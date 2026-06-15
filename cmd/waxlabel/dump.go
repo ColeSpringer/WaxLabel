@@ -1,0 +1,146 @@
+package main
+
+import (
+	"context"
+	"io"
+
+	wl "github.com/colespringer/waxlabel"
+	"github.com/spf13/cobra"
+)
+
+// newDumpCmd builds the "dump" command, which reads each file and prints its
+// metadata. Multiple files are processed independently: a parse failure on one
+// is reported (and reflected in the exit code) without aborting the rest.
+func newDumpCmd() *cobra.Command {
+	var native bool
+	cmd := &cobra.Command{
+		Use:   "dump <file>...",
+		Short: "Show a file's tags, properties, pictures, and warnings",
+		Long: "Parse each file and print its canonical tags, audio properties, embedded\n" +
+			"pictures, and any parse warnings. With --native, also show the native\n" +
+			"metadata blocks and the per-source (family) view that records which\n" +
+			"container supplied each value.",
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return perFile(cmd, args,
+				func(ctx context.Context, path string) (*wl.Document, error) {
+					return wl.ParseFile(ctx, path)
+				},
+				func(path string, doc *wl.Document) any { return toJSONDocument(path, doc, native) },
+				func(path string, c classifiedError) any {
+					return jsonDocument{File: path, Error: &jsonErrBody{c.code, c.message}}
+				},
+				func(w io.Writer, path string, doc *wl.Document) { renderDocument(w, path, doc, native) },
+			)
+		},
+	}
+	cmd.Flags().BoolVar(&native, "native", false, "include native blocks and the per-source (family) view")
+	return cmd
+}
+
+// jsonDocument is the machine-readable view of one dumped file. On a parse
+// failure only File and Error are set; otherwise Error is nil and the metadata
+// fields are populated.
+type jsonDocument struct {
+	File       string          `json:"file"`
+	Error      *jsonErrBody    `json:"error,omitempty"`
+	Format     string          `json:"format,omitempty"`
+	Properties *jsonProperties `json:"properties,omitempty"`
+	Tags       []jsonTag       `json:"tags,omitempty"`
+	Pictures   []jsonPicture   `json:"pictures,omitempty"`
+	Warnings   []jsonWarning   `json:"warnings,omitempty"`
+	Native     []jsonNative    `json:"native,omitempty"`
+	Sources    []jsonSource    `json:"sources,omitempty"`
+}
+
+type jsonProperties struct {
+	Container     string `json:"container,omitempty"`
+	Codec         string `json:"codec,omitempty"`
+	SampleRate    int    `json:"sampleRate,omitempty"`
+	Channels      int    `json:"channels,omitempty"`
+	BitsPerSample int    `json:"bitsPerSample,omitempty"`
+	DurationMs    int64  `json:"durationMs,omitempty"`
+	BitrateBps    int    `json:"bitrateBps,omitempty"` // average bits per second (text dump shows kbps)
+}
+
+type jsonTag struct {
+	Key    string   `json:"key"`
+	Values []string `json:"values"`
+}
+
+type jsonPicture struct {
+	Type        string `json:"type"`
+	MIME        string `json:"mime"`
+	Width       int    `json:"width,omitempty"`
+	Height      int    `json:"height,omitempty"`
+	Bytes       int    `json:"bytes"`
+	Description string `json:"description,omitempty"`
+}
+
+type jsonNative struct {
+	Kind string `json:"kind"`
+	Size int    `json:"size"`
+	Note string `json:"note,omitempty"`
+}
+
+type jsonSource struct {
+	Key      string   `json:"key"`
+	Family   string   `json:"family"`
+	Scope    string   `json:"scope"`
+	Values   []string `json:"values"`
+	Selected bool     `json:"selected"`
+}
+
+// toJSONDocument projects a parsed document into its JSON form.
+func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
+	props := doc.Properties()
+	t := props.First()
+	jd := jsonDocument{
+		File:   path,
+		Format: doc.Format().String(),
+		Properties: &jsonProperties{
+			Container:     props.Container,
+			Codec:         t.Codec,
+			SampleRate:    t.SampleRate,
+			Channels:      t.Channels,
+			BitsPerSample: t.BitsPerSample,
+			DurationMs:    props.Duration().Milliseconds(),
+			BitrateBps:    t.Bitrate,
+		},
+		Tags:     []jsonTag{},
+		Pictures: []jsonPicture{},
+	}
+	for k, vals := range doc.Tags().All() {
+		jd.Tags = append(jd.Tags, jsonTag{Key: string(k), Values: vals})
+	}
+	for _, p := range doc.Pictures() {
+		jd.Pictures = append(jd.Pictures, jsonPicture{
+			Type:        p.Type.String(),
+			MIME:        p.MIME,
+			Width:       p.Width,
+			Height:      p.Height,
+			Bytes:       len(p.Data),
+			Description: p.Description,
+		})
+	}
+	for _, x := range doc.Warnings() {
+		jd.Warnings = append(jd.Warnings, jsonWarning{Code: x.Code.String(), Message: x.Message})
+	}
+	if native {
+		if nd := doc.Native(); nd != nil {
+			for _, e := range nd.Describe() {
+				jd.Native = append(jd.Native, jsonNative{Kind: e.Kind, Size: e.Size, Note: e.Note})
+			}
+		}
+		for _, f := range doc.Families() {
+			jd.Sources = append(jd.Sources, jsonSource{
+				Key:      string(f.Key),
+				Family:   f.Family.String(),
+				Scope:    f.Scope.String(),
+				Values:   f.Values,
+				Selected: f.Selected,
+			})
+		}
+	}
+	return jd
+}

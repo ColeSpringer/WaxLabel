@@ -48,6 +48,42 @@ fmt.Println("committed:", res.Committed)
 [`SaveBack`] (atomic in-place rewrite; a no-op writes nothing), [`SaveAsFile`],
 and [`WriteTo`] (stream to any `io.Writer`).
 
+## Command-line tool
+
+A `waxlabel` CLI lives in `cmd/waxlabel` and dogfoods the library:
+
+```
+go run ./cmd/waxlabel dump track.flac                    # tags, properties, pictures, warnings
+go run ./cmd/waxlabel plan track.flac --set TITLE=New    # preview a write (writes nothing)
+go run ./cmd/waxlabel set  track.flac --set TITLE=New --add ARTIST=Featured --clear ENCODER
+go run ./cmd/waxlabel verify track.flac                  # audio-essence identity for dedup
+```
+
+Install the binary with `go install github.com/colespringer/waxlabel/cmd/waxlabel@latest`.
+
+- **`dump <file>...`** — tags, audio properties, pictures, and warnings. `--native`
+  adds the native blocks and the per-source (family) view.
+- **`plan <file>`** — resolve edits into a write plan and print exactly what `set`
+  would do, without touching the file (the report and the write share state).
+- **`set <file>`** — apply edits and save: atomic in-place by default, `-o` writes a
+  new file, a no-op writes nothing. `--verify` checks the written audio essence.
+- **`verify <file>...`** — the tag-independent audio-essence digest; `--whole-file`
+  adds the whole-file digest.
+
+Edits: `--set KEY=VALUE` (replace), `--add KEY=VALUE` (append, for multi-value),
+`--clear KEY` (remove), `--add-cover FILE`, `--remove-pictures`. Write policy:
+`--preset preserve|compatible|canonical|minimal`, `--legacy …`. Every command
+accepts `--json` for scriptable output.
+
+Exit codes for `dump`/`plan`/`set`/`verify`: `0` success · `1` error · `2`
+usage/invalid key · `3` unsupported format · `4` invalid data · `5` source
+changed · `6` I/O · `130` canceled/timeout. (cobra's built-in `help` and
+`completion` follow cobra's own conventions.)
+
+> The **library** has no third-party dependencies. The CLI (package `main` under
+> `cmd/`) uses `spf13/cobra`; thanks to Go module-graph pruning, code that imports
+> only `github.com/colespringer/waxlabel` never compiles or downloads it.
+
 ## Design
 
 A small set of contracts is stable:
