@@ -1,0 +1,87 @@
+package core
+
+import "slices"
+
+// WarningCode categorizes a non-fatal condition surfaced during parse or
+// planning. Preservation-first means WaxLabel warns rather than silently
+// dropping or rewriting; callers can inspect or act on these.
+type WarningCode uint8
+
+const (
+	WarnUnknown WarningCode = iota
+	// WarnStrayLeadingID3 means an ID3v2 tag precedes the "fLaC" marker. It is
+	// preserved by default.
+	WarnStrayLeadingID3
+	// WarnTrailingID3v1 means a 128-byte ID3v1 tag trails the audio. Preserved.
+	WarnTrailingID3v1
+	// WarnLegacyAPE means an APEv2 tag is present alongside the native tags.
+	WarnLegacyAPE
+	// WarnMultipleVorbisComment means more than one Vorbis comment block was
+	// found; the first is authoritative, the rest preserved.
+	WarnMultipleVorbisComment
+	// WarnInheritedEncoder means an "encoder=Lavf..." style comment from a
+	// transcoder was found — typical of acquired files.
+	WarnInheritedEncoder
+	// WarnDistrustedBlockSize means a block's declared length disagreed with
+	// its real content length (a known broken-encoder case).
+	WarnDistrustedBlockSize
+	// WarnUnknownBlock means a metadata block of an unrecognized type was
+	// preserved verbatim.
+	WarnUnknownBlock
+	// WarnInvalidPicture means a picture block could not be fully interpreted.
+	WarnInvalidPicture
+	// WarnConflictingFamilies means multiple tag families supplied different
+	// values for the same canonical field.
+	WarnConflictingFamilies
+	// WarnNumericGenre means a numeric/"(17)" genre reference was mapped to a
+	// name on read.
+	WarnNumericGenre
+	// WarnChainedStream means a chained/multiplexed Ogg stream was read
+	// best-effort.
+	WarnChainedStream
+)
+
+func (c WarningCode) String() string {
+	switch c {
+	case WarnStrayLeadingID3:
+		return "stray-leading-id3"
+	case WarnTrailingID3v1:
+		return "trailing-id3v1"
+	case WarnLegacyAPE:
+		return "legacy-ape"
+	case WarnMultipleVorbisComment:
+		return "multiple-vorbis-comment"
+	case WarnInheritedEncoder:
+		return "inherited-encoder"
+	case WarnDistrustedBlockSize:
+		return "distrusted-block-size"
+	case WarnUnknownBlock:
+		return "unknown-block"
+	case WarnInvalidPicture:
+		return "invalid-picture"
+	case WarnConflictingFamilies:
+		return "conflicting-families"
+	case WarnNumericGenre:
+		return "numeric-genre"
+	case WarnChainedStream:
+		return "chained-stream"
+	default:
+		return "unknown"
+	}
+}
+
+// Warning is a coded, human-readable note.
+type Warning struct {
+	Code    WarningCode
+	Message string
+}
+
+func (w Warning) String() string { return "[" + w.Code.String() + "] " + w.Message }
+
+// Warn appends a warning to a slice, returning the new slice.
+func Warn(ws []Warning, code WarningCode, msg string) []Warning {
+	return append(ws, Warning{Code: code, Message: msg})
+}
+
+// CloneWarnings copies a warning slice.
+func CloneWarnings(ws []Warning) []Warning { return slices.Clone(ws) }

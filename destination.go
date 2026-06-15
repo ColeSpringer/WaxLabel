@@ -1,0 +1,252 @@
+package waxlabel
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/colespringer/waxlabel/internal/bits"
+	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/waxerr"
+)
+
+type destKind uint8
+
+const (
+	destSaveBack destKind = iota
+	destSaveAsFile
+	destWriteTo
+)
+
+// Destination names where [Plan.Execute] writes. Construct one with [SaveBack],
+// [SaveAsFile], or [WriteTo].
+type Destination struct {
+	kind   destKind
+	path   string
+	w      io.Writer
+	source core.ReaderAtSized
+}
+
+// SaveBack rewrites the original file in place, atomically (temp file, fsync,
+// rename, directory fsync). It requires the document to have come from
+// [ParseFile], verifies the file has not changed since parse
+// ([waxerr.ErrSourceChanged] otherwise), and writes nothing for a no-op plan.
+func SaveBack() Destination { return Destination{kind: destSaveBack} }
+
+// SaveAsFile writes a complete file at path (atomically). Unlike SaveBack it is
+// never a no-op: a fresh destination is always written whole.
+func SaveAsFile(path string) Destination { return Destination{kind: destSaveAsFile, path: path} }
+
+// WriteTo streams the complete output to w. The source bytes to copy come from
+// source (required when the document is detached, i.e. from [Parse]); for a
+// [ParseFile] or [OpenSource] document, pass nil to use its own source.
+func WriteTo(w io.Writer, source ReaderAtSized) Destination {
+	return Destination{kind: destWriteTo, w: w, source: source}
+}
+
+func (p *Plan) saveBack(ctx context.Context) (*Document, SaveResult, error) {
+	if p.doc.path == "" {
+		return nil, SaveResult{}, fmt.Errorf("%w: SaveBack needs a file; use SaveAsFile or WriteTo", waxerr.ErrUnsupportedFormat)
+	}
+	src, err := openFileSource(p.doc.path)
+	if err != nil {
+		return nil, SaveResult{}, err
+	}
+	defer src.Close()
+
+	// Strong change detection: stat plus the structural fingerprint of the
+	// metadata region (recomputed from the current file), so an external edit
+	// that preserved size and mtime is still caught.
+	current, err := fileIdentity(p.doc.path)
+	if err != nil {
+		return nil, SaveResult{}, err
+	}
+	if p.doc.media.Identity.HasFinger {
+		if fp, ok := computeFingerprint(src, p.doc.media.AudioStart, p.opts.Limits.MaxAllocBytes); ok {
+			current.Fingerprint, current.HasFinger = fp, true
+		}
+	}
+	if ok, why := p.doc.media.Identity.Matches(current); !ok {
+		return nil, SaveResult{Dest: current}, fmt.Errorf("%w: %s", waxerr.ErrSourceChanged, why)
+	}
+
+	// Contract: a no-op SaveBack writes nothing.
+	if p.plan.NoOp {
+		return p.doc, SaveResult{Committed: false, Dest: p.doc.media.Identity, Doc: p.doc}, nil
+	}
+
+	committed, werr := p.writeFile(ctx, p.doc.path, src)
+	newID, _ := fileIdentity(p.doc.path)
+	resDoc := p.resultDocument(p.doc.path, nil, newID)
+	return resDoc, SaveResult{Committed: committed, Dest: newID, Doc: resDoc}, werr
+}
+
+func (p *Plan) saveAsFile(ctx context.Context, path string) (*Document, SaveResult, error) {
+	src, closer, err := p.doc.resolveSource(nil)
+	if err != nil {
+		return nil, SaveResult{}, err
+	}
+	defer closer()
+
+	committed, werr := p.writeFile(ctx, path, src)
+	newID, _ := fileIdentity(path)
+	resDoc := p.resultDocument(path, nil, newID)
+	return resDoc, SaveResult{Committed: committed, Dest: newID, Doc: resDoc}, werr
+}
+
+func (p *Plan) writeTo(ctx context.Context, dst Destination) (*Document, SaveResult, error) {
+	src, closer, err := p.doc.resolveSource(dst.source)
+	if err != nil {
+		return nil, SaveResult{}, err
+	}
+	defer closer()
+
+	// A streaming destination cannot be re-read, so VerifyEssence (which checks
+	// the written bytes) does not apply here.
+	if _, err := bits.Write(ctx, dst.w, src, p.plan.Segments, nil); err != nil {
+		return nil, SaveResult{}, err
+	}
+	id := core.Identity{Size: bits.OutputLen(p.plan.Segments)}
+	resDoc := p.resultDocument("", nil, id)
+	return resDoc, SaveResult{Committed: true, Dest: id, Doc: resDoc}, nil
+}
+
+// writeFile performs an atomic write of the plan to path, copying from src.
+// When VerifyEssence is set it hashes the source audio once as it is copied,
+// then re-reads the written output's audio extent and compares — confirming the
+// rewrite preserved the essence before the file is committed. (The output read
+// hits the page cache, so it guards the copy logic rather than disk media.)
+func (p *Plan) writeFile(ctx context.Context, path string, src core.ReaderAtSized) (bool, error) {
+	var srcEssence []byte
+	write := func(f *os.File) error {
+		sum, err := p.streamCopy(ctx, f, src)
+		srcEssence = sum
+		return err
+	}
+	verify := func(f *os.File) error {
+		return p.verifyOutput(ctx, f, srcEssence)
+	}
+	return writeAtomic(path, write, verify, p.opts.PreserveModTime, p.doc.media.Identity.ModTimeUnixNano)
+}
+
+// streamCopy writes the plan's segments to dst, copying ranges from source. If
+// VerifyEssence is set, it taps the copied audio (one read, no extra pass) and
+// returns its hash for verifyOutput to check against the written output.
+func (p *Plan) streamCopy(ctx context.Context, dst io.Writer, source core.ReaderAtSized) ([]byte, error) {
+	var tap bits.Tap
+	var hasher *bits.Hasher
+	if p.opts.VerifyEssence {
+		_, cfg := p.essenceExtent()
+		hasher = bits.NewHasher([][2]int64{{p.doc.media.AudioStart, p.doc.media.AudioEnd}})
+		hasher.Mix(cfg)
+		tap = hasher
+	}
+	if _, err := bits.Write(ctx, dst, source, p.plan.Segments, tap); err != nil {
+		return nil, err
+	}
+	if hasher != nil {
+		return hasher.Sum(), nil
+	}
+	return nil, nil
+}
+
+// verifyOutput re-hashes the written file's audio extent and compares it to the
+// source essence captured during the copy.
+func (p *Plan) verifyOutput(ctx context.Context, out io.ReaderAt, srcEssence []byte) error {
+	if !p.opts.VerifyEssence {
+		return nil
+	}
+	_, cfg := p.essenceExtent()
+	res := p.plan.Result
+	outSum, err := hashRange(ctx, out, cfg, res.AudioStart, res.AudioEnd, p.opts.Limits.MaxAllocBytes)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(outSum, srcEssence) {
+		return fmt.Errorf("%w: written audio essence does not match the source", waxerr.ErrInvalidData)
+	}
+	return nil
+}
+
+// essenceExtent returns the codec's essence-digest inputs for this plan's
+// document (version, config), or a neutral fallback if the format is unknown.
+func (p *Plan) essenceExtent() (string, []byte) {
+	if codec, ok := core.ForFormat(p.doc.media.Format); ok {
+		return codec.EssenceExtent(p.doc.media)
+	}
+	return "audio-extent-v1", nil
+}
+
+// writeAtomic writes via a temp file in the destination directory, fsyncs it,
+// optionally verifies it (before commit), renames it over path, then fsyncs the
+// directory. It returns committed=true once the rename succeeds (even if the
+// later directory fsync errors, since the data is already in place).
+func writeAtomic(path string, write, verify func(*os.File) error, preserveMtime bool, origMtimeUnixNano int64) (bool, error) {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".waxlabel-*.tmp")
+	if err != nil {
+		return false, err
+	}
+	tmpName := tmp.Name()
+	committed := false
+	defer func() {
+		if !committed {
+			tmp.Close()
+			os.Remove(tmpName)
+		}
+	}()
+
+	if err := write(tmp); err != nil {
+		return false, err
+	}
+	if err := tmp.Sync(); err != nil {
+		return false, err
+	}
+	if verify != nil {
+		if err := verify(tmp); err != nil { // runs before commit; temp discarded on failure
+			return false, err
+		}
+	}
+	if err := tmp.Close(); err != nil {
+		return false, err
+	}
+
+	// Mode and mtime are best-effort and deliberately not fatal: many media
+	// libraries live on FAT/exFAT drives that do not support per-file chmod, and
+	// failing the whole save over a cosmetic attribute would be worse than the
+	// data write succeeding. Carry over an existing file's mode; widen a brand-
+	// new file from os.CreateTemp's 0600 to a conventional 0644.
+	if info, err := os.Stat(path); err == nil {
+		_ = os.Chmod(tmpName, info.Mode())
+	} else {
+		_ = os.Chmod(tmpName, 0o644)
+	}
+	if preserveMtime && origMtimeUnixNano > 0 {
+		mt := time.Unix(0, origMtimeUnixNano)
+		_ = os.Chtimes(tmpName, mt, mt)
+	}
+
+	if err := os.Rename(tmpName, path); err != nil {
+		return false, err
+	}
+	committed = true
+	return true, fsyncDir(dir)
+}
+
+// fsyncDir flushes a directory entry so the rename is durable. Best-effort:
+// platforms that cannot open a directory for sync return nil.
+func fsyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return nil
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil {
+		return fmt.Errorf("directory fsync: %w", err)
+	}
+	return nil
+}
