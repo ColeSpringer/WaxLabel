@@ -1,10 +1,6 @@
 package core
 
-import (
-	"strings"
-
-	"github.com/colespringer/waxlabel/tag"
-)
+import "github.com/colespringer/waxlabel/tag"
 
 // Contribution is one canonical value decoded from one native entry, tagged with
 // a source label so conflicts between distinct entries for the same key surface.
@@ -60,7 +56,7 @@ func BuildFamilies(contribs []Contribution, family Family) []FamilyValue {
 func distinctValues(vals []string) int {
 	seen := map[string]bool{}
 	for _, v := range vals {
-		seen[strings.ToLower(strings.TrimSpace(v))] = true
+		seen[Fold(v)] = true
 	}
 	return len(seen)
 }

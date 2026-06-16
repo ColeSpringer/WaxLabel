@@ -15,6 +15,12 @@ func IsTranscoderStamp(s string) bool {
 	return strings.Contains(s, "lavf") || strings.Contains(s, "libavformat")
 }
 
+// Fold normalizes a string for case- and space-insensitive comparison
+// (lowercased, surrounding whitespace trimmed). It is the one place the
+// normalization rule lives for codecs that import core; tag/* cannot use it (core
+// imports tag, not the reverse).
+func Fold(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+
 // ContainsFold reports whether vals holds value, comparing case- and
 // space-insensitively. It is the shared rule for deciding whether a secondary
 // tag container agrees with the authoritative value.

@@ -24,6 +24,7 @@ func FuzzParse(f *testing.F) {
 	for _, p := range []string{
 		sampleFLAC, "testdata/notags.flac", sampleOgg, sampleOpus, notagsOgg, "testdata/notags.opus",
 		sampleMP3, sampleMP324, notagsMP3, sampleWAV, notagsWAV, sampleMP4, notagsMP4,
+		sampleMKA, sampleWebM, notagsMKA,
 	} {
 		if b, err := os.ReadFile(p); err == nil {
 			f.Add(b)
@@ -46,6 +47,9 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte("\x00\x00\x00\x08ftyp\x00\x00\x00\x08moov"))                                                         // empty moov, no tracks
 	f.Add([]byte("\x00\x00\x00\x08ftyp\x00\x00\x00\x01moov\xff\xff\xff\xff\xff\xff\xff\xff"))                         // 64-bit atom, absurd size
 	f.Add([]byte("\x00\x00\x00\x10ftypM4A \x00\x00\x00\x08moof"))                                                     // fragmented: must reject, not panic
+	f.Add([]byte("\x1a\x45\xdf\xa3\x84\x42\x82\x81m"))                                                                // EBML magic + truncated DocType
+	f.Add([]byte("\x1a\x45\xdf\xa3\xff"))                                                                             // EBML magic, unknown-size header
+	f.Add([]byte("\x1a\x45\xdf\xa3\x80\x18\x53\x80\x67\xff"))                                                         // empty EBML header + unknown-size Segment
 	f.Add([]byte{})
 
 	ctx := context.Background()
@@ -62,9 +66,16 @@ func FuzzParse(f *testing.F) {
 		_ = doc.Warnings()
 		_ = doc.Inspect()
 
-		// A no-op write must reproduce the exact input bytes.
+		// A no-op write must reproduce the exact input bytes. A read-only format
+		// (Matroska v1) refuses any plan, including a no-op — that is its contract,
+		// so accept it and skip the write round-trip. The guard is scoped to
+		// non-writable formats so a *writable* format that wrongly reports
+		// ErrUnsupportedFormat still fails here rather than slipping through.
 		plan, err := doc.Edit().Prepare()
 		if err != nil {
+			if errors.Is(err, waxerr.ErrUnsupportedFormat) && !doc.Format().Writable() {
+				return
+			}
 			t.Fatalf("prepare on a parsed doc failed: %v", err)
 		}
 		var out bytes.Buffer

@@ -127,6 +127,15 @@ const (
 	FamilyMatroska = core.FamilyMatroska
 )
 
+// Scope values annotate the target a family value applies to. Most formats are
+// track-scoped; Matroska's targets make album/edition/chapter scopes meaningful.
+const (
+	ScopeTrack   = core.ScopeTrack
+	ScopeAlbum   = core.ScopeAlbum
+	ScopeEdition = core.ScopeEdition
+	ScopeChapter = core.ScopeChapter
+)
+
 // WarningCode values.
 const (
 	WarnStrayLeadingID3       = core.WarnStrayLeadingID3

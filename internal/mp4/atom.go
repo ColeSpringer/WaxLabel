@@ -78,8 +78,15 @@ func childStart(src core.ReaderAtSized, n node, limit int64) int64 {
 
 // walkAtoms parses the atoms in [start, end) of src into a node tree, recursing
 // into container atoms up to the depth guard. It reads only atom headers (never
-// payloads), so a large mdat costs nothing.
-func walkAtoms(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limit int64) ([]node, error) {
+// payloads), so a large mdat costs nothing. topLevel marks the outermost call:
+// only there is an atom whose declared size overruns the region tolerated (a
+// truncated final atom, e.g. a half-downloaded mdat, so the complete earlier
+// metadata still reads); a *nested* atom that overruns its parent is structural
+// corruption and is rejected, because clamping it leaves the recorded size
+// inconsistent with the preserved source bytes — which would make an edit's
+// rewrite emit un-reparseable output (the inserted tag path would fall inside the
+// clamped-but-still-oversized child's declared extent).
+func walkAtoms(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limit int64, topLevel bool) ([]node, error) {
 	if err := depth.Enter(); err != nil {
 		return nil, err
 	}
@@ -121,14 +128,20 @@ func walkAtoms(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limi
 			return nil, fmt.Errorf("%w: atom %q size %d below 8", waxerr.ErrInvalidData, name, size)
 		}
 		if size > end-off {
-			// Declared size overruns the region; clamp so the range stays valid and
-			// this becomes the last atom (corrupt or truncated input).
+			if !topLevel {
+				return nil, fmt.Errorf("%w: atom %q declares %d bytes but only %d remain in its container",
+					waxerr.ErrInvalidData, name, size, end-off)
+			}
+			// Top-level final atom overruns end-of-file (a truncated download): clamp
+			// so the complete earlier atoms still read. This stays consistent on a
+			// rewrite because such an atom is last and re-clamps identically on
+			// re-parse of the output.
 			size = end - off
 		}
 		n := node{name: name, offset: off, headerLen: headerLen, size: size}
 		if containerAtoms[name] {
 			if cs := childStart(src, n, limit); cs <= n.end() {
-				kids, err := walkAtoms(src, cs, n.end(), depth, limit)
+				kids, err := walkAtoms(src, cs, n.end(), depth, limit, false)
 				if err != nil {
 					return nil, err
 				}
@@ -141,6 +154,29 @@ func walkAtoms(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limi
 			break // no forward progress (corrupt) — stop
 		}
 		off = next
+	}
+	// A nested container's children must exactly tile it. Leftover bytes that do
+	// not form a complete atom (a ragged tail) are corruption: parse would ignore
+	// them, but a create/insert rewrite appends the new tag path after the
+	// container's recorded end, leaving the stray bytes to misalign the re-parse of
+	// the output. Top-level trailing bytes are tolerated (junk after the last atom
+	// stays after everything and re-parses identically).
+	//
+	// An exception: an all-zero remainder is benign and must be kept readable —
+	// QuickTime terminates a udta user-data list with a 32-bit zero, and zero
+	// padding cannot form a misaligning atom header. Only a non-zero ragged tail is
+	// rejected.
+	if !topLevel && off < end {
+		tail, err := bits.ReadSlice(src, off, end-off, limit)
+		if err != nil {
+			return nil, err
+		}
+		for _, b := range tail {
+			if b != 0 {
+				return nil, fmt.Errorf("%w: %d trailing byte(s) in a container do not form a complete atom",
+					waxerr.ErrInvalidData, end-off)
+			}
+		}
 	}
 	return out, nil
 }

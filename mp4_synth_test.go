@@ -401,6 +401,38 @@ func TestMP4FragmentedRejected(t *testing.T) {
 	}
 }
 
+func TestMP4MalformedContainerTilingRejected(t *testing.T) {
+	// A nested container's children must exactly tile it. Two fuzz-found shapes
+	// broke the round-trip (parse clamped/ignored the defect, then a create/insert
+	// rewrite copied the original bytes verbatim and emitted un-reparseable output),
+	// so both are now rejected at parse. A truncated *top-level* final atom stays
+	// tolerated — that recovery path is exercised by the real fixtures.
+	ftyp := mp4Atom("ftyp", []byte("M4A \x00\x00\x00\x00isom"))
+	cases := map[string][]byte{
+		// trak inside moov declares 1000 bytes but only 16 are present (overrun).
+		"nested overrun": mp4Atom("moov", slices.Concat(mp4be32(1000), []byte("trak"), make([]byte, 8))),
+		// moov body is a 1-byte ragged tail that cannot be a complete atom.
+		"ragged tail": mp4Atom("moov", []byte("0")),
+	}
+	for name, moov := range cases {
+		file := slices.Concat(ftyp, moov)
+		if _, err := wl.Parse(context.Background(), wl.BytesSource(file)); !errors.Is(err, waxerr.ErrInvalidData) {
+			t.Errorf("%s: parse error = %v, want ErrInvalidData", name, err)
+		}
+	}
+}
+
+func TestMP4QuickTimeUdtaTerminatorAccepted(t *testing.T) {
+	// QuickTime terminates a udta user-data list with a 32-bit zero. The
+	// nested-tiling rejection must treat an all-zero remainder as benign so these
+	// Apple-authored files still read (regression guard for that check).
+	udta := mp4Atom("udta", append(mp4Text("\xa9nam", "X"), 0, 0, 0, 0))
+	file := slices.Concat(mp4Atom("ftyp", []byte("M4A \x00\x00\x00\x00isom")), mp4Atom("moov", udta))
+	if _, err := wl.Parse(context.Background(), wl.BytesSource(file)); err != nil {
+		t.Fatalf("a udta with a QuickTime zero terminator should parse, got %v", err)
+	}
+}
+
 func TestMP4NoOpWritesVerbatim(t *testing.T) {
 	data := mp4Tagged(mp4Text("\xa9nam", "Same"))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Same").Prepare()

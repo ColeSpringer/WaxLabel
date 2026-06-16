@@ -32,7 +32,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	size := src.Size()
 	limit := opts.Limits.MaxAllocBytes
 
-	top, err := walkAtoms(src, 0, size, bits.NewDepth(opts.Limits.MaxDepth), limit)
+	top, err := walkAtoms(src, 0, size, bits.NewDepth(opts.Limits.MaxDepth), limit, true)
 	if err != nil {
 		return nil, err
 	}

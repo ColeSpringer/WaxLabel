@@ -4,9 +4,9 @@ A pure-Go library for reading and writing audio-file metadata (tags + embedded
 cover art), reimplemented from public specifications.
 
 > **Status: v0.x.** The core model with FLAC, Ogg Vorbis/Opus, MP3, WAV, and
-> MP4/M4A read/write are implemented and tested. Other formats are in progress;
-> codecs stay internal until v1.0, when validated ones are promoted to public
-> `waxlabel/<fmt>` packages.
+> MP4/M4A read/write are implemented and tested, plus Matroska/WebM read. Other
+> formats are in progress; codecs stay internal until v1.0, when validated ones
+> are promoted to public `waxlabel/<fmt>` packages.
 
 WaxLabel is preservation-first: it treats the file's native metadata as the
 base and rewrites only the fields you actually change, copying the audio
@@ -115,7 +115,7 @@ A small set of contracts is stable:
 | MP3 | ID3v2/v1 | ✅ | ✅ | ID3v2.2/2.3/2.4 read+write (version preserved); ID3v1/APEv2 read into the family view; numeric genre; VBR length |
 | WAV | RIFF | ✅ | ✅ | LIST/INFO + embedded `id3 ` chunk; id3 authoritative when present, else INFO; pictures via id3; all chunks preserved; RF64/BW64 out of scope |
 | MP4 | AAC/ALAC | ✅ | ✅ | iTunes `moov.udta.meta.ilst` (text, trkn/disk, covr art, `----` freeform long tail); `free`-atom reuse + all-track `stco`/`co64` fixups; `chpl` preserved; fragmented (moof) rejected |
-| Matroska | — | — | — | planned (read-only) |
+| Matroska | FLAC/Opus/Vorbis/AAC/… | ✅ | — | `.mka`/`.webm`/`.mkv`; scope-aware SimpleTag projection (album/track/edition/chapter) + `Info.Title` + cover-art attachments; full scoped tree preserved in `Native`; write deferred to v2 |
 | AIFF | — | — | — | planned |
 
 Ogg writes preserve audio *packet payloads* byte-for-byte (Ogg re-pagination is

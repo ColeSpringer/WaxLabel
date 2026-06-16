@@ -53,9 +53,10 @@ func (f Format) String() string {
 }
 
 // Implemented reports whether this version can parse the format at all.
+// Matroska is parse-only (read); see [Format.Writable].
 func (f Format) Implemented() bool {
 	switch f {
-	case FormatFLAC, FormatOggVorbis, FormatOggOpus, FormatMP3, FormatWAV, FormatMP4:
+	case FormatFLAC, FormatOggVorbis, FormatOggOpus, FormatMP3, FormatWAV, FormatMP4, FormatMatroska:
 		return true
 	}
 	return false
