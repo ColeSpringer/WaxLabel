@@ -171,15 +171,11 @@ func DiffKeys(base, edited tag.TagSet) map[tag.Key]bool {
 // acquired by transcoding.
 func EncoderNoise(vendor string, comments []Comment) []core.Warning {
 	var ws []core.Warning
-	noisy := func(s string) bool {
-		s = strings.ToLower(s)
-		return strings.Contains(s, "lavf") || strings.Contains(s, "libavformat")
-	}
-	if noisy(vendor) {
+	if core.IsTranscoderStamp(vendor) {
 		ws = core.Warn(ws, core.WarnInheritedEncoder, "vendor string is a transcoder stamp: "+vendor)
 	}
 	for _, cm := range comments {
-		if strings.EqualFold(cm.Name, "ENCODER") && noisy(cm.Value) {
+		if strings.EqualFold(cm.Name, "ENCODER") && core.IsTranscoderStamp(cm.Value) {
 			ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder comment: "+cm.Value)
 		}
 	}

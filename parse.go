@@ -13,6 +13,7 @@ import (
 	_ "github.com/colespringer/waxlabel/internal/flac"
 	_ "github.com/colespringer/waxlabel/internal/mp3"
 	_ "github.com/colespringer/waxlabel/internal/ogg"
+	_ "github.com/colespringer/waxlabel/internal/wav"
 )
 
 // Parse reads metadata from src, returning a detached [Document]. src is used

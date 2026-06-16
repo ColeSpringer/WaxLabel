@@ -1,0 +1,193 @@
+package wav
+
+import (
+	"bytes"
+	"encoding/binary"
+	"slices"
+
+	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/mapping"
+	"github.com/colespringer/waxlabel/tag"
+)
+
+// parseInfo decodes a LIST chunk body into INFO items. The body begins with the
+// 4-byte list type; only "INFO" lists are decoded (others — "adtl" association
+// lists, say — are left for verbatim preservation by returning ok=false). It
+// tolerates truncation, stopping at the first malformed sub-chunk.
+func parseInfo(body []byte) (items []infoItem, ok bool) {
+	if len(body) < 4 || string(body[0:4]) != "INFO" {
+		return nil, false
+	}
+	pos := 4
+	for pos+8 <= len(body) {
+		var id [4]byte
+		copy(id[:], body[pos:pos+4])
+		size := int(binary.LittleEndian.Uint32(body[pos+4 : pos+8]))
+		start := pos + 8
+		// Phrase the bound as a subtraction so a hostile size cannot overflow the
+		// addition start+size into a negative int on a 32-bit platform (which would
+		// slip past the guard and panic on the slice below). start <= len(body)
+		// holds from the loop condition, so len(body)-start is non-negative.
+		if size < 0 || size > len(body)-start {
+			break // truncated item; stop rather than over-read
+		}
+		// ZSTR: the value ends at the first NUL. Cutting there (rather than only
+		// trimming trailing NULs) means an interior NUL cannot survive into the
+		// canonical string and later truncate an id3 text frame. Clone so the item
+		// does not alias the larger body buffer.
+		content := body[start : start+size]
+		if i := bytes.IndexByte(content, 0); i >= 0 {
+			content = content[:i]
+		}
+		items = append(items, infoItem{id: id, raw: slices.Clone(content)})
+		pos = start + size
+		if size&1 == 1 {
+			pos++ // word-alignment pad byte
+		}
+	}
+	return items, true
+}
+
+// infoTags projects INFO items into a canonical TagSet, mapping only the known
+// identifiers. Items appear in file order.
+func infoTags(items []infoItem) tag.TagSet {
+	ts := tag.NewTagSet()
+	for _, it := range items {
+		key, ok := mapping.RIFFInfoKey(it.id4())
+		if !ok {
+			continue
+		}
+		if v := it.text(); v != "" {
+			ts.Add(key, v)
+		}
+	}
+	return ts
+}
+
+// infoFamilies builds RIFF family/source entries from INFO items, marking an
+// entry unselected (a conflict) when its value disagrees with the authoritative
+// value for the same key. When INFO is itself authoritative, auth is its own
+// projection, so every entry is selected.
+func infoFamilies(auth tag.TagSet, items []infoItem) []core.FamilyValue {
+	var out []core.FamilyValue
+	for _, it := range items {
+		key, ok := mapping.RIFFInfoKey(it.id4())
+		if !ok {
+			continue
+		}
+		v := it.text()
+		if v == "" {
+			continue
+		}
+		out = append(out, core.FamilyValue{
+			Key: key, Family: core.FamilyRIFF, Scope: core.ScopeTrack,
+			Values: []string{v}, Selected: core.FamilySelected(auth, key, v),
+		})
+	}
+	return out
+}
+
+// infoRepresentable reports whether every key in ts can be stored faithfully in
+// LIST/INFO: each must map to an INFO identifier and carry at most one value
+// (present-but-empty is fine — it normalizes to absent, as in Vorbis). A key that
+// fails forces the richer id3 chunk so no value is lost.
+func infoRepresentable(ts tag.TagSet) bool {
+	for _, k := range ts.Keys() {
+		if _, ok := mapping.RIFFKeyInfo(k); !ok {
+			return false
+		}
+		if vs, _ := ts.Get(k); len(vs) > 1 {
+			return false
+		}
+	}
+	return true
+}
+
+// rebuildInfo produces the INFO item list for an edited tag set. Unmapped items
+// (IENG, ILNG, the ISFT encoder stamp, ...) are preserved verbatim in place;
+// mapped items are re-rendered from the edited set or dropped when their key is
+// now absent; keys newly present in the edited set are appended in the set's
+// order. Multi-value mapped keys (which also forced an id3 chunk) store their
+// first value here, INFO being single-valued.
+func rebuildInfo(orig []infoItem, edited tag.TagSet) []infoItem {
+	out := make([]infoItem, 0, len(orig))
+	emitted := map[tag.Key]bool{}
+	for _, it := range orig {
+		key, ok := mapping.RIFFInfoKey(it.id4())
+		if !ok {
+			out = append(out, it) // unmapped: preserve the raw bytes verbatim
+			continue
+		}
+		if emitted[key] {
+			continue // a non-conformant file with duplicate mapped items: keep one
+		}
+		if v, ok := infoValue(edited, key); ok {
+			out = append(out, infoItem{id: it.id, raw: []byte(v)})
+			emitted[key] = true
+		}
+		// else: key absent in the edited set — drop the item.
+	}
+	for _, k := range edited.Keys() {
+		if emitted[k] {
+			continue
+		}
+		id, ok := mapping.RIFFKeyInfo(k)
+		if !ok {
+			continue
+		}
+		if v, ok := infoValue(edited, k); ok {
+			var id4 [4]byte
+			copy(id4[:], id)
+			out = append(out, infoItem{id: id4, raw: []byte(v)})
+			emitted[k] = true
+		}
+	}
+	return out
+}
+
+// infoValue returns the value INFO should store for key — the first value, since
+// INFO is single-valued — or ok=false when the key is absent or present-empty
+// (which INFO cannot represent and so drops).
+func infoValue(ts tag.TagSet, key tag.Key) (string, bool) {
+	v, ok := ts.First(key)
+	if !ok || v == "" {
+		return "", false
+	}
+	return v, true
+}
+
+// renderInfo serializes INFO items into a LIST chunk body: the "INFO" list type
+// followed by each item as 4CC + little-endian size + NUL-terminated value, word
+// aligned. The returned bytes are the chunk body (the caller prepends the "LIST"
+// header).
+func renderInfo(items []infoItem) []byte {
+	out := []byte("INFO")
+	for _, it := range items {
+		val := make([]byte, len(it.raw)+1) // raw value bytes + NUL terminator
+		copy(val, it.raw)
+		var sz [4]byte
+		binary.LittleEndian.PutUint32(sz[:], uint32(len(val)))
+		out = append(out, it.id[:]...)
+		out = append(out, sz[:]...)
+		out = append(out, val...)
+		if len(val)&1 == 1 {
+			out = append(out, 0) // word-alignment pad (not counted in the size)
+		}
+	}
+	return out
+}
+
+// encoderNoise flags an inherited transcoder stamp: the ISFT software item
+// ("Lavf..." from ffmpeg) is the WAV analogue of an "encoder=" comment.
+func encoderNoise(items []infoItem) []core.Warning {
+	var ws []core.Warning
+	for _, it := range items {
+		if it.id4() != "ISFT" {
+			continue
+		}
+		if v := it.text(); core.IsTranscoderStamp(v) {
+			ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder stamp: "+v)
+		}
+	}
+	return ws
+}

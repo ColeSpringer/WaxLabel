@@ -67,7 +67,7 @@ func (p *Plan) saveBack(ctx context.Context) (*Document, SaveResult, error) {
 		return nil, SaveResult{}, err
 	}
 	if p.doc.media.Identity.HasFinger {
-		if fp, ok := computeFingerprint(src, p.doc.media.AudioStart, p.opts.Limits.MaxAllocBytes); ok {
+		if fp, ok := core.Fingerprint(src, p.doc.media, p.opts.Limits.MaxAllocBytes); ok {
 			current.Fingerprint, current.HasFinger = fp, true
 		}
 	}

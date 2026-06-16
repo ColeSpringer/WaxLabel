@@ -3,7 +3,6 @@ package mp3
 import (
 	"context"
 	"math"
-	"strings"
 	"time"
 
 	"github.com/colespringer/waxlabel/internal/ape"
@@ -105,7 +104,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			warnings = core.Warn(warnings, core.WarnNumericGenre,
 				"a numeric genre reference was resolved to a name")
 		}
-		warnings = append(warnings, encoderNoise(d.id3)...)
+		warnings = append(warnings, id3.EncoderNoise(d.id3)...)
 	}
 
 	// Legacy family/source entries (ID3v1, APEv2): surfaced for the family view,
@@ -114,11 +113,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 
 	media.Properties = core.Properties{Container: "MP3", Tracks: []core.AudioTrack{d.track}}
 	media.Warnings = warnings
-	media.Identity = core.Identity{
-		Size:        size,
-		Fingerprint: bits.SHA256(bits.PrefixOrNil(src, d.audioStart, limit)),
-		HasFinger:   true,
-	}
+	media.Identity = core.Identity{Size: size}
+	media.Identity.Fingerprint, media.Identity.HasFinger = core.Fingerprint(src, media, limit)
 	return media, nil
 }
 
@@ -165,17 +161,9 @@ func samplesToDuration(samples uint64, rate int) time.Duration {
 func legacyFamilies(auth tag.TagSet, id3v1 []byte, apeTag *ape.Tag) []core.FamilyValue {
 	var out []core.FamilyValue
 	add := func(key tag.Key, value string, fam core.Family) {
-		// A legacy value conflicts only when the key is present in the
-		// authoritative ID3v2 set and none of its values match — comparing against
-		// just the first value would falsely flag a multi-value field (e.g. ID3v2
-		// ARTIST=[A,B] vs an ID3v1 artist of "B").
-		selected := true
-		if avs, ok := auth.Get(key); ok && !containsFold(avs, value) {
-			selected = false
-		}
 		out = append(out, core.FamilyValue{
 			Key: key, Family: fam, Scope: core.ScopeTrack,
-			Values: []string{value}, Selected: selected,
+			Values: []string{value}, Selected: core.FamilySelected(auth, key, value),
 		})
 	}
 	if v1, ok := id3.ParseV1(id3v1); ok {
@@ -189,34 +177,4 @@ func legacyFamilies(auth tag.TagSet, id3v1 []byte, apeTag *ape.Tag) []core.Famil
 		}
 	}
 	return out
-}
-
-// containsFold reports whether vals holds value, comparing case- and
-// space-insensitively.
-func containsFold(vals []string, value string) bool {
-	value = strings.TrimSpace(value)
-	for _, v := range vals {
-		if strings.EqualFold(strings.TrimSpace(v), value) {
-			return true
-		}
-	}
-	return false
-}
-
-// encoderNoise flags an inherited transcoder stamp in the TSSE/TENC frames
-// (ffmpeg writes "Lavf..." there), the typical signature of an acquired file.
-func encoderNoise(t *id3.Tag) []core.Warning {
-	var ws []core.Warning
-	for _, f := range t.Frames() {
-		if f.ID != "TSSE" && f.ID != "TENC" {
-			continue
-		}
-		for _, v := range id3.DecodeText(f) {
-			low := strings.ToLower(v)
-			if strings.Contains(low, "lavf") || strings.Contains(low, "libavformat") {
-				ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder stamp: "+v)
-			}
-		}
-	}
-	return ws
 }

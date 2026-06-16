@@ -27,6 +27,7 @@ implementation follows the specifications below directly.
 | ID3v1 | read | the 128-byte trailer (v1.0 / v1.1 track byte) | mutagen `_id3v1.py` |
 | APEv2 | read | header/footer + items, for the family view and verbatim preservation | mutagen `apev2.py` |
 | MP3 | read + write | MPEG-1/2/2.5 Layer I–III frame headers; Xing/Info/VBRI VBR length; ID3v2 front + audio + trailing APEv2/ID3v1 layout; audio frames copied byte-for-byte | mutagen `mp3.py` |
+| WAV / RIFF | read + write | RIFF/WAVE chunk structure (`fmt ` geometry, `data` extent, word alignment, RIFF size); LIST/INFO tag block; embedded `id3 ` chunk (shared ID3v2 codec); all chunks preserved verbatim; RF64/BW64 rejected | mutagen `wave.py`, `aiff.py`, TagLib `riff/` |
 
 The Ogg CRC table in `internal/bits` is generated from the polynomial in the Ogg
 specification and validated in tests against libogg's published `crc_lookup`

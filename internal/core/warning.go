@@ -42,6 +42,10 @@ const (
 	// WarnID3MultiValue means a multi-value field was written NUL-separated in an
 	// ID3v2.3 tag — a de-facto extension some readers do not split.
 	WarnID3MultiValue
+	// WarnDuplicateTagBlock means more than one tag container of the same kind was
+	// found (e.g. two RIFF LIST/INFO chunks or two WAV id3 chunks); the first is
+	// authoritative and the rest are dropped if the file is rewritten.
+	WarnDuplicateTagBlock
 )
 
 func (c WarningCode) String() string {
@@ -70,6 +74,8 @@ func (c WarningCode) String() string {
 		return "chained-stream"
 	case WarnID3MultiValue:
 		return "id3-multi-value"
+	case WarnDuplicateTagBlock:
+		return "duplicate-tag-block"
 	default:
 		return "unknown"
 	}

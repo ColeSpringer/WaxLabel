@@ -23,7 +23,7 @@ func FuzzParse(f *testing.F) {
 	// truncated pages).
 	for _, p := range []string{
 		sampleFLAC, "testdata/notags.flac", sampleOgg, sampleOpus, notagsOgg, "testdata/notags.opus",
-		sampleMP3, sampleMP324, notagsMP3,
+		sampleMP3, sampleMP324, notagsMP3, sampleWAV, notagsWAV,
 	} {
 		if b, err := os.ReadFile(p); err == nil {
 			f.Add(b)
@@ -38,6 +38,10 @@ func FuzzParse(f *testing.F) {
 	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x0a"), []byte("fLaC")...))                                       // stray ID3 then truncated
 	f.Add([]byte("OggS\x00\x02"))                                                                                     // Ogg capture pattern, truncated header
 	f.Add([]byte("OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\xff")) // page header claiming a 255-byte body it lacks
+	f.Add([]byte("RIFF\x04\x00\x00\x00WAVE"))                                                                         // RIFF/WAVE, no chunks
+	f.Add([]byte("RIFF\xff\xff\xff\xffWAVEdata\xff\xff\xff\xff"))                                                     // absurd RIFF + data sizes
+	f.Add([]byte("RIFF\x10\x00\x00\x00WAVELIST\x04\x00\x00\x00INFO"))                                                 // empty INFO list
+	f.Add([]byte("RF64\x04\x00\x00\x00WAVE"))                                                                         // RF64, must be rejected, not panic
 	f.Add([]byte{})
 
 	ctx := context.Background()

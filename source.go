@@ -7,7 +7,6 @@ import (
 	"os"
 	"syscall"
 
-	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -35,21 +34,6 @@ func openFileSource(path string) (*fileSource, error) {
 func (s *fileSource) ReadAt(p []byte, off int64) (int, error) { return s.f.ReadAt(p, off) }
 func (s *fileSource) Size() int64                             { return s.size }
 func (s *fileSource) Close() error                            { return s.f.Close() }
-
-// computeFingerprint hashes the first n bytes of src (the metadata region) for
-// the structural source fingerprint. It returns ok=false if the region cannot
-// be read (e.g. the file is now shorter), in which case the caller falls back to
-// the size/mtime/inode checks.
-func computeFingerprint(src core.ReaderAtSized, n, limit int64) ([32]byte, bool) {
-	if n <= 0 {
-		return [32]byte{}, false
-	}
-	region, err := bits.ReadSlice(src, 0, n, limit)
-	if err != nil {
-		return [32]byte{}, false
-	}
-	return bits.SHA256(region), true
-}
 
 // fileIdentity captures a file's strong identity: size, mtime, and (where the
 // OS exposes them) inode and device. These detect a same-source save against a

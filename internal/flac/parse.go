@@ -153,11 +153,8 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	media.Properties = core.Properties{Container: "FLAC", Tracks: []core.AudioTrack{track}}
 
 	media.Warnings = warnings
-	media.Identity = core.Identity{
-		Size:        size,
-		Fingerprint: bits.SHA256(bits.PrefixOrNil(src, d.audioStart, limit)),
-		HasFinger:   true,
-	}
+	media.Identity = core.Identity{Size: size}
+	media.Identity.Fingerprint, media.Identity.HasFinger = core.Fingerprint(src, media, limit)
 	return media, nil
 }
 

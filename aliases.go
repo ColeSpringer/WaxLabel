@@ -141,6 +141,7 @@ const (
 	WarnNumericGenre          = core.WarnNumericGenre
 	WarnChainedStream         = core.WarnChainedStream
 	WarnID3MultiValue         = core.WarnID3MultiValue
+	WarnDuplicateTagBlock     = core.WarnDuplicateTagBlock
 )
 
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated

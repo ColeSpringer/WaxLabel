@@ -30,6 +30,28 @@ type contribution struct {
 	src string
 }
 
+// EncoderNoise reports inherited-encoder warnings for the tag's TSSE/TENC frames
+// (ffmpeg writes "Lavf..." there), the signature of a transcoded/acquired file.
+// It is shared by the container codecs that embed ID3v2 (MP3 and WAV) so the
+// check lives in one place. A nil tag yields no warnings.
+func EncoderNoise(t *Tag) []core.Warning {
+	if t == nil {
+		return nil
+	}
+	var ws []core.Warning
+	for _, f := range t.Frames() {
+		if f.ID != "TSSE" && f.ID != "TENC" {
+			continue
+		}
+		for _, v := range DecodeText(f) {
+			if core.IsTranscoderStamp(v) {
+				ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder stamp: "+v)
+			}
+		}
+	}
+	return ws
+}
+
 // Project decodes an ID3v2 tag into the canonical model.
 func Project(t *Tag) Projection {
 	var contribs []contribution

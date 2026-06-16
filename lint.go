@@ -69,7 +69,7 @@ func lintWarnings(ws []core.Warning) []Finding {
 			out = append(out, Finding{LintWarning, "stale-legacy-tag", w.Message, ""})
 		case core.WarnInheritedEncoder:
 			out = append(out, Finding{LintWarning, "encoder-noise", w.Message, ""})
-		case core.WarnMultipleVorbisComment:
+		case core.WarnMultipleVorbisComment, core.WarnDuplicateTagBlock:
 			out = append(out, Finding{LintError, "duplicate-tag-block", w.Message, ""})
 		}
 	}

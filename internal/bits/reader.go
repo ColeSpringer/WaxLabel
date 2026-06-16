@@ -197,18 +197,6 @@ func (c *Cursor) U64BE() uint64 {
 	return v
 }
 
-// PrefixOrNil returns the first n bytes of r, or nil if they cannot be read. It
-// is the shared "header region" read used by codecs to build the structural
-// source fingerprint: returning nil on error simply weakens the change-detection
-// fingerprint rather than failing the whole parse.
-func PrefixOrNil(r io.ReaderAt, n, limit int64) []byte {
-	b, err := ReadSlice(r, 0, n, limit)
-	if err != nil {
-		return nil
-	}
-	return b
-}
-
 // ReadSlice reads n bytes at off from r, bounded by limit.
 func ReadSlice(r io.ReaderAt, off, n, limit int64) ([]byte, error) {
 	if n < 0 {
