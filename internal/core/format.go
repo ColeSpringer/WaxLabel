@@ -14,8 +14,9 @@ type Format uint8
 const (
 	// FormatUnknown is the zero value: not yet identified.
 	FormatUnknown Format = iota
-	// FormatFLAC is the only writable format implemented in M0.
+	// FormatFLAC was the first writable format (M0).
 	FormatFLAC
+	// FormatOggVorbis and FormatOggOpus are read/write (build sequence 3).
 	FormatOggVorbis
 	FormatOggOpus
 	FormatMP3
@@ -52,7 +53,19 @@ func (f Format) String() string {
 }
 
 // Implemented reports whether this version can parse the format at all.
-func (f Format) Implemented() bool { return f == FormatFLAC }
+func (f Format) Implemented() bool {
+	switch f {
+	case FormatFLAC, FormatOggVorbis, FormatOggOpus:
+		return true
+	}
+	return false
+}
 
 // Writable reports whether this version can write the format back.
-func (f Format) Writable() bool { return f == FormatFLAC }
+func (f Format) Writable() bool {
+	switch f {
+	case FormatFLAC, FormatOggVorbis, FormatOggOpus:
+		return true
+	}
+	return false
+}

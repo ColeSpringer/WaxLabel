@@ -116,12 +116,30 @@ type Media struct {
 	// bytes the rewrite must copy verbatim and the essence digest must hash.
 	//
 	// This single contiguous extent fits FLAC (metadata up front, one trailing
-	// audio run). Codecs that interleave or split the essence — Ogg pages,
-	// multiple/relocatable MP4 mdat, chained streams — will need a codec-supplied
-	// multi-segment region instead; [bits.Hasher] already accepts several ranges
-	// in anticipation. Revisit when those codecs land (validate-then-decide).
+	// audio run). Codecs that interleave or split the essence set AudioRanges
+	// instead (see below); for them AudioStart still marks where the audio region
+	// begins (used for the save-back structural fingerprint).
 	AudioStart int64
 	AudioEnd   int64
+
+	// AudioRanges is the codec-supplied multi-segment essence region for formats
+	// whose audio is not one contiguous run — Ogg page bodies interleaved with
+	// page headers, and later multiple/relocatable MP4 mdat. When non-nil it is
+	// authoritative for essence hashing and verification (the ranges must be
+	// ascending and disjoint, in source order); when nil the single
+	// [AudioStart, AudioEnd) extent is used. This is the multi-segment region the
+	// M0 plan anticipated for Ogg/MP4.
+	AudioRanges [][2]int64
+}
+
+// EssenceRanges returns the audio-essence byte ranges to hash: the codec-supplied
+// AudioRanges when present, else the single [AudioStart, AudioEnd) extent. The
+// result is always non-nil for a parsed media with audio.
+func (m *Media) EssenceRanges() [][2]int64 {
+	if len(m.AudioRanges) > 0 {
+		return m.AudioRanges
+	}
+	return [][2]int64{{m.AudioStart, m.AudioEnd}}
 }
 
 // Clone returns a deep copy. Native is cloned through its interface; picture
@@ -140,6 +158,10 @@ func (m *Media) Clone() *Media {
 		Identity:   m.Identity,
 		AudioStart: m.AudioStart,
 		AudioEnd:   m.AudioEnd,
+	}
+	if m.AudioRanges != nil {
+		c.AudioRanges = make([][2]int64, len(m.AudioRanges))
+		copy(c.AudioRanges, m.AudioRanges)
 	}
 	if m.Native != nil {
 		c.Native = m.Native.Clone()

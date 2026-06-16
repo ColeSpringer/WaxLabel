@@ -106,16 +106,17 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// cover art — is pure waste. Only the canonical tags (cloned by the patch)
 	// and the picture set are replaced.
 	edited := &core.Media{
-		Format:     e.base.Format,
-		Properties: e.base.Properties,
-		Tags:       e.patch.Apply(e.base.Tags),
-		Pictures:   e.base.Pictures,
-		Families:   e.base.Families,
-		Warnings:   e.base.Warnings,
-		Native:     e.base.Native,
-		Identity:   e.base.Identity,
-		AudioStart: e.base.AudioStart,
-		AudioEnd:   e.base.AudioEnd,
+		Format:      e.base.Format,
+		Properties:  e.base.Properties,
+		Tags:        e.patch.Apply(e.base.Tags),
+		Pictures:    e.base.Pictures,
+		Families:    e.base.Families,
+		Warnings:    e.base.Warnings,
+		Native:      e.base.Native,
+		Identity:    e.base.Identity,
+		AudioStart:  e.base.AudioStart,
+		AudioEnd:    e.base.AudioEnd,
+		AudioRanges: e.base.AudioRanges,
 	}
 	if e.picsTouched {
 		edited.Pictures = e.pictures

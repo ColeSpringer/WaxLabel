@@ -71,7 +71,7 @@ func (d *Document) HashAudioEssence(ctx context.Context, opts ...HashOption) (Au
 	defer closer()
 
 	version, cfg := d.essenceExtent()
-	sum, err := hashRange(ctx, src, cfg, d.media.AudioStart, d.media.AudioEnd, bits.DefaultLimits.MaxAllocBytes)
+	sum, err := hashRanges(ctx, src, cfg, d.media.EssenceRanges(), bits.DefaultLimits.MaxAllocBytes)
 	if err != nil {
 		return AudioDigest{}, err
 	}
@@ -109,37 +109,51 @@ func (d *Document) HashFile(ctx context.Context, opts ...HashOption) (AudioDiges
 	}
 	defer closer()
 
-	sum, err := hashRange(ctx, src, nil, 0, src.Size(), bits.DefaultLimits.MaxAllocBytes)
+	sum, err := hashRanges(ctx, src, nil, [][2]int64{{0, src.Size()}}, bits.DefaultLimits.MaxAllocBytes)
 	if err != nil {
 		return AudioDigest{}, err
 	}
 	return AudioDigest{Algorithm: "sha256", ExtentVersion: "whole-file-v1", Sum: sum}, nil
 }
 
-// hashRange hashes optional prefix bytes followed by src[start:end). It checks
-// ctx between chunks so hashing a large extent can be cancelled. src need only
-// support ReadAt (the written-output handle has no Size).
-func hashRange(ctx context.Context, src io.ReaderAt, prefix []byte, start, end, limit int64) ([]byte, error) {
-	if end < start {
-		return nil, fmt.Errorf("%w: audio extent end before start", waxerr.ErrInvalidData)
-	}
+// hashRanges hashes optional prefix bytes (the decoder-critical config) followed
+// by the concatenation of src over each [start,end) range in order. It is the
+// multi-segment essence hash: FLAC passes a single contiguous range, Ogg passes
+// each audio page body. It checks ctx between chunks so a large extent can be
+// cancelled. src need only support ReadAt (the written-output handle has no
+// Size).
+func hashRanges(ctx context.Context, src io.ReaderAt, prefix []byte, ranges [][2]int64, limit int64) ([]byte, error) {
 	h := sha256.New()
 	h.Write(prefix)
 	buf := make([]byte, 1<<16)
-	off := start
-	for off < end {
-		if err := ctx.Err(); err != nil {
-			return nil, err
+	prevEnd := int64(-1)
+	for _, r := range ranges {
+		start, end := r[0], r[1]
+		if end < start {
+			return nil, fmt.Errorf("%w: audio extent end before start", waxerr.ErrInvalidData)
 		}
-		n := int64(len(buf))
-		if rem := end - off; rem < n {
-			n = rem
+		// The extents must be ascending and disjoint so the digest is order- and
+		// overlap-stable; a codec bug that violated this would otherwise mint a
+		// wrong-but-stable hash. (A gap between extents is fine.)
+		if start < prevEnd {
+			return nil, fmt.Errorf("%w: audio extents overlap or are out of order", waxerr.ErrInvalidData)
 		}
-		if _, err := src.ReadAt(buf[:n], off); err != nil {
-			return nil, fmt.Errorf("%w: essence read at %d: %v", waxerr.ErrInvalidData, off, err)
+		prevEnd = end
+		off := start
+		for off < end {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			n := int64(len(buf))
+			if rem := end - off; rem < n {
+				n = rem
+			}
+			if _, err := src.ReadAt(buf[:n], off); err != nil {
+				return nil, fmt.Errorf("%w: essence read at %d: %v", waxerr.ErrInvalidData, off, err)
+			}
+			h.Write(buf[:n])
+			off += n
 		}
-		h.Write(buf[:n])
-		off += n
 	}
 	return h.Sum(nil), nil
 }

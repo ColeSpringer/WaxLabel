@@ -3,11 +3,13 @@ package waxlabel_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/tag"
+	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // FuzzParse asserts the parser never panics on arbitrary input (risk #5) and
@@ -16,16 +18,20 @@ import (
 //
 //	go test -run x -fuzz FuzzParse
 func FuzzParse(f *testing.F) {
-	// Seed with the real fixtures and a few hand-built malformations.
-	for _, p := range []string{sampleFLAC, "testdata/notags.flac"} {
+	// Seed with the real fixtures (FLAC and Ogg Vorbis/Opus) and a few hand-built
+	// malformations, including Ogg page edge cases (risk #1: multi-page packets,
+	// truncated pages).
+	for _, p := range []string{sampleFLAC, "testdata/notags.flac", sampleOgg, sampleOpus, notagsOgg, "testdata/notags.opus"} {
 		if b, err := os.ReadFile(p); err == nil {
 			f.Add(b)
 		}
 	}
-	f.Add([]byte("fLaC"))                                                       // marker only, no blocks
-	f.Add([]byte("fLaC\x00\x00\x00\x22"))                                       // STREAMINFO header, no body
-	f.Add([]byte("fLaC\x80\xff\xff\xff"))                                       // last block, absurd length
-	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x0a"), []byte("fLaC")...)) // stray ID3 then truncated
+	f.Add([]byte("fLaC"))                                                                                             // marker only, no blocks
+	f.Add([]byte("fLaC\x00\x00\x00\x22"))                                                                             // STREAMINFO header, no body
+	f.Add([]byte("fLaC\x80\xff\xff\xff"))                                                                             // last block, absurd length
+	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x0a"), []byte("fLaC")...))                                       // stray ID3 then truncated
+	f.Add([]byte("OggS\x00\x02"))                                                                                     // Ogg capture pattern, truncated header
+	f.Add([]byte("OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\xff")) // page header claiming a 255-byte body it lacks
 	f.Add([]byte{})
 
 	ctx := context.Background()
@@ -55,9 +61,16 @@ func FuzzParse(f *testing.F) {
 			t.Fatalf("no-op write changed bytes: in=%d out=%d", len(data), out.Len())
 		}
 
-		// An edit on accepted input must also round-trip and re-parse.
+		// An edit on accepted input must round-trip and re-parse. A codec may
+		// legitimately refuse to rewrite some shapes — a chained Ogg stream
+		// (ErrChainedStream) or a non-page-aligned / oversized layout
+		// (ErrInvalidData) — but any other error from a parsed document is a
+		// regression, so fail rather than silently accepting it.
 		plan2, err := doc.Edit().Set(tag.Title, "fuzz").Prepare()
 		if err != nil {
+			if errors.Is(err, waxerr.ErrChainedStream) || errors.Is(err, waxerr.ErrInvalidData) {
+				return
+			}
 			t.Fatalf("edit prepare failed: %v", err)
 		}
 		var out2 bytes.Buffer

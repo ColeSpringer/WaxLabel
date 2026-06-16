@@ -3,12 +3,9 @@ package flac
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
-	"github.com/colespringer/waxlabel/internal/mapping"
-	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -157,83 +154,10 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	media.Warnings = warnings
 	media.Identity = core.Identity{
 		Size:        size,
-		Fingerprint: bits.SHA256(fingerprintRegion(src, d, limit)),
+		Fingerprint: bits.SHA256(bits.PrefixOrNil(src, d.audioStart, limit)),
 		HasFinger:   true,
 	}
 	return media, nil
-}
-
-// projectComments builds the canonical TagSet and the family/source view from
-// decoded Vorbis comments, preserving order. A canonical key fed by two or more
-// distinct native field names with disagreeing values (e.g. DATE=2020 and
-// YEAR=2019, both mapping to RecordingDate) is a genuine conflict and is marked
-// unselected so it surfaces in the family view and Lint. Repeats of the same
-// native name (ARTIST=A, ARTIST=B) are an ordinary multi-value, not a conflict.
-func projectComments(comments []comment) (tag.TagSet, []core.FamilyValue) {
-	ts := tag.NewTagSet()
-	famIndex := map[tag.Key]int{}
-	names := map[tag.Key]map[string]bool{} // distinct native names per key
-	var fams []core.FamilyValue
-	for _, cm := range comments {
-		key := mapping.CanonicalVorbis(cm.name)
-		ts.Add(key, cm.value)
-		if i, ok := famIndex[key]; ok {
-			fams[i].Values = append(fams[i].Values, cm.value)
-		} else {
-			famIndex[key] = len(fams)
-			names[key] = map[string]bool{}
-			fams = append(fams, core.FamilyValue{
-				Key: key, Family: core.FamilyVorbis, Scope: core.ScopeTrack,
-				Values: []string{cm.value}, Selected: true,
-			})
-		}
-		names[key][strings.ToUpper(cm.name)] = true
-	}
-	for key, i := range famIndex {
-		if len(names[key]) > 1 && distinctValues(fams[i].Values) > 1 {
-			fams[i].Selected = false
-		}
-	}
-	return ts, fams
-}
-
-// distinctValues counts the distinct case- and space-insensitive values.
-func distinctValues(vals []string) int {
-	seen := map[string]bool{}
-	for _, v := range vals {
-		seen[strings.ToLower(strings.TrimSpace(v))] = true
-	}
-	return len(seen)
-}
-
-// encoderNoiseWarnings flags inherited transcoder stamps (e.g. ffmpeg's
-// "encoder=Lavf..."), the typical signature of an acquired file.
-func encoderNoiseWarnings(vendor string, comments []comment) []core.Warning {
-	var ws []core.Warning
-	noisy := func(s string) bool {
-		s = strings.ToLower(s)
-		return strings.Contains(s, "lavf") || strings.Contains(s, "libavformat")
-	}
-	if noisy(vendor) {
-		ws = core.Warn(ws, core.WarnInheritedEncoder, "vendor string is a transcoder stamp: "+vendor)
-	}
-	for _, cm := range comments {
-		if strings.EqualFold(cm.name, "ENCODER") && noisy(cm.value) {
-			ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder comment: "+cm.value)
-		}
-	}
-	return ws
-}
-
-// fingerprintRegion returns the header-plus-metadata bytes used in the source
-// identity fingerprint. On read error it returns nil (fingerprint of nothing),
-// which simply weakens the check rather than failing the parse.
-func fingerprintRegion(src core.ReaderAtSized, d *doc, limit int64) []byte {
-	region, err := bits.ReadSlice(src, 0, d.audioStart, limit)
-	if err != nil {
-		return nil
-	}
-	return region
 }
 
 // id3v2Len returns the total byte length of an ID3v2 tag given its 10-byte

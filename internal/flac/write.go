@@ -7,8 +7,6 @@ import (
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
-	"github.com/colespringer/waxlabel/internal/mapping"
-	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -127,60 +125,6 @@ func checkBlockSizes(blocks []block) error {
 			waxerr.ErrInvalidData, blockName(b.code), len(b.body), maxBlockBody)
 	}
 	return nil
-}
-
-// diffKeys returns the canonical keys whose values differ between base and
-// edited (added, removed, or modified).
-func diffKeys(base, edited tag.TagSet) map[tag.Key]bool {
-	changed := map[tag.Key]bool{}
-	for _, k := range base.Keys() {
-		bv, _ := base.Get(k)
-		ev, has := edited.Get(k)
-		if !has || !slices.Equal(bv, ev) {
-			changed[k] = true
-		}
-	}
-	for _, k := range edited.Keys() {
-		if !base.Has(k) {
-			changed[k] = true
-		}
-	}
-	return changed
-}
-
-// rebuildComments produces the new Vorbis comment list with minimal change:
-// unchanged comments keep their exact spelling and position; a changed key's
-// new values replace its first original occurrence (later duplicates and
-// aliases of that key are dropped, deduping inherited noise); newly added keys
-// are appended.
-func rebuildComments(orig []comment, base, edited tag.TagSet, changed map[tag.Key]bool) []comment {
-	emitted := map[tag.Key]bool{}
-	out := make([]comment, 0, len(orig))
-	emit := func(k tag.Key) {
-		vals, _ := edited.Get(k)
-		name := mapping.VorbisName(k)
-		for _, v := range vals {
-			out = append(out, comment{name: name, value: v})
-		}
-		emitted[k] = true
-	}
-	for _, cm := range orig {
-		k := mapping.CanonicalVorbis(cm.name)
-		if changed[k] {
-			if !emitted[k] {
-				emit(k) // replace in place; nothing emitted if the key was cleared
-			}
-			continue
-		}
-		out = append(out, cm)
-	}
-	// Keys added with no original occurrence, in edited order.
-	for _, k := range edited.Keys() {
-		if changed[k] && !emitted[k] {
-			emit(k)
-		}
-	}
-	return out
 }
 
 // rebuildBlocks assembles the new metadata block list (excluding padding),

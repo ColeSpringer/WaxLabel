@@ -41,3 +41,16 @@ func UpdateOggCRC(crc uint32, p []byte) uint32 {
 	}
 	return crc
 }
+
+// UpdateOggCRCZeros continues an Ogg CRC over n zero bytes without allocating a
+// zero buffer. It is the hot path for CRC "patching": because this CRC has
+// init 0 and no final XOR it is linear (CRC(a^b) == CRC(a)^CRC(b)), so a page
+// whose sequence number changed can have its checksum recomputed as
+// oldCRC ^ CRC(delta-bytes followed by zeros to the page end) — see the Ogg
+// codec's page-renumber path.
+func UpdateOggCRCZeros(crc uint32, n int64) uint32 {
+	for ; n > 0; n-- {
+		crc = (crc << 8) ^ oggTable[byte(crc>>24)]
+	}
+	return crc
+}

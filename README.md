@@ -3,9 +3,10 @@
 A pure-Go library for reading and writing audio-file metadata (tags + embedded
 cover art), reimplemented from public specifications.
 
-> **Status: v0.x.** The core model and FLAC read/write are implemented and
-> tested. Other formats are in progress; codecs stay internal until v1.0, when
-> validated ones are promoted to public `waxlabel/<fmt>` packages.
+> **Status: v0.x.** The core model with FLAC and Ogg Vorbis/Opus read/write are
+> implemented and tested. Other formats are in progress; codecs stay internal
+> until v1.0, when validated ones are promoted to public `waxlabel/<fmt>`
+> packages.
 
 WaxLabel is preservation-first: it treats the file's native metadata as the
 base and rewrites only the fields you actually change, copying the audio
@@ -109,20 +110,28 @@ A small set of contracts is stable:
 | Container | Codec | Read | Write | Notes |
 |-----------|-------|:----:|:-----:|-------|
 | FLAC | FLAC | ✅ | ✅ | Vorbis comments, pictures, stray-ID3 + CUESHEET/SEEKTABLE preserved |
-| Ogg | Vorbis / Opus | — | — | planned |
+| Ogg | Vorbis | ✅ | ✅ | Vorbis comments + `METADATA_BLOCK_PICTURE`; setup header preserved; audio packets byte-identical |
+| Ogg | Opus | ✅ | ✅ | OpusTags (+ padding) + pictures; R128 `output_gain` distinct from ReplayGain |
 | MP3 | ID3v2/v1 | — | — | planned |
 | WAV | RIFF | — | — | planned |
 | MP4 | AAC/ALAC | — | — | planned |
 | Matroska | — | — | — | planned (read-only) |
 | AIFF | — | — | — | planned |
 
+Ogg writes preserve audio *packet payloads* byte-for-byte (Ogg re-pagination is
+allowed); chained/multiplexed streams are read best-effort and reported, but
+writing them is refused.
+
 ## Audio identity
 
 Three levels answer different questions:
 
-- `HashAudioEssence` — encoded-essence identity: the audio packets plus
-  decoder-critical config (sample rate, channels, bit depth). "Is this the same
-  audio?", independent of tags.
+- `HashAudioEssence` — encoded-essence identity: the audio packets plus the
+  codec's decoder-critical config (FLAC STREAMINFO; the Vorbis identification +
+  setup headers; the Opus head with its channel mapping and output_gain). "Is
+  this the same audio?", independent of tags. The extent can be several
+  byte ranges, so Ogg's audio page bodies (interleaved with page headers) hash
+  correctly.
 - `HashFile` — whole-file identity.
 - decoded-PCM identity — needs a decoder; test-only.
 

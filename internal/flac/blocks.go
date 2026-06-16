@@ -1,15 +1,14 @@
 package flac
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"math"
-	"strings"
 	"time"
 
-	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/vorbis"
+	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -42,82 +41,71 @@ func parseStreamInfo(body []byte) (core.AudioTrack, error) {
 	return t, nil
 }
 
+// The Vorbis comment list and PICTURE block byte codecs, the canonical
+// projection, and the minimal-change rebuild are shared with Ogg via
+// internal/vorbis. FLAC keeps its own comment type (so its native document and
+// tests stay stable) and adapts at these thin boundaries.
+
+func toVorbis(cs []comment) []vorbis.Comment {
+	out := make([]vorbis.Comment, len(cs))
+	for i, c := range cs {
+		out[i] = vorbis.Comment{Name: c.name, Value: c.value}
+	}
+	return out
+}
+
+func fromVorbis(cs []vorbis.Comment) []comment {
+	out := make([]comment, len(cs))
+	for i, c := range cs {
+		out[i] = comment{name: c.Name, value: c.Value}
+	}
+	return out
+}
+
 // parseVorbisComment decodes a Vorbis comment block body (little-endian
 // lengths, no FLAC framing bit) into a vendor string and ordered comments.
 func parseVorbisComment(body []byte, limit int64) (vendor string, comments []comment, err error) {
-	c := bits.NewCursor(bytes.NewReader(body), int64(len(body)), limit)
-	vlen := int64(c.U32LE())
-	vendor = string(c.Bytes(vlen))
-	count := c.U32LE()
-	for i := uint32(0); i < count; i++ {
-		if c.Err() != nil {
-			break
-		}
-		l := int64(c.U32LE())
-		entry := c.Bytes(l)
-		if c.Err() != nil {
-			break
-		}
-		name, value, ok := strings.Cut(string(entry), "=")
-		if !ok {
-			continue // malformed entry without '='; drop from projection
-		}
-		comments = append(comments, comment{name: name, value: value})
-	}
-	if c.Err() != nil {
-		return vendor, comments, fmt.Errorf("vorbis comment: %w", c.Err())
-	}
-	return vendor, comments, nil
+	vendor, cs, _, err := vorbis.ParseCommentList(body, limit)
+	return vendor, fromVorbis(cs), err
 }
 
 // renderVorbisComment encodes a vendor string and comments back into a block
 // body. Deterministic: same inputs produce identical bytes.
 func renderVorbisComment(vendor string, comments []comment) []byte {
-	var buf bytes.Buffer
-	writeU32LE(&buf, uint32(len(vendor)))
-	buf.WriteString(vendor)
-	writeU32LE(&buf, uint32(len(comments)))
-	for _, cm := range comments {
-		entry := cm.name + "=" + cm.value
-		writeU32LE(&buf, uint32(len(entry)))
-		buf.WriteString(entry)
-	}
-	return buf.Bytes()
+	return vorbis.RenderCommentList(vendor, toVorbis(comments))
 }
 
 // parsePictureBlock decodes a PICTURE block body.
 func parsePictureBlock(body []byte, limit int64) (core.Picture, error) {
-	c := bits.NewCursor(bytes.NewReader(body), int64(len(body)), limit)
-	var p core.Picture
-	p.Type = core.PictureType(c.U32BE())
-	p.MIME = string(c.Bytes(int64(c.U32BE())))
-	p.Description = string(c.Bytes(int64(c.U32BE())))
-	p.Width = int(c.U32BE())
-	p.Height = int(c.U32BE())
-	p.Depth = int(c.U32BE())
-	p.Colors = int(c.U32BE())
-	p.Data = c.Bytes(int64(c.U32BE()))
-	if c.Err() != nil {
-		return core.Picture{}, fmt.Errorf("picture block: %w", c.Err())
-	}
-	return p, nil
+	return vorbis.ParsePicture(body, limit)
 }
 
 // renderPicture encodes a Picture into a PICTURE block body.
 func renderPicture(p core.Picture) []byte {
-	var buf bytes.Buffer
-	writeU32BE(&buf, uint32(p.Type))
-	writeU32BE(&buf, uint32(len(p.MIME)))
-	buf.WriteString(p.MIME)
-	writeU32BE(&buf, uint32(len(p.Description)))
-	buf.WriteString(p.Description)
-	writeU32BE(&buf, uint32(p.Width))
-	writeU32BE(&buf, uint32(p.Height))
-	writeU32BE(&buf, uint32(p.Depth))
-	writeU32BE(&buf, uint32(p.Colors))
-	writeU32BE(&buf, uint32(len(p.Data)))
-	buf.Write(p.Data)
-	return buf.Bytes()
+	return vorbis.RenderPicture(p)
+}
+
+// projectComments builds the canonical TagSet and the family/source view from
+// decoded Vorbis comments, preserving order and surfacing conflicts.
+func projectComments(comments []comment) (tag.TagSet, []core.FamilyValue) {
+	return vorbis.Project(toVorbis(comments))
+}
+
+// encoderNoiseWarnings flags inherited transcoder stamps (e.g. ffmpeg's
+// "encoder=Lavf..."), the typical signature of an acquired file.
+func encoderNoiseWarnings(vendor string, comments []comment) []core.Warning {
+	return vorbis.EncoderNoise(vendor, toVorbis(comments))
+}
+
+// diffKeys returns the canonical keys whose values differ between base and
+// edited (added, removed, or modified).
+func diffKeys(base, edited tag.TagSet) map[tag.Key]bool {
+	return vorbis.DiffKeys(base, edited)
+}
+
+// rebuildComments produces the new Vorbis comment list with minimal change.
+func rebuildComments(orig []comment, base, edited tag.TagSet, changed map[tag.Key]bool) []comment {
+	return fromVorbis(vorbis.Rebuild(toVorbis(orig), edited, changed))
 }
 
 // renderBlock encodes a full metadata block: a 1-byte header (last-block flag
@@ -133,16 +121,4 @@ func renderBlock(code byte, last bool, body []byte) []byte {
 	hdr[2] = byte(n >> 8)
 	hdr[3] = byte(n)
 	return append(hdr, body...)
-}
-
-func writeU32LE(buf *bytes.Buffer, v uint32) {
-	var b [4]byte
-	binary.LittleEndian.PutUint32(b[:], v)
-	buf.Write(b[:])
-}
-
-func writeU32BE(buf *bytes.Buffer, v uint32) {
-	var b [4]byte
-	binary.BigEndian.PutUint32(b[:], v)
-	buf.Write(b[:])
 }

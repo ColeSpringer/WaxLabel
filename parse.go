@@ -10,6 +10,7 @@ import (
 	// Register the codecs. They are internal through v0.x; the blank import
 	// wires them into the detection registry.
 	_ "github.com/colespringer/waxlabel/internal/flac"
+	_ "github.com/colespringer/waxlabel/internal/ogg"
 )
 
 // Parse reads metadata from src, returning a detached [Document]. src is used
@@ -47,7 +48,10 @@ func ParseFile(ctx context.Context, path string, opts ...ParseOption) (*Document
 
 // parseSource detects the format and dispatches to the codec.
 func parseSource(ctx context.Context, src ReaderAtSized, path string, opts core.ParseOptions) (*Document, error) {
-	header := make([]byte, 16)
+	// 64 bytes spans the Ogg BOS page's identification header, where the codec
+	// signature ("\x01vorbis" / "OpusHead") that distinguishes Vorbis from Opus
+	// lives; shorter formats (FLAC's "fLaC", ID3) need only the first few.
+	header := make([]byte, 64)
 	n, _ := src.ReadAt(header, 0)
 	header = header[:n]
 

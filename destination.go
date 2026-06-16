@@ -1,6 +1,7 @@
 package waxlabel
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -141,11 +142,19 @@ func (p *Plan) streamCopy(ctx context.Context, dst io.Writer, source core.Reader
 	var hasher *bits.Hasher
 	if p.opts.VerifyEssence {
 		_, cfg := p.essenceExtent()
-		hasher = bits.NewHasher([][2]int64{{p.doc.media.AudioStart, p.doc.media.AudioEnd}})
+		hasher = bits.NewHasher(p.doc.media.EssenceRanges())
 		hasher.Mix(cfg)
 		tap = hasher
 	}
-	if _, err := bits.Write(ctx, dst, source, p.plan.Segments, tap); err != nil {
+	// Buffer the destination file. A renumbering Ogg rewrite emits three small
+	// segments per audio page (an 18-byte header copy, an 8-byte patch, the body
+	// copy); without buffering those become thousands of tiny writes to the temp
+	// file. The tap still sees the raw source bytes, so verification is unaffected.
+	bw := bufio.NewWriterSize(dst, 1<<16)
+	if _, err := bits.Write(ctx, bw, source, p.plan.Segments, tap); err != nil {
+		return nil, err
+	}
+	if err := bw.Flush(); err != nil {
 		return nil, err
 	}
 	if hasher != nil {
@@ -162,7 +171,7 @@ func (p *Plan) verifyOutput(ctx context.Context, out io.ReaderAt, srcEssence []b
 	}
 	_, cfg := p.essenceExtent()
 	res := p.plan.Result
-	outSum, err := hashRange(ctx, out, cfg, res.AudioStart, res.AudioEnd, p.opts.Limits.MaxAllocBytes)
+	outSum, err := hashRanges(ctx, out, cfg, res.EssenceRanges(), p.opts.Limits.MaxAllocBytes)
 	if err != nil {
 		return err
 	}
