@@ -6,6 +6,7 @@ import (
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/id3"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -160,17 +161,13 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	return media, nil
 }
 
-// id3v2Len returns the total byte length of an ID3v2 tag given its 10-byte
-// header, or 0 if the header is not "ID3". The size field is sync-safe (each
-// byte contributes only 7 bits); a present footer adds another 10 bytes.
+// id3v2Len returns the total byte length of a stray leading ID3v2 tag given its
+// 10-byte header, or 0 if the header is not a valid ID3v2 tag. It delegates to
+// the shared id3 codec so the sync-safe size, footer, and reserved-version
+// handling stay in one place.
 func id3v2Len(hdr []byte) int64 {
-	if len(hdr) < 10 || string(hdr[:3]) != "ID3" {
-		return 0
+	if n, ok := id3.TagSize(hdr); ok {
+		return n
 	}
-	size := int64(hdr[6]&0x7F)<<21 | int64(hdr[7]&0x7F)<<14 | int64(hdr[8]&0x7F)<<7 | int64(hdr[9]&0x7F)
-	total := 10 + size
-	if hdr[5]&0x10 != 0 { // footer present
-		total += 10
-	}
-	return total
+	return 0
 }

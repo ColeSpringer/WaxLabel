@@ -39,6 +39,9 @@ const (
 	// WarnChainedStream means a chained/multiplexed Ogg stream was read
 	// best-effort.
 	WarnChainedStream
+	// WarnID3MultiValue means a multi-value field was written NUL-separated in an
+	// ID3v2.3 tag — a de-facto extension some readers do not split.
+	WarnID3MultiValue
 )
 
 func (c WarningCode) String() string {
@@ -65,6 +68,8 @@ func (c WarningCode) String() string {
 		return "numeric-genre"
 	case WarnChainedStream:
 		return "chained-stream"
+	case WarnID3MultiValue:
+		return "id3-multi-value"
 	default:
 		return "unknown"
 	}

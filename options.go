@@ -43,6 +43,21 @@ func WithVerifyEssence() WriteOption {
 	return func(o *core.WriteOptions) { o.VerifyEssence = true }
 }
 
+// WithNumericGenre writes a recognized genre as its numeric reference (in
+// formats that support one, such as ID3's TCON) instead of the name. By default
+// the canonical name is written.
+func WithNumericGenre() WriteOption {
+	return func(o *core.WriteOptions) { o.NumericGenre = true }
+}
+
+// WithID3MultiValue selects how multiple values for one field are stored in an
+// ID3v2.3 tag, which has no standard multi-value text form. ID3v2.4 always
+// NUL-separates regardless; the v2.3 compatibility impact is flagged in the
+// write report.
+func WithID3MultiValue(p ID3MultiValuePolicy) WriteOption {
+	return func(o *core.WriteOptions) { o.ID3Multi = p }
+}
+
 // Policy presets bundle write options into a named intent. Apply one first,
 // then override individual options if needed:
 //

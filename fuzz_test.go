@@ -21,11 +21,17 @@ func FuzzParse(f *testing.F) {
 	// Seed with the real fixtures (FLAC and Ogg Vorbis/Opus) and a few hand-built
 	// malformations, including Ogg page edge cases (risk #1: multi-page packets,
 	// truncated pages).
-	for _, p := range []string{sampleFLAC, "testdata/notags.flac", sampleOgg, sampleOpus, notagsOgg, "testdata/notags.opus"} {
+	for _, p := range []string{
+		sampleFLAC, "testdata/notags.flac", sampleOgg, sampleOpus, notagsOgg, "testdata/notags.opus",
+		sampleMP3, sampleMP324, notagsMP3,
+	} {
 		if b, err := os.ReadFile(p); err == nil {
 			f.Add(b)
 		}
 	}
+	f.Add([]byte("ID3\x03\x00\x00\x00\x00\x00\x7f"))                                                                  // ID3v2.3 header claiming 127 body bytes it lacks
+	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x10"), []byte("TIT2")...))                                       // truncated v2.4 frame
+	f.Add([]byte("\xff\xfb\x90\x00"))                                                                                 // bare MPEG-1 Layer 3 frame header, no body
 	f.Add([]byte("fLaC"))                                                                                             // marker only, no blocks
 	f.Add([]byte("fLaC\x00\x00\x00\x22"))                                                                             // STREAMINFO header, no body
 	f.Add([]byte("fLaC\x80\xff\xff\xff"))                                                                             // last block, absurd length

@@ -5,11 +5,13 @@ import (
 	"fmt"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/id3"
 	"github.com/colespringer/waxlabel/waxerr"
 
 	// Register the codecs. They are internal through v0.x; the blank import
 	// wires them into the detection registry.
 	_ "github.com/colespringer/waxlabel/internal/flac"
+	_ "github.com/colespringer/waxlabel/internal/mp3"
 	_ "github.com/colespringer/waxlabel/internal/ogg"
 )
 
@@ -58,6 +60,26 @@ func parseSource(ctx context.Context, src ReaderAtSized, path string, opts core.
 	codec, ok := core.Detect(path, header)
 	if !ok {
 		return nil, fmt.Errorf("%w: could not identify %q", waxerr.ErrUnsupportedFormat, path)
+	}
+	// A leading ID3v2 tag is shared between MP3 and a few containers that tolerate
+	// a stray leading ID3 (notably FLAC). When detection lands on MP3 because of
+	// the ID3 header, peek just past the tag: if a different format's signature
+	// follows, that format wins. This keeps an ID3-prefixed FLAC from being read
+	// as MP3 without weakening MP3 detection for the common case.
+	//
+	// This lives here (not in core.Detect) on purpose: core cannot import id3 to
+	// compute the tag length, and the only other ID3-bearing formats (WAV/AIFF)
+	// carry ID3 inside a chunk, not as a front tag — so the front-ID3 ambiguity is
+	// really just MP3-vs-FLAC. See the build-4 plan note before generalizing.
+	if codec.Format() == core.FormatMP3 {
+		if total, isID3 := id3.TagSize(header); isID3 && total < src.Size() {
+			peek := make([]byte, 64)
+			if n, _ := src.ReadAt(peek, total); n > 0 {
+				if c2, ok2 := core.Detect(path, peek[:n]); ok2 && c2.Format() != core.FormatMP3 {
+					codec = c2
+				}
+			}
+		}
 	}
 	media, err := codec.Parse(ctx, src, opts)
 	if err != nil {

@@ -5,8 +5,9 @@ specifications. Reference implementations were consulted for design and for
 cross-checking behavior, **not** copied:
 
 - `mutagen` (GPL-2.0+) — FLAC block layout, Vorbis comment structure, Ogg page
-  handling (its explicit CRC bit-swap confirmed the Ogg CRC is non-reflected).
-- `TagLib` (LGPL-2.1 / MPL-1.1) — FLAC metadata handling.
+  handling (its explicit CRC bit-swap confirmed the Ogg CRC is non-reflected),
+  ID3 frame translation tables and the numeric-genre list.
+- `TagLib` (LGPL-2.1 / MPL-1.1) — FLAC and ID3 metadata handling.
 - `bogem/id3v2`, `sentriz/go-taglib` (MIT) — Go API ergonomics.
 
 Because mutagen and TagLib are copyleft, no line-by-line porting was done; the
@@ -22,6 +23,10 @@ implementation follows the specifications below directly.
 | Ogg Vorbis | read + write | Vorbis I identification + setup headers (preserved verbatim); audio packets copied byte-for-byte | mutagen `oggvorbis.py` |
 | Ogg Opus | read + write | RFC 7845 (Ogg Opus): OpusHead (pre-skip, R128 output_gain), OpusTags with preserved padding | mutagen `oggopus.py` |
 | METADATA_BLOCK_PICTURE | read + write | base64-encoded FLAC PICTURE block, shared with FLAC | mutagen `_vorbis.py` |
+| ID3v2 | read + write | ID3v2.2 / v2.3 / v2.4: header (sync-safe sizes), unsynchronisation, frames (text encodings, TXXX, COMM, USLT, APIC/PIC, UFID), v2.2→v2.3 identifier upgrade, TYER/TDAT/TIME ⇄ TDRC date (de)composition | mutagen `id3/`, bogem/id3v2 |
+| ID3v1 | read | the 128-byte trailer (v1.0 / v1.1 track byte) | mutagen `_id3v1.py` |
+| APEv2 | read | header/footer + items, for the family view and verbatim preservation | mutagen `apev2.py` |
+| MP3 | read + write | MPEG-1/2/2.5 Layer I–III frame headers; Xing/Info/VBRI VBR length; ID3v2 front + audio + trailing APEv2/ID3v1 layout; audio frames copied byte-for-byte | mutagen `mp3.py` |
 
 The Ogg CRC table in `internal/bits` is generated from the polynomial in the Ogg
 specification and validated in tests against libogg's published `crc_lookup`
@@ -31,5 +36,9 @@ final XOR), validated against a full recomputation.
 
 ## Vendored data
 
-None yet. When the ID3v1/Winamp numeric genre table is added (MP3 milestone),
-it will be documented here as data (not expression) with its source.
+- **ID3v1 / Winamp numeric genre table** (`internal/id3/genres.go`) — the 192
+  genre names indexed 0–191. Entries 0–79 are from the ID3v1 specification;
+  80–191 are the de-facto Winamp extensions. This is reference *data* (a list of
+  factual genre names), not expression; it is reproduced for numeric-genre
+  resolution. The same list appears verbatim across mutagen, TagLib, and the
+  ID3v1 documentation.

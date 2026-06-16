@@ -1,0 +1,193 @@
+package mp3
+
+import (
+	"context"
+	"fmt"
+	"slices"
+
+	"github.com/colespringer/waxlabel/internal/bits"
+	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/id3"
+	"github.com/colespringer/waxlabel/waxerr"
+)
+
+// Plan computes the byte-level rewrite that turns the original file into the
+// edited media. It is preservation-first: only the front ID3v2 tag is
+// re-rendered (at the source's version, with unchanged and unmodelled frames
+// kept), the MPEG audio is copied verbatim, and any trailing legacy containers
+// are preserved unless explicitly stripped.
+func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.WriteOptions) (*core.WritePlan, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	d, ok := edited.Native.(*doc)
+	if !ok || d == nil {
+		return nil, fmt.Errorf("mp3: edited media has no MP3 native document")
+	}
+
+	legacyPresent := len(d.ape) > 0 || len(d.id3v1) > 0
+	// Reconcile/UpdateExisting need to migrate values between containers; that is
+	// deferred, so fail loudly when there is a legacy container to act on rather
+	// than silently doing nothing.
+	if (opts.Legacy == core.LegacyReconcile || opts.Legacy == core.LegacyUpdateExisting) && legacyPresent {
+		return nil, fmt.Errorf("%w: legacy policy %q is not yet implemented for MP3 and a legacy tag is present",
+			waxerr.ErrUnsupportedTag, opts.Legacy)
+	}
+
+	tagsChanged := !base.Tags.Equal(edited.Tags)
+	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures)
+	stripLegacy := opts.Legacy == core.LegacyStrip
+	legacyChange := stripLegacy && legacyPresent
+
+	report := core.WriteReport{Format: core.FormatMP3, BytesBefore: edited.Identity.Size}
+
+	// Fast path: nothing changed. Emit a verbatim copy (so SaveAsFile/WriteTo still
+	// produce a whole file) but flag NoOp so SaveBack skips it.
+	if !tagsChanged && !picturesChanged && !legacyChange {
+		report.NoOp = true
+		report.BytesAfter = edited.Identity.Size
+		report.Operations = []string{"no changes"}
+		return &core.WritePlan{
+			Segments: []bits.Segment{bits.Copy(0, edited.Identity.Size)},
+			NoOp:     true,
+			Report:   report,
+			Result:   base,
+		}, nil
+	}
+
+	// Choose the ID3v2 version (preserve the source's; v2.3 for a brand-new tag)
+	// and rebuild the frame list.
+	srcTag := d.id3
+	if srcTag == nil {
+		srcTag = id3.NewEmpty(3)
+	}
+	version := srcTag.WriteVersion()
+	newFrames, info := id3.RebuildFrames(srcTag.Frames(), base.Tags, edited.Tags, version,
+		edited.Pictures, picturesChanged, id3.WriteOpts{Multi: opts.ID3Multi, NumericGenre: opts.NumericGenre})
+	if err := id3.CheckSize(version, newFrames); err != nil {
+		return nil, err
+	}
+
+	// Size the tag and its padding. Reuse the original region in place when the
+	// new content fits, so the audio offset (and file size) need not change.
+	nonPad := int64(len(id3.Render(version, newFrames, 0)))
+	padSize := computePadding(opts.Padding, d.id3Len, nonPad)
+	tagBytes := id3.Render(version, newFrames, int(padSize))
+	report.PaddingAfter = padSize
+
+	if tagsChanged {
+		report.Operations = append(report.Operations, "rewrote ID3v2 frames")
+	}
+	if picturesChanged {
+		report.Operations = append(report.Operations, fmt.Sprintf("pictures: %d", len(edited.Pictures)))
+	}
+	if d.id3 == nil {
+		report.Operations = append(report.Operations, fmt.Sprintf("created ID3v2.%d tag", version))
+	}
+	if info.UsedV23Multi {
+		report.Operations = append(report.Operations, "v2.3 multi-value stored NUL-separated")
+		report.Warnings = core.Warn(report.Warnings, core.WarnID3MultiValue,
+			"a multi-value field was written NUL-separated in ID3v2.3, a de-facto extension some readers do not split")
+	}
+
+	// Assemble the output: the new ID3v2 tag, the verbatim audio, then the
+	// preserved (or stripped) trailing legacy containers.
+	segs := []bits.Segment{bits.Lit(tagBytes)}
+	audioLen := d.audioEnd - d.audioStart
+	segs = append(segs, bits.Copy(d.audioStart, audioLen))
+
+	apeLen := int64(len(d.ape))
+	id3v1Len := int64(len(d.id3v1))
+	if stripLegacy {
+		if apeLen > 0 {
+			report.Operations = append(report.Operations, "stripped APEv2")
+			apeLen = 0
+		}
+		if id3v1Len > 0 {
+			report.Operations = append(report.Operations, "stripped ID3v1")
+			id3v1Len = 0
+		}
+	} else {
+		if apeLen > 0 {
+			segs = append(segs, bits.Copy(d.apeOffset, apeLen))
+			report.Operations = append(report.Operations, "preserved APEv2")
+		}
+		if id3v1Len > 0 {
+			segs = append(segs, bits.Copy(d.size-128, 128))
+			report.Operations = append(report.Operations, "preserved ID3v1")
+		}
+	}
+
+	newSize := bits.OutputLen(segs)
+	report.BytesAfter = newSize
+
+	result := buildResult(edited, d, srcTag.WithFrames(newFrames), tagBytes, audioLen, apeLen, id3v1Len, newSize)
+	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
+}
+
+// computePadding sizes the ID3v2 padding. With ReuseInPlace and a new tag that
+// fits the original region, padding fills the region exactly (audio offset and
+// file size unchanged); otherwise the policy Target (bounded by Min/Max) is used.
+func computePadding(pol core.PaddingPolicy, origLen, nonPad int64) int64 {
+	if pol.ReuseInPlace && origLen >= nonPad {
+		return origLen - nonPad
+	}
+	return clamp(pol.Target, pol.Min, pol.Max)
+}
+
+// clamp bounds v to [lo, hi]; hi <= 0 means "no upper bound".
+func clamp(v, lo, hi int64) int64 {
+	if hi > 0 && v > hi {
+		v = hi
+	}
+	if v < lo {
+		v = lo
+	}
+	if v < 0 {
+		v = 0
+	}
+	return v
+}
+
+// buildResult constructs the post-write Media so the engine can return a
+// Document without re-parsing. The frames actually written are re-projected, so
+// the result equals a fresh parse of the bytes for the canonical view.
+func buildResult(edited *core.Media, base *doc, newTag *id3.Tag, tagBytes []byte,
+	audioLen, apeLen, id3v1Len, newSize int64) *core.Media {
+
+	id3Len := int64(len(tagBytes))
+	nd := &doc{
+		id3:         newTag,
+		id3Len:      id3Len,
+		audioStart:  id3Len,
+		audioEnd:    id3Len + audioLen,
+		firstHeader: base.firstHeader,
+		track:       base.track,
+		size:        newSize,
+	}
+	if apeLen > 0 {
+		nd.ape = slices.Clone(base.ape)
+		nd.apeOffset = nd.audioEnd
+		nd.apeTag = base.apeTag
+	}
+	if id3v1Len > 0 {
+		nd.id3v1 = slices.Clone(base.id3v1)
+	}
+	proj := id3.Project(newTag)
+	// Re-add the preserved legacy containers to the family view so the returned
+	// document matches a fresh parse of the written bytes (conflicts recomputed
+	// against the new ID3v2 values).
+	families := append(proj.Families, legacyFamilies(proj.Tags, nd.id3v1, nd.apeTag)...)
+	return &core.Media{
+		Format:     core.FormatMP3,
+		Properties: edited.Properties.Clone(),
+		Tags:       proj.Tags,
+		Families:   families,
+		Pictures:   core.ClonePictures(edited.Pictures),
+		Warnings:   core.CloneWarnings(edited.Warnings),
+		Native:     nd,
+		Identity:   core.Identity{Size: newSize},
+		AudioStart: nd.audioStart,
+		AudioEnd:   nd.audioEnd,
+	}
+}

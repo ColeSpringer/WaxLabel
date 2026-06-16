@@ -45,6 +45,8 @@ type (
 	ReaderAtSized = core.ReaderAtSized
 	// LegacyPolicy controls handling of legacy/foreign tag containers.
 	LegacyPolicy = core.LegacyPolicy
+	// ID3MultiValuePolicy controls the ID3v2.3 multi-value representation.
+	ID3MultiValuePolicy = core.ID3MultiValuePolicy
 	// PaddingPolicy controls post-metadata free space.
 	PaddingPolicy = core.PaddingPolicy
 	// Limits bounds resource use when parsing untrusted input.
@@ -107,6 +109,13 @@ const (
 	LegacyUpdateExisting = core.LegacyUpdateExisting
 )
 
+// ID3MultiValuePolicy values.
+const (
+	ID3MultiNullSep     = core.ID3MultiNullSep
+	ID3MultiRepeatFrame = core.ID3MultiRepeatFrame
+	ID3MultiSlash       = core.ID3MultiSlash
+)
+
 // Family values.
 const (
 	FamilyVorbis   = core.FamilyVorbis
@@ -131,6 +140,7 @@ const (
 	WarnConflictingFamilies   = core.WarnConflictingFamilies
 	WarnNumericGenre          = core.WarnNumericGenre
 	WarnChainedStream         = core.WarnChainedStream
+	WarnID3MultiValue         = core.WarnID3MultiValue
 )
 
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated

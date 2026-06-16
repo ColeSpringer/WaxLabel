@@ -54,6 +54,35 @@ type PaddingPolicy struct {
 // possible.
 var DefaultPadding = PaddingPolicy{Target: 8192, Min: 0, Max: 1 << 20, ReuseInPlace: true}
 
+// ID3MultiValuePolicy controls how multiple values for one field are written in
+// ID3v2.3, which has no standard multi-value text representation. ID3v2.4 always
+// NUL-separates regardless of this setting; the compatibility impact of the v2.3
+// choice is flagged in the write report.
+type ID3MultiValuePolicy uint8
+
+const (
+	// ID3MultiNullSep stores values in one frame separated by NUL bytes — the
+	// v2.4 form; round-trips losslessly but is a de-facto extension in v2.3.
+	ID3MultiNullSep ID3MultiValuePolicy = iota
+	// ID3MultiRepeatFrame writes one frame per value, so a reader that takes the
+	// first frame still sees a value.
+	ID3MultiRepeatFrame
+	// ID3MultiSlash joins values with " / " into a single value: maximally
+	// compatible but not separable on read-back.
+	ID3MultiSlash
+)
+
+func (p ID3MultiValuePolicy) String() string {
+	switch p {
+	case ID3MultiRepeatFrame:
+		return "repeat-frame"
+	case ID3MultiSlash:
+		return "slash-join"
+	default:
+		return "null-separated"
+	}
+}
+
 // ParseOptions are the resolved (non-functional) parse settings a codec sees.
 type ParseOptions struct {
 	Limits bits.Limits
@@ -73,6 +102,11 @@ type WriteOptions struct {
 	// VerifyEssence hashes the audio essence while it is copied and checks it
 	// against the source's parsed extent.
 	VerifyEssence bool
+	// NumericGenre writes a recognized genre as its numeric reference (ID3 TCON)
+	// rather than the name. Off by default (canonical name on write).
+	NumericGenre bool
+	// ID3Multi selects the ID3v2.3 multi-value representation.
+	ID3Multi ID3MultiValuePolicy
 }
 
 // DefaultWriteOptions returns the preservation-first defaults.
