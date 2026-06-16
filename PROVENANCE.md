@@ -6,7 +6,8 @@ cross-checking behavior, **not** copied:
 
 - `mutagen` (GPL-2.0+) — FLAC block layout, Vorbis comment structure, Ogg page
   handling (its explicit CRC bit-swap confirmed the Ogg CRC is non-reflected),
-  ID3 frame translation tables and the numeric-genre list.
+  ID3 frame translation tables and the numeric-genre list, MP4 atom structure
+  and the iTunes ilst tag conventions.
 - `TagLib` (LGPL-2.1 / MPL-1.1) — FLAC and ID3 metadata handling.
 - `bogem/id3v2`, `sentriz/go-taglib` (MIT) — Go API ergonomics.
 
@@ -28,6 +29,7 @@ implementation follows the specifications below directly.
 | APEv2 | read | header/footer + items, for the family view and verbatim preservation | mutagen `apev2.py` |
 | MP3 | read + write | MPEG-1/2/2.5 Layer I–III frame headers; Xing/Info/VBRI VBR length; ID3v2 front + audio + trailing APEv2/ID3v1 layout; audio frames copied byte-for-byte | mutagen `mp3.py` |
 | WAV / RIFF | read + write | RIFF/WAVE chunk structure (`fmt ` geometry, `data` extent, word alignment, RIFF size); LIST/INFO tag block; embedded `id3 ` chunk (shared ID3v2 codec); all chunks preserved verbatim; RF64/BW64 rejected | mutagen `wave.py`, `aiff.py`, TagLib `riff/` |
+| MP4 / M4A | read + write | ISO/IEC 14496-12 atom structure (32/64-bit sizes, `meta` FullBox, sample tables); iTunes `moov.udta.meta.ilst` tags (`data` type codes — text, integer, JPEG/PNG cover, `trkn`/`disk`, `gnre`, `----` freeform); all-track `stco`/`co64` chunk-offset fixups; `free`-atom padding reuse; `chpl` preserved verbatim; fragmented (`moof`) rejected | mutagen `mp4/` |
 
 The Ogg CRC table in `internal/bits` is generated from the polynomial in the Ogg
 specification and validated in tests against libogg's published `crc_lookup`

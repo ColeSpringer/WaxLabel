@@ -23,7 +23,7 @@ func FuzzParse(f *testing.F) {
 	// truncated pages).
 	for _, p := range []string{
 		sampleFLAC, "testdata/notags.flac", sampleOgg, sampleOpus, notagsOgg, "testdata/notags.opus",
-		sampleMP3, sampleMP324, notagsMP3, sampleWAV, notagsWAV,
+		sampleMP3, sampleMP324, notagsMP3, sampleWAV, notagsWAV, sampleMP4, notagsMP4,
 	} {
 		if b, err := os.ReadFile(p); err == nil {
 			f.Add(b)
@@ -42,6 +42,10 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte("RIFF\xff\xff\xff\xffWAVEdata\xff\xff\xff\xff"))                                                     // absurd RIFF + data sizes
 	f.Add([]byte("RIFF\x10\x00\x00\x00WAVELIST\x04\x00\x00\x00INFO"))                                                 // empty INFO list
 	f.Add([]byte("RF64\x04\x00\x00\x00WAVE"))                                                                         // RF64, must be rejected, not panic
+	f.Add([]byte("\x00\x00\x00\x10ftypM4A \x00\x00\x00\x00"))                                                         // ftyp only, no moov
+	f.Add([]byte("\x00\x00\x00\x08ftyp\x00\x00\x00\x08moov"))                                                         // empty moov, no tracks
+	f.Add([]byte("\x00\x00\x00\x08ftyp\x00\x00\x00\x01moov\xff\xff\xff\xff\xff\xff\xff\xff"))                         // 64-bit atom, absurd size
+	f.Add([]byte("\x00\x00\x00\x10ftypM4A \x00\x00\x00\x08moof"))                                                     // fragmented: must reject, not panic
 	f.Add([]byte{})
 
 	ctx := context.Background()
@@ -78,7 +82,11 @@ func FuzzParse(f *testing.F) {
 		// regression, so fail rather than silently accepting it.
 		plan2, err := doc.Edit().Set(tag.Title, "fuzz").Prepare()
 		if err != nil {
-			if errors.Is(err, waxerr.ErrChainedStream) || errors.Is(err, waxerr.ErrInvalidData) {
+			// A codec may refuse some shapes: a chained Ogg (ErrChainedStream), a
+			// non-page-aligned/oversized layout (ErrInvalidData), or an MP4 whose
+			// crafted offsets would overflow a 32-bit table on a grow (ErrSizeTooLarge).
+			if errors.Is(err, waxerr.ErrChainedStream) || errors.Is(err, waxerr.ErrInvalidData) ||
+				errors.Is(err, waxerr.ErrSizeTooLarge) {
 				return
 			}
 			t.Fatalf("edit prepare failed: %v", err)

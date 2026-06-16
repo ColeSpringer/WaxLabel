@@ -133,7 +133,7 @@ func Project(ts TagSet) Tags {
 		AcoustID:            first(AcoustID),
 		AcoustIDFingerprint: first(AcoustIDFingerprint),
 
-		Compilation: parseBool(first(Compilation)),
+		Compilation: ParseBool(first(Compilation)),
 
 		MusicBrainz: MusicBrainzIDs{
 			ReleaseID:      first(MBReleaseID),
@@ -154,8 +154,8 @@ func Project(ts TagSet) Tags {
 		Rating: first(Rating),
 	}
 
-	t.TrackNumber, t.TrackTotal = parseNumPair(first(TrackNumber), first(TrackTotal))
-	t.DiscNumber, t.DiscTotal = parseNumPair(first(DiscNumber), first(DiscTotal))
+	t.TrackNumber, t.TrackTotal = ParseNumPair(first(TrackNumber), first(TrackTotal))
+	t.DiscNumber, t.DiscTotal = ParseNumPair(first(DiscNumber), first(DiscTotal))
 	t.PlayCount, _ = strconv.Atoi(first(PlayCount))
 	t.Performers = parsePerformers(all(Performer))
 	return t
@@ -248,9 +248,12 @@ func (t Tags) Patch() TagPatch {
 	return p
 }
 
-// parseNumPair resolves a "number" and "total" pair. The number field may use
-// the "n/total" convention; an explicit total field wins if present.
-func parseNumPair(num, total string) (n, tot int) {
+// ParseNumPair resolves a "number" and "total" pair (e.g. track or disc
+// numbering). The number field may use the "n/total" convention; an explicit
+// total field wins if present. Surrounding whitespace is ignored. It is exported
+// so codecs that store numbering as a structured pair (e.g. MP4 trkn/disk) parse
+// the canonical strings the same way the typed projection does.
+func ParseNumPair(num, total string) (n, tot int) {
 	if num != "" {
 		if i := strings.IndexByte(num, '/'); i >= 0 {
 			n, _ = strconv.Atoi(strings.TrimSpace(num[:i]))
@@ -265,7 +268,10 @@ func parseNumPair(num, total string) (n, tot int) {
 	return n, tot
 }
 
-func parseBool(s string) bool {
+// ParseBool reads a canonical boolean tag value, accepting "1"/"true"/"yes"
+// case-insensitively (with surrounding whitespace) as true. Shared so every codec
+// interprets a boolean field (e.g. MP4 cpil) identically.
+func ParseBool(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "1", "true", "yes":
 		return true

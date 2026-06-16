@@ -208,12 +208,12 @@ func TestProjectAndPatchRoundTrip(t *testing.T) {
 }
 
 func TestParseNumPairSlashConvention(t *testing.T) {
-	n, tot := parseNumPair("3/12", "")
+	n, tot := ParseNumPair("3/12", "")
 	if n != 3 || tot != 12 {
 		t.Errorf("got %d/%d, want 3/12", n, tot)
 	}
 	// Explicit total field wins.
-	n, tot = parseNumPair("3", "20")
+	n, tot = ParseNumPair("3", "20")
 	if n != 3 || tot != 20 {
 		t.Errorf("got %d/%d, want 3/20", n, tot)
 	}

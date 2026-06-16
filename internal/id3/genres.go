@@ -54,6 +54,12 @@ func genreName(n int) (string, bool) {
 	return genres[n], true
 }
 
+// GenreName exposes the numeric-genre table to the other codecs that share it
+// (MP4's legacy "gnre" atom resolves a 1-based ID3v1 genre number to a name). It
+// keeps the vendored 192-entry list in one place rather than duplicated per
+// codec; n is the 0-based index.
+func GenreName(n int) (string, bool) { return genreName(n) }
+
 // genreByName maps a lowercased genre name to its index, built once so the
 // WithNumericGenre write path is an O(1) lookup rather than a 192-entry scan.
 var genreByName = func() map[string]int {

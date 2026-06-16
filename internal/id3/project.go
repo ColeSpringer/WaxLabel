@@ -22,14 +22,6 @@ type Projection struct {
 	NumericGenre bool
 }
 
-// contribution is one canonical value decoded from one frame, tagged with the
-// frame identifier it came from so conflicts between distinct frames surface.
-type contribution struct {
-	key tag.Key
-	val string
-	src string
-}
-
 // EncoderNoise reports inherited-encoder warnings for the tag's TSSE/TENC frames
 // (ffmpeg writes "Lavf..." there), the signature of a transcoded/acquired file.
 // It is shared by the container codecs that embed ID3v2 (MP3 and WAV) so the
@@ -54,13 +46,13 @@ func EncoderNoise(t *Tag) []core.Warning {
 
 // Project decodes an ID3v2 tag into the canonical model.
 func Project(t *Tag) Projection {
-	var contribs []contribution
+	var contribs []core.Contribution
 	var pics []core.Picture
 	var dp dateParts
 	numeric := false
 
 	emit := func(key tag.Key, val, src string) {
-		contribs = append(contribs, contribution{key, val, src})
+		contribs = append(contribs, core.Contribution{Key: key, Value: val, Source: src})
 	}
 
 	for _, f := range t.frames {
@@ -132,9 +124,9 @@ func Project(t *Tag) Projection {
 	dp.emit(emit)
 
 	return Projection{
-		Tags:         buildTagSet(contribs),
+		Tags:         core.BuildTagSet(contribs),
 		Pictures:     pics,
-		Families:     buildFamilies(contribs),
+		Families:     core.BuildFamilies(contribs, core.FamilyID3v2),
 		NumericGenre: numeric,
 	}
 }
@@ -152,50 +144,4 @@ func emitNumTotal(emit func(tag.Key, string, string), vals []string, numKey, tot
 			emit(totKey, total, src)
 		}
 	}
-}
-
-// buildTagSet assembles the authoritative TagSet from contributions in order.
-func buildTagSet(contribs []contribution) tag.TagSet {
-	ts := tag.NewTagSet()
-	for _, c := range contribs {
-		ts.Add(c.key, c.val)
-	}
-	return ts
-}
-
-// buildFamilies groups contributions by key into family entries, marking an
-// entry unselected when distinct frames supplied distinct values for one key
-// (e.g. TYER and TDRC disagreeing on the recording date).
-func buildFamilies(contribs []contribution) []core.FamilyValue {
-	index := map[tag.Key]int{}
-	srcs := map[tag.Key]map[string]bool{}
-	var fams []core.FamilyValue
-	for _, c := range contribs {
-		if i, ok := index[c.key]; ok {
-			fams[i].Values = append(fams[i].Values, c.val)
-		} else {
-			index[c.key] = len(fams)
-			srcs[c.key] = map[string]bool{}
-			fams = append(fams, core.FamilyValue{
-				Key: c.key, Family: core.FamilyID3v2, Scope: core.ScopeTrack,
-				Values: []string{c.val}, Selected: true,
-			})
-		}
-		srcs[c.key][c.src] = true
-	}
-	for key, i := range index {
-		if len(srcs[key]) > 1 && distinctValues(fams[i].Values) > 1 {
-			fams[i].Selected = false
-		}
-	}
-	return fams
-}
-
-// distinctValues counts case- and space-insensitive distinct values.
-func distinctValues(vals []string) int {
-	seen := map[string]bool{}
-	for _, v := range vals {
-		seen[strings.ToLower(strings.TrimSpace(v))] = true
-	}
-	return len(seen)
 }

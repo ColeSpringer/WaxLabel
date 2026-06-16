@@ -12,6 +12,7 @@ import (
 	// wires them into the detection registry.
 	_ "github.com/colespringer/waxlabel/internal/flac"
 	_ "github.com/colespringer/waxlabel/internal/mp3"
+	_ "github.com/colespringer/waxlabel/internal/mp4"
 	_ "github.com/colespringer/waxlabel/internal/ogg"
 	_ "github.com/colespringer/waxlabel/internal/wav"
 )

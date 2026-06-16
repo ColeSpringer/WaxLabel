@@ -41,15 +41,17 @@ func (r bytesReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	return n, nil
 }
 
-// Fingerprint hashes a file's metadata regions — everything outside the audio
-// essence — for the structural source fingerprint used in change detection. For
-// a contiguous-essence format that is the header before the audio plus any tail
-// after it (so a trailing ID3v1, or a WAV INFO/id3 chunk written after the data
-// chunk, is covered); for an interleaved-essence format (Ogg, AudioRanges set)
-// it is just the header, where the tags live, since the rest is audio. A file
-// with no identified essence is hashed whole. ok is false when there is nothing
-// to hash or the region cannot be read, in which case the caller falls back to
-// size/mtime/inode.
+// Fingerprint hashes a file's metadata regions — the bytes around the audio
+// essence — for the structural source fingerprint used in change detection. It
+// hashes the header before the essence ([0, AudioStart)) plus the tail after it
+// ([AudioEnd, size)), so a trailing ID3v1, a WAV INFO/id3 chunk written after the
+// data chunk, or an MP4 moov that follows the (last) mdat are all covered. A file
+// with no identified essence is hashed whole. For a multi-segment essence (Ogg
+// page bodies, multiple mdat) the gaps *between* segments are not hashed — Ogg
+// keeps its tags up front, and an MP4 moov sandwiched between two mdats is a rare
+// shape — so the head/tail backstop is weaker there but size/mtime/inode still
+// guard. ok is false when there is nothing to hash or the region cannot be read,
+// in which case the caller falls back to size/mtime/inode.
 //
 // Both parse and save-back call this with the same media extents, so the
 // parse-time fingerprint and the recomputed one cover identical byte ranges and
@@ -75,9 +77,9 @@ func Fingerprint(src ReaderAtSized, m *Media, limit int64) ([32]byte, bool) {
 		}
 		region = head
 	}
-	// Trailing metadata after a single contiguous extent. Interleaved-essence
-	// formats keep their tags up front, so they hash only the head.
-	if len(m.AudioRanges) == 0 && m.AudioEnd > m.AudioStart && m.AudioEnd < size {
+	// Trailing metadata after the last essence byte (any tags that follow the
+	// audio), for both contiguous and multi-segment essences.
+	if m.AudioEnd > m.AudioStart && m.AudioEnd < size {
 		tail, err := bits.ReadSlice(src, m.AudioEnd, size-m.AudioEnd, limit)
 		if err != nil {
 			return [32]byte{}, false

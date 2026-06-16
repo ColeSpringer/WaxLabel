@@ -55,7 +55,7 @@ func (f Format) String() string {
 // Implemented reports whether this version can parse the format at all.
 func (f Format) Implemented() bool {
 	switch f {
-	case FormatFLAC, FormatOggVorbis, FormatOggOpus, FormatMP3, FormatWAV:
+	case FormatFLAC, FormatOggVorbis, FormatOggOpus, FormatMP3, FormatWAV, FormatMP4:
 		return true
 	}
 	return false
@@ -64,7 +64,7 @@ func (f Format) Implemented() bool {
 // Writable reports whether this version can write the format back.
 func (f Format) Writable() bool {
 	switch f {
-	case FormatFLAC, FormatOggVorbis, FormatOggOpus, FormatMP3, FormatWAV:
+	case FormatFLAC, FormatOggVorbis, FormatOggOpus, FormatMP3, FormatWAV, FormatMP4:
 		return true
 	}
 	return false
