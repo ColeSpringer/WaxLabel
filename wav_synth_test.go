@@ -374,6 +374,34 @@ func TestWAVDuplicateId3ChunksDropped(t *testing.T) {
 	}
 }
 
+func TestWAVCorruptId3NotDuplicatedOnForcedRewrite(t *testing.T) {
+	// A lone "id3 " chunk whose body fails to parse leaves no authoritative id3. An
+	// edit forcing a new id3 chunk (a non-INFO key) must drop the stale chunk so the
+	// output carries exactly one id3 chunk, not two (which a re-parse would flag as a
+	// duplicate, disagreeing with the returned document).
+	corrupt := wavChunk("id3 ", []byte("corrupt-not-a-valid-tag")) // fails id3.ParseTag
+	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "T"}), wavData(400), corrupt)
+	doc := mustParseBytes(t, data)
+	if doc.Fields().Title != "T" { // INFO authoritative; the corrupt id3 gave nothing
+		t.Fatalf("title = %q", doc.Fields().Title)
+	}
+	plan, err := doc.Edit().Set(tag.Composer, "Stravinsky").Prepare() // non-INFO key → forces id3
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	if n := bytes.Count(out, []byte("id3 ")); n != 1 {
+		t.Errorf("expected exactly one id3 chunk in output, found %d", n)
+	}
+	re := mustParseBytes(t, out)
+	if !slices.Equal(re.Fields().Composer, []string{"Stravinsky"}) {
+		t.Errorf("composer = %v", re.Fields().Composer)
+	}
+	if hasWarning(re, wl.WarnDuplicateTagBlock) {
+		t.Error("re-parse of the output should not see a duplicate id3 block")
+	}
+}
+
 func TestWAVLatin1InfoValueDecodes(t *testing.T) {
 	// A legacy Latin-1 INFO value (0xE9 == 'é') must decode to valid UTF-8 in the
 	// canonical model rather than passing through as an invalid-UTF-8 string.

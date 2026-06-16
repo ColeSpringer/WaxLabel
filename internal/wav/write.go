@@ -161,6 +161,14 @@ func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, 
 				ops = append(ops, "dropped duplicate tag chunk")
 				continue
 			}
+			// A lone id3 chunk whose body failed to parse leaves no authoritative id3
+			// (so it was not marked dupTag). Drop it when we are writing a fresh id3
+			// chunk, so the output never carries two id3 chunks (which a re-parse would
+			// flag as a duplicate, disagreeing with the returned document).
+			if emitID3 && isID3Chunk(ch.id4()) {
+				ops = append(ops, "dropped stale id3 chunk")
+				continue
+			}
 			role := roleOther
 			if i == d.dataIdx {
 				role = roleData
@@ -184,22 +192,11 @@ func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, 
 		outs = insertBeforeData(outs, created)
 	}
 	if emitID3 {
-		if n := apicCount(newID3); n > 0 {
+		if n := id3.APICCount(newID3); n > 0 {
 			ops = append(ops, fmt.Sprintf("pictures: %d", n))
 		}
 	}
 	return outs, ops
-}
-
-// apicCount returns the number of picture (APIC) frames in a tag.
-func apicCount(t *id3.Tag) int {
-	n := 0
-	for _, f := range t.Frames() {
-		if f.ID == "APIC" {
-			n++
-		}
-	}
-	return n
 }
 
 // infoOut builds the LIST/INFO output chunk from rendered INFO items.

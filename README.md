@@ -116,7 +116,7 @@ A small set of contracts is stable:
 | WAV | RIFF | ✅ | ✅ | LIST/INFO + embedded `id3 ` chunk; id3 authoritative when present, else INFO; pictures via id3; all chunks preserved; RF64/BW64 out of scope |
 | MP4 | AAC/ALAC | ✅ | ✅ | iTunes `moov.udta.meta.ilst` (text, trkn/disk, covr art, `----` freeform long tail); `free`-atom reuse + all-track `stco`/`co64` fixups; `chpl` preserved; fragmented (moof) rejected |
 | Matroska | FLAC/Opus/Vorbis/AAC/… | ✅ | — | `.mka`/`.webm`/`.mkv`; scope-aware SimpleTag projection (album/track/edition/chapter) + `Info.Title` + cover-art attachments; full scoped tree preserved in `Native`; write deferred to v2 |
-| AIFF | — | — | — | planned |
+| AIFF | PCM (AIFF-C) | ✅ | ✅ | native NAME/AUTH/`(c) `/ANNO chunks + embedded `ID3 ` chunk; ID3 authoritative when present, else native; pictures via ID3; 80-bit COMM rate; AIFF-C + `id3 ` variant; all chunks preserved |
 
 Ogg writes preserve audio *packet payloads* byte-for-byte (Ogg re-pagination is
 allowed); chained/multiplexed streams are read best-effort and reported, but

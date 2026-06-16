@@ -10,6 +10,7 @@ import (
 
 	// Register the codecs. They are internal through v0.x; the blank import
 	// wires them into the detection registry.
+	_ "github.com/colespringer/waxlabel/internal/aiff"
 	_ "github.com/colespringer/waxlabel/internal/flac"
 	_ "github.com/colespringer/waxlabel/internal/matroska"
 	_ "github.com/colespringer/waxlabel/internal/mp3"

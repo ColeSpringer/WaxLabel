@@ -125,6 +125,7 @@ const (
 	FamilyMP4      = core.FamilyMP4
 	FamilyRIFF     = core.FamilyRIFF
 	FamilyMatroska = core.FamilyMatroska
+	FamilyAIFF     = core.FamilyAIFF
 )
 
 // Scope values annotate the target a family value applies to. Most formats are

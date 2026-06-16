@@ -45,6 +45,22 @@ func (t *Tag) WriteVersion() byte { return t.writeVersion }
 // Frames returns the decoded frames in order.
 func (t *Tag) Frames() []Frame { return t.frames }
 
+// APICCount returns the number of attached-picture (APIC) frames in the tag,
+// shared by the container codecs that embed ID3v2 (MP3, WAV, AIFF) for their
+// write reports. A nil tag has none.
+func APICCount(t *Tag) int {
+	if t == nil {
+		return 0
+	}
+	n := 0
+	for _, f := range t.frames {
+		if f.ID == "APIC" {
+			n++
+		}
+	}
+	return n
+}
+
 // Clone returns a deep copy of the tag.
 func (t *Tag) Clone() *Tag {
 	c := *t

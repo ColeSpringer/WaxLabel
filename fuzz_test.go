@@ -24,32 +24,38 @@ func FuzzParse(f *testing.F) {
 	for _, p := range []string{
 		sampleFLAC, "testdata/notags.flac", sampleOgg, sampleOpus, notagsOgg, "testdata/notags.opus",
 		sampleMP3, sampleMP324, notagsMP3, sampleWAV, notagsWAV, sampleMP4, notagsMP4,
-		sampleMKA, sampleWebM, notagsMKA,
+		sampleMKA, sampleWebM, notagsMKA, sampleAIFF, notagsAIFF, sampleAIFC,
 	} {
 		if b, err := os.ReadFile(p); err == nil {
 			f.Add(b)
 		}
 	}
-	f.Add([]byte("ID3\x03\x00\x00\x00\x00\x00\x7f"))                                                                  // ID3v2.3 header claiming 127 body bytes it lacks
-	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x10"), []byte("TIT2")...))                                       // truncated v2.4 frame
-	f.Add([]byte("\xff\xfb\x90\x00"))                                                                                 // bare MPEG-1 Layer 3 frame header, no body
-	f.Add([]byte("fLaC"))                                                                                             // marker only, no blocks
-	f.Add([]byte("fLaC\x00\x00\x00\x22"))                                                                             // STREAMINFO header, no body
-	f.Add([]byte("fLaC\x80\xff\xff\xff"))                                                                             // last block, absurd length
-	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x0a"), []byte("fLaC")...))                                       // stray ID3 then truncated
-	f.Add([]byte("OggS\x00\x02"))                                                                                     // Ogg capture pattern, truncated header
-	f.Add([]byte("OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\xff")) // page header claiming a 255-byte body it lacks
-	f.Add([]byte("RIFF\x04\x00\x00\x00WAVE"))                                                                         // RIFF/WAVE, no chunks
-	f.Add([]byte("RIFF\xff\xff\xff\xffWAVEdata\xff\xff\xff\xff"))                                                     // absurd RIFF + data sizes
-	f.Add([]byte("RIFF\x10\x00\x00\x00WAVELIST\x04\x00\x00\x00INFO"))                                                 // empty INFO list
-	f.Add([]byte("RF64\x04\x00\x00\x00WAVE"))                                                                         // RF64, must be rejected, not panic
-	f.Add([]byte("\x00\x00\x00\x10ftypM4A \x00\x00\x00\x00"))                                                         // ftyp only, no moov
-	f.Add([]byte("\x00\x00\x00\x08ftyp\x00\x00\x00\x08moov"))                                                         // empty moov, no tracks
-	f.Add([]byte("\x00\x00\x00\x08ftyp\x00\x00\x00\x01moov\xff\xff\xff\xff\xff\xff\xff\xff"))                         // 64-bit atom, absurd size
-	f.Add([]byte("\x00\x00\x00\x10ftypM4A \x00\x00\x00\x08moof"))                                                     // fragmented: must reject, not panic
-	f.Add([]byte("\x1a\x45\xdf\xa3\x84\x42\x82\x81m"))                                                                // EBML magic + truncated DocType
-	f.Add([]byte("\x1a\x45\xdf\xa3\xff"))                                                                             // EBML magic, unknown-size header
-	f.Add([]byte("\x1a\x45\xdf\xa3\x80\x18\x53\x80\x67\xff"))                                                         // empty EBML header + unknown-size Segment
+	f.Add([]byte("ID3\x03\x00\x00\x00\x00\x00\x7f"))                                                                                      // ID3v2.3 header claiming 127 body bytes it lacks
+	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x10"), []byte("TIT2")...))                                                           // truncated v2.4 frame
+	f.Add([]byte("\xff\xfb\x90\x00"))                                                                                                     // bare MPEG-1 Layer 3 frame header, no body
+	f.Add([]byte("fLaC"))                                                                                                                 // marker only, no blocks
+	f.Add([]byte("fLaC\x00\x00\x00\x22"))                                                                                                 // STREAMINFO header, no body
+	f.Add([]byte("fLaC\x80\xff\xff\xff"))                                                                                                 // last block, absurd length
+	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x0a"), []byte("fLaC")...))                                                           // stray ID3 then truncated
+	f.Add([]byte("OggS\x00\x02"))                                                                                                         // Ogg capture pattern, truncated header
+	f.Add([]byte("OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\xff"))                     // page header claiming a 255-byte body it lacks
+	f.Add([]byte("RIFF\x04\x00\x00\x00WAVE"))                                                                                             // RIFF/WAVE, no chunks
+	f.Add([]byte("RIFF\xff\xff\xff\xffWAVEdata\xff\xff\xff\xff"))                                                                         // absurd RIFF + data sizes
+	f.Add([]byte("RIFF\x10\x00\x00\x00WAVELIST\x04\x00\x00\x00INFO"))                                                                     // empty INFO list
+	f.Add([]byte("RF64\x04\x00\x00\x00WAVE"))                                                                                             // RF64, must be rejected, not panic
+	f.Add([]byte("\x00\x00\x00\x10ftypM4A \x00\x00\x00\x00"))                                                                             // ftyp only, no moov
+	f.Add([]byte("\x00\x00\x00\x08ftyp\x00\x00\x00\x08moov"))                                                                             // empty moov, no tracks
+	f.Add([]byte("\x00\x00\x00\x08ftyp\x00\x00\x00\x01moov\xff\xff\xff\xff\xff\xff\xff\xff"))                                             // 64-bit atom, absurd size
+	f.Add([]byte("\x00\x00\x00\x10ftypM4A \x00\x00\x00\x08moof"))                                                                         // fragmented: must reject, not panic
+	f.Add([]byte("\x1a\x45\xdf\xa3\x84\x42\x82\x81m"))                                                                                    // EBML magic + truncated DocType
+	f.Add([]byte("\x1a\x45\xdf\xa3\xff"))                                                                                                 // EBML magic, unknown-size header
+	f.Add([]byte("\x1a\x45\xdf\xa3\x80\x18\x53\x80\x67\xff"))                                                                             // empty EBML header + unknown-size Segment
+	f.Add([]byte("FORM\x00\x00\x00\x04AIFF"))                                                                                             // AIFF, no chunks
+	f.Add([]byte("FORM\xff\xff\xff\xffAIFCFVER\xff\xff\xff\xff"))                                                                         // absurd FORM + chunk sizes
+	f.Add([]byte("FORM\x00\x00\x00\x12AIFFCOMM\x00\x00\x00\x06\x00\x02\x00\x00\x00\x01"))                                                 // truncated COMM (no 80-bit rate)
+	f.Add([]byte("FORM\x00\x00\x00\x14AIFFSSND\x00\x00\x00\x08\x00\x00\x00\x00\x00\x00\x00\x00"))                                         // SSND-only, header but no frames
+	f.Add([]byte("FORM\x00\x00\x00\x1eAIFCCOMM\x00\x00\x00\x12\x00\x02\x00\x00\x00\x01\x00\x10\x7f\xff\x80\x00\x00\x00\x00\x00\x00\x00")) // AIFF-C 18-byte COMM, 0x7FFF-exponent Inf/NaN rate decoded
+	f.Add([]byte("FORM\x00\x00\x00\x0eAIFFANNO\x00\x00\x00\x06hello\x00"))                                                                // lone ANNO comment chunk
 	f.Add([]byte{})
 
 	ctx := context.Background()
