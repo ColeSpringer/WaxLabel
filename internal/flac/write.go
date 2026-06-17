@@ -43,18 +43,11 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	report := core.WriteReport{Format: core.FormatFLAC, BytesBefore: edited.Identity.Size}
 
-	// Fast path: nothing changed. Emit a full verbatim copy (so SaveAsFile and
-	// WriteTo still produce a whole file) but flag NoOp so SaveBack skips it.
+	// Fast path: nothing changed. NoOpPlan emits a full verbatim copy (so
+	// SaveAsFile and WriteTo still produce a whole file) flagged NoOp so SaveBack
+	// skips it.
 	if !vorbisChanged && !picturesChanged && !legacyChange {
-		report.NoOp = true
-		report.BytesAfter = edited.Identity.Size
-		report.Operations = []string{"no changes"}
-		return &core.WritePlan{
-			Segments: []bits.Segment{bits.Copy(0, edited.Identity.Size)},
-			NoOp:     true,
-			Report:   report,
-			Result:   base,
-		}, nil
+		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
 	newComments := d.comments
@@ -216,7 +209,7 @@ func serializeMetadata(blocks []block, d *doc, pol core.PaddingPolicy) (out []by
 	if pol.ReuseInPlace && int64(nonPad)+4 <= origRegion {
 		padSize = int(origRegion - int64(nonPad) - 4)
 	} else {
-		padSize = int(clamp(pol.Target, pol.Min, pol.Max))
+		padSize = int(pol.ClampTarget())
 	}
 	padSize = clampInt(padSize, 0, maxBlockBody)
 
@@ -267,19 +260,6 @@ func buildResult(edited *core.Media, orig *doc, newBlocks []block, newComments [
 		AudioStart: nd.audioStart,
 		AudioEnd:   nd.audioEnd,
 	}
-}
-
-// clamp bounds v to [lo, hi]. A hi <= 0 means "no upper bound" (see
-// PaddingPolicy.Max), so a zero Max does not clamp a positive Target to nothing;
-// the caller still applies the format's hard cap afterward.
-func clamp(v, lo, hi int64) int64 {
-	if hi > 0 && v > hi {
-		v = hi
-	}
-	if v < lo {
-		v = lo
-	}
-	return v
 }
 
 func clampInt(v, lo, hi int) int {

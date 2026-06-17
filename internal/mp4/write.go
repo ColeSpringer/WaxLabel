@@ -35,18 +35,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	chaptersChanged := !core.EqualChapters(base.Chapters, edited.Chapters)
 	report := core.WriteReport{Format: core.FormatMP4, BytesBefore: edited.Identity.Size}
 
-	// Fast path: nothing changed. Emit a verbatim copy (so SaveAsFile/WriteTo
-	// still produce a whole file) but flag NoOp so SaveBack skips it.
+	// Fast path: nothing changed. NoOpPlan emits a verbatim copy (so SaveAsFile/
+	// WriteTo still produce a whole file) flagged NoOp so SaveBack skips it.
 	if !tagsChanged && !picturesChanged && !chaptersChanged {
-		report.NoOp = true
-		report.BytesAfter = edited.Identity.Size
-		report.Operations = []string{"no changes"}
-		return &core.WritePlan{
-			Segments: []bits.Segment{bits.Copy(0, edited.Identity.Size)},
-			NoOp:     true,
-			Report:   report,
-			Result:   base,
-		}, nil
+		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
 	if d.moov == nil {
@@ -174,8 +166,21 @@ func planLayout(d *doc, newIlst []byte, opts core.WriteOptions) (layout, error) 
 	// everything after shifts and the ancestor sizes grow).
 	inner, withFree, ilstOff, freeOff, freeLen, freeContent := buildCreated(d, newIlst, pad)
 	at := inner.end()
+	regionStart := at
+	// When inserting into an existing udta, place the new atom after its last
+	// complete child rather than at its raw end. A udta body can carry a tolerated
+	// trailing zero (QuickTime terminates its user-data list with a 32-bit zero;
+	// parse keeps it), and an atom appended after those zeros is shifted out of
+	// alignment, corrupting every following atom on re-parse. Replacing
+	// [clean, end) drops the stray tail. d.udtaRaw is nil only for an oversized
+	// udta, where the append-at-end behavior is kept.
+	if inner.name == atomName("udta") && d.udtaRaw != nil {
+		if clean := d.udta.offset + d.udta.headerLen + udtaCleanLen(d.udtaRaw); clean < at {
+			regionStart = clean
+		}
+	}
 	return layout{
-		regionStart: at, regionEnd: at, regionBytes: withFree,
+		regionStart: regionStart, regionEnd: at, regionBytes: withFree,
 		ancestors: createdAncestors(d), ilstOff: ilstOff,
 		freeOff: freeOff, freeLen: freeLen, freeContent: freeContent, created: true,
 	}, nil

@@ -59,6 +59,24 @@ type WritePlan struct {
 	Result   *Media
 }
 
+// NoOpPlan builds the "nothing changed" write plan every codec returns when an
+// edit touches nothing: a verbatim whole-file copy flagged NoOp (so SaveBack
+// skips it, while SaveAsFile/WriteTo still emit the whole file), carrying result
+// as the post-write Media. The passed report (already bearing Format and
+// BytesBefore) is finalized here — NoOp marker, unchanged byte count, the "no
+// changes" operation — so the no-op path cannot drift between codecs.
+func NoOpPlan(report WriteReport, size int64, result *Media) *WritePlan {
+	report.NoOp = true
+	report.BytesAfter = size
+	report.Operations = []string{"no changes"}
+	return &WritePlan{
+		Segments: []bits.Segment{bits.Copy(0, size)},
+		NoOp:     true,
+		Report:   report,
+		Result:   result,
+	}
+}
+
 // codec registry. Codecs register from their package init; the root package
 // imports them for the side effect. The set is closed (no public registry API
 // in v1), so this lives in internal/core.
@@ -99,6 +117,50 @@ func Detect(path string, header []byte) (Codec, bool) {
 		}
 	}
 	return nil, false
+}
+
+// DetectLeading detects src's format, looking past a recognized skippable leading
+// region when one is present. leadingLen reports the byte length of such a region
+// from the file's first bytes — it is supplied by the caller (as id3.TagSize) so
+// core need not import the id3 codec, which is the whole reason this front-tag
+// disambiguation cannot live inside id3 or be a method here without the callback.
+//
+// A leading ID3v2 tag is sniffed as MP3 (the sole bare-ID3 sniffer), but several
+// formats tolerate (FLAC) or require (raw AAC) a front ID3. So when a leading
+// region is present and a *different* format's signature sits just past it, that
+// inner format wins; otherwise the header-level detection stands (MP3 for a real
+// ID3-prefixed MP3, the common case). The peek is signature-only (empty path):
+// a file extension is a weaker signal than the positively sniffed leading tag, so
+// a mere ".aac"/".flac" name must not reclassify bytes that are no signature.
+//
+// This is the single path every ID3-bearing format (MP3 vs FLAC vs AAC) resolves
+// through, rather than a per-format predicate that is correct only while MP3 is
+// the sole ID3-sniffing codec.
+func DetectLeading(src ReaderAtSized, path string, leadingLen func(header []byte) (int64, bool)) (Codec, bool) {
+	// 64 bytes spans the Ogg BOS page's identification header, where the codec
+	// signature ("\x01vorbis" / "OpusHead") that distinguishes Vorbis from Opus
+	// lives; shorter formats (FLAC's "fLaC", ID3) need only the first few.
+	header := make([]byte, 64)
+	n, _ := src.ReadAt(header, 0)
+	header = header[:n]
+
+	codec, ok := Detect(path, header)
+	if !ok {
+		return nil, false
+	}
+	total, isLeading := leadingLen(header)
+	if !isLeading || total >= src.Size() {
+		return codec, true
+	}
+	peek := make([]byte, 64)
+	pn, _ := src.ReadAt(peek, total)
+	if pn <= 0 {
+		return codec, true
+	}
+	if inner, ok := Detect("", peek[:pn]); ok && inner.Format() != codec.Format() {
+		return inner, true
+	}
+	return codec, true
 }
 
 func lowerExt(path string) string {

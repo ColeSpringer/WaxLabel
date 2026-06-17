@@ -54,6 +54,38 @@ type PaddingPolicy struct {
 // possible.
 var DefaultPadding = PaddingPolicy{Target: 8192, Min: 0, Max: 1 << 20, ReuseInPlace: true}
 
+// ClampTarget returns Target bounded by Min and Max: a Max of 0 means "no upper
+// bound" (the caller still applies the format's hard cap), Target is floored to
+// Min, and a negative result to 0. This is the single definition of the padding
+// clamp the codecs share, so the "Max == 0 is unbounded" contract cannot drift
+// between per-codec copies.
+func (p PaddingPolicy) ClampTarget() int64 {
+	v := p.Target
+	if p.Max > 0 && v > p.Max {
+		v = p.Max
+	}
+	if v < p.Min {
+		v = p.Min
+	}
+	if v < 0 {
+		v = 0
+	}
+	return v
+}
+
+// ReuseOrTarget sizes the padding for a rewrite whose metadata sits in a single
+// front region (the ID3 front-tag codecs, MP3 and AAC). With ReuseInPlace and
+// new content that fits the original region, it fills the region exactly so the
+// audio offset and file size do not change; otherwise it falls back to the
+// clamped Target. origLen is the original region length, contentLen the new
+// non-padding content length.
+func (p PaddingPolicy) ReuseOrTarget(origLen, contentLen int64) int64 {
+	if p.ReuseInPlace && origLen >= contentLen {
+		return origLen - contentLen
+	}
+	return p.ClampTarget()
+}
+
 // ID3MultiValuePolicy controls how multiple values for one field are written in
 // ID3v2.3, which has no standard multi-value text representation. ID3v2.4 always
 // NUL-separates regardless of this setting; the compatibility impact of the v2.3

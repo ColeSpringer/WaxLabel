@@ -15,6 +15,8 @@ package id3
 import (
 	"fmt"
 
+	"github.com/colespringer/waxlabel/internal/bits"
+	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -109,6 +111,32 @@ func TagSize(header []byte) (int64, bool) {
 		total += 10
 	}
 	return total, true
+}
+
+// ReadFront reads a leading ID3v2 tag from the start of src, returning the parsed
+// tag and its on-disk length, or (nil, 0, nil) when src has no readable leading
+// ID3. It is the shared front-tag read for the codecs whose authoritative
+// container is a front ID3v2 tag (MP3 and raw AAC); FLAC, which only preserves a
+// stray leading ID3 verbatim, reads the raw bytes itself. size is the source size
+// (the tag must fit within it); limit bounds the allocation.
+func ReadFront(src core.ReaderAtSized, size, limit int64) (*Tag, int64, error) {
+	hdr, err := bits.ReadSlice(src, 0, 10, limit)
+	if err != nil {
+		return nil, 0, nil // too short to hold an ID3 header: no front tag
+	}
+	total, ok := TagSize(hdr)
+	if !ok || total > size {
+		return nil, 0, nil
+	}
+	tagBytes, err := bits.ReadSlice(src, 0, total, limit)
+	if err != nil {
+		return nil, 0, err
+	}
+	tg, err := ParseTag(tagBytes)
+	if err != nil {
+		return nil, 0, err
+	}
+	return tg, total, nil
 }
 
 // syncSafe decodes a 28-bit sync-safe integer from four bytes (each contributes

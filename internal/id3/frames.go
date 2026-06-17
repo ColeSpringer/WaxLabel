@@ -215,6 +215,21 @@ func Render(writeVersion byte, frames []Frame, padding int) []byte {
 	return out
 }
 
+// RenderedSize returns the on-disk byte length [Render] would emit for frames
+// with no padding — a 10-byte tag header plus each frame's 10-byte header and
+// body — without materializing the bytes. Codecs that size padding by
+// reuse-in-place use it to avoid rendering the whole tag (picture bodies and
+// all) a throwaway second time just to measure it. The length is independent of
+// the write version: v2.3 and v2.4 frame headers are both 10 bytes; only the
+// size field's encoding differs.
+func RenderedSize(frames []Frame) int64 {
+	total := int64(10) // tag header
+	for _, f := range frames {
+		total += int64(10 + len(f.Body))
+	}
+	return total
+}
+
 // renderFrame renders one frame's on-disk bytes for the write version. An opaque
 // frame keeps its preserved flags; a normal frame writes cleared flags.
 func renderFrame(writeVersion byte, f Frame) []byte {

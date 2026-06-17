@@ -10,6 +10,7 @@ import (
 
 	// Register the codecs. They are internal through v0.x; the blank import
 	// wires them into the detection registry.
+	_ "github.com/colespringer/waxlabel/internal/aac"
 	_ "github.com/colespringer/waxlabel/internal/aiff"
 	_ "github.com/colespringer/waxlabel/internal/flac"
 	_ "github.com/colespringer/waxlabel/internal/matroska"
@@ -54,36 +55,13 @@ func ParseFile(ctx context.Context, path string, opts ...ParseOption) (*Document
 
 // parseSource detects the format and dispatches to the codec.
 func parseSource(ctx context.Context, src ReaderAtSized, path string, opts core.ParseOptions) (*Document, error) {
-	// 64 bytes spans the Ogg BOS page's identification header, where the codec
-	// signature ("\x01vorbis" / "OpusHead") that distinguishes Vorbis from Opus
-	// lives; shorter formats (FLAC's "fLaC", ID3) need only the first few.
-	header := make([]byte, 64)
-	n, _ := src.ReadAt(header, 0)
-	header = header[:n]
-
-	codec, ok := core.Detect(path, header)
+	// Detection looks past a leading ID3v2 tag when present: MP3 sniffs a bare
+	// ID3, but FLAC tolerates and raw AAC requires a front tag, so the real format
+	// is decided by what sits past the tag. id3.TagSize supplies the tag length so
+	// core need not import the id3 codec.
+	codec, ok := core.DetectLeading(src, path, id3.TagSize)
 	if !ok {
 		return nil, fmt.Errorf("%w: could not identify %q", waxerr.ErrUnsupportedFormat, path)
-	}
-	// A leading ID3v2 tag is shared between MP3 and a few containers that tolerate
-	// a stray leading ID3 (notably FLAC). When detection lands on MP3 because of
-	// the ID3 header, peek just past the tag: if a different format's signature
-	// follows, that format wins. This keeps an ID3-prefixed FLAC from being read
-	// as MP3 without weakening MP3 detection for the common case.
-	//
-	// This lives here (not in core.Detect) on purpose: core cannot import id3 to
-	// compute the tag length, and the only other ID3-bearing formats (WAV/AIFF)
-	// carry ID3 inside a chunk, not as a front tag — so the front-ID3 ambiguity is
-	// really just MP3-vs-FLAC. See the build-4 plan note before generalizing.
-	if codec.Format() == core.FormatMP3 {
-		if total, isID3 := id3.TagSize(header); isID3 && total < src.Size() {
-			peek := make([]byte, 64)
-			if n, _ := src.ReadAt(peek, total); n > 0 {
-				if c2, ok2 := core.Detect(path, peek[:n]); ok2 && c2.Format() != core.FormatMP3 {
-					codec = c2
-				}
-			}
-		}
 	}
 	media, err := codec.Parse(ctx, src, opts)
 	if err != nil {

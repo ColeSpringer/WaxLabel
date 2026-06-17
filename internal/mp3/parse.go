@@ -29,20 +29,12 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	var warnings []core.Warning
 
 	// Front ID3v2 tag.
-	if hdr, err := bits.ReadSlice(src, 0, 10, limit); err == nil {
-		if total, ok := id3.TagSize(hdr); ok && total <= size {
-			tagBytes, err := bits.ReadSlice(src, 0, total, limit)
-			if err != nil {
-				return nil, err
-			}
-			tg, err := id3.ParseTag(tagBytes)
-			if err != nil {
-				return nil, err
-			}
-			d.id3 = tg
-			d.id3Len = total
-		}
+	tg, id3Len, err := id3.ReadFront(src, size, limit)
+	if err != nil {
+		return nil, err
 	}
+	d.id3 = tg
+	d.id3Len = id3Len
 	d.audioStart = d.id3Len
 
 	// Trailing legacy containers, from the end inward: ID3v1 (last 128 bytes),

@@ -173,7 +173,12 @@ func buildUdtaRegion(d *doc, newIlst []byte, needIlst bool, chapters []core.Chap
 	if err != nil {
 		return udtaRegion{}, err
 	}
-	payload = append(payload, appends...)
+	if len(appends) > 0 {
+		// Append after the last complete child, dropping any tolerated trailing zero
+		// (QuickTime terminator / padding) that would otherwise shift the new atom.
+		clean := udtaCleanLen(payload)
+		payload = append(payload[:clean:clean], appends...)
+	}
 
 	reg := udtaRegion{
 		regionStart: d.udta.offset, regionEnd: d.udta.end(),
@@ -425,4 +430,24 @@ func walkUdta(payload []byte) []node {
 // start offset.
 func atomRefAt(n node, base int64) atomRef {
 	return atomRef{name: n.name, offset: base + n.offset, headerLen: n.headerLen, size: n.size}
+}
+
+// udtaCleanLen returns the length of a udta payload up to the end of its last
+// complete child atom, excluding any tolerated trailing zero (QuickTime
+// terminates its user-data list with a 32-bit zero, and parse keeps that
+// padding). A new child must be inserted/appended at this offset — not the
+// payload's raw end — or the zero tail shifts it out of alignment and corrupts
+// the re-parse of the output. An all-zero payload yields 0; a payload walkAtoms
+// unexpectedly rejects (parse already accepted it) yields its full length, so no
+// real bytes are dropped.
+func udtaCleanLen(payload []byte) int64 {
+	nodes, err := walkAtoms(core.BytesSource(payload), 0, int64(len(payload)),
+		bits.NewDepth(bits.DefaultLimits.MaxDepth), maxMetaChunk, false)
+	if err != nil {
+		return int64(len(payload))
+	}
+	if len(nodes) == 0 {
+		return 0
+	}
+	return nodes[len(nodes)-1].end()
 }

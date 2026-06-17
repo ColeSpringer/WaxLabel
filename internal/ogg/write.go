@@ -40,15 +40,7 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	// runs before the chained/alignment guards: copying a file unchanged is always
 	// safe, even for streams we will not rewrite.
 	if !tagsChanged && !picturesChanged {
-		report.NoOp = true
-		report.BytesAfter = edited.Identity.Size
-		report.Operations = []string{"no changes"}
-		return &core.WritePlan{
-			Segments: []bits.Segment{bits.Copy(0, edited.Identity.Size)},
-			NoOp:     true,
-			Report:   report,
-			Result:   base,
-		}, nil
+		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
 	// An actual rewrite is refused for stream shapes we cannot edit safely.

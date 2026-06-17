@@ -364,6 +364,33 @@ func TestMP4BareMetaQuickTime(t *testing.T) {
 	}
 }
 
+// TestMP4UdtaZeroTerminatorCreatesTag covers a udta that ends in a 32-bit-zero
+// QuickTime terminator (which parse tolerates) and has no ilst: creating a tag
+// must insert the new meta after the last real child, dropping the terminator —
+// not after it, which would shift the meta out of alignment and corrupt every
+// following atom on re-parse. (The degenerate 1-byte-zero-body form of this is a
+// FuzzParse seed; this asserts the real-file scenario keeps the existing child.)
+func TestMP4UdtaZeroTerminatorCreatesTag(t *testing.T) {
+	child := mp4Atom("Xtra", []byte("XTRADATA")) // a real opaque udta child (preserved verbatim)
+	data := mp4AssembleUdta(child, mp4be32(0))   // ...then a 32-bit-zero QuickTime terminator
+	doc := mustParseBytes(t, data)
+	if doc.Fields().Title != "" {
+		t.Fatalf("setup: unexpected title %q", doc.Fields().Title)
+	}
+	plan, err := doc.Edit().Set(tag.Title, "Added").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	re := mustParseBytes(t, out) // must re-parse cleanly: no misaligned atoms
+	if re.Fields().Title != "Added" {
+		t.Errorf("title after round-trip = %q, want Added", re.Fields().Title)
+	}
+	if !bytes.Contains(out, []byte("XTRADATA")) {
+		t.Error("the preserved udta child atom was dropped by the tag insert")
+	}
+}
+
 func TestMP4MultiMdatTrailingMoovFingerprinted(t *testing.T) {
 	// Two mdats with the moov (tags) after the last one: the change-detection
 	// fingerprint must hash the trailing moov, so two files differing only in a

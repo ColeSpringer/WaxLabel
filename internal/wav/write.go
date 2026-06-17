@@ -51,18 +51,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	report := core.WriteReport{Format: core.FormatWAV, BytesBefore: edited.Identity.Size}
 
-	// Fast path: nothing changed. Emit a verbatim copy (so SaveAsFile/WriteTo
-	// still produce a whole file) but flag NoOp so SaveBack skips it.
+	// Fast path: nothing changed. NoOpPlan emits a verbatim copy (so SaveAsFile/
+	// WriteTo still produce a whole file) flagged NoOp so SaveBack skips it.
 	if !tagsChanged && !picturesChanged && !stripINFO {
-		report.NoOp = true
-		report.BytesAfter = edited.Identity.Size
-		report.Operations = []string{"no changes"}
-		return &core.WritePlan{
-			Segments: []bits.Segment{bits.Copy(0, edited.Identity.Size)},
-			NoOp:     true,
-			Report:   report,
-			Result:   base,
-		}, nil
+		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
 	// Decide which containers receive the edited tags.
