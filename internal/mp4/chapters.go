@@ -12,9 +12,9 @@ import (
 
 // Two chapter representations live in an MP4: a Nero "chpl" list under
 // moov.udta, and a QuickTime chapter "text" track referenced from the audio
-// track via a tref "chap". Both project into one []core.Chapter. This version
-// reads both and writes only chpl (the QuickTime track is preserved verbatim on
-// a chapter edit; see write.go).
+// track via a tref "chap". Both project into one []core.Chapter. The reader here
+// decodes both; a chapter edit rewrites both (the chpl in write_chapters.go, the
+// QuickTime track in write_qtchapters.go).
 
 // chplStartUnit is the chpl start-time resolution: 1/10,000,000 second (100 ns),
 // per the Nero convention ffmpeg's mov_read_chpl follows.
@@ -124,6 +124,105 @@ func renderChpl(version uint8, chapters []core.Chapter) []byte {
 		payload = append(payload, title...)
 	}
 	return renderAtom(atomName("chpl"), payload)
+}
+
+// collectChapterRefs captures the structural references a QuickTime chapter
+// write needs to rebuild that track without re-reading the source: the audio
+// track to hang a tref on, where its mdia begins (the tref insertion point), any
+// existing tref, the existing chapter text track to replace, and the movie
+// header fields (timescale/duration and a free track id) a new track is built
+// from. It is read-only and tolerant — a field it cannot resolve is left zero
+// and the writer falls back to a chpl-only write when the audio track is absent.
+func collectChapterRefs(src core.ReaderAtSized, moov node, d *doc, limit int64) {
+	traks := moov.findAll("trak", nil)
+	if mvhd, ok := moov.find("mvhd"); ok {
+		d.mvhd = refPtr(mvhd)
+		collectMvhd(src, mvhd, d, limit)
+	}
+	// A track id free of every existing track, used when mvhd's next_track_ID is
+	// missing, the all-ones sentinel, or stale (not actually past every track).
+	// nextTrackID 0 means none is free (a track already holds the max id), so a new
+	// chapter track cannot be created — maxID+1 would wrap to the invalid id 0.
+	maxID := uint32(0)
+	for _, t := range traks {
+		if tkhd, ok := t.find("tkhd"); ok {
+			if id, ok := trackID(src, tkhd, limit); ok && id > maxID {
+				maxID = id
+			}
+		}
+	}
+	switch {
+	case maxID == 0xFFFFFFFF:
+		d.nextTrackID = 0
+	case d.nextTrackID == 0 || d.nextTrackID == 0xFFFFFFFF || d.nextTrackID <= maxID:
+		d.nextTrackID = maxID + 1
+	}
+
+	audio, ok := trakOfHandler(src, traks, "soun", limit)
+	if !ok {
+		return
+	}
+	d.audioTrak = refPtr(audio)
+	if mdia, ok := audio.find("mdia"); ok {
+		d.audioMdiaOff = mdia.offset
+	}
+	if tref, ok := audio.find("tref"); ok {
+		d.audioTref = refPtr(tref)
+		if raw, err := readPayload(src, tref, maxMetaChunk, limit); err == nil {
+			d.audioTrefRaw = raw
+		}
+	}
+	if ids := chapterTrackIDs(src, audio, limit); len(ids) > 0 {
+		d.audioHasChap = true // a "chap" reference exists, even if it does not resolve
+		if text, ok := trakByID(src, traks, ids, limit); ok {
+			d.chapTrak = refPtr(text)
+			if tkhd, ok := text.find("tkhd"); ok {
+				if id, ok := trackID(src, tkhd, limit); ok {
+					d.chapTrackID = id // reused when the track is rebuilt in place
+				}
+			}
+		}
+	}
+}
+
+// collectMvhd reads the movie header's timescale, duration, and next_track_ID:
+// a new chapter track shares the movie timescale, ends its last chapter at the
+// movie duration, and takes next_track_ID as its track id. The field's absolute
+// offset is recorded so a created track can bump it.
+func collectMvhd(src core.ReaderAtSized, mvhd node, d *doc, limit int64) {
+	b, err := readPayload(src, mvhd, 120, limit)
+	if err != nil || len(b) < 1 {
+		return
+	}
+	po := mvhd.payloadOff()
+	switch b[0] {
+	case 0:
+		if len(b) < 100 {
+			return
+		}
+		d.movieTimescale = binary.BigEndian.Uint32(b[12:16])
+		d.movieDuration = sentinelToZero64(uint64(binary.BigEndian.Uint32(b[16:20])), 0xFFFFFFFF)
+		d.nextTrackID = binary.BigEndian.Uint32(b[96:100])
+		d.nextTrackIDOff = po + 96
+	case 1:
+		if len(b) < 112 {
+			return
+		}
+		d.movieTimescale = binary.BigEndian.Uint32(b[20:24])
+		d.movieDuration = sentinelToZero64(binary.BigEndian.Uint64(b[24:32]), 0xFFFFFFFFFFFFFFFF)
+		d.nextTrackID = binary.BigEndian.Uint32(b[108:112])
+		d.nextTrackIDOff = po + 108
+	}
+}
+
+// sentinelToZero64 maps an MP4 "unknown duration" all-ones sentinel to zero so a
+// chapter write does not give the final chapter a multi-week span. A real zero is
+// already "unknown" to the chapter-span logic, so collapsing the two is safe.
+func sentinelToZero64(v, sentinel uint64) uint64 {
+	if v == sentinel {
+		return 0
+	}
+	return v
 }
 
 // decodeQTChapters reads a QuickTime chapter text track: it resolves the audio

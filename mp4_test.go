@@ -95,6 +95,115 @@ func TestMP4DifferentialChaptersChpl(t *testing.T) {
 	}
 }
 
+func TestMP4DifferentialQTChapterTrack(t *testing.T) {
+	requireTool(t, "ffprobe")
+	requireTool(t, "ffmpeg")
+	// Step-12 decision gate: a chapter edit builds a QuickTime chapter text track
+	// that ffmpeg reads. ffprobe must list the chapter text stream and read the
+	// chapters with End times (which only the QuickTime track carries, not the
+	// chpl), and ffmpeg -c copy must demux and remux the whole layout — proving the
+	// new trak, tref, and appended mdat are structurally valid.
+	path := genM4A(t, map[string]string{"title": "Book"})
+	doc := mustParseFile(t, path)
+	plan, err := doc.Edit().SetChapters(
+		wl.Chapter{Start: 0, Title: "Opening"},
+		wl.Chapter{Start: 500 * time.Millisecond, Title: "Closing"},
+	).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := plan.Execute(context.Background(), wl.SaveBack()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The chapter text track shows up as a stream.
+	streams, err := exec.Command("ffprobe", "-hide_banner", "-loglevel", "error",
+		"-show_entries", "stream=codec_tag_string", "-of", "json", path).Output()
+	if err != nil {
+		t.Fatalf("ffprobe streams: %v", err)
+	}
+	if !bytes.Contains(streams, []byte("text")) {
+		t.Errorf("no QuickTime chapter text stream in output: %s", streams)
+	}
+
+	// ffprobe reads the chapters with End times from the QuickTime track.
+	out, err := exec.Command("ffprobe", "-hide_banner", "-loglevel", "error",
+		"-show_chapters", "-of", "json", path).Output()
+	if err != nil {
+		t.Fatalf("ffprobe chapters: %v", err)
+	}
+	var probe struct {
+		Chapters []struct {
+			Start int64 `json:"start"`
+			End   int64 `json:"end"`
+			Tags  struct {
+				Title string `json:"title"`
+			} `json:"tags"`
+		} `json:"chapters"`
+	}
+	if err := json.Unmarshal(out, &probe); err != nil {
+		t.Fatalf("parse ffprobe json: %v\n%s", err, out)
+	}
+	if len(probe.Chapters) != 2 {
+		t.Fatalf("ffprobe saw %d chapters, want 2: %s", len(probe.Chapters), out)
+	}
+	if probe.Chapters[0].Tags.Title != "Opening" || probe.Chapters[1].Tags.Title != "Closing" {
+		t.Errorf("ffprobe titles = %q, %q", probe.Chapters[0].Tags.Title, probe.Chapters[1].Tags.Title)
+	}
+	if probe.Chapters[0].End != 500 { // the QuickTime track ends chapter 0 at chapter 1's start
+		t.Errorf("ffprobe chapter 0 end = %d (time_base 1/1000), want 500", probe.Chapters[0].End)
+	}
+
+	// A stream-copy remux fully demuxes the chapter track, tref, and appended mdat.
+	remux := filepath.Join(t.TempDir(), "remux.m4a")
+	if o, err := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error",
+		"-i", path, "-c", "copy", "-y", remux).CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg rejected our QuickTime chapter output: %v\n%s", err, o)
+	}
+	if chs := mustParseFile(t, remux).Chapters(); len(chs) != 2 || chs[1].Title != "Closing" {
+		t.Errorf("chapters lost through an ffmpeg remux: %+v", chs)
+	}
+}
+
+func TestMP4DifferentialQTChapterFaststart(t *testing.T) {
+	requireTool(t, "ffmpeg")
+	requireTool(t, "ffprobe")
+	// A faststart file puts moov before mdat, so writing chapters shifts the audio
+	// mdat by the moov delta (the existing chunk-offset fixup) while the chapter
+	// samples still land in a fresh mdat at end-of-file. ffmpeg must accept it and
+	// the audio must decode unchanged — the stronger offset path.
+	base := genM4A(t, map[string]string{"title": "FS"})
+	path := filepath.Join(t.TempDir(), "fast.m4a")
+	if o, err := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error",
+		"-i", base, "-c", "copy", "-movflags", "+faststart", "-y", path).CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg faststart: %v\n%s", err, o)
+	}
+	pcmBefore := decodePCM(t, path)
+
+	plan, err := mustParseFile(t, path).Edit().SetChapters(
+		wl.Chapter{Start: 0, Title: "A"},
+		wl.Chapter{Start: 500 * time.Millisecond, Title: "B"},
+	).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := plan.Execute(context.Background(), wl.SaveBack()); err != nil {
+		t.Fatal(err)
+	}
+
+	remux := filepath.Join(t.TempDir(), "fsremux.m4a")
+	if o, err := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error",
+		"-i", path, "-c", "copy", "-y", remux).CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg rejected our faststart chapter output: %v\n%s", err, o)
+	}
+	if pcmAfter := decodePCM(t, path); !bytes.Equal(pcmBefore, pcmAfter) {
+		t.Error("decoded audio changed after a faststart chapter edit (mdat shift wrong?)")
+	}
+	if chs := mustParseFile(t, path).Chapters(); len(chs) != 2 || chs[0].Title != "A" {
+		t.Errorf("chapters wrong after faststart edit: %+v", chs)
+	}
+}
+
 func TestMP4DifferentialChapterAudioUnchanged(t *testing.T) {
 	requireTool(t, "ffmpeg")
 	// A chapter edit must leave the audio bit-identical and produce output ffmpeg

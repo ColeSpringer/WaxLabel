@@ -108,6 +108,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	// Chapters: a Nero chpl list and/or a QuickTime chapter text track project
 	// into one deduplicated list; a disagreement between them is warned.
 	chapterConflict := resolveChapters(src, moov, chplNode, haveChpl, d, limit)
+	// Capture the structural refs a chapter write needs to rebuild the QuickTime
+	// chapter text track (read-only; tolerant of anything it cannot find).
+	collectChapterRefs(src, moov, d, limit)
 
 	media := &core.Media{Format: core.FormatMP4, Native: d}
 	tags, pics, families, numericGenre := project(d)
@@ -324,21 +327,83 @@ func parseStsd(src core.ReaderAtSized, stsd node, d *doc, limit int64) {
 // change-detection fingerprint, covering metadata both before and after the
 // media); multiple mdats use the multi-segment AudioRanges.
 func setEssence(d *doc, media *core.Media) {
-	switch len(d.mdats) {
+	ranges := essenceMdats(d)
+	switch len(ranges) {
 	case 0:
 		// metadata-only file: no essence (the fingerprint then hashes it whole).
 	case 1:
-		media.AudioStart = d.mdats[0][0]
-		media.AudioEnd = d.mdats[0][0] + d.mdats[0][1]
+		media.AudioStart = ranges[0][0]
+		media.AudioEnd = ranges[0][1]
 	default:
-		ranges := make([][2]int64, len(d.mdats))
-		for i, m := range d.mdats {
-			ranges[i] = [2]int64{m[0], m[0] + m[1]}
-		}
 		media.AudioRanges = ranges
 		media.AudioStart = ranges[0][0]
 		media.AudioEnd = ranges[len(ranges)-1][1]
 	}
+}
+
+// essenceMdats returns the mdat ranges that hold audio, as [start, end). It drops
+// a separate chapter-sample mdat — the one a QuickTime chapter write appends at
+// end-of-file — so the change-detection fingerprint keeps hashing any metadata (a
+// trailing moov) that would otherwise sit in the un-hashed gap between the audio
+// mdat and the appended chapter mdat. The fast common path (no chapter track, or a
+// single mdat whose chapter samples share the audio) returns every mdat.
+func essenceMdats(d *doc) [][2]int64 {
+	ranges := make([][2]int64, len(d.mdats))
+	for i, m := range d.mdats {
+		ranges[i] = [2]int64{m[0], m[0] + m[1]}
+	}
+	if d.chapTrak == nil || d.audioTrak == nil || len(ranges) <= 1 {
+		return ranges
+	}
+	chapOff, ok := chapterChunkOffset(d)
+	maxAudio, ok2 := maxAudioChunkOffset(d)
+	if !ok || !ok2 || chapOff <= maxAudio {
+		return ranges // chapter samples lie within the audio (e.g. ffmpeg's layout)
+	}
+	out := ranges[:0:0]
+	for _, r := range ranges {
+		if r[0] <= chapOff && chapOff < r[1] {
+			continue // the standalone chapter mdat
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// trackOffTable returns the chunk-offset table that lies inside trak's byte range.
+func trackOffTable(d *doc, trak *atomRef) (offsetTable, bool) {
+	for _, t := range d.offTables {
+		if trak != nil && t.offset >= trak.offset && t.offset < trak.end() {
+			return t, true
+		}
+	}
+	return offsetTable{}, false
+}
+
+// chapterChunkOffset returns the chapter text track's (single) chunk offset.
+func chapterChunkOffset(d *doc) (int64, bool) {
+	t, ok := trackOffTable(d, d.chapTrak)
+	if !ok || len(t.entries) == 0 {
+		return 0, false
+	}
+	return int64(t.entries[0]), true
+}
+
+// maxAudioChunkOffset returns the largest chunk offset of the audio track, used to
+// tell a chapter mdat that follows the audio (a separate appended mdat) from
+// chapter samples interleaved within the audio mdat.
+func maxAudioChunkOffset(d *doc) (int64, bool) {
+	t, ok := trackOffTable(d, d.audioTrak)
+	if !ok || len(t.entries) == 0 {
+		return 0, false
+	}
+	var mx uint64
+	for _, e := range t.entries {
+		if e > mx {
+			mx = e
+		}
+	}
+	return int64(mx), true
 }
 
 // readPayload reads up to capBytes of an atom's payload, bounded by the alloc

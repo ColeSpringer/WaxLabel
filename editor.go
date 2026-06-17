@@ -1,6 +1,7 @@
 package waxlabel
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -76,12 +77,16 @@ func (e *Editor) ClearPictures() *Editor {
 	return e
 }
 
-// SetChapters replaces the whole chapter list. Chapters are stored in the order
-// given. A format that cannot write chapters reports it via [Capabilities]; only
-// MP4 (Nero chpl) is writable in this version, and it caps a chapter list at 255
-// — a larger list is rejected at [Editor.Prepare].
+// SetChapters replaces the whole chapter list. Chapters are a timeline, so the
+// list is sorted by start time (stably, preserving the order of chapters that
+// share a start) — an out-of-order argument would otherwise lose a start when a
+// container encodes spans relative to the previous chapter. A format that cannot
+// write chapters reports it via [Capabilities]; only MP4 is writable in this
+// version, and it caps a chapter list at 255 — a larger list is rejected at
+// [Editor.Prepare].
 func (e *Editor) SetChapters(chs ...Chapter) *Editor {
 	e.chapters = slices.Clone(chs)
+	slices.SortStableFunc(e.chapters, func(a, b Chapter) int { return cmp.Compare(a.Start, b.Start) })
 	e.chaptersTouched = true
 	return e
 }

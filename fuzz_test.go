@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/tag"
@@ -121,6 +122,31 @@ func FuzzParse(f *testing.F) {
 		}
 		if _, err := wl.Parse(ctx, wl.BytesSource(out2.Bytes())); err != nil {
 			t.Fatalf("re-parse of edited output failed: %v", err)
+		}
+
+		// Chapter write (step 12): a chapter edit on any accepted MP4 rebuilds the
+		// QuickTime chapter track (a new trak, a tref on the audio track, an appended
+		// mdat). A crafted moov/trak/tref/udta shape that parses must not panic that
+		// rewrite, and its output must re-parse. Other formats do not write chapters.
+		if doc.Format() == wl.FormatMP4 {
+			cp, err := doc.Edit().SetChapters(
+				wl.Chapter{Start: 0, Title: "a"},
+				wl.Chapter{Start: time.Second, Title: "b"},
+			).Prepare()
+			if err != nil {
+				if errors.Is(err, waxerr.ErrInvalidData) || errors.Is(err, waxerr.ErrSizeTooLarge) ||
+					errors.Is(err, waxerr.ErrUnsupportedTag) {
+					return
+				}
+				t.Fatalf("chapter edit prepare failed: %v", err)
+			}
+			var cout bytes.Buffer
+			if _, _, err := cp.Execute(ctx, wl.WriteTo(&cout, wl.BytesSource(data))); err != nil {
+				t.Fatalf("chapter edit write failed: %v", err)
+			}
+			if _, err := wl.Parse(ctx, wl.BytesSource(cout.Bytes())); err != nil {
+				t.Fatalf("re-parse of chapter-edited output failed: %v", err)
+			}
 		}
 	})
 }

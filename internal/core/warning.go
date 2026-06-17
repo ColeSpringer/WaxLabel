@@ -51,11 +51,11 @@ const (
 	// that disagree. The file was already inconsistent on parse; the richer
 	// representation is projected and this records the disagreement.
 	WarnChapterSourceConflict
-	// WarnChaptersStale means a chapter edit was written to one representation only
-	// (the MP4 Nero chpl) while a second representation present in the file (a
-	// QuickTime chapter text track) was preserved verbatim and now disagrees. It is
-	// a plan-time warning: the written file's two chapter sources are out of sync
-	// until the QuickTime track write lands.
+	// WarnChaptersStale meant a chapter edit was written to one representation only
+	// (the MP4 Nero chpl) while a second (a QuickTime chapter text track) was
+	// preserved verbatim and now disagreed. A chapter edit now rebuilds both
+	// representations, so this is no longer emitted; the code is retained (a stable
+	// part of the warning surface) for a future write that can only update one.
 	WarnChaptersStale
 	// WarnChapterTitleTruncated means one or more chapter titles were trimmed to fit
 	// a container limit on write (the Nero chpl's single-byte, 255-byte-max length

@@ -69,6 +69,7 @@ func buildResult(edited *core.Media, base *doc, newItems []item, lay layout, del
 		nd.chpl = &c
 	}
 	nd.udtaRaw = resultUdtaRaw(base, lay)
+	carryChapterRefs(nd, base, regionEnd, delta)
 
 	tags, pics, families, numericGenre := project(nd)
 	out := &core.Media{

@@ -15,29 +15,33 @@ import (
 // list longer than this cannot be written. The editor rejects it at Prepare.
 const maxChplChapters = 255
 
-// planChapters computes the rewrite when the chapter list changed. It rewrites
+// planChapters computes the rewrite when the chapter list changed. When the file
+// has an audio track, it rebuilds the QuickTime chapter track too (planChaptersQT,
+// step 12). Otherwise it falls back to the chpl-only path below, which rewrites
 // the whole moov.udta as one contiguous region — splicing the new ilst and chpl
 // byte ranges into the preserved udta bytes — so a chpl resize and an ilst resize
-// fold into a single delta the existing chunk-offset machinery consumes
-// unchanged. Only the Nero chpl is written; an existing QuickTime chapter text
-// track (in moov.trak, untouched) is preserved verbatim and flagged stale.
+// fold into a single delta the existing chunk-offset machinery consumes unchanged.
+// In that fallback an unrewritable QuickTime track is preserved and flagged stale.
 func planChapters(d *doc, edited *core.Media, needIlst bool, opts core.WriteOptions, report core.WriteReport) (*core.WritePlan, error) {
 	if d.udta != nil && d.udtaRaw == nil {
 		return nil, fmt.Errorf("%w: MP4 udta bytes were not captured for a chapter rewrite", waxerr.ErrInvalidData)
 	}
 
-	var newItems []item
-	var newIlst []byte
-	if needIlst {
-		newItems = buildItems(edited.Tags, edited.Pictures, preservedItems(d.items))
-		var payload []byte
-		for _, it := range newItems {
-			payload = append(payload, itemBytes(it)...)
+	// When the file has an audio track to anchor a chapter text track to, rebuild
+	// the QuickTime chapter track alongside the chpl (step 12) so iTunes and Apple
+	// Books see edits too. audioMdiaOff (the tref insertion point) is always set for
+	// a resolved audio track; requiring it guards a malformed track from a bad
+	// insert. The QuickTime path applies when it can rebuild/remove an existing
+	// chapter track, create one (a free track id exists), or strip a dangling tref
+	// "chap" on a clear. The chpl-only path below is the fallback (no audio track).
+	if d.audioTrak != nil && d.audioMdiaOff > 0 {
+		writing := len(edited.Chapters) > 0
+		if d.chapTrak != nil || (writing && d.nextTrackID > 0) || (!writing && d.audioHasChap) {
+			return planChaptersQT(d, edited, needIlst, opts, report)
 		}
-		newIlst = renderAtom(atomName("ilst"), payload)
 	}
 
-	reg, err := buildUdtaRegion(d, newIlst, needIlst, edited.Chapters, opts)
+	newItems, reg, err := buildChapterUdta(d, edited, needIlst, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -76,10 +80,9 @@ func planChapters(d *doc, edited *core.Media, needIlst bool, opts core.WriteOpti
 		report.Warnings = core.Warn(report.Warnings, core.WarnChapterTitleTruncated,
 			fmt.Sprintf("%d chapter title(s) trimmed to %d bytes (the Nero chpl length prefix is one byte)", n, titleByteMax))
 	}
-	if d.hasQTChapters {
-		report.Warnings = core.Warn(report.Warnings, core.WarnChaptersStale,
-			"wrote chapters to the Nero chpl only; the preserved QuickTime chapter track now disagrees")
-	}
+	// No WarnChaptersStale here: this fallback runs only when there is no audio
+	// track to anchor a QuickTime chapter track to, in which case the file has no
+	// QuickTime chapter track to leave stale (decoding one requires an audio track).
 
 	resultItems := d.items // ilst unchanged: keep the parsed items verbatim
 	if needIlst {
@@ -87,6 +90,24 @@ func planChapters(d *doc, edited *core.Media, needIlst bool, opts core.WriteOpti
 	}
 	result := buildChapterResult(edited, d, resultItems, reg, delta, total)
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
+}
+
+// buildChapterUdta renders the new ilst (when tags or pictures changed) and the
+// udta region (the chpl, and the ilst spliced in) that both chapter-write paths —
+// the chpl-only fallback and the QuickTime path — start from.
+func buildChapterUdta(d *doc, edited *core.Media, needIlst bool, opts core.WriteOptions) ([]item, udtaRegion, error) {
+	var newItems []item
+	var newIlst []byte
+	if needIlst {
+		newItems = buildItems(edited.Tags, edited.Pictures, preservedItems(d.items))
+		var payload []byte
+		for _, it := range newItems {
+			payload = append(payload, itemBytes(it)...)
+		}
+		newIlst = renderAtom(atomName("ilst"), payload)
+	}
+	reg, err := buildUdtaRegion(d, newIlst, needIlst, edited.Chapters, opts)
+	return newItems, reg, err
 }
 
 // udtaRegion is the resolved placement of the rewritten user-data box: the source
@@ -325,6 +346,7 @@ func buildChapterResult(edited *core.Media, base *doc, items []item, reg udtaReg
 		udtaRaw:         reg.udtaPayload,
 	}
 	shiftStructure(nd, base, reg.regionStart, reg.regionEnd, delta)
+	carryChapterRefs(nd, base, reg.regionEnd, delta)
 
 	// Recover the new meta/ilst/free/chpl offsets by re-walking the rendered udta
 	// payload, so they equal what a fresh parse would find.

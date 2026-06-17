@@ -50,8 +50,8 @@ func TestMP4ChapterEditResultMatchesReparse(t *testing.T) {
 	if chapterWarn(res, wl.WarnChapterSourceConflict) != chapterWarn(re, wl.WarnChapterSourceConflict) {
 		t.Errorf("conflict warning differs: result=%v reparse=%v", res.Warnings(), re.Warnings())
 	}
-	if !chapterWarn(re, wl.WarnChapterSourceConflict) {
-		t.Error("a stale QuickTime track after a chpl edit should reparse as a source conflict")
+	if chapterWarn(re, wl.WarnChapterSourceConflict) {
+		t.Error("a rebuilt QuickTime track agrees with the chpl, so there must be no source conflict")
 	}
 }
 

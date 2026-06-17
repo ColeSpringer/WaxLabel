@@ -12,8 +12,10 @@
 // are copied verbatim.
 //
 // Chapters are read from both the Nero list (moov.udta.chpl) and a QuickTime
-// chapter text track, projected into one model, and written via the chpl; an
-// existing QuickTime chapter track is preserved verbatim but not rewritten yet.
+// chapter text track, projected into one model, and a chapter edit rewrites both
+// representations: the chpl and a freshly built QuickTime chapter text track
+// (referenced from the audio track via a tref "chap", its samples in an mdat
+// appended at end-of-file) so the edit is visible to iTunes and Apple Books.
 //
 // Out of scope in v1 (rejected loudly): fragmented MP4 (a top-level moof, or a
 // moov declaring movie fragments via mvex).
@@ -54,9 +56,8 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 
 // Capabilities reports MP4's support. Tags and art are stored as ilst atoms,
 // fully writable; chapters are read from both the Nero chpl and a QuickTime
-// chapter text track, and written via the chpl (a present QuickTime track is
-// preserved verbatim but not rewritten yet). The numeric "gnre" genre is read but
-// always rewritten as the text genre.
+// chapter text track, and a chapter edit rewrites both representations. The
+// numeric "gnre" genre is read but always rewritten as the text genre.
 func (Codec) Capabilities(opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
@@ -69,11 +70,12 @@ func (Codec) Capabilities(opts core.WriteOptions) core.Capabilities {
 	}
 	chapters := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
-		Representation: "Nero chpl (read also from a QuickTime text track)",
+		Representation: "Nero chpl and a QuickTime chapter text track",
 		MaxItems:       maxChplChapters,
 		Constraints: []string{
 			"at most 255 chapters (8-bit chpl count)",
-			"written to chpl only; an existing QuickTime chapter track is preserved but not updated",
+			"both the chpl and the QuickTime chapter text track are written",
+			"chapter start resolution is the movie timescale (typically 1 ms)",
 		},
 	}
 	return core.NewCapabilities(core.FormatMP4, false, fields, pictures, chapters, nil)

@@ -34,6 +34,26 @@ type doc struct {
 	free *atomRef // a free atom adjacent to ilst inside meta, if present
 	chpl *atomRef // moov.udta.chpl Nero chapter list, if present
 
+	// QuickTime chapter-write refs (the chapter text track lives in moov as a
+	// sibling trak referenced from the audio track's tref "chap"). These let a
+	// chapter edit rebuild that track without re-reading the source: the audio
+	// trak to attach a tref to, where its mdia starts (the tref insertion point),
+	// any existing tref, the existing chapter trak to replace, and the mvhd fields
+	// a new track needs (the movie timescale/duration and a free track id).
+	audioTrak    *atomRef // the first "soun" trak, if any
+	audioMdiaOff int64    // absolute offset of the audio trak's mdia (tref goes before it)
+	audioTref    *atomRef // the audio trak's tref, if any
+	audioTrefRaw []byte   // the audio tref payload (to re-emit without "chap" on clear)
+	audioHasChap bool     // the audio tref carries a "chap" reference (may be dangling)
+	chapTrak     *atomRef // the resolved QuickTime chapter text trak, if any
+	chapTrackID  uint32   // the chapter text track's track id (reused when rebuilt)
+
+	mvhd           *atomRef
+	movieTimescale uint32 // mvhd timescale (chapter track shares it; 0 if unread)
+	movieDuration  uint64 // mvhd duration in movie units (the last chapter's span)
+	nextTrackID    uint32 // a track id free for a new chapter track
+	nextTrackIDOff int64  // absolute offset of mvhd's next_track_ID field (0 if unread)
+
 	items     []item        // decoded ilst children (nil when no ilst)
 	offTables []offsetTable // every stco/co64 in moov, in document order
 	mdats     [][2]int64    // mdat payload ranges (offset, length), in document order
@@ -51,9 +71,9 @@ type doc struct {
 	// Chapter model. chapters is the projected, deduplicated list (a Nero chpl
 	// list and/or a QuickTime chapter text track project into it). chplVersion is
 	// the version byte of an existing chpl, preserved when chpl is re-rendered.
-	// hasQTChapters records that a QuickTime chapter text track is present: it is
-	// preserved verbatim on a chapter edit (only chpl is written in this version),
-	// which leaves it stale (see WarnChaptersStale).
+	// hasQTChapters records that a QuickTime chapter text track is present (and, on
+	// a post-write document, that one was written): a chapter edit rebuilds it from
+	// the edited model so both representations stay in sync.
 	chapters      []core.Chapter
 	chplVersion   uint8
 	chplCount     int // chapters in the chpl atom specifically (for the native view)
@@ -75,6 +95,11 @@ func (d *doc) Clone() core.NativeDoc {
 	c.ilst = cloneRef(d.ilst)
 	c.free = cloneRef(d.free)
 	c.chpl = cloneRef(d.chpl)
+	c.audioTrak = cloneRef(d.audioTrak)
+	c.audioTref = cloneRef(d.audioTref)
+	c.audioTrefRaw = slices.Clone(d.audioTrefRaw)
+	c.chapTrak = cloneRef(d.chapTrak)
+	c.mvhd = cloneRef(d.mvhd)
 	c.chapters = core.CloneChapters(d.chapters)
 	c.udtaRaw = slices.Clone(d.udtaRaw)
 	c.items = make([]item, len(d.items))
@@ -141,7 +166,7 @@ func (d *doc) Describe() []core.NativeEntry {
 	}
 	if d.hasQTChapters {
 		out = append(out, core.NativeEntry{
-			Kind: "moov chapter track", Note: "QuickTime chapter text track (preserved)",
+			Kind: "moov chapter track", Note: "QuickTime chapter text track",
 		})
 	}
 	return out
