@@ -176,6 +176,15 @@ const (
 	SourceID        Key = "SOURCE_ID"
 	AcquisitionDate Key = "ACQUISITION_DATE"
 	EncodingHistory Key = "ENCODING_HISTORY"
+
+	// Audiobook / spoken-word fields (candidates confirmed at the v1.0 vocabulary
+	// freeze). MediaType is the iTunes "stik" media kind (e.g. 2 = audiobook);
+	// Description and LongDescription are the short and full blurbs; Narrator is
+	// the reader/performer of an audiobook.
+	MediaType       Key = "MEDIATYPE"
+	Description     Key = "DESCRIPTION"
+	LongDescription Key = "LONGDESCRIPTION"
+	Narrator        Key = "NARRATOR"
 )
 
 // vocabulary maps every known key to its description. KnownKeys derives its
@@ -234,4 +243,8 @@ var vocabulary = map[Key]string{
 	SourceID:            "acquisition source identifier",
 	AcquisitionDate:     "date the file was acquired",
 	EncodingHistory:     "encoding history / provenance chain",
+	MediaType:           "iTunes media-kind code (numeric; 2 = audiobook), from stik",
+	Description:         "short description / blurb",
+	LongDescription:     "long description",
+	Narrator:            "audiobook narrator",
 }

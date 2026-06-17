@@ -32,15 +32,35 @@ type doc struct {
 	meta *atomRef // moov.udta.meta, if present
 	ilst *atomRef // moov.udta.meta.ilst, if present
 	free *atomRef // a free atom adjacent to ilst inside meta, if present
+	chpl *atomRef // moov.udta.chpl Nero chapter list, if present
 
 	items     []item        // decoded ilst children (nil when no ilst)
 	offTables []offsetTable // every stco/co64 in moov, in document order
 	mdats     [][2]int64    // mdat payload ranges (offset, length), in document order
 
-	cfg      fmtCfg
-	track    core.AudioTrack
-	size     int64
-	chapters int // moov.udta.chpl chapter count (preserved verbatim; 0 if none)
+	// udtaRaw is the verbatim moov.udta payload (nil when there is no udta). A
+	// chapter rewrite splices the new ilst/chpl byte ranges into it and copies
+	// every other udta byte unchanged, so unknown user-data siblings survive.
+	udtaRaw []byte
+
+	cfg        fmtCfg
+	track      core.AudioTrack
+	size       int64
+	majorBrand string // ftyp major brand (e.g. "M4A ", "M4B "), for the native view
+
+	// Chapter model. chapters is the projected, deduplicated list (a Nero chpl
+	// list and/or a QuickTime chapter text track project into it). chplVersion is
+	// the version byte of an existing chpl, preserved when chpl is re-rendered.
+	// hasQTChapters records that a QuickTime chapter text track is present: it is
+	// preserved verbatim on a chapter edit (only chpl is written in this version),
+	// which leaves it stale (see WarnChaptersStale).
+	chapters      []core.Chapter
+	chplVersion   uint8
+	chplCount     int // chapters in the chpl atom specifically (for the native view)
+	hasQTChapters bool
+	// chapterConflict records that the chpl and QuickTime track disagreed at parse;
+	// it is carried into a post-write document so its warnings match a fresh parse.
+	chapterConflict bool
 }
 
 func (d *doc) Format() core.Format { return core.FormatMP4 }
@@ -54,6 +74,9 @@ func (d *doc) Clone() core.NativeDoc {
 	c.meta = cloneRef(d.meta)
 	c.ilst = cloneRef(d.ilst)
 	c.free = cloneRef(d.free)
+	c.chpl = cloneRef(d.chpl)
+	c.chapters = core.CloneChapters(d.chapters)
+	c.udtaRaw = slices.Clone(d.udtaRaw)
 	c.items = make([]item, len(d.items))
 	for i, it := range d.items {
 		it.payload = slices.Clone(it.payload)
@@ -88,6 +111,9 @@ func (d *doc) Describe() []core.NativeEntry {
 			note = d.track.Codec + " media data"
 		case "ftyp":
 			note = "file type"
+			if d.majorBrand != "" {
+				note = "file type (" + d.majorBrand + ")"
+			}
 		case "free", "skip":
 			note = "padding"
 		}
@@ -106,9 +132,16 @@ func (d *doc) Describe() []core.NativeEntry {
 			out = append(out, core.NativeEntry{Kind: "  " + itemLabel(it.name), Size: len(it.payload) + 8, Note: note})
 		}
 	}
-	if d.chapters > 0 {
+	if d.chpl != nil {
+		note := fmt.Sprintf("%d chapters (Nero, v%d)", d.chplCount, d.chplVersion)
+		if d.chplCount == 0 {
+			note = "preserved (unparsed)"
+		}
+		out = append(out, core.NativeEntry{Kind: "moov.udta.chpl", Size: int(d.chpl.size), Note: note})
+	}
+	if d.hasQTChapters {
 		out = append(out, core.NativeEntry{
-			Kind: "moov.udta.chpl", Note: fmt.Sprintf("%d chapters (preserved)", d.chapters),
+			Kind: "moov chapter track", Note: "QuickTime chapter text track (preserved)",
 		})
 	}
 	return out

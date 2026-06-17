@@ -110,6 +110,7 @@ type Media struct {
 	Properties Properties
 	Tags       tag.TagSet
 	Pictures   []Picture
+	Chapters   []Chapter
 	Families   []FamilyValue
 	Warnings   []Warning
 	Native     NativeDoc
@@ -156,6 +157,7 @@ func (m *Media) Clone() *Media {
 		Properties: m.Properties.Clone(),
 		Tags:       m.Tags.Clone(),
 		Pictures:   ClonePictures(m.Pictures),
+		Chapters:   CloneChapters(m.Chapters),
 		Families:   cloneFamilies(m.Families),
 		Warnings:   CloneWarnings(m.Warnings),
 		Identity:   m.Identity,

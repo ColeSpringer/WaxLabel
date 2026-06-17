@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/tag"
@@ -19,7 +20,115 @@ import (
 const (
 	sampleMP4 = "testdata/sample.m4a"
 	notagsMP4 = "testdata/notags.m4a"
+	sampleM4B = "testdata/sample_chapters.m4b" // ffmpeg-authored: chpl + a QuickTime chapter track
 )
+
+// TestMP4ReadsChapterFixture reads the committed real-ffmpeg M4B (chpl plus a
+// QuickTime chapter text track) without needing ffmpeg at test time.
+func TestMP4ReadsChapterFixture(t *testing.T) {
+	doc := mustParseFile(t, sampleM4B)
+	chs := doc.Chapters()
+	if len(chs) != 3 {
+		t.Fatalf("fixture chapters = %d, want 3", len(chs))
+	}
+	wantTitles := []string{"Opening Credits", "Chapter One", "Chapter Two"}
+	for i, want := range wantTitles {
+		if chs[i].Title != want {
+			t.Errorf("chapter %d title = %q, want %q", i, chs[i].Title, want)
+		}
+	}
+	if chs[1].Start != 3*time.Second {
+		t.Errorf("chapter 1 start = %v, want 3s", chs[1].Start)
+	}
+	// The fixture's chpl and QuickTime track agree, so there must be no conflict.
+	if hasWarning(doc, wl.WarnChapterSourceConflict) {
+		t.Errorf("fixture chapter sources should agree; warnings = %v", doc.Warnings())
+	}
+	// Both representations show in the native view.
+	kinds := map[string]bool{}
+	for _, e := range doc.Native().Describe() {
+		kinds[e.Kind] = true
+	}
+	if !kinds["moov.udta.chpl"] || !kinds["moov chapter track"] {
+		t.Errorf("native view missing a chapter representation: %v", kinds)
+	}
+}
+
+func TestMP4DifferentialChaptersChpl(t *testing.T) {
+	requireTool(t, "ffprobe")
+	// Writing chapters to a chapterless file produces a chpl that ffprobe reads
+	// back (there is no competing QuickTime track here).
+	path := genM4A(t, map[string]string{"title": "Book"})
+	doc := mustParseFile(t, path)
+	plan, err := doc.Edit().SetChapters(
+		wl.Chapter{Start: 0, Title: "Intro Chapter"},
+		wl.Chapter{Start: 4 * time.Second, Title: "Second Chapter"},
+	).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := plan.Execute(context.Background(), wl.SaveBack()); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := exec.Command("ffprobe", "-hide_banner", "-loglevel", "error",
+		"-show_chapters", "-of", "json", path).Output()
+	if err != nil {
+		t.Fatalf("ffprobe: %v", err)
+	}
+	var probe struct {
+		Chapters []struct {
+			StartTime string `json:"start_time"`
+			Tags      struct {
+				Title string `json:"title"`
+			} `json:"tags"`
+		} `json:"chapters"`
+	}
+	if err := json.Unmarshal(out, &probe); err != nil {
+		t.Fatalf("parse ffprobe json: %v\n%s", err, out)
+	}
+	if len(probe.Chapters) != 2 {
+		t.Fatalf("ffprobe saw %d chapters, want 2: %s", len(probe.Chapters), out)
+	}
+	if probe.Chapters[0].Tags.Title != "Intro Chapter" || probe.Chapters[1].Tags.Title != "Second Chapter" {
+		t.Errorf("ffprobe chapter titles = %q, %q", probe.Chapters[0].Tags.Title, probe.Chapters[1].Tags.Title)
+	}
+}
+
+func TestMP4DifferentialChapterAudioUnchanged(t *testing.T) {
+	requireTool(t, "ffmpeg")
+	// A chapter edit must leave the audio bit-identical and produce output ffmpeg
+	// accepts on a stream-copy remux.
+	path := genM4A(t, map[string]string{"title": "Book"})
+	pcmBefore := decodePCM(t, path)
+
+	doc := mustParseFile(t, path)
+	plan, err := doc.Edit().SetChapters(
+		wl.Chapter{Start: 0, Title: "One"},
+		wl.Chapter{Start: 2 * time.Second, Title: "Two"},
+	).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := plan.Execute(context.Background(), wl.SaveBack()); err != nil {
+		t.Fatal(err)
+	}
+
+	remux := filepath.Join(t.TempDir(), "remux.m4a")
+	if out, err := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error",
+		"-i", path, "-c", "copy", "-y", remux).CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg rejected our chapter output: %v\n%s", err, out)
+	}
+	pcmAfter := decodePCM(t, path)
+	if len(pcmBefore) == 0 || len(pcmAfter) != len(pcmBefore) {
+		t.Fatalf("PCM length changed: %d -> %d", len(pcmBefore), len(pcmAfter))
+	}
+	for i := range pcmBefore {
+		if pcmBefore[i] != pcmAfter[i] {
+			t.Fatalf("decoded audio differs at byte %d after a chapter edit", i)
+		}
+	}
+}
 
 // TestMP4ReadsSampleFixture exercises the committed real-ffmpeg fixture without
 // needing ffmpeg at test time, and round-trips an edit through it.

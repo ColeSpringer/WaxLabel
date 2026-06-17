@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/colespringer/waxlabel/internal/bits"
@@ -46,6 +45,12 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	for _, a := range top {
 		d.topLevel = append(d.topLevel, refOf(a))
 		switch a.id() {
+		case "ftyp":
+			// The major brand (e.g. "M4B ") signals an audiobook; it is preserved
+			// verbatim on write (ftyp is copied) and surfaced in the native view.
+			if b, err := readPayload(src, a, 4, limit); err == nil && len(b) >= 4 {
+				d.majorBrand = string(b[:4])
+			}
 		case "moof", "styp":
 			return nil, fmt.Errorf("%w: fragmented MP4 (moof) is not supported", waxerr.ErrUnsupportedFormat)
 		case "mdat":
@@ -69,10 +74,24 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 
 	// Tag path: moov.udta.meta.ilst. Each level is optional; record what exists so
 	// the writer can either rewrite the ilst or create the missing wrappers.
+	var chplNode node
+	haveChpl := false
 	if udta, ok := moov.find("udta"); ok {
 		d.udta = refPtr(udta)
+		// Capture the udta payload verbatim so a chapter rewrite can splice the new
+		// ilst/chpl byte ranges into it while preserving every other user-data atom.
+		// The whole payload is read (bounded by the user's alloc limit, not the
+		// smaller per-atom cap) so it is never silently truncated — a truncated
+		// d.udtaRaw would splice against a delta computed from the full size. If it
+		// exceeds the limit, d.udtaRaw stays nil and a chapter rewrite fails loudly.
+		if udtaLen := udta.size - udta.headerLen; udtaLen >= 0 {
+			if raw, err := bits.ReadSlice(src, udta.payloadOff(), udtaLen, limit); err == nil {
+				d.udtaRaw = raw
+			}
+		}
 		if chpl, ok := udta.find("chpl"); ok {
-			d.chapters = parseChplCount(src, chpl, limit)
+			d.chpl = refPtr(chpl)
+			chplNode, haveChpl = chpl, true
 		}
 		if meta, ok := udta.find("meta"); ok {
 			d.meta = refPtr(meta)
@@ -86,12 +105,21 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		}
 	}
 
+	// Chapters: a Nero chpl list and/or a QuickTime chapter text track project
+	// into one deduplicated list; a disagreement between them is warned.
+	chapterConflict := resolveChapters(src, moov, chplNode, haveChpl, d, limit)
+
 	media := &core.Media{Format: core.FormatMP4, Native: d}
 	tags, pics, families, numericGenre := project(d)
 	media.Tags = tags
 	media.Pictures = pics
+	media.Chapters = d.chapters
 	media.Families = families
 	media.Warnings = mediaWarnings(tags, numericGenre)
+	if chapterConflict {
+		media.Warnings = core.Warn(media.Warnings, core.WarnChapterSourceConflict,
+			"the Nero chpl list and the QuickTime chapter text track disagree")
+	}
 	media.Properties = core.Properties{Container: "MP4", Tracks: []core.AudioTrack{d.track}}
 	setEssence(d, media)
 	media.Identity = core.Identity{Size: size}
@@ -263,38 +291,14 @@ func handlerType(src core.ReaderAtSized, hdlr node, limit int64) string {
 	return string(b[8:12])
 }
 
-// parseMdhd returns the media duration from a mdhd atom (timescale + duration,
-// version 0 or 1).
+// parseMdhd returns the media duration from a mdhd atom, reusing the shared field
+// decode and the shared unit→Duration conversion.
 func parseMdhd(src core.ReaderAtSized, mdhd node, limit int64) (time.Duration, bool) {
-	b, err := readPayload(src, mdhd, 32, limit)
-	if err != nil || len(b) < 4 {
+	ts, dur, ok := mdhdFields(src, mdhd, limit)
+	if !ok || ts == 0 {
 		return 0, false
 	}
-	var timescale, duration uint64
-	switch b[0] {
-	case 0:
-		if len(b) < 20 {
-			return 0, false
-		}
-		timescale = uint64(binary.BigEndian.Uint32(b[12:16]))
-		duration = uint64(binary.BigEndian.Uint32(b[16:20]))
-	case 1:
-		if len(b) < 32 {
-			return 0, false
-		}
-		timescale = uint64(binary.BigEndian.Uint32(b[20:24]))
-		duration = binary.BigEndian.Uint64(b[24:32])
-	default:
-		return 0, false
-	}
-	if timescale == 0 {
-		return 0, false
-	}
-	secs := float64(duration) / float64(timescale)
-	if secs <= 0 || secs >= float64(math.MaxInt64)/float64(time.Second) {
-		return 0, false
-	}
-	return time.Duration(secs * float64(time.Second)), true
+	return scaleToDuration(dur, ts), true
 }
 
 // parseStsd fills the codec name and audio geometry from the first sample entry.
@@ -313,18 +317,6 @@ func parseStsd(src core.ReaderAtSized, stsd node, d *doc, limit int64) {
 	d.track.Channels = int(d.cfg.channels)
 	d.track.BitsPerSample = int(d.cfg.sampleSize)
 	d.track.SampleRate = int(d.cfg.sampleRate)
-}
-
-// parseChplCount returns the number of chapters declared in a Nero chpl atom
-// (for the native view only; the chapter data is preserved verbatim on rewrite).
-// The payload is [1 version][3 flags][4 reserved][1 count][entries...], so the
-// count is the ninth byte.
-func parseChplCount(src core.ReaderAtSized, chpl node, limit int64) int {
-	b, err := readPayload(src, chpl, 9, limit)
-	if err != nil || len(b) < 9 {
-		return 0
-	}
-	return int(b[8])
 }
 
 // setEssence records the audio-essence byte ranges from the mdat atoms. A single

@@ -15,6 +15,8 @@ type (
 	Picture = core.Picture
 	// PictureType is a cover-art role.
 	PictureType = core.PictureType
+	// Chapter is a navigation point (Start, End, Title) in a timed file.
+	Chapter = core.Chapter
 	// Properties describes the audio stream(s).
 	Properties = core.Properties
 	// AudioTrack is one stream's technical properties.
@@ -152,6 +154,9 @@ const (
 	WarnChainedStream         = core.WarnChainedStream
 	WarnID3MultiValue         = core.WarnID3MultiValue
 	WarnDuplicateTagBlock     = core.WarnDuplicateTagBlock
+	WarnChapterSourceConflict = core.WarnChapterSourceConflict
+	WarnChaptersStale         = core.WarnChaptersStale
+	WarnChapterTitleTruncated = core.WarnChapterTitleTruncated
 )
 
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated

@@ -29,6 +29,8 @@ var mp4Text = map[string]tag.Key{
 	"cprt":    tag.Copyright,
 	"\xa9grp": tag.Grouping,
 	"\xa9lyr": tag.Lyrics,
+	"desc":    tag.Description,     // iTunes short description (audiobooks, podcasts)
+	"ldes":    tag.LongDescription, // iTunes long description
 	"soal":    tag.AlbumSort,
 	"soaa":    tag.AlbumArtistSort,
 	"soar":    tag.ArtistSort,
@@ -62,6 +64,7 @@ var mp4Freeform = map[string]tag.Key{
 	"MEDIA":                        tag.Media,
 	"ISRC":                         tag.ISRC,
 	"originaldate":                 tag.OriginalDate,
+	"NARRATOR":                     tag.Narrator, // de-facto audiobook narrator freeform
 }
 
 var (

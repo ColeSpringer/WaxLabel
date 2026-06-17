@@ -2,6 +2,8 @@ package mp4
 
 import (
 	"encoding/binary"
+	"strconv"
+	"strings"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/mapping"
@@ -38,6 +40,10 @@ func buildItems(edited tag.TagSet, pics []core.Picture, preserved []item) []item
 			}
 		case tag.Compilation:
 			if it, ok := boolItem("cpil", vals); ok {
+				out = append(out, it)
+			}
+		case tag.MediaType:
+			if it, ok := mediaTypeItem(vals); ok {
 				out = append(out, it)
 			}
 		default:
@@ -93,6 +99,31 @@ func pairItem(name string, ts tag.TagSet, numKey, totKey tag.Key, trailing bool)
 	binary.BigEndian.PutUint16(v[2:4], num)
 	binary.BigEndian.PutUint16(v[4:6], total)
 	return item{name: atomName(name), payload: renderData(typeImplicit, v)}, true
+}
+
+// mediaTypeItem builds the iTunes "stik" media-kind atom from the canonical
+// MediaType value (a decimal integer). The value is written in the minimal big-
+// endian width that holds it (1, 2, or 4 bytes), so any stik that parsed in
+// round-trips rather than being dropped; a non-numeric or out-of-range value is
+// skipped.
+func mediaTypeItem(vals []string) (item, bool) {
+	if len(vals) == 0 {
+		return item{}, false
+	}
+	n, err := strconv.ParseUint(strings.TrimSpace(vals[0]), 10, 32)
+	if err != nil {
+		return item{}, false
+	}
+	var v []byte
+	switch {
+	case n <= 0xFF:
+		v = []byte{byte(n)}
+	case n <= 0xFFFF:
+		v = []byte{byte(n >> 8), byte(n)}
+	default:
+		v = []byte{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)}
+	}
+	return item{name: atomName("stik"), payload: renderData(typeSignedInt, v)}, true
 }
 
 // boolItem builds a single-byte boolean atom (cpil) from a canonical boolean

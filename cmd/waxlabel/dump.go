@@ -48,6 +48,7 @@ type jsonDocument struct {
 	Properties *jsonProperties `json:"properties,omitempty"`
 	Tags       []jsonTag       `json:"tags,omitempty"`
 	Pictures   []jsonPicture   `json:"pictures,omitempty"`
+	Chapters   []jsonChapter   `json:"chapters,omitempty"`
 	Warnings   []jsonWarning   `json:"warnings,omitempty"`
 	Native     []jsonNative    `json:"native,omitempty"`
 	Sources    []jsonSource    `json:"sources,omitempty"`
@@ -75,6 +76,12 @@ type jsonPicture struct {
 	Height      int    `json:"height,omitempty"`
 	Bytes       int    `json:"bytes"`
 	Description string `json:"description,omitempty"`
+}
+
+type jsonChapter struct {
+	StartMs int64  `json:"startMs"`
+	EndMs   int64  `json:"endMs,omitempty"`
+	Title   string `json:"title,omitempty"`
 }
 
 type jsonNative struct {
@@ -121,6 +128,13 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 			Height:      p.Height,
 			Bytes:       len(p.Data),
 			Description: p.Description,
+		})
+	}
+	for _, c := range doc.Chapters() {
+		jd.Chapters = append(jd.Chapters, jsonChapter{
+			StartMs: c.Start.Milliseconds(),
+			EndMs:   c.End.Milliseconds(),
+			Title:   c.Title,
 		})
 	}
 	for _, x := range doc.Warnings() {

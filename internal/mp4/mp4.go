@@ -11,9 +11,12 @@
 // moov/udta/meta atom sizes are patched — no atom is reordered and the mdat bytes
 // are copied verbatim.
 //
+// Chapters are read from both the Nero list (moov.udta.chpl) and a QuickTime
+// chapter text track, projected into one model, and written via the chpl; an
+// existing QuickTime chapter track is preserved verbatim but not rewritten yet.
+//
 // Out of scope in v1 (rejected loudly): fragmented MP4 (a top-level moof, or a
-// moov declaring movie fragments via mvex). Chapters (moov.udta.chpl) are
-// preserved verbatim but not yet modeled for editing.
+// moov declaring movie fragments via mvex).
 //
 // The codec is reimplemented from ISO/IEC 14496-12 and the iTunes metadata
 // conventions; reference implementations were consulted for design only.
@@ -50,8 +53,10 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 }
 
 // Capabilities reports MP4's support. Tags and art are stored as ilst atoms,
-// fully writable; chapters are read/preserved only (no chapter-editing model
-// yet). The numeric "gnre" genre is read but always rewritten as the text genre.
+// fully writable; chapters are read from both the Nero chpl and a QuickTime
+// chapter text track, and written via the chpl (a present QuickTime track is
+// preserved verbatim but not rewritten yet). The numeric "gnre" genre is read but
+// always rewritten as the text genre.
 func (Codec) Capabilities(opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
@@ -63,8 +68,12 @@ func (Codec) Capabilities(opts core.WriteOptions) core.Capabilities {
 		Representation: "covr atom (JPEG/PNG)", Fidelity: "lossless",
 	}
 	chapters := core.Capability{
-		Read: core.AccessFull, Write: core.AccessNone,
-		Representation: "chpl (preserved verbatim, not editable)",
+		Read: core.AccessFull, Write: core.AccessFull,
+		Representation: "Nero chpl (read also from a QuickTime text track)",
+		Constraints: []string{
+			"at most 255 chapters (8-bit chpl count)",
+			"written to chpl only; an existing QuickTime chapter track is preserved but not updated",
+		},
 	}
 	return core.NewCapabilities(core.FormatMP4, false, fields, pictures, chapters, nil)
 }

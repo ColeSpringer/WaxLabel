@@ -1,0 +1,603 @@
+package mp4
+
+import (
+	"encoding/binary"
+	"math"
+	"time"
+	"unicode/utf8"
+
+	"github.com/colespringer/waxlabel/internal/bits"
+	"github.com/colespringer/waxlabel/internal/core"
+)
+
+// Two chapter representations live in an MP4: a Nero "chpl" list under
+// moov.udta, and a QuickTime chapter "text" track referenced from the audio
+// track via a tref "chap". Both project into one []core.Chapter. This version
+// reads both and writes only chpl (the QuickTime track is preserved verbatim on
+// a chapter edit; see write.go).
+
+// chplStartUnit is the chpl start-time resolution: 1/10,000,000 second (100 ns),
+// per the Nero convention ffmpeg's mov_read_chpl follows.
+const chplStartUnit = 10_000_000
+
+// maxChapterSamples bounds the QuickTime sample-table walk so a crafted text
+// track cannot make a metadata read iterate unboundedly. Real chapter tracks
+// hold a handful of samples; this is far above any plausible count.
+const maxChapterSamples = 1 << 16
+
+// titleByteMax is the chpl per-title cap: its length prefix is a single byte, so
+// a title cannot exceed 255 bytes on write.
+const titleByteMax = 255
+
+// resolveChapters decodes both chapter representations into the doc's projected
+// list and records the structural facts the writer needs (the chpl version to
+// preserve, whether a QuickTime track is present). It returns whether the two
+// sources disagree, so parse can raise WarnChapterSourceConflict.
+func resolveChapters(src core.ReaderAtSized, moov, chpl node, haveChpl bool, d *doc, limit int64) (conflict bool) {
+	d.chplVersion = 1 // ffmpeg's form; used if a chpl is later created from scratch
+	var chplChapters []core.Chapter
+	if haveChpl {
+		if ver, chs, ok := decodeChpl(src, chpl, limit); ok && len(chs) > 0 {
+			d.chplVersion = ver
+			d.chplCount = len(chs)
+			chplChapters = chs
+		} else {
+			// An empty or unparsable chpl is treated as no chpl, so it does not
+			// spuriously conflict with a real QuickTime chapter track.
+			haveChpl = false
+		}
+	}
+	qt, haveQT := decodeQTChapters(src, moov, limit)
+	d.hasQTChapters = haveQT
+	d.chapters, conflict = mergeChapters(chplChapters, haveChpl, qt, haveQT)
+	d.chapterConflict = conflict
+	return conflict
+}
+
+// decodeChpl parses a Nero chpl atom into chapters, supporting both versions:
+// version(1) + flags(3), then a 4-byte field only when version==1, then an 8-bit
+// chapter count, then each entry as a 64-bit 100 ns start plus a length-prefixed
+// UTF-8 title. The 8-bit count caps chpl at 255 chapters. It returns ok==false on
+// any malformation so the caller treats the file as carrying no chpl chapters.
+func decodeChpl(src core.ReaderAtSized, chpl node, limit int64) (version uint8, chapters []core.Chapter, ok bool) {
+	b, err := readPayload(src, chpl, maxMetaChunk, limit)
+	if err != nil {
+		return 0, nil, false
+	}
+	n := int64(len(b))
+	if n < 5 {
+		return 0, nil, false
+	}
+	version = b[0]
+	pos := int64(4) // version(1) + flags(3)
+	if version == 1 {
+		pos += 4 // a reserved 32-bit field precedes the count in version 1
+	}
+	if pos+1 > n {
+		return 0, nil, false
+	}
+	count := int64(b[pos])
+	pos++
+	chapters = make([]core.Chapter, 0, count)
+	for i := int64(0); i < count; i++ {
+		if pos+9 > n { // 8-byte start + 1-byte length
+			return 0, nil, false
+		}
+		start := binary.BigEndian.Uint64(b[pos : pos+8])
+		pos += 8
+		titleLen := int64(b[pos])
+		pos++
+		if pos+titleLen > n {
+			return 0, nil, false
+		}
+		// Match the QuickTime path: an invalid-UTF-8 title yields an empty title
+		// (not invalid bytes that a later JSON dump would mangle), so both chapter
+		// sources behave the same.
+		title := ""
+		if raw := b[pos : pos+titleLen]; utf8.Valid(raw) {
+			title = string(raw)
+		}
+		pos += titleLen
+		chapters = append(chapters, core.Chapter{Start: scaleToDuration(start, chplStartUnit), Title: title})
+	}
+	fillChapterEnds(chapters)
+	return version, chapters, true
+}
+
+// renderChpl encodes chapters into a Nero chpl atom, preserving the parsed
+// version (defaulting to 1, the form ffmpeg writes). The caller guarantees at
+// most 255 chapters; each title is truncated to 255 bytes on a UTF-8 boundary
+// because the length prefix is a single byte.
+func renderChpl(version uint8, chapters []core.Chapter) []byte {
+	payload := make([]byte, 0, 8+len(chapters)*16)
+	payload = append(payload, version, 0, 0, 0) // version + flags
+	if version == 1 {
+		payload = append(payload, 0, 0, 0, 0) // reserved 32-bit field
+	}
+	payload = append(payload, byte(len(chapters)))
+	for _, ch := range chapters {
+		var start [8]byte
+		binary.BigEndian.PutUint64(start[:], durationToUnits(ch.Start, chplStartUnit))
+		payload = append(payload, start[:]...)
+		title := truncateUTF8(ch.Title, titleByteMax)
+		payload = append(payload, byte(len(title)))
+		payload = append(payload, title...)
+	}
+	return renderAtom(atomName("chpl"), payload)
+}
+
+// decodeQTChapters reads a QuickTime chapter text track: it resolves the audio
+// track's tref "chap" reference to a text track, walks that track's sample
+// tables, and decodes each text sample (a 16-bit length prefix plus UTF-8) into
+// a chapter. It returns ok==false (no QuickTime chapters) on anything unexpected.
+//
+// It uses the first audio ("soun") track's reference, consistent with the rest of
+// the codec (which reads properties from the first audio track). A chapter track
+// referenced only by a secondary audio track — a rare multi-audio-track file — is
+// not resolved.
+func decodeQTChapters(src core.ReaderAtSized, moov node, limit int64) ([]core.Chapter, bool) {
+	traks := moov.findAll("trak", nil) // collected once, scanned for both the audio and text track
+	audio, ok := trakOfHandler(src, traks, "soun", limit)
+	if !ok {
+		return nil, false
+	}
+	ids := chapterTrackIDs(src, audio, limit)
+	if len(ids) == 0 {
+		return nil, false
+	}
+	text, ok := trakByID(src, traks, ids, limit)
+	if !ok {
+		return nil, false
+	}
+	return decodeTextTrack(src, text, limit)
+}
+
+// trakOfHandler returns the first trak whose media handler matches want (e.g.
+// "soun" for audio, "text" for a chapter track).
+func trakOfHandler(src core.ReaderAtSized, traks []node, want string, limit int64) (node, bool) {
+	for _, t := range traks {
+		mdia, ok := t.find("mdia")
+		if !ok {
+			continue
+		}
+		if hdlr, ok := mdia.find("hdlr"); ok && handlerType(src, hdlr, limit) == want {
+			return t, true
+		}
+	}
+	return node{}, false
+}
+
+// chapterTrackIDs returns the track IDs referenced by the audio track's tref
+// "chap" entry (the QuickTime way an audio track points at its chapter track).
+// tref is a leaf to the atom walker, so its sub-atoms are parsed here by hand.
+func chapterTrackIDs(src core.ReaderAtSized, trak node, limit int64) []uint32 {
+	tref, ok := trak.find("tref")
+	if !ok {
+		return nil
+	}
+	body, err := readPayload(src, tref, maxMetaChunk, limit)
+	if err != nil {
+		return nil
+	}
+	n := int64(len(body))
+	for pos := int64(0); pos+8 <= n; {
+		size := int64(binary.BigEndian.Uint32(body[pos : pos+4]))
+		if size < 8 || pos+size > n {
+			break
+		}
+		if string(body[pos+4:pos+8]) == "chap" {
+			var ids []uint32
+			for off := pos + 8; off+4 <= pos+size; off += 4 {
+				ids = append(ids, binary.BigEndian.Uint32(body[off:off+4]))
+			}
+			return ids
+		}
+		pos += size
+	}
+	return nil
+}
+
+// trakByID returns the trak whose tkhd track_id is one of ids.
+func trakByID(src core.ReaderAtSized, traks []node, ids []uint32, limit int64) (node, bool) {
+	for _, t := range traks {
+		tkhd, ok := t.find("tkhd")
+		if !ok {
+			continue
+		}
+		id, ok := trackID(src, tkhd, limit)
+		if !ok {
+			continue
+		}
+		for _, want := range ids {
+			if id == want {
+				return t, true
+			}
+		}
+	}
+	return node{}, false
+}
+
+// trackID reads the track_id from a tkhd atom (version 0 places it at byte 12;
+// version 1's 64-bit times push it to byte 20).
+func trackID(src core.ReaderAtSized, tkhd node, limit int64) (uint32, bool) {
+	b, err := readPayload(src, tkhd, 32, limit)
+	if err != nil || len(b) < 1 {
+		return 0, false
+	}
+	off := 12
+	if b[0] == 1 {
+		off = 20
+	}
+	if len(b) < off+4 {
+		return 0, false
+	}
+	return binary.BigEndian.Uint32(b[off : off+4]), true
+}
+
+// decodeTextTrack reconstructs chapters from a text track's sample tables: the
+// per-sample decode time (stts) gives each chapter's start, and the sample's
+// bytes in mdat (located via stsc/stsz/stco|co64) carry its title.
+func decodeTextTrack(src core.ReaderAtSized, trak node, limit int64) ([]core.Chapter, bool) {
+	mdia, ok := trak.find("mdia")
+	if !ok {
+		return nil, false
+	}
+	mdhd, ok := mdia.find("mdhd")
+	if !ok {
+		return nil, false
+	}
+	timescale, ok := mdhdTimescale(src, mdhd, limit)
+	if !ok {
+		return nil, false
+	}
+	minf, ok := mdia.find("minf")
+	if !ok {
+		return nil, false
+	}
+	stbl, ok := minf.find("stbl")
+	if !ok {
+		return nil, false
+	}
+
+	times, ok := sampleTimes(src, stbl, limit)
+	if !ok || len(times) == 0 {
+		return nil, false
+	}
+	offsets, ok := sampleOffsets(src, stbl, len(times), limit)
+	if !ok {
+		return nil, false
+	}
+
+	chapters := make([]core.Chapter, 0, len(offsets))
+	for i, so := range offsets {
+		title := readTextSample(src, so.off, so.size, limit)
+		ch := core.Chapter{Start: scaleToDuration(times[i], timescale), Title: title}
+		if i+1 < len(times) {
+			ch.End = scaleToDuration(times[i+1], timescale)
+		}
+		chapters = append(chapters, ch)
+	}
+	return chapters, true
+}
+
+// sampleOffset is one decoded sample's file location and byte length.
+type sampleOffset struct {
+	off  int64
+	size int64
+}
+
+// sampleTimes returns each sample's cumulative decode time (in the media
+// timescale) from the stts table.
+func sampleTimes(src core.ReaderAtSized, stbl node, limit int64) ([]uint64, bool) {
+	stts, ok := stbl.find("stts")
+	if !ok {
+		return nil, false
+	}
+	b, err := readPayload(src, stts, maxMetaChunk, limit)
+	if err != nil || len(b) < 8 {
+		return nil, false
+	}
+	count := int64(binary.BigEndian.Uint32(b[4:8]))
+	if 8+count*8 > int64(len(b)) {
+		return nil, false
+	}
+	var times []uint64
+	var t uint64
+	for i := int64(0); i < count; i++ {
+		o := 8 + i*8
+		n := binary.BigEndian.Uint32(b[o : o+4])
+		delta := binary.BigEndian.Uint32(b[o+4 : o+8])
+		for j := uint32(0); j < n; j++ {
+			if len(times) >= maxChapterSamples {
+				return times, true
+			}
+			times = append(times, t)
+			t += uint64(delta)
+		}
+	}
+	return times, true
+}
+
+// sampleOffsets locates each of the first nSamples samples in mdat by combining
+// the sample sizes (stsz), the sample-to-chunk map (stsc), and the chunk offsets
+// (stco/co64).
+func sampleOffsets(src core.ReaderAtSized, stbl node, nSamples int, limit int64) ([]sampleOffset, bool) {
+	sizes, ok := sampleSizes(src, stbl, nSamples, limit)
+	if !ok {
+		return nil, false
+	}
+	chunks, ok := chunkOffsets(src, stbl, limit)
+	if !ok || len(chunks) == 0 {
+		return nil, false
+	}
+	stsc, ok := stscEntries(src, stbl, limit)
+	if !ok {
+		return nil, false
+	}
+	perChunk := expandStsc(stsc, len(chunks))
+
+	out := make([]sampleOffset, 0, len(sizes))
+	si := 0
+	for c := 0; c < len(chunks) && si < len(sizes); c++ {
+		off := int64(chunks[c])
+		for k := uint32(0); k < perChunk[c] && si < len(sizes); k++ {
+			sz := int64(sizes[si])
+			out = append(out, sampleOffset{off: off, size: sz})
+			off += sz
+			si++
+		}
+	}
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
+}
+
+// sampleSizes returns the size of each of the first nSamples samples from stsz
+// (a single shared size, or a per-sample table).
+func sampleSizes(src core.ReaderAtSized, stbl node, nSamples int, limit int64) ([]uint32, bool) {
+	stsz, ok := stbl.find("stsz")
+	if !ok {
+		return nil, false
+	}
+	b, err := readPayload(src, stsz, maxMetaChunk, limit)
+	if err != nil || len(b) < 12 {
+		return nil, false
+	}
+	shared := binary.BigEndian.Uint32(b[4:8])
+	count := int64(binary.BigEndian.Uint32(b[8:12]))
+	if count > int64(nSamples) {
+		count = int64(nSamples)
+	}
+	if count > maxChapterSamples {
+		count = maxChapterSamples
+	}
+	sizes := make([]uint32, count)
+	if shared != 0 {
+		for i := range sizes {
+			sizes[i] = shared
+		}
+		return sizes, true
+	}
+	if 12+count*4 > int64(len(b)) {
+		return nil, false
+	}
+	for i := int64(0); i < count; i++ {
+		o := 12 + i*4
+		sizes[i] = binary.BigEndian.Uint32(b[o : o+4])
+	}
+	return sizes, true
+}
+
+// chunkOffsets returns the chunk file offsets from stco (32-bit) or co64 (64-bit).
+func chunkOffsets(src core.ReaderAtSized, stbl node, limit int64) ([]uint64, bool) {
+	if stco, ok := stbl.find("stco"); ok {
+		t, err := parseOffsetTable(src, stco, false, limit)
+		if err != nil {
+			return nil, false
+		}
+		return t.entries, true
+	}
+	if co64, ok := stbl.find("co64"); ok {
+		t, err := parseOffsetTable(src, co64, true, limit)
+		if err != nil {
+			return nil, false
+		}
+		return t.entries, true
+	}
+	return nil, false
+}
+
+// stscEntries parses the sample-to-chunk table (first_chunk, samples_per_chunk;
+// the sample-description index is not needed here).
+func stscEntries(src core.ReaderAtSized, stbl node, limit int64) ([]stscEntry, bool) {
+	stsc, ok := stbl.find("stsc")
+	if !ok {
+		return nil, false
+	}
+	b, err := readPayload(src, stsc, maxMetaChunk, limit)
+	if err != nil || len(b) < 8 {
+		return nil, false
+	}
+	count := int64(binary.BigEndian.Uint32(b[4:8]))
+	if 8+count*12 > int64(len(b)) {
+		return nil, false
+	}
+	out := make([]stscEntry, count)
+	for i := int64(0); i < count; i++ {
+		o := 8 + i*12
+		out[i] = stscEntry{
+			firstChunk:      binary.BigEndian.Uint32(b[o : o+4]),
+			samplesPerChunk: binary.BigEndian.Uint32(b[o+4 : o+8]),
+		}
+	}
+	return out, true
+}
+
+// stscEntry is one sample-to-chunk run: the first chunk it applies to (1-based)
+// and how many samples each such chunk holds.
+type stscEntry struct {
+	firstChunk      uint32
+	samplesPerChunk uint32
+}
+
+// expandStsc resolves the per-chunk sample count for every chunk from the run-
+// length stsc entries.
+func expandStsc(entries []stscEntry, nChunks int) []uint32 {
+	out := make([]uint32, nChunks)
+	if len(entries) == 0 {
+		return out
+	}
+	ei := 0
+	for c := 0; c < nChunks; c++ {
+		for ei+1 < len(entries) && int(entries[ei+1].firstChunk) <= c+1 {
+			ei++
+		}
+		if int(entries[ei].firstChunk) <= c+1 {
+			out[c] = entries[ei].samplesPerChunk
+		}
+	}
+	return out
+}
+
+// readTextSample reads a QuickTime text/tx3g sample and returns its title: a
+// 16-bit big-endian length prefix followed by that many UTF-8 bytes (trailing
+// style atoms, if any, are ignored). Invalid UTF-8 yields an empty title.
+func readTextSample(src core.ReaderAtSized, off, size, limit int64) string {
+	if size < 2 {
+		return ""
+	}
+	b, err := bits.ReadSlice(src, off, min(size, maxMetaChunk), limit)
+	if err != nil || len(b) < 2 {
+		return ""
+	}
+	textLen := int64(binary.BigEndian.Uint16(b[0:2]))
+	if 2+textLen > int64(len(b)) {
+		textLen = int64(len(b)) - 2
+	}
+	title := b[2 : 2+textLen]
+	if !utf8.Valid(title) {
+		return ""
+	}
+	return string(title)
+}
+
+// mergeChapters projects the two MP4 chapter representations into one list. The
+// QuickTime track is preferred when present (it carries End); when both exist and
+// disagree, the disagreement is flagged so the caller can warn.
+func mergeChapters(chpl []core.Chapter, haveChpl bool, qt []core.Chapter, haveQT bool) (chapters []core.Chapter, conflict bool) {
+	switch {
+	case haveQT && haveChpl:
+		return qt, !chaptersAgree(chpl, qt)
+	case haveQT:
+		return qt, false
+	case haveChpl:
+		return chpl, false
+	default:
+		return nil, false
+	}
+}
+
+// chaptersAgree reports whether two chapter lists describe the same chapters:
+// equal count, equal titles, and starts within a small tolerance (the two
+// representations use different time bases, so exact equality is too strict).
+func chaptersAgree(a, b []core.Chapter) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	const tol = 500 * time.Millisecond
+	for i := range a {
+		if a[i].Title != b[i].Title {
+			return false
+		}
+		d := a[i].Start - b[i].Start
+		if d < -tol || d > tol {
+			return false
+		}
+	}
+	return true
+}
+
+// fillChapterEnds sets each chapter's End to the next chapter's Start when End is
+// unset, so a start-only source (chpl) still yields closed intervals (the last
+// chapter's End stays zero — "until end of file"). It only fills when the next
+// start is later, so an out-of-order chapter list does not produce a degenerate
+// End < Start.
+func fillChapterEnds(chs []core.Chapter) {
+	for i := range chs {
+		if chs[i].End == 0 && i+1 < len(chs) && chs[i+1].Start > chs[i].Start {
+			chs[i].End = chs[i+1].Start
+		}
+	}
+}
+
+// mdhdFields decodes a mdhd atom's media timescale and duration (version 0 or 1).
+// It is shared by the audio-property duration read and the chapter-track timescale
+// read so the field layout lives in one place.
+func mdhdFields(src core.ReaderAtSized, mdhd node, limit int64) (timescale uint32, duration uint64, ok bool) {
+	b, err := readPayload(src, mdhd, 32, limit)
+	if err != nil || len(b) < 4 {
+		return 0, 0, false
+	}
+	switch b[0] {
+	case 0:
+		if len(b) < 20 {
+			return 0, 0, false
+		}
+		return binary.BigEndian.Uint32(b[12:16]), uint64(binary.BigEndian.Uint32(b[16:20])), true
+	case 1:
+		if len(b) < 32 {
+			return 0, 0, false
+		}
+		return binary.BigEndian.Uint32(b[20:24]), binary.BigEndian.Uint64(b[24:32]), true
+	default:
+		return 0, 0, false
+	}
+}
+
+// mdhdTimescale reads the media timescale from a mdhd atom. A zero timescale is
+// rejected: it is invalid and would otherwise collapse every chapter time to zero
+// rather than failing the track over to no QuickTime chapters.
+func mdhdTimescale(src core.ReaderAtSized, mdhd node, limit int64) (uint32, bool) {
+	ts, _, ok := mdhdFields(src, mdhd, limit)
+	return ts, ok && ts != 0
+}
+
+// scaleToDuration converts a count of timescale units into a time.Duration,
+// clamping rather than overflowing on absurd inputs. It rounds to the nearest
+// nanosecond: a plain float-to-int conversion truncates, so floating-point error
+// (e.g. a result of 1.9999999999 instead of 2.0) would drop a whole nanosecond.
+func scaleToDuration(units uint64, timescale uint32) time.Duration {
+	if timescale == 0 {
+		return 0
+	}
+	secs := float64(units) / float64(timescale)
+	if secs <= 0 {
+		return 0
+	}
+	if secs >= float64(math.MaxInt64)/float64(time.Second) {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(math.Round(secs * float64(time.Second)))
+}
+
+// durationToUnits is the inverse of scaleToDuration for encoding (e.g. chpl
+// 100 ns units), clamping negatives to zero. It rounds to the nearest unit so a
+// float result just under an integer is not truncated down to the prior unit.
+func durationToUnits(d time.Duration, timescale uint32) uint64 {
+	if d <= 0 {
+		return 0
+	}
+	return uint64(math.Round(d.Seconds() * float64(timescale)))
+}
+
+// truncateUTF8 returns s trimmed to at most max bytes without splitting a rune.
+func truncateUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	for max > 0 && !utf8.RuneStart(s[max]) {
+		max--
+	}
+	return s[:max]
+}

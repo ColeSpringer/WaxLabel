@@ -21,6 +21,7 @@ import (
 var (
 	sampleFLAC = filepath.Join("..", "..", "testdata", "sample.flac")
 	notagsFLAC = filepath.Join("..", "..", "testdata", "notags.flac")
+	sampleM4B  = filepath.Join("..", "..", "testdata", "sample_chapters.m4b")
 )
 
 // runCLI drives the CLI exactly as dispatch does in main, capturing stdout,
@@ -73,6 +74,35 @@ func TestDumpText(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("dump output missing %q\n--- got ---\n%s", want, out)
 		}
+	}
+}
+
+func TestDumpChapters(t *testing.T) {
+	t.Parallel()
+	// Text dump lists chapters with their titles.
+	out, _, code := runCLI(t, "dump", sampleM4B)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	for _, want := range []string{"chapters (3)", "Opening Credits", "Chapter One", "Chapter Two"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dump output missing %q\n--- got ---\n%s", want, out)
+		}
+	}
+	// JSON dump carries them with millisecond timings.
+	jout, _, code := runCLI(t, "--json", "dump", sampleM4B)
+	if code != 0 {
+		t.Fatalf("json dump exit = %d, want 0", code)
+	}
+	var jd jsonDocument
+	if err := json.Unmarshal([]byte(jout), &jd); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, jout)
+	}
+	if len(jd.Chapters) != 3 {
+		t.Fatalf("json chapters = %d, want 3", len(jd.Chapters))
+	}
+	if jd.Chapters[1].Title != "Chapter One" || jd.Chapters[1].StartMs != 3000 {
+		t.Errorf("json chapter 1 = %+v, want Chapter One @ 3000ms", jd.Chapters[1])
 	}
 }
 

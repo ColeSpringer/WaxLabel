@@ -44,6 +44,11 @@ func (d *Document) Properties() Properties { return d.media.Properties.Clone() }
 // Picture's Data is shared read-only.
 func (d *Document) Pictures() []Picture { return core.ClonePictures(d.media.Pictures) }
 
+// Chapters returns the navigation chapters as a detached copy, in file order.
+// Chapters live beside the canonical tags (not inside the TagSet); a format with
+// no chapter model returns none. [Document.Inspect] deliberately omits them.
+func (d *Document) Chapters() []Chapter { return core.CloneChapters(d.media.Chapters) }
+
 // Families returns the tag-family/source view: which family supplied each
 // canonical value, its scope, and whether it won the projection (unselected
 // entries for a key signal a conflict).

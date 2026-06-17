@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/tag"
@@ -18,6 +19,7 @@ func renderDocument(w io.Writer, path string, doc *wl.Document, native bool) {
 	}
 	renderTags(w, doc.Tags())
 	renderPictures(w, doc.Pictures())
+	renderChapters(w, doc.Chapters())
 	renderWarnings(w, doc.Warnings())
 	if native {
 		renderNative(w, doc)
@@ -126,6 +128,37 @@ func renderPictures(w io.Writer, pics []wl.Picture) {
 			fmt.Fprintf(w, "      %q\n", p.Description)
 		}
 	}
+}
+
+// renderChapters prints one line per navigation chapter with its start timestamp.
+func renderChapters(w io.Writer, chs []wl.Chapter) {
+	if len(chs) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "  chapters (%d):\n", len(chs))
+	for i, c := range chs {
+		title := c.Title
+		if title == "" {
+			title = fmt.Sprintf("Chapter %d", i+1)
+		}
+		fmt.Fprintf(w, "    %s  %s\n", chapterTimestamp(c.Start), title)
+	}
+}
+
+// chapterTimestamp formats a chapter start as H:MM:SS.mmm (millisecond precision,
+// since adjacent chapters can be seconds apart).
+func chapterTimestamp(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	h := d / time.Hour
+	d -= h * time.Hour
+	m := d / time.Minute
+	d -= m * time.Minute
+	s := d / time.Second
+	d -= s * time.Second
+	ms := d / time.Millisecond
+	return fmt.Sprintf("%d:%02d:%02d.%03d", h, m, s, ms)
 }
 
 // renderWarnings prints the parse warnings (already "[code] message" formatted).

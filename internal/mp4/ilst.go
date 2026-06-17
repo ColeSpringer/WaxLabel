@@ -84,6 +84,8 @@ func decodeItem(it item) itemResult {
 		return decodeGnre(it)
 	case "cpil":
 		return decodeBool(it, tag.Compilation)
+	case "stik":
+		return decodeMediaType(it)
 	default:
 		key, ok := mapping.MP4TextKey(it.id())
 		if !ok {
@@ -198,6 +200,36 @@ func decodeGnre(it item) itemResult {
 		contribs = append(contribs, core.Contribution{Key: tag.Genre, Value: name, Source: "gnre"})
 	}
 	return itemResult{contribs: contribs, numericGenre: true, owned: true}
+}
+
+// decodeMediaType decodes the iTunes "stik" media-kind atom (a small integer;
+// 2 = audiobook) into the canonical MediaType key as its decimal string, so it
+// round-trips exactly rather than being normalized to a name.
+func decodeMediaType(it item) itemResult {
+	atoms, ok := parseDataAtoms(it.payload)
+	if !ok || len(atoms) != 1 {
+		return itemResult{owned: false}
+	}
+	n, ok := intFromBytes(atoms[0].value)
+	if !ok {
+		return itemResult{owned: false}
+	}
+	return itemResult{contribs: []core.Contribution{{Key: tag.MediaType, Value: strconv.FormatUint(n, 10), Source: "stik"}}, owned: true}
+}
+
+// intFromBytes reads a big-endian unsigned integer from 1–4 bytes (the width an
+// iTunes integer atom uses) into a uint64, reporting false for an empty or
+// oversized value. uint64 avoids the wraparound a 32-bit int would suffer on a
+// 4-byte value with the high bit set.
+func intFromBytes(b []byte) (uint64, bool) {
+	if len(b) == 0 || len(b) > 4 {
+		return 0, false
+	}
+	var n uint64
+	for _, x := range b {
+		n = n<<8 | uint64(x)
+	}
+	return n, true
 }
 
 // decodeBool decodes a single-byte boolean atom (cpil) into "1"/"0".

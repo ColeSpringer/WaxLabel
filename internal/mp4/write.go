@@ -32,11 +32,12 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	tagsChanged := !base.Tags.Equal(edited.Tags)
 	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures)
+	chaptersChanged := !core.EqualChapters(base.Chapters, edited.Chapters)
 	report := core.WriteReport{Format: core.FormatMP4, BytesBefore: edited.Identity.Size}
 
 	// Fast path: nothing changed. Emit a verbatim copy (so SaveAsFile/WriteTo
 	// still produce a whole file) but flag NoOp so SaveBack skips it.
-	if !tagsChanged && !picturesChanged {
+	if !tagsChanged && !picturesChanged && !chaptersChanged {
 		report.NoOp = true
 		report.BytesAfter = edited.Identity.Size
 		report.Operations = []string{"no changes"}
@@ -50,6 +51,16 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	if d.moov == nil {
 		return nil, fmt.Errorf("%w: MP4 has no moov box to write tags into", waxerr.ErrInvalidData)
+	}
+	if len(edited.Chapters) > maxChplChapters {
+		return nil, fmt.Errorf("%w: %d chapters exceeds the %d a Nero chpl can store",
+			waxerr.ErrUnsupportedTag, len(edited.Chapters), maxChplChapters)
+	}
+
+	// A chapter edit rewrites the whole moov.udta (folding any ilst change into one
+	// delta); a tag/picture-only edit keeps the lighter in-place ilst path.
+	if chaptersChanged {
+		return planChapters(d, edited, tagsChanged || picturesChanged, opts, report)
 	}
 
 	// Re-render the ilst from the edited canonical set, keeping the preserved

@@ -15,11 +15,13 @@ import (
 // working picture list; [Editor.Prepare] resolves them into a [Plan]. The
 // editor methods return the editor for chaining.
 type Editor struct {
-	doc         *Document
-	base        *core.Media
-	patch       tag.TagPatch
-	pictures    []core.Picture
-	picsTouched bool
+	doc             *Document
+	base            *core.Media
+	patch           tag.TagPatch
+	pictures        []core.Picture
+	picsTouched     bool
+	chapters        []core.Chapter
+	chaptersTouched bool
 }
 
 // Apply records an explicit patch (set/clear/add operations) after any already
@@ -74,6 +76,23 @@ func (e *Editor) ClearPictures() *Editor {
 	return e
 }
 
+// SetChapters replaces the whole chapter list. Chapters are stored in the order
+// given. A format that cannot write chapters reports it via [Capabilities]; only
+// MP4 (Nero chpl) is writable in this version, and it caps a chapter list at 255
+// — a larger list is rejected at [Editor.Prepare].
+func (e *Editor) SetChapters(chs ...Chapter) *Editor {
+	e.chapters = slices.Clone(chs)
+	e.chaptersTouched = true
+	return e
+}
+
+// ClearChapters removes all chapters.
+func (e *Editor) ClearChapters() *Editor {
+	e.chapters = nil
+	e.chaptersTouched = true
+	return e
+}
+
 // Native returns the native editing hatch for inspection. It reflects the
 // original parsed document, not this editor's pending edits — so pictures or
 // tags added on the editor are not visible here until after a save and reparse.
@@ -110,6 +129,7 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		Properties:  e.base.Properties,
 		Tags:        e.patch.Apply(e.base.Tags),
 		Pictures:    e.base.Pictures,
+		Chapters:    e.base.Chapters,
 		Families:    e.base.Families,
 		Warnings:    e.base.Warnings,
 		Native:      e.base.Native,
@@ -120,6 +140,9 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	}
 	if e.picsTouched {
 		edited.Pictures = e.pictures
+	}
+	if e.chaptersTouched {
+		edited.Chapters = e.chapters
 	}
 	if err := validatePictures(edited.Pictures); err != nil {
 		return nil, err

@@ -46,6 +46,21 @@ const (
 	// found (e.g. two RIFF LIST/INFO chunks or two WAV id3 chunks); the first is
 	// authoritative and the rest are dropped if the file is rewritten.
 	WarnDuplicateTagBlock
+	// WarnChapterSourceConflict means a file carried chapters in two
+	// representations (an MP4 Nero chpl list and a QuickTime chapter text track)
+	// that disagree. The file was already inconsistent on parse; the richer
+	// representation is projected and this records the disagreement.
+	WarnChapterSourceConflict
+	// WarnChaptersStale means a chapter edit was written to one representation only
+	// (the MP4 Nero chpl) while a second representation present in the file (a
+	// QuickTime chapter text track) was preserved verbatim and now disagrees. It is
+	// a plan-time warning: the written file's two chapter sources are out of sync
+	// until the QuickTime track write lands.
+	WarnChaptersStale
+	// WarnChapterTitleTruncated means one or more chapter titles were trimmed to fit
+	// a container limit on write (the Nero chpl's single-byte, 255-byte-max length
+	// prefix). It is a plan-time warning, surfaced rather than silently truncating.
+	WarnChapterTitleTruncated
 )
 
 func (c WarningCode) String() string {
@@ -76,6 +91,12 @@ func (c WarningCode) String() string {
 		return "id3-multi-value"
 	case WarnDuplicateTagBlock:
 		return "duplicate-tag-block"
+	case WarnChapterSourceConflict:
+		return "chapter-source-conflict"
+	case WarnChaptersStale:
+		return "chapters-stale"
+	case WarnChapterTitleTruncated:
+		return "chapter-title-truncated"
 	default:
 		return "unknown"
 	}
