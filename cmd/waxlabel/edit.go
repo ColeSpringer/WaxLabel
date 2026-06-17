@@ -109,18 +109,26 @@ func (e *editFlags) applyPictures(ed *wl.Editor) error {
 // in that order so an explicit -legacy overrides the preset's legacy policy. An
 // unknown name is a usage error.
 func (e *editFlags) writeOptions() ([]wl.WriteOption, error) {
+	return resolveWriteFlags(e.preset, e.legacy)
+}
+
+// resolveWriteFlags turns the shared -preset/-legacy flag values into library
+// write options, applied in that order so an explicit -legacy overrides the
+// preset's legacy policy. It is shared by the edit commands (plan/set) and copy
+// so they parse these flags identically. An unknown name is a usage error.
+func resolveWriteFlags(preset, legacy string) ([]wl.WriteOption, error) {
 	var opts []wl.WriteOption
-	if e.preset != "" {
-		opt, ok := presetOptions[strings.ToLower(e.preset)]
+	if preset != "" {
+		opt, ok := presetOptions[strings.ToLower(preset)]
 		if !ok {
-			return nil, usagef("unknown preset %q (want preserve|compatible|canonical|minimal)", e.preset)
+			return nil, usagef("unknown preset %q (want preserve|compatible|canonical|minimal)", preset)
 		}
 		opts = append(opts, opt)
 	}
-	if e.legacy != "" {
-		pol, ok := legacyOptions[strings.ToLower(e.legacy)]
+	if legacy != "" {
+		pol, ok := legacyOptions[strings.ToLower(legacy)]
 		if !ok {
-			return nil, usagef("unknown legacy policy %q (want preserve|strip|reconcile|update-existing)", e.legacy)
+			return nil, usagef("unknown legacy policy %q (want preserve|strip|reconcile|update-existing)", legacy)
 		}
 		opts = append(opts, wl.WithLegacyPolicy(pol))
 	}

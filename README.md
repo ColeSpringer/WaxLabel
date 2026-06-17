@@ -58,6 +58,8 @@ go run ./cmd/waxlabel dump track.flac                    # tags, properties, pic
 go run ./cmd/waxlabel plan track.flac --set TITLE=New    # preview a write (writes nothing)
 go run ./cmd/waxlabel set  track.flac --set TITLE=New --add ARTIST=Featured --clear ENCODER
 go run ./cmd/waxlabel verify track.flac                  # audio-essence identity for dedup
+go run ./cmd/waxlabel copy  track.flac track.m4a         # copy metadata across formats
+go run ./cmd/waxlabel diff  a.flac b.flac                # compare canonical metadata
 ```
 
 Install the binary with `go install github.com/colespringer/waxlabel/cmd/waxlabel@latest`.
@@ -70,16 +72,24 @@ Install the binary with `go install github.com/colespringer/waxlabel/cmd/waxlabe
   new file, a no-op writes nothing. `--verify` checks the written audio essence.
 - **`verify <file>...`** — the tag-independent audio-essence digest; `--whole-file`
   adds the whole-file digest.
+- **`copy <source> <dest>`** — copy `source`'s canonical metadata onto `dest`
+  (across formats), rewriting `dest` in place. Each value is carried, downgraded,
+  or dropped per `dest`'s capabilities; that loss report prints first. The copy
+  overlays the source (keys only in `dest` are kept). `--dry-run` writes nothing.
+- **`diff <a> <b>`** — compare two files' canonical metadata (added/removed/changed
+  keys, picture/chapter deltas). `--quiet` reports through the exit code only.
 
 Edits: `--set KEY=VALUE` (replace), `--add KEY=VALUE` (append, for multi-value),
 `--clear KEY` (remove), `--add-cover FILE`, `--remove-pictures`. Write policy:
 `--preset preserve|compatible|canonical|minimal`, `--legacy …`. Every command
 accepts `--json` for scriptable output.
 
-Exit codes for `dump`/`plan`/`set`/`verify`: `0` success · `1` error · `2`
+Exit codes for `dump`/`plan`/`set`/`verify`/`copy`: `0` success · `1` error · `2`
 usage/invalid key · `3` unsupported format · `4` invalid data · `5` source
-changed · `6` I/O · `130` canceled/timeout. (cobra's built-in `help` and
-`completion` follow cobra's own conventions.)
+changed · `6` I/O · `130` canceled/timeout. **`diff` follows the diff(1)
+convention instead:** `0` identical · `1` differs · `≥2` error (using the same
+`2`–`6` classes). (cobra's built-in `help` and `completion` follow cobra's own
+conventions.)
 
 > The **library** has no third-party dependencies. The CLI (package `main` under
 > `cmd/`) uses `spf13/cobra`; thanks to Go module-graph pruning, code that imports

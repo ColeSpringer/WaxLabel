@@ -70,6 +70,7 @@ func (Codec) Capabilities(opts core.WriteOptions) core.Capabilities {
 	chapters := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "Nero chpl (read also from a QuickTime text track)",
+		MaxItems:       maxChplChapters,
 		Constraints: []string{
 			"at most 255 chapters (8-bit chpl count)",
 			"written to chpl only; an existing QuickTime chapter track is preserved but not updated",

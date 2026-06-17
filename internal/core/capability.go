@@ -34,6 +34,12 @@ type Capability struct {
 	Representation string   // how the value is stored natively
 	Fidelity       string   // e.g. "lossless", "year-only"
 	Constraints    []string // e.g. "single value", "ASCII only"
+	// MaxItems caps a set-valued dimension (pictures, chapters): the most the
+	// format can store, or 0 for no limit. It makes a hard structural limit (e.g.
+	// MP4's 255-chapter Nero chpl cap) machine-checkable, so a transfer can report
+	// an over-limit set as dropped instead of advertising it carried and then
+	// failing at write time.
+	MaxItems int
 }
 
 // Capabilities describes what a format (under a given set of options) can do.

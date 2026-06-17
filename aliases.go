@@ -55,6 +55,29 @@ type (
 	Limits = bits.Limits
 	// WriteReport describes a planned write.
 	WriteReport = core.WriteReport
+	// TransferReport describes a cross-format metadata copy: what each field,
+	// picture set, and chapter set would carry, downgrade, or lose.
+	TransferReport = core.TransferReport
+	// TransferItem is one piece of metadata's fate in a transfer.
+	TransferItem = core.TransferItem
+	// TransferKind names a transferred item's category (field/picture/chapter).
+	TransferKind = core.TransferKind
+	// Disposition grades how a value survives a transfer (carried/lossy/dropped).
+	Disposition = core.Disposition
+)
+
+// TransferKind values.
+const (
+	TransferField   = core.TransferField
+	TransferPicture = core.TransferPicture
+	TransferChapter = core.TransferChapter
+)
+
+// Disposition values.
+const (
+	Carried = core.Carried
+	Lossy   = core.Lossy
+	Dropped = core.Dropped
 )
 
 // Format values.
@@ -162,3 +185,13 @@ const (
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated
 // while in use). It is handy for parsing or writing in-memory data.
 func BytesSource(b []byte) ReaderAtSized { return core.BytesSource(b) }
+
+// EqualPictures reports whether two picture slices are identical by content
+// (type, MIME, description, dimensions, and bytes), in order. It is the same
+// equality a codec uses to detect a picture edit, so a comparison and an edit
+// cannot disagree on what "the same pictures" means.
+func EqualPictures(a, b []Picture) bool { return core.EqualPictures(a, b) }
+
+// EqualChapters reports whether two chapter slices are identical by content
+// (start, end, and title), in order — the chapter analogue of [EqualPictures].
+func EqualChapters(a, b []Chapter) bool { return core.EqualChapters(a, b) }

@@ -179,6 +179,20 @@ func coverType(mime string) uint32 {
 	}
 }
 
+// coverMIMESupported reports whether an MP4 covr atom can faithfully label this
+// image format. Only JPEG, PNG, and BMP have covr type codes; any other format
+// would be stored with a JPEG type flag over non-JPEG bytes (a corrupt cover the
+// reader would then mislabel image/jpeg), so the writer rejects it instead — see
+// the validation in Plan.
+func coverMIMESupported(mime string) bool {
+	switch mime {
+	case "image/jpeg", "image/png", "image/bmp":
+		return true
+	default:
+		return false
+	}
+}
+
 // decodeGnre decodes the legacy numeric genre atom (a 1-based ID3v1 genre index)
 // into a genre name, mirroring how iTunes/mutagen fold "gnre" into the text
 // genre. It is always rewritten as a text "©gen" atom.

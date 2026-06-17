@@ -29,6 +29,8 @@ func newRootCmd() *cobra.Command {
 		newPlanCmd(),
 		newSetCmd(),
 		newVerifyCmd(),
+		newCopyCmd(),
+		newDiffCmd(),
 	)
 	wrapUsageErrors(root)
 	return root

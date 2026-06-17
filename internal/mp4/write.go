@@ -48,6 +48,11 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		return nil, fmt.Errorf("%w: %d chapters exceeds the %d a Nero chpl can store",
 			waxerr.ErrUnsupportedTag, len(edited.Chapters), maxChplChapters)
 	}
+	if picturesChanged {
+		if err := checkCoverFormats(edited.Pictures); err != nil {
+			return nil, err
+		}
+	}
 
 	// A chapter edit rewrites the whole moov.udta (folding any ilst change into one
 	// delta); a tag/picture-only edit keeps the lighter in-place ilst path.
@@ -98,6 +103,20 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	result := buildResult(edited, d, newItems, lay, delta, total, int64(len(newIlst)))
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
+}
+
+// checkCoverFormats rejects a cover whose image format an MP4 covr atom cannot
+// label. Only JPEG, PNG, and BMP have type codes; another format (WebP, GIF, …)
+// would be stored with a JPEG type flag over non-JPEG bytes — a corrupt cover —
+// so fail loudly here rather than silently mislabel it.
+func checkCoverFormats(pics []core.Picture) error {
+	for _, p := range pics {
+		if !coverMIMESupported(p.MIME) {
+			return fmt.Errorf("%w: MP4 cover art must be JPEG, PNG, or BMP (got %q)",
+				waxerr.ErrUnsupportedTag, p.MIME)
+		}
+	}
+	return nil
 }
 
 // preservedItems returns the items the canonical rebuild does not own (unknown

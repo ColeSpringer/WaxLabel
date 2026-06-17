@@ -14,6 +14,8 @@
 //	plan     show what an edit would write, without writing it
 //	set      apply tag edits and save the file
 //	verify   compute audio-essence (and optionally whole-file) identity
+//	copy     copy metadata from one file onto another (cross-format)
+//	diff     compare two files' canonical metadata
 //
 // Run "waxlabel <command> --help" for a command's flags, and see README.md for
 // the exit-code table.
