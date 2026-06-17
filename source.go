@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"syscall"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/waxerr"
@@ -48,10 +47,7 @@ func fileIdentity(path string) (core.Identity, error) {
 		Size:            info.Size(),
 		ModTimeUnixNano: info.ModTime().UnixNano(),
 	}
-	if st, ok := info.Sys().(*syscall.Stat_t); ok {
-		id.INode = uint64(st.Ino)
-		id.Device = uint64(st.Dev)
-	}
+	id.INode, id.Device = sysInodeDevice(info)
 	return id, nil
 }
 
