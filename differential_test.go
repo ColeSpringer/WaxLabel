@@ -3,6 +3,7 @@ package waxlabel_test
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"os/exec"
 	"testing"
 
@@ -16,9 +17,7 @@ import (
 // tests skip cleanly when the tools are absent.
 
 func TestDifferentialFFprobeReadsOurTags(t *testing.T) {
-	if _, err := exec.LookPath("ffprobe"); err != nil {
-		t.Skip("ffprobe not available")
-	}
+	requireTool(t, "ffprobe")
 	path := copyToTemp(t, sampleFLAC)
 	doc := mustParseFile(t, path)
 	plan, err := doc.Edit().
@@ -63,9 +62,7 @@ func TestDifferentialFFprobeReadsOurTags(t *testing.T) {
 }
 
 func TestDifferentialFFmpegAcceptsOurOutput(t *testing.T) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg not available")
-	}
+	requireTool(t, "ffmpeg")
 	path := copyToTemp(t, sampleFLAC)
 	doc := mustParseFile(t, path)
 	plan, err := doc.Edit().Set(tag.Title, "Valid FLAC").AddPicture(wl.Picture{
@@ -91,6 +88,24 @@ func TestDifferentialFFmpegAcceptsOurOutput(t *testing.T) {
 	if got := mustParseFile(t, remux).Fields().Title; got != "Valid FLAC" {
 		t.Errorf("after ffmpeg remux, Title = %q, want Valid FLAC", got)
 	}
+}
+
+// requireTool guards a differential test on the presence of an external CLI
+// (ffprobe/ffmpeg). When the tool is missing it skips, so the suite stays green
+// on machines without ffmpeg — unless WAXLABEL_REQUIRE_FFMPEG is set (as the CI
+// differential job does), in which case a missing tool is a hard failure, so a
+// broken ffmpeg install can't silently turn the write-side differential gate
+// green. The env var covers both binaries, since ffprobe ships with ffmpeg.
+func requireTool(t *testing.T, name string) {
+	t.Helper()
+	if _, err := exec.LookPath(name); err == nil {
+		return
+	}
+	if os.Getenv("WAXLABEL_REQUIRE_FFMPEG") != "" {
+		t.Fatalf("%s not found in PATH, but WAXLABEL_REQUIRE_FFMPEG is set "+
+			"(it requires the full ffmpeg suite: ffmpeg and ffprobe)", name)
+	}
+	t.Skipf("%s not available", name)
 }
 
 // lookupCI looks up a key case-insensitively (ffmpeg lowercases standard Vorbis

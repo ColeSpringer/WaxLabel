@@ -184,9 +184,7 @@ func TestWAVCoverRoundTrip(t *testing.T) {
 // our audio. These skip cleanly when the tools are absent. ---
 
 func TestWAVDifferentialFFprobeReadsOurTags(t *testing.T) {
-	if _, err := exec.LookPath("ffprobe"); err != nil {
-		t.Skip("ffprobe not available")
-	}
+	requireTool(t, "ffprobe")
 	path := copyToTemp(t, sampleWAV)
 	plan, err := mustParseFile(t, path).Edit().
 		Set(tag.Title, "Differential Title").
@@ -224,9 +222,7 @@ func TestWAVDifferentialFFprobeReadsOurTags(t *testing.T) {
 }
 
 func TestWAVDifferentialFFmpegDecodes(t *testing.T) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg not available")
-	}
+	requireTool(t, "ffmpeg")
 	path := copyToTemp(t, sampleWAV)
 	plan, err := mustParseFile(t, path).Edit().
 		Set(tag.Title, "Valid WAV").

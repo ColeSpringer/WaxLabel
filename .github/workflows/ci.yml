@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege: CI only needs to read the repository.
+permissions:
+  contents: read
+
+# Newer pushes to the same ref supersede in-flight runs.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Core suite across operating systems. The Go version is read from go.mod so
+  # the toolchain stays a single source of truth. Differential tests that shell
+  # out to ffmpeg/ffprobe skip cleanly here when the tools are absent (see the
+  # dedicated `differential` job below for the guaranteed-present gate).
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Test (race)
+        run: go test ./... -race
+
+  # Cross-platform compile + vet sanity. Tests are not executed on Windows for
+  # the skeleton (the race detector needs a C toolchain there, and OS-specific
+  # test behavior is unverified); building proves the pure-Go library compiles.
+  build-windows:
+    name: build (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+
+  # The write-side differential is the real proof of interoperability: with
+  # ffmpeg/ffprobe guaranteed present, the per-format differential tests run
+  # (instead of skipping) and gate the build, so each format's differential is
+  # enforced as it ships rather than discovered at v1.0. The differential tests
+  # are gated by runtime tool-presence checks (exec.LookPath), matching the
+  # committed test pattern; installing ffmpeg here is what flips them on.
+  differential:
+    name: differential (ffmpeg)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Verify ffmpeg present
+        run: |
+          ffmpeg -version
+          ffprobe -version
+      - name: Test (race, differential suite)
+        # Make a missing binary a hard failure here (not a skip), so a broken
+        # ffmpeg install can't let the differential gate pass silently green.
+        env:
+          WAXLABEL_REQUIRE_FFMPEG: "1"
+        run: go test ./... -race

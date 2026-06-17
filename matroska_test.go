@@ -457,9 +457,7 @@ func TestMatroskaPictureTypeNaming(t *testing.T) {
 // TestMatroskaDifferentialFFmpeg is the read-side differential: ffmpeg writes a
 // fresh file and our parser must read back exactly the tags ffmpeg was given.
 func TestMatroskaDifferentialFFmpeg(t *testing.T) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg not available")
-	}
+	requireTool(t, "ffmpeg")
 	dir := t.TempDir()
 	srcWav := filepath.Join(dir, "src.wav")
 	if out, err := exec.Command("ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",

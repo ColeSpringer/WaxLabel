@@ -75,9 +75,7 @@ func realPNG(t *testing.T) []byte {
 // note). Tests skip cleanly when ffmpeg is absent.
 func genM4A(t *testing.T, meta map[string]string) string {
 	t.Helper()
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg not available")
-	}
+	requireTool(t, "ffmpeg")
 	path := filepath.Join(t.TempDir(), "gen.m4a")
 	args := []string{"-hide_banner", "-loglevel", "error", "-f", "lavfi",
 		"-i", "sine=frequency=440:duration=1", "-c:a", "aac"}
@@ -117,9 +115,7 @@ func TestMP4ReadsRealFFmpegFile(t *testing.T) {
 }
 
 func TestMP4DifferentialFFprobeReadsOurTags(t *testing.T) {
-	if _, err := exec.LookPath("ffprobe"); err != nil {
-		t.Skip("ffprobe not available")
-	}
+	requireTool(t, "ffprobe")
 	path := genM4A(t, map[string]string{"title": "Old Title"})
 	doc := mustParseFile(t, path)
 	plan, err := doc.Edit().
@@ -186,9 +182,7 @@ func TestMP4DifferentialFFmpegAcceptsOurOutput(t *testing.T) {
 }
 
 func TestMP4DifferentialDecodeUnchanged(t *testing.T) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg not available")
-	}
+	requireTool(t, "ffmpeg")
 	// Editing tags must not disturb the audio: the decoded PCM of our output must
 	// match the decoded PCM of the original byte-for-byte.
 	path := genM4A(t, map[string]string{"title": "Pre"})

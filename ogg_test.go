@@ -324,9 +324,7 @@ func TestOggExtensionRouting(t *testing.T) {
 // and accept our audio. These skip cleanly when ffmpeg/ffprobe are absent. ---
 
 func TestOggDifferentialFFprobeReadsOurTags(t *testing.T) {
-	if _, err := exec.LookPath("ffprobe"); err != nil {
-		t.Skip("ffprobe not available")
-	}
+	requireTool(t, "ffprobe")
 	for _, f := range []string{sampleOgg, sampleOpus} {
 		path := copyToTemp(t, f)
 		plan, err := mustParseFile(t, path).Edit().
@@ -370,9 +368,7 @@ func TestOggDifferentialFFprobeReadsOurTags(t *testing.T) {
 }
 
 func TestOggDifferentialFFmpegDecodesRenumbered(t *testing.T) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg not available")
-	}
+	requireTool(t, "ffmpeg")
 	cover := pattern(70000) // forces the renumber path
 	for _, f := range []string{sampleOgg, sampleOpus} {
 		path := copyToTemp(t, f)

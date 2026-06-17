@@ -230,9 +230,7 @@ func TestAIFFCoverRoundTrip(t *testing.T) {
 // our audio. These skip cleanly when the tools are absent. ---
 
 func TestAIFFDifferentialFFprobeReadsOurTags(t *testing.T) {
-	if _, err := exec.LookPath("ffprobe"); err != nil {
-		t.Skip("ffprobe not available")
-	}
+	requireTool(t, "ffprobe")
 	path := copyToTemp(t, notagsAIFF)
 	plan, err := mustParseFile(t, path).Edit().
 		Set(tag.Title, "Differential Title").       // native NAME chunk
@@ -270,9 +268,7 @@ func TestAIFFDifferentialFFprobeReadsOurTags(t *testing.T) {
 }
 
 func TestAIFFDifferentialFFmpegDecodes(t *testing.T) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg not available")
-	}
+	requireTool(t, "ffmpeg")
 	path := copyToTemp(t, sampleAIFF)
 	plan, err := mustParseFile(t, path).Edit().
 		Set(tag.Title, "Valid AIFF").
