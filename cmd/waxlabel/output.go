@@ -134,7 +134,7 @@ func perFile[P any](
 			if asJSON {
 				items = append(items, errorJSON(path, classifyError(err)))
 			} else {
-				fmt.Fprintf(errOut, "waxlabel: %s: %s\n", path, cleanMessage(err.Error()))
+				fmt.Fprintf(errOut, "waxlabel: %s: %s\n", path, perFileReason(err))
 			}
 			continue
 		}
@@ -216,9 +216,23 @@ func renderError(w io.Writer, jsonMode bool, err error) {
 	}
 }
 
-// cleanMessage strips a redundant leading "waxlabel: " so the CLI's own prefix
-// is not doubled.
+// cleanMessage defensively strips a leading "waxlabel: " so the CLI's own prefix
+// is never doubled. The library sentinels no longer embed it, so today this is a
+// no-op; it stays as forward-insurance against a future error that reintroduces
+// the prefix.
 func cleanMessage(msg string) string { return strings.TrimPrefix(msg, "waxlabel: ") }
+
+// perFileReason renders a per-file error for a command that already prints the
+// path itself (dump, verify). A bare *fs.PathError restates the path ("open
+// /x: no such file or directory"), so it is reduced to its underlying reason to
+// keep the path from appearing twice on the line; every other error keeps its
+// (prefix-cleaned) message.
+func perFileReason(err error) string {
+	if pe, ok := err.(*fs.PathError); ok {
+		return pe.Err.Error()
+	}
+	return cleanMessage(err.Error())
+}
 
 // classifiedError is every user-visible representation of a terminal error.
 type classifiedError struct {
@@ -260,6 +274,9 @@ func classifyError(err error) classifiedError {
 		c.exitCode, c.code = 4, "invalid-data"
 	case errors.Is(err, waxerr.ErrNoTags):
 		c.exitCode, c.code = 4, "no-tags"
+	case isNotFoundPathError(err):
+		pe, _ := err.(*fs.PathError) // guaranteed by isNotFoundPathError
+		c.exitCode, c.code, c.message = 6, "not-found", "no such file: "+pe.Path
 	case isLocalIOError(err):
 		c.exitCode, c.code = 6, "io"
 	}
@@ -269,6 +286,19 @@ func classifyError(err error) classifiedError {
 func isUsageError(err error) bool {
 	_, ok := waxerr.AsType[*usageError](err)
 	return ok
+}
+
+// isNotFoundPathError reports whether err is, at the top level, a "file does not
+// exist" *fs.PathError - the one shape the CLI restates as a clean
+// "no such file: <path>". The assertion is deliberately direct (not errors.As):
+//   - an error a caller already wrapped with context (a temp-file create, a
+//     cover read) keeps that message and classifies as the generic I/O class;
+//   - a *os.LinkError/*os.SyscallError that os.IsNotExist would also accept
+//     (e.g. a rename race) stays in the I/O class too, since "not-found" promises
+//     the clean path-only message we can produce only for a *fs.PathError.
+func isNotFoundPathError(err error) bool {
+	pe, ok := err.(*fs.PathError)
+	return ok && os.IsNotExist(pe)
 }
 
 // isLocalIOError reports whether err is a local filesystem failure. The kinds

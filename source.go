@@ -27,6 +27,10 @@ func openFileSource(path string) (*fileSource, error) {
 		f.Close()
 		return nil, err
 	}
+	if info.IsDir() {
+		f.Close()
+		return nil, fmt.Errorf("%w: %s is a directory, not a file", waxerr.ErrInvalidData, path)
+	}
 	return &fileSource{f: f, size: info.Size()}, nil
 }
 

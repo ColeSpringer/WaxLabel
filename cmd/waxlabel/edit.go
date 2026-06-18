@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 
@@ -98,7 +99,9 @@ func (e *editFlags) applyPictures(ed *wl.Editor) error {
 	for _, path := range e.addCover {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return err
+			// os.ReadFile's *fs.PathError already names the path, so do not repeat
+			// it; just mark that the failure is about a cover image.
+			return fmt.Errorf("cover image: %w", err)
 		}
 		ed.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: data})
 	}

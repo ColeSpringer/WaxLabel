@@ -341,6 +341,11 @@ func TestClassifyError(t *testing.T) {
 		{"deadline", context.DeadlineExceeded, 130, "timeout"},
 		{"rename", &os.LinkError{Op: "rename", Err: errors.New("x")}, 6, "io"},
 		{"open", &fs.PathError{Op: "open", Err: errors.New("x")}, 6, "io"},
+		{"not-found", &fs.PathError{Op: "open", Path: "/x.flac", Err: fs.ErrNotExist}, 6, "not-found"},
+		// A not-exist error that is not a *fs.PathError stays in the I/O class:
+		// "not-found" promises the clean path-only message we can build only for a
+		// PathError, so a rename race must not borrow that code with a raw message.
+		{"rename-not-found", &os.LinkError{Op: "rename", Err: fs.ErrNotExist}, 6, "io"},
 		{"usage", &usageError{msg: "bad"}, 2, "usage"},
 		{"invalid-key", fmt.Errorf("w: %w", waxerr.ErrInvalidKey), 2, "invalid-key"},
 		{"unsupported", fmt.Errorf("w: %w", waxerr.ErrUnsupportedFormat), 3, "unsupported-format"},
@@ -355,6 +360,155 @@ func TestClassifyError(t *testing.T) {
 				t.Errorf("classify = (%d,%q), want (%d,%q)", c.exitCode, c.code, tc.code, tc.mc)
 			}
 		})
+	}
+}
+
+// TestClassifyNotFoundMessage checks the file-not-found message form and, just
+// as importantly, that a *fs.PathError a caller has already wrapped with context
+// (a temp-file create, a cover read) is not flattened back into "no such file":
+// os.IsNotExist does not unwrap, so the caller's message survives and the error
+// classifies as the generic I/O class.
+func TestClassifyNotFoundMessage(t *testing.T) {
+	t.Parallel()
+	bare := &fs.PathError{Op: "open", Path: "/x.flac", Err: fs.ErrNotExist}
+	if c := classifyError(bare); c.message != "no such file: /x.flac" {
+		t.Errorf("bare message = %q, want %q", c.message, "no such file: /x.flac")
+	}
+
+	// Mirrors the real edit.go wrapping ("cover image: %w" - the read error
+	// already carries the path), so a regression in that shape would surface here.
+	wrapped := fmt.Errorf("cover image: %w", &fs.PathError{Op: "open", Path: "/x.png", Err: fs.ErrNotExist})
+	c := classifyError(wrapped)
+	if c.code != "io" || c.exitCode != 6 {
+		t.Errorf("wrapped class = (%d,%q), want (6,\"io\")", c.exitCode, c.code)
+	}
+	if !strings.HasPrefix(c.message, "cover image:") {
+		t.Errorf("wrapped message lost its context: %q", c.message)
+	}
+}
+
+// TestSentinelsHaveNoProgramPrefix locks in that library sentinels carry no
+// "waxlabel: " prefix; the CLI owns the single prefix, so embedding one would
+// double it.
+func TestSentinelsHaveNoProgramPrefix(t *testing.T) {
+	t.Parallel()
+	for _, err := range []error{
+		waxerr.ErrUnsupportedFormat, waxerr.ErrInvalidData, waxerr.ErrNoTags,
+		waxerr.ErrUnsupportedTag, waxerr.ErrPictureTooLarge, waxerr.ErrSizeTooLarge,
+		waxerr.ErrTooDeep, waxerr.ErrSourceChanged, waxerr.ErrChainedStream,
+		waxerr.ErrInvalidKey,
+	} {
+		if strings.HasPrefix(err.Error(), "waxlabel:") {
+			t.Errorf("sentinel %q should not embed the program prefix", err.Error())
+		}
+	}
+}
+
+// TestDumpMissingFilePathOnce checks dump's per-file error names the path once
+// (its own prefix), without the raw "open <path>:" that used to restate it.
+func TestDumpMissingFilePathOnce(t *testing.T) {
+	t.Parallel()
+	missing := filepath.Join(t.TempDir(), "nope.flac")
+	_, errb, code := runCLI(t, "dump", missing)
+	if code != 6 {
+		t.Fatalf("exit = %d, want 6", code)
+	}
+	if n := strings.Count(errb, missing); n != 1 {
+		t.Errorf("path should appear exactly once, got %d:\n%s", n, errb)
+	}
+	if strings.Contains(errb, "open "+missing) {
+		t.Errorf("raw 'open <path>:' should be gone:\n%s", errb)
+	}
+}
+
+// TestPlanMissingFileMessage checks the terminal (non-per-file) not-found error
+// states the path once in the clean "no such file: <path>" form.
+func TestPlanMissingFileMessage(t *testing.T) {
+	t.Parallel()
+	missing := filepath.Join(t.TempDir(), "nope.flac")
+	_, errb, code := runCLI(t, "plan", missing)
+	if code != 6 {
+		t.Fatalf("exit = %d, want 6", code)
+	}
+	if want := "waxlabel: no such file: " + missing + "\n"; !strings.Contains(errb, want) {
+		t.Errorf("stderr = %q, want it to contain %q", errb, want)
+	}
+	if strings.Contains(errb, "open "+missing) {
+		t.Errorf("raw 'open <path>:' should be gone:\n%s", errb)
+	}
+}
+
+// TestDirectoryAsInput checks that handing a directory where a file is expected
+// fails with a clear "is a directory" message in the invalid-data class, not the
+// confusing "could not identify" unsupported-format error it produced before.
+func TestDirectoryAsInput(t *testing.T) {
+	t.Parallel()
+	_, errb, code := runCLI(t, "dump", t.TempDir())
+	if code != 4 {
+		t.Fatalf("exit = %d, want 4 (invalid data)", code)
+	}
+	if !strings.Contains(errb, "is a directory") {
+		t.Errorf("stderr should explain the directory: %q", errb)
+	}
+}
+
+// TestTempCreateErrorNamesDir checks the atomic-write temp-create failure names
+// the destination directory rather than the internal temp pattern. It also
+// guards the E2/E3 interaction: the wrapped *fs.PathError must keep this message
+// and not be flattened into "no such file: <temp-name>".
+func TestTempCreateErrorNamesDir(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, sampleFLAC)
+	badDir := filepath.Join(t.TempDir(), "no-such-dir")
+	_, errb, code := runCLI(t, "set", file, "--set", "TITLE=X", "-o", filepath.Join(badDir, "out.flac"))
+	if code != 6 {
+		t.Fatalf("exit = %d, want 6", code)
+	}
+	if !strings.Contains(errb, "create temp file in "+badDir) {
+		t.Errorf("stderr should name the destination dir: %q", errb)
+	}
+	// The internal temp-file pattern is an implementation detail; it must not leak.
+	if strings.Contains(errb, ".waxlabel-") {
+		t.Errorf("internal temp pattern should not leak: %q", errb)
+	}
+}
+
+// TestAddCoverMissingFileContext checks a missing cover file is reported with
+// "cover image: <path>:" context so the user knows which input failed.
+func TestAddCoverMissingFileContext(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, sampleFLAC)
+	missing := filepath.Join(t.TempDir(), "cover.png")
+	_, errb, code := runCLI(t, "set", file, "--add-cover", missing)
+	if code != 6 {
+		t.Fatalf("exit = %d, want 6", code)
+	}
+	if !strings.Contains(errb, "cover image:") || !strings.Contains(errb, missing) {
+		t.Errorf("stderr should carry the cover context and path: %q", errb)
+	}
+	// The path is named once (by the underlying read error), not twice.
+	if strings.Count(errb, missing) != 1 {
+		t.Errorf("cover path should appear once: %q", errb)
+	}
+}
+
+// TestCopyIntoOggReportsChaptersNotModeled exercises the transfer-report render
+// end to end: copying a chaptered source onto an Ogg destination (no chapter
+// support) must report the drop as "unsupported: not modeled", not the doubled
+// "unsupported: unsupported" the old Ogg Representation produced.
+func TestCopyIntoOggReportsChaptersNotModeled(t *testing.T) {
+	t.Parallel()
+	src := filepath.Join("..", "..", "testdata", "chapters.mka")
+	dst := copyFixture(t, filepath.Join("..", "..", "testdata", "sample.ogg"))
+	out, errb, code := runCLI(t, "copy", src, dst)
+	if code != 0 {
+		t.Fatalf("copy exit = %d: %s", code, errb)
+	}
+	if !strings.Contains(out, "unsupported: not modeled") {
+		t.Errorf("ogg chapter drop should read 'unsupported: not modeled':\n%s", out)
+	}
+	if strings.Contains(out, "unsupported: unsupported") {
+		t.Errorf("doubled label regressed:\n%s", out)
 	}
 }
 
@@ -416,8 +570,8 @@ func TestJSONErrorEnvelope(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &je); err != nil {
 		t.Fatalf("invalid JSON envelope: %v\n%s", err, out)
 	}
-	if je.Error.Code != "io" {
-		t.Errorf("error code = %q, want io", je.Error.Code)
+	if je.Error.Code != "not-found" {
+		t.Errorf("error code = %q, want not-found", je.Error.Code)
 	}
 }
 
@@ -440,8 +594,8 @@ func TestDumpJSONPerFileError(t *testing.T) {
 	if docs[0].Error != nil {
 		t.Errorf("first doc should have parsed: %+v", docs[0].Error)
 	}
-	if docs[1].Error == nil || docs[1].Error.Code != "io" {
-		t.Errorf("second doc should carry an io error: %+v", docs[1].Error)
+	if docs[1].Error == nil || docs[1].Error.Code != "not-found" {
+		t.Errorf("second doc should carry a not-found error: %+v", docs[1].Error)
 	}
 }
 

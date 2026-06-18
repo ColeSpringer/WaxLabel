@@ -75,3 +75,15 @@ func TestPlanRefusesNonAlignedWrite(t *testing.T) {
 		t.Errorf("non-page-aligned write should be refused with ErrInvalidData, got %v", err)
 	}
 }
+
+// TestChapterCapabilityRepresentation pins the chapter Representation to the
+// "not modeled" phrasing the sibling codecs use. "unsupported" rendered as a
+// doubled "unsupported: unsupported" in the copy transfer report.
+func TestChapterCapabilityRepresentation(t *testing.T) {
+	for _, c := range []Codec{NewVorbis(), NewOpus()} {
+		caps := c.Capabilities(nil, core.DefaultWriteOptions())
+		if got := caps.Chapters.Representation; got != "not modeled" {
+			t.Errorf("%v chapters Representation = %q, want %q", c.Format(), got, "not modeled")
+		}
+	}
+}

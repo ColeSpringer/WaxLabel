@@ -190,6 +190,28 @@ func (p *Plan) essenceExtent() (string, []byte) {
 	return "audio-extent-v1", nil
 }
 
+// tempCreateError reports a failure to create the atomic-write temp file. It
+// names the destination directory (which the user chose) but not the internal
+// temp pattern (which they did not), while still unwrapping to the underlying
+// *os.PathError so the failure classifies as a local I/O error. It deliberately
+// does not satisfy os.IsNotExist (it is not a *PathError itself), so a missing
+// destination directory stays in the I/O class rather than being reported as a
+// "no such file" on a temp name the user never named.
+type tempCreateError struct {
+	dir string
+	err error // the os.CreateTemp failure, normally an *os.PathError
+}
+
+func (e *tempCreateError) Error() string {
+	reason := e.err.Error()
+	if pe, ok := e.err.(*os.PathError); ok {
+		reason = pe.Err.Error() // the bare cause, without the random temp name
+	}
+	return fmt.Sprintf("create temp file in %s: %s", e.dir, reason)
+}
+
+func (e *tempCreateError) Unwrap() error { return e.err }
+
 // writeAtomic writes via a temp file in the destination directory, fsyncs it,
 // optionally verifies it (before commit), renames it over path, then fsyncs the
 // directory. It returns committed=true once the rename succeeds (even if the
@@ -198,7 +220,7 @@ func writeAtomic(path string, write, verify func(*os.File) error, preserveMtime 
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".waxlabel-*.tmp")
 	if err != nil {
-		return false, err
+		return false, &tempCreateError{dir: dir, err: err}
 	}
 	tmpName := tmp.Name()
 	committed := false

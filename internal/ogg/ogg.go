@@ -64,7 +64,7 @@ func (c Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabili
 		Representation: "METADATA_BLOCK_PICTURE", Fidelity: "lossless",
 	}
 	chapters := core.Capability{
-		Read: core.AccessNone, Write: core.AccessNone, Representation: "unsupported",
+		Read: core.AccessNone, Write: core.AccessNone, Representation: "not modeled",
 	}
 	return core.NewCapabilities(c.format, false, fields, pictures, chapters, nil)
 }
