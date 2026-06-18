@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"slices"
 	"strings"
 
 	"github.com/colespringer/waxlabel/internal/bits"
@@ -26,8 +27,14 @@ type Codec interface {
 	// without reopening the source; only Execute reads the source bytes. The
 	// returned plan's Report describes exactly what executing it will do.
 	Plan(ctx context.Context, base, edited *Media, opts WriteOptions) (*WritePlan, error)
-	// Capabilities reports support under the given write options.
-	Capabilities(opts WriteOptions) Capabilities
+	// Capabilities reports support under the given write options. m is the
+	// parsed file the query is about, or nil for a file-agnostic, format-level
+	// query (as [Document.PlanTransfer] makes, having no destination file). A
+	// codec whose support is uniform across files ignores m; one with a per-file
+	// constraint (Matroska, where the WebM subset forbids cover attachments)
+	// consults it when present, and must nil-guard. Threading the file in keeps
+	// the reported capability honest for the report==result transfer invariant.
+	Capabilities(m *Media, opts WriteOptions) Capabilities
 	// EssenceExtent returns the inputs to the audio-essence digest for this
 	// format: a named, versioned extent identifier and the decoder-critical
 	// configuration bytes mixed into the hash ahead of the audio. What counts as
@@ -109,10 +116,8 @@ func Detect(path string, header []byte) (Codec, bool) {
 	ext := lowerExt(path)
 	if ext != "" {
 		for _, c := range registry {
-			for _, e := range c.Extensions() {
-				if e == ext {
-					return c, true
-				}
+			if slices.Contains(c.Extensions(), ext) {
+				return c, true
 			}
 		}
 	}

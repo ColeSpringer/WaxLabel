@@ -1,2 +1,5 @@
 # Built CLI binary (e.g. `go build ./cmd/waxlabel` from the repo root)
 /waxlabel
+/cmd/waxlabel/waxlabel
+
+/temp

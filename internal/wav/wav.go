@@ -58,7 +58,7 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 // the embedded id3 chunk; the RIFF-native LIST/INFO block is also written but is
 // a lower-fidelity store (a fixed vocabulary of single-valued strings), so the
 // generic-field capability notes both representations.
-func (Codec) Capabilities(opts core.WriteOptions) core.Capabilities {
+func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "ID3v2 (id3 chunk) + RIFF LIST/INFO", Fidelity: "lossless via id3; INFO is single-valued, fixed-vocabulary",

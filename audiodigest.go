@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -71,7 +70,7 @@ func (d *Document) HashAudioEssence(ctx context.Context, opts ...HashOption) (Au
 	defer closer()
 
 	version, cfg := d.essenceExtent()
-	sum, err := hashRanges(ctx, src, cfg, d.media.EssenceRanges(), bits.DefaultLimits.MaxAllocBytes)
+	sum, err := hashRanges(ctx, src, cfg, d.media.EssenceRanges())
 	if err != nil {
 		return AudioDigest{}, err
 	}
@@ -109,7 +108,7 @@ func (d *Document) HashFile(ctx context.Context, opts ...HashOption) (AudioDiges
 	}
 	defer closer()
 
-	sum, err := hashRanges(ctx, src, nil, [][2]int64{{0, src.Size()}}, bits.DefaultLimits.MaxAllocBytes)
+	sum, err := hashRanges(ctx, src, nil, [][2]int64{{0, src.Size()}})
 	if err != nil {
 		return AudioDigest{}, err
 	}
@@ -122,7 +121,7 @@ func (d *Document) HashFile(ctx context.Context, opts ...HashOption) (AudioDiges
 // each audio page body. It checks ctx between chunks so a large extent can be
 // cancelled. src need only support ReadAt (the written-output handle has no
 // Size).
-func hashRanges(ctx context.Context, src io.ReaderAt, prefix []byte, ranges [][2]int64, limit int64) ([]byte, error) {
+func hashRanges(ctx context.Context, src io.ReaderAt, prefix []byte, ranges [][2]int64) ([]byte, error) {
 	h := sha256.New()
 	h.Write(prefix)
 	buf := make([]byte, 1<<16)

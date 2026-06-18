@@ -243,3 +243,73 @@ func TestPrepareTransferToMatroska(t *testing.T) {
 		}
 	}
 }
+
+// coverBearingFLAC returns an in-memory FLAC carrying a title and a front cover,
+// the cross-format source for the WebM cover-gating tests.
+func coverBearingFLAC(t *testing.T, title string) []byte {
+	t.Helper()
+	return writeBack(t, "testdata/notags.flac", func(e *wl.Editor) {
+		e.Set("TITLE", title)
+		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()})
+	})
+}
+
+// TestPlanTransferMatroskaCoverWritable: a format-only PlanTransfer has no
+// destination file, so Matroska answers file-agnostically and still reports a
+// cover writable. The WebM cover refusal is a per-file constraint only a real
+// destination (PrepareTransfer/copy) can see, so PlanTransfer(Format) stays right
+// by construction.
+func TestPlanTransferMatroskaCoverWritable(t *testing.T) {
+	src := mustParseBytes(t, coverBearingFLAC(t, "Cover Test"))
+	report, err := src.PlanTransfer(wl.FormatMatroska)
+	if err != nil {
+		t.Fatalf("PlanTransfer(Matroska): %v", err)
+	}
+	var pic wl.TransferItem
+	for _, it := range report.Items {
+		if it.Kind == wl.TransferPicture {
+			pic = it
+		}
+	}
+	if pic.Disposition != wl.Carried {
+		t.Errorf("cover = %s, want carried (no file means the WebM constraint is invisible)", pic.Disposition)
+	}
+}
+
+// TestPrepareTransferCoverToWebMDropsCover is the step-14 report==result proof for
+// a file-dependent capability: projecting a cover-bearing source onto a WebM
+// destination reports the cover dropped (Attachments is outside the WebM subset),
+// and the executed plan then carries no picture while the tags still land. Before
+// file-aware capabilities this reported "carried" and then errored at Prepare.
+func TestPrepareTransferCoverToWebMDropsCover(t *testing.T) {
+	src := mustParseBytes(t, coverBearingFLAC(t, "WebM Transfer"))
+
+	dstBytes := readFixture(t, sampleWebM)
+	dst := mustParseBytes(t, dstBytes)
+
+	plan, report, err := src.PrepareTransfer(dst)
+	if err != nil {
+		t.Fatalf("PrepareTransfer onto WebM: %v", err)
+	}
+	var pic wl.TransferItem
+	for _, it := range report.Items {
+		if it.Kind == wl.TransferPicture {
+			pic = it
+		}
+	}
+	if pic.Disposition != wl.Dropped {
+		t.Fatalf("cover = %s, want dropped for a WebM destination", pic.Disposition)
+	}
+	if pic.Reason == "" {
+		t.Error("a dropped cover must carry a reason")
+	}
+
+	result := mustParseBytes(t, applyToBytes(t, dstBytes, plan))
+	if got := result.Pictures(); len(got) != 0 {
+		t.Errorf("WebM result has %d pictures, want 0 (the cover was dropped)", len(got))
+	}
+	// The tags still transfer - only the cover is gated by the WebM subset.
+	if got, ok := result.Get(tag.Title); !ok || !slices.Equal(got, []string{"WebM Transfer"}) {
+		t.Errorf("carried TITLE = %v (present=%v), want [WebM Transfer]", got, ok)
+	}
+}

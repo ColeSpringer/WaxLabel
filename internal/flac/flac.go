@@ -27,7 +27,7 @@ func (Codec) Sniff(header []byte) bool {
 // Capabilities reports FLAC's support. FLAC stores tags as Vorbis comments and
 // art as PICTURE blocks, both losslessly and fully writable. CUESHEET is
 // preserved but not yet modeled as canonical chapters.
-func (Codec) Capabilities(opts core.WriteOptions) core.Capabilities {
+func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "Vorbis comment", Fidelity: "lossless",

@@ -39,7 +39,7 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 // Capabilities reports MP3's support. Tags and art are stored as ID3v2 frames,
 // fully writable; the version is preserved on edit. Trailing ID3v1/APEv2 are
 // preserved and surfaced but not the write target.
-func (Codec) Capabilities(opts core.WriteOptions) core.Capabilities {
+func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "ID3v2 frame", Fidelity: "lossless",

@@ -140,6 +140,10 @@ func planAbsorb(d *doc, base, edited *core.Media, ch changes, report core.WriteR
 	if flexIdx < 0 {
 		return nil, errFallback
 	}
+	// Created top-level elements (origStart -1) are appended but not added to an
+	// existing SeekHead, matching the shift path: the index is patched in place at a
+	// stable size, and SeekHead is an optional index (readers scan level-1 elements
+	// to find an unindexed Tags/Attachments/Chapters).
 	if ch.simple && !tagsPlaced && r.tags != nil {
 		items = append(items, litItem(idTags, r.tags, -1, itemTags))
 	}

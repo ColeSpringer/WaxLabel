@@ -50,7 +50,7 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 // and are fully writable, identical to MP3's ID3-backed story; the version is
 // preserved on edit. AAC has no secondary tag container, so there are no legacy
 // conflicts to surface.
-func (Codec) Capabilities(opts core.WriteOptions) core.Capabilities {
+func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "ID3v2 frame", Fidelity: "lossless",

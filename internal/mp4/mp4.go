@@ -58,7 +58,7 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 // fully writable; chapters are read from both the Nero chpl and a QuickTime
 // chapter text track, and a chapter edit rewrites both representations. The
 // numeric "gnre" genre is read but always rewritten as the text genre.
-func (Codec) Capabilities(opts core.WriteOptions) core.Capabilities {
+func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "iTunes ilst atom (text / freeform ----)", Fidelity: "lossless",

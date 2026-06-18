@@ -171,7 +171,7 @@ func (p *Plan) verifyOutput(ctx context.Context, out io.ReaderAt, srcEssence []b
 	}
 	_, cfg := p.essenceExtent()
 	res := p.plan.Result
-	outSum, err := hashRanges(ctx, out, cfg, res.EssenceRanges(), p.opts.Limits.MaxAllocBytes)
+	outSum, err := hashRanges(ctx, out, cfg, res.EssenceRanges())
 	if err != nil {
 		return err
 	}

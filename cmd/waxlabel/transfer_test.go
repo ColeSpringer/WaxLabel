@@ -12,12 +12,14 @@ import (
 
 // Additional cross-format fixtures (the shared FLAC/M4B ones live in cli_test.go).
 var (
-	notagsM4A  = filepath.Join("..", "..", "testdata", "notags.m4a")
-	sampleMP3  = filepath.Join("..", "..", "testdata", "sample.mp3")
-	notagsOpus = filepath.Join("..", "..", "testdata", "notags.opus")
-	sampleWAV  = filepath.Join("..", "..", "testdata", "sample.wav")
-	notagsAIFF = filepath.Join("..", "..", "testdata", "notags.aiff")
-	notagsMKA  = filepath.Join("..", "..", "testdata", "notags.mka")
+	notagsM4A   = filepath.Join("..", "..", "testdata", "notags.m4a")
+	sampleMP3   = filepath.Join("..", "..", "testdata", "sample.mp3")
+	notagsOpus  = filepath.Join("..", "..", "testdata", "notags.opus")
+	sampleWAV   = filepath.Join("..", "..", "testdata", "sample.wav")
+	notagsAIFF  = filepath.Join("..", "..", "testdata", "notags.aiff")
+	notagsMKA   = filepath.Join("..", "..", "testdata", "notags.mka")
+	sampleMKA   = filepath.Join("..", "..", "testdata", "sample.mka")  // carries a cover
+	sampleWebMF = filepath.Join("..", "..", "testdata", "sample.webm") // DocType webm
 )
 
 // assertCopyAgrees runs "copy src dst" for real and checks the strongest
@@ -142,6 +144,58 @@ func TestCopyToMatroskaSucceeds(t *testing.T) {
 	want := tagValues(dumpJSON(t, sampleFLAC), "TITLE")
 	if len(want) == 0 || !slices.Equal(got, want) {
 		t.Errorf("copied TITLE = %v, want %v", got, want)
+	}
+}
+
+// TestCopyCoverToWebMDropsCover: copying a cover-bearing source onto a WebM file
+// reports the cover dropped (Attachments is outside the WebM subset) and still
+// writes the tags, exiting 0. This is the file-aware capability fix: before it,
+// the copy advertised the cover "carried" and then errored at Prepare, the one
+// report-vs-result disagreement the transfer layer otherwise rules out.
+func TestCopyCoverToWebMDropsCover(t *testing.T) {
+	t.Parallel()
+	dst := copyFixture(t, sampleWebMF)
+	cout, _, code := runCLI(t, "--json", "copy", sampleMKA, dst)
+	if code != 0 {
+		t.Fatalf("copy %s -> webm exit = %d, want 0\n%s", sampleMKA, code, cout)
+	}
+	var jc jsonCopy
+	if err := json.Unmarshal([]byte(cout), &jc); err != nil {
+		t.Fatalf("copy JSON: %v\n%s", err, cout)
+	}
+
+	var pic jsonTransferItem
+	var sawPic, carried bool
+	for _, it := range jc.Transfer {
+		switch {
+		case it.Kind == "picture":
+			pic, sawPic = it, true
+		case it.Kind == "field" && it.Disposition == "carried":
+			carried = true
+		}
+	}
+	if !sawPic {
+		t.Fatal("expected a picture transfer item (the source carries a cover)")
+	}
+	if pic.Disposition != "dropped" {
+		t.Errorf("cover disposition = %s, want dropped", pic.Disposition)
+	}
+	if pic.Reason == "" {
+		t.Error("a dropped cover must carry a reason")
+	}
+	if !carried {
+		t.Error("expected at least one carried tag (the cover gate must not block tags)")
+	}
+
+	// report == result: the executed write left no picture but carried the title.
+	res := dumpJSON(t, dst)
+	if len(res.Pictures) != 0 {
+		t.Errorf("WebM result has %d pictures, want 0 (the cover was dropped)", len(res.Pictures))
+	}
+	got := tagValues(res, "TITLE")
+	want := tagValues(dumpJSON(t, sampleMKA), "TITLE")
+	if len(want) == 0 || !slices.Equal(got, want) {
+		t.Errorf("copied TITLE = %v, want source %v", got, want)
 	}
 }
 

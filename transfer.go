@@ -22,7 +22,10 @@ func (d *Document) PlanTransfer(dst Format, opts ...WriteOption) (TransferReport
 	if !ok {
 		return TransferReport{}, fmt.Errorf("%w: %s", waxerr.ErrUnsupportedFormat, dst)
 	}
-	caps := codec.Capabilities(resolveWriteOptions(opts))
+	// nil destination file: PlanTransfer is a pure simulation against the format,
+	// so the codec answers file-agnostically (any per-file constraint, like the
+	// WebM cover refusal, is judged when PrepareTransfer/copy supply a real file).
+	caps := codec.Capabilities(nil, resolveWriteOptions(opts))
 	return TransferReport{
 		Source: d.media.Format,
 		Dest:   dst,

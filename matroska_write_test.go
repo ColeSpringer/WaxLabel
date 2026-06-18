@@ -168,7 +168,7 @@ func TestMatroskaWriteCover(t *testing.T) {
 
 // vlen returns the byte length a VINT occupies from its first byte.
 func vlen(b byte) int {
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		if b&(0x80>>i) != 0 {
 			return i + 1
 		}
@@ -188,7 +188,7 @@ func readVint(b []byte, off int, keepMarker bool) (uint64, int, bool) {
 	}
 	var v uint64
 	if keepMarker {
-		for i := 0; i < n; i++ {
+		for i := range n {
 			v = v<<8 | uint64(b[off+i])
 		}
 		return v, n, true
@@ -505,5 +505,24 @@ func TestMatroskaWebMRefusesCover(t *testing.T) {
 	out, _ := saveMatroska(t, src, mustParseBytes(t, src).Edit().Set(tag.Artist, "WebM New"))
 	if f := mustParseBytes(t, out).Fields(); f.Artists[0] != "WebM New" {
 		t.Errorf("WebM tag write Artist = %v", f.Artists)
+	}
+}
+
+// TestMatroskaWebMCapabilityFileAware: Document.Capabilities is file-aware - a
+// parsed WebM file reports cover write unsupported (Attachments is outside the
+// WebM subset) while a parsed Matroska file reports it AccessFull. This is what
+// lets a transfer drop a cover onto WebM up front instead of advertising it
+// carried and then failing at Plan, restoring report==result.
+func TestMatroskaWebMCapabilityFileAware(t *testing.T) {
+	webm := mustParseFile(t, sampleWebM).Capabilities()
+	if webm.Pictures.Write != wl.AccessNone {
+		t.Errorf("WebM Pictures.Write = %v, want AccessNone", webm.Pictures.Write)
+	}
+	// Tags stay fully writable on WebM - only attachments are gated.
+	if webm.GenericField.Write != wl.AccessFull {
+		t.Errorf("WebM tag write = %v, want AccessFull", webm.GenericField.Write)
+	}
+	if mka := mustParseFile(t, sampleMKA).Capabilities(); mka.Pictures.Write != wl.AccessFull {
+		t.Errorf("Matroska Pictures.Write = %v, want AccessFull", mka.Pictures.Write)
 	}
 }

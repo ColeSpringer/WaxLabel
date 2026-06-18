@@ -52,7 +52,15 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 // segment title round-trip fully, cover art writes as an image AttachedFile -
 // except into a WebM file, whose subset excludes Attachments - and chapters
 // (Chapters > EditionEntry > ChapterAtom) round-trip through the default edition.
-func (Codec) Capabilities(opts core.WriteOptions) core.Capabilities {
+//
+// Cover-write support is file-aware: when m is the parsed file and it is WebM,
+// picture write is reported AccessNone (Attachments is outside the WebM subset),
+// so a transfer drops the cover up front instead of advertising it carried and
+// then failing at Plan time - the report==result transfer invariant. A nil m is a
+// format-level query (PlanTransfer, which has no destination file) and keeps the
+// optimistic Matroska answer; the Plan-level WebM refusal remains the backstop for
+// a direct cover add.
+func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "Matroska SimpleTag (album-scoped) + Info.Title",
@@ -63,6 +71,16 @@ func (Codec) Capabilities(opts core.WriteOptions) core.Capabilities {
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "AttachedFile (image attachment)", Fidelity: "lossless",
 		Constraints: []string{"not writable to WebM (Attachments is outside the WebM subset)"},
+	}
+	if m != nil {
+		if d, ok := m.Native.(*doc); ok && isWebM(d.docType) {
+			pictures.Write = core.AccessNone
+			pictures.Representation = "Attachments outside the WebM subset"
+			// The generic "not writable to WebM" note is now redundant: this is the
+			// WebM file's own capability and it already reports AccessNone with the
+			// reason in Representation (which is what dispose surfaces).
+			pictures.Constraints = nil
+		}
 	}
 	chapters := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,

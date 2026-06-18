@@ -49,7 +49,11 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	// WebM does not include the Attachments element in its subset, so refuse to
 	// write cover art into a webm file rather than emit something strict WebM
-	// validators reject. Plain tag/Title writes to .webm remain fine.
+	// validators reject. Plain tag/Title writes to .webm remain fine. This Plan-level
+	// refusal is the backstop for a direct Editor.AddPicture; the transfer path is
+	// gated earlier by Capabilities (matroska.go reports pictures.Write=AccessNone
+	// for a WebM file, so copy/PlanTransfer drops the cover). Both key on isWebM and
+	// must stay in sync.
 	if ch.pictures && isWebM(d.docType) {
 		return nil, fmt.Errorf("%w: cover art cannot be written to a WebM file (Attachments is not in the WebM subset)",
 			waxerr.ErrUnsupportedTag)

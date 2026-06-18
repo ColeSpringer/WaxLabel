@@ -54,7 +54,7 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 
 // Capabilities reports Ogg's support. Tags are Vorbis comments and art is
 // METADATA_BLOCK_PICTURE, both losslessly writable. Chapters are not modeled.
-func (c Codec) Capabilities(opts core.WriteOptions) core.Capabilities {
+func (c Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "Vorbis comment", Fidelity: "lossless",

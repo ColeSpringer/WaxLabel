@@ -122,6 +122,13 @@ func buildShiftItems(wb *writeBase, ch changes, r *rendered) (items []outItem, s
 	if insertAt < 0 {
 		insertAt = len(items)
 	}
+	// Newly created top-level elements get origStart -1; they are appended to the
+	// output but intentionally not added to an existing SeekHead. The index is
+	// preserved/patched at a stable size, never regenerated to gain entries, so
+	// adding one would grow the SeekHead and perturb the size-preserving layout.
+	// SeekHead is an optional index per RFC 9559 and readers locate level-1
+	// elements by scanning, so an unindexed new Tags/Attachments/Chapters is still
+	// found - the same deliberate limitation for all three created element kinds.
 	var created []outItem
 	if ch.simple && !tagsPlaced && r.tags != nil {
 		created = append(created, litItem(idTags, r.tags, -1, itemTags))

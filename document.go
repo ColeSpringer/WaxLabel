@@ -85,7 +85,7 @@ func (d *Document) Capabilities(opts ...WriteOption) Capabilities {
 	if !ok {
 		return Capabilities{Format: d.media.Format, ReadOnly: true}
 	}
-	return codec.Capabilities(resolveWriteOptions(opts))
+	return codec.Capabilities(d.media, resolveWriteOptions(opts))
 }
 
 // Snapshot is the lightweight result of [Document.Inspect]: typed fields and

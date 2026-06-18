@@ -67,7 +67,7 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 // the embedded "ID3 " chunk; the native text chunks are also written but are a
 // lower-fidelity store (a fixed vocabulary of single-valued character runs, save
 // ANNO/Comment), so the generic-field capability notes both representations.
-func (Codec) Capabilities(opts core.WriteOptions) core.Capabilities {
+func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "ID3v2 (ID3 chunk) + native NAME/AUTH/(c)/ANNO",
