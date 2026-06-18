@@ -35,7 +35,7 @@ func saveMatroska(t *testing.T, src []byte, e *wl.Editor) ([]byte, *wl.Document)
 }
 
 // essenceUnchanged asserts the audio essence (cluster region) is bit-identical
-// across an edit — the preservation invariant.
+// across an edit - the preservation invariant.
 func essenceUnchanged(t *testing.T, src, out []byte) {
 	t.Helper()
 	ctx := context.Background()
@@ -100,7 +100,7 @@ func TestMatroskaWriteTag(t *testing.T) {
 		t.Errorf("custom field = %v, want [custom value]", v)
 	}
 	// Adding a new tag overflows the reserved Void, so the tail shifts and the file
-	// grows — exercising the shift path (with the Cues/SeekHead position fixups).
+	// grows - exercising the shift path (with the Cues/SeekHead position fixups).
 	if len(out) <= len(src) {
 		t.Errorf("expected the add-tag edit to grow the file via the shift path (%d -> %d)", len(src), len(out))
 	}
@@ -164,7 +164,7 @@ func TestMatroskaWriteCover(t *testing.T) {
 	essenceUnchanged(t, src, out)
 }
 
-// --- a minimal EBML walker to validate CRC-32 integrity of written output ---
+// A minimal EBML walker to validate CRC-32 integrity of written output.
 
 // vlen returns the byte length a VINT occupies from its first byte.
 func vlen(b byte) int {
@@ -202,7 +202,7 @@ func readVint(b []byte, off int, keepMarker bool) (uint64, int, bool) {
 
 // checkCRCs walks every master element in [start,end) and, when its first child
 // is a CRC-32 (0xBF), verifies the stored little-endian value equals the IEEE
-// CRC-32 of the element's content after the CRC — the exact integrity check a
+// CRC-32 of the element's content after the CRC - the exact integrity check a
 // strict Matroska reader (mkvmerge) performs.
 func checkCRCs(t *testing.T, b []byte, start, end, depth int) {
 	if depth > 12 {
@@ -224,9 +224,9 @@ func checkCRCs(t *testing.T, b []byte, start, end, depth int) {
 			return
 		}
 		// Masters that may carry a CRC and nested masters: Segment, SeekHead, Info,
-		// Tracks, Tags, Tag, Attachments, Cues, Cluster.
+		// Tracks, Tags, Tag, Attachments, Cues, Chapters, EditionEntry.
 		switch id {
-		case 0x18538067, 0x114D9B74, 0x1549A966, 0x1654AE6B, 0x1254C367, 0x7373, 0x1941A469, 0x1C53BB6B:
+		case 0x18538067, 0x114D9B74, 0x1549A966, 0x1654AE6B, 0x1254C367, 0x7373, 0x1941A469, 0x1C53BB6B, 0x1043A770, 0x45B9:
 			if ds+6 <= de && b[ds] == 0xBF && b[ds+1] == 0x84 {
 				stored := binary.LittleEndian.Uint32(b[ds+2 : ds+6])
 				if got := crc32.ChecksumIEEE(b[ds+6 : de]); got != stored {
@@ -255,7 +255,7 @@ func TestMatroskaWriteCRCsValid(t *testing.T) {
 }
 
 // TestMatroskaDifferentialFFprobe writes tags (a small absorbed edit and a large
-// shifting one) and confirms ffprobe — the authority — reads them back and still
+// shifting one) and confirms ffprobe - the authority - reads them back and still
 // sees a valid FLAC audio stream, proving the rewrite kept the container sound.
 func TestMatroskaDifferentialFFprobe(t *testing.T) {
 	requireTool(t, "ffprobe")
@@ -446,7 +446,7 @@ func TestMatroskaWriteMultiValueTitleNotNoOp(t *testing.T) {
 }
 
 // TestMatroskaWriteCoverRoleNormalized: the returned document's picture matches a
-// fresh parse — a non-front-cover role normalizes to Other (Matroska names only
+// fresh parse - a non-front-cover role normalizes to Other (Matroska names only
 // cover/small_cover), not the input role.
 func TestMatroskaWriteCoverRoleNormalized(t *testing.T) {
 	src := readFixture(t, sampleMKA)

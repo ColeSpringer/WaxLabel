@@ -92,7 +92,7 @@ func TestDifferentialFFmpegAcceptsOurOutput(t *testing.T) {
 
 // requireTool guards a differential test on the presence of an external CLI
 // (ffprobe/ffmpeg). When the tool is missing it skips, so the suite stays green
-// on machines without ffmpeg — unless WAXLABEL_REQUIRE_FFMPEG is set (as the CI
+// on machines without ffmpeg - unless WAXLABEL_REQUIRE_FFMPEG is set (as the CI
 // differential job does), in which case a missing tool is a hard failure, so a
 // broken ffmpeg install can't silently turn the write-side differential gate
 // green. The env var covers both binaries, since ffprobe ships with ffmpeg.

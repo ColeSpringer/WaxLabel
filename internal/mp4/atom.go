@@ -83,7 +83,7 @@ func childStart(src core.ReaderAtSized, n node, limit int64) int64 {
 // truncated final atom, e.g. a half-downloaded mdat, so the complete earlier
 // metadata still reads); a *nested* atom that overruns its parent is structural
 // corruption and is rejected, because clamping it leaves the recorded size
-// inconsistent with the preserved source bytes — which would make an edit's
+// inconsistent with the preserved source bytes - which would make an edit's
 // rewrite emit un-reparseable output (the inserted tag path would fall inside the
 // clamped-but-still-oversized child's declared extent).
 func walkAtoms(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limit int64, topLevel bool) ([]node, error) {
@@ -151,7 +151,7 @@ func walkAtoms(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limi
 		out = append(out, n)
 		next := off + size
 		if next <= off {
-			break // no forward progress (corrupt) — stop
+			break // no forward progress (corrupt) - stop
 		}
 		off = next
 	}
@@ -162,7 +162,7 @@ func walkAtoms(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limi
 	// the output. Top-level trailing bytes are tolerated (junk after the last atom
 	// stays after everything and re-parses identically).
 	//
-	// An exception: an all-zero remainder is benign and must be kept readable —
+	// An exception: an all-zero remainder is benign and must be kept readable -
 	// QuickTime terminates a udta user-data list with a 32-bit zero, and zero
 	// padding cannot form a misaligning atom header. Only a non-zero ragged tail is
 	// rejected.

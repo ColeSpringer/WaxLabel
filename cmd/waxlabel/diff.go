@@ -12,8 +12,8 @@ import (
 )
 
 // errFilesDiffer is the sentinel diff returns when two files' canonical metadata
-// differs. It is plain (unclassified), so it maps to exit code 1 — the
-// diff(1)/`git diff --exit-code` convention of "1 = differences found" — and it is
+// differs. It is plain (unclassified), so it maps to exit code 1 - the
+// diff(1)/`git diff --exit-code` convention of "1 = differences found" - and it is
 // returned already-rendered so no error line is printed over the diff output.
 var errFilesDiffer = errors.New("files differ")
 

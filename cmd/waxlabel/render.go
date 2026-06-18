@@ -180,7 +180,7 @@ func renderNative(w io.Writer, doc *wl.Document) {
 			for _, e := range entries {
 				note := ""
 				if e.Note != "" {
-					note = "  — " + e.Note
+					note = "  - " + e.Note
 				}
 				fmt.Fprintf(w, "    %-18s %8s%s\n", e.Kind, humanBytes(int64(e.Size)), note)
 			}

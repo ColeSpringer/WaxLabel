@@ -109,7 +109,7 @@ func rebuildComments(orig []comment, base, edited tag.TagSet, changed map[tag.Ke
 }
 
 // renderBlock encodes a full metadata block: a 1-byte header (last-block flag
-// in bit 7, type code in bits 0–6), a 24-bit big-endian length, then the body.
+// in bit 7, type code in bits 0-6), a 24-bit big-endian length, then the body.
 func renderBlock(code byte, last bool, body []byte) []byte {
 	hdr := make([]byte, 4)
 	hdr[0] = code & 0x7F

@@ -118,8 +118,8 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 
 // frameRenderID returns a frame's render token and whether the frame is managed
 // (modelled by the canonical projection, hence re-rendered when its field
-// changes). Unmanaged frames — URLs, POPM, PRIV, described comments, non-MB
-// UFIDs, opaque frames — are always preserved verbatim.
+// changes). Unmanaged frames - URLs, POPM, PRIV, described comments, non-MB
+// UFIDs, opaque frames - are always preserved verbatim.
 func frameRenderID(f Frame) (string, bool) {
 	if f.Opaque {
 		return "", false
@@ -165,7 +165,7 @@ func frameRenderID(f Frame) (string, bool) {
 
 // frameKeys returns the canonical keys a managed frame contributes to. The
 // rebuilder uses it to drop a stale alternative representation of a key that
-// changed — the same canonical value can sit under more than one frame across
+// changed - the same canonical value can sit under more than one frame across
 // versions (TYER vs TDRC, TXXX:RELEASEDATE vs TDRL, TXXX:ISRC vs TSRC), and only
 // the write-version's target should survive an edit.
 func frameKeys(f Frame) []tag.Key {
@@ -390,7 +390,7 @@ func renderText(version byte, id string, values []string, pol core.ID3MultiValue
 		joined := strings.Join(values, " / ")
 		enc := chooseEncoding(version, []string{joined})
 		return []Frame{{ID: id, Body: encodeTextFrame(enc, []string{joined})}}, false
-	default: // ID3MultiNullSep — a v2.3 extension
+	default: // ID3MultiNullSep - a v2.3 extension
 		enc := chooseEncoding(version, values)
 		return []Frame{{ID: id, Body: encodeTextFrame(enc, values)}}, true
 	}

@@ -35,8 +35,8 @@ type Tag struct {
 }
 
 // Item is one APE key/value pair. Text values may carry NUL-separated multiple
-// values; NonText marks binary, external/locator, and reserved items — anything
-// that is not a UTF-8 text value — which are preserved but not projected.
+// values; NonText marks binary, external/locator, and reserved items - anything
+// that is not a UTF-8 text value - which are preserved but not projected.
 type Item struct {
 	Key     string
 	Value   string
@@ -111,7 +111,7 @@ func parseItems(raw []byte, count uint32) []Item {
 		items = append(items, Item{
 			Key:   key,
 			Value: string(value),
-			// Item-type bits (1–2): 0 == UTF-8 text. Everything else (binary,
+			// Item-type bits (1-2): 0 == UTF-8 text. Everything else (binary,
 			// external/locator, reserved) is non-text and not projected.
 			NonText: (flags>>1)&3 != 0,
 		})

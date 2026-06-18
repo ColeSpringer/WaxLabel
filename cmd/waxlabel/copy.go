@@ -9,7 +9,7 @@ import (
 )
 
 // newCopyCmd builds the "copy" command, which copies one file's canonical
-// metadata onto another — across formats — and reports what carries, downgrades,
+// metadata onto another - across formats - and reports what carries, downgrades,
 // or is lost on the way. The destination is rewritten in place (atomically);
 // --dry-run previews the transfer and the write without touching it.
 func newCopyCmd() *cobra.Command {
@@ -25,7 +25,7 @@ func newCopyCmd() *cobra.Command {
 			"<dest>, and rewrite <dest> in place. The two files need not share a\n" +
 			"format: each value is carried, downgraded, or dropped according to what\n" +
 			"<dest>'s format can store, and that loss report is printed before the\n" +
-			"write. The copy overlays the source onto the destination — keys present\n" +
+			"write. The copy overlays the source onto the destination - keys present\n" +
 			"only in <dest> are kept. With --dry-run nothing is written.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {

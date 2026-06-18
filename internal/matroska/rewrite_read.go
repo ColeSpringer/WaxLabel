@@ -7,8 +7,8 @@ import (
 
 // This file captures the byte-level rewrite base at parse time: the raw bytes and
 // in-buffer offsets the write path patches or re-renders. Plan runs without the
-// source (the Codec contract), so everything it needs — SeekHead/Cues position
-// slots, the Info Title location, the CRC spans — is recorded here while the
+// source (the Codec contract), so everything it needs - SeekHead/Cues position
+// slots, the Info Title location, the CRC spans - is recorded here while the
 // source is open. All offsets are within the captured raw buffer.
 
 // captureRaw reads an element's full bytes ([start, dataEnd)) bounded by the
@@ -33,7 +33,7 @@ func firstChildIsCRC(src core.ReaderAtSized, el element, limit int64) bool {
 // raw is the full element; contentOff is where its payload begins (after the
 // ID and size VINT). It returns nil when no CRC-32 leads the payload.
 func rawCRC(raw []byte, contentOff int) *crcSpot {
-	// Match the canonical encoding directly — 0xBF, a 1-byte size of 0x84, then the
+	// Match the canonical encoding directly - 0xBF, a 1-byte size of 0x84, then the
 	// 4-byte value. Trusting readElement's clamped data length would misread a
 	// malformed element whose junk size merely clamps to 4 bytes as a CRC and then
 	// recompute over the trailing junk, corrupting the re-render.
@@ -130,7 +130,7 @@ func cuesFromRaw(raw []byte, fileStart int64, depth *bits.Depth, limit int64) *c
 
 // captureInfo records the Info element's bytes, CRC, and Title-child location so
 // a Title edit can splice a new Title (or remove/insert one) and recompute the
-// CRC without re-deriving the other Info children (Duration, SegmentUID, …),
+// CRC without re-deriving the other Info children (Duration, SegmentUID, ...),
 // which are preserved verbatim within raw.
 func captureInfo(src core.ReaderAtSized, el element, depth *bits.Depth, limit int64) *infoBlock {
 	raw := captureRaw(src, el, limit)

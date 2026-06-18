@@ -9,7 +9,7 @@ import (
 )
 
 // Codec implements core.Codec for an Ogg-encapsulated codec. Two instances are
-// registered — one for Vorbis, one for Opus — sharing this implementation. They
+// registered - one for Vorbis, one for Opus - sharing this implementation. They
 // differ only in the format they claim and the detection signature; the parser
 // identifies the actual codec from the stream, so editing or hashing a parsed
 // document always routes back to the right instance via the recorded Format.

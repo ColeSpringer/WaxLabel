@@ -13,8 +13,8 @@ import (
 // under a Targets element that scopes them to the whole segment, a track, an
 // edition, or a chapter.
 //
-// Matroska tag names are uppercase with underscores — the same shape as a
-// canonical [tag.Key] — so most names map to themselves by passing through
+// Matroska tag names are uppercase with underscores - the same shape as a
+// canonical [tag.Key] - so most names map to themselves by passing through
 // [tag.ParseKey] (ARTIST, ALBUM, COMPOSER, GENRE, COMMENT, COPYRIGHT, ISRC,
 // LABEL, BARCODE, and the MUSICBRAINZ_* / REPLAYGAIN_* long tail all already
 // equal their canonical keys). The explicit table below holds only the names
@@ -38,7 +38,7 @@ var matroskaTags = map[string]tag.Key{
 	"DATE_RELEASE":   tag.ReleaseDate,
 	"DATE_ORIGINAL":  tag.OriginalDate,
 	"ORIGINAL_DATE":  tag.OriginalDate,
-	"ENCODER":        tag.EncodedBy, // the Lavf… transcoder stamp lands here
+	"ENCODER":        tag.EncodedBy, // the Lavf... transcoder stamp lands here
 	"ENCODED_BY":     tag.EncodedBy,
 	"PART_NUMBER":    tag.TrackNumber, // value may be "n/total"
 	"TOTAL_PARTS":    tag.TrackTotal,

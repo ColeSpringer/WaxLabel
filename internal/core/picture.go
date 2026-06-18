@@ -87,7 +87,7 @@ type Picture struct {
 
 // Hash returns a content hash of the image bytes, for cross-track cover
 // deduplication. It is the identity of the *image*, so the same artwork used as
-// both a front and back cover (or with different descriptions) hashes equal —
+// both a front and back cover (or with different descriptions) hashes equal -
 // type and description are usage metadata, not the picture.
 func (p Picture) Hash() [32]byte {
 	return bits.SHA256(p.Data)

@@ -139,8 +139,8 @@ func lintDates(ts tag.TagSet) []Finding {
 }
 
 // validPartialDate accepts the ISO-8601 reduced precisions YYYY, YYYY-MM, and
-// YYYY-MM-DD. It uses time.Parse so the calendar is checked properly — month
-// range, days per month, and leap years — rejecting e.g. 2021-02-31. The exact
+// YYYY-MM-DD. It uses time.Parse so the calendar is checked properly - month
+// range, days per month, and leap years - rejecting e.g. 2021-02-31. The exact
 // length match enforces zero-padded canonical form (rejecting "2021-6-1").
 func validPartialDate(s string) bool {
 	for _, layout := range []string{"2006-01-02", "2006-01", "2006"} {

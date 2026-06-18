@@ -15,8 +15,8 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// --- Synthetic RIFF/WAVE builders. The data chunk is silence; tests assert on
-// metadata structure and round-trips, not on decoded audio. ---
+// Synthetic RIFF/WAVE builders. The data chunk is silence; tests assert on
+// metadata structure and round-trips, not on decoded audio.
 
 func wavLE16(n int) []byte { return []byte{byte(n), byte(n >> 8)} }
 func wavLE32(n int) []byte { return []byte{byte(n), byte(n >> 8), byte(n >> 16), byte(n >> 24)} }
@@ -281,7 +281,7 @@ func TestWAVAppendedDataKeptOutsideRiffSize(t *testing.T) {
 func TestWAVRF64Rejected(t *testing.T) {
 	// RF64/BW64 (the >4 GiB extension) is out of scope and must fail loudly. Use a
 	// .wav file path so detection routes to the WAV codec by extension and its own
-	// RF64 branch runs — a bare byte source would instead fail generically at
+	// RF64 branch runs - a bare byte source would instead fail generically at
 	// detection (Sniff rejects RF64 and there is no extension to fall back to).
 	data := wavFile(wavFmtPCM(), wavData(64))
 	copy(data[0:4], "RF64")
@@ -385,7 +385,7 @@ func TestWAVCorruptId3NotDuplicatedOnForcedRewrite(t *testing.T) {
 	if doc.Fields().Title != "T" { // INFO authoritative; the corrupt id3 gave nothing
 		t.Fatalf("title = %q", doc.Fields().Title)
 	}
-	plan, err := doc.Edit().Set(tag.Composer, "Stravinsky").Prepare() // non-INFO key → forces id3
+	plan, err := doc.Edit().Set(tag.Composer, "Stravinsky").Prepare() // non-INFO key -> forces id3
 	if err != nil {
 		t.Fatal(err)
 	}

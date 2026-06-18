@@ -9,8 +9,8 @@ import (
 
 // item is one decoded ilst child: the four-character atom name and its raw
 // payload (everything after the 8-byte atom header). Whether the canonical
-// rebuild owns an item — versus preserving it verbatim, the MP4 analogue of ID3's
-// opaque frames — is recomputed on demand by owned(), not cached here, so the
+// rebuild owns an item - versus preserving it verbatim, the MP4 analogue of ID3's
+// opaque frames - is recomputed on demand by owned(), not cached here, so the
 // projection stays a pure read of an immutable document.
 type item struct {
 	name    [4]byte

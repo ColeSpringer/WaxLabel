@@ -25,7 +25,7 @@ func FuzzParse(f *testing.F) {
 	for _, p := range []string{
 		sampleFLAC, "testdata/notags.flac", sampleOgg, sampleOpus, notagsOgg, "testdata/notags.opus",
 		sampleMP3, sampleMP324, notagsMP3, sampleWAV, notagsWAV, sampleMP4, notagsMP4,
-		sampleMKA, sampleWebM, notagsMKA, sampleAIFF, notagsAIFF, sampleAIFC, sampleM4B,
+		sampleMKA, sampleWebM, notagsMKA, chaptersMKA, sampleAIFF, notagsAIFF, sampleAIFC, sampleM4B,
 		sampleAAC, notagsAAC,
 	} {
 		if b, err := os.ReadFile(p); err == nil {
@@ -55,6 +55,7 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte("\x1a\x45\xdf\xa3\x84\x42\x82\x81m"))                                                                                    // EBML magic + truncated DocType
 	f.Add([]byte("\x1a\x45\xdf\xa3\xff"))                                                                                                 // EBML magic, unknown-size header
 	f.Add([]byte("\x1a\x45\xdf\xa3\x80\x18\x53\x80\x67\xff"))                                                                             // empty EBML header + unknown-size Segment
+	f.Add([]byte("\x1a\x45\xdf\xa3\x80\x18\x53\x80\x67\x88\x10\x43\xa7\x70\x84\x45\xb9\x81\xb6"))                                         // EBML + Segment{Chapters{EditionEntry{empty ChapterAtom}}}
 	f.Add([]byte("FORM\x00\x00\x00\x04AIFF"))                                                                                             // AIFF, no chunks
 	f.Add([]byte("FORM\xff\xff\xff\xffAIFCFVER\xff\xff\xff\xff"))                                                                         // absurd FORM + chunk sizes
 	f.Add([]byte("FORM\x00\x00\x00\x12AIFFCOMM\x00\x00\x00\x06\x00\x02\x00\x00\x00\x01"))                                                 // truncated COMM (no 80-bit rate)
@@ -81,7 +82,7 @@ func FuzzParse(f *testing.F) {
 		_ = doc.Inspect()
 
 		// A no-op write must reproduce the exact input bytes. A read-only format
-		// (Matroska v1) refuses any plan, including a no-op — that is its contract,
+		// (Matroska v1) refuses any plan, including a no-op - that is its contract,
 		// so accept it and skip the write round-trip. The guard is scoped to
 		// non-writable formats so a *writable* format that wrongly reports
 		// ErrUnsupportedFormat still fails here rather than slipping through.
@@ -101,16 +102,16 @@ func FuzzParse(f *testing.F) {
 		}
 
 		// An edit on accepted input must round-trip and re-parse. A codec may
-		// legitimately refuse to rewrite some shapes — a chained Ogg stream
+		// legitimately refuse to rewrite some shapes - a chained Ogg stream
 		// (ErrChainedStream) or a non-page-aligned / oversized layout
-		// (ErrInvalidData) — but any other error from a parsed document is a
+		// (ErrInvalidData) - but any other error from a parsed document is a
 		// regression, so fail rather than silently accepting it.
 		plan2, err := doc.Edit().Set(tag.Title, "fuzz").Prepare()
 		if err != nil {
 			// A codec may refuse some shapes: a chained Ogg (ErrChainedStream), a
 			// non-page-aligned/oversized layout (ErrInvalidData), an MP4 whose crafted
 			// offsets would overflow a 32-bit table on a grow (ErrSizeTooLarge), or a
-			// Matroska layout the writer does not handle — no reserved Void, a
+			// Matroska layout the writer does not handle - no reserved Void, a
 			// position that would overflow its width, a Title with no Info element
 			// (ErrUnsupportedTag).
 			if errors.Is(err, waxerr.ErrChainedStream) || errors.Is(err, waxerr.ErrInvalidData) ||
@@ -127,13 +128,13 @@ func FuzzParse(f *testing.F) {
 			t.Fatalf("re-parse of edited output failed: %v", err)
 		}
 
-		// Chapter write (step 12): a chapter edit on any accepted MP4 rebuilds the
-		// QuickTime chapter track (a new trak, a tref on the audio track, an appended
-		// mdat). A crafted moov/trak/tref/udta shape that parses must not panic that
-		// rewrite, and its output must re-parse. Other formats do not write chapters.
-		if doc.Format() == wl.FormatMP4 {
+		// Chapter write: a chapter edit on an accepted MP4 rebuilds the QuickTime
+		// chapter track; on an accepted Matroska it re-renders the Chapters element. A
+		// crafted shape that parses must not panic that rewrite, and its output must
+		// re-parse. Other formats do not write chapters.
+		if doc.Format() == wl.FormatMP4 || doc.Format() == wl.FormatMatroska {
 			cp, err := doc.Edit().SetChapters(
-				wl.Chapter{Start: 0, Title: "a"},
+				wl.Chapter{Start: 0, End: time.Second, Title: "a"},
 				wl.Chapter{Start: time.Second, Title: "b"},
 			).Prepare()
 			if err != nil {

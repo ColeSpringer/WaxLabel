@@ -180,8 +180,8 @@ func TestWAVCoverRoundTrip(t *testing.T) {
 	}
 }
 
-// --- Write-side differential: ffmpeg/ffprobe must read what we wrote and accept
-// our audio. These skip cleanly when the tools are absent. ---
+// Write-side differential: ffmpeg/ffprobe must read what we wrote and accept
+// our audio. These skip cleanly when the tools are absent.
 
 func TestWAVDifferentialFFprobeReadsOurTags(t *testing.T) {
 	requireTool(t, "ffprobe")
@@ -189,7 +189,7 @@ func TestWAVDifferentialFFprobeReadsOurTags(t *testing.T) {
 	plan, err := mustParseFile(t, path).Edit().
 		Set(tag.Title, "Differential Title").
 		Set(tag.Album, "Differential Album").
-		Set(tag.Composer, "Differential Composer"). // non-INFO key → also lands in id3
+		Set(tag.Composer, "Differential Composer"). // non-INFO key -> also lands in id3
 		Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -327,7 +327,7 @@ func TestWAVPostWriteWarningsMatchReparse(t *testing.T) {
 }
 
 // TestWAVPostWriteRetainsFamilies confirms the document returned from a write
-// surfaces the same family view as a fresh parse of the output — here the
+// surfaces the same family view as a fresh parse of the output - here the
 // secondary INFO container after an id3 chunk is added.
 func TestWAVPostWriteRetainsFamilies(t *testing.T) {
 	src := readFixture(t, sampleWAV)

@@ -220,7 +220,7 @@ func TestMP4ChapterEditKeepsMoovFingerprinted(t *testing.T) {
 
 func TestMP4ChapterMaxTrackIDNoCreate(t *testing.T) {
 	// A track already holding the max track id (0xFFFFFFFF) leaves no free id, so a
-	// chapter create must not build a track with the wrapped invalid id 0 — it falls
+	// chapter create must not build a track with the wrapped invalid id 0 - it falls
 	// back to the chpl, and the chapters still read. (Fuzz-reachable now that
 	// FuzzParse chapter-edits.)
 	build := func(stcoOff uint32) []byte {
@@ -248,7 +248,7 @@ func TestMP4ChapterMaxTrackIDNoCreate(t *testing.T) {
 
 func TestMP4ChapterTrefPreservesOtherRefs(t *testing.T) {
 	// An audio tref holding a non-"chap" reference must keep it when a chapter
-	// create adds the "chap" — only the chap entry is ours to write.
+	// create adds the "chap" - only the chap entry is ours to write.
 	otherRef := mp4Atom("hint", mp4be32(7)) // a non-chap reference
 	tref := mp4Atom("tref", otherRef)
 	build := func(stcoOff uint32) []byte {
@@ -275,7 +275,7 @@ func TestMP4ChapterTrefPreservesOtherRefs(t *testing.T) {
 func TestMP4ChapterClearRemovesDanglingChap(t *testing.T) {
 	// A file with a chpl and an audio tref "chap" that does not resolve to a text
 	// track (dangling). ClearChapters drops the chpl and must also strip the
-	// dangling "chap" reference, per the step-12 clear contract.
+	// dangling "chap" reference, per the chapter-clear contract.
 	chpl := mp4Chpl(1, []time.Duration{0, 5 * time.Second}, []string{"X", "Y"})
 	dangling := mp4Atom("tref", mp4Atom("chap", mp4be32(99))) // track 99 does not exist
 	build := func(stcoOff uint32) []byte {
@@ -405,7 +405,7 @@ func TestMP4ChaptersSortedByStart(t *testing.T) {
 
 func TestMP4ChapterClearRemovesQTTrack(t *testing.T) {
 	// Clearing chapters on a file with a QuickTime chapter track removes that track
-	// (and the audio track's tref "chap"), not just the chpl — so a fresh read finds
+	// (and the audio track's tref "chap"), not just the chpl - so a fresh read finds
 	// no chapters and no leftover chapter track.
 	data := mp4QTFile([]int{0, 5000}, []string{"One", "Two"})
 	res, re := execChapters(t, data, func(e *wl.Editor) *wl.Editor { return e.ClearChapters() })
@@ -523,7 +523,7 @@ func TestMP4ChapterAgreementNoConflict(t *testing.T) {
 
 func TestMP4ChapterEditRewritesQTTrack(t *testing.T) {
 	// Editing chapters on a file with a QuickTime chapter track now rebuilds that
-	// track too (step 12), so it is no longer stale: no chapters-stale warning, and
+	// track too, so it is no longer stale: no chapters-stale warning, and
 	// a fresh read returns the edit from the QuickTime track (the representation
 	// iTunes/Apple Books use). The old sample text must not survive as the live
 	// chapters.

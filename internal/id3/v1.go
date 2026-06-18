@@ -7,7 +7,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// V1 is a decoded ID3v1 / ID3v1.1 tag — the fixed 128-byte trailer. It is read
+// V1 is a decoded ID3v1 / ID3v1.1 tag - the fixed 128-byte trailer. It is read
 // for the family view and preserved verbatim; ID3v2 is authoritative.
 type V1 struct {
 	Title   string

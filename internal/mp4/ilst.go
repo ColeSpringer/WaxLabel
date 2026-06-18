@@ -155,7 +155,7 @@ func decodeCover(it item) itemResult {
 }
 
 // coverMIME maps a covr data-atom type code to an image MIME (JPEG by default, as
-// iTunes uses for an implicit or unknown type), and coverType the reverse — the
+// iTunes uses for an implicit or unknown type), and coverType the reverse - the
 // single place the cover image-format mapping lives.
 func coverMIME(typ uint32) string {
 	switch typ {
@@ -182,7 +182,7 @@ func coverType(mime string) uint32 {
 // coverMIMESupported reports whether an MP4 covr atom can faithfully label this
 // image format. Only JPEG, PNG, and BMP have covr type codes; any other format
 // would be stored with a JPEG type flag over non-JPEG bytes (a corrupt cover the
-// reader would then mislabel image/jpeg), so the writer rejects it instead — see
+// reader would then mislabel image/jpeg), so the writer rejects it instead - see
 // the validation in Plan.
 func coverMIMESupported(mime string) bool {
 	switch mime {
@@ -195,7 +195,7 @@ func coverMIMESupported(mime string) bool {
 
 // decodeGnre decodes the legacy numeric genre atom (a 1-based ID3v1 genre index)
 // into a genre name, mirroring how iTunes/mutagen fold "gnre" into the text
-// genre. It is always rewritten as a text "©gen" atom.
+// genre. It is always rewritten as a text "\xa9gen" atom.
 func decodeGnre(it item) itemResult {
 	atoms, ok := parseDataAtoms(it.payload)
 	if !ok {
@@ -231,7 +231,7 @@ func decodeMediaType(it item) itemResult {
 	return itemResult{contribs: []core.Contribution{{Key: tag.MediaType, Value: strconv.FormatUint(n, 10), Source: "stik"}}, owned: true}
 }
 
-// intFromBytes reads a big-endian unsigned integer from 1–4 bytes (the width an
+// intFromBytes reads a big-endian unsigned integer from 1-4 bytes (the width an
 // iTunes integer atom uses) into a uint64, reporting false for an empty or
 // oversized value. uint64 avoids the wraparound a 32-bit int would suffer on a
 // 4-byte value with the high bit set.
@@ -261,9 +261,9 @@ func decodeBool(it item, key tag.Key) itemResult {
 
 // decodeFreeform decodes a "----" freeform item. It is owned only when its mean
 // is com.apple.iTunes and its name maps to a canonical key (a known Picard name,
-// or a name that is already a valid canonical key — which is how this codec
+// or a name that is already a valid canonical key - which is how this codec
 // writes custom keys). Foreign means and mixed-case iTunes-internal names
-// (iTunNORM, …) are preserved verbatim.
+// (iTunNORM, ...) are preserved verbatim.
 func decodeFreeform(it item) itemResult {
 	mean, name, dataStart, ok := parseMeanName(it.payload)
 	if !ok || mean != itunesMean {
@@ -326,7 +326,7 @@ func parseLabelAtom(p []byte, pos int64, want string) (string, int64, bool) {
 }
 
 // project derives the canonical view from a parsed (or rewritten) document. It is
-// a pure read — it does not mutate the items — so it is shared by Parse and the
+// a pure read - it does not mutate the items - so it is shared by Parse and the
 // post-write result without coupling the writer to call order.
 func project(d *doc) (tags tag.TagSet, pics []core.Picture, families []core.FamilyValue, numericGenre bool) {
 	var contribs []core.Contribution
@@ -342,7 +342,7 @@ func project(d *doc) (tags tag.TagSet, pics []core.Picture, families []core.Fami
 	return core.BuildTagSet(contribs), pics, core.BuildFamilies(contribs, core.FamilyMP4), numericGenre
 }
 
-// owned reports whether the canonical rebuild owns an item — i.e. re-renders it
+// owned reports whether the canonical rebuild owns an item - i.e. re-renders it
 // from the edited tag set. Items it does not own (unknown atoms, foreign-mean
 // freeforms, parse failures) are preserved verbatim. It is recomputed wherever
 // needed rather than cached on the item, keeping projection a pure read.

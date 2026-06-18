@@ -118,7 +118,7 @@ func (p *Plan) writeTo(ctx context.Context, dst Destination) (*Document, SaveRes
 
 // writeFile performs an atomic write of the plan to path, copying from src.
 // When VerifyEssence is set it hashes the source audio once as it is copied,
-// then re-reads the written output's audio extent and compares — confirming the
+// then re-reads the written output's audio extent and compares - confirming the
 // rewrite preserved the essence before the file is committed. (The output read
 // hits the page cache, so it guards the copy logic rather than disk media.)
 func (p *Plan) writeFile(ctx context.Context, path string, src core.ReaderAtSized) (bool, error) {

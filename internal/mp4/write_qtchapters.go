@@ -11,9 +11,9 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// QuickTime chapter write (step 12). A chapter edit rewrites both chapter
+// QuickTime chapter write. A chapter edit rewrites both chapter
 // representations so the result is visible everywhere: the Nero chpl (in
-// moov.udta, handled by write_chapters.go) and a QuickTime chapter text track —
+// moov.udta, handled by write_chapters.go) and a QuickTime chapter text track -
 // the form iTunes and Apple Books read. The text track is built fresh
 // (qtchapters.go), its samples go in an mdat appended at end-of-file (so audio
 // never moves), and the audio track gains a tref "chap" pointing at it.
@@ -24,8 +24,8 @@ import (
 // the result document's structures. The audio mdat (if it follows moov) shifts by
 // the one combined delta via the existing offsetPatch. The new chapter track's
 // stco is the single new offset table; because that table is the last atom in the
-// track its address is backpatched after the moov delta — and thus the appended
-// mdat's offset — is known, with no fixpoint iteration.
+// track its address is backpatched after the moov delta - and thus the appended
+// mdat's offset - is known, with no fixpoint iteration.
 
 // planChaptersQT computes the rewrite when chapters change and the file has an
 // audio track to anchor a chapter text track to. It writes the chpl and rebuilds
@@ -174,7 +174,7 @@ func assembleQT(d *doc, edited *core.Media, reg udtaRegion, clearing bool, mts u
 	}
 
 	// Output offset fixups for the audio chunk-offset tables and the moov size. The
-	// replaced chapter track's own table is skipped — it is being rewritten
+	// replaced chapter track's own table is skipped - it is being rewritten
 	// wholesale (and its old samples are abandoned), so patching it would both
 	// overlap that edit and point at dead bytes.
 	p.totalDelta = sumDelta(edits)
@@ -323,7 +323,7 @@ func buildQTChapterResult(edited *core.Media, base *doc, p *qtPlan) *core.Media 
 
 	// Chapter-write refs for a follow-up edit (no reparse). These must equal what a
 	// fresh parse of the output would capture, or a chained chapter edit corrupts
-	// the moov — in particular the audio tref, which this rewrite may have inserted
+	// the moov - in particular the audio tref, which this rewrite may have inserted
 	// (create), replaced, or dropped (clear).
 	nd.movieTimescale = base.movieTimescale
 	nd.movieDuration = base.movieDuration
@@ -440,7 +440,7 @@ func carryChapterRefs(nd, base *doc, regionEnd, delta int64) {
 // audioTrefForChapter returns the audio track's tref atom after a chapter write:
 // for id != 0 a "chap" reference to id with any non-"chap" references the existing
 // tref held preserved; for id == 0 (clearing) the existing references with "chap"
-// removed. It returns nil when the result would be an empty tref (no references) —
+// removed. It returns nil when the result would be an empty tref (no references) -
 // i.e. no tref atom should exist. It is the single source of the output tref bytes
 // for both the byte edit and the result document, so the two cannot disagree.
 func audioTrefForChapter(existing []byte, id uint32) []byte {
@@ -506,7 +506,7 @@ func backpatchStco(trak []byte, off int, value int64, co64 bool) {
 }
 
 // withinChapTrak reports whether an offset table lives inside the chapter track
-// being replaced — its bytes are rewritten wholesale, so it must not be patched
+// being replaced - its bytes are rewritten wholesale, so it must not be patched
 // separately.
 func withinChapTrak(d *doc, t offsetTable) bool {
 	return d.chapTrak != nil && t.offset >= d.chapTrak.offset && t.offset < d.chapTrak.end()

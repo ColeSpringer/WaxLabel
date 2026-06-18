@@ -11,9 +11,9 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// --- Synthetic AIFF / AIFF-C builders. The SSND chunk is silence; tests assert
+// Synthetic AIFF / AIFF-C builders. The SSND chunk is silence; tests assert
 // on metadata structure and round-trips, not on decoded audio. All sizes are
-// big-endian, per IFF. ---
+// big-endian, per IFF.
 
 func aiffBE16(n int) []byte { return []byte{byte(n >> 8), byte(n)} }
 func aiffBE32(n int) []byte { return []byte{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)} }
@@ -199,7 +199,7 @@ func TestAIFFCCodecNames(t *testing.T) {
 		{"sowt", "PCM (little-endian)"},
 		{"fl32", "IEEE float"},
 		{"fl64", "IEEE float64"},
-		{"ulaw", "µ-law"},
+		{"ulaw", "mu-law"},
 		{"alaw", "A-law"},
 		{"ima4", "IMA ADPCM"},
 		{"XYZ!", "AIFF-C XYZ!"},             // unknown printable type passes through
@@ -256,7 +256,7 @@ func TestAIFFHostileCOMMBitrateNotNegative(t *testing.T) {
 func TestAIFFCorruptId3NotDuplicatedOnForcedRewrite(t *testing.T) {
 	// A lone "ID3 " chunk whose body is not a valid ID3 tag leaves no authoritative
 	// ID3. An edit that forces a new ID3 chunk (adding a picture) must drop the stale
-	// chunk so the output carries exactly one ID3 chunk — not two, which a re-parse
+	// chunk so the output carries exactly one ID3 chunk - not two, which a re-parse
 	// would flag as a duplicate, disagreeing with the returned document.
 	corrupt := aiffID3([]byte("corrupt-not-a-valid-tag")) // fails id3.ParseTag
 	data := aiffFile("AIFF", aiffText("NAME", "T"), stdCOMM(), aiffSSND(400), corrupt)

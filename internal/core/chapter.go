@@ -19,7 +19,7 @@ type Chapter struct {
 	// Start is the chapter's offset from the start of the media.
 	Start time.Duration
 	// End is where the chapter stops. Zero means "until the next chapter, or
-	// end of file" — the common case for the start-only formats (Nero chpl).
+	// end of file" - the common case for the start-only formats (Nero chpl).
 	End time.Duration
 	// Title is the chapter name (may be empty).
 	Title string

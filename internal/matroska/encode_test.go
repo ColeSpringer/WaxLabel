@@ -77,7 +77,7 @@ func TestVoidOfTotal(t *testing.T) {
 }
 
 // TestAttachedFileUID confirms a written cover carries the mandatory FileUID, that
-// it is non-zero, and that it is random (distinct across renders) — a collision
+// it is non-zero, and that it is random (distinct across renders) - a collision
 // across 64 bits is negligible.
 func TestAttachedFileUID(t *testing.T) {
 	pic := core.Picture{Type: core.PicFrontCover, MIME: "image/png", Data: []byte("cover-bytes")}
@@ -133,7 +133,7 @@ func TestCheckPreservable(t *testing.T) {
 	if err := checkPreservable(d2, changes{pictures: true}); err == nil {
 		t.Error("uncaptured attachment should be refused")
 	}
-	// All captured → fine.
+	// All captured -> fine.
 	ok := &doc{
 		groups:      []tagGroup{{scope: core.ScopeAlbum, raw: []byte{1}}},
 		attachments: []attachment{{image: true}},

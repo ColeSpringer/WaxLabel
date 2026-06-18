@@ -26,7 +26,7 @@ func TestSentinelToZero64(t *testing.T) {
 func TestChapterDeltasLastChapterBounded(t *testing.T) {
 	chs := []core.Chapter{{Start: 0}, {Start: 5 * time.Second}}
 	// An unknown movie duration (the sentinel maps to 0) must give the final
-	// chapter a one-second tail, not a multi-week span — the regression a raw
+	// chapter a one-second tail, not a multi-week span - the regression a raw
 	// 0xFFFFFFFF movieDuration would cause.
 	if d := chapterDeltas(chs, 1000, 0); d[1] != 1000 {
 		t.Errorf("last delta with unknown duration = %d, want 1000 (1s tail)", d[1])

@@ -11,8 +11,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// --- Synthetic ID3 builders. The audio body is borrowed from the tagless
-// fixture so the synthesized files are real, decodable MP3s. ---
+// Synthetic ID3 builders. The audio body is borrowed from the tagless
+// fixture so the synthesized files are real, decodable MP3s.
 
 func mp3Audio(t *testing.T) []byte {
 	t.Helper()

@@ -10,7 +10,7 @@ import (
 
 // Plan is a resolved, ready-to-execute write produced by [Editor.Prepare]. It
 // owns the byte-level rewrite and its report together, so [Plan.Report] is
-// exactly what [Plan.Execute] will carry out — the two cannot drift.
+// exactly what [Plan.Execute] will carry out - the two cannot drift.
 type Plan struct {
 	doc  *Document
 	plan *core.WritePlan

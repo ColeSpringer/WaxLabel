@@ -164,7 +164,7 @@ type patchOp struct {
 	values []string
 }
 
-// TagPatch is an ordered list of explicit edits — set, clear, add — applied
+// TagPatch is an ordered list of explicit edits - set, clear, add - applied
 // against a base [TagSet]. Because each op is explicit there is no zero-value
 // ambiguity: clearing a key is distinct from setting it to empty. Later ops
 // override earlier ones for the same key.

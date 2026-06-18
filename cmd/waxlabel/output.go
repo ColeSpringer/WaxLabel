@@ -27,7 +27,7 @@ func writeJSON(w io.Writer, v any) error {
 
 // jsonMode reports whether --json was requested, reading it from the command's
 // (already-parsed) flags. The persistent flag is shared with the root, so this
-// works inside a RunE — by which point the command has resolved and parsed.
+// works inside a RunE - by which point the command has resolved and parsed.
 func jsonMode(cmd *cobra.Command) bool {
 	v, _ := cmd.Flags().GetBool("json")
 	return v

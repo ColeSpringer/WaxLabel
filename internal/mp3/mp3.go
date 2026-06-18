@@ -56,7 +56,7 @@ func (Codec) Capabilities(opts core.WriteOptions) core.Capabilities {
 }
 
 // EssenceExtent returns the MP3 essence-digest inputs: a versioned extent name
-// and the decoder-critical configuration mixed in ahead of the audio — the first
+// and the decoder-critical configuration mixed in ahead of the audio - the first
 // frame header together with the decoded sample rate and channel count, so two
 // streams with identical frame bytes but a different rate or channel layout hash
 // differently.

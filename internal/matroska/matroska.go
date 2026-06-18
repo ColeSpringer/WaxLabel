@@ -1,7 +1,8 @@
 // Package matroska implements reading and tag-writing Matroska / WebM
 // (.mka / .webm / .mkv) metadata. Tags (scoped SimpleTags), the segment title,
-// and cover-art attachments are writable; chapters and cluster/essence rewriting
-// are out of v1 scope. The package is internal through v0.x.
+// cover-art attachments, and chapters (the default EditionEntry) are writable;
+// cluster/essence rewriting is out of scope (it touches encoded audio). The
+// package is internal through v0.x.
 //
 // A Matroska file is an EBML document: a tree of length-prefixed elements. Tags
 // live in Segment.Tags as Tag elements, each scoping a set of SimpleTag
@@ -9,7 +10,7 @@
 // Targets element. The segment title lives in Segment.Info.Title (where ffmpeg
 // puts the file's "title"), and cover art lives in Segment.Attachments as an
 // image AttachedFile. The audio geometry comes from Segment.Tracks; the cluster
-// media payloads are never read — only their byte range is recorded.
+// media payloads are never read - only their byte range is recorded.
 //
 // The codec is preservation-aware: the full scoped tag tree (including names
 // that do not project to a canonical key, and nested sub-tags) is kept in the
@@ -48,9 +49,9 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 }
 
 // Capabilities reports Matroska as tag-writable: tags (scoped SimpleTags) and the
-// segment title round-trip fully, and cover art writes as an image AttachedFile —
-// except into a WebM file, whose subset excludes Attachments. Chapters are not
-// modeled in v1 (read or write); Matroska chapter support is step 13.5.
+// segment title round-trip fully, cover art writes as an image AttachedFile -
+// except into a WebM file, whose subset excludes Attachments - and chapters
+// (Chapters > EditionEntry > ChapterAtom) round-trip through the default edition.
 func (Codec) Capabilities(opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
@@ -64,8 +65,14 @@ func (Codec) Capabilities(opts core.WriteOptions) core.Capabilities {
 		Constraints: []string{"not writable to WebM (Attachments is outside the WebM subset)"},
 	}
 	chapters := core.Capability{
-		Read: core.AccessNone, Write: core.AccessNone,
-		Representation: "not modeled in v1",
+		Read: core.AccessFull, Write: core.AccessFull,
+		Representation: "Chapters > EditionEntry > ChapterAtom (default edition)",
+		Fidelity:       "lossless", // chapter times round-trip exactly (absolute nanoseconds)
+		Constraints: []string{
+			"edits apply to the default edition; other editions and chapter UIDs preserved",
+			"a chapter edit flattens the default edition to a title/start/end model - nested sub-chapters and secondary-language displays in it are not preserved (untouched chapters are kept verbatim)",
+		},
+		// No MaxItems: Matroska has no chapter-count cap (unlike MP4's 255-entry chpl).
 	}
 	return core.NewCapabilities(core.FormatMatroska, false, fields, pictures, chapters, nil)
 }

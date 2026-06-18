@@ -1,7 +1,7 @@
 // Command waxlabel is the command-line interface to the WaxLabel audio-metadata
 // library. It reads and writes audio-file tags and embedded cover art for the
 // formats the library supports (FLAC today; more as codecs land) and exists to
-// dogfood the library end to end — every command maps directly onto the public
+// dogfood the library end to end - every command maps directly onto the public
 // API.
 //
 // Usage:
@@ -33,7 +33,7 @@ import (
 
 func main() {
 	// Two-stage interrupt: the first signal cancels in-flight work (parse, hash,
-	// and the atomic write all honor ctx); a second forces an immediate exit — the
+	// and the atomic write all honor ctx); a second forces an immediate exit - the
 	// escape hatch for an operation that cannot observe cancellation (e.g. blocked
 	// in an fsync syscall). The handler runs on its own goroutine so the second
 	// signal fires even while the main goroutine is stuck. os.Exit skips deferred
@@ -54,7 +54,7 @@ func main() {
 }
 
 // dispatch builds and runs the root command and returns the process exit code,
-// rendering any terminal error exactly once — as a JSON envelope on stdout under
+// rendering any terminal error exactly once - as a JSON envelope on stdout under
 // --json, or a human-readable line on stderr otherwise. It takes its streams and
 // arguments as parameters so tests can drive it without spawning a process.
 func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) int {

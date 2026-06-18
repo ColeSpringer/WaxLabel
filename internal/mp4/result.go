@@ -93,7 +93,7 @@ func buildResult(edited *core.Media, base *doc, newItems []item, lay layout, del
 // mdat range, and top-level atom that lies at or past regionEnd. Both the
 // ilst-only and the chapter (udta) rewrite paths share it, so the two result
 // builders cannot drift in how they keep the media playable. (insertion is the
-// region start — chunk offsets at or before it never move; regionEnd is where
+// region start - chunk offsets at or before it never move; regionEnd is where
 // trailing atoms begin to shift.)
 func shiftStructure(nd, base *doc, insertion, regionEnd, delta int64) {
 	moov := *base.moov

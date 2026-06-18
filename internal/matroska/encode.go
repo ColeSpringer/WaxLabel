@@ -12,8 +12,8 @@ import (
 // VINTs. Reimplemented from EBML/RFC 8794; nothing is copied.
 
 // idBytes returns an element ID's on-wire bytes. The ID already carries its
-// length-descriptor bits, so its magnitude fixes the byte count (0x80–0xFE ⇒ 1
-// byte … a 4-byte ID ⇒ 4), mirroring how readVINT(keepMarker=true) decoded it.
+// length-descriptor bits, so its magnitude fixes the byte count (0x80-0xFE => 1
+// byte ... a 4-byte ID => 4), mirroring how readVINT(keepMarker=true) decoded it.
 func idBytes(id uint64) []byte {
 	switch {
 	case id <= 0xFF:
@@ -30,7 +30,7 @@ func idBytes(id uint64) []byte {
 // vintWidth returns the smallest VINT byte length that can hold n as a data
 // size. A k-byte VINT stores 7k value bits, but the all-ones pattern is the
 // reserved "unknown size" form, so a value that would fill k bytes exactly is
-// pushed to k+1 — keeping every size we write a definite one.
+// pushed to k+1 - keeping every size we write a definite one.
 func vintWidth(n uint64) int {
 	for k := 1; k <= 8; k++ {
 		if n < (uint64(1)<<(7*k))-1 {
@@ -85,7 +85,7 @@ func uintData(v uint64) []byte {
 }
 
 // uintDataWidth encodes v as a big-endian integer in exactly width bytes, or
-// nil if it does not fit — used to patch a position in place at its original
+// nil if it does not fit - used to patch a position in place at its original
 // width so the surrounding element keeps its size.
 func uintDataWidth(v uint64, width int) []byte {
 	if width < 1 || width > 8 {
@@ -121,14 +121,14 @@ func stringElement(id uint64, s string) []byte { return encElement(id, []byte(s)
 
 // crcElement renders a CRC-32 element (ID 0xBF, 4-byte little-endian value) over
 // content. Matroska's CRC-32 is the IEEE polynomial (zlib's crc32) stored
-// little-endian — verified against the real fixtures' stored CRCs.
+// little-endian - verified against the real fixtures' stored CRCs.
 func crcElement(content []byte) []byte {
 	sum := crc32.ChecksumIEEE(content)
 	return []byte{idCRC32 & 0xFF, 0x84, byte(sum), byte(sum >> 8), byte(sum >> 16), byte(sum >> 24)}
 }
 
 // withCRC prepends a CRC-32 element computed over payload, returning the master
-// element's content (CRC element ++ payload) — the form mkvmerge writes, where
+// element's content (CRC element ++ payload) - the form mkvmerge writes, where
 // the CRC covers everything in the master after itself.
 func withCRC(payload []byte) []byte {
 	crc := crcElement(payload)

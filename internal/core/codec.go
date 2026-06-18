@@ -21,8 +21,8 @@ type Codec interface {
 	// Parse reads metadata from src into a Media.
 	Parse(ctx context.Context, src ReaderAtSized, opts ParseOptions) (*Media, error)
 	// Plan computes the rewrite that realizes edited over base (the unedited
-	// parse). It works purely from the parsed Media — the native document holds
-	// every structural detail needed — so a detached Document can be planned
+	// parse). It works purely from the parsed Media - the native document holds
+	// every structural detail needed - so a detached Document can be planned
 	// without reopening the source; only Execute reads the source bytes. The
 	// returned plan's Report describes exactly what executing it will do.
 	Plan(ctx context.Context, base, edited *Media, opts WriteOptions) (*WritePlan, error)
@@ -63,8 +63,8 @@ type WritePlan struct {
 // edit touches nothing: a verbatim whole-file copy flagged NoOp (so SaveBack
 // skips it, while SaveAsFile/WriteTo still emit the whole file), carrying result
 // as the post-write Media. The passed report (already bearing Format and
-// BytesBefore) is finalized here — NoOp marker, unchanged byte count, the "no
-// changes" operation — so the no-op path cannot drift between codecs.
+// BytesBefore) is finalized here - NoOp marker, unchanged byte count, the "no
+// changes" operation - so the no-op path cannot drift between codecs.
 func NoOpPlan(report WriteReport, size int64, result *Media) *WritePlan {
 	report.NoOp = true
 	report.BytesAfter = size
@@ -121,7 +121,7 @@ func Detect(path string, header []byte) (Codec, bool) {
 
 // DetectLeading detects src's format, looking past a recognized skippable leading
 // region when one is present. leadingLen reports the byte length of such a region
-// from the file's first bytes — it is supplied by the caller (as id3.TagSize) so
+// from the file's first bytes - it is supplied by the caller (as id3.TagSize) so
 // core need not import the id3 codec, which is the whole reason this front-tag
 // disambiguation cannot live inside id3 or be a method here without the callback.
 //

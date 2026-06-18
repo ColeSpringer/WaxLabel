@@ -22,7 +22,7 @@ func TestEqualPictures(t *testing.T) {
 		{"length differs", []wl.Picture{base}, nil, false},
 		{"data differs", []wl.Picture{base}, []wl.Picture{{Type: base.Type, MIME: base.MIME, Description: base.Description, Width: 10, Height: 10, Data: []byte{9}}}, false},
 		{"type differs", []wl.Picture{base}, []wl.Picture{{Type: wl.PicBackCover, MIME: base.MIME, Description: base.Description, Width: 10, Height: 10, Data: base.Data}}, false},
-		// Dimensions are part of identity — the precision the CLI-local diff lacked.
+		// Dimensions are part of identity - the precision the CLI-local diff lacked.
 		{"width differs", []wl.Picture{base}, []wl.Picture{{Type: base.Type, MIME: base.MIME, Description: base.Description, Width: 11, Height: 10, Data: base.Data}}, false},
 	}
 	for _, tc := range cases {

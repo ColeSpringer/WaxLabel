@@ -12,8 +12,8 @@ import (
 // planShift is the fallback when absorption does not apply (no reserved Void, or
 // the edited header does not fit one). It re-renders the changed children in
 // place and lets the tail shift by the size delta, then repoints the
-// segment-relative positions that moved — CueClusterPosition and the SeekHead
-// SeekPositions of elements after the edit — recomputing the affected CRC-32s and
+// segment-relative positions that moved - CueClusterPosition and the SeekHead
+// SeekPositions of elements after the edit - recomputing the affected CRC-32s and
 // the Segment size. Because the clusters move, the result records their new range.
 //
 // SeekHead positions are patched in place at their original width when they fit
@@ -21,21 +21,21 @@ import (
 // width or its target was dropped, the SeekHead is re-encoded at minimal width,
 // and its resulting size change is resolved by a short bounded layout fixpoint
 // (the plan's "fall back to a full re-encode"). A CueClusterPosition that would
-// overflow — astronomically rare, since cluster offsets are already wide — is
+// overflow - astronomically rare, since cluster offsets are already wide - is
 // refused cleanly rather than corrupting the index.
 func planShift(d *doc, base, edited *core.Media, ch changes, report core.WriteReport) (*core.WritePlan, error) {
 	wb := d.wb
-	newTags, newGroups, newInfo, newTitle, newAttach, newAtts, err := renderChanged(d, base, edited, ch)
+	r, err := renderChanged(d, base, edited, ch)
 	if err != nil {
 		return nil, err
 	}
 
-	items, seekIdx, cuesIdx := buildShiftItems(wb, ch, newTags, newInfo, newAttach)
+	items, seekIdx, cuesIdx := buildShiftItems(wb, ch, r)
 
 	// Resolve the layout, converging the SeekHead size if a re-encode changes it.
 	// Once a re-encode is needed (a position overflowed its width, or an entry to a
 	// dropped element must go), latch into rebuild mode: re-encoding always yields
-	// valid minimal-width positions, so staying in it gives a monotone fixpoint —
+	// valid minimal-width positions, so staying in it gives a monotone fixpoint -
 	// flipping back to in-place patching could oscillate around a width boundary.
 	var lay layout
 	converged, forceRebuild := false, false
@@ -73,16 +73,17 @@ func planShift(d *doc, base, edited *core.Media, ch changes, report core.WriteRe
 
 	report.BytesAfter = lay.size
 	report.Operations = shiftOps(ch, len(edited.Pictures), lay.delta)
-	result := buildResult(d, edited, newGroups, newTitle, newAtts, ch, lay)
+	result := buildResult(d, edited, r, ch, lay)
 	return &core.WritePlan{Segments: lay.segs, NoOp: false, Report: report, Result: result}, nil
 }
 
 // buildShiftItems produces the output item list for every top-level child, with
-// the changed children substituted and any newly created Tags/Attachments placed
-// just before the cluster tail. It returns the SeekHead and Cues item indices.
-func buildShiftItems(wb *writeBase, ch changes, newTags, newInfo, newAttach []byte) (items []outItem, seekIdx, cuesIdx int) {
+// the changed children substituted and any newly created Tags/Attachments/Chapters
+// placed just before the cluster tail. It returns the SeekHead and Cues item indices.
+func buildShiftItems(wb *writeBase, ch changes, r *rendered) (items []outItem, seekIdx, cuesIdx int) {
 	seekIdx, cuesIdx = -1, -1
-	insertAt, tagsPlaced, attachPlaced := -1, false, false
+	insertAt := -1
+	tagsPlaced, attachPlaced, chaptersPlaced := false, false, false
 	for _, c := range wb.children {
 		if insertAt < 0 && c.start >= wb.clusterStart {
 			insertAt = len(items)
@@ -95,19 +96,25 @@ func buildShiftItems(wb *writeBase, ch changes, newTags, newInfo, newAttach []by
 			cuesIdx = len(items)
 			items = append(items, copyItem(c, itemOther))
 		case c.id == idInfo && ch.title:
-			items = append(items, litItem(idInfo, newInfo, c.start, itemInfo))
+			items = append(items, litItem(idInfo, r.info, c.start, itemInfo))
 		case c.id == idTags && ch.simple:
-			if tagsPlaced || newTags == nil {
+			if tagsPlaced || r.tags == nil {
 				continue // dropped, or a second Tags master (the first carries every group)
 			}
 			tagsPlaced = true
-			items = append(items, litItem(idTags, newTags, c.start, itemTags))
+			items = append(items, litItem(idTags, r.tags, c.start, itemTags))
 		case c.id == idAttachments && ch.pictures:
-			if attachPlaced || newAttach == nil {
+			if attachPlaced || r.attach == nil {
 				continue // dropped, or a second Attachments master
 			}
 			attachPlaced = true
-			items = append(items, litItem(idAttachments, newAttach, c.start, itemAttach))
+			items = append(items, litItem(idAttachments, r.attach, c.start, itemAttach))
+		case c.id == idChapters && ch.chapters:
+			if chaptersPlaced || r.chapters == nil {
+				continue // dropped (cleared), or a second Chapters element
+			}
+			chaptersPlaced = true
+			items = append(items, litItem(idChapters, r.chapters, c.start, itemChapters))
 		default:
 			items = append(items, copyItem(c, itemOther))
 		}
@@ -116,11 +123,14 @@ func buildShiftItems(wb *writeBase, ch changes, newTags, newInfo, newAttach []by
 		insertAt = len(items)
 	}
 	var created []outItem
-	if ch.simple && !tagsPlaced && newTags != nil {
-		created = append(created, litItem(idTags, newTags, -1, itemTags))
+	if ch.simple && !tagsPlaced && r.tags != nil {
+		created = append(created, litItem(idTags, r.tags, -1, itemTags))
 	}
-	if ch.pictures && !attachPlaced && newAttach != nil {
-		created = append(created, litItem(idAttachments, newAttach, -1, itemAttach))
+	if ch.pictures && !attachPlaced && r.attach != nil {
+		created = append(created, litItem(idAttachments, r.attach, -1, itemAttach))
+	}
+	if ch.chapters && !chaptersPlaced && r.chapters != nil {
+		created = append(created, litItem(idChapters, r.chapters, -1, itemChapters))
 	}
 	if len(created) > 0 {
 		items = insertItems(items, insertAt, created)
@@ -135,7 +145,7 @@ func buildShiftItems(wb *writeBase, ch changes, newTags, newInfo, newAttach []by
 }
 
 // computeShiftLayout recomputes the Segment lead (the recomputed size VINT), the
-// output data start, the old→new start map, and the new Segment body length from
+// output data start, the old->new start map, and the new Segment body length from
 // the current item sizes.
 func computeShiftLayout(wb *writeBase, items []outItem) (segLead []bits.Segment, outSegStart int64, oldToNew map[int64]int64, bodyLen int64) {
 	for _, it := range items {
@@ -181,7 +191,7 @@ func rebuildSeekHead(sh *seekHead, oldToNew map[int64]int64, inSegStart, outSegS
 	for _, e := range sh.entries {
 		newOff, ok := oldToNew[inSegStart+int64(e.target)]
 		if !ok {
-			continue // target dropped — omit the stale entry
+			continue // target dropped - omit the stale entry
 		}
 		if e.idRaw == nil {
 			return nil, 0, false
@@ -267,6 +277,8 @@ func assembleShift(wb *writeBase, items []outItem, segLead []bits.Segment, outSe
 		case itemAttach:
 			lay.hasAttach = true
 			lay.attach = attachBlock{start: it.outOff, end: it.outOff + it.n, hasCRC: wb.attach != nil && wb.attach.hasCRC}
+		case itemChapters:
+			lay.chaptersRaw = it.lit
 		}
 		if it.id == idCluster && lay.clusterStart == 0 {
 			lay.clusterStart = it.outOff
@@ -305,6 +317,9 @@ func shiftOps(ch changes, pics int, delta int64) []string {
 	}
 	if ch.pictures {
 		ops = append(ops, "rewrote Attachments", "pictures: "+strconv.Itoa(pics))
+	}
+	if ch.chapters {
+		ops = append(ops, "rewrote Chapters")
 	}
 	ops = append(ops, fmt.Sprintf("shifted tail by %d bytes", delta))
 	return ops

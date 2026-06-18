@@ -27,7 +27,7 @@ type Limits struct {
 
 // DefaultLimits are conservative defaults suitable for typical media files.
 var DefaultLimits = Limits{
-	MaxAllocBytes: 256 << 20, // 256 MiB — comfortably larger than any cover art
+	MaxAllocBytes: 256 << 20, // 256 MiB - comfortably larger than any cover art
 	MaxDepth:      64,
 }
 

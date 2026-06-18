@@ -51,7 +51,7 @@ func (p apage) bodyOff() int64 { return p.off + (p.total - p.bodyLen) }
 
 // doc is the Ogg native document: the decoder-critical header packets kept
 // verbatim, the decoded comment list and pictures, and a descriptor for every
-// audio page (headers only — never the audio bytes). It is the preservation-first
+// audio page (headers only - never the audio bytes). It is the preservation-first
 // base for rewrites and satisfies core.NativeDoc.
 type doc struct {
 	format core.Format // FormatOggVorbis or FormatOggOpus

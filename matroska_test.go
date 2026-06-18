@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	sampleMKA  = "testdata/sample.mka"
-	sampleWebM = "testdata/sample.webm"
-	notagsMKA  = "testdata/notags.mka"
+	sampleMKA   = "testdata/sample.mka"
+	sampleWebM  = "testdata/sample.webm"
+	notagsMKA   = "testdata/notags.mka"
+	chaptersMKA = "testdata/chapters.mka"
 )
 
 // TestMatroskaReadsSampleFixture exercises the committed real-ffmpeg fixture
@@ -112,7 +113,7 @@ func TestMatroskaWebMFixture(t *testing.T) {
 		t.Errorf("container=%q codec=%q", pr.Container, pr.First().Codec)
 	}
 
-	// Two ENCODER tags at the segment and track targets disagree → conflict.
+	// Two ENCODER tags at the segment and track targets disagree -> conflict.
 	var encoderScopes []wl.Scope
 	conflict := false
 	for _, fv := range doc.Families() {
@@ -130,7 +131,7 @@ func TestMatroskaWebMFixture(t *testing.T) {
 
 // TestMatroskaNoTags reads the metadata-stripped fixture: ffmpeg still stamps the
 // Lavf encoder, so the descriptive fields are empty but the inherited-encoder
-// warning fires — the "sparse, not blank" acquired case.
+// warning fires - the "sparse, not blank" acquired case.
 func TestMatroskaNoTags(t *testing.T) {
 	doc := mustParseFile(t, notagsMKA)
 	f := doc.Fields()
@@ -143,8 +144,7 @@ func TestMatroskaNoTags(t *testing.T) {
 }
 
 // TestMatroskaWritable confirms Matroska is tag-writable: it is Implemented and
-// Writable, capabilities report full tag/picture read and write, and chapters
-// remain unmodeled in v1.
+// Writable, and capabilities report full tag/picture/chapter read and write.
 func TestMatroskaWritable(t *testing.T) {
 	if !wl.FormatMatroska.Implemented() {
 		t.Error("Matroska should be Implemented")
@@ -163,8 +163,8 @@ func TestMatroskaWritable(t *testing.T) {
 	if caps.GenericField.Read != wl.AccessFull {
 		t.Error("read capability should be AccessFull")
 	}
-	if caps.Chapters.Read != wl.AccessNone || caps.Chapters.Write != wl.AccessNone {
-		t.Error("chapters should be unmodeled (none) in v1")
+	if caps.Chapters.Read != wl.AccessFull || caps.Chapters.Write != wl.AccessFull {
+		t.Error("chapters should be read+write Full")
 	}
 }
 
@@ -252,7 +252,7 @@ func TestMatroskaScopeResolution(t *testing.T) {
 
 // TestMatroskaTargetTypeString confirms a Targets element that carries only the
 // informational TargetType string (no numeric TargetTypeValue) still scopes
-// correctly — the Picard / hand-authored case.
+// correctly - the Picard / hand-authored case.
 func TestMatroskaTargetTypeString(t *testing.T) {
 	tags := mkEl(idTags, mkEl(idTag, concat(
 		mkEl(idTargets, mkStr(idTgtType, "TRACK")),
@@ -357,7 +357,7 @@ func TestMatroskaNestedTagPreserved(t *testing.T) {
 
 // TestMatroskaRejectsOverLimitTag confirms a tag value larger than the configured
 // MaxAllocBytes fails the parse with ErrSizeTooLarge rather than being silently
-// dropped — the alloc limit is surfaced, not bypassed.
+// dropped - the alloc limit is surfaced, not bypassed.
 func TestMatroskaRejectsOverLimitTag(t *testing.T) {
 	big := make([]byte, 4096)
 	for i := range big {
@@ -381,7 +381,7 @@ func TestMatroskaRejectsOverLimitTag(t *testing.T) {
 }
 
 // TestMatroskaNaNDuration confirms a NaN Duration float does not become a garbage
-// track duration (the float→int64 conversion of NaN is implementation-defined).
+// track duration (the float->int64 conversion of NaN is implementation-defined).
 func TestMatroskaNaNDuration(t *testing.T) {
 	var nan [8]byte
 	binary.BigEndian.PutUint64(nan[:], math.Float64bits(math.NaN()))
@@ -403,7 +403,7 @@ func TestMatroskaNaNDuration(t *testing.T) {
 // TestMatroskaMultiTrackDuration confirms the segment duration is applied to every
 // audio track, not just the first.
 func TestMatroskaMultiTrackDuration(t *testing.T) {
-	var dur [8]byte // Duration 1000.0 (× 1ms TimestampScale ⇒ 1s)
+	var dur [8]byte // Duration 1000.0 (x 1ms TimestampScale => 1s)
 	binary.BigEndian.PutUint64(dur[:], math.Float64bits(1000))
 	info := mkEl(idInfo, mkEl(idDuration, dur[:]))
 	mkTrack := func(codec string) []byte {
@@ -504,9 +504,9 @@ func FuzzMatroskaParse(f *testing.F) {
 	f.Add([]byte(magic + "\x80\x18\x53\x80\x67\xff")) // header + unknown-size Segment
 	f.Add([]byte(magic + "\xff"))                     // unknown-size header
 	// Regression: an Info whose malformed "CRC-32" child has a junk size that
-	// clamps to 4 bytes must not be mistaken for a real CRC — a title edit on it
+	// clamps to 4 bytes must not be mistaken for a real CRC - a title edit on it
 	// once wrote a title that a re-parse could not read back.
-	f.Add([]byte("\x810\x18S\x80gA0\x15I\xa9fɿ0000000"))
+	f.Add([]byte("\x810\x18S\x80gA0\x15I\xa9f\xc9\xbf0000000"))
 	ctx := context.Background()
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// Ensure the EBML magic leads so detection lands on Matroska.
@@ -539,7 +539,7 @@ func FuzzMatroskaParse(f *testing.F) {
 		}
 
 		// A Title edit must round-trip or refuse cleanly (a layout the writer does
-		// not yet handle — no Void/overflow/etc. surfaces ErrUnsupportedTag).
+		// not yet handle - no Void/overflow/etc. surfaces ErrUnsupportedTag).
 		plan, err := doc.Edit().Set(tag.Title, "fuzz").Prepare()
 		if err != nil {
 			if errors.Is(err, waxerr.ErrUnsupportedTag) || errors.Is(err, waxerr.ErrInvalidData) {
@@ -561,7 +561,7 @@ func FuzzMatroskaParse(f *testing.F) {
 	})
 }
 
-// --- test helpers: a minimal EBML writer ------------------------------------
+// Test helpers: a minimal EBML writer.
 
 // Element IDs needed by the synth tests (mirroring the unexported codec consts).
 const (
@@ -597,6 +597,17 @@ const (
 	idFileName    = 0x466E
 	idFileMime    = 0x4660
 	idFileData    = 0x465C
+	// Chapters synth IDs (used by matroska_chapter_test.go).
+	idChapters      = 0x1043A770
+	idEditionEntry  = 0x45B9
+	idEditionUID    = 0x45BC
+	idEditionFlagDf = 0x45DB
+	idChapterAtom   = 0xB6
+	idChapterUID    = 0x73C4
+	idChapTimeStart = 0x91
+	idChapTimeEnd   = 0x92
+	idChapDisplay   = 0x80
+	idChapString    = 0x85
 )
 
 func concat(parts ...[]byte) []byte {
@@ -623,7 +634,7 @@ func idToBytes(id uint64) []byte {
 }
 
 // sizeVINT encodes a data size as a full 8-byte VINT (marker 0x01), which is
-// always valid regardless of the value — the parser accepts any VINT length.
+// always valid regardless of the value - the parser accepts any VINT length.
 func sizeVINT(n int) []byte {
 	v := uint64(n)
 	return []byte{0x01, byte(v >> 48), byte(v >> 40), byte(v >> 32), byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)}

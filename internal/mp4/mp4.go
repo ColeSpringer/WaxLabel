@@ -8,7 +8,7 @@
 // neighbouring free padding atom so the media usually does not move at all. When
 // the tag list must grow beyond the available padding, every track's stco/co64
 // offset table is shifted so the media stays playable, and the enclosing
-// moov/udta/meta atom sizes are patched — no atom is reordered and the mdat bytes
+// moov/udta/meta atom sizes are patched - no atom is reordered and the mdat bytes
 // are copied verbatim.
 //
 // Chapters are read from both the Nero list (moov.udta.chpl) and a QuickTime
@@ -42,7 +42,7 @@ func init() { core.Register(New()) }
 func (Codec) Format() core.Format  { return core.FormatMP4 }
 func (Codec) Extensions() []string { return []string{".m4a", ".mp4", ".m4b", ".alac"} }
 
-// Sniff matches an "....ftyp" header — the file-type atom that opens virtually
+// Sniff matches an "....ftyp" header - the file-type atom that opens virtually
 // every MP4/M4A file. The brand inside ftyp is not inspected here; a fragmented
 // or otherwise unsupported variant is detected and rejected in Parse.
 func (Codec) Sniff(header []byte) bool {
@@ -83,8 +83,8 @@ func (Codec) Capabilities(opts core.WriteOptions) core.Capabilities {
 
 // EssenceExtent returns the MP4 essence-digest inputs: a versioned extent name
 // and the decoder-critical sample-entry configuration mixed in ahead of the
-// media — the codec four-cc plus the channel count, sample size, and sample rate
-// — so identical mdat bytes under a different codec or geometry hash differently.
+// media - the codec four-cc plus the channel count, sample size, and sample rate
+// - so identical mdat bytes under a different codec or geometry hash differently.
 // The hashed extent itself is the mdat payload range(s).
 func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 	var cfg [12]byte

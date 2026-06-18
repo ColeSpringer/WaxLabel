@@ -29,7 +29,7 @@ func (c chunk) id4() string { return string(c.id[:]) }
 
 // textItem is one decoded native text chunk (NAME/AUTH/"(c) "/ANNO): its 4CC and
 // the raw character bytes (the run up to the first NUL, as stored). Keeping the
-// raw bytes — rather than a decoded string — lets the value decode on demand
+// raw bytes - rather than a decoded string - lets the value decode on demand
 // under the AIFF/UTF-8 fallback in text(), the same approach the wav codec uses
 // for INFO items. The live chunk-index data lives in doc.textIdx.
 type textItem struct {
@@ -92,7 +92,7 @@ type doc struct {
 	// counted in the FORM size.
 	trailingOff int64
 	trailingLen int64
-	// outerOff/outerLen capture bytes after the FORM chunk — data appended outside
+	// outerOff/outerLen capture bytes after the FORM chunk - data appended outside
 	// the declared FORM size (e.g. a tacked-on tag). Preserved verbatim but kept
 	// outside the recomputed FORM size so a strict reader does not misparse them.
 	outerOff int64

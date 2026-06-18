@@ -104,7 +104,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 // checkBlockSizes rejects any block whose body exceeds the 24-bit length field,
 // which would otherwise be silently truncated into a corrupt file. Oversized
-// pictures (the realistic case — hi-res cover art) report ErrPictureTooLarge.
+// pictures (the realistic case - hi-res cover art) report ErrPictureTooLarge.
 func checkBlockSizes(blocks []block) error {
 	for _, b := range blocks {
 		if len(b.body) <= maxBlockBody {
@@ -244,7 +244,7 @@ func buildResult(edited *core.Media, orig *doc, newBlocks []block, newComments [
 	nd.blocks = slices.Clone(newBlocks)
 
 	// Derive the result's canonical view from the comments actually written, so
-	// the returned Document equals a re-parse of the bytes — in particular a key
+	// the returned Document equals a re-parse of the bytes - in particular a key
 	// set present-but-empty (which Vorbis cannot store) is correctly absent here.
 	// Building the Media directly also avoids cloning edited's (shared) native.
 	tags, families := projectComments(newComments)

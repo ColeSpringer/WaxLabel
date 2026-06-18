@@ -4,7 +4,7 @@ import "github.com/colespringer/waxlabel/internal/bits"
 
 // LegacyPolicy controls what happens to legacy/foreign tag containers (stray
 // leading ID3v2, trailing ID3v1, APEv2) when writing. The default preserves
-// them — WaxLabel never strips silently.
+// them - WaxLabel never strips silently.
 type LegacyPolicy uint8
 
 const (
@@ -93,7 +93,7 @@ func (p PaddingPolicy) ReuseOrTarget(origLen, contentLen int64) int64 {
 type ID3MultiValuePolicy uint8
 
 const (
-	// ID3MultiNullSep stores values in one frame separated by NUL bytes — the
+	// ID3MultiNullSep stores values in one frame separated by NUL bytes - the
 	// v2.4 form; round-trips losslessly but is a de-facto extension in v2.3.
 	ID3MultiNullSep ID3MultiValuePolicy = iota
 	// ID3MultiRepeatFrame writes one frame per value, so a reader that takes the

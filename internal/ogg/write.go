@@ -18,8 +18,8 @@ import (
 // header is rebuilt, the identification and (for Vorbis) setup headers are kept
 // verbatim, and every audio packet payload is copied unchanged. The BOS page is
 // copied as-is; the comment/setup headers are re-paginated. If that changes the
-// header-region page count, the following audio pages are renumbered — their
-// sequence number rewritten and CRC patched — without re-reading the audio.
+// header-region page count, the following audio pages are renumbered - their
+// sequence number rewritten and CRC patched - without re-reading the audio.
 func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.WriteOptions) (*core.WritePlan, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -96,7 +96,7 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 		}
 	} else {
 		// Page count changed: every following page shifts by delta, so each audio
-		// page's sequence number is rebased and its CRC patched in place — the body
+		// page's sequence number is rebased and its CRC patched in place - the body
 		// is still copied byte-for-byte, only the 8 header bytes change. The patch
 		// bytes for all pages share one backing slice (a single allocation, not one
 		// per page); each page's literal segment is a distinct 8-byte window into it.

@@ -14,7 +14,7 @@ import (
 
 // TestPreservationProperty is the property-based proof of the preservation-first
 // contract: for an arbitrary sequence of canonical edits, writing then
-// re-parsing yields exactly the edited tag set — edited keys take their new
+// re-parsing yields exactly the edited tag set - edited keys take their new
 // values and every untouched key is preserved. It also checks the audio
 // essence is unchanged by any tag-only edit.
 func TestPreservationProperty(t *testing.T) {
@@ -103,7 +103,7 @@ func dumpTags(ts tag.TagSet) map[string][]string {
 	return m
 }
 
-// TestTypedRoundTrip checks the typed→native→typed identity for the common
+// TestTypedRoundTrip checks the typed->native->typed identity for the common
 // fields: a Tags struct written and re-read projects back to the same values.
 func TestTypedRoundTrip(t *testing.T) {
 	ctx := context.Background()

@@ -67,7 +67,7 @@ func TestPlanTransferUnsupportedDest(t *testing.T) {
 }
 
 // TestPrepareTransferReportMatchesResult is the load-bearing invariant: the loss
-// report PrepareTransfer returns is exactly what executing its plan produces —
+// report PrepareTransfer returns is exactly what executing its plan produces -
 // every carried field lands with the source's values, and the dropped chapters do
 // not appear. M4B -> FLAC exercises both a carried set and a dropped set at once.
 func TestPrepareTransferReportMatchesResult(t *testing.T) {
@@ -105,7 +105,7 @@ func TestPrepareTransferReportMatchesResult(t *testing.T) {
 		}
 	}
 	// The blank destination had no tags, so the result's keys are exactly the
-	// carried set — the report and the write cannot disagree on membership.
+	// carried set - the report and the write cannot disagree on membership.
 	for _, k := range result.Tags().Keys() {
 		if !carriedKeys[k] {
 			t.Errorf("result has key %s the report did not mark carried", k)
@@ -216,7 +216,7 @@ func TestMP4RejectsUnstorableCover(t *testing.T) {
 }
 
 // TestPrepareTransferToMatroska projects a FLAC's tags onto a Matroska canvas and
-// confirms the report matches the written result — a cross-format transfer into a
+// confirms the report matches the written result - a cross-format transfer into a
 // now-writable container (Title lands in Info.Title, the rest in SimpleTags).
 func TestPrepareTransferToMatroska(t *testing.T) {
 	src := mustParseFile(t, sampleFLAC)

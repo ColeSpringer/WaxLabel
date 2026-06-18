@@ -25,7 +25,7 @@ func BuildTagSet(contribs []Contribution) tag.TagSet {
 
 // BuildFamilies groups contributions by key into family entries for the given
 // family, marking an entry unselected when distinct sources supplied distinct
-// values for one key — a conflict (e.g. an ID3 TYER vs TDRC recording date, or an
+// values for one key - a conflict (e.g. an ID3 TYER vs TDRC recording date, or an
 // MP4 legacy gnre vs text genre).
 func BuildFamilies(contribs []Contribution, family Family) []FamilyValue {
 	index := map[tag.Key]int{}

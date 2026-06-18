@@ -15,19 +15,19 @@ import (
 //
 //	[Element ID (VINT)][Element Data Size (VINT)][data]
 //
-// A VINT's first byte holds a length descriptor — the position of its most
-// significant set bit gives the total byte length (0x80 ⇒ 1 byte … 0x01 ⇒ 8).
+// A VINT's first byte holds a length descriptor - the position of its most
+// significant set bit gives the total byte length (0x80 => 1 byte ... 0x01 => 8).
 // For element IDs the descriptor bits are kept (the canonical ID form); for
 // sizes and values they are stripped. A size whose value field is all ones is
 // the "unknown size" form (a streamed element that runs until a higher-level
-// element appears) — preserved verbatim on write rather than rewritten. The
+// element appears) - preserved verbatim on write rather than rewritten. The
 // inverse encoders live in encode.go.
 //
 // Reimplemented from the EBML/Matroska specifications (RFC 8794 / RFC 9559).
 
 // Element IDs this codec reads. The structural elements the write path must
-// preserve byte-faithfully — SeekHead/Seek/SeekPosition, Cues/CueClusterPosition,
-// Void, and CRC-32 — are enumerated here too (read-only v1 skipped them by size).
+// preserve byte-faithfully - SeekHead/Seek/SeekPosition, Cues/CueClusterPosition,
+// Void, and CRC-32 - are enumerated here too (read-only v1 skipped them by size).
 // The cluster media payload is still never decoded, only its byte range recorded.
 const (
 	idEBML          = 0x1A45DFA3
@@ -76,11 +76,21 @@ const (
 	idCueTrackPos   = 0xB7
 	idCueClusterPos = 0xF1
 	idChapters      = 0x1043A770
+	idEditionEntry  = 0x45B9
+	idEditionUID    = 0x45BC
+	idEditionFlagDf = 0x45DB
+	idChapterAtom   = 0xB6
+	idChapterUID    = 0x73C4
+	idChapTimeStart = 0x91
+	idChapTimeEnd   = 0x92
+	idChapDisplay   = 0x80
+	idChapString    = 0x85
+	idChapLang      = 0x437C
 	idVoid          = 0xEC
 	idCRC32         = 0xBF
 )
 
-// level1IDs are the Segment's direct children — the elements an unknown-size
+// level1IDs are the Segment's direct children - the elements an unknown-size
 // element (in practice a streamed Cluster) ends at, per the EBML rule that an
 // unknown-size element runs until the next equal-or-higher-level element. They
 // are used to bound such an element by skipping its children by size (never
@@ -95,7 +105,7 @@ const trackTypeAudio = 2
 
 // maxElement caps how many bytes of a single leaf element this codec reads into
 // memory (tag strings, attachment metadata, cover art). The large cluster media
-// payloads are never read — only their byte ranges are recorded — so this guards
+// payloads are never read - only their byte ranges are recorded - so this guards
 // the small structural elements against a hostile declared size, alongside the
 // user's MaxAllocBytes limit (whichever is smaller wins).
 const maxElement = 64 << 20
@@ -191,7 +201,7 @@ func readElement(src core.ReaderAtSized, off, end, limit int64) (element, bool) 
 
 // resolveUnknownEnd returns the true end of an unknown-size element whose data
 // begins at from, used at the Segment level so siblings placed after a streamed
-// (unknown-size) Cluster — trailing Tags or Attachments — are not lost. It skips
+// (unknown-size) Cluster - trailing Tags or Attachments - are not lost. It skips
 // the element's children by their declared size (reading only headers, never the
 // media payload) until it meets a Segment-level element ID, which by the EBML
 // unknown-size rule is where the element ends. It falls back to end when it
@@ -253,7 +263,7 @@ func eachChild(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limi
 
 // walkSegment iterates the Segment's direct children like eachChild, but resolves
 // an unknown-size element (a streamed Cluster) to its true end via
-// resolveUnknownEnd, so siblings placed after it — trailing Tags or Attachments —
+// resolveUnknownEnd, so siblings placed after it - trailing Tags or Attachments -
 // are still visited and the element's recorded extent is accurate rather than
 // overstated to the Segment end.
 func walkSegment(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limit int64, fn func(element) error) error {
@@ -281,7 +291,7 @@ func walkSegment(src core.ReaderAtSized, start, end int64, depth *bits.Depth, li
 	return nil
 }
 
-// readUint reads an EBML unsigned integer (big-endian, 1–8 bytes).
+// readUint reads an EBML unsigned integer (big-endian, 1-8 bytes).
 func readUint(src core.ReaderAtSized, el element, limit int64) uint64 {
 	n := el.dataLen()
 	if n <= 0 || n > 8 {

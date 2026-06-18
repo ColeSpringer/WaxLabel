@@ -37,7 +37,7 @@ func chapterWarn(doc *wl.Document, code wl.WarningCode) bool {
 
 // TestMP4ChapterEditResultMatchesReparse is the regression for the headline
 // finding: the in-memory result of a chapter edit must equal a fresh parse of its
-// own bytes — same chapters (a preserved QuickTime track still wins), same
+// own bytes - same chapters (a preserved QuickTime track still wins), same
 // source-conflict warning, and same ftyp brand in the native view.
 func TestMP4ChapterEditResultMatchesReparse(t *testing.T) {
 	data := mp4QTFile([]int{0, 3000, 6000}, []string{"A", "B", "C"})
@@ -85,7 +85,7 @@ func TestMP4BrandPreservedAcrossEdit(t *testing.T) {
 
 func TestMP4ClearChaptersRemovesUdtaCleanly(t *testing.T) {
 	// Clearing the only child of a udta (a chpl) must drop the whole udta, not leave
-	// an empty one — so a later edit does not create a second udta box.
+	// an empty one - so a later edit does not create a second udta box.
 	chpl := mp4Chpl(1, []time.Duration{0}, []string{"Solo"})
 	data := mp4AssembleUdta(chpl)
 	plan, err := mustParseBytes(t, data).Edit().ClearChapters().Prepare()

@@ -165,7 +165,7 @@ func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, 
 			continue
 		default:
 			// A stale ID3-identified chunk reaches the default only when it parsed as
-			// neither the authoritative ID3 (handled above) nor a marked duplicate —
+			// neither the authoritative ID3 (handled above) nor a marked duplicate -
 			// i.e. a lone chunk whose body failed to decode as ID3, so no authoritative
 			// ID3 was found. Drop it when we are writing a fresh ID3 chunk, so the output
 			// never carries two ID3 chunks (which a re-parse would flag as a duplicate,

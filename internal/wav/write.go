@@ -308,7 +308,7 @@ func assemble(d *doc, outs []outChunk) (segs []bits.Segment, lay outLayout, err 
 			// Word-alignment pad. Always a literal zero: the RIFF spec defines pad
 			// bytes as zero and not part of the data, and a malformed source may
 			// omit the final chunk's pad entirely (so copying it would read past
-			// EOF — found by the fuzzer).
+			// EOF - found by the fuzzer).
 			segs = append(segs, bits.Lit([]byte{0}))
 			running++
 		}

@@ -212,7 +212,7 @@ func TestPresentEmptyKeyAbsentInResult(t *testing.T) {
 	_, inResult := resDoc.Get(tag.Title)
 	_, inReparse := mustParseBytes(t, buf.b).Get(tag.Title)
 	if inResult != inReparse {
-		t.Errorf("result Title present=%v but re-parse present=%v — plan and write disagree", inResult, inReparse)
+		t.Errorf("result Title present=%v but re-parse present=%v - plan and write disagree", inResult, inReparse)
 	}
 	if inResult {
 		t.Error("present-but-empty Title should be absent in the written result")

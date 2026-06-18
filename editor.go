@@ -79,11 +79,11 @@ func (e *Editor) ClearPictures() *Editor {
 
 // SetChapters replaces the whole chapter list. Chapters are a timeline, so the
 // list is sorted by start time (stably, preserving the order of chapters that
-// share a start) — an out-of-order argument would otherwise lose a start when a
+// share a start) - an out-of-order argument would otherwise lose a start when a
 // container encodes spans relative to the previous chapter. A format that cannot
-// write chapters reports it via [Capabilities]; only MP4 is writable in this
-// version, and it caps a chapter list at 255 — a larger list is rejected at
-// [Editor.Prepare].
+// write chapters reports it via [Capabilities]; MP4/M4B and Matroska are writable.
+// MP4 caps a chapter list at 255 (the Nero chpl limit) - a larger list is rejected
+// at [Editor.Prepare]; Matroska has no such cap.
 func (e *Editor) SetChapters(chs ...Chapter) *Editor {
 	e.chapters = slices.Clone(chs)
 	slices.SortStableFunc(e.chapters, func(a, b Chapter) int { return cmp.Compare(a.Start, b.Start) })
@@ -99,7 +99,7 @@ func (e *Editor) ClearChapters() *Editor {
 }
 
 // Native returns the native editing hatch for inspection. It reflects the
-// original parsed document, not this editor's pending edits — so pictures or
+// original parsed document, not this editor's pending edits - so pictures or
 // tags added on the editor are not visible here until after a save and reparse.
 // Structural native mutation (arbitrary block add/remove, multiple comment
 // blocks, the vendor string) lands with the public codec packages at v1.0; in
@@ -126,8 +126,8 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 
 	// Share the native document and properties rather than deep-copying them:
 	// planning only reads the native (re-cloning the blocks it keeps), so a full
-	// copy here — which would duplicate every block body, including embedded
-	// cover art — is pure waste. Only the canonical tags (cloned by the patch)
+	// copy here - which would duplicate every block body, including embedded
+	// cover art - is pure waste. Only the canonical tags (cloned by the patch)
 	// and the picture set are replaced.
 	edited := &core.Media{
 		Format:      e.base.Format,

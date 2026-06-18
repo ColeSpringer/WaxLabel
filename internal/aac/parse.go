@@ -40,7 +40,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	// Audio properties from the first ADTS frame header. A stream too short to
 	// hold a fixed header, or a malformed one, leaves the track config zero;
 	// detection already required a valid header for a real .aac, so this is only
-	// defensive. Read only when a full header is present — a shorter slice can
+	// defensive. Read only when a full header is present - a shorter slice can
 	// never decode, so there is nothing to gain from reading it.
 	if avail := d.audioEnd - d.audioStart; avail >= int64(adtsHeaderSize) {
 		if head, err := bits.ReadSlice(src, d.audioStart, int64(adtsHeaderSize), limit); err == nil {
@@ -86,8 +86,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 const samplesPerAACFrame = 1024
 
 // buildTrack assembles the audio properties from the first ADTS frame. The
-// duration is a deliberate cheap estimate — the stream size divided by the first
-// frame's bitrate — not an O(frames) walk of every ADTS frame_length, which is
+// duration is a deliberate cheap estimate - the stream size divided by the first
+// frame's bitrate - not an O(frames) walk of every ADTS frame_length, which is
 // exactly the per-frame essence read a metadata read must avoid. It is therefore
 // approximate for variable-bitrate streams (the first frame may not be
 // representative), which is an accepted trade-off, not a bug.

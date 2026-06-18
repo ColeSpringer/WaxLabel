@@ -6,14 +6,14 @@ import (
 )
 
 // newPlanCmd builds the "plan" command, which resolves edits into a write plan
-// and reports exactly what saving would do — without touching the file.
+// and reports exactly what saving would do - without touching the file.
 func newPlanCmd() *cobra.Command {
 	var ef editFlags
 	cmd := &cobra.Command{
 		Use:   "plan <file>",
 		Short: "Show what an edit would write, without writing it",
 		Long: "Resolve the given edits into a write plan and print exactly what saving\n" +
-			"would do — the operations, the size change, padding, and warnings —\n" +
+			"would do - the operations, the size change, padding, and warnings -\n" +
 			"without modifying the file. With no edits it reports that the file is\n" +
 			"already up to date. The report is the same one set acts on, so the two\n" +
 			"cannot disagree.\n\n" +

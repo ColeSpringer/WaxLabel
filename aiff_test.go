@@ -131,7 +131,7 @@ func TestAIFFRoundTripNativeAndID3(t *testing.T) {
 	src := readFixture(t, sampleAIFF)
 	plan, err := mustParseBytes(t, src).Edit().
 		Set(tag.Title, "Edited Title").
-		Set(tag.Composer, "Edited Composer"). // non-native key → lands in ID3
+		Set(tag.Composer, "Edited Composer"). // non-native key -> lands in ID3
 		Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -226,8 +226,8 @@ func TestAIFFCoverRoundTrip(t *testing.T) {
 	}
 }
 
-// --- Write-side differential: ffmpeg/ffprobe must read what we wrote and accept
-// our audio. These skip cleanly when the tools are absent. ---
+// Write-side differential: ffmpeg/ffprobe must read what we wrote and accept
+// our audio. These skip cleanly when the tools are absent.
 
 func TestAIFFDifferentialFFprobeReadsOurTags(t *testing.T) {
 	requireTool(t, "ffprobe")
@@ -235,7 +235,7 @@ func TestAIFFDifferentialFFprobeReadsOurTags(t *testing.T) {
 	plan, err := mustParseFile(t, path).Edit().
 		Set(tag.Title, "Differential Title").       // native NAME chunk
 		Set(tag.Comment, "Differential Comment").   // native ANNO chunk
-		Set(tag.Composer, "Differential Composer"). // non-native key → ID3 chunk
+		Set(tag.Composer, "Differential Composer"). // non-native key -> ID3 chunk
 		Prepare()
 	if err != nil {
 		t.Fatal(err)

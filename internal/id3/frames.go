@@ -167,7 +167,7 @@ func decodeFrameFlags(flags [2]byte, major byte) (compressed, encrypted, groupin
 }
 
 // validFrameID reports whether id looks like a frame identifier: it begins with
-// A–Z or a digit, and the remaining characters are A–Z, digits, or spaces. The
+// A-Z or a digit, and the remaining characters are A-Z, digits, or spaces. The
 // trailing-space allowance tolerates the non-conformant-but-real case of a
 // three-character ID padded to four (e.g. "TT2 "), so such a frame is preserved
 // verbatim rather than ending the scan and dropping every later frame. A leading
@@ -216,8 +216,8 @@ func Render(writeVersion byte, frames []Frame, padding int) []byte {
 }
 
 // RenderedSize returns the on-disk byte length [Render] would emit for frames
-// with no padding — a 10-byte tag header plus each frame's 10-byte header and
-// body — without materializing the bytes. Codecs that size padding by
+// with no padding - a 10-byte tag header plus each frame's 10-byte header and
+// body - without materializing the bytes. Codecs that size padding by
 // reuse-in-place use it to avoid rendering the whole tag (picture bodies and
 // all) a throwaway second time just to measure it. The length is independent of
 // the write version: v2.3 and v2.4 frame headers are both 10 bytes; only the

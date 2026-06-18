@@ -10,7 +10,7 @@ import (
 // design: a struct's zero values cannot distinguish absent from empty from
 // cleared, so Tags is authoritative for nothing. Use it to read common fields
 // ergonomically ([Project]) and to write them as sugar ([Tags.Patch], which
-// only sets non-empty fields — clearing requires an explicit [TagPatch]).
+// only sets non-empty fields - clearing requires an explicit [TagPatch]).
 type Tags struct {
 	Title       string
 	Artists     []string

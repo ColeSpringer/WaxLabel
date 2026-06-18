@@ -17,8 +17,8 @@ func newVerifyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "verify <file>...",
 		Short: "Compute audio-essence (and optionally whole-file) identity",
-		Long: "Compute each file's audio-essence digest — a hash of the encoded audio\n" +
-			"plus its decoder-critical configuration, independent of tags — which\n" +
+		Long: "Compute each file's audio-essence digest - a hash of the encoded audio\n" +
+			"plus its decoder-critical configuration, independent of tags - which\n" +
 			"answers \"is this the same audio?\" for deduplication. The digest carries\n" +
 			"a versioned extent name, so it stays interpretable across library-wide\n" +
 			"refinements. With --whole-file, also compute the whole-file identity.",

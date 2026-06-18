@@ -6,16 +6,16 @@
 //
 // WAV carries tags in two places, so the codec handles both:
 //
-//   - LIST/INFO — the RIFF-native tag block (a small fixed 4CC vocabulary, one
+//   - LIST/INFO - the RIFF-native tag block (a small fixed 4CC vocabulary, one
 //     string each). It is what the ffmpeg family reads and writes, hence the
 //     realistic acquired-file case, so it is a first-class read/write container.
-//   - an embedded "id3 " chunk — a full ID3v2 tag (decoded by internal/id3),
+//   - an embedded "id3 " chunk - a full ID3v2 tag (decoded by internal/id3),
 //     the only place WAV can hold pictures and the MusicBrainz/Picard long tail.
 //
 // Precedence (read): the id3 chunk is authoritative when present (it is the
 // richer container and the deliberate-tagger signal); otherwise LIST/INFO is.
 // Both surface in the family view with conflicts flagged. Precedence (write):
-// see write.go — by default both present containers are kept in sync, INFO is
+// see write.go - by default both present containers are kept in sync, INFO is
 // the home for a bare file, and pictures or any value INFO cannot represent
 // force an id3 chunk; nothing is ever lost. All other chunks are preserved
 // verbatim. RF64/BW64 (the >4 GiB extension) is out of scope and fails loudly.
@@ -77,9 +77,9 @@ func (Codec) Capabilities(opts core.WriteOptions) core.Capabilities {
 }
 
 // EssenceExtent returns the WAV essence-digest inputs: a versioned extent name
-// and the decoder-critical "fmt " configuration mixed in ahead of the audio —
+// and the decoder-critical "fmt " configuration mixed in ahead of the audio -
 // the sample format tag, channel count, sample rate, bit depth, and block
-// alignment — so identical PCM bytes under a different channel layout or rate
+// alignment - so identical PCM bytes under a different channel layout or rate
 // hash differently. The hashed extent itself is the data chunk's payload (set as
 // the media's [AudioStart, AudioEnd) range).
 func (Codec) EssenceExtent(m *core.Media) (string, []byte) {

@@ -12,7 +12,7 @@ import (
 // tail is deliberately a well-formed-looking extra entry sitting past the declared
 // comment count: a correct parser stops by count and reports n before it (so Opus
 // would preserve it as padding), while a parser that ignored the count would
-// wrongly swallow it — which a plain non-"=" tail could not detect.
+// wrongly swallow it - which a plain non-"=" tail could not detect.
 func TestParseCommentListReportsConsumed(t *testing.T) {
 	body := RenderCommentList("vend", []Comment{{"A", "1"}, {"B", "2"}})
 	extra := []byte("EXTRA=ignored")

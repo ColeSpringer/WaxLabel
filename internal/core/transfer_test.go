@@ -6,7 +6,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestProjectTransferDispositions exercises all three dispositions in one pass —
+// TestProjectTransferDispositions exercises all three dispositions in one pass -
 // including the Lossy path, which no shipping codec currently produces (every real
 // codec writes a field Full or None), using a synthetic capability set.
 func TestProjectTransferDispositions(t *testing.T) {
@@ -59,7 +59,7 @@ func TestProjectTransferDispositions(t *testing.T) {
 }
 
 // TestProjectTransferMaxItems checks that a set exceeding the destination's hard
-// MaxItems cap is reported Dropped — the destination would reject the whole set at
+// MaxItems cap is reported Dropped - the destination would reject the whole set at
 // write time, so reporting it carried would break the report==write invariant.
 func TestProjectTransferMaxItems(t *testing.T) {
 	caps := NewCapabilities(FormatMP4, false,

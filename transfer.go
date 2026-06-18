@@ -8,8 +8,8 @@ import (
 )
 
 // PlanTransfer simulates copying this document's canonical metadata (tags,
-// pictures, and chapters) into a file of format dst, reporting — without writing
-// or even needing a destination file — what each piece would carry, downgrade,
+// pictures, and chapters) into a file of format dst, reporting - without writing
+// or even needing a destination file - what each piece would carry, downgrade,
 // or lose. It consults dst's capabilities under the given write options, so an
 // option-dependent destination (one whose support changes with, say, the legacy
 // or multi-value policy) is judged exactly as a real write would be.
@@ -33,15 +33,15 @@ func (d *Document) PlanTransfer(dst Format, opts ...WriteOption) (TransferReport
 // PrepareTransfer projects this document's canonical metadata onto dst and
 // resolves the result into a ready-to-execute [Plan] that writes dst, returning
 // the plan together with the [TransferReport] describing the projection. The
-// report is computed from the same projection the plan applies — every carried or
+// report is computed from the same projection the plan applies - every carried or
 // downgraded item is set on the destination edit and every dropped item is left
-// off — so the report cannot disagree with what executing the plan produces.
+// off - so the report cannot disagree with what executing the plan produces.
 //
 // The report grades the destination's representational capability per
 // field/picture/chapter, including hard structural limits it models (such as the
 // MP4 chapter-count cap, reported as a drop). A few codec validity checks that
-// depend on the bytes themselves — an embedded image in a format the destination
-// cannot label, or a structurally invalid picture set — are enforced when the plan
+// depend on the bytes themselves - an embedded image in a format the destination
+// cannot label, or a structurally invalid picture set - are enforced when the plan
 // is prepared and surface as an error from this call rather than as a per-item
 // drop; in that case the returned report still describes the attempted projection.
 //
@@ -49,7 +49,7 @@ func (d *Document) PlanTransfer(dst Format, opts ...WriteOption) (TransferReport
 // replaces that key in the destination, the source's pictures replace the
 // destination's (when the source has any and the destination can store them), and
 // likewise for chapters; destination keys the source does not carry are kept. dst
-// is not modified — only [Plan.Execute] writes.
+// is not modified - only [Plan.Execute] writes.
 func (d *Document) PrepareTransfer(dst *Document, opts ...WriteOption) (*Plan, TransferReport, error) {
 	caps := dst.Capabilities(opts...)
 	items := core.ProjectTransfer(d.media, caps)

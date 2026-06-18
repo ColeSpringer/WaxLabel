@@ -1,6 +1,6 @@
 // Package id3 implements reading and writing ID3v2 tags (v2.2, v2.3, v2.4) and
 // reading ID3v1. It is internal through v0.x and shared by the container codecs
-// that embed ID3 — MP3 now, WAV/AIFF later — so the frame model, text encodings,
+// that embed ID3 - MP3 now, WAV/AIFF later - so the frame model, text encodings,
 // unsynchronisation, the numeric-genre table, and the canonical projection live
 // here once. It is reimplemented from the ID3v2.2/2.3/2.4 specifications;
 // reference implementations were consulted for design only.
@@ -30,7 +30,7 @@ const (
 // Tag is a parsed ID3v2 tag: the decoded frames in original order plus the
 // version metadata needed to write them back at the right version. srcVersion
 // records what was read (2, 3, or 4) for reporting; writeVersion is the version
-// actually emitted (3 or 4 — a v2.2 source is modernised to v2.3).
+// actually emitted (3 or 4 - a v2.2 source is modernised to v2.3).
 type Tag struct {
 	srcVersion   byte
 	writeVersion byte
@@ -187,7 +187,7 @@ func ParseTag(data []byte) (*Tag, error) {
 
 	// v2.2/v2.3 unsynchronisation covers the whole tag; undo it before parsing.
 	// v2.4 signals unsynchronisation per frame (the header bit, if set, means it
-	// applies to all frames — handled in parseFrames).
+	// applies to all frames - handled in parseFrames).
 	tagUnsync := flags&hdrUnsync != 0
 	if major <= 3 && tagUnsync {
 		body = deunsync(body)

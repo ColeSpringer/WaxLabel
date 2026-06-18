@@ -9,13 +9,13 @@ import (
 
 // simpleTag is one parsed Matroska SimpleTag: its name, its string value (or the
 // length of its binary value when it is a TagBinary), the language, and any
-// nested sub-tags. The full tree — including names that do not project to a
-// canonical key — is preserved here so a tagger can inspect everything the file
+// nested sub-tags. The full tree - including names that do not project to a
+// canonical key - is preserved here so a tagger can inspect everything the file
 // carries, matching the plan's "preserve the full scoped tree in Native".
 //
 // raw holds the SimpleTag element's original bytes (header + payload + any nested
 // sub-tags), captured at parse so the write path can preserve a tag it does not
-// manage — a binary value, a nested tree, or a custom name — byte-for-byte
+// manage - a binary value, a nested tree, or a custom name - byte-for-byte
 // without re-encoding from the lossy decoded view.
 type simpleTag struct {
 	name   string
@@ -43,7 +43,7 @@ func cloneSimpleTags(in []simpleTag) []simpleTag {
 // optional track/edition/chapter UID references.
 //
 // targetsRaw is the group's Targets element bytes (nil when absent), preserved so
-// a re-rendered group keeps its track/edition/chapter UID values — which the
+// a re-rendered group keeps its track/edition/chapter UID values - which the
 // decoded view records only as presence bools. hasCRC notes the group carried a
 // leading CRC-32 so a re-render recomputes one.
 type tagGroup struct {
@@ -73,15 +73,16 @@ type attachment struct {
 
 // doc is the Matroska native document: the parsed tag groups (the scoped tree),
 // the segment title, the attachment summaries, and the audio track properties.
-// It also carries a writeBase — the byte-level layout the write path preserves
+// It also carries a writeBase - the byte-level layout the write path preserves
 // (Segment header, the ordered top-level children, and the SeekHead/Cues/Info/
-// Attachments raw bytes) — captured at parse so Plan can rewrite without the
+// Attachments raw bytes) - captured at parse so Plan can rewrite without the
 // source.
 type doc struct {
 	docType     string // "matroska" or "webm", from the EBML DocType header
 	segTitle    string
 	groups      []tagGroup
 	attachments []attachment
+	chapters    *chapterDoc // parsed Chapters tree, nil when the file has none
 	tracks      []core.AudioTrack
 
 	// essence-digest config, captured from the first audio track.
@@ -118,7 +119,7 @@ type writeBase struct {
 
 // l1elem is one top-level Segment child captured for rewriting: its ID and full
 // byte range. The id distinguishes which children are re-rendered (Tags/Info/
-// Attachments/SeekHead/Cues) from those copied verbatim (Tracks, Cluster, Void…).
+// Attachments/SeekHead/Cues) from those copied verbatim (Tracks, Cluster, Void...).
 type l1elem struct {
 	id        uint64
 	start     int64
@@ -229,6 +230,14 @@ func (d *doc) Describe() []core.NativeEntry {
 			note += " (cover art)"
 		}
 		out = append(out, core.NativeEntry{Kind: "Attachment " + a.name, Size: a.size, Note: note})
+	}
+	if cd := d.chapters; cd != nil && cd.defIdx >= 0 {
+		ed := cd.editions[cd.defIdx]
+		note := fmt.Sprintf("default edition, %d chapters", len(ed.uids))
+		if len(cd.editions) > 1 {
+			note += fmt.Sprintf(" (%d editions total)", len(cd.editions))
+		}
+		out = append(out, core.NativeEntry{Kind: "Chapters", Size: len(ed.uids), Note: note})
 	}
 	return out
 }

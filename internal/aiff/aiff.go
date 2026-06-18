@@ -1,20 +1,20 @@
 // Package aiff implements reading and writing AIFF / AIFF-C metadata. It is
 // internal through v0.x (promoted to a public waxlabel/aiff only at v1.0). An
 // AIFF file is an IFF container: a "FORM" header naming the form type ("AIFF" or
-// the compressed "AIFC"), then big-endian-sized chunks — a "COMM" common chunk
+// the compressed "AIFC"), then big-endian-sized chunks - a "COMM" common chunk
 // describing the audio (with the sample rate stored as an 80-bit extended
 // float), an "SSND" chunk holding the sample frames, and any number of metadata
 // and ancillary chunks.
 //
-// AIFF carries tags in two places, so the codec handles both — exactly as WAV
+// AIFF carries tags in two places, so the codec handles both - exactly as WAV
 // does, the difference being big-endian sizes and a different chunk vocabulary:
 //
-//   - native text chunks — NAME (title), AUTH (artist), "(c) " (copyright), and
+//   - native text chunks - NAME (title), AUTH (artist), "(c) " (copyright), and
 //     ANNO (comment/annotation, repeatable). A small fixed vocabulary of plain
 //     character runs, one canonical key each. This is what ffmpeg's AIFF muxer
 //     writes by default (NAME + ANNO) and reads back, hence the realistic
 //     acquired-file case and the differential anchor.
-//   - an embedded "ID3 " chunk — a full ID3v2 tag (decoded by internal/id3), the
+//   - an embedded "ID3 " chunk - a full ID3v2 tag (decoded by internal/id3), the
 //     only place AIFF can hold pictures and the MusicBrainz/Picard long tail. The
 //     de-facto identifier is the uppercase "ID3 "; a lowercase "id3 " variant
 //     some tools emit is also read. The writer emits "ID3 ".
@@ -22,7 +22,7 @@
 // Precedence (read): the ID3 chunk is authoritative when present (it is the
 // richer container and the deliberate-tagger signal); otherwise the native text
 // chunks are. Both surface in the family view with conflicts flagged. Precedence
-// (write): see write.go — by default both present containers are kept in sync,
+// (write): see write.go - by default both present containers are kept in sync,
 // the native chunks are the home for a bare file, and pictures or any value the
 // native vocabulary cannot represent force an "ID3 " chunk; nothing is ever lost.
 // All other chunks are preserved verbatim. A >4 GiB output fails loudly.
@@ -87,9 +87,9 @@ func (Codec) Capabilities(opts core.WriteOptions) core.Capabilities {
 }
 
 // EssenceExtent returns the AIFF essence-digest inputs: a versioned extent name
-// and the decoder-critical "COMM" configuration mixed in ahead of the audio —
+// and the decoder-critical "COMM" configuration mixed in ahead of the audio -
 // the channel count, sample size, the raw 80-bit sample rate, and (for AIFF-C)
-// the compression type — so identical sample frames under a different channel
+// the compression type - so identical sample frames under a different channel
 // layout, rate, or codec hash differently. The 80-bit rate is hashed as its raw
 // bytes (not the decoded float) so the digest is exact. The hashed extent is the
 // SSND sample-frame region (set as the media's [AudioStart, AudioEnd) range,

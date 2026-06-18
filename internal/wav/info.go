@@ -11,8 +11,8 @@ import (
 )
 
 // parseInfo decodes a LIST chunk body into INFO items. The body begins with the
-// 4-byte list type; only "INFO" lists are decoded (others — "adtl" association
-// lists, say — are left for verbatim preservation by returning ok=false). It
+// 4-byte list type; only "INFO" lists are decoded (others - "adtl" association
+// lists, say - are left for verbatim preservation by returning ok=false). It
 // tolerates truncation, stopping at the first malformed sub-chunk.
 func parseInfo(body []byte) (items []infoItem, ok bool) {
 	if len(body) < 4 || string(body[0:4]) != "INFO" {
@@ -89,7 +89,7 @@ func infoFamilies(auth tag.TagSet, items []infoItem) []core.FamilyValue {
 
 // infoRepresentable reports whether every key in ts can be stored faithfully in
 // LIST/INFO: each must map to an INFO identifier and carry at most one value
-// (present-but-empty is fine — it normalizes to absent, as in Vorbis). A key that
+// (present-but-empty is fine - it normalizes to absent, as in Vorbis). A key that
 // fails forces the richer id3 chunk so no value is lost.
 func infoRepresentable(ts tag.TagSet) bool {
 	for _, k := range ts.Keys() {
@@ -125,7 +125,7 @@ func rebuildInfo(orig []infoItem, edited tag.TagSet) []infoItem {
 			out = append(out, infoItem{id: it.id, raw: []byte(v)})
 			emitted[key] = true
 		}
-		// else: key absent in the edited set — drop the item.
+		// else: key absent in the edited set - drop the item.
 	}
 	for _, k := range edited.Keys() {
 		if emitted[k] {
@@ -145,8 +145,8 @@ func rebuildInfo(orig []infoItem, edited tag.TagSet) []infoItem {
 	return out
 }
 
-// infoValue returns the value INFO should store for key — the first value, since
-// INFO is single-valued — or ok=false when the key is absent or present-empty
+// infoValue returns the value INFO should store for key - the first value, since
+// INFO is single-valued - or ok=false when the key is absent or present-empty
 // (which INFO cannot represent and so drops).
 func infoValue(ts tag.TagSet, key tag.Key) (string, bool) {
 	v, ok := ts.First(key)

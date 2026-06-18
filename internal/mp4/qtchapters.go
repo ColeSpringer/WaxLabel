@@ -8,7 +8,7 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// This file builds a QuickTime chapter text track — the representation iTunes and
+// This file builds a QuickTime chapter text track - the representation iTunes and
 // Apple Books read (they ignore the Nero chpl). A chapter edit writes both: the
 // chpl (write_chapters.go) and this track. The track is a "text" trak in moov,
 // referenced from the audio track via a tref "chap"; its samples (one per
@@ -43,7 +43,7 @@ func be32u(n uint32) []byte {
 
 // clampU32 saturates a 64-bit count to 32 bits for a v0 box field (the
 // tkhd/mdhd/elst durations). At an audio file's movie timescale (~1 ms) this
-// never bites — MaxUint32 ms is ~49 days; only an extreme media length under an
+// never bites - MaxUint32 ms is ~49 days; only an extreme media length under an
 // unusually high movie timescale (e.g. a video-style 90 kHz over ~13 h) could
 // saturate a duration. A per-sample stts delta is a 32-bit field by spec anyway.
 func clampU32(n uint64) uint32 {
@@ -258,7 +258,7 @@ func buildStco(co64 bool) []byte {
 // last End is left open, as the reader leaves it), and titles capped like the
 // samples. It mirrors decodeTextTrack exactly, so the post-write result equals a
 // reparse. (Because decode times run from zero, a first chapter that does not
-// start at zero is normalized to zero here — the same as on read.)
+// start at zero is normalized to zero here - the same as on read.)
 func qtWriteRoundTrip(chapters []core.Chapter, mts uint32, movieDuration uint64) []core.Chapter {
 	if len(chapters) == 0 {
 		return nil

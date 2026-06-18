@@ -93,7 +93,7 @@ func sniffJPEG(data []byte) (ImageInfo, bool) {
 		if segLen < 2 {
 			break // malformed length (must include its own 2 bytes)
 		}
-		// SOF0–SOF15 except DHT(C4), JPG(C8), DAC(CC) carry frame geometry.
+		// SOF0-SOF15 except DHT(C4), JPG(C8), DAC(CC) carry frame geometry.
 		if marker >= 0xC0 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC {
 			if i+7 >= len(data) {
 				return ImageInfo{MIME: "image/jpeg"}, true

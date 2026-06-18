@@ -180,6 +180,7 @@ const (
 	WarnChapterSourceConflict = core.WarnChapterSourceConflict
 	WarnChaptersStale         = core.WarnChaptersStale
 	WarnChapterTitleTruncated = core.WarnChapterTitleTruncated
+	WarnChaptersFlattened     = core.WarnChaptersFlattened
 )
 
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated
@@ -193,5 +194,5 @@ func BytesSource(b []byte) ReaderAtSized { return core.BytesSource(b) }
 func EqualPictures(a, b []Picture) bool { return core.EqualPictures(a, b) }
 
 // EqualChapters reports whether two chapter slices are identical by content
-// (start, end, and title), in order — the chapter analogue of [EqualPictures].
+// (start, end, and title), in order - the chapter analogue of [EqualPictures].
 func EqualChapters(a, b []Chapter) bool { return core.EqualChapters(a, b) }

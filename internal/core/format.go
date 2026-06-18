@@ -1,7 +1,7 @@
 // Package core holds the value types shared between the public waxlabel
 // package and the internal codecs, plus the Codec contract itself. Splitting
 // these out lets codecs stay internal (per the plan, until v1.0) while the
-// root package re-exports the types as its public API — without an import
+// root package re-exports the types as its public API - without an import
 // cycle.
 package core
 
@@ -62,8 +62,7 @@ func (f Format) Implemented() bool {
 }
 
 // Writable reports whether this version can write the format back. Matroska is
-// tag-writable (tags, segment title, attachments); its chapter support is a
-// separate step.
+// tag-writable (tags, segment title, attachments) and chapter-writable.
 func (f Format) Writable() bool {
 	switch f {
 	case FormatFLAC, FormatOggVorbis, FormatOggOpus, FormatMP3, FormatWAV, FormatMP4, FormatAAC, FormatMatroska, FormatAIFF:

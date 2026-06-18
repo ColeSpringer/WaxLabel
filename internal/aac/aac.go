@@ -1,6 +1,6 @@
 // Package aac implements reading and writing raw-AAC (ADTS) metadata. It is
 // internal through v0.x. A raw-AAC file is structurally the simplest format
-// WaxLabel handles — an optional front ID3v2 tag (decoded by internal/id3, the
+// WaxLabel handles - an optional front ID3v2 tag (decoded by internal/id3, the
 // same authoritative container MP3 uses) followed by a bare sequence of ADTS
 // frames, with no MPEG framing layer and no trailing legacy containers. The
 // ID3v2 tag is the sole writable store; the audio is copied verbatim.
@@ -67,11 +67,11 @@ func (Codec) Capabilities(opts core.WriteOptions) core.Capabilities {
 }
 
 // EssenceExtent returns the AAC essence-digest inputs: a versioned extent name
-// and the decoded static stream configuration — object type, sampling-frequency
-// index, and channel configuration — mixed into the hash ahead of the audio.
+// and the decoded static stream configuration - object type, sampling-frequency
+// index, and channel configuration - mixed into the hash ahead of the audio.
 //
 // It hashes the decoded static fields, NOT the raw first-header bytes, on
-// purpose: bytes 3–5 of an ADTS header carry the per-frame frame_length, so two
+// purpose: bytes 3-5 of an ADTS header carry the per-frame frame_length, so two
 // otherwise-identical streams whose first frame happens to differ in length
 // would hash differently if the raw header were used. The static config bits are
 // exact and need no decode (the same principle as AIFF hashing the COMM rate

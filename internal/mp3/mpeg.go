@@ -16,7 +16,7 @@ type mpegInfo struct {
 	codec           string
 }
 
-// MPEG version field (bits 4–3 of the second header byte).
+// MPEG version field (bits 4-3 of the second header byte).
 const (
 	mpegV25 = 0
 	mpegV2  = 2
@@ -70,7 +70,7 @@ func parseMPEG(window []byte) (mpegInfo, bool) {
 
 // confirmNextFrame checks that a second frame begins exactly one frame length
 // after the candidate at offset i and agrees on version, layer, and sample rate
-// — the standard guard against mistaking padding/garbage for the first frame. A
+// - the standard guard against mistaking padding/garbage for the first frame. A
 // free-format frame (no computable length) or a candidate near the end of the
 // window (next frame beyond what we read) is accepted on its own.
 func confirmNextFrame(window []byte, i int, info mpegInfo) bool {

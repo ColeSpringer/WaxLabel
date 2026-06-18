@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/mapping"
@@ -21,8 +23,8 @@ import (
 // (Tags, Info.Title, Attachments) are re-rendered.
 //
 // The size change is absorbed into a reserved Void element so the clusters do not
-// move — keeping every Cues/SeekHead position valid — which is the layout
-// mkvmerge and ffmpeg both write (SeekHead, Void, …, Clusters). Only the SeekHead
+// move - keeping every Cues/SeekHead position valid - which is the layout
+// mkvmerge and ffmpeg both write (SeekHead, Void, ..., Clusters). Only the SeekHead
 // entries for the header elements that shift within the rebuilt header are
 // patched, in place at their original width, and the affected CRC-32s recomputed.
 // When the file has no usable Void, the tail is shifted instead (see planShift).
@@ -62,13 +64,23 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	// A SeekHead/Cues whose structure could not be captured (e.g. an over-limit
 	// declared size) cannot be repositioned, and copying it verbatim while other
-	// elements move would leave its offsets pointing at the wrong bytes — refuse
+	// elements move would leave its offsets pointing at the wrong bytes - refuse
 	// rather than silently corrupt the index.
 	if err := checkIndexCaptured(d.wb); err != nil {
 		return nil, err
 	}
 	if err := checkPreservable(d, ch); err != nil {
 		return nil, err
+	}
+
+	// Re-rendering a default edition that carried nested sub-chapters or
+	// secondary-language titles drops that structure (the flat chapter model cannot
+	// hold it). Surface it as a plan-time warning rather than flattening silently -
+	// the established precedent for a lossy chapter write. A full clear is a removal,
+	// not a flatten, so it does not warn.
+	if ch.chapters && len(edited.Chapters) > 0 && d.chapters != nil && d.chapters.defLossy {
+		report.Warnings = core.Warn(report.Warnings, core.WarnChaptersFlattened,
+			"chapter edit dropped the default edition's nested sub-chapters or secondary-language titles")
 	}
 
 	pl, err := planAbsorb(d, base, edited, ch, report)
@@ -82,17 +94,19 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 }
 
 // changes records which Segment children an edit touches: the SimpleTag set (any
-// canonical key except Title), the Info.Title, and the Attachments cover set.
+// canonical key except Title), the Info.Title, the Attachments cover set, and the
+// Chapters element.
 type changes struct {
 	simple   bool
 	title    bool
 	pictures bool
+	chapters bool
 }
 
-func (c changes) any() bool { return c.simple || c.title || c.pictures }
+func (c changes) any() bool { return c.simple || c.title || c.pictures || c.chapters }
 
 // detectChanges splits a tag edit into its Title part (which lives in Info.Title)
-// and the rest (which lives in Tags SimpleTags), plus the picture set.
+// and the rest (which lives in Tags SimpleTags), plus the picture and chapter sets.
 func detectChanges(base, edited *core.Media) changes {
 	bt, _ := base.Tags.Get(tag.Title)
 	et, _ := edited.Tags.Get(tag.Title)
@@ -107,6 +121,7 @@ func detectChanges(base, edited *core.Media) changes {
 		simple:   !b.Equal(e),
 		title:    !slices.Equal(bt, et),
 		pictures: !core.EqualPictures(base.Pictures, edited.Pictures),
+		chapters: !core.EqualChapters(base.Chapters, edited.Chapters),
 	}
 }
 
@@ -115,7 +130,7 @@ func detectChanges(base, edited *core.Media) changes {
 func isWebM(docType string) bool { return strings.EqualFold(docType, "webm") }
 
 // checkIndexCaptured refuses the edit when a SeekHead/Cues element cannot be
-// safely rewritten: more than one is present (a linked index — only the last is
+// safely rewritten: more than one is present (a linked index - only the last is
 // captured, so the others would be copied with stale offsets), or its single
 // instance was not captured at parse (a read failure or over-limit declared size).
 // Copying such an element verbatim while other elements shift corrupts its offsets.
@@ -142,7 +157,7 @@ func checkIndexCaptured(wb *writeBase) error {
 
 // checkPreservable refuses the edit when an element the writer must copy verbatim
 // could not be captured (its bytes exceeded the alloc limit, so captureRaw
-// returned nil) — dropping it would silently lose data. It covers the groups and
+// returned nil) - dropping it would silently lose data. It covers the groups and
 // non-canonical SimpleTags a tag edit preserves and the non-image attachments a
 // cover edit preserves.
 func checkPreservable(d *doc, ch changes) error {
@@ -172,6 +187,16 @@ func checkPreservable(d *doc, ch changes) error {
 			}
 		}
 	}
+	if ch.chapters && d.chapters != nil {
+		// The default edition is re-rendered from the parsed model, but every other
+		// edition is copied from its captured bytes - refuse if one was too large to
+		// capture rather than silently dropping it.
+		for i, ed := range d.chapters.editions {
+			if i != d.chapters.defIdx && ed.raw == nil {
+				return tooBig("chapter edition")
+			}
+		}
+	}
 	return nil
 }
 
@@ -182,15 +207,13 @@ var errFallback = fmt.Errorf("matroska: absorption not applicable")
 
 func isFallback(err error) bool { return errors.Is(err, errFallback) }
 
-// --- element renderers ------------------------------------------------------
-
 // renderTags builds the new Tags element bytes from the edited canonical set,
 // returning nil when the result would be empty (so the Tags element is dropped).
 // It also returns the new group list for the result document. Non-canonical
 // SimpleTags (custom, technical, binary, nested) and non-album groups are
 // preserved verbatim from their captured raw bytes; canonical keys are synced
 // into the album-scope group, written under their Matroska-spec names. Title is
-// excluded — it is stored in Info.Title, not a SimpleTag.
+// excluded - it is stored in Info.Title, not a SimpleTag.
 func renderTags(d *doc, base, edited tag.TagSet) (raw []byte, groups []tagGroup) {
 	albumIdx := albumGroupIndex(d.groups)
 	covered := coveredByOtherScopes(d.groups, albumIdx)
@@ -418,17 +441,33 @@ func attachedFileBytes(p core.Picture) ([]byte, attachment) {
 }
 
 // fileUID returns a random non-zero AttachedFile UID (per the spec's "as random
-// as possible"), making a collision with another attachment's UID negligible. The
-// crypto/rand read effectively never fails; a non-zero constant is the fallback.
-func fileUID() uint64 {
+// as possible"), making a collision with another attachment's UID negligible.
+func fileUID() uint64 { return randomUID() }
+
+// uidFallback makes randomUID's non-crypto path still yield distinct values, so a
+// batch of created chapters or attachments cannot collide on one constant UID.
+var uidFallback atomic.Uint64
+
+// randomUID returns a random non-zero 64-bit UID, used for a created
+// AttachedFile's FileUID and a created ChapterAtom's ChapterUID. Both must be
+// non-zero and "as random as possible" per the spec, and - critically for the
+// several UIDs minted in one chapter write - must not repeat within a file (a
+// duplicate ChapterUID would make a chapter-scoped tag reference ambiguous). The
+// crypto/rand read effectively never fails; if it does, a monotonic time+counter
+// mix keeps successive UIDs distinct rather than collapsing to one constant.
+func randomUID() uint64 {
 	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return 1
+	if _, err := rand.Read(b[:]); err == nil {
+		if v := binary.BigEndian.Uint64(b[:]); v != 0 {
+			return v
+		}
 	}
-	if v := binary.BigEndian.Uint64(b[:]); v != 0 {
-		return v
+	n := uidFallback.Add(1)
+	v := (uint64(time.Now().UnixNano()) << 16) ^ (n * 0x9E3779B97F4A7C15)
+	if v == 0 {
+		v = n
 	}
-	return 1
+	return v
 }
 
 // coverFileName picks the AttachedFile name encoding the cover role.

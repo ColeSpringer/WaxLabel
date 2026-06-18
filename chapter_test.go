@@ -173,7 +173,7 @@ func TestMP4ChapterTagAndChapterTogether(t *testing.T) {
 
 func TestMP4ChapterPreservesUnknownUdtaSibling(t *testing.T) {
 	// An unknown udta sibling (here a cprt copyright atom) must survive a chapter
-	// rewrite byte-for-byte — the udta is spliced, not rebuilt from a fixed shape.
+	// rewrite byte-for-byte - the udta is spliced, not rebuilt from a fixed shape.
 	cprt := mp4Atom("cprt", append([]byte{0, 0, 0, 0}, []byte("PRESERVE-THIS-NOTICE")...))
 	chpl := mp4Chpl(1, []time.Duration{0}, []string{"One"})
 	data := mp4AssembleUdta(mp4Meta(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "T"))), cprt, chpl)
@@ -235,7 +235,7 @@ func TestMP4ChapterStartRoundsNotTruncates(t *testing.T) {
 	// (The rounding is checked on the second chapter: the first is the track's
 	// time-zero anchor, which a sample table always reads back as 0.)
 	data := mp4Tagged(mp4Text("\xa9nam", "T"))
-	start := 2700600 * time.Microsecond // 2700.6 ms → rounds to 2701
+	start := 2700600 * time.Microsecond // 2700.6 ms -> rounds to 2701
 	plan, err := mustParseBytes(t, data).Edit().SetChapters(
 		wl.Chapter{Start: 0, Title: "A"},
 		wl.Chapter{Start: start, Title: "X"},

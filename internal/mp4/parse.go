@@ -13,8 +13,8 @@ import (
 )
 
 // maxMetaChunk bounds how large an ilst item or other structural atom this codec
-// reads into memory. The mdat media payload is never read here — only its range
-// is recorded — so this guards the small structural atoms (plus cover art, whose
+// reads into memory. The mdat media payload is never read here - only its range
+// is recorded - so this guards the small structural atoms (plus cover art, whose
 // real size is well under the limit) against a hostile declared size. It works
 // alongside the user's MaxAllocBytes limit (whichever is smaller wins).
 const maxMetaChunk = 64 << 20
@@ -81,7 +81,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		// Capture the udta payload verbatim so a chapter rewrite can splice the new
 		// ilst/chpl byte ranges into it while preserving every other user-data atom.
 		// The whole payload is read (bounded by the user's alloc limit, not the
-		// smaller per-atom cap) so it is never silently truncated — a truncated
+		// smaller per-atom cap) so it is never silently truncated - a truncated
 		// d.udtaRaw would splice against a delta computed from the full size. If it
 		// exceeds the limit, d.udtaRaw stays nil and a chapter rewrite fails loudly.
 		if udtaLen := udta.size - udta.headerLen; udtaLen >= 0 {
@@ -132,7 +132,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 
 // mediaWarnings returns the content-derived warnings for a parsed or rewritten
 // document: a resolved numeric genre and an inherited transcoder stamp (ffmpeg
-// writes "Lavf..." into the ©too / EncodedBy atom on acquired files). Sharing
+// writes "Lavf..." into the \xa9too / EncodedBy atom on acquired files). Sharing
 // this lets the post-write document's warnings match a fresh parse of the output.
 func mediaWarnings(tags tag.TagSet, numericGenre bool) []core.Warning {
 	var ws []core.Warning
@@ -189,7 +189,7 @@ func parseOffsetTable(src core.ReaderAtSized, a node, co64 bool, limit int64) (o
 	t := offsetTable{offset: a.offset, headerLen: a.headerLen, size: a.size, co64: co64}
 	copy(t.verFlags[:], body[0:4])
 	// int64 throughout: count is a 32-bit field, and count*width (up to ~3.4e10 for
-	// co64) overflows a 32-bit int — the body bound caps count so the allocation
+	// co64) overflows a 32-bit int - the body bound caps count so the allocation
 	// stays proportional to the bytes actually read.
 	count := int64(binary.BigEndian.Uint32(body[4:8]))
 	width := int64(4)
@@ -295,7 +295,7 @@ func handlerType(src core.ReaderAtSized, hdlr node, limit int64) string {
 }
 
 // parseMdhd returns the media duration from a mdhd atom, reusing the shared field
-// decode and the shared unit→Duration conversion.
+// decode and the shared unit->Duration conversion.
 func parseMdhd(src core.ReaderAtSized, mdhd node, limit int64) (time.Duration, bool) {
 	ts, dur, ok := mdhdFields(src, mdhd, limit)
 	if !ok || ts == 0 {
@@ -342,8 +342,8 @@ func setEssence(d *doc, media *core.Media) {
 }
 
 // essenceMdats returns the mdat ranges that hold audio, as [start, end). It drops
-// a separate chapter-sample mdat — the one a QuickTime chapter write appends at
-// end-of-file — so the change-detection fingerprint keeps hashing any metadata (a
+// a separate chapter-sample mdat - the one a QuickTime chapter write appends at
+// end-of-file - so the change-detection fingerprint keeps hashing any metadata (a
 // trailing moov) that would otherwise sit in the un-hashed gap between the audio
 // mdat and the appended chapter mdat. The fast common path (no chapter track, or a
 // single mdat whose chapter samples share the audio) returns every mdat.

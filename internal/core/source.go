@@ -29,7 +29,7 @@ func (r bytesReaderAt) Size() int64 { return int64(len(r.b)) }
 
 func (r bytesReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	// off == len(b) is allowed: it yields an empty source slice, so a
-	// zero-length read there succeeds with (0, nil) rather than EOF — matching
+	// zero-length read there succeeds with (0, nil) rather than EOF - matching
 	// os.File.ReadAt, and avoiding a spurious error for empty reads at the end.
 	if off < 0 || off > int64(len(r.b)) {
 		return 0, io.EOF
@@ -41,15 +41,15 @@ func (r bytesReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	return n, nil
 }
 
-// Fingerprint hashes a file's metadata regions — the bytes around the audio
-// essence — for the structural source fingerprint used in change detection. It
+// Fingerprint hashes a file's metadata regions - the bytes around the audio
+// essence - for the structural source fingerprint used in change detection. It
 // hashes the header before the essence ([0, AudioStart)) plus the tail after it
 // ([AudioEnd, size)), so a trailing ID3v1, a WAV INFO/id3 chunk written after the
 // data chunk, or an MP4 moov that follows the (last) mdat are all covered. A file
 // with no identified essence is hashed whole. For a multi-segment essence (Ogg
-// page bodies, multiple mdat) the gaps *between* segments are not hashed — Ogg
+// page bodies, multiple mdat) the gaps *between* segments are not hashed - Ogg
 // keeps its tags up front, and an MP4 moov sandwiched between two mdats is a rare
-// shape — so the head/tail backstop is weaker there but size/mtime/inode still
+// shape - so the head/tail backstop is weaker there but size/mtime/inode still
 // guard. ok is false when there is nothing to hash or the region cannot be read,
 // in which case the caller falls back to size/mtime/inode.
 //
@@ -94,8 +94,8 @@ func Fingerprint(src ReaderAtSized, m *Media, limit int64) ([32]byte, bool) {
 
 // Identity is a strong fingerprint of a source file, recorded at parse so a
 // later save-back can detect that the file changed underneath us. Path, size,
-// and mtime alone are too weak — and weaker still once mtime is not preserved
-// — so a small structural fingerprint (a hash of the metadata region) is
+// and mtime alone are too weak - and weaker still once mtime is not preserved
+// - so a small structural fingerprint (a hash of the metadata region) is
 // included.
 type Identity struct {
 	Path            string

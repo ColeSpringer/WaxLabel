@@ -27,9 +27,9 @@ type chunk struct {
 func (c chunk) id4() string { return string(c.id[:]) }
 
 // infoItem is one LIST/INFO sub-chunk: its 4CC and the raw value bytes (the ZSTR
-// content up to the first NUL, as stored). Keeping the raw bytes — rather than a
-// decoded string — lets an unmapped item round-trip byte-for-byte (no
-// Latin-1→UTF-8 re-encoding) while a mapped item is decoded on demand via text().
+// content up to the first NUL, as stored). Keeping the raw bytes - rather than a
+// decoded string - lets an unmapped item round-trip byte-for-byte (no
+// Latin-1->UTF-8 re-encoding) while a mapped item is decoded on demand via text().
 // Items whose 4CC is not in the canonical mapping are still kept so they survive.
 type infoItem struct {
 	id  [4]byte
@@ -85,7 +85,7 @@ type doc struct {
 	// counted in the RIFF size.
 	trailingOff int64
 	trailingLen int64
-	// outerOff/outerLen capture bytes after the RIFF chunk — data appended outside
+	// outerOff/outerLen capture bytes after the RIFF chunk - data appended outside
 	// the declared RIFF size (e.g. a tacked-on ID3v1). Preserved verbatim but kept
 	// outside the recomputed RIFF size so a strict reader does not misparse them.
 	outerOff int64

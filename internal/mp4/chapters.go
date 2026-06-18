@@ -131,7 +131,7 @@ func renderChpl(version uint8, chapters []core.Chapter) []byte {
 // track to hang a tref on, where its mdia begins (the tref insertion point), any
 // existing tref, the existing chapter text track to replace, and the movie
 // header fields (timescale/duration and a free track id) a new track is built
-// from. It is read-only and tolerant — a field it cannot resolve is left zero
+// from. It is read-only and tolerant - a field it cannot resolve is left zero
 // and the writer falls back to a chpl-only write when the audio track is absent.
 func collectChapterRefs(src core.ReaderAtSized, moov node, d *doc, limit int64) {
 	traks := moov.findAll("trak", nil)
@@ -142,7 +142,7 @@ func collectChapterRefs(src core.ReaderAtSized, moov node, d *doc, limit int64) 
 	// A track id free of every existing track, used when mvhd's next_track_ID is
 	// missing, the all-ones sentinel, or stale (not actually past every track).
 	// nextTrackID 0 means none is free (a track already holds the max id), so a new
-	// chapter track cannot be created — maxID+1 would wrap to the invalid id 0.
+	// chapter track cannot be created - maxID+1 would wrap to the invalid id 0.
 	maxID := uint32(0)
 	for _, t := range traks {
 		if tkhd, ok := t.find("tkhd"); ok {
@@ -232,7 +232,7 @@ func sentinelToZero64(v, sentinel uint64) uint64 {
 //
 // It uses the first audio ("soun") track's reference, consistent with the rest of
 // the codec (which reads properties from the first audio track). A chapter track
-// referenced only by a secondary audio track — a rare multi-audio-track file — is
+// referenced only by a secondary audio track - a rare multi-audio-track file - is
 // not resolved.
 func decodeQTChapters(src core.ReaderAtSized, moov node, limit int64) ([]core.Chapter, bool) {
 	traks := moov.findAll("trak", nil) // collected once, scanned for both the audio and text track
@@ -619,7 +619,7 @@ func chaptersAgree(a, b []core.Chapter) bool {
 
 // fillChapterEnds sets each chapter's End to the next chapter's Start when End is
 // unset, so a start-only source (chpl) still yields closed intervals (the last
-// chapter's End stays zero — "until end of file"). It only fills when the next
+// chapter's End stays zero - "until end of file"). It only fills when the next
 // start is later, so an out-of-order chapter list does not produce a degenerate
 // End < Start.
 func fillChapterEnds(chs []core.Chapter) {

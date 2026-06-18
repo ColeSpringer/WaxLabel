@@ -23,8 +23,8 @@ const (
 )
 
 // rawPage is one parsed Ogg page header plus the location of its body. Audio
-// page bodies are never read during parsing — only their byte range is recorded
-// — so scanning a long file does not buffer the audio.
+// page bodies are never read during parsing - only their byte range is recorded
+// - so scanning a long file does not buffer the audio.
 type rawPage struct {
 	off     int64  // absolute offset of the "OggS" capture pattern
 	hdrLen  int64  // 27 + segment count
@@ -55,7 +55,7 @@ func scanPages(ctx context.Context, src core.ReaderAtSized, size, limit int64) (
 		if e != nil {
 			// The loop guard guarantees these 27 bytes are within the file, so a
 			// failure here is a real I/O error (e.g. concurrent truncation), not a
-			// clean end of stream — surface it, as the segment-table read below does.
+			// clean end of stream - surface it, as the segment-table read below does.
 			return nil, off, fmt.Errorf("%w: read page header at %d: %v", waxerr.ErrInvalidData, off, e)
 		}
 		if !bytes.Equal(hdr[0:4], oggMagic) || hdr[4] != 0 {
@@ -113,14 +113,14 @@ func buildPage(flags byte, granule uint64, serial, seq uint32, lacing, body []by
 }
 
 // paginate lays packets out into Ogg pages starting at sequence number startSeq,
-// all with granule position 0 — correct for the Vorbis/Opus header pages this
+// all with granule position 0 - correct for the Vorbis/Opus header pages this
 // builds. It returns the concatenated page bytes and the page count. The
 // continued flag is set on any page whose first segment continues a packet from
 // the previous page.
 func paginate(serial, startSeq uint32, packets [][]byte) (out []byte, pageCount int) {
 	// Build the lacing values and the body byte stream. Each packet contributes
 	// floor(len/255) lacing values of 255 then one final value of len%255, so a
-	// packet whose length is a multiple of 255 ends with an explicit 0 — the
+	// packet whose length is a multiple of 255 ends with an explicit 0 - the
 	// packet-boundary marker that keeps it from merging with the next packet.
 	var lacing, body []byte
 	for _, pkt := range packets {

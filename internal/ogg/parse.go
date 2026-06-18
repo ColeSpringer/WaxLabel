@@ -107,7 +107,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		if p.serial != d.serial {
 			continue
 		}
-		// Essence range: the audio portion of this page's body — the whole body for
+		// Essence range: the audio portion of this page's body - the whole body for
 		// a page after the header region, or only the tail past audioByteStart for a
 		// page shared with the last header packet.
 		if lo, hi := max(p.bodyOff(), hp.audioByteStart), p.bodyOff()+p.bodyLen; lo < hi {
@@ -131,7 +131,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 	// Preserve any bytes after the last page of a clean single stream (junk, or a
 	// future use) by recording their length and copying them from the source on
-	// write — never buffering them, since they could be arbitrarily large and the
+	// write - never buffering them, since they could be arbitrarily large and the
 	// Document stays detached and lightweight. For a chained file the trailing
 	// region is other streams we do not model, and writing is refused anyway.
 	if !d.chained && size > d.audioEnd {
@@ -220,7 +220,7 @@ func reassembleHeaders(src core.ReaderAtSized, pages []rawPage, serial uint32, l
 				hp.lastHeaderPage = gi
 				hp.clean = idAlone && si == len(p.segs)-1
 				// o has advanced past this completing segment, so this is the first
-				// byte after the last header packet — where audio begins (the page
+				// byte after the last header packet - where audio begins (the page
 				// body start for a clean stream, or mid-page when it is not).
 				hp.audioByteStart = p.bodyOff() + int64(o)
 				return finishHeaders(hp, packets)
@@ -279,7 +279,7 @@ func (d *doc) decodeComments(pkt []byte, limit int64, warnings *[]core.Warning) 
 	}
 	d.vendor = vendor
 	// Preserve trailing bytes after the comment list: Opus comment-header padding
-	// (RFC 7845 §5.2). For Vorbis the next byte is the framing bit, which the
+	// (RFC 7845 section 5.2). For Vorbis the next byte is the framing bit, which the
 	// writer re-adds, so there is nothing to preserve there.
 	if d.kind == kindOpus && n < int64(len(list)) {
 		d.commentPad = slices.Clone(list[n:])

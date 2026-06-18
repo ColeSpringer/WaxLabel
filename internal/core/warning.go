@@ -20,7 +20,7 @@ const (
 	// found; the first is authoritative, the rest preserved.
 	WarnMultipleVorbisComment
 	// WarnInheritedEncoder means an "encoder=Lavf..." style comment from a
-	// transcoder was found — typical of acquired files.
+	// transcoder was found - typical of acquired files.
 	WarnInheritedEncoder
 	// WarnDistrustedBlockSize means a block's declared length disagreed with
 	// its real content length (a known broken-encoder case).
@@ -40,7 +40,7 @@ const (
 	// best-effort.
 	WarnChainedStream
 	// WarnID3MultiValue means a multi-value field was written NUL-separated in an
-	// ID3v2.3 tag — a de-facto extension some readers do not split.
+	// ID3v2.3 tag - a de-facto extension some readers do not split.
 	WarnID3MultiValue
 	// WarnDuplicateTagBlock means more than one tag container of the same kind was
 	// found (e.g. two RIFF LIST/INFO chunks or two WAV id3 chunks); the first is
@@ -61,6 +61,11 @@ const (
 	// a container limit on write (the Nero chpl's single-byte, 255-byte-max length
 	// prefix). It is a plan-time warning, surfaced rather than silently truncating.
 	WarnChapterTitleTruncated
+	// WarnChaptersFlattened means a chapter edit re-rendered a default edition that
+	// carried structure the flat chapter model cannot hold - nested sub-chapters or
+	// secondary-language titles (Matroska ChapterDisplay) - so that structure was
+	// dropped. A plan-time warning, surfaced rather than silently flattening.
+	WarnChaptersFlattened
 )
 
 func (c WarningCode) String() string {
@@ -97,6 +102,8 @@ func (c WarningCode) String() string {
 		return "chapters-stale"
 	case WarnChapterTitleTruncated:
 		return "chapter-title-truncated"
+	case WarnChaptersFlattened:
+		return "chapters-flattened"
 	default:
 		return "unknown"
 	}

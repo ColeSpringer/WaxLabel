@@ -1,6 +1,6 @@
 // Package vorbis implements the byte-level Vorbis comment list codec, the
 // FLAC-style PICTURE block codec, and the canonical projection / minimal-change
-// rebuild shared by every format that stores tags as Vorbis comments — FLAC and
+// rebuild shared by every format that stores tags as Vorbis comments - FLAC and
 // Ogg Vorbis/Opus. It is internal through v0.x and reimplemented from the
 // Vorbis-comment and FLAC picture specifications; reference implementations were
 // consulted for design only.
@@ -34,7 +34,7 @@ type Comment struct {
 
 // ParseCommentList decodes a comment list (little-endian lengths): a vendor
 // string, a count, then that many "NAME=value" entries. It returns the number
-// of body bytes consumed so a caller can handle whatever follows the list — the
+// of body bytes consumed so a caller can handle whatever follows the list - the
 // Vorbis framing bit, or Opus comment-header padding. Entries without '=' are
 // dropped from the result (but still consumed).
 func ParseCommentList(body []byte, limit int64) (vendor string, comments []Comment, n int64, err error) {

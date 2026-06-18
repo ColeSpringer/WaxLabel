@@ -18,7 +18,7 @@ import (
 // parse reads a Matroska/WebM file into a neutral Media: the scoped tag tree from
 // Segment.Tags, the segment title from Segment.Info, cover art from
 // Segment.Attachments, and the audio geometry from Segment.Tracks. The cluster
-// media is never read — only the audio byte range is recorded. It also captures a
+// media is never read - only the audio byte range is recorded. It also captures a
 // writeBase (the Segment header, the ordered top-level children, and the raw
 // bytes of the SeekHead/Cues/Info/Attachments/Tags) so the write path can
 // re-render and patch without the source (see rewrite_read.go).
@@ -63,6 +63,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 
 	var audioStart int64 = -1
 	var audioEnd, durationNs int64
+	var chapters []core.Chapter
 	err = walkSegment(src, segStart, segEnd, depth, limit, func(el element) error {
 		wb.children = append(wb.children, l1elem{id: el.id, start: el.start, dataStart: el.dataStart, dataEnd: el.dataEnd})
 		switch el.id {
@@ -89,6 +90,15 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 				return err
 			}
 			pics = append(pics, ps...)
+		case idChapters:
+			if d.chapters != nil {
+				return nil // at most one Chapters element is valid; ignore a malformed duplicate
+			}
+			chs, err := parseChapters(src, el, depth, limit, d)
+			if err != nil {
+				return err
+			}
+			chapters = chs
 		case idCluster:
 			if audioStart < 0 {
 				audioStart = el.start
@@ -121,6 +131,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	media.Tags = tags
 	media.Families = families
 	media.Pictures = pics
+	media.Chapters = chapters
 	media.Warnings = mediaWarnings(tags, families)
 	media.Properties = core.Properties{Container: containerName(d.docType), Tracks: d.tracks}
 	if audioStart >= 0 && audioEnd > audioStart {
@@ -174,7 +185,7 @@ func parseInfo(src core.ReaderAtSized, info element, depth *bits.Depth, limit in
 		return 0, err
 	}
 	// Guard NaN/Inf explicitly: comparisons against NaN are all false, and a
-	// float→int64 conversion of an out-of-range or NaN value is implementation-
+	// float->int64 conversion of an out-of-range or NaN value is implementation-
 	// defined in Go.
 	ns := duration * float64(scale)
 	if math.IsNaN(ns) || ns <= 0 || ns >= float64(1<<62) {
@@ -405,7 +416,7 @@ func parseAttached(src core.ReaderAtSized, af element, depth *bits.Depth, limit 
 
 // resolveScope maps a tag group's targets to a canonical scope. A chapter or
 // edition UID, or a high TargetTypeValue, widens or narrows the level; the
-// default (empty targets ⇒ TargetTypeValue 50) is album level. A track UID
+// default (empty targets => TargetTypeValue 50) is album level. A track UID
 // narrows an album/part-level group to the track. When the numeric
 // TargetTypeValue is absent, the informational TargetType string is consulted
 // (Picard and some hand-authored files set only the string).
@@ -568,7 +579,7 @@ func buildFamilies(contribs []scopedContribution) []core.FamilyValue {
 	return fams
 }
 
-// mediaWarnings reports the inherited transcoder stamp (ffmpeg writes "Lavf…"
+// mediaWarnings reports the inherited transcoder stamp (ffmpeg writes "Lavf..."
 // into the ENCODER tag of an acquired file) and any cross-scope conflict.
 func mediaWarnings(ts tag.TagSet, fams []core.FamilyValue) []core.Warning {
 	var ws []core.Warning

@@ -5,9 +5,9 @@ import "github.com/colespringer/waxlabel/tag"
 // This file holds the MP4/iTunes metadata <-> canonical mapping shared by the
 // mp4 codec. iTunes-style tags live in a "moov.udta.meta.ilst" atom list. Each
 // item is a four-character atom whose payload is one or more "data" sub-atoms;
-// the four-character names use 0xA9 ("©") for the classic Apple text atoms.
+// the four-character names use the 0xA9 byte for the classic Apple text atoms.
 // A second, open-ended vocabulary lives in "----" freeform atoms keyed by a
-// reverse-DNS mean (almost always "com.apple.iTunes") plus a name — that is
+// reverse-DNS mean (almost always "com.apple.iTunes") plus a name - that is
 // where Picard stores the MusicBrainz/ReplayGain/AcoustID long tail.
 //
 // The four-character text table mirrors ffmpeg's mov metadata conversion so
@@ -41,7 +41,7 @@ var mp4Text = map[string]tag.Key{
 // mp4Freeform maps a "com.apple.iTunes" freeform name to its canonical key.
 // These names are the de-facto Picard/MusicBrainz conventions. Note iTunes's
 // historical naming: the *recording* MBID is stored under "MusicBrainz Track Id"
-// while the *release-track* MBID is "MusicBrainz Release Track Id" — matching our
+// while the *release-track* MBID is "MusicBrainz Release Track Id" - matching our
 // MBRecordingID == MUSICBRAINZ_TRACKID convention.
 var mp4Freeform = map[string]tag.Key{
 	"MusicBrainz Track Id":         tag.MBRecordingID,

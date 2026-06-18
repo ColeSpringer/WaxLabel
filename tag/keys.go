@@ -22,7 +22,7 @@ import (
 // native editing hatch), not as keys.
 type Key string
 
-// Validity rules: a key is non-empty, uppercase, printable ASCII (0x20–0x7E)
+// Validity rules: a key is non-empty, uppercase, printable ASCII (0x20-0x7E)
 // excluding '=' (which separates key from value in Vorbis comments) and
 // excluding lowercase letters. Vorbis comment names are case-insensitive, so
 // canonical keys are normalized to uppercase; requiring that here keeps the
@@ -63,7 +63,7 @@ func MustKey(s string) Key {
 
 // Valid reports whether k satisfies the key rules (non-empty, uppercase,
 // printable ASCII without '='). The exported Key constants are always valid; a
-// hand-built Key such as Key("title") is not — use [ParseKey] to normalize.
+// hand-built Key such as Key("title") is not - use [ParseKey] to normalize.
 func (k Key) Valid() bool {
 	if k == "" {
 		return false

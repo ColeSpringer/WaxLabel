@@ -345,7 +345,7 @@ func TestMP4CraftedDataAtomSizeNoPanic(t *testing.T) {
 
 func TestMP4BareMetaQuickTime(t *testing.T) {
 	// QuickTime authors a bare meta (no FullBox version/flags prefix). The codec
-	// must detect this and still find the ilst — otherwise the 4-byte skip
+	// must detect this and still find the ilst - otherwise the 4-byte skip
 	// misaligns child parsing and the file reads as untagged (silent data loss).
 	bare := mp4MetaBare(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "Bare Meta Title")))
 	data := mp4AssembleUdta(bare)
@@ -366,7 +366,7 @@ func TestMP4BareMetaQuickTime(t *testing.T) {
 
 // TestMP4UdtaZeroTerminatorCreatesTag covers a udta that ends in a 32-bit-zero
 // QuickTime terminator (which parse tolerates) and has no ilst: creating a tag
-// must insert the new meta after the last real child, dropping the terminator —
+// must insert the new meta after the last real child, dropping the terminator -
 // not after it, which would shift the meta out of alignment and corrupt every
 // following atom on re-parse. (The degenerate 1-byte-zero-body form of this is a
 // FuzzParse seed; this asserts the real-file scenario keeps the existing child.)
@@ -433,7 +433,7 @@ func TestMP4MalformedContainerTilingRejected(t *testing.T) {
 	// broke the round-trip (parse clamped/ignored the defect, then a create/insert
 	// rewrite copied the original bytes verbatim and emitted un-reparseable output),
 	// so both are now rejected at parse. A truncated *top-level* final atom stays
-	// tolerated — that recovery path is exercised by the real fixtures.
+	// tolerated - that recovery path is exercised by the real fixtures.
 	ftyp := mp4Atom("ftyp", []byte("M4A \x00\x00\x00\x00isom"))
 	cases := map[string][]byte{
 		// trak inside moov declares 1000 bytes but only 16 are present (overrun).
@@ -477,7 +477,7 @@ func TestMP4NoOpWritesVerbatim(t *testing.T) {
 
 func TestMP4CreateTagsOnUntaggedFile(t *testing.T) {
 	// A file with no udta/meta/ilst: editing must create the whole tag path, shift
-	// the mdat, and fix the stco — and read back correctly.
+	// the mdat, and fix the stco - and read back correctly.
 	mdatPayload := bytes.Repeat([]byte{0xA7}, 120)
 	build := func(stcoOff uint32) []byte {
 		return slices.Concat(mp4Ftyp(), mp4Moov(nil, stcoOff), mp4Atom("mdat", mdatPayload))
@@ -511,7 +511,7 @@ func TestMP4CreateTagsOnUntaggedFile(t *testing.T) {
 func TestMP4CreateMetaInExistingUdta(t *testing.T) {
 	// A file with a udta (holding only a chpl) but no meta/ilst: editing must
 	// create meta+ilst inside the existing udta, preserve the chpl, fix the stco,
-	// and read back — exercising the create-in-udta path and its result rebuild.
+	// and read back - exercising the create-in-udta path and its result rebuild.
 	chpl := mp4Atom("chpl", slices.Concat([]byte{1, 0, 0, 0}, make([]byte, 4), []byte{1},
 		make([]byte, 8), []byte{3}, []byte("One")))
 	data := mp4AssembleUdta(chpl)
@@ -572,7 +572,7 @@ func TestMP4VerifyEssenceOnGrow(t *testing.T) {
 }
 
 func TestMP4InheritedEncoderWarned(t *testing.T) {
-	// ffmpeg stamps "Lavf..." into the ©too encoder atom on transcoded files; it
+	// ffmpeg stamps "Lavf..." into the \xa9too encoder atom on transcoded files; it
 	// must surface as an inherited-encoder warning, the MP4 analogue of ID3 TSSE.
 	data := mp4Tagged(mp4Text("\xa9nam", "T"), mp4Text("\xa9too", "Lavf61.7.100"))
 	doc := mustParseBytes(t, data)
@@ -682,7 +682,7 @@ func TestMP4ChplPreservedThroughEdit(t *testing.T) {
 }
 
 func TestMP4GenreConflictSurfaced(t *testing.T) {
-	// A legacy numeric gnre and a text ©gen that disagree both project to Genre;
+	// A legacy numeric gnre and a text \xa9gen that disagree both project to Genre;
 	// the family view must flag the conflict (an unselected entry).
 	gnre := mp4Atom("gnre", mp4Data(0, []byte{0, 18})) // numeric -> a name
 	data := mp4Tagged(gnre, mp4Text("\xa9gen", "Synthpop"))

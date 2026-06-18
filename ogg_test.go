@@ -21,7 +21,7 @@ const (
 	notagsOgg  = "testdata/notags.ogg"
 )
 
-// pattern returns n deterministic bytes — a stand-in cover payload large enough
+// pattern returns n deterministic bytes - a stand-in cover payload large enough
 // to push the comment header past one page when needed.
 func pattern(n int) []byte {
 	b := make([]byte, n)
@@ -212,7 +212,7 @@ func TestOggCoverRenumberPreservesEssence(t *testing.T) {
 // ReplayGain" rule: an R128_* tag passes through as its own canonical key and is
 // never folded into the ReplayGain keys.
 // TestOggSaveBackVerifyEssence exercises the SaveBack path with WithVerifyEssence
-// — which re-reads the written file and re-hashes its essence (verifyOutput) —
+// - which re-reads the written file and re-hashes its essence (verifyOutput) -
 // together with a renumbering cover add, so the buffered file write, the renumber
 // loop, and output verification are all covered end to end.
 func TestOggSaveBackVerifyEssence(t *testing.T) {
@@ -320,8 +320,8 @@ func TestOggExtensionRouting(t *testing.T) {
 	}
 }
 
-// --- Write-side differential: an independent tool must read back what we wrote
-// and accept our audio. These skip cleanly when ffmpeg/ffprobe are absent. ---
+// Write-side differential: an independent tool must read back what we wrote
+// and accept our audio. These skip cleanly when ffmpeg/ffprobe are absent.
 
 func TestOggDifferentialFFprobeReadsOurTags(t *testing.T) {
 	requireTool(t, "ffprobe")

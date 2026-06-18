@@ -11,7 +11,7 @@ cover art), reimplemented from public specifications.
 WaxLabel is preservation-first: it treats the file's native metadata as the
 base and rewrites only the fields you actually change, copying the audio
 verbatim. It is designed for tools that fill in complete, accurate metadata for
-large libraries — including files acquired from transcoders, which arrive
+large libraries - including files acquired from transcoders, which arrive
 sparsely and inconsistently tagged rather than blank.
 
 ## Install
@@ -44,7 +44,7 @@ if err != nil { log.Fatal(err) }
 fmt.Println("committed:", res.Committed)
 ```
 
-`Document` is immutable and detached — it holds no file descriptor and has no
+`Document` is immutable and detached - it holds no file descriptor and has no
 `Close`, so you can scan, cache, and discard it freely. Save destinations are
 [`SaveBack`] (atomic in-place rewrite; a no-op writes nothing), [`SaveAsFile`],
 and [`WriteTo`] (stream to any `io.Writer`).
@@ -64,31 +64,31 @@ go run ./cmd/waxlabel diff  a.flac b.flac                # compare canonical met
 
 Install the binary with `go install github.com/colespringer/waxlabel/cmd/waxlabel@latest`.
 
-- **`dump <file>...`** — tags, audio properties, pictures, and warnings. `--native`
+- **`dump <file>...`** - tags, audio properties, pictures, and warnings. `--native`
   adds the native blocks and the per-source (family) view.
-- **`plan <file>`** — resolve edits into a write plan and print exactly what `set`
+- **`plan <file>`** - resolve edits into a write plan and print exactly what `set`
   would do, without touching the file (the report and the write share state).
-- **`set <file>`** — apply edits and save: atomic in-place by default, `-o` writes a
+- **`set <file>`** - apply edits and save: atomic in-place by default, `-o` writes a
   new file, a no-op writes nothing. `--verify` checks the written audio essence.
-- **`verify <file>...`** — the tag-independent audio-essence digest; `--whole-file`
+- **`verify <file>...`** - the tag-independent audio-essence digest; `--whole-file`
   adds the whole-file digest.
-- **`copy <source> <dest>`** — copy `source`'s canonical metadata onto `dest`
+- **`copy <source> <dest>`** - copy `source`'s canonical metadata onto `dest`
   (across formats), rewriting `dest` in place. Each value is carried, downgraded,
   or dropped per `dest`'s capabilities; that loss report prints first. The copy
   overlays the source (keys only in `dest` are kept). `--dry-run` writes nothing.
-- **`diff <a> <b>`** — compare two files' canonical metadata (added/removed/changed
+- **`diff <a> <b>`** - compare two files' canonical metadata (added/removed/changed
   keys, picture/chapter deltas). `--quiet` reports through the exit code only.
 
 Edits: `--set KEY=VALUE` (replace), `--add KEY=VALUE` (append, for multi-value),
 `--clear KEY` (remove), `--add-cover FILE`, `--remove-pictures`. Write policy:
-`--preset preserve|compatible|canonical|minimal`, `--legacy …`. Every command
+`--preset preserve|compatible|canonical|minimal`, `--legacy ...`. Every command
 accepts `--json` for scriptable output.
 
-Exit codes for `dump`/`plan`/`set`/`verify`/`copy`: `0` success · `1` error · `2`
-usage/invalid key · `3` unsupported format · `4` invalid data · `5` source
-changed · `6` I/O · `130` canceled/timeout. **`diff` follows the diff(1)
-convention instead:** `0` identical · `1` differs · `≥2` error (using the same
-`2`–`6` classes). (cobra's built-in `help` and `completion` follow cobra's own
+Exit codes for `dump`/`plan`/`set`/`verify`/`copy`: `0` success; `1` error; `2`
+usage/invalid key; `3` unsupported format; `4` invalid data; `5` source
+changed; `6` I/O; `130` canceled/timeout. **`diff` follows the diff(1)
+convention instead:** `0` identical; `1` differs; `>=2` error (using the same
+`2`-`6` classes). (cobra's built-in `help` and `completion` follow cobra's own
 conventions.)
 
 > The **library** has no third-party dependencies. The CLI (package `main` under
@@ -110,7 +110,7 @@ A small set of contracts is stable:
 - **Preservation-first.** The native document is the base; an edit rewrites only
   the affected field. Legacy containers (stray ID3, APE) are preserved and
   warned by default, never stripped silently.
-- **Prepare → Report → Execute.** The plan and the write share state, so the
+- **Prepare -> Report -> Execute.** The plan and the write share state, so the
   report cannot disagree with what is written.
 - **Versioned audio identity.** `AudioDigest` carries an algorithm and a named,
   versioned extent so persisted dedup hashes stay interpretable library-wide.
@@ -119,14 +119,14 @@ A small set of contracts is stable:
 
 | Container | Codec | Read | Write | Notes |
 |-----------|-------|:----:|:-----:|-------|
-| FLAC | FLAC | ✅ | ✅ | Vorbis comments, pictures, stray-ID3 + CUESHEET/SEEKTABLE preserved |
-| Ogg | Vorbis | ✅ | ✅ | Vorbis comments + `METADATA_BLOCK_PICTURE`; setup header preserved; audio packets byte-identical |
-| Ogg | Opus | ✅ | ✅ | OpusTags (+ padding) + pictures; R128 `output_gain` distinct from ReplayGain |
-| MP3 | ID3v2/v1 | ✅ | ✅ | ID3v2.2/2.3/2.4 read+write (version preserved); ID3v1/APEv2 read into the family view; numeric genre; VBR length |
-| WAV | RIFF | ✅ | ✅ | LIST/INFO + embedded `id3 ` chunk; id3 authoritative when present, else INFO; pictures via id3; all chunks preserved; RF64/BW64 out of scope |
-| MP4 | AAC/ALAC | ✅ | ✅ | iTunes `moov.udta.meta.ilst` (text, trkn/disk, covr art, `----` freeform long tail); `free`-atom reuse + all-track `stco`/`co64` fixups; `chpl` preserved; fragmented (moof) rejected |
-| Matroska | FLAC/Opus/Vorbis/AAC/… | ✅ | ✅ | `.mka`/`.webm`/`.mkv`; scope-aware SimpleTag projection (album/track/edition/chapter) + `Info.Title` + cover-art attachments; canonical edits at album scope, other scopes preserved verbatim; size change absorbed into a reserved Void (else tail shifted with Cues/SeekHead/CRC fixups), clusters byte-identical; cover write refused for WebM; chapters and cluster rewrite out of scope |
-| AIFF | PCM (AIFF-C) | ✅ | ✅ | native NAME/AUTH/`(c) `/ANNO chunks + embedded `ID3 ` chunk; ID3 authoritative when present, else native; pictures via ID3; 80-bit COMM rate; AIFF-C + `id3 ` variant; all chunks preserved |
+| FLAC | FLAC | yes | yes | Vorbis comments, pictures, stray-ID3 + CUESHEET/SEEKTABLE preserved |
+| Ogg | Vorbis | yes | yes | Vorbis comments + `METADATA_BLOCK_PICTURE`; setup header preserved; audio packets byte-identical |
+| Ogg | Opus | yes | yes | OpusTags (+ padding) + pictures; R128 `output_gain` distinct from ReplayGain |
+| MP3 | ID3v2/v1 | yes | yes | ID3v2.2/2.3/2.4 read+write (version preserved); ID3v1/APEv2 read into the family view; numeric genre; VBR length |
+| WAV | RIFF | yes | yes | LIST/INFO + embedded `id3 ` chunk; id3 authoritative when present, else INFO; pictures via id3; all chunks preserved; RF64/BW64 out of scope |
+| MP4 | AAC/ALAC | yes | yes | iTunes `moov.udta.meta.ilst` (text, trkn/disk, covr art, `----` freeform long tail); `free`-atom reuse + all-track `stco`/`co64` fixups; `chpl` preserved; fragmented (moof) rejected |
+| Matroska | FLAC/Opus/Vorbis/AAC/... | yes | yes | `.mka`/`.webm`/`.mkv`; scope-aware SimpleTag projection (album/track/edition/chapter) + `Info.Title` + cover-art attachments; canonical edits at album scope, other scopes preserved verbatim; size change absorbed into a reserved Void (else tail shifted with Cues/SeekHead/CRC fixups), clusters byte-identical; cover write refused for WebM; chapters and cluster rewrite out of scope |
+| AIFF | PCM (AIFF-C) | yes | yes | native NAME/AUTH/`(c) `/ANNO chunks + embedded `ID3 ` chunk; ID3 authoritative when present, else native; pictures via ID3; 80-bit COMM rate; AIFF-C + `id3 ` variant; all chunks preserved |
 
 Ogg writes preserve audio *packet payloads* byte-for-byte (Ogg re-pagination is
 allowed); chained/multiplexed streams are read best-effort and reported, but
@@ -136,14 +136,14 @@ writing them is refused.
 
 Three levels answer different questions:
 
-- `HashAudioEssence` — encoded-essence identity: the audio packets plus the
+- `HashAudioEssence` - encoded-essence identity: the audio packets plus the
   codec's decoder-critical config (FLAC STREAMINFO; the Vorbis identification +
   setup headers; the Opus head with its channel mapping and output_gain). "Is
   this the same audio?", independent of tags. The extent can be several
   byte ranges, so Ogg's audio page bodies (interleaved with page headers) hash
   correctly.
-- `HashFile` — whole-file identity.
-- decoded-PCM identity — needs a decoder; test-only.
+- `HashFile` - whole-file identity.
+- decoded-PCM identity - needs a decoder; test-only.
 
 ## Lint
 
@@ -155,7 +155,7 @@ pictures, and malformed dates.
 
 All input is treated as untrusted: allocations and recursion are bounded
 (`waxerr.ErrSizeTooLarge`, `waxerr.ErrTooDeep`) and the parser never panics
-(verified by `FuzzParse`). Saves are durable (temp → fsync → rename → dir
+(verified by `FuzzParse`). Saves are durable (temp -> fsync -> rename -> dir
 fsync) and detect a file that changed since parse (`waxerr.ErrSourceChanged`).
 
 ## License

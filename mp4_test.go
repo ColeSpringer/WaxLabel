@@ -98,10 +98,10 @@ func TestMP4DifferentialChaptersChpl(t *testing.T) {
 func TestMP4DifferentialQTChapterTrack(t *testing.T) {
 	requireTool(t, "ffprobe")
 	requireTool(t, "ffmpeg")
-	// Step-12 decision gate: a chapter edit builds a QuickTime chapter text track
-	// that ffmpeg reads. ffprobe must list the chapter text stream and read the
+	// A chapter edit builds a QuickTime chapter text track that ffmpeg reads.
+	// ffprobe must list the chapter text stream and read the
 	// chapters with End times (which only the QuickTime track carries, not the
-	// chpl), and ffmpeg -c copy must demux and remux the whole layout — proving the
+	// chpl), and ffmpeg -c copy must demux and remux the whole layout - proving the
 	// new trak, tref, and appended mdat are structurally valid.
 	path := genM4A(t, map[string]string{"title": "Book"})
 	doc := mustParseFile(t, path)
@@ -171,7 +171,7 @@ func TestMP4DifferentialQTChapterFaststart(t *testing.T) {
 	// A faststart file puts moov before mdat, so writing chapters shifts the audio
 	// mdat by the moov delta (the existing chunk-offset fixup) while the chapter
 	// samples still land in a fresh mdat at end-of-file. ffmpeg must accept it and
-	// the audio must decode unchanged — the stronger offset path.
+	// the audio must decode unchanged - the stronger offset path.
 	base := genM4A(t, map[string]string{"title": "FS"})
 	path := filepath.Join(t.TempDir(), "fast.m4a")
 	if o, err := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error",

@@ -92,7 +92,7 @@ type NativeEntry struct {
 	Note string
 }
 
-// NativeDoc is a codec's editable native document — the base for
+// NativeDoc is a codec's editable native document - the base for
 // preservation-first edits. It is opaque to the engine except for cloning (so
 // Document accessors stay detached) and describing (for the native view).
 type NativeDoc interface {
@@ -127,7 +127,7 @@ type Media struct {
 	AudioEnd   int64
 
 	// AudioRanges is the codec-supplied multi-segment essence region for formats
-	// whose audio is not one contiguous run — Ogg page bodies interleaved with
+	// whose audio is not one contiguous run - Ogg page bodies interleaved with
 	// page headers, and later multiple/relocatable MP4 mdat. When non-nil it is
 	// authoritative for essence hashing and verification (the ranges must be
 	// ascending and disjoint, in source order); when nil the single

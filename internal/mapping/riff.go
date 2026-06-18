@@ -4,7 +4,7 @@ import "github.com/colespringer/waxlabel/tag"
 
 // This file holds the RIFF LIST/INFO <-> canonical mapping shared by the wav
 // codec. RIFF INFO is a small, fixed vocabulary of four-character chunk
-// identifiers, each holding a single NUL-terminated string — far less
+// identifiers, each holding a single NUL-terminated string - far less
 // expressive than ID3 or Vorbis comments. Only the well-established identifiers
 // map to canonical keys; anything else (IENG, ILNG, ISBJ, IKEY, the ISFT
 // software stamp, ...) is preserved verbatim in the native document but not

@@ -15,8 +15,8 @@ import (
 )
 
 // maxMetaChunk bounds how large a metadata chunk (a native text chunk or ID3) we
-// will read into memory. The SSND sound chunk is never read here — only its range
-// is recorded — so this guards only the small structural chunks against a hostile
+// will read into memory. The SSND sound chunk is never read here - only its range
+// is recorded - so this guards only the small structural chunks against a hostile
 // size, alongside the user's MaxAllocBytes limit (whichever is smaller wins).
 const maxMetaChunk = 64 << 20
 
@@ -53,7 +53,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 
 	// The FORM size delimits the container; bytes beyond it are appended out-of-FORM
-	// data, not chunks. Trust it as the walk boundary only when sane — a bogus 0 or
+	// data, not chunks. Trust it as the walk boundary only when sane - a bogus 0 or
 	// 0xFFFFFFFF falls back to the file size so no chunk is missed.
 	formEnd := 8 + int64(binary.BigEndian.Uint32(hdr[4:8]))
 	if formEnd < 12 || formEnd > size {
@@ -99,8 +99,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		}
 	}
 
-	// The first ID3 chunk that parses is authoritative; every other ID3 chunk — a
-	// duplicate, or a corrupt one beside a valid one — is marked dropped so the
+	// The first ID3 chunk that parses is authoritative; every other ID3 chunk - a
+	// duplicate, or a corrupt one beside a valid one - is marked dropped so the
 	// output never carries two ID3 chunks.
 	for _, i := range id3Idxs {
 		body, err := bits.ReadSlice(src, d.chunks[i].bodyOff, min(d.chunks[i].bodyLen, maxMetaChunk), limit)
@@ -156,7 +156,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 // project derives the canonical view from a parsed (or rewritten) document under
 // the read-precedence policy: the embedded ID3 chunk is authoritative when
 // present, and the native text chunks fill in any canonical key ID3 does not
-// carry — so a native-only value (a Copyright in a "(c) " chunk, say) enters the
+// carry - so a native-only value (a Copyright in a "(c) " chunk, say) enters the
 // canonical set and survives a rewrite rather than being silently dropped. When
 // there is no ID3 chunk, the native chunks are the sole authority. Either way the
 // native chunks also contribute family entries with conflicts flagged. It is
@@ -190,7 +190,7 @@ func project(d *doc) (tags tag.TagSet, pics []core.Picture, families []core.Fami
 
 // mediaWarnings returns the content-derived warnings for a parsed or rewritten
 // document: a resolved numeric genre and an inherited-encoder stamp from the ID3
-// chunk's TSSE/TENC frame (the AIFF analogue of WAV's ISFT scan — ffmpeg writes
+// chunk's TSSE/TENC frame (the AIFF analogue of WAV's ISFT scan - ffmpeg writes
 // the "Lavf..." stamp into ID3, not the native chunks). Structural warnings found
 // only while walking the source (duplicate ID3 chunks) are added by Parse itself.
 // Sharing this lets the post-write document's warnings match a fresh parse.
@@ -233,7 +233,7 @@ func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, formEnd, li
 		}
 		next := bodyOff + bodyLen + (bodyLen & 1) // word-alignment pad byte
 		if next <= off {
-			break // no forward progress (corrupt) — stop and preserve the rest
+			break // no forward progress (corrupt) - stop and preserve the rest
 		}
 		off = next
 	}
@@ -280,7 +280,7 @@ func isID3Chunk(id string) bool { return id == "ID3 " || id == "id3 " }
 
 // textValue extracts a native text chunk's value: the character run up to the
 // first NUL (AIFF text chunks are commonly NUL-padded). Cutting at the first NUL
-// — rather than only trimming trailing NULs — keeps an interior NUL from later
+// - rather than only trimming trailing NULs - keeps an interior NUL from later
 // truncating an ID3 text frame when the value is promoted to the ID3 chunk.
 func textValue(body []byte) []byte {
 	for i, b := range body {

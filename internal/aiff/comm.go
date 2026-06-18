@@ -34,7 +34,7 @@ func parseCOMM(b []byte, isAIFC bool) (commChunk, bool) {
 // rate. The field is an 80-bit IEEE 754 extended-precision float (the big-endian
 // SANE "extended" format): a sign bit, a 15-bit biased exponent, and a 64-bit
 // mantissa whose integer bit is *explicit* (unlike an IEEE double's implicit
-// one). Out-of-range, infinite, NaN, or non-positive values yield 0 — a sample
+// one). Out-of-range, infinite, NaN, or non-positive values yield 0 - a sample
 // rate that nonsensical is treated as unknown rather than wrapped on conversion.
 func decodeSampleRate(b []byte) uint32 {
 	f := extended80ToFloat(b)
@@ -63,7 +63,7 @@ func extended80ToFloat(b []byte) float64 {
 		// is false) and cast to a platform-dependent uint32.
 		return 0
 	case exp == 0x7FFF:
-		return 0 // Inf or NaN — not a usable rate
+		return 0 // Inf or NaN - not a usable rate
 	}
 	// value = sign * mantissa * 2^(exp - bias - 63), bias = 16383, and the 63
 	// accounts for the mantissa's explicit integer bit weighting (bit 63).
@@ -117,7 +117,7 @@ func codecName(c commChunk) string {
 	case "alaw", "ALAW":
 		return "A-law"
 	case "ulaw", "ULAW":
-		return "µ-law"
+		return "mu-law"
 	case "ima4":
 		return "IMA ADPCM"
 	default:

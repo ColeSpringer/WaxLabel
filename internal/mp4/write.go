@@ -19,7 +19,7 @@ import (
 // the media data usually does not move at all (delta == 0, no offset fixups).
 // When the new tag list cannot fit the available padding, the enclosing
 // moov/udta/meta atom sizes are patched and every track's stco/co64 chunk-offset
-// table is shifted so the media stays playable — no atom is reordered and the
+// table is shifted so the media stays playable - no atom is reordered and the
 // mdat bytes are copied verbatim.
 func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.WriteOptions) (*core.WritePlan, error) {
 	if err := ctx.Err(); err != nil {
@@ -106,8 +106,8 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 }
 
 // checkCoverFormats rejects a cover whose image format an MP4 covr atom cannot
-// label. Only JPEG, PNG, and BMP have type codes; another format (WebP, GIF, …)
-// would be stored with a JPEG type flag over non-JPEG bytes — a corrupt cover —
+// label. Only JPEG, PNG, and BMP have type codes; another format (WebP, GIF, ...)
+// would be stored with a JPEG type flag over non-JPEG bytes - a corrupt cover -
 // so fail loudly here rather than silently mislabel it.
 func checkCoverFormats(pics []core.Picture) error {
 	for _, p := range pics {
@@ -173,7 +173,7 @@ func planLayout(d *doc, newIlst []byte, opts core.WriteOptions) (layout, error) 
 			// Fits with room for a free atom: reuse the region in place (delta 0).
 			lay.regionBytes, lay.freeOff, lay.freeLen, lay.freeContent = appendFree(newIlst, leftover-8)
 		default:
-			// Does not fit (or a 1–7 byte remainder a free atom cannot represent):
+			// Does not fit (or a 1-7 byte remainder a free atom cannot represent):
 			// grow with fresh padding so a later edit fits in place again.
 			lay.regionBytes, lay.freeOff, lay.freeLen, lay.freeContent = appendFree(newIlst, pad)
 		}
@@ -351,8 +351,8 @@ func offsetPatch(t offsetTable, delta, insertion int64) (edit, error) {
 // shiftOffset moves a chunk offset that lies past the insertion point by delta,
 // so the media chunk resolves to its new position after the metadata changed
 // size. delta is usually a grow (positive) but can be a small shrink (negative)
-// — a just-smaller tag list written with zero padding leaves a 1–7 byte gap a
-// free atom cannot fill — so the adjustment is signed. The same rule is used to
+// - a just-smaller tag list written with zero padding leaves a 1-7 byte gap a
+// free atom cannot fill - so the adjustment is signed. The same rule is used to
 // rewrite the offset bytes and to update the returned document, so the two
 // cannot disagree.
 func shiftOffset(e uint64, insertion, delta int64) uint64 {

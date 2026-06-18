@@ -15,14 +15,14 @@ import (
 )
 
 // maxMetaChunk bounds how large a metadata chunk (LIST, id3) we will read into
-// memory. The data chunk is never read here — only its range is recorded — so
+// memory. The data chunk is never read here - only its range is recorded - so
 // this guards only the small structural chunks against a hostile size. It works
 // alongside the user's MaxAllocBytes limit (whichever is smaller wins).
 const maxMetaChunk = 64 << 20
 
 // maxFmtChunk bounds the "fmt " read. Only the first 16 bytes are decoded (and a
 // WAVE_FORMAT_EXTENSIBLE chunk is 40), so there is no reason to read a chunk that
-// declares a larger body into memory — the rest is copied from the source on
+// declares a larger body into memory - the rest is copied from the source on
 // rewrite regardless.
 const maxFmtChunk = 40
 
@@ -50,7 +50,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 
 	// The RIFF size delimits the container; bytes beyond it are appended out-of-RIFF
 	// data (e.g. an ID3v1 tag), not chunks. Trust it as the walk boundary only when
-	// sane — a bogus 0 or 0xFFFFFFFF falls back to the file size so no chunk is
+	// sane - a bogus 0 or 0xFFFFFFFF falls back to the file size so no chunk is
 	// missed.
 	riffEnd := 8 + int64(binary.LittleEndian.Uint32(hdr[4:8]))
 	if riffEnd < 12 || riffEnd > size {
@@ -113,8 +113,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		markDup(d, infoIdxs[1:])
 	}
 
-	// The first id3 chunk that parses is authoritative; every other id3 chunk —
-	// a duplicate, or a corrupt one sitting beside a valid one — is marked dropped
+	// The first id3 chunk that parses is authoritative; every other id3 chunk -
+	// a duplicate, or a corrupt one sitting beside a valid one - is marked dropped
 	// so the output never carries two id3 chunks.
 	for _, i := range id3Idxs {
 		body, err := bits.ReadSlice(src, d.chunks[i].bodyOff, min(d.chunks[i].bodyLen, maxMetaChunk), limit)
@@ -168,7 +168,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 
 // project derives the canonical view from a parsed (or rewritten) document under
 // the read-precedence policy: the embedded id3 chunk is authoritative when
-// present, and LIST/INFO fills in any canonical key id3 does not carry — so an
+// present, and LIST/INFO fills in any canonical key id3 does not carry - so an
 // INFO-only value (e.g. a Copyright present only in INFO) enters the canonical
 // set and survives a rewrite rather than being silently dropped. When there is
 // no id3 chunk, INFO is the sole authority. Either way INFO also contributes
@@ -253,7 +253,7 @@ func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, riffEnd, li
 		}
 		next := bodyOff + bodyLen + (bodyLen & 1) // word-alignment pad byte
 		if next <= off {
-			break // no forward progress (corrupt) — stop and preserve the rest
+			break // no forward progress (corrupt) - stop and preserve the rest
 		}
 		off = next
 	}
@@ -304,7 +304,7 @@ func parseFmt(b []byte) (fmtChunk, bool) {
 func buildTrack(fc fmtChunk, dataLen int64) core.AudioTrack {
 	t := core.AudioTrack{
 		Codec: codecName(fc.audioFormat),
-		// Cap the uint32→int conversions so a hostile fmt value cannot overflow
+		// Cap the uint32->int conversions so a hostile fmt value cannot overflow
 		// into a negative property on a 32-bit platform (where int is 32-bit), the
 		// same int(uint32) hazard parseInfo guards. Real rates are far below the cap.
 		SampleRate:    int(min(int64(fc.sampleRate), math.MaxInt32)),
@@ -335,7 +335,7 @@ func codecName(format uint16) string {
 	case 0x0006:
 		return "A-law"
 	case 0x0007:
-		return "µ-law"
+		return "mu-law"
 	case 0x0011:
 		return "IMA ADPCM"
 	case 0x0055:

@@ -33,6 +33,7 @@ const (
 	itemInfo
 	itemTags
 	itemAttach
+	itemChapters
 )
 
 // layout is the resolved output shape both write strategies produce: the segment
@@ -46,14 +47,15 @@ type layout struct {
 	clusterStart int64
 	delta        int64 // tail shift (0 for absorption)
 
-	seekRaw   []byte
-	seekStart int64
-	cuesRaw   []byte
-	cuesStart int64
-	infoRaw   []byte
-	infoStart int64
-	hasAttach bool
-	attach    attachBlock
+	seekRaw     []byte
+	seekStart   int64
+	cuesRaw     []byte
+	cuesStart   int64
+	infoRaw     []byte
+	infoStart   int64
+	chaptersRaw []byte // re-rendered Chapters bytes (nil with a chapter edit = dropped)
+	hasAttach   bool
+	attach      attachBlock
 }
 
 // planAbsorb realizes the edit by absorbing its size change into a reserved Void
@@ -67,17 +69,17 @@ type layout struct {
 func planAbsorb(d *doc, base, edited *core.Media, ch changes, report core.WriteReport) (*core.WritePlan, error) {
 	wb := d.wb
 
-	newTags, newGroups, newInfo, newTitle, newAttach, newAtts, err := renderChanged(d, base, edited, ch)
+	r, err := renderChanged(d, base, edited, ch)
 	if err != nil {
 		return nil, err
 	}
 
 	// A changed element in the post-cluster tail, or a drop of an existing
-	// element, is not absorption-friendly — the shift path rebuilds the SeekHead.
+	// element, is not absorption-friendly - the shift path rebuilds the SeekHead.
 	for _, c := range wb.children {
 		switch {
 		case c.id == idTags && ch.simple:
-			if c.start >= wb.clusterStart || newTags == nil {
+			if c.start >= wb.clusterStart || r.tags == nil {
 				return nil, errFallback
 			}
 		case c.id == idInfo && ch.title:
@@ -85,7 +87,11 @@ func planAbsorb(d *doc, base, edited *core.Media, ch changes, report core.WriteR
 				return nil, errFallback
 			}
 		case c.id == idAttachments && ch.pictures:
-			if c.start >= wb.clusterStart || newAttach == nil {
+			if c.start >= wb.clusterStart || r.attach == nil {
+				return nil, errFallback
+			}
+		case c.id == idChapters && ch.chapters:
+			if c.start >= wb.clusterStart || r.chapters == nil {
 				return nil, errFallback
 			}
 		}
@@ -95,7 +101,7 @@ func planAbsorb(d *doc, base, edited *core.Media, ch changes, report core.WriteR
 	// and marking the first Void as the flex absorber.
 	var items []outItem
 	flexIdx, seekIdx := -1, -1
-	tagsPlaced, attachPlaced := false, false
+	tagsPlaced, attachPlaced, chaptersPlaced := false, false, false
 	for _, c := range wb.children {
 		if c.start >= wb.clusterStart {
 			break
@@ -112,15 +118,21 @@ func planAbsorb(d *doc, base, edited *core.Media, ch changes, report core.WriteR
 				continue // a second Tags master: the first already carries every group
 			}
 			tagsPlaced = true
-			items = append(items, litItem(idTags, newTags, c.start, itemTags))
+			items = append(items, litItem(idTags, r.tags, c.start, itemTags))
 		case c.id == idInfo && ch.title:
-			items = append(items, litItem(idInfo, newInfo, c.start, itemInfo))
+			items = append(items, litItem(idInfo, r.info, c.start, itemInfo))
 		case c.id == idAttachments && ch.pictures:
 			if attachPlaced {
 				continue // a second Attachments master: the first already carries every file
 			}
 			attachPlaced = true
-			items = append(items, litItem(idAttachments, newAttach, c.start, itemAttach))
+			items = append(items, litItem(idAttachments, r.attach, c.start, itemAttach))
+		case c.id == idChapters && ch.chapters:
+			if chaptersPlaced {
+				continue
+			}
+			chaptersPlaced = true
+			items = append(items, litItem(idChapters, r.chapters, c.start, itemChapters))
 		default:
 			items = append(items, outItem{id: c.id, srcOff: c.start, n: c.total(), origStart: c.start})
 		}
@@ -128,11 +140,14 @@ func planAbsorb(d *doc, base, edited *core.Media, ch changes, report core.WriteR
 	if flexIdx < 0 {
 		return nil, errFallback
 	}
-	if ch.simple && !tagsPlaced && newTags != nil {
-		items = append(items, litItem(idTags, newTags, -1, itemTags))
+	if ch.simple && !tagsPlaced && r.tags != nil {
+		items = append(items, litItem(idTags, r.tags, -1, itemTags))
 	}
-	if ch.pictures && !attachPlaced && newAttach != nil {
-		items = append(items, litItem(idAttachments, newAttach, -1, itemAttach))
+	if ch.pictures && !attachPlaced && r.attach != nil {
+		items = append(items, litItem(idAttachments, r.attach, -1, itemAttach))
+	}
+	if ch.chapters && !chaptersPlaced && r.chapters != nil {
+		items = append(items, litItem(idChapters, r.chapters, -1, itemChapters))
 	}
 
 	// Size the flex Void so the header's total byte length is preserved.
@@ -178,32 +193,46 @@ func planAbsorb(d *doc, base, edited *core.Media, ch changes, report core.WriteR
 	lay := assembleItems(wb, items, 0)
 	report.BytesAfter = wb.size
 	report.Operations = absorbOps(ch, len(edited.Pictures))
-	result := buildResult(d, edited, newGroups, newTitle, newAtts, ch, lay)
+	result := buildResult(d, edited, r, ch, lay)
 	return &core.WritePlan{Segments: lay.segs, NoOp: false, Report: report, Result: result}, nil
+}
+
+// rendered holds every Segment child an edit re-rendered, so the two write
+// strategies and buildResult thread one value rather than a long parameter list.
+// A nil tags/attach/chapters byte slice means that element is dropped.
+type rendered struct {
+	tags     []byte
+	groups   []tagGroup
+	info     []byte
+	title    string
+	attach   []byte
+	atts     []attachment
+	chapters []byte
 }
 
 // renderChanged renders every Segment child the edit touches. The caller (Plan)
 // has already guaranteed an Info element exists when the title changed, so the
-// only failure here is an unparseable captured Info — a real ErrInvalidData, kept
+// only failure here is an unparseable captured Info - a real ErrInvalidData, kept
 // distinct from the internal errFallback that signals "try the shift path".
-func renderChanged(d *doc, base, edited *core.Media, ch changes) (newTags []byte, newGroups []tagGroup,
-	newInfo []byte, newTitle string, newAttach []byte, newAtts []attachment, err error) {
-	newTitle = d.segTitle
+func renderChanged(d *doc, base, edited *core.Media, ch changes) (*rendered, error) {
+	r := &rendered{title: d.segTitle}
 	if ch.simple {
-		newTags, newGroups = renderTags(d, base.Tags, edited.Tags)
+		r.tags, r.groups = renderTags(d, base.Tags, edited.Tags)
 	}
 	if ch.title {
 		et, _ := edited.Tags.First(tag.Title)
-		newInfo, newTitle = renderInfo(d.wb.info, et)
-		if newInfo == nil {
-			return nil, nil, nil, "", nil, nil,
-				fmt.Errorf("%w: Matroska Info element could not be re-rendered", waxerr.ErrInvalidData)
+		r.info, r.title = renderInfo(d.wb.info, et)
+		if r.info == nil {
+			return nil, fmt.Errorf("%w: Matroska Info element could not be re-rendered", waxerr.ErrInvalidData)
 		}
 	}
 	if ch.pictures {
-		newAttach, newAtts = renderAttachments(d, edited.Pictures)
+		r.attach, r.atts = renderAttachments(d, edited.Pictures)
 	}
-	return newTags, newGroups, newInfo, newTitle, newAttach, newAtts, nil
+	if ch.chapters {
+		r.chapters = renderChapters(d, edited.Chapters)
+	}
+	return r, nil
 }
 
 func litItem(id uint64, b []byte, origStart int64, kind itemKind) outItem {
@@ -234,6 +263,8 @@ func assembleItems(wb *writeBase, items []outItem, delta int64) layout {
 		case itemAttach:
 			lay.hasAttach = true
 			lay.attach = attachBlock{start: it.outOff, end: it.outOff + it.n, hasCRC: wb.attach != nil && wb.attach.hasCRC}
+		case itemChapters:
+			lay.chaptersRaw = it.lit
 		}
 	}
 	if wb.size > wb.clusterStart {
@@ -351,22 +382,25 @@ func absorbOps(ch changes, pics int) []string {
 	if ch.pictures {
 		ops = append(ops, "rewrote Attachments", "pictures: "+strconv.Itoa(pics))
 	}
+	if ch.chapters {
+		ops = append(ops, "rewrote Chapters (clusters not moved)")
+	}
 	return ops
 }
 
 // buildResult constructs the post-write Media so the engine returns a Document
 // without re-parsing. Its canonical view is re-projected from the written groups
 // (the same project Parse uses), so it equals a fresh parse of the output.
-func buildResult(d *doc, edited *core.Media, newGroups []tagGroup, newTitle string, newAtts []attachment,
-	ch changes, lay layout) *core.Media {
+func buildResult(d *doc, edited *core.Media, r *rendered, ch changes, lay layout) *core.Media {
 	depth := bits.NewDepth(64)
 	limit := int64(maxElement)
 
 	nd := &doc{
 		docType:     d.docType,
-		segTitle:    newTitle,
+		segTitle:    r.title,
 		groups:      d.groups,
 		attachments: d.attachments,
+		chapters:    d.chapters,
 		tracks:      d.tracks,
 		codecID:     d.codecID,
 		sampleRate:  d.sampleRate,
@@ -374,10 +408,20 @@ func buildResult(d *doc, edited *core.Media, newGroups []tagGroup, newTitle stri
 		bitDepth:    d.bitDepth,
 	}
 	if ch.simple {
-		nd.groups = newGroups
+		nd.groups = r.groups
 	}
 	if ch.pictures {
-		nd.attachments = newAtts
+		nd.attachments = r.atts
+	}
+
+	// Re-derive the chapter view from the rendered bytes (re-parsing them, the
+	// seekFromRaw pattern) so the returned Document's chapters equal a fresh parse;
+	// an edit that dropped the Chapters element leaves none.
+	var resChapters []core.Chapter
+	if ch.chapters {
+		nd.chapters, resChapters = chaptersFromRaw(lay.chaptersRaw, depth, limit)
+	} else {
+		resChapters = core.CloneChapters(edited.Chapters)
 	}
 
 	wb := &writeBase{
@@ -418,6 +462,7 @@ func buildResult(d *doc, edited *core.Media, newGroups []tagGroup, newTitle stri
 		Properties: edited.Properties.Clone(),
 		Tags:       tags,
 		Pictures:   resultPictures(edited.Pictures, ch),
+		Chapters:   resChapters,
 		Families:   families,
 		Warnings:   mediaWarnings(tags, families),
 		Native:     nd,
@@ -442,9 +487,9 @@ func clusterEnd(children []l1elem) int64 {
 }
 
 // resultPictures returns the picture set the post-write Document reports. When the
-// covers were rewritten, it re-derives them as a fresh parse would — the role is
+// covers were rewritten, it re-derives them as a fresh parse would - the role is
 // normalized through the cover-art file-name convention (only front cover survives
-// as a distinct role; others read back as Other) and the geometry is re-sniffed —
+// as a distinct role; others read back as Other) and the geometry is re-sniffed -
 // so the returned document equals a re-parse of the output. When pictures were not
 // touched they were preserved verbatim, so the input set already matches.
 func resultPictures(pics []core.Picture, ch changes) []core.Picture {
