@@ -48,7 +48,7 @@ func TestPlanTransferReportsLosses(t *testing.T) {
 }
 
 // TestPlanTransferUnsupportedDest: simulating a transfer to a format with no codec
-// is an error, while a read-only destination is a valid all-dropped report.
+// is an error, while a writable destination (Matroska) carries the canonical set.
 func TestPlanTransferUnsupportedDest(t *testing.T) {
 	src := mustParseFile(t, sampleFLAC)
 
@@ -60,8 +60,9 @@ func TestPlanTransferUnsupportedDest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanTransfer(Matroska): %v", err)
 	}
-	if _, _, dropped := report.Counts(); dropped != len(report.Items) || len(report.Items) == 0 {
-		t.Errorf("read-only Matroska should drop everything, got %+v", report)
+	carried, _, dropped := report.Counts()
+	if carried == 0 || dropped != 0 {
+		t.Errorf("writable Matroska should carry the canonical fields, got %+v", report)
 	}
 }
 
@@ -214,18 +215,31 @@ func TestMP4RejectsUnstorableCover(t *testing.T) {
 	}
 }
 
-// TestPrepareTransferReadOnlyDestErrors projects onto a read-only format: it both
-// reports everything dropped and refuses to prepare (the format cannot be written
-// in this version).
-func TestPrepareTransferReadOnlyDestErrors(t *testing.T) {
+// TestPrepareTransferToMatroska projects a FLAC's tags onto a Matroska canvas and
+// confirms the report matches the written result — a cross-format transfer into a
+// now-writable container (Title lands in Info.Title, the rest in SimpleTags).
+func TestPrepareTransferToMatroska(t *testing.T) {
 	src := mustParseFile(t, sampleFLAC)
-	dst := mustParseBytes(t, readFixture(t, "testdata/notags.mka"))
+	dstBytes := readFixture(t, "testdata/notags.mka")
+	dst := mustParseBytes(t, dstBytes)
 
-	_, report, err := src.PrepareTransfer(dst)
-	if !errors.Is(err, waxerr.ErrUnsupportedFormat) {
-		t.Errorf("err = %v, want ErrUnsupportedFormat", err)
+	plan, report, err := src.PrepareTransfer(dst)
+	if err != nil {
+		t.Fatalf("PrepareTransfer: %v", err)
 	}
-	if report.Lossless() {
-		t.Error("report should still record the drops even though Prepare failed")
+	if carried, _, dropped := report.Counts(); carried == 0 || dropped != 0 {
+		t.Fatalf("expected canonical fields carried, got %+v", report)
+	}
+	result := mustParseBytes(t, applyToBytes(t, dstBytes, plan))
+	// Check the cleanly-mapping core fields land with the source values (TITLE goes
+	// to Info.Title, the rest to SimpleTags). The Vorbis-custom "ENCODER" key is
+	// deliberately not asserted: Matroska's read mapping normalizes ENCODER to the
+	// canonical EncodedBy, a pre-existing cross-format key normalization.
+	for _, k := range []tag.Key{tag.Title, tag.Artist, tag.Album} {
+		srcVals, _ := src.Get(k)
+		gotVals, present := result.Get(k)
+		if len(srcVals) > 0 && (!present || !slices.Equal(gotVals, srcVals)) {
+			t.Errorf("carried %s = %v (present=%v), want %v", k, gotVals, present, srcVals)
+		}
 	}
 }

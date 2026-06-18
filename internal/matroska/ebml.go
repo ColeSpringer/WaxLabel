@@ -20,53 +20,64 @@ import (
 // For element IDs the descriptor bits are kept (the canonical ID form); for
 // sizes and values they are stripped. A size whose value field is all ones is
 // the "unknown size" form (a streamed element that runs until a higher-level
-// element appears) — handled conservatively here, since this codec only reads.
+// element appears) — preserved verbatim on write rather than rewritten. The
+// inverse encoders live in encode.go.
 //
 // Reimplemented from the EBML/Matroska specifications (RFC 8794 / RFC 9559).
 
-// Element IDs this codec reads. Every other element (SeekHead, Cues, Chapters,
-// Void, CRC-32, the cluster media, …) is recognized only as something to skip by
-// its declared size, so those IDs are not enumerated here.
+// Element IDs this codec reads. The structural elements the write path must
+// preserve byte-faithfully — SeekHead/Seek/SeekPosition, Cues/CueClusterPosition,
+// Void, and CRC-32 — are enumerated here too (read-only v1 skipped them by size).
+// The cluster media payload is still never decoded, only its byte range recorded.
 const (
-	idEBML         = 0x1A45DFA3
-	idDocType      = 0x4282
-	idSegment      = 0x18538067
-	idSeekHead     = 0x114D9B74
-	idInfo         = 0x1549A966
-	idTimestampScl = 0x2AD7B1
-	idDuration     = 0x4489
-	idSegTitle     = 0x7BA9
-	idTracks       = 0x1654AE6B
-	idTrackEntry   = 0xAE
-	idTrackNumber  = 0xD7
-	idTrackType    = 0x83
-	idCodecID      = 0x86
-	idAudio        = 0xE1
-	idSampFreq     = 0xB5
-	idChannels     = 0x9F
-	idBitDepth     = 0x6264
-	idTags         = 0x1254C367
-	idTag          = 0x7373
-	idTargets      = 0x63C0
-	idTgtTypeVal   = 0x68CA
-	idTgtType      = 0x63CA
-	idTagTrackUID  = 0x63C5
-	idTagEditUID   = 0x63C9
-	idTagChapUID   = 0x63C4
-	idSimpleTag    = 0x67C8
-	idTagName      = 0x45A3
-	idTagString    = 0x4487
-	idTagBinary    = 0x4485
-	idTagLang      = 0x447A
-	idAttachments  = 0x1941A469
-	idAttached     = 0x61A7
-	idFileName     = 0x466E
-	idFileMime     = 0x4660
-	idFileData     = 0x465C
-	idFileDesc     = 0x467E
-	idCluster      = 0x1F43B675
-	idCues         = 0x1C53BB6B
-	idChapters     = 0x1043A770
+	idEBML          = 0x1A45DFA3
+	idDocType       = 0x4282
+	idSegment       = 0x18538067
+	idSeekHead      = 0x114D9B74
+	idSeek          = 0x4DBB
+	idSeekID        = 0x53AB
+	idSeekPosition  = 0x53AC
+	idInfo          = 0x1549A966
+	idTimestampScl  = 0x2AD7B1
+	idDuration      = 0x4489
+	idSegTitle      = 0x7BA9
+	idTracks        = 0x1654AE6B
+	idTrackEntry    = 0xAE
+	idTrackNumber   = 0xD7
+	idTrackType     = 0x83
+	idCodecID       = 0x86
+	idAudio         = 0xE1
+	idSampFreq      = 0xB5
+	idChannels      = 0x9F
+	idBitDepth      = 0x6264
+	idTags          = 0x1254C367
+	idTag           = 0x7373
+	idTargets       = 0x63C0
+	idTgtTypeVal    = 0x68CA
+	idTgtType       = 0x63CA
+	idTagTrackUID   = 0x63C5
+	idTagEditUID    = 0x63C9
+	idTagChapUID    = 0x63C4
+	idSimpleTag     = 0x67C8
+	idTagName       = 0x45A3
+	idTagString     = 0x4487
+	idTagBinary     = 0x4485
+	idTagLang       = 0x447A
+	idAttachments   = 0x1941A469
+	idAttached      = 0x61A7
+	idFileName      = 0x466E
+	idFileMime      = 0x4660
+	idFileData      = 0x465C
+	idFileDesc      = 0x467E
+	idFileUID       = 0x46AE
+	idCluster       = 0x1F43B675
+	idCues          = 0x1C53BB6B
+	idCuePoint      = 0xBB
+	idCueTrackPos   = 0xB7
+	idCueClusterPos = 0xF1
+	idChapters      = 0x1043A770
+	idVoid          = 0xEC
+	idCRC32         = 0xBF
 )
 
 // level1IDs are the Segment's direct children — the elements an unknown-size

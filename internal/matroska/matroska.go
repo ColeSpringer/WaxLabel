@@ -1,6 +1,7 @@
-// Package matroska implements reading Matroska / WebM (.mka / .webm / .mkv)
-// metadata. It is read-only in v1 (write and full target/scope modeling are
-// deferred to v2) and internal through v0.x.
+// Package matroska implements reading and tag-writing Matroska / WebM
+// (.mka / .webm / .mkv) metadata. Tags (scoped SimpleTags), the segment title,
+// and cover-art attachments are writable; chapters and cluster/essence rewriting
+// are out of v1 scope. The package is internal through v0.x.
 //
 // A Matroska file is an EBML document: a tree of length-prefixed elements. Tags
 // live in Segment.Tags as Tag elements, each scoping a set of SimpleTag
@@ -20,13 +21,11 @@ package matroska
 import (
 	"context"
 	"encoding/binary"
-	"fmt"
 
 	"github.com/colespringer/waxlabel/internal/core"
-	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// Codec implements core.Codec for Matroska (read-only).
+// Codec implements core.Codec for Matroska: read, plus tag/title/attachment write.
 type Codec struct{}
 
 // New returns a Matroska codec.
@@ -48,30 +47,27 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 	return parse(ctx, src, opts)
 }
 
-// Plan refuses to write: Matroska is read-only in this version. Returning the
-// error here (rather than relying on the engine) keeps the reported capabilities
-// and the actual write behavior in lockstep, per the Codec contract.
-func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.WriteOptions) (*core.WritePlan, error) {
-	return nil, fmt.Errorf("%w: Matroska write is deferred to v2 (read-only)", waxerr.ErrUnsupportedFormat)
-}
-
-// Capabilities reports Matroska as read-only: tags and cover art are fully
-// readable but not writable, and chapters are not modeled in v1.
+// Capabilities reports Matroska as tag-writable: tags (scoped SimpleTags) and the
+// segment title round-trip fully, and cover art writes as an image AttachedFile —
+// except into a WebM file, whose subset excludes Attachments. Chapters are not
+// modeled in v1 (read or write); Matroska chapter support is step 13.5.
 func (Codec) Capabilities(opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
-		Read: core.AccessFull, Write: core.AccessNone,
-		Representation: "Matroska SimpleTag (target-scoped)", Fidelity: "read-only",
-		Constraints: []string{"write and full target/scope modeling deferred to v2"},
+		Read: core.AccessFull, Write: core.AccessFull,
+		Representation: "Matroska SimpleTag (album-scoped) + Info.Title",
+		Fidelity:       "lossless",
+		Constraints:    []string{"canonical edits written at album scope; existing track/edition/chapter scopes preserved verbatim"},
 	}
 	pictures := core.Capability{
-		Read: core.AccessFull, Write: core.AccessNone,
-		Representation: "AttachedFile (image attachment)", Fidelity: "read-only",
+		Read: core.AccessFull, Write: core.AccessFull,
+		Representation: "AttachedFile (image attachment)", Fidelity: "lossless",
+		Constraints: []string{"not writable to WebM (Attachments is outside the WebM subset)"},
 	}
 	chapters := core.Capability{
 		Read: core.AccessNone, Write: core.AccessNone,
 		Representation: "not modeled in v1",
 	}
-	return core.NewCapabilities(core.FormatMatroska, true, fields, pictures, chapters, nil)
+	return core.NewCapabilities(core.FormatMatroska, false, fields, pictures, chapters, nil)
 }
 
 // EssenceExtent returns the Matroska essence-digest inputs: a versioned extent

@@ -125,18 +125,23 @@ func TestCopyDryRunLeavesDestUnchanged(t *testing.T) {
 	}
 }
 
-// TestCopyToReadOnlyFormatFails: copying onto a not-yet-writable format reports
-// every item dropped and fails with the unsupported-format exit code.
-func TestCopyToReadOnlyFormatFails(t *testing.T) {
+// TestCopyToMatroskaSucceeds: copying onto a Matroska file now writes the carried
+// tags and exits 0 (the format became writable in this version).
+func TestCopyToMatroskaSucceeds(t *testing.T) {
 	t.Parallel()
 	dst := copyFixture(t, notagsMKA)
 	out, _, code := runCLI(t, "copy", sampleFLAC, dst)
-	if code != 3 {
-		t.Fatalf("exit = %d, want 3 (unsupported-format)", code)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0:\n%s", code, out)
 	}
-	// The loss report still prints so the user sees why nothing transferred.
-	if !strings.Contains(out, "dropped") || !strings.Contains(out, "read-only") {
-		t.Errorf("expected a dropped/read-only report:\n%s", out)
+	if !strings.Contains(out, "carried") {
+		t.Errorf("expected a carried report:\n%s", out)
+	}
+	// The destination now reads back the source's title.
+	got := tagValues(dumpJSON(t, dst), "TITLE")
+	want := tagValues(dumpJSON(t, sampleFLAC), "TITLE")
+	if len(want) == 0 || !slices.Equal(got, want) {
+		t.Errorf("copied TITLE = %v, want %v", got, want)
 	}
 }
 

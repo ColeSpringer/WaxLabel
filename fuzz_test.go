@@ -108,10 +108,13 @@ func FuzzParse(f *testing.F) {
 		plan2, err := doc.Edit().Set(tag.Title, "fuzz").Prepare()
 		if err != nil {
 			// A codec may refuse some shapes: a chained Ogg (ErrChainedStream), a
-			// non-page-aligned/oversized layout (ErrInvalidData), or an MP4 whose
-			// crafted offsets would overflow a 32-bit table on a grow (ErrSizeTooLarge).
+			// non-page-aligned/oversized layout (ErrInvalidData), an MP4 whose crafted
+			// offsets would overflow a 32-bit table on a grow (ErrSizeTooLarge), or a
+			// Matroska layout the writer does not handle — no reserved Void, a
+			// position that would overflow its width, a Title with no Info element
+			// (ErrUnsupportedTag).
 			if errors.Is(err, waxerr.ErrChainedStream) || errors.Is(err, waxerr.ErrInvalidData) ||
-				errors.Is(err, waxerr.ErrSizeTooLarge) {
+				errors.Is(err, waxerr.ErrSizeTooLarge) || errors.Is(err, waxerr.ErrUnsupportedTag) {
 				return
 			}
 			t.Fatalf("edit prepare failed: %v", err)

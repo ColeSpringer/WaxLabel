@@ -7,7 +7,7 @@ import (
 )
 
 // This file holds the Matroska SimpleTag-name <-> canonical mapping used by the
-// matroska codec (read-only in v1). Matroska tags live in
+// matroska codec for both read and write. Matroska tags live in
 // Segment.Tags.Tag.SimpleTag elements: each SimpleTag has a TagName (an
 // uppercase, underscore-separated UTF-8 string) and a TagString value, grouped
 // under a Targets element that scopes them to the whole segment, a track, an
@@ -83,4 +83,38 @@ func MatroskaTagKey(name string) (tag.Key, bool) {
 		return "", false
 	}
 	return k, true
+}
+
+// matroskaNames is the write-side inverse of [MatroskaTagKey]: a canonical key to
+// the Matroska-spec SimpleTag name players expect, for the keys whose canonical
+// spelling differs from the spec name (the canonical form has no underscores, the
+// numbering keys use PART_NUMBER/TOTAL_PARTS, dates use DATE_*). Each target name
+// reads back to the same canonical key through the table above, so the round-trip
+// is exact. A key absent here writes its own canonical string, which also
+// round-trips via the [tag.ParseKey] pass-through.
+var matroskaNames = map[tag.Key]string{
+	tag.AlbumArtist:   "ALBUM_ARTIST",
+	tag.TrackNumber:   "PART_NUMBER",
+	tag.TrackTotal:    "TOTAL_PARTS",
+	tag.DiscNumber:    "DISC",
+	tag.DiscTotal:     "TOTAL_DISCS",
+	tag.RecordingDate: "DATE_RECORDED",
+	tag.ReleaseDate:   "DATE_RELEASED",
+	tag.OriginalDate:  "DATE_ORIGINAL",
+	tag.EncodedBy:     "ENCODER",
+	tag.CatalogNumber: "CATALOG_NUMBER",
+	tag.Remixer:       "REMIXED_BY",
+	tag.Label:         "PUBLISHER",
+	tag.Grouping:      "CONTENT_GROUP",
+}
+
+// MatroskaTagName returns the SimpleTag name to write for a canonical key. The
+// caller excludes [tag.Title] (it is written to Segment.Info.Title, not a
+// SimpleTag); every other key maps either through matroskaNames or to its own
+// uppercase canonical string.
+func MatroskaTagName(key tag.Key) string {
+	if n, ok := matroskaNames[key]; ok {
+		return n
+	}
+	return string(key)
 }

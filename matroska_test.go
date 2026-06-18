@@ -1,6 +1,7 @@
 package waxlabel_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -141,33 +142,29 @@ func TestMatroskaNoTags(t *testing.T) {
 	}
 }
 
-// TestMatroskaReadOnly confirms Matroska is parse-only: it is Implemented but not
-// Writable, capabilities report read-only, and any Prepare (even a no-op) refuses
-// with ErrUnsupportedFormat.
-func TestMatroskaReadOnly(t *testing.T) {
+// TestMatroskaWritable confirms Matroska is tag-writable: it is Implemented and
+// Writable, capabilities report full tag/picture read and write, and chapters
+// remain unmodeled in v1.
+func TestMatroskaWritable(t *testing.T) {
 	if !wl.FormatMatroska.Implemented() {
 		t.Error("Matroska should be Implemented")
 	}
-	if wl.FormatMatroska.Writable() {
-		t.Error("Matroska should not be Writable in v1")
+	if !wl.FormatMatroska.Writable() {
+		t.Error("Matroska should be Writable")
 	}
 	doc := mustParseFile(t, sampleMKA)
 	caps := doc.Capabilities()
-	if !caps.ReadOnly || caps.Format != wl.FormatMatroska {
-		t.Errorf("caps = %+v, want read-only Matroska", caps)
+	if caps.ReadOnly || caps.Format != wl.FormatMatroska {
+		t.Errorf("caps = %+v, want writable Matroska", caps)
 	}
-	if caps.GenericField.Write != wl.AccessNone || caps.Pictures.Write != wl.AccessNone {
-		t.Error("write capabilities should be AccessNone")
+	if caps.GenericField.Write != wl.AccessFull || caps.Pictures.Write != wl.AccessFull {
+		t.Error("tag and picture write capabilities should be AccessFull")
 	}
 	if caps.GenericField.Read != wl.AccessFull {
 		t.Error("read capability should be AccessFull")
 	}
-
-	// A no-op edit and a real edit both refuse to plan.
-	for _, e := range []*wl.Editor{doc.Edit(), doc.Edit().Set(tag.Title, "nope")} {
-		if _, err := e.Prepare(); !errors.Is(err, waxerr.ErrUnsupportedFormat) {
-			t.Errorf("Prepare err = %v, want ErrUnsupportedFormat", err)
-		}
+	if caps.Chapters.Read != wl.AccessNone || caps.Chapters.Write != wl.AccessNone {
+		t.Error("chapters should be unmodeled (none) in v1")
 	}
 }
 
@@ -489,11 +486,13 @@ func TestMatroskaDifferentialFFmpeg(t *testing.T) {
 	}
 }
 
-// FuzzMatroskaParse asserts the read-only Matroska parser never panics and that
-// its accessors are safe on whatever it accepts. It forces EBML detection by
+// FuzzMatroskaParse asserts the Matroska reader and writer never panic and never
+// corrupt the essence on whatever they accept. It forces EBML detection by
 // keeping the magic prefix, so arbitrary mutations exercise the codec itself
 // (unknown-size elements, truncated VINTs, hostile lengths) rather than being
-// routed elsewhere. Run with: go test -run x -fuzz FuzzMatroskaParse
+// routed elsewhere. A no-op write must reproduce the input; a Title edit either
+// refuses cleanly (a layout the writer does not handle) or re-parses to the new
+// title. Run with: go test -run x -fuzz FuzzMatroskaParse
 func FuzzMatroskaParse(f *testing.F) {
 	const magic = "\x1a\x45\xdf\xa3"
 	for _, p := range []string{sampleMKA, sampleWebM, notagsMKA} {
@@ -504,6 +503,10 @@ func FuzzMatroskaParse(f *testing.F) {
 	f.Add([]byte(magic))
 	f.Add([]byte(magic + "\x80\x18\x53\x80\x67\xff")) // header + unknown-size Segment
 	f.Add([]byte(magic + "\xff"))                     // unknown-size header
+	// Regression: an Info whose malformed "CRC-32" child has a junk size that
+	// clamps to 4 bytes must not be mistaken for a real CRC — a title edit on it
+	// once wrote a title that a re-parse could not read back.
+	f.Add([]byte("\x810\x18S\x80gA0\x15I\xa9fɿ0000000"))
 	ctx := context.Background()
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// Ensure the EBML magic leads so detection lands on Matroska.
@@ -523,9 +526,37 @@ func FuzzMatroskaParse(f *testing.F) {
 		if _, err := doc.HashAudioEssence(ctx); err != nil {
 			_ = err // hashing may fail on a degenerate extent; it must not panic
 		}
-		// A read-only format must refuse to plan, never panic.
-		if _, err := doc.Edit().Prepare(); !errors.Is(err, waxerr.ErrUnsupportedFormat) {
-			t.Fatalf("read-only Prepare err = %v, want ErrUnsupportedFormat", err)
+
+		// A no-op write must reproduce the exact input bytes.
+		if plan, err := doc.Edit().Prepare(); err == nil {
+			var out bytes.Buffer
+			if _, _, err := plan.Execute(ctx, wl.WriteTo(&out, wl.BytesSource(data))); err != nil {
+				t.Fatalf("no-op write failed: %v", err)
+			}
+			if plan.IsNoOp() && !bytes.Equal(out.Bytes(), data) {
+				t.Fatalf("no-op write changed bytes")
+			}
+		}
+
+		// A Title edit must round-trip or refuse cleanly (a layout the writer does
+		// not yet handle — no Void/overflow/etc. surfaces ErrUnsupportedTag).
+		plan, err := doc.Edit().Set(tag.Title, "fuzz").Prepare()
+		if err != nil {
+			if errors.Is(err, waxerr.ErrUnsupportedTag) || errors.Is(err, waxerr.ErrInvalidData) {
+				return
+			}
+			t.Fatalf("title edit prepare failed: %v", err)
+		}
+		var out bytes.Buffer
+		if _, _, err := plan.Execute(ctx, wl.WriteTo(&out, wl.BytesSource(data))); err != nil {
+			t.Fatalf("title edit write failed: %v", err)
+		}
+		re, err := wl.Parse(ctx, wl.BytesSource(out.Bytes()))
+		if err != nil {
+			t.Fatalf("re-parse of edited output failed: %v", err)
+		}
+		if got := re.Fields().Title; got != "fuzz" {
+			t.Fatalf("edited title = %q, want fuzz", got)
 		}
 	})
 }

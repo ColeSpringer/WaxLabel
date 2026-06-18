@@ -53,7 +53,6 @@ func (f Format) String() string {
 }
 
 // Implemented reports whether this version can parse the format at all.
-// Matroska is parse-only (read); see [Format.Writable].
 func (f Format) Implemented() bool {
 	switch f {
 	case FormatFLAC, FormatOggVorbis, FormatOggOpus, FormatMP3, FormatWAV, FormatMP4, FormatAAC, FormatMatroska, FormatAIFF:
@@ -62,10 +61,12 @@ func (f Format) Implemented() bool {
 	return false
 }
 
-// Writable reports whether this version can write the format back.
+// Writable reports whether this version can write the format back. Matroska is
+// tag-writable (tags, segment title, attachments); its chapter support is a
+// separate step.
 func (f Format) Writable() bool {
 	switch f {
-	case FormatFLAC, FormatOggVorbis, FormatOggOpus, FormatMP3, FormatWAV, FormatMP4, FormatAAC, FormatAIFF:
+	case FormatFLAC, FormatOggVorbis, FormatOggOpus, FormatMP3, FormatWAV, FormatMP4, FormatAAC, FormatMatroska, FormatAIFF:
 		return true
 	}
 	return false

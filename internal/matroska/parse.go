@@ -18,8 +18,10 @@ import (
 // parse reads a Matroska/WebM file into a neutral Media: the scoped tag tree from
 // Segment.Tags, the segment title from Segment.Info, cover art from
 // Segment.Attachments, and the audio geometry from Segment.Tracks. The cluster
-// media is never read — only the audio byte range is recorded. Matroska is
-// read-only in v1, so no rewrite base is built.
+// media is never read — only the audio byte range is recorded. It also captures a
+// writeBase (the Segment header, the ordered top-level children, and the raw
+// bytes of the SeekHead/Cues/Info/Attachments/Tags) so the write path can
+// re-render and patch without the source (see rewrite_read.go).
 func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) (*core.Media, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -31,6 +33,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	d := &doc{}
 	var pics []core.Picture
 	var segStart, segEnd int64 = -1, -1
+	wb := &writeBase{size: size}
 
 	// Top level: the EBML header (for DocType) then the Segment.
 	err := eachChild(src, 0, size, depth, limit, func(el element) error {
@@ -40,6 +43,13 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		case idSegment:
 			if segStart < 0 {
 				segStart, segEnd = el.dataStart, el.dataEnd
+				idn := int64(len(idBytes(el.id)))
+				wb.segStart = el.start
+				wb.segSizeOff = el.start + idn
+				wb.segSizeLen = el.dataStart - (el.start + idn)
+				wb.segUnknown = el.unknown
+				wb.segDataStart = el.dataStart
+				wb.segDataEnd = el.dataEnd
 			}
 		}
 		return nil
@@ -54,8 +64,14 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	var audioStart int64 = -1
 	var audioEnd, durationNs int64
 	err = walkSegment(src, segStart, segEnd, depth, limit, func(el element) error {
+		wb.children = append(wb.children, l1elem{id: el.id, start: el.start, dataStart: el.dataStart, dataEnd: el.dataEnd})
 		switch el.id {
+		case idSeekHead:
+			wb.seek = captureSeekHead(src, el, depth, limit)
+		case idCues:
+			wb.cues = captureCues(src, el, depth, limit)
 		case idInfo:
+			wb.info = captureInfo(src, el, depth, limit)
 			ns, err := parseInfo(src, el, depth, limit, d)
 			if err != nil {
 				return err
@@ -64,8 +80,10 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		case idTracks:
 			parseTracks(src, el, depth, limit, d)
 		case idTags:
+			wb.tagsCRC = firstChildIsCRC(src, el, limit)
 			return parseTags(src, el, depth, limit, d)
 		case idAttachments:
+			wb.attach = &attachBlock{start: el.start, end: el.dataEnd, hasCRC: firstChildIsCRC(src, el, limit)}
 			ps, err := parseAttachments(src, el, depth, limit, d)
 			if err != nil {
 				return err
@@ -84,6 +102,11 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	if err != nil {
 		return nil, err
 	}
+	wb.clusterStart = audioStart
+	if wb.clusterStart < 0 {
+		wb.clusterStart = wb.segDataEnd
+	}
+	d.wb = wb
 
 	// Matroska has no per-track duration element; the segment Duration is the
 	// container's playable length, so it is the best value for every audio track.
@@ -240,10 +263,13 @@ func parseTags(src core.ReaderAtSized, tags element, depth *bits.Depth, limit in
 
 // parseTag reads one Tag: its Targets scope and its SimpleTags.
 func parseTag(src core.ReaderAtSized, tagEl element, depth *bits.Depth, limit int64) (tagGroup, error) {
-	var g tagGroup
+	g := tagGroup{raw: captureRaw(src, tagEl, limit)}
 	err := eachChild(src, tagEl.dataStart, tagEl.dataEnd, depth, limit, func(el element) error {
 		switch el.id {
+		case idCRC32:
+			g.hasCRC = true
 		case idTargets:
+			g.targetsRaw = captureRaw(src, el, limit)
 			parseTargets(src, el, depth, limit, &g)
 		case idSimpleTag:
 			st, err := parseSimpleTag(src, el, depth, limit)
@@ -281,7 +307,7 @@ func parseTargets(src core.ReaderAtSized, targets element, depth *bits.Depth, li
 // parseSimpleTag reads a SimpleTag (name/value/language) and recurses into any
 // nested sub-tags. eachChild's depth guard bounds the recursion.
 func parseSimpleTag(src core.ReaderAtSized, st element, depth *bits.Depth, limit int64) (simpleTag, error) {
-	var s simpleTag
+	s := simpleTag{raw: captureRaw(src, st, limit)}
 	err := eachChild(src, st.dataStart, st.dataEnd, depth, limit, func(el element) error {
 		switch el.id {
 		case idTagName:
@@ -338,7 +364,7 @@ func parseAttachments(src core.ReaderAtSized, att element, depth *bits.Depth, li
 // errors so a truncated or over-limit cover fails the parse rather than yielding
 // a partial picture.
 func parseAttached(src core.ReaderAtSized, af element, depth *bits.Depth, limit int64) (attachment, *core.Picture, error) {
-	var a attachment
+	a := attachment{raw: captureRaw(src, af, limit)}
 	var dataEl element
 	var haveData bool
 	err := eachChild(src, af.dataStart, af.dataEnd, depth, limit, func(el element) error {
