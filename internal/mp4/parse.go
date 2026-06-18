@@ -125,6 +125,14 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 	media.Properties = core.Properties{Container: "MP4", Tracks: []core.AudioTrack{d.track}}
 	setEssence(d, media)
+	// Average bitrate from the audio-essence byte total and the track duration,
+	// via the shared core helper. Computed after setEssence so it reuses the same
+	// essence extent the digest covers, rather than re-summing stsz.
+	var audioBytes int64
+	for _, r := range media.EssenceRanges() {
+		audioBytes += r[1] - r[0]
+	}
+	media.Properties.Tracks[0].Bitrate = core.AverageBitrate(audioBytes, d.track.Duration.Seconds())
 	media.Identity = core.Identity{Size: size}
 	media.Identity.Fingerprint, media.Identity.HasFinger = core.Fingerprint(src, media, limit)
 	return media, nil

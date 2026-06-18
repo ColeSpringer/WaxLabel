@@ -44,8 +44,8 @@ func TestMP3Parse(t *testing.T) {
 		if f.RecordingDate != c.date {
 			t.Errorf("%s: date = %q, want %q", c.path, f.RecordingDate, c.date)
 		}
-		if len(f.Genre) != 1 || f.Genre[0] != c.genre {
-			t.Errorf("%s: genre = %v, want %q", c.path, f.Genre, c.genre)
+		if len(f.Genres) != 1 || f.Genres[0] != c.genre {
+			t.Errorf("%s: genre = %v, want %q", c.path, f.Genres, c.genre)
 		}
 		if f.TrackNumber != 3 || f.TrackTotal != 12 {
 			t.Errorf("%s: track = %d/%d, want 3/12", c.path, f.TrackNumber, f.TrackTotal)

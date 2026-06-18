@@ -342,18 +342,14 @@ func (d *doc) properties(lastGranule uint64) core.Properties {
 			t.Duration = samplesToDuration(t.TotalSamples, 48000)
 		}
 	}
-	if t.Bitrate == 0 && t.Duration > 0 {
+	// A nominal bitrate from the Vorbis identification header wins; otherwise
+	// derive an average from the audio page bodies via the shared core helper.
+	if t.Bitrate == 0 {
 		var audioBytes int64
 		for _, ap := range d.audioPages {
 			audioBytes += ap.bodyLen
 		}
-		// Guard the float->int cast: a malformed file with a tiny duration but
-		// large audio could otherwise produce a value past the int range (an
-		// implementation-defined cast on 32-bit). A bitrate above MaxInt32 is
-		// nonsensical, so leave it unset rather than store garbage.
-		if br := float64(audioBytes) * 8 / t.Duration.Seconds(); br >= 0 && br < math.MaxInt32 {
-			t.Bitrate = int(br)
-		}
+		t.Bitrate = core.AverageBitrate(audioBytes, t.Duration.Seconds())
 	}
 	return core.Properties{Container: "Ogg", Tracks: []core.AudioTrack{t}}
 }

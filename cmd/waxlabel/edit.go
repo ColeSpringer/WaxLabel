@@ -29,6 +29,7 @@ type editFlags struct {
 	clear    []string // KEY, remove
 	addCover []string // image file path, added as a front cover
 	rmPics   bool
+	force    bool // embed --add-cover input even when it is not a recognized image
 
 	stripEncoder bool // clear the ENCODER software stamp
 
@@ -44,6 +45,7 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringArrayVar(&e.clear, "clear", nil, "remove KEY (repeatable)")
 	f.StringArrayVar(&e.addCover, "add-cover", nil, "add a front-cover picture from an image file (repeatable)")
 	f.BoolVar(&e.rmPics, "remove-pictures", false, "remove all embedded pictures")
+	f.BoolVar(&e.force, "force", false, "embed --add-cover input even if it is not a recognized image (PNG/JPEG/GIF/WebP/BMP/TIFF)")
 	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear the ENCODER software stamp (the transcoder leftover)")
 	f.StringVar(&e.preset, "preset", "", "write policy preset: preserve|compatible|canonical|minimal")
 	f.StringVar(&e.legacy, "legacy", "", "legacy-tag policy: preserve|strip|reconcile|update-existing")
@@ -96,23 +98,28 @@ func splitAssign(s string) (tag.Key, string, error) {
 	return k, s[i+1:], nil
 }
 
-// applyPictures records the picture edits on ed. Removal happens before adds so
-// "--remove-pictures --add-cover x.jpg" yields just the new cover. Reading a
-// cover file is a runtime (not usage) failure.
-func (e *editFlags) applyPictures(ed *wl.Editor) error {
-	if e.rmPics {
-		ed.ClearPictures()
-	}
+// loadCovers reads and validates the --add-cover files once, returning the
+// front-cover pictures to add to each edited file. Reading a cover file is a
+// runtime (not usage) failure; a file that is not a recognized image is rejected
+// as a usage error (the common mistake of pointing --add-cover at the wrong
+// file), overridable with --force for a deliberate exotic format. Validating here
+// - before any file is touched - means a bad cover is reported once for the whole
+// invocation rather than once per file in a bulk run.
+func (e *editFlags) loadCovers() ([]wl.Picture, error) {
+	var pics []wl.Picture
 	for _, path := range e.addCover {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			// os.ReadFile's *fs.PathError already names the path, so do not repeat
 			// it; just mark that the failure is about a cover image.
-			return fmt.Errorf("cover image: %w", err)
+			return nil, fmt.Errorf("cover image: %w", err)
 		}
-		ed.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: data})
+		if !e.force && !wl.IsRecognizedImage(data) {
+			return nil, usagef("cover image: %s: not a recognized image (PNG/JPEG/GIF/WebP/BMP/TIFF); use --force to embed anyway", path)
+		}
+		pics = append(pics, wl.Picture{Type: wl.PicFrontCover, Data: data})
 	}
-	return nil
+	return pics, nil
 }
 
 // writeOptions resolves -preset and -legacy into library write options, applied
@@ -159,28 +166,55 @@ var legacyOptions = map[string]wl.LegacyPolicy{
 	"update-existing": wl.LegacyUpdateExisting,
 }
 
-// preparePlan parses path, applies the edits, and resolves the write plan under
-// the edit's options plus any extra (save-only) options. Prepare performs no
-// I/O beyond the parse, so plan and set share this without writing anything.
-func preparePlan(ctx context.Context, path string, e *editFlags, extra ...wl.WriteOption) (*wl.Document, *wl.Plan, error) {
+// compiledEdit holds the invocation-level edit inputs resolved once: the tag
+// patch, the write options (edit options plus any save-only extras), and the
+// validated cover pictures. A bulk run compiles these a single time, then applies
+// them to each file via prepare, so flag and cover validation happens once - not
+// once per file.
+type compiledEdit struct {
+	patch  tag.TagPatch
+	opts   []wl.WriteOption
+	covers []wl.Picture
+	rmPics bool
+}
+
+// compile resolves the edit flags into a compiledEdit, surfacing any usage error
+// in the flags (bad --set, unknown preset/legacy, or a rejected cover) before any
+// file is parsed. extra carries save-only options (verify, preserve-mtime).
+func (e *editFlags) compile(extra ...wl.WriteOption) (*compiledEdit, error) {
 	opts, err := e.writeOptions()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	opts = append(opts, extra...)
 	patch, err := e.patch()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
+	covers, err := e.loadCovers()
+	if err != nil {
+		return nil, err
+	}
+	return &compiledEdit{patch: patch, opts: opts, covers: covers, rmPics: e.rmPics}, nil
+}
+
+// prepare parses path, applies the compiled edit, and resolves the write plan.
+// Prepare performs no I/O beyond the parse, so plan and set share this without
+// writing anything. Picture removal happens before adds so
+// "--remove-pictures --add-cover x" yields just the new cover.
+func (ce *compiledEdit) prepare(ctx context.Context, path string) (*wl.Document, *wl.Plan, error) {
 	doc, err := wl.ParseFile(ctx, path)
 	if err != nil {
 		return nil, nil, err
 	}
-	ed := doc.Edit().Apply(patch)
-	if err := e.applyPictures(ed); err != nil {
-		return nil, nil, err
+	ed := doc.Edit().Apply(ce.patch)
+	if ce.rmPics {
+		ed.ClearPictures()
 	}
-	plan, err := ed.Prepare(opts...)
+	for _, p := range ce.covers {
+		ed.AddPicture(p)
+	}
+	plan, err := ed.Prepare(ce.opts...)
 	if err != nil {
 		return nil, nil, err
 	}

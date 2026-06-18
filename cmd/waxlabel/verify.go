@@ -21,12 +21,18 @@ func newVerifyCmd() *cobra.Command {
 			"plus its decoder-critical configuration, independent of tags - which\n" +
 			"answers \"is this the same audio?\" for deduplication. The digest carries\n" +
 			"a versioned extent name, so it stays interpretable across library-wide\n" +
-			"refinements. With --whole-file, also compute the whole-file identity.",
+			"refinements. With --whole-file, also compute the whole-file identity. A\n" +
+			"single \"-\" reads from standard input.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			realOf, cleanup, err := readInputs(cmd.InOrStdin(), args)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
 			return perFile(cmd, args,
 				func(ctx context.Context, path string) (jsonVerify, error) {
-					return computeVerify(ctx, path, whole)
+					return computeVerify(ctx, realOf(path), path, whole)
 				},
 				func(path string, v jsonVerify) any { return v },
 				func(path string, c classifiedError) any {
@@ -40,18 +46,20 @@ func newVerifyCmd() *cobra.Command {
 	return cmd
 }
 
-// computeVerify parses path and computes its essence digest (and the whole-file
-// digest when whole is set).
-func computeVerify(ctx context.Context, path string, whole bool) (jsonVerify, error) {
-	doc, err := wl.ParseFile(ctx, path)
+// computeVerify parses the file at realPath and computes its essence digest (and
+// the whole-file digest when whole is set). displayPath is the name recorded in
+// the result and shown to the user; it differs from realPath only for standard
+// input ("-"), whose bytes are parsed from a temp file.
+func computeVerify(ctx context.Context, realPath, displayPath string, whole bool) (jsonVerify, error) {
+	doc, err := wl.ParseFile(ctx, realPath)
 	if err != nil {
-		return jsonVerify{File: path}, err
+		return jsonVerify{File: displayPath}, err
 	}
 	essence, err := doc.HashAudioEssence(ctx)
 	if err != nil {
-		return jsonVerify{File: path}, err
+		return jsonVerify{File: displayPath}, err
 	}
-	v := jsonVerify{SchemaVersion: schemaVersion, File: path, Essence: essence.String()}
+	v := jsonVerify{SchemaVersion: schemaVersion, File: displayPath, Essence: essence.String()}
 	if whole {
 		fileSum, err := doc.HashFile(ctx)
 		if err != nil {

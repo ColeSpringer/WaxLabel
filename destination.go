@@ -217,7 +217,20 @@ func (e *tempCreateError) Unwrap() error { return e.err }
 // directory. It returns committed=true once the rename succeeds (even if the
 // later directory fsync errors, since the data is already in place).
 func writeAtomic(path string, write, verify func(*os.File) error, preserveMtime bool, origMtimeUnixNano int64) (bool, error) {
-	dir := filepath.Dir(path)
+	// Resolve a symlink to its target so the rewrite updates the file the link
+	// points at and leaves the link in place; otherwise the atomic rename would
+	// replace the symlink with a regular file (silent data divergence from the
+	// real target). A path that does not resolve - a brand-new SaveAsFile target,
+	// a dangling link - falls back to the literal path. A hard link is still
+	// broken by the rename (an unavoidable consequence of atomic replace); that is
+	// documented behavior, not worked around here.
+	target := path
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		target = resolved
+	}
+	dir := filepath.Dir(target)
+	// The temp file must live in the target's directory so the rename is on one
+	// filesystem (os.Rename cannot cross devices) and lands beside the real file.
 	tmp, err := os.CreateTemp(dir, ".waxlabel-*.tmp")
 	if err != nil {
 		return false, &tempCreateError{dir: dir, err: err}
@@ -251,7 +264,7 @@ func writeAtomic(path string, write, verify func(*os.File) error, preserveMtime 
 	// failing the whole save over a cosmetic attribute would be worse than the
 	// data write succeeding. Carry over an existing file's mode; widen a brand-
 	// new file from os.CreateTemp's 0600 to a conventional 0644.
-	if info, err := os.Stat(path); err == nil {
+	if info, err := os.Stat(target); err == nil {
 		_ = os.Chmod(tmpName, info.Mode())
 	} else {
 		_ = os.Chmod(tmpName, 0o644)
@@ -261,7 +274,7 @@ func writeAtomic(path string, write, verify func(*os.File) error, preserveMtime 
 		_ = os.Chtimes(tmpName, mt, mt)
 	}
 
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := os.Rename(tmpName, target); err != nil {
 		return false, err
 	}
 	committed = true

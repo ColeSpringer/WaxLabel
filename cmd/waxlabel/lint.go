@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/tag"
@@ -36,10 +37,14 @@ func newLintCmd() *cobra.Command {
 			"With --fix, apply only the safe, non-destructive remediations - clearing\n" +
 			"the encoder stamp and stripping legacy containers - then save in place,\n" +
 			"reporting what changed. Pictures are never dropped automatically; every\n" +
-			"finding --fix does not address is reported as \"not auto-fixed\".",
+			"finding --fix does not address is reported as \"not auto-fixed\". A single\n" +
+			"\"-\" reads from standard input (read-only; not valid with --fix).",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if fix {
+				if slices.Contains(args, stdinArg) {
+					return usagef("cannot fix standard input; --fix writes changes back to a file")
+				}
 				return runLintFix(cmd, args)
 			}
 			return runLint(cmd, args)
@@ -123,9 +128,14 @@ func anyAtWarning(findings []wl.Finding) bool {
 
 // runLint reports findings per file.
 func runLint(cmd *cobra.Command, paths []string) error {
+	realOf, cleanup, err := readInputs(cmd.InOrStdin(), paths)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 	return lintLoop(cmd, paths,
 		func(ctx context.Context, path string) ([]wl.Finding, error) {
-			doc, err := wl.ParseFile(ctx, path)
+			doc, err := wl.ParseFile(ctx, realOf(path))
 			if err != nil {
 				return nil, err
 			}

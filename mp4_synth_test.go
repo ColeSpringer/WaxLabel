@@ -703,8 +703,8 @@ func TestMP4GnreResolvedToName(t *testing.T) {
 	gnre := mp4Atom("gnre", mp4Data(0, []byte{0, 18})) // 18 -> index 17 -> "Rock" era list
 	data := mp4Tagged(gnre)
 	doc := mustParseBytes(t, data)
-	if len(doc.Fields().Genre) != 1 || doc.Fields().Genre[0] == "" {
-		t.Errorf("gnre did not resolve to a genre name: %v", doc.Fields().Genre)
+	if len(doc.Fields().Genres) != 1 || doc.Fields().Genres[0] == "" {
+		t.Errorf("gnre did not resolve to a genre name: %v", doc.Fields().Genres)
 	}
 	if !hasWarning(doc, wl.WarnNumericGenre) {
 		t.Errorf("expected a numeric-genre warning; got %v", doc.Warnings())

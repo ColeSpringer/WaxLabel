@@ -47,7 +47,7 @@ func main() {
 		<-sig
 		os.Exit(130)
 	}()
-	code := dispatch(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	code := dispatch(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	signal.Stop(sig)
 	cancel()
 	os.Exit(code)
@@ -56,9 +56,11 @@ func main() {
 // dispatch builds and runs the root command and returns the process exit code,
 // rendering any terminal error exactly once - as a JSON envelope on stdout under
 // --json, or a human-readable line on stderr otherwise. It takes its streams and
-// arguments as parameters so tests can drive it without spawning a process.
-func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+// arguments as parameters so tests can drive it without spawning a process; stdin
+// is the source for the "-" path sentinel.
+func dispatch(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	root := newRootCmd()
+	root.SetIn(stdin)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
 	root.SetArgs(args)

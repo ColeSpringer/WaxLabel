@@ -33,8 +33,8 @@ func TestAACParse(t *testing.T) {
 	if f.RecordingDate != "2021" {
 		t.Errorf("date = %q, want 2021", f.RecordingDate)
 	}
-	if len(f.Genre) != 1 || f.Genre[0] != "Rock" {
-		t.Errorf("genre = %v, want [Rock]", f.Genre)
+	if len(f.Genres) != 1 || f.Genres[0] != "Rock" {
+		t.Errorf("genre = %v, want [Rock]", f.Genres)
 	}
 	if f.TrackNumber != 3 || f.TrackTotal != 12 {
 		t.Errorf("track = %d/%d, want 3/12", f.TrackNumber, f.TrackTotal)

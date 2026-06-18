@@ -1,46 +1,70 @@
 package main
 
 import (
+	"context"
+	"io"
+
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/spf13/cobra"
 )
 
 // newPlanCmd builds the "plan" command, which resolves edits into a write plan
-// and reports exactly what saving would do - without touching the file.
+// and reports exactly what saving would do - without touching the file. It
+// accepts multiple files (and directories with --recursive), previewing each.
 func newPlanCmd() *cobra.Command {
 	var ef editFlags
+	var recursive bool
 	cmd := &cobra.Command{
-		Use:   "plan <file>",
+		Use:   "plan <file>...",
 		Short: "Show what an edit would write, without writing it",
 		Long: "Resolve the given edits into a write plan and print exactly what saving\n" +
-			"would do - the operations, the size change, padding, and warnings -\n" +
-			"without modifying the file. With no edits it reports that the file is\n" +
-			"already up to date. The report is the same one set acts on, so the two\n" +
-			"cannot disagree.\n\n" +
+			"would do - the operations, the field-level changes, the size change,\n" +
+			"padding, and warnings - without modifying the file. With no edits it\n" +
+			"reports that the file is already up to date. The report is the same one\n" +
+			"set acts on, so the two cannot disagree. Multiple files are previewed\n" +
+			"independently; with --recursive, directory arguments are walked for audio\n" +
+			"files. A single \"-\" reads the file from standard input.\n\n" +
 			editPrecedenceHelp,
-		Args: cobra.ExactArgs(1),
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, plan, err := preparePlan(cmd.Context(), args[0], &ef)
+			ce, err := ef.compile()
 			if err != nil {
 				return err
 			}
-			if jsonMode(cmd) {
-				return writeJSON(cmd.OutOrStdout(), toJSONReport(args[0], plan))
+			realOf, cleanup, err := readInputs(cmd.InOrStdin(), args)
+			if err != nil {
+				return err
 			}
-			renderReport(cmd.OutOrStdout(), args[0], plan)
-			return nil
+			defer cleanup()
+			paths := expandPaths(args, recursive)
+			noteNoFiles(cmd.ErrOrStderr(), paths)
+			return perFile(cmd, paths,
+				func(ctx context.Context, path string) (*wl.Plan, error) {
+					_, plan, err := ce.prepare(ctx, realOf(path))
+					return plan, err
+				},
+				func(path string, plan *wl.Plan) any { return toJSONReport(path, plan) },
+				func(path string, c classifiedError) any {
+					return jsonReport{SchemaVersion: schemaVersion, File: path, Error: &jsonErrBody{c.code, c.message}}
+				},
+				func(w io.Writer, path string, plan *wl.Plan) { renderReport(w, path, plan) },
+			)
 		},
 	}
 	ef.bind(cmd)
+	cmd.Flags().BoolVar(&recursive, "recursive", false, "recurse into directory arguments, previewing every audio file found")
 	return cmd
 }
 
 // jsonReport is the machine-readable form of a write plan, shared by plan and
-// set (set embeds it).
+// set (set embeds it). On a per-file failure in a bulk run only SchemaVersion,
+// File, and Error are set; otherwise Error is nil and the plan fields are
+// populated.
 type jsonReport struct {
 	SchemaVersion int           `json:"schemaVersion"`
 	File          string        `json:"file"`
+	Error         *jsonErrBody  `json:"error,omitempty"`
 	NoOp          bool          `json:"noOp"`
 	Changes       []jsonChange  `json:"changes,omitempty"`
 	Operations    []string      `json:"operations"`

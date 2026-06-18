@@ -253,8 +253,13 @@ func TestMP4ReadsSampleFixture(t *testing.T) {
 	if f.TrackNumber != 2 || f.TrackTotal != 10 {
 		t.Errorf("fixture track = %d/%d, want 2/10", f.TrackNumber, f.TrackTotal)
 	}
-	if len(f.Genre) != 1 || f.Genre[0] != "Jazz" {
-		t.Errorf("fixture genre = %v", f.Genre)
+	if len(f.Genres) != 1 || f.Genres[0] != "Jazz" {
+		t.Errorf("fixture genre = %v", f.Genres)
+	}
+	// Bitrate is derived from the audio-essence byte total and the track duration
+	// (U5); a real fixture with audio must report a positive average.
+	if br := doc.Properties().First().Bitrate; br <= 0 {
+		t.Errorf("MP4 bitrate = %d, want > 0", br)
 	}
 
 	path := copyToTemp(t, sampleMP4)

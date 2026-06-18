@@ -29,15 +29,24 @@ func newDiffCmd() *cobra.Command {
 			"report what was added, removed, or changed going from <a> to <b>. The\n" +
 			"exit code follows diff(1): 0 if the metadata is identical, 1 if it\n" +
 			"differs, and 2 or more on error. With --quiet nothing is printed and\n" +
-			"only the exit code is set.",
+			"only the exit code is set. One operand may be \"-\" to read it from\n" +
+			"standard input.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			aDoc, err := wl.ParseFile(ctx, args[0])
+			if args[0] == stdinArg && args[1] == stdinArg {
+				return usagef("only one operand may be read from standard input (%q)", stdinArg)
+			}
+			realOf, cleanup, err := readInputs(cmd.InOrStdin(), args)
 			if err != nil {
 				return err
 			}
-			bDoc, err := wl.ParseFile(ctx, args[1])
+			defer cleanup()
+			aDoc, err := wl.ParseFile(ctx, realOf(args[0]))
+			if err != nil {
+				return err
+			}
+			bDoc, err := wl.ParseFile(ctx, realOf(args[1]))
 			if err != nil {
 				return err
 			}

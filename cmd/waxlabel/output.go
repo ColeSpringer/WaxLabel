@@ -159,12 +159,28 @@ func perFile[P any](
 }
 
 // emitJSONList writes a single object for one path and an array for several, so
-// the common single-file case is convenient to consume.
+// the common single-file case is convenient to consume. An empty result (e.g. a
+// --recursive walk that matched no audio files) marshals as [] rather than null,
+// so a consumer can always treat the multi-path form as an array.
 func emitJSONList(w io.Writer, paths []string, items []any) error {
 	if len(paths) == 1 && len(items) == 1 {
 		return writeJSON(w, items[0])
 	}
+	if items == nil {
+		items = []any{}
+	}
 	return writeJSON(w, items)
+}
+
+// noteNoFiles prints a note when a path list is empty - reachable only when a
+// --recursive walk matched no audio files (MinimumNArgs(1) guarantees at least
+// one argument otherwise) - so editing a typo'd or audio-free directory is not a
+// silent success. set and plan share it for an identical message; JSON output is
+// unaffected (it still emits []).
+func noteNoFiles(w io.Writer, paths []string) {
+	if len(paths) == 0 {
+		fmt.Fprintln(w, "waxlabel: no audio files found")
+	}
 }
 
 // usageError marks a bad-arguments failure, which maps to exit code 2.

@@ -47,14 +47,14 @@ func TestMatroskaReadsSampleFixture(t *testing.T) {
 	if f.DiscNumber != 1 || f.DiscTotal != 1 {
 		t.Errorf("disc = %d/%d, want 1/1", f.DiscNumber, f.DiscTotal)
 	}
-	if len(f.Genre) != 1 || f.Genre[0] != "Jazz" {
-		t.Errorf("Genre = %v", f.Genre)
+	if len(f.Genres) != 1 || f.Genres[0] != "Jazz" {
+		t.Errorf("Genre = %v", f.Genres)
 	}
 	if f.RecordingDate != "2021" {
 		t.Errorf("RecordingDate = %q, want 2021", f.RecordingDate)
 	}
-	if len(f.Composer) != 1 || f.Composer[0] != "Some Composer" {
-		t.Errorf("Composer = %v", f.Composer)
+	if len(f.Composers) != 1 || f.Composers[0] != "Some Composer" {
+		t.Errorf("Composer = %v", f.Composers)
 	}
 	if f.Comment != "hello" {
 		t.Errorf("Comment = %q, want hello", f.Comment)
@@ -478,8 +478,8 @@ func TestMatroskaDifferentialFFmpeg(t *testing.T) {
 	if len(f.Artists) != 1 || f.Artists[0] != "Diff Artist" {
 		t.Errorf("Artists = %v", f.Artists)
 	}
-	if len(f.Genre) != 1 || f.Genre[0] != "Metal" {
-		t.Errorf("Genre = %v", f.Genre)
+	if len(f.Genres) != 1 || f.Genres[0] != "Metal" {
+		t.Errorf("Genre = %v", f.Genres)
 	}
 	if f.TrackNumber != 4 || f.TrackTotal != 9 {
 		t.Errorf("track = %d/%d, want 4/9", f.TrackNumber, f.TrackTotal)

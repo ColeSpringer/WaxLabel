@@ -419,8 +419,8 @@ func TestAIFFNonNativeKeyPromotesToId3(t *testing.T) {
 		t.Error("a non-native key should create an ID3 chunk")
 	}
 	got := mustParseBytes(t, out)
-	if !slices.Equal(got.Fields().Composer, []string{"Stravinsky"}) {
-		t.Errorf("composer = %v", got.Fields().Composer)
+	if !slices.Equal(got.Fields().Composers, []string{"Stravinsky"}) {
+		t.Errorf("composer = %v", got.Fields().Composers)
 	}
 	if got.Fields().Title != "T" {
 		t.Errorf("promoted title = %q, want T", got.Fields().Title)
@@ -616,7 +616,7 @@ func TestAIFFNumericGenreFromId3(t *testing.T) {
 	data := aiffFile("AIFF", stdCOMM(), aiffSSND(200),
 		aiffID3(id3v2(3, textFrame(3, "TCON", "(17)"), textFrame(3, "TIT2", "T"))))
 	doc := mustParseBytes(t, data)
-	if g := doc.Fields().Genre; len(g) != 1 || g[0] != "Rock" {
+	if g := doc.Fields().Genres; len(g) != 1 || g[0] != "Rock" {
 		t.Errorf("numeric genre (17) -> %v, want [Rock]", g)
 	}
 	if !hasWarning(doc, wl.WarnNumericGenre) {

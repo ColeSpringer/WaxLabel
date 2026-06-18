@@ -65,7 +65,7 @@ func id3v1(title, artist string, genre byte) []byte {
 func TestMP3NumericGenreRead(t *testing.T) {
 	data := append(id3v2(3, textFrame(3, "TCON", "(17)"), textFrame(3, "TIT2", "T")), mp3Audio(t)...)
 	doc := mustParseBytes(t, data)
-	if g := doc.Fields().Genre; len(g) != 1 || g[0] != "Rock" {
+	if g := doc.Fields().Genres; len(g) != 1 || g[0] != "Rock" {
 		t.Errorf("numeric genre (17) -> %v, want [Rock]", g)
 	}
 	if !hasWarning(doc, wl.WarnNumericGenre) {
@@ -76,7 +76,7 @@ func TestMP3NumericGenreRead(t *testing.T) {
 func TestMP3MultipleNumericGenres(t *testing.T) {
 	// An ID3v2.3 two-genre TCON "(51)(39)" must resolve to both names.
 	data := append(id3v2(3, textFrame(3, "TCON", "(51)(39)"), textFrame(3, "TIT2", "T")), mp3Audio(t)...)
-	g := mustParseBytes(t, data).Fields().Genre
+	g := mustParseBytes(t, data).Fields().Genres
 	if len(g) != 2 || g[0] != "Techno-Industrial" || g[1] != "Noise" {
 		t.Errorf("(51)(39) -> %v, want [Techno-Industrial Noise]", g)
 	}
@@ -90,7 +90,7 @@ func TestMP3NumericGenreWrite(t *testing.T) {
 	}
 	out := applyToBytes(t, data, plan)
 	// The written TCON is numeric, but reading resolves it back to the name.
-	if g := mustParseBytes(t, out).Fields().Genre; len(g) != 1 || g[0] != "Rock" {
+	if g := mustParseBytes(t, out).Fields().Genres; len(g) != 1 || g[0] != "Rock" {
 		t.Errorf("genre round-trip = %v", g)
 	}
 	// Prove the on-disk TCON is the numeric reference "17", not the name "Rock":

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"math"
 	"slices"
 	"time"
 )
@@ -29,6 +30,24 @@ type AudioTrack struct {
 	MinBlockSize int
 	MaxBlockSize int
 	MD5          [16]byte // MD5 of the decoded audio, per STREAMINFO
+}
+
+// AverageBitrate returns the average bits per second for audioBytes of encoded
+// audio spread over secs seconds, or 0 when either input is non-positive. The
+// result is capped below MaxInt32: a malformed file declaring a near-zero
+// duration over a large audio extent would otherwise produce a value past the
+// int range - an implementation-defined (garbage, possibly negative) cast on
+// 32-bit platforms. Real audio bitrates are far below that ceiling, so the cap
+// only suppresses nonsense. Every codec that derives an average bitrate shares
+// this, so their handling of the degenerate cases cannot drift apart.
+func AverageBitrate(audioBytes int64, secs float64) int {
+	if audioBytes <= 0 || secs <= 0 {
+		return 0
+	}
+	if bps := float64(audioBytes) * 8 / secs; bps < math.MaxInt32 {
+		return int(bps)
+	}
+	return 0
 }
 
 // Clone returns an independent copy of the properties.

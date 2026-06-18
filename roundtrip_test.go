@@ -113,7 +113,7 @@ func TestTypedRoundTrip(t *testing.T) {
 		Title:         "Round Trip",
 		Artists:       []string{"Alpha", "Beta"},
 		Album:         "Album X",
-		Genre:         []string{"Electronic"},
+		Genres:        []string{"Electronic"},
 		TrackNumber:   4,
 		TrackTotal:    9,
 		DiscNumber:    1,

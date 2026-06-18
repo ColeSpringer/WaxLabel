@@ -413,8 +413,8 @@ func TestMatroskaWriteMultipleTagsConsolidated(t *testing.T) {
 		t.Errorf("output has %d Tags elements, want 1 (consolidated)", got)
 	}
 	f := mustParseBytes(t, out).Fields()
-	if f.Artists[0] != "AA" || len(f.Composer) == 0 || f.Composer[0] != "CC" || f.Genre[0] != "Jazz" {
-		t.Errorf("round-trip lost a value: artist=%v composer=%v genre=%v", f.Artists, f.Composer, f.Genre)
+	if f.Artists[0] != "AA" || len(f.Composers) == 0 || f.Composers[0] != "CC" || f.Genres[0] != "Jazz" {
+		t.Errorf("round-trip lost a value: artist=%v composer=%v genre=%v", f.Artists, f.Composers, f.Genres)
 	}
 }
 

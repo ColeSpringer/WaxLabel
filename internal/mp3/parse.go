@@ -118,9 +118,7 @@ func buildTrack(info mpegInfo, audioBytes int64) core.AudioTrack {
 	case info.vbrFrames > 0 && info.sampleRate > 0:
 		t.TotalSamples = uint64(info.vbrFrames) * uint64(info.samplesPerFrame)
 		t.Duration = samplesToDuration(t.TotalSamples, info.sampleRate)
-		if t.Duration > 0 {
-			t.Bitrate = int(float64(audioBytes) * 8 / t.Duration.Seconds())
-		}
+		t.Bitrate = core.AverageBitrate(audioBytes, t.Duration.Seconds())
 	case info.frameBitrate > 0:
 		t.Bitrate = info.frameBitrate
 		secs := float64(audioBytes) * 8 / float64(info.frameBitrate)

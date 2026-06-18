@@ -197,3 +197,40 @@ func EqualPictures(a, b []Picture) bool { return core.EqualPictures(a, b) }
 // EqualChapters reports whether two chapter slices are identical by content
 // (start, end, and title), in order - the chapter analogue of [EqualPictures].
 func EqualChapters(a, b []Chapter) bool { return core.EqualChapters(a, b) }
+
+// IsRecognizedImage reports whether data begins with the header of an image
+// format WaxLabel can identify (PNG, JPEG, GIF, WebP, BMP, or TIFF). It is a
+// header sniff, not a full decode, so it cannot recognize every valid image
+// (AVIF/HEIC/JXL and the like return false); a caller embedding a deliberately
+// exotic cover should offer an explicit override rather than treat a false
+// negative as corruption. The CLI uses it to reject a non-image file passed as
+// cover art before embedding it, without reaching into internal packages.
+func IsRecognizedImage(data []byte) bool {
+	_, ok := bits.SniffImage(data)
+	return ok
+}
+
+// ExtensionsFor returns the lowercase file extensions (each with a leading dot)
+// associated with format f, or nil for an unknown or unimplemented format. It
+// lets a caller warn when an output path's extension does not match the data
+// being written, since WaxLabel never transcodes.
+func ExtensionsFor(f Format) []string {
+	codec, ok := core.ForFormat(f)
+	if !ok {
+		return nil
+	}
+	return codec.Extensions()
+}
+
+// Formats returns every container/codec format this build implements, in
+// registration order. It lets a caller enumerate the formats - for example to
+// gather all recognized file extensions via [ExtensionsFor] when scanning a
+// directory tree - without hard-coding the list.
+func Formats() []Format {
+	codecs := core.Codecs()
+	out := make([]Format, 0, len(codecs))
+	for _, c := range codecs {
+		out = append(out, c.Format())
+	}
+	return out
+}

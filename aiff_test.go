@@ -38,8 +38,8 @@ func TestAIFFParse(t *testing.T) {
 	if f.RecordingDate != "2021" {
 		t.Errorf("date = %q, want 2021", f.RecordingDate)
 	}
-	if len(f.Genre) != 1 || f.Genre[0] != "Rock" {
-		t.Errorf("genre = %v", f.Genre)
+	if len(f.Genres) != 1 || f.Genres[0] != "Rock" {
+		t.Errorf("genre = %v", f.Genres)
 	}
 	if f.TrackNumber != 3 {
 		t.Errorf("track = %d, want 3", f.TrackNumber)
@@ -141,8 +141,8 @@ func TestAIFFRoundTripNativeAndID3(t *testing.T) {
 	if got.Fields().Title != "Edited Title" {
 		t.Errorf("title = %q", got.Fields().Title)
 	}
-	if len(got.Fields().Composer) != 1 || got.Fields().Composer[0] != "Edited Composer" {
-		t.Errorf("composer = %v", got.Fields().Composer)
+	if len(got.Fields().Composers) != 1 || got.Fields().Composers[0] != "Edited Composer" {
+		t.Errorf("composer = %v", got.Fields().Composers)
 	}
 	// Untouched fields survive (artist/album came from the ID3 chunk).
 	if got.Fields().Album != "Sample Album" || got.Fields().Artists[0] != "Sample Artist" {

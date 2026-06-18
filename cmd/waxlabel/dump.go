@@ -19,12 +19,17 @@ func newDumpCmd() *cobra.Command {
 		Long: "Parse each file and print its canonical tags, audio properties, embedded\n" +
 			"pictures, and any parse warnings. With --native, also show the native\n" +
 			"metadata blocks and the per-source (family) view that records which\n" +
-			"container supplied each value.",
+			"container supplied each value. A single \"-\" reads from standard input.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			realOf, cleanup, err := readInputs(cmd.InOrStdin(), args)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
 			return perFile(cmd, args,
 				func(ctx context.Context, path string) (*wl.Document, error) {
-					return wl.ParseFile(ctx, path)
+					return wl.ParseFile(ctx, realOf(path))
 				},
 				func(path string, doc *wl.Document) any { return toJSONDocument(path, doc, native) },
 				func(path string, c classifiedError) any {

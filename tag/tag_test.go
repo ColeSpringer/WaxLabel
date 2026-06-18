@@ -183,7 +183,7 @@ func TestProjectAndPatchRoundTrip(t *testing.T) {
 		Album:       "Alb",
 		TrackNumber: 3,
 		TrackTotal:  12,
-		Genre:       []string{"Jazz"},
+		Genres:      []string{"Jazz"},
 		Compilation: true,
 		MusicBrainz: MusicBrainzIDs{RecordingID: "mbid-123"},
 	}

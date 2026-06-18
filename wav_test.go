@@ -37,8 +37,8 @@ func TestWAVParse(t *testing.T) {
 	if f.RecordingDate != "2021" {
 		t.Errorf("date = %q, want 2021", f.RecordingDate)
 	}
-	if len(f.Genre) != 1 || f.Genre[0] != "Rock" {
-		t.Errorf("genre = %v", f.Genre)
+	if len(f.Genres) != 1 || f.Genres[0] != "Rock" {
+		t.Errorf("genre = %v", f.Genres)
 	}
 	if f.TrackNumber != 3 {
 		t.Errorf("track = %d, want 3", f.TrackNumber)

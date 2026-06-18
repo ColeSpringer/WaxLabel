@@ -126,8 +126,8 @@ func TestDocumentAccessorsAndEditorSurface(t *testing.T) {
 	}
 	out := applyToBytes(t, src, plan)
 	re := mustParseBytes(t, out)
-	if g := re.Fields().Genre; len(g) == 0 || g[len(g)-1] != "Rock" {
-		t.Errorf("Genre after Add = %v", re.Fields().Genre)
+	if g := re.Fields().Genres; len(g) == 0 || g[len(g)-1] != "Rock" {
+		t.Errorf("Genre after Add = %v", re.Fields().Genres)
 	}
 	if len(re.Pictures()) != 1 {
 		t.Errorf("expected 1 picture, got %d", len(re.Pictures()))

@@ -30,8 +30,15 @@ var (
 // holds no shared mutable state, so tests using it may run in parallel.
 func runCLI(t *testing.T, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
+	return runCLIStdin(t, "", args...)
+}
+
+// runCLIStdin is runCLI with a standard-input string, for exercising the "-"
+// path sentinel.
+func runCLIStdin(t *testing.T, stdin string, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
 	var out, errb bytes.Buffer
-	code = dispatch(context.Background(), args, &out, &errb)
+	code = dispatch(context.Background(), args, strings.NewReader(stdin), &out, &errb)
 	return out.String(), errb.String(), code
 }
 
@@ -263,6 +270,47 @@ func TestSetSaveAsLeavesOriginal(t *testing.T) {
 	}
 }
 
+// TestSetThroughSymlinkUpdatesTarget checks that editing through a symlink
+// rewrites the link's target and leaves the symlink in place, instead of
+// replacing the link with a regular file (which would silently diverge from the
+// real file).
+func TestSetThroughSymlinkUpdatesTarget(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real.flac")
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(real, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.flac")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+
+	if _, _, code := runCLI(t, "set", link, "--set", "TITLE=Linked"); code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+
+	// The link must still be a symlink, not a regular file.
+	if fi, err := os.Lstat(link); err != nil {
+		t.Fatalf("lstat link: %v", err)
+	} else if fi.Mode()&os.ModeSymlink == 0 {
+		t.Error("the symlink was replaced by a regular file")
+	}
+	// The edit landed on the target the link points at.
+	out, _, _ := runCLI(t, "--json", "dump", real)
+	var jd jsonDocument
+	if err := json.Unmarshal([]byte(out), &jd); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if got := tagValues(jd, "TITLE"); len(got) != 1 || got[0] != "Linked" {
+		t.Errorf("target TITLE = %v, want [Linked]", got)
+	}
+}
+
 func TestVerifyEssenceStableAcrossTagEdit(t *testing.T) {
 	t.Parallel()
 	// A tag-only edit must not change the audio-essence identity.
@@ -422,8 +470,9 @@ func TestDumpMissingFilePathOnce(t *testing.T) {
 	}
 }
 
-// TestPlanMissingFileMessage checks the terminal (non-per-file) not-found error
-// states the path once in the clean "no such file: <path>" form.
+// TestPlanMissingFileMessage checks plan (now a per-file command) reports a
+// missing file in the per-file form - the path once, then the bare reason, with
+// no raw "open <path>:" prefix - matching dump and verify.
 func TestPlanMissingFileMessage(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "nope.flac")
@@ -431,8 +480,11 @@ func TestPlanMissingFileMessage(t *testing.T) {
 	if code != 6 {
 		t.Fatalf("exit = %d, want 6", code)
 	}
-	if want := "waxlabel: no such file: " + missing + "\n"; !strings.Contains(errb, want) {
+	if want := "waxlabel: " + missing + ": "; !strings.Contains(errb, want) {
 		t.Errorf("stderr = %q, want it to contain %q", errb, want)
+	}
+	if n := strings.Count(errb, missing); n != 1 {
+		t.Errorf("path should appear exactly once, got %d:\n%s", n, errb)
 	}
 	if strings.Contains(errb, "open "+missing) {
 		t.Errorf("raw 'open <path>:' should be gone:\n%s", errb)
@@ -490,6 +542,390 @@ func TestAddCoverMissingFileContext(t *testing.T) {
 	// The path is named once (by the underlying read error), not twice.
 	if strings.Count(errb, missing) != 1 {
 		t.Errorf("cover path should appear once: %q", errb)
+	}
+}
+
+// TestAddCoverRejectsNonImage checks that pointing --add-cover at a file that is
+// not a recognized image is a usage error (exit 2) by default, and that --force
+// overrides it (embedding the bytes, which then sniff to octet-stream).
+func TestAddCoverRejectsNonImage(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, notagsFLAC)
+	notImage := filepath.Join(t.TempDir(), "cover.png")
+	if err := os.WriteFile(notImage, []byte("this is plainly not an image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, errb, code := runCLI(t, "set", file, "--add-cover", notImage)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (usage)", code)
+	}
+	if !strings.Contains(errb, "not a recognized image") {
+		t.Errorf("stderr should explain the rejection: %q", errb)
+	}
+
+	// --force embeds it anyway; with no recognizable header it stores as octet-stream.
+	if _, _, code := runCLI(t, "set", file, "--add-cover", notImage, "--force"); code != 0 {
+		t.Fatalf("--force exit = %d, want 0", code)
+	}
+	out, _, _ := runCLI(t, "--json", "dump", file)
+	var jd jsonDocument
+	if err := json.Unmarshal([]byte(out), &jd); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(jd.Pictures) != 1 || jd.Pictures[0].MIME != "application/octet-stream" {
+		t.Fatalf("pictures = %+v, want one forced octet-stream cover", jd.Pictures)
+	}
+}
+
+// TestAddCoverAcceptsRecognizedImage checks a recognized image (a BMP, newly
+// supported by the widened sniffer) embeds without --force and sniffs to its true
+// MIME instead of degrading to application/octet-stream.
+func TestAddCoverAcceptsRecognizedImage(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, notagsFLAC)
+	bmp := []byte{
+		'B', 'M', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		40, 0, 0, 0, 3, 0, 0, 0, 5, 0, 0, 0, 1, 0, 24, 0,
+	}
+	cover := filepath.Join(t.TempDir(), "cover.bmp")
+	if err := os.WriteFile(cover, bmp, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, code := runCLI(t, "set", file, "--add-cover", cover); code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	out, _, _ := runCLI(t, "--json", "dump", file)
+	var jd jsonDocument
+	if err := json.Unmarshal([]byte(out), &jd); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(jd.Pictures) != 1 || jd.Pictures[0].MIME != "image/bmp" {
+		t.Fatalf("pictures = %+v, want one image/bmp cover", jd.Pictures)
+	}
+}
+
+// TestSetExtensionMismatchWarns checks that writing to an output whose extension
+// does not match the source format prints a non-fatal warning but still writes
+// (WaxLabel does not transcode, so the name is merely misleading, not invalid).
+func TestSetExtensionMismatchWarns(t *testing.T) {
+	t.Parallel()
+	src := copyFixture(t, sampleFLAC)
+	dst := filepath.Join(t.TempDir(), "out.mp3")
+	_, errb, code := runCLI(t, "set", src, "--set", "TITLE=X", "-o", dst)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (the warning is non-fatal)", code)
+	}
+	if !strings.Contains(errb, "does not transcode") {
+		t.Errorf("stderr should warn about the extension mismatch: %q", errb)
+	}
+	if _, err := os.Stat(dst); err != nil {
+		t.Fatalf("output should still be written: %v", err)
+	}
+}
+
+// TestSetExtensionMatchNoWarn checks no warning is printed when the output
+// extension matches the source format.
+func TestSetExtensionMatchNoWarn(t *testing.T) {
+	t.Parallel()
+	src := copyFixture(t, sampleFLAC)
+	dst := filepath.Join(t.TempDir(), "out.flac")
+	_, errb, code := runCLI(t, "set", src, "--set", "TITLE=X", "-o", dst)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if strings.Contains(errb, "transcode") {
+		t.Errorf("a matching extension should not warn: %q", errb)
+	}
+}
+
+// TestSetBulkInPlace edits several files in one invocation and prints a summary.
+func TestSetBulkInPlace(t *testing.T) {
+	t.Parallel()
+	a := copyFixture(t, sampleFLAC)
+	b := copyFixture(t, sampleFLAC)
+	out, _, code := runCLI(t, "set", a, b, "--set", "TITLE=Bulk")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !strings.Contains(out, "2 changed, 0 unchanged, 0 failed") {
+		t.Errorf("missing/incorrect summary:\n%s", out)
+	}
+	for _, f := range []string{a, b} {
+		j, _, _ := runCLI(t, "--json", "dump", f)
+		var jd jsonDocument
+		if err := json.Unmarshal([]byte(j), &jd); err != nil {
+			t.Fatalf("invalid JSON: %v", err)
+		}
+		if got := tagValues(jd, "TITLE"); len(got) != 1 || got[0] != "Bulk" {
+			t.Errorf("%s TITLE = %v, want [Bulk]", f, got)
+		}
+	}
+}
+
+// TestSetRecursive walks a directory, editing only the audio files it contains
+// and skipping unrelated files.
+func TestSetRecursive(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"one.flac", "sub/two.flac"} {
+		p := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A non-audio file in the tree must be ignored by the extension filter.
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("ignore"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, _, code := runCLI(t, "set", "--recursive", dir, "--set", "ALBUM=Rec")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !strings.Contains(out, "2 changed, 0 unchanged, 0 failed") {
+		t.Errorf("expected two audio files edited:\n%s", out)
+	}
+}
+
+// TestSetBulkContinuesPastFailure checks the first error sets the exit class
+// while the remaining files still process, reflected in the summary.
+func TestSetBulkContinuesPastFailure(t *testing.T) {
+	t.Parallel()
+	missing := filepath.Join(t.TempDir(), "nope.flac")
+	good := copyFixture(t, sampleFLAC)
+	out, _, code := runCLI(t, "set", missing, good, "--set", "TITLE=Bulk")
+	if code != 6 { // first failure is the missing file (not-found)
+		t.Fatalf("exit = %d, want 6", code)
+	}
+	if !strings.Contains(out, "1 changed, 0 unchanged, 1 failed") {
+		t.Errorf("summary should report one success and one failure:\n%s", out)
+	}
+	j, _, _ := runCLI(t, "--json", "dump", good)
+	var jd jsonDocument
+	if err := json.Unmarshal([]byte(j), &jd); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if got := tagValues(jd, "TITLE"); len(got) != 1 || got[0] != "Bulk" {
+		t.Errorf("the good file should still be edited: TITLE = %v", got)
+	}
+}
+
+// TestSetOutputRejectsMultipleInputs checks -o is refused with more than one input.
+func TestSetOutputRejectsMultipleInputs(t *testing.T) {
+	t.Parallel()
+	a := copyFixture(t, sampleFLAC)
+	b := copyFixture(t, sampleFLAC)
+	dst := filepath.Join(t.TempDir(), "out.flac")
+	_, errb, code := runCLI(t, "set", a, b, "-o", dst, "--set", "TITLE=X")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (usage)", code)
+	}
+	if !strings.Contains(errb, "single file") {
+		t.Errorf("want a clear -o-with-many-inputs rejection: %q", errb)
+	}
+}
+
+// TestPlanBulkJSONArray checks a multi-file plan emits a JSON array.
+func TestPlanBulkJSONArray(t *testing.T) {
+	t.Parallel()
+	a := copyFixture(t, sampleFLAC)
+	b := copyFixture(t, sampleFLAC)
+	out, _, code := runCLI(t, "--json", "plan", a, b, "--set", "TITLE=X")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	var arr []jsonReport
+	if err := json.Unmarshal([]byte(out), &arr); err != nil {
+		t.Fatalf("multi-file plan should be a JSON array: %v\n%s", err, out)
+	}
+	if len(arr) != 2 {
+		t.Fatalf("got %d plan reports, want 2", len(arr))
+	}
+}
+
+// TestDumpStdin reads a file from standard input via "-".
+func TestDumpStdin(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _, code := runCLIStdin(t, string(data), "dump", "-")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0\n%s", code, out)
+	}
+	if !strings.Contains(out, "format:  FLAC") {
+		t.Errorf("dump - missing format:\n%s", out)
+	}
+	if strings.Contains(out, "waxlabel-stdin") {
+		t.Errorf("the buffered-stdin temp path leaked into output:\n%s", out)
+	}
+}
+
+// TestLintStdin lints a tag-only file read from standard input.
+func TestLintStdin(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(emptyMP3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _, code := runCLIStdin(t, string(data), "lint", "-")
+	if code != 1 { // no-audio is a LintError -> issues found
+		t.Fatalf("exit = %d, want 1\n%s", code, out)
+	}
+	if !strings.Contains(out, "no-audio") {
+		t.Errorf("lint - missing no-audio finding:\n%s", out)
+	}
+}
+
+// TestVerifyStdinKeepsDisplayName checks verify shows "-" rather than the temp path.
+func TestVerifyStdinKeepsDisplayName(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _, code := runCLIStdin(t, string(data), "verify", "-")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0\n%s", code, out)
+	}
+	if !strings.Contains(out, "essence:") {
+		t.Errorf("verify - missing essence:\n%s", out)
+	}
+	if strings.Contains(out, "waxlabel-stdin") {
+		t.Errorf("the buffered-stdin temp path leaked into output:\n%s", out)
+	}
+}
+
+// TestDiffStdinAgainstFile diffs standard input against the same file on disk.
+func TestDiffStdinAgainstFile(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, code := runCLIStdin(t, string(data), "diff", "-", sampleFLAC)
+	if code != 0 {
+		t.Errorf("exit = %d, want 0 (identical metadata)", code)
+	}
+}
+
+// TestDiffRejectsTwoStdin checks only one operand may read standard input.
+func TestDiffRejectsTwoStdin(t *testing.T) {
+	t.Parallel()
+	_, errb, code := runCLIStdin(t, "x", "diff", "-", "-")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (usage)", code)
+	}
+	if !strings.Contains(errb, "one operand") {
+		t.Errorf("want a clear two-stdin rejection: %q", errb)
+	}
+}
+
+// TestSetStdinRequiresOutput checks editing standard input in place is rejected.
+func TestSetStdinRequiresOutput(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, errb, code := runCLIStdin(t, string(data), "set", "-", "--set", "TITLE=X")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (usage)", code)
+	}
+	if !strings.Contains(errb, "standard input") {
+		t.Errorf("want a clear in-place-stdin rejection: %q", errb)
+	}
+}
+
+// TestSetJSONErrorIsPerFileObject pins set's single-file --json failure shape: a
+// per-file result object carrying file + error (consistent with dump/verify/lint),
+// not the bare terminal {schemaVersion,error} envelope.
+func TestSetJSONErrorIsPerFileObject(t *testing.T) {
+	t.Parallel()
+	missing := filepath.Join(t.TempDir(), "nope.flac")
+	out, _, code := runCLI(t, "--json", "set", missing, "--set", "TITLE=X")
+	if code != 6 {
+		t.Fatalf("exit = %d, want 6", code)
+	}
+	var res jsonSetResult
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("expected a per-file result object: %v\n%s", err, out)
+	}
+	if res.File != missing {
+		t.Errorf("file = %q, want %q", res.File, missing)
+	}
+	if res.Error == nil || res.Error.Code != "not-found" {
+		t.Errorf("error = %+v, want code not-found", res.Error)
+	}
+}
+
+// TestSetRecursiveNoFiles checks a --recursive walk that matches no audio files
+// prints a note (rather than silently succeeding) and, in JSON, emits [] not null.
+func TestSetRecursiveNoFiles(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("no audio here"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, errb, code := runCLI(t, "set", "--recursive", dir, "--set", "TITLE=X")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !strings.Contains(errb, "no audio files found") {
+		t.Errorf("expected a no-files note on stderr, got: %q", errb)
+	}
+	out, _, _ := runCLI(t, "--json", "plan", "--recursive", dir, "--set", "TITLE=X")
+	if strings.TrimSpace(out) != "[]" {
+		t.Errorf("JSON output = %q, want [] (not null)", strings.TrimSpace(out))
+	}
+}
+
+// TestSetStdinUsageBeatsCoverRead checks the stdin-in-place usage error is
+// reported before any --add-cover file is read: the actionable usage error
+// (exit 2) wins over a cover read error (exit 6), and no disk read happens.
+func TestSetStdinUsageBeatsCoverRead(t *testing.T) {
+	t.Parallel()
+	missingCover := filepath.Join(t.TempDir(), "cover.jpg")
+	_, errb, code := runCLIStdin(t, "ignored", "set", "-", "--add-cover", missingCover, "--set", "TITLE=X")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (usage), stderr=%q", code, errb)
+	}
+	if !strings.Contains(errb, "standard input") {
+		t.Errorf("want the stdin usage error, got: %q", errb)
+	}
+	if strings.Contains(errb, "cover image") {
+		t.Errorf("the cover file should not have been read: %q", errb)
+	}
+}
+
+// TestSetStdinToOutput reads from standard input and writes to a file with -o.
+func TestSetStdinToOutput(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "out.flac")
+	_, _, code := runCLIStdin(t, string(data), "set", "-", "-o", dst, "--set", "TITLE=FromStdin")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	j, _, _ := runCLI(t, "--json", "dump", dst)
+	var jd jsonDocument
+	if err := json.Unmarshal([]byte(j), &jd); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if got := tagValues(jd, "TITLE"); len(got) != 1 || got[0] != "FromStdin" {
+		t.Errorf("TITLE = %v, want [FromStdin]", got)
 	}
 }
 

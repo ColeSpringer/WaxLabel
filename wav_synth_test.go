@@ -177,8 +177,8 @@ func TestWAVNonInfoKeyPromotesToId3(t *testing.T) {
 		t.Error("a non-INFO key should create an id3 chunk")
 	}
 	got := mustParseBytes(t, out)
-	if !slices.Equal(got.Fields().Composer, []string{"Stravinsky"}) {
-		t.Errorf("composer = %v", got.Fields().Composer)
+	if !slices.Equal(got.Fields().Composers, []string{"Stravinsky"}) {
+		t.Errorf("composer = %v", got.Fields().Composers)
 	}
 	if got.Fields().Title != "T" {
 		t.Errorf("promoted title = %q, want T", got.Fields().Title)
@@ -394,8 +394,8 @@ func TestWAVCorruptId3NotDuplicatedOnForcedRewrite(t *testing.T) {
 		t.Errorf("expected exactly one id3 chunk in output, found %d", n)
 	}
 	re := mustParseBytes(t, out)
-	if !slices.Equal(re.Fields().Composer, []string{"Stravinsky"}) {
-		t.Errorf("composer = %v", re.Fields().Composer)
+	if !slices.Equal(re.Fields().Composers, []string{"Stravinsky"}) {
+		t.Errorf("composer = %v", re.Fields().Composers)
 	}
 	if hasWarning(re, wl.WarnDuplicateTagBlock) {
 		t.Error("re-parse of the output should not see a duplicate id3 block")

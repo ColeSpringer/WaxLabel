@@ -147,9 +147,7 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 
 	// Properties, including an average bitrate from the audio extent.
 	track := streamInfo
-	if audioBytes := d.audioEnd - d.audioStart; audioBytes > 0 && track.Duration > 0 {
-		track.Bitrate = int(float64(audioBytes) * 8 / track.Duration.Seconds())
-	}
+	track.Bitrate = core.AverageBitrate(d.audioEnd-d.audioStart, track.Duration.Seconds())
 	media.Properties = core.Properties{Container: "FLAC", Tracks: []core.AudioTrack{track}}
 
 	media.Warnings = warnings
