@@ -117,7 +117,7 @@ func TestMatroskaWebMFixture(t *testing.T) {
 	var encoderScopes []wl.Scope
 	conflict := false
 	for _, fv := range doc.Families() {
-		if fv.Key == tag.EncodedBy {
+		if fv.Key == tag.Encoder {
 			encoderScopes = append(encoderScopes, fv.Scope)
 			if !fv.Selected {
 				conflict = true
@@ -125,7 +125,7 @@ func TestMatroskaWebMFixture(t *testing.T) {
 		}
 	}
 	if len(encoderScopes) != 2 || !conflict {
-		t.Errorf("ENCODEDBY family entries = %v (conflict=%v), want 2 conflicting", encoderScopes, conflict)
+		t.Errorf("ENCODER family entries = %v (conflict=%v), want 2 conflicting", encoderScopes, conflict)
 	}
 }
 

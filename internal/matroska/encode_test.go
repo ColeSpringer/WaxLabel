@@ -169,7 +169,7 @@ func TestMatroskaNameRoundTrip(t *testing.T) {
 		tag.Artist, tag.Album, tag.AlbumArtist, tag.Composer, tag.Genre, tag.Comment,
 		tag.TrackNumber, tag.TrackTotal, tag.DiscNumber, tag.DiscTotal,
 		tag.RecordingDate, tag.ReleaseDate, tag.OriginalDate,
-		tag.EncodedBy, tag.CatalogNumber, tag.Remixer, tag.Label, tag.Grouping,
+		tag.Encoder, tag.EncodedBy, tag.CatalogNumber, tag.Remixer, tag.Label, tag.Grouping,
 		tag.MBReleaseID, tag.ReplayGainTrackGain,
 	}
 	for _, k := range keys {

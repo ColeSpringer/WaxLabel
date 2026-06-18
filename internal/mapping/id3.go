@@ -30,7 +30,8 @@ var id3TextFrames = map[string]tag.Key{
 	"TIT1": tag.Grouping,
 	"TSST": tag.DiscSubtitle,
 	"TSRC": tag.ISRC,
-	"TENC": tag.EncodedBy,
+	"TENC": tag.EncodedBy, // encoding person
+	"TSSE": tag.Encoder,   // encoding software/settings (the Lavf... stamp)
 	"TSOT": tag.TitleSort,
 	"TSOP": tag.ArtistSort,
 	"TSOA": tag.AlbumSort,

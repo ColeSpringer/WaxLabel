@@ -42,11 +42,24 @@ func TestVorbisBijectiveForKnownKeys(t *testing.T) {
 		tag.Title, tag.Artist, tag.Album, tag.AlbumArtist, tag.Genre,
 		tag.RecordingDate, tag.TrackNumber, tag.TrackTotal, tag.DiscNumber,
 		tag.MBReleaseID, tag.ReplayGainTrackGain, tag.ISRC, tag.Comment,
+		tag.Encoder,
 		tag.Key("ARBITRARY_CUSTOM"),
 	}
 	for _, k := range keys {
 		if got := CanonicalVorbis(VorbisName(k)); got != k {
 			t.Errorf("round-trip %q -> %q -> %q broke bijectivity", k, VorbisName(k), got)
 		}
+	}
+}
+
+// TestVorbisEncoderCoupling pins both wire directions for the Encoder key, a
+// known Vorbis key only because tag.Encoder == "ENCODER" lines up with the
+// identity pass-through - a coupling that would break silently if it changed.
+func TestVorbisEncoderCoupling(t *testing.T) {
+	if got := CanonicalVorbis("ENCODER"); got != tag.Encoder {
+		t.Errorf("CanonicalVorbis(%q) = %q, want %q", "ENCODER", got, tag.Encoder)
+	}
+	if got := VorbisName(tag.Encoder); got != "ENCODER" {
+		t.Errorf("VorbisName(Encoder) = %q, want ENCODER", got)
 	}
 }

@@ -136,11 +136,14 @@ const (
 	Media         Key = "MEDIA"
 	DiscSubtitle  Key = "DISCSUBTITLE"
 
-	// Credits.
+	// Credits. EncodedBy is the person who encoded the file; Encoder is the
+	// software/tool that did it (the transcoder stamp). They are distinct keys
+	// so a single ENCODER edit reaches the tool stamp on every format.
 	Conductor Key = "CONDUCTOR"
 	Remixer   Key = "REMIXER"
 	Performer Key = "PERFORMER"
 	EncodedBy Key = "ENCODEDBY"
+	Encoder   Key = "ENCODER"
 
 	// Acoustic fingerprint (stored, never computed by WaxLabel).
 	AcoustID            Key = "ACOUSTID_ID"
@@ -221,7 +224,8 @@ var vocabulary = map[Key]string{
 	Conductor:           "conductor",
 	Remixer:             "remixer",
 	Performer:           "performer, optionally role-qualified",
-	EncodedBy:           "encoding person or tool",
+	EncodedBy:           "encoding person",
+	Encoder:             "encoding software/tool",
 	AcoustID:            "AcoustID identifier",
 	AcoustIDFingerprint: "AcoustID fingerprint",
 	Compilation:         "part-of-compilation flag",

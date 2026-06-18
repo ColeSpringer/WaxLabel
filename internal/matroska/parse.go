@@ -583,7 +583,7 @@ func buildFamilies(contribs []scopedContribution) []core.FamilyValue {
 // into the ENCODER tag of an acquired file) and any cross-scope conflict.
 func mediaWarnings(ts tag.TagSet, fams []core.FamilyValue) []core.Warning {
 	var ws []core.Warning
-	if vs, ok := ts.Get(tag.EncodedBy); ok {
+	if vs, ok := ts.Get(tag.Encoder); ok {
 		for _, v := range vs {
 			if core.IsTranscoderStamp(v) {
 				ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder stamp: "+v)

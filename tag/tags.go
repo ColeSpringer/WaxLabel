@@ -53,7 +53,9 @@ type Tags struct {
 	// Performers maps a role to the people in it (e.g. "guitar" -> {"Foo"}).
 	// The empty role holds unqualified PERFORMER values.
 	Performers map[string][]string
-	EncodedBy  string
+	// EncodedBy is the encoding person; Encoder is the encoding software/tool.
+	EncodedBy string
+	Encoder   string
 
 	AcoustID            string
 	AcoustIDFingerprint string
@@ -129,6 +131,7 @@ func Project(ts TagSet) Tags {
 		Conductor: first(Conductor),
 		Remixer:   first(Remixer),
 		EncodedBy: first(EncodedBy),
+		Encoder:   first(Encoder),
 
 		AcoustID:            first(AcoustID),
 		AcoustIDFingerprint: first(AcoustIDFingerprint),
@@ -219,6 +222,7 @@ func (t Tags) Patch() TagPatch {
 	setStr(Conductor, t.Conductor)
 	setStr(Remixer, t.Remixer)
 	setStr(EncodedBy, t.EncodedBy)
+	setStr(Encoder, t.Encoder)
 	setMulti(Performer, formatPerformers(t.Performers))
 
 	setStr(AcoustID, t.AcoustID)

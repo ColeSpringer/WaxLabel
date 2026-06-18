@@ -132,14 +132,14 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 
 // mediaWarnings returns the content-derived warnings for a parsed or rewritten
 // document: a resolved numeric genre and an inherited transcoder stamp (ffmpeg
-// writes "Lavf..." into the \xa9too / EncodedBy atom on acquired files). Sharing
+// writes "Lavf..." into the \xa9too / Encoder atom on acquired files). Sharing
 // this lets the post-write document's warnings match a fresh parse of the output.
 func mediaWarnings(tags tag.TagSet, numericGenre bool) []core.Warning {
 	var ws []core.Warning
 	if numericGenre {
 		ws = core.Warn(ws, core.WarnNumericGenre, "a numeric genre reference was resolved to a name")
 	}
-	if vs, ok := tags.Get(tag.EncodedBy); ok {
+	if vs, ok := tags.Get(tag.Encoder); ok {
 		for _, v := range vs {
 			if core.IsTranscoderStamp(v) {
 				ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder stamp: "+v)

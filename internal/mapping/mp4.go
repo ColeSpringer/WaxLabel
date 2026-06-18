@@ -25,7 +25,7 @@ var mp4Text = map[string]tag.Key{
 	"\xa9day": tag.RecordingDate, // iTunes's single date atom; ffmpeg maps it to "date"
 	"\xa9cmt": tag.Comment,
 	"\xa9gen": tag.Genre,
-	"\xa9too": tag.EncodedBy,
+	"\xa9too": tag.Encoder, // iTunes "encoding tool" - the Lavf... stamp
 	"cprt":    tag.Copyright,
 	"\xa9grp": tag.Grouping,
 	"\xa9lyr": tag.Lyrics,

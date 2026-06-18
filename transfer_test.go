@@ -232,10 +232,11 @@ func TestPrepareTransferToMatroska(t *testing.T) {
 	}
 	result := mustParseBytes(t, applyToBytes(t, dstBytes, plan))
 	// Check the cleanly-mapping core fields land with the source values (TITLE goes
-	// to Info.Title, the rest to SimpleTags). The Vorbis-custom "ENCODER" key is
-	// deliberately not asserted: Matroska's read mapping normalizes ENCODER to the
-	// canonical EncodedBy, a pre-existing cross-format key normalization.
-	for _, k := range []tag.Key{tag.Title, tag.Artist, tag.Album} {
+	// to Info.Title, the rest to SimpleTags). ENCODER is asserted too: it now maps
+	// to the canonical Encoder key on both the Vorbis and Matroska sides, so it
+	// round-trips exactly (previously Matroska read it back as EncodedBy, a latent
+	// cross-format asymmetry the dedicated ENCODER key resolves).
+	for _, k := range []tag.Key{tag.Title, tag.Artist, tag.Album, tag.Encoder} {
 		srcVals, _ := src.Get(k)
 		gotVals, present := result.Get(k)
 		if len(srcVals) > 0 && (!present || !slices.Equal(gotVals, srcVals)) {
