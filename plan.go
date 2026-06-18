@@ -3,8 +3,10 @@ package waxlabel
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -26,6 +28,54 @@ func (p *Plan) Report() WriteReport { return p.plan.Report }
 // [SaveBack] writes nothing; a no-op [SaveAsFile] or [WriteTo] still produces a
 // complete output (a fresh destination must be whole).
 func (p *Plan) IsNoOp() bool { return p.plan.NoOp }
+
+// Changes reports the field-level delta this plan will apply: each canonical key
+// added, removed, or changed, plus picture and chapter count-deltas when those
+// sets differ. It diffs the pre-edit tags against the plan's
+// post-codec-projection result - what the write actually lands, including date
+// and number normalization - so the preview matches reality and a no-op plan
+// yields no changes. It performs no I/O.
+func (p *Plan) Changes() []tag.Change {
+	base := p.doc.media
+	edited := p.plan.Result
+	if edited == nil {
+		// A plan with no computed result changes nothing; diff base against itself.
+		edited = base
+	}
+	changes := tag.Diff(base.Tags, edited.Tags)
+	if !core.EqualPictures(base.Pictures, edited.Pictures) {
+		changes = append(changes, countChange("pictures", len(base.Pictures), len(edited.Pictures)))
+	}
+	if !core.EqualChapters(base.Chapters, edited.Chapters) {
+		changes = append(changes, countChange("chapters", len(base.Chapters), len(edited.Chapters)))
+	}
+	return changes
+}
+
+// countChange renders a picture- or chapter-set change as a [tag.Change] under a
+// reserved lowercase pseudo-key ("pictures"/"chapters"). The key is
+// intentionally lowercase so it can never collide with a canonical tag key
+// (which is always uppercase) while still flowing through the one shared change
+// render/JSON path. The Old/New values are clean integer counts (no prose), so a
+// machine consumer can parse them; an equal-count content change (a cover swap or
+// a retitled chapter) is reported as ChangeChanged with matching counts ("N ->
+// N"), and a defensive 0->0 lands there too rather than as a bogus "added 0".
+func countChange(key tag.Key, before, after int) tag.Change {
+	c := tag.Change{Key: key}
+	switch {
+	case before == 0 && after > 0:
+		c.Kind = tag.ChangeAdded
+		c.New = []string{strconv.Itoa(after)}
+	case after == 0 && before > 0:
+		c.Kind = tag.ChangeRemoved
+		c.Old = []string{strconv.Itoa(before)}
+	default:
+		c.Kind = tag.ChangeChanged
+		c.Old = []string{strconv.Itoa(before)}
+		c.New = []string{strconv.Itoa(after)}
+	}
+	return c
+}
 
 // SaveResult reports the outcome of a save. Committed is true once the new
 // bytes are in place (the rename succeeded); a later directory-fsync error is

@@ -67,5 +67,13 @@ func parseSource(ctx context.Context, src ReaderAtSized, path string, opts core.
 	if err != nil {
 		return nil, err
 	}
+	// "No audio essence" is one cross-format concept: surface it here, off the same
+	// predicate the digest guard uses, so dump/lint flag a tag-only or truncated
+	// file for every format - and always agree with verify (which refuses to hash
+	// it). This replaces the former MP3-only frame-scan warning.
+	if noEssence(media.EssenceRanges()) {
+		media.Warnings = core.Warn(media.Warnings, core.WarnNoAudioFrames,
+			"no audio essence found; file may be tag-only or truncated")
+	}
 	return &Document{media: media}, nil
 }

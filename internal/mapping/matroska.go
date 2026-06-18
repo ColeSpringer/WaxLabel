@@ -38,8 +38,8 @@ var matroskaTags = map[string]tag.Key{
 	"DATE_RELEASE":   tag.ReleaseDate,
 	"DATE_ORIGINAL":  tag.OriginalDate,
 	"ORIGINAL_DATE":  tag.OriginalDate,
-	"ENCODER":        tag.Encoder,   // the Lavf... transcoder stamp lands here
-	"ENCODED_BY":     tag.EncodedBy, // the encoding person
+	"ENCODER":        tag.Encoder,     // the Lavf... transcoder stamp lands here
+	"ENCODED_BY":     tag.EncodedBy,   // the encoding person
 	"PART_NUMBER":    tag.TrackNumber, // value may be "n/total"
 	"TOTAL_PARTS":    tag.TrackTotal,
 	"DISC":           tag.DiscNumber, // ffmpeg's flat "disc"; value may be "n/total"

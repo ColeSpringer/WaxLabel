@@ -28,7 +28,7 @@ func newDumpCmd() *cobra.Command {
 				},
 				func(path string, doc *wl.Document) any { return toJSONDocument(path, doc, native) },
 				func(path string, c classifiedError) any {
-					return jsonDocument{File: path, Error: &jsonErrBody{c.code, c.message}}
+					return jsonDocument{SchemaVersion: schemaVersion, File: path, Error: &jsonErrBody{c.code, c.message}}
 				},
 				func(w io.Writer, path string, doc *wl.Document) { renderDocument(w, path, doc, native) },
 			)
@@ -39,19 +39,20 @@ func newDumpCmd() *cobra.Command {
 }
 
 // jsonDocument is the machine-readable view of one dumped file. On a parse
-// failure only File and Error are set; otherwise Error is nil and the metadata
-// fields are populated.
+// failure only SchemaVersion, File, and Error are set; otherwise Error is nil
+// and the metadata fields are populated.
 type jsonDocument struct {
-	File       string          `json:"file"`
-	Error      *jsonErrBody    `json:"error,omitempty"`
-	Format     string          `json:"format,omitempty"`
-	Properties *jsonProperties `json:"properties,omitempty"`
-	Tags       []jsonTag       `json:"tags,omitempty"`
-	Pictures   []jsonPicture   `json:"pictures,omitempty"`
-	Chapters   []jsonChapter   `json:"chapters,omitempty"`
-	Warnings   []jsonWarning   `json:"warnings,omitempty"`
-	Native     []jsonNative    `json:"native,omitempty"`
-	Sources    []jsonSource    `json:"sources,omitempty"`
+	SchemaVersion int             `json:"schemaVersion"`
+	File          string          `json:"file"`
+	Error         *jsonErrBody    `json:"error,omitempty"`
+	Format        string          `json:"format,omitempty"`
+	Properties    *jsonProperties `json:"properties,omitempty"`
+	Tags          []jsonTag       `json:"tags,omitempty"`
+	Pictures      []jsonPicture   `json:"pictures,omitempty"`
+	Chapters      []jsonChapter   `json:"chapters,omitempty"`
+	Warnings      []jsonWarning   `json:"warnings,omitempty"`
+	Native        []jsonNative    `json:"native,omitempty"`
+	Sources       []jsonSource    `json:"sources,omitempty"`
 }
 
 type jsonProperties struct {
@@ -103,8 +104,9 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 	props := doc.Properties()
 	t := props.First()
 	jd := jsonDocument{
-		File:   path,
-		Format: doc.Format().String(),
+		SchemaVersion: schemaVersion,
+		File:          path,
+		Format:        doc.Format().String(),
 		Properties: &jsonProperties{
 			Container:     props.Container,
 			Codec:         t.Codec,

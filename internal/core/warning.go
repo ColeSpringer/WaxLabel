@@ -66,6 +66,10 @@ const (
 	// secondary-language titles (Matroska ChapterDisplay) - so that structure was
 	// dropped. A plan-time warning, surfaced rather than silently flattening.
 	WarnChaptersFlattened
+	// WarnNoAudioFrames means no decodable audio frame was found: the file may be
+	// tag-only or truncated. The audio-essence digest refuses to hash zero essence
+	// (see HashAudioEssence) rather than mint a fake-stable hash over nothing.
+	WarnNoAudioFrames
 )
 
 func (c WarningCode) String() string {
@@ -104,6 +108,8 @@ func (c WarningCode) String() string {
 		return "chapter-title-truncated"
 	case WarnChaptersFlattened:
 		return "chapters-flattened"
+	case WarnNoAudioFrames:
+		return "no-audio"
 	default:
 		return "unknown"
 	}

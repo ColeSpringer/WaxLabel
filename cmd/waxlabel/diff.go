@@ -4,10 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 	"strings"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/tag"
 	"github.com/spf13/cobra"
 )
 
@@ -65,16 +65,11 @@ func newDiffCmd() *cobra.Command {
 	return cmd
 }
 
-// tagChange names how one key changed between the two files.
-type tagChange struct {
-	key    string
-	change string // "added" (only in b), "removed" (only in a), "changed"
-	a, b   []string
-}
-
-// diffResult is the canonical-metadata delta from file a to file b.
+// diffResult is the canonical-metadata delta from file a to file b. The tag
+// delta is a shared [tag.Change] list (the same primitive the write-plan preview
+// uses); the picture and chapter sets keep their own count-deltas.
 type diffResult struct {
-	tags         []tagChange
+	tags         []tag.Change
 	picsA, picsB int
 	picsDiffer   bool
 	chapsA       int
@@ -90,31 +85,10 @@ func (d diffResult) identical() bool {
 // computeDiff compares the canonical tags, pictures, and chapters of a and b,
 // reporting the delta from a to b (a is the left/old side, b the right/new side).
 func computeDiff(a, b *wl.Document) diffResult {
-	ta, tb := a.Tags(), b.Tags()
-	var tags []tagChange
-	// a's keys first, in a's order: removed or changed.
-	for _, k := range ta.Keys() {
-		av, _ := ta.Get(k)
-		if bv, ok := tb.Get(k); ok {
-			if !slices.Equal(av, bv) {
-				tags = append(tags, tagChange{key: string(k), change: "changed", a: av, b: bv})
-			}
-		} else {
-			tags = append(tags, tagChange{key: string(k), change: "removed", a: av})
-		}
-	}
-	// keys only in b: added.
-	for _, k := range tb.Keys() {
-		if !ta.Has(k) {
-			bv, _ := tb.Get(k)
-			tags = append(tags, tagChange{key: string(k), change: "added", b: bv})
-		}
-	}
-
 	pa, pb := a.Pictures(), b.Pictures()
 	ca, cb := a.Chapters(), b.Chapters()
 	return diffResult{
-		tags:        tags,
+		tags:        tag.Diff(a.Tags(), b.Tags()),
 		picsA:       len(pa),
 		picsB:       len(pb),
 		picsDiffer:  !wl.EqualPictures(pa, pb),
@@ -132,17 +106,24 @@ func renderDiff(w io.Writer, a, b string, d diffResult) {
 	}
 	fmt.Fprintf(w, "%s -> %s\n", a, b)
 	for _, t := range d.tags {
-		switch t.change {
-		case "removed":
-			fmt.Fprintf(w, "  - %s: %s\n", t.key, joinValues(t.a))
-		case "added":
-			fmt.Fprintf(w, "  + %s: %s\n", t.key, joinValues(t.b))
-		case "changed":
-			fmt.Fprintf(w, "  ~ %s: %s -> %s\n", t.key, joinValues(t.a), joinValues(t.b))
-		}
+		renderChangeLine(w, "  ", t)
 	}
 	renderCountDelta(w, "pictures", d.picsDiffer, d.picsA, d.picsB)
 	renderCountDelta(w, "chapters", d.chapsDiffer, d.chapsA, d.chapsB)
+}
+
+// renderChangeLine prints one tag change with diff-style -/+/~ markers at the
+// given indent. It is the single marker renderer shared by the diff command and
+// the write-plan change preview, so their formatting cannot drift.
+func renderChangeLine(w io.Writer, indent string, c tag.Change) {
+	switch c.Kind {
+	case tag.ChangeRemoved:
+		fmt.Fprintf(w, "%s- %s: %s\n", indent, c.Key, joinValues(c.Old))
+	case tag.ChangeAdded:
+		fmt.Fprintf(w, "%s+ %s: %s\n", indent, c.Key, joinValues(c.New))
+	case tag.ChangeChanged:
+		fmt.Fprintf(w, "%s~ %s: %s -> %s\n", indent, c.Key, joinValues(c.Old), joinValues(c.New))
+	}
 }
 
 // renderCountDelta prints a picture/chapter set delta. When the counts are equal
@@ -200,7 +181,7 @@ func toJSONDiff(a, b string, d diffResult) jsonDiff {
 		Tags:          []jsonDiffTag{},
 	}
 	for _, t := range d.tags {
-		jd.Tags = append(jd.Tags, jsonDiffTag{Key: t.key, Change: t.change, A: t.a, B: t.b})
+		jd.Tags = append(jd.Tags, jsonDiffTag{Key: string(t.Key), Change: t.Kind.String(), A: t.Old, B: t.New})
 	}
 	if d.picsDiffer {
 		jd.Pictures = &jsonDiffCount{A: d.picsA, B: d.picsB}

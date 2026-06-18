@@ -71,6 +71,10 @@ func lintWarnings(ws []core.Warning) []Finding {
 			out = append(out, Finding{LintWarning, "encoder-noise", w.Message, ""})
 		case core.WarnMultipleVorbisComment, core.WarnDuplicateTagBlock:
 			out = append(out, Finding{LintError, "duplicate-tag-block", w.Message, ""})
+		case core.WarnInvalidPicture:
+			out = append(out, Finding{LintWarning, "invalid-picture", w.Message, ""})
+		case core.WarnNoAudioFrames:
+			out = append(out, Finding{LintError, "no-audio", w.Message, ""})
 		}
 	}
 	return out
@@ -98,6 +102,15 @@ func lintPictures(pics []Picture) []Finding {
 	seen := map[[32]byte]bool{}
 	fronts := 0
 	for _, p := range pics {
+		// A picture the codec could not sniff is stored as application/octet-stream;
+		// key on that MIME (not a re-sniff) so a cover a codec already recognized is
+		// never false-flagged. Reported only - never auto-fixed - since a valid but
+		// unsniffable cover (WebP/AVIF) degrades to exactly this, and dropping it
+		// would be silent data loss.
+		if p.MIME == "application/octet-stream" {
+			out = append(out, Finding{LintWarning, "invalid-picture",
+				fmt.Sprintf("%s picture is not a recognized image type (%s)", p.Type, p.MIME), ""})
+		}
 		h := p.Hash()
 		if seen[h] {
 			out = append(out, Finding{LintWarning, "duplicate-picture",

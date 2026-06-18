@@ -30,6 +30,8 @@ type editFlags struct {
 	addCover []string // image file path, added as a front cover
 	rmPics   bool
 
+	stripEncoder bool // clear the ENCODER software stamp
+
 	preset string
 	legacy string
 }
@@ -42,6 +44,7 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringArrayVar(&e.clear, "clear", nil, "remove KEY (repeatable)")
 	f.StringArrayVar(&e.addCover, "add-cover", nil, "add a front-cover picture from an image file (repeatable)")
 	f.BoolVar(&e.rmPics, "remove-pictures", false, "remove all embedded pictures")
+	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear the ENCODER software stamp (the transcoder leftover)")
 	f.StringVar(&e.preset, "preset", "", "write policy preset: preserve|compatible|canonical|minimal")
 	f.StringVar(&e.legacy, "legacy", "", "legacy-tag policy: preserve|strip|reconcile|update-existing")
 }
@@ -70,6 +73,10 @@ func (e *editFlags) patch() (tag.TagPatch, error) {
 			return p, &usageError{msg: err.Error()}
 		}
 		p.Clear(k)
+	}
+	if e.stripEncoder {
+		// Sugar for --clear ENCODER: the canonical software stamp on every format.
+		p.Clear(tag.Encoder)
 	}
 	return p, nil
 }

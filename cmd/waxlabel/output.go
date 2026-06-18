@@ -15,8 +15,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// schemaVersion tags JSON output so scripts can detect shape changes.
-const schemaVersion = 1
+// schemaVersion tags JSON output so scripts can detect shape changes. v2 grows
+// the shape: per-file objects (dump/verify/lint) now carry schemaVersion, and a
+// write plan carries a field-level "changes" list.
+const schemaVersion = 2
 
 // writeJSON writes v as indented JSON followed by a newline.
 func writeJSON(w io.Writer, v any) error {

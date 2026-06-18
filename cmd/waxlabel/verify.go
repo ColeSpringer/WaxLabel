@@ -30,7 +30,7 @@ func newVerifyCmd() *cobra.Command {
 				},
 				func(path string, v jsonVerify) any { return v },
 				func(path string, c classifiedError) any {
-					return jsonVerify{File: path, Error: &jsonErrBody{c.code, c.message}}
+					return jsonVerify{SchemaVersion: schemaVersion, File: path, Error: &jsonErrBody{c.code, c.message}}
 				},
 				func(w io.Writer, path string, v jsonVerify) { renderVerify(w, v, whole) },
 			)
@@ -51,7 +51,7 @@ func computeVerify(ctx context.Context, path string, whole bool) (jsonVerify, er
 	if err != nil {
 		return jsonVerify{File: path}, err
 	}
-	v := jsonVerify{File: path, Essence: essence.String()}
+	v := jsonVerify{SchemaVersion: schemaVersion, File: path, Essence: essence.String()}
 	if whole {
 		fileSum, err := doc.HashFile(ctx)
 		if err != nil {
@@ -70,11 +70,12 @@ func renderVerify(w io.Writer, v jsonVerify, whole bool) {
 	}
 }
 
-// jsonVerify is the machine-readable identity for one file. On failure only File
-// and Error are set.
+// jsonVerify is the machine-readable identity for one file. On failure only
+// SchemaVersion, File, and Error are set.
 type jsonVerify struct {
-	File      string       `json:"file"`
-	Essence   string       `json:"essence,omitempty"`
-	WholeFile string       `json:"wholeFile,omitempty"`
-	Error     *jsonErrBody `json:"error,omitempty"`
+	SchemaVersion int          `json:"schemaVersion"`
+	File          string       `json:"file"`
+	Essence       string       `json:"essence,omitempty"`
+	WholeFile     string       `json:"wholeFile,omitempty"`
+	Error         *jsonErrBody `json:"error,omitempty"`
 }

@@ -207,6 +207,7 @@ func renderReport(w io.Writer, path string, plan *wl.Plan) {
 		return
 	}
 	fmt.Fprintf(w, "%s: plan\n", path)
+	renderChanges(w, plan.Changes())
 	if len(r.Operations) == 0 {
 		fmt.Fprintln(w, "  - rewrite metadata")
 	}
@@ -219,5 +220,19 @@ func renderReport(w io.Writer, path string, plan *wl.Plan) {
 	}
 	for _, x := range r.Warnings {
 		fmt.Fprintf(w, "  warning: %s\n", x)
+	}
+}
+
+// renderChanges prints the field-level change preview (which keys are added,
+// removed, or changed) under a "changes:" heading, reusing the diff markers. It
+// prints nothing when the plan changes no fields, so a picture-only or
+// container-only rewrite shows just its operations.
+func renderChanges(w io.Writer, changes []tag.Change) {
+	if len(changes) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "  changes:")
+	for _, c := range changes {
+		renderChangeLine(w, "    ", c)
 	}
 }

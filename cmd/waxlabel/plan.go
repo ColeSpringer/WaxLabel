@@ -2,6 +2,7 @@ package main
 
 import (
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/tag"
 	"github.com/spf13/cobra"
 )
 
@@ -41,11 +42,32 @@ type jsonReport struct {
 	SchemaVersion int           `json:"schemaVersion"`
 	File          string        `json:"file"`
 	NoOp          bool          `json:"noOp"`
+	Changes       []jsonChange  `json:"changes,omitempty"`
 	Operations    []string      `json:"operations"`
 	BytesBefore   int64         `json:"bytesBefore"`
 	BytesAfter    int64         `json:"bytesAfter"`
 	PaddingAfter  int64         `json:"paddingAfter"`
 	Warnings      []jsonWarning `json:"warnings,omitempty"`
+}
+
+// jsonChange is one field's change in a write plan: the canonical key, how it
+// changed ("added"/"removed"/"changed"), and the before/after values. It mirrors
+// the shape of jsonDiffTag, naming the two sides old/new for a before/after edit.
+type jsonChange struct {
+	Key    string   `json:"key"`
+	Change string   `json:"change"`
+	Old    []string `json:"old,omitempty"`
+	New    []string `json:"new,omitempty"`
+}
+
+// toJSONChanges converts a tag-change list to its JSON form. Shared by the write
+// report and lint --fix so their change shape cannot drift.
+func toJSONChanges(changes []tag.Change) []jsonChange {
+	out := make([]jsonChange, 0, len(changes))
+	for _, c := range changes {
+		out = append(out, jsonChange{Key: string(c.Key), Change: c.Kind.String(), Old: c.Old, New: c.New})
+	}
+	return out
 }
 
 func toJSONReport(path string, plan *wl.Plan) jsonReport {
@@ -54,6 +76,7 @@ func toJSONReport(path string, plan *wl.Plan) jsonReport {
 		SchemaVersion: schemaVersion,
 		File:          path,
 		NoOp:          plan.IsNoOp(),
+		Changes:       toJSONChanges(plan.Changes()),
 		Operations:    r.Operations,
 		BytesBefore:   r.BytesBefore,
 		BytesAfter:    r.BytesAfter,

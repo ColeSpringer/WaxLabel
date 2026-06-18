@@ -70,7 +70,17 @@ func (d *Document) HashAudioEssence(ctx context.Context, opts ...HashOption) (Au
 	defer closer()
 
 	version, cfg := d.essenceExtent()
-	sum, err := hashRanges(ctx, src, cfg, d.media.EssenceRanges())
+	ranges := d.media.EssenceRanges()
+	// Refuse to hash zero essence rather than mint a fake-stable digest over
+	// nothing (a tag-only or truncated file): two distinct empty files would
+	// otherwise collide. A malformed range is deliberately not treated as "empty"
+	// here - it falls through to hashRanges, which rejects it with a specific
+	// "end before start" error instead of being masked as a benign empty file. The
+	// write/VerifyEssence path uses hashRanges directly and is unaffected.
+	if noEssence(ranges) {
+		return AudioDigest{}, fmt.Errorf("%w: no audio essence to hash", waxerr.ErrInvalidData)
+	}
+	sum, err := hashRanges(ctx, src, cfg, ranges)
 	if err != nil {
 		return AudioDigest{}, err
 	}
@@ -113,6 +123,21 @@ func (d *Document) HashFile(ctx context.Context, opts ...HashOption) (AudioDiges
 		return AudioDigest{}, err
 	}
 	return AudioDigest{Algorithm: "sha256", ExtentVersion: "whole-file-v1", Sum: sum}, nil
+}
+
+// noEssence reports whether the ranges cover no audio: every range is empty
+// (start == end). It is the single definition of "this file has no audio to
+// hash", shared by the parse-time WarnNoAudioFrames check and the digest guard so
+// dump/lint and verify always agree. A descending range (end < start) is a codec
+// bug, not "empty", so it is left for hashRanges to reject with its specific
+// error rather than being masked as a benign tag-only file.
+func noEssence(ranges [][2]int64) bool {
+	for _, r := range ranges {
+		if r[1] != r[0] {
+			return false
+		}
+	}
+	return true
 }
 
 // hashRanges hashes optional prefix bytes (the decoder-critical config) followed

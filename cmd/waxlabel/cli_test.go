@@ -22,6 +22,7 @@ var (
 	sampleFLAC = filepath.Join("..", "..", "testdata", "sample.flac")
 	notagsFLAC = filepath.Join("..", "..", "testdata", "notags.flac")
 	sampleM4B  = filepath.Join("..", "..", "testdata", "sample_chapters.m4b")
+	emptyMP3   = filepath.Join("..", "..", "testdata", "empty.mp3") // tag-only/truncated MP3
 )
 
 // runCLI drives the CLI exactly as dispatch does in main, capturing stdout,
