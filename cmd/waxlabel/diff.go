@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/tag"
@@ -122,17 +121,12 @@ func renderDiff(w io.Writer, a, b string, d diffResult) {
 }
 
 // renderChangeLine prints one tag change with diff-style -/+/~ markers at the
-// given indent. It is the single marker renderer shared by the diff command and
-// the write-plan change preview, so their formatting cannot drift.
+// given indent. It delegates to [tag.Change.String] - the single change-line
+// formatter shared by the diff command, the write-plan change preview, and
+// library consumers - so their formatting cannot drift and the untrusted change
+// values are sanitized for the terminal in exactly one place.
 func renderChangeLine(w io.Writer, indent string, c tag.Change) {
-	switch c.Kind {
-	case tag.ChangeRemoved:
-		fmt.Fprintf(w, "%s- %s: %s\n", indent, c.Key, joinValues(c.Old))
-	case tag.ChangeAdded:
-		fmt.Fprintf(w, "%s+ %s: %s\n", indent, c.Key, joinValues(c.New))
-	case tag.ChangeChanged:
-		fmt.Fprintf(w, "%s~ %s: %s -> %s\n", indent, c.Key, joinValues(c.Old), joinValues(c.New))
-	}
+	fmt.Fprintf(w, "%s%s\n", indent, c.String())
 }
 
 // renderCountDelta prints a picture/chapter set delta. When the counts are equal
@@ -147,15 +141,6 @@ func renderCountDelta(w io.Writer, label string, differ bool, a, b int) {
 		return
 	}
 	fmt.Fprintf(w, "  %s: %d -> %d\n", label, a, b)
-}
-
-// joinValues renders a key's values for the text diff, separating multiple values
-// with " | " so a value containing a comma is not mistaken for two.
-func joinValues(vals []string) string {
-	if len(vals) == 0 {
-		return "(present, no value)"
-	}
-	return strings.Join(vals, " | ")
 }
 
 // jsonDiff is the machine-readable canonical-metadata delta.

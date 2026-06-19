@@ -33,16 +33,24 @@ func newPlanCmd() *cobra.Command {
 				return err
 			}
 			asJSON := jsonMode(cmd)
-			if err := notifyUnknownKeys(cmd.ErrOrStderr(), ce, ef.strict, asJSON); err != nil {
-				return err
-			}
 			realOf, cleanup, err := readInputs(cmd.InOrStdin(), args)
 			if err != nil {
 				return err
 			}
 			defer cleanup()
-			paths := expandPaths(args, recursive)
+			paths, err := expandPaths(args, recursive)
+			if err != nil {
+				return err
+			}
 			noteNoFiles(cmd.ErrOrStderr(), paths)
+			// Run the invocation-level guardrails and notes only when there is a file to
+			// preview, so a note never claims a value was "written" on an empty walk.
+			if len(paths) > 0 {
+				if err := notifyUnknownKeys(cmd.ErrOrStderr(), ce, ef.strict, asJSON); err != nil {
+					return err
+				}
+				notifyValueNotes(cmd.ErrOrStderr(), &ef, asJSON)
+			}
 			notifier := newSingleValuedNotifier(ef.strict, asJSON, cmd.ErrOrStderr())
 			return perFile(cmd, paths,
 				func(ctx context.Context, path string) (*wl.Plan, error) {

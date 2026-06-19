@@ -3,11 +3,26 @@ package id3
 import (
 	"bytes"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/tag"
 )
+
+// TestSizeErrHumanized (M2): the size-limit messages report humanized binary
+// magnitudes rather than raw byte counts. sizeErr takes the count directly, so no
+// oversized buffer is allocated.
+func TestSizeErrHumanized(t *testing.T) {
+	apic := sizeErr(Frame{ID: "APIC"}, 60*1024*1024)
+	if !strings.Contains(apic.Error(), "MiB") {
+		t.Errorf("APIC size error = %q, want a humanized MiB message", apic.Error())
+	}
+	frame := sizeErr(Frame{ID: "TIT2"}, 60*1024*1024)
+	if !strings.Contains(frame.Error(), "MiB") {
+		t.Errorf("frame size error = %q, want a humanized MiB message", frame.Error())
+	}
+}
 
 func TestSyncSafeRoundTrip(t *testing.T) {
 	for _, v := range []int64{0, 1, 127, 128, 16384, 0xFFFFFFF} {

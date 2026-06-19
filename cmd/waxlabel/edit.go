@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 
 	wl "github.com/colespringer/waxlabel"
@@ -38,6 +39,12 @@ type editFlags struct {
 	preset string
 	legacy string
 
+	// padding is the raw --padding value (a byte count); "" means unset, mirroring
+	// the preset/legacy empty-string sentinel. noPadding is --no-padding. Both unset
+	// leaves the default 8 KiB policy untouched.
+	padding   string
+	noPadding bool
+
 	strict bool // promote the unknown-key and single-valued-multi notes to errors
 }
 
@@ -53,6 +60,8 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear the ENCODER software stamp (the transcoder leftover)")
 	f.StringVar(&e.preset, "preset", "", "write policy preset: preserve|compatible|canonical|minimal")
 	f.StringVar(&e.legacy, "legacy", "", "legacy-tag policy: preserve|strip|reconcile|update-existing")
+	f.StringVar(&e.padding, "padding", "", "reserve N bytes of padding after the metadata (default 8192; reused in place)")
+	f.BoolVar(&e.noPadding, "no-padding", false, "write no padding after the metadata (smallest file)")
 	f.BoolVar(&e.strict, "strict", false, "fail (exit 2) on an unknown key or a single-valued key given multiple values, instead of noting it")
 }
 
@@ -127,11 +136,53 @@ func (e *editFlags) loadCovers() ([]wl.Picture, error) {
 	return pics, nil
 }
 
-// writeOptions resolves -preset and -legacy into library write options, applied
-// in that order so an explicit -legacy overrides the preset's legacy policy. An
-// unknown name is a usage error.
+// writeOptions resolves -preset, -legacy, and the padding flags into library
+// write options, applied in that order so an explicit option overrides the
+// preset's. An unknown name or a bad padding value is a usage error.
 func (e *editFlags) writeOptions() ([]wl.WriteOption, error) {
-	return resolveWriteFlags(e.preset, e.legacy)
+	opts, err := resolveWriteFlags(e.preset, e.legacy)
+	if err != nil {
+		return nil, err
+	}
+	// Append the padding option after the preset/legacy options so an explicit
+	// --padding / --no-padding overrides the preset's padding policy (e.g.
+	// "--preset minimal --padding 16384" reserves 16 KiB rather than the preset's
+	// zero). Padding is editing-command-only, so it lives here rather than in the
+	// resolveWriteFlags shared with copy.
+	padOpt, err := resolvePaddingFlag(e.padding, e.noPadding)
+	if err != nil {
+		return nil, err
+	}
+	if padOpt != nil {
+		opts = append(opts, padOpt)
+	}
+	return opts, nil
+}
+
+// resolvePaddingFlag turns the --padding/--no-padding values into a write option,
+// or nil when neither is set (leaving the default 8 KiB policy in place). The two
+// are mutually exclusive, and an explicit byte count must be a non-negative
+// integer; both violations are usage errors.
+//
+// --no-padding writes none (Target 0, Max 0). --padding N reserves N bytes,
+// reused in place, with Max 0 - unbounded, so only the format's hard cap applies.
+// An explicit target is therefore honored even above the 1 MiB ceiling the
+// default policy carries; for N <= 1 MiB the result matches the default's bound.
+func resolvePaddingFlag(padding string, noPadding bool) (wl.WriteOption, error) {
+	if noPadding && padding != "" {
+		return nil, usagef("--padding and --no-padding cannot be combined")
+	}
+	if noPadding {
+		return wl.WithPadding(wl.PaddingPolicy{Target: 0, Max: 0}), nil
+	}
+	if padding == "" {
+		return nil, nil
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(padding), 10, 64)
+	if err != nil || n < 0 {
+		return nil, usagef("--padding wants a non-negative byte count, got %q", padding)
+	}
+	return wl.WithPadding(wl.PaddingPolicy{Target: n, Max: 0, ReuseInPlace: true}), nil
 }
 
 // resolveWriteFlags turns the shared -preset/-legacy flag values into library
@@ -256,6 +307,52 @@ func notifyUnknownKeys(errOut io.Writer, ce *compiledEdit, strict, asJSON bool) 
 		fmt.Fprintf(errOut, "note: %s is not a known key; written as a custom field\n", k)
 	}
 	return err
+}
+
+// notifyValueNotes emits the invocation-level, text-only advisory notes about the
+// user's --set/--add values: a malformed numeric or date value (M1) and a
+// present-but-empty --set value (M3). Both are pure notes - the value is written
+// faithfully either way - so they are suppressed under --json (where they would
+// corrupt the machine stream) and, unlike the unknown-key and cardinality
+// guardrails, are never escalated to an error under --strict. Notes are emitted in
+// command-line order: the --set assignments, then the --add ones.
+func notifyValueNotes(errOut io.Writer, e *editFlags, asJSON bool) {
+	if asJSON {
+		return
+	}
+	for _, kv := range e.set {
+		k, v, err := splitAssign(kv)
+		if err != nil {
+			continue // a malformed assignment is already reported by patch()
+		}
+		if v == "" {
+			// M3: a present-but-empty --set value, distinct from --clear (which removes
+			// the key). M1's typed check skips empties, so a bare KEY= never double-notes.
+			fmt.Fprintf(errOut, "note: %s= writes an empty value; use --clear %s to remove it\n", k, k)
+			continue
+		}
+		noteMalformedValue(errOut, k, v)
+	}
+	for _, kv := range e.add {
+		// An empty --add value is not M3's case (which advises --clear, a replace-style
+		// fix that does not fit an append), so only the M1 typed check applies here.
+		if k, v, err := splitAssign(kv); err == nil && v != "" {
+			noteMalformedValue(errOut, k, v)
+		}
+	}
+}
+
+// noteMalformedValue emits the M1 note when v does not match the typed shape of a
+// numeric or date key. The value is always still written (the writer is faithful),
+// so this only advises. v is sanitized for display - it is user input, but a
+// control byte in it must not reach the terminal raw.
+func noteMalformedValue(errOut io.Writer, k tag.Key, v string) {
+	switch {
+	case tag.IsNumericKey(k) && !tag.ValidNumericValue(k, v):
+		fmt.Fprintf(errOut, "note: %s=%s does not look like a number; written as-is\n", k, tag.SanitizeText(v))
+	case tag.IsDateKey(k) && !tag.ValidPartialDate(v):
+		fmt.Fprintf(errOut, "note: %s=%s is not YYYY / YYYY-MM / YYYY-MM-DD; written as-is\n", k, tag.SanitizeText(v))
+	}
 }
 
 // singleValuedViolations returns the known single-valued keys a plan would store

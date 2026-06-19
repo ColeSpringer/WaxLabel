@@ -54,18 +54,27 @@ func newSetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := notifyUnknownKeys(cmd.ErrOrStderr(), ce, ef.strict, jsonMode(cmd)); err != nil {
-				return err
-			}
 			realOf, cleanup, err := readInputs(cmd.InOrStdin(), args)
 			if err != nil {
 				return err
 			}
 			defer cleanup()
 
-			paths := expandPaths(args, recursive)
+			paths, err := expandPaths(args, recursive)
+			if err != nil {
+				return err
+			}
 			if output != "" && len(paths) != 1 {
 				return usagef("-o writes a single file, so it takes exactly one input (got %d)", len(paths))
+			}
+			// Invocation-level guardrails and notes run only once there is at least one
+			// file to act on, so a note never claims a value was "written" on a run the
+			// directory (U1) or empty-walk (U4) checks then abort with nothing written.
+			if len(paths) > 0 {
+				if err := notifyUnknownKeys(cmd.ErrOrStderr(), ce, ef.strict, jsonMode(cmd)); err != nil {
+					return err
+				}
+				notifyValueNotes(cmd.ErrOrStderr(), &ef, jsonMode(cmd))
 			}
 			return runSet(cmd, paths, realOf, ce, output, ef.strict)
 		},
@@ -103,7 +112,16 @@ func checkSetStdin(args []string, output string) error {
 func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *compiledEdit, output string, strict bool) error {
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 	asJSON := jsonMode(cmd)
-	noteNoFiles(errOut, paths)
+	// An empty path list is only reachable when a --recursive walk matched no audio
+	// files: cobra requires >=1 argument, the -o path already rejects len != 1, and a
+	// passed-through nonexistent file fails per-file with exit 6. For a mutating
+	// command that is an error, not a silent success - so `set "$DIR" --recursive ...
+	// && echo done` cannot falsely report success. Exit 2 (usage), consistent with
+	// U1's directory case. Returning here, before any note, lets the dispatcher print
+	// the message exactly once (a noteNoFiles call would print it a second time).
+	if len(paths) == 0 {
+		return usagef("no audio files found")
+	}
 	notifier := newSingleValuedNotifier(strict, asJSON, errOut)
 	var items []any
 	var firstErr error
@@ -199,11 +217,11 @@ func warnExtensionMismatch(w io.Writer, output string, f wl.Format) {
 func renderSaveOutcome(w io.Writer, path, output string, res wl.SaveResult) {
 	switch {
 	case output != "":
-		fmt.Fprintf(w, "\nWrote %s (%s)\n", output, humanBytes(res.Dest.Size))
+		fmt.Fprintf(w, "\nWrote %s (%s)\n", output, wl.HumanBytes(res.Dest.Size))
 	case !res.Committed:
 		fmt.Fprintf(w, "\nNo changes; %s left untouched\n", path)
 	default:
-		fmt.Fprintf(w, "\nSaved %s (%s)\n", path, humanBytes(res.Dest.Size))
+		fmt.Fprintf(w, "\nSaved %s (%s)\n", path, wl.HumanBytes(res.Dest.Size))
 	}
 }
 

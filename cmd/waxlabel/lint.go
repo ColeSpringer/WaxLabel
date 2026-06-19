@@ -43,7 +43,18 @@ func newLintCmd() *cobra.Command {
 			"\"-\" reads from standard input (read-only; not valid with --fix).",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			paths := expandPaths(args, recursive)
+			paths, err := expandPaths(args, recursive)
+			if err != nil {
+				return err
+			}
+			// A --recursive walk that matched no audio files is an error for the
+			// mutating --fix path - so a script cannot read "nothing happened" as
+			// success - but a harmless empty read otherwise (noteNoFiles + exit 0).
+			// This guard is scoped to --fix and runs before noteNoFiles so the
+			// returned error is printed once, not doubled by the note.
+			if fix && len(paths) == 0 {
+				return usagef("no audio files found")
+			}
 			noteNoFiles(cmd.ErrOrStderr(), paths)
 			if fix {
 				if slices.Contains(paths, stdinArg) {
@@ -163,7 +174,11 @@ func renderLint(w io.Writer, path string, findings []wl.Finding) {
 		return
 	}
 	for _, f := range findings {
-		fmt.Fprintf(w, "  %s\n", f.String())
+		// A finding's message and key can be file-derived (e.g. the encoder-noise
+		// message carries the raw inherited stamp; a custom-key finding carries the
+		// raw field name), so escape the rendered line. The malformed-date message is
+		// already %q-escaped inside Finding, which SanitizeText leaves intact.
+		fmt.Fprintf(w, "  %s\n", tag.SanitizeText(f.String()))
 	}
 }
 
@@ -256,7 +271,8 @@ func renderLintFix(w io.Writer, o fixOutcome) {
 		}
 	}
 	for _, f := range o.remaining {
-		fmt.Fprintf(w, "  not auto-fixed: %s\n", f.String())
+		// Escape the file-derived finding text (see renderLint).
+		fmt.Fprintf(w, "  not auto-fixed: %s\n", tag.SanitizeText(f.String()))
 	}
 	if o.committed {
 		fmt.Fprintf(w, "  saved %s\n", o.path)

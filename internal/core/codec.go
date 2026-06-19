@@ -2,10 +2,12 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/colespringer/waxlabel/internal/bits"
+	"github.com/colespringer/waxlabel/tag"
 )
 
 // Codec is the contract every format implementation satisfies. Parsing
@@ -54,6 +56,41 @@ type WriteReport struct {
 	PaddingAfter int64
 	Operations   []string
 	Warnings     []Warning
+}
+
+// String renders the report as the human-readable block the CLI and library
+// consumers print: the operations (falling back to "rewrite metadata" when the
+// codec named none), the before/after size, the padding when any is written, and
+// any warnings - or "no changes (already up to date)" for a no-op. Sizes are
+// humanized via [bits.HumanBytes].
+//
+// The operation and size lines are library-generated; the warning line is run
+// through [tag.SanitizeText] defensively (plan warnings are library-generated
+// today, but this keeps the report safe to print if one ever embeds a file-derived
+// snippet such as a chapter title). The field-level change block - the only place
+// untrusted tag values appear in a plan - is rendered separately by
+// [waxlabel.Plan.String] through the sanitizing [tag.Change.String]. The block
+// carries no path header (that is display context the CLI adds) and no trailing
+// newline.
+func (r WriteReport) String() string {
+	if r.NoOp {
+		return "no changes (already up to date)"
+	}
+	var lines []string
+	if len(r.Operations) == 0 {
+		lines = append(lines, "  - rewrite metadata")
+	}
+	for _, op := range r.Operations {
+		lines = append(lines, "  - "+op)
+	}
+	lines = append(lines, fmt.Sprintf("  size:    %s -> %s", bits.HumanBytes(r.BytesBefore), bits.HumanBytes(r.BytesAfter)))
+	if r.PaddingAfter > 0 {
+		lines = append(lines, fmt.Sprintf("  padding: %s", bits.HumanBytes(r.PaddingAfter)))
+	}
+	for _, x := range r.Warnings {
+		lines = append(lines, "  warning: "+tag.SanitizeText(x.String()))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // WritePlan is the codec's output from planning: the rewrite segments, a no-op

@@ -3,6 +3,7 @@ package waxlabel_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,54 @@ func TestPlanChanges(t *testing.T) {
 	}
 	if c, ok := got[tag.Encoder]; !ok || c.Kind != tag.ChangeRemoved {
 		t.Errorf("ENCODER change = %+v (ok=%v), want removed", c, ok)
+	}
+}
+
+// TestPlanString: the full preview a consumer prints with fmt.Println(plan) -
+// the field-level changes block followed by the report body - rather than the
+// Go-struct default. The README quick-start documents exactly this.
+func TestPlanString(t *testing.T) {
+	doc := mustParseFile(t, sampleFLAC)
+	plan, err := doc.Edit().Set(tag.Title, "New Title").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := plan.String()
+	for _, want := range []string{"changes:", "TITLE", "New Title", "size:"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("Plan.String() = %q, missing %q", s, want)
+		}
+	}
+	// A no-op plan renders just the report's no-changes line.
+	noop, err := doc.Edit().Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := noop.String(); got != "no changes (already up to date)" {
+		t.Errorf("no-op Plan.String() = %q", got)
+	}
+}
+
+// TestWriteReportString: the report formats as a readable, humanized block (and
+// the no-op / empty-operations forms), so fmt.Println(plan.Report()) is useful.
+func TestWriteReportString(t *testing.T) {
+	r := wl.WriteReport{
+		BytesBefore:  1000,
+		BytesAfter:   2048,
+		PaddingAfter: 8192,
+		Operations:   []string{"rewrote Vorbis comments"},
+	}
+	got := r.String()
+	for _, want := range []string{"  - rewrote Vorbis comments", "  size:    1000 B -> 2.0 KiB", "  padding: 8.0 KiB"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("WriteReport.String() = %q, missing %q", got, want)
+		}
+	}
+	if got := (wl.WriteReport{NoOp: true}).String(); got != "no changes (already up to date)" {
+		t.Errorf("no-op WriteReport.String() = %q", got)
+	}
+	if got := (wl.WriteReport{BytesBefore: 1, BytesAfter: 1}).String(); !strings.Contains(got, "- rewrite metadata") {
+		t.Errorf("WriteReport.String() with no operations = %q, want rewrite-metadata fallback", got)
 	}
 }
 

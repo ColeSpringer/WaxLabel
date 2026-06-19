@@ -219,6 +219,69 @@ func TestParseNumPairSlashConvention(t *testing.T) {
 	}
 }
 
+func TestValidNumericValue(t *testing.T) {
+	// Valid: plain ints, ParseNumPair-tolerant whitespace, leading sign, and the
+	// "n/total" convention on the pair keys.
+	valid := []struct {
+		k Key
+		v string
+	}{
+		{TrackNumber, "3"}, {TrackNumber, " 3 "}, {TrackNumber, "3/4"}, {TrackNumber, "-1"},
+		{DiscNumber, "1/2"}, {TrackTotal, "12"}, {PlayCount, "0"},
+		// An empty pair-side round-trips through ParseNumPair (to 0), so it is not flagged.
+		{TrackNumber, "3/"}, {DiscNumber, "/2"},
+		{Title, "not-a-number"}, // a non-numeric key is never flagged
+	}
+	for _, c := range valid {
+		if !ValidNumericValue(c.k, c.v) {
+			t.Errorf("ValidNumericValue(%s, %q) = false, want true", c.k, c.v)
+		}
+	}
+	// Malformed: non-numeric, or "/" on a key that does not take it (a total).
+	invalid := []struct {
+		k Key
+		v string
+	}{
+		{TrackNumber, "abc"}, {TrackNumber, "3/x"}, {TrackTotal, "3/4"}, {PlayCount, "lots"},
+	}
+	for _, c := range invalid {
+		if ValidNumericValue(c.k, c.v) {
+			t.Errorf("ValidNumericValue(%s, %q) = true, want false", c.k, c.v)
+		}
+	}
+}
+
+func TestValidPartialDate(t *testing.T) {
+	for _, d := range []string{"2021", "2021-06", "2021-06-15", "2020-02-29"} {
+		if !ValidPartialDate(d) {
+			t.Errorf("ValidPartialDate(%q) = false, want true", d)
+		}
+	}
+	// Calendar-invalid, non-zero-padded, and non-date values are rejected.
+	for _, d := range []string{"banana", "2021-13-01", "2021-02-31", "2021-6-1", "2021-02-29"} {
+		if ValidPartialDate(d) {
+			t.Errorf("ValidPartialDate(%q) = true, want false", d)
+		}
+	}
+}
+
+func TestNumericAndDateKeySets(t *testing.T) {
+	// Rating (free-form string) and MediaType (vocabulary-only) are not numeric.
+	if IsNumericKey(Rating) || IsNumericKey(MediaType) {
+		t.Error("Rating/MediaType must not be classified numeric")
+	}
+	if !IsNumericKey(PlayCount) || !IsNumericKey(TrackNumber) {
+		t.Error("PlayCount/TrackNumber should be numeric")
+	}
+	// AcquisitionDate joins the date set alongside the recording/release/original dates.
+	if !IsDateKey(AcquisitionDate) || !IsDateKey(RecordingDate) {
+		t.Error("AcquisitionDate/RecordingDate should be date keys")
+	}
+	if IsDateKey(Title) {
+		t.Error("Title is not a date key")
+	}
+}
+
 func TestPerformersRoundTrip(t *testing.T) {
 	in := map[string][]string{"guitar": {"Foo"}, "": {"Bar"}}
 	formatted := formatPerformers(in)

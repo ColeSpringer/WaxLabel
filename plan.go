@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/tag"
@@ -28,6 +29,35 @@ func (p *Plan) Report() WriteReport { return p.plan.Report }
 // [SaveBack] writes nothing; a no-op [SaveAsFile] or [WriteTo] still produces a
 // complete output (a fresh destination must be whole).
 func (p *Plan) IsNoOp() bool { return p.plan.NoOp }
+
+// String renders the full human-readable preview of the plan: the field-level
+// changes block (each line through the sanitizing [tag.Change.String]) followed
+// by the [WriteReport] body (operations, size, padding, warnings). It is the
+// complete preview a library consumer prints with fmt.Println(plan) - safe to
+// send to a terminal by construction, since the only untrusted values (the change
+// values) are sanitized. It carries no path header (that is CLI display context)
+// and no trailing newline; a no-op plan renders just the report's "no changes"
+// line.
+func (p *Plan) String() string {
+	report := p.Report()
+	changes := p.Changes()
+	if len(changes) == 0 {
+		return report.String()
+	}
+	var b strings.Builder
+	b.WriteString("changes:\n")
+	for _, c := range changes {
+		// Indent the change lines deeper than the report body's operations (2
+		// spaces), so a removed-key change ("- KEY: ...") nests under "changes:"
+		// rather than reading as a sibling operation line. This mirrors the CLI's
+		// hierarchy (changes deeper than operations).
+		b.WriteString("    ")
+		b.WriteString(c.String())
+		b.WriteByte('\n')
+	}
+	b.WriteString(report.String())
+	return b.String()
+}
 
 // Changes reports the field-level delta this plan will apply: each canonical key
 // added, removed, or changed, plus picture and chapter count-deltas when those

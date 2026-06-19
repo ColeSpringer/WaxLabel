@@ -77,3 +77,66 @@ func TestChangeZeroValue(t *testing.T) {
 		t.Errorf("ChangeUnknown.String() = %q, want %q", got, "unknown")
 	}
 }
+
+func TestChangeString(t *testing.T) {
+	cases := []struct {
+		c    Change
+		want string
+	}{
+		{Change{Key: Title, Kind: ChangeAdded, New: []string{"New"}}, "+ TITLE: New"},
+		{Change{Key: Encoder, Kind: ChangeRemoved, Old: []string{"Lavf"}}, "- ENCODER: Lavf"},
+		{Change{Key: Title, Kind: ChangeChanged, Old: []string{"Old"}, New: []string{"New"}}, "~ TITLE: Old -> New"},
+		// Multiple values join with " | "; an empty value list reads as "(present, no value)".
+		{Change{Key: Artist, Kind: ChangeAdded, New: []string{"A", "B"}}, "+ ARTIST: A | B"},
+		{Change{Key: Comment, Kind: ChangeAdded, New: nil}, "+ COMMENT: (present, no value)"},
+		// Control bytes in a value are escaped (the same sanitizer the dump path uses).
+		{Change{Key: Title, Kind: ChangeChanged, Old: []string{"a\x1bb"}, New: []string{"c"}}, `~ TITLE: a\x1bb -> c`},
+		// A control byte in the KEY is escaped too: a custom Vorbis/MP4 field name
+		// bypasses key validation on parse, so it can carry control bytes.
+		{Change{Key: Key("BAD\x1bKEY"), Kind: ChangeAdded, New: []string{"v"}}, `+ BAD\x1bKEY: v`},
+		{Change{}, ""}, // the zero (unknown) kind renders nothing
+	}
+	for _, c := range cases {
+		if got := c.c.String(); got != c.want {
+			t.Errorf("Change.String() = %q, want %q", got, c.want)
+		}
+	}
+}
+
+func TestSanitizeText(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"clean", "clean"},
+		{"a\x1b[31mb", `a\x1b[31mb`},       // ESC (the ANSI CSI introducer)
+		{"bell\x07", `bell\x07`},           // BEL
+		{"a\rb", `a\x0db`},                 // a mid-string carriage return
+		{"back\x08space", `back\x08space`}, // backspace
+		{"\x7f", `\x7f`},                   // DEL
+		{"\u009b", `\x9b`},                 // a C1 control (CSI), validly UTF-8 encoded
+		{"keep\ttab", "keep\ttab"},         // tab preserved
+		{"keep\nnewline", "keep\nnewline"}, // newline preserved (the value renderer owns it)
+	}
+	for _, c := range cases {
+		if got := SanitizeText(c.in); got != c.want {
+			t.Errorf("SanitizeText(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestSanitizeTextPreservesUnicode is the UTF-8 regression guard: a naive
+// byte-level C1 (0x80-0x9F) check would corrupt multi-byte text, whose
+// continuation bytes live in that range. Decoding to runes first keeps it intact.
+func TestSanitizeTextPreservesUnicode(t *testing.T) {
+	for _, s := range []string{"café", "naïve", "日本語", "emoji 🎵🎶", "Þórr"} {
+		if got := SanitizeText(s); got != s {
+			t.Errorf("SanitizeText(%q) = %q, want it unchanged", s, got)
+		}
+	}
+}
+
+// TestSanitizeTextInvalidUTF8: an invalid UTF-8 byte is escaped on its own rather
+// than emitting a replacement character.
+func TestSanitizeTextInvalidUTF8(t *testing.T) {
+	if got := SanitizeText("a\xffb"); got != `a\xffb` {
+		t.Errorf("SanitizeText(invalid byte) = %q, want %q", got, `a\xffb`)
+	}
+}

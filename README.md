@@ -39,11 +39,17 @@ plan, err := doc.Edit().
     Prepare()
 if err != nil { log.Fatal(err) }
 
-fmt.Println(plan.Report())            // exactly what Execute will do
+fmt.Println(plan)                     // full human-readable preview of what Execute will do
 _, res, err := plan.Execute(ctx, waxlabel.SaveBack())
 if err != nil { log.Fatal(err) }
 fmt.Println("committed:", res.Committed)
 ```
+
+Human-readable text output - `Plan.String()` (printed above), `WriteReport.String()`,
+and the CLI's default rendering - is sanitized for the terminal: control and escape
+bytes in untrusted tag values are shown as visible `\xNN` escapes, so a hostile file
+cannot inject ANSI sequences into your output. For the exact, unmodified bytes, read
+the structured accessors (`plan.Changes()`, `doc.Tags()`) or use the CLI's `--json`.
 
 `Document` is immutable and detached - it holds no file descriptor and has no
 `Close`, so you can scan, cache, and discard it freely. Save destinations are
@@ -76,7 +82,9 @@ Install the binary with `go install github.com/colespringer/waxlabel/cmd/waxlabe
 - **`set <file>...`** - apply edits and save: atomic in-place by default, `-o` writes a
   new file (single input only), a no-op writes nothing. `--verify` checks the written
   audio essence. `--strip-encoder` clears the transcoder stamp; `--recursive` walks
-  directory arguments.
+  directory arguments. `--padding N` / `--no-padding` control the free space reserved
+  after the metadata (default 8 KiB, reused in place; `--preset minimal` also writes
+  none); both `set` and `plan` accept them.
 - **`lint <file>...`** - report metadata issues (stale legacy tags, encoder noise,
   conflicting families, bad pictures, malformed dates, missing audio). `--fix`
   applies only the safe, non-destructive remediations and saves; pictures are never

@@ -69,20 +69,6 @@ type jsonErrBody struct {
 	Message string `json:"message"`
 }
 
-// humanBytes formats a byte count with a binary-magnitude unit.
-func humanBytes(n int64) string {
-	if n < 1024 {
-		return fmt.Sprintf("%d B", n)
-	}
-	const unit = 1024
-	div, exp := int64(unit), 0
-	for x := n / unit; x >= unit; x /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
-}
-
 // humanDuration formats a duration as H:MM:SS or M:SS. Sub-minute clips are
 // shown in seconds so short fixtures are not flattened to 0:00.
 func humanDuration(d time.Duration) string {

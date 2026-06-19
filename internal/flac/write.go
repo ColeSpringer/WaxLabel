@@ -111,11 +111,11 @@ func checkBlockSizes(blocks []block) error {
 			continue
 		}
 		if b.code == blkPicture {
-			return fmt.Errorf("%w: picture block is %d bytes (max %d)",
-				waxerr.ErrPictureTooLarge, len(b.body), maxBlockBody)
+			return fmt.Errorf("%w: picture block is %s (max %s)",
+				waxerr.ErrPictureTooLarge, bits.HumanBytes(int64(len(b.body))), bits.HumanBytes(int64(maxBlockBody)))
 		}
-		return fmt.Errorf("%w: %s block is %d bytes, exceeding the 24-bit limit %d",
-			waxerr.ErrInvalidData, blockName(b.code), len(b.body), maxBlockBody)
+		return fmt.Errorf("%w: %s block is %s, exceeding the 24-bit limit %s",
+			waxerr.ErrInvalidData, blockName(b.code), bits.HumanBytes(int64(len(b.body))), bits.HumanBytes(int64(maxBlockBody)))
 	}
 	return nil
 }

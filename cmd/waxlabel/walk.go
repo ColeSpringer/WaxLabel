@@ -70,13 +70,26 @@ func readInputs(stdin io.Reader, paths []string) (realOf func(string) string, cl
 // recursive is set, walking each tree and keeping files whose extension matches a
 // known codec (a cheap filter that skips unrelated files without parsing them).
 // Ordinary files and the "-" stdin sentinel pass through unchanged and in order.
-// Without recursive, every argument passes through verbatim, so a directory
-// surfaces the normal "is a directory" error per file. A stat or walk failure on
-// an argument leaves it in place for the per-file loop to classify, rather than
-// aborting the whole run.
-func expandPaths(paths []string, recursive bool) []string {
+// A stat or walk failure on an argument leaves it in place for the per-file loop
+// to classify, rather than aborting the whole run.
+//
+// Without recursive, a directory argument cannot be processed, so expandPaths
+// returns a usage error (exit 2) naming --recursive instead of letting the
+// directory fall through to the parser's ErrInvalidData (exit 4); this fixes both
+// the exit class and discoverability in one place. A stat error on an argument
+// (e.g. a nonexistent path) still passes through, so the per-file loop classifies
+// it as not-found (exit 6) - only a confirmed directory is rejected here.
+func expandPaths(paths []string, recursive bool) ([]string, error) {
 	if !recursive {
-		return paths
+		for _, p := range paths {
+			if p == stdinArg {
+				continue
+			}
+			if info, err := os.Stat(p); err == nil && info.IsDir() {
+				return nil, usagef("%s is a directory; pass --recursive to walk it for audio files", p)
+			}
+		}
+		return paths, nil
 	}
 	var out []string
 	for _, p := range paths {
@@ -91,7 +104,7 @@ func expandPaths(paths []string, recursive bool) []string {
 		}
 		out = append(out, walkAudioFiles(p)...)
 	}
-	return out
+	return out, nil
 }
 
 // walkAudioFiles returns the audio files under root, recursively and in sorted

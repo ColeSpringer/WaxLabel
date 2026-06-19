@@ -1,6 +1,10 @@
 package tag
 
-import "slices"
+import (
+	"slices"
+	"strings"
+	"unicode/utf8"
+)
 
 // ChangeKind names how one key differs between two tag sets.
 type ChangeKind uint8
@@ -74,4 +78,111 @@ func Diff(base, edited TagSet) []Change {
 		}
 	}
 	return out
+}
+
+// String renders one change as a single diff-style line: "- KEY: old" for a
+// removed key, "+ KEY: new" for an added one, and "~ KEY: old -> new" for a
+// changed one. Multiple values are joined with " | " (so a value containing a
+// comma is not misread as two), and a key present with no values reads as
+// "(present, no value)". The key and every value are run through [SanitizeText],
+// so the line is safe to print to a terminal even though both originate in an
+// untrusted file (a custom Vorbis/MP4 field name bypasses key validation on
+// parse); a caller that needs the exact bytes reads Key/Old/New directly.
+//
+// The line carries no indent and no trailing newline, so the caller controls
+// layout. It is the single change-line formatter shared by the library's
+// plan/diff previews and the CLI, so their formatting cannot drift.
+func (c Change) String() string {
+	key := SanitizeText(string(c.Key))
+	switch c.Kind {
+	case ChangeRemoved:
+		return "- " + key + ": " + joinChangeValues(c.Old)
+	case ChangeAdded:
+		return "+ " + key + ": " + joinChangeValues(c.New)
+	case ChangeChanged:
+		return "~ " + key + ": " + joinChangeValues(c.Old) + " -> " + joinChangeValues(c.New)
+	default:
+		return ""
+	}
+}
+
+// joinChangeValues renders a key's values for a change line: the empty case as
+// "(present, no value)", otherwise each value sanitized for display and joined
+// with " | ".
+func joinChangeValues(vals []string) string {
+	if len(vals) == 0 {
+		return "(present, no value)"
+	}
+	out := make([]string, len(vals))
+	for i, v := range vals {
+		out[i] = SanitizeText(v)
+	}
+	return strings.Join(out, " | ")
+}
+
+// SanitizeText returns s with control and non-printable bytes rendered as
+// visible \xNN escapes, so an untrusted tag value cannot inject terminal escape
+// sequences (ESC/CSI), carriage returns, or bells into human-facing text output.
+// It is rune-aware: it decodes UTF-8 and escapes only genuine control
+// codepoints, so multi-byte text (accented Latin, CJK, emoji) survives intact
+// even though its continuation bytes fall in the 0x80-0x9F range a naive
+// byte-level scan would corrupt.
+//
+// Kept verbatim: the horizontal tab and the newline (the multi-line value
+// renderer relies on \n, and a tab is benign alignment). Escaped: the C0
+// controls (0x00-0x1F except \t/\n), DEL (0x7F), the C1 controls (0x80-0x9F),
+// and any byte that is not valid UTF-8 (escaped one byte at a time). Every other
+// rune passes through unchanged.
+//
+// It is the single sanitizer behind both the CLI's dump renderers and
+// [Change.String], so the text-display escaping cannot drift between them. The
+// structured accessors ([TagSet], [Change.Old]/[Change.New]) and --json still
+// carry the exact bytes for scripts.
+func SanitizeText(s string) string {
+	// Fast path: a clean, valid-UTF-8 value (the common case) is returned
+	// unchanged with no allocation.
+	if utf8.ValidString(s) && strings.IndexFunc(s, controlRune) < 0 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			// An invalid UTF-8 byte: escape it on its own so the result stays valid
+			// printable text rather than emitting a replacement character.
+			writeHexEscape(&b, s[i])
+			i++
+			continue
+		}
+		if controlRune(r) {
+			// controlRune only matches codepoints <= U+009F, so the value fits one byte.
+			writeHexEscape(&b, byte(r))
+		} else {
+			b.WriteRune(r)
+		}
+		i += size
+	}
+	return b.String()
+}
+
+const hexDigits = "0123456789abcdef"
+
+// writeHexEscape writes c as a two-digit \xNN escape. It avoids fmt's reflection
+// and per-call allocation, since this runs once for every offending byte on the
+// (already cold) escape path.
+func writeHexEscape(b *strings.Builder, c byte) {
+	b.WriteString(`\x`)
+	b.WriteByte(hexDigits[c>>4])
+	b.WriteByte(hexDigits[c&0x0f])
+}
+
+// controlRune reports whether r is a control codepoint SanitizeText escapes: a
+// C0 control other than tab/newline, DEL, or a C1 control. Tab and newline are
+// kept (the multi-line value renderer relies on the newline).
+func controlRune(r rune) bool {
+	if r == '\t' || r == '\n' {
+		return false
+	}
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
 }

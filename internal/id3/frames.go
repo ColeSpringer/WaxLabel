@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -25,17 +26,17 @@ func CheckSize(writeVersion byte, frames []Frame) error {
 		total += 10 + int64(fl)
 	}
 	if total > maxFrameSize {
-		return fmt.Errorf("%w: ID3v2 tag is %d bytes, exceeding the 28-bit size field limit %d",
-			waxerr.ErrSizeTooLarge, total, maxFrameSize)
+		return fmt.Errorf("%w: ID3v2 tag is %s, exceeding the 28-bit size field limit %s",
+			waxerr.ErrSizeTooLarge, bits.HumanBytes(total), bits.HumanBytes(int64(maxFrameSize)))
 	}
 	return nil
 }
 
 func sizeErr(f Frame, n int) error {
 	if f.ID == "APIC" {
-		return fmt.Errorf("%w: APIC frame is %d bytes (max %d)", waxerr.ErrPictureTooLarge, n, maxFrameSize)
+		return fmt.Errorf("%w: APIC frame is %s (max %s)", waxerr.ErrPictureTooLarge, bits.HumanBytes(int64(n)), bits.HumanBytes(int64(maxFrameSize)))
 	}
-	return fmt.Errorf("%w: %s frame is %d bytes (max %d)", waxerr.ErrSizeTooLarge, f.ID, n, maxFrameSize)
+	return fmt.Errorf("%w: %s frame is %s (max %s)", waxerr.ErrSizeTooLarge, f.ID, bits.HumanBytes(int64(n)), bits.HumanBytes(int64(maxFrameSize)))
 }
 
 // Frame is one ID3v2 frame. ID is always the 4-character v2.3/v2.4 identifier

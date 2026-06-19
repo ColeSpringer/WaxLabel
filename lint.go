@@ -2,7 +2,6 @@ package waxlabel
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/tag"
@@ -138,16 +137,22 @@ func lintPictures(pics []Picture) []Finding {
 }
 
 // lintDates reports date fields that are not ISO-8601 year, year-month, or full
-// dates.
+// dates. It filters by [tag.IsDateKey] and validates with [tag.ValidPartialDate],
+// the single date-key set and validator shared with the CLI's set-time
+// malformed-value note, so the two cannot disagree - and it now covers
+// AcquisitionDate alongside the recording/release/original dates.
 func lintDates(ts tag.TagSet) []Finding {
 	var out []Finding
-	for _, k := range []tag.Key{tag.RecordingDate, tag.ReleaseDate, tag.OriginalDate} {
-		vals, ok := ts.Get(k)
-		if !ok {
+	// Iterate the key names and Get only the date keys, rather than ranging All()
+	// (which clones every key's value slice) - a 40-tag file then clones at most the
+	// few date-key slices, not all 40.
+	for _, k := range ts.Keys() {
+		if !tag.IsDateKey(k) {
 			continue
 		}
+		vals, _ := ts.Get(k)
 		for _, v := range vals {
-			if !validPartialDate(v) {
+			if !tag.ValidPartialDate(v) {
 				out = append(out, Finding{LintWarning, "malformed-date",
 					fmt.Sprintf("%q is not YYYY, YYYY-MM, or YYYY-MM-DD", v), k})
 			}
@@ -187,19 +192,4 @@ func lintCustomKeys(ts tag.TagSet) []Finding {
 		}
 	}
 	return out
-}
-
-// validPartialDate accepts the ISO-8601 reduced precisions YYYY, YYYY-MM, and
-// YYYY-MM-DD. It uses time.Parse so the calendar is checked properly - month
-// range, days per month, and leap years - rejecting e.g. 2021-02-31. The exact
-// length match enforces zero-padded canonical form (rejecting "2021-6-1").
-func validPartialDate(s string) bool {
-	for _, layout := range []string{"2006-01-02", "2006-01", "2006"} {
-		if len(s) == len(layout) {
-			if _, err := time.Parse(layout, s); err == nil {
-				return true
-			}
-		}
-	}
-	return false
 }

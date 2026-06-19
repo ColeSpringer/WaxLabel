@@ -65,6 +65,26 @@ func TestBitDepthMeaningful(t *testing.T) {
 	}
 }
 
+// TestRenderLintSanitizes (#3): a finding whose message or key is file-derived
+// (the encoder-noise message carries the raw inherited stamp; a custom-key finding
+// carries the raw field name) is escaped on render, so lint cannot leak control
+// bytes to the terminal.
+func TestRenderLintSanitizes(t *testing.T) {
+	findings := []wl.Finding{
+		{Severity: wl.LintWarning, Code: "encoder-noise", Message: "inherited encoder stamp: Lavf\x1bX"},
+		{Severity: wl.LintInfo, Code: "custom-key", Message: "custom field, not a known key", Key: tag.Key("BAD\x1bKEY")},
+	}
+	var buf bytes.Buffer
+	renderLint(&buf, "f.flac", findings)
+	out := buf.String()
+	if strings.Contains(out, "\x1b") {
+		t.Errorf("renderLint leaked a raw ESC:\n%q", out)
+	}
+	if !strings.Contains(out, `\x1b`) {
+		t.Errorf("renderLint should escape control bytes (message and key):\n%s", out)
+	}
+}
+
 func TestDisplayName(t *testing.T) {
 	if got := displayName("-"); got != "<stdin>" {
 		t.Errorf("displayName(%q) = %q, want <stdin>", "-", got)
@@ -81,5 +101,93 @@ func TestRenderTagsEmptyValue(t *testing.T) {
 	renderTags(&buf, ts)
 	if !strings.Contains(buf.String(), "(empty value)") {
 		t.Errorf("renderTags should label an empty value; got:\n%s", buf.String())
+	}
+}
+
+// TestRenderTagsSanitizes (R1): an embedded ESC/CR in a tag value is shown as a
+// visible escape, never a raw control byte that could drive the terminal.
+func TestRenderTagsSanitizes(t *testing.T) {
+	ts := tag.NewTagSet()
+	ts.Set(tag.Title, "a\x1b[31mX\rY") // ANSI CSI + mid-line CR (the report's repro)
+	var buf bytes.Buffer
+	renderTags(&buf, ts)
+	out := buf.String()
+	if strings.ContainsAny(out, "\x1b\r") {
+		t.Errorf("renderTags leaked a raw control byte:\n%q", out)
+	}
+	if !strings.Contains(out, `\x1b`) || !strings.Contains(out, `\x0d`) {
+		t.Errorf("renderTags should show escaped \\x1b and \\x0d; got:\n%q", out)
+	}
+}
+
+// TestRenderTagsMultiLineAligns: a legitimate multi-line value (lyrics) keeps its
+// line breaks and indents continuation lines, so sanitizing did not flatten it.
+func TestRenderTagsMultiLineAligns(t *testing.T) {
+	ts := tag.NewTagSet()
+	ts.Set(tag.Lyrics, "line one\nline two")
+	var buf bytes.Buffer
+	renderTags(&buf, ts)
+	out := buf.String()
+	if !strings.Contains(out, "line one") || !strings.Contains(out, "line two") {
+		t.Errorf("multi-line value not rendered:\n%s", out)
+	}
+	if strings.Contains(out, "\nline two") {
+		t.Errorf("continuation line should be indented, not at column 0:\n%q", out)
+	}
+}
+
+// TestRenderPicturesDescriptionSingleEscaped (R1): p.Description prints via %q,
+// which already escapes control chars; it must not also be run through
+// SanitizeText (that would double-escape \x1b into \\x1b).
+func TestRenderPicturesDescriptionSingleEscaped(t *testing.T) {
+	var buf bytes.Buffer
+	renderPictures(&buf, []wl.Picture{{
+		Type:        wl.PicFrontCover,
+		MIME:        "image/png",
+		Description: "desc\x1bX",
+		Data:        []byte("xx"),
+	}})
+	out := buf.String()
+	if strings.Contains(out, `\\x1b`) {
+		t.Errorf("description should be single-escaped via %%q, got double-escape:\n%q", out)
+	}
+	if !strings.Contains(out, `\x1b`) {
+		t.Errorf("description control char should be escaped by %%q:\n%q", out)
+	}
+}
+
+// TestRenderTagsKeyCountHeader (U2): the header counts keys explicitly, with
+// singular/plural agreement.
+func TestRenderTagsKeyCountHeader(t *testing.T) {
+	two := tag.NewTagSet()
+	two.Set(tag.Title, "T")
+	two.Set(tag.Artist, "A")
+	var buf bytes.Buffer
+	renderTags(&buf, two)
+	if !strings.Contains(buf.String(), "tags (2 keys):") {
+		t.Errorf("want 'tags (2 keys):' header; got:\n%s", buf.String())
+	}
+	one := tag.NewTagSet()
+	one.Set(tag.Title, "T")
+	buf.Reset()
+	renderTags(&buf, one)
+	if !strings.Contains(buf.String(), "tags (1 key):") {
+		t.Errorf("want 'tags (1 key):' header; got:\n%s", buf.String())
+	}
+}
+
+// TestAudioLineOmittedForDegenerate (M4): a record carrying only a bare codec
+// name with no technical detail drops the audio line; a real stream still renders
+// one. The "container (codec unknown)" signal is kept even without properties,
+// since it tells the user the container parsed but the codec was not identified.
+func TestAudioLineOmittedForDegenerate(t *testing.T) {
+	if line := audioLine(trackProps("", wl.AudioTrack{Codec: "MPEG Audio"})); line != "" {
+		t.Errorf("bare-codec audioLine = %q, want empty", line)
+	}
+	if line := audioLine(wl.Properties{Container: "Matroska"}); line != "Matroska (codec unknown)" {
+		t.Errorf("container-only audioLine = %q, want the codec-unknown signal kept", line)
+	}
+	if line := audioLine(trackProps("FLAC", wl.AudioTrack{Codec: "FLAC", SampleRate: 44100, Channels: 2})); line == "" {
+		t.Error("a real stream (sample rate present) should still render an audio line")
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,6 +62,34 @@ func TestPictureTooLargeRejected(t *testing.T) {
 	_, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/jpeg", Data: big}).Prepare()
 	if !errors.Is(err, waxerr.ErrPictureTooLarge) {
 		t.Errorf("err = %v, want ErrPictureTooLarge", err)
+	}
+	// The size is humanized for the message (M2): "picture block is 16.0 MiB (max
+	// 16.0 MiB)", not a raw byte count.
+	if err != nil && !strings.Contains(err.Error(), "MiB") {
+		t.Errorf("error should humanize the size, got %q", err.Error())
+	}
+}
+
+// TestDiffSanitizesHostileKey: a custom Vorbis field name carrying control bytes
+// reaches the tag model unvalidated (the comment parser splits only on '='), so
+// Change.String must escape the KEY as well as the values - otherwise the diff
+// command and the write-plan preview would leak the control bytes to the terminal.
+func TestDiffSanitizesHostileKey(t *testing.T) {
+	doc := mustParseBytes(t, flacWithComments("TITLE=x", "BAD\x1bKEY=v"))
+	var line string
+	for _, c := range tag.Diff(tag.NewTagSet(), doc.Tags()) {
+		if strings.HasPrefix(string(c.Key), "BAD") {
+			line = c.String()
+		}
+	}
+	if line == "" {
+		t.Fatal("expected a change for the hostile custom key")
+	}
+	if strings.Contains(line, "\x1b") {
+		t.Errorf("Change.String leaked a raw ESC from the key: %q", line)
+	}
+	if !strings.Contains(line, `\x1b`) {
+		t.Errorf("Change.String should escape the key's control byte: %q", line)
 	}
 }
 

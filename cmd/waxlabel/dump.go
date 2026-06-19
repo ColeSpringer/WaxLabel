@@ -29,7 +29,10 @@ func newDumpCmd() *cobra.Command {
 				return err
 			}
 			defer cleanup()
-			paths := expandPaths(args, recursive)
+			paths, err := expandPaths(args, recursive)
+			if err != nil {
+				return err
+			}
 			noteNoFiles(cmd.ErrOrStderr(), paths)
 			return perFile(cmd, paths,
 				func(ctx context.Context, path string) (*wl.Document, error) {

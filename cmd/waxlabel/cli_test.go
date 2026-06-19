@@ -518,16 +518,20 @@ func TestPlanMissingFileMessage(t *testing.T) {
 }
 
 // TestDirectoryAsInput checks that handing a directory where a file is expected
-// fails with a clear "is a directory" message in the invalid-data class, not the
-// confusing "could not identify" unsupported-format error it produced before.
+// fails as a usage error (exit 2) naming --recursive, rather than falling through
+// to the parser's invalid-data class (exit 4). This both fixes the exit class and
+// points the user at the flag that would walk the directory for audio files.
 func TestDirectoryAsInput(t *testing.T) {
 	t.Parallel()
 	_, errb, code := runCLI(t, "dump", t.TempDir())
-	if code != 4 {
-		t.Fatalf("exit = %d, want 4 (invalid data)", code)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (usage)", code)
 	}
 	if !strings.Contains(errb, "is a directory") {
 		t.Errorf("stderr should explain the directory: %q", errb)
+	}
+	if !strings.Contains(errb, "--recursive") {
+		t.Errorf("stderr should point at --recursive: %q", errb)
 	}
 }
 
@@ -880,8 +884,10 @@ func TestSetJSONErrorIsPerFileObject(t *testing.T) {
 	}
 }
 
-// TestSetRecursiveNoFiles checks a --recursive walk that matches no audio files
-// prints a note (rather than silently succeeding) and, in JSON, emits [] not null.
+// TestSetRecursiveNoFiles checks a --recursive walk that matches no audio files is
+// an error for the mutating set command (exit 2, so `set "$DIR" --recursive ... &&
+// echo done` cannot falsely report success), with the message printed exactly once
+// - while the read-only plan command stays exit 0 and, in JSON, emits [] not null.
 func TestSetRecursiveNoFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -889,15 +895,243 @@ func TestSetRecursiveNoFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, errb, code := runCLI(t, "set", "--recursive", dir, "--set", "TITLE=X")
-	if code != 0 {
-		t.Fatalf("exit = %d, want 0", code)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (usage)", code)
 	}
-	if !strings.Contains(errb, "no audio files found") {
-		t.Errorf("expected a no-files note on stderr, got: %q", errb)
+	if n := strings.Count(errb, "no audio files found"); n != 1 {
+		t.Errorf("expected the no-files message exactly once, got %d: %q", n, errb)
 	}
-	out, _, _ := runCLI(t, "--json", "plan", "--recursive", dir, "--set", "TITLE=X")
+	// plan is read-only: an empty walk is a note (exit 0), and JSON is [], not null.
+	out, _, planCode := runCLI(t, "--json", "plan", "--recursive", dir, "--set", "TITLE=X")
+	if planCode != 0 {
+		t.Fatalf("plan exit = %d, want 0", planCode)
+	}
 	if strings.TrimSpace(out) != "[]" {
 		t.Errorf("JSON output = %q, want [] (not null)", strings.TrimSpace(out))
+	}
+}
+
+// TestLintFixRecursiveNoFiles checks that lint --fix, like set, treats a
+// --recursive walk matching no audio files as an error (exit 2) rather than a
+// silent success - while read-only lint of the same empty walk stays exit 0.
+func TestLintFixRecursiveNoFiles(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("no audio here"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, errb, code := runCLI(t, "lint", "--fix", "--recursive", dir)
+	if code != 2 {
+		t.Fatalf("lint --fix exit = %d, want 2 (usage)", code)
+	}
+	if n := strings.Count(errb, "no audio files found"); n != 1 {
+		t.Errorf("expected the no-files message exactly once, got %d: %q", n, errb)
+	}
+	if _, _, readCode := runCLI(t, "lint", "--recursive", dir); readCode != 0 {
+		t.Errorf("read-only lint exit = %d, want 0", readCode)
+	}
+}
+
+// TestResolvePaddingFlag (U3): the flag-to-policy resolver maps --padding /
+// --no-padding to a write option and rejects misuse, independent of any file.
+func TestResolvePaddingFlag(t *testing.T) {
+	t.Parallel()
+	// Neither flag set: no option, so the default policy is left untouched.
+	if opt, err := resolvePaddingFlag("", false); opt != nil || err != nil {
+		t.Errorf("no flags: opt=%v err=%v, want nil,nil", opt, err)
+	}
+	// Valid forms produce an option.
+	if opt, err := resolvePaddingFlag("16384", false); opt == nil || err != nil {
+		t.Errorf("--padding 16384: opt=%v err=%v, want option,nil", opt, err)
+	}
+	if opt, err := resolvePaddingFlag("", true); opt == nil || err != nil {
+		t.Errorf("--no-padding: opt=%v err=%v, want option,nil", opt, err)
+	}
+	// Misuse is a usage error: both flags together, a negative count, a non-integer.
+	for _, c := range []struct {
+		padding   string
+		noPadding bool
+	}{{"16384", true}, {"-1", false}, {"abc", false}} {
+		if _, err := resolvePaddingFlag(c.padding, c.noPadding); err == nil || !isUsageError(err) {
+			t.Errorf("resolvePaddingFlag(%q, %v) err = %v, want usage error", c.padding, c.noPadding, err)
+		}
+	}
+}
+
+// TestPaddingNoPadding (U3): --no-padding drops the padding the default reserves,
+// and the default plan advertises the controls.
+func TestPaddingNoPadding(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, sampleFLAC)
+	def, _, code := runCLI(t, "plan", file, "--set", "TITLE=Pad")
+	if code != 0 {
+		t.Fatalf("plan exit = %d", code)
+	}
+	if !strings.Contains(def, "padding:") {
+		t.Fatalf("default plan should show a padding line; got:\n%s", def)
+	}
+	if !strings.Contains(def, "--padding") || !strings.Contains(def, "--no-padding") {
+		t.Errorf("padding line should advertise its controls; got:\n%s", def)
+	}
+	out, _, code := runCLI(t, "plan", file, "--set", "TITLE=Pad", "--no-padding")
+	if code != 0 {
+		t.Fatalf("plan --no-padding exit = %d", code)
+	}
+	if strings.Contains(out, "padding:") {
+		t.Errorf("--no-padding should write no padding; got:\n%s", out)
+	}
+}
+
+// TestPaddingPresetPrecedence (U3): an explicit --padding overrides the preset's
+// padding policy, so "--preset minimal --padding N" reserves padding even though
+// minimal alone writes none.
+func TestPaddingPresetPrecedence(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, sampleFLAC)
+	bare, _, _ := runCLI(t, "plan", file, "--set", "TITLE=Pad", "--preset", "minimal")
+	if strings.Contains(bare, "padding:") {
+		t.Errorf("--preset minimal alone should write no padding; got:\n%s", bare)
+	}
+	over, _, code := runCLI(t, "plan", file, "--set", "TITLE=Pad", "--preset", "minimal", "--padding", "16384")
+	if code != 0 {
+		t.Fatalf("plan exit = %d", code)
+	}
+	if !strings.Contains(over, "padding:") {
+		t.Errorf("--padding should override the preset's zero padding; got:\n%s", over)
+	}
+}
+
+// TestPaddingFlagValidation (U3): combining the flags, or a negative/non-integer
+// value, is a usage error (exit 2) through the CLI.
+func TestPaddingFlagValidation(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, sampleFLAC)
+	for _, args := range [][]string{
+		{"plan", file, "--padding", "1024", "--no-padding"},
+		{"plan", file, "--padding", "-1"},
+		{"plan", file, "--padding", "abc"},
+	} {
+		if _, _, code := runCLI(t, args...); code != 2 {
+			t.Errorf("args %v exit = %d, want 2 (usage)", args, code)
+		}
+	}
+}
+
+// TestMalformedValueNotes (M1): a malformed numeric or date value is noted on
+// stderr, the write still succeeds, and under --json the note is suppressed.
+func TestMalformedValueNotes(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, sampleFLAC)
+	_, errb, code := runCLI(t, "set", file, "--set", "TRACKNUMBER=abc", "--set", "RECORDINGDATE=banana")
+	if code != 0 {
+		t.Fatalf("set exit = %d (a note must not fail the write); stderr:\n%s", code, errb)
+	}
+	if !strings.Contains(errb, "TRACKNUMBER=abc does not look like a number") {
+		t.Errorf("expected a numeric note; stderr:\n%s", errb)
+	}
+	if !strings.Contains(errb, "RECORDINGDATE=banana is not YYYY") {
+		t.Errorf("expected a date note; stderr:\n%s", errb)
+	}
+	// --json suppresses the note (it would corrupt the machine stream).
+	out, jerr, _ := runCLI(t, "--json", "plan", file, "--set", "TRACKNUMBER=abc")
+	if strings.Contains(jerr, "does not look like a number") {
+		t.Errorf("note should be suppressed under --json; stderr:\n%s", jerr)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(out), "[") {
+		t.Errorf("--json output should be a JSON array; got:\n%s", out)
+	}
+}
+
+// TestMalformedValueNotesTolerant (M1): values ParseNumPair / ValidPartialDate
+// accept - whitespace, "n/total", a leading sign, partial dates - are not flagged.
+func TestMalformedValueNotesTolerant(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, sampleFLAC)
+	_, errb, code := runCLI(t, "set", file,
+		"--set", "TRACKNUMBER= 3 ",
+		"--set", "DISCNUMBER=1/2",
+		"--set", "PLAYCOUNT=-1",
+		"--set", "RECORDINGDATE=2021-06")
+	if code != 0 {
+		t.Fatalf("set exit = %d; stderr:\n%s", code, errb)
+	}
+	if strings.Contains(errb, "does not look like a number") || strings.Contains(errb, "is not YYYY") {
+		t.Errorf("ParseNumPair-tolerant values should not be flagged; stderr:\n%s", errb)
+	}
+}
+
+// TestValueNotesDeferredUntilFiles (#4): the invocation-level value note must not
+// print on a run that resolves no files and aborts - otherwise it falsely claims a
+// value was "written as-is" when nothing was written.
+func TestValueNotesDeferredUntilFiles(t *testing.T) {
+	t.Parallel()
+	// A directory without --recursive aborts with a usage error before any file.
+	_, errb, code := runCLI(t, "set", t.TempDir(), "--set", "TRACKNUMBER=abc")
+	if code != 2 {
+		t.Fatalf("directory exit = %d, want 2", code)
+	}
+	if strings.Contains(errb, "does not look like a number") {
+		t.Errorf("value note must not print on an aborted directory run:\n%s", errb)
+	}
+	// Same for an empty --recursive walk (no audio files matched).
+	_, errb, code = runCLI(t, "set", t.TempDir(), "--recursive", "--set", "TRACKNUMBER=abc")
+	if code != 2 {
+		t.Fatalf("empty-walk exit = %d, want 2", code)
+	}
+	if strings.Contains(errb, "does not look like a number") {
+		t.Errorf("value note must not print on an empty walk:\n%s", errb)
+	}
+}
+
+// TestEmptyValueNote (M3): --set KEY= (a present-but-empty value) is noted with
+// the --clear suggestion, and a bare KEY= never double-notes with M1.
+func TestEmptyValueNote(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, sampleFLAC)
+	_, errb, code := runCLI(t, "set", file, "--set", "TITLE=")
+	if code != 0 {
+		t.Fatalf("set exit = %d; stderr:\n%s", code, errb)
+	}
+	if !strings.Contains(errb, "TITLE= writes an empty value") || !strings.Contains(errb, "--clear TITLE") {
+		t.Errorf("expected an empty-value note suggesting --clear; stderr:\n%s", errb)
+	}
+}
+
+// TestDumpSanitizesEndToEnd (R1): a tag value carrying an ESC/CR survives in the
+// file but is escaped on dump - no raw control byte reaches the terminal.
+func TestDumpSanitizesEndToEnd(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, sampleFLAC)
+	if _, _, code := runCLI(t, "set", file, "--set", "TITLE=x\x1b[31my\rz"); code != 0 {
+		t.Fatalf("set exit = %d", code)
+	}
+	out, _, code := runCLI(t, "dump", file)
+	if code != 0 {
+		t.Fatalf("dump exit = %d", code)
+	}
+	if strings.ContainsAny(out, "\x1b\r") {
+		t.Errorf("dump leaked a raw control byte:\n%q", out)
+	}
+	if !strings.Contains(out, `\x1b`) {
+		t.Errorf("dump should show the escaped form:\n%s", out)
+	}
+}
+
+// TestDiffSanitized (D1/R1): the diff command's change preview escapes control
+// bytes too, since it now shares tag.Change.String() with the write-plan preview.
+func TestDiffSanitized(t *testing.T) {
+	t.Parallel()
+	a := copyFixture(t, sampleFLAC)
+	b := copyFixture(t, sampleFLAC)
+	if _, _, code := runCLI(t, "set", b, "--set", "TITLE=clean\x1bX"); code != 0 {
+		t.Fatalf("set exit = %d", code)
+	}
+	out, _, _ := runCLI(t, "diff", a, b) // differing files exit 1; the diff is on stdout
+	if strings.Contains(out, "\x1b") {
+		t.Errorf("diff leaked a raw ESC:\n%q", out)
+	}
+	if !strings.Contains(out, `\x1b`) {
+		t.Errorf("diff should show the escaped title change:\n%s", out)
 	}
 }
 

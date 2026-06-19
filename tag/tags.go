@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Tags is the typed convenience projection of a [TagSet]. It is lossy by
@@ -270,6 +271,89 @@ func ParseNumPair(num, total string) (n, tot int) {
 		tot, _ = strconv.Atoi(strings.TrimSpace(total))
 	}
 	return n, tot
+}
+
+// numericKeys are the canonical keys whose typed [Tags] projection is an int, so
+// a non-numeric value does not round-trip through that accessor (it reads 0): the
+// track and disc number/total, and the play count. Rating is excluded (it is a
+// free-form string), and so is MediaType (vocabulary-only, no typed accessor). It
+// backs [IsNumericKey] and the set-time malformed-value note.
+var numericKeys = map[Key]bool{
+	TrackNumber: true,
+	TrackTotal:  true,
+	DiscNumber:  true,
+	DiscTotal:   true,
+	PlayCount:   true,
+}
+
+// dateKeySet is the canonical partial-date keys, kept as a set so [IsDateKey] is
+// the single date-key definition shared by the linter's malformed-date rule and
+// the set-time malformed-value note.
+var dateKeySet = map[Key]bool{
+	RecordingDate:   true,
+	ReleaseDate:     true,
+	OriginalDate:    true,
+	AcquisitionDate: true,
+}
+
+// IsNumericKey reports whether k canonically holds a numeric value (one with an
+// int projection in [Tags]): the track/disc number and total, and play count.
+func IsNumericKey(k Key) bool { return numericKeys[k] }
+
+// IsDateKey reports whether k canonically holds an ISO-8601 partial date (YYYY,
+// YYYY-MM, or YYYY-MM-DD).
+func IsDateKey(k Key) bool { return dateKeySet[k] }
+
+// ValidNumericValue reports whether v is a value the numeric key k accepts
+// without loss. It mirrors [ParseNumPair] exactly so it never flags a value that
+// round-trips: surrounding whitespace is ignored, the pair keys (TrackNumber and
+// DiscNumber) accept the "number/total" convention, and the parse is
+// strconv.Atoi (which accepts a leading sign). A key that is not numeric is
+// reported valid - there is nothing to check.
+func ValidNumericValue(k Key, v string) bool {
+	if !numericKeys[k] {
+		return true
+	}
+	// Only the number fields carry "n/total"; the standalone totals and play count
+	// do not (ParseNumPair splits only the number field).
+	if k == TrackNumber || k == DiscNumber {
+		if num, total, ok := strings.Cut(v, "/"); ok {
+			return numComponent(num) && numComponent(total)
+		}
+	}
+	return validInt(v)
+}
+
+// numComponent reports whether one side of a "number/total" value is acceptable.
+// An empty side ("3/" or "/2") is fine: ParseNumPair runs each side through Atoi
+// and ignores the error, so an empty side parses to 0 and the value round-trips -
+// only a non-empty, non-numeric side is malformed.
+func numComponent(s string) bool {
+	return strings.TrimSpace(s) == "" || validInt(s)
+}
+
+// validInt reports whether s, after trimming surrounding whitespace, parses as an
+// integer - the same parse [ParseNumPair] applies.
+func validInt(s string) bool {
+	_, err := strconv.Atoi(strings.TrimSpace(s))
+	return err == nil
+}
+
+// ValidPartialDate accepts the ISO-8601 reduced precisions YYYY, YYYY-MM, and
+// YYYY-MM-DD. It uses time.Parse so the calendar is checked properly - month
+// range, days per month, and leap years - rejecting e.g. 2021-02-31. The exact
+// length match enforces zero-padded canonical form (rejecting "2021-6-1"). It is
+// shared by the linter's malformed-date rule and the set-time malformed-value
+// note, so the two cannot disagree on what a valid date is.
+func ValidPartialDate(s string) bool {
+	for _, layout := range []string{"2006-01-02", "2006-01", "2006"} {
+		if len(s) == len(layout) {
+			if _, err := time.Parse(layout, s); err == nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ParseBool reads a canonical boolean tag value, accepting "1"/"true"/"yes"

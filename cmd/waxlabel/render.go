@@ -43,6 +43,12 @@ func renderDocument(w io.Writer, path string, doc *wl.Document, native bool) {
 func audioLine(p wl.Properties) string {
 	t := p.First()
 	var parts []string
+	// hasSubstantive tracks whether the line carries information worth showing. A
+	// bare codec name with no technical detail (the 10-byte empty.mp3 that shows
+	// "MPEG AUDIO" beside a [no-audio] warning) is degenerate and drops the line; a
+	// genuine decodable stream always reports a sample rate and duration, so this
+	// never hides a real stream.
+	hasSubstantive := false
 	switch {
 	case t.Codec != "":
 		// t.Codec is already the canonical name (CanonicalCodec, applied at parse); the
@@ -51,14 +57,20 @@ func audioLine(p wl.Properties) string {
 	case p.Container != "":
 		// No codec was identified (e.g. an unrecognized Matroska/MP4 track): name the
 		// container and say so, rather than printing the container as if it were the
-		// codec (a bare "MATROSKA").
+		// codec (a bare "MATROSKA"). This "codec unknown" form is itself an
+		// informative signal (the container parsed; the codec did not resolve), so
+		// keep the line even when no technical properties accompany it - unlike a bare
+		// codec name, which would just be noise.
 		parts = append(parts, fmt.Sprintf("%s (codec unknown)", p.Container))
+		hasSubstantive = true
 	}
 	if t.SampleRate > 0 {
 		parts = append(parts, fmt.Sprintf("%d Hz", t.SampleRate))
+		hasSubstantive = true
 	}
 	if t.Channels > 0 {
 		parts = append(parts, fmt.Sprintf("%d ch", t.Channels))
+		hasSubstantive = true
 	}
 	// Bit depth describes the stored samples only for codecs that have a fixed sample
 	// width; a lossy codec decodes to PCM at an arbitrary depth, so a stored "16-bit"
@@ -66,14 +78,20 @@ func audioLine(p wl.Properties) string {
 	// codec carries a real depth.
 	if t.BitsPerSample > 0 && bitDepthMeaningful(t.Codec) {
 		parts = append(parts, fmt.Sprintf("%d-bit", t.BitsPerSample))
+		hasSubstantive = true
 	}
 	if d := p.Duration(); d > 0 {
 		parts = append(parts, humanDuration(d))
+		hasSubstantive = true
 	}
 	// Round to kbps; a sub-1-kbps average (a truncated file's collapsed bitrate)
 	// would print as a misleading "0 kbps", so it is omitted instead.
 	if t.Bitrate >= 1000 {
 		parts = append(parts, fmt.Sprintf("%d kbps", t.Bitrate/1000))
+		hasSubstantive = true
+	}
+	if !hasSubstantive {
+		return ""
 	}
 	return strings.Join(parts, ", ")
 }
@@ -109,7 +127,15 @@ func renderTags(w io.Writer, ts tag.TagSet) {
 		fmt.Fprintln(w, "  tags:    (none)")
 		return
 	}
-	fmt.Fprintf(w, "  tags (%d):\n", ts.Len())
+	// "key"/"keys" makes explicit that the count is of distinct keys, not values:
+	// the layout prints one value per line (the key repeated for a multi-valued
+	// field), matching the JSON shape (keyed by distinct key, values under "values").
+	n := ts.Len()
+	keyWord := "keys"
+	if n == 1 {
+		keyWord = "key"
+	}
+	fmt.Fprintf(w, "  tags (%d %s):\n", n, keyWord)
 	width := 0
 	for _, k := range ts.Keys() {
 		if n := len(k); n > width {
@@ -123,12 +149,15 @@ func renderTags(w io.Writer, ts tag.TagSet) {
 	// continuation lines of a multi-line value (lyrics, comments) align there too.
 	valueCol := 4 + width + 2
 	for k, vals := range ts.All() {
+		// A key is validated printable ASCII, but sanitize defensively so a hostile
+		// key from a malformed file cannot inject control bytes into the line either.
+		ks := tag.SanitizeText(string(k))
 		if len(vals) == 0 {
-			fmt.Fprintf(w, "    %-*s  (present, no value)\n", width, k)
+			fmt.Fprintf(w, "    %-*s  (present, no value)\n", width, ks)
 			continue
 		}
 		for _, v := range vals {
-			fmt.Fprintf(w, "    %-*s  ", width, k)
+			fmt.Fprintf(w, "    %-*s  ", width, ks)
 			// A present-but-empty value is distinct from a key with no values at all
 			// ("(present, no value)" above); label it so it does not print as a blank.
 			if v == "" {
@@ -152,12 +181,27 @@ func writeWrapped(w io.Writer, col int, value string) {
 		lines = lines[:n-1]
 	}
 	for i, line := range lines {
-		line = strings.TrimSuffix(line, "\r")
+		// Trim a trailing CR (from a CRLF split) first, then escape any control
+		// bytes that survive - an embedded mid-line CR/ESC/BEL, the actual
+		// injection vector. Legitimate tabs and the line break (owned by the split
+		// above) are preserved.
+		line = tag.SanitizeText(strings.TrimSuffix(line, "\r"))
 		if i > 0 {
 			fmt.Fprint(w, indent)
 		}
 		fmt.Fprintln(w, line)
 	}
+}
+
+// sanitizeJoin escapes each value for human display (via [tag.SanitizeText]) and
+// joins them with sep, so a multi-value field built from untrusted file bytes
+// cannot inject control sequences into the joined line.
+func sanitizeJoin(vals []string, sep string) string {
+	out := make([]string, len(vals))
+	for i, v := range vals {
+		out[i] = tag.SanitizeText(v)
+	}
+	return strings.Join(out, sep)
 }
 
 // renderPictures prints one line per embedded picture.
@@ -171,7 +215,10 @@ func renderPictures(w io.Writer, pics []wl.Picture) {
 		if p.Width > 0 && p.Height > 0 {
 			dim = fmt.Sprintf("%dx%d", p.Width, p.Height)
 		}
-		fmt.Fprintf(w, "    %-12s %-22s %-9s %s\n", p.Type, p.MIME, dim, humanBytes(int64(len(p.Data))))
+		// p.Type is an enum (safe), p.MIME is file-derived text; sanitize both raw
+		// %s fields. p.Description is left alone: it prints via %q below, which
+		// already escapes control chars - sanitizing it too would double-escape.
+		fmt.Fprintf(w, "    %-12s %-22s %-9s %s\n", tag.SanitizeText(p.Type.String()), tag.SanitizeText(p.MIME), dim, wl.HumanBytes(int64(len(p.Data))))
 		if p.Description != "" {
 			fmt.Fprintf(w, "      %q\n", p.Description)
 		}
@@ -185,7 +232,7 @@ func renderChapters(w io.Writer, chs []wl.Chapter) {
 	}
 	fmt.Fprintf(w, "  chapters (%d):\n", len(chs))
 	for i, c := range chs {
-		title := c.Title
+		title := tag.SanitizeText(c.Title)
 		if title == "" {
 			title = fmt.Sprintf("Chapter %d", i+1)
 		}
@@ -216,7 +263,8 @@ func renderWarnings(w io.Writer, ws []wl.Warning) {
 	}
 	fmt.Fprintf(w, "  warnings (%d):\n", len(ws))
 	for _, x := range ws {
-		fmt.Fprintf(w, "    %s\n", x)
+		// A warning message can embed a file-derived snippet, so escape it for display.
+		fmt.Fprintf(w, "    %s\n", tag.SanitizeText(x.String()))
 	}
 }
 
@@ -230,7 +278,7 @@ func renderNative(w io.Writer, doc *wl.Document) {
 				if e.Note != "" {
 					note = "  - " + e.Note
 				}
-				fmt.Fprintf(w, "    %-18s %8s%s\n", e.Kind, humanBytes(int64(e.Size)), note)
+				fmt.Fprintf(w, "    %-18s %8s%s\n", e.Kind, wl.HumanBytes(int64(e.Size)), note)
 			}
 		}
 	}
@@ -241,7 +289,8 @@ func renderNative(w io.Writer, doc *wl.Document) {
 			if !f.Selected {
 				flag = "  (conflict)"
 			}
-			fmt.Fprintf(w, "    %-20s %-8s %s%s\n", f.Key, f.Family, strings.Join(f.Values, ", "), flag)
+			// f.Family is an enum (safe); f.Key and f.Values are file-derived, so escape them.
+			fmt.Fprintf(w, "    %-20s %-8s %s%s\n", tag.SanitizeText(string(f.Key)), f.Family, sanitizeJoin(f.Values, ", "), flag)
 		}
 	}
 }
@@ -263,12 +312,17 @@ func renderReport(w io.Writer, path string, plan *wl.Plan) {
 	for _, op := range r.Operations {
 		fmt.Fprintf(w, "  - %s\n", op)
 	}
-	fmt.Fprintf(w, "  size:    %s -> %s\n", humanBytes(r.BytesBefore), humanBytes(r.BytesAfter))
+	fmt.Fprintf(w, "  size:    %s -> %s\n", wl.HumanBytes(r.BytesBefore), wl.HumanBytes(r.BytesAfter))
 	if r.PaddingAfter > 0 {
-		fmt.Fprintf(w, "  padding: %s\n", humanBytes(r.PaddingAfter))
+		// Surface the control alongside the value so the padding is discoverable
+		// (the default is the deliberate 8 KiB FLAC-ecosystem convention).
+		fmt.Fprintf(w, "  padding: %s  (--padding N / --no-padding to change)\n", wl.HumanBytes(r.PaddingAfter))
 	}
 	for _, x := range r.Warnings {
-		fmt.Fprintf(w, "  warning: %s\n", x)
+		// Plan-time warnings are library-generated today, but sanitize for parity with
+		// the dump path (renderWarnings) and to stay safe if a future plan warning
+		// ever embeds a file-derived snippet (e.g. a chapter title).
+		fmt.Fprintf(w, "  warning: %s\n", tag.SanitizeText(x.String()))
 	}
 }
 
