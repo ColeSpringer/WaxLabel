@@ -6,7 +6,8 @@ cover art), reimplemented from public specifications.
 > **Status: v0.x.** The core model with FLAC, Ogg Vorbis/Opus, MP3, WAV, MP4/M4A,
 > AAC, AIFF, and Matroska/WebM read/write are implemented and tested. Other
 > formats are in progress; codecs stay internal until v1.0, when validated ones
-> are promoted to public `waxlabel/<fmt>` packages.
+> are promoted to public `waxlabel/<fmt>` packages. See
+> [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 WaxLabel is preservation-first: it treats the file's native metadata as the
 base and rewrites only the fields you actually change, copying the audio
@@ -57,7 +58,9 @@ A `waxlabel` CLI lives in `cmd/waxlabel` and dogfoods the library:
 go run ./cmd/waxlabel dump track.flac                    # tags, properties, pictures, warnings
 go run ./cmd/waxlabel plan track.flac --set TITLE=New    # preview a write (writes nothing)
 go run ./cmd/waxlabel set  track.flac --set TITLE=New --add ARTIST=Featured --clear ENCODER
+go run ./cmd/waxlabel lint track.flac                    # report metadata issues (--fix the safe ones)
 go run ./cmd/waxlabel verify track.flac                  # audio-essence identity for dedup
+go run ./cmd/waxlabel caps  --format flac                # what a format can store and edit
 go run ./cmd/waxlabel copy  track.flac track.m4a         # copy metadata across formats
 go run ./cmd/waxlabel diff  a.flac b.flac                # compare canonical metadata
 ```
@@ -66,12 +69,23 @@ Install the binary with `go install github.com/colespringer/waxlabel/cmd/waxlabe
 
 - **`dump <file>...`** - tags, audio properties, pictures, and warnings. `--native`
   adds the native blocks and the per-source (family) view.
-- **`plan <file>`** - resolve edits into a write plan and print exactly what `set`
-  would do, without touching the file (the report and the write share state).
-- **`set <file>`** - apply edits and save: atomic in-place by default, `-o` writes a
-  new file, a no-op writes nothing. `--verify` checks the written audio essence.
+- **`plan <file>...`** - resolve edits into a write plan and print exactly what `set`
+  would do (including a field-level change preview), without touching the file (the
+  report and the write share state).
+- **`set <file>...`** - apply edits and save: atomic in-place by default, `-o` writes a
+  new file (single input only), a no-op writes nothing. `--verify` checks the written
+  audio essence. `--strip-encoder` clears the transcoder stamp; `--recursive` walks
+  directory arguments.
+- **`lint <file>...`** - report metadata issues (stale legacy tags, encoder noise,
+  conflicting families, bad pictures, malformed dates, missing audio). `--fix`
+  applies only the safe, non-destructive remediations and saves; pictures are never
+  dropped automatically.
 - **`verify <file>...`** - the tag-independent audio-essence digest; `--whole-file`
   adds the whole-file digest.
+- **`caps <file>... | --format <name>`** - what a format can store and edit: per
+  known key the read/write level, native representation, fidelity, and cardinality
+  (single- vs multi-valued), plus picture/chapter limits. `--all` includes
+  read-only keys.
 - **`copy <source> <dest>`** - copy `source`'s canonical metadata onto `dest`
   (across formats), rewriting `dest` in place. Each value is carried, downgraded,
   or dropped per `dest`'s capabilities; that loss report prints first. The copy
@@ -80,16 +94,24 @@ Install the binary with `go install github.com/colespringer/waxlabel/cmd/waxlabe
   keys, picture/chapter deltas). `--quiet` reports through the exit code only.
 
 Edits: `--set KEY=VALUE` (replace), `--add KEY=VALUE` (append, for multi-value),
-`--clear KEY` (remove), `--add-cover FILE`, `--remove-pictures`. Write policy:
-`--preset preserve|compatible|canonical|minimal`, `--legacy ...`. Every command
-accepts `--json` for scriptable output.
+`--clear KEY` (remove), `--strip-encoder`, `--add-cover FILE` (`--force` to embed a
+file whose header is not a recognized image), `--remove-pictures`. Write policy:
+`--preset preserve|compatible|canonical|minimal`, `--legacy ...`. The read commands
+(`dump`, `verify`, `lint`, and a `diff` operand) accept a single `-` to read
+standard input. Every command accepts `--json` for scriptable output.
 
-Exit codes for `dump`/`plan`/`set`/`verify`/`copy`: `0` success; `1` error; `2`
-usage/invalid key; `3` unsupported format; `4` invalid data; `5` source
-changed; `6` I/O; `130` canceled/timeout. **`diff` follows the diff(1)
-convention instead:** `0` identical; `1` differs; `>=2` error (using the same
-`2`-`6` classes). (cobra's built-in `help` and `completion` follow cobra's own
-conventions.)
+`ENCODER` is the canonical key for the encoding software/tool (the transcoder
+stamp, e.g. ID3 `TSSE` or MP4 `©too`), distinct from `ENCODEDBY` (the encoding
+person). A single `--clear ENCODER` or `--strip-encoder` reaches the stamp on
+every format.
+
+Exit codes for `dump`/`plan`/`set`/`verify`/`caps`/`copy`: `0` success; `1` error;
+`2` usage/invalid key; `3` unsupported format; `4` invalid data; `5` source
+changed; `6` I/O; `130` canceled/timeout. **`lint` and `diff` follow the
+linter / diff(1) convention instead:** `0` clean/identical; `1` issues found /
+differs; `>=2` a structural error (using the same `2`-`6` classes, which outranks
+a `1` in a multi-file run). (cobra's built-in `help` and `completion` follow
+cobra's own conventions.)
 
 > The **library** has no third-party dependencies. The CLI (package `main` under
 > `cmd/`) uses `spf13/cobra`; thanks to Go module-graph pruning, code that imports
@@ -105,8 +127,11 @@ A small set of contracts is stable:
 - **Presence-aware `tag.TagSet`/`tag.TagPatch` are authoritative**, so *absent*,
   *present-but-empty*, and *present-with-values* are all distinguishable. The
   typed `tag.Tags` struct is a convenience projection.
-- **Public, writable canonical key vocabulary** (`tag.Key`). Unknown canonical
-  keys pass through unchanged.
+- **Public, writable canonical key vocabulary** (`tag.Key`); `tag.KnownKeys()`
+  enumerates it. Unknown canonical keys pass through unchanged. Keys are
+  Vorbis-permissive (normalized to uppercase; spaces and punctuation are allowed),
+  so a key naming characters ID3/MP4 cannot represent may not round-trip to those
+  formats.
 - **Preservation-first.** The native document is the base; an edit rewrites only
   the affected field. Legacy containers (stray ID3, APE) are preserved and
   warned by default, never stripped silently.
@@ -147,9 +172,23 @@ Three levels answer different questions:
 
 ## Lint
 
-`Document.Lint()` reports issues a tagger would want to surface or fix: stale
-legacy tags, inherited encoder noise, conflicting families, duplicate or invalid
-pictures, and malformed dates.
+`Document.Lint()` (CLI: `waxlabel lint`) reports issues a tagger would want to
+surface or fix: stale legacy tags, inherited encoder noise, conflicting families,
+duplicate or invalid pictures, malformed dates, and missing audio (a tag-only or
+truncated file). `lint --fix` applies only the safe, non-destructive remediations
+(clearing the encoder stamp, stripping legacy containers) and saves, then
+re-lints the saved file so what it reports as "fixed" or still "not auto-fixed" is
+the truth on disk, not the fixer's intent. Pictures are never dropped
+automatically.
+
+## Discovering editable metadata
+
+`tag.KnownKeys()` enumerates the canonical vocabulary, and each `tag.Key` reports
+its `Description()` and `Multivalued()` cardinality. `waxlabel.CapabilitiesFor(format)`
+answers what a format can store and edit with no file in hand (the file-aware
+`Document.Capabilities()` answers it for a parsed file); both feed the
+`waxlabel caps` command. Together they let a UI render an edit form, or a script
+discover fields, without hard-coding the key list.
 
 ## Safety
 
@@ -157,6 +196,17 @@ All input is treated as untrusted: allocations and recursion are bounded
 (`waxerr.ErrSizeTooLarge`, `waxerr.ErrTooDeep`) and the parser never panics
 (verified by `FuzzParse`). Saves are durable (temp -> fsync -> rename -> dir
 fsync) and detect a file that changed since parse (`waxerr.ErrSourceChanged`).
+
+The atomic save writes a temp file in the target's directory and renames it into
+place. Three consequences worth knowing:
+
+- **Symlinks are followed.** Editing through a symlink resolves and rewrites the
+  *target*, leaving the link itself in place - it is not replaced by a regular file.
+- **Hard links are broken.** The rename swaps the directory entry, so any other
+  hard link to the original inode keeps the pre-edit contents. This is inherent to
+  atomic-rename saves.
+- **Read-only files are still rewritten** when their directory is writable (the
+  replacement is a fresh file), and the original file's mode is preserved onto it.
 
 ## License
 

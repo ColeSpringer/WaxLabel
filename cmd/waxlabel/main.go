@@ -13,7 +13,9 @@
 //	dump     show a file's tags, properties, pictures, and warnings
 //	plan     show what an edit would write, without writing it
 //	set      apply tag edits and save the file
+//	lint     report metadata issues (and optionally fix the safe ones)
 //	verify   compute audio-essence (and optionally whole-file) identity
+//	caps     show which metadata a format can edit, and how
 //	copy     copy metadata from one file onto another (cross-format)
 //	diff     compare two files' canonical metadata
 //

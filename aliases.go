@@ -234,3 +234,20 @@ func Formats() []Format {
 	}
 	return out
 }
+
+// CapabilitiesFor reports what format f can do under the given write options,
+// without a parsed file. It is the file-less, format-level query an edit form for
+// a not-yet-created file of format f needs - the counterpart to
+// [Document.Capabilities], which answers the same question for a file already in
+// hand. Both route through the same codec call, so the file-aware and file-less
+// reports cannot drift. An unknown or unimplemented format reports read-only
+// (mirroring Document.Capabilities's no-codec fallback); pair it with the
+// per-key [tag.Key.Multivalued] and the [Capabilities.Field] detail to enumerate
+// what is editable.
+func CapabilitiesFor(f Format, opts ...WriteOption) Capabilities {
+	codec, ok := core.ForFormat(f)
+	if !ok {
+		return Capabilities{Format: f, ReadOnly: true}
+	}
+	return codec.Capabilities(nil, resolveWriteOptions(opts))
+}

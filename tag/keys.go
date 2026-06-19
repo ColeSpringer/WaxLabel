@@ -6,6 +6,7 @@ package tag
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/colespringer/waxlabel/waxerr"
@@ -86,7 +87,28 @@ func (k Key) Known() bool {
 // custom field.
 func (k Key) Description() string { return vocabulary[k] }
 
+// Multivalued reports whether key canonically holds an ordered list of values
+// (multiple artists, composers, genres, performers, or per-artist MusicBrainz
+// IDs) rather than a single one. A consumer rendering an edit form uses it to
+// choose between one input and a repeatable list. The set mirrors the
+// list-valued ([]string) fields of the typed [Tags] projection, so the
+// structured signal and the typed sugar agree on which fields are plural. It is
+// the key's inherent cardinality; a custom (unknown) key is single-valued, and a
+// format that restricts a field further reports that through its capability's
+// MaxValues, not here.
+func (k Key) Multivalued() bool { return multivalued[k] }
+
 func (k Key) String() string { return string(k) }
+
+// KnownKeys returns the published canonical vocabulary in a stable, sorted order.
+// It is the programmatic counterpart to the exported Key constants: a consumer
+// can enumerate every editable field - pairing each with [Key.Description] and
+// [Key.Multivalued] - instead of hard-coding the constant list. The order is
+// deterministic so output and golden tests do not churn. The result is a fresh
+// copy the caller may sort, filter, or append to freely.
+func KnownKeys() []Key {
+	return slices.Clone(sortedKnownKeys)
+}
 
 // The canonical vocabulary. Names follow the de-facto Vorbis/Picard
 // conventions (uppercase, underscore-separated) because FLAC is the first
@@ -252,3 +274,29 @@ var vocabulary = map[Key]string{
 	LongDescription:     "long description",
 	Narrator:            "audiobook narrator",
 }
+
+// multivalued is the set of canonical keys that hold a list of distinct values
+// rather than a single one. It is kept in lockstep with the list-valued fields of
+// the typed [Tags] projection (Artists, Composers, Genres, Performers, and the
+// per-artist MusicBrainz IDs), the cardinality decision the library already
+// commits to; [Key.Multivalued] reads it. Keys absent here are single-valued.
+var multivalued = map[Key]bool{
+	Artist:          true,
+	Composer:        true,
+	Genre:           true,
+	Performer:       true,
+	MBArtistID:      true,
+	MBAlbumArtistID: true,
+}
+
+// sortedKnownKeys is the vocabulary in sorted order, computed once at package
+// init (the vocabulary is static), so [KnownKeys] re-sorts nothing per call - it
+// just clones this. Kept beside the vocabulary it derives from.
+var sortedKnownKeys = func() []Key {
+	keys := make([]Key, 0, len(vocabulary))
+	for k := range vocabulary {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
+}()

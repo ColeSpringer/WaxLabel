@@ -33,13 +33,23 @@ type Capability struct {
 	Write          AccessLevel
 	Representation string   // how the value is stored natively
 	Fidelity       string   // e.g. "lossless", "year-only"
-	Constraints    []string // e.g. "single value", "ASCII only"
+	Constraints    []string // e.g. "ASCII only", "fixed vocabulary"
 	// MaxItems caps a set-valued dimension (pictures, chapters): the most the
 	// format can store, or 0 for no limit. It makes a hard structural limit (e.g.
 	// MP4's 255-chapter Nero chpl cap) machine-checkable, so a transfer can report
 	// an over-limit set as dropped instead of advertising it carried and then
 	// failing at write time.
 	MaxItems int
+	// MaxValues caps how many values one field may hold under this format: 0 for
+	// no format-level limit (the field's cardinality is then the key's own, via
+	// [tag.Key.Multivalued]), or 1 for a format that forces a single value even on
+	// an inherently multi-valued key. It is a cardinality hint for discovery
+	// (enumerating editable fields; the caps command), set only by the rare format
+	// that restricts a key's natural cardinality; the common case leaves it 0.
+	// Unlike MaxItems, it is deliberately not consulted by the transfer report: a
+	// multi-value downgrade a destination actually performs is expressed through
+	// Fidelity/Constraints, which the destination's writer honors (see dispose).
+	MaxValues int
 }
 
 // Capabilities describes what a format (under a given set of options) can do.

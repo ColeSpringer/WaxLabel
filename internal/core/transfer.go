@@ -139,6 +139,16 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 // everything; a set that exceeds the capability's hard MaxItems is dropped (the
 // destination would reject the whole set at write time, so reporting it carried
 // would be a lie); otherwise the write level decides.
+//
+// Note: this does not consult Capability.MaxValues. dispose is the predictive half
+// of the report==write invariant, and the apply path (PrepareTransfer) only skips
+// Dropped items - a Lossy field is still written with all its values, the loss
+// realized by the destination codec's writer. No codec truncates values to
+// MaxValues at write time, so reporting a MaxValues truncation here would promise a
+// write that never happens. A format that genuinely reduces a multi-value field
+// expresses that through its Fidelity/Constraints (which its writer honors, e.g.
+// WAV's single-valued INFO); MaxValues is a cardinality hint for discovery (caps),
+// not a transfer-fidelity signal.
 func dispose(c Capability, readOnly bool, count int) (Disposition, string) {
 	if readOnly {
 		return Dropped, "destination is read-only"

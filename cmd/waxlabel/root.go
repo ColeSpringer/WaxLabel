@@ -32,6 +32,7 @@ func newRootCmd() *cobra.Command {
 		newCopyCmd(),
 		newDiffCmd(),
 		newLintCmd(),
+		newCapsCmd(),
 	)
 	wrapUsageErrors(root)
 	return root
