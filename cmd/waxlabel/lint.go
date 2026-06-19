@@ -102,7 +102,7 @@ func lintLoop[T any](
 		}
 	}
 	if asJSON {
-		if err := emitJSONList(out, paths, items); err != nil {
+		if err := emitJSONList(out, items); err != nil {
 			return err
 		}
 	}

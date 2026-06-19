@@ -65,6 +65,30 @@ func tagValues(jd jsonDocument, key string) []string {
 	return nil
 }
 
+// decodeJSONList unmarshals a list command's --json output into a slice. Since
+// schemaVersion 3 the list commands (dump/verify/lint/set/plan, and caps over
+// files) always emit a JSON array, so this is the single decode path for their
+// output; callers assert the element count they expect.
+func decodeJSONList[T any](t *testing.T, data string) []T {
+	t.Helper()
+	var arr []T
+	if err := json.Unmarshal([]byte(data), &arr); err != nil {
+		t.Fatalf("expected a JSON array: %v\n%s", err, data)
+	}
+	return arr
+}
+
+// decodeJSONOne is decodeJSONList for the single-path case: it asserts exactly one
+// element and returns it.
+func decodeJSONOne[T any](t *testing.T, data string) T {
+	t.Helper()
+	arr := decodeJSONList[T](t, data)
+	if len(arr) != 1 {
+		t.Fatalf("array len = %d, want 1\n%s", len(arr), data)
+	}
+	return arr[0]
+}
+
 func TestDumpText(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "dump", sampleFLAC)
@@ -102,10 +126,7 @@ func TestDumpChapters(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("json dump exit = %d, want 0", code)
 	}
-	var jd jsonDocument
-	if err := json.Unmarshal([]byte(jout), &jd); err != nil {
-		t.Fatalf("invalid JSON: %v\n%s", err, jout)
-	}
+	jd := decodeJSONOne[jsonDocument](t, jout)
 	if len(jd.Chapters) != 3 {
 		t.Fatalf("json chapters = %d, want 3", len(jd.Chapters))
 	}
@@ -120,10 +141,7 @@ func TestDumpJSON(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
 	}
-	var jd jsonDocument
-	if err := json.Unmarshal([]byte(out), &jd); err != nil {
-		t.Fatalf("invalid JSON: %v\n%s", err, out)
-	}
+	jd := decodeJSONOne[jsonDocument](t, out)
 	if jd.Format != "FLAC" {
 		t.Errorf("format = %q, want FLAC", jd.Format)
 	}
@@ -204,10 +222,7 @@ func TestSetRoundTrip(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("dump exit = %d, want 0", code)
 	}
-	var jd jsonDocument
-	if err := json.Unmarshal([]byte(out), &jd); err != nil {
-		t.Fatalf("invalid JSON: %v\n%s", err, out)
-	}
+	jd := decodeJSONOne[jsonDocument](t, out)
 	if got := tagValues(jd, "TITLE"); len(got) != 1 || got[0] != "Brand New" {
 		t.Errorf("TITLE = %v, want [Brand New]", got)
 	}
@@ -261,10 +276,7 @@ func TestSetSaveAsLeavesOriginal(t *testing.T) {
 	}
 
 	out, _, _ := runCLI(t, "--json", "dump", dst)
-	var jd jsonDocument
-	if err := json.Unmarshal([]byte(out), &jd); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
+	jd := decodeJSONOne[jsonDocument](t, out)
 	if got := tagValues(jd, "ALBUM"); len(got) != 1 || got[0] != "Compilation" {
 		t.Errorf("ALBUM = %v, want [Compilation]", got)
 	}
@@ -302,10 +314,7 @@ func TestSetThroughSymlinkUpdatesTarget(t *testing.T) {
 	}
 	// The edit landed on the target the link points at.
 	out, _, _ := runCLI(t, "--json", "dump", real)
-	var jd jsonDocument
-	if err := json.Unmarshal([]byte(out), &jd); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
+	jd := decodeJSONOne[jsonDocument](t, out)
 	if got := tagValues(jd, "TITLE"); len(got) != 1 || got[0] != "Linked" {
 		t.Errorf("target TITLE = %v, want [Linked]", got)
 	}
@@ -318,10 +327,7 @@ func TestVerifyEssenceStableAcrossTagEdit(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("verify exit = %d", code)
 	}
-	var v1 jsonVerify
-	if err := json.Unmarshal([]byte(out1), &v1); err != nil {
-		t.Fatalf("invalid JSON: %v\n%s", err, out1)
-	}
+	v1 := decodeJSONOne[jsonVerify](t, out1)
 	if !strings.HasPrefix(v1.Essence, "sha256/flac-frames-v1:") {
 		t.Errorf("essence = %q", v1.Essence)
 	}
@@ -331,10 +337,7 @@ func TestVerifyEssenceStableAcrossTagEdit(t *testing.T) {
 		t.Fatalf("set exit = %d", code)
 	}
 	out2, _, _ := runCLI(t, "--json", "verify", file)
-	var v2 jsonVerify
-	if err := json.Unmarshal([]byte(out2), &v2); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
+	v2 := decodeJSONOne[jsonVerify](t, out2)
 	if v1.Essence != v2.Essence {
 		t.Errorf("essence changed after tag edit:\n before %s\n after  %s", v1.Essence, v2.Essence)
 	}
@@ -569,10 +572,7 @@ func TestAddCoverRejectsNonImage(t *testing.T) {
 		t.Fatalf("--force exit = %d, want 0", code)
 	}
 	out, _, _ := runCLI(t, "--json", "dump", file)
-	var jd jsonDocument
-	if err := json.Unmarshal([]byte(out), &jd); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
+	jd := decodeJSONOne[jsonDocument](t, out)
 	if len(jd.Pictures) != 1 || jd.Pictures[0].MIME != "application/octet-stream" {
 		t.Fatalf("pictures = %+v, want one forced octet-stream cover", jd.Pictures)
 	}
@@ -596,10 +596,7 @@ func TestAddCoverAcceptsRecognizedImage(t *testing.T) {
 		t.Fatalf("exit = %d, want 0", code)
 	}
 	out, _, _ := runCLI(t, "--json", "dump", file)
-	var jd jsonDocument
-	if err := json.Unmarshal([]byte(out), &jd); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
+	jd := decodeJSONOne[jsonDocument](t, out)
 	if len(jd.Pictures) != 1 || jd.Pictures[0].MIME != "image/bmp" {
 		t.Fatalf("pictures = %+v, want one image/bmp cover", jd.Pictures)
 	}
@@ -653,10 +650,7 @@ func TestSetBulkInPlace(t *testing.T) {
 	}
 	for _, f := range []string{a, b} {
 		j, _, _ := runCLI(t, "--json", "dump", f)
-		var jd jsonDocument
-		if err := json.Unmarshal([]byte(j), &jd); err != nil {
-			t.Fatalf("invalid JSON: %v", err)
-		}
+		jd := decodeJSONOne[jsonDocument](t, j)
 		if got := tagValues(jd, "TITLE"); len(got) != 1 || got[0] != "Bulk" {
 			t.Errorf("%s TITLE = %v, want [Bulk]", f, got)
 		}
@@ -709,10 +703,7 @@ func TestSetBulkContinuesPastFailure(t *testing.T) {
 		t.Errorf("summary should report one success and one failure:\n%s", out)
 	}
 	j, _, _ := runCLI(t, "--json", "dump", good)
-	var jd jsonDocument
-	if err := json.Unmarshal([]byte(j), &jd); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
+	jd := decodeJSONOne[jsonDocument](t, j)
 	if got := tagValues(jd, "TITLE"); len(got) != 1 || got[0] != "Bulk" {
 		t.Errorf("the good file should still be edited: TITLE = %v", got)
 	}
@@ -742,10 +733,7 @@ func TestPlanBulkJSONArray(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
 	}
-	var arr []jsonReport
-	if err := json.Unmarshal([]byte(out), &arr); err != nil {
-		t.Fatalf("multi-file plan should be a JSON array: %v\n%s", err, out)
-	}
+	arr := decodeJSONList[jsonReport](t, out)
 	if len(arr) != 2 {
 		t.Fatalf("got %d plan reports, want 2", len(arr))
 	}
@@ -847,8 +835,8 @@ func TestSetStdinRequiresOutput(t *testing.T) {
 }
 
 // TestSetJSONErrorIsPerFileObject pins set's single-file --json failure shape: a
-// per-file result object carrying file + error (consistent with dump/verify/lint),
-// not the bare terminal {schemaVersion,error} envelope.
+// one-element array whose entry carries file + error (consistent with
+// dump/verify/lint), not the bare terminal {schemaVersion,error} envelope.
 func TestSetJSONErrorIsPerFileObject(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "nope.flac")
@@ -856,10 +844,7 @@ func TestSetJSONErrorIsPerFileObject(t *testing.T) {
 	if code != 6 {
 		t.Fatalf("exit = %d, want 6", code)
 	}
-	var res jsonSetResult
-	if err := json.Unmarshal([]byte(out), &res); err != nil {
-		t.Fatalf("expected a per-file result object: %v\n%s", err, out)
-	}
+	res := decodeJSONOne[jsonSetResult](t, out)
 	if res.File != missing {
 		t.Errorf("file = %q, want %q", res.File, missing)
 	}
@@ -920,10 +905,7 @@ func TestSetStdinToOutput(t *testing.T) {
 		t.Fatalf("exit = %d, want 0", code)
 	}
 	j, _, _ := runCLI(t, "--json", "dump", dst)
-	var jd jsonDocument
-	if err := json.Unmarshal([]byte(j), &jd); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
+	jd := decodeJSONOne[jsonDocument](t, j)
 	if got := tagValues(jd, "TITLE"); len(got) != 1 || got[0] != "FromStdin" {
 		t.Errorf("TITLE = %v, want [FromStdin]", got)
 	}
@@ -994,21 +976,24 @@ func TestExitCodes(t *testing.T) {
 	}
 }
 
-// TestJSONErrorEnvelope checks that a command-level failure under --json is a
-// single well-formed envelope on stdout with the classified code.
-func TestJSONErrorEnvelope(t *testing.T) {
+// TestPlanJSONErrorIsPerFileObject pins plan's single-file --json failure shape:
+// like set, a one-element array whose entry carries the classified per-file error
+// (plan is a per-file command), not the bare terminal {schemaVersion,error}
+// envelope - that envelope is reserved for command-resolution failures, covered by
+// TestJSONErrorRoutingOnEarlyAbort.
+func TestPlanJSONErrorIsPerFileObject(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "nope.flac")
 	out, _, code := runCLI(t, "--json", "plan", missing)
 	if code != 6 {
 		t.Fatalf("exit = %d, want 6", code)
 	}
-	var je jsonError
-	if err := json.Unmarshal([]byte(out), &je); err != nil {
-		t.Fatalf("invalid JSON envelope: %v\n%s", err, out)
+	jr := decodeJSONOne[jsonReport](t, out)
+	if jr.File != missing {
+		t.Errorf("file = %q, want %q", jr.File, missing)
 	}
-	if je.Error.Code != "not-found" {
-		t.Errorf("error code = %q, want not-found", je.Error.Code)
+	if jr.Error == nil || jr.Error.Code != "not-found" {
+		t.Errorf("error = %+v, want code not-found", jr.Error)
 	}
 }
 
@@ -1021,10 +1006,7 @@ func TestDumpJSONPerFileError(t *testing.T) {
 	if code != 6 {
 		t.Fatalf("exit = %d, want 6 (a file failed)", code)
 	}
-	var docs []jsonDocument
-	if err := json.Unmarshal([]byte(out), &docs); err != nil {
-		t.Fatalf("invalid JSON array: %v\n%s", err, out)
-	}
+	docs := decodeJSONList[jsonDocument](t, out)
 	if len(docs) != 2 {
 		t.Fatalf("got %d docs, want 2", len(docs))
 	}

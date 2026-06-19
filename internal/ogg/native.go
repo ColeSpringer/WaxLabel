@@ -28,11 +28,17 @@ const (
 	kindOpus
 )
 
+// String is the codec name surfaced in the raw model and JSON properties.codec.
+// Titlecasing ("Opus"/"Vorbis") matches the Matroska reader, so Opus and Vorbis
+// read identically across the Ogg and Matroska containers. (Other codecs are not
+// normalized - FLAC is "flac" here but "FLAC" from Matroska - which is invisible
+// in the uppercased text dump and left as-is.) The dump uppercases independently,
+// so this affects only the raw/JSON view, not display.
 func (k kind) String() string {
 	if k == kindOpus {
-		return "opus"
+		return "Opus"
 	}
-	return "vorbis"
+	return "Vorbis"
 }
 
 // apage is an audio page descriptor: enough to copy the page verbatim and, when

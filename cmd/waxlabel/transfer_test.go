@@ -81,11 +81,7 @@ func dumpJSON(t *testing.T, path string) jsonDocument {
 	if code != 0 {
 		t.Fatalf("dump %s exit = %d", path, code)
 	}
-	var jd jsonDocument
-	if err := json.Unmarshal([]byte(out), &jd); err != nil {
-		t.Fatalf("dump JSON for %s: %v", path, err)
-	}
-	return jd
+	return decodeJSONOne[jsonDocument](t, out)
 }
 
 // TestCopyReportMatchesResult covers the representative format pairs the plan

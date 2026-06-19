@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -28,17 +27,14 @@ func TestLintReportsFindings(t *testing.T) {
 	}
 }
 
-// TestLintJSON: the machine-readable shape carries schemaVersion 2 and findings.
+// TestLintJSON: the machine-readable shape carries schemaVersion 3 and findings.
 func TestLintJSON(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "--json", "lint", sampleFLAC)
 	if code != 1 {
 		t.Fatalf("lint --json exit = %d, want 1", code)
 	}
-	var jl jsonLint
-	if err := json.Unmarshal([]byte(out), &jl); err != nil {
-		t.Fatalf("unmarshal: %v\n%s", err, out)
-	}
+	jl := decodeJSONOne[jsonLint](t, out)
 	if jl.SchemaVersion != schemaVersion {
 		t.Errorf("schemaVersion = %d, want %d", jl.SchemaVersion, schemaVersion)
 	}
@@ -101,10 +97,7 @@ func TestSetStripEncoder(t *testing.T) {
 		t.Fatalf("set --strip-encoder exit = %d, want 0", code)
 	}
 	out, _, _ := runCLI(t, "--json", "dump", file)
-	var jd jsonDocument
-	if err := json.Unmarshal([]byte(out), &jd); err != nil {
-		t.Fatalf("unmarshal dump: %v", err)
-	}
+	jd := decodeJSONOne[jsonDocument](t, out)
 	if vals := tagValues(jd, "ENCODER"); vals != nil {
 		t.Errorf("ENCODER survived --strip-encoder: %v", vals)
 	}
@@ -125,10 +118,7 @@ func TestPlanChangesPreview(t *testing.T) {
 	}
 
 	jout, _, _ := runCLI(t, "--json", "plan", sampleFLAC, "--set", "TITLE=New", "--clear", "ENCODER")
-	var jr jsonReport
-	if err := json.Unmarshal([]byte(jout), &jr); err != nil {
-		t.Fatalf("unmarshal plan: %v", err)
-	}
+	jr := decodeJSONOne[jsonReport](t, jout)
 	if len(jr.Changes) != 2 {
 		t.Fatalf("plan JSON changes = %v, want 2", jr.Changes)
 	}
@@ -159,10 +149,7 @@ func TestVerifyEmptyMP3Exit4(t *testing.T) {
 func TestDumpJSONSchemaVersion(t *testing.T) {
 	t.Parallel()
 	out, _, _ := runCLI(t, "--json", "dump", sampleFLAC)
-	var jd jsonDocument
-	if err := json.Unmarshal([]byte(out), &jd); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	jd := decodeJSONOne[jsonDocument](t, out)
 	if jd.SchemaVersion != schemaVersion {
 		t.Errorf("dump schemaVersion = %d, want %d", jd.SchemaVersion, schemaVersion)
 	}

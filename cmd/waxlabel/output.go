@@ -15,10 +15,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// schemaVersion tags JSON output so scripts can detect shape changes. v2 grows
-// the shape: per-file objects (dump/verify/lint) now carry schemaVersion, and a
-// write plan carries a field-level "changes" list.
-const schemaVersion = 2
+// schemaVersion tags JSON output so scripts can detect shape changes. v3 makes
+// the list commands (dump/verify/lint/set/plan, and caps over files) always emit
+// a JSON array - even for a single path - so a consumer can iterate the output
+// uniformly; diff and copy stay single objects. (v2 added per-file schemaVersion
+// and the write plan's field-level "changes" list.)
+const schemaVersion = 3
 
 // writeJSON writes v as indented JSON followed by a newline.
 func writeJSON(w io.Writer, v any) error {
@@ -111,8 +113,8 @@ func humanDuration(d time.Duration) string {
 // perFile runs a per-path command (dump, verify): it processes each path
 // independently, captures the first error for the exit code, routes per-file
 // errors to stderr (text) or into the JSON result, separates text records with a
-// blank line only between records actually written, and emits one JSON value (an
-// object for a single path, an array for several). The returned error is
+// blank line only between records actually written, and emits the per-file
+// results as a JSON array (always, even for a single path). The returned error is
 // alreadyRendered, so dispatch keeps the exit class without re-rendering.
 func perFile[P any](
 	cmd *cobra.Command,
@@ -151,21 +153,19 @@ func perFile[P any](
 		}
 	}
 	if asJSON {
-		if err := emitJSONList(out, paths, items); err != nil {
+		if err := emitJSONList(out, items); err != nil {
 			return err
 		}
 	}
 	return alreadyRendered(firstErr)
 }
 
-// emitJSONList writes a single object for one path and an array for several, so
-// the common single-file case is convenient to consume. An empty result (e.g. a
-// --recursive walk that matched no audio files) marshals as [] rather than null,
-// so a consumer can always treat the multi-path form as an array.
-func emitJSONList(w io.Writer, paths []string, items []any) error {
-	if len(paths) == 1 && len(items) == 1 {
-		return writeJSON(w, items[0])
-	}
+// emitJSONList writes the per-file items as a JSON array - always, even for a
+// single path - so a list command's --json output can be consumed uniformly
+// (iterate, or jq '.[]') no matter how many paths were given. An empty result
+// (e.g. a --recursive walk that matched no audio files) marshals as [] rather
+// than null. diff and copy are single-result commands and do not use this.
+func emitJSONList(w io.Writer, items []any) error {
 	if items == nil {
 		items = []any{}
 	}

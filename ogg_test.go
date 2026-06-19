@@ -52,8 +52,8 @@ func TestOggParse(t *testing.T) {
 		title   string
 		hasDate bool
 	}{
-		{sampleOgg, wl.FormatOggVorbis, "vorbis", 44100, 2, "Sample Title", true},
-		{sampleOpus, wl.FormatOggOpus, "opus", 48000, 2, "Sample Title", true},
+		{sampleOgg, wl.FormatOggVorbis, "Vorbis", 44100, 2, "Sample Title", true},
+		{sampleOpus, wl.FormatOggOpus, "Opus", 48000, 2, "Sample Title", true},
 	}
 	for _, c := range cases {
 		doc := mustParseFile(t, c.path)

@@ -94,9 +94,9 @@ func checkSetStdin(args []string, output string) error {
 // runSet applies the compiled edit to each path and saves it. Each file's plan is
 // previewed before its write, so a failed write still shows what was attempted;
 // the first error sets the exit class while the remaining files still process.
-// JSON output is a single object for one input and an array for several; a
-// multi-file text run ends with a one-line summary. The returned error is
-// alreadyRendered, preserving the exit class without rendering a second time.
+// JSON output is always an array, one element per input; a multi-file text run
+// ends with a one-line summary. The returned error is alreadyRendered, preserving
+// the exit class without rendering a second time.
 func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *compiledEdit, output string) error {
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 	asJSON := jsonMode(cmd)
@@ -157,7 +157,7 @@ func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *
 	}
 
 	if asJSON {
-		if err := emitJSONList(out, paths, items); err != nil {
+		if err := emitJSONList(out, items); err != nil {
 			return err
 		}
 	} else if len(paths) > 1 {

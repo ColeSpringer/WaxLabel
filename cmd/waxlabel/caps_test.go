@@ -122,12 +122,28 @@ func TestCapsMultiFileJSONIsArray(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
 	}
-	var arr []jsonCaps
-	if err := json.Unmarshal([]byte(out), &arr); err != nil {
-		t.Fatalf("expected a JSON array: %v\n%s", err, out)
-	}
+	arr := decodeJSONList[jsonCaps](t, out)
 	if len(arr) != 2 {
 		t.Fatalf("array len = %d, want 2", len(arr))
+	}
+}
+
+// TestCapsSingleFileJSONIsArray pins that caps over files is a list command: even
+// a single file emits a one-element array under schemaVersion 3, not a bare object
+// (caps --format stays a single object - see TestCapsFormatJSON), so a script can
+// consume caps over one or many files the same way.
+func TestCapsSingleFileJSONIsArray(t *testing.T) {
+	out, _, code := runCLI(t, "--json", "caps", sampleFLAC)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	jc := decodeJSONOne[jsonCaps](t, out)
+	if jc.Format != "FLAC" {
+		t.Errorf("format = %q, want FLAC", jc.Format)
+	}
+	// Unlike --format mode (File empty), the file form echoes the path back.
+	if jc.File != sampleFLAC {
+		t.Errorf("file = %q, want %q", jc.File, sampleFLAC)
 	}
 }
 
