@@ -874,6 +874,208 @@ func TestSetRecursiveNoFiles(t *testing.T) {
 	}
 }
 
+// makeAudioTree writes two FLAC fixtures (one nested) plus a non-audio file into a
+// fresh temp dir, returning the dir. It backs the --recursive read-command tests.
+func makeAudioTree(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"one.flac", "sub/two.flac"} {
+		p := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A non-audio file in the tree must be ignored by the extension filter.
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("ignore"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// TestDumpRecursive walks a directory tree and dumps every audio file found,
+// skipping non-audio files via the extension filter.
+func TestDumpRecursive(t *testing.T) {
+	t.Parallel()
+	dir := makeAudioTree(t)
+	out, _, code := runCLI(t, "--json", "dump", "--recursive", dir)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	docs := decodeJSONList[jsonDocument](t, out)
+	if len(docs) != 2 {
+		t.Fatalf("dumped %d files, want 2 (two FLACs; notes.txt skipped)", len(docs))
+	}
+}
+
+// TestVerifyRecursive walks a tree and computes an essence digest for each file.
+func TestVerifyRecursive(t *testing.T) {
+	t.Parallel()
+	dir := makeAudioTree(t)
+	out, _, code := runCLI(t, "--json", "verify", "--recursive", dir)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	vs := decodeJSONList[jsonVerify](t, out)
+	if len(vs) != 2 {
+		t.Fatalf("verified %d files, want 2", len(vs))
+	}
+	for _, v := range vs {
+		if v.Essence == "" {
+			t.Errorf("missing essence digest for %s", v.File)
+		}
+	}
+}
+
+// TestLintRecursive walks a tree and lints every audio file found. The exit code
+// is left unchecked because the fixtures may carry warning-level findings (exit 1),
+// which is orthogonal to the recursion under test.
+func TestLintRecursive(t *testing.T) {
+	t.Parallel()
+	dir := makeAudioTree(t)
+	out, _, _ := runCLI(t, "--json", "lint", "--recursive", dir)
+	ls := decodeJSONList[jsonLint](t, out)
+	if len(ls) != 2 {
+		t.Fatalf("linted %d files, want 2", len(ls))
+	}
+}
+
+// TestDumpRecursiveNoFiles: a directory with no audio files notes it on stderr and
+// still emits an empty JSON array (not null), the shared no-files behavior.
+func TestDumpRecursiveNoFiles(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("no audio"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, errb, code := runCLI(t, "--json", "dump", "--recursive", dir)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !strings.Contains(errb, "no audio files found") {
+		t.Errorf("expected a no-files note on stderr, got: %q", errb)
+	}
+	if strings.TrimSpace(out) != "[]" {
+		t.Errorf("JSON output = %q, want [] (not null)", strings.TrimSpace(out))
+	}
+}
+
+// TestSetUnknownKeyNote: an unknown --set key is written as a custom field with a
+// one-line stderr note (the run still succeeds, exit 0).
+func TestSetUnknownKeyNote(t *testing.T) {
+	t.Parallel()
+	f := copyFixture(t, sampleFLAC)
+	_, errb, code := runCLI(t, "set", f, "--set", "TITEL=typo")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0\n%s", code, errb)
+	}
+	if !strings.Contains(errb, "TITEL is not a known key") {
+		t.Errorf("expected unknown-key note on stderr, got: %q", errb)
+	}
+	j, _, _ := runCLI(t, "--json", "dump", f)
+	jd := decodeJSONOne[jsonDocument](t, j)
+	if got := tagValues(jd, "TITEL"); len(got) != 1 || got[0] != "typo" {
+		t.Errorf("the custom field should still be written: TITEL = %v", got)
+	}
+}
+
+// TestSetStrictUnknownKeyFails: --strict turns an unknown key into a usage error
+// (exit 2) before any file is touched.
+func TestSetStrictUnknownKeyFails(t *testing.T) {
+	t.Parallel()
+	f := copyFixture(t, sampleFLAC)
+	_, _, code := runCLI(t, "set", f, "--set", "TITEL=typo", "--strict")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (usage)", code)
+	}
+	j, _, _ := runCLI(t, "--json", "dump", f)
+	jd := decodeJSONOne[jsonDocument](t, j)
+	if got := tagValues(jd, "TITEL"); got != nil {
+		t.Errorf("strict run touched the file: TITEL = %v, want nothing", got)
+	}
+}
+
+// TestSetUnknownKeyJSONClean: notes never pollute the --json stream (stdout stays a
+// clean array, stderr carries no note).
+func TestSetUnknownKeyJSONClean(t *testing.T) {
+	t.Parallel()
+	f := copyFixture(t, sampleFLAC)
+	out, errb, code := runCLI(t, "--json", "set", f, "--set", "TITEL=x")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if strings.Contains(errb, "note:") {
+		t.Errorf("a note leaked to stderr under --json: %q", errb)
+	}
+	if n := len(decodeJSONList[jsonSetResult](t, out)); n != 1 {
+		t.Errorf("JSON array len = %d, want 1", n)
+	}
+}
+
+// TestPlanSingleValuedMultiNote: pushing a single-valued key past one value notes it
+// on stderr; the preview still prints and the run succeeds (exit 0).
+func TestPlanSingleValuedMultiNote(t *testing.T) {
+	t.Parallel()
+	_, errb, code := runCLI(t, "plan", sampleFLAC, "--add", "ENCODER=a", "--add", "ENCODER=b")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0\n%s", code, errb)
+	}
+	if !strings.Contains(errb, "ENCODER is single-valued") {
+		t.Errorf("expected single-valued note on stderr, got: %q", errb)
+	}
+}
+
+// TestSetCustomMultiValueNoSingleValuedNote: a custom key explicitly given several
+// values gets the unknown-key note but not the single-valued-multi note - a custom
+// field legitimately holds a list (the values read back in full).
+func TestSetCustomMultiValueNoSingleValuedNote(t *testing.T) {
+	t.Parallel()
+	f := copyFixture(t, notagsFLAC)
+	_, errb, code := runCLI(t, "set", f, "--add", "MY_CUSTOM=a", "--add", "MY_CUSTOM=b")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0\n%s", code, errb)
+	}
+	if !strings.Contains(errb, "MY_CUSTOM is not a known key") {
+		t.Errorf("expected the unknown-key note, got: %q", errb)
+	}
+	if strings.Contains(errb, "single-valued") {
+		t.Errorf("a custom key should not trigger the single-valued note: %q", errb)
+	}
+	j, _, _ := runCLI(t, "--json", "dump", f)
+	jd := decodeJSONOne[jsonDocument](t, j)
+	if got := tagValues(jd, "MY_CUSTOM"); len(got) != 2 {
+		t.Errorf("custom field should hold both values: MY_CUSTOM = %v", got)
+	}
+}
+
+// TestSetStrictSingleValuedMultiFails: --strict fails a file whose edit pushes a
+// single-valued key past one value (exit 2).
+func TestSetStrictSingleValuedMultiFails(t *testing.T) {
+	t.Parallel()
+	f := copyFixture(t, sampleFLAC)
+	_, _, code := runCLI(t, "set", f, "--add", "ENCODER=a", "--add", "ENCODER=b", "--strict")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (usage)", code)
+	}
+}
+
+// TestSetSingleValuedNoteDedup: across a --recursive walk the single-valued note is
+// printed once per key, not once per file.
+func TestSetSingleValuedNoteDedup(t *testing.T) {
+	t.Parallel()
+	dir := makeAudioTree(t) // two FLAC fixtures, each already carrying an ENCODER
+	_, errb, _ := runCLI(t, "set", "--recursive", dir, "--add", "ENCODER=a", "--add", "ENCODER=b")
+	if n := strings.Count(errb, "ENCODER is single-valued"); n != 1 {
+		t.Errorf("single-valued note printed %d times, want 1 (deduped across files)", n)
+	}
+}
+
 // TestSetStdinUsageBeatsCoverRead checks the stdin-in-place usage error is
 // reported before any --add-cover file is read: the actionable usage error
 // (exit 2) wins over a cover read error (exit 6), and no disk read happens.

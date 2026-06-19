@@ -54,6 +54,9 @@ func newSetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := notifyUnknownKeys(cmd.ErrOrStderr(), ce, ef.strict, jsonMode(cmd)); err != nil {
+				return err
+			}
 			realOf, cleanup, err := readInputs(cmd.InOrStdin(), args)
 			if err != nil {
 				return err
@@ -64,7 +67,7 @@ func newSetCmd() *cobra.Command {
 			if output != "" && len(paths) != 1 {
 				return usagef("-o writes a single file, so it takes exactly one input (got %d)", len(paths))
 			}
-			return runSet(cmd, paths, realOf, ce, output)
+			return runSet(cmd, paths, realOf, ce, output, ef.strict)
 		},
 	}
 	ef.bind(cmd)
@@ -97,10 +100,11 @@ func checkSetStdin(args []string, output string) error {
 // JSON output is always an array, one element per input; a multi-file text run
 // ends with a one-line summary. The returned error is alreadyRendered, preserving
 // the exit class without rendering a second time.
-func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *compiledEdit, output string) error {
+func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *compiledEdit, output string, strict bool) error {
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 	asJSON := jsonMode(cmd)
 	noteNoFiles(errOut, paths)
+	notifier := newSingleValuedNotifier(strict, asJSON, errOut)
 	var items []any
 	var firstErr error
 	changed, unchanged, failed, rendered := 0, 0, 0, 0
@@ -120,6 +124,13 @@ func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *
 	for _, path := range paths {
 		doc, plan, err := ce.prepare(cmd.Context(), realOf(path))
 		if err != nil {
+			fail(path, err)
+			continue
+		}
+		// Under --strict, a single-valued key given multiple values fails the file
+		// before any write; otherwise it is noted (once per key) and the write
+		// proceeds, since the writer stores the values faithfully.
+		if err := notifier.check(plan); err != nil {
 			fail(path, err)
 			continue
 		}

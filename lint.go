@@ -48,7 +48,8 @@ func (f Finding) String() string {
 
 // Lint inspects a document for issues a tagger would want to surface or fix:
 // stale legacy containers, inherited encoder noise, conflicting family values,
-// duplicate or invalid pictures, and malformed dates. It reads only the parsed
+// duplicate or invalid pictures, malformed dates, single-valued keys carrying
+// several values, and custom (non-vocabulary) keys. It reads only the parsed
 // document (no I/O) and never modifies it.
 func (d *Document) Lint() []Finding {
 	var out []Finding
@@ -57,6 +58,8 @@ func (d *Document) Lint() []Finding {
 	out = append(out, lintFamilies(d.media.Families)...)
 	out = append(out, lintPictures(d.media.Pictures)...)
 	out = append(out, lintDates(d.media.Tags)...)
+	out = append(out, lintCardinality(d.media.Tags)...)
+	out = append(out, lintCustomKeys(d.media.Tags)...)
 	return out
 }
 
@@ -146,6 +149,39 @@ func lintDates(ts tag.TagSet) []Finding {
 				out = append(out, Finding{LintWarning, "malformed-date",
 					fmt.Sprintf("%q is not YYYY, YYYY-MM, or YYYY-MM-DD", v), k})
 			}
+		}
+	}
+	return out
+}
+
+// lintCardinality reports known keys that canonically hold a single value but carry
+// more than one - e.g. a transcoded file projecting ENCODER to a muxer value plus a
+// codec value across two Matroska scopes. The typed accessor would silently read
+// only the first, so surfacing the duplication keeps that lossiness visible. A
+// multi-valued key (artist, genre, ...) is exempt, and so is a custom (unknown)
+// key: it has no typed accessor, so its values are read back in full via
+// TagSet.Get, and it is already reported by the custom-key rule. Flagging it here
+// would be a false positive (multiple values in a custom field are legitimate).
+func lintCardinality(ts tag.TagSet) []Finding {
+	var out []Finding
+	for k, vals := range ts.All() {
+		if k.SingleValuedMulti(len(vals)) {
+			out = append(out, Finding{LintWarning, "single-valued-multi",
+				fmt.Sprintf("single-valued key holds %d values", len(vals)), k})
+		}
+	}
+	return out
+}
+
+// lintCustomKeys reports keys outside the published canonical vocabulary. A custom
+// field round-trips faithfully, so this is informational, never a warning: it
+// never flips a clean file to a non-zero exit, it just tells a tagger which fields
+// are non-standard.
+func lintCustomKeys(ts tag.TagSet) []Finding {
+	var out []Finding
+	for _, k := range ts.Keys() {
+		if !k.Known() {
+			out = append(out, Finding{LintInfo, "custom-key", "custom field, not a known key", k})
 		}
 	}
 	return out

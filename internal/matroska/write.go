@@ -47,6 +47,21 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
+	// The canonical keys whose values changed, computed once and threaded into the
+	// preservation check and every group render: a changed key must reach (and be
+	// dropped from) every scope that held it, not just album scope.
+	ek := editedKeySet(base.Tags, edited.Tags)
+
+	// A title edit normally rewrites only Info.Title (ch.title). But a TITLE
+	// SimpleTag carried at any Tag scope also projects into the canonical Title, so
+	// the cross-scope removal contract requires dropping it too - and that drop only
+	// happens on the Tags re-render path (renderTags). Force ch.simple so a
+	// title-only edit still reaches a stale scoped TITLE, the way every other key
+	// does; otherwise the projection would read two titles after the edit.
+	if ch.title && !ch.simple && hasManagedTitleTag(d.groups) {
+		ch.simple = true
+	}
+
 	// WebM does not include the Attachments element in its subset, so refuse to
 	// write cover art into a webm file rather than emit something strict WebM
 	// validators reject. Plain tag/Title writes to .webm remain fine. This Plan-level
@@ -73,7 +88,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	if err := checkIndexCaptured(d.wb); err != nil {
 		return nil, err
 	}
-	if err := checkPreservable(d, ch); err != nil {
+	if err := checkPreservable(d, ch, ek); err != nil {
 		return nil, err
 	}
 
@@ -87,14 +102,14 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 			"chapter edit dropped the default edition's nested sub-chapters or secondary-language titles")
 	}
 
-	pl, err := planAbsorb(d, base, edited, ch, report)
+	pl, err := planAbsorb(d, base, edited, ch, ek, report)
 	if err == nil {
 		return pl, nil
 	}
 	if !isFallback(err) {
 		return nil, err
 	}
-	return planShift(d, base, edited, ch, report)
+	return planShift(d, base, edited, ch, ek, report)
 }
 
 // changes records which Segment children an edit touches: the SimpleTag set (any
@@ -164,23 +179,45 @@ func checkIndexCaptured(wb *writeBase) error {
 // returned nil) - dropping it would silently lose data. It covers the groups and
 // non-canonical SimpleTags a tag edit preserves and the non-image attachments a
 // cover edit preserves.
-func checkPreservable(d *doc, ch changes) error {
+func checkPreservable(d *doc, ch changes, ek map[tag.Key]bool) error {
 	tooBig := func(what string) error {
 		return fmt.Errorf("%w: a Matroska %s is too large to rewrite within the alloc limit", waxerr.ErrUnsupportedTag, what)
 	}
 	if ch.simple {
 		albumIdx := albumGroupIndex(d.groups)
 		for i, g := range d.groups {
-			if i != albumIdx {
+			if i == albumIdx {
+				// Synced in place: only its kept non-canonical SimpleTags need raw.
+				for _, st := range g.tags {
+					if !isManaged(st.name) && st.raw == nil {
+						return tooBig("custom tag")
+					}
+				}
+				continue
+			}
+			if !groupTouchedBy(g, ek) {
+				// Preserved verbatim: needs the whole Tag element's bytes.
 				if g.raw == nil {
 					return tooBig("tag group")
 				}
 				continue
 			}
+			// Re-rendered to drop its edited keys: every surviving SimpleTag needs
+			// its bytes, and a scope-narrowing group needs its Targets bytes too
+			// (else the rebuild would silently lose the narrowing). A target-less
+			// group needs neither - it carries only the kept SimpleTags.
+			kept := 0
 			for _, st := range g.tags {
-				if !isManaged(st.name) && st.raw == nil {
-					return tooBig("custom tag")
+				if droppedByEdit(st, ek) {
+					continue // its value now lives at album scope
 				}
+				if st.raw == nil {
+					return tooBig("tag")
+				}
+				kept++
+			}
+			if kept > 0 && g.targetsRaw == nil && narrowsScope(g) {
+				return tooBig("tag targets")
 			}
 		}
 	}
@@ -214,17 +251,18 @@ func isFallback(err error) bool { return errors.Is(err, errFallback) }
 // renderTags builds the new Tags element bytes from the edited canonical set,
 // returning nil when the result would be empty (so the Tags element is dropped).
 // It also returns the new group list for the result document. Non-canonical
-// SimpleTags (custom, technical, binary, nested) and non-album groups are
-// preserved verbatim from their captured raw bytes; canonical keys are synced
-// into the album-scope group, written under their Matroska-spec names. Title is
-// excluded - it is stored in Info.Title, not a SimpleTag.
-func renderTags(d *doc, base, edited tag.TagSet) (raw []byte, groups []tagGroup) {
+// SimpleTags (custom, technical, binary, nested) are preserved verbatim from their
+// captured raw bytes; canonical keys are synced into the album-scope group, written
+// under their Matroska-spec names. A non-album group is preserved verbatim unless it
+// carries a key the edit changed, in which case it is re-rendered to drop that key
+// (the new value lands at album scope). Title is excluded - it lives in Info.Title.
+func renderTags(d *doc, base, edited tag.TagSet, ek map[tag.Key]bool) (raw []byte, groups []tagGroup) {
 	albumIdx := albumGroupIndex(d.groups)
 	covered := coveredByOtherScopes(d.groups, albumIdx)
 	var content []byte
 
 	for i, g := range d.groups {
-		newGroup, gb, keep := renderGroup(g, base, edited, covered, i == albumIdx)
+		newGroup, gb, keep := renderGroup(g, base, edited, covered, ek, i == albumIdx)
 		if !keep {
 			continue
 		}
@@ -269,20 +307,121 @@ func coveredByOtherScopes(groups []tagGroup, albumIdx int) map[tag.Key]bool {
 }
 
 // renderGroup re-renders one Tag group. The album group is synced to the edited
-// canonical set; every other group is preserved verbatim. keep is false when the
-// group becomes empty.
-func renderGroup(g tagGroup, base, edited tag.TagSet, covered map[tag.Key]bool, isAlbum bool) (out tagGroup, raw []byte, keep bool) {
+// canonical set; a non-album group is preserved verbatim or, when it carries an
+// edited key, re-rendered to drop that key. keep is false when the group becomes
+// empty.
+func renderGroup(g tagGroup, base, edited tag.TagSet, covered, ek map[tag.Key]bool, isAlbum bool) (out tagGroup, raw []byte, keep bool) {
 	if !isAlbum {
-		if g.raw == nil {
-			return tagGroup{}, nil, false
-		}
-		return g, g.raw, true // preserve verbatim (keeps any UID, nested/binary tags)
+		return renderNonAlbumGroup(g, ek)
 	}
 	ng, gb := buildAlbumGroup(&g, base, edited, covered)
 	if gb == nil {
 		return tagGroup{}, nil, false
 	}
 	return ng, gb, true
+}
+
+// renderNonAlbumGroup renders a track/edition/chapter/part-scoped group. When none
+// of its SimpleTags map to an edited canonical key it is preserved verbatim from
+// its captured bytes (the fast path, keeping any UID, nested, or binary tags). When
+// it does carry one, it is rebuilt from the captured Targets plus the surviving
+// SimpleTags - dropping every SimpleTag whose canonical key was edited, since that
+// value is now written authoritatively at album scope (or cleared) - with the CRC
+// recomputed when the source group had one. The group is dropped when nothing
+// survives. checkPreservable has already guaranteed every kept SimpleTag's raw (and
+// the Targets when the group narrows scope) was captured.
+func renderNonAlbumGroup(g tagGroup, ek map[tag.Key]bool) (out tagGroup, raw []byte, keep bool) {
+	if !groupTouchedBy(g, ek) {
+		if g.raw == nil {
+			return tagGroup{}, nil, false
+		}
+		return g, g.raw, true // preserve verbatim
+	}
+	out = g
+	out.tags = nil
+	var simple []byte
+	for _, st := range g.tags {
+		if droppedByEdit(st, ek) {
+			continue // its edited value now lives at album scope (or was cleared)
+		}
+		simple = append(simple, st.raw...)
+		out.tags = append(out.tags, st)
+	}
+	if len(simple) == 0 {
+		return tagGroup{}, nil, false // every SimpleTag was edited away
+	}
+	var content []byte
+	if g.targetsRaw != nil {
+		content = append(content, g.targetsRaw...)
+	}
+	content = append(content, simple...)
+	rendered := masterElement(idTag, content, g.hasCRC)
+	// Carry the freshly rendered bytes (not the stale input raw, which still holds
+	// the dropped SimpleTags) so the returned document's group equals a fresh parse
+	// of the output - a re-edit of that document then preserves this group verbatim
+	// correctly instead of re-emitting the dropped key or dropping the group.
+	out.raw = rendered
+	return out, rendered, true
+}
+
+// droppedByEdit reports whether a SimpleTag must be dropped from a re-rendered
+// group: its name maps to a canonical key whose value the edit changed, so the
+// authoritative value now lives at album scope (or was cleared). A non-canonical or
+// unedited SimpleTag is kept. It is the single drop predicate shared by the
+// preservation check (which tags need captured bytes) and the renderer (which tags
+// are emitted), so the two cannot diverge on which tags survive.
+func droppedByEdit(st simpleTag, ek map[tag.Key]bool) bool {
+	k, ok := mapping.MatroskaTagKey(st.name)
+	return ok && ek[k]
+}
+
+// groupTouchedBy reports whether any of the group's SimpleTags would be dropped by
+// the edit - i.e. whether the group must be re-rendered rather than preserved
+// verbatim.
+func groupTouchedBy(g tagGroup, ek map[tag.Key]bool) bool {
+	for _, st := range g.tags {
+		if droppedByEdit(st, ek) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasManagedTitleTag reports whether any Tag group carries a TITLE SimpleTag, which
+// projects into the canonical Title alongside Info.Title. Editing the title must
+// drop such a tag (the title is authoritative in Info.Title), but that drop only
+// happens on the Tags re-render path - so its presence promotes a title-only edit
+// to also re-render the Tags element.
+func hasManagedTitleTag(groups []tagGroup) bool {
+	for _, g := range groups {
+		for _, st := range g.tags {
+			if k, ok := mapping.MatroskaTagKey(st.name); ok && k == tag.Title {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// narrowsScope reports whether the group's Targets restrict it below album scope
+// (a track/edition/chapter UID or any explicit target type/level). Such a group
+// must keep its captured Targets bytes through a re-render or it would silently
+// widen to the default album scope. A target-less group (the album group) is
+// handled separately and never reaches here.
+func narrowsScope(g tagGroup) bool {
+	return g.trackUID || g.editionUID || g.chapterUID || g.targetTypeValue != 0 || g.targetType != ""
+}
+
+// editedKeySet returns the canonical keys whose values differ between the base and
+// edited tag sets, via the shared tag.Diff primitive. It is the set a Matroska tag
+// edit must reach at every scope: each such key is written at album scope and
+// dropped from any other group that held it.
+func editedKeySet(base, edited tag.TagSet) map[tag.Key]bool {
+	ek := map[tag.Key]bool{}
+	for _, c := range tag.Diff(base, edited) {
+		ek[c.Key] = true
+	}
+	return ek
 }
 
 // buildAlbumGroup renders the album-scope group: the preserved Targets (carrying

@@ -32,6 +32,10 @@ func newPlanCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			asJSON := jsonMode(cmd)
+			if err := notifyUnknownKeys(cmd.ErrOrStderr(), ce, ef.strict, asJSON); err != nil {
+				return err
+			}
 			realOf, cleanup, err := readInputs(cmd.InOrStdin(), args)
 			if err != nil {
 				return err
@@ -39,10 +43,17 @@ func newPlanCmd() *cobra.Command {
 			defer cleanup()
 			paths := expandPaths(args, recursive)
 			noteNoFiles(cmd.ErrOrStderr(), paths)
+			notifier := newSingleValuedNotifier(ef.strict, asJSON, cmd.ErrOrStderr())
 			return perFile(cmd, paths,
 				func(ctx context.Context, path string) (*wl.Plan, error) {
 					_, plan, err := ce.prepare(ctx, realOf(path))
-					return plan, err
+					if err != nil {
+						return nil, err
+					}
+					if err := notifier.check(plan); err != nil {
+						return nil, err
+					}
+					return plan, nil
 				},
 				func(path string, plan *wl.Plan) any { return toJSONReport(path, plan) },
 				func(path string, c classifiedError) any {

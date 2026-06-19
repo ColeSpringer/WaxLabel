@@ -14,6 +14,7 @@ import (
 // it processes files independently and reflects any failure in the exit code.
 func newVerifyCmd() *cobra.Command {
 	var whole bool
+	var recursive bool
 	cmd := &cobra.Command{
 		Use:   "verify <file>...",
 		Short: "Compute audio-essence (and optionally whole-file) identity",
@@ -21,8 +22,9 @@ func newVerifyCmd() *cobra.Command {
 			"plus its decoder-critical configuration, independent of tags - which\n" +
 			"answers \"is this the same audio?\" for deduplication. The digest carries\n" +
 			"a versioned extent name, so it stays interpretable across library-wide\n" +
-			"refinements. With --whole-file, also compute the whole-file identity. A\n" +
-			"single \"-\" reads from standard input.",
+			"refinements. With --whole-file, also compute the whole-file identity. With\n" +
+			"--recursive, directory arguments are walked for audio files. A single \"-\"\n" +
+			"reads from standard input.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			realOf, cleanup, err := readInputs(cmd.InOrStdin(), args)
@@ -30,7 +32,9 @@ func newVerifyCmd() *cobra.Command {
 				return err
 			}
 			defer cleanup()
-			return perFile(cmd, args,
+			paths := expandPaths(args, recursive)
+			noteNoFiles(cmd.ErrOrStderr(), paths)
+			return perFile(cmd, paths,
 				func(ctx context.Context, path string) (jsonVerify, error) {
 					return computeVerify(ctx, realOf(path), path, whole)
 				},
@@ -43,6 +47,7 @@ func newVerifyCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&whole, "whole-file", false, "also compute the whole-file identity")
+	cmd.Flags().BoolVar(&recursive, "recursive", false, "recurse into directory arguments, verifying every audio file found")
 	return cmd
 }
 

@@ -63,9 +63,9 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
-		Representation: "Matroska SimpleTag (album-scoped) + Info.Title",
+		Representation: "Matroska SimpleTag + Info.Title",
 		Fidelity:       "lossless",
-		Constraints:    []string{"canonical edits written at album scope; existing track/edition/chapter scopes preserved verbatim"},
+		Constraints:    []string{"canonical edits written at album scope and removed from any track/edition/chapter scope that also held the key; unedited scoped tags preserved verbatim"},
 	}
 	pictures := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,

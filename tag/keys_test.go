@@ -92,3 +92,24 @@ func TestMultivalued(t *testing.T) {
 		t.Error("a custom key reported Multivalued()=true, want false")
 	}
 }
+
+func TestSingleValuedMulti(t *testing.T) {
+	// A known single-valued key is a violation only at 2+ values.
+	for _, n := range []int{0, 1} {
+		if Encoder.SingleValuedMulti(n) {
+			t.Errorf("Encoder.SingleValuedMulti(%d)=true, want false", n)
+		}
+	}
+	if !Encoder.SingleValuedMulti(2) {
+		t.Error("Encoder.SingleValuedMulti(2)=false, want true")
+	}
+	// A multivalued key is never a violation, however many values it holds.
+	if Artist.SingleValuedMulti(5) {
+		t.Error("Artist (multivalued) reported SingleValuedMulti(5)=true, want false")
+	}
+	// A custom (unknown) key is exempt: it has no typed accessor or enforced
+	// cardinality, so several values are legitimate.
+	if Key("CUSTOM_THING").SingleValuedMulti(3) {
+		t.Error("a custom key reported SingleValuedMulti(3)=true, want false")
+	}
+}

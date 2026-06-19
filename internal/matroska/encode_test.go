@@ -120,17 +120,18 @@ func TestCheckIndexCaptured(t *testing.T) {
 // verbatim could not be captured (raw==nil from an over-limit size), rather than
 // silently dropping it.
 func TestCheckPreservable(t *testing.T) {
-	// A non-album group whose bytes weren't captured.
+	// A non-album group whose bytes weren't captured. It carries no edited key, so
+	// it takes the verbatim path and needs its whole-element raw.
 	d := &doc{groups: []tagGroup{
 		{scope: core.ScopeAlbum, raw: []byte{1}},
 		{scope: core.ScopeTrack, trackUID: true, raw: nil},
 	}}
-	if err := checkPreservable(d, changes{simple: true}); err == nil {
+	if err := checkPreservable(d, changes{simple: true}, nil); err == nil {
 		t.Error("uncaptured tag group should be refused")
 	}
 	// A non-image attachment whose bytes weren't captured.
 	d2 := &doc{attachments: []attachment{{image: false, raw: nil}}}
-	if err := checkPreservable(d2, changes{pictures: true}); err == nil {
+	if err := checkPreservable(d2, changes{pictures: true}, nil); err == nil {
 		t.Error("uncaptured attachment should be refused")
 	}
 	// All captured -> fine.
@@ -138,8 +139,47 @@ func TestCheckPreservable(t *testing.T) {
 		groups:      []tagGroup{{scope: core.ScopeAlbum, raw: []byte{1}}},
 		attachments: []attachment{{image: true}},
 	}
-	if err := checkPreservable(ok, changes{simple: true, pictures: true}); err != nil {
+	if err := checkPreservable(ok, changes{simple: true, pictures: true}, nil); err != nil {
 		t.Errorf("fully-captured doc should pass: %v", err)
+	}
+
+	// A track group carrying an edited key (ENCODER) is re-rendered, not preserved:
+	// its surviving SimpleTag's raw must have been captured, even though the group's
+	// whole-element raw is nil (a large group whose dropped key shrank it under the
+	// limit). A surviving tag with no raw is refused.
+	ek := map[tag.Key]bool{tag.Encoder: true}
+	rerender := &doc{groups: []tagGroup{
+		{scope: core.ScopeAlbum, raw: []byte{1}},
+		{scope: core.ScopeTrack, trackUID: true, raw: nil, targetsRaw: []byte{1}, tags: []simpleTag{
+			{name: "ENCODER", raw: []byte{1}}, // dropped (edited), raw not required
+			{name: "TITLE", raw: nil},         // kept, but its raw wasn't captured
+		}},
+	}}
+	if err := checkPreservable(rerender, changes{simple: true}, ek); err == nil {
+		t.Error("re-rendered group with an uncaptured surviving tag should be refused")
+	}
+	// Same group, but the scope-narrowing Targets bytes weren't captured: the
+	// rebuild would lose the track scope, so it is refused.
+	noTargets := &doc{groups: []tagGroup{
+		{scope: core.ScopeAlbum, raw: []byte{1}},
+		{scope: core.ScopeTrack, trackUID: true, raw: nil, targetsRaw: nil, tags: []simpleTag{
+			{name: "ENCODER", raw: []byte{1}}, // dropped
+			{name: "TITLE", raw: []byte{1}},   // kept
+		}},
+	}}
+	if err := checkPreservable(noTargets, changes{simple: true}, ek); err == nil {
+		t.Error("re-rendered scope-narrowing group with uncaptured Targets should be refused")
+	}
+	// A re-rendered group where every SimpleTag is dropped needs neither the
+	// surviving-tag raws nor the Targets - it disappears entirely.
+	emptied := &doc{groups: []tagGroup{
+		{scope: core.ScopeAlbum, raw: []byte{1}},
+		{scope: core.ScopeTrack, trackUID: true, raw: nil, targetsRaw: nil, tags: []simpleTag{
+			{name: "ENCODER", raw: nil}, // dropped (edited); its raw is irrelevant
+		}},
+	}}
+	if err := checkPreservable(emptied, changes{simple: true}, ek); err != nil {
+		t.Errorf("a fully-emptied re-rendered group should pass: %v", err)
 	}
 }
 

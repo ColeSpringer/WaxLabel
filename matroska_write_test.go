@@ -397,6 +397,170 @@ func TestMatroskaWriteCrossScopeNoDuplicate(t *testing.T) {
 	}
 }
 
+// mkCRC prepends a CRC-32 element over content (the mkvmerge master convention),
+// so a synthesized Tag master parses as CRC-bearing and its re-render must
+// recompute the checksum rather than copy the stale one.
+func mkCRC(content []byte) []byte {
+	sum := crc32.ChecksumIEEE(content)
+	crc := []byte{idCRC32, 0x84, byte(sum), byte(sum >> 8), byte(sum >> 16), byte(sum >> 24)}
+	return concat(crc, content)
+}
+
+// multiScopeTags builds a Tags element with ENCODER at both album scope and a
+// track-scoped group, plus the given extra track-scope SimpleTags. The track
+// group is optionally CRC-guarded so the re-render path's CRC recompute is
+// exercised. This is the transcoded-file shape the report's finding #1 hinges on
+// (muxer ENCODER at album + codec ENCODER at track).
+func multiScopeTags(crc bool, trackExtra ...[]byte) []byte {
+	album := mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)),
+		mkSimple("ARTIST", "AA"), mkSimple("ENCODER", "album-enc")))
+	trackContent := concat(mkEl(idTargets, concat(mkUint(idTgtTypeVal, 50), mkUint(idTagTrackUID, 7))),
+		mkSimple("ENCODER", "track-enc"))
+	trackContent = concat(trackContent, concat(trackExtra...))
+	if crc {
+		trackContent = mkCRC(trackContent)
+	}
+	return mkEl(idTags, concat(album, mkEl(idTag, trackContent)))
+}
+
+// TestMatroskaWriteMultiScopeClear: clearing a key carried at album *and* track
+// scope removes it from every scope (finding #1), leaves unrelated scoped tags
+// intact, and dissolves the spurious cross-scope conflict the two copies produced.
+func TestMatroskaWriteMultiScopeClear(t *testing.T) {
+	data := buildMatroska("matroska", "T", multiScopeTags(false, mkSimple("PART_NUMBER", "2/10")))
+
+	// The fresh file projects ENCODER to two conflicting values across scopes.
+	if v, _ := mustParseBytes(t, data).Get(tag.Encoder); len(v) != 2 {
+		t.Fatalf("setup: want 2 ENCODER values across scopes, got %v", v)
+	}
+
+	out, _ := saveMatroska(t, data, mustParseBytes(t, data).Edit().Clear(tag.Encoder))
+
+	if n := bytes.Count(out, []byte("ENCODER")); n != 0 {
+		t.Errorf("ENCODER survived %d times after clear, want 0 (cleared at every scope)", n)
+	}
+	re := mustParseBytes(t, out)
+	if v, _ := re.Get(tag.Encoder); len(v) != 0 {
+		t.Errorf("ENCODER reads back %v after clear, want empty", v)
+	}
+	// The other tags at each scope survive (album ARTIST, track PART_NUMBER).
+	f := re.Fields()
+	if len(f.Artists) != 1 || f.Artists[0] != "AA" || f.TrackNumber != 2 || f.TrackTotal != 10 {
+		t.Errorf("clear dropped an unrelated tag: artist=%v %d/%d", f.Artists, f.TrackNumber, f.TrackTotal)
+	}
+	if hasWarning(re, wl.WarnConflictingFamilies) {
+		t.Error("conflicting-families warning should be gone after clearing ENCODER everywhere")
+	}
+}
+
+// TestMatroskaWriteMultiScopeSet: setting a key carried at two scopes replaces it
+// with the single new value at album scope (not one new + one stale).
+func TestMatroskaWriteMultiScopeSet(t *testing.T) {
+	data := buildMatroska("matroska", "T", multiScopeTags(false))
+
+	out, _ := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.Encoder, "OnlyEnc"))
+
+	if n := bytes.Count(out, []byte("ENCODER")); n != 1 {
+		t.Errorf("ENCODER written %d times after set, want 1 (replaced, not doubled)", n)
+	}
+	re := mustParseBytes(t, out)
+	if v, _ := re.Get(tag.Encoder); len(v) != 1 || v[0] != "OnlyEnc" {
+		t.Errorf("ENCODER = %v, want [OnlyEnc]", v)
+	}
+	if hasWarning(re, wl.WarnConflictingFamilies) {
+		t.Error("conflicting-families warning should be gone after a single-value set")
+	}
+}
+
+// TestMatroskaWriteMultiScopeCRCRecompute: a CRC-bearing track group that must be
+// re-rendered (to drop the edited key) has its CRC recomputed over the new content
+// - the old verbatim fast path never touched a non-album group's CRC.
+func TestMatroskaWriteMultiScopeCRCRecompute(t *testing.T) {
+	data := buildMatroska("matroska", "T", multiScopeTags(true, mkSimple("COMPOSER", "TrackComposer")))
+
+	out, _ := saveMatroska(t, data, mustParseBytes(t, data).Edit().Clear(tag.Encoder))
+
+	// Every CRC in the output, including the re-rendered track group's, must verify.
+	checkCRCs(t, out, 0, len(out), 0)
+	if n := bytes.Count(out, []byte("ENCODER")); n != 0 {
+		t.Errorf("ENCODER survived CRC-group re-render %d times, want 0", n)
+	}
+	if v, _ := mustParseBytes(t, out).Get(tag.Composer); len(v) != 1 || v[0] != "TrackComposer" {
+		t.Errorf("track-scoped COMPOSER lost in CRC re-render: %v", v)
+	}
+}
+
+// TestMatroskaWriteMultiScopeRerenderRoundTrips: after a multi-scope clear
+// re-renders a track group, the returned document is re-editable in place - a
+// second, unrelated edit preserves the surviving track tag and does not resurrect
+// the cleared key (the re-rendered group carries its new bytes, not the stale ones).
+func TestMatroskaWriteMultiScopeRerenderRoundTrips(t *testing.T) {
+	data := buildMatroska("matroska", "T", multiScopeTags(false, mkSimple("COMPOSER", "TrackComposer")))
+
+	out1, doc1 := saveMatroska(t, data, mustParseBytes(t, data).Edit().Clear(tag.Encoder))
+	// Re-edit the returned document in memory (no re-parse) and save again.
+	out2, _ := saveMatroska(t, out1, doc1.Edit().Set(tag.Album, "NewAlbum"))
+
+	re := mustParseBytes(t, out2)
+	if v, _ := re.Get(tag.Encoder); len(v) != 0 {
+		t.Errorf("cleared ENCODER resurrected on re-edit: %v", v)
+	}
+	if v, _ := re.Get(tag.Composer); len(v) != 1 || v[0] != "TrackComposer" {
+		t.Errorf("surviving track COMPOSER lost on re-edit: %v", v)
+	}
+	if re.Fields().Album != "NewAlbum" {
+		t.Errorf("second edit not applied: Album = %q", re.Fields().Album)
+	}
+}
+
+// TestMatroskaWriteTitleOnlyDropsScopedTitleTag: a title-only edit reaches a TITLE
+// SimpleTag carried at another scope (which also projects into the canonical Title)
+// and removes it, so the projection reads the single new title - the cross-scope
+// removal contract applies to Title, not just SimpleTag-only keys. The unrelated
+// tag sharing that group survives the forced Tags re-render.
+func TestMatroskaWriteTitleOnlyDropsScopedTitleTag(t *testing.T) {
+	tags := mkEl(idTags, mkEl(idTag, concat(
+		mkEl(idTargets, concat(mkUint(idTgtTypeVal, 50), mkUint(idTagTrackUID, 7))),
+		mkSimple("TITLE", "OldTrackTitle"), mkSimple("ARTIST", "TrackArtist"))))
+	data := buildMatroska("matroska", "X", tags)
+
+	if v, _ := mustParseBytes(t, data).Get(tag.Title); len(v) != 2 {
+		t.Fatalf("setup: want Title=[Info.Title, track TITLE], got %v", v)
+	}
+
+	out, _ := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.Title, "NewX"))
+
+	re := mustParseBytes(t, out)
+	if v, _ := re.Get(tag.Title); len(v) != 1 || v[0] != "NewX" {
+		t.Errorf("title-only edit left a stale scoped TITLE: Get(Title)=%v, want [NewX]", v)
+	}
+	// The unrelated track ARTIST sharing the group survives the forced re-render.
+	if v, _ := re.Get(tag.Artist); len(v) != 1 || v[0] != "TrackArtist" {
+		t.Errorf("title edit dropped an unrelated scoped tag: ARTIST=%v", v)
+	}
+}
+
+// TestMatroskaStripEncoderMultiScopePreservesEssence: the report's exact repro on
+// the real transcoded fixture - clearing ENCODER reaches both the muxer (album) and
+// codec (track) stamp, and the audio essence is byte-identical.
+func TestMatroskaStripEncoderMultiScopePreservesEssence(t *testing.T) {
+	src := readFixture(t, sampleWebM)
+	if v, _ := mustParseBytes(t, src).Get(tag.Encoder); len(v) != 2 {
+		t.Fatalf("setup: want 2 ENCODER values in sample.webm, got %v", v)
+	}
+
+	out, _ := saveMatroska(t, src, mustParseBytes(t, src).Edit().Clear(tag.Encoder))
+
+	re := mustParseBytes(t, out)
+	if v, _ := re.Get(tag.Encoder); len(v) != 0 {
+		t.Errorf("ENCODER survived clear across scopes: %v", v)
+	}
+	if hasWarning(re, wl.WarnConflictingFamilies) {
+		t.Error("conflicting-families warning persists after multi-scope clear")
+	}
+	essenceUnchanged(t, src, out)
+}
+
 // TestMatroskaWriteMultipleTagsConsolidated: a file with two Tags masters is
 // rewritten to a single Tags element (no doubled tag tree).
 func TestMatroskaWriteMultipleTagsConsolidated(t *testing.T) {

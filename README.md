@@ -68,10 +68,11 @@ go run ./cmd/waxlabel diff  a.flac b.flac                # compare canonical met
 Install the binary with `go install github.com/colespringer/waxlabel/cmd/waxlabel@latest`.
 
 - **`dump <file>...`** - tags, audio properties, pictures, and warnings. `--native`
-  adds the native blocks and the per-source (family) view.
-- **`plan <file>...`** - resolve edits into a write plan and print exactly what `set`
-  would do (including a field-level change preview), without touching the file (the
-  report and the write share state).
+  adds the native blocks and the per-source (family) view. `--recursive` walks
+  directory arguments.
+- **`plan <file>...`** - the dry-run preview for `set`: resolve edits into a write
+  plan and print exactly what `set` would do (including a field-level change
+  preview), without touching the file (the report and the write share state).
 - **`set <file>...`** - apply edits and save: atomic in-place by default, `-o` writes a
   new file (single input only), a no-op writes nothing. `--verify` checks the written
   audio essence. `--strip-encoder` clears the transcoder stamp; `--recursive` walks
@@ -79,9 +80,9 @@ Install the binary with `go install github.com/colespringer/waxlabel/cmd/waxlabe
 - **`lint <file>...`** - report metadata issues (stale legacy tags, encoder noise,
   conflicting families, bad pictures, malformed dates, missing audio). `--fix`
   applies only the safe, non-destructive remediations and saves; pictures are never
-  dropped automatically.
+  dropped automatically. `--recursive` walks directory arguments.
 - **`verify <file>...`** - the tag-independent audio-essence digest; `--whole-file`
-  adds the whole-file digest.
+  adds the whole-file digest. `--recursive` walks directory arguments.
 - **`caps <file>... | --format <name>`** - what a format can store and edit: per
   known key the read/write level, native representation, fidelity, and cardinality
   (single- vs multi-valued), plus picture/chapter limits. `--all` includes
@@ -89,16 +90,25 @@ Install the binary with `go install github.com/colespringer/waxlabel/cmd/waxlabe
 - **`copy <source> <dest>`** - copy `source`'s canonical metadata onto `dest`
   (across formats), rewriting `dest` in place. Each value is carried, downgraded,
   or dropped per `dest`'s capabilities; that loss report prints first. The copy
-  overlays the source (keys only in `dest` are kept). `--dry-run` writes nothing.
+  overlays the source (keys only in `dest` are kept). `--dry-run` previews the
+  result without writing.
 - **`diff <a> <b>`** - compare two files' canonical metadata (added/removed/changed
   keys, picture/chapter deltas). `--quiet` reports through the exit code only.
 
 Edits: `--set KEY=VALUE` (replace), `--add KEY=VALUE` (append, for multi-value),
 `--clear KEY` (remove), `--strip-encoder`, `--add-cover FILE` (`--force` to embed a
-file whose header is not a recognized image), `--remove-pictures`. Write policy:
+file whose header is not a recognized image), `--remove-pictures`. By default `set`
+and `plan` note an unknown key (written as a custom field) or a single-valued key
+given multiple values on stderr and continue; `--strict` makes either one fail
+(exit 2) instead. Write policy:
 `--preset preserve|compatible|canonical|minimal`, `--legacy ...`. The read commands
 (`dump`, `verify`, `lint`, and a `diff` operand) accept a single `-` to read
-standard input. Every command accepts `--json` for scriptable output.
+standard input; `dump`, `verify`, and `lint` (like `set` and `plan`) walk directory
+arguments with `--recursive`. Every command accepts `--json` for scriptable output:
+the list commands (`dump`, `verify`, `lint`, `set`, `plan`, and `caps` over files)
+emit a JSON array - one element per input, `[]` when none - so a consumer iterates
+(or `jq '.[]'`) regardless of count, while `diff`, `copy`, and `caps --format` emit
+a single object.
 
 `ENCODER` is the canonical key for the encoding software/tool (the transcoder
 stamp, e.g. ID3 `TSSE` or MP4 `©too`), distinct from `ENCODEDBY` (the encoding
@@ -150,7 +160,7 @@ A small set of contracts is stable:
 | MP3 | ID3v2/v1 | yes | yes | ID3v2.2/2.3/2.4 read+write (version preserved); ID3v1/APEv2 read into the family view; numeric genre; VBR length |
 | WAV | RIFF | yes | yes | LIST/INFO + embedded `id3 ` chunk; id3 authoritative when present, else INFO; pictures via id3; all chunks preserved; RF64/BW64 out of scope |
 | MP4 | AAC/ALAC | yes | yes | iTunes `moov.udta.meta.ilst` (text, trkn/disk, covr art, `----` freeform long tail); `free`-atom reuse + all-track `stco`/`co64` fixups; `chpl` preserved; fragmented (moof) rejected |
-| Matroska | FLAC/Opus/Vorbis/AAC/... | yes | yes | `.mka`/`.webm`/`.mkv`; scope-aware SimpleTag projection (album/track/edition/chapter) + `Info.Title` + cover-art attachments; canonical edits at album scope, other scopes preserved verbatim; size change absorbed into a reserved Void (else tail shifted with Cues/SeekHead/CRC fixups), clusters byte-identical; cover write refused for WebM; chapters and cluster rewrite out of scope |
+| Matroska | FLAC/Opus/Vorbis/AAC/... | yes | yes | `.mka`/`.webm`/`.mkv`; scope-aware SimpleTag projection (album/track/edition/chapter) + `Info.Title` + cover-art attachments; canonical edits written at album scope and removed from any other scope that held the key (unedited scoped tags preserved verbatim); size change absorbed into a reserved Void (else tail shifted with Cues/SeekHead/CRC fixups), clusters byte-identical; cover write refused for WebM; chapters and cluster rewrite out of scope |
 | AIFF | PCM (AIFF-C) | yes | yes | native NAME/AUTH/`(c) `/ANNO chunks + embedded `ID3 ` chunk; ID3 authoritative when present, else native; pictures via ID3; 80-bit COMM rate; AIFF-C + `id3 ` variant; all chunks preserved |
 
 Ogg writes preserve audio *packet payloads* byte-for-byte (Ogg re-pagination is

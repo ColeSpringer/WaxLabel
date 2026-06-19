@@ -86,6 +86,70 @@ func TestLintDuplicatePicture(t *testing.T) {
 	}
 }
 
+func TestLintSingleValuedMulti(t *testing.T) {
+	// A single-valued key (ENCODER) carrying two values - the read-side symptom of
+	// a transcoded or multi-scope file - is flagged as a warning. A multivalued key
+	// (ARTIST) given two values is not.
+	doc := mustParseBytes(t, writeBack(t, "testdata/notags.flac", func(e *wl.Editor) {
+		e.Set(tag.Encoder, "Lavf", "Lavc")
+		e.Set(tag.Artist, "A", "B")
+	}))
+	var found *wl.Finding
+	findings := doc.Lint()
+	for i := range findings {
+		if findings[i].Code == "single-valued-multi" {
+			found = &findings[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected single-valued-multi finding; got %v", findingCodes(findings))
+	}
+	if found.Key != tag.Encoder {
+		t.Errorf("single-valued-multi Key = %q, want ENCODER (ARTIST is multivalued and exempt)", found.Key)
+	}
+}
+
+func TestLintCustomKeyMultiValueNotFlagged(t *testing.T) {
+	// A custom key with several values is legitimate - it has no typed accessor that
+	// would lose data, so it gets only the info-level custom-key finding, never the
+	// single-valued-multi warning (which exists for the typed projection's
+	// first-only read of known keys).
+	doc := mustParseBytes(t, writeBack(t, "testdata/notags.flac", func(e *wl.Editor) {
+		e.Set(tag.Key("MY_CUSTOM_FIELD"), "a", "b")
+	}))
+	codes := findingCodes(doc.Lint())
+	if codes["single-valued-multi"] {
+		t.Error("a custom multi-valued key was wrongly flagged single-valued-multi")
+	}
+	if !codes["custom-key"] {
+		t.Errorf("a custom key should still get the custom-key info finding; got %v", codes)
+	}
+}
+
+func TestLintCustomKeyIsInfo(t *testing.T) {
+	// A custom (non-vocabulary) key is reported at info severity, so it never flips
+	// a clean file to a non-zero exit - it is purely advisory.
+	doc := mustParseBytes(t, writeBack(t, "testdata/notags.flac", func(e *wl.Editor) {
+		e.Set(tag.Key("MY_CUSTOM_FIELD"), "x")
+	}))
+	var found *wl.Finding
+	findings := doc.Lint()
+	for i := range findings {
+		if findings[i].Code == "custom-key" {
+			found = &findings[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected custom-key finding; got %v", findingCodes(findings))
+	}
+	if found.Severity != wl.LintInfo {
+		t.Errorf("custom-key severity = %v, want info", found.Severity)
+	}
+	if found.Key != tag.Key("MY_CUSTOM_FIELD") {
+		t.Errorf("custom-key Key = %q, want MY_CUSTOM_FIELD", found.Key)
+	}
+}
+
 func TestLintClean(t *testing.T) {
 	// A freshly written file with one good date and no legacy noise should be
 	// clean.

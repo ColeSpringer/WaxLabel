@@ -98,6 +98,17 @@ func (k Key) Description() string { return vocabulary[k] }
 // MaxValues, not here.
 func (k Key) Multivalued() bool { return multivalued[k] }
 
+// SingleValuedMulti reports whether holding count values violates the key's
+// single-valued cardinality: it is a known, single-valued key - so the typed [Tags]
+// projection would read only the first value - being given more than one. A
+// multivalued key, or a custom (unknown) key (which has no typed accessor and no
+// enforced cardinality), is never a violation. It is the shared predicate behind
+// the linter's single-valued-multi finding and the set/plan --strict guardrail, so
+// the two cannot drift apart on the rule.
+func (k Key) SingleValuedMulti(count int) bool {
+	return count > 1 && k.Known() && !k.Multivalued()
+}
+
 func (k Key) String() string { return string(k) }
 
 // KnownKeys returns the published canonical vocabulary in a stable, sorted order.

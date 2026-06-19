@@ -582,6 +582,7 @@ const (
 	idCluster     = 0x1F43B675
 	idTimestamp   = 0xE7
 	idSimpleBlock = 0xA3
+	idCRC32       = 0xBF
 	idTags        = 0x1254C367
 	idTag         = 0x7373
 	idTargets     = 0x63C0

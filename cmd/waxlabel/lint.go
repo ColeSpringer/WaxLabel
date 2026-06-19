@@ -26,6 +26,7 @@ var errLintFindings = errors.New("issues found")
 // remediations and saves.
 func newLintCmd() *cobra.Command {
 	var fix bool
+	var recursive bool
 	cmd := &cobra.Command{
 		Use:   "lint <file>...",
 		Short: "Report metadata issues (and optionally fix the safe ones)",
@@ -37,20 +38,24 @@ func newLintCmd() *cobra.Command {
 			"With --fix, apply only the safe, non-destructive remediations - clearing\n" +
 			"the encoder stamp and stripping legacy containers - then save in place,\n" +
 			"reporting what changed. Pictures are never dropped automatically; every\n" +
-			"finding --fix does not address is reported as \"not auto-fixed\". A single\n" +
+			"finding --fix does not address is reported as \"not auto-fixed\". With\n" +
+			"--recursive, directory arguments are walked for audio files. A single\n" +
 			"\"-\" reads from standard input (read-only; not valid with --fix).",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			paths := expandPaths(args, recursive)
+			noteNoFiles(cmd.ErrOrStderr(), paths)
 			if fix {
-				if slices.Contains(args, stdinArg) {
+				if slices.Contains(paths, stdinArg) {
 					return usagef("cannot fix standard input; --fix writes changes back to a file")
 				}
-				return runLintFix(cmd, args)
+				return runLintFix(cmd, paths)
 			}
-			return runLint(cmd, args)
+			return runLint(cmd, paths)
 		},
 	}
 	cmd.Flags().BoolVar(&fix, "fix", false, "apply the safe, non-destructive fixes and save in place")
+	cmd.Flags().BoolVar(&recursive, "recursive", false, "recurse into directory arguments, linting every audio file found")
 	return cmd
 }
 
@@ -177,14 +182,15 @@ func runLintFix(cmd *cobra.Command, paths []string) error {
 	)
 }
 
-// fixOutcome is one file's lint --fix result: the field-level changes applied,
-// the findings that still remain afterward, and whether the save committed new
-// bytes.
+// fixOutcome is one file's lint --fix result: the field-level changes applied, the
+// structural operations performed (e.g. stripping a legacy ID3v1 trailer), the
+// findings that still remain afterward, and whether the save committed new bytes.
 type fixOutcome struct {
-	path      string
-	changes   []tag.Change
-	remaining []wl.Finding
-	committed bool
+	path       string
+	changes    []tag.Change
+	operations []string
+	remaining  []wl.Finding
+	committed  bool
 }
 
 // lintFixOne parses path, applies the safe remediation, saves in place, then
@@ -221,10 +227,11 @@ func lintFixOne(ctx context.Context, path string) (fixOutcome, error) {
 		remaining = doc.Lint()
 	}
 	return fixOutcome{
-		path:      path,
-		changes:   plan.Changes(),
-		remaining: remaining,
-		committed: res.Committed,
+		path:       path,
+		changes:    plan.Changes(),
+		operations: plan.Report().Operations,
+		remaining:  remaining,
+		committed:  res.Committed,
 	}, nil
 }
 
@@ -232,12 +239,18 @@ func lintFixOne(ctx context.Context, path string) (fixOutcome, error) {
 // "nothing to fix"), the findings it left for the user, and the save outcome.
 func renderLintFix(w io.Writer, o fixOutcome) {
 	fmt.Fprintf(w, "%s\n", o.path)
-	if len(o.changes) == 0 {
+	// A legacy-container strip is a structural operation with no field change, so
+	// "nothing to fix" holds only when both the changes and the operations are empty
+	// - otherwise the strip would be invisible (the README promises it is reported).
+	if len(o.changes) == 0 && len(o.operations) == 0 {
 		fmt.Fprintln(w, "  nothing to fix")
 	} else {
 		fmt.Fprintln(w, "  fixed:")
 		for _, c := range o.changes {
 			renderChangeLine(w, "    ", c)
+		}
+		for _, op := range o.operations {
+			fmt.Fprintf(w, "    - %s\n", op)
 		}
 	}
 	for _, f := range o.remaining {
@@ -276,6 +289,7 @@ type jsonLintFix struct {
 	File          string        `json:"file"`
 	Error         *jsonErrBody  `json:"error,omitempty"`
 	Changes       []jsonChange  `json:"changes,omitempty"`
+	Operations    []string      `json:"operations,omitempty"`
 	Remaining     []jsonFinding `json:"remaining,omitempty"`
 	Committed     bool          `json:"committed"`
 }
@@ -293,6 +307,7 @@ func toJSONLintFix(o fixOutcome) jsonLintFix {
 		SchemaVersion: schemaVersion,
 		File:          o.path,
 		Changes:       toJSONChanges(o.changes),
+		Operations:    o.operations,
 		Remaining:     toJSONFindings(o.remaining),
 		Committed:     o.committed,
 	}

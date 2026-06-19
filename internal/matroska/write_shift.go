@@ -6,6 +6,7 @@ import (
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -23,9 +24,9 @@ import (
 // (the plan's "fall back to a full re-encode"). A CueClusterPosition that would
 // overflow - astronomically rare, since cluster offsets are already wide - is
 // refused cleanly rather than corrupting the index.
-func planShift(d *doc, base, edited *core.Media, ch changes, report core.WriteReport) (*core.WritePlan, error) {
+func planShift(d *doc, base, edited *core.Media, ch changes, ek map[tag.Key]bool, report core.WriteReport) (*core.WritePlan, error) {
 	wb := d.wb
-	r, err := renderChanged(d, base, edited, ch)
+	r, err := renderChanged(d, base, edited, ch, ek)
 	if err != nil {
 		return nil, err
 	}

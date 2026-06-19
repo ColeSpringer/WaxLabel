@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -86,6 +87,30 @@ func TestLintFixFullyCleans(t *testing.T) {
 	}
 	if _, _, code := runCLI(t, "lint", file); code != 0 {
 		t.Errorf("re-lint after fix exit = %d, want 0 (clean)", code)
+	}
+}
+
+// TestLintFixReportsOperations: --fix surfaces the structural operations it
+// performed (stripping a legacy ID3v1 trailer), not just the field changes -
+// otherwise a legacy-container strip is invisible despite being saved.
+func TestLintFixReportsOperations(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, sampleMP3) // carries an ID3v1 trailer that --fix strips
+	out, _, _ := runCLI(t, "lint", "--fix", file)
+	if !strings.Contains(out, "stripped ID3v1") {
+		t.Errorf("--fix text output missing the ID3v1 strip operation:\n%s", out)
+	}
+}
+
+// TestLintFixJSONOperations: the structural operations also appear in the JSON
+// result's operations array, bringing --fix in line with plan/set.
+func TestLintFixJSONOperations(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, sampleMP3)
+	out, _, _ := runCLI(t, "--json", "lint", "--fix", file)
+	jf := decodeJSONOne[jsonLintFix](t, out)
+	if !slices.Contains(jf.Operations, "stripped ID3v1") {
+		t.Errorf("--fix JSON operations missing the ID3v1 strip: %v", jf.Operations)
 	}
 }
 

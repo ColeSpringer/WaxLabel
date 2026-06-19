@@ -13,13 +13,15 @@ import (
 // is reported (and reflected in the exit code) without aborting the rest.
 func newDumpCmd() *cobra.Command {
 	var native bool
+	var recursive bool
 	cmd := &cobra.Command{
 		Use:   "dump <file>...",
 		Short: "Show a file's tags, properties, pictures, and warnings",
 		Long: "Parse each file and print its canonical tags, audio properties, embedded\n" +
 			"pictures, and any parse warnings. With --native, also show the native\n" +
 			"metadata blocks and the per-source (family) view that records which\n" +
-			"container supplied each value. A single \"-\" reads from standard input.",
+			"container supplied each value. With --recursive, directory arguments are\n" +
+			"walked for audio files. A single \"-\" reads from standard input.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			realOf, cleanup, err := readInputs(cmd.InOrStdin(), args)
@@ -27,7 +29,9 @@ func newDumpCmd() *cobra.Command {
 				return err
 			}
 			defer cleanup()
-			return perFile(cmd, args,
+			paths := expandPaths(args, recursive)
+			noteNoFiles(cmd.ErrOrStderr(), paths)
+			return perFile(cmd, paths,
 				func(ctx context.Context, path string) (*wl.Document, error) {
 					return wl.ParseFile(ctx, realOf(path))
 				},
@@ -40,6 +44,7 @@ func newDumpCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&native, "native", false, "include native blocks and the per-source (family) view")
+	cmd.Flags().BoolVar(&recursive, "recursive", false, "recurse into directory arguments, dumping every audio file found")
 	return cmd
 }
 

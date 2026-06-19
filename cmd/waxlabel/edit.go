@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
+	"slices"
 	"strings"
 
 	wl "github.com/colespringer/waxlabel"
@@ -35,6 +37,8 @@ type editFlags struct {
 
 	preset string
 	legacy string
+
+	strict bool // promote the unknown-key and single-valued-multi notes to errors
 }
 
 // bind registers the edit and write-option flags on cmd.
@@ -49,6 +53,7 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear the ENCODER software stamp (the transcoder leftover)")
 	f.StringVar(&e.preset, "preset", "", "write policy preset: preserve|compatible|canonical|minimal")
 	f.StringVar(&e.legacy, "legacy", "", "legacy-tag policy: preserve|strip|reconcile|update-existing")
+	f.BoolVar(&e.strict, "strict", false, "fail (exit 2) on an unknown key or a single-valued key given multiple values, instead of noting it")
 }
 
 // patch compiles -set/-add/-clear into a presence-aware patch. A malformed
@@ -172,10 +177,11 @@ var legacyOptions = map[string]wl.LegacyPolicy{
 // them to each file via prepare, so flag and cover validation happens once - not
 // once per file.
 type compiledEdit struct {
-	patch  tag.TagPatch
-	opts   []wl.WriteOption
-	covers []wl.Picture
-	rmPics bool
+	patch       tag.TagPatch
+	opts        []wl.WriteOption
+	covers      []wl.Picture
+	rmPics      bool
+	unknownKeys []tag.Key // --set/--add keys outside the canonical vocabulary, first-seen order
 }
 
 // compile resolves the edit flags into a compiledEdit, surfacing any usage error
@@ -195,7 +201,119 @@ func (e *editFlags) compile(extra ...wl.WriteOption) (*compiledEdit, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &compiledEdit{patch: patch, opts: opts, covers: covers, rmPics: e.rmPics}, nil
+	return &compiledEdit{patch: patch, opts: opts, covers: covers, rmPics: e.rmPics, unknownKeys: e.unknownAssignKeys()}, nil
+}
+
+// unknownAssignKeys returns the --set/--add keys outside the published canonical
+// vocabulary, in first-seen order with no duplicates. These are written as custom
+// fields, which a command surfaces as a note (or, under --strict, an error);
+// --clear is exempt, since clearing a stray key is harmless. The raw assignments
+// have already been validated by patch(), so a re-parse cannot fail here.
+func (e *editFlags) unknownAssignKeys() []tag.Key {
+	var out []tag.Key
+	seen := map[tag.Key]bool{}
+	for _, kv := range slices.Concat(e.set, e.add) {
+		k, _, err := splitAssign(kv)
+		if err != nil || k.Known() || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, k)
+	}
+	return out
+}
+
+// guardrailKeys applies the policy shared by every key-based edit guardrail: no
+// keys is a pass; under strict the keys are a usage error (built by strictErr);
+// under --json the keys are suppressed (a note would corrupt the machine stream);
+// otherwise they are returned for the caller to note on stderr (applying any
+// per-key dedup itself). Centralizing the strict/JSON/empty branches keeps the
+// guardrails - unknown-key and single-valued-multi - from drifting on policy, so a
+// future change (e.g. emitting notes as JSON warnings) lands in one place.
+func guardrailKeys(keys []tag.Key, strict, asJSON bool, strictErr func([]tag.Key) error) (note []tag.Key, err error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	if strict {
+		return nil, strictErr(keys)
+	}
+	if asJSON {
+		return nil, nil
+	}
+	return keys, nil
+}
+
+// notifyUnknownKeys handles the invocation-level unknown-key guardrail once,
+// before any file is processed: with strict it is a usage error (exit 2, nothing
+// touched); otherwise each unknown --set/--add key is noted on stderr. Notes are
+// text-only and suppressed under --json (where they would corrupt the machine
+// stream); the strict error flows through the normal json-aware error path.
+func notifyUnknownKeys(errOut io.Writer, ce *compiledEdit, strict, asJSON bool) error {
+	note, err := guardrailKeys(ce.unknownKeys, strict, asJSON, func(ks []tag.Key) error {
+		return usagef("unknown key(s) not in the canonical vocabulary: %s (omit --strict to write them as custom fields)", keyList(ks))
+	})
+	for _, k := range note {
+		fmt.Fprintf(errOut, "note: %s is not a known key; written as a custom field\n", k)
+	}
+	return err
+}
+
+// singleValuedViolations returns the known single-valued keys a plan would store
+// with more than one value - the cardinality the writer faithfully preserves but a
+// typed reader would collapse to the first value. It reads the plan's field
+// changes, so it reflects exactly what saving would write. A custom (unknown) key
+// is exempt: it has no typed accessor and no canonical cardinality, so explicitly
+// giving it several values is legitimate - it is surfaced by the unknown-key note
+// instead, and double-flagging it as single-valued would contradict that.
+func singleValuedViolations(plan *wl.Plan) []tag.Key {
+	var out []tag.Key
+	for _, c := range plan.Changes() {
+		if c.Key.SingleValuedMulti(len(c.New)) {
+			out = append(out, c.Key)
+		}
+	}
+	return out
+}
+
+// singleValuedNotifier applies the per-file single-valued-multi guardrail for plan
+// and set, holding the run-wide dedup set so each offending key is reported once
+// across every file - a --recursive walk of 500 files notes ENCODER once, not 500
+// times. It is the per-file counterpart to notifyUnknownKeys.
+type singleValuedNotifier struct {
+	strict bool
+	asJSON bool
+	errOut io.Writer
+	noted  map[tag.Key]bool
+}
+
+func newSingleValuedNotifier(strict, asJSON bool, errOut io.Writer) *singleValuedNotifier {
+	return &singleValuedNotifier{strict: strict, asJSON: asJSON, errOut: errOut, noted: map[tag.Key]bool{}}
+}
+
+// check inspects one file's plan: under strict a violation is a usage error (so
+// the caller fails that file, exit 2); otherwise each newly-seen offending key is
+// noted on stderr (text-only, suppressed in JSON). It returns nil when the plan is
+// within cardinality, or after only printing notes.
+func (n *singleValuedNotifier) check(plan *wl.Plan) error {
+	note, err := guardrailKeys(singleValuedViolations(plan), n.strict, n.asJSON, func(ks []tag.Key) error {
+		return usagef("%s is single-valued but given multiple values (omit --strict to write them anyway)", keyList(ks))
+	})
+	for _, k := range note {
+		if !n.noted[k] {
+			n.noted[k] = true
+			fmt.Fprintf(n.errOut, "note: %s is single-valued but is being given multiple values\n", k)
+		}
+	}
+	return err
+}
+
+// keyList renders keys as a comma-separated string for a one-line message.
+func keyList(keys []tag.Key) string {
+	s := make([]string, len(keys))
+	for i, k := range keys {
+		s[i] = string(k)
+	}
+	return strings.Join(s, ", ")
 }
 
 // prepare parses path, applies the compiled edit, and resolves the write plan.
