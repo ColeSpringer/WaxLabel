@@ -644,3 +644,24 @@ func TestAIFFBareFileEditsGoNative(t *testing.T) {
 		t.Errorf("bare edit: title=%q comment=%q", got.Fields().Title, got.Fields().Comment)
 	}
 }
+
+// TestAIFFTruncatedSSNDWarns covers the truncation signal for AIFF: an SSND chunk
+// declaring more bytes than the file holds is flagged; an intact file is not.
+func TestAIFFTruncatedSSNDWarns(t *testing.T) {
+	t.Run("declared overruns file", func(t *testing.T) {
+		// The SSND header declares 100000 bytes but only the 8-byte sub-header plus a
+		// little audio follow.
+		ssndHdr := slices.Concat([]byte("SSND"), aiffBE32(100000))
+		data := aiffFile("AIFF", stdCOMM(), slices.Concat(ssndHdr, make([]byte, 8+200)))
+		doc := mustParseBytes(t, data)
+		if !hasWarning(doc, wl.WarnTruncatedAudio) {
+			t.Errorf("expected truncated-audio warning; got %v", doc.Warnings())
+		}
+	})
+	t.Run("intact file not flagged", func(t *testing.T) {
+		data := aiffFile("AIFF", stdCOMM(), aiffSSND(400))
+		if doc := mustParseBytes(t, data); hasWarning(doc, wl.WarnTruncatedAudio) {
+			t.Errorf("an intact AIFF must not be flagged truncated; got %v", doc.Warnings())
+		}
+	})
+}

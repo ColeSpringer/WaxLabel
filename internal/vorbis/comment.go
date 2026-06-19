@@ -168,16 +168,40 @@ func DiffKeys(base, edited tag.TagSet) map[tag.Key]bool {
 
 // EncoderNoise flags inherited transcoder stamps (e.g. ffmpeg's
 // "encoder=Lavf..." comment or vendor string), the typical signature of a file
-// acquired by transcoding.
+// acquired by transcoding. When the vendor string and an ENCODER comment carry the
+// identical stamp - ffmpeg writes the same "Lavf..." into both - they collapse
+// into one warning rather than reporting the same value twice.
 func EncoderNoise(vendor string, comments []Comment) []core.Warning {
 	var ws []core.Warning
-	if core.IsTranscoderStamp(vendor) {
+	vendorStamp := core.IsTranscoderStamp(vendor)
+	// Does an ENCODER comment repeat the vendor stamp verbatim?
+	vendorEchoed := false
+	if vendorStamp {
+		for _, cm := range comments {
+			// Match case-insensitively: a transcoder writes the same stamp into both,
+			// and a casing difference between the two should still collapse to one note.
+			if strings.EqualFold(cm.Name, "ENCODER") && strings.EqualFold(cm.Value, vendor) {
+				vendorEchoed = true
+				break
+			}
+		}
+	}
+	switch {
+	case vendorStamp && vendorEchoed:
+		ws = core.Warn(ws, core.WarnInheritedEncoder,
+			"transcoder stamp in vendor string and encoder comment: "+vendor)
+	case vendorStamp:
 		ws = core.Warn(ws, core.WarnInheritedEncoder, "vendor string is a transcoder stamp: "+vendor)
 	}
 	for _, cm := range comments {
-		if strings.EqualFold(cm.Name, "ENCODER") && core.IsTranscoderStamp(cm.Value) {
-			ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder comment: "+cm.Value)
+		if !strings.EqualFold(cm.Name, "ENCODER") || !core.IsTranscoderStamp(cm.Value) {
+			continue
 		}
+		// Skip the comment already folded into the combined warning above.
+		if vendorEchoed && strings.EqualFold(cm.Value, vendor) {
+			continue
+		}
+		ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder comment: "+cm.Value)
 	}
 	return ws
 }

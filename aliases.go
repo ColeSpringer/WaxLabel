@@ -182,6 +182,7 @@ const (
 	WarnChapterTitleTruncated = core.WarnChapterTitleTruncated
 	WarnChaptersFlattened     = core.WarnChaptersFlattened
 	WarnNoAudioFrames         = core.WarnNoAudioFrames
+	WarnTruncatedAudio        = core.WarnTruncatedAudio
 )
 
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated

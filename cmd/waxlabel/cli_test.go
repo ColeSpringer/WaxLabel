@@ -65,10 +65,10 @@ func tagValues(jd jsonDocument, key string) []string {
 	return nil
 }
 
-// decodeJSONList unmarshals a list command's --json output into a slice. Since
-// schemaVersion 3 the list commands (dump/verify/lint/set/plan, and caps over
-// files) always emit a JSON array, so this is the single decode path for their
-// output; callers assert the element count they expect.
+// decodeJSONList unmarshals a list command's --json output into a slice. The list
+// commands (dump/verify/lint/set/plan, and caps over files) always emit a JSON
+// array, so this is the single decode path for their output; callers assert the
+// element count they expect.
 func decodeJSONList[T any](t *testing.T, data string) []T {
 	t.Helper()
 	var arr []T
@@ -105,6 +105,29 @@ func TestDumpText(t *testing.T) {
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("dump output missing %q\n--- got ---\n%s", want, out)
+		}
+	}
+}
+
+// TestDumpJSONCodecCanonical checks that properties.codec is the canonical,
+// container-neutral name while the container's raw spelling is preserved in
+// codecProfile (and omitted when the raw name was already canonical).
+func TestDumpJSONCodecCanonical(t *testing.T) {
+	t.Parallel()
+	sampleOpus := filepath.Join("..", "..", "testdata", "sample.opus")
+	cases := []struct{ file, codec, profile string }{
+		{sampleM4B, "AAC", "mp4a"},   // MP4 fourcc preserved under canonical AAC
+		{sampleFLAC, "FLAC", "flac"}, // FLAC's lowercase preserved
+		{sampleOpus, "Opus", ""},     // already canonical: no profile
+	}
+	for _, c := range cases {
+		out, _, code := runCLI(t, "dump", c.file, "--json")
+		if code != 0 {
+			t.Fatalf("%s: exit = %d\n%s", c.file, code, out)
+		}
+		jd := decodeJSONOne[jsonDocument](t, out)
+		if jd.Properties == nil || jd.Properties.Codec != c.codec || jd.Properties.CodecProfile != c.profile {
+			t.Errorf("%s: codec=%q profile=%q, want %q/%q", c.file, jd.Properties.Codec, jd.Properties.CodecProfile, c.codec, c.profile)
 		}
 	}
 }
@@ -755,6 +778,10 @@ func TestDumpStdin(t *testing.T) {
 	}
 	if strings.Contains(out, "waxlabel-stdin") {
 		t.Errorf("the buffered-stdin temp path leaked into output:\n%s", out)
+	}
+	// The text record header reads "<stdin>", not the bare "-" argument.
+	if !strings.Contains(out, "<stdin>") {
+		t.Errorf("dump - header should read <stdin>:\n%s", out)
 	}
 }
 

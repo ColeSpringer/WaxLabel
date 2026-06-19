@@ -341,7 +341,7 @@ func TestMP4ChapterClearThenSetNoReparse(t *testing.T) {
 	if chs := re.Chapters(); len(chs) != 2 || chs[0].Title != "New One" {
 		t.Errorf("chapters wrong after clear-then-set: %+v", chs)
 	}
-	if got := re.Properties().First().Codec; got != "mp4a" {
+	if got := re.Properties().First().Codec; got != "AAC" {
 		t.Errorf("audio track corrupted by clear-then-set (mdia spliced over?): codec = %q", got)
 	}
 }

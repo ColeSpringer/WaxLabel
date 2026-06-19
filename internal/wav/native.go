@@ -79,6 +79,11 @@ type doc struct {
 
 	dataOff int64 // data chunk body offset (audio essence start)
 	dataLen int64 // data chunk body length (audio essence length)
+	// dataTruncated records that the data chunk's declared size ran past EOF (and was
+	// not the 0xFFFFFFFF "size unknown" streaming sentinel) - a truncated file. It is
+	// set where the walk already clamps the overrun, so the overrun is acted on where
+	// it is first known rather than reconstructed afterward.
+	dataTruncated bool
 
 	// trailingOff/trailingLen capture leftover bytes inside the RIFF chunk after
 	// the last well-formed chunk (rare: a corrupt region), preserved verbatim and

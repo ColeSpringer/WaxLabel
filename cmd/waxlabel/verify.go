@@ -76,7 +76,7 @@ func computeVerify(ctx context.Context, realPath, displayPath string, whole bool
 }
 
 func renderVerify(w io.Writer, v jsonVerify, whole bool) {
-	fmt.Fprintf(w, "%s\n", v.File)
+	fmt.Fprintf(w, "%s\n", displayName(v.File))
 	fmt.Fprintf(w, "  essence:    %s\n", v.Essence)
 	if whole {
 		fmt.Fprintf(w, "  whole-file: %s\n", v.WholeFile)

@@ -68,6 +68,7 @@ type jsonDocument struct {
 type jsonProperties struct {
 	Container     string `json:"container,omitempty"`
 	Codec         string `json:"codec,omitempty"`
+	CodecProfile  string `json:"codecProfile,omitempty"` // container's raw spelling when it differs (e.g. "mp4a")
 	SampleRate    int    `json:"sampleRate,omitempty"`
 	Channels      int    `json:"channels,omitempty"`
 	BitsPerSample int    `json:"bitsPerSample,omitempty"`
@@ -120,6 +121,7 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 		Properties: &jsonProperties{
 			Container:     props.Container,
 			Codec:         t.Codec,
+			CodecProfile:  t.CodecProfile,
 			SampleRate:    t.SampleRate,
 			Channels:      t.Channels,
 			BitsPerSample: t.BitsPerSample,

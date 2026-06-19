@@ -86,6 +86,11 @@ type doc struct {
 
 	audioOff int64 // SSND sample-frame start (audio essence start)
 	audioEnd int64 // SSND body end (audio essence end)
+	// ssndTruncated records that the SSND chunk's declared size ran past EOF (and was
+	// not the 0xFFFFFFFF "size unknown" sentinel) - a truncated file. It is set where
+	// the walk already clamps the overrun, so the overrun is acted on where it is
+	// first known rather than reconstructed afterward.
+	ssndTruncated bool
 
 	// trailingOff/trailingLen capture leftover bytes inside the FORM chunk after
 	// the last well-formed chunk (rare: a corrupt region), preserved verbatim and

@@ -185,3 +185,14 @@ func writeBack(t *testing.T, fixture string, edit func(*wl.Editor)) []byte {
 type writerTo struct{ b []byte }
 
 func (w *writerTo) Write(p []byte) (int, error) { w.b = append(w.b, p...); return len(p), nil }
+
+func TestLintTruncatedAudio(t *testing.T) {
+	// A WAV whose data chunk declares far more than the file holds surfaces the
+	// parse-time truncated-audio warning as a lint finding.
+	dataHdr := append([]byte("data"), wavLE32(100000)...)
+	data := wavFile(wavFmtPCM(), append(dataHdr, make([]byte, 200)...))
+	codes := findingCodes(mustParseBytes(t, data).Lint())
+	if !codes["truncated-audio"] {
+		t.Errorf("expected truncated-audio finding; got %v", codes)
+	}
+}

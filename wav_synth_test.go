@@ -443,3 +443,52 @@ func TestWAVClearAllRemovesInfoChunk(t *testing.T) {
 		t.Errorf("expected no tags after clear, got %d", got.Tags().Len())
 	}
 }
+
+// TestWAVTruncatedDataChunkWarns covers the cross-format truncation signal: a data
+// chunk that declares more bytes than the file holds is flagged, while the
+// streaming "size unknown" sentinel a real piped capture carries is not.
+func TestWAVTruncatedDataChunkWarns(t *testing.T) {
+	t.Run("declared overruns file", func(t *testing.T) {
+		// The data header declares 100000 bytes but only 200 follow.
+		dataHdr := slices.Concat([]byte("data"), wavLE32(100000))
+		data := wavFile(wavFmtPCM(), slices.Concat(dataHdr, make([]byte, 200)))
+		doc := mustParseBytes(t, data)
+		if !hasWarning(doc, wl.WarnTruncatedAudio) {
+			t.Errorf("expected truncated-audio warning; got %v", doc.Warnings())
+		}
+		// A truncated file still has some essence, so it must not also read as no-audio.
+		if hasWarning(doc, wl.WarnNoAudioFrames) {
+			t.Errorf("a partly-present data chunk should not warn no-audio; got %v", doc.Warnings())
+		}
+	})
+	t.Run("streaming sentinel not flagged", func(t *testing.T) {
+		// 0xFFFFFFFF means "size unknown" - the audio is whatever follows, not a
+		// truncation. (A 0 size is the other sentinel; it reads as no-audio instead.)
+		dataHdr := slices.Concat([]byte("data"), wavLE32(int(^uint32(0))))
+		data := wavFile(wavFmtPCM(), slices.Concat(dataHdr, make([]byte, 400)))
+		doc := mustParseBytes(t, data)
+		if hasWarning(doc, wl.WarnTruncatedAudio) {
+			t.Errorf("a streaming-sentinel data size must not be flagged truncated; got %v", doc.Warnings())
+		}
+	})
+	t.Run("intact file not flagged", func(t *testing.T) {
+		data := wavFile(wavFmtPCM(), wavData(400))
+		if doc := mustParseBytes(t, data); hasWarning(doc, wl.WarnTruncatedAudio) {
+			t.Errorf("an intact WAV must not be flagged truncated; got %v", doc.Warnings())
+		}
+	})
+	t.Run("zero essence reports only no-audio", func(t *testing.T) {
+		// The data header declares 100000 bytes but the file ends at the header, so
+		// zero essence survives. no-audio subsumes truncated for the nothing-at-all
+		// case: the file must report no-audio and not also truncated-audio.
+		dataHdr := slices.Concat([]byte("data"), wavLE32(100000))
+		data := wavFile(wavFmtPCM(), dataHdr)
+		doc := mustParseBytes(t, data)
+		if !hasWarning(doc, wl.WarnNoAudioFrames) {
+			t.Errorf("a zero-essence file should report no-audio; got %v", doc.Warnings())
+		}
+		if hasWarning(doc, wl.WarnTruncatedAudio) {
+			t.Errorf("no-audio subsumes truncated for zero essence; got %v", doc.Warnings())
+		}
+	})
+}

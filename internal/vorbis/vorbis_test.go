@@ -2,6 +2,7 @@ package vorbis
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/colespringer/waxlabel/tag"
@@ -90,4 +91,37 @@ func TestRebuildMinimalChange(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("rebuild = %v\n            want %v", got, want)
 	}
+}
+
+// TestEncoderNoiseDeduplicatesVendorEcho checks that a transcoder stamp appearing
+// in both the vendor string and an ENCODER comment is reported once, while a
+// distinct stamp in each is reported twice.
+func TestEncoderNoiseDeduplicatesVendorEcho(t *testing.T) {
+	t.Run("same value collapses to one", func(t *testing.T) {
+		ws := EncoderNoise("Lavf60.3.100", []Comment{{"ENCODER", "Lavf60.3.100"}})
+		if len(ws) != 1 {
+			t.Fatalf("got %d warnings, want 1: %v", len(ws), ws)
+		}
+		if !strings.Contains(ws[0].Message, "vendor string and encoder comment") {
+			t.Errorf("combined message = %q", ws[0].Message)
+		}
+	})
+	t.Run("case-variant value still collapses", func(t *testing.T) {
+		ws := EncoderNoise("Lavf60.3.100", []Comment{{"ENCODER", "lavf60.3.100"}})
+		if len(ws) != 1 {
+			t.Fatalf("got %d warnings, want 1 (case-insensitive dedup): %v", len(ws), ws)
+		}
+	})
+	t.Run("distinct values stay separate", func(t *testing.T) {
+		ws := EncoderNoise("Lavf60.3.100", []Comment{{"ENCODER", "Lavf58.0.0"}})
+		if len(ws) != 2 {
+			t.Fatalf("got %d warnings, want 2: %v", len(ws), ws)
+		}
+	})
+	t.Run("encoder comment only", func(t *testing.T) {
+		ws := EncoderNoise("normal vendor", []Comment{{"ENCODER", "libavformat 60"}})
+		if len(ws) != 1 {
+			t.Fatalf("got %d warnings, want 1: %v", len(ws), ws)
+		}
+	})
 }

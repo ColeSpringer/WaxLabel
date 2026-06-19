@@ -15,12 +15,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// schemaVersion tags JSON output so scripts can detect shape changes. v3 makes
-// the list commands (dump/verify/lint/set/plan, and caps over files) always emit
-// a JSON array - even for a single path - so a consumer can iterate the output
-// uniformly; diff and copy stay single objects. (v2 added per-file schemaVersion
-// and the write plan's field-level "changes" list.)
-const schemaVersion = 3
+// schemaVersion tags JSON output so a consumer can detect shape changes. It stays
+// pinned at 1 through the pre-1.0 series: there are no released consumers to keep
+// compatible, so the shape is still settling and bumping it would imply a stability
+// the format does not yet promise. It starts moving at the v1.0 freeze, when the
+// JSON shape becomes a compatibility surface worth versioning.
+const schemaVersion = 1
 
 // writeJSON writes v as indented JSON followed by a newline.
 func writeJSON(w io.Writer, v any) error {

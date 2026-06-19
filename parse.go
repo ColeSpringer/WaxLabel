@@ -3,13 +3,13 @@ package waxlabel
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/id3"
 	"github.com/colespringer/waxlabel/waxerr"
 
-	// Register the codecs. They are internal through v0.x; the blank import
-	// wires them into the detection registry.
+	// Register the codecs
 	_ "github.com/colespringer/waxlabel/internal/aac"
 	_ "github.com/colespringer/waxlabel/internal/aiff"
 	_ "github.com/colespringer/waxlabel/internal/flac"
@@ -67,11 +67,28 @@ func parseSource(ctx context.Context, src ReaderAtSized, path string, opts core.
 	if err != nil {
 		return nil, err
 	}
+	// Canonicalize codec names once, here, so the same codec reads identically across
+	// containers in the text view, JSON, and the library model. Each codec keeps
+	// emitting its container's raw name; the raw detail (fourcc, object type, MPEG
+	// version) is preserved in CodecProfile. The native-blocks view keeps the raw name
+	// (it intentionally shows container structure).
+	for i := range media.Properties.Tracks {
+		t := &media.Properties.Tracks[i]
+		t.Codec, t.CodecProfile = core.CanonicalCodec(t.Codec)
+	}
 	// "No audio essence" is one cross-format concept: surface it here, off the same
 	// predicate the digest guard uses, so dump/lint flag a tag-only or truncated
 	// file for every format - and always agree with verify (which refuses to hash
 	// it). This replaces the former MP3-only frame-scan warning.
 	if noEssence(media.EssenceRanges()) {
+		// Zero essence is "no-audio", which subsumes a truncation: a codec that flagged
+		// truncated-audio saw a declared size but nothing survived, so drop that warning
+		// here (EssenceRanges accounts for each format's sub-headers, e.g. AIFF's SSND
+		// offset) and report the one root cause. truncated-audio is the some-but-not-all
+		// case; no-audio owns nothing-at-all.
+		media.Warnings = slices.DeleteFunc(media.Warnings, func(w core.Warning) bool {
+			return w.Code == core.WarnTruncatedAudio
+		})
 		media.Warnings = core.Warn(media.Warnings, core.WarnNoAudioFrames,
 			"no audio essence found; file may be tag-only or truncated")
 	}

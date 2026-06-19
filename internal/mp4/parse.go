@@ -55,6 +55,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			return nil, fmt.Errorf("%w: fragmented MP4 (moof) is not supported", waxerr.ErrUnsupportedFormat)
 		case "mdat":
 			d.mdats = append(d.mdats, [2]int64{a.payloadOff(), a.size - a.headerLen})
+			if a.truncated {
+				d.mdatTruncated = true
+			}
 		case "moov":
 			moov, haveMoov = a, true
 		}
@@ -122,6 +125,10 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	if chapterConflict {
 		media.Warnings = core.Warn(media.Warnings, core.WarnChapterSourceConflict,
 			"the Nero chpl list and the QuickTime chapter text track disagree")
+	}
+	// An mdat atom declared more bytes than the file holds: a truncated MP4.
+	if d.mdatTruncated {
+		media.Warnings = core.WarnTruncated(media.Warnings, "an mdat atom")
 	}
 	media.Properties = core.Properties{Container: "MP4", Tracks: []core.AudioTrack{d.track}}
 	setEssence(d, media)

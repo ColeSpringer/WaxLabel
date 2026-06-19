@@ -78,6 +78,8 @@ func lintWarnings(ws []core.Warning) []Finding {
 			out = append(out, Finding{LintWarning, "invalid-picture", w.Message, ""})
 		case core.WarnNoAudioFrames:
 			out = append(out, Finding{LintError, "no-audio", w.Message, ""})
+		case core.WarnTruncatedAudio:
+			out = append(out, Finding{LintWarning, "truncated-audio", w.Message, ""})
 		}
 	}
 	return out

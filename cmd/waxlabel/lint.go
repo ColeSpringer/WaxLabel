@@ -157,7 +157,7 @@ func runLint(cmd *cobra.Command, paths []string) error {
 
 // renderLint prints one file's findings, one per line, or "no issues" when clean.
 func renderLint(w io.Writer, path string, findings []wl.Finding) {
-	fmt.Fprintf(w, "%s\n", path)
+	fmt.Fprintf(w, "%s\n", displayName(path))
 	if len(findings) == 0 {
 		fmt.Fprintln(w, "  no issues")
 		return
@@ -238,6 +238,8 @@ func lintFixOne(ctx context.Context, path string) (fixOutcome, error) {
 // renderLintFix prints what --fix did to one file: the fields it changed (or
 // "nothing to fix"), the findings it left for the user, and the save outcome.
 func renderLintFix(w io.Writer, o fixOutcome) {
+	// --fix rejects "-" (stdin) up front (see newLintCmd), so o.path is always a real
+	// file - no "<stdin>" relabel is possible here, unlike the other record headers.
 	fmt.Fprintf(w, "%s\n", o.path)
 	// A legacy-container strip is a structural operation with no field change, so
 	// "nothing to fix" holds only when both the changes and the operations are empty

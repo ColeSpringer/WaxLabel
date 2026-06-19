@@ -3,6 +3,7 @@ package waxlabel_test
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"os"
 	"slices"
 	"testing"
@@ -350,4 +351,84 @@ func TestMP3V23MultiValueWarns(t *testing.T) {
 	if !slices.Equal(got, []string{"A", "B", "C"}) {
 		t.Errorf("multi-value artists round-trip = %v", got)
 	}
+}
+
+// mp3XingFrame builds an MPEG-1 Layer III stereo frame header (128 kbps, 44100 Hz)
+// followed by a Xing header declaring frameCount frames. It is intentionally left
+// far short of the frame's full ~417-byte length, so the declared duration (from
+// the Xing count) implies far more audio than the bytes present - the truncated-
+// VBR signature. The 48 bytes it spans are exactly the header + MPEG-1-stereo side
+// information + the Xing tag, flags, and frame count the parser reads.
+func mp3XingFrame(frameCount uint32) []byte {
+	b := []byte{0xFF, 0xFB, 0x90, 0x00} // MPEG-1 L3, 128 kbps, 44100 Hz, stereo
+	b = append(b, make([]byte, 32)...)  // side information (MPEG-1 stereo)
+	b = append(b, []byte("Xing")...)
+	b = append(b, 0, 0, 0, 1) // flags: frame-count present
+	fc := make([]byte, 4)
+	binary.BigEndian.PutUint32(fc, frameCount)
+	return append(b, fc...)
+}
+
+// mp3VBRStream builds `frames` valid consecutive MPEG-1 Layer III frames (128 kbps,
+// 44100 Hz, stereo, 417 bytes each, zero-filled after the header), with a Xing
+// header in the first frame declaring `declared` frames. Unlike mp3XingFrame's
+// 48-byte stub - which fails parseMPEG's two-frame consensus and so never reaches
+// the truncation guard - these full-length frames actually validate (>= 2 needed),
+// so a fixture with declared == frames exercises the guard's intact (>= 8 kbps,
+// no-warn) branch. 417 is the parser's own frame length for this header.
+func mp3VBRStream(frames int, declared uint32) []byte {
+	const frameLen = 417
+	out := make([]byte, 0, frames*frameLen)
+	for i := 0; i < frames; i++ {
+		f := make([]byte, frameLen)
+		f[0], f[1], f[2], f[3] = 0xFF, 0xFB, 0x90, 0x00
+		if i == 0 {
+			copy(f[36:40], "Xing") // after the 32-byte MPEG-1-stereo side information
+			f[43] = 1              // flags: frame-count present
+			binary.BigEndian.PutUint32(f[44:48], declared)
+		}
+		out = append(out, f...)
+	}
+	return out
+}
+
+// TestMP3TruncatedAfterXingWarns synthesizes a VBR MP3 whose Xing header survives
+// but whose frames are mostly gone (the report's head -c repro): the declared
+// frame count implies minutes of audio while only ~48 bytes are present, so the
+// average bitrate collapses below the MPEG floor and truncated-audio fires. An
+// intact VBR frame (padded to its real length) must not be flagged.
+func TestMP3TruncatedAfterXingWarns(t *testing.T) {
+	t.Run("frames missing after Xing", func(t *testing.T) {
+		data := append(id3v2(3, textFrame(3, "TIT2", "X")), mp3XingFrame(10000)...)
+		doc := mustParseBytes(t, data)
+		if doc.Format() != wl.FormatMP3 {
+			t.Fatalf("format = %v, want MP3", doc.Format())
+		}
+		if !hasWarning(doc, wl.WarnTruncatedAudio) {
+			t.Errorf("expected truncated-audio warning; got %v", doc.Warnings())
+		}
+	})
+	t.Run("extreme truncation collapses bitrate to zero", func(t *testing.T) {
+		// A multi-minute declared duration with only the ~48-byte header present drives
+		// the integer average bitrate to exactly 0; the warning must still fire (the
+		// signal is "< 8000", not "> 0 && < 8000").
+		data := append(id3v2(3, textFrame(3, "TIT2", "X")), mp3XingFrame(50000)...)
+		if doc := mustParseBytes(t, data); !hasWarning(doc, wl.WarnTruncatedAudio) {
+			t.Errorf("expected truncated-audio warning on an extreme truncation; got %v", doc.Warnings())
+		}
+	})
+	t.Run("intact VBR stream not flagged", func(t *testing.T) {
+		// Two full frames whose Xing count matches the frames present: the average
+		// bitrate is the real ~128 kbps, so the guard's "< 8000" branch is exercised
+		// and no warning fires. The codec check guards against a regression to the
+		// vacuous case (a stub that fails parseMPEG never reaches the guard at all).
+		data := append(id3v2(3, textFrame(3, "TIT2", "X")), mp3VBRStream(2, 2)...)
+		doc := mustParseBytes(t, data)
+		if got := doc.Properties().First().Codec; got != "MP3" {
+			t.Fatalf("setup: codec = %q, want MP3 (parseMPEG must succeed for this test to mean anything)", got)
+		}
+		if hasWarning(doc, wl.WarnTruncatedAudio) {
+			t.Errorf("an intact VBR stream must not be flagged truncated; got %v", doc.Warnings())
+		}
+	})
 }

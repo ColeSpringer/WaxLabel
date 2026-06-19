@@ -70,6 +70,13 @@ const (
 	// tag-only or truncated. The audio-essence digest refuses to hash zero essence
 	// (see HashAudioEssence) rather than mint a fake-stable hash over nothing.
 	WarnNoAudioFrames
+	// WarnTruncatedAudio means the container declares more audio than the file
+	// actually holds: a positive declared essence size whose end runs past the file
+	// (WAV data / AIFF SSND / MP4 mdat), or a VBR MP3 whose Xing/Info frame count
+	// implies far more audio than the bytes present. It is the "some-but-not-all"
+	// counterpart to WarnNoAudioFrames (zero essence); only the reliable per-format
+	// signals are emitted, so a clean file is never flagged.
+	WarnTruncatedAudio
 )
 
 func (c WarningCode) String() string {
@@ -110,6 +117,8 @@ func (c WarningCode) String() string {
 		return "chapters-flattened"
 	case WarnNoAudioFrames:
 		return "no-audio"
+	case WarnTruncatedAudio:
+		return "truncated-audio"
 	default:
 		return "unknown"
 	}
@@ -126,6 +135,14 @@ func (w Warning) String() string { return "[" + w.Code.String() + "] " + w.Messa
 // Warn appends a warning to a slice, returning the new slice.
 func Warn(ws []Warning, code WarningCode, msg string) []Warning {
 	return append(ws, Warning{Code: code, Message: msg})
+}
+
+// WarnTruncated appends a WarnTruncatedAudio warning naming the essence container
+// that overran its file (e.g. "the data chunk", "the SSND chunk", "an mdat atom").
+// The container walkers each detect the overrun at their own clamp but share this so
+// the code and phrasing cannot drift between formats.
+func WarnTruncated(ws []Warning, subject string) []Warning {
+	return Warn(ws, WarnTruncatedAudio, subject+" declares more audio than the file holds; file may be truncated")
 }
 
 // CloneWarnings copies a warning slice.

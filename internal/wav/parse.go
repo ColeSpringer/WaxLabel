@@ -143,6 +143,10 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		warnings = core.Warn(warnings, core.WarnDuplicateTagBlock,
 			"more than one id3 chunk; the first is authoritative and the rest are dropped on rewrite")
 	}
+	// The data chunk declared more bytes than the file holds: a truncated WAV.
+	if d.dataTruncated {
+		warnings = core.WarnTruncated(warnings, "the data chunk")
+	}
 
 	d.track = buildTrack(d.fmtCfg, d.dataLen)
 
@@ -239,17 +243,23 @@ func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, riffEnd, li
 		}
 		var id [4]byte
 		copy(id[:], head[0:4])
-		bodyLen := int64(binary.LittleEndian.Uint32(head[4:8]))
+		declaredLen := int64(binary.LittleEndian.Uint32(head[4:8]))
 		bodyOff := off + 8
+		bodyLen := declaredLen
 		// Clamp a declared size that runs past EOF (corrupt or streaming "unknown"
 		// size) so the range stays valid; this becomes the last chunk.
-		if bodyLen > size-bodyOff {
+		overran := bodyLen > size-bodyOff
+		if overran {
 			bodyLen = size - bodyOff
 		}
 		idx := len(d.chunks)
 		d.chunks = append(d.chunks, chunk{id: id, bodyOff: bodyOff, bodyLen: bodyLen})
 		if id == [4]byte{'d', 'a', 't', 'a'} && d.dataIdx < 0 {
 			d.dataIdx = idx
+			// The declared data size ran past EOF: a truncated file. The 0xFFFFFFFF
+			// "size unknown" streaming sentinel a real piped WAV carries also overruns
+			// but is not truncation; a 0 size never overruns (it reads as no-audio).
+			d.dataTruncated = overran && declaredLen != 0xFFFFFFFF
 		}
 		next := bodyOff + bodyLen + (bodyLen & 1) // word-alignment pad byte
 		if next <= off {

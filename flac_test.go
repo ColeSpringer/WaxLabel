@@ -340,3 +340,25 @@ func tinyPNG() []byte {
 		0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89,
 	}
 }
+
+// TestFLACTruncationNotFlagged pins the deliberate non-detection: FLAC carries no
+// declared encoded-essence size, so a mid-stream cut is undetectable without
+// decoding and must never be flagged truncated. A valid FLAC - including a minimal,
+// effectively zero-bitrate one - must stay clean, guarding against a future per-byte
+// bitrate floor that would false-flag silent or low-bitrate lossless audio (the
+// case internal/flac/parse.go explicitly declines to flag).
+func TestFLACTruncationNotFlagged(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		data []byte
+	}{
+		{"synthetic minimal (bitrate ~0)", synthFLAC()},
+		{"real fixture", readFixture(t, sampleFLAC)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if doc := mustParseBytes(t, tc.data); hasWarning(doc, wl.WarnTruncatedAudio) {
+				t.Errorf("FLAC must never be flagged truncated; got %v", doc.Warnings())
+			}
+		})
+	}
+}

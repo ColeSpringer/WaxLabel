@@ -184,8 +184,15 @@ Three levels answer different questions:
 
 `Document.Lint()` (CLI: `waxlabel lint`) reports issues a tagger would want to
 surface or fix: stale legacy tags, inherited encoder noise, conflicting families,
-duplicate or invalid pictures, malformed dates, and missing audio (a tag-only or
-truncated file). `lint --fix` applies only the safe, non-destructive remediations
+duplicate or invalid pictures, malformed dates, missing audio (a tag-only file),
+and truncated audio - a file that declares more audio than it contains. Truncation
+is flagged only where it can be told reliably: WAV/AIFF/MP4 against the container's
+declared essence size, and a VBR MP3 when its surviving bytes are far too few for
+the duration its Xing/Info header declares - so few the implied bitrate falls below
+what MPEG can encode. A partial loss that still implies a plausible bitrate, a
+mid-stream FLAC cut, and a Xing-less CBR MP3 are indistinguishable from a valid file
+without decoding, so they are left unflagged rather than risk a false alarm.
+`lint --fix` applies only the safe, non-destructive remediations
 (clearing the encoder stamp, stripping legacy containers) and saves, then
 re-lints the saved file so what it reports as "fixed" or still "not auto-fixed" is
 the truth on disk, not the fixer's intent. Pictures are never dropped

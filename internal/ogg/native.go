@@ -30,10 +30,12 @@ const (
 
 // String is the codec name surfaced in the raw model and JSON properties.codec.
 // Titlecasing ("Opus"/"Vorbis") matches the Matroska reader, so Opus and Vorbis
-// read identically across the Ogg and Matroska containers. (Other codecs are not
-// normalized - FLAC is "flac" here but "FLAC" from Matroska - which is invisible
-// in the uppercased text dump and left as-is.) The dump uppercases independently,
-// so this affects only the raw/JSON view, not display.
+// read identically across the Ogg and Matroska containers. The central CanonicalCodec
+// step (applied after parse) normalizes the codecs that need it - e.g. FLAC's "flac"
+// -> "FLAC", MP4's "mp4a" -> "AAC" - but leaves Opus/Vorbis untouched, since they are
+// already the canonical names; getting their case right here is what keeps them
+// consistent. The text dump uppercases independently, so this affects only the
+// raw/JSON view, not display.
 func (k kind) String() string {
 	if k == kindOpus {
 		return "Opus"

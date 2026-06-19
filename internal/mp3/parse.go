@@ -74,6 +74,22 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		if info, ok := parseMPEG(window); ok {
 			d.firstHeader = info.header
 			d.track = buildTrack(info, d.audioEnd-d.audioStart)
+			// A Xing/Info header declares the encoder's frame count, from which
+			// buildTrack derived the playable duration; the average bitrate it then
+			// computes spreads the bytes actually present over that declared duration.
+			// When frames are missing (a truncated download), that average collapses
+			// far below the 8 kbps MPEG floor - a reliable, zero-I/O truncation signal.
+			// An extreme truncation (a multi-minute declared duration with only the
+			// ~48-byte header left) drives the integer average to 0, so the test is a
+			// bare "< 8000" rather than "> 0 && < 8000": inside this block a frame was
+			// found, so the bytes present are real, and a 0 here means truncation, not
+			// "unknown". A CBR stream without a Xing count carries no declared length to
+			// check against, so that case is undetectable here and is left unflagged
+			// rather than risk a false positive on a valid file.
+			if info.vbrFrames > 0 && d.track.Bitrate < 8000 {
+				warnings = core.Warn(warnings, core.WarnTruncatedAudio,
+					"fewer audio frames than the Xing/Info header declares; file may be truncated")
+			}
 		}
 	}
 	if d.track.Codec == "" {

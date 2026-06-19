@@ -57,6 +57,10 @@ type doc struct {
 	items     []item        // decoded ilst children (nil when no ilst)
 	offTables []offsetTable // every stco/co64 in moov, in document order
 	mdats     [][2]int64    // mdat payload ranges (offset, length), in document order
+	// mdatTruncated records that an mdat atom's declared size overran EOF and was
+	// clamped - a truncated file. Set from the atom walk's own clamp, so the 64-bit
+	// mdat size that would overflow an offset+size computation never reaches one.
+	mdatTruncated bool
 
 	// udtaRaw is the verbatim moov.udta payload (nil when there is no udta). A
 	// chapter rewrite splices the new ilst/chpl byte ranges into it and copies

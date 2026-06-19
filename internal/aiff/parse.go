@@ -130,6 +130,10 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		d.audioOff = soundDataStart(ch.bodyOff, ch.bodyLen)
 		d.audioEnd = ch.bodyOff + ch.bodyLen
 	}
+	// The SSND chunk declared more bytes than the file holds: a truncated AIFF.
+	if d.ssndTruncated {
+		warnings = core.WarnTruncated(warnings, "the SSND chunk")
+	}
 
 	d.track = buildTrack(d.comm)
 
@@ -219,17 +223,23 @@ func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, formEnd, li
 		}
 		var id [4]byte
 		copy(id[:], head[0:4])
-		bodyLen := int64(binary.BigEndian.Uint32(head[4:8]))
+		declaredLen := int64(binary.BigEndian.Uint32(head[4:8]))
 		bodyOff := off + 8
+		bodyLen := declaredLen
 		// Clamp a declared size that runs past EOF (corrupt or truncated) so the
 		// range stays valid; this becomes the last chunk.
-		if bodyLen > size-bodyOff {
+		overran := bodyLen > size-bodyOff
+		if overran {
 			bodyLen = size - bodyOff
 		}
 		idx := len(d.chunks)
 		d.chunks = append(d.chunks, chunk{id: id, bodyOff: bodyOff, bodyLen: bodyLen})
 		if id == [4]byte{'S', 'S', 'N', 'D'} && d.ssndIdx < 0 {
 			d.ssndIdx = idx
+			// The declared SSND size ran past EOF: a truncated file. The 0xFFFFFFFF
+			// "size unknown" sentinel also overruns but is not truncation; a 0 size
+			// never overruns (it reads as no-audio).
+			d.ssndTruncated = overran && declaredLen != 0xFFFFFFFF
 		}
 		next := bodyOff + bodyLen + (bodyLen & 1) // word-alignment pad byte
 		if next <= off {

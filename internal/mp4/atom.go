@@ -49,7 +49,13 @@ type node struct {
 	name      [4]byte
 	offset    int64 // atom start in the source
 	headerLen int64 // 8, or 16 for a 64-bit size
-	size      int64 // total atom length including the header
+	size      int64 // total atom length including the header (clamped to the region)
+	// truncated records that this atom's declared size overran the region and was
+	// clamped (only a top-level final atom can be - a truncated download). The "runs
+	// to EOF" sentinel (a declared 0) is resolved to the region length before the
+	// clamp, so it never reads as truncated. Detected from the clamp's own comparison
+	// (no offset+size arithmetic, which a near-2^63 64-bit size would overflow).
+	truncated bool
 	children  []node
 }
 
@@ -127,6 +133,9 @@ func walkAtoms(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limi
 		case size < 8:
 			return nil, fmt.Errorf("%w: atom %q size %d below 8", waxerr.ErrInvalidData, name, size)
 		}
+		// The size==0 sentinel above already became end-off, so only a genuinely
+		// oversized atom trips the clamp below and reads as truncated.
+		truncated := false
 		if size > end-off {
 			if !topLevel {
 				return nil, fmt.Errorf("%w: atom %q declares %d bytes but only %d remain in its container",
@@ -136,9 +145,10 @@ func walkAtoms(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limi
 			// so the complete earlier atoms still read. This stays consistent on a
 			// rewrite because such an atom is last and re-clamps identically on
 			// re-parse of the output.
+			truncated = true
 			size = end - off
 		}
-		n := node{name: name, offset: off, headerLen: headerLen, size: size}
+		n := node{name: name, offset: off, headerLen: headerLen, size: size, truncated: truncated}
 		if containerAtoms[name] {
 			if cs := childStart(src, n, limit); cs <= n.end() {
 				kids, err := walkAtoms(src, cs, n.end(), depth, limit, false)

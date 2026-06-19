@@ -46,8 +46,12 @@ func TestAACParse(t *testing.T) {
 	if tr.Channels != 1 {
 		t.Errorf("channels = %d, want 1", tr.Channels)
 	}
-	if tr.Codec != "AAC LC" {
-		t.Errorf("codec = %q, want AAC LC", tr.Codec)
+	if tr.Codec != "AAC" {
+		t.Errorf("codec = %q, want AAC", tr.Codec)
+	}
+	// The AAC object type is preserved as the profile under the canonical "AAC".
+	if tr.CodecProfile != "AAC LC" {
+		t.Errorf("codec profile = %q, want AAC LC", tr.CodecProfile)
 	}
 	if tr.Duration <= 0 {
 		t.Errorf("duration = %v, want > 0", tr.Duration)

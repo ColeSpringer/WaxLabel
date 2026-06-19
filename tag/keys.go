@@ -46,11 +46,21 @@ func ParseKey(s string) (Key, error) {
 	up := strings.ToUpper(s)
 	for i := 0; i < len(up); i++ {
 		if !validKeyByte(up[i]) {
-			return "", fmt.Errorf("%w: %q contains byte 0x%02x at offset %d",
-				waxerr.ErrInvalidKey, s, up[i], i)
+			return "", invalidKeyByteError(s, up[i], i)
 		}
 	}
 	return Key(up), nil
+}
+
+// invalidKeyByteError formats ParseKey's "disallowed byte" error. A printable
+// ASCII offender (0x20-0x7E) is shown as a character - "contains '=' at offset 3"
+// reads better than "0x3d" - while a control or non-ASCII byte keeps the
+// unambiguous hex form.
+func invalidKeyByteError(s string, b byte, offset int) error {
+	if b >= 0x20 && b <= 0x7E {
+		return fmt.Errorf("%w: %q contains %q at offset %d", waxerr.ErrInvalidKey, s, rune(b), offset)
+	}
+	return fmt.Errorf("%w: %q contains byte 0x%02x at offset %d", waxerr.ErrInvalidKey, s, b, offset)
 }
 
 // MustKey is ParseKey for compile-time constants; it panics on an invalid key.

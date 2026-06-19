@@ -1,8 +1,12 @@
 package tag
 
 import (
+	"errors"
 	"slices"
+	"strings"
 	"testing"
+
+	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // allKeyConstants lists every exported Key constant. TestKnownKeysMatchConstants
@@ -111,5 +115,20 @@ func TestSingleValuedMulti(t *testing.T) {
 	// cardinality, so several values are legitimate.
 	if Key("CUSTOM_THING").SingleValuedMulti(3) {
 		t.Error("a custom key reported SingleValuedMulti(3)=true, want false")
+	}
+}
+
+// TestParseKeyInvalidByteMessage checks the offending-byte rendering: a printable
+// ASCII byte is shown as a character (easier to read than hex), while a control or
+// non-ASCII byte keeps the unambiguous hex form. Both stay ErrInvalidKey.
+func TestParseKeyInvalidByteMessage(t *testing.T) {
+	if _, err := ParseKey("TI=TLE"); err == nil || !strings.Contains(err.Error(), "'='") {
+		t.Errorf("ParseKey(\"TI=TLE\") error = %v, want a quoted '=' character", err)
+	}
+	if _, err := ParseKey("TIT\x01LE"); err == nil || !strings.Contains(err.Error(), "0x01") {
+		t.Errorf("ParseKey(ctrl) error = %v, want hex 0x01", err)
+	}
+	if _, err := ParseKey("A=B"); !errors.Is(err, waxerr.ErrInvalidKey) {
+		t.Errorf("ParseKey error is not ErrInvalidKey: %v", err)
 	}
 }

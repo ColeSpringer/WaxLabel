@@ -28,7 +28,7 @@ func TestLintReportsFindings(t *testing.T) {
 	}
 }
 
-// TestLintJSON: the machine-readable shape carries schemaVersion 3 and findings.
+// TestLintJSON: the machine-readable shape carries the schema version and findings.
 func TestLintJSON(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "--json", "lint", sampleFLAC)

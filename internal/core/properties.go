@@ -3,6 +3,7 @@ package core
 import (
 	"math"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -17,8 +18,15 @@ type Properties struct {
 // subset (sample rate, channels, bits per sample, and the FLAC block-size
 // bounds) also feeds the audio-essence digest.
 type AudioTrack struct {
-	Index         int
+	Index int
+	// Codec is the canonical, container-neutral codec name (AAC, MP3, FLAC, Opus,
+	// PCM, ALAC, ...), so the same codec reads identically whatever container it
+	// arrived in. CodecProfile holds the container's own spelling when it carries
+	// detail the canonical name drops - the MP4 fourcc "mp4a", the AAC object type
+	// "AAC LC", the MPEG version+layer "MPEG-1 Layer 3" - and is empty when the raw
+	// name was already canonical. Both are filled by [CanonicalCodec].
 	Codec         string
+	CodecProfile  string
 	SampleRate    int
 	Channels      int
 	BitsPerSample int
@@ -48,6 +56,53 @@ func AverageBitrate(audioBytes int64, secs float64) int {
 		return int(bps)
 	}
 	return 0
+}
+
+// CanonicalCodec splits a parser's raw codec name into the canonical,
+// container-neutral name and the container-specific profile detail. The canonical
+// name is what the same codec should read as in every container (so "mp4a",
+// "AAC LC", and "AAC" all canonicalize to "AAC"); the profile is the raw name when
+// it differs - preserving the fourcc / object-type / MPEG-version detail the
+// canonical name drops - and "" when the raw name was already canonical. It is the
+// single source of truth for codec naming, applied once after parse, so the text
+// view, JSON, and the library model cannot disagree.
+func CanonicalCodec(raw string) (codec, profile string) {
+	canon := canonicalCodecName(raw)
+	if canon != raw {
+		return canon, raw
+	}
+	return raw, ""
+}
+
+// canonicalCodecName maps a raw codec name to its canonical form, or returns it
+// unchanged when it is already canonical (Opus, Vorbis, PCM, the Matroska names,
+// the WAV/AIFF descriptive names). Matched case-insensitively.
+func canonicalCodecName(raw string) string {
+	up := strings.ToUpper(raw)
+	switch up {
+	case "MP4A":
+		return "AAC"
+	case "ALAC":
+		return "ALAC" // normalizes the MP4 "alac" fourcc to match Matroska's "ALAC"
+	case "FLAC":
+		return "FLAC" // normalizes FLAC's lowercase "flac"
+	case "AC-3":
+		return "AC-3" // normalizes the MP4 "ac-3" fourcc to match Matroska's "AC-3"
+	case "EC-3", "EAC3":
+		return "E-AC-3" // Dolby Digital Plus: MP4 "ec-3" / Matroska "EAC3"
+	case "MPEG-1 LAYER 3", "MPEG-2 LAYER 3", "MPEG-2.5 LAYER 3":
+		return "MP3"
+	case "MPEG-1 LAYER 2", "MPEG-2 LAYER 2", "MPEG-2.5 LAYER 2":
+		return "MP2"
+	case "MPEG-1 LAYER 1", "MPEG-2 LAYER 1", "MPEG-2.5 LAYER 1":
+		return "MP1"
+	}
+	// The AAC object-type spellings ("AAC LC", "AAC Main", "AAC SSR") all canonicalize
+	// to "AAC"; a bare "AAC" is already canonical and falls through unchanged.
+	if strings.HasPrefix(up, "AAC") {
+		return "AAC"
+	}
+	return raw
 }
 
 // Clone returns an independent copy of the properties.

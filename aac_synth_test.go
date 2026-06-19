@@ -44,8 +44,8 @@ func TestAACBareDetectAndCreateTags(t *testing.T) {
 	if doc.Tags().Len() != 0 {
 		t.Fatalf("bare ADTS should have no tags, got %d", doc.Tags().Len())
 	}
-	if tr := doc.Properties().First(); tr.Channels != 2 || tr.SampleRate != 44100 || tr.Codec != "AAC LC" {
-		t.Errorf("track = %+v, want 2ch/44100/AAC LC", tr)
+	if tr := doc.Properties().First(); tr.Channels != 2 || tr.SampleRate != 44100 || tr.Codec != "AAC" || tr.CodecProfile != "AAC LC" {
+		t.Errorf("track = %+v, want 2ch/44100/AAC (profile AAC LC)", tr)
 	}
 
 	plan, err := doc.Edit().Set(tag.Title, "From Scratch").Set(tag.Artist, "Synth").Prepare()

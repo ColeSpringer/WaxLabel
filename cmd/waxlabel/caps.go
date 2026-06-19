@@ -178,7 +178,7 @@ func cardinalityOf(key tag.Key, c wl.Capability) string {
 // renderCaps writes the human-readable capability report.
 func renderCaps(w io.Writer, jc jsonCaps, all bool) {
 	if jc.File != "" {
-		fmt.Fprintln(w, jc.File)
+		fmt.Fprintln(w, displayName(jc.File))
 	}
 	fmt.Fprintf(w, "  %-9s %s\n", "format:", jc.Format)
 	if jc.ReadOnly {

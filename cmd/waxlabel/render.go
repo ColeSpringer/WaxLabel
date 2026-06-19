@@ -10,9 +10,21 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
+// displayName maps a path to its display form for a text record header: the "-"
+// stdin sentinel reads as "<stdin>", and every real path is shown verbatim. It is
+// purely cosmetic - readInputs already keeps the buffered temp path out of the
+// renderers (they receive the original "-" arg, never the temp path). JSON output
+// keeps the raw "-" so a script still keys on the argument it passed.
+func displayName(path string) string {
+	if path == stdinArg {
+		return "<stdin>"
+	}
+	return path
+}
+
 // renderDocument writes the human-readable view of a parsed file.
 func renderDocument(w io.Writer, path string, doc *wl.Document, native bool) {
-	fmt.Fprintf(w, "%s\n", path)
+	fmt.Fprintf(w, "%s\n", displayName(path))
 	fmt.Fprintf(w, "  format:  %s\n", doc.Format())
 	if line := audioLine(doc.Properties()); line != "" {
 		fmt.Fprintf(w, "  audio:   %s\n", line)
@@ -30,13 +42,17 @@ func renderDocument(w io.Writer, path string, doc *wl.Document, native bool) {
 // skipping fields that are not populated.
 func audioLine(p wl.Properties) string {
 	t := p.First()
-	codec := t.Codec
-	if codec == "" {
-		codec = p.Container
-	}
 	var parts []string
-	if codec != "" {
-		parts = append(parts, strings.ToUpper(codec))
+	switch {
+	case t.Codec != "":
+		// t.Codec is already the canonical name (CanonicalCodec, applied at parse); the
+		// text view just uppercases it to read consistently with the rest of the line.
+		parts = append(parts, strings.ToUpper(t.Codec))
+	case p.Container != "":
+		// No codec was identified (e.g. an unrecognized Matroska/MP4 track): name the
+		// container and say so, rather than printing the container as if it were the
+		// codec (a bare "MATROSKA").
+		parts = append(parts, fmt.Sprintf("%s (codec unknown)", p.Container))
 	}
 	if t.SampleRate > 0 {
 		parts = append(parts, fmt.Sprintf("%d Hz", t.SampleRate))
@@ -44,16 +60,42 @@ func audioLine(p wl.Properties) string {
 	if t.Channels > 0 {
 		parts = append(parts, fmt.Sprintf("%d ch", t.Channels))
 	}
-	if t.BitsPerSample > 0 {
+	// Bit depth describes the stored samples only for codecs that have a fixed sample
+	// width; a lossy codec decodes to PCM at an arbitrary depth, so a stored "16-bit"
+	// there (e.g. the legacy 16 MP4 writes for AAC) is noise. Show it only when the
+	// codec carries a real depth.
+	if t.BitsPerSample > 0 && bitDepthMeaningful(t.Codec) {
 		parts = append(parts, fmt.Sprintf("%d-bit", t.BitsPerSample))
 	}
 	if d := p.Duration(); d > 0 {
 		parts = append(parts, humanDuration(d))
 	}
-	if t.Bitrate > 0 {
+	// Round to kbps; a sub-1-kbps average (a truncated file's collapsed bitrate)
+	// would print as a misleading "0 kbps", so it is omitted instead.
+	if t.Bitrate >= 1000 {
 		parts = append(parts, fmt.Sprintf("%d kbps", t.Bitrate/1000))
 	}
 	return strings.Join(parts, ", ")
+}
+
+// bitDepthMeaningful reports whether codec stores samples at a fixed width, the
+// only case where a "bits per sample" figure describes the audio. It excludes the
+// lossy/perceptual codecs (AAC, MP1/2/3, Opus, Vorbis, AC-3, E-AC-3, Musepack), which
+// decode to PCM at the decoder's chosen depth so a container-stored depth (often a legacy
+// default like the 16 MP4 writes for AAC) is meaningless. Inverting the test this
+// way - a blacklist of the small, stable lossy set rather than a whitelist of the
+// open-ended lossless one - keeps a real depth for the long tail of PCM-family and
+// lossless codecs (A-law/mu-law, ADPCM, FLAC, ALAC, WavPack, TTA, MLP, ...) that the
+// parsers do report a depth for. codec is the canonical name (CanonicalCodec, so
+// AAC's object-type spellings already collapsed to "AAC"). DTS is deliberately not
+// excluded: its DTS-HD Master Audio variant is lossless and shares the same name, so
+// suppressing it would drop a real depth.
+func bitDepthMeaningful(codec string) bool {
+	switch strings.ToUpper(codec) {
+	case "AAC", "MP1", "MP2", "MP3", "OPUS", "VORBIS", "AC-3", "E-AC-3", "MPC":
+		return false
+	}
+	return true
 }
 
 // keyColumn caps the alignment width so one very long key does not push every
@@ -87,6 +129,12 @@ func renderTags(w io.Writer, ts tag.TagSet) {
 		}
 		for _, v := range vals {
 			fmt.Fprintf(w, "    %-*s  ", width, k)
+			// A present-but-empty value is distinct from a key with no values at all
+			// ("(present, no value)" above); label it so it does not print as a blank.
+			if v == "" {
+				fmt.Fprintln(w, "(empty value)")
+				continue
+			}
 			writeWrapped(w, valueCol, v)
 		}
 	}
@@ -202,11 +250,12 @@ func renderNative(w io.Writer, doc *wl.Document) {
 // warnings. A no-op plan reports that the file is already up to date.
 func renderReport(w io.Writer, path string, plan *wl.Plan) {
 	r := plan.Report()
+	name := displayName(path)
 	if plan.IsNoOp() {
-		fmt.Fprintf(w, "%s: no changes (already up to date)\n", path)
+		fmt.Fprintf(w, "%s: no changes (already up to date)\n", name)
 		return
 	}
-	fmt.Fprintf(w, "%s: plan\n", path)
+	fmt.Fprintf(w, "%s: plan\n", name)
 	renderChanges(w, plan.Changes())
 	if len(r.Operations) == 0 {
 		fmt.Fprintln(w, "  - rewrite metadata")

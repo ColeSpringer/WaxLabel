@@ -175,8 +175,8 @@ func TestMP4ParseBasicTags(t *testing.T) {
 	if f.TrackNumber != 3 || f.TrackTotal != 12 {
 		t.Errorf("track = %d/%d, want 3/12", f.TrackNumber, f.TrackTotal)
 	}
-	if got := doc.Properties().First().Codec; got != "mp4a" {
-		t.Errorf("codec = %q, want mp4a", got)
+	if tr := doc.Properties().First(); tr.Codec != "AAC" || tr.CodecProfile != "mp4a" {
+		t.Errorf("codec = %q (profile %q), want AAC (profile mp4a)", tr.Codec, tr.CodecProfile)
 	}
 	if got := doc.Properties().First().SampleRate; got != 44100 {
 		t.Errorf("sample rate = %d, want 44100", got)
@@ -709,4 +709,48 @@ func TestMP4GnreResolvedToName(t *testing.T) {
 	if !hasWarning(doc, wl.WarnNumericGenre) {
 		t.Errorf("expected a numeric-genre warning; got %v", doc.Warnings())
 	}
+}
+
+// TestMP4TruncatedMdatWarns covers the truncation signal for MP4: an mdat atom
+// whose declared size runs past EOF is flagged, while an intact file is not.
+func TestMP4TruncatedMdatWarns(t *testing.T) {
+	t.Run("declared overruns file", func(t *testing.T) {
+		data := mp4Tagged(mp4Text("\xa9nam", "Title"))
+		j := bytes.Index(data, []byte("mdat"))
+		if j < 4 {
+			t.Fatal("no mdat atom in synthetic file")
+		}
+		// Inflate the mdat atom's declared size so it overruns EOF (a truncated
+		// download): the payload bytes are unchanged, only the size header lies.
+		binary.BigEndian.PutUint32(data[j-4:j], binary.BigEndian.Uint32(data[j-4:j])+5000)
+		doc := mustParseBytes(t, data)
+		if !hasWarning(doc, wl.WarnTruncatedAudio) {
+			t.Errorf("expected truncated-audio warning; got %v", doc.Warnings())
+		}
+	})
+	t.Run("intact file not flagged", func(t *testing.T) {
+		data := mp4Tagged(mp4Text("\xa9nam", "Title"))
+		if doc := mustParseBytes(t, data); hasWarning(doc, wl.WarnTruncatedAudio) {
+			t.Errorf("an intact MP4 must not be flagged truncated; got %v", doc.Warnings())
+		}
+	})
+	t.Run("64-bit mdat near 2^63 does not overflow detection", func(t *testing.T) {
+		// A 64-bit mdat declaring ~2^63 bytes: forming offset+declaredSize overflows
+		// int64 to negative and silently suppressed the warning. Detecting at the walk's
+		// clamp (a comparison, no addition) is overflow-safe, so it is still flagged.
+		mdat64 := func(payload []byte) []byte {
+			b := append([]byte{0, 0, 0, 1}, []byte("mdat")...) // size==1 => 64-bit size follows
+			sz := make([]byte, 8)
+			binary.BigEndian.PutUint64(sz, 0x7FFFFFFFFFFFFFFF) // max int64; offset+size overflows
+			return append(append(b, sz...), payload...)
+		}
+		data := slices.Concat(mp4Ftyp(), mp4Moov(mp4Atom("udta", nil), 0), mdat64(bytes.Repeat([]byte{0xA7}, 64)))
+		doc := mustParseBytes(t, data)
+		if doc.Format() != wl.FormatMP4 {
+			t.Fatalf("format = %v, want MP4", doc.Format())
+		}
+		if !hasWarning(doc, wl.WarnTruncatedAudio) {
+			t.Errorf("expected truncated-audio on a 64-bit overflowing mdat; got %v", doc.Warnings())
+		}
+	})
 }

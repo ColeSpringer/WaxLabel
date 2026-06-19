@@ -129,7 +129,7 @@ func TestCapsMultiFileJSONIsArray(t *testing.T) {
 }
 
 // TestCapsSingleFileJSONIsArray pins that caps over files is a list command: even
-// a single file emits a one-element array under schemaVersion 3, not a bare object
+// a single file emits a one-element array, not a bare object
 // (caps --format stays a single object - see TestCapsFormatJSON), so a script can
 // consume caps over one or many files the same way.
 func TestCapsSingleFileJSONIsArray(t *testing.T) {
@@ -156,9 +156,10 @@ func TestCapsStdin(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; out=%q", code, out)
 	}
-	// The display name stays "-", never the buffered temp path.
-	if !strings.HasPrefix(out, "-\n") {
-		t.Errorf("stdin caps should display '-' as the name:\n%s", out)
+	// The header reads "<stdin>", consistent with dump/verify/lint, and never the
+	// buffered temp path.
+	if !strings.HasPrefix(out, "<stdin>\n") {
+		t.Errorf("stdin caps should display <stdin> as the name:\n%s", out)
 	}
 	if strings.Contains(out, "waxlabel-stdin") {
 		t.Errorf("the buffered-stdin temp path leaked into output:\n%s", out)
