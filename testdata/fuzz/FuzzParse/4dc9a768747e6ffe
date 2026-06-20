@@ -1,2 +1,0 @@
-go test fuzz v1
-[]byte("RIFF0000WAVE000000000")

@@ -107,7 +107,7 @@ func dumpTags(ts tag.TagSet) map[string][]string {
 // fields: a Tags struct written and re-read projects back to the same values.
 func TestTypedRoundTrip(t *testing.T) {
 	ctx := context.Background()
-	src, _ := os.ReadFile("testdata/notags.flac")
+	src, _ := os.ReadFile("../testdata/notags.flac")
 
 	in := tag.Tags{
 		Title:         "Round Trip",

@@ -14,7 +14,7 @@ import (
 	"errors"
 )
 
-const sampleFLAC = "testdata/sample.flac"
+const sampleFLAC = "../testdata/sample.flac"
 
 func mustParseFile(t *testing.T, path string) *wl.Document {
 	t.Helper()
@@ -320,7 +320,7 @@ func TestVerifyEssenceOnWrite(t *testing.T) {
 }
 
 func TestParseNoTags(t *testing.T) {
-	doc := mustParseFile(t, "testdata/notags.flac")
+	doc := mustParseFile(t, "../testdata/notags.flac")
 	if doc.Fields().Title != "" {
 		t.Errorf("expected empty title, got %q", doc.Fields().Title)
 	}

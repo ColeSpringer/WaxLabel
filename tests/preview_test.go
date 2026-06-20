@@ -96,7 +96,7 @@ func TestPlanChangesNoOp(t *testing.T) {
 // picture-count change under the lowercase "pictures" pseudo-key (which cannot
 // collide with a real, always-uppercase canonical key).
 func TestPlanChangesPictures(t *testing.T) {
-	doc := mustParseFile(t, "testdata/notags.flac")
+	doc := mustParseFile(t, "../testdata/notags.flac")
 	plan, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -120,7 +120,7 @@ func TestPlanChangesPictures(t *testing.T) {
 // lowercase "chapters" pseudo-key, so the preview is symmetric with the diff
 // command (which already reports chapter deltas).
 func TestPlanChangesChapters(t *testing.T) {
-	doc := mustParseFile(t, "testdata/notags.mka")
+	doc := mustParseFile(t, "../testdata/notags.mka")
 	plan, err := doc.Edit().SetChapters(
 		wl.Chapter{Start: 0, Title: "One"},
 		wl.Chapter{Start: 5 * time.Second, Title: "Two"},
@@ -167,7 +167,7 @@ func TestPlanLintFix(t *testing.T) {
 // digest is refused rather than minting a fake-stable hash that would collide
 // across distinct empty files.
 func TestHashAudioEssenceEmptyErrors(t *testing.T) {
-	emptyMP3 := readFixture(t, "testdata/empty.mp3")
+	emptyMP3 := readFixture(t, "../testdata/empty.mp3")
 	doc, err := wl.Parse(context.Background(), wl.BytesSource(emptyMP3))
 	if err != nil {
 		t.Fatal(err)
@@ -180,7 +180,7 @@ func TestHashAudioEssenceEmptyErrors(t *testing.T) {
 // TestParseEmptyMP3WarnsNoAudio: a tag-only/truncated MP3 surfaces the no-audio
 // warning so dump and lint can report it.
 func TestParseEmptyMP3WarnsNoAudio(t *testing.T) {
-	doc, err := wl.Parse(context.Background(), wl.BytesSource(readFixture(t, "testdata/empty.mp3")))
+	doc, err := wl.Parse(context.Background(), wl.BytesSource(readFixture(t, "../testdata/empty.mp3")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestParseEmptyMP3WarnsNoAudio(t *testing.T) {
 
 // TestLintNoAudioFinding: the no-audio warning maps to a lint error.
 func TestLintNoAudioFinding(t *testing.T) {
-	doc, err := wl.Parse(context.Background(), wl.BytesSource(readFixture(t, "testdata/empty.mp3")))
+	doc, err := wl.Parse(context.Background(), wl.BytesSource(readFixture(t, "../testdata/empty.mp3")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestLintNoAudioFinding(t *testing.T) {
 // WAV must warn (so lint flags it) and refuse to hash (so verify fails) - the two
 // surfaces agreeing for a non-MP3 file.
 func TestNoAudioIsFormatAgnostic(t *testing.T) {
-	emptyWAV := readFixture(t, "testdata/empty.wav")
+	emptyWAV := readFixture(t, "../testdata/empty.wav")
 	doc, err := wl.Parse(context.Background(), wl.BytesSource(emptyWAV))
 	if err != nil {
 		t.Fatal(err)

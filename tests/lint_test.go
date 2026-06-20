@@ -25,7 +25,7 @@ func TestLintEncoderNoise(t *testing.T) {
 }
 
 func TestLintMalformedDate(t *testing.T) {
-	doc := mustParseBytes(t, writeBack(t, "testdata/notags.flac", func(e *wl.Editor) {
+	doc := mustParseBytes(t, writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.Set(tag.RecordingDate, "not-a-date")
 	}))
 	codes := findingCodes(doc.Lint())
@@ -36,7 +36,7 @@ func TestLintMalformedDate(t *testing.T) {
 
 func TestLintAcceptsValidDates(t *testing.T) {
 	for _, d := range []string{"2021", "2021-06", "2021-06-15"} {
-		doc := mustParseBytes(t, writeBack(t, "testdata/notags.flac", func(e *wl.Editor) {
+		doc := mustParseBytes(t, writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 			e.Set(tag.RecordingDate, d)
 		}))
 		for _, f := range doc.Lint() {
@@ -49,7 +49,7 @@ func TestLintAcceptsValidDates(t *testing.T) {
 
 func TestLintCalendarDates(t *testing.T) {
 	lintDate := func(d string) map[string]bool {
-		doc := mustParseBytes(t, writeBack(t, "testdata/notags.flac", func(e *wl.Editor) {
+		doc := mustParseBytes(t, writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 			e.Set(tag.RecordingDate, d)
 		}))
 		return findingCodes(doc.Lint())
@@ -76,7 +76,7 @@ func TestLintCalendarDates(t *testing.T) {
 
 func TestLintDuplicatePicture(t *testing.T) {
 	png := tinyPNG()
-	doc := mustParseBytes(t, writeBack(t, "testdata/notags.flac", func(e *wl.Editor) {
+	doc := mustParseBytes(t, writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: png})
 		e.AddPicture(wl.Picture{Type: wl.PicBackCover, Data: png}) // same bytes, different role
 	}))
@@ -90,7 +90,7 @@ func TestLintSingleValuedMulti(t *testing.T) {
 	// A single-valued key (ENCODER) carrying two values - the read-side symptom of
 	// a transcoded or multi-scope file - is flagged as a warning. A multivalued key
 	// (ARTIST) given two values is not.
-	doc := mustParseBytes(t, writeBack(t, "testdata/notags.flac", func(e *wl.Editor) {
+	doc := mustParseBytes(t, writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.Set(tag.Encoder, "Lavf", "Lavc")
 		e.Set(tag.Artist, "A", "B")
 	}))
@@ -114,7 +114,7 @@ func TestLintCustomKeyMultiValueNotFlagged(t *testing.T) {
 	// would lose data, so it gets only the info-level custom-key finding, never the
 	// single-valued-multi warning (which exists for the typed projection's
 	// first-only read of known keys).
-	doc := mustParseBytes(t, writeBack(t, "testdata/notags.flac", func(e *wl.Editor) {
+	doc := mustParseBytes(t, writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.Set(tag.Key("MY_CUSTOM_FIELD"), "a", "b")
 	}))
 	codes := findingCodes(doc.Lint())
@@ -129,7 +129,7 @@ func TestLintCustomKeyMultiValueNotFlagged(t *testing.T) {
 func TestLintCustomKeyIsInfo(t *testing.T) {
 	// A custom (non-vocabulary) key is reported at info severity, so it never flips
 	// a clean file to a non-zero exit - it is purely advisory.
-	doc := mustParseBytes(t, writeBack(t, "testdata/notags.flac", func(e *wl.Editor) {
+	doc := mustParseBytes(t, writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.Set(tag.Key("MY_CUSTOM_FIELD"), "x")
 	}))
 	var found *wl.Finding
@@ -153,7 +153,7 @@ func TestLintCustomKeyIsInfo(t *testing.T) {
 func TestLintClean(t *testing.T) {
 	// A freshly written file with one good date and no legacy noise should be
 	// clean.
-	doc := mustParseBytes(t, writeBack(t, "testdata/notags.flac", func(e *wl.Editor) {
+	doc := mustParseBytes(t, writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.Set(tag.Title, "Clean").Set(tag.RecordingDate, "2022-01-01")
 	}))
 	if fs := doc.Lint(); len(fs) != 0 {

@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	sampleMP3   = "testdata/sample.mp3"
-	sampleMP324 = "testdata/sample24.mp3"
-	notagsMP3   = "testdata/notags.mp3"
+	sampleMP3   = "../testdata/sample.mp3"
+	sampleMP324 = "../testdata/sample24.mp3"
+	notagsMP3   = "../testdata/notags.mp3"
 )
 
 func TestMP3Parse(t *testing.T) {

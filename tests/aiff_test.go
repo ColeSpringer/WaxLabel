@@ -15,14 +15,15 @@ import (
 )
 
 const (
-	sampleWAV = "testdata/sample.wav"
-	notagsWAV = "testdata/notags.wav"
+	sampleAIFF = "../testdata/sample.aiff"
+	notagsAIFF = "../testdata/notags.aiff"
+	sampleAIFC = "../testdata/sample.aifc"
 )
 
-func TestWAVParse(t *testing.T) {
-	doc := mustParseFile(t, sampleWAV)
-	if doc.Format() != wl.FormatWAV {
-		t.Errorf("format = %v, want WAV", doc.Format())
+func TestAIFFParse(t *testing.T) {
+	doc := mustParseFile(t, sampleAIFF)
+	if doc.Format() != wl.FormatAIFF {
+		t.Errorf("format = %v, want AIFF", doc.Format())
 	}
 	f := doc.Fields()
 	if f.Title != "Sample Title" {
@@ -56,7 +57,7 @@ func TestWAVParse(t *testing.T) {
 	if tr.Codec != "PCM" {
 		t.Errorf("codec = %q, want PCM", tr.Codec)
 	}
-	// ffmpeg's ISFT software stamp is inherited-encoder noise.
+	// ffmpeg writes its "Lavf..." software stamp into the ID3 TSSE frame.
 	if !hasWarning(doc, wl.WarnInheritedEncoder) {
 		t.Errorf("expected an inherited-encoder warning, got %v", doc.Warnings())
 	}
@@ -65,10 +66,10 @@ func TestWAVParse(t *testing.T) {
 	}
 }
 
-func TestWAVParseNoTags(t *testing.T) {
-	doc := mustParseFile(t, notagsWAV)
-	if doc.Format() != wl.FormatWAV {
-		t.Fatalf("format = %v, want WAV", doc.Format())
+func TestAIFFParseNoTags(t *testing.T) {
+	doc := mustParseFile(t, notagsAIFF)
+	if doc.Format() != wl.FormatAIFF {
+		t.Fatalf("format = %v, want AIFF", doc.Format())
 	}
 	if doc.Tags().Len() != 0 {
 		t.Errorf("expected no tags, got %d", doc.Tags().Len())
@@ -84,28 +85,73 @@ func TestWAVParseNoTags(t *testing.T) {
 	}
 }
 
-func TestWAVRoundTripINFO(t *testing.T) {
-	src := readFixture(t, sampleWAV)
+// TestAIFFParseAIFC covers the AIFF-C variant: the AIFC form type, the FVER
+// chunk, native text tags, and an 80-bit COMM rate decoded from a 24-byte COMM
+// with a "sowt" compression type.
+func TestAIFFParseAIFC(t *testing.T) {
+	doc := mustParseFile(t, sampleAIFC)
+	if doc.Format() != wl.FormatAIFF {
+		t.Fatalf("format = %v, want AIFF", doc.Format())
+	}
+	if doc.Properties().Container != "AIFC" {
+		t.Errorf("container = %q, want AIFC", doc.Properties().Container)
+	}
+	if doc.Fields().Title != "AIFC Title" {
+		t.Errorf("title = %q", doc.Fields().Title)
+	}
+	if doc.Fields().Comment != "aifc comment" {
+		t.Errorf("comment = %q", doc.Fields().Comment)
+	}
+	tr := doc.Properties().First()
+	if tr.SampleRate != 44100 {
+		t.Errorf("AIFF-C 80-bit rate decoded to %d, want 44100", tr.SampleRate)
+	}
+	if tr.Codec != "PCM (little-endian)" {
+		t.Errorf("codec = %q, want PCM (little-endian) for sowt", tr.Codec)
+	}
+	// An edit must preserve the AIFC form type and the FVER chunk.
+	src := readFixture(t, sampleAIFC)
+	plan, err := mustParseBytes(t, src).Edit().Set(tag.Title, "Edited AIFC").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, src, plan)
+	if string(out[8:12]) != "AIFC" {
+		t.Errorf("form type after edit = %q, want AIFC", out[8:12])
+	}
+	if !bytes.Contains(out, []byte("FVER")) {
+		t.Error("FVER chunk was not preserved across an edit")
+	}
+	if got := mustParseBytes(t, out); got.Fields().Title != "Edited AIFC" {
+		t.Errorf("edited AIFC title = %q", got.Fields().Title)
+	}
+}
+
+func TestAIFFRoundTripNativeAndID3(t *testing.T) {
+	src := readFixture(t, sampleAIFF)
 	plan, err := mustParseBytes(t, src).Edit().
 		Set(tag.Title, "Edited Title").
-		Set(tag.Artist, "Edited Artist").
+		Set(tag.Composer, "Edited Composer"). // non-native key -> lands in ID3
 		Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
 	out := applyToBytes(t, src, plan)
 	got := mustParseBytes(t, out)
-	if got.Fields().Title != "Edited Title" || got.Fields().Artists[0] != "Edited Artist" {
-		t.Errorf("round-trip: title=%q artists=%v", got.Fields().Title, got.Fields().Artists)
+	if got.Fields().Title != "Edited Title" {
+		t.Errorf("title = %q", got.Fields().Title)
 	}
-	// Untouched INFO values survive.
-	if got.Fields().Album != "Sample Album" || got.Fields().Comment != "hello world" {
-		t.Errorf("untouched fields lost: album=%q comment=%q", got.Fields().Album, got.Fields().Comment)
+	if len(got.Fields().Composers) != 1 || got.Fields().Composers[0] != "Edited Composer" {
+		t.Errorf("composer = %v", got.Fields().Composers)
+	}
+	// Untouched fields survive (artist/album came from the ID3 chunk).
+	if got.Fields().Album != "Sample Album" || got.Fields().Artists[0] != "Sample Artist" {
+		t.Errorf("untouched fields lost: album=%q artists=%v", got.Fields().Album, got.Fields().Artists)
 	}
 }
 
-func TestWAVEssenceStableAcrossTagEdit(t *testing.T) {
-	for _, f := range []string{sampleWAV, notagsWAV} {
+func TestAIFFEssenceStableAcrossTagEdit(t *testing.T) {
+	for _, f := range []string{sampleAIFF, notagsAIFF, sampleAIFC} {
 		src := readFixture(t, f)
 		before := essenceOf(t, src)
 		plan, err := mustParseBytes(t, src).Edit().Set(tag.Title, "Edited").Prepare()
@@ -116,7 +162,7 @@ func TestWAVEssenceStableAcrossTagEdit(t *testing.T) {
 		if after := essenceOf(t, out); !before.Equal(after) {
 			t.Errorf("%s: audio essence changed across a tag edit", f)
 		}
-		if before.ExtentVersion != "wav-data-v1" {
+		if before.ExtentVersion != "aiff-ssnd-v1" {
 			t.Errorf("%s: extent version = %q", f, before.ExtentVersion)
 		}
 		if mustParseBytes(t, out).Fields().Title != "Edited" {
@@ -125,8 +171,8 @@ func TestWAVEssenceStableAcrossTagEdit(t *testing.T) {
 	}
 }
 
-func TestWAVNoOpWritesNothing(t *testing.T) {
-	path := copyToTemp(t, sampleWAV)
+func TestAIFFNoOpWritesNothing(t *testing.T) {
+	path := copyToTemp(t, sampleAIFF)
 	before, _ := os.ReadFile(path)
 	doc := mustParseFile(t, path)
 	plan, err := doc.Edit().Set(tag.Title, doc.Fields().Title).Prepare() // same value
@@ -149,8 +195,8 @@ func TestWAVNoOpWritesNothing(t *testing.T) {
 	}
 }
 
-func TestWAVCoverRoundTrip(t *testing.T) {
-	src := readFixture(t, sampleWAV)
+func TestAIFFCoverRoundTrip(t *testing.T) {
+	src := readFixture(t, sampleAIFF)
 	before := essenceOf(t, src)
 
 	plan, err := mustParseBytes(t, src).Edit().
@@ -169,7 +215,7 @@ func TestWAVCoverRoundTrip(t *testing.T) {
 	if got.Pictures()[0].MIME != "image/png" {
 		t.Errorf("MIME = %q, want image/png", got.Pictures()[0].MIME)
 	}
-	// The pre-existing INFO tags must survive the id3-chunk addition.
+	// The pre-existing tags must survive adding a cover.
 	if got.Fields().Title != "Sample Title" {
 		t.Errorf("title lost when adding cover: %q", got.Fields().Title)
 	}
@@ -183,13 +229,13 @@ func TestWAVCoverRoundTrip(t *testing.T) {
 // Write-side differential: ffmpeg/ffprobe must read what we wrote and accept
 // our audio. These skip cleanly when the tools are absent.
 
-func TestWAVDifferentialFFprobeReadsOurTags(t *testing.T) {
+func TestAIFFDifferentialFFprobeReadsOurTags(t *testing.T) {
 	requireTool(t, "ffprobe")
-	path := copyToTemp(t, sampleWAV)
+	path := copyToTemp(t, notagsAIFF)
 	plan, err := mustParseFile(t, path).Edit().
-		Set(tag.Title, "Differential Title").
-		Set(tag.Album, "Differential Album").
-		Set(tag.Composer, "Differential Composer"). // non-INFO key -> also lands in id3
+		Set(tag.Title, "Differential Title").       // native NAME chunk
+		Set(tag.Comment, "Differential Comment").   // native ANNO chunk
+		Set(tag.Composer, "Differential Composer"). // non-native key -> ID3 chunk
 		Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -210,10 +256,10 @@ func TestWAVDifferentialFFprobeReadsOurTags(t *testing.T) {
 	if err := json.Unmarshal(out, &probe); err != nil {
 		t.Fatalf("parse ffprobe json: %v\n%s", err, out)
 	}
-	// title/album come from INFO; composer is only in the id3 chunk, which the
-	// ffmpeg WAV demuxer also reads.
+	// title/comment come from the native chunks; composer is only in the ID3 chunk,
+	// which the ffmpeg AIFF demuxer also reads.
 	for k, want := range map[string]string{
-		"title": "Differential Title", "album": "Differential Album", "composer": "Differential Composer",
+		"title": "Differential Title", "comment": "Differential Comment", "composer": "Differential Composer",
 	} {
 		if got := lookupCI(probe.Format.Tags, k); got != want {
 			t.Errorf("ffprobe tag %q = %q, want %q (all: %v)", k, got, want, probe.Format.Tags)
@@ -221,11 +267,11 @@ func TestWAVDifferentialFFprobeReadsOurTags(t *testing.T) {
 	}
 }
 
-func TestWAVDifferentialFFmpegDecodes(t *testing.T) {
+func TestAIFFDifferentialFFmpegDecodes(t *testing.T) {
 	requireTool(t, "ffmpeg")
-	path := copyToTemp(t, sampleWAV)
+	path := copyToTemp(t, sampleAIFF)
 	plan, err := mustParseFile(t, path).Edit().
-		Set(tag.Title, "Valid WAV").
+		Set(tag.Title, "Valid AIFF").
 		AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}).
 		Prepare()
 	if err != nil {
@@ -235,22 +281,22 @@ func TestWAVDifferentialFFmpegDecodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Decode only the audio stream: this fails loudly if our chunk framing or the
-	// RIFF size is broken. (The embedded cover becomes a separate video stream.)
+	// FORM size is broken.
 	cmd := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error",
 		"-i", path, "-map", "0:a", "-f", "null", "-")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("ffmpeg rejected our output: %v\n%s", err, out)
 	}
-	if got := mustParseFile(t, path).Fields().Title; got != "Valid WAV" {
+	if got := mustParseFile(t, path).Fields().Title; got != "Valid AIFF" {
 		t.Errorf("title after edit = %q", got)
 	}
 }
 
-// TestWAVVerifyEssenceOnWrite exercises the SaveBack path with WithVerifyEssence:
-// the data chunk is copied from its source offset, so the engine's tap must hash
-// the right bytes against the parsed extent.
-func TestWAVVerifyEssenceOnWrite(t *testing.T) {
-	path := copyToTemp(t, sampleWAV)
+// TestAIFFVerifyEssenceOnWrite exercises SaveBack with WithVerifyEssence: the
+// SSND chunk is copied from its source offset, so the engine's tap must hash the
+// right sample-frame bytes against the parsed extent.
+func TestAIFFVerifyEssenceOnWrite(t *testing.T) {
+	path := copyToTemp(t, sampleAIFF)
 	plan, err := mustParseFile(t, path).Edit().Set(tag.Title, "Verified").Prepare(wl.WithVerifyEssence())
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
@@ -260,100 +306,13 @@ func TestWAVVerifyEssenceOnWrite(t *testing.T) {
 	}
 }
 
-// TestWAVTrailingMetadataChangeDetected proves the fingerprint covers trailing
-// metadata: a WAV whose id3 chunk sits after the data chunk, externally edited in
-// place (same size and mtime), is caught on save-back. The old [0,dataOff)
-// fingerprint missed anything after the audio.
-func TestWAVTrailingMetadataChangeDetected(t *testing.T) {
-	data := wavFile(wavFmtPCM(), wavData(400), wavID3(id3v2(3, textFrame(3, "TIT2", "Original"))))
-	path := writeTempFile(t, "trail.wav", data)
-
-	doc := mustParseFile(t, path)
-	if doc.Fields().Title != "Original" {
-		t.Fatalf("setup: trailing id3 title = %q", doc.Fields().Title)
-	}
-
-	// Externally rewrite the trailing id3 chunk in place (equal length so size is
-	// unchanged) and restore the mtime, so only the bytes differ.
-	st, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := os.ReadFile(path)
-	raw = bytes.Replace(raw, []byte("Original"), []byte("Changed!"), 1) // both 8 bytes
-	if err := os.WriteFile(path, raw, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chtimes(path, st.ModTime(), st.ModTime()); err != nil {
-		t.Fatal(err)
-	}
-
-	plan, err := doc.Edit().Set(tag.Album, "X").Prepare()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := plan.Execute(context.Background(), wl.SaveBack()); !errors.Is(err, waxerr.ErrSourceChanged) {
-		t.Errorf("expected ErrSourceChanged from an external trailing-metadata edit, got %v", err)
-	}
-}
-
-// TestWAVPostWriteWarningsMatchReparse confirms the document returned from a
-// write recomputes its warnings instead of echoing the parse warnings: a
-// duplicate-tag-block the rewrite consolidated must no longer be reported.
-func TestWAVPostWriteWarningsMatchReparse(t *testing.T) {
-	data := wavFile(wavFmtPCM(),
-		wavInfo([2]string{"INAM", "First"}),
-		wavInfo([2]string{"INAM", "Second"}),
-		wavData(400))
-	doc := mustParseBytes(t, data)
-	if !hasWarning(doc, wl.WarnDuplicateTagBlock) {
-		t.Fatal("setup: expected a duplicate-tag-block warning at parse")
-	}
-	plan, err := doc.Edit().Set(tag.Title, "Edited").Prepare()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var w writerTo
-	outDoc, _, err := plan.Execute(context.Background(), wl.WriteTo(&w, wl.BytesSource(data)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if hasWarning(outDoc, wl.WarnDuplicateTagBlock) {
-		t.Error("post-write document still reports a duplicate-tag-block the rewrite resolved")
-	}
-	if hasWarning(mustParseBytes(t, w.b), wl.WarnDuplicateTagBlock) {
-		t.Error("a fresh parse of the output should not warn about duplicates")
-	}
-}
-
-// TestWAVPostWriteRetainsFamilies confirms the document returned from a write
-// surfaces the same family view as a fresh parse of the output - here the
-// secondary INFO container after an id3 chunk is added.
-func TestWAVPostWriteRetainsFamilies(t *testing.T) {
-	src := readFixture(t, sampleWAV)
-	plan, err := mustParseBytes(t, src).Edit().
-		Set(tag.Composer, "Promoted"). // forces an id3 chunk; INFO becomes secondary
-		Prepare()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var w writerTo
-	outDoc, _, err := plan.Execute(context.Background(), wl.WriteTo(&w, wl.BytesSource(src)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	hasRIFFFamily := func(d *wl.Document) bool {
-		for _, f := range d.Families() {
-			if f.Family == wl.FamilyRIFF {
-				return true
-			}
-		}
-		return false
-	}
-	if !hasRIFFFamily(outDoc) {
-		t.Error("post-write document dropped the secondary RIFF family view")
-	}
-	if !hasRIFFFamily(mustParseBytes(t, w.b)) {
-		t.Error("a fresh parse of the output should carry the RIFF family view")
+func TestAIFFRejectsNonAIFF(t *testing.T) {
+	// A FORM container that is not AIFF/AIFC (e.g. an AIFF-less IFF) routed to the
+	// codec by extension must fail loudly rather than mis-parse.
+	data := append([]byte("FORM\x00\x00\x00\x04"), []byte("8SVX")...)
+	path := writeTempFile(t, "x.aiff", data)
+	_, err := wl.ParseFile(context.Background(), path)
+	if !errors.Is(err, waxerr.ErrInvalidData) {
+		t.Fatalf("non-AIFF FORM error = %v, want ErrInvalidData", err)
 	}
 }

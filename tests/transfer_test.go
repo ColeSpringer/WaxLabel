@@ -72,7 +72,7 @@ func TestPlanTransferUnsupportedDest(t *testing.T) {
 // not appear. M4B -> FLAC exercises both a carried set and a dropped set at once.
 func TestPrepareTransferReportMatchesResult(t *testing.T) {
 	src := mustParseFile(t, sampleM4B)
-	dstBytes := readFixture(t, "testdata/notags.flac") // a blank canvas
+	dstBytes := readFixture(t, "../testdata/notags.flac") // a blank canvas
 	dst := mustParseBytes(t, dstBytes)
 
 	plan, report, err := src.PrepareTransfer(dst)
@@ -119,7 +119,7 @@ func TestPrepareTransferReportMatchesResult(t *testing.T) {
 func TestPrepareTransferOverlayKeepsDestKeys(t *testing.T) {
 	src := mustParseBytes(t, readFixture(t, sampleFLAC)) // TITLE/ARTIST/ALBUM/ENCODER
 	// A destination FLAC carrying a key the source lacks.
-	dstBytes := writeBack(t, "testdata/notags.flac", func(e *wl.Editor) {
+	dstBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.Set("CATALOGNUMBER", "KEPT-001")
 	})
 	dst := mustParseBytes(t, dstBytes)
@@ -142,13 +142,13 @@ func TestPrepareTransferOverlayKeepsDestKeys(t *testing.T) {
 // picture-capable destination and matches byte-for-byte.
 func TestPrepareTransferCarriesPictures(t *testing.T) {
 	png := tinyPNG()
-	srcBytes := writeBack(t, "testdata/notags.flac", func(e *wl.Editor) {
+	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.Set("TITLE", "Cover Test")
 		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: png})
 	})
 	src := mustParseBytes(t, srcBytes)
 
-	dstBytes := readFixture(t, "testdata/notags.m4a")
+	dstBytes := readFixture(t, "../testdata/notags.m4a")
 	dst := mustParseBytes(t, dstBytes)
 
 	plan, report, err := src.PrepareTransfer(dst)
@@ -177,7 +177,7 @@ func TestPrepareTransferCarriesPictures(t *testing.T) {
 // function with the same destination capabilities.
 func TestPlanTransferMatchesPrepareTransfer(t *testing.T) {
 	src := mustParseFile(t, sampleM4B)
-	dst := mustParseBytes(t, readFixture(t, "testdata/notags.flac"))
+	dst := mustParseBytes(t, readFixture(t, "../testdata/notags.flac"))
 
 	sim, err := src.PlanTransfer(dst.Format())
 	if err != nil {
@@ -203,7 +203,7 @@ func TestPlanTransferMatchesPrepareTransfer(t *testing.T) {
 // stored mislabeled as JPEG (a corrupt cover a cross-format copy would otherwise
 // claim "carried losslessly"). A supported format still writes.
 func TestMP4RejectsUnstorableCover(t *testing.T) {
-	doc := mustParseBytes(t, readFixture(t, "testdata/notags.m4a"))
+	doc := mustParseBytes(t, readFixture(t, "../testdata/notags.m4a"))
 	_, err := doc.Edit().
 		AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/webp", Data: []byte("RIFF....WEBP")}).
 		Prepare()
@@ -220,7 +220,7 @@ func TestMP4RejectsUnstorableCover(t *testing.T) {
 // now-writable container (Title lands in Info.Title, the rest in SimpleTags).
 func TestPrepareTransferToMatroska(t *testing.T) {
 	src := mustParseFile(t, sampleFLAC)
-	dstBytes := readFixture(t, "testdata/notags.mka")
+	dstBytes := readFixture(t, "../testdata/notags.mka")
 	dst := mustParseBytes(t, dstBytes)
 
 	plan, report, err := src.PrepareTransfer(dst)
@@ -249,7 +249,7 @@ func TestPrepareTransferToMatroska(t *testing.T) {
 // the cross-format source for the WebM cover-gating tests.
 func coverBearingFLAC(t *testing.T, title string) []byte {
 	t.Helper()
-	return writeBack(t, "testdata/notags.flac", func(e *wl.Editor) {
+	return writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.Set("TITLE", title)
 		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()})
 	})

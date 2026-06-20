@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	sampleAAC = "testdata/sample.aac" // ffmpeg-authored: front ID3v2 + ADTS
-	notagsAAC = "testdata/notags.aac" // bare ADTS, no ID3
+	sampleAAC = "../testdata/sample.aac" // ffmpeg-authored: front ID3v2 + ADTS
+	notagsAAC = "../testdata/notags.aac" // bare ADTS, no ID3
 )
 
 func TestAACParse(t *testing.T) {

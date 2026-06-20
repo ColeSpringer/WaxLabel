@@ -23,7 +23,7 @@ func FuzzParse(f *testing.F) {
 	// malformations, including Ogg page edge cases (risk #1: multi-page packets,
 	// truncated pages).
 	for _, p := range []string{
-		sampleFLAC, "testdata/notags.flac", sampleOgg, sampleOpus, notagsOgg, "testdata/notags.opus",
+		sampleFLAC, "../testdata/notags.flac", sampleOgg, sampleOpus, notagsOgg, "../testdata/notags.opus",
 		sampleMP3, sampleMP324, notagsMP3, sampleWAV, notagsWAV, sampleMP4, notagsMP4,
 		sampleMKA, sampleWebM, notagsMKA, chaptersMKA, sampleAIFF, notagsAIFF, sampleAIFC, sampleM4B,
 		sampleAAC, notagsAAC,
@@ -65,6 +65,9 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte{0xFF, 0xF1, 0x50, 0x40, 0x01, 0x00, 0xFC})                                                                               // valid ADTS header, frame_length 8 but only 7 bytes present (short payload)
 	f.Add([]byte{0xFF, 0xF1, 0x50, 0x00, 0x00, 0x00, 0x00})                                                                               // ADTS sync but frame_length 0 (below header)
 	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x00"), 0xFF, 0xF1, 0x50, 0x40, 0x01, 0x5F, 0xFC))                                    // empty front ID3 then a bare ADTS frame
+	// Regression seeds recovered from prior fuzz runs.
+	f.Add([]byte("\x00\x00\x00\bftyp0000moov0")) // MP4: 8-byte ftyp box then a short moov tail
+	f.Add([]byte("RIFF0000WAVE000000000"))       // WAV: RIFF/WAVE with ASCII-digit chunk sizes
 	f.Add([]byte{})
 
 	ctx := context.Background()

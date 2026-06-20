@@ -18,9 +18,9 @@ import (
 )
 
 const (
-	sampleMP4 = "testdata/sample.m4a"
-	notagsMP4 = "testdata/notags.m4a"
-	sampleM4B = "testdata/sample_chapters.m4b" // ffmpeg-authored: chpl + a QuickTime chapter track
+	sampleMP4 = "../testdata/sample.m4a"
+	notagsMP4 = "../testdata/notags.m4a"
+	sampleM4B = "../testdata/sample_chapters.m4b" // ffmpeg-authored: chpl + a QuickTime chapter track
 )
 
 // TestMP4ReadsChapterFixture reads the committed real-ffmpeg M4B (chpl plus a

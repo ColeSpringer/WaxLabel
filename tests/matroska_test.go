@@ -17,10 +17,10 @@ import (
 )
 
 const (
-	sampleMKA   = "testdata/sample.mka"
-	sampleWebM  = "testdata/sample.webm"
-	notagsMKA   = "testdata/notags.mka"
-	chaptersMKA = "testdata/chapters.mka"
+	sampleMKA   = "../testdata/sample.mka"
+	sampleWebM  = "../testdata/sample.webm"
+	notagsMKA   = "../testdata/notags.mka"
+	chaptersMKA = "../testdata/chapters.mka"
 )
 
 // TestMatroskaReadsSampleFixture exercises the committed real-ffmpeg fixture

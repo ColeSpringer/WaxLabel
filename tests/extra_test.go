@@ -19,7 +19,7 @@ func bigPictureFLAC(t *testing.T, payload int) []byte {
 	}
 	// A JPEG SOI so it sniffs as a real type; the bulk is arbitrary.
 	data[0], data[1], data[2] = 0xFF, 0xD8, 0xFF
-	return writeBack(t, "testdata/notags.flac", func(e *wl.Editor) {
+	return writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/jpeg", Data: data})
 	})
 }
@@ -55,7 +55,7 @@ func TestPicturesShareDataBacking(t *testing.T) {
 func TestRemovePicturesByType(t *testing.T) {
 	// Start from a file with a front and a back cover (distinct bytes).
 	back := append(tinyPNG(), 0x00)
-	withPics := writeBack(t, "testdata/notags.flac", func(e *wl.Editor) {
+	withPics := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()})
 		e.AddPicture(wl.Picture{Type: wl.PicBackCover, Data: back})
 	})

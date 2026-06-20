@@ -16,9 +16,9 @@ import (
 )
 
 const (
-	sampleOgg  = "testdata/sample.ogg"
-	sampleOpus = "testdata/sample.opus"
-	notagsOgg  = "testdata/notags.ogg"
+	sampleOgg  = "../testdata/sample.ogg"
+	sampleOpus = "../testdata/sample.opus"
+	notagsOgg  = "../testdata/notags.ogg"
 )
 
 // pattern returns n deterministic bytes - a stand-in cover payload large enough
