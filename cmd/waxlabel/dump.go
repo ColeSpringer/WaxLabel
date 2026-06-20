@@ -43,6 +43,7 @@ func newDumpCmd() *cobra.Command {
 					return jsonDocument{SchemaVersion: schemaVersion, File: path, Error: &jsonErrBody{c.code, c.message}}
 				},
 				func(w io.Writer, path string, doc *wl.Document) { renderDocument(w, path, doc, native) },
+				false,
 			)
 		},
 	}

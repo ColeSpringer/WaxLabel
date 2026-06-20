@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/tag"
@@ -41,6 +42,30 @@ func TestAudioLineSubKbpsOmitted(t *testing.T) {
 	line := audioLine(trackProps("WAV", wl.AudioTrack{Codec: "PCM", SampleRate: 44100, Channels: 2, BitsPerSample: 16, Bitrate: 12}))
 	if strings.Contains(line, "kbps") {
 		t.Errorf("sub-1-kbps bitrate should be omitted: %q", line)
+	}
+}
+
+func TestAudioLineBitrateDroppedAtZeroDuration(t *testing.T) {
+	// M1: a header-only file (empty.wav: zero samples, so zero duration) carries a
+	// header-derived rate×ch×depth bitrate (705 kbps) that is meaningless without
+	// playtime. The truthful header facts stay; the bogus kbps is dropped.
+	zero := audioLine(trackProps("WAV", wl.AudioTrack{
+		Codec: "PCM", SampleRate: 44100, Channels: 1, BitsPerSample: 16, Bitrate: 705600, Duration: 0,
+	}))
+	if strings.Contains(zero, "kbps") {
+		t.Errorf("zero-duration bitrate should be omitted: %q", zero)
+	}
+	for _, want := range []string{"PCM", "44100 Hz", "1 ch", "16-bit"} {
+		if !strings.Contains(zero, want) {
+			t.Errorf("zero-duration line should keep header fact %q: %q", want, zero)
+		}
+	}
+	// A real stream (non-zero duration) keeps its bitrate.
+	real := audioLine(trackProps("WAV", wl.AudioTrack{
+		Codec: "PCM", SampleRate: 44100, Channels: 1, BitsPerSample: 16, Bitrate: 705600, Duration: time.Second,
+	}))
+	if !strings.Contains(real, "705 kbps") {
+		t.Errorf("a real stream should keep its bitrate: %q", real)
 	}
 }
 

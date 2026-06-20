@@ -68,6 +68,7 @@ func newPlanCmd() *cobra.Command {
 					return jsonReport{SchemaVersion: schemaVersion, File: path, Error: &jsonErrBody{c.code, c.message}}
 				},
 				func(w io.Writer, path string, plan *wl.Plan) { renderReport(w, path, plan) },
+				false,
 			)
 		},
 	}

@@ -39,10 +39,13 @@ func (p LegacyPolicy) String() string {
 type PaddingPolicy struct {
 	// Target is the padding to aim for after a rewrite, in bytes.
 	Target int64
-	// Min and Max bound the padding actually written. Max == 0 means "no
-	// explicit limit" (the format's hard cap still applies), so a zero-value
-	// policy with a positive Target is honored rather than clamped to nothing;
-	// to write no padding, set Target to 0.
+	// Min and Max bound the padding actually written, and Min is also a reuse
+	// floor: a rewrite reuses the existing region in place only while the leftover
+	// is still >= Min, otherwise it falls back to the clamped Target (so an
+	// explicit "reserve at least Min" grows a too-small region instead of silently
+	// reusing it). Max == 0 means "no explicit limit" (the format's hard cap still
+	// applies), so a zero-value policy with a positive Target is honored rather than
+	// clamped to nothing; to write no padding, set Target to 0.
 	Min int64
 	Max int64
 	// ReuseInPlace lets a rewrite that fits within existing padding avoid
@@ -76,11 +79,14 @@ func (p PaddingPolicy) ClampTarget() int64 {
 // ReuseOrTarget sizes the padding for a rewrite whose metadata sits in a single
 // front region (the ID3 front-tag codecs, MP3 and AAC). With ReuseInPlace and
 // new content that fits the original region, it fills the region exactly so the
-// audio offset and file size do not change; otherwise it falls back to the
-// clamped Target. origLen is the original region length, contentLen the new
-// non-padding content length.
+// audio offset and file size do not change - but only while the leftover is still
+// >= Min, so an explicit padding floor grows a too-small region rather than
+// reusing it; otherwise it falls back to the clamped Target (which also floors to
+// Min). origLen is the original region length, contentLen the new non-padding
+// content length. The origLen >= contentLen guard runs first, so origLen-contentLen
+// is non-negative before the floor comparison.
 func (p PaddingPolicy) ReuseOrTarget(origLen, contentLen int64) int64 {
-	if p.ReuseInPlace && origLen >= contentLen {
+	if p.ReuseInPlace && origLen >= contentLen && origLen-contentLen >= p.Min {
 		return origLen - contentLen
 	}
 	return p.ClampTarget()

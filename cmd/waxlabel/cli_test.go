@@ -380,6 +380,112 @@ func TestVerifyWholeFileFlag(t *testing.T) {
 	}
 }
 
+// TestVerifyQuietTSV (#6): --quiet emits one tab-separated "essence<TAB>path" line
+// per file, with no labels and no blank line between records, so the output pipes
+// cleanly into sort/uniq for deduplication.
+func TestVerifyQuietTSV(t *testing.T) {
+	t.Parallel()
+	out, _, code := runCLI(t, "verify", "-q", sampleFLAC, notagsFLAC)
+	if code != 0 {
+		t.Fatalf("verify -q exit = %d, want 0", code)
+	}
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("verify -q produced %d lines, want exactly 2 (no blank separators):\n%q", len(lines), out)
+	}
+	for _, line := range lines {
+		cols := strings.Split(line, "\t")
+		if len(cols) != 2 {
+			t.Errorf("line %q has %d tab-separated columns, want 2 (essence, path)", line, len(cols))
+		}
+		if !strings.HasPrefix(cols[0], "sha256/flac-frames-v1:") {
+			t.Errorf("first column %q is not an essence digest", cols[0])
+		}
+	}
+	// The labeled block must not appear in quiet mode.
+	if strings.Contains(out, "essence:") {
+		t.Errorf("quiet output should not carry the labeled block:\n%s", out)
+	}
+}
+
+// TestVerifyQuietWholeFileThreeColumns (#6): under --whole-file the quiet line
+// carries the whole-file digest as a third column.
+func TestVerifyQuietWholeFileThreeColumns(t *testing.T) {
+	t.Parallel()
+	out, _, code := runCLI(t, "verify", "-q", "--whole-file", sampleFLAC)
+	if code != 0 {
+		t.Fatalf("verify -q --whole-file exit = %d, want 0", code)
+	}
+	cols := strings.Split(strings.TrimRight(out, "\n"), "\t")
+	if len(cols) != 3 {
+		t.Fatalf("verify -q --whole-file columns = %d, want 3 (essence, whole-file, path):\n%q", len(cols), out)
+	}
+	if !strings.Contains(cols[1], "whole-file-v1:") {
+		t.Errorf("second column %q should be the whole-file digest", cols[1])
+	}
+}
+
+// TestVerifyQuietNoOpUnderJSON (#6): --quiet is a text-mode choice; under --json the
+// stream shape is unchanged (a JSON array, not TSV).
+func TestVerifyQuietNoOpUnderJSON(t *testing.T) {
+	t.Parallel()
+	out, _, code := runCLI(t, "--json", "verify", "-q", sampleFLAC)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if strings.Contains(out, "\t") {
+		t.Errorf("--json verify -q should stay JSON, not TSV:\n%s", out)
+	}
+	v := decodeJSONList[jsonVerify](t, out)
+	if len(v) != 1 || v[0].Essence == "" {
+		t.Errorf("--json verify -q should emit a normal JSON array: %+v", v)
+	}
+}
+
+// TestSetQuietSilentOnSuccess (#4): a single-file set -q prints nothing on success
+// (no plan preview, no outcome line) on either stream.
+func TestSetQuietSilentOnSuccess(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, sampleFLAC)
+	out, errb, code := runCLI(t, "set", "-q", file, "--set", "TITLE=Quiet")
+	if code != 0 {
+		t.Fatalf("set -q exit = %d, want 0", code)
+	}
+	if out != "" || errb != "" {
+		t.Errorf("set -q should be silent on success; stdout=%q stderr=%q", out, errb)
+	}
+	// The edit still applied.
+	j, _, _ := runCLI(t, "--json", "dump", file)
+	jd := decodeJSONOne[jsonDocument](t, j)
+	if got := tagValues(jd, "TITLE"); len(got) != 1 || got[0] != "Quiet" {
+		t.Errorf("set -q did not apply the edit: TITLE = %v", got)
+	}
+}
+
+// TestSetQuietKeepsSummaryAndErrors (#4): quiet suppresses the per-file preview and
+// outcome but keeps the multi-file summary and any per-file error.
+func TestSetQuietKeepsSummaryAndErrors(t *testing.T) {
+	t.Parallel()
+	good := copyFixture(t, sampleFLAC)
+	missing := filepath.Join(t.TempDir(), "nope.flac")
+	out, errb, code := runCLI(t, "set", "-q", good, missing, "--set", "TITLE=X")
+	if code == 0 {
+		t.Fatalf("a missing file should fail the run; exit = %d", code)
+	}
+	// The per-file plan/outcome is gone, but the summary remains (and has no leading
+	// blank line, since there is no per-file output above it).
+	if strings.Contains(out, "plan") || strings.Contains(out, "Saved") {
+		t.Errorf("quiet stdout should omit the per-file preview/outcome:\n%s", out)
+	}
+	if strings.TrimRight(out, "\n") != "1 changed, 0 unchanged, 1 failed" {
+		t.Errorf("quiet stdout should be just the summary, got:\n%q", out)
+	}
+	// The error still surfaces on stderr.
+	if !strings.Contains(errb, "nope.flac") {
+		t.Errorf("quiet stderr should still report the failed file:\n%s", errb)
+	}
+}
+
 // TestMultiLineTagValueAligns checks that a value containing a newline (lyrics)
 // keeps the aligned layout: its continuation line is indented, not at column 0.
 func TestMultiLineTagValueAligns(t *testing.T) {
@@ -947,14 +1053,21 @@ func TestResolvePaddingFlag(t *testing.T) {
 	if opt, err := resolvePaddingFlag("", true); opt == nil || err != nil {
 		t.Errorf("--no-padding: opt=%v err=%v, want option,nil", opt, err)
 	}
-	// Misuse is a usage error: both flags together, a negative count, a non-integer.
+	// Misuse is a usage error: both flags together, a negative count, a non-integer,
+	// and an absurd byte count above the sanity cap (B1's floor makes a huge value
+	// reachable from a plain edit, so it must be rejected, not allocated).
 	for _, c := range []struct {
 		padding   string
 		noPadding bool
-	}{{"16384", true}, {"-1", false}, {"abc", false}} {
+	}{{"16384", true}, {"-1", false}, {"abc", false}, {"99999999999", false}} {
 		if _, err := resolvePaddingFlag(c.padding, c.noPadding); err == nil || !isUsageError(err) {
 			t.Errorf("resolvePaddingFlag(%q, %v) err = %v, want usage error", c.padding, c.noPadding, err)
 		}
+	}
+	// The floor sets Min=Target so a rewrite grows a too-small region instead of
+	// silently reusing it; the resolver must wire both.
+	if opt, err := resolvePaddingFlag("200000", false); opt == nil || err != nil {
+		t.Errorf("--padding 200000: opt=%v err=%v, want option,nil", opt, err)
 	}
 }
 
@@ -1010,10 +1123,35 @@ func TestPaddingFlagValidation(t *testing.T) {
 		{"plan", file, "--padding", "1024", "--no-padding"},
 		{"plan", file, "--padding", "-1"},
 		{"plan", file, "--padding", "abc"},
+		{"plan", file, "--padding", "99999999999"}, // above the 64 MiB sanity cap
 	} {
 		if _, _, code := runCLI(t, args...); code != 2 {
 			t.Errorf("args %v exit = %d, want 2 (usage)", args, code)
 		}
+	}
+}
+
+// TestPaddingFloorGrowsRegion (B1): --padding N is a floor, not just a target -
+// even an edit that fits the existing (small) padding must grow the region to at
+// least N rather than silently reusing the smaller leftover.
+func TestPaddingFloorGrowsRegion(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, sampleFLAC)
+	planPadding := func(args ...string) int64 {
+		out, _, code := runCLI(t, append([]string{"--json", "plan", file}, args...)...)
+		if code != 0 {
+			t.Fatalf("plan exit = %d for %v", code, args)
+		}
+		return decodeJSONList[jsonReport](t, out)[0].PaddingAfter
+	}
+	// The fixture reuses its small (~8 KB) region by default.
+	if def := planPadding("--set", "TITLE=X"); def > 100000 {
+		t.Fatalf("fixture default padding = %d, expected the small reused region", def)
+	}
+	// With the floor, padding grows to the requested 200000 instead of reusing the
+	// smaller region (the B1 bug, where --padding was silently ignored on reuse).
+	if floor := planPadding("--set", "TITLE=X", "--padding", "200000"); floor < 200000 {
+		t.Errorf("--padding 200000 PaddingAfter = %d, want >= 200000 (floor)", floor)
 	}
 }
 
@@ -1083,8 +1221,11 @@ func TestValueNotesDeferredUntilFiles(t *testing.T) {
 	}
 }
 
-// TestEmptyValueNote (M3): --set KEY= (a present-but-empty value) is noted with
-// the --clear suggestion, and a bare KEY= never double-notes with M1.
+// TestEmptyValueNote: --set KEY= (a present-but-empty value) is noted with the
+// --clear suggestion, and a bare KEY= never double-notes with the malformed-value
+// note. The note is invocation-level (I1), so it states both outcomes rather than
+// asserting one: it must mention that formats which cannot store an empty value
+// (WAV/AIFF) drop it.
 func TestEmptyValueNote(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -1094,6 +1235,9 @@ func TestEmptyValueNote(t *testing.T) {
 	}
 	if !strings.Contains(errb, "TITLE= writes an empty value") || !strings.Contains(errb, "--clear TITLE") {
 		t.Errorf("expected an empty-value note suggesting --clear; stderr:\n%s", errb)
+	}
+	if !strings.Contains(errb, "WAV/AIFF") {
+		t.Errorf("empty-value note should not assert a single outcome; expected it to mention formats that drop it; stderr:\n%s", errb)
 	}
 }
 
@@ -1228,16 +1372,22 @@ func TestDumpRecursiveNoFiles(t *testing.T) {
 }
 
 // TestSetUnknownKeyNote: an unknown --set key is written as a custom field with a
-// one-line stderr note (the run still succeeds, exit 0).
+// one-line stderr note (the run still succeeds, exit 0), followed by a single
+// trailing hint (M2) pointing at the keys command - emitted once even for several
+// unknown keys.
 func TestSetUnknownKeyNote(t *testing.T) {
 	t.Parallel()
 	f := copyFixture(t, sampleFLAC)
-	_, errb, code := runCLI(t, "set", f, "--set", "TITEL=typo")
+	_, errb, code := runCLI(t, "set", f, "--set", "TITEL=typo", "--set", "ARTST=who")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0\n%s", code, errb)
 	}
-	if !strings.Contains(errb, "TITEL is not a known key") {
-		t.Errorf("expected unknown-key note on stderr, got: %q", errb)
+	if !strings.Contains(errb, "TITEL is not a known key") || !strings.Contains(errb, "ARTST is not a known key") {
+		t.Errorf("expected per-key unknown-key notes on stderr, got: %q", errb)
+	}
+	// The discovery hint appears exactly once, after the per-key lines.
+	if n := strings.Count(errb, "waxlabel keys"); n != 1 {
+		t.Errorf("keys hint should appear exactly once for multiple unknown keys, got %d:\n%s", n, errb)
 	}
 	j, _, _ := runCLI(t, "--json", "dump", f)
 	jd := decodeJSONOne[jsonDocument](t, j)
@@ -1436,6 +1586,33 @@ func TestExitCodes(t *testing.T) {
 				t.Errorf("exit = %d, want %d", code, tc.want)
 			}
 		})
+	}
+}
+
+// TestEmptyFileExitClass (M3) pins that an empty file is uniformly an
+// unsupported-format failure (exit 3) regardless of its extension: an empty file
+// carries no signature, so its format cannot be identified - the .flac extension
+// must not steer it into the FLAC parser and a different (invalid-data) class.
+func TestEmptyFileExitClass(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	for _, name := range []string{"zero.flac", "zero.bin"} {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out, _, code := runCLI(t, "--json", "dump", path)
+		if code != 3 {
+			t.Errorf("%s exit = %d, want 3 (unsupported-format)", name, code)
+		}
+		// The classified error names the empty-file cause so the failure is actionable.
+		jr := decodeJSONOne[jsonDocument](t, out)
+		if jr.Error == nil || jr.Error.Code != "unsupported-format" {
+			t.Errorf("%s error = %+v, want code unsupported-format", name, jr.Error)
+		}
+		if jr.Error != nil && !strings.Contains(jr.Error.Message, "empty file") {
+			t.Errorf("%s message = %q, want it to mention the empty file", name, jr.Error.Message)
+		}
 	}
 }
 

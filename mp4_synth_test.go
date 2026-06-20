@@ -460,6 +460,44 @@ func TestMP4QuickTimeUdtaTerminatorAccepted(t *testing.T) {
 	}
 }
 
+func TestMP4PaddingFloorGrowsRegion(t *testing.T) {
+	// B1 on MP4: --padding N is a floor, honored on the in-place reuse path too.
+	// MP4 reuses the existing ilst+free region when the new content fits; without
+	// the floor wired into that path, a large --padding over a small region was
+	// silently ignored. Seed a 50 KB region, then a tiny edit under a 200 KB floor
+	// must grow rather than reuse the smaller region.
+	data := mp4Tagged(mp4Text("\xa9nam", "T"))
+
+	// Set a different title so the seed actually rewrites (creating the 50 KB region);
+	// setting it to its current value would be a no-op and leave the region untouched.
+	seedPlan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Seeded").
+		Prepare(wl.WithPadding(wl.PaddingPolicy{Target: 50000, Max: 1 << 20, ReuseInPlace: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seeded := applyToBytes(t, data, seedPlan)
+
+	// A tiny edit that fits the 50 KB region, but a 200 KB floor: must grow.
+	floorPlan, err := mustParseBytes(t, seeded).Edit().Set(tag.Title, "Hi").
+		Prepare(wl.WithPadding(wl.PaddingPolicy{Target: 200000, Min: 200000, ReuseInPlace: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := floorPlan.Report().PaddingAfter; got < 200000 {
+		t.Errorf("PaddingAfter under a 200 KB floor = %d, want >= 200000 (reuse path ignored Min)", got)
+	}
+
+	// A region already past a small floor reuses in place (Min only floors a grow).
+	reusePlan, err := mustParseBytes(t, seeded).Edit().Set(tag.Title, "Hi").
+		Prepare(wl.WithPadding(wl.PaddingPolicy{Target: 1000, Min: 1000, ReuseInPlace: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reusePlan.Report().PaddingAfter; got < 40000 {
+		t.Errorf("PaddingAfter on reuse = %d, want the ~50 KB region reused, not shrunk", got)
+	}
+}
+
 func TestMP4NoOpWritesVerbatim(t *testing.T) {
 	data := mp4Tagged(mp4Text("\xa9nam", "Same"))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Same").Prepare()

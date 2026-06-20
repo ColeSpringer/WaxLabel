@@ -34,6 +34,9 @@ type editFlags struct {
 	rmPics   bool
 	force    bool // embed --add-cover input even when it is not a recognized image
 
+	addChapter    []string // TIMESTAMP=Title, appended to the chapter list (repeatable)
+	clearChapters bool     // remove all chapters
+
 	stripEncoder bool // clear the ENCODER software stamp
 
 	preset string
@@ -57,10 +60,12 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringArrayVar(&e.addCover, "add-cover", nil, "add a front-cover picture from an image file (repeatable)")
 	f.BoolVar(&e.rmPics, "remove-pictures", false, "remove all embedded pictures")
 	f.BoolVar(&e.force, "force", false, "embed --add-cover input even if it is not a recognized image (PNG/JPEG/GIF/WebP/BMP/TIFF)")
+	f.StringArrayVar(&e.addChapter, "add-chapter", nil, "add a chapter TIMESTAMP=Title (e.g. 1:30=Verse; repeatable); a file whose format cannot store chapters fails while capable files proceed")
+	f.BoolVar(&e.clearChapters, "clear-chapters", false, "remove all chapters (applied before --add-chapter, so combining them keeps only the added chapters)")
 	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear the ENCODER software stamp (the transcoder leftover)")
 	f.StringVar(&e.preset, "preset", "", "write policy preset: preserve|compatible|canonical|minimal")
 	f.StringVar(&e.legacy, "legacy", "", "legacy-tag policy: preserve|strip|reconcile|update-existing")
-	f.StringVar(&e.padding, "padding", "", "reserve N bytes of padding after the metadata (default 8192; reused in place)")
+	f.StringVar(&e.padding, "padding", "", "reserve at least N bytes of padding after the metadata (default 8192)")
 	f.BoolVar(&e.noPadding, "no-padding", false, "write no padding after the metadata (smallest file)")
 	f.BoolVar(&e.strict, "strict", false, "fail (exit 2) on an unknown key or a single-valued key given multiple values, instead of noting it")
 }
@@ -136,6 +141,22 @@ func (e *editFlags) loadCovers() ([]wl.Picture, error) {
 	return pics, nil
 }
 
+// chapterAdds parses the --add-chapter "TIMESTAMP=Title" assignments into chapters,
+// validating every timestamp once - before any file is parsed - so a malformed entry
+// is reported a single time for the whole invocation, not once per file in a bulk
+// run. A bad assignment is a usage error.
+func (e *editFlags) chapterAdds() ([]wl.Chapter, error) {
+	var chs []wl.Chapter
+	for _, s := range e.addChapter {
+		start, title, err := splitChapter(s)
+		if err != nil {
+			return nil, err
+		}
+		chs = append(chs, wl.Chapter{Start: start, Title: title})
+	}
+	return chs, nil
+}
+
 // writeOptions resolves -preset, -legacy, and the padding flags into library
 // write options, applied in that order so an explicit option overrides the
 // preset's. An unknown name or a bad padding value is a usage error.
@@ -159,15 +180,24 @@ func (e *editFlags) writeOptions() ([]wl.WriteOption, error) {
 	return opts, nil
 }
 
+// maxPaddingBytes caps an explicit --padding value. Cover art runs KB-MB, and the
+// padding floor makes a plain edit able to pre-reserve the requested region (the
+// MP3/AAC reuse -> ClampTarget path is otherwise unbounded under Max 0), so an
+// absurd value would allocate a multi-gigabyte metadata region. 64 MiB is a
+// generous ceiling, far above any real cover.
+const maxPaddingBytes = 64 << 20
+
 // resolvePaddingFlag turns the --padding/--no-padding values into a write option,
 // or nil when neither is set (leaving the default 8 KiB policy in place). The two
-// are mutually exclusive, and an explicit byte count must be a non-negative
-// integer; both violations are usage errors.
+// are mutually exclusive, and an explicit byte count must be a non-negative integer
+// no larger than maxPaddingBytes; each violation is a usage error.
 //
-// --no-padding writes none (Target 0, Max 0). --padding N reserves N bytes,
-// reused in place, with Max 0 - unbounded, so only the format's hard cap applies.
-// An explicit target is therefore honored even above the 1 MiB ceiling the
-// default policy carries; for N <= 1 MiB the result matches the default's bound.
+// --no-padding writes none (Target 0, Max 0). --padding N is a floor: it reserves
+// at least N bytes, so it sets Min=N as well as Target=N - a rewrite grows a
+// too-small region up to N instead of reusing it (without Min, the reuse branch
+// would keep the smaller existing region and silently ignore N). Max stays 0
+// (no policy ceiling); the maxPaddingBytes usage cap and each format's hard cap
+// are the actual upper bounds.
 func resolvePaddingFlag(padding string, noPadding bool) (wl.WriteOption, error) {
 	if noPadding && padding != "" {
 		return nil, usagef("--padding and --no-padding cannot be combined")
@@ -182,7 +212,10 @@ func resolvePaddingFlag(padding string, noPadding bool) (wl.WriteOption, error) 
 	if err != nil || n < 0 {
 		return nil, usagef("--padding wants a non-negative byte count, got %q", padding)
 	}
-	return wl.WithPadding(wl.PaddingPolicy{Target: n, Max: 0, ReuseInPlace: true}), nil
+	if n > maxPaddingBytes {
+		return nil, usagef("--padding %d is too large (max %d bytes, 64 MiB)", n, maxPaddingBytes)
+	}
+	return wl.WithPadding(wl.PaddingPolicy{Target: n, Min: n, Max: 0, ReuseInPlace: true}), nil
 }
 
 // resolveWriteFlags turns the shared -preset/-legacy flag values into library
@@ -228,11 +261,13 @@ var legacyOptions = map[string]wl.LegacyPolicy{
 // them to each file via prepare, so flag and cover validation happens once - not
 // once per file.
 type compiledEdit struct {
-	patch       tag.TagPatch
-	opts        []wl.WriteOption
-	covers      []wl.Picture
-	rmPics      bool
-	unknownKeys []tag.Key // --set/--add keys outside the canonical vocabulary, first-seen order
+	patch         tag.TagPatch
+	opts          []wl.WriteOption
+	covers        []wl.Picture
+	rmPics        bool
+	chapters      []wl.Chapter // --add-chapter additions, validated at compile time
+	clearChapters bool         // --clear-chapters
+	unknownKeys   []tag.Key    // --set/--add keys outside the canonical vocabulary, first-seen order
 }
 
 // compile resolves the edit flags into a compiledEdit, surfacing any usage error
@@ -252,7 +287,19 @@ func (e *editFlags) compile(extra ...wl.WriteOption) (*compiledEdit, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &compiledEdit{patch: patch, opts: opts, covers: covers, rmPics: e.rmPics, unknownKeys: e.unknownAssignKeys()}, nil
+	chapters, err := e.chapterAdds()
+	if err != nil {
+		return nil, err
+	}
+	return &compiledEdit{
+		patch:         patch,
+		opts:          opts,
+		covers:        covers,
+		rmPics:        e.rmPics,
+		chapters:      chapters,
+		clearChapters: e.clearChapters,
+		unknownKeys:   e.unknownAssignKeys(),
+	}, nil
 }
 
 // unknownAssignKeys returns the --set/--add keys outside the published canonical
@@ -306,6 +353,12 @@ func notifyUnknownKeys(errOut io.Writer, ce *compiledEdit, strict, asJSON bool) 
 	for _, k := range note {
 		fmt.Fprintf(errOut, "note: %s is not a known key; written as a custom field\n", k)
 	}
+	// One trailing hint after the per-key lines (not per key, so five unknown keys do
+	// not repeat it five times) points at the discovery command for the canonical
+	// vocabulary. Only when at least one key was actually noted.
+	if len(note) > 0 {
+		fmt.Fprintln(errOut, "note: run 'waxlabel keys' to list the canonical vocabulary")
+	}
 	return err
 }
 
@@ -326,9 +379,13 @@ func notifyValueNotes(errOut io.Writer, e *editFlags, asJSON bool) {
 			continue // a malformed assignment is already reported by patch()
 		}
 		if v == "" {
-			// M3: a present-but-empty --set value, distinct from --clear (which removes
-			// the key). M1's typed check skips empties, so a bare KEY= never double-notes.
-			fmt.Fprintf(errOut, "note: %s= writes an empty value; use --clear %s to remove it\n", k, k)
+			// A present-but-empty --set value, distinct from --clear (which removes the
+			// key). The note is invocation-level (no per-file format is known yet), so it
+			// states both outcomes rather than asserting one: formats that can store an
+			// empty value keep it, while those that cannot (WAV/AIFF, whose native text
+			// cannot hold an empty string) drop it. The typed check skips empties, so a
+			// bare KEY= never double-notes.
+			fmt.Fprintf(errOut, "note: %s= writes an empty value (dropped on formats that cannot store one, e.g. WAV/AIFF); use --clear %s to remove it\n", k, k)
 			continue
 		}
 		noteMalformedValue(errOut, k, v)
@@ -430,6 +487,19 @@ func (ce *compiledEdit) prepare(ctx context.Context, path string) (*wl.Document,
 	}
 	for _, p := range ce.covers {
 		ed.AddPicture(p)
+	}
+	// Chapters: --add-chapter appends to the file's existing chapters; --clear-chapters
+	// drops them first, so "clear + add" keeps only the added ones (the
+	// --remove-pictures --add-cover ordering). --clear-chapters alone empties the list.
+	// The library sorts the final list by start time.
+	if len(ce.chapters) > 0 {
+		base := doc.Chapters()
+		if ce.clearChapters {
+			base = nil
+		}
+		ed.SetChapters(append(base, ce.chapters...)...)
+	} else if ce.clearChapters {
+		ed.ClearChapters()
 	}
 	plan, err := ed.Prepare(ce.opts...)
 	if err != nil {

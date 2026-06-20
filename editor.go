@@ -157,6 +157,17 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w: no writer for %s", waxerr.ErrUnsupportedFormat, e.base.Format)
 	}
+	// Refuse to silently drop chapters on a format that cannot store them, mirroring
+	// the picture path (a cover onto WebM hard-errors). Guard on a non-empty list so
+	// ClearChapters() on a chapterless format stays a harmless no-op (just as clearing
+	// a cover on WebM does not error). A format-incapable destination in a transfer is
+	// handled earlier (ProjectTransfer marks chapters Dropped before SetChapters runs),
+	// so chaptersTouched is false there and this never fires.
+	if e.chaptersTouched && len(e.chapters) > 0 &&
+		codec.Capabilities(e.base, wo).Chapters.Write < core.AccessPartial {
+		return nil, fmt.Errorf("%w: chapters cannot be written to a %s file",
+			waxerr.ErrUnsupportedTag, e.base.Format)
+	}
 	wp, err := codec.Plan(context.Background(), e.base, edited, wo)
 	if err != nil {
 		return nil, err

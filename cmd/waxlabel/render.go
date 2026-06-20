@@ -93,8 +93,12 @@ func audioLine(p wl.Properties) string {
 		hasSubstantive = true
 	}
 	// Round to kbps; a sub-1-kbps average (a truncated file's collapsed bitrate)
-	// would print as a misleading "0 kbps", so it is omitted instead.
-	if t.Bitrate >= 1000 {
+	// would print as a misleading "0 kbps", so it is omitted instead. Gate on a
+	// non-zero duration too: a header-only file (empty.wav, zero samples) has a
+	// header-derived rate×ch×depth bitrate that is meaningless over zero playtime -
+	// an average bitrate is undefined there - so the truthful header facts (codec,
+	// rate, channels, depth) stay while the bogus "705 kbps" is dropped.
+	if t.Bitrate >= 1000 && p.Duration() > 0 {
 		parts = append(parts, fmt.Sprintf("%d kbps", t.Bitrate/1000))
 		hasSubstantive = true
 	}

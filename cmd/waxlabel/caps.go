@@ -20,15 +20,13 @@ import (
 // model.
 func newCapsCmd() *cobra.Command {
 	var format string
-	var all bool
 	cmd := &cobra.Command{
 		Use:   "caps [<file>...]",
 		Short: "Show which metadata a format can edit, and how",
 		Long: "Report what metadata each format can store and edit: the read/write level,\n" +
 			"native representation, and fidelity for fields, pictures, and chapters, plus\n" +
-			"every known key with its cardinality (single- or multi-valued) and meaning.\n" +
-			"By default only editable keys are listed; --all includes read-only and\n" +
-			"unsupported ones.\n\n" +
+			"every editable key with its cardinality (single- or multi-valued) and meaning.\n" +
+			"For the format-independent key vocabulary on its own, see the keys command.\n\n" +
 			"Pass files to describe them (a single \"-\" reads from standard input), or\n" +
 			"--format <name> (e.g. flac, mp3, m4a) to describe a format with no file.",
 		Args: cobra.ArbitraryArgs,
@@ -41,33 +39,32 @@ func newCapsCmd() *cobra.Command {
 				if !ok {
 					return usagef("unknown format %q; try one of: %s", format, formatHint())
 				}
-				return runCapsFormat(cmd, f, all)
+				return runCapsFormat(cmd, f)
 			}
 			if len(args) == 0 {
 				return usagef("caps requires a file argument or --format")
 			}
-			return runCapsFiles(cmd, args, all)
+			return runCapsFiles(cmd, args)
 		},
 	}
 	cmd.Flags().StringVar(&format, "format", "", "describe a format with no file (e.g. flac, mp3, m4a)")
-	cmd.Flags().BoolVar(&all, "all", false, "include read-only and unsupported keys, not just editable ones")
 	return cmd
 }
 
 // runCapsFormat renders a single format's capabilities (no file).
-func runCapsFormat(cmd *cobra.Command, f wl.Format, all bool) error {
-	jc := buildCaps("", wl.CapabilitiesFor(f), all)
+func runCapsFormat(cmd *cobra.Command, f wl.Format) error {
+	jc := buildCaps("", wl.CapabilitiesFor(f))
 	if jsonMode(cmd) {
 		return writeJSON(cmd.OutOrStdout(), jc)
 	}
-	renderCaps(cmd.OutOrStdout(), jc, all)
+	renderCaps(cmd.OutOrStdout(), jc)
 	return nil
 }
 
 // runCapsFiles parses each file and reports its (file-aware) capabilities,
 // reusing the per-file harness so a parse failure on one file is reported without
 // aborting the rest.
-func runCapsFiles(cmd *cobra.Command, args []string, all bool) error {
+func runCapsFiles(cmd *cobra.Command, args []string) error {
 	realOf, cleanup, err := readInputs(cmd.InOrStdin(), args)
 	if err != nil {
 		return err
@@ -79,13 +76,14 @@ func runCapsFiles(cmd *cobra.Command, args []string, all bool) error {
 			if err != nil {
 				return jsonCaps{}, err
 			}
-			return buildCaps(path, doc.Capabilities(), all), nil
+			return buildCaps(path, doc.Capabilities()), nil
 		},
 		func(_ string, jc jsonCaps) any { return jc },
 		func(path string, c classifiedError) any {
 			return jsonCaps{SchemaVersion: schemaVersion, File: path, Error: &jsonErrBody{c.code, c.message}}
 		},
-		func(w io.Writer, _ string, jc jsonCaps) { renderCaps(w, jc, all) },
+		func(w io.Writer, _ string, jc jsonCaps) { renderCaps(w, jc) },
+		false,
 	)
 }
 
@@ -123,10 +121,10 @@ type jsonCapKey struct {
 	Cardinality string `json:"cardinality"` // "single" or "multi"
 }
 
-// buildCaps projects a Capabilities into its JSON form. With all false, only keys
-// the format can write are listed (the editable set); with all true, every known
-// key is listed, including any the format cannot store.
-func buildCaps(file string, caps wl.Capabilities, all bool) jsonCaps {
+// buildCaps projects a Capabilities into its JSON form. Only keys the format can
+// write are listed (the editable set); the format-independent vocabulary in full
+// is the keys command's job.
+func buildCaps(file string, caps wl.Capabilities) jsonCaps {
 	jc := jsonCaps{
 		SchemaVersion: schemaVersion,
 		File:          file,
@@ -138,7 +136,7 @@ func buildCaps(file string, caps wl.Capabilities, all bool) jsonCaps {
 	}
 	for _, k := range tag.KnownKeys() {
 		fc := caps.Field(k)
-		if !all && fc.Write < wl.AccessPartial {
+		if fc.Write < wl.AccessPartial {
 			continue // editable-only: skip a key the format cannot write
 		}
 		jc.Keys = append(jc.Keys, jsonCapKey{
@@ -176,7 +174,7 @@ func cardinalityOf(key tag.Key, c wl.Capability) string {
 }
 
 // renderCaps writes the human-readable capability report.
-func renderCaps(w io.Writer, jc jsonCaps, all bool) {
+func renderCaps(w io.Writer, jc jsonCaps) {
 	if jc.File != "" {
 		fmt.Fprintln(w, displayName(jc.File))
 	}
@@ -188,23 +186,12 @@ func renderCaps(w io.Writer, jc jsonCaps, all bool) {
 	renderCapDim(w, "pictures", jc.Pictures)
 	renderCapDim(w, "chapters", jc.Chapters)
 
-	heading := "editable keys"
-	if all {
-		heading = "keys"
+	fmt.Fprintf(w, "  editable keys (%d):\n", len(jc.Keys))
+	rows := make([]keyRow, len(jc.Keys))
+	for i, k := range jc.Keys {
+		rows[i] = keyRow{key: k.Key, cardinality: k.Cardinality, description: k.Description}
 	}
-	fmt.Fprintf(w, "  %s (%d):\n", heading, len(jc.Keys))
-	keyWidth, cardWidth := 0, 0
-	for _, k := range jc.Keys {
-		if n := len(k.Key); n > keyWidth {
-			keyWidth = n
-		}
-		if n := len(k.Cardinality); n > cardWidth {
-			cardWidth = n
-		}
-	}
-	for _, k := range jc.Keys {
-		fmt.Fprintf(w, "    %-*s  %-*s  %s\n", keyWidth, k.Key, cardWidth, k.Cardinality, k.Description)
-	}
+	renderKeyTable(w, "    ", rows)
 }
 
 // renderCapDim writes one dimension line: its read/write levels, then the native

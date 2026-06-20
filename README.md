@@ -54,7 +54,8 @@ the structured accessors (`plan.Changes()`, `doc.Tags()`) or use the CLI's `--js
 `Document` is immutable and detached - it holds no file descriptor and has no
 `Close`, so you can scan, cache, and discard it freely. Save destinations are
 [`SaveBack`] (atomic in-place rewrite; a no-op writes nothing), [`SaveAsFile`],
-and [`WriteTo`] (stream to any `io.Writer`).
+and [`WriteTo`] (stream to any `io.Writer`; pass the source to copy, or `nil` for
+a `ParseFile`/`OpenSource` document to use its own).
 
 ## Command-line tool
 

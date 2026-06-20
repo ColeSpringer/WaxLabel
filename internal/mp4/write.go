@@ -162,19 +162,27 @@ func planLayout(d *doc, newIlst []byte, opts core.WriteOptions) (layout, error) 
 		}
 		regionLen := regionEnd - regionStart
 		leftover := regionLen - newLen
+		// floor is the --padding "reserve at least N" minimum (PaddingPolicy.Min); a
+		// reuse-in-place path may only keep the existing region while its leftover
+		// padding still meets it, otherwise the region must grow. Min defaults to 0,
+		// leaving the prior reuse behavior unchanged. Mirrors the FLAC/ID3 reuse floor.
+		floor := opts.Padding.Min
 
 		lay := layout{regionStart: regionStart, regionEnd: regionEnd, ilstOff: 0, freeOff: -1}
 		lay.ancestors = []atomRef{*d.moov, *d.udta, *d.meta}
 		switch {
-		case leftover == 0:
-			// Exact fit: just the ilst, no padding.
+		case leftover == 0 && floor <= 0:
+			// Exact fit: just the ilst, no padding - but only when no floor is requested
+			// (a zero-leftover region cannot satisfy a positive floor).
 			lay.regionBytes = newIlst
-		case leftover >= 8:
-			// Fits with room for a free atom: reuse the region in place (delta 0).
+		case leftover >= 8 && leftover-8 >= floor:
+			// Fits with room for a free atom whose padding still meets the floor: reuse
+			// the region in place (delta 0).
 			lay.regionBytes, lay.freeOff, lay.freeLen, lay.freeContent = appendFree(newIlst, leftover-8)
 		default:
-			// Does not fit (or a 1-7 byte remainder a free atom cannot represent):
-			// grow with fresh padding so a later edit fits in place again.
+			// Does not fit, leaves a 1-7 byte remainder a free atom cannot represent, or
+			// the leftover would fall below the floor: grow with fresh padding (clampPadding
+			// floors it to Min) so a later edit fits in place again.
 			lay.regionBytes, lay.freeOff, lay.freeLen, lay.freeContent = appendFree(newIlst, pad)
 		}
 		return lay, nil
@@ -275,14 +283,18 @@ func renderFullBox(name [4]byte, content []byte) []byte {
 func metaPrefix() int { return 8 + metaSkip }
 
 // clampPadding resolves the free-atom padding to write on a grow, honoring the
-// policy's target and maximum.
+// policy's maximum and the Min floor (so --padding N reserves at least N). It
+// mirrors core.PaddingPolicy.ClampTarget: clamp to Max, then floor to Min, then to 0.
 func clampPadding(p core.PaddingPolicy) int64 {
 	target := p.Target
-	if target < 0 {
-		target = 0
-	}
 	if p.Max > 0 && target > p.Max {
 		target = p.Max
+	}
+	if target < p.Min {
+		target = p.Min
+	}
+	if target < 0 {
+		target = 0
 	}
 	return target
 }

@@ -311,3 +311,29 @@ func TestMP4ChapterRoundTripStable(t *testing.T) {
 		t.Error("chapter write is not deterministic")
 	}
 }
+
+func TestSetChaptersOnIncapableFormatErrors(t *testing.T) {
+	// FLAC cannot write chapters (CUESHEET is preserved, not modeled). Setting
+	// chapters there must hard-error at Prepare rather than silently dropping them -
+	// mirroring the cover-onto-WebM refusal - so the loss is reported, not swallowed.
+	doc := mustParseBytes(t, synthFLAC())
+	_, err := doc.Edit().SetChapters(wl.Chapter{Start: 0, Title: "Ch1"}).Prepare()
+	if !errors.Is(err, waxerr.ErrUnsupportedTag) {
+		t.Fatalf("SetChapters on FLAC error = %v, want ErrUnsupportedTag", err)
+	}
+}
+
+func TestClearChaptersOnIncapableFormatIsNoOp(t *testing.T) {
+	// Clearing chapters on a chapterless, chapter-incapable format is harmless: the
+	// guard keys on a non-empty list, so an empty list never fires (just as clearing
+	// a cover on WebM does not error). A concurrent tag edit must still apply.
+	doc := mustParseBytes(t, synthFLAC())
+	plan, err := doc.Edit().ClearChapters().Set(tag.Title, "Kept").Prepare()
+	if err != nil {
+		t.Fatalf("ClearChapters on FLAC error = %v, want nil", err)
+	}
+	out := applyToBytes(t, synthFLAC(), plan)
+	if re := mustParseBytes(t, out); re.Fields().Title != "Kept" {
+		t.Errorf("title after ClearChapters = %q, want Kept", re.Fields().Title)
+	}
+}

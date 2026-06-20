@@ -202,9 +202,12 @@ func humanDuration(d time.Duration) string {
 // perFile runs a per-path command (dump, verify): it processes each path
 // independently, captures the first error for the exit code, routes per-file
 // errors to stderr (text) or into the JSON result, separates text records with a
-// blank line only between records actually written, and emits the per-file
-// results as a JSON array (always, even for a single path). The returned error is
-// alreadyRendered, so dispatch keeps the exit class without re-rendering.
+// blank line only between records actually written, and emits the per-file results
+// as a JSON array (always, even for a single path). noSeparator drops that
+// inter-record blank line, for a one-line-per-file (TSV) renderer - verify --quiet -
+// whose output pipes into sort/uniq where a blank line would be spurious. The
+// returned error is alreadyRendered, so dispatch keeps the exit class without
+// re-rendering.
 func perFile[P any](
 	cmd *cobra.Command,
 	paths []string,
@@ -212,6 +215,7 @@ func perFile[P any](
 	toJSON func(path string, p P) any,
 	errorJSON func(path string, c classifiedError) any,
 	render func(w io.Writer, path string, p P),
+	noSeparator bool,
 ) error {
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 	asJSON := jsonMode(cmd)
@@ -234,7 +238,7 @@ func perFile[P any](
 		if asJSON {
 			items = append(items, toJSON(path, p))
 		} else {
-			if rendered > 0 {
+			if rendered > 0 && !noSeparator {
 				fmt.Fprintln(out)
 			}
 			render(out, path, p)

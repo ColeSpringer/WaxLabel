@@ -126,6 +126,35 @@ func TestWithPaddingAndReport(t *testing.T) {
 	}
 }
 
+func TestPaddingFloorWiring(t *testing.T) {
+	src := readFixture(t, sampleFLAC)
+
+	// A floor (Min == Target) grows the region: an edit that would fit the fixture's
+	// small existing padding must instead reserve at least Min, not reuse the smaller
+	// leftover (the B1 fix - Min now gates the reuse branch).
+	floorPlan, err := mustParseBytes(t, src).Edit().Set(tag.Title, "Floor").
+		Prepare(wl.WithPadding(wl.PaddingPolicy{Target: 200000, Min: 200000, ReuseInPlace: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := floorPlan.Report().PaddingAfter; got < 200000 {
+		t.Fatalf("PaddingAfter under a floor = %d, want >= 200000", got)
+	}
+	grown := applyToBytes(t, src, floorPlan)
+
+	// A region already past the floor reuses in place: re-editing the grown file under
+	// a small floor keeps the large region (Min only floors a grow, it never forces a
+	// shrink toward Target).
+	reusePlan, err := mustParseBytes(t, grown).Edit().Set(tag.Title, "Reuse").
+		Prepare(wl.WithPadding(wl.PaddingPolicy{Target: 1000, Min: 1000, ReuseInPlace: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reusePlan.Report().PaddingAfter; got < 100000 {
+		t.Errorf("PaddingAfter on reuse = %d, want the large region reused (not shrunk to 1000)", got)
+	}
+}
+
 func TestMinimalPresetStripsAndShrinks(t *testing.T) {
 	src := withTrailingID3v1(readFixture(t, sampleFLAC))
 	doc := mustParseBytes(t, src)

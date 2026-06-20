@@ -206,7 +206,12 @@ func serializeMetadata(blocks []block, d *doc, pol core.PaddingPolicy) (out []by
 	}
 	origRegion := d.audioStart - (d.flacStart + 4)
 
-	if pol.ReuseInPlace && int64(nonPad)+4 <= origRegion {
+	// Reuse the existing region in place only while the leftover padding is still
+	// >= Min; an explicit --padding floor otherwise falls to ClampTarget (which also
+	// floors to Min) so a too-small region grows. The first bound (content fits the
+	// region) short-circuits, so origRegion-(nonPad+4) is non-negative before the
+	// floor comparison. Min defaults to 0, leaving the prior reuse behavior unchanged.
+	if pol.ReuseInPlace && int64(nonPad)+4 <= origRegion && origRegion-(int64(nonPad)+4) >= pol.Min {
 		padSize = int(origRegion - int64(nonPad) - 4)
 	} else {
 		padSize = int(pol.ClampTarget())

@@ -22,6 +22,7 @@ func newSetCmd() *cobra.Command {
 		verify        bool
 		preserveMtime bool
 		recursive     bool
+		quiet         bool
 	)
 	cmd := &cobra.Command{
 		Use:   "set <file>...",
@@ -76,7 +77,7 @@ func newSetCmd() *cobra.Command {
 				}
 				notifyValueNotes(cmd.ErrOrStderr(), &ef, jsonMode(cmd))
 			}
-			return runSet(cmd, paths, realOf, ce, output, ef.strict)
+			return runSet(cmd, paths, realOf, ce, output, ef.strict, quiet)
 		},
 	}
 	ef.bind(cmd)
@@ -84,6 +85,7 @@ func newSetCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&verify, "verify", false, "after writing, verify the saved file's audio essence matches the source")
 	cmd.Flags().BoolVar(&preserveMtime, "preserve-mtime", false, "keep the file's modification time (by default it is updated)")
 	cmd.Flags().BoolVar(&recursive, "recursive", false, "recurse into directory arguments, editing every audio file found")
+	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "suppress the per-file plan and outcome (errors and the final summary still print); a single-file set is then silent on success")
 	return cmd
 }
 
@@ -107,11 +109,16 @@ func checkSetStdin(args []string, output string) error {
 // previewed before its write, so a failed write still shows what was attempted;
 // the first error sets the exit class while the remaining files still process.
 // JSON output is always an array, one element per input; a multi-file text run
-// ends with a one-line summary. The returned error is alreadyRendered, preserving
+// ends with a one-line summary. With quiet (text mode only), the per-file plan and
+// outcome are suppressed while errors and the summary remain, so a single-file
+// `set -q` is silent on success. The returned error is alreadyRendered, preserving
 // the exit class without rendering a second time.
-func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *compiledEdit, output string, strict bool) error {
+func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *compiledEdit, output string, strict, quiet bool) error {
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 	asJSON := jsonMode(cmd)
+	// quiet is a text-mode presentation choice; under --json the stream shape is
+	// fixed, so it has no effect there.
+	quiet = quiet && !asJSON
 	// An empty path list is only reachable when a --recursive walk matched no audio
 	// files: cobra requires >=1 argument, the -o path already rejects len != 1, and a
 	// passed-through nonexistent file fails per-file with exit 6. For a mutating
@@ -153,8 +160,9 @@ func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *
 			continue
 		}
 		// Print the plan before the write so the preview is shown even if the write
-		// then fails (the help promises this ordering); JSON aggregates instead.
-		if !asJSON {
+		// then fails (the help promises this ordering); JSON aggregates instead, and
+		// quiet suppresses the preview entirely.
+		if !asJSON && !quiet {
 			if rendered > 0 {
 				fmt.Fprintln(out)
 			}
@@ -180,7 +188,7 @@ func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *
 		}
 		if asJSON {
 			items = append(items, toJSONSetResult(path, output, plan, res))
-		} else {
+		} else if !quiet {
 			renderSaveOutcome(out, path, output, res)
 		}
 	}
@@ -190,7 +198,12 @@ func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *
 			return err
 		}
 	} else if len(paths) > 1 {
-		fmt.Fprintf(out, "\n%d changed, %d unchanged, %d failed\n", changed, unchanged, failed)
+		// The blank line separates the summary from the per-file output above it;
+		// under quiet there is none, so drop the separator to avoid a leading blank.
+		if !quiet {
+			fmt.Fprintln(out)
+		}
+		fmt.Fprintf(out, "%d changed, %d unchanged, %d failed\n", changed, unchanged, failed)
 	}
 	return alreadyRendered(firstErr)
 }

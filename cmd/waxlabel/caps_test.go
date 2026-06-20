@@ -96,24 +96,29 @@ func TestCapsChaptersMaxItemsJSON(t *testing.T) {
 	}
 }
 
-func TestCapsAllIncludesEntireVocabulary(t *testing.T) {
-	// Every implemented format is fully field-writable today, so --all and the
-	// editable-only default list the same keys; assert --all is at least as large
-	// and never smaller, and that it covers the whole known vocabulary.
-	var def, all jsonCaps
+func TestCapsListsEditableVocabulary(t *testing.T) {
+	// Every implemented format is fully field-writable today, so the editable-only
+	// listing covers the whole known vocabulary; assert FLAC's editable keys are
+	// exactly that set. (The format-independent catalog is the keys command's job.)
+	var def jsonCaps
 	out, _, _ := runCLI(t, "--json", "caps", "--format", "flac")
 	if err := json.Unmarshal([]byte(out), &def); err != nil {
 		t.Fatalf("unmarshal default: %v", err)
 	}
-	out, _, _ = runCLI(t, "--json", "caps", "--format", "flac", "--all")
-	if err := json.Unmarshal([]byte(out), &all); err != nil {
-		t.Fatalf("unmarshal all: %v", err)
+	if want := len(tag.KnownKeys()); len(def.Keys) != want {
+		t.Errorf("caps listed %d editable keys, want the whole vocabulary (%d)", len(def.Keys), want)
 	}
-	if len(all.Keys) < len(def.Keys) {
-		t.Errorf("--all listed fewer keys (%d) than default (%d)", len(all.Keys), len(def.Keys))
+}
+
+func TestCapsAllFlagIsGone(t *testing.T) {
+	// The dead --all flag was dropped (discovery moved to the keys command); it is
+	// now an unknown flag (usage error, exit 2).
+	_, errOut, code := runCLI(t, "caps", "--format", "flac", "--all")
+	if code != 2 {
+		t.Fatalf("caps --all exit = %d, want 2 (unknown flag)", code)
 	}
-	if want := len(tag.KnownKeys()); len(all.Keys) != want {
-		t.Errorf("--all listed %d keys, want the whole vocabulary (%d)", len(all.Keys), want)
+	if !strings.Contains(errOut, "unknown flag") {
+		t.Errorf("caps --all stderr = %q, want it to mention an unknown flag", errOut)
 	}
 }
 
