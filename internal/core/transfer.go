@@ -112,20 +112,20 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 	var items []TransferItem
 	for _, k := range src.Tags.Keys() {
 		vals, _ := src.Tags.Get(k)
-		disp, reason := dispose(dst.Field(k), dst.ReadOnly, len(vals))
+		disp, reason := dispose(dst.Field(k), dst.ReadOnly, len(vals), "this field")
 		items = append(items, TransferItem{
 			Kind: TransferField, Key: k, Count: len(vals),
 			Disposition: disp, Reason: reason,
 		})
 	}
 	if n := len(src.Pictures); n > 0 {
-		disp, reason := dispose(dst.Pictures, dst.ReadOnly, n)
+		disp, reason := dispose(dst.Pictures, dst.ReadOnly, n, "pictures")
 		items = append(items, TransferItem{
 			Kind: TransferPicture, Count: n, Disposition: disp, Reason: reason,
 		})
 	}
 	if n := len(src.Chapters); n > 0 {
-		disp, reason := dispose(dst.Chapters, dst.ReadOnly, n)
+		disp, reason := dispose(dst.Chapters, dst.ReadOnly, n, "chapters")
 		items = append(items, TransferItem{
 			Kind: TransferChapter, Count: n, Disposition: disp, Reason: reason,
 		})
@@ -135,10 +135,11 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 
 // dispose grades how a piece of metadata (count items of it) survives against the
 // destination capability c, returning the disposition and a human-readable reason
-// drawn from the capability's own description. A read-only destination drops
-// everything; a set that exceeds the capability's hard MaxItems is dropped (the
-// destination would reject the whole set at write time, so reporting it carried
-// would be a lie); otherwise the write level decides.
+// drawn from the capability's own description. noun names the metadata kind
+// ("pictures" / "chapters" / "this field") for a destination-focused drop reason.
+// A read-only destination drops everything; a set that exceeds the capability's
+// hard MaxItems is dropped (the destination would reject the whole set at write
+// time, so reporting it carried would be a lie); otherwise the write level decides.
 //
 // Note: this does not consult Capability.MaxValues. dispose is the predictive half
 // of the report==write invariant, and the apply path (PrepareTransfer) only skips
@@ -149,15 +150,15 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 // expresses that through its Fidelity/Constraints (which its writer honors, e.g.
 // WAV's single-valued INFO); MaxValues is a cardinality hint for discovery (caps),
 // not a transfer-fidelity signal.
-func dispose(c Capability, readOnly bool, count int) (Disposition, string) {
+func dispose(c Capability, readOnly bool, count int, noun string) (Disposition, string) {
 	if readOnly {
 		return Dropped, "destination is read-only"
 	}
 	if c.Write == AccessNone {
-		if c.Representation != "" {
-			return Dropped, "unsupported: " + c.Representation
-		}
-		return Dropped, "unsupported by destination"
+		// Destination-focused wording: the reason a user sees is "what the target
+		// format can't hold", not the source-side Representation string ("no covers",
+		// "not modeled"), which read as internal jargon in the loss report.
+		return Dropped, "destination format does not store " + noun
 	}
 	if c.MaxItems > 0 && count > c.MaxItems {
 		return Dropped, fmt.Sprintf("exceeds the destination limit of %d", c.MaxItems)

@@ -99,7 +99,13 @@ func essenceOf(t *testing.T, file string) string {
 	if code != 0 {
 		t.Fatalf("verify %s exit = %d", file, code)
 	}
-	return decodeJSONOne[jsonVerify](t, out).Essence
+	got := decodeJSONOne[jsonVerify](t, out).Essence
+	// A non-empty digest is the precondition for the before==after invariant to mean
+	// anything: an empty essence would let "" == "" pass the round-trip check trivially.
+	if got == "" {
+		t.Fatalf("verify %s produced an empty essence digest", file)
+	}
+	return got
 }
 
 func TestSetAddChapterRoundTrip(t *testing.T) {

@@ -248,7 +248,105 @@ func decodeQTChapters(src core.ReaderAtSized, moov node, limit int64) ([]core.Ch
 	if !ok {
 		return nil, false
 	}
-	return decodeTextTrack(src, text, limit)
+	// A chapter text track's stts decode times always run from zero, so a first
+	// chapter that starts after t=0 carries that offset in a leading empty edit in
+	// the track's elst (the standard MP4 delayed-track form WaxLabel writes). Read it
+	// and shift every chapter so the QuickTime starts are absolute - and thus agree
+	// with the absolute chpl rather than self-reporting a source conflict. The movie
+	// timescale is read locally because collectMvhd has not populated d.movieTimescale
+	// at this point (resolveChapters runs before it).
+	offset := chapterEditOffset(src, text, movieTimescaleOf(src, moov, limit), limit)
+	return decodeTextTrack(src, text, offset, limit)
+}
+
+// movieTimescaleOf reads moov's mvhd movie timescale (version 0 at byte 12,
+// version 1 at byte 20). It reads only the timescale, so it needs far fewer bytes
+// than collectMvhd (which also reads next_track_ID); it is used at resolveChapters
+// time, before collectMvhd runs. Returns 0 when absent, so the caller applies no
+// edit-list offset.
+func movieTimescaleOf(src core.ReaderAtSized, moov node, limit int64) uint32 {
+	mvhd, ok := moov.find("mvhd")
+	if !ok {
+		return 0
+	}
+	b, err := readPayload(src, mvhd, 32, limit)
+	if err != nil || len(b) < 1 {
+		return 0
+	}
+	switch b[0] {
+	case 0:
+		if len(b) >= 16 {
+			return binary.BigEndian.Uint32(b[12:16])
+		}
+	case 1:
+		if len(b) >= 24 {
+			return binary.BigEndian.Uint32(b[20:24])
+		}
+	}
+	return 0
+}
+
+// chapterEditOffset returns the presentation delay a leading empty edit in trak's
+// elst imposes - the standard MP4 way a chapter track whose first chapter starts
+// after t=0 is positioned (its stts decode times run from zero, so the start lives
+// in the edit list). It returns 0 when there is no edit list, the first entry is a
+// normal edit (media_time != -1), or the movie timescale is unknown, so a foreign
+// track without an empty edit reads unchanged. edts is a leaf to the atom walker
+// (not in containerAtoms), so its elst is parsed by hand, mirroring chapterTrackIDs'
+// tref scan. An elst segment_duration is in movie-timescale units, not the chapter
+// track's media timescale.
+func chapterEditOffset(src core.ReaderAtSized, trak node, movieTimescale uint32, limit int64) time.Duration {
+	if movieTimescale == 0 {
+		return 0
+	}
+	edts, ok := trak.find("edts")
+	if !ok {
+		return 0
+	}
+	b, err := readPayload(src, edts, maxMetaChunk, limit)
+	if err != nil {
+		return 0
+	}
+	n := int64(len(b))
+	for pos := int64(0); pos+8 <= n; {
+		size := int64(binary.BigEndian.Uint32(b[pos : pos+4]))
+		// size < 8 is the 64-bit-size form (the 32-bit field reads 1, the real size
+		// following the type) or the size-0 "to end of box" form. A real elst is a few
+		// 12/20-byte entries and uses neither, so stop and report no offset rather than
+		// grow this by-hand scan for a case that cannot occur on a chapter track.
+		if size < 8 || pos+size > n {
+			break
+		}
+		if string(b[pos+4:pos+8]) == "elst" {
+			return emptyEditOffset(b[pos+8:pos+size], movieTimescale)
+		}
+		pos += size
+	}
+	return 0
+}
+
+// emptyEditOffset reads an elst box payload (version/flags, entry_count, then the
+// entries) and, when the first entry is an empty edit (media_time == -1), returns
+// its segment_duration scaled by the movie timescale; a normal first entry yields
+// 0. It handles version 0 (u32 segment_duration, i32 media_time) and version 1
+// (u64, i64).
+func emptyEditOffset(p []byte, movieTimescale uint32) time.Duration {
+	if len(p) < 8 || binary.BigEndian.Uint32(p[4:8]) == 0 { // version/flags + entry_count
+		return 0
+	}
+	switch p[0] {
+	case 0:
+		if len(p) < 8+12 || int32(binary.BigEndian.Uint32(p[12:16])) != -1 { // media_time
+			return 0
+		}
+		return scaleToDuration(uint64(binary.BigEndian.Uint32(p[8:12])), movieTimescale)
+	case 1:
+		if len(p) < 8+20 || int64(binary.BigEndian.Uint64(p[16:24])) != -1 { // media_time
+			return 0
+		}
+		return scaleToDuration(binary.BigEndian.Uint64(p[8:16]), movieTimescale)
+	}
+	return 0
 }
 
 // trakOfHandler returns the first trak whose media handler matches want (e.g.
@@ -335,8 +433,11 @@ func trackID(src core.ReaderAtSized, tkhd node, limit int64) (uint32, bool) {
 
 // decodeTextTrack reconstructs chapters from a text track's sample tables: the
 // per-sample decode time (stts) gives each chapter's start, and the sample's
-// bytes in mdat (located via stsc/stsz/stco|co64) carry its title.
-func decodeTextTrack(src core.ReaderAtSized, trak node, limit int64) ([]core.Chapter, bool) {
+// bytes in mdat (located via stsc/stsz/stco|co64) carry its title. offset is the
+// edit-list presentation delay (0 when there is none), added to every start and
+// closed End so the chapter times are absolute; the last chapter's open End (0)
+// stays open.
+func decodeTextTrack(src core.ReaderAtSized, trak node, offset time.Duration, limit int64) ([]core.Chapter, bool) {
 	mdia, ok := trak.find("mdia")
 	if !ok {
 		return nil, false
@@ -370,9 +471,9 @@ func decodeTextTrack(src core.ReaderAtSized, trak node, limit int64) ([]core.Cha
 	chapters := make([]core.Chapter, 0, len(offsets))
 	for i, so := range offsets {
 		title := readTextSample(src, so.off, so.size, limit)
-		ch := core.Chapter{Start: scaleToDuration(times[i], timescale), Title: title}
+		ch := core.Chapter{Start: addClamp(scaleToDuration(times[i], timescale), offset), Title: title}
 		if i+1 < len(times) {
-			ch.End = scaleToDuration(times[i+1], timescale)
+			ch.End = addClamp(scaleToDuration(times[i+1], timescale), offset)
 		}
 		chapters = append(chapters, ch)
 	}
@@ -660,6 +761,20 @@ func mdhdFields(src core.ReaderAtSized, mdhd node, limit int64) (timescale uint3
 func mdhdTimescale(src core.ReaderAtSized, mdhd node, limit int64) (uint32, bool) {
 	ts, _, ok := mdhdFields(src, mdhd, limit)
 	return ts, ok && ts != 0
+}
+
+// addClamp returns a + b saturated at MaxInt64, so adding the edit-list offset to
+// a per-sample time preserves scaleToDuration's "clamp rather than overflow"
+// guarantee end to end. Both operands are non-negative here (a duration from
+// scaleToDuration and a non-negative empty-edit offset), so only positive overflow
+// is possible: the sum wrapping below a signals it. Without this a hostile elst
+// whose empty edit drives the offset to ~MaxInt64 could wrap a chapter Start
+// negative on the parse path.
+func addClamp(a, b time.Duration) time.Duration {
+	if s := a + b; s >= a {
+		return s
+	}
+	return time.Duration(math.MaxInt64)
 }
 
 // scaleToDuration converts a count of timescale units into a time.Duration,

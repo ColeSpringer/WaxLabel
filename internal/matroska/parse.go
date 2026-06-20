@@ -126,6 +126,19 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		}
 	}
 
+	// Matroska carries no average-bitrate element. For a single audio-only file
+	// (one audio track, no video/subtitle track) derive it from the cluster byte
+	// span over the segment duration - the same audioBytes/secs every other codec
+	// uses. Skip multi-track or video-bearing files, where the cluster bytes are
+	// shared across streams and would inflate an audio figure. Attachments (cover
+	// art) sit outside the cluster bounds, so a cover-art + single-audio file still
+	// computes cleanly. The audioStart/audioEnd guard matches the AudioStart/AudioEnd
+	// guard below, so a clusterless file yields no bogus bitrate.
+	if !d.sawNonAudio && len(d.tracks) == 1 && audioStart >= 0 && audioEnd > audioStart {
+		t := &d.tracks[0]
+		t.Bitrate = core.AverageBitrate(audioEnd-audioStart, t.Duration.Seconds())
+	}
+
 	media := &core.Media{Format: core.FormatMatroska, Native: d}
 	tags, families := project(d)
 	media.Tags = tags
@@ -225,6 +238,7 @@ func parseTrackEntry(src core.ReaderAtSized, entry element, depth *bits.Depth, l
 		return nil
 	})
 	if tt != trackTypeAudio {
+		d.sawNonAudio = true
 		return
 	}
 	t.Codec = codecName(codecID)

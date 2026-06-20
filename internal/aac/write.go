@@ -55,16 +55,16 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report.PaddingAfter = padSize
 
 	if tagsChanged {
-		report.Operations = append(report.Operations, "rewrote ID3v2 frames")
+		report.Operations = append(report.Operations, "ID3v2 frame rewrite")
 	}
 	if picturesChanged {
 		report.Operations = append(report.Operations, fmt.Sprintf("pictures: %d", len(edited.Pictures)))
 	}
 	if d.id3 == nil {
-		report.Operations = append(report.Operations, fmt.Sprintf("created ID3v2.%d tag", version))
+		report.Operations = append(report.Operations, fmt.Sprintf("ID3v2.%d tag creation", version))
 	}
 	if info.UsedV23Multi {
-		report.Operations = append(report.Operations, "v2.3 multi-value stored NUL-separated")
+		report.Operations = append(report.Operations, "v2.3 multi-value NUL-separated storage")
 		report.Warnings = core.Warn(report.Warnings, core.WarnID3MultiValue,
 			"a multi-value field was written NUL-separated in ID3v2.3, a de-facto extension some readers do not split")
 	}

@@ -126,13 +126,42 @@ func chapterTkhd(trackID uint32, duration uint64) []byte {
 	return renderAtom(atomName("tkhd"), p)
 }
 
-// chapterEdts maps the whole media into the movie timeline once at normal rate.
-func chapterEdts(duration uint64) []byte {
-	entry := make([]byte, 12)
-	binary.BigEndian.PutUint32(entry[0:4], clampU32(duration)) // segment_duration (movie ts)
-	binary.BigEndian.PutUint32(entry[8:12], 0x00010000)        // media_rate 1.0 (media_time 0)
-	elst := renderFullBox(atomName("elst"), slices.Concat(be32(1), entry))
+// chapterEdts maps the media into the movie timeline at normal rate. When the
+// first chapter starts after t=0 (firstStart > 0, in movie-timescale units), the
+// track's stts decode times still run from zero, so the start offset is carried by
+// a leading empty edit (segment_duration firstStart, media_time -1) before the
+// normal entry - the standard MP4 delayed-track form iTunes and Apple Books honor,
+// so the first chapter's start survives instead of being zero-anchored. firstStart
+// == 0 keeps the original single normal entry, byte for byte.
+func chapterEdts(firstStart, mediaDur uint64) []byte {
+	normal := make([]byte, 12)
+	binary.BigEndian.PutUint32(normal[0:4], clampU32(mediaDur)) // segment_duration (movie ts)
+	binary.BigEndian.PutUint32(normal[8:12], 0x00010000)        // media_rate 1.0 (media_time 0)
+	entries, count := normal, 1
+	if firstStart > 0 {
+		empty := make([]byte, 12)
+		binary.BigEndian.PutUint32(empty[0:4], clampU32(firstStart)) // segment_duration = first chapter start
+		binary.BigEndian.PutUint32(empty[4:8], 0xFFFFFFFF)           // media_time -1: an empty edit
+		binary.BigEndian.PutUint32(empty[8:12], 0x00010000)          // media_rate 1.0
+		entries, count = slices.Concat(empty, normal), 2
+	}
+	elst := renderFullBox(atomName("elst"), slices.Concat(be32(count), entries))
 	return renderAtom(atomName("edts"), elst)
+}
+
+// chapterFirstStart is the first chapter's start in movie-timescale units - the
+// leading empty-edit offset that positions a chapter track whose first chapter is
+// not at t=0. It is 0 (no empty edit) when the movie timescale is unknown: the
+// reader needs that timescale to interpret the edit and cannot here, so the track
+// falls back to the original zero-anchored layout rather than encoding an offset no
+// reader could honor. When the timescale is known it equals the chapter track's
+// media timescale (the write path shares them), so the elst segment_duration and
+// the sample deltas use the same units.
+func chapterFirstStart(movieTimescale uint32, chapters []core.Chapter) uint64 {
+	if movieTimescale == 0 || len(chapters) == 0 {
+		return 0
+	}
+	return durationToUnits(chapters[0].Start, movieTimescale)
 }
 
 // chapterSamples renders the text-track media payload (the new mdat's contents):
@@ -187,18 +216,23 @@ func chapterDeltas(chapters []core.Chapter, mts uint32, movieDuration uint64) []
 // returns the trak bytes and the byte offset of the placeholder offset entry
 // within them: because the offset table is the last atom in the track, that
 // entry is simply the final 4 (stco) or 8 (co64) bytes.
-func buildChapterTrak(trackID, mts uint32, movieDuration uint64, chapters []core.Chapter, co64 bool) (trak []byte, stcoEntryOff int) {
+func buildChapterTrak(trackID, mts, movieTimescale uint32, movieDuration uint64, chapters []core.Chapter, co64 bool) (trak []byte, stcoEntryOff int) {
 	deltas := chapterDeltas(chapters, mts, movieDuration)
 	var totalDur uint64
 	for _, d := range deltas {
 		totalDur += uint64(d)
 	}
+	// The first chapter's start becomes a leading empty edit, so the track
+	// presentation (tkhd) spans firstStart + the media, while the media itself
+	// (mdhd) stays totalDur. firstStart is 0 for a list starting at t=0, collapsing
+	// to the original equal-duration single-edit layout.
+	firstStart := chapterFirstStart(movieTimescale, chapters)
 
 	stbl := renderAtom(atomName("stbl"), slices.Concat(
 		chapterStsd(), buildStts(deltas), buildStsc(len(chapters)), buildStsz(chapters), buildStco(co64)))
 	minf := renderAtom(atomName("minf"), slices.Concat(chapterGmhd(), chapterDinf(), stbl))
 	mdia := renderAtom(atomName("mdia"), slices.Concat(chapterMdhd(mts, totalDur), chapterHdlr(), minf))
-	trak = renderAtom(atomName("trak"), slices.Concat(chapterTkhd(trackID, totalDur), chapterEdts(totalDur), mdia))
+	trak = renderAtom(atomName("trak"), slices.Concat(chapterTkhd(trackID, firstStart+totalDur), chapterEdts(firstStart, totalDur), mdia))
 
 	width := 4
 	if co64 {
@@ -254,16 +288,23 @@ func buildStco(co64 bool) []byte {
 
 // qtWriteRoundTrip returns the chapters a fresh parse of the written QuickTime
 // track yields: the decode-time of each sample (the running sum of the stts
-// deltas, from zero) scaled back to a Start, the next sample's time as End (the
-// last End is left open, as the reader leaves it), and titles capped like the
-// samples. It mirrors decodeTextTrack exactly, so the post-write result equals a
-// reparse. (Because decode times run from zero, a first chapter that does not
-// start at zero is normalized to zero here - the same as on read.)
-func qtWriteRoundTrip(chapters []core.Chapter, mts uint32, movieDuration uint64) []core.Chapter {
+// deltas, from zero) scaled to a Start and shifted by the leading empty-edit
+// offset, the next sample's time as End (the last End left open, as the reader
+// leaves it), and titles capped like the samples. It mirrors decodeTextTrack
+// exactly - including applying the offset in the Duration domain after the
+// per-sample scale - so the post-write result equals a reparse with no
+// scale-rounding drift. The offset is 0 for a zero-start list (or an unknown movie
+// timescale), so such a write round-trips unchanged.
+func qtWriteRoundTrip(chapters []core.Chapter, mts, movieTimescale uint32, movieDuration uint64) []core.Chapter {
 	if len(chapters) == 0 {
 		return nil
 	}
 	deltas := chapterDeltas(chapters, mts, movieDuration)
+	// chapterEdts writes firstStart as a u32 segment_duration (clampU32), so derive
+	// the offset from the same clamped value - a reparse reads back exactly that, so
+	// the prediction stays equal even past the 2^32-unit edge. addClamp matches the
+	// read path's saturating add, so neither side wraps on an absurd offset.
+	offset := scaleToDuration(uint64(clampU32(chapterFirstStart(movieTimescale, chapters))), movieTimescale)
 	cum := make([]uint64, len(chapters))
 	for i := 1; i < len(chapters); i++ {
 		cum[i] = cum[i-1] + uint64(deltas[i-1])
@@ -271,11 +312,11 @@ func qtWriteRoundTrip(chapters []core.Chapter, mts uint32, movieDuration uint64)
 	out := make([]core.Chapter, len(chapters))
 	for i := range chapters {
 		out[i] = core.Chapter{
-			Start: scaleToDuration(cum[i], mts),
+			Start: addClamp(scaleToDuration(cum[i], mts), offset),
 			Title: truncateUTF8(chapters[i].Title, titleByteMax),
 		}
 		if i+1 < len(chapters) {
-			out[i].End = scaleToDuration(cum[i+1], mts)
+			out[i].End = addClamp(scaleToDuration(cum[i+1], mts), offset)
 		}
 	}
 	return out

@@ -104,7 +104,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	}
 	report.Operations = ops
 	if id3Info.UsedV23Multi {
-		report.Operations = append(report.Operations, "v2.3 multi-value stored NUL-separated")
+		report.Operations = append(report.Operations, "v2.3 multi-value NUL-separated storage")
 		report.Warnings = core.Warn(report.Warnings, core.WarnID3MultiValue,
 			"a multi-value field was written NUL-separated in ID3v2.3, a de-facto extension some readers do not split")
 	}
@@ -127,13 +127,13 @@ func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, 
 		switch i {
 		case d.infoIdx:
 			if stripINFO {
-				ops = append(ops, "stripped LIST/INFO")
+				ops = append(ops, "LIST/INFO strip")
 				continue
 			}
 			if emitINFO {
 				outs = append(outs, infoOut(newInfo))
 				infoRewritten = true
-				ops = append(ops, "rewrote LIST/INFO")
+				ops = append(ops, "LIST/INFO rewrite")
 				continue
 			}
 			continue // INFO present but now empty: drop it
@@ -141,7 +141,7 @@ func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, 
 			if emitID3 {
 				outs = append(outs, id3Out(newID3))
 				id3Rewritten = true
-				ops = append(ops, "rewrote id3 chunk")
+				ops = append(ops, "id3 chunk rewrite")
 				continue
 			}
 			continue // id3 present but now empty: drop it
@@ -150,7 +150,7 @@ func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, 
 				// Redundant duplicate tag container (a second LIST/INFO or id3 chunk).
 				// Drop it on rewrite so the output carries a single, consistent copy
 				// rather than a stale shadow of the authoritative one.
-				ops = append(ops, "dropped duplicate tag chunk")
+				ops = append(ops, "duplicate tag chunk drop")
 				continue
 			}
 			// A lone id3 chunk whose body failed to parse leaves no authoritative id3
@@ -158,7 +158,7 @@ func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, 
 			// chunk, so the output never carries two id3 chunks (which a re-parse would
 			// flag as a duplicate, disagreeing with the returned document).
 			if emitID3 && isID3Chunk(ch.id4()) {
-				ops = append(ops, "dropped stale id3 chunk")
+				ops = append(ops, "stale id3 chunk drop")
 				continue
 			}
 			role := roleOther
@@ -174,11 +174,11 @@ func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, 
 	var created []outChunk
 	if emitINFO && !infoRewritten {
 		created = append(created, infoOut(newInfo))
-		ops = append(ops, "created LIST/INFO")
+		ops = append(ops, "LIST/INFO creation")
 	}
 	if emitID3 && !id3Rewritten {
 		created = append(created, id3Out(newID3))
-		ops = append(ops, "created id3 chunk")
+		ops = append(ops, "id3 chunk creation")
 	}
 	if len(created) > 0 {
 		outs = insertBeforeData(outs, created)

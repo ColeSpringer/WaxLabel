@@ -56,7 +56,7 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	newComments := d.comments
 	if tagsChanged {
 		newComments = vorbis.Rebuild(d.comments, edited.Tags, changed)
-		report.Operations = append(report.Operations, "rewrote comments")
+		report.Operations = append(report.Operations, "comment rewrite")
 	}
 	full := slices.Clone(newComments)
 	for _, p := range edited.Pictures {

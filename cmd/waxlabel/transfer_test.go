@@ -195,6 +195,33 @@ func TestCopyCoverToWebMDropsCover(t *testing.T) {
 	}
 }
 
+// TestCopyHeaderDistinguishesWebM checks the transfer header names the container
+// subtype for the Matroska family: a .webm side reads "WebM" and a .mka side
+// "Matroska". Both are FormatMatroska, so the bare format alone would print the
+// uninformative "Matroska -> Matroska"; the header instead pulls each side's
+// container label. Other formats keep their Format string (covered elsewhere).
+func TestCopyHeaderDistinguishesWebM(t *testing.T) {
+	t.Parallel()
+	// Destination is webm -> "Matroska -> WebM".
+	dst := copyFixture(t, sampleWebMF)
+	out, _, code := runCLI(t, "copy", sampleMKA, dst, "--dry-run")
+	if code != 0 {
+		t.Fatalf("copy mka -> webm exit = %d, want 0:\n%s", code, out)
+	}
+	if !strings.Contains(out, "transfer Matroska -> WebM") {
+		t.Errorf("webm destination should show 'Matroska -> WebM':\n%s", out)
+	}
+	// Source is webm -> "WebM -> Matroska".
+	dst2 := copyFixture(t, notagsMKA)
+	out2, _, code2 := runCLI(t, "copy", sampleWebMF, dst2, "--dry-run")
+	if code2 != 0 {
+		t.Fatalf("copy webm -> mka exit = %d, want 0:\n%s", code2, out2)
+	}
+	if !strings.Contains(out2, "transfer WebM -> Matroska") {
+		t.Errorf("webm source should show 'WebM -> Matroska':\n%s", out2)
+	}
+}
+
 // TestDiffExitCodes pins the diff(1)-style contract: 0 identical, 1 differs.
 func TestDiffExitCodes(t *testing.T) {
 	t.Parallel()

@@ -318,17 +318,17 @@ func overflowErr() error {
 func shiftOps(ch changes, pics int, delta int64) []string {
 	var ops []string
 	if ch.simple {
-		ops = append(ops, "rewrote Tags (clusters shifted)")
+		ops = append(ops, "Tags rewrite (clusters shifted)")
 	}
 	if ch.title {
-		ops = append(ops, "rewrote Info.Title")
+		ops = append(ops, "Info.Title rewrite")
 	}
 	if ch.pictures {
-		ops = append(ops, "rewrote Attachments", "pictures: "+strconv.Itoa(pics))
+		ops = append(ops, "Attachments rewrite", "pictures: "+strconv.Itoa(pics))
 	}
 	if ch.chapters {
-		ops = append(ops, "rewrote Chapters")
+		ops = append(ops, "Chapters rewrite")
 	}
-	ops = append(ops, fmt.Sprintf("shifted tail by %d bytes", delta))
+	ops = append(ops, fmt.Sprintf("%d-byte tail shift", delta))
 	return ops
 }

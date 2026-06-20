@@ -144,7 +144,7 @@ func assembleQT(d *doc, edited *core.Media, reg udtaRegion, clearing bool, mts u
 		default:
 			p.newTrackID = d.nextTrackID
 		}
-		chapTrak, off := buildChapterTrak(p.newTrackID, mts, d.movieDuration, edited.Chapters, co64)
+		chapTrak, off := buildChapterTrak(p.newTrackID, mts, d.movieTimescale, d.movieDuration, edited.Chapters, co64)
 		stcoOffInTrak = off
 		p.chapTrakLen = int64(len(chapTrak))
 
@@ -238,11 +238,12 @@ func buildQTChapterResult(edited *core.Media, base *doc, p *qtPlan) *core.Media 
 	}
 
 	// A fresh parse prefers the QuickTime track (it carries End), which we wrote,
-	// so the result reflects its decode. A chpl/QuickTime disagreement (e.g. a
-	// first chapter not at zero, which the track normalizes to zero) reparses as a
-	// source conflict, mirrored here.
+	// so the result reflects its decode. The track now carries a first chapter's
+	// start in a leading empty edit, so its starts are absolute and agree with the
+	// chpl (no spurious source conflict); the round-trip mirrors that, reading the
+	// same movie timescale the reparse will.
 	if !clearing {
-		nd.chapters = qtWriteRoundTrip(edited.Chapters, p.mts, base.movieDuration)
+		nd.chapters = qtWriteRoundTrip(edited.Chapters, p.mts, base.movieTimescale, base.movieDuration)
 		nd.hasQTChapters = true
 		nd.chplCount = len(p.chplChapters)
 		nd.chapterConflict = !chaptersAgree(p.chplChapters, nd.chapters)
@@ -541,17 +542,17 @@ func qtChapterOps(d *doc, edited *core.Media, needIlst, clearing bool, delta int
 	var ops []string
 	switch {
 	case clearing:
-		ops = append(ops, "removed chapters (chpl + QuickTime track)")
+		ops = append(ops, "chapter removal (chpl + QuickTime track)")
 	case d.chapTrak != nil:
-		ops = append(ops, fmt.Sprintf("rewrote %d chapters (chpl + QuickTime track)", len(edited.Chapters)))
+		ops = append(ops, fmt.Sprintf("%d-chapter rewrite (chpl + QuickTime track)", len(edited.Chapters)))
 	default:
-		ops = append(ops, fmt.Sprintf("wrote %d chapters (chpl + QuickTime track)", len(edited.Chapters)))
+		ops = append(ops, fmt.Sprintf("%d-chapter write (chpl + QuickTime track)", len(edited.Chapters)))
 	}
 	if needIlst {
-		ops = append(ops, "rewrote ilst")
+		ops = append(ops, "ilst rewrite")
 	}
 	if delta != 0 {
-		ops = append(ops, fmt.Sprintf("shifted %d chunk-offset table(s)", len(d.offTables)))
+		ops = append(ops, fmt.Sprintf("%d chunk-offset table shift(s)", len(d.offTables)))
 	}
 	if len(edited.Pictures) > 0 {
 		ops = append(ops, fmt.Sprintf("pictures: %d", len(edited.Pictures)))

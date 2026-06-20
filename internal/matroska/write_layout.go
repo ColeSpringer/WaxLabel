@@ -378,16 +378,16 @@ func recomputeCRC(raw []byte, c *crcSpot) {
 func absorbOps(ch changes, pics int) []string {
 	var ops []string
 	if ch.simple {
-		ops = append(ops, "rewrote Tags (clusters not moved)")
+		ops = append(ops, "Tags rewrite (clusters not moved)")
 	}
 	if ch.title {
-		ops = append(ops, "rewrote Info.Title")
+		ops = append(ops, "Info.Title rewrite")
 	}
 	if ch.pictures {
-		ops = append(ops, "rewrote Attachments", "pictures: "+strconv.Itoa(pics))
+		ops = append(ops, "Attachments rewrite", "pictures: "+strconv.Itoa(pics))
 	}
 	if ch.chapters {
-		ops = append(ops, "rewrote Chapters (clusters not moved)")
+		ops = append(ops, "Chapters rewrite (clusters not moved)")
 	}
 	return ops
 }

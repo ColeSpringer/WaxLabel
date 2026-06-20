@@ -84,6 +84,7 @@ type doc struct {
 	attachments []attachment
 	chapters    *chapterDoc // parsed Chapters tree, nil when the file has none
 	tracks      []core.AudioTrack
+	sawNonAudio bool // a video/subtitle/button track was present; gates the audio-only bitrate
 
 	// essence-digest config, captured from the first audio track.
 	codecID    string

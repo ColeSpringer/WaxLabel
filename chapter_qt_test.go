@@ -492,6 +492,72 @@ func TestMP4ChapterEditRealFixtureQTTrack(t *testing.T) {
 	}
 }
 
+func TestMP4ChapterNonZeroStartRoundTrip(t *testing.T) {
+	// B1: a multi-chapter list whose first start is not zero round-trips with every
+	// start preserved (the QuickTime track's leading empty edit carries the offset,
+	// rather than zero-anchoring the list). The two chapter sources then agree (no
+	// source conflict) and the in-memory result equals a reparse. (Re-editing a
+	// multi-chapter list is not a no-op - a reparse fills the first chapter's End
+	// from the next start while a fresh SetChapters leaves it open - but that
+	// end-fill asymmetry is pre-existing and independent of the start offset; the
+	// single-chapter case below pins idempotency.)
+	src := readFixture(t, sampleM4B)
+	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
+		return e.SetChapters(
+			wl.Chapter{Start: 4 * time.Second, Title: "Four"},
+			wl.Chapter{Start: 9 * time.Second, Title: "Nine"},
+		)
+	})
+	if !equalChapterLists(res.Chapters(), re.Chapters()) {
+		t.Errorf("result %+v != reparse %+v", res.Chapters(), re.Chapters())
+	}
+	chs := re.Chapters()
+	if len(chs) != 2 || chs[0].Start != 4*time.Second || chs[0].Title != "Four" {
+		t.Fatalf("first chapter not preserved at 4s: %+v", chs)
+	}
+	if chs[1].Start != 9*time.Second {
+		t.Errorf("second chapter start = %v, want 9s", chs[1].Start)
+	}
+	if chapterWarn(re, wl.WarnChapterSourceConflict) {
+		t.Error("a non-zero first start must not self-report a chapter-source-conflict")
+	}
+}
+
+func TestMP4ChapterSingleNonZeroStart(t *testing.T) {
+	// B1, single-chapter case (the report's reproduction): one chapter at a non-zero
+	// start round-trips with its start preserved and its End left open (a lone
+	// chapter runs to EOF - End 0 on both the request and the read-back), the result
+	// equals a reparse with no source conflict, and a second identical set is a
+	// no-op. Before B1 the first set zero-anchored the QuickTime track, so it
+	// conflicted with the chpl and never reached this stable state.
+	src := readFixture(t, sampleM4B)
+	set := func(e *wl.Editor) *wl.Editor {
+		return e.SetChapters(wl.Chapter{Start: 4 * time.Second, Title: "Only"})
+	}
+	res, re := execChapters(t, src, set)
+	if !equalChapterLists(res.Chapters(), re.Chapters()) {
+		t.Errorf("result %+v != reparse %+v", res.Chapters(), re.Chapters())
+	}
+	chs := re.Chapters()
+	if len(chs) != 1 || chs[0].Start != 4*time.Second || chs[0].Title != "Only" {
+		t.Fatalf("single chapter not preserved at 4s: %+v", chs)
+	}
+	if chs[0].End != 0 {
+		t.Errorf("a lone chapter's End should stay open (0); got %v", chs[0].End)
+	}
+	if chapterWarn(re, wl.WarnChapterSourceConflict) {
+		t.Error("a single non-zero-start chapter must not report a source conflict")
+	}
+	// Idempotency: re-applying the same edit to the written file changes nothing.
+	plan2, err := set(re.Edit()).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan2.IsNoOp() {
+		t.Errorf("a second identical chapter set should be a no-op; operations: %v", plan2.Report().Operations)
+	}
+}
+
 func TestMP4ChapterSourceConflict(t *testing.T) {
 	// A chpl and a QuickTime track that disagree (different titles) must warn, and
 	// the richer QuickTime representation wins the projection.

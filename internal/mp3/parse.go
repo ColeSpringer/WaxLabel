@@ -90,6 +90,15 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 				warnings = core.Warn(warnings, core.WarnTruncatedAudio,
 					"fewer audio frames than the Xing/Info header declares; file may be truncated")
 			}
+		} else if d.audioEnd > d.audioStart {
+			// A non-empty essence region that yields no MPEG frame is a .mp3 that is not
+			// actually MPEG audio (text, a renamed file). Surface it under the shared
+			// no-audio code so dump/lint flag it instead of accepting it silently. This is
+			// distinct from the zero-essence no-audio in the root parse (which fires only
+			// when the range is empty), so the two never double-warn. The essence bytes are
+			// left intact, so set still preserves them and verify still hashes them.
+			warnings = core.Warn(warnings, core.WarnNoAudioFrames,
+				"no MPEG audio frames found; file may not be audio")
 		}
 	}
 	if d.track.Codec == "" {

@@ -65,7 +65,7 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear the ENCODER software stamp (the transcoder leftover)")
 	f.StringVar(&e.preset, "preset", "", "write policy preset: preserve|compatible|canonical|minimal")
 	f.StringVar(&e.legacy, "legacy", "", "legacy-tag policy: preserve|strip|reconcile|update-existing")
-	f.StringVar(&e.padding, "padding", "", "reserve at least N bytes of padding after the metadata (default 8192)")
+	f.StringVar(&e.padding, "padding", "", "reserve at least N bytes of padding after the metadata (default 8192; 0 writes none, like --no-padding)")
 	f.BoolVar(&e.noPadding, "no-padding", false, "write no padding after the metadata (smallest file)")
 	f.BoolVar(&e.strict, "strict", false, "fail (exit 2) on an unknown key or a single-valued key given multiple values, instead of noting it")
 }
@@ -192,12 +192,12 @@ const maxPaddingBytes = 64 << 20
 // are mutually exclusive, and an explicit byte count must be a non-negative integer
 // no larger than maxPaddingBytes; each violation is a usage error.
 //
-// --no-padding writes none (Target 0, Max 0). --padding N is a floor: it reserves
-// at least N bytes, so it sets Min=N as well as Target=N - a rewrite grows a
-// too-small region up to N instead of reusing it (without Min, the reuse branch
-// would keep the smaller existing region and silently ignore N). Max stays 0
-// (no policy ceiling); the maxPaddingBytes usage cap and each format's hard cap
-// are the actual upper bounds.
+// --no-padding writes none (Target 0, Max 0), and --padding 0 is its synonym. A
+// positive --padding N is a floor: it reserves at least N bytes, so it sets Min=N
+// as well as Target=N - a rewrite grows a too-small region up to N instead of
+// reusing it (without Min, the reuse branch would keep the smaller existing region
+// and silently ignore N). Max stays 0 (no policy ceiling); the maxPaddingBytes
+// usage cap and each format's hard cap are the actual upper bounds.
 func resolvePaddingFlag(padding string, noPadding bool) (wl.WriteOption, error) {
 	if noPadding && padding != "" {
 		return nil, usagef("--padding and --no-padding cannot be combined")
@@ -211,6 +211,13 @@ func resolvePaddingFlag(padding string, noPadding bool) (wl.WriteOption, error) 
 	n, err := strconv.ParseInt(strings.TrimSpace(padding), 10, 64)
 	if err != nil || n < 0 {
 		return nil, usagef("--padding wants a non-negative byte count, got %q", padding)
+	}
+	if n == 0 {
+		// "--padding 0" means no padding, identical to --no-padding (Target 0, Max 0).
+		// The floor policy below would otherwise set ReuseInPlace with Min 0, which
+		// keeps an existing padding region in place rather than dropping it - so "0"
+		// would not shrink the file as a user reasonably expects.
+		return wl.WithPadding(wl.PaddingPolicy{Target: 0, Max: 0}), nil
 	}
 	if n > maxPaddingBytes {
 		return nil, usagef("--padding %d is too large (max %d bytes, 64 MiB)", n, maxPaddingBytes)

@@ -105,7 +105,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	}
 	report.Operations = ops
 	if id3Info.UsedV23Multi {
-		report.Operations = append(report.Operations, "v2.3 multi-value stored NUL-separated")
+		report.Operations = append(report.Operations, "v2.3 multi-value NUL-separated storage")
 		report.Warnings = core.Warn(report.Warnings, core.WarnID3MultiValue,
 			"a multi-value field was written NUL-separated in ID3v2.3, a de-facto extension some readers do not split")
 	}
@@ -139,7 +139,7 @@ func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, 
 		case textIdxSet[i]:
 			if stripText {
 				if !textGroupEmitted {
-					ops = append(ops, "stripped native text chunks")
+					ops = append(ops, "native text chunk strip")
 					textGroupEmitted = true
 				}
 				continue
@@ -148,20 +148,20 @@ func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, 
 			if i == firstTextIdx && emitText {
 				outs = append(outs, newText...)
 				textGroupEmitted = true
-				ops = append(ops, "rewrote native text chunks")
+				ops = append(ops, "native text chunk rewrite")
 			}
 			continue
 		case i == d.id3Idx:
 			if emitID3 {
 				outs = append(outs, id3Out(newID3))
 				id3Rewritten = true
-				ops = append(ops, "rewrote ID3 chunk")
+				ops = append(ops, "ID3 chunk rewrite")
 			}
 			continue // ID3 present but now empty: drop it
 		case ch.dupTag:
 			// Redundant duplicate ID3 chunk: drop on rewrite so the output carries a
 			// single, consistent copy rather than a stale shadow.
-			ops = append(ops, "dropped duplicate ID3 chunk")
+			ops = append(ops, "duplicate ID3 chunk drop")
 			continue
 		default:
 			// A stale ID3-identified chunk reaches the default only when it parsed as
@@ -171,7 +171,7 @@ func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, 
 			// never carries two ID3 chunks (which a re-parse would flag as a duplicate,
 			// disagreeing with the returned document).
 			if emitID3 && isID3Chunk(ch.id4()) {
-				ops = append(ops, "dropped stale ID3 chunk")
+				ops = append(ops, "stale ID3 chunk drop")
 				continue
 			}
 			role := roleOther
@@ -191,11 +191,11 @@ func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, 
 	var created []outChunk
 	if emitText && !textGroupEmitted {
 		created = append(created, newText...)
-		ops = append(ops, "created native text chunks")
+		ops = append(ops, "native text chunk creation")
 	}
 	if emitID3 && !id3Rewritten {
 		created = append(created, id3Out(newID3))
-		ops = append(ops, "created ID3 chunk")
+		ops = append(ops, "ID3 chunk creation")
 	}
 	if len(created) > 0 {
 		outs = insertBeforeSSND(outs, created)

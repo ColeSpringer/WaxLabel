@@ -132,6 +132,35 @@ func TestDumpJSONCodecCanonical(t *testing.T) {
 	}
 }
 
+// TestDumpJSONOmitsBitDepthForLossy is B2: a lossy codec (AAC) decodes to PCM at
+// the decoder's chosen depth, so a container-stored "16-bit" is noise. The JSON
+// dump zeroes bitsPerSample for such codecs and omitempty drops it - matching the
+// text view's bitDepthMeaningful gate so the two never disagree. A lossless FLAC,
+// whose depth is a real stored width, keeps it. The AAC fixtures store a literal
+// 16 at the parser (see internal/mp4 sampleSize), so this exercises the gate, not
+// an already-absent field.
+func TestDumpJSONOmitsBitDepthForLossy(t *testing.T) {
+	t.Parallel()
+	out, _, code := runCLI(t, "dump", sampleM4B, "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d\n%s", code, out)
+	}
+	// The raw stream must not carry the key at all (omitempty over the zeroed field).
+	if strings.Contains(out, "bitsPerSample") {
+		t.Errorf("AAC/MP4 dump should omit bitsPerSample:\n%s", out)
+	}
+	jd := decodeJSONOne[jsonDocument](t, out)
+	if jd.Properties == nil || jd.Properties.BitsPerSample != 0 {
+		t.Errorf("AAC bitsPerSample = %d, want 0 (omitted)", jd.Properties.BitsPerSample)
+	}
+	// A lossless FLAC keeps its real, fixed-width depth.
+	fout, _, _ := runCLI(t, "dump", sampleFLAC, "--json")
+	fd := decodeJSONOne[jsonDocument](t, fout)
+	if fd.Properties == nil || fd.Properties.BitsPerSample != 16 {
+		t.Errorf("FLAC bitsPerSample = %d, want 16 (a real depth is kept)", fd.Properties.BitsPerSample)
+	}
+}
+
 func TestDumpChapters(t *testing.T) {
 	t.Parallel()
 	// Text dump lists chapters with their titles.
@@ -1053,6 +1082,12 @@ func TestResolvePaddingFlag(t *testing.T) {
 	if opt, err := resolvePaddingFlag("", true); opt == nil || err != nil {
 		t.Errorf("--no-padding: opt=%v err=%v, want option,nil", opt, err)
 	}
+	// "--padding 0" is the no-padding synonym: a parsed 0 is valid (option, no error),
+	// not misuse. The WriteOption closures are not directly comparable, so the
+	// behavioral equivalence to --no-padding is proven by TestPaddingZeroShrinksLikeNoPadding.
+	if opt, err := resolvePaddingFlag("0", false); opt == nil || err != nil {
+		t.Errorf("--padding 0: opt=%v err=%v, want option,nil", opt, err)
+	}
 	// Misuse is a usage error: both flags together, a negative count, a non-integer,
 	// and an absurd byte count above the sanity cap (B1's floor makes a huge value
 	// reachable from a plain edit, so it must be rejected, not allocated).
@@ -1092,6 +1127,35 @@ func TestPaddingNoPadding(t *testing.T) {
 	}
 	if strings.Contains(out, "padding:") {
 		t.Errorf("--no-padding should write no padding; got:\n%s", out)
+	}
+}
+
+// TestPaddingZeroShrinksLikeNoPadding (U1): "--padding 0" means no padding, the
+// same as --no-padding. It must drop the default-reserved padding and produce a
+// file the same size as the --no-padding write - not keep the existing region in
+// place, which is the ReuseInPlace behavior a positive --padding floor uses.
+func TestPaddingZeroShrinksLikeNoPadding(t *testing.T) {
+	t.Parallel()
+	sizeAfter := func(extra ...string) int64 {
+		file := copyFixture(t, sampleFLAC)
+		args := append([]string{"set", file, "--set", "TITLE=Zero"}, extra...)
+		if _, errb, code := runCLI(t, args...); code != 0 {
+			t.Fatalf("set %v exit = %d: %s", extra, code, errb)
+		}
+		fi, err := os.Stat(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fi.Size()
+	}
+	def := sizeAfter()                  // default 8 KiB padding
+	none := sizeAfter("--no-padding")   // padding stripped
+	zero := sizeAfter("--padding", "0") // U1: must behave like --no-padding
+	if zero >= def {
+		t.Errorf("--padding 0 size %d should be smaller than the default-padded %d", zero, def)
+	}
+	if zero != none {
+		t.Errorf("--padding 0 size %d should equal the --no-padding size %d", zero, none)
 	}
 }
 
@@ -1526,8 +1590,9 @@ func TestSetStdinToOutput(t *testing.T) {
 
 // TestCopyIntoOggReportsChaptersNotModeled exercises the transfer-report render
 // end to end: copying a chaptered source onto an Ogg destination (no chapter
-// support) must report the drop as "unsupported: not modeled", not the doubled
-// "unsupported: unsupported" the old Ogg Representation produced.
+// support) must report the drop with the destination-focused reason
+// "destination format does not store chapters", never leaking the source-side
+// Representation string ("unsupported", "not modeled") into the user's report.
 func TestCopyIntoOggReportsChaptersNotModeled(t *testing.T) {
 	t.Parallel()
 	src := filepath.Join("..", "..", "testdata", "chapters.mka")
@@ -1536,11 +1601,11 @@ func TestCopyIntoOggReportsChaptersNotModeled(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("copy exit = %d: %s", code, errb)
 	}
-	if !strings.Contains(out, "unsupported: not modeled") {
-		t.Errorf("ogg chapter drop should read 'unsupported: not modeled':\n%s", out)
+	if !strings.Contains(out, "destination format does not store chapters") {
+		t.Errorf("ogg chapter drop should read 'destination format does not store chapters':\n%s", out)
 	}
-	if strings.Contains(out, "unsupported: unsupported") {
-		t.Errorf("doubled label regressed:\n%s", out)
+	if strings.Contains(out, "unsupported") {
+		t.Errorf("source-side Representation jargon leaked into the report:\n%s", out)
 	}
 }
 

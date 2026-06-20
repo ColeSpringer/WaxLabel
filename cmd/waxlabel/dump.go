@@ -118,6 +118,14 @@ type jsonSource struct {
 func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 	props := doc.Properties()
 	t := props.First()
+	// Bit depth describes the stored samples only for a fixed-width codec; for a
+	// lossy codec a container-stored depth (e.g. the legacy 16 MP4 writes for AAC)
+	// is noise. Zero it so omitempty drops the field, mirroring the text view's
+	// bitDepthMeaningful gate (audioLine) so human and JSON output agree.
+	bitsPerSample := t.BitsPerSample
+	if !bitDepthMeaningful(t.Codec) {
+		bitsPerSample = 0
+	}
 	jd := jsonDocument{
 		SchemaVersion: schemaVersion,
 		File:          path,
@@ -128,7 +136,7 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 			CodecProfile:  t.CodecProfile,
 			SampleRate:    t.SampleRate,
 			Channels:      t.Channels,
-			BitsPerSample: t.BitsPerSample,
+			BitsPerSample: bitsPerSample,
 			DurationMs:    props.Duration().Milliseconds(),
 			BitrateBps:    t.Bitrate,
 		},

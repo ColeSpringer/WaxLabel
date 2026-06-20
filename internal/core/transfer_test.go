@@ -41,7 +41,7 @@ func TestProjectTransferDispositions(t *testing.T) {
 	}{
 		{TransferField, "TITLE", 1, Carried, ""},
 		{TransferField, "ARTIST", 1, Lossy, "ASCII only"},
-		{TransferPicture, "", 1, Dropped, "unsupported: no covers"},
+		{TransferPicture, "", 1, Dropped, "destination format does not store pictures"},
 		{TransferChapter, "", 2, Carried, ""},
 	}
 	for i, w := range want {

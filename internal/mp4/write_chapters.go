@@ -129,7 +129,7 @@ type udtaRegion struct {
 // the wrappers when they are absent and dropping the chpl when the chapter list
 // is cleared.
 func buildUdtaRegion(d *doc, newIlst []byte, needIlst bool, chapters []core.Chapter, opts core.WriteOptions) (udtaRegion, error) {
-	pad := clampPadding(opts.Padding)
+	pad := opts.Padding.ClampTarget()
 	hasIlst := needIlst && len(newIlst) > 8 // an empty ilst is just its 8-byte header
 	needChpl := len(chapters) > 0
 
@@ -305,17 +305,17 @@ func chapterOps(d *doc, edited *core.Media, needIlst bool, delta int64) []string
 	var ops []string
 	switch {
 	case len(edited.Chapters) == 0:
-		ops = append(ops, "removed chapters (chpl)")
+		ops = append(ops, "chapter removal (chpl)")
 	case d.chpl != nil:
-		ops = append(ops, fmt.Sprintf("rewrote %d chapters (chpl)", len(edited.Chapters)))
+		ops = append(ops, fmt.Sprintf("%d-chapter rewrite (chpl)", len(edited.Chapters)))
 	default:
-		ops = append(ops, fmt.Sprintf("wrote %d chapters (chpl)", len(edited.Chapters)))
+		ops = append(ops, fmt.Sprintf("%d-chapter write (chpl)", len(edited.Chapters)))
 	}
 	if needIlst {
-		ops = append(ops, "rewrote ilst")
+		ops = append(ops, "ilst rewrite")
 	}
 	if delta != 0 {
-		ops = append(ops, fmt.Sprintf("shifted %d chunk-offset table(s)", len(d.offTables)))
+		ops = append(ops, fmt.Sprintf("%d chunk-offset table shift(s)", len(d.offTables)))
 	}
 	if len(edited.Pictures) > 0 {
 		ops = append(ops, fmt.Sprintf("pictures: %d", len(edited.Pictures)))

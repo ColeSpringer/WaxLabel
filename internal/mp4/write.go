@@ -151,7 +151,7 @@ type layout struct {
 // had no tags.
 func planLayout(d *doc, newIlst []byte, opts core.WriteOptions) (layout, error) {
 	newLen := int64(len(newIlst))
-	pad := clampPadding(opts.Padding)
+	pad := opts.Padding.ClampTarget()
 
 	if d.ilst != nil {
 		regionStart := d.ilst.offset
@@ -181,7 +181,7 @@ func planLayout(d *doc, newIlst []byte, opts core.WriteOptions) (layout, error) 
 			lay.regionBytes, lay.freeOff, lay.freeLen, lay.freeContent = appendFree(newIlst, leftover-8)
 		default:
 			// Does not fit, leaves a 1-7 byte remainder a free atom cannot represent, or
-			// the leftover would fall below the floor: grow with fresh padding (clampPadding
+			// the leftover would fall below the floor: grow with fresh padding (ClampTarget
 			// floors it to Min) so a later edit fits in place again.
 			lay.regionBytes, lay.freeOff, lay.freeLen, lay.freeContent = appendFree(newIlst, pad)
 		}
@@ -281,23 +281,6 @@ func renderFullBox(name [4]byte, content []byte) []byte {
 // metaPrefix is the byte distance from a meta atom's start to its first child:
 // the 8-byte header plus the 4-byte version/flags.
 func metaPrefix() int { return 8 + metaSkip }
-
-// clampPadding resolves the free-atom padding to write on a grow, honoring the
-// policy's maximum and the Min floor (so --padding N reserves at least N). It
-// mirrors core.PaddingPolicy.ClampTarget: clamp to Max, then floor to Min, then to 0.
-func clampPadding(p core.PaddingPolicy) int64 {
-	target := p.Target
-	if p.Max > 0 && target > p.Max {
-		target = p.Max
-	}
-	if target < p.Min {
-		target = p.Min
-	}
-	if target < 0 {
-		target = 0
-	}
-	return target
-}
 
 // edit is one byte-range replacement in the rewrite: replace oldLen source bytes
 // at off with lit. Most edits are same-length patches (atom sizes, offset
@@ -404,12 +387,12 @@ func operations(d *doc, lay layout, delta int64, pics int) []string {
 	var ops []string
 	switch {
 	case lay.created:
-		ops = append(ops, "created moov.udta.meta.ilst")
+		ops = append(ops, "moov.udta.meta.ilst creation")
 	case delta == 0:
-		ops = append(ops, "rewrote ilst in place (media not moved)")
+		ops = append(ops, "ilst rewrite in place (media not moved)")
 	default:
-		ops = append(ops, fmt.Sprintf("rewrote ilst, grew metadata by %d bytes", delta))
-		ops = append(ops, fmt.Sprintf("shifted %d chunk-offset table(s)", len(d.offTables)))
+		ops = append(ops, fmt.Sprintf("ilst rewrite (+%d bytes metadata)", delta))
+		ops = append(ops, fmt.Sprintf("%d chunk-offset table shift(s)", len(d.offTables)))
 	}
 	if pics > 0 {
 		ops = append(ops, fmt.Sprintf("pictures: %d", pics))

@@ -49,11 +49,15 @@ func newCopyCmd() *cobra.Command {
 			plan, report, err := srcDoc.PrepareTransfer(dstDoc, opts...)
 			out := cmd.OutOrStdout()
 			asJSON := jsonMode(cmd)
+			// Header labels distinguish WebM from Matroska, which share one Format; the
+			// container subtype comes from each parsed doc.
+			srcLabel := transferFormatLabel(srcDoc.Format(), srcDoc.Properties().Container)
+			dstLabel := transferFormatLabel(dstDoc.Format(), dstDoc.Properties().Container)
 			if err != nil {
 				// The report still explains the failure (e.g. a read-only destination
 				// drops everything), so surface it before returning the error.
 				if !asJSON {
-					renderTransfer(out, srcPath, dstPath, report)
+					renderTransfer(out, srcPath, dstPath, report, srcLabel, dstLabel)
 				}
 				return err
 			}
@@ -61,7 +65,7 @@ func newCopyCmd() *cobra.Command {
 			// Preview the transfer (and, for a dry run, the would-be write) before
 			// touching the destination.
 			if !asJSON {
-				renderTransfer(out, srcPath, dstPath, report)
+				renderTransfer(out, srcPath, dstPath, report, srcLabel, dstLabel)
 				renderReport(out, dstPath, plan)
 			}
 			if dryRun {
@@ -106,12 +110,14 @@ func transferLabel(it wl.TransferItem) string {
 
 // renderTransfer prints the cross-format loss report: a carried/lossy/dropped
 // summary followed by a line for every item that does not carry cleanly (the
-// losses are what the user needs to see).
-func renderTransfer(w io.Writer, src, dst string, r wl.TransferReport) {
+// losses are what the user needs to see). srcLabel/dstLabel are the display names
+// for each side's format (see transferFormatLabel): they distinguish WebM from
+// Matroska, which share one Format.
+func renderTransfer(w io.Writer, src, dst string, r wl.TransferReport, srcLabel, dstLabel string) {
 	carried, lossy, dropped := r.Counts()
 	// Escape and stdin-relabel the paths for the single-line header (consistent with
 	// the other record headers), so a hostile filename cannot forge a line.
-	fmt.Fprintf(w, "%s -> %s: transfer %s -> %s\n", displayName(src), displayName(dst), r.Source, r.Dest)
+	fmt.Fprintf(w, "%s -> %s: transfer %s -> %s\n", displayName(src), displayName(dst), srcLabel, dstLabel)
 	fmt.Fprintf(w, "  %d carried, %d lossy, %d dropped\n", carried, lossy, dropped)
 	for _, it := range r.Items {
 		if it.Disposition == wl.Carried {
@@ -119,6 +125,19 @@ func renderTransfer(w io.Writer, src, dst string, r wl.TransferReport) {
 		}
 		fmt.Fprintf(w, "  %-7s %s: %s\n", it.Disposition, transferLabel(it), it.Reason)
 	}
+}
+
+// transferFormatLabel is the display name for one side of a transfer header. The
+// WebM/Matroska distinction lives only in the container label (both .mka and
+// .webm are FormatMatroska), so for the Matroska family it uses the container
+// ("WebM" / "Matroska"); every other format keeps its Format string, so e.g. AAC
+// stays "AAC (ADTS)". The JSON sourceFormat/destFormat deliberately stay the bare
+// Format string: "WebM" is a container subtype, the format identity is Matroska.
+func transferFormatLabel(f wl.Format, container string) string {
+	if f == wl.FormatMatroska && container != "" {
+		return container
+	}
+	return f.String()
 }
 
 // jsonCopy is the machine-readable result of a copy: the per-item transfer

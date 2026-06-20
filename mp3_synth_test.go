@@ -432,3 +432,32 @@ func TestMP3TruncatedAfterXingWarns(t *testing.T) {
 		}
 	})
 }
+
+// TestMP3NonAudioWarnsNoAudio is B3: a .mp3 whose essence is present but is not
+// MPEG audio (text, a renamed file) surfaces the no-audio warning rather than
+// being accepted silently. The garbage carries no MPEG sync to sniff, so the .mp3
+// extension routes it to the MP3 codec; parseMPEG finds no frame and the non-empty
+// essence range triggers the warning. Because that range is non-empty, the
+// zero-essence no-audio path in the root parse stays silent, so exactly one
+// no-audio warning fires (the two paths must not double-warn). The essence bytes
+// are left intact, so a later set still preserves them.
+func TestMP3NonAudioWarnsNoAudio(t *testing.T) {
+	t.Parallel()
+	path := writeTempFile(t, "fake.mp3", []byte("this is text, not audio\n"))
+	doc := mustParseFile(t, path)
+	if doc.Format() != wl.FormatMP3 {
+		t.Fatalf("format = %v, want MP3 (the .mp3 extension must route the garbage to the MP3 codec)", doc.Format())
+	}
+	if !hasWarning(doc, wl.WarnNoAudioFrames) {
+		t.Errorf("a non-MPEG .mp3 should warn no-audio; got %v", doc.Warnings())
+	}
+	n := 0
+	for _, w := range doc.Warnings() {
+		if w.Code == wl.WarnNoAudioFrames {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("no-audio warnings = %d, want exactly 1 (the mp3 and root paths must not both fire); got %v", n, doc.Warnings())
+	}
+}

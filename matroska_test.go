@@ -79,6 +79,25 @@ func TestMatroskaProperties(t *testing.T) {
 	}
 }
 
+// TestMatroskaAverageBitrate covers the average-bitrate feature: Matroska has no
+// bitrate element, so for a single audio-only file it is derived from the cluster
+// byte span over the segment duration. sampleMKA is one FLAC audio track plus a
+// cover attachment - attachments are not tracks and sit outside the cluster
+// bounds, so the figure still computes cleanly - and reports a plausible non-zero
+// rate. (Multi-track or video-bearing files are gated to 0 so shared cluster bytes
+// never inflate an audio figure; the single-track condition is exercised here.)
+func TestMatroskaAverageBitrate(t *testing.T) {
+	t.Parallel()
+	tr := mustParseFile(t, sampleMKA).Properties().First()
+	if tr.Bitrate <= 0 {
+		t.Fatalf("Bitrate = %d, want > 0 for a single audio-only Matroska (cover attachment aside)", tr.Bitrate)
+	}
+	// A real audio rate, not a degenerate or overflowed cast.
+	if tr.Bitrate > 10_000_000 {
+		t.Errorf("Bitrate = %d is implausibly high for the fixture", tr.Bitrate)
+	}
+}
+
 // TestMatroskaCoverArt confirms the cover image is read from an AttachedFile.
 func TestMatroskaCoverArt(t *testing.T) {
 	pics := mustParseFile(t, sampleMKA).Pictures()

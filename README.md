@@ -82,10 +82,12 @@ Install the binary with `go install github.com/colespringer/waxlabel/cmd/waxlabe
   preview), without touching the file (the report and the write share state).
 - **`set <file>...`** - apply edits and save: atomic in-place by default, `-o` writes a
   new file (single input only), a no-op writes nothing. `--verify` checks the written
-  audio essence. `--strip-encoder` clears the transcoder stamp; `--recursive` walks
+  audio essence. `--strip-encoder` clears the transcoder stamp; `--add-chapter
+  TIMESTAMP=Title` / `--clear-chapters` edit navigation chapters; `--recursive` walks
   directory arguments. `--padding N` / `--no-padding` control the free space reserved
-  after the metadata (default 8 KiB, reused in place; `--preset minimal` also writes
-  none); both `set` and `plan` accept them.
+  after the metadata (default 8 KiB; `--padding N` is a floor that grows a too-small
+  region, while `--padding 0` is a synonym for `--no-padding`; `--preset minimal` also
+  writes none); both `set` and `plan` accept them.
 - **`lint <file>...`** - report metadata issues (stale legacy tags, encoder noise,
   conflicting families, bad pictures, malformed dates, missing audio). `--fix`
   applies only the safe, non-destructive remediations and saves; pictures are never
@@ -94,8 +96,10 @@ Install the binary with `go install github.com/colespringer/waxlabel/cmd/waxlabe
   adds the whole-file digest. `--recursive` walks directory arguments.
 - **`caps <file>... | --format <name>`** - what a format can store and edit: per
   known key the read/write level, native representation, fidelity, and cardinality
-  (single- vs multi-valued), plus picture/chapter limits. `--all` includes
-  read-only keys.
+  (single- vs multi-valued), plus picture/chapter limits.
+- **`keys`** - list the canonical, format-neutral tag vocabulary (every key `--set`/
+  `--add`/`--clear` accept, with its cardinality and meaning); needs no file. `caps`
+  then shows which of these a given format stores.
 - **`copy <source> <dest>`** - copy `source`'s canonical metadata onto `dest`
   (across formats), rewriting `dest` in place. Each value is carried, downgraded,
   or dropped per `dest`'s capabilities; that loss report prints first. The copy

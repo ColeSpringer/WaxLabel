@@ -63,10 +63,10 @@ func TestWriteReportString(t *testing.T) {
 		BytesBefore:  1000,
 		BytesAfter:   2048,
 		PaddingAfter: 8192,
-		Operations:   []string{"rewrote Vorbis comments"},
+		Operations:   []string{"Vorbis comment rewrite"},
 	}
 	got := r.String()
-	for _, want := range []string{"  - rewrote Vorbis comments", "  size:    1000 B -> 2.0 KiB", "  padding: 8.0 KiB"} {
+	for _, want := range []string{"  - Vorbis comment rewrite", "  size:    1000 B -> 2.0 KiB", "  padding: 8.0 KiB"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("WriteReport.String() = %q, missing %q", got, want)
 		}

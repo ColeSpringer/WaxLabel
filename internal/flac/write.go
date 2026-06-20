@@ -68,11 +68,11 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	var segs []bits.Segment
 	newLeadingLen := d.flacStart
 	if stripLegacy && len(d.leadingID3) > 0 {
-		report.Operations = append(report.Operations, fmt.Sprintf("stripped leading ID3v2 (%d bytes)", len(d.leadingID3)))
+		report.Operations = append(report.Operations, fmt.Sprintf("leading ID3v2 strip (%d bytes)", len(d.leadingID3)))
 		newLeadingLen = 0
 	} else if len(d.leadingID3) > 0 {
 		segs = append(segs, bits.Copy(0, d.flacStart))
-		report.Operations = append(report.Operations, "preserved leading ID3v2")
+		report.Operations = append(report.Operations, "leading ID3v2 preservation")
 	}
 	segs = append(segs, bits.Lit(slices.Clone(flacMagic)), bits.Lit(metaBytes))
 
@@ -82,11 +82,11 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	newTrailingLen := int64(len(d.trailingID3v1))
 	if stripLegacy && len(d.trailingID3v1) > 0 {
-		report.Operations = append(report.Operations, "stripped trailing ID3v1")
+		report.Operations = append(report.Operations, "trailing ID3v1 strip")
 		newTrailingLen = 0
 	} else if len(d.trailingID3v1) > 0 {
 		segs = append(segs, bits.Copy(d.audioEnd, newTrailingLen))
-		report.Operations = append(report.Operations, "preserved trailing ID3v1")
+		report.Operations = append(report.Operations, "trailing ID3v1 preservation")
 	}
 
 	newSize := bits.OutputLen(segs)
@@ -177,7 +177,7 @@ func rebuildBlocks(d *doc, newComments []comment, pictures []core.Picture, vorbi
 	}
 
 	if vorbisChanged {
-		ops = append(ops, "rewrote Vorbis comments")
+		ops = append(ops, "Vorbis comment rewrite")
 	}
 	if picturesChanged {
 		ops = append(ops, fmt.Sprintf("pictures: %d block(s)", len(pictures)))

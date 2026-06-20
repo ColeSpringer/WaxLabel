@@ -97,7 +97,7 @@ func TestLintFixReportsOperations(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleMP3) // carries an ID3v1 trailer that --fix strips
 	out, _, _ := runCLI(t, "lint", "--fix", file)
-	if !strings.Contains(out, "stripped ID3v1") {
+	if !strings.Contains(out, "ID3v1 strip") {
 		t.Errorf("--fix text output missing the ID3v1 strip operation:\n%s", out)
 	}
 }
@@ -109,7 +109,7 @@ func TestLintFixJSONOperations(t *testing.T) {
 	file := copyFixture(t, sampleMP3)
 	out, _, _ := runCLI(t, "--json", "lint", "--fix", file)
 	jf := decodeJSONOne[jsonLintFix](t, out)
-	if !slices.Contains(jf.Operations, "stripped ID3v1") {
+	if !slices.Contains(jf.Operations, "ID3v1 strip") {
 		t.Errorf("--fix JSON operations missing the ID3v1 strip: %v", jf.Operations)
 	}
 }
