@@ -10,7 +10,9 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 	"github.com/spf13/cobra"
 )
@@ -22,11 +24,112 @@ import (
 // JSON shape becomes a compatibility surface worth versioning.
 const schemaVersion = 1
 
-// writeJSON writes v as indented JSON followed by a newline.
+// writeJSON writes v as indented JSON followed by a newline. JSON is the machine
+// contract - scripts read the exact bytes - so it bypasses the human sanitizing
+// boundary: when w is a sanitizingWriter it unwraps to the raw underlying stream.
+// (json.Encoder already escapes C0 controls but emits DEL and the C1 controls
+// raw; sanitizing its output would corrupt those values and emit invalid JSON.)
+// All JSON output - the list/single records, the caps report, and the error
+// envelope - flows through here, so this one unwrap exempts every JSON path.
 func writeJSON(w io.Writer, v any) error {
+	if sw, ok := w.(*sanitizingWriter); ok {
+		w = sw.Raw()
+	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
+}
+
+// sanitizingWriter is the human-output boundary. Every byte written through it is
+// run through [tag.SanitizeText], so a terminal-control sequence carried by
+// untrusted file bytes - a tag value, a native block label, a parse-warning
+// snippet, even a hostile filename printed in a record header or an error line -
+// is neutralized regardless of which renderer produced it. dispatch wraps stdout
+// and stderr in one once, so a renderer added later that forgets to escape cannot
+// leak a terminal-control sequence. The boundary deliberately keeps '\n' (it
+// separates output lines and carries multi-line values), so it does not stop the
+// lower-severity newline line-forgery class - that relies on the per-field
+// [tag.SanitizeLine] sweep at single-line sites. The JSON paths unwrap via
+// [sanitizingWriter.Raw] so the machine contract keeps the exact bytes.
+//
+// SanitizeText is idempotent over its own (printable-ASCII) output, so the
+// boundary composes with the per-field and String() escapes already in place with
+// no double-escaping.
+//
+// It assumes writes are serialized - cobra drives one command's renderers
+// sequentially, so Write is never called concurrently - and is therefore not safe
+// for concurrent use: Write mutates the partial-rune buffer without locking. A
+// future concurrent renderer would need a mutex here.
+type sanitizingWriter struct {
+	w io.Writer
+	// buf holds a trailing incomplete UTF-8 sequence (< utf8.UTFMax bytes) carried
+	// between Writes, so a rune split across two writes is not escaped as if its
+	// lead byte were invalid. Every human write today is a single fmt.Fprint* call
+	// (a complete UTF-8 unit), so buf stays empty in practice; it is hardening for a
+	// future caller that streams raw bytes. Close flushes any remainder.
+	buf []byte
+}
+
+func newSanitizingWriter(w io.Writer) *sanitizingWriter { return &sanitizingWriter{w: w} }
+
+// Raw returns the underlying writer so the JSON path can emit exact bytes.
+func (s *sanitizingWriter) Raw() io.Writer { return s.w }
+
+// Write sanitizes p and writes it to the underlying stream, holding back a
+// trailing incomplete UTF-8 sequence for the next call. On success it reports the
+// whole of p consumed (the held-back tail is buffered, not rejected). On an
+// underlying write error it commits nothing: the prior held tail is left intact
+// (no buffered byte is lost) and it reports 0 of p consumed, so a retry recomposes
+// the identical write.
+func (s *sanitizingWriter) Write(p []byte) (int, error) {
+	data := p
+	if len(s.buf) > 0 {
+		data = append(s.buf, p...)
+	}
+	hold := incompleteSuffix(data)
+	// string(...) copies the prefix out now, so the s.buf reslice below cannot alias it.
+	clean := tag.SanitizeText(string(data[:len(data)-hold]))
+	if _, err := io.WriteString(s.w, clean); err != nil {
+		// Nothing committed: leave s.buf (the prior held tail) intact so no buffered
+		// byte is lost, and report 0 of p consumed so a retry re-composes this write.
+		return 0, err
+	}
+	// Committed: replace the held tail with this write's incomplete remainder.
+	s.buf = append(s.buf[:0], data[len(data)-hold:]...)
+	return len(p), nil
+}
+
+// Close flushes a held-back trailing partial sequence. Since it never completed,
+// SanitizeText escapes it as the invalid UTF-8 it is, so even the flush path
+// emits no raw byte. dispatch calls it before returning the exit code.
+func (s *sanitizingWriter) Close() error {
+	if len(s.buf) == 0 {
+		return nil
+	}
+	_, err := io.WriteString(s.w, tag.SanitizeText(string(s.buf)))
+	s.buf = nil
+	return err
+}
+
+// incompleteSuffix reports the length of a trailing run of bytes that forms an
+// incomplete UTF-8 sequence - a multi-byte rune missing its final bytes, which a
+// following write could still complete. It returns 0 when the data ends on a rune
+// boundary, including when the final byte is genuinely invalid UTF-8 (which the
+// sanitizer should escape now, not hold for a completion that cannot come).
+func incompleteSuffix(p []byte) int {
+	if len(p) == 0 {
+		return 0
+	}
+	// Step back over continuation bytes (10xxxxxx) to the lead byte of the final
+	// sequence - at most utf8.UTFMax-1, since a UTF-8 rune is at most UTFMax bytes.
+	start := len(p) - 1
+	for start > 0 && len(p)-start < utf8.UTFMax && p[start]&0xC0 == 0x80 {
+		start--
+	}
+	if utf8.FullRune(p[start:]) {
+		return 0
+	}
+	return len(p) - start
 }
 
 // jsonMode reports whether --json was requested, reading it from the command's
@@ -124,7 +227,7 @@ func perFile[P any](
 			if asJSON {
 				items = append(items, errorJSON(path, classifyError(err)))
 			} else {
-				fmt.Fprintf(errOut, "waxlabel: %s: %s\n", path, perFileReason(err))
+				fmt.Fprintf(errOut, "waxlabel: %s: %s\n", displayName(path), perFileReason(err))
 			}
 			continue
 		}
@@ -214,9 +317,13 @@ func renderError(w io.Writer, jsonMode bool, err error) {
 		})
 		return
 	}
-	fmt.Fprintf(w, "waxlabel: %s\n", c.message)
+	// The human message is one line and can embed a file-derived path (e.g.
+	// "no such file: <path>" from a hostile glob/walk arg), so escape it for the
+	// single-line render. The JSON branch above keeps c.message raw - the machine
+	// contract - so this human-only escape does not touch it.
+	fmt.Fprintf(w, "waxlabel: %s\n", tag.SanitizeLine(c.message))
 	if c.hint != "" {
-		fmt.Fprintf(w, "  hint: %s\n", c.hint)
+		fmt.Fprintf(w, "  hint: %s\n", tag.SanitizeLine(c.hint))
 	}
 }
 

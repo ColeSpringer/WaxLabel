@@ -5,6 +5,7 @@ import (
 	"io"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/tag"
 	"github.com/spf13/cobra"
 )
 
@@ -97,7 +98,9 @@ func transferLabel(it wl.TransferItem) string {
 	case wl.TransferChapter:
 		return fmt.Sprintf("chapters (%d)", it.Count)
 	default:
-		return string(it.Key)
+		// it.Key is file-derived: an unvalidated Vorbis/MP4 field name from parse can
+		// carry control bytes or a newline, and this prints on a single line, so escape it.
+		return tag.SanitizeLine(string(it.Key))
 	}
 }
 
@@ -106,7 +109,9 @@ func transferLabel(it wl.TransferItem) string {
 // losses are what the user needs to see).
 func renderTransfer(w io.Writer, src, dst string, r wl.TransferReport) {
 	carried, lossy, dropped := r.Counts()
-	fmt.Fprintf(w, "%s -> %s: transfer %s -> %s\n", src, dst, r.Source, r.Dest)
+	// Escape and stdin-relabel the paths for the single-line header (consistent with
+	// the other record headers), so a hostile filename cannot forge a line.
+	fmt.Fprintf(w, "%s -> %s: transfer %s -> %s\n", displayName(src), displayName(dst), r.Source, r.Dest)
 	fmt.Fprintf(w, "  %d carried, %d lossy, %d dropped\n", carried, lossy, dropped)
 	for _, it := range r.Items {
 		if it.Disposition == wl.Carried {

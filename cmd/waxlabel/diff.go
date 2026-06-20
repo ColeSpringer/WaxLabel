@@ -108,11 +108,14 @@ func computeDiff(a, b *wl.Document) diffResult {
 
 // renderDiff prints the canonical-metadata delta with diff-style -/+/~ markers.
 func renderDiff(w io.Writer, a, b string, d diffResult) {
+	// Escape and stdin-relabel the file paths for the single-line headers (consistent
+	// with dump/lint/caps), so a hostile filename from a glob cannot forge a line.
+	na, nb := displayName(a), displayName(b)
 	if d.identical() {
-		fmt.Fprintf(w, "%s and %s: identical metadata\n", a, b)
+		fmt.Fprintf(w, "%s and %s: identical metadata\n", na, nb)
 		return
 	}
-	fmt.Fprintf(w, "%s -> %s\n", a, b)
+	fmt.Fprintf(w, "%s -> %s\n", na, nb)
 	for _, t := range d.tags {
 		renderChangeLine(w, "  ", t)
 	}

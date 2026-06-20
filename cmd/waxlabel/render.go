@@ -11,15 +11,20 @@ import (
 )
 
 // displayName maps a path to its display form for a text record header: the "-"
-// stdin sentinel reads as "<stdin>", and every real path is shown verbatim. It is
-// purely cosmetic - readInputs already keeps the buffered temp path out of the
-// renderers (they receive the original "-" arg, never the temp path). JSON output
-// keeps the raw "-" so a script still keys on the argument it passed.
+// stdin sentinel reads as "<stdin>", and every real path is shown through
+// [tag.SanitizeLine]. A Linux filename may contain any byte but '/' and NUL, so a
+// name handed over by a shell glob or the --recursive walk could otherwise forge a
+// line or drive the terminal from a record header before a byte is parsed; the CLI
+// boundary already blocks the control-hijack, and escaping the newline here also
+// stops line-forgery in a multi-file listing. It is otherwise cosmetic - readInputs
+// already keeps the buffered temp path out of the renderers (they receive the
+// original "-" arg, never the temp path). JSON output keeps the raw path/"-" so a
+// script still keys on the argument it passed.
 func displayName(path string) string {
 	if path == stdinArg {
 		return "<stdin>"
 	}
-	return path
+	return tag.SanitizeLine(path)
 }
 
 // renderDocument writes the human-readable view of a parsed file.
@@ -51,17 +56,20 @@ func audioLine(p wl.Properties) string {
 	hasSubstantive := false
 	switch {
 	case t.Codec != "":
-		// t.Codec is already the canonical name (CanonicalCodec, applied at parse); the
-		// text view just uppercases it to read consistently with the rest of the line.
-		parts = append(parts, strings.ToUpper(t.Codec))
+		// t.Codec is the canonical name (CanonicalCodec, applied at parse), but for an
+		// unrecognized container codec ID it is the file's raw bytes (e.g. Matroska's
+		// codecName returns the ID tail verbatim), so escape it for the single-line row.
+		parts = append(parts, tag.SanitizeLine(strings.ToUpper(t.Codec)))
 	case p.Container != "":
 		// No codec was identified (e.g. an unrecognized Matroska/MP4 track): name the
 		// container and say so, rather than printing the container as if it were the
 		// codec (a bare "MATROSKA"). This "codec unknown" form is itself an
 		// informative signal (the container parsed; the codec did not resolve), so
 		// keep the line even when no technical properties accompany it - unlike a bare
-		// codec name, which would just be noise.
-		parts = append(parts, fmt.Sprintf("%s (codec unknown)", p.Container))
+		// codec name, which would just be noise. The container is a fixed label today,
+		// but escape it for the single-line row in case a format ever derives it from
+		// the file.
+		parts = append(parts, fmt.Sprintf("%s (codec unknown)", tag.SanitizeLine(p.Container)))
 		hasSubstantive = true
 	}
 	if t.SampleRate > 0 {
@@ -150,8 +158,10 @@ func renderTags(w io.Writer, ts tag.TagSet) {
 	valueCol := 4 + width + 2
 	for k, vals := range ts.All() {
 		// A key is validated printable ASCII, but sanitize defensively so a hostile
-		// key from a malformed file cannot inject control bytes into the line either.
-		ks := tag.SanitizeText(string(k))
+		// key from a malformed file cannot inject control bytes - or, via an embedded
+		// newline, forge a fake tag line - into the listing. SanitizeLine (not
+		// SanitizeText) because a key is single-line: it also escapes \n/\t.
+		ks := tag.SanitizeLine(string(k))
 		if len(vals) == 0 {
 			fmt.Fprintf(w, "    %-*s  (present, no value)\n", width, ks)
 			continue
@@ -193,13 +203,14 @@ func writeWrapped(w io.Writer, col int, value string) {
 	}
 }
 
-// sanitizeJoin escapes each value for human display (via [tag.SanitizeText]) and
-// joins them with sep, so a multi-value field built from untrusted file bytes
-// cannot inject control sequences into the joined line.
+// sanitizeJoin escapes each value for a single-line display (via [tag.SanitizeLine])
+// and joins them with sep, so a multi-value field built from untrusted file bytes
+// can neither inject control sequences nor - via an embedded newline - forge a line
+// in the joined row.
 func sanitizeJoin(vals []string, sep string) string {
 	out := make([]string, len(vals))
 	for i, v := range vals {
-		out[i] = tag.SanitizeText(v)
+		out[i] = tag.SanitizeLine(v)
 	}
 	return strings.Join(out, sep)
 }
@@ -215,10 +226,12 @@ func renderPictures(w io.Writer, pics []wl.Picture) {
 		if p.Width > 0 && p.Height > 0 {
 			dim = fmt.Sprintf("%dx%d", p.Width, p.Height)
 		}
-		// p.Type is an enum (safe), p.MIME is file-derived text; sanitize both raw
-		// %s fields. p.Description is left alone: it prints via %q below, which
-		// already escapes control chars - sanitizing it too would double-escape.
-		fmt.Fprintf(w, "    %-12s %-22s %-9s %s\n", tag.SanitizeText(p.Type.String()), tag.SanitizeText(p.MIME), dim, wl.HumanBytes(int64(len(p.Data))))
+		// p.Type is an enum (safe), p.MIME is file-derived text; both are single-line
+		// columns, so escape via SanitizeLine (also escapes \n/\t, so neither can break
+		// the column layout or forge a line). p.Description is left alone: it prints via
+		// %q below, which independently escapes control chars, \n/\t, invalid UTF-8, and
+		// DEL/C1 - meeting both tiers - so sanitizing it too would double-escape.
+		fmt.Fprintf(w, "    %-12s %-22s %-9s %s\n", tag.SanitizeLine(p.Type.String()), tag.SanitizeLine(p.MIME), dim, wl.HumanBytes(int64(len(p.Data))))
 		if p.Description != "" {
 			fmt.Fprintf(w, "      %q\n", p.Description)
 		}
@@ -232,7 +245,9 @@ func renderChapters(w io.Writer, chs []wl.Chapter) {
 	}
 	fmt.Fprintf(w, "  chapters (%d):\n", len(chs))
 	for i, c := range chs {
-		title := tag.SanitizeText(c.Title)
+		// A chapter title is file-derived and rendered on a single line, so escape via
+		// SanitizeLine (escapes \n/\t too, so a title cannot forge a chapter line).
+		title := tag.SanitizeLine(c.Title)
 		if title == "" {
 			title = fmt.Sprintf("Chapter %d", i+1)
 		}
@@ -263,8 +278,10 @@ func renderWarnings(w io.Writer, ws []wl.Warning) {
 	}
 	fmt.Fprintf(w, "  warnings (%d):\n", len(ws))
 	for _, x := range ws {
-		// A warning message can embed a file-derived snippet, so escape it for display.
-		fmt.Fprintf(w, "    %s\n", tag.SanitizeText(x.String()))
+		// A warning message can embed a file-derived snippet, but Warning.String now
+		// self-sanitizes, so it is safe to print directly (the output boundary is a
+		// second backstop).
+		fmt.Fprintf(w, "    %s\n", x.String())
 	}
 }
 
@@ -274,11 +291,14 @@ func renderNative(w io.Writer, doc *wl.Document) {
 		if entries := nd.Describe(); len(entries) > 0 {
 			fmt.Fprintf(w, "  native blocks (%d):\n", len(entries))
 			for _, e := range entries {
+				// Both Kind and Note are file-controlled for some formats (a Matroska
+				// segment title, attachment name/MIME, or native SimpleTag value), and
+				// each is one single-line column, so escape via SanitizeLine.
 				note := ""
 				if e.Note != "" {
-					note = "  - " + e.Note
+					note = "  - " + tag.SanitizeLine(e.Note)
 				}
-				fmt.Fprintf(w, "    %-18s %8s%s\n", e.Kind, wl.HumanBytes(int64(e.Size)), note)
+				fmt.Fprintf(w, "    %-18s %8s%s\n", tag.SanitizeLine(e.Kind), wl.HumanBytes(int64(e.Size)), note)
 			}
 		}
 	}
@@ -289,8 +309,10 @@ func renderNative(w io.Writer, doc *wl.Document) {
 			if !f.Selected {
 				flag = "  (conflict)"
 			}
-			// f.Family is an enum (safe); f.Key and f.Values are file-derived, so escape them.
-			fmt.Fprintf(w, "    %-20s %-8s %s%s\n", tag.SanitizeText(string(f.Key)), f.Family, sanitizeJoin(f.Values, ", "), flag)
+			// f.Family is an enum (safe); f.Key and f.Values are file-derived, so escape
+			// them. Both the key and the joined values are single-line, so SanitizeLine
+			// (via sanitizeJoin) escapes \n/\t as well as the terminal-hijack class.
+			fmt.Fprintf(w, "    %-20s %-8s %s%s\n", tag.SanitizeLine(string(f.Key)), f.Family, sanitizeJoin(f.Values, ", "), flag)
 		}
 	}
 }
@@ -319,10 +341,10 @@ func renderReport(w io.Writer, path string, plan *wl.Plan) {
 		fmt.Fprintf(w, "  padding: %s  (--padding N / --no-padding to change)\n", wl.HumanBytes(r.PaddingAfter))
 	}
 	for _, x := range r.Warnings {
-		// Plan-time warnings are library-generated today, but sanitize for parity with
-		// the dump path (renderWarnings) and to stay safe if a future plan warning
-		// ever embeds a file-derived snippet (e.g. a chapter title).
-		fmt.Fprintf(w, "  warning: %s\n", tag.SanitizeText(x.String()))
+		// Plan-time warnings are library-generated today, but Warning.String
+		// self-sanitizes (and the output boundary backstops it), so a future plan
+		// warning that embeds a file-derived snippet is safe.
+		fmt.Fprintf(w, "  warning: %s\n", x.String())
 	}
 }
 

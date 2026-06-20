@@ -135,7 +135,7 @@ func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *
 		if asJSON {
 			items = append(items, errorSetResult(path, output, classifyError(err)))
 		} else {
-			fmt.Fprintf(errOut, "waxlabel: %s: %s\n", path, perFileReason(err))
+			fmt.Fprintf(errOut, "waxlabel: %s: %s\n", displayName(path), perFileReason(err))
 		}
 	}
 

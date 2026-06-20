@@ -94,6 +94,9 @@ func TestChangeString(t *testing.T) {
 		// A control byte in the KEY is escaped too: a custom Vorbis/MP4 field name
 		// bypasses key validation on parse, so it can carry control bytes.
 		{Change{Key: Key("BAD\x1bKEY"), Kind: ChangeAdded, New: []string{"v"}}, `+ BAD\x1bKEY: v`},
+		// A newline in a value is escaped: the change row is single-line, so a
+		// multi-line value (lyrics) or hostile input cannot forge a second row.
+		{Change{Key: Title, Kind: ChangeAdded, New: []string{"a\nb"}}, `+ TITLE: a\x0ab`},
 		{Change{}, ""}, // the zero (unknown) kind renders nothing
 	}
 	for _, c := range cases {
@@ -138,5 +141,26 @@ func TestSanitizeTextPreservesUnicode(t *testing.T) {
 func TestSanitizeTextInvalidUTF8(t *testing.T) {
 	if got := SanitizeText("a\xffb"); got != `a\xffb` {
 		t.Errorf("SanitizeText(invalid byte) = %q, want %q", got, `a\xffb`)
+	}
+}
+
+// TestSanitizeLine is SanitizeText's bar plus the tab and newline: a single-line
+// field (a tag key, a chapter title, a change-line value) must occupy exactly one
+// line, so both are escaped - unlike SanitizeText, which keeps them for the
+// multi-line value renderer. Everything else escapes identically, and multi-byte
+// text still survives.
+func TestSanitizeLine(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"clean", "clean"},
+		{"a\x1b[31mb", `a\x1b[31mb`},     // ESC still escaped (same as SanitizeText)
+		{"keep\ttab", `keep\x09tab`},     // tab now escaped, not preserved
+		{"line\nbreak", `line\x0abreak`}, // newline now escaped, not preserved
+		{"café 🎵", "café 🎵"},             // multi-byte text survives intact
+		{"a\xffb", `a\xffb`},             // invalid UTF-8 still escaped per byte
+	}
+	for _, c := range cases {
+		if got := SanitizeLine(c.in); got != c.want {
+			t.Errorf("SanitizeLine(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }

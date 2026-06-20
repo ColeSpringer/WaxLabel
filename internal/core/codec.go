@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/colespringer/waxlabel/internal/bits"
-	"github.com/colespringer/waxlabel/tag"
 )
 
 // Codec is the contract every format implementation satisfies. Parsing
@@ -64,10 +63,10 @@ type WriteReport struct {
 // any warnings - or "no changes (already up to date)" for a no-op. Sizes are
 // humanized via [bits.HumanBytes].
 //
-// The operation and size lines are library-generated; the warning line is run
-// through [tag.SanitizeText] defensively (plan warnings are library-generated
-// today, but this keeps the report safe to print if one ever embeds a file-derived
-// snippet such as a chapter title). The field-level change block - the only place
+// The operation and size lines are library-generated; the warning line is safe
+// because [Warning.String] self-sanitizes (plan warnings are library-generated
+// today, but this keeps the report safe if one ever embeds a file-derived snippet
+// such as a chapter title). The field-level change block - the only place
 // untrusted tag values appear in a plan - is rendered separately by
 // [waxlabel.Plan.String] through the sanitizing [tag.Change.String]. The block
 // carries no path header (that is display context the CLI adds) and no trailing
@@ -88,7 +87,7 @@ func (r WriteReport) String() string {
 		lines = append(lines, fmt.Sprintf("  padding: %s", bits.HumanBytes(r.PaddingAfter)))
 	}
 	for _, x := range r.Warnings {
-		lines = append(lines, "  warning: "+tag.SanitizeText(x.String()))
+		lines = append(lines, "  warning: "+x.String())
 	}
 	return strings.Join(lines, "\n")
 }

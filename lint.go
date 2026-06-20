@@ -38,11 +38,21 @@ type Finding struct {
 	Key      tag.Key // the field involved, or "" if not field-specific
 }
 
+// String renders the finding as "[severity] code: message (key)". The severity and
+// code are fixed library vocabulary; the message and key can be file-derived (the
+// encoder-noise message carries the raw inherited stamp; a custom-key finding
+// carries the raw field name), so those two are run through [tag.SanitizeLine]
+// individually - the finding prints as one list item, so a newline or tab is
+// escaped too (it cannot forge a line), not just the terminal-hijack class. A
+// library consumer that prints this without the CLI's output boundary is then safe.
+// The malformed-date message is already %q-escaped inside the Message, which
+// SanitizeLine leaves intact (no double-escape).
 func (f Finding) String() string {
+	msg := tag.SanitizeLine(f.Message)
 	if f.Key != "" {
-		return fmt.Sprintf("[%s] %s: %s (%s)", f.Severity, f.Code, f.Message, f.Key)
+		return fmt.Sprintf("[%s] %s: %s (%s)", f.Severity, f.Code, msg, tag.SanitizeLine(string(f.Key)))
 	}
-	return fmt.Sprintf("[%s] %s: %s", f.Severity, f.Code, f.Message)
+	return fmt.Sprintf("[%s] %s: %s", f.Severity, f.Code, msg)
 }
 
 // Lint inspects a document for issues a tagger would want to surface or fix:

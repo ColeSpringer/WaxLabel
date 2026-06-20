@@ -344,14 +344,16 @@ func notifyValueNotes(errOut io.Writer, e *editFlags, asJSON bool) {
 
 // noteMalformedValue emits the M1 note when v does not match the typed shape of a
 // numeric or date key. The value is always still written (the writer is faithful),
-// so this only advises. v is sanitized for display - it is user input, but a
-// control byte in it must not reach the terminal raw.
+// so this only advises. The note is a single line, so the key and value are run
+// through [tag.SanitizeLine] - they are the user's own --set input, but a control
+// byte must not reach the terminal raw and an embedded newline must not forge a
+// line. (SanitizeLine, not SanitizeText, to match the single-line-field convention.)
 func noteMalformedValue(errOut io.Writer, k tag.Key, v string) {
 	switch {
 	case tag.IsNumericKey(k) && !tag.ValidNumericValue(k, v):
-		fmt.Fprintf(errOut, "note: %s=%s does not look like a number; written as-is\n", k, tag.SanitizeText(v))
+		fmt.Fprintf(errOut, "note: %s=%s does not look like a number; written as-is\n", tag.SanitizeLine(string(k)), tag.SanitizeLine(v))
 	case tag.IsDateKey(k) && !tag.ValidPartialDate(v):
-		fmt.Fprintf(errOut, "note: %s=%s is not YYYY / YYYY-MM / YYYY-MM-DD; written as-is\n", k, tag.SanitizeText(v))
+		fmt.Fprintf(errOut, "note: %s=%s is not YYYY / YYYY-MM / YYYY-MM-DD; written as-is\n", tag.SanitizeLine(string(k)), tag.SanitizeLine(v))
 	}
 }
 

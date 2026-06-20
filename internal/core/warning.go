@@ -1,6 +1,10 @@
 package core
 
-import "slices"
+import (
+	"slices"
+
+	"github.com/colespringer/waxlabel/tag"
+)
 
 // WarningCode categorizes a non-fatal condition surfaced during parse or
 // planning. Preservation-first means WaxLabel warns rather than silently
@@ -130,7 +134,14 @@ type Warning struct {
 	Message string
 }
 
-func (w Warning) String() string { return "[" + w.Code.String() + "] " + w.Message }
+// String renders the warning as "[code] message". The code is a fixed vocabulary
+// word, but the message can embed a file-derived snippet (an inherited encoder
+// stamp, a conflicting family value), so it is run through [tag.SanitizeLine] -
+// the warning prints as one list item, so an embedded newline or tab is escaped
+// too (it cannot forge a line), not just the terminal-hijack class. A library
+// consumer that prints this without the CLI's output boundary is then safe, and
+// the boundary is a no-op over the already-escaped result.
+func (w Warning) String() string { return "[" + w.Code.String() + "] " + tag.SanitizeLine(w.Message) }
 
 // Warn appends a warning to a slice, returning the new slice.
 func Warn(ws []Warning, code WarningCode, msg string) []Warning {

@@ -100,7 +100,7 @@ func lintLoop[T any](
 			if asJSON {
 				items = append(items, errItem(path, classifyError(err)))
 			} else {
-				fmt.Fprintf(errOut, "waxlabel: %s: %s\n", path, perFileReason(err))
+				fmt.Fprintf(errOut, "waxlabel: %s: %s\n", displayName(path), perFileReason(err))
 			}
 			continue
 		}
@@ -175,10 +175,10 @@ func renderLint(w io.Writer, path string, findings []wl.Finding) {
 	}
 	for _, f := range findings {
 		// A finding's message and key can be file-derived (e.g. the encoder-noise
-		// message carries the raw inherited stamp; a custom-key finding carries the
-		// raw field name), so escape the rendered line. The malformed-date message is
-		// already %q-escaped inside Finding, which SanitizeText leaves intact.
-		fmt.Fprintf(w, "  %s\n", tag.SanitizeText(f.String()))
+		// message carries the raw inherited stamp; a custom-key finding carries the raw
+		// field name), but Finding.String now self-sanitizes, so it is safe to print
+		// directly (the output boundary is a second backstop).
+		fmt.Fprintf(w, "  %s\n", f.String())
 	}
 }
 
@@ -254,8 +254,12 @@ func lintFixOne(ctx context.Context, path string) (fixOutcome, error) {
 // "nothing to fix"), the findings it left for the user, and the save outcome.
 func renderLintFix(w io.Writer, o fixOutcome) {
 	// --fix rejects "-" (stdin) up front (see newLintCmd), so o.path is always a real
-	// file - no "<stdin>" relabel is possible here, unlike the other record headers.
-	fmt.Fprintf(w, "%s\n", o.path)
+	// file - no "<stdin>" relabel is needed, unlike the other record headers - but it
+	// is still escaped for the single-line header and the "saved" line below, so a
+	// hostile filename from a --recursive walk cannot forge a line (e.g. a fake
+	// "saved /etc/passwd").
+	name := tag.SanitizeLine(o.path)
+	fmt.Fprintf(w, "%s\n", name)
 	// A legacy-container strip is a structural operation with no field change, so
 	// "nothing to fix" holds only when both the changes and the operations are empty
 	// - otherwise the strip would be invisible (the README promises it is reported).
@@ -271,11 +275,11 @@ func renderLintFix(w io.Writer, o fixOutcome) {
 		}
 	}
 	for _, f := range o.remaining {
-		// Escape the file-derived finding text (see renderLint).
-		fmt.Fprintf(w, "  not auto-fixed: %s\n", tag.SanitizeText(f.String()))
+		// Finding.String self-sanitizes the file-derived text (see renderLint).
+		fmt.Fprintf(w, "  not auto-fixed: %s\n", f.String())
 	}
 	if o.committed {
-		fmt.Fprintf(w, "  saved %s\n", o.path)
+		fmt.Fprintf(w, "  saved %s\n", name)
 	} else {
 		// No bytes written: nothing was auto-fixable. Any remaining findings are
 		// already listed above, so don't claim the file is "clean" here.

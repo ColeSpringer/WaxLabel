@@ -84,16 +84,18 @@ func Diff(base, edited TagSet) []Change {
 // removed key, "+ KEY: new" for an added one, and "~ KEY: old -> new" for a
 // changed one. Multiple values are joined with " | " (so a value containing a
 // comma is not misread as two), and a key present with no values reads as
-// "(present, no value)". The key and every value are run through [SanitizeText],
-// so the line is safe to print to a terminal even though both originate in an
-// untrusted file (a custom Vorbis/MP4 field name bypasses key validation on
-// parse); a caller that needs the exact bytes reads Key/Old/New directly.
+// "(present, no value)". The key and every value are run through [SanitizeLine] -
+// the row is a single line, so an embedded newline or tab is escaped (it can
+// neither forge a row nor break the layout), not just the terminal-hijack class -
+// even though both originate in an untrusted file (a custom Vorbis/MP4 field name
+// bypasses key validation on parse); a caller that needs the exact bytes reads
+// Key/Old/New directly.
 //
 // The line carries no indent and no trailing newline, so the caller controls
 // layout. It is the single change-line formatter shared by the library's
 // plan/diff previews and the CLI, so their formatting cannot drift.
 func (c Change) String() string {
-	key := SanitizeText(string(c.Key))
+	key := SanitizeLine(string(c.Key))
 	switch c.Kind {
 	case ChangeRemoved:
 		return "- " + key + ": " + joinChangeValues(c.Old)
@@ -107,15 +109,15 @@ func (c Change) String() string {
 }
 
 // joinChangeValues renders a key's values for a change line: the empty case as
-// "(present, no value)", otherwise each value sanitized for display and joined
-// with " | ".
+// "(present, no value)", otherwise each value escaped for a single-line row via
+// [SanitizeLine] and joined with " | ".
 func joinChangeValues(vals []string) string {
 	if len(vals) == 0 {
 		return "(present, no value)"
 	}
 	out := make([]string, len(vals))
 	for i, v := range vals {
-		out[i] = SanitizeText(v)
+		out[i] = SanitizeLine(v)
 	}
 	return strings.Join(out, " | ")
 }
@@ -134,14 +136,37 @@ func joinChangeValues(vals []string) string {
 // and any byte that is not valid UTF-8 (escaped one byte at a time). Every other
 // rune passes through unchanged.
 //
-// It is the single sanitizer behind both the CLI's dump renderers and
-// [Change.String], so the text-display escaping cannot drift between them. The
+// It keeps '\n'/'\t', so it backs the multi-line value display (the dump value
+// renderer, which owns the line break) and the CLI's sanitizing output boundary.
+// Single-line fields use [SanitizeLine] instead (it also escapes '\n'/'\t'); both
+// share one escape core ([sanitize]), so their escaping cannot drift. The
 // structured accessors ([TagSet], [Change.Old]/[Change.New]) and --json still
 // carry the exact bytes for scripts.
-func SanitizeText(s string) string {
+func SanitizeText(s string) string { return sanitize(s, controlRune) }
+
+// SanitizeLine is [SanitizeText] that additionally escapes the horizontal tab and
+// the newline, for a single-line field - a tag key, a picture type or MIME, a
+// chapter title, a native block label, a file path - where an embedded newline
+// would forge a fake line in a listing (output spoofing) or a tab would break
+// column alignment. Its output is printable ASCII, so it composes with the CLI's
+// sanitizing output boundary and any surrounding per-field escape with no
+// double-escaping.
+//
+// Multi-line tag values keep [SanitizeText] (applied by the value renderer, which
+// owns the line break), so their genuine newlines survive as real breaks.
+func SanitizeLine(s string) string { return sanitize(s, lineControlRune) }
+
+// sanitize returns s with every rune isControl reports as control rendered as a
+// visible \xNN escape. It is rune-aware - it decodes UTF-8 and escapes only
+// genuine control codepoints, so multi-byte text survives - and escapes any byte
+// that is not valid UTF-8 one at a time. isControl must match only codepoints
+// <= U+00FF, so the escaped value fits one byte; both controlRune and
+// lineControlRune do. It backs both [SanitizeText] and [SanitizeLine] so their
+// escaping cannot drift.
+func sanitize(s string, isControl func(rune) bool) string {
 	// Fast path: a clean, valid-UTF-8 value (the common case) is returned
 	// unchanged with no allocation.
-	if utf8.ValidString(s) && strings.IndexFunc(s, controlRune) < 0 {
+	if utf8.ValidString(s) && strings.IndexFunc(s, isControl) < 0 {
 		return s
 	}
 	var b strings.Builder
@@ -155,8 +180,8 @@ func SanitizeText(s string) string {
 			i++
 			continue
 		}
-		if controlRune(r) {
-			// controlRune only matches codepoints <= U+009F, so the value fits one byte.
+		if isControl(r) {
+			// isControl only matches codepoints <= U+00FF, so the value fits one byte.
 			writeHexEscape(&b, byte(r))
 		} else {
 			b.WriteRune(r)
@@ -181,8 +206,20 @@ func writeHexEscape(b *strings.Builder, c byte) {
 // C0 control other than tab/newline, DEL, or a C1 control. Tab and newline are
 // kept (the multi-line value renderer relies on the newline).
 func controlRune(r rune) bool {
-	if r == '\t' || r == '\n' {
-		return false
-	}
+	return r != '\t' && r != '\n' && isControlByte(r)
+}
+
+// isControlByte reports whether r is a non-printable control codepoint - a C0
+// control, DEL, or a C1 control - independent of the tab/newline policy. It is the
+// shared core of both escaping predicates and matches only codepoints <= U+009F,
+// so an escaped value fits one byte.
+func isControlByte(r rune) bool {
 	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
+}
+
+// lineControlRune reports whether r is a control codepoint [SanitizeLine] escapes:
+// every control byte, including the tab and newline a single-line field must not
+// carry.
+func lineControlRune(r rune) bool {
+	return isControlByte(r)
 }
