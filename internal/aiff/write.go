@@ -76,7 +76,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	if needID3 {
 		srcTag := d.id3
 		if srcTag == nil {
-			srcTag = id3.NewEmpty(3)
+			// A freshly created id3 chunk uses the shared per-format default (v2.4 for AIFF
+			// and AIFF-C alike); an existing chunk keeps its own version. The rationale
+			// lives in core.DefaultID3Version.
+			srcTag = id3.NewEmpty(core.DefaultID3Version(core.FormatAIFF))
 		}
 		version := srcTag.WriteVersion()
 		id3Base := base.Tags

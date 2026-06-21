@@ -15,6 +15,34 @@ func IsTranscoderStamp(s string) bool {
 	return strings.Contains(s, "lavf") || strings.Contains(s, "libavformat")
 }
 
+// IndefiniteArticle returns "a" or "an" to precede name, so an interpolated format
+// name reads grammatically ("an AIFF file", not "a AIFF file"). It keys on the
+// leading sound: a vowel letter takes "an", and so does an "MP" initialism (MP3/MP4
+// read "em-pee-...", a vowel sound, despite the consonant 'M'). Everything else
+// takes "a". This is correct for every format name WaxLabel interpolates - the
+// vowel-initial ones (AIFF, AAC, Ogg), the "MP" pair, and the rest which read as
+// written (FLAC, WAV, Matroska, WebM) - without a full pronunciation table. Use it
+// wherever a message computes the article for a format name that varies at runtime
+// (the chapter-unsupported message, the WebM cover refusal); a message with a
+// single fixed, known format may spell the article inline.
+func IndefiniteArticle(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "a"
+	}
+	// MP3/MP4 are the one case a leading-letter rule gets wrong: read letter by
+	// letter ("em-pee"), they begin with a vowel sound. No "a"-taking format name
+	// starts with "MP", so this prefix test is safe.
+	if len(name) >= 2 && (name[0] == 'M' || name[0] == 'm') && (name[1] == 'P' || name[1] == 'p') {
+		return "an"
+	}
+	switch name[0] {
+	case 'a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O', 'U':
+		return "an"
+	}
+	return "a"
+}
+
 // Fold normalizes a string for case- and space-insensitive comparison
 // (lowercased, surrounding whitespace trimmed). It is the one place the
 // normalization rule lives for codecs that import core; tag/* cannot use it (core

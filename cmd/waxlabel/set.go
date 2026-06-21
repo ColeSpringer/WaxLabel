@@ -108,6 +108,12 @@ func newSetCmd() *cobra.Command {
 // so the target is safe, and the more-relevant not-found error should surface
 // instead of an "already exists" pointing at the wrong operand.
 func checkOutputTarget(output, inputReal string, overwrite bool) error {
+	// "-" is the stdin/stdout sentinel, not a filename. set is an atomic file-replace
+	// command (streaming to stdout is the library's WriteTo, a different model), so
+	// reject it up front rather than write a literal file named "-" in the cwd.
+	if output == stdinArg {
+		return usagef("-o - is not supported; set writes a named file")
+	}
 	// Stat (follows symlinks) so a directory - or a symlink to one - is caught.
 	if fi, err := os.Stat(output); err == nil && fi.IsDir() {
 		return usagef("-o target %q is a directory, not a file", output)
@@ -171,7 +177,7 @@ func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *
 	if len(paths) == 0 {
 		return usagef("no audio files found")
 	}
-	notifier := newSingleValuedNotifier(strict, asJSON, errOut)
+	notifier := newSingleValuedNotifier(strict, asJSON)
 	var items []any
 	var worstErr error
 	changed, unchanged, failed, rendered := 0, 0, 0, 0
@@ -195,8 +201,9 @@ func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *
 			continue
 		}
 		// Under --strict, a single-valued key given multiple values fails the file
-		// before any write (a per-file usage error, exit 2); otherwise it is noted (once
-		// per key) and the write proceeds, since the writer stores the values faithfully.
+		// before any write (a per-file usage error, exit 2); otherwise the write proceeds
+		// and the plan report carries the single-valued-multi warning (the notifier no
+		// longer prints a stderr note - the library attaches the signal to the report).
 		// The strict failure is one array element so a multi-file run's aggregate exit
 		// code stays order-independent (worseError), like every other per-file error - the
 		// invocation-level unknown-key guardrail, which is file-independent, aborts up

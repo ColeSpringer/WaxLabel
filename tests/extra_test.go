@@ -38,17 +38,24 @@ func TestInspectAllocsIndependentOfPictureSize(t *testing.T) {
 	}
 }
 
-// Pictures() shares the underlying Data array read-only rather than deep-copying
-// megabytes per call.
-func TestPicturesShareDataBacking(t *testing.T) {
+// Pictures() returns a fully detached deep copy on every call: each call's Data is
+// independent, so mutating one does not corrupt a later call (the #16 fix). Bulk
+// scans that must not pay the per-call copy use Inspect(), which skips payloads.
+func TestPicturesDetachedAcrossCalls(t *testing.T) {
 	doc := mustParseBytes(t, bigPictureFLAC(t, 4<<20))
 	a := doc.Pictures()
 	b := doc.Pictures()
 	if len(a) != 1 || len(b) != 1 {
 		t.Fatalf("want 1 picture, got %d/%d", len(a), len(b))
 	}
-	if &a[0].Data[0] != &b[0].Data[0] {
-		t.Error("Pictures() copied the Data payload; it should be shared read-only")
+	if len(a[0].Data) == 0 || &a[0].Data[0] == &b[0].Data[0] {
+		t.Fatal("Pictures() must return a distinct Data backing per call")
+	}
+	// Mutating one call's bytes must not bleed into another call's.
+	orig := b[0].Data[0]
+	a[0].Data[0] = ^orig
+	if doc.Pictures()[0].Data[0] != orig {
+		t.Error("mutating returned Data corrupted a later Pictures() call")
 	}
 }
 

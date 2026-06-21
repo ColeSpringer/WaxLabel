@@ -88,7 +88,15 @@ type FamilyValue struct {
 // the native/dump views.
 type NativeEntry struct {
 	Kind string
+	// Size is a byte count by default, rendered with a binary unit (e.g. "57.2
+	// KiB"). When Unit is non-empty, Size is instead that many of Unit (a count or
+	// other non-byte quantity), rendered as "N <unit>" - so a count of pages,
+	// tags, or chapters is never mislabeled as bytes. A zero Size with no Unit
+	// renders blank (the block has no meaningful size, e.g. an EBML header).
 	Size int
+	// Unit names what Size counts when it is not bytes ("pages", "tags",
+	// "chapters"); empty means Size is a byte count.
+	Unit string
 	Note string
 }
 

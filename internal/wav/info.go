@@ -108,13 +108,19 @@ func infoRepresentable(ts tag.TagSet) bool {
 // mapped items are re-rendered from the edited set or dropped when their key is
 // now absent; keys newly present in the edited set are appended in the set's
 // order. Multi-value mapped keys (which also forced an id3 chunk) store their
-// first value here, INFO being single-valued.
-func rebuildInfo(orig []infoItem, edited tag.TagSet) []infoItem {
+// first value here, INFO being single-valued. When stripStamp is set, a
+// transcoder-stamp ISFT item (the WAV encoder leftover) is dropped rather than
+// preserved - the one removable native stamp a canonical ENCODER edit cannot reach
+// (E1); an emptied list then drops the LIST chunk via the caller's len check.
+func rebuildInfo(orig []infoItem, edited tag.TagSet, stripStamp bool) []infoItem {
 	out := make([]infoItem, 0, len(orig))
 	emitted := map[tag.Key]bool{}
 	for _, it := range orig {
 		key, ok := mapping.RIFFInfoKey(it.id4())
 		if !ok {
+			if stripStamp && isTranscoderISFT(it) {
+				continue // drop the inherited encoder stamp instead of preserving it
+			}
 			out = append(out, it) // unmapped: preserve the raw bytes verbatim
 			continue
 		}
@@ -177,16 +183,34 @@ func renderInfo(items []infoItem) []byte {
 	return out
 }
 
+// isTranscoderISFT reports whether it is an ISFT software item carrying an
+// inherited transcoder stamp ("Lavf..." from ffmpeg). It is the single predicate
+// shared by encoderNoise (which warns about it) and rebuildInfo (which drops it
+// under WithStripEncoderStamp), so the stamp the warning flags is exactly the one
+// the strip removes.
+func isTranscoderISFT(it infoItem) bool {
+	return it.id4() == "ISFT" && core.IsTranscoderStamp(it.text())
+}
+
+// hasTranscoderISFT reports whether items contains a strippable transcoder-stamp
+// ISFT. The WAV Plan uses it to know a strip would change the file, so a
+// WithStripEncoderStamp edit of an otherwise-unchanged file is not a no-op.
+func hasTranscoderISFT(items []infoItem) bool {
+	for _, it := range items {
+		if isTranscoderISFT(it) {
+			return true
+		}
+	}
+	return false
+}
+
 // encoderNoise flags an inherited transcoder stamp: the ISFT software item
 // ("Lavf..." from ffmpeg) is the WAV analogue of an "encoder=" comment.
 func encoderNoise(items []infoItem) []core.Warning {
 	var ws []core.Warning
 	for _, it := range items {
-		if it.id4() != "ISFT" {
-			continue
-		}
-		if v := it.text(); core.IsTranscoderStamp(v) {
-			ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder stamp: "+v)
+		if isTranscoderISFT(it) {
+			ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder stamp: "+it.text())
 		}
 	}
 	return ws

@@ -90,6 +90,11 @@ const (
 	// start time - navigation will land on only one. An edit-time sanity warning;
 	// the chapters are still written faithfully.
 	WarnDuplicateChapter
+	// WarnSingleValuedMulti means an edit leaves a known single-valued key holding
+	// more than one value. The writer stores them faithfully, but a reader using the
+	// typed projection sees only the first - so it is surfaced as a plan-time warning
+	// rather than written silently.
+	WarnSingleValuedMulti
 )
 
 func (c WarningCode) String() string {
@@ -136,6 +141,8 @@ func (c WarningCode) String() string {
 		return "chapter-past-duration"
 	case WarnDuplicateChapter:
 		return "duplicate-chapter"
+	case WarnSingleValuedMulti:
+		return "single-valued-multi"
 	default:
 		return "unknown"
 	}

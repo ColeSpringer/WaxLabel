@@ -110,6 +110,11 @@ func OpenSource(ctx context.Context, r io.Reader, opts ...ParseOption) (*Source,
 	if err := checkContext(ctx); err != nil {
 		return nil, err
 	}
+	// io.ReadAll(nil) panics; reject a nil reader with a clean error first, mirroring
+	// the context guard above and Parse's nil-source guard.
+	if r == nil {
+		return nil, fmt.Errorf("%w: nil reader", waxerr.ErrInvalidData)
+	}
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err

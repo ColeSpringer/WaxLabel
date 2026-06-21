@@ -70,8 +70,8 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// for a WebM file, so copy/PlanTransfer drops the cover). Both key on isWebM and
 	// must stay in sync.
 	if ch.pictures && isWebM(d.docType) {
-		return nil, fmt.Errorf("%w: cover art cannot be written to a WebM file (Attachments is not in the WebM subset)",
-			waxerr.ErrUnsupportedTag)
+		return nil, fmt.Errorf("%w: cover art cannot be written to %s WebM file (Attachments is not in the WebM subset)",
+			waxerr.ErrUnsupportedTag, core.IndefiniteArticle("WebM"))
 	}
 
 	// The segment title lives in Info.Title; a file with no Info element (Info is

@@ -58,6 +58,24 @@ func AverageBitrate(audioBytes int64, secs float64) int {
 	return 0
 }
 
+// SamplesToDuration converts a PCM sample count at rate Hz into a duration,
+// returning 0 for a non-positive rate and guarding the int64-nanosecond range
+// against a pathological count (a malformed file's huge declared sample total). It
+// is the single definition shared by every codec that derives a duration from a
+// sample count (MP3's VBR frame count, the AAC ADTS walk, Ogg's granule span), so
+// their degenerate-case handling cannot drift - the duration counterpart to
+// [AverageBitrate].
+func SamplesToDuration(samples uint64, rate int) time.Duration {
+	if rate <= 0 {
+		return 0
+	}
+	ns := float64(samples) / float64(rate) * float64(time.Second)
+	if ns < 0 || ns >= math.MaxInt64 {
+		return 0
+	}
+	return time.Duration(ns)
+}
+
 // CanonicalCodec splits a parser's raw codec name into the canonical,
 // container-neutral name and the container-specific profile detail. The canonical
 // name is what the same codec should read as in every container (so "mp4a",

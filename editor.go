@@ -31,11 +31,13 @@ type Editor struct {
 	addedMask       []bool
 	chapters        []core.Chapter
 	chaptersTouched bool
-	// chaptersCarried marks chapters set by a faithful carry (the transfer engine)
-	// rather than authored by this edit, so [Editor.Prepare] suppresses the
-	// edit-time chapter sanity warnings for them - copying a file should not warn
-	// about chapters the user authored none of.
-	chaptersCarried bool
+	// carried marks this editor as a faithful carry from a source (the transfer
+	// engine), not a user-authored edit, so [Editor.Prepare] suppresses the edit-time
+	// sanity warnings that flag authoring mistakes - the chapter past-duration /
+	// duplicate-start checks and the single-valued-multi note. Copying a file must not
+	// lecture about metadata the user authored none of (a source's own conflicting
+	// single-valued key, or its chapter timings).
+	carried bool
 }
 
 // Apply records an explicit patch (set/clear/add operations) after any already
@@ -148,6 +150,13 @@ func (e *Editor) Native() NativeEditor {
 func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	wo := resolveWriteOptions(opts)
 
+	// An editor from a zero-value Document (Document.Edit guards that case) has no
+	// base media to plan against; report it cleanly rather than deref a nil base
+	// below.
+	if e.base == nil {
+		return nil, fmt.Errorf("%w: document is not initialized; use ParseFile/Parse", waxerr.ErrInvalidData)
+	}
+
 	// Validate every key the edit touches before it can reach the native writer
 	// and corrupt on round-trip (e.g. a key containing '=').
 	for _, k := range e.patch.Keys() {
@@ -161,10 +170,19 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// copy here - which would duplicate every block body, including embedded
 	// cover art - is pure waste. Only the canonical tags (cloned by the patch)
 	// and the picture set are replaced.
+	editedTags := e.patch.Apply(e.base.Tags)
+	// Collapse any key left present with a zero-length value slice to absent before
+	// the codec plans or Changes() diffs: a Set/Add of no values on an absent key
+	// (or a clear-then-empty-add) leaves the key present-but-empty, which no codec
+	// persists - so without this the plan would diff a phantom add against an
+	// identical file, reporting a change and bumping mtime over bytes that never
+	// moved (#3). The scope is strictly zero-length: a present [""] (what `set KEY=`
+	// produces) is a distinct, CLI-reachable empty value and is left untouched.
+	dropEmptyValuedKeys(&editedTags)
 	edited := &core.Media{
 		Format:      e.base.Format,
 		Properties:  e.base.Properties,
-		Tags:        e.patch.Apply(e.base.Tags),
+		Tags:        editedTags,
 		Pictures:    e.base.Pictures,
 		Chapters:    e.base.Chapters,
 		Families:    e.base.Families,
@@ -211,8 +229,8 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// never fires.
 	if e.chaptersTouched && len(e.chapters) > 0 &&
 		codec.Capabilities(e.base, wo).Chapters.Write < core.AccessPartial {
-		return nil, fmt.Errorf("%w: chapters cannot be written to a %s file",
-			waxerr.ErrUnsupportedTag, e.base.Format)
+		return nil, fmt.Errorf("%w: chapters cannot be written to %s %s file",
+			waxerr.ErrUnsupportedTag, core.IndefiniteArticle(e.base.Format.String()), e.base.Format)
 	}
 	wp, err := codec.Plan(context.Background(), e.base, edited, wo)
 	if err != nil {
@@ -224,11 +242,50 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// introduces are checked - not the file's pre-existing chapters, which the CLI's
 	// --add-chapter merges into the SetChapters list (so warning about them would
 	// flag chapters the user never touched). A faithful carry (the transfer engine)
-	// authors nothing, so it suppresses these entirely via chaptersCarried.
-	if e.chaptersTouched && !e.chaptersCarried {
+	// authors nothing, so it suppresses these entirely via the carried flag.
+	if e.chaptersTouched && !e.carried {
 		wp.Report.Warnings = appendChapterWarnings(wp.Report.Warnings, e.chapters, e.base.Chapters, e.base.Properties.Duration())
 	}
+	// Surface a known single-valued key the edit leaves holding multiple values as a
+	// non-fatal plan warning, so a library caller sees the cardinality the typed
+	// projection would silently collapse to its first value (#17). It is computed off
+	// the same base->result diff Plan.Changes() exposes, so it names exactly the keys
+	// the CLI's --strict guardrail acts on - and lets the CLI drop its separate
+	// stderr note, reporting the signal once (now also in --json warnings). A faithful
+	// carry suppresses it (like the chapter checks): a copy must not flag the source's
+	// own conflicting single-valued key as if the user authored it.
+	if !e.carried {
+		wp.Report.Warnings = appendSingleValuedWarnings(wp.Report.Warnings, e.base.Tags, planResultTags(wp, edited))
+	}
 	return &Plan{doc: e.doc, plan: wp, opts: wo}, nil
+}
+
+// planResultTags returns the tag set the plan will write: the codec's computed
+// result when present, else the edited set (a NoOp plan may carry no result). It
+// is the same source [Plan.Changes] diffs against, so a warning derived from it
+// matches the plan's reported changes.
+func planResultTags(wp *core.WritePlan, edited *core.Media) tag.TagSet {
+	if wp.Result != nil {
+		return wp.Result.Tags
+	}
+	return edited.Tags
+}
+
+// appendSingleValuedWarnings adds a WarnSingleValuedMulti for every known
+// single-valued key the edit changes into holding more than one value. It diffs
+// base against the plan's result (so an unchanged pre-existing multi - already
+// reported by Lint - is not re-flagged here) and uses [tag.Key.SingleValuedMulti],
+// the shared cardinality predicate, so the library warning, the linter's finding,
+// and the CLI's --strict guardrail cannot disagree on the rule.
+func appendSingleValuedWarnings(ws []core.Warning, base, result tag.TagSet) []core.Warning {
+	for _, c := range tag.Diff(base, result) {
+		if c.Key.SingleValuedMulti(len(c.New)) {
+			ws = core.Warn(ws, core.WarnSingleValuedMulti, fmt.Sprintf(
+				"%s is single-valued but is being given %d values; the typed projection reads only the first",
+				c.Key, len(c.New)))
+		}
+	}
+	return ws
 }
 
 // appendChapterWarnings adds the non-fatal chapter sanity warnings for the
@@ -302,6 +359,21 @@ func validateAddedPictures(pics []core.Picture, addedMask []bool) error {
 		}
 	}
 	return nil
+}
+
+// dropEmptyValuedKeys removes every key that is present with a zero-length value
+// slice, making it absent. It is the [Editor.Prepare] normalization that keeps a
+// plan honest (see the call site): such a key is what an Add/Set of no values
+// against an absent key produces, and no codec stores it, so leaving it present
+// would make IsNoOp/Changes disagree with the bytes actually written. It is
+// scoped strictly to a zero-length slice - a present [""] (one empty string) is a
+// distinct, intentional state and is preserved.
+func dropEmptyValuedKeys(ts *tag.TagSet) {
+	for _, k := range ts.Keys() {
+		if vs, ok := ts.Get(k); ok && len(vs) == 0 {
+			ts.Delete(k)
+		}
+	}
 }
 
 // validatePictures enforces the single-icon rule: picture types 1 and 2 must

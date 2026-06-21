@@ -51,7 +51,7 @@ func WriteTo(w io.Writer, source ReaderAtSized) Destination {
 
 func (p *Plan) saveBack(ctx context.Context) (*Document, SaveResult, error) {
 	if p.doc.path == "" {
-		return nil, SaveResult{}, fmt.Errorf("%w: SaveBack needs a file; use SaveAsFile or WriteTo", waxerr.ErrUnsupportedFormat)
+		return nil, SaveResult{}, fmt.Errorf("%w: SaveBack needs a file; use SaveAsFile or WriteTo", waxerr.ErrNeedsFile)
 	}
 	src, err := openFileSource(p.doc.path)
 	if err != nil {

@@ -213,6 +213,18 @@ func (p TagPatch) Keys() []Key {
 	return out
 }
 
+// Touches reports whether the patch records any operation (set, clear, or add) on
+// key. It is the allocation-free membership test for "does this edit affect KEY?",
+// where [TagPatch.Keys] would build a slice and a dedup map just to be scanned.
+func (p TagPatch) Touches(key Key) bool {
+	for _, op := range p.ops {
+		if op.key == key {
+			return true
+		}
+	}
+	return false
+}
+
 // Append adds all of other's operations after this patch's, so other's edits
 // take effect later (and thus win on conflicts).
 func (p *TagPatch) Append(other TagPatch) {

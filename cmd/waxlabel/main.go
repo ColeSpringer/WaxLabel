@@ -25,12 +25,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/signal"
 	"syscall"
-
-	"github.com/colespringer/waxlabel/waxerr"
 )
 
 func main() {
@@ -86,7 +85,7 @@ func dispatch(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	// A command that already wrote its own output (e.g. dump emitting per-file
 	// error objects) carries an alreadyRenderedError: keep its exit class but do
 	// not render a second time.
-	if _, rendered := waxerr.AsType[*alreadyRenderedError](err); rendered {
+	if _, rendered := errors.AsType[*alreadyRenderedError](err); rendered {
 		return exitCodeFor(err)
 	}
 	// Route the terminal error to the right stream. Scan the raw args for --json

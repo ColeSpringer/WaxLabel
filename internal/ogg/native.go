@@ -115,7 +115,7 @@ func (d *doc) Describe() []core.NativeEntry {
 	for range d.pictures {
 		out = append(out, core.NativeEntry{Kind: "METADATA_BLOCK_PICTURE", Note: "embedded picture"})
 	}
-	out = append(out, core.NativeEntry{Kind: "audio pages", Size: len(d.audioPages)})
+	out = append(out, core.NativeEntry{Kind: "audio pages", Size: len(d.audioPages), Unit: "pages"})
 	if len(d.commentPad) > 0 {
 		out = append(out, core.NativeEntry{Kind: "comment padding", Size: len(d.commentPad), Note: "preserved"})
 	}

@@ -52,6 +52,11 @@ func Parse(ctx context.Context, src ReaderAtSized, opts ...ParseOption) (*Docume
 	if err := checkContext(ctx); err != nil {
 		return nil, err
 	}
+	// A nil source would panic on the first src.Size() in detection; reject it up
+	// front with a clean error, mirroring the context guard above.
+	if src == nil {
+		return nil, fmt.Errorf("%w: nil source", waxerr.ErrInvalidData)
+	}
 	return parseSource(ctx, src, "", resolveParseOptions(opts))
 }
 

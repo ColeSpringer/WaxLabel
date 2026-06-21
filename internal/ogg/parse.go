@@ -9,7 +9,6 @@ import (
 	"math"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
@@ -326,7 +325,7 @@ func (d *doc) properties(lastGranule uint64) core.Properties {
 			}
 		}
 		t.TotalSamples = lastGranule
-		t.Duration = samplesToDuration(lastGranule, t.SampleRate)
+		t.Duration = core.SamplesToDuration(lastGranule, t.SampleRate)
 	default: // Opus
 		// OpusHead(8) | version(1) | channels(1) | pre_skip(2) | input_rate(4) |
 		// output_gain(2) | mapping_family(1). Opus always decodes at 48 kHz; the
@@ -339,7 +338,7 @@ func (d *doc) properties(lastGranule uint64) core.Properties {
 		t.SampleRate = 48000
 		if lastGranule > preSkip {
 			t.TotalSamples = lastGranule - preSkip
-			t.Duration = samplesToDuration(t.TotalSamples, 48000)
+			t.Duration = core.SamplesToDuration(t.TotalSamples, 48000)
 		}
 	}
 	// A nominal bitrate from the Vorbis identification header wins; otherwise
@@ -352,17 +351,4 @@ func (d *doc) properties(lastGranule uint64) core.Properties {
 		t.Bitrate = core.AverageBitrate(audioBytes, t.Duration.Seconds())
 	}
 	return core.Properties{Container: "Ogg", Tracks: []core.AudioTrack{t}}
-}
-
-// samplesToDuration converts a sample count at rate into a duration, guarding
-// against a pathological count/rate overflowing time.Duration's int64 nanoseconds.
-func samplesToDuration(samples uint64, rate int) time.Duration {
-	if rate <= 0 {
-		return 0
-	}
-	ns := float64(samples) / float64(rate) * float64(time.Second)
-	if ns < 0 || ns >= math.MaxInt64 {
-		return 0
-	}
-	return time.Duration(ns)
 }

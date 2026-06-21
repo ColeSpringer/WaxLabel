@@ -1,8 +1,7 @@
-// Package waxerr defines the sentinel errors shared across WaxLabel and a
-// small generic helper for extracting typed errors from a wrapped chain.
+// Package waxerr defines the sentinel errors shared across WaxLabel.
 //
 // Sentinels are compared with [errors.Is]; richer errors that wrap a sentinel
-// (so callers can still match the category) are extracted with [AsType].
+// (so callers can still match the category) are extracted with [errors.AsType].
 package waxerr
 
 import "errors"
@@ -38,14 +37,9 @@ var (
 	ErrChainedStream = errors.New("chained stream")
 	// ErrInvalidKey means a canonical key failed validation.
 	ErrInvalidKey = errors.New("invalid tag key")
+	// ErrNeedsFile means a path-bound operation (SaveBack) was attempted on a
+	// document that has no file path - e.g. one from [Parse] or [OpenSource]. The
+	// format is fully supported; the caller must supply a destination that names a
+	// file (SaveAsFile) or a stream (WriteTo).
+	ErrNeedsFile = errors.New("operation needs a file path")
 )
-
-// AsType walks err's wrapped chain ([errors.As] semantics) and returns the
-// first error that is assignable to T, reporting whether one was found. It is
-// the typed counterpart to [errors.Is] for the structured errors WaxLabel
-// returns alongside the sentinels above.
-func AsType[T error](err error) (T, bool) {
-	var target T
-	ok := errors.As(err, &target)
-	return target, ok
-}

@@ -191,7 +191,11 @@ func EncoderNoise(vendor string, comments []Comment) []core.Warning {
 		ws = core.Warn(ws, core.WarnInheritedEncoder,
 			"transcoder stamp in vendor string and encoder comment: "+vendor)
 	case vendorStamp:
-		ws = core.Warn(ws, core.WarnInheritedEncoder, "vendor string is a transcoder stamp: "+vendor)
+		// Name the field explicitly: dump shows the ENCODER *tag* (e.g. "Lavc..."),
+		// while this stamp is the container *vendor string* (never a tag), so without
+		// the distinction the warning reads as contradicting the displayed ENCODER.
+		ws = core.Warn(ws, core.WarnInheritedEncoder,
+			"container vendor string (distinct from the ENCODER tag) is a transcoder stamp: "+vendor)
 	}
 	for _, cm := range comments {
 		if !strings.EqualFold(cm.Name, "ENCODER") || !core.IsTranscoderStamp(cm.Value) {

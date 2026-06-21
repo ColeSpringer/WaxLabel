@@ -5,10 +5,11 @@
 // frames, with no MPEG framing layer and no trailing legacy containers. The
 // ID3v2 tag is the sole writable store; the audio is copied verbatim.
 //
-// Only the first ADTS frame header is parsed, for the stream configuration
-// (object type, sample rate, channels) and a cheap duration estimate; an exact
-// duration would require walking every frame's length, the per-frame essence
-// read a metadata library avoids (see parse.go).
+// The first ADTS frame header gives the stream configuration (object type, sample
+// rate, channels). ADTS carries no frame-count header, so an accurate duration and
+// average bitrate come from a bounded walk of the frame headers - advancing by each
+// frame_length to sum the sample count, reading only headers and never the essence
+// payloads (see parse.go).
 //
 // The codec is reimplemented from the MPEG-2/4 AAC ADTS and ID3 specifications;
 // reference implementations were consulted for design only.

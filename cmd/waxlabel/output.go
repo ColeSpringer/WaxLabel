@@ -430,7 +430,7 @@ func classifyError(err error) classifiedError {
 		c.exitCode, c.code, c.message = 130, "timeout", "operation timed out"
 	case isUsageError(err):
 		c.exitCode, c.code = 2, "usage"
-		if ue, ok := waxerr.AsType[*usageError](err); ok {
+		if ue, ok := errors.AsType[*usageError](err); ok {
 			c.multiline = ue.multiline
 			if ue.wantsHint {
 				name := ue.cmd
@@ -442,6 +442,11 @@ func classifyError(err error) classifiedError {
 		}
 	case errors.Is(err, waxerr.ErrInvalidKey):
 		c.exitCode, c.code = 2, "invalid-key"
+	case errors.Is(err, waxerr.ErrNeedsFile):
+		// A path-less SaveBack: the format is supported, so this is a usage error
+		// (exit 2), not unsupported-format. The CLI always has a path, so it surfaces
+		// only for a direct library caller via the JSON/text error envelope.
+		c.exitCode, c.code = 2, "needs-file"
 	case errors.Is(err, waxerr.ErrUnsupportedFormat):
 		c.exitCode, c.code = 3, "unsupported-format"
 	case errors.Is(err, waxerr.ErrUnsupportedTag):
@@ -466,7 +471,7 @@ func classifyError(err error) classifiedError {
 }
 
 func isUsageError(err error) bool {
-	_, ok := waxerr.AsType[*usageError](err)
+	_, ok := errors.AsType[*usageError](err)
 	return ok
 }
 
@@ -493,6 +498,7 @@ var errClassRank = map[string]int{
 	"not-found":          55,  // exit 6: a wrong path
 	"usage":              20,  // exit 2: a bad invocation
 	"invalid-key":        20,  // exit 2
+	"needs-file":         20,  // exit 2: a path-less SaveBack (library callers)
 	"error":              10,  // exit 1: the unclassified fallback
 }
 
@@ -527,13 +533,13 @@ func isNotFoundPathError(err error) bool {
 // the atomic save-back's os.Rename returns *os.LinkError; lower-level syscall
 // wrappers return *os.SyscallError. All map to the "io" exit class.
 func isLocalIOError(err error) bool {
-	if _, ok := waxerr.AsType[*fs.PathError](err); ok {
+	if _, ok := errors.AsType[*fs.PathError](err); ok {
 		return true
 	}
-	if _, ok := waxerr.AsType[*os.LinkError](err); ok {
+	if _, ok := errors.AsType[*os.LinkError](err); ok {
 		return true
 	}
-	if _, ok := waxerr.AsType[*os.SyscallError](err); ok {
+	if _, ok := errors.AsType[*os.SyscallError](err); ok {
 		return true
 	}
 	return false

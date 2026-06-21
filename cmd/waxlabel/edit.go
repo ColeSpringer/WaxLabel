@@ -307,6 +307,14 @@ func (e *editFlags) compile(extra ...wl.WriteOption) (*compiledEdit, error) {
 	if err != nil {
 		return nil, err
 	}
+	// When the edit touches ENCODER (--set/--clear/--add ENCODER, or --strip-encoder,
+	// which all land as an op on the key), also strip a removable inherited encoder
+	// stamp held in a native field no canonical edit reaches - the WAV ISFT. This
+	// drops the transcoder leftover and prevents a split-brain (a fresh id3 ENCODER
+	// beside a surviving ISFT=Lavf); codecs without such a stamp ignore the option.
+	if patch.Touches(tag.Encoder) {
+		opts = append(opts, wl.WithStripEncoderStamp())
+	}
 	covers, err := e.loadCovers()
 	if err != nil {
 		return nil, err
@@ -506,34 +514,28 @@ func singleValuedViolations(plan *wl.Plan) []tag.Key {
 }
 
 // singleValuedNotifier applies the per-file single-valued-multi guardrail for plan
-// and set, holding the run-wide dedup set so each offending key is reported once
-// across every file - a --recursive walk of 500 files notes ENCODER once, not 500
-// times. It is the per-file counterpart to notifyUnknownKeys.
+// and set. Post-#17 the human signal lives on the plan report (the library attaches
+// a single-valued-multi warning in Editor.Prepare, which plan/set already render in
+// text and JSON), so this no longer prints its own stderr note - it owns only the
+// --strict gate, failing an offending file at exit 2. It is the per-file
+// counterpart to notifyUnknownKeys.
 type singleValuedNotifier struct {
 	strict bool
 	asJSON bool
-	errOut io.Writer
-	noted  map[tag.Key]bool
 }
 
-func newSingleValuedNotifier(strict, asJSON bool, errOut io.Writer) *singleValuedNotifier {
-	return &singleValuedNotifier{strict: strict, asJSON: asJSON, errOut: errOut, noted: map[tag.Key]bool{}}
+func newSingleValuedNotifier(strict, asJSON bool) *singleValuedNotifier {
+	return &singleValuedNotifier{strict: strict, asJSON: asJSON}
 }
 
 // check inspects one file's plan: under strict a violation is a usage error (so
-// the caller fails that file, exit 2); otherwise each newly-seen offending key is
-// noted on stderr (text-only, suppressed in JSON). It returns nil when the plan is
-// within cardinality, or after only printing notes.
+// the caller fails that file, exit 2); otherwise it is a no-op here (the plan
+// report carries the warning for the human and JSON output). It returns nil when
+// the plan is within cardinality or strict is off.
 func (n *singleValuedNotifier) check(plan *wl.Plan) error {
-	note, err := guardrailKeys(singleValuedViolations(plan), n.strict, n.asJSON, func(ks []tag.Key) error {
+	_, err := guardrailKeys(singleValuedViolations(plan), n.strict, n.asJSON, func(ks []tag.Key) error {
 		return usagef("%s is single-valued but given multiple values (omit --strict to write them anyway)", keyList(ks))
 	})
-	for _, k := range note {
-		if !n.noted[k] {
-			n.noted[k] = true
-			fmt.Fprintf(n.errOut, "note: %s is single-valued but is being given multiple values\n", k)
-		}
-	}
 	return err
 }
 

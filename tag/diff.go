@@ -4,6 +4,8 @@ import (
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/colespringer/waxlabel/internal/bits"
 )
 
 // ChangeKind names how one key differs between two tag sets.
@@ -109,17 +111,47 @@ func (c Change) String() string {
 }
 
 // joinChangeValues renders a key's values for a change line: the empty case as
-// "(present, no value)", otherwise each value escaped for a single-line row via
-// [SanitizeLine] and joined with " | ".
+// "(present, no value)", otherwise each value elided for display ([ElideValue])
+// then escaped for a single-line row via [SanitizeLine] and joined with " | ". A
+// machine consumer reads the exact values from [Change.Old]/[Change.New].
 func joinChangeValues(vals []string) string {
 	if len(vals) == 0 {
 		return "(present, no value)"
 	}
 	out := make([]string, len(vals))
 	for i, v := range vals {
-		out[i] = SanitizeLine(v)
+		out[i] = SanitizeLine(ElideValue(v))
 	}
 	return strings.Join(out, " | ")
+}
+
+// maxDisplayValueBytes bounds how much of a single tag value a human-facing
+// renderer prints. A value at or under this length prints in full; a longer one is
+// elided to a prefix plus a length hint, so a pathological value (a 100k-character
+// comment glued into a file) cannot flood the terminal. It is generous enough that
+// normal values - even long lyrics or comments - print whole; only an abnormally
+// large value elides. The structured accessors ([Change.Old]/[Change.New],
+// [TagSet]) and --json keep the exact bytes, so a script always sees the full value.
+const maxDisplayValueBytes = 4096
+
+// ElideValue returns v shortened for human display when it exceeds
+// maxDisplayValueBytes: the first maxDisplayValueBytes bytes (trimmed back to a
+// UTF-8 rune boundary) followed by an ellipsis and a hint naming the elided
+// remainder, e.g. "…[+94.0 KiB]". A value within the limit is returned unchanged.
+// It is the single elision shared by the change-line formatter ([Change.String])
+// and the CLI's tag/dump renderers, so they cannot disagree on the threshold or the
+// hint; a caller needing the exact value reads it from the structured fields. It is
+// applied before sanitizing, so the hint and the boundary are computed on the real
+// value, and the caller's [SanitizeLine]/[SanitizeText] then escapes the result.
+func ElideValue(v string) string {
+	if len(v) <= maxDisplayValueBytes {
+		return v
+	}
+	keep := maxDisplayValueBytes
+	for keep > 0 && !utf8.RuneStart(v[keep]) {
+		keep-- // back up off a UTF-8 continuation byte so the prefix ends on a rune
+	}
+	return v[:keep] + "…[+" + bits.HumanBytes(int64(len(v)-keep)) + "]"
 }
 
 // SanitizeText returns s with control and non-printable bytes rendered as

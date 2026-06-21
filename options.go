@@ -62,6 +62,25 @@ func WithUnrecognizedPictures() WriteOption {
 	return func(o *core.WriteOptions) { o.AllowUnrecognizedPictures = true }
 }
 
+// WithStripEncoderStamp asks the writer to drop a removable inherited
+// transcoder/encoder stamp that lives in a native field no canonical-tag edit can
+// reach - today the WAV ISFT INFO item (e.g. ffmpeg's "Lavf..."), dropped only
+// when it [IsTranscoderStamp]. Other codecs ignore it: the Ogg/Opus/FLAC vendor
+// string is a mandatory codec field, reported but never overwritten. Pair it with
+// clearing or setting [tag.Encoder] so a WAV's stamp does not survive the edit.
+func WithStripEncoderStamp() WriteOption {
+	return func(o *core.WriteOptions) { o.StripEncoderStamp = true }
+}
+
+// WithWebMSubset narrows a file-less Matroska [CapabilitiesFor] query to the WebM
+// subset, which excludes cover-art attachments - so the format-level answer for
+// "webm" reports picture write as unsupported, matching what [Document.Capabilities]
+// reports for a parsed .webm file. It affects only the Matroska capability query;
+// every other codec ignores it, and it has no effect on a write.
+func WithWebMSubset() WriteOption {
+	return func(o *core.WriteOptions) { o.WebMSubset = true }
+}
+
 // WithID3MultiValue selects how multiple values for one field are stored in an
 // ID3v2.3 tag, which has no standard multi-value text form. ID3v2.4 always
 // NUL-separates regardless; the v2.3 compatibility impact is flagged in the

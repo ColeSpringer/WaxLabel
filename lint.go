@@ -61,6 +61,9 @@ func (f Finding) String() string {
 // several values, and custom (non-vocabulary) keys. It reads only the parsed
 // document (no I/O) and never modifies it.
 func (d *Document) Lint() []Finding {
+	if d.zero() {
+		return nil
+	}
 	var out []Finding
 
 	out = append(out, lintWarnings(d.media.Warnings)...)
@@ -95,16 +98,22 @@ func lintWarnings(ws []core.Warning) []Finding {
 }
 
 // lintFamilies reports canonical keys whose source fields disagree (a value was
-// not selected because multiple native fields supplied conflicting values).
+// not selected because multiple native fields supplied conflicting values). A key
+// is reported once even when several of its family entries are unselected: one
+// conflict per key, so a consumer counting findings does not double-count a single
+// disagreement (the parse warning already surfaces it once).
 func lintFamilies(fams []core.FamilyValue) []Finding {
 	var out []Finding
+	seen := map[tag.Key]bool{}
 	for _, f := range fams {
-		if !f.Selected {
-			out = append(out, Finding{
-				LintWarning, "conflicting-families",
-				"multiple source fields supplied conflicting values", f.Key,
-			})
+		if f.Selected || seen[f.Key] {
+			continue
 		}
+		seen[f.Key] = true
+		out = append(out, Finding{
+			LintWarning, "conflicting-families",
+			"multiple source fields supplied conflicting values", f.Key,
+		})
 	}
 	return out
 }

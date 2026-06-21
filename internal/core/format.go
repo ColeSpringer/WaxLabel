@@ -52,6 +52,21 @@ func (f Format) String() string {
 	}
 }
 
+// DefaultID3Version returns the ID3v2 minor version a freshly created id3 tag uses
+// for format f - the from-scratch default only, since a file with an existing id3
+// tag keeps that tag's own version. MP3 defaults to v2.3: id3 is its primary tag and
+// a real ecosystem of legacy hardware players reads it directly and handles v2.3 most
+// reliably. Every other id3-bearing format - raw AAC, and the id3 chunk embedded in
+// WAV/AIFF - is read only by modern software, so it defaults to v2.4 (UTF-8, lossless
+// multi-value). This is the single place the per-format choice lives, so the codecs
+// cannot drift; NewEmpty clamps any other value to a valid one.
+func DefaultID3Version(f Format) byte {
+	if f == FormatMP3 {
+		return 3
+	}
+	return 4
+}
+
 // Implemented reports whether this version can parse the format at all.
 func (f Format) Implemented() bool {
 	switch f {

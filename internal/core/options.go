@@ -150,6 +150,19 @@ type WriteOptions struct {
 	// HEIC/AVIF/JXL cover, or a transfer carrying an already-embedded one) is embedded
 	// rather than rejected. Off by default: a junk or empty picture is refused.
 	AllowUnrecognizedPictures bool
+	// StripEncoderStamp asks the writer to drop a removable inherited
+	// transcoder/encoder stamp held in a native field that no canonical-tag edit can
+	// reach. Today only the WAV codec honors it, dropping a transcoder-stamp ISFT
+	// INFO item (gated on IsTranscoderStamp); the mandatory Ogg/Opus/FLAC vendor
+	// string is a codec field and is never removed. Off by default (preserve
+	// verbatim); the CLI sets it whenever an edit clears, sets, or strips ENCODER.
+	StripEncoderStamp bool
+	// WebMSubset narrows a file-less Matroska capability query to the WebM subset, so
+	// the format-level question ("what can a .webm hold?") reports cover-art write as
+	// unsupported - the same restriction the Matroska codec applies to a parsed WebM
+	// file, reused here so the file-aware and file-less views cannot drift. Only the
+	// Matroska Capabilities path consults it; every other codec ignores it.
+	WebMSubset bool
 }
 
 // DefaultWriteOptions returns the preservation-first defaults.

@@ -216,9 +216,12 @@ func TestParseFormat(t *testing.T) {
 		{"mka", "Matroska"},
 		{"mkv", "Matroska"},
 		{"matroska", "Matroska"},
+		// "webm" resolves to Matroska (its container) under the WebM subset option, so
+		// caps --format webm describes the cover-refusing variant (see TestCapsFormatWebM).
+		{"webm", "Matroska"},
 	}
 	for _, c := range cases {
-		f, ok := parseFormat(c.in)
+		f, _, ok := parseFormat(c.in)
 		if !ok {
 			t.Errorf("parseFormat(%q) failed", c.in)
 			continue
@@ -227,11 +230,7 @@ func TestParseFormat(t *testing.T) {
 			t.Errorf("parseFormat(%q) = %q, want %q", c.in, f.String(), c.want)
 		}
 	}
-	// "webm" is rejected at the format level: it is a per-file subset of Matroska
-	// whose cover-write restriction cannot be answered without the file.
-	for _, bad := range []string{"nonsense", "webm"} {
-		if _, ok := parseFormat(bad); ok {
-			t.Errorf("parseFormat(%q) should fail", bad)
-		}
+	if _, _, ok := parseFormat("nonsense"); ok {
+		t.Error(`parseFormat("nonsense") should fail`)
 	}
 }

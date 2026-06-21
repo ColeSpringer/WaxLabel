@@ -185,6 +185,7 @@ const (
 	WarnTruncatedAudio        = core.WarnTruncatedAudio
 	WarnChapterPastDuration   = core.WarnChapterPastDuration
 	WarnDuplicateChapter      = core.WarnDuplicateChapter
+	WarnSingleValuedMulti     = core.WarnSingleValuedMulti
 )
 
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated

@@ -2,8 +2,7 @@ package aac
 
 import (
 	"context"
-	"math"
-	"time"
+	"io"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
@@ -46,7 +45,11 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		if head, err := bits.ReadSlice(src, d.audioStart, int64(adtsHeaderSize), limit); err == nil {
 			if h, ok := decodeADTS(head); ok {
 				d.header = h
-				d.track = buildTrack(h, avail)
+				samples, audioBytes, err := totalADTSSamples(ctx, src, d.audioStart, d.audioEnd)
+				if err != nil {
+					return nil, err
+				}
+				d.track = buildTrack(h, samples, audioBytes)
 			}
 		}
 	}
@@ -80,36 +83,112 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	return media, nil
 }
 
-// samplesPerAACFrame is the PCM sample count an AAC-LC frame decodes to. SBR
-// (HE-AAC) doubles the output rate, but the raw frame still carries this many
-// samples at the signaled rate, which is what the cheap estimate uses.
+// samplesPerAACFrame is the PCM sample count one AAC-LC raw data block decodes to.
+// SBR (HE-AAC) doubles the output rate, but the raw block still carries this many
+// samples at the signaled rate. An ADTS frame holds rawBlocks+1 such blocks.
 const samplesPerAACFrame = 1024
 
-// buildTrack assembles the audio properties from the first ADTS frame. The
-// duration is a deliberate cheap estimate - the stream size divided by the first
-// frame's bitrate - not an O(frames) walk of every ADTS frame_length, which is
-// exactly the per-frame essence read a metadata read must avoid. It is therefore
-// approximate for variable-bitrate streams (the first frame may not be
-// representative), which is an accepted trade-off, not a bug.
-func buildTrack(h adtsHeader, audioBytes int64) core.AudioTrack {
+// adtsScanChunk bounds each read of the frame walk. ADTS frames are at most 8191
+// bytes, so a 64 KiB window always holds at least one whole frame plus the next
+// header; the buffer is reused across reads, so the walk allocates it once (not per
+// frame).
+const adtsScanChunk = 64 << 10
+
+// buildTrack assembles the audio properties from the first ADTS frame's static
+// config plus the true sample count and byte span from [totalADTSSamples]. The
+// duration is the counted samples over the sample rate, and the average bitrate is
+// audioBytes (the walked frames' span, not the raw region to EOF) over that
+// duration - so both use one consistent extent and the result is accurate on a
+// variable-bitrate stream, where the former first-frame estimate (one frame's size
+// taken as representative) was off by tens of percent. ADTS carries no frame-count
+// header, so this accuracy needs the O(frames) header walk; there is no Xing-style
+// shortcut. A stream too short to hold one whole frame yields zero samples and so a
+// zero duration/bitrate (the honest answer for an unplayable fragment).
+func buildTrack(h adtsHeader, totalSamples uint64, audioBytes int64) core.AudioTrack {
 	t := core.AudioTrack{
 		Codec:      aotName(h.objectType),
 		SampleRate: h.sampleRate,
 		Channels:   h.channels,
 	}
-	if h.sampleRate <= 0 || h.frameLength <= 0 || audioBytes <= 0 {
+	if h.sampleRate <= 0 || totalSamples == 0 {
 		return t
 	}
-	// First-frame bitrate: frameLength bytes carry samplesPerAACFrame samples, so
-	// bitrate = frameLength*8 / (samplesPerAACFrame / sampleRate).
-	t.Bitrate = int(math.Round(float64(h.frameLength) * 8 * float64(h.sampleRate) / float64(samplesPerAACFrame)))
-	if t.Bitrate <= 0 {
-		return t
-	}
-	secs := float64(audioBytes) * 8 / float64(t.Bitrate)
-	if secs > 0 && secs < float64(math.MaxInt64)/float64(time.Second) {
-		t.Duration = time.Duration(secs * float64(time.Second))
-		t.TotalSamples = uint64(secs * float64(h.sampleRate))
-	}
+	t.TotalSamples = totalSamples
+	t.Duration = core.SamplesToDuration(totalSamples, h.sampleRate)
+	t.Bitrate = core.AverageBitrate(audioBytes, t.Duration.Seconds())
 	return t
+}
+
+// totalADTSSamples walks the ADTS frames in [start, end), returning both the true
+// sample count and the byte span of the frames it counted - the basis for an
+// accurate duration and an average bitrate over the *same* extent, since a VBR ADTS
+// stream has no frame-count header to read. Each frame contributes
+// samplesPerAACFrame*(rawBlocks+1) samples (AAC-LC's 1024 per raw data block, 1..4
+// blocks per frame); AAC-LD's 512-sample frames are an unhandled rarity and would
+// read about twice as long. It reads only frame headers - advancing by frame_length
+// skips every payload - in windows reused across iterations, so it never reads
+// essence twice and allocates nothing per frame.
+//
+// The returned audioBytes counts only the whole frames walked, so a trailing
+// non-ADTS region (none is expected in raw ADTS, but a stray tail would otherwise
+// inflate the bitrate) is excluded and the duration/bitrate use one consistent
+// extent. The walk stops at the first header that does not decode or a frame that
+// would run past end (a truncated tail), counting only whole frames. Because it is
+// O(frames) it honors ctx cancellation once per window (a cancelled walk fails the
+// parse rather than returning a short count), and it propagates a genuine read error
+// rather than swallowing it as a benign EOF - matching the per-loop ctx/error
+// handling the other codecs use.
+func totalADTSSamples(ctx context.Context, src core.ReaderAtSized, start, end int64) (samples uint64, audioBytes int64, err error) {
+	// Size the scratch window to the audio extent, capped at adtsScanChunk: a short
+	// clip needs no full 64 KiB buffer, and the cap never falls below the 8191-byte
+	// max frame (extents below it are read whole, so no frame straddles a refill).
+	bufSize := end - start
+	if bufSize > adtsScanChunk {
+		bufSize = adtsScanChunk
+	}
+	buf := make([]byte, bufSize)
+	for off := start; off+int64(adtsHeaderSize) <= end; {
+		if e := ctx.Err(); e != nil {
+			return 0, 0, e
+		}
+		n := end - off
+		if n > int64(len(buf)) {
+			n = int64(len(buf))
+		}
+		got, rerr := src.ReadAt(buf[:n], off)
+		// ReadAt returns a non-nil error whenever got < len(p), and may return io.EOF
+		// even on a full read that ends exactly at EOF. A short read here means the
+		// source no longer holds the bytes the audio region claimed (a concurrent
+		// truncate) and a non-EOF error is a genuine I/O failure: surface it rather
+		// than report a silently short sample count. A full read that merely touched
+		// EOF (got == n) is benign and stops the walk below.
+		if rerr != nil && rerr != io.EOF {
+			return 0, 0, rerr
+		}
+		window := buf[:got]
+		p := 0
+		for p+adtsHeaderSize <= len(window) {
+			h, ok := decodeADTS(window[p:])
+			if !ok {
+				return samples, audioBytes, nil // corrupt/foreign bytes: stop at the last good frame
+			}
+			if off+int64(p)+int64(h.frameLength) > end {
+				return samples, audioBytes, nil // frame runs past the audio region: truncated tail
+			}
+			samples += uint64(samplesPerAACFrame * (h.rawBlocks + 1))
+			audioBytes += int64(h.frameLength)
+			p += h.frameLength
+			if p+adtsHeaderSize > len(window) {
+				break // next header straddles the window (or the body did): refill from off+p
+			}
+		}
+		if p == 0 {
+			break // no whole frame fit the window / nothing read: do not spin
+		}
+		off += int64(p)
+		if rerr != nil {
+			break // benign EOF reached after consuming the whole frames already read
+		}
+	}
+	return samples, audioBytes, nil
 }

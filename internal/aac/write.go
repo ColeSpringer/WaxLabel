@@ -34,11 +34,11 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
-	// Choose the ID3v2 version (preserve the source's; v2.4 for a brand-new tag,
-	// the modern default for raw AAC) and rebuild the frame list.
+	// Choose the ID3v2 version (preserve the source's; the format default for a
+	// brand-new tag) and rebuild the frame list.
 	srcTag := d.id3
 	if srcTag == nil {
-		srcTag = id3.NewEmpty(4)
+		srcTag = id3.NewEmpty(core.DefaultID3Version(core.FormatAAC))
 	}
 	version := srcTag.WriteVersion()
 	newFrames, info := id3.RebuildFrames(srcTag.Frames(), base.Tags, edited.Tags, version,

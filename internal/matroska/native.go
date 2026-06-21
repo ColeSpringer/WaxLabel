@@ -209,7 +209,9 @@ func (d *doc) Describe() []core.NativeEntry {
 	}
 	out = append(out, core.NativeEntry{Kind: "EBML", Note: "DocType " + dt})
 	if d.segTitle != "" {
-		out = append(out, core.NativeEntry{Kind: "Info.Title", Size: len(d.segTitle), Note: d.segTitle})
+		// No Size: the Note already shows the title verbatim, so its char-length would
+		// be a redundant (and bytes-mislabeled) column.
+		out = append(out, core.NativeEntry{Kind: "Info.Title", Note: d.segTitle})
 	}
 	for _, g := range d.groups {
 		tt := g.targetType
@@ -219,7 +221,8 @@ func (d *doc) Describe() []core.NativeEntry {
 		out = append(out, core.NativeEntry{
 			Kind: "Tag",
 			Size: len(g.tags),
-			Note: fmt.Sprintf("scope=%s target=%s (%d simple tags)", g.scope, tt, len(g.tags)),
+			Unit: "tags",
+			Note: fmt.Sprintf("scope=%s target=%s", g.scope, tt),
 		})
 		for _, st := range g.tags {
 			out = append(out, describeSimpleTag(st, "  ")...)
@@ -234,11 +237,11 @@ func (d *doc) Describe() []core.NativeEntry {
 	}
 	if cd := d.chapters; cd != nil && cd.defIdx >= 0 {
 		ed := cd.editions[cd.defIdx]
-		note := fmt.Sprintf("default edition, %d chapters", len(ed.uids))
+		note := "default edition"
 		if len(cd.editions) > 1 {
 			note += fmt.Sprintf(" (%d editions total)", len(cd.editions))
 		}
-		out = append(out, core.NativeEntry{Kind: "Chapters", Size: len(ed.uids), Note: note})
+		out = append(out, core.NativeEntry{Kind: "Chapters", Size: len(ed.uids), Unit: "chapters", Note: note})
 	}
 	return out
 }

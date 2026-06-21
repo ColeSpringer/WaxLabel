@@ -18,6 +18,9 @@ import (
 // destination is an error. Use [Document.PrepareTransfer] when you have an actual
 // destination file and want an executable plan as well.
 func (d *Document) PlanTransfer(dst Format, opts ...WriteOption) (TransferReport, error) {
+	if d.zero() {
+		return TransferReport{}, fmt.Errorf("%w: document is not initialized; use ParseFile/Parse", waxerr.ErrInvalidData)
+	}
 	codec, ok := core.ForFormat(dst)
 	if !ok {
 		return TransferReport{}, fmt.Errorf("%w: %s", waxerr.ErrUnsupportedFormat, dst)
@@ -54,11 +57,18 @@ func (d *Document) PlanTransfer(dst Format, opts ...WriteOption) (TransferReport
 // likewise for chapters; destination keys the source does not carry are kept. dst
 // is not modified - only [Plan.Execute] writes.
 func (d *Document) PrepareTransfer(dst *Document, opts ...WriteOption) (*Plan, TransferReport, error) {
+	if d.zero() || dst.zero() {
+		return nil, TransferReport{}, fmt.Errorf("%w: document is not initialized; use ParseFile/Parse", waxerr.ErrInvalidData)
+	}
 	caps := dst.Capabilities(opts...)
 	items := core.ProjectTransfer(d.media, caps)
 	report := TransferReport{Source: d.media.Format, Dest: dst.media.Format, Items: items}
 
 	ed := dst.Edit()
+	// The whole transfer is a faithful carry from the source, not a user-authored
+	// edit, so suppress the edit-time sanity warnings (chapter past-duration/duplicate,
+	// single-valued-multi): a copy must not flag metadata the user authored none of.
+	ed.carried = true
 	for _, it := range items {
 		if it.Disposition == Dropped {
 			continue
@@ -75,10 +85,6 @@ func (d *Document) PrepareTransfer(dst *Document, opts ...WriteOption) (*Plan, T
 			}
 		case core.TransferChapter:
 			ed.SetChapters(core.CloneChapters(d.media.Chapters)...)
-			// These chapters are carried verbatim from the source, not authored by a
-			// user edit, so suppress the edit-time chapter sanity warnings: a faithful
-			// copy must not flag the source's own past-duration or duplicate starts.
-			ed.chaptersCarried = true
 		}
 	}
 

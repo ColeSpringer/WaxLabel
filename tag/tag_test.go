@@ -167,6 +167,22 @@ func TestTagPatchApply(t *testing.T) {
 	}
 }
 
+func TestTagPatchTouches(t *testing.T) {
+	var p TagPatch
+	p.Set(Title, "x").Clear(Genre).Add(Artist, "y")
+	for _, k := range []Key{Title, Genre, Artist} {
+		if !p.Touches(k) {
+			t.Errorf("Touches(%s) = false, want true (set/clear/add all count)", k)
+		}
+	}
+	if p.Touches(Album) {
+		t.Error("Touches(Album) = true, want false (untouched key)")
+	}
+	if (TagPatch{}).Touches(Title) {
+		t.Error("an empty patch should touch nothing")
+	}
+}
+
 func TestTagPatchLastWins(t *testing.T) {
 	var p TagPatch
 	p.Set(Title, "first").Set(Title, "second")

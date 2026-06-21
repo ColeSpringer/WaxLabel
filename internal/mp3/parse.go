@@ -142,7 +142,7 @@ func buildTrack(info mpegInfo, audioBytes int64) core.AudioTrack {
 	switch {
 	case info.vbrFrames > 0 && info.sampleRate > 0:
 		t.TotalSamples = uint64(info.vbrFrames) * uint64(info.samplesPerFrame)
-		t.Duration = samplesToDuration(t.TotalSamples, info.sampleRate)
+		t.Duration = core.SamplesToDuration(t.TotalSamples, info.sampleRate)
 		t.Bitrate = core.AverageBitrate(audioBytes, t.Duration.Seconds())
 	case info.frameBitrate > 0:
 		t.Bitrate = info.frameBitrate
@@ -155,19 +155,6 @@ func buildTrack(info mpegInfo, audioBytes int64) core.AudioTrack {
 		}
 	}
 	return t
-}
-
-// samplesToDuration converts a sample count at rate into a duration, guarding the
-// int64-nanosecond range against a pathological count.
-func samplesToDuration(samples uint64, rate int) time.Duration {
-	if rate <= 0 {
-		return 0
-	}
-	ns := float64(samples) / float64(rate) * float64(time.Second)
-	if ns < 0 || ns >= math.MaxInt64 {
-		return 0
-	}
-	return time.Duration(ns)
 }
 
 // legacyFamilies builds family/source entries for the trailing ID3v1 and APEv2

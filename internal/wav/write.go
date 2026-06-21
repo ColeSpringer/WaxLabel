@@ -48,12 +48,17 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures)
 	// LegacyStrip consolidates tags into the id3 chunk by dropping LIST/INFO.
 	stripINFO := opts.Legacy == core.LegacyStrip && infoPresent
+	// A WithStripEncoderStamp edit removes a transcoder-stamp ISFT that no canonical
+	// tag edit reaches (E1). It is a real change even when the canonical tags are
+	// untouched (the #2 repro: a WAV carrying only an inherited ISFT), so it must
+	// defeat the no-op fast path below and force an INFO rewrite.
+	stampToStrip := opts.StripEncoderStamp && infoPresent && hasTranscoderISFT(d.info)
 
 	report := core.WriteReport{Format: core.FormatWAV, BytesBefore: edited.Identity.Size}
 
 	// Fast path: nothing changed. NoOpPlan emits a verbatim copy (so SaveAsFile/
 	// WriteTo still produce a whole file) flagged NoOp so SaveBack skips it.
-	if !tagsChanged && !picturesChanged && !stripINFO {
+	if !tagsChanged && !picturesChanged && !stripINFO && !stampToStrip {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
@@ -64,7 +69,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// Build the new INFO items (synced to the edited set; unmapped items kept).
 	var newInfo []infoItem
 	if writeINFO {
-		newInfo = rebuildInfo(d.info, edited.Tags)
+		newInfo = rebuildInfo(d.info, edited.Tags, opts.StripEncoderStamp)
 	}
 
 	// Build the new id3 tag. When no id3 existed, the rewrite base is empty so the
@@ -75,7 +80,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	if needID3 {
 		srcTag := d.id3
 		if srcTag == nil {
-			srcTag = id3.NewEmpty(3)
+			srcTag = id3.NewEmpty(core.DefaultID3Version(core.FormatWAV))
 		}
 		version := srcTag.WriteVersion()
 		id3Base := base.Tags
@@ -103,6 +108,11 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		return nil, err
 	}
 	report.Operations = ops
+	if stampToStrip {
+		// Surface the strip even when it empties the LIST (which records no rewrite op),
+		// so a plan that only drops the stamp is not reported as a contentless rewrite.
+		report.Operations = append(report.Operations, "ISFT encoder stamp strip")
+	}
 	if id3Info.UsedV23Multi {
 		report.Operations = append(report.Operations, "v2.3 multi-value NUL-separated storage")
 		report.Warnings = core.Warn(report.Warnings, core.WarnID3MultiValue,

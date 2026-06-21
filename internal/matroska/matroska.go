@@ -72,15 +72,23 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 		Representation: "AttachedFile (image attachment)", Fidelity: "lossless",
 		Constraints: []string{"not writable to WebM (Attachments is outside the WebM subset)"},
 	}
+	// Cover write is refused for WebM, which excludes Attachments. This is true for a
+	// parsed WebM file (detected from its docType) and for a file-less query that opts
+	// into the subset (WithWebMSubset, e.g. caps --format webm) - one gate, so the
+	// file-aware and format-level views cannot drift.
+	webm := opts.WebMSubset
 	if m != nil {
 		if d, ok := m.Native.(*doc); ok && isWebM(d.docType) {
-			pictures.Write = core.AccessNone
-			pictures.Representation = "Attachments outside the WebM subset"
-			// The generic "not writable to WebM" note is now redundant: this is the
-			// WebM file's own capability and it already reports AccessNone with the
-			// reason in Representation (which is what dispose surfaces).
-			pictures.Constraints = nil
+			webm = true
 		}
+	}
+	if webm {
+		pictures.Write = core.AccessNone
+		pictures.Representation = "Attachments outside the WebM subset"
+		// The generic "not writable to WebM" note is now redundant: this is the WebM
+		// capability itself and it already reports AccessNone with the reason in
+		// Representation (which is what dispose surfaces).
+		pictures.Constraints = nil
 	}
 	chapters := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,

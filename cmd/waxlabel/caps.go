@@ -37,11 +37,11 @@ func newCapsCmd() *cobra.Command {
 				if len(args) > 0 {
 					return usagef("caps --format takes no file arguments")
 				}
-				f, ok := parseFormat(format)
+				f, opts, ok := parseFormat(format)
 				if !ok {
 					return usagef("unknown format %q; try one of: %s", format, formatHint())
 				}
-				return runCapsFormat(cmd, f)
+				return runCapsFormat(cmd, f, opts...)
 			}
 			if len(args) == 0 {
 				return usagef("caps requires a file argument or --format")
@@ -53,9 +53,10 @@ func newCapsCmd() *cobra.Command {
 	return cmd
 }
 
-// runCapsFormat renders a single format's capabilities (no file).
-func runCapsFormat(cmd *cobra.Command, f wl.Format) error {
-	jc := buildCaps("", wl.CapabilitiesFor(f))
+// runCapsFormat renders a single format's capabilities (no file). opts carry any
+// variant narrowing the format name implied (e.g. WithWebMSubset for "webm").
+func runCapsFormat(cmd *cobra.Command, f wl.Format, opts ...wl.WriteOption) error {
+	jc := buildCaps("", wl.CapabilitiesFor(f, opts...))
 	if jsonMode(cmd) {
 		return writeJSON(cmd.OutOrStdout(), jc)
 	}
@@ -222,39 +223,39 @@ func renderCapDim(w io.Writer, label string, d *jsonCapDim) {
 	}
 }
 
-// parseFormat resolves a user-supplied format name to a Format. It accepts any
-// file extension a codec claims (with or without a leading dot) and a few
-// friendly aliases for the formats whose name is not an extension (the two Ogg
-// codecs and Matroska). Matching is case-insensitive.
-func parseFormat(s string) (wl.Format, bool) {
+// parseFormat resolves a user-supplied format name to a Format and any write
+// options needed to describe it. It accepts any file extension a codec claims (with
+// or without a leading dot) and a few friendly aliases for the formats whose name is
+// not an extension (the two Ogg codecs and Matroska/WebM). Matching is
+// case-insensitive.
+func parseFormat(s string) (wl.Format, []wl.WriteOption, bool) {
 	norm := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(s)), ".")
 	switch norm {
 	case "vorbis", "oggvorbis":
-		return wl.FormatOggVorbis, true
+		return wl.FormatOggVorbis, nil, true
 	case "opus", "oggopus":
-		return wl.FormatOggOpus, true
+		return wl.FormatOggOpus, nil, true
 	case "matroska":
-		return wl.FormatMatroska, true
+		return wl.FormatMatroska, nil, true
 	case "webm":
-		// WebM is not a distinct Format - it is a per-file subset of Matroska whose
-		// defining restriction (cover attachments are outside the subset) is decided
-		// from the file, not the format. A format-level query would inherit
-		// Matroska's optimistic answer and wrongly advertise cover writing, so reject
-		// "webm" here; a real .webm file (caps file.webm) reports it accurately. Use
-		// "matroska"/"mka" for the format-level Matroska view.
-		return wl.FormatUnknown, false
+		// WebM is not a distinct Format - it is a subset of Matroska whose defining
+		// restriction is that cover attachments are outside the subset. Describe it via
+		// the Matroska codec under WithWebMSubset, which applies that one restriction
+		// (the codec's own, reused - not a parallel copy), so the format-level "webm"
+		// answer matches what a real .webm file reports.
+		return wl.FormatMatroska, []wl.WriteOption{wl.WithWebMSubset()}, true
 	}
 	for _, f := range wl.Formats() {
 		for _, ext := range wl.ExtensionsFor(f) {
 			if strings.TrimPrefix(ext, ".") == norm {
-				return f, true
+				return f, nil, true
 			}
 		}
 	}
-	return wl.FormatUnknown, false
+	return wl.FormatUnknown, nil, false
 }
 
 // formatHint lists representative format names for the unknown-format error.
 func formatHint() string {
-	return "flac, mp3, mp4 (m4a), wav, aiff, aac, ogg (vorbis), opus, matroska (mka)"
+	return "flac, mp3, mp4 (m4a), wav, aiff, aac, ogg (vorbis), opus, matroska (mka), webm"
 }

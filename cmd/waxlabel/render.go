@@ -185,7 +185,11 @@ func renderTags(w io.Writer, ts tag.TagSet) {
 				fmt.Fprintln(w, "(empty value)"+suffix)
 				continue
 			}
-			writeWrappedSuffix(w, valueCol, v, suffix)
+			// Elide a pathologically long value (a 100k-char comment) so it cannot flood
+			// the terminal; --json/--dump structured output keeps the exact bytes. The
+			// shared tag.ElideValue keeps the dump and the plan/diff change previews on one
+			// threshold and hint format.
+			writeWrappedSuffix(w, valueCol, tag.ElideValue(v), suffix)
 		}
 	}
 }
@@ -305,7 +309,7 @@ func renderNative(w io.Writer, doc *wl.Document) {
 				if e.Note != "" {
 					note = "  - " + tag.SanitizeLine(e.Note)
 				}
-				fmt.Fprintf(w, "    %-18s %8s%s\n", tag.SanitizeLine(e.Kind), wl.HumanBytes(int64(e.Size)), note)
+				fmt.Fprintf(w, "    %-18s %8s%s\n", tag.SanitizeLine(e.Kind), nativeSize(e), note)
 			}
 		}
 	}
@@ -321,6 +325,22 @@ func renderNative(w io.Writer, doc *wl.Document) {
 			// (via sanitizeJoin) escapes \n/\t as well as the terminal-hijack class.
 			fmt.Fprintf(w, "    %-20s %-8s %s%s\n", tag.SanitizeLine(string(f.Key)), f.Family, sanitizeJoin(f.Values, ", "), flag)
 		}
+	}
+}
+
+// nativeSize formats a native block entry's size column. A unit-bearing entry is a
+// count (pages, tags, chapters), shown as "N unit"; a zero-size entry with no unit
+// has no meaningful size (an EBML header, an MP4 QuickTime chapter track), shown
+// blank; everything else is a byte count humanized via HumanBytes. This is the one
+// place that decides bytes-vs-count, so a count can never be mislabeled "N B".
+func nativeSize(e wl.NativeEntry) string {
+	switch {
+	case e.Unit != "":
+		return fmt.Sprintf("%d %s", e.Size, tag.SanitizeLine(e.Unit))
+	case e.Size > 0:
+		return wl.HumanBytes(int64(e.Size))
+	default:
+		return ""
 	}
 }
 

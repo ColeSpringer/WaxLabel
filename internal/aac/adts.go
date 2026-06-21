@@ -3,8 +3,9 @@ package aac
 // adtsHeader is the decoded ADTS fixed header of a frame: the static stream
 // configuration (object type, sample rate, channels) plus the frame length. The
 // static config identifies the stream and feeds the essence digest; the frame
-// length is a per-frame quantity used only for the cheap duration estimate and
-// is deliberately kept out of the digest (see Codec.EssenceExtent).
+// length advances the header walk that derives an accurate duration (see
+// totalADTSSamples) and is deliberately kept out of the digest (see
+// Codec.EssenceExtent).
 type adtsHeader struct {
 	objectType  int // MPEG-4 Audio Object Type (= profile field + 1): 1 Main, 2 LC, 3 SSR (AOT 4 / LTP is rejected at decode)
 	sfIndex     int // sampling-frequency index (0..12)
@@ -12,6 +13,7 @@ type adtsHeader struct {
 	chanConfig  int // channel-configuration field (0..7)
 	channels    int // decoded channel count (0 when chanConfig is 0 / carried in the AOT config)
 	frameLength int // total bytes of this frame (header + payload)
+	rawBlocks   int // number_of_raw_data_blocks_in_frame (0..3); the frame holds rawBlocks+1 AAC blocks
 }
 
 // adtsSampleRates maps the 4-bit sampling-frequency index to Hz. Indices 13-14
@@ -78,6 +80,10 @@ func decodeADTS(b []byte) (adtsHeader, bool) {
 		chanConfig:  chanConfig,
 		channels:    adtsChannels[chanConfig],
 		frameLength: frameLength,
+		// number_of_raw_data_blocks_in_frame: the last 2 bits of byte 6. A frame holds
+		// rawBlocks+1 AAC blocks (1..4), each samplesPerAACFrame samples, so the duration
+		// walk must not assume a flat one block per frame.
+		rawBlocks: int(b[6] & 0x03),
 	}, true
 }
 

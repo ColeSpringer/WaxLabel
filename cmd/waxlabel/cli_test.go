@@ -1493,16 +1493,21 @@ func TestSetUnknownKeyJSONClean(t *testing.T) {
 	}
 }
 
-// TestPlanSingleValuedMultiNote: pushing a single-valued key past one value notes it
-// on stderr; the preview still prints and the run succeeds (exit 0).
+// TestPlanSingleValuedMultiNote: pushing a single-valued key past one value
+// surfaces it as a plan-report warning (in stdout, not a separate stderr note);
+// the preview still prints and the run succeeds (exit 0).
 func TestPlanSingleValuedMultiNote(t *testing.T) {
 	t.Parallel()
-	_, errb, code := runCLI(t, "plan", sampleFLAC, "--add", "ENCODER=a", "--add", "ENCODER=b")
+	out, errb, code := runCLI(t, "plan", sampleFLAC, "--add", "ENCODER=a", "--add", "ENCODER=b")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0\n%s", code, errb)
 	}
-	if !strings.Contains(errb, "ENCODER is single-valued") {
-		t.Errorf("expected single-valued note on stderr, got: %q", errb)
+	if !strings.Contains(out, "single-valued-multi") || !strings.Contains(out, "ENCODER is single-valued") {
+		t.Errorf("expected single-valued-multi warning in the report, got stdout: %q", out)
+	}
+	// The signal now lives on the report; it is no longer printed twice as a stderr note.
+	if strings.Contains(errb, "note: ENCODER is single-valued") {
+		t.Errorf("single-valued signal should not also be a stderr note: %q", errb)
 	}
 }
 
@@ -1540,14 +1545,18 @@ func TestSetStrictSingleValuedMultiFails(t *testing.T) {
 	}
 }
 
-// TestSetSingleValuedNoteDedup: across a --recursive walk the single-valued note is
-// printed once per key, not once per file.
-func TestSetSingleValuedNoteDedup(t *testing.T) {
+// TestSetSingleValuedMultiPerFileWarning: across a --recursive walk each offending
+// file carries the single-valued-multi signal in its own plan report (one per
+// file), and it is never emitted as a separate stderr note.
+func TestSetSingleValuedMultiPerFileWarning(t *testing.T) {
 	t.Parallel()
 	dir := makeAudioTree(t) // two FLAC fixtures, each already carrying an ENCODER
-	_, errb, _ := runCLI(t, "set", "--recursive", dir, "--add", "ENCODER=a", "--add", "ENCODER=b")
-	if n := strings.Count(errb, "ENCODER is single-valued"); n != 1 {
-		t.Errorf("single-valued note printed %d times, want 1 (deduped across files)", n)
+	out, errb, _ := runCLI(t, "set", "--recursive", dir, "--add", "ENCODER=a", "--add", "ENCODER=b")
+	if n := strings.Count(out, "single-valued-multi"); n != 2 {
+		t.Errorf("single-valued-multi report warning appeared %d times, want 1 per file (2)", n)
+	}
+	if strings.Contains(errb, "note: ENCODER is single-valued") {
+		t.Errorf("single-valued signal should not be a stderr note: %q", errb)
 	}
 }
 
@@ -1815,6 +1824,7 @@ func TestErrClassRankCoversEveryErrorClass(t *testing.T) {
 	samples := []error{
 		&usageError{msg: "bad usage"},
 		waxerr.ErrInvalidKey,
+		waxerr.ErrNeedsFile,
 		waxerr.ErrUnsupportedFormat,
 		waxerr.ErrUnsupportedTag,
 		waxerr.ErrSourceChanged,

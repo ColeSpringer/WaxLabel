@@ -48,7 +48,7 @@ func newPlanCmd() *cobra.Command {
 			if err := notifyInvocationNotes(cmd.ErrOrStderr(), ce, &ef, realOf, paths, asJSON); err != nil {
 				return err
 			}
-			notifier := newSingleValuedNotifier(ef.strict, asJSON, cmd.ErrOrStderr())
+			notifier := newSingleValuedNotifier(ef.strict, asJSON)
 			return perFile(cmd, paths,
 				func(ctx context.Context, path string) (*wl.Plan, error) {
 					_, plan, err := ce.prepare(ctx, realOf(path))

@@ -128,19 +128,23 @@ arguments with `--recursive`, which selects files by extension - a mis-named or
 extension-less audio file in a walked directory is skipped, though passing it
 directly still content-sniffs it. All data commands accept `--json` for scriptable
 output:
-the list commands (`dump`, `verify`, `lint`, `set`, `plan`, and `caps` over files)
-emit a JSON array - one element per input, `[]` when none - so a consumer iterates
-(or `jq '.[]'`) regardless of count, while `diff`, `copy`, and `caps --format` emit
-a single object.
+the list commands (`dump`, `verify`, `lint`, `set`, `plan`, `caps` over files, and
+`keys`) emit a JSON array - one element per input, `[]` when none - so a consumer
+iterates (or `jq '.[]'`) regardless of count, while `diff`, `copy`, and
+`caps --format` emit a single object.
 
 `ENCODER` is the canonical key for the encoding software/tool (the transcoder
 stamp, e.g. ID3 `TSSE` or MP4 `©too`), distinct from `ENCODEDBY` (the encoding
-person). A single `--clear ENCODER` or `--strip-encoder` reaches the stamp on
-every format.
+person). `--clear ENCODER`, `--set ENCODER=...`, or `--strip-encoder` clears the
+ENCODER tag on every format, and also drops the WAV `LIST/INFO` `ISFT` stamp that
+no canonical-tag edit otherwise reaches. The Ogg/Opus/FLAC container **vendor
+string** is a mandatory codec field, so an inherited transcoder stamp there is
+reported (a `lint`/`dump` warning) but never overwritten.
 
 Exit codes for `dump`/`plan`/`set`/`verify`/`caps`/`copy`: `0` success; `1` error;
-`2` usage/invalid key; `3` unsupported format; `4` invalid data; `5` source
-changed; `6` I/O; `130` canceled/timeout. **`lint` and `diff` follow the
+`2` usage/invalid key/needs-file (the last only for a path-less library `SaveBack`);
+`3` unsupported format; `4` invalid data; `5` source changed; `6` I/O; `130`
+canceled/timeout. **`lint` and `diff` follow the
 linter / diff(1) convention instead:** `0` clean/identical; `1` issues found /
 differs; `>=2` a structural error (using the same `2`-`6` classes, which outranks
 a `1` in a multi-file run). (cobra's built-in `help` and `completion` follow
@@ -160,12 +164,19 @@ file (`4`) outranks a mistyped path (`6`) regardless of argument order.
 
 A small set of contracts is stable:
 
-- **Immutable, detached `Document`.** Accessors return deep copies; only
-  `Picture` payload bytes are shared read-only. `Inspect()` skips them for bulk
+- **Immutable, detached `Document`.** Accessors return deep copies - including
+  each `Picture`'s payload bytes, so a caller may mutate any returned value
+  freely. `Inspect()` skips the payloads (and the native document) for cheap bulk
   scans.
 - **Presence-aware `tag.TagSet`/`tag.TagPatch` are authoritative**, so *absent*,
   *present-but-empty*, and *present-with-values* are all distinguishable. The
-  typed `tag.Tags` struct is a convenience projection.
+  typed `tag.Tags` struct is a convenience projection. *Present-but-empty* (a key
+  present with **no** values, distinct from a present empty-string value) is an
+  in-memory distinction only: no codec stores it, so it collapses to *absent* on
+  write and never survives a round-trip - and a zero-length `Set`/`Add` that
+  produces only it is reported as a true no-op (`IsNoOp`). A present empty-string
+  value (`set KEY=`) is a real value some formats keep (FLAC/Ogg) and others drop
+  (WAV/AIFF).
 - **Public, writable canonical key vocabulary** (`tag.Key`); `tag.KnownKeys()`
   enumerates it. Unknown canonical keys pass through unchanged. Keys are
   Vorbis-permissive (normalized to uppercase; spaces and punctuation are allowed),
