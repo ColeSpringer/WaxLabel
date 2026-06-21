@@ -78,7 +78,7 @@ func runCapsFiles(cmd *cobra.Command, args []string) error {
 	}
 	return perFile(cmd, args,
 		func(ctx context.Context, path string) (jsonCaps, error) {
-			doc, err := wl.ParseFile(ctx, realOf(path))
+			doc, err := parseInput(ctx, realOf(path), path)
 			if err != nil {
 				return jsonCaps{}, err
 			}
@@ -105,7 +105,11 @@ type jsonCaps struct {
 	Fields        *jsonCapDim  `json:"fields,omitempty"`
 	Pictures      *jsonCapDim  `json:"pictures,omitempty"`
 	Chapters      *jsonCapDim  `json:"chapters,omitempty"`
-	Keys          []jsonCapKey `json:"keys,omitempty"`
+	// Padding grades how completely the format honors the --padding/--no-padding
+	// controls: "none", "partial" (grow-only), or "full". Always present on a
+	// successful report.
+	Padding string       `json:"padding,omitempty"`
+	Keys    []jsonCapKey `json:"keys,omitempty"`
 }
 
 // jsonCapDim is one dimension's (fields/pictures/chapters) support.
@@ -137,6 +141,7 @@ func buildCaps(file string, caps wl.Capabilities) jsonCaps {
 		Fields:        capDim(caps.GenericField),
 		Pictures:      capDim(caps.Pictures),
 		Chapters:      capDim(caps.Chapters),
+		Padding:       caps.Padding.String(),
 	}
 	for _, k := range tag.KnownKeys() {
 		fc := caps.Field(k)
@@ -189,6 +194,11 @@ func renderCaps(w io.Writer, jc jsonCaps) {
 	renderCapDim(w, "fields", jc.Fields)
 	renderCapDim(w, "pictures", jc.Pictures)
 	renderCapDim(w, "chapters", jc.Chapters)
+	if jc.Padding != "" {
+		// Padding is a single level (none/partial/full), not a read/write dimension, so
+		// it gets its own one-word line rather than a renderCapDim row.
+		fmt.Fprintf(w, "  %-9s %s\n", "padding:", jc.Padding)
+	}
 
 	fmt.Fprintf(w, "  editable keys (%d):\n", len(jc.Keys))
 	rows := make([]keyRow, len(jc.Keys))

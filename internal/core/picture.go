@@ -54,6 +54,14 @@ func (p PictureType) SingleIcon() bool {
 	return p == PicFileIcon || p == PicOtherFileIcon
 }
 
+// UnrecognizedMIME is the MIME a picture is stored under when [Picture.SniffInto]
+// cannot identify its bytes as an image (an exotic/unsniffable cover, junk, or an
+// empty payload all degrade to this). It is the single string the linter's
+// invalid-picture rule and the editor's plan-time picture warning both key on -
+// rather than re-sniffing - so a cover a codec already recognized is never
+// false-flagged and the two checks cannot drift.
+const UnrecognizedMIME = "application/octet-stream"
+
 // CountIcons returns how many type-1 (file icon) and type-2 (other file icon)
 // pictures are present. Both must be at most one. The writer's validation and
 // the linter share this so their notion of icon validity cannot drift.
@@ -93,6 +101,11 @@ func (p Picture) Hash() [32]byte {
 	return bits.SHA256(p.Data)
 }
 
+// Unrecognized reports whether the picture is stored under [UnrecognizedMIME] -
+// i.e. its bytes were not a recognized image header. The shared predicate behind
+// the linter's invalid-picture finding and the editor's plan-time picture warning.
+func (p Picture) Unrecognized() bool { return p.MIME == UnrecognizedMIME }
+
 // CloneMeta returns a copy whose structural fields are independent but whose
 // Data slice is shared (read-only). This is what accessors hand out.
 func (p Picture) CloneMeta() Picture {
@@ -107,7 +120,7 @@ func (p *Picture) SniffInto() bool {
 	info, ok := bits.SniffImage(p.Data)
 	if !ok {
 		if p.MIME == "" {
-			p.MIME = "application/octet-stream"
+			p.MIME = UnrecognizedMIME
 		}
 		return false
 	}

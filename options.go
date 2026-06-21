@@ -19,6 +19,17 @@ func WithLimits(l Limits) ParseOption {
 	return func(o *core.ParseOptions) { o.Limits = l }
 }
 
+// WithSourceName sets the display name used for the source in the
+// "could not identify" diagnostics, so a caller that parses buffered or
+// temp-file bytes (e.g. standard input) reports the original name instead of the
+// temp path. It is display-only - detection still keys on the real path's
+// extension - and affects only the unidentified-format error; everything else
+// (including the source identity ParseFile records for save-back) is unchanged.
+// Without it the name falls back to the path argument, or "" for [Parse].
+func WithSourceName(name string) ParseOption {
+	return func(o *core.ParseOptions) { o.SourceName = name }
+}
+
 // WithPadding sets the post-metadata padding policy for writes.
 func WithPadding(p PaddingPolicy) WriteOption {
 	return func(o *core.WriteOptions) { o.Padding = p }

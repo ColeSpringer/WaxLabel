@@ -124,6 +124,13 @@ func (p ID3MultiValuePolicy) String() string {
 // ParseOptions are the resolved (non-functional) parse settings a codec sees.
 type ParseOptions struct {
 	Limits bits.Limits
+	// SourceName is the display name for this source in detection diagnostics (the
+	// "could not identify %q" error). A caller parsing from a temp file or buffer
+	// passes the original name so the temp path never leaks - the CLI supplies "-"'s
+	// display form for buffered standard input. It is display-only: detection still
+	// keys on the real path's extension. Empty falls back to the path argument (and
+	// is "" for the path-less Parse/OpenSource, which is exactly what this fixes).
+	SourceName string
 }
 
 // DefaultParseOptions returns parse options with conservative limits.

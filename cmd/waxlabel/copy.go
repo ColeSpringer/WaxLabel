@@ -89,7 +89,9 @@ func newCopyCmd() *cobra.Command {
 			// touching the destination.
 			if !asJSON {
 				renderTransfer(out, srcPath, dstPath, report, srcLabel, dstLabel)
-				renderReport(out, dstPath, plan)
+				// copy adds no pictures of its own (the transfer report above already
+				// details the carried pictures), so no added-picture detail here.
+				renderReport(out, dstPath, plan, nil)
 			}
 			if dryRun {
 				if asJSON {

@@ -100,7 +100,9 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 		},
 		// No MaxItems: Matroska has no chapter-count cap (unlike MP4's 255-entry chpl).
 	}
-	return core.NewCapabilities(core.FormatMatroska, false, fields, pictures, chapters, nil)
+	// Matroska/WebM has no metadata-padding concept exposed by the writer, so the
+	// padding controls do not apply.
+	return core.NewCapabilities(core.FormatMatroska, false, fields, pictures, chapters, core.AccessNone, nil)
 }
 
 // EssenceExtent returns the Matroska essence-digest inputs: a versioned extent

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"runtime/debug"
 	"strings"
 
@@ -40,6 +41,7 @@ func newRootCmd() *cobra.Command {
 		newLintCmd(),
 		newCapsCmd(),
 		newKeysCmd(),
+		newVersionCmd(),
 	)
 	// Replace cobra's help command so an unknown topic exits non-zero, matching an
 	// unknown command. Register before wrapUsageErrors so it picks up the same
@@ -95,6 +97,23 @@ func newHelpCmd() *cobra.Command {
 	}
 }
 
+// newVersionCmd registers an explicit "version" subcommand so the conventional
+// "waxlabel version" spelling works, not just the --version flag (which a bare
+// "version" word would otherwise hit as an unknown command). It prints the same
+// line cobra's --version template produces - "waxlabel version <v>" - so the two
+// cannot disagree (U3); resolveVersion is the single source for the value.
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the waxlabel version",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			fmt.Fprintf(cmd.OutOrStdout(), "waxlabel version %s\n", resolveVersion())
+			return nil
+		},
+	}
+}
+
 // wrapUsageErrors maps every command's flag- and argument-parsing failures to a
 // usageError (exit code 2) and silences cobra's own error/usage printing, so the
 // central renderer in dispatch reports each failure exactly once.
@@ -105,7 +124,16 @@ func wrapUsageErrors(cmd *cobra.Command) {
 	// usage is silenced), so capture the resolved command path and request the help
 	// hint (M5). c already holds the resolved command at both sites.
 	cmd.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
-		return &usageError{msg: err.Error(), cmd: c.CommandPath(), wantsHint: true}
+		ue := &usageError{msg: err.Error(), cmd: c.CommandPath(), wantsHint: true}
+		// A leading-dash file path (-track.flac / --track.flac) reaches cobra as an
+		// unknown flag; when the offending token looks like a path, point at the "--"
+		// end-of-flags marker instead of the generic --help pointer (U5). A genuine flag
+		// typo (--bogus) is not path-like and keeps the help hint. dashPathHint overrides
+		// wantsHint in classifyError.
+		if msg := err.Error(); (strings.HasPrefix(msg, "unknown flag") || strings.HasPrefix(msg, "unknown shorthand")) && looksLikePathFlag(msg) {
+			ue.hint = dashPathHint
+		}
+		return ue
 	})
 	if inner := cmd.Args; inner != nil {
 		cmd.Args = func(c *cobra.Command, args []string) error {

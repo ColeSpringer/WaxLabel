@@ -178,6 +178,7 @@ func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *
 		return usagef("no audio files found")
 	}
 	notifier := newSingleValuedNotifier(strict, asJSON)
+	pnoter := newPaddingNoter(asJSON, errOut)
 	var items []any
 	var worstErr error
 	changed, unchanged, failed, rendered := 0, 0, 0, 0
@@ -195,10 +196,15 @@ func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *
 	}
 
 	for _, path := range paths {
-		doc, plan, err := ce.prepare(cmd.Context(), realOf(path))
+		doc, plan, err := ce.prepare(cmd.Context(), realOf(path), path)
 		if err != nil {
 			fail(path, err)
 			continue
+		}
+		// Note once per format when a padding flag does not apply to it. Gated on
+		// ce.paddingFlag so the Capabilities are not built when no flag was given.
+		if ce.paddingFlag {
+			pnoter.note(doc.Capabilities())
 		}
 		// Under --strict, a single-valued key given multiple values fails the file
 		// before any write (a per-file usage error, exit 2); otherwise the write proceeds
@@ -225,7 +231,7 @@ func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *
 			if rendered > 0 {
 				fmt.Fprintln(out)
 			}
-			renderReport(out, path, plan)
+			renderReport(out, path, plan, ce.addPics)
 			rendered++
 		}
 		dst := wl.SaveBack()

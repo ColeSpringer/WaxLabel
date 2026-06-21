@@ -687,8 +687,11 @@ func TestMP4NativeViewAndCapabilities(t *testing.T) {
 	if caps.Field(tag.Title).Write != wl.AccessFull {
 		t.Error("MP4 should fully support writing Title")
 	}
+	// Picture write is Full: the image set carries byte-for-byte. MP4 drops a picture's
+	// role/description, but that per-picture loss is surfaced by the plan warning, not
+	// the coarse transfer level (which would mislabel a lossless front-cover copy).
 	if caps.Pictures.Write != wl.AccessFull {
-		t.Error("MP4 should fully support writing pictures")
+		t.Error("MP4 picture write should be AccessFull (image bytes carry losslessly)")
 	}
 }
 

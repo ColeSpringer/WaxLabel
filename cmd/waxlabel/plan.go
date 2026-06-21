@@ -49,11 +49,17 @@ func newPlanCmd() *cobra.Command {
 				return err
 			}
 			notifier := newSingleValuedNotifier(ef.strict, asJSON)
+			pnoter := newPaddingNoter(asJSON, cmd.ErrOrStderr())
 			return perFile(cmd, paths,
 				func(ctx context.Context, path string) (*wl.Plan, error) {
-					_, plan, err := ce.prepare(ctx, realOf(path))
+					doc, plan, err := ce.prepare(ctx, realOf(path), path)
 					if err != nil {
 						return nil, err
+					}
+					// Note once per format when a padding flag does not apply to it. Gated on
+					// ce.paddingFlag so the Capabilities are not built when no flag was given.
+					if ce.paddingFlag {
+						pnoter.note(doc.Capabilities())
 					}
 					if err := notifier.check(plan); err != nil {
 						return nil, err
@@ -61,7 +67,7 @@ func newPlanCmd() *cobra.Command {
 					return plan, nil
 				},
 				func(path string, plan *wl.Plan) any { return toJSONReport(path, plan) },
-				func(w io.Writer, path string, plan *wl.Plan) { renderReport(w, path, plan) },
+				func(w io.Writer, path string, plan *wl.Plan) { renderReport(w, path, plan, ce.addPics) },
 				false,
 			)
 		},

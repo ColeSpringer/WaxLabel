@@ -50,11 +50,11 @@ func newDiffCmd() *cobra.Command {
 			if err := checkRegularInputs(realOf, args...); err != nil {
 				return err
 			}
-			aDoc, err := wl.ParseFile(ctx, realOf(args[0]))
+			aDoc, err := parseInput(ctx, realOf(args[0]), args[0])
 			if err != nil {
 				return err
 			}
-			bDoc, err := wl.ParseFile(ctx, realOf(args[1]))
+			bDoc, err := parseInput(ctx, realOf(args[1]), args[1])
 			if err != nil {
 				return err
 			}

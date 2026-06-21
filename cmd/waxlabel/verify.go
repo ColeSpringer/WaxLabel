@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 
-	wl "github.com/colespringer/waxlabel"
 	"github.com/spf13/cobra"
 )
 
@@ -73,7 +72,7 @@ func newVerifyCmd() *cobra.Command {
 // the result and shown to the user; it differs from realPath only for standard
 // input ("-"), whose bytes are parsed from a temp file.
 func computeVerify(ctx context.Context, realPath, displayPath string, whole bool) (jsonVerify, error) {
-	doc, err := wl.ParseFile(ctx, realPath)
+	doc, err := parseInput(ctx, realPath, displayPath)
 	if err != nil {
 		return jsonVerify{File: displayPath}, err
 	}

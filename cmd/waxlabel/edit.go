@@ -27,12 +27,15 @@ const editPrecedenceHelp = "For one key, --clear takes precedence over --add and
 // onto a command's flag set and compiles into a presence-aware [tag.TagPatch], a
 // picture mutation, and a list of [wl.WriteOption].
 type editFlags struct {
-	set      []string // KEY=VALUE, replace
-	add      []string // KEY=VALUE, append (multi-value)
-	clear    []string // KEY, remove
-	addCover []string // image file path, added as a front cover
-	rmPics   bool
-	force    bool // embed --add-cover input even when it is not a recognized image
+	set                []string // KEY=VALUE, replace
+	add                []string // KEY=VALUE, append (multi-value)
+	clear              []string // KEY, remove
+	addCover           []string // image file path, added as a front cover
+	addPicture         []string // ROLE=PATH, added with that cover-art role (repeatable)
+	pictureDescription string   // description applied to every picture added this run
+	removePicture      []string // SELECTOR (role name or 1-based dump index), repeatable
+	rmPics             bool
+	force              bool // embed --add-cover/--add-picture input even when it is not a recognized image
 
 	addChapter    []string // TIMESTAMP=Title, appended to the chapter list (repeatable)
 	clearChapters bool     // remove all chapters
@@ -57,9 +60,12 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringArrayVar(&e.set, "set", nil, "set KEY=VALUE, replacing the key (repeatable)")
 	f.StringArrayVar(&e.add, "add", nil, "append KEY=VALUE to a key (repeatable, for multi-value fields)")
 	f.StringArrayVar(&e.clear, "clear", nil, "remove KEY (repeatable)")
-	f.StringArrayVar(&e.addCover, "add-cover", nil, "add a front-cover picture from an image file (repeatable)")
+	f.StringArrayVar(&e.addCover, "add-cover", nil, "add a front-cover picture from an image file (sugar for --add-picture front-cover=PATH; repeatable)")
+	f.StringArrayVar(&e.addPicture, "add-picture", nil, "add a picture ROLE=PATH, e.g. back-cover=back.jpg (repeatable; ROLE is a cover-art role such as front-cover, back-cover, artist)")
+	f.StringVar(&e.pictureDescription, "picture-description", "", "set the description on every picture added this run (--add-picture/--add-cover)")
+	f.StringArrayVar(&e.removePicture, "remove-picture", nil, "remove pictures by role name or 1-based dump index, e.g. back-cover or 2 (repeatable; removals apply before adds)")
 	f.BoolVar(&e.rmPics, "remove-pictures", false, "remove all embedded pictures")
-	f.BoolVar(&e.force, "force", false, "embed --add-cover input even if it is not a recognized image (PNG/JPEG/GIF/WebP/BMP/TIFF)")
+	f.BoolVar(&e.force, "force", false, "embed --add-cover/--add-picture input even if it is not a recognized image (PNG/JPEG/GIF/WebP/BMP/TIFF)")
 	f.StringArrayVar(&e.addChapter, "add-chapter", nil, "add a chapter TIMESTAMP=Title (e.g. 1:30=Verse; repeatable); a file whose format cannot store chapters fails while capable files proceed")
 	f.BoolVar(&e.clearChapters, "clear-chapters", false, "remove all chapters (applied before --add-chapter, so combining them keeps only the added chapters)")
 	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear the ENCODER software stamp (the transcoder leftover)")
@@ -117,37 +123,142 @@ func splitAssign(s string) (tag.Key, string, error) {
 	return k, s[i+1:], nil
 }
 
-// loadCovers reads and validates the --add-cover files once, returning the
-// front-cover pictures to add to each edited file. Reading a cover file is a
-// runtime (not usage) failure; a file that is not a recognized image is rejected
-// as a usage error (the common mistake of pointing --add-cover at the wrong
-// file), overridable with --force for a deliberate exotic format. Validating here
-// - before any file is touched - means a bad cover is reported once for the whole
-// invocation rather than once per file in a bulk run.
-func (e *editFlags) loadCovers() ([]wl.Picture, error) {
+// loadPictures reads and validates every --add-cover and --add-picture file once,
+// returning the pictures to add to each edited file. --add-cover PATH is sugar for
+// --add-picture front-cover=PATH (back-compat). Validating here - before any file is
+// touched - means a bad input is reported once for the whole invocation rather than
+// once per file in a bulk run. A --picture-description, if given, is applied to every
+// picture added this run, and is a usage error with nothing to attach to.
+func (e *editFlags) loadPictures() ([]wl.Picture, error) {
 	var pics []wl.Picture
 	for _, path := range e.addCover {
-		// Reject a directory (or other non-regular cover source) as a usage error
-		// (exit 2) before the read, so a mis-pointed --add-cover fails like other bad
-		// inputs. A genuinely missing cover is not intercepted here (it does not exist),
-		// so it still falls through to os.ReadFile, which reports it - classified as io
-		// (exit 6), not not-found, because the wrap below defeats the direct
-		// *fs.PathError assertion in isNotFoundPathError.
-		if err := checkRegularFile(path); err != nil {
-			return nil, fmt.Errorf("cover image: %w", err)
-		}
-		data, err := os.ReadFile(path)
+		p, err := e.loadPictureFile("cover image", wl.PicFrontCover, path)
 		if err != nil {
-			// os.ReadFile's *fs.PathError already names the path, so do not repeat
-			// it; just mark that the failure is about a cover image.
-			return nil, fmt.Errorf("cover image: %w", err)
+			return nil, err
 		}
-		if !e.force && !wl.IsRecognizedImage(data) {
-			return nil, usagef("cover image: %s: not a recognized image (PNG/JPEG/GIF/WebP/BMP/TIFF); use --force to embed anyway", path)
+		pics = append(pics, p)
+	}
+	for _, spec := range e.addPicture {
+		role, path, ok := strings.Cut(spec, "=")
+		if !ok {
+			return nil, usagef("--add-picture wants ROLE=PATH, got %q", spec)
 		}
-		pics = append(pics, wl.Picture{Type: wl.PicFrontCover, Data: data})
+		pt, ok := pictureRole(role) // pictureRole trims/lowercases the role itself
+		if !ok {
+			return nil, usagef("unknown picture role %q; valid roles: %s", strings.TrimSpace(role), pictureRoleList())
+		}
+		// The path is used verbatim (not trimmed), matching --add-cover and the
+		// --set KEY=VALUE convention where the value after '=' is taken as-is - so a
+		// path with a leading/trailing space stays selectable.
+		p, err := e.loadPictureFile("picture image", pt, path)
+		if err != nil {
+			return nil, err
+		}
+		pics = append(pics, p)
+	}
+	if e.pictureDescription != "" {
+		if len(pics) == 0 {
+			return nil, usagef("--picture-description needs at least one --add-picture or --add-cover")
+		}
+		for i := range pics {
+			pics[i].Description = e.pictureDescription
+		}
 	}
 	return pics, nil
+}
+
+// loadPictureFile reads one image file and turns it into a picture of role pt. label
+// ("cover image" / "picture image") prefixes its errors so the message names which
+// flag failed. A directory or other non-regular source is rejected as a usage error
+// (exit 2) before the read, so a mis-pointed flag fails like other bad inputs; a
+// genuinely missing file falls through to os.ReadFile, classified as io (exit 6). A
+// 0-byte file is refused even under --force (no legitimate image is empty - always a
+// mistake), distinct from non-empty unsniffable bytes, which --force still embeds. The
+// picture is sniffed on load so its MIME and dimensions are filled for the plan's
+// added-picture detail (C4a); Editor.AddPicture re-sniffs idempotently.
+func (e *editFlags) loadPictureFile(label string, pt wl.PictureType, path string) (wl.Picture, error) {
+	if err := checkRegularFile(path); err != nil {
+		return wl.Picture{}, fmt.Errorf("%s: %w", label, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// os.ReadFile's *fs.PathError already names the path, so do not repeat it.
+		return wl.Picture{}, fmt.Errorf("%s: %w", label, err)
+	}
+	if len(data) == 0 {
+		return wl.Picture{}, usagef("%s: %s: file is empty", label, path)
+	}
+	if !e.force && !wl.IsRecognizedImage(data) {
+		return wl.Picture{}, usagef("%s: %s: not a recognized image (PNG/JPEG/GIF/WebP/BMP/TIFF); use --force to embed anyway", label, path)
+	}
+	p := wl.Picture{Type: pt, Data: data}
+	p.SniffInto()
+	return p, nil
+}
+
+// pictureRoles maps each cover-art role name to its PictureType. The name is
+// PictureType.String() lowercased with spaces turned to hyphens, derived from the
+// enum itself (the same derive-from-source pattern as the key vocabulary) so it
+// tracks PictureType automatically and disambiguates lead-artist (PicLeadArtist)
+// from artist (PicArtist), which a hand-list would blur.
+var pictureRoles = func() map[string]wl.PictureType {
+	m := map[string]wl.PictureType{}
+	for i := 0; i < 256; i++ {
+		p := wl.PictureType(i)
+		name := p.String()
+		if name == "reserved" {
+			break // past the last defined role (String returns "reserved")
+		}
+		m[strings.ReplaceAll(strings.ToLower(name), " ", "-")] = p
+	}
+	return m
+}()
+
+// pictureRole resolves a role name (case-insensitive, whitespace-trimmed) to its
+// PictureType.
+func pictureRole(name string) (wl.PictureType, bool) {
+	pt, ok := pictureRoles[strings.ToLower(strings.TrimSpace(name))]
+	return pt, ok
+}
+
+// pictureRoleList returns the valid role names in sorted order, for a usage error.
+func pictureRoleList() string {
+	roles := make([]string, 0, len(pictureRoles))
+	for r := range pictureRoles {
+		roles = append(roles, r)
+	}
+	slices.Sort(roles)
+	return strings.Join(roles, ", ")
+}
+
+// resolveRemovals turns the --remove-picture selectors into the set of picture
+// indices (into pics, which is the file's pictures in dump order) to remove. A
+// selector is a 1-based dump index or a cover-art role name; an out-of-range index
+// or an unrecognized role is a usage error. A role that matches no picture is a
+// no-op (so a bulk "remove every back cover" does not fail on a file without one),
+// not an error. The returned map drives a shift-proof closure in prepare.
+func resolveRemovals(selectors []string, pics []wl.Picture) (map[int]bool, error) {
+	targets := map[int]bool{}
+	for _, sel := range selectors {
+		s := strings.TrimSpace(sel)
+		if n, err := strconv.Atoi(s); err == nil {
+			if n < 1 || n > len(pics) {
+				return nil, usagef("--remove-picture index %d is out of range (file has %d picture(s))", n, len(pics))
+			}
+			targets[n-1] = true
+			continue
+		}
+		pt, ok := pictureRole(s)
+		if !ok {
+			return nil, usagef("--remove-picture wants a role name or a 1-based index, got %q; valid roles: %s", sel, pictureRoleList())
+		}
+		for i, p := range pics {
+			if p.Type == pt {
+				targets[i] = true
+			}
+		}
+	}
+	return targets, nil
 }
 
 // chapterAdds parses the --add-chapter "TIMESTAMP=Title" assignments into chapters,
@@ -169,32 +280,33 @@ func (e *editFlags) chapterAdds() ([]wl.Chapter, error) {
 // writeOptions resolves -preset, -legacy, and the padding flags into library
 // write options, applied in that order so an explicit option overrides the
 // preset's. An unknown name or a bad padding value is a usage error.
-func (e *editFlags) writeOptions() ([]wl.WriteOption, error) {
+func (e *editFlags) writeOptions() ([]wl.WriteOption, bool, error) {
 	opts, err := resolveWriteFlags(e.preset, e.legacy)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	// Append the padding option after the preset/legacy options so an explicit
 	// --padding / --no-padding overrides the preset's padding policy (e.g.
 	// "--preset minimal --padding 16384" reserves 16 KiB rather than the preset's
 	// zero). Padding is editing-command-only, so it lives here rather than in the
 	// resolveWriteFlags shared with copy.
-	padOpt, err := resolvePaddingFlag(e.padding, e.noPadding)
+	padOpt, padFlag, err := resolvePaddingFlag(e.padding, e.noPadding)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if padOpt != nil {
 		opts = append(opts, padOpt)
 	}
-	// --force embeds a cover the image sniff does not recognize, so opt the library's
+	// --force embeds a picture the image sniff does not recognize, so opt the library's
 	// added-picture validation out to match: without it, Prepare would reject the
-	// exotic image loadCovers just waved through. loadCovers still pre-checks the
-	// common mistake (a non-image file) for a friendly exit-2 message before any
-	// file is touched; this only affects the --force path.
+	// exotic image loadPictureFile just waved through. loadPictureFile still pre-checks
+	// the common mistake (a non-image file) for a friendly exit-2 message before any
+	// file is touched, and refuses a 0-byte file even here; this only affects the
+	// --force path.
 	if e.force {
 		opts = append(opts, wl.WithUnrecognizedPictures())
 	}
-	return opts, nil
+	return opts, padFlag, nil
 }
 
 // maxPaddingBytes caps an explicit --padding value. Cover art runs KB-MB, and the
@@ -204,42 +316,55 @@ func (e *editFlags) writeOptions() ([]wl.WriteOption, error) {
 // generous ceiling, far above any real cover.
 const maxPaddingBytes = 64 << 20
 
-// resolvePaddingFlag turns the --padding/--no-padding values into a write option,
-// or nil when neither is set (leaving the default 8 KiB policy in place). The two
-// are mutually exclusive, and an explicit byte count must be a non-negative integer
+// resolvePaddingFlag turns the --padding/--no-padding values into a write option
+// (nil when neither is set, leaving the default 8 KiB policy in place) plus whether
+// a padding flag was given at all (which the per-format applicability note reads -
+// only the given-or-not distinction matters, since every format that honors padding
+// honors it for any spelling). An explicit byte count must be a non-negative integer
 // no larger than maxPaddingBytes; each violation is a usage error.
 //
-// --no-padding writes none (Target 0, Max 0), and --padding 0 is its synonym. A
-// positive --padding N is a floor: it reserves at least N bytes, so it sets Min=N
-// as well as Target=N - a rewrite grows a too-small region up to N instead of
-// reusing it (without Min, the reuse branch would keep the smaller existing region
-// and silently ignore N). Max stays 0 (no policy ceiling); the maxPaddingBytes
-// usage cap and each format's hard cap are the actual upper bounds.
-func resolvePaddingFlag(padding string, noPadding bool) (wl.WriteOption, error) {
-	if noPadding && padding != "" {
-		return nil, usagef("--padding and --no-padding cannot be combined")
+// The value is parsed once, so every spelling of zero ("0", "00", " 0 ") behaves
+// identically: --padding 0 is a synonym for --no-padding, and the two conflict only
+// when --padding asks for a *positive* amount (a naive string "!= 0" test would
+// wrongly reject "00" or " 0 " alongside --no-padding - U4).
+//
+// --no-padding / --padding 0 writes none (Target 0, Max 0). A positive --padding N
+// is a floor: it reserves at least N bytes, so it sets Min=N as well as Target=N -
+// a rewrite grows a too-small region up to N instead of reusing it (without Min,
+// the reuse branch would keep the smaller existing region and silently ignore N).
+// Max stays 0 (no policy ceiling); the maxPaddingBytes usage cap and each format's
+// hard cap are the actual upper bounds.
+func resolvePaddingFlag(padding string, noPadding bool) (opt wl.WriteOption, flagGiven bool, err error) {
+	var value int64
+	hasValue := false
+	// Gate on the raw value, not the trimmed one: an empty "" means the flag was not
+	// given (the default sentinel), but a whitespace-only "   " WAS given and is not a
+	// valid byte count, so it must fail the parse below rather than silently default.
+	if padding != "" {
+		v, perr := strconv.ParseInt(strings.TrimSpace(padding), 10, 64)
+		if perr != nil || v < 0 {
+			return nil, false, usagef("--padding wants a non-negative byte count, got %q", padding)
+		}
+		if v > maxPaddingBytes {
+			return nil, false, usagef("--padding %d is too large (max %d bytes, 64 MiB)", v, maxPaddingBytes)
+		}
+		value, hasValue = v, true
 	}
-	if noPadding {
-		return wl.WithPadding(wl.PaddingPolicy{Target: 0, Max: 0}), nil
+	switch {
+	case !noPadding && !hasValue:
+		return nil, false, nil // neither flag: keep the default policy
+	case noPadding && value > 0:
+		// value > 0 implies --padding was given (value defaults to 0); the two contradict
+		// only for a positive amount, so every spelling of zero falls through and agrees.
+		return nil, false, usagef("--padding and --no-padding cannot be combined")
+	case value > 0:
+		return wl.WithPadding(wl.PaddingPolicy{Target: value, Min: value, Max: 0, ReuseInPlace: true}), true, nil
+	default:
+		// --no-padding, or --padding 0 in any spelling: write no padding. A floor policy
+		// with Min 0 would instead reuse an existing region rather than dropping it, so
+		// "0" would not shrink the file as a user reasonably expects.
+		return wl.WithPadding(wl.PaddingPolicy{Target: 0, Max: 0}), true, nil
 	}
-	if padding == "" {
-		return nil, nil
-	}
-	n, err := strconv.ParseInt(strings.TrimSpace(padding), 10, 64)
-	if err != nil || n < 0 {
-		return nil, usagef("--padding wants a non-negative byte count, got %q", padding)
-	}
-	if n == 0 {
-		// "--padding 0" means no padding, identical to --no-padding (Target 0, Max 0).
-		// The floor policy below would otherwise set ReuseInPlace with Min 0, which
-		// keeps an existing padding region in place rather than dropping it - so "0"
-		// would not shrink the file as a user reasonably expects.
-		return wl.WithPadding(wl.PaddingPolicy{Target: 0, Max: 0}), nil
-	}
-	if n > maxPaddingBytes {
-		return nil, usagef("--padding %d is too large (max %d bytes, 64 MiB)", n, maxPaddingBytes)
-	}
-	return wl.WithPadding(wl.PaddingPolicy{Target: n, Min: n, Max: 0, ReuseInPlace: true}), nil
 }
 
 // resolveWriteFlags turns the shared -preset/-legacy flag values into library
@@ -281,24 +406,27 @@ var legacyOptions = map[string]wl.LegacyPolicy{
 
 // compiledEdit holds the invocation-level edit inputs resolved once: the tag
 // patch, the write options (edit options plus any save-only extras), and the
-// validated cover pictures. A bulk run compiles these a single time, then applies
-// them to each file via prepare, so flag and cover validation happens once - not
+// validated pictures to add. A bulk run compiles these a single time, then applies
+// them to each file via prepare, so flag and picture validation happens once - not
 // once per file.
 type compiledEdit struct {
 	patch         tag.TagPatch
 	opts          []wl.WriteOption
-	covers        []wl.Picture
-	rmPics        bool
+	addPics       []wl.Picture // --add-cover/--add-picture pictures, validated and sniffed at compile time
+	removePics    []string     // --remove-picture selectors (role name or 1-based index), resolved per file
+	rmPics        bool         // --remove-pictures (all)
 	chapters      []wl.Chapter // --add-chapter additions, validated at compile time
 	clearChapters bool         // --clear-chapters
 	unknownKeys   []tag.Key    // --set/--add keys outside the canonical vocabulary, first-seen order
+	clearKeys     []tag.Key    // --clear keys outside the canonical vocabulary, first-seen order (C2)
+	paddingFlag   bool         // whether --padding/--no-padding was given, for the per-format note (D2)
 }
 
 // compile resolves the edit flags into a compiledEdit, surfacing any usage error
 // in the flags (bad --set, unknown preset/legacy, or a rejected cover) before any
 // file is parsed. extra carries save-only options (verify, preserve-mtime).
 func (e *editFlags) compile(extra ...wl.WriteOption) (*compiledEdit, error) {
-	opts, err := e.writeOptions()
+	opts, padFlag, err := e.writeOptions()
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +443,7 @@ func (e *editFlags) compile(extra ...wl.WriteOption) (*compiledEdit, error) {
 	if patch.Touches(tag.Encoder) {
 		opts = append(opts, wl.WithStripEncoderStamp())
 	}
-	covers, err := e.loadCovers()
+	addPics, err := e.loadPictures()
 	if err != nil {
 		return nil, err
 	}
@@ -326,11 +454,14 @@ func (e *editFlags) compile(extra ...wl.WriteOption) (*compiledEdit, error) {
 	return &compiledEdit{
 		patch:         patch,
 		opts:          opts,
-		covers:        covers,
+		addPics:       addPics,
+		removePics:    e.removePicture,
 		rmPics:        e.rmPics,
 		chapters:      chapters,
 		clearChapters: e.clearChapters,
 		unknownKeys:   e.unknownAssignKeys(),
+		clearKeys:     e.unknownClearKeys(),
+		paddingFlag:   padFlag,
 	}, nil
 }
 
@@ -340,11 +471,40 @@ func (e *editFlags) compile(extra ...wl.WriteOption) (*compiledEdit, error) {
 // --clear is exempt, since clearing a stray key is harmless. The raw assignments
 // have already been validated by patch(), so a re-parse cannot fail here.
 func (e *editFlags) unknownAssignKeys() []tag.Key {
+	var keys []tag.Key
+	for _, kv := range slices.Concat(e.set, e.add) {
+		if k, _, err := splitAssign(kv); err == nil {
+			keys = append(keys, k)
+		}
+	}
+	return dedupUnknownKeys(keys)
+}
+
+// unknownClearKeys returns the --clear keys outside the published canonical
+// vocabulary, in first-seen order with no duplicates. Clearing such a key affects
+// only a custom field of that exact name, so a typo'd --clear (e.g. ARTIS) is a
+// silent no-op on a file that has no such field - a command surfaces these as a
+// text note (C2). --strip-encoder is exempt (it clears the canonical ENCODER). The
+// raw values were already validated by patch(), so a re-parse cannot fail here.
+func (e *editFlags) unknownClearKeys() []tag.Key {
+	var keys []tag.Key
+	for _, ks := range e.clear {
+		if k, err := tag.ParseKey(strings.TrimSpace(ks)); err == nil {
+			keys = append(keys, k)
+		}
+	}
+	return dedupUnknownKeys(keys)
+}
+
+// dedupUnknownKeys returns the keys outside the published canonical vocabulary, in
+// first-seen order with no duplicates. It is the shared filter behind the
+// unknown-assign and unknown-clear notes, so the "is it unknown / already seen" rule
+// cannot drift between them.
+func dedupUnknownKeys(keys []tag.Key) []tag.Key {
 	var out []tag.Key
 	seen := map[tag.Key]bool{}
-	for _, kv := range slices.Concat(e.set, e.add) {
-		k, _, err := splitAssign(kv)
-		if err != nil || k.Known() || seen[k] {
+	for _, k := range keys {
+		if k.Known() || seen[k] {
 			continue
 		}
 		seen[k] = true
@@ -398,6 +558,7 @@ func notifyInvocationNotes(errOut io.Writer, ce *compiledEdit, ef *editFlags, re
 		}
 	}
 	if exists {
+		notifyClearKeys(errOut, ce, asJSON)
 		notifyValueNotes(errOut, ef, asJSON)
 	}
 	return nil
@@ -433,7 +594,7 @@ func notifyUnknownKeys(errOut io.Writer, ce *compiledEdit, strict, asJSON bool) 
 		return usagef("unknown key(s) not in the canonical vocabulary: %s (omit --strict to write them as custom fields)", keyList(ks))
 	})
 	for _, k := range note {
-		fmt.Fprintf(errOut, "note: %s is not a known key; written as a custom field\n", k)
+		fmt.Fprintf(errOut, "note: %s is not a known key; written as a custom field%s\n", k, didYouMean(k))
 	}
 	// One trailing hint after the per-key lines (not per key, so five unknown keys do
 	// not repeat it five times) points at the discovery command for the canonical
@@ -442,6 +603,32 @@ func notifyUnknownKeys(errOut io.Writer, ce *compiledEdit, strict, asJSON bool) 
 		fmt.Fprintln(errOut, "note: run 'waxlabel keys' to list the canonical vocabulary")
 	}
 	return err
+}
+
+// didYouMean returns a "; did you mean KEY?" suffix when an unknown key is a near
+// miss for a canonical one ([tag.ClosestKey]), or "" when nothing is close enough.
+// Shared by the unknown-assign-key note and the unknown-clear-key note (U2) so both
+// phrase the suggestion identically.
+func didYouMean(k tag.Key) string {
+	if s, ok := tag.ClosestKey(string(k)); ok {
+		return fmt.Sprintf("; did you mean %s?", s)
+	}
+	return ""
+}
+
+// notifyClearKeys notes each --clear key outside the canonical vocabulary (C2):
+// clearing it affects only a custom field of that exact name, so a typo'd --clear
+// (e.g. ARTIS) is otherwise a silent no-op on a file that has no such field. The
+// note is text-only and suppressed under --json, and - unlike the unknown-assign
+// guardrail - is never escalated under --strict (clearing a stray key is harmless).
+// It carries the same "did you mean?" suggestion as the assign note (U2).
+func notifyClearKeys(errOut io.Writer, ce *compiledEdit, asJSON bool) {
+	if asJSON {
+		return
+	}
+	for _, k := range ce.clearKeys {
+		fmt.Fprintf(errOut, "note: %s is not a known key (clearing affects only a custom field of that exact name)%s\n", k, didYouMean(k))
+	}
 }
 
 // notifyValueNotes emits the invocation-level, text-only advisory notes about the
@@ -488,11 +675,18 @@ func notifyValueNotes(errOut io.Writer, e *editFlags, asJSON bool) {
 // byte must not reach the terminal raw and an embedded newline must not forge a
 // line. (SanitizeLine, not SanitizeText, to match the single-line-field convention.)
 func noteMalformedValue(errOut io.Writer, k tag.Key, v string) {
+	ks, vs := tag.SanitizeLine(string(k)), tag.SanitizeLine(v)
 	switch {
 	case tag.IsNumericKey(k) && !tag.ValidNumericValue(k, v):
-		fmt.Fprintf(errOut, "note: %s=%s does not look like a number; written as-is\n", tag.SanitizeLine(string(k)), tag.SanitizeLine(v))
+		fmt.Fprintf(errOut, "note: %s=%s does not look like a number; written as-is\n", ks, vs)
+	case tag.IsNumericKey(k) && tag.NegativeNumericValue(k, v):
+		// The value parses (so it is not "malformed"), but a negative number/total or
+		// play count is semantically odd; advise without rejecting it (V2).
+		fmt.Fprintf(errOut, "note: %s=%s is negative; written as-is (numbering is normally non-negative)\n", ks, vs)
 	case tag.IsDateKey(k) && !tag.ValidPartialDate(v):
-		fmt.Fprintf(errOut, "note: %s=%s is not YYYY / YYYY-MM / YYYY-MM-DD; written as-is\n", tag.SanitizeLine(string(k)), tag.SanitizeLine(v))
+		fmt.Fprintf(errOut, "note: %s=%s is not YYYY / YYYY-MM / YYYY-MM-DD; written as-is\n", ks, vs)
+	case tag.IsBooleanKey(k) && !tag.ValidBooleanValue(k, v):
+		fmt.Fprintf(errOut, "note: %s=%s does not look like a boolean (1/true/yes/0/false/no); written as-is\n", ks, vs)
 	}
 }
 
@@ -539,6 +733,42 @@ func (n *singleValuedNotifier) check(plan *wl.Plan) error {
 	return err
 }
 
+// paddingNoter emits the per-format note that a --padding/--no-padding flag does
+// not apply to a file's format, deduped so a bulk run reports each distinct format
+// once instead of once per file. It is text-only (suppressed under --json, where a
+// note would corrupt the machine stream) and never an error - the flag is simply a
+// no-op on that format. set and plan share it, keyed off the format's
+// Capabilities.Padding level (D2), so their guidance cannot drift. The caller gates
+// note() on whether a padding flag was even given (ce.paddingFlag), so the format's
+// Capabilities are not built when no flag is present (the common case).
+type paddingNoter struct {
+	asJSON bool
+	errOut io.Writer
+	seen   map[wl.Format]bool
+}
+
+func newPaddingNoter(asJSON bool, errOut io.Writer) *paddingNoter {
+	return &paddingNoter{asJSON: asJSON, errOut: errOut, seen: map[wl.Format]bool{}}
+}
+
+// note emits the padding note for caps's format, at most once per format, only when
+// the format has no padding concept at all (AccessNone: Ogg/WAV/AIFF/Matroska) so the
+// flag genuinely does nothing. AccessFull (FLAC) and AccessPartial (the front-tag
+// codecs MP3/AAC and MP4) both honor the flags - on Partial the effect depends on
+// whether the edit reuses the existing tag region in place, which is too nuanced for a
+// one-line note and was previously stated wrongly (MP3/AAC --no-padding does shrink),
+// so those get no note; caps and the README document the per-format detail.
+func (n *paddingNoter) note(caps wl.Capabilities) {
+	if n.asJSON || n.seen[caps.Format] {
+		return
+	}
+	if caps.Padding != wl.AccessNone {
+		return
+	}
+	n.seen[caps.Format] = true
+	fmt.Fprintf(n.errOut, "note: padding control does not apply to %s; --padding/--no-padding has no effect\n", caps.Format)
+}
+
 // keyList renders keys as a comma-separated string for a one-line message.
 func keyList(keys []tag.Key) string {
 	s := make([]string, len(keys))
@@ -548,12 +778,14 @@ func keyList(keys []tag.Key) string {
 	return strings.Join(s, ", ")
 }
 
-// prepare parses path, applies the compiled edit, and resolves the write plan.
-// Prepare performs no I/O beyond the parse, so plan and set share this without
-// writing anything. Picture removal happens before adds so
-// "--remove-pictures --add-cover x" yields just the new cover.
-func (ce *compiledEdit) prepare(ctx context.Context, path string) (*wl.Document, *wl.Plan, error) {
-	doc, err := wl.ParseFile(ctx, path)
+// prepare parses the file at realPath (reported under origPath's display name, so
+// a buffered-stdin temp path never leaks into a parse error), applies the
+// compiled edit, and resolves the write plan. Prepare performs no I/O beyond the
+// parse, so plan and set share this without writing anything. Picture removals
+// happen before adds so "--remove-picture front-cover --add-cover x" replaces the
+// cover (and "--remove-pictures --add-cover x" yields just the new cover).
+func (ce *compiledEdit) prepare(ctx context.Context, realPath, origPath string) (*wl.Document, *wl.Plan, error) {
+	doc, err := parseInput(ctx, realPath, origPath)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -561,7 +793,23 @@ func (ce *compiledEdit) prepare(ctx context.Context, path string) (*wl.Document,
 	if ce.rmPics {
 		ed.ClearPictures()
 	}
-	for _, p := range ce.covers {
+	// Selective --remove-picture: resolve the selectors against the file's pictures in
+	// dump order, then remove by index with a stateful closure. Editor.RemovePictures
+	// evaluates the match once per picture in order, so the running counter stays
+	// aligned with doc.Pictures() and a removal cannot shift the indices of later
+	// pictures out from under the selectors (review #5).
+	if len(ce.removePics) > 0 {
+		targets, err := resolveRemovals(ce.removePics, doc.Pictures())
+		if err != nil {
+			return nil, nil, err
+		}
+		i := -1
+		ed.RemovePictures(func(wl.Picture) bool {
+			i++
+			return targets[i]
+		})
+	}
+	for _, p := range ce.addPics {
 		ed.AddPicture(p)
 	}
 	// Chapters: --add-chapter appends to the file's existing chapters; --clear-chapters

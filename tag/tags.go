@@ -296,6 +296,14 @@ var dateKeySet = map[Key]bool{
 	AcquisitionDate: true,
 }
 
+// booleanKeys is the canonical keys whose value is a boolean flag - today only
+// Compilation, whose typed [Tags] projection is a bool ([ParseBool]). Kept as a
+// set so [IsBooleanKey] is the single boolean-key definition the set-time
+// malformed-value note reads, mirroring numericKeys/dateKeySet.
+var booleanKeys = map[Key]bool{
+	Compilation: true,
+}
+
 // IsNumericKey reports whether k canonically holds a numeric value (one with an
 // int projection in [Tags]): the track/disc number and total, and play count.
 func IsNumericKey(k Key) bool { return numericKeys[k] }
@@ -303,6 +311,10 @@ func IsNumericKey(k Key) bool { return numericKeys[k] }
 // IsDateKey reports whether k canonically holds an ISO-8601 partial date (YYYY,
 // YYYY-MM, or YYYY-MM-DD).
 func IsDateKey(k Key) bool { return dateKeySet[k] }
+
+// IsBooleanKey reports whether k canonically holds a boolean flag (one with a
+// bool projection in [Tags]): today only Compilation.
+func IsBooleanKey(k Key) bool { return booleanKeys[k] }
 
 // ValidNumericValue reports whether v is a value the numeric key k accepts
 // without loss. It mirrors [ParseNumPair] exactly so it never flags a value that
@@ -332,11 +344,46 @@ func numComponent(s string) bool {
 	return strings.TrimSpace(s) == "" || validInt(s)
 }
 
+// NegativeNumericValue reports whether numeric key k's value v has a negative
+// component. Atoi accepts a leading sign, so such a value round-trips and
+// [ValidNumericValue] accepts it - but a negative track/disc number, total, or play
+// count is semantically odd, so the CLI advises on it (the value is still written).
+// It mirrors ValidNumericValue's structure so the "n/total" pair keys check each
+// side independently: both -3/10 and 3/-10 are caught. A non-numeric key, or a value
+// with no negative component, reports false.
+func NegativeNumericValue(k Key, v string) bool {
+	if !numericKeys[k] {
+		return false
+	}
+	if k == TrackNumber || k == DiscNumber {
+		if num, total, ok := strings.Cut(v, "/"); ok {
+			return negativeInt(num) || negativeInt(total)
+		}
+	}
+	return negativeInt(v)
+}
+
+// parseIntField parses one numeric component (trimmed of surrounding whitespace),
+// the same parse [ParseNumPair] applies, returning the value and whether it parsed.
+// It is the single place validInt and negativeInt read, so a parse-rule change cannot
+// make the malformed and negative checks drift apart.
+func parseIntField(s string) (int, bool) {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	return n, err == nil
+}
+
+// negativeInt reports whether s parses (trimmed) as a negative integer. An empty or
+// non-integer side is not negative; ValidNumericValue judges malformedness.
+func negativeInt(s string) bool {
+	n, ok := parseIntField(s)
+	return ok && n < 0
+}
+
 // validInt reports whether s, after trimming surrounding whitespace, parses as an
 // integer - the same parse [ParseNumPair] applies.
 func validInt(s string) bool {
-	_, err := strconv.Atoi(strings.TrimSpace(s))
-	return err == nil
+	_, ok := parseIntField(s)
+	return ok
 }
 
 // ValidPartialDate accepts the ISO-8601 reduced precisions YYYY, YYYY-MM, and
@@ -362,6 +409,25 @@ func ValidPartialDate(s string) bool {
 func ParseBool(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidBooleanValue reports whether v is a recognized boolean spelling for the
+// boolean key k - "1"/"true"/"yes" or "0"/"false"/"no", case-insensitive and
+// whitespace-trimmed, the affirmatives matching [ParseBool] exactly plus their
+// negatives. A key that is not boolean is reported valid - there is nothing to
+// check. It backs the set-time malformed-value note, so a value that does not
+// round-trip through the bool projection ("maybe") can be flagged while still
+// being written faithfully.
+func ValidBooleanValue(k Key, v string) bool {
+	if !booleanKeys[k] {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "0", "false", "no":
 		return true
 	default:
 		return false

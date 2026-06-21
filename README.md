@@ -85,12 +85,16 @@ Install the binary with `go install github.com/colespringer/waxlabel/cmd/waxlabe
   writes nothing), or `-o` writes a single new file (one input only; an existing `-o`
   target is refused unless `--overwrite` is given, except when it is the input itself,
   and a no-op `-o` writes a verbatim copy). `--verify` checks the written
-  audio essence. `--strip-encoder` clears the transcoder stamp; `--add-chapter
-  TIMESTAMP=Title` / `--clear-chapters` edit navigation chapters; `--recursive` walks
-  directory arguments. `--padding N` / `--no-padding` control the free space reserved
-  after the metadata (default 8 KiB; `--padding N` is a floor that grows a too-small
-  region, while `--padding 0` is a synonym for `--no-padding`; `--preset minimal` also
-  writes none); both `set` and `plan` accept them.
+  audio essence. `--strip-encoder` clears the transcoder stamp; `--add-cover PATH`
+  and `--add-picture ROLE=PATH` embed cover art (a shared `--picture-description`
+  applies to every picture added, and `--force` embeds an unrecognized image),
+  while `--remove-picture SELECTOR` (a role name or a 1-based `dump` index) and
+  `--remove-pictures` drop it; `--add-chapter TIMESTAMP=Title` / `--clear-chapters`
+  edit navigation chapters; `--recursive` walks directory arguments. `--padding N` /
+  `--no-padding` control the free space reserved after the metadata (a floor that
+  grows a too-small region; `--padding 0` is a synonym for `--no-padding`;
+  `--preset minimal` also writes none), to the extent the format supports it - see
+  [Padding](#padding); both `set` and `plan` accept them.
 - **`lint <file>...`** - report metadata issues (stale legacy tags, encoder noise,
   conflicting families, bad pictures, malformed dates, missing audio). `--fix`
   applies only the safe, non-destructive remediations and saves; pictures are never
@@ -196,7 +200,7 @@ A small set of contracts is stable:
 |-----------|-------|:----:|:-----:|-------|
 | FLAC | FLAC | yes | yes | Vorbis comments, pictures, stray-ID3 + CUESHEET/SEEKTABLE preserved |
 | Ogg | Vorbis | yes | yes | Vorbis comments + `METADATA_BLOCK_PICTURE`; setup header preserved; audio packets byte-identical |
-| Ogg | Opus | yes | yes | OpusTags (+ padding) + pictures; R128 `output_gain` distinct from ReplayGain |
+| Ogg | Opus | yes | yes | OpusTags + pictures; OpusTags padding round-tripped as-is; R128 `output_gain` distinct from ReplayGain |
 | MP3 | ID3v2/v1 | yes | yes | ID3v2.2/2.3/2.4 read+write (version preserved); ID3v1/APEv2 read into the family view; numeric genre; VBR length |
 | WAV | RIFF | yes | yes | LIST/INFO + embedded `id3 ` chunk; id3 authoritative when present, else INFO; pictures via id3; all chunks preserved; RF64/BW64 out of scope |
 | MP4 | AAC/ALAC | yes | yes | iTunes `moov.udta.meta.ilst` (text, trkn/disk, covr art, `----` freeform long tail); `free`-atom reuse + all-track `stco`/`co64` fixups; `chpl` preserved; fragmented (moof) rejected |
@@ -206,6 +210,24 @@ A small set of contracts is stable:
 Ogg writes preserve audio *packet payloads* byte-for-byte (Ogg re-pagination is
 allowed); chained/multiplexed streams are read best-effort and reported, but
 writing them is refused.
+
+## Padding
+
+WaxLabel can reserve free space after the metadata so a later edit grows in place
+without rewriting the audio. How fully the `--padding N` / `--no-padding` controls
+apply depends on the format; `caps` reports the level as `none`, `partial`, or `full`:
+
+- **Full (FLAC):** FLAC rewrites its metadata block on every edit, so the 8 KiB
+  default applies each save and both `--padding` (grow) and `--no-padding` (shrink)
+  take effect.
+- **Reused in place (MP3 / AAC / MP4):** a fit-in-place edit reuses the existing tag
+  region, keeping whatever padding it already has rather than applying the default.
+  `--padding N` reserves at least N bytes (growing the region on a rewrite when
+  needed); `--no-padding` drops padding by rewriting — always on MP3/AAC, and on MP4
+  when the edit does not fit in place.
+- **Preserved, not controllable (Opus):** OpusTags padding is round-tripped as-is.
+- **None (Ogg / WAV / AIFF / Matroska):** these formats have no metadata-padding
+  concept, so the flags are reported as not applicable, and `set`/`plan` note that.
 
 ## Audio identity
 

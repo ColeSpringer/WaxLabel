@@ -125,17 +125,46 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			"more than one ID3 chunk; the first is authoritative and the rest are dropped on rewrite")
 	}
 
+	// ssndAlign is the SSND "offset" field: block-alignment bytes that precede the
+	// first sample frame (almost always 0). It is read only to exclude those bytes
+	// from a truncated-frame recompute below; audioOff/audioEnd (and the digest range)
+	// keep their established meaning.
+	var ssndAlign int64
 	if d.ssndIdx >= 0 {
 		ch := d.chunks[d.ssndIdx]
 		d.audioOff = soundDataStart(ch.bodyOff, ch.bodyLen)
 		d.audioEnd = ch.bodyOff + ch.bodyLen
+		if ch.bodyLen >= ssndHeaderLen {
+			if hdr, err := bits.ReadSlice(src, ch.bodyOff, 4, limit); err == nil {
+				ssndAlign = int64(binary.BigEndian.Uint32(hdr))
+			}
+		}
 	}
 	// The SSND chunk declared more bytes than the file holds: a truncated AIFF.
 	if d.ssndTruncated {
 		warnings = core.WarnTruncated(warnings, "the SSND chunk")
 	}
 
-	d.track = buildTrack(d.comm)
+	// For a truncated SSND of a constant-frame-size encoding, report the duration the
+	// surviving sample bytes actually decode to (matching WAV), rather than COMM's
+	// now-overstated numFrames - which would imply audio the file does not hold. The
+	// sample bytes are what survives past SSND's 8-byte offset/blockSize sub-header and
+	// its declared `offset` alignment bytes (bodyLen is already EOF-clamped in
+	// walkChunks); the max(0, ...) covers a body too short to even hold the sub-header
+	// or whose alignment offset exceeds the surviving bytes - both mean zero frames.
+	// A compressed AIFF-C (ima4/alaw/ulaw) keeps its declared count: its bytes do not
+	// map linearly to frames. COMM is left untouched, so only the reported track
+	// duration changes; the truncated-audio warning fires regardless of this.
+	frames := d.comm.numFrames
+	if d.ssndTruncated && d.comm.constantFrameSize() {
+		if fs := d.comm.frameSize(); fs > 0 {
+			audioBytes := max(int64(0), d.chunks[d.ssndIdx].bodyLen-ssndHeaderLen-ssndAlign)
+			if present := audioBytes / fs; uint64(present) < uint64(frames) {
+				frames = uint32(present)
+			}
+		}
+	}
+	d.track = buildTrack(d.comm, frames)
 
 	media := &core.Media{
 		Format:     core.FormatAIFF,

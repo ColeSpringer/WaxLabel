@@ -83,7 +83,8 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 		Read: core.AccessNone, Write: core.AccessNone,
 		Representation: "not modeled",
 	}
-	return core.NewCapabilities(core.FormatAIFF, false, fields, pictures, chapters, nil)
+	// AIFF has no metadata-padding concept, so the padding controls do not apply.
+	return core.NewCapabilities(core.FormatAIFF, false, fields, pictures, chapters, core.AccessNone, nil)
 }
 
 // EssenceExtent returns the AIFF essence-digest inputs: a versioned extent name

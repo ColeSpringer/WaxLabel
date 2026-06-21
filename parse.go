@@ -90,6 +90,14 @@ func ParseFile(ctx context.Context, path string, opts ...ParseOption) (*Document
 
 // parseSource detects the format and dispatches to the codec.
 func parseSource(ctx context.Context, src ReaderAtSized, path string, opts core.ParseOptions) (*Document, error) {
+	// name is the display form for the could-not-identify diagnostics: the caller's
+	// SourceName when set (so a buffered-stdin temp path or the path-less Parse does
+	// not surface a temp path or an empty ""), else the path argument. Detection
+	// below still keys on the real path's extension, never name.
+	name := opts.SourceName
+	if name == "" {
+		name = path
+	}
 	// An empty file carries no signature, so its format cannot be identified
 	// regardless of name: normalize it to one outcome (unsupported) here, rather
 	// than letting the extension fall through to a codec whose own parse then fails
@@ -97,7 +105,7 @@ func parseSource(ctx context.Context, src ReaderAtSized, path string, opts core.
 	// unsupported. Detection stays policy-free ("what format is this"); this one
 	// site owns the empty-file rule.
 	if src.Size() == 0 {
-		return nil, fmt.Errorf("%w: could not identify %q (empty file)", waxerr.ErrUnsupportedFormat, path)
+		return nil, fmt.Errorf("%w: could not identify %q (empty file)", waxerr.ErrUnsupportedFormat, name)
 	}
 	// Detection looks past a leading ID3v2 tag when present: MP3 sniffs a bare
 	// ID3, but FLAC tolerates and raw AAC requires a front tag, so the real format
@@ -105,7 +113,7 @@ func parseSource(ctx context.Context, src ReaderAtSized, path string, opts core.
 	// core need not import the id3 codec.
 	codec, ok := core.DetectLeading(src, path, id3.TagSize)
 	if !ok {
-		return nil, fmt.Errorf("%w: could not identify %q", waxerr.ErrUnsupportedFormat, path)
+		return nil, fmt.Errorf("%w: could not identify %q", waxerr.ErrUnsupportedFormat, name)
 	}
 	media, err := codec.Parse(ctx, src, opts)
 	if err != nil {

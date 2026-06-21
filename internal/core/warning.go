@@ -95,6 +95,23 @@ const (
 	// typed projection sees only the first - so it is surfaced as a plan-time warning
 	// rather than written silently.
 	WarnSingleValuedMulti
+	// WarnDuplicatePicture means an edit added a picture whose image bytes are
+	// identical (same [Picture.Hash]) to another in the set. It is an edit-time sanity
+	// warning scoped to pictures this edit authored (the linter reports the whole-set
+	// case separately); the picture is still written. Its String() is "duplicate-picture"
+	// to match the linter's finding code, so the two never drift.
+	WarnDuplicatePicture
+	// WarnMultipleFrontCovers means an edit added a front-cover picture to a set that
+	// now holds more than one. An edit-time sanity warning scoped to this edit's
+	// additions; both covers are still written. Its String() is "multiple-front-covers"
+	// to match the linter's finding code.
+	WarnMultipleFrontCovers
+	// WarnPictureMetadataDropped means the destination format stores cover art as image
+	// data only, so a picture's role (type) and/or description an edit set are not
+	// preserved - the MP4 covr atom, which reads every cover back as a front cover with
+	// no description. A plan-time warning so the loss is visible before the write,
+	// rather than the saved file silently differing from the previewed edit.
+	WarnPictureMetadataDropped
 )
 
 func (c WarningCode) String() string {
@@ -143,6 +160,12 @@ func (c WarningCode) String() string {
 		return "duplicate-chapter"
 	case WarnSingleValuedMulti:
 		return "single-valued-multi"
+	case WarnDuplicatePicture:
+		return "duplicate-picture"
+	case WarnMultipleFrontCovers:
+		return "multiple-front-covers"
+	case WarnPictureMetadataDropped:
+		return "picture-metadata-dropped"
 	default:
 		return "unknown"
 	}

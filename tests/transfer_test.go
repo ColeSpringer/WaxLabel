@@ -138,8 +138,11 @@ func TestPrepareTransferOverlayKeepsDestKeys(t *testing.T) {
 	}
 }
 
-// TestPrepareTransferCarriesPictures: a source picture is carried into a
-// picture-capable destination and matches byte-for-byte.
+// TestPrepareTransferCarriesPictures: a source front cover carries into a
+// picture-capable destination and matches byte-for-byte. The destination here is MP4,
+// whose covr stores image data only - but a plain front cover (no role, no
+// description) round-trips losslessly, so the transfer reports it Carried, not Lossy
+// (the per-picture metadata loss is the plan warning's job, and there is none here).
 func TestPrepareTransferCarriesPictures(t *testing.T) {
 	png := tinyPNG()
 	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
@@ -162,7 +165,7 @@ func TestPrepareTransferCarriesPictures(t *testing.T) {
 		}
 	}
 	if pic.Disposition != wl.Carried || pic.Count != 1 {
-		t.Fatalf("picture item = %+v, want 1 carried", pic)
+		t.Fatalf("picture item = %+v, want 1 carried (a plain front cover round-trips on MP4)", pic)
 	}
 
 	result := mustParseBytes(t, applyToBytes(t, dstBytes, plan))

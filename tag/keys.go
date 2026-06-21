@@ -34,12 +34,18 @@ func validKeyByte(b byte) bool {
 	return b >= 0x20 && b <= 0x7E && b != '=' && !(b >= 'a' && b <= 'z')
 }
 
-// ParseKey normalizes s to uppercase, then validates it, returning the
-// canonical Key. It accepts any case on input (so "title" becomes TITLE) and
-// returns [waxerr.ErrInvalidKey] for empty input or a disallowed byte. ParseKey
-// is the blessed way to build a Key from external input; the exported constants
-// are the way to name a known one.
+// ParseKey trims surrounding whitespace, normalizes the result to uppercase,
+// then validates it, returning the canonical Key. It accepts any case on input
+// (so "title" becomes TITLE) and ignores surrounding whitespace (so "  X  "
+// becomes X; internal spaces are preserved, since a space is a valid key byte),
+// returning [waxerr.ErrInvalidKey] for empty (or all-whitespace) input or a
+// disallowed byte. ParseKey is the blessed way to build a Key from external
+// input; the exported constants are the way to name a known one.
 func ParseKey(s string) (Key, error) {
+	// Trim before the empty check so an all-whitespace input is rejected as empty
+	// rather than slipping through, and so the offset in a disallowed-byte error is
+	// measured against the trimmed key the caller actually gets.
+	s = strings.TrimSpace(s)
 	if s == "" {
 		return "", fmt.Errorf("%w: empty key", waxerr.ErrInvalidKey)
 	}

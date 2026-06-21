@@ -64,7 +64,9 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 		Read: core.AccessNone, Write: core.AccessNone,
 		Representation: "not modeled",
 	}
-	return core.NewCapabilities(core.FormatAAC, false, fields, pictures, chapters, nil)
+	// ID3 front-tag padding is grow-only (ReuseOrTarget), identical to MP3: a forced
+	// rewrite can grow the region, but a fit-in-place edit cannot shrink it.
+	return core.NewCapabilities(core.FormatAAC, false, fields, pictures, chapters, core.AccessPartial, nil)
 }
 
 // EssenceExtent returns the AAC essence-digest inputs: a versioned extent name

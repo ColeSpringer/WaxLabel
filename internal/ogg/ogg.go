@@ -66,7 +66,9 @@ func (c Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabili
 	chapters := core.Capability{
 		Read: core.AccessNone, Write: core.AccessNone, Representation: "not modeled",
 	}
-	return core.NewCapabilities(c.format, false, fields, pictures, chapters, nil)
+	// OggTags/OpusTags padding is round-tripped as-is; there is no padding control,
+	// so AccessNone.
+	return core.NewCapabilities(c.format, false, fields, pictures, chapters, core.AccessNone, nil)
 }
 
 // EssenceExtent returns the Ogg essence-digest inputs: a versioned extent name

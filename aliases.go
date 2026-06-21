@@ -164,28 +164,31 @@ const (
 
 // WarningCode values.
 const (
-	WarnStrayLeadingID3       = core.WarnStrayLeadingID3
-	WarnTrailingID3v1         = core.WarnTrailingID3v1
-	WarnLegacyAPE             = core.WarnLegacyAPE
-	WarnMultipleVorbisComment = core.WarnMultipleVorbisComment
-	WarnInheritedEncoder      = core.WarnInheritedEncoder
-	WarnDistrustedBlockSize   = core.WarnDistrustedBlockSize
-	WarnUnknownBlock          = core.WarnUnknownBlock
-	WarnInvalidPicture        = core.WarnInvalidPicture
-	WarnConflictingFamilies   = core.WarnConflictingFamilies
-	WarnNumericGenre          = core.WarnNumericGenre
-	WarnChainedStream         = core.WarnChainedStream
-	WarnID3MultiValue         = core.WarnID3MultiValue
-	WarnDuplicateTagBlock     = core.WarnDuplicateTagBlock
-	WarnChapterSourceConflict = core.WarnChapterSourceConflict
-	WarnChaptersStale         = core.WarnChaptersStale
-	WarnChapterTitleTruncated = core.WarnChapterTitleTruncated
-	WarnChaptersFlattened     = core.WarnChaptersFlattened
-	WarnNoAudioFrames         = core.WarnNoAudioFrames
-	WarnTruncatedAudio        = core.WarnTruncatedAudio
-	WarnChapterPastDuration   = core.WarnChapterPastDuration
-	WarnDuplicateChapter      = core.WarnDuplicateChapter
-	WarnSingleValuedMulti     = core.WarnSingleValuedMulti
+	WarnStrayLeadingID3        = core.WarnStrayLeadingID3
+	WarnTrailingID3v1          = core.WarnTrailingID3v1
+	WarnLegacyAPE              = core.WarnLegacyAPE
+	WarnMultipleVorbisComment  = core.WarnMultipleVorbisComment
+	WarnInheritedEncoder       = core.WarnInheritedEncoder
+	WarnDistrustedBlockSize    = core.WarnDistrustedBlockSize
+	WarnUnknownBlock           = core.WarnUnknownBlock
+	WarnInvalidPicture         = core.WarnInvalidPicture
+	WarnConflictingFamilies    = core.WarnConflictingFamilies
+	WarnNumericGenre           = core.WarnNumericGenre
+	WarnChainedStream          = core.WarnChainedStream
+	WarnID3MultiValue          = core.WarnID3MultiValue
+	WarnDuplicateTagBlock      = core.WarnDuplicateTagBlock
+	WarnChapterSourceConflict  = core.WarnChapterSourceConflict
+	WarnChaptersStale          = core.WarnChaptersStale
+	WarnChapterTitleTruncated  = core.WarnChapterTitleTruncated
+	WarnChaptersFlattened      = core.WarnChaptersFlattened
+	WarnNoAudioFrames          = core.WarnNoAudioFrames
+	WarnTruncatedAudio         = core.WarnTruncatedAudio
+	WarnChapterPastDuration    = core.WarnChapterPastDuration
+	WarnDuplicateChapter       = core.WarnDuplicateChapter
+	WarnSingleValuedMulti      = core.WarnSingleValuedMulti
+	WarnDuplicatePicture       = core.WarnDuplicatePicture
+	WarnMultipleFrontCovers    = core.WarnMultipleFrontCovers
+	WarnPictureMetadataDropped = core.WarnPictureMetadataDropped
 )
 
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated

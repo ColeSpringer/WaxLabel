@@ -161,7 +161,7 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// and corrupt on round-trip (e.g. a key containing '=').
 	for _, k := range e.patch.Keys() {
 		if !k.Valid() {
-			return nil, fmt.Errorf("%w: %q (keys are uppercase ASCII without '='; build them with tag.ParseKey or tag.MustKey)", waxerr.ErrInvalidKey, k)
+			return nil, fmt.Errorf("%w: %q (keys are uppercase printable ASCII without '=' (spaces and punctuation are allowed); build them with tag.ParseKey or tag.MustKey, which accept any case)", waxerr.ErrInvalidKey, k)
 		}
 	}
 
@@ -245,6 +245,16 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// authors nothing, so it suppresses these entirely via the carried flag.
 	if e.chaptersTouched && !e.carried {
 		wp.Report.Warnings = appendChapterWarnings(wp.Report.Warnings, e.chapters, e.base.Chapters, e.base.Properties.Duration())
+	}
+	// Surface edit-time picture sanity warnings for the pictures this edit authored
+	// (added via AddPicture, tracked by addedMask) - an unrecognized image embedded
+	// under WithUnrecognizedPictures, an added duplicate, or an added front cover that
+	// makes a second - so the user sees what a picture edit introduced without being
+	// lectured about a file's pre-existing art (which stays the linter's whole-set
+	// concern, mirroring how the chapter checks scope to newly-authored chapters). A
+	// faithful carry authors nothing, so it suppresses these via the carried flag.
+	if e.picsTouched && !e.carried {
+		wp.Report.Warnings = appendPictureWarnings(wp.Report.Warnings, e.pictures, e.addedMask)
 	}
 	// Surface a known single-valued key the edit leaves holding multiple values as a
 	// non-fatal plan warning, so a library caller sees the cardinality the typed
@@ -337,6 +347,80 @@ func appendChapterWarnings(ws []core.Warning, chapters, base []core.Chapter, dur
 			}
 		}
 		i = j + 1
+	}
+	return ws
+}
+
+// appendPictureWarnings adds the non-fatal picture sanity warnings for the
+// pictures this edit authored - those with addedMask[i] true (added via
+// AddPicture), not the ones Edit seeded from the file. Scoping to the added set is
+// the picture counterpart to appendChapterWarnings' new-chapter scope: a copy or a
+// tags-only edit must not be lectured about a file's pre-existing art, which the
+// linter already covers whole-set. Three checks, each off a predicate the linter
+// shares so the rule cannot drift:
+//   - invalid-picture: an added picture stored under [core.UnrecognizedMIME]. This
+//     reaches here only under WithUnrecognizedPictures (the CLI's --force); without
+//     it validateAddedPictures has already rejected the picture.
+//   - duplicate-picture: an added picture whose image bytes ([core.Picture.Hash])
+//     match another in the set. Reported once per duplicate group an added picture
+//     belongs to, whether the twin is another added picture or a pre-existing one.
+//   - multiple-front-covers: an added front cover that leaves the set holding more
+//     than one front cover (a pair the user did not touch stays the linter's job).
+func appendPictureWarnings(ws []core.Warning, pics []core.Picture, addedMask []bool) []core.Warning {
+	added := func(i int) bool { return i < len(addedMask) && addedMask[i] }
+
+	// One cheap pass over the set (no hashing): flag each added unrecognized image,
+	// tally front covers, record the byte lengths of added pictures (for the duplicate
+	// scan below), and note whether anything was added at all.
+	var anyAdded, frontAdded bool
+	fronts := 0
+	addedLens := map[int]bool{}
+	for i, p := range pics {
+		if added(i) {
+			anyAdded = true
+			addedLens[len(p.Data)] = true
+			if p.Unrecognized() {
+				ws = core.Warn(ws, core.WarnInvalidPicture, fmt.Sprintf(
+					"added %s picture is not a recognized image type (%s)", p.Type, p.MIME))
+			}
+		}
+		if p.Type == core.PicFrontCover {
+			fronts++
+			if added(i) {
+				frontAdded = true
+			}
+		}
+	}
+	// Nothing added (e.g. a removal-only edit, where addedMask is all-false): there is
+	// nothing to warn about, and - importantly - no picture has been hashed.
+	if !anyAdded {
+		return ws
+	}
+
+	// Duplicate detection. Two images of different byte length can never be equal, so
+	// hash only pictures whose length some added picture shares - a large pre-existing
+	// cover of a different size is never SHA-256'd. Then warn once per duplicate group an
+	// added picture belongs to (whether its twin is another added or a carried picture).
+	hashes := map[int][32]byte{}
+	counts := map[[32]byte]int{}
+	for i, p := range pics {
+		if !addedLens[len(p.Data)] {
+			continue
+		}
+		h := p.Hash()
+		hashes[i] = h
+		counts[h]++
+	}
+	warned := map[[32]byte]bool{}
+	for i := range pics { // pic order, so the warnings are deterministic
+		if h, ok := hashes[i]; ok && added(i) && counts[h] > 1 && !warned[h] {
+			warned[h] = true
+			ws = core.Warn(ws, core.WarnDuplicatePicture, duplicatePictureMessage(pics[i].Type))
+		}
+	}
+
+	if frontAdded && fronts > 1 {
+		ws = core.Warn(ws, core.WarnMultipleFrontCovers, multipleFrontCoversMessage(fronts))
 	}
 	return ws
 }

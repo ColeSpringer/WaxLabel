@@ -70,10 +70,14 @@ func extended80ToFloat(b []byte) float64 {
 	return sign * float64(mant) * math.Ldexp(1, exp-16383-63)
 }
 
-// buildTrack assembles audio properties from the COMM geometry. AIFF records the
-// sample-frame count directly, so the duration and total-sample count come from
-// COMM rather than from the sound-chunk length.
-func buildTrack(c commChunk) core.AudioTrack {
+// buildTrack assembles audio properties from the COMM geometry and an effective
+// sample-frame count. AIFF records the frame count directly in COMM, so the caller
+// normally passes c.numFrames; for a truncated SSND of a constant-frame-size
+// encoding it passes the smaller count the surviving bytes actually hold (C3), so
+// the reported duration matches what is decodable - the WAV behavior, where the
+// duration follows the present data length. c.numFrames itself is left untouched so
+// the writer's COMM bytes stay verbatim.
+func buildTrack(c commChunk, frames uint32) core.AudioTrack {
 	t := core.AudioTrack{
 		Codec: codecName(c),
 		// Cap the conversions so a hostile COMM value cannot overflow into a
@@ -81,10 +85,10 @@ func buildTrack(c commChunk) core.AudioTrack {
 		SampleRate:    int(min(int64(c.sampleRate), math.MaxInt32)),
 		Channels:      int(c.channels),
 		BitsPerSample: int(c.sampleSize),
-		TotalSamples:  uint64(c.numFrames),
+		TotalSamples:  uint64(frames),
 	}
 	if c.sampleRate > 0 {
-		secs := float64(c.numFrames) / float64(c.sampleRate)
+		secs := float64(frames) / float64(c.sampleRate)
 		if secs > 0 && secs < float64(math.MaxInt64)/float64(time.Second) {
 			t.Duration = time.Duration(secs * float64(time.Second))
 		}
@@ -96,6 +100,33 @@ func buildTrack(c commChunk) core.AudioTrack {
 		t.Bitrate = int(min(bitrate*int64(c.sampleSize), math.MaxInt32))
 	}
 	return t
+}
+
+// constantFrameSize reports whether the encoding stores a fixed number of bytes per
+// sample frame, so a present-byte count maps linearly to a frame count. True for
+// plain AIFF (always PCM) and for the uncompressed AIFF-C encodings - PCM (NONE /
+// twos / sowt) and IEEE float (fl32/FL32, fl64/FL64). It is deliberately false for
+// the compressed AIFF-C types (ima4 ADPCM has no constant frame size; alaw/ulaw
+// store one byte per sample while COMM's sampleSize is the *decoded* width, so the
+// byte-to-frame math would be wrong), where COMM's declared numFrames is kept.
+func (c commChunk) constantFrameSize() bool {
+	if !c.isAIFC {
+		return true
+	}
+	switch string(c.compType[:]) {
+	case "NONE", "twos", "sowt", "\x00\x00\x00\x00", "fl32", "FL32", "fl64", "FL64":
+		return true
+	}
+	return false
+}
+
+// frameSize returns the bytes per sample frame for a constant-frame-size encoding:
+// channels times the sample width rounded up to whole bytes. It is meaningful only
+// when [commChunk.constantFrameSize] holds; the caller guards on frameSize > 0. The
+// round-up is done in int64 so a pathological 16-bit sampleSize cannot wrap before
+// the divide.
+func (c commChunk) frameSize() int64 {
+	return int64(c.channels) * ((int64(c.sampleSize) + 7) / 8)
 }
 
 // codecName names the audio codec. Plain AIFF is always signed big-endian PCM;

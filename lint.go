@@ -57,9 +57,9 @@ func (f Finding) String() string {
 
 // Lint inspects a document for issues a tagger would want to surface or fix:
 // stale legacy containers, inherited encoder noise, conflicting family values,
-// duplicate or invalid pictures, malformed dates, single-valued keys carrying
-// several values, and custom (non-vocabulary) keys. It reads only the parsed
-// document (no I/O) and never modifies it.
+// duplicate or invalid pictures, malformed dates and numbers, single-valued keys
+// carrying several values, and custom (non-vocabulary) keys. It reads only the
+// parsed document (no I/O) and never modifies it.
 func (d *Document) Lint() []Finding {
 	if d.zero() {
 		return nil
@@ -70,6 +70,7 @@ func (d *Document) Lint() []Finding {
 	out = append(out, lintFamilies(d.media.Families)...)
 	out = append(out, lintPictures(d.media.Pictures)...)
 	out = append(out, lintDates(d.media.Tags)...)
+	out = append(out, lintNumbers(d.media.Tags)...)
 	out = append(out, lintCardinality(d.media.Tags)...)
 	out = append(out, lintCustomKeys(d.media.Tags)...)
 	return out
@@ -118,6 +119,19 @@ func lintFamilies(fams []core.FamilyValue) []Finding {
 	return out
 }
 
+// duplicatePictureMessage and multipleFrontCoversMessage are the shared human
+// messages for the duplicate-picture and multiple-front-covers conditions, so the
+// linter's whole-set finding (lintPictures) and the editor's edit-scoped plan warning
+// (appendPictureWarnings) read identically - only their scope differs, not the
+// wording, so a reword cannot make the two silently disagree on the same file.
+func duplicatePictureMessage(t core.PictureType) string {
+	return fmt.Sprintf("identical %s picture appears more than once", t)
+}
+
+func multipleFrontCoversMessage(fronts int) string {
+	return fmt.Sprintf("%d front-cover pictures", fronts)
+}
+
 // lintPictures reports duplicate covers, redundant front covers, and the
 // single-icon rule.
 func lintPictures(pics []Picture) []Finding {
@@ -125,19 +139,18 @@ func lintPictures(pics []Picture) []Finding {
 	seen := map[[32]byte]bool{}
 	fronts := 0
 	for _, p := range pics {
-		// A picture the codec could not sniff is stored as application/octet-stream;
-		// key on that MIME (not a re-sniff) so a cover a codec already recognized is
-		// never false-flagged. Reported only - never auto-fixed - since a valid but
+		// A picture the codec could not sniff is stored as the unrecognized-image MIME;
+		// key on that (not a re-sniff) so a cover a codec already recognized is never
+		// false-flagged. Reported only - never auto-fixed - since a valid but
 		// unsniffable cover (WebP/AVIF) degrades to exactly this, and dropping it
 		// would be silent data loss.
-		if p.MIME == "application/octet-stream" {
+		if p.Unrecognized() {
 			out = append(out, Finding{LintWarning, "invalid-picture",
 				fmt.Sprintf("%s picture is not a recognized image type (%s)", p.Type, p.MIME), ""})
 		}
 		h := p.Hash()
 		if seen[h] {
-			out = append(out, Finding{LintWarning, "duplicate-picture",
-				fmt.Sprintf("identical %s picture appears more than once", p.Type), ""})
+			out = append(out, Finding{LintWarning, "duplicate-picture", duplicatePictureMessage(p.Type), ""})
 		}
 		seen[h] = true
 		if p.Type == core.PicFrontCover {
@@ -145,8 +158,7 @@ func lintPictures(pics []Picture) []Finding {
 		}
 	}
 	if fronts > 1 {
-		out = append(out, Finding{LintWarning, "multiple-front-covers",
-			fmt.Sprintf("%d front-cover pictures", fronts), ""})
+		out = append(out, Finding{LintWarning, "multiple-front-covers", multipleFrontCoversMessage(fronts), ""})
 	}
 	if icon, otherIcon := core.CountIcons(pics); icon > 1 || otherIcon > 1 {
 		out = append(out, Finding{LintError, "duplicate-icon",
@@ -159,7 +171,9 @@ func lintPictures(pics []Picture) []Finding {
 // dates. It filters by [tag.IsDateKey] and validates with [tag.ValidPartialDate],
 // the single date-key set and validator shared with the CLI's set-time
 // malformed-value note, so the two cannot disagree - and it now covers
-// AcquisitionDate alongside the recording/release/original dates.
+// AcquisitionDate alongside the recording/release/original dates. A present-but-empty
+// value is skipped: set blesses it as the benign "empty value" advisory (not
+// malformed), so lint must agree rather than flag it.
 func lintDates(ts tag.TagSet) []Finding {
 	var out []Finding
 	// Iterate the key names and Get only the date keys, rather than ranging All()
@@ -171,9 +185,37 @@ func lintDates(ts tag.TagSet) []Finding {
 		}
 		vals, _ := ts.Get(k)
 		for _, v := range vals {
-			if !tag.ValidPartialDate(v) {
+			if v != "" && !tag.ValidPartialDate(v) {
 				out = append(out, Finding{LintWarning, "malformed-date",
 					fmt.Sprintf("%q is not YYYY, YYYY-MM, or YYYY-MM-DD", v), k})
+			}
+		}
+	}
+	return out
+}
+
+// lintNumbers reports numeric fields whose value is not an integer (or, for the
+// number/total pair keys TRACKNUMBER/DISCNUMBER, an "n/total" of integers). It
+// filters by [tag.IsNumericKey] and validates with [tag.ValidNumericValue], the
+// single numeric-key set and validator shared with the CLI's set-time
+// malformed-value note, so the two cannot disagree - mirroring lintDates. A
+// present-but-empty value is skipped (set blesses it as the benign "empty value"
+// advisory, exits 0, and writes it - so lint must not then flag it as malformed). Its
+// finding is a LintWarning, so a previously-"clean" file with e.g. TRACKNUMBER=abc
+// now flips to a non-zero lint exit (a deliberate expansion of lint coverage, V3).
+func lintNumbers(ts tag.TagSet) []Finding {
+	var out []Finding
+	// Range the key names and Get only the numeric keys (mirroring lintDates), so a
+	// large tag set clones at most the few numeric-key value slices.
+	for _, k := range ts.Keys() {
+		if !tag.IsNumericKey(k) {
+			continue
+		}
+		vals, _ := ts.Get(k)
+		for _, v := range vals {
+			if v != "" && !tag.ValidNumericValue(k, v) {
+				out = append(out, Finding{LintWarning, "malformed-number",
+					fmt.Sprintf("%q is not a number", v), k})
 			}
 		}
 	}

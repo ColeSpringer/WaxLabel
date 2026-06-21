@@ -73,7 +73,8 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 		Read: core.AccessNone, Write: core.AccessNone,
 		Representation: "cue/adtl (not modeled)",
 	}
-	return core.NewCapabilities(core.FormatWAV, false, fields, pictures, chapters, nil)
+	// WAV has no metadata-padding concept, so the padding controls do not apply.
+	return core.NewCapabilities(core.FormatWAV, false, fields, pictures, chapters, core.AccessNone, nil)
 }
 
 // EssenceExtent returns the WAV essence-digest inputs: a versioned extent name

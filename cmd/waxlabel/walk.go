@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"io/fs"
 	"os"
@@ -66,6 +67,17 @@ func readInputs(stdin io.Reader, paths []string) (realOf func(string) string, cl
 	return realOf, cleanup, nil
 }
 
+// parseInput parses the file at realPath but reports it under origPath's display
+// name, so a buffered-stdin temp path never leaks into the library's
+// "could not identify" error (B1). realPath is the path actually read (the temp
+// file for "-"); origPath is the user's argument ("-" or the real path), which
+// displayName turns into "<stdin>" or a sanitized path. Routing every read
+// command's ParseFile through this one helper keeps the source-name plumbing from
+// being forgotten at a call site. extra carries any per-call parse options.
+func parseInput(ctx context.Context, realPath, origPath string, extra ...wl.ParseOption) (*wl.Document, error) {
+	return wl.ParseFile(ctx, realPath, append(extra, wl.WithSourceName(displayName(origPath)))...)
+}
+
 // expandPaths expands directory arguments into the audio files they contain when
 // recursive is set, walking each tree and keeping files whose extension matches a
 // known codec (a cheap filter that skips unrelated files without parsing them).
@@ -126,7 +138,8 @@ func expandPaths(paths []string, recursive bool) ([]string, error) {
 // checkRegularFile rejects a path that exists but is not a regular file - a FIFO,
 // device, socket, or directory - as a usage error (exit 2). It is the CLI choke
 // point that turns the library's exit-4 backstop into a precise exit-2 message
-// before any parse, and the same guard loadCovers applies to an --add-cover source.
+// before any parse, and the same guard loadPictureFile applies to an --add-cover /
+// --add-picture source.
 // It distinguishes exists-and-non-regular (the usage error) from does-not-exist
 // (returns nil, so the caller's own not-found path - exit 6 - still owns a typo'd
 // path) and from a regular file (nil). A FIFO is the case that matters most: os.Open

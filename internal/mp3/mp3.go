@@ -52,7 +52,9 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 		Read: core.AccessNone, Write: core.AccessNone,
 		Representation: "CHAP (not modeled)",
 	}
-	return core.NewCapabilities(core.FormatMP3, false, fields, pictures, chapters, nil)
+	// ID3 front-tag padding is grow-only (ReuseOrTarget): a forced rewrite can grow
+	// the region, but a fit-in-place edit reuses it and cannot shrink in place.
+	return core.NewCapabilities(core.FormatMP3, false, fields, pictures, chapters, core.AccessPartial, nil)
 }
 
 // EssenceExtent returns the MP3 essence-digest inputs: a versioned extent name

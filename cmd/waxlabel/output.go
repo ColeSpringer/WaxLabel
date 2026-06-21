@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -306,15 +307,18 @@ func noteNoFiles(w io.Writer, paths []string) {
 // fields are set only at the cobra-origin sites that dead-end with no guidance (an
 // unknown flag, a bad arg count, an unknown command): cmd is the resolved command
 // path for the help hint (empty falls back to "waxlabel"), wantsHint requests the
-// "run '<cmd> --help' for usage" pointer (M5), and multiline marks the message as
+// "run '<cmd> --help' for usage" pointer (M5), multiline marks the message as
 // trusted multi-line cobra text whose newlines/tabs must be preserved on render
-// (the "Did you mean this?" suggestion block - H1). The hand-written usagef
-// messages leave all three zero: they are single-line and already self-document.
+// (the "Did you mean this?" suggestion block - H1), and hint carries an explicit
+// hint line that overrides the wantsHint pointer (the leading-dash "use --" guidance
+// on an unknown flag/shorthand - U5). The hand-written usagef messages leave all
+// four zero: they are single-line and already self-document.
 type usageError struct {
 	msg       string
 	cmd       string
 	wantsHint bool
 	multiline bool
+	hint      string
 }
 
 func (e *usageError) Error() string { return e.msg }
@@ -432,7 +436,12 @@ func classifyError(err error) classifiedError {
 		c.exitCode, c.code = 2, "usage"
 		if ue, ok := errors.AsType[*usageError](err); ok {
 			c.multiline = ue.multiline
-			if ue.wantsHint {
+			switch {
+			case ue.hint != "":
+				// An explicit hint (the leading-dash "use --" guidance) wins over the
+				// generic --help pointer, which would be the less useful of the two here.
+				c.hint = ue.hint
+			case ue.wantsHint:
 				name := ue.cmd
 				if name == "" {
 					name = "waxlabel"
@@ -548,6 +557,28 @@ func isLocalIOError(err error) bool {
 // exitCodeFor maps an error to its process exit code.
 func exitCodeFor(err error) int { return classifyError(err).exitCode }
 
+// dashPathHint guides a user who passed a leading-dash file path (which cobra reads
+// as an unknown flag) to the "--" end-of-flags marker. Phrased conditionally ("if
+// this was a file path") so it never misleads even when shown (U5). Shared by the
+// flag-error path (wrapUsageErrors' FlagErrorFunc, the route cobra actually takes for
+// a flag-parse failure) and normalizeExecuteError's backstop, so both read alike.
+const dashPathHint = "if this was a file path beginning with '-', put '--' before it (e.g. waxlabel dump -- -track.flac)"
+
+// looksLikePathFlag reports whether an unknown-flag error message's offending token
+// looks like a file path - it carries a path separator or a known audio extension -
+// which is when the leading-dash "--" hint is more useful than the generic --help
+// pointer. A genuine flag typo, including a dotted one like "--log.level=debug", is
+// NOT treated as a path (a bare dot is not enough), so it keeps the --help hint. The
+// token is the last space-separated word of cobra's message ("unknown flag: --x" /
+// "unknown shorthand flag: 'x' in -x"); the fixed prefix carries no path bytes.
+func looksLikePathFlag(msg string) bool {
+	token := msg[strings.LastIndexByte(msg, ' ')+1:]
+	if strings.ContainsAny(token, "/\\") {
+		return true // a path separator is never part of a real flag name
+	}
+	return isAudioExtension(filepath.Ext(token)) // e.g. -track.flac, --song.mp3
+}
+
 // normalizeExecuteError converts cobra's untyped unknown-command/flag errors
 // into usage errors so they map to exit code 2.
 func normalizeExecuteError(err error) error {
@@ -558,12 +589,21 @@ func normalizeExecuteError(err error) error {
 	for _, p := range []string{"unknown command", "unknown subcommand", "unknown flag", "unknown shorthand"} {
 		if strings.HasPrefix(msg, p) {
 			ue := &usageError{msg: msg}
-			// The unknown command/subcommand text is cobra's trusted multi-line "Did
-			// you mean this?" block: preserve its newlines/tabs (H1) and point at the
-			// command list (M5). cmd stays empty so the hint falls back to "waxlabel" -
-			// an unknown command should list the commands, not a subcommand's flags.
-			if p == "unknown command" || p == "unknown subcommand" {
+			switch p {
+			case "unknown command", "unknown subcommand":
+				// Cobra's trusted multi-line "Did you mean this?" block: preserve its
+				// newlines/tabs (H1) and point at the command list (M5). cmd stays empty so
+				// the hint falls back to "waxlabel" - an unknown command should list the
+				// commands, not a subcommand's flags.
 				ue.multiline, ue.wantsHint = true, true
+			case "unknown flag", "unknown shorthand":
+				// Backstop for a flag error that reaches here untyped; in practice cobra
+				// routes flag-parse failures through FlagErrorFunc (wrapUsageErrors), which
+				// attaches dashPathHint the same way (U5). Only when the token looks like a
+				// path - else a genuine typo is left to the help hint.
+				if looksLikePathFlag(msg) {
+					ue.hint = dashPathHint
+				}
 			}
 			return ue
 		}

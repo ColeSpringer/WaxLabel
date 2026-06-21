@@ -23,6 +23,7 @@ func TestProjectTransferDispositions(t *testing.T) {
 		Capability{Write: AccessFull},                              // generic field
 		Capability{Write: AccessNone, Representation: "no covers"}, // pictures
 		Capability{Write: AccessFull},                              // chapters
+		AccessNone,                                                 // padding
 		map[tag.Key]Capability{
 			"ARTIST": {Write: AccessPartial, Fidelity: "ASCII only"},
 		},
@@ -64,7 +65,7 @@ func TestProjectTransferDispositions(t *testing.T) {
 func TestProjectTransferMaxItems(t *testing.T) {
 	caps := NewCapabilities(FormatMP4, false,
 		Capability{Write: AccessFull}, Capability{Write: AccessFull},
-		Capability{Write: AccessFull, MaxItems: 255}, nil)
+		Capability{Write: AccessFull, MaxItems: 255}, AccessNone, nil)
 
 	over := &Media{Format: FormatFLAC, Chapters: make([]Chapter, 256)}
 	items := ProjectTransfer(over, caps)
@@ -88,7 +89,7 @@ func TestProjectTransferReadOnlyDropsEverything(t *testing.T) {
 	ts.Set("TITLE", "x")
 	m := &Media{Format: FormatFLAC, Tags: ts, Pictures: []Picture{{}}}
 	caps := NewCapabilities(FormatMatroska, true,
-		Capability{Write: AccessFull}, Capability{Write: AccessFull}, Capability{}, nil)
+		Capability{Write: AccessFull}, Capability{Write: AccessFull}, Capability{}, AccessNone, nil)
 
 	items := ProjectTransfer(m, caps)
 	for _, it := range items {
@@ -106,7 +107,7 @@ func TestProjectTransferReadOnlyDropsEverything(t *testing.T) {
 func TestProjectTransferEmptyMetadata(t *testing.T) {
 	m := &Media{Format: FormatFLAC}
 	items := ProjectTransfer(m, NewCapabilities(FormatMP4, false,
-		Capability{Write: AccessFull}, Capability{Write: AccessFull}, Capability{Write: AccessFull}, nil))
+		Capability{Write: AccessFull}, Capability{Write: AccessFull}, Capability{Write: AccessFull}, AccessNone, nil))
 	if len(items) != 0 {
 		t.Errorf("got %d items, want 0", len(items))
 	}

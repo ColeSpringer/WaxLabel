@@ -154,7 +154,7 @@ func runLint(cmd *cobra.Command, paths []string) error {
 	defer cleanup()
 	return lintLoop(cmd, paths,
 		func(ctx context.Context, path string) ([]wl.Finding, error) {
-			doc, err := wl.ParseFile(ctx, realOf(path))
+			doc, err := parseInput(ctx, realOf(path), path)
 			if err != nil {
 				return nil, err
 			}

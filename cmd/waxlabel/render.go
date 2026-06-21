@@ -146,16 +146,29 @@ func renderTags(w io.Writer, ts tag.TagSet) {
 	if n == 1 {
 		keyWord = "key"
 	}
-	fmt.Fprintf(w, "  tags (%d %s):\n", n, keyWord)
-	width := 0
+	// One pass over the keys computes both the alignment width and the conflict count
+	// (a known single-valued key holding several values prints an extra "(conflict)"
+	// row below, so the header would otherwise undercount the visible lines - C5).
+	// ValueCount reads the value count without cloning the slice (unlike Get), and
+	// SingleValuedMulti is the same predicate the per-row flag uses, so the count and
+	// the marked rows always agree.
+	width, conflicts := 0, 0
 	for _, k := range ts.Keys() {
-		if n := len(k); n > width {
-			width = n
+		if len(k) > width {
+			width = len(k)
+		}
+		if k.SingleValuedMulti(ts.ValueCount(k)) {
+			conflicts++
 		}
 	}
 	if width > keyColumn {
 		width = keyColumn
 	}
+	fmt.Fprintf(w, "  tags (%d %s", n, keyWord)
+	if conflicts > 0 {
+		fmt.Fprintf(w, ", %d in conflict", conflicts)
+	}
+	fmt.Fprintln(w, "):")
 	// Values print in the column after the key (4-space indent + key width + 2);
 	// continuation lines of a multi-line value (lyrics, comments) align there too.
 	valueCol := 4 + width + 2
@@ -242,25 +255,35 @@ func sanitizeJoin(vals []string, sep string) string {
 	return strings.Join(out, sep)
 }
 
-// renderPictures prints one line per embedded picture.
+// pictureRow formats one picture's columns - type, MIME, dimensions ("WxH" or "?"),
+// and size - as a single line with no leading indent or trailing newline. It is
+// shared by the dump picture listing and the plan's added-picture detail (C4a) so the
+// two column layouts cannot drift. p.Type is an enum (safe) and p.MIME is file-derived
+// text; both are single-line columns escaped via SanitizeLine (which also escapes
+// \n/\t, so neither can break the layout or forge a line).
+func pictureRow(p wl.Picture) string {
+	dim := "?"
+	if p.Width > 0 && p.Height > 0 {
+		dim = fmt.Sprintf("%dx%d", p.Width, p.Height)
+	}
+	return fmt.Sprintf("%-12s %-22s %-9s %s", tag.SanitizeLine(p.Type.String()), tag.SanitizeLine(p.MIME), dim, wl.HumanBytes(int64(len(p.Data))))
+}
+
+// renderPictures prints one line per embedded picture, numbered 1-based so the index
+// --remove-picture accepts is visible (the rows are in doc.Pictures() order, which is
+// what the index selects against).
 func renderPictures(w io.Writer, pics []wl.Picture) {
 	if len(pics) == 0 {
 		return
 	}
 	fmt.Fprintf(w, "  pictures (%d):\n", len(pics))
-	for _, p := range pics {
-		dim := "?"
-		if p.Width > 0 && p.Height > 0 {
-			dim = fmt.Sprintf("%dx%d", p.Width, p.Height)
-		}
-		// p.Type is an enum (safe), p.MIME is file-derived text; both are single-line
-		// columns, so escape via SanitizeLine (also escapes \n/\t, so neither can break
-		// the column layout or forge a line). p.Description is left alone: it prints via
-		// %q below, which independently escapes control chars, \n/\t, invalid UTF-8, and
-		// DEL/C1 - meeting both tiers - so sanitizing it too would double-escape.
-		fmt.Fprintf(w, "    %-12s %-22s %-9s %s\n", tag.SanitizeLine(p.Type.String()), tag.SanitizeLine(p.MIME), dim, wl.HumanBytes(int64(len(p.Data))))
+	for i, p := range pics {
+		fmt.Fprintf(w, "    %d. %s\n", i+1, pictureRow(p))
 		if p.Description != "" {
-			fmt.Fprintf(w, "      %q\n", p.Description)
+			// p.Description prints via %q, which independently escapes control chars,
+			// \n/\t, invalid UTF-8, and DEL/C1 - meeting both safety tiers - so it is not
+			// run through SanitizeLine too (that would double-escape).
+			fmt.Fprintf(w, "       %q\n", p.Description)
 		}
 	}
 }
@@ -345,8 +368,11 @@ func nativeSize(e wl.NativeEntry) string {
 }
 
 // renderReport prints a write plan: its operations, size change, padding, and
-// warnings. A no-op plan reports that the file is already up to date.
-func renderReport(w io.Writer, path string, plan *wl.Plan) {
+// warnings. A no-op plan reports that the file is already up to date. addedPics are
+// the pictures this edit adds (ce.addPics); they are listed under a picture-count
+// change so an added cover is not opaque (C4a). copy passes nil (its transfer report
+// already details the carried pictures).
+func renderReport(w io.Writer, path string, plan *wl.Plan, addedPics []wl.Picture) {
 	r := plan.Report()
 	name := displayName(path)
 	if plan.IsNoOp() {
@@ -354,7 +380,7 @@ func renderReport(w io.Writer, path string, plan *wl.Plan) {
 		return
 	}
 	fmt.Fprintf(w, "%s: plan\n", name)
-	renderChanges(w, plan.Changes())
+	renderChanges(w, plan.Changes(), addedPics)
 	if len(r.Operations) == 0 {
 		fmt.Fprintln(w, "  - rewrite metadata")
 	}
@@ -375,16 +401,33 @@ func renderReport(w io.Writer, path string, plan *wl.Plan) {
 	}
 }
 
+// picturesCountKey is the lowercase pseudo-key the library's plan uses for the
+// picture-set count change (see countChange in plan.go); lowercase so it can never
+// collide with a canonical (uppercase) key. The CLI keys its added-picture detail
+// off it.
+const picturesCountKey = "pictures"
+
 // renderChanges prints the field-level change preview (which keys are added,
 // removed, or changed) under a "changes:" heading, reusing the diff markers. It
 // prints nothing when the plan changes no fields, so a picture-only or
-// container-only rewrite shows just its operations.
-func renderChanges(w io.Writer, changes []tag.Change) {
+// container-only rewrite shows just its operations. Under a picture add or swap it
+// lists each added picture's type/MIME/size (addedPics) so a "+ pictures: 1" - or a
+// --force'd application/octet-stream cover - is not opaque (C4a); the machine view
+// (jsonReport) keeps the bare count, so JSON consumers read picture detail from dump.
+func renderChanges(w io.Writer, changes []tag.Change, addedPics []wl.Picture) {
 	if len(changes) == 0 {
 		return
 	}
 	fmt.Fprintln(w, "  changes:")
 	for _, c := range changes {
 		renderChangeLine(w, "    ", c)
+		if c.Key == picturesCountKey && (c.Kind == tag.ChangeAdded || c.Kind == tag.ChangeChanged) {
+			for _, p := range addedPics {
+				fmt.Fprintf(w, "      + %s\n", pictureRow(p))
+				if p.Description != "" {
+					fmt.Fprintf(w, "          %q\n", p.Description)
+				}
+			}
+		}
 	}
 }

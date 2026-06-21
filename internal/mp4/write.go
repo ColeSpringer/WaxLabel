@@ -52,6 +52,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		if err := checkCoverFormats(edited.Pictures); err != nil {
 			return nil, err
 		}
+		if picturesLoseMetadata(edited.Pictures) {
+			report.Warnings = core.Warn(report.Warnings, core.WarnPictureMetadataDropped,
+				"MP4 stores cover art as image data only; picture role and description are not preserved (covers are read back as front cover)")
+		}
 	}
 
 	// A chapter edit rewrites the whole moov.udta (folding any ilst change into one
@@ -117,6 +121,20 @@ func checkCoverFormats(pics []core.Picture) error {
 		}
 	}
 	return nil
+}
+
+// picturesLoseMetadata reports whether writing pics as covr atoms would drop a
+// picture's role or description. MP4 stores image data only (coverItem), and reads
+// every cover back as a front cover with no description (decodeCover), so any
+// non-front-cover type or any description is lost. A carried MP4 cover is already
+// front-cover/no-description, so this can only flag metadata an edit introduced.
+func picturesLoseMetadata(pics []core.Picture) bool {
+	for _, p := range pics {
+		if p.Type != core.PicFrontCover || p.Description != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // preservedItems returns the items the canonical rebuild does not own (unknown

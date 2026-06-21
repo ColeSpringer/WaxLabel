@@ -65,8 +65,15 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 		Constraints: []string{"the long tail is stored as com.apple.iTunes freeform atoms"},
 	}
 	pictures := core.Capability{
+		// Write is Full: the image set carries losslessly (byte-for-byte). The covr atom
+		// drops a picture's role and description, but that loss is per-picture (a plain
+		// front cover round-trips), so it is surfaced precisely by the plan's
+		// picture-metadata-dropped warning rather than the coarse, count-based transfer
+		// level - which, as AccessPartial, would mislabel even a lossless front-cover copy
+		// as lossy. The Fidelity/Constraints below still document the limitation in caps.
 		Read: core.AccessFull, Write: core.AccessFull,
-		Representation: "covr atom (JPEG/PNG)", Fidelity: "lossless",
+		Representation: "covr atom (JPEG/PNG)", Fidelity: "image bytes lossless; role and description not stored",
+		Constraints: []string{"covers store image data only - picture role and description are dropped (read back as front cover)"},
 	}
 	chapters := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
@@ -78,7 +85,9 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 			"chapter start resolution is the movie timescale (typically 1 ms)",
 		},
 	}
-	return core.NewCapabilities(core.FormatMP4, false, fields, pictures, chapters, nil)
+	// Padding is grow-only: a forced rewrite can reserve a region, but a fit-in-place
+	// edit reuses the existing free space and cannot shrink it.
+	return core.NewCapabilities(core.FormatMP4, false, fields, pictures, chapters, core.AccessPartial, nil)
 }
 
 // EssenceExtent returns the MP4 essence-digest inputs: a versioned extent name

@@ -55,22 +55,37 @@ type Capability struct {
 // Capabilities describes what a format (under a given set of options) can do.
 // Field returns per-key detail; the format-level fields cover the common case.
 type Capabilities struct {
-	Format       Format
-	ReadOnly     bool
-	Pictures     Capability
-	Chapters     Capability
+	Format   Format
+	ReadOnly bool
+	Pictures Capability
+	Chapters Capability
+	// Padding grades how completely the format honors the post-metadata padding
+	// controls (--padding / --no-padding), as one AccessLevel rather than a full
+	// Capability (it has no representation or per-key detail):
+	//   - AccessFull: written and shrunk on every edit (FLAC, which always rewrites
+	//     its metadata block - PaddingPolicy.ClampTarget).
+	//   - AccessPartial: a forced rewrite can grow the region, but a fit-in-place edit
+	//     keeps the existing padding and cannot shrink it (the front-tag codecs MP4,
+	//     MP3, and AAC - PaddingPolicy.ReuseOrTarget).
+	//   - AccessNone: the format has no padding concept (Ogg/Opus, WAV, AIFF,
+	//     Matroska).
+	// The CLI reads it to tell the user when a padding flag does not (fully) apply,
+	// and caps renders it ("none"/"partial"/"full" via AccessLevel.String).
+	Padding      AccessLevel
 	GenericField Capability             // default for canonical keys
 	perField     map[tag.Key]Capability // overrides
 }
 
-// NewCapabilities builds a Capabilities with the given per-field overrides.
-func NewCapabilities(f Format, readOnly bool, generic, pictures, chapters Capability, perField map[tag.Key]Capability) Capabilities {
+// NewCapabilities builds a Capabilities with the given padding level and per-field
+// overrides.
+func NewCapabilities(f Format, readOnly bool, generic, pictures, chapters Capability, padding AccessLevel, perField map[tag.Key]Capability) Capabilities {
 	return Capabilities{
 		Format:       f,
 		ReadOnly:     readOnly,
 		GenericField: generic,
 		Pictures:     pictures,
 		Chapters:     chapters,
+		Padding:      padding,
 		perField:     perField,
 	}
 }

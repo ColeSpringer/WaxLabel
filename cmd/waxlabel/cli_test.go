@@ -1067,42 +1067,51 @@ func TestLintFixRecursiveNoFiles(t *testing.T) {
 	}
 }
 
-// TestResolvePaddingFlag (U3): the flag-to-policy resolver maps --padding /
-// --no-padding to a write option and rejects misuse, independent of any file.
+// TestResolvePaddingFlag (U4): the flag-to-policy resolver maps --padding /
+// --no-padding to a write option plus whether a flag was given, and rejects misuse,
+// independent of any file.
 func TestResolvePaddingFlag(t *testing.T) {
 	t.Parallel()
-	// Neither flag set: no option, so the default policy is left untouched.
-	if opt, err := resolvePaddingFlag("", false); opt != nil || err != nil {
-		t.Errorf("no flags: opt=%v err=%v, want nil,nil", opt, err)
+	// Neither flag set: no option (default policy untouched), no flag given.
+	if opt, given, err := resolvePaddingFlag("", false); opt != nil || given || err != nil {
+		t.Errorf("no flags: opt=%v given=%v err=%v, want nil,false,nil", opt, given, err)
 	}
-	// Valid forms produce an option.
-	if opt, err := resolvePaddingFlag("16384", false); opt == nil || err != nil {
-		t.Errorf("--padding 16384: opt=%v err=%v, want option,nil", opt, err)
-	}
-	if opt, err := resolvePaddingFlag("", true); opt == nil || err != nil {
-		t.Errorf("--no-padding: opt=%v err=%v, want option,nil", opt, err)
-	}
-	// "--padding 0" is the no-padding synonym: a parsed 0 is valid (option, no error),
-	// not misuse. The WriteOption closures are not directly comparable, so the
-	// behavioral equivalence to --no-padding is proven by TestPaddingZeroShrinksLikeNoPadding.
-	if opt, err := resolvePaddingFlag("0", false); opt == nil || err != nil {
-		t.Errorf("--padding 0: opt=%v err=%v, want option,nil", opt, err)
-	}
-	// Misuse is a usage error: both flags together, a negative count, a non-integer,
-	// and an absurd byte count above the sanity cap (B1's floor makes a huge value
-	// reachable from a plain edit, so it must be rejected, not allocated).
+	// Valid forms produce an option and report a flag was given.
 	for _, c := range []struct {
 		padding   string
 		noPadding bool
-	}{{"16384", true}, {"-1", false}, {"abc", false}, {"99999999999", false}} {
-		if _, err := resolvePaddingFlag(c.padding, c.noPadding); err == nil || !isUsageError(err) {
-			t.Errorf("resolvePaddingFlag(%q, %v) err = %v, want usage error", c.padding, c.noPadding, err)
+		desc      string
+	}{
+		{"16384", false, "--padding 16384"},
+		{"", true, "--no-padding"},
+		// "--padding 0" is the no-padding synonym: a parsed 0 is valid, not misuse. The
+		// WriteOption closures are not directly comparable, so the behavioral equivalence
+		// to --no-padding is proven by TestPaddingZeroShrinksLikeNoPadding.
+		{"0", false, "--padding 0"},
+		{"200000", false, "--padding 200000 (floor sets Min=Target)"},
+		// U4: --padding and --no-padding combine cleanly when --padding is any spelling
+		// of zero (they then agree), rather than being rejected by a string "!= 0" test.
+		{"0", true, "--padding 0 --no-padding"},
+		{"00", true, "--padding 00 --no-padding"},
+		{" 0 ", true, "--padding ' 0 ' --no-padding"},
+	} {
+		if opt, given, err := resolvePaddingFlag(c.padding, c.noPadding); opt == nil || !given || err != nil {
+			t.Errorf("%s: opt=%v given=%v err=%v, want option,true,nil", c.desc, opt, given, err)
 		}
 	}
-	// The floor sets Min=Target so a rewrite grows a too-small region instead of
-	// silently reusing it; the resolver must wire both.
-	if opt, err := resolvePaddingFlag("200000", false); opt == nil || err != nil {
-		t.Errorf("--padding 200000: opt=%v err=%v, want option,nil", opt, err)
+	// Misuse is a usage error: a *positive* padding alongside --no-padding (they
+	// contradict), a negative count, a non-integer, and an absurd byte count above the
+	// sanity cap (B1's floor makes a huge value reachable from a plain edit, so it must
+	// be rejected, not allocated).
+	// "   " is a degenerate but explicit value (not the unset "" sentinel), so it is a
+	// bad byte count, not silently the default.
+	for _, c := range []struct {
+		padding   string
+		noPadding bool
+	}{{"16384", true}, {"-1", false}, {"abc", false}, {"99999999999", false}, {"   ", false}} {
+		if _, _, err := resolvePaddingFlag(c.padding, c.noPadding); err == nil || !isUsageError(err) {
+			t.Errorf("resolvePaddingFlag(%q, %v) err = %v, want usage error", c.padding, c.noPadding, err)
+		}
 	}
 }
 

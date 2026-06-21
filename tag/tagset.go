@@ -60,6 +60,12 @@ func (s TagSet) First(key Key) (string, bool) {
 // Len reports the number of present keys.
 func (s TagSet) Len() int { return len(s.order) }
 
+// ValueCount returns how many values key holds (0 if absent or present-but-empty),
+// without copying the value slice - a cheap length read for callers that only need
+// the count (e.g. a single-valued cardinality check), unlike [TagSet.Get], which
+// clones.
+func (s TagSet) ValueCount(key Key) int { return len(s.values[key]) }
+
 // Keys returns the present keys in their preserved order.
 func (s TagSet) Keys() []Key { return slices.Clone(s.order) }
 

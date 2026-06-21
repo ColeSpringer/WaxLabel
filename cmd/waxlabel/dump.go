@@ -38,7 +38,7 @@ func newDumpCmd() *cobra.Command {
 			noteNoFiles(cmd.ErrOrStderr(), paths)
 			return perFile(cmd, paths,
 				func(ctx context.Context, path string) (*wl.Document, error) {
-					return wl.ParseFile(ctx, realOf(path))
+					return parseInput(ctx, realOf(path), path)
 				},
 				func(path string, doc *wl.Document) any { return toJSONDocument(path, doc, native) },
 				func(w io.Writer, path string, doc *wl.Document) { renderDocument(w, path, doc, native) },
