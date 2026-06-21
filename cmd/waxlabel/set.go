@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -19,6 +20,7 @@ func newSetCmd() *cobra.Command {
 	var (
 		ef            editFlags
 		output        string
+		overwrite     bool
 		verify        bool
 		preserveMtime bool
 		recursive     bool
@@ -27,6 +29,8 @@ func newSetCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "set <file>...",
 		Short: "Apply tag edits and save the file",
+		Example: "  waxlabel set song.flac --set TITLE=\"Hey\" --add ARTIST=A --add-cover front.jpg\n" +
+			"  waxlabel set song.flac --strip-encoder -o cleaned.flac",
 		Long: "Apply the given edits and write the result. By default it rewrites each\n" +
 			"file in place atomically (temp file, fsync, rename); a no-op writes\n" +
 			"nothing. With -o it writes a single complete new file instead, leaving\n" +
@@ -68,25 +72,62 @@ func newSetCmd() *cobra.Command {
 			if output != "" && len(paths) != 1 {
 				return usagef("-o writes a single file, so it takes exactly one input (got %d)", len(paths))
 			}
-			// Invocation-level guardrails and notes run only once there is at least one
-			// file to act on, so a note never claims a value was "written" on a run the
-			// directory (U1) or empty-walk (U4) checks then abort with nothing written.
-			if len(paths) > 0 {
-				if err := notifyUnknownKeys(cmd.ErrOrStderr(), ce, ef.strict, jsonMode(cmd)); err != nil {
+			// Validate the -o destination before any write. len(paths)==1 is guaranteed
+			// here by the check above, so realOf(paths[0]) is the single input.
+			if output != "" {
+				if err := checkOutputTarget(output, realOf(paths[0]), overwrite); err != nil {
 					return err
 				}
-				notifyValueNotes(cmd.ErrOrStderr(), &ef, jsonMode(cmd))
+			}
+			// Invocation-level guardrails and notes run only once there is at least one
+			// path to act on, so a note never claims a value was "written" on a run the
+			// directory (U1) or empty-walk (U4) checks then abort with nothing written.
+			if err := notifyInvocationNotes(cmd.ErrOrStderr(), ce, &ef, realOf, paths, jsonMode(cmd)); err != nil {
+				return err
 			}
 			return runSet(cmd, paths, realOf, ce, output, ef.strict, quiet)
 		},
 	}
 	ef.bind(cmd)
 	cmd.Flags().StringVarP(&output, "output", "o", "", "write to this path instead of editing the file in place (one input only)")
+	cmd.Flags().BoolVar(&overwrite, "overwrite", false, "allow -o to replace an existing destination file (by default an existing -o target is refused)")
 	cmd.Flags().BoolVar(&verify, "verify", false, "after writing, verify the saved file's audio essence matches the source")
 	cmd.Flags().BoolVar(&preserveMtime, "preserve-mtime", false, "keep the file's modification time (by default it is updated)")
-	cmd.Flags().BoolVar(&recursive, "recursive", false, "recurse into directory arguments, editing every audio file found")
+	cmd.Flags().BoolVar(&recursive, "recursive", false, "recurse into directory arguments, editing every audio file found (selected by file extension)")
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "suppress the per-file plan and outcome (errors and the final summary still print); a single-file set is then silent on success")
 	return cmd
+}
+
+// checkOutputTarget validates the -o destination before any write. A directory can
+// never be the target (the atomic rename fails EISDIR, and --overwrite cannot fix
+// that), so it is rejected up front with a clear message rather than the leaked
+// temp-file error a later rename would produce. An existing entry is refused unless
+// --overwrite, except when it resolves to the single input itself (set f -o f is
+// effectively in-place). inputReal is realOf(paths[0]): when it does not exist the
+// overwrite guard stays silent, since the parse will then fail and write nothing -
+// so the target is safe, and the more-relevant not-found error should surface
+// instead of an "already exists" pointing at the wrong operand.
+func checkOutputTarget(output, inputReal string, overwrite bool) error {
+	// Stat (follows symlinks) so a directory - or a symlink to one - is caught.
+	if fi, err := os.Stat(output); err == nil && fi.IsDir() {
+		return usagef("-o target %q is a directory, not a file", output)
+	}
+	if overwrite {
+		return nil
+	}
+	// Lstat (does not follow) so a dangling symlink, which Stat would report absent,
+	// still counts as an entry the rename would destroy.
+	if _, err := os.Lstat(output); err != nil {
+		return nil // no entry at the target: a fresh write
+	}
+	inFi, ierr := os.Stat(inputReal)
+	if ierr != nil {
+		return nil // input missing/unstattable: the parse fails first, nothing written
+	}
+	if outFi, err := os.Stat(output); err == nil && os.SameFile(outFi, inFi) {
+		return nil // the target resolves to the input: effectively in-place
+	}
+	return usagef("-o target %q already exists; pass --overwrite to replace it", output)
 }
 
 // checkSetStdin enforces that standard input ("-") is used only as a single input
@@ -142,7 +183,7 @@ func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *
 		if asJSON {
 			items = append(items, errorSetResult(path, output, classifyError(err)))
 		} else {
-			fmt.Fprintf(errOut, "waxlabel: %s: %s\n", displayName(path), perFileReason(err))
+			perFileError(errOut, path, err)
 		}
 	}
 
@@ -159,10 +200,16 @@ func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *
 			fail(path, err)
 			continue
 		}
+		// A verbatim -o copy of an unchanged file has no change plan worth previewing:
+		// renderReport would print "no changes (already up to date)" only for the next
+		// line to report it wrote a file. Suppress the preview and let renderSaveOutcome
+		// print one honest line instead (L1). -o takes exactly one input, so this is
+		// never mid-list.
+		previewNoOp := output != "" && plan.IsNoOp()
 		// Print the plan before the write so the preview is shown even if the write
 		// then fails (the help promises this ordering); JSON aggregates instead, and
 		// quiet suppresses the preview entirely.
-		if !asJSON && !quiet {
+		if !asJSON && !quiet && !previewNoOp {
 			if rendered > 0 {
 				fmt.Fprintln(out)
 			}
@@ -189,7 +236,7 @@ func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *
 		if asJSON {
 			items = append(items, toJSONSetResult(path, output, plan, res))
 		} else if !quiet {
-			renderSaveOutcome(out, path, output, res)
+			renderSaveOutcome(out, path, output, res, plan.IsNoOp())
 		}
 	}
 
@@ -226,9 +273,14 @@ func warnExtensionMismatch(w io.Writer, output string, f wl.Format) {
 }
 
 // renderSaveOutcome reports where the bytes went: a new file, an in-place save,
-// or nothing for a no-op save-back.
-func renderSaveOutcome(w io.Writer, path, output string, res wl.SaveResult) {
+// or nothing for a no-op save-back. noOp is the plan's no-op status, used only for
+// the -o path: a verbatim copy of an unchanged file prints one honest line (its
+// change preview was suppressed upstream), with no leading blank since -o takes a
+// single input and is never mid-list.
+func renderSaveOutcome(w io.Writer, path, output string, res wl.SaveResult, noOp bool) {
 	switch {
+	case output != "" && noOp:
+		fmt.Fprintf(w, "No metadata changes; wrote a verbatim copy to %s (%s)\n", output, wl.HumanBytes(res.Dest.Size))
 	case output != "":
 		fmt.Fprintf(w, "\nWrote %s (%s)\n", output, wl.HumanBytes(res.Dest.Size))
 	case !res.Committed:

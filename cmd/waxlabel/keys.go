@@ -19,6 +19,8 @@ func newKeysCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "keys",
 		Short: "List the canonical tag keys and their meanings",
+		Example: "  waxlabel keys\n" +
+			"  waxlabel keys --json",
 		Long: "List WaxLabel's canonical, format-neutral tag vocabulary: every known key\n" +
 			"with its cardinality (single- or multi-valued) and meaning. These are the\n" +
 			"keys --set/--add/--clear accept; the mapping layer translates each to the\n" +

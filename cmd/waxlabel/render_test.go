@@ -145,6 +145,29 @@ func TestRenderTagsSanitizes(t *testing.T) {
 	}
 }
 
+// TestRenderTagsSingleValuedConflict (L5): a known single-valued key holding two
+// values - the [conflicting-families] merge surfacing as duplicate rows - flags
+// each row with "(conflict)" so they tie back to the warning. A legitimately
+// multi-valued key given two values is not flagged.
+func TestRenderTagsSingleValuedConflict(t *testing.T) {
+	ts := tag.NewTagSet()
+	ts.Set(tag.Encoder, "Lavf58", "Lavf59") // ENCODER is single-valued
+	var buf bytes.Buffer
+	renderTags(&buf, ts)
+	out := buf.String()
+	if got := strings.Count(out, "(conflict)"); got != 2 {
+		t.Errorf("expected both single-valued duplicate rows flagged (conflict); got %d in:\n%s", got, out)
+	}
+
+	multi := tag.NewTagSet()
+	multi.Set(tag.Artist, "A", "B") // ARTIST is multi-valued: no conflict
+	buf.Reset()
+	renderTags(&buf, multi)
+	if strings.Contains(buf.String(), "(conflict)") {
+		t.Errorf("multi-valued key should not be flagged as a conflict:\n%s", buf.String())
+	}
+}
+
 // TestRenderTagsMultiLineAligns: a legitimate multi-line value (lyrics) keeps its
 // line breaks and indents continuation lines, so sanitizing did not flatten it.
 func TestRenderTagsMultiLineAligns(t *testing.T) {

@@ -56,7 +56,7 @@ func WithHashSource(src ReaderAtSized) HashOption {
 // It is distinct from whole-file identity ([Document.HashFile]) and from a
 // decoded-PCM hash (which needs a decoder and is test-only).
 func (d *Document) HashAudioEssence(ctx context.Context, opts ...HashOption) (AudioDigest, error) {
-	if err := ctx.Err(); err != nil {
+	if err := checkContext(ctx); err != nil {
 		return AudioDigest{}, err
 	}
 	var ho hashOptions
@@ -105,7 +105,7 @@ func (d *Document) essenceExtent() (version string, config []byte) {
 // HashFile computes the whole-file identity (a hash of every byte). This is the
 // strictest level: it changes whenever any byte, including tags, changes.
 func (d *Document) HashFile(ctx context.Context, opts ...HashOption) (AudioDigest, error) {
-	if err := ctx.Err(); err != nil {
+	if err := checkContext(ctx); err != nil {
 		return AudioDigest{}, err
 	}
 	var ho hashOptions

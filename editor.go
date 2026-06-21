@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/tag"
@@ -16,13 +17,25 @@ import (
 // working picture list; [Editor.Prepare] resolves them into a [Plan]. The
 // editor methods return the editor for chaining.
 type Editor struct {
-	doc             *Document
-	base            *core.Media
-	patch           tag.TagPatch
-	pictures        []core.Picture
-	picsTouched     bool
+	doc         *Document
+	base        *core.Media
+	patch       tag.TagPatch
+	pictures    []core.Picture
+	picsTouched bool
+	// addedMask is parallel to pictures: addedMask[i] is true when pictures[i] was
+	// added on this editor via AddPicture (so Prepare validates it), false for a
+	// picture Edit seeded from the file. A mask rather than a second slice lets
+	// RemovePictures filter both in lockstep with a single evaluation of the caller's
+	// match predicate, so a side-effecting or non-deterministic matcher cannot be
+	// called twice or desync the added set from what will be written.
+	addedMask       []bool
 	chapters        []core.Chapter
 	chaptersTouched bool
+	// chaptersCarried marks chapters set by a faithful carry (the transfer engine)
+	// rather than authored by this edit, so [Editor.Prepare] suppresses the
+	// edit-time chapter sanity warnings for them - copying a file should not warn
+	// about chapters the user authored none of.
+	chaptersCarried bool
 }
 
 // Apply records an explicit patch (set/clear/add operations) after any already
@@ -58,14 +71,32 @@ func (e *Editor) SetTags(t tag.Tags) *Editor { return e.Apply(t.Patch()) }
 // when not already set.
 func (e *Editor) AddPicture(p Picture) *Editor {
 	p.SniffInto()
+	// Pad the mask for any Edit-seeded pictures not yet covered, then mark this one
+	// added, keeping addedMask parallel to pictures.
+	for len(e.addedMask) < len(e.pictures) {
+		e.addedMask = append(e.addedMask, false)
+	}
 	e.pictures = append(e.pictures, p)
+	e.addedMask = append(e.addedMask, true)
 	e.picsTouched = true
 	return e
 }
 
-// RemovePictures drops every picture for which match returns true.
+// RemovePictures drops every picture for which match returns true. match is
+// evaluated exactly once per picture, and the parallel added-mask is filtered with
+// the same verdicts, so an added-then-removed picture is not validated by Prepare
+// and a side-effecting/non-deterministic matcher cannot double-fire or desync.
 func (e *Editor) RemovePictures(match func(Picture) bool) *Editor {
-	e.pictures = slices.DeleteFunc(e.pictures, match)
+	pics := make([]core.Picture, 0, len(e.pictures))
+	mask := make([]bool, 0, len(e.pictures))
+	for i, p := range e.pictures {
+		if match(p) {
+			continue
+		}
+		pics = append(pics, p)
+		mask = append(mask, i < len(e.addedMask) && e.addedMask[i])
+	}
+	e.pictures, e.addedMask = pics, mask
 	e.picsTouched = true
 	return e
 }
@@ -73,6 +104,7 @@ func (e *Editor) RemovePictures(match func(Picture) bool) *Editor {
 // ClearPictures removes all pictures.
 func (e *Editor) ClearPictures() *Editor {
 	e.pictures = nil
+	e.addedMask = nil
 	e.picsTouched = true
 	return e
 }
@@ -120,7 +152,7 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// and corrupt on round-trip (e.g. a key containing '=').
 	for _, k := range e.patch.Keys() {
 		if !k.Valid() {
-			return nil, fmt.Errorf("%w: %q", waxerr.ErrInvalidKey, k)
+			return nil, fmt.Errorf("%w: %q (keys are uppercase ASCII without '='; build them with tag.ParseKey or tag.MustKey)", waxerr.ErrInvalidKey, k)
 		}
 	}
 
@@ -152,6 +184,17 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	if err := validatePictures(edited.Pictures); err != nil {
 		return nil, err
 	}
+	// Validate only the pictures added on this editor (not the file's pre-existing
+	// ones, which Edit seeded): a direct caller handing AddPicture empty or junk
+	// bytes would otherwise have them embedded as application/octet-stream. The CLI
+	// guards the common mistake earlier in loadCovers; this is the library-side
+	// safety net. WithUnrecognizedPictures opts a deliberately exotic cover back in
+	// (and the transfer engine opts out wholesale, carrying already-embedded art).
+	if !wo.AllowUnrecognizedPictures {
+		if err := validateAddedPictures(e.pictures, e.addedMask); err != nil {
+			return nil, err
+		}
+	}
 
 	codec, ok := core.ForFormat(e.base.Format)
 	if !ok {
@@ -175,7 +218,90 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Surface edit-time chapter sanity warnings (a start past the file end, or two
+	// chapters sharing a start) on the plan report so they flow through the same
+	// Warnings path the CLI and JSON already render. Only chapters this edit
+	// introduces are checked - not the file's pre-existing chapters, which the CLI's
+	// --add-chapter merges into the SetChapters list (so warning about them would
+	// flag chapters the user never touched). A faithful carry (the transfer engine)
+	// authors nothing, so it suppresses these entirely via chaptersCarried.
+	if e.chaptersTouched && !e.chaptersCarried {
+		wp.Report.Warnings = appendChapterWarnings(wp.Report.Warnings, e.chapters, e.base.Chapters, e.base.Properties.Duration())
+	}
 	return &Plan{doc: e.doc, plan: wp, opts: wo}, nil
+}
+
+// appendChapterWarnings adds the non-fatal chapter sanity warnings for the
+// chapters this edit introduces (those in chapters but not in base):
+// WarnChapterPastDuration for a newly-added chapter starting beyond the file's
+// playable length, and WarnDuplicateChapter for a start a newly-added chapter
+// shares with another. Scoping to the new chapters means a pre-existing on-disk
+// chapter merged into the list (the CLI's --add-chapter appends to the file's
+// chapters) is not flagged, while a collision the new chapter causes still is.
+// chapters is sorted by Start (SetChapters), so equal starts are adjacent and each
+// distinct collision is reported once. The past-duration check is gated on a known,
+// non-zero duration: a truncated or header-only file reports duration 0 (and
+// already warns no-audio), which would otherwise flag every chapter as beyond 0:00.
+func appendChapterWarnings(ws []core.Warning, chapters, base []core.Chapter, duration time.Duration) []core.Warning {
+	baseSet := make(map[core.Chapter]bool, len(base))
+	for _, c := range base {
+		baseSet[c] = true
+	}
+	isNew := func(c core.Chapter) bool { return !baseSet[c] }
+
+	if duration > 0 {
+		for _, c := range chapters {
+			if isNew(c) && c.Start > duration {
+				ws = core.Warn(ws, core.WarnChapterPastDuration, fmt.Sprintf(
+					"chapter at %s starts past the file duration (%s); check the timestamp",
+					core.FormatChapterTime(c.Start), core.FormatChapterTime(duration)))
+			}
+		}
+	}
+	// Walk each run of equal starts once; warn only when the run contains a
+	// newly-added chapter, so a collision among untouched pre-existing chapters stays
+	// quiet while one the edit introduces is surfaced.
+	for i := 0; i < len(chapters); {
+		j := i
+		for j+1 < len(chapters) && chapters[j+1].Start == chapters[i].Start {
+			j++
+		}
+		if j > i {
+			runHasNew := false
+			for k := i; k <= j; k++ {
+				if isNew(chapters[k]) {
+					runHasNew = true
+					break
+				}
+			}
+			if runHasNew {
+				ws = core.Warn(ws, core.WarnDuplicateChapter, fmt.Sprintf(
+					"two or more chapters share the start %s", core.FormatChapterTime(chapters[i].Start)))
+			}
+		}
+		i = j + 1
+	}
+	return ws
+}
+
+// validateAddedPictures rejects an added picture (one with addedMask[i] true) whose
+// bytes are not a recognized image - an empty payload or a header [IsRecognizedImage]
+// does not know. It re-sniffs Data and ignores any caller-declared MIME, so
+// MIME:"image/png" on junk bytes is still rejected. The message names the picture's
+// type and the opt-out. It is the library counterpart to the CLI's loadCovers
+// pre-check, run at Prepare so a direct API user cannot embed an
+// application/octet-stream picture by mistake; WithUnrecognizedPictures (and the
+// CLI's --force) skip it for a deliberately exotic cover. Pre-existing pictures
+// Edit seeded (addedMask false) are never re-judged.
+func validateAddedPictures(pics []core.Picture, addedMask []bool) error {
+	for i, p := range pics {
+		if i < len(addedMask) && addedMask[i] && !IsRecognizedImage(p.Data) {
+			return fmt.Errorf("%w: added %q picture is not a recognized image "+
+				"(PNG/JPEG/GIF/WebP/BMP/TIFF); pass WithUnrecognizedPictures to embed it anyway",
+				waxerr.ErrInvalidData, p.Type)
+		}
+	}
+	return nil
 }
 
 // validatePictures enforces the single-icon rule: picture types 1 and 2 must

@@ -90,6 +90,9 @@ type Source struct {
 // memory as it reads (you cannot spool bytes after they have passed). The
 // returned Source is closable and its Document can be edited and saved.
 func OpenSource(ctx context.Context, r io.Reader, opts ...ParseOption) (*Source, error) {
+	if err := checkContext(ctx); err != nil {
+		return nil, err
+	}
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err

@@ -183,8 +183,12 @@ func TestOggCoverRenumberPreservesEssence(t *testing.T) {
 		src := readFixture(t, f)
 		before := essenceOf(t, src)
 
+		// pattern() is a deterministic non-image stand-in (this test exercises the
+		// page-renumber path, not image validity), so opt the added-picture
+		// validation out the way a deliberately exotic cover would.
 		plan, err := mustParseBytes(t, src).Edit().
-			AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: cover}).Prepare()
+			AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: cover}).
+			Prepare(wl.WithUnrecognizedPictures())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -221,7 +225,7 @@ func TestOggSaveBackVerifyEssence(t *testing.T) {
 		plan, err := mustParseFile(t, path).Edit().
 			Set(tag.Album, "Verified").
 			AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: pattern(70000)}).
-			Prepare(wl.WithVerifyEssence())
+			Prepare(wl.WithVerifyEssence(), wl.WithUnrecognizedPictures())
 		if err != nil {
 			t.Fatalf("%s: prepare: %v", f, err)
 		}
@@ -375,7 +379,7 @@ func TestOggDifferentialFFmpegDecodesRenumbered(t *testing.T) {
 		plan, err := mustParseFile(t, path).Edit().
 			Set(tag.Title, "Valid Ogg").
 			AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: cover}).
-			Prepare()
+			Prepare(wl.WithUnrecognizedPictures())
 		if err != nil {
 			t.Fatal(err)
 		}

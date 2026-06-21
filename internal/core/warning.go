@@ -81,6 +81,15 @@ const (
 	// counterpart to WarnNoAudioFrames (zero essence); only the reliable per-format
 	// signals are emitted, so a clean file is never flagged.
 	WarnTruncatedAudio
+	// WarnChapterPastDuration means an edited chapter starts beyond the file's
+	// playable length - usually a mistyped timestamp. It is an edit-time sanity
+	// warning on the user's chapter input (gated on a known, non-zero duration), not
+	// a lint of pre-existing on-disk chapters; the chapter is still written.
+	WarnChapterPastDuration
+	// WarnDuplicateChapter means an edited chapter list has two chapters sharing a
+	// start time - navigation will land on only one. An edit-time sanity warning;
+	// the chapters are still written faithfully.
+	WarnDuplicateChapter
 )
 
 func (c WarningCode) String() string {
@@ -123,6 +132,10 @@ func (c WarningCode) String() string {
 		return "no-audio"
 	case WarnTruncatedAudio:
 		return "truncated-audio"
+	case WarnChapterPastDuration:
+		return "chapter-past-duration"
+	case WarnDuplicateChapter:
+		return "duplicate-chapter"
 	default:
 		return "unknown"
 	}

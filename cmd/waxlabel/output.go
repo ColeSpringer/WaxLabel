@@ -231,7 +231,7 @@ func perFile[P any](
 			if asJSON {
 				items = append(items, errorJSON(path, classifyError(err)))
 			} else {
-				fmt.Fprintf(errOut, "waxlabel: %s: %s\n", displayName(path), perFileReason(err))
+				perFileError(errOut, path, err)
 			}
 			continue
 		}
@@ -276,8 +276,20 @@ func noteNoFiles(w io.Writer, paths []string) {
 	}
 }
 
-// usageError marks a bad-arguments failure, which maps to exit code 2.
-type usageError struct{ msg string }
+// usageError marks a bad-arguments failure, which maps to exit code 2. The extra
+// fields are set only at the cobra-origin sites that dead-end with no guidance (an
+// unknown flag, a bad arg count, an unknown command): cmd is the resolved command
+// path for the help hint (empty falls back to "waxlabel"), wantsHint requests the
+// "run '<cmd> --help' for usage" pointer (M5), and multiline marks the message as
+// trusted multi-line cobra text whose newlines/tabs must be preserved on render
+// (the "Did you mean this?" suggestion block - H1). The hand-written usagef
+// messages leave all three zero: they are single-line and already self-document.
+type usageError struct {
+	msg       string
+	cmd       string
+	wantsHint bool
+	multiline bool
+}
 
 func (e *usageError) Error() string { return e.msg }
 
@@ -321,11 +333,18 @@ func renderError(w io.Writer, jsonMode bool, err error) {
 		})
 		return
 	}
-	// The human message is one line and can embed a file-derived path (e.g.
-	// "no such file: <path>" from a hostile glob/walk arg), so escape it for the
-	// single-line render. The JSON branch above keeps c.message raw - the machine
-	// contract - so this human-only escape does not touch it.
-	fmt.Fprintf(w, "waxlabel: %s\n", tag.SanitizeLine(c.message))
+	// Pick the sanitizer by message shape. A single-line message can embed a
+	// file-derived path (e.g. "no such file: <path>" from a hostile glob/walk arg),
+	// so SanitizeLine escapes \n/\t too, blocking line-forgery. A multiline message
+	// is trusted cobra text (the "unknown command ... Did you mean this?" block), so
+	// SanitizeText preserves its real newlines/tabs while still escaping ESC/CSI/BEL/
+	// CR - otherwise the suggestion shows literal \x0a/\x09 (H1). The output boundary
+	// backstops control bytes either way; the JSON branch above keeps c.message raw.
+	sanitize := tag.SanitizeLine
+	if c.multiline {
+		sanitize = tag.SanitizeText
+	}
+	fmt.Fprintf(w, "waxlabel: %s\n", sanitize(c.message))
 	if c.hint != "" {
 		fmt.Fprintf(w, "  hint: %s\n", tag.SanitizeLine(c.hint))
 	}
@@ -336,6 +355,14 @@ func renderError(w io.Writer, jsonMode bool, err error) {
 // no-op; it stays as forward-insurance against a future error that reintroduces
 // the prefix.
 func cleanMessage(msg string) string { return strings.TrimPrefix(msg, "waxlabel: ") }
+
+// perFileError writes the standard per-file failure line - "waxlabel: <path>:
+// <reason>" - to w, single-sourcing the format and the displayName/perFileReason
+// pair every per-file command shares (dump/verify via perFile, lint, set, and copy,
+// which cannot use the perFile generic because it has two named operands).
+func perFileError(w io.Writer, path string, err error) {
+	fmt.Fprintf(w, "waxlabel: %s: %s\n", displayName(path), perFileReason(err))
+}
 
 // perFileReason renders a per-file error for a command that already prints the
 // path itself (dump, verify). A bare *fs.PathError restates the path ("open
@@ -350,11 +377,15 @@ func perFileReason(err error) string {
 }
 
 // classifiedError is every user-visible representation of a terminal error.
+// multiline marks a message whose embedded newlines/tabs are trusted and must be
+// preserved on the human render (a cobra command suggestion block), so renderError
+// picks the newline-preserving sanitizer for it.
 type classifiedError struct {
-	exitCode int
-	code     string
-	message  string
-	hint     string
+	exitCode  int
+	code      string
+	message   string
+	hint      string
+	multiline bool
 }
 
 // classifyError maps a terminal error to a stable exit code and machine code so
@@ -373,6 +404,16 @@ func classifyError(err error) classifiedError {
 		c.exitCode, c.code, c.message = 130, "timeout", "operation timed out"
 	case isUsageError(err):
 		c.exitCode, c.code = 2, "usage"
+		if ue, ok := waxerr.AsType[*usageError](err); ok {
+			c.multiline = ue.multiline
+			if ue.wantsHint {
+				name := ue.cmd
+				if name == "" {
+					name = "waxlabel"
+				}
+				c.hint = fmt.Sprintf("run '%s --help' for usage", name)
+			}
+		}
 	case errors.Is(err, waxerr.ErrInvalidKey):
 		c.exitCode, c.code = 2, "invalid-key"
 	case errors.Is(err, waxerr.ErrUnsupportedFormat):
@@ -445,7 +486,15 @@ func normalizeExecuteError(err error) error {
 	msg := err.Error()
 	for _, p := range []string{"unknown command", "unknown subcommand", "unknown flag", "unknown shorthand"} {
 		if strings.HasPrefix(msg, p) {
-			return &usageError{msg: msg}
+			ue := &usageError{msg: msg}
+			// The unknown command/subcommand text is cobra's trusted multi-line "Did
+			// you mean this?" block: preserve its newlines/tabs (H1) and point at the
+			// command list (M5). cmd stays empty so the hint falls back to "waxlabel" -
+			// an unknown command should list the commands, not a subcommand's flags.
+			if p == "unknown command" || p == "unknown subcommand" {
+				ue.multiline, ue.wantsHint = true, true
+			}
+			return ue
 		}
 	}
 	return err

@@ -50,6 +50,18 @@ func WithNumericGenre() WriteOption {
 	return func(o *core.WriteOptions) { o.NumericGenre = true }
 }
 
+// WithUnrecognizedPictures allows a picture whose bytes [IsRecognizedImage] does
+// not recognize (an empty payload, junk, or a deliberately exotic HEIC/AVIF/JXL
+// cover the header sniff cannot identify) to be embedded by [Editor.Prepare].
+// By default such a picture is rejected ([waxerr.ErrInvalidData]) so a direct
+// library caller cannot silently embed an application/octet-stream picture; pass
+// this to opt a known-exotic cover back in. Only pictures added via
+// [Editor.AddPicture] are validated - a file's pre-existing picture carried
+// through a tags-only edit is never affected.
+func WithUnrecognizedPictures() WriteOption {
+	return func(o *core.WriteOptions) { o.AllowUnrecognizedPictures = true }
+}
+
 // WithID3MultiValue selects how multiple values for one field are stored in an
 // ID3v2.3 tag, which has no standard multi-value text form. ID3v2.4 always
 // NUL-separates regardless; the v2.3 compatibility impact is flagged in the

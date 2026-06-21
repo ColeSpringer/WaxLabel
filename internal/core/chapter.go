@@ -1,6 +1,28 @@
 package core
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
+
+// FormatChapterTime renders a chapter offset as H:MM:SS.mmm - millisecond
+// precision, since adjacent chapters can be seconds apart. A negative offset is
+// clamped to zero. It is the single chapter-timestamp format shared by the text
+// chapter listing and the chapter sanity warnings, so a timestamp named in a
+// warning reads identically to the one in the listing it refers to.
+func FormatChapterTime(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	h := d / time.Hour
+	d -= h * time.Hour
+	m := d / time.Minute
+	d -= m * time.Minute
+	s := d / time.Second
+	d -= s * time.Second
+	ms := d / time.Millisecond
+	return fmt.Sprintf("%d:%02d:%02d.%03d", h, m, s, ms)
+}
 
 // Chapter is a single navigation point in a timed file (an audiobook track, a
 // long mix). It is format-neutral: the MP4 Nero chpl list and QuickTime text

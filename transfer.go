@@ -75,10 +75,20 @@ func (d *Document) PrepareTransfer(dst *Document, opts ...WriteOption) (*Plan, T
 			}
 		case core.TransferChapter:
 			ed.SetChapters(core.CloneChapters(d.media.Chapters)...)
+			// These chapters are carried verbatim from the source, not authored by a
+			// user edit, so suppress the edit-time chapter sanity warnings: a faithful
+			// copy must not flag the source's own past-duration or duplicate starts.
+			ed.chaptersCarried = true
 		}
 	}
 
-	plan, err := ed.Prepare(opts...)
+	// Carry the source's already-embedded pictures verbatim: ProjectTransfer already
+	// graded them by the destination's capability, so an exotic-but-valid embedded
+	// cover (HEIC/AVIF/JXL, which the header sniff rejects by design) must keep
+	// carrying - copy has no --force to wave it through. Opt the added-picture
+	// validation out on a fresh slice so the caller's opts are not mutated; no other
+	// option toggles AllowUnrecognizedPictures, so prepending is order-safe.
+	plan, err := ed.Prepare(append([]WriteOption{WithUnrecognizedPictures()}, opts...)...)
 	if err != nil {
 		return nil, report, err
 	}

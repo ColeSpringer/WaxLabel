@@ -53,9 +53,10 @@ the structured accessors (`plan.Changes()`, `doc.Tags()`) or use the CLI's `--js
 
 `Document` is immutable and detached - it holds no file descriptor and has no
 `Close`, so you can scan, cache, and discard it freely. Save destinations are
-[`SaveBack`] (atomic in-place rewrite; a no-op writes nothing), [`SaveAsFile`],
-and [`WriteTo`] (stream to any `io.Writer`; pass the source to copy, or `nil` for
-a `ParseFile`/`OpenSource` document to use its own).
+[`SaveBack`] (atomic in-place rewrite; a no-op writes nothing), [`SaveAsFile`]
+(atomic write to a new path; never a no-op - a fresh destination is always written
+whole), and [`WriteTo`] (stream the complete output to any `io.Writer`; pass the
+source to copy, or `nil` for a `ParseFile`/`OpenSource` document to use its own).
 
 ## Command-line tool
 
@@ -80,8 +81,10 @@ Install the binary with `go install github.com/colespringer/waxlabel/cmd/waxlabe
 - **`plan <file>...`** - the dry-run preview for `set`: resolve edits into a write
   plan and print exactly what `set` would do (including a field-level change
   preview), without touching the file (the report and the write share state).
-- **`set <file>...`** - apply edits and save: atomic in-place by default, `-o` writes a
-  new file (single input only), a no-op writes nothing. `--verify` checks the written
+- **`set <file>...`** - apply edits and save: atomic in-place by default (a no-op
+  writes nothing), or `-o` writes a single new file (one input only; an existing `-o`
+  target is refused unless `--overwrite` is given, except when it is the input itself,
+  and a no-op `-o` writes a verbatim copy). `--verify` checks the written
   audio essence. `--strip-encoder` clears the transcoder stamp; `--add-chapter
   TIMESTAMP=Title` / `--clear-chapters` edit navigation chapters; `--recursive` walks
   directory arguments. `--padding N` / `--no-padding` control the free space reserved
@@ -95,8 +98,9 @@ Install the binary with `go install github.com/colespringer/waxlabel/cmd/waxlabe
 - **`verify <file>...`** - the tag-independent audio-essence digest; `--whole-file`
   adds the whole-file digest. `--recursive` walks directory arguments.
 - **`caps <file>... | --format <name>`** - what a format can store and edit: per
-  known key the read/write level, native representation, fidelity, and cardinality
-  (single- vs multi-valued), plus picture/chapter limits.
+  category (fields, pictures, chapters) the read/write level, native representation,
+  and fidelity, then every editable key with its cardinality (single- vs
+  multi-valued) and meaning, plus picture/chapter limits.
 - **`keys`** - list the canonical, format-neutral tag vocabulary (every key `--set`/
   `--add`/`--clear` accept, with its cardinality and meaning); needs no file. `caps`
   then shows which of these a given format stores.
@@ -110,14 +114,19 @@ Install the binary with `go install github.com/colespringer/waxlabel/cmd/waxlabe
 
 Edits: `--set KEY=VALUE` (replace), `--add KEY=VALUE` (append, for multi-value),
 `--clear KEY` (remove), `--strip-encoder`, `--add-cover FILE` (`--force` to embed a
-file whose header is not a recognized image), `--remove-pictures`. By default `set`
-and `plan` note an unknown key (written as a custom field) or a single-valued key
-given multiple values on stderr and continue; `--strict` makes either one fail
-(exit 2) instead. Write policy:
+file whose header is not a recognized image), `--remove-pictures`. Tag values are
+taken from the command line only - bounded by the OS argument limit and unable to
+contain a NUL byte - so there is no `--set-from-file` or `@file` indirection. By
+default `set` and `plan` note an unknown key (written as a custom field) or a
+single-valued key given multiple values on stderr and continue; `--strict` makes
+either one fail (exit 2) instead. Write policy:
 `--preset preserve|compatible|canonical|minimal`, `--legacy ...`. The read commands
 (`dump`, `verify`, `lint`, and a `diff` operand) accept a single `-` to read
 standard input; `dump`, `verify`, and `lint` (like `set` and `plan`) walk directory
-arguments with `--recursive`. Every command accepts `--json` for scriptable output:
+arguments with `--recursive`, which selects files by extension - a mis-named or
+extension-less audio file in a walked directory is skipped, though passing it
+directly still content-sniffs it. All data commands accept `--json` for scriptable
+output:
 the list commands (`dump`, `verify`, `lint`, `set`, `plan`, and `caps` over files)
 emit a JSON array - one element per input, `[]` when none - so a consumer iterates
 (or `jq '.[]'`) regardless of count, while `diff`, `copy`, and `caps --format` emit

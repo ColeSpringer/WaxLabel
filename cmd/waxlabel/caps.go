@@ -21,8 +21,10 @@ import (
 func newCapsCmd() *cobra.Command {
 	var format string
 	cmd := &cobra.Command{
-		Use:   "caps [<file>...]",
+		Use:   "caps (<file>... | --format <name>)",
 		Short: "Show which metadata a format can edit, and how",
+		Example: "  waxlabel caps song.flac\n" +
+			"  waxlabel caps --format mp3",
 		Long: "Report what metadata each format can store and edit: the read/write level,\n" +
 			"native representation, and fidelity for fields, pictures, and chapters, plus\n" +
 			"every editable key with its cardinality (single- or multi-valued) and meaning.\n" +

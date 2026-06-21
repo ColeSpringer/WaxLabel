@@ -24,6 +24,8 @@ func newDiffCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "diff <a> <b>",
 		Short: "Compare two files' canonical metadata",
+		Example: "  waxlabel diff old.flac new.flac\n" +
+			"  waxlabel diff --quiet a.mp3 b.mp3",
 		Long: "Compare the canonical tags, pictures, and chapters of two files and\n" +
 			"report what was added, removed, or changed going from <a> to <b>. The\n" +
 			"exit code follows diff(1): 0 if the metadata is identical, 1 if it\n" +

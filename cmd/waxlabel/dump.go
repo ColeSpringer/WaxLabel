@@ -17,6 +17,8 @@ func newDumpCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "dump <file>...",
 		Short: "Show a file's tags, properties, pictures, and warnings",
+		Example: "  waxlabel dump song.flac\n" +
+			"  waxlabel dump --native --json album/*.flac",
 		Long: "Parse each file and print its canonical tags, audio properties, embedded\n" +
 			"pictures, and any parse warnings. With --native, also show the native\n" +
 			"metadata blocks and the per-source (family) view that records which\n" +
@@ -48,7 +50,7 @@ func newDumpCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&native, "native", false, "include native blocks and the per-source (family) view")
-	cmd.Flags().BoolVar(&recursive, "recursive", false, "recurse into directory arguments, dumping every audio file found")
+	cmd.Flags().BoolVar(&recursive, "recursive", false, "recurse into directory arguments, dumping every audio file found (selected by file extension)")
 	return cmd
 }
 

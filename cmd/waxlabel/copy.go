@@ -22,6 +22,8 @@ func newCopyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "copy <source> <dest>",
 		Short: "Copy metadata from one file onto another (cross-format)",
+		Example: "  waxlabel copy source.flac dest.mp3\n" +
+			"  waxlabel copy --dry-run source.flac dest.m4a",
 		Long: "Read <source>, project its canonical tags, pictures, and chapters onto\n" +
 			"<dest>, and rewrite <dest> in place. The two files need not share a\n" +
 			"format: each value is carried, downgraded, or dropped according to what\n" +
@@ -37,18 +39,33 @@ func newCopyCmd() *cobra.Command {
 			}
 
 			ctx := cmd.Context()
-			srcDoc, err := wl.ParseFile(ctx, srcPath)
+			out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
+			asJSON := jsonMode(cmd)
+			// On a parse failure, match the per-file "waxlabel: <path>: <reason>" line
+			// dump/verify/set print (human), rather than the classifier's bare "no such
+			// file: <path>". JSON output is unchanged: the error returns to dispatch,
+			// which emits the not-found envelope (the machine contract scripts read).
+			parse := func(path string) (*wl.Document, error) {
+				doc, err := wl.ParseFile(ctx, path)
+				if err != nil {
+					if asJSON {
+						return nil, err
+					}
+					perFileError(errOut, path, err)
+					return nil, alreadyRendered(err)
+				}
+				return doc, nil
+			}
+			srcDoc, err := parse(srcPath)
 			if err != nil {
 				return err
 			}
-			dstDoc, err := wl.ParseFile(ctx, dstPath)
+			dstDoc, err := parse(dstPath)
 			if err != nil {
 				return err
 			}
 
 			plan, report, err := srcDoc.PrepareTransfer(dstDoc, opts...)
-			out := cmd.OutOrStdout()
-			asJSON := jsonMode(cmd)
 			// Header labels distinguish WebM from Matroska, which share one Format; the
 			// container subtype comes from each parsed doc.
 			srcLabel := transferFormatLabel(srcDoc.Format(), srcDoc.Properties().Container)
@@ -83,7 +100,7 @@ func newCopyCmd() *cobra.Command {
 			if asJSON {
 				return writeJSON(out, toJSONCopy(srcPath, dstPath, report, plan, false, res.Committed))
 			}
-			renderSaveOutcome(out, dstPath, "", res)
+			renderSaveOutcome(out, dstPath, "", res, plan.IsNoOp())
 			return nil
 		},
 	}

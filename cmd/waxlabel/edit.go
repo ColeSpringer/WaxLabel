@@ -177,6 +177,14 @@ func (e *editFlags) writeOptions() ([]wl.WriteOption, error) {
 	if padOpt != nil {
 		opts = append(opts, padOpt)
 	}
+	// --force embeds a cover the image sniff does not recognize, so opt the library's
+	// added-picture validation out to match: without it, Prepare would reject the
+	// exotic image loadCovers just waved through. loadCovers still pre-checks the
+	// common mistake (a non-image file) for a friendly exit-2 message before any
+	// file is touched; this only affects the --force path.
+	if e.force {
+		opts = append(opts, wl.WithUnrecognizedPictures())
+	}
 	return opts, nil
 }
 
@@ -326,6 +334,56 @@ func (e *editFlags) unknownAssignKeys() []tag.Key {
 		out = append(out, k)
 	}
 	return out
+}
+
+// anyInputExists reports whether at least one of paths names something this
+// invocation can act on - the "-" stdin sentinel always counts (its bytes were
+// buffered before the loop). set and plan use it to hold the cosmetic
+// invocation-level notes (the non-strict unknown-key notes and the value notes)
+// until there is a real file to act on, so a single missing file is reported as
+// not-found rather than first lectured about its keys (L7). It stats realOf(p): the
+// buffered temp path for "-", the path itself otherwise. Any stat failure - not
+// only not-exist, but e.g. an unsearchable parent dir - counts as "nothing to act
+// on here": a path that cannot be stat'd cannot be parsed either, so the per-file
+// loop will surface the real error, and a cosmetic note is better withheld than
+// printed before that inevitable failure. The --strict guardrail is deliberately
+// not gated on this - a strict-key misuse is a usage error checked upfront,
+// independent of the file.
+func anyInputExists(realOf func(string) string, paths []string) bool {
+	for _, p := range paths {
+		if p == stdinArg {
+			return true
+		}
+		if _, err := os.Stat(realOf(p)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// notifyInvocationNotes emits the invocation-level guardrails and notes shared by
+// set and plan, once there is at least one path to act on. The --strict unknown-key
+// guardrail fires regardless of whether any input exists, so its exit-2 misuse
+// error stays independent of the file (set nope.flac --strict --set BOGUS=1 is exit
+// 2, not 6); notifyUnknownKeys prints nothing under --strict, so the strict-but-
+// absent path is note-free. The cosmetic notes (the non-strict unknown-key notes
+// and the value notes) wait until an input actually exists, so a lone missing file
+// is not lectured about its key before the not-found error (L7). Centralizing this
+// keeps the strict-vs-exists policy single-sourced across set and plan.
+func notifyInvocationNotes(errOut io.Writer, ce *compiledEdit, ef *editFlags, realOf func(string) string, paths []string, asJSON bool) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	exists := anyInputExists(realOf, paths)
+	if ef.strict || exists {
+		if err := notifyUnknownKeys(errOut, ce, ef.strict, asJSON); err != nil {
+			return err
+		}
+	}
+	if exists {
+		notifyValueNotes(errOut, ef, asJSON)
+	}
+	return nil
 }
 
 // guardrailKeys applies the policy shared by every key-based edit guardrail: no

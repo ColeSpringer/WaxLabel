@@ -18,6 +18,8 @@ func newPlanCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "plan <file>...",
 		Short: "Show what an edit would write, without writing it",
+		Example: "  waxlabel plan song.flac --set TITLE=\"Hey Jude\" --add ARTIST=Beatles\n" +
+			"  waxlabel plan song.flac --clear COMMENT",
 		Long: "Resolve the given edits into a write plan and print exactly what saving\n" +
 			"would do - the operations, the field-level changes, the size change,\n" +
 			"padding, and warnings - without modifying the file. With no edits it\n" +
@@ -43,13 +45,8 @@ func newPlanCmd() *cobra.Command {
 				return err
 			}
 			noteNoFiles(cmd.ErrOrStderr(), paths)
-			// Run the invocation-level guardrails and notes only when there is a file to
-			// preview, so a note never claims a value was "written" on an empty walk.
-			if len(paths) > 0 {
-				if err := notifyUnknownKeys(cmd.ErrOrStderr(), ce, ef.strict, asJSON); err != nil {
-					return err
-				}
-				notifyValueNotes(cmd.ErrOrStderr(), &ef, asJSON)
+			if err := notifyInvocationNotes(cmd.ErrOrStderr(), ce, &ef, realOf, paths, asJSON); err != nil {
+				return err
 			}
 			notifier := newSingleValuedNotifier(ef.strict, asJSON, cmd.ErrOrStderr())
 			return perFile(cmd, paths,
@@ -73,7 +70,7 @@ func newPlanCmd() *cobra.Command {
 		},
 	}
 	ef.bind(cmd)
-	cmd.Flags().BoolVar(&recursive, "recursive", false, "recurse into directory arguments, previewing every audio file found")
+	cmd.Flags().BoolVar(&recursive, "recursive", false, "recurse into directory arguments, previewing every audio file found (selected by file extension)")
 	return cmd
 }
 

@@ -2,6 +2,7 @@ package waxlabel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -20,11 +21,37 @@ import (
 	_ "github.com/colespringer/waxlabel/internal/wav"
 )
 
+// errNilContext reports a nil [context.Context] handed to a public ctx-taking
+// entry point. It is unexported by design: every codec dereferences ctx
+// immediately (ctx.Err()), so a nil ctx is a programmer bug, not a runtime
+// category a caller branches on with errors.Is - keeping it out of the curated
+// [waxerr] vocabulary avoids diluting that surface, while the plain error still
+// carries the message (and is test-assertable). The CLI always supplies a
+// context, so this never surfaces there.
+var errNilContext = errors.New("nil context: pass context.Background() if you have none")
+
+// checkContext is the uniform context guard for every public ctx-taking entry
+// point: it rejects a nil context with [errNilContext] (so the call fails fast
+// instead of panicking on the first ctx.Err() deref inside a codec - and, for the
+// streaming OpenSource, before it reads the whole input into memory), and
+// otherwise reports the context's own state, so an already-cancelled or
+// expired context aborts up front too. Folding both checks here keeps the six
+// entry points consistent (no site stacks a separate ctx.Err()).
+func checkContext(ctx context.Context) error {
+	if ctx == nil {
+		return errNilContext
+	}
+	return ctx.Err()
+}
+
 // Parse reads metadata from src, returning a detached [Document]. src is used
 // only during the call; the Document retains no reference to it, so to write
 // the result you supply a source again via [WriteTo]. Use [ParseFile] when you
 // have a path (it records source identity for save-back).
 func Parse(ctx context.Context, src ReaderAtSized, opts ...ParseOption) (*Document, error) {
+	if err := checkContext(ctx); err != nil {
+		return nil, err
+	}
 	return parseSource(ctx, src, "", resolveParseOptions(opts))
 }
 
@@ -32,6 +59,9 @@ func Parse(ctx context.Context, src ReaderAtSized, opts ...ParseOption) (*Docume
 // Document holds no file descriptor; it records a strong source identity so a
 // later [Plan.Execute] with [SaveBack] can detect a changed file.
 func ParseFile(ctx context.Context, path string, opts ...ParseOption) (*Document, error) {
+	if err := checkContext(ctx); err != nil {
+		return nil, err
+	}
 	fs, err := openFileSource(path)
 	if err != nil {
 		return nil, err

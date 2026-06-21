@@ -19,6 +19,8 @@ func newVerifyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "verify <file>...",
 		Short: "Compute audio-essence (and optionally whole-file) identity",
+		Example: "  waxlabel verify song.flac\n" +
+			"  waxlabel verify --whole-file --quiet *.flac | sort",
 		Long: "Compute each file's audio-essence digest - a hash of the encoded audio\n" +
 			"plus its decoder-critical configuration, independent of tags - which\n" +
 			"answers \"is this the same audio?\" for deduplication. The digest carries\n" +
@@ -64,7 +66,7 @@ func newVerifyCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&whole, "whole-file", false, "also compute the whole-file identity")
-	cmd.Flags().BoolVar(&recursive, "recursive", false, "recurse into directory arguments, verifying every audio file found")
+	cmd.Flags().BoolVar(&recursive, "recursive", false, "recurse into directory arguments, verifying every audio file found (selected by file extension)")
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "print one tab-separated digest+path line per file, for piping into sort/uniq to dedup")
 	return cmd
 }

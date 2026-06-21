@@ -145,6 +145,11 @@ type WriteOptions struct {
 	NumericGenre bool
 	// ID3Multi selects the ID3v2.3 multi-value representation.
 	ID3Multi ID3MultiValuePolicy
+	// AllowUnrecognizedPictures opts the added-picture validation in [Editor.Prepare]
+	// out, so a picture whose bytes are not a recognized image header (an exotic
+	// HEIC/AVIF/JXL cover, or a transfer carrying an already-embedded one) is embedded
+	// rather than rejected. Off by default: a junk or empty picture is refused.
+	AllowUnrecognizedPictures bool
 }
 
 // DefaultWriteOptions returns the preservation-first defaults.

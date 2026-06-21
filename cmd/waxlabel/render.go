@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/tag"
@@ -170,23 +169,41 @@ func renderTags(w io.Writer, ts tag.TagSet) {
 			fmt.Fprintf(w, "    %-*s  (present, no value)\n", width, ks)
 			continue
 		}
+		// A known single-valued key holding several values is the
+		// [conflicting-families] merge surfacing as duplicate rows; flag each with the
+		// same "(conflict)" marker the per-source view uses, so the rows visibly tie
+		// back to the warning rather than reading as an unexplained repeat (L5).
+		suffix := ""
+		if k.SingleValuedMulti(len(vals)) {
+			suffix = "  (conflict)"
+		}
 		for _, v := range vals {
 			fmt.Fprintf(w, "    %-*s  ", width, ks)
 			// A present-but-empty value is distinct from a key with no values at all
 			// ("(present, no value)" above); label it so it does not print as a blank.
 			if v == "" {
-				fmt.Fprintln(w, "(empty value)")
+				fmt.Fprintln(w, "(empty value)"+suffix)
 				continue
 			}
-			writeWrapped(w, valueCol, v)
+			writeWrappedSuffix(w, valueCol, v, suffix)
 		}
 	}
 }
 
 // writeWrapped prints value followed by a newline, indenting every line after an
 // embedded newline to col so a multi-line value stays aligned under its first
-// line instead of falling back to column 0.
+// line instead of falling back to column 0. It is [writeWrappedSuffix] with no
+// suffix.
 func writeWrapped(w io.Writer, col int, value string) {
+	writeWrappedSuffix(w, col, value, "")
+}
+
+// writeWrappedSuffix is [writeWrapped] that appends suffix to the first rendered
+// line only, so a row can be flagged (e.g. a single-valued conflict's "(conflict)"
+// marker) without disturbing the alignment of a multi-line value's continuation
+// lines. suffix is a fixed, non-file-derived label, so it is appended after the
+// per-line sanitize rather than through it.
+func writeWrappedSuffix(w io.Writer, col int, value, suffix string) {
 	indent := strings.Repeat(" ", col)
 	lines := strings.Split(value, "\n")
 	// A trailing newline yields a final empty element; drop it so it does not
@@ -200,7 +217,9 @@ func writeWrapped(w io.Writer, col int, value string) {
 		// injection vector. Legitimate tabs and the line break (owned by the split
 		// above) are preserved.
 		line = tag.SanitizeText(strings.TrimSuffix(line, "\r"))
-		if i > 0 {
+		if i == 0 {
+			line += suffix
+		} else {
 			fmt.Fprint(w, indent)
 		}
 		fmt.Fprintln(w, line)
@@ -255,24 +274,8 @@ func renderChapters(w io.Writer, chs []wl.Chapter) {
 		if title == "" {
 			title = fmt.Sprintf("Chapter %d", i+1)
 		}
-		fmt.Fprintf(w, "    %s  %s\n", chapterTimestamp(c.Start), title)
+		fmt.Fprintf(w, "    %s  %s\n", wl.FormatChapterTime(c.Start), title)
 	}
-}
-
-// chapterTimestamp formats a chapter start as H:MM:SS.mmm (millisecond precision,
-// since adjacent chapters can be seconds apart).
-func chapterTimestamp(d time.Duration) string {
-	if d < 0 {
-		d = 0
-	}
-	h := d / time.Hour
-	d -= h * time.Hour
-	m := d / time.Minute
-	d -= m * time.Minute
-	s := d / time.Second
-	d -= s * time.Second
-	ms := d / time.Millisecond
-	return fmt.Sprintf("%d:%02d:%02d.%03d", h, m, s, ms)
 }
 
 // renderWarnings prints the parse warnings (already "[code] message" formatted).

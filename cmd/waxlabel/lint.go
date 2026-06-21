@@ -30,6 +30,8 @@ func newLintCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "lint <file>...",
 		Short: "Report metadata issues (and optionally fix the safe ones)",
+		Example: "  waxlabel lint song.mp3\n" +
+			"  waxlabel lint --fix --recursive album/",
 		Long: "Inspect each file for issues a tagger would want to surface: stale legacy\n" +
 			"tag containers, inherited encoder stamps, conflicting source values,\n" +
 			"duplicate or unrecognized pictures, malformed dates, and missing audio.\n" +
@@ -66,7 +68,7 @@ func newLintCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&fix, "fix", false, "apply the safe, non-destructive fixes and save in place")
-	cmd.Flags().BoolVar(&recursive, "recursive", false, "recurse into directory arguments, linting every audio file found")
+	cmd.Flags().BoolVar(&recursive, "recursive", false, "recurse into directory arguments, linting every audio file found (selected by file extension)")
 	return cmd
 }
 
@@ -100,7 +102,7 @@ func lintLoop[T any](
 			if asJSON {
 				items = append(items, errItem(path, classifyError(err)))
 			} else {
-				fmt.Fprintf(errOut, "waxlabel: %s: %s\n", displayName(path), perFileReason(err))
+				perFileError(errOut, path, err)
 			}
 			continue
 		}

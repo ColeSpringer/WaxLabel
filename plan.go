@@ -121,7 +121,7 @@ type SaveResult struct {
 // [WriteTo]. It returns the post-write [Document] and a [SaveResult]; on error,
 // the SaveResult still carries what is known (e.g. Committed=false).
 func (p *Plan) Execute(ctx context.Context, dst Destination) (*Document, SaveResult, error) {
-	if err := ctx.Err(); err != nil {
+	if err := checkContext(ctx); err != nil {
 		return nil, SaveResult{}, err
 	}
 	switch dst.kind {
