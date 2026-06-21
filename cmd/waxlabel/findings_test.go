@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -211,5 +212,340 @@ func TestHelpTopicExitCode(t *testing.T) {
 	}
 	if _, _, code := runCLI(t, "help"); code != 0 {
 		t.Errorf("bare help exit = %d, want 0", code)
+	}
+}
+
+// TestBareInvocationExitsUsage (#24, B3): a bare `waxlabel` with no subcommand is a
+// usage error (exit 2) so a script can tell "no command" from success, with the
+// help printed to stderr - while --help/-h stay exit 0 with help on stdout, and a
+// --json bare run still gets the machine-readable error envelope.
+func TestBareInvocationExitsUsage(t *testing.T) {
+	t.Parallel()
+	stdout, stderr, code := runCLI(t)
+	if code != 2 {
+		t.Fatalf("bare waxlabel exit = %d, want 2", code)
+	}
+	if stdout != "" {
+		t.Errorf("bare invocation should print help to stderr, not stdout; stdout=%q", stdout)
+	}
+	if !strings.Contains(stderr, "Usage:") || !strings.Contains(stderr, "Available Commands:") {
+		t.Errorf("stderr should carry the help text: %q", stderr)
+	}
+
+	hout, _, hcode := runCLI(t, "--help")
+	if hcode != 0 {
+		t.Errorf("--help exit = %d, want 0", hcode)
+	}
+	if !strings.Contains(hout, "Usage:") {
+		t.Errorf("--help should print usage to stdout: %q", hout)
+	}
+
+	jout, _, jcode := runCLI(t, "--json")
+	if jcode != 2 {
+		t.Fatalf("waxlabel --json exit = %d, want 2", jcode)
+	}
+	var je jsonError
+	if err := json.Unmarshal([]byte(jout), &je); err != nil {
+		t.Fatalf("--json bare stdout is not the error envelope: %v\n%s", err, jout)
+	}
+	if je.Error.Code != "usage" {
+		t.Errorf("error code = %q, want usage", je.Error.Code)
+	}
+}
+
+// TestMultiFileExitMostSevere (#14, B1): in a multi-file run the exit code is the
+// most-severe failure's class, not the first file's - and is independent of
+// argument order. A corrupt file (invalid-data, exit 4) outranks a missing path
+// (not-found, exit 6), where first-error capture would yield 4 one way and 6 the
+// other.
+func TestMultiFileExitMostSevere(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// A file the FLAC detector claims by its "fLaC" magic but cannot parse: invalid-data.
+	bad := filepath.Join(dir, "garbage.flac")
+	if err := os.WriteFile(bad, append([]byte("fLaC"), make([]byte, 64)...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(dir, "missing.x")
+
+	if _, _, code := runCLI(t, "dump", bad); code != 4 {
+		t.Fatalf("garbage.flac alone exit = %d, want 4 (invalid-data)", code)
+	}
+	if _, _, code := runCLI(t, "dump", missing); code != 6 {
+		t.Fatalf("missing alone exit = %d, want 6 (not-found)", code)
+	}
+	if _, _, code := runCLI(t, "dump", bad, missing); code != 4 {
+		t.Errorf("dump bad missing exit = %d, want 4 (most-severe)", code)
+	}
+	if _, _, code := runCLI(t, "dump", missing, bad); code != 4 {
+		t.Errorf("dump missing bad (swapped) exit = %d, want 4 (order-independent)", code)
+	}
+}
+
+// TestAddCoverNonRegularIsUsageError (#22, B2): an --add-cover pointed at a
+// directory (or other non-regular file) is a usage error (exit 2), consistent with
+// every other non-regular input, rather than the exit-6 io error os.ReadFile would
+// raise. A genuinely missing cover still falls through to the read and stays io.
+func TestAddCoverNonRegularIsUsageError(t *testing.T) {
+	t.Parallel()
+	f := copyFixture(t, sampleFLAC)
+	coverDir := t.TempDir() // a directory, not an image
+	_, errb, code := runCLI(t, "set", f, "--add-cover", coverDir)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (usage); stderr=%q", code, errb)
+	}
+	if !strings.Contains(errb, "is a directory") {
+		t.Errorf("stderr should explain the directory cover: %q", errb)
+	}
+
+	missing := filepath.Join(t.TempDir(), "nope.jpg")
+	if _, _, code := runCLI(t, "set", f, "--add-cover", missing); code != 6 {
+		t.Errorf("missing cover exit = %d, want 6 (io); checkRegularFile must let does-not-exist through", code)
+	}
+}
+
+// TestPlanJSONErrorEntryMinimal (#4, C1): a per-file error element is exactly
+// {schemaVersion,file,error} - no null "operations" array and none of the other
+// zeroed plan fields leaking through.
+func TestPlanJSONErrorEntryMinimal(t *testing.T) {
+	t.Parallel()
+	missing := filepath.Join(t.TempDir(), "nope.flac")
+	out, _, code := runCLI(t, "--json", "plan", sampleFLAC, missing, "--set", "TITLE=X")
+	if code != 6 {
+		t.Fatalf("exit = %d, want 6", code)
+	}
+	var raw []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &raw); err != nil {
+		t.Fatalf("not a JSON array: %v\n%s", err, out)
+	}
+	if len(raw) != 2 {
+		t.Fatalf("got %d elements, want 2", len(raw))
+	}
+	errEl := raw[1] // the missing file's element
+	if _, ok := errEl["error"]; !ok {
+		t.Fatalf("second element should carry an error: %v", errEl)
+	}
+	if len(errEl) != 3 {
+		t.Errorf("error element has %d keys, want exactly schemaVersion/file/error: %v", len(errEl), errEl)
+	}
+	for _, forbidden := range []string{"operations", "noOp", "changes", "bytesBefore", "bytesAfter", "paddingAfter"} {
+		if _, present := errEl[forbidden]; present {
+			t.Errorf("error element leaks %q (#4); want only schemaVersion/file/error", forbidden)
+		}
+	}
+}
+
+// TestSetJSONErrorNoPhantomOutput (#15, C1): a failed set's per-file error element
+// does not echo the (unwritten) output path or carry committed/size, and the output
+// file is never created.
+func TestSetJSONErrorNoPhantomOutput(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "nope.flac")
+	outPath := filepath.Join(dir, "out.flac")
+	out, _, code := runCLI(t, "--json", "set", missing, "--set", "TITLE=X", "-o", outPath)
+	if code != 6 {
+		t.Fatalf("exit = %d, want 6", code)
+	}
+	var raw []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &raw); err != nil {
+		t.Fatalf("not a JSON array: %v\n%s", err, out)
+	}
+	if len(raw) != 1 {
+		t.Fatalf("got %d elements, want 1", len(raw))
+	}
+	for _, forbidden := range []string{"output", "committed", "size", "operations", "noOp"} {
+		if _, present := raw[0][forbidden]; present {
+			t.Errorf("set error element leaks %q (#15)", forbidden)
+		}
+	}
+	if _, err := os.Stat(outPath); !os.IsNotExist(err) {
+		t.Errorf("the output file must not be created on a failed set")
+	}
+}
+
+// TestStrictGuardrailShapes pins how the two --strict guardrails surface (#5, B1).
+// The file-independent unknown-key guardrail aborts up front as the single object
+// envelope. The per-file single-valued-multi guardrail is a per-file array element,
+// so it participates in the most-severe-wins aggregate exit code rather than aborting
+// the run: pairing it with a missing file yields exit 6 (not-found outranks the usage
+// error) with BOTH elements present, independent of argument order. (An earlier
+// abort-on-first design discarded the not-found element and flipped the exit to 2 -
+// order-dependently - which this guards against.)
+func TestStrictGuardrailShapes(t *testing.T) {
+	t.Parallel()
+
+	// Unknown key: invocation-level, one object envelope, exit 2.
+	t.Run("unknown-key-is-object", func(t *testing.T) {
+		out, _, code := runCLI(t, "--json", "plan", sampleFLAC, "--strict", "--set", "BOGUS=1")
+		if code != 2 {
+			t.Fatalf("exit = %d, want 2", code)
+		}
+		var je jsonError
+		if err := json.Unmarshal([]byte(out), &je); err != nil {
+			t.Fatalf("stdout is not the object envelope: %v\n%s", err, out)
+		}
+		if je.Error.Code != "usage" {
+			t.Errorf("error code = %q, want usage", je.Error.Code)
+		}
+	})
+
+	// Single-valued-multi on a lone file: a one-element array, exit 2.
+	t.Run("single-valued-is-array-element", func(t *testing.T) {
+		out, _, code := runCLI(t, "--json", "plan", sampleFLAC, "--strict", "--add", "ENCODER=a", "--add", "ENCODER=b")
+		if code != 2 {
+			t.Fatalf("exit = %d, want 2", code)
+		}
+		jr := decodeJSONOne[jsonReport](t, out) // also asserts a single-element array
+		if jr.Error == nil || jr.Error.Code != "usage" {
+			t.Errorf("error = %+v, want a usage element", jr.Error)
+		}
+	})
+
+	// Multi-file: the strict element does not discard a more-severe not-found, and the
+	// aggregate exit is order-independent.
+	missing := filepath.Join(t.TempDir(), "nope.flac")
+	for _, order := range [][]string{{missing, sampleFLAC}, {sampleFLAC, missing}} {
+		args := append([]string{"--json", "plan"}, order...)
+		args = append(args, "--strict", "--add", "ENCODER=a", "--add", "ENCODER=b")
+		out, _, code := runCLI(t, args...)
+		if code != 6 {
+			t.Errorf("order %v: exit = %d, want 6 (not-found outranks the strict usage error)", order, code)
+		}
+		if entries := decodeJSONList[jsonReport](t, out); len(entries) != 2 {
+			t.Errorf("order %v: %d elements, want 2 (neither discarded)", order, len(entries))
+		}
+	}
+}
+
+// TestDiffQuietJSONEmitsObject (#6, C3): --json overrides --quiet, so a quiet JSON
+// diff still emits the documented object (the exit code carries the verdict either
+// way), while a plain --quiet diff still prints nothing.
+func TestDiffQuietJSONEmitsObject(t *testing.T) {
+	t.Parallel()
+	out, _, code := runCLI(t, "--json", "diff", "--quiet", sampleFLAC, notagsFLAC)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (differ)", code)
+	}
+	var jd jsonDiff
+	if err := json.Unmarshal([]byte(out), &jd); err != nil {
+		t.Fatalf("stdout is not the diff object: %v\n%s", err, out)
+	}
+	if jd.Identical {
+		t.Errorf("diff object should report the files differ")
+	}
+
+	qout, qerr, qcode := runCLI(t, "diff", "--quiet", sampleFLAC, notagsFLAC)
+	if qcode != 1 || qout != "" || qerr != "" {
+		t.Errorf("plain --quiet should print nothing; exit=%d stdout=%q stderr=%q", qcode, qout, qerr)
+	}
+}
+
+// TestRecursiveWalkFollowsSymlinkedAudio (A1): the no-hang hardening must not break
+// the documented "symlinks are followed" behavior - a recursive walk still picks up
+// a symlink that points at a real audio file (resolved via os.Stat), even though
+// filepath.WalkDir does not follow symlinks itself.
+func TestRecursiveWalkFollowsSymlinkedAudio(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(base, "target.flac") // the real file, outside the walked dir
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	walk := filepath.Join(base, "walk")
+	if err := os.MkdirAll(walk, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(walk, "link.flac")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+	out, errb, code := runCLI(t, "--json", "dump", "--recursive", walk)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", code, errb)
+	}
+	docs := decodeJSONList[jsonDocument](t, out)
+	if len(docs) != 1 {
+		t.Fatalf("walk found %d files, want 1 (the symlinked audio file)", len(docs))
+	}
+	if docs[0].Error != nil {
+		t.Errorf("the symlinked audio file should parse: %+v", docs[0].Error)
+	}
+}
+
+// TestRecursiveWalkReportsDanglingSymlink (A1): a dangling symlink with an audio
+// extension is surfaced as a per-file not-found by a recursive walk, not silently
+// dropped - so a library scan does not read "clean" over a broken link. (The
+// non-regular skip applies to FIFOs/sockets, which can wedge a parse; a dangling
+// link cannot - os.Stat fails fast - so it is passed through to be reported.)
+func TestRecursiveWalkReportsDanglingSymlink(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "real.flac"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "nonexistent-target"), filepath.Join(dir, "broken.flac")); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+	out, _, code := runCLI(t, "--json", "dump", "--recursive", dir)
+	if code != 6 {
+		t.Fatalf("exit = %d, want 6 (the broken link is reported as not-found)", code)
+	}
+	docs := decodeJSONList[jsonDocument](t, out)
+	if len(docs) != 2 {
+		t.Fatalf("walk dumped %d entries, want 2 (real.flac + the broken link)", len(docs))
+	}
+	var sawNotFound, sawOK bool
+	for _, d := range docs {
+		switch {
+		case d.Error != nil && d.Error.Code == "not-found":
+			sawNotFound = true
+		case d.Error == nil:
+			sawOK = true
+		}
+	}
+	if !sawNotFound {
+		t.Error("the dangling symlink should be reported as not-found, not dropped")
+	}
+	if !sawOK {
+		t.Error("the real audio file should still be dumped")
+	}
+}
+
+// TestNonExpandingCommandsRejectNonRegular (#3): caps, diff, and copy parse their
+// operands directly (no directory expansion), but still reject a non-regular input -
+// here a directory - as an exit-2 usage error, matching dump/verify/plan/set/lint
+// rather than falling through to the library's exit-4 backstop.
+func TestNonExpandingCommandsRejectNonRegular(t *testing.T) {
+	t.Parallel()
+	d := t.TempDir() // a directory, not a file
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"caps", []string{"caps", d}},
+		{"diff-first", []string{"diff", d, sampleFLAC}},
+		{"diff-second", []string{"diff", sampleFLAC, d}},
+		{"copy-src", []string{"copy", d, sampleFLAC}},
+		{"copy-dst", []string{"copy", sampleFLAC, d}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, errb, code := runCLI(t, tc.args...)
+			if code != 2 {
+				t.Fatalf("exit = %d, want 2 (usage); stderr=%q", code, errb)
+			}
+			if !strings.Contains(errb, "is a directory") {
+				t.Errorf("stderr should name the directory: %q", errb)
+			}
+		})
 	}
 }

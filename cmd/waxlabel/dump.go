@@ -41,9 +41,6 @@ func newDumpCmd() *cobra.Command {
 					return wl.ParseFile(ctx, realOf(path))
 				},
 				func(path string, doc *wl.Document) any { return toJSONDocument(path, doc, native) },
-				func(path string, c classifiedError) any {
-					return jsonDocument{SchemaVersion: schemaVersion, File: path, Error: &jsonErrBody{c.code, c.message}}
-				},
 				func(w io.Writer, path string, doc *wl.Document) { renderDocument(w, path, doc, native) },
 				false,
 			)
@@ -54,9 +51,10 @@ func newDumpCmd() *cobra.Command {
 	return cmd
 }
 
-// jsonDocument is the machine-readable view of one dumped file. On a parse
-// failure only SchemaVersion, File, and Error are set; otherwise Error is nil
-// and the metadata fields are populated.
+// jsonDocument is the machine-readable view of one dumped file. A failed element is
+// emitted as the shared jsonErrorEntry; this struct keeps a matching Error field so
+// a consumer can decode every array element into it (Error set, metadata absent on
+// failure; Error nil and metadata populated on success). See jsonErrorEntry.
 type jsonDocument struct {
 	SchemaVersion int             `json:"schemaVersion"`
 	File          string          `json:"file"`

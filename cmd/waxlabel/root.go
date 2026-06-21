@@ -23,6 +23,11 @@ func newRootCmd() *cobra.Command {
 		// cobra's own printing so failures are not reported twice.
 		SilenceErrors: true,
 		SilenceUsage:  true,
+		// A bare `waxlabel` reaches this RunE (cobra dispatches a subcommand, resolves
+		// --help/-h, and rejects an unknown command before it), so treat "no command"
+		// as a usage error - exit 2, not cobra's default help-and-exit-0 - letting a
+		// script tell it apart from success.
+		RunE: func(cmd *cobra.Command, _ []string) error { return noCommand(cmd) },
 	}
 	root.PersistentFlags().Bool("json", false, "emit machine-readable JSON instead of human output")
 	root.AddCommand(
@@ -42,6 +47,24 @@ func newRootCmd() *cobra.Command {
 	root.SetHelpCommand(newHelpCmd())
 	wrapUsageErrors(root)
 	return root
+}
+
+// noCommand reports a bare `waxlabel` (no subcommand) as a usage error so a script
+// can distinguish it from a successful run - cobra's default would print help and
+// exit 0. For a human it prints the full help to stderr and returns the error
+// already-rendered (exit 2, no second line); under --json it returns the usage error
+// unrendered so dispatch emits the machine-readable error envelope instead of human
+// help text. cobra resolves --help/-h before RunE, so those still print to stdout and
+// exit 0.
+func noCommand(cmd *cobra.Command) error {
+	if jsonMode(cmd) {
+		return &usageError{msg: "no command given", cmd: "waxlabel", wantsHint: true}
+	}
+	cmd.SetOut(cmd.ErrOrStderr())
+	if err := cmd.Help(); err != nil {
+		return err
+	}
+	return alreadyRendered(usagef("no command given"))
 }
 
 // newHelpCmd replaces cobra's default help command so "help <bogus>" exits 2 (a

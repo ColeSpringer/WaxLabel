@@ -172,6 +172,29 @@ type jsonErrBody struct {
 	Message string `json:"message"`
 }
 
+// jsonErrorEntry is the per-file error element shared by every list command's
+// --json output (dump, verify, lint, caps, plan, set). On a per-file failure the
+// element carries only the schema version, the file, and the classified error -
+// none of the command-specific result fields, which would otherwise leak as zero
+// values (plan's null operations array, set's phantom committed flag and echoed
+// output path) and let a scripted consumer mistake a failed file for a partial
+// success. Centralizing the shape here is what keeps the commands from drifting:
+// a per-file error is this, and only this. Every command result struct (jsonDocument,
+// jsonReport, ...) keeps a matching Error field with the same JSON shape, so a
+// consumer can unmarshal every element of a mixed success/failure array into the one
+// command type and branch on whether Error is set - the production path emits this
+// type, the consumer decodes into theirs.
+type jsonErrorEntry struct {
+	SchemaVersion int         `json:"schemaVersion"`
+	File          string      `json:"file"`
+	Error         jsonErrBody `json:"error"`
+}
+
+// errorEntry builds the shared per-file error element from a classified error.
+func errorEntry(path string, c classifiedError) jsonErrorEntry {
+	return jsonErrorEntry{SchemaVersion: schemaVersion, File: path, Error: jsonErrBody{Code: c.code, Message: c.message}}
+}
+
 // humanDuration formats a duration as H:MM:SS or M:SS. Sub-minute clips are
 // shown in seconds so short fixtures are not flattened to 0:00.
 func humanDuration(d time.Duration) string {
@@ -199,13 +222,17 @@ func humanDuration(d time.Duration) string {
 	return fmt.Sprintf("%d:%02d", m, s)
 }
 
-// perFile runs a per-path command (dump, verify): it processes each path
-// independently, captures the first error for the exit code, routes per-file
-// errors to stderr (text) or into the JSON result, separates text records with a
-// blank line only between records actually written, and emits the per-file results
-// as a JSON array (always, even for a single path). noSeparator drops that
-// inter-record blank line, for a one-line-per-file (TSV) renderer - verify --quiet -
-// whose output pipes into sort/uniq where a blank line would be spurious. The
+// perFile runs a per-path command (dump, verify, plan, caps): it processes each path
+// independently, captures the most-severe error class for the exit code (worseError,
+// not the first error seen), routes per-file errors to stderr (text) or into the
+// JSON result as the shared jsonErrorEntry, separates text records with a blank line
+// only between records actually written, and emits the per-file results as a JSON
+// array (always, even for a single path). noSeparator drops that inter-record blank
+// line, for a one-line-per-file (TSV) renderer - verify --quiet - whose output pipes
+// into sort/uniq where a blank line would be spurious. A per-file failure - including
+// plan's --strict single-valued-multi guardrail - is one array element so the
+// aggregate exit code stays order-independent (worseError); the invocation-level
+// unknown-key guardrail, which is file-independent, still aborts up front. The
 // returned error is alreadyRendered, so dispatch keeps the exit class without
 // re-rendering.
 func perFile[P any](
@@ -213,23 +240,22 @@ func perFile[P any](
 	paths []string,
 	compute func(ctx context.Context, path string) (P, error),
 	toJSON func(path string, p P) any,
-	errorJSON func(path string, c classifiedError) any,
 	render func(w io.Writer, path string, p P),
 	noSeparator bool,
 ) error {
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 	asJSON := jsonMode(cmd)
 	var items []any
-	var firstErr error
+	var worstErr error
 	rendered := 0
 	for _, path := range paths {
 		p, err := compute(cmd.Context(), path)
 		if err != nil {
-			if firstErr == nil {
-				firstErr = err
+			if worseError(worstErr, err) {
+				worstErr = err
 			}
 			if asJSON {
-				items = append(items, errorJSON(path, classifyError(err)))
+				items = append(items, errorEntry(path, classifyError(err)))
 			} else {
 				perFileError(errOut, path, err)
 			}
@@ -250,7 +276,7 @@ func perFile[P any](
 			return err
 		}
 	}
-	return alreadyRendered(firstErr)
+	return alreadyRendered(worstErr)
 }
 
 // emitJSONList writes the per-file items as a JSON array - always, even for a
@@ -442,6 +468,45 @@ func classifyError(err error) classifiedError {
 func isUsageError(err error) bool {
 	_, ok := waxerr.AsType[*usageError](err)
 	return ok
+}
+
+// errClassRank orders per-file error classes by severity for a multi-file run's
+// aggregate exit code, most-severe first. The aggregate reports the worst class
+// seen, not merely the first file's error: a genuinely broken file (invalid-data)
+// must outrank a wrong path (not-found), which must outrank a bad invocation
+// (usage). The numeric exit code is deliberately NOT this order - numeric-max would
+// let not-found/io (6) outrank invalid-data (4), i.e. "you typed a bad filename"
+// would beat "this file is corrupt". Keyed off classifyError(err).code so it tracks
+// the vocabulary the exit-code table documents; an unrecognized code ranks lowest
+// (0) and never masks a known class above it. Keep in sync with the precedence list
+// in README.md; TestErrClassRankCoversEveryErrorClass pins that every code
+// classifyError can produce is ranked here, so a new class cannot silently fall to 0.
+var errClassRank = map[string]int{
+	"canceled":           100, // exit 130: an interrupted run dominates
+	"timeout":            100, // exit 130
+	"source-changed":     90,  // exit 5
+	"invalid-data":       80,  // exit 4: a corrupt file
+	"no-tags":            75,  // exit 4
+	"unsupported-format": 70,  // exit 3
+	"unsupported-tag":    65,  // exit 3
+	"io":                 60,  // exit 6
+	"not-found":          55,  // exit 6: a wrong path
+	"usage":              20,  // exit 2: a bad invocation
+	"invalid-key":        20,  // exit 2
+	"error":              10,  // exit 1: the unclassified fallback
+}
+
+// worseError reports whether candidate is a more-severe aggregate error than
+// current for a multi-file run, by errClassRank - so the run's exit code reflects
+// the most-severe failure rather than the first one encountered. A nil current is
+// always replaced. Equal-rank errors keep the incumbent (the first seen), which is
+// harmless since equal rank means an equal exit code. Used by the per-file loops
+// (dump/verify/plan/caps via perFile, set, lint).
+func worseError(current, candidate error) bool {
+	if current == nil {
+		return true
+	}
+	return errClassRank[classifyError(candidate).code] > errClassRank[classifyError(current).code]
 }
 
 // isNotFoundPathError reports whether err is, at the top level, a "file does not

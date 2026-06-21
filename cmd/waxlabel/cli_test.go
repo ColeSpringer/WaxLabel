@@ -1802,3 +1802,47 @@ func TestWriteWrapped(t *testing.T) {
 		t.Errorf("internal blank: got %q, want %q", got, want)
 	}
 }
+
+// TestErrClassRankCoversEveryErrorClass (B1) pins the invariant worseError relies
+// on: every error class classifyError can produce has an entry in errClassRank. A
+// missing entry would silently fall to rank 0 - below the generic "error" (10) - so
+// in a multi-file run that class would lose the aggregate exit code to any other
+// failure. The check is bidirectional, so the rank map and the classified vocabulary
+// cannot drift apart: if you add a class to classifyError, add it to errClassRank and
+// to the samples here.
+func TestErrClassRankCoversEveryErrorClass(t *testing.T) {
+	t.Parallel()
+	samples := []error{
+		&usageError{msg: "bad usage"},
+		waxerr.ErrInvalidKey,
+		waxerr.ErrUnsupportedFormat,
+		waxerr.ErrUnsupportedTag,
+		waxerr.ErrSourceChanged,
+		waxerr.ErrInvalidData,
+		waxerr.ErrNoTags,
+		&fs.PathError{Op: "open", Path: "x", Err: fs.ErrNotExist},             // not-found
+		&fs.PathError{Op: "open", Path: "x", Err: errors.New("disk failure")}, // io
+		context.Canceled,
+		context.DeadlineExceeded,
+		errors.New("some unclassified failure"), // error
+	}
+	seen := map[string]bool{}
+	for _, err := range samples {
+		code := classifyError(err).code
+		seen[code] = true
+		if _, ranked := errClassRank[code]; !ranked {
+			t.Errorf("classifyError(%v) code %q has no errClassRank entry; worseError would sink it to 0", err, code)
+		}
+	}
+	for code := range errClassRank {
+		if !seen[code] {
+			t.Errorf("errClassRank has %q, which no sampled error produces; add a sample or remove the rank", code)
+		}
+	}
+	// Lock the headline B1 rationale: a corrupt file outranks a wrong path, which
+	// outranks a bad invocation.
+	if !(errClassRank["invalid-data"] > errClassRank["not-found"] && errClassRank["not-found"] > errClassRank["usage"]) {
+		t.Errorf("precedence broken: want invalid-data(%d) > not-found(%d) > usage(%d)",
+			errClassRank["invalid-data"], errClassRank["not-found"], errClassRank["usage"])
+	}
+}

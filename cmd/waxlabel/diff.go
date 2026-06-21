@@ -35,6 +35,10 @@ func newDiffCmd() *cobra.Command {
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			// --json has a fixed shape, so it overrides --quiet: a quiet JSON diff still
+			// emits the documented object (the exit code carries the verdict either way).
+			// This mirrors verify and set, so the flag pair behaves the same everywhere.
+			quiet = quiet && !jsonMode(cmd)
 			if args[0] == stdinArg && args[1] == stdinArg {
 				return usagef("only one operand may be read from standard input (%q)", stdinArg)
 			}
@@ -43,6 +47,9 @@ func newDiffCmd() *cobra.Command {
 				return err
 			}
 			defer cleanup()
+			if err := checkRegularInputs(realOf, args...); err != nil {
+				return err
+			}
 			aDoc, err := wl.ParseFile(ctx, realOf(args[0]))
 			if err != nil {
 				return err
@@ -71,7 +78,7 @@ func newDiffCmd() *cobra.Command {
 			return alreadyRendered(errFilesDiffer)
 		},
 	}
-	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "print nothing; report the result through the exit code only")
+	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "print nothing; report the result through the exit code only (--json overrides this and still emits the object)")
 	return cmd
 }
 

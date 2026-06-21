@@ -61,9 +61,6 @@ func newPlanCmd() *cobra.Command {
 					return plan, nil
 				},
 				func(path string, plan *wl.Plan) any { return toJSONReport(path, plan) },
-				func(path string, c classifiedError) any {
-					return jsonReport{SchemaVersion: schemaVersion, File: path, Error: &jsonErrBody{c.code, c.message}}
-				},
 				func(w io.Writer, path string, plan *wl.Plan) { renderReport(w, path, plan) },
 				false,
 			)
@@ -75,9 +72,10 @@ func newPlanCmd() *cobra.Command {
 }
 
 // jsonReport is the machine-readable form of a write plan, shared by plan and
-// set (set embeds it). On a per-file failure in a bulk run only SchemaVersion,
-// File, and Error are set; otherwise Error is nil and the plan fields are
-// populated.
+// set (set embeds it). A failed element in a bulk run is emitted as the shared
+// jsonErrorEntry; this struct keeps a matching Error field so a consumer can decode
+// every array element into it (Error set, plan fields absent on failure; Error nil
+// and plan fields populated on success). See jsonErrorEntry.
 type jsonReport struct {
 	SchemaVersion int           `json:"schemaVersion"`
 	File          string        `json:"file"`

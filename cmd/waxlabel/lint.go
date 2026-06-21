@@ -73,34 +73,35 @@ func newLintCmd() *cobra.Command {
 }
 
 // lintLoop runs a lint-style per-file command: it processes each path, captures
-// the first structural error, accumulates whether any file had an issue, and
-// emits per-file text or JSON. It is perFile with a finding accumulator and
-// lint's exit contract - a structural error (its own exit class) outranks issues
-// (exit 1), which outrank a clean run (exit 0) - so runLint and runLintFix differ
-// only in their compute/issue/render helpers, not in the loop.
+// the most-severe structural error (worseError, not the first one seen),
+// accumulates whether any file had an issue, and emits per-file text or JSON (the
+// shared jsonErrorEntry on failure). It is perFile with a finding accumulator and
+// lint's exit contract - a structural error (its own exit class, always ranked
+// above a finding) outranks issues (exit 1), which outrank a clean run (exit 0) -
+// so runLint and runLintFix differ only in their compute/issue/render helpers, not
+// in the loop.
 func lintLoop[T any](
 	cmd *cobra.Command,
 	paths []string,
 	compute func(ctx context.Context, path string) (T, error),
 	hasIssue func(T) bool,
-	errItem func(path string, c classifiedError) any,
 	jsonItem func(path string, t T) any,
 	render func(w io.Writer, path string, t T),
 ) error {
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 	asJSON := jsonMode(cmd)
 	var items []any
-	var firstErr error
+	var worstErr error
 	issues := false
 	rendered := 0
 	for _, path := range paths {
 		t, err := compute(cmd.Context(), path)
 		if err != nil {
-			if firstErr == nil {
-				firstErr = err
+			if worseError(worstErr, err) {
+				worstErr = err
 			}
 			if asJSON {
-				items = append(items, errItem(path, classifyError(err)))
+				items = append(items, errorEntry(path, classifyError(err)))
 			} else {
 				perFileError(errOut, path, err)
 			}
@@ -124,8 +125,8 @@ func lintLoop[T any](
 			return err
 		}
 	}
-	if firstErr != nil {
-		return alreadyRendered(firstErr)
+	if worstErr != nil {
+		return alreadyRendered(worstErr)
 	}
 	if issues {
 		return alreadyRendered(errLintFindings)
@@ -160,9 +161,6 @@ func runLint(cmd *cobra.Command, paths []string) error {
 			return doc.Lint(), nil
 		},
 		anyAtWarning,
-		func(path string, c classifiedError) any {
-			return jsonLint{SchemaVersion: schemaVersion, File: path, Error: &jsonErrBody{c.code, c.message}}
-		},
 		func(path string, findings []wl.Finding) any { return toJSONLint(path, findings) },
 		renderLint,
 	)
@@ -191,9 +189,6 @@ func runLintFix(cmd *cobra.Command, paths []string) error {
 	return lintLoop(cmd, paths,
 		lintFixOne,
 		func(o fixOutcome) bool { return anyAtWarning(o.remaining) },
-		func(path string, c classifiedError) any {
-			return jsonLintFix{SchemaVersion: schemaVersion, File: path, Error: &jsonErrBody{c.code, c.message}}
-		},
 		func(path string, o fixOutcome) any { return toJSONLintFix(o) },
 		func(w io.Writer, path string, o fixOutcome) { renderLintFix(w, o) },
 	)
@@ -289,8 +284,9 @@ func renderLintFix(w io.Writer, o fixOutcome) {
 	}
 }
 
-// jsonLint is the machine-readable lint result for one file. On a parse failure
-// only SchemaVersion, File, and Error are set.
+// jsonLint is the machine-readable lint result for one file. A failed element is
+// emitted as the shared jsonErrorEntry; this struct keeps a matching Error field so
+// a consumer can decode every array element into it (see jsonErrorEntry).
 type jsonLint struct {
 	SchemaVersion int           `json:"schemaVersion"`
 	File          string        `json:"file"`
@@ -307,7 +303,9 @@ type jsonFinding struct {
 
 // jsonLintFix is the machine-readable lint --fix result for one file. Remaining
 // holds the findings a fresh lint of the saved file still reports (what --fix
-// could not safely resolve).
+// could not safely resolve). A failed element is emitted as the shared
+// jsonErrorEntry; this struct keeps a matching Error field so a consumer can decode
+// every array element into it (see jsonErrorEntry).
 type jsonLintFix struct {
 	SchemaVersion int           `json:"schemaVersion"`
 	File          string        `json:"file"`

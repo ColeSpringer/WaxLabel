@@ -110,7 +110,8 @@ Install the binary with `go install github.com/colespringer/waxlabel/cmd/waxlabe
   overlays the source (keys only in `dest` are kept). `--dry-run` previews the
   result without writing.
 - **`diff <a> <b>`** - compare two files' canonical metadata (added/removed/changed
-  keys, picture/chapter deltas). `--quiet` reports through the exit code only.
+  keys, picture/chapter deltas). `--quiet` reports through the exit code only, unless
+  `--json` is also given, which takes precedence and still emits the object.
 
 Edits: `--set KEY=VALUE` (replace), `--add KEY=VALUE` (append, for multi-value),
 `--clear KEY` (remove), `--strip-encoder`, `--add-cover FILE` (`--force` to embed a
@@ -144,6 +145,12 @@ linter / diff(1) convention instead:** `0` clean/identical; `1` issues found /
 differs; `>=2` a structural error (using the same `2`-`6` classes, which outranks
 a `1` in a multi-file run). (cobra's built-in `help` and `completion` follow
 cobra's own conventions.)
+
+When one run processes several files, the exit code is the most-severe failure's
+class, not the first file's - ranked by severity rather than by numeric code:
+canceled/timeout, then source-changed, invalid-data, no-tags, unsupported-format,
+unsupported-tag, I/O, not-found, usage, and finally a generic error. So a corrupt
+file (`4`) outranks a mistyped path (`6`) regardless of argument order.
 
 > The **library** has no third-party dependencies. The CLI (package `main` under
 > `cmd/`) uses `spf13/cobra`; thanks to Go module-graph pruning, code that imports

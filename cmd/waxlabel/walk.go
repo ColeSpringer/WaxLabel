@@ -85,8 +85,16 @@ func expandPaths(paths []string, recursive bool) ([]string, error) {
 			if p == stdinArg {
 				continue
 			}
-			if info, err := os.Stat(p); err == nil && info.IsDir() {
+			// One stat per arg, reused below: a directory has more specific guidance
+			// (--recursive walks it), so reject it first with that message; otherwise
+			// checkRegularFileInfo catches a FIFO/device/socket before the per-file parse
+			// opens it (which, for a FIFO, would block).
+			info, statErr := os.Stat(p)
+			if statErr == nil && info.IsDir() {
 				return nil, usagef("%s is a directory; pass --recursive to walk it for audio files", p)
+			}
+			if err := checkRegularFileInfo(p, info, statErr); err != nil {
+				return nil, err
 			}
 		}
 		return paths, nil
@@ -99,12 +107,73 @@ func expandPaths(paths []string, recursive bool) ([]string, error) {
 		}
 		info, err := os.Stat(p)
 		if err != nil || !info.IsDir() {
+			// Not a directory (or unstattable): reject a directly-named FIFO/device/socket
+			// here too (reusing the stat above), so it cannot wedge the batch and so the
+			// recursive and non-recursive branches agree (both exit 2). A regular file or a
+			// nonexistent path passes through to the per-file loop, which parses it or
+			// classifies it as not-found.
+			if cerr := checkRegularFileInfo(p, info, err); cerr != nil {
+				return nil, cerr
+			}
 			out = append(out, p)
 			continue
 		}
 		out = append(out, walkAudioFiles(p)...)
 	}
 	return out, nil
+}
+
+// checkRegularFile rejects a path that exists but is not a regular file - a FIFO,
+// device, socket, or directory - as a usage error (exit 2). It is the CLI choke
+// point that turns the library's exit-4 backstop into a precise exit-2 message
+// before any parse, and the same guard loadCovers applies to an --add-cover source.
+// It distinguishes exists-and-non-regular (the usage error) from does-not-exist
+// (returns nil, so the caller's own not-found path - exit 6 - still owns a typo'd
+// path) and from a regular file (nil). A FIFO is the case that matters most: os.Open
+// blocks on its read end, so it must be caught before the file is opened.
+func checkRegularFile(path string) error {
+	info, err := os.Stat(path)
+	return checkRegularFileInfo(path, info, err)
+}
+
+// checkRegularFileInfo is checkRegularFile given an os.Stat result the caller already
+// obtained, so a caller that stats the path for its own reasons (expandPaths, which
+// also tests for a directory) need not stat it twice - which would also open a
+// window for the path to change between the two stats. A non-nil statErr means the
+// path does not exist (or is unstattable): it returns nil so the caller's own
+// not-found path owns it. info is read only when statErr is nil.
+func checkRegularFileInfo(path string, info fs.FileInfo, statErr error) error {
+	if statErr != nil {
+		return nil // does not exist (or unstattable): let the not-found path classify it
+	}
+	if info.Mode().IsRegular() {
+		return nil
+	}
+	if info.IsDir() {
+		return usagef("%s is a directory, not a file", path)
+	}
+	// FIFO, device, or socket: point at the escape hatch that does work for a stream.
+	return usagef("%s is not a regular file; pipe a stream in with %q instead", path, stdinArg)
+}
+
+// checkRegularInputs applies the checkRegularFile guard to each operand of a command
+// that parses its inputs directly rather than through expandPaths - caps, diff, and
+// copy, which take fixed operands and do not walk directories. Without it those
+// commands would fall through to the library's exit-4 backstop for a FIFO/directory
+// (still no hang, but a less precise class and message than the exit-2 dump/verify/
+// plan/set/lint return for the same input). It checks the resolved path (so a "-"
+// maps to the buffered-stdin temp, a regular file, and passes) and lets a
+// nonexistent path through to the parse's own not-found.
+func checkRegularInputs(realOf func(string) string, args ...string) error {
+	for _, a := range args {
+		if a == stdinArg {
+			continue
+		}
+		if err := checkRegularFile(realOf(a)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // walkAudioFiles returns the audio files under root, recursively and in sorted
@@ -118,9 +187,26 @@ func walkAudioFiles(root string) []string {
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		if isAudioExtension(filepath.Ext(path)) {
-			out = append(out, path)
+		if !isAudioExtension(filepath.Ext(path)) {
+			return nil
 		}
+		switch {
+		case d.Type().IsRegular():
+			out = append(out, path)
+		case d.Type()&fs.ModeSymlink != 0:
+			// WalkDir does not follow symlinks, so resolve the target with os.Stat. Include
+			// a link to a regular file (README: "symlinks are followed") and a dangling link
+			// too - os.Stat fails fast on it (it cannot block, unlike a FIFO), so passing it
+			// through lets the per-file loop report the broken entry as not-found rather than
+			// dropping it silently from a library scan. Skip only a link to a non-regular
+			// target (a FIFO/socket/dir), which would be a non-audio or batch-wedging entry.
+			if info, err := os.Stat(path); err != nil || info.Mode().IsRegular() {
+				out = append(out, path)
+			}
+		}
+		// A bare non-regular entry (a FIFO/socket/device file with an audio extension) is
+		// neither case above, so it is skipped like a non-audio file - it cannot wedge the
+		// batch, and it is not a file to parse.
 		return nil
 	})
 	slices.Sort(out)

@@ -51,9 +51,6 @@ func newVerifyCmd() *cobra.Command {
 					return computeVerify(ctx, realOf(path), path, whole)
 				},
 				func(path string, v jsonVerify) any { return v },
-				func(path string, c classifiedError) any {
-					return jsonVerify{SchemaVersion: schemaVersion, File: path, Error: &jsonErrBody{c.code, c.message}}
-				},
 				func(w io.Writer, path string, v jsonVerify) {
 					if quiet {
 						renderVerifyQuiet(w, v, whole)
@@ -117,8 +114,9 @@ func renderVerifyQuiet(w io.Writer, v jsonVerify, whole bool) {
 	fmt.Fprintf(w, "%s\t%s\n", v.Essence, displayName(v.File))
 }
 
-// jsonVerify is the machine-readable identity for one file. On failure only
-// SchemaVersion, File, and Error are set.
+// jsonVerify is the machine-readable identity for one file. A failed element is
+// emitted as the shared jsonErrorEntry; this struct keeps a matching Error field so
+// a consumer can decode every array element into it (see jsonErrorEntry).
 type jsonVerify struct {
 	SchemaVersion int          `json:"schemaVersion"`
 	File          string       `json:"file"`

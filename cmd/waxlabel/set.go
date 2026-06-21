@@ -148,7 +148,8 @@ func checkSetStdin(args []string, output string) error {
 
 // runSet applies the compiled edit to each path and saves it. Each file's plan is
 // previewed before its write, so a failed write still shows what was attempted;
-// the first error sets the exit class while the remaining files still process.
+// the most-severe error class sets the exit code (worseError) while the remaining
+// files still process.
 // JSON output is always an array, one element per input; a multi-file text run
 // ends with a one-line summary. With quiet (text mode only), the per-file plan and
 // outcome are suppressed while errors and the summary remain, so a single-file
@@ -172,16 +173,16 @@ func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *
 	}
 	notifier := newSingleValuedNotifier(strict, asJSON, errOut)
 	var items []any
-	var firstErr error
+	var worstErr error
 	changed, unchanged, failed, rendered := 0, 0, 0, 0
 
 	fail := func(path string, err error) {
-		if firstErr == nil {
-			firstErr = err
+		if worseError(worstErr, err) {
+			worstErr = err
 		}
 		failed++
 		if asJSON {
-			items = append(items, errorSetResult(path, output, classifyError(err)))
+			items = append(items, errorEntry(path, classifyError(err)))
 		} else {
 			perFileError(errOut, path, err)
 		}
@@ -194,8 +195,12 @@ func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *
 			continue
 		}
 		// Under --strict, a single-valued key given multiple values fails the file
-		// before any write; otherwise it is noted (once per key) and the write
-		// proceeds, since the writer stores the values faithfully.
+		// before any write (a per-file usage error, exit 2); otherwise it is noted (once
+		// per key) and the write proceeds, since the writer stores the values faithfully.
+		// The strict failure is one array element so a multi-file run's aggregate exit
+		// code stays order-independent (worseError), like every other per-file error - the
+		// invocation-level unknown-key guardrail, which is file-independent, aborts up
+		// front instead (notifyInvocationNotes).
 		if err := notifier.check(plan); err != nil {
 			fail(path, err)
 			continue
@@ -252,7 +257,7 @@ func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *
 		}
 		fmt.Fprintf(out, "%d changed, %d unchanged, %d failed\n", changed, unchanged, failed)
 	}
-	return alreadyRendered(firstErr)
+	return alreadyRendered(worstErr)
 }
 
 // warnExtensionMismatch prints a non-fatal note when the output path's extension
@@ -305,15 +310,5 @@ func toJSONSetResult(path, output string, plan *wl.Plan, res wl.SaveResult) json
 		Committed:  res.Committed,
 		Output:     output,
 		Size:       res.Dest.Size,
-	}
-}
-
-// errorSetResult is the per-file JSON entry for a file that failed in a bulk set
-// run: the report carries only the file and the classified error, with the
-// (unwritten) output echoed back.
-func errorSetResult(path, output string, c classifiedError) jsonSetResult {
-	return jsonSetResult{
-		jsonReport: jsonReport{SchemaVersion: schemaVersion, File: path, Error: &jsonErrBody{c.code, c.message}},
-		Output:     output,
 	}
 }

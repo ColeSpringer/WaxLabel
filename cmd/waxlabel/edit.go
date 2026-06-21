@@ -127,6 +127,15 @@ func splitAssign(s string) (tag.Key, string, error) {
 func (e *editFlags) loadCovers() ([]wl.Picture, error) {
 	var pics []wl.Picture
 	for _, path := range e.addCover {
+		// Reject a directory (or other non-regular cover source) as a usage error
+		// (exit 2) before the read, so a mis-pointed --add-cover fails like other bad
+		// inputs. A genuinely missing cover is not intercepted here (it does not exist),
+		// so it still falls through to os.ReadFile, which reports it - classified as io
+		// (exit 6), not not-found, because the wrap below defeats the direct
+		// *fs.PathError assertion in isNotFoundPathError.
+		if err := checkRegularFile(path); err != nil {
+			return nil, fmt.Errorf("cover image: %w", err)
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			// os.ReadFile's *fs.PathError already names the path, so do not repeat

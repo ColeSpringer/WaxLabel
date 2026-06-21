@@ -72,6 +72,9 @@ func runCapsFiles(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer cleanup()
+	if err := checkRegularInputs(realOf, args...); err != nil {
+		return err
+	}
 	return perFile(cmd, args,
 		func(ctx context.Context, path string) (jsonCaps, error) {
 			doc, err := wl.ParseFile(ctx, realOf(path))
@@ -81,19 +84,17 @@ func runCapsFiles(cmd *cobra.Command, args []string) error {
 			return buildCaps(path, doc.Capabilities()), nil
 		},
 		func(_ string, jc jsonCaps) any { return jc },
-		func(path string, c classifiedError) any {
-			return jsonCaps{SchemaVersion: schemaVersion, File: path, Error: &jsonErrBody{c.code, c.message}}
-		},
 		func(w io.Writer, _ string, jc jsonCaps) { renderCaps(w, jc) },
 		false,
 	)
 }
 
-// jsonCaps is the machine-readable capability report for one file or format. On a
-// parse failure only SchemaVersion, File, and Error are set. Fields holds the
-// default (generic) field capability shared by every key; Keys lists each key
-// with its per-key cardinality, so the common case (a uniform field capability)
-// is reported once rather than repeated per key.
+// jsonCaps is the machine-readable capability report for one file or format. A
+// failed per-file element is emitted as the shared jsonErrorEntry; this struct keeps
+// a matching Error field so a consumer can decode every array element into it (see
+// jsonErrorEntry). Fields holds the default (generic) field capability shared by
+// every key; Keys lists each key with its per-key cardinality, so the common case
+// (a uniform field capability) is reported once rather than repeated per key.
 type jsonCaps struct {
 	SchemaVersion int          `json:"schemaVersion"`
 	File          string       `json:"file,omitempty"`

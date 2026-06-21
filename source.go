@@ -18,20 +18,37 @@ type fileSource struct {
 }
 
 func openFileSource(path string) (*fileSource, error) {
+	// Stat before Open: opening the read end of a FIFO (or certain device files)
+	// blocks until a writer appears, so a non-regular path must be rejected before
+	// os.Open or the parse hangs before any guard can run. This stat-first check is
+	// the library backstop that stops the hang for every caller (the CLI adds a
+	// friendlier exit-2 layer on top). os.Stat follows symlinks, so a symlink to a
+	// regular file is still accepted; the check also folds in the former directory
+	// guard, keeping its specific message.
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		if info.IsDir() {
+			return nil, fmt.Errorf("%w: %s is a directory, not a file", waxerr.ErrInvalidData, path)
+		}
+		return nil, fmt.Errorf("%w: %s is not a regular file", waxerr.ErrInvalidData, path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	info, err := f.Stat()
+	// Take the size from the open descriptor, not the pre-open stat: that stat only
+	// gated the file kind, and a concurrent truncate/extend in the stat-then-open
+	// window could have made its size stale. A regular file's f.Stat never blocks
+	// (the FIFO hazard is os.Open, already past), so this is safe and authoritative.
+	fi, err := f.Stat()
 	if err != nil {
 		f.Close()
 		return nil, err
 	}
-	if info.IsDir() {
-		f.Close()
-		return nil, fmt.Errorf("%w: %s is a directory, not a file", waxerr.ErrInvalidData, path)
-	}
-	return &fileSource{f: f, size: info.Size()}, nil
+	return &fileSource{f: f, size: fi.Size()}, nil
 }
 
 func (s *fileSource) ReadAt(p []byte, off int64) (int, error) { return s.f.ReadAt(p, off) }

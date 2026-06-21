@@ -56,6 +56,12 @@ func newCopyCmd() *cobra.Command {
 				}
 				return doc, nil
 			}
+			// Reject a non-regular operand (FIFO/directory/socket) up front as a usage error
+			// (exit 2), matching the other file commands; copy takes no "-", so the paths are
+			// used as-is. A nonexistent path passes through to parse's own not-found.
+			if err := checkRegularInputs(func(p string) string { return p }, srcPath, dstPath); err != nil {
+				return err
+			}
 			srcDoc, err := parse(srcPath)
 			if err != nil {
 				return err
