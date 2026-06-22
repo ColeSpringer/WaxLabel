@@ -614,6 +614,73 @@ func TestEmptyWalkNoteNotAFailure(t *testing.T) {
 	}
 }
 
+// TestRecursiveSkippedFileNote (Codex #9): a --recursive walk that passes over files
+// for an unrecognized extension prints a text-mode "N file(s) skipped" note, so a
+// directory of mostly non-audio files is not a silent near-no-op. The note counts only
+// regular files the extension filter rejected and is suppressed under --json.
+func TestRecursiveSkippedFileNote(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "song.flac"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"cover.jpg", "notes.txt"} { // two files the filter rejects
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out, errb, code := runCLI(t, "dump", "--recursive", dir)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", code, errb)
+	}
+	if !strings.Contains(errb, "note: 2 file(s) skipped (not recognized by extension)") {
+		t.Errorf("expected a skipped-file note for the 2 non-audio files; stderr:\n%s", errb)
+	}
+	if !strings.Contains(out, "song.flac") {
+		t.Errorf("the audio file should still be dumped:\n%s", out)
+	}
+
+	// --json suppresses the note (stdout has a fixed shape; stderr stays clean of it).
+	if _, jerrb, _ := runCLI(t, "--json", "dump", "--recursive", dir); strings.Contains(jerrb, "skipped") {
+		t.Errorf("--json should suppress the skipped-file note; stderr:\n%s", jerrb)
+	}
+}
+
+// TestRecursiveSkippedCountsSymlinks (Codex #9): a symlinked non-audio file counts
+// toward the skipped tally too, matching how the inclusion side treats symlinks as
+// candidates - so the count is not silently short by the symlinked entries.
+func TestRecursiveSkippedCountsSymlinks(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "song.flac"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "real.jpg") // a regular non-audio file
+	if err := os.WriteFile(target, []byte("img"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "link.png")); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+	// real.jpg (regular) and link.png (symlink) are both non-audio -> 2 skipped.
+	_, errb, code := runCLI(t, "dump", "--recursive", dir)
+	if code != 0 {
+		t.Fatalf("exit = %d; stderr=%q", code, errb)
+	}
+	if !strings.Contains(errb, "note: 2 file(s) skipped") {
+		t.Errorf("a symlinked non-audio file should count toward skipped (want 2):\n%s", errb)
+	}
+}
+
 // TestSetVerifyConfirmation (#4): a committed --verify save confirms the essence
 // check - a human "Audio essence verified" line and a JSON "verified": true - while
 // a run without --verify omits the field so a normal save does not read like a check.

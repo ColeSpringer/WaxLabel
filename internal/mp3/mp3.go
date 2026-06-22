@@ -50,7 +50,7 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 	}
 	chapters := core.Capability{
 		Read: core.AccessNone, Write: core.AccessNone,
-		Representation: "CHAP (not modeled)",
+		Representation: "CHAP preserved",
 	}
 	// ID3 front-tag padding is grow-only (ReuseOrTarget): a forced rewrite can grow
 	// the region, but a fit-in-place edit reuses it and cannot shrink in place.

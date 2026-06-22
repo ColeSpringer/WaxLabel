@@ -17,10 +17,11 @@ func findingCodes(fs []wl.Finding) map[string]bool {
 }
 
 func TestLintEncoderNoise(t *testing.T) {
-	// sample.flac carries ffmpeg's "encoder=Lavf..." stamp.
+	// sample.flac carries ffmpeg's "encoder=Lavf..." stamp. lint reuses the canonical
+	// parse-warning code (inherited-encoder), so dump and lint name it identically.
 	codes := findingCodes(mustParseFile(t, sampleFLAC).Lint())
-	if !codes["encoder-noise"] {
-		t.Errorf("expected encoder-noise finding; got %v", codes)
+	if !codes["inherited-encoder"] {
+		t.Errorf("expected inherited-encoder finding; got %v", codes)
 	}
 }
 

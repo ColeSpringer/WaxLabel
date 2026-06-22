@@ -305,6 +305,19 @@ func noteNoFiles(w io.Writer, paths []string) {
 	}
 }
 
+// noteSkipped reports how many regular files a --recursive walk passed over for not
+// matching a known audio extension, so a directory of unrecognized files is not a
+// silent near-no-op (it pairs with noteNoFiles: when nothing matched, this explains
+// why). It is a text-mode diagnostic suppressed under --json (whose stdout shape is
+// fixed) and when nothing was skipped, and uses the same "note:" prefix as the other
+// exit-0 advisories (Codex #9).
+func noteSkipped(w io.Writer, skipped int, asJSON bool) {
+	if asJSON || skipped == 0 {
+		return
+	}
+	fmt.Fprintf(w, "note: %d file(s) skipped (not recognized by extension)\n", skipped)
+}
+
 // usageError marks a bad-arguments failure, which maps to exit code 2. The extra
 // fields are set only at the cobra-origin sites that dead-end with no guidance (an
 // unknown flag, a bad arg count, an unknown command): cmd is the resolved command

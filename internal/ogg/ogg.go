@@ -64,7 +64,7 @@ func (c Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabili
 		Representation: "METADATA_BLOCK_PICTURE", Fidelity: "lossless",
 	}
 	chapters := core.Capability{
-		Read: core.AccessNone, Write: core.AccessNone, Representation: "not modeled",
+		Read: core.AccessNone, Write: core.AccessNone,
 	}
 	// OggTags/OpusTags padding is round-tripped as-is; there is no padding control,
 	// so AccessNone.

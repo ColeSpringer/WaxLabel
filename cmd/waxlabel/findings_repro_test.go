@@ -253,6 +253,23 @@ func TestMP4PictureMetadataDropped(t *testing.T) {
 	}
 }
 
+// TestLegacyConflictWarningCLI (Codex #5): a plan edit of a key the MP3's preserved
+// id3v1 trailer also holds surfaces the legacy-conflict warning under the default
+// policy, and --legacy strip (which resolves it) suppresses it.
+func TestLegacyConflictWarningCLI(t *testing.T) {
+	t.Parallel()
+	out, _, code := runCLI(t, "plan", copyFixture(t, sampleMP3), "--set", "TITLE=Brand New")
+	if code != 0 {
+		t.Fatalf("plan exit = %d", code)
+	}
+	if !strings.Contains(out, "legacy-conflict") {
+		t.Errorf("plan should warn legacy-conflict on a stale id3v1 copy:\n%s", out)
+	}
+	if out, _, _ := runCLI(t, "plan", copyFixture(t, sampleMP3), "--set", "TITLE=Brand New", "--legacy", "strip"); strings.Contains(out, "legacy-conflict") {
+		t.Errorf("--legacy strip should resolve the conflict, not warn:\n%s", out)
+	}
+}
+
 // TestZeroByteImageRefused (C4a): a 0-byte image is refused even with --force, unlike
 // non-empty unsniffable bytes (which --force embeds and the plan makes visible).
 func TestZeroByteImageRefused(t *testing.T) {

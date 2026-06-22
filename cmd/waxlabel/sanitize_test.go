@@ -260,7 +260,7 @@ func TestWarningAndFindingStringEscapeNewline(t *testing.T) {
 	if strings.Contains(w.String(), "\n") {
 		t.Errorf("Warning.String should escape a newline (single-line item): %q", w.String())
 	}
-	f := wl.Finding{Severity: wl.LintWarning, Code: "encoder-noise", Message: "a\nb"}
+	f := wl.Finding{Severity: wl.LintWarning, Code: "inherited-encoder", Message: "a\nb"}
 	if strings.Contains(f.String(), "\n") {
 		t.Errorf("Finding.String should escape a newline (single-line item): %q", f.String())
 	}

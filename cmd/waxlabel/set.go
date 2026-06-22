@@ -88,10 +88,14 @@ func newSetCmd() *cobra.Command {
 			}
 			defer cleanup()
 
-			paths, err := expandPaths(args, recursive)
+			paths, skipped, err := expandPaths(args, recursive)
 			if err != nil {
 				return err
 			}
+			// Report extension-skipped files up front (before the per-file edit notes,
+			// which gate on there being work to do): this is input discovery, useful even
+			// when the walk then matches nothing to edit (Codex #9).
+			noteSkipped(cmd.ErrOrStderr(), skipped, jsonMode(cmd))
 			if output != "" && len(paths) != 1 {
 				return usagef("-o writes a single file, so it takes exactly one input (got %d)", len(paths))
 			}

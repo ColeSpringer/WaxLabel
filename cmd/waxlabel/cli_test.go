@@ -217,7 +217,7 @@ func TestDumpNative(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
 	}
-	for _, want := range []string{"native blocks", "STREAMINFO", "VORBIS_COMMENT", "sources", "vorbis"} {
+	for _, want := range []string{"native blocks", "STREAMINFO", "VORBIS_COMMENT", "families", "vorbis"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("native dump missing %q\n%s", want, out)
 		}
@@ -606,15 +606,23 @@ func TestClassifyNotFoundMessage(t *testing.T) {
 		t.Errorf("bare message = %q, want %q", c.message, "/x.flac: no such file or directory")
 	}
 
-	// Mirrors the real edit.go wrapping ("cover image: %w" - the read error
-	// already carries the path), so a regression in that shape would surface here.
-	wrapped := fmt.Errorf("cover image: %w", &fs.PathError{Op: "open", Path: "/x.png", Err: fs.ErrNotExist})
+	// Mirrors the real edit.go wrapping (pictureLoadError), so a regression in that
+	// shape surfaces here: it Unwraps to the *fs.PathError (so it stays io/exit 6, not
+	// flattened to not-found) but renders the bare cause without Go's "open" verb (M4).
+	wrapped := &pictureLoadError{label: "cover image", path: "/x.png", err: &fs.PathError{Op: "open", Path: "/x.png", Err: fs.ErrNotExist}}
 	c := classifyError(wrapped)
 	if c.code != "io" || c.exitCode != 6 {
 		t.Errorf("wrapped class = (%d,%q), want (6,\"io\")", c.exitCode, c.code)
 	}
-	if !strings.HasPrefix(c.message, "cover image:") {
-		t.Errorf("wrapped message lost its context: %q", c.message)
+	// "<label>: <path>: <bare cause>" - the bare PathError.Err string, with no "open"
+	// verb and no doubled path. (The OS-level "no such file or directory" wording is
+	// pinned end to end by TestAddCoverMissingFileContext; here fs.ErrNotExist reads
+	// "file does not exist", so derive the want from it rather than hardcode a reason.)
+	if want := "cover image: /x.png: " + fs.ErrNotExist.Error(); c.message != want {
+		t.Errorf("wrapped message = %q, want %q", c.message, want)
+	}
+	if strings.Contains(c.message, "open") {
+		t.Errorf("wrapped message still carries Go's \"open\" verb: %q", c.message)
 	}
 }
 
@@ -752,7 +760,9 @@ func TestSetOutputParentDirMissing(t *testing.T) {
 }
 
 // TestAddCoverMissingFileContext checks a missing cover file is reported with
-// "cover image: <path>:" context so the user knows which input failed.
+// "cover image: <path>: <reason>" context (exit 6) and that the message reads cleanly
+// - the path named once, no leaked Go "open" verb - so the I/O class is preserved
+// while the wording stays user-facing (M4).
 func TestAddCoverMissingFileContext(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -761,12 +771,18 @@ func TestAddCoverMissingFileContext(t *testing.T) {
 	if code != 6 {
 		t.Fatalf("exit = %d, want 6", code)
 	}
-	if !strings.Contains(errb, "cover image:") || !strings.Contains(errb, missing) {
-		t.Errorf("stderr should carry the cover context and path: %q", errb)
+	want := "cover image: " + missing + ": no such file or directory"
+	if !strings.Contains(errb, want) {
+		t.Errorf("stderr should carry the clean cover message %q:\n%s", want, errb)
 	}
-	// The path is named once (by the underlying read error), not twice.
+	// The path is named once (by pictureLoadError, which drops the *fs.PathError's
+	// repeated path), not twice.
 	if strings.Count(errb, missing) != 1 {
 		t.Errorf("cover path should appear once: %q", errb)
+	}
+	// Go's "open" verb must not leak into the user-facing message.
+	if strings.Contains(errb, "open "+missing) {
+		t.Errorf("stderr leaked Go's \"open\" verb: %q", errb)
 	}
 }
 
@@ -1360,8 +1376,8 @@ func TestValueNotesDeferredUntilFiles(t *testing.T) {
 // TestEmptyValueNote: --set KEY= (a present-but-empty value) is noted with the
 // --clear suggestion, and a bare KEY= never double-notes with the malformed-value
 // note. The note is invocation-level (I1), so it states both outcomes rather than
-// asserting one: it must mention that formats which cannot store an empty value
-// (WAV/AIFF) drop it.
+// asserting one: it must mention WAV/AIFF, where the drop is path-dependent - a
+// native chunk drops the empty value but an ID3-backed field keeps it (DOC2).
 func TestEmptyValueNote(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)

@@ -278,7 +278,17 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// carry suppresses it (like the chapter checks): a copy must not flag the source's
 	// own conflicting single-valued key as if the user authored it.
 	if !e.carried {
-		wp.Report.Warnings = appendSingleValuedWarnings(wp.Report.Warnings, e.base.Tags, planResultTags(wp, edited))
+		// Both edit-time warnings judge against the plan's result tags (what the codec
+		// will actually write), not the raw edited set: a value the codec re-projects -
+		// e.g. GENRE=17 written back as the name "Rock" - must not read as a change or a
+		// conflict when the written value in fact still agrees.
+		result := planResultTags(wp, edited)
+		wp.Report.Warnings = appendSingleValuedWarnings(wp.Report.Warnings, e.base.Tags, result)
+		// Surface a preserved legacy container (an ID3v1/APEv2 tag the family view carries)
+		// the edit now contradicts, under the default LegacyPreserve policy, so the
+		// divergence is visible before the write and the remedy is offered (Codex #5).
+		// Suppressed on a faithful carry like the other edit-time sanity warnings.
+		wp.Report.Warnings = appendLegacyConflictWarnings(wp.Report.Warnings, e.base.Families, e.patch, result, wo.Legacy)
 	}
 	return &Plan{doc: e.doc, plan: wp, opts: wo}, nil
 }
@@ -351,6 +361,62 @@ func appendSingleValuedWarnings(ws []core.Warning, base, result tag.TagSet) []co
 				"%s is single-valued but is being given %d values; the typed projection reads only the first",
 				c.Key, len(c.New)))
 		}
+	}
+	return ws
+}
+
+// appendLegacyConflictWarnings flags a canonical key the edit changes whose value is
+// also carried in a preserved legacy container the family view surfaces - an ID3v1 or
+// APEv2 tag on the ID3-based formats (MP3/AAC) - which the default LegacyPreserve policy
+// keeps verbatim, so the legacy copy now disagrees with the freshly written native tag.
+// It is driven by the family view, so it covers exactly the legacy containers a codec
+// projects into fams; a FLAC trailing ID3v1, which the parser preserves but does not
+// project into families, is surfaced by the trailing-id3v1 parse warning and the
+// "trailing ID3v1 preservation" operation, not this edit-conflict warning.
+//
+// It fires only for an EDIT-INTRODUCED divergence: the legacy value agreed with the
+// native value before this edit (f.Selected) but the edit changed the written value so
+// the legacy copy is no longer among it. A pre-existing disagreement - already
+// unselected, e.g. an ID3v1 field the parser truncated to 30 bytes - is the linter's
+// conflicting-families job, not this edit-time warning. Agreement is judged with
+// [core.FamilySelected] against the plan's result tags (what the codec will actually
+// write, not the raw edited value - so a re-projected GENRE=17 that writes back as
+// "Rock" does not falsely conflict), the same presence test the parser and linter use,
+// so a multi-value key whose legacy value still survives the edit (ID3v2 ARTIST=[A,B]
+// against an ID3v1 "B") is not falsely flagged - a slice-equality check would be, since
+// each legacy family entry is single-valued by construction (one entry per legacy
+// value). It fires only under LegacyPreserve (strip resolves the divergence on write)
+// and only for a key the patch touches; clearing a key does not fire it (the native key
+// is then absent, which FamilySelected - like the linter - treats as no conflict). The
+// value is still written and the legacy container preserved as promised; this only
+// surfaces the divergence and the remedy. One warning per conflicting key.
+func appendLegacyConflictWarnings(ws []core.Warning, fams []core.FamilyValue, patch tag.TagPatch, result tag.TagSet, legacy core.LegacyPolicy) []core.Warning {
+	if legacy != core.LegacyPreserve {
+		return ws
+	}
+	seen := map[tag.Key]bool{}
+	for _, f := range fams {
+		if f.Family != core.FamilyID3v1 && f.Family != core.FamilyAPEv2 {
+			continue
+		}
+		// Skip an already-warned key, a key the edit does not touch, a pre-existing
+		// conflict (!f.Selected - not edit-introduced), or a malformed empty legacy entry.
+		// Legacy entries are single-valued by construction, so f.Values[0] is the value.
+		if seen[f.Key] || !patch.Touches(f.Key) || !f.Selected || len(f.Values) == 0 {
+			continue
+		}
+		// No conflict while the legacy value still agrees with the written native values
+		// (present among them, or the key was cleared) - the same rule the family view uses.
+		if core.FamilySelected(result, f.Key, f.Values[0]) {
+			continue
+		}
+		seen[f.Key] = true
+		// reconcile/update-existing are not yet implemented for these containers (the codec
+		// rejects them when a legacy tag is present), so the remedy names only the working
+		// options: --legacy strip or lint --fix.
+		ws = core.Warn(ws, core.WarnLegacyConflict, fmt.Sprintf(
+			"preserved %s tag still holds the old %s value and now conflicts with the edit; use --legacy strip or lint --fix",
+			f.Family, f.Key))
 	}
 	return ws
 }

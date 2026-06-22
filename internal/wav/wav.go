@@ -71,7 +71,7 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 	}
 	chapters := core.Capability{
 		Read: core.AccessNone, Write: core.AccessNone,
-		Representation: "cue/adtl (not modeled)",
+		Representation: "cue/adtl preserved",
 	}
 	// WAV has no metadata-padding concept, so the padding controls do not apply.
 	return core.NewCapabilities(core.FormatWAV, false, fields, pictures, chapters, core.AccessNone, nil)

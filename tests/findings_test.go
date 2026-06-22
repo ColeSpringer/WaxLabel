@@ -212,6 +212,89 @@ func reportHasWarning(ws []wl.Warning, code wl.WarningCode) bool {
 	return false
 }
 
+// TestLegacyConflictWarning (Codex #5): editing a key also held in a preserved legacy
+// container (the trailing ID3v1 of sample.mp3) under the default LegacyPreserve policy
+// surfaces a legacy-conflict warning, since the ID3v1 copy now disagrees with the
+// native tag. --legacy strip (which removes the legacy container) resolves it without
+// warning, setting the legacy value verbatim does not conflict, and editing a key the
+// legacy container does not hold does not conflict either.
+func TestLegacyConflictWarning(t *testing.T) {
+	path := copyToTemp(t, sampleMP3) // carries TITLE in both id3v2 and id3v1
+
+	// Editing TITLE to a new value leaves the preserved id3v1 copy stale -> warn.
+	plan, err := mustParseFile(t, path).Edit().Set(tag.Title, "A Different Title").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reportHasWarning(plan.Report().Warnings, wl.WarnLegacyConflict) {
+		t.Errorf("expected a legacy-conflict warning; got %v", plan.Report().Warnings)
+	}
+
+	// --legacy strip removes the legacy container, so there is nothing to conflict.
+	stripped, err := mustParseFile(t, path).Edit().Set(tag.Title, "A Different Title").
+		Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reportHasWarning(stripped.Report().Warnings, wl.WarnLegacyConflict) {
+		t.Errorf("--legacy strip should resolve the conflict, not warn; got %v", stripped.Report().Warnings)
+	}
+
+	// Setting TITLE to the value the legacy copy already holds does not conflict.
+	same, err := mustParseFile(t, path).Edit().Set(tag.Title, "Sample Title").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reportHasWarning(same.Report().Warnings, wl.WarnLegacyConflict) {
+		t.Errorf("setting the legacy value verbatim should not warn; got %v", same.Report().Warnings)
+	}
+
+	// A multi-value edit that keeps the legacy value present is NOT a conflict: the
+	// legacy ARTIST "Sample Artist" still appears in ARTIST=[Sample Artist, Extra].
+	// Each legacy family entry is single-valued, so a naive slice-equality check would
+	// falsely flag this (the regression this guards against); FamilySelected, which
+	// tests presence in the whole edited set, does not.
+	keepLegacy, err := mustParseFile(t, path).Edit().
+		Set(tag.Artist, "Sample Artist").Add(tag.Artist, "Extra").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reportHasWarning(keepLegacy.Report().Warnings, wl.WarnLegacyConflict) {
+		t.Errorf("a multi-value edit keeping the legacy value should not warn; got %v", keepLegacy.Report().Warnings)
+	}
+
+	// Clearing a key the legacy container holds does not fire this warning: the native
+	// key is then absent, which FamilySelected (like the linter) treats as no conflict.
+	cleared, err := mustParseFile(t, path).Edit().Clear(tag.Title).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reportHasWarning(cleared.Report().Warnings, wl.WarnLegacyConflict) {
+		t.Errorf("clearing a key should not raise a legacy-conflict warning; got %v", cleared.Report().Warnings)
+	}
+
+	// A value the codec re-projects to the one already written is NOT a conflict: the
+	// fixture's GENRE is "Rock", and GENRE=17 writes back as the numeric genre "Rock", so
+	// judging against the plan's result tags (not the raw edited "17") raises no warning.
+	// Comparing against the raw edited value would have falsely flagged it.
+	genre, err := mustParseFile(t, path).Edit().Set(tag.Genre, "17").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reportHasWarning(genre.Report().Warnings, wl.WarnLegacyConflict) {
+		t.Errorf("a numeric genre re-projected to the existing value should not warn; got %v", genre.Report().Warnings)
+	}
+
+	// Editing a key the legacy container does not hold (a custom key) does not conflict.
+	custom, err := mustParseFile(t, path).Edit().Set(tag.Key("MOOD"), "calm").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reportHasWarning(custom.Report().Warnings, wl.WarnLegacyConflict) {
+		t.Errorf("editing a non-legacy key should not warn; got %v", custom.Report().Warnings)
+	}
+}
+
 // TestRejectNULInEditValues (D1): a NUL byte in a value the edit sets, in a chapter
 // title, or in an added picture's description is refused at Prepare - a NUL silently
 // truncates the field on a C-string format - rather than written and cut.

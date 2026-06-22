@@ -91,12 +91,12 @@ func TestBitDepthMeaningful(t *testing.T) {
 }
 
 // TestRenderLintSanitizes (#3): a finding whose message or key is file-derived
-// (the encoder-noise message carries the raw inherited stamp; a custom-key finding
+// (the inherited-encoder message carries the raw inherited stamp; a custom-key finding
 // carries the raw field name) is escaped on render, so lint cannot leak control
 // bytes to the terminal.
 func TestRenderLintSanitizes(t *testing.T) {
 	findings := []wl.Finding{
-		{Severity: wl.LintWarning, Code: "encoder-noise", Message: "inherited encoder stamp: Lavf\x1bX"},
+		{Severity: wl.LintWarning, Code: "inherited-encoder", Message: "inherited encoder stamp: Lavf\x1bX"},
 		{Severity: wl.LintInfo, Code: "custom-key", Message: "custom field, not a known key", Key: tag.Key("BAD\x1bKEY")},
 	}
 	var buf bytes.Buffer
@@ -201,6 +201,23 @@ func TestRenderPicturesDescriptionSingleEscaped(t *testing.T) {
 	}
 	if !strings.Contains(out, `\x1b`) {
 		t.Errorf("description control char should be escaped by %%q:\n%q", out)
+	}
+}
+
+// TestPictureRowUnknownDims (R2): a picture with no known dimensions renders "--",
+// the tool-wide placeholder for an absent value, not a lone "?". A known size still
+// renders "WxH".
+func TestPictureRowUnknownDims(t *testing.T) {
+	unknown := pictureRow(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: []byte("xx")})
+	if !strings.Contains(unknown, "--") {
+		t.Errorf("unknown dimensions should render \"--\":\n%q", unknown)
+	}
+	if strings.Contains(unknown, "?") {
+		t.Errorf("unknown dimensions should not render \"?\":\n%q", unknown)
+	}
+	known := pictureRow(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Width: 64, Height: 48, Data: []byte("xx")})
+	if !strings.Contains(known, "64x48") {
+		t.Errorf("known dimensions should render WxH:\n%q", known)
 	}
 }
 

@@ -45,7 +45,7 @@ func newLintCmd() *cobra.Command {
 			"\"-\" reads from standard input (read-only; not valid with --fix).",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			paths, err := expandPaths(args, recursive)
+			paths, skipped, err := expandPaths(args, recursive)
 			if err != nil {
 				return err
 			}
@@ -58,6 +58,7 @@ func newLintCmd() *cobra.Command {
 				return usagef("no audio files found")
 			}
 			noteNoFiles(cmd.ErrOrStderr(), paths)
+			noteSkipped(cmd.ErrOrStderr(), skipped, jsonMode(cmd))
 			if fix {
 				if slices.Contains(paths, stdinArg) {
 					return usagef("cannot fix standard input; --fix writes changes back to a file")

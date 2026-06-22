@@ -91,7 +91,12 @@ func parseInput(ctx context.Context, realPath, origPath string, extra ...wl.Pars
 // the exit class and discoverability in one place. A stat error on an argument
 // (e.g. a nonexistent path) still passes through, so the per-file loop classifies
 // it as not-found (exit 6) - only a confirmed directory is rejected here.
-func expandPaths(paths []string, recursive bool) ([]string, error) {
+//
+// On a recursive walk it also returns the count of regular files passed over for not
+// matching a known audio extension (across every directory argument), which the
+// caller surfaces as a text-mode note (Codex #9). The non-recursive path walks
+// nothing, so its count is always zero.
+func expandPaths(paths []string, recursive bool) ([]string, int, error) {
 	if !recursive {
 		for _, p := range paths {
 			if p == stdinArg {
@@ -103,15 +108,16 @@ func expandPaths(paths []string, recursive bool) ([]string, error) {
 			// opens it (which, for a FIFO, would block).
 			info, statErr := os.Stat(p)
 			if statErr == nil && info.IsDir() {
-				return nil, usagef("%s is a directory; pass --recursive to walk it for audio files", p)
+				return nil, 0, usagef("%s is a directory; pass --recursive to walk it for audio files", p)
 			}
 			if err := checkRegularFileInfo(p, info, statErr); err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 		}
-		return paths, nil
+		return paths, 0, nil
 	}
 	var out []string
+	skipped := 0
 	for _, p := range paths {
 		if p == stdinArg {
 			out = append(out, p)
@@ -125,14 +131,16 @@ func expandPaths(paths []string, recursive bool) ([]string, error) {
 			// nonexistent path passes through to the per-file loop, which parses it or
 			// classifies it as not-found.
 			if cerr := checkRegularFileInfo(p, info, err); cerr != nil {
-				return nil, cerr
+				return nil, 0, cerr
 			}
 			out = append(out, p)
 			continue
 		}
-		out = append(out, walkAudioFiles(p)...)
+		files, sk := walkAudioFiles(p)
+		out = append(out, files...)
+		skipped += sk
 	}
-	return out, nil
+	return out, skipped, nil
 }
 
 // checkRegularFile rejects a path that exists but is not a regular file - a FIFO,
@@ -189,41 +197,56 @@ func checkRegularInputs(realOf func(string) string, args ...string) error {
 	return nil
 }
 
+// isWalkCandidate reports whether a non-directory walk entry is a file the recursive
+// walk treats as a candidate: a regular file, or a symlink that resolves to a regular
+// file - or a dangling one, passed through so the per-file loop reports it as not-found
+// rather than dropping it silently from a library scan. A FIFO/socket/device, or a
+// symlink to one, is not a candidate: it cannot wedge the batch and is not a file to
+// parse. It is the single predicate shared by the inclusion of audio-extension entries
+// and the skipped-count of the rest (walkAudioFiles), so the two cannot drift on which
+// entries count as files. WalkDir does not follow symlinks, so a symlink target is
+// resolved with os.Stat, which fails fast on a dangling link (it cannot block, unlike a
+// FIFO).
+func isWalkCandidate(path string, d fs.DirEntry) bool {
+	switch {
+	case d.Type().IsRegular():
+		return true
+	case d.Type()&fs.ModeSymlink != 0:
+		info, err := os.Stat(path)
+		return err != nil || info.Mode().IsRegular()
+	default:
+		return false
+	}
+}
+
 // walkAudioFiles returns the audio files under root, recursively and in sorted
-// order, selected by matching each file's extension against the known codec
-// extensions. A walk error on an entry is skipped (the entry is simply omitted)
-// so one unreadable file does not fail the whole tree; a matching-extension file
-// that is malformed still surfaces its parse error later, in the per-file loop.
-func walkAudioFiles(root string) []string {
+// order, selected by matching each candidate file's extension against the known codec
+// extensions, along with a count of candidate files passed over for not matching a
+// known extension. A walk error on an entry is skipped (the entry is simply omitted)
+// so one unreadable file does not fail the whole tree; a matching-extension file that
+// is malformed still surfaces its parse error later, in the per-file loop. The skipped
+// count drives the run's "N file(s) skipped" note (Codex #9), so a directory of
+// unrecognized files is not a silent near-no-op. Inclusion and the skipped-count share
+// isWalkCandidate, so they cannot disagree on what is a file.
+func walkAudioFiles(root string) ([]string, int) {
 	var out []string
+	skipped := 0
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil || d.IsDir() || !isWalkCandidate(path, d) {
 			return nil
 		}
-		if !isAudioExtension(filepath.Ext(path)) {
-			return nil
-		}
-		switch {
-		case d.Type().IsRegular():
+		if isAudioExtension(filepath.Ext(path)) {
 			out = append(out, path)
-		case d.Type()&fs.ModeSymlink != 0:
-			// WalkDir does not follow symlinks, so resolve the target with os.Stat. Include
-			// a link to a regular file (README: "symlinks are followed") and a dangling link
-			// too - os.Stat fails fast on it (it cannot block, unlike a FIFO), so passing it
-			// through lets the per-file loop report the broken entry as not-found rather than
-			// dropping it silently from a library scan. Skip only a link to a non-regular
-			// target (a FIFO/socket/dir), which would be a non-audio or batch-wedging entry.
-			if info, err := os.Stat(path); err != nil || info.Mode().IsRegular() {
-				out = append(out, path)
-			}
+		} else {
+			// A candidate file passed over for its extension (a cover.jpg, a notes.txt, a
+			// symlinked image) - counted so a directory of unrecognized files is not a
+			// silent near-no-op.
+			skipped++
 		}
-		// A bare non-regular entry (a FIFO/socket/device file with an audio extension) is
-		// neither case above, so it is skipped like a non-audio file - it cannot wedge the
-		// batch, and it is not a file to parse.
 		return nil
 	})
 	slices.Sort(out)
-	return out
+	return out, skipped
 }
 
 // audioExtensions is the set of file extensions any implemented codec claims,

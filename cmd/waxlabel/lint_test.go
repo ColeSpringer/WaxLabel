@@ -15,8 +15,8 @@ func TestLintReportsFindings(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("lint exit = %d, want 1", code)
 	}
-	if !strings.Contains(out, "encoder-noise") {
-		t.Errorf("lint output missing encoder-noise:\n%s", out)
+	if !strings.Contains(out, "inherited-encoder") {
+		t.Errorf("lint output missing inherited-encoder:\n%s", out)
 	}
 
 	cout, _, ccode := runCLI(t, "lint", notagsFLAC)
@@ -25,6 +25,70 @@ func TestLintReportsFindings(t *testing.T) {
 	}
 	if !strings.Contains(cout, "no issues") {
 		t.Errorf("clean lint missing 'no issues':\n%s", cout)
+	}
+}
+
+// TestDumpLintCodeAlignment (§6 C1/C2/C3): a condition both dump and lint surface uses
+// the same code and message in each. dump prints the parse-warning codes; lint now
+// reuses them verbatim (inherited-encoder, trailing-id3v1) instead of its old private
+// aliases (encoder-noise, stale-legacy-tag), and one shared builder makes the
+// conflicting-families message read identically. dump also signposts lint for the
+// computed-only checks it does not run.
+func TestDumpLintCodeAlignment(t *testing.T) {
+	t.Parallel()
+
+	// C1: dump and lint name the same conditions with the same codes on an MP3 that
+	// carries an inherited encoder stamp and a trailing ID3v1.
+	dumpOut, _, _ := runCLI(t, "dump", sampleMP3)
+	lintOut, _, _ := runCLI(t, "lint", sampleMP3)
+	for _, code := range []string{"inherited-encoder", "trailing-id3v1"} {
+		if !strings.Contains(dumpOut, code) {
+			t.Errorf("dump missing %q:\n%s", code, dumpOut)
+		}
+		if !strings.Contains(lintOut, code) {
+			t.Errorf("lint missing %q:\n%s", code, lintOut)
+		}
+	}
+	// The old private aliases must be gone from lint.
+	for _, gone := range []string{"encoder-noise", "stale-legacy-tag"} {
+		if strings.Contains(lintOut, gone) {
+			t.Errorf("lint still uses the retired code %q:\n%s", gone, lintOut)
+		}
+	}
+
+	// C2: the conflicting-families condition reads identically in dump and lint (shared
+	// wording + the same " (KEY)" suffix). chapters.mka carries a cross-target ENCODER
+	// conflict.
+	mka := filepath.Join("..", "..", "testdata", "chapters.mka")
+	dumpMka, _, _ := runCLI(t, "dump", mka)
+	lintMka, _, _ := runCLI(t, "lint", mka)
+	msg := "multiple source fields supplied conflicting values (ENCODER)"
+	if !strings.Contains(dumpMka, msg) || !strings.Contains(lintMka, msg) {
+		t.Errorf("conflicting-families should read identically in dump and lint:\ndump:\n%s\nlint:\n%s", dumpMka, lintMka)
+	}
+	// The lint finding keeps the key structured in JSON (it is a real tag key, unlike the
+	// keyless picture findings), so a consumer can read it without parsing the message.
+	lintJSON, _, _ := runCLI(t, "--json", "lint", mka)
+	jl := decodeJSONOne[jsonLint](t, lintJSON)
+	foundKey := false
+	for _, f := range jl.Findings {
+		if f.Code == "conflicting-families" {
+			foundKey = true
+			if f.Key != "ENCODER" {
+				t.Errorf("conflicting-families JSON key = %q, want ENCODER", f.Key)
+			}
+		}
+	}
+	if !foundKey {
+		t.Error("expected a conflicting-families finding in lint --json")
+	}
+
+	// C3: dump signposts lint when it surfaced warnings, and stays quiet on a clean file.
+	if !strings.Contains(dumpOut, `run "waxlabel lint"`) {
+		t.Errorf("dump with warnings should point at lint:\n%s", dumpOut)
+	}
+	if cleanDump, _, _ := runCLI(t, "dump", notagsFLAC); strings.Contains(cleanDump, "waxlabel lint") {
+		t.Errorf("a clean dump should not show the lint pointer:\n%s", cleanDump)
 	}
 }
 

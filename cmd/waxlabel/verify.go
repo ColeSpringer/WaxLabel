@@ -36,11 +36,12 @@ func newVerifyCmd() *cobra.Command {
 				return err
 			}
 			defer cleanup()
-			paths, err := expandPaths(args, recursive)
+			paths, skipped, err := expandPaths(args, recursive)
 			if err != nil {
 				return err
 			}
 			noteNoFiles(cmd.ErrOrStderr(), paths)
+			noteSkipped(cmd.ErrOrStderr(), skipped, jsonMode(cmd))
 			// quiet is a text-mode presentation choice; --json has a fixed shape. In
 			// quiet mode each file is one TSV line, so the inter-record blank line is
 			// dropped (noSeparator) to keep a sort/uniq pipe clean.

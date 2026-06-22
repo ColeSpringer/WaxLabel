@@ -81,7 +81,6 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 	}
 	chapters := core.Capability{
 		Read: core.AccessNone, Write: core.AccessNone,
-		Representation: "not modeled",
 	}
 	// AIFF has no metadata-padding concept, so the padding controls do not apply.
 	return core.NewCapabilities(core.FormatAIFF, false, fields, pictures, chapters, core.AccessNone, nil)

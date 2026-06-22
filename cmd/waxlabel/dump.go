@@ -21,9 +21,12 @@ func newDumpCmd() *cobra.Command {
 			"  waxlabel dump --native --json album/*.flac",
 		Long: "Parse each file and print its canonical tags, audio properties, embedded\n" +
 			"pictures, and any parse warnings. With --native, also show the native\n" +
-			"metadata blocks and the per-source (family) view that records which\n" +
-			"container supplied each value. With --recursive, directory arguments are\n" +
-			"walked for audio files. A single \"-\" reads from standard input.",
+			"metadata blocks and the per-family view that records which container\n" +
+			"supplied each value. dump reports the warnings noticed at parse; lint adds\n" +
+			"the computed checks (malformed dates and numbers, single-valued cardinality,\n" +
+			"custom keys, duplicate pictures), so run lint for the full issue set. With\n" +
+			"--recursive, directory arguments are walked for audio files. A single \"-\"\n" +
+			"reads from standard input.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			realOf, cleanup, err := readInputs(cmd.InOrStdin(), args)
@@ -31,11 +34,12 @@ func newDumpCmd() *cobra.Command {
 				return err
 			}
 			defer cleanup()
-			paths, err := expandPaths(args, recursive)
+			paths, skipped, err := expandPaths(args, recursive)
 			if err != nil {
 				return err
 			}
 			noteNoFiles(cmd.ErrOrStderr(), paths)
+			noteSkipped(cmd.ErrOrStderr(), skipped, jsonMode(cmd))
 			return perFile(cmd, paths,
 				func(ctx context.Context, path string) (*wl.Document, error) {
 					return parseInput(ctx, realOf(path), path)
@@ -46,7 +50,7 @@ func newDumpCmd() *cobra.Command {
 			)
 		},
 	}
-	cmd.Flags().BoolVar(&native, "native", false, "include native blocks and the per-source (family) view")
+	cmd.Flags().BoolVar(&native, "native", false, "include native blocks and the per-family view")
 	cmd.Flags().BoolVar(&recursive, "recursive", false, "recurse into directory arguments, dumping every audio file found (selected by file extension)")
 	return cmd
 }

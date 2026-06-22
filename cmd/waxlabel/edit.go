@@ -61,7 +61,7 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringArrayVar(&e.set, "set", nil, "set KEY=VALUE, replacing the key (repeatable)")
 	f.StringArrayVar(&e.add, "add", nil, "append KEY=VALUE to a key (repeatable, for multi-value fields)")
 	f.StringArrayVar(&e.clear, "clear", nil, "remove KEY (repeatable)")
-	f.StringArrayVar(&e.addCover, "add-cover", nil, "add a front-cover picture from an image file (sugar for --add-picture front-cover=PATH; repeatable)")
+	f.StringArrayVar(&e.addCover, "add-cover", nil, "add a front-cover picture from an image file (shorthand for --add-picture front-cover=PATH; repeatable)")
 	f.StringArrayVar(&e.addPicture, "add-picture", nil, "add a picture ROLE=PATH, e.g. back-cover=back.jpg (repeatable; ROLE is a cover-art role such as front-cover, back-cover, artist)")
 	f.StringVar(&e.pictureDescription, "picture-description", "", "set the description on every picture added this run (--add-picture/--add-cover)")
 	f.StringArrayVar(&e.removePicture, "remove-picture", nil, "remove pictures by role name or 1-based dump index, e.g. back-cover or 2 (repeatable; removals apply before adds)")
@@ -69,11 +69,11 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.BoolVar(&e.force, "force", false, "embed --add-cover/--add-picture input even if it is not a recognized image (PNG/JPEG/GIF/WebP/BMP/TIFF)")
 	f.StringArrayVar(&e.addChapter, "add-chapter", nil, "add a chapter TIMESTAMP=Title (e.g. 1:30=Verse; repeatable); a file whose format cannot store chapters fails while capable files proceed")
 	f.BoolVar(&e.clearChapters, "clear-chapters", false, "remove all chapters (applied before --add-chapter, so combining them keeps only the added chapters)")
-	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear the ENCODER software stamp (the transcoder leftover)")
+	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear the ENCODER software stamp left behind by an encoder or transcoder")
 	f.StringVar(&e.preset, "preset", "", "write policy preset: preserve|compatible|canonical|minimal")
 	f.StringVar(&e.legacy, "legacy", "", "legacy-tag policy: preserve|strip|reconcile|update-existing")
-	f.StringVar(&e.padding, "padding", "", "reserve at least N bytes of padding after the metadata (default 8192; 0 writes none, like --no-padding)")
-	f.BoolVar(&e.noPadding, "no-padding", false, "write no padding after the metadata (smallest file)")
+	f.StringVar(&e.padding, "padding", "", "reserve at least N bytes of padding after the metadata (FLAC default 8192; MP3/AAC/MP4 reuse the existing region; 0 writes none, like --no-padding)")
+	f.BoolVar(&e.noPadding, "no-padding", false, "write no padding after the metadata (no effect on Ogg/WAV/AIFF/Matroska, which have no padding region)")
 	f.BoolVar(&e.strict, "strict", false, "fail (exit 2) on an unknown key or a single-valued key given multiple values, instead of noting it")
 }
 
@@ -275,8 +275,7 @@ func (e *editFlags) loadPictureFile(label string, pt wl.PictureType, path string
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		// os.ReadFile's *fs.PathError already names the path, so do not repeat it.
-		return wl.Picture{}, fmt.Errorf("%s: %w", label, err)
+		return wl.Picture{}, &pictureLoadError{label: label, path: path, err: err}
 	}
 	if len(data) == 0 {
 		return wl.Picture{}, usagef("%s: %s: file is empty", label, path)
@@ -288,6 +287,29 @@ func (e *editFlags) loadPictureFile(label string, pt wl.PictureType, path string
 	p.SniffInto()
 	return p, nil
 }
+
+// pictureLoadError reports a failure to read an --add-cover/--add-picture image
+// file. It renders "<label>: <path>: <reason>" - the flag context, the path, and the
+// bare cause - dropping Go's "open" verb (and the path os.ReadFile's *fs.PathError
+// repeats) that a plain fmt.Errorf would surface. It Unwraps to that *fs.PathError so
+// the failure still classifies as a local I/O error (exit 6); a naive
+// fmt.Errorf("%s: %s", ...) reformat would instead drop the error from the chain and
+// downgrade a missing cover to the generic exit 1 (M4). It mirrors tempCreateError's
+// shape (a wrapper that cleans the message while preserving the I/O classification).
+type pictureLoadError struct {
+	label string
+	path  string
+	err   error // the os.ReadFile failure, normally an *fs.PathError
+}
+
+func (e *pictureLoadError) Error() string {
+	// perFileReason single-sources the "*fs.PathError -> bare cause" rule (dropping Go's
+	// "open" verb and the path os.ReadFile's PathError repeats); this only frames it with
+	// the flag label and the path.
+	return fmt.Sprintf("%s: %s: %s", e.label, e.path, perFileReason(e.err))
+}
+
+func (e *pictureLoadError) Unwrap() error { return e.err }
 
 // pictureRoles maps each cover-art role name to its PictureType. The name is
 // PictureType.String() lowercased with spaces turned to hyphens, derived from the
@@ -743,11 +765,12 @@ func notifyValueNotes(errOut io.Writer, e *editFlags, asJSON bool) {
 		if v == "" {
 			// A present-but-empty --set value, distinct from --clear (which removes the
 			// key). The note is invocation-level (no per-file format is known yet), so it
-			// states both outcomes rather than asserting one: formats that can store an
-			// empty value keep it, while those that cannot (WAV/AIFF, whose native text
-			// cannot hold an empty string) drop it. The typed check skips empties, so a
-			// bare KEY= never double-notes.
-			fmt.Fprintf(errOut, "note: %s= writes an empty value (dropped on formats that cannot store one, e.g. WAV/AIFF); use --clear %s to remove it\n", k, k)
+			// states both outcomes rather than asserting one. On WAV/AIFF the drop is
+			// path-dependent, not wholesale: a field that lands in a native NAME/ANNO or
+			// LIST/INFO chunk (which cannot hold an empty string) drops it, but an
+			// ID3-backed field keeps the present empty value like the other formats (DOC2).
+			// The typed check skips empties, so a bare KEY= never double-notes.
+			fmt.Fprintf(errOut, "note: %s= writes an empty value (WAV/AIFF drop it from a native chunk but keep it in an ID3 chunk); use --clear %s to remove it\n", k, k)
 			continue
 		}
 		noteMalformedValue(errOut, k, v)

@@ -40,7 +40,7 @@ type Finding struct {
 
 // String renders the finding as "[severity] code: message (key)". The severity and
 // code are fixed library vocabulary; the message and key can be file-derived (the
-// encoder-noise message carries the raw inherited stamp; a custom-key finding
+// inherited-encoder message carries the raw inherited stamp; a custom-key finding
 // carries the raw field name), so those two are run through [tag.SanitizeLine]
 // individually - the finding prints as one list item, so a newline or tab is
 // escaped too (it cannot forge a line), not just the terminal-hijack class. A
@@ -76,23 +76,23 @@ func (d *Document) Lint() []Finding {
 	return out
 }
 
-// lintWarnings promotes the parse-time warnings that a tagger usually acts on.
+// lintWarnings promotes the parse-time warnings that a tagger usually acts on. Each
+// promoted warning reuses w.Code.String() as its finding code, so a condition that
+// both dump (which prints the warning code) and lint surface reads with the same code
+// in each - no renamed alias to keep in sync (C1). Only the subset a tagger acts on is
+// promoted (other parse warnings are informational); the per-condition severity is the
+// only thing this assigns. The computed-only lint codes that dump never prints
+// (malformed-date, single-valued-multi, custom-key, the picture checks) are added by
+// the sibling lint* helpers, not here.
 func lintWarnings(ws []core.Warning) []Finding {
 	var out []Finding
 	for _, w := range ws {
 		switch w.Code {
-		case core.WarnStrayLeadingID3, core.WarnTrailingID3v1, core.WarnLegacyAPE:
-			out = append(out, Finding{LintWarning, "stale-legacy-tag", w.Message, ""})
-		case core.WarnInheritedEncoder:
-			out = append(out, Finding{LintWarning, "encoder-noise", w.Message, ""})
-		case core.WarnMultipleVorbisComment, core.WarnDuplicateTagBlock:
-			out = append(out, Finding{LintError, "duplicate-tag-block", w.Message, ""})
-		case core.WarnInvalidPicture:
-			out = append(out, Finding{LintWarning, "invalid-picture", w.Message, ""})
-		case core.WarnNoAudioFrames:
-			out = append(out, Finding{LintError, "no-audio", w.Message, ""})
-		case core.WarnTruncatedAudio:
-			out = append(out, Finding{LintWarning, "truncated-audio", w.Message, ""})
+		case core.WarnStrayLeadingID3, core.WarnTrailingID3v1, core.WarnLegacyAPE,
+			core.WarnInheritedEncoder, core.WarnInvalidPicture, core.WarnTruncatedAudio:
+			out = append(out, Finding{LintWarning, w.Code.String(), w.Message, ""})
+		case core.WarnMultipleVorbisComment, core.WarnDuplicateTagBlock, core.WarnNoAudioFrames:
+			out = append(out, Finding{LintError, w.Code.String(), w.Message, ""})
 		}
 	}
 	return out
@@ -102,7 +102,11 @@ func lintWarnings(ws []core.Warning) []Finding {
 // not selected because multiple native fields supplied conflicting values). A key
 // is reported once even when several of its family entries are unselected: one
 // conflict per key, so a consumer counting findings does not double-count a single
-// disagreement (the parse warning already surfaces it once).
+// disagreement (the parse warning already surfaces it once). The wording is the shared
+// [core.ConflictingFamiliesMessage] - the same one the parser's conflicting-families
+// warning uses - so dump and lint read identically; the key lives in the Finding.Key
+// field (kept structured for JSON consumers, like the other key-specific findings), and
+// Finding.String renders it as the " (KEY)" suffix the dump warning appends inline.
 func lintFamilies(fams []core.FamilyValue) []Finding {
 	var out []Finding
 	seen := map[tag.Key]bool{}
@@ -113,7 +117,7 @@ func lintFamilies(fams []core.FamilyValue) []Finding {
 		seen[f.Key] = true
 		out = append(out, Finding{
 			LintWarning, "conflicting-families",
-			"multiple source fields supplied conflicting values", f.Key,
+			core.ConflictingFamiliesMessage(), f.Key,
 		})
 	}
 	return out

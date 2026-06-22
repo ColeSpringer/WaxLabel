@@ -112,6 +112,13 @@ const (
 	// no description. A plan-time warning so the loss is visible before the write,
 	// rather than the saved file silently differing from the previewed edit.
 	WarnPictureMetadataDropped
+	// WarnLegacyConflict means an edit changed a canonical key whose value is also held
+	// in a preserved legacy container the family view carries (an ID3v1 or APEv2 tag on
+	// the ID3-based formats) under the default LegacyPreserve policy, so the legacy copy
+	// now disagrees with the native tags. It is an edit-time sanity warning (the value is
+	// still written; the legacy container is preserved verbatim as promised), surfaced so
+	// the divergence is visible and the remedy (--legacy strip, or lint --fix) is offered.
+	WarnLegacyConflict
 )
 
 func (c WarningCode) String() string {
@@ -166,6 +173,8 @@ func (c WarningCode) String() string {
 		return "multiple-front-covers"
 	case WarnPictureMetadataDropped:
 		return "picture-metadata-dropped"
+	case WarnLegacyConflict:
+		return "legacy-conflict"
 	default:
 		return "unknown"
 	}
@@ -197,6 +206,19 @@ func Warn(ws []Warning, code WarningCode, msg string) []Warning {
 // the code and phrasing cannot drift between formats.
 func WarnTruncated(ws []Warning, subject string) []Warning {
 	return Warn(ws, WarnTruncatedAudio, subject+" declares more audio than the file holds; file may be truncated")
+}
+
+// ConflictingFamiliesMessage is the shared keyless wording for the conflicting-families
+// condition: more than one native field supplied a different value for a key, so no
+// value could be selected. Both surfaces attach the key the same way - the dump warning
+// (which has no key field) appends it inline as " (KEY)", and the linter's lintFamilies
+// finding carries it in its Key field, which Finding.String renders the same " (KEY)"
+// way - so dump and lint read identically while lint keeps the key structured (in its
+// JSON, like the other key-specific findings). Sharing the wording here is what keeps
+// the two from drifting, mirroring the duplicatePictureMessage/multipleFrontCoversMessage
+// pattern.
+func ConflictingFamiliesMessage() string {
+	return "multiple source fields supplied conflicting values"
 }
 
 // CloneWarnings copies a warning slice.

@@ -15,31 +15,33 @@ type LintFix struct {
 // PlanLintFix maps a document's lint findings to the safe remediation. Two
 // finding classes are auto-fixed, both non-destructive:
 //
-//   - encoder-noise: clear the ENCODER software stamp ([tag.Encoder]);
-//   - stale-legacy-tag: strip the legacy ID3v1/APEv2/stray-ID3 containers
-//     ([WithLegacyPolicy] [LegacyStrip]).
+//   - inherited-encoder: clear the ENCODER software stamp ([tag.Encoder]);
+//   - stray-leading-id3 / trailing-id3v1 / legacy-ape: strip the legacy
+//     ID3v1/APEv2/stray-ID3 containers ([WithLegacyPolicy] [LegacyStrip]).
 //
-// No other finding is acted on: dropping an unsniffable-but-valid cover would be
-// silent data loss, a malformed date cannot be guessed, conflicting families
-// have no winner, and missing audio cannot be synthesized. The encoder-noise fix
-// both clears the canonical ENCODER key and (via [WithStripEncoderStamp]) drops
-// the WAV ISFT stamp that clearing the key cannot reach; the Ogg/Opus/FLAC vendor
-// string is a mandatory codec field, so it is reported but not removed and a
-// re-lint of one of those still flags it. The honest measure of what was fixed is
-// a fresh lint of the saved file, not this plan. It reads only the parsed document
-// (no I/O) and never modifies it.
+// The finding codes are the canonical parse-warning codes (the same ones dump
+// prints), so this keys off exactly what lint reports - no private alias to keep in
+// step with the linter (C1). No other finding is acted on: dropping an
+// unsniffable-but-valid cover would be silent data loss, a malformed date cannot be
+// guessed, conflicting families have no winner, and missing audio cannot be
+// synthesized. The encoder fix both clears the canonical ENCODER key and (via
+// [WithStripEncoderStamp]) drops the WAV ISFT stamp that clearing the key cannot
+// reach; the Ogg/Opus/FLAC vendor string is a mandatory codec field, so it is
+// reported but not removed and a re-lint of one of those still flags it. The honest
+// measure of what was fixed is a fresh lint of the saved file, not this plan. It
+// reads only the parsed document (no I/O) and never modifies it.
 func (d *Document) PlanLintFix() LintFix {
 	var fix LintFix
 	encoderCleared, legacyStripped := false, false
 	for _, f := range d.Lint() {
 		switch f.Code {
-		case "encoder-noise":
+		case "inherited-encoder":
 			if !encoderCleared {
 				fix.Patch.Clear(tag.Encoder)
 				fix.Options = append(fix.Options, WithStripEncoderStamp())
 				encoderCleared = true
 			}
-		case "stale-legacy-tag":
+		case "stray-leading-id3", "trailing-id3v1", "legacy-ape":
 			if !legacyStripped {
 				fix.Options = append(fix.Options, WithLegacyPolicy(LegacyStrip))
 				legacyStripped = true

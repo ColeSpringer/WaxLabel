@@ -11,17 +11,18 @@ import (
 func fixturePath(name string) string { return filepath.Join("..", "..", "testdata", name) }
 
 // lintHasEncoderNoise reports whether a lint of path still flags the inherited
-// encoder stamp.
+// encoder stamp (finding code inherited-encoder, the canonical parse-warning code
+// lint now reuses).
 func lintHasEncoderNoise(t *testing.T, path string) bool {
 	t.Helper()
 	out, _, _ := runCLI(t, "lint", path)
-	return strings.Contains(out, "encoder-noise")
+	return strings.Contains(out, "inherited-encoder")
 }
 
 // --- E1: WAV ISFT encoder stamp is clearable from the CLI ---
 
 // TestWAVEncoderStampClearedBySetEdits checks each of the three set-side triggers drops
-// the WAV ISFT transcoder stamp so a re-lint is clean of encoder-noise.
+// the WAV ISFT transcoder stamp so a re-lint is clean of inherited-encoder.
 func TestWAVEncoderStampClearedBySetEdits(t *testing.T) {
 	for _, args := range [][]string{
 		{"--strip-encoder"},
@@ -30,23 +31,23 @@ func TestWAVEncoderStampClearedBySetEdits(t *testing.T) {
 	} {
 		f := copyFixture(t, sampleWAV)
 		if lintHasEncoderNoise(t, f) != true {
-			t.Fatalf("setup: %s should start with an encoder-noise finding", f)
+			t.Fatalf("setup: %s should start with an inherited-encoder finding", f)
 		}
 		if _, errb, code := runCLI(t, append([]string{"set", f}, args...)...); code != 0 {
 			t.Fatalf("set %v: exit %d: %s", args, code, errb)
 		}
 		if lintHasEncoderNoise(t, f) {
-			t.Errorf("set %v: encoder-noise persists; the ISFT stamp was not cleared", args)
+			t.Errorf("set %v: inherited-encoder persists; the ISFT stamp was not cleared", args)
 		}
 	}
 }
 
 // TestWAVLintFixClearsEncoderStamp confirms lint --fix reaches the WAV ISFT stamp and a
-// re-lint is clean of encoder-noise.
+// re-lint is clean of inherited-encoder.
 func TestWAVLintFixClearsEncoderStamp(t *testing.T) {
 	f := copyFixture(t, sampleWAV)
 	if !lintHasEncoderNoise(t, f) {
-		t.Fatalf("setup: %s should start with an encoder-noise finding", f)
+		t.Fatalf("setup: %s should start with an inherited-encoder finding", f)
 	}
 	if _, errb, code := runCLI(t, "lint", "--fix", f); code != 0 && code != 1 {
 		t.Fatalf("lint --fix: exit %d: %s", code, errb)

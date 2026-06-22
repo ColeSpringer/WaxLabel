@@ -36,7 +36,16 @@ func renderDocument(w io.Writer, path string, doc *wl.Document, native bool) {
 	renderTags(w, doc.Tags())
 	renderPictures(w, doc.Pictures())
 	renderChapters(w, doc.Chapters())
-	renderWarnings(w, doc.Warnings())
+	warnings := doc.Warnings()
+	renderWarnings(w, warnings)
+	// When dump surfaced parse warnings, point at lint for the deeper issue set dump
+	// does not compute - malformed dates/numbers, single-valued cardinality, custom
+	// keys, duplicate pictures - so "I ran dump and missed an issue" is signposted
+	// without dump taking on lint's cost. Gated on warnings present, so a clean file
+	// stays quiet (C3).
+	if len(warnings) > 0 {
+		fmt.Fprintln(w, `  run "waxlabel lint" for the full issue set (e.g. malformed dates, custom keys)`)
+	}
 	if native {
 		renderNative(w, doc)
 	}
@@ -255,14 +264,16 @@ func sanitizeJoin(vals []string, sep string) string {
 	return strings.Join(out, sep)
 }
 
-// pictureRow formats one picture's columns - type, MIME, dimensions ("WxH" or "?"),
-// and size - as a single line with no leading indent or trailing newline. It is
-// shared by the dump picture listing and the plan's added-picture detail (C4a) so the
-// two column layouts cannot drift. p.Type is an enum (safe) and p.MIME is file-derived
-// text; both are single-line columns escaped via SanitizeLine (which also escapes
-// \n/\t, so neither can break the layout or forge a line).
+// pictureRow formats one picture's columns - type, MIME, dimensions ("WxH" or "--"
+// when unknown), and size - as a single line with no leading indent or trailing
+// newline. It is shared by the dump picture listing and the plan's added-picture
+// detail (C4a) so the two column layouts cannot drift. p.Type is an enum (safe) and
+// p.MIME is file-derived text; both are single-line columns escaped via SanitizeLine
+// (which also escapes \n/\t, so neither can break the layout or forge a line).
 func pictureRow(p wl.Picture) string {
-	dim := "?"
+	// Unknown dimensions read as "--", the same placeholder the rest of the tool uses
+	// for an absent value, rather than a lone "?" (R2).
+	dim := "--"
 	if p.Width > 0 && p.Height > 0 {
 		dim = fmt.Sprintf("%dx%d", p.Width, p.Height)
 	}
@@ -337,7 +348,12 @@ func renderNative(w io.Writer, doc *wl.Document) {
 		}
 	}
 	if fams := doc.Families(); len(fams) > 0 {
-		fmt.Fprintf(w, "  sources (%d):\n", len(fams))
+		// "families" matches the JSON `family` field and the keys/caps vocabulary (C4);
+		// the caption says what the block is so the key/family/value columns are not bare
+		// jargon (R3). Each row is one native field's contribution to a canonical key;
+		// "(conflict)" marks a value the projection did not select.
+		fmt.Fprintf(w, "  families (%d):\n", len(fams))
+		fmt.Fprintln(w, "    (which native container supplied each canonical value)")
 		for _, f := range fams {
 			flag := ""
 			if !f.Selected {

@@ -608,8 +608,10 @@ func mediaWarnings(ts tag.TagSet, fams []core.FamilyValue) []core.Warning {
 	for _, f := range fams {
 		if !f.Selected && !seen[f.Key] {
 			seen[f.Key] = true
-			ws = core.Warn(ws, core.WarnConflictingFamilies,
-				"conflicting values across targets for "+string(f.Key))
+			// A warning has no key field, so the key is appended inline as " (KEY)" - the
+			// same suffix Finding.String renders from lintFamilies' Key field, so the dump
+			// warning and the lint finding read identically.
+			ws = core.Warn(ws, core.WarnConflictingFamilies, core.ConflictingFamiliesMessage()+" ("+string(f.Key)+")")
 		}
 	}
 	return ws

@@ -76,8 +76,10 @@ go run ./cmd/waxlabel diff  a.flac b.flac                # compare canonical met
 Install the binary with `go install github.com/colespringer/waxlabel/cmd/waxlabel@latest`.
 
 - **`dump <file>...`** - tags, audio properties, pictures, and warnings. `--native`
-  adds the native blocks and the per-source (family) view. `--recursive` walks
-  directory arguments.
+  adds the native blocks and the per-family view (which container supplied each
+  value). `dump` shows the warnings noticed at parse; `lint` adds the deeper computed
+  checks, so run `lint` for the full issue set. `--recursive` walks directory
+  arguments.
 - **`plan <file>...`** - the dry-run preview for `set`: resolve edits into a write
   plan and print exactly what `set` would do (including a field-level change
   preview), without touching the file (the report and the write share state).
@@ -181,8 +183,9 @@ A small set of contracts is stable:
   in-memory distinction only: no codec stores it, so it collapses to *absent* on
   write and never survives a round-trip - and a zero-length `Set`/`Add` that
   produces only it is reported as a true no-op (`IsNoOp`). A present empty-string
-  value (`set KEY=`) is a real value some formats keep (FLAC/Ogg) and others drop
-  (WAV/AIFF).
+  value (`set KEY=`) is a real value most formats keep (FLAC/Ogg, and a WAV/AIFF
+  field that lands in an ID3 chunk); only a native WAV/AIFF NAME/ANNO or LIST/INFO
+  chunk, which cannot hold an empty string, drops it.
 - **Public, writable canonical key vocabulary** (`tag.Key`); `tag.KnownKeys()`
   enumerates it. Unknown canonical keys pass through unchanged. Keys are
   Vorbis-permissive (normalized to uppercase; spaces and punctuation are allowed),
@@ -255,7 +258,12 @@ declared essence size, and a VBR MP3 when its surviving bytes are far too few fo
 the duration its Xing/Info header declares - so few the implied bitrate falls below
 what MPEG can encode. A partial loss that still implies a plausible bitrate, a
 mid-stream FLAC cut, and a Xing-less CBR MP3 are indistinguishable from a valid file
-without decoding, so they are left unflagged rather than risk a false alarm.
+without decoding, so they are left unflagged rather than risk a false alarm. Where
+`dump` and lint overlap they use the same finding codes and messages (e.g.
+`inherited-encoder`, `trailing-id3v1`, `conflicting-families`): `dump` reports the
+warnings noticed at parse, while lint adds the computed checks `dump` does not run -
+malformed dates and numbers, single-valued cardinality, custom keys, and duplicate
+pictures - so run lint for the full issue set.
 `lint --fix` applies only the safe, non-destructive remediations
 (clearing the encoder stamp, stripping legacy containers) and saves, then
 re-lints the saved file so what it reports as "fixed" or still "not auto-fixed" is
