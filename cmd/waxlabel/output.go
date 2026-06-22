@@ -41,6 +41,18 @@ func writeJSON(w io.Writer, v any) error {
 	return enc.Encode(v)
 }
 
+// nonNil returns s, or an empty (non-nil) slice when s is nil, so a JSON collection
+// field assigned from it always marshals as [] rather than null. It is the single
+// idiom for the "every iterable field is always an array" invariant on the
+// (pre-1.0, omitempty-free) report structs when the source slice can be nil; a field
+// built by append is instead initialized to []T{} at its struct literal, same effect.
+func nonNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
+}
+
 // sanitizingWriter is the human-output boundary. Every byte written through it is
 // run through [tag.SanitizeText], so a terminal-control sequence carried by
 // untrusted file bytes - a tag value, a native block label, a parse-warning

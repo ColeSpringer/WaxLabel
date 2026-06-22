@@ -231,6 +231,18 @@ func (p TagPatch) Touches(key Key) bool {
 	return false
 }
 
+// Writes reports whether the patch records a write (a Set or Add, not a Clear) on
+// key. It reads straight from the recorded ops, so a caller checking for a
+// write-then-clear conflict needs no parallel bookkeeping.
+func (p TagPatch) Writes(key Key) bool {
+	for _, op := range p.ops {
+		if op.key == key && (op.kind == opSet || op.kind == opAdd) {
+			return true
+		}
+	}
+	return false
+}
+
 // Append adds all of other's operations after this patch's, so other's edits
 // take effect later (and thus win on conflicts).
 func (p *TagPatch) Append(other TagPatch) {

@@ -49,10 +49,11 @@ Human-readable text output - `Plan.String()` (printed above), `WriteReport.Strin
 and the CLI's default rendering - is sanitized for the terminal: ESC/CSI, carriage
 return, BEL, and the other control bytes in untrusted tag values are shown as visible
 `\xNN` escapes, so a hostile file cannot inject ANSI sequences into your output.
-Multi-line tag *values* keep their genuine tabs and newlines (continuation lines
-indent to the value column); single-line fields (keys, paths, chapter titles) escape
-tab and newline too, so a value cannot forge an extra line. For the exact, unmodified
-bytes, read the structured accessors (`plan.Changes()`, `doc.Tags()`) or use the CLI's
+In the `dump` value listing, multi-line tag *values* keep their genuine tabs and
+newlines (continuation lines indent to the value column); single-line fields (keys,
+paths, chapter titles, and the `plan`/`diff` change-preview values) escape tab and
+newline too, so a value cannot forge an extra line. For the exact, unmodified bytes,
+read the structured accessors (`plan.Changes()`, `doc.Tags()`) or use the CLI's
 `--json`.
 
 `Document` is immutable and detached - it holds no file descriptor and has no
@@ -133,7 +134,8 @@ single-valued key given multiple values on stderr and continue; `--strict` makes
 either one fail (exit 2) instead. Write policy:
 `--preset preserve|compatible|canonical|minimal`, `--legacy ...`. The read commands
 (`dump`, `verify`, `lint`, and a `diff` operand) accept a single `-` to read
-standard input; `dump`, `verify`, and `lint` (like `set` and `plan`) walk directory
+standard input, as do `plan` and `set` (the latter only with `-o`, since editing
+standard input in place is meaningless); `dump`, `verify`, and `lint` (like `set` and `plan`) walk directory
 arguments with `--recursive`, which selects files by extension - a mis-named or
 extension-less audio file in a walked directory is skipped, though passing it
 directly still content-sniffs it. All data commands accept `--json` for scriptable

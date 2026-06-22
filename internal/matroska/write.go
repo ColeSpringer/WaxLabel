@@ -314,6 +314,9 @@ func coveredByOtherScopes(groups []tagGroup, albumIdx int, ek map[tag.Key]bool) 
 			if droppedByEdit(st, ek) {
 				continue // dropped by the edit: it preserves nothing at this scope
 			}
+			if !st.hasValue {
+				continue // a binary- or nested-only tag carries no canonical string value
+			}
 			for _, c := range projectTag(st.name, st.value, g.scope) {
 				covered[c.key] = append(covered[c.key], c.value)
 			}
@@ -403,7 +406,7 @@ func droppedByEdit(st simpleTag, ek map[tag.Key]bool) bool {
 		return true
 	}
 	if (k == tag.TrackNumber || k == tag.DiscNumber) && strings.ContainsRune(st.value, '/') {
-		return ek[totalKey(k)]
+		return ek[tag.TotalKey(k)]
 	}
 	return false
 }
@@ -503,11 +506,14 @@ func buildAlbumGroup(group *tagGroup, base, edited tag.TagSet, covered map[tag.K
 		}
 		name := mapping.MatroskaTagName(k)
 		for _, v := range vals {
-			if v == "" {
-				continue
-			}
+			// A present empty value ([""], what `set KEY=` produces) is emitted as a
+			// real zero-length SimpleTag - not skipped - so it round-trips like FLAC/Ogg
+			// keep it, matching Vorbis Rebuild (which has no empty guard) and the
+			// README's "only WAV/AIFF drop a present-empty value" contract. hasValue is
+			// true: this is a written TagString (possibly empty), so the result document's
+			// re-projection (project, which gates on hasValue) keeps it canonical.
 			simple = append(simple, simpleTagBytes(name, v)...)
-			out.tags = append(out.tags, simpleTag{name: name, value: v})
+			out.tags = append(out.tags, simpleTag{name: name, value: v, hasValue: true})
 		}
 	}
 	if len(simple) == 0 {
@@ -567,8 +573,11 @@ func albumGroupIndex(groups []tagGroup) int {
 
 // renderInfo splices the edited Title into the captured Info bytes (replacing,
 // inserting, or removing the Title child) and recomputes the CRC-32. It returns
-// the new Info element bytes and the new segment title.
-func renderInfo(ib *infoBlock, title string) (raw []byte, newTitle string) {
+// the new Info element bytes and the new segment title. present is the Title key's
+// presence in the edited set, not "title != """: a present-but-empty title
+// (`set TITLE=`) writes a zero-length <Title> element, while an absent title
+// (`--clear TITLE`) removes it - the two must stay distinguishable on round-trip.
+func renderInfo(ib *infoBlock, title string, present bool) (raw []byte, newTitle string) {
 	r := ib.raw
 	root, ok := readElement(core.BytesSource(r), 0, int64(len(r)), int64(len(r)))
 	if !ok {
@@ -576,7 +585,7 @@ func renderInfo(ib *infoBlock, title string) (raw []byte, newTitle string) {
 	}
 	headerLen := int(root.dataStart) // ID + size VINT
 	var titleEl []byte
-	if title != "" {
+	if present {
 		titleEl = stringElement(idSegTitle, title)
 	}
 	// Rebuild the content (everything after the element header) with the Title

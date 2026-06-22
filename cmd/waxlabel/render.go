@@ -64,10 +64,13 @@ func audioLine(p wl.Properties) string {
 	hasSubstantive := false
 	switch {
 	case t.Codec != "":
-		// t.Codec is the canonical name (CanonicalCodec, applied at parse), but for an
-		// unrecognized container codec ID it is the file's raw bytes (e.g. Matroska's
-		// codecName returns the ID tail verbatim), so escape it for the single-line row.
-		parts = append(parts, tag.SanitizeLine(strings.ToUpper(t.Codec)))
+		// t.Codec is the canonical name (CanonicalCodec, applied at parse) - real
+		// acronyms stay uppercase (FLAC/AAC/MP3/ALAC/PCM/AC-3), proper names mixed
+		// (Opus/Vorbis). Render it verbatim, not upper-cased, so the human line matches
+		// the --json codec field and the library model exactly; for an unrecognized
+		// container codec ID it is the file's raw bytes (e.g. Matroska's codecName
+		// returns the ID tail verbatim), so escape it for the single-line row.
+		parts = append(parts, tag.SanitizeLine(t.Codec))
 	case p.Container != "":
 		// No codec was identified (e.g. an unrecognized Matroska/MP4 track): name the
 		// container and say so, rather than printing the container as if it were the

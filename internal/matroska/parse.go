@@ -191,6 +191,7 @@ func parseInfo(src core.ReaderAtSized, info element, depth *bits.Depth, limit in
 				return err
 			}
 			d.segTitle = title
+			d.hasSegTitle = true // record presence so a "" title round-trips distinct from none
 		}
 		return nil
 	})
@@ -347,6 +348,7 @@ func parseSimpleTag(src core.ReaderAtSized, st element, depth *bits.Depth, limit
 				return err
 			}
 			s.value = value
+			s.hasValue = true // an empty TagString is a present empty value, distinct from none
 		case idTagLang:
 			s.lang, _ = readString(src, el, limit) // informational; degrade gracefully
 		case idTagBinary:
@@ -504,11 +506,14 @@ type scopedContribution struct {
 // the canonical set; nested sub-tags and unmapped names stay in the native tree.
 func project(d *doc) (tag.TagSet, []core.FamilyValue) {
 	var contribs []scopedContribution
-	if d.segTitle != "" {
+	if d.hasSegTitle {
 		contribs = append(contribs, scopedContribution{tag.Title, d.segTitle, core.ScopeAlbum})
 	}
 	for _, g := range d.groups {
 		for _, st := range g.tags {
+			if !st.hasValue {
+				continue // a binary- or nested-only SimpleTag has no string value to project
+			}
 			contribs = append(contribs, projectTag(st.name, st.value, g.scope)...)
 		}
 	}
@@ -527,10 +532,13 @@ func project(d *doc) (tag.TagSet, []core.FamilyValue) {
 }
 
 // projectTag maps one SimpleTag name/value to canonical contributions, splitting
-// a "n/total" track or disc number into its two canonical keys.
+// a "n/total" track or disc number into its two canonical keys. An empty value maps
+// to a present empty contribution ([""]), matching what `set KEY=` writes and what
+// FLAC/Ogg keep; callers gate on the SimpleTag's hasValue first, so a binary- or
+// nested-only tag (no TagString) never reaches here. An unmapped name contributes nothing.
 func projectTag(name, value string, scope core.Scope) []scopedContribution {
 	key, ok := mapping.MatroskaTagKey(name)
-	if !ok || value == "" {
+	if !ok {
 		return nil
 	}
 	if (key == tag.TrackNumber || key == tag.DiscNumber) && strings.ContainsRune(value, '/') {
@@ -540,21 +548,13 @@ func projectTag(name, value string, scope core.Scope) []scopedContribution {
 			out = append(out, scopedContribution{key, strconv.Itoa(n), scope})
 		}
 		if total > 0 {
-			out = append(out, scopedContribution{totalKey(key), strconv.Itoa(total), scope})
+			out = append(out, scopedContribution{tag.TotalKey(key), strconv.Itoa(total), scope})
 		}
 		if len(out) > 0 {
 			return out
 		}
 	}
 	return []scopedContribution{{key, value, scope}}
-}
-
-// totalKey returns the "total" companion key for a numbering key.
-func totalKey(k tag.Key) tag.Key {
-	if k == tag.DiscNumber {
-		return tag.DiscTotal
-	}
-	return tag.TrackTotal
 }
 
 // buildFamilies groups contributions into one entry per (key, scope), preserving

@@ -65,10 +65,10 @@ type jsonDocument struct {
 	Error         *jsonErrBody    `json:"error,omitempty"`
 	Format        string          `json:"format,omitempty"`
 	Properties    *jsonProperties `json:"properties,omitempty"`
-	Tags          []jsonTag       `json:"tags,omitempty"`
-	Pictures      []jsonPicture   `json:"pictures,omitempty"`
-	Chapters      []jsonChapter   `json:"chapters,omitempty"`
-	Warnings      []jsonWarning   `json:"warnings,omitempty"`
+	Tags          []jsonTag       `json:"tags"`
+	Pictures      []jsonPicture   `json:"pictures"`
+	Chapters      []jsonChapter   `json:"chapters"`
+	Warnings      []jsonWarning   `json:"warnings"`
 	Native        []jsonNative    `json:"native,omitempty"`
 	Sources       []jsonSource    `json:"sources,omitempty"`
 }
@@ -144,8 +144,14 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 			DurationMs:    props.Duration().Milliseconds(),
 			BitrateBps:    t.Bitrate,
 		},
+		// All four iterable collections are inited non-nil (not just tags/pictures) so a
+		// no-tags / no-chapters / no-warnings file emits "[]" rather than null or an
+		// omitted field - `jq '.[].tags[]'` (and the others) never breaks. native/sources
+		// stay omitempty: they are feature-gated (--native), not always-present collections.
 		Tags:     []jsonTag{},
 		Pictures: []jsonPicture{},
+		Chapters: []jsonChapter{},
+		Warnings: []jsonWarning{},
 	}
 	for k, vals := range doc.Tags().All() {
 		jd.Tags = append(jd.Tags, jsonTag{Key: string(k), Values: vals})

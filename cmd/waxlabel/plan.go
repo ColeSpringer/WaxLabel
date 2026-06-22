@@ -55,9 +55,15 @@ func newPlanCmd() *cobra.Command {
 			if err := notifyInvocationNotes(cmd.ErrOrStderr(), ce, &ef, realOf, paths, asJSON); err != nil {
 				return err
 			}
-			// Advise quoting when a bare-word positional that does not resolve looks like
-			// an unquoted value fragment and a value flag was given (#1).
-			maybeQuotingHint(cmd.ErrOrStderr(), &ef, realOf, args, asJSON)
+			// An unquoted value with spaces (--set TITLE=Two Words) leaves a stray bare-word
+			// positional that the preview would misattribute - printing a truncated change
+			// (TITLE -> Two) then failing the stray word as not-found (exit 6). Since the plan
+			// preview is meant to be authoritative, refuse up front (exit 2) like set does, via
+			// the same shared helper. writes=false: plan never writes, so it uses the bare hint
+			// without set's "; nothing was written" suffix (which would be false here).
+			if err := refuseUnquotedValue(&ef, realOf, args, false); err != nil {
+				return err
+			}
 			notifier := newSingleValuedNotifier(ef.strict, asJSON)
 			pnoter := newPaddingNoter(asJSON, cmd.ErrOrStderr())
 			return perFile(cmd, paths,
@@ -102,7 +108,7 @@ type jsonReport struct {
 	BytesBefore   int64         `json:"bytesBefore"`
 	BytesAfter    int64         `json:"bytesAfter"`
 	PaddingAfter  int64         `json:"paddingAfter"`
-	Warnings      []jsonWarning `json:"warnings,omitempty"`
+	Warnings      []jsonWarning `json:"warnings"`
 }
 
 // jsonChange is one field's change in a write plan: the canonical key, how it
@@ -127,21 +133,21 @@ func toJSONChanges(changes []tag.Change) []jsonChange {
 
 func toJSONReport(path string, plan *wl.Plan) jsonReport {
 	r := plan.Report()
-	jr := jsonReport{
+	var warnings []jsonWarning
+	for _, x := range r.Warnings {
+		warnings = append(warnings, jsonWarning{Code: x.Code.String(), Message: x.Message})
+	}
+	// nonNil on each collection so it serializes as [] (never null/omitted) - a
+	// consumer iterating .operations[]/.warnings[] works on a clean plan too.
+	return jsonReport{
 		SchemaVersion: schemaVersion,
 		File:          path,
 		NoOp:          plan.IsNoOp(),
 		Changes:       toJSONChanges(plan.Changes()),
-		Operations:    r.Operations,
+		Operations:    nonNil(r.Operations),
 		BytesBefore:   r.BytesBefore,
 		BytesAfter:    r.BytesAfter,
 		PaddingAfter:  r.PaddingAfter,
+		Warnings:      nonNil(warnings),
 	}
-	if jr.Operations == nil {
-		jr.Operations = []string{}
-	}
-	for _, x := range r.Warnings {
-		jr.Warnings = append(jr.Warnings, jsonWarning{Code: x.Code.String(), Message: x.Message})
-	}
-	return jr
 }

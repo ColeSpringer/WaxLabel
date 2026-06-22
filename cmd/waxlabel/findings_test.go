@@ -770,10 +770,14 @@ func TestUnquotedValueHint(t *testing.T) {
 		t.Error("set refused the unquoted-value run but still modified the named file")
 	}
 
-	// plan (read-only) keeps the advisory rather than refusing - it previews the real
-	// file while the stray word reports its own not-found (exit 6).
-	if _, pstderr, pcode := runCLI(t, "plan", file, "--set", "TITLE=Two", "Words"); pcode != 6 {
-		t.Fatalf("plan stray bare word exit = %d, want 6; stderr=%s", pcode, pstderr)
+	// plan now refuses identically to set (its preview is meant to be authoritative),
+	// but with the bare hint and no "nothing was written" suffix (plan never writes).
+	if _, pstderr, pcode := runCLI(t, "plan", file, "--set", "TITLE=Two", "Words"); pcode != 2 {
+		t.Fatalf("plan stray bare word exit = %d, want 2 (refused); stderr=%s", pcode, pstderr)
+	} else if !strings.Contains(pstderr, "must be quoted") {
+		t.Errorf("plan should carry the quoting hint; got:\n%s", pstderr)
+	} else if strings.Contains(pstderr, "nothing was written") {
+		t.Errorf("plan never writes, so it must not claim 'nothing was written'; got:\n%s", pstderr)
 	}
 
 	// No false positive: two real files with no stray bare word are not refused.

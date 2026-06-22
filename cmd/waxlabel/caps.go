@@ -37,11 +37,11 @@ func newCapsCmd() *cobra.Command {
 				if len(args) > 0 {
 					return usagef("caps --format takes no file arguments")
 				}
-				f, opts, ok := parseFormat(format)
+				f, opts, container, ok := parseFormat(format)
 				if !ok {
 					return usagef("unknown format %q; try one of: %s", format, formatHint())
 				}
-				return runCapsFormat(cmd, f, opts...)
+				return runCapsFormat(cmd, f, container, opts...)
 			}
 			if len(args) == 0 {
 				// Carry the resolved command path (not a literal, which goes stale on a
@@ -57,9 +57,10 @@ func newCapsCmd() *cobra.Command {
 }
 
 // runCapsFormat renders a single format's capabilities (no file). opts carry any
-// variant narrowing the format name implied (e.g. WithWebMSubset for "webm").
-func runCapsFormat(cmd *cobra.Command, f wl.Format, opts ...wl.WriteOption) error {
-	jc := buildCaps("", wl.CapabilitiesFor(f, opts...))
+// variant narrowing the format name implied (e.g. WithWebMSubset for "webm");
+// container is the human label for that variant ("WebM", else empty).
+func runCapsFormat(cmd *cobra.Command, f wl.Format, container string, opts ...wl.WriteOption) error {
+	jc := buildCaps("", container, wl.CapabilitiesFor(f, opts...))
 	if jsonMode(cmd) {
 		return writeJSON(cmd.OutOrStdout(), jc)
 	}
@@ -92,7 +93,10 @@ func runCapsFiles(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return jsonCaps{}, err
 			}
-			return buildCaps(path, doc.Capabilities()), nil
+			// The WebM/Matroska distinction lives only in the container subtype (both
+			// .mka and .webm are FormatMatroska), so pass it for the human header - same
+			// signal copy.go uses for its transfer labels.
+			return buildCaps(path, doc.Properties().Container, doc.Capabilities()), nil
 		},
 		func(_ string, jc jsonCaps) any { return jc },
 		func(w io.Writer, _ string, jc jsonCaps) { renderCaps(w, jc) },
@@ -119,7 +123,14 @@ type jsonCaps struct {
 	// controls: "none", "partial" (grow-only), or "full". Always present on a
 	// successful report.
 	Padding string       `json:"padding,omitempty"`
-	Keys    []jsonCapKey `json:"keys,omitempty"`
+	Keys    []jsonCapKey `json:"keys"`
+
+	// humanFormat is the label the human report prints on the "format:" line - the
+	// container subtype for the Matroska family ("WebM"/"Matroska"), else the bare
+	// Format string. It is unexported so encoding/json ignores it: the JSON "format"
+	// field stays the bare Format identity ("Matroska" even for WebM), matching copy's
+	// deliberate choice, while the human line distinguishes WebM. See transferFormatLabel.
+	humanFormat string
 }
 
 // jsonCapDim is one dimension's (fields/pictures/chapters) support.
@@ -141,17 +152,23 @@ type jsonCapKey struct {
 
 // buildCaps projects a Capabilities into its JSON form. Only keys the format can
 // write are listed (the editable set); the format-independent vocabulary in full
-// is the keys command's job.
-func buildCaps(file string, caps wl.Capabilities) jsonCaps {
+// is the keys command's job. container is the file's (or format's) container
+// subtype ("WebM"/"Matroska", else empty), used only for the human format label.
+func buildCaps(file, container string, caps wl.Capabilities) jsonCaps {
 	jc := jsonCaps{
 		SchemaVersion: schemaVersion,
 		File:          file,
 		Format:        caps.Format.String(),
+		humanFormat:   transferFormatLabel(caps.Format, container),
 		ReadOnly:      caps.ReadOnly,
 		Fields:        capDim(caps.GenericField),
 		Pictures:      capDim(caps.Pictures),
 		Chapters:      capDim(caps.Chapters),
 		Padding:       caps.Padding.String(),
+		// Always a non-nil array so `caps --json` of a read-only format (no editable
+		// keys) emits "keys": [] - a consumer iterating .keys[] never breaks. Latent
+		// today (all shipping formats are writable) but pinned for the frozen schema.
+		Keys: []jsonCapKey{},
 	}
 	for _, k := range tag.KnownKeys() {
 		fc := caps.Field(k)
@@ -197,7 +214,13 @@ func renderCaps(w io.Writer, jc jsonCaps) {
 	if jc.File != "" {
 		fmt.Fprintln(w, displayName(jc.File))
 	}
-	fmt.Fprintf(w, "  %-9s %s\n", "format:", jc.Format)
+	// The human label distinguishes WebM from Matroska; fall back to the bare Format
+	// identity if no label was set (e.g. a zero-value jsonCaps).
+	format := jc.humanFormat
+	if format == "" {
+		format = jc.Format
+	}
+	fmt.Fprintf(w, "  %-9s %s\n", "format:", format)
 	if jc.ReadOnly {
 		fmt.Fprintln(w, "  (read-only: this format cannot be written)")
 	}
@@ -243,36 +266,38 @@ func renderCapDim(w io.Writer, label string, d *jsonCapDim) {
 	}
 }
 
-// parseFormat resolves a user-supplied format name to a Format and any write
-// options needed to describe it. It accepts any file extension a codec claims (with
-// or without a leading dot) and a few friendly aliases for the formats whose name is
-// not an extension (the two Ogg codecs and Matroska/WebM). Matching is
-// case-insensitive.
-func parseFormat(s string) (wl.Format, []wl.WriteOption, bool) {
+// parseFormat resolves a user-supplied format name to a Format, any write options
+// needed to describe it, and its container subtype label ("WebM" for webm, else
+// empty - the human format line uses it to distinguish WebM from Matroska, which
+// share one Format). It accepts any file extension a codec claims (with or without a
+// leading dot) and a few friendly aliases for the formats whose name is not an
+// extension (the two Ogg codecs and Matroska/WebM). Matching is case-insensitive.
+func parseFormat(s string) (f wl.Format, opts []wl.WriteOption, container string, ok bool) {
 	norm := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(s)), ".")
 	switch norm {
 	case "vorbis", "oggvorbis":
-		return wl.FormatOggVorbis, nil, true
+		return wl.FormatOggVorbis, nil, "", true
 	case "opus", "oggopus":
-		return wl.FormatOggOpus, nil, true
+		return wl.FormatOggOpus, nil, "", true
 	case "matroska":
-		return wl.FormatMatroska, nil, true
+		return wl.FormatMatroska, nil, "", true
 	case "webm":
 		// WebM is not a distinct Format - it is a subset of Matroska whose defining
 		// restriction is that cover attachments are outside the subset. Describe it via
 		// the Matroska codec under WithWebMSubset, which applies that one restriction
 		// (the codec's own, reused - not a parallel copy), so the format-level "webm"
-		// answer matches what a real .webm file reports.
-		return wl.FormatMatroska, []wl.WriteOption{wl.WithWebMSubset()}, true
+		// answer matches what a real .webm file reports. The "WebM" container label
+		// makes the human header say WebM (the JSON format stays the bare "Matroska").
+		return wl.FormatMatroska, []wl.WriteOption{wl.WithWebMSubset()}, "WebM", true
 	}
-	for _, f := range wl.Formats() {
-		for _, ext := range wl.ExtensionsFor(f) {
+	for _, cand := range wl.Formats() {
+		for _, ext := range wl.ExtensionsFor(cand) {
 			if strings.TrimPrefix(ext, ".") == norm {
-				return f, nil, true
+				return cand, nil, "", true
 			}
 		}
 	}
-	return wl.FormatUnknown, nil, false
+	return wl.FormatUnknown, nil, "", false
 }
 
 // formatHint lists representative format names for the unknown-format error.

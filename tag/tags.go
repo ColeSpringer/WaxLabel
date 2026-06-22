@@ -273,6 +273,32 @@ func ParseNumPair(num, total string) (n, tot int) {
 	return n, tot
 }
 
+// SplitNumberTotal splits a "number/total" value (e.g. "3/12") on the first '/'
+// into its trimmed number and total substrings. Unlike [ParseNumPair] it preserves
+// the exact substrings - leading zeros and all - rather than renumbering to ints, so
+// it suits a write/edit normalization that must not silently rewrite the value. Each
+// side is "" when absent or blank ("3/" -> "3","" ; "/12" -> "","12"). It is the
+// single substring split shared by the ID3 read path and the edit-time pair split.
+func SplitNumberTotal(v string) (num, total string) {
+	num, total, _ = strings.Cut(v, "/")
+	return strings.TrimSpace(num), strings.TrimSpace(total)
+}
+
+// TotalKey returns the canonical "total" companion for a numbering key:
+// [TrackNumber] -> [TrackTotal], [DiscNumber] -> [DiscTotal]. Any other key is
+// returned unchanged. It is the single number->total mapping shared by the codecs
+// and the edit-time numbering split so the sites cannot drift.
+func TotalKey(k Key) Key {
+	switch k {
+	case TrackNumber:
+		return TrackTotal
+	case DiscNumber:
+		return DiscTotal
+	default:
+		return k
+	}
+}
+
 // numericKeys are the canonical keys whose typed [Tags] projection is an int, so
 // a non-numeric value does not round-trip through that accessor (it reads 0): the
 // track and disc number/total, and the play count. Rating is excluded (it is a

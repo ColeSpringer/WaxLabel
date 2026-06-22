@@ -49,6 +49,11 @@ func (e *Editor) Apply(p tag.TagPatch) *Editor {
 }
 
 // Set replaces a key's values (present, possibly empty).
+//
+// A slash-combined "n/total" on [tag.TrackNumber] or [tag.DiscNumber] is normalized
+// at [Editor.Prepare] into the canonical pair (e.g. Set(tag.TrackNumber, "3/12")
+// becomes TRACKNUMBER=3 + TRACKTOTAL=12) so every format stores it identically; see
+// splitNumberPairs for the precedence rules.
 func (e *Editor) Set(key tag.Key, vals ...string) *Editor {
 	e.patch.Set(key, vals...)
 	return e
@@ -192,6 +197,13 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	if err := e.rejectNULValues(editedTags, patchKeys); err != nil {
 		return nil, err
 	}
+	// Normalize a slash-combined "n/total" track or disc number this edit introduced
+	// into the canonical pair every format stores (see splitNumberPairs). It runs
+	// after rejectNULValues, not before: that scan only covers the patched keys, so
+	// splitting first would route a NUL from "3/\x00" into an unscanned derived
+	// TRACKTOTAL and smuggle it past the guard onto a C-string format. Splitting after
+	// means the NUL is still on the touched TRACKNUMBER and is rejected above.
+	splitNumberPairs(&editedTags, e.patch)
 	edited := &core.Media{
 		Format:      e.base.Format,
 		Properties:  e.base.Properties,
@@ -579,6 +591,59 @@ func dropEmptyValuedKeys(ts *tag.TagSet) {
 	for _, k := range ts.Keys() {
 		if vs, ok := ts.Get(k); ok && len(vs) == 0 {
 			ts.Delete(k)
+		}
+	}
+}
+
+// splitNumberPairs normalizes a slash-combined "n/total" value on a track or disc
+// number that THIS edit introduced into the canonical pair every format stores -
+// TRACKNUMBER + TRACKTOTAL (and DISCNUMBER + DISCTOTAL). Without it a
+// Set(tag.TrackNumber, "3/12") splits on ID3/MP4/Matroska (whose native track field
+// is spec'd as number/total) but survives as the literal "3/12" on Vorbis/WAV (where
+// a slash is non-standard - the convention is a separate TRACKTOTAL comment), so the
+// canonical layer would disagree with itself. Doing it here, in Prepare, makes every
+// write - CLI and library alike - converge, since every write flows through Prepare.
+//
+// It uses the shared [tag.SplitNumberTotal] (the same substring split the ID3 read
+// path uses), setting each side only when non-empty (so "3/" yields just the number
+// and "/12" just the total) - preserving the exact substrings, including any leading
+// zeros, rather than renumbering through tag.ParseNumPair.
+//
+// Two gates keep it from churning unrelated state:
+//   - Only a number key the patch Touches is split, never a literal "3/12" merely
+//     carried from the base file - editing an unrelated field must not silently
+//     rewrite a pre-existing track number.
+//   - The total side is written only when the patch does not also Touch the total
+//     key, so an explicit Set/Clear of TRACKTOTAL in the same edit wins, while a slash
+//     total still updates a total carried from the base file.
+//
+// TRACKNUMBER/DISCNUMBER are canonically single-valued, so only a single-valued edit
+// is split; a multi-valued one (e.g. --add TRACKNUMBER=4/12 --add TRACKNUMBER=3) is
+// left untouched rather than collapsed to one value via Set, which would silently drop
+// the others - the single-valued-key warning flags that misuse separately. A
+// present-but-empty number ([""], from `set TRACKNUMBER=`) carries no slash and so is
+// left untouched.
+func splitNumberPairs(ts *tag.TagSet, patch tag.TagPatch) {
+	for _, numKey := range []tag.Key{tag.TrackNumber, tag.DiscNumber} {
+		if !patch.Touches(numKey) {
+			continue
+		}
+		vals, ok := ts.Get(numKey)
+		if !ok || len(vals) != 1 {
+			continue // absent, or multi-valued (out of scope - never lose a value)
+		}
+		if !strings.ContainsRune(vals[0], '/') {
+			continue
+		}
+		num, total := tag.SplitNumberTotal(vals[0])
+		if num != "" {
+			ts.Set(numKey, num)
+		} else {
+			ts.Delete(numKey) // "/12": no number survives
+		}
+		totKey := tag.TotalKey(numKey)
+		if total != "" && !patch.Touches(totKey) {
+			ts.Set(totKey, total)
 		}
 	}
 }

@@ -131,12 +131,12 @@ func Project(t *Tag) Projection {
 	}
 }
 
-// emitNumTotal splits "n/total" text values into a number key and a total key.
+// emitNumTotal splits "n/total" text values into a number key and a total key,
+// via the shared [tag.SplitNumberTotal] so the substring split cannot drift from the
+// edit-time pair normalization.
 func emitNumTotal(emit func(tag.Key, string, string), vals []string, numKey, totKey tag.Key, src string) {
 	for _, v := range vals {
-		num, total, _ := strings.Cut(v, "/")
-		num = strings.TrimSpace(num)
-		total = strings.TrimSpace(total)
+		num, total := tag.SplitNumberTotal(v)
 		if num != "" {
 			emit(numKey, num, src)
 		}

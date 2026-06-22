@@ -154,18 +154,22 @@ func quotingHint(ef *editFlags, realOf func(string) string, args []string) (hint
 	return "", false
 }
 
-// maybeQuotingHint prints the quotingHint advisory for the read-only plan command:
-// text-only (suppressed under --json) and never an error - the stray positional still
-// reports its own not-found; this only adds the suggestion, once per run. The writing
-// set command instead refuses up front (see its RunE), since previewing writes
-// nothing. (#1)
-func maybeQuotingHint(errOut io.Writer, ef *editFlags, realOf func(string) string, args []string, asJSON bool) {
-	if asJSON {
-		return
+// refuseUnquotedValue refuses a run whose value flag carries an unquoted spaced value
+// (--set TITLE=Two Words) - detected by quotingHint as a stray bare-word positional
+// beside a real input. Both set and plan refuse up front (exit 2) so a partial write
+// or a misleading preview never happens; writes selects set's "; nothing was written"
+// suffix, which would be false for plan (it never writes). Returns nil when there is
+// no stray word. It is the single refusal both commands call, so their wording and
+// exit code stay in lockstep.
+func refuseUnquotedValue(ef *editFlags, realOf func(string) string, args []string, writes bool) error {
+	hint, ok := quotingHint(ef, realOf, args)
+	if !ok {
+		return nil
 	}
-	if hint, ok := quotingHint(ef, realOf, args); ok {
-		fmt.Fprintln(errOut, "hint: "+hint)
+	if writes {
+		return usagef("%s; nothing was written", hint)
 	}
+	return usagef("%s", hint)
 }
 
 // rejectEmptyScalarFlags rejects --preset, --legacy, or --padding given an
@@ -186,7 +190,10 @@ func rejectEmptyScalarFlags(cmd *cobra.Command) error {
 }
 
 // patch compiles -set/-add/-clear into a presence-aware patch. A malformed
-// assignment or key is a usage error.
+// assignment or key is a usage error, as is the same key given to both a write
+// (--set/--add) and a removal (--clear/--strip-encoder): the CLI compiles all sets,
+// then adds, then clears, so --clear would silently win regardless of typed order -
+// refuse the contradiction up front (exit 2, nothing written) rather than guess.
 func (e *editFlags) patch() (tag.TagPatch, error) {
 	var p tag.TagPatch
 	for _, kv := range e.set {
@@ -203,15 +210,27 @@ func (e *editFlags) patch() (tag.TagPatch, error) {
 		}
 		p.Add(k, v)
 	}
+	// All --set/--add are recorded above, so p.Writes reads the "written by set/add"
+	// set straight from the ops - a later removal of the same key is a conflict.
+	// set+add on one key (--set ARTIST=A --add ARTIST=B) is legal and stays so; only
+	// (set|add) vs clear contradicts.
 	for _, ks := range e.clear {
 		k, err := tag.ParseKey(strings.TrimSpace(ks))
 		if err != nil {
 			return p, &usageError{msg: err.Error()}
 		}
+		if p.Writes(k) {
+			return p, usagef("%s is given to both --set/--add and --clear; remove one (they conflict)", k)
+		}
 		p.Clear(k)
 	}
 	if e.stripEncoder {
-		// Sugar for --clear ENCODER: the canonical software stamp on every format.
+		// Sugar for --clear ENCODER: the canonical software stamp on every format. Name
+		// the flag the user actually typed in the conflict message, not a --clear they
+		// never wrote.
+		if p.Writes(tag.Encoder) {
+			return p, usagef("%s is given to both --set/--add and --strip-encoder; remove one (they conflict)", tag.Encoder)
+		}
 		p.Clear(tag.Encoder)
 	}
 	return p, nil

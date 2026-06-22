@@ -221,7 +221,7 @@ func TestParseFormat(t *testing.T) {
 		{"webm", "Matroska"},
 	}
 	for _, c := range cases {
-		f, _, ok := parseFormat(c.in)
+		f, _, _, ok := parseFormat(c.in)
 		if !ok {
 			t.Errorf("parseFormat(%q) failed", c.in)
 			continue
@@ -230,7 +230,7 @@ func TestParseFormat(t *testing.T) {
 			t.Errorf("parseFormat(%q) = %q, want %q", c.in, f.String(), c.want)
 		}
 	}
-	if _, _, ok := parseFormat("nonsense"); ok {
+	if _, _, _, ok := parseFormat("nonsense"); ok {
 		t.Error(`parseFormat("nonsense") should fail`)
 	}
 }

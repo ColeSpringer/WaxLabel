@@ -115,10 +115,10 @@ func newSetCmd() *cobra.Command {
 			// An unquoted value with spaces (--set TITLE=Two Words) leaves a stray bare-word
 			// positional beside the real input; set would write a truncated tag to each named
 			// file before the stray word fails not-found. Refuse the whole run up front (exit
-			// 2, nothing written) - the message says so explicitly - so a script cannot misread
-			// a partial write as success. plan, which writes nothing, keeps the advisory (#1).
-			if hint, ok := quotingHint(&ef, realOf, args); ok {
-				return usagef("%s; nothing was written", hint)
+			// 2, nothing written) so a script cannot misread a partial write as success. plan
+			// refuses identically via the shared helper, but with the bare hint. (#1)
+			if err := refuseUnquotedValue(&ef, realOf, args, true); err != nil {
+				return err
 			}
 			return runSet(cmd, paths, realOf, ce, output, ef.strict, quiet, verify)
 		},

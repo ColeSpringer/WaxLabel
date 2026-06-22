@@ -320,7 +320,7 @@ type jsonLint struct {
 	SchemaVersion int           `json:"schemaVersion"`
 	File          string        `json:"file"`
 	Error         *jsonErrBody  `json:"error,omitempty"`
-	Findings      []jsonFinding `json:"findings,omitempty"`
+	Findings      []jsonFinding `json:"findings"`
 }
 
 type jsonFinding struct {
@@ -340,8 +340,8 @@ type jsonLintFix struct {
 	File          string        `json:"file"`
 	Error         *jsonErrBody  `json:"error,omitempty"`
 	Changes       []jsonChange  `json:"changes"`
-	Operations    []string      `json:"operations,omitempty"`
-	Remaining     []jsonFinding `json:"remaining,omitempty"`
+	Operations    []string      `json:"operations"`
+	Remaining     []jsonFinding `json:"remaining"`
 	Committed     bool          `json:"committed"`
 }
 
@@ -354,11 +354,14 @@ func toJSONLint(path string, findings []wl.Finding) jsonLint {
 }
 
 func toJSONLintFix(o fixOutcome) jsonLintFix {
+	// nonNil on operations (from plan.Report().Operations, which can be nil) so it is
+	// always "[]", never null - matching findings/remaining/changes, which their
+	// to-JSON helpers already build non-nil.
 	return jsonLintFix{
 		SchemaVersion: schemaVersion,
 		File:          o.path,
 		Changes:       toJSONChanges(o.changes),
-		Operations:    o.operations,
+		Operations:    nonNil(o.operations),
 		Remaining:     toJSONFindings(o.remaining),
 		Committed:     o.committed,
 	}

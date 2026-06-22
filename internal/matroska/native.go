@@ -18,12 +18,13 @@ import (
 // manage - a binary value, a nested tree, or a custom name - byte-for-byte
 // without re-encoding from the lossy decoded view.
 type simpleTag struct {
-	name   string
-	value  string
-	lang   string
-	binary int // >0 when the value was a TagBinary of this many bytes (not decoded)
-	sub    []simpleTag
-	raw    []byte
+	name     string
+	value    string
+	hasValue bool // a TagString child was present (an empty TagString is distinct from none)
+	lang     string
+	binary   int // >0 when the value was a TagBinary of this many bytes (not decoded)
+	sub      []simpleTag
+	raw      []byte
 }
 
 func cloneSimpleTags(in []simpleTag) []simpleTag {
@@ -80,6 +81,7 @@ type attachment struct {
 type doc struct {
 	docType     string // "matroska" or "webm", from the EBML DocType header
 	segTitle    string
+	hasSegTitle bool // an Info.Title element was present (distinguishes a "" title from none)
 	groups      []tagGroup
 	attachments []attachment
 	chapters    *chapterDoc // parsed Chapters tree, nil when the file has none
@@ -208,9 +210,10 @@ func (d *doc) Describe() []core.NativeEntry {
 		dt = "matroska"
 	}
 	out = append(out, core.NativeEntry{Kind: "EBML", Note: "DocType " + dt})
-	if d.segTitle != "" {
+	if d.hasSegTitle {
 		// No Size: the Note already shows the title verbatim, so its char-length would
-		// be a redundant (and bytes-mislabeled) column.
+		// be a redundant (and bytes-mislabeled) column. A present-but-empty title shows
+		// an empty Note, distinct from a file with no Info.Title at all.
 		out = append(out, core.NativeEntry{Kind: "Info.Title", Note: d.segTitle})
 	}
 	for _, g := range d.groups {

@@ -205,13 +205,14 @@ func planAbsorb(d *doc, base, edited *core.Media, ch changes, ek map[tag.Key]boo
 // strategies and buildResult thread one value rather than a long parameter list.
 // A nil tags/attach/chapters byte slice means that element is dropped.
 type rendered struct {
-	tags     []byte
-	groups   []tagGroup
-	info     []byte
-	title    string
-	attach   []byte
-	atts     []attachment
-	chapters []byte
+	tags         []byte
+	groups       []tagGroup
+	info         []byte
+	title        string
+	titlePresent bool // the result carries an Info.Title (possibly empty), vs none
+	attach       []byte
+	atts         []attachment
+	chapters     []byte
 }
 
 // renderChanged renders every Segment child the edit touches. The caller (Plan)
@@ -219,13 +220,14 @@ type rendered struct {
 // only failure here is an unparseable captured Info - a real ErrInvalidData, kept
 // distinct from the internal errFallback that signals "try the shift path".
 func renderChanged(d *doc, base, edited *core.Media, ch changes, ek map[tag.Key]bool) (*rendered, error) {
-	r := &rendered{title: d.segTitle}
+	r := &rendered{title: d.segTitle, titlePresent: d.hasSegTitle}
 	if ch.simple {
 		r.tags, r.groups = renderTags(d, base.Tags, edited.Tags, ek)
 	}
 	if ch.title {
-		et, _ := edited.Tags.First(tag.Title)
-		r.info, r.title = renderInfo(d.wb.info, et)
+		et, ok := edited.Tags.First(tag.Title)
+		r.titlePresent = ok
+		r.info, r.title = renderInfo(d.wb.info, et, ok)
 		if r.info == nil {
 			return nil, fmt.Errorf("%w: Matroska Info element could not be re-rendered", waxerr.ErrInvalidData)
 		}
@@ -402,6 +404,7 @@ func buildResult(d *doc, edited *core.Media, r *rendered, ch changes, lay layout
 	nd := &doc{
 		docType:     d.docType,
 		segTitle:    r.title,
+		hasSegTitle: r.titlePresent,
 		groups:      d.groups,
 		attachments: d.attachments,
 		chapters:    d.chapters,
