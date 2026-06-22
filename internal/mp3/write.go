@@ -114,6 +114,11 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report.BytesAfter = newSize
 
 	result := buildResult(edited, d, srcTag.WithFrames(newFrames), tagBytes, audioLen, apeLen, id3v1Len, newSize)
+	// Collapse to a true no-op when the ID3 rebuild re-projected to base's values
+	// (e.g. GENRE=17 -> Rock); a legacy strip stays a real write. See core.DowngradeNoOp.
+	if np := core.DowngradeNoOp(core.FormatMP3, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), legacyChange); np != nil {
+		return np, nil
+	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
 }
 

@@ -97,7 +97,7 @@ type jsonReport struct {
 	File          string        `json:"file"`
 	Error         *jsonErrBody  `json:"error,omitempty"`
 	NoOp          bool          `json:"noOp"`
-	Changes       []jsonChange  `json:"changes,omitempty"`
+	Changes       []jsonChange  `json:"changes"`
 	Operations    []string      `json:"operations"`
 	BytesBefore   int64         `json:"bytesBefore"`
 	BytesAfter    int64         `json:"bytesAfter"`

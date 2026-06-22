@@ -513,6 +513,132 @@ func TestMatroskaWriteMultiScopeRerenderRoundTrips(t *testing.T) {
 	}
 }
 
+// TestMatroskaWriteCrossScopeSplitValuePreserved (finding #1): a key split across
+// scopes with different values (ENCODER album=album-enc + track=track-enc, the
+// transcoded-file shape) must keep BOTH values when an unrelated tag is edited. The
+// album group is rebuilt; the value-aware sync re-emits only the album-scope value
+// the track group does not carry, instead of dropping the album value wholesale.
+func TestMatroskaWriteCrossScopeSplitValuePreserved(t *testing.T) {
+	data := buildMatroska("matroska", "T", multiScopeTags(false))
+	if v, _ := mustParseBytes(t, data).Get(tag.Encoder); len(v) != 2 {
+		t.Fatalf("setup: want 2 ENCODER values across scopes, got %v", v)
+	}
+
+	// Edit an unrelated key (ENCODER itself is untouched): the album group rebuilds.
+	out, _ := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.Artist, "NewArtist"))
+
+	re := mustParseBytes(t, out)
+	if v, _ := re.Get(tag.Encoder); len(v) != 2 {
+		t.Errorf("ENCODER = %v after unrelated edit, want both album+track values preserved", v)
+	}
+	// One ENCODER per scope: neither dropped nor duplicated.
+	if n := bytes.Count(out, []byte("ENCODER")); n != 2 {
+		t.Errorf("ENCODER written %d times, want 2 (one per scope)", n)
+	}
+	if f := re.Fields(); len(f.Artists) != 1 || f.Artists[0] != "NewArtist" {
+		t.Errorf("edit not applied: artists=%v", f.Artists)
+	}
+
+	// A second, unrelated save must not drift the layout (re-drop or duplicate).
+	out2, _ := saveMatroska(t, out, re.Edit().Set(tag.Album, "Alb"))
+	if n := bytes.Count(out2, []byte("ENCODER")); n != 2 {
+		t.Errorf("ENCODER written %d times after a second save, want 2 (idempotent)", n)
+	}
+	if v, _ := mustParseBytes(t, out2).Get(tag.Encoder); len(v) != 2 {
+		t.Errorf("ENCODER = %v after a second save, want 2 preserved", v)
+	}
+}
+
+// TestMatroskaWriteCrossScopeSplitNumberNoDuplicate (finding #1): a track-scoped
+// slash number (PART_NUMBER=3/12) projects to TrackNumber=3 AND TrackTotal=12. When
+// an unrelated tag is edited, neither must reappear at album scope - the covered set
+// projects through the same slash split (not a bare key lookup), so TrackTotal is
+// recognized as already carried and not split out to an album-scope TOTAL_PARTS.
+func TestMatroskaWriteCrossScopeSplitNumberNoDuplicate(t *testing.T) {
+	tags := mkEl(idTags, concat(
+		mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "AA"))),
+		mkEl(idTag, concat(
+			mkEl(idTargets, concat(mkUint(idTgtTypeVal, 30), mkUint(idTagTrackUID, 7))),
+			mkSimple("PART_NUMBER", "3/12"))),
+	))
+	data := buildMatroska("matroska", "T", tags)
+
+	out, _ := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.Album, "X"))
+
+	if n := bytes.Count(out, []byte("PART_NUMBER")); n != 1 {
+		t.Errorf("PART_NUMBER written %d times, want 1 (no cross-scope duplication)", n)
+	}
+	// The TrackTotal half must not be split out to a separate album-scope SimpleTag.
+	if n := bytes.Count(out, []byte("TOTAL_PARTS")); n != 0 {
+		t.Errorf("TrackTotal re-emitted at album scope %d times, want 0", n)
+	}
+	re := mustParseBytes(t, out)
+	if f := re.Fields(); f.TrackNumber != 3 || f.TrackTotal != 12 || f.Album != "X" {
+		t.Errorf("round-trip wrong: %d/%d album=%q", f.TrackNumber, f.TrackTotal, f.Album)
+	}
+}
+
+// TestMatroskaWriteSplitNumberComponentEdit (finding #1 regression guard): editing
+// ONE half of a track-scoped slash number (PART_NUMBER=3/12, projecting TrackNumber=3
+// AND TrackTotal=12) must keep the other half. Editing TrackNumber re-emits both at
+// album scope (the slash tag is dropped); editing TrackTotal does the same - neither
+// half is silently lost, and no stale cross-scope conflict is left behind.
+func TestMatroskaWriteSplitNumberComponentEdit(t *testing.T) {
+	build := func() []byte {
+		return buildMatroska("matroska", "T", mkEl(idTags, concat(
+			mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "AA"))),
+			mkEl(idTag, concat(
+				mkEl(idTargets, concat(mkUint(idTgtTypeVal, 30), mkUint(idTagTrackUID, 7))),
+				mkSimple("PART_NUMBER", "3/12"))),
+		)))
+	}
+
+	t.Run("edit TrackNumber keeps TrackTotal", func(t *testing.T) {
+		data := build()
+		out, _ := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.TrackNumber, "5"))
+		re := mustParseBytes(t, out)
+		if f := re.Fields(); f.TrackNumber != 5 || f.TrackTotal != 12 {
+			t.Errorf("Set(TrackNumber,5): got %d/%d, want 5/12 (TrackTotal must survive)", f.TrackNumber, f.TrackTotal)
+		}
+		if hasWarning(re, wl.WarnConflictingFamilies) {
+			t.Error("spurious cross-scope conflict after editing TrackNumber")
+		}
+	})
+
+	t.Run("edit TrackTotal keeps TrackNumber and does not conflict", func(t *testing.T) {
+		data := build()
+		out, _ := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.TrackTotal, "20"))
+		re := mustParseBytes(t, out)
+		if f := re.Fields(); f.TrackNumber != 3 || f.TrackTotal != 20 {
+			t.Errorf("Set(TrackTotal,20): got %d/%d, want 3/20 (TrackNumber must survive, total updated)", f.TrackNumber, f.TrackTotal)
+		}
+		if v, _ := re.Get(tag.TrackTotal); len(v) != 1 {
+			t.Errorf("TrackTotal = %v after edit, want exactly [20] (no stale cross-scope copy)", v)
+		}
+		if hasWarning(re, wl.WarnConflictingFamilies) {
+			t.Error("editing TrackTotal left a stale cross-scope TrackTotal conflict")
+		}
+	})
+
+	// The same slash split applies to DISC=n/total (DiscNumber + DiscTotal), so editing
+	// one component must keep the other - the drop predicate handles both numbering keys.
+	t.Run("edit DiscNumber keeps DiscTotal", func(t *testing.T) {
+		data := buildMatroska("matroska", "T", mkEl(idTags, concat(
+			mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "AA"))),
+			mkEl(idTag, concat(
+				mkEl(idTargets, concat(mkUint(idTgtTypeVal, 30), mkUint(idTagTrackUID, 7))),
+				mkSimple("DISC", "1/2"))),
+		)))
+		out, _ := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.DiscNumber, "3"))
+		re := mustParseBytes(t, out)
+		dn, _ := re.Get(tag.DiscNumber)
+		dt, _ := re.Get(tag.DiscTotal)
+		if len(dn) != 1 || dn[0] != "3" || len(dt) != 1 || dt[0] != "2" {
+			t.Errorf("Set(DiscNumber,3) on DISC=1/2: DiscNumber=%v DiscTotal=%v, want [3] and [2]", dn, dt)
+		}
+	})
+}
+
 // TestMatroskaWriteTitleOnlyDropsScopedTitleTag: a title-only edit reaches a TITLE
 // SimpleTag carried at another scope (which also projects into the canonical Title)
 // and removes it, so the projection reads the single new title - the cross-scope

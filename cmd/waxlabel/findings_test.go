@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -483,6 +484,43 @@ func TestRecursiveWalkFollowsSymlinkedAudio(t *testing.T) {
 	}
 }
 
+// TestRecursiveWalkThroughSymlinkedDirRoot (Finding 3): a symlink-to-directory used
+// as the --recursive root is followed and its audio found. WalkDir lstats its root
+// and would refuse to descend a symlink node, so walkAudioFiles resolves the named
+// root; the matches are then listed under the original argument name, not the link's
+// resolved target.
+func TestRecursiveWalkThroughSymlinkedDirRoot(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	realDir := filepath.Join(base, "realdir")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, "inside.flac"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(base, "linkdir")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+	out, errb, code := runCLI(t, "dump", "--recursive", linkDir)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (symlinked-dir root should be walked); stderr=%q", code, errb)
+	}
+	// The audio is found and listed under the original arg name (linkdir), not the
+	// resolved target (realdir).
+	if !strings.Contains(out, filepath.Join("linkdir", "inside.flac")) {
+		t.Errorf("walk did not list the audio under the original arg name 'linkdir':\n%s", out)
+	}
+	if strings.Contains(out, filepath.Join("realdir", "inside.flac")) {
+		t.Errorf("walk leaked the resolved target path 'realdir' instead of the user's arg:\n%s", out)
+	}
+}
+
 // TestRecursiveWalkReportsDanglingSymlink (A1): a dangling symlink with an audio
 // extension is surfaced as a per-file not-found by a recursive walk, not silently
 // dropped - so a library scan does not read "clean" over a broken link. (The
@@ -708,21 +746,37 @@ func TestSetVerifyConfirmation(t *testing.T) {
 	}
 }
 
-// TestUnquotedValueHint (#1): a bare-word positional that does not resolve, given
-// alongside a value flag, draws the quoting hint (the symptom of an unquoted
-// `--set TITLE=Two Words`), while the stray word still reports its own not-found.
+// TestUnquotedValueHint (#1/F2): an unquoted value with spaces (--set TITLE=Two
+// Words) leaves a stray bare-word positional beside a real input. The writing set
+// command refuses the whole run up front (exit 2, nothing written) so a script cannot
+// misread a truncated tag as a partial success; the read-only plan keeps the same
+// text as an advisory and previews as usual.
 func TestUnquotedValueHint(t *testing.T) {
 	file := copyFixture(t, sampleFLAC)
+	before, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// The shell would split "Two Words" into "--set TITLE=Two" plus a stray "Words".
 	_, stderr, code := runCLI(t, "set", file, "--set", "TITLE=Two", "Words")
-	if code != 6 {
-		t.Fatalf("stray bare word exit = %d, want 6 (its own not-found)", code)
+	if code != 2 {
+		t.Fatalf("unquoted-value set exit = %d, want 2 (refused before writing)", code)
 	}
-	if !strings.Contains(stderr, "must be quoted") {
-		t.Errorf("stderr should carry the quoting hint; got:\n%s", stderr)
+	if !strings.Contains(stderr, "must be quoted") || !strings.Contains(stderr, "nothing was written") {
+		t.Errorf("stderr should carry the quoting hint and say nothing was written; got:\n%s", stderr)
+	}
+	// The refusal is up front: the named file is byte-for-byte unchanged.
+	if after, _ := os.ReadFile(file); !bytes.Equal(before, after) {
+		t.Error("set refused the unquoted-value run but still modified the named file")
 	}
 
-	// No false positive: two real files with no stray bare word draw no hint.
+	// plan (read-only) keeps the advisory rather than refusing - it previews the real
+	// file while the stray word reports its own not-found (exit 6).
+	if _, pstderr, pcode := runCLI(t, "plan", file, "--set", "TITLE=Two", "Words"); pcode != 6 {
+		t.Fatalf("plan stray bare word exit = %d, want 6; stderr=%s", pcode, pstderr)
+	}
+
+	// No false positive: two real files with no stray bare word are not refused.
 	_, stderr, code = runCLI(t, "set", file, copyFixture(t, sampleFLAC), "--set", "TITLE=One")
 	if code != 0 {
 		t.Fatalf("two real files exit = %d, want 0", code)
@@ -731,14 +785,105 @@ func TestUnquotedValueHint(t *testing.T) {
 		t.Errorf("no bare word, so no quoting hint expected; got:\n%s", stderr)
 	}
 
-	// No false positive: a lone, simply-missing extensionless target is indistinguishable
-	// from a value fragment on its own, so with no resolved sibling it draws no hint - the
-	// not-found stands alone.
-	_, stderr, code = runCLI(t, "set", filepath.Join(t.TempDir(), "no_such_song"), "--set", "TITLE=X")
-	if code != 6 {
-		t.Fatalf("lone missing extensionless file exit = %d, want 6", code)
+	// No false positive: a legitimate extensionless audio file (which looks like a bare
+	// word) given on its own resolves, so it is edited, not refused.
+	extless := filepath.Join(t.TempDir(), "song")
+	if err := os.WriteFile(extless, before, 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(stderr, "must be quoted") {
-		t.Errorf("a lone missing file should not draw the quoting hint; got:\n%s", stderr)
+	if _, estderr, ecode := runCLI(t, "set", extless, "--set", "TITLE=X"); ecode != 0 {
+		t.Fatalf("legitimate extensionless file exit = %d, want 0 (edited, not refused); stderr=%s", ecode, estderr)
+	}
+}
+
+// TestEmptyFilenameUsage (Finding 6): an empty operand is a usage error (exit 2) at
+// the CLI boundary, not the library's ErrInvalidData (exit 4) - so in a multi-file
+// run it does not outrank a real not-found by masquerading as a corrupt file.
+func TestEmptyFilenameUsage(t *testing.T) {
+	t.Parallel()
+	if _, _, code := runCLI(t, "dump", ""); code != 2 {
+		t.Errorf(`dump "" exit = %d, want 2 (usage)`, code)
+	}
+	// Beside a missing file the empty operand is still caught up front (exit 2) and
+	// never classifies as invalid-data (exit 4) over the not-found.
+	out, _, code := runCLI(t, "--json", "dump", "", "missing.flac")
+	if code != 2 {
+		t.Errorf(`dump "" missing.flac exit = %d, want 2`, code)
+	}
+	if strings.Contains(out, "invalid-data") {
+		t.Errorf("empty filename must not classify as invalid-data:\n%s", out)
+	}
+	// copy, diff, and caps parse operands directly (no expandPaths) but reject an empty
+	// operand the same way via their own boundary checks - caps included, so a multi-file
+	// caps run does not mis-class an empty name as invalid-data (exit 4).
+	if _, _, code := runCLI(t, "copy", "", filepath.Join(t.TempDir(), "x.flac")); code != 2 {
+		t.Errorf(`copy "" dst exit = %d, want 2`, code)
+	}
+	if _, _, code := runCLI(t, "diff", "", sampleFLAC); code != 2 {
+		t.Errorf(`diff "" b exit = %d, want 2`, code)
+	}
+	if _, _, code := runCLI(t, "caps", ""); code != 2 {
+		t.Errorf(`caps "" exit = %d, want 2`, code)
+	}
+	if out, _, code := runCLI(t, "--json", "caps", "", "missing.flac"); code != 2 || strings.Contains(out, "invalid-data") {
+		t.Errorf(`caps "" missing.flac exit = %d (want 2), invalid-data in output=%v`, code, strings.Contains(out, "invalid-data"))
+	}
+}
+
+// TestDiffPerFilePathPrefix (Finding 10): a parse failure in diff is reported with
+// the per-file "waxlabel: <path>: <reason>" prefix the other commands print, so the
+// failing operand is named - copy already did this, diff did not.
+func TestDiffPerFilePathPrefix(t *testing.T) {
+	t.Parallel()
+	png := writeTempImage(t, "red.png", minimalPNG()) // a non-audio file diff cannot parse
+	_, errb, code := runCLI(t, "diff", png, sampleFLAC)
+	if code < 2 {
+		t.Fatalf("diff of a non-audio file exit = %d, want a real error (>= 2); stderr=%s", code, errb)
+	}
+	if !strings.Contains(errb, "red.png:") {
+		t.Errorf("diff parse error should carry the 'red.png:' per-file prefix:\n%s", errb)
+	}
+}
+
+// TestJSONErrorCarriesHint (Codex F3): a usage error whose human render shows a hint
+// (the leading-dash "use --" pointer) carries that same hint in the JSON envelope,
+// single-sourced from the classified error; and a per-file error entry can carry one
+// too (e.g. source-changed's "re-run" pointer).
+func TestJSONErrorCarriesHint(t *testing.T) {
+	t.Parallel()
+	// A leading-dash file path is read by cobra as an unknown flag; the usage envelope
+	// then carries the "put -- before it" hint - now in JSON, not only the human line.
+	out, _, code := runCLI(t, "--json", "dump", "-track.flac")
+	if code != 2 {
+		t.Fatalf("leading-dash arg exit = %d, want 2; out=%s", code, out)
+	}
+	// The terminal error envelope is a bare object (not a list command's array).
+	var je jsonError
+	if err := json.Unmarshal([]byte(out), &je); err != nil {
+		t.Fatalf("decode error envelope: %v\n%s", err, out)
+	}
+	if !strings.Contains(je.Error.Hint, "--") {
+		t.Errorf("JSON usage envelope hint missing the '--' guidance; got %q\n%s", je.Error.Hint, out)
+	}
+	// The shared per-file error element single-sources the same hint from the classified
+	// error, so a bulk-run entry can carry one too.
+	entry := errorEntry("f.flac", classifiedError{code: "source-changed", message: "x", hint: "re-run to pick up the new contents"})
+	if entry.Error.Hint != "re-run to pick up the new contents" {
+		t.Errorf("per-file error entry dropped the hint: %q", entry.Error.Hint)
+	}
+}
+
+// TestPlanJSONEmptyChangesArray (Finding 7): a no-op plan's --json output emits
+// "changes": [] (a non-null empty array), not an omitted field, so a scripting
+// consumer can iterate changes unconditionally.
+func TestPlanJSONEmptyChangesArray(t *testing.T) {
+	t.Parallel()
+	// plan with no edits previews a no-op: no field changes.
+	out, _, code := runCLI(t, "--json", "plan", sampleFLAC)
+	if code != 0 {
+		t.Fatalf("no-op plan --json exit = %d, want 0", code)
+	}
+	if !strings.Contains(out, `"changes": []`) {
+		t.Errorf(`no-op plan --json should emit "changes": [], got:\n%s`, out)
 	}
 }

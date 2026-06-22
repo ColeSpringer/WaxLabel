@@ -127,3 +127,35 @@ func TestFifoRejectedByNonExpandingCommands(t *testing.T) {
 		t.Errorf("diff fifo exit = %d, want 2", code)
 	}
 }
+
+// TestCopyFifoHintOmitsDash (Finding 5): copy rejects "-", so its non-regular-file
+// hint must not suggest piping a stream in with "-" (which copy would refuse) - it
+// points at a regular file path instead. The stdin-reading commands keep the "-" hint.
+func TestCopyFifoHintOmitsDash(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "pipe.flac")
+	mkfifo(t, fifo)
+	good := filepath.Join(dir, "good.flac")
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(good, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, errb, code := runCLIBounded(t, 10*time.Second, "copy", fifo, good)
+	if code != 2 {
+		t.Fatalf("copy fifo exit = %d, want 2; stderr=%q", code, errb)
+	}
+	if !strings.Contains(errb, "not a regular file") {
+		t.Errorf("copy fifo stderr should explain the non-regular file: %q", errb)
+	}
+	// The hint must point at a regular file path, not the "-" stream copy rejects.
+	if strings.Contains(errb, "pipe a stream") {
+		t.Errorf("copy hint must not suggest piping with '-', which copy rejects: %q", errb)
+	}
+	if !strings.Contains(errb, "regular file path") {
+		t.Errorf("copy hint should point at a regular file path: %q", errb)
+	}
+}

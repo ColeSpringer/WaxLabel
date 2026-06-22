@@ -39,6 +39,9 @@ func newDiffCmd() *cobra.Command {
 			// emits the documented object (the exit code carries the verdict either way).
 			// This mirrors verify and set, so the flag pair behaves the same everywhere.
 			quiet = quiet && !jsonMode(cmd)
+			if err := checkEmptyOperands(args...); err != nil {
+				return err
+			}
 			if args[0] == stdinArg && args[1] == stdinArg {
 				return usagef("only one operand may be read from standard input (%q)", stdinArg)
 			}
@@ -47,14 +50,31 @@ func newDiffCmd() *cobra.Command {
 				return err
 			}
 			defer cleanup()
-			if err := checkRegularInputs(realOf, args...); err != nil {
+			if err := checkRegularInputs(realOf, true, args...); err != nil {
 				return err
 			}
-			aDoc, err := parseInput(ctx, realOf(args[0]), args[0])
+			asJSON := jsonMode(cmd)
+			errOut := cmd.ErrOrStderr()
+			// On a parse failure, prefix the per-file "waxlabel: <path>: <reason>" line the
+			// other commands print (human mode), instead of the classifier's bare reason
+			// without the operand (Finding 10). JSON is unchanged: the raw error returns to
+			// dispatch, which emits the not-found/invalid-data envelope scripts read.
+			parse := func(arg string) (*wl.Document, error) {
+				doc, err := parseInput(ctx, realOf(arg), arg)
+				if err != nil {
+					if asJSON {
+						return nil, err
+					}
+					perFileError(errOut, arg, err)
+					return nil, alreadyRendered(err)
+				}
+				return doc, nil
+			}
+			aDoc, err := parse(args[0])
 			if err != nil {
 				return err
 			}
-			bDoc, err := parseInput(ctx, realOf(args[1]), args[1])
+			bDoc, err := parse(args[1])
 			if err != nil {
 				return err
 			}
@@ -62,7 +82,7 @@ func newDiffCmd() *cobra.Command {
 			d := computeDiff(aDoc, bDoc)
 			if !quiet {
 				out := cmd.OutOrStdout()
-				if jsonMode(cmd) {
+				if asJSON {
 					if err := writeJSON(out, toJSONDiff(args[0], args[1], d)); err != nil {
 						return err
 					}

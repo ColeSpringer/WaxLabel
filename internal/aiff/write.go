@@ -115,6 +115,11 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report.BytesAfter = lay.total
 
 	result := buildResult(edited, d, newText, newID3, lay)
+	// Collapse to a true no-op when the containers re-projected to base's values
+	// (e.g. a numeric genre); a native-text strip stays a real write. See core.DowngradeNoOp.
+	if np := core.DowngradeNoOp(core.FormatAIFF, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), stripText); np != nil {
+		return np, nil
+	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
 }
 

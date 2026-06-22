@@ -104,17 +104,18 @@ func editFlagsEmpty(cmd *cobra.Command) bool {
 	return empty
 }
 
-// maybeQuotingHint emits a single advisory hint when an edit supplied value-bearing
-// flags (--set/--add) and a stray bare-word positional that does not resolve sits
-// beside a real input - the classic symptom of an unquoted value with spaces, where
-// `--set TITLE=Two Words` leaves the file plus a stray `Words` positional. Requiring
-// a resolved sibling avoids a false positive on a lone, simply-missing extensionless
-// filename, which on its own is indistinguishable from a split value fragment. It is
-// text-only (suppressed under --json) and never an error - the stray positional
-// still reports its own not-found; this only adds the suggestion, once per run. (#1)
-func maybeQuotingHint(errOut io.Writer, ef *editFlags, realOf func(string) string, args []string, asJSON bool) {
-	if asJSON || (len(ef.set) == 0 && len(ef.add) == 0) {
-		return
+// quotingHint detects the unquoted-spaces symptom and returns the advisory hint text
+// plus whether it applies: value-bearing flags (--set/--add) supplied alongside a
+// stray bare-word positional that does not resolve yet sits beside a real input - the
+// classic `--set TITLE=Two Words` that leaves the file plus a stray `Words` positional.
+// Requiring a resolved sibling avoids a false positive on a lone, simply-missing
+// extensionless filename, which on its own is indistinguishable from a split value
+// fragment. It is the single detector shared by plan (which prints the hint as an
+// advisory) and set (which refuses the whole run up front so no truncated tag is
+// written), so the two cannot disagree on when the pattern holds. (#1)
+func quotingHint(ef *editFlags, realOf func(string) string, args []string) (hint string, ok bool) {
+	if len(ef.set) == 0 && len(ef.add) == 0 {
+		return "", false
 	}
 	// Cheap string-only pre-pass: a hint is only possible if some positional is a stray
 	// bare word. Most invocations name extension-bearing files, so this returns before
@@ -127,7 +128,7 @@ func maybeQuotingHint(errOut io.Writer, ef *editFlags, realOf func(string) strin
 		}
 	}
 	if !hasBareWord {
-		return
+		return "", false
 	}
 	// A bare word only signals an unquoted value when it does not itself resolve yet sits
 	// beside a real input; stat to classify (only now that a candidate exists).
@@ -148,7 +149,22 @@ func maybeQuotingHint(errOut io.Writer, ef *editFlags, realOf func(string) strin
 		}
 	}
 	if hasRealInput && hasStrayWord {
-		fmt.Fprintln(errOut, "hint: a value containing spaces must be quoted, e.g. --set 'TITLE=Two Words'")
+		return "a value containing spaces must be quoted, e.g. --set 'TITLE=Two Words'", true
+	}
+	return "", false
+}
+
+// maybeQuotingHint prints the quotingHint advisory for the read-only plan command:
+// text-only (suppressed under --json) and never an error - the stray positional still
+// reports its own not-found; this only adds the suggestion, once per run. The writing
+// set command instead refuses up front (see its RunE), since previewing writes
+// nothing. (#1)
+func maybeQuotingHint(errOut io.Writer, ef *editFlags, realOf func(string) string, args []string, asJSON bool) {
+	if asJSON {
+		return
+	}
+	if hint, ok := quotingHint(ef, realOf, args); ok {
+		fmt.Fprintln(errOut, "hint: "+hint)
 	}
 }
 
@@ -270,7 +286,9 @@ func (e *editFlags) loadPictures() ([]wl.Picture, error) {
 // picture is sniffed on load so its MIME and dimensions are filled for the plan's
 // added-picture detail (C4a); Editor.AddPicture re-sniffs idempotently.
 func (e *editFlags) loadPictureFile(label string, pt wl.PictureType, path string) (wl.Picture, error) {
-	if err := checkRegularFile(path); err != nil {
+	// A picture source is read with os.ReadFile and has no "-" stdin path, so the
+	// non-regular hint must not suggest one (acceptsStdin false).
+	if err := checkRegularFile(path, false); err != nil {
 		return wl.Picture{}, fmt.Errorf("%s: %w", label, err)
 	}
 	data, err := os.ReadFile(path)

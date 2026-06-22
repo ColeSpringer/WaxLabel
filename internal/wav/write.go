@@ -121,6 +121,12 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report.BytesAfter = lay.total
 
 	result := buildResult(edited, d, newInfo, newID3, lay)
+	// Collapse to a true no-op when the containers re-projected to base's values
+	// (a numeric genre, a dropped empty); an INFO strip or encoder-stamp removal stays
+	// a real write. See core.DowngradeNoOp.
+	if np := core.DowngradeNoOp(core.FormatWAV, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), stripINFO || stampToStrip); np != nil {
+		return np, nil
+	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
 }
 

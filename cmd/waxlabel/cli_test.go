@@ -1008,8 +1008,8 @@ func TestLintStdin(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, _, code := runCLIStdin(t, string(data), "lint", "-")
-	if code != 1 { // no-audio is a LintError -> issues found
-		t.Fatalf("exit = %d, want 1\n%s", code, out)
+	if code != 4 { // no-audio is a LintError -> invalid-data (exit 4), matching verify (F4)
+		t.Fatalf("exit = %d, want 4\n%s", code, out)
 	}
 	if !strings.Contains(out, "no-audio") {
 		t.Errorf("lint - missing no-audio finding:\n%s", out)

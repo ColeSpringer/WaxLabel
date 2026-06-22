@@ -9,16 +9,27 @@ import (
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/tag"
+	"github.com/colespringer/waxlabel/waxerr"
 	"github.com/spf13/cobra"
 )
 
-// errLintFindings is the sentinel lint returns when a file has findings at
-// warning severity or above but no structural error. It is plain (unclassified),
-// so it maps to exit code 1 - the linter / diff(1) convention of "1 = issues
-// found" - and is returned already-rendered so no error line prints over the
-// findings. A structural parse/IO error outranks it and keeps its own exit class
+// errLintFindings is the sentinel lint returns when a file's worst finding is a
+// warning (no error-severity finding, no structural error). It is plain
+// (unclassified), so it maps to exit code 1 - the linter / diff(1) convention of
+// "1 = issues found" - and is returned already-rendered so no error line prints over
+// the findings. A structural parse/IO error outranks it and keeps its own exit class
 // (so a script can tell an exit-4 parse failure from exit-1 "issues found").
 var errLintFindings = errors.New("issues found")
+
+// errLintErrorFindings is the sentinel lint returns when a file carries an
+// error-severity finding (no-audio, a duplicate tag block, multiple Vorbis comments,
+// a duplicate picture icon) but no structural parse/IO error. It wraps ErrInvalidData
+// so it classifies as invalid-data (exit 4) - the same class verify/AudioDigest give a
+// no-audio file - making "valid-but-contradictory metadata" a distinct exit from a
+// mere warning (exit 1). Folded through worseError, it outranks a not-found/io/
+// unsupported file in a multi-file run (a broken file beats a wrong path, per the
+// exit-code philosophy) while still losing to canceled/source-changed. (Codex F4)
+var errLintErrorFindings = fmt.Errorf("%w: lint found an invalid or contradictory state", waxerr.ErrInvalidData)
 
 // newLintCmd builds the "lint" command, which reports metadata issues (stale
 // legacy tags, encoder noise, conflicting families, bad pictures, malformed
@@ -35,8 +46,12 @@ func newLintCmd() *cobra.Command {
 		Long: "Inspect each file for issues a tagger would want to surface: stale legacy\n" +
 			"tag containers, inherited encoder stamps, conflicting source values,\n" +
 			"duplicate or unrecognized pictures, malformed dates, and missing audio.\n" +
-			"Exit code 0 means clean, 1 means issues were found, and 2 or more is a\n" +
-			"structural error (which outranks findings in a multi-file run).\n\n" +
+			"Exit code 0 means clean and 1 means warning-level issues were found. An\n" +
+			"error-severity finding - missing audio, a duplicate tag block, multiple\n" +
+			"Vorbis comment blocks, or a duplicate picture icon - exits 4 (invalid-data),\n" +
+			"the same class a corrupt or unparseable file gives, since the metadata is in\n" +
+			"a contradictory state; it outranks a wrong path in a multi-file run. A\n" +
+			"structural parse/IO error keeps its own (higher) exit class.\n\n" +
 			"With --fix, apply only the safe, non-destructive remediations - clearing\n" +
 			"the encoder stamp and stripping legacy containers - then save in place,\n" +
 			"reporting what changed. Pictures are never dropped automatically; every\n" +
@@ -74,18 +89,24 @@ func newLintCmd() *cobra.Command {
 }
 
 // lintLoop runs a lint-style per-file command: it processes each path, captures
-// the most-severe structural error (worseError, not the first one seen),
-// accumulates whether any file had an issue, and emits per-file text or JSON (the
+// the most-severe structural error (worseError, not the first one seen), tracks the
+// worst finding severity across all files, and emits per-file text or JSON (the
 // shared jsonErrorEntry on failure). It is perFile with a finding accumulator and
-// lint's exit contract - a structural error (its own exit class, always ranked
-// above a finding) outranks issues (exit 1), which outrank a clean run (exit 0) -
-// so runLint and runLintFix differ only in their compute/issue/render helpers, not
-// in the loop.
+// lint's exit contract, so runLint and runLintFix differ only in their compute/
+// severity/render helpers, not in the loop.
+//
+// The finding severity maps to a sentinel that is folded into the SAME worseError
+// comparison as a structural error, not gated behind "no structural error": an
+// error-severity finding (errLintErrorFindings, invalid-data/exit 4) must outrank a
+// separate file's not-found/io (exit 6), matching the "a broken file beats a wrong
+// path" exit-code philosophy - gating it behind worstErr==nil would let the wrong
+// path win. A warning (errLintFindings, exit 1) still loses to any structural error,
+// preserving the prior behavior.
 func lintLoop[T any](
 	cmd *cobra.Command,
 	paths []string,
 	compute func(ctx context.Context, path string) (T, error),
-	hasIssue func(T) bool,
+	severity func(T) wl.LintSeverity,
 	jsonItem func(path string, t T) any,
 	render func(w io.Writer, path string, t T),
 ) error {
@@ -93,7 +114,7 @@ func lintLoop[T any](
 	asJSON := jsonMode(cmd)
 	var items []any
 	var worstErr error
-	issues := false
+	var maxSev wl.LintSeverity
 	rendered := 0
 	for _, path := range paths {
 		t, err := compute(cmd.Context(), path)
@@ -108,9 +129,7 @@ func lintLoop[T any](
 			}
 			continue
 		}
-		if hasIssue(t) {
-			issues = true
-		}
+		maxSev = max(maxSev, severity(t))
 		if asJSON {
 			items = append(items, jsonItem(path, t))
 		} else {
@@ -126,24 +145,33 @@ func lintLoop[T any](
 			return err
 		}
 	}
-	if worstErr != nil {
-		return alreadyRendered(worstErr)
+	// Map the worst finding to its sentinel and fold it into worseError alongside any
+	// structural error, so the aggregate exit reflects the most-severe class overall.
+	var findingErr error
+	switch {
+	case maxSev >= wl.LintError:
+		findingErr = errLintErrorFindings // invalid-data, exit 4
+	case maxSev >= wl.LintWarning:
+		findingErr = errLintFindings // plain, exit 1
 	}
-	if issues {
-		return alreadyRendered(errLintFindings)
+	if findingErr != nil && worseError(worstErr, findingErr) {
+		worstErr = findingErr
 	}
-	return nil
+	return alreadyRendered(worstErr)
 }
 
-// anyAtWarning reports whether any finding is at warning severity or above (the
-// threshold that makes a lint run "have issues").
-func anyAtWarning(findings []wl.Finding) bool {
+// worstFinding returns the most-severe severity among a file's findings (LintInfo,
+// the zero value, when there are none). lintLoop accumulates this across files and
+// applies the LintWarning/LintError thresholds itself, so reporting the raw max -
+// rather than a separate "has an issue" bool - keeps the predicate minimal: a
+// sub-threshold LintInfo finding (a custom-key note) is below LintWarning, so it
+// never makes a run non-clean.
+func worstFinding(findings []wl.Finding) wl.LintSeverity {
+	var worst wl.LintSeverity
 	for _, f := range findings {
-		if f.Severity >= wl.LintWarning {
-			return true
-		}
+		worst = max(worst, f.Severity)
 	}
-	return false
+	return worst
 }
 
 // runLint reports findings per file.
@@ -161,7 +189,7 @@ func runLint(cmd *cobra.Command, paths []string) error {
 			}
 			return doc.Lint(), nil
 		},
-		anyAtWarning,
+		worstFinding,
 		func(path string, findings []wl.Finding) any { return toJSONLint(path, findings) },
 		renderLint,
 	)
@@ -189,7 +217,7 @@ func renderLint(w io.Writer, path string, findings []wl.Finding) {
 func runLintFix(cmd *cobra.Command, paths []string) error {
 	return lintLoop(cmd, paths,
 		lintFixOne,
-		func(o fixOutcome) bool { return anyAtWarning(o.remaining) },
+		func(o fixOutcome) wl.LintSeverity { return worstFinding(o.remaining) },
 		func(path string, o fixOutcome) any { return toJSONLintFix(o) },
 		func(w io.Writer, path string, o fixOutcome) { renderLintFix(w, o) },
 	)
@@ -311,7 +339,7 @@ type jsonLintFix struct {
 	SchemaVersion int           `json:"schemaVersion"`
 	File          string        `json:"file"`
 	Error         *jsonErrBody  `json:"error,omitempty"`
-	Changes       []jsonChange  `json:"changes,omitempty"`
+	Changes       []jsonChange  `json:"changes"`
 	Operations    []string      `json:"operations,omitempty"`
 	Remaining     []jsonFinding `json:"remaining,omitempty"`
 	Committed     bool          `json:"committed"`

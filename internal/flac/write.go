@@ -94,6 +94,13 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	result := buildResult(edited, d, finalBlocks, newComments, newLeadingLen, audioOutStart, audioLen, newTrailingLen, newSize)
 
+	// FLAC stores Vorbis values verbatim, so this only fires for a value the rebuild
+	// dropped (an empty); a legacy strip stays a real write. tagsEqual uses the native
+	// key diff. See core.DowngradeNoOp.
+	if np := core.DowngradeNoOp(core.FormatFLAC, edited.Identity.Size, base, result, len(diffKeys(base.Tags, result.Tags)) == 0, legacyChange); np != nil {
+		return np, nil
+	}
+
 	return &core.WritePlan{
 		Segments: segs,
 		NoOp:     false,

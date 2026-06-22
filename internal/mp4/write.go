@@ -106,6 +106,12 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report.Operations = operations(d, lay, delta, len(edited.Pictures))
 
 	result := buildResult(edited, d, newItems, lay, delta, total, int64(len(newIlst)))
+	// Collapse to a true no-op when the ilst rebuild re-projected to base's values
+	// (e.g. TRACKNUMBER=03 -> 3); a chapter edit took the planChapters path above, so
+	// nothing structural remains here. See core.DowngradeNoOp.
+	if np := core.DowngradeNoOp(core.FormatMP4, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), false); np != nil {
+		return np, nil
+	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
 }
 

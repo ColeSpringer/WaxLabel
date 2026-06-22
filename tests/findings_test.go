@@ -284,6 +284,14 @@ func TestLegacyConflictWarning(t *testing.T) {
 	if reportHasWarning(genre.Report().Warnings, wl.WarnLegacyConflict) {
 		t.Errorf("a numeric genre re-projected to the existing value should not warn; got %v", genre.Report().Warnings)
 	}
+	// The same edit re-projects to the value already on disk, so it must read as an
+	// immediate no-op: IsNoOp() and Changes() agree (#2), not a churning rewrite.
+	if !genre.IsNoOp() {
+		t.Error("GENRE=17 over an existing Rock: IsNoOp() = false, want true (re-projection is a no-op)")
+	}
+	if ch := genre.Changes(); len(ch) != 0 {
+		t.Errorf("GENRE=17 over an existing Rock: Changes() = %v, want empty", ch)
+	}
 
 	// Editing a key the legacy container does not hold (a custom key) does not conflict.
 	custom, err := mustParseFile(t, path).Edit().Set(tag.Key("MOOD"), "calm").Prepare()
@@ -469,5 +477,99 @@ func TestWriteToNilWriterRejected(t *testing.T) {
 	_, _, err = plan.Execute(context.Background(), wl.WriteTo(nil, wl.BytesSource(src)))
 	if !errors.Is(err, waxerr.ErrInvalidData) {
 		t.Errorf("WriteTo(nil): err = %v, want ErrInvalidData (and no panic)", err)
+	}
+}
+
+// TestNoOpDowngradeOnReprojection (#2): when a codec re-projects an edit back to
+// the value already on disk - a numeric genre (17 -> Rock), an integer track
+// number (02 -> 2), or a dropped empty - the plan must read as an immediate no-op
+// so IsNoOp() and Changes() agree. Before the fix the raw edit differed from base
+// (so the fast-path no-op gate missed it) while the projected result equalled base
+// (so Changes() was empty), and set/copy/lint --fix churned the file forever.
+func TestNoOpDowngradeOnReprojection(t *testing.T) {
+	cases := []struct {
+		name    string
+		fixture string
+		key     tag.Key
+		value   string
+	}{
+		{"mp3 numeric genre", sampleMP3, tag.Genre, "17"},       // GENRE=Rock; 17 projects to Rock
+		{"aac numeric genre", sampleAAC, tag.Genre, "17"},       // GENRE=Rock; 17 projects to Rock
+		{"aiff numeric genre", sampleAIFF, tag.Genre, "17"},     // GENRE=Rock; 17 projects to Rock
+		{"mp4 integer track", sampleMP4, tag.TrackNumber, "02"}, // TRACKNUMBER=2; 02 projects to 2
+		{"wav dropped empty", sampleWAV, tag.Copyright, ""},     // absent key, empty dropped by INFO
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan, err := mustParseFile(t, tc.fixture).Edit().Set(tc.key, tc.value).Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !plan.IsNoOp() {
+				t.Errorf("IsNoOp() = false, want true (the edit re-projects to the existing value)")
+			}
+			if ch := plan.Changes(); len(ch) != 0 {
+				t.Errorf("Changes() = %v, want empty (must agree with IsNoOp)", ch)
+			}
+		})
+	}
+}
+
+// TestNoOpDowngradeConvergesAndIsIdempotent (#2): a numeric-genre edit whose
+// projection differs from the current value writes once; re-parsing and repeating
+// the same edit is then a no-op whose WriteTo reproduces the source bytes exactly,
+// identically across runs - no perpetual churn.
+func TestNoOpDowngradeConvergesAndIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	path := copyToTemp(t, sampleMP3) // GENRE=Rock
+
+	// Seed a base whose genre differs from 17's projection (Rock), so the first
+	// numeric-genre edit is a genuine write rather than an immediate no-op.
+	seed, err := mustParseFile(t, path).Edit().Set(tag.Genre, "Jazz").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := seed.Execute(ctx, wl.SaveBack()); err != nil {
+		t.Fatal(err)
+	}
+
+	// GENRE=17 projects to "Rock" != "Jazz": a real change on the first pass.
+	first, err := mustParseFile(t, path).Edit().Set(tag.Genre, "17").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.IsNoOp() {
+		t.Fatal("first GENRE=17 over Jazz: IsNoOp() = true, want a real write")
+	}
+	if _, _, err := first.Execute(ctx, wl.SaveBack()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The file now reads GENRE=Rock; repeating GENRE=17 re-projects to Rock -> no-op.
+	src := readFixture(t, path)
+	conv, err := mustParseBytes(t, src).Edit().Set(tag.Genre, "17").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !conv.IsNoOp() {
+		t.Error("converged GENRE=17: IsNoOp() = false, want true")
+	}
+	if ch := conv.Changes(); len(ch) != 0 {
+		t.Errorf("converged GENRE=17: Changes() = %v, want empty", ch)
+	}
+
+	// A no-op WriteTo reproduces the source bytes exactly, identically across runs.
+	var buf1, buf2 bytes.Buffer
+	if _, _, err := conv.Execute(ctx, wl.WriteTo(&buf1, wl.BytesSource(src))); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := conv.Execute(ctx, wl.WriteTo(&buf2, wl.BytesSource(src))); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(buf1.Bytes(), buf2.Bytes()) {
+		t.Error("two WriteTo runs of the same no-op plan produced different bytes")
+	}
+	if !bytes.Equal(buf1.Bytes(), src) {
+		t.Error("a no-op WriteTo did not reproduce the source bytes verbatim")
 	}
 }

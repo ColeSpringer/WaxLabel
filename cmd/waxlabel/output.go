@@ -167,10 +167,14 @@ type jsonWarning struct {
 }
 
 // jsonErrBody is the machine code and message for a failure, used both in the
-// terminal error envelope and in per-file error entries.
+// terminal error envelope and in per-file error entries. Hint carries the same
+// actionable guidance the human render shows (the leading-dash "use --" pointer on a
+// usage error, the "re-run" pointer on source-changed), single-sourced from
+// classifiedError.hint so the two surfaces cannot drift; it is omitted when empty.
 type jsonErrBody struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	Hint    string `json:"hint,omitempty"`
 }
 
 // jsonErrorEntry is the per-file error element shared by every list command's
@@ -191,9 +195,10 @@ type jsonErrorEntry struct {
 	Error         jsonErrBody `json:"error"`
 }
 
-// errorEntry builds the shared per-file error element from a classified error.
+// errorEntry builds the shared per-file error element from a classified error,
+// carrying its hint (e.g. source-changed's "re-run" pointer) into the JSON.
 func errorEntry(path string, c classifiedError) jsonErrorEntry {
-	return jsonErrorEntry{SchemaVersion: schemaVersion, File: path, Error: jsonErrBody{Code: c.code, Message: c.message}}
+	return jsonErrorEntry{SchemaVersion: schemaVersion, File: path, Error: jsonErrBody{Code: c.code, Message: c.message, Hint: c.hint}}
 }
 
 // humanDuration formats a duration as H:MM:SS or M:SS. Sub-minute clips are
@@ -374,7 +379,7 @@ func renderError(w io.Writer, jsonMode bool, err error) {
 	if jsonMode {
 		_ = writeJSON(w, jsonError{
 			SchemaVersion: schemaVersion,
-			Error:         jsonErrBody{Code: c.code, Message: c.message},
+			Error:         jsonErrBody{Code: c.code, Message: c.message, Hint: c.hint},
 		})
 		return
 	}

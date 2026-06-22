@@ -112,10 +112,14 @@ func newSetCmd() *cobra.Command {
 			if err := notifyInvocationNotes(cmd.ErrOrStderr(), ce, &ef, realOf, paths, jsonMode(cmd)); err != nil {
 				return err
 			}
-			// If a bare-word positional that does not resolve looks like an unquoted value
-			// fragment (and a value flag was given), advise quoting - the stray word still
-			// fails per-file below (#1).
-			maybeQuotingHint(cmd.ErrOrStderr(), &ef, realOf, args, jsonMode(cmd))
+			// An unquoted value with spaces (--set TITLE=Two Words) leaves a stray bare-word
+			// positional beside the real input; set would write a truncated tag to each named
+			// file before the stray word fails not-found. Refuse the whole run up front (exit
+			// 2, nothing written) - the message says so explicitly - so a script cannot misread
+			// a partial write as success. plan, which writes nothing, keeps the advisory (#1).
+			if hint, ok := quotingHint(&ef, realOf, args); ok {
+				return usagef("%s; nothing was written", hint)
+			}
 			return runSet(cmd, paths, realOf, ce, output, ef.strict, quiet, verify)
 		},
 	}

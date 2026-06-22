@@ -46,10 +46,14 @@ fmt.Println("committed:", res.Committed)
 ```
 
 Human-readable text output - `Plan.String()` (printed above), `WriteReport.String()`,
-and the CLI's default rendering - is sanitized for the terminal: control and escape
-bytes in untrusted tag values are shown as visible `\xNN` escapes, so a hostile file
-cannot inject ANSI sequences into your output. For the exact, unmodified bytes, read
-the structured accessors (`plan.Changes()`, `doc.Tags()`) or use the CLI's `--json`.
+and the CLI's default rendering - is sanitized for the terminal: ESC/CSI, carriage
+return, BEL, and the other control bytes in untrusted tag values are shown as visible
+`\xNN` escapes, so a hostile file cannot inject ANSI sequences into your output.
+Multi-line tag *values* keep their genuine tabs and newlines (continuation lines
+indent to the value column); single-line fields (keys, paths, chapter titles) escape
+tab and newline too, so a value cannot forge an extra line. For the exact, unmodified
+bytes, read the structured accessors (`plan.Changes()`, `doc.Tags()`) or use the CLI's
+`--json`.
 
 `Document` is immutable and detached - it holds no file descriptor and has no
 `Close`, so you can scan, cache, and discard it freely. Save destinations are
@@ -151,12 +155,18 @@ reported (a `lint`/`dump` warning) but never overwritten.
 
 Exit codes for `dump`/`plan`/`set`/`verify`/`caps`/`copy`: `0` success; `1` error;
 `2` usage/invalid key/needs-file (the last only for a path-less library `SaveBack`);
-`3` unsupported format; `4` invalid data; `5` source changed; `6` I/O; `130`
-canceled/timeout. **`lint` and `diff` follow the
-linter / diff(1) convention instead:** `0` clean/identical; `1` issues found /
-differs; `>=2` a structural error (using the same `2`-`6` classes, which outranks
-a `1` in a multi-file run). (cobra's built-in `help` and `completion` follow
-cobra's own conventions.)
+`3` unsupported format or unsupported tag (e.g. writing chapters or pictures to a
+format that cannot carry them); `4` invalid data; `5` source changed; `6` I/O; `130`
+canceled/timeout. **`lint` and `diff` follow the linter / diff(1) convention
+instead:** `0` clean/identical, `1` warning-level issues found / files differ, and `2`
+or higher a real error (the same `2`-`6` classes, which outranks a `1` in a multi-file
+run). For `lint`, an **error-severity** finding - missing audio, a duplicate tag
+block, multiple Vorbis comment blocks, or a duplicate picture icon - exits `4`
+(`invalid-data`), the same class a corrupt or unparseable file gives, since the
+metadata is in a contradictory state; exit `4` therefore spans *couldn't parse*,
+*corrupt*, and *valid-but-contradictory metadata* (so a no-audio file `lint`s and
+`verify`s alike) and outranks a mistyped path. (cobra's built-in `help` and
+`completion` follow cobra's own conventions.)
 
 When one run processes several files, the exit code is the most-severe failure's
 class, not the first file's - ranked by severity rather than by numeric code:

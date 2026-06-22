@@ -113,9 +113,34 @@ func TestLintJSON(t *testing.T) {
 func TestLintStructuralErrorOutranksFindings(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "nope.flac")
-	// sampleFLAC has findings (would be exit 1); the missing file is exit 6.
+	// sampleFLAC has warning findings (would be exit 1); the missing file is exit 6.
 	if _, _, code := runCLI(t, "lint", sampleFLAC, missing); code != 6 {
-		t.Errorf("exit = %d, want 6 (structural error outranks findings)", code)
+		t.Errorf("exit = %d, want 6 (structural error outranks warning findings)", code)
+	}
+}
+
+// TestLintErrorSeverityExitsInvalidData (Codex F4): an error-severity finding
+// (no-audio) exits 4 (invalid-data) - the same class verify gives a no-audio file -
+// distinct from a warning's exit 1. The error-finding sentinel is folded into the
+// same worseError comparison as a structural error, so a (no-audio + not-found) run
+// reports exit 4: a broken file outranks a wrong path. This is the control-flow case
+// gating the finding behind "no structural error" would get wrong (a (warning +
+// not-found) run, where the warning correctly loses to not-found, would not catch it).
+func TestLintErrorSeverityExitsInvalidData(t *testing.T) {
+	t.Parallel()
+	// A single no-audio file: an error-severity finding -> exit 4.
+	if _, _, code := runCLI(t, "lint", emptyMP3); code != 4 {
+		t.Errorf("lint no-audio exit = %d, want 4 (invalid-data)", code)
+	}
+	// no-audio (exit 4, rank 80) beside a missing file (exit 6, rank 55): the broken
+	// file wins, so the aggregate is exit 4 - not the wrong path's exit 6.
+	missing := filepath.Join(t.TempDir(), "nope.flac")
+	if _, _, code := runCLI(t, "lint", emptyMP3, missing); code != 4 {
+		t.Errorf("lint (no-audio + not-found) exit = %d, want 4 (broken file outranks wrong path)", code)
+	}
+	// A warning-only file still exits 1 (the prior behavior, preserved).
+	if _, _, code := runCLI(t, "lint", sampleFLAC); code != 1 {
+		t.Errorf("lint warning-only exit = %d, want 1", code)
 	}
 }
 

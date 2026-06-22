@@ -71,12 +71,19 @@ func runCapsFormat(cmd *cobra.Command, f wl.Format, opts ...wl.WriteOption) erro
 // reusing the per-file harness so a parse failure on one file is reported without
 // aborting the rest.
 func runCapsFiles(cmd *cobra.Command, args []string) error {
+	// An empty operand is a usage error (exit 2), caught before any parse so it does
+	// not reach the library's ErrInvalidData (exit 4) backstop and outrank a real
+	// not-found in a multi-file run - matching dump/verify/plan/set/lint and copy/diff
+	// (Finding 6). caps parses operands directly (no expandPaths), so it checks here.
+	if err := checkEmptyOperands(args...); err != nil {
+		return err
+	}
 	realOf, cleanup, err := readInputs(cmd.InOrStdin(), args)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
-	if err := checkRegularInputs(realOf, args...); err != nil {
+	if err := checkRegularInputs(realOf, true, args...); err != nil {
 		return err
 	}
 	return perFile(cmd, args,

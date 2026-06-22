@@ -120,6 +120,39 @@ func NoOpPlan(report WriteReport, size int64, result *Media) *WritePlan {
 	}
 }
 
+// DowngradeNoOp returns a clean no-op plan when a codec's projected post-write
+// result is metadata-equivalent to base - the edit re-projected to the values
+// already present (GENRE=17 -> Rock, TRACKNUMBER=03 -> 3, a dropped empty or
+// invalid value) - and nothing structural forces a write. It returns nil when a
+// real change remains, leaving the codec's full rewrite plan in place.
+//
+// This keeps a codec's IsNoOp() and Changes() verdicts in agreement: the raw edit
+// can differ from base (so the fast-path no-op gate did not fire) while the
+// projected result equals base (so Plan.Changes() is empty). Without this
+// downgrade such an edit churns the file - a byte-identical rewrite that only
+// bumps the mtime - on every save, copy, or lint --fix.
+//
+// tagsEqual is the codec's OWN verdict, computed with its native diff primitive
+// against result.Tags (TagSet.Equal for the ID3/INFO codecs, the Vorbis key diff
+// for FLAC/Ogg), so the .Equal/DiffKeys variance cannot make one codec subtly
+// disagree with its own fast path. structuralChange is the OR of the codec's
+// write-forcing flags that no tag/picture/chapter comparison captures (a legacy
+// strip, an encoder-stamp removal, ...); when set, the rewrite is never a no-op.
+//
+// A fresh WriteReport{Format, BytesBefore} is passed to NoOpPlan rather than the
+// codec's already-mutated report: NoOpPlan resets Operations and BytesAfter but
+// not Warnings or PaddingAfter, so reusing a report a partial render had stamped
+// with a warning or padding would leak it onto a plan that writes nothing.
+func DowngradeNoOp(format Format, size int64, base, result *Media, tagsEqual, structuralChange bool) *WritePlan {
+	if structuralChange || !tagsEqual {
+		return nil
+	}
+	if !EqualPictures(base.Pictures, result.Pictures) || !EqualChapters(base.Chapters, result.Chapters) {
+		return nil
+	}
+	return NoOpPlan(WriteReport{Format: format, BytesBefore: size}, size, base)
+}
+
 // codec registry. Codecs register from their package init; the root package
 // imports them for the side effect. The set is closed (no public registry API
 // in v1), so this lives in internal/core.

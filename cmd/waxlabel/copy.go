@@ -33,6 +33,11 @@ func newCopyCmd() *cobra.Command {
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			srcPath, dstPath := args[0], args[1]
+			// An empty operand is a usage error (exit 2), caught before any parse so it does
+			// not reach the library's ErrInvalidData (exit 4) backstop (Finding 6).
+			if err := checkEmptyOperands(srcPath, dstPath); err != nil {
+				return err
+			}
 			// copy is a file-to-file operation with no streaming model (that is the
 			// library's WriteTo), so "-" names no real file here. Reject it up front as a
 			// usage error rather than try to open a file literally named "-". (M1)
@@ -64,8 +69,9 @@ func newCopyCmd() *cobra.Command {
 			}
 			// Reject a non-regular operand (FIFO/directory/socket) up front as a usage error
 			// (exit 2), matching the other file commands; copy takes no "-", so the paths are
-			// used as-is. A nonexistent path passes through to parse's own not-found.
-			if err := checkRegularInputs(func(p string) string { return p }, srcPath, dstPath); err != nil {
+			// used as-is and the hint must not suggest "-" (acceptsStdin false). A nonexistent
+			// path passes through to parse's own not-found.
+			if err := checkRegularInputs(func(p string) string { return p }, false, srcPath, dstPath); err != nil {
 				return err
 			}
 			srcDoc, err := parse(srcPath)

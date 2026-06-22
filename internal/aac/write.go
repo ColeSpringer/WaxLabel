@@ -77,6 +77,11 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report.BytesAfter = newSize
 
 	result := buildResult(edited, d, srcTag.WithFrames(newFrames), tagBytes, audioLen, newSize)
+	// Collapse to a true no-op when the ID3 rebuild re-projected to base's values;
+	// AAC has no strip flag, so nothing structural forces the write. See core.DowngradeNoOp.
+	if np := core.DowngradeNoOp(core.FormatAAC, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), false); np != nil {
+		return np, nil
+	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
 }
 

@@ -258,7 +258,7 @@ func isFallback(err error) bool { return errors.Is(err, errFallback) }
 // (the new value lands at album scope). Title is excluded - it lives in Info.Title.
 func renderTags(d *doc, base, edited tag.TagSet, ek map[tag.Key]bool) (raw []byte, groups []tagGroup) {
 	albumIdx := albumGroupIndex(d.groups)
-	covered := coveredByOtherScopes(d.groups, albumIdx)
+	covered := coveredByOtherScopes(d.groups, albumIdx, ek)
 	var content []byte
 
 	for i, g := range d.groups {
@@ -287,19 +287,35 @@ func renderTags(d *doc, base, edited tag.TagSet, ek map[tag.Key]bool) (raw []byt
 	return masterElement(idTags, content, d.wb.tagsCRC), groups
 }
 
-// coveredByOtherScopes returns the canonical keys carried by non-album groups
-// (preserved verbatim), so the album-group sync can leave an unchanged such key at
-// its own scope instead of re-emitting it at album scope (which would duplicate it
-// on every save and risk a spurious cross-scope conflict).
-func coveredByOtherScopes(groups []tagGroup, albumIdx int) map[tag.Key]bool {
-	covered := map[tag.Key]bool{}
+// coveredByOtherScopes returns, per canonical key, the projected values a non-album
+// group will still carry AFTER the edit, so the album-group sync can leave an
+// unchanged value at its own scope instead of re-emitting it at album scope (which
+// would duplicate it on every save and risk a spurious cross-scope conflict). The
+// values are projected through projectTag - not a bare MatroskaTagKey lookup - so a
+// slash number (PART_NUMBER=3/12, which projects to TrackNumber=3 AND TrackTotal=12)
+// contributes to both canonical keys; a key-only set would miss the second and
+// duplicate it at album scope. Carrying the values (not just the keys) lets the sync
+// subtract exactly what a narrower scope preserves, so a key split across scopes with
+// different values (ENCODER album=Lavf + track=Lavc) keeps its album-only part.
+//
+// A SimpleTag the edit will drop (droppedByEdit) carries nothing forward, so it is
+// excluded - otherwise its projected values would be subtracted from the album sync as
+// if still preserved, and a slash number whose component was edited would lose its
+// unedited half (it is dropped from the track group yet skipped at album scope). The
+// covered set must reflect post-edit survivors, computed with the SAME drop predicate
+// the renderer uses, so the two cannot disagree on what a scope keeps.
+func coveredByOtherScopes(groups []tagGroup, albumIdx int, ek map[tag.Key]bool) map[tag.Key][]string {
+	covered := map[tag.Key][]string{}
 	for i, g := range groups {
 		if i == albumIdx {
 			continue
 		}
 		for _, st := range g.tags {
-			if k, ok := mapping.MatroskaTagKey(st.name); ok {
-				covered[k] = true
+			if droppedByEdit(st, ek) {
+				continue // dropped by the edit: it preserves nothing at this scope
+			}
+			for _, c := range projectTag(st.name, st.value, g.scope) {
+				covered[c.key] = append(covered[c.key], c.value)
 			}
 		}
 	}
@@ -310,7 +326,7 @@ func coveredByOtherScopes(groups []tagGroup, albumIdx int) map[tag.Key]bool {
 // canonical set; a non-album group is preserved verbatim or, when it carries an
 // edited key, re-rendered to drop that key. keep is false when the group becomes
 // empty.
-func renderGroup(g tagGroup, base, edited tag.TagSet, covered, ek map[tag.Key]bool, isAlbum bool) (out tagGroup, raw []byte, keep bool) {
+func renderGroup(g tagGroup, base, edited tag.TagSet, covered map[tag.Key][]string, ek map[tag.Key]bool, isAlbum bool) (out tagGroup, raw []byte, keep bool) {
 	if !isAlbum {
 		return renderNonAlbumGroup(g, ek)
 	}
@@ -365,14 +381,31 @@ func renderNonAlbumGroup(g tagGroup, ek map[tag.Key]bool) (out tagGroup, raw []b
 }
 
 // droppedByEdit reports whether a SimpleTag must be dropped from a re-rendered
-// group: its name maps to a canonical key whose value the edit changed, so the
+// group: it maps to a canonical key whose value the edit changed, so the
 // authoritative value now lives at album scope (or was cleared). A non-canonical or
 // unedited SimpleTag is kept. It is the single drop predicate shared by the
-// preservation check (which tags need captured bytes) and the renderer (which tags
-// are emitted), so the two cannot diverge on which tags survive.
+// preservation check (which tags need captured bytes), the covered-set computation,
+// and the renderer (which tags are emitted), so they cannot diverge on which tags
+// survive.
+//
+// A slash number (PART_NUMBER=3/12) projects to TWO canonical keys (TrackNumber and
+// TrackTotal), so editing EITHER must drop the whole tag - otherwise editing the total
+// would leave the stale total lingering at this scope (conflicting with the value
+// rewritten at album scope), and dropping it for a TrackNumber edit would lose the
+// unedited total entirely. This mirrors projectTag's slash split so the drop and the
+// projection stay in agreement.
 func droppedByEdit(st simpleTag, ek map[tag.Key]bool) bool {
 	k, ok := mapping.MatroskaTagKey(st.name)
-	return ok && ek[k]
+	if !ok {
+		return false
+	}
+	if ek[k] {
+		return true
+	}
+	if (k == tag.TrackNumber || k == tag.DiscNumber) && strings.ContainsRune(st.value, '/') {
+		return ek[totalKey(k)]
+	}
+	return false
 }
 
 // groupTouchedBy reports whether any of the group's SimpleTags would be dropped by
@@ -426,11 +459,14 @@ func editedKeySet(base, edited tag.TagSet) map[tag.Key]bool {
 
 // buildAlbumGroup renders the album-scope group: the preserved Targets (carrying
 // any UID), the kept non-canonical SimpleTags verbatim, then the synced canonical
-// SimpleTags. group is the existing album group (nil when creating one). A key
-// already carried verbatim by another scope is re-emitted here only if the edit
-// changed it (a canonical edit defaults to album scope); an unchanged one stays
-// put, avoiding duplication.
-func buildAlbumGroup(group *tagGroup, base, edited tag.TagSet, covered map[tag.Key]bool) (tagGroup, []byte) {
+// SimpleTags. group is the existing album group (nil when creating one). For an
+// unchanged key already carried verbatim by another scope, only the canonical values
+// that scope does not preserve are re-emitted here - so a value split across scopes
+// (ENCODER album=Lavf + track=Lavc) keeps its album-only part instead of being
+// dropped wholesale, while a fully covered key stays put (no duplication). A changed
+// key re-emits all its values: a canonical edit defaults to album scope and the
+// other scopes drop it via renderNonAlbumGroup/droppedByEdit.
+func buildAlbumGroup(group *tagGroup, base, edited tag.TagSet, covered map[tag.Key][]string) (tagGroup, []byte) {
 	out := tagGroup{scope: core.ScopeAlbum}
 	var simple []byte
 	if group != nil {
@@ -454,9 +490,15 @@ func buildAlbumGroup(group *tagGroup, base, edited tag.TagSet, covered map[tag.K
 			continue // stored in Info.Title
 		}
 		vals, _ := edited.Get(k)
-		if covered[k] {
+		if cov := covered[k]; len(cov) > 0 {
 			if bv, _ := base.Get(k); slices.Equal(bv, vals) {
-				continue // unchanged and owned by another scope: leave it there
+				// Unchanged key carried at another scope: re-emit only the canonical
+				// values that scope does not already preserve. A value split across
+				// scopes keeps its album-only part; a fully covered key is skipped.
+				vals = subtractFold(vals, cov)
+				if len(vals) == 0 {
+					continue
+				}
 			}
 		}
 		name := mapping.MatroskaTagName(k)
@@ -477,6 +519,25 @@ func buildAlbumGroup(group *tagGroup, base, edited tag.TagSet, covered map[tag.K
 	}
 	content = append(content, simple...)
 	return out, masterElement(idTag, content, group != nil && group.hasCRC)
+}
+
+// subtractFold returns the values in vals whose case-folded form is not present in
+// covered, preserving the survivors' original case and order. It mirrors the
+// case-insensitive canonical value dedup (parse.go), so the album group re-emits
+// exactly the canonical values a narrower scope does not already carry verbatim.
+func subtractFold(vals, covered []string) []string {
+	seen := make(map[string]bool, len(covered))
+	for _, c := range covered {
+		seen[core.Fold(c)] = true
+	}
+	out := make([]string, 0, len(vals))
+	for _, v := range vals {
+		if seen[core.Fold(v)] {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 // simpleTagBytes renders a SimpleTag with a name and a single string value.
