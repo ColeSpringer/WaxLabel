@@ -66,6 +66,10 @@ func noCommand(cmd *cobra.Command) error {
 	if err := cmd.Help(); err != nil {
 		return err
 	}
+	// Print the failure line after the help text so the non-zero exit is obvious in a
+	// log that captured stderr - the help alone reads like a successful invocation
+	// (JSON mode already returns the error envelope above). (#8)
+	fmt.Fprintln(cmd.ErrOrStderr(), "waxlabel: no command given")
 	return alreadyRendered(usagef("no command given"))
 }
 

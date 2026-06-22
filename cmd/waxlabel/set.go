@@ -35,18 +35,41 @@ func newSetCmd() *cobra.Command {
 			"file in place atomically (temp file, fsync, rename); a no-op writes\n" +
 			"nothing. With -o it writes a single complete new file instead, leaving\n" +
 			"the original untouched (so -o takes exactly one input). Multiple files\n" +
-			"are edited independently; with --recursive, directory arguments are\n" +
-			"walked for audio files. A single \"-\" reads from standard input and\n" +
-			"requires -o (editing standard input in place is meaningless). The plan is\n" +
-			"printed before each outcome.\n\n" +
+			"are edited independently, each as its own atomic write; with --recursive,\n" +
+			"directory arguments are walked for audio files. Because each file commits\n" +
+			"on its own, a failure partway through a bulk or --recursive run leaves the\n" +
+			"files already saved in place (it is not one transaction) - preview a bulk\n" +
+			"edit with 'plan --recursive' first. A single \"-\" reads from standard input\n" +
+			"and requires -o (editing standard input in place is meaningless). The plan\n" +
+			"is printed before each outcome.\n\n" +
 			editPrecedenceHelp,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// A present-but-empty -o ("") is indistinguishable from cobra's unset
+			// default in every downstream `output != ""` check, so a `set f -o ''`
+			// would silently fall through to an in-place save-back and overwrite the
+			// input. Reject it once here (before checkSetStdin), which guarantees a
+			// present -o is non-empty and keeps every later check valid (B1).
+			if cmd.Flags().Changed("output") && output == "" {
+				return usagef("output path (-o) cannot be empty")
+			}
 			// Validate argument shape (pure, no I/O) before compile() reads any
 			// --add-cover files, so a misuse like "set - --add-cover x" without -o
 			// reports the actionable stdin usage error rather than a cover read error.
 			if err := checkSetStdin(args, output); err != nil {
 				return err
+			}
+			// Reject an explicitly-empty --preset/--legacy/--padding first, so `set f
+			// --preset ''` reports the precise flag mistake rather than proceeding to a
+			// confusing no-op (U4).
+			if err := rejectEmptyScalarFlags(cmd); err != nil {
+				return err
+			}
+			// A set with no edit flags and no -o is a no-op rewrite-in-place - almost always
+			// a forgotten edit flag - so reject it (exit 2) rather than silently do nothing.
+			// With -o it is a deliberate verbatim copy, kept (U1).
+			if output == "" && editFlagsEmpty(cmd) {
+				return usagef("no edits given (use --set/--add/--clear/--add-cover/--add-chapter/…)")
 			}
 			var extra []wl.WriteOption
 			if verify {
@@ -85,7 +108,11 @@ func newSetCmd() *cobra.Command {
 			if err := notifyInvocationNotes(cmd.ErrOrStderr(), ce, &ef, realOf, paths, jsonMode(cmd)); err != nil {
 				return err
 			}
-			return runSet(cmd, paths, realOf, ce, output, ef.strict, quiet)
+			// If a bare-word positional that does not resolve looks like an unquoted value
+			// fragment (and a value flag was given), advise quoting - the stray word still
+			// fails per-file below (#1).
+			maybeQuotingHint(cmd.ErrOrStderr(), &ef, realOf, args, jsonMode(cmd))
+			return runSet(cmd, paths, realOf, ce, output, ef.strict, quiet, verify)
 		},
 	}
 	ef.bind(cmd)
@@ -117,6 +144,19 @@ func checkOutputTarget(output, inputReal string, overwrite bool) error {
 	// Stat (follows symlinks) so a directory - or a symlink to one - is caught.
 	if fi, err := os.Stat(output); err == nil && fi.IsDir() {
 		return usagef("-o target %q is a directory, not a file", output)
+	}
+	// Verify the destination directory exists now (before the plan renders), so a
+	// mistyped -o path fails up front rather than only at the atomic-write temp create
+	// - which would otherwise print the whole plan first and then a late I/O error.
+	// Checked even under --overwrite: a missing parent dir cannot be overwritten. (#6)
+	parent := filepath.Dir(output)
+	if fi, err := os.Stat(parent); err != nil {
+		if os.IsNotExist(err) {
+			return usagef("-o target directory %q does not exist", parent)
+		}
+		return err
+	} else if !fi.IsDir() {
+		return usagef("-o target directory %q is not a directory", parent)
 	}
 	if overwrite {
 		return nil
@@ -161,7 +201,7 @@ func checkSetStdin(args []string, output string) error {
 // outcome are suppressed while errors and the summary remain, so a single-file
 // `set -q` is silent on success. The returned error is alreadyRendered, preserving
 // the exit class without rendering a second time.
-func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *compiledEdit, output string, strict, quiet bool) error {
+func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *compiledEdit, output string, strict, quiet, verify bool) error {
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 	asJSON := jsonMode(cmd)
 	// quiet is a text-mode presentation choice; under --json the stream shape is
@@ -251,10 +291,17 @@ func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *
 		} else {
 			unchanged++
 		}
+		// The essence is only re-read on a committed write (a no-op writes no temp), so
+		// nothing is verified otherwise. Computed once and shared by the human and JSON
+		// paths so they cannot disagree (#4).
+		verified := verify && res.Committed
 		if asJSON {
-			items = append(items, toJSONSetResult(path, output, plan, res))
+			items = append(items, toJSONSetResult(path, output, plan, res, verified))
 		} else if !quiet {
 			renderSaveOutcome(out, path, output, res, plan.IsNoOp())
+			if verified {
+				fmt.Fprintln(out, "Audio essence verified")
+			}
 		}
 	}
 
@@ -309,19 +356,30 @@ func renderSaveOutcome(w io.Writer, path, output string, res wl.SaveResult, noOp
 }
 
 // jsonSetResult is the machine-readable outcome of a save: the plan plus where
-// the bytes landed and whether they were committed.
+// the bytes landed and whether they were committed. Verified is a pointer so it is
+// present only when --verify was given and the write actually committed (so the
+// audio essence was re-read and matched); a normal run omits it entirely rather
+// than emit "verified": false, which would read like a failed check (#4).
 type jsonSetResult struct {
 	jsonReport
 	Committed bool   `json:"committed"`
+	Verified  *bool  `json:"verified,omitempty"`
 	Output    string `json:"output,omitempty"`
 	Size      int64  `json:"size"`
 }
 
-func toJSONSetResult(path, output string, plan *wl.Plan, res wl.SaveResult) jsonSetResult {
-	return jsonSetResult{
+func toJSONSetResult(path, output string, plan *wl.Plan, res wl.SaveResult, verified bool) jsonSetResult {
+	r := jsonSetResult{
 		jsonReport: toJSONReport(path, plan),
 		Committed:  res.Committed,
 		Output:     output,
 		Size:       res.Dest.Size,
 	}
+	// Emit verified only when verification actually ran (a committed --verify write),
+	// so a normal run omits the field rather than showing "verified": false.
+	if verified {
+		t := true
+		r.Verified = &t
+	}
+	return r
 }

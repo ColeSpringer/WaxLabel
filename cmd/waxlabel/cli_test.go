@@ -293,7 +293,9 @@ func TestSetNoOpWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, _, code := runCLI(t, "set", file)
+	// Re-set the title to its current value so the edit resolves to a no-op (a
+	// bare `set file` with no edit flags is now a usage error - see TestSetNoEditsRejected).
+	out, _, code := runCLI(t, "set", file, "--set", "TITLE=Original Title")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
 	}
@@ -306,6 +308,25 @@ func TestSetNoOpWritesNothing(t *testing.T) {
 	}
 	if !bytes.Equal(before, after) {
 		t.Error("no-op set rewrote the file")
+	}
+}
+
+// TestSetNoEditsRejected (U1): an in-place `set <file>` with no edit flags is a
+// usage error (exit 2) - a forgotten edit flag rather than a deliberate no-op. With
+// -o it is a verbatim copy and stays allowed (covered by TestSetOutputNoOpVerbatim).
+func TestSetNoEditsRejected(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, sampleFLAC)
+	_, stderr, code := runCLI(t, "set", file)
+	if code != 2 {
+		t.Fatalf("set with no edits exit = %d, want 2", code)
+	}
+	if !strings.Contains(stderr, "no edits given") {
+		t.Errorf("stderr = %q, want it to mention 'no edits given'", stderr)
+	}
+	// A write-shaping flag (e.g. --no-padding) counts as an edit, so it is allowed.
+	if _, _, code := runCLI(t, "set", file, "--no-padding"); code != 0 {
+		t.Errorf("set --no-padding (re-pad in place) exit = %d, want 0", code)
 	}
 }
 
@@ -581,8 +602,8 @@ func TestClassifyError(t *testing.T) {
 func TestClassifyNotFoundMessage(t *testing.T) {
 	t.Parallel()
 	bare := &fs.PathError{Op: "open", Path: "/x.flac", Err: fs.ErrNotExist}
-	if c := classifyError(bare); c.message != "no such file: /x.flac" {
-		t.Errorf("bare message = %q, want %q", c.message, "no such file: /x.flac")
+	if c := classifyError(bare); c.message != "/x.flac: no such file or directory" {
+		t.Errorf("bare message = %q, want %q", c.message, "/x.flac: no such file or directory")
 	}
 
 	// Mirrors the real edit.go wrapping ("cover image: %w" - the read error
@@ -673,21 +694,60 @@ func TestDirectoryAsInput(t *testing.T) {
 // TestTempCreateErrorNamesDir checks the atomic-write temp-create failure names
 // the destination directory rather than the internal temp pattern. It also
 // guards the E2/E3 interaction: the wrapped *fs.PathError must keep this message
-// and not be flattened into "no such file: <temp-name>".
+// and not be flattened into "no such file: <temp-name>". The trigger is an
+// existing-but-unwritable directory (a missing -o dir is now caught up front as a
+// usage error - see TestSetOutputParentDirMissing - so it never reaches the write).
 func TestTempCreateErrorNamesDir(t *testing.T) {
 	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: directory permissions do not prevent the temp create")
+	}
 	file := copyFixture(t, sampleFLAC)
-	badDir := filepath.Join(t.TempDir(), "no-such-dir")
-	_, errb, code := runCLI(t, "set", file, "--set", "TITLE=X", "-o", filepath.Join(badDir, "out.flac"))
+	roDir := filepath.Join(t.TempDir(), "ro")
+	if err := os.Mkdir(roDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(roDir, 0o755) }) // let TempDir cleanup remove it
+	_, errb, code := runCLI(t, "set", file, "--set", "TITLE=X", "-o", filepath.Join(roDir, "out.flac"))
 	if code != 6 {
 		t.Fatalf("exit = %d, want 6", code)
 	}
-	if !strings.Contains(errb, "create temp file in "+badDir) {
+	if !strings.Contains(errb, "create temp file in "+roDir) {
 		t.Errorf("stderr should name the destination dir: %q", errb)
 	}
 	// The internal temp-file pattern is an implementation detail; it must not leak.
 	if strings.Contains(errb, ".waxlabel-") {
 		t.Errorf("internal temp pattern should not leak: %q", errb)
+	}
+}
+
+// TestSetOutputParentDirMissing (#6): a -o path whose parent directory does not
+// exist is a usage error (exit 2) reported before the plan prints, not a late
+// temp-create io error. A parent that is a regular file is rejected the same way.
+func TestSetOutputParentDirMissing(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, sampleFLAC)
+
+	missing := filepath.Join(t.TempDir(), "no-such-dir", "out.flac")
+	out, errb, code := runCLI(t, "set", file, "--set", "TITLE=X", "-o", missing)
+	if code != 2 {
+		t.Fatalf("missing -o parent: exit = %d, want 2", code)
+	}
+	if !strings.Contains(errb, "does not exist") {
+		t.Errorf("stderr = %q, want it to mention the directory does not exist", errb)
+	}
+	if strings.Contains(out, "plan") {
+		t.Errorf("the usage error should fire before the plan prints; stdout:\n%s", out)
+	}
+
+	// A parent that exists but is a regular file (not a directory) is also rejected.
+	asFile := filepath.Join(t.TempDir(), "afile")
+	if err := os.WriteFile(asFile, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, errb, code = runCLI(t, "set", file, "--set", "TITLE=X", "-o", filepath.Join(asFile, "out.flac"))
+	if code != 2 || !strings.Contains(errb, "not a directory") {
+		t.Errorf("file-as-parent: code %d, stderr %q; want exit 2 'not a directory'", code, errb)
 	}
 }
 
@@ -1134,8 +1194,10 @@ func TestPaddingNoPadding(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("plan --no-padding exit = %d", code)
 	}
-	if strings.Contains(out, "padding:") {
-		t.Errorf("--no-padding should write no padding; got:\n%s", out)
+	// FLAC has a padding concept, so --no-padding now confirms it positively
+	// ("padding: none") rather than omitting the line (U7).
+	if !strings.Contains(out, "padding: none") {
+		t.Errorf("--no-padding should confirm 'padding: none'; got:\n%s", out)
 	}
 }
 
@@ -1175,14 +1237,15 @@ func TestPaddingPresetPrecedence(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
 	bare, _, _ := runCLI(t, "plan", file, "--set", "TITLE=Pad", "--preset", "minimal")
-	if strings.Contains(bare, "padding:") {
-		t.Errorf("--preset minimal alone should write no padding; got:\n%s", bare)
+	if !strings.Contains(bare, "padding: none") {
+		t.Errorf("--preset minimal alone should confirm 'padding: none' (U7); got:\n%s", bare)
 	}
 	over, _, code := runCLI(t, "plan", file, "--set", "TITLE=Pad", "--preset", "minimal", "--padding", "16384")
 	if code != 0 {
 		t.Fatalf("plan exit = %d", code)
 	}
-	if !strings.Contains(over, "padding:") {
+	// The override writes a real region, so a byte value (not "padding: none").
+	if !strings.Contains(over, "padding:") || strings.Contains(over, "padding: none") {
 		t.Errorf("--padding should override the preset's zero padding; got:\n%s", over)
 	}
 }
@@ -1769,12 +1832,21 @@ func TestJSONErrorRoutingOnEarlyAbort(t *testing.T) {
 
 // TestSetShowsPlanBeforeFailedWrite checks that the plan preview is printed even
 // when the write fails, matching the help ("the plan is printed before the
-// outcome").
+// outcome"). The write is failed by an existing-but-unwritable -o directory: it
+// passes the up-front -o checks (the dir exists), so the plan renders, and only the
+// atomic-write temp create then fails (io). A missing -o dir would instead be a
+// usage error before the plan prints (#6).
 func TestSetShowsPlanBeforeFailedWrite(t *testing.T) {
 	t.Parallel()
-	// Save-as into a non-existent directory: planning succeeds, the write fails.
-	bad := filepath.Join(t.TempDir(), "no-such-dir", "out.flac")
-	out, _, code := runCLI(t, "set", sampleFLAC, "--set", "TITLE=X", "-o", bad)
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: directory permissions do not prevent the write")
+	}
+	roDir := filepath.Join(t.TempDir(), "ro")
+	if err := os.Mkdir(roDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(roDir, 0o755) })
+	out, _, code := runCLI(t, "set", sampleFLAC, "--set", "TITLE=X", "-o", filepath.Join(roDir, "out.flac"))
 	if code != 6 {
 		t.Fatalf("exit = %d, want 6 (io)", code)
 	}

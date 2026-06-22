@@ -78,6 +78,15 @@ func fileIdentity(path string) (core.Identity, error) {
 // the write path and the hashing path share this.
 func (d *Document) resolveSource(explicit core.ReaderAtSized) (core.ReaderAtSized, func(), error) {
 	noop := func() {}
+	// A zero-value Document has no media to write or hash; report the uninitialized
+	// state with the same message Prepare uses, rather than the generic
+	// "no source available" below. This is the shared chokepoint for the write and
+	// hash paths, so it fixes a zeroDoc.HashAudioEssence/HashFile at once; the generic
+	// message then fires only for an initialized-but-detached Parse doc, where
+	// supplying a source genuinely is the remedy. (M6)
+	if d.zero() {
+		return nil, noop, fmt.Errorf("%w: document is not initialized; use ParseFile/Parse", waxerr.ErrInvalidData)
+	}
 	if explicit != nil {
 		return explicit, noop, nil
 	}

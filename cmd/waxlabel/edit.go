@@ -12,6 +12,7 @@ import (
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // editPrecedenceHelp documents how flags combine for one key. The edits apply in
@@ -74,6 +75,98 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringVar(&e.padding, "padding", "", "reserve at least N bytes of padding after the metadata (default 8192; 0 writes none, like --no-padding)")
 	f.BoolVar(&e.noPadding, "no-padding", false, "write no padding after the metadata (smallest file)")
 	f.BoolVar(&e.strict, "strict", false, "fail (exit 2) on an unknown key or a single-valued key given multiple values, instead of noting it")
+}
+
+// nonEditFlags are the set/output flags that do not by themselves constitute an
+// edit; every other flag bound on set (the tag/picture/chapter/write-shaping ones)
+// does. Listing the stable destination/output side rather than re-enumerating the
+// editing flags means a newly-added editing flag counts as an edit automatically, so
+// editFlagsEmpty cannot silently reject `set f --new-edit-flag` as "no edits given".
+var nonEditFlags = map[string]bool{
+	"output": true, "overwrite": true, "verify": true, "preserve-mtime": true,
+	"recursive": true, "quiet": true, "json": true,
+	"force": true, "picture-description": true, "strict": true,
+}
+
+// editFlagsEmpty reports whether the invocation requested no edit at all - only
+// non-edit flags (or none) were set. set treats an in-place run in this state as a
+// usage error (a no-op rewrite is almost always a forgotten flag), while with -o it is
+// a deliberate verbatim copy. It reads the parsed flag set (Visit walks only the flags
+// actually changed), so it tracks the bound flags rather than a hand-listed field set
+// that could rot as edit flags are added. (U1)
+func editFlagsEmpty(cmd *cobra.Command) bool {
+	empty := true
+	cmd.Flags().Visit(func(f *pflag.Flag) {
+		if !nonEditFlags[f.Name] {
+			empty = false
+		}
+	})
+	return empty
+}
+
+// maybeQuotingHint emits a single advisory hint when an edit supplied value-bearing
+// flags (--set/--add) and a stray bare-word positional that does not resolve sits
+// beside a real input - the classic symptom of an unquoted value with spaces, where
+// `--set TITLE=Two Words` leaves the file plus a stray `Words` positional. Requiring
+// a resolved sibling avoids a false positive on a lone, simply-missing extensionless
+// filename, which on its own is indistinguishable from a split value fragment. It is
+// text-only (suppressed under --json) and never an error - the stray positional
+// still reports its own not-found; this only adds the suggestion, once per run. (#1)
+func maybeQuotingHint(errOut io.Writer, ef *editFlags, realOf func(string) string, args []string, asJSON bool) {
+	if asJSON || (len(ef.set) == 0 && len(ef.add) == 0) {
+		return
+	}
+	// Cheap string-only pre-pass: a hint is only possible if some positional is a stray
+	// bare word. Most invocations name extension-bearing files, so this returns before
+	// any stat - the per-file loop's own stats are not duplicated on the common path (#5).
+	hasBareWord := false
+	for _, a := range args {
+		if a != stdinArg && looksLikeBareWord(a) {
+			hasBareWord = true
+			break
+		}
+	}
+	if !hasBareWord {
+		return
+	}
+	// A bare word only signals an unquoted value when it does not itself resolve yet sits
+	// beside a real input; stat to classify (only now that a candidate exists).
+	resolves := func(a string) bool {
+		if a == stdinArg {
+			return true
+		}
+		_, err := os.Stat(realOf(a))
+		return err == nil
+	}
+	hasRealInput, hasStrayWord := false, false
+	for _, a := range args {
+		switch {
+		case resolves(a):
+			hasRealInput = true // a present input (incl. an existing extensionless file)
+		case looksLikeBareWord(a):
+			hasStrayWord = true // a missing bare word: a likely split value fragment
+		}
+	}
+	if hasRealInput && hasStrayWord {
+		fmt.Fprintln(errOut, "hint: a value containing spaces must be quoted, e.g. --set 'TITLE=Two Words'")
+	}
+}
+
+// rejectEmptyScalarFlags rejects --preset, --legacy, or --padding given an
+// explicitly empty value, which is otherwise indistinguishable from unset and
+// silently ignored - matching how an unknown value (--preset bogus) is rejected,
+// and keeping the three scalar write-shaping flags consistent. It reads Changed
+// from the command, so set and plan (which both bind these via editFlags) share
+// one check. (U4)
+func rejectEmptyScalarFlags(cmd *cobra.Command) error {
+	for _, name := range []string{"preset", "legacy", "padding"} {
+		if cmd.Flags().Changed(name) {
+			if v, _ := cmd.Flags().GetString(name); v == "" {
+				return usagef("--%s cannot be empty", name)
+			}
+		}
+	}
+	return nil
 }
 
 // patch compiles -set/-add/-clear into a presence-aware patch. A malformed

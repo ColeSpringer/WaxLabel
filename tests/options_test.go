@@ -21,6 +21,23 @@ func TestWithLimitsBoundsAllocation(t *testing.T) {
 	}
 }
 
+// TestWithLimitsZeroFieldUsesDefault (D2): a partially-specified Limits keeps the
+// default bound for any zero field rather than reading zero as "reject everything"
+// (a literal zero MaxAllocBytes would refuse the STREAMINFO allocation).
+func TestWithLimitsZeroFieldUsesDefault(t *testing.T) {
+	src := readFixture(t, sampleFLAC)
+	// Only MaxDepth is set; MaxAllocBytes is zero and must fall back to the default.
+	if _, err := wl.Parse(context.Background(), wl.BytesSource(src),
+		wl.WithLimits(wl.Limits{MaxDepth: 64})); err != nil {
+		t.Errorf("partial Limits{MaxDepth:64} should parse with the default MaxAllocBytes, got: %v", err)
+	}
+	// Symmetrically, only MaxAllocBytes set keeps the default MaxDepth.
+	if _, err := wl.Parse(context.Background(), wl.BytesSource(src),
+		wl.WithLimits(wl.Limits{MaxAllocBytes: 1 << 20})); err != nil {
+		t.Errorf("partial Limits{MaxAllocBytes:1MiB} should parse with the default MaxDepth, got: %v", err)
+	}
+}
+
 // withTrailingID3v1 appends a 128-byte ID3v1 tag to FLAC bytes.
 func withTrailingID3v1(src []byte) []byte {
 	id3 := make([]byte, 128)

@@ -53,6 +53,8 @@ func (p *Plan) saveBack(ctx context.Context) (*Document, SaveResult, error) {
 	if p.doc.path == "" {
 		return nil, SaveResult{}, fmt.Errorf("%w: SaveBack needs a file; use SaveAsFile or WriteTo", waxerr.ErrNeedsFile)
 	}
+	// The already-committed guard lives in Execute (it covers every destination, not
+	// just a second SaveBack), so by here this plan has not yet written.
 	src, err := openFileSource(p.doc.path)
 	if err != nil {
 		return nil, SaveResult{}, err
@@ -81,6 +83,11 @@ func (p *Plan) saveBack(ctx context.Context) (*Document, SaveResult, error) {
 	}
 
 	committed, werr := p.writeFile(ctx, p.doc.path, src)
+	if committed {
+		// Bytes are in place (the rename succeeded), even if a later step like the
+		// directory fsync errored; mark the plan so a second SaveBack is refused (M2).
+		p.committed = true
+	}
 	newID, _ := fileIdentity(p.doc.path)
 	resDoc := p.resultDocument(p.doc.path, nil, newID)
 	return resDoc, SaveResult{Committed: committed, Dest: newID, Doc: resDoc}, werr
@@ -100,6 +107,12 @@ func (p *Plan) saveAsFile(ctx context.Context, path string) (*Document, SaveResu
 }
 
 func (p *Plan) writeTo(ctx context.Context, dst Destination) (*Document, SaveResult, error) {
+	// A nil destination writer would panic on the first bits.Write deref; reject it
+	// up front with a clean error, mirroring the nil-source/nil-reader guards on the
+	// parse entry points (parse.go, source.go) (B2).
+	if dst.w == nil {
+		return nil, SaveResult{}, fmt.Errorf("%w: nil writer", waxerr.ErrInvalidData)
+	}
 	src, closer, err := p.doc.resolveSource(dst.source)
 	if err != nil {
 		return nil, SaveResult{}, err

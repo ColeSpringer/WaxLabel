@@ -392,6 +392,12 @@ func renderReport(w io.Writer, path string, plan *wl.Plan, addedPics []wl.Pictur
 		// Surface the control alongside the value so the padding is discoverable
 		// (the default is the deliberate 8 KiB FLAC-ecosystem convention).
 		fmt.Fprintf(w, "  padding: %s  (--padding N / --no-padding to change)\n", wl.HumanBytes(r.PaddingAfter))
+	} else if wl.CapabilitiesFor(r.Format).Padding != wl.AccessNone {
+		// Positive confirmation that no padding will be written - but only for a format
+		// that has a padding concept. On Ogg/WAV/AIFF/Matroska PaddingAfter is always 0,
+		// and a "padding: none" line there would contradict the "padding control does not
+		// apply to %s" note those formats emit (U7).
+		fmt.Fprintln(w, "  padding: none")
 	}
 	for _, x := range r.Warnings {
 		// Plan-time warnings are library-generated today, but Warning.String

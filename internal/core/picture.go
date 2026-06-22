@@ -114,9 +114,29 @@ func (p Picture) CloneMeta() Picture {
 }
 
 // SniffInto fills MIME, Width, Height, and Depth from the picture's own bytes
-// when they are not already set, using a header-only sniff (no decode). It
-// returns whether the format was recognized.
-func (p *Picture) SniffInto() bool {
+// when they are not already set, via a header-only sniff (no decode). It returns
+// whether the format was recognized. This is the read-path reconciliation: the
+// decoders call it to fill fields a container omits while leaving a stored MIME
+// they already read in place, so a file's metadata is reported as it is on disk.
+// The embed path, where the bytes must win over a mislabeled cover, uses
+// [Picture.SniffAuthoritative].
+func (p *Picture) SniffInto() bool { return p.sniff(false) }
+
+// SniffAuthoritative reconciles MIME and dimensions with the picture's own bytes,
+// letting a successful sniff overwrite a caller-declared value that disagrees - so a
+// mislabeled cover cannot be embedded under a MIME that contradicts its bytes. It is
+// the embed-path counterpart to [Picture.SniffInto] ([Editor.AddPicture] uses it);
+// each dimension is taken only when the sniff determined it (non-zero), so a sniffer
+// that could not fill one does not clobber a caller value with a 0. A failed sniff
+// preserves the caller's values, degrading MIME to [UnrecognizedMIME] only when none
+// was set.
+func (p *Picture) SniffAuthoritative() bool { return p.sniff(true) }
+
+// sniff backs [Picture.SniffInto] (fill-when-empty) and [Picture.SniffAuthoritative]
+// (bytes win). On a failed sniff both only set an empty MIME to [UnrecognizedMIME]; on
+// a success, authoritative overwrites MIME and every sniff-determined dimension, while
+// fill-when-empty sets only the fields the caller left zero.
+func (p *Picture) sniff(authoritative bool) bool {
 	info, ok := bits.SniffImage(p.Data)
 	if !ok {
 		if p.MIME == "" {
@@ -124,19 +144,29 @@ func (p *Picture) SniffInto() bool {
 		}
 		return false
 	}
-	if p.MIME == "" {
+	if authoritative || p.MIME == "" {
 		p.MIME = info.MIME
 	}
-	if p.Width == 0 {
-		p.Width = info.Width
-	}
-	if p.Height == 0 {
-		p.Height = info.Height
-	}
-	if p.Depth == 0 {
-		p.Depth = info.Depth
-	}
+	p.Width = pickDim(authoritative, p.Width, info.Width)
+	p.Height = pickDim(authoritative, p.Height, info.Height)
+	p.Depth = pickDim(authoritative, p.Depth, info.Depth)
 	return true
+}
+
+// pickDim chooses a picture dimension between the caller's value and the sniffed one.
+// Authoritative: the sniffed value wins when it was determined (non-zero), else the
+// caller's stands. Fill-when-empty: the sniffed value fills a caller zero only.
+func pickDim(authoritative bool, cur, sniffed int) int {
+	if authoritative {
+		if sniffed != 0 {
+			return sniffed
+		}
+		return cur
+	}
+	if cur == 0 {
+		return sniffed
+	}
+	return cur
 }
 
 // ClonePictures deep-copies the slice header and structural fields (sharing

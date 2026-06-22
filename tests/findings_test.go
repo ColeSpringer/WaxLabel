@@ -211,3 +211,180 @@ func reportHasWarning(ws []wl.Warning, code wl.WarningCode) bool {
 	}
 	return false
 }
+
+// TestRejectNULInEditValues (D1): a NUL byte in a value the edit sets, in a chapter
+// title, or in an added picture's description is refused at Prepare - a NUL silently
+// truncates the field on a C-string format - rather than written and cut.
+func TestRejectNULInEditValues(t *testing.T) {
+	path := copyToTemp(t, sampleFLAC)
+
+	// A NUL in a --set value is rejected, and the message names the offending key.
+	_, err := mustParseFile(t, path).Edit().Set(tag.Title, "a\x00b").Prepare()
+	if !errors.Is(err, waxerr.ErrInvalidData) {
+		t.Errorf("NUL in set value: err = %v, want ErrInvalidData", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), "NUL") {
+		t.Errorf("NUL in set value: err = %v, want it to mention NUL", err)
+	}
+
+	// A NUL in any of an --add'ed multi-value is rejected too.
+	if _, err := mustParseFile(t, path).Edit().Add(tag.Artist, "ok", "bad\x00name").Prepare(); !errors.Is(err, waxerr.ErrInvalidData) {
+		t.Errorf("NUL in add value: err = %v, want ErrInvalidData", err)
+	}
+
+	// A NUL in an added picture's description is rejected (the PNG bytes are valid, so
+	// only the description triggers it).
+	if _, err := mustParseFile(t, path).Edit().
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG(), Description: "desc\x00rest"}).
+		Prepare(); !errors.Is(err, waxerr.ErrInvalidData) {
+		t.Errorf("NUL in picture description: err = %v, want ErrInvalidData", err)
+	}
+
+	// A NUL in a chapter title is rejected on a chapter-capable format (Matroska), so
+	// the NUL - not a missing-chapter-support gate - is the reason.
+	if _, err := mustParseFile(t, sampleMKA).Edit().
+		SetChapters(wl.Chapter{Start: 0, Title: "bad\x00title"}).Prepare(); !errors.Is(err, waxerr.ErrInvalidData) {
+		t.Errorf("NUL in chapter title: err = %v, want ErrInvalidData", err)
+	}
+
+	// A normal edit (no NUL anywhere) is unaffected.
+	if _, err := mustParseFile(t, path).Edit().Set(tag.Title, "clean").Prepare(); err != nil {
+		t.Errorf("clean edit should still prepare, got: %v", err)
+	}
+}
+
+// TestPictureMIMESniffReconcile (D3): on the embed path SniffAuthoritative lets a
+// recognized image's bytes win over a caller-declared MIME/dimension that disagrees,
+// so a mislabeled cover cannot be embedded under a contradicting MIME. On the read
+// path SniffInto only fills empty fields, so a decoder keeps the MIME a container
+// stored (no silent relabel of on-disk metadata). A failed sniff preserves the
+// caller's MIME under both.
+func TestPictureMIMESniffReconcile(t *testing.T) {
+	// Embed path: PNG bytes wrongly declared JPEG with a bogus width - both corrected.
+	embed := wl.Picture{Type: wl.PicFrontCover, MIME: "image/jpeg", Width: 999, Data: tinyPNG()}
+	if !embed.SniffAuthoritative() {
+		t.Fatal("tinyPNG should sniff as a recognized image")
+	}
+	if embed.MIME != "image/png" {
+		t.Errorf("authoritative MIME = %q, want image/png (bytes win over the caller's lie)", embed.MIME)
+	}
+	if embed.Width != 1 || embed.Height != 1 {
+		t.Errorf("authoritative dims = %dx%d, want 1x1 (sniff wins for a determined dimension)", embed.Width, embed.Height)
+	}
+
+	// Read path: a stored MIME that disagrees with the bytes is preserved (fill-only),
+	// so dump/verify report what is on disk and an MP4 cover-format gate is not tripped
+	// on an unrelated tags-only edit - while an empty field is still filled.
+	read := wl.Picture{Type: wl.PicFrontCover, MIME: "image/jpeg", Data: tinyPNG()}
+	if !read.SniffInto() {
+		t.Fatal("tinyPNG should sniff as a recognized image")
+	}
+	if read.MIME != "image/jpeg" {
+		t.Errorf("read-path MIME = %q, want the stored image/jpeg preserved", read.MIME)
+	}
+	if read.Width != 1 {
+		t.Errorf("read-path Width = %d, want 1 filled from the sniff", read.Width)
+	}
+
+	// A failed sniff (junk bytes) leaves a caller-declared MIME intact under both.
+	for _, authoritative := range []bool{true, false} {
+		junk := wl.Picture{MIME: "image/heic", Data: []byte("not an image")}
+		var ok bool
+		if authoritative {
+			ok = junk.SniffAuthoritative()
+		} else {
+			ok = junk.SniffInto()
+		}
+		if ok {
+			t.Fatalf("authoritative=%v: junk bytes should not sniff", authoritative)
+		}
+		if junk.MIME != "image/heic" {
+			t.Errorf("authoritative=%v: failed-sniff MIME = %q, want image/heic preserved", authoritative, junk.MIME)
+		}
+	}
+}
+
+// TestSaveBackRefusesReExecute (M2): executing the same plan with SaveBack twice
+// fails the second time with a clear "already saved" message - not the confusing
+// "source changed" the now-rewritten file would otherwise trigger - while a no-op
+// SaveBack (which writes nothing) stays re-runnable.
+func TestSaveBackRefusesReExecute(t *testing.T) {
+	ctx := context.Background()
+	plan, err := mustParseFile(t, copyToTemp(t, sampleFLAC)).Edit().Set(tag.Title, "Once").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := plan.Execute(ctx, wl.SaveBack()); err != nil {
+		t.Fatalf("first SaveBack: %v", err)
+	}
+	_, _, err = plan.Execute(ctx, wl.SaveBack())
+	if !errors.Is(err, waxerr.ErrInvalidData) {
+		t.Errorf("second SaveBack err = %v, want ErrInvalidData", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), "already saved") {
+		t.Errorf("second SaveBack err = %v, want it to mention 'already saved'", err)
+	}
+
+	// A committed SaveBack spends the plan for EVERY destination, not just a second
+	// SaveBack: re-reading the rewritten file with the original layout's segments would
+	// corrupt the output, so SaveAsFile and WriteTo are refused too.
+	if _, _, err := plan.Execute(ctx, wl.SaveAsFile(t.TempDir()+"/out.flac")); !errors.Is(err, waxerr.ErrInvalidData) {
+		t.Errorf("SaveAsFile after a committed SaveBack err = %v, want ErrInvalidData", err)
+	}
+	var buf bytes.Buffer
+	if _, _, err := plan.Execute(ctx, wl.WriteTo(&buf, nil)); !errors.Is(err, waxerr.ErrInvalidData) {
+		t.Errorf("WriteTo after a committed SaveBack err = %v, want ErrInvalidData", err)
+	}
+
+	// A no-op SaveBack writes nothing, so re-running it stays valid (it never committed).
+	noop, err := mustParseFile(t, copyToTemp(t, sampleFLAC)).Edit().Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := noop.Execute(ctx, wl.SaveBack()); err != nil {
+		t.Fatalf("first no-op SaveBack: %v", err)
+	}
+	if _, _, err := noop.Execute(ctx, wl.SaveBack()); err != nil {
+		t.Errorf("re-running a no-op SaveBack should stay valid, got: %v", err)
+	}
+}
+
+// TestUninitializedDocMessages (M6): the message papercuts report clearly - a zero
+// Document's hash entry points, ParseFile(""), and a name-less Parse of
+// unidentifiable bytes all give specific, actionable errors.
+func TestUninitializedDocMessages(t *testing.T) {
+	ctx := context.Background()
+	var zero wl.Document
+	if _, err := zero.HashAudioEssence(ctx); err == nil || !strings.Contains(err.Error(), "not initialized") {
+		t.Errorf("zeroDoc.HashAudioEssence err = %v, want it to mention 'not initialized'", err)
+	}
+	if _, err := zero.HashFile(ctx); err == nil || !strings.Contains(err.Error(), "not initialized") {
+		t.Errorf("zeroDoc.HashFile err = %v, want it to mention 'not initialized'", err)
+	}
+	// An empty path is a caller mistake, classified as ErrInvalidData (exit 4) like the
+	// other nil/empty-input guards - deliberately not the fs.ErrNotExist a bare
+	// os.Stat("") would have produced (an empty path is an invalid argument, not a
+	// missing file). Pin the class so the deliberate change is not silently undone.
+	if _, err := wl.ParseFile(ctx, ""); !errors.Is(err, waxerr.ErrInvalidData) || !strings.Contains(err.Error(), "input filename is empty") {
+		t.Errorf("ParseFile(\"\") err = %v, want ErrInvalidData mentioning 'input filename is empty'", err)
+	}
+	// A name-less Parse of unidentifiable bytes names the source readably rather than
+	// reporting `could not identify ""`.
+	if _, err := wl.Parse(ctx, wl.BytesSource([]byte("not audio, no signature here"))); err == nil || !strings.Contains(err.Error(), "<unnamed input>") {
+		t.Errorf("Parse(no name) err = %v, want it to mention '<unnamed input>'", err)
+	}
+}
+
+// TestWriteToNilWriterRejected (B2): Plan.Execute with a WriteTo whose writer is nil
+// returns a clean error instead of panicking on the first write deref.
+func TestWriteToNilWriterRejected(t *testing.T) {
+	src := readFixture(t, sampleFLAC)
+	plan, err := mustParseBytes(t, src).Edit().Set(tag.Title, "X").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = plan.Execute(context.Background(), wl.WriteTo(nil, wl.BytesSource(src)))
+	if !errors.Is(err, waxerr.ErrInvalidData) {
+		t.Errorf("WriteTo(nil): err = %v, want ErrInvalidData (and no panic)", err)
+	}
+}

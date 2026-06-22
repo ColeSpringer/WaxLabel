@@ -59,9 +59,10 @@ func TestUsageHintOnDeadEnds(t *testing.T) {
 	}
 }
 
-// TestCopyNotFoundMatchesOtherCommands (M4): copy's per-input parse failure reads
-// as the "waxlabel: <path>: <reason>" line dump/verify/set print, not the
-// classifier's bare "no such file: <path>". JSON output is unchanged.
+// TestCopyNotFoundMatchesOtherCommands (M3): copy's per-input parse failure reads
+// as the "waxlabel: <path>: <reason>" line dump/verify/set print, and the --json
+// not-found message uses the same "<path>: no such file or directory" phrasing, so
+// the human and machine forms agree across every command.
 func TestCopyNotFoundMatchesOtherCommands(t *testing.T) {
 	dst := copyFixture(t, sampleM4B)
 	missing := filepath.Join(t.TempDir(), "nope.flac")
@@ -74,10 +75,10 @@ func TestCopyNotFoundMatchesOtherCommands(t *testing.T) {
 		t.Errorf("copy not-found human message = %q, want it to contain %q", stderr, want)
 	}
 
-	// JSON path is the machine contract: still the not-found code + "no such file".
+	// JSON path is the machine contract: the not-found code plus the unified message.
 	stdout, _, code := runCLI(t, "copy", missing, dst, "--json")
-	if code != 6 || !strings.Contains(stdout, `"not-found"`) || !strings.Contains(stdout, "no such file: "+missing) {
-		t.Errorf("copy --json not-found = %q (code %d); want not-found envelope unchanged", stdout, code)
+	if code != 6 || !strings.Contains(stdout, `"not-found"`) || !strings.Contains(stdout, want) {
+		t.Errorf("copy --json not-found = %q (code %d); want not-found envelope with %q", stdout, code, want)
 	}
 }
 
@@ -230,6 +231,11 @@ func TestBareInvocationExitsUsage(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "Usage:") || !strings.Contains(stderr, "Available Commands:") {
 		t.Errorf("stderr should carry the help text: %q", stderr)
+	}
+	// An explicit failure line follows the help so the non-zero exit is obvious in a
+	// log that captured stderr (#8).
+	if !strings.Contains(stderr, "waxlabel: no command given") {
+		t.Errorf("stderr should carry the explicit 'no command given' line: %q", stderr)
 	}
 
 	hout, _, hcode := runCLI(t, "--help")
@@ -547,5 +553,125 @@ func TestNonExpandingCommandsRejectNonRegular(t *testing.T) {
 				t.Errorf("stderr should name the directory: %q", errb)
 			}
 		})
+	}
+}
+
+// TestCopyRejectsStdin (M1): copy has no streaming model, so "-" as either operand
+// is a usage error (exit 2), not an attempt to open a file literally named "-".
+func TestCopyRejectsStdin(t *testing.T) {
+	dst := copyFixture(t, sampleFLAC)
+	_, stderr, code := runCLI(t, "copy", "-", dst)
+	if code != 2 || !strings.Contains(stderr, "standard input") {
+		t.Errorf("copy - dst: code %d, stderr %q; want exit 2 mentioning standard input", code, stderr)
+	}
+	if _, _, code := runCLI(t, "copy", dst, "-"); code != 2 {
+		t.Errorf("copy dst -: code %d, want exit 2", code)
+	}
+}
+
+// TestRejectEmptyScalarFlags (U4): an explicitly-empty --preset/--legacy/--padding is
+// a usage error on both set and plan, matching the unknown-value rejection rather than
+// being silently treated as unset (and keeping the scalar write-shaping flags
+// consistent).
+func TestRejectEmptyScalarFlags(t *testing.T) {
+	file := copyFixture(t, sampleFLAC)
+	for _, flag := range []string{"--preset", "--legacy", "--padding"} {
+		_, stderr, code := runCLI(t, "set", file, "--set", "TITLE=X", flag, "")
+		if code != 2 || !strings.Contains(stderr, "cannot be empty") {
+			t.Errorf("set %s '': code %d, stderr %q; want exit 2 'cannot be empty'", flag, code, stderr)
+		}
+		if _, _, code := runCLI(t, "plan", file, flag, ""); code != 2 {
+			t.Errorf("plan %s '': code %d, want exit 2", flag, code)
+		}
+	}
+}
+
+// TestCapsNoArgsHasHint (U5): `caps` with neither a file nor --format dead-ends with
+// the same "run '... --help' for usage" pointer the other commands print.
+func TestCapsNoArgsHasHint(t *testing.T) {
+	_, stderr, code := runCLI(t, "caps")
+	if code != 2 {
+		t.Fatalf("caps no-args exit = %d, want 2", code)
+	}
+	if !strings.Contains(stderr, "--help") {
+		t.Errorf("caps no-args stderr = %q, want the --help hint", stderr)
+	}
+}
+
+// TestEmptyWalkNoteNotAFailure (M5): a --recursive walk that matches no audio files
+// prints a "note:" line (not a "waxlabel:" failure line) and still exits 0.
+func TestEmptyWalkNoteNotAFailure(t *testing.T) {
+	dir := t.TempDir()
+	_, stderr, code := runCLI(t, "plan", dir, "--recursive")
+	if code != 0 {
+		t.Fatalf("plan empty --recursive exit = %d, want 0", code)
+	}
+	if !strings.Contains(stderr, "note: no audio files found") {
+		t.Errorf("stderr = %q, want 'note: no audio files found'", stderr)
+	}
+	if strings.Contains(stderr, "waxlabel: no audio") {
+		t.Errorf("the exit-0 note should not wear the 'waxlabel:' failure prefix; got %q", stderr)
+	}
+}
+
+// TestSetVerifyConfirmation (#4): a committed --verify save confirms the essence
+// check - a human "Audio essence verified" line and a JSON "verified": true - while
+// a run without --verify omits the field so a normal save does not read like a check.
+func TestSetVerifyConfirmation(t *testing.T) {
+	out, _, code := runCLI(t, "set", copyFixture(t, sampleFLAC), "--set", "TITLE=Verified", "--verify")
+	if code != 0 {
+		t.Fatalf("set --verify exit = %d, want 0", code)
+	}
+	if !strings.Contains(out, "Audio essence verified") {
+		t.Errorf("human output missing the verified confirmation:\n%s", out)
+	}
+
+	jout, _, code := runCLI(t, "--json", "set", copyFixture(t, sampleFLAC), "--set", "TITLE=Y", "--verify")
+	if code != 0 {
+		t.Fatalf("set --json --verify exit = %d, want 0", code)
+	}
+	if !strings.Contains(jout, `"verified": true`) {
+		t.Errorf("JSON output missing verified:true:\n%s", jout)
+	}
+
+	// A normal save (no --verify) omits the field entirely - never "verified": false.
+	jplain, _, _ := runCLI(t, "--json", "set", copyFixture(t, sampleFLAC), "--set", "TITLE=Z")
+	if strings.Contains(jplain, "verified") {
+		t.Errorf("a non-verify save should not mention verified:\n%s", jplain)
+	}
+}
+
+// TestUnquotedValueHint (#1): a bare-word positional that does not resolve, given
+// alongside a value flag, draws the quoting hint (the symptom of an unquoted
+// `--set TITLE=Two Words`), while the stray word still reports its own not-found.
+func TestUnquotedValueHint(t *testing.T) {
+	file := copyFixture(t, sampleFLAC)
+	// The shell would split "Two Words" into "--set TITLE=Two" plus a stray "Words".
+	_, stderr, code := runCLI(t, "set", file, "--set", "TITLE=Two", "Words")
+	if code != 6 {
+		t.Fatalf("stray bare word exit = %d, want 6 (its own not-found)", code)
+	}
+	if !strings.Contains(stderr, "must be quoted") {
+		t.Errorf("stderr should carry the quoting hint; got:\n%s", stderr)
+	}
+
+	// No false positive: two real files with no stray bare word draw no hint.
+	_, stderr, code = runCLI(t, "set", file, copyFixture(t, sampleFLAC), "--set", "TITLE=One")
+	if code != 0 {
+		t.Fatalf("two real files exit = %d, want 0", code)
+	}
+	if strings.Contains(stderr, "must be quoted") {
+		t.Errorf("no bare word, so no quoting hint expected; got:\n%s", stderr)
+	}
+
+	// No false positive: a lone, simply-missing extensionless target is indistinguishable
+	// from a value fragment on its own, so with no resolved sibling it draws no hint - the
+	// not-found stands alone.
+	_, stderr, code = runCLI(t, "set", filepath.Join(t.TempDir(), "no_such_song"), "--set", "TITLE=X")
+	if code != 6 {
+		t.Fatalf("lone missing extensionless file exit = %d, want 6", code)
+	}
+	if strings.Contains(stderr, "must be quoted") {
+		t.Errorf("a lone missing file should not draw the quoting hint; got:\n%s", stderr)
 	}
 }

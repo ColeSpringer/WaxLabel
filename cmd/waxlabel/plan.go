@@ -30,6 +30,12 @@ func newPlanCmd() *cobra.Command {
 			editPrecedenceHelp,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Reject an explicitly-empty --preset/--legacy, matching set and the unknown-
+			// value rejection (U4). plan has no no-edits guard: previewing an unedited file
+			// is a valid "is it up to date" query.
+			if err := rejectEmptyScalarFlags(cmd); err != nil {
+				return err
+			}
 			ce, err := ef.compile()
 			if err != nil {
 				return err
@@ -48,6 +54,9 @@ func newPlanCmd() *cobra.Command {
 			if err := notifyInvocationNotes(cmd.ErrOrStderr(), ce, &ef, realOf, paths, asJSON); err != nil {
 				return err
 			}
+			// Advise quoting when a bare-word positional that does not resolve looks like
+			// an unquoted value fragment and a value flag was given (#1).
+			maybeQuotingHint(cmd.ErrOrStderr(), &ef, realOf, args, asJSON)
 			notifier := newSingleValuedNotifier(ef.strict, asJSON)
 			pnoter := newPaddingNoter(asJSON, cmd.ErrOrStderr())
 			return perFile(cmd, paths,

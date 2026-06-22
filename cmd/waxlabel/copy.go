@@ -33,6 +33,12 @@ func newCopyCmd() *cobra.Command {
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			srcPath, dstPath := args[0], args[1]
+			// copy is a file-to-file operation with no streaming model (that is the
+			// library's WriteTo), so "-" names no real file here. Reject it up front as a
+			// usage error rather than try to open a file literally named "-". (M1)
+			if srcPath == stdinArg || dstPath == stdinArg {
+				return usagef("copy does not read standard input; pass file paths")
+			}
 			opts, err := resolveWriteFlags(preset, legacy)
 			if err != nil {
 				return err

@@ -299,7 +299,9 @@ func emitJSONList(w io.Writer, items []any) error {
 // unaffected (it still emits []).
 func noteNoFiles(w io.Writer, paths []string) {
 	if len(paths) == 0 {
-		fmt.Fprintln(w, "waxlabel: no audio files found")
+		// A "note:" prefix (not "waxlabel:") so this exit-0 advisory does not read as a
+		// failure line - the run succeeded, there was simply nothing to do (M5).
+		fmt.Fprintln(w, "note: no audio files found")
 	}
 }
 
@@ -364,8 +366,8 @@ func renderError(w io.Writer, jsonMode bool, err error) {
 		return
 	}
 	// Pick the sanitizer by message shape. A single-line message can embed a
-	// file-derived path (e.g. "no such file: <path>" from a hostile glob/walk arg),
-	// so SanitizeLine escapes \n/\t too, blocking line-forgery. A multiline message
+	// file-derived path (e.g. "<path>: no such file or directory" from a hostile
+	// glob/walk arg), so SanitizeLine escapes \n/\t too, blocking line-forgery. A multiline message
 	// is trusted cobra text (the "unknown command ... Did you mean this?" block), so
 	// SanitizeText preserves its real newlines/tabs while still escaping ESC/CSI/BEL/
 	// CR - otherwise the suggestion shows literal \x0a/\x09 (H1). The output boundary
@@ -472,7 +474,10 @@ func classifyError(err error) classifiedError {
 		c.exitCode, c.code = 4, "no-tags"
 	case isNotFoundPathError(err):
 		pe, _ := err.(*fs.PathError) // guaranteed by isNotFoundPathError
-		c.exitCode, c.code, c.message = 6, "not-found", "no such file: "+pe.Path
+		// Per-file "<path>: no such file or directory", matching the line dump/set/verify
+		// already print, so the human and --json not-found phrasing agree across commands
+		// (M3).
+		c.exitCode, c.code, c.message = 6, "not-found", pe.Path+": no such file or directory"
 	case isLocalIOError(err):
 		c.exitCode, c.code = 6, "io"
 	}
@@ -526,7 +531,7 @@ func worseError(current, candidate error) bool {
 
 // isNotFoundPathError reports whether err is, at the top level, a "file does not
 // exist" *fs.PathError - the one shape the CLI restates as a clean
-// "no such file: <path>". The assertion is deliberately direct (not errors.As):
+// "<path>: no such file or directory". The assertion is deliberately direct (not errors.As):
 //   - an error a caller already wrapped with context (a temp-file create, a
 //     cover read) keeps that message and classifies as the generic I/O class;
 //   - a *os.LinkError/*os.SyscallError that os.IsNotExist would also accept
@@ -564,19 +569,30 @@ func exitCodeFor(err error) int { return classifyError(err).exitCode }
 // a flag-parse failure) and normalizeExecuteError's backstop, so both read alike.
 const dashPathHint = "if this was a file path beginning with '-', put '--' before it (e.g. waxlabel dump -- -track.flac)"
 
+// looksLikePath reports whether s has the shape of a file path rather than a bare
+// flag/word token: it carries a path separator or a known audio extension. A dotted
+// token like "log.level=debug" is NOT a path (a bare dot is not enough). It is the
+// single path-shape test shared by looksLikePathFlag and looksLikeBareWord, so the two
+// cannot drift.
+func looksLikePath(s string) bool {
+	return strings.ContainsAny(s, "/\\") || isAudioExtension(filepath.Ext(s))
+}
+
 // looksLikePathFlag reports whether an unknown-flag error message's offending token
-// looks like a file path - it carries a path separator or a known audio extension -
-// which is when the leading-dash "--" hint is more useful than the generic --help
-// pointer. A genuine flag typo, including a dotted one like "--log.level=debug", is
-// NOT treated as a path (a bare dot is not enough), so it keeps the --help hint. The
-// token is the last space-separated word of cobra's message ("unknown flag: --x" /
-// "unknown shorthand flag: 'x' in -x"); the fixed prefix carries no path bytes.
+// looks like a file path, which is when the leading-dash "--" hint is more useful than
+// the generic --help pointer. A genuine flag typo (including a dotted "--log.level=debug")
+// keeps the --help hint. The token is the last space-separated word of cobra's message
+// ("unknown flag: --x" / "unknown shorthand flag: 'x' in -x"); the fixed prefix carries
+// no path bytes.
 func looksLikePathFlag(msg string) bool {
-	token := msg[strings.LastIndexByte(msg, ' ')+1:]
-	if strings.ContainsAny(token, "/\\") {
-		return true // a path separator is never part of a real flag name
-	}
-	return isAudioExtension(filepath.Ext(token)) // e.g. -track.flac, --song.mp3
+	return looksLikePath(msg[strings.LastIndexByte(msg, ' ')+1:])
+}
+
+// looksLikeBareWord reports whether s is a plain word (not path-shaped) - what an
+// unquoted value fragment looks like (the "Words" left over from `--set TITLE=Two
+// Words`) rather than a real file path. It backs the quoting hint (#1).
+func looksLikeBareWord(s string) bool {
+	return !looksLikePath(s)
 }
 
 // normalizeExecuteError converts cobra's untyped unknown-command/flag errors

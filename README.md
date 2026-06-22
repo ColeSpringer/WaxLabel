@@ -132,10 +132,12 @@ arguments with `--recursive`, which selects files by extension - a mis-named or
 extension-less audio file in a walked directory is skipped, though passing it
 directly still content-sniffs it. All data commands accept `--json` for scriptable
 output:
-the list commands (`dump`, `verify`, `lint`, `set`, `plan`, `caps` over files, and
-`keys`) emit a JSON array - one element per input, `[]` when none - so a consumer
-iterates (or `jq '.[]'`) regardless of count, while `diff`, `copy`, and
-`caps --format` emit a single object.
+the list commands (`dump`, `verify`, `lint`, `set`, `plan`, and `caps` over files)
+emit a JSON array - one element per input, `[]` when none - so a consumer iterates
+(or `jq '.[]'`) regardless of count, while `diff`, `copy`, `caps --format`, and
+`keys` emit a single object. `keys` has no per-input concept, so it emits one
+`{ "schemaVersion": 1, "keys": [ ... ] }` object listing the whole canonical
+vocabulary.
 
 `ENCODER` is the canonical key for the encoding software/tool (the transcoder
 stamp, e.g. ID3 `TSSE` or MP4 `©too`), distinct from `ENCODEDBY` (the encoding

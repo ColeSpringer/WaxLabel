@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/colespringer/waxlabel/internal/core"
@@ -69,10 +70,14 @@ func (e *Editor) Add(key tag.Key, vals ...string) *Editor {
 // compiles to a patch of Set operations; it cannot clear fields).
 func (e *Editor) SetTags(t tag.Tags) *Editor { return e.Apply(t.Patch()) }
 
-// AddPicture appends a picture. MIME and dimensions are sniffed from the data
-// when not already set.
+// AddPicture appends a picture. Its MIME and dimensions are reconciled with the
+// image bytes via an authoritative header sniff ([Picture.SniffAuthoritative]):
+// when the bytes are a recognized image the sniffed MIME and dimensions win over
+// any the caller set, so a mislabeled cover cannot be embedded under a MIME that
+// contradicts it. (A file's stored picture, read by the decoders, keeps its own
+// MIME - that path fills only, via [Picture.SniffInto].)
 func (e *Editor) AddPicture(p Picture) *Editor {
-	p.SniffInto()
+	p.SniffAuthoritative()
 	// Pad the mask for any Edit-seeded pictures not yet covered, then mark this one
 	// added, keeping addedMask parallel to pictures.
 	for len(e.addedMask) < len(e.pictures) {
@@ -158,8 +163,10 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	}
 
 	// Validate every key the edit touches before it can reach the native writer
-	// and corrupt on round-trip (e.g. a key containing '=').
-	for _, k := range e.patch.Keys() {
+	// and corrupt on round-trip (e.g. a key containing '='). The key list is reused by
+	// the NUL scan below, so it is computed once.
+	patchKeys := e.patch.Keys()
+	for _, k := range patchKeys {
 		if !k.Valid() {
 			return nil, fmt.Errorf("%w: %q (keys are uppercase printable ASCII without '=' (spaces and punctuation are allowed); build them with tag.ParseKey or tag.MustKey, which accept any case)", waxerr.ErrInvalidKey, k)
 		}
@@ -179,6 +186,12 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// moved (#3). The scope is strictly zero-length: a present [""] (what `set KEY=`
 	// produces) is a distinct, CLI-reachable empty value and is left untouched.
 	dropEmptyValuedKeys(&editedTags)
+	// Reject a NUL byte in any value, chapter title, or picture description this edit
+	// introduces: a NUL silently truncates the field on the C-string formats and would
+	// otherwise corrupt the write. (D1)
+	if err := e.rejectNULValues(editedTags, patchKeys); err != nil {
+		return nil, err
+	}
 	edited := &core.Media{
 		Format:      e.base.Format,
 		Properties:  e.base.Properties,
@@ -268,6 +281,50 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		wp.Report.Warnings = appendSingleValuedWarnings(wp.Report.Warnings, e.base.Tags, planResultTags(wp, edited))
 	}
 	return &Plan{doc: e.doc, plan: wp, opts: wo}, nil
+}
+
+// rejectNULValues refuses a NUL byte in any value, chapter title, or picture
+// description this edit introduces. A NUL silently truncates the field when it is
+// written to a C-string format (the ID3 frames MP3/WAV/AIFF store, MP4 atoms), so
+// it is refused at the source for every format - even those that round-trip it
+// today - rather than written and cut on the formats that cannot hold it. This is
+// the library and transfer counterpart to the CLI's OS-level argument guard. The
+// tag scan covers only the keys the patch touches (their resolved values are in
+// editedTags); the file's untouched pre-existing tags are not re-judged. Pictures
+// are scoped to those added on this editor (addedMask), like the rest of the
+// added-picture validation; chapters cover the full edited list, which SetChapters
+// replaces wholesale. (D1)
+func (e *Editor) rejectNULValues(editedTags tag.TagSet, keys []tag.Key) error {
+	for _, k := range keys {
+		vals, ok := editedTags.Get(k)
+		if !ok {
+			continue
+		}
+		for _, v := range vals {
+			if containsNUL(v) {
+				return nulErr(fmt.Sprintf("tag value for %q", k))
+			}
+		}
+	}
+	for i, p := range e.pictures {
+		if i < len(e.addedMask) && e.addedMask[i] && containsNUL(p.Description) {
+			return nulErr("picture description")
+		}
+	}
+	for _, c := range e.chapters {
+		if containsNUL(c.Title) {
+			return nulErr("chapter title")
+		}
+	}
+	return nil
+}
+
+// containsNUL reports whether s holds a NUL byte, which truncates the field on a
+// C-string format. nulErr builds the shared rejection for [Editor.rejectNULValues].
+func containsNUL(s string) bool { return strings.IndexByte(s, 0) >= 0 }
+
+func nulErr(what string) error {
+	return fmt.Errorf("%w: %s contains a NUL byte", waxerr.ErrInvalidData, what)
 }
 
 // planResultTags returns the tag set the plan will write: the codec's computed

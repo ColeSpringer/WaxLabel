@@ -44,7 +44,10 @@ func newCapsCmd() *cobra.Command {
 				return runCapsFormat(cmd, f, opts...)
 			}
 			if len(args) == 0 {
-				return usagef("caps requires a file argument or --format")
+				// Carry the resolved command path (not a literal, which goes stale on a
+				// rename) and request the --help pointer, so this dead-end prints the same
+				// hint line the other commands' usage errors do (U5).
+				return &usageError{msg: "caps requires a file argument or --format", cmd: cmd.CommandPath(), wantsHint: true}
 			}
 			return runCapsFiles(cmd, args)
 		},

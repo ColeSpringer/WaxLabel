@@ -14,10 +14,23 @@ import (
 // Plan is a resolved, ready-to-execute write produced by [Editor.Prepare]. It
 // owns the byte-level rewrite and its report together, so [Plan.Report] is
 // exactly what [Plan.Execute] will carry out - the two cannot drift.
+//
+// [Plan.Execute] may mutate the Plan (a committed [SaveBack] is recorded so further
+// writes on it are refused), so a single Plan is not safe for concurrent Execute
+// calls; prepare a fresh Plan per goroutine. [Plan.Report]/[Plan.Changes] and the
+// rest of the read surface are pure and need no such care.
 type Plan struct {
 	doc  *Document
 	plan *core.WritePlan
 	opts core.WriteOptions
+	// committed records that a [SaveBack] on this plan already wrote bytes (the
+	// rename succeeded). Once set, [Plan.Execute] refuses any further write on this
+	// plan: the segments describe the original->edited transform against the source
+	// as parsed, so re-reading the now-rewritten file would corrupt the output (and a
+	// second SaveBack would otherwise report a confusing "source changed"). Multi-
+	// execution without a SaveBack commit - several [WriteTo] or [SaveAsFile] runs -
+	// never sets this and stays valid. (M2)
+	committed bool
 }
 
 // Report describes what executing the plan will do: the operations, the
@@ -123,6 +136,16 @@ type SaveResult struct {
 func (p *Plan) Execute(ctx context.Context, dst Destination) (*Document, SaveResult, error) {
 	if err := checkContext(ctx); err != nil {
 		return nil, SaveResult{}, err
+	}
+	// A committed SaveBack spends the plan: its segments describe the original->edited
+	// transform against the source as parsed, so re-executing ANY destination after the
+	// file was rewritten in place would re-read the already-rewritten bytes (a resized
+	// metadata region shifts every later copy offset) and corrupt the output. Refuse it
+	// here, before dispatch, so SaveBack-then-SaveAsFile/WriteTo is caught too, not only a
+	// second SaveBack. Multi-execution without a SaveBack commit - several WriteTo or
+	// SaveAsFile runs - never sets committed and stays valid. (M2)
+	if p.committed {
+		return nil, SaveResult{}, fmt.Errorf("%w: this plan already saved %s via SaveBack; re-edit the returned Document to write again", waxerr.ErrInvalidData, p.doc.path)
 	}
 	switch dst.kind {
 	case destSaveBack:

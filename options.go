@@ -14,9 +14,20 @@ type (
 )
 
 // WithLimits sets the bounded-allocation and recursion limits for untrusted
-// input.
+// input. A zero field uses the default bound for that field (it is not
+// unlimited): a partial Limits{MaxDepth: 8} keeps the default MaxAllocBytes
+// rather than dropping it to zero, which would reject every allocation.
 func WithLimits(l Limits) ParseOption {
-	return func(o *core.ParseOptions) { o.Limits = l }
+	return func(o *core.ParseOptions) {
+		d := core.DefaultParseOptions().Limits
+		if l.MaxAllocBytes == 0 {
+			l.MaxAllocBytes = d.MaxAllocBytes
+		}
+		if l.MaxDepth == 0 {
+			l.MaxDepth = d.MaxDepth
+		}
+		o.Limits = l
+	}
 }
 
 // WithSourceName sets the display name used for the source in the
@@ -48,8 +59,11 @@ func WithPreserveModTime() WriteOption {
 
 // WithVerifyEssence hashes the audio essence the rewrite copies and checks it
 // against the source's parsed extent, confirming the plan copies the audio it
-// parsed (and catching a source that changes mid-write). It does not re-read
-// the written file, so it is not an end-to-end output check.
+// parsed (and catching a source that changes mid-write). For a file destination
+// ([SaveBack]/[SaveAsFile]) it then re-reads the written temp file's audio extent
+// and compares before the commit, so the check is end-to-end through the page
+// cache (it guards the copy logic, not the disk media). A streaming [WriteTo]
+// cannot be re-read, so there it verifies the copied source bytes only.
 func WithVerifyEssence() WriteOption {
 	return func(o *core.WriteOptions) { o.VerifyEssence = true }
 }

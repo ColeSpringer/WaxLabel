@@ -67,6 +67,11 @@ func ParseFile(ctx context.Context, path string, opts ...ParseOption) (*Document
 	if err := checkContext(ctx); err != nil {
 		return nil, err
 	}
+	// An empty path would otherwise stat "" and surface as "stat : no such file...";
+	// name the actual mistake instead. (M6)
+	if path == "" {
+		return nil, fmt.Errorf("%w: input filename is empty", waxerr.ErrInvalidData)
+	}
 	fs, err := openFileSource(path)
 	if err != nil {
 		return nil, err
@@ -97,6 +102,12 @@ func parseSource(ctx context.Context, src ReaderAtSized, path string, opts core.
 	name := opts.SourceName
 	if name == "" {
 		name = path
+	}
+	// A path-less Parse with no SourceName has nothing to name the source by, so use
+	// a readable placeholder rather than letting the diagnostic read `could not
+	// identify ""`. (M6)
+	if name == "" {
+		name = "<unnamed input>"
 	}
 	// An empty file carries no signature, so its format cannot be identified
 	// regardless of name: normalize it to one outcome (unsupported) here, rather
