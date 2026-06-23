@@ -680,13 +680,28 @@ func mkSimpleNested(name, value string, sub ...[]byte) []byte {
 	return mkEl(idSimpleTag, concat(mkStr(idTagName, name), mkStr(idTagString, value), concat(sub...)))
 }
 
+// mkAudioCluster returns a minimal one-block audio Cluster. A synth fixture needs it
+// to carry real audio essence: without a cluster the parser flags WarnNoAudioFrames
+// (no audio) and Editor.Prepare refuses to write a no-audio file (H1). Real .mka files
+// always carry clusters; the synth fixtures omitted them to focus on tag/chapter logic,
+// which a single preserved block does not disturb.
+func mkAudioCluster() []byte {
+	return mkEl(idCluster, concat(
+		mkUint(idTimestamp, 0),
+		mkEl(idSimpleBlock, []byte{0x81, 0x00, 0x00, 0x00, 0xAA, 0xBB}), // track 1, ts 0, one frame
+	))
+}
+
 // buildMatroska assembles a minimal definite-size file: EBML header + Segment
-// containing an optional Info (with title) and the given Tags bytes.
+// containing an optional Info (with title), a one-block audio Cluster, and the given
+// Tags bytes. The cluster sits before the tags so a tag edit rewrites the tail without
+// touching it.
 func buildMatroska(docType, title string, tags []byte) []byte {
 	var seg []byte
 	if title != "" {
 		seg = append(seg, mkEl(idInfo, mkStr(idSegTitle, title))...)
 	}
+	seg = append(seg, mkAudioCluster()...)
 	seg = append(seg, tags...)
 	return concat(mkEl(idEBML, mkStr(idDocType, docType)), mkEl(idSegment, seg))
 }

@@ -439,8 +439,9 @@ func TestMP3TruncatedAfterXingWarns(t *testing.T) {
 // extension routes it to the MP3 codec; parseMPEG finds no frame and the non-empty
 // essence range triggers the warning. Because that range is non-empty, the
 // zero-essence no-audio path in the root parse stays silent, so exactly one
-// no-audio warning fires (the two paths must not double-warn). The essence bytes
-// are left intact, so a later set still preserves them.
+// no-audio warning fires (the two paths must not double-warn). The bytes are left
+// intact (the file stays dumpable), but the H1 gate means a later set or verify now
+// refuses it - see TestNoAudioMP3RefusesHashAndWrite.
 func TestMP3NonAudioWarnsNoAudio(t *testing.T) {
 	t.Parallel()
 	path := writeTempFile(t, "fake.mp3", []byte("this is text, not audio\n"))

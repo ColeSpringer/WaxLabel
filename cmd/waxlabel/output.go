@@ -309,6 +309,62 @@ func emitJSONList(w io.Writer, items []any) error {
 	return writeJSON(w, items)
 }
 
+// listCommandAnnotation marks a command whose --json output is a JSON array (one
+// element per input, via perFile/emitJSONList above). dispatch reads it to wrap a
+// pre-flight error (a bad flag, missing args, or a dir without --recursive) in the
+// same single-element array shape, so `dump --json … | jq '.[]'` keeps working even
+// when the command fails before its per-file loop (E2). It travels with the command
+// at construction (markListCommand), so adding a list command later sets this in its
+// own constructor rather than in a second hand-maintained list the renderer would
+// have to track.
+const listCommandAnnotation = "waxlabel/emitsJSONList"
+
+// markListCommand tags cmd as a list command (see listCommandAnnotation) and returns
+// it, so a constructor can wrap its command in one expression.
+func markListCommand(cmd *cobra.Command) *cobra.Command {
+	if cmd.Annotations == nil {
+		cmd.Annotations = map[string]string{}
+	}
+	cmd.Annotations[listCommandAnnotation] = "true"
+	return cmd
+}
+
+// emitsJSONList reports whether the command args resolve to emits its --json output as
+// a list (one element per input), so dispatch wraps a pre-flight error in the same
+// single-element array shape (E2). It resolves the command with cobra's own Find -
+// which already handles "--", a flag before the subcommand, and the --format value -
+// rather than re-scanning raw args, then reads the list-command annotation. caps is a
+// list command over files but answers a single object under --format (a format query,
+// not a per-file list), so that one case stays an object; an unknown command resolves
+// to the root (no annotation) and stays an object too.
+func emitsJSONList(root *cobra.Command, args []string) bool {
+	cmd, _, err := root.Find(args)
+	if err != nil || cmd == nil || cmd.Annotations[listCommandAnnotation] != "true" {
+		return false
+	}
+	if cmd.Name() == "caps" && hasFlag(args, "format") {
+		return false
+	}
+	return true
+}
+
+// hasFlag reports whether the long flag --name appears in args, in either the
+// "--name value" or "--name=value" spelling. It stops at the POSIX "--" terminator,
+// so a positional that merely looks like the flag (a file literally named --format,
+// passed after --) is not mistaken for it.
+func hasFlag(args []string, name string) bool {
+	long := "--" + name
+	for _, a := range args {
+		if a == "--" {
+			break // everything after -- is a positional, not a flag
+		}
+		if a == long || strings.HasPrefix(a, long+"=") {
+			return true
+		}
+	}
+	return false
+}
+
 // noteNoFiles prints a note when a path list is empty - reachable only when a
 // --recursive walk matched no audio files (MinimumNArgs(1) guarantees at least
 // one argument otherwise) - so editing a typo'd or audio-free directory is not a
@@ -382,17 +438,25 @@ type jsonError struct {
 }
 
 // renderError writes the terminal error as JSON or as a human-readable line,
-// using one shared classification for both.
-func renderError(w io.Writer, jsonMode bool, err error) {
+// using one shared classification for both. emitList wraps the JSON envelope in a
+// single-element array for a list command, so its pre-flight failures keep the
+// documented array shape that `jq '.[]'` relies on (E2); a non-list command (and the
+// human path) is unaffected.
+func renderError(w io.Writer, jsonMode, emitList bool, err error) {
 	if err == nil {
 		return
 	}
 	c := classifyError(err)
 	if jsonMode {
-		_ = writeJSON(w, jsonError{
+		env := jsonError{
 			SchemaVersion: schemaVersion,
 			Error:         jsonErrBody{Code: c.code, Message: c.message, Hint: c.hint},
-		})
+		}
+		if emitList {
+			_ = emitJSONList(w, []any{env})
+		} else {
+			_ = writeJSON(w, env)
+		}
 		return
 	}
 	// Pick the sanitizer by message shape. A single-line message can embed a

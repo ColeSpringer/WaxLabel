@@ -132,29 +132,6 @@ func TestTrailingID3FalsePositiveGuard(t *testing.T) {
 	}
 }
 
-// #3: unsupported legacy policies must fail loudly when there is a legacy tag,
-// rather than silently doing nothing.
-func TestLegacyReconcileRejectedWhenLegacyPresent(t *testing.T) {
-	ctx := context.Background()
-	src := withLeadingID3v2(readFixture(t, sampleFLAC))
-	path := writeTempFile(t, "lead.flac", src)
-	doc, err := wl.ParseFile(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := doc.Edit().Prepare(wl.WithLegacyPolicy(wl.LegacyReconcile)); !errors.Is(err, waxerr.ErrUnsupportedTag) {
-		t.Errorf("Reconcile with legacy present: err = %v, want ErrUnsupportedTag", err)
-	}
-}
-
-// ...but the Canonical preset works on a file without any legacy container.
-func TestCanonicalPresetWithoutLegacy(t *testing.T) {
-	doc := mustParseBytes(t, flacWithComments("TITLE=x"))
-	if _, err := doc.Edit().Set(tag.Title, "y").Prepare(wl.Canonical); err != nil {
-		t.Errorf("Canonical preset on a clean FLAC errored: %v", err)
-	}
-}
-
 // #4: two native fields mapping to one canonical key with different values is a
 // real conflict and must surface in the family view and Lint.
 func TestConflictingFamiliesDetected(t *testing.T) {

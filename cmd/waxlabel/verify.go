@@ -65,7 +65,7 @@ func newVerifyCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&whole, "whole-file", false, "also compute the whole-file identity")
 	cmd.Flags().BoolVar(&recursive, "recursive", false, "recurse into directory arguments, verifying every audio file found (selected by file extension)")
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "print one tab-separated digest+path line per file, for piping into sort/uniq to dedup")
-	return cmd
+	return markListCommand(cmd)
 }
 
 // computeVerify parses the file at realPath and computes its essence digest (and

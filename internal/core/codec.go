@@ -73,7 +73,15 @@ type WriteReport struct {
 // newline.
 func (r WriteReport) String() string {
 	if r.NoOp {
-		return "no changes (already up to date)"
+		// A no-op can still carry a warning the consumer must see - an edit whose only
+		// effect was a value the format could not store (value-dropped) leaves the bytes
+		// unchanged yet is not what was asked for, so it must not vanish behind a bare "no
+		// changes". A clean no-op has no warnings, so this stays just that one line.
+		s := "no changes (already up to date)"
+		for _, x := range r.Warnings {
+			s += "\n  warning: " + x.String()
+		}
+		return s
 	}
 	var lines []string
 	if len(r.Operations) == 0 {

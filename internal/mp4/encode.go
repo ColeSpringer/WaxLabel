@@ -167,6 +167,79 @@ func clampUint16(n int) uint16 {
 	return uint16(n)
 }
 
+// droppedValue records a canonical (key, value) the iTunes atom encoders cannot
+// represent and therefore silently drop, so the write plan can surface it as a
+// value-dropped warning (F1) rather than losing it with exit 0.
+type droppedValue struct {
+	Key   tag.Key
+	Value string
+}
+
+// droppedValues returns the canonical numeric values this edit would lose at the
+// iTunes encode site: a trkn/disk slot outside the uint16 the atom holds
+// (numTotal -> clampUint16), or a stik media kind strconv.ParseUint cannot read
+// (mediaTypeItem). It reads the same raw canonical strings those encoders consume -
+// so it names exactly what buildItems drops and cannot desync from it - and treats a
+// literal 0 (the pair encoder's "absent") and an absent/empty slot as no loss. The
+// encoders stay the authority on the written value; this is only which were lost.
+func droppedValues(ts tag.TagSet) []droppedValue {
+	var out []droppedValue
+	out = appendDroppedPair(out, ts, tag.TrackNumber, tag.TrackTotal)
+	out = appendDroppedPair(out, ts, tag.DiscNumber, tag.DiscTotal)
+	// MEDIATYPE (stik) shares its representability rule with the linter/note: reuse
+	// tag.ValidMediaTypeValue so the encoder's drop and the validator cannot disagree on
+	// what a storable stik value is. A present-but-empty value is not a drop (it stores
+	// nothing by design), so skip it before the validity check.
+	if v, ok := ts.First(tag.MediaType); ok && strings.TrimSpace(v) != "" && !tag.ValidMediaTypeValue(tag.MediaType, v) {
+		out = append(out, droppedValue{Key: tag.MediaType, Value: strings.TrimSpace(v)})
+	}
+	return out
+}
+
+// appendDroppedPair adds the dropped slot(s) of one trkn/disk pair. It mirrors
+// numTotal/ParseNumPair's slot resolution exactly - a combined "n/total" in the
+// number field feeds the total slot, an explicit total key overrides it - so it
+// names the same slots the encoder reads. TRACKNUMBER and TRACKTOTAL share one trkn
+// atom, so each slot is judged against its own source string (TRACKTOTAL=abc names
+// TRACKTOTAL, not the merged pair).
+func appendDroppedPair(out []droppedValue, ts tag.TagSet, numKey, totKey tag.Key) []droppedValue {
+	numStr, _ := ts.First(numKey)
+	totStr, _ := ts.First(totKey)
+	// Resolve the two slots exactly as the encoder's tag.ParseNumPair does: split the
+	// number field on "/" with the shared tag.SplitNumberTotal, then let a present (raw
+	// non-empty) explicit total key override the "/total" tail. The override gates on the
+	// raw string, not the trimmed one - matching ParseNumPair - so a whitespace-only total
+	// (which ParseNumPair reads as 0, discarding any tail) overrides here too and does not
+	// leave a stale tail this would misreport as dropped.
+	numPart, totPart := tag.SplitNumberTotal(numStr)
+	if totStr != "" {
+		totPart = strings.TrimSpace(totStr)
+	}
+	if uint16ValueDropped(numPart) {
+		out = append(out, droppedValue{Key: numKey, Value: numPart})
+	}
+	if uint16ValueDropped(totPart) {
+		out = append(out, droppedValue{Key: totKey, Value: totPart})
+	}
+	return out
+}
+
+// uint16ValueDropped reports whether the trimmed slot string holds a value the
+// uint16 trkn/disk atom cannot represent: a non-numeric value, a negative, or one
+// past 65535. An empty/absent slot is not a drop, and neither is a literal 0 - the
+// pair encoder treats 0 as "absent" (pairItem), so flagging it would be wrong.
+func uint16ValueDropped(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return true
+	}
+	return n < 0 || n > 0xFFFF
+}
+
 // renderData builds a "data" sub-atom: [size]["data"][version=0][type:24][locale=0][value].
 func renderData(typ uint32, value []byte) []byte {
 	b := make([]byte, 16+len(value))

@@ -72,7 +72,7 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 		// level - which, as AccessPartial, would mislabel even a lossless front-cover copy
 		// as lossy. The Fidelity/Constraints below still document the limitation in caps.
 		Read: core.AccessFull, Write: core.AccessFull,
-		Representation: "covr atom (JPEG/PNG)", Fidelity: "image bytes lossless; role and description not stored",
+		Representation: "covr atom (JPEG/PNG/BMP)", Fidelity: "image bytes lossless; role and description not stored",
 		Constraints: []string{"covers store image data only - picture role and description are dropped (read back as front cover)"},
 	}
 	chapters := core.Capability{

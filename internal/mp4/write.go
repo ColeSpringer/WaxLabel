@@ -58,6 +58,19 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		}
 	}
 
+	// Surface canonical numeric values the iTunes atoms cannot represent and the
+	// encoder therefore drops (trkn/disk are uint16; stik is uint32) as a plan warning
+	// per dropped key, so the loss is visible before the write rather than vanishing
+	// with exit 0 (F1). droppedValues reads the same raw canonical strings the encoder
+	// consumes, so it cannot desync from what buildItems drops; both the ilst and the
+	// chapter rewrite paths build the ilst from edited.Tags, so computing it here (before
+	// the branch, into the shared report) covers both.
+	for _, dv := range droppedValues(edited.Tags) {
+		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueDropped,
+			fmt.Sprintf("%s value %q cannot be represented in this format and was dropped", dv.Key, dv.Value),
+			dv.Key)
+	}
+
 	// A chapter edit rewrites the whole moov.udta (folding any ilst change into one
 	// delta); a tag/picture-only edit keeps the lighter in-place ilst path.
 	if chaptersChanged {
@@ -107,9 +120,18 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	result := buildResult(edited, d, newItems, lay, delta, total, int64(len(newIlst)))
 	// Collapse to a true no-op when the ilst rebuild re-projected to base's values
-	// (e.g. TRACKNUMBER=03 -> 3); a chapter edit took the planChapters path above, so
-	// nothing structural remains here. See core.DowngradeNoOp.
+	// (e.g. TRACKNUMBER=03 -> 3, or an unrepresentable value the encoder dropped); a
+	// chapter edit took the planChapters path above, so nothing structural remains here.
+	// See core.DowngradeNoOp.
 	if np := core.DowngradeNoOp(core.FormatMP4, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), false); np != nil {
+		// Carry the input-rejection warnings through the downgrade: the edit produced no
+		// net byte change, but the user's value or cover description was still rejected and
+		// must be surfaced (and --strict still escalates value-dropped). MP4 stamps only
+		// these input-rejection warnings (value-dropped, picture-metadata-dropped) before
+		// this point - not a write-characteristic warning a verbatim no-op would make moot
+		// (as ID3MultiValue is for the other codecs) - so carrying the whole set is safe.
+		// DowngradeNoOp builds a fresh report, so re-attach.
+		np.Report.Warnings = append(np.Report.Warnings, report.Warnings...)
 		return np, nil
 	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil

@@ -712,7 +712,9 @@ func TestMatroskaWriteMultipleTagsConsolidated(t *testing.T) {
 // refused rather than copied with stale offsets.
 func TestMatroskaWriteMultipleSeekHeadRefused(t *testing.T) {
 	seek := mkEl(idSeekHead, nil)
-	seg := concat(seek, seek, mkEl(idTags, mkEl(idTag, concat(
+	// Include a cluster so the file has audio essence: otherwise Editor.Prepare's
+	// no-audio guard (H1) preempts the multi-SeekHead refusal this test exercises.
+	seg := concat(seek, seek, mkAudioCluster(), mkEl(idTags, mkEl(idTag, concat(
 		mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "AA")))))
 	data := concat(mkEl(idEBML, mkStr(idDocType, "matroska")), mkEl(idSegment, seg))
 	_, err := mustParseBytes(t, data).Edit().Set(tag.Artist, "X").Prepare()

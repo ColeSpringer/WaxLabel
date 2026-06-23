@@ -77,6 +77,12 @@ func TestWriteReportString(t *testing.T) {
 	if got := (wl.WriteReport{BytesBefore: 1, BytesAfter: 1}).String(); !strings.Contains(got, "- rewrite metadata") {
 		t.Errorf("WriteReport.String() with no operations = %q, want rewrite-metadata fallback", got)
 	}
+	// A no-op that carries a warning (a value the format could not store) still surfaces
+	// it, so fmt.Println(plan) does not hide a rejected edit behind a bare "no changes".
+	noopWarned := wl.WriteReport{NoOp: true, Warnings: []wl.Warning{{Code: wl.WarnValueDropped, Message: "TRACKNUMBER dropped"}}}
+	if got := noopWarned.String(); !strings.Contains(got, "no changes") || !strings.Contains(got, "value-dropped") {
+		t.Errorf("no-op report with a warning = %q, want the no-changes line plus the warning", got)
+	}
 }
 
 // TestPlanChangesNoOp: a plan that edits nothing reports no changes (so the

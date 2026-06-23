@@ -94,6 +94,13 @@ func FuzzParse(f *testing.F) {
 			if errors.Is(err, waxerr.ErrUnsupportedFormat) && !doc.Format().Writable() {
 				return
 			}
+			// A file the parser flagged as having no audio essence (WarnNoAudioFrames) is
+			// refused by Editor.Prepare (H1, ErrInvalidData): it is a contradictory file the
+			// library declines to rewrite, not a regression. Accept it and skip the write
+			// round-trip (a no-audio seed has nothing to round-trip anyway).
+			if errors.Is(err, waxerr.ErrInvalidData) && hasWarning(doc, wl.WarnNoAudioFrames) {
+				return
+			}
 			t.Fatalf("prepare on a parsed doc failed: %v", err)
 		}
 		var out bytes.Buffer

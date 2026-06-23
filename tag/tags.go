@@ -1,6 +1,7 @@
 package tag
 
 import (
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -458,6 +459,108 @@ func ValidBooleanValue(k Key, v string) bool {
 	default:
 		return false
 	}
+}
+
+// replayGainKeys is the canonical ReplayGain gain/peak keys, kept as a set so
+// [IsReplayGainKey] is the single definition shared by the linter and the set-time
+// malformed-value note, mirroring numericKeys/dateKeySet/booleanKeys.
+var replayGainKeys = map[Key]bool{
+	ReplayGainTrackGain: true,
+	ReplayGainTrackPeak: true,
+	ReplayGainAlbumGain: true,
+	ReplayGainAlbumPeak: true,
+}
+
+// IsMediaTypeKey reports whether k is the MEDIATYPE (iTunes stik media-kind) key,
+// whose value is a non-negative integer.
+func IsMediaTypeKey(k Key) bool { return k == MediaType }
+
+// IsReplayGainKey reports whether k is a canonical ReplayGain gain or peak key.
+func IsReplayGainKey(k Key) bool { return replayGainKeys[k] }
+
+// ValidMediaTypeValue reports whether v is a value the MEDIATYPE (iTunes stik media
+// kind) key accepts: a non-negative integer in the uint32 range the atom stores. It
+// mirrors the MP4 encoder's strconv.ParseUint(...,32) so a value the encoder would
+// drop is flagged while one it stores (including a large 70000) passes. A non-MediaType
+// key is reported valid - there is nothing to check.
+func ValidMediaTypeValue(k Key, v string) bool {
+	if k != MediaType {
+		return true
+	}
+	_, err := strconv.ParseUint(strings.TrimSpace(v), 10, 32)
+	return err == nil
+}
+
+// ValidReplayGainValue reports whether v is a value the ReplayGain key k accepts: a
+// decimal number, optionally suffixed with a case-insensitive "dB" (the conventional
+// gain unit; a peak is unitless). A *_PEAK key additionally requires a non-negative
+// magnitude (a peak is an amplitude, never signed), while a *_GAIN may be negative. A
+// non-ReplayGain key is reported valid. It mirrors [ValidPartialDate]'s shape so the
+// linter and the set-time note share one definition.
+func ValidReplayGainValue(k Key, v string) bool {
+	if !replayGainKeys[k] {
+		return true
+	}
+	s := strings.TrimSpace(v)
+	if len(s) >= 2 && strings.EqualFold(s[len(s)-2:], "dB") {
+		s = strings.TrimSpace(s[:len(s)-2])
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return false
+	}
+	// ParseFloat accepts "NaN"/"Inf"/"+Inf"/"-Inf" without error, but a ReplayGain
+	// value is a finite decibel/amplitude figure, so reject the non-finite spellings.
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return false
+	}
+	if (k == ReplayGainTrackPeak || k == ReplayGainAlbumPeak) && f < 0 {
+		return false
+	}
+	return true
+}
+
+// Validator is the value contract for one category of canonical key - the single
+// source the linter ([Document.Lint]) and the CLI's set-time malformed-value note
+// both consume, so the "lint and set agree" contract cannot drift. Applies reports
+// whether a key falls in the category; Valid reports whether a present, non-empty
+// value is acceptable. LintDetail/NoteDetail are the human tails the two surfaces
+// append, phrased for each (the linter as "%q <LintDetail>", the note as
+// "KEY=VALUE <NoteDetail>; written as-is").
+type Validator struct {
+	Applies    func(Key) bool
+	Valid      func(Key, string) bool
+	LintCode   string
+	LintDetail string
+	NoteDetail string
+}
+
+// validators is the category registry. The category key-sets are disjoint, so a key
+// matches at most one. RATING is deliberately absent: it is free-form across formats
+// with no canonical numeric contract.
+var validators = []Validator{
+	{IsNumericKey, ValidNumericValue, "malformed-number",
+		"is not a number", "does not look like a number"},
+	{IsDateKey, func(_ Key, v string) bool { return ValidPartialDate(v) }, "malformed-date",
+		"is not YYYY, YYYY-MM, or YYYY-MM-DD", "is not YYYY / YYYY-MM / YYYY-MM-DD"},
+	{IsBooleanKey, ValidBooleanValue, "malformed-boolean",
+		"is not a boolean (1/true/yes/0/false/no)", "does not look like a boolean (1/true/yes/0/false/no)"},
+	{IsMediaTypeKey, ValidMediaTypeValue, "malformed-number",
+		"is not a non-negative integer", "does not look like a non-negative integer"},
+	{IsReplayGainKey, ValidReplayGainValue, "malformed-number",
+		"is not a ReplayGain value (e.g. -7.30 dB)", "does not look like a ReplayGain value (e.g. -7.30 dB)"},
+}
+
+// ValidatorFor returns the value contract for key k, and whether k has one. A key in
+// no category - a free-form key like RATING, or any custom key - returns false, so
+// its values are never flagged as malformed.
+func ValidatorFor(k Key) (Validator, bool) {
+	for _, v := range validators {
+		if v.Applies(k) {
+			return v, true
+		}
+	}
+	return Validator{}, false
 }
 
 // parsePerformers reads PERFORMER values, splitting a trailing "(role)" off

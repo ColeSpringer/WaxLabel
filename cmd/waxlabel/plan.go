@@ -64,7 +64,7 @@ func newPlanCmd() *cobra.Command {
 			if err := refuseUnquotedValue(&ef, realOf, args, false); err != nil {
 				return err
 			}
-			notifier := newSingleValuedNotifier(ef.strict, asJSON)
+			gate := newStrictWarningGate(ef.strict)
 			pnoter := newPaddingNoter(asJSON, cmd.ErrOrStderr())
 			return perFile(cmd, paths,
 				func(ctx context.Context, path string) (*wl.Plan, error) {
@@ -77,7 +77,7 @@ func newPlanCmd() *cobra.Command {
 					if ce.paddingFlag {
 						pnoter.note(doc.Capabilities())
 					}
-					if err := notifier.check(plan); err != nil {
+					if err := gate.check(plan); err != nil {
 						return nil, err
 					}
 					return plan, nil
@@ -90,7 +90,7 @@ func newPlanCmd() *cobra.Command {
 	}
 	ef.bind(cmd)
 	cmd.Flags().BoolVar(&recursive, "recursive", false, "recurse into directory arguments, previewing every audio file found (selected by file extension)")
-	return cmd
+	return markListCommand(cmd)
 }
 
 // jsonReport is the machine-readable form of a write plan, shared by plan and
@@ -113,10 +113,13 @@ type jsonReport struct {
 
 // jsonChange is one field's change in a write plan: the canonical key, how it
 // changed ("added"/"removed"/"changed"), and the before/after values. It mirrors
-// the shape of jsonDiffTag, naming the two sides old/new for a before/after edit.
+// the shape of jsonDiffTag, naming the two sides old/new for a before/after edit. A
+// picture/chapter set-count change instead carries a real integer count (and omits
+// old/new), so a consumer reads the count as a number, not a stringified value (P3).
 type jsonChange struct {
 	Key    string   `json:"key"`
 	Change string   `json:"change"`
+	Count  *int     `json:"count,omitempty"`
 	Old    []string `json:"old,omitempty"`
 	New    []string `json:"new,omitempty"`
 }
@@ -126,7 +129,17 @@ type jsonChange struct {
 func toJSONChanges(changes []tag.Change) []jsonChange {
 	out := make([]jsonChange, 0, len(changes))
 	for _, c := range changes {
-		out = append(out, jsonChange{Key: string(c.Key), Change: c.Kind.String(), Old: c.Old, New: c.New})
+		jc := jsonChange{Key: string(c.Key), Change: c.Kind.String()}
+		if isCountChange(c.Key) {
+			// A picture/chapter set-count change: emit the real integer count instead of
+			// the stringified Old/New the text render uses, dropping the bogus old/new for
+			// this kind (the human "changes:" block shows the per-picture detail separately).
+			n := c.Count
+			jc.Count = &n
+		} else {
+			jc.Old, jc.New = c.Old, c.New
+		}
+		out = append(out, jc)
 	}
 	return out
 }

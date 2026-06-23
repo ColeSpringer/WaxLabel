@@ -71,13 +71,17 @@ func (d *Document) HashAudioEssence(ctx context.Context, opts ...HashOption) (Au
 
 	version, cfg := d.essenceExtent()
 	ranges := d.media.EssenceRanges()
-	// Refuse to hash zero essence rather than mint a fake-stable digest over
-	// nothing (a tag-only or truncated file): two distinct empty files would
-	// otherwise collide. A malformed range is deliberately not treated as "empty"
-	// here - it falls through to hashRanges, which rejects it with a specific
-	// "end before start" error instead of being masked as a benign empty file. The
-	// write/VerifyEssence path uses hashRanges directly and is unaffected.
-	if noEssence(ranges) {
+	// Refuse to hash a file with no real audio, on two signals that together are the
+	// single "no audio" gate (H1): zero essence (all-empty ranges) would mint a
+	// fake-stable digest over nothing, so two distinct empty files collide; and a
+	// non-empty range the parser still flagged WarnNoAudioFrames - a non-empty text
+	// file named .mp3, whose parser set a range over the text bytes - would hash those
+	// bytes as if they were audio. Both are ErrInvalidData, so verify, set --verify, and
+	// HashAudioEssence all refuse a no-audio file alike (and agree with dump/lint, which
+	// raise the same warning). A malformed range (end < start) carries no such warning,
+	// so it still falls through to hashRanges' specific "end before start" error rather
+	// than being masked as a benign empty file.
+	if noEssence(ranges) || hasNoAudioWarning(d.media) {
 		return AudioDigest{}, fmt.Errorf("%w: no audio essence to hash", waxerr.ErrInvalidData)
 	}
 	sum, err := hashRanges(ctx, src, cfg, ranges)
@@ -126,11 +130,14 @@ func (d *Document) HashFile(ctx context.Context, opts ...HashOption) (AudioDiges
 }
 
 // noEssence reports whether the ranges cover no audio: every range is empty
-// (start == end). It is the single definition of "this file has no audio to
-// hash", shared by the parse-time WarnNoAudioFrames check and the digest guard so
-// dump/lint and verify always agree. A descending range (end < start) is a codec
-// bug, not "empty", so it is left for hashRanges to reject with its specific
-// error rather than being masked as a benign tag-only file.
+// (start == end). It catches the all-empty case (a truly tag-only file, e.g.
+// empty.mp3): the parse-time WarnNoAudioFrames check fires off this same predicate
+// (parse.go), and the digest guard consults it too. But it is not the whole "no
+// audio" story: a parser can set a non-empty range yet still flag WarnNoAudioFrames
+// (a non-empty text file named .mp3), so the digest guard pairs this with
+// [hasNoAudioWarning] to catch that case as well (H1). A descending range
+// (end < start) is a codec bug, not "empty", so it is left for hashRanges to reject
+// with its specific error rather than being masked as a benign tag-only file.
 func noEssence(ranges [][2]int64) bool {
 	for _, r := range ranges {
 		if r[1] != r[0] {
@@ -138,6 +145,22 @@ func noEssence(ranges [][2]int64) bool {
 		}
 	}
 	return true
+}
+
+// hasNoAudioWarning reports whether the parser made its authoritative no-audio
+// determination (WarnNoAudioFrames) for this media. The digest guard, the write-time
+// VerifyEssence path, and Editor.Prepare all consult it so a file the parser flagged
+// as carrying no real audio - even one whose parser set a non-empty essence range over
+// non-audio bytes - is never hashed, verified, or silently rewritten (H1). It is the
+// warning twin of noEssence (the all-empty-range case); together they are the single
+// "this file has no audio" gate the library enforces.
+func hasNoAudioWarning(media *core.Media) bool {
+	for _, w := range media.Warnings {
+		if w.Code == core.WarnNoAudioFrames {
+			return true
+		}
+	}
+	return false
 }
 
 // hashRanges hashes optional prefix bytes (the decoder-critical config) followed

@@ -99,6 +99,9 @@ func dispatch(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	if asJSON {
 		out = sout
 	}
-	renderError(out, asJSON, err)
+	// A list command's --json output is an array, so wrap its pre-flight error in the
+	// same single-element array shape rather than a bare object - resolved from the same
+	// root via cobra's Find, so there is no separate command-name list to drift (E2).
+	renderError(out, asJSON, emitsJSONList(root, args), err)
 	return exitCodeFor(err)
 }

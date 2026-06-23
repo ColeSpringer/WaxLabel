@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/tag"
 )
 
 // Codec implements core.Codec for MP3.
@@ -38,8 +39,10 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 
 // Capabilities reports MP3's support. Tags and art are stored as ID3v2 frames,
 // fully writable; the version is preserved on edit. Trailing ID3v1/APEv2 are
-// preserved and surfaced but not the write target.
-func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabilities {
+// preserved and surfaced but not the write target. The Media is bound (not version-
+// blind) so the per-field ORIGINALDATE fidelity can reflect the file's actual ID3
+// write version (C1).
+func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "ID3v2 frame", Fidelity: "lossless",
@@ -52,9 +55,38 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 		Read: core.AccessNone, Write: core.AccessNone,
 		Representation: "CHAP preserved",
 	}
+	// In ID3v2.3, ORIGINALDATE is written to TORY, which holds the year only - so a
+	// full YYYY-MM-DD original date is truncated to YYYY on write. Report ORIGINALDATE
+	// as a partial (lossy) field on v2.3 so a transfer onto a v2.3 MP3 grades it Lossy
+	// rather than claiming it carried unchanged (C1). v2.4 writes the full date to TDOR,
+	// so it stays lossless and gets no override. RecordingDate (TYER+TDAT+TIME) and
+	// ReleaseDate (TXXX:RELEASEDATE) keep their precision in v2.3, so only ORIGINALDATE
+	// is downgraded.
+	var perField map[tag.Key]core.Capability
+	if id3WriteVersion(m) == 3 {
+		perField = map[tag.Key]core.Capability{
+			tag.OriginalDate: {
+				Read: core.AccessFull, Write: core.AccessPartial,
+				Representation: "ID3v2.3 TORY (year only)", Fidelity: "ID3v2.3 TORY stores the year only",
+			},
+		}
+	}
 	// ID3 front-tag padding is grow-only (ReuseOrTarget): a forced rewrite can grow
 	// the region, but a fit-in-place edit reuses it and cannot shrink in place.
-	return core.NewCapabilities(core.FormatMP3, false, fields, pictures, chapters, core.AccessPartial, nil)
+	return core.NewCapabilities(core.FormatMP3, false, fields, pictures, chapters, core.AccessPartial, perField)
+}
+
+// id3WriteVersion returns the ID3v2 minor version (3 or 4) the MP3 codec would write
+// for media m: the parsed file's own tag version when present, else the format default
+// (the file-less PlanTransfer path, where m is nil - a deliberate simulation choice,
+// not a panic). Only the v2.3-vs-v2.4 distinction matters here (the date-frame split).
+func id3WriteVersion(m *core.Media) byte {
+	if m != nil {
+		if d, ok := m.Native.(*doc); ok && d.id3 != nil {
+			return d.id3.WriteVersion()
+		}
+	}
+	return core.DefaultID3Version(core.FormatMP3)
 }
 
 // EssenceExtent returns the MP3 essence-digest inputs: a versioned extent name

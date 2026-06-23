@@ -37,14 +37,6 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	textPresent := len(d.textIdx) > 0
 	id3Present := d.id3 != nil
 
-	// Reconcile/UpdateExisting must migrate values between containers; that is
-	// deferred (as for FLAC, MP3, and WAV), so fail loudly when there is a secondary
-	// container to act on rather than silently doing nothing.
-	if (opts.Legacy == core.LegacyReconcile || opts.Legacy == core.LegacyUpdateExisting) && textPresent && id3Present {
-		return nil, fmt.Errorf("%w: legacy policy %q is not yet implemented for AIFF and both tag containers are present",
-			waxerr.ErrUnsupportedTag, opts.Legacy)
-	}
-
 	tagsChanged := !base.Tags.Equal(edited.Tags)
 	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures)
 	// LegacyStrip consolidates tags into the ID3 chunk by dropping the native ones.

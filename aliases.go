@@ -128,10 +128,8 @@ const (
 
 // LegacyPolicy values.
 const (
-	LegacyPreserve       = core.LegacyPreserve
-	LegacyStrip          = core.LegacyStrip
-	LegacyReconcile      = core.LegacyReconcile
-	LegacyUpdateExisting = core.LegacyUpdateExisting
+	LegacyPreserve = core.LegacyPreserve
+	LegacyStrip    = core.LegacyStrip
 )
 
 // ID3MultiValuePolicy values.
@@ -190,6 +188,7 @@ const (
 	WarnMultipleFrontCovers    = core.WarnMultipleFrontCovers
 	WarnPictureMetadataDropped = core.WarnPictureMetadataDropped
 	WarnLegacyConflict         = core.WarnLegacyConflict
+	WarnValueDropped           = core.WarnValueDropped
 )
 
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated

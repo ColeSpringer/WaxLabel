@@ -15,12 +15,13 @@ import (
 	"github.com/spf13/pflag"
 )
 
-// editPrecedenceHelp documents how flags combine for one key. The edits apply in
-// a fixed order (set, then add, then clear) regardless of command-line position,
-// because each flag's occurrences are collected separately, so this is the rule
-// users can rely on.
-const editPrecedenceHelp = "For one key, --clear takes precedence over --add and --set (it is applied\n" +
-	"last); otherwise --set replaces the key and --add appends to it. Order on the\n" +
+// editPrecedenceHelp documents how the edit flags combine for one key. --set
+// replaces and --add appends; giving the same key to both a write (--set/--add)
+// and a removal (--clear) is rejected as a conflict (exit 2, nothing written) -
+// there is no silent precedence, so the rule users rely on is "don't give one key
+// to both." patch() enforces this.
+const editPrecedenceHelp = "For one key, --set replaces the key and --add appends to it. Giving the same\n" +
+	"key to both --set/--add and --clear is an error (they conflict); order on the\n" +
 	"command line does not change this."
 
 // editFlags holds the tag- and picture-editing options shared by the plan and
@@ -70,8 +71,8 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringArrayVar(&e.addChapter, "add-chapter", nil, "add a chapter TIMESTAMP=Title (e.g. 1:30=Verse; repeatable); a file whose format cannot store chapters fails while capable files proceed")
 	f.BoolVar(&e.clearChapters, "clear-chapters", false, "remove all chapters (applied before --add-chapter, so combining them keeps only the added chapters)")
 	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear the ENCODER software stamp left behind by an encoder or transcoder")
-	f.StringVar(&e.preset, "preset", "", "write policy preset: preserve|compatible|canonical|minimal")
-	f.StringVar(&e.legacy, "legacy", "", "legacy-tag policy: preserve|strip|reconcile|update-existing")
+	f.StringVar(&e.preset, "preset", "", "write policy preset: preserve|compatible|minimal")
+	f.StringVar(&e.legacy, "legacy", "", "legacy-tag policy: preserve|strip")
 	f.StringVar(&e.padding, "padding", "", "reserve at least N bytes of padding after the metadata (FLAC default 8192; MP3/AAC/MP4 reuse the existing region; 0 writes none, like --no-padding)")
 	f.BoolVar(&e.noPadding, "no-padding", false, "write no padding after the metadata (no effect on Ogg/WAV/AIFF/Matroska, which have no padding region)")
 	f.BoolVar(&e.strict, "strict", false, "fail (exit 2) on an unknown key or a single-valued key given multiple values, instead of noting it")
@@ -528,14 +529,14 @@ func resolveWriteFlags(preset, legacy string) ([]wl.WriteOption, error) {
 	if preset != "" {
 		opt, ok := presetOptions[strings.ToLower(preset)]
 		if !ok {
-			return nil, usagef("unknown preset %q (want preserve|compatible|canonical|minimal)", preset)
+			return nil, usagef("unknown preset %q (want preserve|compatible|minimal)", preset)
 		}
 		opts = append(opts, opt)
 	}
 	if legacy != "" {
 		pol, ok := legacyOptions[strings.ToLower(legacy)]
 		if !ok {
-			return nil, usagef("unknown legacy policy %q (want preserve|strip|reconcile|update-existing)", legacy)
+			return nil, usagef("unknown legacy policy %q (want preserve|strip)", legacy)
 		}
 		opts = append(opts, wl.WithLegacyPolicy(pol))
 	}
@@ -545,15 +546,12 @@ func resolveWriteFlags(preset, legacy string) ([]wl.WriteOption, error) {
 var presetOptions = map[string]wl.WriteOption{
 	"preserve":   wl.Preserve,
 	"compatible": wl.Compatible,
-	"canonical":  wl.Canonical,
 	"minimal":    wl.Minimal,
 }
 
 var legacyOptions = map[string]wl.LegacyPolicy{
-	"preserve":        wl.LegacyPreserve,
-	"strip":           wl.LegacyStrip,
-	"reconcile":       wl.LegacyReconcile,
-	"update-existing": wl.LegacyUpdateExisting,
+	"preserve": wl.LegacyPreserve,
+	"strip":    wl.LegacyStrip,
 }
 
 // compiledEdit holds the invocation-level edit inputs resolved once: the tag
@@ -821,69 +819,97 @@ func notifyValueNotes(errOut io.Writer, e *editFlags, asJSON bool) {
 	}
 }
 
-// noteMalformedValue emits the M1 note when v does not match the typed shape of a
-// numeric or date key. The value is always still written (the writer is faithful),
-// so this only advises. The note is a single line, so the key and value are run
-// through [tag.SanitizeLine] - they are the user's own --set input, but a control
-// byte must not reach the terminal raw and an embedded newline must not forge a
-// line. (SanitizeLine, not SanitizeText, to match the single-line-field convention.)
+// noteMalformedValue emits the M1 note when v does not match the typed shape of its
+// key's category. The value is always still written (the writer is faithful), so this
+// only advises. It reads the same [tag.ValidatorFor] registry [Document.Lint] consumes,
+// so the set-time note and the linter cannot disagree on what a malformed value is (F4):
+// numeric, date, boolean, MEDIATYPE, and ReplayGain. The note is a single line, so the
+// key and value are run through [tag.SanitizeLine] - they are the user's own --set
+// input, but a control byte must not reach the terminal raw and an embedded newline must
+// not forge a line. (SanitizeLine, not SanitizeText, to match the single-line convention.)
 func noteMalformedValue(errOut io.Writer, k tag.Key, v string) {
 	ks, vs := tag.SanitizeLine(string(k)), tag.SanitizeLine(v)
-	switch {
-	case tag.IsNumericKey(k) && !tag.ValidNumericValue(k, v):
-		fmt.Fprintf(errOut, "note: %s=%s does not look like a number; written as-is\n", ks, vs)
-	case tag.IsNumericKey(k) && tag.NegativeNumericValue(k, v):
-		// The value parses (so it is not "malformed"), but a negative number/total or
-		// play count is semantically odd; advise without rejecting it (V2).
+	if val, ok := tag.ValidatorFor(k); ok && !val.Valid(k, v) {
+		fmt.Fprintf(errOut, "note: %s=%s %s; written as-is\n", ks, vs, val.NoteDetail)
+		return
+	}
+	// A numeric value that parses but is negative round-trips faithfully, so it is not
+	// "malformed" - but a negative number/total or play count is semantically odd, so it
+	// gets a separate advisory (the value is still written). (V2)
+	if tag.IsNumericKey(k) && tag.NegativeNumericValue(k, v) {
 		fmt.Fprintf(errOut, "note: %s=%s is negative; written as-is (numbering is normally non-negative)\n", ks, vs)
-	case tag.IsDateKey(k) && !tag.ValidPartialDate(v):
-		fmt.Fprintf(errOut, "note: %s=%s is not YYYY / YYYY-MM / YYYY-MM-DD; written as-is\n", ks, vs)
-	case tag.IsBooleanKey(k) && !tag.ValidBooleanValue(k, v):
-		fmt.Fprintf(errOut, "note: %s=%s does not look like a boolean (1/true/yes/0/false/no); written as-is\n", ks, vs)
 	}
 }
 
-// singleValuedViolations returns the known single-valued keys a plan would store
-// with more than one value - the cardinality the writer faithfully preserves but a
-// typed reader would collapse to the first value. It reads the plan's field
-// changes, so it reflects exactly what saving would write. A custom (unknown) key
-// is exempt: it has no typed accessor and no canonical cardinality, so explicitly
-// giving it several values is legitimate - it is surfaced by the unknown-key note
-// instead, and double-flagging it as single-valued would contradict that.
-func singleValuedViolations(plan *wl.Plan) []tag.Key {
-	var out []tag.Key
-	for _, c := range plan.Changes() {
-		if c.Key.SingleValuedMulti(len(c.New)) {
-			out = append(out, c.Key)
+// strictEscalatingCodes are the per-file plan warnings --strict promotes to a usage
+// error (exit 2): a value the codec would drop as unrepresentable (F1, value-dropped)
+// and a known single-valued key left holding multiple values (F2, single-valued-multi).
+// Both are library warnings the plan report already carries (and the human/JSON output
+// already renders), so the gate reads that one signal rather than re-deriving the rule
+// from plan.Changes() - so the warning the user sees and the --strict decision cannot
+// disagree (the divergence the single-source invariant forbids; F2's Matroska case is
+// exactly where a result-based re-derivation went silent). The unknown-key strict path
+// stays separate (notifyUnknownKeys): an unknown key is a CLI-vocabulary concept the
+// library accepts by design, so it is a pre-flight usage error, not a plan warning.
+var strictEscalatingCodes = map[wl.WarningCode]bool{
+	wl.WarnValueDropped:      true,
+	wl.WarnSingleValuedMulti: true,
+}
+
+// strictWarningGate applies the per-file --strict escalation for plan and set: when a
+// plan carries an escalating warning, strict fails that file at exit 2, naming the
+// offending key(s) and the reason. Off --strict it is a no-op - the plan report already
+// carries the warning for the human and JSON output, so a non-strict run just shows it
+// and proceeds. It is the per-file counterpart to the invocation-level unknown-key
+// guardrail (notifyUnknownKeys), and it returns a per-file usage error (not an
+// invocation abort) so a multi-file run's aggregate exit stays order-independent.
+type strictWarningGate struct {
+	strict bool
+}
+
+func newStrictWarningGate(strict bool) *strictWarningGate {
+	return &strictWarningGate{strict: strict}
+}
+
+// check returns a usage error when strict is on and the plan carries an escalating
+// warning, so the caller fails that file (exit 2); otherwise nil. The keys come from
+// the structured [wl.Warning.Keys] the library populates, so the gate names them
+// without parsing the prose message.
+func (g *strictWarningGate) check(plan *wl.Plan) error {
+	if !g.strict {
+		return nil
+	}
+	var reasons []string
+	for _, w := range plan.Report().Warnings {
+		if strictEscalatingCodes[w.Code] {
+			reasons = append(reasons, strictWarningReason(w))
 		}
 	}
-	return out
+	if len(reasons) == 0 {
+		return nil
+	}
+	return usagef("%s (omit --strict to write anyway)", strings.Join(reasons, "; "))
 }
 
-// singleValuedNotifier applies the per-file single-valued-multi guardrail for plan
-// and set. Post-#17 the human signal lives on the plan report (the library attaches
-// a single-valued-multi warning in Editor.Prepare, which plan/set already render in
-// text and JSON), so this no longer prints its own stderr note - it owns only the
-// --strict gate, failing an offending file at exit 2. It is the per-file
-// counterpart to notifyUnknownKeys.
-type singleValuedNotifier struct {
-	strict bool
-	asJSON bool
-}
-
-func newSingleValuedNotifier(strict, asJSON bool) *singleValuedNotifier {
-	return &singleValuedNotifier{strict: strict, asJSON: asJSON}
-}
-
-// check inspects one file's plan: under strict a violation is a usage error (so
-// the caller fails that file, exit 2); otherwise it is a no-op here (the plan
-// report carries the warning for the human and JSON output). It returns nil when
-// the plan is within cardinality or strict is off.
-func (n *singleValuedNotifier) check(plan *wl.Plan) error {
-	_, err := guardrailKeys(singleValuedViolations(plan), n.strict, n.asJSON, func(ks []tag.Key) error {
-		return usagef("%s is single-valued but given multiple values (omit --strict to write them anyway)", keyList(ks))
-	})
-	return err
+// strictWarningReason renders one escalating warning as "key(s): reason" for the
+// --strict error, keyed off the warning code so the wording stays close to the
+// plan-body warning the user also sees.
+func strictWarningReason(w wl.Warning) string {
+	keys := keyList(w.Keys)
+	if keys == "" {
+		// Every escalating warning is built with its key(s) (WarnKeyed), so this only
+		// guards a future keyless code path: render the warning's own prose (which already
+		// names the key) rather than a message with a leading bare colon.
+		return w.Message
+	}
+	switch w.Code {
+	case wl.WarnValueDropped:
+		return fmt.Sprintf("%s: value cannot be represented in this format and would be dropped", keys)
+	case wl.WarnSingleValuedMulti:
+		return fmt.Sprintf("%s: single-valued but given multiple values", keys)
+	default:
+		return keys
+	}
 }
 
 // paddingNoter emits the per-format note that a --padding/--no-padding flag does

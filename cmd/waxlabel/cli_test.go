@@ -1095,10 +1095,10 @@ func TestSetJSONErrorIsPerFileObject(t *testing.T) {
 	}
 }
 
-// TestSetRecursiveNoFiles checks a --recursive walk that matches no audio files is
-// an error for the mutating set command (exit 2, so `set "$DIR" --recursive ... &&
-// echo done` cannot falsely report success), with the message printed exactly once
-// - while the read-only plan command stays exit 0 and, in JSON, emits [] not null.
+// TestSetRecursiveNoFiles checks a --recursive walk that matches no audio files
+// aligns set with its dry-run twin plan: a "no audio files found" note on stderr and
+// exit 0 (not a usage error), so the two agree on the empty-walk outcome, with []
+// (not null) under --json for both (E1).
 func TestSetRecursiveNoFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1106,25 +1106,29 @@ func TestSetRecursiveNoFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, errb, code := runCLI(t, "set", "--recursive", dir, "--set", "TITLE=X")
-	if code != 2 {
-		t.Fatalf("exit = %d, want 2 (usage)", code)
+	if code != 0 {
+		t.Fatalf("set empty-walk exit = %d, want 0 (aligned with plan)", code)
 	}
 	if n := strings.Count(errb, "no audio files found"); n != 1 {
-		t.Errorf("expected the no-files message exactly once, got %d: %q", n, errb)
+		t.Errorf("expected the no-files note exactly once, got %d: %q", n, errb)
 	}
-	// plan is read-only: an empty walk is a note (exit 0), and JSON is [], not null.
-	out, _, planCode := runCLI(t, "--json", "plan", "--recursive", dir, "--set", "TITLE=X")
-	if planCode != 0 {
-		t.Fatalf("plan exit = %d, want 0", planCode)
-	}
-	if strings.TrimSpace(out) != "[]" {
-		t.Errorf("JSON output = %q, want [] (not null)", strings.TrimSpace(out))
+	// Under --json, both set and plan emit [] (not null) for the empty walk and exit 0.
+	for _, sub := range []string{"set", "plan"} {
+		out, _, c := runCLI(t, "--json", sub, "--recursive", dir, "--set", "TITLE=X")
+		if c != 0 {
+			t.Fatalf("%s --json empty-walk exit = %d, want 0", sub, c)
+		}
+		if strings.TrimSpace(out) != "[]" {
+			t.Errorf("%s --json output = %q, want [] (not null)", sub, strings.TrimSpace(out))
+		}
 	}
 }
 
-// TestLintFixRecursiveNoFiles checks that lint --fix, like set, treats a
-// --recursive walk matching no audio files as an error (exit 2) rather than a
-// silent success - while read-only lint of the same empty walk stays exit 0.
+// TestLintFixRecursiveNoFiles checks that lint --fix treats a --recursive walk
+// matching no audio files as an error (exit 2) rather than a silent success - while
+// read-only lint of the same empty walk stays exit 0. Unlike set (which aligns with
+// its dry-run twin plan at exit 0, E1), lint --fix has no such twin, so it keeps the
+// mutating-command guard.
 func TestLintFixRecursiveNoFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1363,10 +1367,12 @@ func TestValueNotesDeferredUntilFiles(t *testing.T) {
 	if strings.Contains(errb, "does not look like a number") {
 		t.Errorf("value note must not print on an aborted directory run:\n%s", errb)
 	}
-	// Same for an empty --recursive walk (no audio files matched).
+	// An empty --recursive walk now aligns with plan: exit 0 with a "nothing to do"
+	// advisory, not a usage error (E1). The value note still must not print, since no
+	// file was acted on.
 	_, errb, code = runCLI(t, "set", t.TempDir(), "--recursive", "--set", "TRACKNUMBER=abc")
-	if code != 2 {
-		t.Fatalf("empty-walk exit = %d, want 2", code)
+	if code != 0 {
+		t.Fatalf("empty-walk exit = %d, want 0", code)
 	}
 	if strings.Contains(errb, "does not look like a number") {
 		t.Errorf("value note must not print on an empty walk:\n%s", errb)
@@ -1822,25 +1828,36 @@ func TestDumpJSONPerFileError(t *testing.T) {
 
 // TestJSONErrorRoutingOnEarlyAbort checks that --json still routes the terminal
 // error to stdout as an envelope even when cobra aborts during command/flag
-// resolution (before it binds the persistent flag).
+// resolution (before it binds the persistent flag). The envelope shape follows the
+// resolved command: an unknown command stays a bare object, while a bad flag on a
+// list command (dump) is wrapped in that command's documented one-element array (E2).
 func TestJSONErrorRoutingOnEarlyAbort(t *testing.T) {
 	t.Parallel()
-	cases := [][]string{
-		{"--json", "frobnicate", "x"},            // unknown command
-		{"dump", "--nope", "--json", sampleFLAC}, // bad flag positioned before --json
+	cases := []struct {
+		args []string
+		list bool // a list command wraps its pre-flight error in a one-element array
+	}{
+		{[]string{"--json", "frobnicate", "x"}, false},           // unknown command -> object
+		{[]string{"dump", "--nope", "--json", sampleFLAC}, true}, // bad flag on dump -> array
 	}
-	for _, args := range cases {
-		t.Run(strings.Join(args, "_"), func(t *testing.T) {
-			out, errb, code := runCLI(t, args...)
+	for _, tc := range cases {
+		t.Run(strings.Join(tc.args, "_"), func(t *testing.T) {
+			out, errb, code := runCLI(t, tc.args...)
 			if code != 2 {
 				t.Errorf("exit = %d, want 2", code)
 			}
-			var je jsonError
-			if err := json.Unmarshal([]byte(out), &je); err != nil {
-				t.Fatalf("stdout is not a JSON envelope: %v\nstdout=%q stderr=%q", err, out, errb)
+			var body jsonErrBody
+			if tc.list {
+				body = decodeJSONOne[jsonError](t, out).Error // asserts a single-element array
+			} else {
+				var je jsonError
+				if err := json.Unmarshal([]byte(out), &je); err != nil {
+					t.Fatalf("stdout is not a JSON object envelope: %v\nstdout=%q stderr=%q", err, out, errb)
+				}
+				body = je.Error
 			}
-			if je.Error.Code != "usage" {
-				t.Errorf("error code = %q, want usage", je.Error.Code)
+			if body.Code != "usage" {
+				t.Errorf("error code = %q, want usage", body.Code)
 			}
 		})
 	}

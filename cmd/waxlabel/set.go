@@ -130,7 +130,7 @@ func newSetCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&preserveMtime, "preserve-mtime", false, "keep the file's modification time (by default it is updated)")
 	cmd.Flags().BoolVar(&recursive, "recursive", false, "recurse into directory arguments, editing every audio file found (selected by file extension)")
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "suppress the per-file plan and outcome (errors and the final summary still print); a single-file set is then silent on success")
-	return cmd
+	return markListCommand(cmd)
 }
 
 // checkOutputTarget validates the -o destination before any write. A directory can
@@ -217,15 +217,19 @@ func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *
 	quiet = quiet && !asJSON
 	// An empty path list is only reachable when a --recursive walk matched no audio
 	// files: cobra requires >=1 argument, the -o path already rejects len != 1, and a
-	// passed-through nonexistent file fails per-file with exit 6. For a mutating
-	// command that is an error, not a silent success - so `set "$DIR" --recursive ...
-	// && echo done` cannot falsely report success. Exit 2 (usage), consistent with
-	// U1's directory case. Returning here, before any note, lets the dispatcher print
-	// the message exactly once (a noteNoFiles call would print it a second time).
+	// passed-through nonexistent file fails per-file with exit 6. Align with plan (the
+	// dry-run twin): a "nothing to do" advisory and exit 0, with [] under --json, rather
+	// than a usage error - so `plan DIR -r` and `set DIR -r` agree on the empty-walk
+	// outcome (E1). A directory arg WITHOUT --recursive is still a pre-flight usage error
+	// (walk.go), so this is reached only for a genuine empty walk, never a misuse.
 	if len(paths) == 0 {
-		return usagef("no audio files found")
+		noteNoFiles(errOut, paths)
+		if asJSON {
+			return emitJSONList(out, nil)
+		}
+		return nil
 	}
-	notifier := newSingleValuedNotifier(strict, asJSON)
+	gate := newStrictWarningGate(strict)
 	pnoter := newPaddingNoter(asJSON, errOut)
 	var items []any
 	var worstErr error
@@ -254,24 +258,26 @@ func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *
 		if ce.paddingFlag {
 			pnoter.note(doc.Capabilities())
 		}
-		// Under --strict, a single-valued key given multiple values fails the file
-		// before any write (a per-file usage error, exit 2); otherwise the write proceeds
-		// and the plan report carries the single-valued-multi warning (the notifier no
-		// longer prints a stderr note - the library attaches the signal to the report).
-		// The strict failure is one array element so a multi-file run's aggregate exit
-		// code stays order-independent (worseError), like every other per-file error - the
-		// invocation-level unknown-key guardrail, which is file-independent, aborts up
-		// front instead (notifyInvocationNotes).
-		if err := notifier.check(plan); err != nil {
+		// Under --strict, an escalating plan warning (a single-valued key given multiple
+		// values, or a value the format would drop) fails the file before any write (a
+		// per-file usage error, exit 2); otherwise the write proceeds and the plan report
+		// carries the warning for the human and JSON output (the gate prints no stderr note -
+		// the library attaches the signal to the report). The strict failure is one array
+		// element so a multi-file run's aggregate exit code stays order-independent
+		// (worseError), like every other per-file error - the invocation-level unknown-key
+		// guardrail, which is file-independent, aborts up front instead (notifyInvocationNotes).
+		if err := gate.check(plan); err != nil {
 			fail(path, err)
 			continue
 		}
 		// A verbatim -o copy of an unchanged file has no change plan worth previewing:
 		// renderReport would print "no changes (already up to date)" only for the next
-		// line to report it wrote a file. Suppress the preview and let renderSaveOutcome
-		// print one honest line instead (L1). -o takes exactly one input, so this is
-		// never mid-list.
-		previewNoOp := output != "" && plan.IsNoOp()
+		// line to report it wrote a file. Suppress that preview and let renderSaveOutcome
+		// print one honest line instead (L1) - UNLESS the no-op carries a warning (a
+		// value-dropped edit whose value the format could not store), which is the only
+		// signal the edit was rejected and so must still be shown. -o takes exactly one
+		// input, so this is never mid-list.
+		previewNoOp := output != "" && plan.IsNoOp() && len(plan.Report().Warnings) == 0
 		// Print the plan before the write so the preview is shown even if the write
 		// then fails (the help promises this ordering); JSON aggregates instead, and
 		// quiet suppresses the preview entirely.

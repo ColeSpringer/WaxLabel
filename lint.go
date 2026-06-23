@@ -69,8 +69,7 @@ func (d *Document) Lint() []Finding {
 	out = append(out, lintWarnings(d.media.Warnings)...)
 	out = append(out, lintFamilies(d.media.Families)...)
 	out = append(out, lintPictures(d.media.Pictures)...)
-	out = append(out, lintDates(d.media.Tags)...)
-	out = append(out, lintNumbers(d.media.Tags)...)
+	out = append(out, lintValues(d.media.Tags)...)
 	out = append(out, lintCardinality(d.media.Tags)...)
 	out = append(out, lintCustomKeys(d.media.Tags)...)
 	return out
@@ -171,55 +170,31 @@ func lintPictures(pics []Picture) []Finding {
 	return out
 }
 
-// lintDates reports date fields that are not ISO-8601 year, year-month, or full
-// dates. It filters by [tag.IsDateKey] and validates with [tag.ValidPartialDate],
-// the single date-key set and validator shared with the CLI's set-time
-// malformed-value note, so the two cannot disagree - and it now covers
-// AcquisitionDate alongside the recording/release/original dates. A present-but-empty
-// value is skipped: set blesses it as the benign "empty value" advisory (not
-// malformed), so lint must agree rather than flag it.
-func lintDates(ts tag.TagSet) []Finding {
+// lintValues reports tag values that violate their key's typed contract, driven by
+// the shared [tag.ValidatorFor] registry so the linter and the CLI's set-time note
+// ([noteMalformedValue]) apply exactly the same rule per category - numeric, date,
+// boolean, MEDIATYPE (a non-negative int), and ReplayGain (a decimal/dB). This is the
+// single source the "lint and set agree" contract needs: it folds in the former
+// lintDates/lintNumbers and closes the gap where COMPILATION was set-validated but not
+// lint-validated, and MEDIATYPE/REPLAYGAIN at neither. A present-but-empty value is
+// skipped (set blesses it as the benign "empty value" advisory and writes it, so lint
+// must agree); RATING is uncovered (free-form across formats). Each finding is a
+// LintWarning, so a file with e.g. TRACKNUMBER=abc flips to a non-zero lint exit (a
+// deliberate expansion of lint coverage, V3). Iterating the key names and Get-ing only
+// the keys with a contract (mirroring the prior helpers) clones at most those few value
+// slices, not the whole set.
+func lintValues(ts tag.TagSet) []Finding {
 	var out []Finding
-	// Iterate the key names and Get only the date keys, rather than ranging All()
-	// (which clones every key's value slice) - a 40-tag file then clones at most the
-	// few date-key slices, not all 40.
 	for _, k := range ts.Keys() {
-		if !tag.IsDateKey(k) {
+		val, ok := tag.ValidatorFor(k)
+		if !ok {
 			continue
 		}
 		vals, _ := ts.Get(k)
 		for _, v := range vals {
-			if v != "" && !tag.ValidPartialDate(v) {
-				out = append(out, Finding{LintWarning, "malformed-date",
-					fmt.Sprintf("%q is not YYYY, YYYY-MM, or YYYY-MM-DD", v), k})
-			}
-		}
-	}
-	return out
-}
-
-// lintNumbers reports numeric fields whose value is not an integer (or, for the
-// number/total pair keys TRACKNUMBER/DISCNUMBER, an "n/total" of integers). It
-// filters by [tag.IsNumericKey] and validates with [tag.ValidNumericValue], the
-// single numeric-key set and validator shared with the CLI's set-time
-// malformed-value note, so the two cannot disagree - mirroring lintDates. A
-// present-but-empty value is skipped (set blesses it as the benign "empty value"
-// advisory, exits 0, and writes it - so lint must not then flag it as malformed). Its
-// finding is a LintWarning, so a previously-"clean" file with e.g. TRACKNUMBER=abc
-// now flips to a non-zero lint exit (a deliberate expansion of lint coverage, V3).
-func lintNumbers(ts tag.TagSet) []Finding {
-	var out []Finding
-	// Range the key names and Get only the numeric keys (mirroring lintDates), so a
-	// large tag set clones at most the few numeric-key value slices.
-	for _, k := range ts.Keys() {
-		if !tag.IsNumericKey(k) {
-			continue
-		}
-		vals, _ := ts.Get(k)
-		for _, v := range vals {
-			if v != "" && !tag.ValidNumericValue(k, v) {
-				out = append(out, Finding{LintWarning, "malformed-number",
-					fmt.Sprintf("%q is not a number", v), k})
+			if v != "" && !val.Valid(k, v) {
+				out = append(out, Finding{LintWarning, val.LintCode,
+					fmt.Sprintf("%q %s", v, val.LintDetail), k})
 			}
 		}
 	}

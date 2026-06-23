@@ -42,11 +42,18 @@ func (k ChangeKind) String() string {
 // how it changed, and the relevant values. Old holds the base values (set for a
 // removed or changed key); New holds the edited values (set for an added or
 // changed key).
+//
+// Count is set only for the synthetic picture/chapter set-count changes (the
+// lowercase "pictures"/"chapters" pseudo-keys a write plan emits): it carries the
+// relevant integer count as a real number, so a machine consumer reads it as a count
+// rather than parsing the human Old/New strings (which exist for the text render). It
+// is zero for an ordinary tag-key change.
 type Change struct {
-	Key  Key
-	Kind ChangeKind
-	Old  []string
-	New  []string
+	Key   Key
+	Kind  ChangeKind
+	Old   []string
+	New   []string
+	Count int
 }
 
 // Diff reports the per-key delta from base to edited: keys dropped (removed),

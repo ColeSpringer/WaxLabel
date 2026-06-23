@@ -53,7 +53,7 @@ func newCapsCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&format, "format", "", "describe a format with no file (e.g. flac, mp3, m4a)")
-	return cmd
+	return markListCommand(cmd)
 }
 
 // runCapsFormat renders a single format's capabilities (no file). opts carry any

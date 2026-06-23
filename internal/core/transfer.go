@@ -75,16 +75,23 @@ type TransferReport struct {
 	Items  []TransferItem
 }
 
-// Counts tallies the items by disposition.
+// Counts tallies the items by disposition. A picture- or chapter-set item stands for
+// it.Count pictures/chapters, so its Count is summed - the headline then matches the
+// per-item detail and the JSON counts (C2). A field item is a single unit (its Count is
+// the value count, e.g. two ARTIST values, not a number of fields), so it counts as one.
 func (r TransferReport) Counts() (carried, lossy, dropped int) {
 	for _, it := range r.Items {
+		n := 1
+		if it.Kind == TransferPicture || it.Kind == TransferChapter {
+			n = it.Count
+		}
 		switch it.Disposition {
 		case Carried:
-			carried++
+			carried += n
 		case Lossy:
-			lossy++
+			lossy += n
 		case Dropped:
-			dropped++
+			dropped += n
 		}
 	}
 	return carried, lossy, dropped

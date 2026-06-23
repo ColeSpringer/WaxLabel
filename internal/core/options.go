@@ -12,21 +12,12 @@ const (
 	LegacyPreserve LegacyPolicy = iota
 	// LegacyStrip removes them.
 	LegacyStrip
-	// LegacyReconcile copies their values into the native tags, then removes.
-	LegacyReconcile
-	// LegacyUpdateExisting rewrites a legacy container only if it already
-	// exists, otherwise leaves it absent.
-	LegacyUpdateExisting
 )
 
 func (p LegacyPolicy) String() string {
 	switch p {
 	case LegacyStrip:
 		return "strip"
-	case LegacyReconcile:
-		return "reconcile"
-	case LegacyUpdateExisting:
-		return "update-existing"
 	default:
 		return "preserve"
 	}

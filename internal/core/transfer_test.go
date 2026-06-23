@@ -53,9 +53,10 @@ func TestProjectTransferDispositions(t *testing.T) {
 		}
 	}
 
+	// carried sums the field unit (TITLE) and the 2-chapter set's Count: 1 + 2 = 3 (C2).
 	carried, lossy, dropped := (TransferReport{Items: items}).Counts()
-	if carried != 2 || lossy != 1 || dropped != 1 {
-		t.Errorf("counts = (%d,%d,%d), want (2,1,1)", carried, lossy, dropped)
+	if carried != 3 || lossy != 1 || dropped != 1 {
+		t.Errorf("counts = (%d,%d,%d), want (3,1,1)", carried, lossy, dropped)
 	}
 }
 

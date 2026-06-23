@@ -60,6 +60,45 @@ func TestUsageHintOnDeadEnds(t *testing.T) {
 	}
 }
 
+// TestRemovedWritePoliciesRejected (F3): the reconcile/update-existing legacy
+// policies and the canonical preset were unimplemented stubs that hard-errored
+// (exit 3) on any legacy container, so v1.0 removes them from the surface and the
+// code. The CLI now rejects them as unknown flag values (exit 2) listing only the
+// surviving options, while every surviving value still parses.
+func TestRemovedWritePoliciesRejected(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, sampleFLAC)
+
+	// The removed legacy policies are now unknown values: a usage error (exit 2)
+	// naming the survivors, not a stub write-time failure.
+	for _, v := range []string{"reconcile", "update-existing"} {
+		_, stderr, code := runCLI(t, "set", file, "--set", "TITLE=x", "--legacy", v)
+		if code != 2 {
+			t.Errorf("--legacy %s: exit = %d, want 2", v, code)
+		}
+		if !strings.Contains(stderr, "unknown legacy policy") || !strings.Contains(stderr, "preserve|strip") {
+			t.Errorf("--legacy %s: stderr = %q, want unknown-legacy-policy naming preserve|strip", v, stderr)
+		}
+	}
+
+	// The removed canonical preset is likewise an unknown value.
+	if _, stderr, code := runCLI(t, "set", file, "--set", "TITLE=x", "--preset", "canonical"); code != 2 ||
+		!strings.Contains(stderr, "unknown preset") || !strings.Contains(stderr, "preserve|compatible|minimal") {
+		t.Errorf("--preset canonical: exit = %d, stderr = %q, want exit 2 unknown-preset naming preserve|compatible|minimal", code, stderr)
+	}
+
+	// Every surviving value still resolves (plan previews without a usage error).
+	for _, extra := range [][]string{
+		{"--legacy", "preserve"}, {"--legacy", "strip"},
+		{"--preset", "preserve"}, {"--preset", "compatible"}, {"--preset", "minimal"},
+	} {
+		args := append([]string{"plan", file, "--set", "TITLE=x"}, extra...)
+		if _, stderr, code := runCLI(t, args...); code != 0 {
+			t.Errorf("%v: exit = %d, stderr = %q, want 0", extra, code, stderr)
+		}
+	}
+}
+
 // TestCopyNotFoundMatchesOtherCommands (M3): copy's per-input parse failure reads
 // as the "waxlabel: <path>: <reason>" line dump/verify/set print, and the --json
 // not-found message uses the same "<path>: no such file or directory" phrasing, so
@@ -371,27 +410,71 @@ func TestSetJSONErrorNoPhantomOutput(t *testing.T) {
 	}
 }
 
+// TestPreflightErrorEnvelopeShape (E2) pins that a list command wraps a pre-flight
+// failure (missing args, a directory without --recursive, a bad flag) in the same
+// one-element JSON array its successful --json output uses, so `jq '.[]'` works no
+// matter how the run ends; a non-list command (diff/copy/keys), caps --format (a
+// format query), and an unknown command keep the bare object envelope.
+func TestPreflightErrorEnvelopeShape(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	for _, args := range [][]string{
+		{"--json", "dump"},      // missing args
+		{"--json", "dump", dir}, // directory without --recursive
+		{"--json", "lint"},      // missing args
+		{"--json", "verify"},    // missing args
+		{"--json", "caps", dir}, // caps over files, directory rejected
+	} {
+		t.Run("array_"+strings.Join(args[1:], "_"), func(t *testing.T) {
+			out, _, code := runCLI(t, args...)
+			if code != 2 {
+				t.Errorf("exit = %d, want 2", code)
+			}
+			if je := decodeJSONOne[jsonError](t, out); je.Error.Code != "usage" { // asserts a one-element array
+				t.Errorf("error code = %q, want usage", je.Error.Code)
+			}
+		})
+	}
+
+	for _, args := range [][]string{
+		{"--json", "diff", "a", "b", "c"},       // diff takes exactly two
+		{"--json", "keys", "extra"},             // keys takes no args
+		{"--json", "copy", "onlyone"},           // copy takes two
+		{"--json", "caps", "--format", "bogus"}, // caps --format is a format query
+		{"--json", "frobnicate"},                // unknown command
+	} {
+		t.Run("object_"+strings.Join(args[1:], "_"), func(t *testing.T) {
+			out, _, _ := runCLI(t, args...)
+			var je jsonError
+			if err := json.Unmarshal([]byte(out), &je); err != nil {
+				t.Fatalf("want a bare object envelope, got: %v\n%s", err, out)
+			}
+		})
+	}
+}
+
 // TestStrictGuardrailShapes pins how the two --strict guardrails surface (#5, B1).
-// The file-independent unknown-key guardrail aborts up front as the single object
-// envelope. The per-file single-valued-multi guardrail is a per-file array element,
-// so it participates in the most-severe-wins aggregate exit code rather than aborting
-// the run: pairing it with a missing file yields exit 6 (not-found outranks the usage
-// error) with BOTH elements present, independent of argument order. (An earlier
-// abort-on-first design discarded the not-found element and flipped the exit to 2 -
-// order-dependently - which this guards against.)
+// The file-independent unknown-key guardrail aborts up front: a single pre-flight
+// error, now wrapped in plan's documented one-element array like every other list-
+// command pre-flight failure (E2). The per-file single-valued-multi guardrail is a
+// per-file array element, so it participates in the most-severe-wins aggregate exit
+// code rather than aborting the run: pairing it with a missing file yields exit 6
+// (not-found outranks the usage error) with BOTH elements present, independent of
+// argument order. (An earlier abort-on-first design discarded the not-found element
+// and flipped the exit to 2 - order-dependently - which this guards against.) The
+// abort-vs-per-file distinction now lives in the element count and aggregate exit,
+// not in array-vs-object.
 func TestStrictGuardrailShapes(t *testing.T) {
 	t.Parallel()
 
-	// Unknown key: invocation-level, one object envelope, exit 2.
-	t.Run("unknown-key-is-object", func(t *testing.T) {
+	// Unknown key: invocation-level abort, a single-element array, exit 2 (E2).
+	t.Run("unknown-key-aborts-as-one-element", func(t *testing.T) {
 		out, _, code := runCLI(t, "--json", "plan", sampleFLAC, "--strict", "--set", "BOGUS=1")
 		if code != 2 {
 			t.Fatalf("exit = %d, want 2", code)
 		}
-		var je jsonError
-		if err := json.Unmarshal([]byte(out), &je); err != nil {
-			t.Fatalf("stdout is not the object envelope: %v\n%s", err, out)
-		}
+		je := decodeJSONOne[jsonError](t, out) // asserts a single-element array
 		if je.Error.Code != "usage" {
 			t.Errorf("error code = %q, want usage", je.Error.Code)
 		}
@@ -861,11 +944,9 @@ func TestJSONErrorCarriesHint(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("leading-dash arg exit = %d, want 2; out=%s", code, out)
 	}
-	// The terminal error envelope is a bare object (not a list command's array).
-	var je jsonError
-	if err := json.Unmarshal([]byte(out), &je); err != nil {
-		t.Fatalf("decode error envelope: %v\n%s", err, out)
-	}
+	// dump is a list command, so its pre-flight error is a single-element array (E2),
+	// and the hint rides on that element.
+	je := decodeJSONOne[jsonError](t, out)
 	if !strings.Contains(je.Error.Hint, "--") {
 		t.Errorf("JSON usage envelope hint missing the '--' guidance; got %q\n%s", je.Error.Hint, out)
 	}

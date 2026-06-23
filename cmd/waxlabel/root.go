@@ -112,10 +112,22 @@ func newVersionCmd() *cobra.Command {
 		Short: "Print the waxlabel version",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// With --json, emit the documented object so a script reads the version like
+			// every other data command's machine output, rather than parsing the text line
+			// (F6). resolveVersion stays the single source for the value.
+			if jsonMode(cmd) {
+				return writeJSON(cmd.OutOrStdout(), jsonVersion{SchemaVersion: schemaVersion, Version: resolveVersion()})
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "waxlabel version %s\n", resolveVersion())
 			return nil
 		},
 	}
+}
+
+// jsonVersion is the machine-readable form of the version command's output.
+type jsonVersion struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	Version       string `json:"version"`
 }
 
 // wrapUsageErrors maps every command's flag- and argument-parsing failures to a

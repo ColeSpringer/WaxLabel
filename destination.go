@@ -154,6 +154,14 @@ func (p *Plan) streamCopy(ctx context.Context, dst io.Writer, source core.Reader
 	var tap bits.Tap
 	var hasher *bits.Hasher
 	if p.opts.VerifyEssence {
+		// Defense-in-depth behind Editor.Prepare, which already refuses a no-audio file
+		// (so a no-audio document never reaches Execute): never verify the "essence" of a
+		// file the parser flagged WarnNoAudioFrames, which would hash non-audio bytes as
+		// if they were audio (H1). Not load-bearing, but it keeps the verify path honest
+		// on its own terms.
+		if hasNoAudioWarning(p.doc.media) {
+			return nil, fmt.Errorf("%w: cannot verify audio essence of a no-audio file", waxerr.ErrInvalidData)
+		}
 		_, cfg := p.essenceExtent()
 		hasher = bits.NewHasher(p.doc.media.EssenceRanges())
 		hasher.Mix(cfg)

@@ -119,6 +119,14 @@ const (
 	// still written; the legacy container is preserved verbatim as promised), surfaced so
 	// the divergence is visible and the remedy (--legacy strip, or lint --fix) is offered.
 	WarnLegacyConflict
+	// WarnValueDropped means an edit set a canonical value the destination format's
+	// encoder cannot represent, so the value is silently lost on write - today the MP4
+	// iTunes atoms: a trkn/disk number/total outside the uint16 the atom holds (a
+	// non-numeric value, a negative, or one past 65535) or a non-numeric stik media
+	// kind. It is a plan-time warning carrying the offending key (Warning.Keys), surfaced
+	// before the write rather than vanishing with exit 0, so the user (and the CLI's
+	// --strict gate) sees the loss.
+	WarnValueDropped
 )
 
 func (c WarningCode) String() string {
@@ -175,6 +183,8 @@ func (c WarningCode) String() string {
 		return "picture-metadata-dropped"
 	case WarnLegacyConflict:
 		return "legacy-conflict"
+	case WarnValueDropped:
+		return "value-dropped"
 	default:
 		return "unknown"
 	}
@@ -184,6 +194,12 @@ func (c WarningCode) String() string {
 type Warning struct {
 	Code    WarningCode
 	Message string
+	// Keys names the canonical key(s) a key-specific warning concerns (a value-dropped
+	// or single-valued-multi warning), so a consumer can act on the key without parsing
+	// the prose Message - the CLI's --strict gate renders the offending key from it.
+	// It is metadata on top of Message (which already names the key in prose), not part
+	// of String(); it is empty for warnings that are not about a specific key.
+	Keys []tag.Key
 }
 
 // String renders the warning as "[code] message". The code is a fixed vocabulary
@@ -198,6 +214,14 @@ func (w Warning) String() string { return "[" + w.Code.String() + "] " + tag.San
 // Warn appends a warning to a slice, returning the new slice.
 func Warn(ws []Warning, code WarningCode, msg string) []Warning {
 	return append(ws, Warning{Code: code, Message: msg})
+}
+
+// WarnKeyed appends a warning carrying the canonical key(s) it concerns, so a
+// consumer (the CLI's --strict gate) can name the offending key without parsing the
+// message. It is the keyed counterpart to [Warn]; the keys are metadata on top of
+// the prose Message, which still names the key itself.
+func WarnKeyed(ws []Warning, code WarningCode, msg string, keys ...tag.Key) []Warning {
+	return append(ws, Warning{Code: code, Message: msg, Keys: keys})
 }
 
 // WarnTruncated appends a WarnTruncatedAudio warning naming the essence container

@@ -25,15 +25,6 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	}
 
 	legacyPresent := len(d.leadingID3) > 0 || len(d.trailingID3v1) > 0
-	// Reconcile/UpdateExisting need an ID3 parser to migrate values, which
-	// arrives with the MP3 milestone. Until then, fail loudly when there is a
-	// legacy container to act on rather than silently leaving it untouched (a
-	// Canonical-preset save would otherwise look like it canonicalized when it
-	// did nothing). With no legacy container present they are correctly no-ops.
-	if (opts.Legacy == core.LegacyReconcile || opts.Legacy == core.LegacyUpdateExisting) && legacyPresent {
-		return nil, fmt.Errorf("%w: legacy policy %q is not yet implemented for FLAC and a legacy tag is present",
-			waxerr.ErrUnsupportedTag, opts.Legacy)
-	}
 
 	changed := diffKeys(base.Tags, edited.Tags)
 	vorbisChanged := len(changed) > 0

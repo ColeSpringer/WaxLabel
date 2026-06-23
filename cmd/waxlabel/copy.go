@@ -124,8 +124,8 @@ func newCopyCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&preset, "preset", "", "write policy preset: preserve|compatible|canonical|minimal")
-	cmd.Flags().StringVar(&legacy, "legacy", "", "legacy-tag policy: preserve|strip|reconcile|update-existing")
+	cmd.Flags().StringVar(&preset, "preset", "", "write policy preset: preserve|compatible|minimal")
+	cmd.Flags().StringVar(&legacy, "legacy", "", "legacy-tag policy: preserve|strip")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview the transfer and write without modifying the destination")
 	return cmd
 }

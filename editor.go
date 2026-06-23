@@ -83,6 +83,12 @@ func (e *Editor) SetTags(t tag.Tags) *Editor { return e.Apply(t.Patch()) }
 // MIME - that path fills only, via [Picture.SniffInto].)
 func (e *Editor) AddPicture(p Picture) *Editor {
 	p.SniffAuthoritative()
+	// Deep-copy the payload so the editor owns its bytes: the caller passes a Picture by
+	// value, but Data is a slice aliasing their backing array, so a later mutation of that
+	// array (or reuse of the buffer) would otherwise change the bytes this edit writes.
+	// The read side (clonePicturesDeep) already detaches on the way out; this detaches on
+	// the way in, reusing the same pattern (L1).
+	p.Data = append([]byte(nil), p.Data...)
 	// Pad the mask for any Edit-seeded pictures not yet covered, then mark this one
 	// added, keeping addedMask parallel to pictures.
 	for len(e.addedMask) < len(e.pictures) {
@@ -165,6 +171,19 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// below.
 	if e.base == nil {
 		return nil, fmt.Errorf("%w: document is not initialized; use ParseFile/Parse", waxerr.ErrInvalidData)
+	}
+
+	// Refuse to build a write plan for a file the parser determined has no real audio
+	// (WarnNoAudioFrames): writing it would re-render metadata around non-audio bytes
+	// and silently bless a contradictory file. Every editing path - set/plan, lint
+	// --fix, and a copy's destination editor (transfer.go) - funnels through Prepare, so
+	// they inherit this one guard (exit 4), making a no-audio file fail to edit just as
+	// it fails to verify (H1). It is a base-document validity check, not an authored-edit
+	// warning, so it is NOT gated on the carried flag. The copy SOURCE stays readable: a
+	// no-audio file is still dumpable and its tags are real, so copying tags out of one is
+	// allowed (only the destination, which writes, is gated here).
+	if hasNoAudioWarning(e.base) {
+		return nil, fmt.Errorf("%w: file has no audio essence; refusing to write metadata to a no-audio file", waxerr.ErrInvalidData)
 	}
 
 	// Validate every key the edit touches before it can reach the native writer
@@ -283,23 +302,24 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	}
 	// Surface a known single-valued key the edit leaves holding multiple values as a
 	// non-fatal plan warning, so a library caller sees the cardinality the typed
-	// projection would silently collapse to its first value (#17). It is computed off
-	// the same base->result diff Plan.Changes() exposes, so it names exactly the keys
-	// the CLI's --strict guardrail acts on - and lets the CLI drop its separate
-	// stderr note, reporting the signal once (now also in --json warnings). A faithful
-	// carry suppresses it (like the chapter checks): a copy must not flag the source's
-	// own conflicting single-valued key as if the user authored it.
+	// projection would silently collapse to its first value (#17). It names exactly the
+	// keys the CLI's --strict gate acts on, and lets the CLI read the signal off the
+	// report once (now also in --json warnings). A faithful carry suppresses it (like the
+	// chapter checks): a copy must not flag the source's own conflicting single-valued
+	// key as if the user authored it.
 	if !e.carried {
-		// Both edit-time warnings judge against the plan's result tags (what the codec
-		// will actually write), not the raw edited set: a value the codec re-projects -
-		// e.g. GENRE=17 written back as the name "Rock" - must not read as a change or a
-		// conflict when the written value in fact still agrees.
+		// The single-valued-multi check judges against the EDIT INTENT (edited.Tags), not
+		// the codec's re-projected result: a single-valued key is single-valued by the
+		// key's own definition regardless of format, and a format that collapses the value
+		// in its result (Matroska's Info.Title) would otherwise stay silent on the very
+		// loss the warning exists to surface (F2). Diffing base->intent still avoids
+		// re-flagging an untouched pre-existing multi.
+		wp.Report.Warnings = appendSingleValuedWarnings(wp.Report.Warnings, e.base.Tags, edited.Tags)
+		// The legacy-conflict check, by contrast, judges against the plan's result tags
+		// (what the codec will actually write): a value the codec re-projects - e.g.
+		// GENRE=17 written back as the name "Rock" - must not read as a conflict when the
+		// written value in fact still agrees. Suppressed on a faithful carry like the rest.
 		result := planResultTags(wp, edited)
-		wp.Report.Warnings = appendSingleValuedWarnings(wp.Report.Warnings, e.base.Tags, result)
-		// Surface a preserved legacy container (an ID3v1/APEv2 tag the family view carries)
-		// the edit now contradicts, under the default LegacyPreserve policy, so the
-		// divergence is visible before the write and the remedy is offered (Codex #5).
-		// Suppressed on a faithful carry like the other edit-time sanity warnings.
 		wp.Report.Warnings = appendLegacyConflictWarnings(wp.Report.Warnings, e.base.Families, e.patch, result, wo.Legacy)
 	}
 	return &Plan{doc: e.doc, plan: wp, opts: wo}, nil
@@ -361,17 +381,20 @@ func planResultTags(wp *core.WritePlan, edited *core.Media) tag.TagSet {
 }
 
 // appendSingleValuedWarnings adds a WarnSingleValuedMulti for every known
-// single-valued key the edit changes into holding more than one value. It diffs
-// base against the plan's result (so an unchanged pre-existing multi - already
-// reported by Lint - is not re-flagged here) and uses [tag.Key.SingleValuedMulti],
-// the shared cardinality predicate, so the library warning, the linter's finding,
-// and the CLI's --strict guardrail cannot disagree on the rule.
-func appendSingleValuedWarnings(ws []core.Warning, base, result tag.TagSet) []core.Warning {
-	for _, c := range tag.Diff(base, result) {
+// single-valued key the edit changes into holding more than one value. It diffs base
+// against the edit INTENT (the edited tag set), not the codec's re-projected result,
+// so a format that collapses the value in its own result (Matroska's Info.Title) is
+// still flagged - the cardinality is a property of the key, not the format (F2).
+// Diffing against base avoids re-flagging an untouched pre-existing multi (already
+// reported by Lint), and the shared [tag.Key.SingleValuedMulti] predicate keeps the
+// library warning, the linter's finding, and the CLI's --strict gate from disagreeing.
+// Each warning carries the offending key (Warning.Keys) so the gate can name it.
+func appendSingleValuedWarnings(ws []core.Warning, base, intent tag.TagSet) []core.Warning {
+	for _, c := range tag.Diff(base, intent) {
 		if c.Key.SingleValuedMulti(len(c.New)) {
-			ws = core.Warn(ws, core.WarnSingleValuedMulti, fmt.Sprintf(
+			ws = core.WarnKeyed(ws, core.WarnSingleValuedMulti, fmt.Sprintf(
 				"%s is single-valued but is being given %d values; the typed projection reads only the first",
-				c.Key, len(c.New)))
+				c.Key, len(c.New)), c.Key)
 		}
 	}
 	return ws
@@ -423,9 +446,8 @@ func appendLegacyConflictWarnings(ws []core.Warning, fams []core.FamilyValue, pa
 			continue
 		}
 		seen[f.Key] = true
-		// reconcile/update-existing are not yet implemented for these containers (the codec
-		// rejects them when a legacy tag is present), so the remedy names only the working
-		// options: --legacy strip or lint --fix.
+		// The remedy names the options that actually resolve the conflict: drop the stale
+		// legacy container (--legacy strip) or let lint --fix do it.
 		ws = core.Warn(ws, core.WarnLegacyConflict, fmt.Sprintf(
 			"preserved %s tag still holds the old %s value and now conflicts with the edit; use --legacy strip or lint --fix",
 			f.Family, f.Key))

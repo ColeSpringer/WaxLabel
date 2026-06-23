@@ -129,12 +129,6 @@ var (
 		o.Legacy = core.LegacyPreserve
 		o.Padding = core.PaddingPolicy{Target: 4096, Max: 1 << 20, ReuseInPlace: true}
 	}
-	// Canonical normalizes aggressively: legacy containers are reconciled into
-	// the native tags, modest padding.
-	Canonical WriteOption = func(o *core.WriteOptions) {
-		o.Legacy = core.LegacyReconcile
-		o.Padding = core.PaddingPolicy{Target: 4096, Max: 1 << 20, ReuseInPlace: true}
-	}
 	// Minimal writes the smallest reasonable file: no padding, strip legacy.
 	Minimal WriteOption = func(o *core.WriteOptions) {
 		o.Legacy = core.LegacyStrip

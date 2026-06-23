@@ -85,7 +85,7 @@ func newLintCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&fix, "fix", false, "apply the safe, non-destructive fixes and save in place")
 	cmd.Flags().BoolVar(&recursive, "recursive", false, "recurse into directory arguments, linting every audio file found (selected by file extension)")
-	return cmd
+	return markListCommand(cmd)
 }
 
 // lintLoop runs a lint-style per-file command: it processes each path, captures
@@ -296,8 +296,11 @@ func renderLintFix(w io.Writer, o fixOutcome) {
 		for _, c := range o.changes {
 			renderChangeLine(w, "    ", c)
 		}
+		// Operations render glyph-free, not with a leading "- ": these lines sit directly
+		// below the change lines above, where "- KEY" means a removed key, so a dash here
+		// would read as another removal rather than a structural step (P5).
 		for _, op := range o.operations {
-			fmt.Fprintf(w, "    - %s\n", op)
+			fmt.Fprintf(w, "    %s\n", op)
 		}
 	}
 	for _, f := range o.remaining {

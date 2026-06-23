@@ -308,12 +308,18 @@ func renderChapters(w io.Writer, chs []wl.Chapter) {
 		return
 	}
 	fmt.Fprintf(w, "  chapters (%d):\n", len(chs))
-	for i, c := range chs {
+	for _, c := range chs {
 		// A chapter title is file-derived and rendered on a single line, so escape via
 		// SanitizeLine (escapes \n/\t too, so a title cannot forge a chapter line).
 		title := tag.SanitizeLine(c.Title)
+		// An untitled chapter shows an explicit "(untitled)" marker rather than a
+		// fabricated "Chapter N": the JSON view omits the title entirely (omitempty), so
+		// inventing a positional title here would make the human and machine views
+		// disagree and read as if the file carried a real title it does not. The marker
+		// matches the parenthetical-placeholder convention used elsewhere (e.g. "(empty
+		// value)").
 		if title == "" {
-			title = fmt.Sprintf("Chapter %d", i+1)
+			title = "(untitled)"
 		}
 		fmt.Fprintf(w, "    %s  %s\n", wl.FormatChapterTime(c.Start), title)
 	}
@@ -396,15 +402,28 @@ func renderReport(w io.Writer, path string, plan *wl.Plan, addedPics []wl.Pictur
 	name := displayName(path)
 	if plan.IsNoOp() {
 		fmt.Fprintf(w, "%s: no changes (already up to date)\n", name)
+		// A no-op can still carry a warning the user must see - an edit whose only effect
+		// was a value the format could not store (value-dropped) leaves the bytes
+		// unchanged yet is not what the user asked for. Surface it rather than hide it
+		// behind "no changes". A genuinely clean no-op has no warnings, so this is silent.
+		for _, x := range r.Warnings {
+			fmt.Fprintf(w, "  warning: %s\n", x.String())
+		}
 		return
 	}
 	fmt.Fprintf(w, "%s: plan\n", name)
 	renderChanges(w, plan.Changes(), addedPics)
+	// Operations get their own heading and a glyph-free indent so a write step (e.g.
+	// "pictures: 1 block(s)") never reuses the leading "-" that means a removed key in
+	// the changes block above - the two lists sit adjacent, so a shared dash blurs an
+	// operation into a removal (P5). This mirrors the "changes:" block's heading +
+	// indented items.
+	fmt.Fprintln(w, "  operations:")
 	if len(r.Operations) == 0 {
-		fmt.Fprintln(w, "  - rewrite metadata")
+		fmt.Fprintln(w, "    rewrite metadata")
 	}
 	for _, op := range r.Operations {
-		fmt.Fprintf(w, "  - %s\n", op)
+		fmt.Fprintf(w, "    %s\n", op)
 	}
 	fmt.Fprintf(w, "  size:    %s -> %s\n", wl.HumanBytes(r.BytesBefore), wl.HumanBytes(r.BytesAfter))
 	if r.PaddingAfter > 0 {
@@ -426,11 +445,22 @@ func renderReport(w io.Writer, path string, plan *wl.Plan, addedPics []wl.Pictur
 	}
 }
 
-// picturesCountKey is the lowercase pseudo-key the library's plan uses for the
-// picture-set count change (see countChange in plan.go); lowercase so it can never
-// collide with a canonical (uppercase) key. The CLI keys its added-picture detail
-// off it.
-const picturesCountKey = "pictures"
+// picturesCountKey and chaptersCountKey are the lowercase pseudo-keys the library's
+// plan uses for the picture-set and chapter-set count changes (see countChange in
+// plan.go); lowercase so they can never collide with a canonical (uppercase) key. The
+// CLI keys its added-picture detail off picturesCountKey, and the JSON path keys the
+// integer-count rendering off both.
+const (
+	picturesCountKey = "pictures"
+	chaptersCountKey = "chapters"
+)
+
+// isCountChange reports whether c keys a synthetic picture/chapter set-count change
+// (the lowercase pseudo-keys countChange emits) rather than a canonical tag change, so
+// the JSON path emits its integer Count instead of the stringified Old/New (P3).
+func isCountChange(k tag.Key) bool {
+	return k == picturesCountKey || k == chaptersCountKey
+}
 
 // renderChanges prints the field-level change preview (which keys are added,
 // removed, or changed) under a "changes:" heading, reusing the diff markers. It

@@ -8,7 +8,6 @@ import (
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/id3"
-	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // Plan computes the byte-level rewrite that turns the original file into the
@@ -26,13 +25,6 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	}
 
 	legacyPresent := len(d.ape) > 0 || len(d.id3v1) > 0
-	// Reconcile/UpdateExisting need to migrate values between containers; that is
-	// deferred, so fail loudly when there is a legacy container to act on rather
-	// than silently doing nothing.
-	if (opts.Legacy == core.LegacyReconcile || opts.Legacy == core.LegacyUpdateExisting) && legacyPresent {
-		return nil, fmt.Errorf("%w: legacy policy %q is not yet implemented for MP3 and a legacy tag is present",
-			waxerr.ErrUnsupportedTag, opts.Legacy)
-	}
 
 	tagsChanged := !base.Tags.Equal(edited.Tags)
 	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures)

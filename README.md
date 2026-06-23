@@ -96,7 +96,9 @@ Install the binary with `go install github.com/colespringer/waxlabel/cmd/waxlabe
   and `--add-picture ROLE=PATH` embed cover art (a shared `--picture-description`
   applies to every picture added, and `--force` embeds an unrecognized image),
   while `--remove-picture SELECTOR` (a role name or a 1-based `dump` index) and
-  `--remove-pictures` drop it; `--add-chapter TIMESTAMP=Title` / `--clear-chapters`
+  `--remove-pictures` drop it (a role that matches no embedded picture is a no-op
+  success - removing nothing is idempotent - while an out-of-range index is an
+  error); `--add-chapter TIMESTAMP=Title` / `--clear-chapters`
   edit navigation chapters; `--recursive` walks directory arguments. `--padding N` /
   `--no-padding` control the free space reserved after the metadata (a floor that
   grows a too-small region; `--padding 0` is a synonym for `--no-padding`;
@@ -129,10 +131,10 @@ Edits: `--set KEY=VALUE` (replace), `--add KEY=VALUE` (append, for multi-value),
 file whose header is not a recognized image), `--remove-pictures`. Tag values are
 taken from the command line only - bounded by the OS argument limit and unable to
 contain a NUL byte - so there is no `--set-from-file` or `@file` indirection. By
-default `set` and `plan` note an unknown key (written as a custom field) or a
-single-valued key given multiple values on stderr and continue; `--strict` makes
-either one fail (exit 2) instead. Write policy:
-`--preset preserve|compatible|canonical|minimal`, `--legacy ...`. The read commands
+default `set` and `plan` note an unknown key (written as a custom field) on stderr,
+and surface a single-valued key given multiple values as a warning in the plan body
+(on stdout); both continue, and `--strict` makes either one fail (exit 2) instead. Write policy:
+`--preset preserve|compatible|minimal`, `--legacy preserve|strip`. The read commands
 (`dump`, `verify`, `lint`, and a `diff` operand) accept a single `-` to read
 standard input, as do `plan` and `set` (the latter only with `-o`, since editing
 standard input in place is meaningless); `dump`, `verify`, and `lint` (like `set` and `plan`) walk directory
@@ -174,7 +176,15 @@ When one run processes several files, the exit code is the most-severe failure's
 class, not the first file's - ranked by severity rather than by numeric code:
 canceled/timeout, then source-changed, invalid-data, no-tags, unsupported-format,
 unsupported-tag, I/O, not-found, usage, and finally a generic error. So a corrupt
-file (`4`) outranks a mistyped path (`6`) regardless of argument order.
+file (`4`) outranks a mistyped path (`6`) regardless of argument order. An
+argument-validation error - for example a directory argument given without
+`--recursive` - is caught up front, before the per-file loop runs, so it precedes
+this per-file ranking entirely rather than competing within it.
+
+Exit `5` (source changed) is a library-level guarantee, not a best-effort check: a
+save that detects the file changed since it was parsed (`waxerr.ErrSourceChanged`)
+refuses rather than overwrite the newer bytes, so a concurrent edit can never be
+silently clobbered.
 
 > The **library** has no third-party dependencies. The CLI (package `main` under
 > `cmd/`) uses `spf13/cobra`; thanks to Go module-graph pruning, code that imports
@@ -221,12 +231,30 @@ A small set of contracts is stable:
 | MP3 | ID3v2/v1 | yes | yes | ID3v2.2/2.3/2.4 read+write (version preserved); ID3v1/APEv2 read into the family view; numeric genre; VBR length |
 | WAV | RIFF | yes | yes | LIST/INFO + embedded `id3 ` chunk; id3 authoritative when present, else INFO; pictures via id3; all chunks preserved; RF64/BW64 out of scope |
 | MP4 | AAC/ALAC | yes | yes | iTunes `moov.udta.meta.ilst` (text, trkn/disk, covr art, `----` freeform long tail); `free`-atom reuse + all-track `stco`/`co64` fixups; `chpl` preserved; fragmented (moof) rejected |
-| Matroska | FLAC/Opus/Vorbis/AAC/... | yes | yes | `.mka`/`.webm`/`.mkv`; scope-aware SimpleTag projection (album/track/edition/chapter) + `Info.Title` + cover-art attachments; canonical edits written at album scope and removed from any other scope that held the key (unedited scoped tags preserved verbatim); size change absorbed into a reserved Void (else tail shifted with Cues/SeekHead/CRC fixups), clusters byte-identical; cover write refused for WebM; chapters and cluster rewrite out of scope |
+| Matroska | FLAC/Opus/Vorbis/AAC/... | yes | yes | `.mka`/`.webm`/`.mkv`; scope-aware SimpleTag projection (album/track/edition/chapter) + `Info.Title` + cover-art attachments; canonical edits written at album scope and removed from any other scope that held the key (unedited scoped tags preserved verbatim); size change absorbed into a reserved Void (else tail shifted with Cues/SeekHead/CRC fixups), clusters byte-identical; cover write refused for WebM; chapters read+write; cluster rewrite out of scope |
 | AIFF | PCM (AIFF-C) | yes | yes | native NAME/AUTH/`(c) `/ANNO chunks + embedded `ID3 ` chunk; ID3 authoritative when present, else native; pictures via ID3; 80-bit COMM rate; AIFF-C + `id3 ` variant; all chunks preserved |
 
 Ogg writes preserve audio *packet payloads* byte-for-byte (Ogg re-pagination is
 allowed); chained/multiplexed streams are read best-effort and reported, but
 writing them is refused.
+
+The per-format picture and chapter capabilities below are generated from the codec
+`Capabilities` (the same source `caps` reports), so they cannot drift from the code -
+a test regenerates the block and fails if the README falls behind:
+
+<!-- BEGIN caps (generated from codec Capabilities; see tests/capability_test.go) -->
+| Format | Pictures | Chapters |
+| --- | --- | --- |
+| AAC (ADTS) | read full, write full · APIC frame | read none, write none |
+| AIFF | read full, write full · APIC (ID3 chunk) | read none, write none |
+| FLAC | read full, write full · FLAC PICTURE block | read none, write none · CUESHEET preserved |
+| MP3 | read full, write full · APIC frame | read none, write none · CHAP preserved |
+| MP4 | read full, write full · covr atom (JPEG/PNG/BMP) | read full, write full · Nero chpl and a QuickTime chapter text track |
+| Matroska | read full, write full · AttachedFile (image attachment) | read full, write full · Chapters > EditionEntry > ChapterAtom (default edition) |
+| Ogg Opus | read full, write full · METADATA_BLOCK_PICTURE | read none, write none |
+| Ogg Vorbis | read full, write full · METADATA_BLOCK_PICTURE | read none, write none |
+| WAV | read full, write full · APIC (id3 chunk) | read none, write none · cue/adtl preserved |
+<!-- END caps -->
 
 ## Padding
 
@@ -274,8 +302,11 @@ without decoding, so they are left unflagged rather than risk a false alarm. Whe
 `dump` and lint overlap they use the same finding codes and messages (e.g.
 `inherited-encoder`, `trailing-id3v1`, `conflicting-families`): `dump` reports the
 warnings noticed at parse, while lint adds the computed checks `dump` does not run -
-malformed dates and numbers, single-valued cardinality, custom keys, and duplicate
-pictures - so run lint for the full issue set.
+malformed dates, numbers, booleans (COMPILATION), media-type codes (MEDIATYPE), and
+ReplayGain values; single-valued cardinality; custom keys; and duplicate pictures - so
+run lint for the full issue set. (RATING stays free-form - no canonical numeric
+contract holds across formats - so it is never flagged.) The same shared validator
+backs both lint and the `set`-time malformed-value note, so the two cannot disagree.
 `lint --fix` applies only the safe, non-destructive remediations
 (clearing the encoder stamp, stripping legacy containers) and saves, then
 re-lints the saved file so what it reports as "fixed" or still "not auto-fixed" is

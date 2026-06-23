@@ -52,7 +52,7 @@ func newDumpCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&native, "native", false, "include native blocks and the per-family view")
 	cmd.Flags().BoolVar(&recursive, "recursive", false, "recurse into directory arguments, dumping every audio file found (selected by file extension)")
-	return cmd
+	return markListCommand(cmd)
 }
 
 // jsonDocument is the machine-readable view of one dumped file. A failed element is

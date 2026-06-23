@@ -109,14 +109,20 @@ func countChange(key tag.Key, before, after int) tag.Change {
 	case before == 0 && after > 0:
 		c.Kind = tag.ChangeAdded
 		c.New = []string{strconv.Itoa(after)}
+		c.Count = after
 	case after == 0 && before > 0:
 		c.Kind = tag.ChangeRemoved
 		c.Old = []string{strconv.Itoa(before)}
+		c.Count = before
 	default:
 		c.Kind = tag.ChangeChanged
 		c.Old = []string{strconv.Itoa(before)}
 		c.New = []string{strconv.Itoa(after)}
+		c.Count = after
 	}
+	// Count mirrors the integer the text render highlights (the added/resulting count,
+	// or the removed count) so a JSON consumer reads it directly instead of the bogus
+	// stringified Old/New a count change formerly leaked into the machine output (P3).
 	return c
 }
 
