@@ -50,6 +50,11 @@ type Capability struct {
 	// multi-value downgrade a destination actually performs is expressed through
 	// Fidelity/Constraints, which the destination's writer honors (see dispose).
 	MaxValues int
+	// PictureLoss grades which picture metadata this format drops on write (the pictures
+	// capability only; [PictureLossNone] for fields, chapters, and lossless formats).
+	// ProjectTransfer uses it to mark a picture set Lossy only when the specific pictures
+	// carry metadata the destination will drop, matching the codec's write-time warning.
+	PictureLoss PictureLoss
 }
 
 // Capabilities describes what a format (under a given set of options) can do.

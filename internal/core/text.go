@@ -43,11 +43,11 @@ func IndefiniteArticle(name string) string {
 	return "a"
 }
 
-// Fold normalizes a string for case- and space-insensitive comparison
-// (lowercased, surrounding whitespace trimmed). It is the one place the
-// normalization rule lives for codecs that import core; tag/* cannot use it (core
-// imports tag, not the reverse).
-func Fold(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+// Fold normalizes a string for case- and space-insensitive comparison. It
+// delegates to [tag.Fold] so the whole tree shares one fold rule (core imports
+// tag, not the reverse): codecs that import core fold through this, and tag's own
+// callers fold through tag.Fold directly.
+func Fold(s string) string { return tag.Fold(s) }
 
 // ContainsFold reports whether vals holds value, comparing case- and
 // space-insensitively. It is the shared rule for deciding whether a secondary

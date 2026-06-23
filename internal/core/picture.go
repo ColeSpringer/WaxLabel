@@ -79,6 +79,49 @@ func CountIcons(pics []Picture) (icon, otherIcon int) {
 	return icon, otherIcon
 }
 
+// PictureLoss names which picture metadata a destination format drops when it
+// stores cover art as image data with a fixed role. It is recorded on the
+// pictures [Capability] so transfer reports and codec write-time warnings use
+// the same [PicturesLoseMetadata] predicate.
+type PictureLoss uint8
+
+const (
+	// PictureLossNone means the format preserves role and description (FLAC, Ogg, ID3).
+	PictureLossNone PictureLoss = iota
+	// PictureLossRoleOnly means the format preserves the front-cover and Other roles,
+	// but reads any other role back as Other. Descriptions survive. Matroska names only
+	// cover and small_cover, and small_cover round-trips as Other, so only a role that is
+	// neither front cover nor Other is lost.
+	PictureLossRoleOnly
+	// PictureLossRoleAndDescription means the format stores image bytes only,
+	// dropping both role and description. MP4's covr atom does this: every cover reads
+	// back as a front cover with no description.
+	PictureLossRoleAndDescription
+)
+
+// PicturesLoseMetadata reports whether storing pics under a destination whose
+// picture loss is loss would drop role and/or description metadata the pictures
+// actually carry. Write-time picture-metadata warnings and transfer disposition
+// both use this predicate, so a copy reported lossy is the same case whose write
+// warns. A plain front cover with no description is never flagged.
+func PicturesLoseMetadata(pics []Picture, loss PictureLoss) bool {
+	for _, p := range pics {
+		switch loss {
+		case PictureLossRoleAndDescription:
+			if p.Type != PicFrontCover || p.Description != "" {
+				return true
+			}
+		case PictureLossRoleOnly:
+			// A PicOther picture already round-trips as Other (Matroska's small_cover), so
+			// only a role that is neither front cover nor Other is lost.
+			if p.Type != PicFrontCover && p.Type != PicOther {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Picture is an embedded image. Data bytes are reference-shared read-only:
 // deep-copying multi-megabyte payloads on every accessor is wasteful, so
 // callers must not mutate Data. The structural fields are copied freely.

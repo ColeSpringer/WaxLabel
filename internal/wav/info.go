@@ -162,6 +162,19 @@ func infoValue(ts tag.TagSet, key tag.Key) (string, bool) {
 	return v, true
 }
 
+// nativeReducedWarnings notes each multi-valued key reduced to its first value in
+// the single-valued LIST/INFO chunk while the full set is kept in the ID3 chunk
+// written alongside it. Every RIFF INFO slot is single-valued, so any mapped key
+// qualifies. core.NativeReducedWarnings applies the value-count and first-present
+// checks, matching infoValue's treatment of present-empty values. The caller
+// invokes this only when both containers are emitted.
+func nativeReducedWarnings(ts tag.TagSet) []core.Warning {
+	return core.NativeReducedWarnings(ts, "LIST/INFO", func(k tag.Key) bool {
+		_, ok := mapping.RIFFKeyInfo(k)
+		return ok
+	})
+}
+
 // renderInfo serializes INFO items into a LIST chunk body: the "INFO" list type
 // followed by each item as 4CC + little-endian size + NUL-terminated value, word
 // aligned. The returned bytes are the chunk body (the caller prepends the "LIST"

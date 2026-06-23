@@ -117,3 +117,16 @@ func rebuildText(orig []textItem, edited tag.TagSet) []outChunk {
 func textOut(id [4]byte, value string) outChunk {
 	return outChunk{id: id, role: roleText, body: []byte(value), bodyLen: int64(len(value))}
 }
+
+// nativeReducedWarnings notes each multi-valued key reduced to its first value in
+// a single-valued native text chunk (NAME/AUTH/"(c) ") while the full set is kept
+// in the ID3 chunk written alongside it. Comment is excluded because it maps to
+// repeatable ANNO chunks. core.NativeReducedWarnings applies the value-count and
+// first-present checks, including the present-empty case, which is dropped rather
+// than reduced. The caller invokes this only when both containers are emitted.
+func nativeReducedWarnings(ts tag.TagSet) []core.Warning {
+	return core.NativeReducedWarnings(ts, "text chunk", func(k tag.Key) bool {
+		_, ok := mapping.AIFFKeyText(k)
+		return ok && k != tag.Comment
+	})
+}

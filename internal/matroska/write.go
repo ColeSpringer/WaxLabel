@@ -102,6 +102,15 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 			"chapter edit dropped the default edition's nested sub-chapters or secondary-language titles")
 	}
 
+	// Matroska stores cover art as cover.<ext>/small_cover.<ext>, so only the front
+	// cover's role round-trips. Other roles read back as Other, while the description is
+	// preserved. Surface that role-only loss as a plan-time warning; WebM picture writes
+	// were already refused above.
+	if ch.pictures && core.PicturesLoseMetadata(edited.Pictures, core.PictureLossRoleOnly) {
+		report.Warnings = core.Warn(report.Warnings, core.WarnPictureMetadataDropped,
+			"Matroska preserves only the front cover's role; other picture roles read back as Other")
+	}
+
 	pl, err := planAbsorb(d, base, edited, ch, ek, report)
 	if err == nil {
 		return pl, nil

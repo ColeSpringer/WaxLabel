@@ -2,6 +2,8 @@ package matroska
 
 import (
 	"bytes"
+	"encoding/binary"
+	"hash/crc32"
 	"testing"
 
 	"github.com/colespringer/waxlabel/internal/bits"
@@ -9,6 +11,35 @@ import (
 	"github.com/colespringer/waxlabel/internal/mapping"
 	"github.com/colespringer/waxlabel/tag"
 )
+
+// TestRawCRCOverlongSizeVINT verifies that a CRC-32 element whose 4-byte size is
+// written with an overlong VINT (0x40 0x04 rather than the canonical 0x84) is
+// still recognized. rawCRC decodes the size VINT and accepts any width whose
+// value is 4; recomputeCRC then rewrites the value as crc32(content).
+func TestRawCRCOverlongSizeVINT(t *testing.T) {
+	content := []byte{0x11, 0x22, 0x33, 0x44, 0x55} // the master's body, after the CRC element
+	// CRC id (0xBF) + overlong 2-byte size VINT encoding 4 (0x40 0x04) + 4 value bytes.
+	raw := append([]byte{idCRC32 & 0xFF, 0x40, 0x04, 0, 0, 0, 0}, content...)
+
+	spot := rawCRC(raw, 0)
+	if spot == nil {
+		t.Fatal("rawCRC returned nil for an overlong (2-byte) size VINT; the CRC would be left stale")
+	}
+	if spot.valOff != 3 || spot.contentStart != 7 {
+		t.Errorf("crcSpot = {valOff:%d, contentStart:%d}, want {3, 7} (2-byte VINT width accounted for)",
+			spot.valOff, spot.contentStart)
+	}
+
+	recomputeCRC(raw, spot)
+	want := crc32.ChecksumIEEE(raw[spot.contentStart:])
+	got := binary.LittleEndian.Uint32(raw[spot.valOff : spot.valOff+4])
+	if got != want {
+		t.Errorf("recomputed CRC = %#08x, want crc32(content) = %#08x", got, want)
+	}
+	if raw[0] != byte(idCRC32) {
+		t.Errorf("CRC element no longer leads its master: first byte %#x", raw[0])
+	}
+}
 
 // TestEncodeRoundTrip checks the EBML encoder is the inverse of the reader: a
 // nested, CRC-guarded master element re-decodes with the CRC matching its content.

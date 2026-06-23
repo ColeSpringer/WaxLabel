@@ -33,14 +33,29 @@ func firstChildIsCRC(src core.ReaderAtSized, el element, limit int64) bool {
 // raw is the full element; contentOff is where its payload begins (after the
 // ID and size VINT). It returns nil when no CRC-32 leads the payload.
 func rawCRC(raw []byte, contentOff int) *crcSpot {
-	// Match the canonical encoding directly - 0xBF, a 1-byte size of 0x84, then the
-	// 4-byte value. Trusting readElement's clamped data length would misread a
-	// malformed element whose junk size merely clamps to 4 bytes as a CRC and then
-	// recompute over the trailing junk, corrupting the re-render.
-	if contentOff+6 > len(raw) || raw[contentOff] != byte(idCRC32) || raw[contentOff+1] != 0x84 {
+	// Decode the size VINT from raw and accept the CRC only when its decoded value is
+	// exactly 4, regardless of VINT width. firstChildIsCRC accepts any valid VINT
+	// encoding; demanding the literal 0x84 here would miss an overlong CRC size such as
+	// 0x40 0x04 and leave a stale CRC. Requiring the decoded value to be 4 still rejects
+	// malformed elements whose oversized payload merely clamps to four readable bytes.
+	if contentOff+1 >= len(raw) || raw[contentOff] != byte(idCRC32) {
 		return nil
 	}
-	return &crcSpot{valOff: contentOff + 2, contentStart: contentOff + 6}
+	length := vintLen(raw[contentOff+1])
+	// length is the VINT width in [1,8]. vintLen guarantees that, but keep the local
+	// bound so the mask shift and value decode stay safe even if that helper changes.
+	if length == 0 || length > 8 || contentOff+1+length+4 > len(raw) {
+		return nil
+	}
+	mask := byte(0x80 >> (length - 1))
+	val := uint64(raw[contentOff+1] &^ mask)
+	for i := 1; i < length; i++ {
+		val = val<<8 | uint64(raw[contentOff+1+i])
+	}
+	if val != 4 {
+		return nil
+	}
+	return &crcSpot{valOff: contentOff + 1 + length, contentStart: contentOff + 1 + length + 4}
 }
 
 // captureSeekHead records the SeekHead's SeekPosition slots so the writer can

@@ -189,6 +189,7 @@ const (
 	WarnPictureMetadataDropped = core.WarnPictureMetadataDropped
 	WarnLegacyConflict         = core.WarnLegacyConflict
 	WarnValueDropped           = core.WarnValueDropped
+	WarnNativeValueReduced     = core.WarnNativeValueReduced
 )
 
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated

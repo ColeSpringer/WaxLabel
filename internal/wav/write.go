@@ -93,6 +93,14 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	emitINFO := writeINFO && len(newInfo) > 0
 	emitID3 := needID3 && newID3 != nil && len(newID3.Frames()) > 0
 
+	// When both LIST/INFO and ID3 are emitted, a multi-valued key keeps its full set
+	// only in ID3; INFO stores just the first value. Surface that native reduction as
+	// a plan-time note. Gate on the emit flags, not needID3/writeINFO, because a full
+	// clear can leave writeINFO true yet emit no INFO chunk.
+	if emitINFO && emitID3 {
+		report.Warnings = append(report.Warnings, nativeReducedWarnings(edited.Tags)...)
+	}
+
 	outs, ops := planChunks(d, newInfo, newID3, emitINFO, emitID3, stripINFO)
 
 	segs, lay, err := assemble(d, outs)

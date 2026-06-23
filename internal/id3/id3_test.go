@@ -519,3 +519,151 @@ func TestParseV1(t *testing.T) {
 		t.Errorf("v1 = %+v", v1)
 	}
 }
+
+// TestRenderNumTotalNoTripleSlash verifies that a canonical number already
+// carrying a total ("5/12") plus an explicit total never composes "5/12/20",
+// which re-reads as TRACKTOTAL="12/20". The explicit total wins; an embedded one
+// is kept when no explicit total is set; leading zeros survive because this uses
+// SplitNumberTotal, not ParseNumPair.
+func TestRenderNumTotalNoTripleSlash(t *testing.T) {
+	cases := []struct{ num, total, want string }{
+		{"5/12", "20", "5/20"}, // explicit total wins over the embedded one
+		{"5/12", "", "5/12"},   // embedded total kept when no explicit total
+		{"03", "09", "03/09"},  // leading zeros preserved, not renumbered to 3/9
+	}
+	for _, frame := range []struct {
+		id             string
+		numKey, totKey tag.Key
+	}{
+		{"TRCK", tag.TrackNumber, tag.TrackTotal},
+		{"TPOS", tag.DiscNumber, tag.DiscTotal},
+	} {
+		for _, c := range cases {
+			edited := tag.NewTagSet()
+			edited.Set(frame.numKey, c.num)
+			if c.total != "" {
+				edited.Set(frame.totKey, c.total)
+			}
+			out, _ := RebuildFrames(nil, tag.NewTagSet(), edited, 4, nil, false, WriteOpts{})
+			var body []byte
+			for _, f := range out {
+				if f.ID == frame.id {
+					body = f.Body
+				}
+			}
+			if body == nil {
+				t.Fatalf("%s num=%q total=%q: no %s frame emitted", frame.id, c.num, c.total, frame.id)
+			}
+			if got := decodeTextFrame(body); !slices.Equal(got, []string{c.want}) {
+				t.Errorf("%s num=%q total=%q => %v, want %q", frame.id, c.num, c.total, got, c.want)
+			}
+		}
+	}
+}
+
+// TestRenderNumTotalPathologicalResidual pins the ID3 behavior for a malformed
+// number pair the editor deliberately leaves unsplit. The writer renders
+// "1/2/3" verbatim instead of composing another slash, and a re-read sees number
+// "1" with total "2/3". The input is already flagged malformed at set time, so
+// the typed projection still matches MP4.
+func TestRenderNumTotalPathologicalResidual(t *testing.T) {
+	edited := tag.NewTagSet()
+	edited.Set(tag.TrackNumber, "1/2/3")
+	out, _ := RebuildFrames(nil, tag.NewTagSet(), edited, 4, nil, false, WriteOpts{})
+	var body []byte
+	for _, f := range out {
+		if f.ID == "TRCK" {
+			body = f.Body
+		}
+	}
+	if got := decodeTextFrame(body); !slices.Equal(got, []string{"1/2/3"}) {
+		t.Fatalf("TRCK = %v, want [1/2/3] rendered verbatim", got)
+	}
+	ts := Project(buildTag(t, 4, out)).Tags
+	if n, _ := ts.First(tag.TrackNumber); n != "1" {
+		t.Errorf("re-read TrackNumber = %q, want 1", n)
+	}
+	if tot, _ := ts.First(tag.TrackTotal); tot != "2/3" {
+		t.Errorf("re-read TrackTotal = %q, want 2/3", tot)
+	}
+}
+
+// TestDecodeFrameDeunsyncBeforeStrip verifies that a v2.4 grouped frame under
+// tag-level unsynchronisation is de-unsynchronised before the group byte is
+// stripped. Otherwise a 0x00 stuffing byte that followed the stripped 0xFF stays
+// in the payload and splits "Hi" into the corrupt ["","Hi"] pair.
+func TestDecodeFrameDeunsyncBeforeStrip(t *testing.T) {
+	// Clean region: group byte 0xFF, then a Latin-1 "Hi" text body {00 'H' 'i'}.
+	// Unsynchronising {FF 00 48 69} stuffs a 0x00 after the FF -> on-disk {FF 00 00 48 69}.
+	raw := []byte{0xFF, 0x00, 0x00, 0x48, 0x69}
+	// Intermediate: de-unsync recovers {FF 00 48 69} (group byte still leading).
+	if got := deunsync(raw); !bytes.Equal(got, []byte{0xFF, 0x00, 0x48, 0x69}) {
+		t.Fatalf("deunsync(raw) = % x, want FF 00 48 69", got)
+	}
+	flags := [2]byte{0, v24Grouping}
+	f := decodeFrame("TIT2", flags, raw, 4, true /* tagUnsync */)
+	// After the group strip the body is {00 48 69} = Latin-1 "Hi", a single value.
+	if !bytes.Equal(f.Body, []byte{0x00, 0x48, 0x69}) {
+		t.Errorf("frame body = % x, want 00 48 69 (group stripped after de-unsync)", f.Body)
+	}
+	if got := decodeTextFrame(f.Body); !slices.Equal(got, []string{"Hi"}) {
+		t.Errorf("decoded TIT2 = %v, want [Hi] (not the [\"\",\"Hi\"] corruption)", got)
+	}
+}
+
+// TestRebuildPreservesCommentLanguage verifies that the read path discards the
+// COMM/USLT 3-byte language, so an edit of the value must recover it from the
+// original frame rather than resetting to "eng". A brand-new comment defaults to
+// "eng", and a garbage 3-byte language round-trips verbatim.
+func TestRebuildPreservesCommentLanguage(t *testing.T) {
+	lang := func(body []byte) string {
+		if len(body) < 4 {
+			return ""
+		}
+		return string(body[1:4])
+	}
+	find := func(out []Frame, id string) []byte {
+		for _, f := range out {
+			if f.ID == id {
+				return f.Body
+			}
+		}
+		return nil
+	}
+
+	// A COMM and a USLT carried in German; editing the value keeps the language.
+	orig := []Frame{
+		{ID: "COMM", Body: encodeComment(4, "deu", "", []string{"Hallo"})},
+		{ID: "USLT", Body: encodeLangText(4, "deu", "", "Strophe")},
+	}
+	base := Project(&Tag{frames: orig}).Tags
+	edited := base.Clone()
+	edited.Set(tag.Comment, "Hallo Welt")
+	edited.Set(tag.Lyrics, "Neue Strophe")
+	out, _ := RebuildFrames(orig, base, edited, 4, nil, false, WriteOpts{})
+	if got := lang(find(out, "COMM")); got != "deu" {
+		t.Errorf("edited COMM language = %q, want deu", got)
+	}
+	if got := lang(find(out, "USLT")); got != "deu" {
+		t.Errorf("edited USLT language = %q, want deu", got)
+	}
+
+	// A brand-new comment (no original frame) defaults to eng.
+	fresh := tag.NewTagSet()
+	fresh.Set(tag.Comment, "Added")
+	outNew, _ := RebuildFrames(nil, tag.NewTagSet(), fresh, 4, nil, false, WriteOpts{})
+	if got := lang(find(outNew, "COMM")); got != "eng" {
+		t.Errorf("new COMM language = %q, want eng", got)
+	}
+
+	// A garbage (non-ASCII) 3-byte language round-trips verbatim, not normalized.
+	garbage := string([]byte{0x01, 0x02, 0x03})
+	origG := []Frame{{ID: "COMM", Body: encodeComment(4, garbage, "", []string{"x"})}}
+	baseG := Project(&Tag{frames: origG}).Tags
+	editedG := baseG.Clone()
+	editedG.Set(tag.Comment, "y")
+	outG, _ := RebuildFrames(origG, baseG, editedG, 4, nil, false, WriteOpts{})
+	if got := lang(find(outG, "COMM")); got != garbage {
+		t.Errorf("edited COMM language = % x, want % x (garbage round-trips)", got, garbage)
+	}
+}

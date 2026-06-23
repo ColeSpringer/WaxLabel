@@ -40,6 +40,20 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 		}
 	}
 
+	// The read path discards the COMM/USLT 3-byte language, so recover it from the
+	// original frames at write time: a re-rendered comment/lyric keeps its language
+	// (e.g. "deu") instead of being reset to "eng". frameRenderID marks a COMM/USLT
+	// frame managed only when its description is empty, so there is at most one managed
+	// COMM and one managed USLT to reuse.
+	origLangs := map[string]string{} // "COMM"/"USLT" -> 3-byte language
+	for _, f := range orig {
+		if f.ID == "COMM" || f.ID == "USLT" {
+			if rid, managed := frameRenderID(f); managed && len(f.Body) >= 4 {
+				origLangs[rid] = string(f.Body[1:4])
+			}
+		}
+	}
+
 	var out []Frame
 	var info RebuildInfo
 	emitted := map[string]bool{}
@@ -67,7 +81,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 		}
 		if dirty[rid] {
 			if !emitted[rid] {
-				frames, v23multi := renderUnit(rid, edited, version, opts)
+				frames, v23multi := renderUnit(rid, edited, version, opts, origLangs)
 				out = append(out, frames...)
 				info.UsedV23Multi = info.UsedV23Multi || v23multi
 				emitted[rid] = true
@@ -95,7 +109,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	}
 	slices.Sort(leftover)
 	for _, rid := range leftover {
-		frames, v23multi := renderUnit(rid, edited, version, opts)
+		frames, v23multi := renderUnit(rid, edited, version, opts, origLangs)
 		out = append(out, frames...)
 		info.UsedV23Multi = info.UsedV23Multi || v23multi
 		emitted[rid] = true
@@ -297,7 +311,7 @@ func rawFrameIDKey(key tag.Key) bool {
 // renderUnit renders the frame(s) for a render token from the edited tag set,
 // returning an empty slice when the underlying field is now absent (the frame is
 // dropped). It also reports whether a v2.3 NUL-separated multi-value was emitted.
-func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts) ([]Frame, bool) {
+func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, origLangs map[string]string) ([]Frame, bool) {
 	switch {
 	case strings.HasPrefix(token, "TXXX\x00"):
 		key := txxxKeyForToken(token[len("TXXX\x00"):])
@@ -318,13 +332,13 @@ func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts) (
 		if !ok || len(vals) == 0 {
 			return nil, false
 		}
-		return []Frame{{ID: "COMM", Body: encodeComment(version, "eng", "", vals)}}, false
+		return []Frame{{ID: "COMM", Body: encodeComment(version, unitLang(origLangs, "COMM"), "", vals)}}, false
 	case token == "USLT":
 		text, ok := edited.First(tag.Lyrics)
 		if !ok {
 			return nil, false
 		}
-		return []Frame{{ID: "USLT", Body: encodeLangText(version, "eng", "", text)}}, false
+		return []Frame{{ID: "USLT", Body: encodeLangText(version, unitLang(origLangs, "USLT"), "", text)}}, false
 	case token == "TCON":
 		vals, ok := edited.Get(tag.Genre)
 		if !ok || len(vals) == 0 {
@@ -360,6 +374,17 @@ func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts) (
 		}
 		return renderText(version, token, vals, opts.Multi)
 	}
+}
+
+// unitLang returns the 3-byte language for a managed COMM/USLT frame: the
+// original frame's language recovered in RebuildFrames, or "eng" for a newly
+// added comment or lyric with no original frame. A garbage 3-byte language
+// round-trips verbatim because langBytes neither normalizes nor rejects it.
+func unitLang(origLangs map[string]string, token string) string {
+	if l, ok := origLangs[token]; ok {
+		return l
+	}
+	return "eng"
 }
 
 // txxxKeyForToken resolves a TXXX render token (an uppercased description) back
@@ -404,9 +429,18 @@ func renderNumTotal(version byte, id string, edited tag.TagSet, numKey, totKey t
 	if num == "" && total == "" {
 		return nil, false
 	}
-	value := num
-	if total != "" {
-		value = num + "/" + total
+	// Peel any embedded "n/total" out of the number so TRACKNUMBER="5/12" plus an
+	// explicit TRACKTOTAL never composes "5/12/20" (which re-reads as TRACKTOTAL="12/20").
+	// An explicit total wins; otherwise the embedded one is used. SplitNumberTotal keeps
+	// the exact digit strings, including leading zeros, unlike tag.ParseNumPair.
+	nPart, embeddedTotal := tag.SplitNumberTotal(num)
+	value := nPart
+	finalTotal := total
+	if finalTotal == "" {
+		finalTotal = embeddedTotal
+	}
+	if finalTotal != "" {
+		value = nPart + "/" + finalTotal
 	}
 	enc := chooseEncoding(version, []string{value})
 	return []Frame{{ID: id, Body: encodeTextFrame(enc, []string{value})}}, false

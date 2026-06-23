@@ -52,11 +52,6 @@ func BuildFamilies(contribs []Contribution, family Family) []FamilyValue {
 	return fams
 }
 
-// distinctValues counts case- and space-insensitive distinct values.
-func distinctValues(vals []string) int {
-	seen := map[string]bool{}
-	for _, v := range vals {
-		seen[Fold(v)] = true
-	}
-	return len(seen)
-}
+// distinctValues counts case- and space-insensitive distinct values using the
+// same fold rule as dump duplicate markers.
+func distinctValues(vals []string) int { return tag.DistinctValues(vals) }

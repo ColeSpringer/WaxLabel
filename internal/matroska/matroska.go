@@ -69,8 +69,16 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	}
 	pictures := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
-		Representation: "AttachedFile (image attachment)", Fidelity: "lossless",
-		Constraints: []string{"not writable to WebM (Attachments is outside the WebM subset)"},
+		Representation: "AttachedFile (image attachment)",
+		// Matroska defines only cover.<ext> (front) and small_cover.<ext>, so only the
+		// front-cover role round-trips; any other role reads back as Other. The description
+		// is preserved in FileDescription, so the loss is role-only.
+		Fidelity:    "image bytes lossless; only the front-cover role is preserved (other roles read back as Other)",
+		PictureLoss: core.PictureLossRoleOnly,
+		Constraints: []string{
+			"not writable to WebM (Attachments is outside the WebM subset)",
+			"only the front cover preserves its role; other picture roles read back as Other (descriptions are preserved)",
+		},
 	}
 	// Cover write is refused for WebM, which excludes Attachments. This is true for a
 	// parsed WebM file (detected from its docType) and for a file-less query that opts
@@ -97,6 +105,7 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 		Constraints: []string{
 			"edits apply to the default edition; other editions and chapter UIDs preserved",
 			"a chapter edit flattens the default edition to a title/start/end model - nested sub-chapters and secondary-language displays in it are not preserved (untouched chapters are kept verbatim)",
+			"a chapter's end time is read only from an explicit ChapterTimeEnd; an absent end is left open-ended (zero), not inferred from the next chapter's start the way MP4 infers it",
 		},
 		// No MaxItems: Matroska has no chapter-count cap (unlike MP4's 255-entry chpl).
 	}

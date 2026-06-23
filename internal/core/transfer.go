@@ -127,6 +127,17 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 	}
 	if n := len(src.Pictures); n > 0 {
 		disp, reason := dispose(dst.Pictures, dst.ReadOnly, n, "pictures")
+		// dispose reports picture sets as Carried when the image bytes themselves carry
+		// byte-for-byte. MP4 and Matroska can still drop role or description metadata,
+		// so upgrade the disposition only when these specific pictures carry metadata
+		// covered by the destination's PictureLoss rule. A plain front cover with no
+		// description still reports Carried.
+		if disp == Carried && PicturesLoseMetadata(src.Pictures, dst.Pictures.PictureLoss) {
+			disp = Lossy
+			if reason = dst.Pictures.Fidelity; reason == "" {
+				reason = strings.Join(dst.Pictures.Constraints, "; ")
+			}
+		}
 		items = append(items, TransferItem{
 			Kind: TransferPicture, Count: n, Disposition: disp, Reason: reason,
 		})

@@ -92,6 +92,15 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	emitText := writeText && len(newText) > 0
 	emitID3 := needID3 && newID3 != nil && len(newID3.Frames()) > 0
 
+	// When both native text chunks and ID3 are emitted, any multi-valued key backed by
+	// a single-valued text chunk keeps its full set only in ID3; the text chunk stores
+	// just the first value. Surface that native reduction as a plan-time note. Gate on
+	// the emit flags, not needID3/writeText, so a full clear that emits no text chunk
+	// does not warn.
+	if emitText && emitID3 {
+		report.Warnings = append(report.Warnings, nativeReducedWarnings(edited.Tags)...)
+	}
+
 	outs, ops := planChunks(d, newText, newID3, emitText, emitID3, stripText)
 
 	segs, lay, err := assemble(d, outs)

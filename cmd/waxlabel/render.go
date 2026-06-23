@@ -106,7 +106,7 @@ func audioLine(p wl.Properties) string {
 	// Round to kbps; a sub-1-kbps average (a truncated file's collapsed bitrate)
 	// would print as a misleading "0 kbps", so it is omitted instead. Gate on a
 	// non-zero duration too: a header-only file (empty.wav, zero samples) has a
-	// header-derived rate×ch×depth bitrate that is meaningless over zero playtime -
+	// header-derived rate * channels * depth bitrate that is meaningless over zero playtime -
 	// an average bitrate is undefined there - so the truthful header facts (codec,
 	// rate, channels, depth) stay while the bogus "705 kbps" is dropped.
 	if t.Bitrate >= 1000 && p.Duration() > 0 {
@@ -143,6 +143,22 @@ func bitDepthMeaningful(codec string) bool {
 // value far to the right.
 const keyColumn = 24
 
+// dupOrConflict classifies a known single-valued key holding several values. If
+// the values fold to the same string, the rows are duplicates; lint reports only
+// single-valued-multi for that case, so dump marks them "(duplicate)" and keeps
+// them out of the conflict count. Differing values are marked "(conflict)" and
+// counted. The marker includes its leading two-space pad so callers can append it
+// directly.
+func dupOrConflict(k tag.Key, vals []string) (marker string, conflict bool) {
+	if !k.SingleValuedMulti(len(vals)) {
+		return "", false
+	}
+	if tag.DistinctValues(vals) == 1 {
+		return "  (duplicate)", false
+	}
+	return "  (conflict)", true
+}
+
 // renderTags prints the canonical tag set, one value per line with the key
 // repeated for multi-valued fields, preserving the set's order.
 func renderTags(w io.Writer, ts tag.TagSet) {
@@ -159,17 +175,21 @@ func renderTags(w io.Writer, ts tag.TagSet) {
 		keyWord = "key"
 	}
 	// One pass over the keys computes both the alignment width and the conflict count
-	// (a known single-valued key holding several values prints an extra "(conflict)"
-	// row below, so the header would otherwise undercount the visible lines - C5).
-	// ValueCount reads the value count without cloning the slice (unlike Get), and
-	// SingleValuedMulti is the same predicate the per-row flag uses, so the count and
-	// the marked rows always agree.
+	// (a known single-valued key holding several differing values prints extra
+	// "(conflict)" rows below, so the header would otherwise undercount the visible
+	// conflicts). Identical duplicate values are marked "(duplicate)" instead and are
+	// excluded here by the same classifier used for each row. ValueCount keeps the
+	// common single-value key from cloning its slice for the distinct check.
 	width, conflicts := 0, 0
 	for _, k := range ts.Keys() {
 		if len(k) > width {
 			width = len(k)
 		}
-		if k.SingleValuedMulti(ts.ValueCount(k)) {
+		if !k.SingleValuedMulti(ts.ValueCount(k)) {
+			continue
+		}
+		vals, _ := ts.Get(k)
+		if _, conflict := dupOrConflict(k, vals); conflict {
 			conflicts++
 		}
 	}
@@ -195,13 +215,10 @@ func renderTags(w io.Writer, ts tag.TagSet) {
 			continue
 		}
 		// A known single-valued key holding several values is the
-		// [conflicting-families] merge surfacing as duplicate rows; flag each with the
-		// same "(conflict)" marker the per-source view uses, so the rows visibly tie
-		// back to the warning rather than reading as an unexplained repeat (L5).
-		suffix := ""
-		if k.SingleValuedMulti(len(vals)) {
-			suffix = "  (conflict)"
-		}
+		// [conflicting-families] merge surfacing as repeated rows. Differing values
+		// are a "(conflict)"; identical ones are a harmless "(duplicate)", matching
+		// the distinction lint draws.
+		suffix, _ := dupOrConflict(k, vals)
 		for _, v := range vals {
 			fmt.Fprintf(w, "    %-*s  ", width, ks)
 			// A present-but-empty value is distinct from a key with no values at all

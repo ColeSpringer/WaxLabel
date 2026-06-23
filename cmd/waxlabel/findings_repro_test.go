@@ -227,6 +227,51 @@ func TestPictureRoleVocabulary(t *testing.T) {
 	}
 }
 
+// TestAddCoverReplacesFrontCover verifies that --add-cover replaces an existing
+// front cover instead of appending a duplicate.
+func TestAddCoverReplacesFrontCover(t *testing.T) {
+	t.Parallel()
+	coverA := writeTempImage(t, "a.png", minimalPNG())
+	coverB := writeTempImage(t, "b.png", append(minimalPNG(), 0x7A)) // distinct bytes, still a valid PNG header
+	f := copyFixture(t, notagsFLAC)
+
+	withA := filepath.Join(t.TempDir(), "a.flac")
+	if _, errb, code := runCLI(t, "set", f, "--add-cover", coverA, "-o", withA); code != 0 {
+		t.Fatalf("add cover A exit = %d\n%s", code, errb)
+	}
+	withB := filepath.Join(t.TempDir(), "b.flac")
+	if _, errb, code := runCLI(t, "set", withA, "--add-cover", coverB, "-o", withB); code != 0 {
+		t.Fatalf("add cover B exit = %d\n%s", code, errb)
+	}
+	out, _, _ := runCLI(t, "dump", withB)
+	if n := strings.Count(out, "Front cover"); n != 1 {
+		t.Errorf("after a second --add-cover, dump shows %d front covers, want 1 (replace, not duplicate):\n%s", n, out)
+	}
+}
+
+// TestAddPictureFrontCoverAppends verifies that --add-picture front-cover=...
+// keeps its documented append semantics. The replacement policy is scoped to
+// --add-cover, so a deliberate second front cover is preserved.
+func TestAddPictureFrontCoverAppends(t *testing.T) {
+	t.Parallel()
+	coverA := writeTempImage(t, "a.png", minimalPNG())
+	coverB := writeTempImage(t, "b.png", append(minimalPNG(), 0x7A)) // distinct bytes, still a valid PNG header
+	f := copyFixture(t, notagsFLAC)
+
+	withA := filepath.Join(t.TempDir(), "a.flac")
+	if _, errb, code := runCLI(t, "set", f, "--add-cover", coverA, "-o", withA); code != 0 {
+		t.Fatalf("add cover A exit = %d\n%s", code, errb)
+	}
+	both := filepath.Join(t.TempDir(), "both.flac")
+	if _, errb, code := runCLI(t, "set", withA, "--add-picture", "front-cover="+coverB, "-o", both); code != 0 {
+		t.Fatalf("add-picture front-cover exit = %d\n%s", code, errb)
+	}
+	out, _, _ := runCLI(t, "dump", both)
+	if n := strings.Count(out, "Front cover"); n != 2 {
+		t.Errorf("--add-picture front-cover should append; dump shows %d front covers, want 2 (existing one preserved):\n%s", n, out)
+	}
+}
+
 // TestMP4PictureMetadataDropped: MP4 stores cover art as image data only, so adding a
 // non-front role or a description warns that they will not be preserved - the saved
 // file must not silently differ from the previewed edit. A plain front cover (no role,

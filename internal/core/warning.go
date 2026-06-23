@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"slices"
 
 	"github.com/colespringer/waxlabel/tag"
@@ -106,11 +107,11 @@ const (
 	// additions; both covers are still written. Its String() is "multiple-front-covers"
 	// to match the linter's finding code.
 	WarnMultipleFrontCovers
-	// WarnPictureMetadataDropped means the destination format stores cover art as image
-	// data only, so a picture's role (type) and/or description an edit set are not
-	// preserved - the MP4 covr atom, which reads every cover back as a front cover with
-	// no description. A plan-time warning so the loss is visible before the write,
-	// rather than the saved file silently differing from the previewed edit.
+	// WarnPictureMetadataDropped means the destination format does not fully preserve a
+	// picture's role (type) and/or description an edit set. MP4 covr atoms store image
+	// data only, so every cover reads back as a front cover with no description. Matroska
+	// preserves only the front-cover role; other roles read back as Other, though
+	// descriptions survive. The warning makes that loss visible before the write.
 	WarnPictureMetadataDropped
 	// WarnLegacyConflict means an edit changed a canonical key whose value is also held
 	// in a preserved legacy container the family view carries (an ID3v1 or APEv2 tag on
@@ -127,6 +128,14 @@ const (
 	// before the write rather than vanishing with exit 0, so the user (and the CLI's
 	// --strict gate) sees the loss.
 	WarnValueDropped
+	// WarnNativeValueReduced means a legitimately multi-valued key was reduced to its
+	// first value in a secondary single-valued native container (the WAV LIST/INFO chunk
+	// or an AIFF text chunk) while the full set is kept in the embedded ID3 chunk. The
+	// canonical projection is unaffected because ID3 wins, but a non-WaxLabel reader that
+	// consults only the native container will see only the first value. This is the
+	// opposite of WarnSingleValuedMulti: here the key is genuinely multi-valued and the
+	// reduction is a faithful format limit.
+	WarnNativeValueReduced
 )
 
 func (c WarningCode) String() string {
@@ -185,6 +194,8 @@ func (c WarningCode) String() string {
 		return "legacy-conflict"
 	case WarnValueDropped:
 		return "value-dropped"
+	case WarnNativeValueReduced:
+		return "native-value-reduced"
 	default:
 		return "unknown"
 	}
@@ -222,6 +233,36 @@ func Warn(ws []Warning, code WarningCode, msg string) []Warning {
 // the prose Message, which still names the key itself.
 func WarnKeyed(ws []Warning, code WarningCode, msg string, keys ...tag.Key) []Warning {
 	return append(ws, Warning{Code: code, Message: msg, Keys: keys})
+}
+
+// WarnNativeReduced appends a [WarnNativeValueReduced] warning naming a multi-valued
+// key whose secondary single-valued native container stores only its first value while
+// the full set is kept in the embedded ID3 chunk. container names the native slot for
+// the message ("LIST/INFO" for WAV, "text chunk" for AIFF).
+func WarnNativeReduced(ws []Warning, key tag.Key, n int, container string) []Warning {
+	return WarnKeyed(ws, WarnNativeValueReduced,
+		fmt.Sprintf("%s: native %s stores only the first of %d values (full set kept in the ID3 chunk)", key, container, n),
+		key)
+}
+
+// NativeReducedWarnings notes each key whose multi-valued set is reduced to its first
+// value in a single-valued native slot while the full set is written alongside in ID3.
+// reduces reports whether a key maps to such a native slot; container names that slot in
+// the message ("LIST/INFO", "text chunk"). Only a key whose first value is present and
+// non-empty is reported, since a slot that stores nothing reduces nothing.
+func NativeReducedWarnings(ts tag.TagSet, container string, reduces func(tag.Key) bool) []Warning {
+	var ws []Warning
+	for _, k := range ts.Keys() {
+		if !reduces(k) {
+			continue
+		}
+		if n := ts.ValueCount(k); n > 1 {
+			if v, ok := ts.First(k); ok && v != "" {
+				ws = WarnNativeReduced(ws, k, n, container)
+			}
+		}
+	}
+	return ws
 }
 
 // WarnTruncated appends a WarnTruncatedAudio warning naming the essence container

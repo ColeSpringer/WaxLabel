@@ -62,12 +62,12 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringArrayVar(&e.set, "set", nil, "set KEY=VALUE, replacing the key (repeatable)")
 	f.StringArrayVar(&e.add, "add", nil, "append KEY=VALUE to a key (repeatable, for multi-value fields)")
 	f.StringArrayVar(&e.clear, "clear", nil, "remove KEY (repeatable)")
-	f.StringArrayVar(&e.addCover, "add-cover", nil, "add a front-cover picture from an image file (shorthand for --add-picture front-cover=PATH; repeatable)")
+	f.StringArrayVar(&e.addCover, "add-cover", nil, "add a front-cover picture from an image file, replacing any existing front cover (shorthand for --add-picture front-cover=PATH; repeatable)")
 	f.StringArrayVar(&e.addPicture, "add-picture", nil, "add a picture ROLE=PATH, e.g. back-cover=back.jpg (repeatable; ROLE is a cover-art role such as front-cover, back-cover, artist)")
 	f.StringVar(&e.pictureDescription, "picture-description", "", "set the description on every picture added this run (--add-picture/--add-cover)")
 	f.StringArrayVar(&e.removePicture, "remove-picture", nil, "remove pictures by role name or 1-based dump index, e.g. back-cover or 2 (repeatable; removals apply before adds)")
 	f.BoolVar(&e.rmPics, "remove-pictures", false, "remove all embedded pictures")
-	f.BoolVar(&e.force, "force", false, "embed --add-cover/--add-picture input even if it is not a recognized image (PNG/JPEG/GIF/WebP/BMP/TIFF)")
+	f.BoolVar(&e.force, "force", false, "embed --add-cover/--add-picture input even if it is not a recognized image (PNG/JPEG/GIF/WebP/BMP/TIFF); unrecognized bytes are stored as application/octet-stream. The check is header-only, not a full image decode")
 	f.StringArrayVar(&e.addChapter, "add-chapter", nil, "add a chapter TIMESTAMP=Title (e.g. 1:30=Verse; repeatable); a file whose format cannot store chapters fails while capable files proceed")
 	f.BoolVar(&e.clearChapters, "clear-chapters", false, "remove all chapters (applied before --add-chapter, so combining them keeps only the added chapters)")
 	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear the ENCODER software stamp left behind by an encoder or transcoder")
@@ -563,6 +563,7 @@ type compiledEdit struct {
 	patch         tag.TagPatch
 	opts          []wl.WriteOption
 	addPics       []wl.Picture // --add-cover/--add-picture pictures, validated and sniffed at compile time
+	replaceFront  bool         // --add-cover was used: replace any existing front cover (not --add-picture front-cover, which appends)
 	removePics    []string     // --remove-picture selectors (role name or 1-based index), resolved per file
 	rmPics        bool         // --remove-pictures (all)
 	chapters      []wl.Chapter // --add-chapter additions, validated at compile time
@@ -605,6 +606,7 @@ func (e *editFlags) compile(extra ...wl.WriteOption) (*compiledEdit, error) {
 		patch:         patch,
 		opts:          opts,
 		addPics:       addPics,
+		replaceFront:  len(e.addCover) > 0, // only --add-cover replaces; --add-picture front-cover appends
 		removePics:    e.removePicture,
 		rmPics:        e.rmPics,
 		chapters:      chapters,
@@ -961,7 +963,9 @@ func keyList(keys []tag.Key) string {
 // compiled edit, and resolves the write plan. Prepare performs no I/O beyond the
 // parse, so plan and set share this without writing anything. Picture removals
 // happen before adds so "--remove-picture front-cover --add-cover x" replaces the
-// cover (and "--remove-pictures --add-cover x" yields just the new cover).
+// cover (and "--remove-pictures --add-cover x" yields just the new cover); an
+// --add-cover additionally clears any pre-existing front cover on its own, so
+// adding a cover always replaces rather than duplicating.
 func (ce *compiledEdit) prepare(ctx context.Context, realPath, origPath string) (*wl.Document, *wl.Plan, error) {
 	doc, err := parseInput(ctx, realPath, origPath)
 	if err != nil {
@@ -975,7 +979,7 @@ func (ce *compiledEdit) prepare(ctx context.Context, realPath, origPath string) 
 	// dump order, then remove by index with a stateful closure. Editor.RemovePictures
 	// evaluates the match once per picture in order, so the running counter stays
 	// aligned with doc.Pictures() and a removal cannot shift the indices of later
-	// pictures out from under the selectors (review #5).
+	// pictures out from under the selectors.
 	if len(ce.removePics) > 0 {
 		targets, err := resolveRemovals(ce.removePics, doc.Pictures())
 		if err != nil {
@@ -986,6 +990,15 @@ func (ce *compiledEdit) prepare(ctx context.Context, realPath, origPath string) 
 			i++
 			return targets[i]
 		})
+	}
+	// An --add-cover replaces any existing front cover rather than appending a
+	// duplicate. Clear pre-existing front covers first so the common case leaves
+	// exactly one front cover and does not warn about multiple front covers.
+	// This is CLI policy only: --add-picture front-cover=... and Editor.AddPicture
+	// both remain append operations for callers that deliberately want more than
+	// one front cover.
+	if ce.replaceFront {
+		ed.RemovePictures(func(p wl.Picture) bool { return p.Type == wl.PicFrontCover })
 	}
 	for _, p := range ce.addPics {
 		ed.AddPicture(p)

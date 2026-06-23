@@ -46,8 +46,8 @@ func TestAudioLineSubKbpsOmitted(t *testing.T) {
 }
 
 func TestAudioLineBitrateDroppedAtZeroDuration(t *testing.T) {
-	// M1: a header-only file (empty.wav: zero samples, so zero duration) carries a
-	// header-derived rate×ch×depth bitrate (705 kbps) that is meaningless without
+	// A header-only file (empty.wav: zero samples, so zero duration) carries a
+	// header-derived rate * channels * depth bitrate (705 kbps) that is meaningless without
 	// playtime. The truthful header facts stay; the bogus kbps is dropped.
 	zero := audioLine(trackProps("WAV", wl.AudioTrack{
 		Codec: "PCM", SampleRate: 44100, Channels: 1, BitsPerSample: 16, Bitrate: 705600, Duration: 0,
@@ -145,26 +145,45 @@ func TestRenderTagsSanitizes(t *testing.T) {
 	}
 }
 
-// TestRenderTagsSingleValuedConflict (L5): a known single-valued key holding two
-// values - the [conflicting-families] merge surfacing as duplicate rows - flags
-// each row with "(conflict)" so they tie back to the warning. A legitimately
-// multi-valued key given two values is not flagged.
-func TestRenderTagsSingleValuedConflict(t *testing.T) {
-	ts := tag.NewTagSet()
-	ts.Set(tag.Encoder, "Lavf58", "Lavf59") // ENCODER is single-valued
+// TestRenderTagsDuplicateVsConflict covers the dump marker for a known
+// single-valued key holding several values. Differing values are a "(conflict)"
+// and counted in the header; identical folded values are a harmless
+// "(duplicate)" and excluded from the count, matching what lint reports. A
+// legitimately multi-valued key is never flagged.
+func TestRenderTagsDuplicateVsConflict(t *testing.T) {
+	// Differing values on a single-valued key: a real conflict, both rows flagged.
+	conflict := tag.NewTagSet()
+	conflict.Set(tag.Encoder, "Lavf58", "Lavf59") // ENCODER is single-valued
 	var buf bytes.Buffer
-	renderTags(&buf, ts)
+	renderTags(&buf, conflict)
 	out := buf.String()
 	if got := strings.Count(out, "(conflict)"); got != 2 {
-		t.Errorf("expected both single-valued duplicate rows flagged (conflict); got %d in:\n%s", got, out)
+		t.Errorf("expected both differing rows flagged (conflict); got %d in:\n%s", got, out)
+	}
+	if !strings.Contains(out, "in conflict") {
+		t.Errorf("header should count the conflict:\n%s", out)
 	}
 
+	// Identical values (folded): a duplicate, not a conflict, and not counted.
+	dup := tag.NewTagSet()
+	dup.Set(tag.Encoder, "Lavf58", "lavf58 ") // same value, case/space-insensitively
+	buf.Reset()
+	renderTags(&buf, dup)
+	out = buf.String()
+	if got := strings.Count(out, "(duplicate)"); got != 2 {
+		t.Errorf("expected both identical rows flagged (duplicate); got %d in:\n%s", got, out)
+	}
+	if strings.Contains(out, "(conflict)") || strings.Contains(out, "in conflict") {
+		t.Errorf("identical duplicate values must not read as a conflict:\n%s", out)
+	}
+
+	// A legitimately multi-valued key given several values is flagged neither way.
 	multi := tag.NewTagSet()
-	multi.Set(tag.Artist, "A", "B") // ARTIST is multi-valued: no conflict
+	multi.Set(tag.Artist, "A", "B") // ARTIST is multi-valued
 	buf.Reset()
 	renderTags(&buf, multi)
-	if strings.Contains(buf.String(), "(conflict)") {
-		t.Errorf("multi-valued key should not be flagged as a conflict:\n%s", buf.String())
+	if got := buf.String(); strings.Contains(got, "(conflict)") || strings.Contains(got, "(duplicate)") {
+		t.Errorf("multi-valued key should not be flagged:\n%s", got)
 	}
 }
 

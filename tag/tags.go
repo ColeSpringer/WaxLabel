@@ -274,6 +274,23 @@ func ParseNumPair(num, total string) (n, tot int) {
 	return n, tot
 }
 
+// Fold normalizes a string for case- and space-insensitive comparison
+// (lowercased, surrounding whitespace trimmed). It is the canonical fold rule for
+// the whole tree: [core.Fold] delegates to it (core imports tag, not the reverse),
+// so codecs that import core and the tag package's own callers fold identically.
+func Fold(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+
+// DistinctValues counts the case- and space-insensitive distinct values in vals,
+// folding each through [Fold]. Dump duplicate markers and codec family-conflict
+// checks both use this rule, so they agree on what counts as the same value.
+func DistinctValues(vals []string) int {
+	seen := make(map[string]bool, len(vals))
+	for _, v := range vals {
+		seen[Fold(v)] = true
+	}
+	return len(seen)
+}
+
 // SplitNumberTotal splits a "number/total" value (e.g. "3/12") on the first '/'
 // into its trimmed number and total substrings. Unlike [ParseNumPair] it preserves
 // the exact substrings - leading zeros and all - rather than renumbering to ints, so

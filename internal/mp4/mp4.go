@@ -74,6 +74,7 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "covr atom (JPEG/PNG/BMP)", Fidelity: "image bytes lossless; role and description not stored",
 		Constraints: []string{"covers store image data only - picture role and description are dropped (read back as front cover)"},
+		PictureLoss: core.PictureLossRoleAndDescription,
 	}
 	chapters := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,

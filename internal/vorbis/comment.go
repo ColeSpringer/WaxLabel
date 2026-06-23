@@ -210,14 +210,9 @@ func EncoderNoise(vendor string, comments []Comment) []core.Warning {
 	return ws
 }
 
-// distinctValues counts the distinct case- and space-insensitive values.
-func distinctValues(vals []string) int {
-	seen := map[string]bool{}
-	for _, v := range vals {
-		seen[strings.ToLower(strings.TrimSpace(v))] = true
-	}
-	return len(seen)
-}
+// distinctValues counts the distinct case- and space-insensitive values using
+// the same fold rule as dump duplicate markers.
+func distinctValues(vals []string) int { return tag.DistinctValues(vals) }
 
 func writeU32LE(buf *bytes.Buffer, v uint32) {
 	var b [4]byte

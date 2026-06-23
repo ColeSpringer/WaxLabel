@@ -138,4 +138,39 @@ func TestSplitNumberPairs(t *testing.T) {
 		wantVals(t, ts, tag.DiscNumber, "1")
 		wantVals(t, ts, tag.DiscTotal, "2")
 	})
+
+	t.Run("triple slash kept verbatim, no malformed total derived", func(t *testing.T) {
+		// "1/2/3" splits to num="1", total="2/3"; "2/3" fails numeric validation, so the
+		// split is skipped entirely. The value stays verbatim on the number key and no
+		// malformed TRACKTOTAL is synthesized; the set-time note already flags the input.
+		var p tag.TagPatch
+		p.Set(tag.TrackNumber, "1/2/3")
+		ts := p.Apply(tag.NewTagSet())
+		splitNumberPairs(&ts, p)
+		wantVals(t, ts, tag.TrackNumber, "1/2/3")
+		wantAbsent(t, ts, tag.TrackTotal)
+	})
+
+	t.Run("non-numeric number kept verbatim, no total manufactured", func(t *testing.T) {
+		// "abc/1" has a valid total ("1") but a non-numeric number ("abc"); validating the
+		// whole value (not just the total) keeps it verbatim on the number key rather than
+		// splitting into a malformed TRACKNUMBER="abc" plus a manufactured TRACKTOTAL="1".
+		var p tag.TagPatch
+		p.Set(tag.TrackNumber, "abc/1")
+		ts := p.Apply(tag.NewTagSet())
+		splitNumberPairs(&ts, p)
+		wantVals(t, ts, tag.TrackNumber, "abc/1")
+		wantAbsent(t, ts, tag.TrackTotal)
+	})
+
+	t.Run("non-numeric total kept verbatim", func(t *testing.T) {
+		// Symmetric to the above: a non-numeric total ("3/abc") is left verbatim, not split
+		// into TRACKNUMBER="3" + a malformed TRACKTOTAL="abc".
+		var p tag.TagPatch
+		p.Set(tag.TrackNumber, "3/abc")
+		ts := p.Apply(tag.NewTagSet())
+		splitNumberPairs(&ts, p)
+		wantVals(t, ts, tag.TrackNumber, "3/abc")
+		wantAbsent(t, ts, tag.TrackTotal)
+	})
 }

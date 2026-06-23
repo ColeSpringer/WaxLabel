@@ -280,11 +280,11 @@ func TestPlanTransferMatroskaCoverWritable(t *testing.T) {
 	}
 }
 
-// TestPrepareTransferCoverToWebMDropsCover is the step-14 report==result proof for
-// a file-dependent capability: projecting a cover-bearing source onto a WebM
-// destination reports the cover dropped (Attachments is outside the WebM subset),
-// and the executed plan then carries no picture while the tags still land. Before
-// file-aware capabilities this reported "carried" and then errored at Prepare.
+// TestPrepareTransferCoverToWebMDropsCover covers a file-dependent capability:
+// projecting a cover-bearing source onto WebM reports the cover dropped
+// (Attachments is outside the WebM subset), and the executed plan carries no
+// picture while the tags still land. Before file-aware capabilities this reported
+// "carried" and then errored at Prepare.
 func TestPrepareTransferCoverToWebMDropsCover(t *testing.T) {
 	src := mustParseBytes(t, coverBearingFLAC(t, "WebM Transfer"))
 
@@ -315,5 +315,59 @@ func TestPrepareTransferCoverToWebMDropsCover(t *testing.T) {
 	// The tags still transfer - only the cover is gated by the WebM subset.
 	if got, ok := result.Get(tag.Title); !ok || !slices.Equal(got, []string{"WebM Transfer"}) {
 		t.Errorf("carried TITLE = %v (present=%v), want [WebM Transfer]", got, ok)
+	}
+}
+
+// TestTransferPictureDisposition verifies that a picture set can be lossy even
+// when the image bytes carry losslessly. The report is Lossy only when the
+// destination drops role or description metadata the pictures actually carry,
+// matching the destination's write-time picture-metadata warning. MP4 drops role
+// and description, Matroska drops only non-front roles, and FLAC drops neither.
+func TestTransferPictureDisposition(t *testing.T) {
+	png := tinyPNG()
+	flacWith := func(p wl.Picture) []byte {
+		return writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
+			e.Set("TITLE", "X")
+			e.AddPicture(p)
+		})
+	}
+	front := wl.Picture{Type: wl.PicFrontCover, Data: png}
+	describedFront := wl.Picture{Type: wl.PicFrontCover, Description: "liner", Data: png}
+	back := wl.Picture{Type: wl.PicBackCover, Data: png}
+	other := wl.Picture{Type: wl.PicOther, Data: png}
+
+	disp := func(srcBytes []byte, dst wl.Format) wl.Disposition {
+		rep, err := mustParseBytes(t, srcBytes).PlanTransfer(dst)
+		if err != nil {
+			t.Fatalf("PlanTransfer to %s: %v", dst, err)
+		}
+		for _, it := range rep.Items {
+			if it.Kind == wl.TransferPicture {
+				return it.Disposition
+			}
+		}
+		t.Fatalf("no picture item in transfer to %s", dst)
+		return wl.Dropped
+	}
+
+	cases := []struct {
+		name string
+		src  []byte
+		dst  wl.Format
+		want wl.Disposition
+	}{
+		{"plain front -> MP4", flacWith(front), wl.FormatMP4, wl.Carried},
+		{"back cover -> MP4", flacWith(back), wl.FormatMP4, wl.Lossy},
+		{"described front -> MP4", flacWith(describedFront), wl.FormatMP4, wl.Lossy},
+		{"described front -> Matroska", flacWith(describedFront), wl.FormatMatroska, wl.Carried},
+		{"back cover -> Matroska", flacWith(back), wl.FormatMatroska, wl.Lossy},
+		{"other -> Matroska", flacWith(other), wl.FormatMatroska, wl.Carried}, // PicOther round-trips as Other
+		{"other -> MP4", flacWith(other), wl.FormatMP4, wl.Lossy},             // MP4 reads every cover back as front
+		{"plain front -> FLAC", flacWith(front), wl.FormatFLAC, wl.Carried},
+	}
+	for _, c := range cases {
+		if got := disp(c.src, c.dst); got != c.want {
+			t.Errorf("%s: disposition = %v, want %v", c.name, got, c.want)
+		}
 	}
 }

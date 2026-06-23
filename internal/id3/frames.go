@@ -145,15 +145,20 @@ func decodeFrame(id string, flags [2]byte, raw []byte, major byte, tagUnsync boo
 		// Cannot safely reinterpret; preserve the bytes and flags verbatim.
 		return Frame{ID: id, Flags: flags, Body: slices.Clone(raw), Opaque: true}
 	}
+	// De-unsynchronise first: per the v2.4 spec the unsync transform covers the whole
+	// frame-data region, including the group byte and data-length indicator. Stripping
+	// first would strand a 0x00 stuffing byte that followed a stripped 0xFF into the
+	// payload, producing an extra empty text value. v2.3 whole-tag unsync is already
+	// undone in ParseTag, so only v2.4 frames reach deunsync here.
 	b := raw
+	if unsync || (major == 4 && tagUnsync) {
+		b = deunsync(b)
+	}
 	if grouping && len(b) >= 1 {
 		b = b[1:] // drop the group identity byte
 	}
 	if dataLen && len(b) >= 4 {
 		b = b[4:] // drop the sync-safe data-length indicator
-	}
-	if unsync || (major == 4 && tagUnsync) {
-		b = deunsync(b)
 	}
 	return Frame{ID: id, Body: slices.Clone(b)}
 }

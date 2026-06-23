@@ -655,13 +655,20 @@ func splitNumberPairs(ts *tag.TagSet, patch tag.TagPatch) {
 		if !strings.ContainsRune(vals[0], '/') {
 			continue
 		}
+		// Only split a genuine numeric pair. ValidNumericValue checks both sides, so a
+		// value whose number ("abc/1") or derived total ("1/2/3") is non-numeric stays
+		// verbatim on the number key instead of becoming a malformed number or a
+		// manufactured total. The set-time note already flags that input.
+		if !tag.ValidNumericValue(numKey, vals[0]) {
+			continue
+		}
 		num, total := tag.SplitNumberTotal(vals[0])
+		totKey := tag.TotalKey(numKey)
 		if num != "" {
 			ts.Set(numKey, num)
 		} else {
 			ts.Delete(numKey) // "/12": no number survives
 		}
-		totKey := tag.TotalKey(numKey)
 		if total != "" && !patch.Touches(totKey) {
 			ts.Set(totKey, total)
 		}

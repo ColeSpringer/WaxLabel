@@ -758,6 +758,44 @@ func TestMatroskaWriteCoverRoleNormalized(t *testing.T) {
 	}
 }
 
+// TestMatroskaBackCoverWarnsRoleLoss verifies that a non-front cover written to
+// Matroska warns about role loss. Only cover/small_cover round-trip the front role;
+// descriptions are preserved. A plain front cover does not warn, and the
+// capability no longer advertises plain "lossless" pictures.
+func TestMatroskaBackCoverWarnsRoleLoss(t *testing.T) {
+	src := readFixture(t, sampleMKA)
+
+	back := prepareWith(t, src, func(e *wl.Editor) {
+		e.ClearPictures()
+		e.AddPicture(wl.Picture{Type: wl.PicBackCover, MIME: "image/png", Description: "BackDesc", Data: tinyPNG()})
+	})
+	if !planWarns(t, back, wl.WarnPictureMetadataDropped) {
+		t.Errorf("a back cover should warn picture-metadata-dropped; got %v", back.Report().Warnings)
+	}
+
+	front := prepareWith(t, src, func(e *wl.Editor) {
+		e.ClearPictures()
+		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()})
+	})
+	if planWarns(t, front, wl.WarnPictureMetadataDropped) {
+		t.Errorf("a plain front cover must not warn role loss; got %v", front.Report().Warnings)
+	}
+
+	// A PicOther picture already round-trips as Other (Matroska's small_cover), so it loses
+	// no role and must not warn.
+	other := prepareWith(t, src, func(e *wl.Editor) {
+		e.ClearPictures()
+		e.AddPicture(wl.Picture{Type: wl.PicOther, MIME: "image/png", Data: tinyPNG()})
+	})
+	if planWarns(t, other, wl.WarnPictureMetadataDropped) {
+		t.Errorf("a PicOther picture round-trips as Other on Matroska; must not warn; got %v", other.Report().Warnings)
+	}
+
+	if fid := wl.CapabilitiesFor(wl.FormatMatroska).Pictures.Fidelity; fid == "lossless" {
+		t.Errorf("Matroska pictures fidelity = %q, want it to disclose the non-front role loss", fid)
+	}
+}
+
 // TestMatroskaWriteNoInfoTitleRefused: a Title edit on a (malformed) file with no
 // Info element is refused cleanly rather than silently dropped or corrupting.
 func TestMatroskaWriteNoInfoTitleRefused(t *testing.T) {
