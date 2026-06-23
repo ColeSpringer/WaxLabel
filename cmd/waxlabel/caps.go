@@ -73,9 +73,9 @@ func runCapsFormat(cmd *cobra.Command, f wl.Format, container string, opts ...wl
 // aborting the rest.
 func runCapsFiles(cmd *cobra.Command, args []string) error {
 	// An empty operand is a usage error (exit 2), caught before any parse so it does
-	// not reach the library's ErrInvalidData (exit 4) backstop and outrank a real
-	// not-found in a multi-file run - matching dump/verify/plan/set/lint and copy/diff
-	// (Finding 6). caps parses operands directly (no expandPaths), so it checks here.
+	// not reach the library's ErrInvalidData (exit 4) fallback and outrank a real
+	// not-found in a multi-file run, matching dump/verify/plan/set/lint and copy/diff.
+	// caps parses operands directly (no expandPaths), so it checks here.
 	if err := checkEmptyOperands(args...); err != nil {
 		return err
 	}

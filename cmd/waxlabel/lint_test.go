@@ -119,13 +119,12 @@ func TestLintStructuralErrorOutranksFindings(t *testing.T) {
 	}
 }
 
-// TestLintErrorSeverityExitsInvalidData (Codex F4): an error-severity finding
-// (no-audio) exits 4 (invalid-data) - the same class verify gives a no-audio file -
-// distinct from a warning's exit 1. The error-finding sentinel is folded into the
-// same worseError comparison as a structural error, so a (no-audio + not-found) run
-// reports exit 4: a broken file outranks a wrong path. This is the control-flow case
-// gating the finding behind "no structural error" would get wrong (a (warning +
-// not-found) run, where the warning correctly loses to not-found, would not catch it).
+// TestLintErrorSeverityExitsInvalidData verifies that an error-severity finding
+// such as no-audio exits 4 (invalid-data), the same class verify gives a no-audio
+// file and distinct from a warning's exit 1. The error-finding sentinel is folded
+// into the same worseError comparison as a structural error, so a no-audio plus
+// not-found run reports exit 4: a broken file outranks a wrong path. This is the
+// control-flow case that a warning plus not-found run would not catch.
 func TestLintErrorSeverityExitsInvalidData(t *testing.T) {
 	t.Parallel()
 	// A single no-audio file: an error-severity finding -> exit 4.

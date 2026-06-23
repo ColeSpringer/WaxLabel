@@ -1,7 +1,7 @@
-// Package aiff implements reading and writing AIFF / AIFF-C metadata. It is
-// internal through v0.x (promoted to a public waxlabel/aiff only at v1.0). An
-// AIFF file is an IFF container: a "FORM" header naming the form type ("AIFF" or
-// the compressed "AIFC"), then big-endian-sized chunks - a "COMM" common chunk
+// Package aiff implements reading and writing AIFF / AIFF-C metadata for the
+// public waxlabel package. The codec itself is internal. An AIFF file is an IFF
+// container: a "FORM" header naming the form type ("AIFF" or the compressed
+// "AIFC"), then big-endian-sized chunks - a "COMM" common chunk
 // describing the audio (with the sample rate stored as an 80-bit extended
 // float), an "SSND" chunk holding the sample frames, and any number of metadata
 // and ancillary chunks.

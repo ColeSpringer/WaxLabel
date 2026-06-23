@@ -128,9 +128,9 @@ func TestFifoRejectedByNonExpandingCommands(t *testing.T) {
 	}
 }
 
-// TestCopyFifoHintOmitsDash (Finding 5): copy rejects "-", so its non-regular-file
-// hint must not suggest piping a stream in with "-" (which copy would refuse) - it
-// points at a regular file path instead. The stdin-reading commands keep the "-" hint.
+// TestCopyFifoHintOmitsDash verifies that copy's non-regular-file hint does not
+// suggest piping a stream in with "-", because copy rejects stdin. It points at a
+// regular file path instead. The stdin-reading commands keep the "-" hint.
 func TestCopyFifoHintOmitsDash(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

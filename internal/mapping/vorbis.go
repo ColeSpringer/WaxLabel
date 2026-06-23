@@ -1,6 +1,6 @@
 // Package mapping translates between canonical [tag.Key]s and native tag
-// names. M0 ships the Vorbis-comment mapping (FLAC, and later Ogg); other
-// formats slot in as their milestones land.
+// names. This file covers Vorbis-comment style names; other files in this
+// package cover ID3, MP4, RIFF, AIFF, and Matroska.
 //
 // The canonical vocabulary deliberately uses Vorbis-style spellings, so most
 // of the mapping is identity. The value here is the read-side alias table

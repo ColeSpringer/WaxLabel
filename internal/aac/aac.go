@@ -1,9 +1,9 @@
-// Package aac implements reading and writing raw-AAC (ADTS) metadata. It is
-// internal through v0.x. A raw-AAC file is structurally the simplest format
-// WaxLabel handles - an optional front ID3v2 tag (decoded by internal/id3, the
-// same authoritative container MP3 uses) followed by a bare sequence of ADTS
-// frames, with no MPEG framing layer and no trailing legacy containers. The
-// ID3v2 tag is the sole writable store; the audio is copied verbatim.
+// Package aac implements reading and writing raw-AAC (ADTS) metadata for the
+// public waxlabel package. The codec itself is internal. A raw-AAC file is an
+// optional front ID3v2 tag (decoded by internal/id3, the same authoritative
+// container MP3 uses) followed by a bare sequence of ADTS frames, with no MPEG
+// framing layer and no trailing legacy containers. The ID3v2 tag is the sole
+// writable store; the audio is copied verbatim.
 //
 // The first ADTS frame header gives the stream configuration (object type, sample
 // rate, channels). ADTS carries no frame-count header, so an accurate duration and

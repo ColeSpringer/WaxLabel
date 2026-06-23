@@ -60,11 +60,9 @@ func TestUsageHintOnDeadEnds(t *testing.T) {
 	}
 }
 
-// TestRemovedWritePoliciesRejected (F3): the reconcile/update-existing legacy
-// policies and the canonical preset were unimplemented stubs that hard-errored
-// (exit 3) on any legacy container, so v1.0 removes them from the surface and the
-// code. The CLI now rejects them as unknown flag values (exit 2) listing only the
-// surviving options, while every surviving value still parses.
+// TestRemovedWritePoliciesRejected verifies that removed write-policy names stay
+// outside the CLI surface. They are rejected as unknown flag values (exit 2)
+// listing only the supported options, while every supported value still parses.
 func TestRemovedWritePoliciesRejected(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -567,11 +565,11 @@ func TestRecursiveWalkFollowsSymlinkedAudio(t *testing.T) {
 	}
 }
 
-// TestRecursiveWalkThroughSymlinkedDirRoot (Finding 3): a symlink-to-directory used
-// as the --recursive root is followed and its audio found. WalkDir lstats its root
-// and would refuse to descend a symlink node, so walkAudioFiles resolves the named
-// root; the matches are then listed under the original argument name, not the link's
-// resolved target.
+// TestRecursiveWalkThroughSymlinkedDirRoot verifies that a symlink-to-directory
+// used as the --recursive root is followed and its audio found. WalkDir lstats its
+// root and would refuse to descend a symlink node, so walkAudioFiles resolves the
+// named root; the matches are then listed under the original argument name, not the
+// link's resolved target.
 func TestRecursiveWalkThroughSymlinkedDirRoot(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()
@@ -735,8 +733,8 @@ func TestEmptyWalkNoteNotAFailure(t *testing.T) {
 	}
 }
 
-// TestRecursiveSkippedFileNote (Codex #9): a --recursive walk that passes over files
-// for an unrecognized extension prints a text-mode "N file(s) skipped" note, so a
+// TestRecursiveSkippedFileNote verifies that a recursive walk that passes over files
+// with unrecognized extensions prints a text-mode "N file(s) skipped" note, so a
 // directory of mostly non-audio files is not a silent near-no-op. The note counts only
 // regular files the extension filter rejected and is suppressed under --json.
 func TestRecursiveSkippedFileNote(t *testing.T) {
@@ -772,9 +770,9 @@ func TestRecursiveSkippedFileNote(t *testing.T) {
 	}
 }
 
-// TestRecursiveSkippedCountsSymlinks (Codex #9): a symlinked non-audio file counts
+// TestRecursiveSkippedCountsSymlinks verifies that a symlinked non-audio file counts
 // toward the skipped tally too, matching how the inclusion side treats symlinks as
-// candidates - so the count is not silently short by the symlinked entries.
+// candidates so the count is not short by the symlinked entries.
 func TestRecursiveSkippedCountsSymlinks(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -883,9 +881,9 @@ func TestUnquotedValueHint(t *testing.T) {
 	}
 }
 
-// TestEmptyFilenameUsage (Finding 6): an empty operand is a usage error (exit 2) at
-// the CLI boundary, not the library's ErrInvalidData (exit 4) - so in a multi-file
-// run it does not outrank a real not-found by masquerading as a corrupt file.
+// TestEmptyFilenameUsage verifies that an empty operand is a usage error (exit 2) at
+// the CLI boundary, not the library's ErrInvalidData (exit 4), so in a multi-file run
+// it does not outrank a real not-found by masquerading as a corrupt file.
 func TestEmptyFilenameUsage(t *testing.T) {
 	t.Parallel()
 	if _, _, code := runCLI(t, "dump", ""); code != 2 {
@@ -917,9 +915,9 @@ func TestEmptyFilenameUsage(t *testing.T) {
 	}
 }
 
-// TestDiffPerFilePathPrefix (Finding 10): a parse failure in diff is reported with
+// TestDiffPerFilePathPrefix verifies that a parse failure in diff is reported with
 // the per-file "waxlabel: <path>: <reason>" prefix the other commands print, so the
-// failing operand is named - copy already did this, diff did not.
+// failing operand is named.
 func TestDiffPerFilePathPrefix(t *testing.T) {
 	t.Parallel()
 	png := writeTempImage(t, "red.png", minimalPNG()) // a non-audio file diff cannot parse
@@ -932,10 +930,10 @@ func TestDiffPerFilePathPrefix(t *testing.T) {
 	}
 }
 
-// TestJSONErrorCarriesHint (Codex F3): a usage error whose human render shows a hint
-// (the leading-dash "use --" pointer) carries that same hint in the JSON envelope,
-// single-sourced from the classified error; and a per-file error entry can carry one
-// too (e.g. source-changed's "re-run" pointer).
+// TestJSONErrorCarriesHint verifies that a usage error whose human render shows a
+// hint, such as the leading-dash "use --" pointer, carries that same hint in the JSON
+// envelope. A per-file error entry can carry a hint too, such as source-changed's
+// "re-run" pointer.
 func TestJSONErrorCarriesHint(t *testing.T) {
 	t.Parallel()
 	// A leading-dash file path is read by cobra as an unknown flag; the usage envelope
@@ -958,7 +956,7 @@ func TestJSONErrorCarriesHint(t *testing.T) {
 	}
 }
 
-// TestPlanJSONEmptyChangesArray (Finding 7): a no-op plan's --json output emits
+// TestPlanJSONEmptyChangesArray verifies that a no-op plan's --json output emits
 // "changes": [] (a non-null empty array), not an omitted field, so a scripting
 // consumer can iterate changes unconditionally.
 func TestPlanJSONEmptyChangesArray(t *testing.T) {

@@ -128,11 +128,11 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	if len(d.audioPages) == 0 {
 		d.audioEnd = d.audioStart
 	}
-	// Preserve any bytes after the last page of a clean single stream (junk, or a
-	// future use) by recording their length and copying them from the source on
-	// write - never buffering them, since they could be arbitrarily large and the
-	// Document stays detached and lightweight. For a chained file the trailing
-	// region is other streams we do not model, and writing is refused anyway.
+	// Preserve any bytes after the last page of a clean single stream by recording
+	// their length and copying them from the source on write. Never buffer them:
+	// they could be arbitrarily large, and the Document stays detached and
+	// lightweight. For a chained file the trailing region is other streams we do
+	// not model, and writing is refused anyway.
 	if !d.chained && size > d.audioEnd {
 		d.trailingLen = size - d.audioEnd
 	}

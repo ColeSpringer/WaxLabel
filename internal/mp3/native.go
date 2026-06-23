@@ -1,11 +1,11 @@
-// Package mp3 implements reading and writing MP3 (MPEG audio) metadata. It is
-// internal through v0.x (promoted to a public waxlabel/mp3 only at v1.0). An MP3
-// file is an optional front ID3v2 tag, the MPEG audio frames, and optional
-// trailing legacy containers (APEv2, then a 128-byte ID3v1). The ID3v2 tag is
-// the authoritative, writable container (decoded by internal/id3); the trailing
-// legacy tags are surfaced in the family view, preserved verbatim, and warned.
-// The codec is reimplemented from the MPEG-1/2 audio and ID3 specifications;
-// reference implementations were consulted for design only.
+// Package mp3 implements reading and writing MP3 (MPEG audio) metadata for the
+// public waxlabel package. The codec itself is internal. An MP3 file is an
+// optional front ID3v2 tag, the MPEG audio frames, and optional trailing legacy
+// containers (APEv2, then a 128-byte ID3v1). The ID3v2 tag is the authoritative,
+// writable container (decoded by internal/id3); the trailing legacy tags are
+// surfaced in the family view, preserved verbatim, and warned. The codec is
+// reimplemented from the MPEG-1/2 audio and ID3 specifications; reference
+// implementations were consulted for design only.
 package mp3
 
 import (

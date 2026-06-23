@@ -138,10 +138,9 @@ func KnownKeys() []Key {
 }
 
 // The canonical vocabulary. Names follow the de-facto Vorbis/Picard
-// conventions (uppercase, underscore-separated) because FLAC is the first
-// codec; the mapping layer translates to other native schemes. This set
-// covers the typed sugar plus the MusicBrainz/Picard long tail and is frozen
-// at v1.0.
+// conventions (uppercase, underscore-separated), and the mapping layer
+// translates them to each format's native scheme. This set covers the typed
+// fields plus the MusicBrainz/Picard long tail.
 const (
 	// Core descriptive fields.
 	Title       Key = "TITLE"
@@ -229,10 +228,9 @@ const (
 	AcquisitionDate Key = "ACQUISITION_DATE"
 	EncodingHistory Key = "ENCODING_HISTORY"
 
-	// Audiobook / spoken-word fields (candidates confirmed at the v1.0 vocabulary
-	// freeze). MediaType is the iTunes "stik" media kind (e.g. 2 = audiobook);
-	// Description and LongDescription are the short and full blurbs; Narrator is
-	// the reader/performer of an audiobook.
+	// Audiobook / spoken-word fields. MediaType is the iTunes "stik" media kind
+	// (e.g. 2 = audiobook); Description and LongDescription are the short and
+	// full blurbs; Narrator is the reader/performer of an audiobook.
 	MediaType       Key = "MEDIATYPE"
 	Description     Key = "DESCRIPTION"
 	LongDescription Key = "LONGDESCRIPTION"

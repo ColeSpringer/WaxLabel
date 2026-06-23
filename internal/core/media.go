@@ -139,8 +139,7 @@ type Media struct {
 	// page headers, and later multiple/relocatable MP4 mdat. When non-nil it is
 	// authoritative for essence hashing and verification (the ranges must be
 	// ascending and disjoint, in source order); when nil the single
-	// [AudioStart, AudioEnd) extent is used. This is the multi-segment region the
-	// M0 plan anticipated for Ogg/MP4.
+	// [AudioStart, AudioEnd) extent is used.
 	AudioRanges [][2]int64
 }
 

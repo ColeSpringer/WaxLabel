@@ -253,9 +253,9 @@ func TestMP4PictureMetadataDropped(t *testing.T) {
 	}
 }
 
-// TestLegacyConflictWarningCLI (Codex #5): a plan edit of a key the MP3's preserved
-// id3v1 trailer also holds surfaces the legacy-conflict warning under the default
-// policy, and --legacy strip (which resolves it) suppresses it.
+// TestLegacyConflictWarningCLI verifies that editing a key also held in an MP3's
+// preserved id3v1 trailer surfaces the legacy-conflict warning under the default
+// policy, and that --legacy strip suppresses it by removing the legacy copy.
 func TestLegacyConflictWarningCLI(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "plan", copyFixture(t, sampleMP3), "--set", "TITLE=Brand New")

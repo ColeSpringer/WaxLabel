@@ -438,9 +438,8 @@ func renderReport(w io.Writer, path string, plan *wl.Plan, addedPics []wl.Pictur
 		fmt.Fprintln(w, "  padding: none")
 	}
 	for _, x := range r.Warnings {
-		// Plan-time warnings are library-generated today, but Warning.String
-		// self-sanitizes (and the output boundary backstops it), so a future plan
-		// warning that embeds a file-derived snippet is safe.
+		// Warning.String self-sanitizes, and the output boundary backstops it, so a
+		// warning that embeds a file-derived snippet is still safe.
 		fmt.Fprintf(w, "  warning: %s\n", x.String())
 	}
 }

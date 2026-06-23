@@ -56,9 +56,9 @@ func newDiffCmd() *cobra.Command {
 			asJSON := jsonMode(cmd)
 			errOut := cmd.ErrOrStderr()
 			// On a parse failure, prefix the per-file "waxlabel: <path>: <reason>" line the
-			// other commands print (human mode), instead of the classifier's bare reason
-			// without the operand (Finding 10). JSON is unchanged: the raw error returns to
-			// dispatch, which emits the not-found/invalid-data envelope scripts read.
+			// other commands print in human mode, instead of the classifier's bare reason
+			// without the operand. JSON is unchanged: the raw error returns to dispatch,
+			// which emits the not-found/invalid-data envelope scripts read.
 			parse := func(arg string) (*wl.Document, error) {
 				doc, err := parseInput(ctx, realOf(arg), arg)
 				if err != nil {

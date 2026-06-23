@@ -9,12 +9,12 @@
 // [Plan.Report] matches exactly what [Plan.Execute] will do), and versioned
 // audio-essence identity for library-wide deduplication.
 //
-// The headline consumer is a music-organization tool that fills in complete,
-// accurate metadata for libraries sourced from YouTube. Such files are
-// sparsely and inconsistently tagged (not blank): source metadata propagates
-// and transcoders stamp an "encoder=Lavf..." comment. WaxLabel therefore
-// treats inherited and generated metadata as a real case to read, preserve,
-// override, and dedupe.
+// WaxLabel is built for music-organization tools that need complete metadata
+// for libraries sourced from uneven inputs such as YouTube. Those files are
+// usually sparse or inconsistently tagged rather than blank: source metadata
+// propagates, and transcoders often stamp an "encoder=Lavf..." comment.
+// WaxLabel treats inherited and generated metadata as data to read, preserve,
+// override, and deduplicate.
 //
 // # Object model
 //
@@ -45,10 +45,10 @@
 //   - [AudioDigest] carries an algorithm and a versioned extent so persisted
 //     dedup hashes survive across library-wide refinements.
 //
-// # Provenance
+// # Acknowledgements
 //
 // All code is reimplemented from public specifications (ID3v2, the Vorbis
 // comment format, FLAC, ISO/IEC 14496-12, RIFF/WAVE, RFC 3533/7845/9559).
-// Reference implementations were consulted for design but not copied; see
-// PROVENANCE.md.
+// Reference implementations were consulted for design but not copied; see the
+// README acknowledgements.
 package waxlabel

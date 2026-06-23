@@ -212,12 +212,10 @@ func reportHasWarning(ws []wl.Warning, code wl.WarningCode) bool {
 	return false
 }
 
-// TestLegacyConflictWarning (Codex #5): editing a key also held in a preserved legacy
-// container (the trailing ID3v1 of sample.mp3) under the default LegacyPreserve policy
-// surfaces a legacy-conflict warning, since the ID3v1 copy now disagrees with the
-// native tag. --legacy strip (which removes the legacy container) resolves it without
-// warning, setting the legacy value verbatim does not conflict, and editing a key the
-// legacy container does not hold does not conflict either.
+// TestLegacyConflictWarning verifies that editing a key also held in a preserved
+// legacy container surfaces a legacy-conflict warning under LegacyPreserve. Stripping
+// the legacy container, setting the same value it already holds, or editing a key it
+// does not hold must not warn.
 func TestLegacyConflictWarning(t *testing.T) {
 	path := copyToTemp(t, sampleMP3) // carries TITLE in both id3v2 and id3v1
 

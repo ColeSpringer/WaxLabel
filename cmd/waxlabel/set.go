@@ -92,9 +92,9 @@ func newSetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Report extension-skipped files up front (before the per-file edit notes,
-			// which gate on there being work to do): this is input discovery, useful even
-			// when the walk then matches nothing to edit (Codex #9).
+			// Report extension-skipped files up front, before per-file edit notes that
+			// require work to do. This is input discovery, useful even when the walk then
+			// matches nothing to edit.
 			noteSkipped(cmd.ErrOrStderr(), skipped, jsonMode(cmd))
 			if output != "" && len(paths) != 1 {
 				return usagef("-o writes a single file, so it takes exactly one input (got %d)", len(paths))

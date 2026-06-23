@@ -60,12 +60,12 @@ func main() {
 // arguments as parameters so tests can drive it without spawning a process; stdin
 // is the source for the "-" path sentinel.
 func dispatch(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	// Wrap both human-output streams in the sanitizing boundary so no renderer -
-	// current or future - can leak a terminal-control sequence from untrusted file
-	// bytes (a tag value, a native block label, a hostile filename, an error line)
-	// to the terminal. Every subcommand inherits these via cobra's OutOrStdout/
-	// ErrOrStderr, and the --json paths unwrap to the raw stream inside writeJSON,
-	// so the machine contract still carries exact bytes. Flush each before
+	// Wrap both human-output streams in the sanitizing boundary so renderers cannot
+	// leak a terminal-control sequence from untrusted file bytes (a tag value, a
+	// native block label, a hostile filename, an error line) to the terminal. Every
+	// subcommand inherits these via cobra's OutOrStdout/ErrOrStderr, and the --json
+	// paths unwrap to the raw stream inside writeJSON, so the machine contract still
+	// carries exact bytes. Flush each before
 	// returning so a held-back trailing partial rune is not dropped.
 	sout := newSanitizingWriter(stdout)
 	serr := newSanitizingWriter(stderr)

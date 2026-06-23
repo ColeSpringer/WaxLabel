@@ -68,8 +68,8 @@ func textRepresentable(ts tag.TagSet) bool {
 // chunk per single-valued key present (NAME/AUTH/"(c) "), and one ANNO chunk per
 // Comment value. Existing keys keep their original relative order; keys newly
 // present in the edited set are appended in the set's order. Present-but-empty
-// values normalize to absent (the chunk is dropped), mirroring the M0 rule for
-// formats that cannot store an empty value.
+// values normalize to absent (the chunk is dropped), matching formats that cannot
+// store an empty value.
 func rebuildText(orig []textItem, edited tag.TagSet) []outChunk {
 	var out []outChunk
 	emitted := map[tag.Key]bool{}

@@ -1,5 +1,5 @@
-// Package ape implements read-only parsing of APEv1/APEv2 tags. It is internal
-// through v0.x. An APE tag is a foreign/legacy container in the formats WaxLabel
+// Package ape implements read-only parsing of APEv1/APEv2 tags for internal
+// codecs. An APE tag is a foreign/legacy container in the formats WaxLabel
 // writes (it shows up trailing some MP3s): WaxLabel surfaces its values in the
 // family/source view and preserves its bytes verbatim, but the native tag stays
 // authoritative. It is reimplemented from the public APE tag specification.

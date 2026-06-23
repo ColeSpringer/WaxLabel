@@ -10,10 +10,9 @@ import (
 )
 
 // allKeyConstants lists every exported Key constant. TestKnownKeysMatchConstants
-// asserts it equals KnownKeys() exactly, so adding a constant without a vocabulary
-// entry (or a vocabulary entry without a constant) fails this test instead of
-// silently drifting - the lock the discovery API depends on before the v1.0
-// vocabulary freeze.
+// asserts it equals KnownKeys() exactly, so adding a constant without a
+// vocabulary entry, or adding a vocabulary entry without a constant, fails this
+// test instead of breaking discovery output quietly.
 var allKeyConstants = []Key{
 	Title, Artist, Album, AlbumArtist, Composer, Genre,
 	TrackNumber, TrackTotal, DiscNumber, DiscTotal,

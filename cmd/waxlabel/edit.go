@@ -719,8 +719,7 @@ func notifyInvocationNotes(errOut io.Writer, ce *compiledEdit, ef *editFlags, re
 // under --json the keys are suppressed (a note would corrupt the machine stream);
 // otherwise they are returned for the caller to note on stderr (applying any
 // per-key dedup itself). Centralizing the strict/JSON/empty branches keeps the
-// guardrails - unknown-key and single-valued-multi - from drifting on policy, so a
-// future change (e.g. emitting notes as JSON warnings) lands in one place.
+// guardrails - unknown-key and single-valued-multi - from drifting on policy.
 func guardrailKeys(keys []tag.Key, strict, asJSON bool, strictErr func([]tag.Key) error) (note []tag.Key, err error) {
 	if len(keys) == 0 {
 		return nil, nil
@@ -898,8 +897,8 @@ func strictWarningReason(w wl.Warning) string {
 	keys := keyList(w.Keys)
 	if keys == "" {
 		// Every escalating warning is built with its key(s) (WarnKeyed), so this only
-		// guards a future keyless code path: render the warning's own prose (which already
-		// names the key) rather than a message with a leading bare colon.
+		// guards a malformed keyless warning: render the warning's own prose (which
+		// should name the key) rather than a message with a leading bare colon.
 		return w.Message
 	}
 	switch w.Code {

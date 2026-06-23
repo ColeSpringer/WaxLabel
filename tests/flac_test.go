@@ -87,7 +87,7 @@ func TestParseReadsTagsAndProperties(t *testing.T) {
 	}
 }
 
-// The plan's risk #3: ffmpeg stamps "encoder=Lavf...". It must be surfaced.
+// ffmpeg stamps "encoder=Lavf..." in FLAC fixtures, and the parser must surface it.
 func TestParseSurfacesInheritedEncoder(t *testing.T) {
 	doc := mustParseFile(t, sampleFLAC)
 	found := false
@@ -344,9 +344,9 @@ func tinyPNG() []byte {
 // TestFLACTruncationNotFlagged pins the deliberate non-detection: FLAC carries no
 // declared encoded-essence size, so a mid-stream cut is undetectable without
 // decoding and must never be flagged truncated. A valid FLAC - including a minimal,
-// effectively zero-bitrate one - must stay clean, guarding against a future per-byte
-// bitrate floor that would false-flag silent or low-bitrate lossless audio (the
-// case internal/flac/parse.go explicitly declines to flag).
+// effectively zero-bitrate one - must stay clean; a per-byte bitrate floor would
+// false-flag silent or low-bitrate lossless audio, which internal/flac/parse.go
+// explicitly declines to flag.
 func TestFLACTruncationNotFlagged(t *testing.T) {
 	for _, tc := range []struct {
 		name string

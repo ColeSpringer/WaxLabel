@@ -28,7 +28,7 @@ var errLintFindings = errors.New("issues found")
 // no-audio file - making "valid-but-contradictory metadata" a distinct exit from a
 // mere warning (exit 1). Folded through worseError, it outranks a not-found/io/
 // unsupported file in a multi-file run (a broken file beats a wrong path, per the
-// exit-code philosophy) while still losing to canceled/source-changed. (Codex F4)
+// exit-code philosophy) while still losing to canceled/source-changed.
 var errLintErrorFindings = fmt.Errorf("%w: lint found an invalid or contradictory state", waxerr.ErrInvalidData)
 
 // newLintCmd builds the "lint" command, which reports metadata issues (stale

@@ -57,9 +57,9 @@ const (
 	WarnChapterSourceConflict
 	// WarnChaptersStale meant a chapter edit was written to one representation only
 	// (the MP4 Nero chpl) while a second (a QuickTime chapter text track) was
-	// preserved verbatim and now disagreed. A chapter edit now rebuilds both
-	// representations, so this is no longer emitted; the code is retained (a stable
-	// part of the warning surface) for a future write that can only update one.
+	// preserved verbatim and now disagreed. Chapter edits now rebuild both
+	// representations, so this is no longer emitted; the code remains part of the
+	// stable warning surface.
 	WarnChaptersStale
 	// WarnChapterTitleTruncated means one or more chapter titles were trimmed to fit
 	// a container limit on write (the Nero chpl's single-byte, 255-byte-max length

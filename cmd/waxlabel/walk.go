@@ -92,14 +92,14 @@ func parseInput(ctx context.Context, realPath, origPath string, extra ...wl.Pars
 // (e.g. a nonexistent path) still passes through, so the per-file loop classifies
 // it as not-found (exit 6) - only a confirmed directory is rejected here.
 //
-// On a recursive walk it also returns the count of regular files passed over for not
-// matching a known audio extension (across every directory argument), which the
-// caller surfaces as a text-mode note (Codex #9). The non-recursive path walks
-// nothing, so its count is always zero.
+// On a recursive walk it also returns the count of regular files passed over for
+// not matching a known audio extension, across every directory argument. The caller
+// surfaces that count as a text-mode note. The non-recursive path walks nothing, so
+// its count is always zero.
 func expandPaths(paths []string, recursive bool) ([]string, int, error) {
 	// An empty operand is a usage error (exit 2), caught before any stat/parse so it
-	// does not reach the library's ErrInvalidData (exit 4) backstop and outrank a real
-	// not-found in a multi-file run. Covers dump/verify/plan/set/lint (Finding 6).
+	// does not reach the library's ErrInvalidData (exit 4) fallback and outrank a real
+	// not-found in a multi-file run. Covers dump/verify/plan/set/lint.
 	if err := checkEmptyOperands(paths...); err != nil {
 		return nil, 0, err
 	}
@@ -219,8 +219,8 @@ func checkRegularInputs(realOf func(string) string, acceptsStdin bool, args ...s
 // operands at the CLI boundary: expandPaths (dump/verify/plan/set/lint) and the
 // direct-operand copy/diff (which do not walk, so they call this themselves). Catching
 // it here keeps an empty name from reaching the library's ErrInvalidData (exit 4)
-// backstop and outranking a real not-found in a multi-file run (Finding 6). "-" (the
-// stdin sentinel) is a real operand and is left for the command's own stdin handling.
+// fallback and outranking a real not-found in a multi-file run. "-" (the stdin
+// sentinel) is a real operand and is left for the command's own stdin handling.
 func checkEmptyOperands(paths ...string) error {
 	for _, p := range paths {
 		if p == "" {
@@ -255,20 +255,20 @@ func isWalkCandidate(path string, d fs.DirEntry) bool {
 // walkAudioFiles returns the audio files under root, recursively and in sorted
 // order, selected by matching each candidate file's extension against the known codec
 // extensions, along with a count of candidate files passed over for not matching a
-// known extension. A walk error on an entry is skipped (the entry is simply omitted)
-// so one unreadable file does not fail the whole tree; a matching-extension file that
-// is malformed still surfaces its parse error later, in the per-file loop. The skipped
-// count drives the run's "N file(s) skipped" note (Codex #9), so a directory of
-// unrecognized files is not a silent near-no-op. Inclusion and the skipped-count share
+// known extension. A walk error on an entry is skipped (the entry is omitted) so one
+// unreadable file does not fail the whole tree; a matching-extension file that is
+// malformed still surfaces its parse error later, in the per-file loop. The skipped
+// count drives the run's "N file(s) skipped" note, so a directory of unrecognized
+// files is not a silent near-no-op. Inclusion and the skipped-count share
 // isWalkCandidate, so they cannot disagree on what is a file.
 func walkAudioFiles(root string) ([]string, int) {
 	// WalkDir lstats its root, so a symlinked-directory argument yields a symlink node
 	// it refuses to descend (WalkDir never follows links). Resolve the named root link
 	// once and walk the real directory, then map every match back under the user's
-	// original argument so display and I/O keep the path they passed (Finding 3). Only
-	// the root is resolved: interior directory symlinks stay skipped (isWalkCandidate
-	// follows symlinks only to regular files), so following the named root cannot
-	// reintroduce traversal-cycle risk.
+	// original argument so display and I/O keep the path they passed. Only the root is
+	// resolved: interior directory symlinks stay skipped (isWalkCandidate follows
+	// symlinks only to regular files), so following the named root cannot reintroduce
+	// traversal-cycle risk.
 	walkRoot, linked := resolvedWalkRoot(root)
 	var out []string
 	skipped := 0

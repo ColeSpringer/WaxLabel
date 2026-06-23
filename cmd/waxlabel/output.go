@@ -18,11 +18,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// schemaVersion tags JSON output so a consumer can detect shape changes. It stays
-// pinned at 1 through the pre-1.0 series: there are no released consumers to keep
-// compatible, so the shape is still settling and bumping it would imply a stability
-// the format does not yet promise. It starts moving at the v1.0 freeze, when the
-// JSON shape becomes a compatibility surface worth versioning.
+// schemaVersion tags JSON output so a consumer can detect shape changes. It
+// stays pinned at 1 until the command's JSON shape changes in a way consumers
+// need to distinguish.
 const schemaVersion = 1
 
 // writeJSON writes v as indented JSON followed by a newline. JSON is the machine
@@ -44,8 +42,8 @@ func writeJSON(w io.Writer, v any) error {
 // nonNil returns s, or an empty (non-nil) slice when s is nil, so a JSON collection
 // field assigned from it always marshals as [] rather than null. It is the single
 // idiom for the "every iterable field is always an array" invariant on the
-// (pre-1.0, omitempty-free) report structs when the source slice can be nil; a field
-// built by append is instead initialized to []T{} at its struct literal, same effect.
+// report structs when the source slice can be nil; a field built by append is
+// instead initialized to []T{} at its struct literal, same effect.
 func nonNil[T any](s []T) []T {
 	if s == nil {
 		return []T{}
@@ -71,15 +69,14 @@ func nonNil[T any](s []T) []T {
 //
 // It assumes writes are serialized - cobra drives one command's renderers
 // sequentially, so Write is never called concurrently - and is therefore not safe
-// for concurrent use: Write mutates the partial-rune buffer without locking. A
-// future concurrent renderer would need a mutex here.
+// for concurrent use: Write mutates the partial-rune buffer without locking.
 type sanitizingWriter struct {
 	w io.Writer
 	// buf holds a trailing incomplete UTF-8 sequence (< utf8.UTFMax bytes) carried
 	// between Writes, so a rune split across two writes is not escaped as if its
 	// lead byte were invalid. Every human write today is a single fmt.Fprint* call
-	// (a complete UTF-8 unit), so buf stays empty in practice; it is hardening for a
-	// future caller that streams raw bytes. Close flushes any remainder.
+	// (a complete UTF-8 unit), so buf stays empty in practice. Close flushes any
+	// remainder.
 	buf []byte
 }
 
@@ -383,7 +380,7 @@ func noteNoFiles(w io.Writer, paths []string) {
 // silent near-no-op (it pairs with noteNoFiles: when nothing matched, this explains
 // why). It is a text-mode diagnostic suppressed under --json (whose stdout shape is
 // fixed) and when nothing was skipped, and uses the same "note:" prefix as the other
-// exit-0 advisories (Codex #9).
+// exit-0 advisories.
 func noteSkipped(w io.Writer, skipped int, asJSON bool) {
 	if asJSON || skipped == 0 {
 		return
@@ -476,10 +473,8 @@ func renderError(w io.Writer, jsonMode, emitList bool, err error) {
 	}
 }
 
-// cleanMessage defensively strips a leading "waxlabel: " so the CLI's own prefix
-// is never doubled. The library sentinels no longer embed it, so today this is a
-// no-op; it stays as forward-insurance against a future error that reintroduces
-// the prefix.
+// cleanMessage strips a leading "waxlabel: " so the CLI's own prefix is never
+// doubled. Library sentinels do not embed it, but direct errors may still carry one.
 func cleanMessage(msg string) string { return strings.TrimPrefix(msg, "waxlabel: ") }
 
 // perFileError writes the standard per-file failure line - "waxlabel: <path>:

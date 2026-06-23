@@ -8,7 +8,7 @@ import (
 // genres is the ID3v1 / Winamp numeric genre table (0-191). It is reference
 // data, not expression: the original 0-79 entries are from the ID3v1
 // specification, 80-191 are the de-facto Winamp extensions. Reproduced for
-// numeric-genre resolution; see PROVENANCE.md.
+// numeric-genre resolution.
 var genres = [...]string{
 	"Blues", "Classic Rock", "Country", "Dance", "Disco", "Funk", "Grunge",
 	"Hip-Hop", "Jazz", "Metal", "New Age", "Oldies", "Other", "Pop", "R&B",

@@ -148,13 +148,11 @@ func (e *Editor) ClearChapters() *Editor {
 	return e
 }
 
-// Native returns the native editing hatch for inspection. It reflects the
-// original parsed document, not this editor's pending edits - so pictures or
-// tags added on the editor are not visible here until after a save and reparse.
-// Structural native mutation (arbitrary block add/remove, multiple comment
-// blocks, the vendor string) lands with the public codec packages at v1.0; in
-// M0 the canonical path (tags and pictures) plus this read view cover the
-// common cases.
+// Native returns the native inspection view for the original parsed document.
+// It does not include pending editor changes; pictures, tags, or chapters added
+// on the editor are visible only after a save and reparse. Structural native
+// mutation, such as arbitrary block edits, multiple comment blocks, or vendor
+// string edits, is not part of the public editing API.
 func (e *Editor) Native() NativeEditor {
 	return NativeEditor{base: e.base}
 }
@@ -683,8 +681,8 @@ func validatePictures(pics []core.Picture) error {
 	return nil
 }
 
-// NativeEditor is the (currently read-only) native hatch. It exposes the
-// native document's structure so a caller can see exactly what is preserved.
+// NativeEditor exposes the native document's structure for inspection, so a
+// caller can see exactly what is preserved. It does not mutate native metadata.
 type NativeEditor struct {
 	base *core.Media
 }

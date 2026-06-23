@@ -5,9 +5,8 @@ package bits
 // output reflection, and no final XOR (MSB-first). Using crc32.MakeTable here
 // would silently produce wrong checksums, so we build the table ourselves.
 //
-// FLAC does not use this CRC, but Ogg Vorbis/Opus (the next milestone) do, and
-// the table is validated against libogg's published crc_lookup values in the
-// tests, so it lives in the shared bits package from M0.
+// The table is validated against libogg's published crc_lookup values in tests and
+// lives in the shared bits package because both Ogg Vorbis and Ogg Opus need it.
 const oggPoly = 0x04C11DB7
 
 var oggTable = makeOggTable()

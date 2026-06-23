@@ -1,8 +1,8 @@
 // Package matroska implements reading and tag-writing Matroska / WebM
 // (.mka / .webm / .mkv) metadata. Tags (scoped SimpleTags), the segment title,
 // cover-art attachments, and chapters (the default EditionEntry) are writable;
-// cluster/essence rewriting is out of scope (it touches encoded audio). The
-// package is internal through v0.x.
+// cluster/essence rewriting is out of scope because it touches encoded audio.
+// The codec itself is internal.
 //
 // A Matroska file is an EBML document: a tree of length-prefixed elements. Tags
 // live in Segment.Tags as Tag elements, each scoping a set of SimpleTag

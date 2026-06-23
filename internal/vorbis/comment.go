@@ -1,9 +1,9 @@
 // Package vorbis implements the byte-level Vorbis comment list codec, the
 // FLAC-style PICTURE block codec, and the canonical projection / minimal-change
 // rebuild shared by every format that stores tags as Vorbis comments - FLAC and
-// Ogg Vorbis/Opus. It is internal through v0.x and reimplemented from the
-// Vorbis-comment and FLAC picture specifications; reference implementations were
-// consulted for design only.
+// Ogg Vorbis/Opus. It is an internal helper reimplemented from the Vorbis-comment
+// and FLAC picture specifications; reference implementations were consulted for
+// design only.
 //
 // A comment list is the format-neutral core: a vendor string and "NAME=value"
 // entries with little-endian length prefixes. FLAC wraps it in a metadata

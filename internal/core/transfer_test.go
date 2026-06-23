@@ -6,9 +6,9 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestProjectTransferDispositions exercises all three dispositions in one pass -
-// including the Lossy path, which no shipping codec currently produces (every real
-// codec writes a field Full or None), using a synthetic capability set.
+// TestProjectTransferDispositions exercises all three dispositions in one pass,
+// including the Lossy path. Shipping codecs write a field Full or None, so the
+// test uses a synthetic capability set for the partial-write case.
 func TestProjectTransferDispositions(t *testing.T) {
 	var ts tag.TagSet
 	ts.Set("TITLE", "x")

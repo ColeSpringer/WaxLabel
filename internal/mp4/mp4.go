@@ -1,6 +1,6 @@
-// Package mp4 implements reading and writing MP4 / iTunes (M4A) metadata. It is
-// internal through v0.x (promoted to a public waxlabel/mp4 only at v1.0). An MP4
-// file is a tree of atoms (boxes); tags live in an iTunes-style list at
+// Package mp4 implements reading and writing MP4 / iTunes (M4A) metadata for
+// the public waxlabel package. The codec itself is internal. An MP4 file is a
+// tree of atoms (boxes); tags live in an iTunes-style list at
 // moov.udta.meta.ilst, and the audio media lives in one or more mdat atoms whose
 // byte offsets are recorded in per-track stco/co64 chunk-offset tables.
 //
@@ -17,8 +17,8 @@
 // (referenced from the audio track via a tref "chap", its samples in an mdat
 // appended at end-of-file) so the edit is visible to iTunes and Apple Books.
 //
-// Out of scope in v1 (rejected loudly): fragmented MP4 (a top-level moof, or a
-// moov declaring movie fragments via mvex).
+// Fragmented MP4 is not writable: a top-level moof, or a moov declaring movie
+// fragments via mvex, is rejected during parse.
 //
 // The codec is reimplemented from ISO/IEC 14496-12 and the iTunes metadata
 // conventions; reference implementations were consulted for design only.

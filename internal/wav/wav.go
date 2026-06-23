@@ -1,8 +1,8 @@
-// Package wav implements reading and writing WAV (RIFF/WAVE) metadata. It is
-// internal through v0.x (promoted to a public waxlabel/wav only at v1.0). A WAV
-// file is a RIFF container of chunks: a "fmt " chunk describing the audio, a
-// "data" chunk holding the PCM essence, and any number of metadata and ancillary
-// chunks (LIST/INFO tags, an embedded "id3 " ID3v2 tag, bext, iXML, cue, ...).
+// Package wav implements reading and writing WAV (RIFF/WAVE) metadata for the
+// public waxlabel package. The codec itself is internal. A WAV file is a RIFF
+// container of chunks: a "fmt " chunk describing the audio, a "data" chunk
+// holding the PCM essence, and any number of metadata and ancillary chunks
+// (LIST/INFO tags, an embedded "id3 " ID3v2 tag, bext, iXML, cue, ...).
 //
 // WAV carries tags in two places, so the codec handles both:
 //

@@ -162,8 +162,8 @@ func DowngradeNoOp(format Format, size int64, base, result *Media, tagsEqual, st
 }
 
 // codec registry. Codecs register from their package init; the root package
-// imports them for the side effect. The set is closed (no public registry API
-// in v1), so this lives in internal/core.
+// imports them for the side effect. The codec set is not user-extensible, so
+// this lives in internal/core.
 var registry []Codec
 
 // Register adds a codec. It is called from codec package initializers.

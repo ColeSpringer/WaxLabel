@@ -27,8 +27,8 @@ import (
 
 // Element IDs this codec reads. The structural elements the write path must
 // preserve byte-faithfully - SeekHead/Seek/SeekPosition, Cues/CueClusterPosition,
-// Void, and CRC-32 - are enumerated here too (read-only v1 skipped them by size).
-// The cluster media payload is still never decoded, only its byte range recorded.
+// Void, and CRC-32 - are enumerated here too. The cluster media payload is still
+// never decoded, only its byte range recorded.
 const (
 	idEBML          = 0x1A45DFA3
 	idDocType       = 0x4282

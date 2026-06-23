@@ -1,7 +1,7 @@
-// Package flac implements reading and writing FLAC metadata. It is internal
-// through v0.x (promoted to a public waxlabel/flac only at v1.0). The codec is
-// reimplemented from the FLAC format specification; reference implementations
-// were consulted for design only.
+// Package flac implements reading and writing FLAC metadata for the public
+// waxlabel package. The codec itself is internal. It is reimplemented from the
+// FLAC format specification; reference implementations were consulted for
+// design only.
 package flac
 
 import (

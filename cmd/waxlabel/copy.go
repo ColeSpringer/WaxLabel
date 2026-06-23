@@ -34,7 +34,7 @@ func newCopyCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			srcPath, dstPath := args[0], args[1]
 			// An empty operand is a usage error (exit 2), caught before any parse so it does
-			// not reach the library's ErrInvalidData (exit 4) backstop (Finding 6).
+			// not reach the library's ErrInvalidData (exit 4) fallback.
 			if err := checkEmptyOperands(srcPath, dstPath); err != nil {
 				return err
 			}

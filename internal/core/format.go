@@ -1,22 +1,21 @@
 // Package core holds the value types shared between the public waxlabel
-// package and the internal codecs, plus the Codec contract itself. Splitting
-// these out lets codecs stay internal (per the plan, until v1.0) while the
-// root package re-exports the types as its public API - without an import
-// cycle.
+// package and the internal codecs, plus the Codec contract itself. Keeping
+// these definitions here lets the root package re-export public types while
+// codecs remain internal, without introducing an import cycle.
 package core
 
-// Format identifies a container/codec combination. The set is closed in v1:
-// there is no public registry, because a mutable global conflicts with the
-// uint8 representation and invites ordering and collision bugs. New formats
-// are added here deliberately.
+// Format identifies a container/codec combination. The set is closed: there is
+// no public registry, because a mutable global conflicts with the uint8
+// representation and invites ordering and collision bugs. New formats are added
+// here deliberately.
 type Format uint8
 
 const (
 	// FormatUnknown is the zero value: not yet identified.
 	FormatUnknown Format = iota
-	// FormatFLAC was the first writable format (M0).
+	// FormatFLAC identifies FLAC.
 	FormatFLAC
-	// FormatOggVorbis and FormatOggOpus are read/write (build sequence 3).
+	// FormatOggVorbis and FormatOggOpus identify Ogg-hosted Vorbis and Opus streams.
 	FormatOggVorbis
 	FormatOggOpus
 	FormatMP3

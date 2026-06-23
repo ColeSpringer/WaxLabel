@@ -1,6 +1,6 @@
 // Package ogg implements reading and writing metadata for Ogg Vorbis and Ogg
-// Opus. It is internal through v0.x (promoted to a public waxlabel/ogg only at
-// v1.0). Both codecs store tags as a Vorbis comment list and cover art as
+// Opus for the public waxlabel package. The codec itself is internal. Both
+// codecs store tags as a Vorbis comment list and cover art as
 // METADATA_BLOCK_PICTURE entries, so the comment and picture codecs are shared
 // with FLAC via internal/vorbis; the Ogg-specific work is the page layer.
 //

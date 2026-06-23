@@ -13,15 +13,14 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// FuzzParse asserts the parser never panics on arbitrary input (risk #5) and
-// that whatever it accepts is internally consistent: a no-op write reproduces
-// the input bytes, and re-parsing succeeds. Run with:
+// FuzzParse asserts that the parser never panics on arbitrary input and that
+// accepted input stays internally consistent: a no-op write reproduces the input
+// bytes, and re-parsing succeeds. Run with:
 //
 //	go test -run x -fuzz FuzzParse
 func FuzzParse(f *testing.F) {
-	// Seed with the real fixtures (FLAC and Ogg Vorbis/Opus) and a few hand-built
-	// malformations, including Ogg page edge cases (risk #1: multi-page packets,
-	// truncated pages).
+	// Seed with the real fixtures and hand-built malformations, including Ogg page
+	// edge cases such as multi-page packets and truncated pages.
 	for _, p := range []string{
 		sampleFLAC, "../testdata/notags.flac", sampleOgg, sampleOpus, notagsOgg, "../testdata/notags.opus",
 		sampleMP3, sampleMP324, notagsMP3, sampleWAV, notagsWAV, sampleMP4, notagsMP4,
@@ -84,11 +83,10 @@ func FuzzParse(f *testing.F) {
 		_ = doc.Warnings()
 		_ = doc.Inspect()
 
-		// A no-op write must reproduce the exact input bytes. A read-only format
-		// (Matroska v1) refuses any plan, including a no-op - that is its contract,
-		// so accept it and skip the write round-trip. The guard is scoped to
-		// non-writable formats so a *writable* format that wrongly reports
-		// ErrUnsupportedFormat still fails here rather than slipping through.
+		// A no-op write must reproduce the exact input bytes. A read-only format may
+		// refuse any plan, including a no-op, so accept that and skip the write
+		// round-trip. The guard is scoped to non-writable formats so a writable format
+		// that wrongly reports ErrUnsupportedFormat still fails here.
 		plan, err := doc.Edit().Prepare()
 		if err != nil {
 			if errors.Is(err, waxerr.ErrUnsupportedFormat) && !doc.Format().Writable() {
