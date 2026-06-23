@@ -104,7 +104,7 @@ func diffKeys(base, edited tag.TagSet) map[tag.Key]bool {
 }
 
 // rebuildComments produces the new Vorbis comment list with minimal change.
-func rebuildComments(orig []comment, base, edited tag.TagSet, changed map[tag.Key]bool) []comment {
+func rebuildComments(orig []comment, edited tag.TagSet, changed map[tag.Key]bool) []comment {
 	return fromVorbis(vorbis.Rebuild(toVorbis(orig), edited, changed))
 }
 

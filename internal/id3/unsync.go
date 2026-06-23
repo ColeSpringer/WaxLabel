@@ -10,7 +10,7 @@ func deunsync(b []byte) []byte {
 	// Fast path: no stuffing sequence present, so there is nothing to undo. This
 	// matches the actual 0xFF 0x00 pattern rather than a lone 0xFF, so audio-like
 	// bodies full of 0xFF but never unsynchronised skip the copy entirely.
-	if bytes.Index(b, []byte{0xFF, 0x00}) < 0 {
+	if !bytes.Contains(b, []byte{0xFF, 0x00}) {
 		return b
 	}
 	out := make([]byte, 0, len(b))

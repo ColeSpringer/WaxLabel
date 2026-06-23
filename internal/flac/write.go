@@ -43,7 +43,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	newComments := d.comments
 	if vorbisChanged {
-		newComments = rebuildComments(d.comments, base.Tags, edited.Tags, changed)
+		newComments = rebuildComments(d.comments, edited.Tags, changed)
 	}
 
 	newBlocks, ops := rebuildBlocks(d, newComments, edited.Pictures, vorbisChanged, picturesChanged)

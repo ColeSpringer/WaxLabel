@@ -16,7 +16,7 @@ func TestParseStreamInfo(t *testing.T) {
 	// Sample rate 44100 (0x0AC44) in 20 bits, channels=2, bps=16, samples=1000.
 	body[10] = 0x0A
 	body[11] = 0xC4
-	body[12] = 0x40 | (1 << 1) | 0                                  // rate low nibble | (channels-1)<<1 | (bps-1)>>4
+	body[12] = 0x40 | (1 << 1)                                      // rate low nibble | (channels-1)<<1 | (bps-1)>>4 (high bit of bps-1 = 0)
 	body[13] = (15 << 4)                                            // (bps-1)&0xf << 4, then high 4 bits of sample count = 0
 	body[14], body[15], body[16], body[17] = 0x00, 0x00, 0x03, 0xE8 // 1000
 
