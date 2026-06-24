@@ -70,6 +70,7 @@ func (d *Document) Lint() []Finding {
 	out = append(out, lintFamilies(d.media.Families)...)
 	out = append(out, lintPictures(d.media.Pictures)...)
 	out = append(out, lintValues(d.media.Tags)...)
+	out = append(out, lintNegativeNumbers(d.media.Tags)...)
 	out = append(out, lintCardinality(d.media.Tags)...)
 	out = append(out, lintCustomKeys(d.media.Tags)...)
 	return out
@@ -195,6 +196,28 @@ func lintValues(ts tag.TagSet) []Finding {
 			if v != "" && !val.Valid(k, v) {
 				out = append(out, Finding{LintWarning, val.LintCode,
 					fmt.Sprintf("%q %s", v, val.LintDetail), k})
+			}
+		}
+	}
+	return out
+}
+
+// lintNegativeNumbers reports numeric fields with negative values, such as a negative
+// track number or play count. These values parse and round-trip, but they are usually
+// mistakes. This mirrors the set-time advisory using the same predicate and stays
+// LintInfo, like custom-key, so it does not change the clean/non-clean exit boundary.
+// Present-but-empty values are skipped.
+func lintNegativeNumbers(ts tag.TagSet) []Finding {
+	var out []Finding
+	for _, k := range ts.Keys() {
+		if !tag.IsNumericKey(k) {
+			continue
+		}
+		vals, _ := ts.Get(k)
+		for _, v := range vals {
+			if v != "" && tag.NegativeNumericValue(k, v) {
+				out = append(out, Finding{LintInfo, "negative-numeric",
+					fmt.Sprintf("%q is negative (numbering is normally non-negative)", v), k})
 			}
 		}
 	}

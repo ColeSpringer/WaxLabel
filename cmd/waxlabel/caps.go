@@ -115,10 +115,15 @@ type jsonCaps struct {
 	File          string       `json:"file,omitempty"`
 	Error         *jsonErrBody `json:"error,omitempty"`
 	Format        string       `json:"format,omitempty"`
-	ReadOnly      bool         `json:"readOnly,omitempty"`
-	Fields        *jsonCapDim  `json:"fields,omitempty"`
-	Pictures      *jsonCapDim  `json:"pictures,omitempty"`
-	Chapters      *jsonCapDim  `json:"chapters,omitempty"`
+	// Subformat is the exact container subtype, such as "WebM" or "AIFC".
+	// Format stays at the codec family level, such as "Matroska" or "AIFF".
+	// caps has no nested properties.container field, so this gives JSON
+	// consumers the same subtype signal dump exposes.
+	Subformat string      `json:"subformat,omitempty"`
+	ReadOnly  bool        `json:"readOnly,omitempty"`
+	Fields    *jsonCapDim `json:"fields,omitempty"`
+	Pictures  *jsonCapDim `json:"pictures,omitempty"`
+	Chapters  *jsonCapDim `json:"chapters,omitempty"`
 	// Padding grades how completely the format honors the --padding/--no-padding
 	// controls: "none", "partial" (grow-only), or "full". Always present on a
 	// successful report.
@@ -129,7 +134,8 @@ type jsonCaps struct {
 	// container subtype for the Matroska family ("WebM"/"Matroska"), else the bare
 	// Format string. It is unexported so encoding/json ignores it: the JSON "format"
 	// field stays the bare Format identity ("Matroska" even for WebM), matching copy's
-	// deliberate choice, while the human line distinguishes WebM. See transferFormatLabel.
+	// deliberate choice. Machine consumers should use Subformat for the exact subtype.
+	// See transferFormatLabel.
 	humanFormat string
 }
 
@@ -155,10 +161,12 @@ type jsonCapKey struct {
 // is the keys command's job. container is the file's (or format's) container
 // subtype ("WebM"/"Matroska", else empty), used only for the human format label.
 func buildCaps(file, container string, caps wl.Capabilities) jsonCaps {
+	format := caps.Format.String()
 	jc := jsonCaps{
 		SchemaVersion: schemaVersion,
 		File:          file,
-		Format:        caps.Format.String(),
+		Format:        format,
+		Subformat:     subformatOf(container, format),
 		humanFormat:   transferFormatLabel(caps.Format, container),
 		ReadOnly:      caps.ReadOnly,
 		Fields:        capDim(caps.GenericField),

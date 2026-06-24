@@ -1379,11 +1379,9 @@ func TestValueNotesDeferredUntilFiles(t *testing.T) {
 	}
 }
 
-// TestEmptyValueNote: --set KEY= (a present-but-empty value) is noted with the
-// --clear suggestion, and a bare KEY= never double-notes with the malformed-value
-// note. The note is invocation-level (I1), so it states both outcomes rather than
-// asserting one: it must mention WAV/AIFF, where the drop is path-dependent - a
-// native chunk drops the empty value but an ID3-backed field keeps it (DOC2).
+// TestEmptyValueNote checks the advisory for --set KEY=. At this point no target file
+// has been inspected, so the message can only say that some formats may drop the empty
+// value. It must also avoid pairing that note with the malformed-value warning.
 func TestEmptyValueNote(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -1394,8 +1392,26 @@ func TestEmptyValueNote(t *testing.T) {
 	if !strings.Contains(errb, "TITLE= writes an empty value") || !strings.Contains(errb, "--clear TITLE") {
 		t.Errorf("expected an empty-value note suggesting --clear; stderr:\n%s", errb)
 	}
-	if !strings.Contains(errb, "WAV/AIFF") {
-		t.Errorf("empty-value note should not assert a single outcome; expected it to mention formats that drop it; stderr:\n%s", errb)
+	if !strings.Contains(errb, "drop") {
+		t.Errorf("empty-value note should state the drop possibility, not assert retention; stderr:\n%s", errb)
+	}
+}
+
+// TestWhitespaceNumericNote checks that whitespace-only numeric input follows the same
+// trim rule as the writer: it becomes empty and uses the empty-value note, not the
+// malformed-value note.
+func TestWhitespaceNumericNote(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, sampleFLAC)
+	_, errb, code := runCLI(t, "set", file, "--set", "TRACKNUMBER=   ")
+	if code != 0 {
+		t.Fatalf("set exit = %d; stderr:\n%s", code, errb)
+	}
+	if strings.Contains(errb, "written as-is") {
+		t.Errorf("whitespace-only numeric must not claim 'written as-is' (it is trimmed to empty); stderr:\n%s", errb)
+	}
+	if !strings.Contains(errb, "TRACKNUMBER= writes an empty value") {
+		t.Errorf("whitespace-only numeric should take the empty-value note; stderr:\n%s", errb)
 	}
 }
 

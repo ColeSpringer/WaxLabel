@@ -23,6 +23,16 @@ import (
 // need to distinguish.
 const schemaVersion = 1
 
+// subformatOf returns the top-level JSON "subformat" value: the exact container
+// subtype when known, otherwise the codec family string already used for "format".
+// dump and caps share it so plain formats consistently report subformat == format.
+func subformatOf(container, format string) string {
+	if container != "" {
+		return container
+	}
+	return format
+}
+
 // writeJSON writes v as indented JSON followed by a newline. JSON is the machine
 // contract - scripts read the exact bytes - so it bypasses the human sanitizing
 // boundary: when w is a sanitizingWriter it unwraps to the raw underlying stream.

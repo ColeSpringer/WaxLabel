@@ -190,6 +190,8 @@ const (
 	WarnLegacyConflict         = core.WarnLegacyConflict
 	WarnValueDropped           = core.WarnValueDropped
 	WarnNativeValueReduced     = core.WarnNativeValueReduced
+	WarnValueReduced           = core.WarnValueReduced
+	WarnChapterEndsDropped     = core.WarnChapterEndsDropped
 )
 
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated

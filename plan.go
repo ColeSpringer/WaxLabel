@@ -33,15 +33,32 @@ type Plan struct {
 	committed bool
 }
 
+// zero reports whether p is uninitialized: a nil Plan, a hand-built &Plan{} that never
+// went through [Editor.Prepare], or a plan whose source document is zero. The read
+// methods return empty values in that state, and Execute turns it into a regular error
+// before reaching saveBack, saveAsFile, or writeTo. It is safe on a nil receiver.
+func (p *Plan) zero() bool { return p == nil || p.plan == nil || p.doc.zero() }
+
 // Report describes what executing the plan will do: the operations, the
 // before/after sizes, the padding to be written, and any warnings. It performs
-// no I/O.
-func (p *Plan) Report() WriteReport { return p.plan.Report }
+// no I/O. An uninitialized plan reports the empty WriteReport.
+func (p *Plan) Report() WriteReport {
+	if p.zero() {
+		return WriteReport{}
+	}
+	return p.plan.Report
+}
 
 // IsNoOp reports whether the plan would not change the file's bytes. A no-op
 // [SaveBack] writes nothing; a no-op [SaveAsFile] or [WriteTo] still produces a
-// complete output (a fresh destination must be whole).
-func (p *Plan) IsNoOp() bool { return p.plan.NoOp }
+// complete output (a fresh destination must be whole). An uninitialized plan is not a
+// no-op because it cannot be executed.
+func (p *Plan) IsNoOp() bool {
+	if p.zero() {
+		return false
+	}
+	return p.plan.NoOp
+}
 
 // String renders the full human-readable preview of the plan: the field-level
 // changes block (each line through the sanitizing [tag.Change.String]) followed
@@ -52,6 +69,11 @@ func (p *Plan) IsNoOp() bool { return p.plan.NoOp }
 // and no trailing newline; a no-op plan renders just the report's "no changes"
 // line.
 func (p *Plan) String() string {
+	// Return before Report or Changes so an uninitialized plan prints a clear sentinel
+	// instead of a misleading all-zero rewrite report.
+	if p.zero() {
+		return "<uninitialized plan>"
+	}
 	report := p.Report()
 	changes := p.Changes()
 	if len(changes) == 0 {
@@ -79,6 +101,10 @@ func (p *Plan) String() string {
 // and number normalization - so the preview matches reality and a no-op plan
 // yields no changes. It performs no I/O.
 func (p *Plan) Changes() []tag.Change {
+	// An uninitialized plan has no delta to report.
+	if p.zero() {
+		return nil
+	}
 	base := p.doc.media
 	edited := p.plan.Result
 	if edited == nil {
@@ -140,6 +166,10 @@ type SaveResult struct {
 // [WriteTo]. It returns the post-write [Document] and a [SaveResult]; on error,
 // the SaveResult still carries what is known (e.g. Committed=false).
 func (p *Plan) Execute(ctx context.Context, dst Destination) (*Document, SaveResult, error) {
+	// An uninitialized plan has no rewrite to carry out.
+	if p.zero() {
+		return nil, SaveResult{}, fmt.Errorf("%w: plan is not initialized; call Editor.Prepare to build a plan", waxerr.ErrInvalidData)
+	}
 	if err := checkContext(ctx); err != nil {
 		return nil, SaveResult{}, err
 	}

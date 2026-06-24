@@ -25,7 +25,6 @@ var readAliases = map[string]tag.Key{
 	"TRACKTOTAL":     tag.TrackTotal,
 	"TOTALDISCS":     tag.DiscTotal,
 	"DISCTOTAL":      tag.DiscTotal,
-	"DESCRIPTION":    tag.Comment,
 	"ORGANIZATION":   tag.Label,
 	"UNSYNCEDLYRICS": tag.Lyrics,
 }

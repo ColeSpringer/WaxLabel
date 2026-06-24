@@ -68,7 +68,7 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringArrayVar(&e.removePicture, "remove-picture", nil, "remove pictures by role name or 1-based dump index, e.g. back-cover or 2 (repeatable; removals apply before adds)")
 	f.BoolVar(&e.rmPics, "remove-pictures", false, "remove all embedded pictures")
 	f.BoolVar(&e.force, "force", false, "embed --add-cover/--add-picture input even if it is not a recognized image (PNG/JPEG/GIF/WebP/BMP/TIFF); unrecognized bytes are stored as application/octet-stream. The check is header-only, not a full image decode")
-	f.StringArrayVar(&e.addChapter, "add-chapter", nil, "add a chapter TIMESTAMP=Title (e.g. 1:30=Verse; repeatable); a file whose format cannot store chapters fails while capable files proceed")
+	f.StringArrayVar(&e.addChapter, "add-chapter", nil, "add a chapter TIMESTAMP=Title (e.g. 1:30=Verse; repeatable); a file whose format cannot store chapters fails while capable files proceed. CLI-created chapters have no end time, so rewriting Matroska chapters this way drops explicit end times")
 	f.BoolVar(&e.clearChapters, "clear-chapters", false, "remove all chapters (applied before --add-chapter, so combining them keeps only the added chapters)")
 	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear the ENCODER software stamp left behind by an encoder or transcoder")
 	f.StringVar(&e.preset, "preset", "", "write policy preset: preserve|compatible|minimal")
@@ -798,24 +798,27 @@ func notifyValueNotes(errOut io.Writer, e *editFlags, asJSON bool) {
 		if err != nil {
 			continue // a malformed assignment is already reported by patch()
 		}
+		// Match the writer's numeric trim so the advisory describes the stored value.
+		// A padded number is checked in its trimmed form, and whitespace-only input uses
+		// the empty-value note below instead of a misleading malformed-value note.
+		v = tag.TrimNumericValue(k, v)
 		if v == "" {
 			// A present-but-empty --set value, distinct from --clear (which removes the
-			// key). The note is invocation-level (no per-file format is known yet), so it
-			// states both outcomes rather than asserting one. On WAV/AIFF the drop is
-			// path-dependent, not wholesale: a field that lands in a native NAME/ANNO or
-			// LIST/INFO chunk (which cannot hold an empty string) drops it, but an
-			// ID3-backed field keeps the present empty value like the other formats (DOC2).
-			// The typed check skips empties, so a bare KEY= never double-notes.
-			fmt.Fprintf(errOut, "note: %s= writes an empty value (WAV/AIFF drop it from a native chunk but keep it in an ID3 chunk); use --clear %s to remove it\n", k, k)
+			// key). No file has been inspected yet, so the note cannot promise a specific
+			// format outcome: some formats store the empty value and some drop an empty
+			// field. The typed check skips empties, so a bare KEY= never double-notes.
+			fmt.Fprintf(errOut, "note: %s= writes an empty value (some formats may drop an empty field rather than store it); use --clear %s to remove it\n", k, k)
 			continue
 		}
 		noteMalformedValue(errOut, k, v)
 	}
 	for _, kv := range e.add {
-		// An empty --add value is not M3's case (which advises --clear, a replace-style
-		// fix that does not fit an append), so only the M1 typed check applies here.
-		if k, v, err := splitAssign(kv); err == nil && v != "" {
-			noteMalformedValue(errOut, k, v)
+		// An empty --add value is not M3's case: --clear is a replacement operation, not
+		// an append. Numeric trimming still mirrors the writer, as in the --set loop.
+		if k, v, err := splitAssign(kv); err == nil {
+			if v = tag.TrimNumericValue(k, v); v != "" {
+				noteMalformedValue(errOut, k, v)
+			}
 		}
 	}
 }

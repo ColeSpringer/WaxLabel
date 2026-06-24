@@ -132,6 +132,16 @@ All data commands accept `--json`. Commands that process many inputs return an
 array, one element per input. Single-result commands such as `diff`, `copy`,
 `caps --format`, `keys`, and `version` return one object.
 
+In `dump` and `caps` JSON, the top-level `format` is the codec family, such as
+`Matroska` or `AIFF`. `subformat` is the exact container subtype, such as `WebM`
+or `AIFC`. For plain formats the two values are the same; in `dump`, `subformat`
+matches `properties.container`.
+
+The `warnings` array reported by `set` and `plan` describes the write plan: what
+the write will change, downgrade, or drop. It does not include post-write
+cleanliness findings such as an inherited encoder stamp or a malformed value. Run
+`lint` on the saved file to check those.
+
 Exit code summary:
 
 - `0`: success, clean lint, or identical diff.

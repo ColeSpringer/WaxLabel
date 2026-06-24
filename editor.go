@@ -214,6 +214,10 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	if err := e.rejectNULValues(editedTags, patchKeys); err != nil {
 		return nil, err
 	}
+	// Trim numeric values introduced by this edit before any number-pair split. That
+	// keeps the stored value in the same form WaxLabel already uses for validation and
+	// parsing, while still preserving carried values from the source file.
+	trimNumericValues(&editedTags, e.patch)
 	// Normalize a slash-combined "n/total" track or disc number this edit introduced
 	// into the canonical pair every format stores (see splitNumberPairs). It runs
 	// after rejectNULValues, not before: that scan only covers the patched keys, so
@@ -260,6 +264,9 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w: no writer for %s", waxerr.ErrUnsupportedFormat, e.base.Format)
 	}
+	// Compute capabilities once under these write options. The chapter gate below and
+	// the value-reduction check after planning must read the same write policy.
+	caps := codec.Capabilities(e.base, wo)
 	// Refuse to silently drop chapters on a format that cannot store them. This is a
 	// format-agnostic capability gate (it reads the destination's Chapters write
 	// level); the analogous picture refusal - a cover onto WebM - is enforced
@@ -270,7 +277,7 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// Dropped before SetChapters runs), so chaptersTouched is false there and this
 	// never fires.
 	if e.chaptersTouched && len(e.chapters) > 0 &&
-		codec.Capabilities(e.base, wo).Chapters.Write < core.AccessPartial {
+		caps.Chapters.Write < core.AccessPartial {
 		return nil, fmt.Errorf("%w: chapters cannot be written to %s %s file",
 			waxerr.ErrUnsupportedTag, core.IndefiniteArticle(e.base.Format.String()), e.base.Format)
 	}
@@ -287,6 +294,13 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// authors nothing, so it suppresses these entirely via the carried flag.
 	if e.chaptersTouched && !e.carried {
 		wp.Report.Warnings = appendChapterWarnings(wp.Report.Warnings, e.chapters, e.base.Chapters, e.base.Properties.Duration())
+		// Matroska/WebM can store explicit chapter end times. A CLI chapter rebuild has
+		// no end-time syntax, so warn when it replaces ended chapters with open-ended ones.
+		// Faithful transfer is suppressed by the carried flag above.
+		if matroskaChapterEndsDropped(e.base.Format, e.chapters, e.base.Chapters) {
+			wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnChapterEndsDropped,
+				"chapters rewrite drops explicit end times (CLI-built chapters are open-ended)")
+		}
 	}
 	// Surface edit-time picture sanity warnings for the pictures this edit authored
 	// (added via AddPicture, tracked by addedMask) - an unrecognized image embedded
@@ -319,6 +333,9 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		// written value in fact still agrees. Suppressed on a faithful carry like the rest.
 		result := planResultTags(wp, edited)
 		wp.Report.Warnings = appendLegacyConflictWarnings(wp.Report.Warnings, e.base.Families, e.patch, result, wo.Legacy)
+		// Warn when a patched value is reduced by the destination's field-level write
+		// capability, using the same projected result tags as the legacy conflict check.
+		wp.Report.Warnings = appendValueReducedWarnings(wp.Report.Warnings, caps, patchKeys, editedTags, result)
 	}
 	return &Plan{doc: e.doc, plan: wp, opts: wo}, nil
 }
@@ -453,6 +470,37 @@ func appendLegacyConflictWarnings(ws []core.Warning, fams []core.FamilyValue, pa
 	return ws
 }
 
+// appendValueReducedWarnings reports patched values that the destination stores with
+// reduced fidelity. Today that applies to an MP3 ORIGINALDATE written as ID3v2.3,
+// where TORY keeps only the year.
+//
+// The check compares the edited tags with the codec's projected result, so a value that
+// already matches the reduced form does not warn. The AccessPartial capability gate
+// keeps ordinary canonicalization, such as GENRE=17 becoming "Rock", out of this path.
+// The reason text comes from the same Capability.Reason helper used by transfer.
+func appendValueReducedWarnings(ws []core.Warning, caps core.Capabilities, patchKeys []tag.Key, edited, result tag.TagSet) []core.Warning {
+	for _, k := range patchKeys {
+		editedVals, ok := edited.Get(k)
+		// Empty values are handled by the empty-value note. If the codec omits one, that
+		// is not a fidelity reduction.
+		if !ok || !slices.ContainsFunc(editedVals, func(v string) bool { return v != "" }) {
+			continue
+		}
+		fc := caps.Field(k)
+		if fc.Write != core.AccessPartial {
+			continue
+		}
+		resultVals, _ := result.Get(k)
+		if slices.Equal(editedVals, resultVals) {
+			continue // the write did not actually reduce the value
+		}
+		// Use the same reason text as transfer so edit and copy describe the loss the
+		// same way.
+		ws = core.WarnKeyed(ws, core.WarnValueReduced, fmt.Sprintf("%s: %s", k, fc.Reason()), k)
+	}
+	return ws
+}
+
 // appendChapterWarnings adds the non-fatal chapter sanity warnings for the
 // chapters this edit introduces (those in chapters but not in base):
 // WarnChapterPastDuration for a newly-added chapter starting beyond the file's
@@ -504,6 +552,35 @@ func appendChapterWarnings(ws []core.Warning, chapters, base []core.Chapter, dur
 		i = j + 1
 	}
 	return ws
+}
+
+// matroskaChapterEndsDropped reports whether a Matroska/WebM chapter rewrite replaces
+// explicit ChapterTimeEnd values with an open-ended list. MP4 does not need this check
+// because its chapter ends are inferred from the next start time.
+//
+// A bare clear is a deletion, not an open-ended rewrite, so it does not warn. Appending
+// a chapter keeps the existing ended chapters in the new list, and library callers that
+// set Chapter.End keep their ends as well.
+func matroskaChapterEndsDropped(format core.Format, newCh, baseCh []core.Chapter) bool {
+	if format != core.FormatMatroska || len(newCh) == 0 {
+		return false
+	}
+	baseHadEnd := false
+	for _, c := range baseCh {
+		if c.End > 0 {
+			baseHadEnd = true
+			break
+		}
+	}
+	if !baseHadEnd {
+		return false
+	}
+	for _, c := range newCh {
+		if c.End > 0 {
+			return false // the rewrite still carries explicit ends
+		}
+	}
+	return true
 }
 
 // appendPictureWarnings adds the non-fatal picture sanity warnings for the
@@ -611,6 +688,32 @@ func dropEmptyValuedKeys(ts *tag.TagSet) {
 	for _, k := range ts.Keys() {
 		if vs, ok := ts.Get(k); ok && len(vs) == 0 {
 			ts.Delete(k)
+		}
+	}
+}
+
+// trimNumericValues applies [tag.TrimNumericValue] to numeric keys touched by this edit.
+// It is scoped to patched keys, like splitNumberPairs, so carried values from the source
+// file are not rewritten. It runs first so splitNumberPairs sees slash pairs without
+// outer padding.
+func trimNumericValues(ts *tag.TagSet, patch tag.TagPatch) {
+	for _, k := range patch.Keys() {
+		if !tag.IsNumericKey(k) {
+			continue
+		}
+		vals, ok := ts.Get(k)
+		if !ok {
+			continue
+		}
+		changed := false
+		for i, v := range vals {
+			if trimmed := tag.TrimNumericValue(k, v); trimmed != v {
+				vals[i] = trimmed
+				changed = true
+			}
+		}
+		if changed {
+			ts.Set(k, vals...)
 		}
 	}
 }

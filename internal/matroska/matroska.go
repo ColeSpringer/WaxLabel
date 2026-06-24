@@ -106,6 +106,7 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 			"edits apply to the default edition; other editions and chapter UIDs preserved",
 			"a chapter edit flattens the default edition to a title/start/end model - nested sub-chapters and secondary-language displays in it are not preserved (untouched chapters are kept verbatim)",
 			"a chapter's end time is read only from an explicit ChapterTimeEnd; an absent end is left open-ended (zero), not inferred from the next chapter's start the way MP4 infers it",
+			"the CLI has no end-time syntax, so a --clear-chapters + --add-chapter rewrite drops explicit end times; library callers can set Chapter.End to keep them",
 		},
 		// No MaxItems: Matroska has no chapter-count cap (unlike MP4's 255-entry chpl).
 	}

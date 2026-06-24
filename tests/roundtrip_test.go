@@ -34,7 +34,7 @@ func TestPreservationProperty(t *testing.T) {
 	}
 
 	keys := []tag.Key{
-		tag.Title, tag.Artist, tag.Album, tag.Genre, tag.Comment,
+		tag.Title, tag.Artist, tag.Album, tag.Genre, tag.Comment, tag.Description,
 		tag.RecordingDate, tag.TrackNumber, tag.Composer, tag.Key("CUSTOM_FIELD"),
 	}
 	rng := rand.New(rand.NewSource(42))

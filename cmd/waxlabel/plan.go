@@ -24,9 +24,11 @@ func newPlanCmd() *cobra.Command {
 			"would do - the operations, the field-level changes, the size change,\n" +
 			"padding, and warnings - without modifying the file. With no edits it\n" +
 			"reports that the file is already up to date. The report is the same one\n" +
-			"set acts on, so the two cannot disagree. Multiple files are previewed\n" +
-			"independently; with --recursive, directory arguments are walked for audio\n" +
-			"files. A single \"-\" reads the file from standard input.\n\n" +
+			"set acts on, so the two cannot disagree. Warnings describe the write plan:\n" +
+			"what the write changes, downgrades, or drops. Run 'lint' on a saved file\n" +
+			"to check post-write metadata cleanliness. Multiple files\n" +
+			"are previewed independently; with --recursive, directory arguments are\n" +
+			"walked for audio files. A single \"-\" reads the file from standard input.\n\n" +
 			editPrecedenceHelp,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

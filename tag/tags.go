@@ -407,6 +407,17 @@ func NegativeNumericValue(k Key, v string) bool {
 	return negativeInt(v)
 }
 
+// TrimNumericValue removes surrounding whitespace from values for numeric keys and
+// leaves all other values unchanged. The editor and CLI advisories share this helper so
+// stored numeric values match the form [ValidNumericValue] and [ParseNumPair] already
+// interpret. Only whitespace is removed; digits, including leading zeros, are preserved.
+func TrimNumericValue(k Key, v string) string {
+	if numericKeys[k] {
+		return strings.TrimSpace(v)
+	}
+	return v
+}
+
 // parseIntField parses one numeric component (trimmed of surrounding whitespace),
 // the same parse [ParseNumPair] applies, returning the value and whether it parsed.
 // It is the single place validInt and negativeInt read, so a parse-rule change cannot

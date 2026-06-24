@@ -136,6 +136,17 @@ const (
 	// opposite of WarnSingleValuedMulti: here the key is genuinely multi-valued and the
 	// reduction is a faithful format limit.
 	WarnNativeValueReduced
+	// WarnValueReduced means an edit set a value the destination stores with reduced
+	// fidelity under a field-level partial-write capability. The warning carries the
+	// affected key and is emitted only when the codec's projected result differs from the
+	// edited value. For example, ID3v2.3 stores ORIGINALDATE as a year-only TORY frame.
+	WarnValueReduced
+	// WarnChapterEndsDropped means a chapter rewrite replaced chapters that carried
+	// explicit end times with a list that has none. It is currently Matroska/WebM-only:
+	// that format reads ends from ChapterTimeEnd, while MP4 infers them from the next
+	// chapter start. The warning is keyless because it describes the chapter set, not a
+	// tag field.
+	WarnChapterEndsDropped
 )
 
 func (c WarningCode) String() string {
@@ -196,6 +207,10 @@ func (c WarningCode) String() string {
 		return "value-dropped"
 	case WarnNativeValueReduced:
 		return "native-value-reduced"
+	case WarnValueReduced:
+		return "value-reduced"
+	case WarnChapterEndsDropped:
+		return "chapter-ends-dropped"
 	default:
 		return "unknown"
 	}

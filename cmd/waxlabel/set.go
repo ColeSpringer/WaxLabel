@@ -41,7 +41,9 @@ func newSetCmd() *cobra.Command {
 			"files already saved in place (it is not one transaction) - preview a bulk\n" +
 			"edit with 'plan --recursive' first. A single \"-\" reads from standard input\n" +
 			"and requires -o (editing standard input in place is meaningless). The plan\n" +
-			"is printed before each outcome.\n\n" +
+			"is printed before each outcome. Its warnings describe the write plan: what\n" +
+			"the write changes, downgrades, or drops. Run 'lint' on the saved file to\n" +
+			"check post-write metadata cleanliness.\n\n" +
 			editPrecedenceHelp,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -181,7 +183,7 @@ func checkOutputTarget(output, inputReal string, overwrite bool) error {
 	if outFi, err := os.Stat(output); err == nil && os.SameFile(outFi, inFi) {
 		return nil // the target resolves to the input: effectively in-place
 	}
-	return usagef("-o target %q already exists; pass --overwrite to replace it", output)
+	return usagef("-o target %q already exists; pass --overwrite to replace any existing path (including a device or special file)", output)
 }
 
 // checkSetStdin enforces that standard input ("-") is used only as a single input

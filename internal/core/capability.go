@@ -1,6 +1,10 @@
 package core
 
-import "github.com/colespringer/waxlabel/tag"
+import (
+	"strings"
+
+	"github.com/colespringer/waxlabel/tag"
+)
 
 // AccessLevel grades how completely a dimension is supported. It is
 // deliberately not a single yes/no: a field can be readable but not writable,
@@ -102,4 +106,18 @@ func (c Capabilities) Field(key tag.Key) Capability {
 		return cap
 	}
 	return c.GenericField
+}
+
+// Reason returns the text used when a partial-write capability reduces fidelity.
+// Fidelity wins over Constraints; if neither is present, it returns a generic fallback.
+// Transfer and edit warnings share this helper so they describe the same loss the same
+// way.
+func (c Capability) Reason() string {
+	if c.Fidelity != "" {
+		return c.Fidelity
+	}
+	if len(c.Constraints) > 0 {
+		return strings.Join(c.Constraints, "; ")
+	}
+	return "stored with reduced fidelity"
 }

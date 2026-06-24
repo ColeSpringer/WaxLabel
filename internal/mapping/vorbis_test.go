@@ -35,16 +35,12 @@ func TestVorbisNamePreferred(t *testing.T) {
 	}
 }
 
-// Writing a canonical key then reading it back must recover the same key, so
-// edits round-trip through the native representation.
+// Writing a canonical key and reading it back must recover the same key, so edits
+// round-trip through the native representation. Use the published vocabulary plus a
+// custom key to catch aliases that collapse distinct keys, such as DESCRIPTION and
+// COMMENT, onto the same canonical field.
 func TestVorbisBijectiveForKnownKeys(t *testing.T) {
-	keys := []tag.Key{
-		tag.Title, tag.Artist, tag.Album, tag.AlbumArtist, tag.Genre,
-		tag.RecordingDate, tag.TrackNumber, tag.TrackTotal, tag.DiscNumber,
-		tag.MBReleaseID, tag.ReplayGainTrackGain, tag.ISRC, tag.Comment,
-		tag.Encoder,
-		tag.Key("ARBITRARY_CUSTOM"),
-	}
+	keys := append(tag.KnownKeys(), tag.Key("ARBITRARY_CUSTOM"))
 	for _, k := range keys {
 		if got := CanonicalVorbis(VorbisName(k)); got != k {
 			t.Errorf("round-trip %q -> %q -> %q broke bijectivity", k, VorbisName(k), got)

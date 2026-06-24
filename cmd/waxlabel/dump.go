@@ -60,17 +60,22 @@ func newDumpCmd() *cobra.Command {
 // a consumer can decode every array element into it (Error set, metadata absent on
 // failure; Error nil and metadata populated on success). See jsonErrorEntry.
 type jsonDocument struct {
-	SchemaVersion int             `json:"schemaVersion"`
-	File          string          `json:"file"`
-	Error         *jsonErrBody    `json:"error,omitempty"`
-	Format        string          `json:"format,omitempty"`
-	Properties    *jsonProperties `json:"properties,omitempty"`
-	Tags          []jsonTag       `json:"tags"`
-	Pictures      []jsonPicture   `json:"pictures"`
-	Chapters      []jsonChapter   `json:"chapters"`
-	Warnings      []jsonWarning   `json:"warnings"`
-	Native        []jsonNative    `json:"native,omitempty"`
-	Sources       []jsonSource    `json:"sources,omitempty"`
+	SchemaVersion int          `json:"schemaVersion"`
+	File          string       `json:"file"`
+	Error         *jsonErrBody `json:"error,omitempty"`
+	Format        string       `json:"format,omitempty"`
+	// Subformat is the exact container subtype, such as "WebM" or "AIFC".
+	// Format stays at the codec family level. This mirrors properties.container at the
+	// top level so machine consumers do not have to inspect properties to distinguish
+	// WebM from Matroska.
+	Subformat  string          `json:"subformat,omitempty"`
+	Properties *jsonProperties `json:"properties,omitempty"`
+	Tags       []jsonTag       `json:"tags"`
+	Pictures   []jsonPicture   `json:"pictures"`
+	Chapters   []jsonChapter   `json:"chapters"`
+	Warnings   []jsonWarning   `json:"warnings"`
+	Native     []jsonNative    `json:"native,omitempty"`
+	Sources    []jsonSource    `json:"sources,omitempty"`
 }
 
 type jsonProperties struct {
@@ -130,10 +135,12 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 	if !bitDepthMeaningful(t.Codec) {
 		bitsPerSample = 0
 	}
+	format := doc.Format().String()
 	jd := jsonDocument{
 		SchemaVersion: schemaVersion,
 		File:          path,
-		Format:        doc.Format().String(),
+		Format:        format,
+		Subformat:     subformatOf(props.Container, format),
 		Properties: &jsonProperties{
 			Container:     props.Container,
 			Codec:         t.Codec,

@@ -182,13 +182,7 @@ func dispose(c Capability, readOnly bool, count int, noun string) (Disposition, 
 		return Dropped, fmt.Sprintf("exceeds the destination limit of %d", c.MaxItems)
 	}
 	if c.Write == AccessPartial {
-		if c.Fidelity != "" {
-			return Lossy, c.Fidelity
-		}
-		if len(c.Constraints) > 0 {
-			return Lossy, strings.Join(c.Constraints, "; ")
-		}
-		return Lossy, "stored with reduced fidelity"
+		return Lossy, c.Reason()
 	}
 	return Carried, ""
 }

@@ -151,6 +151,31 @@ func TestLintCustomKeyIsInfo(t *testing.T) {
 	}
 }
 
+// TestLintNegativeNumeric checks that negative numbering values show up in lint as
+// info-level findings, matching the edit-time advisory without changing the clean-file
+// exit behavior.
+func TestLintNegativeNumeric(t *testing.T) {
+	doc := mustParseBytes(t, writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
+		e.Set(tag.TrackNumber, "-1")
+	}))
+	findings := doc.Lint()
+	var found *wl.Finding
+	for i := range findings {
+		if findings[i].Code == "negative-numeric" {
+			found = &findings[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected negative-numeric finding for TRACKNUMBER=-1; got %v", findingCodes(findings))
+	}
+	if found.Severity != wl.LintInfo {
+		t.Errorf("negative-numeric severity = %v, want info", found.Severity)
+	}
+	if found.Key != tag.TrackNumber {
+		t.Errorf("negative-numeric Key = %q, want TRACKNUMBER", found.Key)
+	}
+}
+
 func TestLintClean(t *testing.T) {
 	// A freshly written file with one good date and no legacy noise should be
 	// clean.
