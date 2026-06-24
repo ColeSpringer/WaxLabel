@@ -11,20 +11,18 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// Cue child IDs used to hand-build narrow-slot Cues fixtures. The tests/ synth
-// helpers emit only 8-byte VINTs, so a 2-byte CueClusterPosition slot - exactly the
-// case a width-crossing edit must widen - can only be constructed here, against the
-// real encoder.
+// Cue child IDs used to build narrow-slot Cues fixtures. The shared test helpers
+// emit canonical element sizes, so these tests construct 2-byte CueClusterPosition
+// slots directly against the real encoder.
 const (
 	idCueTime   = 0xB3
 	idCueTrack  = 0xF7
 	idCueRelPos = 0xF0
 )
 
-// cueTrackPosBytes builds one CueTrackPositions: a CueTrack (its "pre" child), a
-// CueClusterPosition stored at the given byte width, and a trailing
-// CueRelativePosition (its "post" child) so the rebuild's verbatim pre/post handling
-// is exercised - and proven to survive in order.
+// cueTrackPosBytes builds one CueTrackPositions with CueTrack before the position
+// and CueRelativePosition after it, so rebuild tests verify pre/post children
+// survive in order.
 func cueTrackPosBytes(track int, pos uint64, width int) []byte {
 	body := encElement(idCueTrack, uintData(uint64(track)))
 	body = append(body, encElement(idCueClusterPos, uintDataWidth(pos, width))...)
@@ -103,11 +101,9 @@ func countCueElem(t *testing.T, cues []byte, want uint64) int {
 	return n
 }
 
-// TestRebuildCuesToleratesVoid: Void padding (legal EBML, emitted by muxers that
-// reserve Cues space) at the Cues, CuePoint, and CueTrackPositions levels must not
-// poison capturedOK - otherwise the feature's own target operation, embedding a cover
-// that crosses a width boundary, is refused. Void is dropped on rebuild, matching the
-// SeekHead path (which emits only its captured entries).
+// TestRebuildCuesToleratesVoid covers legal EBML padding at the Cues, CuePoint,
+// and CueTrackPositions levels. Rebuild drops Void padding, as SeekHead rebuild
+// does, but padding must not make an otherwise faithful Cues unrebuildable.
 func TestRebuildCuesToleratesVoid(t *testing.T) {
 	void := encElement(idVoid, make([]byte, 8))
 	tp := encElement(idCueTrackPos, cat(
@@ -120,11 +116,12 @@ func TestRebuildCuesToleratesVoid(t *testing.T) {
 	raw := cuesBytes(true, point, void)
 
 	ci := parseCues(t, raw)
-	if !ci.capturedOK {
-		t.Fatal("Void padding must not poison capturedOK")
+	points, ok := buildCuePoints(ci)
+	if !ok {
+		t.Fatal("Void padding must not make the capture unrebuildable")
 	}
-	if len(ci.clusters) != 1 || len(ci.points) != 1 || len(ci.points[0].tracks) != 1 {
-		t.Fatalf("capture: clusters=%d points=%d", len(ci.clusters), len(ci.points))
+	if len(ci.clusters) != 1 || len(points) != 1 || len(points[0].tracks) != 1 {
+		t.Fatalf("capture: clusters=%d points=%d", len(ci.clusters), len(points))
 	}
 	out, _, ok := rebuildCues(ci, map[int64]int64{872: 70000}, 0, 0)
 	if !ok {
@@ -153,33 +150,35 @@ func TestRebuildCuesRefusesNonLeadingCRC(t *testing.T) {
 	point := encElement(idCuePoint, cat(uintElement(idCueTime, 0), cueTrackPosBytes(1, 872, 2), crc))
 	ci := parseCues(t, cuesBytes(false, point))
 
-	if ci.capturedOK {
-		t.Error("a non-leading CRC-32 should mark the capture unrebuildable")
+	if _, ok := buildCuePoints(ci); ok {
+		t.Error("a non-leading CRC-32 should make the capture unrebuildable")
 	}
 	if _, _, ok := rebuildCues(ci, map[int64]int64{872: 70000}, 0, 0); ok {
 		t.Error("rebuildCues should refuse a non-leading CRC")
 	}
 }
 
-// TestCuesCaptureFidelity confirms cuesFromRaw populates both the flat fast-path
-// list and the rebuild tree, splitting each CueTrackPositions at its position.
+// TestCuesCaptureFidelity confirms the parse populates the flat fast-path list and
+// the lazy buildCuePoints walk produces the rebuild tree, splitting each
+// CueTrackPositions at its position.
 func TestCuesCaptureFidelity(t *testing.T) {
 	raw := cuesBytes(true, cuePointBytes(0, cueTrackPosBytes(1, 872, 2)))
 	ci := parseCues(t, raw)
 
-	if !ci.capturedOK {
-		t.Fatal("capturedOK = false for a well-formed Cues")
+	points, ok := buildCuePoints(ci)
+	if !ok {
+		t.Fatal("buildCuePoints ok = false for a well-formed Cues")
 	}
 	if len(ci.clusters) != 1 || ci.clusters[0].target != 872 {
 		t.Fatalf("flat clusters = %+v, want one target 872", ci.clusters)
 	}
-	if len(ci.points) != 1 || len(ci.points[0].tracks) != 1 {
-		t.Fatalf("points = %+v, want one point with one track", ci.points)
+	if len(points) != 1 || len(points[0].tracks) != 1 {
+		t.Fatalf("points = %+v, want one point with one track", points)
 	}
 	if ci.crc == nil {
 		t.Error("CRC not captured")
 	}
-	tp := ci.points[0].tracks[0]
+	tp := points[0].tracks[0]
 	if !tp.hasPos || tp.target != 872 {
 		t.Errorf("track target = %d hasPos=%v, want 872/true", tp.target, tp.hasPos)
 	}
@@ -189,16 +188,15 @@ func TestCuesCaptureFidelity(t *testing.T) {
 }
 
 // TestRebuildCuesMultiTrack rebuilds a single CuePoint carrying two
-// CueTrackPositions (the nested case no fixture exercises), pushing both clusters
-// past the 2-byte boundary, and asserts both positions widen and the verbatim
-// pre/post children survive in order.
+// CueTrackPositions. Both positions cross the 2-byte boundary, and the test checks
+// that the verbatim pre/post children survive in order.
 func TestRebuildCuesMultiTrack(t *testing.T) {
 	raw := cuesBytes(true, cuePointBytes(0,
 		cueTrackPosBytes(1, 872, 2),
 		cueTrackPosBytes(2, 900, 2)))
 	ci := parseCues(t, raw)
-	if !ci.capturedOK || len(ci.clusters) != 2 {
-		t.Fatalf("capture: capturedOK=%v clusters=%d", ci.capturedOK, len(ci.clusters))
+	if pts, ok := buildCuePoints(ci); !ok || len(ci.clusters) != 2 {
+		t.Fatalf("capture: ok=%v clusters=%d points=%d", ok, len(ci.clusters), len(pts))
 	}
 
 	out, _, ok := rebuildCues(ci, map[int64]int64{872: 70000, 900: 80000}, 0, 0)
@@ -215,20 +213,20 @@ func TestRebuildCuesMultiTrack(t *testing.T) {
 		t.Errorf("CueRelativePosition (post) = %v, want [7 7]", got)
 	}
 	ci2 := parseCues(t, out)
-	if !ci2.capturedOK || len(ci2.points) != 1 || len(ci2.points[0].tracks) != 2 {
-		t.Errorf("rebuilt re-parse: capturedOK=%v points=%+v", ci2.capturedOK, ci2.points)
+	if pts, ok := buildCuePoints(ci2); !ok || len(pts) != 1 || len(pts[0].tracks) != 2 {
+		t.Errorf("rebuilt re-parse: ok=%v points=%+v", ok, pts)
 	}
 }
 
 // TestRebuildCuesMultiCluster rebuilds several CuePoints, asserting every position
-// is re-pointed (not just the first) and each CueTime prefix survives.
+// is repointed rather than only the first and each CueTime prefix survives.
 func TestRebuildCuesMultiCluster(t *testing.T) {
 	raw := cuesBytes(true,
 		cuePointBytes(0, cueTrackPosBytes(1, 872, 2)),
 		cuePointBytes(1000, cueTrackPosBytes(1, 5000, 2)))
 	ci := parseCues(t, raw)
-	if !ci.capturedOK || len(ci.points) != 2 {
-		t.Fatalf("capture: capturedOK=%v points=%d", ci.capturedOK, len(ci.points))
+	if pts, ok := buildCuePoints(ci); !ok || len(pts) != 2 {
+		t.Fatalf("capture: ok=%v points=%d", ok, len(pts))
 	}
 
 	out, _, ok := rebuildCues(ci, map[int64]int64{872: 70000, 5000: 130000}, 0, 0)
@@ -243,9 +241,9 @@ func TestRebuildCuesMultiCluster(t *testing.T) {
 	}
 }
 
-// TestRebuildCuesDroppedTarget: a CueTrackPositions whose target left oldToNew is
-// omitted, and a CuePoint left with no tracks disappears - while the rebuild still
-// succeeds for the survivors.
+// TestRebuildCuesDroppedTarget verifies that a CueTrackPositions whose target is
+// absent from oldToNew is omitted, and that a CuePoint with no remaining tracks
+// disappears while the surviving entries still rebuild.
 func TestRebuildCuesDroppedTarget(t *testing.T) {
 	raw := cuesBytes(false,
 		cuePointBytes(0, cueTrackPosBytes(1, 872, 2), cueTrackPosBytes(2, 900, 2)),
@@ -261,8 +259,8 @@ func TestRebuildCuesDroppedTarget(t *testing.T) {
 		t.Errorf("positions = %v, want [70000] (dropped targets omitted)", got)
 	}
 	ci2 := parseCues(t, out)
-	if len(ci2.points) != 1 || len(ci2.points[0].tracks) != 1 {
-		t.Errorf("rebuilt = %+v, want one point with one surviving track", ci2.points)
+	if pts, ok := buildCuePoints(ci2); !ok || len(pts) != 1 || len(pts[0].tracks) != 1 {
+		t.Errorf("rebuilt = %+v, want one point with one surviving track", pts)
 	}
 }
 
@@ -276,22 +274,25 @@ func TestRebuildCuesEmptyRefused(t *testing.T) {
 }
 
 // TestRebuildCuesUncaptured: a CueTrackPositions with no CueClusterPosition cannot
-// be modeled, so capture marks the index unrebuildable and both rebuildCues and a
-// forced makeCues refuse rather than emit a wrong index.
+// be modeled, so buildCuePoints reports the tree unrebuildable and both rebuildCues
+// and a forced shiftIndex.emit refuse rather than emit a wrong index.
 func TestRebuildCuesUncaptured(t *testing.T) {
 	bad := encElement(idCueTrackPos, encElement(idCueTrack, uintData(1))) // no position
 	raw := cuesBytes(true, encElement(idCuePoint, append(uintElement(idCueTime, 0), bad...)))
 	ci := parseCues(t, raw)
 
-	if ci.capturedOK {
-		t.Fatal("capturedOK should be false for a position-less CueTrackPositions")
+	if _, ok := buildCuePoints(ci); ok {
+		t.Fatal("buildCuePoints should be unrebuildable for a position-less CueTrackPositions")
 	}
 	if _, _, ok := rebuildCues(ci, map[int64]int64{}, 0, 0); ok {
 		t.Error("rebuildCues should refuse an uncaptured tree")
 	}
-	wb := &writeBase{cues: ci}
-	if _, _, _, ok := makeCues(wb, 0, map[int64]int64{}, 0, true); ok {
-		t.Error("makeCues(force) should report ok=false for an uncaptured Cues")
+	// Exercise the same refusal through the write machinery by forcing the rebuild
+	// path and skipping the in-place patch.
+	cues := buildShiftIndexes(&writeBase{cues: ci}, -1, 0)[1] // [0]=SeekHead (absent), [1]=Cues
+	cues.force = true
+	if _, _, _, ok := cues.emit(map[int64]int64{}, 0, 0); ok {
+		t.Error("a forced shiftIndex.emit should report ok=false for an uncaptured Cues")
 	}
 }
 
@@ -311,10 +312,9 @@ func TestRebuildCuesCRCPresence(t *testing.T) {
 	}
 }
 
-// TestCuesCaptureDepthTruncated: when the depth bound truncates the child walk
-// before the positions are reached (eachChild's only error), the capture must mark
-// itself unrebuildable rather than emit a partial tree - so the caller refuses the
-// rebuild instead of writing an index missing entries.
+// TestCuesCaptureDepthTruncated verifies that a depth-limited walk refuses a
+// rebuild before it can produce a partial tree. The parse stores ci.maxDepth so
+// the lazy walk uses the same budget family as the original capture.
 func TestCuesCaptureDepthTruncated(t *testing.T) {
 	raw := cuesBytes(true, cuePointBytes(0, cueTrackPosBytes(1, 872, 2)))
 	// A budget too small to reach CueClusterPosition (Cues > CuePoint > CueTrackPositions).
@@ -322,19 +322,18 @@ func TestCuesCaptureDepthTruncated(t *testing.T) {
 	if ci == nil {
 		t.Fatal("cuesFromRaw returned nil")
 	}
-	if ci.capturedOK {
-		t.Error("capturedOK should be false when the depth bound truncates the walk")
+	if _, ok := buildCuePoints(ci); ok {
+		t.Error("buildCuePoints should refuse when the depth bound truncates the walk")
 	}
 	if _, _, ok := rebuildCues(ci, map[int64]int64{872: 70000}, 0, 0); ok {
 		t.Error("rebuildCues should refuse a depth-truncated capture")
 	}
 }
 
-// TestShiftConvergence drives the real resolve fixpoint with a cover large enough to
-// push the single cluster past the 2-byte boundary (forcing BOTH the Cues and
-// SeekHead rebuild paths) and asserts it settles in a small, bounded number of
-// iterations. This fix fails by refusing a legal edit (hitting the iter<=8 ceiling),
-// not by crashing, so the bound is the regression guard.
+// TestShiftConvergence drives resolveShiftLayout with a cover large enough to push
+// the single cluster past the 2-byte boundary, forcing both Cues and SeekHead
+// rebuilds. The test asserts the fixpoint settles quickly rather than hitting the
+// iteration bound and refusing a legal edit.
 func TestShiftConvergence(t *testing.T) {
 	src, err := os.ReadFile("../../testdata/sample.mka")
 	if err != nil {
@@ -366,12 +365,55 @@ func TestShiftConvergence(t *testing.T) {
 		t.Fatal("resolveShiftLayout did not converge")
 	}
 	if iters < 2 {
-		t.Errorf("iters = %d, expected >=2 (the cover should force a rebuild, not just an in-place patch)", iters)
+		t.Errorf("iters = %d, expected >=2 (the cover should force a rebuild, not only an in-place patch)", iters)
 	}
 	if iters > 4 {
 		t.Errorf("iters = %d, expected the fixpoint to settle in <=4", iters)
 	}
 	if lay.size <= int64(len(src)) {
 		t.Errorf("layout size %d did not grow past original %d", lay.size, len(src))
+	}
+}
+
+// synthLargeCues builds a Cues with n CuePoints, each with one CueTrackPositions
+// and a 4-byte CueClusterPosition. At this size, per-CuePoint cost dominates.
+func synthLargeCues(n int) []byte {
+	points := make([][]byte, n)
+	for i := range points {
+		points[i] = cuePointBytes(uint64(i), cueTrackPosBytes(1, uint64(i)*100+1, 4))
+	}
+	return cuesBytes(true, points...)
+}
+
+// BenchmarkCuesParseAlloc measures the parse cost of capturing a large Cues. The
+// intended parse path keeps only the flat cluster-offset list and does not retain
+// the nested rebuild tree or verbatim per-child byte copies.
+func BenchmarkCuesParseAlloc(b *testing.B) {
+	raw := synthLargeCues(20000)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if cuesFromRaw(raw, 0, bits.NewDepth(64), maxElement) == nil {
+			b.Fatal("cuesFromRaw returned nil")
+		}
+	}
+}
+
+// TestCuesParseAllocBudget keeps the parse path from eagerly building the rebuild
+// tree. For an N-CuePoint Cues, allocation count should stay near the flat
+// clusters walk, currently about 13 allocations per CuePoint, and well below the
+// eager tree path at about 34 per CuePoint. The 20-per-CuePoint budget leaves room
+// for runtime variation while catching the extra structured walk and verbatim child
+// copies.
+func TestCuesParseAllocBudget(t *testing.T) {
+	const n = 4000
+	raw := synthLargeCues(n)
+	avg := testing.AllocsPerRun(3, func() {
+		if cuesFromRaw(raw, 0, bits.NewDepth(64), maxElement) == nil {
+			t.Fatal("cuesFromRaw returned nil")
+		}
+	})
+	if budget := float64(20 * n); avg > budget {
+		t.Errorf("parse allocs/run = %.0f for %d CuePoints, want <= %.0f (eager rebuild tree reintroduced?)", avg, n, budget)
 	}
 }

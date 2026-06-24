@@ -27,7 +27,7 @@ type Limits struct {
 
 // DefaultLimits are conservative defaults suitable for typical media files.
 var DefaultLimits = Limits{
-	MaxAllocBytes: 256 << 20, // 256 MiB - comfortably larger than any cover art
+	MaxAllocBytes: 256 << 20, // 256 MiB; comfortably larger than any cover art
 	MaxDepth:      64,
 }
 
@@ -53,6 +53,10 @@ func (d *Depth) Enter() error {
 
 // Leave ascends one level.
 func (d *Depth) Leave() { d.cur-- }
+
+// Max reports the configured recursion limit. Callers can save the parse-time
+// budget and later create a fresh Depth for a deferred walk.
+func (d *Depth) Max() int { return d.max }
 
 // Cursor is a forward-only reader over a fixed region of an [io.ReaderAt] with
 // a sticky error: once a read fails (short read, or a length above the alloc

@@ -7,8 +7,8 @@ import (
 
 // This file captures the byte-level rewrite base at parse time: the raw bytes and
 // in-buffer offsets the write path patches or re-renders. Plan runs without the
-// source (the Codec contract), so everything it needs - SeekHead/Cues position
-// slots, the Info Title location, the CRC spans - is recorded here while the
+// source (the Codec contract), so everything it needs, including SeekHead/Cues
+// position slots, the Info Title location, and CRC spans, is recorded here while the
 // source is open. All offsets are within the captured raw buffer.
 
 // captureRaw reads an element's full bytes ([start, dataEnd)) bounded by the
@@ -122,9 +122,15 @@ func cuesFromRaw(raw []byte, fileStart int64, depth *bits.Depth, limit int64) *c
 	if !ok {
 		return nil
 	}
-	ci := &cuesIndex{start: fileStart, end: fileStart + int64(len(raw)), raw: raw, crc: rawCRC(raw, int(root.dataStart))}
-	// Flat position list: drives the in-place patch fast path. Kept byte-identical to
-	// the original recursive walk so an ordinary (non-width-crossing) edit is unchanged.
+	ci := &cuesIndex{
+		start: fileStart, end: fileStart + int64(len(raw)), raw: raw,
+		crc: rawCRC(raw, int(root.dataStart)), maxDepth: depth.Max(), limit: limit,
+	}
+	// Record only the flat position list used by patchPositions. If a moved
+	// position no longer fits in place, buildCuePoints reconstructs the nested
+	// tree from ci.raw at that point. Keeping this path flat avoids retaining
+	// per-child byte copies during ordinary parses while preserving the exact
+	// in-place behavior.
 	var walk func(start, end int64)
 	walk = func(start, end int64) {
 		_ = eachChild(rs, start, end, depth, limit, func(c element) error {
@@ -142,16 +148,32 @@ func cuesFromRaw(raw []byte, fileStart int64, depth *bits.Depth, limit int64) *c
 		})
 	}
 	walk(root.dataStart, root.dataEnd)
-	// Parsed tree: drives rebuildCues when a position outgrows its in-place slot. A
-	// second, structured pass keeps the flat fast path above provably untouched; the
-	// tree is consulted only on a rebuild, gated by capturedOK.
-	ci.points, ci.capturedOK = capturePoints(rs, raw, root, depth, limit)
-	// The tree must account for exactly the same positions as the flat list, or it is
-	// not a faithful basis for a rebuild - refuse one rather than emit a wrong index.
-	if countTrackPos(ci.points) != len(ci.clusters) {
-		ci.capturedOK = false
-	}
 	return ci
+}
+
+// buildCuePoints parses a captured Cues element into the tree needed for a full
+// rebuild. The work stays lazy because offset shifts do not affect ci.raw, so
+// callers may cache the result for the duration of one layout fixpoint. ok is false
+// when the tree cannot be modeled faithfully, causing the writer to refuse the
+// rebuild rather than emit a reordered, partial, or wrong index.
+func buildCuePoints(ci *cuesIndex) (points []cuePoint, ok bool) {
+	rs := core.BytesSource(ci.raw)
+	root, found := readElement(rs, 0, int64(len(ci.raw)), ci.limit)
+	if !found {
+		return nil, false
+	}
+	// Use a fresh Depth. Depth tracks current recursion, so reusing a consumed guard
+	// would leak state into this walk. The saved maxDepth can be slightly more
+	// permissive than the original Segment-nested parse; the countTrackPos check
+	// below still requires the lazy tree to match the flat list captured on the
+	// original walk.
+	points, ok = capturePoints(rs, ci.raw, root, bits.NewDepth(ci.maxDepth), ci.limit)
+	// The tree must account for exactly the same positions as the flat list. If it
+	// does not, it is not a faithful basis for a rebuild.
+	if countTrackPos(points) != len(ci.clusters) {
+		ok = false
+	}
+	return points, ok
 }
 
 // capturePoints parses the Cues element's CuePoint children into the rebuild tree.

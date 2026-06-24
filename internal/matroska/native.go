@@ -9,13 +9,13 @@ import (
 
 // simpleTag is one parsed Matroska SimpleTag: its name, its string value (or the
 // length of its binary value when it is a TagBinary), the language, and any
-// nested sub-tags. The full tree - including names that do not project to a
-// canonical key - is preserved here so a tagger can inspect everything the file
+// nested sub-tags. The full tree, including names that do not project to a
+// canonical key, is preserved here so a tagger can inspect everything the file
 // carries, matching the plan's "preserve the full scoped tree in Native".
 //
 // raw holds the SimpleTag element's original bytes (header + payload + any nested
 // sub-tags), captured at parse so the write path can preserve a tag it does not
-// manage - a binary value, a nested tree, or a custom name - byte-for-byte
+// manage, such as a binary value, a nested tree, or a custom name, byte-for-byte
 // without re-encoding from the lossy decoded view.
 type simpleTag struct {
 	name     string
@@ -44,7 +44,7 @@ func cloneSimpleTags(in []simpleTag) []simpleTag {
 // optional track/edition/chapter UID references.
 //
 // targetsRaw is the group's Targets element bytes (nil when absent), preserved so
-// a re-rendered group keeps its track/edition/chapter UID values - which the
+// a re-rendered group keeps its track/edition/chapter UID values, which the
 // decoded view records only as presence bools. hasCRC notes the group carried a
 // leading CRC-32 so a re-render recomputes one.
 type tagGroup struct {
@@ -74,9 +74,9 @@ type attachment struct {
 
 // doc is the Matroska native document: the parsed tag groups (the scoped tree),
 // the segment title, the attachment summaries, and the audio track properties.
-// It also carries a writeBase - the byte-level layout the write path preserves
+// It also carries a writeBase, the byte-level layout the write path preserves
 // (Segment header, the ordered top-level children, and the SeekHead/Cues/Info/
-// Attachments raw bytes) - captured at parse so Plan can rewrite without the
+// Attachments raw bytes), captured at parse so Plan can rewrite without the
 // source.
 type doc struct {
 	docType     string // "matroska" or "webm", from the EBML DocType header
@@ -158,34 +158,37 @@ type seekEntry struct {
 
 // cuesIndex is a captured Cues element with its CueClusterPosition values (each a
 // segment-relative cluster offset). clusters drives the in-place fast path (patch
-// each slot at its original width); points is the parsed nested tree the writer
-// re-encodes when an edit pushes a position past its slot width and the element
-// must be rebuilt at minimal width.
+// each slot at its original width). The nested CuePoint tree used for a full
+// rebuild is derived from raw by buildCuePoints only when needed, so ordinary
+// parses retain only the flat offset list. maxDepth and limit record the resource
+// budgets for that deferred walk; they are immutable after parse, matching
+// writeBase's shared-by-pointer Clone model.
 type cuesIndex struct {
 	start, end int64
 	raw        []byte
 	crc        *crcSpot
 	clusters   []seekEntry // in-place patchPositions fast path (kept byte-identical to the source)
-	points     []cuePoint  // parsed tree, drives rebuildCues on a width-crossing shift
-	capturedOK bool        // every CuePoint was captured faithfully, so a rebuild is sound
+	maxDepth   int         // depth budget for the lazy buildCuePoints walk (write-once at parse)
+	limit      int64       // alloc limit for that walk (write-once at parse)
 }
 
-// cuePoint is one captured CuePoint for the rebuild path. prefix holds its leading
-// children - CueTime and any other non-CueTrackPositions child - verbatim with any
-// CRC-32 stripped (a re-render recomputes one when hasCRC). tracks are the
-// CuePoint's CueTrackPositions, in order.
+// cuePoint is one CuePoint produced by buildCuePoints for a rebuild. It is
+// transient and is not stored on the document. prefix holds the leading children,
+// such as CueTime and other non-CueTrackPositions children, with any leading
+// CRC-32 stripped so a re-render can recompute it when hasCRC is set. tracks are
+// the CueTrackPositions children, in order.
 type cuePoint struct {
 	prefix []byte
 	tracks []cueTrackPos
 	hasCRC bool
 }
 
-// cueTrackPos is one captured CueTrackPositions. pre and post are the children
-// before and after its CueClusterPosition (CueTrack, then CueRelativePosition /
-// CueDuration / ...) kept verbatim so unmodeled fields survive byte-for-byte;
+// cueTrackPos is one CueTrackPositions produced by buildCuePoints. pre and post
+// hold the children before and after CueClusterPosition (for example CueTrack,
+// CueRelativePosition, or CueDuration) so unmodeled fields survive byte-for-byte.
 // target is the segment-relative cluster offset the writer repoints. hasPos is
-// false only for a malformed entry with no CueClusterPosition (which marks the
-// whole index capturedOK=false); hasCRC notes a leading CRC-32.
+// false only for a malformed entry with no CueClusterPosition, which makes the
+// whole tree unrebuildable; hasCRC notes a leading CRC-32.
 type cueTrackPos struct {
 	pre, post []byte
 	target    uint64
