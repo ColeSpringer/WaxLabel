@@ -157,12 +157,40 @@ type seekEntry struct {
 }
 
 // cuesIndex is a captured Cues element with its CueClusterPosition values (each a
-// segment-relative cluster offset) for the same in-place patching.
+// segment-relative cluster offset). clusters drives the in-place fast path (patch
+// each slot at its original width); points is the parsed nested tree the writer
+// re-encodes when an edit pushes a position past its slot width and the element
+// must be rebuilt at minimal width.
 type cuesIndex struct {
 	start, end int64
 	raw        []byte
 	crc        *crcSpot
-	clusters   []seekEntry
+	clusters   []seekEntry // in-place patchPositions fast path (kept byte-identical to the source)
+	points     []cuePoint  // parsed tree, drives rebuildCues on a width-crossing shift
+	capturedOK bool        // every CuePoint was captured faithfully, so a rebuild is sound
+}
+
+// cuePoint is one captured CuePoint for the rebuild path. prefix holds its leading
+// children - CueTime and any other non-CueTrackPositions child - verbatim with any
+// CRC-32 stripped (a re-render recomputes one when hasCRC). tracks are the
+// CuePoint's CueTrackPositions, in order.
+type cuePoint struct {
+	prefix []byte
+	tracks []cueTrackPos
+	hasCRC bool
+}
+
+// cueTrackPos is one captured CueTrackPositions. pre and post are the children
+// before and after its CueClusterPosition (CueTrack, then CueRelativePosition /
+// CueDuration / ...) kept verbatim so unmodeled fields survive byte-for-byte;
+// target is the segment-relative cluster offset the writer repoints. hasPos is
+// false only for a malformed entry with no CueClusterPosition (which marks the
+// whole index capturedOK=false); hasCRC notes a leading CRC-32.
+type cueTrackPos struct {
+	pre, post []byte
+	target    uint64
+	hasPos    bool
+	hasCRC    bool
 }
 
 // infoBlock is a captured Info element: raw bytes, optional CRC, and the Title

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"hash/crc32"
 	"os/exec"
+	"strings"
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
@@ -855,4 +856,188 @@ func TestMatroskaWebMCapabilityFileAware(t *testing.T) {
 	if mka := mustParseFile(t, sampleMKA).Capabilities(); mka.Pictures.Write != wl.AccessFull {
 		t.Errorf("Matroska Pictures.Write = %v, want AccessFull", mka.Pictures.Write)
 	}
+}
+
+// Cue/Cluster element IDs for the boundary-crossing offset checks below (idSegment,
+// idCluster, idCRC32 are already declared in matroska_test.go).
+const (
+	idCues          = 0x1C53BB6B
+	idCuePoint      = 0xBB
+	idCueTrackPos   = 0xB7
+	idCueClusterPos = 0xF1
+)
+
+// elemRange finds the first element with id want by a depth-first walk of [start,
+// end), descending only into the master IDs in into (nil = scan one level). It
+// returns the element's absolute start and data range.
+func elemRange(b []byte, start, end int, want uint64, into map[uint64]bool) (eStart, dStart, dEnd int, ok bool) {
+	off := start
+	for off < end {
+		id, idn, ok2 := readVint(b, off, true)
+		if !ok2 {
+			return 0, 0, 0, false
+		}
+		size, szn, ok2 := readVint(b, off+idn, false)
+		if !ok2 {
+			return 0, 0, 0, false
+		}
+		ds := off + idn + szn
+		de := ds + int(size)
+		if de > end || de < ds {
+			de = end
+		}
+		if id == want {
+			return off, ds, de, true
+		}
+		if into[id] {
+			if es, dss, dee, found := elemRange(b, ds, de, want, into); found {
+				return es, dss, dee, true
+			}
+		}
+		if de <= off {
+			break
+		}
+		off = de
+	}
+	return 0, 0, 0, false
+}
+
+// assertCuePointsAtCluster confirms the (rebuilt) first CueClusterPosition crossed
+// the 2-byte boundary AND still resolves, as a segment-relative offset, to the first
+// Cluster's start. essenceUnchanged hashes the cluster range as parsed, so it cannot
+// catch a cue pointing at the wrong offset - this is the direct correctness check on
+// the rebuilt index.
+func assertCuePointsAtCluster(t *testing.T, data []byte) {
+	t.Helper()
+	_, segData, segEnd, ok := elemRange(data, 0, len(data), idSegment, nil)
+	if !ok {
+		t.Fatal("no Segment in output")
+	}
+	clusterStart, _, _, ok := elemRange(data, segData, segEnd, idCluster, nil)
+	if !ok {
+		t.Fatal("no Cluster in output")
+	}
+	_, posDS, posDE, ok := elemRange(data, segData, segEnd, idCueClusterPos,
+		map[uint64]bool{idCues: true, idCuePoint: true, idCueTrackPos: true})
+	if !ok {
+		t.Fatal("no CueClusterPosition in output")
+	}
+	var cuePos int64
+	for i := posDS; i < posDE; i++ {
+		cuePos = cuePos<<8 | int64(data[i])
+	}
+	if cuePos <= 0xFFFF {
+		t.Fatalf("CueClusterPosition %d did not cross the 2-byte boundary; the edit didn't exercise the rebuild", cuePos)
+	}
+	if int64(segData)+cuePos != int64(clusterStart) {
+		t.Errorf("CueClusterPosition %d (+segDataStart %d = %d) does not point at the first Cluster @%d",
+			cuePos, segData, int64(segData)+cuePos, clusterStart)
+	}
+}
+
+// TestMatroskaLargeCoverRebuildsCues embeds a ~200 KB cover on sample.mka - the most
+// common art operation - pushing the single cluster (@924) well past 65535 and
+// forcing the 2->3 byte CueClusterPosition (and SeekHead) rebuild end to end. Before
+// this fix the edit was refused (exit 3, nothing written) despite caps reporting
+// pictures.Write=full.
+func TestMatroskaLargeCoverRebuildsCues(t *testing.T) {
+	src := readFixture(t, sampleMKA)
+	big := append(tinyPNG(), bytes.Repeat([]byte{0x7F}, 200000)...) // valid PNG header + filler
+	out, outDoc := saveMatroska(t, src, mustParseBytes(t, src).Edit().
+		ClearPictures().
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: big}))
+
+	if len(out) < 200000 {
+		t.Fatalf("output %d bytes; the ~200 KB cover should have grown the file via the shift path", len(out))
+	}
+	// The cover round-trips through both the returned document and a fresh reparse.
+	if len(outDoc.Pictures()) != 1 {
+		t.Errorf("returned doc has %d pictures, want 1", len(outDoc.Pictures()))
+	}
+	pics := mustParseBytes(t, out).Pictures()
+	if len(pics) != 1 || pics[0].Type != wl.PicFrontCover || !bytes.Equal(pics[0].Data, big) {
+		t.Fatalf("cover not preserved across the rebuild: %d pictures, bytes-equal=%v",
+			len(pics), len(pics) == 1 && bytes.Equal(pics[0].Data, big))
+	}
+	// The rebuilt CueClusterPosition crossed the boundary and still points at the cluster.
+	assertCuePointsAtCluster(t, out)
+	// Integrity: audio essence bit-identical, every CRC-32 recomputed.
+	essenceUnchanged(t, src, out)
+	checkCRCs(t, out, 0, len(out), 0)
+
+	// The authorities accept the rebuilt container and still read a valid stream.
+	t.Run("differential", func(t *testing.T) {
+		requireTool(t, "ffmpeg")
+		requireTool(t, "ffprobe")
+		path := writeTempFile(t, "cover.mka", out)
+		probe, err := exec.Command("ffprobe", "-hide_banner", "-loglevel", "error",
+			"-show_entries", "stream=codec_name,codec_type", "-of", "json", path).Output()
+		if err != nil {
+			t.Fatalf("ffprobe: %v", err)
+		}
+		if !strings.Contains(string(probe), "flac") {
+			t.Errorf("ffprobe did not report a flac stream after the rebuild:\n%s", probe)
+		}
+		// Map only the audio: ffmpeg fully parses the Segment/Cues/Cluster structure
+		// either way, but -c copy would otherwise try to decode the opaque cover
+		// attachment (a synthetic blob, not a real image). The cover's byte-fidelity is
+		// already proven by the reparse above; this gate is for container soundness.
+		if out2, err := exec.Command("ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+			"-i", path, "-map", "0:a", "-c", "copy", "-f", "null", "-").CombinedOutput(); err != nil {
+			t.Fatalf("ffmpeg remux rejected the rebuilt output: %v\n%s", err, out2)
+		}
+	})
+}
+
+// TestMatroskaWebMLargeTitleRebuildsCues forces the same boundary-crossing rebuild on
+// a .webm via a ~70 KB Info.Title (WebM has no Attachments subset, so a cover is
+// refused). The WebM fixtures carry no CRC-32s, so this also exercises the rebuild
+// path without the CRC convention.
+func TestMatroskaWebMLargeTitleRebuildsCues(t *testing.T) {
+	src := readFixture(t, sampleWebM)
+	title := strings.Repeat("w", 70000)
+	out, outDoc := saveMatroska(t, src, mustParseBytes(t, src).Edit().Set(tag.Title, title))
+
+	if outDoc.Fields().Title != title {
+		t.Error("returned doc title not set")
+	}
+	if got := mustParseBytes(t, out).Fields().Title; got != title {
+		t.Errorf("reparsed title length = %d, want %d", len(got), len(title))
+	}
+	assertCuePointsAtCluster(t, out)
+	essenceUnchanged(t, src, out)
+
+	t.Run("differential", func(t *testing.T) {
+		requireTool(t, "ffmpeg")
+		path := writeTempFile(t, "title.webm", out)
+		if out2, err := exec.Command("ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+			"-i", path, "-c", "copy", "-f", "null", "-").CombinedOutput(); err != nil {
+			t.Fatalf("ffmpeg remux rejected the rebuilt webm: %v\n%s", err, out2)
+		}
+	})
+}
+
+// TestMatroskaCoverRebuildReedit re-edits the document returned by a boundary-crossing
+// save (without reparsing the bytes) and saves again, proving buildResult's
+// cuesFromRaw re-derivation supports a second edit on the rebuilt Cues tree.
+func TestMatroskaCoverRebuildReedit(t *testing.T) {
+	src := readFixture(t, sampleMKA)
+	big := append(tinyPNG(), bytes.Repeat([]byte{0x42}, 200000)...)
+	out1, outDoc := saveMatroska(t, src, mustParseBytes(t, src).Edit().
+		ClearPictures().
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: big}))
+
+	// Second edit on the RETURNED document (no reparse): add a tag, shifting again.
+	out2, _ := saveMatroska(t, out1, outDoc.Edit().Set(tag.Artist, "Re-edited Artist"))
+
+	re := mustParseBytes(t, out2)
+	if f := re.Fields(); len(f.Artists) != 1 || f.Artists[0] != "Re-edited Artist" {
+		t.Errorf("re-edit artist = %v, want [Re-edited Artist]", f.Artists)
+	}
+	if pics := re.Pictures(); len(pics) != 1 || !bytes.Equal(pics[0].Data, big) {
+		t.Errorf("cover lost across the second edit: %d pictures", len(pics))
+	}
+	assertCuePointsAtCluster(t, out2)
+	checkCRCs(t, out2, 0, len(out2), 0)
+	essenceUnchanged(t, src, out2)
 }

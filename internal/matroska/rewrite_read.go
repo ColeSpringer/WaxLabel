@@ -123,6 +123,8 @@ func cuesFromRaw(raw []byte, fileStart int64, depth *bits.Depth, limit int64) *c
 		return nil
 	}
 	ci := &cuesIndex{start: fileStart, end: fileStart + int64(len(raw)), raw: raw, crc: rawCRC(raw, int(root.dataStart))}
+	// Flat position list: drives the in-place patch fast path. Kept byte-identical to
+	// the original recursive walk so an ordinary (non-width-crossing) edit is unchanged.
 	var walk func(start, end int64)
 	walk = func(start, end int64) {
 		_ = eachChild(rs, start, end, depth, limit, func(c element) error {
@@ -140,7 +142,134 @@ func cuesFromRaw(raw []byte, fileStart int64, depth *bits.Depth, limit int64) *c
 		})
 	}
 	walk(root.dataStart, root.dataEnd)
+	// Parsed tree: drives rebuildCues when a position outgrows its in-place slot. A
+	// second, structured pass keeps the flat fast path above provably untouched; the
+	// tree is consulted only on a rebuild, gated by capturedOK.
+	ci.points, ci.capturedOK = capturePoints(rs, raw, root, depth, limit)
+	// The tree must account for exactly the same positions as the flat list, or it is
+	// not a faithful basis for a rebuild - refuse one rather than emit a wrong index.
+	if countTrackPos(ci.points) != len(ci.clusters) {
+		ci.capturedOK = false
+	}
 	return ci
+}
+
+// capturePoints parses the Cues element's CuePoint children into the rebuild tree.
+// A leading CRC-32 and Void padding are tolerated (the CRC is carried on ci.crc and
+// re-added; Void is dropped on rebuild, matching rebuildSeekHead, which emits only
+// its captured entries). ok is false when a child cannot be modeled faithfully (an
+// unexpected non-CuePoint child, a non-leading CRC the rebuild cannot reproduce, or
+// a CuePoint a flat re-render would reorder) or the walk was truncated by the depth
+// bound (eachChild's only error), so the caller refuses a rebuild rather than
+// emitting a reordered, partial, or wrong index.
+func capturePoints(rs core.ReaderAtSized, raw []byte, root element, depth *bits.Depth, limit int64) ([]cuePoint, bool) {
+	var points []cuePoint
+	ok := true
+	idx := 0
+	err := eachChild(rs, root.dataStart, root.dataEnd, depth, limit, func(c element) error {
+		switch c.id {
+		case idCRC32:
+			if idx > 0 {
+				ok = false // a non-leading CRC ci.crc does not reproduce
+			}
+		case idVoid:
+			// padding: dropped on rebuild (the flat clusters walk ignores it too)
+		case idCuePoint:
+			pt, pok := capturePoint(rs, raw, c, depth, limit)
+			points = append(points, pt)
+			ok = ok && pok
+		default:
+			ok = false // an unexpected top-level Cues child the rebuild cannot reproduce
+		}
+		idx++
+		return nil
+	})
+	return points, ok && err == nil
+}
+
+// capturePoint parses one CuePoint: its CueTrackPositions into the tracks list and
+// every other meaningful child (CueTime, unmodeled fields) verbatim into prefix, with
+// a leading CRC stripped (re-added via hasCRC) and Void dropped as padding. ok is
+// false when a non-position, non-padding child trails a CueTrackPositions (the
+// prefix-then-tracks render would reorder it), a non-leading CRC appears, or the
+// point carries no CueTrackPositions.
+func capturePoint(rs core.ReaderAtSized, raw []byte, cp element, depth *bits.Depth, limit int64) (cuePoint, bool) {
+	pt := cuePoint{hasCRC: firstChildIsCRC(rs, cp, limit)}
+	ok := true
+	seenTrack := false
+	idx := 0
+	err := eachChild(rs, cp.dataStart, cp.dataEnd, depth, limit, func(c element) error {
+		switch {
+		case c.id == idCRC32:
+			if idx > 0 {
+				ok = false // a non-leading CRC hasCRC does not reproduce
+			}
+		case c.id == idVoid:
+			// padding: dropped on rebuild
+		case c.id == idCueTrackPos:
+			tp, tok := captureTrackPos(rs, raw, c, depth, limit)
+			pt.tracks = append(pt.tracks, tp)
+			ok = ok && tok
+			seenTrack = true
+		case seenTrack:
+			ok = false // a non-position child after the tracks: a flat render reorders it
+			pt.prefix = append(pt.prefix, raw[c.start:c.dataEnd]...)
+		default:
+			pt.prefix = append(pt.prefix, raw[c.start:c.dataEnd]...)
+		}
+		idx++
+		return nil
+	})
+	return pt, ok && err == nil && len(pt.tracks) > 0
+}
+
+// captureTrackPos parses one CueTrackPositions, splitting its children at the
+// CueClusterPosition into pre (before, e.g. CueTrack) and post (after, e.g.
+// CueRelativePosition) kept verbatim, recording the position target. A leading CRC is
+// stripped (re-added via hasCRC) and Void dropped as padding. ok is false unless it
+// holds exactly one well-formed CueClusterPosition and no non-leading CRC.
+func captureTrackPos(rs core.ReaderAtSized, raw []byte, ctp element, depth *bits.Depth, limit int64) (cueTrackPos, bool) {
+	tp := cueTrackPos{hasCRC: firstChildIsCRC(rs, ctp, limit)}
+	positions, bad := 0, false
+	idx := 0
+	err := eachChild(rs, ctp.dataStart, ctp.dataEnd, depth, limit, func(c element) error {
+		switch {
+		case c.id == idCRC32:
+			if idx > 0 {
+				bad = true // a non-leading CRC hasCRC does not reproduce
+			}
+		case c.id == idVoid:
+			// padding: dropped on rebuild
+		case c.id == idCueClusterPos:
+			positions++
+			if c.dataLen() > 0 && c.dataLen() <= 8 {
+				tp.target, tp.hasPos = readUint(rs, c, limit), true
+			} else {
+				bad = true
+			}
+		case !tp.hasPos:
+			tp.pre = append(tp.pre, raw[c.start:c.dataEnd]...)
+		default:
+			tp.post = append(tp.post, raw[c.start:c.dataEnd]...)
+		}
+		idx++
+		return nil
+	})
+	return tp, err == nil && positions == 1 && !bad
+}
+
+// countTrackPos totals the positions held across a captured CuePoint tree, used to
+// cross-check the tree against the flat clusters list.
+func countTrackPos(points []cuePoint) int {
+	n := 0
+	for _, p := range points {
+		for _, t := range p.tracks {
+			if t.hasPos {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // captureInfo records the Info element's bytes, CRC, and Title-child location so
