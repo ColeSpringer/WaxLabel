@@ -36,7 +36,7 @@ func newVerifyCmd() *cobra.Command {
 				return err
 			}
 			defer cleanup()
-			paths, skipped, err := expandPaths(args, recursive)
+			paths, skipped, pathErrors, err := expandPaths(args, recursive)
 			if err != nil {
 				return err
 			}
@@ -47,9 +47,9 @@ func newVerifyCmd() *cobra.Command {
 			// dropped (noSeparator) to keep a sort/uniq pipe clean.
 			quiet = quiet && !jsonMode(cmd)
 			return perFile(cmd, paths,
-				func(ctx context.Context, path string) (jsonVerify, error) {
+				guardPathErrors(pathErrors, func(ctx context.Context, path string) (jsonVerify, error) {
 					return computeVerify(ctx, realOf(path), path, whole)
-				},
+				}),
 				func(path string, v jsonVerify) any { return v },
 				func(w io.Writer, path string, v jsonVerify) {
 					if quiet {

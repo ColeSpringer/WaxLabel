@@ -132,7 +132,7 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	// Ogg stores Vorbis values verbatim, so this only fires for a value the rebuild
 	// dropped (an empty); no strip flag exists. tagsEqual uses the native key diff.
 	// See core.DowngradeNoOp.
-	if np := core.DowngradeNoOp(d.format, edited.Identity.Size, base, result, len(vorbis.DiffKeys(base.Tags, result.Tags)) == 0, false); np != nil {
+	if np := core.DowngradeNoOp(d.format, edited.Identity.Size, base, result, len(vorbis.DiffKeys(base.Tags, result.Tags)) == 0, false, report.Warnings); np != nil {
 		return np, nil
 	}
 	return &core.WritePlan{

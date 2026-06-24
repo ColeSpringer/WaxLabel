@@ -42,16 +42,36 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	// defensive. Read only when a full header is present - a shorter slice can
 	// never decode, so there is nothing to gain from reading it.
 	if avail := d.audioEnd - d.audioStart; avail >= int64(adtsHeaderSize) {
-		if head, err := bits.ReadSlice(src, d.audioStart, int64(adtsHeaderSize), limit); err == nil {
-			if h, ok := decodeADTS(head); ok {
-				d.header = h
-				samples, audioBytes, err := totalADTSSamples(ctx, src, d.audioStart, d.audioEnd)
-				if err != nil {
-					return nil, err
-				}
-				d.track = buildTrack(h, samples, audioBytes)
-			}
+		head, err := bits.ReadSlice(src, d.audioStart, int64(adtsHeaderSize), limit)
+		if err != nil {
+			// avail >= adtsHeaderSize means the bytes exist, so a read failure here is a
+			// genuine I/O fault - a faulting source, a concurrent truncate, or MaxAllocBytes
+			// below the header size - not a malformed or absent header. Surface it (as
+			// totalADTSSamples does for its reads) rather than swallowing it and letting the
+			// no-audio gate below mislabel an I/O error as "file may not be audio".
+			return nil, err
 		}
+		if h, ok := decodeADTS(head); ok {
+			d.header = h
+			samples, audioBytes, err := totalADTSSamples(ctx, src, d.audioStart, d.audioEnd)
+			if err != nil {
+				return nil, err
+			}
+			d.track = buildTrack(h, samples, audioBytes)
+		}
+	}
+	// A non-empty essence region that decodes no whole ADTS frame is a .aac that is
+	// not actually ADTS audio (random bytes, zeros, a renamed file). buildTrack
+	// leaves TotalSamples at zero on every no-frame path - too short for a header, a
+	// ReadSlice failure, a header that does not decode, or a valid-looking header
+	// that yields zero complete frames - so this one check covers them all. Surface
+	// it under the shared no-audio code (matching MP3 at internal/mp3/parse.go) so
+	// dump/lint flag it and set/plan/verify refuse it (ErrInvalidData, exit 4)
+	// rather than hash non-audio bytes as essence. A valid stream always has
+	// TotalSamples > 0, so there are no false positives.
+	if d.track.TotalSamples == 0 && d.audioEnd > d.audioStart {
+		warnings = core.Warn(warnings, core.WarnNoAudioFrames,
+			"no ADTS audio frames found; file may not be audio")
 	}
 	if d.track.Codec == "" {
 		d.track.Codec = "AAC"

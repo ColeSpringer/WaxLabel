@@ -250,6 +250,21 @@ func WarnKeyed(ws []Warning, code WarningCode, msg string, keys ...tag.Key) []Wa
 	return append(ws, Warning{Code: code, Message: msg, Keys: keys})
 }
 
+// WarningsWithCode returns the warnings in ws whose code is one of codes, in order.
+// [DowngradeNoOp] uses it to carry the input-rejection warnings (value-dropped,
+// picture-metadata-dropped) through a no-op downgrade, which builds a fresh report:
+// when an edit produces no byte change precisely because an input could not be stored,
+// that silent drop must still surface (and --strict still escalate).
+func WarningsWithCode(ws []Warning, codes ...WarningCode) []Warning {
+	var out []Warning
+	for _, w := range ws {
+		if slices.Contains(codes, w.Code) {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
 // WarnNativeReduced appends a [WarnNativeValueReduced] warning naming a multi-valued
 // key whose secondary single-valued native container stores only its first value while
 // the full set is kept in the embedded ID3 chunk. container names the native slot for

@@ -60,7 +60,7 @@ func newLintCmd() *cobra.Command {
 			"\"-\" reads from standard input (read-only; not valid with --fix).",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			paths, skipped, err := expandPaths(args, recursive)
+			paths, skipped, pathErrors, err := expandPaths(args, recursive)
 			if err != nil {
 				return err
 			}
@@ -78,9 +78,9 @@ func newLintCmd() *cobra.Command {
 				if slices.Contains(paths, stdinArg) {
 					return usagef("cannot fix standard input; --fix writes changes back to a file")
 				}
-				return runLintFix(cmd, paths)
+				return runLintFix(cmd, paths, pathErrors)
 			}
-			return runLint(cmd, paths)
+			return runLint(cmd, paths, pathErrors)
 		},
 	}
 	cmd.Flags().BoolVar(&fix, "fix", false, "apply the safe, non-destructive fixes and save in place")
@@ -175,20 +175,20 @@ func worstFinding(findings []wl.Finding) wl.LintSeverity {
 }
 
 // runLint reports findings per file.
-func runLint(cmd *cobra.Command, paths []string) error {
+func runLint(cmd *cobra.Command, paths []string, pathErrors map[string]error) error {
 	realOf, cleanup, err := readInputs(cmd.InOrStdin(), paths)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
 	return lintLoop(cmd, paths,
-		func(ctx context.Context, path string) ([]wl.Finding, error) {
+		guardPathErrors(pathErrors, func(ctx context.Context, path string) ([]wl.Finding, error) {
 			doc, err := parseInput(ctx, realOf(path), path)
 			if err != nil {
 				return nil, err
 			}
 			return doc.Lint(), nil
-		},
+		}),
 		worstFinding,
 		func(path string, findings []wl.Finding) any { return toJSONLint(path, findings) },
 		renderLint,
@@ -214,9 +214,9 @@ func renderLint(w io.Writer, path string, findings []wl.Finding) {
 // runLintFix applies the safe remediations to each file and saves, reporting the
 // field-level changes (the shared write-plan preview) and the findings that still
 // remain afterward. A remaining warning-or-worse finding still yields exit 1.
-func runLintFix(cmd *cobra.Command, paths []string) error {
+func runLintFix(cmd *cobra.Command, paths []string, pathErrors map[string]error) error {
 	return lintLoop(cmd, paths,
-		lintFixOne,
+		guardPathErrors(pathErrors, lintFixOne),
 		func(o fixOutcome) wl.LintSeverity { return worstFinding(o.remaining) },
 		func(path string, o fixOutcome) any { return toJSONLintFix(o) },
 		func(w io.Writer, path string, o fixOutcome) { renderLintFix(w, o) },

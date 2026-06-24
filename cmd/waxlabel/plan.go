@@ -48,13 +48,13 @@ func newPlanCmd() *cobra.Command {
 				return err
 			}
 			defer cleanup()
-			paths, skipped, err := expandPaths(args, recursive)
+			paths, skipped, pathErrors, err := expandPaths(args, recursive)
 			if err != nil {
 				return err
 			}
 			noteNoFiles(cmd.ErrOrStderr(), paths)
 			noteSkipped(cmd.ErrOrStderr(), skipped, asJSON)
-			if err := notifyInvocationNotes(cmd.ErrOrStderr(), ce, &ef, realOf, paths, asJSON); err != nil {
+			if err := notifyInvocationNotes(cmd.ErrOrStderr(), ce, &ef, realOf, paths, pathErrors, asJSON); err != nil {
 				return err
 			}
 			// An unquoted value with spaces (--set TITLE=Two Words) leaves a stray bare-word
@@ -69,7 +69,7 @@ func newPlanCmd() *cobra.Command {
 			gate := newStrictWarningGate(ef.strict)
 			pnoter := newPaddingNoter(asJSON, cmd.ErrOrStderr())
 			return perFile(cmd, paths,
-				func(ctx context.Context, path string) (*wl.Plan, error) {
+				guardPathErrors(pathErrors, func(ctx context.Context, path string) (*wl.Plan, error) {
 					doc, plan, err := ce.prepare(ctx, realOf(path), path)
 					if err != nil {
 						return nil, err
@@ -83,7 +83,7 @@ func newPlanCmd() *cobra.Command {
 						return nil, err
 					}
 					return plan, nil
-				},
+				}),
 				func(path string, plan *wl.Plan) any { return toJSONReport(path, plan) },
 				func(w io.Writer, path string, plan *wl.Plan) { renderReport(w, path, plan, ce.addPics) },
 				false,

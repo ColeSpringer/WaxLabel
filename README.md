@@ -186,11 +186,11 @@ entire file.
 | --- | --- | --- |
 | FLAC | read/write | Vorbis comments and FLAC pictures; padding is fully controllable. |
 | Ogg Vorbis / Opus | read/write | Vorbis comments and `METADATA_BLOCK_PICTURE`; audio packet payloads are preserved. |
-| MP3 | read/write | ID3v2 is writable; ID3v1 and APEv2 are surfaced as legacy families. |
+| MP3 | read/write | ID3v2 is writable (a new tag is written as ID3v2.3); ID3v1 and APEv2 are surfaced as legacy families. |
 | WAV | read/write | RIFF LIST/INFO plus embedded `id3 `; chunks are preserved. |
 | MP4 / M4A / M4B | read/write | iTunes `ilst`, cover art, Nero chapters, and QuickTime chapter text tracks. Fragmented MP4 is rejected. |
 | Matroska / WebM | read/write | Scoped SimpleTags, segment title, attachments, and default-edition chapters. WebM cannot write cover attachments. |
-| AAC (ADTS) | read/write | Front ID3v2 tag plus ADTS frames. |
+| AAC (ADTS) | read/write | Front ID3v2 tag (a new tag is written as ID3v2.4) plus ADTS frames. |
 | AIFF / AIFF-C | read/write | Native text chunks plus embedded `ID3 `; chunks are preserved. |
 
 The capability table below is generated from the same codec capability model used

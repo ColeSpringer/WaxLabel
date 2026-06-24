@@ -21,8 +21,9 @@
 // [Parse], [ParseFile], and [OpenSource] return an immutable, detached
 // [Document]: it holds no OS resources and has no Close method, so a caller
 // may scan, cache, and discard it freely. Accessors return detached deep
-// copies of structural data; only [Picture] payload bytes are shared
-// read-only. [Document.Inspect] skips picture bytes entirely for bulk scans.
+// copies of structural data - [Picture] payloads included, so a caller may
+// mutate anything an accessor returns without affecting the [Document] or a
+// later call. [Document.Inspect] skips picture bytes entirely for bulk scans.
 //
 // Editing flows through [Document.Edit], which yields an [Editor]. The editor
 // records mutations against a presence-aware canonical [tag.TagSet]; calling
@@ -31,7 +32,8 @@
 //
 // # Frozen contracts
 //
-// The following contracts are stable; everything else may change during v0.x:
+// The following contracts are stable across the v1 line; other surface may
+// still evolve:
 //
 //   - The Document is immutable, detached, and serializable.
 //   - The presence-aware canonical [tag.TagSet]/[tag.TagPatch] is

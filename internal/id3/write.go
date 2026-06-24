@@ -1,6 +1,7 @@
 package id3
 
 import (
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,6 +24,12 @@ type RebuildInfo struct {
 	// UsedV23Multi is true when a v2.3 tag was written with NUL-separated
 	// multi-values (a nonstandard extension whose compatibility impact is flagged).
 	UsedV23Multi bool
+	// DroppedDates lists year-anchored date keys whose edited value had no extractable
+	// numeric year and so rendered no v2.3 frame at all - a silent drop the caller
+	// surfaces as a value-dropped warning. Empty on v2.4 (TDRC/TDOR store the full
+	// string) and for values that do carry a year (only the sub-year precision is lost,
+	// which is not a drop). See detectDroppedDates.
+	DroppedDates []tag.Key
 }
 
 // RebuildFrames produces the new frame list for an edited tag, preserving
@@ -127,6 +134,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 		out = slices.Insert(out, firstAPIC, pics...)
 	}
 
+	info.DroppedDates = detectDroppedDates(changed, edited, version)
 	return out, info
 }
 
@@ -463,6 +471,55 @@ const (
 	partDayMonth
 	partHourMin
 )
+
+// detectDroppedDates finds the year-anchored date keys whose edited value cannot be
+// represented at all on a v2.3 tag, so the caller can warn rather than drop silently.
+// TYER (RecordingDate) and TORY (OriginalDate) need a numeric year: a touched value
+// with none (e.g. "Unknown Date") renders no frame, a silent loss. ReleaseDate is
+// excluded - on v2.3 it maps to TXXX:RELEASEDATE, which stores the string verbatim,
+// so it never drops. v2.4 stores the full string (TDRC/TDOR) and returns nothing here.
+//
+// The check is per key, not per render token: a single RecordingDate dirties three
+// tokens (TYER/TDAT/TIME), and a common "2021"/"2021-05" legitimately renders only
+// TYER while TDAT/TIME yield nothing - so a per-token "no frame" test would falsely
+// flag a perfectly stored date. A date is dropped iff the key has a non-empty value
+// but no extractable year, which also preserves a shaped-but-invalid "2021-13-45"
+// (its year extracts, so only the day/month is lost, not the whole value).
+func detectDroppedDates(changed map[tag.Key]bool, edited tag.TagSet, version byte) []tag.Key {
+	if version >= 4 {
+		return nil
+	}
+	var dropped []tag.Key
+	for _, k := range []tag.Key{tag.RecordingDate, tag.OriginalDate} {
+		if !changed[k] {
+			continue
+		}
+		if v, _ := edited.First(k); v != "" && extractDatePart(v, partYear) == "" {
+			dropped = append(dropped, k)
+		}
+	}
+	return dropped
+}
+
+// AppendDroppedDateWarnings appends a value-dropped warning to ws for each
+// year-anchored date RebuildFrames could not store on a v2.3 tag
+// (RebuildInfo.DroppedDates) - EXCEPT one the output still retains in another
+// container. retained is the re-projected output tag set: a WAV whose LIST/INFO keeps
+// RecordingDate in ICRD even when the id3 TYER drops it is therefore not flagged (and
+// does not fail --strict) on a value that round-trips. WarnValueDropped carries the
+// key so --strict names it and the human/JSON output renders it like MP4's drops. This
+// is the single emission seam the four ID3-backed codecs (mp3/aac/aiff/wav) share, so
+// the message and the native-retention suppression cannot drift across them.
+func AppendDroppedDateWarnings(ws []core.Warning, info RebuildInfo, retained tag.TagSet) []core.Warning {
+	for _, k := range info.DroppedDates {
+		if v, _ := retained.First(k); v != "" {
+			continue // retained in another container (e.g. WAV's ICRD); not actually dropped
+		}
+		ws = core.WarnKeyed(ws, core.WarnValueDropped,
+			fmt.Sprintf("%s value cannot be represented in ID3v2.3 (it has no numeric year) and was dropped", k), k)
+	}
+	return ws
+}
 
 // renderDatePart renders a v2.3 date component (TYER/TDAT/TIME/TORY) extracted
 // from an ISO date key.

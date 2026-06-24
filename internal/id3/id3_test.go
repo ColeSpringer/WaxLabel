@@ -245,6 +245,78 @@ func TestDateDecompositionV23(t *testing.T) {
 	}
 }
 
+// TestDroppedDateDetection (Fix 2) pins detectDroppedDates: a year-anchored date key
+// whose edited value has no extractable numeric year renders no v2.3 frame and so is
+// silently dropped - the caller turns RebuildInfo.DroppedDates into a value-dropped
+// warning. The detection is year-anchored and per key, so a stored or year-bearing
+// date never false-fires, and v2.4 (TDRC stores the string) never populates it.
+func TestDroppedDateDetection(t *testing.T) {
+	cases := []struct {
+		name    string
+		key     tag.Key
+		value   string
+		version byte
+		dropped bool
+	}{
+		{"v23 recording no year", tag.RecordingDate, "Unknown Date", 3, true},
+		{"v23 original no year", tag.OriginalDate, "Unknown", 3, true},
+		// ReleaseDate maps to TXXX:RELEASEDATE on v2.3 and stores the string verbatim, so
+		// it is deliberately excluded from the year-anchored drop check.
+		{"v23 release no year stored verbatim", tag.ReleaseDate, "Unknown", 3, false},
+		{"v23 recording year only", tag.RecordingDate, "2021", 3, false},
+		// A shaped-but-invalid date still has an extractable year, so only sub-year
+		// precision is lost - not the whole value - and it is not flagged dropped.
+		{"v23 recording shaped-but-invalid keeps year", tag.RecordingDate, "2021-13-45", 3, false},
+		{"v24 recording no year stores string", tag.RecordingDate, "Unknown", 4, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			base := tag.NewTagSet()
+			edited := tag.NewTagSet()
+			edited.Set(c.key, c.value)
+			_, info := RebuildFrames(nil, base, edited, c.version, nil, false, WriteOpts{})
+			if got := slices.Contains(info.DroppedDates, c.key); got != c.dropped {
+				t.Errorf("DroppedDates contains %s = %v, want %v (DroppedDates=%v)", c.key, got, c.dropped, info.DroppedDates)
+			}
+		})
+	}
+}
+
+// TestDroppedDateOnlyTouchedKeys: an unchanged date key (base == edited) is never
+// flagged dropped - only a key the edit actually touched can be. This guards the
+// per-key, anchored-on-changed half of the rule.
+func TestDroppedDateOnlyTouchedKeys(t *testing.T) {
+	base := tag.NewTagSet()
+	base.Set(tag.RecordingDate, "Unknown")
+	edited := tag.NewTagSet()
+	edited.Set(tag.RecordingDate, "Unknown")
+	if _, info := RebuildFrames(nil, base, edited, 3, nil, false, WriteOpts{}); len(info.DroppedDates) != 0 {
+		t.Errorf("an unchanged date must not be flagged dropped, got %v", info.DroppedDates)
+	}
+}
+
+// TestReleaseDateV23StoredNotDropped confirms the exclusion is safe: a non-date
+// ReleaseDate string on v2.3 renders a real TXXX:RELEASEDATE frame, so it genuinely
+// is not dropped (and must not warn). detectDroppedDates excludes it for this reason.
+func TestReleaseDateV23StoredNotDropped(t *testing.T) {
+	base := tag.NewTagSet()
+	edited := tag.NewTagSet()
+	edited.Set(tag.ReleaseDate, "Unknown")
+	out, info := RebuildFrames(nil, base, edited, 3, nil, false, WriteOpts{})
+	if len(info.DroppedDates) != 0 {
+		t.Errorf("ReleaseDate must not be flagged dropped on v2.3, got %v", info.DroppedDates)
+	}
+	hasTXXX := false
+	for _, f := range out {
+		if f.ID == "TXXX" {
+			hasTXXX = true
+		}
+	}
+	if !hasTXXX {
+		t.Errorf("ReleaseDate=Unknown on v2.3 should render a TXXX:RELEASEDATE frame, got %d frames", len(out))
+	}
+}
+
 func TestNumericGenreWrite(t *testing.T) {
 	base := tag.NewTagSet()
 	edited := tag.NewTagSet()

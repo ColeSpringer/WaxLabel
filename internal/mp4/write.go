@@ -122,16 +122,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// Collapse to a true no-op when the ilst rebuild re-projected to base's values
 	// (e.g. TRACKNUMBER=03 -> 3, or an unrepresentable value the encoder dropped); a
 	// chapter edit took the planChapters path above, so nothing structural remains here.
-	// See core.DowngradeNoOp.
-	if np := core.DowngradeNoOp(core.FormatMP4, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), false); np != nil {
-		// Carry the input-rejection warnings through the downgrade: the edit produced no
-		// net byte change, but the user's value or cover description was still rejected and
-		// must be surfaced (and --strict still escalates value-dropped). MP4 stamps only
-		// these input-rejection warnings (value-dropped, picture-metadata-dropped) before
-		// this point - not a write-characteristic warning a verbatim no-op would make moot
-		// (as ID3MultiValue is for the other codecs) - so carrying the whole set is safe.
-		// DowngradeNoOp builds a fresh report, so re-attach.
-		np.Report.Warnings = append(np.Report.Warnings, report.Warnings...)
+	// DowngradeNoOp carries the input-rejection warnings (value-dropped,
+	// picture-metadata-dropped) forward, so a rejected value or cover description still
+	// surfaces (and --strict still escalates) even though the write is a no-op.
+	if np := core.DowngradeNoOp(core.FormatMP4, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), false, report.Warnings); np != nil {
 		return np, nil
 	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil

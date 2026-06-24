@@ -554,7 +554,7 @@ func ValidReplayGainValue(k Key, v string) bool {
 // whether a key falls in the category; Valid reports whether a present, non-empty
 // value is acceptable. LintDetail/NoteDetail are the human tails the two surfaces
 // append, phrased for each (the linter as "%q <LintDetail>", the note as
-// "KEY=VALUE <NoteDetail>; written as-is").
+// "KEY=VALUE <NoteDetail>; kept as text where the format supports it").
 type Validator struct {
 	Applies    func(Key) bool
 	Valid      func(Key, string) bool

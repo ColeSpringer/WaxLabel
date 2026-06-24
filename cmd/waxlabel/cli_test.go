@@ -1355,17 +1355,19 @@ func TestMalformedValueNotesTolerant(t *testing.T) {
 }
 
 // TestValueNotesDeferredUntilFiles (#4): the invocation-level value note must not
-// print on a run that resolves no files and aborts - otherwise it falsely claims a
-// value was "written as-is" when nothing was written.
+// print on a run that acts on no real file - otherwise it falsely claims a value was
+// "written as-is" when nothing was written.
 func TestValueNotesDeferredUntilFiles(t *testing.T) {
 	t.Parallel()
-	// A directory without --recursive aborts with a usage error before any file.
+	// A directory without --recursive is now a per-element usage error (exit 2), not a
+	// whole-batch abort, but it is still not an actionable input - so the value note
+	// must stay silent (anyInputExists skips a path with a recorded pre-flight error).
 	_, errb, code := runCLI(t, "set", t.TempDir(), "--set", "TRACKNUMBER=abc")
 	if code != 2 {
 		t.Fatalf("directory exit = %d, want 2", code)
 	}
 	if strings.Contains(errb, "does not look like a number") {
-		t.Errorf("value note must not print on an aborted directory run:\n%s", errb)
+		t.Errorf("value note must not print on a directory-only run:\n%s", errb)
 	}
 	// An empty --recursive walk now aligns with plan: exit 0 with a "nothing to do"
 	// advisory, not a usage error (E1). The value note still must not print, since no
@@ -1407,8 +1409,8 @@ func TestWhitespaceNumericNote(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("set exit = %d; stderr:\n%s", code, errb)
 	}
-	if strings.Contains(errb, "written as-is") {
-		t.Errorf("whitespace-only numeric must not claim 'written as-is' (it is trimmed to empty); stderr:\n%s", errb)
+	if strings.Contains(errb, "kept as text") {
+		t.Errorf("whitespace-only numeric must not take the malformed-value note (it is trimmed to empty); stderr:\n%s", errb)
 	}
 	if !strings.Contains(errb, "TRACKNUMBER= writes an empty value") {
 		t.Errorf("whitespace-only numeric should take the empty-value note; stderr:\n%s", errb)

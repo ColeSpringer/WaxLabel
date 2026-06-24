@@ -104,6 +104,46 @@ func TestFifoInWalkedTreeSkipped(t *testing.T) {
 	}
 }
 
+// TestFifoInBatchIsPerElementError (Fix 4): a directly-named FIFO between two good
+// files is recorded as that path's per-element usage error rather than aborting the
+// whole batch - and crucially the FIFO is never opened (its read would block), so the
+// run returns promptly (runCLIBounded). The good files still process. This is the
+// per-element twin of TestFifoInputRejectedFast (a lone FIFO).
+func TestFifoInBatchIsPerElementError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "pipe.flac")
+	mkfifo(t, fifo)
+	good1 := filepath.Join(dir, "good1.flac")
+	good2 := filepath.Join(dir, "good2.flac")
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range []string{good1, good2} {
+		if err := os.WriteFile(g, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, _, code := runCLIBounded(t, 10*time.Second, "--json", "dump", good1, fifo, good2)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (the FIFO's usage class)", code)
+	}
+	docs := decodeJSONList[jsonDocument](t, out)
+	if len(docs) != 3 {
+		t.Fatalf("%d elements, want 3 (good, fifo, good)\n%s", len(docs), out)
+	}
+	if docs[0].Error != nil || docs[2].Error != nil {
+		t.Errorf("good files should parse; got [0]=%+v [2]=%+v", docs[0].Error, docs[2].Error)
+	}
+	if docs[1].Error == nil || docs[1].Error.Code != "usage" {
+		t.Errorf("the FIFO element should be a usage error, got %+v", docs[1].Error)
+	}
+	if docs[1].File != fifo {
+		t.Errorf("FIFO element file = %q, want %q", docs[1].File, fifo)
+	}
+}
+
 // TestFifoRejectedByNonExpandingCommands (#3, A1): caps and diff parse operands
 // directly (no expandPaths), yet still reject a FIFO fast as a usage error (exit 2)
 // with no hang - the checkRegularInputs guard, not just the library backstop.

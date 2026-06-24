@@ -121,10 +121,17 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report.BytesAfter = lay.total
 
 	result := buildResult(edited, d, newInfo, newID3, lay)
+	// A year-anchored date with no numeric year has no v2.3 TYER/TORY representation and
+	// dropped from the id3 chunk - but WAV also writes it to the native LIST/INFO (ICRD =
+	// RecordingDate), where it survives verbatim. The shared helper warns only when the
+	// value is gone from the WHOLE output (result re-projects every container), so a date
+	// that round-trips in INFO neither warns nor fails --strict. See id3.AppendDroppedDateWarnings.
+	report.Warnings = id3.AppendDroppedDateWarnings(report.Warnings, id3Info, result.Tags)
 	// Collapse to a true no-op when the containers re-projected to base's values
 	// (a numeric genre, a dropped empty); an INFO strip or encoder-stamp removal stays
-	// a real write. See core.DowngradeNoOp.
-	if np := core.DowngradeNoOp(core.FormatWAV, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), stripINFO || stampToStrip); np != nil {
+	// a real write. DowngradeNoOp carries the value-dropped warning forward so a dropped
+	// date still surfaces on a no-op.
+	if np := core.DowngradeNoOp(core.FormatWAV, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), stripINFO || stampToStrip, report.Warnings); np != nil {
 		return np, nil
 	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil

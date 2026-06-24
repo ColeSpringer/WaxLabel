@@ -85,46 +85,53 @@ func parseInput(ctx context.Context, realPath, origPath string, extra ...wl.Pars
 // A stat or walk failure on an argument leaves it in place for the per-file loop
 // to classify, rather than aborting the whole run.
 //
-// Without recursive, a directory argument cannot be processed, so expandPaths
-// returns a usage error (exit 2) naming --recursive instead of letting the
-// directory fall through to the parser's ErrInvalidData (exit 4); this fixes both
-// the exit class and discoverability in one place. A stat error on an argument
-// (e.g. a nonexistent path) still passes through, so the per-file loop classifies
-// it as not-found (exit 6) - only a confirmed directory is rejected here.
+// A directory argument without --recursive, and a directly-named non-regular file
+// (FIFO/device/socket) in either mode, are file-dependent failures: rather than
+// aborting the whole batch, expandPaths leaves the path in the returned list and
+// records its error in pathErrors, keyed by the path. The caller checks that map as
+// the first step of its per-file work, so the bad path surfaces as one per-element
+// error (carrying file under --json) while the good inputs still process - matching
+// how a parse or I/O failure is already reported per element. Recording the FIFO
+// rather than opening it is load-bearing: a per-file os.Open on a FIFO would block.
+// Only a genuinely invocation-level failure - an empty operand (checkEmptyOperands) -
+// is returned as the 4th value err, which still aborts the whole run.
 //
 // On a recursive walk it also returns the count of regular files passed over for
 // not matching a known audio extension, across every directory argument. The caller
 // surfaces that count as a text-mode note. The non-recursive path walks nothing, so
 // its count is always zero.
-func expandPaths(paths []string, recursive bool) ([]string, int, error) {
+func expandPaths(paths []string, recursive bool) (expanded []string, skipped int, pathErrors map[string]error, err error) {
 	// An empty operand is a usage error (exit 2), caught before any stat/parse so it
 	// does not reach the library's ErrInvalidData (exit 4) fallback and outrank a real
-	// not-found in a multi-file run. Covers dump/verify/plan/set/lint.
+	// not-found in a multi-file run. Covers dump/verify/plan/set/lint. This is the one
+	// invocation-level abort; everything else below is recorded per path instead.
 	if err := checkEmptyOperands(paths...); err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
+	pathErrors = map[string]error{}
 	if !recursive {
 		for _, p := range paths {
 			if p == stdinArg {
 				continue
 			}
 			// One stat per arg, reused below: a directory has more specific guidance
-			// (--recursive walks it), so reject it first with that message; otherwise
+			// (--recursive walks it), so record that message first; otherwise
 			// checkRegularFileInfo catches a FIFO/device/socket before the per-file parse
 			// opens it (which, for a FIFO, would block). These commands stream stdin, so
-			// the non-regular hint may suggest "-" (acceptsStdin true).
+			// the non-regular hint may suggest "-" (acceptsStdin true). Both are recorded
+			// per path so the rest of the batch still runs.
 			info, statErr := os.Stat(p)
 			if statErr == nil && info.IsDir() {
-				return nil, 0, usagef("%s is a directory; pass --recursive to walk it for audio files", p)
+				pathErrors[p] = usagef("%s is a directory; pass --recursive to walk it for audio files", p)
+				continue
 			}
-			if err := checkRegularFileInfo(p, info, statErr, true); err != nil {
-				return nil, 0, err
+			if cerr := checkRegularFileInfo(p, info, statErr, true); cerr != nil {
+				pathErrors[p] = cerr
 			}
 		}
-		return paths, 0, nil
+		return paths, 0, pathErrors, nil
 	}
 	var out []string
-	skipped := 0
 	for _, p := range paths {
 		if p == stdinArg {
 			out = append(out, p)
@@ -132,13 +139,13 @@ func expandPaths(paths []string, recursive bool) ([]string, int, error) {
 		}
 		info, err := os.Stat(p)
 		if err != nil || !info.IsDir() {
-			// Not a directory (or unstattable): reject a directly-named FIFO/device/socket
-			// here too (reusing the stat above), so it cannot wedge the batch and so the
-			// recursive and non-recursive branches agree (both exit 2). A regular file or a
-			// nonexistent path passes through to the per-file loop, which parses it or
+			// Not a directory (or unstattable): record a directly-named FIFO/device/socket
+			// as that path's per-element error (reusing the stat above) rather than wedging
+			// the batch, so the recursive and non-recursive branches agree. A regular file
+			// or a nonexistent path passes through to the per-file loop, which parses it or
 			// classifies it as not-found.
 			if cerr := checkRegularFileInfo(p, info, err, true); cerr != nil {
-				return nil, 0, cerr
+				pathErrors[p] = cerr
 			}
 			out = append(out, p)
 			continue
@@ -147,7 +154,27 @@ func expandPaths(paths []string, recursive bool) ([]string, int, error) {
 		out = append(out, files...)
 		skipped += sk
 	}
-	return out, skipped, nil
+	return out, skipped, pathErrors, nil
+}
+
+// guardPathErrors wraps a per-file compute so a path carrying a recorded pre-flight
+// error from expandPaths (a directory without --recursive, or a directly-named
+// FIFO/device/socket) returns that error as the literal first step - before any
+// os.Open or parse - so it surfaces as that path's per-element error instead of
+// aborting the batch. Centralizing the check is what guarantees the load-bearing
+// invariant for every caller: a recorded FIFO is never opened (its read would
+// block). dump/verify/plan/lint wrap their compute with this. A new per-file command
+// should do the same; only a command with a bespoke write loop that cannot express a
+// (T, error) compute - as set does - checks pathErrors inline instead, and must do so
+// as the first statement of the loop body to preserve the never-open-a-FIFO invariant.
+func guardPathErrors[T any](pathErrors map[string]error, compute func(context.Context, string) (T, error)) func(context.Context, string) (T, error) {
+	return func(ctx context.Context, path string) (T, error) {
+		if e := pathErrors[path]; e != nil {
+			var zero T
+			return zero, e
+		}
+		return compute(ctx, path)
+	}
 }
 
 // checkRegularFile rejects a path that exists but is not a regular file - a FIFO,
@@ -245,6 +272,9 @@ func isWalkCandidate(path string, d fs.DirEntry) bool {
 	case d.Type().IsRegular():
 		return true
 	case d.Type()&fs.ModeSymlink != 0:
+		// A dangling link (Stat fails) is kept on purpose - returning true here lets the
+		// per-file loop report it as not-found rather than dropping it silently (see the
+		// doc comment); only a link resolving to a non-regular file is excluded.
 		info, err := os.Stat(path)
 		return err != nil || info.Mode().IsRegular()
 	default:

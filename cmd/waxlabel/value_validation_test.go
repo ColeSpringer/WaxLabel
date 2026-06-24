@@ -37,10 +37,11 @@ func TestLintAndNoteAgree(t *testing.T) {
 		t.Run(c.kv, func(t *testing.T) {
 			t.Parallel()
 			file := copyFixture(t, sampleFLAC)
-			// The note half writes to stderr ("... written as-is"); the lint half to stdout
-			// (a "malformed-*" finding code). They must reach the same verdict.
+			// The note half writes to stderr ("... kept as text where the format supports
+			// it"); the lint half to stdout (a "malformed-*" finding code). They must reach
+			// the same verdict.
 			_, noteErr, _ := runCLI(t, "set", file, "--set", c.kv)
-			noted := strings.Contains(noteErr, "written as-is")
+			noted := strings.Contains(noteErr, "kept as text")
 			lintOut, _, _ := runCLI(t, "lint", file)
 			linted := strings.Contains(lintOut, "malformed-")
 			if noted != c.malformed {

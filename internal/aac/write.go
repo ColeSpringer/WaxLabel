@@ -68,7 +68,6 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		report.Warnings = core.Warn(report.Warnings, core.WarnID3MultiValue,
 			"a multi-value field was written NUL-separated in ID3v2.3, a de-facto extension some readers do not split")
 	}
-
 	// Assemble the output: the new ID3v2 tag, then the verbatim ADTS stream.
 	audioLen := d.audioEnd - d.audioStart
 	segs := []bits.Segment{bits.Lit(tagBytes), bits.Copy(d.audioStart, audioLen)}
@@ -77,9 +76,15 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report.BytesAfter = newSize
 
 	result := buildResult(edited, d, srcTag.WithFrames(newFrames), tagBytes, audioLen, newSize)
-	// Collapse to a true no-op when the ID3 rebuild re-projected to base's values;
-	// AAC has no strip flag, so nothing structural forces the write. See core.DowngradeNoOp.
-	if np := core.DowngradeNoOp(core.FormatAAC, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), false); np != nil {
+	// A year-anchored date with no numeric year has no v2.3 TYER/TORY representation and
+	// was dropped; warn unless the value survives in another container (AAC has none, and
+	// a new tag is v2.4 anyway, so this fires only on a preserved v2.3 tag that dropped a
+	// date). See id3.AppendDroppedDateWarnings.
+	report.Warnings = id3.AppendDroppedDateWarnings(report.Warnings, info, result.Tags)
+	// Collapse to a true no-op when the ID3 rebuild re-projected to base's values; AAC has
+	// no strip flag, so nothing structural forces the write. DowngradeNoOp carries the
+	// value-dropped warning forward so a dropped date still surfaces on a no-op.
+	if np := core.DowngradeNoOp(core.FormatAAC, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), false, report.Warnings); np != nil {
 		return np, nil
 	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil

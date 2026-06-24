@@ -34,16 +34,16 @@ func newDumpCmd() *cobra.Command {
 				return err
 			}
 			defer cleanup()
-			paths, skipped, err := expandPaths(args, recursive)
+			paths, skipped, pathErrors, err := expandPaths(args, recursive)
 			if err != nil {
 				return err
 			}
 			noteNoFiles(cmd.ErrOrStderr(), paths)
 			noteSkipped(cmd.ErrOrStderr(), skipped, jsonMode(cmd))
 			return perFile(cmd, paths,
-				func(ctx context.Context, path string) (*wl.Document, error) {
+				guardPathErrors(pathErrors, func(ctx context.Context, path string) (*wl.Document, error) {
 					return parseInput(ctx, realOf(path), path)
-				},
+				}),
 				func(path string, doc *wl.Document) any { return toJSONDocument(path, doc, native) },
 				func(w io.Writer, path string, doc *wl.Document) { renderDocument(w, path, doc, native) },
 				false,

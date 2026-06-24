@@ -116,9 +116,15 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report.BytesAfter = lay.total
 
 	result := buildResult(edited, d, newText, newID3, lay)
+	// A year-anchored date with no numeric year has no v2.3 TYER/TORY representation and
+	// was dropped; warn unless the value survives in another container (AIFF's native text
+	// chunks store no date, so this fires whenever a v2.3 chunk dropped one). See
+	// id3.AppendDroppedDateWarnings.
+	report.Warnings = id3.AppendDroppedDateWarnings(report.Warnings, id3Info, result.Tags)
 	// Collapse to a true no-op when the containers re-projected to base's values
-	// (e.g. a numeric genre); a native-text strip stays a real write. See core.DowngradeNoOp.
-	if np := core.DowngradeNoOp(core.FormatAIFF, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), stripText); np != nil {
+	// (e.g. a numeric genre); a native-text strip stays a real write. DowngradeNoOp carries
+	// the value-dropped warning forward so a dropped date still surfaces on a no-op.
+	if np := core.DowngradeNoOp(core.FormatAIFF, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), stripText, report.Warnings); np != nil {
 		return np, nil
 	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil

@@ -151,14 +151,28 @@ func NoOpPlan(report WriteReport, size int64, result *Media) *WritePlan {
 // codec's already-mutated report: NoOpPlan resets Operations and BytesAfter but
 // not Warnings or PaddingAfter, so reusing a report a partial render had stamped
 // with a warning or padding would leak it onto a plan that writes nothing.
-func DowngradeNoOp(format Format, size int64, base, result *Media, tagsEqual, structuralChange bool) *WritePlan {
+//
+// Because NoOpPlan starts from a warning-free report, DowngradeNoOp re-attaches the
+// INPUT-rejection warnings from priorWarnings (the codec's pre-downgrade report
+// warnings): a value the format could not store (value-dropped) or a cover whose
+// role/description it drops (picture-metadata-dropped). The edit produced no byte
+// change precisely because the input was rejected, so the rejection still has to
+// surface and --strict still escalate - the exact silent-drop class a codec would
+// otherwise reintroduce by forgetting to re-attach. Only those input-describing codes
+// carry; a write-mechanics warning (e.g. a v2.3 multi-value NUL-separation) describes a
+// write that did not happen and is correctly dropped. Centralizing this here means no
+// codec re-attaches by hand, so none can silently forget; a codec that stamps no such
+// warning (FLAC/Ogg) passes its report.Warnings harmlessly, since nothing matches.
+func DowngradeNoOp(format Format, size int64, base, result *Media, tagsEqual, structuralChange bool, priorWarnings []Warning) *WritePlan {
 	if structuralChange || !tagsEqual {
 		return nil
 	}
 	if !EqualPictures(base.Pictures, result.Pictures) || !EqualChapters(base.Chapters, result.Chapters) {
 		return nil
 	}
-	return NoOpPlan(WriteReport{Format: format, BytesBefore: size}, size, base)
+	np := NoOpPlan(WriteReport{Format: format, BytesBefore: size}, size, base)
+	np.Report.Warnings = append(np.Report.Warnings, WarningsWithCode(priorWarnings, WarnValueDropped, WarnPictureMetadataDropped)...)
+	return np
 }
 
 // codec registry. Codecs register from their package init; the root package

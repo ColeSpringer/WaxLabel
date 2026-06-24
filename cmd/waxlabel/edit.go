@@ -53,6 +53,11 @@ type editFlags struct {
 	padding   string
 	noPadding bool
 
+	// numericGenre writes a recognized genre as its numeric reference (ID3's TCON)
+	// instead of its name, via wl.WithNumericGenre(). It is a write-encoding choice,
+	// so - like --force - it resolves in writeOptions() and is shared by plan and set.
+	numericGenre bool
+
 	strict bool // promote the unknown-key and single-valued-multi notes to errors
 }
 
@@ -75,6 +80,7 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringVar(&e.legacy, "legacy", "", "legacy-tag policy: preserve|strip")
 	f.StringVar(&e.padding, "padding", "", "reserve at least N bytes of padding after the metadata (FLAC default 8192; MP3/AAC/MP4 reuse the existing region; 0 writes none, like --no-padding)")
 	f.BoolVar(&e.noPadding, "no-padding", false, "write no padding after the metadata (no effect on Ogg/WAV/AIFF/Matroska, which have no padding region)")
+	f.BoolVar(&e.numericGenre, "numeric-genre", false, "write a recognized genre as its numeric reference where the format supports one (ID3's TCON); by default the canonical genre name is written")
 	f.BoolVar(&e.strict, "strict", false, "fail (exit 2) on an unknown key or a single-valued key given multiple values, instead of noting it")
 }
 
@@ -459,6 +465,12 @@ func (e *editFlags) writeOptions() ([]wl.WriteOption, bool, error) {
 	if e.force {
 		opts = append(opts, wl.WithUnrecognizedPictures())
 	}
+	// --numeric-genre writes a recognized genre as its numeric reference (ID3's
+	// TCON) instead of the name. Resolved here beside --force so both plan and set
+	// pick it up through compile() without per-caller wiring.
+	if e.numericGenre {
+		opts = append(opts, wl.WithNumericGenre())
+	}
 	return opts, padFlag, nil
 }
 
@@ -678,8 +690,16 @@ func dedupUnknownKeys(keys []tag.Key) []tag.Key {
 // printed before that inevitable failure. The --strict guardrail is deliberately
 // not gated on this - a strict-key misuse is a usage error checked upfront,
 // independent of the file.
-func anyInputExists(realOf func(string) string, paths []string) bool {
+//
+// A path expandPaths recorded as a pre-flight failure (a directory without
+// --recursive, or a directly-named FIFO/device) is skipped: it is not an actionable
+// input - the per-file loop turns it into a per-element error and writes nothing - so
+// a directory-only run must not print a value note that claims the value was written.
+func anyInputExists(realOf func(string) string, paths []string, pathErrors map[string]error) bool {
 	for _, p := range paths {
+		if pathErrors[p] != nil {
+			continue
+		}
 		if p == stdinArg {
 			return true
 		}
@@ -699,11 +719,11 @@ func anyInputExists(realOf func(string) string, paths []string) bool {
 // and the value notes) wait until an input actually exists, so a lone missing file
 // is not lectured about its key before the not-found error (L7). Centralizing this
 // keeps the strict-vs-exists policy single-sourced across set and plan.
-func notifyInvocationNotes(errOut io.Writer, ce *compiledEdit, ef *editFlags, realOf func(string) string, paths []string, asJSON bool) error {
+func notifyInvocationNotes(errOut io.Writer, ce *compiledEdit, ef *editFlags, realOf func(string) string, paths []string, pathErrors map[string]error, asJSON bool) error {
 	if len(paths) == 0 {
 		return nil
 	}
-	exists := anyInputExists(realOf, paths)
+	exists := anyInputExists(realOf, paths, pathErrors)
 	if ef.strict || exists {
 		if err := notifyUnknownKeys(errOut, ce, ef.strict, asJSON); err != nil {
 			return err
@@ -824,17 +844,22 @@ func notifyValueNotes(errOut io.Writer, e *editFlags, asJSON bool) {
 }
 
 // noteMalformedValue emits the M1 note when v does not match the typed shape of its
-// key's category. The value is always still written (the writer is faithful), so this
-// only advises. It reads the same [tag.ValidatorFor] registry [Document.Lint] consumes,
-// so the set-time note and the linter cannot disagree on what a malformed value is (F4):
-// numeric, date, boolean, MEDIATYPE, and ReplayGain. The note is a single line, so the
-// key and value are run through [tag.SanitizeLine] - they are the user's own --set
-// input, but a control byte must not reach the terminal raw and an embedded newline must
-// not forge a line. (SanitizeLine, not SanitizeText, to match the single-line convention.)
+// key's category. This is only a shape advisory, emitted before any file is parsed, so
+// it cannot know the target codec: most formats keep the value as text, but a
+// format-specific encoding may still drop it (e.g. an ID3v2.3 date with no numeric
+// year, which has no TYER/TORY representation) - so the note no longer promises
+// unconditional persistence, and the per-file value-dropped warning is the
+// authoritative drop signal. It reads the same [tag.ValidatorFor] registry
+// [Document.Lint] consumes, so the set-time note and the linter cannot disagree on what
+// a malformed value is (F4): numeric, date, boolean, MEDIATYPE, and ReplayGain. The
+// note is a single line, so the key and value are run through [tag.SanitizeLine] - they
+// are the user's own --set input, but a control byte must not reach the terminal raw
+// and an embedded newline must not forge a line. (SanitizeLine, not SanitizeText, to
+// match the single-line convention.)
 func noteMalformedValue(errOut io.Writer, k tag.Key, v string) {
 	ks, vs := tag.SanitizeLine(string(k)), tag.SanitizeLine(v)
 	if val, ok := tag.ValidatorFor(k); ok && !val.Valid(k, v) {
-		fmt.Fprintf(errOut, "note: %s=%s %s; written as-is\n", ks, vs, val.NoteDetail)
+		fmt.Fprintf(errOut, "note: %s=%s %s; kept as text where the format supports it\n", ks, vs, val.NoteDetail)
 		return
 	}
 	// A numeric value that parses but is negative round-trips faithfully, so it is not

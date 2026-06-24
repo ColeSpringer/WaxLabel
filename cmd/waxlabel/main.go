@@ -1,8 +1,8 @@
 // Command waxlabel is the command-line interface to the WaxLabel audio-metadata
 // library. It reads and writes audio-file tags and embedded cover art for the
-// formats the library supports (FLAC today; more as codecs land) and exists to
-// dogfood the library end to end - every command maps directly onto the public
-// API.
+// formats the library supports (FLAC, Ogg Vorbis/Opus, MP3, WAV, MP4/M4A/M4B,
+// AAC/ADTS, Matroska/WebM, and AIFF/AIFF-C) and exists to dogfood the library
+// end to end - every command maps directly onto the public API.
 //
 // Usage:
 //

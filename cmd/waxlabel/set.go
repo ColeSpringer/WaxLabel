@@ -90,7 +90,7 @@ func newSetCmd() *cobra.Command {
 			}
 			defer cleanup()
 
-			paths, skipped, err := expandPaths(args, recursive)
+			paths, skipped, pathErrors, err := expandPaths(args, recursive)
 			if err != nil {
 				return err
 			}
@@ -111,7 +111,7 @@ func newSetCmd() *cobra.Command {
 			// Invocation-level guardrails and notes run only once there is at least one
 			// path to act on, so a note never claims a value was "written" on a run the
 			// directory (U1) or empty-walk (U4) checks then abort with nothing written.
-			if err := notifyInvocationNotes(cmd.ErrOrStderr(), ce, &ef, realOf, paths, jsonMode(cmd)); err != nil {
+			if err := notifyInvocationNotes(cmd.ErrOrStderr(), ce, &ef, realOf, paths, pathErrors, jsonMode(cmd)); err != nil {
 				return err
 			}
 			// An unquoted value with spaces (--set TITLE=Two Words) leaves a stray bare-word
@@ -122,7 +122,7 @@ func newSetCmd() *cobra.Command {
 			if err := refuseUnquotedValue(&ef, realOf, args, true); err != nil {
 				return err
 			}
-			return runSet(cmd, paths, realOf, ce, output, ef.strict, quiet, verify)
+			return runSet(cmd, paths, pathErrors, realOf, ce, output, ef.strict, quiet, verify)
 		},
 	}
 	ef.bind(cmd)
@@ -211,7 +211,7 @@ func checkSetStdin(args []string, output string) error {
 // outcome are suppressed while errors and the summary remain, so a single-file
 // `set -q` is silent on success. The returned error is alreadyRendered, preserving
 // the exit class without rendering a second time.
-func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *compiledEdit, output string, strict, quiet, verify bool) error {
+func runSet(cmd *cobra.Command, paths []string, pathErrors map[string]error, realOf func(string) string, ce *compiledEdit, output string, strict, quiet, verify bool) error {
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 	asJSON := jsonMode(cmd)
 	// quiet is a text-mode presentation choice; under --json the stream shape is
@@ -250,6 +250,15 @@ func runSet(cmd *cobra.Command, paths []string, realOf func(string) string, ce *
 	}
 
 	for _, path := range paths {
+		// A path expandPaths recorded as a pre-flight failure (a directory without
+		// --recursive, or a directly-named FIFO/device) is this file's per-element error,
+		// checked before any parse or write - so the rest of the batch still saves and a
+		// recorded FIFO is never opened (its read would block). This mirrors the read
+		// commands' guardPathErrors; set has its own write loop, so it checks inline.
+		if e := pathErrors[path]; e != nil {
+			fail(path, e)
+			continue
+		}
 		doc, plan, err := ce.prepare(cmd.Context(), realOf(path), path)
 		if err != nil {
 			fail(path, err)

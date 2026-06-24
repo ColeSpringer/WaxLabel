@@ -106,9 +106,14 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report.BytesAfter = newSize
 
 	result := buildResult(edited, d, srcTag.WithFrames(newFrames), tagBytes, audioLen, apeLen, id3v1Len, newSize)
+	// A year-anchored date with no numeric year has no v2.3 TYER/TORY representation and
+	// was dropped; warn unless the value survives in another container (MP3 has none, so
+	// this always warns when a date dropped). See id3.AppendDroppedDateWarnings.
+	report.Warnings = id3.AppendDroppedDateWarnings(report.Warnings, info, result.Tags)
 	// Collapse to a true no-op when the ID3 rebuild re-projected to base's values
-	// (e.g. GENRE=17 -> Rock); a legacy strip stays a real write. See core.DowngradeNoOp.
-	if np := core.DowngradeNoOp(core.FormatMP3, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), legacyChange); np != nil {
+	// (e.g. GENRE=17 -> Rock); a legacy strip stays a real write. DowngradeNoOp carries
+	// the value-dropped warning forward so a dropped date still surfaces on a no-op.
+	if np := core.DowngradeNoOp(core.FormatMP3, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), legacyChange, report.Warnings); np != nil {
 		return np, nil
 	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
