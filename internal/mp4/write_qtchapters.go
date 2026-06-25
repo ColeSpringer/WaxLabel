@@ -59,8 +59,8 @@ func planChaptersQT(d *doc, edited *core.Media, needIlst bool, opts core.WriteOp
 		}
 	}
 
-	total := d.size + plan.totalDelta + int64(len(plan.newMdat))
-	if err := checkSizes([]atomRef{*d.moov}, plan.totalDelta); err != nil {
+	total := d.size + plan.fileDelta + int64(len(plan.newMdat))
+	if err := checkSizes([]atomRef{*d.moov}, plan.moovDelta); err != nil {
 		return nil, err
 	}
 
@@ -74,7 +74,7 @@ func planChaptersQT(d *doc, edited *core.Media, needIlst bool, opts core.WriteOp
 
 	report.BytesAfter = total
 	report.PaddingAfter = reg.freeContent
-	report.Operations = qtChapterOps(d, edited, needIlst, clearing, plan.totalDelta)
+	report.Operations = qtChapterOps(d, edited, needIlst, clearing, plan.moovDelta)
 	if n := truncatedTitleCount(edited.Chapters); n > 0 {
 		report.Warnings = core.Warn(report.Warnings, core.WarnChapterTitleTruncated,
 			fmt.Sprintf("%d chapter title(s) trimmed to %d bytes (the chapter-title length limit)", n, titleByteMax))
@@ -91,9 +91,23 @@ func planChaptersQT(d *doc, edited *core.Media, needIlst bool, opts core.WriteOp
 // qtPlan is the resolved QuickTime-chapter rewrite: the edit list and the derived
 // facts both the segment writer and the result builder need.
 type qtPlan struct {
-	edits      []edit
-	totalDelta int64
-	newMdat    []byte // the appended chapter-sample mdat (nil when clearing)
+	edits []edit
+	// moovDelta is the moov-INTERNAL length change (the chapter trak, tref, mvhd
+	// next-track-id, and udta edits). It drives the moov size patch, the audio
+	// offset-table shift, and every netShift of a pre-existing structure - all of
+	// which relocate by the moov's growth, not the whole file's.
+	moovDelta int64
+	// fileDelta is the whole-file length change before the new chapter mdat is appended:
+	// moovDelta plus the negative delta of a reclaimed trailing chapter mdat. It drives
+	// the file size and the appended mdat's offset.
+	fileDelta int64
+	newMdat   []byte // the appended chapter-sample mdat (nil when clearing)
+
+	// reclaimed is the prior standalone trailing chapter-sample mdat this rewrite
+	// deletes (nil when none is reclaimed - a first chapter write, or a layout the
+	// safety gate rejects). buildQTChapterResult skips it so the result equals a
+	// fresh parse of the output.
+	reclaimed *atomRef
 
 	resultItems []item
 
@@ -176,27 +190,44 @@ func assembleQT(d *doc, edited *core.Media, reg udtaRegion, clearing bool, mts u
 	// Output offset fixups for the audio chunk-offset tables and the moov size. The
 	// replaced chapter track's own table is skipped - it is being rewritten
 	// wholesale (and its old samples are abandoned), so patching it would both
-	// overlap that edit and point at dead bytes.
-	p.totalDelta = sumDelta(edits)
+	// overlap that edit and point at dead bytes. These all relocate by the
+	// moov-internal delta, so they are computed before the trailing mdat reclaim.
+	p.moovDelta = sumDelta(edits)
 	for _, t := range d.offTables {
 		if withinChapTrak(d, t) {
 			continue
 		}
-		e, err := offsetPatch(t, p.totalDelta, d.moov.offset)
+		e, err := offsetPatch(t, p.moovDelta, d.moov.offset)
 		if err != nil {
 			return nil, err
 		}
 		edits = append(edits, e)
 	}
-	if p.totalDelta != 0 {
-		edits = append(edits, sizePatch(*d.moov, p.totalDelta))
+	if p.moovDelta != 0 {
+		edits = append(edits, sizePatch(*d.moov, p.moovDelta))
 	}
+
+	// Reclaim the prior chapter-sample mdat. A chapter rewrite appends a fresh mdat
+	// at end-of-file; without this, the previous one is abandoned and accumulates
+	// (and an old build's orphans would be hashed as audio). The delete edit is added
+	// LAST - after the moov size patch and the audio offset shift - because the
+	// reclaimed mdat sits after the moov: it must not inflate the moov size or shift
+	// the audio tables, and being trailing it changes no pre-existing structure's
+	// netShift. Gated so only a strictly-safe standalone trailing mdat is touched.
+	if rec, ok := standaloneTrailingChapterMdat(d); ok {
+		edits = append(edits, edit{off: rec.offset, oldLen: rec.size}) // nil lit = delete
+		p.reclaimed = &rec
+	}
+	// fileDelta is the whole-file change (moovDelta minus any reclaimed mdat); the
+	// moov-internal patches above stay on moovDelta, so the two diverge here.
+	p.fileDelta = sumDelta(edits)
 	p.edits = edits
 
 	// Derived output offsets (computed before backpatching, which preserves
-	// lengths). The chapter samples land in a fresh mdat at end-of-file.
+	// lengths). The chapter samples land in a fresh mdat at end-of-file - after the
+	// reclaimed mdat's deletion, so its offset uses the whole-file fileDelta.
 	if !clearing {
-		p.mdatPayloadOff = d.size + p.totalDelta + 8
+		p.mdatPayloadOff = d.size + p.fileDelta + 8
 		backpatchStco(edits[chapEditIdx].lit, stcoOffInTrak, p.mdatPayloadOff, co64)
 		p.chapStcoCo64 = co64
 		// The new chapter track lands either replacing the old one or at the udta
@@ -227,7 +258,7 @@ func assembleQT(d *doc, edited *core.Media, reg udtaRegion, clearing bool, mts u
 // refs are carried so a further edit needs no source.
 func buildQTChapterResult(edited *core.Media, base *doc, p *qtPlan) *core.Media {
 	clearing := len(edited.Chapters) == 0
-	total := base.size + p.totalDelta + int64(len(p.newMdat))
+	total := base.size + p.fileDelta + int64(len(p.newMdat))
 	nd := &doc{
 		size:        total,
 		cfg:         base.cfg,
@@ -249,9 +280,9 @@ func buildQTChapterResult(edited *core.Media, base *doc, p *qtPlan) *core.Media 
 		nd.chapterConflict = !chaptersAgree(p.chplChapters, nd.chapters)
 	}
 
-	// moov grows by the one combined delta; everything else relocates by netShift.
+	// moov grows by the moov-internal delta; everything else relocates by netShift.
 	moov := *base.moov
-	moov.size += p.totalDelta
+	moov.size += p.moovDelta
 	nd.moov = &moov
 
 	for _, t := range base.offTables {
@@ -274,15 +305,21 @@ func buildQTChapterResult(edited *core.Media, base *doc, p *qtPlan) *core.Media 
 	}
 
 	for _, m := range base.mdats {
+		if p.reclaimed != nil && m[0] == p.reclaimed.payloadOff() {
+			continue // the reclaimed trailing chapter mdat is deleted from the output
+		}
 		nd.mdats = append(nd.mdats, [2]int64{m[0] + netShift(p.edits, m[0]), m[1]})
 	}
 	if p.newMdat != nil {
-		nd.mdats = append(nd.mdats, [2]int64{base.size + p.totalDelta + 8, int64(len(p.newMdat)) - 8})
+		nd.mdats = append(nd.mdats, [2]int64{base.size + p.fileDelta + 8, int64(len(p.newMdat)) - 8})
 	}
 
 	for _, a := range base.topLevel {
+		if p.reclaimed != nil && a.offset == p.reclaimed.offset {
+			continue // the reclaimed trailing chapter mdat is deleted from the output
+		}
 		if a.offset == base.moov.offset {
-			a.size += p.totalDelta
+			a.size += p.moovDelta
 		} else {
 			a.offset += netShift(p.edits, a.offset)
 		}
@@ -290,7 +327,7 @@ func buildQTChapterResult(edited *core.Media, base *doc, p *qtPlan) *core.Media 
 	}
 	if p.newMdat != nil {
 		nd.topLevel = append(nd.topLevel, atomRef{
-			name: atomName("mdat"), offset: base.size + p.totalDelta, headerLen: 8, size: int64(len(p.newMdat)),
+			name: atomName("mdat"), offset: base.size + p.fileDelta, headerLen: 8, size: int64(len(p.newMdat)),
 		})
 	}
 
@@ -511,6 +548,40 @@ func backpatchStco(trak []byte, off int, value int64, co64 bool) {
 // separately.
 func withinChapTrak(d *doc, t offsetTable) bool {
 	return d.chapTrak != nil && t.offset >= d.chapTrak.offset && t.offset < d.chapTrak.end()
+}
+
+// standaloneTrailingChapterMdat returns the prior chapter-sample mdat that is safe to
+// reclaim on a replace/clear, and whether one was found. All conditions must hold: the
+// existing chapter track has EXACTLY ONE chunk offset, that offset is the payload start
+// of a top-level mdat, that mdat ends at end-of-file, AND the mdat holds NO other track's
+// chunk offset (no audio, video, or subtitle samples). Together they prove the mdat holds
+// only this chapter track's samples and is the last atom, so deleting it shifts nothing
+// earlier (every netShift stays correct) and reclaims no other media. A foreign multi-chunk
+// chapter track, a chapter mdat shared with another track (a chapter chunk at the front of
+// an mdat that also stores audio/video/text samples), or a non-trailing one is left intact -
+// essence stays correct regardless via the parse-side rule. There is nothing to reclaim on a
+// first chapter write (no chapTrak), where trackOffTable returns false.
+func standaloneTrailingChapterMdat(d *doc) (atomRef, bool) {
+	t, ok := trackOffTable(d, d.chapTrak)
+	if !ok || len(t.entries) != 1 {
+		return atomRef{}, false
+	}
+	chapOff := int64(t.entries[0])
+	for _, a := range d.topLevel {
+		if a.name != atomName("mdat") || a.payloadOff() != chapOff || a.end() != d.size {
+			continue
+		}
+		// Refuse an mdat that also carries another track's samples: the chapter chunk may
+		// sit at the front of an mdat shared with a second audio, video, or subtitle track,
+		// and reclaiming (deleting) it would drop that media too, leaving its stco/co64
+		// dangling into the appended chapter mdat. The check spans every non-chapter track,
+		// not just the first audio one, so a multi-track file is handled correctly.
+		if mdatHoldsNonChapterChunk(d, [2]int64{a.payloadOff(), a.end()}) {
+			return atomRef{}, false
+		}
+		return a, true
+	}
+	return atomRef{}, false
 }
 
 // sumDelta totals the length change of an edit list.

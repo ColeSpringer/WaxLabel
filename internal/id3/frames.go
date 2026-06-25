@@ -78,7 +78,7 @@ const (
 // padding (a zero ID byte), an invalid identifier, or truncation. major selects
 // the header geometry; tagUnsync (v2.4) forces per-frame de-unsynchronisation
 // even when a frame does not set its own flag.
-func parseFrames(body []byte, major byte, tagUnsync bool) []Frame {
+func parseFrames(body []byte, major byte, tagUnsync bool, maxElements int) ([]Frame, error) {
 	var frames []Frame
 	pos := 0
 	hdr := 10
@@ -89,6 +89,12 @@ func parseFrames(body []byte, major byte, tagUnsync bool) []Frame {
 	for pos+hdr <= len(body) {
 		if body[pos] == 0 {
 			break // padding
+		}
+		// The body is already bounded by the caller's MaxAllocBytes, but a body full
+		// of minimum-size (6/10 B) frames still amplifies into one Frame descriptor
+		// each; cap the count so a hostile tag cannot accumulate them to OOM.
+		if err := bits.CheckElementCap(len(frames), maxElements, "ID3 frames"); err != nil {
+			return nil, err
 		}
 		id := string(body[pos : pos+idLen])
 		if !validFrameID(id) {
@@ -119,7 +125,7 @@ func parseFrames(body []byte, major byte, tagUnsync bool) []Frame {
 
 		frames = append(frames, decodeFrame(id, flags, raw, major, tagUnsync))
 	}
-	return frames
+	return frames, nil
 }
 
 // decodeFrame normalises one raw frame: it upgrades a v2.2 identifier, converts

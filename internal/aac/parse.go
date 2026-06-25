@@ -24,7 +24,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	var warnings []core.Warning
 
 	// Optional front ID3v2 tag (same authoritative container as MP3).
-	tg, id3Len, err := id3.ReadFront(src, size, limit)
+	tg, id3Len, err := id3.ReadFront(src, size, limit, opts.Limits.MaxElements)
 	if err != nil {
 		return nil, err
 	}
@@ -38,7 +38,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 
 	// Audio properties from the first ADTS frame header. A stream too short to
 	// hold a fixed header, or a malformed one, leaves the track config zero;
-	// detection already required a valid header for a real .aac, so this is only
+	// detection already required a valid header for a real.aac, so this is only
 	// defensive. Read only when a full header is present - a shorter slice can
 	// never decode, so there is nothing to gain from reading it.
 	if avail := d.audioEnd - d.audioStart; avail >= int64(adtsHeaderSize) {
@@ -60,7 +60,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			d.track = buildTrack(h, samples, audioBytes)
 		}
 	}
-	// A non-empty essence region that decodes no whole ADTS frame is a .aac that is
+	// A non-empty essence region that decodes no whole ADTS frame is a.aac that is
 	// not actually ADTS audio (random bytes, zeros, a renamed file). buildTrack
 	// leaves TotalSamples at zero on every no-frame path - too short for a header, a
 	// ReadSlice failure, a header that does not decode, or a valid-looking header

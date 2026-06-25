@@ -154,6 +154,28 @@ func TestSetAddChapterAppendsToExisting(t *testing.T) {
 	}
 }
 
+func TestSetAddChapterDedupsExactDuplicates(t *testing.T) {
+	// A repeated --add-chapter (same Start/Title) must be written once, not twice,
+	// while two distinct titles at the same timestamp are both kept.
+	file := copyFixture(t, sampleM4B)
+	if _, _, code := runCLI(t, "set", file, "--clear-chapters",
+		"--add-chapter", "0:00=Intro",
+		"--add-chapter", "1:00=Verse", "--add-chapter", "1:00=Verse", // exact duplicate -> one
+		"--add-chapter", "1:00=Bridge"); code != 0 { // same start, different title -> kept
+		t.Fatalf("set --add-chapter exit != 0")
+	}
+	out, _, _ := runCLI(t, "dump", file)
+	if !strings.Contains(out, "chapters (3)") {
+		t.Errorf("expected 3 chapters (the duplicate Verse deduped, Bridge kept); got:\n%s", out)
+	}
+	if strings.Count(out, "Verse") != 1 {
+		t.Errorf("the duplicate Verse should appear once; got:\n%s", out)
+	}
+	if !strings.Contains(out, "Bridge") {
+		t.Errorf("a distinct title at the same start must be kept; got:\n%s", out)
+	}
+}
+
 func TestSetClearChapters(t *testing.T) {
 	file := copyFixture(t, sampleM4B)
 	if _, _, code := runCLI(t, "set", file, "--clear-chapters"); code != 0 {
@@ -177,8 +199,7 @@ func TestPlanAddChapterShowsOperation(t *testing.T) {
 }
 
 func TestSetAddChapterOnFLACErrors(t *testing.T) {
-	// B2 integration: a chapter-incapable format hard-fails (exit 3) rather than
-	// silently dropping the chapters.
+	// A chapter-incapable format hard-fails rather than silently dropping the chapters.
 	file := copyFixture(t, sampleFLAC)
 	_, errOut, code := runCLI(t, "set", file, "--add-chapter", "0:00=Intro")
 	if code != 3 {

@@ -41,8 +41,8 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// LegacyStrip consolidates tags into the id3 chunk by dropping LIST/INFO.
 	stripINFO := opts.Legacy == core.LegacyStrip && infoPresent
 	// A WithStripEncoderStamp edit removes a transcoder-stamp ISFT that no canonical
-	// tag edit reaches (E1). It is a real change even when the canonical tags are
-	// untouched (the #2 repro: a WAV carrying only an inherited ISFT), so it must
+	// tag edit reaches. It is a real change even when the canonical tags are
+	// untouched (for example, a WAV carrying only an inherited ISFT), so it must
 	// defeat the no-op fast path below and force an INFO rewrite.
 	stampToStrip := opts.StripEncoderStamp && infoPresent && hasTranscoderISFT(d.info)
 
@@ -121,12 +121,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report.BytesAfter = lay.total
 
 	result := buildResult(edited, d, newInfo, newID3, lay)
-	// A year-anchored date with no numeric year has no v2.3 TYER/TORY representation and
-	// dropped from the id3 chunk - but WAV also writes it to the native LIST/INFO (ICRD =
-	// RecordingDate), where it survives verbatim. The shared helper warns only when the
-	// value is gone from the WHOLE output (result re-projects every container), so a date
-	// that round-trips in INFO neither warns nor fails --strict. See id3.AppendDroppedDateWarnings.
-	report.Warnings = id3.AppendDroppedDateWarnings(report.Warnings, id3Info, result.Tags)
+	// Surface ID3 rebuild losses only when the file as a whole loses them. WAV also writes
+	// RecordingDate to native LIST/INFO ICRD, where it can survive verbatim; the shared
+	// helper checks the re-projected output before warning.
+	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, id3Info, result.Tags)
 	// Collapse to a true no-op when the containers re-projected to base's values
 	// (a numeric genre, a dropped empty); an INFO strip or encoder-stamp removal stays
 	// a real write. DowngradeNoOp carries the value-dropped warning forward so a dropped

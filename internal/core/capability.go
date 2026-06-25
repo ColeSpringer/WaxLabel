@@ -61,6 +61,32 @@ type Capability struct {
 	PictureLoss PictureLoss
 }
 
+// NumericGenreCapability returns the GENRE override for codecs that can store a
+// recognized genre as a numeric reference under --numeric-genre. Reading the value back
+// yields the canonical genre name, so spelling or case may change. The capability is
+// conservative: some values still write losslessly, but capability data is value-blind.
+// Edit warnings compare the written result to the requested value before warning, while
+// transfer reports grade AccessPartial as Lossy without a per-value check.
+func NumericGenreCapability(repr string) Capability {
+	return Capability{
+		Read: AccessFull, Write: AccessPartial,
+		Representation: repr,
+		Fidelity:       "a recognized genre is stored as a numeric reference and re-read as its canonical name",
+	}
+}
+
+// OriginalDateV23Capability returns the ORIGINALDATE override for an ID3-backed codec
+// writing ID3v2.3. Its TORY frame holds only the year, so YYYY-MM or YYYY-MM-DD values
+// lose sub-year precision. Keeping this in one helper keeps the ID3-backed codecs in
+// agreement; v2.4 writes the full TDOR string and needs no override.
+func OriginalDateV23Capability() Capability {
+	return Capability{
+		Read: AccessFull, Write: AccessPartial,
+		Representation: "ID3v2.3 TORY (year only)",
+		Fidelity:       "ID3v2.3 TORY stores the year only",
+	}
+}
+
 // Capabilities describes what a format (under a given set of options) can do.
 // Field returns per-key detail; the format-level fields cover the common case.
 type Capabilities struct {

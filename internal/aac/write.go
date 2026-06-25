@@ -76,11 +76,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report.BytesAfter = newSize
 
 	result := buildResult(edited, d, srcTag.WithFrames(newFrames), tagBytes, audioLen, newSize)
-	// A year-anchored date with no numeric year has no v2.3 TYER/TORY representation and
-	// was dropped; warn unless the value survives in another container (AAC has none, and
-	// a new tag is v2.4 anyway, so this fires only on a preserved v2.3 tag that dropped a
-	// date). See id3.AppendDroppedDateWarnings.
-	report.Warnings = id3.AppendDroppedDateWarnings(report.Warnings, info, result.Tags)
+	// Surface ID3 rebuild losses the bytes cannot show: a date without a numeric year, or
+	// a v2.3 date whose month/time precision could not be stored. AAC has no other tag
+	// container, and fresh tags are v2.4, so this only fires on a preserved v2.3 tag.
+	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, info, result.Tags)
 	// Collapse to a true no-op when the ID3 rebuild re-projected to base's values; AAC has
 	// no strip flag, so nothing structural forces the write. DowngradeNoOp carries the
 	// value-dropped warning forward so a dropped date still surfaces on a no-op.

@@ -29,7 +29,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	var warnings []core.Warning
 
 	// Front ID3v2 tag.
-	tg, id3Len, err := id3.ReadFront(src, size, limit)
+	tg, id3Len, err := id3.ReadFront(src, size, limit, opts.Limits.MaxElements)
 	if err != nil {
 		return nil, err
 	}
@@ -91,13 +91,13 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 					"fewer audio frames than the Xing/Info header declares; file may be truncated")
 			}
 		} else if d.audioEnd > d.audioStart {
-			// A non-empty essence region that yields no MPEG frame is a .mp3 that is not
+			// A non-empty essence region that yields no MPEG frame is a.mp3 that is not
 			// actually MPEG audio (text, a renamed file). Surface it under the shared
 			// no-audio code so dump/lint flag it instead of accepting it silently. This is
 			// distinct from the zero-essence no-audio in the root parse (which fires only
 			// when the range is empty), so the two never double-warn. The parser leaves the
-			// bytes intact (the file stays dumpable and usable as a copy SOURCE), but this
-			// warning is the H1 no-audio gate's signal: set/plan and verify now refuse the
+			// bytes intact (the file stays dumpable and usable as a copy source), but this
+			// warning is the no-audio gate's signal: set/plan and verify now refuse the
 			// file (ErrInvalidData, exit 4) rather than rewrite metadata around non-audio
 			// bytes or hash them as essence.
 			warnings = core.Warn(warnings, core.WarnNoAudioFrames,

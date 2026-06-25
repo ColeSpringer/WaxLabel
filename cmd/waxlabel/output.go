@@ -217,7 +217,7 @@ type jsonErrorEntry struct {
 // errorEntry builds the shared per-file error element from a classified error,
 // carrying its hint (e.g. source-changed's "re-run" pointer) into the JSON.
 func errorEntry(path string, c classifiedError) jsonErrorEntry {
-	return jsonErrorEntry{SchemaVersion: schemaVersion, File: path, Error: jsonErrBody{Code: c.code, Message: c.message, Hint: c.hint}}
+	return jsonErrorEntry{SchemaVersion: schemaVersion, File: jsonFileName(path), Error: jsonErrBody{Code: c.code, Message: c.message, Hint: c.hint}}
 }
 
 // humanDuration formats a duration as H:MM:SS or M:SS. Sub-minute clips are
@@ -319,8 +319,8 @@ func emitJSONList(w io.Writer, items []any) error {
 // listCommandAnnotation marks a command whose --json output is a JSON array (one
 // element per input, via perFile/emitJSONList above). dispatch reads it to wrap a
 // pre-flight error (a bad flag, missing args, or a dir without --recursive) in the
-// same single-element array shape, so `dump --json … | jq '.[]'` keeps working even
-// when the command fails before its per-file loop (E2). It travels with the command
+// same single-element array shape, so `dump --json... | jq '.[]'` keeps working even
+// when the command fails before its per-file loop. It travels with the command
 // at construction (markListCommand), so adding a list command later sets this in its
 // own constructor rather than in a second hand-maintained list the renderer would
 // have to track.
@@ -338,7 +338,7 @@ func markListCommand(cmd *cobra.Command) *cobra.Command {
 
 // emitsJSONList reports whether the command args resolve to emits its --json output as
 // a list (one element per input), so dispatch wraps a pre-flight error in the same
-// single-element array shape (E2). It resolves the command with cobra's own Find -
+// single-element array shape. It resolves the command with cobra's own Find -
 // which already handles "--", a flag before the subcommand, and the --format value -
 // rather than re-scanning raw args, then reads the list-command annotation. caps is a
 // list command over files but answers a single object under --format (a format query,
@@ -380,7 +380,7 @@ func hasFlag(args []string, name string) bool {
 func noteNoFiles(w io.Writer, paths []string) {
 	if len(paths) == 0 {
 		// A "note:" prefix (not "waxlabel:") so this exit-0 advisory does not read as a
-		// failure line - the run succeeded, there was simply nothing to do (M5).
+		// failure line - the run succeeded, there was simply nothing to do.
 		fmt.Fprintln(w, "note: no audio files found")
 	}
 }
@@ -402,11 +402,10 @@ func noteSkipped(w io.Writer, skipped int, asJSON bool) {
 // fields are set only at the cobra-origin sites that dead-end with no guidance (an
 // unknown flag, a bad arg count, an unknown command): cmd is the resolved command
 // path for the help hint (empty falls back to "waxlabel"), wantsHint requests the
-// "run '<cmd> --help' for usage" pointer (M5), multiline marks the message as
-// trusted multi-line cobra text whose newlines/tabs must be preserved on render
-// (the "Did you mean this?" suggestion block - H1), and hint carries an explicit
-// hint line that overrides the wantsHint pointer (the leading-dash "use --" guidance
-// on an unknown flag/shorthand - U5). The hand-written usagef messages leave all
+// "run '<cmd> --help' for usage" pointer, multiline marks the message as
+// trusted multi-line cobra text whose newlines/tabs must be preserved on render,
+// and hint carries an explicit hint line that overrides the wantsHint pointer (for
+// example, leading-dash path guidance on an unknown flag/shorthand). The hand-written usagef messages leave all
 // four zero: they are single-line and already self-document.
 type usageError struct {
 	msg       string
@@ -447,7 +446,7 @@ type jsonError struct {
 // renderError writes the terminal error as JSON or as a human-readable line,
 // using one shared classification for both. emitList wraps the JSON envelope in a
 // single-element array for a list command, so its pre-flight failures keep the
-// documented array shape that `jq '.[]'` relies on (E2); a non-list command (and the
+// documented array shape that `jq '.[]'` relies on; a non-list command (and the
 // human path) is unaffected.
 func renderError(w io.Writer, jsonMode, emitList bool, err error) {
 	if err == nil {
@@ -469,9 +468,9 @@ func renderError(w io.Writer, jsonMode, emitList bool, err error) {
 	// Pick the sanitizer by message shape. A single-line message can embed a
 	// file-derived path (e.g. "<path>: no such file or directory" from a hostile
 	// glob/walk arg), so SanitizeLine escapes \n/\t too, blocking line-forgery. A multiline message
-	// is trusted cobra text (the "unknown command ... Did you mean this?" block), so
+	// is trusted cobra text (the "unknown command... Did you mean this?" block), so
 	// SanitizeText preserves its real newlines/tabs while still escaping ESC/CSI/BEL/
-	// CR - otherwise the suggestion shows literal \x0a/\x09 (H1). The output boundary
+	// CR - otherwise the suggestion shows literal \x0a/\x09. The output boundary
 	// backstops control bytes either way; the JSON branch above keeps c.message raw.
 	sanitize := tag.SanitizeLine
 	if c.multiline {
@@ -575,7 +574,7 @@ func classifyError(err error) classifiedError {
 		pe, _ := err.(*fs.PathError) // guaranteed by isNotFoundPathError
 		// Per-file "<path>: no such file or directory", matching the line dump/set/verify
 		// already print, so the human and --json not-found phrasing agree across commands
-		// (M3).
+		//.
 		c.exitCode, c.code, c.message = 6, "not-found", pe.Path+": no such file or directory"
 	case isLocalIOError(err):
 		c.exitCode, c.code = 6, "io"
@@ -592,7 +591,7 @@ func isUsageError(err error) bool {
 // aggregate exit code, most-severe first. The aggregate reports the worst class
 // seen, not merely the first file's error: a genuinely broken file (invalid-data)
 // must outrank a wrong path (not-found), which must outrank a bad invocation
-// (usage). The numeric exit code is deliberately NOT this order - numeric-max would
+// (usage). The numeric exit code deliberately does not follow this order; numeric-max would
 // let not-found/io (6) outrank invalid-data (4), i.e. "you typed a bad filename"
 // would beat "this file is corrupt". Keyed off classifyError(err).code so it tracks
 // the vocabulary the exit-code table documents; an unrecognized code ranks lowest
@@ -663,14 +662,14 @@ func exitCodeFor(err error) int { return classifyError(err).exitCode }
 
 // dashPathHint guides a user who passed a leading-dash file path (which cobra reads
 // as an unknown flag) to the "--" end-of-flags marker. Phrased conditionally ("if
-// this was a file path") so it never misleads even when shown (U5). Shared by the
+// this was a file path") so it never misleads even when shown. Shared by the
 // flag-error path (wrapUsageErrors' FlagErrorFunc, the route cobra actually takes for
 // a flag-parse failure) and normalizeExecuteError's backstop, so both read alike.
 const dashPathHint = "if this was a file path beginning with '-', put '--' before it (e.g. waxlabel dump -- -track.flac)"
 
 // looksLikePath reports whether s has the shape of a file path rather than a bare
 // flag/word token: it carries a path separator or a known audio extension. A dotted
-// token like "log.level=debug" is NOT a path (a bare dot is not enough). It is the
+// token like "log.level=debug" is not a path (a bare dot is not enough). It is the
 // single path-shape test shared by looksLikePathFlag and looksLikeBareWord, so the two
 // cannot drift.
 func looksLikePath(s string) bool {
@@ -689,7 +688,7 @@ func looksLikePathFlag(msg string) bool {
 
 // looksLikeBareWord reports whether s is a plain word (not path-shaped) - what an
 // unquoted value fragment looks like (the "Words" left over from `--set TITLE=Two
-// Words`) rather than a real file path. It backs the quoting hint (#1).
+// Words`) rather than a real file path. It backs the quoting hint.
 func looksLikeBareWord(s string) bool {
 	return !looksLikePath(s)
 }
@@ -707,14 +706,14 @@ func normalizeExecuteError(err error) error {
 			switch p {
 			case "unknown command", "unknown subcommand":
 				// Cobra's trusted multi-line "Did you mean this?" block: preserve its
-				// newlines/tabs (H1) and point at the command list (M5). cmd stays empty so
+				// newlines/tabs and point at the command list. cmd stays empty so
 				// the hint falls back to "waxlabel" - an unknown command should list the
 				// commands, not a subcommand's flags.
 				ue.multiline, ue.wantsHint = true, true
 			case "unknown flag", "unknown shorthand":
 				// Backstop for a flag error that reaches here untyped; in practice cobra
 				// routes flag-parse failures through FlagErrorFunc (wrapUsageErrors), which
-				// attaches dashPathHint the same way (U5). Only when the token looks like a
+				// attaches dashPathHint the same way. Only when the token looks like a
 				// path - else a genuine typo is left to the help hint.
 				if looksLikePathFlag(msg) {
 					ue.hint = dashPathHint

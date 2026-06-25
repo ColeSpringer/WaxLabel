@@ -69,7 +69,7 @@ func readInputs(stdin io.Reader, paths []string) (realOf func(string) string, cl
 
 // parseInput parses the file at realPath but reports it under origPath's display
 // name, so a buffered-stdin temp path never leaks into the library's
-// "could not identify" error (B1). realPath is the path actually read (the temp
+// "could not identify" error. realPath is the path actually read (the temp
 // file for "-"); origPath is the user's argument ("-" or the real path), which
 // displayName turns into "<stdin>" or a sanitized path. Routing every read
 // command's ParseFile through this one helper keeps the source-name plumbing from
@@ -303,7 +303,25 @@ func walkAudioFiles(root string) ([]string, int) {
 	var out []string
 	skipped := 0
 	_ = filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !isWalkCandidate(path, d) {
+		if err != nil {
+			return nil
+		}
+		// Skip a hidden directory (name begins with ".") and its whole subtree - a.git,
+		//.cache, or the like is not part of a user's media tree. An explicitly-named
+		// hidden root (the directory --recursive points at) is still walked, so only an
+		// interior hidden directory is pruned.
+		if d.IsDir() {
+			if path != walkRoot && strings.HasPrefix(d.Name(), ".") {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		// A hidden file is likewise not picked up, and is not counted as a skipped
+		// candidate (it was deliberately hidden, not an unrecognized media file).
+		if strings.HasPrefix(d.Name(), ".") {
+			return nil
+		}
+		if !isWalkCandidate(path, d) {
 			return nil
 		}
 		if isAudioExtension(filepath.Ext(path)) {

@@ -19,6 +19,7 @@ import (
 	"context"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/id3"
 )
 
 // Codec implements core.Codec for raw AAC (ADTS).
@@ -33,10 +34,10 @@ func (Codec) Format() core.Format  { return core.FormatAAC }
 func (Codec) Extensions() []string { return []string{".aac"} }
 
 // Sniff matches a raw ADTS stream by a valid ADTS frame header at the start. A
-// front ID3v2 tag is intentionally NOT sniffed here: that header is claimed by
+// front ID3v2 tag is intentionally not sniffed here: that header is claimed by
 // MP3, and the root parser disambiguates a leading ID3 by peeking past the tag
 // (detectPastLeadingID3), where this codec's ADTS recognizer then wins for an
-// ID3-prefixed .aac. Sniffing ID3 here too would just create a redundant tie.
+// ID3-prefixed.aac. Sniffing ID3 here too would just create a redundant tie.
 func (Codec) Sniff(header []byte) bool {
 	_, ok := decodeADTS(header)
 	return ok
@@ -51,7 +52,7 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 // and are fully writable, identical to MP3's ID3-backed story; the version is
 // preserved on edit. AAC has no secondary tag container, so there are no legacy
 // conflicts to surface.
-func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabilities {
+func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "ID3v2 frame", Fidelity: "lossless",
@@ -63,16 +64,22 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 	chapters := core.Capability{
 		Read: core.AccessNone, Write: core.AccessNone,
 	}
+	// AAC's front ID3 tag is the only tag store, so numeric genre and v2.3 original-date
+	// reductions follow the shared ID3 capability rules.
+	perField := id3.PerFieldCapabilities(id3.WriteVersionFor(m, core.FormatAAC), opts.NumericGenre, true)
 	// ID3 front-tag padding is grow-only (ReuseOrTarget), identical to MP3: a forced
 	// rewrite can grow the region, but a fit-in-place edit cannot shrink it.
-	return core.NewCapabilities(core.FormatAAC, false, fields, pictures, chapters, core.AccessPartial, nil)
+	return core.NewCapabilities(core.FormatAAC, false, fields, pictures, chapters, core.AccessPartial, perField)
 }
+
+// ID3Tag returns the parsed front ID3 tag, or nil when the file has none.
+func (d *doc) ID3Tag() *id3.Tag { return d.id3 }
 
 // EssenceExtent returns the AAC essence-digest inputs: a versioned extent name
 // and the decoded static stream configuration - object type, sampling-frequency
 // index, and channel configuration - mixed into the hash ahead of the audio.
 //
-// It hashes the decoded static fields, NOT the raw first-header bytes, on
+// It hashes the decoded static fields, not the raw first-header bytes, on
 // purpose: bytes 3-5 of an ADTS header carry the per-frame frame_length, so two
 // otherwise-identical streams whose first frame happens to differ in length
 // would hash differently if the raw header were used. The static config bits are

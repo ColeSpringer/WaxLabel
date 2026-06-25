@@ -1,12 +1,34 @@
 package vorbis
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/colespringer/waxlabel/tag"
+	"github.com/colespringer/waxlabel/waxerr"
 )
+
+// TestParseCommentListCountCapped verifies that ParseCommentList stops at maxElements
+// with ErrSizeTooLarge. The comment count is an attacker-controlled uint32, and an Ogg
+// comment packet is bounded only by the alloc limit, so a run of minimum entries would
+// otherwise amplify into one Comment descriptor each. A zero cap stays unbounded.
+func TestParseCommentListCountCapped(t *testing.T) {
+	const max = 1000
+	entries := make([]Comment, max+50)
+	for i := range entries {
+		entries[i] = Comment{Name: "X", Value: ""} // renders "X=", so it is stored and counted
+	}
+	body := RenderCommentList("v", entries)
+
+	if _, _, _, err := ParseCommentList(body, 1<<20, max); !errors.Is(err, waxerr.ErrSizeTooLarge) {
+		t.Fatalf("over the %d cap: err = %v, want ErrSizeTooLarge", max, err)
+	}
+	if _, cs, _, err := ParseCommentList(body, 1<<20, 0); err != nil || len(cs) != max+50 {
+		t.Fatalf("uncapped (0): got %d comments, err = %v; want all %d", len(cs), err, max+50)
+	}
+}
 
 // TestParseCommentListReportsConsumed checks the bytes-consumed return value the
 // Ogg codecs rely on to find the Vorbis framing bit / preserve Opus padding. The
@@ -20,7 +42,7 @@ func TestParseCommentListReportsConsumed(t *testing.T) {
 	tail := append([]byte{byte(len(extra)), 0, 0, 0}, extra...) // a valid length-prefixed entry
 	in := append(slices.Clone(body), tail...)
 
-	vendor, cs, n, err := ParseCommentList(in, 1<<20)
+	vendor, cs, n, err := ParseCommentList(in, 1<<20, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

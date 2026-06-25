@@ -135,3 +135,29 @@ func TestScanPagesRejectsNonOgg(t *testing.T) {
 		t.Error("expected an error for non-Ogg input")
 	}
 }
+
+// TestScanPagesManyPagesUncapped guards against someone later applying the
+// metadata element cap (bits.Limits.MaxElements, default 100000) to the Ogg page
+// loop. One apage is recorded per audio page, so the count scales with audio
+// duration - a long Opus/Vorbis stream legitimately has far more than the cap.
+// scanPages must accept them all.
+func TestScanPagesManyPagesUncapped(t *testing.T) {
+	const n = 120000 // exceeds the 100000 metadata cap; an audio-granularity loop must not honor it
+	lacing := []byte{1}
+	body := []byte{0xAA}
+	buf := make([]byte, 0, n*(pageFixedHdr+len(lacing)+len(body)))
+	for i := 0; i < n; i++ {
+		buf = append(buf, buildPage(0, uint64(i), 0xCAFEBABE, uint32(i), lacing, body)...)
+	}
+	src := core.BytesSource(buf)
+	pages, end, err := scanPages(context.Background(), src, int64(len(buf)), bits.DefaultLimits.MaxAllocBytes)
+	if err != nil {
+		t.Fatalf("scanPages on %d pages: %v", n, err)
+	}
+	if len(pages) != n {
+		t.Fatalf("scanned %d pages, want %d", len(pages), n)
+	}
+	if end != int64(len(buf)) {
+		t.Errorf("scan ended at %d, want %d", end, len(buf))
+	}
+}

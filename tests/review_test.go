@@ -26,6 +26,36 @@ func flacWithTwoVC() []byte {
 	return append(out, 0xFF, 0xF8)
 }
 
+// TestFLACReuseLargePaddingNoSpuriousClamp verifies that a large existing padding region
+// is reused exactly by splitting it across multiple legal FLAC padding blocks. ReuseInPlace
+// should preserve the audio offset and must not warn padding-clamped when the user did not
+// request new oversized padding.
+func TestFLACReuseLargePaddingNoSpuriousClamp(t *testing.T) {
+	data := []byte("fLaC")
+	data = append(data, flacBlock(0, false, validStreamInfo())...)
+	data = append(data, flacBlock(4, false, renderVC("TITLE=x"))...)
+	data = append(data, flacBlock(1, false, make([]byte, 10<<20))...) // ~10 MiB PADDING
+	data = append(data, flacBlock(1, true, make([]byte, 10<<20))...)  // ~10 MiB PADDING (last)
+	data = append(data, 0xFF, 0xF8)                                   // a frame sync so audio is detected
+
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "y").Prepare()
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	for _, w := range plan.Report().Warnings {
+		if w.Code == wl.WarnPaddingClamped {
+			t.Errorf("an in-place edit of a large-padding FLAC must not warn padding-clamped; got %v", plan.Report().Warnings)
+		}
+	}
+	out := applyToBytes(t, data, plan)
+	if len(out) != len(data) {
+		t.Errorf("reuse-in-place must preserve the region size (audio offset stable): out=%d bytes, in=%d", len(out), len(data))
+	}
+	if got := mustParseBytes(t, out).Fields().Title; got != "y" {
+		t.Errorf("title after edit = %q, want y", got)
+	}
+}
+
 // flacBlock renders a metadata block (header + body).
 func flacBlock(code byte, last bool, body []byte) []byte {
 	h := []byte{code, byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}
@@ -54,7 +84,7 @@ func flacWithComments(entries ...string) []byte {
 	return append(out, 0xFF, 0xF8)
 }
 
-// #1: an oversized picture must be rejected, not silently truncated.
+// An oversized picture must be rejected, not silently truncated.
 func TestPictureTooLargeRejected(t *testing.T) {
 	doc := mustParseBytes(t, flacWithComments("TITLE=x"))
 	big := make([]byte, 16<<20) // 16 MiB body exceeds the 24-bit block length
@@ -63,7 +93,7 @@ func TestPictureTooLargeRejected(t *testing.T) {
 	if !errors.Is(err, waxerr.ErrPictureTooLarge) {
 		t.Errorf("err = %v, want ErrPictureTooLarge", err)
 	}
-	// The size is humanized for the message (M2): "picture block is 16.0 MiB (max
+	// The size is humanized for the message: "picture block is 16.0 MiB (max
 	// 16.0 MiB)", not a raw byte count.
 	if err != nil && !strings.Contains(err.Error(), "MiB") {
 		t.Errorf("error should humanize the size, got %q", err.Error())
@@ -93,8 +123,8 @@ func TestDiffSanitizesHostileKey(t *testing.T) {
 	}
 }
 
-// #2: a "TAG" sequence inside the metadata region must not be mistaken for a
-// trailing ID3v1 tag (which would make the audio length negative).
+// A "TAG" sequence inside the metadata region must not be mistaken for a trailing
+// ID3v1 tag, which would make the audio length negative.
 func TestTrailingID3FalsePositiveGuard(t *testing.T) {
 	ctx := context.Background()
 	// PADDING body of 130 bytes with "TAG" at file offset size-128, well inside
@@ -132,8 +162,8 @@ func TestTrailingID3FalsePositiveGuard(t *testing.T) {
 	}
 }
 
-// #4: two native fields mapping to one canonical key with different values is a
-// real conflict and must surface in the family view and Lint.
+// Two native fields mapping to one canonical key with different values are a real
+// conflict and must surface in the family view and Lint.
 func TestConflictingFamiliesDetected(t *testing.T) {
 	doc := mustParseBytes(t, flacWithComments("DATE=2020", "YEAR=2019"))
 
@@ -164,8 +194,8 @@ func TestRepeatedFieldIsNotConflict(t *testing.T) {
 	}
 }
 
-// #1: the structural fingerprint must be used in save-back so an in-place
-// metadata edit that preserves size, mtime, and inode is still caught.
+// The structural fingerprint must be used in save-back so an in-place metadata edit
+// that preserves size, mtime, and inode is still caught.
 func TestFingerprintDetectsInPlaceMetadataChange(t *testing.T) {
 	path := copyToTemp(t, sampleFLAC)
 	doc := mustParseFile(t, path)
@@ -200,8 +230,8 @@ func TestFingerprintDetectsInPlaceMetadataChange(t *testing.T) {
 	}
 }
 
-// #2: a key set present-but-empty (which Vorbis cannot store) must be absent in
-// the returned Document, matching a re-parse of the written bytes.
+// A key set present-but-empty (which Vorbis cannot store) must be absent in the returned
+// Document, matching a re-parse of the written bytes.
 func TestPresentEmptyKeyAbsentInResult(t *testing.T) {
 	data := readFixture(t, sampleFLAC) // has Title="Original Title"
 	doc := mustParseBytes(t, data)
@@ -225,7 +255,7 @@ func TestPresentEmptyKeyAbsentInResult(t *testing.T) {
 	}
 }
 
-// #3: an invalid key must be rejected at Prepare, not written verbatim.
+// An invalid key must be rejected at Prepare, not written verbatim.
 func TestInvalidKeyRejectedOnWrite(t *testing.T) {
 	doc := mustParseBytes(t, flacWithComments("TITLE=x"))
 	if _, err := doc.Edit().Set(tag.Key("ARTIST=HACK"), "v").Prepare(); !errors.Is(err, waxerr.ErrInvalidKey) {
@@ -233,8 +263,8 @@ func TestInvalidKeyRejectedOnWrite(t *testing.T) {
 	}
 }
 
-// #4: a picture-only edit must preserve extra VORBIS_COMMENT blocks; a tag edit
-// collapses them (the documented behavior).
+// A picture-only edit must preserve extra VORBIS_COMMENT blocks; a tag edit collapses
+// them as documented.
 func TestExtraVorbisBlocksPreservedOnNonTagEdit(t *testing.T) {
 	data := flacWithTwoVC()
 
@@ -263,8 +293,8 @@ func TestExtraVorbisBlocksPreservedOnNonTagEdit(t *testing.T) {
 	})
 }
 
-// #5: SaveAsFile to a new path should produce a conventional 0644 file, not the
-// 0600 that os.CreateTemp leaves.
+// SaveAsFile to a new path should produce a conventional 0644 file, not the 0600 that
+// os.CreateTemp leaves.
 func TestSaveAsFilePermissions(t *testing.T) {
 	doc := mustParseFile(t, sampleFLAC)
 	out := filepath.Join(t.TempDir(), "out.flac")

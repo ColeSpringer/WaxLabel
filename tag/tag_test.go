@@ -299,14 +299,77 @@ func TestNumericAndDateKeySets(t *testing.T) {
 }
 
 func TestPerformersRoundTrip(t *testing.T) {
-	in := map[string][]string{"guitar": {"Foo"}, "": {"Bar"}}
-	formatted := formatPerformers(in)
-	out := parsePerformers(formatted)
-	if !slices.Equal(out["guitar"], []string{"Foo"}) {
-		t.Errorf("guitar = %v", out["guitar"])
+	in := []PerformerCredit{{Name: "Foo", Role: "guitar"}, {Name: "Bar"}}
+	out := parsePerformers(formatPerformers(in))
+	if len(out) != len(in) {
+		t.Fatalf("round-trip length = %d, want %d", len(out), len(in))
 	}
-	if !slices.Equal(out[""], []string{"Bar"}) {
-		t.Errorf("unqualified = %v", out[""])
+	for i := range in {
+		if out[i] != in[i] { // PerformerCredit is comparable, so no reflect needed
+			t.Errorf("performer %d = %+v, want %+v", i, out[i], in[i])
+		}
+	}
+}
+
+// TestPerformersPreserveOrder verifies that a multi-valued PERFORMER's order is significant and
+// must survive Project -> Patch -> Apply unchanged. The old map-keyed-by-role projection
+// re-sorted it.
+func TestPerformersPreserveOrder(t *testing.T) {
+	values := []string{"Zoe (vocals)", "Amy (guitar)", "Bob (drums)"}
+	ts := NewTagSet()
+	ts.Set(Performer, values...)
+
+	got := Project(ts).Patch().Apply(NewTagSet())
+	out, _ := got.Get(Performer)
+	if !slices.Equal(out, values) {
+		t.Errorf("PERFORMER order not preserved: got %v, want %v", out, values)
+	}
+}
+
+// TestPerformersTrimSurroundingWhitespace: incidental whitespace around a PERFORMER
+// value must not hide the "(role)" suffix (a trailing space before the value end) nor
+// stick to the parsed name. The native bytes are preserved separately; this only cleans
+// the typed projection.
+func TestPerformersTrimSurroundingWhitespace(t *testing.T) {
+	cases := []struct {
+		value string
+		want  PerformerCredit
+	}{
+		{"John Doe (vocals) ", PerformerCredit{Name: "John Doe", Role: "vocals"}}, // trailing space still splits
+		{"  Foo (bar)  ", PerformerCredit{Name: "Foo", Role: "bar"}},
+		{" Solo Artist ", PerformerCredit{Name: "Solo Artist"}}, // padded bare name trimmed
+	}
+	for _, c := range cases {
+		got := parsePerformers([]string{c.value})
+		if len(got) != 1 || got[0] != c.want {
+			t.Errorf("parsePerformers(%q) = %+v, want [%+v]", c.value, got, c.want)
+		}
+	}
+}
+
+// TestPerformersParenthesizedValues verifies that a fully-parenthesized value has no name to
+// split a role from, so it must be kept whole and re-emit verbatim rather than being
+// mangled (the old splitter dropped the parentheses or split an empty name).
+func TestPerformersParenthesizedValues(t *testing.T) {
+	cases := []struct {
+		value string
+		want  PerformerCredit
+	}{
+		{"Foo (guitar)", PerformerCredit{Name: "Foo", Role: "guitar"}},
+		{"(note)", PerformerCredit{Name: "(note)"}},
+		{"()", PerformerCredit{Name: "()"}},
+		{"Name ()", PerformerCredit{Name: "Name ()"}},
+		{"Bare", PerformerCredit{Name: "Bare"}},
+	}
+	for _, c := range cases {
+		got := parsePerformers([]string{c.value})
+		if len(got) != 1 || got[0] != c.want {
+			t.Errorf("parsePerformers(%q) = %+v, want [%+v]", c.value, got, c.want)
+			continue
+		}
+		if rt := formatPerformers(got); len(rt) != 1 || rt[0] != c.value {
+			t.Errorf("round-trip %q -> %v (not verbatim)", c.value, rt)
+		}
 	}
 }
 

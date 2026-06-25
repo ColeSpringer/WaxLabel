@@ -203,8 +203,12 @@ func chapterDeltas(chapters []core.Chapter, mts uint32, movieDuration uint64) []
 		default:
 			next = starts[i] + uint64(mts) // a one-second tail when nothing else bounds it
 		}
-		if next < starts[i] {
-			next = starts[i]
+		// Guarantee every chapter spans at least one timescale unit: two chapters at
+		// the same start, or a last chapter the movie duration does not extend, would
+		// otherwise encode a zero-length sample (End == Start). One unit is the smallest
+		// representable nonzero duration and keeps starts strictly increasing.
+		if next <= starts[i] {
+			next = starts[i] + 1
 		}
 		deltas[i] = clampU32(next - starts[i])
 	}

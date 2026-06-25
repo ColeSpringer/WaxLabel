@@ -7,25 +7,37 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// decodeAPIC decodes an APIC frame body into a Picture. The layout is:
-// encoding(1) MIME(Latin-1, NUL-terminated) type(1) description(encoded,
-// terminated) data. A malformed frame yields ok=false and is preserved opaque.
-func decodeAPIC(body []byte) (core.Picture, bool) {
+// apicHeader cuts an APIC frame body into its header fields and the remaining image
+// payload. The payload is returned as a sub-slice, not copied. Layout:
+// encoding(1) MIME(Latin-1, NUL-terminated) type(1) description(encoded, terminated)
+// data. It is the shared structural parse behind decodeAPIC (which clones and sniffs
+// the payload) and validAPIC (which does neither).
+func apicHeader(body []byte) (enc byte, mime string, ptype byte, desc string, rest []byte, ok bool) {
 	if len(body) < 4 {
-		return core.Picture{}, false
+		return 0, "", 0, "", nil, false
 	}
-	enc := body[0]
+	enc = body[0]
 	if !validEncoding(enc) {
-		return core.Picture{}, false
+		return 0, "", 0, "", nil, false
 	}
-	rest := body[1:]
-	mime, rest, ok := cutLatin1(rest)
+	rest = body[1:]
+	mime, rest, ok = cutLatin1(rest)
 	if !ok || len(rest) < 1 {
-		return core.Picture{}, false
+		return 0, "", 0, "", nil, false
 	}
-	ptype := rest[0]
+	ptype = rest[0]
 	rest = rest[1:]
-	desc, rest, ok := cutEncoded(enc, rest)
+	desc, rest, ok = cutEncoded(enc, rest)
+	if !ok {
+		return 0, "", 0, "", nil, false
+	}
+	return enc, mime, ptype, desc, rest, true
+}
+
+// decodeAPIC decodes an APIC frame body into a Picture. A malformed frame yields ok=false
+// and is preserved opaque.
+func decodeAPIC(body []byte) (core.Picture, bool) {
+	_, mime, ptype, desc, rest, ok := apicHeader(body)
 	if !ok {
 		return core.Picture{}, false
 	}
@@ -37,6 +49,14 @@ func decodeAPIC(body []byte) (core.Picture, bool) {
 	}
 	p.SniffInto()
 	return p, true
+}
+
+// validAPIC reports whether an APIC frame body is well-formed through its header without
+// cloning or sniffing the potentially large image payload. RebuildFrames uses it to flag
+// a malformed cover it is about to drop.
+func validAPIC(body []byte) bool {
+	_, _, _, _, _, ok := apicHeader(body)
+	return ok
 }
 
 // encodeAPIC renders a Picture as an APIC frame body. The description encoding

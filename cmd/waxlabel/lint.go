@@ -298,7 +298,7 @@ func renderLintFix(w io.Writer, o fixOutcome) {
 		}
 		// Operations render glyph-free, not with a leading "- ": these lines sit directly
 		// below the change lines above, where "- KEY" means a removed key, so a dash here
-		// would read as another removal rather than a structural step (P5).
+		// would read as another removal rather than a structural step.
 		for _, op := range o.operations {
 			fmt.Fprintf(w, "    %s\n", op)
 		}
@@ -351,7 +351,7 @@ type jsonLintFix struct {
 func toJSONLint(path string, findings []wl.Finding) jsonLint {
 	return jsonLint{
 		SchemaVersion: schemaVersion,
-		File:          path,
+		File:          jsonFileName(path),
 		Findings:      toJSONFindings(findings),
 	}
 }
@@ -362,7 +362,7 @@ func toJSONLintFix(o fixOutcome) jsonLintFix {
 	// to-JSON helpers already build non-nil.
 	return jsonLintFix{
 		SchemaVersion: schemaVersion,
-		File:          o.path,
+		File:          jsonFileName(o.path),
 		Changes:       toJSONChanges(o.changes),
 		Operations:    nonNil(o.operations),
 		Remaining:     toJSONFindings(o.remaining),

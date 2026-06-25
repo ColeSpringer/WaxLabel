@@ -101,6 +101,12 @@ func walkAtoms(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limi
 	var out []node
 	off := start
 	for off+8 <= end {
+		// The depth guard's element budget bounds atoms across the whole tree, not per
+		// container, since the guard is shared through recursion. The write path re-walks
+		// with an uncapped guard.
+		if err := depth.Count(); err != nil {
+			return nil, err
+		}
 		head, err := bits.ReadSlice(src, off, 8, limit)
 		if err != nil {
 			return nil, err
@@ -250,3 +256,5 @@ type atomRef struct {
 func (r atomRef) id() string { return string(r.name[:]) }
 
 func (r atomRef) end() int64 { return r.offset + r.size }
+
+func (r atomRef) payloadOff() int64 { return r.offset + r.headerLen }

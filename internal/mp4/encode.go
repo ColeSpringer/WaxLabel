@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/id3"
 	"github.com/colespringer/waxlabel/internal/mapping"
 	"github.com/colespringer/waxlabel/tag"
 )
@@ -16,7 +17,7 @@ import (
 // order derived from the tag set's key order, so the same input and edit produce
 // the same bytes. Number/total pairs (trkn, disk) and pictures (covr) are
 // special-cased; everything else is a text atom (known four-cc) or a freeform.
-func buildItems(edited tag.TagSet, pics []core.Picture, preserved []item) []item {
+func buildItems(edited tag.TagSet, pics []core.Picture, preserved []item, numericGenre bool) []item {
 	var out []item
 	consumed := map[tag.Key]bool{}
 
@@ -50,6 +51,16 @@ func buildItems(edited tag.TagSet, pics []core.Picture, preserved []item) []item
 			if len(vals) == 0 {
 				continue // present-but-empty: nothing to store
 			}
+			// Numeric genre: emit the legacy "gnre" atom (a 1-based ID3v1 index) only
+			// when every value resolves to a standard genre; otherwise the whole field
+			// falls through to the text "\xa9gen" atom so an order-preserving mix of
+			// standard and custom genres is kept verbatim.
+			if key == tag.Genre && numericGenre {
+				if indices, ok := allGenreIndices(vals); ok {
+					out = append(out, gnreItem(indices))
+					continue
+				}
+			}
 			if name, ok := mapping.MP4KeyText(key); ok {
 				out = append(out, textItem(atomName(name), vals))
 			} else {
@@ -72,6 +83,38 @@ func textItem(name [4]byte, vals []string) item {
 		payload = append(payload, renderData(typeUTF8, []byte(v))...)
 	}
 	return item{name: name, payload: payload}
+}
+
+// allGenreIndices resolves every value to its 0-based ID3v1 genre index, reporting
+// false if any value is not a standard genre (so the field stays a text atom). It
+// requires at least one value, mirroring the present-but-empty skip in buildItems.
+func allGenreIndices(vals []string) ([]int, bool) {
+	if len(vals) == 0 {
+		return nil, false
+	}
+	indices := make([]int, 0, len(vals))
+	for _, v := range vals {
+		idx := id3.GenreIndex(v)
+		if idx < 0 {
+			return nil, false
+		}
+		indices = append(indices, idx)
+	}
+	return indices, true
+}
+
+// gnreItem builds the legacy numeric-genre item: one implicit-type (class 0) data
+// atom per genre holding the 1-based ID3v1 index as a big-endian uint16, the exact
+// form decodeGnre reads back (id3.GenreName(n-1)). The implicit type is what makes it
+// a classic "gnre" rather than a UTF-8 text atom.
+func gnreItem(indices []int) item {
+	var payload []byte
+	for _, idx := range indices {
+		var v [2]byte
+		binary.BigEndian.PutUint16(v[:], uint16(idx+1))
+		payload = append(payload, renderData(typeImplicit, v[:])...)
+	}
+	return item{name: atomName("gnre"), payload: payload}
 }
 
 // freeformItem builds a "----" freeform item under the com.apple.iTunes mean.
@@ -168,8 +211,7 @@ func clampUint16(n int) uint16 {
 }
 
 // droppedValue records a canonical (key, value) the iTunes atom encoders cannot
-// represent and therefore silently drop, so the write plan can surface it as a
-// value-dropped warning (F1) rather than losing it with exit 0.
+// represent and would otherwise silently drop.
 type droppedValue struct {
 	Key   tag.Key
 	Value string
@@ -192,6 +234,14 @@ func droppedValues(ts tag.TagSet) []droppedValue {
 	// nothing by design), so skip it before the validity check.
 	if v, ok := ts.First(tag.MediaType); ok && strings.TrimSpace(v) != "" && !tag.ValidMediaTypeValue(tag.MediaType, v) {
 		out = append(out, droppedValue{Key: tag.MediaType, Value: strings.TrimSpace(v)})
+	}
+	// COMPILATION (cpil) is a single boolean byte, so a non-boolean value ("2",
+	// "maybe") cannot be represented: boolItem coerces it to false (0) and the user's
+	// distinct value is silently lost. Flag it the same way, reusing tag.ValidBooleanValue
+	// so the encoder's coercion and the set-time malformed-value note agree on what a
+	// storable boolean is. A recognized spelling ("0"/"true"/...) stores faithfully.
+	if v, ok := ts.First(tag.Compilation); ok && strings.TrimSpace(v) != "" && !tag.ValidBooleanValue(tag.Compilation, v) {
+		out = append(out, droppedValue{Key: tag.Compilation, Value: strings.TrimSpace(v)})
 	}
 	return out
 }

@@ -75,13 +75,13 @@ func newVerifyCmd() *cobra.Command {
 func computeVerify(ctx context.Context, realPath, displayPath string, whole bool) (jsonVerify, error) {
 	doc, err := parseInput(ctx, realPath, displayPath)
 	if err != nil {
-		return jsonVerify{File: displayPath}, err
+		return jsonVerify{File: jsonFileName(displayPath)}, err
 	}
 	essence, err := doc.HashAudioEssence(ctx)
 	if err != nil {
-		return jsonVerify{File: displayPath}, err
+		return jsonVerify{File: jsonFileName(displayPath)}, err
 	}
-	v := jsonVerify{SchemaVersion: schemaVersion, File: displayPath, Essence: essence.String()}
+	v := jsonVerify{SchemaVersion: schemaVersion, File: jsonFileName(displayPath), Essence: essence.String()}
 	if whole {
 		fileSum, err := doc.HashFile(ctx)
 		if err != nil {

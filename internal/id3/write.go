@@ -30,6 +30,26 @@ type RebuildInfo struct {
 	// string) and for values that do carry a year (only the sub-year precision is lost,
 	// which is not a drop). See detectDroppedDates.
 	DroppedDates []tag.Key
+	// ReducedDates lists date keys whose v2.3 rendering silently lost precision finer than
+	// the rendered frames capture: a month with no full date drops to the year (TDAT needs a
+	// full DDMM), and an hour with no minute drops to the date (TIME needs a full HHMM). Each
+	// entry pairs the key with the attempted edited value (e.g. "2021-03", "2021-03-15T10")
+	// for the warning text and the precision-aware suppression. Scoped to RecordingDate;
+	// OriginalDate's v2.3 reductions are reported through the capability-based value-reduced
+	// path (its TORY field is AccessPartial), so listing it here would double-warn. See
+	// detectReducedDates and reducesDatePrecision.
+	ReducedDates []ReducedDate
+	// HasDroppedMalformedPicture is set when a picture edit replaced the APIC frames and
+	// at least one original APIC could not be decoded (a malformed cover). Those raw
+	// bytes are not carried forward, so the loss is surfaced rather than left silent.
+	HasDroppedMalformedPicture bool
+}
+
+// ReducedDate pairs a date key with the value an edit attempted to store before a
+// lower-fidelity v2.3 rendering reduced its precision.
+type ReducedDate struct {
+	Key   tag.Key
+	Value string
 }
 
 // RebuildFrames produces the new frame list for an edited tag, preserving
@@ -71,6 +91,12 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 			if !picturesChanged {
 				out = append(out, f.Clone())
 				continue
+			}
+			// Picture edits replace the original APIC frames with the edited picture set.
+			// If an original APIC has a malformed header, it cannot be projected and will
+			// not be carried forward, so surface that loss.
+			if !validAPIC(f.Body) {
+				info.HasDroppedMalformedPicture = true
 			}
 			if firstAPIC < 0 {
 				firstAPIC = len(out)
@@ -135,6 +161,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	}
 
 	info.DroppedDates = detectDroppedDates(changed, edited, version)
+	info.ReducedDates = detectReducedDates(changed, edited, version)
 	return out, info
 }
 
@@ -501,16 +528,66 @@ func detectDroppedDates(changed map[tag.Key]bool, edited tag.TagSet, version byt
 	return dropped
 }
 
-// AppendDroppedDateWarnings appends a value-dropped warning to ws for each
-// year-anchored date RebuildFrames could not store on a v2.3 tag
-// (RebuildInfo.DroppedDates) - EXCEPT one the output still retains in another
-// container. retained is the re-projected output tag set: a WAV whose LIST/INFO keeps
-// RecordingDate in ICRD even when the id3 TYER drops it is therefore not flagged (and
-// does not fail --strict) on a value that round-trips. WarnValueDropped carries the
-// key so --strict names it and the human/JSON output renders it like MP4's drops. This
-// is the single emission seam the four ID3-backed codecs (mp3/aac/aiff/wav) share, so
-// the message and the native-retention suppression cannot drift across them.
-func AppendDroppedDateWarnings(ws []core.Warning, info RebuildInfo, retained tag.TagSet) []core.Warning {
+// detectReducedDates finds RecordingDate edits whose finer precision a v2.3 tag drops:
+// a month with no full date, or an hour with no minute. OriginalDate is intentionally
+// excluded because the capability path reports its v2.3 TORY reduction and uses different
+// cross-container suppression. Listing it here too would double-warn.
+func detectReducedDates(changed map[tag.Key]bool, edited tag.TagSet, version byte) []ReducedDate {
+	if version >= 4 {
+		return nil
+	}
+	var reduced []ReducedDate
+	k := tag.RecordingDate
+	if changed[k] {
+		if v, _ := edited.First(k); reducesDatePrecision(v) {
+			reduced = append(reduced, ReducedDate{Key: k, Value: v})
+		}
+	}
+	return reduced
+}
+
+// reducesDatePrecision reports whether a v2.3 tag would store iso with less precision
+// than it carries. v2.3 splits a date-time across TYER (year), TDAT (DDMM, needs a full
+// YYYY-MM-DD) and TIME (HHMM, needs YYYY-MM-DDTHH:MM), each all-or-nothing. A value
+// carrying a component the rendered frames cannot capture loses it:
+//   - a month with no full date ("2021-03", non-canonical "2021-3"/"2021-03-1") -> only TYER,
+//     month/day dropped;
+//   - an hour with no minute ("2021-03-15T10") -> TYER+TDAT only, the hour dropped.
+//
+// A bare year, a full date, or a full date-time render losslessly and are excluded. The tool
+// stores values verbatim (no normalization), so the non-canonical forms are reachable too. A
+// value with no extractable year drops entirely and is handled by detectDroppedDates instead.
+func reducesDatePrecision(iso string) bool {
+	if extractDatePart(iso, partYear) == "" {
+		return false
+	}
+	monthLost := hasSubYearPart(iso) && extractDatePart(iso, partDayMonth) == ""
+	hourLost := hasSubDayPart(iso) && extractDatePart(iso, partHourMin) == ""
+	return monthLost || hourLost
+}
+
+// hasSubYearPart reports whether iso carries a month-or-finer component after its 4-digit
+// year: a '-' then at least one digit (so "2021-3", "2021-03", "2021-03-15" do, but a bare
+// "2021" does not). It separates a reducible partial date from a lossless year-only value.
+func hasSubYearPart(iso string) bool {
+	return len(iso) >= 6 && iso[4] == '-' && iso[5] >= '0' && iso[5] <= '9'
+}
+
+// hasSubDayPart reports whether iso carries an hour-or-finer component after a full date: a
+// 'T' (or space) date-time separator then at least one digit past the 10-char YYYY-MM-DD (so
+// "2021-03-15T10" does, but a bare date does not). It separates a reducible partial
+// date-time from a lossless full date.
+func hasSubDayPart(iso string) bool {
+	return len(iso) >= 12 && (iso[10] == 'T' || iso[10] == ' ') && iso[11] >= '0' && iso[11] <= '9'
+}
+
+// AppendRebuildWarnings appends warnings for losses found while rebuilding ID3 frames:
+// dates that render no v2.3 frame at all, dates whose v2.3 TDAT/TIME rendering drops
+// precision, and malformed pictures dropped during a picture edit. Date warnings are
+// suppressed when the re-projected output still retains the attempted value in another
+// container, such as WAV's LIST/INFO ICRD. The keyed warnings let --strict name the field
+// and keep the four ID3-backed codecs' wording and suppression rules aligned.
+func AppendRebuildWarnings(ws []core.Warning, info RebuildInfo, retained tag.TagSet) []core.Warning {
 	for _, k := range info.DroppedDates {
 		if v, _ := retained.First(k); v != "" {
 			continue // retained in another container (e.g. WAV's ICRD); not actually dropped
@@ -518,7 +595,51 @@ func AppendDroppedDateWarnings(ws []core.Warning, info RebuildInfo, retained tag
 		ws = core.WarnKeyed(ws, core.WarnValueDropped,
 			fmt.Sprintf("%s value cannot be represented in ID3v2.3 (it has no numeric year) and was dropped", k), k)
 	}
+	for _, rd := range info.ReducedDates {
+		// Suppress only when another container still carries the attempted precision:
+		// a retained "2021" must not suppress an attempted "2021-03".
+		if v, _ := retained.First(rd.Key); v == rd.Value {
+			continue
+		}
+		ws = core.WarnKeyed(ws, core.WarnValueReduced,
+			fmt.Sprintf("%s value %q carries finer precision than ID3v2.3 date frames can store (TDAT needs a full day, TIME a full minute) and was reduced", rd.Key, rd.Value), rd.Key)
+	}
+	if info.HasDroppedMalformedPicture {
+		ws = core.Warn(ws, core.WarnInvalidPicture,
+			"a malformed embedded picture could not be decoded and was dropped during a picture edit")
+	}
 	return ws
+}
+
+// PerFieldCapabilities builds the per-key capability overrides shared by every
+// ID3-backed codec (MP3/AAC/AIFF/WAV). The two value-mutating ID3 cases are declared
+// once here rather than copied into each codec:
+//
+//   - ORIGINALDATE is AccessPartial when the codec writes ID3v2.3 (writeVersion == 3),
+//     whose TORY frame keeps only the year. This drives both the transfer grade and the
+//     value-reduced edit warning (editor.appendValueReducedWarnings), the latter confirming
+//     the value actually changed before warning.
+//   - GENRE is AccessPartial when --numeric-genre is set and the ID3 tag is the authoritative
+//     genre store for this codec (genreViaID3). That holds always for MP3/AAC/AIFF (no native
+//     genre slot wins over ID3), but for WAV only when an id3 chunk is present - a bare WAV's
+//     native LIST/INFO IGNR keeps the genre as text, losslessly.
+//
+// Returns nil when neither applies, so a codec with a lossless write passes no overrides.
+func PerFieldCapabilities(writeVersion byte, numericGenre, genreViaID3 bool) map[tag.Key]core.Capability {
+	var perField map[tag.Key]core.Capability
+	add := func(k tag.Key, c core.Capability) {
+		if perField == nil {
+			perField = map[tag.Key]core.Capability{}
+		}
+		perField[k] = c
+	}
+	if writeVersion == 3 {
+		add(tag.OriginalDate, core.OriginalDateV23Capability())
+	}
+	if numericGenre && genreViaID3 {
+		add(tag.Genre, core.NumericGenreCapability("numeric ID3 TCON reference"))
+	}
+	return perField
 }
 
 // renderDatePart renders a v2.3 date component (TYER/TDAT/TIME/TORY) extracted

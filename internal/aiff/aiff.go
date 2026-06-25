@@ -36,6 +36,7 @@ import (
 	"encoding/binary"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/id3"
 )
 
 // Codec implements core.Codec for AIFF / AIFF-C.
@@ -67,7 +68,7 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 // the embedded "ID3 " chunk; the native text chunks are also written but are a
 // lower-fidelity store (a fixed vocabulary of single-valued character runs, save
 // ANNO/Comment), so the generic-field capability notes both representations.
-func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabilities {
+func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "ID3v2 (ID3 chunk) + native NAME/AUTH/(c)/ANNO",
@@ -82,9 +83,15 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 	chapters := core.Capability{
 		Read: core.AccessNone, Write: core.AccessNone,
 	}
+	// AIFF has no native genre slot, so genre writes through the ID3 chunk. Numeric genre
+	// and v2.3 original-date reductions follow the shared ID3 capability rules.
+	perField := id3.PerFieldCapabilities(id3.WriteVersionFor(m, core.FormatAIFF), opts.NumericGenre, true)
 	// AIFF has no metadata-padding concept, so the padding controls do not apply.
-	return core.NewCapabilities(core.FormatAIFF, false, fields, pictures, chapters, core.AccessNone, nil)
+	return core.NewCapabilities(core.FormatAIFF, false, fields, pictures, chapters, core.AccessNone, perField)
 }
+
+// ID3Tag returns the parsed ID3-chunk tag, or nil when the file has none.
+func (d *doc) ID3Tag() *id3.Tag { return d.id3 }
 
 // EssenceExtent returns the AIFF essence-digest inputs: a versioned extent name
 // and the decoder-critical "COMM" configuration mixed in ahead of the audio -

@@ -40,7 +40,7 @@ func newCopyCmd() *cobra.Command {
 			}
 			// copy is a file-to-file operation with no streaming model (that is the
 			// library's WriteTo), so "-" names no real file here. Reject it up front as a
-			// usage error rather than try to open a file literally named "-". (M1)
+			// usage error rather than try to open a file literally named "-".
 			if srcPath == stdinArg || dstPath == stdinArg {
 				return usagef("copy does not read standard input; pass file paths")
 			}
@@ -126,7 +126,7 @@ func newCopyCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&preset, "preset", "", "write policy preset: preserve|compatible|minimal")
 	cmd.Flags().StringVar(&legacy, "legacy", "", "legacy-tag policy: preserve|strip")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview the transfer and write without modifying the destination")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview the transfer without modifying the destination")
 	return cmd
 }
 
@@ -165,7 +165,7 @@ func renderTransfer(w io.Writer, src, dst string, r wl.TransferReport, srcLabel,
 }
 
 // transferFormatLabel is the display name for one side of a transfer header. The
-// WebM/Matroska distinction lives only in the container label (both .mka and
+// WebM/Matroska distinction lives only in the container label (both.mka and
 // .webm are FormatMatroska), so for the Matroska family it uses the container
 // ("WebM" / "Matroska"); every other format keeps its Format string, so e.g. AAC
 // stays "AAC (ADTS)". The JSON sourceFormat/destFormat deliberately stay the bare

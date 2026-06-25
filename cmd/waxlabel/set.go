@@ -34,7 +34,10 @@ func newSetCmd() *cobra.Command {
 		Long: "Apply the given edits and write the result. By default it rewrites each\n" +
 			"file in place atomically (temp file, fsync, rename); a no-op writes\n" +
 			"nothing. With -o it writes a single complete new file instead, leaving\n" +
-			"the original untouched (so -o takes exactly one input). Multiple files\n" +
+			"the original untouched (so -o takes exactly one input). Because the write\n" +
+			"is atomic (a temp file in -o's directory, then a rename onto it), -o must\n" +
+			"name a regular file in a writable directory; it is not a discard sink, so\n" +
+			"-o /dev/null fails - omit -o or use 'plan' to write nothing. Multiple files\n" +
 			"are edited independently, each as its own atomic write; with --recursive,\n" +
 			"directory arguments are walked for audio files. Because each file commits\n" +
 			"on its own, a failure partway through a bulk or --recursive run leaves the\n" +
@@ -51,7 +54,7 @@ func newSetCmd() *cobra.Command {
 			// default in every downstream `output != ""` check, so a `set f -o ''`
 			// would silently fall through to an in-place save-back and overwrite the
 			// input. Reject it once here (before checkSetStdin), which guarantees a
-			// present -o is non-empty and keeps every later check valid (B1).
+			// present -o is non-empty and keeps every later check valid.
 			if cmd.Flags().Changed("output") && output == "" {
 				return usagef("output path (-o) cannot be empty")
 			}
@@ -61,17 +64,16 @@ func newSetCmd() *cobra.Command {
 			if err := checkSetStdin(args, output); err != nil {
 				return err
 			}
-			// Reject an explicitly-empty --preset/--legacy/--padding first, so `set f
-			// --preset ''` reports the precise flag mistake rather than proceeding to a
-			// confusing no-op (U4).
+			// Reject an explicitly-empty --preset/--legacy/--padding before the
+			// no-edit check, so `set f --preset ''` reports the flag mistake directly.
 			if err := rejectEmptyScalarFlags(cmd); err != nil {
 				return err
 			}
-			// A set with no edit flags and no -o is a no-op rewrite-in-place - almost always
-			// a forgotten edit flag - so reject it (exit 2) rather than silently do nothing.
-			// With -o it is a deliberate verbatim copy, kept (U1).
+			// A set with no edit flags and no -o is almost always a forgotten edit flag, so
+			// reject it instead of silently doing nothing. With -o it is a deliberate
+			// verbatim copy.
 			if output == "" && editFlagsEmpty(cmd) {
-				return usagef("no edits given (use --set/--add/--clear/--add-cover/--add-chapter/…)")
+				return usagef("no edits given (use --set/--add/--clear/--add-cover/--add-chapter/...)")
 			}
 			var extra []wl.WriteOption
 			if verify {
@@ -110,7 +112,7 @@ func newSetCmd() *cobra.Command {
 			}
 			// Invocation-level guardrails and notes run only once there is at least one
 			// path to act on, so a note never claims a value was "written" on a run the
-			// directory (U1) or empty-walk (U4) checks then abort with nothing written.
+			// directory or empty-walk checks then abort with nothing written.
 			if err := notifyInvocationNotes(cmd.ErrOrStderr(), ce, &ef, realOf, paths, pathErrors, jsonMode(cmd)); err != nil {
 				return err
 			}
@@ -118,7 +120,7 @@ func newSetCmd() *cobra.Command {
 			// positional beside the real input; set would write a truncated tag to each named
 			// file before the stray word fails not-found. Refuse the whole run up front (exit
 			// 2, nothing written) so a script cannot misread a partial write as success. plan
-			// refuses identically via the shared helper, but with the bare hint. (#1)
+			// refuses identically via the shared helper, but with the bare hint.
 			if err := refuseUnquotedValue(&ef, realOf, args, true); err != nil {
 				return err
 			}
@@ -126,7 +128,7 @@ func newSetCmd() *cobra.Command {
 		},
 	}
 	ef.bind(cmd)
-	cmd.Flags().StringVarP(&output, "output", "o", "", "write to this path instead of editing the file in place (one input only)")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "write to this path instead of editing the file in place (one input only); must name a regular file in a writable directory - it is not a discard sink (use 'plan' to preview without writing)")
 	cmd.Flags().BoolVar(&overwrite, "overwrite", false, "allow -o to replace an existing destination file (by default an existing -o target is refused)")
 	cmd.Flags().BoolVar(&verify, "verify", false, "after writing, verify the saved file's audio essence matches the source")
 	cmd.Flags().BoolVar(&preserveMtime, "preserve-mtime", false, "keep the file's modification time (by default it is updated)")
@@ -158,7 +160,7 @@ func checkOutputTarget(output, inputReal string, overwrite bool) error {
 	// Verify the destination directory exists now (before the plan renders), so a
 	// mistyped -o path fails up front rather than only at the atomic-write temp create
 	// - which would otherwise print the whole plan first and then a late I/O error.
-	// Checked even under --overwrite: a missing parent dir cannot be overwritten. (#6)
+	// Checked even under --overwrite: a missing parent dir cannot be overwritten.
 	parent := filepath.Dir(output)
 	if fi, err := os.Stat(parent); err != nil {
 		if os.IsNotExist(err) {
@@ -222,7 +224,7 @@ func runSet(cmd *cobra.Command, paths []string, pathErrors map[string]error, rea
 	// passed-through nonexistent file fails per-file with exit 6. Align with plan (the
 	// dry-run twin): a "nothing to do" advisory and exit 0, with [] under --json, rather
 	// than a usage error - so `plan DIR -r` and `set DIR -r` agree on the empty-walk
-	// outcome (E1). A directory arg WITHOUT --recursive is still a pre-flight usage error
+	// outcome. A directory arg WITHOUT --recursive is still a pre-flight usage error
 	// (walk.go), so this is reached only for a genuine empty walk, never a misuse.
 	if len(paths) == 0 {
 		noteNoFiles(errOut, paths)
@@ -284,7 +286,7 @@ func runSet(cmd *cobra.Command, paths []string, pathErrors map[string]error, rea
 		// A verbatim -o copy of an unchanged file has no change plan worth previewing:
 		// renderReport would print "no changes (already up to date)" only for the next
 		// line to report it wrote a file. Suppress that preview and let renderSaveOutcome
-		// print one honest line instead (L1) - UNLESS the no-op carries a warning (a
+		// print one honest line instead - UNLESS the no-op carries a warning (a
 		// value-dropped edit whose value the format could not store), which is the only
 		// signal the edit was rejected and so must still be shown. -o takes exactly one
 		// input, so this is never mid-list.
@@ -318,7 +320,7 @@ func runSet(cmd *cobra.Command, paths []string, pathErrors map[string]error, rea
 		}
 		// The essence is only re-read on a committed write (a no-op writes no temp), so
 		// nothing is verified otherwise. Computed once and shared by the human and JSON
-		// paths so they cannot disagree (#4).
+		// paths so they cannot disagree.
 		verified := verify && res.Committed
 		if asJSON {
 			items = append(items, toJSONSetResult(path, output, plan, res, verified))
@@ -384,7 +386,7 @@ func renderSaveOutcome(w io.Writer, path, output string, res wl.SaveResult, noOp
 // the bytes landed and whether they were committed. Verified is a pointer so it is
 // present only when --verify was given and the write actually committed (so the
 // audio essence was re-read and matched); a normal run omits it entirely rather
-// than emit "verified": false, which would read like a failed check (#4).
+// than emit "verified": false, which would read like a failed check.
 type jsonSetResult struct {
 	jsonReport
 	Committed bool   `json:"committed"`

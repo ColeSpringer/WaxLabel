@@ -16,7 +16,7 @@ import (
 //	[Element ID (VINT)][Element Data Size (VINT)][data]
 //
 // A VINT's first byte holds a length descriptor - the position of its most
-// significant set bit gives the total byte length (0x80 => 1 byte ... 0x01 => 8).
+// significant set bit gives the total byte length (0x80 => 1 byte... 0x01 => 8).
 // For element IDs the descriptor bits are kept (the canonical ID form); for
 // sizes and values they are stripped. A size whose value field is all ones is
 // the "unknown size" form (a streamed element that runs until a higher-level
@@ -249,6 +249,13 @@ func eachChild(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limi
 		el, ok := readElement(src, off, end, limit)
 		if !ok {
 			return nil
+		}
+		// Count every metadata element walked against the per-parse breadth budget. eachChild
+		// (unlike walkSegment, which iterates clusters) drives the tag/attachment/seek/cue/
+		// chapter walks, so a region of minimum-size EBML elements cannot accumulate one
+		// descriptor each to OOM. Clusters are audio-granularity and stay uncapped.
+		if err := depth.Count(); err != nil {
+			return err
 		}
 		if err := fn(el); err != nil {
 			return err

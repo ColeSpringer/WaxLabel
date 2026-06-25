@@ -99,7 +99,7 @@ func buildChapterUdta(d *doc, edited *core.Media, needIlst bool, opts core.Write
 	var newItems []item
 	var newIlst []byte
 	if needIlst {
-		newItems = buildItems(edited.Tags, edited.Pictures, preservedItems(d.items))
+		newItems = buildItems(edited.Tags, edited.Pictures, preservedItems(d.items), opts.NumericGenre)
 		var payload []byte
 		for _, it := range newItems {
 			payload = append(payload, itemBytes(it)...)

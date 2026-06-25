@@ -147,6 +147,11 @@ const (
 	// chapter start. The warning is keyless because it describes the chapter set, not a
 	// tag field.
 	WarnChapterEndsDropped
+	// WarnPaddingClamped means a requested post-metadata padding exceeded the format's
+	// per-block hard cap (FLAC's ~16 MiB metadata-block body) and was reduced to it, so
+	// the written padding is smaller than asked. Keyless: it describes the write, not a
+	// tag field.
+	WarnPaddingClamped
 )
 
 func (c WarningCode) String() string {
@@ -211,6 +216,8 @@ func (c WarningCode) String() string {
 		return "value-reduced"
 	case WarnChapterEndsDropped:
 		return "chapter-ends-dropped"
+	case WarnPaddingClamped:
+		return "padding-clamped"
 	default:
 		return "unknown"
 	}

@@ -31,7 +31,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	size := src.Size()
 	limit := opts.Limits.MaxAllocBytes
 
-	top, err := walkAtoms(src, 0, size, bits.NewDepth(opts.Limits.MaxDepth), limit, true)
+	depth := bits.NewDepth(opts.Limits.MaxDepth).WithElementCap(opts.Limits.MaxElements, "MP4 atoms")
+	top, err := walkAtoms(src, 0, size, depth, limit, true)
 	if err != nil {
 		return nil, err
 	}
@@ -63,6 +64,13 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		}
 	}
 	if !haveMoov {
+		// A truncated final mdat that overruns its declared end swallows whatever
+		// follows it (clamped to EOF). When a moov sits after such an mdat it is never
+		// seen, so report the truncation - the real cause - rather than a misleading
+		// "no moov box", independent of box order.
+		if d.mdatTruncated {
+			return nil, fmt.Errorf("%w: MP4 mdat atom declares more bytes than the file holds (truncated; a trailing moov was overrun)", waxerr.ErrInvalidData)
+		}
 		return nil, fmt.Errorf("%w: MP4 has no moov box", waxerr.ErrInvalidData)
 	}
 	if _, ok := moov.find("mvex"); ok {
@@ -356,33 +364,78 @@ func setEssence(d *doc, media *core.Media) {
 	}
 }
 
-// essenceMdats returns the mdat ranges that hold audio, as [start, end). It drops
-// a separate chapter-sample mdat - the one a QuickTime chapter write appends at
-// end-of-file - so the change-detection fingerprint keeps hashing any metadata (a
-// trailing moov) that would otherwise sit in the un-hashed gap between the audio
-// mdat and the appended chapter mdat. The fast common path (no chapter track, or a
-// single mdat whose chapter samples share the audio) returns every mdat.
+// essenceMdats returns the mdat ranges that hold media essence, as [start, end). The
+// essence is every mdat carrying at least one chunk from a track other than the
+// QuickTime chapter text track being rewritten. An mdat holding only chapter samples is
+// dropped from the digest, including chapter mdats leaked by older builds, so chapter
+// edits do not change the audio fingerprint.
+//
+// Filtering against every non-chapter offset table, not only the first audio track's
+// table, keeps secondary audio, video, and subtitle tracks in the digest. With a single
+// mdat there is nothing to disambiguate, and a file with no non-chapter offset table keeps
+// every mdat.
 func essenceMdats(d *doc) [][2]int64 {
 	ranges := make([][2]int64, len(d.mdats))
 	for i, m := range d.mdats {
 		ranges[i] = [2]int64{m[0], m[0] + m[1]}
 	}
-	if d.chapTrak == nil || d.audioTrak == nil || len(ranges) <= 1 {
+	if len(ranges) <= 1 {
 		return ranges
 	}
-	chapOff, ok := chapterChunkOffset(d)
-	maxAudio, ok2 := maxAudioChunkOffset(d)
-	if !ok || !ok2 || chapOff <= maxAudio {
-		return ranges // chapter samples lie within the audio (e.g. ffmpeg's layout)
+	// Classify offset tables once before the per-mdat loop. With no non-chapter table to
+	// filter against, keep every mdat.
+	nonChapter := nonChapterTables(d)
+	if len(nonChapter) == 0 {
+		return ranges
 	}
 	out := ranges[:0:0]
 	for _, r := range ranges {
-		if r[0] <= chapOff && chapOff < r[1] {
-			continue // the standalone chapter mdat
+		if mdatHoldsChunk(r, nonChapter) {
+			out = append(out, r)
 		}
-		out = append(out, r)
 	}
 	return out
+}
+
+// nonChapterTables returns non-empty offset tables outside the chapter text track being
+// rewritten. Their chunks mark an mdat as media essence rather than chapter samples.
+func nonChapterTables(d *doc) []offsetTable {
+	var out []offsetTable
+	for _, t := range d.offTables {
+		if !withinChapTrak(d, t) && len(t.entries) > 0 {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// mdatHoldsChunk reports whether any of tables places a chunk inside the mdat range
+// [r[0], r[1]).
+func mdatHoldsChunk(r [2]int64, tables []offsetTable) bool {
+	for _, t := range tables {
+		if rangeHoldsChunk(r, t.entries) {
+			return true
+		}
+	}
+	return false
+}
+
+// mdatHoldsNonChapterChunk reports whether any non-chapter chunk-offset table places a
+// chunk inside the mdat range [r[0], r[1]). A positive result means the mdat carries media
+// essence and must not be reclaimed as chapter-only storage.
+func mdatHoldsNonChapterChunk(d *doc, r [2]int64) bool {
+	return mdatHoldsChunk(r, nonChapterTables(d))
+}
+
+// rangeHoldsChunk reports whether any chunk offset in entries falls within the mdat
+// range [r[0], r[1]).
+func rangeHoldsChunk(r [2]int64, entries []uint64) bool {
+	for _, e := range entries {
+		if off := int64(e); r[0] <= off && off < r[1] {
+			return true
+		}
+	}
+	return false
 }
 
 // trackOffTable returns the chunk-offset table that lies inside trak's byte range.
@@ -393,32 +446,6 @@ func trackOffTable(d *doc, trak *atomRef) (offsetTable, bool) {
 		}
 	}
 	return offsetTable{}, false
-}
-
-// chapterChunkOffset returns the chapter text track's (single) chunk offset.
-func chapterChunkOffset(d *doc) (int64, bool) {
-	t, ok := trackOffTable(d, d.chapTrak)
-	if !ok || len(t.entries) == 0 {
-		return 0, false
-	}
-	return int64(t.entries[0]), true
-}
-
-// maxAudioChunkOffset returns the largest chunk offset of the audio track, used to
-// tell a chapter mdat that follows the audio (a separate appended mdat) from
-// chapter samples interleaved within the audio mdat.
-func maxAudioChunkOffset(d *doc) (int64, bool) {
-	t, ok := trackOffTable(d, d.audioTrak)
-	if !ok || len(t.entries) == 0 {
-		return 0, false
-	}
-	var mx uint64
-	for _, e := range t.entries {
-		if e > mx {
-			mx = e
-		}
-	}
-	return int64(mx), true
 }
 
 // readPayload reads up to capBytes of an atom's payload, bounded by the alloc

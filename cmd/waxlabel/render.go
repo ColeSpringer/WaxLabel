@@ -20,10 +20,30 @@ import (
 // original "-" arg, never the temp path). JSON output keeps the raw path/"-" so a
 // script still keys on the argument it passed.
 func displayName(path string) string {
+	if s := stdinDisplay(path); s != "" {
+		return s
+	}
+	return tag.SanitizeLine(path)
+}
+
+// stdinDisplay returns the display label for the stdin sentinel, or "" for any real path.
+// displayName and jsonFileName share it so the human and JSON outputs label stdin
+// identically; if the sentinel or its label ever changes, only this branch moves.
+func stdinDisplay(path string) string {
 	if path == stdinArg {
 		return "<stdin>"
 	}
-	return tag.SanitizeLine(path)
+	return ""
+}
+
+// jsonFileName maps the stdin sentinel "-" to the "<stdin>" label for a JSON "file"
+// field while returning every real path unchanged. Unlike displayName, it does not run
+// SanitizeLine: JSON output preserves the exact path argument so scripts can key on it.
+func jsonFileName(path string) string {
+	if s := stdinDisplay(path); s != "" {
+		return s
+	}
+	return path
 }
 
 // renderDocument writes the human-readable view of a parsed file.
@@ -42,7 +62,7 @@ func renderDocument(w io.Writer, path string, doc *wl.Document, native bool) {
 	// does not compute - malformed dates/numbers, single-valued cardinality, custom
 	// keys, duplicate pictures - so "I ran dump and missed an issue" is signposted
 	// without dump taking on lint's cost. Gated on warnings present, so a clean file
-	// stays quiet (C3).
+	// stays quiet.
 	if len(warnings) > 0 {
 		fmt.Fprintln(w, `  run "waxlabel lint" for the full issue set (e.g. malformed dates, custom keys)`)
 	}
@@ -292,7 +312,7 @@ func sanitizeJoin(vals []string, sep string) string {
 // (which also escapes \n/\t, so neither can break the layout or forge a line).
 func pictureRow(p wl.Picture) string {
 	// Unknown dimensions read as "--", the same placeholder the rest of the tool uses
-	// for an absent value, rather than a lone "?" (R2).
+	// for an absent value, rather than a lone "?".
 	dim := "--"
 	if p.Width > 0 && p.Height > 0 {
 		dim = fmt.Sprintf("%dx%d", p.Width, p.Height)
@@ -374,9 +394,9 @@ func renderNative(w io.Writer, doc *wl.Document) {
 		}
 	}
 	if fams := doc.Families(); len(fams) > 0 {
-		// "families" matches the JSON `family` field and the keys/caps vocabulary (C4);
+		// "families" matches the JSON `family` field and the keys/caps vocabulary;
 		// the caption says what the block is so the key/family/value columns are not bare
-		// jargon (R3). Each row is one native field's contribution to a canonical key;
+		// jargon. Each row is one native field's contribution to a canonical key;
 		// "(conflict)" marks a value the projection did not select.
 		fmt.Fprintf(w, "  families (%d):\n", len(fams))
 		fmt.Fprintln(w, "    (which native container supplied each canonical value)")
@@ -433,7 +453,7 @@ func renderReport(w io.Writer, path string, plan *wl.Plan, addedPics []wl.Pictur
 	// Operations get their own heading and a glyph-free indent so a write step (e.g.
 	// "pictures: 1 block(s)") never reuses the leading "-" that means a removed key in
 	// the changes block above - the two lists sit adjacent, so a shared dash blurs an
-	// operation into a removal (P5). This mirrors the "changes:" block's heading +
+	// operation into a removal. This mirrors the "changes:" block's heading +
 	// indented items.
 	fmt.Fprintln(w, "  operations:")
 	if len(r.Operations) == 0 {
@@ -451,7 +471,7 @@ func renderReport(w io.Writer, path string, plan *wl.Plan, addedPics []wl.Pictur
 		// Positive confirmation that no padding will be written - but only for a format
 		// that has a padding concept. On Ogg/WAV/AIFF/Matroska PaddingAfter is always 0,
 		// and a "padding: none" line there would contradict the "padding control does not
-		// apply to %s" note those formats emit (U7).
+		// apply to %s" note those formats emit.
 		fmt.Fprintln(w, "  padding: none")
 	}
 	for _, x := range r.Warnings {
@@ -473,7 +493,7 @@ const (
 
 // isCountChange reports whether c keys a synthetic picture/chapter set-count change
 // (the lowercase pseudo-keys countChange emits) rather than a canonical tag change, so
-// the JSON path emits its integer Count instead of the stringified Old/New (P3).
+// the JSON path emits its integer Count instead of the stringified Old/New.
 func isCountChange(k tag.Key) bool {
 	return k == picturesCountKey || k == chaptersCountKey
 }

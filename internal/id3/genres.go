@@ -79,6 +79,11 @@ func genreIndex(name string) int {
 	return -1
 }
 
+// GenreIndex exposes genreIndex to other codecs (the MP4 numeric "gnre" atom),
+// mirroring the exported GenreName. It returns the 0-based ID3v1 genre index of a
+// name (case-insensitive), or -1 if the name is not a standard genre.
+func GenreIndex(name string) int { return genreIndex(name) }
+
 // resolveGenres turns a raw TCON value into one or more display names, expanding
 // every numeric/special reference. It reports whether any numeric reference was
 // seen so the parser can surface a numeric-genre warning. A single ID3v2.3 TCON

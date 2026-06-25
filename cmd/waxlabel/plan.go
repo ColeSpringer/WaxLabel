@@ -33,7 +33,7 @@ func newPlanCmd() *cobra.Command {
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Reject an explicitly-empty --preset/--legacy, matching set and the unknown-
-			// value rejection (U4). plan has no no-edits guard: previewing an unedited file
+			// value rejection. plan has no no-edits guard: previewing an unedited file
 			// is a valid "is it up to date" query.
 			if err := rejectEmptyScalarFlags(cmd); err != nil {
 				return err
@@ -117,7 +117,7 @@ type jsonReport struct {
 // changed ("added"/"removed"/"changed"), and the before/after values. It mirrors
 // the shape of jsonDiffTag, naming the two sides old/new for a before/after edit. A
 // picture/chapter set-count change instead carries a real integer count (and omits
-// old/new), so a consumer reads the count as a number, not a stringified value (P3).
+// old/new), so a consumer reads the count as a number, not a stringified value.
 type jsonChange struct {
 	Key    string   `json:"key"`
 	Change string   `json:"change"`
@@ -153,10 +153,10 @@ func toJSONReport(path string, plan *wl.Plan) jsonReport {
 		warnings = append(warnings, jsonWarning{Code: x.Code.String(), Message: x.Message})
 	}
 	// nonNil on each collection so it serializes as [] (never null/omitted) - a
-	// consumer iterating .operations[]/.warnings[] works on a clean plan too.
+	// consumer iterating.operations[]/.warnings[] works on a clean plan too.
 	return jsonReport{
 		SchemaVersion: schemaVersion,
-		File:          path,
+		File:          jsonFileName(path),
 		NoOp:          plan.IsNoOp(),
 		Changes:       toJSONChanges(plan.Changes()),
 		Operations:    nonNil(r.Operations),

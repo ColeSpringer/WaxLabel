@@ -83,7 +83,7 @@ func TestVorbisCommentRoundTrip(t *testing.T) {
 		{"DESCRIPTION", "has = equals = signs"},
 	}
 	body := renderVorbisComment("WaxLabel/0.1", comments)
-	vendor, got, err := parseVorbisComment(body, 1<<20)
+	vendor, got, err := parseVorbisComment(body, 1<<20, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestParseVorbisCommentSkipsEntriesWithoutEquals(t *testing.T) {
 	// Bump the comment count from 1 to 2.
 	// vendor len (4) + vendor (1) => count at offset 5.
 	body[5] = 2
-	_, got, err := parseVorbisComment(body, 1<<20)
+	_, got, err := parseVorbisComment(body, 1<<20, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

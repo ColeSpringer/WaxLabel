@@ -362,3 +362,36 @@ func TestFLACTruncationNotFlagged(t *testing.T) {
 		})
 	}
 }
+
+// TestFLACPaddingClampWarns verifies that requested padding above FLAC's ~16 MiB per-block
+// limit is clamped to it, and the write must surface a padding-clamped warning so the
+// smaller-than-asked padding is not silent. A sane padding does not warn.
+func TestFLACPaddingClampWarns(t *testing.T) {
+	doc := mustParseFile(t, sampleFLAC)
+	hasClamp := func(p *wl.Plan) bool {
+		for _, w := range p.Report().Warnings {
+			if w.Code == wl.WarnPaddingClamped {
+				return true
+			}
+		}
+		return false
+	}
+
+	big, err := doc.Edit().Set(tag.Title, "Padded").
+		Prepare(wl.WithPadding(wl.PaddingPolicy{Target: (1 << 24) + (1 << 20)})) // ~17 MiB > FLAC's block cap
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasClamp(big) {
+		t.Errorf("padding above FLAC's block cap must warn padding-clamped; got %v", big.Report().Warnings)
+	}
+
+	small, err := doc.Edit().Set(tag.Title, "Padded").
+		Prepare(wl.WithPadding(wl.PaddingPolicy{Target: 4096}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasClamp(small) {
+		t.Errorf("a 4 KiB padding must not warn padding-clamped; got %v", small.Report().Warnings)
+	}
+}

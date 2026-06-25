@@ -15,8 +15,9 @@ type (
 
 // WithLimits sets the bounded-allocation and recursion limits for untrusted
 // input. A zero field uses the default bound for that field (it is not
-// unlimited): a partial Limits{MaxDepth: 8} keeps the default MaxAllocBytes
-// rather than dropping it to zero, which would reject every allocation.
+// unlimited): a partial Limits{MaxDepth: 8} keeps the default MaxAllocBytes and
+// MaxElements rather than dropping them to zero, which would reject every
+// allocation (or, for MaxElements, silently disable the element-count cap).
 func WithLimits(l Limits) ParseOption {
 	return func(o *core.ParseOptions) {
 		d := core.DefaultParseOptions().Limits
@@ -25,6 +26,9 @@ func WithLimits(l Limits) ParseOption {
 		}
 		if l.MaxDepth == 0 {
 			l.MaxDepth = d.MaxDepth
+		}
+		if l.MaxElements == 0 {
+			l.MaxElements = d.MaxElements
 		}
 		o.Limits = l
 	}
@@ -100,7 +104,7 @@ func WithStripEncoderStamp() WriteOption {
 // WithWebMSubset narrows a file-less Matroska [CapabilitiesFor] query to the WebM
 // subset, which excludes cover-art attachments - so the format-level answer for
 // "webm" reports picture write as unsupported, matching what [Document.Capabilities]
-// reports for a parsed .webm file. It affects only the Matroska capability query;
+// reports for a parsed.webm file. It affects only the Matroska capability query;
 // every other codec ignores it, and it has no effect on a write.
 func WithWebMSubset() WriteOption {
 	return func(o *core.WriteOptions) { o.WebMSubset = true }
@@ -117,7 +121,7 @@ func WithID3MultiValue(p ID3MultiValuePolicy) WriteOption {
 // Policy presets bundle write options into a named intent. Apply one first,
 // then override individual options if needed:
 //
-//	plan, _ := ed.Prepare(waxlabel.Preserve, waxlabel.WithVerifyEssence())
+//	plan, _:= ed.Prepare(waxlabel.Preserve, waxlabel.WithVerifyEssence())
 var (
 	// Preserve is the default: keep legacy containers, reuse padding in place.
 	Preserve WriteOption = func(o *core.WriteOptions) {

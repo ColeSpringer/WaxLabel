@@ -100,7 +100,7 @@ var nonEditFlags = map[string]bool{
 // usage error (a no-op rewrite is almost always a forgotten flag), while with -o it is
 // a deliberate verbatim copy. It reads the parsed flag set (Visit walks only the flags
 // actually changed), so it tracks the bound flags rather than a hand-listed field set
-// that could rot as edit flags are added. (U1)
+// that could rot as edit flags are added.
 func editFlagsEmpty(cmd *cobra.Command) bool {
 	empty := true
 	cmd.Flags().Visit(func(f *pflag.Flag) {
@@ -119,14 +119,14 @@ func editFlagsEmpty(cmd *cobra.Command) bool {
 // extensionless filename, which on its own is indistinguishable from a split value
 // fragment. It is the single detector shared by plan (which prints the hint as an
 // advisory) and set (which refuses the whole run up front so no truncated tag is
-// written), so the two cannot disagree on when the pattern holds. (#1)
+// written), so the two cannot disagree on when the pattern holds.
 func quotingHint(ef *editFlags, realOf func(string) string, args []string) (hint string, ok bool) {
 	if len(ef.set) == 0 && len(ef.add) == 0 {
 		return "", false
 	}
 	// Cheap string-only pre-pass: a hint is only possible if some positional is a stray
 	// bare word. Most invocations name extension-bearing files, so this returns before
-	// any stat - the per-file loop's own stats are not duplicated on the common path (#5).
+	// any stat - the per-file loop's own stats are not duplicated on the common path.
 	hasBareWord := false
 	for _, a := range args {
 		if a != stdinArg && looksLikeBareWord(a) {
@@ -184,7 +184,7 @@ func refuseUnquotedValue(ef *editFlags, realOf func(string) string, args []strin
 // silently ignored - matching how an unknown value (--preset bogus) is rejected,
 // and keeping the three scalar write-shaping flags consistent. It reads Changed
 // from the command, so set and plan (which both bind these via editFlags) share
-// one check. (U4)
+// one check.
 func rejectEmptyScalarFlags(cmd *cobra.Command) error {
 	for _, name := range []string{"preset", "legacy", "padding"} {
 		if cmd.Flags().Changed(name) {
@@ -222,7 +222,7 @@ func (e *editFlags) patch() (tag.TagPatch, error) {
 	// set+add on one key (--set ARTIST=A --add ARTIST=B) is legal and stays so; only
 	// (set|add) vs clear contradicts.
 	for _, ks := range e.clear {
-		k, err := tag.ParseKey(strings.TrimSpace(ks))
+		k, err := parseEditKey(strings.TrimSpace(ks))
 		if err != nil {
 			return p, &usageError{msg: err.Error()}
 		}
@@ -243,19 +243,31 @@ func (e *editFlags) patch() (tag.TagPatch, error) {
 	return p, nil
 }
 
-// splitAssign parses a "KEY=VALUE" assignment. The key is normalized and
-// validated; everything after the first '=' is the (possibly empty) value, so a
+// splitAssign parses a "KEY=VALUE" assignment. The key is normalized, alias-resolved,
+// and validated; everything after the first '=' is the (possibly empty) value, so a
 // value may itself contain '='.
 func splitAssign(s string) (tag.Key, string, error) {
 	i := strings.IndexByte(s, '=')
 	if i < 0 {
 		return "", "", usagef("missing '=' in %q (want KEY=VALUE; use --clear to remove a key)", s)
 	}
-	k, err := tag.ParseKey(strings.TrimSpace(s[:i]))
+	k, err := parseEditKey(strings.TrimSpace(s[:i]))
 	if err != nil {
 		return "", "", &usageError{msg: err.Error()}
 	}
 	return k, s[i+1:], nil
+}
+
+// parseEditKey validates a user-supplied tag key and resolves recognized aliases
+// (DATE -> RECORDINGDATE, TOTALTRACKS -> TRACKTOTAL, ...) to their canonical keys.
+// All CLI key entry points use it, so an alias replaces the real field instead of
+// adding a duplicate custom field and bypassing the unknown-key guardrails.
+func parseEditKey(s string) (tag.Key, error) {
+	k, err := tag.ParseKey(s)
+	if err != nil {
+		return "", err
+	}
+	return wl.ResolveAlias(k), nil
 }
 
 // loadPictures reads and validates every --add-cover and --add-picture file once,
@@ -338,7 +350,7 @@ func (e *editFlags) loadPictureFile(label string, pt wl.PictureType, path string
 // repeats) that a plain fmt.Errorf would surface. It Unwraps to that *fs.PathError so
 // the failure still classifies as a local I/O error (exit 6); a naive
 // fmt.Errorf("%s: %s", ...) reformat would instead drop the error from the chain and
-// downgrade a missing cover to the generic exit 1 (M4). It mirrors tempCreateError's
+// downgrade a missing cover to the generic exit 1. It mirrors tempCreateError's
 // shape (a wrapper that cleans the message while preserving the I/O classification).
 type pictureLoadError struct {
 	label string
@@ -490,8 +502,8 @@ const maxPaddingBytes = 64 << 20
 //
 // The value is parsed once, so every spelling of zero ("0", "00", " 0 ") behaves
 // identically: --padding 0 is a synonym for --no-padding, and the two conflict only
-// when --padding asks for a *positive* amount (a naive string "!= 0" test would
-// wrongly reject "00" or " 0 " alongside --no-padding - U4).
+// when --padding asks for a *positive* amount. A naive string "!= 0" test would
+// wrongly reject "00" or " 0 " alongside --no-padding.
 //
 // --no-padding / --padding 0 writes none (Target 0, Max 0). A positive --padding N
 // is a floor: it reserves at least N bytes, so it sets Min=N as well as Target=N -
@@ -581,8 +593,8 @@ type compiledEdit struct {
 	chapters      []wl.Chapter // --add-chapter additions, validated at compile time
 	clearChapters bool         // --clear-chapters
 	unknownKeys   []tag.Key    // --set/--add keys outside the canonical vocabulary, first-seen order
-	clearKeys     []tag.Key    // --clear keys outside the canonical vocabulary, first-seen order (C2)
-	paddingFlag   bool         // whether --padding/--no-padding was given, for the per-format note (D2)
+	clearKeys     []tag.Key    // --clear keys outside the canonical vocabulary, first-seen order
+	paddingFlag   bool         // whether --padding/--no-padding was given, for the per-format note
 }
 
 // compile resolves the edit flags into a compiledEdit, surfacing any usage error
@@ -648,12 +660,12 @@ func (e *editFlags) unknownAssignKeys() []tag.Key {
 // vocabulary, in first-seen order with no duplicates. Clearing such a key affects
 // only a custom field of that exact name, so a typo'd --clear (e.g. ARTIS) is a
 // silent no-op on a file that has no such field - a command surfaces these as a
-// text note (C2). --strip-encoder is exempt (it clears the canonical ENCODER). The
+// text note. --strip-encoder is exempt (it clears the canonical ENCODER). The
 // raw values were already validated by patch(), so a re-parse cannot fail here.
 func (e *editFlags) unknownClearKeys() []tag.Key {
 	var keys []tag.Key
 	for _, ks := range e.clear {
-		if k, err := tag.ParseKey(strings.TrimSpace(ks)); err == nil {
+		if k, err := parseEditKey(strings.TrimSpace(ks)); err == nil {
 			keys = append(keys, k)
 		}
 	}
@@ -682,7 +694,7 @@ func dedupUnknownKeys(keys []tag.Key) []tag.Key {
 // buffered before the loop). set and plan use it to hold the cosmetic
 // invocation-level notes (the non-strict unknown-key notes and the value notes)
 // until there is a real file to act on, so a single missing file is reported as
-// not-found rather than first lectured about its keys (L7). It stats realOf(p): the
+// not-found rather than first lectured about its keys. It stats realOf(p): the
 // buffered temp path for "-", the path itself otherwise. Any stat failure - not
 // only not-exist, but e.g. an unsearchable parent dir - counts as "nothing to act
 // on here": a path that cannot be stat'd cannot be parsed either, so the per-file
@@ -717,7 +729,7 @@ func anyInputExists(realOf func(string) string, paths []string, pathErrors map[s
 // 2, not 6); notifyUnknownKeys prints nothing under --strict, so the strict-but-
 // absent path is note-free. The cosmetic notes (the non-strict unknown-key notes
 // and the value notes) wait until an input actually exists, so a lone missing file
-// is not lectured about its key before the not-found error (L7). Centralizing this
+// is not lectured about its key before the not-found error. Centralizing this
 // keeps the strict-vs-exists policy single-sourced across set and plan.
 func notifyInvocationNotes(errOut io.Writer, ce *compiledEdit, ef *editFlags, realOf func(string) string, paths []string, pathErrors map[string]error, asJSON bool) error {
 	if len(paths) == 0 {
@@ -778,7 +790,7 @@ func notifyUnknownKeys(errOut io.Writer, ce *compiledEdit, strict, asJSON bool) 
 
 // didYouMean returns a "; did you mean KEY?" suffix when an unknown key is a near
 // miss for a canonical one ([tag.ClosestKey]), or "" when nothing is close enough.
-// Shared by the unknown-assign-key note and the unknown-clear-key note (U2) so both
+// Shared by the unknown-assign-key note and the unknown-clear-key note so both
 // phrase the suggestion identically.
 func didYouMean(k tag.Key) string {
 	if s, ok := tag.ClosestKey(string(k)); ok {
@@ -787,12 +799,12 @@ func didYouMean(k tag.Key) string {
 	return ""
 }
 
-// notifyClearKeys notes each --clear key outside the canonical vocabulary (C2):
+// notifyClearKeys notes each --clear key outside the canonical vocabulary:
 // clearing it affects only a custom field of that exact name, so a typo'd --clear
 // (e.g. ARTIS) is otherwise a silent no-op on a file that has no such field. The
 // note is text-only and suppressed under --json, and - unlike the unknown-assign
 // guardrail - is never escalated under --strict (clearing a stray key is harmless).
-// It carries the same "did you mean?" suggestion as the assign note (U2).
+// It carries the same "did you mean?" suggestion as the assign note.
 func notifyClearKeys(errOut io.Writer, ce *compiledEdit, asJSON bool) {
 	if asJSON {
 		return
@@ -803,8 +815,8 @@ func notifyClearKeys(errOut io.Writer, ce *compiledEdit, asJSON bool) {
 }
 
 // notifyValueNotes emits the invocation-level, text-only advisory notes about the
-// user's --set/--add values: a malformed numeric or date value (M1) and a
-// present-but-empty --set value (M3). Both are pure notes - the value is written
+// user's --set/--add values: a malformed numeric or date value and a
+// present-but-empty --set value. Both are pure notes - the value is written
 // faithfully either way - so they are suppressed under --json (where they would
 // corrupt the machine stream) and, unlike the unknown-key and cardinality
 // guardrails, are never escalated to an error under --strict. Notes are emitted in
@@ -833,8 +845,8 @@ func notifyValueNotes(errOut io.Writer, e *editFlags, asJSON bool) {
 		noteMalformedValue(errOut, k, v)
 	}
 	for _, kv := range e.add {
-		// An empty --add value is not M3's case: --clear is a replacement operation, not
-		// an append. Numeric trimming still mirrors the writer, as in the --set loop.
+		// An empty --add value is not the same as an empty --set value: --clear is a
+		// replacement operation, not an append. Numeric trimming still mirrors the writer.
 		if k, v, err := splitAssign(kv); err == nil {
 			if v = tag.TrimNumericValue(k, v); v != "" {
 				noteMalformedValue(errOut, k, v)
@@ -843,15 +855,15 @@ func notifyValueNotes(errOut io.Writer, e *editFlags, asJSON bool) {
 	}
 }
 
-// noteMalformedValue emits the M1 note when v does not match the typed shape of its
-// key's category. This is only a shape advisory, emitted before any file is parsed, so
+// noteMalformedValue emits the advisory for values that do not match the typed shape of
+// their key category. This is emitted before any file is parsed, so
 // it cannot know the target codec: most formats keep the value as text, but a
 // format-specific encoding may still drop it (e.g. an ID3v2.3 date with no numeric
 // year, which has no TYER/TORY representation) - so the note no longer promises
 // unconditional persistence, and the per-file value-dropped warning is the
 // authoritative drop signal. It reads the same [tag.ValidatorFor] registry
 // [Document.Lint] consumes, so the set-time note and the linter cannot disagree on what
-// a malformed value is (F4): numeric, date, boolean, MEDIATYPE, and ReplayGain. The
+// a malformed value is: numeric, date, boolean, MEDIATYPE, and ReplayGain. The
 // note is a single line, so the key and value are run through [tag.SanitizeLine] - they
 // are the user's own --set input, but a control byte must not reach the terminal raw
 // and an embedded newline must not forge a line. (SanitizeLine, not SanitizeText, to
@@ -864,20 +876,20 @@ func noteMalformedValue(errOut io.Writer, k tag.Key, v string) {
 	}
 	// A numeric value that parses but is negative round-trips faithfully, so it is not
 	// "malformed" - but a negative number/total or play count is semantically odd, so it
-	// gets a separate advisory (the value is still written). (V2)
+	// gets a separate advisory (the value is still written).
 	if tag.IsNumericKey(k) && tag.NegativeNumericValue(k, v) {
 		fmt.Fprintf(errOut, "note: %s=%s is negative; written as-is (numbering is normally non-negative)\n", ks, vs)
 	}
 }
 
 // strictEscalatingCodes are the per-file plan warnings --strict promotes to a usage
-// error (exit 2): a value the codec would drop as unrepresentable (F1, value-dropped)
-// and a known single-valued key left holding multiple values (F2, single-valued-multi).
+// error (exit 2): a value the codec would drop as unrepresentable, and a known
+// single-valued key left holding multiple values.
 // Both are library warnings the plan report already carries (and the human/JSON output
 // already renders), so the gate reads that one signal rather than re-deriving the rule
 // from plan.Changes() - so the warning the user sees and the --strict decision cannot
-// disagree (the divergence the single-source invariant forbids; F2's Matroska case is
-// exactly where a result-based re-derivation went silent). The unknown-key strict path
+// disagree. A result-based re-derivation went silent in the Matroska single-valued case,
+// which is why this reads the plan warnings directly. The unknown-key strict path
 // stays separate (notifyUnknownKeys): an unknown key is a CLI-vocabulary concept the
 // library accepts by design, so it is a pre-flight usage error, not a plan warning.
 var strictEscalatingCodes = map[wl.WarningCode]bool{
@@ -946,7 +958,7 @@ func strictWarningReason(w wl.Warning) string {
 // once instead of once per file. It is text-only (suppressed under --json, where a
 // note would corrupt the machine stream) and never an error - the flag is simply a
 // no-op on that format. set and plan share it, keyed off the format's
-// Capabilities.Padding level (D2), so their guidance cannot drift. The caller gates
+// Capabilities.Padding level, so their guidance cannot drift. The caller gates
 // note() on whether a padding flag was even given (ce.paddingFlag), so the format's
 // Capabilities are not built when no flag is present (the common case).
 type paddingNoter struct {
@@ -1040,7 +1052,18 @@ func (ce *compiledEdit) prepare(ctx context.Context, realPath, origPath string) 
 		if ce.clearChapters {
 			base = nil
 		}
-		ed.SetChapters(append(base, ce.chapters...)...)
+		// Dedup CLI additions against the accumulated list (existing chapters plus earlier
+		// additions), skipping exact Start/End/Title matches. Additions have End == 0, so
+		// an on-disk chapter with the same start/title and a real end time is kept as a
+		// distinct chapter. The library API still permits callers to set duplicates.
+		merged := slices.Clone(base)
+		for _, add := range ce.chapters {
+			// wl.Chapter is comparable, so slices.Contains is the whole exact-match check.
+			if !slices.Contains(merged, add) {
+				merged = append(merged, add)
+			}
+		}
+		ed.SetChapters(merged...)
 	} else if ce.clearChapters {
 		ed.ClearChapters()
 	}

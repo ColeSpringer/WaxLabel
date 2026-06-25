@@ -43,8 +43,12 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 		return nil, fmt.Errorf("%w: missing fLaC marker", waxerr.ErrInvalidData)
 	}
 
+	maxElements := opts.Limits.MaxElements
 	for {
 		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if err := bits.CheckElementCap(len(d.blocks), maxElements, "FLAC metadata blocks"); err != nil {
 			return nil, err
 		}
 		h0 := c.Byte()
@@ -120,7 +124,7 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 				"more than one Vorbis comment block; the first is authoritative and the extras are dropped if the file is rewritten")
 			continue
 		}
-		vendor, comments, err := parseVorbisComment(b.body, limit)
+		vendor, comments, err := parseVorbisComment(b.body, limit, maxElements)
 		if err != nil {
 			return nil, err
 		}

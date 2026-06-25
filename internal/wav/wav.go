@@ -29,6 +29,7 @@ import (
 	"encoding/binary"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/id3"
 )
 
 // Codec implements core.Codec for WAV.
@@ -58,7 +59,7 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 // the embedded id3 chunk; the RIFF-native LIST/INFO block is also written but is
 // a lower-fidelity store (a fixed vocabulary of single-valued strings), so the
 // generic-field capability notes both representations.
-func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabilities {
+func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "ID3v2 (id3 chunk) + RIFF LIST/INFO", Fidelity: "lossless via id3; INFO is single-valued, fixed-vocabulary",
@@ -73,9 +74,18 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 		Read: core.AccessNone, Write: core.AccessNone,
 		Representation: "cue/adtl preserved",
 	}
+	// A WAV write may route genre through the id3 chunk when one is present or when an edit
+	// forces one into existence. The capability is value-blind, so it conservatively reports
+	// numeric GENRE as partial; edit warnings remain precise because they compare the written
+	// result to the requested value. v2.3 original-date reductions follow the same shared
+	// ID3 rules.
+	perField := id3.PerFieldCapabilities(id3.WriteVersionFor(m, core.FormatWAV), opts.NumericGenre, true)
 	// WAV has no metadata-padding concept, so the padding controls do not apply.
-	return core.NewCapabilities(core.FormatWAV, false, fields, pictures, chapters, core.AccessNone, nil)
+	return core.NewCapabilities(core.FormatWAV, false, fields, pictures, chapters, core.AccessNone, perField)
 }
+
+// ID3Tag returns the parsed id3-chunk tag, or nil when the file has none.
+func (d *doc) ID3Tag() *id3.Tag { return d.id3 }
 
 // EssenceExtent returns the WAV essence-digest inputs: a versioned extent name
 // and the decoder-critical "fmt " configuration mixed in ahead of the audio -

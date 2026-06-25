@@ -37,10 +37,14 @@ func TestChapterDeltasLastChapterBounded(t *testing.T) {
 	if d := chapterDeltas(chs, 1000, 9000); d[1] != 4000 {
 		t.Errorf("last delta with duration 9000 = %d, want 4000", d[1])
 	}
-	// An out-of-order start cannot encode a negative span (defense-in-depth behind
-	// the editor's sort).
-	if d := chapterDeltas([]core.Chapter{{Start: 5 * time.Second}, {Start: time.Second}}, 1000, 0); d[0] != 0 {
-		t.Errorf("backwards gap delta = %d, want 0 (clamped)", d[0])
+	// An out-of-order start cannot encode a negative span. Defense in depth behind
+	// the editor's sort: clamp to one unit so every chapter still spans End > Start.
+	if d := chapterDeltas([]core.Chapter{{Start: 5 * time.Second}, {Start: time.Second}}, 1000, 0); d[0] != 1 {
+		t.Errorf("backwards gap delta = %d, want 1 (clamped to the one-unit minimum)", d[0])
+	}
+	// Two chapters at the same start must still give the first one a nonzero duration.
+	if d := chapterDeltas([]core.Chapter{{Start: time.Second}, {Start: time.Second}}, 1000, 0); d[0] != 1 {
+		t.Errorf("same-start delta = %d, want 1 (one-unit minimum, not a zero-length chapter)", d[0])
 	}
 }
 
@@ -52,8 +56,8 @@ const (
 	elstEntry0   = 24
 )
 
-// TestChapterEdtsEmptyEdit pins the wire format of the chapter track's edit list -
-// the heart of B1. A non-zero first chapter is positioned by a leading empty edit
+// TestChapterEdtsEmptyEdit pins the wire format of the chapter track's edit list.
+// A non-zero first chapter is positioned by a leading empty edit
 // (media_time -1), not zero-anchored. Asserting the raw bytes matters because a
 // round-trip alone only proves WaxLabel's (lenient) reader agrees with its writer;
 // iTunes and Apple Books read these exact fields. A zero-start list keeps the
@@ -152,7 +156,7 @@ func TestAddClampSaturates(t *testing.T) {
 	}
 }
 
-// TestEmptyEditOffset is the read side of B1: an elst whose first entry is an empty
+// TestEmptyEditOffset is the read side of that contract: an elst whose first entry is an empty
 // edit (media_time -1) yields its segment_duration as a Duration scaled by the
 // movie timescale; a normal first entry (or zero entries) yields no offset. It is
 // the inverse of chapterEdts.

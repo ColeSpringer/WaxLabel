@@ -97,6 +97,17 @@ func mp4Stco(offset uint32) []byte {
 	return mp4Atom("stco", slices.Concat([]byte{0, 0, 0, 0}, mp4be32(1), mp4be32(int(offset))))
 }
 
+// mp4SounTrak builds a minimal audio (soun) trak with the given track id and a
+// single-entry stco at stcoOff. Unlike mp4AudioTrakChap it carries no tref, so it
+// models a second, independent audio track in a multi-track file.
+func mp4SounTrak(trackID int, stcoOff uint32) []byte {
+	tkhd := mp4Atom("tkhd", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 8), mp4be32(trackID), make([]byte, 4)))
+	stbl := mp4Atom("stbl", slices.Concat(mp4StsdAudio(), mp4Stco(stcoOff)))
+	minf := mp4Atom("minf", stbl)
+	mdia := mp4Atom("mdia", slices.Concat(mp4HdlrSoun(), mp4Mdhd(), minf))
+	return mp4Atom("trak", slices.Concat(tkhd, mdia))
+}
+
 // mp4Moov assembles the movie box: one audio trak (with a one-entry stco) and the
 // given udta. The stco entry points at stcoOff.
 func mp4Moov(udta []byte, stcoOff uint32) []byte {
@@ -185,7 +196,7 @@ func TestMP4ParseBasicTags(t *testing.T) {
 
 func TestMP4RewriteInPlaceKeepsOffsets(t *testing.T) {
 	// A free atom adjacent to ilst gives slack, so editing the title to a value
-	// that fits reuses the region: the mdat must NOT move (stco unchanged) and the
+	// that fits reuses the region: the mdat must not move (stco unchanged) and the
 	// file size must stay the same.
 	free := mp4Atom("free", make([]byte, 64))
 	data := mp4Assemble(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "Original Title")), free)
@@ -372,7 +383,7 @@ func TestMP4BareMetaQuickTime(t *testing.T) {
 // FuzzParse seed; this asserts the real-file scenario keeps the existing child.)
 func TestMP4UdtaZeroTerminatorCreatesTag(t *testing.T) {
 	child := mp4Atom("Xtra", []byte("XTRADATA")) // a real opaque udta child (preserved verbatim)
-	data := mp4AssembleUdta(child, mp4be32(0))   // ...then a 32-bit-zero QuickTime terminator
+	data := mp4AssembleUdta(child, mp4be32(0))   //...then a 32-bit-zero QuickTime terminator
 	doc := mustParseBytes(t, data)
 	if doc.Fields().Title != "" {
 		t.Fatalf("setup: unexpected title %q", doc.Fields().Title)
@@ -461,7 +472,7 @@ func TestMP4QuickTimeUdtaTerminatorAccepted(t *testing.T) {
 }
 
 func TestMP4PaddingFloorGrowsRegion(t *testing.T) {
-	// B1 on MP4: --padding N is a floor, honored on the in-place reuse path too.
+	// --padding N is a floor, honored on the in-place reuse path too.
 	// MP4 reuses the existing ilst+free region when the new content fits; without
 	// the floor wired into that path, a large --padding over a small region was
 	// silently ignored. Seed a 50 KB region, then a tiny edit under a 200 KB floor

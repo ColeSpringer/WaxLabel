@@ -28,7 +28,11 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 	size := src.Size()
 	limit := opts.Limits.MaxAllocBytes
-	depth := bits.NewDepth(opts.Limits.MaxDepth)
+	// The depth guard also carries the per-parse breadth budget: eachChild counts every
+	// metadata element it visits against MaxElements, so the SimpleTag/attachment/seek/cue/
+	// chapter walks cannot amplify a flat run of empty EBML elements into descriptors to OOM
+	// (clusters, walked by walkSegment, are exempt - see eachChild and TestMatroska*Clusters).
+	depth := bits.NewDepth(opts.Limits.MaxDepth).WithElementCap(opts.Limits.MaxElements, "Matroska metadata elements")
 
 	d := &doc{}
 	var pics []core.Picture

@@ -2,7 +2,6 @@ package tag
 
 import (
 	"math"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -52,9 +51,11 @@ type Tags struct {
 
 	Conductor string
 	Remixer   string
-	// Performers maps a role to the people in it (e.g. "guitar" -> {"Foo"}).
-	// The empty role holds unqualified PERFORMER values.
-	Performers map[string][]string
+	// Performers are the credited performers in PERFORMER order, which is
+	// significant and round-trips: an ordered slice rather than a map so
+	// Project -> Patch does not reorder a multi-valued PERFORMER. A bare value
+	// lands as a PerformerCredit with an empty Role.
+	Performers []PerformerCredit
 	// EncodedBy is the encoding person; Encoder is the encoding software/tool.
 	EncodedBy string
 	Encoder   string
@@ -295,7 +296,7 @@ func DistinctValues(vals []string) int {
 // into its trimmed number and total substrings. Unlike [ParseNumPair] it preserves
 // the exact substrings - leading zeros and all - rather than renumbering to ints, so
 // it suits a write/edit normalization that must not silently rewrite the value. Each
-// side is "" when absent or blank ("3/" -> "3","" ; "/12" -> "","12"). It is the
+// side is "" when absent or blank ("3/" -> "3",""; "/12" -> "","12"). It is the
 // single substring split shared by the ID3 read path and the edit-time pair split.
 func SplitNumberTotal(v string) (num, total string) {
 	num, total, _ = strings.Cut(v, "/")
@@ -591,46 +592,69 @@ func ValidatorFor(k Key) (Validator, bool) {
 	return Validator{}, false
 }
 
-// parsePerformers reads PERFORMER values, splitting a trailing "(role)" off
-// each. Values without a role land under the empty-string key.
-func parsePerformers(vals []string) map[string][]string {
+// Performer is one credited performer: a Name and an optional Role (the part or
+// instrument, e.g. "guitar"). It models a single PERFORMER value, stored as
+// "Name (Role)" or a bare "Name" when Role is empty. Performer is a comparable
+// struct, so two performers can be compared with ==.
+//
+// A Performer with an empty Name and a non-empty Role re-emits as "(Role)", which
+// re-parses as {Name: "(Role)"} - the one shape that is not round-trip-stable;
+// construct performers with a non-empty Name.
+type PerformerCredit struct {
+	Name string
+	Role string
+}
+
+// parsePerformers reads PERFORMER values in order, splitting a trailing "(role)"
+// off each into a Role. The split happens only when both the pre-paren name and the
+// role text are non-empty after trimming; otherwise the whole value is kept as the
+// Name, so a fully-parenthesized value ("(note)", "()", "Name ()") round-trips
+// verbatim instead of losing its parentheses.
+//
+// Each value is trimmed once up front so incidental surrounding whitespace ("Name
+// (role) ") does not hide the "(role)" suffix and leave it stuck on the name. The
+// typed projection is a convenience view (lossy by design), so dropping that
+// whitespace here is acceptable; the native bytes are preserved regardless.
+func parsePerformers(vals []string) []PerformerCredit {
 	if len(vals) == 0 {
 		return nil
 	}
-	out := make(map[string][]string)
+	out := make([]PerformerCredit, 0, len(vals))
 	for _, v := range vals {
+		v = strings.TrimSpace(v)
 		name, role := v, ""
 		if strings.HasSuffix(v, ")") {
 			if open := strings.LastIndexByte(v, '('); open >= 0 {
-				name = strings.TrimSpace(v[:open])
-				role = strings.TrimSpace(v[open+1 : len(v)-1])
+				n := strings.TrimSpace(v[:open])
+				r := strings.TrimSpace(v[open+1 : len(v)-1])
+				if n != "" && r != "" {
+					name, role = n, r
+				}
 			}
 		}
-		out[role] = append(out[role], name)
+		out = append(out, PerformerCredit{Name: name, Role: role})
 	}
 	return out
 }
 
-// formatPerformers is the inverse of parsePerformers. Roles are emitted in
-// sorted order for deterministic output; the empty role emits a bare name.
-func formatPerformers(m map[string][]string) []string {
-	if len(m) == 0 {
+// formatPerformers is the inverse of parsePerformers, emitting one value per
+// performer IN ORDER (PERFORMER order is significant, so no sort). A performer with
+// a role emits "Name (Role)"; a bare name emits the name; an empty-name performer
+// with a role emits "(Role)" with no leading space (reachable only from a directly
+// constructed Performer, and not round-trip-stable - see Performer).
+func formatPerformers(ps []PerformerCredit) []string {
+	if len(ps) == 0 {
 		return nil
 	}
-	roles := make([]string, 0, len(m))
-	for r := range m {
-		roles = append(roles, r)
-	}
-	// Deterministic ordering across runs.
-	slices.Sort(roles)
-	var out []string
-	for _, r := range roles {
-		for _, name := range m[r] {
-			if r == "" {
-				out = append(out, name)
-			} else {
-				out = append(out, name+" ("+r+")")
-			}
+	out := make([]string, 0, len(ps))
+	for _, p := range ps {
+		switch {
+		case p.Role == "":
+			out = append(out, p.Name)
+		case p.Name == "":
+			out = append(out, "("+p.Role+")")
+		default:
+			out = append(out, p.Name+" ("+p.Role+")")
 		}
 	}
 	return out

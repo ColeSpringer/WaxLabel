@@ -192,6 +192,7 @@ const (
 	WarnNativeValueReduced     = core.WarnNativeValueReduced
 	WarnValueReduced           = core.WarnValueReduced
 	WarnChapterEndsDropped     = core.WarnChapterEndsDropped
+	WarnPaddingClamped         = core.WarnPaddingClamped
 )
 
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated

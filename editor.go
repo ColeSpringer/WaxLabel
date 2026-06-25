@@ -9,9 +9,16 @@ import (
 	"time"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/mapping"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
+
+// ResolveAlias returns the canonical key for a recognized alternative tag spelling
+// (DATE/YEAR -> RECORDINGDATE, TOTALTRACKS -> TRACKTOTAL, ORGANIZATION -> LABEL, ...),
+// or key unchanged when it is not an alias. Front-ends use it before applying an edit
+// so an alias targets the real field instead of creating a duplicate custom field.
+func ResolveAlias(key tag.Key) tag.Key { return mapping.ResolveAlias(key) }
 
 // Editor records mutations against a [Document] without changing it. Mutations
 // accumulate as a presence-aware [tag.TagPatch] (for canonical fields) plus a
@@ -87,7 +94,7 @@ func (e *Editor) AddPicture(p Picture) *Editor {
 	// value, but Data is a slice aliasing their backing array, so a later mutation of that
 	// array (or reuse of the buffer) would otherwise change the bytes this edit writes.
 	// The read side (clonePicturesDeep) already detaches on the way out; this detaches on
-	// the way in, reusing the same pattern (L1).
+	// the way in with the same ownership rule.
 	p.Data = append([]byte(nil), p.Data...)
 	// Pad the mask for any Edit-seeded pictures not yet covered, then mark this one
 	// added, keeping addedMask parallel to pictures.
@@ -176,8 +183,8 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// and silently bless a contradictory file. Every editing path - set/plan, lint
 	// --fix, and a copy's destination editor (transfer.go) - funnels through Prepare, so
 	// they inherit this one guard (exit 4), making a no-audio file fail to edit just as
-	// it fails to verify (H1). It is a base-document validity check, not an authored-edit
-	// warning, so it is NOT gated on the carried flag. The copy SOURCE stays readable: a
+	// it fails to verify. It is a base-document validity check, not an authored-edit
+	// warning, so it is not gated on the carried flag. The copy source stays readable: a
 	// no-audio file is still dumpable and its tags are real, so copying tags out of one is
 	// allowed (only the destination, which writes, is gated here).
 	if hasNoAudioWarning(e.base) {
@@ -205,12 +212,12 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// (or a clear-then-empty-add) leaves the key present-but-empty, which no codec
 	// persists - so without this the plan would diff a phantom add against an
 	// identical file, reporting a change and bumping mtime over bytes that never
-	// moved (#3). The scope is strictly zero-length: a present [""] (what `set KEY=`
+	// moved. The scope is strictly zero-length: a present [""] (what `set KEY=`
 	// produces) is a distinct, CLI-reachable empty value and is left untouched.
 	dropEmptyValuedKeys(&editedTags)
 	// Reject a NUL byte in any value, chapter title, or picture description this edit
 	// introduces: a NUL silently truncates the field on the C-string formats and would
-	// otherwise corrupt the write. (D1)
+	// otherwise corrupt the write.
 	if err := e.rejectNULValues(editedTags, patchKeys); err != nil {
 		return nil, err
 	}
@@ -314,7 +321,7 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	}
 	// Surface a known single-valued key the edit leaves holding multiple values as a
 	// non-fatal plan warning, so a library caller sees the cardinality the typed
-	// projection would silently collapse to its first value (#17). It names exactly the
+	// projection would silently collapse to its first value. It names exactly the
 	// keys the CLI's --strict gate acts on, and lets the CLI read the signal off the
 	// report once (now also in --json warnings). A faithful carry suppresses it (like the
 	// chapter checks): a copy must not flag the source's own conflicting single-valued
@@ -324,7 +331,7 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		// the codec's re-projected result: a single-valued key is single-valued by the
 		// key's own definition regardless of format, and a format that collapses the value
 		// in its result (Matroska's Info.Title) would otherwise stay silent on the very
-		// loss the warning exists to surface (F2). Diffing base->intent still avoids
+		// loss the warning exists to surface. Diffing base->intent still avoids
 		// re-flagging an untouched pre-existing multi.
 		wp.Report.Warnings = appendSingleValuedWarnings(wp.Report.Warnings, e.base.Tags, edited.Tags)
 		// The legacy-conflict check, by contrast, judges against the plan's result tags
@@ -350,7 +357,7 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 // editedTags); the file's untouched pre-existing tags are not re-judged. Pictures
 // are scoped to those added on this editor (addedMask), like the rest of the
 // added-picture validation; chapters cover the full edited list, which SetChapters
-// replaces wholesale. (D1)
+// replaces wholesale.
 func (e *Editor) rejectNULValues(editedTags tag.TagSet, keys []tag.Key) error {
 	for _, k := range keys {
 		vals, ok := editedTags.Get(k)
@@ -399,7 +406,7 @@ func planResultTags(wp *core.WritePlan, edited *core.Media) tag.TagSet {
 // single-valued key the edit changes into holding more than one value. It diffs base
 // against the edit INTENT (the edited tag set), not the codec's re-projected result,
 // so a format that collapses the value in its own result (Matroska's Info.Title) is
-// still flagged - the cardinality is a property of the key, not the format (F2).
+// still flagged - the cardinality is a property of the key, not the format.
 // Diffing against base avoids re-flagging an untouched pre-existing multi (already
 // reported by Lint), and the shared [tag.Key.SingleValuedMulti] predicate keeps the
 // library warning, the linter's finding, and the CLI's --strict gate from disagreeing.

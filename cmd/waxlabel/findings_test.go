@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// TestUnknownCommandSuggestionNotMangled (H1): cobra's multi-line "Did you mean
+// TestUnknownCommandSuggestionNotMangled: cobra's multi-line "Did you mean
 // this?" suggestion is trusted CLI text, so it must render with real newlines and a
 // real tab - never the literal \x0a/\x09 the single-line path would escape.
 func TestUnknownCommandSuggestionNotMangled(t *testing.T) {
@@ -29,7 +29,7 @@ func TestUnknownCommandSuggestionNotMangled(t *testing.T) {
 	}
 }
 
-// TestUsageHintOnDeadEnds (M5): a cobra dead-end with no built-in guidance - an
+// TestUsageHintOnDeadEnds: a cobra dead-end with no built-in guidance - an
 // arg-count failure or an unknown flag - gains a "run '<cmd> --help' for usage"
 // pointer, with the resolved command path. A self-documenting usagef message does
 // not (it would be redundant).
@@ -97,7 +97,7 @@ func TestRemovedWritePoliciesRejected(t *testing.T) {
 	}
 }
 
-// TestCopyNotFoundMatchesOtherCommands (M3): copy's per-input parse failure reads
+// TestCopyNotFoundMatchesOtherCommands: copy's per-input parse failure reads
 // as the "waxlabel: <path>: <reason>" line dump/verify/set print, and the --json
 // not-found message uses the same "<path>: no such file or directory" phrasing, so
 // the human and machine forms agree across every command.
@@ -120,7 +120,7 @@ func TestCopyNotFoundMatchesOtherCommands(t *testing.T) {
 	}
 }
 
-// TestSetOutputOverwriteGuard (M3): -o refuses to clobber an existing, unrelated
+// TestSetOutputOverwriteGuard: -o refuses to clobber an existing, unrelated
 // file unless --overwrite is given; the input-as-output case is exempt.
 func TestSetOutputOverwriteGuard(t *testing.T) {
 	in := copyFixture(t, sampleFLAC)
@@ -173,14 +173,14 @@ func TestSetOutputOverwriteGuard(t *testing.T) {
 
 	// A missing input plus an existing -o target reports the input's not-found
 	// (exit 6), not "already exists" - the parse fails and writes nothing, so the
-	// target is safe and the more-relevant error surfaces (#4).
+	// target is safe and the more-relevant error surfaces.
 	missing := filepath.Join(t.TempDir(), "missing.flac")
 	if _, _, code = runCLI(t, "set", missing, "--set", "TITLE=X", "-o", existing); code != 6 {
 		t.Errorf("missing input + existing -o: code %d, want 6 (not-found), not 2", code)
 	}
 
 	// A directory -o target is rejected with a clear message, even with --overwrite
-	// (the rename could never succeed) (#5).
+	// (the rename could never succeed).
 	subdir := filepath.Join(t.TempDir(), "outdir")
 	if err := os.Mkdir(subdir, 0o755); err != nil {
 		t.Fatal(err)
@@ -194,7 +194,7 @@ func TestSetOutputOverwriteGuard(t *testing.T) {
 	}
 }
 
-// TestSetOutputNoOpVerbatim (L1): -o on an unchanged file prints one honest line,
+// TestSetOutputNoOpVerbatim: -o on an unchanged file prints one honest line,
 // not a "no changes" preview followed by a contradictory "Wrote" line.
 func TestSetOutputNoOpVerbatim(t *testing.T) {
 	in := copyFixture(t, sampleFLAC)
@@ -212,7 +212,7 @@ func TestSetOutputNoOpVerbatim(t *testing.T) {
 	}
 }
 
-// TestStrictBeforeNotFound (L7): a strict-key misuse is checked upfront, so it
+// TestStrictBeforeNotFound: a strict-key misuse is checked upfront, so it
 // stays exit 2 even when the file is missing; the non-strict note waits for a real
 // file, so a missing file is reported as not-found without a premature key lecture.
 func TestStrictBeforeNotFound(t *testing.T) {
@@ -232,7 +232,7 @@ func TestStrictBeforeNotFound(t *testing.T) {
 	}
 }
 
-// TestHelpTopicExitCode (L9): an unknown help topic exits non-zero like an unknown
+// TestHelpTopicExitCode: an unknown help topic exits non-zero like an unknown
 // command; a valid topic and bare help exit 0. A valid command followed by a stray
 // token that resolves to nothing (e.g. "help set bogus") is rejected too, but a
 // flag after a valid command (stripped before RunE) is not.
@@ -254,7 +254,7 @@ func TestHelpTopicExitCode(t *testing.T) {
 	}
 }
 
-// TestBareInvocationExitsUsage (#24, B3): a bare `waxlabel` with no subcommand is a
+// TestBareInvocationExitsUsage: a bare `waxlabel` with no subcommand is a
 // usage error (exit 2) so a script can tell "no command" from success, with the
 // help printed to stderr - while --help/-h stay exit 0 with help on stdout, and a
 // --json bare run still gets the machine-readable error envelope.
@@ -271,7 +271,7 @@ func TestBareInvocationExitsUsage(t *testing.T) {
 		t.Errorf("stderr should carry the help text: %q", stderr)
 	}
 	// An explicit failure line follows the help so the non-zero exit is obvious in a
-	// log that captured stderr (#8).
+	// log that captured stderr.
 	if !strings.Contains(stderr, "waxlabel: no command given") {
 		t.Errorf("stderr should carry the explicit 'no command given' line: %q", stderr)
 	}
@@ -297,7 +297,7 @@ func TestBareInvocationExitsUsage(t *testing.T) {
 	}
 }
 
-// TestMultiFileExitMostSevere (#14, B1): in a multi-file run the exit code is the
+// TestMultiFileExitMostSevere: in a multi-file run the exit code is the
 // most-severe failure's class, not the first file's - and is independent of
 // argument order. A corrupt file (invalid-data, exit 4) outranks a missing path
 // (not-found, exit 6), where first-error capture would yield 4 one way and 6 the
@@ -326,7 +326,7 @@ func TestMultiFileExitMostSevere(t *testing.T) {
 	}
 }
 
-// TestAddCoverNonRegularIsUsageError (#22, B2): an --add-cover pointed at a
+// TestAddCoverNonRegularIsUsageError: an --add-cover pointed at a
 // directory (or other non-regular file) is a usage error (exit 2), consistent with
 // every other non-regular input, rather than the exit-6 io error os.ReadFile would
 // raise. A genuinely missing cover still falls through to the read and stays io.
@@ -348,7 +348,7 @@ func TestAddCoverNonRegularIsUsageError(t *testing.T) {
 	}
 }
 
-// TestPlanJSONErrorEntryMinimal (#4, C1): a per-file error element is exactly
+// TestPlanJSONErrorEntryMinimal: a per-file error element is exactly
 // {schemaVersion,file,error} - no null "operations" array and none of the other
 // zeroed plan fields leaking through.
 func TestPlanJSONErrorEntryMinimal(t *testing.T) {
@@ -374,12 +374,12 @@ func TestPlanJSONErrorEntryMinimal(t *testing.T) {
 	}
 	for _, forbidden := range []string{"operations", "noOp", "changes", "bytesBefore", "bytesAfter", "paddingAfter"} {
 		if _, present := errEl[forbidden]; present {
-			t.Errorf("error element leaks %q (#4); want only schemaVersion/file/error", forbidden)
+			t.Errorf("error element leaks %q; want only schemaVersion/file/error", forbidden)
 		}
 	}
 }
 
-// TestSetJSONErrorNoPhantomOutput (#15, C1): a failed set's per-file error element
+// TestSetJSONErrorNoPhantomOutput: a failed set's per-file error element
 // does not echo the (unwritten) output path or carry committed/size, and the output
 // file is never created.
 func TestSetJSONErrorNoPhantomOutput(t *testing.T) {
@@ -400,7 +400,7 @@ func TestSetJSONErrorNoPhantomOutput(t *testing.T) {
 	}
 	for _, forbidden := range []string{"output", "committed", "size", "operations", "noOp"} {
 		if _, present := raw[0][forbidden]; present {
-			t.Errorf("set error element leaks %q (#15)", forbidden)
+			t.Errorf("set error element leaks %q", forbidden)
 		}
 	}
 	if _, err := os.Stat(outPath); !os.IsNotExist(err) {
@@ -408,7 +408,7 @@ func TestSetJSONErrorNoPhantomOutput(t *testing.T) {
 	}
 }
 
-// TestPreflightErrorEnvelopeShape (E2) pins that a list command wraps a pre-flight
+// TestPreflightErrorEnvelopeShape pins that a list command wraps a pre-flight
 // failure (missing args, a directory without --recursive, a bad flag) in the same
 // one-element JSON array its successful --json output uses, so `jq '.[]'` works no
 // matter how the run ends; a non-list command (diff/copy/keys), caps --format (a
@@ -452,13 +452,13 @@ func TestPreflightErrorEnvelopeShape(t *testing.T) {
 	}
 }
 
-// TestStrictGuardrailShapes pins how the two --strict guardrails surface (#5, B1).
+// TestStrictGuardrailShapes pins how the two --strict guardrails surface.
 // The file-independent unknown-key guardrail aborts up front: a single pre-flight
 // error, now wrapped in plan's documented one-element array like every other list-
-// command pre-flight failure (E2). The per-file single-valued-multi guardrail is a
+// command pre-flight failure. The per-file single-valued-multi guardrail is a
 // per-file array element, so it participates in the most-severe-wins aggregate exit
 // code rather than aborting the run: pairing it with a missing file yields exit 6
-// (not-found outranks the usage error) with BOTH elements present, independent of
+// (not-found outranks the usage error) with both elements present, independent of
 // argument order. (An earlier abort-on-first design discarded the not-found element
 // and flipped the exit to 2 - order-dependently - which this guards against.) The
 // abort-vs-per-file distinction now lives in the element count and aggregate exit,
@@ -466,7 +466,7 @@ func TestPreflightErrorEnvelopeShape(t *testing.T) {
 func TestStrictGuardrailShapes(t *testing.T) {
 	t.Parallel()
 
-	// Unknown key: invocation-level abort, a single-element array, exit 2 (E2).
+	// Unknown key: invocation-level abort, a single-element array, exit 2.
 	t.Run("unknown-key-aborts-as-one-element", func(t *testing.T) {
 		out, _, code := runCLI(t, "--json", "plan", sampleFLAC, "--strict", "--set", "BOGUS=1")
 		if code != 2 {
@@ -506,7 +506,7 @@ func TestStrictGuardrailShapes(t *testing.T) {
 	}
 }
 
-// TestDiffQuietJSONEmitsObject (#6, C3): --json overrides --quiet, so a quiet JSON
+// TestDiffQuietJSONEmitsObject: --json overrides --quiet, so a quiet JSON
 // diff still emits the documented object (the exit code carries the verdict either
 // way), while a plain --quiet diff still prints nothing.
 func TestDiffQuietJSONEmitsObject(t *testing.T) {
@@ -529,7 +529,7 @@ func TestDiffQuietJSONEmitsObject(t *testing.T) {
 	}
 }
 
-// TestRecursiveWalkFollowsSymlinkedAudio (A1): the no-hang hardening must not break
+// TestRecursiveWalkFollowsSymlinkedAudio: the no-hang hardening must not break
 // the documented "symlinks are followed" behavior - a recursive walk still picks up
 // a symlink that points at a real audio file (resolved via os.Stat), even though
 // filepath.WalkDir does not follow symlinks itself.
@@ -602,7 +602,7 @@ func TestRecursiveWalkThroughSymlinkedDirRoot(t *testing.T) {
 	}
 }
 
-// TestRecursiveWalkReportsDanglingSymlink (A1): a dangling symlink with an audio
+// TestRecursiveWalkReportsDanglingSymlink: a dangling symlink with an audio
 // extension is surfaced as a per-file not-found by a recursive walk, not silently
 // dropped - so a library scan does not read "clean" over a broken link. (The
 // non-regular skip applies to FIFOs/sockets, which can wedge a parse; a dangling
@@ -645,7 +645,7 @@ func TestRecursiveWalkReportsDanglingSymlink(t *testing.T) {
 	}
 }
 
-// TestNonExpandingCommandsRejectNonRegular (#3): caps, diff, and copy parse their
+// TestNonExpandingCommandsRejectNonRegular: caps, diff, and copy parse their
 // operands directly (no directory expansion), but still reject a non-regular input -
 // here a directory - as an exit-2 usage error, matching dump/verify/plan/set/lint
 // rather than falling through to the library's exit-4 backstop.
@@ -675,7 +675,7 @@ func TestNonExpandingCommandsRejectNonRegular(t *testing.T) {
 	}
 }
 
-// TestCopyRejectsStdin (M1): copy has no streaming model, so "-" as either operand
+// TestCopyRejectsStdin: copy has no streaming model, so "-" as either operand
 // is a usage error (exit 2), not an attempt to open a file literally named "-".
 func TestCopyRejectsStdin(t *testing.T) {
 	dst := copyFixture(t, sampleFLAC)
@@ -688,7 +688,7 @@ func TestCopyRejectsStdin(t *testing.T) {
 	}
 }
 
-// TestRejectEmptyScalarFlags (U4): an explicitly-empty --preset/--legacy/--padding is
+// TestRejectEmptyScalarFlags: an explicitly-empty --preset/--legacy/--padding is
 // a usage error on both set and plan, matching the unknown-value rejection rather than
 // being silently treated as unset (and keeping the scalar write-shaping flags
 // consistent).
@@ -705,7 +705,7 @@ func TestRejectEmptyScalarFlags(t *testing.T) {
 	}
 }
 
-// TestCapsNoArgsHasHint (U5): `caps` with neither a file nor --format dead-ends with
+// TestCapsNoArgsHasHint: `caps` with neither a file nor --format dead-ends with
 // the same "run '... --help' for usage" pointer the other commands print.
 func TestCapsNoArgsHasHint(t *testing.T) {
 	_, stderr, code := runCLI(t, "caps")
@@ -717,7 +717,7 @@ func TestCapsNoArgsHasHint(t *testing.T) {
 	}
 }
 
-// TestEmptyWalkNoteNotAFailure (M5): a --recursive walk that matches no audio files
+// TestEmptyWalkNoteNotAFailure: a --recursive walk that matches no audio files
 // prints a "note:" line (not a "waxlabel:" failure line) and still exits 0.
 func TestEmptyWalkNoteNotAFailure(t *testing.T) {
 	dir := t.TempDir()
@@ -800,7 +800,7 @@ func TestRecursiveSkippedCountsSymlinks(t *testing.T) {
 	}
 }
 
-// TestSetVerifyConfirmation (#4): a committed --verify save confirms the essence
+// TestSetVerifyConfirmation: a committed --verify save confirms the essence
 // check - a human "Audio essence verified" line and a JSON "verified": true - while
 // a run without --verify omits the field so a normal save does not read like a check.
 func TestSetVerifyConfirmation(t *testing.T) {
@@ -827,7 +827,7 @@ func TestSetVerifyConfirmation(t *testing.T) {
 	}
 }
 
-// TestUnquotedValueHint (#1/F2): an unquoted value with spaces (--set TITLE=Two
+// TestUnquotedValueHint: an unquoted value with spaces (--set TITLE=Two
 // Words) leaves a stray bare-word positional beside a real input. The writing set
 // command refuses the whole run up front (exit 2, nothing written) so a script cannot
 // misread a truncated tag as a partial success; the read-only plan keeps the same
@@ -942,7 +942,7 @@ func TestJSONErrorCarriesHint(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("leading-dash arg exit = %d, want 2; out=%s", code, out)
 	}
-	// dump is a list command, so its pre-flight error is a single-element array (E2),
+	// dump is a list command, so its pre-flight error is a single-element array,
 	// and the hint rides on that element.
 	je := decodeJSONOne[jsonError](t, out)
 	if !strings.Contains(je.Error.Hint, "--") {
@@ -968,5 +968,65 @@ func TestPlanJSONEmptyChangesArray(t *testing.T) {
 	}
 	if !strings.Contains(out, `"changes": []`) {
 		t.Errorf(`no-op plan --json should emit "changes": [], got:\n%s`, out)
+	}
+}
+
+// TestVorbisAliasCanonicalized verifies that a recognized alias (DATE, YEAR, TOTALTRACKS, ...) is
+// resolved to its canonical key, so editing one targets the real field - replacing the
+// value rather than appending a stray duplicate - is not flagged as a custom field, and
+// is accepted under --strict. A genuinely unknown key is still flagged and rejected.
+func TestVorbisAliasCanonicalized(t *testing.T) {
+	// DATE replaces the existing RECORDINGDATE rather than creating a second value.
+	f := copyFixture(t, sampleFLAC)
+	if _, _, code := runCLI(t, "set", f, "--set", "RECORDINGDATE=2019"); code != 0 {
+		t.Fatalf("seed RECORDINGDATE exit = %d", code)
+	}
+	if _, stderr, code := runCLI(t, "set", f, "--set", "DATE=2021"); code != 0 {
+		t.Fatalf("set --set DATE exit = %d, want 0; stderr: %s", code, stderr)
+	} else if strings.Contains(stderr, "custom field") || strings.Contains(stderr, "not a known key") {
+		t.Errorf("DATE must resolve to RECORDINGDATE, not be flagged a custom field; stderr:\n%s", stderr)
+	}
+	out, _, _ := runCLI(t, "dump", f)
+	if strings.Count(out, "RECORDINGDATE") != 1 || !strings.Contains(out, "RECORDINGDATE  2021") {
+		t.Errorf("DATE should replace RECORDINGDATE with one value, not duplicate it:\n%s", out)
+	}
+
+	// Under --strict, DATE is accepted (it resolves to a known key, so the guardrail does
+	// not reject it) and is stored as RECORDINGDATE even on a non-Vorbis format.
+	mp3 := copyFixture(t, sampleMP3)
+	if _, _, code := runCLI(t, "set", "--strict", mp3, "--set", "DATE=2021"); code != 0 {
+		t.Errorf("--strict --set DATE on MP3 exit = %d, want 0 (DATE resolves to a known key)", code)
+	}
+	if out, _, _ := runCLI(t, "dump", mp3); !strings.Contains(out, "RECORDINGDATE  2021") {
+		t.Errorf("DATE on MP3 should be stored as RECORDINGDATE:\n%s", out)
+	}
+
+	// A genuinely unknown key is still flagged, and rejected under --strict.
+	if _, stderr, code := runCLI(t, "set", copyFixture(t, sampleFLAC), "--set", "BOGUSKEY=x"); code != 0 || !strings.Contains(stderr, "custom field") {
+		t.Errorf("unknown key: exit %d, want 0 with a custom-field note; stderr:\n%s", code, stderr)
+	}
+	if _, _, code := runCLI(t, "set", "--strict", copyFixture(t, sampleFLAC), "--set", "BOGUSKEY=x"); code != 2 {
+		t.Errorf("--strict unknown key exit = %d, want 2 (rejected)", code)
+	}
+}
+
+// TestJSONVersionFlag verifies that `--json --version` emits the JSON version object,
+// not cobra's plain text template; plain `--version` stays text. Both exit 0.
+func TestJSONVersionFlag(t *testing.T) {
+	stdout, _, code := runCLI(t, "--json", "--version")
+	if code != 0 {
+		t.Fatalf("--json --version exit = %d, want 0", code)
+	}
+	var jv jsonVersion
+	if err := json.Unmarshal([]byte(stdout), &jv); err != nil {
+		t.Fatalf("--json --version did not emit JSON: %v\noutput: %s", err, stdout)
+	}
+	if jv.SchemaVersion != schemaVersion || jv.Version == "" {
+		t.Errorf("version JSON = %+v, want schemaVersion %d and a non-empty version", jv, schemaVersion)
+	}
+
+	text, _, code := runCLI(t, "--version")
+	if code != 0 || !strings.HasPrefix(text, "waxlabel version ") {
+		t.Errorf("--version = %q (exit %d), want a 'waxlabel version...' line", text, code)
 	}
 }

@@ -201,8 +201,8 @@ type jsonDiffCount struct {
 func toJSONDiff(a, b string, d diffResult) jsonDiff {
 	jd := jsonDiff{
 		SchemaVersion: schemaVersion,
-		FileA:         a,
-		FileB:         b,
+		FileA:         jsonFileName(a),
+		FileB:         jsonFileName(b),
 		Identical:     d.identical(),
 		Tags:          []jsonDiffTag{},
 	}

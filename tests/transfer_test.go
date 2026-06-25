@@ -371,3 +371,123 @@ func TestTransferPictureDisposition(t *testing.T) {
 		}
 	}
 }
+
+// TestPlanTransferNumericGenreLossy verifies that under --numeric-genre a recognized GENRE is
+// stored as a numeric reference (ID3 TCON / MP4 gnre) and re-read as its canonical name, so
+// the destination mutates the value. The transfer report must grade it Lossy, not Carried;
+// without the option the genre carries verbatim. Every numeric-genre destination - AAC, MP3,
+// and MP4 (gnre) - must report consistently.
+func TestPlanTransferNumericGenreLossy(t *testing.T) {
+	src := mustParseBytes(t, append(id3v2(3, textFrame(3, "TCON", "Rock"), textFrame(3, "TIT2", "T")), mp3Audio(t)...))
+
+	genreDisp := func(dst wl.Format, opts ...wl.WriteOption) wl.Disposition {
+		report, err := src.PlanTransfer(dst, opts...)
+		if err != nil {
+			t.Fatalf("PlanTransfer(%v): %v", dst, err)
+		}
+		for _, it := range report.Items {
+			if it.Kind == wl.TransferField && it.Key == tag.Genre {
+				return it.Disposition
+			}
+		}
+		t.Fatalf("transfer report to %v has no GENRE field", dst)
+		return wl.Carried
+	}
+
+	// AIFF and WAV join AAC/MP3/MP4 under --numeric-genre. AIFF has no native genre slot, so
+	// genre always routes through the ID3 chunk; WAV may force an ID3 chunk for the rest of a
+	// transfer (a multi-value field, an unmapped key, a picture), and its numeric TCON then
+	// wins read precedence - so the value-blind capability reports GENRE partial conservatively
+	// for both (matching the other ID3 codecs). A plain (non-numeric) transfer still carries.
+	for _, dst := range []wl.Format{wl.FormatAAC, wl.FormatMP3, wl.FormatMP4, wl.FormatAIFF, wl.FormatWAV} {
+		if d := genreDisp(dst); d != wl.Carried {
+			t.Errorf("GENRE transfer to %v without numeric-genre = %s, want carried", dst, d)
+		}
+		if d := genreDisp(dst, wl.WithNumericGenre()); d != wl.Lossy {
+			t.Errorf("GENRE transfer to %v under numeric-genre = %s, want lossy (numeric resolution mutates the value)", dst, d)
+		}
+	}
+}
+
+// TestAiffNumericGenreReducedWarns verifies that AIFF has no native genre slot, so a
+// --numeric-genre write stores the genre as a numeric ID3 TCON, re-read as its canonical
+// name - mutating "rock" -> "Rock". The edit must warn value-reduced naming GENRE (it
+// previously graded the field carried and stayed silent); a plain write keeps the text
+// genre verbatim with no warning.
+func TestAiffNumericGenreReducedWarns(t *testing.T) {
+	data := aiffFile("AIFF", stdCOMM(), aiffSSND(400), aiffID3(id3v2(4, textFrame(4, "TIT2", "T"))))
+
+	num, err := mustParseBytes(t, data).Edit().Set(tag.Genre, "rock").Prepare(wl.WithNumericGenre())
+	if err != nil {
+		t.Fatalf("prepare numeric: %v", err)
+	}
+	if !hasKeyedValueReduced(num.Report().Warnings, tag.Genre) {
+		t.Errorf("AIFF --numeric-genre GENRE must warn value-reduced; got %v", num.Report().Warnings)
+	}
+	if v, _ := mustParseBytes(t, applyToBytes(t, data, num)).Tags().First(tag.Genre); v != "Rock" {
+		t.Errorf("AIFF --numeric-genre GENRE round-trip = %q, want the mutated canonical Rock", v)
+	}
+
+	plain := prepareWith(t, data, func(e *wl.Editor) { e.Set(tag.Genre, "rock") })
+	if hasKeyedValueReduced(plain.Report().Warnings, tag.Genre) {
+		t.Errorf("a plain (text) GENRE write must not warn value-reduced; got %v", plain.Report().Warnings)
+	}
+	if v, _ := mustParseBytes(t, applyToBytes(t, data, plain)).Tags().First(tag.Genre); v != "rock" {
+		t.Errorf("plain GENRE round-trip = %q, want rock verbatim", v)
+	}
+}
+
+// TestWavNumericGenreReducedWithID3 verifies that WAV genre uses native LIST/INFO IGNR
+// text unless an id3 chunk is present, in which case the id3 value wins read precedence.
+// With a preserved id3 chunk a --numeric-genre write's numeric TCON becomes authoritative
+// and mutates "rock" -> "Rock", so it must warn; a bare WAV keeps IGNR text losslessly and
+// must not warn.
+func TestWavNumericGenreReducedWithID3(t *testing.T) {
+	withID3 := wavFile(wavFmtPCM(), wavID3(id3v2(4, textFrame(4, "TIT2", "T"))), wavData(400))
+	wplan, err := mustParseBytes(t, withID3).Edit().Set(tag.Genre, "rock").Prepare(wl.WithNumericGenre())
+	if err != nil {
+		t.Fatalf("prepare withID3: %v", err)
+	}
+	if !hasKeyedValueReduced(wplan.Report().Warnings, tag.Genre) {
+		t.Errorf("WAV with an id3 chunk: --numeric-genre GENRE must warn value-reduced; got %v", wplan.Report().Warnings)
+	}
+	if v, _ := mustParseBytes(t, applyToBytes(t, withID3, wplan)).Tags().First(tag.Genre); v != "Rock" {
+		t.Errorf("WAV+id3 --numeric-genre GENRE round-trip = %q, want the mutated Rock", v)
+	}
+
+	bare := wavFile(wavFmtPCM(), wavData(400))
+	bplan, err := mustParseBytes(t, bare).Edit().Set(tag.Genre, "rock").Prepare(wl.WithNumericGenre())
+	if err != nil {
+		t.Fatalf("prepare bare: %v", err)
+	}
+	if hasKeyedValueReduced(bplan.Report().Warnings, tag.Genre) {
+		t.Errorf("a bare WAV keeps native IGNR text, so --numeric-genre GENRE must not warn; got %v", bplan.Report().Warnings)
+	}
+	if v, _ := mustParseBytes(t, applyToBytes(t, bare, bplan)).Tags().First(tag.Genre); v != "rock" {
+		t.Errorf("bare WAV GENRE round-trip = %q, want rock verbatim (IGNR text)", v)
+	}
+}
+
+// TestWavForcedID3NumericGenreWarns verifies that a bare WAV whose edit forces an
+// id3 chunk into existence - here an unmapped key, which LIST/INFO cannot store - routes
+// genre through that chunk too, so under --numeric-genre the numeric TCON mutates "rock" ->
+// "Rock" even though the base file had no id3 chunk. The value-blind capability cannot see
+// the forcing, so it reports GENRE partial under --numeric-genre and the edited-vs-result
+// comparison turns that into a precise value-reduced warning (no false positive on the
+// genre-only bare case, which TestWavNumericGenreReducedWithID3 covers).
+func TestWavForcedID3NumericGenreWarns(t *testing.T) {
+	bare := wavFile(wavFmtPCM(), wavData(400))
+	plan, err := mustParseBytes(t, bare).Edit().
+		Set(tag.Genre, "rock").
+		Set(tag.Key("PRIVATE_X"), "x"). // unmapped key -> not INFO-representable -> forces an id3 chunk
+		Prepare(wl.WithNumericGenre())
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if !hasKeyedValueReduced(plan.Report().Warnings, tag.Genre) {
+		t.Errorf("a forced-id3 bare WAV --numeric-genre GENRE must warn value-reduced; got %v", plan.Report().Warnings)
+	}
+	if v, _ := mustParseBytes(t, applyToBytes(t, bare, plan)).Tags().First(tag.Genre); v != "Rock" {
+		t.Errorf("forced-id3 GENRE round-trip = %q, want the mutated Rock", v)
+	}
+}

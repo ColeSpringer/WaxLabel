@@ -126,7 +126,12 @@ Common edit flags:
 The read commands accept a single `-` for standard input; `set -` also works when
 paired with `-o`. `dump`, `verify`, `lint`, `plan`, and `set` can walk directories
 with `--recursive`; walked files are selected by extension, while direct file
-arguments are content-sniffed.
+arguments are content-sniffed, and a `--recursive` walk skips hidden directories
+(those whose name begins with `.`) unless one is named as the root.
+
+`-o` writes atomically (a temp file in the target's directory, then a rename), so it
+must name a regular file in a writable directory. It is not a discard sink, and
+`-o /dev/null` fails. To write nothing, omit `-o` or use `plan` to preview the edit.
 
 All data commands accept `--json`. Commands that process many inputs return an
 array, one element per input. Single-result commands such as `diff`, `copy`,

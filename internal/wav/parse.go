@@ -3,6 +3,7 @@ package wav
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"time"
@@ -58,7 +59,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 
 	d := &doc{size: size, infoIdx: -1, id3Idx: -1, dataIdx: -1}
-	if err := walkChunks(ctx, src, d, riffEnd, limit); err != nil {
+	if err := walkChunks(ctx, src, d, riffEnd, limit, opts.Limits.MaxElements); err != nil {
 		return nil, err
 	}
 
@@ -121,10 +122,19 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		if err != nil {
 			return nil, err
 		}
-		if tg, perr := id3.ParseTag(body); perr == nil {
+		tg, perr := id3.ParseTag(body, opts.Limits.MaxElements)
+		if perr == nil {
 			d.id3 = tg
 			d.id3Idx = i
 			break
+		}
+		// A bounded-allocation cap breach (a hostile frame flood hitting MaxElements) is a hard
+		// error, not a benign "this chunk is not a tag": swallowing it would silently treat a
+		// structurally-valid id3 chunk as absent and rewrite the file without it. Surface it like
+		// the MP3/AAC front-tag path does. An ordinary malformed chunk still falls through to the
+		// LIST/INFO fallback.
+		if errors.Is(perr, waxerr.ErrSizeTooLarge) {
+			return nil, perr
 		}
 	}
 	if d.id3Idx >= 0 {
@@ -141,7 +151,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 	if len(id3Idxs) > 1 && d.id3Idx >= 0 {
 		warnings = core.Warn(warnings, core.WarnDuplicateTagBlock,
-			"more than one id3 chunk; the first is authoritative and the rest are dropped on rewrite")
+			"more than one id3 chunk; the first that parses is authoritative and the rest are dropped on rewrite")
 	}
 	// The data chunk declared more bytes than the file holds: a truncated WAV.
 	if d.dataTruncated {
@@ -230,11 +240,14 @@ func mediaWarnings(d *doc, numericGenre bool) []core.Warning {
 // walkChunks records every top-level RIFF chunk by identifier and source range,
 // noting the indices of the first fmt-relevant data, LIST, and id3 chunks. It
 // reads only chunk headers (never bodies), so a large data chunk costs nothing.
-func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, riffEnd, limit int64) error {
+func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, riffEnd, limit int64, maxElements int) error {
 	size := d.size
 	off := int64(12)
 	for off+8 <= size && off < riffEnd {
 		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := bits.CheckElementCap(len(d.chunks), maxElements, "RIFF chunks"); err != nil {
 			return err
 		}
 		head, err := bits.ReadSlice(src, off, 8, limit)

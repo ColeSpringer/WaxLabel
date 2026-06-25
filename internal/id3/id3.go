@@ -44,6 +44,35 @@ func (t *Tag) SrcVersion() byte { return t.srcVersion }
 // WriteVersion reports the version a rewrite will emit (3 or 4).
 func (t *Tag) WriteVersion() byte { return t.writeVersion }
 
+// WriteVersionOr returns t's write version, or the format default when t is nil. It is the
+// single home for the "which ID3 minor version will this codec write" rule (the v2.3-vs-v2.4
+// split that governs the date-frame and numeric-genre fidelity).
+func WriteVersionOr(t *Tag, f core.Format) byte {
+	if t != nil {
+		return t.WriteVersion()
+	}
+	return core.DefaultID3Version(f)
+}
+
+// id3Doc is the native-document view WriteVersionFor needs: the file's parsed ID3 tag, or nil
+// when the file has none. Every ID3-backed codec's *doc implements it with a one-line ID3Tag
+// accessor, so reaching the native tag is expressed once here instead of in four per-codec
+// wrappers that could drift in how m.Native is unwrapped.
+type id3Doc interface{ ID3Tag() *Tag }
+
+// WriteVersionFor returns the ID3 minor version codec format f would write for media m: the
+// file's own tag version when present, else the format default. m.Native must implement
+// id3Doc (each ID3-backed codec's doc does); a nil m or a foreign Native yields the default.
+func WriteVersionFor(m *core.Media, f core.Format) byte {
+	var t *Tag
+	if m != nil {
+		if d, ok := m.Native.(id3Doc); ok {
+			t = d.ID3Tag()
+		}
+	}
+	return WriteVersionOr(t, f)
+}
+
 // Frames returns the decoded frames in order.
 func (t *Tag) Frames() []Frame { return t.frames }
 
@@ -119,7 +148,7 @@ func TagSize(header []byte) (int64, bool) {
 // container is a front ID3v2 tag (MP3 and raw AAC); FLAC, which only preserves a
 // stray leading ID3 verbatim, reads the raw bytes itself. size is the source size
 // (the tag must fit within it); limit bounds the allocation.
-func ReadFront(src core.ReaderAtSized, size, limit int64) (*Tag, int64, error) {
+func ReadFront(src core.ReaderAtSized, size, limit int64, maxElements int) (*Tag, int64, error) {
 	hdr, err := bits.ReadSlice(src, 0, 10, limit)
 	if err != nil {
 		return nil, 0, nil // too short to hold an ID3 header: no front tag
@@ -132,7 +161,7 @@ func ReadFront(src core.ReaderAtSized, size, limit int64) (*Tag, int64, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	tg, err := ParseTag(tagBytes)
+	tg, err := ParseTag(tagBytes, maxElements)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -158,8 +187,9 @@ func putSyncSafe(dst []byte, v int64) {
 // ParseTag decodes a complete ID3v2 tag region (starting at the "ID3" header).
 // It tolerates truncation (parsing what is present) but rejects a missing or
 // reserved header. The caller bounds the size of data when reading it from the
-// source, so parsing the in-memory region needs no further allocation limit.
-func ParseTag(data []byte) (*Tag, error) {
+// source; maxElements additionally caps the frame count (0 = unlimited) so a body
+// of minimum-size frames cannot accumulate descriptors past the shared limit.
+func ParseTag(data []byte, maxElements int) (*Tag, error) {
 	size, ok := TagSize(data)
 	if !ok {
 		return nil, fmt.Errorf("%w: not an ID3v2 header", waxerr.ErrInvalidData)
@@ -196,7 +226,11 @@ func ParseTag(data []byte) (*Tag, error) {
 		body = skipExtHeader(body, major)
 	}
 
-	t.frames = parseFrames(body, major, tagUnsync)
+	frames, err := parseFrames(body, major, tagUnsync, maxElements)
+	if err != nil {
+		return nil, err
+	}
+	t.frames = frames
 	return t, nil
 }
 

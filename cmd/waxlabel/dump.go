@@ -138,7 +138,7 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 	format := doc.Format().String()
 	jd := jsonDocument{
 		SchemaVersion: schemaVersion,
-		File:          path,
+		File:          jsonFileName(path),
 		Format:        format,
 		Subformat:     subformatOf(props.Container, format),
 		Properties: &jsonProperties{

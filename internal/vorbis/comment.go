@@ -36,8 +36,12 @@ type Comment struct {
 // string, a count, then that many "NAME=value" entries. It returns the number
 // of body bytes consumed so a caller can handle whatever follows the list - the
 // Vorbis framing bit, or Opus comment-header padding. Entries without '=' are
-// dropped from the result (but still consumed).
-func ParseCommentList(body []byte, limit int64) (vendor string, comments []Comment, n int64, err error) {
+// dropped from the result (but still consumed). maxElements caps how many
+// comments accumulate (0 disables it): the count field is an attacker-controlled
+// uint32 and the body can be large (an Ogg comment packet is bounded only by the
+// alloc limit), so without the cap a body packed with minimum entries amplifies
+// into one Comment descriptor each to OOM - the same guard FLAC/RIFF/ID3/MP4 use.
+func ParseCommentList(body []byte, limit int64, maxElements int) (vendor string, comments []Comment, n int64, err error) {
 	c := bits.NewCursor(bytes.NewReader(body), int64(len(body)), limit)
 	vlen := int64(c.U32LE())
 	vendor = string(c.Bytes(vlen))
@@ -54,6 +58,9 @@ func ParseCommentList(body []byte, limit int64) (vendor string, comments []Comme
 		name, value, ok := strings.Cut(string(entry), "=")
 		if !ok {
 			continue // malformed entry without '='; drop from projection
+		}
+		if capErr := bits.CheckElementCap(len(comments), maxElements, "Vorbis comments"); capErr != nil {
+			return vendor, comments, c.Pos(), capErr
 		}
 		comments = append(comments, Comment{Name: name, Value: value})
 	}

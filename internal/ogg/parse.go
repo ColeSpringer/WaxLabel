@@ -137,7 +137,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		d.trailingLen = size - d.audioEnd
 	}
 
-	if err := d.decodeComments(hp.comment, limit, &warnings); err != nil {
+	if err := d.decodeComments(hp.comment, limit, opts.Limits.MaxElements, &warnings); err != nil {
 		return nil, err
 	}
 
@@ -200,6 +200,13 @@ func reassembleHeaders(src core.ReaderAtSized, pages []rawPage, serial uint32, l
 		completed := 0
 		for si, lac := range p.segs {
 			cur = append(cur, body[o:o+int(lac)]...)
+			// A packet reassembled across continuation pages is otherwise unbounded (each
+			// page body is capped by limit, but the running packet is not), so a hostile
+			// stream could grow it to file size. Cap the cumulative packet at the alloc
+			// limit, which sits well above any real comment header (tags + embedded cover).
+			if int64(len(cur)) > limit {
+				return hp, fmt.Errorf("%w: Ogg header packet exceeds the %d-byte limit", waxerr.ErrSizeTooLarge, limit)
+			}
 			o += int(lac)
 			if lac == maxSegments {
 				continue // packet continues onto the next segment/page
@@ -258,7 +265,7 @@ func detectKind(pkt []byte) (kind, int, error) {
 // comments, and pictures, preserving any trailing padding (Opus). The comment
 // list body is shared with FLAC via internal/vorbis; only the per-codec framing
 // differs.
-func (d *doc) decodeComments(pkt []byte, limit int64, warnings *[]core.Warning) error {
+func (d *doc) decodeComments(pkt []byte, limit int64, maxElements int, warnings *[]core.Warning) error {
 	var list []byte
 	switch d.kind {
 	case kindVorbis:
@@ -272,7 +279,7 @@ func (d *doc) decodeComments(pkt []byte, limit int64, warnings *[]core.Warning) 
 		}
 		list = pkt[len(opusTags):]
 	}
-	vendor, comments, n, err := vorbis.ParseCommentList(list, limit)
+	vendor, comments, n, err := vorbis.ParseCommentList(list, limit, maxElements)
 	if err != nil {
 		return err
 	}
@@ -314,7 +321,7 @@ func (d *doc) properties(lastGranule uint64) core.Properties {
 	switch d.kind {
 	case kindVorbis:
 		// \x01vorbis(7) | version(4) | channels(1) | sample_rate(4) |
-		// bitrate_max(4) | bitrate_nominal(4) | ...
+		// bitrate_max(4) | bitrate_nominal(4) |...
 		if len(d.idPacket) >= 16 {
 			t.Channels = int(d.idPacket[11])
 			t.SampleRate = int(binary.LittleEndian.Uint32(d.idPacket[12:16]))

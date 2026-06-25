@@ -19,7 +19,11 @@ func newRootCmd() *cobra.Command {
 			"dump reads a file, plan previews a write, set applies edits, and verify\n" +
 			"reports the audio-essence identity used for deduplication.\n\n" +
 			"All data commands support --json for scriptable output.",
-		Version: resolveVersion(),
+		// Version is deliberately unset: cobra's built-in --version handling prints its
+		// text template before RunE runs, so it cannot honor --json. We
+		// register our own "version" flag below and handle it in RunE instead, sharing one
+		// printVersion with the "version" subcommand so the two cannot disagree.
+		//
 		// Errors and usage are rendered once, centrally, in dispatch; silence
 		// cobra's own printing so failures are not reported twice.
 		SilenceErrors: true,
@@ -27,10 +31,19 @@ func newRootCmd() *cobra.Command {
 		// A bare `waxlabel` reaches this RunE (cobra dispatches a subcommand, resolves
 		// --help/-h, and rejects an unknown command before it), so treat "no command"
 		// as a usage error - exit 2, not cobra's default help-and-exit-0 - letting a
-		// script tell it apart from success.
-		RunE: func(cmd *cobra.Command, _ []string) error { return noCommand(cmd) },
+		// script tell it apart from success. With --version it prints the version (honoring
+		// --json) and exits 0.
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if v, _ := cmd.Flags().GetBool("version"); v {
+				return printVersion(cmd)
+			}
+			return noCommand(cmd)
+		},
 	}
 	root.PersistentFlags().Bool("json", false, "emit machine-readable JSON instead of human output")
+	// Our own --version flag, so it routes through RunE (where --json is honored) rather
+	// than cobra's pre-RunE text-only template.
+	root.Flags().Bool("version", false, "print the waxlabel version and exit")
 	root.AddCommand(
 		newDumpCmd(),
 		newPlanCmd(),
@@ -68,7 +81,7 @@ func noCommand(cmd *cobra.Command) error {
 	}
 	// Print the failure line after the help text so the non-zero exit is obvious in a
 	// log that captured stderr - the help alone reads like a successful invocation
-	// (JSON mode already returns the error envelope above). (#8)
+	// (JSON mode already returns the error envelope above).
 	fmt.Fprintln(cmd.ErrOrStderr(), "waxlabel: no command given")
 	return alreadyRendered(usagef("no command given"))
 }
@@ -105,23 +118,25 @@ func newHelpCmd() *cobra.Command {
 // "waxlabel version" spelling works, not just the --version flag (which a bare
 // "version" word would otherwise hit as an unknown command). It prints the same
 // line cobra's --version template produces - "waxlabel version <v>" - so the two
-// cannot disagree (U3); resolveVersion is the single source for the value.
+// cannot disagree; resolveVersion is the single source for the value.
 func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print the waxlabel version",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			// With --json, emit the documented object so a script reads the version like
-			// every other data command's machine output, rather than parsing the text line
-			// (F6). resolveVersion stays the single source for the value.
-			if jsonMode(cmd) {
-				return writeJSON(cmd.OutOrStdout(), jsonVersion{SchemaVersion: schemaVersion, Version: resolveVersion()})
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "waxlabel version %s\n", resolveVersion())
-			return nil
-		},
+		RunE:  func(cmd *cobra.Command, _ []string) error { return printVersion(cmd) },
 	}
+}
+
+// printVersion writes the version in the same shape as the caller requested: JSON mode
+// gets the documented object, and text mode gets the conventional "waxlabel version <v>"
+// line. Both the subcommand and the root flag share this helper.
+func printVersion(cmd *cobra.Command) error {
+	if jsonMode(cmd) {
+		return writeJSON(cmd.OutOrStdout(), jsonVersion{SchemaVersion: schemaVersion, Version: resolveVersion()})
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "waxlabel version %s\n", resolveVersion())
+	return nil
 }
 
 // jsonVersion is the machine-readable form of the version command's output.
@@ -138,12 +153,12 @@ func wrapUsageErrors(cmd *cobra.Command) {
 	cmd.SilenceUsage = true
 	// A flag-parse or arg-count failure dead-ends with no pointer to help (cobra's
 	// usage is silenced), so capture the resolved command path and request the help
-	// hint (M5). c already holds the resolved command at both sites.
+	// hint. c already holds the resolved command at both sites.
 	cmd.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
 		ue := &usageError{msg: err.Error(), cmd: c.CommandPath(), wantsHint: true}
 		// A leading-dash file path (-track.flac / --track.flac) reaches cobra as an
 		// unknown flag; when the offending token looks like a path, point at the "--"
-		// end-of-flags marker instead of the generic --help pointer (U5). A genuine flag
+		// end-of-flags marker instead of the generic --help pointer. A genuine flag
 		// typo (--bogus) is not path-like and keeps the help hint. dashPathHint overrides
 		// wantsHint in classifyError.
 		if msg := err.Error(); (strings.HasPrefix(msg, "unknown flag") || strings.HasPrefix(msg, "unknown shorthand")) && looksLikePathFlag(msg) {

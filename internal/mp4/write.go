@@ -58,13 +58,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		}
 	}
 
-	// Surface canonical numeric values the iTunes atoms cannot represent and the
-	// encoder therefore drops (trkn/disk are uint16; stik is uint32) as a plan warning
-	// per dropped key, so the loss is visible before the write rather than vanishing
-	// with exit 0 (F1). droppedValues reads the same raw canonical strings the encoder
-	// consumes, so it cannot desync from what buildItems drops; both the ilst and the
-	// chapter rewrite paths build the ilst from edited.Tags, so computing it here (before
-	// the branch, into the shared report) covers both.
+	// Surface canonical values the iTunes atoms cannot represent and the encoder would
+	// otherwise drop (trkn/disk are uint16, stik is uint32, cpil is boolean). droppedValues
+	// reads the same raw canonical strings the encoder consumes, and both the ilst and
+	// chapter rewrite paths build from edited.Tags, so the shared report covers both.
 	for _, dv := range droppedValues(edited.Tags) {
 		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueDropped,
 			fmt.Sprintf("%s value %q cannot be represented in this format and was dropped", dv.Key, dv.Value),
@@ -79,7 +76,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	// Re-render the ilst from the edited canonical set, keeping the preserved
 	// items (unknown atoms, foreign freeforms) verbatim.
-	newItems := buildItems(edited.Tags, edited.Pictures, preservedItems(d.items))
+	newItems := buildItems(edited.Tags, edited.Pictures, preservedItems(d.items), opts.NumericGenre)
 	var ilstPayload []byte
 	for _, it := range newItems {
 		ilstPayload = append(ilstPayload, itemBytes(it)...)
@@ -89,6 +86,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	lay, err := planLayout(d, newIlst, opts)
 	if err != nil {
 		return nil, err
+	}
+	if lay.paddingClamped {
+		report.Warnings = core.Warn(report.Warnings, core.WarnPaddingClamped,
+			fmt.Sprintf("requested padding exceeded the %d-byte limit and was clamped to it", maxPadding))
 	}
 	delta := int64(len(lay.regionBytes)) - (lay.regionEnd - lay.regionStart)
 	total := d.size + delta
@@ -169,7 +170,17 @@ type layout struct {
 	freeLen                int64 // total length of the new free atom (0 if none)
 	freeContent            int64 // free atom payload length (padding bytes)
 	created                bool  // true when the tag path was created (no prior ilst)
+	paddingClamped         bool  // a too-large padding Target was clamped to maxPadding (a free atom was emitted)
 }
+
+// maxPadding caps the metadata padding the MP4 writer allocates for a free atom.
+// PaddingPolicy.Max == 0 means "no caller ceiling - apply the format's cap", and MP4 free
+// atoms have no small structural limit (unlike a FLAC PADDING block's 24-bit length), so
+// without this a programmatic WithPadding(Target: huge) would make([]byte, Target) and OOM at
+// the library layer (the CLI's 64 MiB cap protects only the CLI). 256 MiB matches the
+// library's default allocation ceiling (bits.DefaultLimits.MaxAllocBytes) and sits far above
+// any real tag-padding need.
+const maxPadding = 256 << 20
 
 // planLayout decides how to place the new ilst: reuse the existing ilst+free
 // region in place when it fits (delta 0, media never moves), grow it with fresh
@@ -178,6 +189,13 @@ type layout struct {
 func planLayout(d *doc, newIlst []byte, opts core.WriteOptions) (layout, error) {
 	newLen := int64(len(newIlst))
 	pad := opts.Padding.ClampTarget()
+	// Clamp a too-large padding request before it reaches make([]byte, pad). padClamped is
+	// reported only by the branches that actually emit fresh padding (grow/create), so a
+	// reuse-in-place edit - where pad is unused - never raises a spurious warning.
+	padClamped := false
+	if pad > maxPadding {
+		pad, padClamped = maxPadding, true
+	}
 
 	if d.ilst != nil {
 		regionStart := d.ilst.offset
@@ -210,6 +228,7 @@ func planLayout(d *doc, newIlst []byte, opts core.WriteOptions) (layout, error) 
 			// the leftover would fall below the floor: grow with fresh padding (ClampTarget
 			// floors it to Min) so a later edit fits in place again.
 			lay.regionBytes, lay.freeOff, lay.freeLen, lay.freeContent = appendFree(newIlst, pad)
+			lay.paddingClamped = padClamped
 		}
 		return lay, nil
 	}
@@ -236,6 +255,7 @@ func planLayout(d *doc, newIlst []byte, opts core.WriteOptions) (layout, error) 
 		regionStart: regionStart, regionEnd: at, regionBytes: withFree,
 		ancestors: createdAncestors(d), ilstOff: ilstOff,
 		freeOff: freeOff, freeLen: freeLen, freeContent: freeContent, created: true,
+		paddingClamped: padClamped,
 	}, nil
 }
 

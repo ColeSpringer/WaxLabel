@@ -23,21 +23,60 @@ type Limits struct {
 	// MaxDepth caps nested-container recursion (EBML, MP4 atoms). FLAC's flat
 	// block list does not nest, but the limit is shared.
 	MaxDepth int
+	// MaxElements caps how many metadata-granularity descriptors a parser may
+	// accumulate in one pass: RIFF/IFF chunks, FLAC and MP4 structural blocks,
+	// ID3 frames. MaxAllocBytes bounds each individual read but not the slice of
+	// descriptors, so a file of minimum-size elements (8 B RIFF/IFF chunks, 4 B
+	// FLAC blocks, 8 B MP4 atoms) would otherwise grow memory linearly to OOM.
+	// Real files have well under a few thousand, and each descriptor is small, so
+	// the default caps descriptor memory in the low single-digit MiB. A value
+	// above this yields waxerr.ErrSizeTooLarge. It is deliberately not applied to
+	// audio-granularity loops (Ogg pages, Matroska clusters) whose count scales
+	// with audio duration. 0 means unlimited, matching the MaxDepth convention.
+	MaxElements int
 }
 
 // DefaultLimits are conservative defaults suitable for typical media files.
 var DefaultLimits = Limits{
 	MaxAllocBytes: 256 << 20, // 256 MiB; comfortably larger than any cover art
 	MaxDepth:      64,
+	MaxElements:   100000, // thousands in real files; <=24 B each caps memory at about 2.4 MB
 }
 
-// Depth is a recursion-depth guard. The zero value is ready to use.
+// Depth guards a recursive walk on two axes: nesting level (Enter/Leave, the MaxDepth
+// limit) and, optionally, the total number of elements visited (Count, the MaxElements
+// limit). The element budget is for container formats whose amplification risk is a broad
+// run of minimum-size elements rather than deep nesting, such as an EBML metadata region
+// full of empty elements. The zero element budget disables the breadth cap, so depth-only
+// callers are unaffected. The zero value is ready to use.
 type Depth struct {
-	cur, max int
+	cur, max       int
+	elems, elemMax int
+	elemNoun       string
 }
 
-// NewDepth returns a guard limited to max levels.
+// NewDepth returns a guard limited to max nesting levels.
 func NewDepth(max int) *Depth { return &Depth{max: max} }
+
+// WithElementCap adds a breadth budget: Count returns waxerr.ErrSizeTooLarge once max
+// elements have been visited (max <= 0 disables it), with noun naming them in the error. It
+// returns the receiver so it chains onto NewDepth at construction.
+func (d *Depth) WithElementCap(max int, noun string) *Depth {
+	d.elemMax = max
+	d.elemNoun = noun
+	return d
+}
+
+// Count records one visited element, returning waxerr.ErrSizeTooLarge once the breadth
+// budget is reached. It is the breadth analogue of Enter; unlike Enter it does not nest, so
+// there is no paired release. It is a no-op (always nil) when no element cap was set.
+func (d *Depth) Count() error {
+	if err := CheckElementCap(d.elems, d.elemMax, d.elemNoun); err != nil {
+		return err
+	}
+	d.elems++
+	return nil
+}
 
 // Enter descends one level, returning waxerr.ErrTooDeep if the limit is
 // exceeded. A failed Enter does not consume a level (it rolls back), so only a
@@ -53,6 +92,17 @@ func (d *Depth) Enter() error {
 
 // Leave ascends one level.
 func (d *Depth) Leave() { d.cur-- }
+
+// CheckElementCap returns waxerr.ErrSizeTooLarge once n has reached the per-parse element
+// cap max (max <= 0 disables it), naming what for the message (e.g. "RIFF chunks"). All
+// metadata-element parsers use this guard, which keeps the sentinel and boundary behavior
+// identical across FLAC blocks, RIFF/IFF chunks, ID3 frames, MP4 atoms, and similar lists.
+func CheckElementCap(n, max int, what string) error {
+	if max > 0 && n >= max {
+		return fmt.Errorf("%w: more than %d %s", waxerr.ErrSizeTooLarge, max, what)
+	}
+	return nil
+}
 
 // Max reports the configured recursion limit. Callers can save the parse-time
 // budget and later create a fresh Depth for a deferred walk.

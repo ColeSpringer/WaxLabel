@@ -3,6 +3,7 @@ package aiff
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -62,7 +63,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 
 	d := &doc{size: size, commIdx: -1, ssndIdx: -1, id3Idx: -1}
 	copy(d.formType[:], hdr[8:12])
-	if err := walkChunks(ctx, src, d, formEnd, limit); err != nil {
+	if err := walkChunks(ctx, src, d, formEnd, limit, opts.Limits.MaxElements); err != nil {
 		return nil, err
 	}
 
@@ -107,10 +108,19 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		if err != nil {
 			return nil, err
 		}
-		if tg, perr := id3.ParseTag(body); perr == nil {
+		tg, perr := id3.ParseTag(body, opts.Limits.MaxElements)
+		if perr == nil {
 			d.id3 = tg
 			d.id3Idx = i
 			break
+		}
+		// A bounded-allocation cap breach (a hostile frame flood hitting MaxElements) is a hard
+		// error, not a benign "this chunk is not a tag": swallowing it would silently treat a
+		// structurally-valid ID3 chunk as absent and rewrite the file without it. Surface it like
+		// the MP3/AAC front-tag path does. An ordinary malformed chunk still falls through to the
+		// native-chunk fallback.
+		if errors.Is(perr, waxerr.ErrSizeTooLarge) {
+			return nil, perr
 		}
 	}
 	if d.id3Idx >= 0 {
@@ -122,7 +132,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 	if len(id3Idxs) > 1 && d.id3Idx >= 0 {
 		warnings = core.Warn(warnings, core.WarnDuplicateTagBlock,
-			"more than one ID3 chunk; the first is authoritative and the rest are dropped on rewrite")
+			"more than one ID3 chunk; the first that parses is authoritative and the rest are dropped on rewrite")
 	}
 
 	// ssndAlign is the SSND "offset" field: block-alignment bytes that precede the
@@ -239,11 +249,14 @@ func mediaWarnings(d *doc, numericGenre bool) []core.Warning {
 // walkChunks records every top-level IFF chunk by identifier and source range,
 // noting the index of the first COMM and SSND chunk. It reads only chunk headers
 // (never bodies), so a large SSND chunk costs nothing.
-func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, formEnd, limit int64) error {
+func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, formEnd, limit int64, maxElements int) error {
 	size := d.size
 	off := int64(12)
 	for off+8 <= size && off < formEnd {
 		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := bits.CheckElementCap(len(d.chunks), maxElements, "IFF chunks"); err != nil {
 			return err
 		}
 		head, err := bits.ReadSlice(src, off, 8, limit)

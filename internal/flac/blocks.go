@@ -64,8 +64,8 @@ func fromVorbis(cs []vorbis.Comment) []comment {
 
 // parseVorbisComment decodes a Vorbis comment block body (little-endian
 // lengths, no FLAC framing bit) into a vendor string and ordered comments.
-func parseVorbisComment(body []byte, limit int64) (vendor string, comments []comment, err error) {
-	vendor, cs, _, err := vorbis.ParseCommentList(body, limit)
+func parseVorbisComment(body []byte, limit int64, maxElements int) (vendor string, comments []comment, err error) {
+	vendor, cs, _, err := vorbis.ParseCommentList(body, limit, maxElements)
 	return vendor, fromVorbis(cs), err
 }
 

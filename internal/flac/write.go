@@ -50,9 +50,13 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	if err := checkBlockSizes(newBlocks); err != nil {
 		return nil, err
 	}
-	metaBytes, padSize, finalBlocks := serializeMetadata(newBlocks, d, opts.Padding)
+	metaBytes, padSize, finalBlocks, padClamped := serializeMetadata(newBlocks, d, opts.Padding)
 	report.Operations = append(report.Operations, ops...)
 	report.PaddingAfter = int64(padSize)
+	if padClamped {
+		report.Warnings = core.Warn(report.Warnings, core.WarnPaddingClamped,
+			fmt.Sprintf("requested padding exceeded FLAC's %d-byte metadata-block limit and was clamped to it", maxBlockBody))
+	}
 
 	// Assemble the output as segments: optional leading ID3, the fLaC marker
 	// and new metadata, the verbatim audio, and optional trailing ID3v1.
@@ -183,6 +187,25 @@ func rebuildBlocks(d *doc, newComments []comment, pictures []core.Picture, vorbi
 	return out, ops
 }
 
+// paddingBlocks returns PADDING blocks that together occupy exactly budget bytes (each
+// block's 4-byte header plus its body), splitting across several blocks when budget exceeds
+// one block's 24-bit body limit. It fills a reuse-in-place region whose existing padding is
+// larger than a single block can represent, preserving the audio offset. Each loop iteration
+// leaves at least a 4-byte header's room for the remainder, so no unrepresentable 1-3 byte
+// tail is stranded; the caller's reuse guard ensures budget >= 4.
+func paddingBlocks(budget int) []block {
+	var out []block
+	for budget > 4+maxBlockBody {
+		body := budget - 8 // reserve a 4-byte header for the following block
+		if body > maxBlockBody {
+			body = maxBlockBody
+		}
+		out = append(out, block{code: blkPadding, body: make([]byte, body)})
+		budget -= 4 + body
+	}
+	return append(out, block{code: blkPadding, body: make([]byte, budget-4)})
+}
+
 // insertAfterStreamInfo inserts b right after the STREAMINFO block (index 0),
 // keeping STREAMINFO first as the format requires.
 func insertAfterStreamInfo(blocks []block, b block) []block {
@@ -197,7 +220,7 @@ func insertAfterStreamInfo(blocks []block, b block) []block {
 // and the new content fits the original region, padding fills it exactly so the
 // audio offset does not change. It also returns the final block list (padding
 // included) so the post-write native view matches the bytes.
-func serializeMetadata(blocks []block, d *doc, pol core.PaddingPolicy) (out []byte, padSize int, all []block) {
+func serializeMetadata(blocks []block, d *doc, pol core.PaddingPolicy) (out []byte, padSize int, all []block, clamped bool) {
 	nonPad := 0
 	for _, b := range blocks {
 		nonPad += 4 + len(b.body)
@@ -209,18 +232,35 @@ func serializeMetadata(blocks []block, d *doc, pol core.PaddingPolicy) (out []by
 	// floors to Min) so a too-small region grows. The first bound (content fits the
 	// region) short-circuits, so origRegion-(nonPad+4) is non-negative before the
 	// floor comparison. Min defaults to 0, leaving the prior reuse behavior unchanged.
+	var padBlocks []block
 	if pol.ReuseInPlace && int64(nonPad)+4 <= origRegion && origRegion-(int64(nonPad)+4) >= pol.Min {
-		padSize = int(origRegion - int64(nonPad) - 4)
+		// Reuse the existing region in place: fill it EXACTLY so the audio offset does not move.
+		// A region holding more than one block's worth of padding (legal - a file may carry
+		// several PADDING blocks, each individually <16 MiB) is filled with several padding
+		// blocks rather than one oversized, invalid one. This padding is region-derived, not a
+		// user request, so it never raises the clamped warning, even spanning multiple blocks.
+		padBlocks = paddingBlocks(int(origRegion - int64(nonPad)))
 	} else {
-		padSize = int(pol.ClampTarget())
+		// Grow with fresh padding (ClampTarget floors to Min). A single PADDING block body cannot
+		// exceed the 24-bit block-length field, so a larger Target is clamped to it and reported
+		// (the smaller-than-asked padding is not silent). The compare is in int64 space so a
+		// >2 GiB request is caught rather than wrapping to a small value on a 32-bit int.
+		t := pol.ClampTarget()
+		if t > int64(maxBlockBody) {
+			t = int64(maxBlockBody)
+			clamped = true
+		}
+		padBlocks = []block{{code: blkPadding, body: make([]byte, int(t))}}
 	}
-	padSize = clampInt(padSize, 0, maxBlockBody)
+	for _, pb := range padBlocks {
+		padSize += len(pb.body)
+	}
 
-	all = append(slices.Clone(blocks), block{code: blkPadding, body: make([]byte, padSize)})
+	all = append(slices.Clone(blocks), padBlocks...)
 	for i, b := range all {
 		out = append(out, renderBlock(b.code, i == len(all)-1, b.body)...)
 	}
-	return out, padSize, all
+	return out, padSize, all, clamped
 }
 
 // buildResult constructs the post-write Media so the engine can return a
@@ -263,14 +303,4 @@ func buildResult(edited *core.Media, orig *doc, newBlocks []block, newComments [
 		AudioStart: nd.audioStart,
 		AudioEnd:   nd.audioEnd,
 	}
-}
-
-func clampInt(v, lo, hi int) int {
-	if v > hi {
-		v = hi
-	}
-	if v < lo {
-		v = lo
-	}
-	return v
 }

@@ -46,7 +46,7 @@ func newCapsCmd() *cobra.Command {
 			if len(args) == 0 {
 				// Carry the resolved command path (not a literal, which goes stale on a
 				// rename) and request the --help pointer, so this dead-end prints the same
-				// hint line the other commands' usage errors do (U5).
+				// hint line the other commands' usage errors do.
 				return &usageError{msg: "caps requires a file argument or --format", cmd: cmd.CommandPath(), wantsHint: true}
 			}
 			return runCapsFiles(cmd, args)
@@ -94,7 +94,7 @@ func runCapsFiles(cmd *cobra.Command, args []string) error {
 				return jsonCaps{}, err
 			}
 			// The WebM/Matroska distinction lives only in the container subtype (both
-			// .mka and .webm are FormatMatroska), so pass it for the human header - same
+			//.mka and.webm are FormatMatroska), so pass it for the human header - same
 			// signal copy.go uses for its transfer labels.
 			return buildCaps(path, doc.Properties().Container, doc.Capabilities()), nil
 		},
@@ -164,7 +164,7 @@ func buildCaps(file, container string, caps wl.Capabilities) jsonCaps {
 	format := caps.Format.String()
 	jc := jsonCaps{
 		SchemaVersion: schemaVersion,
-		File:          file,
+		File:          jsonFileName(file),
 		Format:        format,
 		Subformat:     subformatOf(container, format),
 		humanFormat:   transferFormatLabel(caps.Format, container),
@@ -174,7 +174,7 @@ func buildCaps(file, container string, caps wl.Capabilities) jsonCaps {
 		Chapters:      capDim(caps.Chapters),
 		Padding:       caps.Padding.String(),
 		// Always a non-nil array so `caps --json` of a read-only format (no editable
-		// keys) emits "keys": [] - a consumer iterating .keys[] never breaks. Latent
+		// keys) emits "keys": [] - a consumer iterating.keys[] never breaks. Latent
 		// today (all shipping formats are writable) but pinned for the frozen schema.
 		Keys: []jsonCapKey{},
 	}
@@ -294,7 +294,7 @@ func parseFormat(s string) (f wl.Format, opts []wl.WriteOption, container string
 		// restriction is that cover attachments are outside the subset. Describe it via
 		// the Matroska codec under WithWebMSubset, which applies that one restriction
 		// (the codec's own, reused - not a parallel copy), so the format-level "webm"
-		// answer matches what a real .webm file reports. The "WebM" container label
+		// answer matches what a real.webm file reports. The "WebM" container label
 		// makes the human header say WebM (the JSON format stays the bare "Matroska").
 		return wl.FormatMatroska, []wl.WriteOption{wl.WithWebMSubset()}, "WebM", true
 	}

@@ -29,6 +29,7 @@ import (
 	"encoding/binary"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/tag"
 )
 
 // Codec implements core.Codec for MP4.
@@ -86,9 +87,16 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 			"chapter start resolution is the movie timescale (typically 1 ms)",
 		},
 	}
+	// Under --numeric-genre, recognized genres are written as numeric "gnre" atoms and
+	// re-read as canonical ID3 genre names. Some values still fall back to text, but the
+	// capability is value-blind, so it reports GENRE as partial.
+	var perField map[tag.Key]core.Capability
+	if opts.NumericGenre {
+		perField = map[tag.Key]core.Capability{tag.Genre: core.NumericGenreCapability("numeric gnre atom")}
+	}
 	// Padding is grow-only: a forced rewrite can reserve a region, but a fit-in-place
 	// edit reuses the existing free space and cannot shrink it.
-	return core.NewCapabilities(core.FormatMP4, false, fields, pictures, chapters, core.AccessPartial, nil)
+	return core.NewCapabilities(core.FormatMP4, false, fields, pictures, chapters, core.AccessPartial, perField)
 }
 
 // EssenceExtent returns the MP4 essence-digest inputs: a versioned extent name
@@ -104,5 +112,8 @@ func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 		binary.BigEndian.PutUint16(cfg[6:8], d.cfg.sampleSize)
 		binary.BigEndian.PutUint32(cfg[8:12], d.cfg.sampleRate)
 	}
-	return "mp4-mdat-v1", cfg[:]
+	// v2: the essence byte-set changed. essenceMdats now hashes every non-chapter
+	// track's mdat and excludes legacy leaked chapter mdats. Bump the extent so a
+	// digest persisted by a v1 build is treated as a different algorithm.
+	return "mp4-mdat-v2", cfg[:]
 }

@@ -10,7 +10,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestSizeErrHumanized (M2): the size-limit messages report humanized binary
+// TestSizeErrHumanized: the size-limit messages report humanized binary
 // magnitudes rather than raw byte counts. sizeErr takes the count directly, so no
 // oversized buffer is allocated.
 func TestSizeErrHumanized(t *testing.T) {
@@ -115,7 +115,7 @@ func TestResolveGenres(t *testing.T) {
 func buildTag(t *testing.T, version byte, frames []Frame) *Tag {
 	t.Helper()
 	data := Render(version, frames, 0)
-	tg, err := ParseTag(data)
+	tg, err := ParseTag(data, 0)
 	if err != nil {
 		t.Fatalf("ParseTag: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestV22Upgrade(t *testing.T) {
 	data := append([]byte{'I', 'D', '3', 2, 0, 0}, sz[:]...)
 	data = append(data, frame...)
 
-	tg, err := ParseTag(data)
+	tg, err := ParseTag(data, 0)
 	if err != nil {
 		t.Fatalf("ParseTag: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestDateDecompositionV23(t *testing.T) {
 	}
 }
 
-// TestDroppedDateDetection (Fix 2) pins detectDroppedDates: a year-anchored date key
+// TestDroppedDateDetection pins detectDroppedDates: a year-anchored date key
 // whose edited value has no extractable numeric year renders no v2.3 frame and so is
 // silently dropped - the caller turns RebuildInfo.DroppedDates into a value-dropped
 // warning. The detection is year-anchored and per key, so a stored or year-bearing
@@ -540,7 +540,7 @@ func TestSpacePaddedFrameID(t *testing.T) {
 	data = append(data, pad...)
 	data = append(data, tit2...)
 
-	tg, err := ParseTag(data)
+	tg, err := ParseTag(data, 0)
 	if err != nil {
 		t.Fatalf("ParseTag: %v", err)
 	}
@@ -562,7 +562,7 @@ func TestHugeFrameSizeNoPanic(t *testing.T) {
 	data := append([]byte{'I', 'D', '3', 3, 0, 0}, sz[:]...)
 	data = append(data, frame...)
 
-	tg, err := ParseTag(data) // must not panic on any platform
+	tg, err := ParseTag(data, 0) // must not panic on any platform
 	if err != nil {
 		t.Fatalf("ParseTag: %v", err)
 	}

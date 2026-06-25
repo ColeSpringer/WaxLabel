@@ -46,6 +46,17 @@ func CanonicalVorbis(name string) tag.Key {
 	return tag.Key(up)
 }
 
+// ResolveAlias returns the canonical key for a recognized alternative Vorbis spelling
+// (DATE/YEAR -> RECORDINGDATE, TOTALTRACKS -> TRACKTOTAL, ORGANIZATION -> LABEL, ...),
+// or key unchanged when it is not an alias. It is case-insensitive for aliases and leaves
+// non-alias keys otherwise untouched.
+func ResolveAlias(key tag.Key) tag.Key {
+	if k, ok := readAliases[strings.ToUpper(string(key))]; ok {
+		return k
+	}
+	return key
+}
+
 // VorbisName maps a canonical key to the native Vorbis field name used when
 // writing it.
 func VorbisName(key tag.Key) string {
