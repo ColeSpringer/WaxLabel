@@ -491,3 +491,51 @@ func TestWavForcedID3NumericGenreWarns(t *testing.T) {
 		t.Errorf("forced-id3 GENRE round-trip = %q, want the mutated Rock", v)
 	}
 }
+
+// TestTransferCarriesV23MultiValueWarning is the F11 regression: a copy that carries a
+// multi-value field verbatim onto an ID3v2.3 destination - while another field changes, so
+// the multi-value frame is preserved rather than re-rendered - must surface the
+// [id3-multi-value] caveat, the same one a direct multi-value set warns. The earlier gap
+// was that the warning was raised only for a re-rendered multi-value, so a carried-verbatim
+// one slipped through and the copy reported the field "carried" with no caveat.
+func TestTransferCarriesV23MultiValueWarning(t *testing.T) {
+	base := readFixture(t, sampleMP3) // ID3v2.3
+	// A v2.3 MP3 carrying a genuine multi-value ARTIST.
+	multi := applyToBytes(t, base, mustPlan(t, mustParseBytes(t, base).Edit().Set(tag.Artist, "A", "B", "C")))
+
+	// Source and destination both hold ARTIST=[A,B,C] but differ in TITLE, so the copy
+	// changes only TITLE and carries the multi-value ARTIST verbatim.
+	src := applyToBytes(t, multi, mustPlan(t, mustParseBytes(t, multi).Edit().Set(tag.Title, "Source Title")))
+	dst := applyToBytes(t, multi, mustPlan(t, mustParseBytes(t, multi).Edit().Set(tag.Title, "Dest Title")))
+
+	plan, _, err := mustParseBytes(t, src).PrepareTransfer(mustParseBytes(t, dst))
+	if err != nil {
+		t.Fatalf("PrepareTransfer: %v", err)
+	}
+	if plan.IsNoOp() {
+		t.Fatal("expected a real write (TITLE changes), got a no-op")
+	}
+	warned := false
+	for _, w := range plan.Report().Warnings {
+		if w.Code == wl.WarnID3MultiValue {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("a copy carrying a v2.3 multi-value verbatim must warn id3-multi-value; got %v", plan.Report().Warnings)
+	}
+	// The carried multi-value still round-trips for our own reader.
+	if got := mustParseBytes(t, applyToBytes(t, dst, plan)).Fields().Artists; !slices.Equal(got, []string{"A", "B", "C"}) {
+		t.Errorf("carried multi-value artists = %v, want [A B C]", got)
+	}
+}
+
+// mustPlan prepares an edit, failing the test on error.
+func mustPlan(t *testing.T, ed *wl.Editor) *wl.Plan {
+	t.Helper()
+	p, err := ed.Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}

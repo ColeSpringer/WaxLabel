@@ -44,8 +44,14 @@ func EncoderNoise(t *Tag) []core.Warning {
 	return ws
 }
 
-// Project decodes an ID3v2 tag into the canonical model.
+// Project decodes an ID3v2 tag into the canonical model. A nil tag projects to the
+// empty Projection: a write that drops the front ID3v2 entirely (an edit clearing every
+// frame, or a --legacy strip on a tagless file) passes nil here for the result document,
+// which must equal a fresh parse of the now-tagless output.
 func Project(t *Tag) Projection {
+	if t == nil {
+		return Projection{}
+	}
 	var contribs []core.Contribution
 	var pics []core.Picture
 	var dp dateParts

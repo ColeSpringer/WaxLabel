@@ -81,7 +81,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		var frames []id3.Frame
 		frames, id3Info = id3.RebuildFrames(srcTag.Frames(), id3Base, edited.Tags, version,
 			edited.Pictures, picturesChanged, id3.WriteOpts{Multi: opts.ID3Multi, NumericGenre: opts.NumericGenre})
-		if err := id3.CheckSize(version, frames); err != nil {
+		if err := id3.CheckSize(version, frames, bits.DefaultLimits.MaxElements); err != nil {
 			return nil, err
 		}
 		newID3 = srcTag.WithFrames(frames)

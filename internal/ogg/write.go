@@ -48,7 +48,7 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 		return nil, fmt.Errorf("%w: refusing to rewrite a chained or multiplexed Ogg stream", waxerr.ErrChainedStream)
 	}
 	if !d.clean {
-		return nil, fmt.Errorf("%w: Ogg header and audio are not cleanly page-aligned; cannot rewrite safely", waxerr.ErrInvalidData)
+		return nil, fmt.Errorf("%w: Ogg header and audio are not cleanly page-aligned; cannot rewrite safely", waxerr.ErrUnalignedStream)
 	}
 
 	// Rebuild the comment list: tag comments (minimal-change) followed by one

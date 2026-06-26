@@ -57,7 +57,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			tailEnd = at.Offset
 			apeTag = at
 			warnings = core.Warn(warnings, core.WarnLegacyAPE,
-				"APEv2 tag present alongside ID3; preserved")
+				"APEv2 tag present; preserved")
 		}
 	}
 	d.audioEnd = tailEnd

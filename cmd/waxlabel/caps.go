@@ -96,10 +96,21 @@ func runCapsFiles(cmd *cobra.Command, args []string) error {
 			// The WebM/Matroska distinction lives only in the container subtype (both
 			//.mka and.webm are FormatMatroska), so pass it for the human header - same
 			// signal copy.go uses for its transfer labels.
-			return buildCaps(path, doc.Properties().Container, doc.Capabilities()), nil
+			jc := buildCaps(path, doc.Properties().Container, doc.Capabilities())
+			jc.noAudio = docHasNoAudio(doc)
+			return jc, nil
 		},
 		func(_ string, jc jsonCaps) any { return jc },
 		func(w io.Writer, _ string, jc jsonCaps) { renderCaps(w, jc) },
+		// caps still prints the capability report, then exits 4 on a no-audio file - keeping
+		// the two read commands symmetric rather than having caps alone read exit 0. caps has
+		// no warnings line to show the reason, but the exit code matches dump and the writers.
+		func(_ string, jc jsonCaps) error {
+			if jc.noAudio {
+				return errNoAudioEssence()
+			}
+			return nil
+		},
 		false,
 	)
 }
@@ -137,6 +148,12 @@ type jsonCaps struct {
 	// deliberate choice. Machine consumers should use Subformat for the exact subtype.
 	// See transferFormatLabel.
 	humanFormat string
+
+	// noAudio records that the parsed document carried the no-audio-frames warning, so the
+	// per-file severity hook can escalate caps to exit 4 after printing the report. It is
+	// unexported, so the JSON report has no warnings field (caps reports capabilities, not
+	// parse warnings); the exit code is the only signal, matching dump.
+	noAudio bool
 }
 
 // jsonCapDim is one dimension's (fields/pictures/chapters) support.
@@ -287,6 +304,11 @@ func parseFormat(s string) (f wl.Format, opts []wl.WriteOption, container string
 		return wl.FormatOggVorbis, nil, "", true
 	case "opus", "oggopus":
 		return wl.FormatOggOpus, nil, "", true
+	case "adts":
+		// ADTS is the byte framing of an AAC stream and the format's own label is
+		// "AAC (ADTS)", so accept it as a friendly alias for aac, which otherwise only
+		// matches the .aac extension.
+		return wl.FormatAAC, nil, "", true
 	case "matroska":
 		return wl.FormatMatroska, nil, "", true
 	case "webm":

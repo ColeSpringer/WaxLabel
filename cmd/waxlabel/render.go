@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"fmt"
 	"io"
 	"strings"
@@ -358,8 +359,27 @@ func renderChapters(w io.Writer, chs []wl.Chapter) {
 		if title == "" {
 			title = "(untitled)"
 		}
-		fmt.Fprintf(w, "    %s  %s\n", wl.FormatChapterTime(c.Start), title)
+		fmt.Fprintf(w, "    %s  %s%s\n", wl.FormatChapterTime(c.Start), title, chapterAnnotations(c))
 	}
+}
+
+// chapterAnnotations renders the trailing per-chapter notes for the text listing: the
+// title language (the ISO-639-2 ChapLanguage, or the BCP-47 ChapLanguageIETF when only it
+// is set) and the hidden/disabled state. It returns "" for a plain visible enabled chapter
+// in an unspecified language, so the common case stays uncluttered. The language is
+// file-derived, so it is run through SanitizeLine like the title.
+func chapterAnnotations(c wl.Chapter) string {
+	var b strings.Builder
+	if lang := cmp.Or(c.Language, c.LanguageIETF); lang != "" {
+		fmt.Fprintf(&b, " [lang: %s]", tag.SanitizeLine(lang))
+	}
+	if c.Hidden {
+		b.WriteString(" (hidden)")
+	}
+	if c.Disabled {
+		b.WriteString(" (disabled)")
+	}
+	return b.String()
 }
 
 // renderWarnings prints the parse warnings (already "[code] message" formatted).

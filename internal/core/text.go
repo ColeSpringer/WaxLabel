@@ -2,9 +2,21 @@ package core
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"github.com/colespringer/waxlabel/tag"
 )
+
+// SanitizeUTF8 returns valid UTF-8, replacing any invalid byte sequence with the Unicode
+// replacement character. A reader that stores text best-effort from a non-conformant file -
+// the Vorbis and Matroska parsers keep raw bytes the spec requires to be UTF-8 - runs its
+// projected canonical values through it, so the model never carries invalid sequences: a copy
+// of such a value is not spuriously rejected by the write-time UTF-8 guard, and --json never
+// emits invalid bytes. It is a no-op on already-valid input. The shared helper keeps the
+// ID3/Vorbis/Matroska read paths sanitizing identically.
+func SanitizeUTF8(s string) string {
+	return strings.ToValidUTF8(s, string(utf8.RuneError))
+}
 
 // IsTranscoderStamp reports whether s looks like an inherited transcoder/encoder
 // stamp. ffmpeg's libavformat writes "Lavf<version>", the typical signature of a

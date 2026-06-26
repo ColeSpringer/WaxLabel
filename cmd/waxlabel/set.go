@@ -170,22 +170,89 @@ func checkOutputTarget(output, inputReal string, overwrite bool) error {
 	} else if !fi.IsDir() {
 		return usagef("-o target directory %q is not a directory", parent)
 	}
-	if overwrite {
+	// Resolve the symlink the way writeAtomic will, once, and thread it to both the
+	// non-regular-target check and the writability probe so they inspect the exact file and
+	// directory the write lands on - and cannot drift from writeAtomic's resolution rule.
+	resolved := wl.ResolveWriteTarget(output)
+	// Refuse a non-regular target (a FIFO, device, socket, or dangling symlink) even with
+	// --overwrite: writeAtomic renames its temp over the resolved target, which would
+	// silently destroy a special node or, for a dangling link, write a stray new file.
+	// --overwrite is meant to replace an existing regular file, not a special path.
+	if err := checkOutputRegular(output, resolved); err != nil {
+		return err
+	}
+	// Resolve the existence/--overwrite policy BEFORE probing writability, so the actionable
+	// "already exists; pass --overwrite" wins over an unwritable-directory error, and a refused
+	// invocation (which writes nothing) does not touch the filesystem with a probe temp file.
+	if !overwrite {
+		// Lstat (does not follow) so a dangling symlink, which Stat would report absent,
+		// still counts as an entry the rename would destroy.
+		if _, err := os.Lstat(output); err == nil {
+			// An entry exists. It is allowed only when it resolves to the single input (an
+			// in-place -o), or the input is missing (the parse fails first and writes
+			// nothing); otherwise refuse with the actionable hint.
+			if inFi, ierr := os.Stat(inputReal); ierr == nil {
+				if outFi, serr := os.Stat(output); serr != nil || !os.SameFile(outFi, inFi) {
+					return usagef("-o target %q already exists; pass --overwrite to replace the existing file", output)
+				}
+			}
+		}
+	}
+	// The write will proceed: probe that the resolved target's directory is writable now - the
+	// same temp create writeAtomic performs - so an unwritable destination fails up front
+	// rather than after the whole plan is previewed and only the late atomic write errors.
+	return checkOutputDirWritable(resolved)
+}
+
+// checkOutputRegular refuses an -o target that is not a regular file or a symlink that
+// resolves to one: a FIFO, device, socket, or a dangling symlink. writeAtomic renames its
+// temp over resolved (the wl.ResolveWriteTarget result the caller threads in), so a special
+// node would be silently replaced by a regular file and a dangling link would leave a stray
+// new file at its (non-existent) target. This is refused even under --overwrite, which
+// replaces an existing regular file, not a special path. A target that does not exist (a
+// fresh write) is allowed; the parent directory was already validated.
+func checkOutputRegular(output, resolved string) error {
+	li, err := os.Lstat(output)
+	if err != nil {
+		return nil // no entry at the literal path: a fresh write
+	}
+	if li.Mode()&os.ModeSymlink == 0 {
+		if !li.Mode().IsRegular() {
+			return usagef("-o target %q is not a regular file (a device, FIFO, or socket); choose another path", output)
+		}
 		return nil
 	}
-	// Lstat (does not follow) so a dangling symlink, which Stat would report absent,
-	// still counts as an entry the rename would destroy.
-	if _, err := os.Lstat(output); err != nil {
-		return nil // no entry at the target: a fresh write
+	// A symlink: it must resolve to a regular file. ResolveWriteTarget returns the literal
+	// output path when the link cannot be resolved (a dangling link or a loop), so an unchanged
+	// path signals an unresolvable symlink the write would turn into a stray file.
+	if resolved == output {
+		return usagef("-o target %q is a dangling symlink; point it at a regular file or choose another path", output)
 	}
-	inFi, ierr := os.Stat(inputReal)
-	if ierr != nil {
-		return nil // input missing/unstattable: the parse fails first, nothing written
+	if fi, serr := os.Stat(resolved); serr != nil {
+		return usagef("-o target %q cannot be resolved: %v", output, serr)
+	} else if !fi.Mode().IsRegular() {
+		return usagef("-o target %q resolves to a non-regular file (a device, FIFO, or socket); choose another path", output)
 	}
-	if outFi, err := os.Stat(output); err == nil && os.SameFile(outFi, inFi) {
-		return nil // the target resolves to the input: effectively in-place
+	return nil
+}
+
+// checkOutputDirWritable probes that the resolved -o target's directory accepts a write, by
+// creating and removing a temp file there - the operation writeAtomic performs to land its
+// atomic rename. Running it here surfaces a read-only filesystem or a permission failure
+// before the plan is previewed, instead of as a late I/O error after the whole preview
+// printed. resolved is the wl.ResolveWriteTarget path, so the probe inspects the same
+// directory writeAtomic places its temp in. On failure it returns the library's own
+// wl.NewTempCreateError, so the up-front and late errors read identically.
+func checkOutputDirWritable(resolved string) error {
+	dir := filepath.Dir(resolved)
+	f, err := os.CreateTemp(dir, ".waxlabel-writecheck-*.tmp")
+	if err != nil {
+		return wl.NewTempCreateError(dir, err)
 	}
-	return usagef("-o target %q already exists; pass --overwrite to replace any existing path (including a device or special file)", output)
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	return nil
 }
 
 // checkSetStdin enforces that standard input ("-") is used only as a single input

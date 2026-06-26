@@ -46,6 +46,25 @@ type Chapter struct {
 	// Title is the chapter name (may be empty).
 	Title string
 
+	// Language is the chapter title's language as an ISO-639-2 code (Matroska
+	// ChapLanguage), e.g. "eng". Empty means unspecified - the EBML "und" default,
+	// normalized away on read so a freshly authored chapter (a zero-value Chapter)
+	// renders the same "und" the spec assumes and carries no spurious language.
+	Language string
+	// LanguageIETF is the title's language as a BCP-47 tag (Matroska
+	// ChapLanguageIETF), e.g. "en-US". Modern mkvmerge writes it on essentially
+	// every chapter; it is modeled so it round-trips rather than being dropped (and
+	// firing a flatten warning) on nearly every real file. Empty means none.
+	LanguageIETF string
+	// Hidden marks the chapter ChapterFlagHidden=1 (not shown by players). The EBML
+	// default is 0, so the zero value is the common visible chapter.
+	Hidden bool
+	// Disabled marks the chapter ChapterFlagEnabled=0. The EBML default for
+	// ChapterFlagEnabled is 1 (enabled), so the non-default state is modeled here as
+	// Disabled: a zero-value Chapter renders no flag and stays enabled, exactly as a
+	// CLI-authored --add-chapter behaves today.
+	Disabled bool
+
 	// _ makes positional construction (Chapter{a, b, c}) a compile error in other
 	// packages, enforcing the keyed-field contract: a later field (a chapter image
 	// or URL) can then be added without breaking any caller's literal. It stays

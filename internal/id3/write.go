@@ -43,6 +43,13 @@ type RebuildInfo struct {
 	// at least one original APIC could not be decoded (a malformed cover). Those raw
 	// bytes are not carried forward, so the loss is surfaced rather than left silent.
 	HasDroppedMalformedPicture bool
+	// NumericGenres lists the GENRE values this edit set that are a bare number naming a
+	// standard genre by index (e.g. "17"). Written verbatim to TCON, such a value reads
+	// back as the genre NAME on the pure-ID3 formats, so the caller surfaces it as a
+	// write-time numeric-genre warning - symmetric with the read-time one - suppressed
+	// where a native container keeps the literal number (WAV/AIFF INFO/text). See
+	// detectNumericGenres.
+	NumericGenres []string
 }
 
 // ReducedDate pairs a date key with the value an edit attempted to store before a
@@ -128,6 +135,15 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 		if touchesChangedKey(f, changed) {
 			continue
 		}
+		// A managed text frame carried verbatim can itself hold a v2.3 NUL-separated
+		// multi-value (a copy that preserves the destination's existing multi-value field,
+		// or an unrelated edit on a v2.3 file that already had one). The re-render path above
+		// never sees it, so flag it here too - the caveat is a property of the OUTPUT, which
+		// still carries the NUL-separated multi-value some readers do not split. v2.4 always
+		// splits cleanly, so only v2.3 applies.
+		if version == 3 && len(DecodeText(f)) > 1 {
+			info.UsedV23Multi = true
+		}
 		out = append(out, f.Clone())
 	}
 
@@ -162,7 +178,66 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 
 	info.DroppedDates = detectDroppedDates(changed, edited, version)
 	info.ReducedDates = detectReducedDates(changed, edited, version)
+	info.NumericGenres = detectNumericGenres(changed, edited)
 	return out, info
+}
+
+// FrontTag is the rendered leading ID3v2 tag a front-tag-only codec (MP3, AAC) emits, plus
+// the report fragments the emission contributes. Bytes/Tag are nil when the tag is dropped
+// (no frame survives) - the caller writes no tag segment and hands its result builder a nil
+// tag (so the output re-parses with no front tag, audioStart 0).
+type FrontTag struct {
+	Bytes      []byte         // rendered tag (header + frames + padding); nil to drop the tag
+	Tag        *Tag           // the new tag for the result document; nil when dropped
+	Padding    int64          // padding bytes written (0 when dropped)
+	Operations []string       // report operation lines this emission adds, in order
+	Warnings   []core.Warning // report warnings this emission adds
+}
+
+// RenderFrontTag sizes and renders the leading ID3v2 tag for a codec that stores tags only
+// as a single front tag (MP3, AAC), centralizing the drop-empty-tag policy so the two cannot
+// diverge. It emits the tag only when at least one frame survives: an edit (or a --legacy
+// strip) that leaves no frames drops the tag entirely rather than fabricating an empty,
+// padding-only container, matching WAV/AIFF's len(frames)>0 chunk guard. hadTag is whether the
+// source carried a front tag (so a full clear records an "ID3v2 removal" op instead of a bare
+// rewrite); srcTagLen is its byte length for in-place padding reuse; pictureCount is the
+// edited picture count for the operation line.
+func RenderFrontTag(srcTag *Tag, version byte, newFrames []Frame, info RebuildInfo, pad core.PaddingPolicy,
+	srcTagLen int64, hadTag, tagsChanged, picturesChanged bool, pictureCount int) FrontTag {
+
+	if len(newFrames) == 0 {
+		var ft FrontTag
+		if hadTag {
+			// A full clear of a file that had a front tag: record the removal so a contentful
+			// write (a clear-all) is not reported as a bare rewrite.
+			ft.Operations = []string{"ID3v2 removal"}
+		}
+		return ft
+	}
+	// Size the tag and its padding. Reuse the original region in place when the new content
+	// fits, so the audio offset (and file size) need not change.
+	nonPad := RenderedSize(newFrames)
+	padSize := pad.ReuseOrTarget(srcTagLen, nonPad)
+	ft := FrontTag{
+		Bytes:   Render(version, newFrames, int(padSize)),
+		Tag:     srcTag.WithFrames(newFrames),
+		Padding: padSize,
+	}
+	if tagsChanged {
+		ft.Operations = append(ft.Operations, "ID3v2 frame rewrite")
+	}
+	if picturesChanged {
+		ft.Operations = append(ft.Operations, fmt.Sprintf("pictures: %d", pictureCount))
+	}
+	if !hadTag {
+		ft.Operations = append(ft.Operations, fmt.Sprintf("ID3v2.%d tag creation", version))
+	}
+	if info.UsedV23Multi {
+		ft.Operations = append(ft.Operations, "v2.3 multi-value NUL-separated storage")
+		ft.Warnings = core.Warn(ft.Warnings, core.WarnID3MultiValue,
+			"a multi-value field was written NUL-separated in ID3v2.3, a de-facto extension some readers do not split")
+	}
+	return ft
 }
 
 // frameRenderID returns a frame's render token and whether the frame is managed
@@ -499,6 +574,44 @@ const (
 	partHourMin
 )
 
+// detectNumericGenres returns the GENRE values this edit set that are a bare integer
+// naming a standard genre by index (e.g. "17" -> "Rock"). Written verbatim to TCON, such a
+// value is resolved back to the genre NAME by the read path, so GENRE=17 round-trips as
+// "Rock" - a surprising change the caller surfaces (see AppendRebuildWarnings), suppressed
+// where a native container keeps the literal number. Only a value the edit actually changed
+// is reported, so an untouched pre-existing numeric genre does not warn.
+func detectNumericGenres(changed map[tag.Key]bool, edited tag.TagSet) []string {
+	if !changed[tag.Genre] {
+		return nil
+	}
+	vals, _ := edited.Get(tag.Genre)
+	var out []string
+	seen := map[string]bool{}
+	for _, v := range vals {
+		// De-duplicate by value so a repeated reference (GENRE=17,17) warns once, not once
+		// per occurrence - and so the same single warning is what DowngradeNoOp carries onto
+		// a no-op report.
+		if isNumericGenreRef(v) && !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// isNumericGenreRef reports whether v carries a numeric or special genre reference the
+// read path resolves to a genre name - a bare number ("17"), a parenthesised reference
+// ("(17)", "(51)(39)"), a special code ("(RX)", "(CR)"), or a reference with a refinement
+// ("(17)Hard"). It delegates to resolveGenres, the SAME resolver the parser uses, so the
+// write-time warning cannot drift from what actually round-trips: a value that resolves to a
+// name reads back as that name, a non-verbatim round-trip on the pure-ID3 formats. An
+// out-of-range or non-resolving value (kept verbatim) reports false here, and the retained-
+// value suppression in AppendRebuildWarnings catches any remaining no-change case.
+func isNumericGenreRef(v string) bool {
+	_, numeric := resolveGenres(v)
+	return numeric
+}
+
 // detectDroppedDates finds the year-anchored date keys whose edited value cannot be
 // represented at all on a v2.3 tag, so the caller can warn rather than drop silently.
 // TYER (RecordingDate) and TORY (OriginalDate) need a numeric year: a touched value
@@ -604,6 +717,18 @@ func AppendRebuildWarnings(ws []core.Warning, info RebuildInfo, retained tag.Tag
 		ws = core.WarnKeyed(ws, core.WarnValueReduced,
 			fmt.Sprintf("%s value %q carries finer precision than ID3v2.3 date frames can store (TDAT needs a full day, TIME a full minute) and was reduced", rd.Key, rd.Value), rd.Key)
 	}
+	for _, gv := range info.NumericGenres {
+		// Suppress only where a native container still carries the literal number: on the
+		// pure-ID3 formats (MP3/AAC) the retained GENRE reads back as the genre name, so gv is
+		// absent and the warning fires; on WAV/AIFF the INFO/text slot keeps "17" verbatim, so
+		// it is retained and the round-trip did not change - no warning. This mirrors the
+		// date-warning suppression and keeps the write-time note aligned with the read-time one.
+		if genres, _ := retained.Get(tag.Genre); slices.Contains(genres, gv) {
+			continue
+		}
+		ws = core.WarnKeyed(ws, core.WarnNumericGenre,
+			fmt.Sprintf("GENRE %q is a numeric reference that reads back as its genre name on ID3-based formats", gv), tag.Genre)
+	}
 	if info.HasDroppedMalformedPicture {
 		ws = core.Warn(ws, core.WarnInvalidPicture,
 			"a malformed embedded picture could not be decoded and was dropped during a picture edit")
@@ -669,7 +794,11 @@ func extractDatePart(iso string, part datePart) string {
 			return iso[8:10] + iso[5:7] // DDMM
 		}
 	case partHourMin:
-		if len(iso) >= 16 && iso[10] == 'T' && iso[13] == ':' {
+		// Accept either ISO date-time separator: 'T' (the canonical form) or a space (a
+		// common variant). hasSubDayPart accepts both when deciding a value carries a time,
+		// so this must too - else "2021-03-15 10:30" would be judged reducible yet yield no
+		// TIME frame, spuriously firing [value-reduced] while the 'T' form keeps the time.
+		if len(iso) >= 16 && (iso[10] == 'T' || iso[10] == ' ') && iso[13] == ':' {
 			return iso[11:13] + iso[14:16] // HHMM
 		}
 	}

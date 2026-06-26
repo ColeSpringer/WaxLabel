@@ -81,7 +81,7 @@ func TestBuildAlbumGroupKeepsEmptyValue(t *testing.T) {
 	base := tag.NewTagSet()
 	edited := tag.NewTagSet()
 	edited.Set(tag.Artist, "") // set ARTIST=
-	_, gb := buildAlbumGroup(nil, base, edited, nil)
+	_, gb := buildAlbumGroup(nil, base, edited, nil, nil, nil)
 	if gb == nil {
 		t.Fatal("buildAlbumGroup dropped a present-empty ARTIST (set KEY= must not equal --clear KEY)")
 	}

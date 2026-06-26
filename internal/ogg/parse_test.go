@@ -71,8 +71,8 @@ func TestPlanRefusesNonAlignedWrite(t *testing.T) {
 	edited := media.Clone()
 	edited.Tags.Set(tag.Title, "nope") // a real change, so it is not a no-op
 
-	if _, err := NewOpus().Plan(context.Background(), media, edited, core.DefaultWriteOptions()); !errors.Is(err, waxerr.ErrInvalidData) {
-		t.Errorf("non-page-aligned write should be refused with ErrInvalidData, got %v", err)
+	if _, err := NewOpus().Plan(context.Background(), media, edited, core.DefaultWriteOptions()); !errors.Is(err, waxerr.ErrUnalignedStream) {
+		t.Errorf("non-page-aligned write should be refused with ErrUnalignedStream, got %v", err)
 	}
 }
 

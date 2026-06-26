@@ -5,6 +5,7 @@ import (
 	"math"
 	"slices"
 	"time"
+	"unicode/utf8"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
@@ -157,11 +158,11 @@ func parseEdition(src core.ReaderAtSized, ed element, depth *bits.Depth, limit i
 	return out, isDefault, chs, lossy, err
 }
 
-// parseChapterAtom reads one ChapterAtom's UID, start/end (absolute nanoseconds),
-// and the first ChapterDisplay title. Only the top-level atom and its first
-// display are projected; lossy reports a nested sub-atom or a second display
-// (other-language title) - structure the flat []core.Chapter model cannot hold
-// and a re-render would drop.
+// parseChapterAtom reads one ChapterAtom's UID, start/end (absolute nanoseconds), the
+// hidden/enabled flags, and the first ChapterDisplay (title + language). Only the top-level
+// atom and its first display are projected; lossy reports a nested sub-atom, a second
+// display (other-language title), or any other unmodeled child - structure the flat
+// []core.Chapter model cannot hold and a re-render would drop.
 func parseChapterAtom(src core.ReaderAtSized, atom element, depth *bits.Depth, limit int64) (ch core.Chapter, uid uint64, lossy bool, err error) {
 	var startNs, endNs int64
 	displays := 0
@@ -173,18 +174,32 @@ func parseChapterAtom(src core.ReaderAtSized, atom element, depth *bits.Depth, l
 			startNs = clampNs(readUint(src, el, limit))
 		case idChapTimeEnd:
 			endNs = clampNs(readUint(src, el, limit))
+		case idChapFlagHidden:
+			ch.Hidden = readUint(src, el, limit) != 0 // EBML default 0; 1 = hidden
+		case idChapFlagEnabled:
+			ch.Disabled = readUint(src, el, limit) == 0 // EBML default 1; 0 = disabled
 		case idChapDisplay:
 			displays++
 			if displays > 1 {
 				return nil // a second display is an other-language title we cannot carry
 			}
-			title, err := readChapterTitle(src, el, depth, limit)
+			title, lang, langIETF, dispLossy, err := readChapterDisplay(src, el, depth, limit)
 			if err != nil {
 				return err
 			}
-			ch.Title = title
+			ch.Title, ch.Language, ch.LanguageIETF = title, lang, langIETF
+			lossy = lossy || dispLossy
 		case idChapterAtom:
 			lossy = true // a nested sub-chapter
+		case idCRC32, idVoid:
+			// Structural framing, not chapter data: a re-render recomputes its own CRC and
+			// drops padding, so neither is a content loss.
+		default:
+			// Any other unmodeled ChapterAtom child (ChapterSegmentUID, ChapProcess,
+			// ChapterTrack, ...) the flat model cannot carry: flag it lossy so the flatten
+			// warning covers the whole silent-loss class, not just nested atoms and
+			// multi-language displays.
+			lossy = true
 		}
 		return nil
 	})
@@ -196,21 +211,59 @@ func parseChapterAtom(src core.ReaderAtSized, atom element, depth *bits.Depth, l
 	return ch, uid, lossy, err
 }
 
-// readChapterTitle returns the first ChapString within a ChapterDisplay.
-func readChapterTitle(src core.ReaderAtSized, disp element, depth *bits.Depth, limit int64) (string, error) {
-	var title string
+// readChapterDisplay reads one ChapterDisplay: the first ChapString title, the
+// ChapLanguage (ISO-639-2), and the ChapLanguageIETF (BCP-47). An absent or "und"
+// ChapLanguage normalizes to "" so a freshly written chapter carries no spurious
+// language. lossy reports an unmodeled ChapDisplay child (e.g. ChapCountry) the flat
+// model cannot hold, so the flatten warning covers it.
+func readChapterDisplay(src core.ReaderAtSized, disp element, depth *bits.Depth, limit int64) (title, lang, langIETF string, lossy bool, err error) {
 	got := false
-	err := eachChild(src, disp.dataStart, disp.dataEnd, depth, limit, func(el element) error {
-		if el.id == idChapString && !got {
+	err = eachChild(src, disp.dataStart, disp.dataEnd, depth, limit, func(el element) error {
+		switch el.id {
+		case idChapString:
+			if got {
+				lossy = true // a second ChapString in one display: the flat model keeps only the first
+				return nil
+			}
 			s, err := readString(src, el, limit)
 			if err != nil {
 				return err
 			}
+			// Sanitize an invalid-UTF-8 title to "" (matching MP4's chpl and the QuickTime
+			// chapter track) so a later --json dump cannot emit raw invalid bytes and every
+			// chapter source behaves the same on read. Prepare separately rejects an
+			// invalid-UTF-8 title on write, so a value read back here is always valid.
+			if !utf8.ValidString(s) {
+				s = ""
+			}
 			title, got = s, true
+		case idChapLang:
+			lang, _ = readString(src, el, limit) // informational; degrade gracefully
+		case idChapLangIETF:
+			langIETF, _ = readString(src, el, limit)
+		case idCRC32, idVoid:
+			// Structural framing, not display content; never a loss.
+		default:
+			lossy = true // an unmodeled ChapDisplay child (ChapCountry, ...) the flat model drops
 		}
 		return nil
 	})
-	return title, err
+	// Drop a language WaxLabel should not surface or re-emit: invalid UTF-8 (sanitized like
+	// the title, so no raw bytes reach --json/copy) or the "und"/absent default (which carries
+	// no information and would print a spurious "[lang: und]"). Both ChapLanguage and the IETF
+	// tag default to "und" on modern mkvmerge output, so both are normalized the same way.
+	lang = normalizeChapLang(lang)
+	langIETF = normalizeChapLang(langIETF)
+	return title, lang, langIETF, lossy, err
+}
+
+// normalizeChapLang returns "" for a chapter language that carries no information: invalid
+// UTF-8, or the "und"/absent default. Otherwise it returns the language verbatim.
+func normalizeChapLang(s string) string {
+	if !utf8.ValidString(s) || !meaningfulLang(s) {
+		return ""
+	}
+	return s
 }
 
 // clampNs converts an EBML timestamp to int64 nanoseconds, capping a hostile
@@ -347,7 +400,8 @@ func popChapterUID(q map[time.Duration][]uint64, start time.Duration) uint64 {
 }
 
 // renderChapterAtom encodes one ChapterAtom: its UID, the absolute-nanosecond
-// start (and end when the chapter is closed), and a ChapterDisplay title when set.
+// start (and end when the chapter is closed), the non-default ChapterFlagHidden/
+// ChapterFlagEnabled flags, and a ChapterDisplay (title + language) when titled.
 func renderChapterAtom(uid uint64, ch core.Chapter) []byte {
 	content := make([]byte, 0, 48+len(ch.Title))
 	content = append(content, uintElement(idChapterUID, uid)...)
@@ -359,9 +413,35 @@ func renderChapterAtom(uid uint64, ch core.Chapter) []byte {
 	if ch.End > ch.Start {
 		content = append(content, uintElement(idChapTimeEnd, uint64(chapNanos(ch.End)))...)
 	}
-	if ch.Title != "" {
-		disp := stringElement(idChapString, ch.Title)
-		disp = append(disp, stringElement(idChapLang, "und")...)
+	// Emit a flag only for its non-default state: ChapterFlagHidden defaults to 0 (emit
+	// 1 only when Hidden), ChapterFlagEnabled defaults to 1 (emit 0 only when Disabled).
+	// A zero-value Chapter (a CLI --add-chapter) writes neither and reads back visible
+	// and enabled, exactly as before these fields existed.
+	if ch.Hidden {
+		content = append(content, uintElement(idChapFlagHidden, 1)...)
+	}
+	if ch.Disabled {
+		content = append(content, uintElement(idChapFlagEnabled, 0)...)
+	}
+	// Emit a ChapterDisplay when the chapter has a title OR a modeled language to carry. A
+	// title-less chapter still needs a display (with an empty, spec-mandatory ChapString) to
+	// preserve a language - the case an invalid-UTF-8 title sanitized to "" on read produces -
+	// which a "title != ''" gate would silently drop on re-render. A chapter with neither (a
+	// bare CLI --add-chapter) writes no display, exactly as before.
+	if ch.Title != "" || ch.Language != "" || ch.LanguageIETF != "" {
+		disp := stringElement(idChapString, ch.Title) // mandatory; an empty string is allowed
+		// ChapLanguage is mandatory; fall back to the spec "und" default when no language
+		// was modeled, which a re-parse normalizes back to "" (so the round-trip is stable).
+		lang := ch.Language
+		if lang == "" {
+			lang = "und"
+		}
+		disp = append(disp, stringElement(idChapLang, lang)...)
+		// ChapLanguageIETF only when set - modern mkvmerge writes it, so preserving it keeps
+		// a real file's chapters from re-rendering lossily and tripping the flatten warning.
+		if ch.LanguageIETF != "" {
+			disp = append(disp, stringElement(idChapLangIETF, ch.LanguageIETF)...)
+		}
 		content = append(content, encElement(idChapDisplay, disp)...)
 	}
 	return encElement(idChapterAtom, content)

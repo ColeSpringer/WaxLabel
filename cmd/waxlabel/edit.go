@@ -901,8 +901,9 @@ func noteMalformedValue(errOut io.Writer, k tag.Key, v string) {
 // stays separate (notifyUnknownKeys): an unknown key is a CLI-vocabulary concept the
 // library accepts by design, so it is a pre-flight usage error, not a plan warning.
 var strictEscalatingCodes = map[wl.WarningCode]bool{
-	wl.WarnValueDropped:      true,
-	wl.WarnSingleValuedMulti: true,
+	wl.WarnValueDropped:        true,
+	wl.WarnSingleValuedMulti:   true,
+	wl.WarnTagStructureDropped: true,
 }
 
 // strictWarningGate applies the per-file --strict escalation for plan and set: when a
@@ -956,6 +957,8 @@ func strictWarningReason(w wl.Warning) string {
 		return fmt.Sprintf("%s: value cannot be represented in this format and would be dropped", keys)
 	case wl.WarnSingleValuedMulti:
 		return fmt.Sprintf("%s: single-valued but given multiple values", keys)
+	case wl.WarnTagStructureDropped:
+		return fmt.Sprintf("%s: edit drops the tag's secondary language, binary value, or nested sub-tags", keys)
 	default:
 		return keys
 	}
@@ -1061,13 +1064,19 @@ func (ce *compiledEdit) prepare(ctx context.Context, realPath, origPath string) 
 			base = nil
 		}
 		// Dedup CLI additions against the accumulated list (existing chapters plus earlier
-		// additions), skipping exact Start/End/Title matches. Additions have End == 0, so
-		// an on-disk chapter with the same start/title and a real end time is kept as a
-		// distinct chapter. The library API still permits callers to set duplicates.
+		// additions), skipping matches on the fields the CLI can author: Start, End, and Title.
+		// It deliberately ignores the parse-derived fields (Language/LanguageIETF/hidden/
+		// disabled) a Matroska chapter may carry - a CLI addition leaves those zero, so a full
+		// struct == would never match an existing chapter that has a language and would write a
+		// spurious duplicate. Additions have End == 0, so an on-disk chapter with the same
+		// start/title and a real end time is kept as a distinct chapter. The library API still
+		// permits callers to set duplicates.
 		merged := slices.Clone(base)
 		for _, add := range ce.chapters {
-			// wl.Chapter is comparable, so slices.Contains is the whole exact-match check.
-			if !slices.Contains(merged, add) {
+			dup := slices.ContainsFunc(merged, func(c wl.Chapter) bool {
+				return c.Start == add.Start && c.End == add.End && c.Title == add.Title
+			})
+			if !dup {
 				merged = append(merged, add)
 			}
 		}

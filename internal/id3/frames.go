@@ -13,10 +13,22 @@ import (
 // larger value would silently truncate the size field and corrupt the tag.
 const maxFrameSize = 1<<28 - 1
 
-// CheckSize rejects a frame list that cannot be encoded without overflowing the
-// sync-safe size fields. The realistic trigger is an over-large embedded picture,
-// reported as ErrPictureTooLarge; anything else is ErrSizeTooLarge.
-func CheckSize(writeVersion byte, frames []Frame) error {
+// CheckSize rejects a frame list that cannot be encoded: more than maxElements frames, or
+// a frame region overflowing the sync-safe size fields. The element cap is checked first so
+// a write can never mint a tag the read path would then refuse to re-parse - an edit that
+// nets a frame onto a tag already at the cap. The realistic size trigger is an over-large
+// embedded picture, reported as ErrPictureTooLarge; anything else is ErrSizeTooLarge.
+//
+// The cap test is a strict len(frames) > maxElements, NOT bits.CheckElementCap: the reader
+// calls CheckElementCap with the pre-append count, so it errors at >= max and thus accepts
+// exactly maxElements frames. A final-count CheckElementCap (which trips at >= max) would
+// reject a legitimate maxElements-frame tag the reader reads back fine; the strict > test
+// matches the reader's boundary. Pass bits.DefaultLimits.MaxElements, the read-path default.
+func CheckSize(writeVersion byte, frames []Frame, maxElements int) error {
+	if maxElements > 0 && len(frames) > maxElements {
+		return fmt.Errorf("%w: ID3v2 tag has %d frames, exceeding the %d-frame limit",
+			waxerr.ErrSizeTooLarge, len(frames), maxElements)
+	}
 	var total int64 // int64 so a sum of large frames cannot wrap on 32-bit
 	for _, f := range frames {
 		fl := len(f.Body)

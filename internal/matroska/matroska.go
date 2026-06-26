@@ -104,7 +104,7 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 		Fidelity:       "lossless", // chapter times round-trip exactly (absolute nanoseconds)
 		Constraints: []string{
 			"edits apply to the default edition; other editions and chapter UIDs preserved",
-			"a chapter edit flattens the default edition to a title/start/end model - nested sub-chapters and secondary-language displays in it are not preserved (untouched chapters are kept verbatim)",
+			"a chapter edit re-renders the default edition to a flat model (title, start/end, the primary display's language, and the hidden/disabled flags) - nested sub-chapters, additional ChapterDisplays (other-language titles), and other unmodeled atom fields are not preserved (untouched chapters are kept verbatim)",
 			"a chapter's end time is read only from an explicit ChapterTimeEnd; an absent end is left open-ended (zero), not inferred from the next chapter's start the way MP4 infers it",
 			"the CLI has no end-time syntax, so a --clear-chapters + --add-chapter rewrite drops explicit end times; library callers can set Chapter.End to keep them",
 		},

@@ -17,7 +17,10 @@ func ParsePicture(body []byte, limit int64) (core.Picture, error) {
 	var p core.Picture
 	p.Type = core.PictureType(c.U32BE())
 	p.MIME = string(c.Bytes(int64(c.U32BE())))
-	p.Description = string(c.Bytes(int64(c.U32BE())))
+	// The description is stored as raw bytes; a non-conformant file can hold invalid UTF-8.
+	// Sanitize it into the model like the tag-value read paths, so a transfer that re-adds
+	// this picture is not rejected by the write-time UTF-8 guard and --json stays valid.
+	p.Description = core.SanitizeUTF8(string(c.Bytes(int64(c.U32BE()))))
 	p.Width = int(c.U32BE())
 	p.Height = int(c.U32BE())
 	p.Depth = int(c.U32BE())

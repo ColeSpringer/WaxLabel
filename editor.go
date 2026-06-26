@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/mapping"
@@ -215,10 +216,12 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// moved. The scope is strictly zero-length: a present [""] (what `set KEY=`
 	// produces) is a distinct, CLI-reachable empty value and is left untouched.
 	dropEmptyValuedKeys(&editedTags)
-	// Reject a NUL byte in any value, chapter title, or picture description this edit
-	// introduces: a NUL silently truncates the field on the C-string formats and would
-	// otherwise corrupt the write.
-	if err := e.rejectNULValues(editedTags, patchKeys); err != nil {
+	// Reject a NUL byte or invalid UTF-8 in any value, chapter title, or picture
+	// description this edit introduces: a NUL silently truncates the field on the
+	// C-string formats, and invalid UTF-8 is reprojected through the read path (ID3 to
+	// U+FFFD, an MP4 chapter title to "") so the written result would not equal a fresh
+	// parse - both would corrupt the write, so they are refused at the source.
+	if err := e.rejectInvalidValues(editedTags, patchKeys); err != nil {
 		return nil, err
 	}
 	// Trim numeric values introduced by this edit before any number-pair split. That
@@ -227,7 +230,7 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	trimNumericValues(&editedTags, e.patch)
 	// Normalize a slash-combined "n/total" track or disc number this edit introduced
 	// into the canonical pair every format stores (see splitNumberPairs). It runs
-	// after rejectNULValues, not before: that scan only covers the patched keys, so
+	// after rejectInvalidValues, not before: that scan only covers the patched keys, so
 	// splitting first would route a NUL from "3/\x00" into an unscanned derived
 	// TRACKTOTAL and smuggle it past the guard onto a C-string format. Splitting after
 	// means the NUL is still on the touched TRACKNUMBER and is rejected above.
@@ -347,44 +350,73 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	return &Plan{doc: e.doc, plan: wp, opts: wo}, nil
 }
 
-// rejectNULValues refuses a NUL byte in any value, chapter title, or picture
-// description this edit introduces. A NUL silently truncates the field when it is
-// written to a C-string format (the ID3 frames MP3/WAV/AIFF store, MP4 atoms), so
-// it is refused at the source for every format - even those that round-trip it
-// today - rather than written and cut on the formats that cannot hold it. This is
-// the library and transfer counterpart to the CLI's OS-level argument guard. The
-// tag scan covers only the keys the patch touches (their resolved values are in
-// editedTags); the file's untouched pre-existing tags are not re-judged. Pictures
-// are scoped to those added on this editor (addedMask), like the rest of the
+// rejectInvalidValues refuses a NUL byte or invalid UTF-8 in any value, chapter title,
+// or picture description this edit introduces. A NUL silently truncates the field when it
+// is written to a C-string format (the ID3 frames MP3/WAV/AIFF store, MP4 atoms). Invalid
+// UTF-8 is reprojected through the read path - ID3 reads it back as U+FFFD, an MP4 chapter
+// title as "" - so a value passed raw to a writer would not round-trip and the result
+// would not equal a fresh parse; refusing it at the source keeps the "result == fresh
+// parse" guarantee by construction for every format, even those that carry the bytes
+// verbatim today. This is the library and transfer counterpart to the CLI's OS-level
+// argument guard. The tag scan covers only the keys the patch touches (their resolved
+// values are in editedTags); the file's untouched pre-existing tags are not re-judged.
+// Pictures are scoped to those added on this editor (addedMask), like the rest of the
 // added-picture validation; chapters cover the full edited list, which SetChapters
 // replaces wholesale.
-func (e *Editor) rejectNULValues(editedTags tag.TagSet, keys []tag.Key) error {
+func (e *Editor) rejectInvalidValues(editedTags tag.TagSet, keys []tag.Key) error {
 	for _, k := range keys {
 		vals, ok := editedTags.Get(k)
 		if !ok {
 			continue
 		}
 		for _, v := range vals {
-			if containsNUL(v) {
-				return nulErr(fmt.Sprintf("tag value for %q", k))
+			if err := checkWritableText(v, fmt.Sprintf("tag value for %q", k)); err != nil {
+				return err
 			}
 		}
 	}
 	for i, p := range e.pictures {
-		if i < len(e.addedMask) && e.addedMask[i] && containsNUL(p.Description) {
-			return nulErr("picture description")
+		if i < len(e.addedMask) && e.addedMask[i] {
+			if err := checkWritableText(p.Description, "picture description"); err != nil {
+				return err
+			}
 		}
 	}
 	for _, c := range e.chapters {
-		if containsNUL(c.Title) {
-			return nulErr("chapter title")
+		if err := checkWritableText(c.Title, "chapter title"); err != nil {
+			return err
+		}
+		// The Matroska chapter languages are written verbatim into the EBML, and the read
+		// path sanitizes them on parse, so a freshly authored invalid-UTF-8 language would
+		// not round-trip - reject it at the source like the title (library-only; the CLI has
+		// no chapter-language syntax).
+		if err := checkWritableText(c.Language, "chapter language"); err != nil {
+			return err
+		}
+		if err := checkWritableText(c.LanguageIETF, "chapter IETF language"); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
+// checkWritableText refuses a freshly authored text value WaxLabel cannot faithfully write
+// to every format: a NUL byte (truncates a C-string field) or invalid UTF-8 (reprojected
+// by the read path, so it would not round-trip). what names the field for the error. A
+// value read back through the (sanitizing) parse path is always valid UTF-8, so this fires
+// only on CLI/library input freshly authored by the caller.
+func checkWritableText(s, what string) error {
+	if containsNUL(s) {
+		return nulErr(what)
+	}
+	if !utf8.ValidString(s) {
+		return fmt.Errorf("%w: %s contains invalid UTF-8", waxerr.ErrInvalidData, what)
+	}
+	return nil
+}
+
 // containsNUL reports whether s holds a NUL byte, which truncates the field on a
-// C-string format. nulErr builds the shared rejection for [Editor.rejectNULValues].
+// C-string format. nulErr builds the shared rejection for [Editor.rejectInvalidValues].
 func containsNUL(s string) bool { return strings.IndexByte(s, 0) >= 0 }
 
 func nulErr(what string) error {

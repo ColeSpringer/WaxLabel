@@ -48,36 +48,27 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	version := srcTag.WriteVersion()
 	newFrames, info := id3.RebuildFrames(srcTag.Frames(), base.Tags, edited.Tags, version,
 		edited.Pictures, picturesChanged, id3.WriteOpts{Multi: opts.ID3Multi, NumericGenre: opts.NumericGenre})
-	if err := id3.CheckSize(version, newFrames); err != nil {
+	if err := id3.CheckSize(version, newFrames, bits.DefaultLimits.MaxElements); err != nil {
 		return nil, err
 	}
 
-	// Size the tag and its padding. Reuse the original region in place when the
-	// new content fits, so the audio offset (and file size) need not change.
-	nonPad := id3.RenderedSize(newFrames)
-	padSize := opts.Padding.ReuseOrTarget(d.id3Len, nonPad)
-	tagBytes := id3.Render(version, newFrames, int(padSize))
-	report.PaddingAfter = padSize
+	// Size and render the front ID3v2 tag, dropping it entirely when no frame survives (an
+	// edit that clears every frame, or a --legacy strip on a tagless file) rather than
+	// fabricating an empty, padding-only container. The drop-empty-tag policy lives in the
+	// shared id3.RenderFrontTag so MP3 and AAC cannot diverge.
+	ft := id3.RenderFrontTag(srcTag, version, newFrames, info, opts.Padding, d.id3Len,
+		d.id3 != nil, tagsChanged, picturesChanged, len(edited.Pictures))
+	report.PaddingAfter = ft.Padding
+	report.Operations = append(report.Operations, ft.Operations...)
+	report.Warnings = append(report.Warnings, ft.Warnings...)
 
-	if tagsChanged {
-		report.Operations = append(report.Operations, "ID3v2 frame rewrite")
-	}
-	if picturesChanged {
-		report.Operations = append(report.Operations, fmt.Sprintf("pictures: %d", len(edited.Pictures)))
-	}
-	if d.id3 == nil {
-		report.Operations = append(report.Operations, fmt.Sprintf("ID3v2.%d tag creation", version))
-	}
-	if info.UsedV23Multi {
-		report.Operations = append(report.Operations, "v2.3 multi-value NUL-separated storage")
-		report.Warnings = core.Warn(report.Warnings, core.WarnID3MultiValue,
-			"a multi-value field was written NUL-separated in ID3v2.3, a de-facto extension some readers do not split")
-	}
-
-	// Assemble the output: the new ID3v2 tag, the verbatim audio, then the
+	// Assemble the output: the new ID3v2 tag (when any), the verbatim audio, then the
 	// preserved (or stripped) trailing legacy containers.
-	segs := []bits.Segment{bits.Lit(tagBytes)}
 	audioLen := d.audioEnd - d.audioStart
+	var segs []bits.Segment
+	if ft.Bytes != nil {
+		segs = append(segs, bits.Lit(ft.Bytes))
+	}
 	segs = append(segs, bits.Copy(d.audioStart, audioLen))
 
 	apeLen := int64(len(d.ape))
@@ -105,7 +96,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	newSize := bits.OutputLen(segs)
 	report.BytesAfter = newSize
 
-	result := buildResult(edited, d, srcTag.WithFrames(newFrames), tagBytes, audioLen, apeLen, id3v1Len, newSize)
+	result := buildResult(edited, d, ft.Tag, ft.Bytes, audioLen, apeLen, id3v1Len, newSize)
 	// Surface ID3 rebuild losses the bytes cannot show. MP3 has no other tag container, so
 	// an ID3 date drop or reduction is always a file-level loss.
 	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, info, result.Tags)

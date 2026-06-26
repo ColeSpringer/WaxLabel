@@ -83,12 +83,17 @@ func TestMatroskaWriteTitle(t *testing.T) {
 	essenceUnchanged(t, src, out)
 }
 
-// TestMatroskaWriteTag changes an existing SimpleTag and adds a new one.
+// TestMatroskaWriteTag changes an existing SimpleTag and adds a new one. The added
+// value is long enough to overflow the reserved Void on its own, so the edit always
+// exercises the shift path regardless of any byte savings elsewhere - notably the
+// preserved combined PART_NUMBER=2/10 form, which an unrelated edit now keeps verbatim
+// instead of splitting into two flat SimpleTags.
 func TestMatroskaWriteTag(t *testing.T) {
 	src := readFixture(t, sampleMKA)
+	bigValue := strings.Repeat("x", 4096) // overflow any reserved Void to force the tail shift
 	out, _ := saveMatroska(t, src, mustParseBytes(t, src).Edit().
 		Set(tag.Artist, "Changed Artist").
-		Set(tag.Key("CUSTOM_FIELD"), "custom value"))
+		Set(tag.Key("CUSTOM_FIELD"), bigValue))
 
 	f := mustParseBytes(t, out).Fields()
 	if len(f.Artists) != 1 || f.Artists[0] != "Changed Artist" {
@@ -97,10 +102,10 @@ func TestMatroskaWriteTag(t *testing.T) {
 	if f.Album != "Sample Album" {
 		t.Errorf("Album not preserved: %q", f.Album)
 	}
-	if v, _ := mustParseBytes(t, out).Get(tag.Key("CUSTOM_FIELD")); len(v) != 1 || v[0] != "custom value" {
-		t.Errorf("custom field = %v, want [custom value]", v)
+	if v, _ := mustParseBytes(t, out).Get(tag.Key("CUSTOM_FIELD")); len(v) != 1 || v[0] != bigValue {
+		t.Errorf("custom field length = %d, want %d", len(v), len(bigValue))
 	}
-	// Adding a new tag overflows the reserved Void, so the tail shifts and the file
+	// The long added tag overflows the reserved Void, so the tail shifts and the file
 	// grows - exercising the shift path (with the Cues/SeekHead position fixups).
 	if len(out) <= len(src) {
 		t.Errorf("expected the add-tag edit to grow the file via the shift path (%d -> %d)", len(src), len(out))

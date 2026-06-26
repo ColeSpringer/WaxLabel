@@ -580,6 +580,8 @@ func TestClassifyError(t *testing.T) {
 		{"usage", &usageError{msg: "bad"}, 2, "usage"},
 		{"invalid-key", fmt.Errorf("w: %w", waxerr.ErrInvalidKey), 2, "invalid-key"},
 		{"unsupported", fmt.Errorf("w: %w", waxerr.ErrUnsupportedFormat), 3, "unsupported-format"},
+		{"chained-stream", fmt.Errorf("w: %w", waxerr.ErrChainedStream), 3, "unsupported-stream"},
+		{"unaligned-stream", fmt.Errorf("w: %w", waxerr.ErrUnalignedStream), 3, "unsupported-alignment"},
 		{"invalid-data", fmt.Errorf("w: %w", waxerr.ErrInvalidData), 4, "invalid-data"},
 		{"source-changed", fmt.Errorf("w: %w", waxerr.ErrSourceChanged), 5, "source-changed"},
 		{"unclassified", errors.New("boom"), 1, "error"},
@@ -635,7 +637,7 @@ func TestSentinelsHaveNoProgramPrefix(t *testing.T) {
 		waxerr.ErrUnsupportedFormat, waxerr.ErrInvalidData, waxerr.ErrNoTags,
 		waxerr.ErrUnsupportedTag, waxerr.ErrPictureTooLarge, waxerr.ErrSizeTooLarge,
 		waxerr.ErrTooDeep, waxerr.ErrSourceChanged, waxerr.ErrChainedStream,
-		waxerr.ErrInvalidKey,
+		waxerr.ErrUnalignedStream, waxerr.ErrInvalidKey,
 	} {
 		if strings.HasPrefix(err.Error(), "waxlabel:") {
 			t.Errorf("sentinel %q should not embed the program prefix", err.Error())
@@ -1883,21 +1885,36 @@ func TestJSONErrorRoutingOnEarlyAbort(t *testing.T) {
 
 // TestSetShowsPlanBeforeFailedWrite checks that the plan preview is printed even
 // when the write fails, matching the help ("the plan is printed before the
-// outcome"). The write is failed by an existing-but-unwritable -o directory: it
-// passes the up-front -o checks (the dir exists), so the plan renders, and only the
-// atomic-write temp create then fails (io). A missing -o dir would instead be a
-// usage error before the plan prints (#6).
+// outcome"). The trigger is an IN-PLACE edit of a file in an existing-but-unwritable
+// directory: the file stays readable, so the parse and plan succeed, and only the
+// atomic in-place write's temp create then fails (io). An -o write to an unwritable dir
+// is instead caught by the up-front writability probe before the plan renders, so this
+// uses the in-place path, which has no such probe (TestTempCreateErrorNamesDir covers
+// the -o probe's exit code and message).
 func TestSetShowsPlanBeforeFailedWrite(t *testing.T) {
 	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: directory permissions do not prevent the write")
 	}
 	roDir := filepath.Join(t.TempDir(), "ro")
-	if err := os.Mkdir(roDir, 0o555); err != nil {
+	if err := os.Mkdir(roDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A real file in the dir, then make the dir read-only: the file stays readable (parse
+	// and plan succeed) while a temp create for the in-place atomic write fails.
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(roDir, "in.flac")
+	if err := os.WriteFile(file, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(roDir, 0o555); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.Chmod(roDir, 0o755) })
-	out, _, code := runCLI(t, "set", sampleFLAC, "--set", "TITLE=X", "-o", filepath.Join(roDir, "out.flac"))
+	out, _, code := runCLI(t, "set", file, "--set", "TITLE=X")
 	if code != 6 {
 		t.Fatalf("exit = %d, want 6 (io)", code)
 	}
@@ -1959,6 +1976,8 @@ func TestErrClassRankCoversEveryErrorClass(t *testing.T) {
 		waxerr.ErrNeedsFile,
 		waxerr.ErrUnsupportedFormat,
 		waxerr.ErrUnsupportedTag,
+		waxerr.ErrChainedStream,
+		waxerr.ErrUnalignedStream,
 		waxerr.ErrSourceChanged,
 		waxerr.ErrInvalidData,
 		waxerr.ErrNoTags,

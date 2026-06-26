@@ -266,6 +266,7 @@ func perFile[P any](
 	compute func(ctx context.Context, path string) (P, error),
 	toJSON func(path string, p P) any,
 	render func(w io.Writer, path string, p P),
+	severity func(path string, p P) error,
 	noSeparator bool,
 ) error {
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
@@ -295,6 +296,17 @@ func perFile[P any](
 			render(out, path, p)
 			rendered++
 		}
+		// After the record renders (or its JSON item is queued), fold an optional
+		// post-render soft error into the aggregate exit code - the same "render the
+		// record, then fold a sentinel" shape the lint loop uses. dump/caps use it to
+		// escalate a no-audio document to exit 4 while still showing its contents, so a
+		// read command's verdict on a tag-only/truncated file matches what verify/set/lint
+		// reach by hashing or rewriting essence.
+		if severity != nil {
+			if serr := severity(path, p); serr != nil && worseError(worstErr, serr) {
+				worstErr = serr
+			}
+		}
 	}
 	if asJSON {
 		if err := emitJSONList(out, items); err != nil {
@@ -302,6 +314,15 @@ func perFile[P any](
 		}
 	}
 	return alreadyRendered(worstErr)
+}
+
+// errNoAudioEssence is the soft sentinel dump and caps fold (after rendering the record)
+// when a file carries no decodable audio essence. It wraps ErrInvalidData, so it classifies
+// as exit 4 (invalid-data) - the same verdict verify/set/lint reach by hashing or rewriting
+// essence - removing the dump/caps exit-0 outlier and the extension-dependent verdict it
+// masked. The record is still shown; only the aggregate exit code escalates.
+func errNoAudioEssence() error {
+	return fmt.Errorf("%w: no decodable audio frames found", waxerr.ErrInvalidData)
 }
 
 // emitJSONList writes the per-file items as a JSON array - always, even for a
@@ -560,6 +581,14 @@ func classifyError(err error) classifiedError {
 		c.exitCode, c.code = 3, "unsupported-format"
 	case errors.Is(err, waxerr.ErrUnsupportedTag):
 		c.exitCode, c.code = 3, "unsupported-tag"
+	case errors.Is(err, waxerr.ErrChainedStream):
+		// A chained/multiplexed Ogg stream: a distinct write-refusal, not collapsed into
+		// unsupported-tag - two different refusal reasons reading as one code loses signal.
+		c.exitCode, c.code = 3, "unsupported-stream"
+	case errors.Is(err, waxerr.ErrUnalignedStream):
+		// A well-formed but non-page-aligned Ogg stream: a write refusal (exit 3), not a
+		// corrupt file (exit 4) - the stream reads fine, it just cannot be rewritten safely.
+		c.exitCode, c.code = 3, "unsupported-alignment"
 	case errors.Is(err, waxerr.ErrSourceChanged):
 		c.exitCode, c.code, c.hint = 5, "source-changed",
 			"the file changed since it was read; re-run to pick up the new contents"
@@ -599,19 +628,21 @@ func isUsageError(err error) bool {
 // in README.md; TestErrClassRankCoversEveryErrorClass pins that every code
 // classifyError can produce is ranked here, so a new class cannot silently fall to 0.
 var errClassRank = map[string]int{
-	"canceled":           100, // exit 130: an interrupted run dominates
-	"timeout":            100, // exit 130
-	"source-changed":     90,  // exit 5
-	"invalid-data":       80,  // exit 4: a corrupt file
-	"no-tags":            75,  // exit 4
-	"unsupported-format": 70,  // exit 3
-	"unsupported-tag":    65,  // exit 3
-	"io":                 60,  // exit 6
-	"not-found":          55,  // exit 6: a wrong path
-	"usage":              20,  // exit 2: a bad invocation
-	"invalid-key":        20,  // exit 2
-	"needs-file":         20,  // exit 2: a path-less SaveBack (library callers)
-	"error":              10,  // exit 1: the unclassified fallback
+	"canceled":              100, // exit 130: an interrupted run dominates
+	"timeout":               100, // exit 130
+	"source-changed":        90,  // exit 5
+	"invalid-data":          80,  // exit 4: a corrupt file
+	"no-tags":               75,  // exit 4
+	"unsupported-format":    70,  // exit 3
+	"unsupported-tag":       65,  // exit 3
+	"unsupported-stream":    64,  // exit 3: a chained/multiplexed Ogg stream
+	"unsupported-alignment": 63,  // exit 3: a non-page-aligned Ogg stream
+	"io":                    60,  // exit 6
+	"not-found":             55,  // exit 6: a wrong path
+	"usage":                 20,  // exit 2: a bad invocation
+	"invalid-key":           20,  // exit 2
+	"needs-file":            20,  // exit 2: a path-less SaveBack (library callers)
+	"error":                 10,  // exit 1: the unclassified fallback
 }
 
 // worseError reports whether candidate is a more-severe aggregate error than

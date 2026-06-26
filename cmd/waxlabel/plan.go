@@ -86,6 +86,7 @@ func newPlanCmd() *cobra.Command {
 				}),
 				func(path string, plan *wl.Plan) any { return toJSONReport(path, plan) },
 				func(w io.Writer, path string, plan *wl.Plan) { renderReport(w, path, plan, ce.addPics) },
+				nil, // plan is a dry-run preview; the no-audio verdict is for the read views (dump/caps) and the writers
 				false,
 			)
 		},

@@ -103,6 +103,19 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		return nil, err
 	}
 
+	// An edit that changes the value of an album-scope SimpleTag carrying structure the
+	// flat canonical model cannot hold (a secondary TagLanguage, a TagBinary value, or
+	// nested sub-tags) re-emits that value flat and drops the structure. The unchanged-tag
+	// case is preserved verbatim by buildAlbumGroup, so this fires only when the key was
+	// edited and the old bytes cannot be kept. Emit it as a keyed plan-time warning here,
+	// before planAbsorb, so an absorb-then-shift retry cannot render it twice.
+	if ch.simple {
+		if keys := tagStructureDropped(d, ek); len(keys) > 0 {
+			report.Warnings = core.WarnKeyed(report.Warnings, core.WarnTagStructureDropped,
+				"an edited album tag dropped its secondary language, binary value, or nested sub-tags", keys...)
+		}
+	}
+
 	// Re-rendering a default edition that carried nested sub-chapters or
 	// secondary-language titles drops that structure (the flat chapter model cannot
 	// hold it). Surface it as a plan-time warning rather than flattening silently -
@@ -207,10 +220,16 @@ func checkPreservable(d *doc, ch changes, ek map[tag.Key]bool) error {
 		albumIdx := albumGroupIndex(d.groups)
 		for i, g := range d.groups {
 			if i == albumIdx {
-				// Synced in place: only its kept non-canonical SimpleTags need raw.
+				// Synced in place: every SimpleTag the edit keeps verbatim - a non-canonical
+				// tag, OR a managed tag whose canonical key was not edited (preserved with its
+				// language/binary/nested structure) - needs its captured bytes. A tag the edit
+				// drops is re-emitted flat from the canonical set and needs no raw.
 				for _, st := range g.tags {
-					if !isManaged(st.name) && st.raw == nil {
-						return tooBig("custom tag")
+					if droppedByEdit(st, ek) || isManagedTitle(st) {
+						continue // re-emitted from the canonical set, or migrated to Info.Title: no raw needed
+					}
+					if st.raw == nil {
+						return tooBig("tag")
 					}
 				}
 				continue
@@ -278,11 +297,11 @@ func isFallback(err error) bool { return errors.Is(err, errFallback) }
 // (the new value lands at album scope). Title is excluded - it lives in Info.Title.
 func renderTags(d *doc, base, edited tag.TagSet, ek map[tag.Key]bool) (raw []byte, groups []tagGroup) {
 	albumIdx := albumGroupIndex(d.groups)
-	covered := coveredByOtherScopes(d.groups, albumIdx, ek)
+	covered, albumOwn := coveredByOtherScopes(d.groups, albumIdx, ek)
 	var content []byte
 
 	for i, g := range d.groups {
-		newGroup, gb, keep := renderGroup(g, base, edited, covered, ek, i == albumIdx)
+		newGroup, gb, keep := renderGroup(g, base, edited, covered, albumOwn, ek, i == albumIdx)
 		if !keep {
 			continue
 		}
@@ -292,7 +311,7 @@ func renderTags(d *doc, base, edited tag.TagSet, ek map[tag.Key]bool) (raw []byt
 
 	// No album group existed: create one carrying the canonical set.
 	if albumIdx < 0 {
-		newGroup, gb := buildAlbumGroup(nil, base, edited, covered)
+		newGroup, gb := buildAlbumGroup(nil, base, edited, covered, albumOwn, ek)
 		if gb != nil {
 			content = append(content, gb...)
 			groups = append(groups, newGroup)
@@ -334,9 +353,15 @@ func renderTags(d *doc, base, edited tag.TagSet, ek map[tag.Key]bool) (raw []byt
 // primary album emit, so its values are covered and subtractFold removes only the
 // matching number of album values. That keeps same-scope duplicates stable across
 // repeated edits instead of growing or shrinking them.
-func coveredByOtherScopes(groups []tagGroup, albumIdx int, ek map[tag.Key]bool) map[tag.Key][]string {
-	// Per key, the case-folded values the album scope itself keeps after the edit.
+// It also returns albumOwn: the album group's own surviving values as ordered lists, computed
+// from the same projection pass that builds albumFolds. buildAlbumGroup subtracts these from
+// its canonical re-emit so a value it preserves verbatim is not also emitted flat - returning
+// them here means that pass runs once, not a second time inside buildAlbumGroup.
+func coveredByOtherScopes(groups []tagGroup, albumIdx int, ek map[tag.Key]bool) (covered, albumOwn map[tag.Key][]string) {
+	// Per key, the case-folded values the album scope itself keeps after the edit, plus the
+	// same values as ordered lists (albumOwn) for buildAlbumGroup's subtraction.
 	albumFolds := map[tag.Key]map[string]bool{}
+	albumOwn = map[tag.Key][]string{}
 	var albumScope core.Scope
 	if albumIdx >= 0 {
 		albumScope = groups[albumIdx].scope
@@ -345,10 +370,11 @@ func coveredByOtherScopes(groups []tagGroup, albumIdx int, ek map[tag.Key]bool) 
 				albumFolds[c.key] = map[string]bool{}
 			}
 			albumFolds[c.key][core.Fold(c.value)] = true
+			albumOwn[c.key] = append(albumOwn[c.key], c.value)
 		})
 	}
 
-	covered := map[tag.Key][]string{}
+	covered = map[tag.Key][]string{}
 	for i, g := range groups {
 		if i == albumIdx {
 			continue
@@ -363,7 +389,7 @@ func coveredByOtherScopes(groups []tagGroup, albumIdx int, ek map[tag.Key]bool) 
 			covered[c.key] = append(covered[c.key], c.value)
 		})
 	}
-	return covered
+	return covered, albumOwn
 }
 
 // forEachSurvivingContribution invokes fn for each canonical contribution a group's
@@ -384,11 +410,11 @@ func forEachSurvivingContribution(g tagGroup, ek map[tag.Key]bool, fn func(scope
 // canonical set; a non-album group is preserved verbatim or, when it carries an
 // edited key, re-rendered to drop that key. keep is false when the group becomes
 // empty.
-func renderGroup(g tagGroup, base, edited tag.TagSet, covered map[tag.Key][]string, ek map[tag.Key]bool, isAlbum bool) (out tagGroup, raw []byte, keep bool) {
+func renderGroup(g tagGroup, base, edited tag.TagSet, covered, albumOwn map[tag.Key][]string, ek map[tag.Key]bool, isAlbum bool) (out tagGroup, raw []byte, keep bool) {
 	if !isAlbum {
 		return renderNonAlbumGroup(g, ek)
 	}
-	ng, gb := buildAlbumGroup(&g, base, edited, covered)
+	ng, gb := buildAlbumGroup(&g, base, edited, covered, albumOwn, ek)
 	if gb == nil {
 		return tagGroup{}, nil, false
 	}
@@ -466,6 +492,59 @@ func droppedByEdit(st simpleTag, ek map[tag.Key]bool) bool {
 	return false
 }
 
+// meaningfulLang reports whether an EBML language string names a real language, i.e.
+// it is neither absent nor the "und" (undetermined) default. Matroska's TagLanguage and
+// ChapLanguage both default to "und", so an "und" value carries no information a flat
+// re-emit (which omits the element and reads back as "und") would lose.
+func meaningfulLang(lang string) bool {
+	return lang != "" && !strings.EqualFold(lang, "und")
+}
+
+// tagStructureDropped returns the canonical keys whose album-scope SimpleTag carried
+// structure the flat canonical model cannot hold - a TagLanguage, a TagBinary value, or
+// nested sub-tags - that this edit drops because the key's value changed (droppedByEdit),
+// re-emitting it flat at album scope. An unchanged structured tag is preserved verbatim
+// (by buildAlbumGroup at album scope, or renderNonAlbumGroup's verbatim carry elsewhere) and
+// is not reported. Every scope is scanned, not just album: a track/edition/chapter-scoped
+// structured tag whose key is edited is dropped and re-emitted flat at album scope too, the
+// same silent loss. Keys are de-duplicated in first-seen order so the warning names each
+// affected field once.
+func tagStructureDropped(d *doc, ek map[tag.Key]bool) []tag.Key {
+	var keys []tag.Key
+	seen := map[tag.Key]bool{}
+	for _, g := range d.groups {
+		for _, st := range g.tags {
+			if !droppedByEdit(st, ek) {
+				continue
+			}
+			// A plain string tag loses nothing on a flat re-emit. A TagLanguage of "und"
+			// (the EBML default mkvmerge writes on essentially every SimpleTag) is not a
+			// meaningful secondary language - re-emitting with no TagLanguage reads back as
+			// "und" too - so it does not count as lost structure and must not spuriously warn.
+			if !meaningfulLang(st.lang) && st.binary == 0 && len(st.sub) == 0 {
+				continue
+			}
+			k, ok := mapping.MatroskaTagKey(st.name)
+			if !ok || seen[k] {
+				continue
+			}
+			seen[k] = true
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}
+
+// isManagedTitle reports whether a SimpleTag maps to the canonical Title, which is always
+// homed in Info.Title - so it is never kept as an album SimpleTag in the output. The album
+// re-emit already skips Title (k == tag.Title), and the preservation loop must skip it too:
+// otherwise a file whose title lives only in a SimpleTag, migrated to Info.Title on an
+// unrelated edit, would carry the title twice (Info.Title plus the stale SimpleTag).
+func isManagedTitle(st simpleTag) bool {
+	k, ok := mapping.MatroskaTagKey(st.name)
+	return ok && k == tag.Title
+}
+
 // groupTouchedBy reports whether any of the group's SimpleTags would be dropped by
 // the edit - i.e. whether the group must be re-rendered rather than preserved
 // verbatim.
@@ -524,16 +603,23 @@ func editedKeySet(base, edited tag.TagSet) map[tag.Key]bool {
 // dropped wholesale, while a fully covered key stays put (no duplication). A changed
 // key re-emits all its values: a canonical edit defaults to album scope and the
 // other scopes drop it via renderNonAlbumGroup/droppedByEdit.
-func buildAlbumGroup(group *tagGroup, base, edited tag.TagSet, covered map[tag.Key][]string) (tagGroup, []byte) {
+// albumOwn is the album group's own surviving projected values (from coveredByOtherScopes),
+// subtracted from the canonical re-emit so a value preserved verbatim - with its
+// language/binary/nested structure - is not also emitted flat.
+func buildAlbumGroup(group *tagGroup, base, edited tag.TagSet, covered, albumOwn map[tag.Key][]string, ek map[tag.Key]bool) (tagGroup, []byte) {
 	out := tagGroup{scope: core.ScopeAlbum}
 	var simple []byte
 	if group != nil {
 		out = *group
 		out.tags = nil
-		// Keep non-canonical tags verbatim (custom names, technical stats, binary,
-		// nested trees) in place.
+		// Preserve every SimpleTag the edit does not drop, verbatim from its captured
+		// bytes - custom names, technical stats, binary, nested trees, AND managed tags
+		// whose canonical key was not edited (keeping the language, binary value, or
+		// secondary structure a flat re-emit would lose). A managed tag whose key WAS
+		// edited (droppedByEdit) is dropped here; its new value is re-emitted flat at
+		// album scope below. checkPreservable has guaranteed each kept tag's raw.
 		for _, st := range group.tags {
-			if isManaged(st.name) {
+			if droppedByEdit(st, ek) || isManagedTitle(st) {
 				continue
 			}
 			if st.raw != nil {
@@ -548,12 +634,14 @@ func buildAlbumGroup(group *tagGroup, base, edited tag.TagSet, covered map[tag.K
 			continue // stored in Info.Title
 		}
 		vals, _ := edited.Get(k)
-		if cov := covered[k]; len(cov) > 0 {
-			if bv, _ := base.Get(k); slices.Equal(bv, vals) {
-				// Unchanged key carried at another scope: re-emit only the canonical
-				// values that scope does not already preserve. A value split across
-				// scopes keeps its album-only part; a fully covered key is skipped.
-				vals = subtractFold(vals, cov)
+		if bv, _ := base.Get(k); slices.Equal(bv, vals) {
+			// Unchanged key carried verbatim elsewhere - by a narrower scope (covered) or
+			// by this album group's own preserved SimpleTags (albumOwn) - is re-emitted
+			// only for the canonical values not already preserved. A value split across
+			// scopes keeps its album-only part; a fully covered/preserved key is skipped.
+			// A changed key re-emits in full (its preserved copies were dropped above).
+			if sub := slices.Concat(covered[k], albumOwn[k]); len(sub) > 0 {
+				vals = subtractFold(vals, sub)
 				if len(vals) == 0 {
 					continue
 				}
@@ -566,8 +654,16 @@ func buildAlbumGroup(group *tagGroup, base, edited tag.TagSet, covered map[tag.K
 			// WAV/AIFF INFO/text vocabularies drop such a value when no ID3 chunk is
 			// available to hold it. hasValue stays true so the result document projects it
 			// back into the canonical tag set.
-			simple = append(simple, simpleTagBytes(name, v)...)
-			out.tags = append(out.tags, simpleTag{name: name, value: v, hasValue: true})
+			stb := simpleTagBytes(name, v)
+			simple = append(simple, stb...)
+			// Carry the freshly rendered bytes as this synthesized tag's raw, so the result
+			// document's album group equals a fresh parse of the output. A re-edit of that
+			// returned Document then preserves this tag verbatim (it is flat, so there is no
+			// structure to lose) instead of tripping checkPreservable's raw-availability gate,
+			// which exists to catch a parsed tag whose bytes were too big to capture - a case a
+			// synthesized tag must not be mistaken for. Mirrors renderNonAlbumGroup, which
+			// carries its re-rendered group bytes the same way.
+			out.tags = append(out.tags, simpleTag{name: name, value: v, hasValue: true, raw: stb})
 		}
 	}
 	if len(simple) == 0 {

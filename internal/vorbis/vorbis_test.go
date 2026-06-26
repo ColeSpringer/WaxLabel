@@ -5,7 +5,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
+	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -146,4 +148,43 @@ func TestEncoderNoiseDeduplicatesVendorEcho(t *testing.T) {
 			t.Fatalf("got %d warnings, want 1: %v", len(ws), ws)
 		}
 	})
+}
+
+// TestProjectSanitizesInvalidUTF8 is the QA-review regression: the Vorbis reader stores raw
+// bytes, so a non-conformant file can hold invalid UTF-8. Project must sanitize it into the
+// canonical model (like the ID3/MP4/WAV/AIFF readers) so the value never reaches the TagSet
+// or family view invalid - otherwise a copy of it would be spuriously rejected by the
+// write-time UTF-8 guard, and --json would emit raw invalid bytes.
+func TestProjectSanitizesInvalidUTF8(t *testing.T) {
+	ts, fams := Project([]Comment{{Name: "ARTIST", Value: "bad\xff\xfevalue"}})
+	if v, _ := ts.First(tag.Artist); !utf8.ValidString(v) {
+		t.Errorf("Project left invalid UTF-8 in the TagSet: %q", v)
+	}
+	if len(fams) != 1 || len(fams[0].Values) != 1 || !utf8.ValidString(fams[0].Values[0]) {
+		t.Errorf("Project left invalid UTF-8 in the family view: %+v", fams)
+	}
+	// A valid value is untouched.
+	if ts2, _ := Project([]Comment{{Name: "ARTIST", Value: "Valid ☃"}}); func() bool {
+		v, _ := ts2.First(tag.Artist)
+		return v != "Valid ☃"
+	}() {
+		t.Error("Project altered a valid UTF-8 value")
+	}
+}
+
+// TestParsePictureSanitizesDescription is a QA-review regression: a FLAC/Ogg picture
+// description is stored as raw bytes, so a non-conformant file can hold invalid UTF-8.
+// ParsePicture must sanitize it so a transfer that re-adds the picture is not rejected by the
+// write-time UTF-8 guard.
+func TestParsePictureSanitizesDescription(t *testing.T) {
+	body := RenderPicture(core.Picture{
+		Type: core.PicFrontCover, MIME: "image/png", Description: "bad\xff\xfedesc", Data: []byte{1, 2, 3},
+	})
+	p, err := ParsePicture(body, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !utf8.ValidString(p.Description) {
+		t.Errorf("ParsePicture left invalid UTF-8 in the description: %q", p.Description)
+	}
 }

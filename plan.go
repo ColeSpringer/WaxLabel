@@ -3,6 +3,7 @@ package waxlabel
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -42,11 +43,21 @@ func (p *Plan) zero() bool { return p == nil || p.plan == nil || p.doc.zero() }
 // Report describes what executing the plan will do: the operations, the
 // before/after sizes, the padding to be written, and any warnings. It performs
 // no I/O. An uninitialized plan reports the empty WriteReport.
+//
+// It returns a defensive copy: the Operations and Warnings slices (the only
+// reference types in a report) are cloned, and the warnings are run through the
+// deep [core.CloneWarnings] so a caller mutating a returned warning's Keys cannot
+// reach back into the plan's own report. Without this a consumer iterating
+// Report().Warnings and editing Keys would corrupt a later Report() of the same
+// plan.
 func (p *Plan) Report() WriteReport {
 	if p.zero() {
 		return WriteReport{}
 	}
-	return p.plan.Report
+	r := p.plan.Report
+	r.Operations = slices.Clone(r.Operations)
+	r.Warnings = core.CloneWarnings(r.Warnings)
+	return r
 }
 
 // IsNoOp reports whether the plan would not change the file's bytes. A no-op

@@ -33,7 +33,7 @@ func TestTrackNumberSlashIsLibrarySemantic(t *testing.T) {
 }
 
 // TestTrackNumberNULRejected (A2): a NUL in a slash number is rejected by Prepare
-// before the split, not smuggled into the derived TRACKTOTAL (which rejectNULValues
+// before the split, not smuggled into the derived TRACKTOTAL (which rejectInvalidValues
 // does not scan, since it is not a patched key). This is the load-bearing reason
 // splitNumberPairs runs *after* the NUL guard. execve blocks a NUL in CLI argv, so
 // this footgun can only be reached - and tested - through the library.

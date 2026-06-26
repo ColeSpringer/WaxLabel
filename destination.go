@@ -233,6 +233,27 @@ func (e *tempCreateError) Error() string {
 
 func (e *tempCreateError) Unwrap() error { return e.err }
 
+// NewTempCreateError builds the same temp-create failure [writeAtomic] returns when a
+// destination directory rejects a write: it names dir (not the random temp file) and unwraps
+// to err so the failure classifies as local I/O. It is exported so a caller that probes a
+// directory's writability up front - the CLI's -o pre-check - surfaces the identical error
+// (same message and exit class) the late atomic write would, instead of re-implementing it.
+func NewTempCreateError(dir string, err error) error {
+	return &tempCreateError{dir: dir, err: err}
+}
+
+// ResolveWriteTarget returns the path an atomic write will rename over: the symlink-resolved
+// target when path resolves (so the rewrite updates the file a link points at, leaving the
+// link in place), else path verbatim (a fresh target or a dangling link). It is the single
+// resolution rule [writeAtomic] uses; a caller pre-checking an -o destination resolves the
+// same way so its probe inspects the directory the write actually lands in.
+func ResolveWriteTarget(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return path
+}
+
 // writeAtomic writes via a temp file in the destination directory, fsyncs it,
 // optionally verifies it (before commit), renames it over path, then fsyncs the
 // directory. It returns committed=true once the rename succeeds (even if the
@@ -245,10 +266,7 @@ func writeAtomic(path string, write, verify func(*os.File) error, preserveMtime 
 	// a dangling link - falls back to the literal path. A hard link is still
 	// broken by the rename (an unavoidable consequence of atomic replace); that is
 	// documented behavior, not worked around here.
-	target := path
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		target = resolved
-	}
+	target := ResolveWriteTarget(path)
 	dir := filepath.Dir(target)
 	// The temp file must live in the target's directory so the rename is on one
 	// filesystem (os.Rename cannot cross devices) and lands beside the real file.

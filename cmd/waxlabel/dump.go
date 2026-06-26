@@ -46,6 +46,15 @@ func newDumpCmd() *cobra.Command {
 				}),
 				func(path string, doc *wl.Document) any { return toJSONDocument(path, doc, native) },
 				func(w io.Writer, path string, doc *wl.Document) { renderDocument(w, path, doc, native) },
+				// A document with no decodable audio essence renders fully, then exits 4 - the
+				// same verdict the write/lint commands reach - so a read command's exit code on a
+				// tag-only or truncated file is no longer the exit-0 outlier.
+				func(_ string, doc *wl.Document) error {
+					if docHasNoAudio(doc) {
+						return errNoAudioEssence()
+					}
+					return nil
+				},
 				false,
 			)
 		},
@@ -59,6 +68,19 @@ func newDumpCmd() *cobra.Command {
 // emitted as the shared jsonErrorEntry; this struct keeps a matching Error field so
 // a consumer can decode every array element into it (Error set, metadata absent on
 // failure; Error nil and metadata populated on success). See jsonErrorEntry.
+// docHasNoAudio reports whether a parsed document carries the no-audio-frames warning -
+// a tag-only or truncated file with no decodable essence. It is the shared signal behind
+// the dump and caps no-audio severity hooks (caps records it on jsonCaps, which has no
+// warnings field of its own).
+func docHasNoAudio(doc *wl.Document) bool {
+	for _, w := range doc.Warnings() {
+		if w.Code == wl.WarnNoAudioFrames {
+			return true
+		}
+	}
+	return false
+}
+
 type jsonDocument struct {
 	SchemaVersion int          `json:"schemaVersion"`
 	File          string       `json:"file"`
@@ -104,9 +126,13 @@ type jsonPicture struct {
 }
 
 type jsonChapter struct {
-	StartMs int64  `json:"startMs"`
-	EndMs   int64  `json:"endMs,omitempty"`
-	Title   string `json:"title,omitempty"`
+	StartMs      int64  `json:"startMs"`
+	EndMs        int64  `json:"endMs,omitempty"`
+	Title        string `json:"title,omitempty"`
+	Language     string `json:"language,omitempty"`
+	LanguageIETF string `json:"languageIetf,omitempty"`
+	Hidden       bool   `json:"hidden,omitempty"`
+	Disabled     bool   `json:"disabled,omitempty"`
 }
 
 type jsonNative struct {
@@ -175,9 +201,13 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 	}
 	for _, c := range doc.Chapters() {
 		jd.Chapters = append(jd.Chapters, jsonChapter{
-			StartMs: c.Start.Milliseconds(),
-			EndMs:   c.End.Milliseconds(),
-			Title:   c.Title,
+			StartMs:      c.Start.Milliseconds(),
+			EndMs:        c.End.Milliseconds(),
+			Title:        c.Title,
+			Language:     c.Language,
+			LanguageIETF: c.LanguageIETF,
+			Hidden:       c.Hidden,
+			Disabled:     c.Disabled,
 		})
 	}
 	for _, x := range doc.Warnings() {

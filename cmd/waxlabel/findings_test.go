@@ -165,9 +165,15 @@ func TestSetOutputOverwriteGuard(t *testing.T) {
 		if fi, err := os.Lstat(dangling); err != nil || fi.Mode()&os.ModeSymlink == 0 {
 			t.Errorf("dangling -o symlink was clobbered despite refusal (mode %v, err %v)", fi.Mode(), err)
 		}
-		// With --overwrite it is replaced.
-		if _, _, code = runCLI(t, "set", in, "--set", "TITLE=X", "-o", dangling, "--overwrite"); code != 0 {
-			t.Errorf("dangling -o symlink with --overwrite: code %d, want 0", code)
+		// A dangling symlink is refused even WITH --overwrite: it resolves to no regular
+		// file, so the atomic write would leave a stray new file at the (non-existent)
+		// target instead of replacing a real one. --overwrite replaces an existing file,
+		// not a broken link, so the user must point it somewhere real or pick another path.
+		if _, _, code = runCLI(t, "set", in, "--set", "TITLE=X", "-o", dangling, "--overwrite"); code != 2 {
+			t.Errorf("dangling -o symlink with --overwrite should still be refused: code %d, want 2", code)
+		}
+		if fi, err := os.Lstat(dangling); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("dangling -o symlink clobbered under --overwrite (mode %v, err %v)", fi.Mode(), err)
 		}
 	}
 

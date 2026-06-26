@@ -237,12 +237,15 @@ func TestPlanChangesPreview(t *testing.T) {
 	}
 }
 
-// TestDumpEmptyMP3NoAudio: a tag-only MP3 surfaces the no-audio warning in dump.
+// TestDumpEmptyMP3NoAudio: a tag-only MP3 surfaces the no-audio warning in dump AND
+// exits 4 (invalid-data), the same verdict verify/set/lint reach - dump renders the full
+// document first, then escalates the exit code, so a read command's verdict on a
+// zero-essence file is no longer the exit-0 outlier.
 func TestDumpEmptyMP3NoAudio(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "dump", emptyMP3)
-	if code != 0 {
-		t.Fatalf("dump exit = %d, want 0", code)
+	if code != 4 {
+		t.Fatalf("dump exit = %d, want 4 (no-audio is invalid-data)", code)
 	}
 	if !strings.Contains(out, "no-audio") {
 		t.Errorf("dump missing no-audio warning:\n%s", out)

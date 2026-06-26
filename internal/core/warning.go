@@ -152,6 +152,14 @@ const (
 	// the written padding is smaller than asked. Keyless: it describes the write, not a
 	// tag field.
 	WarnPaddingClamped
+	// WarnTagStructureDropped means an edit changed the value of an album-scope Matroska
+	// SimpleTag that carried structure the flat canonical model cannot hold - a secondary
+	// language (TagLanguage), a binary value (TagBinary), or nested sub-tags - so the new
+	// value is re-emitted flat and that structure is lost. An unchanged structured tag is
+	// preserved verbatim; this fires only when the key was edited, so the old bytes cannot
+	// be kept. It is a plan-time warning carrying the affected key (Warning.Keys), so the
+	// CLI's --strict gate can act on it.
+	WarnTagStructureDropped
 )
 
 func (c WarningCode) String() string {
@@ -218,6 +226,8 @@ func (c WarningCode) String() string {
 		return "chapter-ends-dropped"
 	case WarnPaddingClamped:
 		return "padding-clamped"
+	case WarnTagStructureDropped:
+		return "tag-structure-dropped"
 	default:
 		return "unknown"
 	}
@@ -323,5 +333,19 @@ func ConflictingFamiliesMessage() string {
 	return "multiple source fields supplied conflicting values"
 }
 
-// CloneWarnings copies a warning slice.
-func CloneWarnings(ws []Warning) []Warning { return slices.Clone(ws) }
+// CloneWarnings deep-copies a warning slice, detaching each Warning.Keys so a
+// caller mutating a returned warning's Keys cannot reach back into the shared
+// source slice. A shallow slices.Clone leaves every element's Keys aliasing the
+// original; [WarnKeyed] populates Keys, so a keyed warning surfaced through a
+// defensive copy (e.g. Plan.Report) needs the per-element clone too. Returns nil
+// for a nil/empty input.
+func CloneWarnings(ws []Warning) []Warning {
+	if len(ws) == 0 {
+		return nil
+	}
+	out := slices.Clone(ws)
+	for i := range out {
+		out[i].Keys = slices.Clone(out[i].Keys)
+	}
+	return out
+}

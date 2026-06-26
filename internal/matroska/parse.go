@@ -444,9 +444,12 @@ func parseAttached(src core.ReaderAtSized, af element, depth *bits.Depth, limit 
 		return a, nil, err
 	}
 	pic := core.Picture{
-		Type:        pictureType(a.name),
-		MIME:        a.mime,
-		Description: a.description,
+		Type: pictureType(a.name),
+		MIME: a.mime,
+		// Sanitize the attachment description into the canonical picture like the tag-value
+		// read path, so a transfer that re-adds this cover is not rejected by the write-time
+		// UTF-8 guard. The native attachment keeps its raw description (preserved verbatim).
+		Description: core.SanitizeUTF8(a.description),
 		Data:        data,
 	}
 	pic.SniffInto()
@@ -528,16 +531,22 @@ type scopedContribution struct {
 // the parsed groups and the segment title. Only top-level SimpleTags project to
 // the canonical set; nested sub-tags and unmapped names stay in the native tree.
 func project(d *doc) (tag.TagSet, []core.FamilyValue) {
+	// Matroska text is stored as raw bytes; a non-conformant file can hold invalid UTF-8 in a
+	// TagString or the Info.Title. Sanitize the values entering the canonical model (like the
+	// ID3/MP4/Vorbis readers) so a copy of such a value is not spuriously rejected by the
+	// write-time UTF-8 guard and --json never emits invalid bytes. The native tree keeps its
+	// raw bytes, and the write path preserves unchanged tags from their captured raw, so this
+	// does not alter byte-level preservation.
 	var contribs []scopedContribution
 	if d.hasSegTitle {
-		contribs = append(contribs, scopedContribution{tag.Title, d.segTitle, core.ScopeAlbum})
+		contribs = append(contribs, scopedContribution{tag.Title, core.SanitizeUTF8(d.segTitle), core.ScopeAlbum})
 	}
 	for _, g := range d.groups {
 		for _, st := range g.tags {
 			if !st.hasValue {
 				continue // a binary- or nested-only SimpleTag has no string value to project
 			}
-			contribs = append(contribs, projectTag(st.name, st.value, g.scope)...)
+			contribs = append(contribs, projectTag(st.name, core.SanitizeUTF8(st.value), g.scope)...)
 		}
 	}
 	return projectFlat(contribs), buildFamilies(contribs)

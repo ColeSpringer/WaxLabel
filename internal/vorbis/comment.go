@@ -99,15 +99,23 @@ func Project(comments []Comment) (tag.TagSet, []core.FamilyValue) {
 	var fams []core.FamilyValue
 	for _, cm := range comments {
 		key := mapping.CanonicalVorbis(cm.Name)
-		ts.Add(key, cm.Value)
+		// The Vorbis reader stores values as raw bytes; a non-conformant file can hold invalid
+		// UTF-8 (the spec mandates UTF-8, but WaxLabel parses best-effort). Sanitize it into the
+		// canonical model the way the ID3/MP4/Matroska readers do, so the model never carries raw
+		// invalid sequences: a copy of such a value is not spuriously rejected by the write-time
+		// UTF-8 guard, and --json never emits invalid bytes. The native comment list keeps its
+		// raw bytes, so an unrelated edit still preserves them verbatim (Rebuild copies unchanged
+		// comments as-is).
+		val := core.SanitizeUTF8(cm.Value)
+		ts.Add(key, val)
 		if i, ok := famIndex[key]; ok {
-			fams[i].Values = append(fams[i].Values, cm.Value)
+			fams[i].Values = append(fams[i].Values, val)
 		} else {
 			famIndex[key] = len(fams)
 			names[key] = map[string]bool{}
 			fams = append(fams, core.FamilyValue{
 				Key: key, Family: core.FamilyVorbis, Scope: core.ScopeTrack,
-				Values: []string{cm.Value}, Selected: true,
+				Values: []string{val}, Selected: true,
 			})
 		}
 		names[key][strings.ToUpper(cm.Name)] = true

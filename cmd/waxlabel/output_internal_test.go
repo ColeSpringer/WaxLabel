@@ -40,3 +40,17 @@ func TestStrictWarningReasonKeyless(t *testing.T) {
 		t.Errorf("keyless reason = %q, want the warning's own message (no leading colon)", got)
 	}
 }
+
+// TestStrictEscalatesTagStructureDropped is a QA-review regression: WarnTagStructureDropped is
+// keyed for a lossy edited field, so --strict must escalate it (the F3 finding emitted it
+// "so --strict can act on it"). This checks both halves of the gate: the code is in the
+// escalating set, and its reason names the offending key.
+func TestStrictEscalatesTagStructureDropped(t *testing.T) {
+	if !strictEscalatingCodes[wl.WarnTagStructureDropped] {
+		t.Error("--strict must escalate tag-structure-dropped (a lossy keyed edit)")
+	}
+	w := wl.Warning{Code: wl.WarnTagStructureDropped, Message: "an edited album tag dropped its structure", Keys: []tag.Key{tag.Artist}}
+	if got := strictWarningReason(w); !strings.HasPrefix(got, "ARTIST:") {
+		t.Errorf("tag-structure-dropped strict reason = %q, want it to name ARTIST", got)
+	}
+}
