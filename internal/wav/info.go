@@ -110,8 +110,8 @@ func infoRepresentable(ts tag.TagSet) bool {
 // order. Multi-value mapped keys (which also forced an id3 chunk) store their
 // first value here, INFO being single-valued. When stripStamp is set, a
 // transcoder-stamp ISFT item (the WAV encoder leftover) is dropped rather than
-// preserved - the one removable native stamp a canonical ENCODER edit cannot reach
-// (E1); an emptied list then drops the LIST chunk via the caller's len check.
+// preserved; it is the one removable native stamp a canonical ENCODER edit cannot
+// reach. An emptied list then drops the LIST chunk via the caller's len check.
 func rebuildInfo(orig []infoItem, edited tag.TagSet, stripStamp bool) []infoItem {
 	out := make([]infoItem, 0, len(orig))
 	emitted := map[tag.Key]bool{}
@@ -152,8 +152,9 @@ func rebuildInfo(orig []infoItem, edited tag.TagSet, stripStamp bool) []infoItem
 }
 
 // infoValue returns the value INFO should store for key - the first value, since
-// INFO is single-valued - or ok=false when the key is absent or present-empty
-// (which INFO cannot represent and so drops).
+// INFO is single-valued - or ok=false when the key is absent or present empty. The
+// native INFO vocabulary cannot represent an empty value, but a WAV that also carries
+// ID3 can preserve it there, matching the AIFF behavior in internal/aiff/text.go.
 func infoValue(ts tag.TagSet, key tag.Key) (string, bool) {
 	v, ok := ts.First(key)
 	if !ok || v == "" {

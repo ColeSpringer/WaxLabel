@@ -61,13 +61,13 @@ func WithPreserveModTime() WriteOption {
 	return func(o *core.WriteOptions) { o.PreserveModTime = true }
 }
 
-// WithVerifyEssence hashes the audio essence the rewrite copies and checks it
-// against the source's parsed extent, confirming the plan copies the audio it
-// parsed (and catching a source that changes mid-write). For a file destination
-// ([SaveBack]/[SaveAsFile]) it then re-reads the written temp file's audio extent
-// and compares before the commit, so the check is end-to-end through the page
-// cache (it guards the copy logic, not the disk media). A streaming [WriteTo]
-// cannot be re-read, so there it verifies the copied source bytes only.
+// WithVerifyEssence hashes the audio bytes while a rewrite copies them and compares
+// the written output with that copy stream. It is a copy-consistency check: it proves
+// the output matches the bytes read during the write, not a separate parse-time
+// baseline. For [SaveBack] and [SaveAsFile] it re-reads the temporary output before
+// commit, which checks the copy path through the page cache. A streaming [WriteTo]
+// cannot be re-read, so it verifies only the bytes copied from the source. The CLI
+// parses each file immediately before writing, so its source extent is fresh.
 func WithVerifyEssence() WriteOption {
 	return func(o *core.WriteOptions) { o.VerifyEssence = true }
 }

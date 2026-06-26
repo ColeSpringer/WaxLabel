@@ -3,6 +3,7 @@ package matroska
 import (
 	"fmt"
 	"slices"
+	"sort"
 	"strconv"
 
 	"github.com/colespringer/waxlabel/internal/bits"
@@ -10,6 +11,53 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
+
+// offsetMap resolves an original absolute file offset to its new absolute offset in
+// the shifted output. direct holds exact per-element mappings. runs covers coalesced
+// cluster descriptors: the parser retains one descriptor per contiguous cluster run,
+// so a Cue or SeekHead target that points into a later cluster in the run may not have
+// a direct key. Because the whole run is copied verbatim and shifts by one delta, an
+// interior offset maps to itself plus that run's shift.
+//
+// Only the shift path needs this fallback because that is where clusters move and
+// CueClusterPosition or SeekPosition targets must be repointed. The absorb path leaves
+// unmatched cluster targets untouched and can keep using a plain map.
+type offsetMap struct {
+	direct map[int64]int64
+	runs   []clusterRun
+}
+
+// clusterRun is one coalesced cluster run's original [start, end) extent and the byte
+// shift applied to it in the output. The interval is half-open, so an offset exactly at
+// end resolves through the next element's direct mapping instead of this run. Runs are
+// appended in file order and never overlap, which lets lookup use binary search.
+type clusterRun struct {
+	start, end int64
+	shift      int64
+}
+
+// lookup returns the new absolute offset for an original absolute offset, and whether
+// it was found. A direct hit wins. Otherwise, the offset maps through the cluster run
+// that contains it, found by binary search over the sorted, non-overlapping runs. This
+// keeps repointing from becoming quadratic on files with many cluster runs.
+func (m offsetMap) lookup(abs int64) (int64, bool) {
+	if v, ok := m.direct[abs]; ok {
+		return v, true
+	}
+	// The last run whose start is <= abs is the only one that can contain it.
+	i := sort.Search(len(m.runs), func(i int) bool { return m.runs[i].start > abs }) - 1
+	if i >= 0 && abs < m.runs[i].end {
+		return abs + m.runs[i].shift, true
+	}
+	return 0, false
+}
+
+// directOffsetMap wraps a bare original-to-new map as an offsetMap with no cluster
+// runs. Unit tests use it when they drive rebuildCues or patchPositions with a small
+// hand-built map; production code builds runs in computeShiftLayout.
+func directOffsetMap(m map[int64]int64) offsetMap {
+	return offsetMap{direct: m}
+}
 
 // planShift is the fallback when absorption does not apply (no reserved Void, or
 // the edited header does not fit one). It re-renders the changed children in
@@ -54,7 +102,7 @@ type shiftIndex struct {
 	raw     []byte
 	crc     *crcSpot
 	entries []seekEntry // flat slots driving the in-place patch fast path
-	rebuild func(oldToNew map[int64]int64, inSeg, outSeg int64) ([]byte, int64, bool)
+	rebuild func(om offsetMap, inSeg, outSeg int64) ([]byte, int64, bool)
 	force   bool // monotone latch: once a rebuild was needed, stays set
 }
 
@@ -62,16 +110,16 @@ type shiftIndex struct {
 // place while possible; after force is set, or if a slot cannot fit or its target
 // is gone, it calls rebuild. ok is false only when rebuild cannot faithfully
 // produce an index.
-func (ix *shiftIndex) emit(oldToNew map[int64]int64, inSeg, outSeg int64) (out []byte, n int64, rebuilt, ok bool) {
+func (ix *shiftIndex) emit(om offsetMap, inSeg, outSeg int64) (out []byte, n int64, rebuilt, ok bool) {
 	if ix.itemIdx < 0 {
 		return nil, 0, false, true
 	}
 	if !ix.force {
-		if patched, ok := patchPositions(ix.raw, ix.crc, ix.entries, oldToNew, inSeg, outSeg); ok {
+		if patched, ok := patchPositions(ix.raw, ix.crc, ix.entries, om, inSeg, outSeg); ok {
 			return patched, int64(len(patched)), false, true
 		}
 	}
-	out, n, ok = ix.rebuild(oldToNew, inSeg, outSeg)
+	out, n, ok = ix.rebuild(om, inSeg, outSeg)
 	return out, n, true, ok
 }
 
@@ -85,8 +133,8 @@ func buildShiftIndexes(wb *writeBase, seekIdx, cuesIdx int) []*shiftIndex {
 	if seekIdx >= 0 {
 		sh := wb.seek
 		seek.raw, seek.crc, seek.entries = sh.raw, sh.crc, sh.entries
-		seek.rebuild = func(oldToNew map[int64]int64, inSeg, outSeg int64) ([]byte, int64, bool) {
-			return rebuildSeekHead(sh, oldToNew, inSeg, outSeg)
+		seek.rebuild = func(om offsetMap, inSeg, outSeg int64) ([]byte, int64, bool) {
+			return rebuildSeekHead(sh, om, inSeg, outSeg)
 		}
 	}
 
@@ -99,7 +147,7 @@ func buildShiftIndexes(wb *writeBase, seekIdx, cuesIdx int) []*shiftIndex {
 			pointsOK bool
 			parsed   bool
 		)
-		cues.rebuild = func(oldToNew map[int64]int64, inSeg, outSeg int64) ([]byte, int64, bool) {
+		cues.rebuild = func(om offsetMap, inSeg, outSeg int64) ([]byte, int64, bool) {
 			if !parsed {
 				points, pointsOK = buildCuePoints(ci) // parse ci.raw once per edit
 				parsed = true
@@ -107,7 +155,7 @@ func buildShiftIndexes(wb *writeBase, seekIdx, cuesIdx int) []*shiftIndex {
 			if !pointsOK {
 				return nil, 0, false
 			}
-			return encodeCues(points, ci.crc, len(ci.raw), oldToNew, inSeg, outSeg)
+			return encodeCues(points, ci.crc, len(ci.raw), om, inSeg, outSeg)
 		}
 	}
 
@@ -139,11 +187,11 @@ func buildShiftIndexes(wb *writeBase, seekIdx, cuesIdx int) []*shiftIndex {
 func resolveShiftLayout(wb *writeBase, items []outItem, seekIdx, cuesIdx int) (lay layout, iters int, ok bool) {
 	indexes := buildShiftIndexes(wb, seekIdx, cuesIdx)
 	for iters = 1; iters <= 8; iters++ {
-		segLead, outSegStart, oldToNew, bodyLen := computeShiftLayout(wb, items)
+		segLead, outSegStart, om, bodyLen := computeShiftLayout(wb, items)
 
 		resized := false
 		for _, ix := range indexes {
-			b, n, rebuilt, iok := ix.emit(oldToNew, wb.segDataStart, outSegStart)
+			b, n, rebuilt, iok := ix.emit(om, wb.segDataStart, outSegStart)
 			if !iok {
 				return layout{}, iters, false
 			}
@@ -249,32 +297,37 @@ func buildShiftItems(wb *writeBase, ch changes, r *rendered) (items []outItem, s
 }
 
 // computeShiftLayout recomputes the Segment lead (the recomputed size VINT), the
-// output data start, the old->new start map, and the new Segment body length from
-// the current item sizes.
-func computeShiftLayout(wb *writeBase, items []outItem) (segLead []bits.Segment, outSegStart int64, oldToNew map[int64]int64, bodyLen int64) {
+// output data start, the old-to-new offset map, and the new Segment body length from
+// the current item sizes. A coalesced cluster descriptor registers both its first
+// offset as a direct key and a clusterRun spanning its whole extent, so targets inside
+// later clusters in the run still resolve.
+func computeShiftLayout(wb *writeBase, items []outItem) (segLead []bits.Segment, outSegStart int64, om offsetMap, bodyLen int64) {
 	for _, it := range items {
 		bodyLen += it.n
 	}
 	segLead, outSegStart = segmentLead(wb, bodyLen)
-	oldToNew = make(map[int64]int64, len(items))
+	om = offsetMap{direct: make(map[int64]int64, len(items))}
 	off := outSegStart
 	for i := range items {
 		items[i].outOff = off
 		if items[i].origStart >= 0 {
-			oldToNew[items[i].origStart] = off
+			om.direct[items[i].origStart] = off
+			if items[i].id == idCluster {
+				om.runs = append(om.runs, clusterRun{start: items[i].origStart, end: items[i].origStart + items[i].n, shift: off - items[i].origStart})
+			}
 		}
 		off += items[i].n
 	}
-	return segLead, outSegStart, oldToNew, bodyLen
+	return segLead, outSegStart, om, bodyLen
 }
 
 // rebuildSeekHead re-encodes the SeekHead from its entries with each SeekPosition
 // at minimal width and entries to dropped targets omitted. It needs each entry's
 // captured SeekID; ok is false if one is missing.
-func rebuildSeekHead(sh *seekHead, oldToNew map[int64]int64, inSegStart, outSegStart int64) ([]byte, int64, bool) {
+func rebuildSeekHead(sh *seekHead, om offsetMap, inSegStart, outSegStart int64) ([]byte, int64, bool) {
 	var content []byte
 	for _, e := range sh.entries {
-		newOff, ok := oldToNew[inSegStart+int64(e.target)]
+		newOff, ok := om.lookup(inSegStart + int64(e.target))
 		if !ok {
 			continue // target dropped; omit the stale entry
 		}
@@ -294,12 +347,12 @@ func rebuildSeekHead(sh *seekHead, oldToNew map[int64]int64, inSegStart, outSegS
 // Unit tests call this uncached path; resolveShiftLayout caches the tree across
 // the fixpoint. ok is false when the tree cannot be captured faithfully or the
 // result would be an invalid empty Cues.
-func rebuildCues(ci *cuesIndex, oldToNew map[int64]int64, inSegStart, outSegStart int64) ([]byte, int64, bool) {
+func rebuildCues(ci *cuesIndex, om offsetMap, inSegStart, outSegStart int64) ([]byte, int64, bool) {
 	points, ok := buildCuePoints(ci)
 	if !ok {
 		return nil, 0, false
 	}
-	return encodeCues(points, ci.crc, len(ci.raw), oldToNew, inSegStart, outSegStart)
+	return encodeCues(points, ci.crc, len(ci.raw), om, inSegStart, outSegStart)
 }
 
 // encodeCues re-encodes a Cues element from a captured CuePoint tree with every
@@ -310,7 +363,7 @@ func rebuildCues(ci *cuesIndex, oldToNew map[int64]int64, inSegStart, outSegStar
 // was dropped is omitted; a CuePoint left with no positions disappears. crc != nil
 // reproduces a leading CRC-32, and sizeHint pre-sizes the accumulator. ok is false
 // when the result would be an invalid empty Cues.
-func encodeCues(points []cuePoint, crc *crcSpot, sizeHint int, oldToNew map[int64]int64, inSeg, outSeg int64) (out []byte, length int64, ok bool) {
+func encodeCues(points []cuePoint, crc *crcSpot, sizeHint int, om offsetMap, inSeg, outSeg int64) (out []byte, length int64, ok bool) {
 	// The rebuilt element is usually close in size to the original, so size the
 	// accumulator from the captured bytes to avoid repeated growth.
 	content := make([]byte, 0, sizeHint)
@@ -322,7 +375,7 @@ func encodeCues(points []cuePoint, crc *crcSpot, sizeHint int, oldToNew map[int6
 		for _, tp := range p.tracks {
 			tc := slices.Clone(tp.pre)
 			if tp.hasPos {
-				newOff, present := oldToNew[inSeg+int64(tp.target)]
+				newOff, present := om.lookup(inSeg + int64(tp.target))
 				if !present {
 					continue // target cluster dropped: omit this CueTrackPositions
 				}
@@ -377,11 +430,11 @@ func segmentLead(wb *writeBase, bodyLen int64) ([]bits.Segment, int64) {
 // patchPositions rewrites each position whose target moved (per oldToNew) in
 // place at its original width and recomputes the CRC. ok is false if a value
 // overflows its slot or its target was dropped (not in oldToNew).
-func patchPositions(raw []byte, crc *crcSpot, entries []seekEntry, oldToNew map[int64]int64, inSegStart, outSegStart int64) ([]byte, bool) {
+func patchPositions(raw []byte, crc *crcSpot, entries []seekEntry, om offsetMap, inSegStart, outSegStart int64) ([]byte, bool) {
 	out := make([]byte, len(raw))
 	copy(out, raw)
 	for _, e := range entries {
-		newOff, ok := oldToNew[inSegStart+int64(e.target)]
+		newOff, ok := om.lookup(inSegStart + int64(e.target))
 		if !ok {
 			return nil, false
 		}

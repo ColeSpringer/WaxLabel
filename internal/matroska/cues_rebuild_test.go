@@ -123,7 +123,7 @@ func TestRebuildCuesToleratesVoid(t *testing.T) {
 	if len(ci.clusters) != 1 || len(points) != 1 || len(points[0].tracks) != 1 {
 		t.Fatalf("capture: clusters=%d points=%d", len(ci.clusters), len(points))
 	}
-	out, _, ok := rebuildCues(ci, map[int64]int64{872: 70000}, 0, 0)
+	out, _, ok := rebuildCues(ci, directOffsetMap(map[int64]int64{872: 70000}), 0, 0)
 	if !ok {
 		t.Fatal("rebuildCues refused a Void-padded Cues")
 	}
@@ -153,7 +153,7 @@ func TestRebuildCuesRefusesNonLeadingCRC(t *testing.T) {
 	if _, ok := buildCuePoints(ci); ok {
 		t.Error("a non-leading CRC-32 should make the capture unrebuildable")
 	}
-	if _, _, ok := rebuildCues(ci, map[int64]int64{872: 70000}, 0, 0); ok {
+	if _, _, ok := rebuildCues(ci, directOffsetMap(map[int64]int64{872: 70000}), 0, 0); ok {
 		t.Error("rebuildCues should refuse a non-leading CRC")
 	}
 }
@@ -199,7 +199,7 @@ func TestRebuildCuesMultiTrack(t *testing.T) {
 		t.Fatalf("capture: ok=%v clusters=%d points=%d", ok, len(ci.clusters), len(pts))
 	}
 
-	out, _, ok := rebuildCues(ci, map[int64]int64{872: 70000, 900: 80000}, 0, 0)
+	out, _, ok := rebuildCues(ci, directOffsetMap(map[int64]int64{872: 70000, 900: 80000}), 0, 0)
 	if !ok {
 		t.Fatal("rebuildCues failed")
 	}
@@ -229,7 +229,7 @@ func TestRebuildCuesMultiCluster(t *testing.T) {
 		t.Fatalf("capture: ok=%v points=%d", ok, len(pts))
 	}
 
-	out, _, ok := rebuildCues(ci, map[int64]int64{872: 70000, 5000: 130000}, 0, 0)
+	out, _, ok := rebuildCues(ci, directOffsetMap(map[int64]int64{872: 70000, 5000: 130000}), 0, 0)
 	if !ok {
 		t.Fatal("rebuildCues failed")
 	}
@@ -251,7 +251,7 @@ func TestRebuildCuesDroppedTarget(t *testing.T) {
 	ci := parseCues(t, raw)
 
 	// Keep only cluster 872: track 900 (one track of point 1) and all of point 2 drop.
-	out, _, ok := rebuildCues(ci, map[int64]int64{872: 70000}, 0, 0)
+	out, _, ok := rebuildCues(ci, directOffsetMap(map[int64]int64{872: 70000}), 0, 0)
 	if !ok {
 		t.Fatal("rebuildCues failed (a partial survivor should still succeed)")
 	}
@@ -268,7 +268,7 @@ func TestRebuildCuesDroppedTarget(t *testing.T) {
 // empty (invalid) Cues, which is refused so the caller surfaces overflowErr.
 func TestRebuildCuesEmptyRefused(t *testing.T) {
 	ci := parseCues(t, cuesBytes(true, cuePointBytes(0, cueTrackPosBytes(1, 872, 2))))
-	if _, _, ok := rebuildCues(ci, map[int64]int64{}, 0, 0); ok {
+	if _, _, ok := rebuildCues(ci, directOffsetMap(map[int64]int64{}), 0, 0); ok {
 		t.Error("rebuildCues should refuse to emit an empty Cues")
 	}
 }
@@ -284,14 +284,14 @@ func TestRebuildCuesUncaptured(t *testing.T) {
 	if _, ok := buildCuePoints(ci); ok {
 		t.Fatal("buildCuePoints should be unrebuildable for a position-less CueTrackPositions")
 	}
-	if _, _, ok := rebuildCues(ci, map[int64]int64{}, 0, 0); ok {
+	if _, _, ok := rebuildCues(ci, directOffsetMap(map[int64]int64{}), 0, 0); ok {
 		t.Error("rebuildCues should refuse an uncaptured tree")
 	}
 	// Exercise the same refusal through the write machinery by forcing the rebuild
 	// path and skipping the in-place patch.
 	cues := buildShiftIndexes(&writeBase{cues: ci}, -1, 0)[1] // [0]=SeekHead (absent), [1]=Cues
 	cues.force = true
-	if _, _, _, ok := cues.emit(map[int64]int64{}, 0, 0); ok {
+	if _, _, _, ok := cues.emit(directOffsetMap(map[int64]int64{}), 0, 0); ok {
 		t.Error("a forced shiftIndex.emit should report ok=false for an uncaptured Cues")
 	}
 }
@@ -302,7 +302,7 @@ func TestRebuildCuesUncaptured(t *testing.T) {
 func TestRebuildCuesCRCPresence(t *testing.T) {
 	for _, crc := range []bool{true, false} {
 		ci := parseCues(t, cuesBytes(crc, cuePointBytes(0, cueTrackPosBytes(1, 872, 2))))
-		out, _, ok := rebuildCues(ci, map[int64]int64{872: 70000}, 0, 0)
+		out, _, ok := rebuildCues(ci, directOffsetMap(map[int64]int64{872: 70000}), 0, 0)
 		if !ok {
 			t.Fatalf("rebuild (crc=%v) failed", crc)
 		}
@@ -325,7 +325,7 @@ func TestCuesCaptureDepthTruncated(t *testing.T) {
 	if _, ok := buildCuePoints(ci); ok {
 		t.Error("buildCuePoints should refuse when the depth bound truncates the walk")
 	}
-	if _, _, ok := rebuildCues(ci, map[int64]int64{872: 70000}, 0, 0); ok {
+	if _, _, ok := rebuildCues(ci, directOffsetMap(map[int64]int64{872: 70000}), 0, 0); ok {
 		t.Error("rebuildCues should refuse a depth-truncated capture")
 	}
 }

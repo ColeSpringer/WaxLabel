@@ -341,6 +341,20 @@ func tinyPNG() []byte {
 	}
 }
 
+// tinyJPEG returns a minimal complete JPEG header: SOI followed by a 3x5 SOF0. The
+// image sniffer requires a readable Start-Of-Frame, so a bare FF D8 FF magic does not
+// count as a recognized image.
+func tinyJPEG() []byte {
+	return []byte{
+		0xFF, 0xD8, // SOI
+		0xFF, 0xC0, 0x00, 0x11, 0x08, // SOF0, length 17, precision 8
+		0x00, 0x05, // height 5
+		0x00, 0x03, // width 3
+		0x03, // components
+		0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01,
+	}
+}
+
 // TestFLACTruncationNotFlagged pins the deliberate non-detection: FLAC carries no
 // declared encoded-essence size, so a mid-stream cut is undetectable without
 // decoding and must never be flagged truncated. A valid FLAC - including a minimal,

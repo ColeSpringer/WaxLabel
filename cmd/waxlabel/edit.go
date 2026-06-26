@@ -278,12 +278,20 @@ func parseEditKey(s string) (tag.Key, error) {
 // picture added this run, and is a usage error with nothing to attach to.
 func (e *editFlags) loadPictures() ([]wl.Picture, error) {
 	var pics []wl.Picture
+	// --add-cover replaces the front cover, so repeated flags in one invocation are
+	// last-wins. Still load every path before writing: a missing or invalid earlier
+	// cover must fail the command even if a later flag supersedes it.
+	// --add-picture front-cover=... below keeps its append-capable behavior.
+	var lastCover *wl.Picture
 	for _, path := range e.addCover {
 		p, err := e.loadPictureFile("cover image", wl.PicFrontCover, path)
 		if err != nil {
 			return nil, err
 		}
-		pics = append(pics, p)
+		lastCover = &p
+	}
+	if lastCover != nil {
+		pics = append(pics, *lastCover)
 	}
 	for _, spec := range e.addPicture {
 		role, path, ok := strings.Cut(spec, "=")
@@ -319,10 +327,10 @@ func (e *editFlags) loadPictures() ([]wl.Picture, error) {
 // flag failed. A directory or other non-regular source is rejected as a usage error
 // (exit 2) before the read, so a mis-pointed flag fails like other bad inputs; a
 // genuinely missing file falls through to os.ReadFile, classified as io (exit 6). A
-// 0-byte file is refused even under --force (no legitimate image is empty - always a
-// mistake), distinct from non-empty unsniffable bytes, which --force still embeds. The
-// picture is sniffed on load so its MIME and dimensions are filled for the plan's
-// added-picture detail (C4a); Editor.AddPicture re-sniffs idempotently.
+// 0-byte file is refused even under --force because no legitimate image is empty,
+// distinct from non-empty unsniffable bytes, which --force still embeds. The picture is
+// sniffed on load so its MIME and dimensions are available in plan output;
+// Editor.AddPicture re-sniffs idempotently.
 func (e *editFlags) loadPictureFile(label string, pt wl.PictureType, path string) (wl.Picture, error) {
 	// A picture source is read with os.ReadFile and has no "-" stdin path, so the
 	// non-regular hint must not suggest one (acceptsStdin false).

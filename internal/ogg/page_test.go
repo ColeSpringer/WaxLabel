@@ -3,11 +3,23 @@ package ogg
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"testing"
+	"unsafe"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/waxerr"
 )
+
+// TestRawPageBytesMatchesStructSize keeps the retained-byte accounting honest. The
+// budget constant must match the real struct size so future field additions or padding
+// changes cannot silently undercount the scan budget.
+func TestRawPageBytesMatchesStructSize(t *testing.T) {
+	if got := int(unsafe.Sizeof(rawPage{})); got != rawPageBytes {
+		t.Errorf("unsafe.Sizeof(rawPage{}) = %d, but rawPageBytes = %d; update the const or pack the struct", got, rawPageBytes)
+	}
+}
 
 func pattern(n int) []byte {
 	b := make([]byte, n)
@@ -63,7 +75,7 @@ func TestPaginateRoundTrip(t *testing.T) {
 	}
 
 	src := core.BytesSource(out)
-	pages, end, err := scanPages(context.Background(), src, int64(len(out)), bits.DefaultLimits.MaxAllocBytes)
+	pages, end, err := scanPages(context.Background(), src, int64(len(out)), bits.DefaultLimits.MaxAllocBytes, maxOggScanBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +127,7 @@ func TestPaginateRoundTrip(t *testing.T) {
 func TestPaginateSequenceAndContinuation(t *testing.T) {
 	out, _ := paginate(1, 5, [][]byte{pattern(70000)}) // one packet across pages
 	src := core.BytesSource(out)
-	pages, _, err := scanPages(context.Background(), src, int64(len(out)), 1<<20)
+	pages, _, err := scanPages(context.Background(), src, int64(len(out)), 1<<20, maxOggScanBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +143,7 @@ func TestPaginateSequenceAndContinuation(t *testing.T) {
 }
 
 func TestScanPagesRejectsNonOgg(t *testing.T) {
-	if _, _, err := scanPages(context.Background(), core.BytesSource([]byte("not an ogg file at all")), 22, 1<<20); err == nil {
+	if _, _, err := scanPages(context.Background(), core.BytesSource([]byte("not an ogg file at all")), 22, 1<<20, maxOggScanBytes); err == nil {
 		t.Error("expected an error for non-Ogg input")
 	}
 }
@@ -150,7 +162,7 @@ func TestScanPagesManyPagesUncapped(t *testing.T) {
 		buf = append(buf, buildPage(0, uint64(i), 0xCAFEBABE, uint32(i), lacing, body)...)
 	}
 	src := core.BytesSource(buf)
-	pages, end, err := scanPages(context.Background(), src, int64(len(buf)), bits.DefaultLimits.MaxAllocBytes)
+	pages, end, err := scanPages(context.Background(), src, int64(len(buf)), bits.DefaultLimits.MaxAllocBytes, maxOggScanBytes)
 	if err != nil {
 		t.Fatalf("scanPages on %d pages: %v", n, err)
 	}
@@ -159,5 +171,47 @@ func TestScanPagesManyPagesUncapped(t *testing.T) {
 	}
 	if end != int64(len(buf)) {
 		t.Errorf("scan ended at %d, want %d", end, len(buf))
+	}
+}
+
+// TestScanPagesBoundsRetainedBytes checks that scanPages uses a byte budget, not a
+// page count, for retained page descriptors. The lacing table is charged too: the same
+// page count that fits as empty pages overflows once each page carries a full lacing
+// table.
+func TestScanPagesBoundsRetainedBytes(t *testing.T) {
+	const budget = 64 << 10 // small budget so the bound trips quickly
+
+	build := func(n int, lacing []byte) []byte {
+		bodyLen := 0
+		for _, v := range lacing {
+			bodyLen += int(v)
+		}
+		body := make([]byte, bodyLen)
+		var buf []byte
+		for i := 0; i < n; i++ {
+			buf = append(buf, buildPage(0, uint64(i), 0xCAFEBABE, uint32(i), lacing, body)...)
+		}
+		return buf
+	}
+	scan := func(buf []byte) error {
+		_, _, err := scanPages(context.Background(), core.BytesSource(buf), int64(len(buf)), bits.DefaultLimits.MaxAllocBytes, budget)
+		return err
+	}
+
+	// An empty-page flood past the budget is rejected before it can retain unbounded
+	// descriptors. 72 B per descriptor * 1000 pages = 72000 B > the 65536 B budget.
+	if err := scan(build(1000, nil)); !errors.Is(err, waxerr.ErrSizeTooLarge) {
+		t.Fatalf("empty-page flood: got err %v, want ErrSizeTooLarge", err)
+	}
+
+	// The lacing table is counted, not just the struct. 500 * 72 = 36000 B, but
+	// 500 * (72+255) = 163500 B.
+	const n = 500
+	maxLacing := make([]byte, maxSegments) // 255 lacing values (zero-length segments)
+	if err := scan(build(n, nil)); err != nil {
+		t.Fatalf("%d empty pages within budget: unexpected err %v", n, err)
+	}
+	if err := scan(build(n, maxLacing)); !errors.Is(err, waxerr.ErrSizeTooLarge) {
+		t.Fatalf("%d max-lacing pages: got err %v, want ErrSizeTooLarge (lacing bytes must count)", n, err)
 	}
 }

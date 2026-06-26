@@ -62,6 +62,17 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		ch.simple = true
 	}
 
+	// A source can carry its canonical title only in a scoped TITLE SimpleTag, with no
+	// Segment Info title. When Tags are re-rendered, renderTags drops managed TITLE tags
+	// because Info.Title is the canonical home. If an Info element exists, force a title
+	// render so that scoped-only title migrates there instead of disappearing on an
+	// unrelated tag edit.
+	if ch.simple && !ch.title && !d.hasSegTitle && d.wb.info != nil {
+		if _, ok := edited.Tags.First(tag.Title); ok {
+			ch.title = true
+		}
+	}
+
 	// WebM does not include the Attachments element in its subset, so refuse to
 	// write cover art into a webm file rather than emit something strict WebM
 	// validators reject. Plain tag/Title writes to .webm remain fine. This Plan-level
@@ -297,7 +308,7 @@ func renderTags(d *doc, base, edited tag.TagSet, ek map[tag.Key]bool) (raw []byt
 }
 
 // coveredByOtherScopes returns, per canonical key, the projected values a non-album
-// group will still carry AFTER the edit, so the album-group sync can leave an
+// group will still carry after the edit, so the album-group sync can leave an
 // unchanged value at its own scope instead of re-emitting it at album scope (which
 // would duplicate it on every save and risk a spurious cross-scope conflict). The
 // values are projected through projectTag - not a bare MatroskaTagKey lookup - so a
@@ -311,27 +322,62 @@ func renderTags(d *doc, base, edited tag.TagSet, ek map[tag.Key]bool) (raw []byt
 // excluded - otherwise its projected values would be subtracted from the album sync as
 // if still preserved, and a slash number whose component was edited would lose its
 // unedited half (it is dropped from the track group yet skipped at album scope). The
-// covered set must reflect post-edit survivors, computed with the SAME drop predicate
-// the renderer uses, so the two cannot disagree on what a scope keeps.
+// covered set must reflect post-edit survivors, using the same drop predicate as the
+// renderer, so the two cannot disagree on what a scope keeps.
+//
+// A narrower-scope value that only echoes an album value is not counted as covered.
+// projectFlat emits album values verbatim and suppresses the narrower echo, so the
+// album scope owns that canonical multiplicity. Subtracting the echo would collapse
+// album duplicates during an unrelated edit.
+//
+// A second group at album scope is different. The reader treats it as part of the
+// primary album emit, so its values are covered and subtractFold removes only the
+// matching number of album values. That keeps same-scope duplicates stable across
+// repeated edits instead of growing or shrinking them.
 func coveredByOtherScopes(groups []tagGroup, albumIdx int, ek map[tag.Key]bool) map[tag.Key][]string {
+	// Per key, the case-folded values the album scope itself keeps after the edit.
+	albumFolds := map[tag.Key]map[string]bool{}
+	var albumScope core.Scope
+	if albumIdx >= 0 {
+		albumScope = groups[albumIdx].scope
+		forEachSurvivingContribution(groups[albumIdx], ek, func(c scopedContribution) {
+			if albumFolds[c.key] == nil {
+				albumFolds[c.key] = map[string]bool{}
+			}
+			albumFolds[c.key][core.Fold(c.value)] = true
+		})
+	}
+
 	covered := map[tag.Key][]string{}
 	for i, g := range groups {
 		if i == albumIdx {
 			continue
 		}
-		for _, st := range g.tags {
-			if droppedByEdit(st, ek) {
-				continue // dropped by the edit: it preserves nothing at this scope
+		// A second album-scope group contributes to the album canonical. Its values are
+		// covered and subtracted with multiplicity, not carved out as narrower echoes.
+		narrower := albumIdx >= 0 && g.scope != albumScope
+		forEachSurvivingContribution(g, ek, func(c scopedContribution) {
+			if narrower && albumFolds[c.key][core.Fold(c.value)] {
+				return // a narrower-scope echo of an album value: the album scope owns it
 			}
-			if !st.hasValue {
-				continue // a binary- or nested-only tag carries no canonical string value
-			}
-			for _, c := range projectTag(st.name, st.value, g.scope) {
-				covered[c.key] = append(covered[c.key], c.value)
-			}
-		}
+			covered[c.key] = append(covered[c.key], c.value)
+		})
 	}
 	return covered
+}
+
+// forEachSurvivingContribution invokes fn for each canonical contribution a group's
+// SimpleTags still carry after the edit. It skips tags dropped by the edit and tags
+// with no string value, then projects the survivors through projectTag.
+func forEachSurvivingContribution(g tagGroup, ek map[tag.Key]bool, fn func(scopedContribution)) {
+	for _, st := range g.tags {
+		if droppedByEdit(st, ek) || !st.hasValue {
+			continue
+		}
+		for _, c := range projectTag(st.name, st.value, g.scope) {
+			fn(c)
+		}
+	}
 }
 
 // renderGroup re-renders one Tag group. The album group is synced to the edited
@@ -515,12 +561,11 @@ func buildAlbumGroup(group *tagGroup, base, edited tag.TagSet, covered map[tag.K
 		}
 		name := mapping.MatroskaTagName(k)
 		for _, v := range vals {
-			// A present empty value ([""], what `set KEY=` produces) is emitted as a
-			// real zero-length SimpleTag - not skipped - so it round-trips like FLAC/Ogg
-			// keep it, matching Vorbis Rebuild (which has no empty guard) and the
-			// README's "only WAV/AIFF drop a present-empty value" contract. hasValue is
-			// true: this is a written TagString (possibly empty), so the result document's
-			// re-projection (project, which gates on hasValue) keeps it canonical.
+			// A present empty value from `set KEY=` is emitted as a zero-length SimpleTag,
+			// not skipped. Matroska preserves it like FLAC and Ogg; only the native
+			// WAV/AIFF INFO/text vocabularies drop such a value when no ID3 chunk is
+			// available to hold it. hasValue stays true so the result document projects it
+			// back into the canonical tag set.
 			simple = append(simple, simpleTagBytes(name, v)...)
 			out.tags = append(out.tags, simpleTag{name: name, value: v, hasValue: true})
 		}
@@ -536,18 +581,19 @@ func buildAlbumGroup(group *tagGroup, base, edited tag.TagSet, covered map[tag.K
 	return out, masterElement(idTag, content, group != nil && group.hasCRC)
 }
 
-// subtractFold returns the values in vals whose case-folded form is not present in
-// covered, preserving the survivors' original case and order. It mirrors the
-// case-insensitive canonical value dedup (parse.go), so the album group re-emits
-// exactly the canonical values a narrower scope does not already carry verbatim.
+// subtractFold removes covered values from vals by folded form, one occurrence at a
+// time, preserving survivor case and order. Per-occurrence subtraction is what keeps
+// duplicates stable: if the canonical carries a value twice and another scope covers it
+// once, only one copy is removed from the album sync.
 func subtractFold(vals, covered []string) []string {
-	seen := make(map[string]bool, len(covered))
+	remaining := make(map[string]int, len(covered))
 	for _, c := range covered {
-		seen[core.Fold(c)] = true
+		remaining[core.Fold(c)]++
 	}
 	out := make([]string, 0, len(vals))
 	for _, v := range vals {
-		if seen[core.Fold(v)] {
+		if f := core.Fold(v); remaining[f] > 0 {
+			remaining[f]--
 			continue
 		}
 		out = append(out, v)
@@ -677,6 +723,11 @@ var uidFallback atomic.Uint64
 // duplicate ChapterUID would make a chapter-scoped tag reference ambiguous). The
 // crypto/rand read effectively never fails; if it does, a monotonic time+counter
 // mix keeps successive UIDs distinct rather than collapsing to one constant.
+//
+// These UIDs are random per run, so Matroska writes that create or rebuild attachment
+// FileUIDs or ChapterUIDs are not byte-reproducible. The README documents that
+// limitation. The audio essence is still preserved; deterministic UIDs would need a
+// stable seed or content-derived scheme.
 func randomUID() uint64 {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err == nil {

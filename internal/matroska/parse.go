@@ -69,6 +69,32 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	var audioEnd, durationNs int64
 	var chapters []core.Chapter
 	err = walkSegment(src, segStart, segEnd, depth, limit, func(el element) error {
+		if el.id == idCluster {
+			// Coalesce a contiguous run of Clusters into one descriptor. The writer copies
+			// the run as one byte range, and audioStart/audioEnd already track the run's
+			// bounds, so one descriptor per tiny cluster would only waste memory. Extend
+			// the last descriptor by index; keeping a pointer into wb.children would be
+			// unsafe across append reallocation. Non-cluster elements break the run.
+			if n := len(wb.children); n > 0 && wb.children[n-1].id == idCluster {
+				wb.children[n-1].dataEnd = el.dataEnd
+			} else {
+				wb.children = append(wb.children, l1elem{id: el.id, start: el.start, dataStart: el.dataStart, dataEnd: el.dataEnd})
+			}
+			if audioStart < 0 {
+				audioStart = el.start
+			}
+			if el.dataEnd > audioEnd {
+				audioEnd = el.dataEnd
+			}
+			return nil
+		}
+		// Charge every non-cluster level-1 child against the element budget. walkSegment
+		// does not count its children itself, and a Cluster/Void alternation would
+		// otherwise defeat cluster coalescing by forcing one descriptor per pair. Real
+		// files have few non-cluster level-1 children; adversarial floods are rejected.
+		if err := depth.Count(); err != nil {
+			return err
+		}
 		wb.children = append(wb.children, l1elem{id: el.id, start: el.start, dataStart: el.dataStart, dataEnd: el.dataEnd})
 		switch el.id {
 		case idSeekHead:
@@ -103,13 +129,6 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 				return err
 			}
 			chapters = chs
-		case idCluster:
-			if audioStart < 0 {
-				audioStart = el.start
-			}
-			if el.dataEnd > audioEnd {
-				audioEnd = el.dataEnd
-			}
 		}
 		return nil
 	})
@@ -521,18 +540,71 @@ func project(d *doc) (tag.TagSet, []core.FamilyValue) {
 			contribs = append(contribs, projectTag(st.name, st.value, g.scope)...)
 		}
 	}
+	return projectFlat(contribs), buildFamilies(contribs)
+}
+
+// projectFlat builds the flat TagSet from scoped Matroska contributions. For each key
+// it picks a primary scope, preferring album scope when present, and emits that scope's
+// values verbatim and in order. This keeps intra-scope duplicates and case or
+// whitespace variants visible, matching formats such as FLAC and Ogg. Values from
+// other scopes are added only when their folded form is not already present, so
+// album/track echoes collapse to one canonical value while genuinely distinct scoped
+// values still surface and can be reported by buildFamilies.
+//
+// TITLE is the one exception: it is single-valued in the authoritative Info.Title
+// contribution. An album-scope TITLE SimpleTag that echoes the segment title must not
+// duplicate it, so the primary emit fold-dedups TITLE only. A genuinely different TITLE
+// still surfaces and buildFamilies reports the scoped disagreement.
+func projectFlat(contribs []scopedContribution) tag.TagSet {
+	type keyScope struct {
+		key   tag.Key
+		scope core.Scope
+	}
+	values := map[keyScope][]string{}
+	var keyOrder []tag.Key
+	scopeOrder := map[tag.Key][]core.Scope{}
+	for _, c := range contribs {
+		// First sighting of a key extends keyOrder; first sighting of a (key, scope)
+		// extends that key's scope order. The maps already hold enough state for both
+		// checks, so no separate seen sets are needed.
+		ks := keyScope{c.key, c.scope}
+		if len(scopeOrder[c.key]) == 0 {
+			keyOrder = append(keyOrder, c.key)
+		}
+		if len(values[ks]) == 0 {
+			scopeOrder[c.key] = append(scopeOrder[c.key], c.scope)
+		}
+		values[ks] = append(values[ks], c.value)
+	}
 
 	ts := tag.NewTagSet()
-	seen := map[string]bool{}
-	for _, c := range contribs {
-		sig := string(c.key) + "\x00" + core.Fold(c.value)
-		if seen[sig] {
-			continue
+	for _, key := range keyOrder {
+		scopes := scopeOrder[key]
+		primary := scopes[0]
+		for _, s := range scopes {
+			if s == core.ScopeAlbum {
+				primary = core.ScopeAlbum // album is the canonical scope when present
+				break
+			}
 		}
-		seen[sig] = true
-		ts.Add(c.key, c.value)
+		present := map[string]bool{}
+		emit := func(scope core.Scope, dedup bool) {
+			for _, v := range values[keyScope{key, scope}] {
+				if dedup && present[core.Fold(v)] {
+					continue
+				}
+				ts.Add(key, v)
+				present[core.Fold(v)] = true
+			}
+		}
+		emit(primary, key == tag.Title) // primary scope verbatim (TITLE suppresses its own echo)
+		for _, s := range scopes {
+			if s != primary {
+				emit(s, true) // other scopes: cross-scope echoes suppressed, distinct values kept
+			}
+		}
 	}
-	return ts, buildFamilies(contribs)
+	return ts
 }
 
 // projectTag maps one SimpleTag name/value to canonical contributions, splitting

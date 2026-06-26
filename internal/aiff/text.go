@@ -67,9 +67,10 @@ func textRepresentable(ts tag.TagSet) bool {
 // rebuildText produces the full native-text-chunk set for an edited tag set: one
 // chunk per single-valued key present (NAME/AUTH/"(c) "), and one ANNO chunk per
 // Comment value. Existing keys keep their original relative order; keys newly
-// present in the edited set are appended in the set's order. Present-but-empty
-// values normalize to absent (the chunk is dropped), matching formats that cannot
-// store an empty value.
+// present in the edited set are appended in the set's order. A present empty value
+// is dropped here because the native AIFF text chunks have no way to represent it.
+// An AIFF file that also carries ID3 can still preserve the value there, matching the
+// WAV INFO behavior in internal/wav/info.go.
 func rebuildText(orig []textItem, edited tag.TagSet) []outChunk {
 	var out []outChunk
 	emitted := map[tag.Key]bool{}

@@ -6,6 +6,11 @@ import "encoding/binary"
 // when derivable cheaply from the header, pixel dimensions and color depth.
 // WaxLabel never decodes pixels; it only reads headers, so a caller can fill a
 // FLAC PICTURE block's width/height/depth without an image library.
+//
+// Width, Height, and Depth come from the image header and are not trusted. WaxLabel
+// never allocates from these values, so a tiny file can claim huge dimensions without
+// exhausting memory. Callers that do more than echo the geometry must apply their own
+// bounds.
 type ImageInfo struct {
 	MIME   string
 	Width  int
@@ -115,7 +120,7 @@ func sniffJPEG(data []byte) (ImageInfo, bool) {
 		// SOF0-SOF15 except DHT(C4), JPG(C8), DAC(CC) carry frame geometry.
 		if marker >= 0xC0 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC {
 			if i+7 >= len(data) {
-				return ImageInfo{MIME: "image/jpeg"}, true
+				return ImageInfo{}, false // truncated mid-SOF: no readable dimensions
 			}
 			precision := int(data[i+2])
 			h := int(binary.BigEndian.Uint16(data[i+3 : i+5]))
@@ -125,8 +130,9 @@ func sniffJPEG(data []byte) (ImageInfo, bool) {
 		}
 		i += segLen // length field includes its own 2 bytes
 	}
-	// Recognized as JPEG even if no SOF was located.
-	return ImageInfo{MIME: "image/jpeg"}, true
+	// No Start-Of-Frame was found. Refuse magic-only or SOF-less data rather than
+	// accepting bytes with no readable geometry; an intact JPEG carries a complete SOF.
+	return ImageInfo{}, false
 }
 
 // sniffGIF reads the logical-screen descriptor for dimensions and the global

@@ -18,9 +18,11 @@ import (
 // (or the first, when none is flagged) projects into core.Media.Chapters. A
 // ChapterAtom carries ChapterTimeStart and an optional ChapterTimeEnd - absolute
 // nanoseconds by spec, with the segment TimestampScale deliberately *not* applied
-// (unlike Cluster timestamps) - plus a ChapterDisplay > ChapString title. The
-// ChapterUIDs are preserved across an edit so chapter-scoped SimpleTags that
-// reference them stay valid, and every non-default edition is preserved verbatim.
+// (unlike Cluster timestamps) - plus a ChapterDisplay > ChapString title. A surviving
+// chapter keeps its ChapterUID by matching the saved UID on start time, which preserves
+// chapter-scoped SimpleTags through inserts, deletes, and renames. If an edit changes
+// a chapter's start time, core.Chapter has no UID field to track it, so the writer must
+// mint a fresh UID. Every non-default edition is preserved verbatim.
 //
 // Like Tags, the full parsed tree is retained on the native doc: when chapters
 // are not edited the whole Chapters element is copied byte-for-byte (nested
@@ -43,14 +45,23 @@ type chapterDoc struct {
 // verbatim for a non-default edition (the default edition is re-rendered, so its
 // raw is dropped at parse); prefix is its non-atom leading children (EditionUID,
 // the edition flags) with any CRC stripped, reused when the default edition is
-// re-rendered so its UID and flags survive; uids are the top-level ChapterAtom
-// UIDs in order, reused by position so chapter-scoped tags keep resolving across
-// an edit.
+// re-rendered so its UID and flags survive; startUIDs records each top-level atom's
+// start time and ChapterUID in file order. Re-rendering uses those pairs to keep a
+// surviving chapter's UID by start time rather than by list position, since inserts
+// and deletes shift positions but leave surviving starts unchanged.
 type chapterEdition struct {
-	raw    []byte
-	prefix []byte
-	hasCRC bool
-	uids   []uint64
+	raw       []byte
+	prefix    []byte
+	hasCRC    bool
+	startUIDs []chapterStartUID
+}
+
+// chapterStartUID pairs a parsed chapter's start time with its ChapterUID, using 0
+// when the atom carried none. Zero entries stay in the queue: for same-start atoms,
+// dropping a zero would shift a later real UID onto the wrong chapter.
+type chapterStartUID struct {
+	start time.Duration
+	uid   uint64
 }
 
 // parseChapters reads a Chapters element into the native chapterDoc and returns
@@ -95,36 +106,18 @@ func parseChapters(src core.ReaderAtSized, chapters element, depth *bits.Depth, 
 	// The default edition is re-rendered on an edit, never copied verbatim, so its
 	// captured bytes are dead weight on the retained document - drop them.
 	cd.editions[cd.defIdx].raw = nil
-	// SetChapters stable-sorts by start; ordering the projection (and its UIDs) the
-	// same way makes SetChapters(doc.Chapters()...) a true no-op even for a source
-	// whose atoms were stored out of start order, and keeps each chapter aligned
-	// with its own ChapterUID on re-render.
-	sortChaptersWithUIDs(defChapters, cd.editions[cd.defIdx].uids)
+	// SetChapters stable-sorts by start; ordering the projection the same way makes
+	// SetChapters(doc.Chapters()...) a no-op even when the source stored atoms out of
+	// start order. UIDs are reassigned by start time during re-render, so no parallel
+	// UID slice needs to be sorted with the projected chapters.
+	sortChapters(defChapters)
 	return defChapters, nil
 }
 
-// sortChaptersWithUIDs stably orders chs by start time, keeping each chapter's
-// ChapterUID (uids, parallel by index) aligned.
-func sortChaptersWithUIDs(chs []core.Chapter, uids []uint64) {
-	type entry struct {
-		ch  core.Chapter
-		uid uint64
-	}
-	es := make([]entry, len(chs))
-	for i := range chs {
-		var uid uint64
-		if i < len(uids) {
-			uid = uids[i]
-		}
-		es[i] = entry{chs[i], uid}
-	}
-	slices.SortStableFunc(es, func(a, b entry) int { return cmp.Compare(a.ch.Start, b.ch.Start) })
-	for i, e := range es {
-		chs[i] = e.ch
-		if i < len(uids) {
-			uids[i] = e.uid
-		}
-	}
+// sortChapters stably orders chs by start time. Stability keeps same-start atoms in
+// file order, which is the order the UID queue consumes them.
+func sortChapters(chs []core.Chapter) {
+	slices.SortStableFunc(chs, func(a, b core.Chapter) int { return cmp.Compare(a.Start, b.Start) })
 }
 
 // parseEdition reads one EditionEntry: whether it is the default edition, the
@@ -143,7 +136,10 @@ func parseEdition(src core.ReaderAtSized, ed element, depth *bits.Depth, limit i
 			if err != nil {
 				return err
 			}
-			out.uids = append(out.uids, uid)
+			// Keep one entry per atom in file order, including a UID of 0. A popped zero
+			// means "mint fresh"; for same-start atoms it also keeps later real UIDs from
+			// sliding onto earlier UID-less chapters.
+			out.startUIDs = append(out.startUIDs, chapterStartUID{ch.Start, uid})
 			chs = append(chs, ch)
 			lossy = lossy || atomLossy
 		case idEditionFlagDf:
@@ -295,9 +291,12 @@ func renderChapters(d *doc, chs []core.Chapter) []byte {
 }
 
 // renderDefaultEdition rebuilds the default EditionEntry from the edited chapters,
-// keeping its preserved prefix (EditionUID/flags) and reusing each chapter's
-// original ChapterUID by position. It returns nil for an empty chapter list,
-// since an EditionEntry requires at least one ChapterAtom.
+// keeping its preserved prefix (EditionUID/flags) and reassigning each surviving
+// chapter its original ChapterUID by start time. Position-based reuse is unsafe: an
+// insert, delete, or reorder can move a surviving chapter to a different list index
+// and break chapter-scoped tags. A chapter whose start matches no saved UID is minted
+// a fresh UID. It returns nil for an empty chapter list, since an EditionEntry requires
+// at least one ChapterAtom.
 func renderDefaultEdition(ed chapterEdition, chs []core.Chapter) []byte {
 	if len(chs) == 0 {
 		return nil
@@ -315,17 +314,36 @@ func renderDefaultEdition(ed chapterEdition, chs []core.Chapter) []byte {
 	} else {
 		content = append(content, uintElement(idEditionFlagDf, 1)...) // mark default, as ffmpeg does
 	}
-	for i, ch := range chs {
-		uid := uint64(0)
-		if i < len(ed.uids) {
-			uid = ed.uids[i]
-		}
+	queue := chapterUIDQueue(ed.startUIDs)
+	for _, ch := range chs {
+		uid := popChapterUID(queue, ch.Start)
 		if uid == 0 {
 			uid = randomUID()
 		}
 		content = append(content, renderChapterAtom(uid, ch)...)
 	}
 	return masterElement(idEditionEntry, content, ed.hasCRC)
+}
+
+// chapterUIDQueue groups saved UIDs by start time. Each queue preserves file order, so
+// duplicate-start atoms keep their UIDs in the same order during re-render.
+func chapterUIDQueue(pairs []chapterStartUID) map[time.Duration][]uint64 {
+	q := make(map[time.Duration][]uint64, len(pairs))
+	for _, p := range pairs {
+		q[p.start] = append(q[p.start], p.uid)
+	}
+	return q
+}
+
+// popChapterUID removes and returns the next saved ChapterUID at start. It returns 0
+// when none remains; the caller treats that as a request to mint a fresh UID.
+func popChapterUID(q map[time.Duration][]uint64, start time.Duration) uint64 {
+	ids := q[start]
+	if len(ids) == 0 {
+		return 0
+	}
+	q[start] = ids[1:]
+	return ids[0]
 }
 
 // renderChapterAtom encodes one ChapterAtom: its UID, the absolute-nanosecond

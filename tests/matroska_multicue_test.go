@@ -137,9 +137,13 @@ func collectCuePositions(data []byte, start, end int, out *[]int64) {
 }
 
 // assertAllCuesPointAtClusters checks that every CueClusterPosition (not just the
-// first) resolves, in order, to its Cluster's start, and that at least one crossed
-// the 2-byte boundary - so the multi-cue rebuild ran through the real pipeline.
-func assertAllCuesPointAtClusters(t *testing.T, data []byte) {
+// first) resolves, in order, to its Cluster's start. The clusters are contiguous, so
+// the parser coalesces them to one descriptor and the later cues target interior run
+// offsets. This checks that the shift-path offsetMap repointed every cue, not only the
+// run's first direct-keyed cluster. wantCross requires at least one position to cross
+// the 2-byte slot boundary, proving the minimal-width rebuild path ran; false checks
+// that the in-place patch path kept every interior cue correct without a width change.
+func assertAllCuesPointAtClusters(t *testing.T, data []byte, wantCross bool) {
 	t.Helper()
 	_, segData, segEnd, ok := elemRange(data, 0, len(data), idSegment, nil)
 	if !ok {
@@ -166,46 +170,63 @@ func assertAllCuesPointAtClusters(t *testing.T, data []byte) {
 				i, positions[i], segData, int64(segData)+positions[i], i, clusters[i])
 		}
 	}
-	if !crossed {
+	if wantCross && !crossed {
 		t.Error("no CueClusterPosition crossed the 2-byte boundary; the edit didn't exercise the rebuild")
+	}
+	if !wantCross && crossed {
+		t.Error("a CueClusterPosition crossed the 2-byte boundary; the small edit was meant to stay on the in-place patch path")
 	}
 }
 
 // TestMatroskaMultiClusterRebuildsAllCues drives a 3-cluster file through the real
-// shift pipeline (computeShiftLayout/oldToNew, the fixpoint, buildResult) with a
-// boundary-crossing edit, asserting every cue - not just the first - is re-pointed to
-// its cluster. Both Cues topologies are covered: trailing (as the real fixtures) and
-// leading (the cluster-shifting feedback loop).
+// shift pipeline, asserting every cue, not just the first, is repointed to its
+// cluster. Because the clusters are contiguous they coalesce to one descriptor, so
+// later cues exercise offsetMap's run fallback rather than a direct key. The test
+// covers both trailing and leading Cues layouts, plus both offset paths: an in-place
+// patch and a boundary-crossing edit that forces a minimal-width Cues rebuild.
 func TestMatroskaMultiClusterRebuildsAllCues(t *testing.T) {
 	for _, frontCues := range []bool{false, true} {
-		name := "trailing-cues"
+		topology := "trailing-cues"
 		if frontCues {
-			name = "leading-cues"
+			topology = "leading-cues"
 		}
-		t.Run(name, func(t *testing.T) {
-			src := buildMultiClusterMKA(t, frontCues, "x")
-			// The synthetic source parses and its cues are valid before any edit.
-			if got := mustParseBytes(t, src).Fields().Title; got != "x" {
-				t.Fatalf("source title = %q, want x", got)
-			}
+		edits := []struct {
+			name      string
+			title     string
+			wantCross bool
+		}{
+			// A short title keeps every cluster offset inside its 2-byte slot, so the
+			// positions are patched in place with no width change.
+			{"in-place-patch", strings.Repeat("T", 40), false},
+			// A 70 KB title pushes every cluster past 65535, forcing all three 2-byte
+			// slots to widen to 3 bytes through the minimal-width Cues rebuild.
+			{"width-rebuild", strings.Repeat("T", 70000), true},
+		}
+		for _, ed := range edits {
+			t.Run(topology+"/"+ed.name, func(t *testing.T) {
+				src := buildMultiClusterMKA(t, frontCues, "x")
+				// The synthetic source parses and its cues are valid before any edit.
+				if got := mustParseBytes(t, src).Fields().Title; got != "x" {
+					t.Fatalf("source title = %q, want x", got)
+				}
 
-			bigTitle := strings.Repeat("T", 70000)
-			out, outDoc := saveMatroska(t, src, mustParseBytes(t, src).Edit().Set(tag.Title, bigTitle))
-			if outDoc.Fields().Title != bigTitle {
-				t.Error("returned doc title not set")
-			}
-			if got := mustParseBytes(t, out).Fields().Title; got != bigTitle {
-				t.Errorf("reparsed title length = %d, want %d", len(got), len(bigTitle))
-			}
+				out, outDoc := saveMatroska(t, src, mustParseBytes(t, src).Edit().Set(tag.Title, ed.title))
+				if outDoc.Fields().Title != ed.title {
+					t.Error("returned doc title not set")
+				}
+				if got := mustParseBytes(t, out).Fields().Title; got != ed.title {
+					t.Errorf("reparsed title length = %d, want %d", len(got), len(ed.title))
+				}
 
-			assertAllCuesPointAtClusters(t, out)
-			essenceUnchanged(t, src, out)
+				assertAllCuesPointAtClusters(t, out, ed.wantCross)
+				essenceUnchanged(t, src, out)
 
-			// A second edit on the returned document (no reparse) must still resolve every
-			// cue - proving buildResult re-derived the multi-cue tree.
-			out2, _ := saveMatroska(t, out, outDoc.Edit().Set(tag.Artist, "A2"))
-			assertAllCuesPointAtClusters(t, out2)
-			essenceUnchanged(t, src, out2)
-		})
+				// A second edit on the returned document, with no reparse, must still resolve
+				// every cue. That proves buildResult rebuilt the cue tree over the coalesced run.
+				out2, _ := saveMatroska(t, out, outDoc.Edit().Set(tag.Artist, "A2"))
+				assertAllCuesPointAtClusters(t, out2, ed.wantCross)
+				essenceUnchanged(t, src, out2)
+			})
+		}
 	}
 }

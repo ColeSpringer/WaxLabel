@@ -17,8 +17,9 @@ func bigPictureFLAC(t *testing.T, payload int) []byte {
 	for i := range data {
 		data[i] = byte(i)
 	}
-	// A JPEG SOI so it sniffs as a real type; the bulk is arbitrary.
-	data[0], data[1], data[2] = 0xFF, 0xD8, 0xFF
+	// Start with a complete JPEG header so the payload passes image sniffing; the rest
+	// is arbitrary bulk.
+	copy(data, tinyJPEG())
 	return writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/jpeg", Data: data})
 	})

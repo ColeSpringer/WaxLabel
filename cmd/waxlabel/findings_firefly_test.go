@@ -35,10 +35,9 @@ func lineWith(out, sub string) string {
 	return ""
 }
 
-// TestEmptyValuePreservedMatroska (A1): `set KEY=` writes a present empty value on
-// Matroska/WebM that round-trips as [""] - it is no longer dropped (which had made it
-// identical to `--clear KEY`). Both the SimpleTag path (ARTIST) and the Info.Title
-// path are covered, on .mka and .webm.
+// TestEmptyValuePreservedMatroska checks that `set KEY=` writes a present empty value
+// on Matroska/WebM that round-trips as [""], distinct from `--clear KEY`. Both the
+// SimpleTag path (ARTIST) and the Info.Title path are covered on .mka and .webm.
 func TestEmptyValuePreservedMatroska(t *testing.T) {
 	for _, src := range []string{notagsMKA, sampleWebMF} {
 		f := copyFixture(t, src)
@@ -69,9 +68,9 @@ func TestEmptyValuePreservedMatroska(t *testing.T) {
 	}
 }
 
-// TestEmptyValueKeptOnGeneralFormats (A1) locks the contract's load-bearing claim:
-// only WAV/AIFF drop a present-empty *general* value; MP3/AAC/MP4 keep it (as does
-// Matroska now). A regression here would mean a hidden third dropper.
+// TestEmptyValueKeptOnGeneralFormats locks the cross-format contract: MP3, AAC, and
+// MP4 keep a present-empty general value, as do FLAC, Ogg, and Matroska. Bare WAV and
+// AIFF native chunks are the exception, covered separately below.
 func TestEmptyValueKeptOnGeneralFormats(t *testing.T) {
 	for _, src := range []string{td("notags.mp3"), td("notags.aac"), notagsM4A} {
 		f := copyFixture(t, src)
@@ -85,13 +84,38 @@ func TestEmptyValueKeptOnGeneralFormats(t *testing.T) {
 	}
 }
 
-// TestTrackNumberSlashSplitsAcrossFormats (A2): `--set TRACKNUMBER=3/12` yields the
-// canonical TRACKNUMBER=3 + TRACKTOTAL=12 on every format. flac/ogg/opus/wav are the
-// rows that actually exercise the new write-side split: their read path does NOT split
-// a slash (it is non-standard for Vorbis/WAV), so a deleted splitNumberPairs would
-// leave TRACKNUMBER=["3/12"] and fail them. mp3/m4a/mka also split on read (ID3 TRCK,
-// MP4 trkn, Matroska projectTag), so they would pass even without the write-side split;
-// they are kept to assert the cross-format canonical result is uniform.
+// TestWAVAIFFPresentEmptyDependsOnID3 records the native WAV/AIFF behavior. INFO and
+// AIFF text chunks cannot represent a present-empty value, so a bare file drops
+// `set ARTIST=`. When a cover forces an ID3 chunk, the same value is preserved there.
+func TestWAVAIFFPresentEmptyDependsOnID3(t *testing.T) {
+	cover := writeTempImage(t, "c.png", minimalPNG())
+	for _, src := range []string{td("notags.wav"), td("notags.aiff")} {
+		t.Run(filepath.Base(src), func(t *testing.T) {
+			// Bare file (native chunk only): the present-empty value is dropped.
+			bare := copyFixture(t, src)
+			if _, _, code := runCLI(t, "set", bare, "--set", "ARTIST=", "-q"); code != 0 {
+				t.Fatalf("set ARTIST= exit %d", code)
+			}
+			if v := tagValues(decodeJSONOne[jsonDocument](t, mustDumpJSON(t, bare)), "ARTIST"); len(v) != 0 {
+				t.Errorf("bare native chunk: ARTIST = %v, want dropped (no value)", v)
+			}
+			// An ID3 chunk (forced by a cover) holds the present-empty value.
+			withID3 := copyFixture(t, src)
+			if _, _, code := runCLI(t, "set", withID3, "--add-cover", cover, "--set", "ARTIST=", "-q"); code != 0 {
+				t.Fatalf("set ARTIST= + cover exit %d", code)
+			}
+			if v := tagValues(decodeJSONOne[jsonDocument](t, mustDumpJSON(t, withID3)), "ARTIST"); len(v) != 1 || v[0] != "" {
+				t.Errorf("ID3-bearing file: ARTIST = %v, want a kept present-empty value", v)
+			}
+		})
+	}
+}
+
+// TestTrackNumberSlashSplitsAcrossFormats checks that `--set TRACKNUMBER=3/12` yields
+// canonical TRACKNUMBER=3 and TRACKTOTAL=12 on every format. FLAC, Ogg, Opus, and WAV
+// exercise the write-side split because their read paths do not split slash numbers.
+// MP3, M4A, and Matroska split on read too, but they stay in the table to assert a
+// uniform cross-format result.
 func TestTrackNumberSlashSplitsAcrossFormats(t *testing.T) {
 	for _, src := range []string{
 		td("notags.flac"), td("notags.ogg"), td("notags.opus"), td("notags.wav"),
@@ -111,9 +135,9 @@ func TestTrackNumberSlashSplitsAcrossFormats(t *testing.T) {
 	}
 }
 
-// TestSetClearConflictRefused (B1): the same key given to both --set/--add and
-// --clear (or --strip-encoder) is refused up front (exit 2, nothing written),
-// regardless of typed order; set+add on one key stays legal.
+// TestSetClearConflictRefused checks that the same key cannot be both written and
+// cleared in one command. The conflict is refused up front regardless of typed order;
+// set+add on one key stays legal.
 func TestSetClearConflictRefused(t *testing.T) {
 	f := copyFixture(t, sampleFLAC)
 	for _, args := range [][]string{
@@ -139,9 +163,8 @@ func TestSetClearConflictRefused(t *testing.T) {
 	}
 }
 
-// TestCapsWebMHeader (B3): the human header for WebM (by --format and by file) reads
-// WebM - the same label copy renders - while the JSON format field stays the bare
-// "Matroska" identity. Matroska itself is unaffected.
+// TestCapsWebMHeader checks that the human header says WebM for WebM inputs while the
+// JSON format field keeps the bare "Matroska" identity. Matroska itself is unaffected.
 func TestCapsWebMHeader(t *testing.T) {
 	if got := lineWith(mustRun(t, 0, "caps", "--format", "webm"), "format:"); !strings.Contains(got, "WebM") {
 		t.Errorf("caps --format webm header = %q, want it to say WebM", got)
@@ -162,9 +185,8 @@ func TestCapsWebMHeader(t *testing.T) {
 	}
 }
 
-// TestCodecCaseNotUppercased (C1): the human dump shows the canonical codec case
-// (Opus/Vorbis mixed, FLAC/AAC upper), matching the --json codec field exactly -
-// no more ToUpper.
+// TestCodecCaseNotUppercased checks that the human dump shows the canonical codec case
+// and matches the --json codec field exactly.
 func TestCodecCaseNotUppercased(t *testing.T) {
 	for _, c := range []struct{ file, want string }{
 		{td("sample.opus"), "Opus"},
@@ -186,9 +208,8 @@ func TestCodecCaseNotUppercased(t *testing.T) {
 	}
 }
 
-// TestJSONEmptyCollectionsAreArrays (D1): the iterable collection fields are always
-// present as arrays (never omitted or null), so a `jq '.[].tags[]'`-style consumer
-// works on an empty file too - across dump, lint, lint --fix, and plan.
+// TestJSONEmptyCollectionsAreArrays checks that iterable collection fields are always
+// arrays, never omitted or null, so consumers can iterate them for empty files too.
 func TestJSONEmptyCollectionsAreArrays(t *testing.T) {
 	dump := compactJSON(t, mustDumpJSON(t, td("notags.mp3")))
 	for _, want := range []string{`"tags":[]`, `"pictures":[]`, `"chapters":[]`, `"warnings":[]`} {
@@ -211,9 +232,9 @@ func TestJSONEmptyCollectionsAreArrays(t *testing.T) {
 	}
 }
 
-// TestCapsKeysAlwaysArray (D1): caps emits keys as an array even for a capability
-// with no writable keys (the latent read-only case no shipping format triggers), so
-// it is pinned at the struct/init level rather than via the CLI.
+// TestCapsKeysAlwaysArray checks that caps emits keys as an array even for a
+// capability with no writable keys. The latent read-only case is pinned at the
+// struct/init level because no shipping format triggers it.
 func TestCapsKeysAlwaysArray(t *testing.T) {
 	jc := buildCaps("", "", wl.Capabilities{})
 	if jc.Keys == nil {

@@ -12,6 +12,37 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
+// TestMP4TrackNumberZeroWarns checks the MP4-specific TRACKNUMBER=0 case. pairItem
+// treats 0/0 as absent, so the user's 0 would be lost and the write must warn. A 0
+// paired with a real total writes 0/total faithfully and must not warn.
+func TestMP4TrackNumberZeroWarns(t *testing.T) {
+	base := mp4Tagged(mp4Text("\xa9nam", "T"))
+	dropped := func(p *wl.Plan, key tag.Key) bool {
+		for _, w := range p.Report().Warnings {
+			if w.Code == wl.WarnValueDropped && slices.Contains(w.Keys, key) {
+				return true
+			}
+		}
+		return false
+	}
+
+	p, err := mustParseBytes(t, base).Edit().Set(tag.TrackNumber, "0").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dropped(p, tag.TrackNumber) {
+		t.Errorf("TRACKNUMBER=0 must warn value-dropped (the pair collapses to absent); got %v", p.Report().Warnings)
+	}
+
+	p2, err := mustParseBytes(t, base).Edit().Set(tag.TrackNumber, "0").Set(tag.TrackTotal, "12").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dropped(p2, tag.TrackNumber) {
+		t.Errorf("TRACKNUMBER=0 with TRACKTOTAL=12 writes 0/12 and must not warn; got %v", p2.Report().Warnings)
+	}
+}
+
 // TestMP4CompilationCoercionWarns verifies that COMPILATION is a single boolean byte (cpil), so a
 // non-boolean value is silently coerced to false. The write must surface a value-dropped
 // warning naming the key rather than losing the user's intent at exit 0; a recognized

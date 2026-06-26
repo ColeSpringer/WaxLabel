@@ -111,6 +111,19 @@ func TestSniffImage(t *testing.T) {
 	}
 }
 
+// TestSniffJPEGRequiresSOF checks that a JPEG must carry a readable Start-Of-Frame
+// before the sniffer accepts it. A bare magic number or a SOF truncated before its
+// geometry is rejected; intact JPEGs are still covered by TestSniffImage.
+func TestSniffJPEGRequiresSOF(t *testing.T) {
+	if _, ok := SniffImage([]byte{0xFF, 0xD8, 0xFF}); ok {
+		t.Error("a 3-byte FF D8 FF magic (no SOF) must not sniff as a valid JPEG")
+	}
+	// SOF0 marker with a declared length but cut off before the 7 geometry bytes.
+	if _, ok := SniffImage([]byte{0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08}); ok {
+		t.Error("a JPEG truncated mid-SOF must not sniff as valid")
+	}
+}
+
 // TestSniffBMPNegativeWidth checks a hostile BMP with the sign bit set in the
 // width field yields a non-negative dimension (its magnitude), so it cannot wrap
 // to a huge value when later stored as an unsigned 32-bit picture width.

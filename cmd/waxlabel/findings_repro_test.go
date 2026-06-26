@@ -24,7 +24,7 @@ func writeTempImage(t *testing.T, name string, data []byte) string {
 	return p
 }
 
-// TestVersionSubcommand (U3): `waxlabel version` prints the same line as --version.
+// TestVersionSubcommand checks that `waxlabel version` prints the same line as --version.
 func TestVersionSubcommand(t *testing.T) {
 	t.Parallel()
 	sub, _, code := runCLI(t, "version")
@@ -40,8 +40,8 @@ func TestVersionSubcommand(t *testing.T) {
 	}
 }
 
-// TestDashPathHint (U5): an unknown flag that looks like a leading-dash file path
-// suggests the "--" end-of-flags marker, for both the shorthand and long forms.
+// TestDashPathHint checks that an unknown flag shaped like a leading-dash file path
+// suggests the "--" end-of-flags marker for both shorthand and long forms.
 func TestDashPathHint(t *testing.T) {
 	t.Parallel()
 	for _, arg := range []string{"-track.flac", "--track.flac"} {
@@ -55,8 +55,8 @@ func TestDashPathHint(t *testing.T) {
 	}
 }
 
-// TestPaddingZeroCombinesWithNoPadding (U4): every spelling of zero combines with
-// --no-padding (they agree), while a positive --padding still conflicts.
+// TestPaddingZeroCombinesWithNoPadding checks that every spelling of zero combines
+// with --no-padding, while a positive --padding still conflicts.
 func TestPaddingZeroCombinesWithNoPadding(t *testing.T) {
 	t.Parallel()
 	for _, pad := range []string{"0", "00", " 0 "} {
@@ -71,8 +71,8 @@ func TestPaddingZeroCombinesWithNoPadding(t *testing.T) {
 	}
 }
 
-// TestStdinUnidentifiedNamesStdin (B1): an unidentifiable stdin names "<stdin>" and
-// never leaks the buffered temp path.
+// TestStdinUnidentifiedNamesStdin checks that unidentifiable stdin is reported as
+// "<stdin>" and never leaks the buffered temp path.
 func TestStdinUnidentifiedNamesStdin(t *testing.T) {
 	t.Parallel()
 	_, errb, _ := runCLIStdin(t, "not audio at all", "dump", "-")
@@ -84,10 +84,10 @@ func TestStdinUnidentifiedNamesStdin(t *testing.T) {
 	}
 }
 
-// TestPaddingNotePerFormat (D2): set/plan note when a padding flag does not fully
-// apply to a file's format - only the no-padding-concept formats (AccessNone, e.g.
-// WAV) get a note. FLAC (Full) and MP3/AAC/MP4 (Partial) honor the flags, so they get
-// none - in particular MP3 --no-padding does shrink, so it must NOT claim "no effect".
+// TestPaddingNotePerFormat checks set/plan notes for padding flags that do not apply
+// to a file's format. WAV gets a note; FLAC and MP3/AAC/MP4 honor the flags, so they
+// get none. In particular, MP3 --no-padding shrinks via rewrite and must not claim
+// "no effect".
 func TestPaddingNotePerFormat(t *testing.T) {
 	t.Parallel()
 	wav := copyFixture(t, sampleWAV)
@@ -121,7 +121,8 @@ func paddingLineHas(capsOut, want string) bool {
 	return false
 }
 
-// TestCapsPaddingLevel (D2): caps reports the per-format padding level in text and JSON.
+// TestCapsPaddingLevel checks that caps reports the per-format padding level in text
+// and JSON.
 func TestCapsPaddingLevel(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct{ format, level string }{
@@ -148,8 +149,9 @@ func TestCapsPaddingLevel(t *testing.T) {
 	}
 }
 
-// TestUnknownKeySuggestions (C2/U2): a near-miss --set or --clear key draws a
-// "did you mean?" suggestion, and a typo'd --clear is surfaced (not a silent no-op).
+// TestUnknownKeySuggestions checks that near-miss --set and --clear keys draw a
+// "did you mean?" suggestion, and that a typo'd --clear is surfaced instead of
+// becoming a silent no-op.
 func TestUnknownKeySuggestions(t *testing.T) {
 	t.Parallel()
 	_, errb, _ := runCLI(t, "plan", sampleFLAC, "--set", "TITEL=x")
@@ -162,7 +164,7 @@ func TestUnknownKeySuggestions(t *testing.T) {
 	}
 }
 
-// TestValueNotes (V1/V2): a non-boolean COMPILATION and a negative numbering value
+// TestValueNotes checks that a non-boolean COMPILATION and a negative numbering value
 // each draw an advisory note while still being written.
 func TestValueNotes(t *testing.T) {
 	t.Parallel()
@@ -174,8 +176,8 @@ func TestValueNotes(t *testing.T) {
 	}
 }
 
-// TestPictureEditing (U1): add a roled picture with a description, then remove it by
-// role; the description-only and unknown-role misuses are usage errors.
+// TestPictureEditing adds a roled picture with a description, then removes it by role.
+// Description-only and unknown-role misuses remain usage errors.
 func TestPictureEditing(t *testing.T) {
 	t.Parallel()
 	png := writeTempImage(t, "back.png", minimalPNG())
@@ -249,6 +251,47 @@ func TestAddCoverReplacesFrontCover(t *testing.T) {
 	}
 }
 
+// TestAddCoverLastWinsWithinInvocation checks that repeated --add-cover flags in one
+// command produce a single front cover, with the final flag winning. coverA is a PNG
+// and coverB is a JPEG, so the surviving MIME shows which one remained.
+func TestAddCoverLastWinsWithinInvocation(t *testing.T) {
+	t.Parallel()
+	coverA := writeTempImage(t, "a.png", minimalPNG())
+	coverB := writeTempImage(t, "b.jpg", minimalJPEG())
+	f := copyFixture(t, notagsFLAC)
+
+	out := filepath.Join(t.TempDir(), "out.flac")
+	if _, errb, code := runCLI(t, "set", f, "--add-cover", coverA, "--add-cover", coverB, "-o", out); code != 0 {
+		t.Fatalf("two --add-cover exit = %d\n%s", code, errb)
+	}
+	dump, _, _ := runCLI(t, "dump", out)
+	if n := strings.Count(dump, "Front cover"); n != 1 {
+		t.Errorf("two --add-cover in one invocation: %d front covers, want 1 (last-wins):\n%s", n, dump)
+	}
+	if !strings.Contains(dump, "image/jpeg") || strings.Contains(dump, "image/png") {
+		t.Errorf("last-wins should keep coverB (the JPEG), not coverA (the PNG):\n%s", dump)
+	}
+}
+
+// TestAddCoverValidatesSupersededPaths checks that last-wins selection does not skip
+// validation. A bad earlier --add-cover path must fail the command before any output is
+// written, even if a later path would replace it.
+func TestAddCoverValidatesSupersededPaths(t *testing.T) {
+	t.Parallel()
+	good := writeTempImage(t, "good.png", minimalPNG())
+	missing := filepath.Join(t.TempDir(), "missing.png")
+	f := copyFixture(t, notagsFLAC)
+
+	// The superseded first path is missing, so the invocation must fail.
+	_, errb, code := runCLI(t, "set", f, "--add-cover", missing, "--add-cover", good, "-o", filepath.Join(t.TempDir(), "out.flac"))
+	if code == 0 {
+		t.Errorf("a missing superseded --add-cover path must fail the invocation, got exit 0")
+	}
+	if !strings.Contains(errb, "cover image") && !strings.Contains(errb, "missing.png") {
+		t.Errorf("error should name the bad cover input; got: %s", errb)
+	}
+}
+
 // TestAddPictureFrontCoverAppends verifies that --add-picture front-cover=...
 // keeps its documented append semantics. The replacement policy is scoped to
 // --add-cover, so a deliberate second front cover is preserved.
@@ -315,8 +358,8 @@ func TestLegacyConflictWarningCLI(t *testing.T) {
 	}
 }
 
-// TestZeroByteImageRefused (C4a): a 0-byte image is refused even with --force, unlike
-// non-empty unsniffable bytes (which --force embeds and the plan makes visible).
+// TestZeroByteImageRefused checks that a 0-byte image is refused even with --force,
+// unlike non-empty unsniffable bytes, which --force embeds and the plan makes visible.
 func TestZeroByteImageRefused(t *testing.T) {
 	t.Parallel()
 	empty := writeTempImage(t, "empty.jpg", nil)
@@ -333,8 +376,8 @@ func TestZeroByteImageRefused(t *testing.T) {
 	}
 }
 
-// TestAddedPictureDetailInPlan (C4a): the plan lists an added picture's type/MIME/size
-// beneath the picture-count change.
+// TestAddedPictureDetailInPlan checks that the plan lists an added picture's
+// type/MIME/size beneath the picture-count change.
 func TestAddedPictureDetailInPlan(t *testing.T) {
 	t.Parallel()
 	png := writeTempImage(t, "c.png", minimalPNG())
@@ -350,8 +393,8 @@ func TestAddedPictureDetailInPlan(t *testing.T) {
 	}
 }
 
-// TestLintMalformedNumber (V3): a non-numeric track number is flagged, flipping a
-// previously-clean file to a non-zero lint exit.
+// TestLintMalformedNumber checks that a non-numeric track number is flagged, flipping
+// a previously clean file to a non-zero lint exit.
 func TestLintMalformedNumber(t *testing.T) {
 	t.Parallel()
 	bad := filepath.Join(t.TempDir(), "bad.flac")
@@ -367,9 +410,9 @@ func TestLintMalformedNumber(t *testing.T) {
 	}
 }
 
-// TestLintSkipsEmptyNumericValue (review): set treats a present-but-empty --set value
-// as the benign "empty value" advisory (exit 0, written), so lint must not then flag
-// it as malformed-number - the shared validator has to agree across both paths.
+// TestLintSkipsEmptyNumericValue checks that lint agrees with set for present-empty
+// numeric values: set writes them with an empty-value advisory, so lint must not later
+// call them malformed numbers.
 func TestLintSkipsEmptyNumericValue(t *testing.T) {
 	t.Parallel()
 	f := filepath.Join(t.TempDir(), "empty.flac")
@@ -382,7 +425,7 @@ func TestLintSkipsEmptyNumericValue(t *testing.T) {
 	}
 }
 
-// TestConflictCountInTagHeader (C5): the dump tag header counts conflicting
+// TestConflictCountInTagHeader checks that the dump tag header counts conflicting
 // single-valued keys, so the header count matches the rows shown.
 func TestConflictCountInTagHeader(t *testing.T) {
 	t.Parallel()

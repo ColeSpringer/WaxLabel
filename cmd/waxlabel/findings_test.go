@@ -688,6 +688,18 @@ func TestCopyRejectsStdin(t *testing.T) {
 	}
 }
 
+// TestReadCommandsRejectRepeatedStdin checks that read commands accept at most one
+// "-". A second one would replay the buffered stdin bytes as a duplicate input, so it
+// is a usage error.
+func TestReadCommandsRejectRepeatedStdin(t *testing.T) {
+	for _, cmd := range []string{"dump", "verify", "lint", "plan"} {
+		_, stderr, code := runCLI(t, cmd, "-", "-")
+		if code != 2 || !strings.Contains(stderr, "standard input") {
+			t.Errorf("%s - -: code %d, stderr %q; want exit 2 mentioning standard input", cmd, code, stderr)
+		}
+	}
+}
+
 // TestRejectEmptyScalarFlags: an explicitly-empty --preset/--legacy/--padding is
 // a usage error on both set and plan, matching the unknown-value rejection rather than
 // being silently treated as unset (and keeping the scalar write-shaping flags

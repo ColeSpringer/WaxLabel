@@ -41,15 +41,25 @@ func bufferStdin(stdin io.Reader) (path string, cleanup func(), err error) {
 }
 
 // readInputs prepares a read command's path arguments for parsing. Standard input
-// ("-") is buffered to one shared temp file (a pipe can be read only once, so
-// repeated "-" arguments all resolve to that single buffer). It returns realOf,
-// which maps each original argument to the path to parse - the temp file for "-",
-// the argument itself otherwise - and a cleanup that removes the temp file. The
-// original argument stays the display name, so "-" never surfaces as a temp path.
+// ("-") is buffered to one temp file because a pipe can be read only once. A second
+// "-" would replay the same bytes as a duplicate input, so read commands reject it
+// with a usage error. It returns realOf, which maps each original argument to the path
+// to parse, plus a cleanup that removes the temp file. The original argument remains
+// the display name, so "-" never appears as a temp path.
 func readInputs(stdin io.Reader, paths []string) (realOf func(string) string, cleanup func(), err error) {
 	cleanup = func() {}
+	seenStdin := false
+	for _, p := range paths {
+		if p != stdinArg {
+			continue
+		}
+		if seenStdin {
+			return nil, cleanup, usagef("standard input (%q) cannot be specified more than once", stdinArg)
+		}
+		seenStdin = true
+	}
 	stdinReal := ""
-	if slices.Contains(paths, stdinArg) {
+	if seenStdin {
 		real, cl, e := bufferStdin(stdin)
 		if e != nil {
 			return nil, cleanup, e

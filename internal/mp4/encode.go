@@ -265,19 +265,46 @@ func appendDroppedPair(out []droppedValue, ts tag.TagSet, numKey, totKey tag.Key
 	if totStr != "" {
 		totPart = strings.TrimSpace(totStr)
 	}
-	if uint16ValueDropped(numPart) {
-		out = append(out, droppedValue{Key: numKey, Value: numPart})
-	}
-	if uint16ValueDropped(totPart) {
-		out = append(out, droppedValue{Key: totKey, Value: totPart})
+	// pairItem treats (0,0) as absent and emits no trkn/disk atom. A user-supplied
+	// literal 0 can therefore be lost even though 0 fits uint16. Warn only when the
+	// whole pair encodes to nothing; TRACKNUMBER=0 with TRACKTOTAL=12 writes 0/12.
+	num, total := numTotal(ts, numKey, totKey)
+	collapsed := num == 0 && total == 0
+	out = appendSlotDrop(out, numKey, numPart, collapsed)
+	out = appendSlotDrop(out, totKey, totPart, collapsed)
+	return out
+}
+
+// appendSlotDrop records one trkn/disk slot the encoder would lose: either a value the
+// uint16 atom cannot represent, or a literal 0 dropped when the pair collapses to
+// absent. A slot is reported at most once.
+func appendSlotDrop(out []droppedValue, key tag.Key, slot string, collapsed bool) []droppedValue {
+	switch {
+	case uint16ValueDropped(slot):
+		return append(out, droppedValue{Key: key, Value: slot})
+	case collapsed && isRepresentableZero(slot):
+		return append(out, droppedValue{Key: key, Value: strings.TrimSpace(slot)})
 	}
 	return out
 }
 
+// isRepresentableZero reports whether a slot holds a present, parseable numeric zero
+// such as "0", " 0 ", "+0", or "-0". That value fits uint16, but pairItem may still
+// drop it by treating the whole pair as absent.
+func isRepresentableZero(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	n, err := strconv.Atoi(s)
+	return err == nil && n == 0
+}
+
 // uint16ValueDropped reports whether the trimmed slot string holds a value the
 // uint16 trkn/disk atom cannot represent: a non-numeric value, a negative, or one
-// past 65535. An empty/absent slot is not a drop, and neither is a literal 0 - the
-// pair encoder treats 0 as "absent" (pairItem), so flagging it would be wrong.
+// past 65535. An empty slot is not a drop. A literal 0 also passes this check because
+// it fits uint16; appendSlotDrop handles the separate case where pairItem drops 0 by
+// treating the whole pair as absent.
 func uint16ValueDropped(s string) bool {
 	s = strings.TrimSpace(s)
 	if s == "" {

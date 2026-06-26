@@ -88,7 +88,7 @@ func flacWithComments(entries ...string) []byte {
 func TestPictureTooLargeRejected(t *testing.T) {
 	doc := mustParseBytes(t, flacWithComments("TITLE=x"))
 	big := make([]byte, 16<<20) // 16 MiB body exceeds the 24-bit block length
-	big[0], big[1], big[2] = 0xFF, 0xD8, 0xFF
+	copy(big, tinyJPEG())       // complete JPEG header for the image-recognition gate
 	_, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/jpeg", Data: big}).Prepare()
 	if !errors.Is(err, waxerr.ErrPictureTooLarge) {
 		t.Errorf("err = %v, want ErrPictureTooLarge", err)

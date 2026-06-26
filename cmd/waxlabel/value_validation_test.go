@@ -6,11 +6,10 @@ import (
 	"testing"
 )
 
-// TestLintAndNoteAgree (F4): the set-time malformed-value note and Document.Lint read
-// one shared validator registry, so they must agree on which values are malformed -
-// numeric, date, boolean, MEDIATYPE (a non-negative int), and ReplayGain (a decimal,
-// optionally dB; a peak is non-negative). RATING is free-form and is flagged by
-// neither. A valid value triggers neither half.
+// TestLintAndNoteAgree checks that set-time notes and Document.Lint use the same value
+// validators. Numeric, date, boolean, MEDIATYPE, and ReplayGain values should get the
+// same malformed verdict in both paths. RATING is free-form and is flagged by neither.
+// Valid values trigger neither path.
 func TestLintAndNoteAgree(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -54,16 +53,15 @@ func TestLintAndNoteAgree(t *testing.T) {
 	}
 }
 
-// TestValueDroppedWarningM4A (F1): an iTunes atom cannot hold a non-numeric, negative,
-// or >65535 trkn/disk slot, nor a non-numeric stik - the encoder drops it silently. The
-// plan now surfaces a value-dropped warning per dropped key (naming the offending slot,
-// not the merged pair), and --strict escalates it to exit 2. A representable value (a
-// uint32 stik like 70000, or the pair encoder's "absent" 0) warns about nothing.
+// TestValueDroppedWarningM4A checks the values MP4 cannot store faithfully. Numeric
+// track and disc slots reject non-numeric, negative, and >65535 values. A literal "0"
+// also warns when pairItem collapses the whole pair to absent, but 0/total stores
+// cleanly. The warning names the dropped canonical key, and --strict escalates it.
 func TestValueDroppedWarningM4A(t *testing.T) {
 	t.Parallel()
 	notagsM4A := filepath.Join("..", "..", "testdata", "notags.m4a")
 
-	for _, kv := range []string{"TRACKNUMBER=abc", "TRACKNUMBER=70000", "TRACKNUMBER=-3", "MEDIATYPE=abc"} {
+	for _, kv := range []string{"TRACKNUMBER=abc", "TRACKNUMBER=70000", "TRACKNUMBER=-3", "TRACKNUMBER=0", "MEDIATYPE=abc"} {
 		if out, _, _ := runCLI(t, "plan", copyFixture(t, notagsM4A), "--set", kv); !strings.Contains(out, "value-dropped") {
 			t.Errorf("plan --set %s: missing value-dropped warning:\n%s", kv, out)
 		}
@@ -78,19 +76,22 @@ func TestValueDroppedWarningM4A(t *testing.T) {
 		t.Errorf("plan TRACKTOTAL=abc: want a value-dropped warning naming TRACKTOTAL:\n%s", out)
 	}
 
-	// Representable / absent values do not warn.
-	for _, kv := range []string{"TRACKNUMBER=0", "MEDIATYPE=70000", "TRACKNUMBER=5"} {
+	// A 0 that keeps the pair (0/total) and other storable values do not warn.
+	out, _, _ = runCLI(t, "plan", copyFixture(t, notagsM4A), "--set", "TRACKNUMBER=0", "--set", "TRACKTOTAL=12")
+	if strings.Contains(out, "value-dropped") {
+		t.Errorf("plan TRACKNUMBER=0 TRACKTOTAL=12: 0/12 writes fine, must not warn:\n%s", out)
+	}
+	for _, kv := range []string{"MEDIATYPE=70000", "TRACKNUMBER=5"} {
 		if out, _, _ := runCLI(t, "plan", copyFixture(t, notagsM4A), "--set", kv); strings.Contains(out, "value-dropped") {
 			t.Errorf("plan --set %s: unexpected value-dropped warning:\n%s", kv, out)
 		}
 	}
 }
 
-// TestValueDroppedWarningVisibleOnNoOpOutput (review): a value-dropped edit whose only
-// effect is the drop is a no-op write, but the warning must still surface - including
-// the `set -o` path, which otherwise suppresses the no-op preview. TRACKNUMBER=70000 is
-// a valid integer that overflows the uint16 atom, so it gets no stderr value note; the
-// plan-body value-dropped warning is then the only signal the edit was rejected.
+// TestValueDroppedWarningVisibleOnNoOpOutput checks that value-dropped warnings still
+// surface when the dropped value makes the write a no-op. This matters for `set -o`,
+// which otherwise suppresses the no-op preview. TRACKNUMBER=70000 is a valid integer
+// that overflows the uint16 atom, so the plan-body warning is the only signal.
 func TestValueDroppedWarningVisibleOnNoOpOutput(t *testing.T) {
 	t.Parallel()
 	in := copyFixture(t, filepath.Join("..", "..", "testdata", "notags.m4a"))
@@ -104,10 +105,9 @@ func TestValueDroppedWarningVisibleOnNoOpOutput(t *testing.T) {
 	}
 }
 
-// TestMatroskaSingleValuedMultiWarning (F2): Matroska collapses Info.Title to one value
-// in its codec result, so the single-valued-multi check must judge the edit intent, not
-// the re-projected result - otherwise the one format that truly loses the value stays
-// silent. The warning fires in the plan body, and --strict escalates it to exit 2.
+// TestMatroskaSingleValuedMultiWarning checks the edit intent, not only Matroska's
+// re-projected result. Info.Title stores one value, so TITLE=A plus TITLE=B must warn
+// even though the codec result collapses to one value. --strict escalates it to exit 2.
 func TestMatroskaSingleValuedMultiWarning(t *testing.T) {
 	t.Parallel()
 	if out, _, _ := runCLI(t, "plan", copyFixture(t, notagsMKA), "--set", "TITLE=A", "--add", "TITLE=B"); !strings.Contains(out, "single-valued-multi") {

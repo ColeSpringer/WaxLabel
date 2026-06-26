@@ -386,6 +386,16 @@ func minimalPNG() []byte {
 	}
 }
 
+// minimalJPEG returns a complete minimal JPEG header with a distinct MIME from
+// minimalPNG, letting tests tell which cover survived a last-wins merge.
+func minimalJPEG() []byte {
+	return []byte{
+		0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08,
+		0x00, 0x05, 0x00, 0x03, 0x03,
+		0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01,
+	}
+}
+
 // TestCopyUsageErrors: copy and diff need exactly two paths.
 func TestCopyDiffArgCounts(t *testing.T) {
 	t.Parallel()

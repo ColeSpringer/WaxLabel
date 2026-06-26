@@ -119,7 +119,9 @@ Common edit flags:
 - `--strip-encoder` removes inherited encoder stamps where the format allows it.
 - `--add-cover FILE` and `--add-picture ROLE=FILE` embed pictures.
 - `--remove-picture SELECTOR` and `--remove-pictures` remove pictures.
-- `--add-chapter TIMESTAMP=TITLE` and `--clear-chapters` edit chapters.
+- `--add-chapter TIMESTAMP=TITLE` and `--clear-chapters` edit chapters. A chapter
+  `TIMESTAMP` is `[H:]MM:SS[.mmm]` (for example `1:02:03.500` or `02:03`) or a bare
+  number of seconds (`123` or `123.5`).
 - `--preset preserve|compatible|minimal`, `--legacy preserve|strip`,
   `--padding N`, and `--no-padding` shape the write.
 
@@ -151,8 +153,8 @@ Exit code summary:
 
 - `0`: success, clean lint, or identical diff.
 - `1`: generic error, lint warnings found, or files differ.
-- `2`: usage error.
-- `3`: unsupported format or unsupported metadata operation.
+- `2`: usage error (including a bad `--format` flag value).
+- `3`: an input file in an unsupported format, or an unsupported metadata operation.
 - `4`: invalid or contradictory data.
 - `5`: source changed since parse.
 - `6`: I/O or not-found error.
@@ -214,6 +216,12 @@ by `waxlabel caps`.
 | Ogg Vorbis | read full, write full · METADATA_BLOCK_PICTURE | read none, write none |
 | WAV | read full, write full · APIC (id3 chunk) | read none, write none · cue/adtl preserved |
 <!-- END caps -->
+
+**Known issue: Matroska reproducibility.** Matroska expects FileUID and ChapterUID
+values to be random. WaxLabel follows that rule for new attachments and chapters, so a
+write that creates or rebuilds those IDs will not be byte-identical across runs. The
+audio bytes are still preserved. A tag-only rewrite that mints no new ID can remain
+deterministic, and a future option could derive IDs from a stable seed or content hash.
 
 ## Safety
 

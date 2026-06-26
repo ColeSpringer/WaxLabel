@@ -22,19 +22,37 @@ const (
 	maxSegments   = 255  // a lacing value of 255 means "packet continues"
 )
 
+// maxOggScanBytes bounds the heap retained by rawPage descriptors during scanPages.
+// Ogg pages cannot be coalesced because the renumber path rewrites each audio page's
+// sequence number and CRC. Without a budget, a stream made of minimum-size pages would
+// make even dump and verify retain memory proportional to page count. The metadata
+// element cap is not a good fit here because long real streams can legitimately have
+// many audio pages.
+//
+// 64 MiB holds about 930k empty page descriptors. That is far above normal Vorbis and
+// Opus pagination, but it rejects adversarial one-packet-per-page streams before they
+// can exhaust memory. Tests can pass a smaller scanBudget directly.
+const maxOggScanBytes = 64 << 20
+
+// rawPageBytes is one retained rawPage's fixed heap cost on 64-bit builds. The lacing
+// table is counted separately as len(p.segs), so max-lacing pages are charged for
+// their real footprint.
+const rawPageBytes = 72
+
 // rawPage is one parsed Ogg page header plus the location of its body. Audio
 // page bodies are never read during parsing - only their byte range is recorded
-// - so scanning a long file does not buffer the audio.
+// - so scanning a long file does not buffer the audio. Field order keeps the
+// single-byte flags last so the struct packs to rawPageBytes with no extra padding.
 type rawPage struct {
 	off     int64  // absolute offset of the "OggS" capture pattern
 	hdrLen  int64  // 27 + segment count
 	bodyLen int64  // sum of the lacing values
 	segs    []byte // the segment table (lacing values)
-	flags   byte
 	granule uint64
 	serial  uint32
 	seq     uint32
 	crc     uint32
+	flags   byte
 }
 
 func (p rawPage) total() int64   { return p.hdrLen + p.bodyLen }
@@ -45,8 +63,9 @@ func (p rawPage) bodyOff() int64 { return p.off + p.hdrLen }
 // position that is not a valid page (trailing junk, or the end of the data),
 // returning that offset as end. The first bytes must be a valid Ogg page. It
 // checks ctx between pages so scanning a very large file can be cancelled.
-func scanPages(ctx context.Context, src core.ReaderAtSized, size, limit int64) (pages []rawPage, end int64, err error) {
+func scanPages(ctx context.Context, src core.ReaderAtSized, size, limit, scanBudget int64) (pages []rawPage, end int64, err error) {
 	off := int64(0)
+	var retained int64 // cumulative heap cost of the rawPage descriptors below
 	for off+pageFixedHdr <= size {
 		if err := ctx.Err(); err != nil {
 			return nil, off, err
@@ -83,6 +102,12 @@ func scanPages(ctx context.Context, src core.ReaderAtSized, size, limit int64) (
 		}
 		if p.total() > size-off {
 			return nil, off, fmt.Errorf("%w: Ogg page at %d overruns the file", waxerr.ErrInvalidData, off)
+		}
+		// Count the descriptor and its lacing table so both empty-page and max-lacing
+		// floods are bounded by the memory they actually retain.
+		retained += rawPageBytes + int64(len(segs))
+		if retained > scanBudget {
+			return nil, off, fmt.Errorf("%w: Ogg page descriptors exceed the %d-byte scan budget", waxerr.ErrSizeTooLarge, scanBudget)
 		}
 		pages = append(pages, p)
 		off += p.total()

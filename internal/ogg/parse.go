@@ -40,7 +40,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	size := src.Size()
 	limit := opts.Limits.MaxAllocBytes
 
-	pages, lastEnd, err := scanPages(ctx, src, size, limit)
+	pages, lastEnd, err := scanPages(ctx, src, size, limit, maxOggScanBytes)
 	if err != nil {
 		return nil, err
 	}

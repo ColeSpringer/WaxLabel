@@ -275,7 +275,7 @@ func (d *doc) Describe() []core.NativeEntry {
 		if len(cd.editions) > 1 {
 			note += fmt.Sprintf(" (%d editions total)", len(cd.editions))
 		}
-		out = append(out, core.NativeEntry{Kind: "Chapters", Size: len(ed.uids), Unit: "chapters", Note: note})
+		out = append(out, core.NativeEntry{Kind: "Chapters", Size: len(ed.startUIDs), Unit: "chapters", Note: note})
 	}
 	return out
 }
