@@ -330,9 +330,24 @@ func parseMdhd(src core.ReaderAtSized, mdhd node, limit int64) (time.Duration, b
 // parseStsd fills the codec name and audio geometry from the first sample entry.
 // The AudioSampleEntry layout (after the entry's 8-byte size+4cc header): 6+2+8
 // reserved bytes, then channels(2), sample_size(2), 4 skipped, sample_rate(16.16).
+// That fixed layout holds for a v0 or v1 sound entry; a v2+ entry stores its
+// geometry in a different structure (a float64 sample rate and a uint32 channel
+// count at other offsets), so its version is checked first.
 func parseStsd(src core.ReaderAtSized, stsd node, d *doc, limit int64) {
 	b, err := readPayload(src, stsd, 256, limit)
 	if err != nil || len(b) < 44 {
+		return
+	}
+	// The sound sample-entry version lives 16 bytes into the entry (which starts at
+	// b[8]); the len>=44 guard above already covers b[24:26]. A v2+ entry is parseable,
+	// but its geometry sits elsewhere - reading the v0/v1 offsets would feed bogus
+	// channels/sample-rate into the essence-digest salt. This intentionally degrades the
+	// reported properties (channels/sample-rate left unset) rather than misreading them;
+	// stsd is still preserved verbatim on write, and the salt stays deterministic. >=2
+	// (not ==2) so an unknown future version also skips rather than misparses.
+	if version := binary.BigEndian.Uint16(b[24:26]); version >= 2 {
+		copy(d.cfg.codec[:], b[12:16])
+		d.track.Codec = string(d.cfg.codec[:])
 		return
 	}
 	copy(d.cfg.codec[:], b[12:16])

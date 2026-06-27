@@ -117,6 +117,36 @@ func TestRebuildMinimalChange(t *testing.T) {
 	}
 }
 
+// TestRebuildPreservesEditedKeyCasing checks that editing an existing key keeps the
+// file's own spelling for that key (lowercase "title" stays "title") rather than forcing
+// the canonical upper-case name. Untouched keys stay verbatim, and an edited alias still
+// canonicalizes to its preferred spelling (DATE).
+func TestRebuildPreservesEditedKeyCasing(t *testing.T) {
+	orig := []Comment{
+		{"artist", "A"},
+		{"title", "Old"},
+		{"year", "2019"}, // alias of RecordingDate, lower-case
+	}
+	base := tag.NewTagSet()
+	base.Set(tag.Artist, "A")
+	base.Set(tag.Title, "Old")
+	base.Set(tag.RecordingDate, "2019")
+
+	edited := base.Clone()
+	edited.Set(tag.Title, "New")          // edit an existing lowercase key
+	edited.Set(tag.RecordingDate, "2020") // edit an alias
+
+	got := Rebuild(orig, edited, DiffKeys(base, edited))
+	want := []Comment{
+		{"artist", "A"},  // untouched: verbatim casing
+		{"title", "New"}, // edited but keeps the file's lowercase spelling
+		{"DATE", "2020"}, // alias canonicalizes to the preferred Vorbis spelling
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("rebuild = %v\n            want %v", got, want)
+	}
+}
+
 // TestEncoderNoiseDeduplicatesVendorEcho checks that a transcoder stamp appearing
 // in both the vendor string and an ENCODER comment is reported once, while a
 // distinct stamp in each is reported twice.

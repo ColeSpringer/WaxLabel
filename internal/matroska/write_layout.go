@@ -102,6 +102,10 @@ func planAbsorb(d *doc, base, edited *core.Media, ch changes, ek map[tag.Key]boo
 	var items []outItem
 	flexIdx, seekIdx := -1, -1
 	tagsPlaced, attachPlaced, chaptersPlaced := false, false, false
+	// Absolute offsets of duplicate masters absorbed (dropped) into the first. A
+	// SeekHead entry pointing at one is now stale and cannot be patched in place, so
+	// it forces the shift path, which rebuilds the SeekHead and omits dropped targets.
+	absorbed := map[int64]bool{}
 	for _, c := range wb.children {
 		if c.start >= wb.clusterStart {
 			break
@@ -115,6 +119,7 @@ func planAbsorb(d *doc, base, edited *core.Media, ch changes, ek map[tag.Key]boo
 			items = append(items, outItem{id: idVoid, origStart: c.start, kind: itemVoid})
 		case c.id == idTags && ch.simple:
 			if tagsPlaced {
+				absorbed[c.start] = true
 				continue // a second Tags master: the first already carries every group
 			}
 			tagsPlaced = true
@@ -123,12 +128,14 @@ func planAbsorb(d *doc, base, edited *core.Media, ch changes, ek map[tag.Key]boo
 			items = append(items, litItem(idInfo, r.info, c.start, itemInfo))
 		case c.id == idAttachments && ch.pictures:
 			if attachPlaced {
+				absorbed[c.start] = true
 				continue // a second Attachments master: the first already carries every file
 			}
 			attachPlaced = true
 			items = append(items, litItem(idAttachments, r.attach, c.start, itemAttach))
 		case c.id == idChapters && ch.chapters:
 			if chaptersPlaced {
+				absorbed[c.start] = true
 				continue
 			}
 			chaptersPlaced = true
@@ -187,7 +194,7 @@ func planAbsorb(d *doc, base, edited *core.Media, ch changes, ek map[tag.Key]boo
 
 	// Patch the SeekHead positions of the header elements that moved.
 	if seekIdx >= 0 {
-		patched, ok := patchSeekAbsorb(wb.seek, wb.segDataStart, oldToNew)
+		patched, ok := patchSeekAbsorb(wb.seek, wb.segDataStart, oldToNew, absorbed)
 		if !ok {
 			return nil, errFallback
 		}
@@ -347,13 +354,22 @@ func voidOfTotal(total int64) []byte {
 
 // patchSeekAbsorb copies the SeekHead bytes and rewrites each SeekPosition whose
 // target moved (per oldToNew) in place at its original width, then recomputes the
-// CRC. ok is false if a new value does not fit its slot, so Plan falls back to
-// the shift path (which rebuilds the SeekHead at minimal width).
-func patchSeekAbsorb(sh *seekHead, segDataStart int64, oldToNew map[int64]int64) ([]byte, bool) {
+// CRC. ok is false if a new value does not fit its slot, or if an entry targets a
+// duplicate master that was absorbed (dropped) into the first - in either case Plan
+// falls back to the shift path (which rebuilds the SeekHead at minimal width and
+// omits dropped targets). An entry whose target is neither moved nor absorbed is
+// left as-is: it can legitimately point at a cluster outside the header item list.
+func patchSeekAbsorb(sh *seekHead, segDataStart int64, oldToNew map[int64]int64, absorbed map[int64]bool) ([]byte, bool) {
 	raw := make([]byte, len(sh.raw))
 	copy(raw, sh.raw)
 	for _, e := range sh.entries {
-		newAbs, ok := oldToNew[segDataStart+int64(e.target)]
+		abs := segDataStart + int64(e.target)
+		if absorbed[abs] {
+			// The entry targets a dropped duplicate master; its bytes are gone, so there
+			// is no in-place value to write. Rebuild the SeekHead via the shift path.
+			return nil, false
+		}
+		newAbs, ok := oldToNew[abs]
 		if !ok {
 			continue
 		}

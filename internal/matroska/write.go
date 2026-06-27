@@ -66,10 +66,12 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	}
 
 	// A source can carry its canonical title only in a scoped TITLE SimpleTag, with no
-	// Segment Info title. When Tags are re-rendered, renderTags drops managed TITLE tags
-	// because Info.Title is the canonical home. If an Info element exists, force a title
-	// render so that scoped-only title migrates there instead of disappearing on an
-	// unrelated tag edit.
+	// Segment Info title. Info present: renderTags drops the managed TITLE because
+	// Info.Title is the canonical home, so force a title render here to migrate the
+	// scoped-only title there instead of letting it disappear on an unrelated tag edit.
+	// Info absent: there is nowhere to migrate it, so buildAlbumGroup/checkPreservable
+	// preserve the SimpleTag verbatim (or refuse if its bytes are uncapturable) - see
+	// those functions' infoPresent / d.wb.info branch.
 	if ch.simple && !ch.title && !d.hasSegTitle && d.wb.info != nil {
 		if _, ok := edited.Tags.First(tag.Title); ok {
 			ch.title = true
@@ -228,10 +230,12 @@ func checkPreservable(d *doc, ch changes, ek map[tag.Key]bool) error {
 				// language/binary/nested structure) - needs its captured bytes. A tag the edit
 				// drops is re-emitted flat from the canonical set and needs no raw.
 				for _, st := range g.tags {
-					if droppedByEdit(st, ek) || isManagedTitle(st) {
+					if droppedByEdit(st, ek) || migratesToInfo(st, d.wb.info != nil) {
 						continue // re-emitted from the canonical set, or migrated to Info.Title: no raw needed
 					}
 					if st.raw == nil {
+						// Includes a managed TITLE kept because no Info exists to migrate it
+						// to. Refuse rather than let buildAlbumGroup skip an uncapturable tag.
 						return tooBig("tag")
 					}
 				}
@@ -301,10 +305,13 @@ func isFallback(err error) bool { return errors.Is(err, errFallback) }
 func renderTags(d *doc, base, edited tag.TagSet, ek map[tag.Key]bool) (raw []byte, groups []tagGroup) {
 	albumIdx := albumGroupIndex(d.groups)
 	covered, albumOwn := coveredByOtherScopes(d.groups, albumIdx, ek)
+	// A managed TITLE migrates to Info.Title only when an Info element exists; with
+	// none, buildAlbumGroup preserves the SimpleTag verbatim instead of dropping it.
+	infoPresent := d.wb.info != nil
 	var content []byte
 
 	for i, g := range d.groups {
-		newGroup, gb, keep := renderGroup(g, base, edited, covered, albumOwn, ek, i == albumIdx)
+		newGroup, gb, keep := renderGroup(g, base, edited, covered, albumOwn, ek, i == albumIdx, infoPresent)
 		if !keep {
 			continue
 		}
@@ -314,7 +321,7 @@ func renderTags(d *doc, base, edited tag.TagSet, ek map[tag.Key]bool) (raw []byt
 
 	// No album group existed: create one carrying the canonical set.
 	if albumIdx < 0 {
-		newGroup, gb := buildAlbumGroup(nil, base, edited, covered, albumOwn, ek)
+		newGroup, gb := buildAlbumGroup(nil, base, edited, covered, albumOwn, ek, infoPresent)
 		if gb != nil {
 			content = append(content, gb...)
 			groups = append(groups, newGroup)
@@ -413,11 +420,11 @@ func forEachSurvivingContribution(g tagGroup, ek map[tag.Key]bool, fn func(scope
 // canonical set; a non-album group is preserved verbatim or, when it carries an
 // edited key, re-rendered to drop that key. keep is false when the group becomes
 // empty.
-func renderGroup(g tagGroup, base, edited tag.TagSet, covered, albumOwn map[tag.Key][]string, ek map[tag.Key]bool, isAlbum bool) (out tagGroup, raw []byte, keep bool) {
+func renderGroup(g tagGroup, base, edited tag.TagSet, covered, albumOwn map[tag.Key][]string, ek map[tag.Key]bool, isAlbum, infoPresent bool) (out tagGroup, raw []byte, keep bool) {
 	if !isAlbum {
 		return renderNonAlbumGroup(g, ek)
 	}
-	ng, gb := buildAlbumGroup(&g, base, edited, covered, albumOwn, ek)
+	ng, gb := buildAlbumGroup(&g, base, edited, covered, albumOwn, ek, infoPresent)
 	if gb == nil {
 		return tagGroup{}, nil, false
 	}
@@ -548,6 +555,16 @@ func isManagedTitle(st simpleTag) bool {
 	return ok && k == tag.Title
 }
 
+// migratesToInfo reports whether a managed TITLE SimpleTag will migrate to Info.Title and
+// thus be dropped from the Tags element: it is a managed title AND an Info element exists
+// to receive it. With no Info, the SimpleTag is preserved verbatim instead. buildAlbumGroup
+// (which drops it) and checkPreservable (which then needs no captured raw for it) both
+// consult this one predicate, so the two gates cannot diverge and lose a title that only
+// one of them believed was migrating.
+func migratesToInfo(st simpleTag, infoPresent bool) bool {
+	return isManagedTitle(st) && infoPresent
+}
+
 // groupTouchedBy reports whether any of the group's SimpleTags would be dropped by
 // the edit - i.e. whether the group must be re-rendered rather than preserved
 // verbatim.
@@ -609,7 +626,7 @@ func editedKeySet(base, edited tag.TagSet) map[tag.Key]bool {
 // albumOwn is the album group's own surviving projected values (from coveredByOtherScopes),
 // subtracted from the canonical re-emit so a value preserved verbatim - with its
 // language/binary/nested structure - is not also emitted flat.
-func buildAlbumGroup(group *tagGroup, base, edited tag.TagSet, covered, albumOwn map[tag.Key][]string, ek map[tag.Key]bool) (tagGroup, []byte) {
+func buildAlbumGroup(group *tagGroup, base, edited tag.TagSet, covered, albumOwn map[tag.Key][]string, ek map[tag.Key]bool, infoPresent bool) (tagGroup, []byte) {
 	out := tagGroup{scope: core.ScopeAlbum}
 	var simple []byte
 	if group != nil {
@@ -621,8 +638,14 @@ func buildAlbumGroup(group *tagGroup, base, edited tag.TagSet, covered, albumOwn
 		// secondary structure a flat re-emit would lose). A managed tag whose key WAS
 		// edited (droppedByEdit) is dropped here; its new value is re-emitted flat at
 		// album scope below. checkPreservable has guaranteed each kept tag's raw.
+		//
+		// A managed TITLE is dropped here only when an Info element exists to migrate it
+		// to (Info.Title is its canonical home, and Plan forces a title render so it lands
+		// there). With no Info element there is nowhere to migrate it, so it is preserved
+		// verbatim like any other kept tag instead of being silently lost on an unrelated
+		// edit; the canonical re-emit below still skips Title, so it is not duplicated.
 		for _, st := range group.tags {
-			if droppedByEdit(st, ek) || isManagedTitle(st) {
+			if droppedByEdit(st, ek) || migratesToInfo(st, infoPresent) {
 				continue
 			}
 			if st.raw != nil {
@@ -755,13 +778,15 @@ func renderInfo(ib *infoBlock, title string, present bool) (raw []byte, newTitle
 		content = append(content, r[ib.insertOff:]...)
 	}
 	if ib.crc != nil {
-		// Recompute the CRC over the new content following the CRC element. The CRC
-		// element occupies content[0:6] (its own bytes were copied verbatim above).
+		// Recompute the CRC over the new content following the CRC element by reusing
+		// recomputeCRC (rather than a hardcoded content[0:6]): EBML permits an overlong CRC
+		// size VINT, so the 4 value bytes are not always at index 2. The captured offsets
+		// are element-relative (rewrite_read.go) and content excludes the element header, so
+		// rebase by headerLen. recomputeCRC rewrites only the 4 value bytes, leaving any
+		// overlong size VINT intact.
 		fixed := make([]byte, len(content))
 		copy(fixed, content)
-		body := fixed[6:]
-		crc := crcElement(body)
-		copy(fixed[0:6], crc)
+		recomputeCRC(fixed, &crcSpot{valOff: ib.crc.valOff - headerLen, contentStart: ib.crc.contentStart - headerLen})
 		content = fixed
 	}
 	return encElement(idInfo, content), title

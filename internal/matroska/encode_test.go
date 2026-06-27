@@ -41,6 +41,72 @@ func TestRawCRCOverlongSizeVINT(t *testing.T) {
 	}
 }
 
+// TestRenderInfoOverlongCRCVINT checks that an Info element whose CRC-32 uses an
+// overlong size VINT survives a title edit. The renderer must preserve the CRC element's
+// encoded width, recompute the checksum over the right window, and leave unrelated Info
+// children intact.
+func TestRenderInfoOverlongCRCVINT(t *testing.T) {
+	limit := int64(1 << 20)
+	depth := bits.NewDepth(8)
+
+	title := stringElement(idSegTitle, "Old")
+	ts := uintElement(idTimestampScl, 1000000)
+	body := append(append([]byte{}, title...), ts...)
+	// CRC element with an overlong 2-byte size VINT (0x40 0x04) encoding length 4,
+	// its value correct over the body that follows it - a real-file shape.
+	sum := crc32.ChecksumIEEE(body)
+	crcEl := []byte{idCRC32 & 0xFF, 0x40, 0x04, byte(sum), byte(sum >> 8), byte(sum >> 16), byte(sum >> 24)}
+	content := append(append([]byte{}, crcEl...), body...)
+	infoRaw := encElement(idInfo, content)
+
+	ib := infoFromRaw(infoRaw, 0, depth, limit)
+	if ib == nil || ib.crc == nil {
+		t.Fatal("infoFromRaw failed to capture the overlong CRC")
+	}
+
+	out, newTitle := renderInfo(ib, "New", true)
+	if newTitle != "New" {
+		t.Errorf("newTitle = %q, want New", newTitle)
+	}
+
+	src := core.BytesSource(out)
+	root, ok := readElement(src, 0, src.Size(), limit)
+	if !ok || root.id != idInfo {
+		t.Fatalf("rendered Info did not re-parse: ok=%v id=%#x", ok, root.id)
+	}
+	var gotTitle string
+	var gotScale uint64
+	var crcEnd int64 // byte after the CRC element's value
+	_ = eachChild(src, root.dataStart, root.dataEnd, depth, limit, func(c element) error {
+		switch c.id {
+		case idCRC32:
+			// The overlong size VINT must remain intact: ID byte + 2 size bytes.
+			if out[c.start] != byte(idCRC32) || out[c.start+1] != 0x40 || out[c.start+2] != 0x04 {
+				t.Errorf("CRC size VINT not preserved: % x", out[c.start:c.start+3])
+			}
+			crcEnd = c.dataEnd
+		case idSegTitle:
+			b, _ := bits.ReadSlice(src, c.dataStart, c.dataLen(), limit)
+			gotTitle = string(b)
+		case idTimestampScl:
+			gotScale = readUint(src, c, limit)
+		}
+		return nil
+	})
+	if gotTitle != "New" {
+		t.Errorf("Title = %q, want New", gotTitle)
+	}
+	if gotScale != 1000000 {
+		t.Errorf("TimestampScale = %d, want 1000000 (lost on the corrupting recompute)", gotScale)
+	}
+	// The CRC must validate over everything after it.
+	want := crc32.ChecksumIEEE(out[crcEnd:])
+	got := binary.LittleEndian.Uint32(out[crcEnd-4 : crcEnd])
+	if got != want {
+		t.Errorf("recomputed CRC = %#08x, want %#08x", got, want)
+	}
+}
+
 // TestEncodeRoundTrip checks the EBML encoder is the inverse of the reader: a
 // nested, CRC-guarded master element re-decodes with the CRC matching its content.
 func TestEncodeRoundTrip(t *testing.T) {
@@ -64,7 +130,7 @@ func TestEncodeRoundTrip(t *testing.T) {
 	}
 }
 
-// TestVINTBoundaries pins the minimal-width VINT and fixed-width encodings,
+// TestVINTBoundaries checks the minimal-width VINT and fixed-width encodings,
 // including the all-ones "unknown size" exclusion.
 func TestVINTBoundaries(t *testing.T) {
 	for _, c := range []struct {
@@ -211,6 +277,26 @@ func TestCheckPreservable(t *testing.T) {
 	}}
 	if err := checkPreservable(emptied, changes{simple: true}, ek); err != nil {
 		t.Errorf("a fully-emptied re-rendered group should pass: %v", err)
+	}
+
+	// A managed TITLE with no Info element must be preserved verbatim. If its raw bytes
+	// were too large to capture, refuse the edit instead of dropping the SimpleTag.
+	noInfoTitle := &doc{wb: &writeBase{}, groups: []tagGroup{
+		{scope: core.ScopeAlbum, raw: []byte{1}, tags: []simpleTag{
+			{name: "TITLE", raw: nil}, // managed title, bytes uncapturable
+		}},
+	}}
+	if err := checkPreservable(noInfoTitle, changes{simple: true}, nil); err == nil {
+		t.Error("an uncapturable managed title with no Info should be refused")
+	}
+	// With an Info element the same title migrates to Info.Title, so its raw is not needed.
+	withInfo := &doc{wb: &writeBase{info: &infoBlock{}}, groups: []tagGroup{
+		{scope: core.ScopeAlbum, raw: []byte{1}, tags: []simpleTag{
+			{name: "TITLE", raw: nil},
+		}},
+	}}
+	if err := checkPreservable(withInfo, changes{simple: true}, nil); err != nil {
+		t.Errorf("a migratable managed title (Info present) needs no raw: %v", err)
 	}
 }
 

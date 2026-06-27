@@ -48,10 +48,10 @@ func TestManagedTagWithoutTagStringStaysNative(t *testing.T) {
 	}
 }
 
-// TestEmptySimpleTagRoundTrip pins A1's SimpleTag half: the writer emits a present
-// empty value ([""], what `set ARTIST=` produces) as a real zero-length SimpleTag,
-// and the parser reads it back as a present empty value - not absent. Before the fix
-// the writer skipped it, making `set ARTIST=` indistinguishable from `--clear ARTIST`.
+// TestEmptySimpleTagRoundTrip checks the SimpleTag half: the writer emits a present-empty
+// value ([""], what `set ARTIST=` produces) as a real zero-length SimpleTag, and the
+// parser reads it back as present-empty, not absent. Otherwise `set ARTIST=` becomes
+// indistinguishable from `--clear ARTIST`.
 func TestEmptySimpleTagRoundTrip(t *testing.T) {
 	const limit = int64(1 << 20)
 	b := simpleTagBytes("ARTIST", "") // writer output for a present-empty value
@@ -81,7 +81,7 @@ func TestBuildAlbumGroupKeepsEmptyValue(t *testing.T) {
 	base := tag.NewTagSet()
 	edited := tag.NewTagSet()
 	edited.Set(tag.Artist, "") // set ARTIST=
-	_, gb := buildAlbumGroup(nil, base, edited, nil, nil, nil)
+	_, gb := buildAlbumGroup(nil, base, edited, nil, nil, nil, true)
 	if gb == nil {
 		t.Fatal("buildAlbumGroup dropped a present-empty ARTIST (set KEY= must not equal --clear KEY)")
 	}
@@ -103,9 +103,9 @@ func TestBuildAlbumGroupKeepsEmptyValue(t *testing.T) {
 	}
 }
 
-// TestRenderInfoTitlePresence pins A1's Info.Title half: a present-but-empty title
+// TestRenderInfoTitlePresence checks the Info.Title half: a present-but-empty title
 // (`set TITLE=`) writes a zero-length <Title> that parses back as present, while an
-// absent title (`--clear TITLE`) removes the element - the two stay distinguishable.
+// absent title (`--clear TITLE`) removes the element. The two stay distinguishable.
 func TestRenderInfoTitlePresence(t *testing.T) {
 	const limit = int64(1 << 20)
 

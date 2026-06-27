@@ -121,6 +121,13 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 // region, so identical cluster bytes under a different codec or geometry hash
 // differently. The hashed extent is the contiguous cluster span recorded at
 // parse (m.AudioStart..m.AudioEnd).
+//
+// Known limitation: the extent is a single [AudioStart, AudioEnd) span. A non-cluster
+// level-1 element between clusters, such as mid-stream Cues, Tags, or Void, is therefore
+// hashed as if it were essence. If an edit re-renders that element, the audio digest may
+// change even though the cluster bytes did not. The multi-range essence model already
+// exists in core.Media.AudioRanges; the remaining work is to populate it from Matroska
+// cluster runs and bump this extent's version.
 func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 	var cfg []byte
 	if d, ok := m.Native.(*doc); ok {

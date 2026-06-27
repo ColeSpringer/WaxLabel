@@ -91,6 +91,9 @@ func convertPICtoAPIC(body []byte) []byte {
 	rest := body[5:]
 	desc, data, ok := cutEncoded(enc, rest)
 	if !ok {
+		// Malformed v2.2 PIC frames sometimes omit the description terminator. With no
+		// unambiguous split point, keep the whole remainder as image data under an empty
+		// description; conformant PIC frames always take the normal path above.
 		desc, data = "", rest
 	}
 	out := []byte{enc}

@@ -21,6 +21,8 @@ func TestParseChapterTimestamp(t *testing.T) {
 		{"90:00", 90 * time.Minute},       // leading minutes unbounded
 		{"0:01:30.000", 90 * time.Second}, // H:MM:SS.mmm (the dump format)
 		{"1:02:03.5", time.Hour + 2*time.Minute + 3*time.Second + 500*ms},
+		{"1:02:03.500", time.Hour + 2*time.Minute + 3*time.Second + 500*ms}, // 3 fractional digits
+		{".5", 500 * ms},                 // bare fractional seconds, single digit
 		{"2:00:00", 2 * time.Hour},       // hours
 		{"1000:00:00", 1000 * time.Hour}, // large but representable (long audiobook)
 		{"100000", 100000 * time.Second}, // large bare seconds, ~27.7 hours
@@ -50,6 +52,7 @@ func TestParseChapterTimestampRejects(t *testing.T) {
 		"ab", "1:xx", "1.2.3", // non-numeric
 		"Inf", "NaN", // ParseFloat accepts these; we must not
 		"0x1p4", "1e3", "1_000", "+90", "+1:30", // nonstandard numeric forms outside the decimal grammar
+		"1:30.", "00:00:00.9999", ".9999", // dangling dot, and over-precise fractions (> 3 digits)
 		"2562048:00:00",       // hours overflow int64 nanoseconds
 		"153722868:00",        // leading minutes overflow
 		"99999999999",         // bare seconds overflow

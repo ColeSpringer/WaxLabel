@@ -2,6 +2,7 @@ package mp4
 
 import (
 	"encoding/binary"
+	"slices"
 	"strconv"
 	"unicode/utf8"
 
@@ -179,18 +180,17 @@ func coverType(mime string) uint32 {
 	}
 }
 
+// coverMIMEs lists the image formats an MP4 covr atom can faithfully label. Only JPEG,
+// PNG, and BMP have covr type codes. The write-time guard and the transfer capability
+// both read this list.
+var coverMIMEs = []string{"image/jpeg", "image/png", "image/bmp"}
+
 // coverMIMESupported reports whether an MP4 covr atom can faithfully label this
-// image format. Only JPEG, PNG, and BMP have covr type codes; any other format
-// would be stored with a JPEG type flag over non-JPEG bytes (a corrupt cover the
-// reader would then mislabel image/jpeg), so the writer rejects it instead - see
-// the validation in Plan.
+// image format. Any other format would be stored with a JPEG type flag over non-JPEG
+// bytes (a corrupt cover the reader would then mislabel image/jpeg), so the writer
+// rejects it instead - see the validation in Plan.
 func coverMIMESupported(mime string) bool {
-	switch mime {
-	case "image/jpeg", "image/png", "image/bmp":
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(coverMIMEs, mime)
 }
 
 // decodeGnre decodes the legacy numeric genre atom (a 1-based ID3v1 genre index)

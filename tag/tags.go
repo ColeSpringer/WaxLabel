@@ -375,6 +375,12 @@ func ValidNumericValue(k Key, v string) bool {
 	// do not (ParseNumPair splits only the number field).
 	if k == TrackNumber || k == DiscNumber {
 		if num, total, ok := strings.Cut(v, "/"); ok {
+			// A bare "/" (both sides blank) is malformed: a lone slash carries no number,
+			// so it must not pass the validator and let splitNumberPairs delete the key.
+			// One blank side ("3/" or "/2") is still fine - ParseNumPair reads it as 0.
+			if strings.TrimSpace(num) == "" && strings.TrimSpace(total) == "" {
+				return false
+			}
 			return numComponent(num) && numComponent(total)
 		}
 	}
@@ -521,11 +527,12 @@ func ValidMediaTypeValue(k Key, v string) bool {
 }
 
 // ValidReplayGainValue reports whether v is a value the ReplayGain key k accepts: a
-// decimal number, optionally suffixed with a case-insensitive "dB" (the conventional
-// gain unit; a peak is unitless). A *_PEAK key additionally requires a non-negative
-// magnitude (a peak is an amplitude, never signed), while a *_GAIN may be negative. A
-// non-ReplayGain key is reported valid. It mirrors [ValidPartialDate]'s shape so the
-// linter and the set-time note share one definition.
+// decimal number with an optional leading sign (a positive gain is conventionally written
+// "+2.34 dB"), optionally suffixed with a case-insensitive "dB" (the conventional gain
+// unit; a peak is unitless). A *_PEAK key additionally rejects any leading '-' (a peak is
+// an amplitude, never signed), while a *_GAIN may carry either sign. A non-ReplayGain key
+// is reported valid. It mirrors [ValidPartialDate]'s shape so the linter and the set-time
+// note share one definition.
 func ValidReplayGainValue(k Key, v string) bool {
 	if !replayGainKeys[k] {
 		return true
@@ -534,17 +541,44 @@ func ValidReplayGainValue(k Key, v string) bool {
 	if len(s) >= 2 && strings.EqualFold(s[len(s)-2:], "dB") {
 		s = strings.TrimSpace(s[:len(s)-2])
 	}
+	// strconv.ParseFloat is too permissive for a ReplayGain figure: it accepts scientific
+	// (1e3), hex (0x1p-2), and underscored (1_0.5) forms. Pre-scan for the conventional
+	// decimal shape - digits, at most one '.', an optional single leading sign - then let
+	// ParseFloat finish the job (a lone sign or '.' passes this scan but ParseFloat rejects
+	// it, so the two compose). A leading '+' is allowed: the ReplayGain convention writes a
+	// positive gain with an explicit sign (e.g. "+2.34 dB"), so rejecting it would
+	// false-flag legitimate values.
+	if s == "" {
+		return false
+	}
+	dots := 0
+	for i := 0; i < len(s); i++ {
+		switch b := s[i]; {
+		case b == '+' || b == '-':
+			if i != 0 {
+				return false
+			}
+		case b == '.':
+			if dots++; dots > 1 {
+				return false
+			}
+		case b < '0' || b > '9':
+			return false
+		}
+	}
 	f, err := strconv.ParseFloat(s, 64)
 	if err != nil {
 		return false
 	}
-	// ParseFloat accepts "NaN"/"Inf"/"+Inf"/"-Inf" without error, but a ReplayGain
-	// value is a finite decibel/amplitude figure, so reject the non-finite spellings.
+	// The byte-scan already rejects "NaN"/"Inf" (their letters), so this is a defensive
+	// finite check.
 	if math.IsNaN(f) || math.IsInf(f, 0) {
 		return false
 	}
-	if (k == ReplayGainTrackPeak || k == ReplayGainAlbumPeak) && f < 0 {
-		return false
+	// A peak is an amplitude, never signed: reject any leading '-' (so "-0.0" fails too,
+	// not just a negative magnitude). A *_GAIN may be negative.
+	if k == ReplayGainTrackPeak || k == ReplayGainAlbumPeak {
+		return !strings.HasPrefix(s, "-")
 	}
 	return true
 }

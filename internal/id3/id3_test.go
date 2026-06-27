@@ -296,9 +296,9 @@ func TestDateDecompositionV23(t *testing.T) {
 	}
 }
 
-// TestDroppedDateDetection pins detectDroppedDates: a year-anchored date key
+// TestDroppedDateDetection checks detectDroppedDates: a year-anchored date key
 // whose edited value has no extractable numeric year renders no v2.3 frame and so is
-// silently dropped - the caller turns RebuildInfo.DroppedDates into a value-dropped
+// dropped; the caller turns RebuildInfo.DroppedDates into a value-dropped
 // warning. The detection is year-anchored and per key, so a stored or year-bearing
 // date never false-fires, and v2.4 (TDRC stores the string) never populates it.
 func TestDroppedDateDetection(t *testing.T) {
@@ -684,7 +684,7 @@ func TestRenderNumTotalNoTripleSlash(t *testing.T) {
 	}
 }
 
-// TestRenderNumTotalPathologicalResidual pins the ID3 behavior for a malformed
+// TestRenderNumTotalPathologicalResidual checks the ID3 behavior for a malformed
 // number pair the editor deliberately leaves unsplit. The writer renders
 // "1/2/3" verbatim instead of composing another slash, and a re-read sees number
 // "1" with total "2/3". The input is already flagged malformed at set time, so
@@ -788,5 +788,45 @@ func TestRebuildPreservesCommentLanguage(t *testing.T) {
 	outG, _ := RebuildFrames(origG, baseG, editedG, 4, nil, false, WriteOpts{})
 	if got := lang(find(outG, "COMM")); got != garbage {
 		t.Errorf("edited COMM language = % x, want % x (garbage round-trips)", got, garbage)
+	}
+}
+
+// TestRebuildKeepsMultiLanguageCommentsOnUnrelatedEdit checks that an unrelated edit
+// preserves a v2.3 tag with two managed COMM frames in different languages. Because the
+// Comment field is not edited, both original frames and their language codes should carry
+// through verbatim.
+func TestRebuildKeepsMultiLanguageCommentsOnUnrelatedEdit(t *testing.T) {
+	orig := []Frame{
+		{ID: "COMM", Body: encodeComment(3, "eng", "", []string{"English"})},
+		{ID: "COMM", Body: encodeComment(3, "deu", "", []string{"Deutsch"})},
+	}
+	base := Project(&Tag{frames: orig}).Tags
+	edited := base.Clone()
+	edited.Set(tag.Artist, "New Artist") // unrelated to the comments
+
+	out, _ := RebuildFrames(orig, base, edited, 3, nil, false, WriteOpts{})
+
+	var langs, texts []string
+	var tpe1 []byte
+	for _, f := range out {
+		switch f.ID {
+		case "COMM":
+			langs = append(langs, string(f.Body[1:4]))
+			if _, vals, ok := decodeCommentFrame(f.Body); ok && len(vals) > 0 {
+				texts = append(texts, vals[0])
+			}
+		case "TPE1":
+			tpe1 = f.Body
+		}
+	}
+	if !slices.Equal(langs, []string{"eng", "deu"}) {
+		t.Errorf("COMM languages = %v, want [eng deu] (both frames kept with their languages)", langs)
+	}
+	if !slices.Equal(texts, []string{"English", "Deutsch"}) {
+		t.Errorf("COMM texts = %v, want [English Deutsch]", texts)
+	}
+	// The unrelated edit still landed.
+	if got := DecodeText(Frame{ID: "TPE1", Body: tpe1}); len(got) == 0 || got[0] != "New Artist" {
+		t.Errorf("TPE1 = %v, want [New Artist] (the unrelated edit landed)", got)
 	}
 }

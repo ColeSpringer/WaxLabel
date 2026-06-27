@@ -10,6 +10,7 @@ import (
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/id3"
+	"github.com/colespringer/waxlabel/internal/iff"
 	"github.com/colespringer/waxlabel/internal/mapping"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
@@ -246,65 +247,26 @@ func mediaWarnings(d *doc, numericGenre bool) []core.Warning {
 	return ws
 }
 
-// walkChunks records every top-level IFF chunk by identifier and source range,
-// noting the index of the first COMM and SSND chunk. It reads only chunk headers
-// (never bodies), so a large SSND chunk costs nothing.
+// formDialect parameterizes the shared IFF/RIFF walker for AIFF: big-endian chunk sizes
+// and an "SSND" audio chunk.
+var formDialect = iff.Dialect{Order: binary.BigEndian, AudioID: [4]byte{'S', 'S', 'N', 'D'}, Noun: "IFF chunks"}
+
+// walkChunks records every top-level IFF chunk by identifier and source range via the
+// shared iff walker, then copies the result into d. It reads only chunk headers (never
+// bodies), so a large SSND chunk costs nothing.
 func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, formEnd, limit int64, maxElements int) error {
-	size := d.size
-	off := int64(12)
-	for off+8 <= size && off < formEnd {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := bits.CheckElementCap(len(d.chunks), maxElements, "IFF chunks"); err != nil {
-			return err
-		}
-		head, err := bits.ReadSlice(src, off, 8, limit)
-		if err != nil {
-			return err
-		}
-		var id [4]byte
-		copy(id[:], head[0:4])
-		declaredLen := int64(binary.BigEndian.Uint32(head[4:8]))
-		bodyOff := off + 8
-		bodyLen := declaredLen
-		// Clamp a declared size that runs past EOF (corrupt or truncated) so the
-		// range stays valid; this becomes the last chunk.
-		overran := bodyLen > size-bodyOff
-		if overran {
-			bodyLen = size - bodyOff
-		}
-		idx := len(d.chunks)
-		d.chunks = append(d.chunks, chunk{id: id, bodyOff: bodyOff, bodyLen: bodyLen})
-		if id == [4]byte{'S', 'S', 'N', 'D'} && d.ssndIdx < 0 {
-			d.ssndIdx = idx
-			// The declared SSND size ran past EOF: a truncated file. The 0xFFFFFFFF
-			// "size unknown" sentinel also overruns but is not truncation; a 0 size
-			// never overruns (it reads as no-audio).
-			d.ssndTruncated = overran && declaredLen != 0xFFFFFFFF
-		}
-		next := bodyOff + bodyLen + (bodyLen & 1) // word-alignment pad byte
-		if next <= off {
-			break // no forward progress (corrupt) - stop and preserve the rest
-		}
-		off = next
+	res, err := iff.WalkChunks(ctx, src, d.size, formEnd, limit, maxElements, formDialect)
+	if err != nil {
+		return err
 	}
-	// Leftover bytes still inside the FORM chunk (a corrupt region): preserved and
-	// counted in the FORM size.
-	if off < formEnd {
-		d.trailingOff = off
-		d.trailingLen = formEnd - off
+	d.chunks = make([]chunk, len(res.Chunks))
+	for i, c := range res.Chunks {
+		d.chunks[i] = chunk{id: c.ID, bodyOff: c.BodyOff, bodyLen: c.BodyLen}
 	}
-	// Bytes after the FORM chunk: preserved verbatim but kept outside the
-	// recomputed FORM size. max(off, formEnd) avoids double-counting a final chunk
-	// whose declared body straddled the boundary.
-	if outerStart := max(off, formEnd); outerStart < size {
-		d.outerOff = outerStart
-		d.outerLen = size - outerStart
-	}
-	if len(d.chunks) == 0 {
-		return fmt.Errorf("%w: no IFF chunks", waxerr.ErrInvalidData)
-	}
+	d.ssndIdx = res.AudioIdx
+	d.ssndTruncated = res.AudioTruncated
+	d.trailingOff, d.trailingLen = res.TrailingOff, res.TrailingLen
+	d.outerOff, d.outerLen = res.OuterOff, res.OuterLen
 	return nil
 }
 

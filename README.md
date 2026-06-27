@@ -120,10 +120,15 @@ Common edit flags:
 - `--add-cover FILE` and `--add-picture ROLE=FILE` embed pictures.
 - `--remove-picture SELECTOR` and `--remove-pictures` remove pictures.
 - `--add-chapter TIMESTAMP=TITLE` and `--clear-chapters` edit chapters. A chapter
-  `TIMESTAMP` is `[H:]MM:SS[.mmm]` (for example `1:02:03.500` or `02:03`) or a bare
-  number of seconds (`123` or `123.5`).
+  `TIMESTAMP` is `[H:]MM:SS[.fff]` (for example `1:02:03.500` or `02:03`) or a bare
+  number of seconds (`123` or `123.5`); when present, the seconds field's fractional
+  part is 1 to 3 digits (millisecond resolution).
 - `--preset preserve|compatible|minimal`, `--legacy preserve|strip`,
   `--padding N`, and `--no-padding` shape the write.
+- `--numeric-genre` writes a recognized genre as its numeric reference where the
+  format supports one (ID3's `TCON`). It converts only on a genuine genre change; when
+  the canonical genre is unchanged it is a no-op (an existing numeric or text genre is
+  left as it is, not rewritten).
 
 The read commands accept a single `-` for standard input; `set -` also works when
 paired with `-o`. `dump`, `verify`, `lint`, `plan`, and `set` can walk directories
@@ -153,9 +158,12 @@ Exit code summary:
 
 - `0`: success, clean lint, or identical diff.
 - `1`: generic error, lint warnings found, or files differ.
-- `2`: usage error (including a bad `--format` flag value).
+- `2`: usage error, such as a bad `--format` flag value, giving the same key to
+  both `--set`/`--add` and `--clear` (they conflict), or a bare directory argument
+  without `--recursive`.
 - `3`: an input file in an unsupported format, or an unsupported metadata operation.
-- `4`: invalid or contradictory data.
+- `4`: invalid or contradictory data, including a recognized container whose contents
+  are corrupt.
 - `5`: source changed since parse.
 - `6`: I/O or not-found error.
 - `130`: canceled or timed out.
@@ -222,6 +230,27 @@ values to be random. WaxLabel follows that rule for new attachments and chapters
 write that creates or rebuilds those IDs will not be byte-identical across runs. The
 audio bytes are still preserved. A tag-only rewrite that mints no new ID can remain
 deterministic, and a future option could derive IDs from a stable seed or content hash.
+
+### Known limitations
+
+These limits are intentional for now; each is bounded and does not affect the common
+path:
+
+- **Matroska essence digest, interleaved metadata.** The audio-essence digest hashes a
+  single contiguous cluster span. If a muxer places a non-cluster element such as Cues
+  or Tags between clusters, that element is included in the digest. Re-rendering it
+  could change the digest even when the audio bytes are unchanged. The multi-range
+  essence model already exists (used by MP4 and Ogg); closing this means populating it
+  from the Matroska cluster runs and bumping the digest version.
+- **Malformed ID3v2.2 `PIC` with no description terminator.** A non-conformant embedded
+  picture whose description is missing its terminating NUL is parsed with an empty
+  description and the remaining bytes as image data. That reading is persisted on
+  rewrite, so the original malformed bytes do not round-trip. Conformant pictures are
+  unaffected.
+- **Present-but-valueless fields collapse to absent.** A field present in the source
+  with no value reads back as absent rather than present-empty; this is consistent
+  across formats and matches how `--clear` and a set-empty value are distinguished
+  elsewhere.
 
 ## Safety
 

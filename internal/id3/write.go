@@ -218,10 +218,18 @@ func RenderFrontTag(srcTag *Tag, version byte, newFrames []Frame, info RebuildIn
 	// fits, so the audio offset (and file size) need not change.
 	nonPad := RenderedSize(newFrames)
 	padSize := pad.ReuseOrTarget(srcTagLen, nonPad)
+	// Clamp at the sizing layer, not only inside Render: Report().PaddingAfter comes from
+	// ft.Padding, so a hidden clamp would make the report overstate the written padding.
+	// The practical trigger is a reused tag region larger than the ID3v2 size field.
+	padSize, clamped := clampPadding(nonPad, padSize)
 	ft := FrontTag{
 		Bytes:   Render(version, newFrames, int(padSize)),
 		Tag:     srcTag.WithFrames(newFrames),
 		Padding: padSize,
+	}
+	if clamped {
+		ft.Warnings = core.Warn(ft.Warnings, core.WarnPaddingClamped,
+			fmt.Sprintf("requested ID3v2 padding exceeded the 28-bit size field (max %d bytes) and was clamped to it", maxFrameSize))
 	}
 	if tagsChanged {
 		ft.Operations = append(ft.Operations, "ID3v2 frame rewrite")

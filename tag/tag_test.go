@@ -267,6 +267,39 @@ func TestValidNumericValue(t *testing.T) {
 	}
 }
 
+func TestValidReplayGainValue(t *testing.T) {
+	// Accept the conventional decimal gain spellings, with or without the dB unit. A
+	// positive gain may carry an explicit '+' (the ReplayGain convention, e.g. "+2.34 dB").
+	for _, v := range []string{"-6.5", "-6.5 dB", "-6.5dB", "0.0", "7.30", "12", "-3.2", "+2.34", "+2.34 dB"} {
+		if !ValidReplayGainValue(ReplayGainTrackGain, v) {
+			t.Errorf("ValidReplayGainValue(gain, %q) = false, want true", v)
+		}
+	}
+	// Reject the spellings strconv.ParseFloat accepts but a ReplayGain figure never
+	// uses: scientific, hex, underscored, multiple dots, a lone sign, and non-finite.
+	for _, v := range []string{"1e3", "0x1p-2", "1_0.5", ".", "-", "+", "1.2.3", "nan", "inf", "-Inf"} {
+		if ValidReplayGainValue(ReplayGainTrackGain, v) {
+			t.Errorf("ValidReplayGainValue(gain, %q) = true, want false", v)
+		}
+	}
+	// A peak is never signed: any leading '-' is rejected, including "-0.0" (which a bare
+	// f < 0 check would have let through); a non-negative peak (with or without '+') is fine.
+	for _, v := range []string{"-0.1", "-0.0"} {
+		if ValidReplayGainValue(ReplayGainTrackPeak, v) {
+			t.Errorf("a signed peak %q should be rejected", v)
+		}
+	}
+	for _, v := range []string{"0.98", "+0.98"} {
+		if !ValidReplayGainValue(ReplayGainTrackPeak, v) {
+			t.Errorf("a non-negative peak %q should be valid", v)
+		}
+	}
+	// A non-ReplayGain key is never flagged.
+	if !ValidReplayGainValue(Title, "1e3") {
+		t.Error("a non-ReplayGain key should never be flagged")
+	}
+}
+
 func TestValidPartialDate(t *testing.T) {
 	for _, d := range []string{"2021", "2021-06", "2021-06-15", "2020-02-29"} {
 		if !ValidPartialDate(d) {

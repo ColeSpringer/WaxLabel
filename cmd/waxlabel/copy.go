@@ -160,7 +160,10 @@ func renderTransfer(w io.Writer, src, dst string, r wl.TransferReport, srcLabel,
 		if it.Disposition == wl.Carried {
 			continue
 		}
-		fmt.Fprintf(w, "  %-7s %s: %s\n", it.Disposition, transferLabel(it), it.Reason)
+		// it.Reason can include file-derived text, such as an unrepresentable cover MIME.
+		// This report is line-based, so escape it before printing; tag.SanitizeText keeps
+		// real newlines for multi-line values, but here a newline would forge a report line.
+		fmt.Fprintf(w, "  %-7s %s: %s\n", it.Disposition, transferLabel(it), tag.SanitizeLine(it.Reason))
 	}
 }
 

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/colespringer/waxlabel/tag"
@@ -59,6 +60,28 @@ type Capability struct {
 	// ProjectTransfer uses it to mark a picture set Lossy only when the specific pictures
 	// carry metadata the destination will drop, matching the codec's write-time warning.
 	PictureLoss PictureLoss
+	// PictureMIMEs lists the cover MIME types this format can store; nil means no
+	// per-MIME restriction. The format may still store no pictures at all, which is
+	// decided by Write == AccessNone. A non-nil list (MP4's covr
+	// atom: JPEG/PNG/BMP) lets the transfer layer drop a single unrepresentable cover
+	// per-image instead of failing the whole copy. The pictures capability only.
+	PictureMIMEs []string
+}
+
+// Representable reports whether the pictures capability c can store picture p's image
+// format. A nil PictureMIMEs list imposes no MIME restriction; Write still decides
+// whether pictures are supported at all. The check uses [Picture.EffectiveMIME], so a
+// JPEG labeled image/jpg or IMAGE/JPEG is accepted, while a GIF mislabeled as JPEG is
+// rejected. ProjectTransfer and PrepareTransfer use this same predicate, keeping the
+// report and write filter aligned.
+func Representable(c Capability, p Picture) bool {
+	return MIMERepresentable(c, p.EffectiveMIME())
+}
+
+// MIMERepresentable is [Representable] after the sniff: it decides from an
+// already-computed effective MIME, so a caller can sniff once and reuse the result.
+func MIMERepresentable(c Capability, mime string) bool {
+	return len(c.PictureMIMEs) == 0 || slices.Contains(c.PictureMIMEs, mime)
 }
 
 // NumericGenreCapability returns the GENRE override for codecs that can store a

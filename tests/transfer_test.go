@@ -3,12 +3,19 @@ package waxlabel_test
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
+
+// tinyGIF returns a minimal recognized GIF89a header (3x5, 8-bit GCT), a cover format
+// MP4's covr atom cannot label.
+func tinyGIF() []byte {
+	return append([]byte("GIF89a"), 0x03, 0x00, 0x05, 0x00, 0x77, 0x00, 0x00)
+}
 
 // TestPlanTransferReportsLosses simulates copying an M4B (tags + chapters) into a
 // FLAC: the tags carry but the chapters drop, and no destination bytes are needed.
@@ -66,10 +73,10 @@ func TestPlanTransferUnsupportedDest(t *testing.T) {
 	}
 }
 
-// TestPrepareTransferReportMatchesResult is the load-bearing invariant: the loss
-// report PrepareTransfer returns is exactly what executing its plan produces -
-// every carried field lands with the source's values, and the dropped chapters do
-// not appear. M4B -> FLAC exercises both a carried set and a dropped set at once.
+// TestPrepareTransferReportMatchesResult checks that PrepareTransfer's loss report
+// matches the result of executing its plan: carried fields land with the source's values,
+// and dropped chapters do not appear. M4B -> FLAC exercises both a carried set and a
+// dropped set at once.
 func TestPrepareTransferReportMatchesResult(t *testing.T) {
 	src := mustParseFile(t, sampleM4B)
 	dstBytes := readFixture(t, "../testdata/notags.flac") // a blank canvas
@@ -215,6 +222,98 @@ func TestMP4RejectsUnstorableCover(t *testing.T) {
 	}
 	if _, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).Prepare(); err != nil {
 		t.Errorf("a PNG cover should be accepted: %v", err)
+	}
+}
+
+// TestPrepareTransferDropsUnrepresentableCover checks that a GIF cover MP4 cannot store
+// is dropped and reported without failing the whole copy. Tags still carry; because a
+// fully dropped picture set produces no carried item, destination pictures are left alone.
+func TestPrepareTransferDropsUnrepresentableCover(t *testing.T) {
+	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
+		e.Set("TITLE", "GIF Cover")
+		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyGIF()})
+	})
+	src := mustParseBytes(t, srcBytes)
+	if pics := src.Pictures(); len(pics) != 1 || pics[0].MIME != "image/gif" {
+		t.Fatalf("setup: source cover = %+v, want one image/gif", pics)
+	}
+
+	dstBytes := readFixture(t, "../testdata/notags.m4a")
+	dst := mustParseBytes(t, dstBytes)
+
+	plan, report, err := src.PrepareTransfer(dst)
+	if err != nil {
+		t.Fatalf("PrepareTransfer must not fail on an unrepresentable cover: %v", err)
+	}
+	carried, _, dropped := report.Counts()
+	if dropped != 1 {
+		t.Errorf("dropped count = %d, want 1 (the GIF cover)", dropped)
+	}
+	if carried == 0 {
+		t.Error("expected the TITLE field carried")
+	}
+	var pic wl.TransferItem
+	for _, it := range report.Items {
+		if it.Kind == wl.TransferPicture {
+			pic = it
+		}
+	}
+	if pic.Disposition != wl.Dropped || !strings.Contains(pic.Reason, "image/gif") {
+		t.Errorf("picture item = %+v, want Dropped naming image/gif", pic)
+	}
+
+	result := mustParseBytes(t, applyToBytes(t, dstBytes, plan))
+	if v, _ := result.Get(tag.Title); len(v) == 0 || v[0] != "GIF Cover" {
+		t.Errorf("destination TITLE = %v, want [GIF Cover] (tags carried despite the dropped cover)", v)
+	}
+	if n := len(result.Pictures()); n != 0 {
+		t.Errorf("destination has %d pictures, want 0 (GIF dropped, dest had none)", n)
+	}
+}
+
+// TestPrepareTransferMixedCoversSplit checks that a mixed cover set carries the storable
+// JPEG and drops only the GIF. The pictures written to the destination and the Dropped
+// item's MIME must partition the source set exactly, keeping the report aligned with the
+// bytes written.
+func TestPrepareTransferMixedCoversSplit(t *testing.T) {
+	jpeg := tinyJPEG()
+	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
+		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: jpeg})
+		e.AddPicture(wl.Picture{Type: wl.PicBackCover, Data: tinyGIF()})
+	})
+	src := mustParseBytes(t, srcBytes)
+
+	dstBytes := readFixture(t, "../testdata/notags.m4a")
+	dst := mustParseBytes(t, dstBytes)
+
+	plan, report, err := src.PrepareTransfer(dst)
+	if err != nil {
+		t.Fatalf("PrepareTransfer: %v", err)
+	}
+	var carried, dropped wl.TransferItem
+	for _, it := range report.Items {
+		if it.Kind != wl.TransferPicture {
+			continue
+		}
+		if it.Disposition == wl.Dropped {
+			dropped = it
+		} else {
+			carried = it
+		}
+	}
+	if carried.Disposition != wl.Carried || carried.Count != 1 {
+		t.Errorf("carried picture item = %+v, want one Carried (the JPEG)", carried)
+	}
+	if dropped.Count != 1 || !strings.Contains(dropped.Reason, "image/gif") || strings.Contains(dropped.Reason, "image/jpeg") {
+		t.Errorf("dropped picture item = %+v, want count 1 naming only image/gif", dropped)
+	}
+
+	// The destination must hold exactly the JPEG, byte-for-byte: written plus dropped
+	// equals the source set.
+	result := mustParseBytes(t, applyToBytes(t, dstBytes, plan))
+	pics := result.Pictures()
+	if len(pics) != 1 || pics[0].MIME != "image/jpeg" || !slices.Equal(pics[0].Data, jpeg) {
+		t.Fatalf("destination pictures = %d (want 1 JPEG byte-equal); the GIF must be withheld, not stored", len(pics))
 	}
 }
 

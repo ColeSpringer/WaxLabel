@@ -89,6 +89,18 @@ func TestNoLineForgeryFromTransferKey(t *testing.T) {
 	assertNoForgedLine(t, "transferLabel key", got)
 }
 
+// TestNoLineForgeryFromTransferReason covers a drop reason that includes a source cover
+// MIME containing a newline. The reason is escaped on one report line, so it cannot forge
+// a fake loss line in the copy report.
+func TestNoLineForgeryFromTransferReason(t *testing.T) {
+	var buf strings.Builder
+	r := wl.TransferReport{Items: []wl.TransferItem{
+		{Kind: wl.TransferPicture, Count: 1, Disposition: wl.Dropped, Reason: "MP4 cannot store image/gif" + forgeMark},
+	}}
+	renderTransfer(&buf, "a.flac", "b.m4a", r, "FLAC", "MP4")
+	assertNoForgedLine(t, "renderTransfer reason", buf.String())
+}
+
 // TestNoLineForgeryFromSetNote: the malformed-value note (stderr) and the change
 // preview (stdout) both escape a hostile newline in a --set value.
 func TestNoLineForgeryFromSetNote(t *testing.T) {

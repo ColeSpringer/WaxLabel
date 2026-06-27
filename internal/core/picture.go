@@ -175,6 +175,21 @@ func (p *Picture) SniffInto() bool { return p.sniff(false) }
 // was set.
 func (p *Picture) SniffAuthoritative() bool { return p.sniff(true) }
 
+// EffectiveMIME returns the MIME type an authoritative sniff would store: the canonical
+// sniffed type when the bytes are recognized, otherwise the stored label, or
+// [UnrecognizedMIME] when there is no label. It mirrors [Editor.AddPicture] without
+// mutating p, so representability checks use the type the writer will actually see
+// rather than a stale or non-canonical container label.
+func (p Picture) EffectiveMIME() string {
+	if info, ok := bits.SniffImage(p.Data); ok {
+		return info.MIME
+	}
+	if p.MIME == "" {
+		return UnrecognizedMIME
+	}
+	return p.MIME
+}
+
 // sniff backs [Picture.SniffInto] (fill-when-empty) and [Picture.SniffAuthoritative]
 // (bytes win). On a failed sniff both only set an empty MIME to [UnrecognizedMIME]; on
 // a success, authoritative overwrites MIME and every sniff-determined dimension, while

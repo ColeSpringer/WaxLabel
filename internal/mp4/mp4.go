@@ -27,6 +27,7 @@ package mp4
 import (
 	"context"
 	"encoding/binary"
+	"slices"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/tag"
@@ -76,6 +77,10 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 		Representation: "covr atom (JPEG/PNG/BMP)", Fidelity: "image bytes lossless; role and description not stored",
 		Constraints: []string{"covers store image data only - picture role and description are dropped (read back as front cover)"},
 		PictureLoss: core.PictureLossRoleAndDescription,
+		// A covr atom can only label JPEG/PNG/BMP, so the transfer layer drops other cover
+		// formats per-image. Clone the package var: Capabilities is publicly exported, so
+		// handing out the backing array would let a caller mutate the write-time allowlist.
+		PictureMIMEs: slices.Clone(coverMIMEs),
 	}
 	chapters := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,

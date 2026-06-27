@@ -28,9 +28,11 @@ func splitChapter(s string) (start time.Duration, title string, err error) {
 // bare (possibly fractional) seconds. It round-trips the dump format exactly:
 // chapterTimestamp emits H:MM:SS.mmm, so a timestamp copied from a dump line parses
 // back to the same instant. Components are colon-separated and the seconds field
-// may carry a fractional part. The leading component may exceed 60 (90:00 is ninety
-// minutes) but is bounded by the representable range; an inner minutes field and the
-// seconds field are each < 60, and every field is non-negative - a negative,
+// may carry 1, 2, or 3 fractional digits. Fractions are millisecond-resolution:
+// ".5" and ".500" are valid; ".9999" and a dangling "." are not. The leading
+// component may exceed 60 (90:00 is ninety minutes) but is bounded by the
+// representable range; an inner minutes field and the seconds field are each < 60,
+// and every field is non-negative - a negative,
 // out-of-range, or non-numeric field is a usage error.
 func parseChapterTimestamp(s string) (time.Duration, error) {
 	s = strings.TrimSpace(s)
@@ -48,7 +50,16 @@ func parseChapterTimestamp(s string) (time.Duration, error) {
 	}
 	// The last component is the seconds (fractional allowed); any preceding ones are
 	// whole hours/minutes.
-	secs, err := strconv.ParseFloat(parts[len(parts)-1], 64)
+	secStr := parts[len(parts)-1]
+	// When a fractional part is present it must be 1 to 3 digits: ParseFloat would
+	// otherwise accept a dangling dot ("1:30.") and an over-precise fraction (".9999"),
+	// neither of which the documented millisecond grammar admits. A bare ".5" stays valid.
+	if idx := strings.IndexByte(secStr, '.'); idx >= 0 {
+		if frac := secStr[idx+1:]; len(frac) == 0 || len(frac) > 3 {
+			return 0, badTimestamp(s)
+		}
+	}
+	secs, err := strconv.ParseFloat(secStr, 64)
 	if err != nil || secs < 0 {
 		return 0, badTimestamp(s)
 	}

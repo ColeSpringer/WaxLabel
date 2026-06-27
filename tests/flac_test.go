@@ -8,11 +8,58 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 
 	"errors"
 )
+
+// flacWithLowercaseComments splices a VORBIS_COMMENT block carrying lowercase field
+// names into the notags.flac fixture (whose empty comment block sits at a known offset),
+// so a test can drive a real lowercase-keyed FLAC through parse / edit / write.
+func flacWithLowercaseComments(t *testing.T) []byte {
+	t.Helper()
+	data := readFixture(t, "../testdata/notags.flac")
+	// The fixture's VORBIS_COMMENT is type 4 at offset 42 ([4-byte hdr][body]); replace its
+	// body with one carrying lowercase names. The block is not last (PADDING follows it).
+	const off = 42
+	bodyLen := int(data[off+1])<<16 | int(data[off+2])<<8 | int(data[off+3])
+	body := vorbis.RenderCommentList("test", []vorbis.Comment{
+		{Name: "artist", Value: "A"},
+		{Name: "title", Value: "Old"},
+		{Name: "year", Value: "2019"}, // alias of RecordingDate
+	})
+	out := append([]byte{}, data[:off]...)
+	out = append(out, 0x04, byte(len(body)>>16), byte(len(body)>>8), byte(len(body))) // type 4, not last
+	out = append(out, body...)
+	return append(out, data[off+4+bodyLen:]...)
+}
+
+// TestFLACPreservesLowercaseKeyCasingOnEdit checks the FLAC path end to end: editing one
+// field in a lowercase-keyed file keeps the file's spelling for the edited and untouched
+// keys, while an edited date alias rewrites to the preferred DATE.
+func TestFLACPreservesLowercaseKeyCasingOnEdit(t *testing.T) {
+	src := flacWithLowercaseComments(t)
+	doc := mustParseBytes(t, src)
+	if v, _ := doc.Get(tag.Title); len(v) == 0 || v[0] != "Old" {
+		t.Fatalf("setup: TITLE = %v, want [Old]", v)
+	}
+	plan, err := doc.Edit().Set(tag.Title, "New").Set(tag.RecordingDate, "2020").Prepare()
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	out := applyToBytes(t, src, plan)
+
+	for _, want := range []string{"title=New", "artist=A", "DATE=2020"} {
+		if !bytes.Contains(out, []byte(want)) {
+			t.Errorf("output missing %q (key casing / alias not preserved as expected)", want)
+		}
+	}
+	if bytes.Contains(out, []byte("TITLE=New")) {
+		t.Error("edited TITLE was upper-cased; the file's lowercase spelling was not preserved")
+	}
+}
 
 const sampleFLAC = "../testdata/sample.flac"
 
@@ -355,7 +402,7 @@ func tinyJPEG() []byte {
 	}
 }
 
-// TestFLACTruncationNotFlagged pins the deliberate non-detection: FLAC carries no
+// TestFLACTruncationNotFlagged documents the deliberate non-detection: FLAC carries no
 // declared encoded-essence size, so a mid-stream cut is undetectable without
 // decoding and must never be flagged truncated. A valid FLAC - including a minimal,
 // effectively zero-bitrate one - must stay clean; a per-byte bitrate floor would

@@ -221,12 +221,32 @@ func padID(id string) string {
 	return id[:4]
 }
 
+// clampPadding bounds padding so the rendered tag's payload - frames plus padding,
+// i.e. everything after the 10-byte header - fits the sync-safe 28-bit size field.
+// nonPad is the rendered non-padding size including that header (RenderedSize), so
+// the frame bytes are nonPad-10. It returns the clamped padding and whether a clamp
+// was applied. The floor is self-safe: an over-limit frame set (which CheckSize
+// rejects before this runs) yields maxPad 0 rather than a negative padding.
+func clampPadding(nonPad, padSize int64) (int64, bool) {
+	maxPad := max(0, int64(maxFrameSize)-(nonPad-10))
+	if padSize > maxPad {
+		return maxPad, true
+	}
+	return padSize, false
+}
+
 // Render assembles a full ID3v2 tag: the 10-byte header (no unsynchronisation,
 // no extended header), the frames, and padding zeros. writeVersion is 3 or 4.
 func Render(writeVersion byte, frames []Frame, padding int) []byte {
 	var fb []byte
 	for _, f := range frames {
 		fb = append(fb, renderFrame(writeVersion, f)...)
+	}
+	// Backstop direct Render callers: padding must not push frames+padding past the
+	// 28-bit size field. RenderFrontTag clamps earlier for normal front-tag writes, and
+	// WAV/AIFF callers pass padding=0. Frame bytes are still checked upstream by CheckSize.
+	if clamped, _ := clampPadding(int64(len(fb))+10, int64(padding)); clamped < int64(padding) {
+		padding = int(clamped)
 	}
 	total := len(fb) + padding
 	out := make([]byte, 0, 10+total)

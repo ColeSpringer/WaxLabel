@@ -133,12 +133,17 @@ func Project(comments []Comment) (tag.TagSet, []core.FamilyValue) {
 // first original occurrence (later duplicates and aliases of that key are
 // dropped, deduping inherited noise); newly added keys are appended in edited
 // order.
+//
+// An edited key that already existed keeps the file's own spelling for that key (so a
+// lowercase "artist" stays "artist" on an unrelated-value edit), except when the key
+// has a write-preferred Vorbis spelling distinct from its canonical name - an alias
+// like RecordingDate, whose preferred tag is DATE - in which case it canonicalizes to
+// that. A newly-added key uses the preferred Vorbis spelling.
 func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool) []Comment {
 	emitted := map[tag.Key]bool{}
 	out := make([]Comment, 0, len(orig))
-	emit := func(k tag.Key) {
+	emit := func(k tag.Key, name string) {
 		vals, _ := edited.Get(k)
-		name := mapping.VorbisName(k)
 		for _, v := range vals {
 			out = append(out, Comment{Name: name, Value: v})
 		}
@@ -148,7 +153,13 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool) []Comm
 		k := mapping.CanonicalVorbis(cm.Name)
 		if changed[k] {
 			if !emitted[k] {
-				emit(k) // replace in place; nothing emitted if the key was cleared
+				// Reuse the original comment's casing, unless the key has a write-preferred
+				// spelling (e.g. an alias canonicalizing to DATE), which wins.
+				name := cm.Name
+				if pref := mapping.VorbisName(k); pref != string(k) {
+					name = pref
+				}
+				emit(k, name) // replace in place; nothing emitted if the key was cleared
 			}
 			continue
 		}
@@ -156,7 +167,7 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool) []Comm
 	}
 	for _, k := range edited.Keys() {
 		if changed[k] && !emitted[k] {
-			emit(k)
+			emit(k, mapping.VorbisName(k)) // newly-added key: the preferred Vorbis spelling
 		}
 	}
 	return out

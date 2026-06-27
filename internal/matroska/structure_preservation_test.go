@@ -326,6 +326,192 @@ func TestF3TitleSimpleTagMigratesWithoutDuplicate(t *testing.T) {
 	}
 }
 
+// TestF2TitlePreservedWhenNoInfo checks that a title carried only in an album-scope TITLE
+// SimpleTag survives an unrelated edit when the file has no Info element. With no
+// Info.Title to migrate to, buildAlbumGroup must keep the SimpleTag verbatim. The second
+// consecutive edit verifies that every render re-derives infoPresent == false.
+func TestF2TitlePreservedWhenNoInfo(t *testing.T) {
+	targets := encElement(idTargets, uintElement(idTgtTypeVal, 50)) // album scope
+	titleTag := encElement(idSimpleTag, cat(stringElement(idTagName, "TITLE"), stringElement(idTagString, "MyTitle")))
+	artist := encElement(idSimpleTag, cat(stringElement(idTagName, "ARTIST"), stringElement(idTagString, "A")))
+	tags := encElement(idTags, encElement(idTag, cat(targets, titleTag, artist)))
+	src := segBytes(cat(tags, emptyCluster())) // deliberately no Info element
+
+	base := parseMKA(t, src)
+	if base.Native.(*doc).wb.info != nil {
+		t.Fatal("setup: expected no Info element")
+	}
+	if v, _ := base.Tags.First(tag.Title); v != "MyTitle" {
+		t.Fatalf("setup: TITLE = %q, want MyTitle", v)
+	}
+
+	// editAndCheck runs one unrelated ARTIST edit and asserts the title survives.
+	editAndCheck := func(t *testing.T, in []byte, newArtist string) []byte {
+		t.Helper()
+		b := parseMKA(t, in)
+		ed := b.Clone()
+		ed.Tags.Set(tag.Artist, newArtist)
+		plan, err := Codec{}.Plan(context.Background(), b, ed, core.DefaultWriteOptions())
+		if err != nil {
+			t.Fatalf("Plan: %v", err)
+		}
+		out := renderPlan(t, in, plan)
+		if n := bytes.Count(out, []byte("MyTitle")); n != 1 {
+			t.Errorf("title value appears %d times, want 1 (preserved as a SimpleTag, not lost or duplicated)", n)
+		}
+		re := parseMKA(t, out)
+		if v, _ := re.Tags.First(tag.Title); v != "MyTitle" {
+			t.Errorf("reparsed TITLE = %q, want MyTitle (preserved without Info)", v)
+		}
+		if v, _ := re.Tags.First(tag.Artist); v != newArtist {
+			t.Errorf("reparsed ARTIST = %q, want %q", v, newArtist)
+		}
+		return out
+	}
+
+	out1 := editAndCheck(t, src, "Changed")
+	editAndCheck(t, out1, "ChangedAgain") // idempotency: still survives a second consecutive edit
+}
+
+// seekFor builds one Seek entry pointing a SeekID (a target element's ID) at a
+// segment-data-relative position. The position is encoded at a fixed 8-byte width so
+// the SeekHead's own length does not depend on the offset values it stores, which lets
+// a test compute the offsets of the elements after the SeekHead without a fixpoint.
+func seekFor(targetID, pos uint64) []byte {
+	seek := cat(
+		encElement(idSeekID, idBytes(targetID)),
+		encElement(idSeekPosition, uintDataWidth(pos, 8)),
+	)
+	return encElement(idSeek, seek)
+}
+
+// assertSeekHeadResolves re-parses out and checks every SeekHead entry's stored
+// position lands on an element whose ID matches the entry's SeekID. A stale entry left
+// behind by an absorbed duplicate master points at the wrong bytes and fails this. It
+// also asserts the surviving entry count, so a regression that over-omits (drops the kept
+// master's entry too, not just the absorbed one) cannot pass vacuously with zero entries.
+func assertSeekHeadResolves(t *testing.T, out []byte, wantEntries int) {
+	t.Helper()
+	wb := parseMKA(t, out).Native.(*doc).wb
+	if wb.seek == nil {
+		t.Fatal("output has no captured SeekHead")
+	}
+	if got := len(wb.seek.entries); got != wantEntries {
+		t.Errorf("SeekHead has %d entries, want %d (the kept master's entry must survive)", got, wantEntries)
+	}
+	src := core.BytesSource(out)
+	for i, e := range wb.seek.entries {
+		abs := wb.segDataStart + int64(e.target)
+		el, ok := readElement(src, abs, int64(len(out)), 1<<20)
+		if !ok {
+			t.Errorf("SeekHead entry %d (position %d) does not resolve to an element", i, e.target)
+			continue
+		}
+		if !bytes.Equal(idBytes(el.id), e.idRaw) {
+			t.Errorf("SeekHead entry %d points at element id %#x, but its SeekID is % x (stale offset)",
+				i, el.id, e.idRaw)
+		}
+	}
+}
+
+// TestF3StaleSeekHeadAfterAbsorbingDuplicateMaster checks duplicate master absorption:
+// when an edit absorbs a later Tags, Attachments, or Chapters master into the first, a
+// SeekHead entry pointing at the absorbed master must not survive with a stale offset. The
+// absorb path cannot delete a fixed-size SeekHead entry, so it falls back to the shift path
+// and rebuilds the SeekHead without the dropped target. A reserved Void makes the absorb
+// path the first attempt.
+func TestF3StaleSeekHeadAfterAbsorbingDuplicateMaster(t *testing.T) {
+	tagsMaster := func(name, val string) []byte {
+		return encElement(idTags, encElement(idTag, cat(
+			encElement(idTargets, uintElement(idTgtTypeVal, 50)),
+			encElement(idSimpleTag, cat(stringElement(idTagName, name), stringElement(idTagString, val))),
+		)))
+	}
+	attachMaster := func(uid uint64, data string) []byte {
+		return encElement(idAttachments, encElement(idAttached, cat(
+			stringElement(idFileName, "cover.png"),
+			stringElement(idFileMime, "image/png"),
+			encElement(idFileData, []byte(data)),
+			uintElement(idFileUID, uid),
+		)))
+	}
+	chaptersMaster := func(uid, startNs uint64, title string) []byte {
+		atom := encElement(idChapterAtom, cat(
+			uintElement(idChapterUID, uid),
+			uintElement(idChapTimeStart, startNs),
+			encElement(idChapDisplay, stringElement(idChapString, title)),
+		))
+		return encElement(idChapters, encElement(idEditionEntry, atom))
+	}
+
+	cases := []struct {
+		name     string
+		targetID uint64
+		m1, m2   []byte
+		edit     func(m *core.Media)
+	}{
+		{
+			name: "Tags", targetID: idTags,
+			m1: tagsMaster("ARTIST", "AA"), m2: tagsMaster("COMPOSER", "CC"),
+			edit: func(m *core.Media) { m.Tags.Set(tag.Genre, "Jazz") },
+		},
+		{
+			name: "Attachments", targetID: idAttachments,
+			m1: attachMaster(0x11, "first-cover"), m2: attachMaster(0x22, "second-cover"),
+			edit: func(m *core.Media) {
+				m.Pictures = []core.Picture{{Type: core.PicFrontCover, MIME: "image/png", Data: []byte("replacement")}}
+			},
+		},
+		{
+			name: "Chapters", targetID: idChapters,
+			m1: chaptersMaster(0x33, 0, "Intro"), m2: chaptersMaster(0x44, 1_000_000_000, "Outro"),
+			edit: func(m *core.Media) {
+				m.Chapters = append(core.CloneChapters(m.Chapters), core.Chapter{Start: 5_000_000_000, Title: "New"})
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			void := encElement(idVoid, make([]byte, 40)) // a reserved Void so absorb is attempted first
+
+			// The SeekHead is the first child, so its length is the offset of everything
+			// after it. With fixed 8-byte positions a template measures that stable length.
+			tmpl := encElement(idSeekHead, cat(seekFor(tc.targetID, 0), seekFor(tc.targetID, 0)))
+			shLen := int64(len(tmpl))
+			m1Off := shLen + int64(len(void))
+			m2Off := m1Off + int64(len(tc.m1))
+			seekHead := encElement(idSeekHead, cat(
+				seekFor(tc.targetID, uint64(m1Off)),
+				seekFor(tc.targetID, uint64(m2Off)),
+			))
+			if int64(len(seekHead)) != shLen {
+				t.Fatalf("SeekHead length unstable: %d vs template %d", len(seekHead), shLen)
+			}
+
+			src := segBytes(cat(seekHead, void, tc.m1, tc.m2, emptyCluster()))
+			base := parseMKA(t, src)
+			// Sanity: the SeekHead entry for the second (to-be-absorbed) master is present
+			// and the planner would otherwise leave it stale.
+			if sh := base.Native.(*doc).wb.seek; sh == nil || len(sh.entries) != 2 {
+				t.Fatalf("setup: expected 2 SeekHead entries, got %v", sh)
+			}
+
+			edited := base.Clone()
+			tc.edit(edited)
+
+			plan, err := Codec{}.Plan(context.Background(), base, edited, core.DefaultWriteOptions())
+			if err != nil {
+				t.Fatalf("Plan: %v", err)
+			}
+			out := renderPlan(t, src, plan)
+			// The two original entries (m1, m2) collapse to one: m2 is absorbed and its
+			// stale entry omitted, while m1's entry must survive and resolve.
+			assertSeekHeadResolves(t, out, 1)
+		})
+	}
+}
+
 // TestMatroskaAttachmentDescriptionSanitized is the picture-description half of the parsed-
 // text sanitization: a cover attachment's FileDescription is stored as raw bytes, so a
 // non-conformant file can hold invalid UTF-8 that a transfer would otherwise re-add and the

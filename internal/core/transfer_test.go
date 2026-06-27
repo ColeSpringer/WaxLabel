@@ -6,6 +6,12 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
+// tinyGIF returns a minimal recognized GIF89a header (3x5), a cover format the MP4 covr
+// allowlist does not include.
+func tinyGIF() []byte {
+	return append([]byte("GIF89a"), 0x03, 0x00, 0x05, 0x00, 0x77, 0x00, 0x00)
+}
+
 // TestProjectTransferDispositions exercises all three dispositions in one pass,
 // including the Lossy path. Shipping codecs write a field Full or None, so the
 // test uses a synthetic capability set for the partial-write case.
@@ -100,6 +106,126 @@ func TestProjectTransferReadOnlyDropsEverything(t *testing.T) {
 	}
 	if r := (TransferReport{Items: items}); r.Lossless() {
 		t.Error("a read-only destination cannot be lossless")
+	}
+}
+
+// TestProjectTransferSplitsUnrepresentableCovers checks a destination that stores only
+// certain cover MIME types: unsupported covers become a separate Dropped item, while the
+// representable subset is graded as usual.
+func TestProjectTransferSplitsUnrepresentableCovers(t *testing.T) {
+	pics := Capability{
+		Write: AccessFull, PictureLoss: PictureLossRoleAndDescription,
+		PictureMIMEs: []string{"image/jpeg", "image/png", "image/bmp"},
+	}
+	caps := NewCapabilities(FormatMP4, false, Capability{Write: AccessFull}, pics,
+		Capability{Write: AccessNone}, AccessNone, nil)
+
+	// Mixed: one representable JPEG, two unrepresentable (GIF, WebP).
+	m := &Media{Format: FormatFLAC, Pictures: []Picture{
+		{Type: PicFrontCover, MIME: "image/jpeg"},
+		{Type: PicFrontCover, MIME: "image/gif"},
+		{Type: PicFrontCover, MIME: "image/webp"},
+	}}
+	items := ProjectTransfer(m, caps)
+	var carried, dropped *TransferItem
+	for i := range items {
+		if items[i].Kind != TransferPicture {
+			continue
+		}
+		if items[i].Disposition == Dropped {
+			dropped = &items[i]
+		} else {
+			carried = &items[i]
+		}
+	}
+	if carried == nil || carried.Disposition != Carried || carried.Count != 1 {
+		t.Fatalf("carried picture item = %+v, want one Carried JPEG", carried)
+	}
+	if dropped == nil || dropped.Count != 2 {
+		t.Fatalf("dropped picture item = %+v, want count 2", dropped)
+	}
+	if want := "MP4 cannot store image/gif, image/webp"; dropped.Reason != want {
+		t.Errorf("dropped reason = %q, want %q", dropped.Reason, want)
+	}
+	if c, l, d := (TransferReport{Items: items}).Counts(); c != 1 || l != 0 || d != 2 {
+		t.Errorf("counts = (%d,%d,%d), want (1,0,2)", c, l, d)
+	}
+
+	// All-unrepresentable: only a Dropped item, no carried picture item, and the reason
+	// lists each distinct MIME once.
+	allGIF := &Media{Format: FormatFLAC, Pictures: []Picture{
+		{Type: PicFrontCover, MIME: "image/gif"},
+		{Type: PicBackCover, MIME: "image/gif"},
+	}}
+	got := ProjectTransfer(allGIF, caps)
+	if len(got) != 1 || got[0].Disposition != Dropped || got[0].Count != 2 {
+		t.Fatalf("all-unrepresentable items = %+v, want one Dropped of count 2", got)
+	}
+	if want := "MP4 cannot store image/gif"; got[0].Reason != want {
+		t.Errorf("reason = %q, want %q (distinct MIMEs only)", got[0].Reason, want)
+	}
+
+	// No PictureMIMEs restriction: the set stays a single item, byte-identical to the
+	// pre-split behavior (a format that stores any cover it accepts).
+	open := NewCapabilities(FormatFLAC, false, Capability{Write: AccessFull},
+		Capability{Write: AccessFull}, Capability{Write: AccessNone}, AccessNone, nil)
+	if n := len(ProjectTransfer(m, open)); n != 1 {
+		t.Errorf("unrestricted destination produced %d picture items, want 1", n)
+	}
+}
+
+// TestProjectTransferReasonUsesSniffedMIME checks that a dropped cover's reason names the
+// sniffed type used to reject it, not a wrong or empty stored label. A GIF mislabeled as
+// JPEG, and an unlabeled GIF, both read "cannot store image/gif".
+func TestProjectTransferReasonUsesSniffedMIME(t *testing.T) {
+	gif := tinyGIF()
+	pics := Capability{Write: AccessFull, PictureMIMEs: []string{"image/jpeg", "image/png", "image/bmp"}}
+	caps := NewCapabilities(FormatMP4, false, Capability{Write: AccessFull}, pics,
+		Capability{Write: AccessNone}, AccessNone, nil)
+
+	for _, label := range []string{"image/jpeg", ""} { // a wrong label, then an empty one
+		m := &Media{Format: FormatFLAC, Pictures: []Picture{{Type: PicFrontCover, MIME: label, Data: gif}}}
+		var dropped *TransferItem
+		items := ProjectTransfer(m, caps)
+		for i := range items {
+			if items[i].Kind == TransferPicture && items[i].Disposition == Dropped {
+				dropped = &items[i]
+			}
+		}
+		if dropped == nil {
+			t.Fatalf("label %q: expected the GIF cover dropped", label)
+		}
+		if want := "MP4 cannot store image/gif"; dropped.Reason != want {
+			t.Errorf("label %q: reason = %q, want %q (sniffed type, not the stored label)", label, dropped.Reason, want)
+		}
+	}
+}
+
+// TestRepresentableUsesSniffedMIME guards the per-image split against a false drop:
+// Representable must compare the MIME an authoritative sniff settles on (what AddPicture
+// stores), not the raw container label. A storable JPEG carried under a non-canonical
+// alias or odd casing is representable; a GIF mislabeled as JPEG is not (the bytes win);
+// a label-only picture (no bytes) falls back to the stored label.
+func TestRepresentableUsesSniffedMIME(t *testing.T) {
+	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 0x05, 0x00, 0x03, 0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01}
+	gif := tinyGIF()
+	mp4 := Capability{Write: AccessFull, PictureMIMEs: []string{"image/jpeg", "image/png", "image/bmp"}}
+
+	if !Representable(mp4, Picture{MIME: "image/jpg", Data: jpeg}) {
+		t.Error("a JPEG labeled image/jpg should be representable (the sniff canonicalizes to image/jpeg)")
+	}
+	if !Representable(mp4, Picture{MIME: "IMAGE/JPEG", Data: jpeg}) {
+		t.Error("a JPEG labeled IMAGE/JPEG should be representable")
+	}
+	if Representable(mp4, Picture{MIME: "image/jpeg", Data: gif}) {
+		t.Error("a GIF mislabeled image/jpeg must not be representable (the bytes win over the label)")
+	}
+	// Label-only (no recognizable bytes): the stored label decides.
+	if Representable(mp4, Picture{MIME: "image/gif"}) {
+		t.Error("a label-only image/gif (no bytes) must not be representable")
+	}
+	if !Representable(mp4, Picture{MIME: "image/png"}) {
+		t.Error("a label-only image/png (no bytes) should be representable")
 	}
 }
 

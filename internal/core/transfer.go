@@ -66,9 +66,10 @@ type TransferItem struct {
 }
 
 // TransferReport is the result of projecting a source document's canonical
-// metadata onto a destination format: one item per field/picture-set/chapter-set,
-// in source order. It is purely descriptive (no I/O) and is the exact projection
-// a transfer applies, so a report and the write it predicts cannot disagree.
+// metadata onto a destination format: one item per field and chapter-set, in source
+// order, and one or two picture items (a destination that stores only certain cover
+// MIME types splits the set into a carried and a dropped item). It is purely
+// descriptive (no I/O) and is built from the same projection a transfer write applies.
 type TransferReport struct {
 	Source Format
 	Dest   Format
@@ -112,9 +113,12 @@ func (r TransferReport) Lossless() bool {
 // container only under certain options) is reflected here without this function
 // needing the options itself.
 //
-// This is the single decision point both PlanTransfer (simulation) and the
-// transfer apply path consult, so the reported fate and the bytes a transfer
-// actually writes derive from the same computation.
+// The picture set may split into two items when the destination stores only certain
+// cover MIME types (see [Representable]): the representable subset is graded as usual,
+// and the rest become one Dropped item naming the unsupported MIME types.
+//
+// PlanTransfer (simulation) and the transfer apply path both use this computation, so
+// the reported fates match the write filter.
 func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 	var items []TransferItem
 	for _, k := range src.Tags.Keys() {
@@ -125,22 +129,43 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 			Disposition: disp, Reason: reason,
 		})
 	}
-	if n := len(src.Pictures); n > 0 {
-		disp, reason := dispose(dst.Pictures, dst.ReadOnly, n, "pictures")
-		// dispose reports picture sets as Carried when the image bytes themselves carry
-		// byte-for-byte. MP4 and Matroska can still drop role or description metadata,
-		// so upgrade the disposition only when these specific pictures carry metadata
-		// covered by the destination's PictureLoss rule. A plain front cover with no
-		// description still reports Carried.
-		if disp == Carried && PicturesLoseMetadata(src.Pictures, dst.Pictures.PictureLoss) {
-			disp = Lossy
-			if reason = dst.Pictures.Fidelity; reason == "" {
-				reason = strings.Join(dst.Pictures.Constraints, "; ")
+	if len(src.Pictures) > 0 {
+		// Split the set by per-image representability. A destination such as MP4 can store
+		// covers only in certain MIME types, so it drops just the unsupported covers instead
+		// of failing the whole transfer. Each cover's effective MIME is computed once and
+		// reused for the split decision and the dropped reason.
+		var rep []Picture
+		var unrepMIMEs []string
+		for _, p := range src.Pictures {
+			if mime := p.EffectiveMIME(); MIMERepresentable(dst.Pictures, mime) {
+				rep = append(rep, p)
+			} else {
+				unrepMIMEs = append(unrepMIMEs, mime)
 			}
 		}
-		items = append(items, TransferItem{
-			Kind: TransferPicture, Count: n, Disposition: disp, Reason: reason,
-		})
+		if len(rep) > 0 {
+			disp, reason := dispose(dst.Pictures, dst.ReadOnly, len(rep), "pictures")
+			// dispose reports picture sets as Carried when the image bytes themselves carry
+			// byte-for-byte. MP4 and Matroska can still drop role or description metadata,
+			// so upgrade the disposition only when these specific pictures carry metadata
+			// covered by the destination's PictureLoss rule. A plain front cover with no
+			// description still reports Carried. Evaluated on the representable subset only.
+			if disp == Carried && PicturesLoseMetadata(rep, dst.Pictures.PictureLoss) {
+				disp = Lossy
+				if reason = dst.Pictures.Fidelity; reason == "" {
+					reason = strings.Join(dst.Pictures.Constraints, "; ")
+				}
+			}
+			items = append(items, TransferItem{
+				Kind: TransferPicture, Count: len(rep), Disposition: disp, Reason: reason,
+			})
+		}
+		if len(unrepMIMEs) > 0 {
+			items = append(items, TransferItem{
+				Kind: TransferPicture, Count: len(unrepMIMEs), Disposition: Dropped,
+				Reason: unrepresentableReason(dst.Format, unrepMIMEs),
+			})
+		}
 	}
 	if n := len(src.Chapters); n > 0 {
 		disp, reason := dispose(dst.Chapters, dst.ReadOnly, n, "chapters")
@@ -185,4 +210,20 @@ func dispose(c Capability, readOnly bool, count int, noun string) (Disposition, 
 		return Lossy, c.Reason()
 	}
 	return Carried, ""
+}
+
+// unrepresentableReason names the destination format and the distinct MIME types it
+// cannot store, in first-seen order, for a dropped-cover item's reason. mimes are the
+// effective MIMEs rejected by MIMERepresentable, so a GIF mislabeled as JPEG reports
+// "cannot store image/gif" rather than the stored label.
+func unrepresentableReason(dst Format, mimes []string) string {
+	seen := map[string]bool{}
+	var distinct []string
+	for _, m := range mimes {
+		if !seen[m] {
+			seen[m] = true
+			distinct = append(distinct, m)
+		}
+	}
+	return fmt.Sprintf("%s cannot store %s", dst, strings.Join(distinct, ", "))
 }

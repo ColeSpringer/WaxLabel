@@ -8,11 +8,10 @@ import (
 )
 
 // PlanTransfer simulates copying this document's canonical metadata (tags,
-// pictures, and chapters) into a file of format dst, reporting - without writing
-// or even needing a destination file - what each piece would carry, downgrade,
-// or lose. It consults dst's capabilities under the given write options, so an
-// option-dependent destination (one whose support changes with, say, the legacy
-// or multi-value policy) is judged exactly as a real write would be.
+// pictures, and chapters) into a file of format dst. It reports what each piece would
+// carry, downgrade, or lose without writing or needing a destination file. It consults
+// dst's capabilities under the given write options, so an option-dependent destination
+// is judged as a real write would be.
 //
 // A read-only destination format reports everything dropped; an unimplemented
 // destination is an error. Use [Document.PrepareTransfer] when you have an actual
@@ -39,9 +38,8 @@ func (d *Document) PlanTransfer(dst Format, opts ...WriteOption) (TransferReport
 // PrepareTransfer projects this document's canonical metadata onto dst and
 // resolves the result into a ready-to-execute [Plan] that writes dst, returning
 // the plan together with the [TransferReport] describing the projection. The
-// report is computed from the same projection the plan applies - every carried or
-// downgraded item is set on the destination edit and every dropped item is left
-// off - so the report cannot disagree with what executing the plan produces.
+// report is computed from the same projection the plan applies: every carried or
+// downgraded item is set on the destination edit, and every dropped item is left off.
 //
 // The report grades the destination's representational capability per
 // field/picture/chapter, including hard structural limits it models (such as the
@@ -79,9 +77,18 @@ func (d *Document) PrepareTransfer(dst *Document, opts ...WriteOption) (*Plan, T
 				ed.Set(it.Key, vals...)
 			}
 		case core.TransferPicture:
+			// Replace the destination's cover set with the source covers it can store. The
+			// filter is the same representability test ProjectTransfer used to split the
+			// report's picture items, so the written bytes match the carried/dropped counts.
+			//
+			// Pictures are a set, so this is whole-set replacement, like chapters. If no
+			// source cover is representable, ProjectTransfer emits only Dropped items; this
+			// branch is not reached, and the destination's existing covers remain unchanged.
 			ed.ClearPictures()
 			for _, p := range core.ClonePictures(d.media.Pictures) {
-				ed.AddPicture(p)
+				if core.Representable(caps.Pictures, p) {
+					ed.AddPicture(p)
+				}
 			}
 		case core.TransferChapter:
 			ed.SetChapters(core.CloneChapters(d.media.Chapters)...)

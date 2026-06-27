@@ -7,12 +7,11 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestSplitNumberPairs pins A2's "n/total" normalization and its precedence rules
-// directly on the helper Prepare runs, covering cases a cross-format CLI table cannot
-// reach: a present-empty value, a base-carried total, leading-zero preservation, the
-// no-churn gate, and the multi-valued out-of-scope case. The (tags, patch) pair fed in
-// is exactly what TagPatch.Apply produces, so the test exercises the same inputs
-// Prepare passes.
+// TestSplitNumberPairs checks "n/total" normalization and its precedence rules directly
+// on the helper Prepare runs. It covers cases a cross-format CLI table cannot reach:
+// present-empty values, base-carried totals, leading-zero preservation, the no-churn
+// gate, and the multi-valued out-of-scope case. The (tags, patch) pair fed in is exactly
+// what TagPatch.Apply produces, so the test exercises the same inputs Prepare passes.
 func TestSplitNumberPairs(t *testing.T) {
 	// wantVals asserts a key is present with exactly vals; wantAbsent asserts it is
 	// absent. They are kept distinct (rather than one helper keyed on nil) so the
@@ -119,6 +118,24 @@ func TestSplitNumberPairs(t *testing.T) {
 		splitNumberPairs(&ts, p)
 		wantAbsent(t, ts, tag.TrackNumber) // no number survives
 		wantVals(t, ts, tag.TrackTotal, "12")
+	})
+
+	t.Run("bare slash kept verbatim, key not deleted", func(t *testing.T) {
+		// "--set TRACKNUMBER=/" must not delete the key. A lone slash carries no number,
+		// so it fails validation; splitNumberPairs leaves it verbatim instead of splitting
+		// to empty/empty, and the set-time note flags it. TRACKTOTAL is untouched.
+		base := tag.NewTagSet()
+		base.Set(tag.TrackNumber, "5")
+		base.Set(tag.TrackTotal, "10")
+		var p tag.TagPatch
+		p.Set(tag.TrackNumber, "/")
+		ts := p.Apply(base)
+		splitNumberPairs(&ts, p)
+		wantVals(t, ts, tag.TrackNumber, "/") // kept verbatim, not deleted
+		wantVals(t, ts, tag.TrackTotal, "10") // unchanged
+		if tag.ValidNumericValue(tag.TrackNumber, "/") {
+			t.Error(`ValidNumericValue(TRACKNUMBER, "/") = true; a bare slash must fail so a malformed-number note is emitted`)
+		}
 	})
 
 	t.Run("leading zeros preserved (not renumbered)", func(t *testing.T) {

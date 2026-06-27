@@ -68,6 +68,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	var audioStart int64 = -1
 	var audioEnd, durationNs int64
 	var chapters []core.Chapter
+	var tagsSeen bool // capture the Tags CRC framing from the first master only (later masters merge)
 	err = walkSegment(src, segStart, segEnd, depth, limit, func(el element) error {
 		if el.id == idCluster {
 			// Coalesce a contiguous run of Clusters into one descriptor. The writer copies
@@ -111,10 +112,21 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		case idTracks:
 			parseTracks(src, el, depth, limit, d)
 		case idTags:
-			wb.tagsCRC = firstChildIsCRC(src, el, limit)
+			// A merged element adopts the FIRST master's framing (the layout keeps the
+			// first master and absorbs the rest), so capture the CRC flag once; still parse
+			// every master so the later groups merge.
+			if !tagsSeen {
+				wb.tagsCRC = firstChildIsCRC(src, el, limit)
+				tagsSeen = true
+			}
 			return parseTags(src, el, depth, limit, d)
 		case idAttachments:
-			wb.attach = &attachBlock{start: el.start, end: el.dataEnd, hasCRC: firstChildIsCRC(src, el, limit)}
+			// Keep the first Attachments master's framing (the one the layout preserves);
+			// still parse every master so later files merge. wb.attach is a pointer, so a
+			// nil check gates it to the first.
+			if wb.attach == nil {
+				wb.attach = &attachBlock{start: el.start, end: el.dataEnd, hasCRC: firstChildIsCRC(src, el, limit)}
+			}
 			ps, err := parseAttachments(src, el, depth, limit, d)
 			if err != nil {
 				return err
