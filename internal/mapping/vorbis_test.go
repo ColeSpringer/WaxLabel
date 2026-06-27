@@ -16,12 +16,39 @@ func TestCanonicalVorbisAliases(t *testing.T) {
 		"organization": tag.Label,
 		"TITLE":        tag.Title,
 		"artist":       tag.Artist,
+		"DISC":         tag.DiscNumber,  // bare DISC folds to the canonical key on read
+		"Track":        tag.TrackNumber, // ...as does bare TRACK
+		"ALBUM ARTIST": tag.AlbumArtist, // spaced and underscored album-artist variants
+		"album_artist": tag.AlbumArtist,
 		"WEIRD_CUSTOM": tag.Key("WEIRD_CUSTOM"), // unknown passes through, uppercased
 		"weird_custom": tag.Key("WEIRD_CUSTOM"),
 	}
 	for in, want := range cases {
 		if got := CanonicalVorbis(in); got != want {
 			t.Errorf("CanonicalVorbis(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestResolveAliasNewSpellings pins the format-independent edit-resolve path for the
+// bare DISC/TRACK and spaced/underscored ALBUM ARTIST spellings. DISC and TRACK are 6
+// edits from their canonical keys, past ClosestKey's distance-2 suggestion cap, so
+// without these aliases a --set DISC=1 would land as a custom field (and break --strict).
+func TestResolveAliasNewSpellings(t *testing.T) {
+	cases := map[tag.Key]tag.Key{
+		"DISC":         tag.DiscNumber,
+		"disc":         tag.DiscNumber,
+		"TRACK":        tag.TrackNumber,
+		"track":        tag.TrackNumber,
+		"ALBUM ARTIST": tag.AlbumArtist,
+		"album artist": tag.AlbumArtist,
+		"ALBUM_ARTIST": tag.AlbumArtist,
+		"TITLE":        tag.Title,            // a non-alias key is returned unchanged
+		"MY_CUSTOM":    tag.Key("MY_CUSTOM"), // an unknown key is returned unchanged
+	}
+	for in, want := range cases {
+		if got := ResolveAlias(in); got != want {
+			t.Errorf("ResolveAlias(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

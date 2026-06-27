@@ -27,6 +27,15 @@ var readAliases = map[string]tag.Key{
 	"DISCTOTAL":      tag.DiscTotal,
 	"ORGANIZATION":   tag.Label,
 	"UNSYNCEDLYRICS": tag.Lyrics,
+	// Bare DISC/TRACK and the spaced/underscored ALBUM ARTIST spellings. DISC and
+	// TRACK are 6 edits from their canonical keys, past ClosestKey's distance-2
+	// suggestion cap, so without these they would land as custom fields and break a
+	// --strict --set DISC=1. ALBUM_ARTIST is Matroska's native spelling; folding both
+	// it and the spaced form here makes them resolve canonically on every format.
+	"DISC":         tag.DiscNumber,
+	"TRACK":        tag.TrackNumber,
+	"ALBUM ARTIST": tag.AlbumArtist,
+	"ALBUM_ARTIST": tag.AlbumArtist,
 }
 
 // writePreferred overrides the native spelling used when a canonical key is
@@ -47,9 +56,10 @@ func CanonicalVorbis(name string) tag.Key {
 }
 
 // ResolveAlias returns the canonical key for a recognized alternative Vorbis spelling
-// (DATE/YEAR -> RECORDINGDATE, TOTALTRACKS -> TRACKTOTAL, ORGANIZATION -> LABEL, ...),
-// or key unchanged when it is not an alias. It is case-insensitive for aliases and leaves
-// non-alias keys otherwise untouched.
+// (DATE/YEAR -> RECORDINGDATE, TOTALTRACKS -> TRACKTOTAL, ORGANIZATION -> LABEL,
+// DISC -> DISCNUMBER, TRACK -> TRACKNUMBER, ALBUM ARTIST/ALBUM_ARTIST -> ALBUMARTIST,
+// ...), or key unchanged when it is not an alias. It is case-insensitive for aliases and
+// leaves non-alias keys otherwise untouched.
 func ResolveAlias(key tag.Key) tag.Key {
 	if k, ok := readAliases[strings.ToUpper(string(key))]; ok {
 		return k

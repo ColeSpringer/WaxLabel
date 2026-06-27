@@ -71,7 +71,53 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// A chapter edit rewrites the whole moov.udta (folding any ilst change into one
 	// delta); a tag/picture-only edit keeps the lighter in-place ilst path.
 	if chaptersChanged {
-		return planChapters(d, edited, tagsChanged || picturesChanged, opts, report)
+		pl, err := planChapters(d, edited, tagsChanged || picturesChanged, opts, report)
+		if err != nil || pl == nil {
+			return pl, err
+		}
+		// Collapse a chapter edit that re-projected to base's exact chapters/tags/
+		// pictures to a true no-op, so re-applying an identical list does not churn the
+		// file (new inode -> broken hard links, bumped mtime) on a byte-identical write.
+		// --add-chapter builds chapters with End==0 while a parse derives End, so
+		// core.EqualChapters always reports a change and this plan path never self-reports
+		// NoOp; pl.Result is the round-tripped read view (it equals a fresh reparse of the
+		// output, by qtWriteRoundTrip/chplRoundTrip design), so it is the honest basis for
+		// the comparison and a genuine title/start edit still differs and writes. (A more
+		// general fix would normalize the edited chapter ends at the editor boundary, but
+		// that is an adjacent change spanning Matroska and the 100 ns rounding + title
+		// truncation; the localized build-then-discard stays here.)
+		//
+		// Two facts pl.Result cannot represent, so refuse to collapse over either:
+		//
+		//  - A conflicted source: when the file's chpl and QuickTime tables disagreed at
+		//    parse, re-applying the (preferred) list rewrites the stale table - a real,
+		//    conflict-resolving change - and DowngradeNoOp does not carry
+		//    WarnChapterSourceConflict. pl.Result reflects only the preferred projection, so
+		//    it would falsely compare equal. After one such write the file is consistent and
+		//    a later re-apply collapses normally; WaxLabel-written files are never conflicted.
+		//
+		//  - An explicit final-chapter End: the QuickTime path's chapterDeltas encodes a last
+		//    chapter whose End > Start into the final sample's stts duration (a real byte
+		//    change), but the reader - and so qtWriteRoundTrip and pl.Result - intentionally
+		//    leave the last End at 0. Comparing base to pl.Result would miss that edit and
+		//    silently drop the requested end time, so do not collapse when one is authored.
+		//    (The chpl-only path ignores End entirely, making this at worst a redundant
+		//    byte-identical rewrite there - never a dropped edit.)
+		conflicted := len(core.WarningsWithCode(base.Warnings, core.WarnChapterSourceConflict)) > 0
+		lastEndAuthored := false
+		if n := len(edited.Chapters); n > 0 {
+			last := edited.Chapters[n-1]
+			lastEndAuthored = last.End > last.Start
+		}
+		if !conflicted && !lastEndAuthored {
+			// pl.Report.Warnings (not the outer report): planChapters took report by value, so
+			// warnings appended during planning live only on pl.Report.
+			if np := core.DowngradeNoOp(core.FormatMP4, edited.Identity.Size, base, pl.Result,
+				base.Tags.Equal(pl.Result.Tags), false, pl.Report.Warnings); np != nil {
+				return np, nil
+			}
+		}
+		return pl, nil
 	}
 
 	// Re-render the ilst from the edited canonical set, keeping the preserved

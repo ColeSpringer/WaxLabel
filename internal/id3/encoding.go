@@ -31,7 +31,10 @@ func termLen(enc byte) int {
 // byte) as one or more null-separated strings. ID3v2.4 allows multiple values
 // in a single text frame; earlier versions officially allow one, but real files
 // null-separate anyway, so splitting is safe across versions. A trailing
-// terminator yields no extra empty value.
+// terminator yields no extra empty value, and any trailing empties left by
+// padding terminators (a frame ending in two or more NULs, as some foreign
+// encoders write) are stripped too, matching TagLib/mutagen; an all-terminator
+// frame still decodes to a single empty value.
 func decodeStrings(enc byte, data []byte) []string {
 	tl := termLen(enc)
 	var out []string
@@ -48,6 +51,13 @@ func decodeStrings(enc byte, data []byte) []string {
 		if len(data) == 0 {
 			break
 		}
+	}
+	// Strip trailing empties produced by padding terminators (a frame ending in a
+	// double NUL decodes to [..., ""]). Trailing-only: an interior present-empty value
+	// in a genuine multi-value frame is preserved, and the len>1 floor keeps a lone ""
+	// for an all-terminator frame.
+	for len(out) > 1 && out[len(out)-1] == "" {
+		out = out[:len(out)-1]
 	}
 	if out == nil {
 		out = []string{""}

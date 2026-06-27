@@ -665,18 +665,24 @@ func detectReducedDates(changed map[tag.Key]bool, edited tag.TagSet, version byt
 // carrying a component the rendered frames cannot capture loses it:
 //   - a month with no full date ("2021-03", non-canonical "2021-3"/"2021-03-1") -> only TYER,
 //     month/day dropped;
-//   - an hour with no minute ("2021-03-15T10") -> TYER+TDAT only, the hour dropped.
+//   - an hour with no minute ("2021-03-15T10") -> TYER+TDAT only, the hour dropped;
+//   - seconds past a full minute ("2021-03-15T10:30:45") -> TIME stores only HHMM, the
+//     seconds dropped.
 //
-// A bare year, a full date, or a full date-time render losslessly and are excluded. The tool
-// stores values verbatim (no normalization), so the non-canonical forms are reachable too. A
-// value with no extractable year drops entirely and is handled by detectDroppedDates instead.
+// A bare year, a full date, or a date-time to the minute render losslessly and are excluded.
+// The tool stores values verbatim (no normalization), so the non-canonical forms are reachable
+// too. A value with no extractable year drops entirely and is handled by detectDroppedDates
+// instead.
 func reducesDatePrecision(iso string) bool {
 	if extractDatePart(iso, partYear) == "" {
 		return false
 	}
 	monthLost := hasSubYearPart(iso) && extractDatePart(iso, partDayMonth) == ""
 	hourLost := hasSubDayPart(iso) && extractDatePart(iso, partHourMin) == ""
-	return monthLost || hourLost
+	// HHMM is stored (a full minute renders) yet the value carries seconds: v2.3 TIME has
+	// no seconds field, so they are dropped.
+	secondsLost := hasSubMinutePart(iso) && extractDatePart(iso, partHourMin) != ""
+	return monthLost || hourLost || secondsLost
 }
 
 // hasSubYearPart reports whether iso carries a month-or-finer component after its 4-digit
@@ -692,6 +698,16 @@ func hasSubYearPart(iso string) bool {
 // date-time from a lossless full date.
 func hasSubDayPart(iso string) bool {
 	return len(iso) >= 12 && (iso[10] == 'T' || iso[10] == ' ') && iso[11] >= '0' && iso[11] <= '9'
+}
+
+// hasSubMinutePart reports whether iso carries a seconds-or-finer component after a full
+// minute: the ':ss' at the YYYY-MM-DDThh:mm boundary - a ':' at index 16 then a digit at 17
+// (so "2021-03-15T10:30:45" does, but a minute-precision "2021-03-15T10:30", or one with only
+// a trailing zone like "2021-03-15T10:30+05:00", does not). It separates a value v2.3's HHMM
+// TIME stores losslessly from one whose seconds it drops. The trailing-digit check mirrors
+// hasSubYearPart/hasSubDayPart and avoids flagging a malformed trailing-colon value.
+func hasSubMinutePart(iso string) bool {
+	return len(iso) >= 18 && iso[16] == ':' && iso[17] >= '0' && iso[17] <= '9'
 }
 
 // AppendRebuildWarnings appends warnings for losses found while rebuilding ID3 frames:

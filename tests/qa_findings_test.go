@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -215,5 +216,171 @@ func TestNumericGenreWarnsOnceForDuplicates(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("GENRE=17,17 produced %d numeric-genre warnings, want 1", n)
+	}
+}
+
+// chapterSetTwo applies a fixed two-chapter list (with End==0, as --add-chapter builds).
+func chapterSetTwo(e *wl.Editor) *wl.Editor {
+	return e.SetChapters(
+		wl.Chapter{Start: 0, Title: "One"},
+		wl.Chapter{Start: 5 * time.Second, Title: "Two"},
+	)
+}
+
+// TestMP4ChapterReapplyMultiNoOpQT is the Fix-2 regression on the QuickTime path:
+// re-applying an identical multi-chapter list to an already-written file collapses to a
+// true no-op. --add-chapter builds chapters with End==0 while a parse derives End from the
+// next start, so core.EqualChapters always reports a change and the chapter plan path never
+// self-reports NoOp; the round-tripped result (which equals a reparse) is the honest basis
+// that collapses it, so a save/copy no longer churns the file.
+func TestMP4ChapterReapplyMultiNoOpQT(t *testing.T) {
+	data := mp4QTFile([]int{0, 5000}, []string{"Seed A", "Seed B"})
+	_, re := execChapters(t, data, chapterSetTwo)
+	plan2, err := chapterSetTwo(re.Edit()).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan2.IsNoOp() {
+		t.Errorf("re-applying an identical multi-chapter list (QuickTime path) should be a no-op; ops: %v", plan2.Report().Operations)
+	}
+}
+
+// TestMP4ChapterReapplyMultiNoOpChpl is the Fix-2 regression on the chpl-only fallback (no
+// QuickTime track). A track holding the max id leaves no free id, so SetChapters writes
+// only the chpl; chplRoundTrip shares decodeChpl's end-fill convention, so a re-apply
+// collapses to a no-op just like the QuickTime path - covering the second sub-path, which
+// builds its result view differently.
+func TestMP4ChapterReapplyMultiNoOpChpl(t *testing.T) {
+	build := func(stcoOff uint32) []byte {
+		moov := mp4Atom("moov", mp4AudioTrakTkhd(int(uint32(0xFFFFFFFF)), stcoOff))
+		return slices.Concat(mp4Ftyp(), moov, mp4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)))
+	}
+	tmp := build(0)
+	data := build(uint32(bytes.Index(tmp, []byte("mdat")) + 4))
+
+	_, re := execChapters(t, data, chapterSetTwo)
+	for _, e := range re.Native().Describe() {
+		if e.Kind == "moov chapter track" {
+			t.Fatal("expected the chpl-only fallback, but a QuickTime chapter track was created")
+		}
+	}
+	plan2, err := chapterSetTwo(re.Edit()).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan2.IsNoOp() {
+		t.Errorf("re-applying an identical multi-chapter list (chpl-only path) should be a no-op; ops: %v", plan2.Report().Operations)
+	}
+}
+
+// TestMP4ChapterConflictedReapplyResolvesThenCollapses is the Fix-2 conflict guard: on a
+// file whose chpl and QuickTime track disagree, re-applying the (QuickTime-preferred)
+// projection must NOT collapse - the write resolves the conflict by rewriting the stale
+// chpl, and DowngradeNoOp does not carry the conflict warning. After that write the file is
+// consistent, so a further identical re-apply collapses normally.
+func TestMP4ChapterConflictedReapplyResolvesThenCollapses(t *testing.T) {
+	chpl := mp4Chpl(1, []time.Duration{0, 5 * time.Second}, []string{"Nero One", "Nero Two"})
+	data := mp4QTFile([]int{0, 5000}, []string{"QT One", "QT Two"}, chpl)
+
+	doc := mustParseBytes(t, data)
+	if !chapterWarn(doc, wl.WarnChapterSourceConflict) {
+		t.Fatal("setup: expected a chapter-source-conflict")
+	}
+	// Re-apply exactly what the conflicted file projects (the QuickTime view wins).
+	set := func(e *wl.Editor) *wl.Editor {
+		return e.SetChapters(
+			wl.Chapter{Start: 0, Title: "QT One"},
+			wl.Chapter{Start: 5 * time.Second, Title: "QT Two"},
+		)
+	}
+	plan1, err := set(doc.Edit()).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan1.IsNoOp() {
+		t.Error("a conflicted source must not collapse to a no-op: the write resolves the conflict")
+	}
+
+	re := mustParseBytes(t, applyToBytes(t, data, plan1))
+	if chapterWarn(re, wl.WarnChapterSourceConflict) {
+		t.Fatal("the conflict-resolving write should have made the chpl and QuickTime track agree")
+	}
+	plan2, err := set(re.Edit()).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan2.IsNoOp() {
+		t.Errorf("re-applying on the now-consistent file should be a no-op; ops: %v", plan2.Report().Operations)
+	}
+}
+
+// TestVorbisDiscReadSideFold is the Fix-3 read-side regression: a Vorbis file carrying both
+// native DISC and DISCNUMBER folds both onto canonical DISCNUMBER (two values, one key).
+// The native bytes are preserved, so this is a canonical-view-only change and no-op
+// detection stays sane - a no-op edit on such a file does not spuriously churn.
+func TestVorbisDiscReadSideFold(t *testing.T) {
+	data := flacWithComments("TITLE=Folded", "DISC=1", "DISCNUMBER=2")
+	doc := mustParseBytes(t, data)
+	if v, ok := doc.Get(tag.DiscNumber); !ok || !slices.Equal(v, []string{"1", "2"}) {
+		t.Errorf("DISC + DISCNUMBER should fold to DISCNUMBER=[1 2]; got %v (ok=%v)", v, ok)
+	}
+	plan, err := doc.Edit().Set(tag.Title, "Folded").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.IsNoOp() {
+		t.Errorf("a no-op edit on a folded-disc file should stay a no-op; ops: %v", plan.Report().Operations)
+	}
+}
+
+// TestMP4ChapterReapplyTruncatedTitleCarriesWarning pins that the Fix-2 no-op collapse still
+// surfaces input-loss: re-applying an over-long chapter title to a file already holding its
+// truncation is byte-identical (a no-op), but the chapter-title-truncated warning - the
+// user's input being trimmed to a container limit - is carried onto the no-op report, exactly
+// as value-reduced is for an over-precise date. (--strict does not escalate either; this is
+// the informational-surface consistency.)
+func TestMP4ChapterReapplyTruncatedTitleCarriesWarning(t *testing.T) {
+	longTitle := strings.Repeat("a", 300) // exceeds the 255-byte chapter-title limit
+	data := mp4QTFile([]int{0, 5000}, []string{"Seed A", "Seed B"})
+	set := func(e *wl.Editor) *wl.Editor {
+		return e.SetChapters(
+			wl.Chapter{Start: 0, Title: longTitle},
+			wl.Chapter{Start: 5 * time.Second, Title: "Two"},
+		)
+	}
+	_, re := execChapters(t, data, set)
+	plan2, err := set(re.Edit()).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan2.IsNoOp() {
+		t.Fatalf("re-applying the identical (already-truncated) title should be a no-op; ops: %v", plan2.Report().Operations)
+	}
+	if !planWarns(t, plan2, wl.WarnChapterTitleTruncated) {
+		t.Errorf("the chapter-title-truncated input-loss warning must survive the no-op collapse; warnings: %v", plan2.Report().Warnings)
+	}
+}
+
+// TestMP4ChapterLastEndEditNotCollapsed guards the Fix-2 collapse against dropping a real
+// edit: setting an explicit End on the LAST chapter of a QuickTime-track file encodes that
+// value into the final sample's stts duration (chapterDeltas), yet the round-trip Result
+// leaves the last End at 0, exactly as the reader does. Comparing base to that Result would
+// look equal, so the collapse must refuse here and let the real write through.
+func TestMP4ChapterLastEndEditNotCollapsed(t *testing.T) {
+	data := mp4QTFile([]int{0, 5000}, []string{"A", "B"})
+	// Same starts/titles the file already projects, but the last chapter gains an explicit
+	// End. Without the guard, pl.Result drops that End and the edit collapses to a no-op.
+	plan, err := mustParseBytes(t, data).Edit().SetChapters(
+		wl.Chapter{Start: 0, Title: "A"},
+		wl.Chapter{Start: 5 * time.Second, End: 8 * time.Second, Title: "B"},
+	).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.IsNoOp() {
+		t.Fatal("an explicit final-chapter End sets the last sample duration; it must not collapse to a no-op")
+	}
+	if out := applyToBytes(t, data, plan); bytes.Equal(out, data) {
+		t.Error("the final-End edit produced byte-identical output; the requested end time was dropped")
 	}
 }

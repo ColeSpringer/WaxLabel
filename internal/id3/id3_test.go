@@ -73,6 +73,57 @@ func TestDecodeStringsMultiValue(t *testing.T) {
 	}
 }
 
+func TestDecodeStringsTrailingPadding(t *testing.T) {
+	// A foreign frame ending in a double NUL (a padding terminator after the value's
+	// own terminator) must not yield a phantom trailing empty - that would defeat no-op
+	// detection on such files. Matches TagLib/mutagen.
+	if got := decodeStrings(encLatin1, []byte("Hello\x00\x00")); !slices.Equal(got, []string{"Hello"}) {
+		t.Errorf("double-NUL latin1 decode = %v, want [Hello]", got)
+	}
+	if got := decodeStrings(encUTF8, []byte("Hello\x00\x00")); !slices.Equal(got, []string{"Hello"}) {
+		t.Errorf("double-NUL utf8 decode = %v, want [Hello]", got)
+	}
+	// Trailing-only: an interior present-empty value in a genuine multi-value frame is
+	// preserved; only the trailing padding empty is dropped.
+	if got := decodeStrings(encLatin1, []byte("A\x00\x00B\x00\x00")); !slices.Equal(got, []string{"A", "", "B"}) {
+		t.Errorf("interior-empty decode = %v, want [A,\"\",B]", got)
+	}
+	// A frame that is nothing but terminators still decodes to a single empty value.
+	if got := decodeStrings(encLatin1, []byte("\x00\x00")); !slices.Equal(got, []string{""}) {
+		t.Errorf("all-terminator decode = %v, want [\"\"]", got)
+	}
+	// The pre-existing single-trailing-terminator case is unchanged.
+	if got := decodeStrings(encLatin1, []byte("Solo\x00")); !slices.Equal(got, []string{"Solo"}) {
+		t.Errorf("single-terminator decode = %v, want [Solo]", got)
+	}
+}
+
+func TestReducesDatePrecisionSeconds(t *testing.T) {
+	// v2.3 TIME stores only HHMM, so seconds past a full minute are dropped - the same
+	// class of loss as the existing month/hour reductions.
+	truthy := []string{
+		"2020-07-04T13:05:45",       // seconds dropped
+		"2020-07-04T13:05:45+05:00", // seconds present even with a trailing zone -> dropped
+		"2020-07-04 13:05:45",       // a space date-time separator is accepted too
+	}
+	for _, iso := range truthy {
+		if !reducesDatePrecision(iso) {
+			t.Errorf("reducesDatePrecision(%q) = false, want true (v2.3 TIME drops the seconds)", iso)
+		}
+	}
+	falsy := []string{
+		"2020-07-04T13:05",       // minute precision: stored losslessly, no over-warn
+		"2020-07-04T13:05+05:00", // a zone but no seconds: the documented seconds-only-scope gap
+		"2020-07-04",             // a full date
+		"2020",                   // a bare year
+	}
+	for _, iso := range falsy {
+		if reducesDatePrecision(iso) {
+			t.Errorf("reducesDatePrecision(%q) = true, want false (no seconds to drop)", iso)
+		}
+	}
+}
+
 func TestDeunsync(t *testing.T) {
 	in := []byte{0xFF, 0x00, 0xFB, 0x10, 0xFF, 0x00, 0x00}
 	want := []byte{0xFF, 0xFB, 0x10, 0xFF, 0x00}

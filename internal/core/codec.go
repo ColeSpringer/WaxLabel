@@ -154,13 +154,14 @@ func NoOpPlan(report WriteReport, size int64, result *Media) *WritePlan {
 //
 // Because NoOpPlan starts from a warning-free report, DowngradeNoOp re-attaches the
 // input-loss warnings from the codec's pre-downgrade report: values the format could not
-// store, values it stored with reduced precision, picture metadata it dropped, and a numeric
-// genre reference the input supplied that reads back as a name. Those reflect the user's
-// INPUT, not the write mechanics, and are often the very reason the byte stream did not
-// change (GENRE=17 on a file already projecting Rock), so they still need to surface on the
-// no-op report (the value-dropped case additionally trips --strict). Write-mechanics
-// warnings, such as an ID3v2.3 storage convention, are left behind because the write did not
-// happen.
+// store, values it stored with reduced precision, picture metadata it dropped, a numeric
+// genre reference the input supplied that reads back as a name, and chapter titles trimmed
+// to a container limit. Those reflect the user's INPUT, not the write mechanics, and are
+// often the very reason the byte stream did not change (GENRE=17 on a file already projecting
+// Rock; an over-long chapter title re-applied to a file already holding its truncation), so
+// they still need to surface on the no-op report (the value-dropped case additionally trips
+// --strict). Write-mechanics warnings, such as an ID3v2.3 storage convention, are left behind
+// because the write did not happen.
 func DowngradeNoOp(format Format, size int64, base, result *Media, tagsEqual, structuralChange bool, priorWarnings []Warning) *WritePlan {
 	if structuralChange || !tagsEqual {
 		return nil
@@ -169,7 +170,7 @@ func DowngradeNoOp(format Format, size int64, base, result *Media, tagsEqual, st
 		return nil
 	}
 	np := NoOpPlan(WriteReport{Format: format, BytesBefore: size}, size, base)
-	np.Report.Warnings = append(np.Report.Warnings, WarningsWithCode(priorWarnings, WarnValueDropped, WarnValueReduced, WarnPictureMetadataDropped, WarnNumericGenre)...)
+	np.Report.Warnings = append(np.Report.Warnings, WarningsWithCode(priorWarnings, WarnValueDropped, WarnValueReduced, WarnPictureMetadataDropped, WarnNumericGenre, WarnChapterTitleTruncated)...)
 	return np
 }
 

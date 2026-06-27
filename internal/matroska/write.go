@@ -22,12 +22,15 @@ import (
 // cluster media is copied byte-for-byte and only the affected Segment children
 // (Tags, Info.Title, Attachments) are re-rendered.
 //
-// The size change is absorbed into a reserved Void element so the clusters do not
-// move - keeping every Cues/SeekHead position valid - which is the layout
+// The size change is typically absorbed into a reserved Void element so the clusters
+// do not move - keeping every Cues/SeekHead position valid - which is the layout
 // mkvmerge and ffmpeg both write (SeekHead, Void, ..., Clusters). Only the SeekHead
-// entries for the header elements that shift within the rebuilt header are
-// patched, in place at their original width, and the affected CRC-32s recomputed.
-// When the file has no usable Void, the tail is shifted instead (see planShift).
+// entries for the header elements that shift within the rebuilt header are patched,
+// in place at their original width, and the affected CRC-32s recomputed. Two cases
+// force the tail to move instead (see planShift): the file has no usable Void, or a
+// shift pushes an indexed SeekPosition across a VINT-width boundary so it no longer
+// fits its original-width slot (patchSeekAbsorb fails). Seek targets and CRC-32s stay
+// correct in every case, and the cluster media is always copied byte-for-byte.
 func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.WriteOptions) (*core.WritePlan, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

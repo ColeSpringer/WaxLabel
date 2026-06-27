@@ -496,11 +496,12 @@ func TestMP4ChapterNonZeroStartRoundTrip(t *testing.T) {
 	// B1: a multi-chapter list whose first start is not zero round-trips with every
 	// start preserved (the QuickTime track's leading empty edit carries the offset,
 	// rather than zero-anchoring the list). The two chapter sources then agree (no
-	// source conflict) and the in-memory result equals a reparse. (Re-editing a
-	// multi-chapter list is not a no-op - a reparse fills the first chapter's End
-	// from the next start while a fresh SetChapters leaves it open - but that
-	// end-fill asymmetry is pre-existing and independent of the start offset; the
-	// single-chapter case below pins idempotency.)
+	// source conflict) and the in-memory result equals a reparse. (A reparse fills the
+	// first chapter's End from the next start while a fresh SetChapters leaves it open;
+	// the chapter-plan no-op collapse now folds that end-fill asymmetry away, so
+	// re-editing an identical multi-chapter list is a no-op too - see
+	// TestMP4ChapterReapplyMultiNoOpQT. The single-chapter case below pins the simplest
+	// idempotency, which holds via the fast path even without that collapse.)
 	src := readFixture(t, sampleM4B)
 	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(

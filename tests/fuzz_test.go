@@ -67,6 +67,9 @@ func FuzzParse(f *testing.F) {
 	// Regression seeds recovered from prior fuzz runs.
 	f.Add([]byte("\x00\x00\x00\bftyp0000moov0")) // MP4: 8-byte ftyp box then a short moov tail
 	f.Add([]byte("RIFF0000WAVE000000000"))       // WAV: RIFF/WAVE with ASCII-digit chunk sizes
+	// Ogg Opus whose first audio packet shares the OpusTags page: it parses but is not
+	// page-aligned, so an edit's Prepare refuses with ErrUnalignedStream (accept-listed below).
+	f.Add([]byte("OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x004\x12\x00\x00\x00\x00\x00\x00\x16\xbb\xdb\t\x01\x13OpusHead\x01\x02\x00\x00\x80\xbb\x00\x00\x00\x00\x00OggS\x00\x00\xc0\x03\x00\x00\x00\x00\x00\x004\x12\x00\x00\x01\x00\x00\x00\xe3K\x9c\x11\x02\x10\nOpusTags\x00\x00\x00\x00\x00\x00\x00\x00AUDIOPKT!!"))
 	f.Add([]byte{})
 
 	ctx := context.Background()
@@ -111,19 +114,20 @@ func FuzzParse(f *testing.F) {
 
 		// An edit on accepted input must round-trip and re-parse. A codec may
 		// legitimately refuse to rewrite some shapes - a chained Ogg stream
-		// (ErrChainedStream) or a non-page-aligned / oversized layout
-		// (ErrInvalidData) - but any other error from a parsed document is a
-		// regression, so fail rather than silently accepting it.
+		// (ErrChainedStream), a non-page-aligned Ogg (ErrUnalignedStream), or an
+		// oversized layout (ErrInvalidData) - but any other error from a parsed
+		// document is a regression, so fail rather than silently accepting it.
 		plan2, err := doc.Edit().Set(tag.Title, "fuzz").Prepare()
 		if err != nil {
 			// A codec may refuse some shapes: a chained Ogg (ErrChainedStream), a
-			// non-page-aligned/oversized layout (ErrInvalidData), an MP4 whose crafted
-			// offsets would overflow a 32-bit table on a grow (ErrSizeTooLarge), or a
-			// Matroska layout the writer does not handle - no reserved Void, a
-			// position that would overflow its width, a Title with no Info element
-			// (ErrUnsupportedTag).
+			// non-page-aligned Ogg (ErrUnalignedStream), an oversized layout
+			// (ErrInvalidData), an MP4 whose crafted offsets would overflow a 32-bit
+			// table on a grow (ErrSizeTooLarge), or a Matroska layout the writer does
+			// not handle - no reserved Void, a position that would overflow its width,
+			// a Title with no Info element (ErrUnsupportedTag).
 			if errors.Is(err, waxerr.ErrChainedStream) || errors.Is(err, waxerr.ErrInvalidData) ||
-				errors.Is(err, waxerr.ErrSizeTooLarge) || errors.Is(err, waxerr.ErrUnsupportedTag) {
+				errors.Is(err, waxerr.ErrUnalignedStream) || errors.Is(err, waxerr.ErrSizeTooLarge) ||
+				errors.Is(err, waxerr.ErrUnsupportedTag) {
 				return
 			}
 			t.Fatalf("edit prepare failed: %v", err)

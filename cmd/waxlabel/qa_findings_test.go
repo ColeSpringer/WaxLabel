@@ -136,3 +136,60 @@ func TestSetOutputExistsBeatsWritabilityProbe(t *testing.T) {
 		t.Errorf("expected the actionable already-exists hint, got: %q", errb)
 	}
 }
+
+// TestSetBareDiscTrackAliasResolves is the Fix-3 CLI regression: the bare DISC/TRACK and
+// spaced/underscored ALBUM ARTIST spellings resolve to canonical keys. DISC/TRACK are 6
+// edits from DISCNUMBER/TRACKNUMBER, past ClosestKey's distance-2 suggestion cap, so before
+// the aliases they landed as custom fields - making --strict exit 2 and the non-strict
+// "written as a custom field" note fire. Both must now be gone, and the value lands on the
+// canonical key.
+func TestSetBareDiscTrackAliasResolves(t *testing.T) {
+	// --strict now succeeds for each bare/aliased spelling.
+	for _, kv := range []string{"DISC=1", "TRACK=2", "ALBUM ARTIST=The Band", "ALBUM_ARTIST=The Band"} {
+		f := copyFixture(t, sampleFLAC)
+		if _, stderr, code := runCLI(t, "set", f, "--set", kv, "--strict", "-q"); code != 0 {
+			t.Errorf("set %q --strict: code=%d (want 0), stderr=%q", kv, code, stderr)
+		}
+	}
+
+	// Non-strict: no custom-field note, and the values land on the canonical keys.
+	f := copyFixture(t, sampleFLAC)
+	_, stderr, code := runCLI(t, "set", f, "--set", "DISC=1", "--set", "TRACK=2")
+	if code != 0 {
+		t.Fatalf("set DISC/TRACK: code=%d stderr=%q", code, stderr)
+	}
+	if strings.Contains(stderr, "custom field") {
+		t.Errorf("DISC/TRACK must not be noted as custom fields; stderr=%q", stderr)
+	}
+	jd := decodeJSONOne[jsonDocument](t, mustDumpJSON(t, f))
+	if v := tagValues(jd, "DISCNUMBER"); len(v) != 1 || v[0] != "1" {
+		t.Errorf("DISC=1 should project canonical DISCNUMBER=[1]; got %v", v)
+	}
+	if v := tagValues(jd, "TRACKNUMBER"); len(v) != 1 || v[0] != "2" {
+		t.Errorf("TRACK=2 should project canonical TRACKNUMBER=[2]; got %v", v)
+	}
+
+	// DISC=1 projects canonical DISCNUMBER on every format (resolution is format-independent).
+	for _, name := range []string{"notags.flac", "notags.ogg", "notags.mp3", "notags.m4a"} {
+		ff := copyFixture(t, td(name))
+		if _, errb, c := runCLI(t, "set", ff, "--set", "DISC=1", "-q"); c != 0 {
+			t.Fatalf("%s: set DISC=1 exit %d stderr=%q", name, c, errb)
+		}
+		if v := tagValues(decodeJSONOne[jsonDocument](t, mustDumpJSON(t, ff)), "DISCNUMBER"); len(v) != 1 || v[0] != "1" {
+			t.Errorf("%s: DISC=1 should project DISCNUMBER=[1]; got %v", name, v)
+		}
+	}
+
+	// A number-pair on the alias still splits to DiscNumber + DiscTotal after resolving.
+	pair := copyFixture(t, td("notags.flac"))
+	if _, _, c := runCLI(t, "set", pair, "--set", "DISC=1/2", "-q"); c != 0 {
+		t.Fatalf("set DISC=1/2 exit %d", c)
+	}
+	pjd := decodeJSONOne[jsonDocument](t, mustDumpJSON(t, pair))
+	if v := tagValues(pjd, "DISCNUMBER"); len(v) != 1 || v[0] != "1" {
+		t.Errorf("DISC=1/2: DISCNUMBER = %v, want [1]", v)
+	}
+	if v := tagValues(pjd, "DISCTOTAL"); len(v) != 1 || v[0] != "2" {
+		t.Errorf("DISC=1/2: DISCTOTAL = %v, want [2]", v)
+	}
+}
