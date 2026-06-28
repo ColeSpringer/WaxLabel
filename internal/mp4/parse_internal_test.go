@@ -77,3 +77,96 @@ func TestCapabilitiesPictureMIMEsCloned(t *testing.T) {
 		t.Error("coverMIMESupported accepted a value injected through the returned slice")
 	}
 }
+
+// TestEssenceMdatsTrimsFrontChapters checks the front-only mdat trim used by MP4 essence
+// digests. Front-loaded chapter samples are excluded, chapter-only mdats are dropped, and
+// chapter samples after the first audio chunk stay included.
+func TestEssenceMdatsTrimsFrontChapters(t *testing.T) {
+	// chapTrak spans [200,300); a chunk-offset table whose atom offset is in that range
+	// belongs to the chapter text track.
+	chapTrak := &atomRef{offset: 200, size: 100}
+	chapTable := func(entries ...uint64) offsetTable { return offsetTable{offset: 210, entries: entries} }
+	audioTable := func(entries ...uint64) offsetTable { return offsetTable{offset: 400, entries: entries} }
+
+	for _, c := range []struct {
+		name   string
+		mdats  [][2]int64
+		tables []offsetTable
+		want   [][2]int64
+	}{
+		{
+			// Shared mdat [1000,1500): chapter text at the front (1000), audio after (1100).
+			name:   "front chapter trimmed off a shared mdat",
+			mdats:  [][2]int64{{1000, 500}},
+			tables: []offsetTable{chapTable(1000), audioTable(1100)},
+			want:   [][2]int64{{1100, 1500}},
+		},
+		{
+			// Audio first: nothing to trim.
+			name:   "do no harm when audio leads the mdat",
+			mdats:  [][2]int64{{1000, 500}},
+			tables: []offsetTable{audioTable(1000), chapTable(2050)}, // chapter chunk is elsewhere
+			want:   [][2]int64{{1000, 1500}},
+		},
+		{
+			// Audio at 1000, a chapter chunk interleaved after it: stays in the digest.
+			name:   "chapter after audio stays included",
+			mdats:  [][2]int64{{1000, 500}},
+			tables: []offsetTable{audioTable(1000), chapTable(1400)},
+			want:   [][2]int64{{1000, 1500}},
+		},
+		{
+			// A second mdat holding only chapter samples is dropped.
+			name:   "chapter-only mdat dropped",
+			mdats:  [][2]int64{{1000, 500}, {2000, 200}},
+			tables: []offsetTable{audioTable(1000), chapTable(2050)},
+			want:   [][2]int64{{1000, 1500}},
+		},
+		{
+			// No non-chapter table at all: nothing to classify, keep the mdat whole.
+			name:   "no non-chapter table keeps the mdat whole",
+			mdats:  [][2]int64{{1000, 500}},
+			tables: []offsetTable{chapTable(1000)},
+			want:   [][2]int64{{1000, 1500}},
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d := &doc{chapTrak: chapTrak, mdats: c.mdats, offTables: c.tables}
+			got := essenceMdats(d)
+			if len(got) != len(c.want) {
+				t.Fatalf("essenceMdats = %v, want %v", got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Errorf("range %d = %v, want %v (full: %v)", i, got[i], c.want[i], got)
+				}
+			}
+		})
+	}
+}
+
+// TestElstSegmentDurationSum covers the edit-list playable-duration parser used for the
+// audio track's own trimmed duration.
+func TestElstSegmentDurationSum(t *testing.T) {
+	be := binary.BigEndian
+	// v0: two entries, segment_durations 1000 + 500.
+	v0 := make([]byte, 8+2*12)
+	be.PutUint32(v0[4:8], 2)
+	be.PutUint32(v0[8:12], 1000)
+	be.PutUint32(v0[20:24], 500)
+	if got := elstSegmentDurationSum(v0); got != 1500 {
+		t.Errorf("v0 sum = %d, want 1500", got)
+	}
+	// v1: one entry with a 64-bit segment_duration beyond uint32.
+	v1 := make([]byte, 8+20)
+	v1[0] = 1
+	be.PutUint32(v1[4:8], 1)
+	be.PutUint64(v1[8:16], 9_000_000_000)
+	if got := elstSegmentDurationSum(v1); got != 9_000_000_000 {
+		t.Errorf("v1 sum = %d, want 9000000000", got)
+	}
+	// Truncated payload is bounds-checked (no panic, no over-read).
+	if got := elstSegmentDurationSum([]byte{0, 0, 0, 0, 0, 0, 0, 9}); got != 0 {
+		t.Errorf("truncated sum = %d, want 0", got)
+	}
+}

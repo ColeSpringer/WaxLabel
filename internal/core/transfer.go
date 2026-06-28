@@ -41,6 +41,10 @@ const (
 	Lossy
 	// Dropped means the destination cannot store it (the Reason records why).
 	Dropped
+	// Excluded means policy deliberately leaves the value out of the transfer. It is
+	// reported with a reason, but it is not a capability loss and does not make an
+	// otherwise clean copy lossy.
+	Excluded
 )
 
 func (d Disposition) String() string {
@@ -49,6 +53,8 @@ func (d Disposition) String() string {
 		return "carried"
 	case Lossy:
 		return "lossy"
+	case Excluded:
+		return "excluded"
 	default:
 		return "dropped"
 	}
@@ -123,7 +129,37 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 	var items []TransferItem
 	for _, k := range src.Tags.Keys() {
 		vals, _ := src.Tags.Get(k)
-		disp, reason := dispose(dst.Field(k), dst.ReadOnly, len(vals), "this field")
+		if k.DescribesOwnAudio() {
+			// Metadata copies do not carry audio. Values that describe this file's audio,
+			// such as encoder stamps, ReplayGain, or an AcoustID fingerprint, would describe
+			// the source samples after being copied to a different destination. Report the
+			// skip explicitly, but keep the copy lossless.
+			items = append(items, TransferItem{
+				Kind: TransferField, Key: k, Count: len(vals), Disposition: Excluded,
+				Reason: "not transferred; describes this file's own audio, not the work; the destination keeps its own value",
+			})
+			continue
+		}
+		// Grade the value the writer would store, not the raw parsed bytes. Numeric and
+		// date fields are trimmed before rendering, so value-level predicates should see
+		// the stored form.
+		graded := vals
+		if tag.IsNumericKey(k) || tag.IsDateKey(k) {
+			// Copy on write: most stored values are already clean, so they reuse vals.
+			cloned := false
+			for i, v := range vals {
+				trimmed := tag.TrimNumericValue(k, v)
+				if trimmed == v {
+					continue
+				}
+				if !cloned {
+					graded = append([]string(nil), vals...)
+					cloned = true
+				}
+				graded[i] = trimmed
+			}
+		}
+		disp, reason := dispose(dst.Field(k), dst.ReadOnly, len(graded), "this field", graded)
 		items = append(items, TransferItem{
 			Kind: TransferField, Key: k, Count: len(vals),
 			Disposition: disp, Reason: reason,
@@ -144,7 +180,7 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 			}
 		}
 		if len(rep) > 0 {
-			disp, reason := dispose(dst.Pictures, dst.ReadOnly, len(rep), "pictures")
+			disp, reason := dispose(dst.Pictures, dst.ReadOnly, len(rep), "pictures", nil)
 			// dispose reports picture sets as Carried when the image bytes themselves carry
 			// byte-for-byte. MP4 and Matroska can still drop role or description metadata,
 			// so upgrade the disposition only when these specific pictures carry metadata
@@ -168,7 +204,7 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 		}
 	}
 	if n := len(src.Chapters); n > 0 {
-		disp, reason := dispose(dst.Chapters, dst.ReadOnly, n, "chapters")
+		disp, reason := dispose(dst.Chapters, dst.ReadOnly, n, "chapters", nil)
 		// Start+title-only destinations carry starts and titles but drop other chapter
 		// metadata. Upgrade only sets carrying metadata the destination cannot represent;
 		// plain chapter lists remain Carried.
@@ -200,7 +236,7 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 // expresses that through its Fidelity/Constraints (which its writer honors, e.g.
 // WAV's single-valued INFO); MaxValues is a cardinality hint for discovery (caps),
 // not a transfer-fidelity signal.
-func dispose(c Capability, readOnly bool, count int, noun string) (Disposition, string) {
+func dispose(c Capability, readOnly bool, count int, noun string, values []string) (Disposition, string) {
 	if readOnly {
 		return Dropped, "destination is read-only"
 	}
@@ -212,6 +248,26 @@ func dispose(c Capability, readOnly bool, count int, noun string) (Disposition, 
 	}
 	if c.MaxItems > 0 && count > c.MaxItems {
 		return Dropped, fmt.Sprintf("exceeds the destination limit of %d", c.MaxItems)
+	}
+	// A value-drop predicate decides, per value, whether the destination cannot store it
+	// at all. Check it before reduction so an omitted value is reported as dropped, not
+	// lossy.
+	if c.dropsValue != nil {
+		for _, v := range values {
+			if c.dropsValue(v) {
+				return Dropped, "the destination cannot store this value"
+			}
+		}
+	}
+	// A value-reduction predicate decides Lossy vs Carried from the actual values. This
+	// covers fields whose fidelity is value-dependent, such as a year-only date field.
+	if c.reducesValue != nil {
+		for _, v := range values {
+			if c.reducesValue(v) {
+				return Lossy, c.Reason()
+			}
+		}
+		return Carried, ""
 	}
 	if c.Write == AccessPartial {
 		return Lossy, c.Reason()

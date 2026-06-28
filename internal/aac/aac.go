@@ -33,6 +33,9 @@ func init() { core.Register(New()) }
 func (Codec) Format() core.Format  { return core.FormatAAC }
 func (Codec) Extensions() []string { return []string{".aac"} }
 
+// SkipsLeadingID3 reports true because raw AAC commonly carries a leading ID3v2 tag.
+func (Codec) SkipsLeadingID3() bool { return true }
+
 // Sniff matches a raw ADTS stream by a valid ADTS frame header at the start. A
 // front ID3v2 tag is intentionally not sniffed here: that header is claimed by
 // MP3, and the root parser disambiguates a leading ID3 by peeking past the tag

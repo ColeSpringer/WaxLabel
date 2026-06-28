@@ -71,6 +71,30 @@ type Capability struct {
 	// atom: JPEG/PNG/BMP) lets the transfer layer drop a single unrepresentable cover
 	// per-image instead of failing the whole copy. The pictures capability only.
 	PictureMIMEs []string
+
+	// reducesValue, when set, decides per value whether this capability stores reduced
+	// fidelity. It refines [dispose] for fields whose loss depends on the value, such as
+	// an ID3v2.3 year-only date that stores "2021" losslessly but truncates "2021-05-03".
+	// The field stays unexported because Capability is publicly aliased and JSON-marshaled.
+	reducesValue func(string) bool
+	// dropsValue, when set, decides per value whether this capability cannot store it at
+	// all. It takes precedence over reducesValue in [dispose], so a value omitted by the
+	// writer is reported as dropped rather than merely lossy.
+	dropsValue func(string) bool
+}
+
+// WithValueReduction returns a copy of c with a per-value reduction predicate. Internal
+// codecs use it when a field's transfer grade depends on the specific value being stored.
+func WithValueReduction(c Capability, reduces func(string) bool) Capability {
+	c.reducesValue = reduces
+	return c
+}
+
+// WithValueDrop returns a copy of c with a per-value drop predicate. Internal codecs use
+// it to keep transfer reports aligned with values their writer omits entirely.
+func WithValueDrop(c Capability, drops func(string) bool) Capability {
+	c.dropsValue = drops
+	return c
 }
 
 // Representable reports whether the pictures capability c can store picture p's image
@@ -112,6 +136,18 @@ func OriginalDateV23Capability() Capability {
 		Read: AccessFull, Write: AccessPartial,
 		Representation: "ID3v2.3 TORY (year only)",
 		Fidelity:       "ID3v2.3 TORY stores the year only",
+	}
+}
+
+// RecordingDateV23Capability describes RECORDINGDATE in an ID3v2.3 tag. Its write level
+// stays AccessFull because the ID3 writer already reports second-precision loss through
+// ReducedDates; the value-reduction predicate attached by id3 gives transfers the same
+// per-value grading without adding another editor warning.
+func RecordingDateV23Capability() Capability {
+	return Capability{
+		Read: AccessFull, Write: AccessFull,
+		Representation: "ID3v2.3 TYER+TDAT+TIME",
+		Fidelity:       "ID3v2.3 TIME stores HH:MM only (seconds dropped)",
 	}
 }
 

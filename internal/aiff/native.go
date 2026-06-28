@@ -95,6 +95,9 @@ type doc struct {
 	// the walk already clamps the overrun, so the overrun is acted on where it is
 	// first known rather than reconstructed afterward.
 	ssndTruncated bool
+	// oversizedChunks holds non-audio chunk ids whose declared body ran past EOF and was
+	// clamped, so the parser can surface a warning.
+	oversizedChunks [][4]byte
 
 	// trailingOff/trailingLen capture leftover bytes inside the FORM chunk after
 	// the last well-formed chunk (rare: a corrupt region), preserved verbatim and

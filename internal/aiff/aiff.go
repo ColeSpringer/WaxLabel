@@ -50,6 +50,9 @@ func init() { core.Register(New()) }
 func (Codec) Format() core.Format  { return core.FormatAIFF }
 func (Codec) Extensions() []string { return []string{".aiff", ".aif", ".aifc", ".afc"} }
 
+// SkipsLeadingID3 reports false because AIFF/AIFC files begin with the FORM header.
+func (Codec) SkipsLeadingID3() bool { return false }
+
 // Sniff matches a "FORM....AIFF" or "FORM....AIFC" header. The form type
 // disambiguates AIFF from the other IFF/FORM families (which carry different
 // type identifiers), so there is no collision with WAV's "RIFF/WAVE".

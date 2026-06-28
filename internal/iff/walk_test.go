@@ -123,3 +123,34 @@ func TestWalkChunksNoChunks(t *testing.T) {
 		t.Errorf("err = %v, want ErrInvalidData", err)
 	}
 }
+
+// TestWalkChunksOversizedNonAudioChunk checks that clamped non-audio chunks are recorded
+// for caller warnings, while the 0xFFFFFFFF "size unknown" sentinel is left alone.
+func TestWalkChunksOversizedNonAudioChunk(t *testing.T) {
+	for _, d := range []Dialect{riff, form} {
+		t.Run(d.Noun, func(t *testing.T) {
+			overChunk := func(declared uint32) []byte {
+				h := make([]byte, 8)
+				copy(h, "JUNK")
+				d.Order.PutUint32(h[4:8], declared)
+				return append(h, 1, 2, 3, 4) // only 4 body bytes present
+			}
+
+			// Declares far more than the file holds: clamped and recorded.
+			data := append(make([]byte, 12), overChunk(9999)...)
+			res := walk(t, data, int64(len(data)), d)
+			if len(res.OversizedChunks) != 1 || string(res.OversizedChunks[0][:]) != "JUNK" {
+				t.Errorf("OversizedChunks = %v, want one JUNK", res.OversizedChunks)
+			}
+			if res.AudioTruncated {
+				t.Error("a non-audio overrun set AudioTruncated")
+			}
+
+			// The 0xFFFFFFFF streaming sentinel is "size unknown", not an overrun.
+			data2 := append(make([]byte, 12), overChunk(0xFFFFFFFF)...)
+			if res2 := walk(t, data2, int64(len(data2)), d); len(res2.OversizedChunks) != 0 {
+				t.Errorf("0xFFFFFFFF sentinel flagged oversized: %v", res2.OversizedChunks)
+			}
+		})
+	}
+}

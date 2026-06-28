@@ -171,13 +171,25 @@ const keyColumn = 24
 // counted. The marker includes its leading two-space pad so callers can append it
 // directly.
 func dupOrConflict(k tag.Key, vals []string) (marker string, conflict bool) {
+	switch cardinalityState(k, vals) {
+	case "duplicate":
+		return "  (duplicate)", false
+	case "conflict":
+		return "  (conflict)", true
+	}
+	return "", false
+}
+
+// cardinalityState classifies the extra values on a single-valued key. Human and JSON
+// dumps both use this helper so their duplicate/conflict markers stay in sync.
+func cardinalityState(k tag.Key, vals []string) string {
 	if !k.SingleValuedMulti(len(vals)) {
-		return "", false
+		return ""
 	}
 	if tag.DistinctValues(vals) == 1 {
-		return "  (duplicate)", false
+		return "duplicate"
 	}
-	return "  (conflict)", true
+	return "conflict"
 }
 
 // renderTags prints the canonical tag set, one value per line with the key

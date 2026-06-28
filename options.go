@@ -37,17 +37,21 @@ func WithLimits(l Limits) ParseOption {
 // WithSourceName sets the display name used for the source in the
 // "could not identify" diagnostics, so a caller that parses buffered or
 // temp-file bytes (e.g. standard input) reports the original name instead of the
-// temp path. It is display-only - detection still keys on the real path's
-// extension - and affects only the unidentified-format error; everything else
-// (including the source identity ParseFile records for save-back) is unchanged.
-// Without it the name falls back to the path argument, or "" for [Parse].
+// temp path. It is display-only: detection sniffs bytes, never names or extensions. The
+// option only affects the unidentified-format error; source identity and save-back checks
+// are unchanged. Without it the name falls back to the path argument, or "" for [Parse].
 func WithSourceName(name string) ParseOption {
 	return func(o *core.ParseOptions) { o.SourceName = name }
 }
 
-// WithPadding sets the post-metadata padding policy for writes.
+// WithPadding sets the post-metadata padding policy for writes. It marks the policy as an
+// explicit request, so a padding-only change is still realized when no tag, picture, or
+// legacy edit is pending.
 func WithPadding(p PaddingPolicy) WriteOption {
-	return func(o *core.WriteOptions) { o.Padding = p }
+	return func(o *core.WriteOptions) {
+		o.Padding = p
+		o.PaddingExplicit = true
+	}
 }
 
 // WithLegacyPolicy sets how legacy/foreign tag containers are handled.
@@ -132,11 +136,13 @@ var (
 	Compatible WriteOption = func(o *core.WriteOptions) {
 		o.Legacy = core.LegacyPreserve
 		o.Padding = core.PaddingPolicy{Target: 4096, Max: 1 << 20, ReuseInPlace: true}
+		o.PaddingExplicit = true
 	}
 	// Minimal writes the smallest reasonable file: no padding, strip legacy.
 	Minimal WriteOption = func(o *core.WriteOptions) {
 		o.Legacy = core.LegacyStrip
 		o.Padding = core.PaddingPolicy{Target: 0, Max: 0}
+		o.PaddingExplicit = true
 	}
 )
 

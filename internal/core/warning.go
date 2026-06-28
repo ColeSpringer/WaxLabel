@@ -174,6 +174,10 @@ const (
 	// Matroska CLI's no-end-syntax limitation, while this covers MP4's start+title-only
 	// capability limit. It is keyless because it describes the chapter set, not a tag field.
 	WarnChapterMetadataDropped
+	// WarnOversizedChunk means a non-audio RIFF/IFF chunk declared a body past EOF and was
+	// clamped to fit. It is separate from WarnTruncatedAudio because it describes a
+	// container chunk, not audio essence or a tag field.
+	WarnOversizedChunk
 )
 
 func (c WarningCode) String() string {
@@ -216,6 +220,8 @@ func (c WarningCode) String() string {
 		return "no-audio"
 	case WarnTruncatedAudio:
 		return "truncated-audio"
+	case WarnOversizedChunk:
+		return "oversized-chunk"
 	case WarnChapterPastDuration:
 		return "chapter-past-duration"
 	case WarnDuplicateChapter:

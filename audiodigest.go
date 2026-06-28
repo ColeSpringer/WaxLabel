@@ -23,16 +23,21 @@ type AudioDigest struct {
 	Sum           []byte
 }
 
-// String renders the digest as "algorithm/extent:hex".
+// String renders the digest as "algorithm/extent:hex". When TrackID is non-zero, it
+// renders as "algorithm/extent#trackID:hex" so per-track digests do not collide with
+// each other.
 func (d AudioDigest) String() string {
+	if d.TrackID != 0 {
+		return fmt.Sprintf("%s/%s#%d:%s", d.Algorithm, d.ExtentVersion, d.TrackID, hex.EncodeToString(d.Sum))
+	}
 	return fmt.Sprintf("%s/%s:%s", d.Algorithm, d.ExtentVersion, hex.EncodeToString(d.Sum))
 }
 
-// Equal reports whether two digests are comparable (same algorithm and extent)
-// and equal.
+// Equal reports whether two digests have the same algorithm, extent, TrackID, and sum.
 func (d AudioDigest) Equal(other AudioDigest) bool {
 	return d.Algorithm == other.Algorithm &&
 		d.ExtentVersion == other.ExtentVersion &&
+		d.TrackID == other.TrackID &&
 		bytes.Equal(d.Sum, other.Sum)
 }
 

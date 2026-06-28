@@ -16,8 +16,11 @@ func New() Codec { return Codec{} }
 
 func init() { core.Register(New()) }
 
-func (Codec) Format() core.Format  { return core.FormatMP3 }
-func (Codec) Extensions() []string { return []string{".mp3"} }
+func (Codec) Format() core.Format { return core.FormatMP3 }
+
+// SkipsLeadingID3 reports true because the leading ID3v2 tag is MP3's native tag container.
+func (Codec) SkipsLeadingID3() bool { return true }
+func (Codec) Extensions() []string  { return []string{".mp3"} }
 
 // Sniff matches a leading ID3v2 tag or a bare MPEG audio frame. An ID3v2 header
 // is shared with other containers that may carry a stray leading ID3 (FLAC); the

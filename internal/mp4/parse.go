@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/colespringer/waxlabel/internal/bits"
@@ -299,6 +300,15 @@ func parseProperties(src core.ReaderAtSized, moov node, d *doc, limit int64) {
 			d.track.Duration = dur
 		}
 	}
+	// Report the edit-list-trimmed playable duration. The raw mdhd duration can include
+	// AAC encoder priming that the track's own edit list removes. Only shrink the value;
+	// malformed edit lists should not inflate it. Bitrate below is recomputed from the
+	// trimmed duration.
+	if mvTs := movieTimescaleOf(src, moov, limit); mvTs > 0 {
+		if edited := trackEditedDuration(src, trak, mvTs, limit); edited > 0 && edited < d.track.Duration {
+			d.track.Duration = edited
+		}
+	}
 	if minf, ok := mdia.find("minf"); ok {
 		if stbl, ok := minf.find("stbl"); ok {
 			if stsd, ok := stbl.find("stsd"); ok {
@@ -379,37 +389,61 @@ func setEssence(d *doc, media *core.Media) {
 	}
 }
 
-// essenceMdats returns the mdat ranges that hold media essence, as [start, end). The
-// essence is every mdat carrying at least one chunk from a track other than the
-// QuickTime chapter text track being rewritten. An mdat holding only chapter samples is
-// dropped from the digest, including chapter mdats leaked by older builds, so chapter
-// edits do not change the audio fingerprint.
+// essenceMdats returns the mdat ranges that hold media essence, as [start, end). Each
+// range begins at its first non-chapter chunk, so front-loaded QuickTime chapter samples
+// are excluded. An mdat holding only chapter samples is dropped entirely, including
+// chapter mdats leaked by older builds.
 //
-// Filtering against every non-chapter offset table, not only the first audio track's
-// table, keeps secondary audio, video, and subtitle tracks in the digest. With a single
-// mdat there is nothing to disambiguate, and a file with no non-chapter offset table keeps
-// every mdat.
+// The trim is unconditional (single and multi-mdat) and front-only by design: a WaxLabel
+// chapter edit copies the shared mdat verbatim and appends a new chapter mdat, so trimming
+// to the first audio chunk in both the source and the rewritten result keeps the digest
+// stable. Filtering against every non-chapter offset table (not just the first audio
+// track's) keeps secondary audio, video, and subtitle tracks. Chapter samples interleaved
+// after the first audio chunk stay in the digest, which avoids trimming audio. A file with
+// no non-chapter offset table keeps every mdat whole.
 func essenceMdats(d *doc) [][2]int64 {
 	ranges := make([][2]int64, len(d.mdats))
 	for i, m := range d.mdats {
 		ranges[i] = [2]int64{m[0], m[0] + m[1]}
 	}
-	if len(ranges) <= 1 {
-		return ranges
-	}
-	// Classify offset tables once before the per-mdat loop. With no non-chapter table to
-	// filter against, keep every mdat.
 	nonChapter := nonChapterTables(d)
 	if len(nonChapter) == 0 {
 		return ranges
 	}
 	out := ranges[:0:0]
 	for _, r := range ranges {
-		if mdatHoldsChunk(r, nonChapter) {
-			out = append(out, r)
+		if first := firstNonChapterChunk(r, nonChapter); first >= 0 {
+			out = append(out, [2]int64{first, r[1]})
 		}
 	}
+	// If no mdat held a referenced non-chapter chunk, keep every mdat whole rather than
+	// report zero essence. Real files reference their mdats, so this is a damaged-input
+	// fallback.
+	if len(out) == 0 {
+		return ranges
+	}
 	return out
+}
+
+// firstNonChapterChunk returns the smallest non-chapter chunk offset within the mdat
+// range [r[0], r[1]), or -1 if the mdat holds no non-chapter chunk (chapter-only). It is
+// the lower bound of the essence trim: everything before it in the mdat is front-loaded
+// chapter text.
+func firstNonChapterChunk(r [2]int64, tables []offsetTable) int64 {
+	first := int64(-1)
+	for _, t := range tables {
+		for _, e := range t.entries {
+			// A co64 offset >= 2^63 cannot be a valid position in an int64-addressed file;
+			// skip it rather than let int64(e) wrap negative and spuriously fail the range test.
+			if e > math.MaxInt64 {
+				continue
+			}
+			if off := int64(e); r[0] <= off && off < r[1] && (first < 0 || off < first) {
+				first = off
+			}
+		}
+	}
+	return first
 }
 
 // nonChapterTables returns non-empty offset tables outside the chapter text track being

@@ -51,9 +51,10 @@ func (d *Document) PlanTransfer(dst Format, opts ...WriteOption) (TransferReport
 //
 // The transfer overlays src onto dst: each canonical key present in the source
 // replaces that key in the destination, the source's pictures replace the destination
-// picture set whenever the source carries any pictures the destination can write, and
-// likewise for chapters. Destination keys the source does not carry are kept. dst is
-// not modified; only [Plan.Execute] writes.
+// picture set whenever at least one source picture is representable in the destination
+// (a source whose covers are all unrepresentable leaves the destination's own covers
+// intact), and likewise for chapters. Destination keys the source does not carry are
+// kept. dst is not modified; only [Plan.Execute] writes.
 func (d *Document) PrepareTransfer(dst *Document, opts ...WriteOption) (*Plan, TransferReport, error) {
 	if d.zero() || dst.zero() {
 		return nil, TransferReport{}, fmt.Errorf("%w: document is not initialized; use ParseFile/Parse", waxerr.ErrInvalidData)
@@ -68,26 +69,36 @@ func (d *Document) PrepareTransfer(dst *Document, opts ...WriteOption) (*Plan, T
 	// single-valued-multi): a copy must not flag metadata the user authored none of.
 	ed.carried = true
 
-	// Pictures are a set. When the destination can store covers, source pictures replace
-	// the destination's set whenever the source carries any, even if every source picture
-	// is later filtered out as unrepresentable. Representable is the same per-MIME test
-	// ProjectTransfer used to split the report's picture items.
+	// Pictures are a set. Build the representable subset first, then replace the
+	// destination's set only when the source has at least one picture the destination can
+	// write. Clearing before that check would destroy a valid destination cover when every
+	// source picture is unrepresentable, such as GIF or WebP copied onto an MP4 that
+	// already has a PNG cover. Representable is the same per-MIME test ProjectTransfer
+	// uses for picture report items.
 	//
-	// The whole block, including ClearPictures, is gated on the destination actually
-	// storing pictures. A read-only format or a no-cover container like WebM cannot hold
-	// covers, so touching its picture set would only mark a change the writer refuses.
-	// Leaving that set untouched lets tags transfer while the source cover is reported Dropped.
-	if len(d.media.Pictures) > 0 && !caps.ReadOnly && caps.Pictures.Write != core.AccessNone {
-		ed.ClearPictures()
+	// The block is also gated on the destination actually storing pictures: a read-only
+	// format or a no-cover container like WebM cannot hold covers, so touching its picture
+	// set would only mark a change the writer refuses. Either way, leaving the set
+	// untouched lets tags transfer while each source cover is reported Dropped.
+	if !caps.ReadOnly && caps.Pictures.Write != core.AccessNone {
+		representable := make([]core.Picture, 0, len(d.media.Pictures))
 		for _, p := range core.ClonePictures(d.media.Pictures) {
 			if core.Representable(caps.Pictures, p) {
+				representable = append(representable, p)
+			}
+		}
+		if len(representable) > 0 {
+			ed.ClearPictures()
+			for _, p := range representable {
 				ed.AddPicture(p)
 			}
 		}
 	}
 
 	for _, it := range items {
-		if it.Disposition == Dropped {
+		// Dropped means the destination cannot store it. Excluded means policy keeps the
+		// destination's own value. Neither is written.
+		if it.Disposition == Dropped || it.Disposition == Excluded {
 			continue
 		}
 		switch it.Kind {

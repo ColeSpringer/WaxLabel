@@ -44,6 +44,9 @@ func init() { core.Register(New()) }
 func (Codec) Format() core.Format  { return core.FormatMP4 }
 func (Codec) Extensions() []string { return []string{".m4a", ".mp4", ".m4b", ".alac"} }
 
+// SkipsLeadingID3 reports false because MP4 parsers expect an atom box at offset 0.
+func (Codec) SkipsLeadingID3() bool { return false }
+
 // Sniff matches an "....ftyp" header - the file-type atom that opens virtually
 // every MP4/M4A file. The brand inside ftyp is not inspected here; a fragmented
 // or otherwise unsupported variant is detected and rejected in Parse.
@@ -123,8 +126,8 @@ func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 		binary.BigEndian.PutUint16(cfg[6:8], d.cfg.sampleSize)
 		binary.BigEndian.PutUint32(cfg[8:12], d.cfg.sampleRate)
 	}
-	// v2: the essence byte-set changed. essenceMdats now hashes every non-chapter
-	// track's mdat and excludes legacy leaked chapter mdats. Bump the extent so a
-	// digest persisted by a v1 build is treated as a different algorithm.
-	return "mp4-mdat-v2", cfg[:]
+	// v3 changed the hashed byte set again. essenceMdats now trims each mdat to its first
+	// non-chapter chunk, which excludes front-loaded QuickTime chapter text in common M4B
+	// files as well as chapter-only mdats.
+	return "mp4-mdat-v3", cfg[:]
 }

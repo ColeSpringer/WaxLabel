@@ -14,12 +14,16 @@ func New() Codec { return Codec{} }
 
 func init() { core.Register(New()) }
 
-func (Codec) Format() core.Format  { return core.FormatFLAC }
-func (Codec) Extensions() []string { return []string{".flac"} }
+func (Codec) Format() core.Format { return core.FormatFLAC }
 
-// Sniff matches the "fLaC" stream marker. A FLAC file with a stray leading
-// ID3v2 tag is recognized by extension instead (its header is shared with
-// MP3, so claiming it here would misroute MP3 files).
+// SkipsLeadingID3 reports true because FLAC tolerates a stray leading ID3v2 tag.
+func (Codec) SkipsLeadingID3() bool { return true }
+func (Codec) Extensions() []string  { return []string{".flac"} }
+
+// Sniff matches the "fLaC" stream marker at offset 0. A FLAC file with a stray leading
+// ID3v2 tag has no "fLaC" there, so Sniff does not match it directly; it is recognized
+// via DetectLeading, which peeks past the leading ID3 to the inner "fLaC" signature.
+// The ID3 header is shared with MP3, so this method does not claim ID3 prefixes.
 func (Codec) Sniff(header []byte) bool {
 	return len(header) >= 4 && string(header[:4]) == string(flacMagic)
 }

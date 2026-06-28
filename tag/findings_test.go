@@ -37,11 +37,19 @@ func TestClosestKey(t *testing.T) {
 		{"TRACK NUMBER", TrackNumber}, // an extra separator, distance 1
 		{"ARTIS", Artist},             // one missing letter
 		{"titel", Title},              // case-insensitive
+		{"DISC", DiscNumber},          // alias, 6 edits from DISCNUMBER (would suggest ISRC)
+		{"TRACK", TrackNumber},        // alias, past the distance cap
+		{"album_artist", AlbumArtist}, // alias, case-insensitive
+		{"DATE", RecordingDate},       // alias resolves to the canonical date key
 	} {
 		got, ok := ClosestKey(c.in)
 		if !ok || got != c.want {
 			t.Errorf("ClosestKey(%q) = %q, %v; want %q, true", c.in, got, ok, c.want)
 		}
+	}
+	// A recognized alias resolves to its canonical key before the distance fallback.
+	if got, _ := ClosestKey("DISC"); got == ISRC {
+		t.Error("ClosestKey(DISC) = ISRC; expected the alias to win over the distance fallback")
 	}
 	for _, in := range []string{"", "ZZZZZZZZZZ", "X"} {
 		if got, ok := ClosestKey(in); ok {

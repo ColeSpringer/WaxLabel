@@ -62,7 +62,8 @@ type (
 	TransferItem = core.TransferItem
 	// TransferKind names a transferred item's category (field/picture/chapter).
 	TransferKind = core.TransferKind
-	// Disposition grades how a value survives a transfer (carried/lossy/dropped).
+	// Disposition grades how a value survives a transfer
+	// (carried/lossy/dropped/excluded).
 	Disposition = core.Disposition
 )
 
@@ -75,9 +76,10 @@ const (
 
 // Disposition values.
 const (
-	Carried = core.Carried
-	Lossy   = core.Lossy
-	Dropped = core.Dropped
+	Carried  = core.Carried
+	Lossy    = core.Lossy
+	Dropped  = core.Dropped
+	Excluded = core.Excluded
 )
 
 // Format values.
@@ -196,6 +198,7 @@ const (
 	WarnTagStructureDropped    = core.WarnTagStructureDropped
 	WarnChapterStartOverflow   = core.WarnChapterStartOverflow
 	WarnChapterMetadataDropped = core.WarnChapterMetadataDropped
+	WarnOversizedChunk         = core.WarnOversizedChunk
 )
 
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated

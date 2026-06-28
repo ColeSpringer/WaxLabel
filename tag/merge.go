@@ -50,6 +50,10 @@ type FieldProvenance struct {
 // and per-key provenance. Result key order is base keys first (in base order)
 // then incoming-only keys (in incoming order); within a key, Union order is
 // base values then new incoming values. Neither input is modified.
+//
+// Single-valued keys are capped to their first selected value, even when the strategy
+// selects several. Dropped values are recorded in [FieldProvenance.Rejected] with a capped
+// reason so Merge matches the linter and --strict cardinality rule.
 func Merge(base, incoming TagSet, strategy Strategy) (TagSet, []FieldProvenance) {
 	out := NewTagSet()
 	var prov []FieldProvenance
@@ -67,6 +71,15 @@ func Merge(base, incoming TagSet, strategy Strategy) (TagSet, []FieldProvenance)
 		iv, hasI := incoming.Get(k)
 
 		selected, source, reason := resolve(strategy, hasB, bv, hasI, iv)
+		if k.SingleValuedMulti(len(selected)) {
+			// A single-valued key cannot hold the multi-value result the strategy produced.
+			// rejected below records the dropped tail in FieldProvenance.Rejected.
+			selected = selected[:1]
+			if reason != "" {
+				reason += "; "
+			}
+			reason += "capped to one value (single-valued key)"
+		}
 		out.Set(k, selected...)
 		prov = append(prov, FieldProvenance{
 			Key:      k,

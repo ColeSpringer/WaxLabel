@@ -796,7 +796,14 @@ func TestMP4TruncatedMdatWarns(t *testing.T) {
 			binary.BigEndian.PutUint64(sz, 0x7FFFFFFFFFFFFFFF) // max int64; offset+size overflows
 			return append(append(b, sz...), payload...)
 		}
-		data := slices.Concat(mp4Ftyp(), mp4Moov(mp4Atom("udta", nil), 0), mdat64(bytes.Repeat([]byte{0xA7}, 64)))
+		// Point the chunk-offset table at the mdat payload (past the 16-byte 64-bit
+		// header) so the mdat is real essence, not an unreferenced range the digest trim
+		// would drop. The moov's byte length is independent of the offset value it carries,
+		// so measuring it with a placeholder gives the final payload offset.
+		udta := mp4Atom("udta", nil)
+		ftyp := mp4Ftyp()
+		chunkOff := uint32(len(ftyp) + len(mp4Moov(udta, 0)) + 16)
+		data := slices.Concat(ftyp, mp4Moov(udta, chunkOff), mdat64(bytes.Repeat([]byte{0xA7}, 64)))
 		doc := mustParseBytes(t, data)
 		if doc.Format() != wl.FormatMP4 {
 			t.Fatalf("format = %v, want MP4", doc.Format())

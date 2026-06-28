@@ -423,12 +423,12 @@ func NegativeNumericValue(k Key, v string) bool {
 	return negativeInt(v)
 }
 
-// TrimNumericValue removes surrounding whitespace from values for numeric keys and
-// leaves all other values unchanged. The editor and CLI advisories share this helper so
-// stored numeric values match the form [ValidNumericValue] and [ParseNumPair] already
-// interpret. Only whitespace is removed; digits, including leading zeros, are preserved.
+// TrimNumericValue removes surrounding whitespace from numeric and date values and leaves
+// other values unchanged. The editor and CLI advisories share this helper so stored values
+// match the forms [ValidNumericValue] and [ValidPartialDate] accept. Digits, including
+// leading zeros, are preserved.
 func TrimNumericValue(k Key, v string) string {
-	if numericKeys[k] {
+	if numericKeys[k] || dateKeySet[k] {
 		return strings.TrimSpace(v)
 	}
 	return v
@@ -464,6 +464,8 @@ func validInt(s string) bool {
 // shared by the linter's malformed-date rule and the set-time malformed-value
 // note, so the two cannot disagree on what a valid date is.
 func ValidPartialDate(s string) bool {
+	// Trim first so incidental surrounding space is tolerated like every other typed value.
+	s = strings.TrimSpace(s)
 	for _, layout := range []string{"2006-01-02", "2006-01", "2006"} {
 		if len(s) == len(layout) {
 			if _, err := time.Parse(layout, s); err == nil {
@@ -521,6 +523,24 @@ func IsMediaTypeKey(k Key) bool { return k == MediaType }
 
 // IsReplayGainKey reports whether k is a canonical ReplayGain gain or peak key.
 func IsReplayGainKey(k Key) bool { return replayGainKeys[k] }
+
+// ownAudioEncodingKeys describes values tied to this file's encoded audio: encoder stamps,
+// encoding history, and sample fingerprints. ReplayGain keys are included through
+// replayGainKeys. ACOUSTID_ID is omitted because it identifies the recording rather than
+// this file's samples.
+var ownAudioEncodingKeys = map[Key]bool{
+	Encoder:             true,
+	EncodedBy:           true,
+	EncodingHistory:     true,
+	AcoustIDFingerprint: true,
+}
+
+// DescribesOwnAudio reports whether the key's value describes this file's own audio rather
+// than portable metadata about the work. Metadata-only transfers exclude such values so
+// destination files keep their own encoder, gain, and fingerprint data.
+func (k Key) DescribesOwnAudio() bool {
+	return ownAudioEncodingKeys[k] || replayGainKeys[k]
+}
 
 // ValidMediaTypeValue reports whether v is a value the MEDIATYPE (iTunes stik media
 // kind) key accepts: a non-negative integer in the uint32 range the atom stores. It

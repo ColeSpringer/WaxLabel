@@ -65,3 +65,51 @@ func TestMP3RecordingDateSecondsValueReduced(t *testing.T) {
 		t.Errorf("v2.4 RECORDINGDATE with seconds must not warn; got %v", v24secs.Report().Warnings)
 	}
 }
+
+// TestTransferDateDispositionV23 checks that v2.3 date transfers are graded by the value's
+// precision. TORY is year-only, while TYER+TDAT+TIME keeps values to the minute.
+func TestTransferDateDispositionV23(t *testing.T) {
+	// notags.mp3 resolves to an ID3v2.3 tag on write, so its date caps are the v2.3 ones.
+	dst := mustParseFile(t, "../testdata/notags.mp3")
+
+	dispositionOf := func(t *testing.T, key tag.Key, value string) wl.Disposition {
+		t.Helper()
+		srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
+			e.Set(key, value)
+		})
+		_, report, err := mustParseBytes(t, srcBytes).PrepareTransfer(dst)
+		if err != nil {
+			t.Fatalf("PrepareTransfer: %v", err)
+		}
+		for _, it := range report.Items {
+			if it.Kind == wl.TransferField && it.Key == key {
+				return it.Disposition
+			}
+		}
+		t.Fatalf("no transfer item for %s", key)
+		return 0
+	}
+
+	for _, c := range []struct {
+		key   tag.Key
+		value string
+		want  wl.Disposition
+	}{
+		{tag.OriginalDate, "2021", wl.Carried},               // bare year stored as-is by TORY
+		{tag.OriginalDate, "2021-05-03", wl.Lossy},           // TORY truncates a full date to the year
+		{tag.OriginalDate, "20210503", wl.Lossy},             // non-dash separator: still truncated to the year
+		{tag.OriginalDate, "2021.05.03", wl.Lossy},           // dot separator: still truncated
+		{tag.OriginalDate, "not-a-date", wl.Dropped},         // no numeric year: TORY renders no frame
+		{tag.RecordingDate, "2021-05-03", wl.Carried},        // full date stored losslessly in TYER+TDAT
+		{tag.RecordingDate, "20210503", wl.Lossy},            // non-dash: TDAT can't parse it -> truncated to year
+		{tag.RecordingDate, "2021-06-15T08:30:45", wl.Lossy}, // TIME drops the seconds
+		{tag.RecordingDate, "2021-06-15T08:30", wl.Carried},  // minute precision is kept
+		{tag.RecordingDate, "garbage", wl.Dropped},           // no numeric year: TYER renders no frame
+	} {
+		t.Run(string(c.key)+"="+c.value, func(t *testing.T) {
+			if got := dispositionOf(t, c.key, c.value); got != c.want {
+				t.Errorf("%s=%s disposition = %s, want %s", c.key, c.value, got, c.want)
+			}
+		})
+	}
+}

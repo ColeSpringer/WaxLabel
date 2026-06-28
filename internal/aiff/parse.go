@@ -159,6 +159,11 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	if d.ssndTruncated {
 		warnings = core.WarnTruncated(warnings, "the SSND chunk")
 	}
+	// A non-audio chunk declared more bytes than the file holds and was clamped.
+	for _, id := range d.oversizedChunks {
+		warnings = core.Warn(warnings, core.WarnOversizedChunk,
+			fmt.Sprintf("the %q chunk declares more bytes than the file holds and was clamped to EOF", string(id[:])))
+	}
 
 	// For a truncated SSND of a constant-frame-size encoding, report the duration the
 	// surviving sample bytes actually decode to (matching WAV), rather than COMM's
@@ -269,6 +274,7 @@ func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, formEnd, li
 	}
 	d.ssndIdx = res.AudioIdx
 	d.ssndTruncated = res.AudioTruncated
+	d.oversizedChunks = res.OversizedChunks
 	d.trailingOff, d.trailingLen = res.TrailingOff, res.TrailingLen
 	d.outerOff, d.outerLen = res.OuterOff, res.OuterLen
 	return nil

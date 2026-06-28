@@ -651,6 +651,33 @@ func TestRecursiveWalkReportsDanglingSymlink(t *testing.T) {
 	}
 }
 
+// TestDirectoryWithoutRecursiveNoDoublePath checks that a directory passed without
+// --recursive is reported once. The per-file renderer already prefixes the path, so
+// the error detail should not repeat it.
+func TestDirectoryWithoutRecursiveNoDoublePath(t *testing.T) {
+	t.Parallel()
+	d := t.TempDir() // a directory, not a file
+	for _, cmd := range []string{"dump", "verify", "plan", "lint"} {
+		t.Run(cmd, func(t *testing.T) {
+			args := []string{cmd, d}
+			if cmd == "plan" {
+				args = append(args, "--set", "TITLE=X")
+			}
+			_, errb, code := runCLI(t, args...)
+			if code != 2 {
+				t.Fatalf("exit = %d, want 2 (usage); stderr=%q", code, errb)
+			}
+			if !strings.Contains(errb, "is a directory; pass --recursive") {
+				t.Fatalf("stderr should explain --recursive: %q", errb)
+			}
+			// The old render was "waxlabel: <d>: <d> is a directory ...".
+			if strings.Contains(errb, ": "+d+" is a directory") {
+				t.Errorf("path appears twice (doubled): %q", errb)
+			}
+		})
+	}
+}
+
 // TestNonExpandingCommandsRejectNonRegular: caps, diff, and copy parse their
 // operands directly (no directory expansion), but still reject a non-regular input -
 // here a directory - as an exit-2 usage error, matching dump/verify/plan/set/lint

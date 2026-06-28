@@ -492,21 +492,37 @@ func buildResult(d *doc, edited *core.Media, r *rendered, ch changes, lay layout
 		Identity:   core.Identity{Size: lay.size},
 	}
 	if lay.clusterStart < lay.size {
+		// Mirror the parse side: essence digests hash only Cluster runs, including after a
+		// rewrite of an inter-cluster element. The same helper keeps parse and write extents
+		// aligned.
+		runs := clusterRuns(lay.children)
 		res.AudioStart = lay.clusterStart
-		res.AudioEnd = clusterEnd(lay.children)
+		res.AudioRanges = runs
+		for _, r := range runs {
+			if r[1] > res.AudioEnd {
+				res.AudioEnd = r[1]
+			}
+		}
 	}
 	return res
 }
 
-// clusterEnd returns the end of the last Cluster among the output children.
-func clusterEnd(children []l1elem) int64 {
-	var end int64
+// clusterRuns returns the Cluster byte runs among children, as [start, dataEnd).
+// Contiguous clusters are coalesced and non-cluster level-1 elements are excluded, matching
+// the byte set used by the audio-essence digest.
+func clusterRuns(children []l1elem) [][2]int64 {
+	var runs [][2]int64
 	for _, c := range children {
-		if c.id == idCluster && c.dataEnd > end {
-			end = c.dataEnd
+		if c.id != idCluster {
+			continue
+		}
+		if n := len(runs); n > 0 && runs[n-1][1] == c.start {
+			runs[n-1][1] = c.dataEnd // contiguous with the previous run
+		} else {
+			runs = append(runs, [2]int64{c.start, c.dataEnd})
 		}
 	}
-	return end
+	return runs
 }
 
 // resultPictures returns the picture set the post-write Document reports. When the

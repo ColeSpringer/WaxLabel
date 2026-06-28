@@ -24,13 +24,14 @@ type Plan struct {
 	doc  *Document
 	plan *core.WritePlan
 	opts core.WriteOptions
-	// committed records that a [SaveBack] on this plan already wrote bytes (the
+	// committed records that this plan already wrote bytes over its own source file:
+	// a [SaveBack], or a [SaveAsFile] whose target resolves to the source path (the
 	// rename succeeded). Once set, [Plan.Execute] refuses any further write on this
 	// plan: the segments describe the original->edited transform against the source
 	// as parsed, so re-reading the now-rewritten file would corrupt the output (and a
-	// second SaveBack would otherwise report a confusing "source changed"). Multi-
-	// execution without a SaveBack commit - several [WriteTo] or [SaveAsFile] runs -
-	// never sets this and stays valid. (M2)
+	// second SaveBack would otherwise report a confusing "source changed"). Repeat
+	// writes that never clobber the source, such as several [WriteTo] or [SaveAsFile]
+	// runs to other paths, never set this and stay valid while the source bytes are stable.
 	committed bool
 }
 
@@ -176,6 +177,12 @@ type SaveResult struct {
 // Execute carries out the plan against dst, one of [SaveBack], [SaveAsFile], or
 // [WriteTo]. It returns the post-write [Document] and a [SaveResult]; on error,
 // the SaveResult still carries what is known (e.g. Committed=false).
+//
+// A plan may be executed more than once as long as no execution writes over its own
+// source file. Repeated [WriteTo] or [SaveAsFile] runs to other paths are valid while the
+// source bytes stay stable, or while a stable source is passed to [WriteTo]. Once an
+// execution writes over the source, [Execute] refuses later runs; re-edit the returned
+// Document to write again.
 func (p *Plan) Execute(ctx context.Context, dst Destination) (*Document, SaveResult, error) {
 	// An uninitialized plan has no rewrite to carry out.
 	if p.zero() {
@@ -184,15 +191,15 @@ func (p *Plan) Execute(ctx context.Context, dst Destination) (*Document, SaveRes
 	if err := checkContext(ctx); err != nil {
 		return nil, SaveResult{}, err
 	}
-	// A committed SaveBack spends the plan: its segments describe the original->edited
+	// An in-place commit spends the plan: its segments describe the original->edited
 	// transform against the source as parsed, so re-executing ANY destination after the
 	// file was rewritten in place would re-read the already-rewritten bytes (a resized
 	// metadata region shifts every later copy offset) and corrupt the output. Refuse it
-	// here, before dispatch, so SaveBack-then-SaveAsFile/WriteTo is caught too, not only a
-	// second SaveBack. Multi-execution without a SaveBack commit - several WriteTo or
-	// SaveAsFile runs - never sets committed and stays valid. (M2)
+	// here, before dispatch, so an in-place write followed by any second write is caught,
+	// not only a second SaveBack. Runs that never write over the source never set
+	// committed and stay valid.
 	if p.committed {
-		return nil, SaveResult{}, fmt.Errorf("%w: this plan already saved %s via SaveBack; re-edit the returned Document to write again", waxerr.ErrInvalidData, p.doc.path)
+		return nil, SaveResult{}, fmt.Errorf("%w: this plan already wrote %s in place; re-edit the returned Document to write again", waxerr.ErrInvalidData, p.doc.path)
 	}
 	switch dst.kind {
 	case destSaveBack:
@@ -214,6 +221,18 @@ func (p *Plan) resultDocument(path string, src core.ReaderAtSized, id core.Ident
 		res = p.doc.media
 	}
 	media := res.Clone()
+	// A returned Document needs the structural fingerprint so later SaveBack calls keep
+	// using strong change detection. fileIdentity omits it, so recompute it at the shared
+	// result path for saveBack and saveAsFile. writeTo passes path="", so it is skipped.
+	// media is the result clone, so the hash covers the post-write metadata region.
+	if path != "" && !id.HasFinger {
+		if fSrc, err := openFileSource(path); err == nil {
+			if fp, ok := core.Fingerprint(fSrc, media, p.opts.Limits.MaxAllocBytes); ok {
+				id.Fingerprint, id.HasFinger = fp, true
+			}
+			fSrc.Close()
+		}
+	}
 	media.Identity = id
 	return &Document{media: media, path: path, src: src}
 }

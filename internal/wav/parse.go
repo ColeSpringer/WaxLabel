@@ -158,6 +158,11 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	if d.dataTruncated {
 		warnings = core.WarnTruncated(warnings, "the data chunk")
 	}
+	// A non-audio chunk declared more bytes than the file holds and was clamped.
+	for _, id := range d.oversizedChunks {
+		warnings = core.Warn(warnings, core.WarnOversizedChunk,
+			fmt.Sprintf("the %q chunk declares more bytes than the file holds and was clamped to EOF", string(id[:])))
+	}
 
 	d.track = buildTrack(d.fmtCfg, d.dataLen)
 
@@ -256,6 +261,7 @@ func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, riffEnd, li
 	}
 	d.dataIdx = res.AudioIdx
 	d.dataTruncated = res.AudioTruncated
+	d.oversizedChunks = res.OversizedChunks
 	d.trailingOff, d.trailingLen = res.TrailingOff, res.TrailingLen
 	d.outerOff, d.outerLen = res.OuterOff, res.OuterLen
 	return nil

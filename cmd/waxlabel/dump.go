@@ -114,6 +114,9 @@ type jsonProperties struct {
 type jsonTag struct {
 	Key    string   `json:"key"`
 	Values []string `json:"values"`
+	// Cardinality matches the human dump's single-valued key marker: "duplicate" when
+	// values fold to one, "conflict" when they differ, or empty for ordinary keys.
+	Cardinality string `json:"cardinality,omitempty"`
 }
 
 type jsonPicture struct {
@@ -187,7 +190,7 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 		Warnings: []jsonWarning{},
 	}
 	for k, vals := range doc.Tags().All() {
-		jd.Tags = append(jd.Tags, jsonTag{Key: string(k), Values: vals})
+		jd.Tags = append(jd.Tags, jsonTag{Key: string(k), Values: vals, Cardinality: cardinalityState(k, vals)})
 	}
 	for _, p := range doc.Pictures() {
 		jd.Pictures = append(jd.Pictures, jsonPicture{

@@ -36,8 +36,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	// Fast path: nothing changed. NoOpPlan emits a full verbatim copy (so
 	// SaveAsFile and WriteTo still produce a whole file) flagged NoOp so SaveBack
-	// skips it.
-	if !vorbisChanged && !picturesChanged && !legacyChange {
+	// skips it. Explicit padding requests run the serializer below so a padding-only edit
+	// can take effect.
+	if !vorbisChanged && !picturesChanged && !legacyChange && !opts.PaddingExplicit {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
@@ -51,11 +52,20 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		return nil, err
 	}
 	metaBytes, padSize, finalBlocks, padClamped := serializeMetadata(newBlocks, d, opts.Padding)
+	// Compare the rendered metadata size with the source region. When padding is the only
+	// request, a changed size is the edit.
+	origRegion := d.audioStart - (d.flacStart + 4)
+	regionDiffers := int64(len(metaBytes)) != origRegion
 	report.Operations = append(report.Operations, ops...)
 	report.PaddingAfter = int64(padSize)
 	if padClamped {
 		report.Warnings = core.Warn(report.Warnings, core.WarnPaddingClamped,
 			fmt.Sprintf("requested padding exceeded FLAC's %d-byte metadata-block limit and was clamped to it", maxBlockBody))
+	}
+	// When padding is the only change, report it explicitly.
+	if regionDiffers && !vorbisChanged && !picturesChanged && !legacyChange {
+		// For a padding-only edit, newContent is the region minus its new padding.
+		report.Operations = append(report.Operations, core.PaddingOp(origRegion, int64(len(metaBytes))-int64(padSize), int64(padSize)))
 	}
 
 	// Assemble the output as segments: optional leading ID3, the fLaC marker
@@ -92,7 +102,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// FLAC stores Vorbis values verbatim, so this only fires for a value the rebuild
 	// dropped (an empty); a legacy strip stays a real write. tagsEqual uses the native
 	// key diff. See core.DowngradeNoOp.
-	if np := core.DowngradeNoOp(core.FormatFLAC, edited.Identity.Size, base, result, len(diffKeys(base.Tags, result.Tags)) == 0, legacyChange, report.Warnings); np != nil {
+	if np := core.DowngradeNoOp(core.FormatFLAC, edited.Identity.Size, base, result, len(diffKeys(base.Tags, result.Tags)) == 0, legacyChange || regionDiffers, report.Warnings); np != nil {
 		return np, nil
 	}
 

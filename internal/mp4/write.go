@@ -36,8 +36,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report := core.WriteReport{Format: core.FormatMP4, BytesBefore: edited.Identity.Size}
 
 	// Fast path: nothing changed. NoOpPlan emits a verbatim copy (so SaveAsFile/
-	// WriteTo still produce a whole file) flagged NoOp so SaveBack skips it.
-	if !tagsChanged && !picturesChanged && !chaptersChanged {
+	// WriteTo still produce a whole file) flagged NoOp so SaveBack skips it. Explicit
+	// padding requests run the layout below so a grow-only MP4 padding edit can take
+	// effect when it enlarges the moov region.
+	if !tagsChanged && !picturesChanged && !chaptersChanged && !opts.PaddingExplicit {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
@@ -172,7 +174,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// DowngradeNoOp carries the input-rejection warnings (value-dropped,
 	// picture-metadata-dropped) forward, so a rejected value or cover description still
 	// surfaces (and --strict still escalates) even though the write is a no-op.
-	if np := core.DowngradeNoOp(core.FormatMP4, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), false, report.Warnings); np != nil {
+	// delta != 0 means the layout grew the moov region. That makes an explicit padding
+	// increase a real structural change, while a reuse-in-place edit with equal tags stays
+	// a no-op.
+	if np := core.DowngradeNoOp(core.FormatMP4, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), delta != 0, report.Warnings); np != nil {
 		return np, nil
 	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil

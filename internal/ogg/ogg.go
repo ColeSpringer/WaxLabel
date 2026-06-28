@@ -26,6 +26,9 @@ func init() {
 
 func (c Codec) Format() core.Format { return c.format }
 
+// SkipsLeadingID3 reports false because Ogg streams begin with an OggS page.
+func (Codec) SkipsLeadingID3() bool { return false }
+
 func (c Codec) Extensions() []string {
 	if c.format == core.FormatOggOpus {
 		return []string{".opus"}

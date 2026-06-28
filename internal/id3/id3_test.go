@@ -137,6 +137,65 @@ func TestDeunsync(t *testing.T) {
 	}
 }
 
+// TestTagLevelUnsyncOpaqueFrame covers opaque v2.4 frames whose bodies need unsync
+// normalization. Tag-level and frame-level unsync both normalize the body; a frame with
+// no unsync flag keeps its bytes and flags unchanged.
+func TestTagLevelUnsyncOpaqueFrame(t *testing.T) {
+	rawBody := []byte{0xFF, 0x00, 0x42, 0xFF, 0x00} // FF 00 stuffing; de-unsyncs to:
+	deunsynced := []byte{0xFF, 0x42, 0xFF}
+
+	build := func(tagUnsync bool, frameFlag1 byte) []byte {
+		var fsz [4]byte
+		putSyncSafe(fsz[:], int64(len(rawBody)))
+		frame := append([]byte("TIT2"), fsz[:]...)
+		frame = append(frame, 0x00, frameFlag1)
+		frame = append(frame, rawBody...)
+		var tsz [4]byte
+		putSyncSafe(tsz[:], int64(len(frame)))
+		hdrFlags := byte(0)
+		if tagUnsync {
+			hdrFlags = hdrUnsync
+		}
+		data := append([]byte{'I', 'D', '3', 4, 0, hdrFlags}, tsz[:]...)
+		return append(data, frame...)
+	}
+
+	for _, c := range []struct {
+		name          string
+		tagUnsync     bool
+		frameFlag1    byte
+		wantBody      []byte
+		wantUnsyncBit bool
+	}{
+		// Tag-level unsync, frame bit clear: body normalized and no frame bit to clear.
+		{"tag-level", true, v24Compression, deunsynced, false},
+		// Frame-level unsync bit set: body normalized and the bit cleared.
+		{"frame-level", false, v24Compression | v24Unsync, deunsynced, false},
+		// No unsync anywhere: the FF 00 is genuine payload, preserved verbatim.
+		{"none", false, v24Compression, rawBody, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			tg, err := ParseTag(build(c.tagUnsync, c.frameFlag1), 0)
+			if err != nil {
+				t.Fatalf("ParseTag: %v", err)
+			}
+			if len(tg.frames) != 1 || !tg.frames[0].Opaque {
+				t.Fatalf("want 1 opaque frame, got %+v", tg.frames)
+			}
+			f := tg.frames[0]
+			if !bytes.Equal(f.Body, c.wantBody) {
+				t.Errorf("body = % x, want % x", f.Body, c.wantBody)
+			}
+			if (f.Flags[1]&v24Unsync != 0) != c.wantUnsyncBit {
+				t.Errorf("unsync bit set = %v, want %v (flags=% x)", f.Flags[1]&v24Unsync != 0, c.wantUnsyncBit, f.Flags)
+			}
+			if f.Flags[1]&v24Compression == 0 {
+				t.Errorf("compression bit was not preserved, flags=% x", f.Flags)
+			}
+		})
+	}
+}
+
 func TestResolveGenres(t *testing.T) {
 	cases := []struct {
 		in      string
@@ -378,6 +437,70 @@ func TestNumericGenreWrite(t *testing.T) {
 	}
 	if v := decodeTextFrame(out[0].Body)[0]; v != "17" {
 		t.Errorf("numeric genre = %q, want 17", v)
+	}
+}
+
+// TestGenreParenEscapeRoundTrip checks that literal genre names beginning with "("
+// survive a writer-to-reader round trip instead of being parsed as genre references.
+func TestGenreParenEscapeRoundTrip(t *testing.T) {
+	roundTrip := func(t *testing.T, version byte, pol core.ID3MultiValuePolicy, numeric bool, in []string) []string {
+		t.Helper()
+		edited := tag.NewTagSet()
+		edited.Set(tag.Genre, in...)
+		out, _ := RebuildFrames(nil, tag.NewTagSet(), edited, version, nil, false,
+			WriteOpts{Multi: pol, NumericGenre: numeric})
+		got, _ := Project(buildTag(t, version, out)).Tags.Get(tag.Genre)
+		return got
+	}
+
+	// A single literal name beginning with "(" stays one value, parens intact.
+	for _, name := range []string{"(Live)", "(Remastered)", "(2020) Best Of"} {
+		for _, version := range []byte{3, 4} {
+			if got := roundTrip(t, version, core.ID3MultiNullSep, false, []string{name}); !slices.Equal(got, []string{name}) {
+				t.Errorf("v2.%d single %q round-trip = %v, want [%q]", version, name, got, name)
+			}
+		}
+	}
+
+	// Multi-value: a standard name plus a paren-leading literal name across every policy.
+	in := []string{"Rock", "(Live)"}
+	for _, c := range []struct {
+		name    string
+		version byte
+		pol     core.ID3MultiValuePolicy
+		want    []string
+	}{
+		{"v23-repeat", 3, core.ID3MultiRepeatFrame, []string{"Rock", "(Live)"}},
+		{"v23-nullsep", 3, core.ID3MultiNullSep, []string{"Rock", "(Live)"}},
+		{"v24-nullsep", 4, core.ID3MultiNullSep, []string{"Rock", "(Live)"}},
+		// Slash is a lossy multi-to-single join. The second value is mid-string, so it is
+		// not escaped and reads back as one joined value.
+		{"v23-slash", 3, core.ID3MultiSlash, []string{"Rock / (Live)"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := roundTrip(t, c.version, c.pol, false, in); !slices.Equal(got, c.want) {
+				t.Errorf("round-trip = %v, want %v", got, c.want)
+			}
+		})
+	}
+
+	// NumericGenre on: the standard name folds to a numeric reference (never escaped),
+	// the paren-leading literal name is still escaped and round-trips.
+	if got := roundTrip(t, 4, core.ID3MultiNullSep, true, in); !slices.Equal(got, []string{"Rock", "(Live)"}) {
+		t.Errorf("numeric-genre round-trip = %v, want [Rock (Live)]", got)
+	}
+
+	// NumericGenre on under a multi-value Slash join: numeric conversion is skipped (a
+	// mid-string "(17)" reference would re-read as a reference + slash-prefixed refinement,
+	// splitting into garbage), so it stays the documented lossy "Rock / (Live)" single value.
+	if got := roundTrip(t, 3, core.ID3MultiSlash, true, in); !slices.Equal(got, []string{"Rock / (Live)"}) {
+		t.Errorf("numeric-genre slash round-trip = %v, want [Rock / (Live)]", got)
+	}
+
+	// Existing ID3 behavior: a bare numeric value is always a reference, so GENRE="17"
+	// reads back as the numeric genre name even with NumericGenre off.
+	if got := roundTrip(t, 4, core.ID3MultiNullSep, false, []string{"17"}); !slices.Equal(got, []string{"Rock"}) {
+		t.Errorf("bare-number genre 17 = %v, want [Rock]", got)
 	}
 }
 

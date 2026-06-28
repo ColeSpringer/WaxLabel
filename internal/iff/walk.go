@@ -40,6 +40,9 @@ type Result struct {
 	// AudioTruncated records that the audio chunk's declared size ran past EOF and was not
 	// the 0xFFFFFFFF "size unknown" streaming sentinel - i.e. a truncated file.
 	AudioTruncated bool
+	// OversizedChunks lists non-audio chunk ids whose declared body ran past EOF and was
+	// clamped. Audio chunk overruns are reported separately via AudioTruncated.
+	OversizedChunks [][4]byte
 	// TrailingOff/Len capture leftover bytes still inside the container after the last
 	// well-formed chunk (a corrupt region, or an ID3v1 trailer a writer miscounted inside
 	// the container size): preserved verbatim and counted in the container size.
@@ -104,6 +107,10 @@ func WalkChunks(ctx context.Context, r io.ReaderAt, size, end, limit int64, maxE
 			// unknown" streaming sentinel also overruns but is not truncation; a 0 size never
 			// overruns (it reads as no-audio).
 			res.AudioTruncated = overran && declaredLen != 0xFFFFFFFF
+		} else if overran && declaredLen != 0xFFFFFFFF {
+			// Record clamped non-audio chunks so callers can warn. The streaming sentinel
+			// means "size unknown", not an overrun.
+			res.OversizedChunks = append(res.OversizedChunks, id)
 		}
 		next := bodyOff + bodyLen + (bodyLen & 1) // word-alignment pad byte
 		if next <= off {

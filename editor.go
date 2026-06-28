@@ -56,7 +56,11 @@ func (e *Editor) Apply(p tag.TagPatch) *Editor {
 	return e
 }
 
-// Set replaces a key's values (present, possibly empty).
+// Set replaces a key's values.
+//
+// Calling Set with no values collapses the key to absent during [Editor.Prepare], matching
+// the empty-value cleanup. [Editor.Clear] is the explicit removal call. Set(key, "") is
+// distinct: it stores one empty value, which a format may then drop with a note.
 //
 // A slash-combined "n/total" on [tag.TrackNumber] or [tag.DiscNumber] is normalized
 // at [Editor.Prepare] into the canonical pair (e.g. Set(tag.TrackNumber, "3/12")
@@ -738,13 +742,12 @@ func dropEmptyValuedKeys(ts *tag.TagSet) {
 	}
 }
 
-// trimNumericValues applies [tag.TrimNumericValue] to numeric keys touched by this edit.
-// It is scoped to patched keys, like splitNumberPairs, so carried values from the source
-// file are not rewritten. It runs first so splitNumberPairs sees slash pairs without
-// outer padding.
+// trimNumericValues applies [tag.TrimNumericValue] to numeric and date keys touched by
+// this edit, so stored values match the trimmed form the validators accept. It is scoped
+// to patched keys, like splitNumberPairs, so carried source values are not rewritten.
 func trimNumericValues(ts *tag.TagSet, patch tag.TagPatch) {
 	for _, k := range patch.Keys() {
-		if !tag.IsNumericKey(k) {
+		if !tag.IsNumericKey(k) && !tag.IsDateKey(k) {
 			continue
 		}
 		vals, ok := ts.Get(k)

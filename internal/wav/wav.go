@@ -43,11 +43,22 @@ func init() { core.Register(New()) }
 func (Codec) Format() core.Format  { return core.FormatWAV }
 func (Codec) Extensions() []string { return []string{".wav", ".wave"} }
 
-// Sniff matches a "RIFF....WAVE" header. RF64/BW64 deliberately do not match
-// here; such a file is routed by extension and then rejected loudly in Parse.
+// SkipsLeadingID3 reports false because WAV/RF64 files begin with a RIFF/RF64 header.
+func (Codec) SkipsLeadingID3() bool { return false }
+
+// Sniff matches a "RIFF....WAVE" header, plus the 64-bit RF64/BW64 variants, which also
+// carry "WAVE" at offset 8. Detection is content-only, so matching them here is what
+// routes such a file to Parse, where the out-of-scope 64-bit rejection can explain the
+// limit instead of falling through to a generic "could not identify".
 func (Codec) Sniff(header []byte) bool {
-	return len(header) >= 12 &&
-		string(header[0:4]) == "RIFF" && string(header[8:12]) == "WAVE"
+	if len(header) < 12 || string(header[8:12]) != "WAVE" {
+		return false
+	}
+	switch string(header[0:4]) {
+	case "RIFF", "RF64", "BW64":
+		return true
+	}
+	return false
 }
 
 // Parse reads metadata from src into a Media.

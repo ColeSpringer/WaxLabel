@@ -349,6 +349,61 @@ func emptyEditOffset(p []byte, movieTimescale uint32) time.Duration {
 	return 0
 }
 
+// trackEditedDuration returns trak's total edit-list playable duration, or 0 when the
+// track has no edit list. This is the track's own trimmed length, not the movie duration;
+// for AAC, it removes encoder priming that is still present in the raw mdhd duration.
+func trackEditedDuration(src core.ReaderAtSized, trak node, movieTimescale uint32, limit int64) time.Duration {
+	if movieTimescale == 0 {
+		return 0
+	}
+	edts, ok := trak.find("edts")
+	if !ok {
+		return 0
+	}
+	b, err := readPayload(src, edts, maxMetaChunk, limit)
+	if err != nil {
+		return 0
+	}
+	n := int64(len(b))
+	for pos := int64(0); pos+8 <= n; {
+		size := int64(binary.BigEndian.Uint32(b[pos : pos+4]))
+		if size < 8 || pos+size > n { // 64-bit/size-0 forms do not occur on a real elst
+			break
+		}
+		if string(b[pos+4:pos+8]) == "elst" {
+			return scaleToDuration(elstSegmentDurationSum(b[pos+8:pos+size]), movieTimescale)
+		}
+		pos += size
+	}
+	return 0
+}
+
+// elstSegmentDurationSum sums the segment_duration field of every edit-list entry (in
+// movie-timescale units). A v0 entry is 12 bytes (segment_duration u32, media_time i32,
+// rate u32); a v1 entry is 20 bytes (u64, i64, u32). Each entry is bounds-checked.
+func elstSegmentDurationSum(p []byte) uint64 {
+	if len(p) < 8 {
+		return 0
+	}
+	count := int64(binary.BigEndian.Uint32(p[4:8]))
+	var sum uint64
+	switch p[0] {
+	case 0:
+		for i := int64(0); i < count; i++ {
+			if off := 8 + i*12; off+12 <= int64(len(p)) {
+				sum += uint64(binary.BigEndian.Uint32(p[off : off+4]))
+			}
+		}
+	case 1:
+		for i := int64(0); i < count; i++ {
+			if off := 8 + i*20; off+20 <= int64(len(p)) {
+				sum += binary.BigEndian.Uint64(p[off : off+8])
+			}
+		}
+	}
+	return sum
+}
+
 // trakOfHandler returns the first trak whose media handler matches want (e.g.
 // "soun" for audio, "text" for a chapter track).
 func trakOfHandler(src core.ReaderAtSized, traks []node, want string, limit int64) (node, bool) {

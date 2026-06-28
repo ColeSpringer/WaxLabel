@@ -132,7 +132,9 @@ func expandPaths(paths []string, recursive bool) (expanded []string, skipped int
 			// per path so the rest of the batch still runs.
 			info, statErr := os.Stat(p)
 			if statErr == nil && info.IsDir() {
-				pathErrors[p] = usagef("%s is a directory; pass --recursive to walk it for audio files", p)
+				// Leave the path out of the detail. Callers already add the
+				// "waxlabel: <path>: " prefix.
+				pathErrors[p] = usagef("is a directory; pass --recursive to walk it for audio files")
 				continue
 			}
 			if cerr := checkRegularFileInfo(p, info, statErr, true); cerr != nil {

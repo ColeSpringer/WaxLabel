@@ -44,3 +44,22 @@ func TestContentDetectionCoversFixtures(t *testing.T) {
 		t.Fatal("no fixtures found; content detection was not exercised")
 	}
 }
+
+// TestSkipsLeadingID3Set checks the formats whose parsers read past a leading ID3v2 tag:
+// MP3, FLAC, and raw AAC. Other inner signatures past ID3 should be reported unsupported.
+func TestSkipsLeadingID3Set(t *testing.T) {
+	want := map[core.Format]bool{
+		core.FormatMP3: true, core.FormatFLAC: true, core.FormatAAC: true,
+		core.FormatMP4: false, core.FormatMatroska: false, core.FormatWAV: false,
+		core.FormatAIFF: false, core.FormatOggVorbis: false, core.FormatOggOpus: false,
+	}
+	for f, w := range want {
+		c, ok := core.ForFormat(f)
+		if !ok {
+			t.Fatalf("no codec registered for %s", f)
+		}
+		if got := c.SkipsLeadingID3(); got != w {
+			t.Errorf("%s.SkipsLeadingID3() = %v, want %v", f, got, w)
+		}
+	}
+}

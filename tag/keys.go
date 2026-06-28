@@ -49,6 +49,14 @@ func ParseKey(s string) (Key, error) {
 	if s == "" {
 		return "", fmt.Errorf("%w: empty key", waxerr.ErrInvalidKey)
 	}
+	// Reject non-ASCII before ToUpper. Some confusable runes fold to ASCII letters under
+	// ToUpper, which could turn an invalid field name into a valid key; length-changing
+	// folds would also misalign the invalid-byte offset below.
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return "", invalidKeyByteError(s, s[i], i)
+		}
+	}
 	up := strings.ToUpper(s)
 	for i := 0; i < len(up); i++ {
 		if !validKeyByte(up[i]) {

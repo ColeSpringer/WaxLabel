@@ -160,7 +160,14 @@ func decodeFrame(id string, flags [2]byte, raw []byte, major byte, tagUnsync boo
 
 	compressed, encrypted, grouping, unsync, dataLen := decodeFrameFlags(flags, major)
 	if compressed || encrypted {
-		// Cannot safely reinterpret; preserve the bytes and flags verbatim.
+		// The payload cannot be reinterpreted, but v2.4 unsync still applies to opaque
+		// compressed or encrypted bodies. Render writes a tag header without tag-level
+		// unsync, so normalize the body here and clear the frame-level unsync bit when it
+		// no longer applies.
+		if unsync || (major == 4 && tagUnsync) {
+			raw = deunsync(raw)
+			flags[1] &^= v24Unsync
+		}
 		return Frame{ID: id, Flags: flags, Body: slices.Clone(raw), Opaque: true}
 	}
 	// De-unsynchronise first: per the v2.4 spec the unsync transform covers the whole

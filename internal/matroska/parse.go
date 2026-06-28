@@ -185,6 +185,10 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	if audioStart >= 0 && audioEnd > audioStart {
 		media.AudioStart = audioStart
 		media.AudioEnd = audioEnd
+		// Essence digests hash only Cluster byte runs. Non-cluster level-1 elements between
+		// clusters are excluded so tag-only edits there do not change the audio digest.
+		// AudioStart and AudioEnd remain for the save-back fingerprint.
+		media.AudioRanges = clusterRuns(wb.children)
 	}
 	media.Identity = core.Identity{Size: size}
 	media.Identity.Fingerprint, media.Identity.HasFinger = core.Fingerprint(src, media, limit)

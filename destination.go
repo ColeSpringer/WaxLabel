@@ -39,7 +39,9 @@ type Destination struct {
 func SaveBack() Destination { return Destination{kind: destSaveBack} }
 
 // SaveAsFile writes a complete file at path (atomically). Unlike SaveBack it is
-// never a no-op: a fresh destination is always written whole.
+// never a no-op: a fresh destination is always written whole. Writing to a path that
+// resolves to the document's own source file spends the plan just as SaveBack does
+// (see [Plan.Execute]); writing to other paths leaves the plan reusable.
 func SaveAsFile(path string) Destination { return Destination{kind: destSaveAsFile, path: path} }
 
 // WriteTo streams the complete output to w. The source bytes to copy come from
@@ -101,9 +103,48 @@ func (p *Plan) saveAsFile(ctx context.Context, path string) (*Document, SaveResu
 	defer closer()
 
 	committed, werr := p.writeFile(ctx, path, src)
+	if committed && sameFileTarget(path, p.doc.path) {
+		// This write replaced the plan's source file, so later executions would read bytes
+		// that no longer match the planned segments. Treat it like SaveBack and spend the
+		// plan. The match is by resolved path rather than inode because an atomic rename to
+		// a hardlink alias leaves the original source bytes intact.
+		p.committed = true
+	}
 	newID, _ := fileIdentity(path)
 	resDoc := p.resultDocument(path, nil, newID)
 	return resDoc, SaveResult{Committed: committed, Dest: newID, Doc: resDoc}, werr
+}
+
+// sameFileTarget reports whether an atomic write to dst would replace the path the
+// document was parsed from. It compares absolute paths after write-target symlink
+// resolution. A symlink to the source resolves to the source and is guarded; a hardlink
+// alias is not, because the atomic rename replaces only the alias directory entry and
+// leaves the source path's bytes intact.
+//
+// If either path cannot be made absolute (filepath.Abs needs the working directory, which a
+// removed or inaccessible cwd denies), the comparison is unreliable. Treat that case as a
+// match so the guard fails closed.
+func sameFileTarget(dst, src string) bool {
+	if src == "" {
+		return false // a detached document (from Parse) has no source file to clobber
+	}
+	a, aok := absResolved(dst)
+	b, bok := absResolved(src)
+	if a == b {
+		return true
+	}
+	return !aok || !bok
+}
+
+// absResolved returns the path form sameFileTarget compares: the write target after
+// symlink resolution, made absolute and cleaned. reliable is false when filepath.Abs
+// failed, leaving a cleaned path that may still be relative.
+func absResolved(path string) (resolved string, reliable bool) {
+	r := ResolveWriteTarget(path)
+	if abs, err := filepath.Abs(r); err == nil {
+		return abs, true
+	}
+	return filepath.Clean(r), false
 }
 
 func (p *Plan) writeTo(ctx context.Context, dst Destination) (*Document, SaveResult, error) {

@@ -33,6 +33,13 @@ func TestPlanTransferReportsLosses(t *testing.T) {
 	for _, it := range report.Items {
 		switch it.Kind {
 		case wl.TransferField:
+			if it.Key == tag.Encoder {
+				// ENCODER describes the source audio, so metadata copies exclude it.
+				if it.Disposition != wl.Excluded {
+					t.Errorf("ENCODER = %s, want excluded", it.Disposition)
+				}
+				continue
+			}
 			if it.Disposition != wl.Carried {
 				t.Errorf("field %s = %s, want carried (FLAC writes all fields)", it.Key, it.Disposition)
 			}
@@ -227,8 +234,8 @@ func TestMP4RejectsUnstorableCover(t *testing.T) {
 
 // TestPrepareTransferDropsUnrepresentableCover checks that a GIF cover MP4 cannot store
 // is dropped and reported without failing the whole copy. Tags still carry; the
-// destination had no cover, so the result has none (the dest-with-a-cover replacement
-// case is TestPrepareTransferUnrepresentableCoverClearsDestCover).
+// destination had no cover, so the result has none (the dest-with-a-cover preservation
+// case is TestPrepareTransferUnrepresentableCoverKeepsDestCover).
 func TestPrepareTransferDropsUnrepresentableCover(t *testing.T) {
 	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.Set("TITLE", "GIF Cover")
@@ -272,10 +279,9 @@ func TestPrepareTransferDropsUnrepresentableCover(t *testing.T) {
 	}
 }
 
-// TestPrepareTransferUnrepresentableCoverClearsDestCover checks picture overlay
-// semantics: when the source carries covers, it replaces the destination picture set
-// even if none of those source covers are representable there.
-func TestPrepareTransferUnrepresentableCoverClearsDestCover(t *testing.T) {
+// TestPrepareTransferUnrepresentableCoverKeepsDestCover checks that an all-unrepresentable
+// source cover set leaves the destination's existing cover intact.
+func TestPrepareTransferUnrepresentableCoverKeepsDestCover(t *testing.T) {
 	// Source carries only a GIF cover an MP4 covr atom cannot store.
 	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyGIF()})
@@ -295,8 +301,8 @@ func TestPrepareTransferUnrepresentableCoverClearsDestCover(t *testing.T) {
 		t.Fatalf("PrepareTransfer: %v", err)
 	}
 	result := mustParseBytes(t, applyToBytes(t, dstBytes, plan))
-	if n := len(result.Pictures()); n != 0 {
-		t.Errorf("dest ends with %d covers, want 0 (the source covers replace the dest's; none representable)", n)
+	if n := len(result.Pictures()); n != 1 {
+		t.Errorf("dest ends with %d covers, want 1 (its own PNG preserved; no source cover is representable)", n)
 	}
 }
 
@@ -748,4 +754,66 @@ func mustPlan(t *testing.T, ed *wl.Editor) *wl.Plan {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// TestTransferExcludesOwnAudioKeys checks that metadata copies leave file-audio values
+// with the destination. Encoder stamps, ReplayGain, and fingerprints are reported as
+// excluded, while recording identity and ordinary work metadata still transfer.
+func TestTransferExcludesOwnAudioKeys(t *testing.T) {
+	ownAudio := []tag.Key{
+		tag.Encoder, tag.EncodedBy, tag.EncodingHistory, tag.AcoustIDFingerprint,
+		tag.ReplayGainTrackGain, tag.ReplayGainTrackPeak, tag.ReplayGainAlbumGain, tag.ReplayGainAlbumPeak,
+	}
+	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
+		e.Set(tag.ReplayGainTrackGain, "-6.5 dB")
+		e.Set(tag.ReplayGainTrackPeak, "0.9")
+		e.Set(tag.ReplayGainAlbumGain, "-7.0 dB")
+		e.Set(tag.ReplayGainAlbumPeak, "0.95")
+		e.Set(tag.EncodedBy, "Src Person")
+		e.Set(tag.EncodingHistory, "A=PCM; A=FLAC")
+		e.Set(tag.AcoustIDFingerprint, "AQAAfingerprint")
+		e.Set(tag.Encoder, "SourceEnc 1.0")
+		e.Set(tag.Title, "Shared Title")
+		e.Set(tag.AcoustID, "recording-xyz") // recording ID is portable
+	})
+	src := mustParseBytes(t, srcBytes)
+
+	dstBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
+		e.Set(tag.Encoder, "DestEnc 9.9")
+	})
+
+	plan, report, err := src.PrepareTransfer(mustParseBytes(t, dstBytes))
+	if err != nil {
+		t.Fatalf("PrepareTransfer: %v", err)
+	}
+
+	disp := map[tag.Key]wl.Disposition{}
+	for _, it := range report.Items {
+		if it.Kind == wl.TransferField {
+			disp[it.Key] = it.Disposition
+		}
+	}
+	for _, k := range ownAudio {
+		if disp[k] != wl.Excluded {
+			t.Errorf("%s disposition = %s, want excluded", k, disp[k])
+		}
+	}
+	if disp[tag.AcoustID] == wl.Excluded {
+		t.Error("ACOUSTID_ID is recording identity and should transfer, not be excluded")
+	}
+	if !report.Lossless() {
+		t.Error("excluding own-audio keys should not make the copy lossy")
+	}
+
+	// The destination keeps its own ENCODER; the work metadata (title + recording ID) carries.
+	result := mustParseBytes(t, applyToBytes(t, dstBytes, plan))
+	if v, _ := result.Get(tag.Encoder); len(v) != 1 || v[0] != "DestEnc 9.9" {
+		t.Errorf("destination ENCODER = %v, want [DestEnc 9.9] (untouched)", v)
+	}
+	if v, _ := result.Get(tag.Title); len(v) != 1 || v[0] != "Shared Title" {
+		t.Errorf("destination TITLE = %v, want [Shared Title] (carried)", v)
+	}
+	if v, _ := result.Get(tag.AcoustID); len(v) != 1 || v[0] != "recording-xyz" {
+		t.Errorf("destination ACOUSTID_ID = %v, want [recording-xyz] (carried)", v)
+	}
 }

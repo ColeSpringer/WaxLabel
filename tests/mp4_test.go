@@ -445,3 +445,51 @@ func decodePCM(t *testing.T, path string) []byte {
 	}
 	return b
 }
+
+// TestMP4ChapterEditKeepsEssenceDigest checks that editing QuickTime chapters in a shared
+// mdat leaves the audio-essence digest unchanged. Front-loaded chapter samples are
+// excluded from the digest, so retitling chapters does not change the audio fingerprint.
+func TestMP4ChapterEditKeepsEssenceDigest(t *testing.T) {
+	ctx := context.Background()
+	before, err := mustParseFile(t, sampleM4B).HashAudioEssence(ctx)
+	if err != nil {
+		t.Fatalf("HashAudioEssence: %v", err)
+	}
+	if before.ExtentVersion != "mp4-mdat-v3" || len(before.Sum) == 0 {
+		t.Fatalf("digest = %s (version %q), want mp4-mdat-v3 with a non-empty sum", before, before.ExtentVersion)
+	}
+
+	path := copyToTemp(t, sampleM4B)
+	plan, err := mustParseFile(t, path).Edit().SetChapters(
+		wl.Chapter{Start: 0, Title: "Retitled One"},
+		wl.Chapter{Start: 3 * time.Second, Title: "Retitled Two"},
+	).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := plan.Execute(ctx, wl.SaveBack()); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := mustParseFile(t, path).HashAudioEssence(ctx)
+	if err != nil {
+		t.Fatalf("HashAudioEssence after: %v", err)
+	}
+	if !before.Equal(after) {
+		t.Errorf("chapter edit changed the essence digest:\n before=%s\n after =%s", before, after)
+	}
+}
+
+// TestMP4DurationIsEditListTrimmed checks that MP4 duration uses the audio track's own
+// edit-list-trimmed length, not the raw mdhd duration that includes AAC encoder priming.
+// Bitrate is recomputed from the trimmed duration.
+func TestMP4DurationIsEditListTrimmed(t *testing.T) {
+	tr := mustParseFile(t, sampleMP4).Properties().First()
+	// sample.m4a trims to ~1.000s; the raw mdhd is ~1.023s and is excluded.
+	if tr.Duration < 995*time.Millisecond || tr.Duration > 1010*time.Millisecond {
+		t.Errorf("duration = %v, want ~1.000s (edit-list-trimmed), not the ~1.023s raw mdhd", tr.Duration)
+	}
+	if tr.Bitrate <= 0 {
+		t.Error("bitrate should be recomputed (positive) from the trimmed duration")
+	}
+}

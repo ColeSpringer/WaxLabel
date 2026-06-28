@@ -19,6 +19,10 @@ type Codec interface {
 	Extensions() []string
 	// Sniff reports whether the leading bytes look like this format.
 	Sniff(header []byte) bool
+	// SkipsLeadingID3 reports whether this parser accepts a leading ID3v2 tag before the
+	// format signature. [DetectLeading] only routes an inner signature past ID3 to codecs
+	// that declare this support; other matches are reported as unsupported input.
+	SkipsLeadingID3() bool
 	// Parse reads metadata from src into a Media.
 	Parse(ctx context.Context, src ReaderAtSized, opts ParseOptions) (*Media, error)
 	// Plan computes the rewrite that realizes edited over base (the unedited
@@ -125,6 +129,15 @@ func NoOpPlan(report WriteReport, size int64, result *Media) *WritePlan {
 		Report:   report,
 		Result:   result,
 	}
+}
+
+// PaddingOp formats the "padding X -> Y" operation line for padding-only writes. oldRegion
+// is the source metadata-region size, newContent is the rendered content size before new
+// padding, and padAfter is the padding now written. The old padding is clamped at zero
+// because this is display text and a re-rendered content block can differ slightly from
+// the on-disk bytes.
+func PaddingOp(oldRegion, newContent, padAfter int64) string {
+	return fmt.Sprintf("padding %d -> %d", max(int64(0), oldRegion-newContent), padAfter)
 }
 
 // DowngradeNoOp returns a clean no-op plan when a codec's projected post-write
@@ -249,7 +262,13 @@ func DetectLeading(src ReaderAtSized, path string, leadingLen func(header []byte
 		return codec, true
 	}
 	if inner, ok := Detect("", peek[:pn]); ok && inner.Format() != codec.Format() {
-		return inner, true
+		// Route through the inner signature only when that parser explicitly accepts a
+		// leading ID3 tag. Container signatures found past ID3 are unsupported input, not
+		// corrupt files for a parser that starts at byte 0.
+		if inner.SkipsLeadingID3() {
+			return inner, true
+		}
+		return nil, false
 	}
 	return codec, true
 }

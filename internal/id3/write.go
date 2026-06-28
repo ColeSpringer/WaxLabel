@@ -483,7 +483,7 @@ func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, o
 		if !ok || len(vals) == 0 {
 			return nil, false
 		}
-		return renderText(version, "TCON", genreValues(vals, version, opts.NumericGenre), opts.Multi)
+		return renderText(version, "TCON", genreValues(vals, version, opts.NumericGenre, opts.Multi), opts.Multi)
 	case token == "TRCK":
 		return renderNumTotal(version, "TRCK", edited, tag.TrackNumber, tag.TrackTotal)
 	case token == "TPOS":
@@ -628,15 +628,14 @@ func detectNumericGenres(changed map[tag.Key]bool, edited tag.TagSet) []string {
 	return out
 }
 
-// isNumericGenreRef reports whether v carries a numeric or special genre reference the
-// read path resolves to a genre name - a bare number ("17"), a parenthesised reference
-// ("(17)", "(51)(39)"), a special code ("(RX)", "(CR)"), or a reference with a refinement
-// ("(17)Hard"). It delegates to resolveGenres, the SAME resolver the parser uses, so the
-// write-time warning cannot drift from what actually round-trips: a value that resolves to a
-// name reads back as that name, a non-verbatim round-trip on the pure-ID3 formats. An
-// out-of-range or non-resolving value (kept verbatim) reports false here, and the retained-
-// value suppression in AppendRebuildWarnings catches any remaining no-change case.
+// isNumericGenreRef reports whether v reads back as a different genre name after write.
+// Values beginning with "(" are escaped by genreValues and round-trip verbatim, so the
+// remaining asymmetry is a bare number such as "17" that the reader resolves to a name.
+// The final resolver is the same one the parser uses.
 func isNumericGenreRef(v string) bool {
+	if strings.HasPrefix(v, "(") {
+		return false // escaped by genreValues, so it round-trips verbatim
+	}
 	_, numeric := resolveGenres(v)
 	return numeric
 }
@@ -663,11 +662,19 @@ func detectDroppedDates(changed map[tag.Key]bool, edited tag.TagSet, version byt
 		if !changed[k] {
 			continue
 		}
-		if v, _ := edited.First(k); v != "" && extractDatePart(v, partYear) == "" {
+		if v, _ := edited.First(k); v23DateDropped(v) {
 			dropped = append(dropped, k)
 		}
 	}
 	return dropped
+}
+
+// v23DateDropped reports whether a v2.3 tag drops the date value v entirely: a non-empty
+// value with no numeric year renders no TYER/TORY frame (both fields need a year). It is
+// the single predicate the write (detectDroppedDates) and the transfer capability's
+// value-drop grading share, so the transfer report cannot drift from the write.
+func v23DateDropped(v string) bool {
+	return v != "" && extractDatePart(v, partYear) == ""
 }
 
 // detectReducedDates finds RecordingDate edits whose finer precision a v2.3 tag drops:
@@ -714,11 +721,11 @@ func reducesDatePrecision(iso string) bool {
 	return monthLost || hourLost || secondsLost
 }
 
-// hasSubYearPart reports whether iso carries a month-or-finer component after its 4-digit
-// year: a '-' then at least one digit (so "2021-3", "2021-03", "2021-03-15" do, but a bare
-// "2021" does not). It separates a reducible partial date from a lossless year-only value.
+// hasSubYearPart reports whether iso carries content beyond its 4-digit year, regardless
+// of separator: "2021-03", "20210503", and "2021.05.03" all do, but "2021" does not.
+// ID3v2.3 year-only fields truncate all such values to the year, including non-dash forms.
 func hasSubYearPart(iso string) bool {
-	return len(iso) >= 6 && iso[4] == '-' && iso[5] >= '0' && iso[5] <= '9'
+	return len(iso) > 4 && extractDatePart(iso, partYear) != ""
 }
 
 // hasSubDayPart reports whether iso carries an hour-or-finer component after a full date: a
@@ -804,12 +811,24 @@ func PerFieldCapabilities(writeVersion byte, numericGenre, genreViaID3 bool) map
 		perField[k] = c
 	}
 	if writeVersion == 3 {
-		add(tag.OriginalDate, core.OriginalDateV23Capability())
+		// Grade v2.3 date transfers by value. TORY is year-only; TYER+TDAT+TIME keeps date
+		// values to the minute. Values with no numeric year render no frame, so the drop
+		// predicate matches the write path.
+		add(tag.OriginalDate, core.WithValueDrop(core.WithValueReduction(core.OriginalDateV23Capability(), reducesToYear), v23DateDropped))
+		add(tag.RecordingDate, core.WithValueDrop(core.WithValueReduction(core.RecordingDateV23Capability(), reducesDatePrecision), v23DateDropped))
 	}
 	if numericGenre && genreViaID3 {
 		add(tag.Genre, core.NumericGenreCapability("numeric ID3 TCON reference"))
 	}
 	return perField
+}
+
+// reducesToYear reports whether storing iso in a year-only field (ID3v2.3 TORY) loses
+// information. Anything that is not exactly a bare year, including a fuller date or a
+// value with no parseable year, is reduced or dropped. Distinct from reducesDatePrecision,
+// which treats a full YYYY-MM-DD as lossless and would wrongly grade it Carried for TORY.
+func reducesToYear(iso string) bool {
+	return extractDatePart(iso, partYear) == "" || hasSubYearPart(iso)
 }
 
 // renderDatePart renders a v2.3 date component (TYER/TDAT/TIME/TORY) extracted
@@ -850,25 +869,51 @@ func extractDatePart(iso string, part datePart) string {
 	return ""
 }
 
-// genreValues converts genre names to numeric references when WithNumericGenre
-// is set and the name is a standard genre; otherwise the names pass through.
-func genreValues(names []string, version byte, numeric bool) []string {
-	if !numeric {
-		return names
+// genreValues converts standard genre names to numeric references when WithNumericGenre is
+// set; other names pass through. Literal names beginning with "(" are escaped at positions
+// where the reader would parse "(ref)" syntax. Generated numeric and special references
+// are left unescaped so the reader can resolve them.
+//
+// A multi-value ID3MultiSlash join skips numeric conversion because the values become one
+// "a / b / c" frame value. A generated reference in the middle would be parsed back as a
+// reference plus a slash-prefixed refinement instead of the intended joined value.
+func genreValues(names []string, version byte, numeric bool, pol core.ID3MultiValuePolicy) []string {
+	if numeric && pol == core.ID3MultiSlash && len(names) > 1 {
+		numeric = false
 	}
 	out := make([]string, len(names))
 	for i, n := range names {
-		if idx := genreIndex(n); idx >= 0 {
-			if version >= 4 {
-				out[i] = strconv.Itoa(idx)
-			} else {
-				out[i] = "(" + strconv.Itoa(idx) + ")"
+		if numeric {
+			if idx := genreIndex(n); idx >= 0 {
+				if version >= 4 {
+					out[i] = strconv.Itoa(idx)
+				} else {
+					out[i] = "(" + strconv.Itoa(idx) + ")"
+				}
+				continue // a generated reference is never escaped
 			}
-			continue
 		}
-		out[i] = n
+		// Escape literal names beginning with "(" where the reader would parse from the
+		// start of this value.
+		if strings.HasPrefix(n, "(") && genreParseLeading(i, len(names), version, pol) {
+			out[i] = "(" + n
+		} else {
+			out[i] = n
+		}
 	}
 	return out
+}
+
+// genreParseLeading reports whether value i lands where resolveGenres parses from the
+// start of the value. Only those positions need "(" escaping.
+func genreParseLeading(i, n int, version byte, pol core.ID3MultiValuePolicy) bool {
+	if n <= 1 || version >= 4 {
+		return true
+	}
+	if pol == core.ID3MultiSlash {
+		return i == 0 // joined into one frame value; only the first is parse-leading
+	}
+	return true // ID3MultiNullSep, ID3MultiRepeatFrame: each value is parse-leading
 }
 
 // encodeUserText renders a TXXX body: encoding, description, then the value(s).

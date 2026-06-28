@@ -393,9 +393,9 @@ func TestPictureMIMESniffReconcile(t *testing.T) {
 	}
 }
 
-// TestSaveBackRefusesReExecute (M2): executing the same plan with SaveBack twice
-// fails the second time with a clear "already saved" message - not the confusing
-// "source changed" the now-rewritten file would otherwise trigger - while a no-op
+// TestSaveBackRefusesReExecute: executing the same plan with SaveBack twice fails the
+// second time with a clear "already wrote ... in place" message rather than the confusing
+// "source changed" the now-rewritten file would otherwise trigger, while a no-op
 // SaveBack (which writes nothing) stays re-runnable.
 func TestSaveBackRefusesReExecute(t *testing.T) {
 	ctx := context.Background()
@@ -410,8 +410,8 @@ func TestSaveBackRefusesReExecute(t *testing.T) {
 	if !errors.Is(err, waxerr.ErrInvalidData) {
 		t.Errorf("second SaveBack err = %v, want ErrInvalidData", err)
 	}
-	if err != nil && !strings.Contains(err.Error(), "already saved") {
-		t.Errorf("second SaveBack err = %v, want it to mention 'already saved'", err)
+	if err != nil && !strings.Contains(err.Error(), "already wrote") {
+		t.Errorf("second SaveBack err = %v, want it to mention 'already wrote ... in place'", err)
 	}
 
 	// A committed SaveBack spends the plan for EVERY destination, not just a second

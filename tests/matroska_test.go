@@ -194,7 +194,7 @@ func TestMatroskaAudioEssence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d1.ExtentVersion != "matroska-clusters-v1" || len(d1.Sum) == 0 {
+	if d1.ExtentVersion != "matroska-clusters-v2" || len(d1.Sum) == 0 {
 		t.Errorf("digest = %s (version %q)", d1, d1.ExtentVersion)
 	}
 	d2, err := mustParseFile(t, sampleMKA).HashAudioEssence(context.Background())

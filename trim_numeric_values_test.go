@@ -78,4 +78,12 @@ func TestTrimNumericValues(t *testing.T) {
 		trimNumericValues(&ts, p)
 		wantVals(t, ts, tag.Title, "  spaced title  ")
 	})
+
+	t.Run("date key trimmed for storage", func(t *testing.T) {
+		var p tag.TagPatch
+		p.Set(tag.RecordingDate, " 2021 ")
+		ts := p.Apply(tag.NewTagSet())
+		trimNumericValues(&ts, p)
+		wantVals(t, ts, tag.RecordingDate, "2021") // stored clean, so no malformed-date note
+	})
 }

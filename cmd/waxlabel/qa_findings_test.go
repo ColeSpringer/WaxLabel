@@ -96,15 +96,28 @@ func TestNumericGenreWriteWarnAsymmetry(t *testing.T) {
 		t.Errorf("a Vorbis target keeps GENRE=17 verbatim and must NOT warn numeric-genre:\n%s", flacOut)
 	}
 
-	// The detection matches the read path's resolver, so parenthesised and special-code
-	// references warn too (they also read back as a name), not just a bare number.
-	for _, ref := range []string{"(17)", "(RX)"} {
+	// A literal value beginning with "(" is escaped on write, so it round-trips verbatim
+	// instead of being resolved to a genre name. The warning and the round-trip should
+	// agree on that behavior.
+	for _, ref := range []string{"(17)", "(RX)", "(2020) Best Of"} {
 		out, _, code := runCLI(t, "plan", notagsMP3, "--set", "GENRE="+ref)
 		if code != 0 {
 			t.Fatalf("plan MP3 GENRE=%s exit = %d, want 0", ref, code)
 		}
-		if !strings.Contains(out, "numeric-genre") {
-			t.Errorf("GENRE=%s on an ID3 target reads back as a name and must warn numeric-genre:\n%s", ref, out)
+		if strings.Contains(out, "numeric-genre") {
+			t.Errorf("GENRE=%s round-trips verbatim and should not warn numeric-genre:\n%s", ref, out)
+		}
+
+		f := copyFixture(t, notagsMP3)
+		if _, stderr, code := runCLI(t, "set", f, "--set", "GENRE="+ref); code != 0 {
+			t.Fatalf("set GENRE=%s exit = %d: %s", ref, code, stderr)
+		}
+		dumped, _, code := runCLI(t, "--json", "dump", f)
+		if code != 0 {
+			t.Fatalf("dump after GENRE=%s exit = %d", ref, code)
+		}
+		if !strings.Contains(dumped, `"`+ref+`"`) {
+			t.Errorf("GENRE=%s did not round-trip verbatim:\n%s", ref, dumped)
 		}
 	}
 }

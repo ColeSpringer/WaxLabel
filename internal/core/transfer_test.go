@@ -1,6 +1,7 @@
 package core
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -309,5 +310,38 @@ func TestProjectTransferEmptyMetadata(t *testing.T) {
 	}
 	if !(TransferReport{Items: items}).Lossless() {
 		t.Error("empty transfer should be lossless")
+	}
+}
+
+// TestProjectTransferTrimsNumericDateValues checks that transfer grading sees the value
+// the writer stores. Numeric and date fields are trimmed before value-level predicates
+// run, while unrelated fields keep surrounding whitespace.
+func TestProjectTransferTrimsNumericDateValues(t *testing.T) {
+	// A drop predicate that fires only for surrounding whitespace proves whether trimming
+	// happened before grading.
+	dropsIfPadded := func(v string) bool { return v != strings.TrimSpace(v) }
+	padSensitive := WithValueDrop(Capability{Read: AccessFull, Write: AccessFull}, dropsIfPadded)
+	caps := NewCapabilities(FormatMP3, false,
+		Capability{Read: AccessFull, Write: AccessFull}, Capability{}, Capability{}, AccessNone,
+		map[tag.Key]Capability{tag.RecordingDate: padSensitive, tag.Title: padSensitive})
+
+	m := &Media{Tags: tag.NewTagSet()}
+	m.Tags.Set(tag.RecordingDate, " 2021 ") // a date field: trimmed before grading
+	m.Tags.Set(tag.Title, " padded ")       // a non-date field: not trimmed
+
+	var rec, title TransferItem
+	for _, it := range ProjectTransfer(m, caps) {
+		switch it.Key {
+		case tag.RecordingDate:
+			rec = it
+		case tag.Title:
+			title = it
+		}
+	}
+	if rec.Disposition == Dropped {
+		t.Errorf("RECORDINGDATE graded %s; expected a padded date to be trimmed to its stored form before grading", rec.Disposition)
+	}
+	if title.Disposition != Dropped {
+		t.Errorf("TITLE graded %s; a non-numeric/non-date value should not be trimmed (the predicate should fire)", title.Disposition)
 	}
 }

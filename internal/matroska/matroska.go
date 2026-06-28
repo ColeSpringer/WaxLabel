@@ -37,6 +37,9 @@ func init() { core.Register(New()) }
 func (Codec) Format() core.Format  { return core.FormatMatroska }
 func (Codec) Extensions() []string { return []string{".mka", ".webm", ".mkv", ".mk3d", ".mks"} }
 
+// SkipsLeadingID3 reports false because Matroska/WebM files begin with an EBML header.
+func (Codec) SkipsLeadingID3() bool { return false }
+
 // Sniff matches the EBML magic that opens every Matroska/WebM file, using the
 // same idEBML constant the parser matches against so the two cannot drift.
 func (Codec) Sniff(header []byte) bool {
@@ -119,15 +122,10 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 // name and the decoder-critical config of the first audio track (CodecID plus
 // sample rate, channels, and bit depth) mixed in ahead of the hashed cluster
 // region, so identical cluster bytes under a different codec or geometry hash
-// differently. The hashed extent is the contiguous cluster span recorded at
-// parse (m.AudioStart..m.AudioEnd).
-//
-// Known limitation: the extent is a single [AudioStart, AudioEnd) span. A non-cluster
-// level-1 element between clusters, such as mid-stream Cues, Tags, or Void, is therefore
-// hashed as if it were essence. If an edit re-renders that element, the audio digest may
-// change even though the cluster bytes did not. The multi-range essence model already
-// exists in core.Media.AudioRanges; the remaining work is to populate it from Matroska
-// cluster runs and bump this extent's version.
+// differently. The hashed extent is the multi-range set of Cluster runs recorded at
+// parse (m.AudioRanges), which excludes any non-cluster level-1 element between
+// clusters (mid-stream Cues, Tags, or Void) so an edit that re-renders such an element
+// no longer changes the audio digest.
 func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 	var cfg []byte
 	if d, ok := m.Native.(*doc); ok {
@@ -140,5 +138,7 @@ func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 		cfg = append(cfg, n[:2]...)
 		cfg = append(cfg, byte(d.bitDepth))
 	}
-	return "matroska-clusters-v1", cfg
+	// v2 changed the hashed byte set to per-cluster runs, excluding inter-cluster
+	// non-cluster elements. Older persisted digests use a different algorithm.
+	return "matroska-clusters-v2", cfg
 }

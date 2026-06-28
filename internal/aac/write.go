@@ -29,8 +29,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report := core.WriteReport{Format: core.FormatAAC, BytesBefore: edited.Identity.Size}
 
 	// Fast path: nothing changed. NoOpPlan emits a verbatim copy (so SaveAsFile/
-	// WriteTo still produce a whole file) flagged NoOp so SaveBack skips it.
-	if !tagsChanged && !picturesChanged {
+	// WriteTo still produce a whole file) flagged NoOp so SaveBack skips it. Explicit
+	// padding requests run the front-tag renderer below so a padding-only edit can take
+	// effect.
+	if !tagsChanged && !picturesChanged && !opts.PaddingExplicit {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
@@ -56,6 +58,12 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report.PaddingAfter = ft.Padding
 	report.Operations = append(report.Operations, ft.Operations...)
 	report.Warnings = append(report.Warnings, ft.Warnings...)
+	// Compare the rendered front-tag size with the source region. When padding is the
+	// only request, a changed size is the edit.
+	regionDiffers := int64(len(ft.Bytes)) != d.id3Len
+	if regionDiffers && !tagsChanged && !picturesChanged {
+		report.Operations = append(report.Operations, core.PaddingOp(d.id3Len, int64(len(ft.Bytes))-ft.Padding, ft.Padding))
+	}
 
 	// Assemble the output: the new ID3v2 tag (when any), then the verbatim ADTS stream.
 	audioLen := d.audioEnd - d.audioStart
@@ -76,7 +84,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// Collapse to a true no-op when the ID3 rebuild re-projected to base's values; AAC has
 	// no strip flag, so nothing structural forces the write. DowngradeNoOp carries the
 	// value-dropped warning forward so a dropped date still surfaces on a no-op.
-	if np := core.DowngradeNoOp(core.FormatAAC, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), false, report.Warnings); np != nil {
+	if np := core.DowngradeNoOp(core.FormatAAC, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), regionDiffers, report.Warnings); np != nil {
 		return np, nil
 	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil

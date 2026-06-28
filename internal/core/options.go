@@ -131,8 +131,13 @@ func DefaultParseOptions() ParseOptions {
 
 // WriteOptions are the resolved write settings a codec sees.
 type WriteOptions struct {
-	Limits          bits.Limits
-	Padding         PaddingPolicy
+	Limits  bits.Limits
+	Padding PaddingPolicy
+	// PaddingExplicit marks the padding policy as a user request rather than the
+	// opportunistic default. Codecs use it to run their authoritative serializer even when
+	// no tag, picture, or legacy change is pending, so padding-only edits are not lost to
+	// the fast-path no-op gate.
+	PaddingExplicit bool
 	Legacy          LegacyPolicy
 	PreserveModTime bool
 	// VerifyEssence hashes the audio essence while it is copied and checks it

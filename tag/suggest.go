@@ -21,6 +21,11 @@ func ClosestKey(s string) (Key, bool) {
 	if up == "" {
 		return "", false
 	}
+	// A recognized alias resolves before the distance fallback. DISC and TRACK are too far
+	// from their canonical names for Levenshtein alone to help.
+	if k, ok := AliasKey(up); ok {
+		return k, true
+	}
 	best := Key("")
 	bestDist := -1
 	for _, k := range sortedKnownKeys {
