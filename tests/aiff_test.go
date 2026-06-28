@@ -162,7 +162,7 @@ func TestAIFFEssenceStableAcrossTagEdit(t *testing.T) {
 		if after := essenceOf(t, out); !before.Equal(after) {
 			t.Errorf("%s: audio essence changed across a tag edit", f)
 		}
-		if before.ExtentVersion != "aiff-ssnd-v1" {
+		if before.ExtentVersion != "aiff-ssnd-v2" {
 			t.Errorf("%s: extent version = %q", f, before.ExtentVersion)
 		}
 		if mustParseBytes(t, out).Fields().Title != "Edited" {
@@ -306,13 +306,82 @@ func TestAIFFVerifyEssenceOnWrite(t *testing.T) {
 	}
 }
 
+// TestAIFFSSNDOffsetExcludedFromEssence verifies that SSND "offset" alignment bytes
+// precede the first sample frame and are not hashed as audio. Files with identical
+// sample frames but different offsets should hash the same.
+func TestAIFFSSNDOffsetExcludedFromEssence(t *testing.T) {
+	samples := bytes.Repeat([]byte{0xA7}, 400)
+	align := []byte{0xFF, 0xFF, 0xFF, 0xFF} // distinct so a leak would change the digest
+
+	off0 := aiffFile("AIFF", stdCOMM(), aiffSSNDOffset(0, nil, samples))
+	off4 := aiffFile("AIFF", stdCOMM(), aiffSSNDOffset(4, align, samples))
+
+	if d0, d4 := essenceOf(t, off0), essenceOf(t, off4); !d0.Equal(d4) {
+		t.Errorf("offset 0 vs 4 essence differ: alignment bytes leaked into the digest\n off0=%x\n off4=%x", d0.Sum, d4.Sum)
+	}
+
+	// A corrupt header whose declared offset overruns the body must collapse the
+	// sample range to empty (the no-audio path), not leave AudioStart > AudioEnd.
+	huge := aiffFile("AIFF", stdCOMM(), aiffSSNDOffset(1<<20, nil, samples))
+	doc := mustParseBytes(t, huge) // must not panic
+	_, err := doc.HashAudioEssence(context.Background(), wl.WithHashSource(wl.BytesSource(huge)))
+	if !errors.Is(err, waxerr.ErrInvalidData) {
+		t.Errorf("oversized SSND offset: hash err = %v, want ErrInvalidData (no-audio path)", err)
+	}
+}
+
+// TestAIFFSSNDOffsetResultMatchesReparse checks that a metadata edit on an AIFF with
+// a non-zero SSND offset returns a result document whose essence range matches a fresh
+// parse of the written output.
+func TestAIFFSSNDOffsetResultMatchesReparse(t *testing.T) {
+	samples := bytes.Repeat([]byte{0xA7}, 400)
+	align := []byte{0xFF, 0xFF, 0xFF, 0xFF} // distinct: a leak would change the digest
+	data := aiffFile("AIFF", aiffText("NAME", "Old"), stdCOMM(), aiffSSNDOffset(4, align, samples))
+
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "New").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w writerTo
+	resDoc, _, err := plan.Execute(context.Background(), wl.WriteTo(&w, wl.BytesSource(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resDigest, err := resDoc.HashAudioEssence(context.Background(), wl.WithHashSource(wl.BytesSource(w.b)))
+	if err != nil {
+		t.Fatalf("hash result essence: %v", err)
+	}
+	if reparse := essenceOf(t, w.b); !resDigest.Equal(reparse) {
+		t.Errorf("result-view essence != reparse essence (SSND offset bytes leaked into the result view)\n result=%x\nreparse=%x", resDigest.Sum, reparse.Sum)
+	}
+
+	// A second edit on the returned document recomputes layout without reparsing, so
+	// ssndAlign must be carried forward.
+	plan2, err := resDoc.Edit().Set(tag.Artist, "Chained").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w2 writerTo
+	res2, _, err := plan2.Execute(context.Background(), wl.WriteTo(&w2, wl.BytesSource(w.b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res2Digest, err := res2.HashAudioEssence(context.Background(), wl.WithHashSource(wl.BytesSource(w2.b)))
+	if err != nil {
+		t.Fatalf("hash chained result essence: %v", err)
+	}
+	if reparse := essenceOf(t, w2.b); !res2Digest.Equal(reparse) {
+		t.Errorf("chained result-view essence != reparse (result doc dropped ssndAlign)\n result=%x\nreparse=%x", res2Digest.Sum, reparse.Sum)
+	}
+}
+
 func TestAIFFRejectsNonAIFF(t *testing.T) {
-	// A FORM container that is not AIFF/AIFC (e.g. an AIFF-less IFF) routed to the
-	// codec by extension must fail loudly rather than mis-parse.
+	// A FORM container that is not AIFF/AIFC carries no AIFF signature, so content-only
+	// detection rejects it as unsupported rather than routing it by extension.
 	data := append([]byte("FORM\x00\x00\x00\x04"), []byte("8SVX")...)
 	path := writeTempFile(t, "x.aiff", data)
 	_, err := wl.ParseFile(context.Background(), path)
-	if !errors.Is(err, waxerr.ErrInvalidData) {
-		t.Fatalf("non-AIFF FORM error = %v, want ErrInvalidData", err)
+	if !errors.Is(err, waxerr.ErrUnsupportedFormat) {
+		t.Fatalf("non-AIFF FORM error = %v, want ErrUnsupportedFormat", err)
 	}
 }

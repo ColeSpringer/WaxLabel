@@ -147,6 +147,33 @@ func TestWAVInfoAuthoritativeWhenNoId3(t *testing.T) {
 	}
 }
 
+// TestWAVITRKReadsTrackNumber checks the ITRK read alias. INFO-only files can read
+// track numbers from ITRK, while newly written track numbers use IPRT so output stays
+// deterministic.
+func TestWAVITRKReadsTrackNumber(t *testing.T) {
+	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Track via ITRK"}, [2]string{"ITRK", "7"}), wavData(400))
+	if got := mustParseBytes(t, data).Fields().TrackNumber; got != 7 {
+		t.Fatalf("ITRK track = %d, want 7", got)
+	}
+	// Writing a fresh track number into an INFO file with no existing track item
+	// must emit the chosen IPRT identifier, not ITRK.
+	base := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Has title"}), wavData(400))
+	plan, err := mustParseBytes(t, base).Edit().Set(tag.TrackNumber, "4").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, base, plan)
+	if !bytes.Contains(out, []byte("IPRT")) {
+		t.Error("freshly written track number should emit IPRT")
+	}
+	if bytes.Contains(out, []byte("ITRK")) {
+		t.Error("write must not emit ITRK; IPRT is the chosen identifier")
+	}
+	if got := mustParseBytes(t, out).Fields().TrackNumber; got != 4 {
+		t.Errorf("round-trip track = %d, want 4", got)
+	}
+}
+
 func TestWAVEditInfoOnlyStaysInfoOnly(t *testing.T) {
 	// Editing an INFO-representable key on an INFO-only file updates INFO in place
 	// and does not introduce an id3 chunk.

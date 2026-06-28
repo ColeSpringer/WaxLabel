@@ -184,13 +184,20 @@ func chapterSamples(chapters []core.Chapter) []byte {
 // the movie duration) so the track spans the whole movie. Deltas are clamped
 // non-negative so an out-of-order list cannot encode a negative duration. The
 // reader sums these from zero, so they double as the basis for the result view.
-func chapterDeltas(chapters []core.Chapter, mts uint32, movieDuration uint64) []uint32 {
+// saturated reports whether any delta exceeded the 32-bit stts field and was
+// clamped. The QuickTime track loses precision there; the uint64 Nero chpl does not.
+func chapterDeltas(chapters []core.Chapter, mts uint32, movieDuration uint64) (deltas []uint32, saturated bool) {
 	n := len(chapters)
 	starts := make([]uint64, n)
 	for i, ch := range chapters {
 		starts[i] = durationToUnits(ch.Start, mts)
 	}
-	deltas := make([]uint32, n)
+	deltas = make([]uint32, n)
+	// debt counts units borrowed to separate coincident starts. Borrowing one unit
+	// keeps deltas strictly increasing; repaying it from later slack keeps subsequent
+	// distinct starts aligned with their originals. The unavoidable +1 stays only on
+	// the duplicate start.
+	var debt uint64
 	for i := range n {
 		var next uint64
 		switch {
@@ -203,16 +210,31 @@ func chapterDeltas(chapters []core.Chapter, mts uint32, movieDuration uint64) []
 		default:
 			next = starts[i] + uint64(mts) // a one-second tail when nothing else bounds it
 		}
-		// Guarantee every chapter spans at least one timescale unit: two chapters at
-		// the same start, or a last chapter the movie duration does not extend, would
-		// otherwise encode a zero-length sample (End == Start). One unit is the smallest
-		// representable nonzero duration and keeps starts strictly increasing.
-		if next <= starts[i] {
-			next = starts[i] + 1
+		// The input is stably sorted by start, so starts[i] <= next normally holds; a
+		// zero raw gap is a genuine collision (or a last chapter the movie duration does
+		// not extend), not disorder.
+		var rawDelta uint64
+		if next > starts[i] {
+			rawDelta = next - starts[i]
 		}
-		deltas[i] = clampU32(next - starts[i])
+		var delta uint64
+		if rawDelta == 0 {
+			delta = 1 // smallest representable nonzero duration; keeps starts increasing
+			debt++
+		} else {
+			delta = rawDelta
+			if debt > 0 && delta > 1 { // repay borrowed units from this chapter's slack
+				repay := min(debt, delta-1)
+				delta -= repay
+				debt -= repay
+			}
+		}
+		if delta > math.MaxUint32 {
+			saturated = true // clampU32 will saturate this to a 32-bit field
+		}
+		deltas[i] = clampU32(delta)
 	}
-	return deltas
+	return deltas, saturated
 }
 
 // buildChapterTrak renders the whole chapter text trak with a placeholder chunk
@@ -220,8 +242,8 @@ func chapterDeltas(chapters []core.Chapter, mts uint32, movieDuration uint64) []
 // returns the trak bytes and the byte offset of the placeholder offset entry
 // within them: because the offset table is the last atom in the track, that
 // entry is simply the final 4 (stco) or 8 (co64) bytes.
-func buildChapterTrak(trackID, mts, movieTimescale uint32, movieDuration uint64, chapters []core.Chapter, co64 bool) (trak []byte, stcoEntryOff int) {
-	deltas := chapterDeltas(chapters, mts, movieDuration)
+func buildChapterTrak(trackID, mts, movieTimescale uint32, movieDuration uint64, chapters []core.Chapter, co64 bool) (trak []byte, stcoEntryOff int, saturated bool) {
+	deltas, saturated := chapterDeltas(chapters, mts, movieDuration)
 	var totalDur uint64
 	for _, d := range deltas {
 		totalDur += uint64(d)
@@ -231,6 +253,10 @@ func buildChapterTrak(trackID, mts, movieTimescale uint32, movieDuration uint64,
 	// (mdhd) stays totalDur. firstStart is 0 for a list starting at t=0, collapsing
 	// to the original equal-duration single-edit layout.
 	firstStart := chapterFirstStart(movieTimescale, chapters)
+	// A first chapter past ~49.7 days saturates the leading empty edit's 32-bit
+	// segment_duration even when every inter-chapter delta is small, so include it in
+	// the WarnChapterStartOverflow signal.
+	saturated = saturated || firstStart > math.MaxUint32
 
 	stbl := renderAtom(atomName("stbl"), slices.Concat(
 		chapterStsd(), buildStts(deltas), buildStsc(len(chapters)), buildStsz(chapters), buildStco(co64)))
@@ -242,7 +268,7 @@ func buildChapterTrak(trackID, mts, movieTimescale uint32, movieDuration uint64,
 	if co64 {
 		width = 8
 	}
-	return trak, len(trak) - width
+	return trak, len(trak) - width, saturated
 }
 
 // buildStts renders the time-to-sample table: one run per sample (sample_count 1,
@@ -303,7 +329,7 @@ func qtWriteRoundTrip(chapters []core.Chapter, mts, movieTimescale uint32, movie
 	if len(chapters) == 0 {
 		return nil
 	}
-	deltas := chapterDeltas(chapters, mts, movieDuration)
+	deltas, _ := chapterDeltas(chapters, mts, movieDuration)
 	// chapterEdts writes firstStart as a u32 segment_duration (clampU32), so derive
 	// the offset from the same clamped value - a reparse reads back exactly that, so
 	// the prediction stays equal even past the 2^32-unit edge. addClamp matches the

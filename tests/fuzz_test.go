@@ -166,3 +166,62 @@ func FuzzParse(f *testing.F) {
 		}
 	})
 }
+
+// FuzzChainedMP4ChapterWrite exercises the returned-document chapter-write path. A
+// tag edit grows ilst inside meta, then a follow-up SetChapters on that returned
+// document must splice chpl into self-consistent bytes and parse again cleanly. Run
+// with:
+//
+//	go test -run x -fuzz FuzzChainedMP4ChapterWrite
+func FuzzChainedMP4ChapterWrite(f *testing.F) {
+	for _, p := range []string{sampleM4B, sampleMP4, notagsMP4} {
+		if b, err := os.ReadFile(p); err == nil {
+			f.Add(b)
+		}
+	}
+	ctx := context.Background()
+	// Some parsed fuzz inputs are still unwritable: oversized layouts, unrepresentable
+	// tags, or content-unrecognized rewrites.
+	accept := func(err error) bool {
+		return errors.Is(err, waxerr.ErrInvalidData) || errors.Is(err, waxerr.ErrSizeTooLarge) ||
+			errors.Is(err, waxerr.ErrUnsupportedTag) || errors.Is(err, waxerr.ErrUnsupportedFormat)
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		doc, err := wl.Parse(ctx, wl.BytesSource(data))
+		if err != nil || doc.Format() != wl.FormatMP4 {
+			return // only the MP4 chained-write path is under test here
+		}
+		// 1. Grow ilst and return a document without reparsing.
+		p1, err := doc.Edit().Set(tag.Title, "a substantially longer title that grows the ilst region").Prepare()
+		if err != nil {
+			if accept(err) {
+				return
+			}
+			t.Fatalf("tag-grow prepare failed: %v", err)
+		}
+		var w1 bytes.Buffer
+		res1, _, err := p1.Execute(ctx, wl.WriteTo(&w1, wl.BytesSource(data)))
+		if err != nil {
+			t.Fatalf("tag-grow write failed: %v", err)
+		}
+		// 2. SetChapters on the returned document splices chpl into the cached udta bytes.
+		p2, err := res1.Edit().SetChapters(
+			wl.Chapter{Start: 0, End: time.Second, Title: "a"},
+			wl.Chapter{Start: time.Second, Title: "b"},
+		).Prepare()
+		if err != nil {
+			if accept(err) {
+				return
+			}
+			t.Fatalf("chained chapter prepare failed: %v", err)
+		}
+		var w2 bytes.Buffer
+		if _, _, err := p2.Execute(ctx, wl.WriteTo(&w2, wl.BytesSource(w1.Bytes()))); err != nil {
+			t.Fatalf("chained chapter write failed: %v", err)
+		}
+		// 3. The twice-edited output must parse cleanly.
+		if _, err := wl.Parse(ctx, wl.BytesSource(w2.Bytes())); err != nil {
+			t.Fatalf("re-parse of chained chapter output failed: %v", err)
+		}
+	})
+}

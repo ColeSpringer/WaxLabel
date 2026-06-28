@@ -178,8 +178,8 @@ func TestVoidOfTotal(t *testing.T) {
 // across 64 bits is negligible.
 func TestAttachedFileUID(t *testing.T) {
 	pic := core.Picture{Type: core.PicFrontCover, MIME: "image/png", Data: []byte("cover-bytes")}
-	b0, _ := attachedFileBytes(pic)
-	b1, _ := attachedFileBytes(pic)
+	b0, _ := attachedFileBytes(pic, "cover.png")
+	b1, _ := attachedFileBytes(pic, "cover.png")
 
 	if uidOf(t, b0) == 0 || uidOf(t, b1) == 0 {
 		t.Error("FileUID must be non-zero")

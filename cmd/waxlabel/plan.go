@@ -102,16 +102,20 @@ func newPlanCmd() *cobra.Command {
 // every array element into it (Error set, plan fields absent on failure; Error nil
 // and plan fields populated on success). See jsonErrorEntry.
 type jsonReport struct {
-	SchemaVersion int           `json:"schemaVersion"`
-	File          string        `json:"file"`
-	Error         *jsonErrBody  `json:"error,omitempty"`
-	NoOp          bool          `json:"noOp"`
-	Changes       []jsonChange  `json:"changes"`
-	Operations    []string      `json:"operations"`
-	BytesBefore   int64         `json:"bytesBefore"`
-	BytesAfter    int64         `json:"bytesAfter"`
-	PaddingAfter  int64         `json:"paddingAfter"`
-	Warnings      []jsonWarning `json:"warnings"`
+	SchemaVersion int          `json:"schemaVersion"`
+	File          string       `json:"file"`
+	Error         *jsonErrBody `json:"error,omitempty"`
+	NoOp          bool         `json:"noOp"`
+	// Changes is the canonical tag-level diff: keys added, removed, or replaced.
+	// Operations is the structural write list, such as an ID3v2 frame rewrite,
+	// encoder-stamp strip, or chapter-track rewrite. A fix can touch only native
+	// structure, so empty Changes can still be paired with non-empty Operations.
+	Changes      []jsonChange  `json:"changes"`
+	Operations   []string      `json:"operations"`
+	BytesBefore  int64         `json:"bytesBefore"`
+	BytesAfter   int64         `json:"bytesAfter"`
+	PaddingAfter int64         `json:"paddingAfter"`
+	Warnings     []jsonWarning `json:"warnings"`
 }
 
 // jsonChange is one field's change in a write plan: the canonical key, how it

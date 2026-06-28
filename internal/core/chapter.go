@@ -72,6 +72,77 @@ type Chapter struct {
 	_ struct{}
 }
 
+// ChapterLoss names chapter metadata a destination format cannot preserve, such as
+// formats that store only start+title. It is recorded on the chapters [Capability]
+// so transfer reports and direct-edit warnings use the same [ChaptersLoseMetadata]
+// predicate, matching [PictureLoss] for pictures.
+type ChapterLoss uint8
+
+const (
+	// ChapterLossNone means the format preserves chapter end times, per-chapter
+	// language, and the hidden/disabled flags (Matroska/WebM).
+	ChapterLossNone ChapterLoss = iota
+	// ChapterLossStartTitleOnly means the format stores each chapter's start and title
+	// only, dropping a gapped end time, per-chapter language, and hidden/disabled
+	// flags. MP4's Nero chpl and QuickTime text track use this model.
+	ChapterLossStartTitleOnly
+)
+
+// ChaptersLoseMetadata reports whether writing chs to a destination with loss would
+// discard metadata present in chs. Transfers and direct-edit warnings share this
+// predicate, so they classify the same chapter sets as lossy.
+//
+// For [ChapterLossStartTitleOnly]:
+//   - Hidden or Disabled chapters lose those flags.
+//   - An explicit End that cannot be inferred from the next Start is lost. An End
+//     equal to the next Start is safe because MP4 infers it.
+//   - Varying Language or LanguageIETF values are lost, but uniform language values
+//     are not treated as loss. mkvmerge commonly writes ChapLanguageIETF on every
+//     chapter, so language presence alone would make ordinary Matroska-to-MP4 copies
+//     look lossy. ISO and IETF values are counted separately so a uniform
+//     "eng"/"en-US" pair is not mistaken for variety.
+func ChaptersLoseMetadata(chs []Chapter, loss ChapterLoss) bool {
+	if loss != ChapterLossStartTitleOnly {
+		return false
+	}
+	// Lazily allocated: a Hidden/Disabled or gapped-end chapter returns before any
+	// language is recorded, so the common early-out path allocates nothing. len() on a
+	// nil map is 0, so the final distinct-count check below still holds.
+	var iso, ietf map[string]bool
+	for i, c := range chs {
+		if c.Hidden || c.Disabled {
+			return true
+		}
+		if c.End > 0 && (i == len(chs)-1 || c.End != chs[i+1].Start) {
+			return true
+		}
+		if c.Language != "" {
+			if iso == nil {
+				iso = make(map[string]bool)
+			}
+			iso[c.Language] = true
+		}
+		if c.LanguageIETF != "" {
+			if ietf == nil {
+				ietf = make(map[string]bool)
+			}
+			ietf[c.LanguageIETF] = true
+		}
+	}
+	return len(iso) > 1 || len(ietf) > 1
+}
+
+// ChapterLossFor returns the chapter-metadata loss a format incurs on write, derived
+// from the codec's own chapters capability using default write options. Chapter loss
+// is not option-dependent, so this cannot drift from the codec's declaration. It lets
+// the editor resolve the loss for the edit-time warning without threading write options.
+func ChapterLossFor(format Format) ChapterLoss {
+	if c, ok := ForFormat(format); ok {
+		return c.Capabilities(nil, WriteOptions{}).Chapters.ChapterLoss
+	}
+	return ChapterLossNone
+}
+
 // EqualChapters reports whether two chapter slices are identical by content,
 // including order. It is the chapter analogue of EqualPictures, so a codec can
 // detect a chapter edit the same way it detects a picture edit.

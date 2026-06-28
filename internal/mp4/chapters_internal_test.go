@@ -30,21 +30,80 @@ func TestChapterDeltasLastChapterBounded(t *testing.T) {
 	// An unknown movie duration (the sentinel maps to 0) must give the final
 	// chapter a one-second tail, not a multi-week span - the regression a raw
 	// 0xFFFFFFFF movieDuration would cause.
-	if d := chapterDeltas(chs, 1000, 0); d[1] != 1000 {
+	if d, _ := chapterDeltas(chs, 1000, 0); d[1] != 1000 {
 		t.Errorf("last delta with unknown duration = %d, want 1000 (1s tail)", d[1])
 	}
 	// A real movie duration bounds the last chapter to the remaining span.
-	if d := chapterDeltas(chs, 1000, 9000); d[1] != 4000 {
+	if d, _ := chapterDeltas(chs, 1000, 9000); d[1] != 4000 {
 		t.Errorf("last delta with duration 9000 = %d, want 4000", d[1])
 	}
 	// An out-of-order start cannot encode a negative span. Defense in depth behind
 	// the editor's sort: clamp to one unit so every chapter still spans End > Start.
-	if d := chapterDeltas([]core.Chapter{{Start: 5 * time.Second}, {Start: time.Second}}, 1000, 0); d[0] != 1 {
+	if d, _ := chapterDeltas([]core.Chapter{{Start: 5 * time.Second}, {Start: time.Second}}, 1000, 0); d[0] != 1 {
 		t.Errorf("backwards gap delta = %d, want 1 (clamped to the one-unit minimum)", d[0])
 	}
 	// Two chapters at the same start must still give the first one a nonzero duration.
-	if d := chapterDeltas([]core.Chapter{{Start: time.Second}, {Start: time.Second}}, 1000, 0); d[0] != 1 {
+	if d, _ := chapterDeltas([]core.Chapter{{Start: time.Second}, {Start: time.Second}}, 1000, 0); d[0] != 1 {
 		t.Errorf("same-start delta = %d, want 1 (one-unit minimum, not a zero-length chapter)", d[0])
+	}
+}
+
+// TestChapterDeltasRepaysCollisionDebt checks that the one-unit duration used for a
+// duplicate start is subtracted from later slack, so later distinct starts reconstruct
+// exactly. [1s, 1s, 5s, 8s] reconstructs to 1s / 1.001s / 5s / 8s.
+func TestChapterDeltasRepaysCollisionDebt(t *testing.T) {
+	chs := []core.Chapter{
+		{Start: 1 * time.Second},
+		{Start: 1 * time.Second},
+		{Start: 5 * time.Second},
+		{Start: 8 * time.Second},
+	}
+	deltas, saturated := chapterDeltas(chs, 1000, 10000)
+	if saturated {
+		t.Error("no delta should saturate for second-scale starts")
+	}
+	// The leading empty edit anchors chapter 0 at its start; each later absolute start
+	// is that plus the running sum of preceding deltas, exactly as the reader sums them.
+	const firstStart uint64 = 1000
+	want := []uint64{1000, 1001, 5000, 8000}
+	var sum uint64
+	for i, d := range deltas {
+		if abs := firstStart + sum; abs != want[i] {
+			t.Errorf("chapter %d reconstructed start = %d, want %d (deltas %v)", i, abs, want[i], deltas)
+		}
+		sum += uint64(d)
+	}
+}
+
+// TestChapterDeltasSaturationFlag checks that a chapter start past the 32-bit stts
+// field (~49.7 days at the movie timescale) sets the saturation flag surfaced as
+// WarnChapterStartOverflow, while an ordinary list does not.
+func TestChapterDeltasSaturationFlag(t *testing.T) {
+	if _, sat := chapterDeltas([]core.Chapter{{Start: 0}, {Start: 5 * time.Second}}, 1000, 0); sat {
+		t.Error("ordinary second-scale chapters must not flag saturation")
+	}
+	huge := []core.Chapter{{Start: 0}, {Start: 50 * 24 * time.Hour}} // ~50 days > MaxUint32 ms units
+	if _, sat := chapterDeltas(huge, 1000, 0); !sat {
+		t.Error("a >49.7-day chapter gap must flag saturation")
+	}
+}
+
+// TestBuildChapterTrakLeadingOffsetSaturates checks that a first chapter past the
+// 32-bit edit-list segment_duration (~49.7 days) flags saturation even when every
+// inter-chapter delta is small. chapterDeltas sees only gaps, so buildChapterTrak
+// must also account for the leading empty edit.
+func TestBuildChapterTrakLeadingOffsetSaturates(t *testing.T) {
+	day := 24 * time.Hour
+	// First chapter at 60 days (> MaxUint32 ms units), the next only 5s later.
+	chs := []core.Chapter{{Start: 60 * day}, {Start: 60*day + 5*time.Second}}
+	if _, satDeltas := chapterDeltas(chs, 1000, 0); satDeltas {
+		t.Fatal("setup: the small inter-chapter gap should not saturate the deltas")
+	}
+	if _, _, sat := buildChapterTrak(2, 1000, 1000, 0, chs, false); !sat {
+		t.Error("a first chapter past ~49.7 days must flag saturation (leading empty edit clamped)")
+	}
+	if _, _, sat := buildChapterTrak(2, 1000, 1000, 0, []core.Chapter{{Start: 0}, {Start: 5 * time.Second}}, false); sat {
+		t.Error("a normal chapter list must not flag saturation")
 	}
 }
 
@@ -125,7 +184,7 @@ func TestBuildChapterTrakEditGating(t *testing.T) {
 }
 
 func mustBuildTrak(trackID, mts, movieTimescale uint32, chs []core.Chapter) []byte {
-	trak, _ := buildChapterTrak(trackID, mts, movieTimescale, 0, chs, false)
+	trak, _, _ := buildChapterTrak(trackID, mts, movieTimescale, 0, chs, false)
 	return trak
 }
 

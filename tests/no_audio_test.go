@@ -10,17 +10,14 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestNoAudioMP3RefusesHashAndWrite (H1): a non-empty text file named .mp3 parses
-// (detected by extension) with no audio frames - the parser flags WarnNoAudioFrames
-// even though it set a non-empty essence range over the text bytes. The library must
-// refuse to hash, verify, or write it, so HashAudioEssence (and thus verify) and
-// Editor.Prepare (and thus set/plan/lint --fix/copy-dest) all fail with ErrInvalidData
-// rather than silently succeed over non-audio bytes - a no-audio file lints and verifies
-// alike. empty.mp3 was already covered by the all-empty-range path; this is the
-// non-empty-range case the digest guard formerly missed.
+// TestNoAudioMP3RefusesHashAndWrite checks that an MP3 selected by a leading ID3v2
+// tag but carrying non-MPEG bytes refuses hashing and writes. The parser reports
+// WarnNoAudioFrames over a non-empty essence range; HashAudioEssence, verify, and
+// Editor.Prepare all fail with ErrInvalidData instead of treating those bytes as audio.
 func TestNoAudioMP3RefusesHashAndWrite(t *testing.T) {
 	ctx := context.Background()
-	path := writeTempFile(t, "notaudio.mp3", []byte("this is not audio, just plain text\n"))
+	data := append(id3v2(4, textFrame(4, "TIT2", "x")), []byte("this is not audio, just plain text\n")...)
+	path := writeTempFile(t, "notaudio.mp3", data)
 	doc, err := wl.ParseFile(ctx, path)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -39,19 +36,14 @@ func TestNoAudioMP3RefusesHashAndWrite(t *testing.T) {
 	}
 }
 
-// TestNoAudioAACRefusesHashAndWrite (Fix 3): a .aac file with no decodable ADTS
-// frame must be flagged exactly like the MP3 case. The parser sets a non-empty
-// essence range over the whole post-ID3 region but no whole frame decodes, so it
-// raises WarnNoAudioFrames; the library then refuses to hash, verify, or write it
-// (ErrInvalidData) instead of digesting non-audio bytes. Before Fix 3 the AAC
-// parser stayed silent on every one of these and verify happily hashed the bytes.
+// TestNoAudioAACRefusesHashAndWrite checks that an AAC file selected by a valid ADTS
+// header but containing no whole frame is treated like the MP3 no-audio case. The
+// parser reports WarnNoAudioFrames and hashing, verify, and writes fail with
+// ErrInvalidData instead of digesting non-audio bytes.
 //
-// Three no-frame shapes share the one TotalSamples==0 gate:
-//   - garbage: a long non-ADTS payload (detected as AAC only by the .aac extension);
-//   - shorter-than-header: essence below the 7-byte ADTS header size;
-//   - valid-header-zero-frames: a header that decodes (so the bytes self-detect as
-//     AAC) but declares a frame the truncated body cannot complete - zero whole
-//     frames counted.
+// Under content-only detection only a genuine ADTS signature reaches the AAC codec.
+// Non-ADTS garbage is unsupported; the valid-but-truncated header below still
+// self-detects and exercises the zero-frame gate.
 func TestNoAudioAACRefusesHashAndWrite(t *testing.T) {
 	ctx := context.Background()
 
@@ -74,8 +66,6 @@ func TestNoAudioAACRefusesHashAndWrite(t *testing.T) {
 		name string
 		data []byte
 	}{
-		{"garbage", append([]byte("this is not audio, just text"), make([]byte, 4096)...)},
-		{"shorter-than-header", []byte{0x01, 0x02, 0x03}},
 		{"valid-header-zero-frames", adtsHeaderOnly(2000)},
 	}
 	for _, tc := range cases {
@@ -86,7 +76,7 @@ func TestNoAudioAACRefusesHashAndWrite(t *testing.T) {
 				t.Fatalf("parse: %v", err)
 			}
 			if doc.Format() != wl.FormatAAC {
-				t.Fatalf("format = %v, want AAC (the .aac extension must still resolve)", doc.Format())
+				t.Fatalf("format = %v, want AAC (the ADTS header must self-detect)", doc.Format())
 			}
 			if !hasWarning(doc, wl.WarnNoAudioFrames) {
 				t.Fatal("expected a no-audio warning on a frameless .aac")

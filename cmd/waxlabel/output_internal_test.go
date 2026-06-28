@@ -27,6 +27,36 @@ func TestHasFlagHonorsDoubleDash(t *testing.T) {
 	}
 }
 
+// TestWantsJSONParsesBoolForms checks that raw-argument routing follows pflag's
+// boolean forms: ParseBool spellings update the flag, invalid values leave the
+// previous state unchanged, and tokens after "--" are positionals.
+func TestWantsJSONParsesBoolForms(t *testing.T) {
+	for _, c := range []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"caps", "--json"}, true},
+		{[]string{"caps", "--json=true"}, true},
+		{[]string{"caps", "--json=1"}, true},
+		{[]string{"caps", "--json=t"}, true},
+		{[]string{"caps", "--json=T"}, true},
+		{[]string{"caps", "--json=TRUE"}, true},
+		{[]string{"caps", "--json=True"}, true},
+		{[]string{"caps", "--json=false"}, false},
+		{[]string{"caps", "--json=0"}, false},
+		{[]string{"caps", "--json=f"}, false},
+		{[]string{"caps", "--json=bogus"}, false},         // unparseable: prior state (false) stands
+		{[]string{"caps", "--json=yes"}, false},           // ParseBool rejects "yes" (not a bool spelling)
+		{[]string{"caps", "--json=1", "--json=0"}, false}, // last wins
+		{[]string{"caps", "--", "--json=1"}, false},       // after -- is a positional
+		{[]string{"caps"}, false},
+	} {
+		if got := wantsJSON(c.args); got != c.want {
+			t.Errorf("wantsJSON(%q) = %v, want %v", c.args, got, c.want)
+		}
+	}
+}
+
 // TestStrictWarningReasonKeyless (review #2): the --strict reason names the offending
 // key when a warning carries one, and degrades to the warning's own prose (rather than
 // a message with a leading bare colon) for a defensive keyless warning.

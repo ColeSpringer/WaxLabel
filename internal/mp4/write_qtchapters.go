@@ -79,6 +79,10 @@ func planChaptersQT(d *doc, edited *core.Media, needIlst bool, opts core.WriteOp
 		report.Warnings = core.Warn(report.Warnings, core.WarnChapterTitleTruncated,
 			fmt.Sprintf("%d chapter title(s) trimmed to %d bytes (the chapter-title length limit)", n, titleByteMax))
 	}
+	if plan.sttsSaturated {
+		report.Warnings = core.Warn(report.Warnings, core.WarnChapterStartOverflow,
+			"a chapter start exceeds the QuickTime track's 32-bit duration field (~49.7 days) and was clamped; the Nero chpl keeps the exact value")
+	}
 
 	plan.resultItems = d.items
 	if needIlst {
@@ -130,6 +134,11 @@ type qtPlan struct {
 	// For the post-write chapter view.
 	mts          uint32
 	chplChapters []core.Chapter // chplRoundTrip(edited.Chapters), for the result's conflict check
+
+	// sttsSaturated is set when a chapter's QuickTime stts delta overflowed the
+	// 32-bit field and was clamped (a start beyond ~49.7 days at the movie
+	// timescale); the caller surfaces it as a WarnChapterStartOverflow.
+	sttsSaturated bool
 }
 
 // assembleQT builds the full edit list for one stco width. It is called at most
@@ -158,9 +167,10 @@ func assembleQT(d *doc, edited *core.Media, reg udtaRegion, clearing bool, mts u
 		default:
 			p.newTrackID = d.nextTrackID
 		}
-		chapTrak, off := buildChapterTrak(p.newTrackID, mts, d.movieTimescale, d.movieDuration, edited.Chapters, co64)
+		chapTrak, off, saturated := buildChapterTrak(p.newTrackID, mts, d.movieTimescale, d.movieDuration, edited.Chapters, co64)
 		stcoOffInTrak = off
 		p.chapTrakLen = int64(len(chapTrak))
+		p.sttsSaturated = saturated
 
 		if d.chapTrak != nil {
 			// Replace the existing chapter track in place; the audio tref already

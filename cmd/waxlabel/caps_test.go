@@ -193,6 +193,30 @@ func TestCapsUsageErrors(t *testing.T) {
 	}
 }
 
+// TestCapsJSONShortBoolForm verifies that --json=1 on an early usage error still
+// returns the JSON error envelope on stdout. The normal success path is handled by
+// pflag; terminal errors use wantsJSON's raw-argument scan and must agree with it.
+func TestCapsJSONShortBoolForm(t *testing.T) {
+	stdout, stderr, code := runCLI(t, "caps", "--format", "bogus", "--json=1")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (usage)", code)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Errorf("error should be JSON on stdout, not text on stderr; stderr:\n%s", stderr)
+	}
+	var env struct {
+		Error *struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
+		t.Fatalf("stdout is not the JSON error envelope: %v\n%s", err, stdout)
+	}
+	if env.Error == nil || env.Error.Code == "" {
+		t.Errorf("expected a populated JSON error envelope, got %s", stdout)
+	}
+}
+
 func TestParseFormat(t *testing.T) {
 	cases := []struct {
 		in   string

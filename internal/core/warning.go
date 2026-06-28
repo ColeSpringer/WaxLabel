@@ -160,6 +160,20 @@ const (
 	// be kept. It is a plan-time warning carrying the affected key (Warning.Keys), so the
 	// CLI's --strict gate can act on it.
 	WarnTagStructureDropped
+	// WarnChapterStartOverflow means a chapter start exceeded the QuickTime chapter
+	// track's 32-bit stts duration field (~49.7 days at the movie timescale) and was
+	// clamped on write. This is MP4-only and QuickTime-track-specific: the uint64
+	// Nero chpl stores the exact start, so only the QuickTime navigation timeline
+	// loses precision. It is keyless because it describes the chapter set, not a tag field.
+	WarnChapterStartOverflow
+	// WarnChapterMetadataDropped means a direct chapter edit to a format that stores
+	// chapter start+title only (MP4) carried chapters whose end times, per-chapter
+	// language, or hidden/disabled flags it cannot represent, so that metadata is
+	// dropped on write. It is scoped to authored chapters and suppressed during a
+	// faithful transfer carry. WarnChapterEndsDropped is separate: it covers the
+	// Matroska CLI's no-end-syntax limitation, while this covers MP4's start+title-only
+	// capability limit. It is keyless because it describes the chapter set, not a tag field.
+	WarnChapterMetadataDropped
 )
 
 func (c WarningCode) String() string {
@@ -228,6 +242,10 @@ func (c WarningCode) String() string {
 		return "padding-clamped"
 	case WarnTagStructureDropped:
 		return "tag-structure-dropped"
+	case WarnChapterStartOverflow:
+		return "chapter-start-overflow"
+	case WarnChapterMetadataDropped:
+		return "chapter-metadata-dropped"
 	default:
 		return "unknown"
 	}

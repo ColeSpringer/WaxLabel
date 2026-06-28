@@ -2,6 +2,7 @@ package core
 
 import (
 	"testing"
+	"time"
 
 	"github.com/colespringer/waxlabel/tag"
 )
@@ -226,6 +227,74 @@ func TestRepresentableUsesSniffedMIME(t *testing.T) {
 	}
 	if !Representable(mp4, Picture{MIME: "image/png"}) {
 		t.Error("a label-only image/png (no bytes) should be representable")
+	}
+}
+
+// TestChaptersLoseMetadata checks the start+title-only loss predicate. Only metadata
+// the destination actually drops should flag a loss; uniform language metadata and
+// ChapterLossNone should not.
+func TestChaptersLoseMetadata(t *testing.T) {
+	sec := func(s int) time.Duration { return time.Duration(s) * time.Second }
+	cases := []struct {
+		name string
+		chs  []Chapter
+		want bool
+	}{
+		{"plain", []Chapter{{Start: 0, Title: "A"}, {Start: sec(5), Title: "B"}}, false},
+		{"uniform-ietf", []Chapter{{Start: 0, LanguageIETF: "en-US"}, {Start: sec(5), LanguageIETF: "en-US"}}, false},
+		{"uniform-iso+ietf", []Chapter{{LanguageIETF: "en-US", Language: "eng"}, {Start: sec(5), LanguageIETF: "en-US", Language: "eng"}}, false},
+		{"varying-iso", []Chapter{{Language: "fre"}, {Start: sec(5), Language: "ger"}}, true},
+		{"varying-ietf", []Chapter{{LanguageIETF: "fr-FR"}, {Start: sec(5), LanguageIETF: "de-DE"}}, true},
+		{"hidden", []Chapter{{Hidden: true}}, true},
+		{"disabled", []Chapter{{Disabled: true}}, true},
+		{"gapped-end", []Chapter{{End: sec(3)}, {Start: sec(5)}}, true},      // gap inference cannot recover this
+		{"contiguous-end", []Chapter{{End: sec(5)}, {Start: sec(5)}}, false}, // End == next Start, inferred
+		{"last-end", []Chapter{{}, {Start: sec(5), End: sec(9)}}, true},      // last End always lost
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := ChaptersLoseMetadata(c.chs, ChapterLossStartTitleOnly); got != c.want {
+				t.Errorf("ChaptersLoseMetadata = %v, want %v", got, c.want)
+			}
+			if ChaptersLoseMetadata(c.chs, ChapterLossNone) {
+				t.Error("ChapterLossNone must never flag a loss")
+			}
+		})
+	}
+}
+
+// TestProjectTransferChapterGrading checks that a start+title-only destination marks
+// chapter sets Lossy only when they carry metadata the destination drops. Plain
+// chapters copy as Carried, and a lossless destination carries metadata-bearing
+// chapters as well.
+func TestProjectTransferChapterGrading(t *testing.T) {
+	sec := func(s int) time.Duration { return time.Duration(s) * time.Second }
+	startTitleOnly := Capability{Write: AccessFull, ChapterLoss: ChapterLossStartTitleOnly, Fidelity: "start and title only"}
+	mp4 := NewCapabilities(FormatMP4, false,
+		Capability{Write: AccessFull}, Capability{Write: AccessFull}, startTitleOnly, AccessNone, nil)
+
+	chapterItem := func(caps Capabilities, chs []Chapter) TransferItem {
+		for _, it := range ProjectTransfer(&Media{Format: FormatMatroska, Chapters: chs}, caps) {
+			if it.Kind == TransferChapter {
+				return it
+			}
+		}
+		t.Fatal("no chapter item")
+		return TransferItem{}
+	}
+
+	lossy := []Chapter{{End: sec(3), Title: "A", Language: "fre", Hidden: true}, {Start: sec(5), Title: "B", Language: "ger"}}
+	if it := chapterItem(mp4, lossy); it.Disposition != Lossy || it.Reason != "start and title only" {
+		t.Errorf("metadata-bearing chapters = %s/%q, want Lossy with the fidelity reason", it.Disposition, it.Reason)
+	}
+	carried := []Chapter{{Title: "A", LanguageIETF: "en-US"}, {Start: sec(5), Title: "B", LanguageIETF: "en-US"}}
+	if it := chapterItem(mp4, carried); it.Disposition != Carried {
+		t.Errorf("plain uniform-language chapters = %s, want Carried", it.Disposition)
+	}
+	lossless := NewCapabilities(FormatMatroska, false,
+		Capability{Write: AccessFull}, Capability{Write: AccessFull}, Capability{Write: AccessFull}, AccessNone, nil)
+	if it := chapterItem(lossless, lossy); it.Disposition != Carried {
+		t.Errorf("Matroska->Matroska chapters = %s, want Carried", it.Disposition)
 	}
 }
 

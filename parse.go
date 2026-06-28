@@ -98,7 +98,8 @@ func parseSource(ctx context.Context, src ReaderAtSized, path string, opts core.
 	// name is the display form for the could-not-identify diagnostics: the caller's
 	// SourceName when set (so a buffered-stdin temp path or the path-less Parse does
 	// not surface a temp path or an empty ""), else the path argument. Detection
-	// below still keys on the real path's extension, never name.
+	// below is content-only (it consults neither name nor the path extension); name
+	// is purely for the diagnostic text.
 	name := opts.SourceName
 	if name == "" {
 		name = path
@@ -110,11 +111,10 @@ func parseSource(ctx context.Context, src ReaderAtSized, path string, opts core.
 		name = "<unnamed input>"
 	}
 	// An empty file carries no signature, so its format cannot be identified
-	// regardless of name: normalize it to one outcome (unsupported) here, rather
-	// than letting the extension fall through to a codec whose own parse then fails
-	// with a different class - e.g. empty.flac as invalid-data but empty.bin as
-	// unsupported. Detection stays policy-free ("what format is this"); this one
-	// site owns the empty-file rule.
+	// regardless of name. Content-only detection already reaches the same outcome
+	// (no signature -> unsupported), but this site short-circuits it with a precise
+	// "(empty file)" diagnostic instead of a bare "could not identify". Detection
+	// stays policy-free ("what format is this"); this one site owns the empty-file rule.
 	if src.Size() == 0 {
 		return nil, fmt.Errorf("%w: could not identify %q (empty file)", waxerr.ErrUnsupportedFormat, name)
 	}

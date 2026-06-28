@@ -218,6 +218,77 @@ func TestMP4ChapterEditKeepsMoovFingerprinted(t *testing.T) {
 	}
 }
 
+// TestMP4ChapterStartOverflowWarns checks that a chapter start past the QuickTime
+// stts 32-bit field (~49.7 days at the movie timescale) surfaces a warning and still
+// writes a reparsable file. The uint64 Nero chpl keeps the exact start.
+func TestMP4ChapterStartOverflowWarns(t *testing.T) {
+	build := func(stcoOff uint32) []byte {
+		moov := mp4Atom("moov", mp4AudioTrakTkhd(1, stcoOff))
+		return slices.Concat(mp4Ftyp(), moov, mp4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)))
+	}
+	tmp := build(0)
+	data := build(uint32(bytes.Index(tmp, []byte("mdat")) + 4))
+
+	plan, err := mustParseBytes(t, data).Edit().
+		SetChapters(
+			wl.Chapter{Start: 0, Title: "A"},
+			wl.Chapter{Start: 50 * 24 * time.Hour, Title: "B"}, // ~50 days > MaxUint32 ms units
+		).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	overflow := false
+	for _, w := range plan.Report().Warnings {
+		if w.Code == wl.WarnChapterStartOverflow {
+			overflow = true
+		}
+	}
+	if !overflow {
+		t.Errorf("expected a chapter-start-overflow warning; got %v", plan.Report().Warnings)
+	}
+	// The clamp must not corrupt the output: it still reparses with both chapters.
+	if chs := mustParseBytes(t, applyToBytes(t, data, plan)).Chapters(); len(chs) != 2 {
+		t.Errorf("reparsed chapters = %d, want 2", len(chs))
+	}
+}
+
+// TestMP4SetChaptersMetadataDroppedWarns checks the direct-edit warning for MP4's
+// start+title-only chapter storage. Gapped ends should warn chapter-metadata-dropped,
+// while the Matroska-specific chapter-ends-dropped warning remains separate.
+func TestMP4SetChaptersMetadataDroppedWarns(t *testing.T) {
+	build := func(stcoOff uint32) []byte {
+		moov := mp4Atom("moov", mp4AudioTrakTkhd(1, stcoOff))
+		return slices.Concat(mp4Ftyp(), moov, mp4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)))
+	}
+	tmp := build(0)
+	data := build(uint32(bytes.Index(tmp, []byte("mdat")) + 4))
+
+	// A gapped end (chapter A ends at 1s, chapter B starts at 3s) is metadata MP4 drops.
+	plan, err := mustParseBytes(t, data).Edit().
+		SetChapters(
+			wl.Chapter{Start: 0, End: time.Second, Title: "A"},
+			wl.Chapter{Start: 3 * time.Second, Title: "B"},
+		).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !planWarns(t, plan, wl.WarnChapterMetadataDropped) {
+		t.Errorf("MP4 SetChapters with a gapped end should warn chapter-metadata-dropped; got %v", plan.Report().Warnings)
+	}
+	if planWarns(t, plan, wl.WarnChapterEndsDropped) {
+		t.Error("MP4 must not emit chapter-ends-dropped (that is the Matroska CLI limitation)")
+	}
+
+	plain, err := mustParseBytes(t, data).Edit().
+		SetChapters(wl.Chapter{Start: 0, Title: "A"}, wl.Chapter{Start: 3 * time.Second, Title: "B"}).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planWarns(t, plain, wl.WarnChapterMetadataDropped) {
+		t.Errorf("plain MP4 chapters must not warn chapter-metadata-dropped; got %v", plain.Report().Warnings)
+	}
+}
+
 func TestMP4ChapterMaxTrackIDNoCreate(t *testing.T) {
 	// A track already holding the max track id (0xFFFFFFFF) leaves no free id, so a
 	// chapter create must not build a track with the wrapped invalid id 0 - it falls
@@ -463,6 +534,51 @@ func TestMP4ChapterReEditQTResult(t *testing.T) {
 	}
 	if re.Fields().Title != "A Long Title That Forces The Metadata Region To Grow And Shift Offsets" {
 		t.Errorf("tag edit after a chapter edit did not apply: %q", re.Fields().Title)
+	}
+}
+
+// TestMP4TagGrowThenChapterEditReparses checks the returned-document splice path: a
+// tag edit grows ilst inside meta, and a follow-up SetChapters on that returned
+// document must splice chpl into bytes whose meta size remains self-consistent.
+func TestMP4TagGrowThenChapterEditReparses(t *testing.T) {
+	src := readFixture(t, sampleM4B)
+	const grownTitle = "A Much Longer Title That Forces The ilst And meta Region To Grow Substantially"
+
+	// 1. Grow ilst, and therefore the enclosing meta region.
+	plan1, err := mustParseBytes(t, src).Edit().Set(tag.Title, grownTitle).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w1 writerTo
+	res1, _, err := plan1.Execute(context.Background(), wl.WriteTo(&w1, wl.BytesSource(src)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. SetChapters on the returned document splices chpl into its cached udta bytes.
+	plan2, err := res1.Edit().SetChapters(
+		wl.Chapter{Start: 0, Title: "Chained A"},
+		wl.Chapter{Start: 3 * time.Second, Title: "Chained B"},
+	).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w2 writerTo
+	res2, _, err := plan2.Execute(context.Background(), wl.WriteTo(&w2, wl.BytesSource(w1.b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 3. The twice-edited output must reparse cleanly and match the result view.
+	re := mustParseBytes(t, w2.b)
+	if !equalChapterLists(res2.Chapters(), re.Chapters()) {
+		t.Errorf("result %+v != reparse %+v", res2.Chapters(), re.Chapters())
+	}
+	if chs := re.Chapters(); len(chs) != 2 || chs[0].Title != "Chained A" || chs[1].Title != "Chained B" {
+		t.Errorf("chained chapters corrupted: %+v", chs)
+	}
+	if re.Fields().Title != grownTitle {
+		t.Errorf("grown title lost across the chained edit: %q", re.Fields().Title)
 	}
 }
 

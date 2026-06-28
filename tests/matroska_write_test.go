@@ -170,6 +170,46 @@ func TestMatroskaWriteCover(t *testing.T) {
 	essenceUnchanged(t, src, out)
 }
 
+// TestMatroskaTwoFrontCoversDistinctNames checks that two same-role, same-MIME covers
+// get distinct AttachedFile names and still reparse as front covers with their own
+// payloads.
+func TestMatroskaTwoFrontCoversDistinctNames(t *testing.T) {
+	src := readFixture(t, sampleMKA)
+	cover1 := tinyPNG()
+	cover2 := append(append([]byte{}, tinyPNG()...), 0xAA, 0xBB) // distinct bytes, still sniffs PNG
+	out, _ := saveMatroska(t, src, mustParseBytes(t, src).Edit().
+		ClearPictures().
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: cover1}).
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: cover2}))
+
+	// Raw bytes: the colliding base name appears once, the suffixed name once.
+	if n := bytes.Count(out, []byte("cover.png")); n != 1 {
+		t.Errorf("FileName \"cover.png\" count = %d, want 1 (the two covers must not share it)", n)
+	}
+	if n := bytes.Count(out, []byte("cover_1.png")); n != 1 {
+		t.Errorf("FileName \"cover_1.png\" count = %d, want 1 (the second cover should be suffixed)", n)
+	}
+
+	// Reparse: both survive as front covers with their own bytes.
+	pics := mustParseBytes(t, out).Pictures()
+	if len(pics) != 2 {
+		t.Fatalf("reparsed pictures = %d, want 2", len(pics))
+	}
+	for _, p := range pics {
+		if p.Type != wl.PicFrontCover {
+			t.Errorf("picture type = %v, want FrontCover", p.Type)
+		}
+	}
+	haveCover1, haveCover2 := false, false
+	for _, p := range pics {
+		haveCover1 = haveCover1 || bytes.Equal(p.Data, cover1)
+		haveCover2 = haveCover2 || bytes.Equal(p.Data, cover2)
+	}
+	if !haveCover1 || !haveCover2 {
+		t.Error("both cover payloads should survive the round-trip")
+	}
+}
+
 // A minimal EBML walker to validate CRC-32 integrity of written output.
 
 // vlen returns the byte length a VINT occupies from its first byte.

@@ -137,9 +137,11 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 
 	// ssndAlign is the SSND "offset" field: block-alignment bytes that precede the
-	// first sample frame (almost always 0). It is read only to exclude those bytes
-	// from a truncated-frame recompute below; audioOff/audioEnd (and the digest range)
-	// keep their established meaning.
+	// first sample frame (almost always 0). soundDataStart advances past the 8-byte
+	// sub-header; adding ssndAlign below skips the declared alignment bytes as well,
+	// keeping them out of the essence digest and truncated-frame recompute. The clamp
+	// treats a corrupt oversized offset as an empty sample range instead of leaving
+	// AudioStart greater than AudioEnd.
 	var ssndAlign int64
 	if d.ssndIdx >= 0 {
 		ch := d.chunks[d.ssndIdx]
@@ -150,6 +152,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 				ssndAlign = int64(binary.BigEndian.Uint32(hdr))
 			}
 		}
+		d.audioOff = min(d.audioOff+ssndAlign, d.audioEnd)
+		d.ssndAlign = ssndAlign // reused when building the post-write document
 	}
 	// The SSND chunk declared more bytes than the file holds: a truncated AIFF.
 	if d.ssndTruncated {

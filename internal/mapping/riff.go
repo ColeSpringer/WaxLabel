@@ -27,6 +27,7 @@ var riffInfoKeys = map[string]tag.Key{
 	"ICMT": tag.Comment,
 	"ICOP": tag.Copyright,
 	"IPRT": tag.TrackNumber,
+	"ITRK": tag.TrackNumber, // ffmpeg also reads track numbers from ITRK
 }
 
 // riffKeyInfo is the inverse of riffInfoKeys, built at init.
@@ -36,6 +37,10 @@ func init() {
 	for id, k := range riffInfoKeys {
 		riffKeyInfo[k] = id
 	}
+	// IPRT and ITRK both read as TrackNumber, so the inverse loop above would choose
+	// one nondeterministically from map iteration order. Write IPRT, matching ffmpeg's
+	// common choice and keeping output deterministic.
+	riffKeyInfo[tag.TrackNumber] = "IPRT"
 }
 
 // RIFFInfoKey returns the canonical key for an INFO identifier and whether it is

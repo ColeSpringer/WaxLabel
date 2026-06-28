@@ -226,8 +226,9 @@ func TestMP4RejectsUnstorableCover(t *testing.T) {
 }
 
 // TestPrepareTransferDropsUnrepresentableCover checks that a GIF cover MP4 cannot store
-// is dropped and reported without failing the whole copy. Tags still carry; because a
-// fully dropped picture set produces no carried item, destination pictures are left alone.
+// is dropped and reported without failing the whole copy. Tags still carry; the
+// destination had no cover, so the result has none (the dest-with-a-cover replacement
+// case is TestPrepareTransferUnrepresentableCoverClearsDestCover).
 func TestPrepareTransferDropsUnrepresentableCover(t *testing.T) {
 	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.Set("TITLE", "GIF Cover")
@@ -268,6 +269,116 @@ func TestPrepareTransferDropsUnrepresentableCover(t *testing.T) {
 	}
 	if n := len(result.Pictures()); n != 0 {
 		t.Errorf("destination has %d pictures, want 0 (GIF dropped, dest had none)", n)
+	}
+}
+
+// TestPrepareTransferUnrepresentableCoverClearsDestCover checks picture overlay
+// semantics: when the source carries covers, it replaces the destination picture set
+// even if none of those source covers are representable there.
+func TestPrepareTransferUnrepresentableCoverClearsDestCover(t *testing.T) {
+	// Source carries only a GIF cover an MP4 covr atom cannot store.
+	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
+		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyGIF()})
+	})
+	src := mustParseBytes(t, srcBytes)
+
+	// Destination MP4 already holds a storable PNG cover.
+	dstBytes := writeBack(t, "../testdata/notags.m4a", func(e *wl.Editor) {
+		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()})
+	})
+	if n := len(mustParseBytes(t, dstBytes).Pictures()); n != 1 {
+		t.Fatalf("setup: dest cover count = %d, want 1", n)
+	}
+
+	plan, _, err := src.PrepareTransfer(mustParseBytes(t, dstBytes))
+	if err != nil {
+		t.Fatalf("PrepareTransfer: %v", err)
+	}
+	result := mustParseBytes(t, applyToBytes(t, dstBytes, plan))
+	if n := len(result.Pictures()); n != 0 {
+		t.Errorf("dest ends with %d covers, want 0 (the source covers replace the dest's; none representable)", n)
+	}
+}
+
+// TestPlanTransferMatroskaToMP4ChapterLoss checks transfer grading for chapter
+// metadata. Matroska chapters with gapped ends or varying language are lossy when
+// copied to MP4's start+title storage; plain uniform-language chapters are carried,
+// and a Matroska destination carries the richer metadata.
+func TestPlanTransferMatroskaToMP4ChapterLoss(t *testing.T) {
+	src := readFixture(t, sampleMKA)
+	withChapters := func(chs ...wl.Chapter) *wl.Document {
+		out, _ := saveMatroska(t, src, mustParseBytes(t, src).Edit().SetChapters(chs...))
+		return mustParseBytes(t, out)
+	}
+	chapterItem := func(doc *wl.Document, dst wl.Format) wl.TransferItem {
+		report, err := doc.PlanTransfer(dst)
+		if err != nil {
+			t.Fatalf("PlanTransfer: %v", err)
+		}
+		for _, it := range report.Items {
+			if it.Kind == wl.TransferChapter {
+				return it
+			}
+		}
+		t.Fatal("no chapter item in report")
+		return wl.TransferItem{}
+	}
+
+	// Gapped end (chapter 1 ends at 200ms, chapter 2 starts at 450ms) + varying language.
+	rich := withChapters(
+		wl.Chapter{Start: 0, End: ms(200), Title: "Intro", LanguageIETF: "en-US"},
+		wl.Chapter{Start: ms(450), Title: "Main", LanguageIETF: "fr-FR"},
+	)
+	if it := chapterItem(rich, wl.FormatMP4); it.Disposition != wl.Lossy || it.Reason == "" {
+		t.Errorf("rich chapters -> MP4 = %s/%q, want lossy with a reason", it.Disposition, it.Reason)
+	}
+	// A Matroska destination loses nothing, so the same chapters carry (control).
+	if it := chapterItem(rich, wl.FormatMatroska); it.Disposition != wl.Carried {
+		t.Errorf("rich chapters -> Matroska = %s, want carried", it.Disposition)
+	}
+	// Plain chapters with a uniform language: nothing MP4 cannot represent -> carried.
+	plain := withChapters(
+		wl.Chapter{Start: 0, Title: "One", LanguageIETF: "en-US"},
+		wl.Chapter{Start: ms(300), Title: "Two", LanguageIETF: "en-US"},
+	)
+	if it := chapterItem(plain, wl.FormatMP4); it.Disposition != wl.Carried {
+		t.Errorf("plain uniform-language chapters -> MP4 = %s, want carried", it.Disposition)
+	}
+}
+
+// TestPrepareTransferToWebMWithExistingCover checks that a WebM destination with an
+// existing cover attachment can still receive transferable tags. WebM reports pictures
+// as unsupported, so the source cover is dropped and the destination picture set is
+// left untouched.
+func TestPrepareTransferToWebMWithExistingCover(t *testing.T) {
+	src := mustParseBytes(t, coverBearingFLAC(t, "WebM Cover Src"))
+
+	cover := mkEl(idAttachments, mkEl(idAttached, concat(
+		mkStr(idFileName, "cover.png"),
+		mkStr(idFileMime, "image/png"),
+		mkEl(idFileData, tinyPNG()),
+	)))
+	dstBytes := buildMatroska("webm", "WebM Dst", cover)
+	if n := len(mustParseBytes(t, dstBytes).Pictures()); n != 1 {
+		t.Fatalf("setup: the WebM destination should surface its 1 cover attachment, got %d", n)
+	}
+
+	plan, report, err := src.PrepareTransfer(mustParseBytes(t, dstBytes))
+	if err != nil {
+		t.Fatalf("PrepareTransfer onto a WebM with an existing cover must not error: %v", err)
+	}
+	var pic wl.TransferItem
+	for _, it := range report.Items {
+		if it.Kind == wl.TransferPicture {
+			pic = it
+		}
+	}
+	if pic.Disposition != wl.Dropped {
+		t.Errorf("source cover = %s, want dropped for a WebM destination", pic.Disposition)
+	}
+	out := applyToBytes(t, dstBytes, plan)
+	if got, _ := mustParseBytes(t, out).Get(tag.Title); len(got) == 0 || got[0] != "WebM Cover Src" {
+		t.Errorf("carried TITLE = %v, want [WebM Cover Src] (tags carry despite the WebM cover)", got)
 	}
 }
 

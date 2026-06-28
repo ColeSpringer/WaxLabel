@@ -172,3 +172,57 @@ func TestSniffTIFFIgnoresMultiValueCount(t *testing.T) {
 		t.Errorf("height = %d, want 5", got.Height)
 	}
 }
+
+// pngChunk builds a single PNG chunk: a 4-byte big-endian length, the 4-byte type,
+// the data, and a placeholder CRC (the sniffer does not validate it).
+func pngChunk(typ string, data []byte) []byte {
+	b := []byte{byte(len(data) >> 24), byte(len(data) >> 16), byte(len(data) >> 8), byte(len(data))}
+	b = append(b, typ...)
+	b = append(b, data...)
+	return append(b, 0, 0, 0, 0) // CRC placeholder
+}
+
+// TestSniffIndexedColors covers palette counts: indexed PNG reads its PLTE entry
+// count, GIF reads the global color table size, non-indexed formats stay 0, and a
+// garbage chunk length is bounded instead of panicking.
+func TestSniffIndexedColors(t *testing.T) {
+	pngMagic := []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
+	ihdr := func(colorType byte) []byte {
+		return pngChunk("IHDR", []byte{0, 0, 0, 4, 0, 0, 0, 4, 8, colorType, 0, 0, 0}) // 4x4, bitdepth 8
+	}
+	// Indexed PNG: IHDR(type 3) + a PLTE of 3 RGB triplets (9 bytes -> 3 colors).
+	idxPNG := append(append(append([]byte{}, pngMagic...), ihdr(3)...), pngChunk("PLTE", make([]byte, 9))...)
+	// Indexed PNG with no PLTE chunk: the palette count is unknown -> 0.
+	noPLTE := append(append([]byte{}, pngMagic...), ihdr(3)...)
+	// Non-indexed (truecolor) PNG with a stray PLTE must not report colors.
+	truecolor := append(append(append([]byte{}, pngMagic...), ihdr(2)...), pngChunk("PLTE", make([]byte, 9))...)
+	// Color-type-3 PNG whose post-IHDR chunk claims a 0xFFFFFFFF length: the bound
+	// must break the walk, not slice out of range.
+	garbage := append(append(append([]byte{}, pngMagic...), ihdr(3)...),
+		0xFF, 0xFF, 0xFF, 0xFF, 'P', 'L', 'T', 'E')
+	// Indexed GIF: GCT flag set (0x80) with size field 2 -> 2^(2+1) = 8 colors.
+	idxGIF := append([]byte("GIF89a"), 0x04, 0x00, 0x04, 0x00, 0x82, 0x00, 0x00)
+
+	cases := []struct {
+		name       string
+		data       []byte
+		wantColors int
+	}{
+		{"indexed-png", idxPNG, 3},
+		{"png-no-plte", noPLTE, 0},
+		{"truecolor-png-stray-plte", truecolor, 0},
+		{"garbage-chunk-length", garbage, 0}, // must not panic
+		{"indexed-gif", idxGIF, 8},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := SniffImage(tc.data)
+			if !ok {
+				t.Fatalf("SniffImage(%s) not recognized", tc.name)
+			}
+			if got.Colors != tc.wantColors {
+				t.Errorf("Colors = %d, want %d (info %+v)", got.Colors, tc.wantColors, got)
+			}
+		})
+	}
+}

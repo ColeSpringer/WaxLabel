@@ -23,10 +23,12 @@ func captureRaw(src core.ReaderAtSized, el element, limit int64) []byte {
 }
 
 // firstChildIsCRC reports whether a master element's first child is a CRC-32, so
-// a re-render reproduces that integrity convention.
+// a re-render preserves that integrity convention. It requires the CRC payload to
+// be exactly 4 bytes, matching rawCRC's malformed-payload rejection. If the two
+// checks disagreed, a rewrite could drop or duplicate a malformed integrity field.
 func firstChildIsCRC(src core.ReaderAtSized, el element, limit int64) bool {
 	c, ok := readElement(src, el.dataStart, el.dataEnd, limit)
-	return ok && c.id == idCRC32
+	return ok && c.id == idCRC32 && c.dataEnd-c.dataStart == 4
 }
 
 // rawCRC finds a master element's leading CRC-32 within its own captured bytes.

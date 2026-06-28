@@ -100,7 +100,8 @@ func (d *doc) ID3Tag() *id3.Tag { return d.id3 }
 // layout, rate, or codec hash differently. The 80-bit rate is hashed as its raw
 // bytes (not the decoded float) so the digest is exact. The hashed extent is the
 // SSND sample-frame region (set as the media's [AudioStart, AudioEnd) range,
-// which excludes SSND's 8-byte offset/blockSize sub-header).
+// which excludes both SSND's 8-byte offset/blockSize sub-header and the declared
+// "offset" alignment bytes that precede the first sample frame).
 func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 	var cfg []byte
 	if d, ok := m.Native.(*doc); ok && d != nil {
@@ -112,5 +113,8 @@ func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 		cfg = append(cfg, d.comm.rateBytes[:]...)
 		cfg = append(cfg, d.comm.compType[:]...)
 	}
-	return "aiff-ssnd-v1", cfg
+	// v2 excludes the SSND "offset" alignment bytes, which v1 hashed as audio. Use a
+	// new extent name so older and newer builds never produce different hashes under
+	// one algorithm name.
+	return "aiff-ssnd-v2", cfg
 }

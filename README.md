@@ -132,9 +132,11 @@ Common edit flags:
 
 The read commands accept a single `-` for standard input; `set -` also works when
 paired with `-o`. `dump`, `verify`, `lint`, `plan`, and `set` can walk directories
-with `--recursive`; walked files are selected by extension, while direct file
-arguments are content-sniffed, and a `--recursive` walk skips hidden directories
-(those whose name begins with `.`) unless one is named as the root.
+with `--recursive`. A file's format is detected from its leading bytes, not from
+its extension: extensions only filter which files a `--recursive` walk visits.
+A walk skips hidden directories (those whose name begins with `.`) unless one is
+named as the root. A direct file argument whose bytes match no supported
+container is unsupported (exit 3), regardless of extension.
 
 `-o` writes atomically (a temp file in the target's directory, then a rename), so it
 must name a regular file in a writable directory. It is not a discard sink, and
@@ -154,6 +156,13 @@ the write will change, downgrade, or drop. It does not include post-write
 cleanliness findings such as an inherited encoder stamp or a malformed value. Run
 `lint` on the saved file to check those.
 
+In `set`, `plan`, and `lint --fix` JSON, `changes` and `operations` have
+different meanings. `changes` is the canonical tag-level diff: which keys are
+added, removed, or replaced. `operations` is the structural write list, such as
+an ID3v2 frame rewrite, an encoder-stamp strip, or a chapter-track rewrite. Some
+fixes touch only native structure, so they can report an empty `changes` list
+with non-empty `operations`. Empty `changes` does not mean nothing was written.
+
 Exit code summary:
 
 - `0`: success, clean lint, or identical diff.
@@ -161,7 +170,8 @@ Exit code summary:
 - `2`: usage error, such as a bad `--format` flag value, giving the same key to
   both `--set`/`--add` and `--clear` (they conflict), or a bare directory argument
   without `--recursive`.
-- `3`: an input file in an unsupported format, or an unsupported metadata operation.
+- `3`: an input file whose bytes match no supported container signature (unsupported
+  regardless of its extension), or an unsupported metadata operation.
 - `4`: invalid or contradictory data, including a recognized container whose contents
   are corrupt.
 - `5`: source changed since parse.

@@ -261,16 +261,25 @@ func (t Tags) Patch() TagPatch {
 // so codecs that store numbering as a structured pair (e.g. MP4 trkn/disk) parse
 // the canonical strings the same way the typed projection does.
 func ParseNumPair(num, total string) (n, tot int) {
+	// atoi parses a trimmed int and treats every error as 0, including
+	// out-of-range overflow.
+	atoi := func(s string) int {
+		v, err := strconv.Atoi(strings.TrimSpace(s))
+		if err != nil {
+			return 0
+		}
+		return v
+	}
 	if num != "" {
 		if i := strings.IndexByte(num, '/'); i >= 0 {
-			n, _ = strconv.Atoi(strings.TrimSpace(num[:i]))
-			tot, _ = strconv.Atoi(strings.TrimSpace(num[i+1:]))
+			n = atoi(num[:i])
+			tot = atoi(num[i+1:])
 		} else {
-			n, _ = strconv.Atoi(strings.TrimSpace(num))
+			n = atoi(num)
 		}
 	}
 	if total != "" {
-		tot, _ = strconv.Atoi(strings.TrimSpace(total))
+		tot = atoi(total)
 	}
 	return n, tot
 }

@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/colespringer/waxlabel/internal/bits"
@@ -170,7 +169,7 @@ func DowngradeNoOp(format Format, size int64, base, result *Media, tagsEqual, st
 		return nil
 	}
 	np := NoOpPlan(WriteReport{Format: format, BytesBefore: size}, size, base)
-	np.Report.Warnings = append(np.Report.Warnings, WarningsWithCode(priorWarnings, WarnValueDropped, WarnValueReduced, WarnPictureMetadataDropped, WarnNumericGenre, WarnChapterTitleTruncated)...)
+	np.Report.Warnings = append(np.Report.Warnings, WarningsWithCode(priorWarnings, WarnValueDropped, WarnValueReduced, WarnPictureMetadataDropped, WarnNumericGenre, WarnChapterTitleTruncated, WarnChapterMetadataDropped)...)
 	return np
 }
 
@@ -195,20 +194,17 @@ func ForFormat(f Format) (Codec, bool) {
 	return nil, false
 }
 
-// Detect picks a codec by sniffing the header, then falling back to the path
-// extension. header may be short.
+// Detect picks a codec by sniffing the header. Detection is content-only: a file
+// whose leading bytes match no container signature is unrecognized regardless of its
+// path or extension. The caller maps that to unsupported (exit 3), while a
+// recognized container that fails deeper parsing is invalid (exit 4). The path
+// argument is retained for call-site/signature compatibility but is no longer
+// consulted; an extension is too weak a signal to classify bytes that carry no
+// signature. header may be short.
 func Detect(path string, header []byte) (Codec, bool) {
 	for _, c := range registry {
 		if c.Sniff(header) {
 			return c, true
-		}
-	}
-	ext := lowerExt(path)
-	if ext != "" {
-		for _, c := range registry {
-			if slices.Contains(c.Extensions(), ext) {
-				return c, true
-			}
 		}
 	}
 	return nil, false
@@ -224,9 +220,9 @@ func Detect(path string, header []byte) (Codec, bool) {
 // formats tolerate (FLAC) or require (raw AAC) a front ID3. So when a leading
 // region is present and a *different* format's signature sits just past it, that
 // inner format wins; otherwise the header-level detection stands (MP3 for a real
-// ID3-prefixed MP3, the common case). The peek is signature-only (empty path):
-// a file extension is a weaker signal than the positively sniffed leading tag, so
-// a mere ".aac"/".flac" name must not reclassify bytes that are no signature.
+// ID3-prefixed MP3, the common case). Detection is content-only throughout (Detect
+// no longer consults the path), so a mere ".aac"/".flac" name cannot reclassify
+// bytes that carry no signature. Only a positively sniffed inner signature can.
 //
 // This is the single path every ID3-bearing format (MP3 vs FLAC vs AAC) resolves
 // through, rather than a per-format predicate that is correct only while MP3 is
@@ -256,12 +252,4 @@ func DetectLeading(src ReaderAtSized, path string, leadingLen func(header []byte
 		return inner, true
 	}
 	return codec, true
-}
-
-func lowerExt(path string) string {
-	i := strings.LastIndexByte(path, '.')
-	if i < 0 {
-		return ""
-	}
-	return strings.ToLower(path[i:])
 }

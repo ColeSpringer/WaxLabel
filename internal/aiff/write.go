@@ -326,8 +326,10 @@ func assemble(d *doc, outs []outChunk) (segs []bits.Segment, lay outLayout, err 
 			lay.commIdx = idx
 		case roleSSND:
 			lay.ssndIdx = idx
-			lay.audioOff = soundDataStart(running, oc.bodyLen)
 			lay.audioEnd = running + oc.bodyLen
+			// Match parse: skip the SSND "offset" alignment bytes in the result view.
+			// Metadata edits copy the SSND verbatim, so the source's ssndAlign still applies.
+			lay.audioOff = min(soundDataStart(running, oc.bodyLen)+d.ssndAlign, lay.audioEnd)
 		}
 		if oc.body != nil {
 			segs = append(segs, bits.Lit(oc.body))
@@ -358,17 +360,18 @@ func assemble(d *doc, outs []outChunk) (segs []bits.Segment, lay outLayout, err 
 // of the output.
 func buildResult(edited *core.Media, base *doc, newText []outChunk, newID3 *id3.Tag, lay outLayout) *core.Media {
 	nd := &doc{
-		chunks:   lay.chunks,
-		formType: base.formType,
-		commIdx:  lay.commIdx,
-		ssndIdx:  lay.ssndIdx,
-		id3Idx:   lay.id3Idx,
-		textIdx:  lay.textIdx,
-		audioOff: lay.audioOff,
-		audioEnd: lay.audioEnd,
-		comm:     base.comm,
-		track:    base.track,
-		size:     lay.total,
+		chunks:    lay.chunks,
+		formType:  base.formType,
+		commIdx:   lay.commIdx,
+		ssndIdx:   lay.ssndIdx,
+		id3Idx:    lay.id3Idx,
+		textIdx:   lay.textIdx,
+		audioOff:  lay.audioOff,
+		audioEnd:  lay.audioEnd,
+		ssndAlign: base.ssndAlign, // SSND copied verbatim; chained edits reuse the same alignment
+		comm:      base.comm,
+		track:     base.track,
+		size:      lay.total,
 	}
 	// Rebuild the decoded native text items from the written chunks so a re-edit of
 	// the returned document (without re-parsing) sees the same values. newText is the

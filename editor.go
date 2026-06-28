@@ -311,6 +311,13 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 			wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnChapterEndsDropped,
 				"chapters rewrite drops explicit end times (CLI-built chapters are open-ended)")
 		}
+		// MP4 stores chapters as start+title. A direct chapter edit drops gapped ends,
+		// per-chapter language changes, and hidden/disabled flags that cannot be
+		// represented. Transfers use the same predicate when reporting a lossy chapter copy.
+		if core.ChaptersLoseMetadata(e.chapters, core.ChapterLossFor(e.base.Format)) {
+			wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnChapterMetadataDropped,
+				"chapters store start and title only; gapped end times, per-chapter language, and hidden/disabled flags are dropped")
+		}
 	}
 	// Surface edit-time picture sanity warnings for the pictures this edit authored
 	// (added via AddPicture, tracked by addedMask) - an unrecognized image embedded

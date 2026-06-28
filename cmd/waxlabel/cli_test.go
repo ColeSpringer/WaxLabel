@@ -1804,6 +1804,34 @@ func TestEmptyFileExitClass(t *testing.T) {
 	}
 }
 
+// TestContentFaithfulDetection checks the exit-code boundary for content sniffing.
+// Byte-identical junk is unsupported (exit 3) regardless of extension, while a
+// recognized container with corrupt contents remains invalid data (exit 4).
+func TestContentFaithfulDetection(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	junk := []byte("this is plainly not audio, just text\n")
+	for _, ext := range []string{".txt", ".flac", ".wav"} {
+		path := filepath.Join(dir, "x"+ext)
+		if err := os.WriteFile(path, junk, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, code := runCLI(t, "dump", path); code != 3 {
+			t.Errorf("byte-identical junk%s exit = %d, want 3 (unsupported regardless of extension)", ext, code)
+		}
+	}
+	// A real FLAC signature is enough to select the codec; corrupt contents then fail
+	// in the parser and keep the invalid-data classification.
+	corrupt := append([]byte("fLaC"), bytes.Repeat([]byte{0xFF}, 64)...)
+	path := filepath.Join(dir, "corrupt.flac")
+	if err := os.WriteFile(path, corrupt, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, code := runCLI(t, "dump", path); code != 4 {
+		t.Errorf("recognized-but-corrupt FLAC exit = %d, want 4 (invalid-data)", code)
+	}
+}
+
 // TestPlanJSONErrorIsPerFileObject pins plan's single-file --json failure shape:
 // like set, a one-element array whose entry carries the classified per-file error
 // (plan is a per-file command), not the bare terminal {schemaVersion,error}

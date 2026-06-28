@@ -80,6 +80,15 @@ func aiffSSND(n int) []byte {
 	return aiffChunk("SSND", body)
 }
 
+// aiffSSNDOffset builds an SSND chunk whose "offset" sub-header field is non-zero:
+// `align` block-alignment bytes precede the `samples` sample frames. A reader must
+// begin the sample-frame (essence) region after those alignment bytes. A declared
+// offset larger than the body models a corrupt header.
+func aiffSSNDOffset(offset int, align, samples []byte) []byte {
+	body := slices.Concat(aiffBE32(offset), aiffBE32(0), align, samples)
+	return aiffChunk("SSND", body)
+}
+
 // aiffText builds a native text chunk (NAME/AUTH/"(c) "/ANNO).
 func aiffText(id, value string) []byte { return aiffChunk(id, []byte(value)) }
 

@@ -1,7 +1,6 @@
 package mp4
 
 import (
-	"encoding/binary"
 	"fmt"
 	"math"
 	"sort"
@@ -257,17 +256,14 @@ func ilstRegionRel(d *doc, ups int64) (start, end int64) {
 }
 
 // metaSizeRep returns the replacement that rewrites the meta atom's size field
-// (32- or 64-bit) to newSize, relative to the udta payload start.
+// (32- or 64-bit) to newSize, relative to the udta payload start. The field's
+// location and width come from atomRef.sizeField, shared with the result-document
+// splice patch.
 func metaSizeRep(d *doc, ups, newSize int64) byteRep {
-	start := d.meta.offset - ups
-	if d.meta.headerLen == 16 {
-		var b [8]byte
-		binary.BigEndian.PutUint64(b[:], uint64(newSize))
-		return byteRep{start: start + 8, oldLen: 8, repl: b[:]}
-	}
-	var b [4]byte
-	binary.BigEndian.PutUint32(b[:], uint32(newSize))
-	return byteRep{start: start, oldLen: 4, repl: b[:]}
+	off, width := d.meta.sizeField()
+	b := make([]byte, width)
+	putBoxSize(b, width, newSize)
+	return byteRep{start: d.meta.offset - ups + off, oldLen: width, repl: b}
 }
 
 // fitIlst places the new ilst within a region of oldRegionLen bytes, reusing the

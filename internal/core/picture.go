@@ -208,6 +208,7 @@ func (p *Picture) sniff(authoritative bool) bool {
 	p.Width = pickDim(authoritative, p.Width, info.Width)
 	p.Height = pickDim(authoritative, p.Height, info.Height)
 	p.Depth = pickDim(authoritative, p.Depth, info.Depth)
+	p.Colors = pickDim(authoritative, p.Colors, info.Colors)
 	return true
 }
 

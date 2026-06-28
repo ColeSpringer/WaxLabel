@@ -400,6 +400,39 @@ func TestTXXXLongTailRoundTrip(t *testing.T) {
 	}
 }
 
+// TestTXXXCustomDescriptionCasePreserved verifies that editing a custom TXXX value
+// preserves the original description casing instead of rewriting it as the uppercased
+// canonical key. Aliased keys still write their preferred Picard spelling.
+func TestTXXXCustomDescriptionCasePreserved(t *testing.T) {
+	orig := []Frame{{ID: "TXXX", Body: encodeUserText(4, "MyMoodTag", []string{"happy"})}}
+	base := Project(buildTag(t, 4, orig)).Tags
+	key := tag.Key("MYMOODTAG")
+	if v, _ := base.First(key); v != "happy" {
+		t.Fatalf("custom TXXX projected %q, want happy", v)
+	}
+
+	edited := base.Clone()
+	edited.Set(key, "sad") // edit only the value
+
+	out, _ := RebuildFrames(orig, base, edited, 4, nil, false, WriteOpts{})
+	var txxx *Frame
+	for i := range out {
+		if out[i].ID == "TXXX" {
+			txxx = &out[i]
+		}
+	}
+	if txxx == nil {
+		t.Fatalf("no TXXX frame in rebuild output (%d frames)", len(out))
+	}
+	desc, vals, _ := decodeUserText(txxx.Body)
+	if desc != "MyMoodTag" {
+		t.Errorf("description = %q, want MyMoodTag (original casing preserved on a value edit)", desc)
+	}
+	if !slices.Equal(vals, []string{"sad"}) {
+		t.Errorf("values = %v, want [sad]", vals)
+	}
+}
+
 func TestPictureRoundTrip(t *testing.T) {
 	pic := core.Picture{Type: core.PicFrontCover, MIME: "image/png", Description: "front", Data: []byte("\x89PNG-data")}
 	body := encodeAPIC(pic, 4)

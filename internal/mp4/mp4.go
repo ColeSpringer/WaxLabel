@@ -83,9 +83,15 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 		PictureMIMEs: slices.Clone(coverMIMEs),
 	}
 	chapters := core.Capability{
+		// Starts and titles write losslessly. MP4 drops gapped ends, per-chapter
+		// language, and hidden/disabled flags, but that loss depends on the chapter set:
+		// plain chapters round-trip. Keep Write full and express the conditional loss
+		// through ChapterLoss and edit warnings instead of AccessPartial.
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "Nero chpl and a QuickTime chapter text track",
+		Fidelity:       "chapter start and title stored; gapped end times, per-chapter language, and hidden/disabled flags are dropped",
 		MaxItems:       maxChplChapters,
+		ChapterLoss:    core.ChapterLossStartTitleOnly,
 		Constraints: []string{
 			"at most 255 chapters (8-bit chpl count)",
 			"both the chpl and the QuickTime chapter text track are written",

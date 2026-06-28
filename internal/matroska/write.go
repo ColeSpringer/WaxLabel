@@ -797,15 +797,22 @@ func renderInfo(ib *infoBlock, title string, present bool) (raw []byte, newTitle
 // the element is dropped). It also returns the new attachment list for the result.
 func renderAttachments(d *doc, pics []core.Picture) (raw []byte, atts []attachment) {
 	var content []byte
+	// Track the names already used in this element so two same-role, same-MIME
+	// covers (both "cover.png") get distinct FileNames. Seed it with the preserved
+	// non-image attachment names so a cover cannot collide with one of those either.
+	used := map[string]bool{}
 	for _, a := range d.attachments {
 		if a.image || a.raw == nil {
 			continue // images are rebuilt from the picture set below
 		}
 		content = append(content, a.raw...)
 		atts = append(atts, a)
+		used[a.name] = true
 	}
 	for _, p := range pics {
-		ab, a := attachedFileBytes(p)
+		name := uniqueAttachmentName(coverFileStem(p), imageExt(p.MIME), used)
+		used[name] = true
+		ab, a := attachedFileBytes(p, name)
 		content = append(content, ab...)
 		atts = append(atts, a)
 	}
@@ -816,11 +823,11 @@ func renderAttachments(d *doc, pics []core.Picture) (raw []byte, atts []attachme
 	return masterElement(idAttachments, content, hasCRC), atts
 }
 
-// attachedFileBytes renders one AttachedFile from a picture, using the Matroska
-// cover-art file-name convention (cover.<ext>) so a re-parse classifies it. The
-// mandatory FileUID is random, as the spec advises ("as random as possible").
-func attachedFileBytes(p core.Picture) ([]byte, attachment) {
-	name := coverFileName(p)
+// attachedFileBytes renders one AttachedFile from a picture under an already-unique
+// file name. The Matroska cover-art convention (cover.<ext>) lets a later parse
+// classify it; renderAttachments resolves names so same-role covers cannot share a
+// FileName. The mandatory FileUID is random, as the spec advises.
+func attachedFileBytes(p core.Picture, name string) ([]byte, attachment) {
 	payload := stringElement(idFileName, name)
 	payload = append(payload, stringElement(idFileMime, p.MIME)...)
 	if p.Description != "" {
@@ -867,13 +874,32 @@ func randomUID() uint64 {
 	return v
 }
 
-// coverFileName picks the AttachedFile name encoding the cover role.
+// coverFileName is the canonical (un-disambiguated) AttachedFile name for a cover
+// role. It backs the result view's Type derivation; the actually-stored name is
+// resolved by renderAttachments and may carry a numeric suffix.
 func coverFileName(p core.Picture) string {
-	ext := imageExt(p.MIME)
+	return coverFileStem(p) + imageExt(p.MIME)
+}
+
+// coverFileStem is the AttachedFile name stem (no extension) encoding the cover role.
+func coverFileStem(p core.Picture) string {
 	if p.Type == core.PicFrontCover {
-		return "cover" + ext
+		return "cover"
 	}
-	return "small_cover" + ext
+	return "small_cover"
+}
+
+// uniqueAttachmentName resolves an AttachedFile name from its role stem and
+// extension, inserting a numeric suffix before the extension (cover.png,
+// cover_1.png, ...) until it does not collide with a name already used in this
+// Attachments element. Two same-role, same-MIME covers would otherwise both render
+// "cover.png". Built natively from the parts, so no path/filepath dependency.
+func uniqueAttachmentName(stem, ext string, used map[string]bool) string {
+	name := stem + ext
+	for i := 1; used[name]; i++ {
+		name = fmt.Sprintf("%s_%d%s", stem, i, ext)
+	}
+	return name
 }
 
 // imageExt returns the conventional extension for a cover MIME.

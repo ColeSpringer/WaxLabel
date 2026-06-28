@@ -309,6 +309,35 @@ func TestAddAndReadPicture(t *testing.T) {
 	}
 }
 
+// TestIndexedPictureColorsRoundTrip embeds an indexed GIF with an 8-entry global
+// color table and checks that the sniffed palette size reaches the FLAC PICTURE
+// block's Colors field and survives a reparse.
+func TestIndexedPictureColorsRoundTrip(t *testing.T) {
+	path := copyToTemp(t, sampleFLAC)
+	doc := mustParseFile(t, path)
+
+	// GIF89a, 4x4, packed 0x82: GCT present (0x80), size field 2 -> 8 colors.
+	idxGIF := append([]byte("GIF89a"), 0x04, 0x00, 0x04, 0x00, 0x82, 0x00, 0x00)
+	plan, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: idxGIF}).Prepare()
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if _, _, err := plan.Execute(context.Background(), wl.SaveBack()); err != nil {
+		t.Fatalf("SaveBack: %v", err)
+	}
+
+	pics := mustParseFile(t, path).Pictures()
+	if len(pics) != 1 {
+		t.Fatalf("got %d pictures, want 1", len(pics))
+	}
+	if pics[0].MIME != "image/gif" {
+		t.Errorf("sniffed MIME = %q, want image/gif", pics[0].MIME)
+	}
+	if pics[0].Colors != 8 {
+		t.Errorf("palette size = %d, want 8 (the sniffed GCT entry count must reach the PICTURE block)", pics[0].Colors)
+	}
+}
+
 func TestSourceChangedDetected(t *testing.T) {
 	path := copyToTemp(t, sampleFLAC)
 	doc := mustParseFile(t, path)

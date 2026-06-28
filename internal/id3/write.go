@@ -74,16 +74,25 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 		}
 	}
 
-	// The read path discards the COMM/USLT 3-byte language, so recover it from the
-	// original frames at write time: a re-rendered comment/lyric keeps its language
-	// (e.g. "deu") instead of being reset to "eng". frameRenderID marks a COMM/USLT
-	// frame managed only when its description is empty, so there is at most one managed
-	// COMM and one managed USLT to reuse.
-	origLangs := map[string]string{} // "COMM"/"USLT" -> 3-byte language
+	// The read path does not expose the COMM/USLT 3-byte language and stores a TXXX
+	// description under its uppercased canonical key, so recover both from the original
+	// frames when rewriting. Re-rendered comment and lyric frames keep their language,
+	// and custom TXXX frames keep their original description casing.
+	// frameRenderID marks a COMM/USLT frame managed only when its description is empty,
+	// so there is at most one managed COMM and one managed USLT to reuse.
+	origLangs := map[string]string{}    // "COMM"/"USLT" -> 3-byte language
+	origTXXXDesc := map[string]string{} // TXXX render token -> original description (verbatim casing)
 	for _, f := range orig {
-		if f.ID == "COMM" || f.ID == "USLT" {
+		switch f.ID {
+		case "COMM", "USLT":
 			if rid, managed := frameRenderID(f); managed && len(f.Body) >= 4 {
 				origLangs[rid] = string(f.Body[1:4])
+			}
+		case "TXXX":
+			if rid, managed := frameRenderID(f); managed {
+				if desc, _, ok := decodeUserText(f.Body); ok {
+					origTXXXDesc[rid] = desc
+				}
 			}
 		}
 	}
@@ -121,7 +130,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 		}
 		if dirty[rid] {
 			if !emitted[rid] {
-				frames, v23multi := renderUnit(rid, edited, version, opts, origLangs)
+				frames, v23multi := renderUnit(rid, edited, version, opts, origLangs, origTXXXDesc)
 				out = append(out, frames...)
 				info.UsedV23Multi = info.UsedV23Multi || v23multi
 				emitted[rid] = true
@@ -158,7 +167,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	}
 	slices.Sort(leftover)
 	for _, rid := range leftover {
-		frames, v23multi := renderUnit(rid, edited, version, opts, origLangs)
+		frames, v23multi := renderUnit(rid, edited, version, opts, origLangs, origTXXXDesc)
 		out = append(out, frames...)
 		info.UsedV23Multi = info.UsedV23Multi || v23multi
 		emitted[rid] = true
@@ -272,6 +281,13 @@ func frameRenderID(f Frame) (string, bool) {
 		}
 		return "UFID", true
 	case "COMM":
+		// Only an empty-description COMM is managed as the canonical Comment; a described
+		// COMM, such as iTunNORM or a ReplayGain note, is preserved verbatim. The flat
+		// Comment model has no per-comment language, so editing Comment merges multiple
+		// empty-description COMM frames in different languages into one frame. The texts
+		// are still retained under Comment, and untouched Comment frames are preserved
+		// verbatim. Preserving the language split would require a language-aware comment
+		// model across codecs.
 		desc, _, ok := decodeCommentFrame(f.Body)
 		if !ok || desc != "" {
 			return "", false
@@ -429,7 +445,7 @@ func rawFrameIDKey(key tag.Key) bool {
 // renderUnit renders the frame(s) for a render token from the edited tag set,
 // returning an empty slice when the underlying field is now absent (the frame is
 // dropped). It also reports whether a v2.3 NUL-separated multi-value was emitted.
-func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, origLangs map[string]string) ([]Frame, bool) {
+func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, origLangs, origTXXXDesc map[string]string) ([]Frame, bool) {
 	switch {
 	case strings.HasPrefix(token, "TXXX\x00"):
 		key := txxxKeyForToken(token[len("TXXX\x00"):])
@@ -437,7 +453,12 @@ func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, o
 		if !ok || len(vals) == 0 {
 			return nil, false
 		}
+		// Use the preferred Picard spelling for an aliased key. For custom keys, reuse
+		// the original TXXX description casing when available, matching the Vorbis rebuild.
 		desc := mapping.ID3TXXXDesc(key)
+		if orig, ok := origTXXXDesc[token]; ok && desc == string(key) {
+			desc = orig
+		}
 		return []Frame{{ID: "TXXX", Body: encodeUserText(version, desc, vals)}}, false
 	case token == "UFID":
 		id, ok := edited.First(tag.MBRecordingID)

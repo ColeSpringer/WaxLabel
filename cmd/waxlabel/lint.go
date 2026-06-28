@@ -339,13 +339,15 @@ type jsonFinding struct {
 // jsonErrorEntry; this struct keeps a matching Error field so a consumer can decode
 // every array element into it (see jsonErrorEntry).
 type jsonLintFix struct {
-	SchemaVersion int           `json:"schemaVersion"`
-	File          string        `json:"file"`
-	Error         *jsonErrBody  `json:"error,omitempty"`
-	Changes       []jsonChange  `json:"changes"`
-	Operations    []string      `json:"operations"`
-	Remaining     []jsonFinding `json:"remaining"`
-	Committed     bool          `json:"committed"`
+	SchemaVersion int          `json:"schemaVersion"`
+	File          string       `json:"file"`
+	Error         *jsonErrBody `json:"error,omitempty"`
+	// Changes is the tag-level diff. Operations is the structural write list; see
+	// jsonReport for the shared contract.
+	Changes    []jsonChange  `json:"changes"`
+	Operations []string      `json:"operations"`
+	Remaining  []jsonFinding `json:"remaining"`
+	Committed  bool          `json:"committed"`
 }
 
 func toJSONLint(path string, findings []wl.Finding) jsonLint {

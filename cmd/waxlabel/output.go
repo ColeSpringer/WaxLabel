@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -163,17 +164,22 @@ func jsonMode(cmd *cobra.Command) bool {
 // wantsJSON reports whether --json appears in the raw args. dispatch uses it to
 // route a terminal error even when cobra aborted before it could bind the
 // persistent flag (an unknown command or a bad flag), where jsonMode would
-// wrongly read false. It mirrors pflag's bool-flag forms.
+// wrongly read false. It mirrors pflag's bool-flag forms: --json sets true,
+// --json=value uses strconv.ParseBool, and an unparseable value leaves the prior
+// state unchanged.
 func wantsJSON(args []string) bool {
 	v := false
 	for _, a := range args {
-		switch a {
-		case "--":
+		switch {
+		case a == "--":
 			return v // everything after -- is a positional argument
-		case "--json", "--json=true":
+		case a == "--json":
 			v = true
-		case "--json=false":
-			v = false
+		case strings.HasPrefix(a, "--json="):
+			// pflag leaves the previous value unchanged when bool parsing fails.
+			if b, err := strconv.ParseBool(a[len("--json="):]); err == nil {
+				v = b
+			}
 		}
 	}
 	return v

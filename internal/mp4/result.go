@@ -148,6 +148,18 @@ func resultUdtaRaw(base *doc, lay layout) []byte {
 		out = append(out, base.udtaRaw[:relStart]...)
 		out = append(out, lay.regionBytes...)
 		out = append(out, base.udtaRaw[relEnd:]...)
+
+		// The splice resized the ilst region inside the enclosing meta box, so meta's
+		// own size field in these bytes is stale. Patch it by the same delta as the
+		// on-disk write; both paths locate the field through atomRef.sizeField. Without
+		// this, a later chapter edit on the returned document would carry the wrong meta
+		// size. Bounds checks keep malformed layouts from indexing out of range.
+		if delta := int64(len(lay.regionBytes)) - (relEnd - relStart); base.meta != nil && delta != 0 {
+			off, width := base.meta.sizeField()
+			if fieldStart := base.meta.offset - ups + off; fieldStart >= 0 && fieldStart+width <= int64(len(out)) {
+				putBoxSize(out[fieldStart:fieldStart+width], width, base.meta.size+delta)
+			}
+		}
 		return out
 	}
 	// A udta was created: the region bytes are the new udta atom, payload after the

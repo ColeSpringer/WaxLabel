@@ -16,6 +16,9 @@ type ImageInfo struct {
 	Width  int
 	Height int
 	Depth  int // bits per pixel across all channels; 0 if unknown
+	// Colors is the palette-entry count for indexed images: PNG color type 3 or a
+	// GIF global color table. It is 0 for non-indexed formats and unknown counts.
+	Colors int
 }
 
 // SniffImage identifies PNG, JPEG, GIF, WebP, BMP, and TIFF data and extracts
@@ -83,7 +86,32 @@ func sniffPNG(data []byte) (ImageInfo, bool) {
 	bitDepth := int(data[24])
 	colorType := data[25]
 	channels := map[byte]int{0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[colorType]
-	return ImageInfo{MIME: "image/png", Width: w, Height: h, Depth: bitDepth * channels}, true
+	info := ImageInfo{MIME: "image/png", Width: w, Height: h, Depth: bitDepth * channels}
+	if colorType == 3 { // indexed-color PNG: PLTE length / 3
+		info.Colors = pngPaletteColors(data)
+	}
+	return info, true
+}
+
+// pngPaletteColors walks the PNG chunk stream from the first chunk (offset 8, past
+// the signature) for the PLTE chunk, whose data length divided by 3 (one RGB triplet
+// per entry) is the palette entry count. Every step is bounds-checked. The length
+// guard is written as a subtraction so a hostile chunk length cannot overflow past
+// int range or loop forever. An absent, truncated, or garbage PLTE yields 0.
+func pngPaletteColors(data []byte) int {
+	for pos := 8; pos+8 <= len(data); { // room for length(4) + type(4)
+		l := int(binary.BigEndian.Uint32(data[pos : pos+4]))
+		// Need l data bytes + a 4-byte CRC after the header; a negative l means the
+		// length overflowed int on a 32-bit build.
+		if l < 0 || l > len(data)-pos-8-4 {
+			break
+		}
+		if string(data[pos+4:pos+8]) == "PLTE" {
+			return l / 3
+		}
+		pos += 8 + l + 4 // length + type + data + CRC
+	}
+	return 0
 }
 
 // sniffJPEG scans marker segments for a Start-Of-Frame, which carries sample
@@ -145,7 +173,11 @@ func sniffGIF(data []byte) (ImageInfo, bool) {
 	h := int(binary.LittleEndian.Uint16(data[8:10]))
 	packed := data[10]
 	depth := int(packed&0x07) + 1 // bits per primary color in the GCT
-	return ImageInfo{MIME: "image/gif", Width: w, Height: h, Depth: depth}, true
+	var colors int
+	if packed&0x80 != 0 { // a Global Color Table is present: 2^(size+1) entries
+		colors = 1 << ((packed & 0x07) + 1)
+	}
+	return ImageInfo{MIME: "image/gif", Width: w, Height: h, Depth: depth, Colors: colors}, true
 }
 
 // sniffWebP reads dimensions from the first chunk after the WEBP form type. The

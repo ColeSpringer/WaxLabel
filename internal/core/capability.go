@@ -60,6 +60,11 @@ type Capability struct {
 	// ProjectTransfer uses it to mark a picture set Lossy only when the specific pictures
 	// carry metadata the destination will drop, matching the codec's write-time warning.
 	PictureLoss PictureLoss
+	// ChapterLoss records chapter metadata this format cannot preserve on chapter
+	// writes. It is set only on the chapters capability. ProjectTransfer uses it to
+	// mark a chapter set Lossy only when those chapters actually carry affected
+	// metadata, matching the editor's write warning.
+	ChapterLoss ChapterLoss
 	// PictureMIMEs lists the cover MIME types this format can store; nil means no
 	// per-MIME restriction. The format may still store no pictures at all, which is
 	// decided by Write == AccessNone. A non-nil list (MP4's covr

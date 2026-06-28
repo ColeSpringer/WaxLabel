@@ -258,3 +258,25 @@ func (r atomRef) id() string { return string(r.name[:]) }
 func (r atomRef) end() int64 { return r.offset + r.size }
 
 func (r atomRef) payloadOff() int64 { return r.offset + r.headerLen }
+
+// sizeField returns the offset from the atom start and byte width of the field that
+// encodes the atom's total size. A 16-byte header is the 64-bit largesize form, whose
+// real size is the 8-byte field 8 bytes in; otherwise the 4-byte size leads the box.
+// metaSizeRep and resultUdtaRaw both call this helper so the write path and returned
+// result document patch the same box layout.
+func (r atomRef) sizeField() (off, width int64) {
+	if r.headerLen == 16 {
+		return 8, 8
+	}
+	return 0, 4
+}
+
+// putBoxSize writes newSize into a big-endian box size field of the given width
+// (4 or 8 bytes), as returned by [atomRef.sizeField].
+func putBoxSize(field []byte, width, newSize int64) {
+	if width == 8 {
+		binary.BigEndian.PutUint64(field, uint64(newSize))
+		return
+	}
+	binary.BigEndian.PutUint32(field, uint32(newSize))
+}

@@ -233,6 +233,15 @@ func TestParseNumPairSlashConvention(t *testing.T) {
 	if n != 3 || tot != 20 {
 		t.Errorf("got %d/%d, want 3/20", n, tot)
 	}
+	// Out-of-range overflow reads 0, not strconv.Atoi's MaxInt64 saturation, so the
+	// typed projection matches the documented "non-numeric ... reads 0" contract.
+	n, tot = ParseNumPair("99999999999999999999/88888888888888888888", "")
+	if n != 0 || tot != 0 {
+		t.Errorf("overflow got %d/%d, want 0/0", n, tot)
+	}
+	if n, tot = ParseNumPair("5", "99999999999999999999"); n != 5 || tot != 0 {
+		t.Errorf("overflow total got %d/%d, want 5/0", n, tot)
+	}
 }
 
 func TestValidNumericValue(t *testing.T) {

@@ -169,6 +169,13 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 	}
 	if n := len(src.Chapters); n > 0 {
 		disp, reason := dispose(dst.Chapters, dst.ReadOnly, n, "chapters")
+		// Start+title-only destinations carry starts and titles but drop other chapter
+		// metadata. Upgrade only sets carrying metadata the destination cannot represent;
+		// plain chapter lists remain Carried.
+		if disp == Carried && ChaptersLoseMetadata(src.Chapters, dst.Chapters.ChapterLoss) {
+			disp = Lossy
+			reason = dst.Chapters.Reason()
+		}
 		items = append(items, TransferItem{
 			Kind: TransferChapter, Count: n, Disposition: disp, Reason: reason,
 		})

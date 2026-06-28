@@ -86,6 +86,10 @@ type doc struct {
 
 	audioOff int64 // SSND sample-frame start (audio essence start)
 	audioEnd int64 // SSND body end (audio essence end)
+	// ssndAlign is the SSND "offset" field: block-alignment bytes before the first
+	// sample frame. audioOff already includes it; the value is retained so post-write
+	// result construction can match a fresh parse of the copied SSND.
+	ssndAlign int64
 	// ssndTruncated records that the SSND chunk's declared size ran past EOF (and was
 	// not the 0xFFFFFFFF "size unknown" sentinel) - a truncated file. It is set where
 	// the walk already clamps the overrun, so the overrun is acted on where it is

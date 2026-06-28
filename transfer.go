@@ -50,10 +50,10 @@ func (d *Document) PlanTransfer(dst Format, opts ...WriteOption) (TransferReport
 // drop; in that case the returned report still describes the attempted projection.
 //
 // The transfer overlays src onto dst: each canonical key present in the source
-// replaces that key in the destination, the source's pictures replace the
-// destination's (when the source has any and the destination can store them), and
-// likewise for chapters; destination keys the source does not carry are kept. dst
-// is not modified - only [Plan.Execute] writes.
+// replaces that key in the destination, the source's pictures replace the destination
+// picture set whenever the source carries any pictures the destination can write, and
+// likewise for chapters. Destination keys the source does not carry are kept. dst is
+// not modified; only [Plan.Execute] writes.
 func (d *Document) PrepareTransfer(dst *Document, opts ...WriteOption) (*Plan, TransferReport, error) {
 	if d.zero() || dst.zero() {
 		return nil, TransferReport{}, fmt.Errorf("%w: document is not initialized; use ParseFile/Parse", waxerr.ErrInvalidData)
@@ -67,6 +67,25 @@ func (d *Document) PrepareTransfer(dst *Document, opts ...WriteOption) (*Plan, T
 	// edit, so suppress the edit-time sanity warnings (chapter past-duration/duplicate,
 	// single-valued-multi): a copy must not flag metadata the user authored none of.
 	ed.carried = true
+
+	// Pictures are a set. When the destination can store covers, source pictures replace
+	// the destination's set whenever the source carries any, even if every source picture
+	// is later filtered out as unrepresentable. Representable is the same per-MIME test
+	// ProjectTransfer used to split the report's picture items.
+	//
+	// The whole block, including ClearPictures, is gated on the destination actually
+	// storing pictures. A read-only format or a no-cover container like WebM cannot hold
+	// covers, so touching its picture set would only mark a change the writer refuses.
+	// Leaving that set untouched lets tags transfer while the source cover is reported Dropped.
+	if len(d.media.Pictures) > 0 && !caps.ReadOnly && caps.Pictures.Write != core.AccessNone {
+		ed.ClearPictures()
+		for _, p := range core.ClonePictures(d.media.Pictures) {
+			if core.Representable(caps.Pictures, p) {
+				ed.AddPicture(p)
+			}
+		}
+	}
+
 	for _, it := range items {
 		if it.Disposition == Dropped {
 			continue
@@ -75,20 +94,6 @@ func (d *Document) PrepareTransfer(dst *Document, opts ...WriteOption) (*Plan, T
 		case core.TransferField:
 			if vals, ok := d.media.Tags.Get(it.Key); ok {
 				ed.Set(it.Key, vals...)
-			}
-		case core.TransferPicture:
-			// Replace the destination's cover set with the source covers it can store. The
-			// filter is the same representability test ProjectTransfer used to split the
-			// report's picture items, so the written bytes match the carried/dropped counts.
-			//
-			// Pictures are a set, so this is whole-set replacement, like chapters. If no
-			// source cover is representable, ProjectTransfer emits only Dropped items; this
-			// branch is not reached, and the destination's existing covers remain unchanged.
-			ed.ClearPictures()
-			for _, p := range core.ClonePictures(d.media.Pictures) {
-				if core.Representable(caps.Pictures, p) {
-					ed.AddPicture(p)
-				}
 			}
 		case core.TransferChapter:
 			ed.SetChapters(core.CloneChapters(d.media.Chapters)...)

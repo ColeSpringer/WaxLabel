@@ -194,6 +194,8 @@ const (
 	WarnChapterEndsDropped     = core.WarnChapterEndsDropped
 	WarnPaddingClamped         = core.WarnPaddingClamped
 	WarnTagStructureDropped    = core.WarnTagStructureDropped
+	WarnChapterStartOverflow   = core.WarnChapterStartOverflow
+	WarnChapterMetadataDropped = core.WarnChapterMetadataDropped
 )
 
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated
