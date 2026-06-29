@@ -84,6 +84,19 @@ func genreIndex(name string) int {
 // name (case-insensitive), or -1 if the name is not a standard genre.
 func GenreIndex(name string) int { return genreIndex(name) }
 
+// specialGenre maps the non-numeric TCON references defined by ID3: RX (Remix)
+// and CR (Cover). They resolve the same whether bare or parenthesized, so both
+// resolveGenres branches use this table.
+func specialGenre(ref string) (string, bool) {
+	switch ref {
+	case "RX":
+		return "Remix", true
+	case "CR":
+		return "Cover", true
+	}
+	return "", false
+}
+
 // resolveGenres turns a raw TCON value into one or more display names, expanding
 // every numeric/special reference. It reports whether any numeric reference was
 // seen so the parser can surface a numeric-genre warning. A single ID3v2.3 TCON
@@ -93,16 +106,23 @@ func GenreIndex(name string) int { return genreIndex(name) }
 //	"(17)"       -> ["Rock"]                 (parenthesised reference, v2.3)
 //	"(51)(39)"   -> ["Techno-Industrial","Noise"]  (multiple references)
 //	"(17)Hard"   -> ["Rock","Hard"]          (reference + textual refinement)
-//	"(RX)"       -> ["Remix"]                (special references)
-//	"(CR)"       -> ["Cover"]
+//	"(RX)"/"RX"  -> ["Remix"]                (special reference, parenthesised or bare)
+//	"(CR)"/"CR"  -> ["Cover"]
 //	"Rock"       -> ["Rock"]                 (already a name)
+//
+// Bare RX/CR values are reference tokens, not literal genre names. They resolve
+// on read like bare numeric references; lowercase values and other text stay literal.
 func resolveGenres(v string) (names []string, numeric bool) {
 	v = strings.TrimSpace(v)
 	if v == "" {
 		return nil, false
 	}
-	// No parentheses: a bare number is a v2.4 reference, anything else a name.
+	// No parentheses: a bare special reference (RX/CR) resolves like its parenthesized form,
+	// a bare number is a v2.4 reference, and anything else is a literal name.
 	if !strings.HasPrefix(v, "(") {
+		if name, ok := specialGenre(v); ok {
+			return []string{name}, true
+		}
 		if n, err := strconv.Atoi(v); err == nil {
 			if g, ok := genreName(n); ok {
 				return []string{g}, true
@@ -120,24 +140,18 @@ func resolveGenres(v string) (names []string, numeric bool) {
 			break // unterminated reference; treat the remainder as text
 		}
 		ref := v[1:end]
-		switch {
-		case ref == "RX":
-			names = append(names, "Remix")
+		if name, ok := specialGenre(ref); ok {
+			names = append(names, name)
 			numeric = true
-		case ref == "CR":
-			names = append(names, "Cover")
+		} else if n, err := strconv.Atoi(ref); err == nil {
 			numeric = true
-		default:
-			if n, err := strconv.Atoi(ref); err == nil {
-				numeric = true
-				if g, ok := genreName(n); ok {
-					names = append(names, g)
-				} else {
-					names = append(names, "("+ref+")") // out of range: keep the literal
-				}
+			if g, ok := genreName(n); ok {
+				names = append(names, g)
 			} else {
-				names = append(names, ref)
+				names = append(names, "("+ref+")") // out of range: keep the literal
 			}
+		} else {
+			names = append(names, ref)
 		}
 		v = v[end+1:]
 	}

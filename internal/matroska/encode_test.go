@@ -337,3 +337,38 @@ func TestMatroskaNameRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// Creating an album-scope Tag must emit the schema-mandatory Targets child.
+// Strict validators reject a Tag without Targets, and the returned tagGroup
+// should match a fresh parse of the rendered bytes.
+func TestBuildAlbumGroupEmitsTargets(t *testing.T) {
+	edited := tag.NewTagSet()
+	edited.Set(tag.Artist, "X")
+	ek := map[tag.Key]bool{tag.Artist: true}
+
+	out, rendered := buildAlbumGroup(nil, tag.NewTagSet(), edited, nil, nil, ek, false)
+
+	// White-box: the synthesized album group records an empty, album-scope Targets.
+	if out.targetsRaw == nil {
+		t.Fatal("a created album Tag did not record a Targets element (out.targetsRaw is nil)")
+	}
+	if want := encElement(idTargets, nil); !bytes.Equal(out.targetsRaw, want) {
+		t.Errorf("out.targetsRaw = % x, want the empty Targets element % x", out.targetsRaw, want)
+	}
+	// out.raw is the freshly rendered bytes, so a re-edit of the returned doc preserves it.
+	if !bytes.Equal(out.raw, rendered) {
+		t.Error("out.raw must equal the rendered Tag bytes (the returned-doc-equals-fresh-parse invariant)")
+	}
+
+	// The serialized Tag's first child is the mandatory Targets element.
+	src := core.BytesSource(rendered)
+	limit := int64(len(rendered))
+	tagEl, ok := readElement(src, 0, limit, limit)
+	if !ok || tagEl.id != idTag {
+		t.Fatalf("rendered bytes are not a Tag element (ok=%v id=%#x)", ok, tagEl.id)
+	}
+	child, ok := readElement(src, tagEl.dataStart, tagEl.dataEnd, limit)
+	if !ok || child.id != idTargets {
+		t.Errorf("first Tag child id = %#x, want Targets %#x", child.id, idTargets)
+	}
+}

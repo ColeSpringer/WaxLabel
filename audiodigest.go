@@ -82,8 +82,10 @@ func (d *Document) HashAudioEssence(ctx context.Context, opts ...HashOption) (Au
 	// non-empty range the parser still flagged WarnNoAudioFrames - a non-empty text
 	// file named .mp3, whose parser set a range over the text bytes - would hash those
 	// bytes as if they were audio. Both are ErrInvalidData, so verify, set --verify, and
-	// HashAudioEssence all refuse a no-audio file alike (and agree with dump/lint, which
-	// raise the same warning). A malformed range (end < start) carries no such warning,
+	// HashAudioEssence all refuse a no-audio file. lint reaches the same invalid-data
+	// verdict. dump reports WarnNoAudioFrames but exits 0 because metadata rendering
+	// succeeded, so the warning is the shared signal for that read-only path. A
+	// malformed range (end < start) carries no such warning,
 	// so it still falls through to hashRanges' specific "end before start" error rather
 	// than being masked as a benign empty file.
 	if noEssence(ranges) || hasNoAudioWarning(d.media) {

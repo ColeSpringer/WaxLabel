@@ -459,7 +459,8 @@ func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, o
 		if orig, ok := origTXXXDesc[token]; ok && desc == string(key) {
 			desc = orig
 		}
-		return []Frame{{ID: "TXXX", Body: encodeUserText(version, desc, vals)}}, false
+		return renderByPolicy(version, "TXXX", vals, opts.Multi,
+			func(v []string) []byte { return encodeUserText(version, desc, v) })
 	case token == "UFID":
 		id, ok := edited.First(tag.MBRecordingID)
 		if !ok || id == "" {
@@ -471,7 +472,9 @@ func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, o
 		if !ok || len(vals) == 0 {
 			return nil, false
 		}
-		return []Frame{{ID: "COMM", Body: encodeComment(version, unitLang(origLangs, "COMM"), "", vals)}}, false
+		lang := unitLang(origLangs, "COMM")
+		return renderByPolicy(version, "COMM", vals, opts.Multi,
+			func(v []string) []byte { return encodeComment(version, lang, "", v) })
 	case token == "USLT":
 		text, ok := edited.First(tag.Lyrics)
 		if !ok {
@@ -535,28 +538,38 @@ func txxxKeyForToken(upperDesc string) tag.Key {
 	return tag.Key(upperDesc)
 }
 
-// renderText renders a text frame's value(s), applying the multi-value policy in
-// v2.3. v2.4 always NUL-separates.
+// renderText renders a plain text frame under the multi-value policy. ID3v2.4
+// always uses NUL-separated values.
 func renderText(version byte, id string, values []string, pol core.ID3MultiValuePolicy) ([]Frame, bool) {
+	return renderByPolicy(version, id, values, pol,
+		func(v []string) []byte { return encodeTextFrame(chooseEncoding(version, v), v) })
+}
+
+// renderByPolicy renders a text-like ID3 frame under the configured multi-value
+// policy. encodeBody owns the frame-specific body format, while this helper
+// handles repeat-frame, slash-join, and NUL-separated v2.3 extension behavior.
+// The bool return reports whether the v2.3 NUL-separated extension was used.
+//
+// ID3MultiRepeatFrame emits one frame per value, including TXXX and COMM. That
+// can repeat a TXXX description or COMM language/description pair, which ID3
+// readers commonly tolerate but the spec discourages. The policy is explicit
+// caller opt-in, so it is applied uniformly.
+func renderByPolicy(version byte, id string, values []string, pol core.ID3MultiValuePolicy,
+	encodeBody func([]string) []byte) ([]Frame, bool) {
 	if len(values) <= 1 || version >= 4 {
-		enc := chooseEncoding(version, values)
-		return []Frame{{ID: id, Body: encodeTextFrame(enc, values)}}, false
+		return []Frame{{ID: id, Body: encodeBody(values)}}, false
 	}
 	switch pol {
 	case core.ID3MultiRepeatFrame:
 		var frames []Frame
 		for _, v := range values {
-			enc := chooseEncoding(version, []string{v})
-			frames = append(frames, Frame{ID: id, Body: encodeTextFrame(enc, []string{v})})
+			frames = append(frames, Frame{ID: id, Body: encodeBody([]string{v})})
 		}
 		return frames, false
 	case core.ID3MultiSlash:
-		joined := strings.Join(values, " / ")
-		enc := chooseEncoding(version, []string{joined})
-		return []Frame{{ID: id, Body: encodeTextFrame(enc, []string{joined})}}, false
+		return []Frame{{ID: id, Body: encodeBody([]string{strings.Join(values, " / ")})}}, false
 	default: // ID3MultiNullSep - a v2.3 extension
-		enc := chooseEncoding(version, values)
-		return []Frame{{ID: id, Body: encodeTextFrame(enc, values)}}, true
+		return []Frame{{ID: id, Body: encodeBody(values)}}, true
 	}
 }
 
@@ -630,7 +643,8 @@ func detectNumericGenres(changed map[tag.Key]bool, edited tag.TagSet) []string {
 
 // isNumericGenreRef reports whether v reads back as a different genre name after write.
 // Values beginning with "(" are escaped by genreValues and round-trip verbatim, so the
-// remaining asymmetry is a bare number such as "17" that the reader resolves to a name.
+// remaining asymmetry is a bare reference the reader resolves to a name, such as
+// "17" to "Rock", "RX" to "Remix", or "CR" to "Cover".
 // The final resolver is the same one the parser uses.
 func isNumericGenreRef(v string) bool {
 	if strings.HasPrefix(v, "(") {

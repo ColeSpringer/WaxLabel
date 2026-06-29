@@ -17,8 +17,6 @@ var (
 	// ErrInvalidData means the input violated the format specification in a
 	// way parsing could not recover from.
 	ErrInvalidData = errors.New("invalid data")
-	// ErrNoTags means the file parsed cleanly but carried no tag block.
-	ErrNoTags = errors.New("no tags present")
 	// ErrUnsupportedTag means a tag exists that this version cannot model.
 	ErrUnsupportedTag = errors.New("unsupported tag")
 	// ErrPictureTooLarge means an embedded picture exceeded a configured or

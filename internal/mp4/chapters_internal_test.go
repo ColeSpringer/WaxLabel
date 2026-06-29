@@ -9,6 +9,44 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
+// ffmpeg-compatible chpl parsing skips the Nero reserved field for any non-zero
+// version, not just version 1. A version-2 atom should parse and render back to
+// the same payload.
+func TestDecodeChplV2SkipsReservedField(t *testing.T) {
+	payload := []byte{
+		2, 0, 0, 0, // version 2 + flags
+		0, 0, 0, 0, // reserved 32-bit field (must be skipped for v2, as it is for v1)
+		1,                        // chapter count
+		0, 0, 0, 0, 0, 0, 3, 232, // start = 1000 chpl units (100 ns each)
+		5, 'I', 'n', 't', 'r', 'o', // length-prefixed UTF-8 title
+	}
+	raw := append(make([]byte, 8), payload...) // 8-byte dummy atom header; payloadOff() = 8
+	n := node{name: [4]byte{'c', 'h', 'p', 'l'}, offset: 0, headerLen: 8, size: int64(len(raw))}
+
+	version, chapters, ok := decodeChpl(core.BytesSource(raw), n, int64(len(raw)))
+	if !ok {
+		t.Fatal("decodeChpl(v2) returned ok=false; the reserved field was not skipped for version 2")
+	}
+	if version != 2 {
+		t.Errorf("version = %d, want 2", version)
+	}
+	if len(chapters) != 1 {
+		t.Fatalf("chapters = %d, want 1", len(chapters))
+	}
+	if want := scaleToDuration(1000, chplStartUnit); chapters[0].Start != want {
+		t.Errorf("chapter Start = %v, want %v (a mis-skipped reserved field shifts the start)", chapters[0].Start, want)
+	}
+	if chapters[0].Title != "Intro" {
+		t.Errorf("chapter Title = %q, want %q", chapters[0].Title, "Intro")
+	}
+
+	// renderChpl is symmetric: a v2 atom re-emits the reserved field, so the
+	// payload past the atom header matches the input byte for byte.
+	if got := renderChpl(2, chapters); !bytes.Equal(got[8:], payload) {
+		t.Errorf("renderChpl(2) payload = % x, want % x", got[8:], payload)
+	}
+}
+
 func TestSentinelToZero64(t *testing.T) {
 	cases := []struct {
 		v, sentinel, want uint64

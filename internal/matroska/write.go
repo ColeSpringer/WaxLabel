@@ -695,12 +695,20 @@ func buildAlbumGroup(group *tagGroup, base, edited tag.TagSet, covered, albumOwn
 	if len(simple) == 0 {
 		return tagGroup{}, nil
 	}
-	var content []byte
-	if group != nil && group.targetsRaw != nil {
-		content = append(content, group.targetsRaw...)
+	// out already carries any existing Targets from group. A nil value means this
+	// is a newly created album group, which still needs the mandatory Targets
+	// child. An empty Targets element defaults to album scope (TargetTypeValue
+	// 50). Recording it on out keeps the returned doc consistent with a fresh
+	// parse of the rendered bytes.
+	if out.targetsRaw == nil {
+		out.targetsRaw = encElement(idTargets, nil)
 	}
+	var content []byte
+	content = append(content, out.targetsRaw...)
 	content = append(content, simple...)
-	return out, masterElement(idTag, content, group != nil && group.hasCRC)
+	rendered := masterElement(idTag, content, out.hasCRC)
+	out.raw = rendered
+	return out, rendered
 }
 
 // subtractFold removes covered values from vals by folded form, one occurrence at a

@@ -58,7 +58,6 @@ func newVerifyCmd() *cobra.Command {
 					}
 					renderVerify(w, v, whole)
 				},
-				nil, // verify already exits 4 on no-audio (HashAudioEssence refuses zero essence)
 				quiet,
 			)
 		},

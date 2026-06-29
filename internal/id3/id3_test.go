@@ -210,6 +210,10 @@ func TestResolveGenres(t *testing.T) {
 		{"(Indie)Refined", []string{"Indie", "Refined"}, false},    // non-numeric parenthetical
 		{"(RX)", []string{"Remix"}, true},
 		{"(CR)", []string{"Cover"}, true},
+		{"RX", []string{"Remix"}, true},    // bare special reference resolves like (RX)
+		{"CR", []string{"Cover"}, true},    // bare special reference resolves like (CR)
+		{"rx", []string{"rx"}, false},      // case-sensitive (the spec form is uppercase): lowercase stays a literal name
+		{"(rx)", []string{"rx"}, false},    // parenthesized lowercase is literal too
 		{"(255)", []string{"(255)"}, true}, // out of range, kept literal, still numeric syntax
 		{"Custom Genre", []string{"Custom Genre"}, false},
 	}
@@ -258,6 +262,22 @@ func TestProjectTextFrames(t *testing.T) {
 	}
 	if !proj.NumericGenre {
 		t.Error("expected NumericGenre to be reported")
+	}
+}
+
+// A pre-existing bare TCON of RX or CR, as another tool might write, projects to
+// Remix or Cover and sets NumericGenre. The frame is built directly instead of
+// through the writer so the test covers read-side behavior.
+func TestProjectBareSpecialGenreReinterpreted(t *testing.T) {
+	for _, c := range []struct{ raw, want string }{{"RX", "Remix"}, {"CR", "Cover"}} {
+		frames := []Frame{{ID: "TCON", Body: encodeTextFrame(encLatin1, []string{c.raw})}}
+		proj := Project(buildTag(t, 4, frames))
+		if v, _ := proj.Tags.First(tag.Genre); v != c.want {
+			t.Errorf("bare TCON %q projected Genre = %q, want %q", c.raw, v, c.want)
+		}
+		if !proj.NumericGenre {
+			t.Errorf("bare TCON %q should set NumericGenre so the read-side warning fires", c.raw)
+		}
 	}
 }
 
@@ -656,6 +676,92 @@ func TestRebuildMultiValuePolicies(t *testing.T) {
 		WriteOpts{Multi: core.ID3MultiNullSep})
 	if !info3.UsedV23Multi {
 		t.Error("null-sep on v2.3 should report UsedV23Multi")
+	}
+}
+
+// Custom TXXX fields use the same v2.3 multi-value policy as named text frames.
+// MOOD has no dedicated frame, so it routes through TXXX here.
+func TestRebuildTXXXMultiValuePolicies(t *testing.T) {
+	mood := tag.Key("MOOD")
+	edited := tag.NewTagSet()
+	edited.Set(mood, "Happy", "Energetic")
+
+	txxxValues := func(frames []Frame) [][]string {
+		var out [][]string
+		for _, f := range frames {
+			if f.ID != "TXXX" {
+				continue
+			}
+			if _, vals, ok := decodeUserText(f.Body); ok {
+				out = append(out, vals)
+			}
+		}
+		return out
+	}
+
+	// NUL-separated v2.3 extension: one TXXX frame and a compatibility warning.
+	out, info := RebuildFrames(nil, tag.NewTagSet(), edited, 3, nil, false,
+		WriteOpts{Multi: core.ID3MultiNullSep})
+	if got := txxxValues(out); len(got) != 1 || !slices.Equal(got[0], []string{"Happy", "Energetic"}) {
+		t.Errorf("v2.3 null-sep TXXX = %v, want one frame [Happy Energetic]", got)
+	}
+	if !info.UsedV23Multi {
+		t.Error("v2.3 null-sep multi-value TXXX should report UsedV23Multi")
+	}
+
+	// Repeat-frame policy: two TXXX frames, no v2.3-extension flag. ID3's "one
+	// frame per description" convention discourages repeated same-description
+	// frames, but Repeat is an explicit caller opt-in applied uniformly with
+	// plain text frames.
+	out, info = RebuildFrames(nil, tag.NewTagSet(), edited, 3, nil, false,
+		WriteOpts{Multi: core.ID3MultiRepeatFrame})
+	if got := txxxValues(out); len(got) != 2 || info.UsedV23Multi {
+		t.Errorf("v2.3 repeat TXXX = %v, v23multi=%v, want 2 frames, false", got, info.UsedV23Multi)
+	}
+
+	// Slash-join: one frame carrying the " / "-joined value, no flag.
+	out, info = RebuildFrames(nil, tag.NewTagSet(), edited, 3, nil, false,
+		WriteOpts{Multi: core.ID3MultiSlash})
+	if got := txxxValues(out); len(got) != 1 || !slices.Equal(got[0], []string{"Happy / Energetic"}) {
+		t.Errorf("v2.3 slash TXXX = %v, want one frame [Happy / Energetic]", got)
+	}
+	if info.UsedV23Multi {
+		t.Error("v2.3 slash-join must not report UsedV23Multi")
+	}
+
+	// v2.4 always NUL-separates cleanly, no v2.3-extension flag.
+	out, info = RebuildFrames(nil, tag.NewTagSet(), edited, 4, nil, false,
+		WriteOpts{Multi: core.ID3MultiNullSep})
+	if got := txxxValues(out); len(got) != 1 || !slices.Equal(got[0], []string{"Happy", "Energetic"}) {
+		t.Errorf("v2.4 TXXX = %v, want one frame [Happy Energetic]", got)
+	}
+	if info.UsedV23Multi {
+		t.Error("v2.4 must not report UsedV23Multi")
+	}
+}
+
+// COMM is normally single-valued, but the shared policy helper still handles a
+// multi-value TagSet. A v2.3 multi-value comment raises the compatibility flag,
+// and a single-value comment stays one frame.
+func TestRebuildCOMMMultiValuePolicy(t *testing.T) {
+	multi := tag.NewTagSet()
+	multi.Set(tag.Comment, "first", "second")
+	if _, info := RebuildFrames(nil, tag.NewTagSet(), multi, 3, nil, false,
+		WriteOpts{Multi: core.ID3MultiNullSep}); !info.UsedV23Multi {
+		t.Error("v2.3 null-sep multi-value COMM should report UsedV23Multi")
+	}
+
+	single := tag.NewTagSet()
+	single.Set(tag.Comment, "only")
+	out, info := RebuildFrames(nil, tag.NewTagSet(), single, 3, nil, false, WriteOpts{})
+	count := 0
+	for _, f := range out {
+		if f.ID == "COMM" {
+			count++
+		}
+	}
+	if count != 1 || info.UsedV23Multi {
+		t.Errorf("single COMM = %d frames, v23multi=%v, want 1 frame, false", count, info.UsedV23Multi)
 	}
 }
 

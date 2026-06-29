@@ -60,7 +60,8 @@ func (e *Editor) Apply(p tag.TagPatch) *Editor {
 //
 // Calling Set with no values collapses the key to absent during [Editor.Prepare], matching
 // the empty-value cleanup. [Editor.Clear] is the explicit removal call. Set(key, "") is
-// distinct: it stores one empty value, which a format may then drop with a note.
+// distinct: it stores one empty value. A format that cannot store that value may drop it,
+// report a removed/no-op change, and let the CLI print an advisory stderr note.
 //
 // A slash-combined "n/total" on [tag.TrackNumber] or [tag.DiscNumber] is normalized
 // at [Editor.Prepare] into the canonical pair (e.g. Set(tag.TrackNumber, "3/12")

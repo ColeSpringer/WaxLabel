@@ -11,11 +11,10 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// TestSetAddChapterDedupsAcrossLanguageField is a QA-review regression: --add-chapter dedups
-// on the fields the CLI can author (start/end/title), ignoring the parse-derived chapter
-// language. A Matroska chapter carrying a language must not defeat that dedup and write a
-// duplicate when the user re-adds the same start/title. The CLI has no language syntax, so the
-// language-carrying chapter is authored through the library for the fixture.
+// --add-chapter dedups on the fields the CLI can author: start, end, and title.
+// Parse-derived chapter language should not make the same user-authored chapter
+// look distinct. The fixture is authored through the library because the CLI has
+// no language syntax for chapters.
 func TestSetAddChapterDedupsAcrossLanguageField(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -46,21 +45,101 @@ func TestSetAddChapterDedupsAcrossLanguageField(t *testing.T) {
 	}
 }
 
-// TestCapsEmptyNoAudioExit4 is the F6 regression for caps: a file with no decodable audio
-// essence still prints its capability report, then exits 4 (invalid-data) - the same verdict
-// dump/verify/set/lint reach, removing the read-command exit-0 outlier.
-func TestCapsEmptyNoAudioExit4(t *testing.T) {
+// caps reports container capability, not file health. A no-audio file can still
+// have readable capabilities, so the command prints its report and exits 0.
+func TestCapsEmptyNoAudioExit0(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "caps", emptyMP3)
-	if code != 4 {
-		t.Fatalf("caps no-audio exit = %d, want 4", code)
+	if code != 0 {
+		t.Fatalf("caps no-audio exit = %d, want 0 (a successful capability read)", code)
 	}
 	if !strings.Contains(out, "format:") {
-		t.Errorf("caps must still print the capability report before exiting 4:\n%s", out)
+		t.Errorf("caps must still print the capability report:\n%s", out)
 	}
 }
 
-// TestCapsFormatADTSAlias is the Codex polish: caps accepts "adts" as an alias for aac.
+// A no-audio file does not fail a dump batch. It is a successful metadata read
+// with a warning, so the aggregate exit code stays 0 when all files are readable.
+func TestDumpMixedBatchNoAudioExit0(t *testing.T) {
+	t.Parallel()
+	out, _, code := runCLI(t, "dump", sampleFLAC, emptyMP3)
+	if code != 0 {
+		t.Fatalf("dump good+no-audio exit = %d, want 0 (no-audio is a warning-only read)", code)
+	}
+	if !strings.Contains(out, "no-audio") {
+		t.Errorf("dump batch missing the no-audio warning for the empty file:\n%s", out)
+	}
+}
+
+// A corrupt file still dominates a dump batch at exit 4. The no-audio warning
+// path must not weaken invalid-data results from files that cannot be parsed.
+func TestDumpBatchCorruptStillDominates(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// A file the FLAC detector claims by its "fLaC" magic but cannot parse: invalid-data.
+	bad := filepath.Join(dir, "garbage.flac")
+	if err := os.WriteFile(bad, append([]byte("fLaC"), make([]byte, 64)...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, code := runCLI(t, "dump", sampleFLAC, emptyMP3, bad); code != 4 {
+		t.Errorf("dump good+no-audio+corrupt exit = %d, want 4 (corrupt dominates)", code)
+	}
+}
+
+// caps follows the same batch contract as dump: a no-audio file with readable
+// capabilities does not make the batch fail.
+func TestCapsMixedBatchNoAudioExit0(t *testing.T) {
+	t.Parallel()
+	if _, _, code := runCLI(t, "caps", sampleFLAC, emptyMP3); code != 0 {
+		t.Errorf("caps good+no-audio exit = %d, want 0", code)
+	}
+}
+
+// In JSON mode, a no-audio file is a normal dump record with a warning. It is
+// not represented as an error element.
+func TestDumpJSONNoAudioNoError(t *testing.T) {
+	t.Parallel()
+	out, _, code := runCLI(t, "--json", "dump", sampleFLAC, emptyMP3)
+	if code != 0 {
+		t.Fatalf("dump --json good+no-audio exit = %d, want 0", code)
+	}
+	docs := decodeJSONList[jsonDocument](t, out)
+	if len(docs) != 2 {
+		t.Fatalf("dump --json array len = %d, want 2\n%s", len(docs), out)
+	}
+	for i, d := range docs {
+		if d.Error != nil {
+			t.Errorf("element %d carries an error %+v; a no-audio file is a successful read", i, d.Error)
+		}
+	}
+	sawNoAudio := false
+	for _, d := range docs {
+		for _, w := range d.Warnings {
+			if w.Code == "no-audio" {
+				sawNoAudio = true
+			}
+		}
+	}
+	if !sawNoAudio {
+		t.Errorf("no element carried the no-audio warning:\n%s", out)
+	}
+}
+
+// caps has no warnings field, so JSON mode represents a readable no-audio file
+// as a clean capability record.
+func TestCapsJSONNoAudioNoError(t *testing.T) {
+	t.Parallel()
+	out, _, code := runCLI(t, "--json", "caps", emptyMP3)
+	if code != 0 {
+		t.Fatalf("caps --json no-audio exit = %d, want 0", code)
+	}
+	jc := decodeJSONOne[jsonCaps](t, out)
+	if jc.Error != nil {
+		t.Errorf("caps --json no-audio carries an error %+v, want none", jc.Error)
+	}
+}
+
+// caps accepts "adts" as an alias for aac.
 func TestCapsFormatADTSAlias(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "caps", "--format", "adts")
@@ -72,9 +151,8 @@ func TestCapsFormatADTSAlias(t *testing.T) {
 	}
 }
 
-// TestNumericGenreWriteWarnAsymmetry is the F10 numeric-genre regression: setting a bare
-// numeric GENRE warns on an ID3 target (it reads back as the genre NAME) but not on a
-// Vorbis target (it stays the literal number), discoverable at the point of action.
+// A bare numeric GENRE warns on an ID3 target because it reads back as the genre
+// name. Vorbis stores the same value literally, so it should not warn.
 func TestNumericGenreWriteWarnAsymmetry(t *testing.T) {
 	t.Parallel()
 	notagsMP3 := filepath.Join("..", "..", "testdata", "notags.mp3")
@@ -93,7 +171,7 @@ func TestNumericGenreWriteWarnAsymmetry(t *testing.T) {
 		t.Fatalf("plan FLAC GENRE=17 exit = %d, want 0", code)
 	}
 	if strings.Contains(flacOut, "numeric-genre") {
-		t.Errorf("a Vorbis target keeps GENRE=17 verbatim and must NOT warn numeric-genre:\n%s", flacOut)
+		t.Errorf("a Vorbis target keeps GENRE=17 verbatim and must not warn numeric-genre:\n%s", flacOut)
 	}
 
 	// A literal value beginning with "(" is escaped on write, so it round-trips verbatim
@@ -122,10 +200,9 @@ func TestNumericGenreWriteWarnAsymmetry(t *testing.T) {
 	}
 }
 
-// TestSetOutputExistsBeatsWritabilityProbe is a QA-review regression: when an existing -o
-// target (no --overwrite) sits in a read-only directory, the actionable "already exists; pass
-// --overwrite" (exit 2) must win over the writability probe's I/O error (exit 6) - the probe
-// must not pre-empt the more useful refusal, nor touch the filesystem on a refused write.
+// When an existing -o target is used without --overwrite, the actionable
+// already-exists refusal should win over any writability probe error. The probe
+// must not preempt the clearer refusal or touch the target path.
 func TestSetOutputExistsBeatsWritabilityProbe(t *testing.T) {
 	t.Parallel()
 	if os.Geteuid() == 0 {
@@ -150,12 +227,9 @@ func TestSetOutputExistsBeatsWritabilityProbe(t *testing.T) {
 	}
 }
 
-// TestSetBareDiscTrackAliasResolves is the Fix-3 CLI regression: the bare DISC/TRACK and
-// spaced/underscored ALBUM ARTIST spellings resolve to canonical keys. DISC/TRACK are 6
-// edits from DISCNUMBER/TRACKNUMBER, past ClosestKey's distance-2 suggestion cap, so before
-// the aliases they landed as custom fields - making --strict exit 2 and the non-strict
-// "written as a custom field" note fire. Both must now be gone, and the value lands on the
-// canonical key.
+// Bare DISC/TRACK and spaced or underscored ALBUM ARTIST spellings resolve to
+// canonical keys. DISC/TRACK are outside ClosestKey's suggestion distance, so
+// aliases keep them from being treated as custom fields.
 func TestSetBareDiscTrackAliasResolves(t *testing.T) {
 	// --strict now succeeds for each bare/aliased spelling.
 	for _, kv := range []string{"DISC=1", "TRACK=2", "ALBUM ARTIST=The Band", "ALBUM_ARTIST=The Band"} {

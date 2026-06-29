@@ -132,8 +132,8 @@ func TestDumpJSONCodecCanonical(t *testing.T) {
 	}
 }
 
-// TestDumpJSONOmitsBitDepthForLossy is B2: a lossy codec (AAC) decodes to PCM at
-// the decoder's chosen depth, so a container-stored "16-bit" is noise. The JSON
+// TestDumpJSONOmitsBitDepthForLossy covers lossy codecs such as AAC, which
+// decode to PCM at the decoder's chosen depth. A container-stored "16-bit" is noise. The JSON
 // dump zeroes bitsPerSample for such codecs and omitempty drops it - matching the
 // text view's bitDepthMeaningful gate so the two never disagree. A lossless FLAC,
 // whose depth is a real stored width, keeps it. The AAC fixtures store a literal
@@ -608,9 +608,9 @@ func TestClassifyNotFoundMessage(t *testing.T) {
 		t.Errorf("bare message = %q, want %q", c.message, "/x.flac: no such file or directory")
 	}
 
-	// Mirrors the real edit.go wrapping (pictureLoadError), so a regression in that
-	// shape surfaces here: it Unwraps to the *fs.PathError (so it stays io/exit 6, not
-	// flattened to not-found) but renders the bare cause without Go's "open" verb (M4).
+	// Mirrors the real edit.go wrapping (pictureLoadError): it Unwraps to the
+	// *fs.PathError, so it stays io/exit 6 instead of flattening to not-found,
+	// but renders the bare cause without Go's "open" verb.
 	wrapped := &pictureLoadError{label: "cover image", path: "/x.png", err: &fs.PathError{Op: "open", Path: "/x.png", Err: fs.ErrNotExist}}
 	c := classifyError(wrapped)
 	if c.code != "io" || c.exitCode != 6 {
@@ -634,7 +634,7 @@ func TestClassifyNotFoundMessage(t *testing.T) {
 func TestSentinelsHaveNoProgramPrefix(t *testing.T) {
 	t.Parallel()
 	for _, err := range []error{
-		waxerr.ErrUnsupportedFormat, waxerr.ErrInvalidData, waxerr.ErrNoTags,
+		waxerr.ErrUnsupportedFormat, waxerr.ErrInvalidData,
 		waxerr.ErrUnsupportedTag, waxerr.ErrPictureTooLarge, waxerr.ErrSizeTooLarge,
 		waxerr.ErrTooDeep, waxerr.ErrSourceChanged, waxerr.ErrChainedStream,
 		waxerr.ErrUnalignedStream, waxerr.ErrInvalidKey,
@@ -763,8 +763,8 @@ func TestSetOutputParentDirMissing(t *testing.T) {
 
 // TestAddCoverMissingFileContext checks a missing cover file is reported with
 // "cover image: <path>: <reason>" context (exit 6) and that the message reads cleanly
-// - the path named once, no leaked Go "open" verb - so the I/O class is preserved
-// while the wording stays user-facing (M4).
+// with the path named once and no leaked Go "open" verb, while preserving the I/O
+// error class.
 func TestAddCoverMissingFileContext(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -1010,7 +1010,7 @@ func TestLintStdin(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, _, code := runCLIStdin(t, string(data), "lint", "-")
-	if code != 4 { // no-audio is a LintError -> invalid-data (exit 4), matching verify (F4)
+	if code != 4 { // no-audio is a LintError, so it classifies as invalid-data.
 		t.Fatalf("exit = %d, want 4\n%s", code, out)
 	}
 	if !strings.Contains(out, "no-audio") {
@@ -1181,10 +1181,10 @@ func TestResolvePaddingFlag(t *testing.T) {
 			t.Errorf("%s: opt=%v given=%v err=%v, want option,true,nil", c.desc, opt, given, err)
 		}
 	}
-	// Misuse is a usage error: a *positive* padding alongside --no-padding (they
+	// Misuse is a usage error: a positive padding alongside --no-padding (they
 	// contradict), a negative count, a non-integer, and an absurd byte count above the
-	// sanity cap (B1's floor makes a huge value reachable from a plain edit, so it must
-	// be rejected, not allocated).
+	// sanity cap. Large padding values are reachable from a plain edit, so they must
+	// be rejected before allocation.
 	// "   " is a degenerate but explicit value (not the unset "" sentinel), so it is a
 	// bad byte count, not silently the default.
 	for _, c := range []struct {
@@ -1289,8 +1289,8 @@ func TestPaddingFlagValidation(t *testing.T) {
 	}
 }
 
-// TestPaddingFloorGrowsRegion (B1): --padding N is a floor, not just a target -
-// even an edit that fits the existing (small) padding must grow the region to at
+// TestPaddingFloorGrowsRegion confirms --padding N is a floor, not just a target:
+// even an edit that fits the existing small padding must grow the region to at
 // least N rather than silently reusing the smaller leftover.
 func TestPaddingFloorGrowsRegion(t *testing.T) {
 	t.Parallel()
@@ -1306,15 +1306,15 @@ func TestPaddingFloorGrowsRegion(t *testing.T) {
 	if def := planPadding("--set", "TITLE=X"); def > 100000 {
 		t.Fatalf("fixture default padding = %d, expected the small reused region", def)
 	}
-	// With the floor, padding grows to the requested 200000 instead of reusing the
-	// smaller region (the B1 bug, where --padding was silently ignored on reuse).
+	// With the floor, padding grows to the requested 200000 instead of reusing
+	// the smaller region and silently ignoring --padding.
 	if floor := planPadding("--set", "TITLE=X", "--padding", "200000"); floor < 200000 {
 		t.Errorf("--padding 200000 PaddingAfter = %d, want >= 200000 (floor)", floor)
 	}
 }
 
-// TestMalformedValueNotes (M1): a malformed numeric or date value is noted on
-// stderr, the write still succeeds, and under --json the note is suppressed.
+// TestMalformedValueNotes verifies that malformed numeric and date values are
+// noted on stderr, the write still succeeds, and --json suppresses the note.
 func TestMalformedValueNotes(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -1338,8 +1338,8 @@ func TestMalformedValueNotes(t *testing.T) {
 	}
 }
 
-// TestMalformedValueNotesTolerant (M1): values ParseNumPair / ValidPartialDate
-// accept - whitespace, "n/total", a leading sign, partial dates - are not flagged.
+// TestMalformedValueNotesTolerant covers values accepted by ParseNumPair and
+// ValidPartialDate: whitespace, "n/total", a leading sign, and partial dates.
 func TestMalformedValueNotesTolerant(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -1551,8 +1551,8 @@ func TestDumpRecursiveNoFiles(t *testing.T) {
 
 // TestSetUnknownKeyNote: an unknown --set key is written as a custom field with a
 // one-line stderr note (the run still succeeds, exit 0), followed by a single
-// trailing hint (M2) pointing at the keys command - emitted once even for several
-// unknown keys.
+// trailing hint pointing at the keys command. The hint is emitted once even for
+// several unknown keys.
 func TestSetUnknownKeyNote(t *testing.T) {
 	t.Parallel()
 	f := copyFixture(t, sampleFLAC)
@@ -1777,10 +1777,10 @@ func TestExitCodes(t *testing.T) {
 	}
 }
 
-// TestEmptyFileExitClass (M3) pins that an empty file is uniformly an
-// unsupported-format failure (exit 3) regardless of its extension: an empty file
-// carries no signature, so its format cannot be identified - the .flac extension
-// must not steer it into the FLAC parser and a different (invalid-data) class.
+// TestEmptyFileExitClass pins that an empty file is uniformly an
+// unsupported-format failure (exit 3) regardless of extension. An empty file has
+// no signature, so a .flac name must not steer it into the FLAC parser and a
+// different invalid-data class.
 func TestEmptyFileExitClass(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1989,9 +1989,9 @@ func TestWriteWrapped(t *testing.T) {
 	}
 }
 
-// TestErrClassRankCoversEveryErrorClass (B1) pins the invariant worseError relies
-// on: every error class classifyError can produce has an entry in errClassRank. A
-// missing entry would silently fall to rank 0 - below the generic "error" (10) - so
+// TestErrClassRankCoversEveryErrorClass pins the invariant worseError relies on:
+// every error class classifyError can produce has an entry in errClassRank. A
+// missing entry would silently fall to rank 0, below the generic "error" rank, so
 // in a multi-file run that class would lose the aggregate exit code to any other
 // failure. The check is bidirectional, so the rank map and the classified vocabulary
 // cannot drift apart: if you add a class to classifyError, add it to errClassRank and
@@ -2008,8 +2008,7 @@ func TestErrClassRankCoversEveryErrorClass(t *testing.T) {
 		waxerr.ErrUnalignedStream,
 		waxerr.ErrSourceChanged,
 		waxerr.ErrInvalidData,
-		waxerr.ErrNoTags,
-		&fs.PathError{Op: "open", Path: "x", Err: fs.ErrNotExist},             // not-found
+		&fs.PathError{Op: "open", Path: "x", Err: fs.ErrNotExist}, // not-found
 		&fs.PathError{Op: "open", Path: "x", Err: errors.New("disk failure")}, // io
 		context.Canceled,
 		context.DeadlineExceeded,
@@ -2028,8 +2027,7 @@ func TestErrClassRankCoversEveryErrorClass(t *testing.T) {
 			t.Errorf("errClassRank has %q, which no sampled error produces; add a sample or remove the rank", code)
 		}
 	}
-	// Lock the headline B1 rationale: a corrupt file outranks a wrong path, which
-	// outranks a bad invocation.
+	// A corrupt file outranks a wrong path, which outranks a bad invocation.
 	if !(errClassRank["invalid-data"] > errClassRank["not-found"] && errClassRank["not-found"] > errClassRank["usage"]) {
 		t.Errorf("precedence broken: want invalid-data(%d) > not-found(%d) > usage(%d)",
 			errClassRank["invalid-data"], errClassRank["not-found"], errClassRank["usage"])

@@ -54,11 +54,17 @@ func resolveChapters(src core.ReaderAtSized, moov, chpl node, haveChpl bool, d *
 	return conflict
 }
 
+// chplHasReserved reports whether a Nero chpl atom carries the 32-bit reserved
+// field before the chapter count. ffmpeg's mov_read_chpl skips that field for
+// any non-zero version; no public chpl v2+ spec is known. decodeChpl and
+// renderChpl share this predicate so reads and writes stay symmetric.
+func chplHasReserved(version uint8) bool { return version != 0 }
+
 // decodeChpl parses a Nero chpl atom into chapters, supporting both versions:
-// version(1) + flags(3), then a 4-byte field only when version==1, then an 8-bit
-// chapter count, then each entry as a 64-bit 100 ns start plus a length-prefixed
-// UTF-8 title. The 8-bit count caps chpl at 255 chapters. It returns ok==false on
-// any malformation so the caller treats the file as carrying no chpl chapters.
+// version(1) + flags(3), then a reserved 4-byte field (see chplHasReserved), then an 8-bit
+// chapter count, then each entry as a 64-bit 100 ns start plus a length-prefixed UTF-8 title.
+// The 8-bit count caps chpl at 255 chapters. It returns ok==false on any malformation so the
+// caller treats the file as carrying no chpl chapters.
 func decodeChpl(src core.ReaderAtSized, chpl node, limit int64) (version uint8, chapters []core.Chapter, ok bool) {
 	b, err := readPayload(src, chpl, maxMetaChunk, limit)
 	if err != nil {
@@ -70,8 +76,8 @@ func decodeChpl(src core.ReaderAtSized, chpl node, limit int64) (version uint8, 
 	}
 	version = b[0]
 	pos := int64(4) // version(1) + flags(3)
-	if version == 1 {
-		pos += 4 // a reserved 32-bit field precedes the count in version 1
+	if chplHasReserved(version) {
+		pos += 4 // skip the reserved 32-bit field
 	}
 	if pos+1 > n {
 		return 0, nil, false
@@ -111,7 +117,7 @@ func decodeChpl(src core.ReaderAtSized, chpl node, limit int64) (version uint8, 
 func renderChpl(version uint8, chapters []core.Chapter) []byte {
 	payload := make([]byte, 0, 8+len(chapters)*16)
 	payload = append(payload, version, 0, 0, 0) // version + flags
-	if version == 1 {
+	if chplHasReserved(version) {
 		payload = append(payload, 0, 0, 0, 0) // reserved 32-bit field
 	}
 	payload = append(payload, byte(len(chapters)))
