@@ -1,10 +1,10 @@
 # WaxLabel
 
 WaxLabel is a pure-Go library and command-line tool for reading and writing
-audio-file metadata: tags, embedded pictures, and chapters where the format
-supports them. It is preservation-first: edits are planned against the parsed
-native structure, metadata is rewritten only where needed, and audio bytes are
-copied rather than transcoded.
+audio-file metadata: tags, embedded pictures, chapters, and synced lyrics where
+the format supports them. It is preservation-first: edits are planned against the
+parsed native structure, metadata is rewritten only where needed, and audio bytes
+are copied rather than transcoded.
 
 The public API lives in `github.com/colespringer/waxlabel` and
 `github.com/colespringer/waxlabel/tag`. Codec packages are internal implementation
@@ -101,7 +101,7 @@ Commands:
 
 | Command | Purpose |
 | --- | --- |
-| `dump <file>...` | Show tags, audio properties, pictures, chapters, and parse warnings. `--native` also shows native blocks and source families. |
+| `dump <file>...` | Show tags, audio properties, pictures, chapters, synced lyrics, and parse warnings. `--native` also shows native blocks and source families. |
 | `plan <file>...` | Preview an edit without writing. |
 | `set <file>...` | Apply edits and save. Use `-o` for a new output file. |
 | `lint <file>...` | Report metadata issues. `--fix` applies only safe fixes, such as clearing encoder noise or stripping legacy containers. |
@@ -109,7 +109,7 @@ Commands:
 | `caps <file>...` or `caps --format <name>` | Show what a file or format can store and edit. |
 | `keys` | List the canonical tag vocabulary and cardinality. |
 | `copy <source> <dest>` | Overlay source metadata onto the destination, reporting values that carry, downgrade, or drop. |
-| `diff <a> <b>` | Compare canonical tags, pictures, and chapters. |
+| `diff <a> <b>` | Compare canonical tags, pictures, chapters, and synced lyrics. |
 
 Common edit flags:
 
@@ -123,6 +123,12 @@ Common edit flags:
   `TIMESTAMP` is `[H:]MM:SS[.fff]` (for example `1:02:03.500` or `02:03`) or a bare
   number of seconds (`123` or `123.5`); when present, the seconds field's fractional
   part is 1 to 3 digits (millisecond resolution).
+- `--synced-lyrics-file FILE.lrc`, `--add-synced-lyric TIMESTAMP=TEXT`,
+  `--synced-lyrics-lang eng`, and `--clear-synced-lyrics` edit synced lyrics.
+  File input and added lines are combined into one set that replaces any existing
+  synced lyrics. MP3/AAC/AIFF/WAV keep `--synced-lyrics-lang` as the ID3v2 `SYLT`
+  ISO-639-2 language code; FLAC/Ogg drop it because `SYNCEDLYRICS` stores LRC text
+  without a language field. The `TIMESTAMP` grammar matches `--add-chapter`.
 - `--preset preserve|compatible|minimal`, `--legacy preserve|strip`,
   `--padding N`, and `--no-padding` shape the write.
 - `--numeric-genre` writes a recognized genre as its numeric reference where the
@@ -209,30 +215,30 @@ entire file.
 
 | Format | Metadata | Notes |
 | --- | --- | --- |
-| FLAC | read/write | Vorbis comments, FLAC pictures, and `CHAPTERxxx` chapters; padding is fully controllable. |
-| Ogg Vorbis / Opus | read/write | Vorbis comments, `METADATA_BLOCK_PICTURE`, and `CHAPTERxxx` chapters; audio packet payloads are preserved. |
-| MP3 | read/write | ID3v2 is writable, including `CHAP`/`CTOC` chapters. A new tag is written as ID3v2.3; ID3v1 and APEv2 are surfaced as legacy families. |
-| WAV | read/write | RIFF LIST/INFO plus embedded `id3 `, including `CHAP`/`CTOC` chapters; chunks are preserved. |
-| MP4 / M4A / M4B | read/write | iTunes `ilst`, cover art, Nero chapters, and QuickTime chapter text tracks. Fragmented MP4 is rejected. |
-| Matroska / WebM | read/write | Scoped SimpleTags, segment title, attachments, and default-edition chapters. WebM cannot write cover attachments. |
-| AAC (ADTS) | read/write | Front ID3v2 tag plus ADTS frames. A new tag is written as ID3v2.4, including `CHAP`/`CTOC` chapters. |
-| AIFF / AIFF-C | read/write | Native text chunks plus embedded `ID3 `, including `CHAP`/`CTOC` chapters; chunks are preserved. |
+| FLAC | read/write | Vorbis comments, FLAC pictures, `CHAPTERxxx` chapters, and `SYNCEDLYRICS` (LRC) synced lyrics; padding is fully controllable. |
+| Ogg Vorbis / Opus | read/write | Vorbis comments, `METADATA_BLOCK_PICTURE`, `CHAPTERxxx` chapters, and `SYNCEDLYRICS` (LRC) synced lyrics; audio packet payloads are preserved. |
+| MP3 | read/write | ID3v2 is writable, including `CHAP`/`CTOC` chapters and `SYLT` synced lyrics. A new tag is written as ID3v2.3; ID3v1 and APEv2 are surfaced as legacy families. |
+| WAV | read/write | RIFF LIST/INFO plus embedded `id3 `, including `CHAP`/`CTOC` chapters and `SYLT` synced lyrics; chunks are preserved. |
+| MP4 / M4A / M4B | read/write | iTunes `ilst`, cover art, Nero chapters, and QuickTime chapter text tracks. Timed-text lyric tracks are outside the metadata model. Fragmented MP4 is rejected. |
+| Matroska / WebM | read/write | Scoped SimpleTags, segment title, attachments, and default-edition chapters. Subtitle lyric tracks are outside the metadata model. WebM cannot write cover attachments. |
+| AAC (ADTS) | read/write | Front ID3v2 tag plus ADTS frames. A new tag is written as ID3v2.4, including `CHAP`/`CTOC` chapters and `SYLT` synced lyrics. |
+| AIFF / AIFF-C | read/write | Native text chunks plus embedded `ID3 `, including `CHAP`/`CTOC` chapters and `SYLT` synced lyrics; chunks are preserved. |
 
 The capability table below is generated from the same codec capability model used
 by `waxlabel caps`.
 
 <!-- BEGIN caps (generated from codec Capabilities; see tests/capability_test.go) -->
-| Format | Pictures | Chapters |
-| --- | --- | --- |
-| AAC (ADTS) | read full, write full · APIC frame | read full, write full · ID3v2 CHAP/CTOC frames |
-| AIFF | read full, write full · APIC (ID3 chunk) | read full, write full · ID3v2 CHAP/CTOC frames (ID3 chunk) |
-| FLAC | read full, write full · FLAC PICTURE block | read full, write full · VorbisComment CHAPTERxxx |
-| MP3 | read full, write full · APIC frame | read full, write full · ID3v2 CHAP/CTOC frames |
-| MP4 | read full, write full · covr atom (JPEG/PNG/BMP) | read full, write full · Nero chpl and a QuickTime chapter text track |
-| Matroska | read full, write full · AttachedFile (image attachment) | read full, write full · Chapters > EditionEntry > ChapterAtom (default edition) |
-| Ogg Opus | read full, write full · METADATA_BLOCK_PICTURE | read full, write full · VorbisComment CHAPTERxxx |
-| Ogg Vorbis | read full, write full · METADATA_BLOCK_PICTURE | read full, write full · VorbisComment CHAPTERxxx |
-| WAV | read full, write full · APIC (id3 chunk) | read full, write full · ID3v2 CHAP/CTOC frames (id3 chunk) |
+| Format | Pictures | Chapters | Synced Lyrics |
+| --- | --- | --- | --- |
+| AAC (ADTS) | read full, write full · APIC frame | read full, write full · ID3v2 CHAP/CTOC frames | read full, write full · ID3v2 SYLT frame |
+| AIFF | read full, write full · APIC (ID3 chunk) | read full, write full · ID3v2 CHAP/CTOC frames (ID3 chunk) | read full, write full · ID3v2 SYLT frame |
+| FLAC | read full, write full · FLAC PICTURE block | read full, write full · VorbisComment CHAPTERxxx | read full, write full · SYNCEDLYRICS comment (LRC) |
+| MP3 | read full, write full · APIC frame | read full, write full · ID3v2 CHAP/CTOC frames | read full, write full · ID3v2 SYLT frame |
+| MP4 | read full, write full · covr atom (JPEG/PNG/BMP) | read full, write full · Nero chpl and a QuickTime chapter text track | read none, write none |
+| Matroska | read full, write full · AttachedFile (image attachment) | read full, write full · Chapters > EditionEntry > ChapterAtom (default edition) | read none, write none |
+| Ogg Opus | read full, write full · METADATA_BLOCK_PICTURE | read full, write full · VorbisComment CHAPTERxxx | read full, write full · SYNCEDLYRICS comment (LRC) |
+| Ogg Vorbis | read full, write full · METADATA_BLOCK_PICTURE | read full, write full · VorbisComment CHAPTERxxx | read full, write full · SYNCEDLYRICS comment (LRC) |
+| WAV | read full, write full · APIC (id3 chunk) | read full, write full · ID3v2 CHAP/CTOC frames (id3 chunk) | read full, write full · ID3v2 SYLT frame |
 <!-- END caps -->
 
 **Known issue: Matroska reproducibility.** Matroska expects FileUID and ChapterUID
@@ -267,6 +273,20 @@ path:
   (those bytes are preserved verbatim, never edited). ID3 `CHAP` stores start, end, and
   title but no per-chapter language or hidden/disabled flags; `CHAPTERxxx` stores start and
   title only. Copying chapters that carry the dropped fields reports a lossy carry.
+- **Synced lyrics are metadata-only.** MP3/AAC/AIFF/WAV use ID3v2 `SYLT`, which
+  keeps the language, descriptor, and millisecond timestamps. FLAC/Ogg use an LRC
+  document in a `SYNCEDLYRICS` Vorbis comment, which keeps the timed text but has
+  no language or descriptor field; copying a set with either field to FLAC/Ogg
+  reports a lossy carry. WaxLabel reads only `SYLT` entries that use millisecond
+  timestamps and the lyrics content type. MPEG-frame timestamps and non-lyric
+  content types are skipped with warnings and preserved verbatim. `SYLT` timestamps
+  are 32-bit milliseconds (about 49.7 days), so later lines are clamped with a
+  warning. Authored synced-lyrics languages must be 3-letter ISO-639-2 codes such
+  as `eng`. LRC is line-based: a newline inside one lyric line is flattened to a
+  space on FLAC/Ogg, while `SYLT` keeps it. MP4 and Matroska represent synced
+  lyrics as timed-text or subtitle tracks, not metadata, so WaxLabel does not model
+  them. LRC `[offset:]` follows foobar2000 behavior: effective timestamp =
+  timestamp - offset.
 
 ## Safety
 

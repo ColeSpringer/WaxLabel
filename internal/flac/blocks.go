@@ -96,6 +96,11 @@ func projectChapters(comments []comment) []core.Chapter {
 	return vorbis.ProjectChapters(toVorbis(comments))
 }
 
+// projectSyncedLyrics decodes the SYNCEDLYRICS (LRC) convention from the Vorbis comments.
+func projectSyncedLyrics(comments []comment) []core.SyncedLyrics {
+	return vorbis.ProjectSyncedLyrics(toVorbis(comments))
+}
+
 // encoderNoiseWarnings flags inherited transcoder stamps (e.g. ffmpeg's
 // "encoder=Lavf..."), the typical signature of an acquired file.
 func encoderNoiseWarnings(vendor string, comments []comment) []core.Warning {
@@ -109,9 +114,10 @@ func diffKeys(base, edited tag.TagSet) map[tag.Key]bool {
 }
 
 // rebuildComments produces the new Vorbis comment list with minimal change, owning the
-// CHAPTERxxx chapter comments (dropped and re-emitted only on a chapter edit).
-func rebuildComments(orig []comment, edited tag.TagSet, changed map[tag.Key]bool, chapters []core.Chapter, chaptersChanged bool) []comment {
-	return fromVorbis(vorbis.Rebuild(toVorbis(orig), edited, changed, chapters, chaptersChanged))
+// CHAPTERxxx chapter and SYNCEDLYRICS comments (dropped and re-emitted only on the matching
+// structured edit).
+func rebuildComments(orig []comment, edited tag.TagSet, changed map[tag.Key]bool, chapters []core.Chapter, chaptersChanged bool, syncedLyrics []core.SyncedLyrics, syncedLyricsChanged bool) []comment {
+	return fromVorbis(vorbis.Rebuild(toVorbis(orig), edited, changed, chapters, chaptersChanged, syncedLyrics, syncedLyricsChanged))
 }
 
 // renderBlock encodes a full metadata block: a 1-byte header (last-block flag

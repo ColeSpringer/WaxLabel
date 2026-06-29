@@ -120,6 +120,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		media.Tags = proj.Tags
 		media.Pictures = proj.Pictures
 		media.Chapters = proj.Chapters
+		media.SyncedLyrics = proj.SyncedLyrics
 		media.Families = proj.Families
 		if proj.NumericGenre {
 			warnings = core.Warn(warnings, core.WarnNumericGenre,

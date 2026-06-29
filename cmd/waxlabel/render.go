@@ -57,6 +57,7 @@ func renderDocument(w io.Writer, path string, doc *wl.Document, native bool) {
 	renderTags(w, doc.Tags())
 	renderPictures(w, doc.Pictures())
 	renderChapters(w, doc.Chapters())
+	renderSyncedLyrics(w, doc.SyncedLyrics())
 	warnings := doc.Warnings()
 	renderWarnings(w, warnings)
 	// When dump surfaced parse warnings, point at lint for the deeper issue set dump
@@ -394,6 +395,63 @@ func chapterAnnotations(c wl.Chapter) string {
 	return b.String()
 }
 
+// renderSyncedLyrics prints the timed (synchronized) lyric sets: a count header, then,
+// per set, an optional [lang/desc] marker followed by one timestamped line each. The
+// line timestamp uses the same H:MM:SS.mmm format as chapters, so a synced-lyric line and
+// a chapter at the same instant read identically.
+func renderSyncedLyrics(w io.Writer, sets []wl.SyncedLyrics) {
+	if len(sets) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "  synced lyrics (%d):\n", len(sets))
+	for i, sl := range sets {
+		if h := syncedLyricsHeader(sl, i, len(sets)); h != "" {
+			fmt.Fprintf(w, "    %s\n", h)
+		}
+		for _, ln := range sl.Lines {
+			fmt.Fprintf(w, "      %s  %s\n", wl.FormatChapterTime(ln.Time), syncedLineText(ln.Text))
+		}
+	}
+}
+
+// syncedLyricsHeader renders a set's marker line: its language and descriptor, plus a
+// "set N" label when more than one set is present. Both text fields can come from the
+// file, so they are sanitized for one-line terminal output. The common single, unlabeled
+// set returns "" so the lyric lines render without extra clutter.
+func syncedLyricsHeader(sl wl.SyncedLyrics, idx, total int) string {
+	var notes []string
+	if sl.Language != "" {
+		notes = append(notes, "lang: "+tag.SanitizeLine(sl.Language))
+	}
+	if sl.Description != "" {
+		notes = append(notes, "desc: "+tag.SanitizeLine(sl.Description))
+	}
+	if len(notes) == 0 && total <= 1 {
+		return ""
+	}
+	label := ""
+	if total > 1 {
+		label = fmt.Sprintf("set %d", idx+1)
+	}
+	if len(notes) == 0 {
+		return label
+	}
+	joined := "[" + strings.Join(notes, ", ") + "]"
+	if label != "" {
+		return label + " " + joined
+	}
+	return joined
+}
+
+// syncedLineText renders a lyric line's text, marking an empty-text clear marker
+// "(blank)" so it is visible (matching how renderChapters marks an untitled chapter).
+func syncedLineText(s string) string {
+	if t := tag.SanitizeLine(s); t != "" {
+		return t
+	}
+	return "(blank)"
+}
+
 // renderWarnings prints the parse warnings (already "[code] message" formatted).
 func renderWarnings(w io.Writer, ws []wl.Warning) {
 	if len(ws) == 0 {
@@ -519,15 +577,16 @@ func renderReport(w io.Writer, path string, plan *wl.Plan, addedPics []wl.Pictur
 // CLI keys its added-picture detail off picturesCountKey, and the JSON path keys the
 // integer-count rendering off both.
 const (
-	picturesCountKey = "pictures"
-	chaptersCountKey = "chapters"
+	picturesCountKey     = "pictures"
+	chaptersCountKey     = "chapters"
+	syncedLyricsCountKey = "synced lyrics"
 )
 
-// isCountChange reports whether c keys a synthetic picture/chapter set-count change
-// (the lowercase pseudo-keys countChange emits) rather than a canonical tag change, so
-// the JSON path emits its integer Count instead of the stringified Old/New.
+// isCountChange reports whether c keys a synthetic picture/chapter/synced-lyrics set-count
+// change (the lowercase pseudo-keys countChange emits) rather than a canonical tag change,
+// so the JSON path emits its integer Count instead of the stringified Old/New.
 func isCountChange(k tag.Key) bool {
-	return k == picturesCountKey || k == chaptersCountKey
+	return k == picturesCountKey || k == chaptersCountKey || k == syncedLyricsCountKey
 }
 
 // renderChanges prints the field-level change preview (which keys are added,

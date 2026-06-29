@@ -33,15 +33,16 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	tagsChanged := len(changed) > 0
 	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures)
 	chaptersChanged := !core.EqualChapters(base.Chapters, edited.Chapters)
+	syncedLyricsChanged := !core.EqualSyncedLyrics(base.SyncedLyrics, edited.SyncedLyrics)
 
 	report := core.WriteReport{Format: d.format, BytesBefore: edited.Identity.Size}
 
 	// Fast path: nothing changed. Emit a full verbatim copy (so SaveAsFile and
 	// WriteTo still produce a whole file) but flag NoOp so SaveBack skips it. This
 	// runs before the chained/alignment guards: copying a file unchanged is always
-	// safe, even for streams we will not rewrite. A chapters-only edit (CHAPTERxxx
-	// comments) must defeat the gate too.
-	if !tagsChanged && !picturesChanged && !chaptersChanged {
+	// safe, even for streams we will not rewrite. A chapters- or synced-lyrics-only edit
+	// (CHAPTERxxx / SYNCEDLYRICS comments) must defeat the gate too.
+	if !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
@@ -53,18 +54,22 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 		return nil, fmt.Errorf("%w: Ogg header and audio are not cleanly page-aligned; cannot rewrite safely", waxerr.ErrUnalignedStream)
 	}
 
-	// Rebuild the comment list: tag comments (minimal-change), owned CHAPTERxxx chapter
-	// comments, then one METADATA_BLOCK_PICTURE comment per edited picture. Chapters are
-	// stored as Vorbis comments, so a chapter edit rebuilds the list like a tag edit.
+	// Rebuild the comment list: tag comments (minimal-change), owned CHAPTERxxx chapter and
+	// SYNCEDLYRICS comments, then one METADATA_BLOCK_PICTURE comment per edited picture.
+	// Chapters and synced lyrics are stored as Vorbis comments, so an edit to either rebuilds
+	// the list like a tag edit.
 	newComments := d.comments
-	if tagsChanged || chaptersChanged {
-		newComments = vorbis.Rebuild(d.comments, edited.Tags, changed, edited.Chapters, chaptersChanged)
+	if tagsChanged || chaptersChanged || syncedLyricsChanged {
+		newComments = vorbis.Rebuild(d.comments, edited.Tags, changed, edited.Chapters, chaptersChanged, edited.SyncedLyrics, syncedLyricsChanged)
 		report.Operations = append(report.Operations, "Vorbis comment rewrite")
 	}
 	if chaptersChanged && len(edited.Chapters) > 0 {
 		// Suppress the count line on a clear (the "Vorbis comment rewrite" op already
 		// records the change); matches the ID3 codecs' count gate.
 		report.Operations = append(report.Operations, fmt.Sprintf("chapters: %d", len(edited.Chapters)))
+	}
+	if syncedLyricsChanged && len(edited.SyncedLyrics) > 0 {
+		report.Operations = append(report.Operations, fmt.Sprintf("synced lyrics: %d", len(edited.SyncedLyrics)))
 	}
 	full := slices.Clone(newComments)
 	for _, p := range edited.Pictures {
@@ -195,16 +200,18 @@ func buildResult(edited *core.Media, base *doc, newComments []vorbis.Comment,
 	}
 	tags, families := vorbis.Project(newComments)
 	media := &core.Media{
-		Format:     base.format,
-		Properties: edited.Properties.Clone(),
-		Tags:       tags,
-		Families:   families,
-		Pictures:   core.ClonePictures(edited.Pictures),
-		Chapters:   vorbis.ProjectChapters(newComments),
-		// Carrying the source warnings verbatim is correct because the CHAPTERxxx projection
-		// emits no warnings (unlike ID3's nested-CTOC flatten note): there is nothing a chapter
-		// edit could invalidate. If vorbis.ProjectChapters ever gains a warning, this must
-		// re-derive it from newComments (as the ID3 codecs do via CarryChapterWarnings).
+		Format:       base.format,
+		Properties:   edited.Properties.Clone(),
+		Tags:         tags,
+		Families:     families,
+		Pictures:     core.ClonePictures(edited.Pictures),
+		Chapters:     vorbis.ProjectChapters(newComments),
+		SyncedLyrics: vorbis.ProjectSyncedLyrics(newComments),
+		// Carrying the source warnings verbatim is correct because the CHAPTERxxx and
+		// SYNCEDLYRICS projections emit no warnings (unlike ID3's nested-CTOC flatten note):
+		// there is nothing a chapter or synced-lyrics edit could invalidate. If either
+		// projection ever gains a warning, this must re-derive it from newComments (as the ID3
+		// codecs do via CarryChapterWarnings).
 		Warnings:   core.CloneWarnings(edited.Warnings),
 		Native:     nd,
 		Identity:   core.Identity{Size: newSize},

@@ -65,6 +65,11 @@ type Capability struct {
 	// mark a chapter set Lossy only when those chapters actually carry affected
 	// metadata, matching the editor's write warning.
 	ChapterLoss ChapterLoss
+	// SyncedLyricsLoss records synced-lyrics metadata this format cannot preserve. It is
+	// set only on the synced-lyrics capability. ProjectTransfer uses it to mark a
+	// synced-lyrics set Lossy only when those sets carry affected metadata (a per-set
+	// language or descriptor an LRC store drops), matching the editor's write warning.
+	SyncedLyricsLoss SyncedLyricsLoss
 	// PictureMIMEs lists the cover MIME types this format can store; nil means no
 	// per-MIME restriction. The format may still store no pictures at all, which is
 	// decided by Write == AccessNone. A non-nil list (MP4's covr
@@ -154,10 +159,11 @@ func RecordingDateV23Capability() Capability {
 // Capabilities describes what a format (under a given set of options) can do.
 // Field returns per-key detail; the format-level fields cover the common case.
 type Capabilities struct {
-	Format   Format
-	ReadOnly bool
-	Pictures Capability
-	Chapters Capability
+	Format       Format
+	ReadOnly     bool
+	Pictures     Capability
+	Chapters     Capability
+	SyncedLyrics Capability
 	// Padding grades how completely the format honors the post-metadata padding
 	// controls (--padding / --no-padding), as one AccessLevel rather than a full
 	// Capability (it has no representation or per-key detail):
@@ -187,6 +193,15 @@ func NewCapabilities(f Format, readOnly bool, generic, pictures, chapters Capabi
 		Padding:      padding,
 		perField:     perField,
 	}
+}
+
+// WithSyncedLyrics returns a copy of c with its synced-lyrics capability set. This keeps
+// [NewCapabilities] stable for existing codec construction while allowing codecs to opt
+// in to the additional capability dimension. Codecs that do not call it retain the zero
+// Capability, whose AccessNone read/write reports "no synced lyrics".
+func (c Capabilities) WithSyncedLyrics(sl Capability) Capabilities {
+	c.SyncedLyrics = sl
+	return c
 }
 
 // Field returns the capability for key, falling back to GenericField when

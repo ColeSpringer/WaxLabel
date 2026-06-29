@@ -72,14 +72,15 @@ type jsonDocument struct {
 	// Format stays at the codec family level. This mirrors properties.container at the
 	// top level so machine consumers do not have to inspect properties to distinguish
 	// WebM from Matroska.
-	Subformat  string          `json:"subformat,omitempty"`
-	Properties *jsonProperties `json:"properties,omitempty"`
-	Tags       []jsonTag       `json:"tags"`
-	Pictures   []jsonPicture   `json:"pictures"`
-	Chapters   []jsonChapter   `json:"chapters"`
-	Warnings   []jsonWarning   `json:"warnings"`
-	Native     []jsonNative    `json:"native,omitempty"`
-	Sources    []jsonSource    `json:"sources,omitempty"`
+	Subformat    string             `json:"subformat,omitempty"`
+	Properties   *jsonProperties    `json:"properties,omitempty"`
+	Tags         []jsonTag          `json:"tags"`
+	Pictures     []jsonPicture      `json:"pictures"`
+	Chapters     []jsonChapter      `json:"chapters"`
+	SyncedLyrics []jsonSyncedLyrics `json:"syncedLyrics"`
+	Warnings     []jsonWarning      `json:"warnings"`
+	Native       []jsonNative       `json:"native,omitempty"`
+	Sources      []jsonSource       `json:"sources,omitempty"`
 }
 
 type jsonProperties struct {
@@ -118,6 +119,20 @@ type jsonChapter struct {
 	LanguageIETF string `json:"languageIetf,omitempty"`
 	Hidden       bool   `json:"hidden,omitempty"`
 	Disabled     bool   `json:"disabled,omitempty"`
+}
+
+// jsonSyncedLyrics is one timed-lyrics set. Lines is always present (a set carries at
+// least one line); each line's text may be empty (a clear marker), so Text is not
+// omitempty.
+type jsonSyncedLyrics struct {
+	Language    string           `json:"language,omitempty"`
+	Description string           `json:"description,omitempty"`
+	Lines       []jsonSyncedLine `json:"lines"`
+}
+
+type jsonSyncedLine struct {
+	TimeMs int64  `json:"timeMs"` // matches jsonChapter.StartMs (integer milliseconds)
+	Text   string `json:"text"`
 }
 
 type jsonNative struct {
@@ -166,10 +181,11 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 		// no-tags / no-chapters / no-warnings file emits "[]" rather than null or an
 		// omitted field - `jq '.[].tags[]'` (and the others) never breaks. native/sources
 		// stay omitempty: they are feature-gated (--native), not always-present collections.
-		Tags:     []jsonTag{},
-		Pictures: []jsonPicture{},
-		Chapters: []jsonChapter{},
-		Warnings: []jsonWarning{},
+		Tags:         []jsonTag{},
+		Pictures:     []jsonPicture{},
+		Chapters:     []jsonChapter{},
+		SyncedLyrics: []jsonSyncedLyrics{},
+		Warnings:     []jsonWarning{},
 	}
 	for k, vals := range doc.Tags().All() {
 		jd.Tags = append(jd.Tags, jsonTag{Key: string(k), Values: vals, Cardinality: cardinalityState(k, vals)})
@@ -194,6 +210,13 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 			Hidden:       c.Hidden,
 			Disabled:     c.Disabled,
 		})
+	}
+	for _, sl := range doc.SyncedLyrics() {
+		js := jsonSyncedLyrics{Language: sl.Language, Description: sl.Description, Lines: []jsonSyncedLine{}}
+		for _, ln := range sl.Lines {
+			js.Lines = append(js.Lines, jsonSyncedLine{TimeMs: ln.Time.Milliseconds(), Text: ln.Text})
+		}
+		jd.SyncedLyrics = append(jd.SyncedLyrics, js)
 	}
 	for _, x := range doc.Warnings() {
 		jd.Warnings = append(jd.Warnings, jsonWarning{Code: x.Code.String(), Message: x.Message})

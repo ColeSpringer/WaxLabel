@@ -17,6 +17,10 @@ type (
 	PictureType = core.PictureType
 	// Chapter is a navigation point (Start, End, Title) in a timed file.
 	Chapter = core.Chapter
+	// SyncedLyrics is one timed-lyrics set (Language, Description, Lines).
+	SyncedLyrics = core.SyncedLyrics
+	// SyncedLine is one timed lyric line (Time, Text) within a SyncedLyrics set.
+	SyncedLine = core.SyncedLine
 	// Properties describes the audio stream(s).
 	Properties = core.Properties
 	// AudioTrack is one stream's technical properties.
@@ -69,9 +73,10 @@ type (
 
 // TransferKind values.
 const (
-	TransferField   = core.TransferField
-	TransferPicture = core.TransferPicture
-	TransferChapter = core.TransferChapter
+	TransferField       = core.TransferField
+	TransferPicture     = core.TransferPicture
+	TransferChapter     = core.TransferChapter
+	TransferSyncedLyric = core.TransferSyncedLyric
 )
 
 // Disposition values.
@@ -199,6 +204,11 @@ const (
 	WarnChapterStartOverflow   = core.WarnChapterStartOverflow
 	WarnChapterMetadataDropped = core.WarnChapterMetadataDropped
 	WarnOversizedChunk         = core.WarnOversizedChunk
+
+	WarnSyncedLyricsTimestampFormat  = core.WarnSyncedLyricsTimestampFormat
+	WarnSyncedLyricsContentType      = core.WarnSyncedLyricsContentType
+	WarnSyncedLyricsMetadataDropped  = core.WarnSyncedLyricsMetadataDropped
+	WarnSyncedLyricsTimestampClamped = core.WarnSyncedLyricsTimestampClamped
 )
 
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated
@@ -212,8 +222,27 @@ func BytesSource(b []byte) ReaderAtSized { return core.BytesSource(b) }
 func EqualPictures(a, b []Picture) bool { return core.EqualPictures(a, b) }
 
 // EqualChapters reports whether two chapter slices are identical by content
-// (start, end, and title), in order - the chapter analogue of [EqualPictures].
+// (start, end, and title), in order. This is the chapter analogue of [EqualPictures].
 func EqualChapters(a, b []Chapter) bool { return core.EqualChapters(a, b) }
+
+// EqualSyncedLyrics reports whether two synced-lyrics slices are identical by content
+// (language, description, and timed lines), in order. SyncedLyrics contains a slice, so
+// it is not comparable with ==; this is the equality codecs use to detect edits.
+func EqualSyncedLyrics(a, b []SyncedLyrics) bool { return core.EqualSyncedLyrics(a, b) }
+
+// ParseLRC parses an LRC document into timed lyric lines, applying the foobar2000
+// [offset:] convention (effective timestamp = timestamp - offset) and skipping metadata
+// tags such as [ar:], [ti:], [al:], and [length:]. A line with several leading time tags
+// yields one SyncedLine per tag; lines are returned sorted by timestamp. This is the
+// parser behind the FLAC/Ogg SYNCEDLYRICS store and a convenience for building a
+// [SyncedLyrics] from an LRC file. LRC has no per-set language field; set it on
+// SyncedLyrics yourself when the destination can store it.
+func ParseLRC(text string) []SyncedLine { return core.ParseLRC(text) }
+
+// FormatLRC renders timed lyric lines as an LRC document ("[mm:ss.mmm]text" per line, in
+// order). It round-trips losslessly through [ParseLRC]; the per-set language and
+// descriptor are not representable in LRC and are not emitted.
+func FormatLRC(lines []SyncedLine) string { return core.FormatLRC(lines) }
 
 // IsRecognizedImage reports whether data begins with the header of an image
 // format WaxLabel can identify (PNG, JPEG, GIF, WebP, BMP, or TIFF). It is a

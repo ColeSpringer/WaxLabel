@@ -107,8 +107,8 @@ func (p *Plan) String() string {
 }
 
 // Changes reports the field-level delta this plan will apply: each canonical key
-// added, removed, or changed, plus picture and chapter count-deltas when those
-// sets differ. It diffs the pre-edit tags against the plan's
+// added, removed, or changed, plus picture, chapter, and synced-lyrics count-deltas when
+// those sets differ. It diffs the pre-edit tags against the plan's
 // post-codec-projection result - what the write actually lands, including date
 // and number normalization - so the preview matches reality and a no-op plan
 // yields no changes. It performs no I/O.
@@ -129,6 +129,9 @@ func (p *Plan) Changes() []tag.Change {
 	}
 	if !core.EqualChapters(base.Chapters, edited.Chapters) {
 		changes = append(changes, countChange("chapters", len(base.Chapters), len(edited.Chapters)))
+	}
+	if !core.EqualSyncedLyrics(base.SyncedLyrics, edited.SyncedLyrics) {
+		changes = append(changes, countChange("synced lyrics", len(base.SyncedLyrics), len(edited.SyncedLyrics)))
 	}
 	return changes
 }

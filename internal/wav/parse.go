@@ -173,12 +173,13 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		AudioEnd:   d.dataOff + d.dataLen,
 	}
 
-	tags, pics, chapters, families, numericGenre, chapterWs := project(d)
+	tags, pics, chapters, syncedLyrics, families, numericGenre, projWs := project(d)
 	media.Tags = tags
 	media.Pictures = pics
 	media.Chapters = chapters
+	media.SyncedLyrics = syncedLyrics
 	media.Families = families
-	warnings = append(warnings, chapterWs...)
+	warnings = append(warnings, projWs...)
 	warnings = append(warnings, mediaWarnings(d, numericGenre)...)
 
 	media.Properties = core.Properties{Container: "WAV", Tracks: []core.AudioTrack{d.track}}
@@ -196,18 +197,19 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 // no id3 chunk, INFO is the sole authority. Either way INFO also contributes
 // family entries with conflicts flagged (mirroring how MP3 surfaces ID3v1/APEv2).
 // It is shared by Parse and the post-write result so they cannot disagree.
-func project(d *doc) (tags tag.TagSet, pics []core.Picture, chapters []core.Chapter, families []core.FamilyValue, numericGenre bool, chapterWarnings []core.Warning) {
+func project(d *doc) (tags tag.TagSet, pics []core.Picture, chapters []core.Chapter, syncedLyrics []core.SyncedLyrics, families []core.FamilyValue, numericGenre bool, projWarnings []core.Warning) {
 	tags = tag.NewTagSet()
 	switch {
 	case d.id3 != nil:
 		proj := id3.Project(d.id3)
 		tags = proj.Tags
 		pics = proj.Pictures
-		// Chapters live only in the embedded id3 chunk (CHAP/CTOC). A native cue/adtl
-		// WAV chapter list is preserved opaque but not projected (a known gap), so a bare
-		// WAV reports no chapters.
+		// Chapters and synced lyrics live only in the embedded id3 chunk (CHAP/CTOC, SYLT).
+		// A native cue/adtl WAV chapter list is preserved opaque but not projected (a known
+		// gap), so a bare WAV reports no chapters.
 		chapters = proj.Chapters
-		chapterWarnings = proj.Warnings
+		syncedLyrics = proj.SyncedLyrics
+		projWarnings = proj.Warnings
 		families = proj.Families
 		numericGenre = proj.NumericGenre
 		// id3 wins on conflict; INFO fills keys id3 lacks (precedence merge).
@@ -224,7 +226,7 @@ func project(d *doc) (tags tag.TagSet, pics []core.Picture, chapters []core.Chap
 		tags = infoTags(d.info)
 		families = infoFamilies(tags, d.info)
 	}
-	return tags, pics, chapters, families, numericGenre, chapterWarnings
+	return tags, pics, chapters, syncedLyrics, families, numericGenre, projWarnings
 }
 
 // markDup flags the given chunk indices as redundant duplicate tag containers,

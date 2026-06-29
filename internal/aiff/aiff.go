@@ -97,8 +97,11 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	// AIFF has no native genre slot, so genre writes through the ID3 chunk. Numeric genre
 	// and v2.3 original-date reductions follow the shared ID3 capability rules.
 	perField := id3.PerFieldCapabilities(id3.WriteVersionFor(m, core.FormatAIFF), opts.NumericGenre, true)
-	// AIFF has no metadata-padding concept, so the padding controls do not apply.
-	return core.NewCapabilities(core.FormatAIFF, false, fields, pictures, chapters, core.AccessNone, perField)
+	// AIFF has no metadata-padding concept, so the padding controls do not apply. Synced
+	// lyrics, like chapters and pictures, require an ID3 chunk (the native text chunks
+	// cannot hold them); an edit forces one into existence, so the write stays AccessFull.
+	return core.NewCapabilities(core.FormatAIFF, false, fields, pictures, chapters, core.AccessNone, perField).
+		WithSyncedLyrics(id3.SyncedLyricsCapability())
 }
 
 // ID3Tag returns the parsed ID3-chunk tag, or nil when the file has none.

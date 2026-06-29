@@ -107,6 +107,22 @@ func ChapterCount(t *Tag) int {
 	return n
 }
 
+// SyncedLyricsCount returns the number of SYLT frames in the tag, for the WAV/AIFF write
+// reports (which build their id3 chunk without the shared RenderFrontTag). A nil tag has
+// none.
+func SyncedLyricsCount(t *Tag) int {
+	if t == nil {
+		return 0
+	}
+	n := 0
+	for _, f := range t.frames {
+		if f.ID == "SYLT" {
+			n++
+		}
+	}
+	return n
+}
+
 // Clone returns a deep copy of the tag.
 func (t *Tag) Clone() *Tag {
 	c := *t

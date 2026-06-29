@@ -42,6 +42,11 @@ type editFlags struct {
 	addChapter    []string // TIMESTAMP=Title, appended to the chapter list (repeatable)
 	clearChapters bool     // remove all chapters
 
+	syncedLyricsFile  string   // --synced-lyrics-file: LRC file authoring one synced-lyrics set
+	addSyncedLyric    []string // TIMESTAMP=Text timed lines, authoring one synced-lyrics set (repeatable)
+	syncedLyricsLang  string   // ISO-639-2 language for the authored synced-lyrics set
+	clearSyncedLyrics bool     // remove all synced lyrics
+
 	stripEncoder bool // clear the ENCODER software stamp
 
 	preset string
@@ -75,6 +80,10 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.BoolVar(&e.force, "force", false, "embed --add-cover/--add-picture input even if it is not a recognized image (PNG/JPEG/GIF/WebP/BMP/TIFF); unrecognized bytes are stored as application/octet-stream. The check is header-only, not a full image decode")
 	f.StringArrayVar(&e.addChapter, "add-chapter", nil, "add a chapter TIMESTAMP=Title (e.g. 1:30=Verse; repeatable); formats with chapter-count caps reject over-limit lists (255 for ID3 and MP4). CLI-created chapters have no end time, so rewriting Matroska chapters this way drops explicit end times")
 	f.BoolVar(&e.clearChapters, "clear-chapters", false, "remove all chapters (applied before --add-chapter, so combining them keeps only the added chapters)")
+	f.StringVar(&e.syncedLyricsFile, "synced-lyrics-file", "", "set synced lyrics from an LRC file, replacing any existing synced lyrics (MP3/AAC/AIFF/WAV keep the language; FLAC/Ogg drop it)")
+	f.StringArrayVar(&e.addSyncedLyric, "add-synced-lyric", nil, "add synced lyric line TIMESTAMP=Text (e.g. 1:30=Verse; repeatable); combined lines replace any existing synced lyrics")
+	f.StringVar(&e.syncedLyricsLang, "synced-lyrics-lang", "", "ISO-639-2 language code (e.g. eng) for synced lyrics authored by --synced-lyrics-file or --add-synced-lyric")
+	f.BoolVar(&e.clearSyncedLyrics, "clear-synced-lyrics", false, "remove all synced lyrics")
 	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear the ENCODER software stamp left behind by an encoder or transcoder")
 	f.StringVar(&e.preset, "preset", "", "write policy preset: preserve|compatible|minimal")
 	f.StringVar(&e.legacy, "legacy", "", "legacy-tag policy: preserve|strip")
@@ -93,6 +102,9 @@ var nonEditFlags = map[string]bool{
 	"output": true, "overwrite": true, "verify": true, "preserve-mtime": true,
 	"recursive": true, "quiet": true, "json": true,
 	"force": true, "picture-description": true, "strict": true,
+	// --synced-lyrics-lang only labels lyrics authored by --synced-lyrics-file/
+	// --add-synced-lyric; on its own it is not an edit, like --picture-description.
+	"synced-lyrics-lang": true,
 }
 
 // editFlagsEmpty reports whether the invocation requested no edit at all - only
@@ -600,9 +612,13 @@ type compiledEdit struct {
 	rmPics        bool         // --remove-pictures (all)
 	chapters      []wl.Chapter // --add-chapter additions, validated at compile time
 	clearChapters bool         // --clear-chapters
-	unknownKeys   []tag.Key    // --set/--add keys outside the canonical vocabulary, first-seen order
-	clearKeys     []tag.Key    // --clear keys outside the canonical vocabulary, first-seen order
-	paddingFlag   bool         // whether --padding/--no-padding was given, for the per-format note
+	// syncedLyrics is the single authored synced-lyrics set (0 or 1), validated at
+	// compile time; it replaces any existing synced lyrics.
+	syncedLyrics      []wl.SyncedLyrics
+	clearSyncedLyrics bool      // --clear-synced-lyrics
+	unknownKeys       []tag.Key // --set/--add keys outside the canonical vocabulary, first-seen order
+	clearKeys         []tag.Key // --clear keys outside the canonical vocabulary, first-seen order
+	paddingFlag       bool      // whether --padding/--no-padding was given, for the per-format note
 }
 
 // compile resolves the edit flags into a compiledEdit, surfacing any usage error
@@ -634,18 +650,24 @@ func (e *editFlags) compile(extra ...wl.WriteOption) (*compiledEdit, error) {
 	if err != nil {
 		return nil, err
 	}
+	syncedLyrics, err := e.syncedLyricsAdds()
+	if err != nil {
+		return nil, err
+	}
 	return &compiledEdit{
-		patch:         patch,
-		opts:          opts,
-		addPics:       addPics,
-		replaceFront:  len(e.addCover) > 0, // only --add-cover replaces; --add-picture front-cover appends
-		removePics:    e.removePicture,
-		rmPics:        e.rmPics,
-		chapters:      chapters,
-		clearChapters: e.clearChapters,
-		unknownKeys:   e.unknownAssignKeys(),
-		clearKeys:     e.unknownClearKeys(),
-		paddingFlag:   padFlag,
+		patch:             patch,
+		opts:              opts,
+		addPics:           addPics,
+		replaceFront:      len(e.addCover) > 0, // only --add-cover replaces; --add-picture front-cover appends
+		removePics:        e.removePicture,
+		rmPics:            e.rmPics,
+		chapters:          chapters,
+		clearChapters:     e.clearChapters,
+		syncedLyrics:      syncedLyrics,
+		clearSyncedLyrics: e.clearSyncedLyrics,
+		unknownKeys:       e.unknownAssignKeys(),
+		clearKeys:         e.unknownClearKeys(),
+		paddingFlag:       padFlag,
 	}, nil
 }
 
@@ -1083,6 +1105,14 @@ func (ce *compiledEdit) prepare(ctx context.Context, realPath, origPath string) 
 		ed.SetChapters(merged...)
 	} else if ce.clearChapters {
 		ed.ClearChapters()
+	}
+	// Synced lyrics authored from a file or individual lines replace the existing set list.
+	// Appending to one of several existing sets would be ambiguous because native stores
+	// key sets differently. --clear-synced-lyrics alone removes them all.
+	if len(ce.syncedLyrics) > 0 {
+		ed.SetSyncedLyrics(ce.syncedLyrics...)
+	} else if ce.clearSyncedLyrics {
+		ed.ClearSyncedLyrics()
 	}
 	plan, err := ed.Prepare(ce.opts...)
 	if err != nil {

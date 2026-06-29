@@ -22,10 +22,12 @@ type WriteOpts struct {
 // dropped and re-emitted only when its change flag is set; otherwise the source frames
 // are preserved as-is.
 type StructuredEdit struct {
-	Pictures        []core.Picture
-	PicturesChanged bool
-	Chapters        []core.Chapter
-	ChaptersChanged bool
+	Pictures            []core.Picture
+	PicturesChanged     bool
+	Chapters            []core.Chapter
+	ChaptersChanged     bool
+	SyncedLyrics        []core.SyncedLyrics
+	SyncedLyricsChanged bool
 }
 
 // RebuildInfo reports facts about a rebuild the caller surfaces in the write
@@ -68,6 +70,10 @@ type RebuildInfo struct {
 	// other than the TIT2 title (a per-chapter image or URL the flat model cannot hold),
 	// so that loss is surfaced rather than left silent.
 	DroppedChapterSubframes bool
+	// SyncedLyricsOverflow is set when a synced-lyrics edit clamped a line's timestamp past
+	// the SYLT frame's 32-bit millisecond field (~49.7 days). The caller surfaces it as a
+	// synced-lyrics-timestamp-clamped warning.
+	SyncedLyricsOverflow bool
 }
 
 // ReducedDate pairs a date key with the value an edit attempted to store before a
@@ -99,13 +105,23 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	// and custom TXXX frames keep their original description casing.
 	// frameRenderID marks a COMM/USLT frame managed only when its description is empty,
 	// so there is at most one managed COMM and one managed USLT to reuse.
-	origLangs := map[string]string{}    // "COMM"/"USLT" -> 3-byte language
+	origLangs := map[string]string{}    // "COMM"/"USLT"/"SYLT" -> 3-byte language
 	origTXXXDesc := map[string]string{} // TXXX render token -> original description (verbatim casing)
 	for _, f := range orig {
 		switch f.ID {
 		case "COMM", "USLT":
 			if rid, managed := frameRenderID(f); managed && len(f.Body) >= 4 {
 				origLangs[rid] = string(f.Body[1:4])
+			}
+		case "SYLT":
+			// Recover the first lyrics SYLT language as the fallback for a re-rendered set
+			// whose modeled language is unset, so a line-only edit keeps it. Only a projecting
+			// lyrics frame qualifies; a chord or trivia SYLT that appears first must not donate
+			// its language to the lyrics set.
+			if _, seen := origLangs["SYLT"]; !seen && syltProjectsLyrics(f.Body) {
+				if l, ok := syltFrameLanguage(f.Body); ok {
+					origLangs["SYLT"] = l
+				}
 			}
 		case "TXXX":
 			if rid, managed := frameRenderID(f); managed {
@@ -150,6 +166,17 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 				info.DroppedChapterSubframes = true
 			}
 			continue
+		}
+		if f.ID == "SYLT" && !f.Opaque {
+			// A synced-lyrics edit replaces the SYLT frames the model owns: lyrics with
+			// millisecond timestamps. Non-projecting SYLT frames, such as chord/trivia tracks
+			// or MPEG-frame-timestamped entries, stay verbatim because they are outside the
+			// lyrics model.
+			if !se.SyncedLyricsChanged || !syltProjectsLyrics(f.Body) {
+				out = append(out, f.Clone())
+				continue
+			}
+			continue // re-emitted from the edited synced-lyrics set below
 		}
 		if f.Opaque {
 			out = append(out, f.Clone())
@@ -225,6 +252,15 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 		info.ChapterOverflow = overflow
 	}
 
+	// Append edited synced lyrics. SYLT is self-contained (no element-ID references), so
+	// frame position is not significant. A set with an empty language falls back to the
+	// first original SYLT's language so a line-only edit preserves it.
+	if se.SyncedLyricsChanged && len(se.SyncedLyrics) > 0 {
+		syltF, overflow := syltFrames(se.SyncedLyrics, version, origLangs["SYLT"])
+		out = append(out, syltF...)
+		info.SyncedLyricsOverflow = overflow
+	}
+
 	info.DroppedDates = detectDroppedDates(changed, edited, version)
 	info.ReducedDates = detectReducedDates(changed, edited, version)
 	info.NumericGenres = detectNumericGenres(changed, edited)
@@ -249,11 +285,12 @@ type FrontTag struct {
 // strip) that leaves no frames drops the tag entirely rather than fabricating an empty,
 // padding-only container, matching WAV/AIFF's len(frames)>0 chunk guard. hadTag is whether the
 // source carried a front tag (so a full clear records an "ID3v2 removal" op instead of a bare
-// rewrite); srcTagLen is its byte length for in-place padding reuse; pictureCount and
-// chapterCount are used for the picture and chapter operation lines.
+// rewrite); srcTagLen is its byte length for in-place padding reuse; pictureCount,
+// chapterCount, and syncedLyricsCount are used for the picture, chapter, and synced-lyrics
+// operation lines.
 func RenderFrontTag(srcTag *Tag, version byte, newFrames []Frame, info RebuildInfo, pad core.PaddingPolicy,
 	srcTagLen int64, hadTag, tagsChanged, picturesChanged bool, pictureCount int,
-	chaptersChanged bool, chapterCount int) FrontTag {
+	chaptersChanged bool, chapterCount int, syncedLyricsChanged bool, syncedLyricsCount int) FrontTag {
 
 	if len(newFrames) == 0 {
 		var ft FrontTag
@@ -292,6 +329,10 @@ func RenderFrontTag(srcTag *Tag, version byte, newFrames []Frame, info RebuildIn
 		// removal is already captured by the tag rewrite/removal op - matching WAV/AIFF,
 		// which gate their chapter op on the written count.
 		ft.Operations = append(ft.Operations, fmt.Sprintf("chapters: %d", chapterCount))
+	}
+	if syncedLyricsChanged && syncedLyricsCount > 0 {
+		// Suppress the count line on a clear (count 0), like chapters above.
+		ft.Operations = append(ft.Operations, fmt.Sprintf("synced lyrics: %d", syncedLyricsCount))
 	}
 	if !hadTag {
 		ft.Operations = append(ft.Operations, fmt.Sprintf("ID3v2.%d tag creation", version))
@@ -853,6 +894,10 @@ func AppendRebuildWarnings(ws []core.Warning, info RebuildInfo, retained tag.Tag
 	if info.DroppedChapterSubframes {
 		ws = core.Warn(ws, core.WarnChapterMetadataDropped,
 			"a per-chapter subframe other than the title (e.g. an image) could not be represented and was dropped")
+	}
+	if info.SyncedLyricsOverflow {
+		ws = core.Warn(ws, core.WarnSyncedLyricsTimestampClamped,
+			"a synced-lyric timestamp exceeded the SYLT frame's 32-bit millisecond field (~49.7 days) and was clamped")
 	}
 	return ws
 }

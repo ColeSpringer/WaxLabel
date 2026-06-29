@@ -93,16 +93,17 @@ func RenderCommentList(vendor string, comments []Comment) []byte {
 // surfaces in the family view and Lint. Repeats of the same native name
 // (ARTIST=A, ARTIST=B) are an ordinary multi-value, not a conflict.
 //
-// CHAPTERxxx comments are structured chapters, not custom tag fields. [ProjectChapters]
-// owns them, and [Rebuild] preserves them unless a chapter edit replaces the set.
+// CHAPTERxxx and SYNCEDLYRICS comments are structured chapters and synced lyrics, not
+// custom tag fields. [ProjectChapters]/[ProjectSyncedLyrics] own them, and [Rebuild]
+// preserves them unless a chapter or synced-lyrics edit replaces the set.
 func Project(comments []Comment) (tag.TagSet, []core.FamilyValue) {
 	ts := tag.NewTagSet()
 	famIndex := map[tag.Key]int{}
 	names := map[tag.Key]map[string]bool{} // distinct native names per key
 	var fams []core.FamilyValue
 	for _, cm := range comments {
-		if isChapterComment(cm.Name) {
-			continue // owned by the chapter projection, not a custom tag field
+		if isChapterComment(cm.Name) || isSyncedLyricsComment(cm.Name) {
+			continue // owned by the chapter/synced-lyrics projection, not a custom tag field
 		}
 		key := mapping.CanonicalVorbis(cm.Name)
 		// The Vorbis reader stores values as raw bytes; a non-conformant file can hold invalid
@@ -146,10 +147,10 @@ func Project(comments []Comment) (tag.TagSet, []core.FamilyValue) {
 // like RecordingDate, whose preferred tag is DATE - in which case it canonicalizes to
 // that. A newly-added key uses the preferred Vorbis spelling.
 //
-// CHAPTERxxx comments are owned by the chapter model, not by the generic tag-key diff.
-// A chapter edit drops the source chapter comments and appends the edited set; unrelated
-// edits preserve them verbatim.
-func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapters []core.Chapter, chaptersChanged bool) []Comment {
+// CHAPTERxxx and SYNCEDLYRICS comments are owned by the chapter and synced-lyrics models,
+// not by the generic tag-key diff. A chapter or synced-lyrics edit drops the source owned
+// comments and appends the edited set; unrelated edits preserve them verbatim.
+func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapters []core.Chapter, chaptersChanged bool, syncedLyrics []core.SyncedLyrics, syncedLyricsChanged bool) []Comment {
 	emitted := map[tag.Key]bool{}
 	out := make([]Comment, 0, len(orig))
 	emit := func(k tag.Key, name string) {
@@ -165,6 +166,12 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapte
 				out = append(out, cm) // preserve verbatim on an unrelated edit
 			}
 			continue // dropped on a chapter edit; re-emitted from the edited set below
+		}
+		if isSyncedLyricsComment(cm.Name) {
+			if !syncedLyricsChanged {
+				out = append(out, cm) // preserve verbatim on an unrelated edit
+			}
+			continue // dropped on a synced-lyrics edit; re-emitted below
 		}
 		k := mapping.CanonicalVorbis(cm.Name)
 		if changed[k] {
@@ -188,6 +195,9 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapte
 	}
 	if chaptersChanged {
 		out = append(out, chapterComments(chapters)...)
+	}
+	if syncedLyricsChanged {
+		out = append(out, syncedLyricsComments(syncedLyrics)...)
 	}
 	return out
 }

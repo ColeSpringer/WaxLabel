@@ -43,18 +43,18 @@ const (
 	capsBlockEnd   = "<!-- END caps -->"
 )
 
-// renderCapabilityBlock renders the per-format picture/chapter capability table from
-// the public CapabilitiesFor query. Formats are sorted by name so the block is stable
-// regardless of codec registration order.
+// renderCapabilityBlock renders the per-format picture/chapter/synced-lyrics capability
+// table from the public CapabilitiesFor query. Formats are sorted by name so the block is
+// stable regardless of codec registration order.
 func renderCapabilityBlock() string {
 	formats := wl.Formats()
 	sort.Slice(formats, func(i, j int) bool { return formats[i].String() < formats[j].String() })
 	var b strings.Builder
-	b.WriteString("| Format | Pictures | Chapters |\n")
-	b.WriteString("| --- | --- | --- |\n")
+	b.WriteString("| Format | Pictures | Chapters | Synced Lyrics |\n")
+	b.WriteString("| --- | --- | --- | --- |\n")
 	for _, f := range formats {
 		caps := wl.CapabilitiesFor(f)
-		fmt.Fprintf(&b, "| %s | %s | %s |\n", f, capCell(caps.Pictures), capCell(caps.Chapters))
+		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", f, capCell(caps.Pictures), capCell(caps.Chapters), capCell(caps.SyncedLyrics))
 	}
 	return b.String()
 }

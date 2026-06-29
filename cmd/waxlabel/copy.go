@@ -131,13 +131,15 @@ func newCopyCmd() *cobra.Command {
 }
 
 // transferLabel names a transfer item for display: the key for a field, or a
-// counted noun for the picture and chapter sets.
+// counted noun for the picture, chapter, and synced-lyrics sets.
 func transferLabel(it wl.TransferItem) string {
 	switch it.Kind {
 	case wl.TransferPicture:
 		return fmt.Sprintf("pictures (%d)", it.Count)
 	case wl.TransferChapter:
 		return fmt.Sprintf("chapters (%d)", it.Count)
+	case wl.TransferSyncedLyric:
+		return fmt.Sprintf("synced lyrics (%d)", it.Count)
 	default:
 		// it.Key is file-derived: an unvalidated Vorbis/MP4 field name from parse can
 		// carry control bytes or a newline, and this prints on a single line, so escape it.

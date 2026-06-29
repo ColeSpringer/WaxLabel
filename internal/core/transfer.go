@@ -15,6 +15,7 @@ const (
 	TransferField TransferKind = iota
 	TransferPicture
 	TransferChapter
+	TransferSyncedLyric
 )
 
 func (k TransferKind) String() string {
@@ -23,6 +24,8 @@ func (k TransferKind) String() string {
 		return "picture"
 	case TransferChapter:
 		return "chapter"
+	case TransferSyncedLyric:
+		return "synced lyrics"
 	default:
 		return "field"
 	}
@@ -61,8 +64,8 @@ func (d Disposition) String() string {
 }
 
 // TransferItem is one piece of metadata's fate in a transfer. Key is set for
-// TransferField items; for the picture and chapter sets it is empty and Count
-// is the number of items in the set.
+// TransferField items; for the picture, chapter, and synced-lyrics sets it is empty and
+// Count is the number of items in the set.
 type TransferItem struct {
 	Kind        TransferKind
 	Key         tag.Key
@@ -89,7 +92,7 @@ type TransferReport struct {
 func (r TransferReport) Counts() (carried, lossy, dropped int) {
 	for _, it := range r.Items {
 		n := 1
-		if it.Kind == TransferPicture || it.Kind == TransferChapter {
+		if it.Kind == TransferPicture || it.Kind == TransferChapter || it.Kind == TransferSyncedLyric {
 			n = it.Count
 		}
 		switch it.Disposition {
@@ -214,6 +217,19 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 		}
 		items = append(items, TransferItem{
 			Kind: TransferChapter, Count: n, Disposition: disp, Reason: reason,
+		})
+	}
+	if n := len(src.SyncedLyrics); n > 0 {
+		disp, reason := dispose(dst.SyncedLyrics, dst.ReadOnly, n, "synced lyrics", nil)
+		// LRC destinations carry the timed text but drop the per-set language and
+		// descriptor. Upgrade only sets carrying metadata the destination cannot
+		// represent; plain timed-text sets remain Carried.
+		if disp == Carried && SyncedLyricsLoseMetadata(src.SyncedLyrics, dst.SyncedLyrics.SyncedLyricsLoss) {
+			disp = Lossy
+			reason = dst.SyncedLyrics.Reason()
+		}
+		items = append(items, TransferItem{
+			Kind: TransferSyncedLyric, Count: n, Disposition: disp, Reason: reason,
 		})
 	}
 	return items

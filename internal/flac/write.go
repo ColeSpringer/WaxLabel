@@ -30,9 +30,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	vorbisChanged := len(changed) > 0
 	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures)
 	chaptersChanged := !core.EqualChapters(base.Chapters, edited.Chapters)
-	// Chapters are stored as CHAPTERxxx Vorbis comments, so a chapter edit rewrites the
-	// comment block just like a tag edit does.
-	commentsChanged := vorbisChanged || chaptersChanged
+	syncedLyricsChanged := !core.EqualSyncedLyrics(base.SyncedLyrics, edited.SyncedLyrics)
+	// Chapters (CHAPTERxxx) and synced lyrics (SYNCEDLYRICS) are stored as Vorbis comments,
+	// so an edit to either rewrites the comment block just like a tag edit does.
+	commentsChanged := vorbisChanged || chaptersChanged || syncedLyricsChanged
 	stripLegacy := opts.Legacy == core.LegacyStrip
 	legacyChange := stripLegacy && legacyPresent
 
@@ -48,7 +49,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	newComments := d.comments
 	if commentsChanged {
-		newComments = rebuildComments(d.comments, edited.Tags, changed, edited.Chapters, chaptersChanged)
+		newComments = rebuildComments(d.comments, edited.Tags, changed, edited.Chapters, chaptersChanged, edited.SyncedLyrics, syncedLyricsChanged)
 	}
 
 	newBlocks, ops := rebuildBlocks(d, newComments, edited.Pictures, commentsChanged, picturesChanged)
@@ -56,6 +57,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		// Suppress the count line on a clear (the "Vorbis comment rewrite" op already
 		// records the change); matches the ID3 codecs' count gate.
 		ops = append(ops, fmt.Sprintf("chapters: %d", len(edited.Chapters)))
+	}
+	if syncedLyricsChanged && len(edited.SyncedLyrics) > 0 {
+		ops = append(ops, fmt.Sprintf("synced lyrics: %d", len(edited.SyncedLyrics)))
 	}
 	if err := checkBlockSizes(newBlocks); err != nil {
 		return nil, err
@@ -314,16 +318,18 @@ func buildResult(edited *core.Media, orig *doc, newBlocks []block, newComments [
 	// Building the Media directly also avoids cloning edited's (shared) native.
 	tags, families := projectComments(newComments)
 	return &core.Media{
-		Format:     core.FormatFLAC,
-		Properties: edited.Properties.Clone(),
-		Tags:       tags,
-		Families:   families,
-		Pictures:   core.ClonePictures(edited.Pictures),
-		Chapters:   projectChapters(newComments),
-		// Carrying the source warnings verbatim is correct because the CHAPTERxxx projection
-		// emits no warnings (unlike ID3's nested-CTOC flatten note): there is nothing a chapter
-		// edit could invalidate. If vorbis.ProjectChapters ever gains a warning, this must
-		// re-derive it from newComments (as the ID3 codecs do via CarryChapterWarnings).
+		Format:       core.FormatFLAC,
+		Properties:   edited.Properties.Clone(),
+		Tags:         tags,
+		Families:     families,
+		Pictures:     core.ClonePictures(edited.Pictures),
+		Chapters:     projectChapters(newComments),
+		SyncedLyrics: projectSyncedLyrics(newComments),
+		// Carrying the source warnings verbatim is correct because the CHAPTERxxx and
+		// SYNCEDLYRICS projections emit no warnings (unlike ID3's nested-CTOC flatten note):
+		// there is nothing a chapter or synced-lyrics edit could invalidate. If either
+		// projection ever gains a warning, this must re-derive it from newComments (as the ID3
+		// codecs do via CarryChapterWarnings).
 		Warnings:   core.CloneWarnings(edited.Warnings),
 		Native:     nd,
 		Identity:   core.Identity{Size: newSize},

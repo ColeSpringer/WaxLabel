@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/vorbis"
 )
 
 // Codec implements [core.Codec] for FLAC.
@@ -50,7 +51,8 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 	}
 	// FLAC rewrites its metadata block every edit, so it both grows and shrinks
 	// padding: --padding and --no-padding fully apply.
-	return core.NewCapabilities(core.FormatFLAC, false, fields, pictures, chapters, core.AccessFull, nil)
+	return core.NewCapabilities(core.FormatFLAC, false, fields, pictures, chapters, core.AccessFull, nil).
+		WithSyncedLyrics(vorbis.SyncedLyricsCapability())
 }
 
 // EssenceExtent returns the FLAC essence-digest inputs: the versioned extent

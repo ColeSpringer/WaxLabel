@@ -98,8 +98,11 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	// result to the requested value. v2.3 original-date reductions follow the same shared
 	// ID3 rules.
 	perField := id3.PerFieldCapabilities(id3.WriteVersionFor(m, core.FormatWAV), opts.NumericGenre, true)
-	// WAV has no metadata-padding concept, so the padding controls do not apply.
-	return core.NewCapabilities(core.FormatWAV, false, fields, pictures, chapters, core.AccessNone, perField)
+	// WAV has no metadata-padding concept, so the padding controls do not apply. Synced
+	// lyrics, like chapters and pictures, require an id3 chunk (LIST/INFO cannot hold them);
+	// an edit forces one into existence, so the write stays AccessFull.
+	return core.NewCapabilities(core.FormatWAV, false, fields, pictures, chapters, core.AccessNone, perField).
+		WithSyncedLyrics(id3.SyncedLyricsCapability())
 }
 
 // ID3Tag returns the parsed id3-chunk tag, or nil when the file has none.

@@ -122,11 +122,12 @@ type jsonCaps struct {
 	// Format stays at the codec family level, such as "Matroska" or "AIFF".
 	// caps has no nested properties.container field, so this gives JSON
 	// consumers the same subtype signal dump exposes.
-	Subformat string      `json:"subformat,omitempty"`
-	ReadOnly  bool        `json:"readOnly,omitempty"`
-	Fields    *jsonCapDim `json:"fields,omitempty"`
-	Pictures  *jsonCapDim `json:"pictures,omitempty"`
-	Chapters  *jsonCapDim `json:"chapters,omitempty"`
+	Subformat    string      `json:"subformat,omitempty"`
+	ReadOnly     bool        `json:"readOnly,omitempty"`
+	Fields       *jsonCapDim `json:"fields,omitempty"`
+	Pictures     *jsonCapDim `json:"pictures,omitempty"`
+	Chapters     *jsonCapDim `json:"chapters,omitempty"`
+	SyncedLyrics *jsonCapDim `json:"syncedLyrics,omitempty"`
 	// Padding grades how completely the format honors the --padding/--no-padding
 	// controls: "none", "partial" (grow-only), or "full". Always present on a
 	// successful report.
@@ -175,6 +176,7 @@ func buildCaps(file, container string, caps wl.Capabilities) jsonCaps {
 		Fields:        capDim(caps.GenericField),
 		Pictures:      capDim(caps.Pictures),
 		Chapters:      capDim(caps.Chapters),
+		SyncedLyrics:  capDim(caps.SyncedLyrics),
 		Padding:       caps.Padding.String(),
 		// Always a non-nil array so `caps --json` of a read-only format (no editable
 		// keys) emits "keys": [] - a consumer iterating.keys[] never breaks. Latent
@@ -238,6 +240,7 @@ func renderCaps(w io.Writer, jc jsonCaps) {
 	renderCapDim(w, "fields", jc.Fields)
 	renderCapDim(w, "pictures", jc.Pictures)
 	renderCapDim(w, "chapters", jc.Chapters)
+	renderCapDim(w, "synced lyrics", jc.SyncedLyrics)
 	if jc.Padding != "" {
 		// Padding is a single level (none/partial/full), not a read/write dimension, so
 		// it gets its own one-word line rather than a renderCapDim row.

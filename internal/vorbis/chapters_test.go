@@ -126,7 +126,7 @@ func TestRebuildOwnsChapters(t *testing.T) {
 	// Unrelated (title-only) edit: every CHAPTERxxx comment is preserved verbatim.
 	base := mkTagSet("TITLE", "Old")
 	edited := mkTagSet("TITLE", "New")
-	got := Rebuild(orig, edited, DiffKeys(base, edited), nil, false)
+	got := Rebuild(orig, edited, DiffKeys(base, edited), nil, false, nil, false)
 	if !hasComment(got, "CHAPTER001", "00:00:00.000") ||
 		!hasComment(got, "CHAPTER001NAME", "Intro") ||
 		!hasComment(got, "CHAPTER002", "garbage") {
@@ -134,7 +134,7 @@ func TestRebuildOwnsChapters(t *testing.T) {
 	}
 
 	// Chapter edit: old CHAPTERxxx dropped, the new single chapter re-emitted.
-	got = Rebuild(orig, base, DiffKeys(base, base), []core.Chapter{{Start: time.Second, Title: "Only"}}, true)
+	got = Rebuild(orig, base, DiffKeys(base, base), []core.Chapter{{Start: time.Second, Title: "Only"}}, true, nil, false)
 	if hasComment(got, "CHAPTER002", "garbage") {
 		t.Error("a chapter edit must drop the source CHAPTERxxx comments, including the malformed one")
 	}

@@ -169,7 +169,8 @@ func PaddingOp(oldRegion, newContent, padAfter int64) string {
 // store, values it stored with reduced precision, picture metadata it dropped, a numeric
 // genre reference the input supplied that reads back as a name, chapter titles trimmed to
 // a container limit, chapter metadata the format cannot hold, a chapter timestamp clamped
-// to a 32-bit field, and chapter hierarchy flattened on projection. Those reflect the
+// to a 32-bit field, chapter hierarchy flattened on projection, and synced-lyrics
+// metadata dropped by an LRC store. Those reflect the
 // user's INPUT, not the write mechanics, and are
 // often the very reason the byte stream did not change (GENRE=17 on a file already projecting
 // Rock; an over-long chapter title re-applied to a file already holding its truncation), so
@@ -180,11 +181,12 @@ func DowngradeNoOp(format Format, size int64, base, result *Media, tagsEqual, st
 	if structuralChange || !tagsEqual {
 		return nil
 	}
-	if !EqualPictures(base.Pictures, result.Pictures) || !EqualChapters(base.Chapters, result.Chapters) {
+	if !EqualPictures(base.Pictures, result.Pictures) || !EqualChapters(base.Chapters, result.Chapters) ||
+		!EqualSyncedLyrics(base.SyncedLyrics, result.SyncedLyrics) {
 		return nil
 	}
 	np := NoOpPlan(WriteReport{Format: format, BytesBefore: size}, size, base)
-	np.Report.Warnings = append(np.Report.Warnings, WarningsWithCode(priorWarnings, WarnValueDropped, WarnValueReduced, WarnPictureMetadataDropped, WarnNumericGenre, WarnChapterTitleTruncated, WarnChapterMetadataDropped, WarnChapterStartOverflow, WarnChaptersFlattened)...)
+	np.Report.Warnings = append(np.Report.Warnings, WarningsWithCode(priorWarnings, WarnValueDropped, WarnValueReduced, WarnPictureMetadataDropped, WarnNumericGenre, WarnChapterTitleTruncated, WarnChapterMetadataDropped, WarnChapterStartOverflow, WarnChaptersFlattened, WarnSyncedLyricsMetadataDropped, WarnSyncedLyricsTimestampClamped)...)
 	return np
 }
 

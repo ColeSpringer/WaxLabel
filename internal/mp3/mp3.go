@@ -67,7 +67,8 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	perField := id3.PerFieldCapabilities(id3.WriteVersionFor(m, core.FormatMP3), opts.NumericGenre, true)
 	// ID3 front-tag padding is grow-only (ReuseOrTarget): a forced rewrite can grow
 	// the region, but a fit-in-place edit reuses it and cannot shrink in place.
-	return core.NewCapabilities(core.FormatMP3, false, fields, pictures, chapters, core.AccessPartial, perField)
+	return core.NewCapabilities(core.FormatMP3, false, fields, pictures, chapters, core.AccessPartial, perField).
+		WithSyncedLyrics(id3.SyncedLyricsCapability())
 }
 
 // ID3Tag returns the parsed front ID3 tag, or nil when the file has none.

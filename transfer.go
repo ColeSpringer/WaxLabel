@@ -8,10 +8,10 @@ import (
 )
 
 // PlanTransfer simulates copying this document's canonical metadata (tags,
-// pictures, and chapters) into a file of format dst. It reports what each piece would
-// carry, downgrade, or lose without writing or needing a destination file. It consults
-// dst's capabilities under the given write options, so an option-dependent destination
-// is judged as a real write would be.
+// pictures, chapters, and synced lyrics) into a file of format dst. It reports what each
+// piece would carry, downgrade, or lose without writing or needing a destination file. It
+// consults dst's capabilities under the given write options, so an option-dependent
+// destination is judged as a real write would be.
 //
 // A read-only destination format reports everything dropped; an unimplemented
 // destination is an error. Use [Document.PrepareTransfer] when you have an actual
@@ -53,8 +53,8 @@ func (d *Document) PlanTransfer(dst Format, opts ...WriteOption) (TransferReport
 // replaces that key in the destination, the source's pictures replace the destination
 // picture set whenever at least one source picture is representable in the destination
 // (a source whose covers are all unrepresentable leaves the destination's own covers
-// intact), and likewise for chapters. Destination keys the source does not carry are
-// kept. dst is not modified; only [Plan.Execute] writes.
+// intact), and likewise for chapters and synced lyrics. Destination keys the source does
+// not carry are kept. dst is not modified; only [Plan.Execute] writes.
 func (d *Document) PrepareTransfer(dst *Document, opts ...WriteOption) (*Plan, TransferReport, error) {
 	if d.zero() || dst.zero() {
 		return nil, TransferReport{}, fmt.Errorf("%w: document is not initialized; use ParseFile/Parse", waxerr.ErrInvalidData)
@@ -108,6 +108,8 @@ func (d *Document) PrepareTransfer(dst *Document, opts ...WriteOption) (*Plan, T
 			}
 		case core.TransferChapter:
 			ed.SetChapters(core.CloneChapters(d.media.Chapters)...)
+		case core.TransferSyncedLyric:
+			ed.SetSyncedLyrics(core.CloneSyncedLyrics(d.media.SyncedLyrics)...)
 		}
 	}
 

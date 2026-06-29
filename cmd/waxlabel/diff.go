@@ -112,26 +112,33 @@ type diffResult struct {
 	chapsA       int
 	chapsB       int
 	chapsDiffer  bool
+	syncedA      int
+	syncedB      int
+	syncedDiffer bool
 }
 
 // identical reports whether the two files carry the same canonical metadata.
 func (d diffResult) identical() bool {
-	return len(d.tags) == 0 && !d.picsDiffer && !d.chapsDiffer
+	return len(d.tags) == 0 && !d.picsDiffer && !d.chapsDiffer && !d.syncedDiffer
 }
 
-// computeDiff compares the canonical tags, pictures, and chapters of a and b,
-// reporting the delta from a to b (a is the left/old side, b the right/new side).
+// computeDiff compares the canonical tags, pictures, chapters, and synced lyrics of a and
+// b, reporting the delta from a to b (a is the left/old side, b the right/new side).
 func computeDiff(a, b *wl.Document) diffResult {
 	pa, pb := a.Pictures(), b.Pictures()
 	ca, cb := a.Chapters(), b.Chapters()
+	sa, sb := a.SyncedLyrics(), b.SyncedLyrics()
 	return diffResult{
-		tags:        tag.Diff(a.Tags(), b.Tags()),
-		picsA:       len(pa),
-		picsB:       len(pb),
-		picsDiffer:  !wl.EqualPictures(pa, pb),
-		chapsA:      len(ca),
-		chapsB:      len(cb),
-		chapsDiffer: !wl.EqualChapters(ca, cb),
+		tags:         tag.Diff(a.Tags(), b.Tags()),
+		picsA:        len(pa),
+		picsB:        len(pb),
+		picsDiffer:   !wl.EqualPictures(pa, pb),
+		chapsA:       len(ca),
+		chapsB:       len(cb),
+		chapsDiffer:  !wl.EqualChapters(ca, cb),
+		syncedA:      len(sa),
+		syncedB:      len(sb),
+		syncedDiffer: !wl.EqualSyncedLyrics(sa, sb),
 	}
 }
 
@@ -150,6 +157,7 @@ func renderDiff(w io.Writer, a, b string, d diffResult) {
 	}
 	renderCountDelta(w, "pictures", d.picsDiffer, d.picsA, d.picsB)
 	renderCountDelta(w, "chapters", d.chapsDiffer, d.chapsA, d.chapsB)
+	renderCountDelta(w, "synced lyrics", d.syncedDiffer, d.syncedA, d.syncedB)
 }
 
 // renderChangeLine prints one tag change with diff-style -/+/~ markers at the
@@ -184,6 +192,7 @@ type jsonDiff struct {
 	Tags          []jsonDiffTag  `json:"tags"`
 	Pictures      *jsonDiffCount `json:"pictures,omitempty"`
 	Chapters      *jsonDiffCount `json:"chapters,omitempty"`
+	SyncedLyrics  *jsonDiffCount `json:"syncedLyrics,omitempty"`
 }
 
 type jsonDiffTag struct {
@@ -214,6 +223,9 @@ func toJSONDiff(a, b string, d diffResult) jsonDiff {
 	}
 	if d.chapsDiffer {
 		jd.Chapters = &jsonDiffCount{A: d.chapsA, B: d.chapsB}
+	}
+	if d.syncedDiffer {
+		jd.SyncedLyrics = &jsonDiffCount{A: d.syncedA, B: d.syncedB}
 	}
 	return jd
 }

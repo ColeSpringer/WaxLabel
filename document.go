@@ -94,6 +94,16 @@ func (d *Document) Chapters() []Chapter {
 	return core.CloneChapters(d.media.Chapters)
 }
 
+// SyncedLyrics returns the timed lyric sets as a detached deep copy, in file order. Like
+// chapters, they live beside the canonical tags rather than inside the TagSet. A file with
+// none returns nil. Unsynchronized lyrics remain in [Document.Tags] as the LYRICS field.
+func (d *Document) SyncedLyrics() []SyncedLyrics {
+	if d.zero() {
+		return nil
+	}
+	return core.CloneSyncedLyrics(d.media.SyncedLyrics)
+}
+
 // Families returns the tag-family/source view: which family supplied each
 // canonical value, its scope, and whether it won the projection (unselected
 // entries for a key signal a conflict).

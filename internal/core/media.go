@@ -114,15 +114,16 @@ type NativeDoc interface {
 // Pictures, Properties) and the native base (Native) needed for
 // preservation-first rewrites.
 type Media struct {
-	Format     Format
-	Properties Properties
-	Tags       tag.TagSet
-	Pictures   []Picture
-	Chapters   []Chapter
-	Families   []FamilyValue
-	Warnings   []Warning
-	Native     NativeDoc
-	Identity   Identity
+	Format       Format
+	Properties   Properties
+	Tags         tag.TagSet
+	Pictures     []Picture
+	Chapters     []Chapter
+	SyncedLyrics []SyncedLyrics
+	Families     []FamilyValue
+	Warnings     []Warning
+	Native       NativeDoc
+	Identity     Identity
 
 	// AudioStart and AudioEnd bound the audio essence within the source: the
 	// bytes the rewrite must copy verbatim and the essence digest must hash.
@@ -160,16 +161,17 @@ func (m *Media) Clone() *Media {
 		return nil
 	}
 	c := &Media{
-		Format:     m.Format,
-		Properties: m.Properties.Clone(),
-		Tags:       m.Tags.Clone(),
-		Pictures:   ClonePictures(m.Pictures),
-		Chapters:   CloneChapters(m.Chapters),
-		Families:   cloneFamilies(m.Families),
-		Warnings:   CloneWarnings(m.Warnings),
-		Identity:   m.Identity,
-		AudioStart: m.AudioStart,
-		AudioEnd:   m.AudioEnd,
+		Format:       m.Format,
+		Properties:   m.Properties.Clone(),
+		Tags:         m.Tags.Clone(),
+		Pictures:     ClonePictures(m.Pictures),
+		Chapters:     CloneChapters(m.Chapters),
+		SyncedLyrics: CloneSyncedLyrics(m.SyncedLyrics),
+		Families:     cloneFamilies(m.Families),
+		Warnings:     CloneWarnings(m.Warnings),
+		Identity:     m.Identity,
+		AudioStart:   m.AudioStart,
+		AudioEnd:     m.AudioEnd,
 	}
 	if m.AudioRanges != nil {
 		c.AudioRanges = make([][2]int64, len(m.AudioRanges))

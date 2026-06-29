@@ -19,6 +19,7 @@ type Projection struct {
 	Tags         tag.TagSet
 	Pictures     []core.Picture
 	Chapters     []core.Chapter
+	SyncedLyrics []core.SyncedLyrics
 	Families     []core.FamilyValue
 	NumericGenre bool
 	Warnings     []core.Warning
@@ -133,14 +134,17 @@ func Project(t *Tag) Projection {
 
 	// Decode CHAP/CTOC navigation chapters. See chapters.go for ordering rules.
 	chapters, chapterWarnings := ProjectChapters(t)
+	// Decode SYLT synchronized lyrics. See synced_lyrics.go.
+	syncedLyrics, syncedWarnings := ProjectSyncedLyrics(t)
 
 	return Projection{
 		Tags:         core.BuildTagSet(contribs),
 		Pictures:     pics,
 		Chapters:     chapters,
+		SyncedLyrics: syncedLyrics,
 		Families:     core.BuildFamilies(contribs, core.FamilyID3v2),
 		NumericGenre: numeric,
-		Warnings:     chapterWarnings,
+		Warnings:     append(chapterWarnings, syncedWarnings...),
 	}
 }
 

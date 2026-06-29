@@ -29,6 +29,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	tagsChanged := !base.Tags.Equal(edited.Tags)
 	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures)
 	chaptersChanged := !core.EqualChapters(base.Chapters, edited.Chapters)
+	syncedLyricsChanged := !core.EqualSyncedLyrics(base.SyncedLyrics, edited.SyncedLyrics)
 	stripLegacy := opts.Legacy == core.LegacyStrip
 	legacyChange := stripLegacy && legacyPresent
 
@@ -37,8 +38,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// Fast path: nothing changed. NoOpPlan emits a verbatim copy (so SaveAsFile/
 	// WriteTo still produce a whole file) flagged NoOp so SaveBack skips it. Explicit
 	// padding requests run the front-tag renderer below so a padding-only edit can take
-	// effect. A chapters-only edit (CHAP/CTOC) must defeat the no-op gate too.
-	if !tagsChanged && !picturesChanged && !chaptersChanged && !legacyChange && !opts.PaddingExplicit {
+	// effect. A chapters- or synced-lyrics-only edit (CHAP/CTOC, SYLT) must defeat the
+	// no-op gate too.
+	if !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !legacyChange && !opts.PaddingExplicit {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 	// Re-check the ID3 CTOC count at the codec boundary. Only a chapter edit re-renders
@@ -60,6 +62,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		id3.StructuredEdit{
 			Pictures: edited.Pictures, PicturesChanged: picturesChanged,
 			Chapters: edited.Chapters, ChaptersChanged: chaptersChanged,
+			SyncedLyrics: edited.SyncedLyrics, SyncedLyricsChanged: syncedLyricsChanged,
 		}, id3.WriteOpts{Multi: opts.ID3Multi, NumericGenre: opts.NumericGenre})
 	if err := id3.CheckSize(version, newFrames, bits.DefaultLimits.MaxElements); err != nil {
 		return nil, err
@@ -70,14 +73,15 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// fabricating an empty, padding-only container. The drop-empty-tag policy lives in the
 	// shared id3.RenderFrontTag so MP3 and AAC cannot diverge.
 	ft := id3.RenderFrontTag(srcTag, version, newFrames, info, opts.Padding, d.id3Len,
-		d.id3 != nil, tagsChanged, picturesChanged, len(edited.Pictures), chaptersChanged, len(edited.Chapters))
+		d.id3 != nil, tagsChanged, picturesChanged, len(edited.Pictures), chaptersChanged, len(edited.Chapters),
+		syncedLyricsChanged, len(edited.SyncedLyrics))
 	report.PaddingAfter = ft.Padding
 	report.Operations = append(report.Operations, ft.Operations...)
 	report.Warnings = append(report.Warnings, ft.Warnings...)
 	// Compare the rendered front-tag size with the source region. When padding is the
 	// only request, a changed size is the edit.
 	regionDiffers := int64(len(ft.Bytes)) != d.id3Len
-	if regionDiffers && !tagsChanged && !picturesChanged && !chaptersChanged && !legacyChange {
+	if regionDiffers && !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !legacyChange {
 		report.Operations = append(report.Operations, core.PaddingOp(d.id3Len, int64(len(ft.Bytes))-ft.Padding, ft.Padding))
 	}
 
@@ -161,16 +165,17 @@ func buildResult(edited *core.Media, base *doc, newTag *id3.Tag, tagBytes []byte
 	// written tag no longer flattens. AAC uses the same helper for the same front-tag path.
 	warnings := id3.CarryChapterWarnings(edited.Warnings, proj.Warnings)
 	return &core.Media{
-		Format:     core.FormatMP3,
-		Properties: edited.Properties.Clone(),
-		Tags:       proj.Tags,
-		Families:   families,
-		Pictures:   core.ClonePictures(edited.Pictures),
-		Chapters:   proj.Chapters,
-		Warnings:   warnings,
-		Native:     nd,
-		Identity:   core.Identity{Size: newSize},
-		AudioStart: nd.audioStart,
-		AudioEnd:   nd.audioEnd,
+		Format:       core.FormatMP3,
+		Properties:   edited.Properties.Clone(),
+		Tags:         proj.Tags,
+		Families:     families,
+		Pictures:     core.ClonePictures(edited.Pictures),
+		Chapters:     proj.Chapters,
+		SyncedLyrics: proj.SyncedLyrics,
+		Warnings:     warnings,
+		Native:       nd,
+		Identity:     core.Identity{Size: newSize},
+		AudioStart:   nd.audioStart,
+		AudioEnd:     nd.audioEnd,
 	}
 }

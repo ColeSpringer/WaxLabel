@@ -175,6 +175,27 @@ const (
 	// clamped to fit. It is separate from WarnTruncatedAudio because it describes a
 	// container chunk, not audio essence or a tag field.
 	WarnOversizedChunk
+	// WarnSyncedLyricsTimestampFormat means an ID3v2 SYLT frame used the MPEG-frames
+	// timestamp format (format 1) instead of milliseconds (format 2). WaxLabel reads and
+	// writes only the millisecond format. Mapping MPEG frames to a time needs the full
+	// frame index, so the frame is skipped on projection rather than placed at the wrong
+	// offset. Keyless: it describes a synced-lyrics set, not a tag field.
+	WarnSyncedLyricsTimestampFormat
+	// WarnSyncedLyricsContentType means an ID3v2 SYLT frame carried a non-lyric content
+	// type, such as chord, trivia, or image URL. Only the lyrics content type projects into
+	// the synced-lyrics model, so the frame is skipped rather than misrepresented as lyrics.
+	// It is preserved verbatim through an unrelated edit. Keyless.
+	WarnSyncedLyricsContentType
+	// WarnSyncedLyricsMetadataDropped means a direct synced-lyrics edit carried a per-set
+	// language or descriptor the destination cannot store. The VorbisComment LRC store
+	// keeps the timed text only (see [SyncedLyricsLoss]). It is scoped to authored sets and
+	// is keyless because it describes the synced-lyrics set, not a tag field.
+	WarnSyncedLyricsMetadataDropped
+	// WarnSyncedLyricsTimestampClamped means a synced-lyric line's timestamp exceeded the
+	// ID3v2 SYLT frame's 32-bit millisecond field (~49.7 days) and was clamped on write,
+	// the synced-lyrics analogue of [WarnChapterStartOverflow]. Keyless: it describes the
+	// synced-lyrics set, not a tag field.
+	WarnSyncedLyricsTimestampClamped
 )
 
 func (c WarningCode) String() string {
@@ -249,6 +270,14 @@ func (c WarningCode) String() string {
 		return "chapter-start-overflow"
 	case WarnChapterMetadataDropped:
 		return "chapter-metadata-dropped"
+	case WarnSyncedLyricsTimestampFormat:
+		return "synced-lyrics-timestamp-format"
+	case WarnSyncedLyricsContentType:
+		return "synced-lyrics-content-type"
+	case WarnSyncedLyricsMetadataDropped:
+		return "synced-lyrics-metadata-dropped"
+	case WarnSyncedLyricsTimestampClamped:
+		return "synced-lyrics-timestamp-clamped"
 	default:
 		return "unknown"
 	}

@@ -37,9 +37,11 @@ type Editor struct {
 	// RemovePictures filter both in lockstep with a single evaluation of the caller's
 	// match predicate, so a side-effecting or non-deterministic matcher cannot be
 	// called twice or desync the added set from what will be written.
-	addedMask       []bool
-	chapters        []core.Chapter
-	chaptersTouched bool
+	addedMask           []bool
+	chapters            []core.Chapter
+	chaptersTouched     bool
+	syncedLyrics        []core.SyncedLyrics
+	syncedLyricsTouched bool
 	// carried marks this editor as a faithful carry from a source (the transfer
 	// engine), not a user-authored edit, so [Editor.Prepare] suppresses the edit-time
 	// sanity warnings that flag authoring mistakes - the chapter past-duration /
@@ -160,6 +162,36 @@ func (e *Editor) ClearChapters() *Editor {
 	return e
 }
 
+// SetSyncedLyrics replaces all synced-lyrics sets. Lines within each set are sorted by
+// Time with a stable sort, matching [ParseLRC] and [Editor.SetChapters]. The line slices
+// are deep-copied so later caller mutations cannot change the pending edit. A format that
+// cannot write synced lyrics reports that through [Capabilities], and [Editor.Prepare]
+// rejects the write.
+func (e *Editor) SetSyncedLyrics(sls ...SyncedLyrics) *Editor {
+	e.syncedLyrics = make([]core.SyncedLyrics, 0, len(sls))
+	for _, sl := range sls {
+		// A set with no lines carries no model value: writers skip it because an empty SYLT
+		// or SYNCEDLYRICS comment projects to nothing on re-read. Dropping it here keeps the
+		// authored and rendered counts aligned across codecs, so a plan never reports a set
+		// it did not write.
+		if len(sl.Lines) == 0 {
+			continue
+		}
+		sl.Lines = slices.Clone(sl.Lines)
+		slices.SortStableFunc(sl.Lines, func(a, b SyncedLine) int { return cmp.Compare(a.Time, b.Time) })
+		e.syncedLyrics = append(e.syncedLyrics, sl)
+	}
+	e.syncedLyricsTouched = true
+	return e
+}
+
+// ClearSyncedLyrics removes all synced lyrics.
+func (e *Editor) ClearSyncedLyrics() *Editor {
+	e.syncedLyrics = nil
+	e.syncedLyricsTouched = true
+	return e
+}
+
 // Native returns the native inspection view for the original parsed document.
 // It does not include pending editor changes; pictures, tags, or chapters added
 // on the editor are visible only after a save and reparse. Structural native
@@ -240,24 +272,28 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// means the NUL is still on the touched TRACKNUMBER and is rejected above.
 	splitNumberPairs(&editedTags, e.patch)
 	edited := &core.Media{
-		Format:      e.base.Format,
-		Properties:  e.base.Properties,
-		Tags:        editedTags,
-		Pictures:    e.base.Pictures,
-		Chapters:    e.base.Chapters,
-		Families:    e.base.Families,
-		Warnings:    e.base.Warnings,
-		Native:      e.base.Native,
-		Identity:    e.base.Identity,
-		AudioStart:  e.base.AudioStart,
-		AudioEnd:    e.base.AudioEnd,
-		AudioRanges: e.base.AudioRanges,
+		Format:       e.base.Format,
+		Properties:   e.base.Properties,
+		Tags:         editedTags,
+		Pictures:     e.base.Pictures,
+		Chapters:     e.base.Chapters,
+		SyncedLyrics: e.base.SyncedLyrics,
+		Families:     e.base.Families,
+		Warnings:     e.base.Warnings,
+		Native:       e.base.Native,
+		Identity:     e.base.Identity,
+		AudioStart:   e.base.AudioStart,
+		AudioEnd:     e.base.AudioEnd,
+		AudioRanges:  e.base.AudioRanges,
 	}
 	if e.picsTouched {
 		edited.Pictures = e.pictures
 	}
 	if e.chaptersTouched {
 		edited.Chapters = e.chapters
+	}
+	if e.syncedLyricsTouched {
+		edited.SyncedLyrics = e.syncedLyrics
 	}
 	if err := validatePictures(edited.Pictures); err != nil {
 		return nil, err
@@ -303,6 +339,24 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		return nil, fmt.Errorf("%w: %d chapters exceeds the %d %s can store",
 			waxerr.ErrUnsupportedTag, len(e.chapters), caps.Chapters.MaxItems, e.base.Format)
 	}
+	// Reject authored synced lyrics when the destination has no metadata store for them,
+	// using the same capability gate as chapters above. MP4 and Matroska can carry timed
+	// lyric tracks, but those tracks are outside this metadata model. A clear on an
+	// unsupported format stays a no-op, and MaxItems is enforced before the writer sees the
+	// list (the LRC store holds a single set).
+	if e.syncedLyricsTouched && len(e.syncedLyrics) > 0 &&
+		caps.SyncedLyrics.Write < core.AccessPartial {
+		return nil, fmt.Errorf("%w: synced lyrics cannot be written to %s %s file",
+			waxerr.ErrUnsupportedTag, core.IndefiniteArticle(e.base.Format.String()), e.base.Format)
+	}
+	if e.syncedLyricsTouched && caps.SyncedLyrics.MaxItems > 0 && len(e.syncedLyrics) > caps.SyncedLyrics.MaxItems {
+		return nil, fmt.Errorf("%w: %d synced-lyrics sets exceeds the %d %s can store",
+			waxerr.ErrUnsupportedTag, len(e.syncedLyrics), caps.SyncedLyrics.MaxItems, e.base.Format)
+	}
+	// Do not reject a parsed 1-2 byte SYLT language here. Some files store NUL-padded short
+	// codes, and the writer preserves them on read-then-write; longer values are truncated
+	// to SYLT's fixed three bytes. The CLI validates author-entered --synced-lyrics-lang
+	// values before they reach this path.
 	wp, err := codec.Plan(context.Background(), e.base, edited, wo)
 	if err != nil {
 		return nil, err
@@ -329,6 +383,17 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		if loss := caps.Chapters.ChapterLoss; core.ChaptersLoseMetadata(e.chapters, loss) {
 			wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnChapterMetadataDropped,
 				core.ChapterMetadataDroppedMessage(loss))
+		}
+	}
+	// Warn when the destination cannot store every field in the authored synced-lyrics
+	// list. The LRC store keeps timed text but drops the per-set language and descriptor,
+	// mirroring the chapter metadata-dropped warning above. SyncedLyricsLoss is
+	// option-independent, so use the capability value already computed for the write plan.
+	// A transfer that carries source metadata is already graded in its transfer report.
+	if e.syncedLyricsTouched && !e.carried {
+		if loss := caps.SyncedLyrics.SyncedLyricsLoss; core.SyncedLyricsLoseMetadata(e.syncedLyrics, loss) {
+			wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnSyncedLyricsMetadataDropped,
+				core.SyncedLyricsMetadataDroppedMessage())
 		}
 	}
 	// Surface edit-time picture sanity warnings for the pictures this edit authored
@@ -414,6 +479,23 @@ func (e *Editor) rejectInvalidValues(editedTags tag.TagSet, keys []tag.Key) erro
 		}
 		if err := checkWritableText(c.LanguageIETF, "chapter IETF language"); err != nil {
 			return err
+		}
+	}
+	// Synced-lyrics text, descriptor, and language are stored in SYLT or LRC and read back
+	// through sanitization. Reject newly authored NULs or invalid UTF-8 here, using the
+	// same rule as chapter titles, so the written values can round-trip through the model.
+	// SetSyncedLyrics replaces the whole list, so the full edited set is scanned.
+	for _, sl := range e.syncedLyrics {
+		if err := checkWritableText(sl.Language, "synced-lyrics language"); err != nil {
+			return err
+		}
+		if err := checkWritableText(sl.Description, "synced-lyrics description"); err != nil {
+			return err
+		}
+		for _, ln := range sl.Lines {
+			if err := checkWritableText(ln.Text, "synced-lyrics line"); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
