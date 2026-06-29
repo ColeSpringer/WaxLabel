@@ -312,14 +312,43 @@ func TestMP4ChapterRoundTripStable(t *testing.T) {
 	}
 }
 
-func TestSetChaptersOnIncapableFormatErrors(t *testing.T) {
-	// FLAC cannot write chapters (CUESHEET is preserved, not modeled). Setting
-	// chapters there must hard-error at Prepare rather than silently dropping them -
-	// mirroring the cover-onto-WebM refusal - so the loss is reported, not swallowed.
+func TestChapterCountCapEnforced(t *testing.T) {
+	// The ID3 CTOC entry count and the MP4 Nero chpl count are both single bytes, so a
+	// 256th chapter would overflow the count field and write a malformed container. Prepare
+	// rejects an over-limit list with ErrUnsupportedTag (the generic Chapters.MaxItems gate);
+	// exactly 255 is accepted. MP3 exercises the ID3 CTOC path.
+	doc := mustParseFile(t, sampleMP3)
+	mk := func(n int) []wl.Chapter {
+		chs := make([]wl.Chapter, n)
+		for i := range chs {
+			chs[i] = wl.Chapter{Start: time.Duration(i) * time.Second, Title: "Ch"}
+		}
+		return chs
+	}
+	if _, err := doc.Edit().SetChapters(mk(256)...).Prepare(); !errors.Is(err, waxerr.ErrUnsupportedTag) {
+		t.Errorf("256 chapters on MP3: err = %v, want ErrUnsupportedTag", err)
+	}
+	if _, err := doc.Edit().SetChapters(mk(255)...).Prepare(); err != nil {
+		t.Errorf("255 chapters on MP3: err = %v, want nil", err)
+	}
+}
+
+func TestSetChaptersOnFLACRoundTrips(t *testing.T) {
+	// FLAC stores chapters via the VorbisComment CHAPTERxxx convention, so SetChapters
+	// succeeds and the chapters survive a re-parse. CHAPTERxxx belongs to the chapter
+	// projection, not the custom tag view.
 	doc := mustParseBytes(t, synthFLAC())
-	_, err := doc.Edit().SetChapters(wl.Chapter{Start: 0, Title: "Ch1"}).Prepare()
-	if !errors.Is(err, waxerr.ErrUnsupportedTag) {
-		t.Fatalf("SetChapters on FLAC error = %v, want ErrUnsupportedTag", err)
+	plan, err := doc.Edit().SetChapters(
+		wl.Chapter{Start: 0, Title: "Ch1"},
+		wl.Chapter{Start: 5 * time.Second, Title: "Ch2"},
+	).Prepare()
+	if err != nil {
+		t.Fatalf("SetChapters on FLAC error = %v, want nil", err)
+	}
+	re := mustParseBytes(t, applyToBytes(t, synthFLAC(), plan))
+	chs := re.Chapters()
+	if len(chs) != 2 || chs[0].Title != "Ch1" || chs[1].Title != "Ch2" || chs[1].Start != 5*time.Second {
+		t.Errorf("FLAC chapters after round-trip = %+v, want Ch1@0 and Ch2@5s", chs)
 	}
 }
 

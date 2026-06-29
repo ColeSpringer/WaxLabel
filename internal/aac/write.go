@@ -25,15 +25,23 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	tagsChanged := !base.Tags.Equal(edited.Tags)
 	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures)
+	chaptersChanged := !core.EqualChapters(base.Chapters, edited.Chapters)
 
 	report := core.WriteReport{Format: core.FormatAAC, BytesBefore: edited.Identity.Size}
 
 	// Fast path: nothing changed. NoOpPlan emits a verbatim copy (so SaveAsFile/
 	// WriteTo still produce a whole file) flagged NoOp so SaveBack skips it. Explicit
 	// padding requests run the front-tag renderer below so a padding-only edit can take
-	// effect.
-	if !tagsChanged && !picturesChanged && !opts.PaddingExplicit {
+	// effect. A chapters-only edit (CHAP/CTOC) must defeat the no-op gate too.
+	if !tagsChanged && !picturesChanged && !chaptersChanged && !opts.PaddingExplicit {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
+	}
+	// Re-check the ID3 CTOC count at the codec boundary. Only a chapter edit re-renders
+	// the CTOC, so unchanged chapters can keep their source frames.
+	if chaptersChanged {
+		if err := id3.CheckChapterCount(edited.Chapters); err != nil {
+			return nil, err
+		}
 	}
 
 	// Choose the ID3v2 version (preserve the source's; the format default for a
@@ -44,7 +52,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	}
 	version := srcTag.WriteVersion()
 	newFrames, info := id3.RebuildFrames(srcTag.Frames(), base.Tags, edited.Tags, version,
-		edited.Pictures, picturesChanged, id3.WriteOpts{Multi: opts.ID3Multi, NumericGenre: opts.NumericGenre})
+		id3.StructuredEdit{
+			Pictures: edited.Pictures, PicturesChanged: picturesChanged,
+			Chapters: edited.Chapters, ChaptersChanged: chaptersChanged,
+		}, id3.WriteOpts{Multi: opts.ID3Multi, NumericGenre: opts.NumericGenre})
 	if err := id3.CheckSize(version, newFrames, bits.DefaultLimits.MaxElements); err != nil {
 		return nil, err
 	}
@@ -54,14 +65,14 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// The drop-empty-tag policy lives in the shared id3.RenderFrontTag so MP3 and AAC cannot
 	// diverge.
 	ft := id3.RenderFrontTag(srcTag, version, newFrames, info, opts.Padding, d.id3Len,
-		d.id3 != nil, tagsChanged, picturesChanged, len(edited.Pictures))
+		d.id3 != nil, tagsChanged, picturesChanged, len(edited.Pictures), chaptersChanged, len(edited.Chapters))
 	report.PaddingAfter = ft.Padding
 	report.Operations = append(report.Operations, ft.Operations...)
 	report.Warnings = append(report.Warnings, ft.Warnings...)
 	// Compare the rendered front-tag size with the source region. When padding is the
 	// only request, a changed size is the edit.
 	regionDiffers := int64(len(ft.Bytes)) != d.id3Len
-	if regionDiffers && !tagsChanged && !picturesChanged {
+	if regionDiffers && !tagsChanged && !picturesChanged && !chaptersChanged {
 		report.Operations = append(report.Operations, core.PaddingOp(d.id3Len, int64(len(ft.Bytes))-ft.Padding, ft.Padding))
 	}
 
@@ -105,13 +116,17 @@ func buildResult(edited *core.Media, base *doc, newTag *id3.Tag, tagBytes []byte
 		size:       newSize,
 	}
 	proj := id3.Project(newTag)
+	// Carry source-parse warnings forward, but drop a stale chapter-flatten note when the
+	// written tag no longer flattens. MP3 uses the same helper for the same front-tag path.
+	warnings := id3.CarryChapterWarnings(edited.Warnings, proj.Warnings)
 	return &core.Media{
 		Format:     core.FormatAAC,
 		Properties: edited.Properties.Clone(),
 		Tags:       proj.Tags,
 		Families:   proj.Families,
 		Pictures:   core.ClonePictures(edited.Pictures),
-		Warnings:   core.CloneWarnings(edited.Warnings),
+		Chapters:   proj.Chapters,
+		Warnings:   warnings,
 		Native:     nd,
 		Identity:   core.Identity{Size: newSize},
 		AudioStart: nd.audioStart,

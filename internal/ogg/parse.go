@@ -149,6 +149,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		Pictures:   d.pictures,
 	}
 	media.Tags, media.Families = vorbis.Project(d.comments)
+	media.Chapters = vorbis.ProjectChapters(d.comments)
 	warnings = append(warnings, vorbis.EncoderNoise(d.vendor, d.comments)...)
 
 	// Essence ranges (audio page bodies, interleaved with page headers, so not one

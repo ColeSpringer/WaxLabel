@@ -29,8 +29,9 @@ func (Codec) Sniff(header []byte) bool {
 }
 
 // Capabilities reports FLAC's support. FLAC stores tags as Vorbis comments and
-// art as PICTURE blocks, both losslessly and fully writable. CUESHEET is
-// preserved but not yet modeled as canonical chapters.
+// art as PICTURE blocks, both losslessly and fully writable. Chapters use the
+// VorbisComment CHAPTERxxx convention (start and title); a CUESHEET block is preserved
+// verbatim but not read as canonical chapters.
 func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
@@ -41,8 +42,11 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 		Representation: "FLAC PICTURE block", Fidelity: "lossless",
 	}
 	chapters := core.Capability{
-		Read: core.AccessNone, Write: core.AccessNone,
-		Representation: "CUESHEET preserved",
+		Read: core.AccessFull, Write: core.AccessFull,
+		Representation: "VorbisComment CHAPTERxxx",
+		Fidelity:       "start and title stored",
+		Constraints:    []string{"CHAPTERxxx stores start and title only; a CUESHEET is preserved opaque but not read"},
+		ChapterLoss:    core.ChapterLossStartTitleOnly,
 	}
 	// FLAC rewrites its metadata block every edit, so it both grows and shrinks
 	// padding: --padding and --no-padding fully apply.

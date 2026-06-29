@@ -91,6 +91,11 @@ func projectComments(comments []comment) (tag.TagSet, []core.FamilyValue) {
 	return vorbis.Project(toVorbis(comments))
 }
 
+// projectChapters decodes the CHAPTERxxx chapter convention from the Vorbis comments.
+func projectChapters(comments []comment) []core.Chapter {
+	return vorbis.ProjectChapters(toVorbis(comments))
+}
+
 // encoderNoiseWarnings flags inherited transcoder stamps (e.g. ffmpeg's
 // "encoder=Lavf..."), the typical signature of an acquired file.
 func encoderNoiseWarnings(vendor string, comments []comment) []core.Warning {
@@ -103,9 +108,10 @@ func diffKeys(base, edited tag.TagSet) map[tag.Key]bool {
 	return vorbis.DiffKeys(base, edited)
 }
 
-// rebuildComments produces the new Vorbis comment list with minimal change.
-func rebuildComments(orig []comment, edited tag.TagSet, changed map[tag.Key]bool) []comment {
-	return fromVorbis(vorbis.Rebuild(toVorbis(orig), edited, changed))
+// rebuildComments produces the new Vorbis comment list with minimal change, owning the
+// CHAPTERxxx chapter comments (dropped and re-emitted only on a chapter edit).
+func rebuildComments(orig []comment, edited tag.TagSet, changed map[tag.Key]bool, chapters []core.Chapter, chaptersChanged bool) []comment {
+	return fromVorbis(vorbis.Rebuild(toVorbis(orig), edited, changed, chapters, chaptersChanged))
 }
 
 // renderBlock encodes a full metadata block: a 1-byte header (last-block flag

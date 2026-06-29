@@ -101,7 +101,7 @@ func TestRebuildMinimalChange(t *testing.T) {
 	edited.Set(tag.RecordingDate, "2020")
 	edited.Set(tag.Genre, "Rock") // new key
 
-	got := Rebuild(orig, edited, DiffKeys(base, edited))
+	got := Rebuild(orig, edited, DiffKeys(base, edited), nil, false)
 
 	// TITLE and ARTIST unchanged and in place; RecordingDate replaced once at its
 	// first occurrence (preferred spelling DATE); the YEAR alias dropped; GENRE
@@ -136,7 +136,7 @@ func TestRebuildPreservesEditedKeyCasing(t *testing.T) {
 	edited.Set(tag.Title, "New")          // edit an existing lowercase key
 	edited.Set(tag.RecordingDate, "2020") // edit an alias
 
-	got := Rebuild(orig, edited, DiffKeys(base, edited))
+	got := Rebuild(orig, edited, DiffKeys(base, edited), nil, false)
 	want := []Comment{
 		{"artist", "A"},  // untouched: verbatim casing
 		{"title", "New"}, // edited but keeps the file's lowercase spelling

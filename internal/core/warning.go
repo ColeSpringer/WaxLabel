@@ -66,10 +66,10 @@ const (
 	// a container limit on write (the Nero chpl's single-byte, 255-byte-max length
 	// prefix). It is a plan-time warning, surfaced rather than silently truncating.
 	WarnChapterTitleTruncated
-	// WarnChaptersFlattened means a chapter edit re-rendered a default edition that
-	// carried structure the flat chapter model cannot hold - nested sub-chapters or
-	// secondary-language titles (Matroska ChapterDisplay) - so that structure was
-	// dropped. A plan-time warning, surfaced rather than silently flattening.
+	// WarnChaptersFlattened means a file's chapters carried structure the flat chapter
+	// model cannot hold, so that structure was dropped during projection. Matroska nested
+	// sub-chapters, secondary ChapterDisplay titles, and nested ID3v2 CTOC hierarchies
+	// all flatten to a single ordered chapter list.
 	WarnChaptersFlattened
 	// WarnNoAudioFrames means no decodable audio frame was found: the file may be
 	// tag-only or truncated. The audio-essence digest refuses to hash zero essence
@@ -160,19 +160,16 @@ const (
 	// be kept. It is a plan-time warning carrying the affected key (Warning.Keys), so the
 	// CLI's --strict gate can act on it.
 	WarnTagStructureDropped
-	// WarnChapterStartOverflow means a chapter start exceeded the QuickTime chapter
-	// track's 32-bit stts duration field (~49.7 days at the movie timescale) and was
-	// clamped on write. This is MP4-only and QuickTime-track-specific: the uint64
-	// Nero chpl stores the exact start, so only the QuickTime navigation timeline
-	// loses precision. It is keyless because it describes the chapter set, not a tag field.
+	// WarnChapterStartOverflow means a chapter start or end exceeded a format's 32-bit
+	// timestamp field and was clamped on write. MP4 QuickTime chapter tracks and ID3v2
+	// CHAP frames both have this limit. It is keyless because it describes the chapter
+	// set, not a tag field.
 	WarnChapterStartOverflow
-	// WarnChapterMetadataDropped means a direct chapter edit to a format that stores
-	// chapter start+title only (MP4) carried chapters whose end times, per-chapter
-	// language, or hidden/disabled flags it cannot represent, so that metadata is
-	// dropped on write. It is scoped to authored chapters and suppressed during a
-	// faithful transfer carry. WarnChapterEndsDropped is separate: it covers the
-	// Matroska CLI's no-end-syntax limitation, while this covers MP4's start+title-only
-	// capability limit. It is keyless because it describes the chapter set, not a tag field.
+	// WarnChapterMetadataDropped means a direct chapter edit carried fields the destination
+	// cannot store. The exact loss is driven by [ChapterLoss]: start+title formats drop
+	// gapped ends, language, and hidden/disabled flags; ID3v2 CHAP keeps ends but drops
+	// language and flags. It is scoped to authored chapters and is keyless because it
+	// describes the chapter set, not a tag field.
 	WarnChapterMetadataDropped
 	// WarnOversizedChunk means a non-audio RIFF/IFF chunk declared a body past EOF and was
 	// clamped to fit. It is separate from WarnTruncatedAudio because it describes a
@@ -300,6 +297,18 @@ func WarningsWithCode(ws []Warning, codes ...WarningCode) []Warning {
 	var out []Warning
 	for _, w := range ws {
 		if slices.Contains(codes, w.Code) {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// WarningsWithoutCode returns the warnings in ws whose code is not listed in codes,
+// preserving order. It is the complement of [WarningsWithCode].
+func WarningsWithoutCode(ws []Warning, codes ...WarningCode) []Warning {
+	var out []Warning
+	for _, w := range ws {
+		if !slices.Contains(codes, w.Code) {
 			out = append(out, w)
 		}
 	}

@@ -12,14 +12,16 @@ import (
 // recording ID is stored.
 const musicBrainzOwner = "http://musicbrainz.org"
 
-// Projection is the canonical view decoded from an ID3v2 tag: the authoritative
-// tag set, the embedded pictures, the per-frame family/source entries, and
-// whether a numeric genre reference was resolved (so the caller can warn).
+// Projection is the canonical view decoded from an ID3v2 tag: tags, embedded pictures,
+// navigation chapters, family/source entries, and parse facts the caller turns into
+// warnings.
 type Projection struct {
 	Tags         tag.TagSet
 	Pictures     []core.Picture
+	Chapters     []core.Chapter
 	Families     []core.FamilyValue
 	NumericGenre bool
+	Warnings     []core.Warning
 }
 
 // EncoderNoise reports inherited-encoder warnings for the tag's TSSE/TENC frames
@@ -129,11 +131,16 @@ func Project(t *Tag) Projection {
 	// Compose the date frames gathered above into canonical date keys.
 	dp.emit(emit)
 
+	// Decode CHAP/CTOC navigation chapters. See chapters.go for ordering rules.
+	chapters, chapterWarnings := ProjectChapters(t)
+
 	return Projection{
 		Tags:         core.BuildTagSet(contribs),
 		Pictures:     pics,
+		Chapters:     chapters,
 		Families:     core.BuildFamilies(contribs, core.FamilyID3v2),
 		NumericGenre: numeric,
+		Warnings:     chapterWarnings,
 	}
 }
 

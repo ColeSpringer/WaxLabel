@@ -18,6 +18,16 @@ type WriteOpts struct {
 	NumericGenre bool // write TCON as a numeric reference when the genre is standard
 }
 
+// StructuredEdit carries the non-tag structures a frame rebuild owns. A structure is
+// dropped and re-emitted only when its change flag is set; otherwise the source frames
+// are preserved as-is.
+type StructuredEdit struct {
+	Pictures        []core.Picture
+	PicturesChanged bool
+	Chapters        []core.Chapter
+	ChaptersChanged bool
+}
+
 // RebuildInfo reports facts about a rebuild the caller surfaces in the write
 // report.
 type RebuildInfo struct {
@@ -50,6 +60,14 @@ type RebuildInfo struct {
 	// where a native container keeps the literal number (WAV/AIFF INFO/text). See
 	// detectNumericGenres.
 	NumericGenres []string
+	// ChapterOverflow is set when a chapter edit clamped a start or end past the CHAP
+	// frame's 32-bit millisecond field (~49.7 days). The caller surfaces it as a
+	// chapter-start-overflow warning.
+	ChapterOverflow bool
+	// DroppedChapterSubframes is set when a chapter edit dropped a source CHAP's subframe
+	// other than the TIT2 title (a per-chapter image or URL the flat model cannot hold),
+	// so that loss is surfaced rather than left silent.
+	DroppedChapterSubframes bool
 }
 
 // ReducedDate pairs a date key with the value an edit attempted to store before a
@@ -61,11 +79,12 @@ type ReducedDate struct {
 
 // RebuildFrames produces the new frame list for an edited tag, preserving
 // unchanged and unmodelled frames in place and re-rendering only the frames a
-// changed canonical key affects. Pictures are reconciled here too, since APIC
-// frames are interleaved with the text frames.
+// changed canonical key affects. Pictures and chapters are reconciled here as well,
+// since APIC and CHAP/CTOC frames are interleaved with text frames.
 func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
-	pictures []core.Picture, picturesChanged bool, opts WriteOpts) ([]Frame, RebuildInfo) {
+	se StructuredEdit, opts WriteOpts) ([]Frame, RebuildInfo) {
 
+	picturesChanged := se.PicturesChanged
 	changed := diffKeys(base, edited)
 	dirty := map[string]bool{}
 	for k := range changed {
@@ -118,6 +137,19 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 				firstAPIC = len(out)
 			}
 			continue // re-emitted from the edited picture set below
+		}
+		if (f.ID == "CHAP" || f.ID == "CTOC") && !f.Opaque {
+			if !se.ChaptersChanged {
+				out = append(out, f.Clone())
+				continue
+			}
+			// Chapter edits replace decoded CHAP/CTOC frames with the edited flat list. Opaque
+			// CHAP/CTOC frames are preserved below because their body was never decoded. A CHAP
+			// with non-title subframes loses those subframes when replaced, so flag it once.
+			if !info.DroppedChapterSubframes && f.ID == "CHAP" && chapHasExtraSubframes(f.Body, version) {
+				info.DroppedChapterSubframes = true
+			}
+			continue
 		}
 		if f.Opaque {
 			out = append(out, f.Clone())
@@ -178,11 +210,19 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 		if firstAPIC < 0 {
 			firstAPIC = len(out)
 		}
-		pics := make([]Frame, 0, len(pictures))
-		for _, p := range pictures {
+		pics := make([]Frame, 0, len(se.Pictures))
+		for _, p := range se.Pictures {
 			pics = append(pics, Frame{ID: "APIC", Body: encodeAPIC(p, version)})
 		}
 		out = slices.Insert(out, firstAPIC, pics...)
+	}
+
+	// Append edited chapters after text and picture frames. Readers resolve CHAP/CTOC by
+	// element ID, so frame position is not significant.
+	if se.ChaptersChanged && len(se.Chapters) > 0 {
+		chapFrames, overflow := chapterFrames(se.Chapters, version)
+		out = append(out, chapFrames...)
+		info.ChapterOverflow = overflow
 	}
 
 	info.DroppedDates = detectDroppedDates(changed, edited, version)
@@ -209,10 +249,11 @@ type FrontTag struct {
 // strip) that leaves no frames drops the tag entirely rather than fabricating an empty,
 // padding-only container, matching WAV/AIFF's len(frames)>0 chunk guard. hadTag is whether the
 // source carried a front tag (so a full clear records an "ID3v2 removal" op instead of a bare
-// rewrite); srcTagLen is its byte length for in-place padding reuse; pictureCount is the
-// edited picture count for the operation line.
+// rewrite); srcTagLen is its byte length for in-place padding reuse; pictureCount and
+// chapterCount are used for the picture and chapter operation lines.
 func RenderFrontTag(srcTag *Tag, version byte, newFrames []Frame, info RebuildInfo, pad core.PaddingPolicy,
-	srcTagLen int64, hadTag, tagsChanged, picturesChanged bool, pictureCount int) FrontTag {
+	srcTagLen int64, hadTag, tagsChanged, picturesChanged bool, pictureCount int,
+	chaptersChanged bool, chapterCount int) FrontTag {
 
 	if len(newFrames) == 0 {
 		var ft FrontTag
@@ -245,6 +286,12 @@ func RenderFrontTag(srcTag *Tag, version byte, newFrames []Frame, info RebuildIn
 	}
 	if picturesChanged {
 		ft.Operations = append(ft.Operations, fmt.Sprintf("pictures: %d", pictureCount))
+	}
+	if chaptersChanged && chapterCount > 0 {
+		// Suppress the count line on a clear (count 0): "chapters: 0" reads oddly, and the
+		// removal is already captured by the tag rewrite/removal op - matching WAV/AIFF,
+		// which gate their chapter op on the written count.
+		ft.Operations = append(ft.Operations, fmt.Sprintf("chapters: %d", chapterCount))
 	}
 	if !hadTag {
 		ft.Operations = append(ft.Operations, fmt.Sprintf("ID3v2.%d tag creation", version))
@@ -799,7 +846,28 @@ func AppendRebuildWarnings(ws []core.Warning, info RebuildInfo, retained tag.Tag
 		ws = core.Warn(ws, core.WarnInvalidPicture,
 			"a malformed embedded picture could not be decoded and was dropped during a picture edit")
 	}
+	if info.ChapterOverflow {
+		ws = core.Warn(ws, core.WarnChapterStartOverflow,
+			"a chapter time exceeded the CHAP frame's 32-bit millisecond field (~49.7 days) and was clamped")
+	}
+	if info.DroppedChapterSubframes {
+		ws = core.Warn(ws, core.WarnChapterMetadataDropped,
+			"a per-chapter subframe other than the title (e.g. an image) could not be represented and was dropped")
+	}
 	return ws
+}
+
+// CarryChapterWarnings returns warnings for a post-write MP3/AAC document. Front-tag codecs
+// carry source parse warnings forward because buildResult cannot recompute audio warnings.
+// A chapter edit can resolve one source warning, though: a nested CTOC may be rewritten as a
+// flat list. Drop that stale flatten warning only when the written tag no longer projects it,
+// preserving the remaining warning order.
+func CarryChapterWarnings(sourceWarnings, newTagChapterWarnings []core.Warning) []core.Warning {
+	out := core.CloneWarnings(sourceWarnings)
+	if len(core.WarningsWithCode(newTagChapterWarnings, core.WarnChaptersFlattened)) == 0 {
+		out = core.WarningsWithoutCode(out, core.WarnChaptersFlattened)
+	}
+	return out
 }
 
 // PerFieldCapabilities builds the per-key capability overrides shared by every

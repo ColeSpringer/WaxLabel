@@ -30,13 +30,10 @@ func FormatChapterTime(d time.Duration) string {
 // ChapterAtom (ChapterTimeStart+ChapterTimeEnd) and boundary-based FLAC CUESHEET
 // are designed to project into this same type later without an API change.
 //
-// End is included from day one (a zero End means "until the next chapter, or
-// end of file"): the formats this model targets are interval-based, so a
-// Start-only struct could not preserve a chapter that ends before the next
-// begins (an audiobook silence gap, trailing credits). Because End is part of
-// the struct, callers must construct Chapters with keyed fields
-// (Chapter{Start: s, Title: t}); a positional literal would break the next time
-// a field is added.
+// End is explicit because several formats store intervals. A zero End means "until
+// the next chapter, or end of file"; a non-zero End can preserve gaps before the next
+// chapter. Callers outside core must use keyed fields, such as Chapter{Start: s,
+// Title: t}, so new fields can be added without breaking positional literals.
 type Chapter struct {
 	// Start is the chapter's offset from the start of the media.
 	Start time.Duration
@@ -84,8 +81,13 @@ const (
 	ChapterLossNone ChapterLoss = iota
 	// ChapterLossStartTitleOnly means the format stores each chapter's start and title
 	// only, dropping a gapped end time, per-chapter language, and hidden/disabled
-	// flags. MP4's Nero chpl and QuickTime text track use this model.
+	// flags. MP4's Nero chpl and QuickTime text track use this model, as does the
+	// VorbisComment CHAPTERxxx convention (FLAC/Ogg), which stores a start and a name.
 	ChapterLossStartTitleOnly
+	// ChapterLossLangFlags means the format stores each chapter's start, end, and title
+	// but no per-chapter language or hidden/disabled flags. ID3v2 CHAP frames use this
+	// model: explicit ends survive, while language and visibility metadata do not.
+	ChapterLossLangFlags
 )
 
 // ChaptersLoseMetadata reports whether writing chs to a destination with loss would
@@ -101,46 +103,59 @@ const (
 //     chapter, so language presence alone would make ordinary Matroska-to-MP4 copies
 //     look lossy. ISO and IETF values are counted separately so a uniform
 //     "eng"/"en-US" pair is not mistaken for variety.
+//
+// For [ChapterLossLangFlags] (ID3v2 CHAP), the start, end, and title survive. Any
+// language or Hidden/Disabled flag is lost because CHAP has no field for it; the
+// uniform-language tolerance used for start+title formats does not apply.
 func ChaptersLoseMetadata(chs []Chapter, loss ChapterLoss) bool {
-	if loss != ChapterLossStartTitleOnly {
+	switch loss {
+	case ChapterLossLangFlags:
+		for _, c := range chs {
+			if c.Hidden || c.Disabled || c.Language != "" || c.LanguageIETF != "" {
+				return true
+			}
+		}
+		return false
+	case ChapterLossStartTitleOnly:
+		// Lazily allocated: a Hidden/Disabled or gapped-end chapter returns before any
+		// language is recorded, so the common early-out path allocates nothing. len() on a
+		// nil map is 0, so the final distinct-count check below still holds.
+		var iso, ietf map[string]bool
+		for i, c := range chs {
+			if c.Hidden || c.Disabled {
+				return true
+			}
+			if c.End > 0 && (i == len(chs)-1 || c.End != chs[i+1].Start) {
+				return true
+			}
+			if c.Language != "" {
+				if iso == nil {
+					iso = make(map[string]bool)
+				}
+				iso[c.Language] = true
+			}
+			if c.LanguageIETF != "" {
+				if ietf == nil {
+					ietf = make(map[string]bool)
+				}
+				ietf[c.LanguageIETF] = true
+			}
+		}
+		return len(iso) > 1 || len(ietf) > 1
+	default:
 		return false
 	}
-	// Lazily allocated: a Hidden/Disabled or gapped-end chapter returns before any
-	// language is recorded, so the common early-out path allocates nothing. len() on a
-	// nil map is 0, so the final distinct-count check below still holds.
-	var iso, ietf map[string]bool
-	for i, c := range chs {
-		if c.Hidden || c.Disabled {
-			return true
-		}
-		if c.End > 0 && (i == len(chs)-1 || c.End != chs[i+1].Start) {
-			return true
-		}
-		if c.Language != "" {
-			if iso == nil {
-				iso = make(map[string]bool)
-			}
-			iso[c.Language] = true
-		}
-		if c.LanguageIETF != "" {
-			if ietf == nil {
-				ietf = make(map[string]bool)
-			}
-			ietf[c.LanguageIETF] = true
-		}
-	}
-	return len(iso) > 1 || len(ietf) > 1
 }
 
-// ChapterLossFor returns the chapter-metadata loss a format incurs on write, derived
-// from the codec's own chapters capability using default write options. Chapter loss
-// is not option-dependent, so this cannot drift from the codec's declaration. It lets
-// the editor resolve the loss for the edit-time warning without threading write options.
-func ChapterLossFor(format Format) ChapterLoss {
-	if c, ok := ForFormat(format); ok {
-		return c.Capabilities(nil, WriteOptions{}).Chapters.ChapterLoss
+// ChapterMetadataDroppedMessage returns the edit-time warning text for the fields a
+// destination cannot preserve.
+func ChapterMetadataDroppedMessage(loss ChapterLoss) string {
+	switch loss {
+	case ChapterLossLangFlags:
+		return "ID3 chapters store start, end, and title only; per-chapter language and hidden/disabled flags are dropped"
+	default:
+		return "chapters store start and title only; gapped end times, per-chapter language, and hidden/disabled flags are dropped"
 	}
-	return ChapterLossNone
 }
 
 // EqualChapters reports whether two chapter slices are identical by content,

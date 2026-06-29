@@ -39,19 +39,29 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	tagsChanged := !base.Tags.Equal(edited.Tags)
 	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures)
+	chaptersChanged := !core.EqualChapters(base.Chapters, edited.Chapters)
 	// LegacyStrip consolidates tags into the ID3 chunk by dropping the native ones.
 	stripText := opts.Legacy == core.LegacyStrip && textPresent
 
 	report := core.WriteReport{Format: core.FormatAIFF, BytesBefore: edited.Identity.Size}
 
 	// Fast path: nothing changed. NoOpPlan emits a verbatim copy (so SaveAsFile/
-	// WriteTo still produce a whole file) flagged NoOp so SaveBack skips it.
-	if !tagsChanged && !picturesChanged && !stripText {
+	// WriteTo still produce a whole file) flagged NoOp so SaveBack skips it. A
+	// chapters-only edit (CHAP/CTOC in the ID3 chunk) must defeat the gate too.
+	if !tagsChanged && !picturesChanged && !chaptersChanged && !stripText {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
+	// Re-check the ID3 CTOC count at the codec boundary. Only a chapter edit re-renders
+	// the CTOC, so unchanged chapters can keep their source frames.
+	if chaptersChanged {
+		if err := id3.CheckChapterCount(edited.Chapters); err != nil {
+			return nil, err
+		}
+	}
 
-	// Decide which containers receive the edited tags.
-	needID3 := id3Present || len(edited.Pictures) > 0 || !textRepresentable(edited.Tags) || stripText
+	// Decide which containers receive the edited tags. Chapters force an ID3 chunk
+	// because the native text chunks cannot store them (they are ID3 CHAP/CTOC frames).
+	needID3 := id3Present || len(edited.Pictures) > 0 || len(edited.Chapters) > 0 || !textRepresentable(edited.Tags) || stripText
 	writeText := (textPresent && !stripText) || !needID3
 
 	// Build the new native text chunks (synced to the edited set).
@@ -80,7 +90,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		}
 		var frames []id3.Frame
 		frames, id3Info = id3.RebuildFrames(srcTag.Frames(), id3Base, edited.Tags, version,
-			edited.Pictures, picturesChanged, id3.WriteOpts{Multi: opts.ID3Multi, NumericGenre: opts.NumericGenre})
+			id3.StructuredEdit{
+				Pictures: edited.Pictures, PicturesChanged: picturesChanged,
+				Chapters: edited.Chapters, ChaptersChanged: chaptersChanged,
+			}, id3.WriteOpts{Multi: opts.ID3Multi, NumericGenre: opts.NumericGenre})
 		if err := id3.CheckSize(version, frames, bits.DefaultLimits.MaxElements); err != nil {
 			return nil, err
 		}
@@ -216,6 +229,9 @@ func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, 
 	if emitID3 {
 		if n := id3.APICCount(newID3); n > 0 {
 			ops = append(ops, fmt.Sprintf("pictures: %d", n))
+		}
+		if n := id3.ChapterCount(newID3); n > 0 {
+			ops = append(ops, fmt.Sprintf("chapters: %d", n))
 		}
 	}
 	return outs, ops
@@ -390,19 +406,21 @@ func buildResult(edited *core.Media, base *doc, newText []outChunk, newID3 *id3.
 	nd.trailingLen = base.trailingLen
 	nd.trailingOff = nd.outerOff - base.trailingLen
 
-	tags, pics, families, numericGenre := project(nd)
+	tags, pics, chapters, families, numericGenre, chapterWs := project(nd)
 	return &core.Media{
 		Format:     core.FormatAIFF,
 		Properties: edited.Properties.Clone(),
 		Tags:       tags,
 		Pictures:   pics,
+		Chapters:   chapters,
 		Families:   families,
 		// Recompute warnings from the written containers so the returned document
 		// matches a fresh parse of the output: a dropped duplicate no longer warns, a
 		// resolved numeric genre no longer warns, and a preserved encoder stamp still
 		// does. (Duplicate-tag-block warnings are structural to the source and gone
-		// once consolidated, so they are correctly absent here.)
-		Warnings:   mediaWarnings(nd, numericGenre),
+		// once consolidated, so they are correctly absent here.) chapterWs carries the
+		// ID3-chunk chapter-flatten note, re-derived from the written CHAP/CTOC like Parse.
+		Warnings:   append(chapterWs, mediaWarnings(nd, numericGenre)...),
 		Native:     nd,
 		Identity:   core.Identity{Size: lay.total},
 		AudioStart: lay.audioOff,

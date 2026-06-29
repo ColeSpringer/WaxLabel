@@ -193,10 +193,12 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		AudioEnd:   d.audioEnd,
 	}
 
-	tags, pics, families, numericGenre := project(d)
+	tags, pics, chapters, families, numericGenre, chapterWs := project(d)
 	media.Tags = tags
 	media.Pictures = pics
+	media.Chapters = chapters
 	media.Families = families
+	warnings = append(warnings, chapterWs...)
 	warnings = append(warnings, mediaWarnings(d, numericGenre)...)
 
 	media.Properties = core.Properties{Container: formType, Tracks: []core.AudioTrack{d.track}}
@@ -214,13 +216,17 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 // there is no ID3 chunk, the native chunks are the sole authority. Either way the
 // native chunks also contribute family entries with conflicts flagged. It is
 // shared by Parse and the post-write result so they cannot disagree.
-func project(d *doc) (tags tag.TagSet, pics []core.Picture, families []core.FamilyValue, numericGenre bool) {
+func project(d *doc) (tags tag.TagSet, pics []core.Picture, chapters []core.Chapter, families []core.FamilyValue, numericGenre bool, chapterWarnings []core.Warning) {
 	tags = tag.NewTagSet()
 	switch {
 	case d.id3 != nil:
 		proj := id3.Project(d.id3)
 		tags = proj.Tags
 		pics = proj.Pictures
+		// Chapters live only in the embedded ID3 chunk (CHAP/CTOC); AIFF's native text
+		// chunks have no chapter concept.
+		chapters = proj.Chapters
+		chapterWarnings = proj.Warnings
 		families = proj.Families
 		numericGenre = proj.NumericGenre
 		// ID3 wins on conflict; the native chunks fill keys ID3 lacks (precedence
@@ -238,7 +244,7 @@ func project(d *doc) (tags tag.TagSet, pics []core.Picture, families []core.Fami
 		tags = textTags(d.texts)
 		families = textFamilies(tags, d.texts)
 	}
-	return tags, pics, families, numericGenre
+	return tags, pics, chapters, families, numericGenre, chapterWarnings
 }
 
 // mediaWarnings returns the content-derived warnings for a parsed or rewritten

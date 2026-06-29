@@ -22,10 +22,10 @@
 // Precedence (read): the ID3 chunk is authoritative when present (it is the
 // richer container and the deliberate-tagger signal); otherwise the native text
 // chunks are. Both surface in the family view with conflicts flagged. Precedence
-// (write): see write.go - by default both present containers are kept in sync,
+// (write): see write.go. By default both present containers are kept in sync,
 // the native chunks are the home for a bare file, and pictures or any value the
 // native vocabulary cannot represent force an "ID3 " chunk; nothing is ever lost.
-// All other chunks are preserved verbatim. A >4 GiB output fails loudly.
+// All other chunks are preserved verbatim. A >4 GiB output returns an error.
 //
 // The codec is reimplemented from the AIFF / AIFF-C and ID3 specifications;
 // reference implementations were consulted for design only.
@@ -84,7 +84,15 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 		Constraints: []string{"native AIFF chunks cannot hold pictures; an ID3 chunk is required"},
 	}
 	chapters := core.Capability{
-		Read: core.AccessNone, Write: core.AccessNone,
+		Read: core.AccessFull, Write: core.AccessFull,
+		Representation: "ID3v2 CHAP/CTOC frames (ID3 chunk)",
+		Fidelity:       "start, end, and title stored; per-chapter language and hidden/disabled flags dropped",
+		Constraints: []string{
+			"chapters require an ID3 chunk; AIFF has no native chapter representation",
+			"chapter start/end limited to a 32-bit millisecond field (~49.7 days)",
+		},
+		MaxItems:    255, // the CTOC entry count is a single byte
+		ChapterLoss: core.ChapterLossLangFlags,
 	}
 	// AIFF has no native genre slot, so genre writes through the ID3 chunk. Numeric genre
 	// and v2.3 original-date reductions follow the shared ID3 capability rules.

@@ -17,8 +17,9 @@ func tinyGIF() []byte {
 	return append([]byte("GIF89a"), 0x03, 0x00, 0x05, 0x00, 0x77, 0x00, 0x00)
 }
 
-// TestPlanTransferReportsLosses simulates copying an M4B (tags + chapters) into a
-// FLAC: the tags carry but the chapters drop, and no destination bytes are needed.
+// TestPlanTransferReportsLosses simulates copying an M4B (tags + chapters) into a FLAC.
+// Tags carry, and the MP4 start+title chapters also carry because FLAC writes the same
+// chapter subset through VorbisComment CHAPTERxxx. No destination bytes are needed.
 func TestPlanTransferReportsLosses(t *testing.T) {
 	src := mustParseFile(t, sampleM4B)
 	report, err := src.PlanTransfer(wl.FormatFLAC)
@@ -29,7 +30,7 @@ func TestPlanTransferReportsLosses(t *testing.T) {
 		t.Errorf("report formats = %s -> %s, want MP4 -> FLAC", report.Source, report.Dest)
 	}
 
-	var sawChapterDrop bool
+	var sawChapter bool
 	for _, it := range report.Items {
 		switch it.Kind {
 		case wl.TransferField:
@@ -44,20 +45,17 @@ func TestPlanTransferReportsLosses(t *testing.T) {
 				t.Errorf("field %s = %s, want carried (FLAC writes all fields)", it.Key, it.Disposition)
 			}
 		case wl.TransferChapter:
-			sawChapterDrop = true
-			if it.Disposition != wl.Dropped {
-				t.Errorf("chapters = %s, want dropped (FLAC has no chapter write)", it.Disposition)
-			}
-			if it.Reason == "" {
-				t.Error("a dropped item must carry a reason")
+			sawChapter = true
+			if it.Disposition != wl.Carried {
+				t.Errorf("chapters = %s, want carried (FLAC stores start+title chapters)", it.Disposition)
 			}
 		}
 	}
-	if !sawChapterDrop {
-		t.Error("expected a dropped chapter item (the M4B has chapters)")
+	if !sawChapter {
+		t.Error("expected a chapter item (the M4B has chapters)")
 	}
-	if report.Lossless() {
-		t.Error("dropping chapters is not lossless")
+	if !report.Lossless() {
+		t.Errorf("MP4 start+title chapters into FLAC should be lossless, report: %+v", report.Items)
 	}
 }
 

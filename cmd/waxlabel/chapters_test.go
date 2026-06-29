@@ -201,15 +201,20 @@ func TestPlanAddChapterShowsOperation(t *testing.T) {
 	}
 }
 
-func TestSetAddChapterOnFLACErrors(t *testing.T) {
-	// A chapter-incapable format hard-fails rather than silently dropping the chapters.
+func TestSetAddChapterOnFLAC(t *testing.T) {
+	// FLAC stores chapters via the VorbisComment CHAPTERxxx convention, so --add-chapter
+	// succeeds and the chapter round-trips through a re-parse. CHAPTERxxx belongs to the
+	// chapter projection, not the custom tag view.
 	file := copyFixture(t, sampleFLAC)
-	_, errOut, code := runCLI(t, "set", file, "--add-chapter", "0:00=Intro")
-	if code != 3 {
-		t.Fatalf("set --add-chapter on FLAC exit = %d, want 3", code)
+	if _, _, code := runCLI(t, "set", file, "--add-chapter", "0:00=Intro"); code != 0 {
+		t.Fatalf("set --add-chapter on FLAC exit = %d, want 0", code)
 	}
-	if !strings.Contains(errOut, "chapters cannot be written") {
-		t.Errorf("stderr = %q, want it to explain the chapter refusal", errOut)
+	out, _, _ := runCLI(t, "dump", file)
+	if !strings.Contains(out, "Intro") {
+		t.Errorf("chapter title did not survive round-trip:\n%s", out)
+	}
+	if strings.Contains(out, "CHAPTER001") {
+		t.Errorf("CHAPTERxxx leaked into the tag view instead of being projected as a chapter:\n%s", out)
 	}
 }
 

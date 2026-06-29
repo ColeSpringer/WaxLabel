@@ -56,7 +56,8 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 }
 
 // Capabilities reports Ogg's support. Tags are Vorbis comments and art is
-// METADATA_BLOCK_PICTURE, both losslessly writable. Chapters are not modeled.
+// METADATA_BLOCK_PICTURE, both losslessly writable. Chapters use the CHAPTERxxx comment
+// convention, which stores start and title.
 func (c Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
@@ -67,7 +68,11 @@ func (c Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabili
 		Representation: "METADATA_BLOCK_PICTURE", Fidelity: "lossless",
 	}
 	chapters := core.Capability{
-		Read: core.AccessNone, Write: core.AccessNone,
+		Read: core.AccessFull, Write: core.AccessFull,
+		Representation: "VorbisComment CHAPTERxxx",
+		Fidelity:       "start and title stored",
+		Constraints:    []string{"CHAPTERxxx stores start and title only (no end time, language, or flags)"},
+		ChapterLoss:    core.ChapterLossStartTitleOnly,
 	}
 	// OggTags/OpusTags padding is round-tripped as-is; there is no padding control,
 	// so AccessNone.

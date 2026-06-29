@@ -209,14 +209,14 @@ entire file.
 
 | Format | Metadata | Notes |
 | --- | --- | --- |
-| FLAC | read/write | Vorbis comments and FLAC pictures; padding is fully controllable. |
-| Ogg Vorbis / Opus | read/write | Vorbis comments and `METADATA_BLOCK_PICTURE`; audio packet payloads are preserved. |
-| MP3 | read/write | ID3v2 is writable (a new tag is written as ID3v2.3); ID3v1 and APEv2 are surfaced as legacy families. |
-| WAV | read/write | RIFF LIST/INFO plus embedded `id3 `; chunks are preserved. |
+| FLAC | read/write | Vorbis comments, FLAC pictures, and `CHAPTERxxx` chapters; padding is fully controllable. |
+| Ogg Vorbis / Opus | read/write | Vorbis comments, `METADATA_BLOCK_PICTURE`, and `CHAPTERxxx` chapters; audio packet payloads are preserved. |
+| MP3 | read/write | ID3v2 is writable, including `CHAP`/`CTOC` chapters. A new tag is written as ID3v2.3; ID3v1 and APEv2 are surfaced as legacy families. |
+| WAV | read/write | RIFF LIST/INFO plus embedded `id3 `, including `CHAP`/`CTOC` chapters; chunks are preserved. |
 | MP4 / M4A / M4B | read/write | iTunes `ilst`, cover art, Nero chapters, and QuickTime chapter text tracks. Fragmented MP4 is rejected. |
 | Matroska / WebM | read/write | Scoped SimpleTags, segment title, attachments, and default-edition chapters. WebM cannot write cover attachments. |
-| AAC (ADTS) | read/write | Front ID3v2 tag (a new tag is written as ID3v2.4) plus ADTS frames. |
-| AIFF / AIFF-C | read/write | Native text chunks plus embedded `ID3 `; chunks are preserved. |
+| AAC (ADTS) | read/write | Front ID3v2 tag plus ADTS frames. A new tag is written as ID3v2.4, including `CHAP`/`CTOC` chapters. |
+| AIFF / AIFF-C | read/write | Native text chunks plus embedded `ID3 `, including `CHAP`/`CTOC` chapters; chunks are preserved. |
 
 The capability table below is generated from the same codec capability model used
 by `waxlabel caps`.
@@ -224,15 +224,15 @@ by `waxlabel caps`.
 <!-- BEGIN caps (generated from codec Capabilities; see tests/capability_test.go) -->
 | Format | Pictures | Chapters |
 | --- | --- | --- |
-| AAC (ADTS) | read full, write full · APIC frame | read none, write none |
-| AIFF | read full, write full · APIC (ID3 chunk) | read none, write none |
-| FLAC | read full, write full · FLAC PICTURE block | read none, write none · CUESHEET preserved |
-| MP3 | read full, write full · APIC frame | read none, write none · CHAP preserved |
+| AAC (ADTS) | read full, write full · APIC frame | read full, write full · ID3v2 CHAP/CTOC frames |
+| AIFF | read full, write full · APIC (ID3 chunk) | read full, write full · ID3v2 CHAP/CTOC frames (ID3 chunk) |
+| FLAC | read full, write full · FLAC PICTURE block | read full, write full · VorbisComment CHAPTERxxx |
+| MP3 | read full, write full · APIC frame | read full, write full · ID3v2 CHAP/CTOC frames |
 | MP4 | read full, write full · covr atom (JPEG/PNG/BMP) | read full, write full · Nero chpl and a QuickTime chapter text track |
 | Matroska | read full, write full · AttachedFile (image attachment) | read full, write full · Chapters > EditionEntry > ChapterAtom (default edition) |
-| Ogg Opus | read full, write full · METADATA_BLOCK_PICTURE | read none, write none |
-| Ogg Vorbis | read full, write full · METADATA_BLOCK_PICTURE | read none, write none |
-| WAV | read full, write full · APIC (id3 chunk) | read none, write none · cue/adtl preserved |
+| Ogg Opus | read full, write full · METADATA_BLOCK_PICTURE | read full, write full · VorbisComment CHAPTERxxx |
+| Ogg Vorbis | read full, write full · METADATA_BLOCK_PICTURE | read full, write full · VorbisComment CHAPTERxxx |
+| WAV | read full, write full · APIC (id3 chunk) | read full, write full · ID3v2 CHAP/CTOC frames (id3 chunk) |
 <!-- END caps -->
 
 **Known issue: Matroska reproducibility.** Matroska expects FileUID and ChapterUID
@@ -261,6 +261,12 @@ path:
   with no value reads back as absent rather than present-empty; this is consistent
   across formats and matches how `--clear` and a set-empty value are distinguished
   elsewhere.
+- **Native-cue chapters are not read.** MP3/AAC/AIFF/WAV chapters use ID3v2 `CHAP`/`CTOC`,
+  and FLAC/Ogg use the VorbisComment `CHAPTERxxx` convention. A FLAC ripped with a
+  `CUESHEET` block, or a WAV carrying native `cue `/`adtl` chapters, projects no chapters
+  (those bytes are preserved verbatim, never edited). ID3 `CHAP` stores start, end, and
+  title but no per-chapter language or hidden/disabled flags; `CHAPTERxxx` stores start and
+  title only. Copying chapters that carry the dropped fields reports a lossy carry.
 
 ## Safety
 

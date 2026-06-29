@@ -55,8 +55,12 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 		Representation: "APIC frame", Fidelity: "lossless",
 	}
 	chapters := core.Capability{
-		Read: core.AccessNone, Write: core.AccessNone,
-		Representation: "CHAP preserved",
+		Read: core.AccessFull, Write: core.AccessFull,
+		Representation: "ID3v2 CHAP/CTOC frames",
+		Fidelity:       "start, end, and title stored; per-chapter language and hidden/disabled flags dropped",
+		Constraints:    []string{"chapter start/end limited to a 32-bit millisecond field (~49.7 days)"},
+		MaxItems:       255, // the CTOC entry count is a single byte
+		ChapterLoss:    core.ChapterLossLangFlags,
 	}
 	// MP3's front ID3 tag is the authoritative tag store, so numeric genre and v2.3
 	// original-date reductions follow the shared ID3 capability rules.

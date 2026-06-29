@@ -32,14 +32,16 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	changed := vorbis.DiffKeys(base.Tags, edited.Tags)
 	tagsChanged := len(changed) > 0
 	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures)
+	chaptersChanged := !core.EqualChapters(base.Chapters, edited.Chapters)
 
 	report := core.WriteReport{Format: d.format, BytesBefore: edited.Identity.Size}
 
 	// Fast path: nothing changed. Emit a full verbatim copy (so SaveAsFile and
 	// WriteTo still produce a whole file) but flag NoOp so SaveBack skips it. This
 	// runs before the chained/alignment guards: copying a file unchanged is always
-	// safe, even for streams we will not rewrite.
-	if !tagsChanged && !picturesChanged {
+	// safe, even for streams we will not rewrite. A chapters-only edit (CHAPTERxxx
+	// comments) must defeat the gate too.
+	if !tagsChanged && !picturesChanged && !chaptersChanged {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
@@ -51,12 +53,18 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 		return nil, fmt.Errorf("%w: Ogg header and audio are not cleanly page-aligned; cannot rewrite safely", waxerr.ErrUnalignedStream)
 	}
 
-	// Rebuild the comment list: tag comments (minimal-change) followed by one
-	// METADATA_BLOCK_PICTURE comment per edited picture.
+	// Rebuild the comment list: tag comments (minimal-change), owned CHAPTERxxx chapter
+	// comments, then one METADATA_BLOCK_PICTURE comment per edited picture. Chapters are
+	// stored as Vorbis comments, so a chapter edit rebuilds the list like a tag edit.
 	newComments := d.comments
-	if tagsChanged {
-		newComments = vorbis.Rebuild(d.comments, edited.Tags, changed)
+	if tagsChanged || chaptersChanged {
+		newComments = vorbis.Rebuild(d.comments, edited.Tags, changed, edited.Chapters, chaptersChanged)
 		report.Operations = append(report.Operations, "Vorbis comment rewrite")
+	}
+	if chaptersChanged && len(edited.Chapters) > 0 {
+		// Suppress the count line on a clear (the "Vorbis comment rewrite" op already
+		// records the change); matches the ID3 codecs' count gate.
+		report.Operations = append(report.Operations, fmt.Sprintf("chapters: %d", len(edited.Chapters)))
 	}
 	full := slices.Clone(newComments)
 	for _, p := range edited.Pictures {
@@ -192,6 +200,11 @@ func buildResult(edited *core.Media, base *doc, newComments []vorbis.Comment,
 		Tags:       tags,
 		Families:   families,
 		Pictures:   core.ClonePictures(edited.Pictures),
+		Chapters:   vorbis.ProjectChapters(newComments),
+		// Carrying the source warnings verbatim is correct because the CHAPTERxxx projection
+		// emits no warnings (unlike ID3's nested-CTOC flatten note): there is nothing a chapter
+		// edit could invalidate. If vorbis.ProjectChapters ever gains a warning, this must
+		// re-derive it from newComments (as the ID3 codecs do via CarryChapterWarnings).
 		Warnings:   core.CloneWarnings(edited.Warnings),
 		Native:     nd,
 		Identity:   core.Identity{Size: newSize},

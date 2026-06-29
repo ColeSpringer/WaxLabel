@@ -133,6 +133,7 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	}
 
 	media.Tags, media.Families = projectComments(d.comments)
+	media.Chapters = projectChapters(d.comments)
 	warnings = append(warnings, encoderNoiseWarnings(d.vendor, d.comments)...)
 
 	// Decode pictures; a malformed picture is warned and skipped (its block is

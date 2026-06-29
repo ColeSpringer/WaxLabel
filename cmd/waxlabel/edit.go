@@ -73,7 +73,7 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringArrayVar(&e.removePicture, "remove-picture", nil, "remove pictures by role name or 1-based dump index, e.g. back-cover or 2 (repeatable; removals apply before adds)")
 	f.BoolVar(&e.rmPics, "remove-pictures", false, "remove all embedded pictures")
 	f.BoolVar(&e.force, "force", false, "embed --add-cover/--add-picture input even if it is not a recognized image (PNG/JPEG/GIF/WebP/BMP/TIFF); unrecognized bytes are stored as application/octet-stream. The check is header-only, not a full image decode")
-	f.StringArrayVar(&e.addChapter, "add-chapter", nil, "add a chapter TIMESTAMP=Title (e.g. 1:30=Verse; repeatable); a file whose format cannot store chapters fails while capable files proceed. CLI-created chapters have no end time, so rewriting Matroska chapters this way drops explicit end times")
+	f.StringArrayVar(&e.addChapter, "add-chapter", nil, "add a chapter TIMESTAMP=Title (e.g. 1:30=Verse; repeatable); formats with chapter-count caps reject over-limit lists (255 for ID3 and MP4). CLI-created chapters have no end time, so rewriting Matroska chapters this way drops explicit end times")
 	f.BoolVar(&e.clearChapters, "clear-chapters", false, "remove all chapters (applied before --add-chapter, so combining them keeps only the added chapters)")
 	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear the ENCODER software stamp left behind by an encoder or transcoder")
 	f.StringVar(&e.preset, "preset", "", "write policy preset: preserve|compatible|minimal")
@@ -97,7 +97,7 @@ var nonEditFlags = map[string]bool{
 
 // editFlagsEmpty reports whether the invocation requested no edit at all - only
 // non-edit flags (or none) were set. set treats an in-place run in this state as a
-// usage error (a no-op rewrite is almost always a forgotten flag), while with -o it is
+// usage error (usually a missing edit flag), while with -o it is
 // a deliberate verbatim copy. It reads the parsed flag set (Visit walks only the flags
 // actually changed), so it tracks the bound flags rather than a hand-listed field set
 // that could rot as edit flags are added.

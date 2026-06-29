@@ -316,7 +316,7 @@ func TestRebuildMinimalChange(t *testing.T) {
 	edited := base.Clone()
 	edited.Set(tag.Title, "New")
 
-	out, _ := RebuildFrames(orig, base, edited, 4, nil, false, WriteOpts{})
+	out, _ := RebuildFrames(orig, base, edited, 4, StructuredEdit{}, WriteOpts{})
 
 	var ids []string
 	for _, f := range out {
@@ -349,7 +349,7 @@ func TestRebuildClearDropsFrame(t *testing.T) {
 	base := Project(&Tag{frames: orig}).Tags
 	edited := base.Clone()
 	edited.Delete(tag.Title)
-	out, _ := RebuildFrames(orig, base, edited, 4, nil, false, WriteOpts{})
+	out, _ := RebuildFrames(orig, base, edited, 4, StructuredEdit{}, WriteOpts{})
 	if len(out) != 0 {
 		t.Errorf("cleared title should drop the frame, got %+v", out)
 	}
@@ -360,7 +360,7 @@ func TestDateDecompositionV23(t *testing.T) {
 	base := tag.NewTagSet()
 	edited := tag.NewTagSet()
 	edited.Set(tag.RecordingDate, "2021-06-15T08:30")
-	out, _ := RebuildFrames(nil, base, edited, 3, nil, false, WriteOpts{})
+	out, _ := RebuildFrames(nil, base, edited, 3, StructuredEdit{}, WriteOpts{})
 
 	byID := map[string]string{}
 	for _, f := range out {
@@ -404,7 +404,7 @@ func TestDroppedDateDetection(t *testing.T) {
 			base := tag.NewTagSet()
 			edited := tag.NewTagSet()
 			edited.Set(c.key, c.value)
-			_, info := RebuildFrames(nil, base, edited, c.version, nil, false, WriteOpts{})
+			_, info := RebuildFrames(nil, base, edited, c.version, StructuredEdit{}, WriteOpts{})
 			if got := slices.Contains(info.DroppedDates, c.key); got != c.dropped {
 				t.Errorf("DroppedDates contains %s = %v, want %v (DroppedDates=%v)", c.key, got, c.dropped, info.DroppedDates)
 			}
@@ -420,7 +420,7 @@ func TestDroppedDateOnlyTouchedKeys(t *testing.T) {
 	base.Set(tag.RecordingDate, "Unknown")
 	edited := tag.NewTagSet()
 	edited.Set(tag.RecordingDate, "Unknown")
-	if _, info := RebuildFrames(nil, base, edited, 3, nil, false, WriteOpts{}); len(info.DroppedDates) != 0 {
+	if _, info := RebuildFrames(nil, base, edited, 3, StructuredEdit{}, WriteOpts{}); len(info.DroppedDates) != 0 {
 		t.Errorf("an unchanged date must not be flagged dropped, got %v", info.DroppedDates)
 	}
 }
@@ -432,7 +432,7 @@ func TestReleaseDateV23StoredNotDropped(t *testing.T) {
 	base := tag.NewTagSet()
 	edited := tag.NewTagSet()
 	edited.Set(tag.ReleaseDate, "Unknown")
-	out, info := RebuildFrames(nil, base, edited, 3, nil, false, WriteOpts{})
+	out, info := RebuildFrames(nil, base, edited, 3, StructuredEdit{}, WriteOpts{})
 	if len(info.DroppedDates) != 0 {
 		t.Errorf("ReleaseDate must not be flagged dropped on v2.3, got %v", info.DroppedDates)
 	}
@@ -451,7 +451,7 @@ func TestNumericGenreWrite(t *testing.T) {
 	base := tag.NewTagSet()
 	edited := tag.NewTagSet()
 	edited.Set(tag.Genre, "Rock")
-	out, _ := RebuildFrames(nil, base, edited, 4, nil, false, WriteOpts{NumericGenre: true})
+	out, _ := RebuildFrames(nil, base, edited, 4, StructuredEdit{}, WriteOpts{NumericGenre: true})
 	if len(out) != 1 || out[0].ID != "TCON" {
 		t.Fatalf("expected one TCON frame, got %+v", out)
 	}
@@ -467,7 +467,7 @@ func TestGenreParenEscapeRoundTrip(t *testing.T) {
 		t.Helper()
 		edited := tag.NewTagSet()
 		edited.Set(tag.Genre, in...)
-		out, _ := RebuildFrames(nil, tag.NewTagSet(), edited, version, nil, false,
+		out, _ := RebuildFrames(nil, tag.NewTagSet(), edited, version, StructuredEdit{},
 			WriteOpts{Multi: pol, NumericGenre: numeric})
 		got, _ := Project(buildTag(t, version, out)).Tags.Get(tag.Genre)
 		return got
@@ -533,7 +533,7 @@ func TestTXXXLongTailRoundTrip(t *testing.T) {
 		t.Fatalf("MBReleaseID = %q", v)
 	}
 	base := tag.NewTagSet()
-	out, _ := RebuildFrames(nil, base, ts, 4, nil, false, WriteOpts{})
+	out, _ := RebuildFrames(nil, base, ts, 4, StructuredEdit{}, WriteOpts{})
 	if len(out) != 1 || out[0].ID != "TXXX" {
 		t.Fatalf("expected one TXXX, got %+v", out)
 	}
@@ -557,7 +557,7 @@ func TestTXXXCustomDescriptionCasePreserved(t *testing.T) {
 	edited := base.Clone()
 	edited.Set(key, "sad") // edit only the value
 
-	out, _ := RebuildFrames(orig, base, edited, 4, nil, false, WriteOpts{})
+	out, _ := RebuildFrames(orig, base, edited, 4, StructuredEdit{}, WriteOpts{})
 	var txxx *Frame
 	for i := range out {
 		if out[i].ID == "TXXX" {
@@ -608,7 +608,7 @@ func TestRebuildBreadthV24(t *testing.T) {
 	edited.Set(tag.OriginalDate, "1999")
 	edited.Set(tag.Key("TBPM"), "128")
 
-	out, _ := RebuildFrames(nil, tag.NewTagSet(), edited, 4, nil, false, WriteOpts{})
+	out, _ := RebuildFrames(nil, tag.NewTagSet(), edited, 4, StructuredEdit{}, WriteOpts{})
 	got := Project(buildTag(t, 4, out)).Tags
 
 	for _, k := range edited.Keys() {
@@ -626,7 +626,7 @@ func TestRebuildV23Fallbacks(t *testing.T) {
 	edited := tag.NewTagSet()
 	edited.Set(tag.ReleaseDate, "2018")
 	edited.Set(tag.OriginalDate, "1995")
-	out, _ := RebuildFrames(nil, tag.NewTagSet(), edited, 3, nil, false, WriteOpts{})
+	out, _ := RebuildFrames(nil, tag.NewTagSet(), edited, 3, StructuredEdit{}, WriteOpts{})
 
 	ids := map[string]bool{}
 	for _, f := range out {
@@ -652,7 +652,7 @@ func TestRebuildMultiValuePolicies(t *testing.T) {
 	edited.Set(tag.Artist, "A", "B")
 
 	// Repeat-frame: two TPE1 frames, no v2.3-extension flag.
-	out, info := RebuildFrames(nil, tag.NewTagSet(), edited, 3, nil, false,
+	out, info := RebuildFrames(nil, tag.NewTagSet(), edited, 3, StructuredEdit{},
 		WriteOpts{Multi: core.ID3MultiRepeatFrame})
 	count := 0
 	for _, f := range out {
@@ -665,14 +665,14 @@ func TestRebuildMultiValuePolicies(t *testing.T) {
 	}
 
 	// Slash-join: one frame, single joined value.
-	out2, _ := RebuildFrames(nil, tag.NewTagSet(), edited, 3, nil, false,
+	out2, _ := RebuildFrames(nil, tag.NewTagSet(), edited, 3, StructuredEdit{},
 		WriteOpts{Multi: core.ID3MultiSlash})
 	if len(out2) != 1 || decodeTextFrame(out2[0].Body)[0] != "A / B" {
 		t.Errorf("slash-join = %+v", out2)
 	}
 
 	// Null-sep on v2.3 flags the compatibility impact.
-	_, info3 := RebuildFrames(nil, tag.NewTagSet(), edited, 3, nil, false,
+	_, info3 := RebuildFrames(nil, tag.NewTagSet(), edited, 3, StructuredEdit{},
 		WriteOpts{Multi: core.ID3MultiNullSep})
 	if !info3.UsedV23Multi {
 		t.Error("null-sep on v2.3 should report UsedV23Multi")
@@ -700,7 +700,7 @@ func TestRebuildTXXXMultiValuePolicies(t *testing.T) {
 	}
 
 	// NUL-separated v2.3 extension: one TXXX frame and a compatibility warning.
-	out, info := RebuildFrames(nil, tag.NewTagSet(), edited, 3, nil, false,
+	out, info := RebuildFrames(nil, tag.NewTagSet(), edited, 3, StructuredEdit{},
 		WriteOpts{Multi: core.ID3MultiNullSep})
 	if got := txxxValues(out); len(got) != 1 || !slices.Equal(got[0], []string{"Happy", "Energetic"}) {
 		t.Errorf("v2.3 null-sep TXXX = %v, want one frame [Happy Energetic]", got)
@@ -713,14 +713,14 @@ func TestRebuildTXXXMultiValuePolicies(t *testing.T) {
 	// frame per description" convention discourages repeated same-description
 	// frames, but Repeat is an explicit caller opt-in applied uniformly with
 	// plain text frames.
-	out, info = RebuildFrames(nil, tag.NewTagSet(), edited, 3, nil, false,
+	out, info = RebuildFrames(nil, tag.NewTagSet(), edited, 3, StructuredEdit{},
 		WriteOpts{Multi: core.ID3MultiRepeatFrame})
 	if got := txxxValues(out); len(got) != 2 || info.UsedV23Multi {
 		t.Errorf("v2.3 repeat TXXX = %v, v23multi=%v, want 2 frames, false", got, info.UsedV23Multi)
 	}
 
 	// Slash-join: one frame carrying the " / "-joined value, no flag.
-	out, info = RebuildFrames(nil, tag.NewTagSet(), edited, 3, nil, false,
+	out, info = RebuildFrames(nil, tag.NewTagSet(), edited, 3, StructuredEdit{},
 		WriteOpts{Multi: core.ID3MultiSlash})
 	if got := txxxValues(out); len(got) != 1 || !slices.Equal(got[0], []string{"Happy / Energetic"}) {
 		t.Errorf("v2.3 slash TXXX = %v, want one frame [Happy / Energetic]", got)
@@ -730,7 +730,7 @@ func TestRebuildTXXXMultiValuePolicies(t *testing.T) {
 	}
 
 	// v2.4 always NUL-separates cleanly, no v2.3-extension flag.
-	out, info = RebuildFrames(nil, tag.NewTagSet(), edited, 4, nil, false,
+	out, info = RebuildFrames(nil, tag.NewTagSet(), edited, 4, StructuredEdit{},
 		WriteOpts{Multi: core.ID3MultiNullSep})
 	if got := txxxValues(out); len(got) != 1 || !slices.Equal(got[0], []string{"Happy", "Energetic"}) {
 		t.Errorf("v2.4 TXXX = %v, want one frame [Happy Energetic]", got)
@@ -746,14 +746,14 @@ func TestRebuildTXXXMultiValuePolicies(t *testing.T) {
 func TestRebuildCOMMMultiValuePolicy(t *testing.T) {
 	multi := tag.NewTagSet()
 	multi.Set(tag.Comment, "first", "second")
-	if _, info := RebuildFrames(nil, tag.NewTagSet(), multi, 3, nil, false,
+	if _, info := RebuildFrames(nil, tag.NewTagSet(), multi, 3, StructuredEdit{},
 		WriteOpts{Multi: core.ID3MultiNullSep}); !info.UsedV23Multi {
 		t.Error("v2.3 null-sep multi-value COMM should report UsedV23Multi")
 	}
 
 	single := tag.NewTagSet()
 	single.Set(tag.Comment, "only")
-	out, info := RebuildFrames(nil, tag.NewTagSet(), single, 3, nil, false, WriteOpts{})
+	out, info := RebuildFrames(nil, tag.NewTagSet(), single, 3, StructuredEdit{}, WriteOpts{})
 	count := 0
 	for _, f := range out {
 		if f.ID == "COMM" {
@@ -798,7 +798,7 @@ func TestRebuildDropsStaleAlias(t *testing.T) {
 	base := Project(&Tag{frames: orig}).Tags
 	edited := base.Clone()
 	edited.Set(tag.ReleaseDate, "2022")
-	out, _ := RebuildFrames(orig, base, edited, 4, nil, false, WriteOpts{})
+	out, _ := RebuildFrames(orig, base, edited, 4, StructuredEdit{}, WriteOpts{})
 	if got, _ := Project(buildTag(t, 4, out)).Tags.Get(tag.ReleaseDate); !slices.Equal(got, []string{"2022"}) {
 		t.Errorf("v2.4 ReleaseDate after edit = %v, want [2022] (no duplicate/stale)", got)
 	}
@@ -809,7 +809,7 @@ func TestRebuildDropsStaleAlias(t *testing.T) {
 	base2 := Project(&Tag{frames: orig2}).Tags
 	edited2 := base2.Clone()
 	edited2.Set(tag.RecordingDate, "2022")
-	out2, _ := RebuildFrames(orig2, base2, edited2, 3, nil, false, WriteOpts{})
+	out2, _ := RebuildFrames(orig2, base2, edited2, 3, StructuredEdit{}, WriteOpts{})
 	if got, _ := Project(buildTag(t, 3, out2)).Tags.Get(tag.RecordingDate); !slices.Equal(got, []string{"2022"}) {
 		t.Errorf("v2.3 RecordingDate after edit = %v, want [2022] (edit not lost)", got)
 	}
@@ -829,7 +829,7 @@ func TestRebuildDeterministicNewFrames(t *testing.T) {
 
 	var first []byte
 	for i := 0; i < 25; i++ {
-		out, _ := RebuildFrames(nil, tag.NewTagSet(), edited, 4, nil, false, WriteOpts{})
+		out, _ := RebuildFrames(nil, tag.NewTagSet(), edited, 4, StructuredEdit{}, WriteOpts{})
 		data := Render(4, out, 0)
 		if i == 0 {
 			first = data
@@ -929,7 +929,7 @@ func TestRenderNumTotalNoTripleSlash(t *testing.T) {
 			if c.total != "" {
 				edited.Set(frame.totKey, c.total)
 			}
-			out, _ := RebuildFrames(nil, tag.NewTagSet(), edited, 4, nil, false, WriteOpts{})
+			out, _ := RebuildFrames(nil, tag.NewTagSet(), edited, 4, StructuredEdit{}, WriteOpts{})
 			var body []byte
 			for _, f := range out {
 				if f.ID == frame.id {
@@ -954,7 +954,7 @@ func TestRenderNumTotalNoTripleSlash(t *testing.T) {
 func TestRenderNumTotalPathologicalResidual(t *testing.T) {
 	edited := tag.NewTagSet()
 	edited.Set(tag.TrackNumber, "1/2/3")
-	out, _ := RebuildFrames(nil, tag.NewTagSet(), edited, 4, nil, false, WriteOpts{})
+	out, _ := RebuildFrames(nil, tag.NewTagSet(), edited, 4, StructuredEdit{}, WriteOpts{})
 	var body []byte
 	for _, f := range out {
 		if f.ID == "TRCK" {
@@ -1025,7 +1025,7 @@ func TestRebuildPreservesCommentLanguage(t *testing.T) {
 	edited := base.Clone()
 	edited.Set(tag.Comment, "Hallo Welt")
 	edited.Set(tag.Lyrics, "Neue Strophe")
-	out, _ := RebuildFrames(orig, base, edited, 4, nil, false, WriteOpts{})
+	out, _ := RebuildFrames(orig, base, edited, 4, StructuredEdit{}, WriteOpts{})
 	if got := lang(find(out, "COMM")); got != "deu" {
 		t.Errorf("edited COMM language = %q, want deu", got)
 	}
@@ -1036,7 +1036,7 @@ func TestRebuildPreservesCommentLanguage(t *testing.T) {
 	// A brand-new comment (no original frame) defaults to eng.
 	fresh := tag.NewTagSet()
 	fresh.Set(tag.Comment, "Added")
-	outNew, _ := RebuildFrames(nil, tag.NewTagSet(), fresh, 4, nil, false, WriteOpts{})
+	outNew, _ := RebuildFrames(nil, tag.NewTagSet(), fresh, 4, StructuredEdit{}, WriteOpts{})
 	if got := lang(find(outNew, "COMM")); got != "eng" {
 		t.Errorf("new COMM language = %q, want eng", got)
 	}
@@ -1047,7 +1047,7 @@ func TestRebuildPreservesCommentLanguage(t *testing.T) {
 	baseG := Project(&Tag{frames: origG}).Tags
 	editedG := baseG.Clone()
 	editedG.Set(tag.Comment, "y")
-	outG, _ := RebuildFrames(origG, baseG, editedG, 4, nil, false, WriteOpts{})
+	outG, _ := RebuildFrames(origG, baseG, editedG, 4, StructuredEdit{}, WriteOpts{})
 	if got := lang(find(outG, "COMM")); got != garbage {
 		t.Errorf("edited COMM language = % x, want % x (garbage round-trips)", got, garbage)
 	}
@@ -1066,7 +1066,7 @@ func TestRebuildKeepsMultiLanguageCommentsOnUnrelatedEdit(t *testing.T) {
 	edited := base.Clone()
 	edited.Set(tag.Artist, "New Artist") // unrelated to the comments
 
-	out, _ := RebuildFrames(orig, base, edited, 3, nil, false, WriteOpts{})
+	out, _ := RebuildFrames(orig, base, edited, 3, StructuredEdit{}, WriteOpts{})
 
 	var langs, texts []string
 	var tpe1 []byte

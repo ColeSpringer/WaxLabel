@@ -92,12 +92,18 @@ func RenderCommentList(vendor string, comments []Comment) []byte {
 // mapping to RecordingDate) is a genuine conflict and is marked unselected so it
 // surfaces in the family view and Lint. Repeats of the same native name
 // (ARTIST=A, ARTIST=B) are an ordinary multi-value, not a conflict.
+//
+// CHAPTERxxx comments are structured chapters, not custom tag fields. [ProjectChapters]
+// owns them, and [Rebuild] preserves them unless a chapter edit replaces the set.
 func Project(comments []Comment) (tag.TagSet, []core.FamilyValue) {
 	ts := tag.NewTagSet()
 	famIndex := map[tag.Key]int{}
 	names := map[tag.Key]map[string]bool{} // distinct native names per key
 	var fams []core.FamilyValue
 	for _, cm := range comments {
+		if isChapterComment(cm.Name) {
+			continue // owned by the chapter projection, not a custom tag field
+		}
 		key := mapping.CanonicalVorbis(cm.Name)
 		// The Vorbis reader stores values as raw bytes; a non-conformant file can hold invalid
 		// UTF-8 (the spec mandates UTF-8, but WaxLabel parses best-effort). Sanitize it into the
@@ -139,7 +145,11 @@ func Project(comments []Comment) (tag.TagSet, []core.FamilyValue) {
 // has a write-preferred Vorbis spelling distinct from its canonical name - an alias
 // like RecordingDate, whose preferred tag is DATE - in which case it canonicalizes to
 // that. A newly-added key uses the preferred Vorbis spelling.
-func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool) []Comment {
+//
+// CHAPTERxxx comments are owned by the chapter model, not by the generic tag-key diff.
+// A chapter edit drops the source chapter comments and appends the edited set; unrelated
+// edits preserve them verbatim.
+func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapters []core.Chapter, chaptersChanged bool) []Comment {
 	emitted := map[tag.Key]bool{}
 	out := make([]Comment, 0, len(orig))
 	emit := func(k tag.Key, name string) {
@@ -150,6 +160,12 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool) []Comm
 		emitted[k] = true
 	}
 	for _, cm := range orig {
+		if isChapterComment(cm.Name) {
+			if !chaptersChanged {
+				out = append(out, cm) // preserve verbatim on an unrelated edit
+			}
+			continue // dropped on a chapter edit; re-emitted from the edited set below
+		}
 		k := mapping.CanonicalVorbis(cm.Name)
 		if changed[k] {
 			if !emitted[k] {
@@ -169,6 +185,9 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool) []Comm
 		if changed[k] && !emitted[k] {
 			emit(k, mapping.VorbisName(k)) // newly-added key: the preferred Vorbis spelling
 		}
+	}
+	if chaptersChanged {
+		out = append(out, chapterComments(chapters)...)
 	}
 	return out
 }

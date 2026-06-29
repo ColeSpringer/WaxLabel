@@ -258,7 +258,34 @@ func TestChaptersLoseMetadata(t *testing.T) {
 				t.Errorf("ChaptersLoseMetadata = %v, want %v", got, c.want)
 			}
 			if ChaptersLoseMetadata(c.chs, ChapterLossNone) {
-				t.Error("ChapterLossNone must never flag a loss")
+				t.Error("ChapterLossNone reported a metadata loss")
+			}
+		})
+	}
+}
+
+// TestChaptersLoseMetadataLangFlags checks the ID3 CHAP loss predicate. Start, end, and
+// title all survive, so gapped and last-chapter ends are not a loss. CHAP has no language
+// or visibility fields, so any language or Matroska visibility flag is a loss.
+func TestChaptersLoseMetadataLangFlags(t *testing.T) {
+	sec := func(s int) time.Duration { return time.Duration(s) * time.Second }
+	cases := []struct {
+		name string
+		chs  []Chapter
+		want bool
+	}{
+		{"plain", []Chapter{{Start: 0, Title: "A"}, {Start: sec(5), Title: "B"}}, false},
+		{"gapped-end-kept", []Chapter{{End: sec(3)}, {Start: sec(5)}}, false},                 // CHAP stores ends
+		{"last-end-kept", []Chapter{{}, {Start: sec(5), End: sec(9)}}, false},                 // CHAP stores ends
+		{"uniform-iso", []Chapter{{Language: "eng"}, {Start: sec(5), Language: "eng"}}, true}, // no language field at all
+		{"uniform-ietf", []Chapter{{LanguageIETF: "en-US"}, {Start: sec(5), LanguageIETF: "en-US"}}, true},
+		{"hidden", []Chapter{{Hidden: true}}, true},
+		{"disabled", []Chapter{{Disabled: true}}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := ChaptersLoseMetadata(c.chs, ChapterLossLangFlags); got != c.want {
+				t.Errorf("ChaptersLoseMetadata(LangFlags) = %v, want %v", got, c.want)
 			}
 		})
 	}
@@ -296,6 +323,20 @@ func TestProjectTransferChapterGrading(t *testing.T) {
 		Capability{Write: AccessFull}, Capability{Write: AccessFull}, Capability{Write: AccessFull}, AccessNone, nil)
 	if it := chapterItem(lossless, lossy); it.Disposition != Carried {
 		t.Errorf("Matroska->Matroska chapters = %s, want Carried", it.Disposition)
+	}
+
+	// ID3 CHAP keeps ends but stores no per-chapter language. A Matroska source whose
+	// chapters carry language, even uniformly, copies as Lossy; plain chapters carry.
+	langFlags := Capability{Write: AccessFull, ChapterLoss: ChapterLossLangFlags, Fidelity: "language and flags dropped"}
+	mp3 := NewCapabilities(FormatMP3, false,
+		Capability{Write: AccessFull}, Capability{Write: AccessFull}, langFlags, AccessPartial, nil)
+	uniformLang := []Chapter{{Title: "A", LanguageIETF: "en-US"}, {Start: sec(5), Title: "B", LanguageIETF: "en-US"}}
+	if it := chapterItem(mp3, uniformLang); it.Disposition != Lossy {
+		t.Errorf("Matroska->MP3 uniform-language chapters = %s, want Lossy (CHAP has no language field)", it.Disposition)
+	}
+	plain := []Chapter{{Title: "A", End: sec(3)}, {Start: sec(5), Title: "B"}}
+	if it := chapterItem(mp3, plain); it.Disposition != Carried {
+		t.Errorf("Matroska->MP3 plain chapters = %s, want Carried (CHAP keeps ends)", it.Disposition)
 	}
 }
 

@@ -119,24 +119,23 @@ func nativeLine(t *testing.T, out, kind string) string {
 	return ""
 }
 
-// --- E6: a/an article in the chapter-unsupported message ---
+// --- E6: chapter writes on former refusal fixtures ---
+//
+// The chapter-unsupported CLI path is not reachable for these fixtures: MP3/AAC/AIFF/WAV
+// use ID3 CHAP/CTOC, FLAC/Ogg use VorbisComment CHAPTERxxx, and MP4/Matroska use their
+// native chapter stores. The indefinite-article helper is covered in internal/core.
 
-// TestChapterArticleGrammar checks the unsupported-chapter message uses the correct
-// indefinite article for the format name (an AIFF, a FLAC).
-func TestChapterArticleGrammar(t *testing.T) {
-	cases := []struct{ fixture, want string }{
-		{notagsAIFF, "an AIFF"},
-		{notagsFLAC, "a FLAC"},
-		{fixturePath("sample.mp3"), "an MP3"}, // MP3 reads "em-pee-three" -> "an"
-	}
-	for _, c := range cases {
-		f := copyFixture(t, c.fixture)
-		_, errb, code := runCLI(t, "set", f, "--add-chapter", "0:00=Intro")
-		if code != 3 {
-			t.Fatalf("%s: exit %d, want 3 (unsupported-tag), stderr=%q", c.fixture, code, errb)
+// TestAddChapterAcrossFormats checks that --add-chapter succeeds on the formats that used
+// to reject chapters, and that the chapter survives a re-parse.
+func TestAddChapterAcrossFormats(t *testing.T) {
+	for _, fixture := range []string{notagsAIFF, notagsFLAC, fixturePath("sample.mp3")} {
+		f := copyFixture(t, fixture)
+		if _, errb, code := runCLI(t, "set", f, "--add-chapter", "0:01=Intro"); code != 0 {
+			t.Fatalf("%s: set --add-chapter exit %d, want 0, stderr=%q", fixture, code, errb)
 		}
-		if !strings.Contains(errb, c.want) {
-			t.Errorf("%s: message %q, want it to contain %q", c.fixture, errb, c.want)
+		out, _, _ := runCLI(t, "dump", f)
+		if !strings.Contains(out, "Intro") {
+			t.Errorf("%s: chapter did not survive round-trip:\n%s", fixture, out)
 		}
 	}
 }

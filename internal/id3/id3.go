@@ -92,6 +92,21 @@ func APICCount(t *Tag) int {
 	return n
 }
 
+// ChapterCount returns the number of CHAP frames in the tag. CTOC is the index, not a
+// chapter, so it is not counted. A nil tag has none.
+func ChapterCount(t *Tag) int {
+	if t == nil {
+		return 0
+	}
+	n := 0
+	for _, f := range t.frames {
+		if f.ID == "CHAP" {
+			n++
+		}
+	}
+	return n
+}
+
 // Clone returns a deep copy of the tag.
 func (t *Tag) Clone() *Tag {
 	c := *t

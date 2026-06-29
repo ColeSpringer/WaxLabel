@@ -311,9 +311,9 @@ func TestSetNoOpWritesNothing(t *testing.T) {
 	}
 }
 
-// TestSetNoEditsRejected (U1): an in-place `set <file>` with no edit flags is a
-// usage error (exit 2) - a forgotten edit flag rather than a deliberate no-op. With
-// -o it is a verbatim copy and stays allowed (covered by TestSetOutputNoOpVerbatim).
+// TestSetNoEditsRejected (U1): an in-place `set <file>` with no edit flags is a usage
+// error (exit 2), treating it as a missing edit flag rather than a deliberate no-op. With
+// -o it is a verbatim copy and stays allowed.
 func TestSetNoEditsRejected(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -1711,12 +1711,10 @@ func TestSetStdinToOutput(t *testing.T) {
 	}
 }
 
-// TestCopyIntoOggReportsChaptersNotModeled exercises the transfer-report render
-// end to end: copying a chaptered source onto an Ogg destination (no chapter
-// support) must report the drop with the destination-focused reason
-// "destination format does not store chapters", never leaking the source-side
-// Representation string ("unsupported", "not modeled") into the user's report.
-func TestCopyIntoOggReportsChaptersNotModeled(t *testing.T) {
+// TestCopyChaptersIntoOggIsLossy exercises the transfer-report render end to end. Ogg
+// stores chapters via CHAPTERxxx comments, which keep start and title but not Matroska's
+// per-chapter language or flags, so the transfer is reported as lossy rather than dropped.
+func TestCopyChaptersIntoOggIsLossy(t *testing.T) {
 	t.Parallel()
 	src := filepath.Join("..", "..", "testdata", "chapters.mka")
 	dst := copyFixture(t, filepath.Join("..", "..", "testdata", "sample.ogg"))
@@ -1724,11 +1722,16 @@ func TestCopyIntoOggReportsChaptersNotModeled(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("copy exit = %d: %s", code, errb)
 	}
-	if !strings.Contains(out, "destination format does not store chapters") {
-		t.Errorf("ogg chapter drop should read 'destination format does not store chapters':\n%s", out)
+	if !strings.Contains(out, "lossy") || !strings.Contains(out, "chapters") {
+		t.Errorf("ogg chapter copy should report a lossy chapter carry:\n%s", out)
 	}
 	if strings.Contains(out, "unsupported") {
-		t.Errorf("source-side Representation jargon leaked into the report:\n%s", out)
+		t.Errorf("unsupported marker leaked into the report:\n%s", out)
+	}
+	// The chapters land in the Ogg file despite the metadata loss.
+	dump, _, _ := runCLI(t, "dump", dst)
+	if !strings.Contains(dump, "chapters (") {
+		t.Errorf("chapters did not transfer into the Ogg destination:\n%s", dump)
 	}
 }
 

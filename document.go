@@ -85,8 +85,8 @@ func (d *Document) Pictures() []Picture {
 }
 
 // Chapters returns the navigation chapters as a detached copy, in file order.
-// Chapters live beside the canonical tags (not inside the TagSet); a format with
-// no chapter model returns none. [Document.Inspect] deliberately omits them.
+// Chapters live beside the canonical tags (not inside the TagSet); a file with no
+// chapters returns none. [Document.Inspect] deliberately omits them.
 func (d *Document) Chapters() []Chapter {
 	if d.zero() {
 		return nil

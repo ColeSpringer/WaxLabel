@@ -15,10 +15,10 @@
 // Precedence (read): the id3 chunk is authoritative when present (it is the
 // richer container and the deliberate-tagger signal); otherwise LIST/INFO is.
 // Both surface in the family view with conflicts flagged. Precedence (write):
-// see write.go - by default both present containers are kept in sync, INFO is
+// see write.go: by default both present containers are kept in sync, INFO is
 // the home for a bare file, and pictures or any value INFO cannot represent
 // force an id3 chunk; nothing is ever lost. All other chunks are preserved
-// verbatim. RF64/BW64 (the >4 GiB extension) is out of scope and fails loudly.
+// verbatim. RF64/BW64 (the >4 GiB extension) is out of scope and returns an error.
 //
 // The codec is reimplemented from the RIFF/WAVE and ID3 specifications;
 // reference implementations were consulted for design only.
@@ -82,8 +82,15 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 		Constraints: []string{"LIST/INFO cannot hold pictures; an id3 chunk is required"},
 	}
 	chapters := core.Capability{
-		Read: core.AccessNone, Write: core.AccessNone,
-		Representation: "cue/adtl preserved",
+		Read: core.AccessFull, Write: core.AccessFull,
+		Representation: "ID3v2 CHAP/CTOC frames (id3 chunk)",
+		Fidelity:       "start, end, and title stored; per-chapter language and hidden/disabled flags dropped",
+		Constraints: []string{
+			"chapters require an id3 chunk; native cue/adtl chapters are preserved opaque but not read",
+			"chapter start/end limited to a 32-bit millisecond field (~49.7 days)",
+		},
+		MaxItems:    255, // the CTOC entry count is a single byte
+		ChapterLoss: core.ChapterLossLangFlags,
 	}
 	// A WAV write may route genre through the id3 chunk when one is present or when an edit
 	// forces one into existence. The capability is value-blind, so it conservatively reports

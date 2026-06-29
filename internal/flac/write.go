@@ -29,6 +29,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	changed := diffKeys(base.Tags, edited.Tags)
 	vorbisChanged := len(changed) > 0
 	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures)
+	chaptersChanged := !core.EqualChapters(base.Chapters, edited.Chapters)
+	// Chapters are stored as CHAPTERxxx Vorbis comments, so a chapter edit rewrites the
+	// comment block just like a tag edit does.
+	commentsChanged := vorbisChanged || chaptersChanged
 	stripLegacy := opts.Legacy == core.LegacyStrip
 	legacyChange := stripLegacy && legacyPresent
 
@@ -38,16 +42,21 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// SaveAsFile and WriteTo still produce a whole file) flagged NoOp so SaveBack
 	// skips it. Explicit padding requests run the serializer below so a padding-only edit
 	// can take effect.
-	if !vorbisChanged && !picturesChanged && !legacyChange && !opts.PaddingExplicit {
+	if !commentsChanged && !picturesChanged && !legacyChange && !opts.PaddingExplicit {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
 	newComments := d.comments
-	if vorbisChanged {
-		newComments = rebuildComments(d.comments, edited.Tags, changed)
+	if commentsChanged {
+		newComments = rebuildComments(d.comments, edited.Tags, changed, edited.Chapters, chaptersChanged)
 	}
 
-	newBlocks, ops := rebuildBlocks(d, newComments, edited.Pictures, vorbisChanged, picturesChanged)
+	newBlocks, ops := rebuildBlocks(d, newComments, edited.Pictures, commentsChanged, picturesChanged)
+	if chaptersChanged && len(edited.Chapters) > 0 {
+		// Suppress the count line on a clear (the "Vorbis comment rewrite" op already
+		// records the change); matches the ID3 codecs' count gate.
+		ops = append(ops, fmt.Sprintf("chapters: %d", len(edited.Chapters)))
+	}
 	if err := checkBlockSizes(newBlocks); err != nil {
 		return nil, err
 	}
@@ -62,8 +71,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		report.Warnings = core.Warn(report.Warnings, core.WarnPaddingClamped,
 			fmt.Sprintf("requested padding exceeded FLAC's %d-byte metadata-block limit and was clamped to it", maxBlockBody))
 	}
-	// When padding is the only change, report it explicitly.
-	if regionDiffers && !vorbisChanged && !picturesChanged && !legacyChange {
+	// When padding is the only change, report it explicitly. Gate on commentsChanged (tags
+	// OR chapters), not just vorbisChanged: a chapters-only edit grows the comment block, so
+	// testing vorbisChanged alone would mislabel that growth as a padding-only change.
+	if regionDiffers && !commentsChanged && !picturesChanged && !legacyChange {
 		// For a padding-only edit, newContent is the region minus its new padding.
 		report.Operations = append(report.Operations, core.PaddingOp(origRegion, int64(len(metaBytes))-int64(padSize), int64(padSize)))
 	}
@@ -133,8 +144,9 @@ func checkBlockSizes(blocks []block) error {
 }
 
 // rebuildBlocks assembles the new metadata block list (excluding padding),
-// preserving order and raw bytes for everything untouched.
-func rebuildBlocks(d *doc, newComments []comment, pictures []core.Picture, vorbisChanged, picturesChanged bool) ([]block, []string) {
+// preserving order and raw bytes for everything untouched. commentsChanged is set when a
+// tag OR chapter edit changed the Vorbis comment list (chapters are CHAPTERxxx comments).
+func rebuildBlocks(d *doc, newComments []comment, pictures []core.Picture, commentsChanged, picturesChanged bool) ([]block, []string) {
 	var out []block
 	var ops []string
 	vorbisHandled := false
@@ -150,15 +162,15 @@ func rebuildBlocks(d *doc, newComments []comment, pictures []core.Picture, vorbi
 	for _, b := range d.blocks {
 		switch b.code {
 		case blkVorbisComment:
-			if !vorbisChanged {
-				// Tags weren't edited (e.g. a picture- or legacy-only change):
-				// preserve every comment block verbatim, including extras whose
+			if !commentsChanged {
+				// Neither tags nor chapters were edited (e.g. a picture- or legacy-only
+				// change): preserve every comment block verbatim, including extras whose
 				// tags are not in the canonical projection.
 				out = append(out, b.clone())
 				vorbisHandled = true
 				continue
 			}
-			// Tags were edited: render the canonical comments into the first
+			// Tags or chapters were edited: render the canonical comments into the first
 			// block and drop any extras (the documented collapse).
 			if vorbisHandled {
 				continue
@@ -188,7 +200,7 @@ func rebuildBlocks(d *doc, newComments []comment, pictures []core.Picture, vorbi
 		emitPictures()
 	}
 
-	if vorbisChanged {
+	if commentsChanged {
 		ops = append(ops, "Vorbis comment rewrite")
 	}
 	if picturesChanged {
@@ -307,6 +319,11 @@ func buildResult(edited *core.Media, orig *doc, newBlocks []block, newComments [
 		Tags:       tags,
 		Families:   families,
 		Pictures:   core.ClonePictures(edited.Pictures),
+		Chapters:   projectChapters(newComments),
+		// Carrying the source warnings verbatim is correct because the CHAPTERxxx projection
+		// emits no warnings (unlike ID3's nested-CTOC flatten note): there is nothing a chapter
+		// edit could invalidate. If vorbis.ProjectChapters ever gains a warning, this must
+		// re-derive it from newComments (as the ID3 codecs do via CarryChapterWarnings).
 		Warnings:   core.CloneWarnings(edited.Warnings),
 		Native:     nd,
 		Identity:   core.Identity{Size: newSize},

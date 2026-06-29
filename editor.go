@@ -142,11 +142,10 @@ func (e *Editor) ClearPictures() *Editor {
 
 // SetChapters replaces the whole chapter list. Chapters are a timeline, so the
 // list is sorted by start time (stably, preserving the order of chapters that
-// share a start) - an out-of-order argument would otherwise lose a start when a
-// container encodes spans relative to the previous chapter. A format that cannot
-// write chapters reports it via [Capabilities]; MP4/M4B and Matroska are writable.
-// MP4 caps a chapter list at 255 (the Nero chpl limit) - a larger list is rejected
-// at [Editor.Prepare]; Matroska has no such cap.
+// share a start) because an out-of-order argument can lose a start when a container
+// encodes spans relative to the previous chapter. A format that cannot write chapters
+// reports that through [Capabilities]. Lists above a format's hard count cap are
+// rejected at [Editor.Prepare]; ID3 CTOC and MP4 Nero chpl are capped at 255 entries.
 func (e *Editor) SetChapters(chs ...Chapter) *Editor {
 	e.chapters = slices.Clone(chs)
 	slices.SortStableFunc(e.chapters, func(a, b Chapter) int { return cmp.Compare(a.Start, b.Start) })
@@ -283,7 +282,7 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// the value-reduction check after planning must read the same write policy.
 	caps := codec.Capabilities(e.base, wo)
 	// Refuse to silently drop chapters on a format that cannot store them. This is a
-	// format-agnostic capability gate (it reads the destination's Chapters write
+	// format-independent capability gate (it reads the destination's Chapters write
 	// level); the analogous picture refusal - a cover onto WebM - is enforced
 	// separately as a WebM-specific check inside the Matroska writer, not here, so the
 	// two share intent but neither site nor mechanism. Guard on a non-empty list so
@@ -295,6 +294,14 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		caps.Chapters.Write < core.AccessPartial {
 		return nil, fmt.Errorf("%w: chapters cannot be written to %s %s file",
 			waxerr.ErrUnsupportedTag, core.IndefiniteArticle(e.base.Format.String()), e.base.Format)
+	}
+	// Enforce the destination's chapter-count limit before the writer sees the list.
+	// ID3 CTOC and MP4 Nero chpl use single-byte counts, so allowing 256 entries would
+	// produce a malformed container. Transfers apply the same limit before calling
+	// SetChapters, which leaves this path for direct edits.
+	if e.chaptersTouched && caps.Chapters.MaxItems > 0 && len(e.chapters) > caps.Chapters.MaxItems {
+		return nil, fmt.Errorf("%w: %d chapters exceeds the %d %s can store",
+			waxerr.ErrUnsupportedTag, len(e.chapters), caps.Chapters.MaxItems, e.base.Format)
 	}
 	wp, err := codec.Plan(context.Background(), e.base, edited, wo)
 	if err != nil {
@@ -316,12 +323,12 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 			wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnChapterEndsDropped,
 				"chapters rewrite drops explicit end times (CLI-built chapters are open-ended)")
 		}
-		// MP4 stores chapters as start+title. A direct chapter edit drops gapped ends,
-		// per-chapter language changes, and hidden/disabled flags that cannot be
-		// represented. Transfers use the same predicate when reporting a lossy chapter copy.
-		if core.ChaptersLoseMetadata(e.chapters, core.ChapterLossFor(e.base.Format)) {
+		// Warn when this destination cannot store every field in the authored chapter
+		// list. ChapterLoss is option-independent, so use the capability value already
+		// computed for the write plan.
+		if loss := caps.Chapters.ChapterLoss; core.ChaptersLoseMetadata(e.chapters, loss) {
 			wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnChapterMetadataDropped,
-				"chapters store start and title only; gapped end times, per-chapter language, and hidden/disabled flags are dropped")
+				core.ChapterMetadataDroppedMessage(loss))
 		}
 	}
 	// Surface edit-time picture sanity warnings for the pictures this edit authored

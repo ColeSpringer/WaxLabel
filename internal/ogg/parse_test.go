@@ -76,16 +76,17 @@ func TestPlanRefusesNonAlignedWrite(t *testing.T) {
 	}
 }
 
-// TestChapterCapabilityRepresentation pins Ogg's chapter Representation to empty:
-// Ogg has no native chapter container to name, so the read/write-none levels say
-// everything and no Representation string is shown (R1 dropped the dev-term "not
-// modeled"). It must never be "unsupported", which rendered as a doubled
-// "unsupported: unsupported" in the copy transfer report.
+// TestChapterCapabilityRepresentation pins Ogg's chapter capability. Both Ogg Vorbis and
+// Ogg Opus store chapters via CHAPTERxxx comments, with full read/write access and
+// start+title fidelity.
 func TestChapterCapabilityRepresentation(t *testing.T) {
 	for _, c := range []Codec{NewVorbis(), NewOpus()} {
 		caps := c.Capabilities(nil, core.DefaultWriteOptions())
-		if got := caps.Chapters.Representation; got != "" {
-			t.Errorf("%v chapters Representation = %q, want %q", c.Format(), got, "")
+		if got := caps.Chapters.Representation; got != "VorbisComment CHAPTERxxx" {
+			t.Errorf("%v chapters Representation = %q, want %q", c.Format(), got, "VorbisComment CHAPTERxxx")
+		}
+		if caps.Chapters.Write != core.AccessFull || caps.Chapters.Read != core.AccessFull {
+			t.Errorf("%v chapters access = read %v/write %v, want full/full", c.Format(), caps.Chapters.Read, caps.Chapters.Write)
 		}
 	}
 }

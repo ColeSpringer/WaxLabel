@@ -52,7 +52,7 @@ func TestRenderFrontTagClampsPadding(t *testing.T) {
 	}
 
 	ft := RenderFrontTag(NewEmpty(4), 4, frames, RebuildInfo{}, pol, srcTagLen,
-		true, true, false, 0)
+		true, true, false, 0, false, 0)
 
 	if ft.Padding >= requested {
 		t.Errorf("ft.Padding = %d was not clamped below the requested %d", ft.Padding, requested)

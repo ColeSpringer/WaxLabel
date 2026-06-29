@@ -88,11 +88,13 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		proj := id3.Project(d.id3)
 		media.Tags = proj.Tags
 		media.Pictures = proj.Pictures
+		media.Chapters = proj.Chapters
 		media.Families = proj.Families
 		if proj.NumericGenre {
 			warnings = core.Warn(warnings, core.WarnNumericGenre,
 				"a numeric genre reference was resolved to a name")
 		}
+		warnings = append(warnings, proj.Warnings...)
 		warnings = append(warnings, id3.EncoderNoise(d.id3)...)
 	}
 

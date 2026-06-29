@@ -43,7 +43,7 @@ type Codec interface {
 	// format: a named, versioned extent identifier and the decoder-critical
 	// configuration bytes mixed into the hash ahead of the audio. What counts as
 	// "decoder-critical" is codec-specific, so it lives here rather than in the
-	// format-agnostic public layer.
+	// format-independent public layer.
 	EssenceExtent(m *Media) (version string, config []byte)
 }
 
@@ -167,8 +167,10 @@ func PaddingOp(oldRegion, newContent, padAfter int64) string {
 // Because NoOpPlan starts from a warning-free report, DowngradeNoOp re-attaches the
 // input-loss warnings from the codec's pre-downgrade report: values the format could not
 // store, values it stored with reduced precision, picture metadata it dropped, a numeric
-// genre reference the input supplied that reads back as a name, and chapter titles trimmed
-// to a container limit. Those reflect the user's INPUT, not the write mechanics, and are
+// genre reference the input supplied that reads back as a name, chapter titles trimmed to
+// a container limit, chapter metadata the format cannot hold, a chapter timestamp clamped
+// to a 32-bit field, and chapter hierarchy flattened on projection. Those reflect the
+// user's INPUT, not the write mechanics, and are
 // often the very reason the byte stream did not change (GENRE=17 on a file already projecting
 // Rock; an over-long chapter title re-applied to a file already holding its truncation), so
 // they still need to surface on the no-op report (the value-dropped case additionally trips
@@ -182,7 +184,7 @@ func DowngradeNoOp(format Format, size int64, base, result *Media, tagsEqual, st
 		return nil
 	}
 	np := NoOpPlan(WriteReport{Format: format, BytesBefore: size}, size, base)
-	np.Report.Warnings = append(np.Report.Warnings, WarningsWithCode(priorWarnings, WarnValueDropped, WarnValueReduced, WarnPictureMetadataDropped, WarnNumericGenre, WarnChapterTitleTruncated, WarnChapterMetadataDropped)...)
+	np.Report.Warnings = append(np.Report.Warnings, WarningsWithCode(priorWarnings, WarnValueDropped, WarnValueReduced, WarnPictureMetadataDropped, WarnNumericGenre, WarnChapterTitleTruncated, WarnChapterMetadataDropped, WarnChapterStartOverflow, WarnChaptersFlattened)...)
 	return np
 }
 
