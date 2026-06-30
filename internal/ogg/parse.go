@@ -8,17 +8,12 @@ import (
 	"fmt"
 	"math"
 	"slices"
-	"strings"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/waxerr"
 )
-
-// pictureComment is the comment name that carries base64-encoded cover art (a
-// FLAC PICTURE block) in Ogg Vorbis and Opus.
-const pictureComment = "METADATA_BLOCK_PICTURE"
 
 // Header packet signatures.
 var (
@@ -293,7 +288,7 @@ func (d *doc) decodeComments(pkt []byte, limit int64, maxElements int, warnings 
 		d.commentPad = slices.Clone(list[n:])
 	}
 	for _, cm := range comments {
-		if !strings.EqualFold(cm.Name, pictureComment) {
+		if !vorbis.IsPictureComment(cm.Name) {
 			d.comments = append(d.comments, cm)
 			continue
 		}

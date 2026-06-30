@@ -143,25 +143,26 @@ func TestLintErrorSeverityExitsInvalidData(t *testing.T) {
 	}
 }
 
-// TestLintFixHonest: --fix clears what it can and re-lints, so a stamp it cannot
-// reach (the FLAC vendor string) is reported as remaining and keeps exit 1.
-func TestLintFixHonest(t *testing.T) {
+// TestLintFixNeutralizesFlacVendor checks that --fix clears the canonical ENCODER comment
+// and neutralizes a transcoder-stamped FLAC vendor string. The saved file should re-lint
+// cleanly.
+func TestLintFixNeutralizesFlacVendor(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
 	out, _, code := runCLI(t, "lint", "--fix", file)
-	if code != 1 {
-		t.Fatalf("lint --fix exit = %d, want 1 (vendor stamp remains)", code)
+	if code != 0 {
+		t.Fatalf("lint --fix exit = %d, want 0 (vendor stamp now neutralized):\n%s", code, out)
 	}
 	if !strings.Contains(out, "ENCODER") {
 		t.Errorf("--fix output missing the ENCODER change:\n%s", out)
 	}
-	if !strings.Contains(out, "not auto-fixed") {
-		t.Errorf("--fix output missing remaining finding:\n%s", out)
+	// A fresh lint should not see either the ENCODER comment or the vendor stamp.
+	relint, _, rcode := runCLI(t, "lint", file)
+	if rcode != 0 {
+		t.Errorf("re-lint after --fix exit = %d, want 0 (clean):\n%s", rcode, relint)
 	}
-	// The ENCODER comment is actually gone now; re-lint must not report it again.
-	relint, _, _ := runCLI(t, "lint", file)
-	if strings.Contains(relint, "inherited encoder comment") {
-		t.Errorf("ENCODER comment survived --fix:\n%s", relint)
+	if strings.Contains(relint, "inherited") || strings.Contains(relint, "transcoder") {
+		t.Errorf("an inherited-encoder finding survived --fix:\n%s", relint)
 	}
 }
 

@@ -31,7 +31,9 @@ type Tags struct {
 	ReleaseDate   string
 	OriginalDate  string
 
-	Comment   string
+	// Comment is multi-valued. AIFF ANNO, Vorbis comments, MP4 cmt atoms, and ID3 COMM
+	// frames can all store several comments, so the typed projection keeps the full list.
+	Comment   []string
 	Lyrics    string
 	Grouping  string
 	Copyright string
@@ -113,7 +115,7 @@ func Project(ts TagSet) Tags {
 		ReleaseDate:   first(ReleaseDate),
 		OriginalDate:  first(OriginalDate),
 
-		Comment:   first(Comment),
+		Comment:   all(Comment),
 		Lyrics:    first(Lyrics),
 		Grouping:  first(Grouping),
 		Copyright: first(Copyright),
@@ -204,7 +206,7 @@ func (t Tags) Patch() TagPatch {
 	setStr(ReleaseDate, t.ReleaseDate)
 	setStr(OriginalDate, t.OriginalDate)
 
-	setStr(Comment, t.Comment)
+	setMulti(Comment, t.Comment)
 	setStr(Lyrics, t.Lyrics)
 	setStr(Grouping, t.Grouping)
 	setStr(Copyright, t.Copyright)
@@ -421,6 +423,19 @@ func NegativeNumericValue(k Key, v string) bool {
 		}
 	}
 	return negativeInt(v)
+}
+
+// EmptyNumberWithTotal reports whether v is a valid "number/total" value for TrackNumber or
+// DiscNumber with an empty number side and a numeric total, such as "/5". The value is valid
+// and can be written, but the empty number is easy to type by accident, so the CLI reports an
+// advisory. Explicit total keys can override the embedded total; this helper only describes
+// the submitted pair value.
+func EmptyNumberWithTotal(k Key, v string) bool {
+	if k != TrackNumber && k != DiscNumber {
+		return false
+	}
+	num, total := SplitNumberTotal(v)
+	return num == "" && validInt(total)
 }
 
 // TrimNumericValue removes surrounding whitespace from numeric and date values and leaves

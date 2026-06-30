@@ -476,6 +476,26 @@ func TestAIFFMultiCommentStaysNative(t *testing.T) {
 	}
 }
 
+// TestAIFFMultiCommentNotFlaggedConflict checks that repeated ANNO comments are treated as a
+// valid multi-valued COMMENT field, not as a lint or dump conflict.
+func TestAIFFMultiCommentNotFlaggedConflict(t *testing.T) {
+	data := aiffFile("AIFF", stdCOMM(), aiffSSND(400))
+	out := applyToBytes(t, data, mustPlan(t, mustParseBytes(t, data).Edit().Set(tag.Comment, "one", "two")))
+	doc := mustParseBytes(t, out)
+	if vals, _ := doc.Tags().Get(tag.Comment); !slices.Equal(vals, []string{"one", "two"}) {
+		t.Fatalf("comments = %v, want [one two]", vals)
+	}
+	for _, f := range doc.Lint() {
+		if f.Code == "single-valued-multi" && f.Key == tag.Comment {
+			t.Errorf("multi-value COMMENT must not be flagged single-valued-multi; got %v", f)
+		}
+	}
+	// Dump's "(conflict)" marker gates on the same predicate.
+	if tag.Comment.SingleValuedMulti(2) {
+		t.Error("Comment.SingleValuedMulti(2) = true; dump would still mark (conflict)")
+	}
+}
+
 func TestAIFFStripNativeConsolidatesToId3(t *testing.T) {
 	data := aiffFile("AIFF", aiffText("NAME", "Keep"), aiffText("AUTH", "A"), stdCOMM(), aiffSSND(400))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Keep").
@@ -649,8 +669,8 @@ func TestAIFFBareFileEditsGoNative(t *testing.T) {
 		t.Error("expected created NAME and ANNO chunks")
 	}
 	got := mustParseBytes(t, out)
-	if got.Fields().Title != "Fresh" || got.Fields().Comment != "note" {
-		t.Errorf("bare edit: title=%q comment=%q", got.Fields().Title, got.Fields().Comment)
+	if c := got.Fields().Comment; got.Fields().Title != "Fresh" || !slices.Equal(c, []string{"note"}) {
+		t.Errorf("bare edit: title=%q comment=%v", got.Fields().Title, c)
 	}
 }
 

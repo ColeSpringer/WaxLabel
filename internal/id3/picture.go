@@ -145,12 +145,19 @@ func cutLatin1(b []byte) (string, []byte, bool) {
 // cutEncoded reads a terminated string in the given encoding, returning it and
 // the bytes after the terminator. A missing terminator consumes the rest (the
 // description is the final terminated field before binary data, so a well-formed
-// frame always has one).
+// frame always has one). It uses fresh byte-order state, so standalone terminated fields
+// such as APIC and v2.2 PIC descriptions decode by their own BOM.
 func cutEncoded(enc byte, b []byte) (string, []byte, bool) {
+	return cutEncodedTracked(enc, b, &utf16Order{})
+}
+
+// cutEncodedTracked is [cutEncoded] with byte-order state shared by the rest of a
+// multi-segment frame.
+func cutEncodedTracked(enc byte, b []byte, order *utf16Order) (string, []byte, bool) {
 	tl := termLen(enc)
 	idx := indexTerm(b, tl)
 	if idx < 0 {
 		return "", b, false
 	}
-	return decodeString(enc, b[:idx]), b[idx+tl:], true
+	return decodeStringTracked(enc, b[:idx], order), b[idx+tl:], true
 }

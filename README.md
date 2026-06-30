@@ -116,7 +116,10 @@ Common edit flags:
 - `--set KEY=VALUE` replaces a value.
 - `--add KEY=VALUE` appends a value.
 - `--clear KEY` removes a key.
-- `--strip-encoder` removes inherited encoder stamps where the format allows it.
+- `--strip-encoder` removes inherited encoder/transcoder stamps where the format allows
+  it. It clears the canonical `ENCODER` tag, drops a transcoder-stamp WAV `ISFT`, and
+  rewrites a transcoder-stamped FLAC/Ogg vendor string to `WaxLabel`. The vendor field is
+  mandatory in those formats, so it is neutralized instead of removed.
 - `--add-cover FILE` and `--add-picture ROLE=FILE` embed pictures.
 - `--remove-picture SELECTOR` and `--remove-pictures` remove pictures.
 - `--add-chapter TIMESTAMP=TITLE` and `--clear-chapters` edit chapters. A chapter
@@ -134,7 +137,9 @@ Common edit flags:
 - `--numeric-genre` writes a recognized genre as its numeric reference where the
   format supports one (ID3's `TCON`). It converts only on a genuine genre change; when
   the canonical genre is unchanged it is a no-op (an existing numeric or text genre is
-  left as it is, not rewritten).
+  left as it is, not rewritten). A file written this way carries a numeric genre, so later
+  `dump` and `lint` runs report an informational `[numeric-genre]` note. That is expected
+  for an opt-in numeric genre, not a defect.
 
 The read commands accept a single `-` for standard input; `set -` also works when
 paired with `-o`. `dump`, `verify`, `lint`, `plan`, and `set` can walk directories
@@ -252,12 +257,6 @@ deterministic, and a future option could derive IDs from a stable seed or conten
 These limits are intentional for now; each is bounded and does not affect the common
 path:
 
-- **Matroska essence digest, interleaved metadata.** The audio-essence digest hashes a
-  single contiguous cluster span. If a muxer places a non-cluster element such as Cues
-  or Tags between clusters, that element is included in the digest. Re-rendering it
-  could change the digest even when the audio bytes are unchanged. The multi-range
-  essence model already exists (used by MP4 and Ogg); closing this means populating it
-  from the Matroska cluster runs and bumping the digest version.
 - **Malformed ID3v2.2 `PIC` with no description terminator.** A non-conformant embedded
   picture whose description is missing its terminating NUL is parsed with an empty
   description and the remaining bytes as image data. That reading is persisted on
@@ -287,6 +286,11 @@ path:
   lyrics as timed-text or subtitle tracks, not metadata, so WaxLabel does not model
   them. LRC `[offset:]` follows foobar2000 behavior: effective timestamp =
   timestamp - offset.
+- **MP4 cover art drops the picture description.** The iTunes `covr` atom stores image
+  data only, with no role or description field. A cover written to MP4 keeps its bytes, loses
+  any description, and reads back as a front cover. A plain front cover with no description
+  round-trips losslessly; copying a described or non-front cover to MP4 reports the
+  per-picture metadata loss.
 
 ## Safety
 

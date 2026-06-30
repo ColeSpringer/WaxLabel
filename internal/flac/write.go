@@ -7,6 +7,7 @@ import (
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -36,6 +37,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	commentsChanged := vorbisChanged || chaptersChanged || syncedLyricsChanged
 	stripLegacy := opts.Legacy == core.LegacyStrip
 	legacyChange := stripLegacy && legacyPresent
+	// Vendor neutralization is a real metadata edit even when the comment list is unchanged.
+	// It must bypass the no-op fast path so the comment block is rendered with the neutral
+	// vendor string.
+	newVendor, vendorChanged := vorbis.NeutralizeVendor(d.vendor, opts.StripEncoderStamp)
 
 	report := core.WriteReport{Format: core.FormatFLAC, BytesBefore: edited.Identity.Size}
 
@@ -43,7 +48,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// SaveAsFile and WriteTo still produce a whole file) flagged NoOp so SaveBack
 	// skips it. Explicit padding requests run the serializer below so a padding-only edit
 	// can take effect.
-	if !commentsChanged && !picturesChanged && !legacyChange && !opts.PaddingExplicit {
+	if !commentsChanged && !picturesChanged && !legacyChange && !vendorChanged && !opts.PaddingExplicit {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
@@ -52,7 +57,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		newComments = rebuildComments(d.comments, edited.Tags, changed, edited.Chapters, chaptersChanged, edited.SyncedLyrics, syncedLyricsChanged)
 	}
 
-	newBlocks, ops := rebuildBlocks(d, newComments, edited.Pictures, commentsChanged, picturesChanged)
+	newBlocks, ops := rebuildBlocks(d, newVendor, newComments, edited.Pictures, commentsChanged, vendorChanged, picturesChanged)
+	if vendorChanged {
+		ops = append(ops, "vendor stamp neutralized")
+	}
 	if chaptersChanged && len(edited.Chapters) > 0 {
 		// Suppress the count line on a clear (the "Vorbis comment rewrite" op already
 		// records the change); matches the ID3 codecs' count gate.
@@ -78,7 +86,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// When padding is the only change, report it explicitly. Gate on commentsChanged (tags
 	// OR chapters), not just vorbisChanged: a chapters-only edit grows the comment block, so
 	// testing vorbisChanged alone would mislabel that growth as a padding-only change.
-	if regionDiffers && !commentsChanged && !picturesChanged && !legacyChange {
+	if regionDiffers && !commentsChanged && !picturesChanged && !legacyChange && !vendorChanged {
 		// For a padding-only edit, newContent is the region minus its new padding.
 		report.Operations = append(report.Operations, core.PaddingOp(origRegion, int64(len(metaBytes))-int64(padSize), int64(padSize)))
 	}
@@ -112,12 +120,13 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	newSize := bits.OutputLen(segs)
 	report.BytesAfter = newSize
 
-	result := buildResult(edited, d, finalBlocks, newComments, newLeadingLen, audioOutStart, audioLen, newTrailingLen, newSize)
+	result := buildResult(edited, d, newVendor, finalBlocks, newComments, newLeadingLen, audioOutStart, audioLen, newTrailingLen, newSize)
 
-	// FLAC stores Vorbis values verbatim, so this only fires for a value the rebuild
-	// dropped (an empty); a legacy strip stays a real write. tagsEqual uses the native
-	// key diff. See core.DowngradeNoOp.
-	if np := core.DowngradeNoOp(core.FormatFLAC, edited.Identity.Size, base, result, len(diffKeys(base.Tags, result.Tags)) == 0, legacyChange || regionDiffers, report.Warnings); np != nil {
+	// FLAC stores Vorbis values verbatim, so this downgrade only catches values the rebuild
+	// dropped, such as empty strings. A legacy strip or vendor neutralization remains a real
+	// write. ReuseInPlace padding can absorb a shorter vendor without changing the region
+	// length, so vendorChanged must be part of the structural-change flag.
+	if np := core.DowngradeNoOp(core.FormatFLAC, edited.Identity.Size, base, result, len(diffKeys(base.Tags, result.Tags)) == 0, legacyChange || regionDiffers || vendorChanged, report.Warnings); np != nil {
 		return np, nil
 	}
 
@@ -150,7 +159,9 @@ func checkBlockSizes(blocks []block) error {
 // rebuildBlocks assembles the new metadata block list (excluding padding),
 // preserving order and raw bytes for everything untouched. commentsChanged is set when a
 // tag OR chapter edit changed the Vorbis comment list (chapters are CHAPTERxxx comments).
-func rebuildBlocks(d *doc, newComments []comment, pictures []core.Picture, commentsChanged, picturesChanged bool) ([]block, []string) {
+// vendorChanged forces the Vorbis comment block to be re-rendered with newVendor even when
+// the comment values themselves are unchanged.
+func rebuildBlocks(d *doc, newVendor string, newComments []comment, pictures []core.Picture, commentsChanged, vendorChanged, picturesChanged bool) ([]block, []string) {
 	var out []block
 	var ops []string
 	vorbisHandled := false
@@ -166,20 +177,19 @@ func rebuildBlocks(d *doc, newComments []comment, pictures []core.Picture, comme
 	for _, b := range d.blocks {
 		switch b.code {
 		case blkVorbisComment:
-			if !commentsChanged {
-				// Neither tags nor chapters were edited (e.g. a picture- or legacy-only
-				// change): preserve every comment block verbatim, including extras whose
-				// tags are not in the canonical projection.
+			if !commentsChanged && !vendorChanged {
+				// Nothing touched the comment block, so preserve every comment block verbatim,
+				// including extras outside the canonical projection.
 				out = append(out, b.clone())
 				vorbisHandled = true
 				continue
 			}
-			// Tags or chapters were edited: render the canonical comments into the first
-			// block and drop any extras (the documented collapse).
+			// Re-render the first comment block and drop any extra comment blocks. That is the
+			// documented collapse for tag/chapter edits and vendor neutralization.
 			if vorbisHandled {
 				continue
 			}
-			out = append(out, block{code: blkVorbisComment, body: renderVorbisComment(d.vendor, newComments)})
+			out = append(out, block{code: blkVorbisComment, body: renderVorbisComment(newVendor, newComments)})
 			vorbisHandled = true
 		case blkPicture:
 			if picturesChanged {
@@ -198,7 +208,7 @@ func rebuildBlocks(d *doc, newComments []comment, pictures []core.Picture, comme
 
 	// Create a Vorbis comment block if one is now needed but none existed.
 	if !vorbisHandled && len(newComments) > 0 {
-		out = insertAfterStreamInfo(out, block{code: blkVorbisComment, body: renderVorbisComment(d.vendor, newComments)})
+		out = insertAfterStreamInfo(out, block{code: blkVorbisComment, body: renderVorbisComment(newVendor, newComments)})
 	}
 	if picturesChanged && !picturesEmitted && len(pictures) > 0 {
 		emitPictures()
@@ -291,11 +301,11 @@ func serializeMetadata(blocks []block, d *doc, pol core.PaddingPolicy) (out []by
 
 // buildResult constructs the post-write Media so the engine can return a
 // Document without re-parsing (needed for the io.Writer destination).
-func buildResult(edited *core.Media, orig *doc, newBlocks []block, newComments []comment,
+func buildResult(edited *core.Media, orig *doc, newVendor string, newBlocks []block, newComments []comment,
 	newLeadingLen, audioStart, audioLen, trailingLen, newSize int64) *core.Media {
 
 	nd := &doc{
-		vendor:     orig.vendor,
+		vendor:     newVendor,
 		comments:   newComments,
 		streamInfo: orig.streamInfo,
 		flacStart:  newLeadingLen,
@@ -325,12 +335,10 @@ func buildResult(edited *core.Media, orig *doc, newBlocks []block, newComments [
 		Pictures:     core.ClonePictures(edited.Pictures),
 		Chapters:     projectChapters(newComments),
 		SyncedLyrics: projectSyncedLyrics(newComments),
-		// Carrying the source warnings verbatim is correct because the CHAPTERxxx and
-		// SYNCEDLYRICS projections emit no warnings (unlike ID3's nested-CTOC flatten note):
-		// there is nothing a chapter or synced-lyrics edit could invalidate. If either
-		// projection ever gains a warning, this must re-derive it from newComments (as the ID3
-		// codecs do via CarryChapterWarnings).
-		Warnings:   core.CloneWarnings(edited.Warnings),
+		// Recompute inherited-encoder warnings from the vendor and comments that were written.
+		// Other warnings carry verbatim because CHAPTERxxx and SYNCEDLYRICS projections emit
+		// no warnings today; if that changes, this must rederive those warnings too.
+		Warnings:   vorbis.CarryEncoderWarnings(edited.Warnings, newVendor, toVorbis(newComments)),
 		Native:     nd,
 		Identity:   core.Identity{Size: newSize},
 		AudioStart: nd.audioStart,

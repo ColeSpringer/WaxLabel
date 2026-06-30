@@ -43,8 +43,8 @@ func TestWAVParse(t *testing.T) {
 	if f.TrackNumber != 3 {
 		t.Errorf("track = %d, want 3", f.TrackNumber)
 	}
-	if f.Comment != "hello world" {
-		t.Errorf("comment = %q", f.Comment)
+	if len(f.Comment) != 1 || f.Comment[0] != "hello world" {
+		t.Errorf("comment = %v", f.Comment)
 	}
 	tr := doc.Properties().First()
 	if tr.SampleRate != 44100 || tr.Channels != 2 || tr.BitsPerSample != 16 {
@@ -99,8 +99,8 @@ func TestWAVRoundTripINFO(t *testing.T) {
 		t.Errorf("round-trip: title=%q artists=%v", got.Fields().Title, got.Fields().Artists)
 	}
 	// Untouched INFO values survive.
-	if got.Fields().Album != "Sample Album" || got.Fields().Comment != "hello world" {
-		t.Errorf("untouched fields lost: album=%q comment=%q", got.Fields().Album, got.Fields().Comment)
+	if c := got.Fields().Comment; got.Fields().Album != "Sample Album" || len(c) != 1 || c[0] != "hello world" {
+		t.Errorf("untouched fields lost: album=%q comment=%v", got.Fields().Album, c)
 	}
 }
 

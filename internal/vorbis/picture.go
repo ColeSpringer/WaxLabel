@@ -4,10 +4,22 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"strings"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 )
+
+// PictureComment is the Vorbis comment name that carries base64-encoded cover art in Ogg
+// Vorbis and Opus. The value is a FLAC PICTURE block payload.
+const PictureComment = "METADATA_BLOCK_PICTURE"
+
+// IsPictureComment reports whether a comment name is the cover-art picture comment,
+// case-insensitively. Lowercase spellings are decoded as pictures at parse time, so the tag
+// projector must skip them the same way.
+func IsPictureComment(name string) bool {
+	return strings.EqualFold(name, PictureComment)
+}
 
 // ParsePicture decodes a FLAC PICTURE block body into a Picture. The same binary
 // layout is the payload of an Ogg METADATA_BLOCK_PICTURE comment (after

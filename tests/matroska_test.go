@@ -56,8 +56,8 @@ func TestMatroskaReadsSampleFixture(t *testing.T) {
 	if len(f.Composers) != 1 || f.Composers[0] != "Some Composer" {
 		t.Errorf("Composer = %v", f.Composers)
 	}
-	if f.Comment != "hello" {
-		t.Errorf("Comment = %q, want hello", f.Comment)
+	if len(f.Comment) != 1 || f.Comment[0] != "hello" {
+		t.Errorf("Comment = %v, want [hello]", f.Comment)
 	}
 }
 

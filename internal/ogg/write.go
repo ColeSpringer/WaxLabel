@@ -34,6 +34,10 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures)
 	chaptersChanged := !core.EqualChapters(base.Chapters, edited.Chapters)
 	syncedLyricsChanged := !core.EqualSyncedLyrics(base.SyncedLyrics, edited.SyncedLyrics)
+	// Vendor neutralization is a real metadata edit even when the comment list is unchanged.
+	// It must bypass the no-op fast path so the comment packet is rendered with the neutral
+	// vendor string.
+	newVendor, vendorChanged := vorbis.NeutralizeVendor(d.vendor, opts.StripEncoderStamp)
 
 	report := core.WriteReport{Format: d.format, BytesBefore: edited.Identity.Size}
 
@@ -42,7 +46,7 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	// runs before the chained/alignment guards: copying a file unchanged is always
 	// safe, even for streams we will not rewrite. A chapters- or synced-lyrics-only edit
 	// (CHAPTERxxx / SYNCEDLYRICS comments) must defeat the gate too.
-	if !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged {
+	if !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !vendorChanged {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
@@ -74,17 +78,21 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	full := slices.Clone(newComments)
 	for _, p := range edited.Pictures {
 		full = append(full, vorbis.Comment{
-			Name:  pictureComment,
+			Name:  vorbis.PictureComment,
 			Value: base64.StdEncoding.EncodeToString(vorbis.RenderPicture(p)),
 		})
 	}
 	if picturesChanged {
 		report.Operations = append(report.Operations, fmt.Sprintf("pictures: %d", len(edited.Pictures)))
 	}
+	if vendorChanged {
+		report.Operations = append(report.Operations, "vendor stamp neutralized")
+	}
 
 	// Re-paginate the header tail (everything after the BOS id page): the new
-	// comment packet, plus the Vorbis setup packet preserved verbatim.
-	tailPackets := [][]byte{d.buildCommentPacket(full)}
+	// comment packet (with the possibly-neutralized vendor), plus the Vorbis setup packet
+	// preserved verbatim.
+	tailPackets := [][]byte{d.buildCommentPacket(newVendor, full)}
 	if d.kind == kindVorbis {
 		tailPackets = append(tailPackets, d.setupPacket)
 	}
@@ -141,11 +149,11 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	report.BytesAfter = newSize
 	report.PaddingAfter = int64(len(d.commentPad))
 
-	result := buildResult(edited, d, newComments, newAudioPages, newHeaderPages, newAudioStart, shift, newSize)
-	// Ogg stores Vorbis values verbatim, so this only fires for a value the rebuild
-	// dropped (an empty); no strip flag exists. tagsEqual uses the native key diff.
-	// See core.DowngradeNoOp.
-	if np := core.DowngradeNoOp(d.format, edited.Identity.Size, base, result, len(vorbis.DiffKeys(base.Tags, result.Tags)) == 0, false, report.Warnings); np != nil {
+	result := buildResult(edited, d, newVendor, newComments, newAudioPages, newHeaderPages, newAudioStart, shift, newSize)
+	// Ogg stores Vorbis values verbatim, so this downgrade only catches values the rebuild
+	// dropped, such as empty strings. Vendor neutralization has no canonical-tag diff, so it
+	// must be passed as the structural-change flag.
+	if np := core.DowngradeNoOp(d.format, edited.Identity.Size, base, result, len(vorbis.DiffKeys(base.Tags, result.Tags)) == 0, vendorChanged, report.Warnings); np != nil {
 		return np, nil
 	}
 	return &core.WritePlan{
@@ -156,11 +164,11 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	}, nil
 }
 
-// buildCommentPacket frames a comment list as a full comment header packet: the
-// per-codec signature, the comment-list body, and the trailing framing bit
-// (Vorbis) or preserved padding (Opus).
-func (d *doc) buildCommentPacket(comments []vorbis.Comment) []byte {
-	body := vorbis.RenderCommentList(d.vendor, comments)
+// buildCommentPacket frames a comment list as a full comment header packet: the per-codec
+// signature, the comment-list body under vendor, and the trailing framing bit for Vorbis or
+// preserved padding for Opus.
+func (d *doc) buildCommentPacket(vendor string, comments []vorbis.Comment) []byte {
+	body := vorbis.RenderCommentList(vendor, comments)
 	if d.kind == kindVorbis {
 		pkt := make([]byte, 0, len(vorbisComment)+len(body)+1)
 		pkt = append(pkt, vorbisComment...)
@@ -177,14 +185,14 @@ func (d *doc) buildCommentPacket(comments []vorbis.Comment) []byte {
 // Document without re-parsing. The audio pages keep their bodies (and thus the
 // essence) and only shift in offset (and, when renumbered, sequence/CRC), so the
 // result equals a fresh parse of the written bytes.
-func buildResult(edited *core.Media, base *doc, newComments []vorbis.Comment,
+func buildResult(edited *core.Media, base *doc, newVendor string, newComments []vorbis.Comment,
 	newAudioPages []apage, newHeaderPages int, newAudioStart, shift, newSize int64) *core.Media {
 
 	nd := &doc{
 		format:      base.format,
 		kind:        base.kind,
 		serial:      base.serial,
-		vendor:      base.vendor,
+		vendor:      newVendor,
 		comments:    newComments,
 		pictures:    core.ClonePictures(edited.Pictures),
 		idPacket:    base.idPacket,
@@ -207,12 +215,10 @@ func buildResult(edited *core.Media, base *doc, newComments []vorbis.Comment,
 		Pictures:     core.ClonePictures(edited.Pictures),
 		Chapters:     vorbis.ProjectChapters(newComments),
 		SyncedLyrics: vorbis.ProjectSyncedLyrics(newComments),
-		// Carrying the source warnings verbatim is correct because the CHAPTERxxx and
-		// SYNCEDLYRICS projections emit no warnings (unlike ID3's nested-CTOC flatten note):
-		// there is nothing a chapter or synced-lyrics edit could invalidate. If either
-		// projection ever gains a warning, this must re-derive it from newComments (as the ID3
-		// codecs do via CarryChapterWarnings).
-		Warnings:   core.CloneWarnings(edited.Warnings),
+		// Recompute inherited-encoder warnings from the vendor and comments that were written.
+		// Other warnings carry verbatim because CHAPTERxxx and SYNCEDLYRICS projections emit
+		// no warnings today; if that changes, this must rederive those warnings too.
+		Warnings:   vorbis.CarryEncoderWarnings(edited.Warnings, newVendor, newComments),
 		Native:     nd,
 		Identity:   core.Identity{Size: newSize},
 		AudioStart: newAudioStart,

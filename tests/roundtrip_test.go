@@ -118,7 +118,7 @@ func TestTypedRoundTrip(t *testing.T) {
 		TrackTotal:    9,
 		DiscNumber:    1,
 		RecordingDate: "2021-03",
-		Comment:       "hello",
+		Comment:       []string{"hello"},
 		MusicBrainz:   tag.MusicBrainzIDs{RecordingID: "rec-1", ArtistID: []string{"a-1", "a-2"}},
 	}
 
@@ -136,7 +136,7 @@ func TestTypedRoundTrip(t *testing.T) {
 	}
 
 	got := mustParseBytes(t, out.Bytes()).Fields()
-	if got.Title != in.Title || got.Album != in.Album || got.Comment != in.Comment {
+	if got.Title != in.Title || got.Album != in.Album || len(got.Comment) != 1 || got.Comment[0] != in.Comment[0] {
 		t.Errorf("scalars: got %+v", got)
 	}
 	if got.TrackNumber != 4 || got.TrackTotal != 9 || got.DiscNumber != 1 {

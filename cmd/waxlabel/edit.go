@@ -84,7 +84,7 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringArrayVar(&e.addSyncedLyric, "add-synced-lyric", nil, "add synced lyric line TIMESTAMP=Text (e.g. 1:30=Verse; repeatable); combined lines replace any existing synced lyrics")
 	f.StringVar(&e.syncedLyricsLang, "synced-lyrics-lang", "", "ISO-639-2 language code (e.g. eng) for synced lyrics authored by --synced-lyrics-file or --add-synced-lyric")
 	f.BoolVar(&e.clearSyncedLyrics, "clear-synced-lyrics", false, "remove all synced lyrics")
-	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear the ENCODER software stamp left behind by an encoder or transcoder")
+	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear the ENCODER software stamp left behind by an encoder or transcoder, including FLAC/Ogg vendor stamps")
 	f.StringVar(&e.preset, "preset", "", "write policy preset: preserve|compatible|minimal")
 	f.StringVar(&e.legacy, "legacy", "", "legacy-tag policy: preserve|strip")
 	f.StringVar(&e.padding, "padding", "", "reserve at least N bytes of padding after the metadata (FLAC default 8192; MP3/AAC/MP4 reuse the existing region; 0 writes none, like --no-padding)")
@@ -191,14 +191,11 @@ func refuseUnquotedValue(ef *editFlags, realOf func(string) string, args []strin
 	return usagef("%s", hint)
 }
 
-// rejectEmptyScalarFlags rejects --preset, --legacy, or --padding given an
-// explicitly empty value, which is otherwise indistinguishable from unset and
-// silently ignored - matching how an unknown value (--preset bogus) is rejected,
-// and keeping the three scalar write-shaping flags consistent. It reads Changed
-// from the command, so set and plan (which both bind these via editFlags) share
-// one check.
+// rejectEmptyScalarFlags rejects explicitly empty scalar flags. Empty values are otherwise
+// indistinguishable from unset values, so rejecting them keeps these flags aligned with the
+// unknown-value path. It reads Changed from the command so set and plan share one check.
 func rejectEmptyScalarFlags(cmd *cobra.Command) error {
-	for _, name := range []string{"preset", "legacy", "padding"} {
+	for _, name := range []string{"preset", "legacy", "padding", "synced-lyrics-file"} {
 		if cmd.Flags().Changed(name) {
 			if v, _ := cmd.Flags().GetString(name); v == "" {
 				return usagef("--%s cannot be empty", name)
@@ -344,6 +341,11 @@ func (e *editFlags) loadPictures() ([]wl.Picture, error) {
 // sniffed on load so its MIME and dimensions are available in plan output;
 // Editor.AddPicture re-sniffs idempotently.
 func (e *editFlags) loadPictureFile(label string, pt wl.PictureType, path string) (wl.Picture, error) {
+	// Treat an explicit empty image path as usage error before os.ReadFile can turn it into
+	// a misleading file-read failure.
+	if path == "" {
+		return wl.Picture{}, usagef("%s: image path cannot be empty", label)
+	}
 	// A picture source is read with os.ReadFile and has no "-" stdin path, so the
 	// non-regular hint must not suggest one (acceptsStdin false).
 	if err := checkRegularFile(path, false); err != nil {
@@ -905,10 +907,13 @@ func noteMalformedValue(errOut io.Writer, k tag.Key, v string) {
 		return
 	}
 	// A numeric value that parses but is negative round-trips faithfully, so it is not
-	// "malformed" - but a negative number/total or play count is semantically odd, so it
-	// gets a separate advisory (the value is still written).
+	// malformed. It still gets an advisory because negative numbering and play counts are
+	// unusual. A "/total" value with an empty number side is valid too, but easy to type by
+	// accident; use else-if so "/-5" reports only the negative note.
 	if tag.IsNumericKey(k) && tag.NegativeNumericValue(k, v) {
 		fmt.Fprintf(errOut, "note: %s=%s is negative; written as-is (numbering is normally non-negative)\n", ks, vs)
+	} else if tag.EmptyNumberWithTotal(k, v) {
+		fmt.Fprintf(errOut, "note: %s=%s has no number component; the number is left unset\n", ks, vs)
 	}
 }
 

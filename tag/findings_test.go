@@ -103,3 +103,30 @@ func TestNegativeNumericValue(t *testing.T) {
 		}
 	}
 }
+
+// TestEmptyNumberWithTotal checks that the helper accepts only an empty number side paired
+// with a numeric total. It also rejects malformed totals without relying on caller-side
+// validation.
+func TestEmptyNumberWithTotal(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		k    Key
+		v    string
+		want bool
+	}{
+		{TrackNumber, "/5", true},
+		{DiscNumber, "/5", true},
+		{TrackNumber, "/ 5 ", true},  // validInt trims the total
+		{TrackNumber, "/-5", true},   // negative total is valid; the CLI reports the negative note
+		{TrackNumber, "/abc", false}, // non-numeric total (the defensive guard)
+		{TrackNumber, "/", false},    // empty total
+		{TrackNumber, "3/5", false},  // number present
+		{TrackNumber, "3", false},    // no slash
+		{TrackTotal, "/5", false},    // numeric, but not a pair-number key
+		{Title, "/5", false},         // not a number key
+	} {
+		if got := EmptyNumberWithTotal(c.k, c.v); got != c.want {
+			t.Errorf("EmptyNumberWithTotal(%s, %q) = %v, want %v", c.k, c.v, got, c.want)
+		}
+	}
+}

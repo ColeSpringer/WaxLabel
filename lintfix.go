@@ -24,12 +24,11 @@ type LintFix struct {
 // step with the linter (C1). No other finding is acted on: dropping an
 // unsniffable-but-valid cover would be silent data loss, a malformed date cannot be
 // guessed, conflicting families have no winner, and missing audio cannot be
-// synthesized. The encoder fix both clears the canonical ENCODER key and (via
-// [WithStripEncoderStamp]) drops the WAV ISFT stamp that clearing the key cannot
-// reach; the Ogg/Opus/FLAC vendor string is a mandatory codec field, so it is
-// reported but not removed and a re-lint of one of those still flags it. The honest
-// measure of what was fixed is a fresh lint of the saved file, not this plan. It
-// reads only the parsed document (no I/O) and never modifies it.
+// synthesized. The encoder fix clears the canonical ENCODER key and, via
+// [WithStripEncoderStamp], also handles native stamps the canonical key cannot reach:
+// the WAV ISFT INFO item and the FLAC/Ogg/Opus comment-header vendor string. Vendor fields
+// are mandatory, so they are rewritten to a neutral value instead of removed. This plan is
+// derived from the parsed document only; the saved file's next lint is the final result.
 func (d *Document) PlanLintFix() LintFix {
 	var fix LintFix
 	encoderCleared, legacyStripped := false, false

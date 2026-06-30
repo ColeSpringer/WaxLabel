@@ -733,13 +733,11 @@ func TestReadCommandsRejectRepeatedStdin(t *testing.T) {
 	}
 }
 
-// TestRejectEmptyScalarFlags: an explicitly-empty --preset/--legacy/--padding is
-// a usage error on both set and plan, matching the unknown-value rejection rather than
-// being silently treated as unset (and keeping the scalar write-shaping flags
-// consistent).
+// TestRejectEmptyScalarFlags checks that empty scalar flags fail as usage errors on both set
+// and plan instead of being treated as unset.
 func TestRejectEmptyScalarFlags(t *testing.T) {
 	file := copyFixture(t, sampleFLAC)
-	for _, flag := range []string{"--preset", "--legacy", "--padding"} {
+	for _, flag := range []string{"--preset", "--legacy", "--padding", "--synced-lyrics-file"} {
 		_, stderr, code := runCLI(t, "set", file, "--set", "TITLE=X", flag, "")
 		if code != 2 || !strings.Contains(stderr, "cannot be empty") {
 			t.Errorf("set %s '': code %d, stderr %q; want exit 2 'cannot be empty'", flag, code, stderr)

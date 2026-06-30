@@ -36,15 +36,23 @@ func termLen(enc byte) int {
 // encoders write) are stripped too, matching TagLib/mutagen; an all-terminator
 // frame still decodes to a single empty value.
 func decodeStrings(enc byte, data []byte) []string {
+	// A text frame is one frame: share byte-order state across its values so a UTF-16 BOM on
+	// the first value also applies to later values that omit a BOM.
+	return decodeStringsTracked(enc, data, &utf16Order{})
+}
+
+// decodeStringsTracked is [decodeStrings] with byte-order state shared by the surrounding
+// frame, such as a COMM or TXXX descriptor decoded before these values.
+func decodeStringsTracked(enc byte, data []byte, order *utf16Order) []string {
 	tl := termLen(enc)
 	var out []string
 	for len(data) > 0 {
 		idx := indexTerm(data, tl)
 		if idx < 0 {
-			out = append(out, decodeString(enc, data))
+			out = append(out, decodeStringTracked(enc, data, order))
 			break
 		}
-		out = append(out, decodeString(enc, data[:idx]))
+		out = append(out, decodeStringTracked(enc, data[:idx], order))
 		data = data[idx+tl:]
 		// A terminator at the very end terminates the last value rather than
 		// introducing an empty one.
@@ -85,14 +93,24 @@ func indexTerm(data []byte, tl int) int {
 	return -1
 }
 
-// decodeString decodes a single string (no terminator) in the given encoding.
+// decodeString decodes one unterminated string in the given encoding. A standalone string
+// gets fresh byte-order state, so its UTF-16 endianness is decided by its own BOM and
+// defaults to big-endian when no BOM is present.
 func decodeString(enc byte, b []byte) string {
+	return decodeStringTracked(enc, b, &utf16Order{})
+}
+
+// decodeStringTracked decodes one string, consulting and updating shared UTF-16 byte-order
+// state for encUTF16. encUTF16BE is always big-endian, and the single-byte encodings ignore
+// the tracker.
+func decodeStringTracked(enc byte, b []byte, order *utf16Order) string {
 	switch enc {
 	case encUTF8:
 		return sanitizeUTF8(b)
 	case encUTF16:
-		// A byte-order mark selects endianness and is then stripped.
-		le := detectBOM(b)
+		// This string's own BOM wins. Without a BOM, use the order carried from earlier in
+		// the frame. A present BOM is stripped before decoding.
+		le := order.resolve(b)
 		if hasBOM(b) {
 			b = b[2:]
 		}
@@ -105,18 +123,29 @@ func decodeString(enc byte, b []byte) string {
 	}
 }
 
-// detectBOM reports whether a UTF-16 string is little-endian per its byte-order
-// mark, defaulting to big-endian when the mark is absent or malformed.
-func detectBOM(b []byte) (littleEndian bool) {
+// utf16Order tracks byte order across the UTF-16 segments of one ID3 frame. A frame may put
+// a BOM on the descriptor or first value and omit it from later values. The default remains
+// big-endian for a lone BOM-less string.
+type utf16Order struct {
+	known bool // whether a BOM has set the running order yet
+	le    bool // the running order: true little-endian, false big-endian
+}
+
+// resolve returns the byte order for b and updates the running order when b starts with a
+// BOM. A BOM applies to its own string and becomes the default for later BOM-less strings.
+// The caller strips the BOM after calling resolve.
+func (o *utf16Order) resolve(b []byte) (littleEndian bool) {
 	if len(b) >= 2 {
 		if b[0] == 0xFF && b[1] == 0xFE {
+			o.known, o.le = true, true
 			return true
 		}
 		if b[0] == 0xFE && b[1] == 0xFF {
+			o.known, o.le = true, false
 			return false
 		}
 	}
-	return false
+	return o.known && o.le
 }
 
 // hasBOM reports whether b begins with a UTF-16 byte-order mark.

@@ -447,13 +447,23 @@ func buildResult(d *doc, edited *core.Media, r *rendered, ch changes, lay layout
 		resChapters = core.CloneChapters(edited.Chapters)
 	}
 
+	// Derive Segment header geometry from the emitted layout, not from parse-time offsets.
+	// If the Segment data-size VINT widens, the first child moves and later in-memory edits
+	// must compute SeekHead and Cue positions from the new base. segSizeOff itself does not
+	// move: it sits just after the unchanged Segment ID. With no children there are no
+	// SeekHead or Cue positions to update, so keep the parse-time values.
+	segDataStart, segSizeLen := d.wb.segDataStart, d.wb.segSizeLen
+	if len(lay.children) > 0 {
+		segDataStart = lay.children[0].start
+		segSizeLen = lay.children[0].start - d.wb.segSizeOff
+	}
 	wb := &writeBase{
 		size:         lay.size,
 		segStart:     d.wb.segStart,
 		segSizeOff:   d.wb.segSizeOff,
-		segSizeLen:   d.wb.segSizeLen,
+		segSizeLen:   segSizeLen,
 		segUnknown:   d.wb.segUnknown,
-		segDataStart: d.wb.segDataStart,
+		segDataStart: segDataStart,
 		segDataEnd:   d.wb.segDataEnd + lay.delta,
 		children:     lay.children,
 		clusterStart: lay.clusterStart,

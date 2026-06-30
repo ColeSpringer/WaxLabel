@@ -44,8 +44,8 @@ func TestAIFFParse(t *testing.T) {
 	if f.TrackNumber != 3 {
 		t.Errorf("track = %d, want 3", f.TrackNumber)
 	}
-	if f.Comment != "hello world" {
-		t.Errorf("comment = %q", f.Comment)
+	if len(f.Comment) != 1 || f.Comment[0] != "hello world" {
+		t.Errorf("comment = %v", f.Comment)
 	}
 	tr := doc.Properties().First()
 	if tr.SampleRate != 44100 || tr.Channels != 2 || tr.BitsPerSample != 16 {
@@ -99,8 +99,8 @@ func TestAIFFParseAIFC(t *testing.T) {
 	if doc.Fields().Title != "AIFC Title" {
 		t.Errorf("title = %q", doc.Fields().Title)
 	}
-	if doc.Fields().Comment != "aifc comment" {
-		t.Errorf("comment = %q", doc.Fields().Comment)
+	if c := doc.Fields().Comment; len(c) != 1 || c[0] != "aifc comment" {
+		t.Errorf("comment = %v", c)
 	}
 	tr := doc.Properties().First()
 	if tr.SampleRate != 44100 {

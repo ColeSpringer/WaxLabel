@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -95,6 +96,29 @@ func (d *Document) PrepareTransfer(dst *Document, opts ...WriteOption) (*Plan, T
 		}
 	}
 
+	// When a slash number's embedded total is dropped, copy only the number side. Passing the
+	// raw "3/70000" value into the destination editor would re-create the unstorable total
+	// and could overwrite the destination's valid total before the writer drops it. Explicit
+	// total keys are already skipped by the main apply loop when they are dropped.
+	stripEmbeddedTotal := map[tag.Key]bool{}
+	for _, it := range items {
+		if it.Kind != core.TransferField || it.Disposition != Dropped {
+			continue
+		}
+		var numKey tag.Key
+		switch it.Key {
+		case tag.TrackTotal:
+			numKey = tag.TrackNumber
+		case tag.DiscTotal:
+			numKey = tag.DiscNumber
+		default:
+			continue
+		}
+		if !d.media.Tags.Has(it.Key) { // a derived total, not an explicit source key
+			stripEmbeddedTotal[numKey] = true
+		}
+	}
+
 	for _, it := range items {
 		// Dropped means the destination cannot store it. Excluded means policy keeps the
 		// destination's own value. Neither is written.
@@ -104,7 +128,12 @@ func (d *Document) PrepareTransfer(dst *Document, opts ...WriteOption) (*Plan, T
 		switch it.Kind {
 		case core.TransferField:
 			if vals, ok := d.media.Tags.Get(it.Key); ok {
-				ed.Set(it.Key, vals...)
+				if stripEmbeddedTotal[it.Key] && len(vals) == 1 {
+					num, _ := tag.SplitNumberTotal(vals[0])
+					ed.Set(it.Key, num) // number only; the dropped total stays with the dest
+				} else {
+					ed.Set(it.Key, vals...)
+				}
 			}
 		case core.TransferChapter:
 			ed.SetChapters(core.CloneChapters(d.media.Chapters)...)

@@ -93,17 +93,18 @@ func RenderCommentList(vendor string, comments []Comment) []byte {
 // surfaces in the family view and Lint. Repeats of the same native name
 // (ARTIST=A, ARTIST=B) are an ordinary multi-value, not a conflict.
 //
-// CHAPTERxxx and SYNCEDLYRICS comments are structured chapters and synced lyrics, not
-// custom tag fields. [ProjectChapters]/[ProjectSyncedLyrics] own them, and [Rebuild]
-// preserves them unless a chapter or synced-lyrics edit replaces the set.
+// CHAPTERxxx and SYNCEDLYRICS comments are structured chapters and synced lyrics.
+// METADATA_BLOCK_PICTURE is cover art. These entries are owned by their dedicated
+// projectors, not by the custom tag view; Rebuild preserves them unless the matching edit
+// replaces the set.
 func Project(comments []Comment) (tag.TagSet, []core.FamilyValue) {
 	ts := tag.NewTagSet()
 	famIndex := map[tag.Key]int{}
 	names := map[tag.Key]map[string]bool{} // distinct native names per key
 	var fams []core.FamilyValue
 	for _, cm := range comments {
-		if isChapterComment(cm.Name) || isSyncedLyricsComment(cm.Name) {
-			continue // owned by the chapter/synced-lyrics projection, not a custom tag field
+		if isChapterComment(cm.Name) || isSyncedLyricsComment(cm.Name) || IsPictureComment(cm.Name) {
+			continue // owned by structured metadata projectors, not the custom tag view
 		}
 		key := mapping.CanonicalVorbis(cm.Name)
 		// The Vorbis reader stores values as raw bytes; a non-conformant file can hold invalid
@@ -263,6 +264,30 @@ func EncoderNoise(vendor string, comments []Comment) []core.Warning {
 		ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder comment: "+cm.Value)
 	}
 	return ws
+}
+
+// WaxLabelVendor is the neutral vendor string written when --strip-encoder replaces an
+// inherited transcoder stamp in a FLAC/Ogg Vorbis comment block.
+const WaxLabelVendor = "WaxLabel"
+
+// NeutralizeVendor returns the vendor string to write under the strip flag and reports
+// whether it changed. A changed vendor is a real edit because no canonical tag key can reach
+// the comment-header vendor field.
+func NeutralizeVendor(vendor string, strip bool) (string, bool) {
+	if strip && core.IsTranscoderStamp(vendor) {
+		return WaxLabelVendor, true
+	}
+	return vendor, false
+}
+
+// CarryEncoderWarnings recomputes inherited-encoder warnings from the vendor and comments
+// that were written, preserving every other warning in prior. Post-write documents use this
+// to match a fresh parse of the output.
+func CarryEncoderWarnings(prior []core.Warning, vendor string, comments []Comment) []core.Warning {
+	// Filter first, then deep-clone only the survivors. WarningsWithoutCode already returns a
+	// fresh slice, but its structs still share Keys with prior.
+	out := core.CloneWarnings(core.WarningsWithoutCode(prior, core.WarnInheritedEncoder))
+	return append(out, EncoderNoise(vendor, comments)...)
 }
 
 // distinctValues counts the distinct case- and space-insensitive values using

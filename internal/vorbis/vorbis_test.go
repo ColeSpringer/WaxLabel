@@ -180,11 +180,8 @@ func TestEncoderNoiseDeduplicatesVendorEcho(t *testing.T) {
 	})
 }
 
-// TestProjectSanitizesInvalidUTF8 is the QA-review regression: the Vorbis reader stores raw
-// bytes, so a non-conformant file can hold invalid UTF-8. Project must sanitize it into the
-// canonical model (like the ID3/MP4/WAV/AIFF readers) so the value never reaches the TagSet
-// or family view invalid - otherwise a copy of it would be spuriously rejected by the
-// write-time UTF-8 guard, and --json would emit raw invalid bytes.
+// TestProjectSanitizesInvalidUTF8 checks that invalid Vorbis comment bytes are sanitized
+// before reaching the canonical tag model or family view.
 func TestProjectSanitizesInvalidUTF8(t *testing.T) {
 	ts, fams := Project([]Comment{{Name: "ARTIST", Value: "bad\xff\xfevalue"}})
 	if v, _ := ts.First(tag.Artist); !utf8.ValidString(v) {
@@ -202,10 +199,8 @@ func TestProjectSanitizesInvalidUTF8(t *testing.T) {
 	}
 }
 
-// TestParsePictureSanitizesDescription is a QA-review regression: a FLAC/Ogg picture
-// description is stored as raw bytes, so a non-conformant file can hold invalid UTF-8.
-// ParsePicture must sanitize it so a transfer that re-adds the picture is not rejected by the
-// write-time UTF-8 guard.
+// TestParsePictureSanitizesDescription checks that FLAC/Ogg picture descriptions are valid
+// UTF-8 once exposed.
 func TestParsePictureSanitizesDescription(t *testing.T) {
 	body := RenderPicture(core.Picture{
 		Type: core.PicFrontCover, MIME: "image/png", Description: "bad\xff\xfedesc", Data: []byte{1, 2, 3},
@@ -216,5 +211,51 @@ func TestParsePictureSanitizesDescription(t *testing.T) {
 	}
 	if !utf8.ValidString(p.Description) {
 		t.Errorf("ParsePicture left invalid UTF-8 in the description: %q", p.Description)
+	}
+}
+
+// TestProjectSkipsPictureComment checks that picture comments stay out of the custom tag
+// projection. Malformed picture comments are kept opaque by the parser, but they are still
+// picture metadata and should not appear as tag or family values.
+func TestProjectSkipsPictureComment(t *testing.T) {
+	for _, name := range []string{"METADATA_BLOCK_PICTURE", "metadata_block_picture"} {
+		ts, fams := Project([]Comment{
+			{"TITLE", "T"},
+			{name, "not-valid-base64!!"},
+		})
+		if vals, ok := ts.Get(tag.Key(name)); ok {
+			t.Errorf("%s leaked as a tag: %v", name, vals)
+		}
+		for _, f := range fams {
+			if strings.EqualFold(string(f.Key), name) {
+				t.Errorf("%s leaked as a family value", name)
+			}
+		}
+		if v, _ := ts.First(tag.Title); v != "T" {
+			t.Errorf("TITLE = %q, want T (a real tag still projects)", v)
+		}
+	}
+}
+
+// TestRebuildPreservesPictureComment checks that an opaque picture comment survives an
+// unrelated tag edit. The codec re-renders decoded pictures, while malformed picture comments
+// remain ordinary preserved comments.
+func TestRebuildPreservesPictureComment(t *testing.T) {
+	orig := []Comment{
+		{"TITLE", "Old"},
+		{"METADATA_BLOCK_PICTURE", "not-valid-base64!!"},
+	}
+	base := tag.NewTagSet()
+	base.Set(tag.Title, "Old")
+	edited := base.Clone()
+	edited.Set(tag.Title, "New")
+
+	got := Rebuild(orig, edited, DiffKeys(base, edited), nil, false, nil, false)
+	want := []Comment{
+		{"TITLE", "New"},
+		{"METADATA_BLOCK_PICTURE", "not-valid-base64!!"}, // preserved verbatim
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("rebuild = %v\n            want %v", got, want)
 	}
 }

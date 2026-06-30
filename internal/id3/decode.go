@@ -40,11 +40,14 @@ func decodeUserText(body []byte) (desc string, vals []string, ok bool) {
 	if !validEncoding(enc) {
 		return "", nil, false
 	}
-	desc, rest, ok := cutEncoded(enc, body[1:])
+	// Share byte-order state across the descriptor and values. Some foreign frames put a
+	// UTF-16 BOM only on the descriptor, then omit it from the values.
+	order := &utf16Order{}
+	desc, rest, ok := cutEncodedTracked(enc, body[1:], order)
 	if !ok {
 		return "", nil, false
 	}
-	return desc, decodeStrings(enc, rest), true
+	return desc, decodeStringsTracked(enc, rest, order), true
 }
 
 // decodeUFID decodes a UFID frame: an owner identifier (Latin-1, terminated)
@@ -67,11 +70,14 @@ func decodeCommentFrame(body []byte) (desc string, vals []string, ok bool) {
 	if !validEncoding(enc) {
 		return "", nil, false
 	}
-	desc, rest, ok := cutEncoded(enc, body[4:]) // skip the language bytes
+	// Share byte-order state across the descriptor and values. Some foreign frames put a
+	// UTF-16 BOM only on the descriptor, then omit it from the values.
+	order := &utf16Order{}
+	desc, rest, ok := cutEncodedTracked(enc, body[4:], order) // skip the language bytes
 	if !ok {
 		return "", nil, false
 	}
-	return desc, decodeStrings(enc, rest), true
+	return desc, decodeStringsTracked(enc, rest, order), true
 }
 
 // decodeLangText decodes a USLT frame: encoding, a 3-byte language, a content
@@ -84,11 +90,14 @@ func decodeLangText(body []byte) (desc, text string, ok bool) {
 	if !validEncoding(enc) {
 		return "", "", false
 	}
-	desc, rest, ok := cutEncoded(enc, body[4:])
+	// Share byte-order state across the descriptor and text. Some foreign frames put a
+	// UTF-16 BOM only on the descriptor, then omit it from the text.
+	order := &utf16Order{}
+	desc, rest, ok := cutEncodedTracked(enc, body[4:], order)
 	if !ok {
 		return "", "", false
 	}
-	return desc, decodeString(enc, rest), true
+	return desc, decodeStringTracked(enc, rest, order), true
 }
 
 // isDateFrame reports whether id is one of the date frames the projector

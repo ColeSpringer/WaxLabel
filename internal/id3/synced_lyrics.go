@@ -93,7 +93,10 @@ func decodeSYLT(body []byte) (core.SyncedLyrics, []core.Warning, bool) {
 	lang := syltLanguage(string(body[1:4]))
 	tsFmt := body[4]
 	content := body[5]
-	desc, rest, ok := cutEncoded(enc, body[6:])
+	// Share byte-order state across the descriptor and every line. SYLT stores all strings
+	// under one encoding byte, and some files put a UTF-16 BOM only on the first string.
+	order := &utf16Order{}
+	desc, rest, ok := cutEncodedTracked(enc, body[6:], order)
 	if !ok {
 		return core.SyncedLyrics{}, nil, false
 	}
@@ -107,7 +110,7 @@ func decodeSYLT(body []byte) (core.SyncedLyrics, []core.Warning, bool) {
 	}
 	var lines []core.SyncedLine
 	for len(rest) > 0 && len(lines) < maxSyltLines {
-		text, after, tok := cutEncoded(enc, rest)
+		text, after, tok := cutEncodedTracked(enc, rest, order)
 		if !tok || len(after) < 4 {
 			break // truncated entry: keep what parsed
 		}

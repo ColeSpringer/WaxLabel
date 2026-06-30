@@ -228,19 +228,13 @@ func droppedValues(ts tag.TagSet) []droppedValue {
 	var out []droppedValue
 	out = appendDroppedPair(out, ts, tag.TrackNumber, tag.TrackTotal)
 	out = appendDroppedPair(out, ts, tag.DiscNumber, tag.DiscTotal)
-	// MEDIATYPE (stik) shares its representability rule with the linter/note: reuse
-	// tag.ValidMediaTypeValue so the encoder's drop and the validator cannot disagree on
-	// what a storable stik value is. A present-but-empty value is not a drop (it stores
-	// nothing by design), so skip it before the validity check.
-	if v, ok := ts.First(tag.MediaType); ok && strings.TrimSpace(v) != "" && !tag.ValidMediaTypeValue(tag.MediaType, v) {
+	// MEDIATYPE (stik) and COMPILATION (cpil) use the same value-drop predicates exposed to
+	// transfer. Empty values are exempt because they intentionally store nothing; invalid cpil
+	// values are reported because boolItem would coerce them to false.
+	if v, ok := ts.First(tag.MediaType); ok && mediaTypeValueDropped(v) {
 		out = append(out, droppedValue{Key: tag.MediaType, Value: strings.TrimSpace(v)})
 	}
-	// COMPILATION (cpil) is a single boolean byte, so a non-boolean value ("2",
-	// "maybe") cannot be represented: boolItem coerces it to false (0) and the user's
-	// distinct value is silently lost. Flag it the same way, reusing tag.ValidBooleanValue
-	// so the encoder's coercion and the set-time malformed-value note agree on what a
-	// storable boolean is. A recognized spelling ("0"/"true"/...) stores faithfully.
-	if v, ok := ts.First(tag.Compilation); ok && strings.TrimSpace(v) != "" && !tag.ValidBooleanValue(tag.Compilation, v) {
+	if v, ok := ts.First(tag.Compilation); ok && compilationValueDropped(v) {
 		out = append(out, droppedValue{Key: tag.Compilation, Value: strings.TrimSpace(v)})
 	}
 	return out
@@ -305,6 +299,9 @@ func isRepresentableZero(s string) bool {
 // past 65535. An empty slot is not a drop. A literal 0 also passes this check because
 // it fits uint16; appendSlotDrop handles the separate case where pairItem drops 0 by
 // treating the whole pair as absent.
+//
+// Transfer uses this same predicate for standalone total slots, keeping write behavior and
+// transfer grading aligned.
 func uint16ValueDropped(s string) bool {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -316,6 +313,32 @@ func uint16ValueDropped(s string) bool {
 	}
 	return n < 0 || n > 0xFFFF
 }
+
+// numberComponentDropped is the transfer-layer value-drop predicate for TRACKNUMBER and
+// DISCNUMBER. It judges only the number side of a possible "n/total" value; the embedded
+// total is graded separately. It does not reproduce pairItem's pair-level zero collapse
+// because that rule depends on the sibling total slot.
+func numberComponentDropped(s string) bool {
+	num, _ := tag.SplitNumberTotal(s)
+	return uint16ValueDropped(num)
+}
+
+// vocabValueDropped builds the value-drop predicate for a vocabulary atom such as stik or
+// cpil. The transfer layer passes raw values for these keys, so trim here and exempt empty
+// values, which intentionally store nothing.
+func vocabValueDropped(k tag.Key, valid func(tag.Key, string) bool) func(string) bool {
+	return func(val string) bool {
+		v := strings.TrimSpace(val)
+		return v != "" && !valid(k, v)
+	}
+}
+
+// mediaTypeValueDropped and compilationValueDropped are shared by transfer grading and the
+// writer's dropped-value report.
+var (
+	mediaTypeValueDropped   = vocabValueDropped(tag.MediaType, tag.ValidMediaTypeValue)
+	compilationValueDropped = vocabValueDropped(tag.Compilation, tag.ValidBooleanValue)
+)
 
 // renderData builds a "data" sub-atom: [size]["data"][version=0][type:24][locale=0][value].
 func renderData(typ uint32, value []byte) []byte {

@@ -101,13 +101,31 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 			"chapter start resolution is the movie timescale (typically 1 ms)",
 		},
 	}
+	// Per-field value-drop predicates expose the values the iTunes atom encoders cannot
+	// store: out-of-uint16 trkn/disk slots and invalid stik/cpil values. Transfer uses these
+	// predicates before applying fields so a dropped source value does not overwrite a valid
+	// destination value.
+	//
 	// Under --numeric-genre, recognized genres are written as numeric "gnre" atoms and
-	// re-read as canonical ID3 genre names. Some values still fall back to text, but the
-	// capability is value-blind, so it reports GENRE as partial.
+	// re-read as canonical ID3 genre names; the capability is value-blind, so it reports
+	// GENRE as partial. The lazy add inits the map on first use and preserves the Genre
+	// entry rather than overwriting it.
 	var perField map[tag.Key]core.Capability
-	if opts.NumericGenre {
-		perField = map[tag.Key]core.Capability{tag.Genre: core.NumericGenreCapability("numeric gnre atom")}
+	add := func(k tag.Key, c core.Capability) {
+		if perField == nil {
+			perField = map[tag.Key]core.Capability{}
+		}
+		perField[k] = c
 	}
+	if opts.NumericGenre {
+		add(tag.Genre, core.NumericGenreCapability("numeric gnre atom"))
+	}
+	add(tag.TrackNumber, core.WithValueDrop(fields, numberComponentDropped))
+	add(tag.TrackTotal, core.WithValueDrop(fields, uint16ValueDropped))
+	add(tag.DiscNumber, core.WithValueDrop(fields, numberComponentDropped))
+	add(tag.DiscTotal, core.WithValueDrop(fields, uint16ValueDropped))
+	add(tag.MediaType, core.WithValueDrop(fields, mediaTypeValueDropped))
+	add(tag.Compilation, core.WithValueDrop(fields, compilationValueDropped))
 	// Padding is grow-only: a forced rewrite can reserve a region, but a fit-in-place
 	// edit reuses the existing free space and cannot shrink it.
 	return core.NewCapabilities(core.FormatMP4, false, fields, pictures, chapters, core.AccessPartial, perField)

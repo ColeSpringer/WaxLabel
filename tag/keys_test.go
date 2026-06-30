@@ -71,12 +71,10 @@ func TestKnownKeysMatchConstants(t *testing.T) {
 	}
 }
 
-// TestMultivalued locks the cardinality signal to the exact set of keys the typed
-// Tags projection stores as slices (Artists, Composers, Genres, Performers, and
-// the two per-artist MusicBrainz ID lists), so the structured signal and the typed
-// sugar cannot disagree about which fields are plural.
+// TestMultivalued keeps the cardinality signal aligned with the fields the typed Tags
+// projection stores as slices.
 func TestMultivalued(t *testing.T) {
-	multi := []Key{Artist, Composer, Genre, Performer, MBArtistID, MBAlbumArtistID}
+	multi := []Key{Artist, Composer, Genre, Comment, Performer, MBArtistID, MBAlbumArtistID}
 	isMulti := make(map[Key]bool, len(multi))
 	for _, k := range multi {
 		isMulti[k] = true

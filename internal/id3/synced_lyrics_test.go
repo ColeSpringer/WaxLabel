@@ -242,6 +242,9 @@ func FuzzDecodeSYLT(f *testing.F) {
 	f.Add([]byte{encLatin1, 'e', 'n', 'g', 2, 1})
 	f.Add(buildSYLT(encLatin1, "eng", syltFmtMillis, syltContentLyrics, "d", []core.SyncedLine{{Time: time.Second, Text: "x"}}))
 	f.Add(buildSYLT(encUTF16, "eng", syltFmtMillis, syltContentLyrics, "dé", []core.SyncedLine{{Time: time.Second, Text: "café"}}))
+	// buildSYLT writes a BOM on every UTF-16 string. Add hand-built bytes where only the
+	// descriptor carries one.
+	f.Add(syltLEDescBOMLessLines())
 	roundtrip, _ := syltFrames([]core.SyncedLyrics{syltSet()}, 4, "")
 	f.Add(roundtrip[0].Body)
 	f.Fuzz(func(t *testing.T, body []byte) {
