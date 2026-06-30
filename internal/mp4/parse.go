@@ -50,7 +50,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		case "ftyp":
 			// The major brand (e.g. "M4B ") signals an audiobook; it is preserved
 			// verbatim on write (ftyp is copied) and surfaced in the native view.
-			if b, err := readPayload(src, a, 4, limit); err == nil && len(b) >= 4 {
+			if b, err := readPayloadPrefix(src, a, 4, limit); err == nil && len(b) >= 4 {
 				d.majorBrand = string(b[:4])
 			}
 		case "moof", "styp":
@@ -203,7 +203,7 @@ func collectOffsetTables(ctx context.Context, src core.ReaderAtSized, moov node,
 // parseOffsetTable decodes one stco/co64 atom: a 4-byte version/flags, a 4-byte
 // entry count, then that many 32- or 64-bit chunk offsets.
 func parseOffsetTable(src core.ReaderAtSized, a node, co64 bool, limit int64) (offsetTable, error) {
-	body, err := readPayload(src, a, maxMetaChunk, limit)
+	body, err := readPayloadWhole(src, a, maxMetaChunk, limit)
 	if err != nil {
 		return offsetTable{}, err
 	}
@@ -242,7 +242,10 @@ func decodeIlst(ctx context.Context, src core.ReaderAtSized, ilst node, d *doc, 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		payload, err := readPayload(src, c, maxMetaChunk, limit)
+		// ilst/covr items are the legitimately-large reads (high-res cover art), so they get
+		// the configurable MaxAllocBytes ceiling rather than the 64 MiB structural cap - and
+		// fail loudly past it instead of silently truncating an item we then could not read back.
+		payload, err := readPayloadWhole(src, c, limit, limit)
 		if err != nil {
 			return err
 		}
@@ -251,9 +254,16 @@ func decodeIlst(ctx context.Context, src core.ReaderAtSized, ilst node, d *doc, 
 	return nil
 }
 
-// adjacentFree returns the free atom immediately before or after ilst within
-// meta (the only reusable padding this codec considers), or nil. Mirrors
-// iTunes/mutagen, which keep padding next to the tag list.
+// reusablePadding reports whether an atom id is padding WaxLabel can overwrite in place.
+// Both "free" and "skip" are spec padding (native.go marks both as such); iTunes/mutagen
+// write "free", but a file may carry "skip", so either is reusable.
+func reusablePadding(id string) bool {
+	return id == "free" || id == "skip"
+}
+
+// adjacentFree returns the free/skip padding atom immediately before or after ilst within
+// meta (the only reusable padding this codec considers), or nil. Mirrors iTunes/mutagen,
+// which keep padding next to the tag list.
 func adjacentFree(meta, ilst node) *atomRef {
 	idx := -1
 	for i, c := range meta.children {
@@ -265,11 +275,11 @@ func adjacentFree(meta, ilst node) *atomRef {
 	if idx < 0 {
 		return nil
 	}
-	if idx > 0 && meta.children[idx-1].id() == "free" {
+	if idx > 0 && reusablePadding(meta.children[idx-1].id()) {
 		r := refOf(meta.children[idx-1])
 		return &r
 	}
-	if idx+1 < len(meta.children) && meta.children[idx+1].id() == "free" {
+	if idx+1 < len(meta.children) && reusablePadding(meta.children[idx+1].id()) {
 		r := refOf(meta.children[idx+1])
 		return &r
 	}
@@ -320,7 +330,7 @@ func parseProperties(src core.ReaderAtSized, moov node, d *doc, limit int64) {
 
 // handlerType returns a hdlr atom's 4-character handler type (e.g. "soun").
 func handlerType(src core.ReaderAtSized, hdlr node, limit int64) string {
-	b, err := readPayload(src, hdlr, 12, limit)
+	b, err := readPayloadPrefix(src, hdlr, 12, limit)
 	if err != nil || len(b) < 12 {
 		return ""
 	}
@@ -344,7 +354,7 @@ func parseMdhd(src core.ReaderAtSized, mdhd node, limit int64) (time.Duration, b
 // geometry in a different structure (a float64 sample rate and a uint32 channel
 // count at other offsets), so its version is checked first.
 func parseStsd(src core.ReaderAtSized, stsd node, d *doc, limit int64) {
-	b, err := readPayload(src, stsd, 256, limit)
+	b, err := readPayloadPrefix(src, stsd, 256, limit)
 	if err != nil || len(b) < 44 {
 		return
 	}
@@ -497,11 +507,30 @@ func trackOffTable(d *doc, trak *atomRef) (offsetTable, bool) {
 	return offsetTable{}, false
 }
 
-// readPayload reads up to capBytes of an atom's payload, bounded by the alloc
-// limit. The small leaf-atom decoders share it; it never reads a large mdat
-// (only its range is recorded).
-func readPayload(src core.ReaderAtSized, n node, capBytes, limit int64) ([]byte, error) {
-	return bits.ReadSlice(src, n.payloadOff(), min(n.size-n.headerLen, capBytes), limit)
+// readPayloadPrefix reads up to prefixLen bytes of an atom's payload, bounded by the
+// alloc limit. The header-prefix decoders (the ftyp brand, mvhd/tkhd/mdhd/hdlr/stsd
+// leading fields) intend to read only the front of a possibly-larger atom, so reading
+// min(payloadSize, prefixLen) and never failing on a larger atom is the correct contract.
+func readPayloadPrefix(src core.ReaderAtSized, n node, prefixLen, limit int64) ([]byte, error) {
+	return bits.ReadSlice(src, n.payloadOff(), min(n.size-n.headerLen, prefixLen), limit)
+}
+
+// readPayloadWhole reads an atom's entire payload, failing with ErrSizeTooLarge when it
+// exceeds capBytes rather than silently truncating it. The whole-atom decoders (the ilst
+// items and the structural offset/sample tables) need every byte, so a payload past the cap
+// is a hard error, not a quietly-shortened read that downstream length checks would then
+// reject with a misleading diagnostic. capBytes is maxMetaChunk for the structural tables
+// (which should never approach it) and the configurable MaxAllocBytes for ilst/covr items
+// (legitimately large cover art). It never reads a large mdat (only its range is recorded).
+func readPayloadWhole(src core.ReaderAtSized, n node, capBytes, limit int64) ([]byte, error) {
+	payloadSize := n.size - n.headerLen
+	// capBytes <= 0 means "no cap", matching the limit <= 0 unbounded convention bits.ReadSlice
+	// follows: the ilst read passes capBytes = limit (the configurable MaxAllocBytes), so a
+	// caller that explicitly disables the alloc limit (limit == 0) also disables this cap.
+	if capBytes > 0 && payloadSize > capBytes {
+		return nil, fmt.Errorf("%w: MP4 atom %q payload %d exceeds %d", waxerr.ErrSizeTooLarge, n.id(), payloadSize, capBytes)
+	}
+	return bits.ReadSlice(src, n.payloadOff(), payloadSize, limit)
 }
 
 // refOf / refPtr capture a node as a lightweight atomRef for the writer.

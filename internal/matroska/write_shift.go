@@ -240,6 +240,11 @@ func buildShiftItems(wb *writeBase, ch changes, r *rendered) (items []outItem, s
 		case c.id == idCues && wb.cues != nil:
 			cuesIdx = len(items)
 			items = append(items, copyItem(c, itemOther))
+		case c.id == idCRC32 && wb.segVoidFromCRC != nil:
+			// Substitute the stale Segment-level CRC with the captured length-identical Void
+			// rather than copyItem-ing the original bytes; litItem records idVoid as the output
+			// id, so the returned doc carries a Void instead of a live, now-wrong CRC.
+			items = append(items, litItem(idVoid, wb.segVoidFromCRC, c.start, itemOther))
 		case c.id == idInfo && ch.title:
 			items = append(items, litItem(idInfo, r.info, c.start, itemInfo))
 		case c.id == idTags && ch.simple:

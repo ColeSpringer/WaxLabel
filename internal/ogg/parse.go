@@ -3,7 +3,6 @@ package ogg
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -292,15 +291,9 @@ func (d *doc) decodeComments(pkt []byte, limit int64, maxElements int, warnings 
 			d.comments = append(d.comments, cm)
 			continue
 		}
-		// A malformed picture is preserved as an opaque comment and warned, never
-		// silently dropped.
-		raw, derr := base64.StdEncoding.DecodeString(cm.Value)
-		if derr != nil {
-			*warnings = core.Warn(*warnings, core.WarnInvalidPicture, "METADATA_BLOCK_PICTURE is not valid base64; preserved as a comment")
-			d.comments = append(d.comments, cm)
-			continue
-		}
-		pic, derr := vorbis.ParsePicture(raw, limit)
+		// A malformed picture is preserved as an opaque comment and warned, never silently
+		// dropped. The decode is shared with the FLAC parser so the two cannot drift.
+		pic, derr := vorbis.DecodePictureComment(cm.Value, limit)
 		if derr != nil {
 			*warnings = core.Warn(*warnings, core.WarnInvalidPicture, derr.Error())
 			d.comments = append(d.comments, cm)

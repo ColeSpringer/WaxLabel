@@ -118,6 +118,11 @@ type writeBase struct {
 	info    *infoBlock
 	attach  *attachBlock
 	tagsCRC bool // the Tags master element led with a CRC-32
+	// segVoidFromCRC holds the bytes of a CRC-32 found directly under the Segment, pre-flipped
+	// to a Void (byte[0] set to idVoid). A Segment-level CRC covers the whole segment body and
+	// goes stale on any edit; the writer substitutes this length-identical Void so the output
+	// stays valid (the CRC is spec-optional) without a whole-file recompute. nil when absent.
+	segVoidFromCRC []byte
 }
 
 // l1elem is one top-level Segment child captured for rewriting: its ID and full

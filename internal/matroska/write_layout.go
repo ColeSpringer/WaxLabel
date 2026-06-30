@@ -117,6 +117,12 @@ func planAbsorb(d *doc, base, edited *core.Media, ch changes, ek map[tag.Key]boo
 		case c.id == idVoid && flexIdx < 0:
 			flexIdx = len(items)
 			items = append(items, outItem{id: idVoid, origStart: c.start, kind: itemVoid})
+		case c.id == idCRC32 && wb.segVoidFromCRC != nil:
+			// Substitute the stale Segment-level CRC with the captured length-identical Void.
+			// litItem records idVoid as the output id (l1elem{id: it.id} in buildResult), so the
+			// returned doc carries a Void - a re-edit sees a Void, not a live CRC, with no
+			// separate post-write patch needed.
+			items = append(items, litItem(idVoid, wb.segVoidFromCRC, c.start, itemOther))
 		case c.id == idTags && ch.simple:
 			if tagsPlaced {
 				absorbed[c.start] = true

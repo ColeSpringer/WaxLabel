@@ -1,8 +1,9 @@
 package vorbis
 
 import (
+	"cmp"
 	"fmt"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -85,13 +86,19 @@ func ProjectChapters(comments []Comment) []core.Chapter {
 			e.start, e.hasStart = d, true
 		}
 	}
-	sort.Ints(order)
+	slices.Sort(order)
 	var chs []core.Chapter
 	for _, idx := range order {
 		if e := byIndex[idx]; e.hasStart {
 			chs = append(chs, core.Chapter{Start: e.start, Title: e.title})
 		}
 	}
+	// Build in CHAPTERxxx index order above, then stable-sort by start so an out-of-order
+	// source (CHAPTER001 later than CHAPTER002) projects in time order, making a load->store
+	// round-trip a no-op. Mirrors Matroska's sortChapters; the prior index order breaks ties
+	// deterministically for equal-start chapters. Conformant files (index order == time
+	// order) are unaffected.
+	slices.SortStableFunc(chs, func(a, b core.Chapter) int { return cmp.Compare(a.Start, b.Start) })
 	return chs
 }
 

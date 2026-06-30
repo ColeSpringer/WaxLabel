@@ -2,7 +2,9 @@ package vorbis
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -14,11 +16,29 @@ import (
 // Vorbis and Opus. The value is a FLAC PICTURE block payload.
 const PictureComment = "METADATA_BLOCK_PICTURE"
 
+// pictureCommentBase64Error is the warning message for a METADATA_BLOCK_PICTURE comment whose
+// value is not valid base64. The FLAC and Ogg parsers both preserve such a comment verbatim, so
+// sharing the wording (via DecodePictureComment) keeps the two from drifting.
+const pictureCommentBase64Error = "METADATA_BLOCK_PICTURE is not valid base64; preserved as a comment"
+
 // IsPictureComment reports whether a comment name is the cover-art picture comment,
 // case-insensitively. Lowercase spellings are decoded as pictures at parse time, so the tag
 // projector must skip them the same way.
 func IsPictureComment(name string) bool {
 	return strings.EqualFold(name, PictureComment)
+}
+
+// DecodePictureComment base64-decodes a METADATA_BLOCK_PICTURE comment value and parses it into a
+// Picture. On failure it returns a descriptive error - the shared base64 message, or ParsePicture's
+// own error - so the caller warns with WarnInvalidPicture and preserves the comment verbatim. It is
+// the shared core of the FLAC and Ogg picture-comment decoders, so neither the flow nor the base64
+// wording can drift between the two formats.
+func DecodePictureComment(value string, limit int64) (core.Picture, error) {
+	raw, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return core.Picture{}, errors.New(pictureCommentBase64Error)
+	}
+	return ParsePicture(raw, limit)
 }
 
 // ParsePicture decodes a FLAC PICTURE block body into a Picture. The same binary
@@ -27,7 +47,15 @@ func IsPictureComment(name string) bool {
 func ParsePicture(body []byte, limit int64) (core.Picture, error) {
 	c := bits.NewCursor(bytes.NewReader(body), int64(len(body)), limit)
 	var p core.Picture
-	p.Type = core.PictureType(c.U32BE())
+	// The on-disk type is a 32-bit field, but the defined + reserved role space is a single
+	// byte (matches ID3 APIC). A value past 255 is non-conformant; clamp it to PicOther (the
+	// honest "undefined role" default) rather than letting the narrowing conversion wrap it
+	// into a misleading valid role (e.g. 259 -> "Front cover"). Picture bytes are unaffected.
+	typ := c.U32BE()
+	if typ > 255 {
+		typ = 0 // PicOther; out of the single-byte ID3/FLAC type space
+	}
+	p.Type = core.PictureType(typ)
 	p.MIME = string(c.Bytes(int64(c.U32BE())))
 	// The description is stored as raw bytes; a non-conformant file can hold invalid UTF-8.
 	// Sanitize it into the model like the tag-value read paths, so a transfer that re-adds

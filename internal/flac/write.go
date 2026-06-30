@@ -166,6 +166,18 @@ func rebuildBlocks(d *doc, newVendor string, newComments []comment, pictures []c
 	var ops []string
 	vorbisHandled := false
 	picturesEmitted := false
+	// commentBlockReRendered records that the comment block was re-rendered from the (already
+	// picture-comment-stripped) newComments, so the materialization below can fire on the real
+	// re-render rather than hand-mirroring its trigger condition (which previously drifted and
+	// dropped a cover on a vendor-only edit).
+	commentBlockReRendered := false
+
+	// A picture edit re-emits every cover as a native block (emitPictures below). If the source
+	// carried a comment-embedded cover (METADATA_BLOCK_PICTURE), a verbatim clone of the comment
+	// block would keep that now-stale picture comment alongside the fresh native block - a
+	// duplicate cover. Force the comment block to re-render from the (already-stripped) comment
+	// list in that case so the picture comment is dropped exactly once.
+	dropPictureComment := picturesChanged && len(d.commentPictures) > 0
 
 	emitPictures := func() {
 		for _, p := range pictures {
@@ -177,7 +189,7 @@ func rebuildBlocks(d *doc, newVendor string, newComments []comment, pictures []c
 	for _, b := range d.blocks {
 		switch b.code {
 		case blkVorbisComment:
-			if !commentsChanged && !vendorChanged {
+			if !commentsChanged && !vendorChanged && !dropPictureComment {
 				// Nothing touched the comment block, so preserve every comment block verbatim,
 				// including extras outside the canonical projection.
 				out = append(out, b.clone())
@@ -191,6 +203,7 @@ func rebuildBlocks(d *doc, newVendor string, newComments []comment, pictures []c
 			}
 			out = append(out, block{code: blkVorbisComment, body: renderVorbisComment(newVendor, newComments)})
 			vorbisHandled = true
+			commentBlockReRendered = true
 		case blkPicture:
 			if picturesChanged {
 				if !picturesEmitted {
@@ -209,9 +222,22 @@ func rebuildBlocks(d *doc, newVendor string, newComments []comment, pictures []c
 	// Create a Vorbis comment block if one is now needed but none existed.
 	if !vorbisHandled && len(newComments) > 0 {
 		out = insertAfterStreamInfo(out, block{code: blkVorbisComment, body: renderVorbisComment(newVendor, newComments)})
+		commentBlockReRendered = true
 	}
 	if picturesChanged && !picturesEmitted && len(pictures) > 0 {
 		emitPictures()
+	}
+	// Materialize comment-sourced covers when the comment block was re-rendered (which strips the
+	// METADATA_BLOCK_PICTURE entry) but pictures were not separately re-emitted. Without this a
+	// tag/chapter/vendor edit would silently drop the cover. Keying off the actual re-render flag
+	// (rather than re-deriving its trigger) keeps the two from drifting - a vendor-only edit
+	// re-renders the block too, which a hand-mirrored condition once missed. Native PICTURE blocks
+	// were already cloned verbatim above; emit only the comment-sourced subset (not all of
+	// pictures) so those native blocks are not re-rendered and duplicated.
+	if commentBlockReRendered && !picturesChanged {
+		for _, p := range d.commentPictures {
+			out = append(out, block{code: blkPicture, body: renderPicture(p)})
+		}
 	}
 
 	if commentsChanged {

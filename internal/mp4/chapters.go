@@ -66,7 +66,7 @@ func chplHasReserved(version uint8) bool { return version != 0 }
 // The 8-bit count caps chpl at 255 chapters. It returns ok==false on any malformation so the
 // caller treats the file as carrying no chpl chapters.
 func decodeChpl(src core.ReaderAtSized, chpl node, limit int64) (version uint8, chapters []core.Chapter, ok bool) {
-	b, err := readPayload(src, chpl, maxMetaChunk, limit)
+	b, err := readPayloadWhole(src, chpl, maxMetaChunk, limit)
 	if err != nil {
 		return 0, nil, false
 	}
@@ -174,7 +174,7 @@ func collectChapterRefs(src core.ReaderAtSized, moov node, d *doc, limit int64) 
 	}
 	if tref, ok := audio.find("tref"); ok {
 		d.audioTref = refPtr(tref)
-		if raw, err := readPayload(src, tref, maxMetaChunk, limit); err == nil {
+		if raw, err := readPayloadWhole(src, tref, maxMetaChunk, limit); err == nil {
 			d.audioTrefRaw = raw
 		}
 	}
@@ -196,7 +196,7 @@ func collectChapterRefs(src core.ReaderAtSized, moov node, d *doc, limit int64) 
 // movie duration, and takes next_track_ID as its track id. The field's absolute
 // offset is recorded so a created track can bump it.
 func collectMvhd(src core.ReaderAtSized, mvhd node, d *doc, limit int64) {
-	b, err := readPayload(src, mvhd, 120, limit)
+	b, err := readPayloadPrefix(src, mvhd, 120, limit)
 	if err != nil || len(b) < 1 {
 		return
 	}
@@ -275,7 +275,7 @@ func movieTimescaleOf(src core.ReaderAtSized, moov node, limit int64) uint32 {
 	if !ok {
 		return 0
 	}
-	b, err := readPayload(src, mvhd, 32, limit)
+	b, err := readPayloadPrefix(src, mvhd, 32, limit)
 	if err != nil || len(b) < 1 {
 		return 0
 	}
@@ -309,7 +309,7 @@ func chapterEditOffset(src core.ReaderAtSized, trak node, movieTimescale uint32,
 	if !ok {
 		return 0
 	}
-	b, err := readPayload(src, edts, maxMetaChunk, limit)
+	b, err := readPayloadWhole(src, edts, maxMetaChunk, limit)
 	if err != nil {
 		return 0
 	}
@@ -366,7 +366,7 @@ func trackEditedDuration(src core.ReaderAtSized, trak node, movieTimescale uint3
 	if !ok {
 		return 0
 	}
-	b, err := readPayload(src, edts, maxMetaChunk, limit)
+	b, err := readPayloadWhole(src, edts, maxMetaChunk, limit)
 	if err != nil {
 		return 0
 	}
@@ -433,7 +433,7 @@ func chapterTrackIDs(src core.ReaderAtSized, trak node, limit int64) []uint32 {
 	if !ok {
 		return nil
 	}
-	body, err := readPayload(src, tref, maxMetaChunk, limit)
+	body, err := readPayloadWhole(src, tref, maxMetaChunk, limit)
 	if err != nil {
 		return nil
 	}
@@ -478,7 +478,7 @@ func trakByID(src core.ReaderAtSized, traks []node, ids []uint32, limit int64) (
 // trackID reads the track_id from a tkhd atom (version 0 places it at byte 12;
 // version 1's 64-bit times push it to byte 20).
 func trackID(src core.ReaderAtSized, tkhd node, limit int64) (uint32, bool) {
-	b, err := readPayload(src, tkhd, 32, limit)
+	b, err := readPayloadPrefix(src, tkhd, 32, limit)
 	if err != nil || len(b) < 1 {
 		return 0, false
 	}
@@ -554,7 +554,7 @@ func sampleTimes(src core.ReaderAtSized, stbl node, limit int64) ([]uint64, bool
 	if !ok {
 		return nil, false
 	}
-	b, err := readPayload(src, stts, maxMetaChunk, limit)
+	b, err := readPayloadWhole(src, stts, maxMetaChunk, limit)
 	if err != nil || len(b) < 8 {
 		return nil, false
 	}
@@ -621,7 +621,7 @@ func sampleSizes(src core.ReaderAtSized, stbl node, nSamples int, limit int64) (
 	if !ok {
 		return nil, false
 	}
-	b, err := readPayload(src, stsz, maxMetaChunk, limit)
+	b, err := readPayloadWhole(src, stsz, maxMetaChunk, limit)
 	if err != nil || len(b) < 12 {
 		return nil, false
 	}
@@ -676,7 +676,7 @@ func stscEntries(src core.ReaderAtSized, stbl node, limit int64) ([]stscEntry, b
 	if !ok {
 		return nil, false
 	}
-	b, err := readPayload(src, stsc, maxMetaChunk, limit)
+	b, err := readPayloadWhole(src, stsc, maxMetaChunk, limit)
 	if err != nil || len(b) < 8 {
 		return nil, false
 	}
@@ -796,7 +796,7 @@ func fillChapterEnds(chs []core.Chapter) {
 // It is shared by the audio-property duration read and the chapter-track timescale
 // read so the field layout lives in one place.
 func mdhdFields(src core.ReaderAtSized, mdhd node, limit int64) (timescale uint32, duration uint64, ok bool) {
-	b, err := readPayload(src, mdhd, 32, limit)
+	b, err := readPayloadPrefix(src, mdhd, 32, limit)
 	if err != nil || len(b) < 4 {
 		return 0, 0, false
 	}

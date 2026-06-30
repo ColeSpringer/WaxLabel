@@ -104,6 +104,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	if err := checkIndexCaptured(d.wb); err != nil {
 		return nil, err
 	}
+	if err := checkSegmentCRCCaptured(d.wb); err != nil {
+		return nil, err
+	}
 	if err := checkPreservable(d, ch, ek); err != nil {
 		return nil, err
 	}
@@ -208,6 +211,25 @@ func checkIndexCaptured(wb *writeBase) error {
 	if (seeks == 1 && wb.seek == nil) || (cues == 1 && wb.cues == nil) {
 		return fmt.Errorf("%w: a Matroska index element (SeekHead/Cues) could not be read for rewrite",
 			waxerr.ErrUnsupportedTag)
+	}
+	return nil
+}
+
+// checkSegmentCRCCaptured refuses an edit when a Segment-level CRC-32 is present but its bytes
+// could not be captured for neutralization (an over-limit declared size left segVoidFromCRC nil).
+// Copying such a CRC verbatim over an edited body would leave a stale, invalid checksum, so this
+// fails loudly rather than emit it - the same contract checkIndexCaptured applies to the index
+// elements. The Segment CRC is the only CRC-32 that appears directly in wb.children (the rest live
+// inside their masters' captured raw bytes), so scanning for idCRC32 here is unambiguous.
+func checkSegmentCRCCaptured(wb *writeBase) error {
+	if wb.segVoidFromCRC != nil {
+		return nil // captured and neutralizable to a Void
+	}
+	for _, c := range wb.children {
+		if c.id == idCRC32 {
+			return fmt.Errorf("%w: a Matroska Segment-level CRC-32 could not be read for neutralization",
+				waxerr.ErrUnsupportedTag)
+		}
 	}
 	return nil
 }

@@ -125,6 +125,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// Re-render the ilst from the edited canonical set, keeping the preserved
 	// items (unknown atoms, foreign freeforms) verbatim.
 	newItems := buildItems(edited.Tags, edited.Pictures, preservedItems(d.items), opts.NumericGenre)
+	if err := checkBuiltItems(newItems, d.items, opts.Limits.MaxAllocBytes); err != nil {
+		return nil, err
+	}
 	var ilstPayload []byte
 	for _, it := range newItems {
 		ilstPayload = append(ilstPayload, itemBytes(it)...)
@@ -413,6 +416,61 @@ func checkSizes(ancestors []atomRef, delta int64) error {
 		}
 	}
 	return nil
+}
+
+// checkItemSizes rejects any ilst item whose payload exceeds the alloc limit - the write-side
+// half of H1's read/write symmetry. readPayloadWhole caps an ilst item read at the same limit,
+// so without this guard the writer could emit a cover or freeform it cannot read back. It
+// inspects every item buildItems returns - the canonical atoms, the covr, and the preserved/
+// unknown items - so an oversized preserved freeform is caught too, not only the cover. An
+// oversized covr reports ErrPictureTooLarge (the realistic hi-res-cover case); any other item
+// reports ErrSizeTooLarge. A zero/unset limit falls back to the 256 MiB library ceiling so a
+// caller that left Limits unset still cannot write an unreadable item.
+func checkItemSizes(items []item, limit int64) error {
+	if limit <= 0 {
+		limit = bits.DefaultLimits.MaxAllocBytes
+	}
+	for _, it := range items {
+		body := int64(len(it.payload))
+		if body <= limit {
+			continue
+		}
+		if it.name == atomName("covr") {
+			return fmt.Errorf("%w: cover art is %s (max %s)",
+				waxerr.ErrPictureTooLarge, bits.HumanBytes(body), bits.HumanBytes(limit))
+		}
+		return fmt.Errorf("%w: ilst item %q is %s (max %s)",
+			waxerr.ErrSizeTooLarge, string(it.name[:]), bits.HumanBytes(body), bits.HumanBytes(limit))
+	}
+	return nil
+}
+
+// checkBuiltItems is the single guard both write paths funnel buildItems' output through, so the
+// size check (and the floor below) cannot be applied inconsistently or forgotten at a call site.
+// It floors the write limit at the largest ilst item already present at parse: those items were
+// read within the (possibly raised) parse limit, so writing them back is always safe even when
+// the write limit defaults lower. Without the floor, an untouched oversized cover - parsed under
+// a raised MaxAllocBytes - would make an unrelated tag edit fail. A genuinely new item larger
+// than anything the file already held is still rejected.
+func checkBuiltItems(items, parsed []item, limit int64) error {
+	if limit <= 0 {
+		limit = bits.DefaultLimits.MaxAllocBytes
+	}
+	if f := largestItemPayload(parsed); f > limit {
+		limit = f
+	}
+	return checkItemSizes(items, limit)
+}
+
+// largestItemPayload returns the largest ilst item payload in items, or 0 when there are none.
+func largestItemPayload(items []item) int64 {
+	var maxLen int64
+	for _, it := range items {
+		if n := int64(len(it.payload)); n > maxLen {
+			maxLen = n
+		}
+	}
+	return maxLen
 }
 
 // offsetPatch re-renders a chunk-offset table with every entry past the

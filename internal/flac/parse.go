@@ -7,6 +7,7 @@ import (
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/id3"
+	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -151,6 +152,18 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 		media.Pictures = append(media.Pictures, p)
 	}
 
+	// Also decode cover art carried as a base64 METADATA_BLOCK_PICTURE Vorbis comment (the Ogg
+	// form some encoders use in FLAC), appended after the native pictures so it is visible and
+	// editable. Decoded comments are stripped from the list (so they are not also surfaced as
+	// tags) and recorded so the writer materializes exactly them into native blocks on a
+	// metadata-rewriting edit - a tag-only edit would otherwise drop the cover.
+	var commentPics []core.Picture
+	var picWarnings []core.Warning
+	d.comments, commentPics, picWarnings = extractCommentPictures(d.comments, limit)
+	d.commentPictures = commentPics
+	media.Pictures = append(media.Pictures, commentPics...)
+	warnings = append(warnings, picWarnings...)
+
 	for _, b := range d.blocks {
 		if b.code > blkPicture && b.code != blkInvalid {
 			warnings = core.Warn(warnings, core.WarnUnknownBlock,
@@ -167,6 +180,41 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	media.Identity = core.Identity{Size: size}
 	media.Identity.Fingerprint, media.Identity.HasFinger = core.Fingerprint(src, media, limit)
 	return media, nil
+}
+
+// extractCommentPictures splits base64 METADATA_BLOCK_PICTURE entries out of a Vorbis comment
+// list. It returns the comments to keep, the decoded covers (in comment order), and any
+// invalid-picture warnings. A malformed picture comment is kept verbatim and warned, never
+// dropped - exactly the Ogg parser's behavior via the shared vorbis decoder. The fast path
+// returns the input slice unchanged when no picture comment is present, so the common FLAC
+// file (native PICTURE blocks only) pays no reallocation.
+func extractCommentPictures(comments []comment, limit int64) (kept []comment, pics []core.Picture, ws []core.Warning) {
+	has := false
+	for _, cm := range comments {
+		if vorbis.IsPictureComment(cm.name) {
+			has = true
+			break
+		}
+	}
+	if !has {
+		return comments, nil, nil
+	}
+	kept = make([]comment, 0, len(comments))
+	for _, cm := range comments {
+		if !vorbis.IsPictureComment(cm.name) {
+			kept = append(kept, cm)
+			continue
+		}
+		// Shared with the Ogg parser so the decode flow and the invalid-base64 wording cannot drift.
+		pic, err := vorbis.DecodePictureComment(cm.value, limit)
+		if err != nil {
+			ws = core.Warn(ws, core.WarnInvalidPicture, err.Error())
+			kept = append(kept, cm)
+			continue
+		}
+		pics = append(pics, pic)
+	}
+	return kept, pics, ws
 }
 
 // id3v2Len returns the total byte length of a stray leading ID3v2 tag given its

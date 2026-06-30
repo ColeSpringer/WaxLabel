@@ -291,6 +291,12 @@ path:
   any description, and reads back as a front cover. A plain front cover with no description
   round-trips losslessly; copying a described or non-front cover to MP4 reports the
   per-picture metadata loss.
+- **MP4 metadata is read only at `moov.udta.meta.ilst`.** An iTunes `ilst` placed
+  directly under `moov.meta` (no intervening `udta`) and the QuickTime `mdta`-keys form
+  (`moov.meta` with a `keys` table) are not read, so such a file reads as having no tags.
+  Editing it writes a fresh `moov.udta.meta.ilst` and preserves the original metadata atom
+  verbatim rather than destroying it; the canonical `moov.udta.meta.ilst` layout that
+  iTunes and most taggers write is unaffected.
 
 ## Safety
 

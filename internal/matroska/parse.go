@@ -98,6 +98,19 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		}
 		wb.children = append(wb.children, l1elem{id: el.id, start: el.start, dataStart: el.dataStart, dataEnd: el.dataEnd})
 		switch el.id {
+		case idCRC32:
+			// A CRC-32 directly under the Segment covers the whole segment body, so any edit
+			// leaves it stale. Capture its bytes pre-flipped to a Void (byte[0] = idVoid): the
+			// writer substitutes this length-identical Void in place of the stale CRC, so the
+			// Segment data-size VINT is unchanged and nothing shifts. A Void's content is
+			// arbitrary, so keeping the old CRC value bytes inside it is harmless. Dropping the
+			// spec-optional CRC keeps the output valid (EBML RFC 8794) without the risky
+			// whole-file recompute the other masters' CRCs would need. It is the only CRC that
+			// appears directly in wb.children (the rest live inside their masters' raw bytes).
+			if raw, err := bits.ReadSlice(src, el.start, el.dataEnd-el.start, limit); err == nil && len(raw) > 0 {
+				raw[0] = idVoid
+				wb.segVoidFromCRC = raw
+			}
 		case idSeekHead:
 			wb.seek = captureSeekHead(src, el, depth, limit)
 		case idCues:

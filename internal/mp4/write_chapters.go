@@ -99,6 +99,9 @@ func buildChapterUdta(d *doc, edited *core.Media, needIlst bool, opts core.Write
 	var newIlst []byte
 	if needIlst {
 		newItems = buildItems(edited.Tags, edited.Pictures, preservedItems(d.items), opts.NumericGenre)
+		if err := checkBuiltItems(newItems, d.items, opts.Limits.MaxAllocBytes); err != nil {
+			return nil, udtaRegion{}, err
+		}
 		var payload []byte
 		for _, it := range newItems {
 			payload = append(payload, itemBytes(it)...)

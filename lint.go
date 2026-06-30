@@ -93,6 +93,11 @@ func lintWarnings(ws []core.Warning) []Finding {
 			out = append(out, Finding{LintWarning, w.Code.String(), w.Message, ""})
 		case core.WarnMultipleVorbisComment, core.WarnDuplicateTagBlock, core.WarnNoAudioFrames:
 			out = append(out, Finding{LintError, w.Code.String(), w.Message, ""})
+		case core.WarnNumericGenre:
+			// Informational, like negative-numeric/custom-key: a numeric genre
+			// reference resolved to a name, worth surfacing in lint (README promises
+			// dump and lint both report it) but it does not flip the clean exit.
+			out = append(out, Finding{LintInfo, w.Code.String(), w.Message, ""})
 		}
 	}
 	return out

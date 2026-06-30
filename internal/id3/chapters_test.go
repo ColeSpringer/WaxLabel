@@ -3,6 +3,7 @@ package id3
 import (
 	"bytes"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -143,6 +144,73 @@ func TestChapterCTOCSubsetKeepsUnreferenced(t *testing.T) {
 	for i := range want {
 		if titles[i] != want[i] {
 			t.Errorf("title[%d] = %q, want %q", i, titles[i], want[i])
+		}
+	}
+}
+
+// TestChapterDuplicateElementIDsAllSurvive checks the M1 fix: several CHAP frames sharing an
+// element ID (a non-conformant tag) must each project to a distinct chapter rather than
+// collapsing to one via the old map[elementID]Chapter keying. Without a CTOC they keep file
+// order; a CTOC that names the shared ID more than once consumes one distinct CHAP per
+// reference.
+func TestChapterDuplicateElementIDsAllSurvive(t *testing.T) {
+	mk := func(id string, start time.Duration, title string) Frame {
+		body, _ := encodeCHAP(id, core.Chapter{Start: start, Title: title}, 4)
+		return Frame{ID: "CHAP", Body: body}
+	}
+	titlesOf := func(chs []core.Chapter) []string {
+		var ts []string
+		for _, c := range chs {
+			ts = append(ts, c.Title)
+		}
+		return ts
+	}
+
+	// No CTOC: three CHAP frames all keyed "chp0" must all survive, in file order.
+	noTOC := []Frame{
+		mk("chp0", 1*time.Second, "one"),
+		mk("chp0", 2*time.Second, "two"),
+		mk("chp0", 3*time.Second, "three"),
+	}
+	gotNoTOC, _ := ProjectChapters(tagWith(4, noTOC))
+	if got := titlesOf(gotNoTOC); !slices.Equal(got, []string{"one", "two", "three"}) {
+		t.Errorf("duplicate-ID chapters without a CTOC = %v, want [one two three] (none collapsed)", got)
+	}
+
+	// CTOC naming the shared ID three times: each reference consumes the next un-emitted
+	// "chp0" in file order, so all three survive and follow the CTOC order.
+	withTOC := []Frame{
+		mk("chp0", 1*time.Second, "one"),
+		mk("chp0", 2*time.Second, "two"),
+		mk("chp0", 3*time.Second, "three"),
+		{ID: "CTOC", Body: encodeCTOC("toc", []string{"chp0", "chp0", "chp0"})},
+	}
+	gotTOC, _ := ProjectChapters(tagWith(4, withTOC))
+	if got := titlesOf(gotTOC); !slices.Equal(got, []string{"one", "two", "three"}) {
+		t.Errorf("duplicate-ID chapters with a CTOC = %v, want [one two three] (each reference consumes one)", got)
+	}
+}
+
+// TestChapterEmptyElementIDsAllSurvive checks the M1 fix for the empty-ID case: several CHAP
+// frames that all carry an empty element ID must each project to a distinct chapter rather than
+// collapsing under the shared "" key.
+func TestChapterEmptyElementIDsAllSurvive(t *testing.T) {
+	mk := func(start time.Duration, title string) Frame {
+		body, _ := encodeCHAP("", core.Chapter{Start: start, Title: title}, 4)
+		return Frame{ID: "CHAP", Body: body}
+	}
+	frames := []Frame{
+		mk(1*time.Second, "a"),
+		mk(2*time.Second, "b"),
+		mk(3*time.Second, "c"),
+	}
+	got, _ := ProjectChapters(tagWith(4, frames))
+	if len(got) != 3 {
+		t.Fatalf("empty-ID chapters projected %d, want 3 (none collapsed)", len(got))
+	}
+	for i, want := range []string{"a", "b", "c"} {
+		if got[i].Title != want {
+			t.Errorf("chapter %d title = %q, want %q", i, got[i].Title, want)
 		}
 	}
 }
@@ -324,6 +392,7 @@ func FuzzDecodeCHAP(f *testing.F) {
 	f.Add([]byte("a\x00"))
 	f.Add(append([]byte("a\x00"), make([]byte, 16)...))
 	f.Add(append([]byte("a\x00"), append(make([]byte, 16), 'T', 'I', 'T', '2')...))
+	f.Add(append([]byte("\x00"), make([]byte, 16)...)) // empty element ID (M1 dup/empty-ID regression)
 	good, _ := encodeCHAP("chp0", core.Chapter{Start: time.Second, End: 2 * time.Second, Title: "Tî"}, 4)
 	f.Add(good)
 	f.Fuzz(func(t *testing.T, body []byte) {

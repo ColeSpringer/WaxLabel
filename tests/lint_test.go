@@ -212,6 +212,33 @@ type writerTo struct{ b []byte }
 
 func (w *writerTo) Write(p []byte) (int, error) { w.b = append(w.b, p...); return len(p), nil }
 
+// TestLintNumericGenre verifies that a numeric genre reference resolved on read surfaces as
+// an info-level lint finding, reconciling lint with README's promise that dump and lint both
+// report numeric-genre. The MP4 gnre atom (written via --numeric-genre) is the parse-time
+// source of the warning; info severity keeps it advisory, never flipping the clean exit.
+func TestLintNumericGenre(t *testing.T) {
+	base := mp4Tagged(mp4Text("\xa9nam", "T"))
+	plan, err := mustParseBytes(t, base).Edit().Set(tag.Genre, "Rock").Prepare(wl.WithNumericGenre())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, base, plan)
+
+	findings := mustParseBytes(t, out).Lint()
+	var found *wl.Finding
+	for i := range findings {
+		if findings[i].Code == "numeric-genre" {
+			found = &findings[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected numeric-genre finding; got %v", findingCodes(findings))
+	}
+	if found.Severity != wl.LintInfo {
+		t.Errorf("numeric-genre severity = %v, want info", found.Severity)
+	}
+}
+
 func TestLintTruncatedAudio(t *testing.T) {
 	// A WAV whose data chunk declares far more than the file holds surfaces the
 	// parse-time truncated-audio warning as a lint finding.

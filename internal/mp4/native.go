@@ -31,7 +31,7 @@ type doc struct {
 	udta *atomRef // moov.udta, if present
 	meta *atomRef // moov.udta.meta, if present
 	ilst *atomRef // moov.udta.meta.ilst, if present
-	free *atomRef // a free atom adjacent to ilst inside meta, if present
+	free *atomRef // a free or skip padding atom adjacent to ilst inside meta, if present (reusable)
 	chpl *atomRef // moov.udta.chpl Nero chapter list, if present
 
 	// QuickTime chapter-write refs (the chapter text track lives in moov as a
@@ -143,8 +143,12 @@ func (d *doc) Describe() []core.NativeEntry {
 			if d.majorBrand != "" {
 				note = "file type (" + d.majorBrand + ")"
 			}
-		case "free", "skip":
-			note = "padding"
+		default:
+			// Single-source the padding set via reusablePadding (free/skip) so the dump label
+			// and the in-place reuse logic cannot drift on which atoms count as padding.
+			if reusablePadding(a.id()) {
+				note = "padding"
+			}
 		}
 		out = append(out, core.NativeEntry{Kind: a.id(), Size: int(a.size), Note: note})
 	}

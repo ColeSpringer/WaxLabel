@@ -72,7 +72,12 @@ type doc struct {
 
 	blocks   []block   // all metadata blocks, in original order
 	vendor   string    // Vorbis comment vendor string
-	comments []comment // decoded Vorbis comments, in order
+	comments []comment // decoded Vorbis comments, in order (picture comments stripped)
+	// commentPictures holds covers decoded from base64 METADATA_BLOCK_PICTURE comments (the
+	// Ogg form some encoders use in FLAC). They are stripped from comments above and projected
+	// into Media.Pictures; the writer materializes exactly these into native PICTURE blocks on
+	// a metadata-rewriting edit, so a tag-only edit does not silently drop the cover.
+	commentPictures []core.Picture
 
 	streamInfo core.AudioTrack
 
@@ -86,14 +91,15 @@ func (d *doc) Format() core.Format { return core.FormatFLAC }
 // Clone deep-copies the document so Document accessors stay detached.
 func (d *doc) Clone() core.NativeDoc {
 	c := &doc{
-		leadingID3:    slices.Clone(d.leadingID3),
-		trailingID3v1: slices.Clone(d.trailingID3v1),
-		vendor:        d.vendor,
-		comments:      slices.Clone(d.comments),
-		streamInfo:    d.streamInfo,
-		flacStart:     d.flacStart,
-		audioStart:    d.audioStart,
-		audioEnd:      d.audioEnd,
+		leadingID3:      slices.Clone(d.leadingID3),
+		trailingID3v1:   slices.Clone(d.trailingID3v1),
+		vendor:          d.vendor,
+		comments:        slices.Clone(d.comments),
+		commentPictures: core.ClonePictures(d.commentPictures),
+		streamInfo:      d.streamInfo,
+		flacStart:       d.flacStart,
+		audioStart:      d.audioStart,
+		audioEnd:        d.audioEnd,
 	}
 	c.blocks = make([]block, len(d.blocks))
 	for i, b := range d.blocks {

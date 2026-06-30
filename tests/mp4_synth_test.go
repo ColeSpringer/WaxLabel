@@ -226,6 +226,41 @@ func TestMP4RewriteInPlaceKeepsOffsets(t *testing.T) {
 	}
 }
 
+func TestMP4RewriteReusesSkipPadding(t *testing.T) {
+	// A "skip" atom is spec padding exactly like "free" (the native view marks both). An edit
+	// that grows the ilst past its original size but still fits within the adjacent skip slack
+	// must reuse the region in place rather than shift the mdat: the mdat must not move (stco
+	// unchanged) and the file size must stay the same. A grow (not a shrink, which reuses in
+	// place regardless by emitting a fill free atom) is what actually exercises reuse of the
+	// adjacent padding - without recognizing skip, the longer ilst forces a grow that moves
+	// the mdat and enlarges the file.
+	skip := mp4Atom("skip", make([]byte, 64))
+	data := mp4Assemble(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "T")), skip)
+
+	mdatBefore, stcoBefore := mp4Index(t, data)
+	// Longer than "T" (so the ilst grows past its original extent) but well within the 64-byte
+	// skip body, so a codec that reuses skip padding keeps everything in place.
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "A Longer Title That Fits In Skip").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+
+	if len(out) != len(data) {
+		t.Errorf("grow-into-skip edit changed file size %d -> %d (skip padding not reused)", len(data), len(out))
+	}
+	mdatAfter, stcoAfter := mp4Index(t, out)
+	if stcoAfter != stcoBefore {
+		t.Errorf("stco entry moved on a skip-reuse edit: %d -> %d", stcoBefore, stcoAfter)
+	}
+	if mdatAfter != mdatBefore {
+		t.Errorf("mdat moved on a skip-reuse edit: %d -> %d", mdatBefore, mdatAfter)
+	}
+	if got := mustParseBytes(t, out).Fields().Title; got != "A Longer Title That Fits In Skip" {
+		t.Errorf("title after edit = %q", got)
+	}
+}
+
 func TestMP4GrowShiftsAllOffsets(t *testing.T) {
 	// No free atom: a longer title forces the metadata to grow, the mdat to move,
 	// and the stco entry to follow it. The audio bytes must survive verbatim at the

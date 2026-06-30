@@ -1,6 +1,7 @@
 package vorbis
 
 import (
+	"encoding/binary"
 	"errors"
 	"slices"
 	"strings"
@@ -211,6 +212,30 @@ func TestParsePictureSanitizesDescription(t *testing.T) {
 	}
 	if !utf8.ValidString(p.Description) {
 		t.Errorf("ParsePicture left invalid UTF-8 in the description: %q", p.Description)
+	}
+}
+
+// TestParsePictureClampsOutOfRangeType checks that a picture type past the single-byte
+// ID3/FLAC role space reads as PicOther rather than narrowing/wrapping into a misleading
+// valid role (259 & 0xFF == 3, "Front cover"). The image bytes are preserved regardless;
+// only the role projection is clamped. Protects both FLAC PICTURE blocks and Ogg
+// METADATA_BLOCK_PICTURE comments, which share this decoder.
+func TestParsePictureClampsOutOfRangeType(t *testing.T) {
+	body := RenderPicture(core.Picture{
+		Type: core.PicFrontCover, MIME: "image/png", Data: []byte{1, 2, 3},
+	})
+	// Overwrite the 32-bit type field (first 4 bytes) with 259, which a bare uint8
+	// conversion would wrap to 3 (PicFrontCover).
+	binary.BigEndian.PutUint32(body[0:4], 259)
+	p, err := ParsePicture(body, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Type != core.PicOther {
+		t.Errorf("out-of-range type 259 read as %v (%d), want PicOther", p.Type, p.Type)
+	}
+	if !slices.Equal(p.Data, []byte{1, 2, 3}) {
+		t.Errorf("picture data corrupted by the type clamp: %v", p.Data)
 	}
 }
 

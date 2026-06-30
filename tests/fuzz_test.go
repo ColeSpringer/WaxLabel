@@ -71,6 +71,7 @@ func FuzzParse(f *testing.F) {
 	// page-aligned, so an edit's Prepare refuses with ErrUnalignedStream (accept-listed below).
 	f.Add([]byte("OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x004\x12\x00\x00\x00\x00\x00\x00\x16\xbb\xdb\t\x01\x13OpusHead\x01\x02\x00\x00\x80\xbb\x00\x00\x00\x00\x00OggS\x00\x00\xc0\x03\x00\x00\x00\x00\x00\x004\x12\x00\x00\x01\x00\x00\x00\xe3K\x9c\x11\x02\x10\nOpusTags\x00\x00\x00\x00\x00\x00\x00\x00AUDIOPKT!!"))
 	f.Add([]byte{})
+	f.Add(flacCommentPictureSeed()) // FLAC with a base64 METADATA_BLOCK_PICTURE comment (L2 regression)
 
 	ctx := context.Background()
 	f.Fuzz(func(t *testing.T, data []byte) {

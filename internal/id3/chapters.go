@@ -73,8 +73,12 @@ func ProjectChapters(t *Tag) ([]core.Chapter, []core.Warning) {
 	if major < 3 {
 		major = 3 // CHAP/CTOC are v2.3+; their subframes use the 10-byte header geometry
 	}
-	chapByID := map[string]core.Chapter{}
-	var order []string // CHAP element IDs in file order
+	// Keep every CHAP in file order; do not key by element ID, which would collapse
+	// duplicate or empty IDs (multiple CHAP frames sharing an ID, or several with none)
+	// into one chapter and lose the rest. CTOC ordering is resolved against this slice
+	// below using a parallel emitted[] marker, so each TOC reference consumes one distinct
+	// CHAP rather than overwriting a map entry.
+	var chaps []decodedCHAP
 	var tocs []ctocFrame
 	for _, f := range t.frames {
 		// A compressed or encrypted frame body is uninterpretable here. Preserve opaque
@@ -85,10 +89,7 @@ func ProjectChapters(t *Tag) ([]core.Chapter, []core.Warning) {
 		switch f.ID {
 		case "CHAP":
 			if id, ch, ok := decodeCHAP(f.Body, major); ok {
-				if _, dup := chapByID[id]; !dup {
-					order = append(order, id)
-				}
-				chapByID[id] = ch
+				chaps = append(chaps, decodedCHAP{id: id, ch: ch})
 			}
 		case "CTOC":
 			if c, ok := decodeCTOC(f.Body); ok {
@@ -96,27 +97,38 @@ func ProjectChapters(t *Tag) ([]core.Chapter, []core.Warning) {
 			}
 		}
 	}
-	if len(chapByID) == 0 {
+	if len(chaps) == 0 {
 		return nil, nil
 	}
 
-	// Order by the chosen table of contents when one is present.
-	ordered := order
+	// Index the CHAP positions by element ID so the TOC walk consumes them in O(1) rather than
+	// rescanning the whole slice per child (a crafted tag can hold many CHAP frames up to the
+	// element cap). byID[id] is the file-order queue of not-yet-placed CHAP indices for that ID;
+	// taken[i] marks chaps[i] as placed. The chosen TOC orders the list: for each child
+	// element-ID, take the first un-placed CHAP with that ID. Any CHAP the TOC did not reference
+	// (or all of them when there is no TOC) is appended in file order, so no chapter is lost -
+	// including duplicate and empty IDs, which each occupy their own slot.
+	byID := make(map[string][]int, len(chaps))
+	for i, c := range chaps {
+		byID[c.id] = append(byID[c.id], i)
+	}
+	taken := make([]bool, len(chaps))
+	ordered := make([]core.Chapter, 0, len(chaps))
 	if toc := pickTOC(tocs); toc != nil {
-		seen := map[string]bool{}
-		// Use a fresh slice so fallback appends cannot overwrite the original file-order list.
-		ordered = make([]string, 0, len(order))
 		for _, child := range toc.children {
-			if _, ok := chapByID[child]; ok && !seen[child] {
-				ordered = append(ordered, child)
-				seen[child] = true
+			q := byID[child]
+			if len(q) == 0 {
+				continue
 			}
+			idx := q[0]
+			byID[child] = q[1:] // pop the first un-placed CHAP with this ID
+			taken[idx] = true
+			ordered = append(ordered, chaps[idx].ch)
 		}
-		for _, id := range order { // append any CHAP the TOC did not reference
-			if !seen[id] {
-				ordered = append(ordered, id)
-				seen[id] = true
-			}
+	}
+	for i := range chaps {
+		if !taken[i] {
+			ordered = append(ordered, chaps[i].ch)
 		}
 	}
 
@@ -127,11 +139,14 @@ func ProjectChapters(t *Tag) ([]core.Chapter, []core.Warning) {
 		ws = core.Warn(ws, core.WarnChaptersFlattened,
 			"ID3 table of contents has a nested hierarchy; chapters were flattened to a single ordered list")
 	}
-	chs := make([]core.Chapter, 0, len(ordered))
-	for _, id := range ordered {
-		chs = append(chs, chapByID[id])
-	}
-	return chs, ws
+	return ordered, ws
+}
+
+// decodedCHAP is one CHAP frame's element ID and projected chapter, kept in file order so
+// duplicate or empty element IDs each retain a distinct slot (see ProjectChapters).
+type decodedCHAP struct {
+	id string
+	ch core.Chapter
 }
 
 // ctocFrame is a decoded CTOC: its element ID, whether it is the top-level table of

@@ -90,7 +90,7 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringVar(&e.padding, "padding", "", "reserve at least N bytes of padding after the metadata (FLAC default 8192; MP3/AAC/MP4 reuse the existing region; 0 writes none, like --no-padding)")
 	f.BoolVar(&e.noPadding, "no-padding", false, "write no padding after the metadata (no effect on Ogg/WAV/AIFF/Matroska, which have no padding region)")
 	f.BoolVar(&e.numericGenre, "numeric-genre", false, "write a recognized genre as its numeric reference where the format supports one (ID3's TCON); by default the canonical genre name is written")
-	f.BoolVar(&e.strict, "strict", false, "fail (exit 2) on an unknown key or a single-valued key given multiple values, instead of noting it")
+	f.BoolVar(&e.strict, "strict", false, "fail (exit 2), instead of noting it, on an unknown key, a single-valued key given multiple values, or a value or tag structure the destination format cannot represent (dropped on write)")
 }
 
 // nonEditFlags are the set/output flags that do not by themselves constitute an

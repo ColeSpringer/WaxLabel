@@ -65,6 +65,35 @@ func TestVorbisChapterAcceptsAnyDigitsAndBase(t *testing.T) {
 	}
 }
 
+// TestVorbisChapterSortsByStart checks that chapters whose CHAPTERxxx index order disagrees
+// with their start times project in start-time order, so a load->store round-trip is a no-op
+// even for an out-of-order source. The prior sort.Ints(order) kept index order (the 10s
+// chapter ahead of the 5s one). Equal-start chapters break ties by index (stable sort).
+func TestVorbisChapterSortsByStart(t *testing.T) {
+	comments := []Comment{
+		{"CHAPTER001", "00:00:10.000"}, // lower index, later time
+		{"CHAPTER001NAME", "Late"},
+		{"CHAPTER002", "00:00:05.000"}, // higher index, earlier time
+		{"CHAPTER002NAME", "Early"},
+		{"CHAPTER003", "00:00:05.000"}, // equal start to CHAPTER002: ties break by index
+		{"CHAPTER003NAME", "EarlyTie"},
+	}
+	got := ProjectChapters(comments)
+	if len(got) != 3 {
+		t.Fatalf("got %d chapters, want 3", len(got))
+	}
+	want := []core.Chapter{
+		{Start: 5 * time.Second, Title: "Early"},
+		{Start: 5 * time.Second, Title: "EarlyTie"},
+		{Start: 10 * time.Second, Title: "Late"},
+	}
+	for i := range want {
+		if got[i].Start != want[i].Start || got[i].Title != want[i].Title {
+			t.Errorf("chapter %d = {%v %q}, want {%v %q}", i, got[i].Start, got[i].Title, want[i].Start, want[i].Title)
+		}
+	}
+}
+
 // TestVorbisChapterFractionScaling checks the fractional second scales by its digit count
 // (".5" == 500 ms, ".05" == 50 ms) rather than being read as a literal millisecond count.
 func TestVorbisChapterFractionScaling(t *testing.T) {
