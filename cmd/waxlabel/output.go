@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 	"github.com/spf13/cobra"
@@ -425,6 +426,20 @@ func (e *usageError) Error() string { return e.msg }
 
 func usagef(format string, args ...any) error {
 	return &usageError{msg: fmt.Sprintf(format, args...)}
+}
+
+// checkArgText reclassifies the library's writable-text rejection (a NUL byte or invalid UTF-8)
+// as a CLI usage error (exit 2): a bad command-line value is a bad invocation, not a corrupt
+// media file. It reads the bare reason phrase from the library's WritableTextReason - the same
+// rule the library backstop enforces - so the CLI boundary and the backstop cannot drift, and the
+// message needs no error-string surgery. The four argv inputs cannot carry a NUL (argv is
+// NUL-terminated), but --synced-lyrics-file content can, so the shared validator is what closes
+// that path. what names the offending input for the message.
+func checkArgText(value, what string) error {
+	if reason := wl.WritableTextReason(value); reason != "" {
+		return usagef("%s %s", what, reason)
+	}
+	return nil
 }
 
 // alreadyRenderedError marks a failure whose output a command already wrote.

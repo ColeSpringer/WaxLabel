@@ -106,8 +106,32 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			chplNode, haveChpl = chpl, true
 		}
 		if meta, ok := udta.find("meta"); ok {
+			ilst, hasIlst := meta.find("ilst")
+			// A gap between where meta's children end and meta.end() corrupts a create-ilst
+			// edit: buildCreated appends the new ilst at meta.end(), but a re-parse resolves the
+			// first child at childStart/last-child-end (earlier), so the ilst lands misaligned.
+			// walkAtoms tolerates an all-zero gap (the udta-terminator rule), so it must be
+			// rejected here instead. Only a meta with no ilst can take that append path (an
+			// existing ilst is edited in place), so the check is scoped to !hasIlst. childEnd is
+			// the last child's end, or - only when there are no children - the child-start
+			// position, which is read lazily since a has-children meta (the common case) never
+			// needs it. This covers the bare (9-11 byte) and FullBox-with-zero-pad (13-15+ byte)
+			// shapes uniformly; an empty bare meta (size 8) and an empty FullBox meta (size 12)
+			// have no gap and edit cleanly, as does a meta whose hdlr child tiles to its end.
+			if !hasIlst {
+				var childEnd int64
+				if n := len(meta.children); n > 0 {
+					childEnd = meta.children[n-1].end()
+				} else {
+					childEnd = childStart(src, meta, limit)
+				}
+				if childEnd < meta.end() {
+					return nil, fmt.Errorf("%w: moov.udta.meta has %d unusable trailing byte(s)",
+						waxerr.ErrInvalidData, meta.end()-childEnd)
+				}
+			}
 			d.meta = refPtr(meta)
-			if ilst, ok := meta.find("ilst"); ok {
+			if hasIlst {
 				d.ilst = refPtr(ilst)
 				if err := decodeIlst(ctx, src, ilst, d, limit); err != nil {
 					return nil, err
@@ -200,6 +224,16 @@ func collectOffsetTables(ctx context.Context, src core.ReaderAtSized, moov node,
 	return nil
 }
 
+// boundedCount reports whether `declared` fixed-width entries (each `width` bytes, after a
+// `header`-byte table prefix) fit within `avail` bytes. The single guard every count-driven
+// MP4 table decoder shares so none can drift into an unbounded loop. Every caller passes a
+// uint32-widened count and a fixed small header/width constant (never data-derived), so
+// header+declared*width (<= ~8.6e10) cannot overflow int64 and inputs are never negative - no
+// explicit overflow/negative guard is needed (a future untrusted-width caller would add one).
+func boundedCount(declared, header, width, avail int64) bool {
+	return header+declared*width <= avail
+}
+
 // parseOffsetTable decodes one stco/co64 atom: a 4-byte version/flags, a 4-byte
 // entry count, then that many 32- or 64-bit chunk offsets.
 func parseOffsetTable(src core.ReaderAtSized, a node, co64 bool, limit int64) (offsetTable, error) {
@@ -220,7 +254,7 @@ func parseOffsetTable(src core.ReaderAtSized, a node, co64 bool, limit int64) (o
 	if co64 {
 		width = 8
 	}
-	if 8+count*width > int64(len(body)) {
+	if !boundedCount(count, 8, width, int64(len(body))) {
 		return offsetTable{}, fmt.Errorf("%w: %s declares %d entries but is %d bytes",
 			waxerr.ErrInvalidData, a.id(), count, len(body))
 	}

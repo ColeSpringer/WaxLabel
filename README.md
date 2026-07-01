@@ -120,7 +120,9 @@ Common edit flags:
   it. It clears the canonical `ENCODER` tag, drops a transcoder-stamp WAV `ISFT`, and
   rewrites a transcoder-stamped FLAC/Ogg vendor string to `WaxLabel`. The vendor field is
   mandatory in those formats, so it is neutralized instead of removed.
-- `--add-cover FILE` and `--add-picture ROLE=FILE` embed pictures.
+- `--add-cover FILE` and `--add-picture ROLE=FILE` embed pictures. `--add-cover`
+  replaces any existing front cover, while `--add-picture front-cover=FILE` appends one
+  (like every other `--add-picture ROLE=`).
 - `--remove-picture SELECTOR` and `--remove-pictures` remove pictures.
 - `--add-chapter TIMESTAMP=TITLE` and `--clear-chapters` edit chapters. A chapter
   `TIMESTAMP` is `[H:]MM:SS[.fff]` (for example `1:02:03.500` or `02:03`) or a bare
@@ -146,12 +148,18 @@ paired with `-o`. `dump`, `verify`, `lint`, `plan`, and `set` can walk directori
 with `--recursive`. A file's format is detected from its leading bytes, not from
 its extension: extensions only filter which files a `--recursive` walk visits.
 A walk skips hidden directories (those whose name begins with `.`) unless one is
-named as the root. A direct file argument whose bytes match no supported
-container is unsupported (exit 3), regardless of extension.
+named as the root. It likewise skips hidden files (a leading `.`), which are not
+counted among the files passed over for their extension; a hidden file named
+directly as an argument is still processed. A direct file argument whose bytes
+match no supported container is unsupported (exit 3), regardless of extension.
 
 `-o` writes atomically (a temp file in the target's directory, then a rename), so it
 must name a regular file in a writable directory. It is not a discard sink, and
 `-o /dev/null` fails. To write nothing, omit `-o` or use `plan` to preview the edit.
+By default `-o` refuses an existing target with a usage error (exit 2); pass
+`--overwrite` to replace it. The one exception is writing back to the single input
+(`set f -o f`), which is allowed without `--overwrite` since it is effectively an
+in-place edit.
 
 All data commands accept `--json`. Commands that process many inputs return an
 array, one element per input. Single-result commands such as `diff`, `copy`,
@@ -302,6 +310,23 @@ path:
   Editing it writes a fresh `moov.udta.meta.ilst` and preserves the original metadata atom
   verbatim rather than destroying it; the canonical `moov.udta.meta.ilst` layout that
   iTunes and most taggers write is unaffected.
+- **WAV/AIFF dual tag containers consolidate on edit.** A WAV or AIFF can carry both an
+  embedded `id3`/`ID3 ` chunk and native `LIST`/`INFO` (WAV) or text (AIFF) chunks. When they
+  hold conflicting values for the same key, the documented precedence applies (the id3 chunk
+  wins; the native chunks only fill keys id3 lacks). Any edit rewrites both containers from
+  that merged set, so a shadowed native value is dropped; a no-op write leaves the file
+  byte-identical.
+- **ID3v2 is written without unsynchronization.** WaxLabel writes clean ID3v2 tags with no
+  unsynchronization, so a tag may contain a byte pattern that looks like a false MPEG frame
+  sync. Compliant decoders skip the tag via its size field, so playback is unaffected; the
+  read path still accepts unsynchronized input.
+- **FLAC padding is clamped to one maximum block.** A `--padding` request larger than a
+  single FLAC `PADDING` block can hold (16,777,215 bytes, the ceiling of its 24-bit length
+  field) is clamped to fit and reported with a `[padding-clamped]` warning. The request still
+  reserves the largest padding the format allows; it is not silently shrunk toward zero.
+- **EBML nesting is bounded at 64 levels.** A Matroska/WebM file whose elements nest deeper
+  than 64 levels fails to parse. The same recursion guard bounds every container against
+  hostile input.
 
 ## Safety
 

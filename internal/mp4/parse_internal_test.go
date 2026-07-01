@@ -169,4 +169,36 @@ func TestElstSegmentDurationSum(t *testing.T) {
 	if got := elstSegmentDurationSum([]byte{0, 0, 0, 0, 0, 0, 0, 9}); got != 0 {
 		t.Errorf("truncated sum = %d, want 0", got)
 	}
+	// A hostile entry_count (0xFFFFFFFF) over a tiny buffer must be rejected by the up-front
+	// bound rather than looped ~4.3 billion times: it returns 0 immediately, for v0 and v1.
+	hostileV0 := make([]byte, 8)
+	be.PutUint32(hostileV0[4:8], 0xFFFFFFFF)
+	if got := elstSegmentDurationSum(hostileV0); got != 0 {
+		t.Errorf("hostile v0 count sum = %d, want 0", got)
+	}
+	hostileV1 := make([]byte, 8)
+	hostileV1[0] = 1
+	be.PutUint32(hostileV1[4:8], 0xFFFFFFFF)
+	if got := elstSegmentDurationSum(hostileV1); got != 0 {
+		t.Errorf("hostile v1 count sum = %d, want 0", got)
+	}
+}
+
+// TestBoundedCount pins the shared count-loop guard every MP4 table decoder routes through:
+// entries that exactly fit are accepted, one entry past the buffer is rejected, and a hostile
+// uint32-max count stays within int64 (no overflow) and is rejected.
+func TestBoundedCount(t *testing.T) {
+	// 2 entries of 12 bytes after an 8-byte header need 32 bytes; exactly 32 fits.
+	if !boundedCount(2, 8, 12, 32) {
+		t.Error("boundedCount(2, 8, 12, 32) = false, want true (exact fit)")
+	}
+	// One byte short must be rejected.
+	if boundedCount(2, 8, 12, 31) {
+		t.Error("boundedCount(2, 8, 12, 31) = true, want false (one past)")
+	}
+	// A hostile uint32-max count over a tiny buffer: header+count*width (~8.6e10) stays well
+	// within int64, so the arithmetic does not overflow and the guard rejects it.
+	if boundedCount(0xFFFFFFFF, 8, 20, 8) {
+		t.Error("boundedCount(0xFFFFFFFF, 8, 20, 8) = true, want false (hostile count)")
+	}
 }

@@ -22,7 +22,11 @@ func splitSyncedLyric(s string) (wl.SyncedLine, error) {
 	if err != nil {
 		return wl.SyncedLine{}, err
 	}
-	return wl.SyncedLine{Time: start, Text: s[i+1:]}, nil
+	text := s[i+1:]
+	if err := checkArgText(text, "synced-lyric text"); err != nil {
+		return wl.SyncedLine{}, err
+	}
+	return wl.SyncedLine{Time: start, Text: text}, nil
 }
 
 // syncedLyricsAdds resolves --synced-lyrics-file and --add-synced-lyric into the single
@@ -50,7 +54,14 @@ func (e *editFlags) syncedLyricsAdds() ([]wl.SyncedLyrics, error) {
 		if err != nil {
 			return nil, fmt.Errorf("--synced-lyrics-file: %s: %w", e.syncedLyricsFile, err)
 		}
-		fileLines := wl.ParseLRC(string(data))
+		content := string(data)
+		// Validate the file content at the boundary, like the argv author-text inputs, so a NUL
+		// byte (valid UTF-8, missed by a UTF-8-only check) or invalid UTF-8 in the LRC is a usage
+		// error (exit 2) rather than deferring to the library's exit-4 corrupt-media backstop.
+		if err := checkArgText(content, "--synced-lyrics-file: "+e.syncedLyricsFile); err != nil {
+			return nil, err
+		}
+		fileLines := wl.ParseLRC(content)
 		if len(fileLines) == 0 {
 			return nil, usagef("--synced-lyrics-file: %s: no timed lyric lines found (want LRC lines like [00:12.00]Text)", e.syncedLyricsFile)
 		}

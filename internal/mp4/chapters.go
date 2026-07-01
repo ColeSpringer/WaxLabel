@@ -386,7 +386,9 @@ func trackEditedDuration(src core.ReaderAtSized, trak node, movieTimescale uint3
 
 // elstSegmentDurationSum sums the segment_duration field of every edit-list entry (in
 // movie-timescale units). A v0 entry is 12 bytes (segment_duration u32, media_time i32,
-// rate u32); a v1 entry is 20 bytes (u64, i64, u32). Each entry is bounds-checked.
+// rate u32); a v1 entry is 20 bytes (u64, i64, u32). The declared entry_count is bounded
+// against the payload up front (boundedCount), like the sibling sample-table decoders, so a
+// hostile count cannot drive the loop past the bytes actually present.
 func elstSegmentDurationSum(p []byte) uint64 {
 	if len(p) < 8 {
 		return 0
@@ -395,16 +397,20 @@ func elstSegmentDurationSum(p []byte) uint64 {
 	var sum uint64
 	switch p[0] {
 	case 0:
+		if !boundedCount(count, 8, 12, int64(len(p))) {
+			return 0
+		}
 		for i := int64(0); i < count; i++ {
-			if off := 8 + i*12; off+12 <= int64(len(p)) {
-				sum += uint64(binary.BigEndian.Uint32(p[off : off+4]))
-			}
+			off := 8 + i*12
+			sum += uint64(binary.BigEndian.Uint32(p[off : off+4]))
 		}
 	case 1:
+		if !boundedCount(count, 8, 20, int64(len(p))) {
+			return 0
+		}
 		for i := int64(0); i < count; i++ {
-			if off := 8 + i*20; off+20 <= int64(len(p)) {
-				sum += binary.BigEndian.Uint64(p[off : off+8])
-			}
+			off := 8 + i*20
+			sum += binary.BigEndian.Uint64(p[off : off+8])
 		}
 	}
 	return sum
@@ -559,7 +565,7 @@ func sampleTimes(src core.ReaderAtSized, stbl node, limit int64) ([]uint64, bool
 		return nil, false
 	}
 	count := int64(binary.BigEndian.Uint32(b[4:8]))
-	if 8+count*8 > int64(len(b)) {
+	if !boundedCount(count, 8, 8, int64(len(b))) {
 		return nil, false
 	}
 	var times []uint64
@@ -640,7 +646,7 @@ func sampleSizes(src core.ReaderAtSized, stbl node, nSamples int, limit int64) (
 		}
 		return sizes, true
 	}
-	if 12+count*4 > int64(len(b)) {
+	if !boundedCount(count, 12, 4, int64(len(b))) {
 		return nil, false
 	}
 	for i := int64(0); i < count; i++ {
@@ -681,7 +687,7 @@ func stscEntries(src core.ReaderAtSized, stbl node, limit int64) ([]stscEntry, b
 		return nil, false
 	}
 	count := int64(binary.BigEndian.Uint32(b[4:8]))
-	if 8+count*12 > int64(len(b)) {
+	if !boundedCount(count, 8, 12, int64(len(b))) {
 		return nil, false
 	}
 	out := make([]stscEntry, count)

@@ -72,7 +72,7 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringArrayVar(&e.set, "set", nil, "set KEY=VALUE, replacing the key (repeatable)")
 	f.StringArrayVar(&e.add, "add", nil, "append KEY=VALUE to a key (repeatable, for multi-value fields)")
 	f.StringArrayVar(&e.clear, "clear", nil, "remove KEY (repeatable)")
-	f.StringArrayVar(&e.addCover, "add-cover", nil, "add a front-cover picture from an image file, replacing any existing front cover (shorthand for --add-picture front-cover=PATH; repeatable)")
+	f.StringArrayVar(&e.addCover, "add-cover", nil, "add a front-cover picture from an image file, replacing any existing front cover (repeatable, last wins); --add-picture front-cover=PATH instead appends a front cover")
 	f.StringArrayVar(&e.addPicture, "add-picture", nil, "add a picture ROLE=PATH, e.g. back-cover=back.jpg (repeatable; ROLE is a cover-art role such as front-cover, back-cover, artist)")
 	f.StringVar(&e.pictureDescription, "picture-description", "", "set the description on every picture added this run (--add-picture/--add-cover)")
 	f.StringArrayVar(&e.removePicture, "remove-picture", nil, "remove pictures by role name or 1-based dump index, e.g. back-cover or 2 (repeatable; removals apply before adds)")
@@ -264,7 +264,11 @@ func splitAssign(s string) (tag.Key, string, error) {
 	if err != nil {
 		return "", "", &usageError{msg: err.Error()}
 	}
-	return k, s[i+1:], nil
+	v := s[i+1:]
+	if err := checkArgText(v, fmt.Sprintf("value for %q", k)); err != nil {
+		return "", "", err
+	}
+	return k, v, nil
 }
 
 // parseEditKey validates a user-supplied tag key and resolves recognized aliases
@@ -280,9 +284,10 @@ func parseEditKey(s string) (tag.Key, error) {
 }
 
 // loadPictures reads and validates every --add-cover and --add-picture file once,
-// returning the pictures to add to each edited file. --add-cover PATH is sugar for
-// --add-picture front-cover=PATH (back-compat). Validating here - before any file is
-// touched - means a bad input is reported once for the whole invocation rather than
+// returning the pictures to add to each edited file. --add-cover replaces any existing
+// front cover, whereas --add-picture front-cover=PATH appends one (consistent with every
+// other --add-picture ROLE= and the library's AddPicture). Validating here - before any file
+// is touched - means a bad input is reported once for the whole invocation rather than
 // once per file in a bulk run. A --picture-description, if given, is applied to every
 // picture added this run, and is a usage error with nothing to attach to.
 func (e *editFlags) loadPictures() ([]wl.Picture, error) {
@@ -321,6 +326,9 @@ func (e *editFlags) loadPictures() ([]wl.Picture, error) {
 		pics = append(pics, p)
 	}
 	if e.pictureDescription != "" {
+		if err := checkArgText(e.pictureDescription, "--picture-description"); err != nil {
+			return nil, err
+		}
 		if len(pics) == 0 {
 			return nil, usagef("--picture-description needs at least one --add-picture or --add-cover")
 		}

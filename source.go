@@ -75,8 +75,11 @@ func fileIdentity(path string) (core.Identity, error) {
 // resolveSource selects the bytes to read for a write or a hash: an explicit
 // source, else the document's in-memory source (from OpenSource), else its file
 // reopened (from ParseFile). The returned closer must always be called. Both
-// the write path and the hashing path share this.
-func (d *Document) resolveSource(explicit core.ReaderAtSized) (core.ReaderAtSized, func(), error) {
+// the write path and the hashing path share this. remedy is the caller-specific
+// "here is how to supply a source" hint appended to the no-source error, since a
+// generic one is half-wrong for each caller (a hash path cannot use WriteTo, a
+// write path cannot use WithHashSource).
+func (d *Document) resolveSource(explicit core.ReaderAtSized, remedy string) (core.ReaderAtSized, func(), error) {
 	noop := func() {}
 	// A zero-value Document has no media to write or hash; report the uninitialized
 	// state with the same message Prepare uses, rather than the generic
@@ -100,7 +103,7 @@ func (d *Document) resolveSource(explicit core.ReaderAtSized) (core.ReaderAtSize
 		}
 		return fs, func() { fs.Close() }, nil
 	}
-	return nil, noop, fmt.Errorf("%w: no source available; supply one via WriteTo or WithHashSource", waxerr.ErrInvalidData)
+	return nil, noop, fmt.Errorf("%w: no source available; %s", waxerr.ErrInvalidData, remedy)
 }
 
 // Source retains the complete bytes of a non-seekable stream that was parsed

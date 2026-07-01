@@ -42,6 +42,11 @@ func SaveBack() Destination { return Destination{kind: destSaveBack} }
 // never a no-op: a fresh destination is always written whole. Writing to a path that
 // resolves to the document's own source file spends the plan just as SaveBack does
 // (see [Plan.Execute]); writing to other paths leaves the plan reusable.
+//
+// It needs a document that can resolve its own source bytes - one from [ParseFile]
+// or [OpenSource]. A detached document from [Parse] carries no source, so SaveAsFile
+// fails with [waxerr.ErrInvalidData]; write it with [WriteTo] and an explicit source
+// instead.
 func SaveAsFile(path string) Destination { return Destination{kind: destSaveAsFile, path: path} }
 
 // WriteTo streams the complete output to w. The source bytes to copy come from
@@ -96,7 +101,7 @@ func (p *Plan) saveBack(ctx context.Context) (*Document, SaveResult, error) {
 }
 
 func (p *Plan) saveAsFile(ctx context.Context, path string) (*Document, SaveResult, error) {
-	src, closer, err := p.doc.resolveSource(nil)
+	src, closer, err := p.doc.resolveSource(nil, "this document was parsed with Parse; use WriteTo(w, source) to write it")
 	if err != nil {
 		return nil, SaveResult{}, err
 	}
@@ -154,7 +159,7 @@ func (p *Plan) writeTo(ctx context.Context, dst Destination) (*Document, SaveRes
 	if dst.w == nil {
 		return nil, SaveResult{}, fmt.Errorf("%w: nil writer", waxerr.ErrInvalidData)
 	}
-	src, closer, err := p.doc.resolveSource(dst.source)
+	src, closer, err := p.doc.resolveSource(dst.source, "pass the source bytes as the second argument to WriteTo(w, source)")
 	if err != nil {
 		return nil, SaveResult{}, err
 	}

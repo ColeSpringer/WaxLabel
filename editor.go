@@ -123,7 +123,14 @@ func (e *Editor) RemovePictures(match func(Picture) bool) *Editor {
 	pics := make([]core.Picture, 0, len(e.pictures))
 	mask := make([]bool, 0, len(e.pictures))
 	for i, p := range e.pictures {
-		if match(p) {
+		// Edit() seeds e.pictures via the shallow core.ClonePictures, so each p.Data still
+		// aliases the immutable Document's backing array. match is the only place the editor
+		// hands a Picture to user code, so detach Data for the probe: a predicate that writes
+		// p.Data then cannot mutate the Document (or race a concurrent doc.Pictures()). The
+		// retained e.pictures keeps the efficient shallow share; only the probe is a copy.
+		probe := p
+		probe.Data = append([]byte(nil), p.Data...)
+		if match(probe) {
 			continue
 		}
 		pics = append(pics, p)
@@ -507,27 +514,45 @@ func (e *Editor) rejectInvalidValues(editedTags tag.TagSet, keys []tag.Key) erro
 	return nil
 }
 
-// checkWritableText refuses a freshly authored text value WaxLabel cannot faithfully write
-// to every format: a NUL byte (truncates a C-string field) or invalid UTF-8 (reprojected
-// by the read path, so it would not round-trip). what names the field for the error. A
-// value read back through the (sanitizing) parse path is always valid UTF-8, so this fires
-// only on CLI/library input freshly authored by the caller.
-func checkWritableText(s, what string) error {
-	if containsNUL(s) {
-		return nulErr(what)
+// WritableTextReason returns "" when s can be written faithfully to every supported format,
+// else a short reason phrase ("contains a NUL byte" / "contains invalid UTF-8"). It is the
+// single source of truth for the NUL / invalid-UTF-8 rule: the internal checkWritableText and
+// the public ValidWritableText wrap it in an [waxerr.ErrInvalidData] error, and a front-end (the
+// CLI) can read the bare phrase to build its own message without parsing an error string.
+func WritableTextReason(s string) string {
+	if strings.IndexByte(s, 0) >= 0 {
+		return "contains a NUL byte"
 	}
 	if !utf8.ValidString(s) {
-		return fmt.Errorf("%w: %s contains invalid UTF-8", waxerr.ErrInvalidData, what)
+		return "contains invalid UTF-8"
+	}
+	return ""
+}
+
+// ValidWritableText reports whether s can be written faithfully to every supported format:
+// no NUL byte (which truncates a C-string field) and valid UTF-8 (the read path reprojects
+// invalid UTF-8, so it would not round-trip). It returns nil, or an error wrapping
+// [waxerr.ErrInvalidData] naming the problem. Editor edits already enforce this on authored
+// text; a caller (or a front-end) may pre-check a value with it, or with [WritableTextReason]
+// for the bare reason phrase, before building an edit.
+func ValidWritableText(s string) error {
+	if r := WritableTextReason(s); r != "" {
+		return fmt.Errorf("%w: %s", waxerr.ErrInvalidData, r)
 	}
 	return nil
 }
 
-// containsNUL reports whether s holds a NUL byte, which truncates the field on a
-// C-string format. nulErr builds the shared rejection for [Editor.rejectInvalidValues].
-func containsNUL(s string) bool { return strings.IndexByte(s, 0) >= 0 }
-
-func nulErr(what string) error {
-	return fmt.Errorf("%w: %s contains a NUL byte", waxerr.ErrInvalidData, what)
+// checkWritableText refuses a freshly authored text value WaxLabel cannot faithfully write
+// to every format: a NUL byte (truncates a C-string field) or invalid UTF-8 (reprojected
+// by the read path, so it would not round-trip). what names the field for the error. A
+// value read back through the (sanitizing) parse path is always valid UTF-8, so this fires
+// only on CLI/library input freshly authored by the caller. It shares WritableTextReason with
+// the public ValidWritableText, so its "<what> contains ..." messages stay in lockstep.
+func checkWritableText(s, what string) error {
+	if r := WritableTextReason(s); r != "" {
+		return fmt.Errorf("%w: %s %s", waxerr.ErrInvalidData, what, r)
+	}
+	return nil
 }
 
 // planResultTags returns the tag set the plan will write: the codec's computed

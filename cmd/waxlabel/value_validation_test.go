@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -115,5 +116,48 @@ func TestMatroskaSingleValuedMultiWarning(t *testing.T) {
 	}
 	if _, _, code := runCLI(t, "set", copyFixture(t, notagsMKA), "--set", "TITLE=A", "--add", "TITLE=B", "--strict"); code != 2 {
 		t.Errorf("set --strict TITLE A+B on Matroska: exit = %d, want 2", code)
+	}
+}
+
+// TestArgTextValidationIsUsageError covers the F5 fix: an author-entered value carrying invalid
+// UTF-8 (or, for file content, a NUL) is caught at the CLI boundary as a usage error (exit 2),
+// not deferred to the library's exit-4 "file is corrupt" backstop - even on read-only `plan`
+// against a valid file. Every author-text boundary routes through the shared checkArgText.
+func TestArgTextValidationIsUsageError(t *testing.T) {
+	t.Parallel()
+	badUTF8 := "x\xffy" // a lone 0xff is invalid UTF-8
+
+	// A valid cover so the --picture-description case fails on the description text, not on the
+	// "needs at least one picture" branch.
+	cover := writeTempImage(t, "cover.png", minimalPNG())
+
+	argCases := map[string][]string{
+		"--set value":         {"plan", sampleFLAC, "--set", "K=" + badUTF8},
+		"--add value":         {"plan", sampleFLAC, "--add", "K=" + badUTF8},
+		"--add-chapter title": {"plan", sampleFLAC, "--add-chapter", "1:30=" + badUTF8},
+		"--add-synced-lyric":  {"plan", sampleFLAC, "--add-synced-lyric", "1:30=" + badUTF8},
+		"--picture-description": {"plan", sampleFLAC,
+			"--add-cover", cover, "--picture-description", "d\xffe"},
+	}
+	for name, args := range argCases {
+		if _, _, code := runCLI(t, args...); code != 2 {
+			t.Errorf("%s: exit = %d, want 2 (usage error, not exit 4)", name, code)
+		}
+	}
+
+	// --synced-lyrics-file is file content, which can hold a NUL that is valid UTF-8 - the case a
+	// UTF-8-only check would leave at exit 4. Both invalid UTF-8 and a NUL must land at exit 2.
+	fileCases := map[string]string{
+		"LRC invalid UTF-8": "[00:12.00]Bad" + badUTF8 + "Line\n",
+		"LRC NUL byte":      "[00:12.00]Null\x00Line\n",
+	}
+	for name, content := range fileCases {
+		lrc := filepath.Join(t.TempDir(), "lyrics.lrc")
+		if err := os.WriteFile(lrc, []byte(content), 0o644); err != nil {
+			t.Fatalf("%s: write LRC: %v", name, err)
+		}
+		if _, _, code := runCLI(t, "plan", sampleFLAC, "--synced-lyrics-file", lrc); code != 2 {
+			t.Errorf("%s: exit = %d, want 2 (usage error, not exit 4)", name, code)
+		}
 	}
 }

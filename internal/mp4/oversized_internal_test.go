@@ -1,9 +1,11 @@
 package mp4
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -130,5 +132,84 @@ func TestPlanChapterPathRejectsOversizedItem(t *testing.T) {
 	opts := core.WriteOptions{Limits: bits.Limits{MaxAllocBytes: 1024}}
 	if _, err := (Codec{}).Plan(ctx, base, edited, opts); !errors.Is(err, waxerr.ErrSizeTooLarge) {
 		t.Fatalf("chapter-path Plan with an oversized item: err = %v, want ErrSizeTooLarge", err)
+	}
+}
+
+// mkMP4WithUdtaMeta builds a minimal parseable MP4 - ftyp, moov(udta(meta)), mdat - wrapping the
+// given raw meta box (header included), so a test can exercise parse's moov.udta.meta gap check
+// against a specific meta shape and, for an editable shape, round-trip a tag edit through it.
+func mkMP4WithUdtaMeta(meta []byte) []byte {
+	udta := renderAtom(atomName("udta"), meta)
+	moov := renderAtom(atomName("moov"), udta)
+	ftyp := renderAtom(atomName("ftyp"), []byte("M4A \x00\x00\x00\x00M4A mp42"))
+	mdat := renderAtom(atomName("mdat"), []byte("audiodata"))
+	return slices.Concat(ftyp, moov, mdat)
+}
+
+// TestParseRejectsUndersizedMetaGap covers the F2 fix: a moov.udta.meta with a gap between where
+// its children end and its own end corrupts a create-ilst edit (buildCreated appends the new ilst
+// at meta.end(), but a re-parse resolves the first child earlier, so the ilst lands misaligned).
+// walkAtoms tolerates an all-zero gap (the udta-terminator rule), so parse must reject it here.
+// Both the bare (9-11 byte) and FullBox-with-zero-pad (13-15 byte) shapes must be caught; an empty
+// bare meta (size 8), an empty FullBox meta (size 12), and a meta whose hdlr child tiles exactly to
+// its end must all still parse cleanly.
+func TestParseRejectsUndersizedMetaGap(t *testing.T) {
+	ctx := context.Background()
+	reject := map[string][]byte{
+		"bare gap size 9":     renderAtom(atomName("meta"), make([]byte, 1)),
+		"bare gap size 10":    renderAtom(atomName("meta"), make([]byte, 2)),
+		"bare gap size 11":    renderAtom(atomName("meta"), make([]byte, 3)),
+		"fullbox gap size 13": renderFullBox(atomName("meta"), make([]byte, 1)),
+		"fullbox gap size 14": renderFullBox(atomName("meta"), make([]byte, 2)),
+		"fullbox gap size 15": renderFullBox(atomName("meta"), make([]byte, 3)),
+	}
+	for name, meta := range reject {
+		_, err := parse(ctx, core.BytesSource(mkMP4WithUdtaMeta(meta)), core.ParseOptions{})
+		if !errors.Is(err, waxerr.ErrInvalidData) {
+			t.Errorf("%s: parse err = %v, want ErrInvalidData", name, err)
+		}
+	}
+	accept := map[string][]byte{
+		"empty bare meta size 8":       renderAtom(atomName("meta"), nil),
+		"empty fullbox meta size 12":   renderFullBox(atomName("meta"), nil),
+		"meta with hdlr tiling to end": renderFullBox(atomName("meta"), hdlrAtom()),
+	}
+	for name, meta := range accept {
+		if _, err := parse(ctx, core.BytesSource(mkMP4WithUdtaMeta(meta)), core.ParseOptions{}); err != nil {
+			t.Errorf("%s: parse err = %v, want nil", name, err)
+		}
+	}
+}
+
+// TestEmptyMetaRoundTripsTagEdit locks in the lossless empty-meta upgrade the F2 gap check leaves
+// intact: a size-8 empty meta (no ilst, no gap) still accepts a tag edit - the create-ilst path
+// inserts an ilst inside the existing meta - and the written file re-parses with the tag present.
+func TestEmptyMetaRoundTripsTagEdit(t *testing.T) {
+	ctx := context.Background()
+	raw := mkMP4WithUdtaMeta(renderAtom(atomName("meta"), nil)) // size-8 empty bare meta
+	base, err := parse(ctx, core.BytesSource(raw), core.ParseOptions{})
+	if err != nil {
+		t.Fatalf("parse base: %v", err)
+	}
+	edited, err := parse(ctx, core.BytesSource(raw), core.ParseOptions{})
+	if err != nil {
+		t.Fatalf("parse edited: %v", err)
+	}
+	edited.Tags.Set(tag.Title, "Round Trip")
+
+	plan, err := (Codec{}).Plan(ctx, base, edited, core.WriteOptions{})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	var buf bytes.Buffer
+	if _, err := bits.Write(ctx, &buf, core.BytesSource(raw), plan.Segments, nil); err != nil {
+		t.Fatalf("render plan: %v", err)
+	}
+	reparsed, err := parse(ctx, core.BytesSource(buf.Bytes()), core.ParseOptions{})
+	if err != nil {
+		t.Fatalf("re-parse output: %v", err)
+	}
+	if v, ok := reparsed.Tags.Get(tag.Title); !ok || len(v) != 1 || v[0] != "Round Trip" {
+		t.Errorf("re-parsed TITLE = %v (ok=%v), want [\"Round Trip\"]", v, ok)
 	}
 }

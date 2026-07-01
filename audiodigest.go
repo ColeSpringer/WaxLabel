@@ -68,7 +68,7 @@ func (d *Document) HashAudioEssence(ctx context.Context, opts ...HashOption) (Au
 	for _, fn := range opts {
 		fn(&ho)
 	}
-	src, closer, err := d.resolveSource(ho.source)
+	src, closer, err := d.resolveSource(ho.source, "supply the bytes to hash via WithHashSource")
 	if err != nil {
 		return AudioDigest{}, err
 	}
@@ -123,7 +123,7 @@ func (d *Document) HashFile(ctx context.Context, opts ...HashOption) (AudioDiges
 	for _, fn := range opts {
 		fn(&ho)
 	}
-	src, closer, err := d.resolveSource(ho.source)
+	src, closer, err := d.resolveSource(ho.source, "supply the bytes to hash via WithHashSource")
 	if err != nil {
 		return AudioDigest{}, err
 	}

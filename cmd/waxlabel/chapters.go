@@ -21,7 +21,11 @@ func splitChapter(s string) (start time.Duration, title string, err error) {
 	if err != nil {
 		return 0, "", err
 	}
-	return start, s[i+1:], nil
+	title = s[i+1:]
+	if err := checkArgText(title, "chapter title"); err != nil {
+		return 0, "", err
+	}
+	return start, title, nil
 }
 
 // parseChapterTimestamp parses a chapter start written as [H:]MM:SS[.mmm] or as
