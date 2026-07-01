@@ -236,6 +236,40 @@ func buildTag(t *testing.T, version byte, frames []Frame) *Tag {
 	return tg
 }
 
+// TestRewriteBase covers the shared WAV/AIFF ID3 diff base: tagless files use an
+// empty base, legacy strip uses only the parsed ID3 frames so native-only values
+// get written into ID3, and normal rewrites use the merged projection.
+func TestRewriteBase(t *testing.T) {
+	// srcTag carries only TITLE from the ID3 chunk. base is the merged projection:
+	// that TITLE plus ARTIST promoted from the native container.
+	srcTag := buildTag(t, 4, []Frame{{ID: "TIT2", Body: encodeTextFrame(encLatin1, []string{"SrcTitle"})}})
+	base := tag.NewTagSet()
+	base.Set(tag.Title, "SrcTitle")
+	base.Set(tag.Artist, "NativeArtist")
+
+	// No existing ID3 chunk: the full promoted set renders into a new chunk.
+	if got := RewriteBase(base, srcTag, false, false); got.Len() != 0 {
+		t.Errorf("!id3Present: base has %d keys, want 0 (empty)", got.Len())
+	}
+	// !id3Present takes precedence even when stripNative is set.
+	if got := RewriteBase(base, srcTag, false, true); got.Len() != 0 {
+		t.Errorf("!id3Present+strip: base has %d keys, want 0", got.Len())
+	}
+	// ID3 present, not stripping: use the merged base, including native ARTIST.
+	if got := RewriteBase(base, srcTag, true, false); !got.Has(tag.Artist) {
+		t.Error("id3Present, no strip: want the merged base (with native-only ARTIST)")
+	}
+	// ID3 present, stripping the native container: compare against the ID3 chunk
+	// only, so native ARTIST is treated as an addition.
+	stripped := RewriteBase(base, srcTag, true, true)
+	if v, _ := stripped.First(tag.Title); v != "SrcTitle" {
+		t.Errorf("strip: Title = %q, want SrcTitle (from the id3 chunk's own frame)", v)
+	}
+	if stripped.Has(tag.Artist) {
+		t.Error("strip: native-only ARTIST must be absent from the rebuild base so it renders as an addition")
+	}
+}
+
 func TestProjectTextFrames(t *testing.T) {
 	frames := []Frame{
 		{ID: "TIT2", Body: encodeTextFrame(encLatin1, []string{"My Title"})},

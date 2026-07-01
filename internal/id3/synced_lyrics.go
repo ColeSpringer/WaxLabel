@@ -29,6 +29,9 @@ const (
 	// syltContentLyrics is the SYLT content type for lyrics (1); other content types are
 	// not projected as lyrics.
 	syltContentLyrics byte = 1
+	// syltTimeMax is the SYLT timestamp ceiling. Unlike CHAP, SYLT has no
+	// reserved "field unused" sentinel, so the full uint32 range is valid.
+	syltTimeMax uint32 = 0xFFFFFFFF
 )
 
 // maxSyltLines caps how many timed lines one SYLT frame decodes, a defense-in-depth bound
@@ -209,7 +212,7 @@ func encodeSYLT(sl core.SyncedLyrics, version byte, fallbackLang string) (body [
 		out = append(out, encodeString(enc, "\n"+ln.Text)...)
 		out = append(out, term(enc)...)
 		var ts [4]byte
-		ms, ov := durationToMs(ln.Time) // clamps a line past the 32-bit ms field (~49.7 days)
+		ms, ov := durationToMs(ln.Time, syltTimeMax) // clamps only a line past the full 32-bit ms field
 		overflow = overflow || ov
 		binary.BigEndian.PutUint32(ts[:], ms)
 		out = append(out, ts[:]...)
@@ -221,11 +224,19 @@ func encodeSYLT(sl core.SyncedLyrics, version byte, fallbackLang string) (body [
 // empty language writes the spec's "XXX" undefined marker. A 1-2 byte code is NUL-padded
 // because some encoders store short codes that way; using "X" padding would read back as a
 // different language such as "enX". A longer value is truncated to the field's hard limit.
+// ISO-639-2 codes are conventionally lowercase. Fold uppercase ASCII here so
+// callers that bypass the CLI still write canonical bytes. This avoids Unicode
+// case folding before the fixed-width pad/truncate below.
 func syltLangBytes(lang string) []byte {
 	if lang == "" {
 		return []byte{'X', 'X', 'X'}
 	}
 	b := []byte(lang)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
 	for len(b) < 3 {
 		b = append(b, 0)
 	}

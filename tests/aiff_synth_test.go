@@ -519,6 +519,61 @@ func TestAIFFStripNativeConsolidatesToId3(t *testing.T) {
 	}
 }
 
+func TestAIFFStripNativeConsolidatesToId3WithExistingId3(t *testing.T) {
+	// Source shape: an ID3 chunk holds TITLE, while native AIFF text chunks hold
+	// keys not present in ID3 (AUTH -> Artist, "(c) " -> Copyright). When
+	// --legacy strip removes native text chunks, those native-only values must be
+	// emitted into ID3. The regression seeded the ID3 diff base from the merged
+	// projection, so untouched native-only keys were omitted.
+	id3Chunk := aiffID3(id3v2(4, textFrame(4, "TIT2", "Original Title")))
+	data := aiffFile("AIFF", aiffText("AUTH", "Native Artist"), aiffText("(c) ", "Native Copyright"),
+		id3Chunk, stdCOMM(), aiffSSND(400))
+
+	t.Run("unchanged native-only keys survive", func(t *testing.T) {
+		plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "New Title").
+			Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := applyToBytes(t, data, plan)
+		if bytes.Contains(out, []byte("AUTH")) || bytes.Contains(out, []byte("(c) ")) {
+			t.Error("native text chunks should have been stripped")
+		}
+		if !bytes.Contains(out, []byte("ID3 ")) {
+			t.Error("tags should have been consolidated into an ID3 chunk")
+		}
+		re := mustParseBytes(t, out).Fields()
+		if re.Title != "New Title" {
+			t.Errorf("title after strip = %q", re.Title)
+		}
+		if !slices.Contains(re.Artists, "Native Artist") {
+			t.Errorf("native-only ARTIST dropped on strip: artists = %v", re.Artists)
+		}
+		if re.Copyright != "Native Copyright" {
+			t.Errorf("native-only COPYRIGHT dropped on strip: %q", re.Copyright)
+		}
+	})
+
+	t.Run("changed native-only key survives (control)", func(t *testing.T) {
+		plan, err := mustParseBytes(t, data).Edit().Set(tag.Artist, "Changed Artist").
+			Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := applyToBytes(t, data, plan)
+		re := mustParseBytes(t, out).Fields()
+		if !slices.Contains(re.Artists, "Changed Artist") {
+			t.Errorf("changed native-only ARTIST lost on strip: artists = %v", re.Artists)
+		}
+		if re.Copyright != "Native Copyright" {
+			t.Errorf("unchanged native-only COPYRIGHT dropped: %q", re.Copyright)
+		}
+		if re.Title != "Original Title" {
+			t.Errorf("id3-only TITLE lost on strip: %q", re.Title)
+		}
+	})
+}
+
 func TestAIFFPreservesUnknownChunks(t *testing.T) {
 	// An "FVER" chunk and a "MARK" chunk (neither modeled) must survive an edit
 	// byte-for-byte and keep their order relative to SSND.

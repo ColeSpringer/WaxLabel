@@ -63,7 +63,7 @@ type editFlags struct {
 	// so - like --force - it resolves in writeOptions() and is shared by plan and set.
 	numericGenre bool
 
-	strict bool // promote the unknown-key and single-valued-multi notes to errors
+	strict bool // promote selected write notes, including unknown-key and dropped-value notes, to errors
 }
 
 // bind registers the edit and write-option flags on cmd.

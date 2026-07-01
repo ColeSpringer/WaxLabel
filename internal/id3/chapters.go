@@ -276,10 +276,10 @@ func chapterFrames(chs []core.Chapter, version byte) (frames []Frame, overflow b
 // emitted only for a non-empty title, via renderFrame so the subframe is serialized with
 // the enclosing tag's version geometry. Byte-offset fields are always the unused sentinel.
 func encodeCHAP(id string, ch core.Chapter, version byte) ([]byte, bool) {
-	startMs, ov1 := durationToMs(ch.Start)
+	startMs, ov1 := durationToMs(ch.Start, chapTimeMax)
 	endMs, ov2 := chapFieldUnused, false
 	if ch.End > 0 {
-		endMs, ov2 = durationToMs(ch.End)
+		endMs, ov2 = durationToMs(ch.End, chapTimeMax)
 	}
 	out := append(encodeLatin1(id), 0)
 	var b [16]byte
@@ -308,15 +308,17 @@ func encodeCTOC(id string, childIDs []string) []byte {
 	return out
 }
 
-// durationToMs converts a chapter offset to uint32 milliseconds, clamping a value past
-// the 32-bit field (~49.7 days) to chapTimeMax and reporting the clamp.
-func durationToMs(d time.Duration) (uint32, bool) {
+// durationToMs converts a chapter or lyric offset to uint32 milliseconds, clamps
+// values past maxMs, and reports the clamp. CHAP passes chapTimeMax, one below
+// the reserved "field unused" sentinel; SYLT has no sentinel and uses the full
+// uint32 range.
+func durationToMs(d time.Duration, maxMs uint32) (uint32, bool) {
 	if d < 0 {
 		d = 0
 	}
 	ms := int64(d / time.Millisecond)
-	if ms > int64(chapTimeMax) {
-		return chapTimeMax, true
+	if ms > int64(maxMs) {
+		return maxMs, true
 	}
 	return uint32(ms), false
 }

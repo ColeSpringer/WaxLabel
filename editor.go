@@ -295,8 +295,14 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	if e.syncedLyricsTouched {
 		edited.SyncedLyrics = e.syncedLyrics
 	}
-	if err := validatePictures(edited.Pictures); err != nil {
-		return nil, err
+	// Enforce the icon-count rule only when this edit wrote the picture set. Tags-only
+	// edits use the file's existing pictures, so duplicate type-1 or type-2 icons in
+	// the source file should not block unrelated tag edits or lint fixes. Picture
+	// edits still set picsTouched and are validated here.
+	if e.picsTouched {
+		if err := validatePictures(edited.Pictures); err != nil {
+			return nil, err
+		}
 	}
 	// Validate only the pictures added on this editor (not the file's pre-existing
 	// ones, which Edit seeded): a direct caller handing AddPicture empty or junk

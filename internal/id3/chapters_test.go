@@ -2,6 +2,7 @@ package id3
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"slices"
 	"testing"
@@ -54,6 +55,21 @@ func TestChapterOpenEndRoundTrips(t *testing.T) {
 	got, _ := ProjectChapters(tagWith(4, frames))
 	if len(got) != 1 || got[0].End != 0 {
 		t.Fatalf("open-ended chapter round-trip = %+v, want End 0", got)
+	}
+}
+
+// TestChapterTimeClampsBelowSentinel checks that CHAP clamps past the 32-bit
+// millisecond field to chapTimeMax (0xFFFFFFFE), one below the reserved
+// "unused" sentinel. SYLT's 0xFFFFFFFF ceiling must not be used for CHAP,
+// because that value decodes as time-not-used.
+func TestChapterTimeClampsBelowSentinel(t *testing.T) {
+	body, overflow := encodeCHAP("a", core.Chapter{Start: time.Duration(0x100000000) * time.Millisecond, Title: "X"}, 4)
+	if !overflow {
+		t.Error("a start past the 32-bit ms field should report overflow")
+	}
+	// The 4-byte start-time field follows the NUL-terminated element ID "a\0".
+	if start := binary.BigEndian.Uint32(body[2:6]); start != chapTimeMax {
+		t.Errorf("clamped CHAP start = %#08x, want %#08x (chapTimeMax, below the 0xFFFFFFFF sentinel)", start, chapTimeMax)
 	}
 }
 

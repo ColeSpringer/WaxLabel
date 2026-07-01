@@ -49,7 +49,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		}
 	}
 	var apeTag *ape.Tag
-	if at, ok, _ := ape.ParseAt(src, tailEnd, limit); ok && at.Offset >= d.audioStart {
+	if at, ok, _ := ape.ParseAt(src, tailEnd, limit, opts.Limits.MaxElements); ok && at.Offset >= d.audioStart {
 		if apeBytes, err := bits.ReadSlice(src, at.Offset, at.Size, limit); err == nil {
 			d.ape = apeBytes
 			d.apeOffset = at.Offset

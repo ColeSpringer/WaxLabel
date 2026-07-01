@@ -233,9 +233,12 @@ func TestMP3PostWriteRetainsLegacyFamilies(t *testing.T) {
 }
 
 // apeTag builds a minimal footer-only APEv2 tag (mirrors the ape package test).
-func apeTag(items map[string]string) []byte {
+func apeTag(items map[string]string) []byte { return apeTagCount(items, len(items)) }
+
+// apeTagCount is apeTag with an explicitly chosen footer item-count field, so a test can
+// overstate it to exercise the decoded-item cap while the raw tag bytes stay preserved.
+func apeTagCount(items map[string]string, footerCount int) []byte {
 	var body []byte
-	count := 0
 	for k, v := range items {
 		var hdr [8]byte
 		put32le(hdr[0:4], len(v))
@@ -244,14 +247,40 @@ func apeTag(items map[string]string) []byte {
 		body = append(body, []byte(k)...)
 		body = append(body, 0)
 		body = append(body, []byte(v)...)
-		count++
 	}
 	foot := make([]byte, 32)
 	copy(foot[0:8], "APETAGEX")
 	put32le(foot[8:12], 2000)
 	put32le(foot[12:16], len(body)+32)
-	put32le(foot[16:20], count)
+	put32le(foot[16:20], footerCount)
 	return append(body, foot...)
+}
+
+// TestMP3APEOverstatedItemCountPreserved checks that an APE footer can
+// overstate its item count without corrupting the read. The decoded item list is
+// capped, the raw APE bytes remain available for preservation, and the
+// authoritative ID3v2 tag still reads.
+func TestMP3APEOverstatedItemCountPreserved(t *testing.T) {
+	ape := apeTagCount(map[string]string{"Title": "APE Title"}, 1_000_000)
+	data := id3v2(3, textFrame(3, "TIT2", "V2 Title"))
+	data = append(data, mp3Audio(t)...)
+	data = append(data, ape...)
+
+	doc := mustParseBytes(t, data)
+	if got := doc.Fields().Title; got != "V2 Title" {
+		t.Errorf("authoritative id3v2 title = %q, want V2 Title", got)
+	}
+	if !hasWarning(doc, wl.WarnLegacyAPE) {
+		t.Error("expected a legacy-APE warning despite the overstated count")
+	}
+	// The raw APE region round-trips byte-identical across an edit.
+	plan, err := doc.Edit().Set(tag.Artist, "X").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := applyToBytes(t, data, plan); !bytes.Contains(out, ape) {
+		t.Error("the raw APE region was not preserved verbatim under an overstated item count")
+	}
 }
 
 func put32le(b []byte, v int) {

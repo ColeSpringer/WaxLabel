@@ -158,6 +158,20 @@ func TestCLISyncedLyricsLangValidation(t *testing.T) {
 	}
 }
 
+// TestCLISyncedLyricsLangUppercaseCanonicalized checks that an uppercase
+// --synced-lyrics-lang is stored and dumped as canonical lowercase ISO-639-2.
+func TestCLISyncedLyricsLangUppercaseCanonicalized(t *testing.T) {
+	file := copyFixture(t, "../../testdata/notags.mp3")
+	if _, errb, code := runCLI(t, "set", file, "--add-synced-lyric", "0:00=Hi", "--synced-lyrics-lang", "ENG"); code != 0 {
+		t.Fatalf("set exit %d: %s", code, errb)
+	}
+	out, _, _ := runCLI(t, "dump", "--json", file)
+	jd := decodeJSONOne[jsonDocument](t, out)
+	if len(jd.SyncedLyrics) != 1 || jd.SyncedLyrics[0].Language != "eng" {
+		t.Errorf("synced lyrics = %+v, want one set with language eng", jd.SyncedLyrics)
+	}
+}
+
 // TestCLISyncedLyricsUnsupported checks authoring synced lyrics on a format that cannot
 // store them (MP4) fails cleanly rather than silently dropping.
 func TestCLISyncedLyricsUnsupported(t *testing.T) {

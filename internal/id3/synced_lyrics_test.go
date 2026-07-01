@@ -217,6 +217,76 @@ func TestSYLTTimestampOverflow(t *testing.T) {
 	}
 }
 
+// TestSYLTTimestampFullRange checks that SYLT accepts the full uint32
+// millisecond range. A line at 0xFFFFFFFF round-trips without overflow; CHAP's
+// lower chapTimeMax ceiling does not apply.
+func TestSYLTTimestampFullRange(t *testing.T) {
+	const maxMs = 0xFFFFFFFF
+	wantD := time.Duration(maxMs) * time.Millisecond
+	set := core.SyncedLyrics{Lines: []core.SyncedLine{{Time: wantD, Text: "edge"}}}
+	frames, overflow := syltFrames([]core.SyncedLyrics{set}, 4, "")
+	if overflow {
+		t.Error("a line at exactly 0xFFFFFFFF ms should not report overflow")
+	}
+	got, _ := ProjectSyncedLyrics(tagWith(4, frames))
+	if len(got) != 1 || len(got[0].Lines) != 1 {
+		t.Fatalf("decoded %v, want one set with one line", got)
+	}
+	if got[0].Lines[0].Time != wantD {
+		t.Errorf("time = %v, want %v (unclamped full-range value)", got[0].Lines[0].Time, wantD)
+	}
+}
+
+// TestSYLTTimestampClampsAtFullMax checks that a timestamp past 0xFFFFFFFF ms
+// clamps to the full uint32 max and reports overflow.
+func TestSYLTTimestampClampsAtFullMax(t *testing.T) {
+	over := core.SyncedLyrics{Lines: []core.SyncedLine{{Time: time.Duration(0x100000000) * time.Millisecond, Text: "past"}}}
+	frames, overflow := syltFrames([]core.SyncedLyrics{over}, 4, "")
+	if !overflow {
+		t.Error("a line past 0xFFFFFFFF ms should report overflow")
+	}
+	got, _ := ProjectSyncedLyrics(tagWith(4, frames))
+	if wantD := time.Duration(0xFFFFFFFF) * time.Millisecond; got[0].Lines[0].Time != wantD {
+		t.Errorf("clamped time = %v, want %v (0xFFFFFFFF)", got[0].Lines[0].Time, wantD)
+	}
+}
+
+// TestSyltLangBytesCanonicalizesCase checks that SYLT language encoding folds
+// uppercase ISO-639-2 codes to lowercase before fixed-width pad/truncate, while
+// keeping the "XXX" undefined marker and short NUL-padded codes in shape.
+func TestSyltLangBytesCanonicalizesCase(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"ENG", "eng"},
+		{"eng", "eng"},
+		{"Fr", "fr\x00"}, // 2-byte code: folded, then NUL-padded
+		{"", "XXX"},      // undefined marker unchanged
+	}
+	for _, c := range cases {
+		if got := string(syltLangBytes(c.in)); got != c.want {
+			t.Errorf("syltLangBytes(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestSYLTUppercaseLanguageWrittenLowercase checks that the encoder writes
+// lowercase for both an authored uppercase language and one inherited through
+// fallbackLang on a line-only edit. The decoder preserves case, so lowercase
+// bytes in the frame prove the encoder performed the fold.
+func TestSYLTUppercaseLanguageWrittenLowercase(t *testing.T) {
+	explicit := core.SyncedLyrics{Language: "ENG", Lines: []core.SyncedLine{{Time: time.Second, Text: "x"}}}
+	frames, _ := syltFrames([]core.SyncedLyrics{explicit}, 4, "")
+	if lang := string(frames[0].Body[1:4]); lang != "eng" {
+		t.Errorf("explicit language stored = %q, want eng", lang)
+	}
+	// Line-only edit: the modeled language is empty, so the file's uppercase code arrives via
+	// fallbackLang and is canonicalized on re-encode.
+	inherited := core.SyncedLyrics{Lines: []core.SyncedLine{{Time: time.Second, Text: "new"}}}
+	frames, _ = syltFrames([]core.SyncedLyrics{inherited}, 4, "ENG")
+	if lang := string(frames[0].Body[1:4]); lang != "eng" {
+		t.Errorf("inherited language stored = %q, want eng (canonicalized on re-encode)", lang)
+	}
+}
+
 // buildSYLT assembles a SYLT frame body with explicit header fields, for the skip/normalize
 // tests that need a content type or timestamp format encodeSYLT never writes.
 func buildSYLT(enc byte, lang string, tsFmt, content byte, desc string, lines []core.SyncedLine) []byte {

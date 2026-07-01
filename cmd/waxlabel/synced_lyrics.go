@@ -66,14 +66,17 @@ func (e *editFlags) syncedLyricsAdds() ([]wl.SyncedLyrics, error) {
 	if len(lines) == 0 {
 		return nil, nil
 	}
-	// One set carrying every authored line; the library sorts the lines by timestamp.
-	return []wl.SyncedLyrics{{Language: e.syncedLyricsLang, Lines: lines}}, nil
+	// Store one set containing every authored line. The library sorts by timestamp.
+	// Lowercase the language here so the model, JSON dump, and encoded ISO-639-2
+	// bytes agree; validation has already limited the input to ASCII letters.
+	return []wl.SyncedLyrics{{Language: strings.ToLower(e.syncedLyricsLang), Lines: lines}}, nil
 }
 
 // validLanguageCode reports whether s is exactly three ASCII letters, the shape of an
 // ISO-639-2 language code and the only form the ID3 SYLT 3-byte field stores without
-// padding or truncation. A full ISO registry lookup is intentionally out of scope; the
-// storage field can only preserve three single-byte letters.
+// padding or truncation. Input is case-insensitive and is stored in lowercase. A full
+// ISO registry lookup is intentionally out of scope; the storage field can only preserve
+// three single-byte letters.
 func validLanguageCode(s string) bool {
 	if len(s) != 3 {
 		return false

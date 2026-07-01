@@ -9,7 +9,6 @@ import (
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/id3"
-	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -73,9 +72,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		newText = rebuildText(d.texts, edited.Tags)
 	}
 
-	// Build the new ID3 tag. When no ID3 existed, the rewrite base is empty so the
-	// whole authoritative set (promoted from the native chunks plus the edit)
-	// renders into the new chunk; when one existed, only changed frames re-render.
+	// Build the new ID3 tag. id3.RewriteBase picks the diff base: no ID3 chunk means
+	// an empty base, --legacy strip uses only the parsed ID3 frames so native-only
+	// text chunks are emitted into ID3, and the default path uses the merged base.
 	var newID3 *id3.Tag
 	var id3Info id3.RebuildInfo
 	if needID3 {
@@ -87,10 +86,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 			srcTag = id3.NewEmpty(core.DefaultID3Version(core.FormatAIFF))
 		}
 		version := srcTag.WriteVersion()
-		id3Base := base.Tags
-		if !id3Present {
-			id3Base = tag.NewTagSet()
-		}
+		id3Base := id3.RewriteBase(base.Tags, srcTag, id3Present, stripText)
 		var frames []id3.Frame
 		frames, id3Info = id3.RebuildFrames(srcTag.Frames(), id3Base, edited.Tags, version,
 			id3.StructuredEdit{

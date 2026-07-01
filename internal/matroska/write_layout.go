@@ -366,6 +366,11 @@ func voidOfTotal(total int64) []byte {
 // omits dropped targets). An entry whose target is neither moved nor absorbed is
 // left as-is: it can legitimately point at a cluster outside the header item list.
 func patchSeekAbsorb(sh *seekHead, segDataStart int64, oldToNew map[int64]int64, absorbed map[int64]bool) ([]byte, bool) {
+	if sh.hasNestedCRC {
+		// This in-place patch only recomputes the SeekHead CRC. A nested per-Seek
+		// CRC requires the shift path, which rebuilds Seek entries without one.
+		return nil, false
+	}
 	raw := make([]byte, len(sh.raw))
 	copy(raw, sh.raw)
 	for _, e := range sh.entries {

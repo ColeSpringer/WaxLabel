@@ -249,6 +249,65 @@ func TestWAVStripInfoConsolidatesToId3(t *testing.T) {
 	}
 }
 
+func TestWAVStripInfoConsolidatesToId3WithExistingId3(t *testing.T) {
+	// Source shape: an id3 chunk holds TITLE, while LIST/INFO holds keys not present
+	// in id3 (ARTIST, COPYRIGHT). When --legacy strip removes INFO, those native-only
+	// values must be emitted into id3. The regression seeded the ID3 diff base from
+	// the merged projection, so untouched native-only keys were omitted.
+	id3Chunk := wavID3(id3v2(3, textFrame(3, "TIT2", "Original Title")))
+	info := wavInfo([2]string{"IART", "Native Artist"}, [2]string{"ICOP", "Native Copyright"})
+	data := wavFile(wavFmtPCM(), info, id3Chunk, wavData(400))
+
+	t.Run("unchanged native-only keys survive", func(t *testing.T) {
+		// The edit touches only TITLE. Before the fix, ARTIST and COPYRIGHT were
+		// compared against the merged base, treated as unchanged, and omitted from
+		// the rebuilt id3 chunk.
+		plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "New Title").
+			Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := applyToBytes(t, data, plan)
+		if bytes.Contains(out, []byte("LIST")) || bytes.Contains(out, []byte("INFO")) {
+			t.Error("LIST/INFO should have been stripped")
+		}
+		if !bytes.Contains(out, []byte("id3 ")) {
+			t.Error("tags should have been consolidated into an id3 chunk")
+		}
+		re := mustParseBytes(t, out).Fields()
+		if re.Title != "New Title" {
+			t.Errorf("title after strip = %q", re.Title)
+		}
+		if !slices.Contains(re.Artists, "Native Artist") {
+			t.Errorf("native-only ARTIST dropped on strip: artists = %v", re.Artists)
+		}
+		if re.Copyright != "Native Copyright" {
+			t.Errorf("native-only COPYRIGHT dropped on strip: %q", re.Copyright)
+		}
+	})
+
+	t.Run("changed native-only key survives (control)", func(t *testing.T) {
+		// Changing ARTIST already used the dirty-key path. Keep that coverage and
+		// confirm that untouched COPYRIGHT also migrates.
+		plan, err := mustParseBytes(t, data).Edit().Set(tag.Artist, "Changed Artist").
+			Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := applyToBytes(t, data, plan)
+		re := mustParseBytes(t, out).Fields()
+		if !slices.Contains(re.Artists, "Changed Artist") {
+			t.Errorf("changed native-only ARTIST lost on strip: artists = %v", re.Artists)
+		}
+		if re.Copyright != "Native Copyright" {
+			t.Errorf("unchanged native-only COPYRIGHT dropped: %q", re.Copyright)
+		}
+		if re.Title != "Original Title" {
+			t.Errorf("id3-only TITLE lost on strip: %q", re.Title)
+		}
+	})
+}
+
 func TestWAVPreservesUnknownChunks(t *testing.T) {
 	// A "bext" chunk and a "cue " chunk (neither modeled) must survive an edit
 	// byte-for-byte and keep their order relative to data.

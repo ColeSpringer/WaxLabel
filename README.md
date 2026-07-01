@@ -189,7 +189,12 @@ Exit code summary:
 - `6`: I/O or not-found error.
 - `130`: canceled or timed out.
 
-For multi-file commands, a more severe file error determines the process exit code.
+For multi-file commands, WaxLabel returns the code for the highest-precedence
+file error, not necessarily the first error encountered. The precedence is:
+
+> canceled/timeout (130) > source-changed (5) > invalid-data (4) > unsupported
+> format/tag/stream/alignment (3) > I/O (6) > not-found (6) > usage/invalid-key
+> (2) > generic error (1)
 
 ## Core Concepts
 

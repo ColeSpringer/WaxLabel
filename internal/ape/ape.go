@@ -45,8 +45,9 @@ type Item struct {
 
 // ParseAt looks for an APE footer ending at endOff (the file size, or the start
 // of a trailing ID3v1 tag) and decodes the tag if present. ok is false when
-// there is no APE tag there.
-func ParseAt(src core.ReaderAtSized, endOff, limit int64) (*Tag, bool, error) {
+// there is no APE tag there. maxElements caps the decoded item list; callers
+// preserve the raw tag bytes separately.
+func ParseAt(src core.ReaderAtSized, endOff, limit int64, maxElements int) (*Tag, bool, error) {
 	if endOff < footerLen {
 		return nil, false, nil
 	}
@@ -71,7 +72,7 @@ func ParseAt(src core.ReaderAtSized, endOff, limit int64) (*Tag, bool, error) {
 		if err != nil {
 			return nil, false, nil //nolint:nilerr
 		}
-		items = parseItems(raw, itemCount)
+		items = parseItems(raw, itemCount, maxElements)
 	}
 
 	offset := itemsStart
@@ -86,9 +87,11 @@ func ParseAt(src core.ReaderAtSized, endOff, limit int64) (*Tag, bool, error) {
 	return &Tag{Version: version, Items: items, Offset: offset, Size: size}, true, nil
 }
 
-// parseItems decodes up to count items from the item region. It stops on the
-// first malformed item rather than over-reading.
-func parseItems(raw []byte, count uint32) []Item {
+// parseItems decodes up to count items from the item region. It stops on
+// malformed input and caps the decoded list at maxElements. MP3 writes preserve
+// the raw APE region separately, so truncating this decoded view does not drop
+// bytes on write.
+func parseItems(raw []byte, count uint32, maxElements int) []Item {
 	var items []Item
 	pos := 0
 	for range count {
@@ -103,11 +106,21 @@ func parseItems(raw []byte, count uint32) []Item {
 			break
 		}
 		pos += n
-		if size < 0 || pos+size > len(raw) {
+		// Compare against len(raw)-pos instead of pos+size. On 32-bit builds, a
+		// crafted size near 2 GiB can overflow pos+size before the bounds check.
+		// pos is already within raw, and size < 0 catches uint32 values whose high
+		// bit becomes negative after int conversion.
+		if size < 0 || size > len(raw)-pos {
 			break
 		}
 		value := raw[pos : pos+size]
 		pos += size
+		// Apply the cap after malformed-item checks so short or corrupt input still
+		// exits through the lenient parse path. Hitting the cap just stops decoding;
+		// raw bytes are kept elsewhere.
+		if bits.CheckElementCap(len(items), maxElements, "APE items") != nil {
+			break // cap reached: stop decoding; the raw region is preserved elsewhere
+		}
 		items = append(items, Item{
 			Key:   key,
 			Value: string(value),

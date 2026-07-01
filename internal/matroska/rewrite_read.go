@@ -84,6 +84,11 @@ func seekFromRaw(raw []byte, fileStart int64, depth *bits.Depth, limit int64) *s
 		if c.id != idSeek {
 			return nil
 		}
+		// A per-Seek leading CRC-32 is valid but is not recomputed by the in-place
+		// patch. Latch the flag once and rebuild instead.
+		if !sh.hasNestedCRC && firstChildIsCRC(rs, c, limit) {
+			sh.hasNestedCRC = true
+		}
 		var e seekEntry
 		var have bool
 		_ = eachChild(rs, c.dataStart, c.dataEnd, depth, limit, func(s element) error {
@@ -138,6 +143,11 @@ func cuesFromRaw(raw []byte, fileStart int64, depth *bits.Depth, limit int64) *c
 		_ = eachChild(rs, start, end, depth, limit, func(c element) error {
 			switch c.id {
 			case idCuePoint, idCueTrackPos:
+				// A leading CRC-32 on CuePoint or CueTrackPositions is valid but is not
+				// recomputed by patchPositions. Latch the flag once and rebuild instead.
+				if !ci.hasNestedCRC && firstChildIsCRC(rs, c, limit) {
+					ci.hasNestedCRC = true
+				}
 				walk(c.dataStart, c.dataEnd) // descend to the CueClusterPosition leaves
 			case idCueClusterPos:
 				if c.dataLen() > 0 && c.dataLen() <= 8 {

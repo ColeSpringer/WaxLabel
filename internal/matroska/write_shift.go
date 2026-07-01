@@ -136,6 +136,9 @@ func buildShiftIndexes(wb *writeBase, seekIdx, cuesIdx int) []*shiftIndex {
 		seek.rebuild = func(om offsetMap, inSeg, outSeg int64) ([]byte, int64, bool) {
 			return rebuildSeekHead(sh, om, inSeg, outSeg)
 		}
+		// A nested per-Seek CRC cannot be patched in place, since only the master
+		// CRC is recomputed. RebuildSeekHead re-encodes each Seek without one.
+		seek.force = sh.hasNestedCRC
 	}
 
 	cues := &shiftIndex{itemIdx: cuesIdx}
@@ -157,6 +160,9 @@ func buildShiftIndexes(wb *writeBase, seekIdx, cuesIdx int) []*shiftIndex {
 			}
 			return encodeCues(points, ci.crc, len(ci.raw), om, inSeg, outSeg)
 		}
+		// Nested CuePoint and CueTrackPositions CRCs cannot be patched in place,
+		// since only the master CRC is recomputed. encodeCues recalculates them.
+		cues.force = ci.hasNestedCRC
 	}
 
 	return []*shiftIndex{seek, cues}

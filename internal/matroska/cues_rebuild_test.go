@@ -417,3 +417,221 @@ func TestCuesParseAllocBudget(t *testing.T) {
 		t.Errorf("parse allocs/run = %.0f for %d CuePoints, want <= %.0f (eager rebuild tree reintroduced?)", avg, n, budget)
 	}
 }
+
+// Nested CRC-32 elements are valid in CuePoint, CueTrackPositions, and Seek. The
+// in-place patch paths only recompute the containing master CRC, so parsing a
+// nested CRC must force a rebuild.
+//
+// validateNestedCRCs walks Cues and SeekHead descendants. For each master with a
+// leading CRC-32 child, it recomputes the CRC over the remaining content and
+// compares it with the stored element. The returned count lets callers confirm
+// that the fixture actually contained CRCs.
+func validateNestedCRCs(t *testing.T, raw []byte) int {
+	t.Helper()
+	rs := core.BytesSource(raw)
+	checked := 0
+	var walk func(start, end int64)
+	walk = func(start, end int64) {
+		_ = eachChild(rs, start, end, bits.NewDepth(64), maxElement, func(c element) error {
+			switch c.id {
+			case idCues, idCuePoint, idCueTrackPos, idSeekHead, idSeek:
+				if first, ok := readElement(rs, c.dataStart, c.dataEnd, maxElement); ok &&
+					first.id == idCRC32 && first.dataEnd-first.dataStart == 4 {
+					stored, _ := bits.ReadSlice(rs, first.start, first.dataEnd-first.start, maxElement)
+					content, _ := bits.ReadSlice(rs, first.dataEnd, c.dataEnd-first.dataEnd, maxElement)
+					// Compare against the production encoder's rendering so the test's notion of
+					// a correct CRC element cannot drift from the write path.
+					if want := crcElement(content); !bytes.Equal(stored, want) {
+						t.Errorf("stale CRC on element %#x: stored % x, want % x", c.id, stored, want)
+					}
+					checked++
+				}
+				walk(c.dataStart, c.dataEnd)
+			}
+			return nil
+		})
+	}
+	walk(0, int64(len(raw)))
+	return checked
+}
+
+// TestCuesFromRawDetectsNestedCRC checks that a leading CRC on CuePoint or
+// CueTrackPositions sets hasNestedCRC, while a Cues master CRC alone does not.
+func TestCuesFromRawDetectsNestedCRC(t *testing.T) {
+	pointCRC := encElement(idCuePoint, withCRC(cat(uintElement(idCueTime, 0), cueTrackPosBytes(1, 872, 2))))
+	if ci := parseCues(t, cuesBytes(true, pointCRC)); !ci.hasNestedCRC {
+		t.Error("a leading CuePoint CRC was not detected as nested")
+	}
+	tpCRC := encElement(idCueTrackPos, withCRC(cat(
+		encElement(idCueTrack, uintData(1)),
+		encElement(idCueClusterPos, uintDataWidth(872, 2)),
+	)))
+	if ci := parseCues(t, cuesBytes(true, encElement(idCuePoint, cat(uintElement(idCueTime, 0), tpCRC)))); !ci.hasNestedCRC {
+		t.Error("a leading CueTrackPositions CRC was not detected as nested")
+	}
+	if ci := parseCues(t, cuesBytes(true, cuePointBytes(0, cueTrackPosBytes(1, 872, 2)))); ci.hasNestedCRC {
+		t.Error("a master-only Cues CRC was wrongly flagged nested (would needlessly force rebuild)")
+	}
+}
+
+// TestSeekFromRawDetectsNestedCRC checks that a per-Seek leading CRC sets
+// hasNestedCRC, while a SeekHead master CRC alone does not.
+func TestSeekFromRawDetectsNestedCRC(t *testing.T) {
+	seekCRC := encElement(idSeek, withCRC(cat(
+		encElement(idSeekID, idBytes(idCues)),
+		encElement(idSeekPosition, uintDataWidth(100, 8)),
+	)))
+	if sh := seekFromRaw(masterElement(idSeekHead, seekCRC, true), 0, bits.NewDepth(64), maxElement); sh == nil || !sh.hasNestedCRC {
+		t.Fatalf("a per-Seek leading CRC was not detected as nested: %+v", sh)
+	}
+	plain := seekFromRaw(masterElement(idSeekHead, cat(seekFor(idCues, 100), seekFor(idTags, 200)), true), 0, bits.NewDepth(64), maxElement)
+	if plain == nil || plain.hasNestedCRC {
+		t.Error("a master-only SeekHead CRC was wrongly flagged nested")
+	}
+}
+
+// TestBuildShiftIndexesForcesRebuildOnNestedCRC checks that the parse-time
+// hasNestedCRC flag latches shiftIndex.force, sending emit to rebuild.
+func TestBuildShiftIndexesForcesRebuildOnNestedCRC(t *testing.T) {
+	ciPlain := parseCues(t, cuesBytes(true, cuePointBytes(0, cueTrackPosBytes(1, 872, 2))))
+	if buildShiftIndexes(&writeBase{cues: ciPlain}, -1, 0)[1].force {
+		t.Error("a plain Cues should not force rebuild")
+	}
+	ciNested := parseCues(t, cuesBytes(true, encElement(idCuePoint, withCRC(cat(uintElement(idCueTime, 0), cueTrackPosBytes(1, 872, 2))))))
+	if !buildShiftIndexes(&writeBase{cues: ciNested}, -1, 0)[1].force {
+		t.Error("a nested-CRC Cues should force rebuild")
+	}
+	shNested := seekFromRaw(masterElement(idSeekHead, encElement(idSeek, withCRC(cat(
+		encElement(idSeekID, idBytes(idCues)),
+		encElement(idSeekPosition, uintDataWidth(100, 8))))), true), 0, bits.NewDepth(64), maxElement)
+	if !buildShiftIndexes(&writeBase{seek: shNested}, 0, -1)[0].force {
+		t.Error("a nested-CRC SeekHead should force rebuild")
+	}
+}
+
+// TestRebuildCuesRecomputesNestedCRCs covers a Cues master CRC with nested
+// CuePoint and CueTrackPositions CRCs. A forced rebuild should repoint the
+// cluster and recompute every CRC element.
+func TestRebuildCuesRecomputesNestedCRCs(t *testing.T) {
+	tp := encElement(idCueTrackPos, withCRC(cat(
+		encElement(idCueTrack, uintData(1)),
+		encElement(idCueClusterPos, uintDataWidth(872, 2)),
+		uintElement(idCueRelPos, 7),
+	)))
+	raw := cuesBytes(true, encElement(idCuePoint, withCRC(cat(uintElement(idCueTime, 0), tp))))
+	if n := validateNestedCRCs(t, raw); n != 3 {
+		t.Fatalf("source validated %d CRCs, want 3 (Cues, CuePoint, CueTrackPositions)", n)
+	}
+
+	ci := parseCues(t, raw)
+	if !ci.hasNestedCRC {
+		t.Fatal("nested CRC not detected")
+	}
+	out, _, ok := rebuildCues(ci, directOffsetMap(map[int64]int64{872: 70000}), 0, 0)
+	if !ok {
+		t.Fatal("rebuildCues refused a nested-CRC Cues")
+	}
+	if got := collectCueUint(t, out, idCueClusterPos); !slices.Equal(got, []uint64{70000}) {
+		t.Errorf("position = %v, want [70000]", got)
+	}
+	if n := validateNestedCRCs(t, out); n != 3 {
+		t.Errorf("rebuilt validated %d CRCs, want 3 (master + both nested, all recomputed)", n)
+	}
+}
+
+// TestRebuildCuesNestedCRCIdempotent checks that a rebuilt Cues still parses as
+// having nested CRCs, so the next edit rebuilds again instead of using the
+// in-place path. The second rebuild should converge byte-identically.
+func TestRebuildCuesNestedCRCIdempotent(t *testing.T) {
+	raw := cuesBytes(true, encElement(idCuePoint, withCRC(cat(uintElement(idCueTime, 0), cueTrackPosBytes(1, 872, 2)))))
+	out1, _, ok := rebuildCues(parseCues(t, raw), directOffsetMap(map[int64]int64{872: 70000}), 0, 0)
+	if !ok {
+		t.Fatal("first rebuild failed")
+	}
+	ci2 := parseCues(t, out1)
+	if !ci2.hasNestedCRC {
+		t.Fatal("the rebuilt Cues lost its nested CRC flag; a second edit would fast-path a stale CRC")
+	}
+	out2, _, ok := rebuildCues(ci2, directOffsetMap(map[int64]int64{70000: 70000}), 0, 0)
+	if !ok {
+		t.Fatal("second rebuild failed")
+	}
+	if !bytes.Equal(out1, out2) {
+		t.Error("rebuild is not idempotent on a nested-CRC Cues")
+	}
+	if n := validateNestedCRCs(t, out2); n != 2 {
+		t.Errorf("re-rebuilt validated %d CRCs, want 2 (Cues master + nested CuePoint)", n)
+	}
+}
+
+// TestRebuildCuesNestedCRCUnrebuildableRefused checks that a nested CRC on an
+// unrebuildable Cues tree forces rebuild, and that emit returns ok=false instead
+// of writing an in-place result with stale nested CRCs.
+func TestRebuildCuesNestedCRCUnrebuildableRefused(t *testing.T) {
+	badPoint := encElement(idCuePoint, withCRC(uintElement(idCueTime, 0))) // no CueTrackPositions
+	raw := cuesBytes(true, badPoint, cuePointBytes(1000, cueTrackPosBytes(1, 872, 2)))
+	ci := parseCues(t, raw)
+	if !ci.hasNestedCRC {
+		t.Fatal("nested CRC not detected on the zero-track CuePoint")
+	}
+	cues := buildShiftIndexes(&writeBase{cues: ci}, -1, 0)[1]
+	if !cues.force {
+		t.Fatal("nested CRC did not force rebuild")
+	}
+	if _, _, _, ok := cues.emit(directOffsetMap(map[int64]int64{872: 70000}), 0, 0); ok {
+		t.Error("a forced emit on an unrebuildable nested-CRC Cues must refuse (ok=false), not write stale")
+	}
+}
+
+// TestRebuildSeekHeadDropsPerSeekCRC checks that SeekHead rebuild re-encodes
+// each Seek without an optional per-Seek CRC, preserves the entry, and
+// recomputes the master CRC.
+func TestRebuildSeekHeadDropsPerSeekCRC(t *testing.T) {
+	seekCRC := encElement(idSeek, withCRC(cat(
+		encElement(idSeekID, idBytes(idCues)),
+		encElement(idSeekPosition, uintDataWidth(200, 8)),
+	)))
+	sh := seekFromRaw(masterElement(idSeekHead, seekCRC, true), 0, bits.NewDepth(64), maxElement)
+	if sh == nil || !sh.hasNestedCRC {
+		t.Fatalf("per-Seek CRC not detected: %+v", sh)
+	}
+	out, _, ok := rebuildSeekHead(sh, directOffsetMap(map[int64]int64{200: 200}), 0, 0)
+	if !ok {
+		t.Fatal("rebuildSeekHead failed")
+	}
+	sh2 := seekFromRaw(out, 0, bits.NewDepth(64), maxElement)
+	if sh2 == nil {
+		t.Fatal("re-parse of rebuilt SeekHead failed")
+	}
+	if sh2.hasNestedCRC {
+		t.Error("the rebuilt SeekHead still carries a per-Seek CRC; it should be dropped")
+	}
+	if len(sh2.entries) != 1 || sh2.entries[0].target != 200 {
+		t.Errorf("rebuilt entry = %+v, want one targeting 200", sh2.entries)
+	}
+	if n := validateNestedCRCs(t, out); n != 1 {
+		t.Errorf("rebuilt validated %d CRCs, want 1 (the SeekHead master CRC, recomputed)", n)
+	}
+}
+
+// TestPatchSeekAbsorbFallsBackOnNestedCRC checks that the absorb fast path
+// refuses a SeekHead with a nested per-Seek CRC, while a plain SeekHead still
+// patches in place.
+func TestPatchSeekAbsorbFallsBackOnNestedCRC(t *testing.T) {
+	nested := seekFromRaw(masterElement(idSeekHead, encElement(idSeek, withCRC(cat(
+		encElement(idSeekID, idBytes(idCues)),
+		encElement(idSeekPosition, uintDataWidth(200, 8))))), true), 0, bits.NewDepth(64), maxElement)
+	if nested == nil || !nested.hasNestedCRC {
+		t.Fatal("per-Seek CRC not detected")
+	}
+	if _, ok := patchSeekAbsorb(nested, 0, map[int64]int64{}, map[int64]bool{}); ok {
+		t.Error("patchSeekAbsorb should fall back (ok=false) when the SeekHead has a nested per-Seek CRC")
+	}
+	plain := seekFromRaw(masterElement(idSeekHead, seekFor(idCues, 200), true), 0, bits.NewDepth(64), maxElement)
+	if plain == nil {
+		t.Fatal("plain SeekHead parse failed")
+	}
+	if _, ok := patchSeekAbsorb(plain, 0, map[int64]int64{}, map[int64]bool{}); !ok {
+		t.Error("patchSeekAbsorb should still succeed in place for a plain SeekHead")
+	}
+}

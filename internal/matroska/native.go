@@ -152,6 +152,10 @@ type seekHead struct {
 	raw        []byte
 	crc        *crcSpot
 	entries    []seekEntry
+	// hasNestedCRC records that at least one Seek child starts with CRC-32. The
+	// in-place patch only recomputes the SeekHead CRC, so this forces rebuildSeekHead,
+	// which omits per-Seek CRCs on output.
+	hasNestedCRC bool
 }
 
 type seekEntry struct {
@@ -175,6 +179,10 @@ type cuesIndex struct {
 	clusters   []seekEntry // in-place patchPositions fast path (kept byte-identical to the source)
 	maxDepth   int         // depth budget for the lazy buildCuePoints walk (write-once at parse)
 	limit      int64       // alloc limit for that walk (write-once at parse)
+	// hasNestedCRC records that a CuePoint or CueTrackPositions child starts with
+	// CRC-32. patchPositions only recomputes the Cues CRC, so this forces encodeCues,
+	// which recalculates nested CRCs.
+	hasNestedCRC bool
 }
 
 // cuePoint is one CuePoint produced by buildCuePoints for a rebuild. It is
