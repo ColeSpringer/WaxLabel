@@ -179,12 +179,15 @@ func Project(t *Tag) Projection {
 	}
 }
 
-// emitNumTotal splits "n/total" text values into a number key and a total key,
-// via the shared [tag.SplitNumberTotal] so the substring split cannot drift from the
-// edit-time pair normalization.
+// emitNumTotal splits "n/total" text values into a number key and a total key, via
+// the shared [tag.NumberTotalSplit] so the substring split - and its validity gate -
+// cannot drift from the edit-time pair normalization or the other read paths. A
+// malformed pair ("abc/1", "1/2/3") stays verbatim on the number key instead of
+// composing a non-numeric number or a fabricated total, matching the editor and every
+// other codec; a well-formed "4/9" splits and preserves leading zeros.
 func emitNumTotal(emit func(tag.Key, string, string), vals []string, numKey, totKey tag.Key, src string) {
 	for _, v := range vals {
-		num, total := tag.SplitNumberTotal(v)
+		num, total, _ := tag.NumberTotalSplit(numKey, v)
 		if num != "" {
 			emit(numKey, num, src)
 		}

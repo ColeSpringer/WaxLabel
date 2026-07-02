@@ -36,6 +36,14 @@ func apicHeader(body []byte) (enc byte, mime string, ptype byte, desc string, re
 
 // decodeAPIC decodes an APIC frame body into a Picture. A malformed frame yields ok=false
 // and is preserved opaque.
+//
+// The trimmed declared MIME is passed straight through (including the "-->" URL-link
+// sentinel) rather than coercing a blank MIME to "image/" - that read-side coercion is
+// dropped so an authoritative sniff can speak for the bytes. SniffAuthoritative then lets
+// recognizable bytes win over a mislabeled or blank declaration (a JPEG under a bogus MIME
+// reads as image/jpeg), and degrades a blank MIME over unrecognizable bytes to
+// UnrecognizedMIME rather than the old blank->"image/". encodeAPIC still re-adds "image/"
+// for an empty MIME at write, so a round-trip of a genuinely blank declaration is unaffected.
 func decodeAPIC(body []byte) (core.Picture, bool) {
 	_, mime, ptype, desc, rest, ok := apicHeader(body)
 	if !ok {
@@ -43,11 +51,11 @@ func decodeAPIC(body []byte) (core.Picture, bool) {
 	}
 	p := core.Picture{
 		Type:        core.PictureType(ptype),
-		MIME:        normalizeMIME(mime),
+		MIME:        strings.TrimSpace(mime),
 		Description: desc,
 		Data:        slices.Clone(rest),
 	}
-	p.SniffInto()
+	p.SniffAuthoritative()
 	return p, true
 }
 
@@ -119,16 +127,6 @@ func mimeForFormat(format string) string {
 	default:
 		return "image/jpeg"
 	}
-}
-
-// normalizeMIME tidies a stored MIME type. The "-->" sentinel (a URL link
-// instead of embedded data) is preserved as-is.
-func normalizeMIME(mime string) string {
-	mime = strings.TrimSpace(mime)
-	if mime == "" {
-		return "image/"
-	}
-	return mime
 }
 
 // cutLatin1 reads a NUL-terminated Latin-1 string, returning it and the bytes

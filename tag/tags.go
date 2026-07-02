@@ -329,6 +329,79 @@ func TotalKey(k Key) Key {
 	}
 }
 
+// NumberTotalSplit splits a track/disc number value into its number and total substrings for
+// the read paths, so every codec that stores numbering as text splits a slashed value the same
+// way and agrees with the edit-time split (editor.splitNumberPairs). It is the single split
+// decision shared by ID3's emitNumTotal, Matroska's projectTag, and [NormalizeNumberPairs] (the
+// FLAC/Ogg and WAV post-pass), so those sites cannot drift.
+//
+// A genuine numeric pair ("4/9", "04/09", "0/12", "/2", "3/") splits on the first '/' via
+// [SplitNumberTotal], preserving the exact substrings (leading zeros and a literal 0 included),
+// each side "" when absent, and reports split=true. A value with no '/', a malformed pair whose
+// number or total side is non-numeric ("abc/1", "1/2/3"), or a bare "/" comes back whole as num
+// with an empty total and split=false, so it stays verbatim on the number key instead of
+// fabricating a total, matching what the editor leaves alone.
+//
+// A non-pair key returns split=false unchanged. That guard is not dead defense: Matroska's
+// projectTag and WAV's infoFamilies pass arbitrary mapped keys through here and rely on it, so
+// dropping it would split an Album or Title value that happens to contain a '/'. The validity
+// gate reuses [ValidNumericValue], so it cannot disagree with the linter on what a well-formed
+// pair is.
+func NumberTotalSplit(k Key, v string) (num, total string, split bool) {
+	if (k == TrackNumber || k == DiscNumber) &&
+		strings.ContainsRune(v, '/') && ValidNumericValue(k, v) {
+		num, total = SplitNumberTotal(v)
+		return num, total, true
+	}
+	return v, "", false
+}
+
+// NormalizeNumberPairs splits a slashed TRACKNUMBER/DISCNUMBER carried in a read projection into
+// a number key plus a derived total key, so the FLAC/Ogg and WAV read paths agree with the
+// ID3/MP4/Matroska projections and with the editor. Without it Tags() would show ["4/9"] while
+// the typed Fields() fabricated a total, and dump, copy, and diff would disagree on the same
+// file. It runs as a post-pass over a codec's projected [TagSet] and has no edit context, so its
+// total guard is "no total already present" rather than the editor's patch.Touches.
+//
+// An absent or multi-valued key is left alone; splitting a multi-value would invent a total no
+// writer can store and churn the file. A single value goes through [SplitNumberValue], which
+// sets the derived total only when the key has no value yet, so an explicit or present-empty
+// TRACKTOTAL wins over the slash's own total (matching [ParseNumPair]).
+func NormalizeNumberPairs(ts *TagSet) {
+	for _, numKey := range []Key{TrackNumber, DiscNumber} {
+		vals, ok := ts.Get(numKey)
+		if !ok || len(vals) != 1 {
+			continue // absent, or multi-valued (out of scope - never lose a value)
+		}
+		SplitNumberValue(ts, numKey, vals[0], !ts.Has(TotalKey(numKey)))
+	}
+}
+
+// SplitNumberValue applies a slashed track/disc number split to one key in ts. When value is a
+// genuine pair (per [NumberTotalSplit]) the number substring replaces numKey, or deletes it when
+// the number side is empty ("/12"), and the total is written to the companion total key when it
+// is non-empty and setTotal is true. A non-pair or malformed value is left untouched.
+//
+// This split-and-assign body is shared by [NormalizeNumberPairs] and the editor's edit-time
+// split. The two differ only in setTotal: the read pass passes "no total already present" (an
+// explicit total wins), the editor passes "the patch does not also touch the total key" (a slash
+// updates a base-carried total, but an explicit set wins). Keeping the body in one place stops
+// the number set/delete and leading-zero handling from drifting between them.
+func SplitNumberValue(ts *TagSet, numKey Key, value string, setTotal bool) {
+	num, total, split := NumberTotalSplit(numKey, value)
+	if !split {
+		return
+	}
+	if num != "" {
+		ts.Set(numKey, num)
+	} else {
+		ts.Delete(numKey) // "/12": no number survives
+	}
+	if total != "" && setTotal {
+		ts.Set(TotalKey(numKey), total)
+	}
+}
+
 // numericKeys are the canonical keys whose typed [Tags] projection is an int, so
 // a non-numeric value does not round-trip through that accessor (it reads 0): the
 // track and disc number/total, and the play count. Rating is excluded (it is a

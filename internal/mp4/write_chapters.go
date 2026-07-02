@@ -21,7 +21,7 @@ const maxChplChapters = 255
 // byte ranges into the preserved udta bytes - so a chpl resize and an ilst resize
 // fold into a single delta the existing chunk-offset machinery consumes unchanged.
 // In that fallback an unrewritable QuickTime track is preserved and flagged stale.
-func planChapters(d *doc, edited *core.Media, needIlst bool, opts core.WriteOptions, report core.WriteReport) (*core.WritePlan, error) {
+func planChapters(d *doc, edited *core.Media, needIlst, picturesChanged bool, opts core.WriteOptions, report core.WriteReport) (*core.WritePlan, error) {
 	if d.udta != nil && d.udtaRaw == nil {
 		return nil, fmt.Errorf("%w: MP4 udta bytes were not captured for a chapter rewrite", waxerr.ErrInvalidData)
 	}
@@ -36,11 +36,11 @@ func planChapters(d *doc, edited *core.Media, needIlst bool, opts core.WriteOpti
 	if d.audioTrak != nil && d.audioMdiaOff > 0 {
 		writing := len(edited.Chapters) > 0
 		if d.chapTrak != nil || (writing && d.nextTrackID > 0) || (!writing && d.audioHasChap) {
-			return planChaptersQT(d, edited, needIlst, opts, report)
+			return planChaptersQT(d, edited, needIlst, picturesChanged, opts, report)
 		}
 	}
 
-	newItems, reg, err := buildChapterUdta(d, edited, needIlst, opts)
+	newItems, reg, err := buildChapterUdta(d, edited, needIlst, picturesChanged, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -94,11 +94,12 @@ func planChapters(d *doc, edited *core.Media, needIlst bool, opts core.WriteOpti
 // buildChapterUdta renders the new ilst (when tags or pictures changed) and the
 // udta region (the chpl, and the ilst spliced in) that both chapter-write paths -
 // the chpl-only fallback and the QuickTime path - start from.
-func buildChapterUdta(d *doc, edited *core.Media, needIlst bool, opts core.WriteOptions) ([]item, udtaRegion, error) {
+func buildChapterUdta(d *doc, edited *core.Media, needIlst, picturesChanged bool, opts core.WriteOptions) ([]item, udtaRegion, error) {
 	var newItems []item
 	var newIlst []byte
 	if needIlst {
-		newItems = buildItems(edited.Tags, edited.Pictures, preservedItems(d.items), opts.NumericGenre)
+		covr := coverItemsToWrite(edited.Pictures, d.items, picturesChanged)
+		newItems = buildItems(edited.Tags, covr, preservedItems(d.items), opts.NumericGenre)
 		if err := checkBuiltItems(newItems, d.items, opts.Limits.MaxAllocBytes); err != nil {
 			return nil, udtaRegion{}, err
 		}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"strconv"
 	"strings"
 	"time"
 
@@ -481,7 +480,10 @@ func parseAttached(src core.ReaderAtSized, af element, depth *bits.Depth, limit 
 		Description: core.SanitizeUTF8(a.description),
 		Data:        data,
 	}
-	pic.SniffInto()
+	// Let recognizable bytes win over the declared attachment MIME, matching the ID3/MP4
+	// read paths - a mislabeled cover reads as its true type. Matroska accepts any MIME and
+	// has no cover-format write guard, so the stakes are lower, but the principle is shared.
+	pic.SniffAuthoritative()
 	return a, &pic, nil
 }
 
@@ -655,20 +657,24 @@ func projectTag(name, value string, scope core.Scope) []scopedContribution {
 	if !ok {
 		return nil
 	}
-	if (key == tag.TrackNumber || key == tag.DiscNumber) && strings.ContainsRune(value, '/') {
-		n, total := tag.ParseNumPair(value, "")
-		var out []scopedContribution
-		if n > 0 {
-			out = append(out, scopedContribution{key, strconv.Itoa(n), scope})
-		}
-		if total > 0 {
-			out = append(out, scopedContribution{tag.TotalKey(key), strconv.Itoa(total), scope})
-		}
-		if len(out) > 0 {
-			return out
-		}
+	// Split a slashed track/disc number through the shared read-path helper, which
+	// preserves the exact substrings ("04/09" -> "04"/"09", "0/12" -> "0"/"12") rather
+	// than renumbering through ParseNumPair/strconv.Itoa (which dropped leading zeros
+	// and a literal 0), and leaves a malformed pair verbatim - so Matroska agrees with
+	// every other read path. A non-split value (no slash, malformed, or a non-pair key)
+	// contributes verbatim, including a present-empty value ([""]).
+	num, total, split := tag.NumberTotalSplit(key, value)
+	if !split {
+		return []scopedContribution{{key, value, scope}}
 	}
-	return []scopedContribution{{key, value, scope}}
+	var out []scopedContribution
+	if num != "" {
+		out = append(out, scopedContribution{key, num, scope})
+	}
+	if total != "" {
+		out = append(out, scopedContribution{tag.TotalKey(key), total, scope})
+	}
+	return out
 }
 
 // buildFamilies groups contributions into one entry per (key, scope), preserving

@@ -981,10 +981,12 @@ func TestRenderNumTotalNoTripleSlash(t *testing.T) {
 }
 
 // TestRenderNumTotalPathologicalResidual checks the ID3 behavior for a malformed
-// number pair the editor deliberately leaves unsplit. The writer renders
-// "1/2/3" verbatim instead of composing another slash, and a re-read sees number
-// "1" with total "2/3". The input is already flagged malformed at set time, so
-// the typed projection still matches MP4.
+// number pair the editor deliberately leaves unsplit. The writer renders "1/2/3"
+// verbatim, and the read path now leaves it verbatim on TrackNumber too - the same
+// validity gate (tag.NumberTotalSplit) the editor and every other text codec apply -
+// instead of composing a non-numeric number and a "2/3" total. The value is already
+// flagged malformed at set time, and the typed projection still matches MP4
+// (tag.ParseNumPair reads TrackNumber 1 from either shape).
 func TestRenderNumTotalPathologicalResidual(t *testing.T) {
 	edited := tag.NewTagSet()
 	edited.Set(tag.TrackNumber, "1/2/3")
@@ -999,11 +1001,12 @@ func TestRenderNumTotalPathologicalResidual(t *testing.T) {
 		t.Fatalf("TRCK = %v, want [1/2/3] rendered verbatim", got)
 	}
 	ts := Project(buildTag(t, 4, out)).Tags
-	if n, _ := ts.First(tag.TrackNumber); n != "1" {
-		t.Errorf("re-read TrackNumber = %q, want 1", n)
+	if n, _ := ts.First(tag.TrackNumber); n != "1/2/3" {
+		t.Errorf("re-read TrackNumber = %q, want 1/2/3 (malformed pair kept verbatim)", n)
 	}
-	if tot, _ := ts.First(tag.TrackTotal); tot != "2/3" {
-		t.Errorf("re-read TrackTotal = %q, want 2/3", tot)
+	if ts.Has(tag.TrackTotal) {
+		tot, _ := ts.First(tag.TrackTotal)
+		t.Errorf("re-read TrackTotal = %q, want absent (no total composed from a malformed pair)", tot)
 	}
 }
 

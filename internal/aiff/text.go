@@ -22,6 +22,9 @@ func textTags(items []textItem) tag.TagSet {
 			ts.AddNativeItem(key, v)
 		}
 	}
+	// No number-pair normalization here: AIFF's native text chunks map no numeric key
+	// (mapping.aiffTextKeys), so a slashed track/disc number cannot occur. If a numeric
+	// mapping is ever added, split it with tag.NormalizeNumberPairs like the WAV/Vorbis paths.
 	return ts
 }
 

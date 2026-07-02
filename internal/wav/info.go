@@ -65,6 +65,11 @@ func infoTags(items []infoItem) tag.TagSet {
 			ts.AddNativeItem(key, v)
 		}
 	}
+	// IPRT/ITRK map to TrackNumber, so a non-standard IPRT="4/9" would otherwise read
+	// verbatim while ID3/MP4 split it - normalize here so every read path agrees.
+	// INFO has no TrackTotal slot (mapping/riff.go), so a subsequent edit spills the
+	// derived total into the forced id3 chunk; a plain read->write stays byte-identical.
+	tag.NormalizeNumberPairs(&ts)
 	return ts
 }
 
@@ -76,6 +81,12 @@ func infoTags(items []infoItem) tag.TagSet {
 // set. A duplicate text item is kept in auth (both selected), since both values survive.
 func infoFamilies(auth tag.TagSet, items []infoItem) []core.FamilyValue {
 	var out []core.FamilyValue
+	add := func(key tag.Key, v string) {
+		out = append(out, core.FamilyValue{
+			Key: key, Family: core.FamilyRIFF, Scope: core.ScopeTrack,
+			Values: []string{v}, Selected: core.FamilySelected(auth, key, v),
+		})
+	}
 	for _, it := range items {
 		key, ok := mapping.RIFFInfoKey(it.id4())
 		if !ok {
@@ -85,10 +96,21 @@ func infoFamilies(auth tag.TagSet, items []infoItem) []core.FamilyValue {
 		if v == "" {
 			continue
 		}
-		out = append(out, core.FamilyValue{
-			Key: key, Family: core.FamilyRIFF, Scope: core.ScopeTrack,
-			Values: []string{v}, Selected: core.FamilySelected(auth, key, v),
-		})
+		// Split a slashed track/disc number the same way infoTags does, so the family value
+		// matches the (normalized) authoritative tag instead of being falsely graded a
+		// conflict - a raw "4/9" compared against TrackNumber=4 would read unselected and
+		// surface a spurious conflicting-families finding. This mirrors the ID3/Matroska read
+		// paths, which already contribute the split number and total to their family views.
+		if num, total, split := tag.NumberTotalSplit(key, v); split {
+			if num != "" {
+				add(key, num)
+			}
+			if total != "" {
+				add(tag.TotalKey(key), total)
+			}
+			continue
+		}
+		add(key, v)
 	}
 	return out
 }

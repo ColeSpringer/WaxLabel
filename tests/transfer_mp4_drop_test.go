@@ -83,15 +83,17 @@ func TestTransferDropsUnstorableMP4ValuesPreservesDest(t *testing.T) {
 	// the sibling total slot, so a per-value predicate cannot detect it.
 }
 
-// TestTransferDerivesSlashTrackTotal checks that transfer reports the TRACKTOTAL implied by
-// a slash-combined TRACKNUMBER value when the writer will actually store that total.
-func TestTransferDerivesSlashTrackTotal(t *testing.T) {
+// TestTransferSlashTrackTotalToMP4 checks how transfer to MP4 handles the TRACKTOTAL carried by
+// a slash-combined source TRACKNUMBER. The FLAC read path splits "3/12" into TRACKNUMBER=3 +
+// TRACKTOTAL=12 at parse (tag.NormalizeNumberPairs), so transfer does not derive the total
+// itself; it sees two independent canonical keys and grades each against the destination.
+func TestTransferSlashTrackTotalToMP4(t *testing.T) {
 	dstBytes := readFixture(t, "../testdata/notags.m4a")
 
 	transfer := func(t *testing.T, trackNumber string) (wl.TransferReport, *wl.Document) {
 		t.Helper()
-		// A literal Vorbis comment keeps "3/12" as one parsed value; writeBack would split it
-		// before transfer sees it.
+		// The FLAC read path splits a slashed TRACKNUMBER into number + total at parse, so
+		// transfer sees TRACKNUMBER and TRACKTOTAL as separate keys.
 		src := mustParseBytes(t, flacWithComments("TRACKNUMBER="+trackNumber))
 		plan, report, err := src.PrepareTransfer(mustParseBytes(t, dstBytes))
 		if err != nil {
@@ -116,8 +118,8 @@ func TestTransferDerivesSlashTrackTotal(t *testing.T) {
 		return 0, false
 	}
 
-	// 3/12: the embedded total is representable, so the report lists a carried TRACKTOTAL
-	// item the source had no explicit key for, and the write stores it.
+	// 3/12: both split keys are representable, so the report lists a carried TRACKTOTAL and
+	// the write stores it.
 	report, result := transfer(t, "3/12")
 	if it, ok := totalItem(report); !ok || it.Disposition != wl.Carried {
 		t.Errorf("3/12: TRACKTOTAL item = %+v (present=%v), want one carried", it, ok)
@@ -126,8 +128,8 @@ func TestTransferDerivesSlashTrackTotal(t *testing.T) {
 		t.Errorf("3/12: result TRACKTOTAL = %v, want [12]", got)
 	}
 
-	// 3/70000: the number is representable but the embedded total is not, so the derived
-	// item is reported Dropped - matching the writer, which stores 3 and drops 70000.
+	// 3/70000: the number is representable but the split-off total is not (past uint16), so
+	// the TRACKTOTAL item is Dropped - matching the writer, which stores 3 and drops 70000.
 	report, result = transfer(t, "3/70000")
 	if it, ok := totalItem(report); !ok || it.Disposition != wl.Dropped {
 		t.Errorf("3/70000: TRACKTOTAL item = %+v (present=%v), want one dropped", it, ok)
@@ -136,20 +138,27 @@ func TestTransferDerivesSlashTrackTotal(t *testing.T) {
 		t.Errorf("3/70000: result TRACKTOTAL = %v, must not store the dropped 70000", got)
 	}
 
-	// 70000/3: the number itself drops, so splitNumberPairs never runs and the total is never
-	// written. The number item's drop is the whole transfer result.
-	report, _ = transfer(t, "70000/3")
-	if it, ok := totalItem(report); ok {
-		t.Errorf("70000/3: unexpected TRACKTOTAL item %+v; a dropped number must not synthesize a total", it)
+	// 70000/3: the split makes TRACKNUMBER=70000 (dropped, past uint16) and TRACKTOTAL=3 two
+	// independent keys. The number drops, but the representable total still carries on its own
+	// - the read-path split promoted it to a first-class value, so it no longer rides on the
+	// number the way a transfer-time-derived total once did.
+	report, result = transfer(t, "70000/3")
+	if it, ok := totalItem(report); !ok || it.Disposition != wl.Carried {
+		t.Errorf("70000/3: TRACKTOTAL item = %+v (present=%v), want one carried", it, ok)
+	}
+	if got, _ := result.Get(tag.TrackTotal); !slices.Equal(got, []string{"3"}) {
+		t.Errorf("70000/3: result TRACKTOTAL = %v, want [3] (representable total carries despite the dropped number)", got)
 	}
 	if d, ok := dispositionOf(report, tag.TrackNumber); !ok || d != wl.Dropped {
 		t.Errorf("70000/3: TRACKNUMBER disposition = %s (present=%v), want dropped", d, ok)
 	}
 }
 
-// TestTransferSlashTotalDoesNotClobberDest checks that a dropped embedded total leaves the
-// destination's total intact. The carried value should be the number side only, not the raw
-// slash value that would re-create the unstorable total in the destination editor.
+// TestTransferSlashTotalDoesNotClobberDest checks that when a source's total is unstorable at
+// the destination, the destination's own total survives. The FLAC read path splits
+// "3/70000" into TRACKNUMBER=3 + TRACKTOTAL=70000; transfer grades that total Dropped (past
+// uint16 / negative) and skips it, so it never overwrites the destination's TRACKTOTAL, while
+// the representable number still carries.
 func TestTransferSlashTotalDoesNotClobberDest(t *testing.T) {
 	for _, num := range []string{"3/70000", "3/-5"} {
 		dstBytes := writeBack(t, "../testdata/notags.m4a", func(e *wl.Editor) {
@@ -165,7 +174,7 @@ func TestTransferSlashTotalDoesNotClobberDest(t *testing.T) {
 			t.Fatalf("%s: PrepareTransfer: %v", num, err)
 		}
 
-		// The report grades the embedded total dropped...
+		// The report grades the split-off total dropped...
 		var totDisp wl.Disposition
 		var sawTot bool
 		for _, it := range report.Items {
@@ -179,7 +188,7 @@ func TestTransferSlashTotalDoesNotClobberDest(t *testing.T) {
 		// ...so the destination's own total must survive, not be clobbered to 0.
 		result := mustParseBytes(t, applyToBytes(t, dstBytes, plan))
 		if got, _ := result.Get(tag.TrackTotal); !slices.Equal(got, wantTotal) {
-			t.Errorf("%s: result TRACKTOTAL = %v, want preserved %v (a dropped derived total must not clobber the dest)", num, got, wantTotal)
+			t.Errorf("%s: result TRACKTOTAL = %v, want preserved %v (a dropped total must not clobber the dest)", num, got, wantTotal)
 		}
 		// The representable number still carries.
 		if got, _ := result.Get(tag.TrackNumber); len(got) != 1 || got[0] != "3" {

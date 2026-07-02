@@ -11,13 +11,14 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// buildItems renders the edited canonical tags and pictures into ilst items,
-// then appends the preserved items (unknown atoms and foreign freeforms kept
-// verbatim) in their original order. The canonical items come first in a stable
-// order derived from the tag set's key order, so the same input and edit produce
-// the same bytes. Number/total pairs (trkn, disk) and pictures (covr) are
+// buildItems renders the edited canonical tags into ilst items, appends the
+// pre-resolved cover item(s) (see coverItemsToWrite - either the re-encoded edited
+// pictures or the parsed covr carried verbatim), then the preserved items (unknown
+// atoms and foreign freeforms kept verbatim) in their original order. The canonical
+// items come first in a stable order derived from the tag set's key order, so the same
+// input and edit produce the same bytes. Number/total pairs (trkn, disk) are
 // special-cased; everything else is a text atom (known four-cc) or a freeform.
-func buildItems(edited tag.TagSet, pics []core.Picture, preserved []item, numericGenre bool) []item {
+func buildItems(edited tag.TagSet, covr []item, preserved []item, numericGenre bool) []item {
 	var out []item
 	consumed := map[tag.Key]bool{}
 
@@ -69,11 +70,43 @@ func buildItems(edited tag.TagSet, pics []core.Picture, preserved []item, numeri
 		}
 	}
 
-	if len(pics) > 0 {
-		out = append(out, coverItem(pics))
-	}
+	out = append(out, covr...)
 	out = append(out, preserved...)
 	return out
+}
+
+// covrItems returns the owned (successfully decoded) covr item(s) among parsed ilst items, so an
+// edit that leaves the picture set unchanged can carry the original cover verbatim. A malformed
+// covr whose data atoms fail to parse is not owned, so preservedItems already carries it;
+// returning it here too would append it twice, once as a cover and once as a preserved item, and
+// duplicate it further on every later edit. A conformant file has at most one covr; owned ones
+// are returned in document order.
+func covrItems(items []item) []item {
+	var out []item
+	for _, it := range items {
+		if it.name == atomName("covr") && owned(it) {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// coverItemsToWrite resolves the covr ilst item(s) to emit past the fast path. When the picture
+// set changed it re-encodes the edited pictures via coverItem, whose format checkCoverFormats has
+// already validated in Plan (that guard runs only under picturesChanged). When the picture set
+// did not change it carries the parsed covr item(s) verbatim. That keeps a cover the covr atom
+// cannot re-label faithfully (a GIF or WebP the read path now sniffs to its true MIME)
+// byte-for-byte under its original type code, instead of rewriting it under coverType's JPEG
+// default and stamping a JPEG type code over non-JPEG bytes on an unrelated tag- or chapter-only
+// edit.
+func coverItemsToWrite(pics []core.Picture, parsed []item, picturesChanged bool) []item {
+	if !picturesChanged {
+		return covrItems(parsed)
+	}
+	if len(pics) > 0 {
+		return []item{coverItem(pics)}
+	}
+	return nil
 }
 
 // textItem builds a text item: one UTF-8 data atom per value.

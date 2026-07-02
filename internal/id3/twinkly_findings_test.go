@@ -121,7 +121,7 @@ func TestProjectWarnsMalformedAPIC(t *testing.T) {
 	}
 }
 
-// tinyPNGBytes is a minimal PNG signature + IHDR so SniffInto recognizes image/png.
+// tinyPNGBytes is a minimal PNG signature + IHDR so the picture sniffer recognizes image/png.
 func tinyPNGBytes() []byte {
 	return []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89")
 }

@@ -925,26 +925,13 @@ func splitNumberPairs(ts *tag.TagSet, patch tag.TagPatch) {
 		if !ok || len(vals) != 1 {
 			continue // absent, or multi-valued (out of scope - never lose a value)
 		}
-		if !strings.ContainsRune(vals[0], '/') {
-			continue
-		}
-		// Only split a genuine numeric pair. ValidNumericValue checks both sides, so a
-		// value whose number ("abc/1") or derived total ("1/2/3") is non-numeric stays
-		// verbatim on the number key instead of becoming a malformed number or a
-		// manufactured total. The set-time note already flags that input.
-		if !tag.ValidNumericValue(numKey, vals[0]) {
-			continue
-		}
-		num, total := tag.SplitNumberTotal(vals[0])
-		totKey := tag.TotalKey(numKey)
-		if num != "" {
-			ts.Set(numKey, num)
-		} else {
-			ts.Delete(numKey) // "/12": no number survives
-		}
-		if total != "" && !patch.Touches(totKey) {
-			ts.Set(totKey, total)
-		}
+		// Split through the shared split-and-assign body, so this edit-time site cannot drift
+		// from the codec read paths ([tag.NormalizeNumberPairs] uses the same helper). A value
+		// with no slash, or a malformed pair ("abc/1", "1/2/3"), is left verbatim on the number
+		// key (the set-time note flags it). The total is written unless the patch also touches
+		// the total key, so an explicit Set/Clear of the total in the same edit wins while a
+		// slash total still updates a base-carried one.
+		tag.SplitNumberValue(ts, numKey, vals[0], !patch.Touches(tag.TotalKey(numKey)))
 	}
 }
 

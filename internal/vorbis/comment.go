@@ -142,6 +142,14 @@ func Project(comments []Comment) (tag.TagSet, []core.FamilyValue) {
 			fams[i].Selected = false
 		}
 	}
+	// Split a slashed TRACKNUMBER/DISCNUMBER ("4/9") into number + total so this read path
+	// agrees with the ID3/MP4/Matroska projections and the editor. Vorbis stores the pair
+	// verbatim, so without this the canonical layer would disagree with itself. The native
+	// comment list keeps its raw "4/9" (Rebuild copies unchanged comments as-is), so a plain
+	// read then write stays byte-identical and an unrelated edit re-projects through the same
+	// post-pass, keeping base == result. Only ts is normalized; the family view still shows the
+	// raw value by design.
+	tag.NormalizeNumberPairs(&ts)
 	return ts, fams
 }
 
@@ -171,6 +179,18 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapte
 		}
 		emitted[k] = true
 	}
+	// hasNative marks the canonical keys that already own a native comment in orig. The slash-pair
+	// rewrite below re-derives a total from the slash only when its total key has no comment of
+	// its own; an explicit TRACKTOTAL/TOTALTRACKS is left to the normal loop, which preserves or
+	// replaces it in place. Re-deriving it there too would duplicate an explicit-total-first
+	// ordering, or relabel and relocate an untouched one.
+	hasNative := map[tag.Key]bool{}
+	for _, cm := range orig {
+		if isChapterComment(cm.Name) || isSyncedLyricsComment(cm.Name) {
+			continue
+		}
+		hasNative[mapping.CanonicalVorbis(cm.Name)] = true
+	}
 	for _, cm := range orig {
 		if isChapterComment(cm.Name) {
 			if !chaptersChanged {
@@ -185,6 +205,30 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapte
 			continue // dropped on a synced-lyrics edit; re-emitted below
 		}
 		k := mapping.CanonicalVorbis(cm.Name)
+		// A slash-backed TRACKNUMBER/DISCNUMBER comment natively holds both the number and a
+		// derived total; the read path splits "4/9" into TRACKNUMBER=4 + TRACKTOTAL=9. When either
+		// canonical key changed, rewrite the number from the edited value and drop the slash, or a
+		// cleared or edited total would resurface when the preserved "4/9" is re-projected. The
+		// derived total gets its own comment only when the total key has no native comment;
+		// otherwise the explicit TRACKTOTAL/TOTALTRACKS is left to the normal loop (kept verbatim
+		// if untouched, replaced in place if changed) so it is neither duplicated nor moved. This
+		// tracks the read-path split ([tag.NumberTotalSplit]) and Matroska's droppedByEdit so write
+		// and projection agree. An unrelated edit leaves the pair alone, so the fall-through below
+		// preserves the slash comment verbatim.
+		if k == tag.TrackNumber || k == tag.DiscNumber {
+			if _, _, split := tag.NumberTotalSplit(k, cm.Value); split {
+				totKey := tag.TotalKey(k)
+				if changed[k] || changed[totKey] {
+					if !emitted[k] {
+						emit(k, cm.Name) // number only, keeping the file's spelling (no slash)
+					}
+					if !hasNative[totKey] && !emitted[totKey] {
+						emit(totKey, mapping.VorbisName(totKey)) // derived total with no comment of its own
+					}
+					continue
+				}
+			}
+		}
 		if changed[k] {
 			if !emitted[k] {
 				// Reuse the original comment's casing, unless the key has a write-preferred
@@ -196,6 +240,9 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapte
 				emit(k, name) // replace in place; nothing emitted if the key was cleared
 			}
 			continue
+		}
+		if emitted[k] {
+			continue // a later duplicate of a key already emitted by the slash-pair rewrite above
 		}
 		out = append(out, cm)
 	}

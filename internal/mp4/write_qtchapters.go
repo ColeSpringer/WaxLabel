@@ -30,12 +30,12 @@ import (
 // planChaptersQT computes the rewrite when chapters change and the file has an
 // audio track to anchor a chapter text track to. It writes the chpl and rebuilds
 // the QuickTime chapter track (or removes both when chapters are cleared).
-func planChaptersQT(d *doc, edited *core.Media, needIlst bool, opts core.WriteOptions, report core.WriteReport) (*core.WritePlan, error) {
+func planChaptersQT(d *doc, edited *core.Media, needIlst, picturesChanged bool, opts core.WriteOptions, report core.WriteReport) (*core.WritePlan, error) {
 	if d.udta != nil && d.udtaRaw == nil {
 		return nil, fmt.Errorf("%w: MP4 udta bytes were not captured for a chapter rewrite", waxerr.ErrInvalidData)
 	}
 
-	newItems, reg, err := buildChapterUdta(d, edited, needIlst, opts)
+	newItems, reg, err := buildChapterUdta(d, edited, needIlst, picturesChanged, opts)
 	if err != nil {
 		return nil, err
 	}

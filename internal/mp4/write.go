@@ -73,7 +73,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// A chapter edit rewrites the whole moov.udta (folding any ilst change into one
 	// delta); a tag/picture-only edit keeps the lighter in-place ilst path.
 	if chaptersChanged {
-		pl, err := planChapters(d, edited, tagsChanged || picturesChanged, opts, report)
+		pl, err := planChapters(d, edited, tagsChanged || picturesChanged, picturesChanged, opts, report)
 		if err != nil || pl == nil {
 			return pl, err
 		}
@@ -123,8 +123,11 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	}
 
 	// Re-render the ilst from the edited canonical set, keeping the preserved
-	// items (unknown atoms, foreign freeforms) verbatim.
-	newItems := buildItems(edited.Tags, edited.Pictures, preservedItems(d.items), opts.NumericGenre)
+	// items (unknown atoms, foreign freeforms) verbatim. The cover is re-encoded only
+	// when the picture set changed; otherwise the parsed covr is carried verbatim so a
+	// tag-only edit never rewrites a carried cover through coverType's JPEG default.
+	covr := coverItemsToWrite(edited.Pictures, d.items, picturesChanged)
+	newItems := buildItems(edited.Tags, covr, preservedItems(d.items), opts.NumericGenre)
 	if err := checkBuiltItems(newItems, d.items, opts.Limits.MaxAllocBytes); err != nil {
 		return nil, err
 	}

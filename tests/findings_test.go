@@ -342,12 +342,14 @@ func TestRejectNULInEditValues(t *testing.T) {
 	}
 }
 
-// TestPictureMIMESniffReconcile (D3): on the embed path SniffAuthoritative lets a
-// recognized image's bytes win over a caller-declared MIME/dimension that disagrees,
-// so a mislabeled cover cannot be embedded under a contradicting MIME. On the read
-// path SniffInto only fills empty fields, so a decoder keeps the MIME a container
-// stored (no silent relabel of on-disk metadata). A failed sniff preserves the
-// caller's MIME under both.
+// TestPictureMIMESniffReconcile exercises the two Picture sniff methods in isolation.
+// SniffAuthoritative (the embed path, and now every codec read path, per the Cluster B tests
+// TestMP4CoverSniffedAuthoritatively and TestID3BlankMIMESniffed) lets a recognized image's
+// bytes win over a caller-declared MIME or dimension that disagrees, so a mislabeled cover is
+// never stored or reported under a contradicting MIME. SniffInto is the fill-only variant: it
+// fills only empty fields and never relabels a set MIME. The decoders no longer call it, but its
+// fill-only contract is still used elsewhere and pinned here. A failed sniff keeps the caller's
+// MIME under both.
 func TestPictureMIMESniffReconcile(t *testing.T) {
 	// Embed path: PNG bytes wrongly declared JPEG with a bogus width - both corrected.
 	embed := wl.Picture{Type: wl.PicFrontCover, MIME: "image/jpeg", Width: 999, Data: tinyPNG()}
@@ -361,18 +363,18 @@ func TestPictureMIMESniffReconcile(t *testing.T) {
 		t.Errorf("authoritative dims = %dx%d, want 1x1 (sniff wins for a determined dimension)", embed.Width, embed.Height)
 	}
 
-	// Read path: a stored MIME that disagrees with the bytes is preserved (fill-only),
-	// so dump/verify report what is on disk and an MP4 cover-format gate is not tripped
-	// on an unrelated tags-only edit - while an empty field is still filled.
+	// SniffInto (fill-only) in isolation: a set MIME that disagrees with the bytes is left
+	// as-is and only an empty field is filled. This is the method contract, not the codec read
+	// path; the decoders now call SniffAuthoritative, so dump reports the true type.
 	read := wl.Picture{Type: wl.PicFrontCover, MIME: "image/jpeg", Data: tinyPNG()}
 	if !read.SniffInto() {
 		t.Fatal("tinyPNG should sniff as a recognized image")
 	}
 	if read.MIME != "image/jpeg" {
-		t.Errorf("read-path MIME = %q, want the stored image/jpeg preserved", read.MIME)
+		t.Errorf("SniffInto MIME = %q, want the set image/jpeg preserved (fill-only leaves it)", read.MIME)
 	}
 	if read.Width != 1 {
-		t.Errorf("read-path Width = %d, want 1 filled from the sniff", read.Width)
+		t.Errorf("SniffInto Width = %d, want 1 filled from the sniff", read.Width)
 	}
 
 	// A failed sniff (junk bytes) leaves a caller-declared MIME intact under both.

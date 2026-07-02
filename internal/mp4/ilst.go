@@ -140,7 +140,13 @@ func decodePair(it item, numKey, totKey tag.Key) itemResult {
 	return itemResult{contribs: contribs, owned: true}
 }
 
-// decodeCover decodes covr image data atoms into pictures.
+// decodeCover decodes covr image data atoms into pictures. The declared type code
+// seeds the MIME only when it is one of the three explicit image codes; an implicit
+// (0) or unknown type leaves it empty so the authoritative sniff decides. SniffAuthoritative
+// then lets the bytes win: a PNG stored under an implicit or a mislabeled JPEG code reads
+// as image/png (and the write-time checkCoverFormats guard sees a GIF/WebP as unsupported
+// rather than being fooled by a manufactured image/jpeg), while an unrecognizable cover
+// reads honestly as UnrecognizedMIME instead of a fabricated image/jpeg.
 func decodeCover(it item) itemResult {
 	atoms, ok := parseDataAtoms(it.payload)
 	if !ok {
@@ -149,23 +155,27 @@ func decodeCover(it item) itemResult {
 	var pics []core.Picture
 	for _, a := range atoms {
 		p := core.Picture{Type: core.PicFrontCover, MIME: coverMIME(a.typ), Data: a.value}
-		p.SniffInto()
+		p.SniffAuthoritative()
 		pics = append(pics, p)
 	}
 	return itemResult{pics: pics, owned: true}
 }
 
-// coverMIME maps a covr data-atom type code to an image MIME (JPEG by default, as
-// iTunes uses for an implicit or unknown type), and coverType the reverse - the
-// single place the cover image-format mapping lives.
+// coverMIME maps a covr data-atom type code to an image MIME, and coverType the
+// reverse - the single place the cover image-format mapping lives. Only the three
+// explicit image codes map; an implicit (0) or unknown type returns "" so the read
+// path's authoritative sniff, not a manufactured default, determines the MIME (an
+// implicit type historically defaulted to JPEG, which mislabeled a PNG/GIF cover).
 func coverMIME(typ uint32) string {
 	switch typ {
+	case typeJPEG:
+		return "image/jpeg"
 	case typePNG:
 		return "image/png"
 	case typeBMP:
 		return "image/bmp"
 	default:
-		return "image/jpeg"
+		return ""
 	}
 }
 

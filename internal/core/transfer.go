@@ -167,16 +167,9 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 			Kind: TransferField, Key: k, Count: len(vals),
 			Disposition: disp, Reason: reason,
 		})
-		// A slash-combined number field, such as TRACKNUMBER=3/12, writes the total into a
-		// separate TRACKTOTAL or DISCTOTAL slot. Add that implied item to the report so the
-		// transfer view matches the values written.
-		if totKey, total, ok := derivedTransferTotal(src.Tags, k, graded, disp); ok {
-			tdisp, treason := dispose(dst.Field(totKey), dst.ReadOnly, 1, "this field", []string{total})
-			items = append(items, TransferItem{
-				Kind: TransferField, Key: totKey, Count: 1,
-				Disposition: tdisp, Reason: treason,
-			})
-		}
+		// A slashed track/disc number (TRACKNUMBER=3/12) is split into its number and total
+		// keys by the codec read path, so TRACKTOTAL is an ordinary key graded by this loop -
+		// no transfer-time derivation is needed.
 	}
 	if len(src.Pictures) > 0 {
 		// Split the set by per-image representability. A destination such as MP4 can store
@@ -243,32 +236,6 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 		})
 	}
 	return items
-}
-
-// derivedTransferTotal reports the TRACKTOTAL or DISCTOTAL item implied by a slash-combined
-// number field. It returns a value only when the source has no explicit companion total, the
-// source value is a single valid numeric pair, and the number side itself will be written.
-// If the number is dropped, the writer never splits the embedded total, so the number item's
-// drop is the complete transfer result.
-func derivedTransferTotal(src tag.TagSet, k tag.Key, vals []string, numDisp Disposition) (tag.Key, string, bool) {
-	if k != tag.TrackNumber && k != tag.DiscNumber {
-		return "", "", false
-	}
-	if numDisp == Dropped {
-		return "", "", false
-	}
-	totKey := tag.TotalKey(k)
-	if src.Has(totKey) {
-		return "", "", false
-	}
-	if len(vals) != 1 || !tag.ValidNumericValue(k, vals[0]) {
-		return "", "", false
-	}
-	// SplitNumberTotal returns a non-empty total only for a slash value with content after it.
-	if _, total := tag.SplitNumberTotal(vals[0]); total != "" {
-		return totKey, total, true
-	}
-	return "", "", false
 }
 
 // dispose grades how a piece of metadata (count items of it) survives against the
