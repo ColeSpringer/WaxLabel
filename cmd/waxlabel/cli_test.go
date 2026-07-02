@@ -731,23 +731,24 @@ func TestTempCreateErrorNamesDir(t *testing.T) {
 	}
 }
 
-// TestSetOutputParentDirMissing (#6): a -o path whose parent directory does not
-// exist is a usage error (exit 2) reported before the plan prints, not a late
-// temp-create io error. A parent that is a regular file is rejected the same way.
+// TestSetOutputParentDirMissing (#6): a -o path whose parent directory does not exist is a
+// not-found error (exit 6, like every other missing path) reported before the plan prints, not
+// a late temp-create io error and no longer a usage error (M10). A parent that EXISTS but is a
+// regular file stays a usage error (exit 2) - it is a bad invocation, not a missing path.
 func TestSetOutputParentDirMissing(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
 
 	missing := filepath.Join(t.TempDir(), "no-such-dir", "out.flac")
 	out, errb, code := runCLI(t, "set", file, "--set", "TITLE=X", "-o", missing)
-	if code != 2 {
-		t.Fatalf("missing -o parent: exit = %d, want 2", code)
+	if code != 6 {
+		t.Fatalf("missing -o parent: exit = %d, want 6 (not-found, consistent with other missing paths)", code)
 	}
-	if !strings.Contains(errb, "does not exist") {
-		t.Errorf("stderr = %q, want it to mention the directory does not exist", errb)
+	if !strings.Contains(errb, "no such file or directory") {
+		t.Errorf("stderr = %q, want the not-found message naming the missing directory", errb)
 	}
 	if strings.Contains(out, "plan") {
-		t.Errorf("the usage error should fire before the plan prints; stdout:\n%s", out)
+		t.Errorf("the not-found error should fire before the plan prints; stdout:\n%s", out)
 	}
 
 	// A parent that exists but is a regular file (not a directory) is also rejected.

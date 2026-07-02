@@ -2,6 +2,7 @@ package waxlabel_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
@@ -84,6 +85,47 @@ func TestLintDuplicatePicture(t *testing.T) {
 	codes := findingCodes(doc.Lint())
 	if !codes["duplicate-picture"] {
 		t.Errorf("expected duplicate-picture finding; got %v", codes)
+	}
+}
+
+// TestDuplicatePictureMessageAgrees is the M9 regression: the editor's edit-scope warning and the
+// linter's whole-set finding must produce the SAME duplicate-picture message even when the
+// identical bytes appear under different roles (front + back) - naming a single occurrence's role
+// made the two disagree by iteration order. The message names both roles in a stable order.
+func TestDuplicatePictureMessageAgrees(t *testing.T) {
+	png := tinyPNG()
+	plan, err := mustParseBytes(t, readFixture(t, "../testdata/notags.flac")).Edit().
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: png}).
+		AddPicture(wl.Picture{Type: wl.PicBackCover, Data: png}). // same bytes, different role
+		Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var editorMsg string
+	for _, w := range plan.Report().Warnings {
+		if w.Code == wl.WarnDuplicatePicture {
+			editorMsg = w.Message
+		}
+	}
+	if editorMsg == "" {
+		t.Fatal("editor did not warn duplicate-picture on identical front+back covers")
+	}
+	var lintMsg string
+	for _, f := range mustParseBytes(t, applyToBytes(t, readFixture(t, "../testdata/notags.flac"), plan)).Lint() {
+		if f.Code == "duplicate-picture" {
+			lintMsg = f.Message
+		}
+	}
+	if lintMsg == "" {
+		t.Fatal("linter did not flag duplicate-picture on the written file")
+	}
+	if editorMsg != lintMsg {
+		t.Errorf("duplicate-picture messages diverge (M9):\n  editor: %q\n  linter: %q", editorMsg, lintMsg)
+	}
+	for _, role := range []string{"Front cover", "Back cover"} {
+		if !strings.Contains(lintMsg, role) {
+			t.Errorf("message %q should name the %q role (all roles the bytes appear under)", lintMsg, role)
+		}
 	}
 }
 

@@ -27,17 +27,27 @@ func bufferStdin(stdin io.Reader) (path string, cleanup func(), err error) {
 		return "", noop, err
 	}
 	name := tmp.Name()
-	remove := func() { _ = os.Remove(name) }
+	// Register the removal as soon as the temp exists - before the io.Copy below - so the signal
+	// goroutine's forced-exit path (os.Exit, which skips the caller's defer cleanup()) still deletes
+	// it even if the process is force-killed DURING the copy of a large piped stdin. cleanup both
+	// deregisters (so the registry holds only in-flight temps, never accumulating and never letting
+	// one command's drain touch another's) and removes the file; it is used on every exit path, so
+	// there is no orphaned registry entry even when the copy or close fails.
+	deregister := registerCleanup(func() { _ = os.Remove(name) })
+	cleanup = func() {
+		deregister()
+		_ = os.Remove(name)
+	}
 	if _, err := io.Copy(tmp, stdin); err != nil {
 		_ = tmp.Close()
-		remove()
+		cleanup()
 		return "", noop, err
 	}
 	if err := tmp.Close(); err != nil {
-		remove()
+		cleanup()
 		return "", noop, err
 	}
-	return name, remove, nil
+	return name, cleanup, nil
 }
 
 // readInputs prepares a read command's path arguments for parsing. Standard input

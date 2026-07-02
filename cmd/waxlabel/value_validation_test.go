@@ -56,8 +56,8 @@ func TestLintAndNoteAgree(t *testing.T) {
 
 // TestValueDroppedWarningM4A checks the values MP4 cannot store faithfully. Numeric
 // track and disc slots reject non-numeric, negative, and >65535 values. A literal "0"
-// also warns when pairItem collapses the whole pair to absent, but 0/total stores
-// cleanly. The warning names the dropped canonical key, and --strict escalates it.
+// warns in either slot - decodePair drops a 0 on read, so it never round-trips, even paired
+// with a real total (L2). The warning names the dropped canonical key, and --strict escalates it.
 func TestValueDroppedWarningM4A(t *testing.T) {
 	t.Parallel()
 	notagsM4A := filepath.Join("..", "..", "testdata", "notags.m4a")
@@ -77,10 +77,11 @@ func TestValueDroppedWarningM4A(t *testing.T) {
 		t.Errorf("plan TRACKTOTAL=abc: want a value-dropped warning naming TRACKTOTAL:\n%s", out)
 	}
 
-	// A 0 that keeps the pair (0/total) and other storable values do not warn.
+	// TRACKNUMBER=0 with a real total still loses the 0 on read (decodePair drops a 0 slot), so it
+	// warns for TRACKNUMBER even though 12 stores fine (L2).
 	out, _, _ = runCLI(t, "plan", copyFixture(t, notagsM4A), "--set", "TRACKNUMBER=0", "--set", "TRACKTOTAL=12")
-	if strings.Contains(out, "value-dropped") {
-		t.Errorf("plan TRACKNUMBER=0 TRACKTOTAL=12: 0/12 writes fine, must not warn:\n%s", out)
+	if !strings.Contains(out, "value-dropped") || !strings.Contains(out, "TRACKNUMBER") {
+		t.Errorf("plan TRACKNUMBER=0 TRACKTOTAL=12: the 0 is dropped on read, want a value-dropped warning naming TRACKNUMBER:\n%s", out)
 	}
 	for _, kv := range []string{"MEDIATYPE=70000", "TRACKNUMBER=5"} {
 		if out, _, _ := runCLI(t, "plan", copyFixture(t, notagsM4A), "--set", kv); strings.Contains(out, "value-dropped") {

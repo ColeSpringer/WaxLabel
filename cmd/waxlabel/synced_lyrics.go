@@ -20,7 +20,9 @@ func splitSyncedLyric(s string) (wl.SyncedLine, error) {
 	}
 	start, err := parseChapterTimestamp(s[:i])
 	if err != nil {
-		return wl.SyncedLine{}, err
+		// Reword the shared timestamp parser's "chapter" noun for the synced-lyric path, so a
+		// bad --add-synced-lyric timestamp does not report an "invalid chapter timestamp".
+		return wl.SyncedLine{}, usagef("invalid synced-lyric timestamp %q (want [H:]MM:SS[.mmm] or seconds, e.g. 1:30 or 90)", s[:i])
 	}
 	text := s[i+1:]
 	if err := checkArgText(text, "synced-lyric text"); err != nil {
@@ -38,11 +40,14 @@ func splitSyncedLyric(s string) (wl.SyncedLine, error) {
 // file is parsed, so bad input is reported once for the whole invocation. Returns nil when
 // neither authoring flag was given.
 func (e *editFlags) syncedLyricsAdds() ([]wl.SyncedLyrics, error) {
-	// Validate the author-provided language once for the whole run, alongside the
-	// timestamps. A typo such as ISO-639-1 "en" or "english" should be one usage error, not
-	// a per-file failure. ISO-639-2 codes are three letters; the SYLT field is a fixed three
-	// bytes, so a shorter or longer value would be padded or truncated.
-	if e.syncedLyricsLang != "" && !validLanguageCode(e.syncedLyricsLang) {
+	// Validate the author-provided language once for the whole run, alongside the timestamps,
+	// but only when lyrics are actually being authored: a bare --synced-lyrics-lang alongside
+	// --clear-synced-lyrics tags nothing, so its value is unused and must not fail the run. A
+	// typo such as ISO-639-1 "en" or "english" is then one usage error, not a per-file failure.
+	// ISO-639-2 codes are three letters; the SYLT field is a fixed three bytes, so a shorter or
+	// longer value would be padded or truncated.
+	authoring := e.syncedLyricsFile != "" || len(e.addSyncedLyric) > 0
+	if authoring && e.syncedLyricsLang != "" && !validLanguageCode(e.syncedLyricsLang) {
 		return nil, usagef("--synced-lyrics-lang %q must be a 3-letter ISO-639-2 code (e.g. eng)", e.syncedLyricsLang)
 	}
 	var lines []wl.SyncedLine

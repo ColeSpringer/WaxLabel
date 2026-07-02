@@ -134,9 +134,8 @@ func TestMP4DifferentialQTChapterTrack(t *testing.T) {
 	}
 	var probe struct {
 		Chapters []struct {
-			Start int64 `json:"start"`
-			End   int64 `json:"end"`
-			Tags  struct {
+			EndTime string `json:"end_time"` // seconds, independent of the track time_base
+			Tags    struct {
 				Title string `json:"title"`
 			} `json:"tags"`
 		} `json:"chapters"`
@@ -150,8 +149,11 @@ func TestMP4DifferentialQTChapterTrack(t *testing.T) {
 	if probe.Chapters[0].Tags.Title != "Opening" || probe.Chapters[1].Tags.Title != "Closing" {
 		t.Errorf("ffprobe titles = %q, %q", probe.Chapters[0].Tags.Title, probe.Chapters[1].Tags.Title)
 	}
-	if probe.Chapters[0].End != 500 { // the QuickTime track ends chapter 0 at chapter 1's start
-		t.Errorf("ffprobe chapter 0 end = %d (time_base 1/1000), want 500", probe.Chapters[0].End)
+	// The QuickTime track ends chapter 0 at chapter 1's start (0.5 s). The chapter track's
+	// media timescale is a fixed 90,000 (see chapterMediaTimescale), so ffprobe reports the
+	// raw units in time_base 1/90000; end_time is the timescale-independent value in seconds.
+	if probe.Chapters[0].EndTime != "0.500000" {
+		t.Errorf("ffprobe chapter 0 end_time = %q, want \"0.500000\"", probe.Chapters[0].EndTime)
 	}
 
 	// A stream-copy remux fully demuxes the chapter track, tref, and appended mdat.

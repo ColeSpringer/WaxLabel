@@ -463,7 +463,7 @@ func parseAttached(src core.ReaderAtSized, af element, depth *bits.Depth, limit 
 	if err != nil {
 		return a, nil, err
 	}
-	a.image = strings.HasPrefix(strings.ToLower(a.mime), "image/")
+	a.image = isImageMIME(a.mime)
 	if !a.image || !haveData {
 		return a, nil, nil
 	}
@@ -752,6 +752,15 @@ func pictureType(name string) core.PictureType {
 	default:
 		return core.PicOther
 	}
+}
+
+// isImageMIME reports whether a MIME labels an image - the Matroska cover-art gate. Only an
+// image/* AttachedFile projects into a Picture; a non-image (e.g. a --force-embedded
+// application/octet-stream) is a plain attachment, preserved verbatim but never read back as a
+// cover. Shared by the read path, the write attachment record, and the result reprojection so
+// the three agree on what counts as a picture.
+func isImageMIME(mime string) bool {
+	return strings.HasPrefix(strings.ToLower(mime), "image/")
 }
 
 // codecName maps a Matroska CodecID to a short display codec name.

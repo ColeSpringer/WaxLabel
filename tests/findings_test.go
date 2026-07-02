@@ -481,11 +481,14 @@ func TestWriteToNilWriterRejected(t *testing.T) {
 }
 
 // TestNoOpDowngradeOnReprojection (#2): when a codec re-projects an edit back to
-// the value already on disk - a numeric genre (17 -> Rock), an integer track
-// number (02 -> 2), or a dropped empty - the plan must read as an immediate no-op
-// so IsNoOp() and Changes() agree. Before the fix the raw edit differed from base
-// (so the fast-path no-op gate missed it) while the projected result equalled base
-// (so Changes() was empty), and set/copy/lint --fix churned the file forever.
+// the value already on disk - a numeric genre (17 -> Rock) or an integer track
+// number (02 -> 2) - the plan must read as an immediate no-op so IsNoOp() and
+// Changes() agree. Before the fix the raw edit differed from base (so the fast-path
+// no-op gate missed it) while the projected result equalled base (so Changes() was
+// empty), and set/copy/lint --fix churned the file forever. (The former "wav dropped
+// empty" case is gone: WAV/AIFF now store a present-empty value in their native chunk
+// like every other format (L1), so setting an absent key to present-empty is a real
+// change, not a dropped-then-no-op.)
 func TestNoOpDowngradeOnReprojection(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -497,7 +500,6 @@ func TestNoOpDowngradeOnReprojection(t *testing.T) {
 		{"aac numeric genre", sampleAAC, tag.Genre, "17"},       // GENRE=Rock; 17 projects to Rock
 		{"aiff numeric genre", sampleAIFF, tag.Genre, "17"},     // GENRE=Rock; 17 projects to Rock
 		{"mp4 integer track", sampleMP4, tag.TrackNumber, "02"}, // TRACKNUMBER=2; 02 projects to 2
-		{"wav dropped empty", sampleWAV, tag.Copyright, ""},     // absent key, empty dropped by INFO
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

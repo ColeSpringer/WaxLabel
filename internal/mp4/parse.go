@@ -30,7 +30,13 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		return nil, err
 	}
 	size := src.Size()
+	// Resolve an unset allocation limit (a zero-value ParseOptions) to the library default, so
+	// every bounded read still has a real ceiling now that ReadSlice requires a positive limit.
+	// The public Parse path already supplies DefaultLimits; this covers a direct-parse caller.
 	limit := opts.Limits.MaxAllocBytes
+	if limit <= 0 {
+		limit = bits.DefaultLimits.MaxAllocBytes
+	}
 
 	depth := bits.NewDepth(opts.Limits.MaxDepth).WithElementCap(opts.Limits.MaxElements, "MP4 atoms")
 	top, err := walkAtoms(src, 0, size, depth, limit, true)
@@ -348,7 +354,7 @@ func parseProperties(src core.ReaderAtSized, moov node, d *doc, limit int64) {
 	// AAC encoder priming that the track's own edit list removes. Only shrink the value;
 	// malformed edit lists should not inflate it. Bitrate below is recomputed from the
 	// trimmed duration.
-	if mvTs := movieTimescaleOf(src, moov, limit); mvTs > 0 {
+	if mvTs, _ := movieTimingOf(src, moov, limit); mvTs > 0 {
 		if edited := trackEditedDuration(src, trak, mvTs, limit); edited > 0 && edited < d.track.Duration {
 			d.track.Duration = edited
 		}

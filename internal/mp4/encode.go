@@ -292,24 +292,23 @@ func appendDroppedPair(out []droppedValue, ts tag.TagSet, numKey, totKey tag.Key
 	if totStr != "" {
 		totPart = strings.TrimSpace(totStr)
 	}
-	// pairItem treats (0,0) as absent and emits no trkn/disk atom. A user-supplied
-	// literal 0 can therefore be lost even though 0 fits uint16. Warn only when the
-	// whole pair encodes to nothing; TRACKNUMBER=0 with TRACKTOTAL=12 writes 0/12.
-	num, total := numTotal(ts, numKey, totKey)
-	collapsed := num == 0 && total == 0
-	out = appendSlotDrop(out, numKey, numPart, collapsed)
-	out = appendSlotDrop(out, totKey, totPart, collapsed)
+	// decodePair drops a literal 0 in EITHER slot on read (its num>0/total>0 guards treat 0 as
+	// unset), so a 0 written to a slot never round-trips - report it per slot, not only when the
+	// whole pair collapses to absent. TRACKNUMBER=0 with TRACKTOTAL=12 still loses the 0 on read.
+	out = appendSlotDrop(out, numKey, numPart)
+	out = appendSlotDrop(out, totKey, totPart)
 	return out
 }
 
-// appendSlotDrop records one trkn/disk slot the encoder would lose: either a value the
-// uint16 atom cannot represent, or a literal 0 dropped when the pair collapses to
-// absent. A slot is reported at most once.
-func appendSlotDrop(out []droppedValue, key tag.Key, slot string, collapsed bool) []droppedValue {
+// appendSlotDrop records one trkn/disk slot the encoder would lose: either a value the uint16
+// atom cannot represent, or a literal 0 (which decodePair drops on read, so it never
+// round-trips - MP4 keeps its 0-as-unset write semantics, this only makes the loss visible). A
+// slot is reported at most once.
+func appendSlotDrop(out []droppedValue, key tag.Key, slot string) []droppedValue {
 	switch {
 	case uint16ValueDropped(slot):
 		return append(out, droppedValue{Key: key, Value: slot})
-	case collapsed && isRepresentableZero(slot):
+	case isRepresentableZero(slot):
 		return append(out, droppedValue{Key: key, Value: strings.TrimSpace(slot)})
 	}
 	return out
@@ -325,6 +324,16 @@ func isRepresentableZero(s string) bool {
 	}
 	n, err := strconv.Atoi(s)
 	return err == nil && n == 0
+}
+
+// slotValueDropped reports whether a resolved trkn/disk slot value is lost on write: a value the
+// uint16 atom cannot hold, OR a literal 0 (decodePair drops a 0 slot on read, so it never
+// round-trips). It is the shared slot-level predicate so the writer's dropped-value report
+// (appendSlotDrop, whose two-case switch is this same disjunction) and the transfer capability
+// grading stay in lockstep on which slot values MP4 drops - otherwise a copy of TRACKNUMBER=0 (or
+// 0/total) would be graded carried yet the writer drops it and it reads back absent (L2).
+func slotValueDropped(s string) bool {
+	return uint16ValueDropped(s) || isRepresentableZero(s)
 }
 
 // uint16ValueDropped reports whether the trimmed slot string holds a value the
@@ -353,7 +362,7 @@ func uint16ValueDropped(s string) bool {
 // because that rule depends on the sibling total slot.
 func numberComponentDropped(s string) bool {
 	num, _ := tag.SplitNumberTotal(s)
-	return uint16ValueDropped(num)
+	return slotValueDropped(num)
 }
 
 // vocabValueDropped builds the value-drop predicate for a vocabulary atom such as stik or

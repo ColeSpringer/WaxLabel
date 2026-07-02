@@ -203,6 +203,25 @@ func TestLintFixJSONOperations(t *testing.T) {
 	}
 }
 
+// TestLintFixNothingToFix is the M8 regression: on a clean file --fix has nothing to do, so it
+// prints "nothing to fix" (the NoOpPlan "no changes" sentinel no longer masks that branch) and
+// the --json operations array is empty rather than leaking the sentinel.
+func TestLintFixNothingToFix(t *testing.T) {
+	t.Parallel()
+	out, _, _ := runCLI(t, "lint", "--fix", copyFixture(t, td("notags.mp3"))) // no lint findings
+	if !strings.Contains(out, "nothing to fix") {
+		t.Errorf("clean --fix should print 'nothing to fix'; got:\n%s", out)
+	}
+	if strings.Contains(out, "no changes") {
+		t.Errorf("the NoOpPlan 'no changes' sentinel leaked into --fix text output:\n%s", out)
+	}
+	jout, _, _ := runCLI(t, "--json", "lint", "--fix", copyFixture(t, td("notags.mp3")))
+	jf := decodeJSONOne[jsonLintFix](t, jout)
+	if len(jf.Operations) != 0 {
+		t.Errorf("clean --fix JSON operations = %v, want empty (no 'no changes' sentinel leak)", jf.Operations)
+	}
+}
+
 // TestSetStripEncoder: --strip-encoder clears the ENCODER tag.
 func TestSetStripEncoder(t *testing.T) {
 	t.Parallel()

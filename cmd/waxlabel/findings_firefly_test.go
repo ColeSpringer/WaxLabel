@@ -84,28 +84,19 @@ func TestEmptyValueKeptOnGeneralFormats(t *testing.T) {
 	}
 }
 
-// TestWAVAIFFPresentEmptyDependsOnID3 records the native WAV/AIFF behavior. INFO and
-// AIFF text chunks cannot represent a present-empty value, so a bare file drops
-// `set ARTIST=`. When a cover forces an ID3 chunk, the same value is preserved there.
-func TestWAVAIFFPresentEmptyDependsOnID3(t *testing.T) {
-	cover := writeTempImage(t, "c.png", minimalPNG())
+// TestWAVAIFFPresentEmptyNativeRoundTrip is the L1 regression: WAV INFO items (ZSTR, so a
+// present-empty value is a size-1 NUL item) and AIFF text chunks (genuinely zero-length) now
+// store a present-empty value, so a bare file round-trips `set ARTIST=` as present-empty like
+// every other format - no forced ID3 chunk needed.
+func TestWAVAIFFPresentEmptyNativeRoundTrip(t *testing.T) {
 	for _, src := range []string{td("notags.wav"), td("notags.aiff")} {
 		t.Run(filepath.Base(src), func(t *testing.T) {
-			// Bare file (native chunk only): the present-empty value is dropped.
 			bare := copyFixture(t, src)
 			if _, _, code := runCLI(t, "set", bare, "--set", "ARTIST=", "-q"); code != 0 {
 				t.Fatalf("set ARTIST= exit %d", code)
 			}
-			if v := tagValues(decodeJSONOne[jsonDocument](t, mustDumpJSON(t, bare)), "ARTIST"); len(v) != 0 {
-				t.Errorf("bare native chunk: ARTIST = %v, want dropped (no value)", v)
-			}
-			// An ID3 chunk (forced by a cover) holds the present-empty value.
-			withID3 := copyFixture(t, src)
-			if _, _, code := runCLI(t, "set", withID3, "--add-cover", cover, "--set", "ARTIST=", "-q"); code != 0 {
-				t.Fatalf("set ARTIST= + cover exit %d", code)
-			}
-			if v := tagValues(decodeJSONOne[jsonDocument](t, mustDumpJSON(t, withID3)), "ARTIST"); len(v) != 1 || v[0] != "" {
-				t.Errorf("ID3-bearing file: ARTIST = %v, want a kept present-empty value", v)
+			if v := tagValues(decodeJSONOne[jsonDocument](t, mustDumpJSON(t, bare)), "ARTIST"); len(v) != 1 || v[0] != "" {
+				t.Errorf("bare native chunk: ARTIST = %v, want a kept present-empty value (L1)", v)
 			}
 		})
 	}

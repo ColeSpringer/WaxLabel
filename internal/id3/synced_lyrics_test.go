@@ -71,6 +71,25 @@ func TestSYLTLanguageNormalization(t *testing.T) {
 	}
 }
 
+// TestSYLTLanguageWriteMatchesRead is the L7 regression: a modeled language of "xxx" (which the
+// CLI accepts) is the ISO undefined marker, so the write must store it as the canonical "XXX" and
+// it must read back empty - the same value an empty model language round-trips to - rather than
+// being stored verbatim yet dropped to empty on read.
+func TestSYLTLanguageWriteMatchesRead(t *testing.T) {
+	for _, lang := range []string{"xxx", "XXX", ""} {
+		frames, _ := syltFrames([]core.SyncedLyrics{{Language: lang, Lines: []core.SyncedLine{{Time: 0, Text: "x"}}}}, 4, "")
+		if len(frames) != 1 {
+			t.Fatalf("language %q: got %d frames, want 1", lang, len(frames))
+		}
+		if l, _ := syltFrameLanguage(frames[0].Body); l != "XXX" {
+			t.Errorf("language %q written as %q, want XXX (canonical undefined marker)", lang, l)
+		}
+		if got, _, ok := decodeSYLT(frames[0].Body); !ok || got.Language != "" {
+			t.Errorf("language %q read back as %q (ok=%v), want empty (consistent with the write)", lang, got.Language, ok)
+		}
+	}
+}
+
 // TestSYLTEmptyLanguageFallback checks a re-rendered set whose modeled language is empty
 // falls back to the supplied original language, so a line-only edit keeps it.
 func TestSYLTEmptyLanguageFallback(t *testing.T) {

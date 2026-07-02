@@ -21,13 +21,17 @@ type (
 func WithLimits(l Limits) ParseOption {
 	return func(o *core.ParseOptions) {
 		d := core.DefaultParseOptions().Limits
-		if l.MaxAllocBytes == 0 {
+		// Non-positive means "unset": fall back to the default rather than passing a negative
+		// through. ReadSlice now rejects a non-positive allocation limit, so a negative
+		// MaxAllocBytes would otherwise fail every bounded read; a negative depth/element cap is
+		// equally nonsensical.
+		if l.MaxAllocBytes <= 0 {
 			l.MaxAllocBytes = d.MaxAllocBytes
 		}
-		if l.MaxDepth == 0 {
+		if l.MaxDepth <= 0 {
 			l.MaxDepth = d.MaxDepth
 		}
-		if l.MaxElements == 0 {
+		if l.MaxElements <= 0 {
 			l.MaxElements = d.MaxElements
 		}
 		o.Limits = l
@@ -97,10 +101,11 @@ func WithUnrecognizedPictures() WriteOption {
 
 // WithStripEncoderStamp asks the writer to drop a removable inherited
 // transcoder/encoder stamp that lives in a native field no canonical-tag edit can
-// reach - today the WAV ISFT INFO item (e.g. ffmpeg's "Lavf..."), dropped only
-// when it [IsTranscoderStamp]. Other codecs ignore it: the Ogg/Opus/FLAC vendor
-// string is a mandatory codec field, reported but never overwritten. Pair it with
-// clearing or setting [tag.Encoder] so a WAV's stamp does not survive the edit.
+// reach: the WAV ISFT INFO item (e.g. ffmpeg's "Lavf...") and the Ogg/Opus/FLAC
+// comment-header vendor string. Each is acted on only when it [IsTranscoderStamp].
+// The ISFT item is dropped; the vendor string is a mandatory codec field, so it is
+// rewritten to WaxLabel's neutral value rather than removed (NeutralizeVendor). Pair it
+// with clearing or setting [tag.Encoder] so a canonical ENCODER stamp does not survive.
 func WithStripEncoderStamp() WriteOption {
 	return func(o *core.WriteOptions) { o.StripEncoderStamp = true }
 }

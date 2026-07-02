@@ -147,6 +147,27 @@ func TestSniffBMPNegativeWidth(t *testing.T) {
 	}
 }
 
+// TestSniffBMPOS2Header is the L11 regression: an OS/2 2.x BITMAPINFOHEADER2 (a 16-byte DIB
+// header) shares the BITMAPINFOHEADER width/height/depth field offsets (18/22/28), so its
+// dimensions are read rather than reported as 0x0.
+func TestSniffBMPOS2Header(t *testing.T) {
+	os2 := []byte{
+		'B', 'M', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 14-byte file header
+		16, 0, 0, 0, // DIB header size 16 (OS/2 2.x BITMAPINFOHEADER2)
+		3, 0, 0, 0, // width 3
+		5, 0, 0, 0, // height 5
+		1, 0, // planes
+		24, 0, // bit count (depth 24)
+	}
+	got, ok := SniffImage(os2)
+	if !ok {
+		t.Fatal("SniffImage did not recognize the OS/2 BMP")
+	}
+	if got.Width != 3 || got.Height != 5 || got.Depth != 24 {
+		t.Errorf("OS/2 BMP = %dx%d depth %d, want 3x5 depth 24 (16-byte DIB header now read)", got.Width, got.Height, got.Depth)
+	}
+}
+
 // TestSniffTIFFIgnoresMultiValueCount checks that an ImageWidth/ImageLength IFD
 // entry whose value count is not 1 - meaning its 4-byte field is a file offset,
 // not an inline value - is skipped, rather than mistaking the offset for a

@@ -210,17 +210,18 @@ func sniffWebP(data []byte) (ImageInfo, bool) {
 	return info, true
 }
 
-// sniffBMP reads the DIB header for dimensions and bit depth. It handles both the
-// common BITMAPINFOHEADER (size >= 40) and the legacy BITMAPCOREHEADER (size 12);
-// a top-down bitmap stores a negative height, which is normalized to its
-// magnitude.
+// sniffBMP reads the DIB header for dimensions and bit depth. It handles the common
+// BITMAPINFOHEADER (size >= 40), the OS/2 2.x BITMAPINFOHEADER2 (size 16-64), and the legacy
+// BITMAPCOREHEADER (size 12). Every header >= 16 bytes shares the same width/height/depth field
+// offsets (18/22/28) - the branch reads nothing past offset 30 - so one case covers them all; a
+// top-down bitmap stores a negative height, which is normalized to its magnitude.
 func sniffBMP(data []byte) (ImageInfo, bool) {
 	info := ImageInfo{MIME: "image/bmp"}
 	if len(data) < 18 {
 		return info, true
 	}
 	switch dibSize := binary.LittleEndian.Uint32(data[14:18]); {
-	case dibSize >= 40 && len(data) >= 30:
+	case dibSize >= 16 && len(data) >= 30:
 		// Width and height are signed: a negative height legitimately encodes a
 		// top-down image, while a negative width is malformed. Either way take the
 		// magnitude, so a hostile sign bit cannot propagate as a ~4.29e9 value when

@@ -179,18 +179,26 @@ func chapterSamples(chapters []core.Chapter) []byte {
 	return out
 }
 
-// chapterDeltas returns each chapter sample's stts duration in movie-timescale
-// units: the gap to the next chapter, and for the last chapter its own End (or
-// the movie duration) so the track spans the whole movie. Deltas are clamped
-// non-negative so an out-of-order list cannot encode a negative duration. The
-// reader sums these from zero, so they double as the basis for the result view.
-// saturated reports whether any delta exceeded the 32-bit stts field and was
-// clamped. The QuickTime track loses precision there; the uint64 Nero chpl does not.
-func chapterDeltas(chapters []core.Chapter, mts uint32, movieDuration uint64) (deltas []uint32, saturated bool) {
+// chapterDeltas returns each chapter sample's stts duration in the chapter media timescale
+// (mts): the gap to the next chapter, and for the last chapter its own End (or the movie
+// duration) so the track spans the whole movie. Because mts is decoupled from the movie
+// timescale, the movie duration - given in movie-timescale units - is converted into mts
+// units before it bounds the last chapter. Deltas are clamped non-negative so an out-of-order
+// list cannot encode a negative duration. The reader sums these from zero, so they double as
+// the basis for the result view. saturated reports whether any delta exceeded the 32-bit stts
+// field and was clamped. The QuickTime track loses precision there; the uint64 Nero chpl does not.
+func chapterDeltas(chapters []core.Chapter, mts, movieTimescale uint32, movieDuration uint64) (deltas []uint32, saturated bool) {
 	n := len(chapters)
 	starts := make([]uint64, n)
 	for i, ch := range chapters {
 		starts[i] = durationToUnits(ch.Start, mts)
+	}
+	// Convert the movie duration (movie-timescale units) into mts units so it can bound the
+	// open last chapter on the same grid as starts. When the timescales coincide, or the movie
+	// timescale is unknown, the value is used as-is.
+	movieDurUnits := movieDuration
+	if movieTimescale != 0 && movieTimescale != mts {
+		movieDurUnits = durationToUnits(scaleToDuration(movieDuration, movieTimescale), mts)
 	}
 	deltas = make([]uint32, n)
 	// debt counts units borrowed to separate coincident starts. Borrowing one unit
@@ -205,8 +213,8 @@ func chapterDeltas(chapters []core.Chapter, mts uint32, movieDuration uint64) (d
 			next = starts[i+1]
 		case chapters[i].End > chapters[i].Start:
 			next = durationToUnits(chapters[i].End, mts)
-		case movieDuration > starts[i]:
-			next = movieDuration
+		case movieDurUnits > starts[i]:
+			next = movieDurUnits
 		default:
 			next = starts[i] + uint64(mts) // a one-second tail when nothing else bounds it
 		}
@@ -243,8 +251,8 @@ func chapterDeltas(chapters []core.Chapter, mts uint32, movieDuration uint64) (d
 // within them: because the offset table is the last atom in the track, that
 // entry is simply the final 4 (stco) or 8 (co64) bytes.
 func buildChapterTrak(trackID, mts, movieTimescale uint32, movieDuration uint64, chapters []core.Chapter, co64 bool) (trak []byte, stcoEntryOff int, saturated bool) {
-	deltas, saturated := chapterDeltas(chapters, mts, movieDuration)
-	var totalDur uint64
+	deltas, saturated := chapterDeltas(chapters, mts, movieTimescale, movieDuration)
+	var totalDur uint64 // the summed media (mts) span; mdhd.duration and the stts deltas use it
 	for _, d := range deltas {
 		totalDur += uint64(d)
 	}
@@ -257,12 +265,21 @@ func buildChapterTrak(trackID, mts, movieTimescale uint32, movieDuration uint64,
 	// segment_duration even when every inter-chapter delta is small, so include it in
 	// the WarnChapterStartOverflow signal.
 	saturated = saturated || firstStart > math.MaxUint32
+	// mdhd.duration and the stts deltas are media-timescale (mts); tkhd.duration and the elst
+	// normal segment_duration are movie-timescale. With mts decoupled from the movie timescale,
+	// convert the media span into movie units for those two fields (the leading empty-edit
+	// segment_duration is firstStart, already movie units). When the movie timescale is unknown
+	// or equals mts the value is used as-is.
+	totalDurMovie := totalDur
+	if movieTimescale != 0 && movieTimescale != mts {
+		totalDurMovie = durationToUnits(scaleToDuration(totalDur, mts), movieTimescale)
+	}
 
 	stbl := renderAtom(atomName("stbl"), slices.Concat(
 		chapterStsd(), buildStts(deltas), buildStsc(len(chapters)), buildStsz(chapters), buildStco(co64)))
 	minf := renderAtom(atomName("minf"), slices.Concat(chapterGmhd(), chapterDinf(), stbl))
 	mdia := renderAtom(atomName("mdia"), slices.Concat(chapterMdhd(mts, totalDur), chapterHdlr(), minf))
-	trak = renderAtom(atomName("trak"), slices.Concat(chapterTkhd(trackID, firstStart+totalDur), chapterEdts(firstStart, totalDur), mdia))
+	trak = renderAtom(atomName("trak"), slices.Concat(chapterTkhd(trackID, firstStart+totalDurMovie), chapterEdts(firstStart, totalDurMovie), mdia))
 
 	width := 4
 	if co64 {
@@ -319,17 +336,21 @@ func buildStco(co64 bool) []byte {
 // qtWriteRoundTrip returns the chapters a fresh parse of the written QuickTime
 // track yields: the decode-time of each sample (the running sum of the stts
 // deltas, from zero) scaled to a Start and shifted by the leading empty-edit
-// offset, the next sample's time as End (the last End left open, as the reader
-// leaves it), and titles capped like the samples. It mirrors decodeTextTrack
-// exactly - including applying the offset in the Duration domain after the
-// per-sample scale - so the post-write result equals a reparse with no
-// scale-rounding drift. The offset is 0 for a zero-start list (or an unknown movie
-// timescale), so such a write round-trips unchanged.
-func qtWriteRoundTrip(chapters []core.Chapter, mts, movieTimescale uint32, movieDuration uint64) []core.Chapter {
+// offset, the next sample's time as End, and titles capped like the samples. It
+// mirrors decodeTextTrack exactly - including applying the offset in the Duration
+// domain after the per-sample scale, and recovering the last chapter's end from the
+// final stts boundary (canonicalized to open at the movie duration) - so the
+// post-write result equals a reparse with no scale-rounding drift. The offset is 0 for
+// a zero-start list (or an unknown movie timescale), so such a write round-trips unchanged.
+// saturated reports whether any stts delta clamped (a per-gap span past ~13.25 h read back as
+// MaxUint32), the same value-based signal decodeTextTrack detects, so the caller can prefer the
+// exact chpl over this lossy track without recomputing the deltas.
+func qtWriteRoundTrip(chapters []core.Chapter, mts, movieTimescale uint32, movieDuration uint64) (out []core.Chapter, saturated bool) {
 	if len(chapters) == 0 {
-		return nil
+		return nil, false
 	}
-	deltas, _ := chapterDeltas(chapters, mts, movieDuration)
+	deltas, _ := chapterDeltas(chapters, mts, movieTimescale, movieDuration)
+	saturated = slices.Contains(deltas, uint32(math.MaxUint32))
 	// chapterEdts writes firstStart as a u32 segment_duration (clampU32), so derive
 	// the offset from the same clamped value - a reparse reads back exactly that, so
 	// the prediction stays equal even past the 2^32-unit edge. addClamp matches the
@@ -339,7 +360,7 @@ func qtWriteRoundTrip(chapters []core.Chapter, mts, movieTimescale uint32, movie
 	for i := 1; i < len(chapters); i++ {
 		cum[i] = cum[i-1] + uint64(deltas[i-1])
 	}
-	out := make([]core.Chapter, len(chapters))
+	out = make([]core.Chapter, len(chapters))
 	for i := range chapters {
 		out[i] = core.Chapter{
 			Start: addClamp(scaleToDuration(cum[i], mts), offset),
@@ -349,5 +370,13 @@ func qtWriteRoundTrip(chapters []core.Chapter, mts, movieTimescale uint32, movie
 			out[i].End = addClamp(scaleToDuration(cum[i+1], mts), offset)
 		}
 	}
-	return out
+	// Mirror decodeTextTrack's last-end recovery: the final stts boundary (the last
+	// cumulative sum plus the last delta) is the last chapter's end, canonicalized back to
+	// open at the movie duration. A written list is always under maxChapterSamples, so the
+	// reader's completed flag is always true here.
+	last := len(chapters) - 1
+	if lastEnd := addClamp(scaleToDuration(cum[last]+uint64(deltas[last]), mts), offset); !endIsMovieDuration(lastEnd, movieTimescale, movieDuration) {
+		out[last].End = lastEnd
+	}
+	return out, saturated
 }

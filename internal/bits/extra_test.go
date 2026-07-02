@@ -40,6 +40,13 @@ func TestReadSliceBounds(t *testing.T) {
 	if _, err := ReadSlice(r, 8, 5, 1<<20); !errors.Is(err, waxerr.ErrInvalidData) {
 		t.Errorf("past-EOF err = %v, want ErrInvalidData", err)
 	}
+	// L14: a non-positive limit is a caller bug - the allocation would be unbounded - so it is
+	// rejected rather than treated as "unlimited".
+	for _, lim := range []int64{0, -1} {
+		if _, err := ReadSlice(r, 0, 3, lim); !errors.Is(err, waxerr.ErrInvalidData) {
+			t.Errorf("limit %d err = %v, want ErrInvalidData (a real ceiling is required)", lim, err)
+		}
+	}
 }
 
 func TestHasherTapMatchesDirectHash(t *testing.T) {

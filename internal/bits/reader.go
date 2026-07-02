@@ -251,12 +251,20 @@ func (c *Cursor) U64BE() uint64 {
 	return v
 }
 
-// ReadSlice reads n bytes at off from r, bounded by limit.
+// ReadSlice reads n bytes at off from r, bounded by limit. limit must be positive: the
+// allocation is make([]byte, n), so without a real ceiling a hostile length-prefix could drive an
+// unbounded allocation. ReadSlice takes a bare io.ReaderAt with no size to derive a bound from, so
+// the caller must supply one (every parser threads its parse-time MaxAllocBytes, defaulted to the
+// 256 MiB library ceiling). A non-positive limit is a caller bug, rejected rather than treated as
+// "unbounded".
 func ReadSlice(r io.ReaderAt, off, n, limit int64) ([]byte, error) {
 	if n < 0 {
 		return nil, fmt.Errorf("%w: negative length %d", waxerr.ErrInvalidData, n)
 	}
-	if limit > 0 && n > limit {
+	if limit <= 0 {
+		return nil, fmt.Errorf("%w: ReadSlice needs a positive allocation limit (got %d)", waxerr.ErrInvalidData, limit)
+	}
+	if n > limit {
 		return nil, fmt.Errorf("%w: %d bytes exceeds limit %d", waxerr.ErrSizeTooLarge, n, limit)
 	}
 	buf := make([]byte, n)

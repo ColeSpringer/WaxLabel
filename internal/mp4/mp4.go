@@ -121,9 +121,9 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 		add(tag.Genre, core.NumericGenreCapability("numeric gnre atom"))
 	}
 	add(tag.TrackNumber, core.WithValueDrop(fields, numberComponentDropped))
-	add(tag.TrackTotal, core.WithValueDrop(fields, uint16ValueDropped))
+	add(tag.TrackTotal, core.WithValueDrop(fields, slotValueDropped))
 	add(tag.DiscNumber, core.WithValueDrop(fields, numberComponentDropped))
-	add(tag.DiscTotal, core.WithValueDrop(fields, uint16ValueDropped))
+	add(tag.DiscTotal, core.WithValueDrop(fields, slotValueDropped))
 	add(tag.MediaType, core.WithValueDrop(fields, mediaTypeValueDropped))
 	add(tag.Compilation, core.WithValueDrop(fields, compilationValueDropped))
 	// Padding is grow-only: a forced rewrite can reserve a region, but a fit-in-place

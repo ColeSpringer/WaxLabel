@@ -2,6 +2,8 @@ package waxlabel
 
 import (
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/tag"
@@ -134,8 +136,40 @@ func lintFamilies(fams []core.FamilyValue) []Finding {
 // linter's whole-set finding (lintPictures) and the editor's edit-scoped plan warning
 // (appendPictureWarnings) read identically - only their scope differs, not the
 // wording, so a reword cannot make the two silently disagree on the same file.
-func duplicatePictureMessage(t core.PictureType) string {
-	return fmt.Sprintf("identical %s picture appears more than once", t)
+func duplicatePictureMessage(roles []core.PictureType) string {
+	// Name the message by the sorted set of roles the identical bytes appear under, not a single
+	// occurrence's role: the linter scans the whole parsed set and the editor scans the edit
+	// scope, so "first vs second occurrence" is not a shared concept and naming one would make
+	// the two disagree when the shared bytes carry different Types. A single role (the common
+	// case) keeps the original wording; multiple roles list them all in a stable order.
+	if len(roles) <= 1 {
+		var t core.PictureType
+		if len(roles) == 1 {
+			t = roles[0]
+		}
+		return fmt.Sprintf("identical %s picture appears more than once", t)
+	}
+	names := make([]string, len(roles))
+	for i, r := range roles {
+		names[i] = r.String()
+	}
+	return fmt.Sprintf("identical picture appears more than once (roles: %s)", strings.Join(names, ", "))
+}
+
+// distinctSortedRoles returns the distinct picture types among pics whose bytes hash to one of
+// the given per-index hashes equal to h, sorted, so a duplicate-picture message names every role
+// the identical bytes appear under in a stable, iteration-order-independent way. hashes[i] is the
+// precomputed hash of pics[i] (a site may only hash a length-matching subset; an index absent
+// from hashes is skipped).
+func distinctSortedRoles(pics []Picture, hashes map[int][32]byte, h [32]byte) []core.PictureType {
+	var roles []core.PictureType
+	for i := range pics {
+		if hashes[i] == h && !slices.Contains(roles, pics[i].Type) {
+			roles = append(roles, pics[i].Type)
+		}
+	}
+	slices.Sort(roles)
+	return roles
 }
 
 func multipleFrontCoversMessage(fronts int) string {
@@ -146,9 +180,16 @@ func multipleFrontCoversMessage(fronts int) string {
 // single-icon rule.
 func lintPictures(pics []Picture) []Finding {
 	var out []Finding
+	// Precompute every picture's hash once, so a duplicate finding can name the whole set of
+	// roles the identical bytes appear under (distinctSortedRoles) rather than a single
+	// occurrence's role - keeping the message identical to the editor's edit-scope warning.
+	hashes := make(map[int][32]byte, len(pics))
+	for i, p := range pics {
+		hashes[i] = p.Hash()
+	}
 	seen := map[[32]byte]bool{}
 	fronts := 0
-	for _, p := range pics {
+	for i, p := range pics {
 		// A picture the codec could not sniff is stored as the unrecognized-image MIME;
 		// key on that (not a re-sniff) so a cover a codec already recognized is never
 		// false-flagged. Reported only - never auto-fixed - since a valid but
@@ -158,9 +199,9 @@ func lintPictures(pics []Picture) []Finding {
 			out = append(out, Finding{LintWarning, "invalid-picture",
 				fmt.Sprintf("%s picture is not a recognized image type (%s)", p.Type, p.MIME), ""})
 		}
-		h := p.Hash()
+		h := hashes[i]
 		if seen[h] {
-			out = append(out, Finding{LintWarning, "duplicate-picture", duplicatePictureMessage(p.Type), ""})
+			out = append(out, Finding{LintWarning, "duplicate-picture", duplicatePictureMessage(distinctSortedRoles(pics, hashes, h)), ""})
 		}
 		seen[h] = true
 		if p.Type == core.PicFrontCover {

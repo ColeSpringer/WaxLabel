@@ -12,9 +12,11 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestMP4TrackNumberZeroWarns checks the MP4-specific TRACKNUMBER=0 case. pairItem
-// treats 0/0 as absent, so the user's 0 would be lost and the write must warn. A 0
-// paired with a real total writes 0/total faithfully and must not warn.
+// TestMP4TrackNumberZeroWarns checks the MP4-specific TRACKNUMBER=0 case (L2). decodePair drops
+// a 0 slot on read (its num>0/total>0 guards treat 0 as unset), so a user's 0 never round-trips
+// and the write must warn - even when the pair does not collapse: 0 paired with a real total
+// still loses the 0 on read (0/12 reads back as total-only), while the representable total is
+// not flagged.
 func TestMP4TrackNumberZeroWarns(t *testing.T) {
 	base := mp4Tagged(mp4Text("\xa9nam", "T"))
 	dropped := func(p *wl.Plan, key tag.Key) bool {
@@ -31,15 +33,18 @@ func TestMP4TrackNumberZeroWarns(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !dropped(p, tag.TrackNumber) {
-		t.Errorf("TRACKNUMBER=0 must warn value-dropped (the pair collapses to absent); got %v", p.Report().Warnings)
+		t.Errorf("TRACKNUMBER=0 must warn value-dropped (a 0 slot is dropped on read); got %v", p.Report().Warnings)
 	}
 
 	p2, err := mustParseBytes(t, base).Edit().Set(tag.TrackNumber, "0").Set(tag.TrackTotal, "12").Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dropped(p2, tag.TrackNumber) {
-		t.Errorf("TRACKNUMBER=0 with TRACKTOTAL=12 writes 0/12 and must not warn; got %v", p2.Report().Warnings)
+	if !dropped(p2, tag.TrackNumber) {
+		t.Errorf("TRACKNUMBER=0 with TRACKTOTAL=12 still loses the 0 on read; must warn; got %v", p2.Report().Warnings)
+	}
+	if dropped(p2, tag.TrackTotal) {
+		t.Errorf("TRACKTOTAL=12 is representable and must not warn; got %v", p2.Report().Warnings)
 	}
 }
 

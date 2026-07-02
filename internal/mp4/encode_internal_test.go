@@ -21,7 +21,7 @@ func TestDroppedValues(t *testing.T) {
 		{"track overflow", map[tag.Key]string{tag.TrackNumber: "70000"}, []tag.Key{tag.TrackNumber}},
 		{"track negative", map[tag.Key]string{tag.TrackNumber: "-3"}, []tag.Key{tag.TrackNumber}},
 		{"track zero collapses the pair, flagged", map[tag.Key]string{tag.TrackNumber: "0"}, []tag.Key{tag.TrackNumber}},
-		{"track zero with a real total is not a drop", map[tag.Key]string{tag.TrackNumber: "0", tag.TrackTotal: "12"}, nil},
+		{"track zero with a real total still drops the zero number", map[tag.Key]string{tag.TrackNumber: "0", tag.TrackTotal: "12"}, []tag.Key{tag.TrackNumber}},
 		{"both zero flags both slots", map[tag.Key]string{tag.TrackNumber: "0", tag.TrackTotal: "0"}, []tag.Key{tag.TrackNumber, tag.TrackTotal}},
 		{"total zero alone collapses the pair", map[tag.Key]string{tag.TrackTotal: "0"}, []tag.Key{tag.TrackTotal}},
 		{"track valid", map[tag.Key]string{tag.TrackNumber: "3"}, nil},

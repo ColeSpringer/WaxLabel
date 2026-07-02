@@ -115,6 +115,35 @@ func TestLRCTimestampForms(t *testing.T) {
 	}
 }
 
+// TestParseLRCCarriageReturns is the L4 regression: classic-Mac pure-CR line endings (and CRLF)
+// must be split like LF, not read as one concatenated line.
+func TestParseLRCCarriageReturns(t *testing.T) {
+	for _, sep := range []string{"\r", "\r\n", "\n"} {
+		got := ParseLRC("[00:01.00]A" + sep + "[00:02.00]B")
+		if len(got) != 2 || got[0].Text != "A" || got[1].Text != "B" {
+			t.Errorf("ParseLRC with %q separator = %+v, want two lines A,B", sep, got)
+		}
+	}
+}
+
+// TestParseLRCRejectsOutOfRangeSeconds is the L5 regression: a seconds field >= 60 is malformed
+// in every form, and minutes >= 60 are rejected only in the three-part HH:MM:SS form; the
+// two-part MM:SS form keeps a large minute count for a long track ("[120:00.00]").
+func TestParseLRCRejectsOutOfRangeSeconds(t *testing.T) {
+	for _, in := range []string{
+		"[00:99.00]x", // 99 seconds, MM:SS
+		"[01:99:00]x", // 99 seconds, HH:MM:SS
+		"[01:60:00]x", // 60 minutes, HH:MM:SS
+	} {
+		if got := ParseLRC(in); got != nil {
+			t.Errorf("ParseLRC(%q) = %+v, want no line (out-of-range field)", in, got)
+		}
+	}
+	if got := ParseLRC("[120:00.00]x"); len(got) != 1 || got[0].Time != 120*time.Minute {
+		t.Errorf("ParseLRC([120:00.00]) = %+v, want one line at 120m (long track, two-part form)", got)
+	}
+}
+
 // TestFormatLRCRoundTrip checks FormatLRC emits [mm:ss.mmm] and round-trips losslessly
 // through ParseLRC, including a long (>99 minute) timestamp and an empty clear marker.
 func TestFormatLRCRoundTrip(t *testing.T) {

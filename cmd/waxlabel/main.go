@@ -38,7 +38,9 @@ func main() {
 	// escape hatch for an operation that cannot observe cancellation (e.g. blocked
 	// in an fsync syscall). The handler runs on its own goroutine so the second
 	// signal fires even while the main goroutine is stuck. os.Exit skips deferred
-	// calls, so the signal registration is released explicitly before it.
+	// calls, so the signal registration is released explicitly before it, and the
+	// forced-exit path drains the cleanup registry so a buffered-stdin temp file is
+	// still removed.
 	ctx, cancel := context.WithCancel(context.Background())
 	sig := make(chan os.Signal, 2)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
@@ -46,10 +48,26 @@ func main() {
 		<-sig
 		cancel()
 		<-sig
+		runCleanups()
 		os.Exit(130)
 	}()
+
+	// SIGPIPE (a closed output pipe, e.g. `dump - | head`) is caught on its OWN channel: without
+	// catching it, the next stdout write default-kills the process before any cleanup runs.
+	// Catching it turns the write into an EPIPE the command unwinds through its deferred cleanup,
+	// and cancelling stops in-flight work promptly - but keeping it OUT of the interrupt two-stage
+	// machine means a broken pipe does not consume a later Ctrl-C's graceful-cancel stage. The
+	// constant compiles on every target; Windows defines it but never delivers it.
+	pipe := make(chan os.Signal, 1)
+	signal.Notify(pipe, syscall.SIGPIPE)
+	go func() {
+		<-pipe
+		cancel()
+	}()
+
 	code := dispatch(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	signal.Stop(sig)
+	signal.Stop(pipe)
 	cancel()
 	os.Exit(code)
 }

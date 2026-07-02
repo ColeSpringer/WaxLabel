@@ -163,11 +163,14 @@ func checkOutputTarget(output, inputReal string, overwrite bool) error {
 	// Checked even under --overwrite: a missing parent dir cannot be overwritten.
 	parent := filepath.Dir(output)
 	if fi, err := os.Stat(parent); err != nil {
-		if os.IsNotExist(err) {
-			return usagef("-o target directory %q does not exist", parent)
-		}
+		// A missing (or otherwise unstattable) -o parent directory classifies as not-found /
+		// I/O (exit 6), like every other missing path - so a script branching on exit codes
+		// treats "-o typo/out.flac" the same as a missing input file. Returning the raw
+		// *fs.PathError yields the clean "<dir>: no such file or directory" not-found message.
+		// (It was usagef/exit-2 for the not-exist case before, inconsistent with the rest.)
 		return err
 	} else if !fi.IsDir() {
+		// The parent EXISTS but is a regular file, not a missing path: still a usage error.
 		return usagef("-o target directory %q is not a directory", parent)
 	}
 	// Resolve the symlink the way writeAtomic will, once, and thread it to both the
@@ -371,8 +374,12 @@ func runSet(cmd *cobra.Command, paths []string, pathErrors map[string]error, rea
 		dst := wl.SaveBack()
 		if output != "" {
 			// WaxLabel never transcodes, so a mismatched output extension means a
-			// misnamed file; warn (on stderr, non-fatally) but still write.
-			warnExtensionMismatch(errOut, output, doc.Format())
+			// misnamed file; warn (on stderr, non-fatally) but still write. Gated on the
+			// non-JSON path: under --json the sibling stderr notes are suppressed too, so this
+			// one must be as well, keeping the machine run's stderr clean.
+			if !asJSON {
+				warnExtensionMismatch(errOut, output, doc.Format())
+			}
 			dst = wl.SaveAsFile(output)
 		}
 		_, res, err := plan.Execute(cmd.Context(), dst)

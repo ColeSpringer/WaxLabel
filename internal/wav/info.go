@@ -61,9 +61,10 @@ func infoTags(items []infoItem) tag.TagSet {
 		if !ok {
 			continue
 		}
-		if v := it.text(); v != "" {
-			ts.AddNativeItem(key, v)
-		}
+		// Surface a present-empty INFO item (a size-1 NUL, text() == "") as a present-empty
+		// value, not absent, so --set TITLE= round-trips like the other formats (L1). Every item
+		// in the list is present; an absent key simply has no item.
+		ts.AddNativeItem(key, it.text())
 	}
 	// IPRT/ITRK map to TrackNumber, so a non-standard IPRT="4/9" would otherwise read
 	// verbatim while ID3/MP4 split it - normalize here so every read path agrees.
@@ -116,9 +117,9 @@ func infoFamilies(auth tag.TagSet, items []infoItem) []core.FamilyValue {
 }
 
 // infoRepresentable reports whether every key in ts can be stored faithfully in
-// LIST/INFO: each must map to an INFO identifier and carry at most one value
-// (present-but-empty is fine - it normalizes to absent, as in Vorbis). A key that
-// fails forces the richer id3 chunk so no value is lost.
+// LIST/INFO: each must map to an INFO identifier and carry at most one value (a
+// present-but-empty value is representable - stored as a size-1 NUL INFO item, see infoValue).
+// A key that fails forces the richer id3 chunk so no value is lost.
 func infoRepresentable(ts tag.TagSet) bool {
 	for _, k := range ts.Keys() {
 		if _, ok := mapping.RIFFKeyInfo(k); !ok {
@@ -179,16 +180,14 @@ func rebuildInfo(orig []infoItem, edited tag.TagSet, stripStamp bool) []infoItem
 	return out
 }
 
-// infoValue returns the value INFO should store for key - the first value, since
-// INFO is single-valued - or ok=false when the key is absent or present empty. The
-// native INFO vocabulary cannot represent an empty value, but a WAV that also carries
-// ID3 can preserve it there, matching the AIFF behavior in internal/aiff/text.go.
+// infoValue returns the value INFO should store for key - the first value, since INFO is
+// single-valued - or ok=false only when the key is absent. A present value, including a
+// present-empty one (--set TITLE=), is stored: INFO items are ZSTR (NUL-terminated), so an
+// empty value is a size-1 NUL item (renderInfo writes len(raw)+1 bytes), distinct from an
+// absent key (no item at all). This lets a present-empty value round-trip through INFO like the
+// other formats, rather than being dropped and relying on a forced ID3 chunk (L1).
 func infoValue(ts tag.TagSet, key tag.Key) (string, bool) {
-	v, ok := ts.First(key)
-	if !ok || v == "" {
-		return "", false
-	}
-	return v, true
+	return ts.First(key)
 }
 
 // nativeReducedWarnings notes each multi-valued key reduced to its first value in

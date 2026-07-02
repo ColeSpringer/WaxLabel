@@ -260,6 +260,19 @@ func (p *TagPatch) Append(other TagPatch) {
 	p.ops = append(p.ops, other.ops...)
 }
 
+// MapKeys returns a copy of the patch with every operation's key passed through fn (values
+// and op order unchanged). Front-ends use it with an alias resolver so a pre-built patch
+// targets canonical keys - the same normalization the key-taking editor methods apply. The
+// tag package stays decoupled from the alias table by taking fn rather than resolving itself.
+func (p TagPatch) MapKeys(fn func(Key) Key) TagPatch {
+	out := TagPatch{ops: make([]patchOp, len(p.ops))}
+	for i, op := range p.ops {
+		op.key = fn(op.key)
+		out.ops[i] = op
+	}
+	return out
+}
+
 // Apply returns a new TagSet that is base with the patch applied. base is not
 // modified.
 func (p TagPatch) Apply(base TagSet) TagSet {

@@ -175,6 +175,24 @@ the write will change, downgrade, or drop. It does not include post-write
 cleanliness findings such as an inherited encoder stamp or a malformed value. Run
 `lint` on the saved file to check those.
 
+Each `lint --json` finding carries a machine-readable `code`, a `severity`, and a
+`message`. A `warning` or `error` finding makes `lint` exit non-zero; an `info`
+finding does not. The codes:
+
+- Errors: `no-audio` (no decodable audio frames), `multiple-vorbis-comment` and
+  `duplicate-tag-block` (repeated metadata blocks), `duplicate-icon` (a non-unique
+  icon/other-icon picture type).
+- Warnings: `inherited-encoder` (a transcoder/encoder stamp `--fix` can clear),
+  `stray-leading-id3`, `trailing-id3v1`, `legacy-ape` (legacy containers `--fix` can
+  strip), `invalid-picture` (bytes that are not a recognized image), `truncated-audio`,
+  `invalid-tag-key` (a native name mapping to no canonical key), `conflicting-families`
+  (a key's native source fields disagree), `duplicate-picture`, `multiple-front-covers`,
+  `single-valued-multi` (a single-valued key carrying several values), `malformed-number`,
+  `malformed-date`, and `malformed-boolean`.
+- Info (never flips the exit): `numeric-genre` (a numeric genre reference resolved to a
+  name), `negative-numeric` (a negative value in a numeric field), and `custom-key` (an
+  unknown, preserved uppercase key).
+
 In `set`, `plan`, and `lint --fix` JSON, `changes` and `operations` have
 different meanings. `changes` is the canonical tag-level diff: which keys are
 added, removed, or replaced. `operations` is the structural write list, such as

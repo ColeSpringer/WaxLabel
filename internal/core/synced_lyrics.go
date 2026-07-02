@@ -199,6 +199,10 @@ const maxLRCOffsetMs = 1 << 40
 // a Windows editor) is stripped so the first line is not lost.
 func ParseLRC(text string) []SyncedLine {
 	text = strings.TrimPrefix(text, "\ufeff")
+	// Normalize CRLF and lone-CR (classic-Mac) line endings to LF before splitting, so a
+	// pure-CR file is not read as one giant line with every lyric concatenated.
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
 	var out []SyncedLine
 	var offsetMs int64
 	hasOffset := false
@@ -206,7 +210,7 @@ func ParseLRC(text string) []SyncedLine {
 		if len(out) >= maxSyncedLines {
 			break
 		}
-		times, lineOffset, lineHasOffset, body := leadingTimestamps(strings.TrimRight(raw, "\r"))
+		times, lineOffset, lineHasOffset, body := leadingTimestamps(raw)
 		if lineHasOffset && !hasOffset {
 			offsetMs, hasOffset = lineOffset, true
 		}
@@ -381,8 +385,18 @@ func parseLRCTime(s string) (time.Duration, bool) {
 		}
 		ms, _ = strconv.Atoi(fracStr[:3])
 	}
-	// Bound every field below the point where the assembled nanosecond product could
-	// overflow a time.Duration (see maxLRCField).
+	// Seconds are a real seconds value (< 60) in every form: "[00:99.00]" is malformed, not 99 s.
+	if secs >= 60 {
+		return 0, false
+	}
+	// Minutes are bounded < 60 only in the three-part HH:MM:SS form; the two-part MM:SS form
+	// legitimately uses a large minute count for a long track ("[100:00.000]"), which FormatLRC
+	// emits and the round-trip guard below re-accepts - so it must not be capped at 59 here.
+	if len(parts) == 3 && mins >= 60 {
+		return 0, false
+	}
+	// Bound the remaining unbounded fields below the point where the assembled nanosecond product
+	// could overflow a time.Duration (see maxLRCField): the two-part minute count and the hours.
 	if hours > maxLRCField || mins > maxLRCField || secs > maxLRCField {
 		return 0, false
 	}

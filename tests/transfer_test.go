@@ -17,6 +17,41 @@ func tinyGIF() []byte {
 	return append([]byte("GIF89a"), 0x03, 0x00, 0x05, 0x00, 0x77, 0x00, 0x00)
 }
 
+// TestPrepareTransferMP4ZeroTrackDropped is the finding-1 regression: MP4 drops a literal 0 in a
+// trkn/disk slot on read (L2), so the transfer grading must report TRACKNUMBER=0 (even paired with
+// a real total) as dropped, not carried - keeping the report in sync with what the writer stores
+// and reads back.
+func TestPrepareTransferMP4ZeroTrackDropped(t *testing.T) {
+	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
+		e.Set(tag.TrackNumber, "0").Set(tag.TrackTotal, "12")
+	})
+	src := mustParseBytes(t, srcBytes)
+	dst := mustParseBytes(t, readFixture(t, "../testdata/notags.m4a"))
+	_, report, err := src.PrepareTransfer(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	track, total := wl.Carried, wl.Carried
+	sawTrack, sawTotal := false, false
+	for _, it := range report.Items {
+		if it.Kind != wl.TransferField {
+			continue
+		}
+		switch it.Key {
+		case tag.TrackNumber:
+			track, sawTrack = it.Disposition, true
+		case tag.TrackTotal:
+			total, sawTotal = it.Disposition, true
+		}
+	}
+	if !sawTrack || track != wl.Dropped {
+		t.Errorf("TRACKNUMBER=0 to MP4: disposition = %v (seen=%v), want dropped (MP4 drops a 0 slot on read)", track, sawTrack)
+	}
+	if sawTotal && total != wl.Carried {
+		t.Errorf("TRACKTOTAL=12 to MP4: disposition = %v, want carried (12 stores fine)", total)
+	}
+}
+
 // TestPlanTransferReportsLosses simulates copying an M4B (tags + chapters) into a FLAC.
 // Tags carry, and the MP4 start+title chapters also carry because FLAC writes the same
 // chapter subset through VorbisComment CHAPTERxxx. No destination bytes are needed.

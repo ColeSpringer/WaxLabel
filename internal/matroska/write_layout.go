@@ -505,7 +505,7 @@ func buildResult(d *doc, edited *core.Media, r *rendered, ch changes, lay layout
 		Format:     core.FormatMatroska,
 		Properties: edited.Properties.Clone(),
 		Tags:       tags,
-		Pictures:   resultPictures(edited.Pictures, ch),
+		Pictures:   resultPictures(edited.Pictures),
 		Chapters:   resChapters,
 		Families:   families,
 		Warnings:   mediaWarnings(tags, families),
@@ -546,35 +546,42 @@ func clusterRuns(children []l1elem) [][2]int64 {
 	return runs
 }
 
-// resultPictures returns the picture set the post-write Document reports. When the
-// covers were rewritten, it re-derives them as a fresh parse would - the role is
-// normalized through the cover-art file-name convention (only front cover survives
-// as a distinct role; others read back as Other) and the geometry is re-sniffed -
-// so the returned document equals a re-parse of the output. When pictures were not
-// touched they were preserved verbatim, so the input set already matches.
-func resultPictures(pics []core.Picture, ch changes) []core.Picture {
-	if !ch.pictures {
-		return clonePics(pics)
-	}
-	out := make([]core.Picture, len(pics))
-	for i, p := range pics {
+// resultPictures returns the picture set the post-write Document reports: the picture-level
+// reprojection of the edited set (dropNonImage), which equals a fresh parse of the written cover
+// set. When the covers were not rewritten they were preserved verbatim from base, and
+// detectChanges already found base equal to the (image-covers) reprojection, so it is correct
+// either way - both funnel through reprojectPictures so the change verdict and the result view
+// cannot drift on the image covers (the M6 bug).
+func resultPictures(pics []core.Picture) []core.Picture {
+	return reprojectPictures(pics, true)
+}
+
+// reprojectPictures maps an edited picture set through the Matroska attachment round trip. Image
+// pictures are always projected to what a fresh parse yields: the role reduced to the cover-art
+// file-name convention (only the front cover keeps a distinct role, others read back as Other),
+// the description sanitized like the read path (parseAttached, so a non-UTF8 description does not
+// re-introduce a false diff), and the geometry/MIME re-sniffed authoritatively. A non-image
+// picture (embedded under --force) is stored as a plain attachment, not a cover: with dropNonImage
+// it is omitted (the result view, since a fresh parse returns 0 pictures for it, the L15 fix); with
+// dropNonImage false the picture is kept as-is so detectChanges still sees the fresh attachment as
+// a change (a non-image never appears in base.Pictures, so dropping it there would skip the write).
+func reprojectPictures(pics []core.Picture, dropNonImage bool) []core.Picture {
+	var out []core.Picture
+	for _, p := range pics {
+		if !isImageMIME(p.MIME) {
+			if !dropNonImage {
+				out = append(out, p)
+			}
+			continue
+		}
 		np := core.Picture{
 			Type:        pictureType(coverFileName(p)),
 			MIME:        p.MIME,
-			Description: p.Description,
+			Description: core.SanitizeUTF8(p.Description),
 			Data:        p.Data,
 		}
-		np.SniffInto()
-		out[i] = np
+		np.SniffAuthoritative()
+		out = append(out, np)
 	}
-	return out
-}
-
-func clonePics(p []core.Picture) []core.Picture {
-	if p == nil {
-		return nil
-	}
-	out := make([]core.Picture, len(p))
-	copy(out, p)
 	return out
 }

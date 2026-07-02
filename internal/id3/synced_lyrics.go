@@ -228,7 +228,12 @@ func encodeSYLT(sl core.SyncedLyrics, version byte, fallbackLang string) (body [
 // callers that bypass the CLI still write canonical bytes. This avoids Unicode
 // case folding before the fixed-width pad/truncate below.
 func syltLangBytes(lang string) []byte {
-	if lang == "" {
+	// Recognize every ISO "undefined" form (empty, NUL/space-padded, or "xxx") as the canonical
+	// "XXX" marker, using the exact rule the read applies (syltLanguage). Otherwise a model
+	// language of "xxx" - which the CLI accepts and the model may carry - would be stored
+	// verbatim yet read back empty, the L7 asymmetry; now write and read agree that "xxx" is
+	// the undefined marker (the model's unspecified = empty convention).
+	if syltLanguage(lang) == "" {
 		return []byte{'X', 'X', 'X'}
 	}
 	b := []byte(lang)

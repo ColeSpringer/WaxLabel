@@ -29,6 +29,19 @@ const maxChapterSamples = 1 << 16
 // a title cannot exceed 255 bytes on write.
 const titleByteMax = 255
 
+// chapterMediaTimescale is the fixed media timescale WaxLabel writes the QuickTime
+// chapter text track at, decoupled from the (often coarse) movie timescale. At 90,000
+// units/second one millisecond is exactly 90 units, so an authored millisecond start is
+// represented exactly and the sub-timescale-unit collision threshold shrinks to ~11 us -
+// removing the fractional-millisecond drift a coarse movie timescale (e.g. 600) would
+// otherwise impose on third-party QuickTime readers. The 32-bit stts delta field then saturates
+// at ~13.25 h per chapter gap; a longer gap clamps the delta (surfaced as
+// WarnChapterStartOverflow), corrupting the QuickTime starts past that point - but the uint64
+// Nero chpl keeps the exact values, and mergeChapters detects the saturation and prefers the
+// chpl, so every chapter start still reads back exactly (a >13.25 h single-chapter gap is
+// pathological, not a real audiobook, but it must not silently drop the exact value).
+const chapterMediaTimescale = 90_000
+
 // resolveChapters decodes both chapter representations into the doc's projected
 // list and records the structural facts the writer needs (the chpl version to
 // preserve, whether a QuickTime track is present). It returns whether the two
@@ -47,9 +60,9 @@ func resolveChapters(src core.ReaderAtSized, moov, chpl node, haveChpl bool, d *
 			haveChpl = false
 		}
 	}
-	qt, haveQT := decodeQTChapters(src, moov, limit)
+	qt, qtSaturated, haveQT := decodeQTChapters(src, moov, limit)
 	d.hasQTChapters = haveQT
-	d.chapters, conflict = mergeChapters(chplChapters, haveChpl, qt, haveQT)
+	d.chapters, conflict = mergeChapters(chplChapters, haveChpl, qt, haveQT, qtSaturated)
 	d.chapterConflict = conflict
 	return conflict
 }
@@ -201,23 +214,23 @@ func collectMvhd(src core.ReaderAtSized, mvhd node, d *doc, limit int64) {
 		return
 	}
 	po := mvhd.payloadOff()
+	// Read the timescale/duration through readMvhdTiming - the SAME decode movieTimingOf uses on a
+	// reparse - so the write path's d.movieTimescale/d.movieDuration cannot drift from it (a drift
+	// would desync the chapter last-end canonicalization and churn the file). next_track_ID is read
+	// separately below at its own, later threshold: a valid-but-truncated mvhd (present timing, cut
+	// off before byte 96/108) still populates the timing.
+	d.movieTimescale, d.movieDuration = readMvhdTiming(b)
 	switch b[0] {
 	case 0:
-		if len(b) < 100 {
-			return
+		if len(b) >= 100 {
+			d.nextTrackID = binary.BigEndian.Uint32(b[96:100])
+			d.nextTrackIDOff = po + 96
 		}
-		d.movieTimescale = binary.BigEndian.Uint32(b[12:16])
-		d.movieDuration = sentinelToZero64(uint64(binary.BigEndian.Uint32(b[16:20])), 0xFFFFFFFF)
-		d.nextTrackID = binary.BigEndian.Uint32(b[96:100])
-		d.nextTrackIDOff = po + 96
 	case 1:
-		if len(b) < 112 {
-			return
+		if len(b) >= 112 {
+			d.nextTrackID = binary.BigEndian.Uint32(b[108:112])
+			d.nextTrackIDOff = po + 108
 		}
-		d.movieTimescale = binary.BigEndian.Uint32(b[20:24])
-		d.movieDuration = sentinelToZero64(binary.BigEndian.Uint64(b[24:32]), 0xFFFFFFFFFFFFFFFF)
-		d.nextTrackID = binary.BigEndian.Uint32(b[108:112])
-		d.nextTrackIDOff = po + 108
 	}
 }
 
@@ -240,56 +253,76 @@ func sentinelToZero64(v, sentinel uint64) uint64 {
 // the codec (which reads properties from the first audio track). A chapter track
 // referenced only by a secondary audio track - a rare multi-audio-track file - is
 // not resolved.
-func decodeQTChapters(src core.ReaderAtSized, moov node, limit int64) ([]core.Chapter, bool) {
+func decodeQTChapters(src core.ReaderAtSized, moov node, limit int64) (chapters []core.Chapter, saturated, ok bool) {
 	traks := moov.findAll("trak", nil) // collected once, scanned for both the audio and text track
 	audio, ok := trakOfHandler(src, traks, "soun", limit)
 	if !ok {
-		return nil, false
+		return nil, false, false
 	}
 	ids := chapterTrackIDs(src, audio, limit)
 	if len(ids) == 0 {
-		return nil, false
+		return nil, false, false
 	}
 	text, ok := trakByID(src, traks, ids, limit)
 	if !ok {
-		return nil, false
+		return nil, false, false
 	}
 	// A chapter text track's stts decode times always run from zero, so a first
 	// chapter that starts after t=0 carries that offset in a leading empty edit in
 	// the track's elst (the standard MP4 delayed-track form WaxLabel writes). Read it
 	// and shift every chapter so the QuickTime starts are absolute - and thus agree
 	// with the absolute chpl rather than self-reporting a source conflict. The movie
-	// timescale is read locally because collectMvhd has not populated d.movieTimescale
-	// at this point (resolveChapters runs before it).
-	offset := chapterEditOffset(src, text, movieTimescaleOf(src, moov, limit), limit)
-	return decodeTextTrack(src, text, offset, limit)
+	// timescale and duration are read locally because collectMvhd has not populated
+	// d.movieTimescale/d.movieDuration at this point (resolveChapters runs before it); the
+	// duration lets decodeTextTrack canonicalize an open last chapter's recovered end.
+	movieTimescale, movieDuration := movieTimingOf(src, moov, limit)
+	offset := chapterEditOffset(src, text, movieTimescale, limit)
+	return decodeTextTrack(src, text, offset, movieTimescale, movieDuration, limit)
 }
 
-// movieTimescaleOf reads moov's mvhd movie timescale (version 0 at byte 12,
-// version 1 at byte 20). It reads only the timescale, so it needs far fewer bytes
-// than collectMvhd (which also reads next_track_ID); it is used at resolveChapters
-// time, before collectMvhd runs. Returns 0 when absent, so the caller applies no
-// edit-list offset.
-func movieTimescaleOf(src core.ReaderAtSized, moov node, limit int64) uint32 {
+// movieTimingOf reads moov's mvhd movie timescale and duration at resolveChapters time, before
+// collectMvhd populates d. It returns zeros when the mvhd is absent or unreadable, so the chapter
+// decode applies no edit-list offset and no last-end canonicalization. A caller wanting only the
+// timescale reads the first return and ignores the duration.
+func movieTimingOf(src core.ReaderAtSized, moov node, limit int64) (timescale uint32, duration uint64) {
 	mvhd, ok := moov.find("mvhd")
 	if !ok {
-		return 0
+		return 0, 0
 	}
 	b, err := readPayloadPrefix(src, mvhd, 32, limit)
-	if err != nil || len(b) < 1 {
-		return 0
+	if err != nil {
+		return 0, 0
+	}
+	return readMvhdTiming(b)
+}
+
+// readMvhdTiming decodes the movie timescale and duration from a mvhd payload prefix (version 0 at
+// bytes 12/16, version 1 at bytes 20/24), mapping the all-ones "unknown duration" sentinel to
+// zero. Per-field guards return the timescale even on a payload truncated before the duration
+// (or before next_track_ID). It is the single decode both movieTimingOf (reparse) and collectMvhd
+// (write path) call, so the two cannot drift on the offsets or thresholds - the read and write
+// chapter timing must agree or the last-end canonicalization desyncs.
+func readMvhdTiming(b []byte) (timescale uint32, duration uint64) {
+	if len(b) < 1 {
+		return 0, 0
 	}
 	switch b[0] {
 	case 0:
 		if len(b) >= 16 {
-			return binary.BigEndian.Uint32(b[12:16])
+			timescale = binary.BigEndian.Uint32(b[12:16])
+		}
+		if len(b) >= 20 {
+			duration = sentinelToZero64(uint64(binary.BigEndian.Uint32(b[16:20])), 0xFFFFFFFF)
 		}
 	case 1:
 		if len(b) >= 24 {
-			return binary.BigEndian.Uint32(b[20:24])
+			timescale = binary.BigEndian.Uint32(b[20:24])
+		}
+		if len(b) >= 32 {
+			duration = sentinelToZero64(binary.BigEndian.Uint64(b[24:32]), 0xFFFFFFFFFFFFFFFF)
 		}
 	}
-	return 0
+	return timescale, duration
 }
 
 // chapterEditOffset returns the presentation delay a leading empty edit in trak's
@@ -502,40 +535,53 @@ func trackID(src core.ReaderAtSized, tkhd node, limit int64) (uint32, bool) {
 // per-sample decode time (stts) gives each chapter's start, and the sample's
 // bytes in mdat (located via stsc/stsz/stco|co64) carry its title. offset is the
 // edit-list presentation delay (0 when there is none), added to every start and
-// closed End so the chapter times are absolute; the last chapter's open End (0)
-// stays open.
-func decodeTextTrack(src core.ReaderAtSized, trak node, offset time.Duration, limit int64) ([]core.Chapter, bool) {
+// closed End so the chapter times are absolute. The last chapter's end is recovered
+// from the stts running total (movieTimescale/movieDuration canonicalize a span that
+// reaches end-of-movie back to open); see the recovery block below. saturated reports
+// whether any stts delta reads back as the clamp value (a per-gap span past ~13.25 h at
+// the 90 kHz chapter timescale that the 32-bit field could not hold), which corrupts the
+// QuickTime starts - the caller then prefers the exact Nero chpl over this lossy track.
+func decodeTextTrack(src core.ReaderAtSized, trak node, offset time.Duration, movieTimescale uint32, movieDuration uint64, limit int64) (chapters []core.Chapter, saturated, ok bool) {
 	mdia, ok := trak.find("mdia")
 	if !ok {
-		return nil, false
+		return nil, false, false
 	}
 	mdhd, ok := mdia.find("mdhd")
 	if !ok {
-		return nil, false
+		return nil, false, false
 	}
 	timescale, ok := mdhdTimescale(src, mdhd, limit)
 	if !ok {
-		return nil, false
+		return nil, false, false
 	}
 	minf, ok := mdia.find("minf")
 	if !ok {
-		return nil, false
+		return nil, false, false
 	}
 	stbl, ok := minf.find("stbl")
 	if !ok {
-		return nil, false
+		return nil, false, false
 	}
 
-	times, ok := sampleTimes(src, stbl, limit)
+	times, endTime, completed, ok := sampleTimes(src, stbl, limit)
 	if !ok || len(times) == 0 {
-		return nil, false
+		return nil, false, false
+	}
+	// A written stts delta that clamped is read back as exactly MaxUint32; times are the running
+	// sum, so a per-gap delta is times[i+1]-times[i]. Any such delta means this QuickTime track's
+	// starts are lossy past that gap (the exact values survive only in the uint64 chpl).
+	for i := 1; i < len(times); i++ {
+		if times[i]-times[i-1] == math.MaxUint32 {
+			saturated = true
+			break
+		}
 	}
 	offsets, ok := sampleOffsets(src, stbl, len(times), limit)
 	if !ok {
-		return nil, false
+		return nil, false, false
 	}
 
-	chapters := make([]core.Chapter, 0, len(offsets))
+	chapters = make([]core.Chapter, 0, len(offsets))
 	for i, so := range offsets {
 		title := readTextSample(src, so.off, so.size, limit)
 		ch := core.Chapter{Start: addClamp(scaleToDuration(times[i], timescale), offset), Title: title}
@@ -544,7 +590,35 @@ func decodeTextTrack(src core.ReaderAtSized, trak node, offset time.Duration, li
 		}
 		chapters = append(chapters, ch)
 	}
-	return chapters, true
+	// Recover the last chapter's end from the stts running total (endTime, the decode time
+	// past the final sample) - the per-sample loop above cannot fill it, there being no next
+	// start. Trust it only when the stts walk ran to completion (the maxChapterSamples-capped
+	// case has no true final boundary, so the last chapter stays open) and every sample was
+	// located (len(chapters) == len(times), so the last decoded chapter really is the last
+	// sample). Canonicalize an end that lands on the movie duration back to open: the encoder
+	// writes an open last chapter's span all the way to the movie duration, so recovering it
+	// verbatim would resurrect a spurious near-EOF end and break open-ended idempotency.
+	//
+	// Known cosmetic edge: when coincident starts borrow stts units (chapterDeltas) that
+	// cannot fully repay from an open last chapter's own slack, its recovered end lands a few
+	// units short of the movie duration and misses this canonicalization, reading back a
+	// near-EOF end instead of open. qtWriteRoundTrip mirrors the exact computation, so the
+	// result still equals a reparse (re-apply idempotency holds); only the displayed end is
+	// off, and the fine chapter media timescale makes such sub-unit collisions rare.
+	//
+	// A second cosmetic edge: on a file whose movie duration is unknown (the 0xFFFFFFFF sentinel
+	// or a truncated mvhd), chapterDeltas gives an open last chapter a one-second placeholder
+	// tail, which endIsMovieDuration cannot canonicalize (movieDuration == 0), so it reads back as
+	// a 1 s final chapter instead of open. It is mirror-consistent (qtWriteRoundTrip produces the
+	// same, so no churn), and the read cannot tell the placeholder from a genuine 1 s last chapter
+	// without knowing the movie duration - so this is accepted rather than gated on a known
+	// duration, which would drop a genuinely-authored last-chapter end on the same files.
+	if completed && len(chapters) == len(times) {
+		if lastEnd := addClamp(scaleToDuration(endTime, timescale), offset); !endIsMovieDuration(lastEnd, movieTimescale, movieDuration) {
+			chapters[len(chapters)-1].End = lastEnd
+		}
+	}
+	return chapters, saturated, true
 }
 
 // sampleOffset is one decoded sample's file location and byte length.
@@ -553,22 +627,24 @@ type sampleOffset struct {
 	size int64
 }
 
-// sampleTimes returns each sample's cumulative decode time (in the media
-// timescale) from the stts table.
-func sampleTimes(src core.ReaderAtSized, stbl node, limit int64) ([]uint64, bool) {
-	stts, ok := stbl.find("stts")
-	if !ok {
-		return nil, false
+// sampleTimes returns each sample's cumulative decode time (in the media timescale) from
+// the stts table, plus endTime - the running total past the final sample, i.e. the last
+// sample's end boundary - and whether the walk ran to completion. endTime is a true final
+// boundary only when completed is true; the maxChapterSamples early-return leaves it
+// mid-table, so the caller must not treat it as the last chapter's end there.
+func sampleTimes(src core.ReaderAtSized, stbl node, limit int64) (times []uint64, endTime uint64, completed, ok bool) {
+	stts, found := stbl.find("stts")
+	if !found {
+		return nil, 0, false, false
 	}
 	b, err := readPayloadWhole(src, stts, maxMetaChunk, limit)
 	if err != nil || len(b) < 8 {
-		return nil, false
+		return nil, 0, false, false
 	}
 	count := int64(binary.BigEndian.Uint32(b[4:8]))
 	if !boundedCount(count, 8, 8, int64(len(b))) {
-		return nil, false
+		return nil, 0, false, false
 	}
-	var times []uint64
 	var t uint64
 	for i := int64(0); i < count; i++ {
 		o := 8 + i*8
@@ -576,13 +652,13 @@ func sampleTimes(src core.ReaderAtSized, stbl node, limit int64) ([]uint64, bool
 		delta := binary.BigEndian.Uint32(b[o+4 : o+8])
 		for j := uint32(0); j < n; j++ {
 			if len(times) >= maxChapterSamples {
-				return times, true
+				return times, t, false, true // capped: t is not the true final boundary
 			}
 			times = append(times, t)
 			t += uint64(delta)
 		}
 	}
-	return times, true
+	return times, t, true, true
 }
 
 // sampleOffsets locates each of the first nSamples samples in mdat by combining
@@ -749,13 +825,28 @@ func readTextSample(src core.ReaderAtSized, off, size, limit int64) string {
 	return string(title)
 }
 
-// mergeChapters projects the two MP4 chapter representations into one list. The
-// QuickTime track is preferred when present (it carries End); when both exist and
-// disagree, the disagreement is flagged so the caller can warn.
-func mergeChapters(chpl []core.Chapter, haveChpl bool, qt []core.Chapter, haveQT bool) (chapters []core.Chapter, conflict bool) {
+// mergeChapters projects the two MP4 chapter representations into one list. When both are
+// present and agree, the exact uint64 Nero chpl starts are preferred over the QuickTime
+// track's stts starts - coincident or sub-timescale-unit-apart starts borrow a stts unit
+// that only repays from later slack, so the QuickTime starts carry sub-unit drift the chpl
+// does not - while the last chapter's end is taken from the QuickTime track (the only source
+// that recovers it). When they disagree (by more than the agreement tolerance), the richer
+// QuickTime track wins and the disagreement is flagged so the caller can warn - EXCEPT when the
+// QuickTime track saturated (qtSaturated: a per-gap span past ~13.25 h clamped its 32-bit stts
+// delta), in which case its starts are known-lossy garbage and the exact uint64 chpl is taken
+// instead (matching by count and titles), so a pathological >13.25 h chapter gap still reads back
+// exactly rather than at the clamped QuickTime value. That is a lossy-representation artifact, not
+// a genuine source conflict, so no conflict is flagged.
+func mergeChapters(chpl []core.Chapter, haveChpl bool, qt []core.Chapter, haveQT, qtSaturated bool) (chapters []core.Chapter, conflict bool) {
 	switch {
 	case haveQT && haveChpl:
-		return qt, !chaptersAgree(chpl, qt)
+		if chaptersAgree(chpl, qt) {
+			return mergeChplStartsQTEnd(chpl, qt), false
+		}
+		if qtSaturated && sameCountAndTitles(chpl, qt) {
+			return mergeChplStartsQTEnd(chpl, qt), false
+		}
+		return qt, true
 	case haveQT:
 		return qt, false
 	case haveChpl:
@@ -763,6 +854,36 @@ func mergeChapters(chpl []core.Chapter, haveChpl bool, qt []core.Chapter, haveQT
 	default:
 		return nil, false
 	}
+}
+
+// sameCountAndTitles reports whether two chapter lists have equal length and matching titles,
+// ignoring starts. It gates the saturated-QuickTime override in mergeChapters: the two describe
+// the same chapters, only the clamped QuickTime starts differ from the exact chpl.
+func sameCountAndTitles(a, b []core.Chapter) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Title != b[i].Title {
+			return false
+		}
+	}
+	return true
+}
+
+// mergeChplStartsQTEnd combines two agreeing chapter sources: chpl's exact uint64 starts and
+// its own interior ends (filled from its next starts, free of the QuickTime stts drift), with
+// the last chapter's end taken from the QuickTime track - the only source that recovers it, the
+// chpl leaving its last end open. It is also used for the saturated-QuickTime override, where
+// qt's cumulative times past a clamped gap are corrupted; the qt end is taken only when it forms
+// a valid interval (End >= the chpl start), else the last end is left open (chpl's 0) - the real
+// end is unknown there, and this avoids a semantically invalid End < Start.
+func mergeChplStartsQTEnd(chpl, qt []core.Chapter) []core.Chapter {
+	out := core.CloneChapters(chpl)
+	if n := len(out); n > 0 && n == len(qt) && qt[n-1].End >= out[n-1].Start {
+		out[n-1].End = qt[n-1].End
+	}
+	return out
 }
 
 // chaptersAgree reports whether two chapter lists describe the same chapters:
@@ -783,6 +904,23 @@ func chaptersAgree(a, b []core.Chapter) bool {
 		}
 	}
 	return true
+}
+
+// endIsMovieDuration reports whether a recovered last-chapter end coincides with the movie
+// duration (within +/-1 movie-timescale unit) - i.e. the chapter track spans to end-of-movie
+// and the end should stay open (End 0) rather than pin a spurious near-EOF value. The
+// comparison is on the movie-timescale grid so it is exact at any timescale, including a
+// coarse one (e.g. 600). It returns false when the movie timing is unknown (no
+// canonicalization possible), leaving the recovered end intact.
+func endIsMovieDuration(lastEnd time.Duration, movieTimescale uint32, movieDuration uint64) bool {
+	if movieTimescale == 0 || movieDuration == 0 {
+		return false
+	}
+	units := durationToUnits(lastEnd, movieTimescale)
+	if units > movieDuration {
+		return units-movieDuration <= 1
+	}
+	return movieDuration-units <= 1
 }
 
 // fillChapterEnds sets each chapter's End to the next chapter's Start when End is

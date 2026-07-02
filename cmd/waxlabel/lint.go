@@ -267,10 +267,20 @@ func lintFixOne(ctx context.Context, path string) (fixOutcome, error) {
 	} else {
 		remaining = doc.Lint()
 	}
+	// NoOpPlan stamps operations with a shared "no changes" sentinel (core.NoOpPlan), not a real
+	// remediation step, so a no-op --fix would otherwise both suppress renderLintFix's "nothing
+	// to fix" branch (its len==0 guard never fires) and leak "no changes" into the --json
+	// operations array. Treat a no-op as having no operations; a committed legacy-strip is not a
+	// no-op, so its real structural operations are preserved (README: non-empty operations =>
+	// bytes were written).
+	operations := plan.Report().Operations
+	if plan.IsNoOp() {
+		operations = nil
+	}
 	return fixOutcome{
 		path:       path,
 		changes:    plan.Changes(),
-		operations: plan.Report().Operations,
+		operations: operations,
 		remaining:  remaining,
 		committed:  res.Committed,
 	}, nil

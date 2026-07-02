@@ -361,15 +361,17 @@ func TestMP4ChapterReapplyTruncatedTitleCarriesWarning(t *testing.T) {
 	}
 }
 
-// TestMP4ChapterLastEndEditNotCollapsed guards the Fix-2 collapse against dropping a real
-// edit: setting an explicit End on the LAST chapter of a QuickTime-track file encodes that
-// value into the final sample's stts duration (chapterDeltas), yet the round-trip Result
-// leaves the last End at 0, exactly as the reader does. Comparing base to that Result would
-// look equal, so the collapse must refuse here and let the real write through.
+// TestMP4ChapterLastEndEditNotCollapsed guards the chapter no-op collapse against dropping a
+// real edit: setting an explicit End on the LAST chapter of a QuickTime-track file encodes that
+// value into the final sample's stts duration (chapterDeltas). The QuickTime reader now recovers
+// that last end (M4), so the round-trip Result carries it and differs from base's own recovered
+// last end - the collapse sees a genuine change and lets the write through, with no special-case
+// gate (the earlier dropped-last-end behavior needed one).
 func TestMP4ChapterLastEndEditNotCollapsed(t *testing.T) {
 	data := mp4QTFile([]int{0, 5000}, []string{"A", "B"})
-	// Same starts/titles the file already projects, but the last chapter gains an explicit
-	// End. Without the guard, pl.Result drops that End and the edit collapses to a no-op.
+	// Same starts/titles the file already projects, but the last chapter gains an explicit End
+	// (8 s). base's recovered last end differs (the synthetic track's final delta yields 6 s), so
+	// the round-trip Result reflects a genuine 8 s end and the edit must not collapse.
 	plan, err := mustParseBytes(t, data).Edit().SetChapters(
 		wl.Chapter{Start: 0, Title: "A"},
 		wl.Chapter{Start: 5 * time.Second, End: 8 * time.Second, Title: "B"},

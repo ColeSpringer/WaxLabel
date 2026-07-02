@@ -1,6 +1,9 @@
 package waxlabel
 
-import "github.com/colespringer/waxlabel/tag"
+import (
+	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/tag"
+)
 
 // LintFix is the safe, non-destructive remediation derived from a document's
 // lint findings: the tag patch and write options that, applied together and
@@ -36,7 +39,34 @@ func (d *Document) PlanLintFix() LintFix {
 		switch f.Code {
 		case "inherited-encoder":
 			if !encoderCleared {
-				fix.Patch.Clear(tag.Encoder)
+				// Remove only the transcoder-stamp values from a (possibly multi-valued) ENCODER,
+				// preserving any clean user-set value. The inherited-encoder finding also fires on a
+				// bare Vorbis vendor string or WAV ISFT with no ENCODER tag at all, so an
+				// unconditional Clear would destroy a clean ENCODER as collateral - but checking
+				// only the FIRST value would equally miss a stamp in a later value (EncoderNoise
+				// flags any stamped ENCODER comment) or clear a clean earlier value. So filter:
+				// clear when every value is a stamp, set the survivors when only some are, and leave
+				// a stamp-free ENCODER untouched. IsTranscoderStamp reuses the linter's own noise
+				// test (matches Lavf/libavformat, not Lavc), so a "Lavc.. libvorbis" ENCODER is
+				// preserved while a "Lavf.." one is removed - the filter can never disagree with the
+				// finding. WithStripEncoderStamp stays OUTSIDE this gate: it neutralizes the vendor
+				// string and ISFT (neither a canonical ENCODER tag), which must still be remediated
+				// when only they carry the stamp. Do not fold them.
+				if v, ok := d.Get(tag.Encoder); ok {
+					clean := make([]string, 0, len(v))
+					for _, s := range v {
+						if !core.IsTranscoderStamp(s) {
+							clean = append(clean, s)
+						}
+					}
+					if len(clean) < len(v) { // at least one stamp value to remove
+						if len(clean) == 0 {
+							fix.Patch.Clear(tag.Encoder)
+						} else {
+							fix.Patch.Set(tag.Encoder, clean...)
+						}
+					}
+				}
 				fix.Options = append(fix.Options, WithStripEncoderStamp())
 				encoderCleared = true
 			}

@@ -41,10 +41,12 @@ func planChaptersQT(d *doc, edited *core.Media, needIlst, picturesChanged bool, 
 	}
 
 	clearing := len(edited.Chapters) == 0
-	mts := d.movieTimescale
-	if mts == 0 {
-		mts = 1000 // a sane default when the movie header lacked a timescale
-	}
+	// The QuickTime chapter track is written at a fixed fine media timescale, decoupled from
+	// the (often coarse) movie timescale, so authored millisecond starts are exact for
+	// third-party QuickTime readers; see chapterMediaTimescale. The movie timescale is still
+	// threaded through (as d.movieTimescale) for the leading empty edit and the tkhd/elst
+	// durations, which stay in movie units.
+	mts := uint32(chapterMediaTimescale)
 
 	// Build the moov-internal edits (with a 32-bit stco placeholder first), then,
 	// once the combined delta and thus the appended mdat's offset are known, retry
@@ -278,16 +280,20 @@ func buildQTChapterResult(edited *core.Media, base *doc, p *qtPlan) *core.Media 
 		chplVersion: base.chplVersion,
 	}
 
-	// A fresh parse prefers the QuickTime track (it carries End), which we wrote,
-	// so the result reflects its decode. The track now carries a first chapter's
-	// start in a leading empty edit, so its starts are absolute and agree with the
-	// chpl (no spurious source conflict); the round-trip mirrors that, reading the
-	// same movie timescale the reparse will.
+	// A fresh parse decodes both tables and merges them: when they agree (always, for a
+	// WaxLabel-written file - the track carries a first chapter's start in a leading empty
+	// edit, so its starts are absolute and agree with the chpl) it takes the chpl's exact
+	// starts and the QuickTime track's recovered last end. Mirror that merge here, and compute
+	// the conflict from the two RAW projections (not the merged list, which already took chpl's
+	// starts and would trivially agree) so it matches what a reparse's mergeChapters flags.
 	if !clearing {
-		nd.chapters = qtWriteRoundTrip(edited.Chapters, p.mts, base.movieTimescale, base.movieDuration)
+		// qtWriteRoundTrip returns whether any stts delta clamped (keyed on the same MaxUint32 the
+		// reader detects), so the merge picks chpl over a lossy QuickTime track here exactly as the
+		// reparse would - no second chapterDeltas build.
+		qt, qtSaturated := qtWriteRoundTrip(edited.Chapters, p.mts, base.movieTimescale, base.movieDuration)
+		nd.chapters, nd.chapterConflict = mergeChapters(p.chplChapters, true, qt, true, qtSaturated)
 		nd.hasQTChapters = true
 		nd.chplCount = len(p.chplChapters)
-		nd.chapterConflict = !chaptersAgree(p.chplChapters, nd.chapters)
 	}
 
 	// moov grows by the moov-internal delta; everything else relocates by netShift.

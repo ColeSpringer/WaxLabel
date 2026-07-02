@@ -52,13 +52,18 @@ type Editor struct {
 }
 
 // Apply records an explicit patch (set/clear/add operations) after any already
-// recorded, so later edits win on conflicts.
+// recorded, so later edits win on conflicts. Each operation's key is resolved through
+// [ResolveAlias] first, exactly as the key-taking methods below do, so a patch built with
+// an alias spelling (e.g. DATE) lands on the canonical field rather than a custom key.
 func (e *Editor) Apply(p tag.TagPatch) *Editor {
-	e.patch.Append(p)
+	e.patch.Append(p.MapKeys(ResolveAlias))
 	return e
 }
 
-// Set replaces a key's values.
+// Set replaces a key's values. The key is resolved through [ResolveAlias], so an
+// alternative spelling (Set(tag.Key("DATE"), ...)) lands on the canonical field
+// (RECORDINGDATE) on every format instead of creating a custom key; a non-alias key is
+// unchanged.
 //
 // Calling Set with no values collapses the key to absent during [Editor.Prepare], matching
 // the empty-value cleanup. [Editor.Clear] is the explicit removal call. Set(key, "") is
@@ -70,19 +75,21 @@ func (e *Editor) Apply(p tag.TagPatch) *Editor {
 // becomes TRACKNUMBER=3 + TRACKTOTAL=12) so every format stores it identically; see
 // splitNumberPairs for the precedence rules.
 func (e *Editor) Set(key tag.Key, vals ...string) *Editor {
-	e.patch.Set(key, vals...)
+	e.patch.Set(ResolveAlias(key), vals...)
 	return e
 }
 
-// Clear removes a key (makes it absent).
+// Clear removes a key (makes it absent). The key is resolved through [ResolveAlias], so
+// clearing an alias spelling removes the canonical field.
 func (e *Editor) Clear(key tag.Key) *Editor {
-	e.patch.Clear(key)
+	e.patch.Clear(ResolveAlias(key))
 	return e
 }
 
-// Add appends values to a key.
+// Add appends values to a key. The key is resolved through [ResolveAlias], so adding under
+// an alias spelling appends to the canonical field.
 func (e *Editor) Add(key tag.Key, vals ...string) *Editor {
-	e.patch.Add(key, vals...)
+	e.patch.Add(ResolveAlias(key), vals...)
 	return e
 }
 
@@ -818,7 +825,10 @@ func appendPictureWarnings(ws []core.Warning, pics []core.Picture, addedMask []b
 	for i := range pics { // pic order, so the warnings are deterministic
 		if h, ok := hashes[i]; ok && added(i) && counts[h] > 1 && !warned[h] {
 			warned[h] = true
-			ws = core.Warn(ws, core.WarnDuplicatePicture, duplicatePictureMessage(pics[i].Type))
+			// Name every role the identical bytes appear under (sorted), not this occurrence's
+			// role, so the message matches the linter's whole-set finding regardless of which
+			// occurrence each site reaches first (M9).
+			ws = core.Warn(ws, core.WarnDuplicatePicture, duplicatePictureMessage(distinctSortedRoles(pics, hashes, h)))
 		}
 	}
 

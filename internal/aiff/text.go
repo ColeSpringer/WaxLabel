@@ -18,9 +18,10 @@ func textTags(items []textItem) tag.TagSet {
 		if !ok {
 			continue
 		}
-		if v := it.text(); v != "" {
-			ts.AddNativeItem(key, v)
-		}
+		// Surface a present-empty (genuinely zero-length) text chunk as a present-empty value,
+		// not absent, so --set TITLE= round-trips like the other formats (L1). Every chunk in the
+		// list is present; an absent key simply has no chunk.
+		ts.AddNativeItem(key, it.text())
 	}
 	// No number-pair normalization here: AIFF's native text chunks map no numeric key
 	// (mapping.aiffTextKeys), so a slashed track/disc number cannot occur. If a numeric
@@ -74,10 +75,10 @@ func textRepresentable(ts tag.TagSet) bool {
 // rebuildText produces the full native-text-chunk set for an edited tag set: one
 // chunk per single-valued key present (NAME/AUTH/"(c) "), and one ANNO chunk per
 // Comment value. Existing keys keep their original relative order; keys newly
-// present in the edited set are appended in the set's order. A present empty value
-// is dropped here because the native AIFF text chunks have no way to represent it.
-// An AIFF file that also carries ID3 can still preserve the value there, matching the
-// WAV INFO behavior in internal/wav/info.go.
+// present in the edited set are appended in the set's order. A present-empty value is
+// emitted as a genuinely zero-length chunk (textTags surfaces it as present-empty), so
+// --set TITLE= round-trips through the native chunk like the other formats (L1); only an
+// absent key emits no chunk.
 func rebuildText(orig []textItem, edited tag.TagSet) []outChunk {
 	var out []outChunk
 	emitted := map[tag.Key]bool{}
@@ -90,14 +91,12 @@ func rebuildText(orig []textItem, edited tag.TagSet) []outChunk {
 		if key == tag.Comment {
 			vals, _ := edited.Get(key)
 			for _, v := range vals {
-				if v != "" {
-					out = append(out, textOut(id, v))
-				}
+				out = append(out, textOut(id, v)) // emit each value, including a present-empty (zero-length) ANNO
 			}
 			return
 		}
-		if v, ok := edited.First(key); ok && v != "" {
-			out = append(out, textOut(id, v))
+		if v, ok := edited.First(key); ok {
+			out = append(out, textOut(id, v)) // present (even empty) -> a chunk; a present-empty is zero-length
 		}
 	}
 

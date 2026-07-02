@@ -228,14 +228,14 @@ func TestMP4ChapterTitleTruncatedTo255(t *testing.T) {
 }
 
 func TestMP4ChapterStartRoundsNotTruncates(t *testing.T) {
-	// A chapter start is encoded in the chapter track's timescale, so a finer start
-	// must round to the nearest unit, not truncate down (which would silently lose
-	// time). The QuickTime track wins on read; with the default movie timescale
-	// (1 ms) a 2.7006 s start rounds to 2.701 s, where truncation would give 2.700 s.
-	// (The rounding is checked on the second chapter: the first is the track's
-	// time-zero anchor, which a sample table always reads back as 0.)
+	// A chapter start is encoded in the chapter track's media timescale. WaxLabel writes that
+	// track at a fixed fine timescale (90,000, so 1 ms = 90 units), decoupled from the coarse
+	// movie timescale, so a sub-millisecond start survives instead of rounding to the nearest
+	// millisecond as a 1 ms movie timescale would force. 2.7006 s is exactly 243,054 units at
+	// 90 kHz, so it round-trips with no loss (and the exact uint64 Nero chpl agrees). (The
+	// second chapter is checked: the first is the track's time-zero anchor, always read as 0.)
 	data := mp4Tagged(mp4Text("\xa9nam", "T"))
-	start := 2700600 * time.Microsecond // 2700.6 ms -> rounds to 2701
+	start := 2700600 * time.Microsecond // 2700.6 ms, exact at the 90 kHz chapter timescale
 	plan, err := mustParseBytes(t, data).Edit().SetChapters(
 		wl.Chapter{Start: 0, Title: "A"},
 		wl.Chapter{Start: start, Title: "X"},
@@ -244,9 +244,8 @@ func TestMP4ChapterStartRoundsNotTruncates(t *testing.T) {
 		t.Fatal(err)
 	}
 	chs := mustParseBytes(t, applyToBytes(t, data, plan)).Chapters()
-	want := 2701 * time.Millisecond // nearest ms (truncation would give 2700 ms)
-	if len(chs) != 2 || chs[1].Start != want {
-		t.Errorf("rounded start = %v, want %v", chs[1].Start, want)
+	if len(chs) != 2 || chs[1].Start != start {
+		t.Errorf("start = %v, want %v (the fine chapter timescale preserves the sub-ms start)", chs[1].Start, start)
 	}
 }
 

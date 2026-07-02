@@ -63,6 +63,15 @@ var txxxAliases = map[string]tag.Key{
 	"REPLAYGAIN_TRACK_PEAK":        tag.ReplayGainTrackPeak,
 	"REPLAYGAIN_ALBUM_GAIN":        tag.ReplayGainAlbumGain,
 	"REPLAYGAIN_ALBUM_PEAK":        tag.ReplayGainAlbumPeak,
+	// ffmpeg writes the compilation flag as a TXXX:TCMP user frame, not only the dedicated
+	// TCMP text frame (which id3Frames already maps), so fold that spelling onto COMPILATION
+	// too. Compilation still writes back as the dedicated TCMP frame (it is not in
+	// txxxDescForKey), so this only widens what is accepted on read. (Conscious edge: a file
+	// carrying BOTH a dedicated TCMP frame AND a TXXX:TCMP - a redundant, non-conformant input
+	// WaxLabel never writes - now projects COMPILATION twice and lint flags single-valued-multi.
+	// That escalation is defensible: the file is genuinely redundant, and flagging it is lint's
+	// job.)
+	"TCMP": tag.Compilation,
 }
 
 // txxxDescForKey gives the preferred TXXX description to write for a canonical

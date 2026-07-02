@@ -6,8 +6,44 @@ import (
 	"testing"
 	"time"
 
+	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 )
+
+// TestCollectMvhdAgreesWithMovieTimingOf is the regression for the write/reparse twin divergence
+// a valid-but-truncated mvhd would introduce: collectMvhd (write path, populates
+// d.movieTimescale/d.movieDuration) and movieTimingOf (reparse, feeds the chapter last-end
+// canonicalization) must read the same timing at the same per-field thresholds. A v0 mvhd with a
+// present timescale+duration but cut off before next_track_ID (byte 96) previously left the write
+// path's timing zero while a reparse read it - desyncing the last-end canonicalization and
+// churning the file on an identical re-apply.
+func TestCollectMvhdAgreesWithMovieTimingOf(t *testing.T) {
+	payload := make([]byte, 50) // v0, 50 bytes: past the duration field (byte 20), before next_track_ID (byte 96)
+	binary.BigEndian.PutUint32(payload[12:16], 1000) // timescale
+	binary.BigEndian.PutUint32(payload[16:20], 9000) // duration
+	moovBytes := renderAtom(atomName("moov"), renderAtom(atomName("mvhd"), payload))
+	src := core.BytesSource(moovBytes)
+	limit := int64(len(moovBytes))
+	nodes, err := walkAtoms(src, 0, limit, bits.NewDepth(bits.DefaultLimits.MaxDepth), maxMetaChunk, true)
+	if err != nil || len(nodes) != 1 {
+		t.Fatalf("walkAtoms: %d nodes, err %v", len(nodes), err)
+	}
+	moov := nodes[0]
+	mvhd, ok := moov.find("mvhd")
+	if !ok {
+		t.Fatal("mvhd not found in the walked moov")
+	}
+	ts, dur := movieTimingOf(src, moov, limit)
+	if ts != 1000 || dur != 9000 {
+		t.Errorf("movieTimingOf = (%d, %d), want (1000, 9000) from the truncated mvhd", ts, dur)
+	}
+	var d doc
+	collectMvhd(src, mvhd, &d, limit)
+	if d.movieTimescale != ts || d.movieDuration != dur {
+		t.Errorf("collectMvhd = (%d, %d) but movieTimingOf = (%d, %d): a truncated mvhd desyncs the write vs reparse timing",
+			d.movieTimescale, d.movieDuration, ts, dur)
+	}
+}
 
 // ffmpeg-compatible chpl parsing skips the Nero reserved field for any non-zero
 // version, not just version 1. A version-2 atom should parse and render back to
@@ -68,20 +104,20 @@ func TestChapterDeltasLastChapterBounded(t *testing.T) {
 	// An unknown movie duration (the sentinel maps to 0) must give the final
 	// chapter a one-second tail, not a multi-week span - the regression a raw
 	// 0xFFFFFFFF movieDuration would cause.
-	if d, _ := chapterDeltas(chs, 1000, 0); d[1] != 1000 {
+	if d, _ := chapterDeltas(chs, 1000, 1000, 0); d[1] != 1000 {
 		t.Errorf("last delta with unknown duration = %d, want 1000 (1s tail)", d[1])
 	}
 	// A real movie duration bounds the last chapter to the remaining span.
-	if d, _ := chapterDeltas(chs, 1000, 9000); d[1] != 4000 {
+	if d, _ := chapterDeltas(chs, 1000, 1000, 9000); d[1] != 4000 {
 		t.Errorf("last delta with duration 9000 = %d, want 4000", d[1])
 	}
 	// An out-of-order start cannot encode a negative span. Defense in depth behind
 	// the editor's sort: clamp to one unit so every chapter still spans End > Start.
-	if d, _ := chapterDeltas([]core.Chapter{{Start: 5 * time.Second}, {Start: time.Second}}, 1000, 0); d[0] != 1 {
+	if d, _ := chapterDeltas([]core.Chapter{{Start: 5 * time.Second}, {Start: time.Second}}, 1000, 1000, 0); d[0] != 1 {
 		t.Errorf("backwards gap delta = %d, want 1 (clamped to the one-unit minimum)", d[0])
 	}
 	// Two chapters at the same start must still give the first one a nonzero duration.
-	if d, _ := chapterDeltas([]core.Chapter{{Start: time.Second}, {Start: time.Second}}, 1000, 0); d[0] != 1 {
+	if d, _ := chapterDeltas([]core.Chapter{{Start: time.Second}, {Start: time.Second}}, 1000, 1000, 0); d[0] != 1 {
 		t.Errorf("same-start delta = %d, want 1 (one-unit minimum, not a zero-length chapter)", d[0])
 	}
 }
@@ -96,7 +132,7 @@ func TestChapterDeltasRepaysCollisionDebt(t *testing.T) {
 		{Start: 5 * time.Second},
 		{Start: 8 * time.Second},
 	}
-	deltas, saturated := chapterDeltas(chs, 1000, 10000)
+	deltas, saturated := chapterDeltas(chs, 1000, 1000, 10000)
 	if saturated {
 		t.Error("no delta should saturate for second-scale starts")
 	}
@@ -117,11 +153,11 @@ func TestChapterDeltasRepaysCollisionDebt(t *testing.T) {
 // field (~49.7 days at the movie timescale) sets the saturation flag surfaced as
 // WarnChapterStartOverflow, while an ordinary list does not.
 func TestChapterDeltasSaturationFlag(t *testing.T) {
-	if _, sat := chapterDeltas([]core.Chapter{{Start: 0}, {Start: 5 * time.Second}}, 1000, 0); sat {
+	if _, sat := chapterDeltas([]core.Chapter{{Start: 0}, {Start: 5 * time.Second}}, 1000, 1000, 0); sat {
 		t.Error("ordinary second-scale chapters must not flag saturation")
 	}
 	huge := []core.Chapter{{Start: 0}, {Start: 50 * 24 * time.Hour}} // ~50 days > MaxUint32 ms units
-	if _, sat := chapterDeltas(huge, 1000, 0); !sat {
+	if _, sat := chapterDeltas(huge, 1000, 1000, 0); !sat {
 		t.Error("a >49.7-day chapter gap must flag saturation")
 	}
 }
@@ -134,7 +170,7 @@ func TestBuildChapterTrakLeadingOffsetSaturates(t *testing.T) {
 	day := 24 * time.Hour
 	// First chapter at 60 days (> MaxUint32 ms units), the next only 5s later.
 	chs := []core.Chapter{{Start: 60 * day}, {Start: 60*day + 5*time.Second}}
-	if _, satDeltas := chapterDeltas(chs, 1000, 0); satDeltas {
+	if _, satDeltas := chapterDeltas(chs, 1000, 1000, 0); satDeltas {
 		t.Fatal("setup: the small inter-chapter gap should not saturate the deltas")
 	}
 	if _, _, sat := buildChapterTrak(2, 1000, 1000, 0, chs, false); !sat {
