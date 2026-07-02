@@ -91,7 +91,7 @@ type jsonProperties struct {
 	Channels      int    `json:"channels,omitempty"`
 	BitsPerSample int    `json:"bitsPerSample,omitempty"`
 	DurationMs    int64  `json:"durationMs,omitempty"`
-	BitrateBps    int    `json:"bitrateBps,omitempty"` // average bits per second (text dump shows kbps)
+	BitrateBps    int    `json:"bitrateBps,omitempty"` // meaningful average bits per second, not a nominal PCM header rate; omitted (like durationMs) when the duration is under one millisecond (text dump shows kbps)
 }
 
 type jsonTag struct {
@@ -161,6 +161,16 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 	if !bitDepthMeaningful(t.Codec) {
 		bitsPerSample = 0
 	}
+	// bitrateBps is a meaningful average bitrate, not a nominal PCM header rate. A file with no
+	// whole-millisecond duration (a header-only PCM WAV, or a handful of sub-millisecond
+	// samples) has no average worth reporting, so zero it and let omitempty drop the field.
+	// Gate on the same Milliseconds() the durationMs field uses, so the JSON never shows a
+	// bitrate with no duration beside it. The human view's >=1000 kbps rounding threshold is a
+	// display artifact and stays out of raw bps.
+	bitrateBps := t.Bitrate
+	if props.Duration().Milliseconds() == 0 {
+		bitrateBps = 0
+	}
 	format := doc.Format().String()
 	jd := jsonDocument{
 		SchemaVersion: schemaVersion,
@@ -175,7 +185,7 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 			Channels:      t.Channels,
 			BitsPerSample: bitsPerSample,
 			DurationMs:    props.Duration().Milliseconds(),
-			BitrateBps:    t.Bitrate,
+			BitrateBps:    bitrateBps,
 		},
 		// All four iterable collections are inited non-nil (not just tags/pictures) so a
 		// no-tags / no-chapters / no-warnings file emits "[]" rather than null or an

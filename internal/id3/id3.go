@@ -227,7 +227,11 @@ func ParseTag(data []byte, maxElements int) (*Tag, error) {
 	}
 	major := data[3]
 	if major < 2 || major > 4 {
-		return nil, fmt.Errorf("%w: unsupported ID3v2.%d", waxerr.ErrUnsupportedFormat, major)
+		// TagSize already matched a recognized "ID3" header, so an out-of-range major
+		// version is a corrupt tag inside a recognized container - invalid data (exit 4),
+		// not an unsupported format (exit 3), matching the "not an ID3v2 header" sibling
+		// above.
+		return nil, fmt.Errorf("%w: ID3v2 major version %d out of range", waxerr.ErrInvalidData, major)
 	}
 	flags := data[5]
 

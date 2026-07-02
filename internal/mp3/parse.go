@@ -38,10 +38,16 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	d.audioStart = d.id3Len
 
 	// Trailing legacy containers, from the end inward: ID3v1 (last 128 bytes),
-	// then an APEv2 tag ending just before it.
+	// then an APEv2 tag ending just before it. The strict LooksLikeID3v1 gate can miss a
+	// genuine ID3v1 whose year is non-standard (a legacy writer's "90s") or whose bytes carry
+	// a control byte; when it does, tailEnd stays at size and the APE probe below starts inside
+	// that undetected trailer, so a coexisting APEv2 tag (the rare [audio][APE][odd-year ID3v1]
+	// layout) is also missed and folded into essence. Accepted as the cost of not false-flagging
+	// random audio; the strict gate belongs on this sniff, unlike the WAV/AIFF path whose
+	// trailing tag sits at a declared chunk boundary.
 	tailEnd := size
 	if size-128 >= d.audioStart {
-		if tail, err := bits.ReadSlice(src, size-128, 128, limit); err == nil && string(tail[:3]) == "TAG" {
+		if tail, err := bits.ReadSlice(src, size-128, 128, limit); err == nil && id3.LooksLikeID3v1(tail) {
 			d.id3v1 = tail
 			tailEnd = size - 128
 			warnings = core.Warn(warnings, core.WarnTrailingID3v1,

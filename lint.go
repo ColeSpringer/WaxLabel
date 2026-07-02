@@ -89,7 +89,8 @@ func lintWarnings(ws []core.Warning) []Finding {
 	for _, w := range ws {
 		switch w.Code {
 		case core.WarnStrayLeadingID3, core.WarnTrailingID3v1, core.WarnLegacyAPE,
-			core.WarnInheritedEncoder, core.WarnInvalidPicture, core.WarnTruncatedAudio:
+			core.WarnInheritedEncoder, core.WarnInvalidPicture, core.WarnTruncatedAudio,
+			core.WarnInvalidTagKey:
 			out = append(out, Finding{LintWarning, w.Code.String(), w.Message, ""})
 		case core.WarnMultipleVorbisComment, core.WarnDuplicateTagBlock, core.WarnNoAudioFrames:
 			out = append(out, Finding{LintError, w.Code.String(), w.Message, ""})

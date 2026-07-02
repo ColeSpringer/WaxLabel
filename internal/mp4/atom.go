@@ -100,6 +100,7 @@ func walkAtoms(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limi
 
 	var out []node
 	off := start
+walkLoop:
 	for off+8 <= end {
 		// The depth guard's element budget bounds atoms across the whole tree, not per
 		// container, since the guard is shared through recursion. The write path re-walks
@@ -134,13 +135,26 @@ func walkAtoms(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limi
 				return nil, fmt.Errorf("%w: 64-bit atom %q size %d below 16", waxerr.ErrInvalidData, name, size)
 			}
 		case size == 0:
-			// Runs to the end of the enclosing region (top-level last atom).
+			// A declared size of 0 means "runs to the end of the enclosing region,"
+			// which is only meaningful for a top-level final atom (it extends to EOF).
+			// A *nested* size-0 atom would otherwise absorb every remaining byte - including
+			// a no-ilst meta's trailing zeros - as one spanning child, and a create-ilst
+			// rewrite then re-parses that atom back over the inserted tag path. Do not
+			// absorb it: stop walking here so the remaining bytes fall through to the tail
+			// rules below (all-zero padding stays tolerated; a non-zero remainder is
+			// rejected as a ragged tail) and the meta-no-ilst gate (parse.go) rejects the
+			// dangerous case. A bare break would only exit the switch, so the loop is
+			// labeled.
+			if !topLevel {
+				break walkLoop
+			}
 			size = end - off
 		case size < 8:
 			return nil, fmt.Errorf("%w: atom %q size %d below 8", waxerr.ErrInvalidData, name, size)
 		}
-		// The size==0 sentinel above already became end-off, so only a genuinely
-		// oversized atom trips the clamp below and reads as truncated.
+		// Only a top-level size==0 sentinel became end-off above (a nested one broke out
+		// of the walk), so past here only a genuinely oversized atom trips the clamp below
+		// and reads as truncated.
 		truncated := false
 		if size > end-off {
 			if !topLevel {

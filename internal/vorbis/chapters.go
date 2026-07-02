@@ -25,6 +25,16 @@ import (
 // the title (CHAPTERxxxNAME) comments.
 const chapterNamePrefix = "CHAPTER"
 
+// maxChapterSec is the largest whole-second chapter offset parseChapterTime accepts
+// (1,000,000 hours). Anything past it is treated as malformed on read, so the writer
+// clamps to it: an over-range edited chapter is stored at the ceiling (and warned) rather
+// than written unreadably and silently dropped on the next parse.
+const maxChapterSec = int64(1_000_000) * 3600
+
+// maxChapterDuration is that ceiling as a Duration - the exact value chapterComments clamps
+// an over-range chapter start to.
+const maxChapterDuration = time.Duration(maxChapterSec) * time.Second
+
 // parseChapterName splits a CHAPTERxxx / CHAPTERxxxNAME comment name into its numeric
 // index and whether it is the NAME (title) half. ok is false for any other name, including
 // a CHAPTER prefix with no digits ("CHAPTERS") or a different field, so a genuine custom
@@ -106,16 +116,22 @@ func ProjectChapters(comments []Comment) []core.Chapter {
 // comments in the common-writer form: 1-based, 3-digit numbers. A chapter with an empty
 // title emits no CHAPTERxxxNAME, so it round-trips to a titleless chapter rather than an
 // empty-string title.
-func chapterComments(chs []core.Chapter) []Comment {
+func chapterComments(chs []core.Chapter) ([]Comment, bool) {
 	out := make([]Comment, 0, len(chs))
+	overflow := false
 	for i, ch := range chs {
+		start := ch.Start
+		if start > maxChapterDuration {
+			start = maxChapterDuration // clamp to the reader's ceiling so it round-trips, not silently dropped
+			overflow = true
+		}
 		num := fmt.Sprintf("%s%03d", chapterNamePrefix, i+1)
-		out = append(out, Comment{Name: num, Value: formatChapterTime(ch.Start)})
+		out = append(out, Comment{Name: num, Value: formatChapterTime(start)})
 		if ch.Title != "" {
 			out = append(out, Comment{Name: num + "NAME", Value: ch.Title})
 		}
 	}
-	return out
+	return out, overflow
 }
 
 // formatChapterTime renders a chapter offset as HH:MM:SS.mmm (millisecond precision, the
@@ -184,7 +200,6 @@ func parseChapterTime(s string) (time.Duration, bool) {
 		return 0, false
 	}
 	totalSec := int64(h)*3600 + int64(m)*60 + int64(sec)
-	const maxChapterSec = int64(1_000_000) * 3600
 	if totalSec > maxChapterSec {
 		return 0, false
 	}

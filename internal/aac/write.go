@@ -122,7 +122,7 @@ func buildResult(edited *core.Media, base *doc, newTag *id3.Tag, tagBytes []byte
 	proj := id3.Project(newTag)
 	// Carry source-parse warnings forward, but drop a stale chapter-flatten note when the
 	// written tag no longer flattens. MP3 uses the same helper for the same front-tag path.
-	warnings := id3.CarryChapterWarnings(edited.Warnings, proj.Warnings)
+	warnings := id3.CarryProjectionWarnings(edited.Warnings, proj.Warnings)
 	return &core.Media{
 		Format:       core.FormatAAC,
 		Properties:   edited.Properties.Clone(),

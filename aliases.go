@@ -209,6 +209,8 @@ const (
 	WarnSyncedLyricsContentType      = core.WarnSyncedLyricsContentType
 	WarnSyncedLyricsMetadataDropped  = core.WarnSyncedLyricsMetadataDropped
 	WarnSyncedLyricsTimestampClamped = core.WarnSyncedLyricsTimestampClamped
+
+	WarnInvalidTagKey = core.WarnInvalidTagKey
 )
 
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated

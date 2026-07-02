@@ -53,8 +53,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	}
 
 	newComments := d.comments
+	var rebuildInfo vorbis.RebuildInfo
 	if commentsChanged {
-		newComments = rebuildComments(d.comments, edited.Tags, changed, edited.Chapters, chaptersChanged, edited.SyncedLyrics, syncedLyricsChanged)
+		newComments, rebuildInfo = rebuildComments(d.comments, edited.Tags, changed, edited.Chapters, chaptersChanged, edited.SyncedLyrics, syncedLyricsChanged)
 	}
 
 	newBlocks, ops := rebuildBlocks(d, newVendor, newComments, edited.Pictures, commentsChanged, vendorChanged, picturesChanged)
@@ -119,6 +120,12 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	newSize := bits.OutputLen(segs)
 	report.BytesAfter = newSize
+
+	// An over-range chapter or synced-lyric timestamp was clamped to the codec ceiling while
+	// rendering the comment list; surface it as a write-time warning (before DowngradeNoOp, so
+	// it is visible). The clamp itself keeps the value readable, so result != base and the
+	// write proceeds rather than collapsing to a silent no-op.
+	report.Warnings = vorbis.OverflowWarnings(report.Warnings, rebuildInfo)
 
 	result := buildResult(edited, d, newVendor, finalBlocks, newComments, newLeadingLen, audioOutStart, audioLen, newTrailingLen, newSize)
 
@@ -226,6 +233,22 @@ func rebuildBlocks(d *doc, newVendor string, newComments []comment, pictures []c
 	}
 	if picturesChanged && !picturesEmitted && len(pictures) > 0 {
 		emitPictures()
+	}
+	// Re-append any undecodable native PICTURE block on a picture edit. The decoded-set
+	// re-emit above drops these (they never entered media.Pictures), yet they are valid
+	// metadata the user did not touch, so preserve them verbatim - matching Ogg's
+	// opaque-comment retention. Gated on picturesChanged: a tag-only edit already cloned the
+	// blocks verbatim in the loop's default path.
+	//
+	// A malformed block that originally sat before a valid one moves to the end of the
+	// picture blocks here (after the re-emitted decoded set). That reordering is benign: FLAC
+	// assigns no meaning to metadata-block order beyond STREAMINFO-first, so the bytes still
+	// round-trip and re-parse identically. Preserving the exact original position is not worth
+	// re-interleaving the two sets.
+	if picturesChanged {
+		for _, body := range d.malformedPictureBlocks {
+			out = append(out, block{code: blkPicture, body: slices.Clone(body)})
+		}
 	}
 	// Materialize comment-sourced covers when the comment block was re-rendered (which strips the
 	// METADATA_BLOCK_PICTURE entry) but pictures were not separately re-emitted. Without this a
@@ -337,6 +360,11 @@ func buildResult(edited *core.Media, orig *doc, newVendor string, newBlocks []bl
 		flacStart:  newLeadingLen,
 		audioStart: audioStart,
 		audioEnd:   audioStart + audioLen,
+		// The written output re-appended each undecodable PICTURE block (rebuildBlocks), so the
+		// result doc must carry them too - otherwise a chained picture edit on this returned
+		// Document (no re-parse) would drop every raw blkPicture and, finding this slice empty,
+		// lose the malformed block a fresh parse of the same bytes would have kept.
+		malformedPictureBlocks: cloneByteSlices(orig.malformedPictureBlocks),
 	}
 	if newLeadingLen > 0 {
 		nd.leadingID3 = slices.Clone(orig.leadingID3)

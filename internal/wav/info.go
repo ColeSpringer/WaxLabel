@@ -49,7 +49,11 @@ func parseInfo(body []byte) (items []infoItem, ok bool) {
 }
 
 // infoTags projects INFO items into a canonical TagSet, mapping only the known
-// identifiers. Items appear in file order.
+// identifiers. Items appear in file order. [tag.TagSet.AddNativeItem] applies the shared IFF
+// first-wins rule: a duplicate number key (two IPRT, both TrackNumber) keeps the first, since a
+// phantom multi-value TRACKNUMBER no writer can store would diff as a spurious change and trip
+// a false native-value-reduced warning; a duplicate text key (two INAM) accumulates, because
+// the ID3 chunk the writer forces preserves both.
 func infoTags(items []infoItem) tag.TagSet {
 	ts := tag.NewTagSet()
 	for _, it := range items {
@@ -58,7 +62,7 @@ func infoTags(items []infoItem) tag.TagSet {
 			continue
 		}
 		if v := it.text(); v != "" {
-			ts.Add(key, v)
+			ts.AddNativeItem(key, v)
 		}
 	}
 	return ts
@@ -66,8 +70,10 @@ func infoTags(items []infoItem) tag.TagSet {
 
 // infoFamilies builds RIFF family/source entries from INFO items, marking an
 // entry unselected (a conflict) when its value disagrees with the authoritative
-// value for the same key. When INFO is itself authoritative, auth is its own
-// projection, so every entry is selected.
+// value for the same key. When INFO is itself authoritative, auth holds only the first
+// value of each number/total key (infoTags is first-wins for those), so a duplicate item for
+// such a key reads back unselected - exposing the conflict without polluting the canonical
+// set. A duplicate text item is kept in auth (both selected), since both values survive.
 func infoFamilies(auth tag.TagSet, items []infoItem) []core.FamilyValue {
 	var out []core.FamilyValue
 	for _, it := range items {

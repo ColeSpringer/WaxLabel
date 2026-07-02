@@ -107,6 +107,13 @@ func encoderNoiseWarnings(vendor string, comments []comment) []core.Warning {
 	return vorbis.EncoderNoise(vendor, toVorbis(comments))
 }
 
+// invalidKeyWarnings flags Vorbis comments whose native name has no valid canonical tag key
+// (an empty name, or one the writer's Key.Valid() gate rejects). Project drops such a key
+// from the canonical model, so this surfaces it at parse for dump and lint to report.
+func invalidKeyWarnings(comments []comment) []core.Warning {
+	return vorbis.InvalidKeyWarnings(toVorbis(comments))
+}
+
 // diffKeys returns the canonical keys whose values differ between base and
 // edited (added, removed, or modified).
 func diffKeys(base, edited tag.TagSet) map[tag.Key]bool {
@@ -116,8 +123,9 @@ func diffKeys(base, edited tag.TagSet) map[tag.Key]bool {
 // rebuildComments produces the new Vorbis comment list with minimal change, owning the
 // CHAPTERxxx chapter and SYNCEDLYRICS comments (dropped and re-emitted only on the matching
 // structured edit).
-func rebuildComments(orig []comment, edited tag.TagSet, changed map[tag.Key]bool, chapters []core.Chapter, chaptersChanged bool, syncedLyrics []core.SyncedLyrics, syncedLyricsChanged bool) []comment {
-	return fromVorbis(vorbis.Rebuild(toVorbis(orig), edited, changed, chapters, chaptersChanged, syncedLyrics, syncedLyricsChanged))
+func rebuildComments(orig []comment, edited tag.TagSet, changed map[tag.Key]bool, chapters []core.Chapter, chaptersChanged bool, syncedLyrics []core.SyncedLyrics, syncedLyricsChanged bool) ([]comment, vorbis.RebuildInfo) {
+	cs, info := vorbis.Rebuild(toVorbis(orig), edited, changed, chapters, chaptersChanged, syncedLyrics, syncedLyricsChanged)
+	return fromVorbis(cs), info
 }
 
 // renderBlock encodes a full metadata block: a 1-byte header (last-block flag

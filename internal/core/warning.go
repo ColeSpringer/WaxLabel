@@ -196,6 +196,14 @@ const (
 	// the synced-lyrics analogue of [WarnChapterStartOverflow]. Keyless: it describes the
 	// synced-lyrics set, not a tag field.
 	WarnSyncedLyricsTimestampClamped
+	// WarnInvalidTagKey means a Vorbis comment used a native name that does not map to a valid
+	// canonical tag key - an empty name, or one with characters the writer's Key.Valid() gate
+	// rejects. The raw comment is preserved verbatim on write (preservation-first Rebuild), so
+	// the key is absent from the canonical tag model and a copy does not carry it, but it is
+	// not removed from the file. Emitted on the read path so dump and lint surface it. Keyless:
+	// the offending native name is in the prose Message, since there is no valid canonical key
+	// to name.
+	WarnInvalidTagKey
 )
 
 func (c WarningCode) String() string {
@@ -278,6 +286,8 @@ func (c WarningCode) String() string {
 		return "synced-lyrics-metadata-dropped"
 	case WarnSyncedLyricsTimestampClamped:
 		return "synced-lyrics-timestamp-clamped"
+	case WarnInvalidTagKey:
+		return "invalid-tag-key"
 	default:
 		return "unknown"
 	}

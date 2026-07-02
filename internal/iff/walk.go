@@ -142,6 +142,13 @@ func WalkChunks(ctx context.Context, r io.ReaderAt, size, end, limit int64, maxE
 // overrun proxy) catches a tag with a short or empty title, whose declared-length bytes
 // are small and would not overrun, so the walk preserves it verbatim instead of shredding
 // it into phantom chunks.
+//
+// The bare "TAG" magic is deliberate here and NOT the strict [id3.LooksLikeID3v1] gate the
+// FLAC/MP3 trailing-tag detection uses: this fires only when the RIFF/IFF chunk walk has
+// already consumed every declared chunk and exactly 128 bytes remain at a chunk boundary, so
+// there is no essence to false-positive against - the container structure, not a sniff, says
+// the region is trailing metadata. The strict gate matters only where a tag is inferred by
+// probing raw bytes at size-128 with no structural boundary.
 func isID3v1Tail(id [4]byte, off, end int64) bool {
 	return id[0] == 'T' && id[1] == 'A' && id[2] == 'G' && end-off == 128
 }

@@ -44,12 +44,34 @@ func ProjectSyncedLyrics(comments []Comment) []core.SyncedLyrics {
 
 // syncedLyricsComments renders synced-lyrics sets as a single SYNCEDLYRICS comment holding
 // the first set's lines as LRC (the store holds one set). A set with no lines emits no
-// comment, so it round-trips to no synced lyrics rather than an empty comment.
-func syncedLyricsComments(sls []core.SyncedLyrics) []Comment {
+// comment, so it round-trips to no synced lyrics rather than an empty comment. A line
+// timestamp past the LRC ceiling is clamped to it (reported via the returned bool) so an
+// over-range edited line is stored at the ceiling rather than written unreadably and
+// silently dropped on the next parse.
+func syncedLyricsComments(sls []core.SyncedLyrics) ([]Comment, bool) {
 	if len(sls) == 0 || len(sls[0].Lines) == 0 {
-		return nil
+		return nil, false
 	}
-	return []Comment{{Name: syncedLyricsName, Value: core.FormatLRC(sls[0].Lines)}}
+	lines := sls[0].Lines
+	// Common case: nothing overflows, so render the lines directly with no copy.
+	overflow := false
+	for _, ln := range lines {
+		if ln.Time > core.MaxLRCTime {
+			overflow = true
+			break
+		}
+	}
+	if !overflow {
+		return []Comment{{Name: syncedLyricsName, Value: core.FormatLRC(lines)}}, false
+	}
+	// At least one line is over the ceiling: clamp into a copy so the caller's input is not
+	// mutated, then render.
+	clamped := make([]core.SyncedLine, len(lines))
+	for i, ln := range lines {
+		ln.Time, _ = core.ClampLRCTime(ln.Time)
+		clamped[i] = ln
+	}
+	return []Comment{{Name: syncedLyricsName, Value: core.FormatLRC(clamped)}}, true
 }
 
 // SyncedLyricsCapability is the synced-lyrics capability shared by FLAC and Ogg. The LRC

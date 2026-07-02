@@ -82,6 +82,7 @@ func Project(t *Tag) Projection {
 	var contribs []core.Contribution
 	var pics []core.Picture
 	var dp dateParts
+	var warnings []core.Warning
 	numeric := false
 
 	emit := func(key tag.Key, val, src string) {
@@ -96,6 +97,12 @@ func Project(t *Tag) Projection {
 		case f.ID == "APIC":
 			if p, ok := decodeAPIC(f.Body); ok {
 				pics = append(pics, p)
+			} else {
+				// A malformed APIC is dropped from the picture set but must not be silent:
+				// surface it on the read path so dump and lint report the bad cover, matching
+				// the FLAC PICTURE-block warning. decodeAPIC returns only ok, so the message
+				// is static.
+				warnings = core.Warn(warnings, core.WarnInvalidPicture, "APIC: invalid picture data")
 			}
 		case f.ID == "TXXX":
 			if desc, vals, ok := decodeUserText(f.Body); ok {
@@ -168,7 +175,7 @@ func Project(t *Tag) Projection {
 		SyncedLyrics: syncedLyrics,
 		Families:     core.BuildFamilies(contribs, core.FamilyID3v2),
 		NumericGenre: numeric,
-		Warnings:     append(chapterWarnings, syncedWarnings...),
+		Warnings:     append(append(chapterWarnings, syncedWarnings...), warnings...),
 	}
 }
 

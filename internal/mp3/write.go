@@ -163,7 +163,7 @@ func buildResult(edited *core.Media, base *doc, newTag *id3.Tag, tagBytes []byte
 	families := append(proj.Families, legacyFamilies(proj.Tags, nd.id3v1, nd.apeTag)...)
 	// Carry source-parse warnings forward, but drop a stale chapter-flatten note when the
 	// written tag no longer flattens. AAC uses the same helper for the same front-tag path.
-	warnings := id3.CarryChapterWarnings(edited.Warnings, proj.Warnings)
+	warnings := id3.CarryProjectionWarnings(edited.Warnings, proj.Warnings)
 	return &core.Media{
 		Format:       core.FormatMP3,
 		Properties:   edited.Properties.Clone(),

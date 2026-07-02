@@ -92,7 +92,7 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	// begin with "TAG" at size-128 would push audioEnd before audioStart,
 	// yielding a negative audio length.
 	if size >= 128 && size-128 >= d.audioStart {
-		if tail, err := bits.ReadSlice(src, size-128, 128, limit); err == nil && string(tail[:3]) == "TAG" {
+		if tail, err := bits.ReadSlice(src, size-128, 128, limit); err == nil && id3.LooksLikeID3v1(tail) {
 			d.trailingID3v1 = tail
 			d.audioEnd = size - 128
 			warnings = core.Warn(warnings, core.WarnTrailingID3v1,
@@ -137,9 +137,10 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	media.Chapters = projectChapters(d.comments)
 	media.SyncedLyrics = projectSyncedLyrics(d.comments)
 	warnings = append(warnings, encoderNoiseWarnings(d.vendor, d.comments)...)
+	warnings = append(warnings, invalidKeyWarnings(d.comments)...)
 
-	// Decode pictures; a malformed picture is warned and skipped (its block is
-	// still preserved in the native doc).
+	// Decode pictures; a malformed picture is warned and skipped, but its raw block is
+	// preserved in the native doc (and re-emitted on a picture edit) so it is not destroyed.
 	for _, b := range d.blocks {
 		if b.code != blkPicture {
 			continue
@@ -147,6 +148,7 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 		p, err := parsePictureBlock(b.body, limit)
 		if err != nil {
 			warnings = core.Warn(warnings, core.WarnInvalidPicture, err.Error())
+			d.malformedPictureBlocks = append(d.malformedPictureBlocks, b.body)
 			continue
 		}
 		media.Pictures = append(media.Pictures, p)

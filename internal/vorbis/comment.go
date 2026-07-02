@@ -106,7 +106,16 @@ func Project(comments []Comment) (tag.TagSet, []core.FamilyValue) {
 		if isChapterComment(cm.Name) || isSyncedLyricsComment(cm.Name) || IsPictureComment(cm.Name) {
 			continue // owned by structured metadata projectors, not the custom tag view
 		}
-		key := mapping.CanonicalVorbis(cm.Name)
+		key, valid := canonicalTagKey(cm.Name)
+		if !valid {
+			// A non-conformant native name (empty, or with characters the writer's Key.Valid()
+			// gate rejects) has no valid canonical key. Keep it out of the canonical model
+			// entirely - no tag, no family entry - so copy does not grade it Carried and then
+			// abort at write time. The raw comment is untouched in the native list, so an
+			// unrelated edit still preserves it verbatim (Rebuild copies it as-is);
+			// InvalidKeyWarnings surfaces it at the parse sites via the same canonicalTagKey rule.
+			continue
+		}
 		// The Vorbis reader stores values as raw bytes; a non-conformant file can hold invalid
 		// UTF-8 (the spec mandates UTF-8, but WaxLabel parses best-effort). Sanitize it into the
 		// canonical model the way the ID3/MP4/Matroska readers do, so the model never carries raw
@@ -151,7 +160,8 @@ func Project(comments []Comment) (tag.TagSet, []core.FamilyValue) {
 // CHAPTERxxx and SYNCEDLYRICS comments are owned by the chapter and synced-lyrics models,
 // not by the generic tag-key diff. A chapter or synced-lyrics edit drops the source owned
 // comments and appends the edited set; unrelated edits preserve them verbatim.
-func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapters []core.Chapter, chaptersChanged bool, syncedLyrics []core.SyncedLyrics, syncedLyricsChanged bool) []Comment {
+func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapters []core.Chapter, chaptersChanged bool, syncedLyrics []core.SyncedLyrics, syncedLyricsChanged bool) ([]Comment, RebuildInfo) {
+	var info RebuildInfo
 	emitted := map[tag.Key]bool{}
 	out := make([]Comment, 0, len(orig))
 	emit := func(k tag.Key, name string) {
@@ -195,12 +205,79 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapte
 		}
 	}
 	if chaptersChanged {
-		out = append(out, chapterComments(chapters)...)
+		cc, overflow := chapterComments(chapters)
+		out = append(out, cc...)
+		info.ChapterOverflow = overflow
 	}
 	if syncedLyricsChanged {
-		out = append(out, syncedLyricsComments(syncedLyrics)...)
+		sc, overflow := syncedLyricsComments(syncedLyrics)
+		out = append(out, sc...)
+		info.SyncedLyricsOverflow = overflow
 	}
-	return out
+	return out, info
+}
+
+// RebuildInfo reports the codec-ceiling clamps [Rebuild] applied while rendering owned
+// chapter and synced-lyrics comments, so the caller can attach the matching write-time
+// warnings. Rebuild stays otherwise pure - it records the clamp here rather than emitting a
+// warning itself - mirroring ID3's RebuildInfo. The clamp is not cosmetic: without it the
+// over-range value is written past what the reader accepts and re-projects to nothing, so
+// the write collapses to a "No metadata changes" no-op and the edit is silently lost.
+type RebuildInfo struct {
+	// ChapterOverflow is set when a chapter start exceeded the CHAPTERxxx timestamp ceiling
+	// and was clamped to it.
+	ChapterOverflow bool
+	// SyncedLyricsOverflow is set when a synced-lyric line's timestamp exceeded the LRC
+	// timestamp ceiling and was clamped to it.
+	SyncedLyricsOverflow bool
+}
+
+// OverflowWarnings appends the write-time warnings for the clamps RebuildInfo recorded,
+// so an over-range chapter or synced-lyric timestamp surfaces the same coded warning that
+// MP4/ID3 emit. FLAC and Ogg share it, keeping their two write paths aligned. These are
+// write-report warnings, not post-write document warnings: the stored value sits at the
+// codec ceiling and re-parses cleanly, so a fresh parse of the output emits neither.
+func OverflowWarnings(prior []core.Warning, info RebuildInfo) []core.Warning {
+	if info.ChapterOverflow {
+		prior = core.Warn(prior, core.WarnChapterStartOverflow,
+			"a chapter start exceeded the CHAPTERxxx timestamp limit and was clamped")
+	}
+	if info.SyncedLyricsOverflow {
+		prior = core.Warn(prior, core.WarnSyncedLyricsTimestampClamped,
+			"a synced-lyric timestamp exceeded the LRC timestamp limit and was clamped")
+	}
+	return prior
+}
+
+// InvalidKeyWarnings reports a WarnInvalidTagKey for each comment whose native name does
+// not map to a valid canonical tag key (an empty name, or one with characters the writer's
+// Key.Valid() gate rejects). Project drops such a key from the canonical model, but the raw
+// comment is preserved verbatim on write, so the warning says the key is not represented in
+// canonical tags / not carried - not that it was removed. Emitted at the parse sites like
+// EncoderNoise; owned structured comments (chapters, synced lyrics, pictures) are skipped,
+// exactly as Project skips them.
+func InvalidKeyWarnings(comments []Comment) []core.Warning {
+	var ws []core.Warning
+	for _, cm := range comments {
+		if isChapterComment(cm.Name) || isSyncedLyricsComment(cm.Name) || IsPictureComment(cm.Name) {
+			continue
+		}
+		if _, valid := canonicalTagKey(cm.Name); valid {
+			continue
+		}
+		ws = core.Warn(ws, core.WarnInvalidTagKey,
+			"tag key not represented in canonical tags (not carried): "+tag.SanitizeLine(cm.Name))
+	}
+	return ws
+}
+
+// canonicalTagKey resolves a Vorbis comment name to its canonical key and reports whether that
+// key is valid, meaning representable in the canonical tag model. [Project] (which drops an
+// invalid key) and [InvalidKeyWarnings] (which flags it) share this one decision so the two
+// cannot drift out of sync.
+func canonicalTagKey(name string) (tag.Key, bool) {
+	k := mapping.CanonicalVorbis(name)
+	return k, k.Valid()
 }
 
 // DiffKeys returns the canonical keys whose values differ between base and

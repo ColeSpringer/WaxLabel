@@ -146,6 +146,15 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 			// Picture edits replace the original APIC frames with the edited picture set.
 			// If an original APIC has a malformed header, it cannot be projected and will
 			// not be carried forward, so surface that loss.
+			//
+			// This is a deliberate per-codec-family difference: the ID3 codecs drop an
+			// undecodable cover on a picture edit and warn (via HasDroppedMalformedPicture,
+			// reconciled onto the returned document by CarryProjectionWarnings), whereas the
+			// Vorbis-comment codecs (FLAC/Ogg) re-append their undecodable PICTURE block
+			// verbatim. The two metadata models differ enough - an opaque FLAC block round-trips
+			// trivially, an APIC frame does not - that unifying them is a larger design change
+			// than this pass; each is internally consistent (its returned document matches a
+			// fresh re-parse of its own output).
 			if !validAPIC(f.Body) {
 				info.HasDroppedMalformedPicture = true
 			}
@@ -902,15 +911,22 @@ func AppendRebuildWarnings(ws []core.Warning, info RebuildInfo, retained tag.Tag
 	return ws
 }
 
-// CarryChapterWarnings returns warnings for a post-write MP3/AAC document. Front-tag codecs
-// carry source parse warnings forward because buildResult cannot recompute audio warnings.
-// A chapter edit can resolve one source warning, though: a nested CTOC may be rewritten as a
-// flat list. Drop that stale flatten warning only when the written tag no longer projects it,
-// preserving the remaining warning order.
-func CarryChapterWarnings(sourceWarnings, newTagChapterWarnings []core.Warning) []core.Warning {
+// CarryProjectionWarnings returns warnings for a post-write MP3/AAC document. Front-tag codecs
+// carry source parse warnings forward because buildResult cannot recompute the audio and
+// container warnings (trailing-id3v1, legacy-ape, ...). But an edit can resolve a warning the
+// ID3 projection produced, so any such warning the rewritten tag no longer projects must be
+// dropped, or the returned document would disagree with a fresh parse of the written bytes.
+// newTagWarnings is Project(newTag).Warnings; each reconciled code is stripped from the carried
+// set only when the new projection lacks it, preserving the remaining warning order:
+//   - chapters-flattened: a nested CTOC rewritten as a flat list no longer flattens;
+//   - invalid-picture: a picture edit drops a malformed APIC (HasDroppedMalformedPicture), so
+//     the malformed cover the source-parse warning described is gone from the output.
+func CarryProjectionWarnings(sourceWarnings, newTagWarnings []core.Warning) []core.Warning {
 	out := core.CloneWarnings(sourceWarnings)
-	if len(core.WarningsWithCode(newTagChapterWarnings, core.WarnChaptersFlattened)) == 0 {
-		out = core.WarningsWithoutCode(out, core.WarnChaptersFlattened)
+	for _, code := range []core.WarningCode{core.WarnChaptersFlattened, core.WarnInvalidPicture} {
+		if len(core.WarningsWithCode(newTagWarnings, code)) == 0 {
+			out = core.WarningsWithoutCode(out, code)
+		}
 	}
 	return out
 }

@@ -78,6 +78,17 @@ type doc struct {
 	// into Media.Pictures; the writer materializes exactly these into native PICTURE blocks on
 	// a metadata-rewriting edit, so a tag-only edit does not silently drop the cover.
 	commentPictures []core.Picture
+	// malformedPictureBlocks holds the raw bodies of native PICTURE blocks that failed to
+	// decode at parse (warned and skipped from Media.Pictures, but valid metadata the user did
+	// not author). A picture edit re-emits covers only from the decoded set, which would drop
+	// these; the writer re-appends them verbatim on a picture edit so the edit does not destroy
+	// them, matching Ogg's opaque-comment retention. Storing the exact parse-time bodies, rather
+	// than re-detecting malformed blocks in the write loop, keeps the classification
+	// deterministic: it cannot diverge under a different alloc limit at write time. The cost is
+	// a second reference to each such body, bounded by the block size and only for the rare file
+	// that carries an undecodable cover. At parse this aliases the entry in blocks; Clone copies
+	// them independently.
+	malformedPictureBlocks [][]byte
 
 	streamInfo core.AudioTrack
 
@@ -97,6 +108,8 @@ func (d *doc) Clone() core.NativeDoc {
 		comments:        slices.Clone(d.comments),
 		commentPictures: core.ClonePictures(d.commentPictures),
 		streamInfo:      d.streamInfo,
+		// preserved so a picture edit on a cloned doc still re-appends the undecodable blocks
+		malformedPictureBlocks: cloneByteSlices(d.malformedPictureBlocks),
 		flacStart:       d.flacStart,
 		audioStart:      d.audioStart,
 		audioEnd:        d.audioEnd,
@@ -106,6 +119,19 @@ func (d *doc) Clone() core.NativeDoc {
 		c.blocks[i] = b.clone()
 	}
 	return c
+}
+
+// cloneByteSlices deep-copies a slice of byte slices, returning nil for nil input so a doc
+// with no malformed picture blocks keeps that shape on clone.
+func cloneByteSlices(in [][]byte) [][]byte {
+	if in == nil {
+		return nil
+	}
+	out := make([][]byte, len(in))
+	for i, b := range in {
+		out[i] = slices.Clone(b)
+	}
+	return out
 }
 
 // Describe summarizes the native blocks for the dump/native views.

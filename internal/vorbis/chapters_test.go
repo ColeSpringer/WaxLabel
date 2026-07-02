@@ -17,7 +17,8 @@ func TestVorbisChapterRoundTrip(t *testing.T) {
 		{Start: 1500 * time.Millisecond, Title: "Verse"},
 		{Start: 3*time.Minute + 7500*time.Millisecond, Title: "Bridge"},
 	}
-	got := ProjectChapters(chapterComments(in))
+	cc, _ := chapterComments(in)
+	got := ProjectChapters(cc)
 	if len(got) != len(in) {
 		t.Fatalf("got %d chapters, want %d", len(got), len(in))
 	}
@@ -31,7 +32,7 @@ func TestVorbisChapterRoundTrip(t *testing.T) {
 // TestVorbisChapterEmitsCommonForm checks the writer emits 1-based, 3-digit numbers and a
 // HH:MM:SS.mmm timestamp, with no CHAPTERxxxNAME for a titleless chapter.
 func TestVorbisChapterEmitsCommonForm(t *testing.T) {
-	got := chapterComments([]core.Chapter{
+	got, _ := chapterComments([]core.Chapter{
 		{Start: 90500 * time.Millisecond, Title: "Named"},
 		{Start: 0}, // titleless: no CHAPTER002NAME
 	})
@@ -155,7 +156,7 @@ func TestRebuildOwnsChapters(t *testing.T) {
 	// Unrelated (title-only) edit: every CHAPTERxxx comment is preserved verbatim.
 	base := mkTagSet("TITLE", "Old")
 	edited := mkTagSet("TITLE", "New")
-	got := Rebuild(orig, edited, DiffKeys(base, edited), nil, false, nil, false)
+	got, _ := Rebuild(orig, edited, DiffKeys(base, edited), nil, false, nil, false)
 	if !hasComment(got, "CHAPTER001", "00:00:00.000") ||
 		!hasComment(got, "CHAPTER001NAME", "Intro") ||
 		!hasComment(got, "CHAPTER002", "garbage") {
@@ -163,7 +164,7 @@ func TestRebuildOwnsChapters(t *testing.T) {
 	}
 
 	// Chapter edit: old CHAPTERxxx dropped, the new single chapter re-emitted.
-	got = Rebuild(orig, base, DiffKeys(base, base), []core.Chapter{{Start: time.Second, Title: "Only"}}, true, nil, false)
+	got, _ = Rebuild(orig, base, DiffKeys(base, base), []core.Chapter{{Start: time.Second, Title: "Only"}}, true, nil, false)
 	if hasComment(got, "CHAPTER002", "garbage") {
 		t.Error("a chapter edit must drop the source CHAPTERxxx comments, including the malformed one")
 	}

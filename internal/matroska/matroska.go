@@ -76,8 +76,14 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 		// Matroska defines only cover.<ext> (front) and small_cover.<ext>, so only the
 		// front-cover role round-trips; any other role reads back as Other. The description
 		// is preserved in FileDescription, so the loss is role-only.
-		Fidelity:    "image bytes lossless; only the front-cover role is preserved (other roles read back as Other)",
-		PictureLoss: core.PictureLossRoleOnly,
+		Fidelity: "image bytes lossless; only the front-cover role is preserved (other roles read back as Other)",
+		// The reader surfaces a cover only for an image/ attachment (a lowercase HasPrefix
+		// gate) and the writer stores the MIME verbatim, so every image/* subtype round-trips
+		// but a non-image attachment does not. Declaring the wildcard here keeps the transfer
+		// grade aligned with what actually reads back: a non-image cover grades Dropped instead
+		// of being carried and silently destroying the destination's real cover.
+		PictureMIMEs: []string{"image/*"},
+		PictureLoss:  core.PictureLossRoleOnly,
 		Constraints: []string{
 			"not writable to WebM (Attachments is outside the WebM subset)",
 			"only the front cover preserves its role; other picture roles read back as Other (descriptions are preserved)",

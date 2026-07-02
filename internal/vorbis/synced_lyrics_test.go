@@ -61,7 +61,7 @@ func TestSyncedLyricsRebuildPreserves(t *testing.T) {
 	edited := tag.NewTagSet()
 	edited.Add(tag.Title, "New")
 	// A title-only edit: chapters and synced lyrics unchanged.
-	out := Rebuild(orig, edited, DiffKeys(base, edited), nil, false, nil, false)
+	out, _ := Rebuild(orig, edited, DiffKeys(base, edited), nil, false, nil, false)
 	found := false
 	for _, cm := range out {
 		if cm.Name == "SYNCEDLYRICS" {
@@ -86,7 +86,7 @@ func TestSyncedLyricsRebuildReplaces(t *testing.T) {
 	ts := tag.NewTagSet()
 	ts.Add(tag.Title, "Song")
 	newSet := []core.SyncedLyrics{{Lines: []core.SyncedLine{{Time: 5 * time.Second, Text: "New line"}}}}
-	out := Rebuild(orig, ts, map[tag.Key]bool{}, nil, false, newSet, true)
+	out, _ := Rebuild(orig, ts, map[tag.Key]bool{}, nil, false, newSet, true)
 
 	var lyrics, titles int
 	var lrcValue string
@@ -115,7 +115,7 @@ func TestSyncedLyricsRebuildReplaces(t *testing.T) {
 // SYNCEDLYRICS comment entirely.
 func TestSyncedLyricsClear(t *testing.T) {
 	orig := []Comment{{Name: "SYNCEDLYRICS", Value: "[00:01.000]x"}}
-	out := Rebuild(orig, tag.NewTagSet(), map[tag.Key]bool{}, nil, false, nil, true)
+	out, _ := Rebuild(orig, tag.NewTagSet(), map[tag.Key]bool{}, nil, false, nil, true)
 	for _, cm := range out {
 		if isSyncedLyricsComment(cm.Name) {
 			t.Errorf("SYNCEDLYRICS survived a clear: %+v", out)

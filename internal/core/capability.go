@@ -113,9 +113,24 @@ func Representable(c Capability, p Picture) bool {
 }
 
 // MIMERepresentable is [Representable] after the sniff: it decides from an
-// already-computed effective MIME, so a caller can sniff once and reuse the result.
+// already-computed effective MIME, so a caller can sniff once and reuse the result. A
+// PictureMIMEs entry ending in "/*" is a wildcard matching any MIME of that top-level
+// type (e.g. image/* accepts image/tiff); exact entries still match by equality, so a
+// fixed list like MP4's is unaffected.
 func MIMERepresentable(c Capability, mime string) bool {
-	return len(c.PictureMIMEs) == 0 || slices.Contains(c.PictureMIMEs, mime)
+	if len(c.PictureMIMEs) == 0 || slices.Contains(c.PictureMIMEs, mime) {
+		return true
+	}
+	// Match a trailing "/*" wildcard against the lowercased MIME, mirroring a reader that
+	// gates attachments on a lowercase HasPrefix (Matroska accepts any image/ subtype), so
+	// a valid-but-unsniffable subtype is not over-conservatively graded Dropped.
+	lower := strings.ToLower(mime)
+	for _, pat := range c.PictureMIMEs {
+		if prefix, ok := strings.CutSuffix(pat, "/*"); ok && strings.HasPrefix(lower, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // NumericGenreCapability returns the GENRE override for codecs that can store a

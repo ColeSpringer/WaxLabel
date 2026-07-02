@@ -100,14 +100,18 @@ func TestPictureTooLargeRejected(t *testing.T) {
 	}
 }
 
-// TestDiffSanitizesHostileKey: a custom Vorbis field name carrying control bytes
-// reaches the tag model unvalidated (the comment parser splits only on '='), so
-// Change.String must escape the KEY as well as the values - otherwise the diff
-// command and the write-plan preview would leak the control bytes to the terminal.
+// TestDiffSanitizesHostileKey: a custom field name carrying control bytes could still
+// reach the diff renderer through some path (defense in depth), so Change.String must
+// escape the KEY as well as the values - otherwise the diff command and the write-plan
+// preview would leak the control bytes to the terminal. The Vorbis reader now drops such a
+// name on projection (Key.Valid rejects it, emitting invalid-tag-key), so this exercises
+// the sanitizer directly at the tag layer where a hostile key is injected unvalidated.
 func TestDiffSanitizesHostileKey(t *testing.T) {
-	doc := mustParseBytes(t, flacWithComments("TITLE=x", "BAD\x1bKEY=v"))
+	edited := tag.NewTagSet()
+	edited.Add(tag.Title, "x")
+	edited.Add(tag.Key("BAD\x1bKEY"), "v")
 	var line string
-	for _, c := range tag.Diff(tag.NewTagSet(), doc.Tags()) {
+	for _, c := range tag.Diff(tag.NewTagSet(), edited) {
 		if strings.HasPrefix(string(c.Key), "BAD") {
 			line = c.String()
 		}

@@ -8,7 +8,9 @@ import (
 
 // textTags projects native text chunks into a canonical TagSet, mapping only the
 // known identifiers. Items appear in file order; several ANNO chunks contribute
-// several Comment values.
+// several Comment values. [tag.TagSet.AddNativeItem] applies the shared IFF first-wins rule
+// (see [infoTags]); AIFF maps no number key today, so in practice every mapped chunk projects
+// and a duplicate NAME (Title) is kept as a multi-value, preserved by the forced ID3 chunk.
 func textTags(items []textItem) tag.TagSet {
 	ts := tag.NewTagSet()
 	for _, it := range items {
@@ -17,7 +19,7 @@ func textTags(items []textItem) tag.TagSet {
 			continue
 		}
 		if v := it.text(); v != "" {
-			ts.Add(key, v)
+			ts.AddNativeItem(key, v)
 		}
 	}
 	return ts
@@ -25,8 +27,10 @@ func textTags(items []textItem) tag.TagSet {
 
 // textFamilies builds AIFF family/source entries from native text chunks,
 // marking an entry unselected (a conflict) when its value disagrees with the
-// authoritative value for the same key. When the native chunks are themselves
-// authoritative, auth is their own projection, so every entry is selected.
+// authoritative value for the same key. A duplicate number/total item reads back unselected
+// (textTags is first-wins for those); a duplicate text item stays in auth (both values are
+// kept), so both entries read selected. AIFF maps no number key today, so in practice every
+// entry is selected.
 func textFamilies(auth tag.TagSet, items []textItem) []core.FamilyValue {
 	var out []core.FamilyValue
 	for _, it := range items {

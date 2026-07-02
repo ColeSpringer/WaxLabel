@@ -63,8 +63,9 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	// Chapters and synced lyrics are stored as Vorbis comments, so an edit to either rebuilds
 	// the list like a tag edit.
 	newComments := d.comments
+	var rebuildInfo vorbis.RebuildInfo
 	if tagsChanged || chaptersChanged || syncedLyricsChanged {
-		newComments = vorbis.Rebuild(d.comments, edited.Tags, changed, edited.Chapters, chaptersChanged, edited.SyncedLyrics, syncedLyricsChanged)
+		newComments, rebuildInfo = vorbis.Rebuild(d.comments, edited.Tags, changed, edited.Chapters, chaptersChanged, edited.SyncedLyrics, syncedLyricsChanged)
 		report.Operations = append(report.Operations, "Vorbis comment rewrite")
 	}
 	if chaptersChanged && len(edited.Chapters) > 0 {
@@ -148,6 +149,12 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	newSize := bits.OutputLen(segs)
 	report.BytesAfter = newSize
 	report.PaddingAfter = int64(len(d.commentPad))
+
+	// An over-range chapter or synced-lyric timestamp was clamped to the codec ceiling while
+	// rendering the comment list; surface it as a write-time warning (before DowngradeNoOp).
+	// The clamp keeps the value readable, so result != base and the write proceeds instead of
+	// collapsing to a "No metadata changes" no-op.
+	report.Warnings = vorbis.OverflowWarnings(report.Warnings, rebuildInfo)
 
 	result := buildResult(edited, d, newVendor, newComments, newAudioPages, newHeaderPages, newAudioStart, shift, newSize)
 	// Ogg stores Vorbis values verbatim, so this downgrade only catches values the rebuild

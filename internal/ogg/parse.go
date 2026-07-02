@@ -146,6 +146,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	media.Chapters = vorbis.ProjectChapters(d.comments)
 	media.SyncedLyrics = vorbis.ProjectSyncedLyrics(d.comments)
 	warnings = append(warnings, vorbis.EncoderNoise(d.vendor, d.comments)...)
+	warnings = append(warnings, vorbis.InvalidKeyWarnings(d.comments)...)
 
 	// Essence ranges (audio page bodies, interleaved with page headers, so not one
 	// contiguous run) were collected above.

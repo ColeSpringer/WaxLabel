@@ -101,6 +101,17 @@ func (s *TagSet) Add(key Key, vals ...string) {
 	s.values[key] = append(s.values[key], vals...)
 }
 
+// AddNativeItem projects one native tag item under the IFF single-item cardinality rule:
+// a duplicate of a [Key.NumberPair] key (a track/disc number no writer can store twice) keeps
+// the first and drops the rest, while every other key accumulates. The RIFF/INFO and AIFF text
+// readers share this one method so the first-wins rule cannot drift between them.
+func (s *TagSet) AddNativeItem(key Key, v string) {
+	if key.NumberPair() && s.Has(key) {
+		return
+	}
+	s.Add(key, v)
+}
+
 // Delete removes key, making it absent. It is a no-op if the key was absent.
 func (s *TagSet) Delete(key Key) {
 	if _, ok := s.values[key]; !ok {

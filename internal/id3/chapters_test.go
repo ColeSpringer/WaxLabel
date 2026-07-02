@@ -103,23 +103,38 @@ func TestChapterCTOCOrdering(t *testing.T) {
 	}
 }
 
-// TestCarryChapterWarnings checks the front-tag warning carry: a stale flatten note is
-// dropped when the written tag no longer flattens, and kept in source order when it still
-// does.
-func TestCarryChapterWarnings(t *testing.T) {
+// TestCarryProjectionWarnings checks the front-tag warning carry: a stale projection note
+// (chapters-flattened or invalid-picture) is dropped when the written tag no longer projects
+// it, and kept in source order when it still does, while container warnings carry unchanged.
+func TestCarryProjectionWarnings(t *testing.T) {
 	flat := core.Warning{Code: core.WarnChaptersFlattened, Message: "flat"}
 	enc := core.Warning{Code: core.WarnInheritedEncoder, Message: "enc"}
 	source := []core.Warning{flat, enc}
 
 	// Written tag still flattens (proj carries the note): keep source order [flatten, enc].
-	got := CarryChapterWarnings(source, []core.Warning{flat})
+	got := CarryProjectionWarnings(source, []core.Warning{flat})
 	if len(got) != 2 || got[0].Code != core.WarnChaptersFlattened || got[1].Code != core.WarnInheritedEncoder {
 		t.Errorf("still-flattened: got %+v, want [flatten, encoder] in order", got)
 	}
 	// Written tag no longer flattens (proj empty): drop the stale flatten, keep the rest.
-	got = CarryChapterWarnings(source, nil)
+	got = CarryProjectionWarnings(source, nil)
 	if len(got) != 1 || got[0].Code != core.WarnInheritedEncoder {
 		t.Errorf("flattened-away: got %+v, want [encoder] only", got)
+	}
+
+	// A source invalid-picture (a parsed malformed APIC) is dropped when a picture edit's
+	// rewritten tag no longer projects it (the malformed cover was dropped), but a container
+	// warning like legacy-ape carries unchanged.
+	badPic := core.Warning{Code: core.WarnInvalidPicture, Message: "APIC: invalid picture data"}
+	ape := core.Warning{Code: core.WarnLegacyAPE, Message: "ape"}
+	got = CarryProjectionWarnings([]core.Warning{badPic, ape}, nil)
+	if len(got) != 1 || got[0].Code != core.WarnLegacyAPE {
+		t.Errorf("dropped-malformed-apic: got %+v, want [legacy-ape] only", got)
+	}
+	// A tag-only edit preserves the malformed APIC, so proj still projects invalid-picture: keep it.
+	got = CarryProjectionWarnings([]core.Warning{badPic}, []core.Warning{badPic})
+	if len(got) != 1 || got[0].Code != core.WarnInvalidPicture {
+		t.Errorf("preserved-malformed-apic: got %+v, want [invalid-picture] kept", got)
 	}
 }
 

@@ -140,6 +140,28 @@ const maxSyncedLines = 1 << 16
 // to an invalid, often negative, duration.
 const maxLRCField = 1 << 21
 
+// MaxLRCTime is the largest line offset [FormatLRC] can emit and [ParseLRC] read back: past
+// it the minute-normalized value fails to re-parse (parseLRCTime rejects it), so the
+// VorbisComment synced-lyrics writer clamps to it and warns rather than writing a timestamp
+// that is silently dropped on the next read. It is the same ceiling applyLRCOffset enforces.
+const MaxLRCTime = time.Duration(maxLRCField) * time.Minute
+
+// ClampLRCTime clamps a synced-lyric line offset to the round-trippable range, reporting
+// whether it changed the value. The VorbisComment writer uses it so an over-range edited
+// timestamp is stored at the ceiling (and warned) instead of written past what ParseLRC
+// accepts. It clamps only the upper bound, which is the sole case that fails to re-parse and
+// so warrants the overflow warning. A negative offset is not an overflow: formatLRCTime
+// already renders it as zero and ParseLRC reads zero back, so it round-trips faithfully with
+// no clamp reported - flagging it here would emit a "timestamp exceeded the limit" warning
+// that does not describe a below-zero value (matching chapterComments, which likewise leaves
+// negatives to its formatter).
+func ClampLRCTime(d time.Duration) (time.Duration, bool) {
+	if d > MaxLRCTime {
+		return MaxLRCTime, true
+	}
+	return d, false
+}
+
 // maxLRCOffsetMs bounds an LRC [offset:] magnitude (in milliseconds) so applying it cannot
 // overflow a time.Duration. It is far past any real offset (a few seconds), so a legitimate
 // offset always applies; an absurd one is clamped rather than wrapped.
@@ -313,8 +335,8 @@ func applyLRCOffset(d time.Duration, offsetMs int64) time.Duration {
 	if d < 0 {
 		return 0
 	}
-	if maxD := time.Duration(maxLRCField) * time.Minute; d > maxD {
-		return maxD
+	if d > MaxLRCTime {
+		return MaxLRCTime
 	}
 	return d
 }
