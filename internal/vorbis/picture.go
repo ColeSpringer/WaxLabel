@@ -96,6 +96,19 @@ func RenderPicture(p core.Picture) []byte {
 	return buf.Bytes()
 }
 
+// PictureCommentLen returns how many bytes the picture takes up as a base64
+// METADATA_BLOCK_PICTURE comment value, which is the bulk of its weight in the comment packet.
+// It lets a write-side size check measure a cover without rendering it: the result equals
+// base64.StdEncoding.EncodedLen(len(RenderPicture(p))), but the rendered length is recomputed
+// from RenderPicture's layout (eight fixed 32-bit fields, then the MIME, description, and image
+// bytes) instead of built. TestPictureCommentLenMatchesRender guards the arithmetic against a
+// change to RenderPicture.
+func PictureCommentLen(p core.Picture) int64 {
+	const fixedFields = 8 * 4 // the eight 32-bit fields RenderPicture writes before the image data
+	rendered := fixedFields + len(p.MIME) + len(p.Description) + len(p.Data)
+	return int64(base64.StdEncoding.EncodedLen(rendered))
+}
+
 func writeU32BE(buf *bytes.Buffer, v uint32) {
 	var b [4]byte
 	binary.BigEndian.PutUint32(b[:], v)

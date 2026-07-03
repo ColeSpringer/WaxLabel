@@ -83,7 +83,7 @@ func planChaptersQT(d *doc, edited *core.Media, needIlst, picturesChanged bool, 
 	}
 	if plan.sttsSaturated {
 		report.Warnings = core.Warn(report.Warnings, core.WarnChapterStartOverflow,
-			"a chapter start exceeds the QuickTime track's 32-bit duration field (~49.7 days) and was clamped; the Nero chpl keeps the exact value")
+			"a chapter start or the total chapter span exceeds the QuickTime track's 32-bit duration field (~13.25 h at the 90 kHz media timescale) and was clamped; the Nero chpl keeps the exact values")
 	}
 
 	plan.resultItems = d.items
@@ -137,9 +137,10 @@ type qtPlan struct {
 	mts          uint32
 	chplChapters []core.Chapter // chplRoundTrip(edited.Chapters), for the result's conflict check
 
-	// sttsSaturated is set when a chapter's QuickTime stts delta overflowed the
-	// 32-bit field and was clamped (a start beyond ~49.7 days at the movie
-	// timescale); the caller surfaces it as a WarnChapterStartOverflow.
+	// sttsSaturated is set when any of the chapter track's clamped duration fields overflowed
+	// its 32-bit slot - a per-gap stts delta, the first-chapter start, or the cumulative
+	// mdhd/tkhd/elst span (the fixed 90 kHz media field binds first, at ~13.25 h); the caller
+	// surfaces it as a WarnChapterStartOverflow.
 	sttsSaturated bool
 }
 

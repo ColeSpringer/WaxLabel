@@ -18,7 +18,7 @@ import (
 // path's timing zero while a reparse read it - desyncing the last-end canonicalization and
 // churning the file on an identical re-apply.
 func TestCollectMvhdAgreesWithMovieTimingOf(t *testing.T) {
-	payload := make([]byte, 50) // v0, 50 bytes: past the duration field (byte 20), before next_track_ID (byte 96)
+	payload := make([]byte, 50)                      // v0, 50 bytes: past the duration field (byte 20), before next_track_ID (byte 96)
 	binary.BigEndian.PutUint32(payload[12:16], 1000) // timescale
 	binary.BigEndian.PutUint32(payload[16:20], 9000) // duration
 	moovBytes := renderAtom(atomName("moov"), renderAtom(atomName("mvhd"), payload))
@@ -178,6 +178,35 @@ func TestBuildChapterTrakLeadingOffsetSaturates(t *testing.T) {
 	}
 	if _, _, sat := buildChapterTrak(2, 1000, 1000, 0, []core.Chapter{{Start: 0}, {Start: 5 * time.Second}}, false); sat {
 		t.Error("a normal chapter list must not flag saturation")
+	}
+}
+
+// TestBuildChapterTrakCumulativeSpanSaturates checks that a chapter list whose cumulative
+// span exceeds the 90 kHz mdhd/tkhd/elst 32-bit duration field flags saturation even when
+// every individual inter-chapter gap fits (chapterDeltas alone reports none). Without folding
+// the cumulative totalDur / totalDurMovie / firstStart+totalDurMovie spans into the flag, a
+// real >13.25 h audiobook would write a clamped, un-warned chapter-track duration. Mirrors the
+// report's repro (0:00 / 13:00:00 / 13:30:00) at the default 90 kHz chapter media timescale.
+func TestBuildChapterTrakCumulativeSpanSaturates(t *testing.T) {
+	const mts = chapterMediaTimescale // 90 kHz: MaxUint32 units is ~13.25 h
+	chs := []core.Chapter{
+		{Start: 0},
+		{Start: 13 * time.Hour},
+		{Start: 13*time.Hour + 30*time.Minute, End: 13*time.Hour + 30*time.Minute + time.Second},
+	}
+	// Each gap (13 h, then 30 min) is under the ~13.25 h per-field ceiling, so no per-gap stts
+	// delta clamps - the flag must come from the cumulative span, not a single delta.
+	if _, satDeltas := chapterDeltas(chs, mts, mts, 0); satDeltas {
+		t.Fatal("setup: no single inter-chapter gap should saturate the stts deltas")
+	}
+	// Their sum (~13.5 h of 90 kHz units) overflows the mdhd/tkhd/elst 32-bit field.
+	if _, _, sat := buildChapterTrak(2, mts, mts, 0, chs, false); !sat {
+		t.Error("a >13.25 h cumulative chapter span must flag saturation (mdhd/tkhd/elst clamped)")
+	}
+	// An ordinary sub-13.25 h list at the same timescale must not flag.
+	short := []core.Chapter{{Start: 0}, {Start: time.Hour}}
+	if _, _, sat := buildChapterTrak(2, mts, mts, 0, short, false); sat {
+		t.Error("an ordinary sub-13.25 h chapter list must not flag saturation")
 	}
 }
 

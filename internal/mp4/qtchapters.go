@@ -41,11 +41,14 @@ func be32u(n uint32) []byte {
 	return b[:]
 }
 
-// clampU32 saturates a 64-bit count to 32 bits for a v0 box field (the
-// tkhd/mdhd/elst durations). At an audio file's movie timescale (~1 ms) this
-// never bites - MaxUint32 ms is ~49 days; only an extreme media length under an
-// unusually high movie timescale (e.g. a video-style 90 kHz over ~13 h) could
-// saturate a duration. A per-sample stts delta is a 32-bit field by spec anyway.
+// clampU32 saturates a 64-bit count to 32 bits for a v0 box field. It is a generic helper
+// applied to both the 90 kHz media fields (the mdhd duration, and by spec each stts delta)
+// and the movie-timescale fields (the tkhd/elst durations), so the ceiling it enforces
+// depends on the caller. The tightest-binding caller is the fixed 90 kHz media field, which
+// saturates at ~13.25 h; the movie-unit fields clamp at the movie-timescale ceiling instead -
+// larger for a coarse ~1 ms timescale (MaxUint32 ms is ~49.7 days), or smaller for a hi-res
+// file whose movie timescale exceeds 90 kHz. buildChapterTrak folds every one of these fields
+// into the WarnChapterStartOverflow signal, so a clamp at any of them is surfaced, not silent.
 func clampU32(n uint64) uint32 {
 	if n > math.MaxUint32 {
 		return math.MaxUint32
@@ -261,10 +264,6 @@ func buildChapterTrak(trackID, mts, movieTimescale uint32, movieDuration uint64,
 	// (mdhd) stays totalDur. firstStart is 0 for a list starting at t=0, collapsing
 	// to the original equal-duration single-edit layout.
 	firstStart := chapterFirstStart(movieTimescale, chapters)
-	// A first chapter past ~49.7 days saturates the leading empty edit's 32-bit
-	// segment_duration even when every inter-chapter delta is small, so include it in
-	// the WarnChapterStartOverflow signal.
-	saturated = saturated || firstStart > math.MaxUint32
 	// mdhd.duration and the stts deltas are media-timescale (mts); tkhd.duration and the elst
 	// normal segment_duration are movie-timescale. With mts decoupled from the movie timescale,
 	// convert the media span into movie units for those two fields (the leading empty-edit
@@ -274,12 +273,24 @@ func buildChapterTrak(trackID, mts, movieTimescale uint32, movieDuration uint64,
 	if movieTimescale != 0 && movieTimescale != mts {
 		totalDurMovie = durationToUnits(scaleToDuration(totalDur, mts), movieTimescale)
 	}
+	// buildChapterTrak writes four clampU32 duration fields: the 90 kHz mdhd (totalDur) and three
+	// movie-unit fields - tkhd (firstStart+totalDurMovie), the elst normal segment (totalDurMovie),
+	// and the elst empty-edit segment (firstStart). Any clamp means the QuickTime track lost its
+	// exact duration, so fold them into the WarnChapterStartOverflow signal rather than the leading
+	// empty edit alone - in particular a chapter list whose cumulative span exceeds the field even
+	// when every inter-chapter delta is small. tkhdDur is the largest movie-unit field (firstStart
+	// >= 0), so checking it subsumes both elst segments; two terms cover all four. The fixed 90 kHz
+	// mdhd binds first at ~13.25 h, while a movie timescale above 90 kHz (a hi-res >=96 kHz file)
+	// makes tkhd bind sooner. tkhdDur is the same value passed to chapterTkhd below, so the check
+	// cannot drift from the field it guards.
+	tkhdDur := firstStart + totalDurMovie
+	saturated = saturated || totalDur > math.MaxUint32 || tkhdDur > math.MaxUint32
 
 	stbl := renderAtom(atomName("stbl"), slices.Concat(
 		chapterStsd(), buildStts(deltas), buildStsc(len(chapters)), buildStsz(chapters), buildStco(co64)))
 	minf := renderAtom(atomName("minf"), slices.Concat(chapterGmhd(), chapterDinf(), stbl))
 	mdia := renderAtom(atomName("mdia"), slices.Concat(chapterMdhd(mts, totalDur), chapterHdlr(), minf))
-	trak = renderAtom(atomName("trak"), slices.Concat(chapterTkhd(trackID, firstStart+totalDurMovie), chapterEdts(firstStart, totalDurMovie), mdia))
+	trak = renderAtom(atomName("trak"), slices.Concat(chapterTkhd(trackID, tkhdDur), chapterEdts(firstStart, totalDurMovie), mdia))
 
 	width := 4
 	if co64 {

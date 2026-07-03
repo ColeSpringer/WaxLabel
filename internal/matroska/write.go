@@ -124,6 +124,22 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		}
 	}
 
+	// Matroska homes the canonical Title in the single-valued Segment.Info.Title element, so
+	// only the first TITLE value survives a write (renderChanged pulls it with .First); every
+	// other canonical key keeps its full value list via the per-value SimpleTag loop. When an
+	// edit leaves more than one TITLE value, the extras are dropped at render - surface that as
+	// a keyed, --strict-visible WarnValueDropped (the same code MP4 uses for a trkn the atom
+	// cannot hold). Gate on ch.title (Title is split out from ch.simple in detectChanges), and
+	// place it here, before the planAbsorb/planShift split, so an absorb-then-shift retry cannot
+	// render it twice. Storage stays first-value-only; this only closes the honesty gap, and is
+	// complementary to the set-time single-valued-multi lint (which flags the input, not the drop).
+	if ch.title {
+		if vals, _ := edited.Tags.Get(tag.Title); len(vals) > 1 {
+			report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueDropped,
+				"Matroska stores only the first TITLE value; additional values were dropped", tag.Title)
+		}
+	}
+
 	// Re-rendering a default edition that carried nested sub-chapters or
 	// secondary-language titles drops that structure (the flat chapter model cannot
 	// hold it). Surface it as a plan-time warning rather than flattening silently -

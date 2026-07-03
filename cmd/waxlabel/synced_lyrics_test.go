@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -143,18 +144,22 @@ func TestTransferLabelSyncedLyrics(t *testing.T) {
 // The validation should not depend on parsing a target file.
 func TestCLISyncedLyricsLangValidation(t *testing.T) {
 	file := copyFixture(t, "../../testdata/notags.mp3")
-	for _, bad := range []string{"en", "english", "e1g"} {
+	for _, bad := range []string{"en", "zz", "english", "e1g"} {
 		_, errb, code := runCLI(t, "set", file, "--add-synced-lyric", "0:00=Hi", "--synced-lyrics-lang", bad)
 		if code != 2 {
 			t.Errorf("--synced-lyrics-lang %q exit = %d, want 2 (usage error)", bad, code)
 		}
-		if errb == "" {
-			t.Errorf("--synced-lyrics-lang %q: expected an error message", bad)
+		// The message promises 3 ASCII letters, not a full ISO-639-2 registry lookup (the
+		// validator accepts any 3 letters), so it must not overpromise a code check it never does.
+		if !strings.Contains(errb, "3 ASCII letters") {
+			t.Errorf("--synced-lyrics-lang %q message = %q, want it to mention \"3 ASCII letters\"", bad, errb)
 		}
 	}
-	// A valid code succeeds.
-	if _, errb, code := runCLI(t, "set", file, "--add-synced-lyric", "0:00=Hi", "--synced-lyrics-lang", "eng"); code != 0 {
-		t.Errorf("--synced-lyrics-lang eng exit = %d: %s", code, errb)
+	// Any 3 ASCII letters are accepted, including one that is not a registered ISO-639-2 code.
+	for _, ok := range []string{"eng", "zzz"} {
+		if _, errb, code := runCLI(t, "set", file, "--add-synced-lyric", "0:00=Hi", "--synced-lyrics-lang", ok); code != 0 {
+			t.Errorf("--synced-lyrics-lang %q exit = %d: %s", ok, code, errb)
+		}
 	}
 }
 

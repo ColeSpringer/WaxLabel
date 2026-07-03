@@ -43,6 +43,13 @@ func SaveBack() Destination { return Destination{kind: destSaveBack} }
 // resolves to the document's own source file spends the plan just as SaveBack does
 // (see [Plan.Execute]); writing to other paths leaves the plan reusable.
 //
+// For a [ParseFile] document it verifies the source file has not changed since parse
+// ([waxerr.ErrSourceChanged] otherwise), as SaveBack does: the copied byte offsets come
+// from the source as parsed, so a changed source would produce a corrupt file. Writing
+// in place (a target that resolves to the source) uses the full check; writing to another
+// path uses the precise inode+size+fingerprint check, so a benign mtime-only touch does
+// not block it. An [OpenSource] document reads stable in-memory bytes and is not checked.
+//
 // It needs a document that can resolve its own source bytes - one from [ParseFile]
 // or [OpenSource]. A detached document from [Parse] carries no source, so SaveAsFile
 // fails with [waxerr.ErrInvalidData]; write it with [WriteTo] and an explicit source
@@ -52,8 +59,57 @@ func SaveAsFile(path string) Destination { return Destination{kind: destSaveAsFi
 // WriteTo streams the complete output to w. The source bytes to copy come from
 // source (required when the document is detached, i.e. from [Parse]); for a
 // [ParseFile] or [OpenSource] document, pass nil to use its own source.
+//
+// When it reopens a [ParseFile] document's own source (source is nil), it first verifies
+// that file has not changed since parse ([waxerr.ErrSourceChanged] otherwise), as SaveBack
+// does - a streaming write never clobbers the source, so it uses the precise
+// inode+size+fingerprint check. An explicit source or an [OpenSource] document supplies
+// stable bytes and is not checked.
 func WriteTo(w io.Writer, source ReaderAtSized) Destination {
 	return Destination{kind: destWriteTo, w: w, source: source}
+}
+
+// verifySourceUnchanged confirms the on-disk source has not changed under the parsed
+// document since parse. It returns the source's current identity - so every caller can
+// report SaveResult{Dest: current} - and wraps [waxerr.ErrSourceChanged] on mismatch. It
+// recomputes the same stat plus the structural fingerprint of the metadata region as the
+// original save-back check, reusing the already-open src (the same handle the write copies
+// from) for the fingerprint, so no third open is needed. samePath selects the strength:
+//
+//   - samePath == true (SaveBack, or a SaveAsFile whose target resolves to the source):
+//     the full mtime-inclusive [Identity.Matches], staying conservative about clobbering
+//     the source.
+//   - samePath == false (a derived write - SaveAsFile to another path, WriteTo): the
+//     content-only [Identity.MatchesContent] (inode+size+fingerprint), so a benign
+//     mtime-only touch during a long parse->write window does not spuriously block a write
+//     whose planned byte offsets are still valid.
+func (p *Plan) verifySourceUnchanged(src core.ReaderAtSized, samePath bool) (core.Identity, error) {
+	current, err := fileIdentity(p.doc.path)
+	if err != nil {
+		return core.Identity{}, err
+	}
+	match := p.doc.media.Identity.Matches
+	if !samePath {
+		match = p.doc.media.Identity.MatchesContent
+	}
+	// Cheap stat comparison first (inode/size, plus mtime for a same-path write). current
+	// carries no fingerprint yet, so match skips its fingerprint arm here: a moved, resized, or
+	// re-inoded source is rejected without the read + SHA-256 the fingerprint would cost -
+	// potentially many MB for a large-cover file.
+	if ok, why := match(current); !ok {
+		return current, fmt.Errorf("%w: %s", waxerr.ErrSourceChanged, why)
+	}
+	// Stat matched; now fold in the structural fingerprint of the metadata region and re-check,
+	// so a tamper that preserved size, mtime, and inode is still caught.
+	if p.doc.media.Identity.HasFinger {
+		if fp, ok := core.Fingerprint(src, p.doc.media, p.opts.Limits.MaxAllocBytes); ok {
+			current.Fingerprint, current.HasFinger = fp, true
+			if ok, why := match(current); !ok {
+				return current, fmt.Errorf("%w: %s", waxerr.ErrSourceChanged, why)
+			}
+		}
+	}
+	return current, nil
 }
 
 func (p *Plan) saveBack(ctx context.Context) (*Document, SaveResult, error) {
@@ -68,20 +124,10 @@ func (p *Plan) saveBack(ctx context.Context) (*Document, SaveResult, error) {
 	}
 	defer src.Close()
 
-	// Strong change detection: stat plus the structural fingerprint of the
-	// metadata region (recomputed from the current file), so an external edit
-	// that preserved size and mtime is still caught.
-	current, err := fileIdentity(p.doc.path)
-	if err != nil {
-		return nil, SaveResult{}, err
-	}
-	if p.doc.media.Identity.HasFinger {
-		if fp, ok := core.Fingerprint(src, p.doc.media, p.opts.Limits.MaxAllocBytes); ok {
-			current.Fingerprint, current.HasFinger = fp, true
-		}
-	}
-	if ok, why := p.doc.media.Identity.Matches(current); !ok {
-		return nil, SaveResult{Dest: current}, fmt.Errorf("%w: %s", waxerr.ErrSourceChanged, why)
+	// Strong change detection: an in-place save uses the full check (mtime included),
+	// staying conservative about clobbering the source.
+	if current, err := p.verifySourceUnchanged(src, true); err != nil {
+		return nil, SaveResult{Dest: current}, err
 	}
 
 	// Contract: a no-op SaveBack writes nothing.
@@ -106,6 +152,19 @@ func (p *Plan) saveAsFile(ctx context.Context, path string) (*Document, SaveResu
 		return nil, SaveResult{}, err
 	}
 	defer closer()
+
+	// A ParseFile document resolves its source by reopening the current on-disk file, so a
+	// change since parse would make the planned byte offsets copy the wrong bytes - and for an
+	// in-place target, silently replace the source with the corruption. Verify the source is
+	// unchanged first, as SaveBack does. An in-place target gets the full mtime-inclusive check;
+	// another path gets the precise inode+size+fingerprint check. An OpenSource document reads
+	// stable in-memory bytes (no reopen), and a detached Parse doc fails resolveSource above, so
+	// neither reaches here.
+	if p.doc.reopensFileSource() {
+		if current, err := p.verifySourceUnchanged(src, sameFileTarget(path, p.doc.path)); err != nil {
+			return nil, SaveResult{Dest: current}, err
+		}
+	}
 
 	committed, werr := p.writeFile(ctx, path, src)
 	if committed && sameFileTarget(path, p.doc.path) {
@@ -164,6 +223,17 @@ func (p *Plan) writeTo(ctx context.Context, dst Destination) (*Document, SaveRes
 		return nil, SaveResult{}, err
 	}
 	defer closer()
+
+	// Like SaveAsFile, a ParseFile document with no explicit source reopens the on-disk file,
+	// so verify it is unchanged before copying its (possibly stale) byte offsets. A streaming
+	// writer never clobbers the source, so this is always a derived write - the precise
+	// inode+size+fingerprint check (mtime skipped). An explicit WriteTo(w, source) or an
+	// OpenSource document reads caller-supplied / in-memory bytes and needs no check.
+	if dst.source == nil && p.doc.reopensFileSource() {
+		if current, err := p.verifySourceUnchanged(src, false); err != nil {
+			return nil, SaveResult{Dest: current}, err
+		}
+	}
 
 	// A streaming destination cannot be re-read, so VerifyEssence (which checks
 	// the written bytes) does not apply here.

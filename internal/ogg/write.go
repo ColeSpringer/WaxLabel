@@ -94,6 +94,33 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 		report.Operations = append(report.Operations, "vendor stamp neutralized")
 	}
 
+	// Guard against emitting a cover a default-limit reader would then refuse. Only a picture
+	// can realistically push the comment packet past the alloc ceiling (tags, chapters, and
+	// synced lyrics are all bounded well below it), so weigh the rendered covers - the Ogg
+	// analogue of MP4's per-item checkBuiltItems - floored at the largest cover already in the
+	// file. Those parsed covers were read within the (possibly raised) parse limit, so writing
+	// them back is always safe even though the write limit defaults lower; without the floor an
+	// unrelated tag edit on a file whose cover was parsed under WithLimits could never be written
+	// back. A genuinely new cover larger than anything the file held is still rejected. Gate on
+	// the write limit (opts.Limits), like the sibling MP4 check, not a hardcoded default.
+	// --verify would miss this: its structural re-parse floors the alloc cap at the output size,
+	// so the failure belongs at write time.
+	limit := opts.Limits.MaxAllocBytes
+	if limit <= 0 {
+		limit = bits.DefaultLimits.MaxAllocBytes
+	}
+	for _, p := range d.pictures { // covers already in the file, read within the parse limit
+		if n := vorbis.PictureCommentLen(p); n > limit {
+			limit = n
+		}
+	}
+	for _, p := range edited.Pictures {
+		if n := vorbis.PictureCommentLen(p); n > limit {
+			return nil, fmt.Errorf("%w: Ogg cover art is %s (max %s)",
+				waxerr.ErrPictureTooLarge, bits.HumanBytes(n), bits.HumanBytes(limit))
+		}
+	}
+
 	// Re-paginate the header tail (everything after the BOS id page): the new
 	// comment packet (with the possibly-neutralized vendor), plus the Vorbis setup packet
 	// preserved verbatim.

@@ -108,10 +108,29 @@ type Identity struct {
 }
 
 // Matches reports whether other is the same source this identity was recorded
-// from, and a reason string when it is not. It is the single change-detection
-// rule, checking inode/device, size, modification time, and (when both sides
-// have one) the structural fingerprint.
+// from, and a reason string when it is not. It is the change-detection rule for a
+// conservative in-place save (SaveBack, or a SaveAsFile whose target resolves to the
+// source): the full content check plus the modification time. A derived write - to
+// another path or a streaming writer - uses [Identity.MatchesContent] instead, which
+// omits the mtime so a benign touch during a long parse->write window does not spuriously
+// block a write whose byte offsets are still valid.
 func (id Identity) Matches(other Identity) (bool, string) {
+	if ok, why := id.MatchesContent(other); !ok {
+		return false, why
+	}
+	if id.ModTimeUnixNano != 0 && other.ModTimeUnixNano != 0 && id.ModTimeUnixNano != other.ModTimeUnixNano {
+		return false, "modification time changed"
+	}
+	return true, ""
+}
+
+// MatchesContent reports whether other has the same byte content as this identity -
+// inode/device, size, and (when both sides have one) the structural fingerprint - but
+// NOT the modification time. A moved audio region always changes the size and/or the
+// fingerprint, so mtime says nothing about whether the recorded byte offsets are still
+// valid; a derived write skips it to avoid a false positive from an mtime-only touch.
+// [Identity.Matches] layers the mtime check on top for the in-place case.
+func (id Identity) MatchesContent(other Identity) (bool, string) {
 	if id.INode != 0 && other.INode != 0 {
 		if id.INode != other.INode || id.Device != other.Device {
 			return false, "file inode changed"
@@ -119,9 +138,6 @@ func (id Identity) Matches(other Identity) (bool, string) {
 	}
 	if id.Size != other.Size {
 		return false, fmt.Sprintf("size changed (%d -> %d)", id.Size, other.Size)
-	}
-	if id.ModTimeUnixNano != 0 && other.ModTimeUnixNano != 0 && id.ModTimeUnixNano != other.ModTimeUnixNano {
-		return false, "modification time changed"
 	}
 	if id.HasFinger && other.HasFinger && id.Fingerprint != other.Fingerprint {
 		return false, "metadata fingerprint changed"

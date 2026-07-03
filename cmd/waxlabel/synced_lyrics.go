@@ -48,7 +48,7 @@ func (e *editFlags) syncedLyricsAdds() ([]wl.SyncedLyrics, error) {
 	// longer value would be padded or truncated.
 	authoring := e.syncedLyricsFile != "" || len(e.addSyncedLyric) > 0
 	if authoring && e.syncedLyricsLang != "" && !validLanguageCode(e.syncedLyricsLang) {
-		return nil, usagef("--synced-lyrics-lang %q must be a 3-letter ISO-639-2 code (e.g. eng)", e.syncedLyricsLang)
+		return nil, usagef("--synced-lyrics-lang %q must be 3 ASCII letters (e.g. eng)", e.syncedLyricsLang)
 	}
 	var lines []wl.SyncedLine
 	if e.syncedLyricsFile != "" {

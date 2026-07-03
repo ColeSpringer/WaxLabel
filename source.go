@@ -72,6 +72,15 @@ func fileIdentity(path string) (core.Identity, error) {
 	return id, nil
 }
 
+// reopensFileSource reports whether resolving this document's own source (no explicit
+// override) reopens its file from disk rather than reusing in-memory bytes. It is true only for
+// a ParseFile document (a path, no retained src); an OpenSource document (src set) or a detached
+// Parse document (no path) is false. It gates the source-unchanged guard on the write paths:
+// only a reopened file can have changed under the parsed document since parse.
+func (d *Document) reopensFileSource() bool {
+	return d.src == nil && d.path != ""
+}
+
 // resolveSource selects the bytes to read for a write or a hash: an explicit
 // source, else the document's in-memory source (from OpenSource), else its file
 // reopened (from ParseFile). The returned closer must always be called. Both

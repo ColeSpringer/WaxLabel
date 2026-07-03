@@ -68,6 +68,22 @@ func TestPictureDecodePreservesStoredMIME(t *testing.T) {
 	}
 }
 
+// TestPictureCommentLenMatchesRender pins the arithmetic PictureCommentLen to the actual
+// RenderPicture layout, so the write-side size guard cannot silently under-count a cover if
+// RenderPicture ever gains or loses a field.
+func TestPictureCommentLenMatchesRender(t *testing.T) {
+	for _, p := range []core.Picture{
+		{Type: core.PicFrontCover, MIME: "image/png", Description: "cover", Data: make([]byte, 5000)},
+		{Type: core.PicOther, MIME: "", Description: "", Data: nil},
+		{Type: core.PicBackCover, MIME: "image/jpeg", Description: "描述", Data: []byte{1, 2, 3}},
+	} {
+		want := int64(base64.StdEncoding.EncodedLen(len(RenderPicture(p))))
+		if got := PictureCommentLen(p); got != want {
+			t.Errorf("PictureCommentLen(%q,%d bytes) = %d, want %d (must track RenderPicture)", p.MIME, len(p.Data), got, want)
+		}
+	}
+}
+
 // TestParseCommentListCountCapped verifies that ParseCommentList stops at maxElements
 // with ErrSizeTooLarge. The comment count is an attacker-controlled uint32, and an Ogg
 // comment packet is bounded only by the alloc limit, so a run of minimum entries would

@@ -147,6 +147,43 @@ func TestF3WarnsWhenEditedTagDropsStructure(t *testing.T) {
 	}
 }
 
+// TestMatroskaWarnsWhenExtraTitleValueDropped is the O1 regression: Matroska homes the
+// canonical Title in the single-valued Info.Title, so a multi-valued TITLE edit keeps only
+// the first value. That drop must surface as a keyed value-dropped warning (visible to
+// --strict) rather than vanish with exit 0, and only the first value is stored.
+func TestMatroskaWarnsWhenExtraTitleValueDropped(t *testing.T) {
+	src := segBytes(cat(mkInfo("First"), emptyCluster()))
+	base := parseMKA(t, src)
+
+	edited := base.Clone()
+	edited.Tags.Set(tag.Title, "First")  // --set TITLE=First
+	edited.Tags.Add(tag.Title, "Second") // --add TITLE=Second
+
+	plan, err := Codec{}.Plan(context.Background(), base, edited, core.DefaultWriteOptions())
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	warned := false
+	for _, w := range plan.Report.Warnings {
+		if w.Code == core.WarnValueDropped {
+			warned = true
+			if len(w.Keys) != 1 || w.Keys[0] != tag.Title {
+				t.Errorf("value-dropped keys = %v, want [TITLE]", w.Keys)
+			}
+		}
+	}
+	if !warned {
+		t.Errorf("a multi-valued TITLE edit must warn value-dropped; got %v", plan.Report.Warnings)
+	}
+
+	// Only the first value survives a round-trip; the extra is dropped as warned.
+	re := parseMKA(t, renderPlan(t, src, plan))
+	if got, _ := re.Tags.Get(tag.Title); len(got) != 1 || got[0] != "First" {
+		t.Errorf("stored TITLE = %v, want [First] (extra value dropped)", got)
+	}
+}
+
 // structuredChaptersMKA builds a Matroska file whose default-edition chapter carries the
 // full structure modern mkvmerge writes: a ChapLanguage, a ChapLanguageIETF, and explicit
 // hidden/disabled flags. allModeled controls whether the chapter has only modeled children
