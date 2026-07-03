@@ -90,12 +90,16 @@ func readInputs(stdin io.Reader, paths []string) (realOf func(string) string, cl
 // parseInput parses the file at realPath but reports it under origPath's display
 // name, so a buffered-stdin temp path never leaks into the library's
 // "could not identify" error. realPath is the path actually read (the temp
-// file for "-"); origPath is the user's argument ("-" or the real path), which
-// displayName turns into "<stdin>" or a sanitized path. Routing every read
-// command's ParseFile through this one helper keeps the source-name plumbing from
-// being forgotten at a call site. extra carries any per-call parse options.
+// file for "-"); origPath is the user's argument ("-" or the real path). The source
+// name is the raw path (jsonFileName maps only "-" to "<stdin>"), not the sanitized
+// displayName: the library's "could not identify %q" already escapes control bytes
+// once via %q, so passing an already-sanitized name would double-escape a tab as
+// "\\x09". The CLI's own path label still goes through displayName (perFileError).
+// Routing every read command's ParseFile through this one helper keeps the
+// source-name plumbing from being forgotten at a call site. extra carries any
+// per-call parse options.
 func parseInput(ctx context.Context, realPath, origPath string, extra ...wl.ParseOption) (*wl.Document, error) {
-	return wl.ParseFile(ctx, realPath, append(extra, wl.WithSourceName(displayName(origPath)))...)
+	return wl.ParseFile(ctx, realPath, append(extra, wl.WithSourceName(jsonFileName(origPath)))...)
 }
 
 // expandPaths expands directory arguments into the audio files they contain when

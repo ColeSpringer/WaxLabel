@@ -125,7 +125,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// rendering the comment list; surface it as a write-time warning (before DowngradeNoOp, so
 	// it is visible). The clamp itself keeps the value readable, so result != base and the
 	// write proceeds rather than collapsing to a silent no-op.
-	report.Warnings = vorbis.OverflowWarnings(report.Warnings, rebuildInfo)
+	report.Warnings = vorbis.RebuildWarnings(report.Warnings, rebuildInfo)
 
 	result := buildResult(edited, d, newVendor, finalBlocks, newComments, newLeadingLen, audioOutStart, audioLen, newTrailingLen, newSize)
 

@@ -21,6 +21,14 @@ type Document struct {
 	// path is set by ParseFile; src is an in-memory source set by OpenSource.
 	path string
 	src  core.ReaderAtSized
+
+	// limits records the allocation/recursion limits this document was parsed under, so a
+	// later write with WithVerifyEssence can re-parse the output under the same ceilings the
+	// original parse cleared. Without it, a document parsed with an elevated WithLimits (a deep
+	// tree, many elements, or a cover past the default cap) would fail its own structural
+	// re-verification under the default limits and abort a valid write. Zero value = the library
+	// defaults, which parseSource resolves the same way parse does.
+	limits Limits
 }
 
 // zero reports whether d is a nil or uninitialized Document (no parsed media).
@@ -81,7 +89,16 @@ func (d *Document) Pictures() []Picture {
 	if d.zero() {
 		return nil
 	}
-	return clonePicturesDeep(d.media.Pictures)
+	// Display projection: reconcile each returned cover's MIME/dimensions with its own bytes, so a
+	// mislabeled cover shows its real type and a junk cover degrades to the unrecognized MIME that
+	// lint flags. media.Pictures itself stays stored (it is the edit/write source), so this sniff is
+	// confined to the detached copy the caller sees. Idempotent for the id3/mp4/matroska codecs,
+	// whose decoders already store the sniffed type.
+	pics := clonePicturesDeep(d.media.Pictures)
+	for i := range pics {
+		pics[i].SniffAuthoritative()
+	}
+	return pics
 }
 
 // Chapters returns the navigation chapters as a detached copy, in file order.

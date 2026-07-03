@@ -85,6 +85,26 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 	d.moov = refPtr(moov)
 
+	// A gap between where moov's children end and moov.end() corrupts a create-ilst edit the
+	// same way the meta gap (below) does: with no udta present, buildCreated appends the new
+	// udta/meta/ilst at moov.end() (write.go, the default branch), but a re-parse resolves
+	// moov's children at their recorded ends (earlier), so the inserted tag path lands past a
+	// stray all-zero remainder and misaligns. walkAtoms tolerates that remainder (the
+	// udta-terminator rule), so it must be rejected here - the exact analogue of the meta guard,
+	// sharing the trailingGap predicate. Scoped to a moov with no udta: with a udta the insert
+	// targets udta.end() (guarded by udtaCleanLen) or meta.end() (guarded by the meta gap check),
+	// so a valid file that zero-pads moov around a present udta still writes correctly and must not
+	// be rejected. A childless truncated moov (gap == moov payload) is rejected too.
+	if _, ok := moov.find("udta"); !ok {
+		if gap := trailingGap(src, moov, limit); gap > 0 {
+			// No "(truncated)" qualifier: the gap can come from a truncated download or a muxer's
+			// structural pad, and moov.truncated is surfaced separately as a warning when the clamp
+			// tiles cleanly. This matches the meta guard's wording.
+			return nil, fmt.Errorf("%w: moov atom has %d unusable trailing byte(s)",
+				waxerr.ErrInvalidData, gap)
+		}
+	}
+
 	if err := collectOffsetTables(ctx, src, moov, d, limit); err != nil {
 		return nil, err
 	}
@@ -118,22 +138,15 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			// first child at childStart/last-child-end (earlier), so the ilst lands misaligned.
 			// walkAtoms tolerates an all-zero gap (the udta-terminator rule), so it must be
 			// rejected here instead. Only a meta with no ilst can take that append path (an
-			// existing ilst is edited in place), so the check is scoped to !hasIlst. childEnd is
-			// the last child's end, or - only when there are no children - the child-start
-			// position, which is read lazily since a has-children meta (the common case) never
-			// needs it. This covers the bare (9-11 byte) and FullBox-with-zero-pad (13-15+ byte)
-			// shapes uniformly; an empty bare meta (size 8) and an empty FullBox meta (size 12)
-			// have no gap and edit cleanly, as does a meta whose hdlr child tiles to its end.
+			// existing ilst is edited in place), so the check is scoped to !hasIlst. trailingGap
+			// (shared with the moov guard above) covers the bare (9-11 byte) and FullBox-with-zero-
+			// pad (13-15+ byte) shapes uniformly; an empty bare meta (size 8) and an empty FullBox
+			// meta (size 12) have no gap and edit cleanly, as does a meta whose hdlr child tiles to
+			// its end.
 			if !hasIlst {
-				var childEnd int64
-				if n := len(meta.children); n > 0 {
-					childEnd = meta.children[n-1].end()
-				} else {
-					childEnd = childStart(src, meta, limit)
-				}
-				if childEnd < meta.end() {
+				if gap := trailingGap(src, meta, limit); gap > 0 {
 					return nil, fmt.Errorf("%w: moov.udta.meta has %d unusable trailing byte(s)",
-						waxerr.ErrInvalidData, meta.end()-childEnd)
+						waxerr.ErrInvalidData, gap)
 				}
 			}
 			d.meta = refPtr(meta)
@@ -168,6 +181,12 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	// An mdat atom declared more bytes than the file holds: a truncated MP4.
 	if d.mdatTruncated {
 		media.Warnings = core.WarnTruncated(media.Warnings, "an mdat atom")
+	}
+	// The moov atom itself was clamped to EOF (a truncated download whose remaining bytes
+	// still tile cleanly to moov.end(), so the guard above accepted it). Surface it like the
+	// mdat truncation so the degraded structure is not silently reported as clean.
+	if moov.truncated {
+		media.Warnings = core.WarnTruncated(media.Warnings, "the moov atom")
 	}
 	media.Properties = core.Properties{Container: "MP4", Tracks: []core.AudioTrack{d.track}}
 	setEssence(d, media)

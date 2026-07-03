@@ -7,9 +7,88 @@ import (
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
+
+// TestCopyChapterTitleTooLongReportsLossy covers Finding 14: MP4's Nero chpl truncates a chapter
+// title past 255 bytes, so copying a chapter whose title exceeds that to MP4 must grade the chapter
+// set Lossy (with the truncation reason) rather than advertise a clean carry. FLAC/Ogg have no such
+// cap, so the same title stays Carried there.
+func TestCopyChapterTitleTooLongReportsLossy(t *testing.T) {
+	longTitle := strings.Repeat("x", 300)
+	// A FLAC source carrying one chapter with a 300-byte title (FLAC has no title cap).
+	srcBase := readFixture(t, "../testdata/notags.flac")
+	plan0, err := mustParseBytes(t, srcBase).Edit().SetChapters(wl.Chapter{Start: 0, Title: longTitle}).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := mustParseBytes(t, applyToBytes(t, srcBase, plan0))
+	if chs := src.Chapters(); len(chs) != 1 || len(chs[0].Title) != 300 {
+		t.Fatalf("setup: source should carry one 300-byte-title chapter, got %v", chs)
+	}
+
+	// Onto an MP4 destination the title exceeds the 255-byte chpl cap -> Lossy.
+	dstMP4 := mustParseBytes(t, readFixture(t, "../testdata/notags.m4a"))
+	_, reportMP4, err := src.PrepareTransfer(dstMP4)
+	if err != nil {
+		t.Fatalf("PrepareTransfer to MP4: %v", err)
+	}
+	if it := chapterItem(t, reportMP4); it.Disposition != wl.Lossy || !strings.Contains(it.Reason, "too long") {
+		t.Errorf("MP4 chapter carry = %s (%q), want Lossy with the truncation reason", it.Disposition, it.Reason)
+	}
+
+	// FLAC has no title cap, so the same title stays Carried.
+	dstFLAC := mustParseBytes(t, readFixture(t, "../testdata/notags.flac"))
+	_, reportFLAC, err := src.PrepareTransfer(dstFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it := chapterItem(t, reportFLAC); it.Disposition != wl.Carried {
+		t.Errorf("FLAC chapter carry = %s, want Carried (no title byte cap)", it.Disposition)
+	}
+}
+
+// chapterItem returns the single chapter transfer item from a report, failing if absent.
+func chapterItem(t *testing.T, r wl.TransferReport) wl.TransferItem {
+	t.Helper()
+	for _, it := range r.Items {
+		if it.Kind == wl.TransferChapter {
+			return it
+		}
+	}
+	t.Fatal("no chapter transfer item in report")
+	return wl.TransferItem{}
+}
+
+// TestCopyTrimsMediaType covers Finding 9 on the copy path: a source whose MEDIATYPE comment carries
+// surrounding whitespace (stored raw here, bypassing the writer's own trim) transfers the trimmed
+// single-token value to the destination, matching the set path so set, lint, and copy agree on the
+// stored form. REPLAYGAIN_* keys describe the source's own audio, so copy excludes them entirely
+// (their trim is exercised on the set/lint paths); the widened transfer gate keeps them aligned with
+// TrimTokenValue for any value that does reach the value-level grading.
+func TestCopyTrimsMediaType(t *testing.T) {
+	srcBytes := flacWithCommentBlock([]vorbis.Comment{
+		{Name: "MEDIATYPE", Value: " 2 "},
+		{Name: "REPLAYGAIN_TRACK_GAIN", Value: " -7.30 dB "},
+	})
+	src := mustParseBytes(t, srcBytes)
+	dstBytes := readFixture(t, "../testdata/notags.flac")
+	dst := mustParseBytes(t, dstBytes)
+
+	plan, _, err := src.PrepareTransfer(dst)
+	if err != nil {
+		t.Fatalf("PrepareTransfer: %v", err)
+	}
+	result := mustParseBytes(t, applyToBytes(t, dstBytes, plan))
+	if got, _ := result.Get(tag.MediaType); len(got) != 1 || got[0] != "2" {
+		t.Errorf("copied MEDIATYPE = %v, want [\"2\"] (surrounding whitespace trimmed)", got)
+	}
+	if got, _ := result.Get(tag.ReplayGainTrackGain); len(got) != 0 {
+		t.Errorf("REPLAYGAIN_TRACK_GAIN should not be carried by copy (own-audio), got %v", got)
+	}
+}
 
 // tinyGIF returns a minimal recognized GIF89a header (3x5, 8-bit GCT), a cover format
 // MP4's covr atom cannot label.

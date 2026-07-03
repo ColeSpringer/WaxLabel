@@ -155,5 +155,5 @@ func parseSource(ctx context.Context, src ReaderAtSized, path string, opts core.
 		media.Warnings = core.Warn(media.Warnings, core.WarnNoAudioFrames,
 			"no audio essence found; file may be tag-only or truncated")
 	}
-	return &Document{media: media}, nil
+	return &Document{media: media, limits: opts.Limits}, nil
 }

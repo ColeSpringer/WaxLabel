@@ -248,6 +248,15 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapte
 	}
 	for _, k := range edited.Keys() {
 		if changed[k] && !emitted[k] {
+			// A newly-added key in the reserved CHAPTERxxx/CHAPTERxxxNAME namespace cannot be
+			// written as a custom field: on read it is owned by the chapter model, not the tag
+			// view, so writing it would leave a stray comment the reader consumes as a chapter and
+			// the key vanishes silently. Record it so the caller warns value-dropped, and skip it
+			// rather than emit an unreadable custom comment.
+			if isChapterComment(mapping.VorbisName(k)) {
+				info.ReservedChapterKeys = append(info.ReservedChapterKeys, k)
+				continue
+			}
 			emit(k, mapping.VorbisName(k)) // newly-added key: the preferred Vorbis spelling
 		}
 	}
@@ -277,14 +286,22 @@ type RebuildInfo struct {
 	// SyncedLyricsOverflow is set when a synced-lyric line's timestamp exceeded the LRC
 	// timestamp ceiling and was clamped to it.
 	SyncedLyricsOverflow bool
+	// ReservedChapterKeys lists newly-added keys in the reserved CHAPTERxxx/CHAPTERxxxNAME
+	// namespace that cannot be written as custom fields: on read they are owned by the chapter
+	// model, not the tag view, so writing one would leave a stray comment the reader silently
+	// consumes as a chapter. They are dropped rather than written, and the caller surfaces a
+	// value-dropped warning per key.
+	ReservedChapterKeys []tag.Key
 }
 
-// OverflowWarnings appends the write-time warnings for the clamps RebuildInfo recorded,
-// so an over-range chapter or synced-lyric timestamp surfaces the same coded warning that
-// MP4/ID3 emit. FLAC and Ogg share it, keeping their two write paths aligned. These are
-// write-report warnings, not post-write document warnings: the stored value sits at the
-// codec ceiling and re-parses cleanly, so a fresh parse of the output emits neither.
-func OverflowWarnings(prior []core.Warning, info RebuildInfo) []core.Warning {
+// RebuildWarnings appends the write-time warnings for what [Rebuild] recorded in RebuildInfo:
+// the codec-ceiling clamps (an over-range chapter or synced-lyric timestamp, surfacing the same
+// coded warning MP4/ID3 emit) and the reserved-namespace drops (a custom key in the CHAPTERxxx
+// space that cannot be written as a tag). FLAC and Ogg share it, keeping their two write paths
+// aligned. The clamp warnings are write-report only - the stored value sits at the codec ceiling
+// and re-parses cleanly, so a fresh parse emits neither - while a reserved-key drop is a real
+// value loss carried through even a no-op (via DowngradeNoOp) so it is never silent.
+func RebuildWarnings(prior []core.Warning, info RebuildInfo) []core.Warning {
 	if info.ChapterOverflow {
 		prior = core.Warn(prior, core.WarnChapterStartOverflow,
 			"a chapter start exceeded the CHAPTERxxx timestamp limit and was clamped")
@@ -292,6 +309,10 @@ func OverflowWarnings(prior []core.Warning, info RebuildInfo) []core.Warning {
 	if info.SyncedLyricsOverflow {
 		prior = core.Warn(prior, core.WarnSyncedLyricsTimestampClamped,
 			"a synced-lyric timestamp exceeded the LRC timestamp limit and was clamped")
+	}
+	for _, k := range info.ReservedChapterKeys {
+		prior = core.WarnKeyed(prior, core.WarnValueDropped,
+			fmt.Sprintf("%s is in the reserved chapter namespace and cannot be written as a custom field", k), k)
 	}
 	return prior
 }

@@ -431,6 +431,10 @@ func TestDroppedDateDetection(t *testing.T) {
 		// A shaped-but-invalid date still has an extractable year, so only sub-year
 		// precision is lost - not the whole value - and it is not flagged dropped.
 		{"v23 recording shaped-but-invalid keeps year", tag.RecordingDate, "2021-13-45", 3, false},
+		// Finding 10: a malformed 5-digit year and a non-canonical compact form have no valid
+		// 4-digit year (they must not truncate to "1000"/"2021"), so both drop entirely.
+		{"v23 recording 5-digit year dropped", tag.RecordingDate, "10000", 3, true},
+		{"v23 recording compact form dropped", tag.RecordingDate, "20210503", 3, true},
 		{"v24 recording no year stores string", tag.RecordingDate, "Unknown", 4, false},
 	}
 	for _, c := range cases {

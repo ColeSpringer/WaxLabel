@@ -817,7 +817,7 @@ func notifyUnknownKeys(errOut io.Writer, ce *compiledEdit, strict, asJSON bool) 
 		return usagef("unknown key(s) not in the canonical vocabulary: %s (omit --strict to write them as custom fields)", keyList(ks))
 	})
 	for _, k := range note {
-		fmt.Fprintf(errOut, "note: %s is not a known key; written as a custom field%s\n", k, didYouMean(k))
+		fmt.Fprintf(errOut, "note: %s is not a known key; treated as a custom field where the format permits%s\n", k, didYouMean(k))
 	}
 	// One trailing hint after the per-key lines (not per key, so five unknown keys do
 	// not repeat it five times) points at the discovery command for the canonical
@@ -873,7 +873,7 @@ func notifyValueNotes(errOut io.Writer, e *editFlags, asJSON bool) {
 		// Match the writer's numeric trim so the advisory describes the stored value.
 		// A padded number is checked in its trimmed form, and whitespace-only input uses
 		// the empty-value note below instead of a misleading malformed-value note.
-		v = tag.TrimNumericValue(k, v)
+		v = tag.TrimTokenValue(k, v)
 		if v == "" {
 			// A present-but-empty --set value, distinct from --clear (which removes the
 			// key). No file has been inspected yet, so the note cannot promise a specific
@@ -888,7 +888,7 @@ func notifyValueNotes(errOut io.Writer, e *editFlags, asJSON bool) {
 		// An empty --add value is not the same as an empty --set value: --clear is a
 		// replacement operation, not an append. Numeric trimming still mirrors the writer.
 		if k, v, err := splitAssign(kv); err == nil {
-			if v = tag.TrimNumericValue(k, v); v != "" {
+			if v = tag.TrimTokenValue(k, v); v != "" {
 				noteMalformedValue(errOut, k, v)
 			}
 		}
@@ -1099,17 +1099,23 @@ func (ce *compiledEdit) prepare(ctx context.Context, realPath, origPath string) 
 			base = nil
 		}
 		// Dedup CLI additions against the accumulated list (existing chapters plus earlier
-		// additions), skipping matches on the fields the CLI can author: Start, End, and Title.
-		// It deliberately ignores the parse-derived fields (Language/LanguageIETF/hidden/
-		// disabled) a Matroska chapter may carry - a CLI addition leaves those zero, so a full
-		// struct == would never match an existing chapter that has a language and would write a
-		// spurious duplicate. Additions have End == 0, so an on-disk chapter with the same
-		// start/title and a real end time is kept as a distinct chapter. The library API still
-		// permits callers to set duplicates.
+		// additions), skipping matches on the fields the CLI can author: Start and Title, plus End
+		// only when the addition carries one. It deliberately ignores the parse-derived fields
+		// (Language/LanguageIETF/hidden/disabled) a Matroska chapter may carry - a CLI addition
+		// leaves those zero, so a full struct == would never match an existing chapter that has a
+		// language and would write a spurious duplicate. A CLI addition also has End == 0 (there is
+		// no end syntax), while an MP4 chapter reads back an End derived from the next chapter's
+		// start; requiring End equality would then never match, so re-adding an existing MP4 chapter
+		// wrote a duplicate. Ignore the derived end when the addition has none (add.End == 0): a flat
+		// chapter list cannot hold two chapters at one start, so matching Start+Title is safe. The
+		// `add.End == 0` short-circuit makes the End comparison inert for today's CLI (which authors
+		// no end); the `c.End == add.End` arm keeps the dedup precise if end-authoring is ever added,
+		// so two chapters at one start+title but different ends would not then wrongly merge. The
+		// library API still permits callers to set duplicates.
 		merged := slices.Clone(base)
 		for _, add := range ce.chapters {
 			dup := slices.ContainsFunc(merged, func(c wl.Chapter) bool {
-				return c.Start == add.Start && c.End == add.End && c.Title == add.Title
+				return c.Start == add.Start && c.Title == add.Title && (add.End == 0 || c.End == add.End)
 			})
 			if !dup {
 				merged = append(merged, add)

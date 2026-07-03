@@ -118,6 +118,42 @@ func TestSyncedLyricsWriteInvariant(t *testing.T) {
 	}
 }
 
+// TestNoOpWriteOnLyricedFLACByteIdentical is the Finding 2 preservation pin: an edit that does not
+// touch synced lyrics never re-serializes them through FormatLRC, so a no-op write on a
+// lyrics-bearing FLAC is byte-identical and an unrelated title edit leaves the synced lyrics intact
+// on re-parse. This is what keeps the new space-separator convention from silently rewriting (and,
+// for a file an older WaxLabel already corrupted, re-touching) the lyrics block on every save.
+func TestNoOpWriteOnLyricedFLACByteIdentical(t *testing.T) {
+	src, err := os.ReadFile("../testdata/notags.flac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := wl.SyncedLyrics{Lines: sampleSyncedLines} // the LRC store keeps only the timed lines
+	lyricPlan, err := mustParseBytes(t, src).Edit().SetSyncedLyrics(set).Prepare()
+	if err != nil {
+		t.Fatalf("Prepare lyrics: %v", err)
+	}
+	lyriced := applyToBytes(t, src, lyricPlan)
+
+	// A no-op write must reproduce the exact bytes (the crown-jewel invariant), proving the lyrics
+	// block is copied verbatim rather than re-emitted through FormatLRC.
+	noop, err := mustParseBytes(t, lyriced).Edit().Prepare()
+	if err != nil {
+		t.Fatalf("Prepare no-op: %v", err)
+	}
+	if out := applyToBytes(t, lyriced, noop); !bytes.Equal(out, lyriced) {
+		t.Errorf("no-op write on a lyrics-bearing FLAC changed bytes: %d -> %d", len(lyriced), len(out))
+	}
+
+	// An unrelated title edit must keep the synced lyrics intact and unchanged on re-parse.
+	titlePlan, err := mustParseBytes(t, lyriced).Edit().Set(tag.Title, "Unrelated").Prepare()
+	if err != nil {
+		t.Fatalf("Prepare title edit: %v", err)
+	}
+	edited := applyToBytes(t, lyriced, titlePlan)
+	assertSyncedLines(t, "after unrelated title edit", mustParseBytes(t, edited).SyncedLyrics(), sampleSyncedLines)
+}
+
 // TestSyncedLyricsCapabilityConsistency keeps synced-lyrics capability fields equal across
 // codecs that share the same physical store, and confirms the two stores differ in the
 // expected way: SYLT is lossless, while the LRC store drops language and descriptor.

@@ -97,11 +97,11 @@ func TestTransferDateDispositionV23(t *testing.T) {
 	}{
 		{tag.OriginalDate, "2021", wl.Carried},               // bare year stored as-is by TORY
 		{tag.OriginalDate, "2021-05-03", wl.Lossy},           // TORY truncates a full date to the year
-		{tag.OriginalDate, "20210503", wl.Lossy},             // non-dash separator: still truncated to the year
-		{tag.OriginalDate, "2021.05.03", wl.Lossy},           // dot separator: still truncated
+		{tag.OriginalDate, "20210503", wl.Dropped},           // non-canonical compact form: no valid 4-digit year -> dropped
+		{tag.OriginalDate, "2021.05.03", wl.Dropped},         // dotted form: no valid 4-digit year -> dropped
 		{tag.OriginalDate, "not-a-date", wl.Dropped},         // no numeric year: TORY renders no frame
 		{tag.RecordingDate, "2021-05-03", wl.Carried},        // full date stored losslessly in TYER+TDAT
-		{tag.RecordingDate, "20210503", wl.Lossy},            // non-dash: TDAT can't parse it -> truncated to year
+		{tag.RecordingDate, "20210503", wl.Dropped},          // non-canonical compact form: no valid 4-digit year -> dropped
 		{tag.RecordingDate, "2021-06-15T08:30:45", wl.Lossy}, // TIME drops the seconds
 		{tag.RecordingDate, "2021-06-15T08:30", wl.Carried},  // minute precision is kept
 		{tag.RecordingDate, "garbage", wl.Dropped},           // no numeric year: TYER renders no frame

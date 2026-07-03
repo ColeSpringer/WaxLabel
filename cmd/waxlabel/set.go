@@ -401,7 +401,7 @@ func runSet(cmd *cobra.Command, paths []string, pathErrors map[string]error, rea
 		} else if !quiet {
 			renderSaveOutcome(out, path, output, res, plan.IsNoOp())
 			if verified {
-				fmt.Fprintln(out, "Audio essence verified")
+				fmt.Fprintln(out, "Output verified (audio essence + structure)")
 			}
 		}
 	}

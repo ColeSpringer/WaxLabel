@@ -140,7 +140,11 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		Native:     d,
 		AudioStart: d.audioStart,
 		AudioEnd:   d.audioEnd,
-		Pictures:   d.pictures,
+		// Keep each cover's stored MIME: media.Pictures is the write source (the comment is re-emitted
+		// from it), so it must not carry the sniffed type or an unrelated edit would rewrite an
+		// untouched cover's label. Type detection runs at the display boundary (Document.Pictures and
+		// the linter, via core.ProjectPictures).
+		Pictures: d.pictures,
 	}
 	media.Tags, media.Families = vorbis.Project(d.comments)
 	media.Chapters = vorbis.ProjectChapters(d.comments)

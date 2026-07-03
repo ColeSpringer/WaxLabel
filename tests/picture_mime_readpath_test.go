@@ -2,10 +2,12 @@ package waxlabel_test
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -181,6 +183,117 @@ func TestMP4MalformedCoverNotDuplicatedOnEdit(t *testing.T) {
 	}
 	if n := bytes.Count(applyToBytes(t, out, plan2), []byte("covr")); n != 1 {
 		t.Fatalf("covr atom count = %d after a second edit, want 1", n)
+	}
+}
+
+// TestFLACPictureSniffedAuthoritatively (Finding 6): a FLAC native PICTURE block declared image/png
+// but carrying GIF bytes reads back image/gif - recognizable bytes win, matching the ID3/MP4/Matroska
+// read paths and closing the FLAC/Ogg read-path gap.
+func TestFLACPictureSniffedAuthoritatively(t *testing.T) {
+	src := flacWithCommentBlock(nil, wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyGIF()})
+	pics := mustParseBytes(t, src).Pictures()
+	if len(pics) != 1 || pics[0].MIME != "image/gif" {
+		t.Fatalf("pictures = %v, want one image/gif (bytes win over the declared image/png)", pics)
+	}
+}
+
+// TestFLACMislabeledPictureNoOpFidelity (Finding 6, the crown-jewel no-op invariant): the read-path
+// sniff is a pure projection, so a no-op write on a FLAC whose native PICTURE is mislabeled must be
+// byte-identical (the block is cloned verbatim, not re-emitted from the sniffed MIME), and a
+// title-only edit must leave the picture's stored MIME on disk untouched while the read view still
+// reports the sniffed type.
+func TestFLACMislabeledPictureNoOpFidelity(t *testing.T) {
+	src := flacWithCommentBlock(nil, wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyGIF()})
+
+	noop, err := mustParseBytes(t, src).Edit().Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := applyToBytes(t, src, noop); !bytes.Equal(out, src) {
+		t.Errorf("no-op on a mislabeled-picture FLAC changed bytes: %d -> %d", len(src), len(out))
+	}
+
+	// A title-only edit keeps the picture block verbatim: the stored image/png survives and the
+	// sniffed image/gif never leaks into the written bytes.
+	plan, err := mustParseBytes(t, src).Edit().Set(tag.Title, "After").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, src, plan)
+	if !bytes.Contains(out, []byte("image/png")) {
+		t.Error("a title-only edit rewrote the picture's stored MIME (image/png no longer on disk)")
+	}
+	if bytes.Contains(out, []byte("image/gif")) {
+		t.Error("the sniffed image/gif leaked into the written PICTURE block")
+	}
+	if pics := mustParseBytes(t, out).Pictures(); len(pics) != 1 || pics[0].MIME != "image/gif" {
+		t.Fatalf("after the title edit: pictures = %v, want one image/gif (read projection unchanged)", pics)
+	}
+}
+
+// TestFLACCommentCoverMIMENotRewrittenOnEdit is the re-serialization guard for Finding 6: a FLAC
+// cover stored as a base64 METADATA_BLOCK_PICTURE comment reads (projects) as its true type
+// (image/gif), but a tag-only edit must materialize it into a native block with its STORED MIME
+// (image/png), never the sniffed type - the sniff is a display projection, so it must not leak into
+// the written bytes on an edit that never touched the cover. (The regression this pins: the read-path
+// sniff once mutated the decoded struct, which the materializer re-serialized.)
+func TestFLACCommentCoverMIMENotRewrittenOnEdit(t *testing.T) {
+	pic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyGIF()} // mislabeled on disk
+	comment := vorbis.Comment{Name: "METADATA_BLOCK_PICTURE", Value: base64.StdEncoding.EncodeToString(vorbis.RenderPicture(pic))}
+	src := flacWithCommentBlock([]vorbis.Comment{comment})
+
+	if pics := mustParseBytes(t, src).Pictures(); len(pics) != 1 || pics[0].MIME != "image/gif" {
+		t.Fatalf("read: pics = %v, want one image/gif (projection sniffed)", pics)
+	}
+	plan, err := mustParseBytes(t, src).Edit().Set(tag.Title, "After").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, src, plan)
+	if !bytes.Contains(out, []byte("image/png")) {
+		t.Error("a tag-only edit rewrote the stored comment-cover MIME (image/png no longer on disk)")
+	}
+	if bytes.Contains(out, []byte("image/gif")) {
+		t.Error("the sniffed image/gif leaked into the written comment cover")
+	}
+	if pics := mustParseBytes(t, out).Pictures(); len(pics) != 1 || pics[0].MIME != "image/gif" {
+		t.Fatalf("re-read: pics = %v, want one image/gif (projection unchanged)", pics)
+	}
+}
+
+// TestFLACPictureSetEditPreservesUntouchedCoverMIME extends the Finding 6 re-serialization guard to
+// a picture-set edit: adding a second, different cover must not rewrite a pre-existing mislabeled
+// cover's stored MIME. media.Pictures holds the stored type (the sniff is a display-only projection),
+// so the untouched cover is re-emitted as image/png while the read view still reports image/gif.
+func TestFLACPictureSetEditPreservesUntouchedCoverMIME(t *testing.T) {
+	pic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyGIF()} // mislabeled on disk
+	comment := vorbis.Comment{Name: "METADATA_BLOCK_PICTURE", Value: base64.StdEncoding.EncodeToString(vorbis.RenderPicture(pic))}
+	src := flacWithCommentBlock([]vorbis.Comment{comment})
+
+	// Add a second, different cover - a picturesChanged edit that never touches the first cover.
+	plan, err := mustParseBytes(t, src).Edit().AddPicture(wl.Picture{Type: wl.PicBackCover, Data: tinyJPEG()}).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, src, plan)
+	if !bytes.Contains(out, []byte("image/png")) {
+		t.Error("a picture-set edit rewrote the untouched cover's stored MIME (image/png gone)")
+	}
+	if bytes.Contains(out, []byte("image/gif")) {
+		t.Error("the sniffed image/gif leaked into the untouched cover on a picture-set edit")
+	}
+	// Both covers read back: the pre-existing one still projects its true type, the added JPEG too.
+	pics := mustParseBytes(t, out).Pictures()
+	if len(pics) != 2 {
+		t.Fatalf("expected 2 covers after the add, got %d", len(pics))
+	}
+	var gotGIF, gotJPEG bool
+	for _, p := range pics {
+		gotGIF = gotGIF || p.MIME == "image/gif"
+		gotJPEG = gotJPEG || p.MIME == "image/jpeg"
+	}
+	if !gotGIF || !gotJPEG {
+		t.Errorf("read projection = %v, want the mislabeled cover as image/gif and the added one as image/jpeg", pics)
 	}
 }
 

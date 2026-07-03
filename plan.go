@@ -237,5 +237,7 @@ func (p *Plan) resultDocument(path string, src core.ReaderAtSized, id core.Ident
 		}
 	}
 	media.Identity = id
-	return &Document{media: media, path: path, src: src}
+	// Inherit the base document's parse limits so a re-edit of this result verifies under the
+	// same ceilings the original parse cleared (see Document.limits).
+	return &Document{media: media, path: path, src: src, limits: p.doc.limits}
 }

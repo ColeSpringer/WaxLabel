@@ -96,6 +96,18 @@ func TestCapsChaptersMaxItemsJSON(t *testing.T) {
 	}
 }
 
+// TestCapsM4BChapterTitleByteConstraint covers Finding 14: the MP4 chapters capability surfaces its
+// 255-byte title cap as a constraint, so `caps --format m4b` documents the truncation a copy reports.
+func TestCapsM4BChapterTitleByteConstraint(t *testing.T) {
+	out, _, code := runCLI(t, "caps", "--format", "m4b")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !strings.Contains(out, "255 bytes") {
+		t.Errorf("caps --format m4b should surface the 255-byte chapter-title constraint:\n%s", out)
+	}
+}
+
 func TestCapsListsEditableVocabulary(t *testing.T) {
 	// Every implemented format is fully field-writable today, so the editable-only
 	// listing covers the whole known vocabulary; assert FLAC's editable keys are

@@ -316,7 +316,11 @@ path:
   space on FLAC/Ogg, while `SYLT` keeps it. MP4 and Matroska represent synced
   lyrics as timed-text or subtitle tracks, not metadata, so WaxLabel does not model
   them. LRC `[offset:]` follows foobar2000 behavior: effective timestamp =
-  timestamp - offset.
+  timestamp - offset. WaxLabel writes one space between a line's timestamp and its
+  text so a lyric that itself begins with a `[mm:ss]`-shaped string round-trips; an
+  externally authored file that omits that separator (`[00:01.00][00:02.00]x`) is
+  read as two timestamps, as any LRC player would, and a file already corrupted by
+  an older WaxLabel that wrote no separator stays corrupted.
 - **MP4 cover art drops the picture description.** The iTunes `covr` atom stores image
   data only, with no role or description field. A cover written to MP4 keeps its bytes, loses
   any description, and reads back as a front cover. A plain front cover with no description

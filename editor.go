@@ -277,7 +277,7 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// Trim numeric values introduced by this edit before any number-pair split. That
 	// keeps the stored value in the same form WaxLabel already uses for validation and
 	// parsing, while still preserving carried values from the source file.
-	trimNumericValues(&editedTags, e.patch)
+	trimTokenValues(&editedTags, e.patch)
 	// Normalize a slash-combined "n/total" track or disc number this edit introduced
 	// into the canonical pair every format stores (see splitNumberPairs). It runs
 	// after rejectInvalidValues, not before: that scan only covers the patched keys, so
@@ -873,12 +873,13 @@ func dropEmptyValuedKeys(ts *tag.TagSet) {
 	}
 }
 
-// trimNumericValues applies [tag.TrimNumericValue] to numeric and date keys touched by
-// this edit, so stored values match the trimmed form the validators accept. It is scoped
-// to patched keys, like splitNumberPairs, so carried source values are not rewritten.
-func trimNumericValues(ts *tag.TagSet, patch tag.TagPatch) {
+// trimTokenValues applies [tag.TrimTokenValue] to the trimmable keys ([tag.IsTrimmableKey]:
+// numeric, date, media-type, and ReplayGain) touched by this edit, so stored values match the
+// trimmed form the validators accept. It is scoped to patched keys, like splitNumberPairs, so
+// carried source values are not rewritten.
+func trimTokenValues(ts *tag.TagSet, patch tag.TagPatch) {
 	for _, k := range patch.Keys() {
-		if !tag.IsNumericKey(k) && !tag.IsDateKey(k) {
+		if !tag.IsTrimmableKey(k) {
 			continue
 		}
 		vals, ok := ts.Get(k)
@@ -887,7 +888,7 @@ func trimNumericValues(ts *tag.TagSet, patch tag.TagPatch) {
 		}
 		changed := false
 		for i, v := range vals {
-			if trimmed := tag.TrimNumericValue(k, v); trimmed != v {
+			if trimmed := tag.TrimTokenValue(k, v); trimmed != v {
 				vals[i] = trimmed
 				changed = true
 			}

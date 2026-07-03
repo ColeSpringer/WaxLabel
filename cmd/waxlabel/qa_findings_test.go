@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -152,26 +153,36 @@ func TestCapsFormatADTSAlias(t *testing.T) {
 }
 
 // A bare numeric GENRE warns on an ID3 target because it reads back as the genre
-// name. Vorbis stores the same value literally, so it should not warn.
+// name. Formats that keep the value literally - Vorbis (FLAC), and WAV in its LIST/INFO
+// IGNR slot - should not warn. AIFF stores genre only in its ID3 chunk, so it warns like
+// MP3/AAC (it is not exempt the way WAV is, despite both carrying a native container).
 func TestNumericGenreWriteWarnAsymmetry(t *testing.T) {
 	t.Parallel()
 	notagsMP3 := filepath.Join("..", "..", "testdata", "notags.mp3")
-	notagsFLAC := filepath.Join("..", "..", "testdata", "notags.flac")
 
-	mp3Out, _, code := runCLI(t, "plan", notagsMP3, "--set", "GENRE=17")
-	if code != 0 {
-		t.Fatalf("plan MP3 GENRE=17 exit = %d, want 0", code)
-	}
-	if !strings.Contains(mp3Out, "numeric-genre") {
-		t.Errorf("setting a bare numeric GENRE on an ID3 target must warn numeric-genre:\n%s", mp3Out)
+	// Every target where the genre resolves to a name on read must warn: MP3/AAC (pure ID3) and
+	// AIFF (ID3 chunk; no native genre text chunk to keep the literal number).
+	for _, name := range []string{"notags.mp3", "notags.aac", "notags.aiff"} {
+		fix := filepath.Join("..", "..", "testdata", name)
+		out, _, code := runCLI(t, "plan", fix, "--set", "GENRE=17")
+		if code != 0 {
+			t.Fatalf("plan %s GENRE=17 exit = %d, want 0", name, code)
+		}
+		if !strings.Contains(out, "numeric-genre") {
+			t.Errorf("a bare numeric GENRE on %s must warn numeric-genre (it reads back as the name):\n%s", name, out)
+		}
 	}
 
-	flacOut, _, code := runCLI(t, "plan", notagsFLAC, "--set", "GENRE=17")
-	if code != 0 {
-		t.Fatalf("plan FLAC GENRE=17 exit = %d, want 0", code)
-	}
-	if strings.Contains(flacOut, "numeric-genre") {
-		t.Errorf("a Vorbis target keeps GENRE=17 verbatim and must not warn numeric-genre:\n%s", flacOut)
+	// Targets that keep "17" verbatim must not warn: Vorbis (FLAC) and WAV's LIST/INFO IGNR.
+	for _, name := range []string{"notags.flac", "notags.wav"} {
+		fix := filepath.Join("..", "..", "testdata", name)
+		out, _, code := runCLI(t, "plan", fix, "--set", "GENRE=17")
+		if code != 0 {
+			t.Fatalf("plan %s GENRE=17 exit = %d, want 0", name, code)
+		}
+		if strings.Contains(out, "numeric-genre") {
+			t.Errorf("%s keeps GENRE=17 verbatim and must not warn numeric-genre:\n%s", name, out)
+		}
 	}
 
 	// A literal value beginning with "(" is escaped on write, so it round-trips verbatim
@@ -196,6 +207,125 @@ func TestNumericGenreWriteWarnAsymmetry(t *testing.T) {
 		}
 		if !strings.Contains(dumped, `"`+ref+`"`) {
 			t.Errorf("GENRE=%s did not round-trip verbatim:\n%s", ref, dumped)
+		}
+	}
+}
+
+// TestNumberTotalNonNumericDropsTotalCLI covers Finding 3 end to end on an ID3 target: a non-numeric
+// TRACKNUMBER plus a canonical TRACKTOTAL cannot compose "n/total" (the reader would read "A1/12" as
+// one literal value with the total lost), so the number is written verbatim, the total is dropped
+// with a value-dropped warning, and it reads back as "A1" - never the corrupt "A1/12". The write is
+// idempotent, and a literal "A1/12" set alone is preserved verbatim and unwarned.
+func TestNumberTotalNonNumericDropsTotalCLI(t *testing.T) {
+	t.Parallel()
+	notagsMP3 := filepath.Join("..", "..", "testdata", "notags.mp3")
+
+	// plan surfaces the value-dropped warning keyed to TRACKTOTAL.
+	planOut, _, code := runCLI(t, "plan", notagsMP3, "--set", "TRACKNUMBER=A1", "--set", "TRACKTOTAL=12")
+	if code != 0 {
+		t.Fatalf("plan exit = %d, want 0", code)
+	}
+	if !strings.Contains(planOut, "value-dropped") || !strings.Contains(planOut, "TRACKTOTAL") {
+		t.Errorf("a non-numeric number dropping a canonical total must warn value-dropped on TRACKTOTAL:\n%s", planOut)
+	}
+
+	f := copyFixture(t, notagsMP3)
+	if _, stderr, code := runCLI(t, "set", f, "--set", "TRACKNUMBER=A1", "--set", "TRACKTOTAL=12"); code != 0 {
+		t.Fatalf("set exit = %d: %s", code, stderr)
+	}
+	dumped, _, code := runCLI(t, "--json", "dump", f)
+	if code != 0 {
+		t.Fatalf("dump exit = %d", code)
+	}
+	if strings.Contains(dumped, "A1/12") {
+		t.Errorf("TRACKNUMBER must read back as \"A1\", not the corrupt \"A1/12\":\n%s", dumped)
+	}
+	if !strings.Contains(dumped, `"TRACKNUMBER"`) || strings.Contains(dumped, `"TRACKTOTAL"`) {
+		t.Errorf("want TRACKNUMBER=A1 present and TRACKTOTAL absent (dropped):\n%s", dumped)
+	}
+
+	// Idempotent: re-setting the retained TRACKNUMBER=A1 changes nothing.
+	before, _ := os.ReadFile(f)
+	if _, stderr, code := runCLI(t, "set", f, "--set", "TRACKNUMBER=A1"); code != 0 {
+		t.Fatalf("second set exit = %d: %s", code, stderr)
+	}
+	if after, _ := os.ReadFile(f); !bytes.Equal(before, after) {
+		t.Error("re-setting the retained TRACKNUMBER changed bytes (not idempotent)")
+	}
+
+	// A literal "A1/12" as the number alone is preserved verbatim and not warned.
+	planVerbatim, _, _ := runCLI(t, "plan", notagsMP3, "--set", "TRACKNUMBER=A1/12")
+	if strings.Contains(planVerbatim, "value-dropped") {
+		t.Errorf("a verbatim TRACKNUMBER=A1/12 must not warn value-dropped:\n%s", planVerbatim)
+	}
+	g := copyFixture(t, notagsMP3)
+	if _, stderr, code := runCLI(t, "set", g, "--set", "TRACKNUMBER=A1/12"); code != 0 {
+		t.Fatalf("set A1/12 exit = %d: %s", code, stderr)
+	}
+	if dumped, _, _ := runCLI(t, "--json", "dump", g); !strings.Contains(dumped, "A1/12") {
+		t.Errorf("TRACKNUMBER=A1/12 alone must round-trip verbatim:\n%s", dumped)
+	}
+}
+
+// TestReservedChapterKeyDroppedWithWarning covers Finding 8: a custom key in the reserved CHAPTERxxx
+// namespace cannot be written as a Vorbis custom field (on read the chapter model owns it), so
+// setting CHAPTER005=hijack on a FLAC must warn value-dropped and leave the key absent from the tag
+// view - not claim it was written and then lose it silently.
+func TestReservedChapterKeyDroppedWithWarning(t *testing.T) {
+	t.Parallel()
+	f := copyFixture(t, filepath.Join("..", "..", "testdata", "notags.flac"))
+	out, _, code := runCLI(t, "set", f, "--set", "CHAPTER005=hijack")
+	if code != 0 {
+		t.Fatalf("set exit = %d, want 0:\n%s", code, out)
+	}
+	if !strings.Contains(out, "value-dropped") || !strings.Contains(out, "CHAPTER005") {
+		t.Errorf("setting a reserved CHAPTERxxx key must warn value-dropped:\n%s", out)
+	}
+	dumped, _, code := runCLI(t, "--json", "dump", f)
+	if code != 0 {
+		t.Fatalf("dump exit = %d", code)
+	}
+	if strings.Contains(dumped, "CHAPTER005") || strings.Contains(dumped, "hijack") {
+		t.Errorf("the reserved key must be absent from the tag view, but leaked into the file:\n%s", dumped)
+	}
+}
+
+// TestSetTrimsMediaTypeAndReplayGain covers Finding 9 on the set path: MEDIATYPE and REPLAYGAIN_* are
+// single-token values, so surrounding whitespace in a --set value is trimmed before storage the same
+// way it is for numeric and date keys, while the internal space in "-7.30 dB" survives.
+func TestSetTrimsMediaTypeAndReplayGain(t *testing.T) {
+	t.Parallel()
+	f := copyFixture(t, filepath.Join("..", "..", "testdata", "notags.flac"))
+	if _, stderr, code := runCLI(t, "set", f, "--set", "MEDIATYPE= 2 ", "--set", "REPLAYGAIN_TRACK_GAIN= -7.30 dB "); code != 0 {
+		t.Fatalf("set exit = %d: %s", code, stderr)
+	}
+	j, _, _ := runCLI(t, "--json", "dump", f)
+	jd := decodeJSONOne[jsonDocument](t, j)
+	if got := tagValues(jd, "MEDIATYPE"); len(got) != 1 || got[0] != "2" {
+		t.Errorf("MEDIATYPE = %v, want [\"2\"]", got)
+	}
+	if got := tagValues(jd, "REPLAYGAIN_TRACK_GAIN"); len(got) != 1 || got[0] != "-7.30 dB" {
+		t.Errorf("REPLAYGAIN_TRACK_GAIN = %v, want [\"-7.30 dB\"]", got)
+	}
+}
+
+// TestMalformedYearDroppedNotTruncated covers Finding 10 on an ID3v2.3 target: a malformed 5-digit
+// year and a non-canonical compact date have no valid 4-digit year, so they must be dropped with a
+// value-dropped warning rather than silently truncated to a valid-but-wrong "1000"/"2021".
+func TestMalformedYearDroppedNotTruncated(t *testing.T) {
+	t.Parallel()
+	for _, v := range []string{"10000", "20210503"} {
+		f := copyFixture(t, filepath.Join("..", "..", "testdata", "notags.mp3"))
+		out, _, code := runCLI(t, "set", f, "--set", "RECORDINGDATE="+v)
+		if code != 0 {
+			t.Fatalf("set RECORDINGDATE=%s exit = %d:\n%s", v, code, out)
+		}
+		if !strings.Contains(out, "value-dropped") || !strings.Contains(out, "4-digit year") {
+			t.Errorf("RECORDINGDATE=%s must warn value-dropped (no valid 4-digit year):\n%s", v, out)
+		}
+		dumped, _, _ := runCLI(t, "--json", "dump", f)
+		if strings.Contains(dumped, "1000") || strings.Contains(dumped, `"RECORDINGDATE"`) {
+			t.Errorf("RECORDINGDATE=%s stored a wrong/truncated year instead of dropping:\n%s", v, dumped)
 		}
 	}
 }

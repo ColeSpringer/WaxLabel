@@ -91,12 +91,14 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 		// plain chapters round-trip. Keep Write full and express the conditional loss
 		// through ChapterLoss and edit warnings instead of AccessPartial.
 		Read: core.AccessFull, Write: core.AccessFull,
-		Representation: "Nero chpl and a QuickTime chapter text track",
-		Fidelity:       "chapter start and title stored; gapped end times, per-chapter language, and hidden/disabled flags are dropped",
-		MaxItems:       maxChplChapters,
-		ChapterLoss:    core.ChapterLossStartTitleOnly,
+		Representation:      "Nero chpl and a QuickTime chapter text track",
+		Fidelity:            "chapter start and title stored; gapped end times, per-chapter language, and hidden/disabled flags are dropped",
+		MaxItems:            maxChplChapters,
+		ChapterLoss:         core.ChapterLossStartTitleOnly,
+		ChapterTitleByteMax: 255,
 		Constraints: []string{
 			"at most 255 chapters (8-bit chpl count)",
+			"chapter titles are truncated to 255 bytes (8-bit chpl length prefix)",
 			"both the chpl and the QuickTime chapter text track are written",
 			"chapter start resolution is the movie timescale (typically 1 ms)",
 		},

@@ -120,13 +120,15 @@ const (
 	// still written; the legacy container is preserved verbatim as promised), surfaced so
 	// the divergence is visible and the remedy (--legacy strip, or lint --fix) is offered.
 	WarnLegacyConflict
-	// WarnValueDropped means an edit set a canonical value the destination format's
-	// encoder cannot represent, so the value is silently lost on write - today the MP4
-	// iTunes atoms: a trkn/disk number/total outside the uint16 the atom holds (a
-	// non-numeric value, a negative, or one past 65535) or a non-numeric stik media
-	// kind. It is a plan-time warning carrying the offending key (Warning.Keys), surfaced
-	// before the write rather than vanishing with exit 0, so the user (and the CLI's
-	// --strict gate) sees the loss.
+	// WarnValueDropped means an edit set a canonical value the destination format's encoder
+	// cannot represent, so the value is silently lost on write. It spans several codecs: an MP4
+	// iTunes trkn/disk number/total outside the uint16 the atom holds (a non-numeric value, a
+	// negative, or one past 65535) or a non-numeric stik media kind; an ID3v2.3 date with no valid
+	// 4-digit year (no TYER/TORY frame renders); an ID3 track/disc total that cannot attach to a
+	// non-numeric number (composing "A1/12" would re-read as one literal value with the total lost);
+	// and a Vorbis custom key in the reserved CHAPTERxxx namespace that cannot be written as a tag.
+	// It is a plan-time warning carrying the offending key (Warning.Keys), surfaced before the write
+	// rather than vanishing with exit 0, so the user (and the CLI's --strict gate) sees the loss.
 	WarnValueDropped
 	// WarnNativeValueReduced means a legitimately multi-valued key was reduced to its
 	// first value in a secondary single-valued native container (the WAV LIST/INFO chunk

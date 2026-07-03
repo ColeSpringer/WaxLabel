@@ -843,15 +843,15 @@ func TestRecursiveSkippedCountsSymlinks(t *testing.T) {
 	}
 }
 
-// TestSetVerifyConfirmation: a committed --verify save confirms the essence
-// check - a human "Audio essence verified" line and a JSON "verified": true - while
+// TestSetVerifyConfirmation: a committed --verify save confirms the check - a human
+// "Output verified (audio essence + structure)" line and a JSON "verified": true - while
 // a run without --verify omits the field so a normal save does not read like a check.
 func TestSetVerifyConfirmation(t *testing.T) {
 	out, _, code := runCLI(t, "set", copyFixture(t, sampleFLAC), "--set", "TITLE=Verified", "--verify")
 	if code != 0 {
 		t.Fatalf("set --verify exit = %d, want 0", code)
 	}
-	if !strings.Contains(out, "Audio essence verified") {
+	if !strings.Contains(out, "Output verified (audio essence + structure)") {
 		t.Errorf("human output missing the verified confirmation:\n%s", out)
 	}
 

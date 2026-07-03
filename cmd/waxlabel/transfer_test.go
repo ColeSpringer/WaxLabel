@@ -2,12 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/tag"
 )
 
 // Additional cross-format fixtures (the shared FLAC/M4B ones live in cli_test.go).
@@ -96,6 +100,100 @@ func TestCopyReportMatchesResult(t *testing.T) {
 	}
 	for _, p := range pairs {
 		assertCopyAgrees(t, p.src, p.dst)
+	}
+}
+
+// TestCopySyncedLyricsNewlineReportsLossy covers Finding 7: a SYLT line whose text carries an
+// embedded newline is flattened to a space by the FLAC/Ogg LRC store, a silent content change, so a
+// copy to an LRC-backed destination must grade the synced-lyrics carry Lossy, not lossless. The CLI's
+// LRC input cannot author an embedded newline (it reads as a line break), so the source is built
+// through the library.
+func TestCopySyncedLyricsNewlineReportsLossy(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	src := copyFixture(t, filepath.Join("..", "..", "testdata", "notags.mp3"))
+	doc, err := wl.ParseFile(ctx, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := wl.SyncedLyrics{Lines: []wl.SyncedLine{{Time: 0, Text: "line one\nstill line one"}}}
+	plan, err := doc.Edit().SetSyncedLyrics(set).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := plan.Execute(ctx, wl.SaveBack()); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := copyFixture(t, notagsFLAC)
+	out, _, code := runCLI(t, "--json", "copy", src, dst)
+	if code != 0 {
+		t.Fatalf("copy exit = %d, want 0:\n%s", code, out)
+	}
+	var jc jsonCopy
+	if err := json.Unmarshal([]byte(out), &jc); err != nil {
+		t.Fatalf("copy JSON: %v\n%s", err, out)
+	}
+	found := false
+	for _, it := range jc.Transfer {
+		if it.Kind == "synced lyrics" {
+			found = true
+			if it.Disposition != "lossy" {
+				t.Errorf("synced-lyrics disposition = %q, want lossy (embedded newline flattened by the LRC store)", it.Disposition)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("copy report has no synced-lyrics item:\n%s", out)
+	}
+}
+
+// TestCopyDateReductionReasonNotWrong covers Finding 11: v2.3 splits a date across TYER/TDAT/TIME, so
+// which component a value loses varies. The shared transfer reason must be component-agnostic (never
+// a wrong "seconds dropped" for a month-precision value); the per-value [value-reduced] write warning
+// carries the specific component. Copying 2021-06, a T10, and a T10:30:45 to MP3 each grades the date
+// lossy with a reason that never names "seconds".
+func TestCopyDateReductionReasonNotWrong(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, date := range []string{"2021-06", "2021-06-15T10", "2021-06-15T10:30:45"} {
+		src := copyFixture(t, notagsFLAC) // FLAC stores the date verbatim
+		doc, err := wl.ParseFile(ctx, src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan, err := doc.Edit().Set(tag.RecordingDate, date).Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := plan.Execute(ctx, wl.SaveBack()); err != nil {
+			t.Fatal(err)
+		}
+
+		dst := copyFixture(t, sampleMP3)
+		out, _, code := runCLI(t, "--json", "copy", src, dst)
+		if code != 0 {
+			t.Fatalf("copy %s exit = %d:\n%s", date, code, out)
+		}
+		var jc jsonCopy
+		if err := json.Unmarshal([]byte(out), &jc); err != nil {
+			t.Fatalf("copy %s JSON: %v\n%s", date, err, out)
+		}
+		found := false
+		for _, it := range jc.Transfer {
+			if it.Key == "RECORDINGDATE" {
+				found = true
+				if it.Disposition != "lossy" {
+					t.Errorf("%s: RECORDINGDATE disposition = %s, want lossy", date, it.Disposition)
+				}
+				if strings.Contains(it.Reason, "seconds") {
+					t.Errorf("%s: transfer reason names a specific component (%q); it must be component-agnostic", date, it.Reason)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("%s: no RECORDINGDATE transfer item:\n%s", date, out)
+		}
 	}
 }
 

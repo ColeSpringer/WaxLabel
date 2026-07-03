@@ -275,3 +275,50 @@ func TestAudioLineOmittedForDegenerate(t *testing.T) {
 		t.Error("a real stream (sample rate present) should still render an audio line")
 	}
 }
+
+// TestNativeSizeZeroPadding covers the cosmetic fix: a zero-length PADDING block shows "0 B" (it is
+// a real, empty byte-sized block), while a zero-size structural entry with no unit stays blank, a
+// non-empty PADDING is a byte count, and a unit-bearing count is never mislabeled as bytes.
+func TestNativeSizeZeroPadding(t *testing.T) {
+	if got := nativeSize(wl.NativeEntry{Kind: "PADDING", Size: 0}); got != "0 B" {
+		t.Errorf("nativeSize(0-length PADDING) = %q, want \"0 B\"", got)
+	}
+	if got := nativeSize(wl.NativeEntry{Kind: "EBML header", Size: 0}); got != "" {
+		t.Errorf("nativeSize(0-size structural entry) = %q, want blank", got)
+	}
+	if got := nativeSize(wl.NativeEntry{Kind: "PADDING", Size: 8192}); got == "" || got == "0 B" {
+		t.Errorf("nativeSize(non-empty PADDING) should be a real byte count, got %q", got)
+	}
+	if got := nativeSize(wl.NativeEntry{Kind: "VORBIS_COMMENT", Size: 3, Unit: "tags"}); got != "3 tags" {
+		t.Errorf("nativeSize(count) = %q, want \"3 tags\"", got)
+	}
+}
+
+// TestDumpNativeZeroPaddingShowsBytes is the producer-side guard for the 0 B padding render: writing
+// a FLAC with no reserved padding leaves a zero-length PADDING block, and dump --native must show it
+// as "0 B", not blank. Unlike TestNativeSizeZeroPadding (which feeds the renderer a hand-built
+// "PADDING" entry), this drives a real FLAC end to end, so a relabel of FLAC's block name that broke
+// the nativeSize coupling would fail here.
+func TestDumpNativeZeroPaddingShowsBytes(t *testing.T) {
+	t.Parallel()
+	f := copyFixture(t, sampleFLAC)
+	if _, _, code := runCLI(t, "set", f, "--set", "TITLE=X", "--no-padding"); code != 0 {
+		t.Fatalf("set --no-padding exit = %d", code)
+	}
+	out, _, code := runCLI(t, "dump", "--native", f)
+	if code != 0 {
+		t.Fatalf("dump --native exit = %d", code)
+	}
+	var paddingLine string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "PADDING") {
+			paddingLine = line
+		}
+	}
+	if paddingLine == "" {
+		t.Fatalf("no PADDING block in the native view:\n%s", out)
+	}
+	if !strings.Contains(paddingLine, "0 B") {
+		t.Errorf("zero-length PADDING block should render 0 B, got %q", paddingLine)
+	}
+}

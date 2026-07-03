@@ -514,6 +514,11 @@ func nativeSize(e wl.NativeEntry) string {
 		return fmt.Sprintf("%d %s", e.Size, tag.SanitizeLine(e.Unit))
 	case e.Size > 0:
 		return wl.HumanBytes(int64(e.Size))
+	case e.Kind == "PADDING":
+		// An empty (zero-length) PADDING block is a real byte-sized block, so show "0 B" rather
+		// than blank; other zero-size entries (an EBML header, an MP4 QuickTime chapter track) are
+		// structural and have no meaningful byte size, so they stay blank.
+		return "0 B"
 	default:
 		return ""
 	}

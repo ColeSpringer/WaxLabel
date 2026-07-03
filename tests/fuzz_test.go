@@ -51,6 +51,7 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte("\x00\x00\x00\x10ftypM4A \x00\x00\x00\x00\x00\x00\x00\x14moov\x00\x00\x00\x0cchpl\x01\x00\x00\x00"))                     // chpl v1 header, count truncated
 	f.Add([]byte("\x00\x00\x00\x10ftypM4A \x00\x00\x00\x00\x00\x00\x00\x11moov\x00\x00\x00\x09chpl\x00\x00\x00\x00\x05"))                 // chpl v0 declaring 5 chapters, none present
 	f.Add([]byte("\x00\x00\x00\x1cftyp00000000000000000000\x00\x00\x00\x11moov\x00\x00\x00\x00udta\x00"))                                 // ftyp(28)+moov(17){udta zero-body}: a created tag must not append past the stray zero
+	f.Add([]byte("\x00\x00\x00\x10ftypM4A \x00\x00\x00\x00\x00\x00\x00\xffmoov\x00\x00\x00\bfree\x00\x00\x00\x00"))                       // truncated moov (declares 255, clamps to EOF) with a gap after its free child: reject, not write 2x-size
 	f.Add([]byte("\x1a\x45\xdf\xa3\x84\x42\x82\x81m"))                                                                                    // EBML magic + truncated DocType
 	f.Add([]byte("\x1a\x45\xdf\xa3\xff"))                                                                                                 // EBML magic, unknown-size header
 	f.Add([]byte("\x1a\x45\xdf\xa3\x80\x18\x53\x80\x67\xff"))                                                                             // empty EBML header + unknown-size Segment

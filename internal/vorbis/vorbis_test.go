@@ -1,6 +1,7 @@
 package vorbis
 
 import (
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"slices"
@@ -12,6 +13,60 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
+
+// TestRebuildDropsReservedChapterKey covers Finding 8: a newly-added custom key in the reserved
+// CHAPTERxxx namespace is not emitted as a comment (on read it is owned by the chapter model, so a
+// written comment would vanish from the tag view) and is recorded in ReservedChapterKeys so the
+// caller surfaces a value-dropped warning rather than claim the key was written.
+func TestRebuildDropsReservedChapterKey(t *testing.T) {
+	edited := tag.NewTagSet()
+	edited.Set(tag.Key("CHAPTER005"), "hijack")
+	changed := map[tag.Key]bool{tag.Key("CHAPTER005"): true}
+	out, info := Rebuild(nil, edited, changed, nil, false, nil, false)
+	for _, cm := range out {
+		if cm.Name == "CHAPTER005" {
+			t.Errorf("a reserved chapter key was emitted as a comment: %+v", cm)
+		}
+	}
+	if !slices.Contains(info.ReservedChapterKeys, tag.Key("CHAPTER005")) {
+		t.Errorf("ReservedChapterKeys = %v, want it to contain CHAPTER005", info.ReservedChapterKeys)
+	}
+	ws := RebuildWarnings(nil, info)
+	if !slices.ContainsFunc(ws, func(w core.Warning) bool {
+		return w.Code == core.WarnValueDropped && slices.Contains(w.Keys, tag.Key("CHAPTER005"))
+	}) {
+		t.Errorf("RebuildWarnings did not surface a value-dropped warning for CHAPTER005: %v", ws)
+	}
+	// A plain custom key (not in the chapter namespace) is still written normally.
+	edited2 := tag.NewTagSet()
+	edited2.Set(tag.Key("MYFIELD"), "keep")
+	out2, info2 := Rebuild(nil, edited2, map[tag.Key]bool{tag.Key("MYFIELD"): true}, nil, false, nil, false)
+	if len(info2.ReservedChapterKeys) != 0 {
+		t.Errorf("a non-chapter custom key must not be flagged reserved: %v", info2.ReservedChapterKeys)
+	}
+	if !slices.ContainsFunc(out2, func(cm Comment) bool { return cm.Name == "MYFIELD" && cm.Value == "keep" }) {
+		t.Errorf("a plain custom key should still be written: %+v", out2)
+	}
+}
+
+// TestPictureDecodePreservesStoredMIME covers the re-serialization half of Finding 6: the decoders
+// (ParsePicture for a native FLAC block, DecodePictureComment for an Ogg comment) return each cover's
+// MIME and dimensions exactly as stored, never sniffed. This is the re-serialization source, so a
+// mislabeled cover's on-disk label survives an unrelated edit rather than being silently rewritten.
+func TestPictureDecodePreservesStoredMIME(t *testing.T) {
+	gif := append([]byte("GIF89a"), 0x03, 0x00, 0x05, 0x00, 0x77, 0x00, 0x00)
+	body := RenderPicture(core.Picture{Type: core.PicFrontCover, MIME: "image/png", Data: gif}) // mislabeled
+	if p, err := ParsePicture(body, 1<<20); err != nil {
+		t.Fatalf("ParsePicture: %v", err)
+	} else if p.MIME != "image/png" {
+		t.Errorf("ParsePicture MIME = %q, want the stored \"image/png\" (unsniffed)", p.MIME)
+	}
+	if pc, err := DecodePictureComment(base64.StdEncoding.EncodeToString(body), 1<<20); err != nil {
+		t.Fatalf("DecodePictureComment: %v", err)
+	} else if pc.MIME != "image/png" {
+		t.Errorf("DecodePictureComment MIME = %q, want the stored \"image/png\" (unsniffed)", pc.MIME)
+	}
+}
 
 // TestParseCommentListCountCapped verifies that ParseCommentList stops at maxElements
 // with ErrSizeTooLarge. The comment count is an attacker-controlled uint32, and an Ogg

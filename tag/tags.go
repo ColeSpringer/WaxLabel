@@ -511,12 +511,23 @@ func EmptyNumberWithTotal(k Key, v string) bool {
 	return num == "" && validInt(total)
 }
 
-// TrimNumericValue removes surrounding whitespace from numeric and date values and leaves
-// other values unchanged. The editor and CLI advisories share this helper so stored values
-// match the forms [ValidNumericValue] and [ValidPartialDate] accept. Digits, including
-// leading zeros, are preserved.
-func TrimNumericValue(k Key, v string) string {
-	if numericKeys[k] || dateKeySet[k] {
+// IsTrimmableKey reports whether a value stored under k is a single-token value whose surrounding
+// whitespace is never meaningful - a numeric, date, media-type, or ReplayGain key. [TrimTokenValue],
+// the editor's per-key trim gate, and the transfer grade all key off this one predicate, so the
+// stored form, the write, and the copy report cannot disagree on which keys trim; adding a
+// trim-eligible key here updates all three at once.
+func IsTrimmableKey(k Key) bool {
+	return numericKeys[k] || dateKeySet[k] || IsMediaTypeKey(k) || IsReplayGainKey(k)
+}
+
+// TrimTokenValue removes surrounding whitespace from a trimmable value (see [IsTrimmableKey]) and
+// leaves other values unchanged. The editor and CLI advisories share this helper so stored values
+// match the forms [ValidNumericValue] and [ValidPartialDate] accept. MEDIATYPE and the REPLAYGAIN_*
+// keys are single-token values ("2", "-7.30 dB") where a stray leading or trailing space is never
+// meaningful, so they trim the same way; internal whitespace (the space before "dB") and digits,
+// including leading zeros, are preserved.
+func TrimTokenValue(k Key, v string) string {
+	if IsTrimmableKey(k) {
 		return strings.TrimSpace(v)
 	}
 	return v
@@ -554,6 +565,12 @@ func validInt(s string) bool {
 func ValidPartialDate(s string) bool {
 	// Trim first so incidental surrounding space is tolerated like every other typed value.
 	s = strings.TrimSpace(s)
+	// Year 0000 is not a meaningful recording/release year, but time.Parse accepts it; reject it
+	// here so the linter's malformed-date rule and set-time validation agree. The year is always
+	// the leading 4 characters in each canonical layout below.
+	if strings.HasPrefix(s, "0000") {
+		return false
+	}
 	for _, layout := range []string{"2006-01-02", "2006-01", "2006"} {
 		if len(s) == len(layout) {
 			if _, err := time.Parse(layout, s); err == nil {

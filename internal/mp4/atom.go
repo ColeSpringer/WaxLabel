@@ -82,6 +82,23 @@ func childStart(src core.ReaderAtSized, n node, limit int64) int64 {
 	return po + metaSkip
 }
 
+// trailingGap returns the count of unusable bytes between where a container's children end and
+// n.end(): the last child's end, or - only when childless - the child-start position (read lazily,
+// since a has-children container never needs it), subtracted from n.end(). A positive result is an
+// all-zero remainder walkAtoms tolerated (the udta-terminator rule) but a create/insert rewrite
+// would append past, misaligning the re-parse; 0 means the children tile exactly to the end. The
+// moov (no-udta) and moov.udta.meta (no-ilst) insert guards both key off this one predicate so the
+// two subtle truncation checks cannot drift.
+func trailingGap(src core.ReaderAtSized, n node, limit int64) int64 {
+	var childEnd int64
+	if k := len(n.children); k > 0 {
+		childEnd = n.children[k-1].end()
+	} else {
+		childEnd = childStart(src, n, limit)
+	}
+	return n.end() - childEnd
+}
+
 // walkAtoms parses the atoms in [start, end) of src into a node tree, recursing
 // into container atoms up to the depth guard. It reads only atom headers (never
 // payloads), so a large mdat costs nothing. topLevel marks the outermost call:

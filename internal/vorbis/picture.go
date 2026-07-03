@@ -66,6 +66,12 @@ func ParsePicture(body []byte, limit int64) (core.Picture, error) {
 	p.Depth = int(c.U32BE())
 	p.Colors = int(c.U32BE())
 	p.Data = c.Bytes(int64(c.U32BE()))
+	// The MIME and dimensions come back as stored, not sniffed. This decoder doubles as the
+	// re-serialization source (FLAC materializes a comment cover into a native block, and Ogg
+	// re-emits the comment), so correcting a mislabeled MIME here would write the sniffed value back
+	// on an unrelated edit. Type detection happens on the display copy instead, where the FLAC and
+	// Ogg parsers hand media.Pictures to core.ProjectPictures. id3/mp4/matroska sniff at read too,
+	// but their writers preserve the picture verbatim, so the sniffed type never reaches disk.
 	if c.Err() != nil {
 		return core.Picture{}, fmt.Errorf("picture block: %w", c.Err())
 	}

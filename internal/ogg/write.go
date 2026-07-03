@@ -76,6 +76,10 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	if syncedLyricsChanged && len(edited.SyncedLyrics) > 0 {
 		report.Operations = append(report.Operations, fmt.Sprintf("synced lyrics: %d", len(edited.SyncedLyrics)))
 	}
+	// Re-emit one METADATA_BLOCK_PICTURE comment per picture. edited.Pictures carries each cover's
+	// stored MIME (media.Pictures is the stored set, not a sniffed projection), so re-rendering it
+	// preserves an untouched cover's on-disk label; a newly added cover carries the type the editor
+	// reconciled with its bytes on add.
 	full := slices.Clone(newComments)
 	for _, p := range edited.Pictures {
 		full = append(full, vorbis.Comment{
@@ -154,7 +158,7 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	// rendering the comment list; surface it as a write-time warning (before DowngradeNoOp).
 	// The clamp keeps the value readable, so result != base and the write proceeds instead of
 	// collapsing to a "No metadata changes" no-op.
-	report.Warnings = vorbis.OverflowWarnings(report.Warnings, rebuildInfo)
+	report.Warnings = vorbis.RebuildWarnings(report.Warnings, rebuildInfo)
 
 	result := buildResult(edited, d, newVendor, newComments, newAudioPages, newHeaderPages, newAudioStart, shift, newSize)
 	// Ogg stores Vorbis values verbatim, so this downgrade only catches values the rebuild

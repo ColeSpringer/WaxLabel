@@ -228,6 +228,91 @@ func TestFormatLRCFlattensNewlines(t *testing.T) {
 	}
 }
 
+// TestFormatLRCSpaceSeparator pins the Finding 2 convention: FormatLRC separates a timestamp from
+// non-empty text with exactly one space, while an empty-text clear marker stays a bare timestamp
+// with no trailing space.
+func TestFormatLRCSpaceSeparator(t *testing.T) {
+	got := FormatLRC([]SyncedLine{
+		{Time: time.Second, Text: "hi"},
+		{Time: 2 * time.Second, Text: ""},
+	})
+	want := "[00:01.000] hi\n[00:02.000]"
+	if got != want {
+		t.Errorf("FormatLRC = %q, want %q", got, want)
+	}
+}
+
+// TestLRCTimestampShapedTextRoundTrip is the Finding 2 corruption repro: a lyric whose text is
+// itself a literal [mm:ss.xx]-shaped string used to corrupt on FLAC/Ogg - FormatLRC wrote
+// "[00:03.000][00:05.000]hi" with no separator, which ParseLRC read back as two phantom lines. The
+// space separator disambiguates it, so it now round-trips as one line whose text keeps the
+// bracketed prefix - including a lyric that legitimately begins with its own space.
+func TestLRCTimestampShapedTextRoundTrip(t *testing.T) {
+	for _, text := range []string{
+		"[00:05.000]hi",                 // text looks like a second timestamp
+		"[00:05.000]",                   // text is exactly a timestamp string
+		"[offset:500]x",                 // text looks like an offset directive
+		"[00:01.000] [00:02.000]spaced", // text is several timestamp-shaped groups
+		" hi",                           // legitimate leading space (written as two, stripped to one)
+		"  two leading",
+	} {
+		lines := []SyncedLine{{Time: 3 * time.Second, Text: text}}
+		got := ParseLRC(FormatLRC(lines))
+		if len(got) != 1 || got[0].Time != 3*time.Second || got[0].Text != text {
+			t.Errorf("round-trip %q = %+v (LRC %q), want one {3s %q}", text, got, FormatLRC(lines), text)
+		}
+	}
+}
+
+// TestParseLRCTimestampTextSeparator covers how the read side treats the space between a timestamp
+// group and text, including externally-authored input: a space after a run of adjacent timestamps
+// separates shared text, a space between two timestamps stops collection at the first, and a
+// no-space external line is unaffected (there is no separator to strip).
+func TestParseLRCTimestampTextSeparator(t *testing.T) {
+	if got := ParseLRC("[00:01.00][00:02.00] chorus"); len(got) != 2 || got[0].Text != "chorus" || got[1].Text != "chorus" {
+		t.Errorf("adjacent-then-space = %+v, want two lines 'chorus'", got)
+	}
+	if g := ParseLRC("[00:01.00] [00:02.00]text"); len(g) != 1 || g[0].Time != time.Second || g[0].Text != "[00:02.00]text" {
+		t.Errorf("space-between = %+v, want one {1s \"[00:02.00]text\"}", g)
+	}
+	if g := ParseLRC("[00:03.00]hi"); len(g) != 1 || g[0].Text != "hi" {
+		t.Errorf("external no-space = %+v, want one {_ \"hi\"}", g)
+	}
+}
+
+// FuzzLRCDoubleParse asserts double-parse idempotency for Finding 2: ParseLRC(FormatLRC(ParseLRC(x)))
+// equals ParseLRC(x) line for line. It holds for arbitrary input because ParseLRC's output never
+// contains an embedded newline (it splits on them), so FormatLRC's one non-inverse - flattening an
+// embedded newline to a space - never fires on already-parsed lines. Constructed-line equality is
+// deliberately not asserted (see the round-trip test above for the specific pinned cases).
+func FuzzLRCDoubleParse(f *testing.F) {
+	for _, s := range []string{
+		"[00:01.000]hi",
+		"[00:03.000][00:05.000]hi",       // adjacent timestamps
+		"[00:03.00] [00:05.00]hi",        // space between: text is a timestamp string
+		"[00:01.00][00:02.00] chorus",    // shared text after a run
+		"[offset:500][00:01.000]A",       // offset directive
+		"[ar:Artist]\n[00:02.000] world", // metadata + a spaced line
+		"[00:30.000]",                    // bare clear marker
+		"plain text no stamp",
+		"\ufeff[00:01.000]bom",
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, x string) {
+		once := ParseLRC(x)
+		twice := ParseLRC(FormatLRC(once))
+		if len(once) != len(twice) {
+			t.Fatalf("line count changed: %d -> %d (x=%q, LRC=%q)", len(once), len(twice), x, FormatLRC(once))
+		}
+		for i := range once {
+			if once[i] != twice[i] {
+				t.Errorf("line %d changed: %+v -> %+v (x=%q)", i, once[i], twice[i], x)
+			}
+		}
+	})
+}
+
 // TestEqualSyncedLyrics checks element-wise equality across language, descriptor, and lines.
 func TestEqualSyncedLyrics(t *testing.T) {
 	a := []SyncedLyrics{{Language: "eng", Description: "d", Lines: []SyncedLine{{Time: time.Second, Text: "x"}}}}
@@ -280,6 +365,14 @@ func TestSyncedLyricsLoseMetadata(t *testing.T) {
 	withDesc := []SyncedLyrics{{Description: "d", Lines: plain[0].Lines}}
 	if !SyncedLyricsLoseMetadata(withDesc, SyncedLyricsLossLanguage) {
 		t.Error("a set with a descriptor should be lossy under the LRC store")
+	}
+	// Finding 7: an embedded line break in a line's text is flattened to a space by the LRC store,
+	// so a set carrying one is a lossy carry even with no language or descriptor.
+	for _, brk := range []string{"a\nb", "a\r\nb", "a\rb"} {
+		set := []SyncedLyrics{{Lines: []SyncedLine{{Time: 0, Text: brk}}}}
+		if !SyncedLyricsLoseMetadata(set, SyncedLyricsLossLanguage) {
+			t.Errorf("a set with an embedded line break %q should be lossy under the LRC store", brk)
+		}
 	}
 }
 

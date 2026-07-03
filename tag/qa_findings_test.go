@@ -67,11 +67,11 @@ func TestPartialDateToleratesWhitespace(t *testing.T) {
 	if ValidPartialDate(" not-a-date ") {
 		t.Error("ValidPartialDate(' not-a-date ') = true, want false (still rejects a non-date)")
 	}
-	if got := TrimNumericValue(RecordingDate, " 2021 "); got != "2021" {
-		t.Errorf("TrimNumericValue(RECORDINGDATE, ' 2021 ') = %q, want 2021 (date keys now trim)", got)
+	if got := TrimTokenValue(RecordingDate, " 2021 "); got != "2021" {
+		t.Errorf("TrimTokenValue(RECORDINGDATE, ' 2021 ') = %q, want 2021 (date keys now trim)", got)
 	}
-	if got := TrimNumericValue(Title, "  spaced  "); got != "  spaced  " {
-		t.Errorf("TrimNumericValue(TITLE) = %q, want it unchanged (non-numeric, non-date)", got)
+	if got := TrimTokenValue(Title, "  spaced  "); got != "  spaced  " {
+		t.Errorf("TrimTokenValue(TITLE) = %q, want it unchanged (non-numeric, non-date)", got)
 	}
 }
 
@@ -93,6 +93,46 @@ func TestDescribesOwnAudio(t *testing.T) {
 	for _, k := range notOwn {
 		if k.DescribesOwnAudio() {
 			t.Errorf("%s.DescribesOwnAudio() = true, want false (not an own-audio key)", k)
+		}
+	}
+}
+
+// TestTrimTokenValueMediaTypeReplayGain covers Finding 9: MEDIATYPE and the REPLAYGAIN_* keys are
+// single-token values, so TrimTokenValue strips their surrounding whitespace the same way it does
+// numeric and date keys. Internal whitespace (the space before "dB") is preserved, and a
+// free-text key is left untouched.
+func TestTrimTokenValueMediaTypeReplayGain(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		k    Key
+		in   string
+		want string
+	}{
+		{MediaType, " 2 ", "2"},
+		{ReplayGainTrackGain, " -7.30 dB ", "-7.30 dB"},
+		{ReplayGainAlbumGain, "  -3.21 dB  ", "-3.21 dB"},
+		{ReplayGainTrackPeak, "\t0.998643\n", "0.998643"},
+		{Title, " keep me ", " keep me "}, // a free-text key is left untouched
+	} {
+		if got := TrimTokenValue(c.k, c.in); got != c.want {
+			t.Errorf("TrimTokenValue(%s, %q) = %q, want %q", c.k, c.in, got, c.want)
+		}
+	}
+}
+
+// TestValidPartialDateRejectsYearZero covers the cosmetic year-0000 guard: time.Parse would accept
+// "0000", but it is not a meaningful year, so ValidPartialDate rejects it (and its month/day
+// extensions) while still accepting real dates - keeping lint and set-time validation in agreement.
+func TestValidPartialDateRejectsYearZero(t *testing.T) {
+	t.Parallel()
+	for _, s := range []string{"0000", "0000-01", "0000-01-01"} {
+		if ValidPartialDate(s) {
+			t.Errorf("ValidPartialDate(%q) = true, want false (year 0000 is not valid)", s)
+		}
+	}
+	for _, s := range []string{"2021", "2021-05", "2021-05-03", "0001"} {
+		if !ValidPartialDate(s) {
+			t.Errorf("ValidPartialDate(%q) = false, want true (a real date must stay valid)", s)
 		}
 	}
 }

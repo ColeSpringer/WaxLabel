@@ -65,6 +65,12 @@ type Capability struct {
 	// mark a chapter set Lossy only when those chapters actually carry affected
 	// metadata, matching the editor's write warning.
 	ChapterLoss ChapterLoss
+	// ChapterTitleByteMax caps the byte length of a chapter title this format stores, or 0 for no
+	// limit. MP4's Nero chpl (an 8-bit length prefix) truncates a title past 255 bytes; FLAC/Ogg
+	// have no such cap. ProjectTransfer uses it to mark a chapter set Lossy when a title exceeds it,
+	// so a copy that will truncate a title reports the loss instead of a clean carry, matching the
+	// write-time chapter-title-truncated warning. Set only on the chapters capability.
+	ChapterTitleByteMax int
 	// SyncedLyricsLoss records synced-lyrics metadata this format cannot preserve. It is
 	// set only on the synced-lyrics capability. ProjectTransfer uses it to mark a
 	// synced-lyrics set Lossy only when those sets carry affected metadata (a per-set
@@ -160,14 +166,20 @@ func OriginalDateV23Capability() Capability {
 }
 
 // RecordingDateV23Capability describes RECORDINGDATE in an ID3v2.3 tag. Its write level
-// stays AccessFull because the ID3 writer already reports second-precision loss through
+// stays AccessFull because the ID3 writer already reports the precise precision loss through
 // ReducedDates; the value-reduction predicate attached by id3 gives transfers the same
 // per-value grading without adding another editor warning.
+//
+// The Fidelity string is deliberately component-agnostic: v2.3 splits a date across TYER (year),
+// TDAT (day+month), and TIME (hour+minute), so which component a given value loses varies: a
+// "2021-06" drops the month, a "2021-06-15T10" drops the hour, a full "...T10:30:45" drops the
+// seconds. A component-specific reason ("seconds dropped") is wrong for the month case, so the shared
+// transfer reason names none; the per-value [value-reduced] write warning carries the specific one.
 func RecordingDateV23Capability() Capability {
 	return Capability{
 		Read: AccessFull, Write: AccessFull,
 		Representation: "ID3v2.3 TYER+TDAT+TIME",
-		Fidelity:       "ID3v2.3 TIME stores HH:MM only (seconds dropped)",
+		Fidelity:       "ID3v2.3 date frames store reduced precision, so a finer component was dropped",
 	}
 }
 

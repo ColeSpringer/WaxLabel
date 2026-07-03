@@ -179,6 +179,25 @@ func TestSetAddChapterDedupsExactDuplicates(t *testing.T) {
 	}
 }
 
+// TestSetReAddExistingMP4ChapterNoDuplicate covers Finding 4: an MP4 chapter reads back a derived
+// End (from the next chapter's start) while a CLI addition has End == 0, so requiring End equality in
+// the dedup made re-adding an existing chapter write a duplicate. Matching Start+Title (and End only
+// when the addition carries one) dedups it: re-adding "0:00=Opening Credits" to a file that already
+// has that chapter leaves the count at 3, with the title appearing once.
+func TestSetReAddExistingMP4ChapterNoDuplicate(t *testing.T) {
+	file := copyFixture(t, sampleM4B)
+	if _, _, code := runCLI(t, "set", file, "--add-chapter", "0:00=Opening Credits"); code != 0 {
+		t.Fatalf("set --add-chapter exit = %d, want 0", code)
+	}
+	out, _, _ := runCLI(t, "dump", file)
+	if !strings.Contains(out, "chapters (3)") {
+		t.Errorf("re-adding an existing MP4 chapter wrote a duplicate (want 3 chapters):\n%s", out)
+	}
+	if strings.Count(out, "Opening Credits") != 1 {
+		t.Errorf("%q should appear once, not duplicated:\n%s", "Opening Credits", out)
+	}
+}
+
 func TestSetClearChapters(t *testing.T) {
 	file := copyFixture(t, sampleM4B)
 	if _, _, code := runCLI(t, "set", file, "--clear-chapters"); code != 0 {

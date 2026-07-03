@@ -70,7 +70,11 @@ func (d *Document) Lint() []Finding {
 
 	out = append(out, lintWarnings(d.media.Warnings)...)
 	out = append(out, lintFamilies(d.media.Families)...)
-	out = append(out, lintPictures(d.media.Pictures)...)
+	// Lint the display projection so a cover whose bytes disagree with its stored MIME (a GIF
+	// mislabeled image/png, or junk under a valid-looking label) is judged by its real type - the
+	// unrecognized-MIME and format checks then see what a reader would. media.Pictures stays stored
+	// for the write path; the projection is a read-only view.
+	out = append(out, lintPictures(core.ProjectPictures(d.media.Pictures))...)
 	out = append(out, lintValues(d.media.Tags)...)
 	out = append(out, lintNegativeNumbers(d.media.Tags)...)
 	out = append(out, lintCardinality(d.media.Tags)...)

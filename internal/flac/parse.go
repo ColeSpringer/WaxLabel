@@ -165,6 +165,11 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	d.commentPictures = commentPics
 	media.Pictures = append(media.Pictures, commentPics...)
 	warnings = append(warnings, picWarnings...)
+	// media.Pictures keeps each cover's stored MIME/dimensions: it is the edit/write source (native
+	// blocks cloned verbatim, comment covers materialized from it), so it must not carry the sniffed
+	// type or an unrelated edit would rewrite an untouched cover's on-disk label. The read-side type
+	// detection runs at the display boundary instead - Document.Pictures and the linter project it
+	// through core.ProjectPictures.
 
 	for _, b := range d.blocks {
 		if b.code > blkPicture && b.code != blkInvalid {

@@ -143,15 +143,18 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 			})
 			continue
 		}
-		// Grade the value the writer would store, not the raw parsed bytes. Numeric and
-		// date fields are trimmed before rendering, so value-level predicates should see
-		// the stored form.
+		// Grade the value the writer would store, not the raw parsed bytes. Trimmable fields
+		// ([tag.IsTrimmableKey]: numeric, date, media-type, ReplayGain) are trimmed before
+		// rendering, so value-level predicates should see the stored form (matching
+		// TrimTokenValue's own gate). ReplayGain keys are filtered upstream as own-audio, so in
+		// practice only the first three reach here; keying off the shared predicate keeps this gate
+		// from drifting from TrimTokenValue when a trimmable key is added.
 		graded := vals
-		if tag.IsNumericKey(k) || tag.IsDateKey(k) {
+		if tag.IsTrimmableKey(k) {
 			// Copy on write: most stored values are already clean, so they reuse vals.
 			cloned := false
 			for i, v := range vals {
-				trimmed := tag.TrimNumericValue(k, v)
+				trimmed := tag.TrimTokenValue(k, v)
 				if trimmed == v {
 					continue
 				}
@@ -217,6 +220,19 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 		if disp == Carried && ChaptersLoseMetadata(src.Chapters, dst.Chapters.ChapterLoss) {
 			disp = Lossy
 			reason = dst.Chapters.Reason()
+		}
+		// A title longer than the format's byte cap (MP4's 255-byte chpl length prefix) is
+		// truncated on write, a silent content loss the metadata check above does not cover, so
+		// grade it Lossy too. Checked only when still Carried, so a set already Lossy keeps its
+		// (broader) reason. len is the byte length, matching the chpl prefix.
+		if disp == Carried && dst.Chapters.ChapterTitleByteMax > 0 {
+			for _, c := range src.Chapters {
+				if len(c.Title) > dst.Chapters.ChapterTitleByteMax {
+					disp = Lossy
+					reason = "chapter title is too long and was truncated"
+					break
+				}
+			}
 		}
 		items = append(items, TransferItem{
 			Kind: TransferChapter, Count: n, Disposition: disp, Reason: reason,

@@ -231,7 +231,9 @@ func (p *Plan) streamCopy(ctx context.Context, dst io.Writer, source core.Reader
 }
 
 // verifyOutput re-hashes the written file's audio extent and compares it to the
-// source essence captured during the copy.
+// source essence captured during the copy, then re-parses the file structurally.
+// Both run before the atomic commit (writeAtomic's verify hook), so a mismatch or
+// an unreadable rewrite discards the temp file rather than shipping it.
 func (p *Plan) verifyOutput(ctx context.Context, out io.ReaderAt, srcEssence []byte) error {
 	if !p.opts.VerifyEssence {
 		return nil
@@ -245,8 +247,45 @@ func (p *Plan) verifyOutput(ctx context.Context, out io.ReaderAt, srcEssence []b
 	if !bytes.Equal(outSum, srcEssence) {
 		return fmt.Errorf("%w: written audio essence does not match the source", waxerr.ErrInvalidData)
 	}
+	// Structural re-parse: the essence hash re-reads the same verbatim media bytes, so it alone
+	// cannot notice a corrupt container wrapped around them (the MP4 truncated-moov write that
+	// motivated this passed --verify while producing a self-unreadable file). Parsing the output
+	// back - the large mdat/audio essence is never read, only its range recorded - catches any
+	// codec's structurally invalid rewrite before it is committed, and the result is discarded.
+	if codec, ok := core.ForFormat(p.doc.media.Format); ok {
+		size := bits.OutputLen(p.plan.Segments)
+		// This verifies our own just-written output, so it must not reject a valid rewrite for a
+		// resource-limit reason it should clear. Take, per field, the more permissive of the
+		// document's parse-time limits and the library defaults: the doc's limits cover a structure
+		// an elevated WithLimits accepted (a deep tree or an oversized cover the defaults would
+		// reject), while the defaults cover a rewrite that grew past a caller's tight parse cap, since
+		// an edit can add elements the input lacked. The writers' own size checks (id3.CheckSize and
+		// the like) gate against DefaultLimits rather than the document's, so the output already fits
+		// the defaults. Finally floor the alloc cap at the output size: no single element can exceed
+		// the whole file, and a hostile declared size still cannot overrun it.
+		def := bits.DefaultLimits
+		limits := bits.Limits{
+			MaxAllocBytes: max(p.doc.limits.MaxAllocBytes, def.MaxAllocBytes, size),
+			MaxDepth:      max(p.doc.limits.MaxDepth, def.MaxDepth),
+			MaxElements:   max(p.doc.limits.MaxElements, def.MaxElements),
+		}
+		sized := sizedReaderAt{ReaderAt: out, size: size}
+		if _, err := codec.Parse(ctx, sized, core.ParseOptions{Limits: limits}); err != nil {
+			return fmt.Errorf("%w: the written file did not parse back cleanly (%v)", waxerr.ErrInvalidData, err)
+		}
+	}
 	return nil
 }
+
+// sizedReaderAt pairs an io.ReaderAt with a known size to satisfy core.ReaderAtSized, so the
+// --verify structural re-parse can read the still-open temp file in place, without loading it
+// into memory the way core.BytesSource would.
+type sizedReaderAt struct {
+	io.ReaderAt
+	size int64
+}
+
+func (s sizedReaderAt) Size() int64 { return s.size }
 
 // essenceExtent returns the codec's essence-digest inputs for this plan's
 // document (version, config), or a neutral fallback if the format is unknown.

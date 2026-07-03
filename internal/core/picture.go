@@ -158,11 +158,11 @@ func (p Picture) CloneMeta() Picture {
 
 // SniffInto fills MIME, Width, Height, and Depth from the picture's own bytes
 // when they are not already set, via a header-only sniff (no decode). It returns
-// whether the format was recognized. This is the read-path reconciliation: the
-// decoders call it to fill fields a container omits while leaving a stored MIME
-// they already read in place, so a file's metadata is reported as it is on disk.
-// The embed path, where the bytes must win over a mislabeled cover, uses
-// [Picture.SniffAuthoritative].
+// whether the format was recognized. This is the fill-when-empty variant: it leaves
+// a value the caller already set in place and only supplies the ones left zero. The
+// CLI's picture-load path (--add-cover/--add-picture) uses it to fill a freshly read
+// image's fields. The codec read paths, by contrast, use [Picture.SniffAuthoritative]
+// so recognizable bytes win over a mislabeled container MIME.
 func (p *Picture) SniffInto() bool { return p.sniff(false) }
 
 // SniffAuthoritative reconciles MIME and dimensions with the picture's own bytes,
@@ -226,6 +226,21 @@ func pickDim(authoritative bool, cur, sniffed int) int {
 		return sniffed
 	}
 	return cur
+}
+
+// ProjectPictures returns a display copy of ps: an independent clone (the image Data stays shared,
+// read-only) whose MIME and dimensions are reconciled with each picture's own bytes via
+// [Picture.SniffAuthoritative], so a mislabeled cover reports its real type and a junk cover degrades
+// to [UnrecognizedMIME] for the linter to flag. The caller's originals are left alone, which is what
+// lets FLAC and Ogg keep a mislabeled cover's on-disk label through an unrelated edit: their writers
+// re-serialize from the stored set, so the sniffed type must stay out of it. The accessor and the
+// linter project; the codecs keep the raw type.
+func ProjectPictures(ps []Picture) []Picture {
+	out := ClonePictures(ps)
+	for i := range out {
+		out[i].SniffAuthoritative()
+	}
+	return out
 }
 
 // ClonePictures deep-copies the slice header and structural fields (sharing

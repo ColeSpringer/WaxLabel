@@ -183,6 +183,45 @@ func TestBoundarySanitizesHostileFilename(t *testing.T) {
 	})
 }
 
+// TestUnidentifiedFilenameEscapedOnce covers Finding 12: the library's "could not identify %q"
+// already escapes control bytes once via %q, so the CLI must pass the raw source name (jsonFileName),
+// not an already-sanitized displayName - otherwise a tab in the name is double-escaped in the error.
+// A tab-in-name failure must escape exactly once in both the human error and the JSON error.message.
+func TestUnidentifiedFilenameEscapedOnce(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "na\tme.bin") // an actual tab byte in the name
+	if err := os.WriteFile(path, []byte("not an audio file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Human: the reason is on stderr. Go's %q renders the tab once as \t; the old bug re-escaped the
+	// already-sanitized \x09 to \\x09. (The stderr path label legitimately shows \x09, so the check
+	// keys on the double-backslash artifact, which only the reason's double-escape produced.)
+	_, stderr, code := runCLI(t, "dump", path)
+	if code == 0 {
+		t.Fatalf("dump of an unidentifiable file should fail")
+	}
+	if !strings.Contains(stderr, `na\tme.bin`) {
+		t.Errorf("human error should escape the tab once as \\t in the reason:\n%s", stderr)
+	}
+	if strings.Contains(stderr, `na\\x09`) {
+		t.Errorf("human error double-escaped the tab (\\\\x09 present):\n%s", stderr)
+	}
+
+	// JSON: the reason is in error.message, which carries no path label to confuse the check.
+	jout, _, _ := runCLI(t, "--json", "dump", path)
+	docs := decodeJSONList[jsonDocument](t, jout)
+	if len(docs) != 1 || docs[0].Error == nil {
+		t.Fatalf("expected one document carrying an error:\n%s", jout)
+	}
+	if !strings.Contains(docs[0].Error.Message, `na\tme.bin`) {
+		t.Errorf("JSON error.message should escape the tab once as \\t: %q", docs[0].Error.Message)
+	}
+	if strings.Contains(docs[0].Error.Message, "x09") {
+		t.Errorf("JSON error.message double-escaped the tab: %q", docs[0].Error.Message)
+	}
+}
+
 // TestBoundaryJSONStaysRaw pins the deliberate exemption: --json is the machine
 // contract, so the boundary unwraps to the raw stream for it. A value carrying DEL
 // (0x7f) and a C1 control (U+009B) - both of which json.Encoder emits raw - must

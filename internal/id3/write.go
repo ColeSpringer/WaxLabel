@@ -62,6 +62,14 @@ type RebuildInfo struct {
 	// where a native container keeps the literal number (WAV/AIFF INFO/text). See
 	// detectNumericGenres.
 	NumericGenres []string
+	// DroppedTotals lists the TRACKTOTAL/DISCTOTAL keys whose canonical value cannot be composed
+	// into a valid "n/total" TRCK/TPOS frame because the number field is non-numeric (e.g.
+	// TRACKNUMBER="A1"): the reader would read "A1/12" as one literal value with the total merged
+	// in and lost, so renderNumTotal preserves the number verbatim and drops the total. The caller
+	// surfaces it as a value-dropped warning keyed to the total. An embedded total in the number
+	// itself ("A1/12" with no canonical TRACKTOTAL) is preserved verbatim and is not a drop. See
+	// detectDroppedTotals.
+	DroppedTotals []tag.Key
 	// ChapterOverflow is set when a chapter edit clamped a start or end past the CHAP
 	// frame's 32-bit millisecond field (~49.7 days). The caller surfaces it as a
 	// chapter-start-overflow warning.
@@ -273,6 +281,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	info.DroppedDates = detectDroppedDates(changed, edited, version)
 	info.ReducedDates = detectReducedDates(changed, edited, version)
 	info.NumericGenres = detectNumericGenres(changed, edited)
+	info.DroppedTotals = detectDroppedTotals(changed, edited)
 	return out, info
 }
 
@@ -678,21 +687,57 @@ func renderNumTotal(version byte, id string, edited tag.TagSet, numKey, totKey t
 	if num == "" && total == "" {
 		return nil, false
 	}
-	// Peel any embedded "n/total" out of the number so TRACKNUMBER="5/12" plus an
-	// explicit TRACKTOTAL never composes "5/12/20" (which re-reads as TRACKTOTAL="12/20").
-	// An explicit total wins; otherwise the embedded one is used. SplitNumberTotal keeps
-	// the exact digit strings, including leading zeros, unlike tag.ParseNumPair.
+	value, _ := composeNumTotal(numKey, num, total)
+	enc := chooseEncoding(version, []string{value})
+	return []Frame{{ID: id, Body: encodeTextFrame(enc, []string{value})}}, false
+}
+
+// composeNumTotal is the single compose-or-drop decision renderNumTotal (what to write) and
+// detectDroppedTotals (whether to warn) share, so the write and its value-dropped warning cannot
+// drift. It returns the TRCK/TPOS number field to write and whether a canonical total was thereby
+// dropped. It composes "n/total" only when the result is a valid numeric value the reader will split
+// back; a non-numeric number (e.g. "A1/12") otherwise reads as one literal value with the total
+// merged in and lost, so the number is preserved verbatim instead. An explicit canonical total wins
+// over one embedded in the number ("5/12" plus TRACKTOTAL never composes "5/12/20"); SplitNumberTotal
+// keeps exact digit strings, including leading zeros, unlike tag.ParseNumPair. totalDropped is true
+// only when a canonical total (from the total key, not an embedded one) is made unrepresentable.
+func composeNumTotal(numKey tag.Key, num, canonicalTotal string) (value string, totalDropped bool) {
 	nPart, embeddedTotal := tag.SplitNumberTotal(num)
-	value := nPart
-	finalTotal := total
+	finalTotal := canonicalTotal
 	if finalTotal == "" {
 		finalTotal = embeddedTotal
 	}
-	if finalTotal != "" {
-		value = nPart + "/" + finalTotal
+	if finalTotal == "" {
+		return nPart, false
 	}
-	enc := chooseEncoding(version, []string{value})
-	return []Frame{{ID: id, Body: encodeTextFrame(enc, []string{value})}}, false
+	if composed := nPart + "/" + finalTotal; tag.ValidNumericValue(numKey, composed) {
+		return composed, false
+	}
+	// Compose failed: preserve the number verbatim (a literal "A1/12" round-trips as-is). A canonical
+	// total is thereby dropped; an embedded one stays inside the preserved num.
+	return num, canonicalTotal != ""
+}
+
+// detectDroppedTotals finds the TRACKTOTAL/DISCTOTAL keys whose canonical value composeNumTotal
+// cannot fit into a valid "n/total" frame, so the caller can warn rather than drop the total
+// silently. Scoped to a pair the edit touched: an untouched pair keeps its original frame, and an
+// embedded total in the number itself ("A1/12" alone) is preserved verbatim and is not a drop.
+func detectDroppedTotals(changed map[tag.Key]bool, edited tag.TagSet) []tag.Key {
+	var dropped []tag.Key
+	for _, p := range []struct{ numKey, totKey tag.Key }{
+		{tag.TrackNumber, tag.TrackTotal},
+		{tag.DiscNumber, tag.DiscTotal},
+	} {
+		if !changed[p.numKey] && !changed[p.totKey] {
+			continue // neither field edited; the original frame is preserved, nothing newly dropped
+		}
+		num, _ := edited.First(p.numKey)
+		total, _ := edited.First(p.totKey)
+		if _, totalDropped := composeNumTotal(p.numKey, num, total); totalDropped {
+			dropped = append(dropped, p.totKey)
+		}
+	}
+	return dropped
 }
 
 // renderDate renders a v2.4 date frame directly from an ISO date key.
@@ -719,6 +764,14 @@ const (
 // "Rock" - a surprising change the caller surfaces (see AppendRebuildWarnings), suppressed
 // where a native container keeps the literal number. Only a value the edit actually changed
 // is reported, so an untouched pre-existing numeric genre does not warn.
+//
+// Three residuals of this handling are known and intentional, so a QA pass should not re-flag
+// them: (a) diff and copy treat a file holding "17" and one holding "Rock" as different, because
+// the read projection resolves "17" to "Rock" while the on-disk bytes differ; (b) on ID3v2.3 a
+// bare "17" is free text, so resolving it to "Rock" is non-conformant to what WaxLabel itself
+// wrote - the warning makes the surprise visible rather than rewriting the bytes; and (c) a
+// parenthesized "(17)" is escaped to "((17)" on disk and reads back as the literal "(17)", never
+// resolved (which is why isNumericGenreRef exempts a leading "(").
 func detectNumericGenres(changed map[tag.Key]bool, edited tag.TagSet) []string {
 	if !changed[tag.Genre] {
 		return nil
@@ -781,9 +834,10 @@ func detectDroppedDates(changed map[tag.Key]bool, edited tag.TagSet, version byt
 }
 
 // v23DateDropped reports whether a v2.3 tag drops the date value v entirely: a non-empty
-// value with no numeric year renders no TYER/TORY frame (both fields need a year). It is
-// the single predicate the write (detectDroppedDates) and the transfer capability's
-// value-drop grading share, so the transfer report cannot drift from the write.
+// value with no valid 4-digit year renders no TYER/TORY frame (both fields need one, and a
+// 5-digit or compact non-canonical form yields none). It is the single predicate the write
+// (detectDroppedDates) and the transfer capability's value-drop grading share, so the transfer
+// report cannot drift from the write.
 func v23DateDropped(v string) bool {
 	return v != "" && extractDatePart(v, partYear) == ""
 }
@@ -832,9 +886,11 @@ func reducesDatePrecision(iso string) bool {
 	return monthLost || hourLost || secondsLost
 }
 
-// hasSubYearPart reports whether iso carries content beyond its 4-digit year, regardless
-// of separator: "2021-03", "20210503", and "2021.05.03" all do, but "2021" does not.
-// ID3v2.3 year-only fields truncate all such values to the year, including non-dash forms.
+// hasSubYearPart reports whether iso carries content beyond its 4-digit year, in a form whose
+// year is still extractable: "2021-03" and "2021-03-15" do, but "2021" does not - and neither do
+// non-canonical compact/dotted forms ("20210503", "2021.05.03"), whose year extractDatePart no
+// longer accepts, so they carry no valid year at all and route to dropped rather than reducing to
+// one. ID3v2.3 year-only fields truncate a dash-form sub-year value to the year.
 func hasSubYearPart(iso string) bool {
 	return len(iso) > 4 && extractDatePart(iso, partYear) != ""
 }
@@ -869,7 +925,14 @@ func AppendRebuildWarnings(ws []core.Warning, info RebuildInfo, retained tag.Tag
 			continue // retained in another container (e.g. WAV's ICRD); not actually dropped
 		}
 		ws = core.WarnKeyed(ws, core.WarnValueDropped,
-			fmt.Sprintf("%s value cannot be represented in ID3v2.3 (it has no numeric year) and was dropped", k), k)
+			fmt.Sprintf("%s value cannot be represented in ID3v2.3 (it has no valid 4-digit year) and was dropped", k), k)
+	}
+	for _, k := range info.DroppedTotals {
+		if v, _ := retained.First(k); v != "" {
+			continue // retained in another container (e.g. WAV's LIST/INFO); not actually dropped
+		}
+		ws = core.WarnKeyed(ws, core.WarnValueDropped,
+			fmt.Sprintf("%s cannot be represented in ID3 because the number it attaches to is non-numeric (the total is stored only as the second half of \"number/total\") and was dropped", k), k)
 	}
 	for _, rd := range info.ReducedDates {
 		// Suppress only when another container still carries the attempted precision:
@@ -881,11 +944,11 @@ func AppendRebuildWarnings(ws []core.Warning, info RebuildInfo, retained tag.Tag
 			fmt.Sprintf("%s value %q carries finer precision than ID3v2.3 date frames can store (TDAT needs a full day, TIME a full minute) and was reduced", rd.Key, rd.Value), rd.Key)
 	}
 	for _, gv := range info.NumericGenres {
-		// Suppress only where a native container still carries the literal number: on the
-		// pure-ID3 formats (MP3/AAC) the retained GENRE reads back as the genre name, so gv is
-		// absent and the warning fires; on WAV/AIFF the INFO/text slot keeps "17" verbatim, so
-		// it is retained and the round-trip did not change - no warning. This mirrors the
-		// date-warning suppression and keeps the write-time note aligned with the read-time one.
+		// Suppress only where a native container still carries the literal number: on MP3/AAC (and
+		// AIFF, whose genre lives only in its ID3 chunk) the retained GENRE reads back as the genre
+		// name, so gv is absent and the warning fires; only WAV keeps "17" verbatim in its LIST/INFO
+		// IGNR slot, so it is retained and the round-trip did not change - no warning. This mirrors
+		// the date-warning suppression and keeps the write-time note aligned with the read-time one.
 		if genres, _ := retained.Get(tag.Genre); slices.Contains(genres, gv) {
 			continue
 		}
@@ -989,11 +1052,15 @@ func renderDatePart(version byte, id string, edited tag.TagSet, key tag.Key, par
 	return []Frame{{ID: id, Body: encodeTextFrame(enc, []string{v})}}, false
 }
 
-// extractDatePart pulls a component out of an ISO-8601 date "YYYY[-MM-DD[THH:MM]]".
+// extractDatePart pulls a component out of an ISO-8601 date "YYYY[-MM-DD[THH:MM]]". The year
+// must be exactly 4 digits bounded by end-of-string or a '-' separator, so a malformed 5-digit
+// year ("10000") or a non-canonical compact/dotted form ("20210503", "2021.05") is not silently
+// truncated to a valid-but-wrong "1000"/"2021"; such a value yields no year and routes to
+// dropped (v23DateDropped) rather than corrupted.
 func extractDatePart(iso string, part datePart) string {
 	switch part {
 	case partYear:
-		if len(iso) >= 4 && allDigits(iso[:4]) {
+		if len(iso) >= 4 && allDigits(iso[:4]) && (len(iso) == 4 || iso[4] == '-') {
 			return iso[:4]
 		}
 	case partDayMonth:

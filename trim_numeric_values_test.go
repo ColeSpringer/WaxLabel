@@ -7,10 +7,10 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestTrimNumericValues checks the same order Prepare uses: trim numeric values first,
+// TestTrimTokenValues checks the same order Prepare uses: trim numeric values first,
 // then split number pairs. That stores the value WaxLabel already validates and lets
 // padded slash pairs keep their inner component trimming.
-func TestTrimNumericValues(t *testing.T) {
+func TestTrimTokenValues(t *testing.T) {
 	wantVals := func(t *testing.T, ts tag.TagSet, key tag.Key, vals ...string) {
 		t.Helper()
 		got, ok := ts.Get(key)
@@ -29,7 +29,7 @@ func TestTrimNumericValues(t *testing.T) {
 		var p tag.TagPatch
 		p.Set(tag.TrackNumber, " 3 ")
 		ts := p.Apply(tag.NewTagSet())
-		trimNumericValues(&ts, p)
+		trimTokenValues(&ts, p)
 		splitNumberPairs(&ts, p)
 		wantVals(t, ts, tag.TrackNumber, "3")
 		wantAbsent(t, ts, tag.TrackTotal)
@@ -39,7 +39,7 @@ func TestTrimNumericValues(t *testing.T) {
 		var p tag.TagPatch
 		p.Set(tag.TrackNumber, " 3 / 12 ")
 		ts := p.Apply(tag.NewTagSet())
-		trimNumericValues(&ts, p)
+		trimTokenValues(&ts, p)
 		splitNumberPairs(&ts, p)
 		wantVals(t, ts, tag.TrackNumber, "3")
 		wantVals(t, ts, tag.TrackTotal, "12")
@@ -49,7 +49,7 @@ func TestTrimNumericValues(t *testing.T) {
 		var p tag.TagPatch
 		p.Set(tag.TrackTotal, " 12 ")
 		ts := p.Apply(tag.NewTagSet())
-		trimNumericValues(&ts, p)
+		trimTokenValues(&ts, p)
 		wantVals(t, ts, tag.TrackTotal, "12")
 	})
 
@@ -59,7 +59,7 @@ func TestTrimNumericValues(t *testing.T) {
 		var p tag.TagPatch
 		p.Set(tag.Title, "X") // edits an unrelated field
 		ts := p.Apply(base)
-		trimNumericValues(&ts, p)
+		trimTokenValues(&ts, p)
 		wantVals(t, ts, tag.TrackNumber, " 5 ") // untouched - the edit never patched it
 	})
 
@@ -67,7 +67,7 @@ func TestTrimNumericValues(t *testing.T) {
 		var p tag.TagPatch
 		p.Set(tag.TrackNumber, " 03 ")
 		ts := p.Apply(tag.NewTagSet())
-		trimNumericValues(&ts, p)
+		trimTokenValues(&ts, p)
 		wantVals(t, ts, tag.TrackNumber, "03")
 	})
 
@@ -75,7 +75,7 @@ func TestTrimNumericValues(t *testing.T) {
 		var p tag.TagPatch
 		p.Set(tag.Title, "  spaced title  ")
 		ts := p.Apply(tag.NewTagSet())
-		trimNumericValues(&ts, p)
+		trimTokenValues(&ts, p)
 		wantVals(t, ts, tag.Title, "  spaced title  ")
 	})
 
@@ -83,7 +83,7 @@ func TestTrimNumericValues(t *testing.T) {
 		var p tag.TagPatch
 		p.Set(tag.RecordingDate, " 2021 ")
 		ts := p.Apply(tag.NewTagSet())
-		trimNumericValues(&ts, p)
+		trimTokenValues(&ts, p)
 		wantVals(t, ts, tag.RecordingDate, "2021") // stored clean, so no malformed-date note
 	})
 }

@@ -69,7 +69,9 @@ const (
 // predicate, so they classify the same sets as lossy.
 //
 // For [SyncedLyricsLossLanguage] (VorbisComment LRC), the timed lines survive, but a
-// non-empty per-set language or descriptor is lost because LRC has no field for it.
+// non-empty per-set language or descriptor is lost because LRC has no field for it - and an
+// embedded line break in a line's text is flattened to a space by the LRC store (FormatLRC), a
+// silent content change, so a set carrying one is a lossy carry too.
 func SyncedLyricsLoseMetadata(sls []SyncedLyrics, loss SyncedLyricsLoss) bool {
 	if loss != SyncedLyricsLossLanguage {
 		return false
@@ -77,6 +79,11 @@ func SyncedLyricsLoseMetadata(sls []SyncedLyrics, loss SyncedLyricsLoss) bool {
 	for _, sl := range sls {
 		if sl.Language != "" || sl.Description != "" {
 			return true
+		}
+		for _, ln := range sl.Lines {
+			if strings.ContainsAny(ln.Text, "\r\n") {
+				return true
+			}
 		}
 	}
 	return false
@@ -86,7 +93,7 @@ func SyncedLyricsLoseMetadata(sls []SyncedLyrics, loss SyncedLyricsLoss) bool {
 // VorbisComment LRC convention cannot preserve. There is only one lossy synced-lyrics
 // variant, so the helper takes no loss argument.
 func SyncedLyricsMetadataDroppedMessage() string {
-	return "LRC synced lyrics store timed text only; the per-set language and descriptor are dropped"
+	return "LRC synced lyrics store timed text only; the per-set language, descriptor, and embedded line breaks are dropped"
 }
 
 // EqualSyncedLyrics reports whether two synced-lyrics slices are identical by content,
@@ -185,10 +192,15 @@ const maxLRCOffsetMs = 1 << 40
 // timestamp (stably, preserving file order among equal times) and capped at
 // [maxSyncedLines]. A document with no timestamped line yields nil.
 //
-// LRC has no escape mechanism, so the one text that cannot round-trip is a lyric line
-// whose text is itself a literal [mm:ss.xx]-shaped timestamp string: on re-read it is
-// indistinguishable from a second time tag. This is inherent to the format (any LRC reader
-// has the same ambiguity); every other text, including section markers, round-trips.
+// WaxLabel separates a line's timestamp from its text with one space (see [FormatLRC]) and
+// strips exactly that space here, so its own output round-trips even when the text is itself a
+// literal [mm:ss.xx]-shaped string: the space stops timestamp collection, so the text is not
+// re-read as a second time tag. LRC has no escape mechanism, so the residual ambiguity is an
+// externally-authored line that abuts a [mm:ss.xx]-shaped text directly against its timestamp
+// with no separator ("[00:01.00][00:02.00]x"); that reads as two time tags, as it would in any
+// LRC player. Every other text, including section markers, round-trips. A file already corrupted
+// by WaxLabel's old no-separator writer stays corrupted - this prevents new corruption, it cannot
+// recover a phantom line already baked into existing bytes.
 //
 // [offset:N] (milliseconds, optionally signed) shifts every timestamp by the
 // foobar2000 rule, effective timestamp = timestamp - offset, clamped at zero. The first
@@ -235,13 +247,14 @@ func ParseLRC(text string) []SyncedLine {
 	return out
 }
 
-// FormatLRC renders timed lyric lines as an LRC document: one "[mm:ss.mmm]text" line
-// per [SyncedLine], in the given order, joined by newlines. The millisecond timestamp
-// means a round-trip through [ParseLRC] is lossless for every line except the inherently
-// ambiguous one whose text is itself a literal [mm:ss.xx]-shaped string (see ParseLRC). The
-// minute field widens past two digits for a long track, and an empty-text line emits a bare
-// timestamp (a clear marker). The per-set language and descriptor are not representable in
-// LRC and are not emitted (see [SyncedLyricsLossLanguage]).
+// FormatLRC renders timed lyric lines as an LRC document: one "[mm:ss.mmm] text" line per
+// [SyncedLine], in the given order, joined by newlines. A single space separates the timestamp
+// from non-empty text and [ParseLRC] strips it back, so the millisecond timestamp makes a
+// round-trip through ParseLRC lossless for every line - including one whose text is itself a
+// literal [mm:ss.xx]-shaped string, which the separator disambiguates (see ParseLRC). The minute
+// field widens past two digits for a long track, and an empty-text line emits a bare timestamp
+// (a clear marker). The per-set language and descriptor are not representable in LRC and are not
+// emitted (see [SyncedLyricsLossLanguage]).
 func FormatLRC(lines []SyncedLine) string {
 	var b strings.Builder
 	for i, ln := range lines {
@@ -249,7 +262,15 @@ func FormatLRC(lines []SyncedLine) string {
 			b.WriteByte('\n')
 		}
 		b.WriteString(formatLRCTime(ln.Time))
-		b.WriteString(flattenLRCText(ln.Text))
+		// Separate the timestamp from the text with exactly one space, and only for non-empty
+		// text (an empty-text clear marker stays a bare timestamp). leadingTimestamps strips this
+		// one space back off on read, so "[00:05.000] [x]" round-trips even when the text is
+		// itself a literal [..]-shaped string: the space stops timestamp collection, so the text
+		// is no longer re-read as a second time tag. Without it the two abut and corrupt.
+		if text := flattenLRCText(ln.Text); text != "" {
+			b.WriteByte(' ')
+			b.WriteString(text)
+		}
 	}
 	return b.String()
 }
@@ -309,6 +330,15 @@ func leadingTimestamps(line string) (times []time.Duration, offsetMs int64, hasO
 			break // a metadata tag or a section marker in the lyric text; the text starts here
 		}
 		s = s[end+1:]
+	}
+	// Strip exactly one space between the consumed timestamp group(s) and the text - the
+	// separator FormatLRC now emits - so "[00:05.000] hi" reads back "hi", not " hi". Scoped to a
+	// line that actually yielded a timestamp: a plain-text or metadata line (no timestamp
+	// consumed) keeps its leading whitespace untouched. TrimPrefix removes at most one space, so
+	// a lyric whose text legitimately begins with a space (written as two spaces) keeps the rest,
+	// and an external no-space "[00:05.000]hi" is unaffected.
+	if len(times) > 0 {
+		s = strings.TrimPrefix(s, " ")
 	}
 	return times, offsetMs, hasOffset, s
 }
