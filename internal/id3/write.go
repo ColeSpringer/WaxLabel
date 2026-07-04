@@ -536,16 +536,11 @@ func keyRenderIDs(key tag.Key, version byte) []string {
 // identifier (four characters beginning with T), so an otherwise-unmapped text
 // frame round-trips under its own identifier instead of via TXXX.
 func rawFrameIDKey(key tag.Key) bool {
+	// A plain text-frame identifier is a conformant 4-char ID that begins with T. Reuse
+	// conformantFrameID for the length + character-class check (it guarantees len==4, so the
+	// s[0] index is safe) so the allowed byte set stays defined in one place.
 	s := string(key)
-	if len(s) != 4 || s[0] != 'T' {
-		return false
-	}
-	for i := 0; i < 4; i++ {
-		if !(s[i] >= 'A' && s[i] <= 'Z' || s[i] >= '0' && s[i] <= '9') {
-			return false
-		}
-	}
-	return true
+	return conformantFrameID(s) && s[0] == 'T'
 }
 
 // renderUnit renders the frame(s) for a render token from the edited tag set,

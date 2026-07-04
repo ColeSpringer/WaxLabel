@@ -196,18 +196,23 @@ func rebuildBlocks(d *doc, newVendor string, newComments []comment, pictures []c
 	for _, b := range d.blocks {
 		switch b.code {
 		case blkVorbisComment:
+			// De-dup first: only the first Vorbis comment block survives a rewrite, matching the
+			// multiple-vorbis-comment lint promise that the extras are dropped. This guard is
+			// hoisted above the preserve-verbatim gate below so a picture/padding/legacy-only edit
+			// (all three change flags false) still collapses duplicates - the gate alone would
+			// clone every extra block verbatim.
+			if vorbisHandled {
+				continue
+			}
 			if !commentsChanged && !vendorChanged && !dropPictureComment {
-				// Nothing touched the comment block, so preserve every comment block verbatim,
-				// including extras outside the canonical projection.
+				// Nothing touched the comment block, so preserve the first block verbatim
+				// (byte fidelity for the common single-block file).
 				out = append(out, b.clone())
 				vorbisHandled = true
 				continue
 			}
-			// Re-render the first comment block and drop any extra comment blocks. That is the
-			// documented collapse for tag/chapter edits and vendor neutralization.
-			if vorbisHandled {
-				continue
-			}
+			// Re-render the first comment block. That is the documented collapse for tag/chapter
+			// edits and vendor neutralization.
 			out = append(out, block{code: blkVorbisComment, body: renderVorbisComment(newVendor, newComments)})
 			vorbisHandled = true
 			commentBlockReRendered = true

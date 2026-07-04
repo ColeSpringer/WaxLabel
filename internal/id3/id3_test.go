@@ -903,6 +903,55 @@ func TestSpacePaddedFrameID(t *testing.T) {
 	}
 }
 
+// TestNonConformantFrameIDMarkedOpaque covers the re-read half of the unknown-v2.2-frame
+// preservation: a space-padded "TXY " ID (the form an unknown v2.2 frame takes once modernized
+// to v2.3 and read back) is marked opaque at decode, the single decode entry point. That one
+// flag - not a set of scattered per-projection gates - is what keeps the frame preserved
+// verbatim and out of the canonical model, and it closes the DecodeText path a text-frame
+// scan would otherwise leak through.
+func TestNonConformantFrameIDMarkedOpaque(t *testing.T) {
+	frame := func(id, text string) []byte {
+		body := encodeTextFrame(encLatin1, []string{text})
+		h := append([]byte(id), byte(len(body)>>24), byte(len(body)>>16), byte(len(body)>>8), byte(len(body)), 0, 0)
+		return append(h, body...)
+	}
+	txy := frame("TXY ", "leak?") // non-conformant (trailing space) ID
+	tit2 := frame("TIT2", "Real")
+	var sz [4]byte
+	putSyncSafe(sz[:], int64(len(txy)+len(tit2)))
+	data := append([]byte{'I', 'D', '3', 3, 0, 0}, sz[:]...)
+	data = append(append(data, txy...), tit2...)
+
+	tg, err := ParseTag(data, 0)
+	if err != nil {
+		t.Fatalf("ParseTag: %v", err)
+	}
+	var txyFrame Frame
+	found := false
+	for _, f := range tg.Frames() {
+		if f.ID == "TXY " {
+			txyFrame, found = f, true
+		}
+	}
+	if !found {
+		t.Fatal("the space-padded TXY frame was dropped rather than preserved")
+	}
+	if !txyFrame.Opaque {
+		t.Error("a non-conformant (space-padded) frame ID must be marked opaque on decode")
+	}
+	// The opaque frame must not leak its bytes as a text value through DecodeText.
+	if got := DecodeText(txyFrame); len(got) != 0 {
+		t.Errorf("DecodeText on an opaque non-conformant frame = %v, want empty (no text leak)", got)
+	}
+	// It must not surface as a phantom canonical tag; the real TIT2 still projects.
+	if v, ok := Project(tg).Tags.First(tag.Key("TXY")); ok {
+		t.Errorf("phantom canonical TXY = %q surfaced from a non-conformant frame", v)
+	}
+	if v, _ := Project(tg).Tags.First(tag.Title); v != "Real" {
+		t.Errorf("Title = %q, want Real (conformant frames still project)", v)
+	}
+}
+
 // TestHugeFrameSizeNoPanic guards the 32-bit overflow: a v2.3 frame header
 // declaring size 0xFFFFFFFF must be rejected (the scan stops) rather than
 // wrapping to a negative length and panicking on the slice.

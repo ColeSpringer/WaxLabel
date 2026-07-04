@@ -21,8 +21,9 @@ const (
 	WarnTrailingID3v1
 	// WarnLegacyAPE means an APEv2 tag is present alongside the native tags.
 	WarnLegacyAPE
-	// WarnMultipleVorbisComment means more than one Vorbis comment block was
-	// found; the first is authoritative, the rest preserved.
+	// WarnMultipleVorbisComment means more than one Vorbis comment block was found; the first
+	// is authoritative and the extras are dropped if the file is rewritten (any edit collapses
+	// them to a single block), matching the runtime lint message.
 	WarnMultipleVorbisComment
 	// WarnInheritedEncoder means an "encoder=Lavf..." style comment from a
 	// transcoder was found - typical of acquired files.
@@ -206,6 +207,15 @@ const (
 	// the offending native name is in the prose Message, since there is no valid canonical key
 	// to name.
 	WarnInvalidTagKey
+	// WarnNumberTotalConflict means one edit both set a slash-combined track/disc number (e.g.
+	// TRACKNUMBER=3/12) and explicitly set the matching total (TRACKTOTAL=99) to a different
+	// value. The explicit total wins by design (the slash-derived total is only a fallback), so
+	// no value is lost - both the number and the explicit total are kept and only the redundant
+	// derived total goes unused - but the disagreement is surfaced so the user is not surprised.
+	// It is an edit-time-only warning carrying the affected total key (Warning.Keys); it is
+	// advisory and does not escalate --strict. Absent on a faithful copy, which must not flag the
+	// source's own values as an authored conflict.
+	WarnNumberTotalConflict
 )
 
 func (c WarningCode) String() string {
@@ -290,6 +300,8 @@ func (c WarningCode) String() string {
 		return "synced-lyrics-timestamp-clamped"
 	case WarnInvalidTagKey:
 		return "invalid-tag-key"
+	case WarnNumberTotalConflict:
+		return "number-total-conflict"
 	default:
 		return "unknown"
 	}

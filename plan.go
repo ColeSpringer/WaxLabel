@@ -230,7 +230,12 @@ func (p *Plan) resultDocument(path string, src core.ReaderAtSized, id core.Ident
 	// media is the result clone, so the hash covers the post-write metadata region.
 	if path != "" && !id.HasFinger {
 		if fSrc, err := openFileSource(path); err == nil {
-			if fp, ok := core.Fingerprint(fSrc, media, p.opts.Limits.MaxAllocBytes); ok {
+			// Use the document's own parse limit (p.opts.Limits is a WriteOptions field no option
+			// sets, so always DefaultLimits); this matches the p.doc.limits stamp below and the
+			// verifySourceUnchanged fingerprint, and reproduces the exact limit the parse-time
+			// fingerprint used, so a returned Document's identity agrees with a fresh ParseFile
+			// under the same options (see Document.fingerprintLimit).
+			if fp, ok := core.Fingerprint(fSrc, media, p.doc.fingerprintLimit()); ok {
 				id.Fingerprint, id.HasFinger = fp, true
 			}
 			fSrc.Close()

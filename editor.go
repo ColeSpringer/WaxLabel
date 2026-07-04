@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -284,7 +285,9 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// splitting first would route a NUL from "3/\x00" into an unscanned derived
 	// TRACKTOTAL and smuggle it past the guard onto a C-string format. Splitting after
 	// means the NUL is still on the touched TRACKNUMBER and is rejected above.
-	splitNumberPairs(&editedTags, e.patch)
+	// The returned conflict warnings (an explicit total disagreeing with a slash-derived
+	// one) are surfaced below, gated on !e.carried like the other authored warnings.
+	numberConflicts := splitNumberPairs(&editedTags, e.patch)
 	edited := &core.Media{
 		Format:       e.base.Format,
 		Properties:   e.base.Properties,
@@ -450,6 +453,10 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		// Warn when a patched value is reduced by the destination's field-level write
 		// capability, using the same projected result tags as the legacy conflict check.
 		wp.Report.Warnings = appendValueReducedWarnings(wp.Report.Warnings, caps, patchKeys, editedTags, result)
+		// Surface a track/disc total-vs-slash conflict this edit authored (computed at the
+		// number-pair split above, where the precedence lives). A faithful carry is suppressed
+		// by the enclosing !e.carried gate: a copy must not flag the source's own values.
+		wp.Report.Warnings = append(wp.Report.Warnings, numberConflicts...)
 	}
 	return &Plan{doc: e.doc, plan: wp, opts: wo}, nil
 }
@@ -927,7 +934,13 @@ func trimTokenValues(ts *tag.TagSet, patch tag.TagPatch) {
 // the others - the single-valued-key warning flags that misuse separately. A
 // present-but-empty number ([""], from `set TRACKNUMBER=`) carries no slash and so is
 // left untouched.
-func splitNumberPairs(ts *tag.TagSet, patch tag.TagPatch) {
+//
+// It returns a warning per pair whose explicit total (set by the same edit) disagrees with
+// the slash-derived one - the redundant derived total is dropped by design, and surfacing
+// the disagreement is the caller's to gate on e.carried (a faithful copy must not flag the
+// source's own values). The split itself always runs, so a carried edit still normalizes.
+func splitNumberPairs(ts *tag.TagSet, patch tag.TagPatch) []core.Warning {
+	var ws []core.Warning
 	for _, numKey := range []tag.Key{tag.TrackNumber, tag.DiscNumber} {
 		if !patch.Touches(numKey) {
 			continue
@@ -936,14 +949,45 @@ func splitNumberPairs(ts *tag.TagSet, patch tag.TagPatch) {
 		if !ok || len(vals) != 1 {
 			continue // absent, or multi-valued (out of scope - never lose a value)
 		}
+		totKey := tag.TotalKey(numKey)
+		touchesTotal := patch.Touches(totKey)
+		// When the same edit also sets the total explicitly, that explicit value wins (the
+		// SplitNumberValue call below is told not to write the derived total). Warn when the two
+		// numerically disagree so the unused slash-derived total is not a silent surprise.
+		// Detection lives here, where the precedence lives, so the two cannot drift. A
+		// leading-zero-only difference ("1/07" + TRACKTOTAL=7) is not a conflict - the same total,
+		// and the derived "07" is discarded anyway; agreement, a malformed number (no derived
+		// total), or an edit that does not touch the total also does not warn.
+		_, derived, split := tag.NumberTotalSplit(numKey, vals[0])
+		explicit, _ := ts.First(totKey)
+		if touchesTotal && split && derived != "" && explicit != "" && !sameTotal(explicit, derived) {
+			ws = core.WarnKeyed(ws, core.WarnNumberTotalConflict,
+				fmt.Sprintf("%s %s overrides the total %s derived from %s %q",
+					totKey, explicit, derived, numKey, vals[0]), totKey, numKey)
+		}
 		// Split through the shared split-and-assign body, so this edit-time site cannot drift
 		// from the codec read paths ([tag.NormalizeNumberPairs] uses the same helper). A value
 		// with no slash, or a malformed pair ("abc/1", "1/2/3"), is left verbatim on the number
 		// key (the set-time note flags it). The total is written unless the patch also touches
 		// the total key, so an explicit Set/Clear of the total in the same edit wins while a
 		// slash total still updates a base-carried one.
-		tag.SplitNumberValue(ts, numKey, vals[0], !patch.Touches(tag.TotalKey(numKey)))
+		tag.SplitNumberValue(ts, numKey, vals[0], !touchesTotal)
 	}
+	return ws
+}
+
+// sameTotal reports whether two track/disc total strings denote the same number, so a
+// leading-zero-only difference ("07" vs "7", "012" vs "12") is not flagged as a conflict. The
+// derived side is already validated numeric; a non-numeric or out-of-range explicit total never
+// parses equal, so it still counts as a genuine disagreement (and its own malformed-value note
+// fires separately). Exact-string equality short-circuits the common case.
+func sameTotal(explicit, derived string) bool {
+	if explicit == derived {
+		return true
+	}
+	e, eerr := strconv.Atoi(explicit)
+	d, derr := strconv.Atoi(derived)
+	return eerr == nil && derr == nil && e == d
 }
 
 // validatePictures enforces the single-icon rule: picture types 1 and 2 must

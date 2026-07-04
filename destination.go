@@ -102,7 +102,13 @@ func (p *Plan) verifySourceUnchanged(src core.ReaderAtSized, samePath bool) (cor
 	// Stat matched; now fold in the structural fingerprint of the metadata region and re-check,
 	// so a tamper that preserved size, mtime, and inode is still caught.
 	if p.doc.media.Identity.HasFinger {
-		if fp, ok := core.Fingerprint(src, p.doc.media, p.opts.Limits.MaxAllocBytes); ok {
+		// Fingerprint under the document's own PARSE limit, not p.opts.Limits (a WriteOptions
+		// field no WriteOption ever sets, so always DefaultLimits). A document parsed with an
+		// elevated WithLimits and a >256 MiB metadata region would otherwise silently skip its
+		// save-time fingerprint (core.Fingerprint returns ok=false), degrading the guard to
+		// inode+size+mtime. Using the same limit the parse-time fingerprint used keeps the two
+		// symmetric (see fingerprintLimit).
+		if fp, ok := core.Fingerprint(src, p.doc.media, p.doc.fingerprintLimit()); ok {
 			current.Fingerprint, current.HasFinger = fp, true
 			if ok, why := match(current); !ok {
 				return current, fmt.Errorf("%w: %s", waxerr.ErrSourceChanged, why)
@@ -110,6 +116,21 @@ func (p *Plan) verifySourceUnchanged(src core.ReaderAtSized, samePath bool) (cor
 		}
 	}
 	return current, nil
+}
+
+// fingerprintLimit is the alloc ceiling for a save-time structural fingerprint: the
+// document's parse limit used verbatim, so save/result fingerprinting stays symmetric with the
+// parse-time fingerprint (the codecs pass the raw opts.Limits.MaxAllocBytes) and never allocates
+// past a caller's explicit WithLimits cap - a deliberately tight sub-default limit is honored,
+// not floored. The default is used only when the recorded limit is non-positive, which happens
+// solely for a Document built without a resolved limit (a hand-constructed one in a test); a
+// zero limit would otherwise make core.Fingerprint skip silently (bits.ReadSlice rejects a
+// non-positive limit), degrading save-back change detection to inode+size+mtime.
+func (d *Document) fingerprintLimit() int64 {
+	if d.limits.MaxAllocBytes > 0 {
+		return d.limits.MaxAllocBytes
+	}
+	return bits.DefaultLimits.MaxAllocBytes
 }
 
 func (p *Plan) saveBack(ctx context.Context) (*Document, SaveResult, error) {

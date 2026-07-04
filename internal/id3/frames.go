@@ -159,11 +159,17 @@ func decodeFrame(id string, flags [2]byte, raw []byte, major byte, tagUnsync boo
 	}
 
 	compressed, encrypted, grouping, unsync, dataLen := decodeFrameFlags(flags, major)
-	if compressed || encrypted {
-		// The payload cannot be reinterpreted, but v2.4 unsync still applies to opaque
-		// compressed or encrypted bodies. Render writes a tag header without tag-level
-		// unsync, so normalize the body here and clear the frame-level unsync bit when it
-		// no longer applies.
+	// Preserve verbatim (opaque) when the body cannot be reinterpreted - compressed or
+	// encrypted - or when the ID is not spec-conformant. A non-conformant ID is a space-padded
+	// v2.2 upgrade (e.g. "TXY " from padID) that was rendered into this v2.3/2.4 tag and is now
+	// being re-read: marking it opaque here, the single decode entry point, is what keeps it out
+	// of the canonical projection and the managed-frame rebuild on re-read - mirroring how the
+	// v2.2 read above already marks the unknown frame opaque - so the flag models it uniformly
+	// on both reads and every f.Opaque short-circuit (projection, rebuild, DecodeText) covers it.
+	if compressed || encrypted || !conformantFrameID(id) {
+		// v2.4 unsync still applies to an opaque body. Render writes a tag header without
+		// tag-level unsync, so normalize the body here and clear the frame-level unsync bit when
+		// it no longer applies.
 		if unsync || (major == 4 && tagUnsync) {
 			raw = deunsync(raw)
 			flags[1] &^= v24Unsync
@@ -207,12 +213,35 @@ func validFrameID(id string) bool {
 	if len(id) == 0 {
 		return false
 	}
-	if !(id[0] >= 'A' && id[0] <= 'Z' || id[0] >= '0' && id[0] <= '9') {
+	if !isUpperAlnum(id[0]) {
 		return false
 	}
 	for i := 1; i < len(id); i++ {
-		c := id[i]
-		if !(c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == ' ') {
+		if c := id[i]; !isUpperAlnum(c) && c != ' ' {
+			return false
+		}
+	}
+	return true
+}
+
+// isUpperAlnum reports whether c is an uppercase ASCII letter or a digit - the character class
+// an ID3 frame identifier is built from. Shared by validFrameID, conformantFrameID, and
+// rawFrameIDKey so the allowed byte set is defined in one place.
+func isUpperAlnum(c byte) bool {
+	return c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+}
+
+// conformantFrameID reports whether id is a spec-conformant 4-character frame identifier:
+// exactly four bytes, each A-Z or 0-9. Unlike validFrameID it does NOT tolerate a trailing
+// space, so an unknown ID3v2.2 frame preserved under a space-padded best-effort ID (e.g. "TXY "
+// from padID) is rejected. decodeFrame uses it to mark such a re-read frame opaque, so it stays
+// preserved verbatim and never surfaces as a canonical tag; rawFrameIDKey builds on it.
+func conformantFrameID(id string) bool {
+	if len(id) != 4 {
+		return false
+	}
+	for i := 0; i < 4; i++ {
+		if !isUpperAlnum(id[i]) {
 			return false
 		}
 	}

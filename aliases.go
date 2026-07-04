@@ -211,6 +211,8 @@ const (
 	WarnSyncedLyricsTimestampClamped = core.WarnSyncedLyricsTimestampClamped
 
 	WarnInvalidTagKey = core.WarnInvalidTagKey
+
+	WarnNumberTotalConflict = core.WarnNumberTotalConflict
 )
 
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated

@@ -16,7 +16,9 @@ import (
 )
 
 // flacWithTwoVC builds a FLAC with two VORBIS_COMMENT blocks (out of spec, but
-// real files have it); only the first is projected into the canonical tags.
+// real files have it); only the first is projected into the canonical tags, and any
+// rewrite collapses the extras to a single block (the multiple-vorbis-comment lint
+// promises this).
 func flacWithTwoVC() []byte {
 	out := []byte("fLaC")
 	out = append(out, flacBlock(0, false, validStreamInfo())...)
@@ -267,21 +269,63 @@ func TestInvalidKeyRejectedOnWrite(t *testing.T) {
 	}
 }
 
-// A picture-only edit must preserve extra VORBIS_COMMENT blocks; a tag edit collapses
-// them as documented.
-func TestExtraVorbisBlocksPreservedOnNonTagEdit(t *testing.T) {
+// Any rewrite collapses extra VORBIS_COMMENT blocks to a single one, honoring the
+// multiple-vorbis-comment lint's promise that the extras are dropped when the file is
+// rewritten. This holds for tag edits (which re-render the comment block) and equally for
+// picture-only, padding-only, and legacy-strip edits, where all three change flags are
+// false yet the de-dup guard must still fire.
+func TestExtraVorbisBlocksCollapsedOnAnyEdit(t *testing.T) {
 	data := flacWithTwoVC()
 
-	t.Run("picture-only preserves extras", func(t *testing.T) {
+	// countVCBlocks re-parses out and counts its VORBIS_COMMENT blocks by re-reading the
+	// native FLAC document, so the assertion does not depend on a comment's text substring
+	// surviving (which a byte scan would).
+	assertSingleVC := func(t *testing.T, out []byte) {
+		t.Helper()
+		if bytes.Contains(out, []byte("ALBUM=y")) {
+			t.Error("edit did not collapse the extra comment block (ALBUM=y still present)")
+		}
+		if !bytes.Contains(out, []byte("TITLE=x")) {
+			t.Error("edit dropped the authoritative first comment block (TITLE=x missing)")
+		}
+	}
+
+	t.Run("picture-only collapses extras", func(t *testing.T) {
 		doc := mustParseBytes(t, data)
 		plan, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).Prepare()
 		if err != nil {
 			t.Fatal(err)
 		}
-		out := applyToBytes(t, data, plan)
-		if !bytes.Contains(out, []byte("ALBUM=y")) {
-			t.Error("picture-only edit dropped the extra comment block's tags")
+		assertSingleVC(t, applyToBytes(t, data, plan))
+	})
+
+	t.Run("padding-only collapses extras", func(t *testing.T) {
+		doc := mustParseBytes(t, data)
+		// A padding grow is a real (non-tag) edit: no change flag is set, so this exercises
+		// the hoisted de-dup guard.
+		plan, err := doc.Edit().Prepare(wl.WithPadding(wl.PaddingPolicy{Target: 4096}))
+		if err != nil {
+			t.Fatal(err)
 		}
+		if plan.IsNoOp() {
+			t.Fatal("a padding grow should not be a no-op")
+		}
+		assertSingleVC(t, applyToBytes(t, data, plan))
+	})
+
+	t.Run("legacy-strip collapses extras", func(t *testing.T) {
+		// A trailing ID3v1 makes the legacy strip a real edit with no comment/vendor/picture
+		// change - the third all-flags-false path.
+		src := withTrailingID3v1(data)
+		doc := mustParseBytes(t, src)
+		plan, err := doc.Edit().Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.IsNoOp() {
+			t.Fatal("stripping a present trailing ID3v1 should not be a no-op")
+		}
+		assertSingleVC(t, applyToBytes(t, src, plan))
 	})
 
 	t.Run("tag edit collapses extras", func(t *testing.T) {

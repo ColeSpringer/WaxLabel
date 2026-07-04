@@ -293,6 +293,13 @@ path:
   description and the remaining bytes as image data. That reading is persisted on
   rewrite, so the original malformed bytes do not round-trip. Conformant pictures are
   unaffected.
+- **Unknown ID3v2.2 frames keep a non-conformant 4-character ID.** An ID3v2.2 frame
+  whose 3-character ID is not in the upgrade table is preserved when the tag is written
+  as ID3v2.3/2.4 under a best-effort ID formed by padding the original with a trailing
+  space (e.g. `TXY` becomes `TXY `). That padded ID is technically non-conformant, but
+  the frame's bytes are kept verbatim and it never surfaces as a canonical tag — it is
+  skipped on read, in `dump`, and in `diff`, so the preview always equals a fresh
+  re-parse. Known ID3v2.2 frames upgrade to their proper v2.3/2.4 IDs and are unaffected.
 - **Present-but-valueless fields collapse to absent.** A field present in the source
   with no value reads back as absent rather than present-empty; this is consistent
   across formats and matches how `--clear` and a set-empty value are distinguished
