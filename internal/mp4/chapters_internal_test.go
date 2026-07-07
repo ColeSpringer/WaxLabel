@@ -350,3 +350,26 @@ func TestEmptyEditOffset(t *testing.T) {
 		t.Errorf("empty-elst offset = %v, want 0", got)
 	}
 }
+
+// TestSpliceBytesCoincidentOffsetOrdering pins the tie-break for two reps sharing a start (a
+// combined tag+chapter edit where a chpl insert lands exactly at meta.end()): a zero-width insert
+// must be applied before a same-offset replace, deterministically and regardless of input order.
+// Without the tie-break sort.Slice ordered by luck, and emitting the replace first advances pos
+// past the insert's start, tripping the disjoint-range guard.
+func TestSpliceBytesCoincidentOffsetOrdering(t *testing.T) {
+	src := []byte("AABBCC") // replace the "BB" pair at offset 2 with "XX", insert "II" at offset 2
+	insert := byteRep{start: 2, oldLen: 0, repl: []byte("II")}
+	replace := byteRep{start: 2, oldLen: 2, repl: []byte("XX")}
+	want := "AAIIXXCC" // insert's bytes precede the replacement's at the shared offset
+
+	for _, order := range [][]byteRep{{insert, replace}, {replace, insert}} {
+		reps := append([]byteRep(nil), order...) // sort.Slice mutates in place; give each run its own copy
+		got, err := spliceBytes(src, reps)
+		if err != nil {
+			t.Fatalf("spliceBytes(order %+v): %v", order, err)
+		}
+		if string(got) != want {
+			t.Errorf("spliceBytes = %q, want %q (insert must precede a same-offset replace, order-independent)", got, want)
+		}
+	}
+}

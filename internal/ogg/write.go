@@ -79,13 +79,18 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	// Re-emit one METADATA_BLOCK_PICTURE comment per picture. edited.Pictures carries each cover's
 	// stored MIME (media.Pictures is the stored set, not a sniffed projection), so re-rendering it
 	// preserves an untouched cover's on-disk label; a newly added cover carries the type the editor
-	// reconciled with its bytes on add.
-	full := slices.Clone(newComments)
-	for _, p := range edited.Pictures {
-		full = append(full, vorbis.Comment{
-			Name:  vorbis.PictureComment,
-			Value: base64.StdEncoding.EncodeToString(vorbis.RenderPicture(p)),
-		})
+	// reconciled with its bytes on add. Clone only when there are covers to append (the common
+	// tag/chapter edit has none): buildCommentPacket below only reads full, so aliasing newComments
+	// when nothing is appended is safe.
+	full := newComments
+	if len(edited.Pictures) > 0 {
+		full = slices.Clone(newComments)
+		for _, p := range edited.Pictures {
+			full = append(full, vorbis.Comment{
+				Name:  vorbis.PictureComment,
+				Value: base64.StdEncoding.EncodeToString(vorbis.RenderPicture(p)),
+			})
+		}
 	}
 	if picturesChanged {
 		report.Operations = append(report.Operations, fmt.Sprintf("pictures: %d", len(edited.Pictures)))
@@ -94,37 +99,39 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 		report.Operations = append(report.Operations, "vendor stamp neutralized")
 	}
 
-	// Guard against emitting a cover a default-limit reader would then refuse. Only a picture
-	// can realistically push the comment packet past the alloc ceiling (tags, chapters, and
-	// synced lyrics are all bounded well below it), so weigh the rendered covers - the Ogg
-	// analogue of MP4's per-item checkBuiltItems - floored at the largest cover already in the
-	// file. Those parsed covers were read within the (possibly raised) parse limit, so writing
-	// them back is always safe even though the write limit defaults lower; without the floor an
-	// unrelated tag edit on a file whose cover was parsed under WithLimits could never be written
-	// back. A genuinely new cover larger than anything the file held is still rejected. Gate on
-	// the write limit (opts.Limits), like the sibling MP4 check, not a hardcoded default.
-	// --verify would miss this: its structural re-parse floors the alloc cap at the output size,
-	// so the failure belongs at write time.
+	// Guard against emitting a comment header a default-limit reader would then refuse. Only a
+	// picture can realistically push the comment packet past the alloc ceiling (tags, chapters, and
+	// synced lyrics are all bounded well below it). Check the *whole* rebuilt comment packet, not
+	// each cover individually: reassembleHeaders caps the summed comment packet on re-read, so
+	// several near-limit covers that each fit but jointly overflow would otherwise produce a file
+	// that fails to re-parse at the same limit. The write limit floors at the whole original comment
+	// packet (origCommentPacketLen): those bytes were parsed within the (possibly raised) parse
+	// limit, so an unrelated edit on a file whose covers were parsed under WithLimits stays writable
+	// - and flooring to the whole packet (not the largest single cover, as the old per-cover floor
+	// did) also lets a file that already held two big covers rewrite. An additive edit that grows
+	// the packet past the floor on an above-limit file is still (correctly) rejected. Gate on the
+	// write limit (opts.Limits), like the sibling MP4 check, not a hardcoded default. --verify would
+	// miss this: its structural re-parse floors the alloc cap at the output size, so the failure
+	// belongs at write time.
 	limit := opts.Limits.MaxAllocBytes
 	if limit <= 0 {
 		limit = bits.DefaultLimits.MaxAllocBytes
 	}
-	for _, p := range d.pictures { // covers already in the file, read within the parse limit
-		if n := vorbis.PictureCommentLen(p); n > limit {
-			limit = n
-		}
+	if d.origCommentPacketLen > limit {
+		limit = d.origCommentPacketLen // preserve data already in the file, read within the parse limit
 	}
-	for _, p := range edited.Pictures {
-		if n := vorbis.PictureCommentLen(p); n > limit {
-			return nil, fmt.Errorf("%w: Ogg cover art is %s (max %s)",
-				waxerr.ErrPictureTooLarge, bits.HumanBytes(n), bits.HumanBytes(limit))
-		}
+
+	// Build the comment packet (with the possibly-neutralized vendor) once, here, so the
+	// whole-packet guard weighs the exact bytes the re-pagination below emits.
+	commentPacket := d.buildCommentPacket(newVendor, full)
+	if int64(len(commentPacket)) > limit {
+		return nil, fmt.Errorf("%w: Ogg comment header is %s (max %s; raise the write allocation limit to keep it)",
+			waxerr.ErrPictureTooLarge, bits.HumanBytes(int64(len(commentPacket))), bits.HumanBytes(limit))
 	}
 
 	// Re-paginate the header tail (everything after the BOS id page): the new
-	// comment packet (with the possibly-neutralized vendor), plus the Vorbis setup packet
-	// preserved verbatim.
-	tailPackets := [][]byte{d.buildCommentPacket(newVendor, full)}
+	// comment packet, plus the Vorbis setup packet preserved verbatim.
+	tailPackets := [][]byte{commentPacket}
 	if d.kind == kindVorbis {
 		tailPackets = append(tailPackets, d.setupPacket)
 	}

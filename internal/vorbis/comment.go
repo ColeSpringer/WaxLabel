@@ -103,7 +103,7 @@ func Project(comments []Comment) (tag.TagSet, []core.FamilyValue) {
 	names := map[tag.Key]map[string]bool{} // distinct native names per key
 	var fams []core.FamilyValue
 	for _, cm := range comments {
-		if isChapterComment(cm.Name) || isSyncedLyricsComment(cm.Name) || IsPictureComment(cm.Name) {
+		if reservedNamespace(cm.Name) != "" {
 			continue // owned by structured metadata projectors, not the custom tag view
 		}
 		key, valid := canonicalTagKey(cm.Name)
@@ -167,7 +167,10 @@ func Project(comments []Comment) (tag.TagSet, []core.FamilyValue) {
 //
 // CHAPTERxxx and SYNCEDLYRICS comments are owned by the chapter and synced-lyrics models,
 // not by the generic tag-key diff. A chapter or synced-lyrics edit drops the source owned
-// comments and appends the edited set; unrelated edits preserve them verbatim.
+// comments and appends the edited set; unrelated edits preserve them verbatim. A
+// METADATA_BLOCK_PICTURE comment is likewise never treated as a custom key: a malformed/opaque one
+// is preserved verbatim (a valid cover was decoded out into the picture set and is re-rendered by
+// the codec), and a --set on that reserved key drops-with-warning instead of overwriting it.
 func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapters []core.Chapter, chaptersChanged bool, syncedLyrics []core.SyncedLyrics, syncedLyricsChanged bool) ([]Comment, RebuildInfo) {
 	var info RebuildInfo
 	emitted := map[tag.Key]bool{}
@@ -203,6 +206,17 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapte
 				out = append(out, cm) // preserve verbatim on an unrelated edit
 			}
 			continue // dropped on a synced-lyrics edit; re-emitted below
+		}
+		if IsPictureComment(cm.Name) {
+			// Cover art belongs to the picture model and is re-rendered by the codec, never edited
+			// as a custom tag: a valid cover was already decoded out into the picture set, so only
+			// a malformed, opaque comment lingers here. Preserve it verbatim and skip the generic
+			// key path, so a --set METADATA_BLOCK_PICTURE on a file that already holds a picture
+			// comment cannot overwrite it in place. It falls through to the reserved-namespace drop
+			// below instead, the same as chapters and synced lyrics; without this branch that --set
+			// would quietly reopen the side channel the guard closes.
+			out = append(out, cm)
+			continue
 		}
 		k := mapping.CanonicalVorbis(cm.Name)
 		// A slash-backed TRACKNUMBER/DISCNUMBER comment natively holds both the number and a
@@ -248,16 +262,21 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapte
 	}
 	for _, k := range edited.Keys() {
 		if changed[k] && !emitted[k] {
-			// A newly-added key in the reserved CHAPTERxxx/CHAPTERxxxNAME namespace cannot be
-			// written as a custom field: on read it is owned by the chapter model, not the tag
-			// view, so writing it would leave a stray comment the reader consumes as a chapter and
-			// the key vanishes silently. Record it so the caller warns value-dropped, and skip it
-			// rather than emit an unreadable custom comment.
-			if isChapterComment(mapping.VorbisName(k)) {
-				info.ReservedChapterKeys = append(info.ReservedChapterKeys, k)
+			// A newly-added key in a reserved namespace - CHAPTERxxx/CHAPTERxxxNAME chapters,
+			// SYNCEDLYRICS synced lyrics, or METADATA_BLOCK_PICTURE cover art - cannot be written
+			// as a custom field: on read each is owned by its structured projector, not the tag
+			// view, so writing it would leave a stray comment the reader consumes as structured
+			// data and the key vanishes silently. Record it so the caller warns value-dropped, and
+			// skip it rather than emit a comment that re-reads as something other than a custom
+			// field. All three behave like CHAPTERxxx (always drop-with-warning), rather than the
+			// surprising "invalid payload lost, valid payload silently becomes a chapter / synced
+			// lyric / cover"; users set these through the dedicated paths, not --set.
+			name := mapping.VorbisName(k)
+			if reservedNamespace(name) != "" {
+				info.ReservedKeys = append(info.ReservedKeys, k)
 				continue
 			}
-			emit(k, mapping.VorbisName(k)) // newly-added key: the preferred Vorbis spelling
+			emit(k, name) // newly-added key: the preferred Vorbis spelling
 		}
 	}
 	if chaptersChanged {
@@ -286,18 +305,20 @@ type RebuildInfo struct {
 	// SyncedLyricsOverflow is set when a synced-lyric line's timestamp exceeded the LRC
 	// timestamp ceiling and was clamped to it.
 	SyncedLyricsOverflow bool
-	// ReservedChapterKeys lists newly-added keys in the reserved CHAPTERxxx/CHAPTERxxxNAME
-	// namespace that cannot be written as custom fields: on read they are owned by the chapter
-	// model, not the tag view, so writing one would leave a stray comment the reader silently
-	// consumes as a chapter. They are dropped rather than written, and the caller surfaces a
-	// value-dropped warning per key.
-	ReservedChapterKeys []tag.Key
+	// ReservedKeys lists newly-added keys in a reserved namespace - CHAPTERxxx/CHAPTERxxxNAME
+	// chapters, SYNCEDLYRICS synced lyrics, or METADATA_BLOCK_PICTURE cover art - that cannot be
+	// written as custom fields: on read they are owned by a structured projector, not the tag
+	// view, so writing one would leave a stray comment the reader silently consumes as structured
+	// data. They are dropped rather than written, and the caller surfaces a value-dropped warning
+	// naming the specific namespace per key.
+	ReservedKeys []tag.Key
 }
 
 // RebuildWarnings appends the write-time warnings for what [Rebuild] recorded in RebuildInfo:
 // the codec-ceiling clamps (an over-range chapter or synced-lyric timestamp, surfacing the same
-// coded warning MP4/ID3 emit) and the reserved-namespace drops (a custom key in the CHAPTERxxx
-// space that cannot be written as a tag). FLAC and Ogg share it, keeping their two write paths
+// coded warning MP4/ID3 emit) and the reserved-namespace drops (a custom key in a reserved
+// namespace - CHAPTERxxx chapters, SYNCEDLYRICS synced lyrics, or METADATA_BLOCK_PICTURE cover
+// art - that cannot be written as a tag). FLAC and Ogg share it, keeping their two write paths
 // aligned. The clamp warnings are write-report only - the stored value sits at the codec ceiling
 // and re-parses cleanly, so a fresh parse emits neither - while a reserved-key drop is a real
 // value loss carried through even a no-op (via DowngradeNoOp) so it is never silent.
@@ -310,9 +331,12 @@ func RebuildWarnings(prior []core.Warning, info RebuildInfo) []core.Warning {
 		prior = core.Warn(prior, core.WarnSyncedLyricsTimestampClamped,
 			"a synced-lyric timestamp exceeded the LRC timestamp limit and was clamped")
 	}
-	for _, k := range info.ReservedChapterKeys {
+	for _, k := range info.ReservedKeys {
+		// The key reached ReservedKeys only because reservedNamespace matched, so the label here is
+		// the same non-empty classification the drop decision made.
+		ns := reservedNamespace(mapping.VorbisName(k))
 		prior = core.WarnKeyed(prior, core.WarnValueDropped,
-			fmt.Sprintf("%s is in the reserved chapter namespace and cannot be written as a custom field", k), k)
+			fmt.Sprintf("%s is in the reserved %s namespace and cannot be written as a custom field", k, ns), k)
 	}
 	return prior
 }
@@ -327,7 +351,7 @@ func RebuildWarnings(prior []core.Warning, info RebuildInfo) []core.Warning {
 func InvalidKeyWarnings(comments []Comment) []core.Warning {
 	var ws []core.Warning
 	for _, cm := range comments {
-		if isChapterComment(cm.Name) || isSyncedLyricsComment(cm.Name) || IsPictureComment(cm.Name) {
+		if reservedNamespace(cm.Name) != "" {
 			continue
 		}
 		if _, valid := canonicalTagKey(cm.Name); valid {
@@ -346,6 +370,24 @@ func InvalidKeyWarnings(comments []Comment) []core.Warning {
 func canonicalTagKey(name string) (tag.Key, bool) {
 	k := mapping.CanonicalVorbis(name)
 	return k, k.Valid()
+}
+
+// reservedNamespace classifies a Vorbis comment name that a structured projector owns rather than
+// the custom tag view, returning its label ("chapter", "synced lyrics", or "cover art") or "" for
+// an ordinary custom field. [Project], [Rebuild], [RebuildWarnings], and [InvalidKeyWarnings] all
+// resolve it here, so the "is this reserved?" test (label != "") and the value-dropped warning
+// text stay in step: a new namespace is added in one place, and [RebuildWarnings] can never name a
+// namespace the drop decision did not make.
+func reservedNamespace(name string) string {
+	switch {
+	case isChapterComment(name):
+		return "chapter"
+	case isSyncedLyricsComment(name):
+		return "synced lyrics"
+	case IsPictureComment(name):
+		return "cover art"
+	}
+	return ""
 }
 
 // DiffKeys returns the canonical keys whose values differ between base and

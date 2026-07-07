@@ -74,6 +74,12 @@ type doc struct {
 	setupPacket []byte // Vorbis setup header (packet 3), verbatim; nil for Opus
 	commentPad  []byte // bytes after the comment list in the comment packet (Opus padding), preserved
 
+	// origCommentPacketLen is the raw comment header packet length as parsed. reassembleHeaders
+	// caps the summed comment packet at the alloc limit on re-read, so the write path floors its
+	// whole-packet size guard at this value: data already in the file (read within the parse
+	// limit) must stay writable even under a lower write limit. Clone copies it via c := *d.
+	origCommentPacketLen int64
+
 	page0Len    int64 // BOS page length (the id packet, alone; copied verbatim)
 	headerPages int   // number of pages in the header region
 	audioStart  int64 // first audio-page offset (== end of the header region)

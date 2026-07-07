@@ -512,11 +512,12 @@ func buildResult(d *doc, edited *core.Media, r *rendered, ch changes, lay layout
 		Native:     nd,
 		Identity:   core.Identity{Size: lay.size},
 	}
-	if lay.clusterStart < lay.size {
-		// Mirror the parse side: essence digests hash only Cluster runs, including after a
-		// rewrite of an inter-cluster element. The same helper keeps parse and write extents
-		// aligned.
-		runs := clusterRuns(lay.children)
+	// Mirror the parse side: essence digests hash only Cluster runs, so a segment with no clusters
+	// reports no audio extent - keeping the absorb and shift paths consistent with a fresh parse
+	// (a clusterless segment with trailing bytes otherwise let the absorb path report
+	// AudioStart = segDataEnd while shift and parse reported 0). When len(runs) > 0, clusters
+	// exist, so lay.clusterStart < lay.size is already implied and the outer check is redundant.
+	if runs := clusterRuns(lay.children); len(runs) > 0 {
 		res.AudioStart = lay.clusterStart
 		res.AudioRanges = runs
 		for _, r := range runs {

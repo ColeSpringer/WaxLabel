@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/colespringer/waxlabel/internal/bits"
@@ -78,10 +79,12 @@ func TestPlanRejectsOversizedNewCover(t *testing.T) {
 }
 
 // TestPlanWritesBackCoverParsedUnderRaisedLimit is the regression for the cap's floor: a cover
-// that was read within the (possibly raised) parse limit must remain writable even when the
-// write limit later sits below it - the file was readable going in, so an unrelated tag edit
-// must not be refused going out. This is the Ogg analogue of MP4 checkBuiltItems' parsed-size
-// floor; without it, a large-cover file parsed under WithLimits could never be edited.
+// that was read within the (possibly raised) parse limit must remain writable even when the write
+// limit later sits below it - the file was readable going in, so an unrelated edit that does not
+// grow the comment packet past what the file already held must not be refused going out. The floor
+// is now the whole original comment packet (origCommentPacketLen), so a same-length edit stays
+// within it. This is the Ogg analogue of MP4 checkBuiltItems' parsed-size floor; without it, a
+// large-cover file parsed under WithLimits could never be edited.
 func TestPlanWritesBackCoverParsedUnderRaisedLimit(t *testing.T) {
 	cover := smallCover()
 	base := parseOpusStreamWith(t, pictureComment(cover))
@@ -94,9 +97,74 @@ func TestPlanWritesBackCoverParsedUnderRaisedLimit(t *testing.T) {
 	bits.DefaultLimits.MaxAllocBytes = vorbis.PictureCommentLen(cover) - 1 // below the parsed cover
 
 	edited := base.Clone()
-	edited.Tags.Set(tag.Title, "Retitled") // an unrelated edit; the cover is untouched
+	edited.Tags.Set(tag.Title, "Tune") // an unrelated, same-length edit ("Song" -> "Tune"); packet size unchanged
 
 	if _, err := NewOpus().Plan(context.Background(), base, edited, core.DefaultWriteOptions()); err != nil {
-		t.Fatalf("writing back a cover parsed under a raised limit must succeed (floored at the parsed cover): err=%v", err)
+		t.Fatalf("a same-length edit staying within the whole-packet floor must succeed: err=%v", err)
+	}
+}
+
+// TestPlanRejectsCoversJointlyExceedingLimit pins the whole-packet cap: two covers that each fit
+// under the limit individually (so the old per-cover check passed both) but whose comment packet
+// jointly exceeds it are now rejected, rather than writing a file reassembleHeaders would refuse to
+// re-parse at the same limit. A one-cover control at the same limit still succeeds.
+func TestPlanRejectsCoversJointlyExceedingLimit(t *testing.T) {
+	cover := smallCover()
+	// Measure the cover-less and one-cover comment packet sizes so the limit can sit strictly
+	// between the one-cover packet (must fit) and the two-cover packet (must be rejected).
+	p0 := parseOpusStreamWith(t).Native.(*doc).origCommentPacketLen                        // base, no cover
+	p1 := parseOpusStreamWith(t, pictureComment(cover)).Native.(*doc).origCommentPacketLen // base + 1 cover
+	p2 := 2*p1 - p0                                                                        // base + 2 covers
+	limit := (p1 + p2) / 2                                                                 // p1 < limit < p2
+
+	// Each cover individually clears the old per-cover check (its base64 footprint is below the
+	// limit), so this is exactly the case the old code let through into an unparseable file.
+	if vorbis.PictureCommentLen(cover) >= limit {
+		t.Fatalf("setup: single-cover footprint %d must be below the limit %d to isolate the whole-packet check",
+			vorbis.PictureCommentLen(cover), limit)
+	}
+
+	old := bits.DefaultLimits.MaxAllocBytes
+	defer func() { bits.DefaultLimits.MaxAllocBytes = old }()
+	bits.DefaultLimits.MaxAllocBytes = limit
+
+	base := parseOpusStreamWith(t) // cover-less source; the covers are added by the edit
+	twoCovers := base.Clone()
+	twoCovers.Pictures = []core.Picture{cover, cover}
+	if _, err := NewOpus().Plan(context.Background(), base, twoCovers, core.DefaultWriteOptions()); !errors.Is(err, waxerr.ErrPictureTooLarge) {
+		t.Fatalf("two covers jointly exceeding the limit: err=%v, want ErrPictureTooLarge", err)
+	}
+
+	// Control: one cover at the same limit still writes (its packet fits below the limit).
+	oneCover := base.Clone()
+	oneCover.Pictures = []core.Picture{cover}
+	if _, err := NewOpus().Plan(context.Background(), base, oneCover, core.DefaultWriteOptions()); err != nil {
+		t.Fatalf("one cover within the limit must still succeed: err=%v", err)
+	}
+}
+
+// TestPlanRejectsAdditiveEditPastFloor pins the deliberately locked-in edge: on a file whose
+// comment packet already sits above the write limit (only reachable via a raised WithLimits parse
+// then a lower-limit write), an additive edit that grows the packet past the whole-packet floor is
+// now rejected with a limit hint - where the old per-cover check silently wrote a file a re-parse
+// at the same limit would refuse.
+func TestPlanRejectsAdditiveEditPastFloor(t *testing.T) {
+	cover := smallCover()
+	base := parseOpusStreamWith(t, pictureComment(cover)) // parsed at the default (high) limit
+	p1 := base.Native.(*doc).origCommentPacketLen
+
+	old := bits.DefaultLimits.MaxAllocBytes
+	defer func() { bits.DefaultLimits.MaxAllocBytes = old }()
+	bits.DefaultLimits.MaxAllocBytes = p1 - 10 // write limit below the parsed packet; the floor raises it back to p1
+
+	edited := base.Clone()
+	edited.Tags.Set(tag.Title, "Retitled") // "Song" -> "Retitled" grows the packet past the p1 floor
+
+	_, err := NewOpus().Plan(context.Background(), base, edited, core.DefaultWriteOptions())
+	if !errors.Is(err, waxerr.ErrPictureTooLarge) {
+		t.Fatalf("an additive edit past the floor must be rejected: err=%v, want ErrPictureTooLarge", err)
+	}
+	if !strings.Contains(err.Error(), "raise the write allocation limit") {
+		t.Errorf("rejection should hint at raising the limit; got %q", err.Error())
 	}
 }

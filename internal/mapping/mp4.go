@@ -70,6 +70,11 @@ var mp4Freeform = map[string]tag.Key{
 var (
 	keyMP4Text     = map[tag.Key]string{}
 	keyMP4Freeform = map[tag.Key]string{}
+	// freeformFold is the case-folded read index: an upper-cased freeform name to its
+	// canonical key. It is separate from mp4Freeform (which drives the write spelling) so
+	// folding the read path never disturbs the exact Picard/ReplayGain names WaxLabel writes.
+	// The current names have no upper-case collisions, so the fold is unambiguous.
+	freeformFold = map[string]tag.Key{}
 )
 
 func init() {
@@ -78,6 +83,7 @@ func init() {
 	}
 	for name, k := range mp4Freeform {
 		keyMP4Freeform[k] = name
+		freeformFold[normalizeKey(name)] = k
 	}
 }
 
@@ -96,9 +102,19 @@ func MP4KeyText(key tag.Key) (string, bool) {
 }
 
 // MP4FreeformKey returns the canonical key for a "com.apple.iTunes" freeform
-// name and whether it is one of the mapped names.
+// name and whether it is one of the mapped names. The match folds case (like the
+// ID3/Matroska read paths at [ID3TXXXKey]/[MatroskaTagKey]) so a foreign or
+// hand-edited atom using non-standard casing still resolves into the canonical
+// view rather than being hidden from dump/diff/copy. Case and surrounding whitespace
+// are folded (via the shared normalizeKey), not separators, so "musicbrainz_album_id"
+// still misses "MusicBrainz Album Id".
 func MP4FreeformKey(name string) (tag.Key, bool) {
-	k, ok := mp4Freeform[name]
+	// Fast path for standard-cased names (the common case): an exact hit avoids the normalizeKey
+	// allocation. The fold table has no collisions, so this returns the same key the fold would.
+	if k, ok := mp4Freeform[name]; ok {
+		return k, true
+	}
+	k, ok := freeformFold[normalizeKey(name)]
 	return k, ok
 }
 

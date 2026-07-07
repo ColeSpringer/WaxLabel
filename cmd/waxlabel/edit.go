@@ -919,7 +919,7 @@ func noteMalformedValue(errOut io.Writer, k tag.Key, v string) {
 	// unusual. A "/total" value with an empty number side is valid too, but easy to type by
 	// accident; use else-if so "/-5" reports only the negative note.
 	if tag.IsNumericKey(k) && tag.NegativeNumericValue(k, v) {
-		fmt.Fprintf(errOut, "note: %s=%s is negative; written as-is (numbering is normally non-negative)\n", ks, vs)
+		fmt.Fprintf(errOut, "note: %s=%s is negative (numbering is normally non-negative); some formats cannot store a negative number and will drop it\n", ks, vs)
 	} else if tag.EmptyNumberWithTotal(k, v) {
 		fmt.Fprintf(errOut, "note: %s=%s has no number component; the number is left unset\n", ks, vs)
 	}

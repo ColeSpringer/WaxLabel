@@ -5,7 +5,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
+	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/tag"
 )
@@ -1181,4 +1183,68 @@ func TestRebuildKeepsMultiLanguageCommentsOnUnrelatedEdit(t *testing.T) {
 	if got := DecodeText(Frame{ID: "TPE1", Body: tpe1}); len(got) == 0 || got[0] != "New Artist" {
 		t.Errorf("TPE1 = %v, want [New Artist] (the unrelated edit landed)", got)
 	}
+}
+
+// FuzzParseTag exercises the top-level ID3 parse chain - ParseTag -> parseFrames -> deunsync ->
+// decodeFrame, plus skipExtHeader and the footer/unsync bounds - that the CHAP/CTOC/SYLT body
+// fuzzers do not reach. Beyond "no panic," a successful parse is pushed through the canonical
+// projector and every canonical key and value must be valid UTF-8: a stronger invariant that
+// catches a projector leaking raw frame bytes into the canonical model. Values pass SanitizeUTF8,
+// so the value assertion is safe; a key hit would be a real projector leak to fix (e.g. a
+// TXXX-derived key carrying raw bytes), not a wrong test.
+func FuzzParseTag(f *testing.F) {
+	// Minimal empty tags at each major version.
+	f.Add([]byte("ID3\x03\x00\x00\x00\x00\x00\x00")) // empty v2.3
+	f.Add([]byte("ID3\x04\x00\x00\x00\x00\x00\x00")) // empty v2.4
+	f.Add([]byte("ID3\x02\x00\x00\x00\x00\x00\x00")) // empty v2.2 (3-char frame IDs)
+
+	// A tag carrying one TIT2 text frame ("hi", ISO-8859-1) at v2.3 and v2.4.
+	textFrameTag := func(major byte) []byte {
+		body := append([]byte{0x00}, "hi"...) // encoding byte 0x00 (ISO-8859-1) + text
+		var fsz [4]byte
+		putSyncSafe(fsz[:], int64(len(body)))
+		frame := append([]byte("TIT2"), fsz[:]...)
+		frame = append(frame, 0x00, 0x00) // frame flags
+		frame = append(frame, body...)
+		var tsz [4]byte
+		putSyncSafe(tsz[:], int64(len(frame)))
+		out := append([]byte{'I', 'D', '3', major, 0, 0}, tsz[:]...)
+		return append(out, frame...)
+	}
+	f.Add(textFrameTag(4))
+	f.Add(textFrameTag(3))
+
+	// A v2.4 tag whose frame body needs unsync normalization (0xFF 0x00 stuffing), tag-level unsync.
+	rawBody := []byte{0xFF, 0x00, 0x42, 0xFF, 0x00}
+	var ufsz [4]byte
+	putSyncSafe(ufsz[:], int64(len(rawBody)))
+	uframe := append([]byte("TIT2"), ufsz[:]...)
+	uframe = append(uframe, 0x00, 0x00)
+	uframe = append(uframe, rawBody...)
+	var utsz [4]byte
+	putSyncSafe(utsz[:], int64(len(uframe)))
+	f.Add(append(append([]byte{'I', 'D', '3', 4, 0, hdrUnsync}, utsz[:]...), uframe...))
+
+	// A footer-flagged v2.4 tag and an extended-header v2.4 tag (empty bodies), to walk those paths.
+	f.Add([]byte{'I', 'D', '3', 4, 0, hdrFooter, 0, 0, 0, 0})
+	f.Add([]byte{'I', 'D', '3', 4, 0, hdrExtHeader, 0, 0, 0, 0})
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		tg, err := ParseTag(data, bits.DefaultLimits.MaxElements)
+		if err != nil || tg == nil {
+			return
+		}
+		proj := Project(tg) // named tg, not tag - a tag var would shadow the tag package
+		for _, k := range proj.Tags.Keys() {
+			if !utf8.ValidString(string(k)) {
+				t.Errorf("invalid UTF-8 in canonical key: %q", k)
+			}
+			vals, _ := proj.Tags.Get(k) // Get returns ([]string, bool)
+			for _, v := range vals {
+				if !utf8.ValidString(v) {
+					t.Errorf("invalid UTF-8 in canonical value: %q", v)
+				}
+			}
+		}
+	})
 }

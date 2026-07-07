@@ -8,11 +8,7 @@
 // onto one canonical key) and the small set of write-side preferred spellings.
 package mapping
 
-import (
-	"strings"
-
-	"github.com/colespringer/waxlabel/tag"
-)
+import "github.com/colespringer/waxlabel/tag"
 
 // The read-side alias table lives in package tag ([tag.AliasKey]) so canonicalization and
 // "did you mean?" suggestions share one definition. Native bytes are preserved; alias
@@ -24,14 +20,15 @@ var writePreferred = map[tag.Key]string{
 	tag.RecordingDate: "DATE",
 }
 
-// CanonicalVorbis maps a native Vorbis field name (any case) to its canonical
-// key. Unknown names pass through as canonical custom fields (the uppercased
-// name), so nothing is lost.
+// CanonicalVorbis maps a native Vorbis field name (any case, ignoring surrounding
+// whitespace) to its canonical key. Unknown names pass through as canonical custom
+// fields (the normalized name), so nothing is lost.
 func CanonicalVorbis(name string) tag.Key {
-	if k, ok := tag.AliasKey(name); ok {
+	norm := normalizeKey(name)
+	if k, ok := tag.AliasKey(norm); ok {
 		return k
 	}
-	return tag.Key(strings.ToUpper(name))
+	return tag.Key(norm)
 }
 
 // ResolveAlias returns the canonical key for a recognized alternative Vorbis spelling

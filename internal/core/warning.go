@@ -127,7 +127,8 @@ const (
 	// negative, or one past 65535) or a non-numeric stik media kind; an ID3v2.3 date with no valid
 	// 4-digit year (no TYER/TORY frame renders); an ID3 track/disc total that cannot attach to a
 	// non-numeric number (composing "A1/12" would re-read as one literal value with the total lost);
-	// and a Vorbis custom key in the reserved CHAPTERxxx namespace that cannot be written as a tag.
+	// and a Vorbis custom key in a reserved namespace - CHAPTERxxx chapters, SYNCEDLYRICS synced
+	// lyrics, or METADATA_BLOCK_PICTURE cover art - that cannot be written as a tag.
 	// It is a plan-time warning carrying the offending key (Warning.Keys), surfaced before the write
 	// rather than vanishing with exit 0, so the user (and the CLI's --strict gate) sees the loss.
 	WarnValueDropped

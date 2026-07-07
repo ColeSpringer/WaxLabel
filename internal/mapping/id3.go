@@ -1,10 +1,6 @@
 package mapping
 
-import (
-	"strings"
-
-	"github.com/colespringer/waxlabel/tag"
-)
+import "github.com/colespringer/waxlabel/tag"
 
 // This file holds the ID3v2 <-> canonical mapping tables shared by the id3
 // codec. Only the simple 1:1 text frames and the TXXX user-frame descriptions
@@ -113,7 +109,7 @@ func ID3KeyFrame(key tag.Key) (string, bool) {
 // onto the vocabulary; otherwise the uppercased description becomes a custom
 // key. ok is false only when the description cannot form a valid key.
 func ID3TXXXKey(desc string) (tag.Key, bool) {
-	up := strings.ToUpper(strings.TrimSpace(desc))
+	up := normalizeKey(desc)
 	if k, ok := txxxAliases[up]; ok {
 		return k, true
 	}

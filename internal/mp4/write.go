@@ -125,6 +125,14 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		ilstPayload = append(ilstPayload, itemBytes(it)...)
 	}
 	newIlst := renderAtom(atomName("ilst"), ilstPayload)
+	// Guard the aggregate ilst size against the 32-bit box-size field renderAtom/renderData write.
+	// checkSizes only guards 8-byte-header ancestors, so it structurally cannot see an ilst wrap
+	// inside a 64-bit moov; the created-ilst path additionally guards the fresh meta/udta wrappers
+	// in planLayout. Per-item payloads are already capped at MaxAllocBytes by checkBuiltItems, so
+	// only the aggregate can reach this ceiling.
+	if err := checkBoxSize32(atomName("ilst"), 8+int64(len(ilstPayload))); err != nil {
+		return nil, err
+	}
 
 	lay, err := planLayout(d, newIlst, opts)
 	if err != nil {
@@ -282,7 +290,10 @@ func planLayout(d *doc, newIlst []byte, opts core.WriteOptions) (layout, error) 
 	// No ilst: create the missing path. Insert into the deepest existing of
 	// moov/udta/meta, at its end (the new atom becomes that container's last child;
 	// everything after shifts and the ancestor sizes grow).
-	inner, withFree, ilstOff, freeOff, freeLen, freeContent := buildCreated(d, newIlst, pad)
+	inner, withFree, ilstOff, freeOff, freeLen, freeContent, err := buildCreated(d, newIlst, pad)
+	if err != nil {
+		return layout{}, err
+	}
 	at := inner.end()
 	regionStart := at
 	// When inserting into an existing udta, place the new atom after its last
@@ -309,23 +320,35 @@ func planLayout(d *doc, newIlst []byte, opts core.WriteOptions) (layout, error) 
 // the wrapper depth from which containers already exist. It returns the
 // innermost existing container to insert into, the bytes to insert, and where
 // the ilst/free land within those bytes.
-func buildCreated(d *doc, newIlst []byte, pad int64) (inner atomRef, bytes []byte, ilstOff, freeOff, freeLen, freeContent int64) {
+func buildCreated(d *doc, newIlst []byte, pad int64) (inner atomRef, bytes []byte, ilstOff, freeOff, freeLen, freeContent int64, err error) {
 	ilstAndFree, fOff, fLen, fContent := appendFree(newIlst, pad)
 	switch {
 	case d.meta != nil:
-		// Append ilst(+free) directly inside the existing meta.
-		return *d.meta, ilstAndFree, 0, fOff, fLen, fContent
+		// Append ilst(+free) directly inside the existing meta. The ilst is already size-guarded,
+		// and the existing meta/udta/moov grow via sizePatch (64-bit-aware) - no fresh wrapper here.
+		return *d.meta, ilstAndFree, 0, fOff, fLen, fContent, nil
 	case d.udta != nil:
 		metaInner := append(hdlrAtom(), ilstAndFree...)
+		// The fresh meta is rendered with a 32-bit size field and is never an existing ancestor
+		// checkSizes can see, so guard it here. meta total = metaPrefix() + len(metaInner).
+		if err := checkBoxSize32(atomName("meta"), int64(metaPrefix()+len(metaInner))); err != nil {
+			return atomRef{}, nil, 0, 0, 0, 0, err
+		}
 		meta := renderFullBox(atomName("meta"), metaInner)
 		base := metaPrefix() + len(hdlrAtom())
-		return *d.udta, meta, int64(base), int64(base) + fOff, fLen, fContent
+		return *d.udta, meta, int64(base), int64(base) + fOff, fLen, fContent, nil
 	default:
 		metaInner := append(hdlrAtom(), ilstAndFree...)
+		// The fresh udta wraps the fresh meta; udta is the outermost/largest box, so if it fits the
+		// enclosed meta does too. Both are rendered with 32-bit size fields and are invisible to
+		// checkSizes. udta total = 8 + meta total = 8 + metaPrefix() + len(metaInner).
+		if err := checkBoxSize32(atomName("udta"), int64(8+metaPrefix()+len(metaInner))); err != nil {
+			return atomRef{}, nil, 0, 0, 0, 0, err
+		}
 		meta := renderFullBox(atomName("meta"), metaInner)
 		udta := renderAtom(atomName("udta"), meta)
 		base := 8 + metaPrefix() + len(hdlrAtom()) // udta header + meta prefix + hdlr
-		return *d.moov, udta, int64(base), int64(base) + fOff, fLen, fContent
+		return *d.moov, udta, int64(base), int64(base) + fOff, fLen, fContent, nil
 	}
 }
 
@@ -406,6 +429,21 @@ func checkSizes(ancestors []atomRef, delta int64) error {
 			return fmt.Errorf("%w: atom %q would exceed the 4 GiB 32-bit size limit",
 				waxerr.ErrSizeTooLarge, anc.name)
 		}
+	}
+	return nil
+}
+
+// checkBoxSize32 fails when a freshly-rendered box's total size would overflow the 32-bit
+// box-size field renderAtom/renderData/renderFullBox write (they cast size to uint32 unchecked).
+// It centralizes the 8-byte-header assumption so the ilst guard, the created-wrapper guards, and
+// the chapter udta guard share one definition. It is the counterpart to checkSizes/sizePatch,
+// which patch *existing* ancestors (and write a 64-bit field when the header is 64-bit); this
+// guards the newly-built boxes those paths never see. totalLen is the whole box (header +
+// payload).
+func checkBoxSize32(name [4]byte, totalLen int64) error {
+	if totalLen > math.MaxUint32 {
+		return fmt.Errorf("%w: %s atom would exceed the 4 GiB 32-bit size limit",
+			waxerr.ErrSizeTooLarge, string(name[:]))
 	}
 	return nil
 }

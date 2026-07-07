@@ -71,7 +71,7 @@ var technicalTags = map[string]bool{
 // canonical-shaped name (e.g. MUSICBRAINZ_ALBUMID, REPLAYGAIN_TRACK_GAIN) round-
 // trips to the matching custom key without an explicit entry.
 func MatroskaTagKey(name string) (tag.Key, bool) {
-	up := strings.ToUpper(strings.TrimSpace(name))
+	up := normalizeKey(name)
 	if up == "" || technicalTags[up] || strings.HasPrefix(up, "_STATISTICS") {
 		return "", false
 	}

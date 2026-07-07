@@ -267,6 +267,10 @@ func detectKind(pkt []byte) (kind, int, error) {
 // list body is shared with FLAC via internal/vorbis; only the per-codec framing
 // differs.
 func (d *doc) decodeComments(pkt []byte, limit int64, maxElements int, warnings *[]core.Warning) error {
+	// Record the raw comment header packet length before splitting off the signature: this is the
+	// exact byte count reassembleHeaders re-reads and caps, so the write-side whole-packet guard
+	// floors against it (see doc.origCommentPacketLen).
+	d.origCommentPacketLen = int64(len(pkt))
 	var list []byte
 	switch d.kind {
 	case kindVorbis:

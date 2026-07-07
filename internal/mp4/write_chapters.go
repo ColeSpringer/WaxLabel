@@ -2,7 +2,6 @@ package mp4
 
 import (
 	"fmt"
-	"math"
 	"sort"
 
 	"github.com/colespringer/waxlabel/internal/bits"
@@ -50,8 +49,8 @@ func planChapters(d *doc, edited *core.Media, needIlst, picturesChanged bool, op
 	if err := checkSizes(reg.ancestors, delta); err != nil {
 		return nil, err
 	}
-	if 8+int64(len(reg.udtaPayload)) > math.MaxUint32 {
-		return nil, fmt.Errorf("%w: udta atom would exceed the 4 GiB 32-bit size limit", waxerr.ErrSizeTooLarge)
+	if err := checkBoxSize32(atomName("udta"), 8+int64(len(reg.udtaPayload))); err != nil {
+		return nil, err
 	}
 
 	edits := []edit{{off: reg.regionStart, oldLen: reg.regionEnd - reg.regionStart, lit: reg.regionBytes}}
@@ -232,7 +231,17 @@ type byteRep struct {
 // covered by a replacement - so udta siblings and meta children outside the
 // ilst/chpl ranges survive a chapter rewrite verbatim.
 func spliceBytes(src []byte, reps []byteRep) ([]byte, error) {
-	sort.Slice(reps, func(i, j int) bool { return reps[i].start < reps[j].start })
+	// Order by start; on a tie, a zero-width insert (oldLen==0) sorts before a same-offset
+	// replace. sort.Slice is not stable, so two reps sharing a start (a combined tag+chapter
+	// edit where a chpl insert lands exactly at meta.end()) would otherwise order by luck - and
+	// emitting the replace first advances pos past the insert's start, tripping the r.start<pos
+	// guard below. The tie-break makes the insert-before-replace output deterministic.
+	sort.Slice(reps, func(i, j int) bool {
+		if reps[i].start != reps[j].start {
+			return reps[i].start < reps[j].start
+		}
+		return reps[i].oldLen < reps[j].oldLen
+	})
 	n := int64(len(src))
 	out := make([]byte, 0, n)
 	pos := int64(0)

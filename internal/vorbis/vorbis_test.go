@@ -14,38 +14,104 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestRebuildDropsReservedChapterKey covers Finding 8: a newly-added custom key in the reserved
-// CHAPTERxxx namespace is not emitted as a comment (on read it is owned by the chapter model, so a
-// written comment would vanish from the tag view) and is recorded in ReservedChapterKeys so the
-// caller surfaces a value-dropped warning rather than claim the key was written.
-func TestRebuildDropsReservedChapterKey(t *testing.T) {
+// TestRebuildDropsReservedKey checks that a newly-added custom key in any of the three reserved
+// Vorbis namespaces - CHAPTERxxx chapters, SYNCEDLYRICS synced lyrics, METADATA_BLOCK_PICTURE cover
+// art - is dropped rather than emitted as a comment (on read each is owned by its structured
+// projector, so a written comment would vanish from the tag view) and is recorded in ReservedKeys
+// so the caller surfaces a namespace-specific value-dropped warning rather than claim the key was
+// written. The synced-lyrics and picture payloads here are deliberately *valid* (a real LRC line
+// and a real base64 cover): pinning that a valid payload is still dropped-with-warning locks in the
+// v1.0 decision, so a later reader does not "restore" the old silent side channel where a valid
+// --set value quietly became structured data.
+func TestRebuildDropsReservedKey(t *testing.T) {
+	validCover := base64.StdEncoding.EncodeToString(RenderPicture(core.Picture{
+		Type: core.PicFrontCover, MIME: "image/png", Data: []byte{1, 2, 3},
+	}))
+	for _, tc := range []struct {
+		label  string
+		key    tag.Key
+		value  string
+		wantNS string // the namespace phrase the value-dropped message must name
+	}{
+		{"chapter", tag.Key("CHAPTER005"), "hijack", "reserved chapter namespace"},
+		{"synced lyrics", tag.Key("SYNCEDLYRICS"), "[00:01.00]hi", "reserved synced lyrics namespace"},
+		{"cover art", tag.Key("METADATA_BLOCK_PICTURE"), validCover, "reserved cover art namespace"},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			edited := tag.NewTagSet()
+			edited.Set(tc.key, tc.value)
+			out, info := Rebuild(nil, edited, map[tag.Key]bool{tc.key: true}, nil, false, nil, false)
+			for _, cm := range out {
+				if strings.EqualFold(cm.Name, string(tc.key)) {
+					t.Errorf("a reserved %s key was emitted as a comment: %+v", tc.label, cm)
+				}
+			}
+			if !slices.Contains(info.ReservedKeys, tc.key) {
+				t.Errorf("ReservedKeys = %v, want it to contain %s", info.ReservedKeys, tc.key)
+			}
+			found := false
+			for _, w := range RebuildWarnings(nil, info) {
+				if w.Code != core.WarnValueDropped || !slices.Contains(w.Keys, tc.key) {
+					continue
+				}
+				found = true
+				if !strings.Contains(w.Message, tc.wantNS) {
+					t.Errorf("value-dropped message = %q, want it to name %q", w.Message, tc.wantNS)
+				}
+			}
+			if !found {
+				t.Errorf("RebuildWarnings did not surface a value-dropped warning for %s", tc.key)
+			}
+		})
+	}
+
+	// A plain custom key (in no reserved namespace) is still written normally.
 	edited := tag.NewTagSet()
-	edited.Set(tag.Key("CHAPTER005"), "hijack")
-	changed := map[tag.Key]bool{tag.Key("CHAPTER005"): true}
-	out, info := Rebuild(nil, edited, changed, nil, false, nil, false)
+	edited.Set(tag.Key("MYFIELD"), "keep")
+	out, info := Rebuild(nil, edited, map[tag.Key]bool{tag.Key("MYFIELD"): true}, nil, false, nil, false)
+	if len(info.ReservedKeys) != 0 {
+		t.Errorf("a non-reserved custom key must not be flagged reserved: %v", info.ReservedKeys)
+	}
+	if !slices.ContainsFunc(out, func(cm Comment) bool { return cm.Name == "MYFIELD" && cm.Value == "keep" }) {
+		t.Errorf("a plain custom key should still be written: %+v", out)
+	}
+}
+
+// TestRebuildSetOnExistingPictureCommentDrops covers the case where the file already holds a
+// malformed (opaque) METADATA_BLOCK_PICTURE comment and the user runs --set METADATA_BLOCK_PICTURE:
+// the set value must be dropped-with-warning rather than overwriting the existing comment in place
+// via the generic key path (which would bypass the reserved-namespace guard, reopening the silent
+// side channel). The existing comment is preserved verbatim - matching chapters and synced lyrics.
+func TestRebuildSetOnExistingPictureCommentDrops(t *testing.T) {
+	orig := []Comment{{"TITLE", "Keep"}, {"METADATA_BLOCK_PICTURE", "not-valid-base64!!"}}
+	edited := tag.NewTagSet()
+	edited.Set(tag.Title, "Keep")
+	edited.Set(tag.Key("METADATA_BLOCK_PICTURE"), "hijack") // must not overwrite the existing comment
+	changed := map[tag.Key]bool{tag.Key("METADATA_BLOCK_PICTURE"): true}
+
+	out, info := Rebuild(orig, edited, changed, nil, false, nil, false)
+
+	// The existing picture comment is preserved verbatim and never overwritten by the set value.
+	pics := 0
 	for _, cm := range out {
-		if cm.Name == "CHAPTER005" {
-			t.Errorf("a reserved chapter key was emitted as a comment: %+v", cm)
+		if IsPictureComment(cm.Name) {
+			pics++
+			if cm.Value != "not-valid-base64!!" {
+				t.Errorf("existing picture comment was overwritten by the --set value: %q", cm.Value)
+			}
 		}
 	}
-	if !slices.Contains(info.ReservedChapterKeys, tag.Key("CHAPTER005")) {
-		t.Errorf("ReservedChapterKeys = %v, want it to contain CHAPTER005", info.ReservedChapterKeys)
+	if pics != 1 {
+		t.Errorf("want exactly the 1 preserved picture comment, got %d: %+v", pics, out)
 	}
-	ws := RebuildWarnings(nil, info)
-	if !slices.ContainsFunc(ws, func(w core.Warning) bool {
-		return w.Code == core.WarnValueDropped && slices.Contains(w.Keys, tag.Key("CHAPTER005"))
+	// The set value must drop-with-warning, exactly like a newly-added reserved key.
+	if !slices.Contains(info.ReservedKeys, tag.Key("METADATA_BLOCK_PICTURE")) {
+		t.Errorf("ReservedKeys = %v, want METADATA_BLOCK_PICTURE (the --set must drop-with-warning)", info.ReservedKeys)
+	}
+	if !slices.ContainsFunc(RebuildWarnings(nil, info), func(w core.Warning) bool {
+		return w.Code == core.WarnValueDropped && slices.Contains(w.Keys, tag.Key("METADATA_BLOCK_PICTURE"))
 	}) {
-		t.Errorf("RebuildWarnings did not surface a value-dropped warning for CHAPTER005: %v", ws)
-	}
-	// A plain custom key (not in the chapter namespace) is still written normally.
-	edited2 := tag.NewTagSet()
-	edited2.Set(tag.Key("MYFIELD"), "keep")
-	out2, info2 := Rebuild(nil, edited2, map[tag.Key]bool{tag.Key("MYFIELD"): true}, nil, false, nil, false)
-	if len(info2.ReservedChapterKeys) != 0 {
-		t.Errorf("a non-chapter custom key must not be flagged reserved: %v", info2.ReservedChapterKeys)
-	}
-	if !slices.ContainsFunc(out2, func(cm Comment) bool { return cm.Name == "MYFIELD" && cm.Value == "keep" }) {
-		t.Errorf("a plain custom key should still be written: %+v", out2)
+		t.Error("no value-dropped warning for the dropped METADATA_BLOCK_PICTURE --set over an existing comment")
 	}
 }
 

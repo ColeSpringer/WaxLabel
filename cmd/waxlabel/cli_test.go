@@ -1358,8 +1358,8 @@ func TestMalformedValueNotesTolerant(t *testing.T) {
 }
 
 // TestValueNotesDeferredUntilFiles (#4): the invocation-level value note must not
-// print on a run that acts on no real file - otherwise it falsely claims a value was
-// "written as-is" when nothing was written.
+// print on a run that acts on no real file - otherwise it advises about a value that
+// was never acted on because nothing was written.
 func TestValueNotesDeferredUntilFiles(t *testing.T) {
 	t.Parallel()
 	// A directory without --recursive is now a per-element usage error (exit 2), not a

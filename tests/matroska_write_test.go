@@ -1086,3 +1086,47 @@ func TestMatroskaCoverRebuildReedit(t *testing.T) {
 	checkCRCs(t, out2, 0, len(out2), 0)
 	essenceUnchanged(t, src, out2)
 }
+
+// TestMatroskaWriteUnknownSizeSegment covers the edit/save path for an unknown-size (0xFF) Segment
+// - the streamed form mkvmerge/ffmpeg commonly emit - which TestMatroskaUnknownSizeSegment only
+// parses. A Title edit must round-trip through the save path, and the unknown-size marker must
+// survive: the writer copies [0, segDataStart) verbatim (segmentLead), so the EBML header, the
+// Segment ID, and the 0xFF size byte are byte-identical in the output.
+func TestMatroskaWriteUnknownSizeSegment(t *testing.T) {
+	// Reuse the 0xFF-segment construction from TestMatroskaUnknownSizeSegment, with a one-block
+	// audio Cluster added so the file has essence (the write path refuses a no-audio file). The
+	// cluster sits before the tags so a Title edit rewrites the tail without touching it.
+	tags := mkEl(idTags, mkEl(idTag, concat(
+		mkEl(idTargets, nil),
+		mkSimple("ARTIST", "Streamed Artist"),
+	)))
+	info := mkEl(idInfo, mkStr(idSegTitle, "Streamed"))
+	body := concat(info, mkAudioCluster(), tags)
+	seg := concat(idToBytes(idSegment), []byte{0xFF}, body) // Segment with an unknown-size VINT (1-byte form: 0xFF)
+	file := concat(mkEl(idEBML, mkStr(idDocType, "matroska")), seg)
+
+	out, outDoc := saveMatroska(t, file, mustParseBytes(t, file).Edit().Set(tag.Title, "Retitled Stream"))
+
+	if got := outDoc.Fields().Title; got != "Retitled Stream" {
+		t.Errorf("returned doc Title = %q, want Retitled Stream", got)
+	}
+	re := mustParseBytes(t, out)
+	if got := re.Fields().Title; got != "Retitled Stream" {
+		t.Errorf("reparsed Title = %q, want Retitled Stream", got)
+	}
+	if v, _ := re.Get(tag.Artist); len(v) != 1 || v[0] != "Streamed Artist" {
+		t.Errorf("Artist not preserved across the unknown-size write: %v", v)
+	}
+
+	// The unknown-size marker must survive. The write copies [0, segDataStart) verbatim, and
+	// segDataStart == idx+len(segID)+1 (EBML header + Segment ID + the 0xFF byte), so the output
+	// must carry that exact prefix.
+	segID := idToBytes(idSegment)
+	idx := bytes.Index(file, segID)
+	if idx < 0 {
+		t.Fatalf("setup: Segment ID not found in the synthetic file")
+	}
+	if !bytes.HasPrefix(out, file[:idx+len(segID)+1]) {
+		t.Errorf("unknown-size Segment header (EBML header + Segment ID + 0xFF) not preserved on write")
+	}
+}
