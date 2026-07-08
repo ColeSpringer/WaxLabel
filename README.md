@@ -176,15 +176,18 @@ cleanliness findings such as an inherited encoder stamp or a malformed value. Ru
 `lint` on the saved file to check those.
 
 Each `lint --json` finding carries a machine-readable `code`, a `severity`, and a
-`message`. A `warning` or `error` finding makes `lint` exit non-zero; an `info`
-finding does not. The codes:
+`message`. A `warning` finding makes `lint` exit `1` (issues found); an `error`-severity
+finding exits `4` (invalid-data), so a script can tell contradictory metadata from a mere
+warning; an `info` finding never flips the exit. The codes:
 
 - Errors: `no-audio` (no decodable audio frames), `multiple-vorbis-comment` and
   `duplicate-tag-block` (repeated metadata blocks), `duplicate-icon` (a non-unique
   icon/other-icon picture type).
 - Warnings: `inherited-encoder` (a transcoder/encoder stamp `--fix` can clear),
   `stray-leading-id3`, `trailing-id3v1`, `legacy-ape` (legacy containers `--fix` can
-  strip), `invalid-picture` (bytes that are not a recognized image), `truncated-audio`,
+  strip), `invalid-picture` (a picture stored as `application/octet-stream` - an unsniffable
+  or `--force`-embedded cover; the check is the stored MIME, not a re-sniff of the bytes),
+  `truncated-audio`,
   `invalid-tag-key` (a native name mapping to no canonical key), `conflicting-families`
   (a key's native source fields disagree), `duplicate-picture`, `multiple-front-covers`,
   `single-valued-multi` (a single-valued key carrying several values), `malformed-number`,
@@ -202,7 +205,8 @@ with non-empty `operations`. Empty `changes` does not mean nothing was written.
 
 Exit code summary:
 
-- `0`: success, clean lint, or identical diff.
+- `0`: success, clean lint, identical diff, or a closed output pipe (a downstream reader
+  ended early, as in `waxlabel dump --recursive DIR | head` - benign and silent).
 - `1`: generic error, lint warnings found, or files differ.
 - `2`: usage error, such as a bad `--format` flag value, giving the same key to
   both `--set`/`--add` and `--clear` (they conflict), or a bare directory argument
@@ -210,7 +214,8 @@ Exit code summary:
 - `3`: an input file whose bytes match no supported container signature (unsupported
   regardless of its extension), or an unsupported metadata operation.
 - `4`: invalid or contradictory data, including a recognized container whose contents
-  are corrupt.
+  are corrupt, or a `lint` error-severity finding (`no-audio`, `duplicate-tag-block`,
+  `multiple-vorbis-comment`, `duplicate-icon`).
 - `5`: source changed since parse.
 - `6`: I/O or not-found error.
 - `130`: canceled or timed out.
@@ -220,7 +225,11 @@ file error, not necessarily the first error encountered. The precedence is:
 
 > canceled/timeout (130) > source-changed (5) > invalid-data (4) > unsupported
 > format/tag/stream/alignment (3) > I/O (6) > not-found (6) > usage/invalid-key
-> (2) > generic error (1)
+> (2) > generic error (1) > broken-pipe (0)
+
+A broken output pipe ranks last, below every real failure, so a genuine per-file error in
+the same run still sets the exit code; only when the closed pipe is the sole outcome does the
+run exit 0.
 
 ## Core Concepts
 
@@ -339,6 +348,11 @@ path:
   Editing it writes a fresh `moov.udta.meta.ilst` and preserves the original metadata atom
   verbatim rather than destroying it; the canonical `moov.udta.meta.ilst` layout that
   iTunes and most taggers write is unaffected.
+- **An MP4 `trkn`/`disk` of 65535 reads back as `-1` in ffmpeg.** WaxLabel stores a track or
+  disc number/total up to the atom's unsigned 16-bit ceiling (65535) and round-trips it
+  faithfully. ffprobe/ffmpeg read that same field as a *signed* 16-bit int, so they report the
+  maximum, 65535, as `-1`. This is a signed/unsigned interpretation difference in the other tool,
+  not a stored-data difference; WaxLabel's unsigned value is the one on disk.
 - **WAV/AIFF dual tag containers consolidate on edit.** A WAV or AIFF can carry both an
   embedded `id3`/`ID3 ` chunk and native `LIST`/`INFO` (WAV) or text (AIFF) chunks. When they
   hold conflicting values for the same key, the documented precedence applies (the id3 chunk

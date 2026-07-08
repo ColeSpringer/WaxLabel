@@ -60,14 +60,20 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		}
 	}
 
-	// Surface canonical values the iTunes atoms cannot represent and the encoder would
-	// otherwise drop (trkn/disk are uint16, stik is uint32, cpil is boolean). droppedValues
-	// reads the same raw canonical strings the encoder consumes, and both the ilst and
-	// chapter rewrite paths build from edited.Tags, so the shared report covers both.
+	// Surface canonical values the iTunes atoms cannot represent. droppedValues names the ones
+	// genuinely lost (trkn/disk outside uint16, a non-numeric stik), coercedValues the ones
+	// stored in a normalized form (a non-boolean cpil written as 0). Both read the same raw
+	// canonical strings the encoder consumes, and both the ilst and chapter rewrite paths build
+	// from edited.Tags, so the shared report covers both.
 	for _, dv := range droppedValues(edited.Tags) {
 		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueDropped,
 			fmt.Sprintf("%s value %q cannot be represented in this format and was dropped", dv.Key, dv.Value),
 			dv.Key)
+	}
+	for _, cv := range coercedValues(edited.Tags) {
+		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueCoerced,
+			fmt.Sprintf("%s value %q is not a valid boolean and was stored as 0 (false)", cv.Key, cv.Value),
+			cv.Key)
 	}
 
 	// A chapter edit rewrites the whole moov.udta (folding any ilst change into one
@@ -174,9 +180,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// Collapse to a true no-op when the ilst rebuild re-projected to base's values
 	// (e.g. TRACKNUMBER=03 -> 3, or an unrepresentable value the encoder dropped); a
 	// chapter edit took the planChapters path above, so nothing structural remains here.
-	// DowngradeNoOp carries the input-rejection warnings (value-dropped,
-	// picture-metadata-dropped) forward, so a rejected value or cover description still
-	// surfaces (and --strict still escalates) even though the write is a no-op.
+	// DowngradeNoOp carries the input-rejection warnings (value-dropped, value-coerced,
+	// picture-metadata-dropped) forward, so a rejected/coerced value or cover description still
+	// surfaces (and --strict still escalates) even though the write is a no-op. A coerced
+	// COMPILATION=maybe re-applied to a file already cpil=0 is exactly this case.
 	// delta != 0 means the layout grew the moov region. That makes an explicit padding
 	// increase a real structural change, while a reuse-in-place edit with equal tags stays
 	// a no-op.

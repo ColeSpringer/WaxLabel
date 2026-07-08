@@ -96,6 +96,26 @@ func SyncedLyricsMetadataDroppedMessage() string {
 	return "LRC synced lyrics store timed text only; the per-set language, descriptor, and embedded line breaks are dropped"
 }
 
+// SyncedLyricsClampOverflows reports whether any line in sls carries a timestamp past max, so
+// the destination's writer would clamp it (SYLT's 32-bit ms field, or the LRC store's
+// MaxLRCTime). max == 0 means no limit (nothing overflows). The comparison is strictly
+// greater, matching the writers' clamp predicates (a line exactly at max round-trips). It is
+// the synced-lyrics analogue of the chapter-title byte-cap check, letting a transfer grade a
+// clamping copy Lossy instead of a clean carry.
+func SyncedLyricsClampOverflows(sls []SyncedLyrics, max time.Duration) bool {
+	if max <= 0 {
+		return false
+	}
+	for _, sl := range sls {
+		for _, ln := range sl.Lines {
+			if ln.Time > max {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // EqualSyncedLyrics reports whether two synced-lyrics slices are identical by content,
 // including order. SyncedLyrics contains a slice, so it is not comparable with ==; this
 // compares each set's Language, Description, and Lines element-wise. It is the
@@ -407,7 +427,7 @@ func parseLRCTime(s string) (time.Duration, bool) {
 	}
 	ms := 0
 	if fracStr != "" {
-		if !lrcAllDigits(fracStr) {
+		if !AllASCIIDigits(fracStr) {
 			return 0, false
 		}
 		for len(fracStr) < 3 {
@@ -444,7 +464,7 @@ func parseLRCTime(s string) (time.Duration, bool) {
 // lrcUint parses an all-digit string as a non-negative int, rejecting empty input, a
 // sign, or any non-digit.
 func lrcUint(s string) (int, bool) {
-	if !lrcAllDigits(s) {
+	if !AllASCIIDigits(s) {
 		return 0, false
 	}
 	n, err := strconv.Atoi(s)
@@ -454,8 +474,10 @@ func lrcUint(s string) (int, bool) {
 	return n, true
 }
 
-// lrcAllDigits reports whether s is non-empty and entirely ASCII digits.
-func lrcAllDigits(s string) bool {
+// AllASCIIDigits reports whether s is non-empty and entirely ASCII digits. It is the one shared
+// digit check for the codecs (the LRC timestamp fields here, the Vorbis chapter/LRC parser, and
+// the Matroska cover-name suffix), so the same rule cannot drift between packages.
+func AllASCIIDigits(s string) bool {
 	if s == "" {
 		return false
 	}

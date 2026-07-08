@@ -220,6 +220,38 @@ func TestSYLTNonLyricLanguageNotInherited(t *testing.T) {
 	}
 }
 
+// TestSYLTCarriedLanguageNotInherited is the M1 regression: a faithful carry of a
+// no-language synced-lyrics set must not inherit the destination's existing SYLT language.
+// An authored line-only edit still keeps it (the documented CLI convenience), so the two
+// dispositions are asserted side by side to pin the SyncedLyricsCarried gate.
+func TestSYLTCarriedLanguageNotInherited(t *testing.T) {
+	// A leading projecting lyrics SYLT already in the destination, in English.
+	engLyrics := buildSYLT(encLatin1, "eng", syltFmtMillis, syltContentLyrics, "", []core.SyncedLine{{Time: 0, Text: "old"}})
+	orig := []Frame{{ID: "SYLT", Body: engLyrics}}
+	noLangSet := []core.SyncedLyrics{{Lines: []core.SyncedLine{{Time: time.Second, Text: "lyric"}}}}
+
+	lyricLang := func(se StructuredEdit) string {
+		out, _ := RebuildFrames(orig, tag.NewTagSet(), tag.NewTagSet(), 4, se, WriteOpts{})
+		for _, f := range out {
+			if f.ID == "SYLT" && syltProjectsLyrics(f.Body) {
+				sl, _, _ := decodeSYLT(f.Body)
+				return sl.Language
+			}
+		}
+		t.Fatal("no projecting lyrics SYLT in the rebuilt frames")
+		return ""
+	}
+
+	// Carried: the destination's "eng" must not leak onto the no-language source set.
+	if got := lyricLang(StructuredEdit{SyncedLyrics: noLangSet, SyncedLyricsChanged: true, SyncedLyricsCarried: true}); got != "" {
+		t.Errorf("carried lyrics SYLT language = %q, want empty (must not inherit the destination's eng)", got)
+	}
+	// Authored (not carried): the documented convenience still inherits "eng".
+	if got := lyricLang(StructuredEdit{SyncedLyrics: noLangSet, SyncedLyricsChanged: true}); got != "eng" {
+		t.Errorf("authored line-only edit language = %q, want eng (the documented fallback)", got)
+	}
+}
+
 // TestSYLTTimestampOverflow checks a line past the SYLT 32-bit millisecond field (~49.7
 // days) is reported as clamped, so the codec can surface a warning instead of silently
 // moving the lyric.

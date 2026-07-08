@@ -247,6 +247,15 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 			disp = Lossy
 			reason = dst.SyncedLyrics.Reason()
 		}
+		// A line timestamp past the destination's 32-bit millisecond field (SYLT) or LRC
+		// re-parse ceiling is clamped on write, a silent content loss the metadata check above
+		// does not cover, so grade it Lossy too - the synced-lyrics analogue of the chapter
+		// title-byte-cap upgrade. Checked only when still Carried, so a set already Lossy keeps
+		// its (broader) reason.
+		if disp == Carried && SyncedLyricsClampOverflows(src.SyncedLyrics, dst.SyncedLyrics.SyncedLyricsTimeMax) {
+			disp = Lossy
+			reason = "a synced-lyric timestamp is too large and was clamped"
+		}
 		items = append(items, TransferItem{
 			Kind: TransferSyncedLyric, Count: n, Disposition: disp, Reason: reason,
 		})

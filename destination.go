@@ -39,9 +39,14 @@ type Destination struct {
 func SaveBack() Destination { return Destination{kind: destSaveBack} }
 
 // SaveAsFile writes a complete file at path (atomically). Unlike SaveBack it is
-// never a no-op: a fresh destination is always written whole. Writing to a path that
-// resolves to the document's own source file spends the plan just as SaveBack does
-// (see [Plan.Execute]); writing to other paths leaves the plan reusable.
+// never a no-op: a fresh destination is always written whole. It OVERWRITES any existing
+// file at path (atomically replacing it via a temp file and rename) - it does not refuse an
+// existing target, so the caller is responsible for the "do not clobber" check. The CLI's
+// copy -o guard is a CLI-level policy, not a library one. (If a hard guard is later wanted, the
+// safe route is an additive SaveAsNewFile(path) that returns a waxerr-wrapped "exists" error,
+// not a default-refuse flip of this function's contract.) Writing to a path that resolves to the
+// document's own source file spends the plan just as SaveBack does (see [Plan.Execute]); writing
+// to other paths leaves the plan reusable.
 //
 // For a [ParseFile] document it verifies the source file has not changed since parse
 // ([waxerr.ErrSourceChanged] otherwise), as SaveBack does: the copied byte offsets come

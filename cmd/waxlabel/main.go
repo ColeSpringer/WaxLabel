@@ -41,12 +41,16 @@ func main() {
 	// calls, so the signal registration is released explicitly before it, and the
 	// forced-exit path drains the cleanup registry so a buffered-stdin temp file is
 	// still removed.
-	ctx, cancel := context.WithCancel(context.Background())
+	// WithCancelCause lets the pipe goroutine cancel with a distinct sentinel (errBrokenPipe)
+	// while the interrupt path cancels with the default context.Canceled: a canceled op returns
+	// context.Canceled either way, so the cause is the only thing that tells a benign closed pipe
+	// (exit 0) from a real Ctrl-C (exit 130). dispatch reads context.Cause(ctx) to make that call.
+	ctx, cancel := context.WithCancelCause(context.Background())
 	sig := make(chan os.Signal, 2)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sig
-		cancel()
+		cancel(nil) // nil cause -> context.Canceled: a real interrupt, exit 130
 		<-sig
 		runCleanups()
 		os.Exit(130)
@@ -57,18 +61,20 @@ func main() {
 	// Catching it turns the write into an EPIPE the command unwinds through its deferred cleanup,
 	// and cancelling stops in-flight work promptly - but keeping it OUT of the interrupt two-stage
 	// machine means a broken pipe does not consume a later Ctrl-C's graceful-cancel stage. The
-	// constant compiles on every target; Windows defines it but never delivers it.
+	// distinct errBrokenPipe cause is what lets dispatch classify this as broken-pipe (exit 0,
+	// silent) rather than a cancel. The constant compiles on every target; Windows defines it but
+	// never delivers it.
 	pipe := make(chan os.Signal, 1)
 	signal.Notify(pipe, syscall.SIGPIPE)
 	go func() {
 		<-pipe
-		cancel()
+		cancel(errBrokenPipe)
 	}()
 
 	code := dispatch(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	signal.Stop(sig)
 	signal.Stop(pipe)
-	cancel()
+	cancel(nil)
 	os.Exit(code)
 }
 
@@ -99,6 +105,20 @@ func dispatch(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	err := root.ExecuteContext(ctx)
 	if err == nil {
 		return 0
+	}
+	// A broken output pipe (`waxlabel dump --recursive DIR | head`) is benign: re-tag it as
+	// broken-pipe (exit 0, silent). It surfaces two ways:
+	//   - a synchronous EPIPE returned from the terminal write itself (dump --json's single
+	//     emitJSONList, or a single-result command like diff/copy). The write is definitive proof
+	//     the pipe closed, so do NOT gate this on the SIGPIPE cancel cause - that goroutine is
+	//     async and may not have run yet, which would otherwise misclassify it as exit-6 "io".
+	//     WaxLabel only writes to stdout/stderr, so an EPIPE is always a closed output pipe.
+	//   - a context.Canceled whose cancel cause is errBrokenPipe: text multi-file mode, where the
+	//     pipe broke mid-render and a later parse observed the cancel. Gated on the cause to keep a
+	//     real Ctrl-C (also context.Canceled, but cause context.Canceled) exiting 130.
+	if errors.Is(err, syscall.EPIPE) ||
+		(errors.Is(err, context.Canceled) && errors.Is(context.Cause(ctx), errBrokenPipe)) {
+		err = errBrokenPipe
 	}
 	// A command that already wrote its own output (e.g. dump emitting per-file
 	// error objects) carries an alreadyRenderedError: keep its exit class but do

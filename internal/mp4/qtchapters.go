@@ -361,12 +361,17 @@ func qtWriteRoundTrip(chapters []core.Chapter, mts, movieTimescale uint32, movie
 		return nil, false
 	}
 	deltas, _ := chapterDeltas(chapters, mts, movieTimescale, movieDuration)
-	saturated = slices.Contains(deltas, uint32(math.MaxUint32))
-	// chapterEdts writes firstStart as a u32 segment_duration (clampU32), so derive
-	// the offset from the same clamped value - a reparse reads back exactly that, so
-	// the prediction stays equal even past the 2^32-unit edge. addClamp matches the
-	// read path's saturating add, so neither side wraps on an absurd offset.
-	offset := scaleToDuration(uint64(clampU32(chapterFirstStart(movieTimescale, chapters))), movieTimescale)
+	// chapterEdts writes firstStart as a u32 segment_duration via clampU32; a reparse reads that
+	// clamped value back, so derive the offset from it too - the prediction then stays equal even
+	// past the 2^32-unit edge, and addClamp matches the read's saturating add.
+	clampedFirstStart := clampU32(chapterFirstStart(movieTimescale, chapters))
+	// Saturation has two sources, mirroring the read: an over-range stts delta (a >13.25 h gap
+	// clamped by buildStts, read back as a MaxUint32 delta) and a leading empty-edit offset whose
+	// clamped u32 segment_duration reads back as MaxUint32 (emptyEditOffset). Reuse that clamped
+	// value (the read's own signal) instead of re-deriving the boundary, so the two agree by
+	// construction (including at firstStart == MaxUint32 exactly, which clamps to itself).
+	saturated = slices.Contains(deltas, uint32(math.MaxUint32)) || clampedFirstStart == math.MaxUint32
+	offset := scaleToDuration(uint64(clampedFirstStart), movieTimescale)
 	cum := make([]uint64, len(chapters))
 	for i := 1; i < len(chapters); i++ {
 		cum[i] = cum[i-1] + uint64(deltas[i-1])
@@ -381,12 +386,15 @@ func qtWriteRoundTrip(chapters []core.Chapter, mts, movieTimescale uint32, movie
 			out[i].End = addClamp(scaleToDuration(cum[i+1], mts), offset)
 		}
 	}
-	// Mirror decodeTextTrack's last-end recovery: the final stts boundary (the last
-	// cumulative sum plus the last delta) is the last chapter's end, canonicalized back to
-	// open at the movie duration. A written list is always under maxChapterSamples, so the
-	// reader's completed flag is always true here.
+	// Mirror decodeTextTrack's last-end recovery exactly: the final stts boundary (the last
+	// cumulative sum plus the last delta) is the last chapter's end, left open both when it
+	// canonicalizes to the movie duration and when it is the synthetic 1 s placeholder tail for a
+	// chapter starting at/past a known movie duration (isPlaceholderTail). A written list is
+	// always under maxChapterSamples, so the reader's completed flag is always true here.
 	last := len(chapters) - 1
-	if lastEnd := addClamp(scaleToDuration(cum[last]+uint64(deltas[last]), mts), offset); !endIsMovieDuration(lastEnd, movieTimescale, movieDuration) {
+	lastEnd := addClamp(scaleToDuration(cum[last]+uint64(deltas[last]), mts), offset)
+	if !isPlaceholderTail(out[last].Start, lastEnd, movieTimescale, movieDuration) &&
+		!endIsMovieDuration(lastEnd, movieTimescale, movieDuration) {
 		out[last].End = lastEnd
 	}
 	return out, saturated

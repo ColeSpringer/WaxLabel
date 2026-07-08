@@ -78,7 +78,7 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringArrayVar(&e.removePicture, "remove-picture", nil, "remove pictures by role name or 1-based dump index, e.g. back-cover or 2 (repeatable; removals apply before adds)")
 	f.BoolVar(&e.rmPics, "remove-pictures", false, "remove all embedded pictures")
 	f.BoolVar(&e.force, "force", false, "embed --add-cover/--add-picture input even if it is not a recognized image (PNG/JPEG/GIF/WebP/BMP/TIFF); unrecognized bytes are stored as application/octet-stream. The check is header-only, not a full image decode")
-	f.StringArrayVar(&e.addChapter, "add-chapter", nil, "add a chapter TIMESTAMP=Title (e.g. 1:30=Verse; repeatable); formats with chapter-count caps reject over-limit lists (255 for ID3 and MP4). CLI-created chapters have no end time, so rewriting Matroska chapters this way drops explicit end times")
+	f.StringArrayVar(&e.addChapter, "add-chapter", nil, "add a chapter TIMESTAMP=Title (e.g. 1:30=Verse; repeatable); formats with chapter-count caps reject over-limit lists (255 for ID3 and MP4). CLI-created chapters have no end time, so replacing a Matroska list that had explicit ends (--clear-chapters plus this flag) drops them; a plain --add-chapter keeps existing chapters and their ends")
 	f.BoolVar(&e.clearChapters, "clear-chapters", false, "remove all chapters (applied before --add-chapter, so combining them keeps only the added chapters)")
 	f.StringVar(&e.syncedLyricsFile, "synced-lyrics-file", "", "set synced lyrics from an LRC file, replacing any existing synced lyrics (MP3/AAC/AIFF/WAV keep the language; FLAC/Ogg drop it)")
 	f.StringArrayVar(&e.addSyncedLyric, "add-synced-lyric", nil, "add synced lyric line TIMESTAMP=Text (e.g. 1:30=Verse; repeatable); combined lines replace any existing synced lyrics")
@@ -937,6 +937,7 @@ func noteMalformedValue(errOut io.Writer, k tag.Key, v string) {
 // library accepts by design, so it is a pre-flight usage error, not a plan warning.
 var strictEscalatingCodes = map[wl.WarningCode]bool{
 	wl.WarnValueDropped:        true,
+	wl.WarnValueCoerced:        true,
 	wl.WarnSingleValuedMulti:   true,
 	wl.WarnTagStructureDropped: true,
 }
@@ -990,6 +991,8 @@ func strictWarningReason(w wl.Warning) string {
 	switch w.Code {
 	case wl.WarnValueDropped:
 		return fmt.Sprintf("%s: value cannot be represented in this format and would be dropped", keys)
+	case wl.WarnValueCoerced:
+		return fmt.Sprintf("%s: value is not valid for this format and would be stored coerced", keys)
 	case wl.WarnSingleValuedMulti:
 		return fmt.Sprintf("%s: single-valued but given multiple values", keys)
 	case wl.WarnTagStructureDropped:

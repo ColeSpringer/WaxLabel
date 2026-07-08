@@ -217,6 +217,15 @@ const (
 	// advisory and does not escalate --strict. Absent on a faithful copy, which must not flag the
 	// source's own values as an authored conflict.
 	WarnNumberTotalConflict
+	// WarnValueCoerced means an edit set a canonical value the destination format cannot store
+	// as the literal given, so the encoder stored a normalized value instead of dropping it. It
+	// is the counterpart to [WarnValueDropped]: the key IS written (the change set shows the
+	// stored value), and the warning tells the user the literal was normalized. MP4 COMPILATION
+	// (cpil) is a single boolean byte, so a non-boolean like "maybe" is stored as 0 (false)
+	// rather than dropped. It is a plan-time warning carrying the offending key (Warning.Keys),
+	// so the CLI's --strict gate can act on it, matching WarnValueDropped's escalation. Appended
+	// to the end of the block so the existing codes keep their numbers.
+	WarnValueCoerced
 )
 
 func (c WarningCode) String() string {
@@ -303,6 +312,8 @@ func (c WarningCode) String() string {
 		return "invalid-tag-key"
 	case WarnNumberTotalConflict:
 		return "number-total-conflict"
+	case WarnValueCoerced:
+		return "value-coerced"
 	default:
 		return "unknown"
 	}

@@ -183,16 +183,20 @@ func renderCountDelta(w io.Writer, label string, differ bool, a, b int) {
 	fmt.Fprintf(w, "  %s: %d -> %d\n", label, a, b)
 }
 
-// jsonDiff is the machine-readable canonical-metadata delta.
+// jsonDiff is the machine-readable canonical-metadata delta. The three count objects are
+// always present (like the tags array), each carrying a `changed` discriminator, so a consumer
+// reads `chapters.changed` rather than inferring a difference from key presence or a != b -
+// the latter cannot distinguish "contents differ at equal count" (a replaced cover, a retitled
+// chapter) from a no-op.
 type jsonDiff struct {
-	SchemaVersion int            `json:"schemaVersion"`
-	FileA         string         `json:"a"`
-	FileB         string         `json:"b"`
-	Identical     bool           `json:"identical"`
-	Tags          []jsonDiffTag  `json:"tags"`
-	Pictures      *jsonDiffCount `json:"pictures,omitempty"`
-	Chapters      *jsonDiffCount `json:"chapters,omitempty"`
-	SyncedLyrics  *jsonDiffCount `json:"syncedLyrics,omitempty"`
+	SchemaVersion int           `json:"schemaVersion"`
+	FileA         string        `json:"a"`
+	FileB         string        `json:"b"`
+	Identical     bool          `json:"identical"`
+	Tags          []jsonDiffTag `json:"tags"`
+	Pictures      jsonDiffCount `json:"pictures"`
+	Chapters      jsonDiffCount `json:"chapters"`
+	SyncedLyrics  jsonDiffCount `json:"syncedLyrics"`
 }
 
 type jsonDiffTag struct {
@@ -202,9 +206,12 @@ type jsonDiffTag struct {
 	B      []string `json:"b,omitempty"`
 }
 
+// jsonDiffCount is a set's before/after count plus whether the set changed at all - the flag
+// disambiguates an equal-count contents change (Changed true, A == B) from no difference.
 type jsonDiffCount struct {
-	A int `json:"a"`
-	B int `json:"b"`
+	A       int  `json:"a"`
+	B       int  `json:"b"`
+	Changed bool `json:"changed"`
 }
 
 func toJSONDiff(a, b string, d diffResult) jsonDiff {
@@ -214,18 +221,12 @@ func toJSONDiff(a, b string, d diffResult) jsonDiff {
 		FileB:         jsonFileName(b),
 		Identical:     d.identical(),
 		Tags:          []jsonDiffTag{},
+		Pictures:      jsonDiffCount{A: d.picsA, B: d.picsB, Changed: d.picsDiffer},
+		Chapters:      jsonDiffCount{A: d.chapsA, B: d.chapsB, Changed: d.chapsDiffer},
+		SyncedLyrics:  jsonDiffCount{A: d.syncedA, B: d.syncedB, Changed: d.syncedDiffer},
 	}
 	for _, t := range d.tags {
 		jd.Tags = append(jd.Tags, jsonDiffTag{Key: string(t.Key), Change: t.Kind.String(), A: t.Old, B: t.New})
-	}
-	if d.picsDiffer {
-		jd.Pictures = &jsonDiffCount{A: d.picsA, B: d.picsB}
-	}
-	if d.chapsDiffer {
-		jd.Chapters = &jsonDiffCount{A: d.chapsA, B: d.chapsB}
-	}
-	if d.syncedDiffer {
-		jd.SyncedLyrics = &jsonDiffCount{A: d.syncedA, B: d.syncedB}
 	}
 	return jd
 }

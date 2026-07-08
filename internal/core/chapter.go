@@ -88,6 +88,13 @@ const (
 	// but no per-chapter language or hidden/disabled flags. ID3v2 CHAP frames use this
 	// model: explicit ends survive, while language and visibility metadata do not.
 	ChapterLossLangFlags
+	// ChapterLossInteriorEndsLangFlags is the MP4 QuickTime-text-track model: each
+	// chapter's start and title are stored, the final chapter's explicit end is kept (the
+	// text track carries it), but an interior chapter's gapped end, per-chapter language,
+	// and hidden/disabled flags are dropped. It differs from ChapterLossStartTitleOnly
+	// (FLAC/Ogg, MP4 Nero chpl) only in sparing the last chapter's end, which those
+	// start-only stores cannot hold.
+	ChapterLossInteriorEndsLangFlags
 )
 
 // ChaptersLoseMetadata reports whether writing chs to a destination with loss would
@@ -107,6 +114,10 @@ const (
 // For [ChapterLossLangFlags] (ID3v2 CHAP), the start, end, and title survive. Any
 // language or Hidden/Disabled flag is lost because CHAP has no field for it; the
 // uniform-language tolerance used for start+title formats does not apply.
+//
+// For [ChapterLossInteriorEndsLangFlags] (MP4 QuickTime text track), the rule is
+// [ChapterLossStartTitleOnly]'s except the final chapter's explicit end is kept, because
+// the text track stores it - only an interior gapped end vanishes.
 func ChaptersLoseMetadata(chs []Chapter, loss ChapterLoss) bool {
 	switch loss {
 	case ChapterLossLangFlags:
@@ -117,34 +128,55 @@ func ChaptersLoseMetadata(chs []Chapter, loss ChapterLoss) bool {
 		}
 		return false
 	case ChapterLossStartTitleOnly:
-		// Lazily allocated: a Hidden/Disabled or gapped-end chapter returns before any
-		// language is recorded, so the common early-out path allocates nothing. len() on a
-		// nil map is 0, so the final distinct-count check below still holds.
-		var iso, ietf map[string]bool
-		for i, c := range chs {
-			if c.Hidden || c.Disabled {
-				return true
-			}
-			if c.End > 0 && (i == len(chs)-1 || c.End != chs[i+1].Start) {
-				return true
-			}
-			if c.Language != "" {
-				if iso == nil {
-					iso = make(map[string]bool)
-				}
-				iso[c.Language] = true
-			}
-			if c.LanguageIETF != "" {
-				if ietf == nil {
-					ietf = make(map[string]bool)
-				}
-				ietf[c.LanguageIETF] = true
-			}
-		}
-		return len(iso) > 1 || len(ietf) > 1
+		return chaptersLoseStartTitle(chs, false)
+	case ChapterLossInteriorEndsLangFlags:
+		return chaptersLoseStartTitle(chs, true)
 	default:
 		return false
 	}
+}
+
+// chaptersLoseStartTitle is the shared predicate for the start+title chapter models. A
+// Hidden or Disabled chapter, an interior chapter's gapped end (an End that is neither zero
+// nor the next chapter's Start), or a *varying* per-chapter language (ISO or IETF) always
+// counts as loss; a uniform language does not, so an ordinary mkvmerge file whose every
+// chapter carries the same ChapLanguageIETF is not mislabeled. The final chapter's explicit
+// end counts as loss only when keepLastEnd is false: FLAC/Ogg and MP4's Nero chpl store no
+// end at all, so the last end vanishes there, but MP4's QuickTime text track stores it, so
+// keepLastEnd spares it. With keepLastEnd=false this is byte-identical to the original
+// ChapterLossStartTitleOnly predicate.
+func chaptersLoseStartTitle(chs []Chapter, keepLastEnd bool) bool {
+	// Lazily allocated: a Hidden/Disabled or gapped-end chapter returns before any language
+	// is recorded, so the common early-out path allocates nothing. len() on a nil map is 0,
+	// so the final distinct-count check below still holds.
+	var iso, ietf map[string]bool
+	for i, c := range chs {
+		if c.Hidden || c.Disabled {
+			return true
+		}
+		if c.End > 0 {
+			if i == len(chs)-1 {
+				if !keepLastEnd {
+					return true // the store holds no end at all; the final end is lost
+				}
+			} else if c.End != chs[i+1].Start {
+				return true // an interior gapped end cannot be inferred from the next start
+			}
+		}
+		if c.Language != "" {
+			if iso == nil {
+				iso = make(map[string]bool)
+			}
+			iso[c.Language] = true
+		}
+		if c.LanguageIETF != "" {
+			if ietf == nil {
+				ietf = make(map[string]bool)
+			}
+			ietf[c.LanguageIETF] = true
+		}
+	}
+	return len(iso) > 1 || len(ietf) > 1
 }
 
 // ChapterMetadataDroppedMessage returns the edit-time warning text for the fields a
@@ -153,6 +185,8 @@ func ChapterMetadataDroppedMessage(loss ChapterLoss) string {
 	switch loss {
 	case ChapterLossLangFlags:
 		return "ID3 chapters store start, end, and title only; per-chapter language and hidden/disabled flags are dropped"
+	case ChapterLossInteriorEndsLangFlags:
+		return "MP4 chapters store start, title, and the final chapter's end; interior gapped end times, per-chapter language, and hidden/disabled flags are dropped"
 	default:
 		return "chapters store start and title only; gapped end times, per-chapter language, and hidden/disabled flags are dropped"
 	}

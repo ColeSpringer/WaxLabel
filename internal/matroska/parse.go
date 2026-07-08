@@ -463,7 +463,11 @@ func parseAttached(src core.ReaderAtSized, af element, depth *bits.Depth, limit 
 	if err != nil {
 		return a, nil, err
 	}
-	a.image = isImageMIME(a.mime)
+	// A cover is an image MIME, or a --force octet-stream stored under the cover-art file name:
+	// the latter reprojects as an Unrecognized() picture (removable, and rebuilt not preserved on
+	// write) instead of accumulating a new cover_<n> attachment on every re-add (L9). A foreign
+	// non-image doc named cover.* (text/plain, application/pdf) stays a plain attachment.
+	a.image = isCoverAttachment(a.mime, a.name)
 	if !a.image || !haveData {
 		return a, nil, nil
 	}
@@ -754,13 +758,48 @@ func pictureType(name string) core.PictureType {
 	}
 }
 
-// isImageMIME reports whether a MIME labels an image - the Matroska cover-art gate. Only an
-// image/* AttachedFile projects into a Picture; a non-image (e.g. a --force-embedded
-// application/octet-stream) is a plain attachment, preserved verbatim but never read back as a
-// cover. Shared by the read path, the write attachment record, and the result reprojection so
-// the three agree on what counts as a picture.
+// isImageMIME reports whether a MIME labels an image. It is one input to isCoverAttachment (the
+// shared Matroska cover-art gate): an image/* AttachedFile projects into a Picture, as does a
+// cover-named application/octet-stream (a --force-embedded unsniffable cover).
 func isImageMIME(mime string) bool {
 	return strings.HasPrefix(strings.ToLower(mime), "image/")
+}
+
+// isCoverName reports whether an attachment file name follows the Matroska cover-art naming
+// convention this codec reads and writes: a base name (before the extension) of exactly "cover"
+// or "small_cover", optionally with WaxLabel's uniquifying numeric suffix ("cover_1",
+// "small_cover_2"), and any (or no) extension. isCoverAttachment pairs it with an octet-stream
+// MIME to admit a --force cover. It deliberately does NOT match a broad "cover_" prefix, so a
+// foreign attachment such as "cover_letter.txt" stays a plain preserved attachment.
+func isCoverName(name string) bool {
+	base := name
+	if i := strings.LastIndexByte(base, '.'); i >= 0 {
+		base = base[:i] // strip a single trailing extension
+	}
+	base = strings.ToLower(base)
+	for _, stem := range []string{"small_cover", "cover"} {
+		if base == stem {
+			return true
+		}
+		// A numeric suffix is WaxLabel's uniquifier ("cover_1"); an empty or non-numeric one
+		// (the "cover_letter" case) is not, so it stays a plain attachment.
+		if suffix, ok := strings.CutPrefix(base, stem+"_"); ok && core.AllASCIIDigits(suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// isCoverAttachment reports whether an AttachedFile projects as a cover picture. A cover is
+// either an image-MIME file, or WaxLabel's --force cover: an application/octet-stream stored
+// under the cover-art file name (cover.<ext>/small_cover.<ext>). Restricting the cover-name path
+// to octet-stream keeps a foreign non-image document that merely happens to be named cover.* (a
+// cover.txt/cover.pdf carrying text/plain or application/pdf) a plain preserved attachment rather
+// than promoting it to a picture and rebuilding it under the cover convention. Shared by the read
+// gate, the write attachment record, and the result reprojection so the three cannot drift on what
+// counts as a cover.
+func isCoverAttachment(mime, name string) bool {
+	return isImageMIME(mime) || (mime == core.UnrecognizedMIME && isCoverName(name))
 }
 
 // codecName maps a Matroska CodecID to a short display codec name.

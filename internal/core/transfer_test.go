@@ -264,6 +264,35 @@ func TestChaptersLoseMetadata(t *testing.T) {
 	}
 }
 
+// TestChaptersLoseMetadataInteriorEnds checks the MP4 QuickTime loss predicate (the L1
+// fix). It matches ChapterLossStartTitleOnly except the final chapter's explicit end is
+// kept (the text track stores it), so only an interior gapped end is a loss.
+func TestChaptersLoseMetadataInteriorEnds(t *testing.T) {
+	sec := func(s int) time.Duration { return time.Duration(s) * time.Second }
+	cases := []struct {
+		name string
+		chs  []Chapter
+		want bool
+	}{
+		{"plain", []Chapter{{Start: 0, Title: "A"}, {Start: sec(5), Title: "B"}}, false},
+		{"uniform-ietf", []Chapter{{LanguageIETF: "en-US"}, {Start: sec(5), LanguageIETF: "en-US"}}, false},
+		{"varying-iso", []Chapter{{Language: "fre"}, {Start: sec(5), Language: "ger"}}, true},
+		{"hidden", []Chapter{{Hidden: true}}, true},
+		{"disabled", []Chapter{{Disabled: true}}, true},
+		{"gapped-interior-end", []Chapter{{End: sec(3)}, {Start: sec(5)}}, true},                     // interior gap cannot be inferred
+		{"contiguous-end", []Chapter{{End: sec(5)}, {Start: sec(5)}}, false},                         // End == next Start, inferred
+		{"last-end-kept", []Chapter{{}, {Start: sec(5), End: sec(9)}}, false},                        // the text track stores the final end
+		{"last-end-plus-interior-gap", []Chapter{{End: sec(3)}, {Start: sec(5), End: sec(9)}}, true}, // interior gap still lost
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := ChaptersLoseMetadata(c.chs, ChapterLossInteriorEndsLangFlags); got != c.want {
+				t.Errorf("ChaptersLoseMetadata(InteriorEnds) = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 // TestChaptersLoseMetadataLangFlags checks the ID3 CHAP loss predicate. Start, end, and
 // title all survive, so gapped and last-chapter ends are not a loss. CHAP has no language
 // or visibility fields, so any language or Matroska visibility flag is a loss.
@@ -337,6 +366,40 @@ func TestProjectTransferChapterGrading(t *testing.T) {
 	plain := []Chapter{{Title: "A", End: sec(3)}, {Start: sec(5), Title: "B"}}
 	if it := chapterItem(mp3, plain); it.Disposition != Carried {
 		t.Errorf("Matroska->MP3 plain chapters = %s, want Carried (CHAP keeps ends)", it.Disposition)
+	}
+}
+
+// TestProjectTransferSyncedLyricsTimestampClamp checks the L3 upgrade: a synced-lyric line
+// past the destination's SyncedLyricsTimeMax grades Lossy (the write clamps it), while a set
+// within the ceiling carries. The destination stores the language too (no metadata loss), so
+// the timestamp clamp is the only thing that can make it lossy.
+func TestProjectTransferSyncedLyricsTimestampClamp(t *testing.T) {
+	dst := NewCapabilities(FormatMP3, false,
+		Capability{Write: AccessFull}, Capability{Write: AccessFull}, Capability{Write: AccessFull}, AccessPartial, nil).
+		WithSyncedLyrics(Capability{Write: AccessFull, SyncedLyricsTimeMax: 100 * time.Second})
+
+	syncedItem := func(sls []SyncedLyrics) TransferItem {
+		for _, it := range ProjectTransfer(&Media{Format: FormatFLAC, SyncedLyrics: sls}, dst) {
+			if it.Kind == TransferSyncedLyric {
+				return it
+			}
+		}
+		t.Fatal("no synced-lyrics item")
+		return TransferItem{}
+	}
+
+	over := []SyncedLyrics{{Lines: []SyncedLine{{Time: 0, Text: "a"}, {Time: 200 * time.Second, Text: "b"}}}}
+	if it := syncedItem(over); it.Disposition != Lossy || it.Reason == "" {
+		t.Errorf("a line past the timestamp ceiling = %s/%q, want Lossy with a reason", it.Disposition, it.Reason)
+	}
+	within := []SyncedLyrics{{Lines: []SyncedLine{{Time: 0, Text: "a"}, {Time: 50 * time.Second, Text: "b"}}}}
+	if it := syncedItem(within); it.Disposition != Carried {
+		t.Errorf("a set within the ceiling = %s, want Carried", it.Disposition)
+	}
+	// A line exactly at the ceiling round-trips (strictly-greater clamp), so it carries.
+	atMax := []SyncedLyrics{{Lines: []SyncedLine{{Time: 100 * time.Second, Text: "edge"}}}}
+	if it := syncedItem(atMax); it.Disposition != Carried {
+		t.Errorf("a line exactly at the ceiling = %s, want Carried (clamp is strictly greater)", it.Disposition)
 	}
 }
 

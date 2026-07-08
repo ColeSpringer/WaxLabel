@@ -49,15 +49,16 @@ func TestMP4TrackNumberZeroWarns(t *testing.T) {
 }
 
 // TestMP4CompilationCoercionWarns verifies that COMPILATION is a single boolean byte (cpil), so a
-// non-boolean value is silently coerced to false. The write must surface a value-dropped
-// warning naming the key rather than losing the user's intent at exit 0; a recognized
-// boolean spelling stores faithfully and must not warn.
+// non-boolean value is coerced to false and WRITTEN (0) rather than dropped (L2). The write must
+// surface a value-coerced warning naming the key - the honest disposition, since the key does land
+// on disk - rather than the old value-dropped, which contradicted the change set showing ["0"]. A
+// recognized boolean spelling stores faithfully and must not warn.
 func TestMP4CompilationCoercionWarns(t *testing.T) {
 	base := mp4Tagged(mp4Text("\xa9nam", "T"))
 
-	hasDropped := func(p *wl.Plan) bool {
+	hasCoerced := func(p *wl.Plan) bool {
 		for _, w := range p.Report().Warnings {
-			if w.Code == wl.WarnValueDropped && slices.Contains(w.Keys, tag.Compilation) {
+			if w.Code == wl.WarnValueCoerced && slices.Contains(w.Keys, tag.Compilation) {
 				return true
 			}
 		}
@@ -69,8 +70,8 @@ func TestMP4CompilationCoercionWarns(t *testing.T) {
 		if err != nil {
 			t.Fatalf("COMPILATION=%q: %v", v, err)
 		}
-		if !hasDropped(p) {
-			t.Errorf("non-boolean COMPILATION=%q must warn value-dropped; got %v", v, p.Report().Warnings)
+		if !hasCoerced(p) {
+			t.Errorf("non-boolean COMPILATION=%q must warn value-coerced; got %v", v, p.Report().Warnings)
 		}
 	}
 	for _, v := range []string{"1", "true", "0", "no"} {
@@ -78,9 +79,24 @@ func TestMP4CompilationCoercionWarns(t *testing.T) {
 		if err != nil {
 			t.Fatalf("COMPILATION=%q: %v", v, err)
 		}
-		if hasDropped(p) {
-			t.Errorf("recognized boolean COMPILATION=%q must not warn value-dropped; got %v", v, p.Report().Warnings)
+		if hasCoerced(p) {
+			t.Errorf("recognized boolean COMPILATION=%q must not warn value-coerced; got %v", v, p.Report().Warnings)
 		}
+	}
+
+	// No-op preservation: on a file already cpil=0, COMPILATION=maybe coerces to the same 0,
+	// so the write is a byte-identical no-op - yet the coercion warning must still surface (the
+	// DowngradeNoOp preserve-list), or the silent normalization would vanish at exit 0.
+	cpil0 := mp4Tagged(mp4Text("\xa9nam", "T"), mp4Atom("cpil", mp4Data(21, []byte{0})))
+	p, err := mustParseBytes(t, cpil0).Edit().Set(tag.Compilation, "maybe").Prepare()
+	if err != nil {
+		t.Fatalf("COMPILATION=maybe on cpil=0: %v", err)
+	}
+	if !p.IsNoOp() {
+		t.Errorf("COMPILATION=maybe on a cpil=0 file should be a no-op (maybe -> 0 == existing 0)")
+	}
+	if !hasCoerced(p) {
+		t.Errorf("value-coerced warning must survive the no-op downgrade; got %v", p.Report().Warnings)
 	}
 }
 

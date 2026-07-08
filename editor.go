@@ -222,6 +222,10 @@ func (e *Editor) Native() NativeEditor {
 // holds everything the planner needs).
 func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	wo := resolveWriteOptions(opts)
+	// Propagate the carry marker so codecs can suppress author-convenience heuristics on a
+	// faithful transfer (e.g. the ID3 SYLT language fallback). Set at the single transfer
+	// chokepoint (transfer.go), so every carry path inherits it and authored edits do not.
+	wo.Carried = e.carried
 
 	// An editor from a zero-value Document (Document.Edit guards that case) has no
 	// base media to plan against; report it cleanly rather than deref a nil base

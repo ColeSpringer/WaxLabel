@@ -462,6 +462,16 @@ func TestPlanTransferMatroskaToMP4ChapterLoss(t *testing.T) {
 	if it := chapterItem(plain, wl.FormatMP4); it.Disposition != wl.Carried {
 		t.Errorf("plain uniform-language chapters -> MP4 = %s, want carried", it.Disposition)
 	}
+	// Only the final chapter carries an explicit end, with no interior gap and a uniform
+	// language: MP4's QuickTime text track stores the last chapter's end, so this is carried,
+	// not lossy (the L1 fix - it was graded Lossy when the last end was flagged unconditionally).
+	lastEndOnly := withChapters(
+		wl.Chapter{Start: 0, Title: "One", LanguageIETF: "en-US"},
+		wl.Chapter{Start: ms(300), End: ms(600), Title: "Two", LanguageIETF: "en-US"},
+	)
+	if it := chapterItem(lastEndOnly, wl.FormatMP4); it.Disposition != wl.Carried {
+		t.Errorf("last-end-only chapters -> MP4 = %s/%q, want carried (QuickTime keeps the final end)", it.Disposition, it.Reason)
+	}
 }
 
 // TestPrepareTransferToWebMWithExistingCover checks that a WebM destination with an

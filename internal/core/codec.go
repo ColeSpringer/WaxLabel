@@ -186,7 +186,7 @@ func DowngradeNoOp(format Format, size int64, base, result *Media, tagsEqual, st
 		return nil
 	}
 	np := NoOpPlan(WriteReport{Format: format, BytesBefore: size}, size, base)
-	np.Report.Warnings = append(np.Report.Warnings, WarningsWithCode(priorWarnings, WarnValueDropped, WarnValueReduced, WarnPictureMetadataDropped, WarnNumericGenre, WarnChapterTitleTruncated, WarnChapterMetadataDropped, WarnChapterStartOverflow, WarnChaptersFlattened, WarnSyncedLyricsMetadataDropped, WarnSyncedLyricsTimestampClamped)...)
+	np.Report.Warnings = append(np.Report.Warnings, WarningsWithCode(priorWarnings, WarnValueDropped, WarnValueCoerced, WarnValueReduced, WarnPictureMetadataDropped, WarnNumericGenre, WarnChapterTitleTruncated, WarnChapterMetadataDropped, WarnChapterStartOverflow, WarnChaptersFlattened, WarnSyncedLyricsMetadataDropped, WarnSyncedLyricsTimestampClamped)...)
 	return np
 }
 

@@ -86,5 +86,8 @@ func SyncedLyricsCapability() core.Capability {
 		Fidelity:         "timed text stored; per-set language and descriptor dropped",
 		MaxItems:         1,
 		SyncedLyricsLoss: core.SyncedLyricsLossLanguage,
+		// A line past the LRC re-parse ceiling is clamped on write (see the ClampLRCTime call
+		// above); expose it so a transfer grades a clamping copy Lossy rather than a clean carry.
+		SyncedLyricsTimeMax: core.MaxLRCTime,
 	}
 }

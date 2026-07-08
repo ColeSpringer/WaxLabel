@@ -250,23 +250,36 @@ type droppedValue struct {
 	Value string
 }
 
-// droppedValues returns the canonical numeric values this edit would lose at the
-// iTunes encode site: a trkn/disk slot outside the uint16 the atom holds
-// (numTotal -> clampUint16), or a stik media kind strconv.ParseUint cannot read
-// (mediaTypeItem). It reads the same raw canonical strings those encoders consume -
-// so it names exactly what buildItems drops and cannot desync from it - and treats a
-// literal 0 (the pair encoder's "absent") and an absent/empty slot as no loss. The
-// encoders stay the authority on the written value; this is only which were lost.
+// droppedValues returns the canonical values this edit would genuinely lose at the iTunes
+// encode site (the value is not written at all): a trkn/disk slot outside the uint16 the atom
+// holds (numTotal -> clampUint16), or a stik media kind strconv.ParseUint cannot read
+// (mediaTypeItem, which returns no atom for a non-numeric value). It reads the same raw
+// canonical strings those encoders consume - so it names exactly what buildItems drops and
+// cannot desync from it - and treats a literal 0 (the pair encoder's "absent") and an
+// absent/empty slot as no loss. COMPILATION is not here: boolItem coerces a non-boolean to 0
+// and writes it, so it is a coercion (see coercedValues), not a drop. The encoders stay the
+// authority on the written value; this is only which were lost.
 func droppedValues(ts tag.TagSet) []droppedValue {
 	var out []droppedValue
 	out = appendDroppedPair(out, ts, tag.TrackNumber, tag.TrackTotal)
 	out = appendDroppedPair(out, ts, tag.DiscNumber, tag.DiscTotal)
-	// MEDIATYPE (stik) and COMPILATION (cpil) use the same value-drop predicates exposed to
-	// transfer. Empty values are exempt because they intentionally store nothing; invalid cpil
-	// values are reported because boolItem would coerce them to false.
+	// MEDIATYPE (stik) uses the same value-drop predicate exposed to transfer. An empty value
+	// is exempt because it intentionally stores nothing; a non-numeric one is a genuine drop
+	// because mediaTypeItem returns no atom for it.
 	if v, ok := ts.First(tag.MediaType); ok && mediaTypeValueDropped(v) {
 		out = append(out, droppedValue{Key: tag.MediaType, Value: strings.TrimSpace(v)})
 	}
+	return out
+}
+
+// coercedValues returns the canonical values this edit stores in a normalized form because
+// the iTunes atom cannot hold the literal. Unlike droppedValues, these ARE written (the
+// change set shows the stored value); the warning only tells the user the literal was
+// normalized. It reuses the droppedValue (key, value) carrier. Currently only COMPILATION:
+// cpil is a single boolean byte, so boolItem coerces a non-boolean like "maybe" to 0 (false)
+// and writes it, rather than dropping it. An empty value is exempt (it stores nothing).
+func coercedValues(ts tag.TagSet) []droppedValue {
+	var out []droppedValue
 	if v, ok := ts.First(tag.Compilation); ok && compilationValueDropped(v) {
 		out = append(out, droppedValue{Key: tag.Compilation, Value: strings.TrimSpace(v)})
 	}

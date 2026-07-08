@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -283,6 +284,15 @@ func perFile[P any](
 	for _, path := range paths {
 		p, err := compute(cmd.Context(), path)
 		if err != nil {
+			// A closed output pipe cancelled the shared context; the files not yet reached are
+			// not our failure to report. Stop silently (dispatch turns the run's broken-pipe cause
+			// into exit 0) rather than emitting a "canceled" line per un-dumped file. Gate on
+			// isPipeClose too, matching dispatch, so a genuine file error that merely races the
+			// pipe-close is still recorded and rendered, not swallowed by the break. Any error seen
+			// before the break stays in worstErr and still sets the exit code.
+			if errors.Is(context.Cause(cmd.Context()), errBrokenPipe) && isPipeClose(err) {
+				break
+			}
 			if worseError(worstErr, err) {
 				worstErr = err
 			}
@@ -304,8 +314,16 @@ func perFile[P any](
 		}
 	}
 	if asJSON {
-		if err := emitJSONList(out, items); err != nil {
-			return err
+		if werr := emitJSONList(out, items); werr != nil {
+			// The terminal array write failed - almost always a closed output pipe (EPIPE). A
+			// genuine per-file error already recorded outranks a broken pipe (errClassRank), so
+			// surface worstErr when present so its exit class still stands; otherwise return the
+			// write error, which dispatch maps to broken-pipe (exit 0). Returning werr
+			// unconditionally would drop an accumulated exit-4 to broken-pipe/io.
+			if worstErr != nil {
+				return alreadyRendered(worstErr)
+			}
+			return werr
 		}
 	}
 	return alreadyRendered(worstErr)
@@ -474,6 +492,12 @@ func renderError(w io.Writer, jsonMode, emitList bool, err error) {
 		return
 	}
 	c := classifyError(err)
+	// A broken output pipe is silent: the downstream reader closed the pipe deliberately, so
+	// printing an error (to a possibly-still-open stderr) would be noise, and there may be no
+	// stdout to write a JSON envelope to anyway. exitCodeFor still returns its 0.
+	if c.code == "broken-pipe" {
+		return
+	}
 	if jsonMode {
 		env := jsonError{
 			SchemaVersion: schemaVersion,
@@ -539,6 +563,20 @@ type classifiedError struct {
 	multiline bool
 }
 
+// errBrokenPipe is the cancel cause the SIGPIPE goroutine (main) uses so a closed output pipe
+// is distinguishable from a real interrupt: both leave a canceled op returning context.Canceled,
+// but only a broken pipe carries this cause. dispatch re-tags the terminal error with it, and
+// classifyError maps it to a silent exit 0 - the Unix convention for `... | head`.
+var errBrokenPipe = errors.New("broken output pipe")
+
+// isPipeClose reports whether err is the symptom of a closed output pipe: the shared context's
+// cancellation, or an EPIPE from a write that raced the reader's close. perFile's loop pairs it
+// with the errBrokenPipe cancel cause to stop silently on a broken pipe, so a genuine file error
+// that merely coincided with the pipe closing is still recorded rather than swallowed.
+func isPipeClose(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, syscall.EPIPE)
+}
+
 // classifyError maps a terminal error to a stable exit code and machine code so
 // scripts can branch on the failure class without parsing messages. The library
 // sentinels take precedence over the structural (filesystem) fallback. Keep this
@@ -549,6 +587,10 @@ func classifyError(err error) classifiedError {
 	}
 	c := classifiedError{message: cleanMessage(err.Error()), exitCode: 1, code: "error"}
 	switch {
+	case errors.Is(err, errBrokenPipe):
+		// A closed output pipe (`... | head`) is benign: exit 0 with no message, so the
+		// pipeline's own exit status stands. Placed first because it is the most specific.
+		c.exitCode, c.code, c.message = 0, "broken-pipe", ""
 	case errors.Is(err, context.Canceled):
 		c.exitCode, c.code, c.message = 130, "canceled", "canceled"
 	case errors.Is(err, context.DeadlineExceeded):
@@ -640,6 +682,7 @@ var errClassRank = map[string]int{
 	"invalid-key":           20,  // exit 2
 	"needs-file":            20,  // exit 2: a path-less SaveBack (library callers)
 	"error":                 10,  // exit 1: the unclassified fallback
+	"broken-pipe":           5,   // exit 0: a closed output pipe, below every real failure so one still wins
 }
 
 // worseError reports whether candidate is a more-severe aggregate error than

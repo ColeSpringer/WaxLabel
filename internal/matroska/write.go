@@ -46,6 +46,22 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	ch := detectChanges(base, edited)
 	report := core.WriteReport{Format: core.FormatMatroska, BytesBefore: edited.Identity.Size}
 
+	// Matroska cover art is cover.<ext> holding an image, or WaxLabel's unsniffable octet-stream
+	// --force cover. A picture with any other MIME (an authored text/plain or application/pdf) is
+	// not cover art: the reprojection would drop it, so change detection would collapse the edit to
+	// a silent no-op below and the bytes would vanish. Refuse it instead - the Plan-level backstop
+	// for a direct Editor.AddPicture with an exotic MIME (checked before the no-op gate, since a
+	// dropped picture leaves nothing for that gate to see). The CLI and transfer paths only ever
+	// produce image/* or octet-stream picture MIMEs, so this never fires for them; a foreign
+	// non-image attachment merely NAMED cover.* is not a projected picture (isCoverAttachment gates
+	// on octet-stream), so it is preserved verbatim and never reaches edited.Pictures.
+	for _, p := range edited.Pictures {
+		if !isCoverAttachment(p.MIME, coverFileName(p)) {
+			return nil, fmt.Errorf("%w: a %q picture cannot be stored as Matroska cover art (only an image, or an unsniffable --force cover, is supported)",
+				waxerr.ErrUnsupportedTag, p.MIME)
+		}
+	}
+
 	if !ch.any() {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
@@ -158,13 +174,11 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		report.Warnings = core.Warn(report.Warnings, core.WarnPictureMetadataDropped,
 			"Matroska preserves only the front cover's role; other picture roles read back as Other")
 	}
-	// A non-image picture (embedded under --force) is stored as a plain AttachedFile, not a
-	// cover, so it reads back as an attachment and not a picture. Warn so the reported "+
-	// pictures" does not imply a cover that will not round-trip (M6/L15 honesty).
-	if ch.pictures && hasNonImagePicture(edited.Pictures) {
-		report.Warnings = core.Warn(report.Warnings, core.WarnPictureMetadataDropped,
-			"Matroska stores a non-image attachment as a plain file, not a cover; it reads back as an attachment, not a picture")
-	}
+	// A non-image cover embedded under --force no longer needs an honesty warning: it is stored
+	// under the cover-art file name and reads back as an Unrecognized() picture (removable, and
+	// rebuilt not accumulated on re-add), so the reported "+ pictures" is accurate. It stays
+	// flagged as an invalid picture on read/lint, which is the correct place for the "not a
+	// recognized image" signal (L9).
 
 	pl, err := planAbsorb(d, base, edited, ch, ek, report)
 	if err == nil {
@@ -188,18 +202,6 @@ type changes struct {
 
 func (c changes) any() bool { return c.simple || c.title || c.pictures || c.chapters }
 
-// hasNonImagePicture reports whether any picture has a non-image MIME - a --force-embedded file
-// Matroska stores as a plain attachment rather than a cover (so it does not round-trip as a
-// picture). Used only for the honesty warning; reprojectPictures drops such pictures.
-func hasNonImagePicture(pics []core.Picture) bool {
-	for _, p := range pics {
-		if !isImageMIME(p.MIME) {
-			return true
-		}
-	}
-	return false
-}
-
 // detectChanges splits a tag edit into its Title part (which lives in Info.Title)
 // and the rest (which lives in Tags SimpleTags), plus the picture and chapter sets.
 func detectChanges(base, edited *core.Media) changes {
@@ -215,12 +217,12 @@ func detectChanges(base, edited *core.Media) changes {
 		// the single-valued Info.Title, but the edit must not be silently dropped).
 		simple: !b.Equal(e),
 		title:  !slices.Equal(bt, et),
-		// Compare base against the reprojected edited set (image roles reduced to the cover-art
-		// file-name convention, description sanitized), not the raw edited roles: a role Matroska
-		// cannot represent would otherwise look like a change on every copy even though the on-disk
-		// cover set is already identical (M6). dropNonImage is false so a --force-embedded
-		// non-image still registers as a fresh attachment (it never appears in base.Pictures).
-		pictures: !core.EqualPictures(base.Pictures, reprojectPictures(edited.Pictures, false)),
+		// Compare base against the reprojected edited set (roles reduced to the cover-art
+		// file-name convention, description sanitized, MIME re-sniffed), not the raw edited roles:
+		// a role Matroska cannot represent would otherwise look like a change on every copy even
+		// though the on-disk cover set is already identical (M6). A --force non-image now reprojects
+		// too, so re-adding an identical one is a no-op instead of accumulating a fresh cover_<n> (L9).
+		pictures: !core.EqualPictures(base.Pictures, reprojectPictures(edited.Pictures)),
 		chapters: !core.EqualChapters(base.Chapters, edited.Chapters),
 	}
 }
@@ -905,7 +907,10 @@ func attachedFileBytes(p core.Picture, name string) ([]byte, attachment) {
 	}
 	payload = append(payload, encElement(idFileData, p.Data)...)
 	payload = append(payload, uintElement(idFileUID, fileUID())...)
-	a := attachment{name: name, mime: p.MIME, description: p.Description, size: len(p.Data), image: isImageMIME(p.MIME)}
+	// image mirrors the read gate (isCoverAttachment) so this result attachment matches a fresh
+	// reparse: a --force octet-stream cover is written under a cover name, so it must read back as
+	// a picture here too, not a plain attachment.
+	a := attachment{name: name, mime: p.MIME, description: p.Description, size: len(p.Data), image: isCoverAttachment(p.MIME, name)}
 	return encElement(idAttached, payload), a
 }
 

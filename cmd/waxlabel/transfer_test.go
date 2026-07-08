@@ -400,6 +400,13 @@ func TestDiffJSON(t *testing.T) {
 	if !ij.Identical {
 		t.Error("identical = false, want true")
 	}
+	// The three count objects are always present now (not omitempty pointers), each with a
+	// `changed` discriminator; on an identical pair every one is changed:false.
+	for label, c := range map[string]jsonDiffCount{"pictures": ij.Pictures, "chapters": ij.Chapters, "syncedLyrics": ij.SyncedLyrics} {
+		if c.Changed {
+			t.Errorf("identical pair: %s.changed = true, want false", label)
+		}
+	}
 }
 
 // TestDiffErrorsRankAboveDifferences: a real failure (missing file, junk input)
@@ -471,6 +478,20 @@ func TestDiffPictureContentsDiffer(t *testing.T) {
 	}
 	if !strings.Contains(out, "pictures: 1 (contents differ)") {
 		t.Errorf("expected a contents-differ line:\n%s", out)
+	}
+
+	// L6: the equal-count contents change must be unambiguous in JSON too - both counts are 1,
+	// so a consumer needs pictures.changed rather than an a != b guess (which reads as a no-op).
+	jout, _, jcode := runCLI(t, "--json", "diff", a, b)
+	if jcode != 1 {
+		t.Fatalf("json exit = %d, want 1", jcode)
+	}
+	var jd jsonDiff
+	if err := json.Unmarshal([]byte(jout), &jd); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, jout)
+	}
+	if jd.Pictures.A != 1 || jd.Pictures.B != 1 || !jd.Pictures.Changed {
+		t.Errorf("pictures = %+v, want {A:1 B:1 Changed:true} (equal count, contents differ)", jd.Pictures)
 	}
 }
 

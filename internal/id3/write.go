@@ -28,6 +28,12 @@ type StructuredEdit struct {
 	ChaptersChanged     bool
 	SyncedLyrics        []core.SyncedLyrics
 	SyncedLyricsChanged bool
+	// SyncedLyricsCarried marks the synced-lyrics edit as a faithful cross-format carry, so
+	// the empty-language fallback to the destination's existing SYLT language is skipped: a
+	// carry of a no-language set (FLAC/Ogg store none) must read back with no language, not
+	// silently inherit the destination's. An authored line-only edit leaves this false and
+	// keeps the documented CLI convenience of preserving the file's existing language.
+	SyncedLyricsCarried bool
 }
 
 // RebuildInfo reports facts about a rebuild the caller surfaces in the write
@@ -271,9 +277,15 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 
 	// Append edited synced lyrics. SYLT is self-contained (no element-ID references), so
 	// frame position is not significant. A set with an empty language falls back to the
-	// first original SYLT's language so a line-only edit preserves it.
+	// first original SYLT's language so an authored line-only edit preserves it - but a
+	// faithful carry passes no fallback, so a no-language source set (FLAC/Ogg store none)
+	// reads back with no language instead of inheriting the destination's.
 	if se.SyncedLyricsChanged && len(se.SyncedLyrics) > 0 {
-		syltF, overflow := syltFrames(se.SyncedLyrics, version, origLangs["SYLT"])
+		fallbackLang := origLangs["SYLT"]
+		if se.SyncedLyricsCarried {
+			fallbackLang = ""
+		}
+		syltF, overflow := syltFrames(se.SyncedLyrics, version, fallbackLang)
 		out = append(out, syltF...)
 		info.SyncedLyricsOverflow = overflow
 	}

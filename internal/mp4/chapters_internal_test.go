@@ -3,6 +3,7 @@ package mp4
 import (
 	"bytes"
 	"encoding/binary"
+	"math"
 	"testing"
 	"time"
 
@@ -336,18 +337,24 @@ func TestEmptyEditOffset(t *testing.T) {
 		be.PutUint32(e[8:12], 0x00010000)
 		return e
 	}
-	// An empty edit of 4000 units at timescale 1000 -> 4s.
+	// An empty edit of 4000 units at timescale 1000 -> 4s, not saturated.
 	p := elst(2, append(entry(4000, -1), entry(9000, 0)...)...)
-	if got := emptyEditOffset(p, 1000); got != 4*time.Second {
-		t.Errorf("empty-edit offset = %v, want 4s", got)
+	if got, sat := emptyEditOffset(p, 1000); got != 4*time.Second || sat {
+		t.Errorf("empty-edit offset = %v/sat=%v, want 4s/false", got, sat)
 	}
 	// A normal first entry -> no offset (a foreign track without an empty edit).
-	if got := emptyEditOffset(elst(1, entry(9000, 0)...), 1000); got != 0 {
-		t.Errorf("normal-edit offset = %v, want 0", got)
+	if got, sat := emptyEditOffset(elst(1, entry(9000, 0)...), 1000); got != 0 || sat {
+		t.Errorf("normal-edit offset = %v/sat=%v, want 0/false", got, sat)
 	}
 	// Zero entries -> no offset.
-	if got := emptyEditOffset(elst(0), 1000); got != 0 {
-		t.Errorf("empty-elst offset = %v, want 0", got)
+	if got, sat := emptyEditOffset(elst(0), 1000); got != 0 || sat {
+		t.Errorf("empty-elst offset = %v/sat=%v, want 0/false", got, sat)
+	}
+	// L5: a segment_duration read back as exactly MaxUint32 is a clamped leading offset (a
+	// first chapter past the u32 movie-timescale ceiling), so saturated must be set - that is
+	// how mergeChapters learns to take the exact chpl start over the clamped QuickTime one.
+	if got, sat := emptyEditOffset(elst(1, entry(math.MaxUint32, -1)...), 1000); !sat {
+		t.Errorf("MaxUint32 segment_duration offset = %v/sat=%v, want saturated=true", got, sat)
 	}
 }
 

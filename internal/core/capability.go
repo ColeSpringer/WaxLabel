@@ -3,6 +3,7 @@ package core
 import (
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/colespringer/waxlabel/tag"
 )
@@ -76,6 +77,14 @@ type Capability struct {
 	// synced-lyrics set Lossy only when those sets carry affected metadata (a per-set
 	// language or descriptor an LRC store drops), matching the editor's write warning.
 	SyncedLyricsLoss SyncedLyricsLoss
+	// SyncedLyricsTimeMax caps a synced-lyric line's timestamp this format stores, or 0 for no
+	// limit. ID3v2 SYLT's 32-bit millisecond field (~49.7 days) and the VorbisComment LRC
+	// store's re-parse ceiling ([MaxLRCTime]) both bound it. ProjectTransfer uses it to mark a
+	// synced-lyrics set Lossy when a line exceeds it, so a copy that will clamp a timestamp
+	// reports the loss instead of a clean carry, matching the write-time
+	// synced-lyrics-timestamp-clamped warning - the analogue of ChapterTitleByteMax. Set only on
+	// the synced-lyrics capability.
+	SyncedLyricsTimeMax time.Duration
 	// PictureMIMEs lists the cover MIME types this format can store; nil means no
 	// per-MIME restriction. The format may still store no pictures at all, which is
 	// decided by Write == AccessNone. A non-nil list (MP4's covr

@@ -548,35 +548,35 @@ func clusterRuns(children []l1elem) [][2]int64 {
 }
 
 // resultPictures returns the picture set the post-write Document reports: the picture-level
-// reprojection of the edited set (dropNonImage), which equals a fresh parse of the written cover
-// set. When the covers were not rewritten they were preserved verbatim from base, and
-// detectChanges already found base equal to the (image-covers) reprojection, so it is correct
-// either way - both funnel through reprojectPictures so the change verdict and the result view
-// cannot drift on the image covers (the M6 bug).
+// reprojection of the edited set, which equals a fresh parse of the written cover set. When the
+// covers were not rewritten they were preserved verbatim from base, and detectChanges already
+// found base equal to the reprojection, so it is correct either way - both funnel through
+// reprojectPictures so the change verdict and the result view cannot drift (the M6 bug).
 func resultPictures(pics []core.Picture) []core.Picture {
-	return reprojectPictures(pics, true)
+	return reprojectPictures(pics)
 }
 
-// reprojectPictures maps an edited picture set through the Matroska attachment round trip. Image
-// pictures are always projected to what a fresh parse yields: the role reduced to the cover-art
-// file-name convention (only the front cover keeps a distinct role, others read back as Other),
-// the description sanitized like the read path (parseAttached, so a non-UTF8 description does not
-// re-introduce a false diff), and the geometry/MIME re-sniffed authoritatively. A non-image
-// picture (embedded under --force) is stored as a plain attachment, not a cover: with dropNonImage
-// it is omitted (the result view, since a fresh parse returns 0 pictures for it, the L15 fix); with
-// dropNonImage false the picture is kept as-is so detectChanges still sees the fresh attachment as
-// a change (a non-image never appears in base.Pictures, so dropping it there would skip the write).
-func reprojectPictures(pics []core.Picture, dropNonImage bool) []core.Picture {
+// reprojectPictures maps an edited picture set through the Matroska attachment round trip so the
+// result view equals a fresh parse of the written attachments. A picture WaxLabel writes gets a
+// cover-convention file name (cover.<ext>/small_cover.<ext> via coverFileStem), so an image or a
+// --force octet-stream cover reads back as a picture - the latter as an Unrecognized() cover (the
+// L9 read/write symmetry) rather than vanishing and re-registering as a fresh attachment on every
+// copy. A picture the read gate would NOT project (isCoverAttachment: a non-image, non-octet MIME
+// such as a caller's text/plain, which reads back as a plain attachment) is dropped here so the
+// two agree; normal edit/transfer paths carry only image/* or octet-stream picture MIMEs, so this
+// drop is defensive. A kept picture is projected to what a fresh parse yields: the role reduced to
+// the cover-art file-name convention (only the front cover keeps a distinct role; others read back
+// as Other), the description sanitized like the read path (so a non-UTF8 description does not
+// re-introduce a false diff), and the geometry/MIME re-sniffed authoritatively.
+func reprojectPictures(pics []core.Picture) []core.Picture {
 	var out []core.Picture
 	for _, p := range pics {
-		if !isImageMIME(p.MIME) {
-			if !dropNonImage {
-				out = append(out, p)
-			}
-			continue
+		name := coverFileName(p)
+		if !isCoverAttachment(p.MIME, name) {
+			continue // would read back as a plain attachment, not a cover - keep result==reparse
 		}
 		np := core.Picture{
-			Type:        pictureType(coverFileName(p)),
+			Type:        pictureType(name),
 			MIME:        p.MIME,
 			Description: core.SanitizeUTF8(p.Description),
 			Data:        p.Data,

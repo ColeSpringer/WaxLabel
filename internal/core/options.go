@@ -165,6 +165,14 @@ type WriteOptions struct {
 	// file, reused here so the file-aware and file-less views cannot drift. Only the
 	// Matroska Capabilities path consults it; every other codec ignores it.
 	WebMSubset bool
+	// Carried marks this write as a faithful cross-format carry (a transfer/copy), not a
+	// user-authored edit, so codecs suppress author-convenience heuristics that would
+	// mislabel carried data. Off by default; the transfer engine sets it. Its first use is
+	// the ID3 SYLT language fallback: an authored line-only edit inherits the destination's
+	// existing SYLT language (a documented CLI convenience), but a carry of a no-language
+	// lyric set (FLAC/Ogg have no language) must not, or the report says "carried" while the
+	// bytes gain a language the source never had.
+	Carried bool
 }
 
 // DefaultWriteOptions returns the preservation-first defaults.

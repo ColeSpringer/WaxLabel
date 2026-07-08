@@ -48,7 +48,7 @@ func parseChapterName(name string) (index int, isTitle bool, ok bool) {
 	if r, isName := strings.CutSuffix(rest, "NAME"); isName {
 		rest, isTitle = r, true
 	}
-	if rest == "" || !isAllDigits(rest) {
+	if rest == "" || !core.AllASCIIDigits(rest) {
 		return 0, false, false
 	}
 	n, err := strconv.Atoi(rest)
@@ -184,7 +184,7 @@ func parseChapterTime(s string) (time.Duration, bool) {
 	}
 	ms := 0
 	if fracStr != "" {
-		if !isAllDigits(fracStr) {
+		if !core.AllASCIIDigits(fracStr) {
 			return 0, false
 		}
 		for len(fracStr) < 3 {
@@ -210,7 +210,7 @@ func parseChapterTime(s string) (time.Duration, bool) {
 // parseUint parses an all-digit string as a non-negative int. It rejects empty input and
 // any sign or non-digit, unlike strconv.Atoi which accepts a leading "+"/"-".
 func parseUint(s string) (int, bool) {
-	if !isAllDigits(s) {
+	if !core.AllASCIIDigits(s) {
 		return 0, false
 	}
 	n, err := strconv.Atoi(s)
@@ -218,17 +218,4 @@ func parseUint(s string) (int, bool) {
 		return 0, false
 	}
 	return n, true
-}
-
-// isAllDigits reports whether s is non-empty and entirely ASCII digits.
-func isAllDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
-			return false
-		}
-	}
-	return true
 }

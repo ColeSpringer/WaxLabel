@@ -50,6 +50,9 @@ func SyncedLyricsCapability() core.Capability {
 		Representation: "ID3v2 SYLT frame",
 		Fidelity:       "lossless",
 		Constraints:    []string{"synced-lyric timestamps limited to a 32-bit millisecond field (~49.7 days)"},
+		// A line past the 32-bit ms field is clamped on write (see encodeSYLT); expose the
+		// ceiling so a transfer grades a clamping copy Lossy rather than a clean carry.
+		SyncedLyricsTimeMax: msToDuration(syltTimeMax),
 	}
 }
 

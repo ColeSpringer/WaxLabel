@@ -2016,6 +2016,7 @@ func TestErrClassRankCoversEveryErrorClass(t *testing.T) {
 		&fs.PathError{Op: "open", Path: "x", Err: errors.New("disk failure")}, // io
 		context.Canceled,
 		context.DeadlineExceeded,
+		errBrokenPipe,                           // broken-pipe (exit 0)
 		errors.New("some unclassified failure"), // error
 	}
 	seen := map[string]bool{}

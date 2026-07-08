@@ -123,20 +123,23 @@ func (k Key) Description() string { return vocabulary[k] }
 func (k Key) Multivalued() bool { return multivalued[k] }
 
 // numberPairKeys are the numeric index/total keys - a track's or disc's number and
-// optional total. Each names a single scalar a recording carries exactly one of, and every
-// writer renders it as one composite value (ID3 collapses TrackNumber+TrackTotal into a
-// single "n/total" TRCK frame, TPOS likewise), so unlike a text key it cannot hold multiple
-// values in any container.
+// optional total. Each names a single scalar a recording carries exactly one of, and the
+// composite formats render it as one value (ID3 collapses TrackNumber+TrackTotal into a single
+// "n/total" TRCK frame, TPOS likewise; MP4 packs both into one trkn/disk atom). A Vorbis comment
+// (FLAC/Ogg) or a Matroska SimpleTag could physically store two, but WaxLabel models these as a
+// single scalar and keeps only the first, so unlike a genuinely multi-valued text key a duplicate
+// is treated as non-conformant rather than preserved.
 var numberPairKeys = map[Key]bool{
 	TrackNumber: true, TrackTotal: true, DiscNumber: true, DiscTotal: true,
 }
 
-// NumberPair reports whether k is a numeric track/disc index or total. Such a key holds a
-// single value across every container (no writer can store two), so a duplicate native item
-// mapping to it - two RIFF IPRT chunks, say - is non-conformant junk rather than preservable
-// data, and the IFF readers keep only the first. A plain single-valued *text* key is not a
-// NumberPair: its duplicates round-trip through the multi-value-capable ID3 fallback and so
-// are preserved, not dropped.
+// NumberPair reports whether k is a numeric track/disc index or total. WaxLabel models such a
+// key as a single scalar: the composite formats (ID3 TRCK/TPOS, MP4 trkn/disk) store only one,
+// and although a Vorbis comment or Matroska SimpleTag could hold two, the readers keep only the
+// first. So a duplicate native item mapping to it - two RIFF IPRT chunks, say - is non-conformant
+// junk rather than preservable data, and the IFF readers keep only the first. A plain
+// single-valued *text* key is not a NumberPair: its duplicates round-trip through the
+// multi-value-capable ID3 fallback and so are preserved, not dropped.
 func (k Key) NumberPair() bool { return numberPairKeys[k] }
 
 // SingleValuedMulti reports whether holding count values violates the key's

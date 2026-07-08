@@ -163,9 +163,9 @@ func TestSyncedLyricsCapabilityConsistency(t *testing.T) {
 		ref := cap(group[0])
 		for _, f := range group[1:] {
 			c := cap(f)
-			if c.MaxItems != ref.MaxItems || c.SyncedLyricsLoss != ref.SyncedLyricsLoss || c.Write != ref.Write {
-				t.Errorf("%s synced lyrics {MaxItems %d, loss %d, write %v} != %s {MaxItems %d, loss %d, write %v}",
-					f, c.MaxItems, c.SyncedLyricsLoss, c.Write, group[0], ref.MaxItems, ref.SyncedLyricsLoss, ref.Write)
+			if c.MaxItems != ref.MaxItems || c.SyncedLyricsLoss != ref.SyncedLyricsLoss || c.Write != ref.Write || c.SyncedLyricsTimeMax != ref.SyncedLyricsTimeMax {
+				t.Errorf("%s synced lyrics {MaxItems %d, loss %d, write %v, timeMax %v} != %s {MaxItems %d, loss %d, write %v, timeMax %v}",
+					f, c.MaxItems, c.SyncedLyricsLoss, c.Write, c.SyncedLyricsTimeMax, group[0], ref.MaxItems, ref.SyncedLyricsLoss, ref.Write, ref.SyncedLyricsTimeMax)
 			}
 		}
 		return ref
@@ -234,6 +234,42 @@ func TestSyncedLyricsTransferGrading(t *testing.T) {
 		if it := syncedItem(dst); it.Disposition != wl.Dropped {
 			t.Errorf("MP3->%s synced lyrics = %v, want dropped", dst, it.Disposition)
 		}
+	}
+
+	// L3: a timestamp the destination must clamp grades Lossy. The LRC store holds a far
+	// larger range than SYLT's 32-bit ms field (~49.7 days), so a FLAC line past that field
+	// carries onto another LRC store, but onto a SYLT format it is clamped and graded Lossy.
+	flacBytes, err := os.ReadFile("../testdata/notags.flac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	overSYLT := wl.SyncedLyrics{Lines: []wl.SyncedLine{{Time: 60 * 24 * time.Hour, Text: "way out"}}} // ~60 days > SYLT max
+	srcPlan, err := mustParseBytes(t, flacBytes).Edit().SetSyncedLyrics(overSYLT).Prepare()
+	if err != nil {
+		t.Fatalf("build over-SYLT FLAC: %v", err)
+	}
+	bigDoc := mustParseBytes(t, applyToBytes(t, flacBytes, srcPlan))
+	bigItem := func(dst wl.Format) wl.TransferItem {
+		t.Helper()
+		rep, err := bigDoc.PlanTransfer(dst)
+		if err != nil {
+			t.Fatalf("PlanTransfer(%s): %v", dst, err)
+		}
+		for _, it := range rep.Items {
+			if it.Kind == wl.TransferSyncedLyric {
+				return it
+			}
+		}
+		t.Fatalf("%s: no synced-lyrics item", dst)
+		return wl.TransferItem{}
+	}
+	// FLAC -> AAC (SYLT): the line exceeds SYLT's ms field, so it clamps -> Lossy.
+	if it := bigItem(wl.FormatAAC); it.Disposition != wl.Lossy || it.Reason == "" {
+		t.Errorf("over-SYLT FLAC->AAC = %s/%q, want Lossy (SYLT clamps the timestamp)", it.Disposition, it.Reason)
+	}
+	// FLAC -> FLAC (LRC): the LRC ceiling holds it, and the source set has no language, so Carried.
+	if it := bigItem(wl.FormatFLAC); it.Disposition != wl.Carried {
+		t.Errorf("over-SYLT FLAC->FLAC = %s, want Carried (the LRC ceiling holds it)", it.Disposition)
 	}
 }
 
@@ -341,6 +377,39 @@ func TestSyncedLyricsTransferApply(t *testing.T) {
 	assertSyncedLines(t, "transferred onto FLAC", got, sampleSyncedLines)
 	if got[0].Language != "" {
 		t.Errorf("FLAC kept language %q, want it dropped by the LRC store", got[0].Language)
+	}
+}
+
+// TestSyncedLyricsCarryDoesNotInheritLanguage is the M1 regression at the library boundary:
+// carrying a no-language synced-lyrics set (a FLAC/Ogg source stores none) onto a destination
+// that already has an eng SYLT must read back with no language, not silently inherit the
+// destination's - otherwise the transfer report says "carried/lossless" while the bytes gain a
+// language the source never had. The id3 unit test pins that an authored line-only edit still
+// keeps the destination language (the documented CLI convenience); this pins the carry path.
+func TestSyncedLyricsCarryDoesNotInheritLanguage(t *testing.T) {
+	// Source: a FLAC carrying a no-language synced-lyrics set (the Vorbis LRC store holds none).
+	flacBytes, err := os.ReadFile("../testdata/notags.flac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	noLang := wl.SyncedLyrics{Lines: sampleSyncedLines} // no Language
+	srcPlan, err := mustParseBytes(t, flacBytes).Edit().SetSyncedLyrics(noLang).Prepare()
+	if err != nil {
+		t.Fatalf("source Prepare: %v", err)
+	}
+	srcFLAC := applyToBytes(t, flacBytes, srcPlan)
+
+	// Destination: an MP3 that already has an eng SYLT set; carry FLAC -> MP3.
+	dstMP3 := lyricedMP3(t)
+	plan, _, err := mustParseBytes(t, srcFLAC).PrepareTransfer(mustParseBytes(t, dstMP3))
+	if err != nil {
+		t.Fatalf("PrepareTransfer: %v", err)
+	}
+	out := applyToBytes(t, dstMP3, plan)
+	got := mustParseBytes(t, out).SyncedLyrics()
+	assertSyncedLines(t, "carried onto MP3", got, sampleSyncedLines)
+	if got[0].Language != "" {
+		t.Errorf("carried MP3 SYLT language = %q, want empty (must not inherit the destination's eng)", got[0].Language)
 	}
 }
 
