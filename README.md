@@ -134,8 +134,10 @@ Common edit flags:
   synced lyrics. MP3/AAC/AIFF/WAV keep `--synced-lyrics-lang` as the ID3v2 `SYLT`
   ISO-639-2 language code; FLAC/Ogg drop it because `SYNCEDLYRICS` stores LRC text
   without a language field. The `TIMESTAMP` grammar matches `--add-chapter`.
-- `--preset preserve|compatible|minimal`, `--legacy preserve|strip`,
-  `--padding N`, and `--no-padding` shape the write.
+- `--preset preserve|compatible|minimal`, `--legacy preserve|strip`, and
+  `--no-padding` shape the write; `--padding N` reserves *at least* N bytes of padding
+  after the metadata (FLAC defaults to 8192; MP3/AAC/MP4 reuse the existing region; `0`
+  writes none, like `--no-padding`).
 - `--numeric-genre` writes a recognized genre as its numeric reference where the
   format supports one (ID3's `TCON`). It converts only on a genuine genre change; when
   the canonical genre is unchanged it is a no-op (an existing numeric or text genre is
@@ -306,7 +308,7 @@ path:
   whose 3-character ID is not in the upgrade table is preserved when the tag is written
   as ID3v2.3/2.4 under a best-effort ID formed by padding the original with a trailing
   space (e.g. `TXY` becomes `TXY `). That padded ID is technically non-conformant, but
-  the frame's bytes are kept verbatim and it never surfaces as a canonical tag — it is
+  the frame's bytes are kept verbatim and it never surfaces as a canonical tag - it is
   skipped on read, in `dump`, and in `diff`, so the preview always equals a fresh
   re-parse. Known ID3v2.2 frames upgrade to their proper v2.3/2.4 IDs and are unaffected.
 - **Present-but-valueless fields collapse to absent.** A field present in the source
@@ -327,8 +329,9 @@ path:
   timestamps and the lyrics content type. MPEG-frame timestamps and non-lyric
   content types are skipped with warnings and preserved verbatim. `SYLT` timestamps
   are 32-bit milliseconds (about 49.7 days), so later lines are clamped with a
-  warning. Authored synced-lyrics languages must be 3-letter ISO-639-2 codes such
-  as `eng`. LRC is line-based: a newline inside one lyric line is flattened to a
+  warning. An authored synced-lyrics language must be a 3-letter code (the ISO-639-2
+  shape, e.g. `eng`); the shape is validated, not registry membership. LRC is
+  line-based: a newline inside one lyric line is flattened to a
   space on FLAC/Ogg, while `SYLT` keeps it. MP4 and Matroska represent synced
   lyrics as timed-text or subtitle tracks, not metadata, so WaxLabel does not model
   them. LRC `[offset:]` follows foobar2000 behavior: effective timestamp =
@@ -353,6 +356,14 @@ path:
   faithfully. ffprobe/ffmpeg read that same field as a *signed* 16-bit int, so they report the
   maximum, 65535, as `-1`. This is a signed/unsigned interpretation difference in the other tool,
   not a stored-data difference; WaxLabel's unsigned value is the one on disk.
+- **An MP4 `trkn`/`disk` of `0` reads back as absent.** MP4 stores the track/disc number and its
+  total as a pair of binary `uint16` fields, in which `0` is the structural "absent" sentinel: the
+  bytes are written (as `0/N`), but the reader treats a `0` slot as unset, so a `0` never
+  round-trips. Setting `TRACKNUMBER=0` (even paired with a real total, as `0/12`) therefore warns
+  that the value is treated as unset and reads back as absent, rather than that it cannot be
+  represented (an overflow past 65535 or a non-numeric value keeps the latter wording). This is
+  MP4-specific: the text-based number/total ID3 formats (MP3/AAC/AIFF/WAV) store the digits
+  literally, so a `0` there is preserved.
 - **WAV/AIFF dual tag containers consolidate on edit.** A WAV or AIFF can carry both an
   embedded `id3`/`ID3 ` chunk and native `LIST`/`INFO` (WAV) or text (AIFF) chunks. When they
   hold conflicting values for the same key, the documented precedence applies (the id3 chunk
@@ -367,6 +378,12 @@ path:
   single FLAC `PADDING` block can hold (16,777,215 bytes, the ceiling of its 24-bit length
   field) is clamped to fit and reported with a `[padding-clamped]` warning. The request still
   reserves the largest padding the format allows; it is not silently shrunk toward zero.
+- **`--padding` above 64 MiB is a usage error.** A `--padding` value larger than 64 MiB
+  (67,108,864 bytes) is rejected up front (exit 2, all formats), not clamped. This is distinct
+  from the per-format clamp above: a value below 64 MiB that still exceeds a format's structural
+  cap (such as FLAC's ~16 MiB block) is clamped with `[padding-clamped]`, but an absurd value
+  that would reserve a multi-gigabyte metadata region is refused as a likely mistake; a clear
+  error is friendlier than silently writing a 64 MiB-padded file.
 - **EBML nesting is bounded at 64 levels.** A Matroska/WebM file whose elements nest deeper
   than 64 levels fails to parse. The same recursion guard bounds every container against
   hostile input.

@@ -149,6 +149,25 @@ func TestSetOutputOverwriteGuard(t *testing.T) {
 		t.Errorf("set f -o f (same file): code %d, want 0", code)
 	}
 
+	// A hardlink of the input (same inode, distinct canonical path) is not the input for -o
+	// purposes: the atomic rename replaces only the link's directory entry and leaves the
+	// input's bytes intact. So it is refused without --overwrite - unlike a symlink or ./alias
+	// of the input, which resolve to the same canonical path and stay exempt - and allowed with
+	// it. os.SameFile (inode identity) would wrongly treat it as the input; the guard uses
+	// canonical-path equality instead.
+	hardlink := filepath.Join(filepath.Dir(in), "hardlink.flac")
+	if err := os.Link(in, hardlink); err != nil {
+		t.Logf("skipping hardlink case (hardlinks unsupported here): %v", err)
+	} else {
+		_, stderr, code = runCLI(t, "set", in, "--set", "TITLE=X", "-o", hardlink)
+		if code != 2 || !strings.Contains(stderr, "already exists") {
+			t.Errorf("hardlink -o target without --overwrite: code %d, stderr %q; want exit 2 'already exists'", code, stderr)
+		}
+		if _, _, code = runCLI(t, "set", in, "--set", "TITLE=X", "-o", hardlink, "--overwrite"); code != 0 {
+			t.Errorf("hardlink -o target with --overwrite: code %d, want 0", code)
+		}
+	}
+
 	// A dangling symlink at the target is still an existing entry the atomic rename
 	// would destroy, so it must be refused too - os.Stat follows the link and would
 	// miss it, so the guard uses Lstat.
@@ -197,6 +216,39 @@ func TestSetOutputOverwriteGuard(t *testing.T) {
 	}
 	if _, _, code = runCLI(t, "set", in, "-o", subdir, "--overwrite"); code != 2 {
 		t.Errorf("-o directory with --overwrite: code %d, want 2 (still rejected)", code)
+	}
+}
+
+// TestSetOverwriteWithoutOutputWarns: --overwrite only governs the -o replace-existing gate,
+// so passing it without -o is a silent no-op. set notes that on stderr (exit stays 0) rather
+// than ignore it, and the note stays on stderr even under --json so the JSON stdout array is
+// left intact.
+func TestSetOverwriteWithoutOutputWarns(t *testing.T) {
+	in := copyFixture(t, sampleFLAC)
+
+	_, stderr, code := runCLI(t, "set", in, "--set", "TITLE=X", "--overwrite")
+	if code != 0 {
+		t.Errorf("--overwrite without -o: exit = %d, want 0 (non-fatal advisory)", code)
+	}
+	if !strings.Contains(stderr, "--overwrite has no effect") {
+		t.Errorf("--overwrite without -o should note it has no effect on stderr; got %q", stderr)
+	}
+
+	// Under --json the advisory stays on stderr; the stdout array is still valid JSON and does
+	// not carry the advisory (assert against the stderr stream, not the JSON array).
+	in2 := copyFixture(t, sampleFLAC)
+	stdout, stderr, code := runCLI(t, "set", in2, "--set", "TITLE=X", "--overwrite", "--json")
+	if code != 0 {
+		t.Errorf("--overwrite without -o (--json): exit = %d, want 0", code)
+	}
+	if !strings.Contains(stderr, "--overwrite has no effect") {
+		t.Errorf("--json run should still note --overwrite on stderr; got %q", stderr)
+	}
+	if !json.Valid([]byte(stdout)) {
+		t.Errorf("--json stdout must stay valid JSON, uncontaminated by the advisory; got %q", stdout)
+	}
+	if strings.Contains(stdout, "--overwrite has no effect") {
+		t.Errorf("the advisory must not leak into --json stdout; got %q", stdout)
 	}
 }
 

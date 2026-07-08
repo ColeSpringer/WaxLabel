@@ -75,6 +75,13 @@ func newSetCmd() *cobra.Command {
 			if output == "" && editFlagsEmpty(cmd) {
 				return usagef("no edits given (use --set/--add/--clear/--add-cover/--add-chapter/...)")
 			}
+			// --overwrite only governs the -o gate that replaces an existing destination; with
+			// no -o there is nothing to replace, so it is silently a no-op. Note that on stderr
+			// (non-fatal, exit stays 0) rather than ignore it. Emitted on stderr even under --json,
+			// like the other exit-0 advisories, so the JSON stdout array is untouched.
+			if overwrite && output == "" {
+				fmt.Fprintln(cmd.ErrOrStderr(), "note: --overwrite has no effect without -o")
+			}
 			var extra []wl.WriteOption
 			if verify {
 				extra = append(extra, wl.WithVerifyEssence())
@@ -142,7 +149,11 @@ func newSetCmd() *cobra.Command {
 // that), so it is rejected up front with a clear message rather than the leaked
 // temp-file error a later rename would produce. An existing entry is refused unless
 // --overwrite, except when it resolves to the single input itself (set f -o f is
-// effectively in-place). inputReal is realOf(paths[0]): when it does not exist the
+// effectively in-place) - resolution is canonical-path equality (see sameWriteTarget),
+// so a symlink or ./alias of the input is exempt, but a hardlink of it is not: the atomic
+// rename would break the link and leave the source path's bytes intact, so a hardlink
+// target must pass --overwrite like any unrelated file (this matches the library's own
+// sameFileTarget definition). inputReal is realOf(paths[0]): when it does not exist the
 // overwrite guard stays silent, since the parse will then fail and write nothing -
 // so the target is safe, and the more-relevant not-found error should surface
 // instead of an "already exists" pointing at the wrong operand.
@@ -193,11 +204,14 @@ func checkOutputTarget(output, inputReal string, overwrite bool) error {
 		if _, err := os.Lstat(output); err == nil {
 			// An entry exists. It is allowed only when it resolves to the single input (an
 			// in-place -o), or the input is missing (the parse fails first and writes
-			// nothing); otherwise refuse with the actionable hint.
-			if inFi, ierr := os.Stat(inputReal); ierr == nil {
-				if outFi, serr := os.Stat(output); serr != nil || !os.SameFile(outFi, inFi) {
-					return usagef("-o target %q already exists; pass --overwrite to replace the existing file", output)
-				}
+			// nothing); otherwise refuse with the actionable hint. "Resolves to the input" is
+			// canonical-path equality (sameWriteTarget), not inode identity: a hardlink of the
+			// input shares its inode but has a distinct canonical path, and the atomic rename
+			// would break the link and leave the source bytes intact, so it is refused here and
+			// must pass --overwrite. The input-exists gate is kept so a missing input still falls
+			// through (its parse fails first with the more-relevant not-found error).
+			if _, ierr := os.Stat(inputReal); ierr == nil && !sameWriteTarget(output, inputReal) {
+				return usagef("-o target %q already exists; pass --overwrite to replace the existing file", output)
 			}
 		}
 	}
@@ -205,6 +219,45 @@ func checkOutputTarget(output, inputReal string, overwrite bool) error {
 	// same temp create writeAtomic performs - so an unwritable destination fails up front
 	// rather than after the whole plan is previewed and only the late atomic write errors.
 	return checkOutputDirWritable(resolved)
+}
+
+// sameWriteTarget reports whether the -o output and the single input resolve to the same file
+// the atomic write would land on: canonical-path equality after write-target symlink
+// resolution. A symlink to the input, or a relative/absolute alias of it, compares equal (a
+// genuine in-place -o); a hardlink of the input - same inode but a distinct canonical path -
+// does not, so it falls through to the "already exists; pass --overwrite" gate. inputReal is not
+// pre-canonicalized, so the resolution here (via wl.ResolveWriteTarget, writeAtomic's own rule)
+// is what makes ./f, an absolute/relative mix, and a symlink-to-input all compare equal.
+//
+// It is deliberately not the library's sameFileTarget, despite asking a near-identical question:
+// that guard fails closed toward "same" so an unreliable compare refuses a source-clobbering
+// write (protective for it), whereas this gate reads the answer inverted (same -> skip the
+// --overwrite prompt), so it must fail closed toward "different" to still require --overwrite. On
+// an Abs failure (a removed or inaccessible cwd) it therefore compares the cleaned paths -
+// absResolved's own best effort - rather than calling the two equal: `set f -o f` still matches
+// (identical cleaned path), but `set input -o existing` on two distinct paths no longer skips the
+// gate to silently overwrite existing.
+//
+// The compare is on the canonical path string, so on a case-insensitive filesystem (macOS,
+// Windows) or across a bind mount the same underlying file spelled two ways ("Foo.flac" vs
+// "foo.flac", or /mnt/a/f vs a bind-mounted /mnt/b/f) resolves to two distinct strings and does
+// not read as in-place: the write is refused pending --overwrite rather than silently allowed.
+// That fails safe (no clobber, just an extra flag) and matches the library's sameFileTarget, which
+// compares the same way. The prior os.SameFile inode check accepted those aliases, but it could
+// not tell a case-fold alias from a hardlink - the distinction this gate exists to draw - so the
+// string compare is the right trade.
+func sameWriteTarget(output, inputReal string) bool {
+	return absOrClean(wl.ResolveWriteTarget(output)) == absOrClean(wl.ResolveWriteTarget(inputReal))
+}
+
+// absOrClean returns path made absolute, or - when filepath.Abs cannot read the working
+// directory - the cleaned (possibly still relative) path. It mirrors the library's absResolved so
+// a degraded cwd yields a best-effort comparison instead of giving up.
+func absOrClean(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return filepath.Clean(path)
 }
 
 // checkOutputRegular refuses an -o target that is not a regular file or a symlink that

@@ -66,9 +66,14 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// canonical strings the encoder consumes, and both the ilst and chapter rewrite paths build
 	// from edited.Tags, so the shared report covers both.
 	for _, dv := range droppedValues(edited.Tags) {
-		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueDropped,
-			fmt.Sprintf("%s value %q cannot be represented in this format and was dropped", dv.Key, dv.Value),
-			dv.Key)
+		msg := fmt.Sprintf("%s value %q cannot be represented in this format and was dropped", dv.Key, dv.Value)
+		if dv.ZeroUnset {
+			// The 0 bytes ARE written (0/N), but decodePair treats a 0 slot as unset and reads it
+			// back as absent, so this is a round-trip loss, not an unrepresentable value - say so
+			// rather than the misleading "cannot be represented ... was dropped".
+			msg = fmt.Sprintf("%s value %q is treated as unset in this format and reads back as absent", dv.Key, dv.Value)
+		}
+		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueDropped, msg, dv.Key)
 	}
 	for _, cv := range coercedValues(edited.Tags) {
 		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueCoerced,

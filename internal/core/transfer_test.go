@@ -231,9 +231,9 @@ func TestRepresentableUsesSniffedMIME(t *testing.T) {
 	}
 }
 
-// TestChaptersLoseMetadata checks the start+title-only loss predicate. Only metadata
-// the destination actually drops should flag a loss; uniform language metadata and
-// ChapterLossNone should not.
+// TestChaptersLoseMetadata checks the start+title-only loss predicate. Metadata the
+// destination drops flags a loss - including any per-chapter language, since these stores
+// hold no language field (uniform or varying alike). ChapterLossNone never flags a loss.
 func TestChaptersLoseMetadata(t *testing.T) {
 	sec := func(s int) time.Duration { return time.Duration(s) * time.Second }
 	cases := []struct {
@@ -242,8 +242,8 @@ func TestChaptersLoseMetadata(t *testing.T) {
 		want bool
 	}{
 		{"plain", []Chapter{{Start: 0, Title: "A"}, {Start: sec(5), Title: "B"}}, false},
-		{"uniform-ietf", []Chapter{{Start: 0, LanguageIETF: "en-US"}, {Start: sec(5), LanguageIETF: "en-US"}}, false},
-		{"uniform-iso+ietf", []Chapter{{LanguageIETF: "en-US", Language: "eng"}, {Start: sec(5), LanguageIETF: "en-US", Language: "eng"}}, false},
+		{"uniform-ietf", []Chapter{{Start: 0, LanguageIETF: "en-US"}, {Start: sec(5), LanguageIETF: "en-US"}}, true},
+		{"uniform-iso+ietf", []Chapter{{LanguageIETF: "en-US", Language: "eng"}, {Start: sec(5), LanguageIETF: "en-US", Language: "eng"}}, true},
 		{"varying-iso", []Chapter{{Language: "fre"}, {Start: sec(5), Language: "ger"}}, true},
 		{"varying-ietf", []Chapter{{LanguageIETF: "fr-FR"}, {Start: sec(5), LanguageIETF: "de-DE"}}, true},
 		{"hidden", []Chapter{{Hidden: true}}, true},
@@ -275,7 +275,7 @@ func TestChaptersLoseMetadataInteriorEnds(t *testing.T) {
 		want bool
 	}{
 		{"plain", []Chapter{{Start: 0, Title: "A"}, {Start: sec(5), Title: "B"}}, false},
-		{"uniform-ietf", []Chapter{{LanguageIETF: "en-US"}, {Start: sec(5), LanguageIETF: "en-US"}}, false},
+		{"uniform-ietf", []Chapter{{LanguageIETF: "en-US"}, {Start: sec(5), LanguageIETF: "en-US"}}, true},
 		{"varying-iso", []Chapter{{Language: "fre"}, {Start: sec(5), Language: "ger"}}, true},
 		{"hidden", []Chapter{{Hidden: true}}, true},
 		{"disabled", []Chapter{{Disabled: true}}, true},
@@ -344,9 +344,13 @@ func TestProjectTransferChapterGrading(t *testing.T) {
 	if it := chapterItem(mp4, lossy); it.Disposition != Lossy || it.Reason != "start and title only" {
 		t.Errorf("metadata-bearing chapters = %s/%q, want Lossy with the fidelity reason", it.Disposition, it.Reason)
 	}
-	carried := []Chapter{{Title: "A", LanguageIETF: "en-US"}, {Start: sec(5), Title: "B", LanguageIETF: "en-US"}}
-	if it := chapterItem(mp4, carried); it.Disposition != Carried {
-		t.Errorf("plain uniform-language chapters = %s, want Carried", it.Disposition)
+	mp4UniformLang := []Chapter{{Title: "A", LanguageIETF: "en-US"}, {Start: sec(5), Title: "B", LanguageIETF: "en-US"}}
+	if it := chapterItem(mp4, mp4UniformLang); it.Disposition != Lossy || it.Reason != "start and title only" {
+		t.Errorf("uniform-language chapters = %s/%q, want Lossy (MP4 stores no per-chapter language)", it.Disposition, it.Reason)
+	}
+	plainMP4 := []Chapter{{Title: "A"}, {Start: sec(5), Title: "B"}}
+	if it := chapterItem(mp4, plainMP4); it.Disposition != Carried {
+		t.Errorf("plain language-free chapters = %s, want Carried", it.Disposition)
 	}
 	lossless := NewCapabilities(FormatMatroska, false,
 		Capability{Write: AccessFull}, Capability{Write: AccessFull}, Capability{Write: AccessFull}, AccessNone, nil)

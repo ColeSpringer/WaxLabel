@@ -59,15 +59,35 @@ func TestWantsJSONParsesBoolForms(t *testing.T) {
 
 // TestStrictWarningReasonKeyless: the --strict reason names the offending
 // key when a warning carries one, and degrades to the warning's own prose (rather than
-// a message with a leading bare colon) for a defensive keyless warning.
+// a message with a leading bare colon) for a defensive keyless warning. Uses a code that keeps
+// the compact "KEY: reason" format (WarnValueDropped now echoes its own message instead - see
+// TestStrictWarningReasonValueDroppedEchoesMessage).
 func TestStrictWarningReasonKeyless(t *testing.T) {
-	keyed := wl.Warning{Code: wl.WarnValueDropped, Message: "TITLE value dropped", Keys: []tag.Key{tag.Title}}
+	keyed := wl.Warning{Code: wl.WarnValueCoerced, Message: "TITLE coerced", Keys: []tag.Key{tag.Title}}
 	if got := strictWarningReason(keyed); !strings.HasPrefix(got, "TITLE:") {
-		t.Errorf("keyed reason = %q, want it to name TITLE", got)
+		t.Errorf("keyed reason = %q, want it to name TITLE with a colon", got)
 	}
-	keyless := wl.Warning{Code: wl.WarnValueDropped, Message: "something was dropped"}
-	if got := strictWarningReason(keyless); got != "something was dropped" {
+	keyless := wl.Warning{Code: wl.WarnValueCoerced, Message: "something was coerced"}
+	if got := strictWarningReason(keyless); got != "something was coerced" {
 		t.Errorf("keyless reason = %q, want the warning's own message (no leading colon)", got)
+	}
+}
+
+// TestStrictWarningReasonValueDroppedEchoesMessage: a dropped-value strict reason mirrors the
+// plan-body warning verbatim rather than a fixed phrase, so the --strict error and the plan
+// report never contradict each other on the drop reason - notably the MP4 trkn/disk 0 case, which
+// reads "treated as unset ... reads back as absent", not "cannot be represented".
+func TestStrictWarningReasonValueDroppedEchoesMessage(t *testing.T) {
+	zero := wl.Warning{
+		Code:    wl.WarnValueDropped,
+		Message: `TRACKNUMBER value "0" is treated as unset in this format and reads back as absent`,
+		Keys:    []tag.Key{tag.TrackNumber},
+	}
+	if got := strictWarningReason(zero); got != zero.Message {
+		t.Errorf("value-dropped strict reason = %q, want the warning's own message verbatim", got)
+	}
+	if got := strictWarningReason(zero); strings.Contains(got, "cannot be represented") {
+		t.Errorf("zero-slot strict reason must not use the 'cannot be represented' wording: %q", got)
 	}
 }
 

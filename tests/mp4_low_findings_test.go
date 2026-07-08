@@ -19,21 +19,29 @@ import (
 // not flagged.
 func TestMP4TrackNumberZeroWarns(t *testing.T) {
 	base := mp4Tagged(mp4Text("\xa9nam", "T"))
-	dropped := func(p *wl.Plan, key tag.Key) bool {
+	msgFor := func(p *wl.Plan, key tag.Key) (string, bool) {
 		for _, w := range p.Report().Warnings {
 			if w.Code == wl.WarnValueDropped && slices.Contains(w.Keys, key) {
-				return true
+				return w.Message, true
 			}
 		}
-		return false
+		return "", false
+	}
+	dropped := func(p *wl.Plan, key tag.Key) bool {
+		_, ok := msgFor(p, key)
+		return ok
 	}
 
 	p, err := mustParseBytes(t, base).Edit().Set(tag.TrackNumber, "0").Prepare()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !dropped(p, tag.TrackNumber) {
+	// A 0 slot is written (0/N) but read back as unset, so the warning must say the value
+	// reads back as absent, not the hard-rejection "cannot be represented".
+	if msg, ok := msgFor(p, tag.TrackNumber); !ok {
 		t.Errorf("TRACKNUMBER=0 must warn value-dropped (a 0 slot is dropped on read); got %v", p.Report().Warnings)
+	} else if !strings.Contains(msg, "reads back as absent") || strings.Contains(msg, "cannot be represented") {
+		t.Errorf("TRACKNUMBER=0 warning should say the 0 reads back as absent, not that it cannot be represented; got %q", msg)
 	}
 
 	p2, err := mustParseBytes(t, base).Edit().Set(tag.TrackNumber, "0").Set(tag.TrackTotal, "12").Prepare()
@@ -45,6 +53,18 @@ func TestMP4TrackNumberZeroWarns(t *testing.T) {
 	}
 	if dropped(p2, tag.TrackTotal) {
 		t.Errorf("TRACKTOTAL=12 is representable and must not warn; got %v", p2.Report().Warnings)
+	}
+
+	// An overflow (not a 0) is a genuinely unrepresentable value: it keeps the "cannot be
+	// represented ... was dropped" wording, so the two drop reasons stay distinguishable.
+	p3, err := mustParseBytes(t, base).Edit().Set(tag.TrackNumber, "70000").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg, ok := msgFor(p3, tag.TrackNumber); !ok {
+		t.Errorf("TRACKNUMBER=70000 must warn value-dropped; got %v", p3.Report().Warnings)
+	} else if !strings.Contains(msg, "cannot be represented") {
+		t.Errorf("TRACKNUMBER=70000 (uint16 overflow) should keep the 'cannot be represented' wording; got %q", msg)
 	}
 }
 

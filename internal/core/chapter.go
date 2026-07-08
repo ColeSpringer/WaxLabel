@@ -81,8 +81,10 @@ const (
 	ChapterLossNone ChapterLoss = iota
 	// ChapterLossStartTitleOnly means the format stores each chapter's start and title
 	// only, dropping a gapped end time, per-chapter language, and hidden/disabled
-	// flags. MP4's Nero chpl and QuickTime text track use this model, as does the
-	// VorbisComment CHAPTERxxx convention (FLAC/Ogg), which stores a start and a name.
+	// flags. MP4's Nero chpl uses this model, as does the VorbisComment CHAPTERxxx
+	// convention (FLAC/Ogg), which stores a start and a name. (MP4's QuickTime text
+	// track is the richer ChapterLossInteriorEndsLangFlags model below - it spares the
+	// final chapter's end - and is what WaxLabel's MP4 codec actually uses.)
 	ChapterLossStartTitleOnly
 	// ChapterLossLangFlags means the format stores each chapter's start, end, and title
 	// but no per-chapter language or hidden/disabled flags. ID3v2 CHAP frames use this
@@ -105,15 +107,15 @@ const (
 //   - Hidden or Disabled chapters lose those flags.
 //   - An explicit End that cannot be inferred from the next Start is lost. An End
 //     equal to the next Start is safe because MP4 infers it.
-//   - Varying Language or LanguageIETF values are lost, but uniform language values
-//     are not treated as loss. mkvmerge commonly writes ChapLanguageIETF on every
-//     chapter, so language presence alone would make ordinary Matroska-to-MP4 copies
-//     look lossy. ISO and IETF values are counted separately so a uniform
-//     "eng"/"en-US" pair is not mistaken for variety.
+//   - Any Language or LanguageIETF value is lost, because these stores hold no
+//     per-chapter language field. The read path normalizes the ubiquitous "und"/absent
+//     Matroska default to empty, so an ordinary mkvmerge file whose chapters all default
+//     to und carries no language here and is not flagged; only a genuine, non-default
+//     language ("en-US", "deu") counts.
 //
 // For [ChapterLossLangFlags] (ID3v2 CHAP), the start, end, and title survive. Any
-// language or Hidden/Disabled flag is lost because CHAP has no field for it; the
-// uniform-language tolerance used for start+title formats does not apply.
+// language or Hidden/Disabled flag is lost because CHAP has no field for it. The language
+// axis matches the start+title formats above: any per-chapter language present is a loss.
 //
 // For [ChapterLossInteriorEndsLangFlags] (MP4 QuickTime text track), the rule is
 // [ChapterLossStartTitleOnly]'s except the final chapter's explicit end is kept, because
@@ -138,20 +140,17 @@ func ChaptersLoseMetadata(chs []Chapter, loss ChapterLoss) bool {
 
 // chaptersLoseStartTitle is the shared predicate for the start+title chapter models. A
 // Hidden or Disabled chapter, an interior chapter's gapped end (an End that is neither zero
-// nor the next chapter's Start), or a *varying* per-chapter language (ISO or IETF) always
-// counts as loss; a uniform language does not, so an ordinary mkvmerge file whose every
-// chapter carries the same ChapLanguageIETF is not mislabeled. The final chapter's explicit
-// end counts as loss only when keepLastEnd is false: FLAC/Ogg and MP4's Nero chpl store no
-// end at all, so the last end vanishes there, but MP4's QuickTime text track stores it, so
-// keepLastEnd spares it. With keepLastEnd=false this is byte-identical to the original
-// ChapterLossStartTitleOnly predicate.
+// nor the next chapter's Start), or any per-chapter language (ISO or IETF) counts as loss,
+// since none of these stores holds a per-chapter language field - the language axis matches
+// the ID3 CHAP path exactly. Only a genuine language counts: the read path has already
+// normalized the ubiquitous Matroska "und" default to empty, so a plain mkvmerge file carries
+// none here (ChaptersLoseMetadata's doc has the full rationale). The final chapter's explicit
+// end counts as loss only when keepLastEnd is false: FLAC/Ogg and MP4's Nero chpl store no end
+// at all, so the last end vanishes there, but MP4's QuickTime text track stores it, so
+// keepLastEnd spares it.
 func chaptersLoseStartTitle(chs []Chapter, keepLastEnd bool) bool {
-	// Lazily allocated: a Hidden/Disabled or gapped-end chapter returns before any language
-	// is recorded, so the common early-out path allocates nothing. len() on a nil map is 0,
-	// so the final distinct-count check below still holds.
-	var iso, ietf map[string]bool
 	for i, c := range chs {
-		if c.Hidden || c.Disabled {
+		if c.Hidden || c.Disabled || c.Language != "" || c.LanguageIETF != "" {
 			return true
 		}
 		if c.End > 0 {
@@ -163,20 +162,8 @@ func chaptersLoseStartTitle(chs []Chapter, keepLastEnd bool) bool {
 				return true // an interior gapped end cannot be inferred from the next start
 			}
 		}
-		if c.Language != "" {
-			if iso == nil {
-				iso = make(map[string]bool)
-			}
-			iso[c.Language] = true
-		}
-		if c.LanguageIETF != "" {
-			if ietf == nil {
-				ietf = make(map[string]bool)
-			}
-			ietf[c.LanguageIETF] = true
-		}
 	}
-	return len(iso) > 1 || len(ietf) > 1
+	return false
 }
 
 // ChapterMetadataDroppedMessage returns the edit-time warning text for the fields a

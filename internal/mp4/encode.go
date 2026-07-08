@@ -244,10 +244,15 @@ func clampUint16(n int) uint16 {
 }
 
 // droppedValue records a canonical (key, value) the iTunes atom encoders cannot
-// represent and would otherwise silently drop.
+// represent and would otherwise silently drop. ZeroUnset marks the one drop that is not a
+// hard rejection: a literal 0 in a trkn/disk slot, whose bytes ARE written (0/N) but which
+// decodePair reads back as absent (its num>0/total>0 guards treat 0 as unset), so it is a
+// round-trip loss rather than an unrepresentable value. The write.go warning wording keys off
+// it; a uint16-overflow or non-numeric drop leaves it false.
 type droppedValue struct {
-	Key   tag.Key
-	Value string
+	Key       tag.Key
+	Value     string
+	ZeroUnset bool
 }
 
 // droppedValues returns the canonical values this edit would genuinely lose at the iTunes
@@ -316,13 +321,14 @@ func appendDroppedPair(out []droppedValue, ts tag.TagSet, numKey, totKey tag.Key
 // appendSlotDrop records one trkn/disk slot the encoder would lose: either a value the uint16
 // atom cannot represent, or a literal 0 (which decodePair drops on read, so it never
 // round-trips - MP4 keeps its 0-as-unset write semantics, this only makes the loss visible). A
-// slot is reported at most once.
+// slot is reported at most once. The 0 case sets ZeroUnset so the warning can say "reads back as
+// absent" rather than the hard-rejection "cannot be represented".
 func appendSlotDrop(out []droppedValue, key tag.Key, slot string) []droppedValue {
 	switch {
 	case uint16ValueDropped(slot):
 		return append(out, droppedValue{Key: key, Value: slot})
 	case isRepresentableZero(slot):
-		return append(out, droppedValue{Key: key, Value: strings.TrimSpace(slot)})
+		return append(out, droppedValue{Key: key, Value: strings.TrimSpace(slot), ZeroUnset: true})
 	}
 	return out
 }

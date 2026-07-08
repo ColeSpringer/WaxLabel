@@ -78,11 +78,11 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringArrayVar(&e.removePicture, "remove-picture", nil, "remove pictures by role name or 1-based dump index, e.g. back-cover or 2 (repeatable; removals apply before adds)")
 	f.BoolVar(&e.rmPics, "remove-pictures", false, "remove all embedded pictures")
 	f.BoolVar(&e.force, "force", false, "embed --add-cover/--add-picture input even if it is not a recognized image (PNG/JPEG/GIF/WebP/BMP/TIFF); unrecognized bytes are stored as application/octet-stream. The check is header-only, not a full image decode")
-	f.StringArrayVar(&e.addChapter, "add-chapter", nil, "add a chapter TIMESTAMP=Title (e.g. 1:30=Verse; repeatable); formats with chapter-count caps reject over-limit lists (255 for ID3 and MP4). CLI-created chapters have no end time, so replacing a Matroska list that had explicit ends (--clear-chapters plus this flag) drops them; a plain --add-chapter keeps existing chapters and their ends")
+	f.StringArrayVar(&e.addChapter, "add-chapter", nil, "add a chapter TIMESTAMP=Title (e.g. 1:30=Verse; repeatable); formats with chapter-count caps reject over-limit lists (255 for ID3 and MP4). CLI-created chapters have no end time, so replacing a Matroska list that had explicit ends (--clear-chapters plus this flag) drops them; a plain --add-chapter keeps existing chapters, and their ends where the format stores them (FLAC/Ogg CHAPTERxxx store none), except that a start-only insert overlapping an existing chapter truncates that chapter's end to the new start (reported as [chapter-overlap-reconciled])")
 	f.BoolVar(&e.clearChapters, "clear-chapters", false, "remove all chapters (applied before --add-chapter, so combining them keeps only the added chapters)")
 	f.StringVar(&e.syncedLyricsFile, "synced-lyrics-file", "", "set synced lyrics from an LRC file, replacing any existing synced lyrics (MP3/AAC/AIFF/WAV keep the language; FLAC/Ogg drop it)")
 	f.StringArrayVar(&e.addSyncedLyric, "add-synced-lyric", nil, "add synced lyric line TIMESTAMP=Text (e.g. 1:30=Verse; repeatable); combined lines replace any existing synced lyrics")
-	f.StringVar(&e.syncedLyricsLang, "synced-lyrics-lang", "", "ISO-639-2 language code (e.g. eng) for synced lyrics authored by --synced-lyrics-file or --add-synced-lyric")
+	f.StringVar(&e.syncedLyricsLang, "synced-lyrics-lang", "", "a 3-letter language code (the ISO-639-2 shape, e.g. eng) for synced lyrics authored by --synced-lyrics-file or --add-synced-lyric; the shape is validated, not registry membership")
 	f.BoolVar(&e.clearSyncedLyrics, "clear-synced-lyrics", false, "remove all synced lyrics")
 	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear the ENCODER software stamp left behind by an encoder or transcoder, including FLAC/Ogg vendor stamps")
 	f.StringVar(&e.preset, "preset", "", "write policy preset: preserve|compatible|minimal")
@@ -991,8 +991,13 @@ func (g *strictWarningGate) check(plan *wl.Plan) error {
 	return usagef("%s (omit --strict to write anyway)", strings.Join(reasons, "; "))
 }
 
-// strictWarningReason renders one escalating warning as "key(s): reason" for the
-// --strict error, keyed off the warning code so the wording stays close to the
+// strictWarningReason renders one escalating warning for the --strict error. Most codes get a
+// compact "key(s): reason" line keyed off the code; WarnValueDropped instead echoes the warning's
+// own Message verbatim, because a dropped value has more than one plan-body wording (an
+// unrepresentable value "cannot be represented ... was dropped" versus an MP4 trkn/disk 0 that
+// "is treated as unset ... reads back as absent"), and a fixed reason here would contradict
+// whichever one the user saw in the plan body. Every WarnValueDropped message names its key in
+// prose, so it stays self-describing without the "keys:" prefix - and stays in lockstep with the
 // plan-body warning the user also sees.
 func strictWarningReason(w wl.Warning) string {
 	keys := keyList(w.Keys)
@@ -1004,7 +1009,10 @@ func strictWarningReason(w wl.Warning) string {
 	}
 	switch w.Code {
 	case wl.WarnValueDropped:
-		return fmt.Sprintf("%s: value cannot be represented in this format and would be dropped", keys)
+		// The warning's own message carries the accurate, value-specific wording (including the
+		// ZeroUnset "reads back as absent" variant), which a hardcoded reason cannot; it already
+		// names the offending key, so echo it rather than re-deriving a fixed phrase.
+		return w.Message
 	case wl.WarnValueCoerced:
 		return fmt.Sprintf("%s: value is not valid for this format and would be stored coerced", keys)
 	case wl.WarnSingleValuedMulti:

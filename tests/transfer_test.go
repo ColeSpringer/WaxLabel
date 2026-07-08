@@ -419,9 +419,10 @@ func TestPrepareTransferUnrepresentableCoverKeepsDestCover(t *testing.T) {
 }
 
 // TestPlanTransferMatroskaToMP4ChapterLoss checks transfer grading for chapter
-// metadata. Matroska chapters with gapped ends or varying language are lossy when
-// copied to MP4's start+title storage; plain uniform-language chapters are carried,
-// and a Matroska destination carries the richer metadata.
+// metadata. Matroska chapters with gapped ends or any per-chapter language (uniform or
+// varying) are lossy when copied to MP4's start+title storage, which stores no language;
+// only language-free chapters are carried, and a Matroska destination carries the richer
+// metadata.
 func TestPlanTransferMatroskaToMP4ChapterLoss(t *testing.T) {
 	src := readFixture(t, sampleMKA)
 	withChapters := func(chs ...wl.Chapter) *wl.Document {
@@ -454,23 +455,32 @@ func TestPlanTransferMatroskaToMP4ChapterLoss(t *testing.T) {
 	if it := chapterItem(rich, wl.FormatMatroska); it.Disposition != wl.Carried {
 		t.Errorf("rich chapters -> Matroska = %s, want carried", it.Disposition)
 	}
-	// Plain chapters with a uniform language: nothing MP4 cannot represent -> carried.
-	plain := withChapters(
+	// A uniform per-chapter language: MP4's start+title storage holds no language field, so
+	// even a uniform language is a lossy carry (these formats store none at all).
+	uniformLang := withChapters(
 		wl.Chapter{Start: 0, Title: "One", LanguageIETF: "en-US"},
 		wl.Chapter{Start: ms(300), Title: "Two", LanguageIETF: "en-US"},
 	)
-	if it := chapterItem(plain, wl.FormatMP4); it.Disposition != wl.Carried {
-		t.Errorf("plain uniform-language chapters -> MP4 = %s, want carried", it.Disposition)
+	if it := chapterItem(uniformLang, wl.FormatMP4); it.Disposition != wl.Lossy || it.Reason == "" {
+		t.Errorf("uniform-language chapters -> MP4 = %s/%q, want lossy with a reason", it.Disposition, it.Reason)
 	}
-	// Only the final chapter carries an explicit end, with no interior gap and a uniform
-	// language: MP4's QuickTime text track stores the last chapter's end, so this is carried,
-	// not lossy (the fix - it was graded Lossy when the last end was flagged unconditionally).
+	// Language-free chapters with contiguous ends: nothing MP4 cannot represent -> carried.
+	languageFree := withChapters(
+		wl.Chapter{Start: 0, Title: "One"},
+		wl.Chapter{Start: ms(300), Title: "Two"},
+	)
+	if it := chapterItem(languageFree, wl.FormatMP4); it.Disposition != wl.Carried {
+		t.Errorf("language-free chapters -> MP4 = %s, want carried", it.Disposition)
+	}
+	// Only the final chapter carries an explicit end (no interior gap), which MP4's QuickTime
+	// text track stores, so the end itself is fine - but the uniform language these chapters
+	// carry is still dropped, so the copy is lossy for the language.
 	lastEndOnly := withChapters(
 		wl.Chapter{Start: 0, Title: "One", LanguageIETF: "en-US"},
 		wl.Chapter{Start: ms(300), End: ms(600), Title: "Two", LanguageIETF: "en-US"},
 	)
-	if it := chapterItem(lastEndOnly, wl.FormatMP4); it.Disposition != wl.Carried {
-		t.Errorf("last-end-only chapters -> MP4 = %s/%q, want carried (QuickTime keeps the final end)", it.Disposition, it.Reason)
+	if it := chapterItem(lastEndOnly, wl.FormatMP4); it.Disposition != wl.Lossy || it.Reason == "" {
+		t.Errorf("last-end-only uniform-language chapters -> MP4 = %s/%q, want lossy for the language (QuickTime keeps the final end)", it.Disposition, it.Reason)
 	}
 }
 

@@ -78,10 +78,18 @@ func TestValueDroppedWarningM4A(t *testing.T) {
 	}
 
 	// TRACKNUMBER=0 with a real total still loses the 0 on read (decodePair drops a 0 slot), so it
-	// warns for TRACKNUMBER even though 12 stores fine.
+	// warns for TRACKNUMBER even though 12 stores fine. Its wording says the 0 reads back as
+	// absent (the bytes are written, just not round-tripped), not that it cannot be represented -
+	// unlike a genuine uint16 overflow, which keeps the "cannot be represented" phrasing.
 	out, _, _ = runCLI(t, "plan", copyFixture(t, notagsM4A), "--set", "TRACKNUMBER=0", "--set", "TRACKTOTAL=12")
 	if !strings.Contains(out, "value-dropped") || !strings.Contains(out, "TRACKNUMBER") {
 		t.Errorf("plan TRACKNUMBER=0 TRACKTOTAL=12: the 0 is dropped on read, want a value-dropped warning naming TRACKNUMBER:\n%s", out)
+	}
+	if !strings.Contains(out, "reads back as absent") {
+		t.Errorf("plan TRACKNUMBER=0: the 0-as-unset warning should say it reads back as absent, not that it cannot be represented:\n%s", out)
+	}
+	if overflow, _, _ := runCLI(t, "plan", copyFixture(t, notagsM4A), "--set", "TRACKNUMBER=70000"); !strings.Contains(overflow, "cannot be represented") {
+		t.Errorf("plan TRACKNUMBER=70000: a uint16 overflow should keep the 'cannot be represented' wording:\n%s", overflow)
 	}
 	for _, kv := range []string{"MEDIATYPE=70000", "TRACKNUMBER=5"} {
 		if out, _, _ := runCLI(t, "plan", copyFixture(t, notagsM4A), "--set", kv); strings.Contains(out, "value-dropped") {
