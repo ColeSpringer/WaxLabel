@@ -1,6 +1,8 @@
 package waxlabel
 
 import (
+	"time"
+
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 )
@@ -232,6 +234,17 @@ func EqualPictures(a, b []Picture) bool { return core.EqualPictures(a, b) }
 // EqualChapters reports whether two chapter slices are identical by content
 // (start, end, and title), in order. This is the chapter analogue of [EqualPictures].
 func EqualChapters(a, b []Chapter) bool { return core.EqualChapters(a, b) }
+
+// EqualChaptersModuloEnds reports whether two chapter lists are equal after normalizing away
+// ends a codec would itself reconstruct (a gapless interior end, or a trailing end that runs
+// to end-of-file). Byte-identical lists are always equal regardless of duration. durA/durB are
+// the two files' media durations, used only for the trailing rule. It is what [diff] uses: the
+// interior gapless rule matches how copy grades that end (reconstructable), while the trailing
+// run-to-EOF rule is diff-specific and intentionally diverges from copy's format-based trailing
+// grade. [EqualChapters] (literal ends) still backs codec change-detection.
+func EqualChaptersModuloEnds(a, b []Chapter, durA, durB time.Duration) bool {
+	return core.EqualChaptersModuloEnds(a, b, durA, durB)
+}
 
 // EqualSyncedLyrics reports whether two synced-lyrics slices are identical by content
 // (language, description, and timed lines), in order. SyncedLyrics contains a slice, so

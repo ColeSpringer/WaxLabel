@@ -129,13 +129,16 @@ func computeDiff(a, b *wl.Document) diffResult {
 	ca, cb := a.Chapters(), b.Chapters()
 	sa, sb := a.SyncedLyrics(), b.SyncedLyrics()
 	return diffResult{
-		tags:         tag.Diff(a.Tags(), b.Tags()),
-		picsA:        len(pa),
-		picsB:        len(pb),
-		picsDiffer:   !wl.EqualPictures(pa, pb),
-		chapsA:       len(ca),
-		chapsB:       len(cb),
-		chapsDiffer:  !wl.EqualChapters(ca, cb),
+		tags:       tag.Diff(a.Tags(), b.Tags()),
+		picsA:      len(pa),
+		picsB:      len(pb),
+		picsDiffer: !wl.EqualPictures(pa, pb),
+		chapsA:     len(ca),
+		chapsB:     len(cb),
+		// Duration-aware so diff agrees with how copy grades chapters: a reconstructable end
+		// difference (a gapless interior end, or a trailing end that runs to EOF) is not a
+		// difference. Properties is a method on the Document here (not the codec-path field).
+		chapsDiffer:  !wl.EqualChaptersModuloEnds(ca, cb, a.Properties().Duration(), b.Properties().Duration()),
 		syncedA:      len(sa),
 		syncedB:      len(sb),
 		syncedDiffer: !wl.EqualSyncedLyrics(sa, sb),

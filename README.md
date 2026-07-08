@@ -130,10 +130,12 @@ Common edit flags:
   part is 1 to 3 digits (millisecond resolution).
 - `--synced-lyrics-file FILE.lrc`, `--add-synced-lyric TIMESTAMP=TEXT`,
   `--synced-lyrics-lang eng`, and `--clear-synced-lyrics` edit synced lyrics.
-  File input and added lines are combined into one set that replaces any existing
-  synced lyrics. MP3/AAC/AIFF/WAV keep `--synced-lyrics-lang` as the ID3v2 `SYLT`
-  ISO-639-2 language code; FLAC/Ogg drop it because `SYNCEDLYRICS` stores LRC text
-  without a language field. The `TIMESTAMP` grammar matches `--add-chapter`.
+  File input and added lines are combined into one set that replaces the existing
+  synced-lyric *lines*. On MP3/AAC/AIFF/WAV the ID3v2 `SYLT` ISO-639-2 language comes
+  from `--synced-lyrics-lang` when given; without it, an existing set's language is
+  preserved (a line-only edit does not discard it), and a first set authored with no
+  flag is left undefined. FLAC/Ogg have no language field, so `--synced-lyrics-lang`
+  is dropped there. The `TIMESTAMP` grammar matches `--add-chapter`.
 - `--preset preserve|compatible|minimal`, `--legacy preserve|strip`, and
   `--no-padding` shape the write; `--padding N` reserves *at least* N bytes of padding
   after the metadata (FLAC defaults to 8192; MP3/AAC/MP4 reuse the existing region; `0`
@@ -248,7 +250,13 @@ the same state used by `Execute()`. The preview is not a separate guess.
 
 **Preservation.** Legacy or secondary metadata containers are preserved and warned
 by default. Use `WithLegacyPolicy(LegacyStrip)` or the CLI's `--legacy strip` when
-you want them removed.
+you want them removed. ID3v2 is authoritative and edits are written there, so editing
+a file that also carries a legacy ID3v1 (or APEv2) tag leaves that older tag untouched.
+It then goes stale: the edit reports `[legacy-conflict]`, and later `lint`/`dump` runs
+keep reporting `trailing-id3v1` / `legacy-ape` and `conflicting-families` until you
+resolve it with `--legacy strip` (or `--preset minimal`) or `lint --fix`. This is
+deliberate. Preservation-first never silently discards a container you did not ask to
+remove.
 
 **Terminal-safe text.** Human text renderers sanitize untrusted tag values, paths,
 and warning strings so control bytes cannot inject terminal escapes. JSON output
@@ -322,12 +330,16 @@ path:
   title but no per-chapter language or hidden/disabled flags; `CHAPTERxxx` stores start and
   title only. Copying chapters that carry the dropped fields reports a lossy carry.
 - **Synced lyrics are metadata-only.** MP3/AAC/AIFF/WAV use ID3v2 `SYLT`, which
-  keeps the language, descriptor, and millisecond timestamps. FLAC/Ogg use an LRC
-  document in a `SYNCEDLYRICS` Vorbis comment, which keeps the timed text but has
-  no language or descriptor field; copying a set with either field to FLAC/Ogg
-  reports a lossy carry. WaxLabel reads only `SYLT` entries that use millisecond
-  timestamps and the lyrics content type. MPEG-frame timestamps and non-lyric
-  content types are skipped with warnings and preserved verbatim. `SYLT` timestamps
+  keeps the language, descriptor, and millisecond timestamps. Authoring new lines
+  replaces the lyric text but preserves the existing `SYLT` language unless
+  `--synced-lyrics-lang` overrides it; a first set authored with no language is
+  written undefined. A faithful cross-format copy carries no language, so it never
+  inherits the destination's. FLAC/Ogg use an LRC document in a `SYNCEDLYRICS`
+  Vorbis comment, which keeps the timed text but has no language or descriptor
+  field; copying a set with either field to FLAC/Ogg reports a lossy carry.
+  WaxLabel reads only `SYLT` entries that use millisecond timestamps and the lyrics
+  content type. MPEG-frame timestamps and non-lyric content types are skipped with
+  warnings and preserved verbatim. `SYLT` timestamps
   are 32-bit milliseconds (about 49.7 days), so later lines are clamped with a
   warning. An authored synced-lyrics language must be a 3-letter code (the ISO-639-2
   shape, e.g. `eng`); the shape is validated, not registry membership. LRC is

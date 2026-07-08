@@ -257,11 +257,35 @@ func decodeCTOC(body []byte) (ctocFrame, bool) {
 // chapter time was clamped to the 32-bit millisecond field. Emitting the CHAP frames in
 // chapter order means a reader that ignores the CTOC still reads them correctly.
 //
+// It first materializes concrete ends for open-ended chapters (End == 0), so a
+// spec-conforming reader (ffprobe, players) sees bounded chapters instead of the 0xFFFFFFFF
+// "unused" sentinel encodeCHAP would otherwise emit (~49.7 days). This fill is ID3-local: the
+// canonical core.Chapter{End:0} "open" model is unchanged and MP4/Matroska keep omitting or
+// inferring ends as before. The fill runs on a clone, so the caller's chapter slice is not
+// mutated. Two separate rules apply:
+//   - Interior open chapter -> the next chapter's start (a gapless interval) via the shared
+//     core.FillInteriorEnds, so the ID3 writer and the MP4 read/write paths cannot drift on it.
+//   - Trailing open chapter -> the media duration, when the duration is known and past the last
+//     start. This is genuinely ID3-local (core.FillInteriorEnds leaves the last chapter open;
+//     MP4 derives a bounded last end from the QuickTime text track's last-sample duration, not
+//     from Chapter.End). When the duration is unknown (0) or not past the last start, the
+//     trailing chapter stays open and encodeCHAP emits the sentinel - no worse than before.
+//
 // Precondition: len(chs) <= 255. The CTOC entry count is a single byte (see encodeCTOC), so
 // a longer list would wrap it. Callers must enforce MaxChapters before writing.
-func chapterFrames(chs []core.Chapter, version byte) (frames []Frame, overflow bool) {
-	childIDs := make([]string, len(chs))
-	for i, ch := range chs {
+func chapterFrames(chs []core.Chapter, duration time.Duration, version byte) (frames []Frame, overflow bool) {
+	filled := core.CloneChapters(chs)
+	// Interior open ends -> the next chapter's start (gapless), shared with the MP4 paths so the
+	// rule cannot drift. It leaves the last chapter open.
+	core.FillInteriorEnds(filled)
+	// Trailing open chapter -> the media duration (ID3-local). When the duration is unknown (0)
+	// or not past the last start, the chapter stays open and encodeCHAP emits the sentinel - no
+	// worse than before.
+	if n := len(filled); n > 0 && filled[n-1].End == 0 && duration > filled[n-1].Start {
+		filled[n-1].End = duration
+	}
+	childIDs := make([]string, len(filled))
+	for i, ch := range filled {
 		id := fmt.Sprintf("%s%d", chapElementPrefix, i)
 		childIDs[i] = id
 		body, ov := encodeCHAP(id, ch, version)

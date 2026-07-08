@@ -1,6 +1,9 @@
 package tag
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // keyAliases folds common field-name spellings onto canonical keys. Vorbis mapping and
 // [ClosestKey] share this table so aliases resolve the same way on read, edit, and
@@ -27,4 +30,21 @@ var keyAliases = map[string]Key{
 func AliasKey(name string) (Key, bool) {
 	k, ok := keyAliases[strings.ToUpper(name)]
 	return k, ok
+}
+
+// KeyAliases returns the recognized alternative spellings that resolve to k, sorted, so a
+// consumer (the keys command) can surface them. A self-alias - an entry whose spelling is k's
+// own canonical name, present so an uppercased canonical spelling still resolves (TRACKTOTAL,
+// DISCTOTAL) - is excluded, since listing a key as its own alias is noise. Returns nil for a
+// key with no genuine aliases.
+func KeyAliases(k Key) []string {
+	canon := strings.ToUpper(string(k))
+	var out []string
+	for alias, target := range keyAliases {
+		if target == k && alias != canon {
+			out = append(out, alias)
+		}
+	}
+	slices.Sort(out)
+	return out
 }

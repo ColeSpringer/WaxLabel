@@ -90,7 +90,7 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringVar(&e.padding, "padding", "", "reserve at least N bytes of padding after the metadata (FLAC default 8192; MP3/AAC/MP4 reuse the existing region; 0 writes none, like --no-padding)")
 	f.BoolVar(&e.noPadding, "no-padding", false, "write no padding after the metadata (no effect on Ogg/WAV/AIFF/Matroska, which have no padding region)")
 	f.BoolVar(&e.numericGenre, "numeric-genre", false, "write a recognized genre as its numeric reference where the format supports one (ID3's TCON); by default the canonical genre name is written")
-	f.BoolVar(&e.strict, "strict", false, "fail (exit 2), instead of noting it, on an unknown key, a single-valued key given multiple values, or a value or tag structure the destination format cannot represent (dropped on write)")
+	f.BoolVar(&e.strict, "strict", false, "fail (exit 2), instead of just noting it, on an unknown key or any edit the destination format cannot store faithfully: a value dropped, coerced, or reduced in precision; a single-valued key given multiple values; a dropped picture, chapter, or synced-lyrics field; or a truncated chapter title or clamped timestamp")
 }
 
 // nonEditFlags are the set/output flags that do not by themselves constitute an
@@ -939,21 +939,47 @@ func noteMalformedValue(errOut io.Writer, k tag.Key, v string) {
 	}
 }
 
-// strictEscalatingCodes are the per-file plan warnings --strict promotes to a usage
-// error (exit 2): a value the codec would drop as unrepresentable, and a known
-// single-valued key left holding multiple values.
-// Both are library warnings the plan report already carries (and the human/JSON output
-// already renders), so the gate reads that one signal rather than re-deriving the rule
-// from plan.Changes() - so the warning the user sees and the --strict decision cannot
-// disagree. A result-based re-derivation went silent in the Matroska single-valued case,
-// which is why this reads the plan warnings directly. The unknown-key strict path
-// stays separate (notifyUnknownKeys): an unknown key is a CLI-vocabulary concept the
-// library accepts by design, so it is a pre-flight usage error, not a plan warning.
+// strictEscalatingCodes are the per-file plan warnings --strict promotes to a usage error
+// (exit 2): the family of edit-caused write losses where the destination format cannot
+// represent what the edit asked for, so a CI gate never silently ships a lossy file. Each is
+// a library warning the plan report already carries (and the human/JSON output already
+// renders), so the gate reads that one signal rather than re-deriving the rule from
+// plan.Changes() - the warning the user sees and the --strict decision cannot disagree. A
+// result-based re-derivation went silent in the Matroska single-valued case, which is why
+// this reads the plan warnings directly. The unknown-key strict path stays separate
+// (notifyUnknownKeys): an unknown key is a CLI-vocabulary concept the library accepts by
+// design, so it is a pre-flight usage error, not a plan warning.
+//
+// Deliberately NOT escalated, so the boundary is explicit and a later pass does not "fix" it:
+//   - WarnID3MultiValue, WarnNativeValueReduced: not a loss - the value is fully stored
+//     (NUL-separated v2.3 multi-value; or the full set kept in the winning container), so
+//     escalating would fail --strict on ordinary multi-value edits.
+//   - WarnChaptersFlattened: can describe pre-existing on-read file state, not this edit.
+//   - WarnPaddingClamped: about padding size, not tag content.
+//   - Advisory/sanity codes (number-total-conflict, chapter-overlap-reconciled,
+//     chapter-past-duration, duplicate-*, multiple-front-covers, legacy-conflict) and all
+//     read-path codes: they describe the file, not an edit loss.
 var strictEscalatingCodes = map[wl.WarningCode]bool{
-	wl.WarnValueDropped:        true,
-	wl.WarnValueCoerced:        true,
-	wl.WarnSingleValuedMulti:   true,
-	wl.WarnTagStructureDropped: true,
+	// Value-level losses: dropped, coerced, precision-reduced, or a single-valued key given
+	// multiple values.
+	wl.WarnValueDropped:      true,
+	wl.WarnValueCoerced:      true,
+	wl.WarnValueReduced:      true,
+	wl.WarnSingleValuedMulti: true,
+	// Structure the destination cannot hold: a secondary language / binary / nested sub-tag,
+	// or picture metadata beyond the raw bytes.
+	wl.WarnTagStructureDropped:    true,
+	wl.WarnPictureMetadataDropped: true,
+	// Chapter losses. The *MetadataDropped/*EndsDropped codes are editor-emitted only when the
+	// edit is not a faithful carry (gated on !carried), so a copy/transfer never emits them and
+	// escalating them cannot make a carry fail (see the carry-safety note on the copy command).
+	wl.WarnChapterEndsDropped:     true,
+	wl.WarnChapterTitleTruncated:  true,
+	wl.WarnChapterStartOverflow:   true,
+	wl.WarnChapterMetadataDropped: true,
+	// Synced-lyrics losses: a dropped per-set field, or a timestamp clamped to the 32-bit field.
+	wl.WarnSyncedLyricsMetadataDropped:  true,
+	wl.WarnSyncedLyricsTimestampClamped: true,
 }
 
 // strictWarningGate applies the per-file --strict escalation for plan and set: when a
@@ -1008,10 +1034,12 @@ func strictWarningReason(w wl.Warning) string {
 		return w.Message
 	}
 	switch w.Code {
-	case wl.WarnValueDropped:
-		// The warning's own message carries the accurate, value-specific wording (including the
-		// ZeroUnset "reads back as absent" variant), which a hardcoded reason cannot; it already
-		// names the offending key, so echo it rather than re-deriving a fixed phrase.
+	case wl.WarnValueDropped, wl.WarnValueReduced:
+		// Both messages carry wording a fixed reason here could not: a drop's value-specific or
+		// ZeroUnset "reads back as absent" phrasing, and a reduction's exact precision loss (e.g.
+		// an ORIGINALDATE reduced to a year by ID3v2.3 date frames). Each names its own key, so
+		// echo the plan-body message rather than re-deriving one, keeping --strict in lockstep
+		// with the warning the user sees.
 		return w.Message
 	case wl.WarnValueCoerced:
 		return fmt.Sprintf("%s: value is not valid for this format and would be stored coerced", keys)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"runtime/debug"
 	"strings"
 
@@ -55,6 +56,7 @@ func newRootCmd() *cobra.Command {
 		newCapsCmd(),
 		newKeysCmd(),
 		newVersionCmd(),
+		newCompletionCmd(),
 	)
 	// Replace cobra's help command so an unknown topic exits non-zero, matching an
 	// unknown command. Register before wrapUsageErrors so it picks up the same
@@ -126,6 +128,55 @@ func newVersionCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE:  func(cmd *cobra.Command, _ []string) error { return printVersion(cmd) },
 	}
+}
+
+// newCompletionCmd replaces cobra's auto-added completion command so an unknown shell name or
+// an extra argument exits 2 (a usage error), matching every other unknown-topic path (help,
+// version, unknown command). Cobra's own completion parent is non-runnable, so its NoArgs
+// validator is skipped - the non-runnable path returns flag.ErrHelp before arg validation, and
+// "completion zzz" looks like success (exit 0). Two things fix that: the parent is made
+// runnable (its RunE prints help), which defeats that short-circuit so its NoArgs validator
+// runs; and each shell subcommand is NoArgs too. So "completion bash" generates the script and
+// exits 0, a bare "completion" prints help and exits 0, and "completion zzz" or "completion
+// bash extra" find no subcommand, fail NoArgs, and reach wrapUsageErrors' arg wrapper -> a
+// usageError -> exit 2. Registering a command named "completion" makes cobra's
+// InitDefaultCompletionCmd skip adding its own default, so this cleanly replaces it.
+//
+// Each generator writes to the RunE-time c.Root().OutOrStdout() (not a writer captured at build
+// time) so a redirected output - the test harness, or a shell `> file` - is honored, and emits
+// the script for the root command.
+func newCompletionCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "completion [bash|zsh|fish|powershell]",
+		Short: "Generate a shell completion script",
+		Long: "Generate a shell completion script for waxlabel. Run the subcommand for your\n" +
+			"shell (bash, zsh, fish, or powershell) and source or install its output; see\n" +
+			"each subcommand's --help for shell-specific instructions.",
+		Args: cobra.NoArgs,
+		// Runnable so a bare "completion" prints help and exits 0 while its NoArgs validator
+		// still runs for an unknown shell name (which a non-runnable parent would skip).
+		RunE: func(c *cobra.Command, _ []string) error { return c.Help() },
+	}
+	// One row per shell; the NoArgs + RunE-time-output wiring exists once. Each gen writes the
+	// root command's completion script to the RunE-time c.Root().OutOrStdout() so a redirected
+	// stream (the test harness, a shell `> file`) is honored.
+	for _, sh := range []struct {
+		use, short string
+		gen        func(root *cobra.Command, w io.Writer) error
+	}{
+		{"bash", "Generate the bash completion script", func(r *cobra.Command, w io.Writer) error { return r.GenBashCompletionV2(w, true) }},
+		{"zsh", "Generate the zsh completion script", func(r *cobra.Command, w io.Writer) error { return r.GenZshCompletion(w) }},
+		{"fish", "Generate the fish completion script", func(r *cobra.Command, w io.Writer) error { return r.GenFishCompletion(w, true) }},
+		{"powershell", "Generate the PowerShell completion script", func(r *cobra.Command, w io.Writer) error { return r.GenPowerShellCompletionWithDesc(w) }},
+	} {
+		cmd.AddCommand(&cobra.Command{
+			Use:   sh.use,
+			Short: sh.short,
+			Args:  cobra.NoArgs,
+			RunE:  func(c *cobra.Command, _ []string) error { return sh.gen(c.Root(), c.Root().OutOrStdout()) },
+		})
+	}
+	return cmd
 }
 
 // printVersion writes the version in the same shape as the caller requested: JSON mode

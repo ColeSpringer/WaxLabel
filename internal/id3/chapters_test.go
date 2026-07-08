@@ -21,15 +21,23 @@ func tagWith(version byte, frames []Frame) *Tag {
 }
 
 // TestChapterRoundTrip checks decode(encode(x)) == x for the start, end, and title CHAP
-// stores, at both write versions.
+// stores, at both write versions. chapterFrames materializes open ends before encoding, so
+// the expected round-trip carries the filled ends: an interior open chapter takes the next
+// chapter's start, and the trailing open chapter takes the media duration passed in.
 func TestChapterRoundTrip(t *testing.T) {
+	const duration = 10 * time.Second
 	in := []core.Chapter{
 		{Start: 0, Title: "Intro"},
 		{Start: 1500 * time.Millisecond, End: 3 * time.Second, Title: "Verse"},
 		{Start: 3 * time.Second, Title: "Outro café"}, // non-Latin-1 forces UTF encoding
 	}
+	want := []core.Chapter{
+		{Start: 0, End: 1500 * time.Millisecond, Title: "Intro"},               // interior open -> next start
+		{Start: 1500 * time.Millisecond, End: 3 * time.Second, Title: "Verse"}, // explicit end kept
+		{Start: 3 * time.Second, End: duration, Title: "Outro café"},           // trailing open -> duration
+	}
 	for _, version := range []byte{3, 4} {
-		frames, overflow := chapterFrames(in, version)
+		frames, overflow := chapterFrames(in, duration, version)
 		if overflow {
 			t.Fatalf("v%d: unexpected overflow", version)
 		}
@@ -37,24 +45,127 @@ func TestChapterRoundTrip(t *testing.T) {
 		if len(ws) != 0 {
 			t.Errorf("v%d: unexpected warnings %v", version, ws)
 		}
-		if len(got) != len(in) {
-			t.Fatalf("v%d: got %d chapters, want %d", version, len(got), len(in))
+		if len(got) != len(want) {
+			t.Fatalf("v%d: got %d chapters, want %d", version, len(got), len(want))
 		}
-		for i := range in {
-			if got[i] != in[i] {
-				t.Errorf("v%d chapter %d = %+v, want %+v", version, i, got[i], in[i])
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("v%d chapter %d = %+v, want %+v", version, i, got[i], want[i])
 			}
 		}
 	}
 }
 
-// TestChapterOpenEndRoundTrips checks an open-ended chapter (End == 0) round-trips to End
-// == 0 rather than picking up the 0xFFFFFFFF sentinel as a real time.
+// TestChapterOpenEndRoundTrips checks the unknown-duration fallback: with duration 0, a
+// trailing open-ended chapter (End == 0) has no bound to fill, so it keeps the 0xFFFFFFFF
+// sentinel and reads back open rather than picking it up as a ~49.7-day time.
 func TestChapterOpenEndRoundTrips(t *testing.T) {
-	frames, _ := chapterFrames([]core.Chapter{{Start: 2 * time.Second, Title: "A"}}, 4)
+	frames, _ := chapterFrames([]core.Chapter{{Start: 2 * time.Second, Title: "A"}}, 0, 4)
 	got, _ := ProjectChapters(tagWith(4, frames))
 	if len(got) != 1 || got[0].End != 0 {
-		t.Fatalf("open-ended chapter round-trip = %+v, want End 0", got)
+		t.Fatalf("open-ended chapter with unknown duration = %+v, want End 0", got)
+	}
+}
+
+// TestChapterTrailingEndFilledFromDuration checks the known-duration case: a trailing
+// open-ended chapter takes the media duration as its concrete end, so a spec-conforming
+// reader sees a bounded final chapter instead of the sentinel. The assertion is on the
+// concrete End value (== duration), which the sentinel cannot spoof: WaxLabel's own decoder
+// reads the sentinel back as End == 0, so a "reads back open" check could not tell a correctly
+// bounded chapter from one regressed to the sentinel.
+func TestChapterTrailingEndFilledFromDuration(t *testing.T) {
+	const duration = 12 * time.Second
+	frames, _ := chapterFrames([]core.Chapter{{Start: 2 * time.Second, Title: "A"}}, duration, 4)
+	got, _ := ProjectChapters(tagWith(4, frames))
+	if len(got) != 1 || got[0].End != duration {
+		t.Fatalf("trailing open chapter with known duration = %+v, want End %v", got, duration)
+	}
+}
+
+// TestChapterInteriorEndFilledFromNextStart checks an interior open-ended chapter takes the
+// next chapter's start as its concrete end (a gapless interval), never the sentinel.
+func TestChapterInteriorEndFilledFromNextStart(t *testing.T) {
+	frames, _ := chapterFrames([]core.Chapter{
+		{Start: 0, Title: "A"},
+		{Start: 5 * time.Second, Title: "B"},
+	}, 10*time.Second, 4)
+	got, _ := ProjectChapters(tagWith(4, frames))
+	if len(got) != 2 {
+		t.Fatalf("got %d chapters, want 2", len(got))
+	}
+	if got[0].End != 5*time.Second {
+		t.Errorf("interior chapter End = %v, want 5s (next start)", got[0].End)
+	}
+}
+
+// TestChapterFilledEndClampsBelowSentinel checks that a filled trailing end past the 32-bit
+// millisecond field clamps to chapTimeMax (0xFFFFFFFE), never colliding with the 0xFFFFFFFF
+// sentinel that would decode as "open". The raw end bytes are inspected, since the projection
+// reads chapTimeMax as a concrete time but 0xFFFFFFFF as open.
+func TestChapterFilledEndClampsBelowSentinel(t *testing.T) {
+	huge := time.Duration(0x100000000) * time.Millisecond // one past the uint32 ms field
+	frames, overflow := chapterFrames([]core.Chapter{{Start: time.Second, Title: "A"}}, huge, 4)
+	if !overflow {
+		t.Error("a filled end past the 32-bit ms field should report overflow")
+	}
+	_, rest, ok := cutLatin1(frames[0].Body) // element ID, then start(4)+end(4)+offsets(8)
+	if !ok || len(rest) < 8 {
+		t.Fatalf("could not read CHAP end field from %x", frames[0].Body)
+	}
+	if end := binary.BigEndian.Uint32(rest[4:8]); end != chapTimeMax {
+		t.Errorf("clamped filled end = %#08x, want %#08x (chapTimeMax, below the sentinel)", end, chapTimeMax)
+	}
+}
+
+// TestChapterSubMillisecondTrailingEndFloorsSafely covers the ms-resolution edge of the CHAP
+// fill: when the media duration is under 1 ms past the last chapter's start, flooring the
+// filled end to milliseconds (durationToMs) collapses it onto the start. The result must be a
+// benign zero-length chapter (End == Start) - never End < Start (an invalid interval) and never
+// the 0xFFFFFFFF sentinel (the 49.7-day bug Finding 1 fixed). A zero-length final chapter is far
+// closer to the truth than either alternative, and ms is the container's hard resolution, so this
+// is the accepted output rather than a case to reroute back to the sentinel.
+func TestChapterSubMillisecondTrailingEndFloorsSafely(t *testing.T) {
+	start := 1000 * time.Millisecond
+	duration := start + 500*time.Microsecond // 0.5 ms past the start: floors to the same ms
+	frames, _ := chapterFrames([]core.Chapter{{Start: start, Title: "A"}}, duration, 4)
+	_, rest, ok := cutLatin1(frames[0].Body) // element ID, then start(4)+end(4)+offsets(8)
+	if !ok || len(rest) < 8 {
+		t.Fatalf("could not read CHAP fields from %x", frames[0].Body)
+	}
+	startMs := binary.BigEndian.Uint32(rest[0:4])
+	endMs := binary.BigEndian.Uint32(rest[4:8])
+	if endMs == chapFieldUnused {
+		t.Error("trailing end regressed to the 0xFFFFFFFF sentinel instead of a concrete end")
+	}
+	if endMs < startMs {
+		t.Errorf("trailing end %d < start %d: an invalid interval", endMs, startMs)
+	}
+	if endMs != startMs {
+		t.Errorf("sub-ms trailing end = %d, want == start %d (floored to a zero-length chapter)", endMs, startMs)
+	}
+}
+
+// TestChapterTrailingEndNormalizesAgainstWriteDuration ties the ID3 writer's millisecond
+// flooring (durationToMs) to the diff comparator's millisecond truncation
+// (core.EqualChaptersModuloEnds): a trailing open chapter written from a non-whole-millisecond
+// duration must read back as an end the comparator, given that same duration, normalizes to
+// "open" (run-to-EOF). If the two ever floored differently, a file WaxLabel just wrote would
+// diff as having a chapter difference against an equivalent open-ended list. This is the
+// cross-package coupling the Truncate in normalizeReconstructableEnds exists to hold, exercised
+// through both real code paths rather than a hardcoded floor.
+func TestChapterTrailingEndNormalizesAgainstWriteDuration(t *testing.T) {
+	start := time.Second
+	duration := 2037*time.Millisecond + 551*time.Microsecond // deliberately not a whole ms
+	frames, _ := chapterFrames([]core.Chapter{{Start: start, Title: "A"}}, duration, 4)
+	got, _ := ProjectChapters(tagWith(4, frames))
+	if len(got) != 1 {
+		t.Fatalf("got %d chapters, want 1", len(got))
+	}
+	written := []core.Chapter{{Start: start, End: got[0].End, Title: "A"}}
+	open := []core.Chapter{{Start: start, Title: "A"}}
+	if !core.EqualChaptersModuloEnds(written, open, duration, duration) {
+		t.Errorf("written trailing end %v does not normalize to open against its own write duration %v: the writer floor and comparator truncation disagree",
+			got[0].End, duration)
 	}
 }
 
@@ -306,7 +417,7 @@ func TestChapterNestedCTOCFlattensWithWarning(t *testing.T) {
 // and reports the overflow.
 func TestChapterStartOverflowClamps(t *testing.T) {
 	huge := 60 * 24 * time.Hour // ~60 days, past the ~49.7-day uint32 ms limit
-	_, overflow := chapterFrames([]core.Chapter{{Start: huge, Title: "X"}}, 4)
+	_, overflow := chapterFrames([]core.Chapter{{Start: huge, Title: "X"}}, 0, 4)
 	if !overflow {
 		t.Error("a chapter past the 32-bit ms field should report overflow")
 	}
@@ -348,7 +459,7 @@ func TestChapterTitleInvalidUTF8Sanitized(t *testing.T) {
 // TestRebuildPreservesChaptersOnTagEdit checks that a tag-only edit (chapters unchanged)
 // preserves the source CHAP/CTOC frames byte-for-byte, while the tag change still applies.
 func TestRebuildPreservesChaptersOnTagEdit(t *testing.T) {
-	chapFrames, _ := chapterFrames([]core.Chapter{{Start: time.Second, End: 2 * time.Second, Title: "Ch1"}}, 4)
+	chapFrames, _ := chapterFrames([]core.Chapter{{Start: time.Second, End: 2 * time.Second, Title: "Ch1"}}, 0, 4)
 	orig := append([]Frame{{ID: "TIT2", Body: encodeTextFrame(encLatin1, []string{"Old"})}}, chapFrames...)
 
 	base := tag.NewTagSet()

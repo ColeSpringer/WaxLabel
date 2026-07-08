@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/spf13/cobra"
@@ -53,6 +54,11 @@ type jsonKey struct {
 	Key         string `json:"key"`
 	Cardinality string `json:"cardinality"`
 	Description string `json:"description,omitempty"`
+	// Aliases are the alternative spellings --set/--add accept for this key (e.g. DATE, YEAR
+	// for RECORDINGDATE), so the common Vorbis spellings are discoverable rather than silently
+	// normalized. Omitted for a key with no aliases. Only the keys command uses this; caps
+	// shares renderKeyTable but not this field.
+	Aliases []string `json:"aliases,omitempty"`
 }
 
 // buildKeys projects the canonical vocabulary into its JSON form, in KnownKeys'
@@ -64,6 +70,7 @@ func buildKeys() jsonKeys {
 			Key:         string(k),
 			Cardinality: keyCardinality(k),
 			Description: k.Description(),
+			Aliases:     tag.KeyAliases(k),
 		})
 	}
 	return jk
@@ -85,7 +92,14 @@ func renderKeys(w io.Writer, jk jsonKeys) {
 	fmt.Fprintf(w, "canonical keys (%d):\n", len(jk.Keys))
 	rows := make([]keyRow, len(jk.Keys))
 	for i, k := range jk.Keys {
-		rows[i] = keyRow{key: k.Key, cardinality: k.Cardinality, description: k.Description}
+		// Append the aliases to the description column (keys only); renderKeyTable is shared
+		// with caps, so aliases must not become a new column there. TrimSpace drops the leading
+		// gap when a key has no description of its own.
+		desc := k.Description
+		if len(k.Aliases) > 0 {
+			desc = strings.TrimSpace(desc + "  (aliases: " + strings.Join(k.Aliases, ", ") + ")")
+		}
+		rows[i] = keyRow{key: k.Key, cardinality: k.Cardinality, description: desc}
 	}
 	renderKeyTable(w, "  ", rows)
 }

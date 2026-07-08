@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/mapping"
@@ -34,6 +35,12 @@ type StructuredEdit struct {
 	// silently inherit the destination's. An authored line-only edit leaves this false and
 	// keeps the documented CLI convenience of preserving the file's existing language.
 	SyncedLyricsCarried bool
+	// MediaDuration is the file's playable length, used only to bound a trailing open-ended
+	// chapter (End == 0) at CHAP serialization time so a spec-conforming reader sees a
+	// concrete end instead of the 0xFFFFFFFF "unused" sentinel (~49.7 days). Zero (unknown
+	// duration) leaves the trailing chapter open, emitting the sentinel as before. The
+	// canonical core.Chapter{End:0} "open" model is unchanged; the fill is ID3-local.
+	MediaDuration time.Duration
 }
 
 // RebuildInfo reports facts about a rebuild the caller surfaces in the write
@@ -270,7 +277,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	// Append edited chapters after text and picture frames. Readers resolve CHAP/CTOC by
 	// element ID, so frame position is not significant.
 	if se.ChaptersChanged && len(se.Chapters) > 0 {
-		chapFrames, overflow := chapterFrames(se.Chapters, version)
+		chapFrames, overflow := chapterFrames(se.Chapters, se.MediaDuration, version)
 		out = append(out, chapFrames...)
 		info.ChapterOverflow = overflow
 	}

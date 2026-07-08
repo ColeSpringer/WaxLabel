@@ -95,6 +95,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 				Chapters: edited.Chapters, ChaptersChanged: chaptersChanged,
 				SyncedLyrics: edited.SyncedLyrics, SyncedLyricsChanged: syncedLyricsChanged,
 				SyncedLyricsCarried: opts.Carried,
+				MediaDuration:       edited.Properties.Duration(),
 			}, id3.WriteOpts{Multi: opts.ID3Multi, NumericGenre: opts.NumericGenre})
 		if err := id3.CheckSize(version, frames, bits.DefaultLimits.MaxElements); err != nil {
 			return nil, err

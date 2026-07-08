@@ -119,7 +119,7 @@ func decodeChpl(src core.ReaderAtSized, chpl node, limit int64) (version uint8, 
 		pos += titleLen
 		chapters = append(chapters, core.Chapter{Start: scaleToDuration(start, chplStartUnit), Title: title})
 	}
-	fillChapterEnds(chapters)
+	core.FillInteriorEnds(chapters)
 	return version, chapters, true
 }
 
@@ -968,19 +968,6 @@ func isPlaceholderTail(lastStart, lastEnd time.Duration, movieTimescale uint32, 
 		return false
 	}
 	return lastEnd == lastStart+time.Second
-}
-
-// fillChapterEnds sets each chapter's End to the next chapter's Start when End is
-// unset, so a start-only source (chpl) still yields closed intervals (the last
-// chapter's End stays zero - "until end of file"). It only fills when the next
-// start is later, so an out-of-order chapter list does not produce a degenerate
-// End < Start.
-func fillChapterEnds(chs []core.Chapter) {
-	for i := range chs {
-		if chs[i].End == 0 && i+1 < len(chs) && chs[i+1].Start > chs[i].Start {
-			chs[i].End = chs[i+1].Start
-		}
-	}
 }
 
 // mdhdFields decodes a mdhd atom's media timescale and duration (version 0 or 1).

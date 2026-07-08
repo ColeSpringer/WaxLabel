@@ -416,7 +416,7 @@ func chplRoundTrip(chapters []core.Chapter) []core.Chapter {
 			Title: truncateUTF8(ch.Title, titleByteMax),
 		}
 	}
-	fillChapterEnds(out)
+	core.FillInteriorEnds(out)
 	return out
 }
 

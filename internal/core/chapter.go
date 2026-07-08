@@ -158,12 +158,40 @@ func chaptersLoseStartTitle(chs []Chapter, keepLastEnd bool) bool {
 				if !keepLastEnd {
 					return true // the store holds no end at all; the final end is lost
 				}
-			} else if c.End != chs[i+1].Start {
+			} else if !chapterEndReachesNextStart(chs, i) {
 				return true // an interior gapped end cannot be inferred from the next start
 			}
 		}
 	}
 	return false
+}
+
+// chapterEndReachesNextStart reports whether chapter i's End coincides with the next
+// chapter's Start - a gapless interior interval a start-only store can reconstruct by
+// inferring the end from the following start. It is the single interior-end predicate
+// shared by chaptersLoseStartTitle (chapter-loss grading) and normalizeReconstructableEnds
+// (diff equivalence), so the two cannot drift on what "gapless" means. A last chapter (no
+// i+1) is never gapless-interior. It is the query-side dual of FillInteriorEnds (which sets
+// the end this predicate then recognizes).
+func chapterEndReachesNextStart(chs []Chapter, i int) bool {
+	return i+1 < len(chs) && chs[i].End == chs[i+1].Start
+}
+
+// FillInteriorEnds sets each non-last open chapter's End to the next chapter's Start when that
+// start is later, so a start-only source (MP4 Nero chpl on read, an authored list on write)
+// yields gapless closed intervals. The last chapter is left open ("until end of file"); a store
+// that bounds the final chapter (ID3 CHAP, from the media duration) does that separately. The
+// later-start guard skips an out-of-order pair, so it never produces End < Start. It mutates chs
+// in place, so callers that must not disturb their input pass a CloneChapters copy.
+//
+// It is the single interior end-fill shared by the MP4 read/write paths and the ID3 CHAP writer,
+// so the gapless-interior fill rule lives in one place rather than drifting between packages.
+func FillInteriorEnds(chs []Chapter) {
+	for i := range chs {
+		if chs[i].End == 0 && i+1 < len(chs) && chs[i+1].Start > chs[i].Start {
+			chs[i].End = chs[i+1].Start
+		}
+	}
 }
 
 // ChapterMetadataDroppedMessage returns the edit-time warning text for the fields a
@@ -182,6 +210,11 @@ func ChapterMetadataDroppedMessage(loss ChapterLoss) string {
 // EqualChapters reports whether two chapter slices are identical by content,
 // including order. It is the chapter analogue of EqualPictures, so a codec can
 // detect a chapter edit the same way it detects a picture edit.
+//
+// It compares End literally, which is required for codec change-detection
+// (chaptersChanged := !EqualChapters(...)): a genuine end edit must be detected. Callers
+// that want to treat a reconstructable end difference as equal (the diff command, matching
+// how copy grades such a difference as reconstructable) use EqualChaptersModuloEnds instead.
 func EqualChapters(a, b []Chapter) bool {
 	if len(a) != len(b) {
 		return false
@@ -192,6 +225,63 @@ func EqualChapters(a, b []Chapter) bool {
 		}
 	}
 	return true
+}
+
+// EqualChaptersModuloEnds reports whether two chapter lists are equal once each list's
+// reconstructable ends are normalized away, so a difference the destination codecs would
+// themselves reconstruct is not reported as a change. It is what diff uses in place of
+// EqualChapters. Byte-identical lists take the fast path and stay equal whatever the durations:
+// the normalization below reads each list against its own media duration, so a 50s trailing end
+// (run-to-EOF in a 50s file, mid-file in a 100s file) would otherwise make two files with the
+// same chapter metadata compare unequal.
+//
+// On the interior gapless rule (End == next.Start) diff and copy agree that the end is
+// reconstructable ("0 lossy"); the shared chapterEndReachesNextStart predicate keeps grading and
+// diff from drifting on it. The trailing run-to-EOF rule is diff-specific and does not mirror
+// copy: copy grades any trailing end dropped to a start-only store (FLAC/Ogg,
+// chaptersLoseStartTitle with keepLastEnd=false) as lossy even when it runs to EOF, while diff
+// treats a last end that reaches EOF as reconstructable. The divergence is confined to the
+// trailing end and is intended: a run-to-EOF end carries nothing a shorter store would lose,
+// while copy's grade turns on whether the store can hold a last end at all.
+//
+// durA/durB are the two files' media durations, used only for the trailing rule. Non-end fields
+// (Start, Title, Language, Hidden, Disabled, ...) are compared with ==, so any real difference
+// outside the reconstructable-end axis still counts.
+func EqualChaptersModuloEnds(a, b []Chapter, durA, durB time.Duration) bool {
+	if EqualChapters(a, b) {
+		return true // identical metadata is equal regardless of the two files' durations
+	}
+	return EqualChapters(normalizeReconstructableEnds(a, durA), normalizeReconstructableEnds(b, durB))
+}
+
+// normalizeReconstructableEnds returns a copy of chs with every reconstructable End set to 0
+// ("open"), so two lists that differ only in ends a codec would reconstruct compare equal. An
+// End is reconstructable when it is already 0, when it is a gapless interior end (equal to the
+// next chapter's Start - the codecs' own inference rule, shared via chapterEndReachesNextStart),
+// or when it is the trailing chapter's end and the chapter runs to end-of-file (End >= the media
+// duration).
+//
+// The trailing rule intentionally differs from the format-based grading in
+// chaptersLoseStartTitle (keepLastEnd): grading asks whether the destination store *can hold* a
+// last end, while diff asks whether the last end is merely "until EOF" and so carries no
+// information a shorter store would lose. dur is truncated to whole milliseconds before the
+// comparison because the ID3 CHAP writer floors a filled trailing end to ms (durationToMs), so
+// a written end reads back as floor(duration) ms while Properties().Duration() is
+// nanosecond-precise; without the truncation floor(dur)ms >= dur would be false and a genuine
+// run-to-EOF trailing chapter would wrongly count as different.
+func normalizeReconstructableEnds(chs []Chapter, dur time.Duration) []Chapter {
+	out := CloneChapters(chs)
+	durMs := dur.Truncate(time.Millisecond)
+	for i := range out {
+		switch {
+		case out[i].End == 0:
+		case chapterEndReachesNextStart(out, i): // gapless interior
+			out[i].End = 0
+		case i == len(out)-1 && durMs > 0 && out[i].End >= durMs: // trailing runs to EOF
+			out[i].End = 0
+		}
+	}
+	return out
 }
 
 // ReconcileChapterOverlaps truncates a chapter's stale explicit end to the following
