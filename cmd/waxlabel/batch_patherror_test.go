@@ -15,12 +15,12 @@ type batchElem struct {
 	} `json:"error"`
 }
 
-// TestDirectoryInBatchIsPerElementError (Fix 4): a directory argument without
+// TestDirectoryInBatchIsPerElementError: a directory argument without
 // --recursive sitting between two good files must not collapse the whole batch into a
 // single fileless error. Each list command emits one element per input - the good
 // files succeed (no error), and the directory is its own "usage"-coded error carrying
 // its file - so a --json consumer keeps the one-element-per-input contract and the
-// good results survive. Before Fix 4 expandPaths aborted the run up front, dropping
+// good results survive. Previously expandPaths aborted the run up front, dropping
 // both good results into a single error with no file field.
 func TestDirectoryInBatchIsPerElementError(t *testing.T) {
 	t.Parallel()

@@ -39,7 +39,7 @@ func commentPictureValue(p wl.Picture) string {
 }
 
 // flacCommentPictureSeed is a compact FLAC carrying a base64 METADATA_BLOCK_PICTURE comment,
-// used as a FuzzParse regression seed for the L2 comment-cover decode/materialize path.
+// used as a FuzzParse regression seed for the comment-cover decode/materialize path.
 func flacCommentPictureSeed() []byte {
 	return flacWithCommentBlock([]vorbis.Comment{
 		{Name: vorbis.PictureComment, Value: commentPictureValue(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()})},
@@ -47,7 +47,7 @@ func flacCommentPictureSeed() []byte {
 	})
 }
 
-// TestFLACCommentPictureVisibleAndMaterializes covers L2: a cover stored only as a base64
+// TestFLACCommentPictureVisibleAndMaterializes checks that a cover stored only as a base64
 // METADATA_BLOCK_PICTURE comment must be visible on read, and a tag edit (pictures untouched)
 // must keep it - canonicalized into exactly one native PICTURE block, with the now-stale
 // picture comment dropped (not duplicated, not lost).
@@ -88,7 +88,7 @@ func TestFLACCommentPictureVisibleAndMaterializes(t *testing.T) {
 	}
 }
 
-// TestFLACMixedNativeAndCommentPictures covers the L2 mixed case: a file with both a native
+// TestFLACMixedNativeAndCommentPictures covers the mixed case: a file with both a native
 // PICTURE block and a comment-embedded cover must read two distinct pictures, and a tag edit
 // must yield exactly two (the native block kept verbatim, the comment cover materialized once)
 // with no leftover METADATA_BLOCK_PICTURE comment - the easy duplication/loss regression.
@@ -165,7 +165,7 @@ func TestFLACCommentPicturePictureEditNoDuplicate(t *testing.T) {
 	}
 }
 
-// TestFLACCommentPictureSurvivesVendorStrip covers the L2 vendor-only-edit case: --strip-encoder
+// TestFLACCommentPictureSurvivesVendorStrip covers the vendor-only-edit case: --strip-encoder
 // re-renders the comment block (dropping the stripped METADATA_BLOCK_PICTURE comment) even though
 // no tag/chapter/picture changed, so the comment-sourced cover must still be materialized into a
 // native block rather than silently lost. Regression for the materialization trigger set, which
@@ -202,8 +202,8 @@ func TestFLACCommentPictureSurvivesVendorStrip(t *testing.T) {
 	}
 }
 
-// TestFLACCommentPictureOutOfRangeTypeMaterializes covers the L2<->L4 caveat: a comment cover
-// whose on-disk type is out of the single-byte range is clamped to PicOther on read (L4), and
+// TestFLACCommentPictureOutOfRangeTypeMaterializes covers the caveat: a comment cover
+// whose on-disk type is out of the single-byte range is clamped to PicOther on read, and
 // materializing it re-renders from the parsed struct - so the round-trip asserts the cover's
 // presence and image data, not byte-identity of the original comment bytes.
 func TestFLACCommentPictureOutOfRangeTypeMaterializes(t *testing.T) {

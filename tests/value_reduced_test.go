@@ -39,7 +39,7 @@ func TestMP3OriginalDateValueReduced(t *testing.T) {
 	}
 }
 
-// TestMP3RecordingDateSecondsValueReduced is the Fix-5 regression: ID3v2.3's TIME frame
+// TestMP3RecordingDateSecondsValueReduced is a regression guard: ID3v2.3's TIME frame
 // stores only HHMM, so a RECORDINGDATE carrying seconds drops them and must warn
 // value-reduced - the same loss class as the existing month/hour reductions. A value to
 // the minute is lossless (no over-warn), and ID3v2.4 keeps seconds in TDRC.

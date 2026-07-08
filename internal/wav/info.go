@@ -5,18 +5,23 @@ import (
 	"encoding/binary"
 	"slices"
 
+	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/mapping"
 	"github.com/colespringer/waxlabel/tag"
 )
 
 // parseInfo decodes a LIST chunk body into INFO items. The body begins with the
-// 4-byte list type; only "INFO" lists are decoded (others - "adtl" association
-// lists, say - are left for verbatim preservation by returning ok=false). It
-// tolerates truncation, stopping at the first malformed sub-chunk.
-func parseInfo(body []byte) (items []infoItem, ok bool) {
+// 4-byte list type; only "INFO" lists are decoded (the sole caller pre-confirms
+// the INFO type, so a non-INFO body yields no items). It tolerates
+// truncation, stopping at the first malformed sub-chunk and returning the items
+// gathered so far with a nil error. maxElements caps the item count via
+// bits.CheckElementCap - the one hard error this returns - so a crafted multi-MB
+// LIST cannot amplify allocation past the WithLimits knob, matching every sibling
+// parser.
+func parseInfo(body []byte, maxElements int) (items []infoItem, err error) {
 	if len(body) < 4 || string(body[0:4]) != "INFO" {
-		return nil, false
+		return nil, nil
 	}
 	pos := 4
 	for pos+8 <= len(body) {
@@ -29,7 +34,7 @@ func parseInfo(body []byte) (items []infoItem, ok bool) {
 		// slip past the guard and panic on the slice below). start <= len(body)
 		// holds from the loop condition, so len(body)-start is non-negative.
 		if size < 0 || size > len(body)-start {
-			break // truncated item; stop rather than over-read
+			break // truncated item; stop rather than over-read (tolerated, nil error)
 		}
 		// ZSTR: the value ends at the first NUL. Cutting there (rather than only
 		// trimming trailing NULs) means an interior NUL cannot survive into the
@@ -39,13 +44,19 @@ func parseInfo(body []byte) (items []infoItem, ok bool) {
 		if i := bytes.IndexByte(content, 0); i >= 0 {
 			content = content[:i]
 		}
+		// Cap the item count before appending so a hostile LIST full of zero-length
+		// items cannot balloon allocation - the truncation break above stays benign,
+		// only a genuine cap breach is fatal.
+		if err := bits.CheckElementCap(len(items), maxElements, "RIFF INFO items"); err != nil {
+			return nil, err
+		}
 		items = append(items, infoItem{id: id, raw: slices.Clone(content)})
 		pos = start + size
 		if size&1 == 1 {
 			pos++ // word-alignment pad byte
 		}
 	}
-	return items, true
+	return items, nil
 }
 
 // infoTags projects INFO items into a canonical TagSet, mapping only the known
@@ -62,7 +73,7 @@ func infoTags(items []infoItem) tag.TagSet {
 			continue
 		}
 		// Surface a present-empty INFO item (a size-1 NUL, text() == "") as a present-empty
-		// value, not absent, so --set TITLE= round-trips like the other formats (L1). Every item
+		// value, not absent, so --set TITLE= round-trips like the other formats. Every item
 		// in the list is present; an absent key simply has no item.
 		ts.AddNativeItem(key, it.text())
 	}
@@ -185,7 +196,7 @@ func rebuildInfo(orig []infoItem, edited tag.TagSet, stripStamp bool) []infoItem
 // present-empty one (--set TITLE=), is stored: INFO items are ZSTR (NUL-terminated), so an
 // empty value is a size-1 NUL item (renderInfo writes len(raw)+1 bytes), distinct from an
 // absent key (no item at all). This lets a present-empty value round-trip through INFO like the
-// other formats, rather than being dropped and relying on a forced ID3 chunk (L1).
+// other formats, rather than being dropped and relying on a forced ID3 chunk.
 func infoValue(ts tag.TagSet, key tag.Key) (string, bool) {
 	return ts.First(key)
 }

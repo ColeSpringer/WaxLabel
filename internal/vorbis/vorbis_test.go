@@ -115,7 +115,7 @@ func TestRebuildSetOnExistingPictureCommentDrops(t *testing.T) {
 	}
 }
 
-// TestPictureDecodePreservesStoredMIME covers the re-serialization half of Finding 6: the decoders
+// TestPictureDecodePreservesStoredMIME covers the re-serialization half: the decoders
 // (ParsePicture for a native FLAC block, DecodePictureComment for an Ogg comment) return each cover's
 // MIME and dimensions exactly as stored, never sniffed. This is the re-serialization source, so a
 // mislabeled cover's on-disk label survives an unrelated edit rather than being silently rewritten.

@@ -340,11 +340,11 @@ func isRepresentableZero(s string) bool {
 }
 
 // slotValueDropped reports whether a resolved trkn/disk slot value is lost on write: a value the
-// uint16 atom cannot hold, OR a literal 0 (decodePair drops a 0 slot on read, so it never
+// uint16 atom cannot hold, or a literal 0 (decodePair drops a 0 slot on read, so it never
 // round-trips). It is the shared slot-level predicate so the writer's dropped-value report
 // (appendSlotDrop, whose two-case switch is this same disjunction) and the transfer capability
 // grading stay in lockstep on which slot values MP4 drops - otherwise a copy of TRACKNUMBER=0 (or
-// 0/total) would be graded carried yet the writer drops it and it reads back absent (L2).
+// 0/total) would be graded carried yet the writer drops it and it reads back absent.
 func slotValueDropped(s string) bool {
 	return uint16ValueDropped(s) || isRepresentableZero(s)
 }

@@ -33,7 +33,7 @@ func prepareWith(t *testing.T, src []byte, edit func(*wl.Editor)) *wl.Plan {
 	return plan
 }
 
-// TestPictureWarningsScopedToAddedPictures pins C1: the edit-time picture warnings
+// TestPictureWarningsScopedToAddedPictures pins that the edit-time picture warnings
 // fire only for pictures this edit authored, never for a file's pre-existing art
 // (which stays the linter's whole-set concern). Adding a second front cover warns;
 // adding an unrelated picture to a file that already had two front covers does not,
@@ -102,7 +102,7 @@ func truncatedSSNDOffset(declaredBody int, offset uint32, presentBody int) []byt
 	return append(out, body...)
 }
 
-// TestAIFFTruncatedDurationRecomputed pins C3: a truncated PCM AIFF reports the
+// TestAIFFTruncatedDurationRecomputed pins that a truncated PCM AIFF reports the
 // duration its surviving SSND bytes decode to (like WAV), while a truncated
 // compressed AIFF-C keeps COMM's declared frame count (its bytes do not map linearly
 // to frames). Both still flag truncated-audio.

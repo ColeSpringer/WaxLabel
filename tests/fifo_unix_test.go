@@ -14,7 +14,7 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestParseFileFifoBackstop (#1, A1) pins the library backstop directly: ParseFile
+// TestParseFileFifoBackstop pins the library backstop directly: ParseFile
 // on a FIFO must return promptly with an invalid-data error rather than blocking in
 // os.Open (which waits for a writer on a FIFO's read end and ignores the context).
 // This is the guard that stops the hang for every caller, independent of the CLI's

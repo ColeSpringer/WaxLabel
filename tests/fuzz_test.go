@@ -72,7 +72,7 @@ func FuzzParse(f *testing.F) {
 	// page-aligned, so an edit's Prepare refuses with ErrUnalignedStream (accept-listed below).
 	f.Add([]byte("OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x004\x12\x00\x00\x00\x00\x00\x00\x16\xbb\xdb\t\x01\x13OpusHead\x01\x02\x00\x00\x80\xbb\x00\x00\x00\x00\x00OggS\x00\x00\xc0\x03\x00\x00\x00\x00\x00\x004\x12\x00\x00\x01\x00\x00\x00\xe3K\x9c\x11\x02\x10\nOpusTags\x00\x00\x00\x00\x00\x00\x00\x00AUDIOPKT!!"))
 	f.Add([]byte{})
-	f.Add(flacCommentPictureSeed()) // FLAC with a base64 METADATA_BLOCK_PICTURE comment (L2 regression)
+	f.Add(flacCommentPictureSeed()) // FLAC with a base64 METADATA_BLOCK_PICTURE comment (regression)
 
 	ctx := context.Background()
 	f.Fuzz(func(t *testing.T, data []byte) {
@@ -98,7 +98,7 @@ func FuzzParse(f *testing.F) {
 				return
 			}
 			// A file the parser flagged as having no audio essence (WarnNoAudioFrames) is
-			// refused by Editor.Prepare (H1, ErrInvalidData): it is a contradictory file the
+			// refused by Editor.Prepare (ErrInvalidData): it is a contradictory file the
 			// library declines to rewrite, not a regression. Accept it and skip the write
 			// round-trip (a no-audio seed has nothing to round-trip anyway).
 			if errors.Is(err, waxerr.ErrInvalidData) && hasWarning(doc, wl.WarnNoAudioFrames) {

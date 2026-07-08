@@ -57,7 +57,7 @@ func TestLintAndNoteAgree(t *testing.T) {
 // TestValueDroppedWarningM4A checks the values MP4 cannot store faithfully. Numeric
 // track and disc slots reject non-numeric, negative, and >65535 values. A literal "0"
 // warns in either slot - decodePair drops a 0 on read, so it never round-trips, even paired
-// with a real total (L2). The warning names the dropped canonical key, and --strict escalates it.
+// with a real total. The warning names the dropped canonical key, and --strict escalates it.
 func TestValueDroppedWarningM4A(t *testing.T) {
 	t.Parallel()
 	notagsM4A := filepath.Join("..", "..", "testdata", "notags.m4a")
@@ -78,7 +78,7 @@ func TestValueDroppedWarningM4A(t *testing.T) {
 	}
 
 	// TRACKNUMBER=0 with a real total still loses the 0 on read (decodePair drops a 0 slot), so it
-	// warns for TRACKNUMBER even though 12 stores fine (L2).
+	// warns for TRACKNUMBER even though 12 stores fine.
 	out, _, _ = runCLI(t, "plan", copyFixture(t, notagsM4A), "--set", "TRACKNUMBER=0", "--set", "TRACKTOTAL=12")
 	if !strings.Contains(out, "value-dropped") || !strings.Contains(out, "TRACKNUMBER") {
 		t.Errorf("plan TRACKNUMBER=0 TRACKTOTAL=12: the 0 is dropped on read, want a value-dropped warning naming TRACKNUMBER:\n%s", out)
@@ -120,7 +120,7 @@ func TestMatroskaSingleValuedMultiWarning(t *testing.T) {
 	}
 }
 
-// TestArgTextValidationIsUsageError covers the F5 fix: an author-entered value carrying invalid
+// TestArgTextValidationIsUsageError: an author-entered value carrying invalid
 // UTF-8 (or, for file content, a NUL) is caught at the CLI boundary as a usage error (exit 2),
 // not deferred to the library's exit-4 "file is corrupt" backstop - even on read-only `plan`
 // against a valid file. Every author-text boundary routes through the shared checkArgText.

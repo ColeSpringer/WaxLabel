@@ -71,7 +71,7 @@ func TestSYLTLanguageNormalization(t *testing.T) {
 	}
 }
 
-// TestSYLTLanguageWriteMatchesRead is the L7 regression: a modeled language of "xxx" (which the
+// TestSYLTLanguageWriteMatchesRead is a regression: a modeled language of "xxx" (which the
 // CLI accepts) is the ISO undefined marker, so the write must store it as the canonical "XXX" and
 // it must read back empty - the same value an empty model language round-trips to - rather than
 // being stored verbatim yet dropped to empty on read.
@@ -220,7 +220,7 @@ func TestSYLTNonLyricLanguageNotInherited(t *testing.T) {
 	}
 }
 
-// TestSYLTCarriedLanguageNotInherited is the M1 regression: a faithful carry of a
+// TestSYLTCarriedLanguageNotInherited is a regression: a faithful carry of a
 // no-language synced-lyrics set must not inherit the destination's existing SYLT language.
 // An authored line-only edit still keeps it (the documented CLI convenience), so the two
 // dispositions are asserted side by side to pin the SyncedLyricsCarried gate.

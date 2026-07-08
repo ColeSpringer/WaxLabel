@@ -709,6 +709,16 @@ func renderNumTotal(version byte, id string, edited tag.TagSet, numKey, totKey t
 // keeps exact digit strings, including leading zeros, unlike tag.ParseNumPair. totalDropped is true
 // only when a canonical total (from the total key, not an embedded one) is made unrepresentable.
 func composeNumTotal(numKey tag.Key, num, canonicalTotal string) (value string, totalDropped bool) {
+	// A non-empty number field that is not itself a valid numeric value ("1/2/3", "A1/12")
+	// cannot be recomposed as "n/total" without silently dropping the extra text - splitting
+	// "1/2/3" to nPart "1" and re-joining "1/<total>" would discard "/2/3" with no warning.
+	// Preserve it verbatim (matching both the no-total path and the pre-parse "kept as text"
+	// note) and mark any canonical total dropped, so a value-dropped warning fires instead of a
+	// silent loss. The empty/whitespace check is why a lone TRACKTOTAL still round-trips: an
+	// empty number is cleanly representable as "/total" (composed below), not dropped here.
+	if strings.TrimSpace(num) != "" && !tag.ValidNumericValue(numKey, num) {
+		return num, canonicalTotal != ""
+	}
 	nPart, embeddedTotal := tag.SplitNumberTotal(num)
 	finalTotal := canonicalTotal
 	if finalTotal == "" {

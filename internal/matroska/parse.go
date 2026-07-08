@@ -465,7 +465,7 @@ func parseAttached(src core.ReaderAtSized, af element, depth *bits.Depth, limit 
 	}
 	// A cover is an image MIME, or a --force octet-stream stored under the cover-art file name:
 	// the latter reprojects as an Unrecognized() picture (removable, and rebuilt not preserved on
-	// write) instead of accumulating a new cover_<n> attachment on every re-add (L9). A foreign
+	// write) instead of accumulating a new cover_<n> attachment on every re-add. A foreign
 	// non-image doc named cover.* (text/plain, application/pdf) stays a plain attachment.
 	a.image = isCoverAttachment(a.mime, a.name)
 	if !a.image || !haveData {

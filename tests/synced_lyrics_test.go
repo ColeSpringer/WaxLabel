@@ -118,7 +118,7 @@ func TestSyncedLyricsWriteInvariant(t *testing.T) {
 	}
 }
 
-// TestNoOpWriteOnLyricedFLACByteIdentical is the Finding 2 preservation pin: an edit that does not
+// TestNoOpWriteOnLyricedFLACByteIdentical is the preservation pin: an edit that does not
 // touch synced lyrics never re-serializes them through FormatLRC, so a no-op write on a
 // lyrics-bearing FLAC is byte-identical and an unrelated title edit leaves the synced lyrics intact
 // on re-parse. This is what keeps the new space-separator convention from silently rewriting (and,
@@ -236,7 +236,7 @@ func TestSyncedLyricsTransferGrading(t *testing.T) {
 		}
 	}
 
-	// L3: a timestamp the destination must clamp grades Lossy. The LRC store holds a far
+	// A timestamp the destination must clamp grades Lossy. The LRC store holds a far
 	// larger range than SYLT's 32-bit ms field (~49.7 days), so a FLAC line past that field
 	// carries onto another LRC store, but onto a SYLT format it is clamped and graded Lossy.
 	flacBytes, err := os.ReadFile("../testdata/notags.flac")
@@ -380,7 +380,7 @@ func TestSyncedLyricsTransferApply(t *testing.T) {
 	}
 }
 
-// TestSyncedLyricsCarryDoesNotInheritLanguage is the M1 regression at the library boundary:
+// TestSyncedLyricsCarryDoesNotInheritLanguage is a regression guard at the library boundary:
 // carrying a no-language synced-lyrics set (a FLAC/Ogg source stores none) onto a destination
 // that already has an eng SYLT must read back with no language, not silently inherit the
 // destination's - otherwise the transfer report says "carried/lossless" while the bytes gain a

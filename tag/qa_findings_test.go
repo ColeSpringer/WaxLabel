@@ -97,7 +97,7 @@ func TestDescribesOwnAudio(t *testing.T) {
 	}
 }
 
-// TestTrimTokenValueMediaTypeReplayGain covers Finding 9: MEDIATYPE and the REPLAYGAIN_* keys are
+// TestTrimTokenValueMediaTypeReplayGain checks that MEDIATYPE and the REPLAYGAIN_* keys are
 // single-token values, so TrimTokenValue strips their surrounding whitespace the same way it does
 // numeric and date keys. Internal whitespace (the space before "dB") is preserved, and a
 // free-text key is left untouched.

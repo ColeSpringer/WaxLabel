@@ -179,7 +179,7 @@ func TestChapterCTOCSubsetKeepsUnreferenced(t *testing.T) {
 	}
 }
 
-// TestChapterDuplicateElementIDsAllSurvive checks the M1 fix: several CHAP frames sharing an
+// TestChapterDuplicateElementIDsAllSurvive checks that several CHAP frames sharing an
 // element ID (a non-conformant tag) must each project to a distinct chapter rather than
 // collapsing to one via the old map[elementID]Chapter keying. Without a CTOC they keep file
 // order; a CTOC that names the shared ID more than once consumes one distinct CHAP per
@@ -222,7 +222,7 @@ func TestChapterDuplicateElementIDsAllSurvive(t *testing.T) {
 	}
 }
 
-// TestChapterEmptyElementIDsAllSurvive checks the M1 fix for the empty-ID case: several CHAP
+// TestChapterEmptyElementIDsAllSurvive checks the empty-ID case: several CHAP
 // frames that all carry an empty element ID must each project to a distinct chapter rather than
 // collapsing under the shared "" key.
 func TestChapterEmptyElementIDsAllSurvive(t *testing.T) {
@@ -423,7 +423,7 @@ func FuzzDecodeCHAP(f *testing.F) {
 	f.Add([]byte("a\x00"))
 	f.Add(append([]byte("a\x00"), make([]byte, 16)...))
 	f.Add(append([]byte("a\x00"), append(make([]byte, 16), 'T', 'I', 'T', '2')...))
-	f.Add(append([]byte("\x00"), make([]byte, 16)...)) // empty element ID (M1 dup/empty-ID regression)
+	f.Add(append([]byte("\x00"), make([]byte, 16)...)) // empty element ID (dup/empty-ID regression)
 	good, _ := encodeCHAP("chp0", core.Chapter{Start: time.Second, End: 2 * time.Second, Title: "Tî"}, 4)
 	f.Add(good)
 	f.Fuzz(func(t *testing.T, body []byte) {

@@ -21,7 +21,7 @@ func segmentFirstChildIsVoid(t *testing.T, b []byte) bool {
 	return b[ds] == 0xEC
 }
 
-// TestMatroskaSegmentCRCDroppedToVoid covers M2: a CRC-32 directly under the Segment covers the
+// TestMatroskaSegmentCRCDroppedToVoid checks that a CRC-32 directly under the Segment covers the
 // whole segment body, so any edit makes it stale. The writer must neutralize it to a Void (not
 // copy the stale CRC), keeping the output valid (the CRC is spec-optional) without a whole-file
 // recompute. checkCRCs recurses into the Segment master, so it would flag a stale Segment CRC;
@@ -70,7 +70,7 @@ func TestMatroskaSegmentCRCDroppedToVoid(t *testing.T) {
 	}
 }
 
-// TestMatroskaSegmentCRCUncapturableRefused covers the M2 robustness gap: a Segment-level CRC-32
+// TestMatroskaSegmentCRCUncapturableRefused covers the robustness gap: a Segment-level CRC-32
 // whose declared size exceeds the alloc limit cannot be captured for neutralization, so an edit
 // must refuse loudly (the same contract the index elements use) rather than copy the stale CRC
 // over an edited body and silently produce an invalid file.

@@ -179,11 +179,13 @@ const (
 	// clamped to fit. It is separate from WarnTruncatedAudio because it describes a
 	// container chunk, not audio essence or a tag field.
 	WarnOversizedChunk
-	// WarnSyncedLyricsTimestampFormat means an ID3v2 SYLT frame used the MPEG-frames
-	// timestamp format (format 1) instead of milliseconds (format 2). WaxLabel reads and
-	// writes only the millisecond format. Mapping MPEG frames to a time needs the full
-	// frame index, so the frame is skipped on projection rather than placed at the wrong
-	// offset. Keyless: it describes a synced-lyrics set, not a tag field.
+	// WarnSyncedLyricsTimestampFormat means an ID3v2 SYLT frame used a non-millisecond
+	// timestamp format (the guard fires for any format byte other than 2 - MPEG frames is
+	// format 1, but bytes 0 and 3-255 also trip it). WaxLabel reads and writes only the
+	// millisecond format. Mapping a non-millisecond unit to a time would need context the
+	// model lacks (e.g. the full MPEG frame index), so the frame is skipped on projection
+	// rather than placed at the wrong offset. Keyless: it describes a synced-lyrics set,
+	// not a tag field.
 	WarnSyncedLyricsTimestampFormat
 	// WarnSyncedLyricsContentType means an ID3v2 SYLT frame carried a non-lyric content
 	// type, such as chord, trivia, or image URL. Only the lyrics content type projects into
@@ -226,6 +228,13 @@ const (
 	// so the CLI's --strict gate can act on it, matching WarnValueDropped's escalation. Appended
 	// to the end of the block so the existing codes keep their numbers.
 	WarnValueCoerced
+	// WarnChapterOverlapReconciled means a chapter edit inserted or moved a chapter such that a
+	// neighbor's explicit end overlapped the following start, so that stale end was truncated to
+	// the next start to keep the written list non-overlapping. It is informational (the user chose
+	// "truncate + note"): the reconciliation is applied to the edit's own overlaps only, a file's
+	// pre-existing on-disk overlap is left verbatim, and it does not escalate --strict. Keyless: it
+	// describes the chapter set, not a tag field.
+	WarnChapterOverlapReconciled
 )
 
 func (c WarningCode) String() string {
@@ -314,6 +323,8 @@ func (c WarningCode) String() string {
 		return "number-total-conflict"
 	case WarnValueCoerced:
 		return "value-coerced"
+	case WarnChapterOverlapReconciled:
+		return "chapter-overlap-reconciled"
 	default:
 		return "unknown"
 	}

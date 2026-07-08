@@ -11,7 +11,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestMatroskaProjectSanitizesInvalidUTF8 is a QA-review regression: the Matroska reader
+// TestMatroskaProjectSanitizesInvalidUTF8 is a regression guard: the Matroska reader
 // stores text as raw bytes, so a non-conformant file can hold invalid UTF-8 in a TagString or
 // the Info.Title. project must sanitize the values entering the canonical model (like the
 // ID3/MP4/Vorbis readers) so a copy of such a value is not spuriously rejected by the
@@ -71,10 +71,10 @@ func structuredTagsMKA() []byte {
 	return segBytes(cat(mkInfo("Title"), tags, emptyCluster()))
 }
 
-// TestF3PreservesAlbumTagStructureThroughUnrelatedEdit is the F3 regression on a non-flat
+// TestPreservesAlbumTagStructureThroughUnrelatedEdit is a regression on a non-flat
 // fixture: an edit that touches an UNRELATED key must keep every album-scope SimpleTag's
 // language, binary value, and nested sub-tags byte-for-byte, not re-emit them flat.
-func TestF3PreservesAlbumTagStructureThroughUnrelatedEdit(t *testing.T) {
+func TestPreservesAlbumTagStructureThroughUnrelatedEdit(t *testing.T) {
 	src := structuredTagsMKA()
 	base := parseMKA(t, src)
 	// Sanity: the structured tags parsed.
@@ -120,9 +120,9 @@ func TestF3PreservesAlbumTagStructureThroughUnrelatedEdit(t *testing.T) {
 	}
 }
 
-// TestF3WarnsWhenEditedTagDropsStructure: changing the value of a structured album tag
+// TestWarnsWhenEditedTagDropsStructure: changing the value of a structured album tag
 // cannot keep its old bytes, so the structure is genuinely lost - this must warn (keyed).
-func TestF3WarnsWhenEditedTagDropsStructure(t *testing.T) {
+func TestWarnsWhenEditedTagDropsStructure(t *testing.T) {
 	src := structuredTagsMKA()
 	base := parseMKA(t, src)
 
@@ -147,7 +147,7 @@ func TestF3WarnsWhenEditedTagDropsStructure(t *testing.T) {
 	}
 }
 
-// TestMatroskaWarnsWhenExtraTitleValueDropped is the O1 regression: Matroska homes the
+// TestMatroskaWarnsWhenExtraTitleValueDropped is a regression: Matroska homes the
 // canonical Title in the single-valued Info.Title, so a multi-valued TITLE edit keeps only
 // the first value. That drop must surface as a keyed value-dropped warning (visible to
 // --strict) rather than vanish with exit 0, and only the first value is stored.
@@ -205,10 +205,10 @@ func structuredChaptersMKA() []byte {
 	return segBytes(cat(mkInfo("Title"), chapters, emptyCluster()))
 }
 
-// TestF4PreservesChapterStructureThroughReRender is the F4 regression on a non-flat fixture:
+// TestPreservesChapterStructureThroughReRender is a regression on a non-flat fixture:
 // a chapter edit re-renders the default edition, which must keep each chapter's language,
 // IETF language, and hidden/disabled flags instead of stripping them to a bare "und" atom.
-func TestF4PreservesChapterStructureThroughReRender(t *testing.T) {
+func TestPreservesChapterStructureThroughReRender(t *testing.T) {
 	src := structuredChaptersMKA()
 	base := parseMKA(t, src)
 	if len(base.Chapters) != 1 {
@@ -253,10 +253,10 @@ func TestF4PreservesChapterStructureThroughReRender(t *testing.T) {
 	}
 }
 
-// TestF3WarnsOnNarrowerScopeStructureDropped: editing a key whose structured (language-
+// TestWarnsOnNarrowerScopeStructureDropped: editing a key whose structured (language-
 // carrying) SimpleTag lives at a NON-album scope drops the structure on re-render too, so the
 // tag-structure-dropped warning must cover it - not just album scope.
-func TestF3WarnsOnNarrowerScopeStructureDropped(t *testing.T) {
+func TestWarnsOnNarrowerScopeStructureDropped(t *testing.T) {
 	targets := encElement(idTargets, uintElement(idTgtTypeVal, 30)) // track scope
 	artist := encElement(idSimpleTag, cat(
 		stringElement(idTagName, "ARTIST"),
@@ -283,11 +283,11 @@ func TestF3WarnsOnNarrowerScopeStructureDropped(t *testing.T) {
 	}
 }
 
-// TestF4ChapterLanguagePreservedWithEmptyTitle: a chapter carrying a language but an empty
+// TestChapterLanguagePreservedWithEmptyTitle: a chapter carrying a language but an empty
 // title (the case an invalid-UTF-8 title sanitized to "" produces) must keep its language
 // through a re-render - the render must emit a ChapterDisplay for the language even with no
 // title, or the language is silently lost.
-func TestF4ChapterLanguagePreservedWithEmptyTitle(t *testing.T) {
+func TestChapterLanguagePreservedWithEmptyTitle(t *testing.T) {
 	disp := encElement(idChapDisplay, cat(
 		stringElement(idChapString, ""), // empty (sanitized) title
 		stringElement(idChapLang, "eng"),
@@ -306,10 +306,10 @@ func TestF4ChapterLanguagePreservedWithEmptyTitle(t *testing.T) {
 	}
 }
 
-// TestF4ChapterIETFUndNormalized: an "und" ChapLanguageIETF (mkvmerge's default on nearly
+// TestChapterIETFUndNormalized: an "und" ChapLanguageIETF (mkvmerge's default on nearly
 // every chapter) carries no information and must normalize to "" like ChapLanguage, so the
 // text listing shows no spurious "[lang: und]" and --json omits the field.
-func TestF4ChapterIETFUndNormalized(t *testing.T) {
+func TestChapterIETFUndNormalized(t *testing.T) {
 	disp := encElement(idChapDisplay, cat(
 		stringElement(idChapString, "Intro"),
 		stringElement(idChapLang, "und"),
@@ -323,11 +323,11 @@ func TestF4ChapterIETFUndNormalized(t *testing.T) {
 	}
 }
 
-// TestF3TitleSimpleTagMigratesWithoutDuplicate is a QA-review regression: a file whose title
+// TestTitleSimpleTagMigratesWithoutDuplicate is a regression guard: a file whose title
 // lives only in an album TITLE SimpleTag (no Info.Title) migrates that title into Info.Title
 // on any edit. The preservation loop must NOT also keep the stale TITLE SimpleTag, or the
 // output carries the title twice (Info.Title plus a redundant SimpleTag).
-func TestF3TitleSimpleTagMigratesWithoutDuplicate(t *testing.T) {
+func TestTitleSimpleTagMigratesWithoutDuplicate(t *testing.T) {
 	// An Info element with no Title child (title lives only in a SimpleTag), plus an album
 	// group carrying TITLE + ARTIST.
 	info := encElement(idInfo, uintElement(idTimestampScl, 1000000))
@@ -363,11 +363,11 @@ func TestF3TitleSimpleTagMigratesWithoutDuplicate(t *testing.T) {
 	}
 }
 
-// TestF2TitlePreservedWhenNoInfo checks that a title carried only in an album-scope TITLE
+// TestTitlePreservedWhenNoInfo checks that a title carried only in an album-scope TITLE
 // SimpleTag survives an unrelated edit when the file has no Info element. With no
 // Info.Title to migrate to, buildAlbumGroup must keep the SimpleTag verbatim. The second
 // consecutive edit verifies that every render re-derives infoPresent == false.
-func TestF2TitlePreservedWhenNoInfo(t *testing.T) {
+func TestTitlePreservedWhenNoInfo(t *testing.T) {
 	targets := encElement(idTargets, uintElement(idTgtTypeVal, 50)) // album scope
 	titleTag := encElement(idSimpleTag, cat(stringElement(idTagName, "TITLE"), stringElement(idTagString, "MyTitle")))
 	artist := encElement(idSimpleTag, cat(stringElement(idTagName, "ARTIST"), stringElement(idTagString, "A")))
@@ -451,13 +451,13 @@ func assertSeekHeadResolves(t *testing.T, out []byte, wantEntries int) {
 	}
 }
 
-// TestF3StaleSeekHeadAfterAbsorbingDuplicateMaster checks duplicate master absorption:
+// TestStaleSeekHeadAfterAbsorbingDuplicateMaster checks duplicate master absorption:
 // when an edit absorbs a later Tags, Attachments, or Chapters master into the first, a
 // SeekHead entry pointing at the absorbed master must not survive with a stale offset. The
 // absorb path cannot delete a fixed-size SeekHead entry, so it falls back to the shift path
 // and rebuilds the SeekHead without the dropped target. A reserved Void makes the absorb
 // path the first attempt.
-func TestF3StaleSeekHeadAfterAbsorbingDuplicateMaster(t *testing.T) {
+func TestStaleSeekHeadAfterAbsorbingDuplicateMaster(t *testing.T) {
 	tagsMaster := func(name, val string) []byte {
 		return encElement(idTags, encElement(idTag, cat(
 			encElement(idTargets, uintElement(idTgtTypeVal, 50)),
@@ -593,11 +593,11 @@ func warnsFlattened(plan *core.WritePlan) bool {
 	return false
 }
 
-// TestF4MultipleDisplaysAreLossy: a chapter with a second ChapterDisplay (an other-language
+// TestMultipleDisplaysAreLossy: a chapter with a second ChapterDisplay (an other-language
 // title) the flat model cannot carry must trip the flatten warning on a chapter edit. The
 // second display is skipped inside the atom callback; the lossy flag is set after the loop
 // from displays > 1, so this guards that post-loop accounting.
-func TestF4MultipleDisplaysAreLossy(t *testing.T) {
+func TestMultipleDisplaysAreLossy(t *testing.T) {
 	disp1 := encElement(idChapDisplay, cat(stringElement(idChapString, "Intro"), stringElement(idChapLang, "eng")))
 	disp2 := encElement(idChapDisplay, cat(stringElement(idChapString, "Anfang"), stringElement(idChapLang, "ger")))
 	atom := encElement(idChapterAtom, cat(uintElement(idChapterUID, 0x33), uintElement(idChapTimeStart, 0), disp1, disp2))
@@ -607,10 +607,10 @@ func TestF4MultipleDisplaysAreLossy(t *testing.T) {
 	}
 }
 
-// TestF4DuplicateChapStringIsLossy: a single ChapterDisplay with two ChapString elements
+// TestDuplicateChapStringIsLossy: a single ChapterDisplay with two ChapString elements
 // keeps only the first - the second is silently dropped unless lossy is flagged, so this
 // guards that the duplicate-string case is part of the silent-loss class.
-func TestF4DuplicateChapStringIsLossy(t *testing.T) {
+func TestDuplicateChapStringIsLossy(t *testing.T) {
 	disp := encElement(idChapDisplay, cat(
 		stringElement(idChapString, "Intro"),
 		stringElement(idChapString, "DUPLICATE"),
@@ -623,10 +623,10 @@ func TestF4DuplicateChapStringIsLossy(t *testing.T) {
 	}
 }
 
-// TestF4UnmodeledChapterChildStillWarns: an unmodeled ChapterAtom child the flat model
+// TestUnmodeledChapterChildStillWarns: an unmodeled ChapterAtom child the flat model
 // cannot carry (here a ChapProcess) still trips the flatten warning on a chapter edit, so
 // the broadened lossy detection covers the whole silent-loss class.
-func TestF4UnmodeledChapterChildStillWarns(t *testing.T) {
+func TestUnmodeledChapterChildStillWarns(t *testing.T) {
 	const idChapProcess = 0x6944
 	atom := encElement(idChapterAtom, cat(
 		uintElement(idChapterUID, 0x22),

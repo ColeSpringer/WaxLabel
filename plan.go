@@ -163,7 +163,7 @@ func countChange(key tag.Key, before, after int) tag.Change {
 	}
 	// Count mirrors the integer the text render highlights (the added/resulting count,
 	// or the removed count) so a JSON consumer reads it directly instead of the bogus
-	// stringified Old/New a count change formerly leaked into the machine output (P3).
+	// stringified Old/New a count change formerly leaked into the machine output.
 	return c
 }
 

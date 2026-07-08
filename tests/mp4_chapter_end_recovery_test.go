@@ -8,7 +8,7 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// TestMP4ChapterLastEndRecoveredBelowMovieDuration is the M4 regression: the QuickTime
+// TestMP4ChapterLastEndRecoveredBelowMovieDuration is a regression guard: the QuickTime
 // reader recovers the last chapter's end from the stts running total. An explicit end that
 // lands below the movie duration must survive the round trip (only an end that reaches the
 // movie duration is canonicalized back to open), and the in-memory result must equal a fresh
@@ -56,7 +56,7 @@ func TestMP4ChapterOpenLastCanonicalizedAtMovieDuration(t *testing.T) {
 	}
 }
 
-// TestMP4ChapterOpenLastPastMovieDurationReadsOpen is the L4 regression: a last chapter
+// TestMP4ChapterOpenLastPastMovieDurationReadsOpen is a regression guard: a last chapter
 // authored to start at or past the movie duration gets a synthetic 1 s placeholder tail on
 // write (chapterDeltas' default branch), which used to read back as a fabricated 1 s end
 // (endIsMovieDuration cannot canonicalize a span a full second past the duration). It must now
@@ -86,7 +86,7 @@ func TestMP4ChapterOpenLastPastMovieDurationReadsOpen(t *testing.T) {
 	}
 }
 
-// TestMP4ChapterExactChplStartsOverDriftedQT is the M1 regression: coincident and
+// TestMP4ChapterExactChplStartsOverDriftedQT is a regression guard: coincident and
 // sub-millisecond-apart starts drift in the QuickTime stts (a duplicate start borrows a unit
 // that only repays from later slack), but the uint64 Nero chpl keeps them exact. When the two
 // sources agree, the read must take the chpl's exact starts, not the drifted QuickTime ones.
@@ -127,8 +127,8 @@ func TestMP4ChapterExactChplStartsOverDriftedQT(t *testing.T) {
 	}
 }
 
-// TestMP4ChapterCopyWithEndConverges is the M5 regression: a chapter list carrying a
-// last-chapter end now round-trips (M4), so re-applying it is a true no-op with byte-identical
+// TestMP4ChapterCopyWithEndConverges is a regression guard: a chapter list carrying a
+// last-chapter end now round-trips, so re-applying it is a true no-op with byte-identical
 // output - three re-copies in a row report "no changes" and never churn the file.
 func TestMP4ChapterCopyWithEndConverges(t *testing.T) {
 	src := readFixture(t, sampleM4B)
@@ -191,7 +191,7 @@ func TestMP4ChapterGapPastClampPrefersChpl(t *testing.T) {
 	}
 }
 
-// TestMP4ChapterOversizedStartPrefersChpl is the L5 regression: a first chapter starting past
+// TestMP4ChapterOversizedStartPrefersChpl is a regression guard: a first chapter starting past
 // the u32 movie-timescale ceiling (here 5,000,000 s at a 1 ms movie timescale, ~57.9 days > the
 // ~49.7 day field) carries its start in the leading empty edit, whose u32 segment_duration
 // clamps to MaxUint32. That clamp is invisible to the stts-delta saturation scan, so the read
@@ -220,7 +220,7 @@ func TestMP4ChapterOversizedStartPrefersChpl(t *testing.T) {
 	}
 }
 
-// TestMP4ChapterCoincidentOpenLastMirrors covers the M4/M1 corner the plan flags as a known
+// TestMP4ChapterCoincidentOpenLastMirrors covers the corner the plan flags as a known
 // cosmetic edge: coincident starts with an open last chapter. Whatever last end the reader
 // recovers, the in-memory result must equal a fresh reparse (so re-apply idempotency holds),
 // and the coincident starts still read back exact from the chpl.
@@ -241,7 +241,7 @@ func TestMP4ChapterCoincidentOpenLastMirrors(t *testing.T) {
 }
 
 // TestMP4ChapterWriteReparseInvariant is the shared mirror-invariant guard the whole
-// read/predictor divergence class depends on (L4, L5, and the earlier recovery corners): for
+// read/predictor divergence class depends on: for
 // each chapter edit, the in-memory Result.Chapters and the chapter-source-conflict flag must
 // equal a fresh parse of the written bytes. If decodeTextTrack (read) and qtWriteRoundTrip
 // (write predictor) ever drift, the two disagree and a re-edit stops being a no-op. The
@@ -258,10 +258,10 @@ func TestMP4ChapterWriteReparseInvariant(t *testing.T) {
 		{"plain", []wl.Chapter{{Start: 0, Title: "A"}, {Start: sec(3), Title: "B"}}},
 		{"last-end-below-duration", []wl.Chapter{{Start: 0, Title: "A"}, {Start: sec(4), End: sec(6), Title: "B"}}},
 		{"open-last-within-duration", []wl.Chapter{{Start: 0, Title: "A"}, {Start: sec(4), Title: "B"}}},
-		{"open-last-past-duration", []wl.Chapter{{Start: 0, Title: "A"}, {Start: 9500 * time.Millisecond, Title: "Epilogue"}}}, // L4
+		{"open-last-past-duration", []wl.Chapter{{Start: 0, Title: "A"}, {Start: 9500 * time.Millisecond, Title: "Epilogue"}}},
 		{"coincident-open-last", []wl.Chapter{{Start: sec(2), Title: "A"}, {Start: sec(2), Title: "B"}}},
 		{"gap-past-stts-clamp", []wl.Chapter{{Start: 0, Title: "A"}, {Start: 14 * time.Hour, Title: "B"}}}, // stts saturation
-		{"oversized-start", []wl.Chapter{{Start: 5_000_000 * time.Second, Title: "Far"}}},                  // L5 edit-list saturation
+		{"oversized-start", []wl.Chapter{{Start: 5_000_000 * time.Second, Title: "Far"}}},                  // edit-list saturation
 		{"oversized-start-with-open-last", []wl.Chapter{{Start: 5_000_000 * time.Second, Title: "Far"}, {Start: 5_000_001 * time.Second, Title: "Farther"}}},
 		// firstStart lands exactly on the u32 movie-timescale ceiling (4294967295 ms at the 1 ms
 		// movie timescale): the edit's segment_duration stores MaxUint32 without clamping, so the

@@ -211,7 +211,7 @@ func TestNumericGenreWriteWarnAsymmetry(t *testing.T) {
 	}
 }
 
-// TestNumberTotalNonNumericDropsTotalCLI covers Finding 3 end to end on an ID3 target: a non-numeric
+// TestNumberTotalNonNumericDropsTotalCLI covers end to end on an ID3 target: a non-numeric
 // TRACKNUMBER plus a canonical TRACKTOTAL cannot compose "n/total" (the reader would read "A1/12" as
 // one literal value with the total lost), so the number is written verbatim, the total is dropped
 // with a value-dropped warning, and it reads back as "A1" - never the corrupt "A1/12". The write is
@@ -267,7 +267,7 @@ func TestNumberTotalNonNumericDropsTotalCLI(t *testing.T) {
 	}
 }
 
-// TestReservedChapterKeyDroppedWithWarning covers Finding 8: a custom key in the reserved CHAPTERxxx
+// TestReservedChapterKeyDroppedWithWarning: a custom key in the reserved CHAPTERxxx
 // namespace cannot be written as a Vorbis custom field (on read the chapter model owns it), so
 // setting CHAPTER005=hijack on a FLAC must warn value-dropped and leave the key absent from the tag
 // view - not claim it was written and then lose it silently.
@@ -290,7 +290,7 @@ func TestReservedChapterKeyDroppedWithWarning(t *testing.T) {
 	}
 }
 
-// TestSetTrimsMediaTypeAndReplayGain covers Finding 9 on the set path: MEDIATYPE and REPLAYGAIN_* are
+// TestSetTrimsMediaTypeAndReplayGain covers the set path: MEDIATYPE and REPLAYGAIN_* are
 // single-token values, so surrounding whitespace in a --set value is trimmed before storage the same
 // way it is for numeric and date keys, while the internal space in "-7.30 dB" survives.
 func TestSetTrimsMediaTypeAndReplayGain(t *testing.T) {
@@ -309,7 +309,7 @@ func TestSetTrimsMediaTypeAndReplayGain(t *testing.T) {
 	}
 }
 
-// TestMalformedYearDroppedNotTruncated covers Finding 10 on an ID3v2.3 target: a malformed 5-digit
+// TestMalformedYearDroppedNotTruncated covers an ID3v2.3 target: a malformed 5-digit
 // year and a non-canonical compact date have no valid 4-digit year, so they must be dropped with a
 // value-dropped warning rather than silently truncated to a valid-but-wrong "1000"/"2021".
 func TestMalformedYearDroppedNotTruncated(t *testing.T) {

@@ -78,7 +78,7 @@ func mp4Box(name string, payload []byte) []byte {
 // format's codec.Parse. A structurally-invalid rewrite (a truncated moov whose last child leaves a
 // misaligning gap) must fail that parse, so a would-be-corrupt write aborts at writeAtomic's verify
 // hook before the atomic commit. The essence hash alone cannot catch this - it re-reads the same
-// verbatim media bytes - which is why this second check exists (Finding 1's --verify strengthening).
+// verbatim media bytes - which is why this second check exists.
 func TestStructuralVerifyCatchesBadOutput(t *testing.T) {
 	// ftyp + moov(free child + 4-byte zero gap): well-formed boxes, but the gap after the moov's
 	// last complete child is exactly the misalignment the parse guard rejects.

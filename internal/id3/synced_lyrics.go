@@ -108,7 +108,7 @@ func decodeSYLT(body []byte) (core.SyncedLyrics, []core.Warning, bool) {
 	}
 	if tsFmt != syltFmtMillis {
 		return core.SyncedLyrics{}, []core.Warning{{Code: core.WarnSyncedLyricsTimestampFormat,
-			Message: "a SYLT frame uses the MPEG-frames timestamp format, which is not modeled; it was skipped"}}, false
+			Message: "a SYLT frame uses a non-millisecond timestamp format, which is not modeled; it was skipped"}}, false
 	}
 	if content != syltContentLyrics {
 		return core.SyncedLyrics{}, []core.Warning{{Code: core.WarnSyncedLyricsContentType,
@@ -234,7 +234,7 @@ func syltLangBytes(lang string) []byte {
 	// Recognize every ISO "undefined" form (empty, NUL/space-padded, or "xxx") as the canonical
 	// "XXX" marker, using the exact rule the read applies (syltLanguage). Otherwise a model
 	// language of "xxx" - which the CLI accepts and the model may carry - would be stored
-	// verbatim yet read back empty, the L7 asymmetry; now write and read agree that "xxx" is
+	// verbatim yet read back empty, the asymmetry; now write and read agree that "xxx" is
 	// the undefined marker (the model's unspecified = empty convention).
 	if syltLanguage(lang) == "" {
 		return []byte{'X', 'X', 'X'}

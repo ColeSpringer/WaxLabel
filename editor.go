@@ -384,6 +384,22 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// codes, and the writer preserves them on read-then-write; longer values are truncated
 	// to SYLT's fixed three bytes. The CLI validates author-entered --synced-lyrics-lang
 	// values before they reach this path.
+	//
+	// Reconcile any overlap this chapter edit introduced before planning, so the codec writes a
+	// non-overlapping list. Inserting a start-only chapter between already-ended chapters leaves
+	// the preceding chapter's end overlapping the insert; truncating that end to the next start
+	// fixes both the silent ID3/Matroska overlap and the spurious MP4 chapter-metadata-dropped
+	// warning at once. Reconcile into a clone (leaving e.chapters untouched, so a repeated
+	// Prepare() recomputes identically and the note stays deterministic); the !e.carried gate
+	// preserves faithful-transfer fidelity.
+	var chaptersReconciled bool
+	if e.chaptersTouched && !e.carried {
+		reconciled := core.CloneChapters(e.chapters)
+		if core.ReconcileChapterOverlaps(reconciled, e.base.Chapters) {
+			edited.Chapters = reconciled
+			chaptersReconciled = true
+		}
+	}
 	wp, err := codec.Plan(context.Background(), e.base, edited, wo)
 	if err != nil {
 		return nil, err
@@ -406,10 +422,21 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		}
 		// Warn when this destination cannot store every field in the authored chapter
 		// list. ChapterLoss is option-independent, so use the capability value already
-		// computed for the write plan.
-		if loss := caps.Chapters.ChapterLoss; core.ChaptersLoseMetadata(e.chapters, loss) {
+		// computed for the write plan. This reads edited.Chapters (the reconciled list),
+		// not e.chapters: once a stale interior end is truncated to the next start it is
+		// inferable, so a start-title format no longer reports a spurious gapped-end loss -
+		// while a genuine interior gap (End < next.Start) or a pre-existing on-disk overlap
+		// (not reconciled) still warns. The reconcile note below is the accurate signal.
+		if loss := caps.Chapters.ChapterLoss; core.ChaptersLoseMetadata(edited.Chapters, loss) {
 			wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnChapterMetadataDropped,
 				core.ChapterMetadataDroppedMessage(loss))
+		}
+		// A stale end that overlapped the next start was truncated to keep the written list
+		// non-overlapping. The user chose "truncate + note," so surface it (informational; it
+		// does not escalate --strict).
+		if chaptersReconciled {
+			wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnChapterOverlapReconciled,
+				"a chapter's end overlapped the next chapter's start and was truncated to keep the chapters non-overlapping")
 		}
 	}
 	// Warn when the destination cannot store every field in the authored synced-lyrics
@@ -838,7 +865,7 @@ func appendPictureWarnings(ws []core.Warning, pics []core.Picture, addedMask []b
 			warned[h] = true
 			// Name every role the identical bytes appear under (sorted), not this occurrence's
 			// role, so the message matches the linter's whole-set finding regardless of which
-			// occurrence each site reaches first (M9).
+			// occurrence each site reaches first.
 			ws = core.Warn(ws, core.WarnDuplicatePicture, duplicatePictureMessage(distinctSortedRoles(pics, hashes, h)))
 		}
 	}
@@ -999,7 +1026,7 @@ func sameTotal(explicit, derived string) bool {
 func validatePictures(pics []core.Picture) error {
 	icon, otherIcon := core.CountIcons(pics)
 	if icon > 1 {
-		return fmt.Errorf("%w: more than one 32x32 file-icon picture (type 1)", waxerr.ErrInvalidData)
+		return fmt.Errorf("%w: more than one file-icon picture (type 1)", waxerr.ErrInvalidData)
 	}
 	if otherIcon > 1 {
 		return fmt.Errorf("%w: more than one other-file-icon picture (type 2)", waxerr.ErrInvalidData)

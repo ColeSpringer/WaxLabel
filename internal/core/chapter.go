@@ -207,6 +207,47 @@ func EqualChapters(a, b []Chapter) bool {
 	return true
 }
 
+// ReconcileChapterOverlaps truncates a chapter's stale explicit end to the following
+// chapter's start wherever the edit introduced an overlap, returning whether any end
+// changed. For a start-sorted chs, an adjacent pair i/i+1 where chs[i] has a non-zero End
+// past chs[i+1].Start is reconciled (chs[i].End set to chs[i+1].Start) only when the overlap
+// is timing-introduced: either the overshooting End or the overshot Start is a value no base
+// chapter carries - an inserted marker's new start, or an edited/lengthened end. Inserting a
+// start-only marker between two already-ended chapters is the motivating case: the preceding
+// chapter's end otherwise overlaps the marker (ID3/Matroska write it verbatim; MP4 fires a
+// spurious drop warning).
+//
+// Keying on the timing values, not the whole struct, is deliberate: retitling a chapter or
+// editing any non-timing field leaves both End and Start on base, so a file's own pre-existing
+// on-disk overlap is left verbatim - preservation-first, scoping the change to exactly the
+// overlap the edit's timing caused. (A whole-struct membership check would treat a retitle as
+// "new" and shorten an unrelated pre-existing overlap.)
+//
+// It mutates chs in place, so the caller passes a clone. The truncation is guarded by
+// next >= chs[i].Start, so End can never drop below Start even if a caller passes an unsorted
+// list (a no-op there rather than latent End<Start corruption). A list shorter than two
+// chapters is a safe no-op.
+func ReconcileChapterOverlaps(chs, base []Chapter) bool {
+	baseStarts := make(map[time.Duration]bool, len(base))
+	baseEnds := make(map[time.Duration]bool, len(base))
+	for _, c := range base {
+		baseStarts[c.Start] = true
+		if c.End > 0 {
+			baseEnds[c.End] = true
+		}
+	}
+	changed := false
+	for i := 0; i+1 < len(chs); i++ {
+		next := chs[i+1].Start
+		if chs[i].End > 0 && chs[i].End > next && next >= chs[i].Start &&
+			(!baseEnds[chs[i].End] || !baseStarts[next]) {
+			chs[i].End = next
+			changed = true
+		}
+	}
+	return changed
+}
+
 // CloneChapters returns an independent copy of the slice (Chapter has no
 // reference fields, so a shallow element copy fully detaches it). It returns nil
 // for a nil input so a chapterless document stays chapterless on round-trip.

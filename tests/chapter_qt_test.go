@@ -609,7 +609,7 @@ func TestMP4ChapterEditRealFixtureQTTrack(t *testing.T) {
 }
 
 func TestMP4ChapterNonZeroStartRoundTrip(t *testing.T) {
-	// B1: a multi-chapter list whose first start is not zero round-trips with every
+	// A multi-chapter list whose first start is not zero round-trips with every
 	// start preserved (the QuickTime track's leading empty edit carries the offset,
 	// rather than zero-anchoring the list). The two chapter sources then agree (no
 	// source conflict) and the in-memory result equals a reparse. (A reparse fills the
@@ -641,11 +641,11 @@ func TestMP4ChapterNonZeroStartRoundTrip(t *testing.T) {
 }
 
 func TestMP4ChapterSingleNonZeroStart(t *testing.T) {
-	// B1, single-chapter case (the report's reproduction): one chapter at a non-zero
+	// Single-chapter case (the report's reproduction): one chapter at a non-zero
 	// start round-trips with its start preserved and its End left open (a lone
 	// chapter runs to EOF - End 0 on both the request and the read-back), the result
 	// equals a reparse with no source conflict, and a second identical set is a
-	// no-op. Before B1 the first set zero-anchored the QuickTime track, so it
+	// no-op. Before the fix the first set zero-anchored the QuickTime track, so it
 	// conflicted with the chpl and never reached this stable state.
 	src := readFixture(t, sampleM4B)
 	set := func(e *wl.Editor) *wl.Editor {

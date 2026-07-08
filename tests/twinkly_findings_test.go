@@ -28,7 +28,7 @@ func countWarning(ws []wl.Warning, code wl.WarningCode) int {
 
 func hasWarn(ws []wl.Warning, code wl.WarningCode) bool { return countWarning(ws, code) > 0 }
 
-// --- F3: non-conformant Vorbis key validated at read ---
+// --- non-conformant Vorbis key validated at read ---
 
 // TestInvalidVorbisKeyWarnsPreservesAndCopiesClean covers the invalid-tag-key handling: an
 // empty-name Vorbis comment is dropped from the canonical model (the writer's Key.Valid gate
@@ -106,7 +106,7 @@ func TestHostileVorbisKeyDroppedAndWarned(t *testing.T) {
 	}
 }
 
-// --- F5: FLAC/Ogg over-range chapter/lyric clamp + warn ---
+// --- FLAC/Ogg over-range chapter/lyric clamp + warn ---
 
 // maxChapterDuration and maxLRCTime mirror the codec ceilings the writer clamps to (see
 // internal/vorbis/chapters.go maxChapterSec and internal/core/synced_lyrics.go maxLRCField).
@@ -174,7 +174,7 @@ func TestVorbisSyncedLyricOverflowClampsAndWarns(t *testing.T) {
 	}
 }
 
-// --- F6: FLAC preserves an undecodable native PICTURE block across a picture edit ---
+// --- FLAC preserves an undecodable native PICTURE block across a picture edit ---
 
 // flacWithMalformedPicture builds a FLAC carrying one valid VORBIS_COMMENT block and one
 // PICTURE block whose body is too short to decode (warned + skipped at parse).
@@ -287,7 +287,7 @@ func TestMP3MalformedAPICWarningNotStaleAfterPictureEdit(t *testing.T) {
 	}
 }
 
-// --- F7: stricter trailing-ID3v1 detection ---
+// --- stricter trailing-ID3v1 detection ---
 
 // flacWithTrailer builds a FLAC whose final 128 bytes are the given trailer, so the
 // trailing-ID3v1 detector inspects exactly that block.
@@ -320,7 +320,7 @@ func TestTrailingID3v1StrictDetection(t *testing.T) {
 	}
 }
 
-// --- F2: Matroska non-image cover copy must not destroy the destination cover ---
+// --- Matroska non-image cover copy must not destroy the destination cover ---
 
 func TestMatroskaNonImageCoverPreservesDestPNG(t *testing.T) {
 	// Source: a FLAC with a genuinely non-image (octet-stream) cover.

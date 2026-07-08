@@ -215,6 +215,8 @@ const (
 	WarnNumberTotalConflict = core.WarnNumberTotalConflict
 
 	WarnValueCoerced = core.WarnValueCoerced
+
+	WarnChapterOverlapReconciled = core.WarnChapterOverlapReconciled
 )
 
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated

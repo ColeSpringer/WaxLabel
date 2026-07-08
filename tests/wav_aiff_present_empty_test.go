@@ -7,7 +7,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestWAVAIFFPresentEmptyRoundTripIdempotent is the L1 library-level regression: WAV INFO items
+// TestWAVAIFFPresentEmptyRoundTripIdempotent is the library-level regression: WAV INFO items
 // (a size-1 NUL for an empty ZSTR) and AIFF text chunks (genuinely zero-length) now store a
 // present-empty value in their native chunk, so `--set COPYRIGHT=` reads back present-empty
 // (['']) like every other format, and re-applying the same edit is a byte-stable no-op.
@@ -20,7 +20,7 @@ func TestWAVAIFFPresentEmptyRoundTripIdempotent(t *testing.T) {
 				t.Fatal(err)
 			}
 			if plan.IsNoOp() {
-				t.Fatal("setting an absent key to present-empty is a real change, not a no-op (L1)")
+				t.Fatal("setting an absent key to present-empty is a real change, not a no-op")
 			}
 			re := mustParseBytes(t, applyToBytes(t, data, plan))
 			if v, ok := re.Get(tag.Copyright); !ok || len(v) != 1 || v[0] != "" {

@@ -85,7 +85,7 @@ func (d *Document) Lint() []Finding {
 // lintWarnings promotes the parse-time warnings that a tagger usually acts on. Each
 // promoted warning reuses w.Code.String() as its finding code, so a condition that
 // both dump (which prints the warning code) and lint surface reads with the same code
-// in each - no renamed alias to keep in sync (C1). Only the subset a tagger acts on is
+// in each - no renamed alias to keep in sync. Only the subset a tagger acts on is
 // promoted (other parse warnings are informational); the per-condition severity is the
 // only thing this assigns. The computed-only lint codes that dump never prints
 // (malformed-date, single-valued-multi, custom-key, the picture checks) are added by
@@ -232,7 +232,7 @@ func lintPictures(pics []Picture) []Finding {
 // skipped (set blesses it as the benign "empty value" advisory and writes it, so lint
 // must agree); RATING is uncovered (free-form across formats). Each finding is a
 // LintWarning, so a file with e.g. TRACKNUMBER=abc flips to a non-zero lint exit (a
-// deliberate expansion of lint coverage, V3). Iterating the key names and Get-ing only
+// deliberate expansion of lint coverage). Iterating the key names and Get-ing only
 // the keys with a contract (mirroring the prior helpers) clones at most those few value
 // slices, not the whole set.
 func lintValues(ts tag.TagSet) []Finding {

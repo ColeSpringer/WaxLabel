@@ -340,7 +340,13 @@ func serializeMetadata(blocks []block, d *doc, pol core.PaddingPolicy) (out []by
 			t = int64(maxBlockBody)
 			clamped = true
 		}
-		padBlocks = []block{{code: blkPadding, body: make([]byte, int(t))}}
+		// A zero target (--no-padding / --padding 0) means no PADDING block at all: a FLAC
+		// with no PADDING block is valid, and renderBlock's last-block flag still lands on the
+		// true last block. Appending a zero-length PADDING block would only leave a useless
+		// empty block behind.
+		if t > 0 {
+			padBlocks = []block{{code: blkPadding, body: make([]byte, int(t))}}
+		}
 	}
 	for _, pb := range padBlocks {
 		padSize += len(pb.body)

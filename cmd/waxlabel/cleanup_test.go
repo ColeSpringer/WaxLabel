@@ -2,7 +2,7 @@ package main
 
 import "testing"
 
-// TestCleanupRegistryRuns covers the M7 forced-exit cleanup registry: registered cleanups run
+// TestCleanupRegistryRuns covers the forced-exit cleanup registry: registered cleanups run
 // once on a drain and are cleared (so a second drain does not re-run them), and a nil cleanup is
 // ignored. Not parallel - it drains the package-level registry, which the buffered-stdin path
 // also feeds - so it runs in the serial phase when no parallel CLI test can register concurrently.

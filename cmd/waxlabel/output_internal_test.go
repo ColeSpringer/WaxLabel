@@ -8,7 +8,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestHasFlagHonorsDoubleDash (review #1): hasFlag detects a long flag before the POSIX
+// TestHasFlagHonorsDoubleDash: hasFlag detects a long flag before the POSIX
 // "--" terminator but treats an identical-looking token after "--" as a positional, so
 // a file literally named --format does not masquerade as the caps format query and flip
 // a list command's pre-flight error from an array to an object.
@@ -57,7 +57,7 @@ func TestWantsJSONParsesBoolForms(t *testing.T) {
 	}
 }
 
-// TestStrictWarningReasonKeyless (review #2): the --strict reason names the offending
+// TestStrictWarningReasonKeyless: the --strict reason names the offending
 // key when a warning carries one, and degrades to the warning's own prose (rather than
 // a message with a leading bare colon) for a defensive keyless warning.
 func TestStrictWarningReasonKeyless(t *testing.T) {
@@ -71,8 +71,8 @@ func TestStrictWarningReasonKeyless(t *testing.T) {
 	}
 }
 
-// TestStrictEscalatesTagStructureDropped is a QA-review regression: WarnTagStructureDropped is
-// keyed for a lossy edited field, so --strict must escalate it (the F3 finding emitted it
+// TestStrictEscalatesTagStructureDropped is a regression guard: WarnTagStructureDropped is
+// keyed for a lossy edited field, so --strict must escalate it (the finding emitted it
 // "so --strict can act on it"). This checks both halves of the gate: the code is in the
 // escalating set, and its reason names the offending key.
 func TestStrictEscalatesTagStructureDropped(t *testing.T) {

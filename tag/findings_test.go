@@ -2,7 +2,7 @@ package tag
 
 import "testing"
 
-// TestParseKeyTrimsWhitespace pins L1: ParseKey ignores surrounding whitespace
+// TestParseKeyTrimsWhitespace checks that ParseKey ignores surrounding whitespace
 // (so a CLI "KEY = VALUE" split yields the bare key) while preserving interior
 // spaces, and an all-whitespace input is still the empty-key error.
 func TestParseKeyTrimsWhitespace(t *testing.T) {
@@ -25,7 +25,7 @@ func TestParseKeyTrimsWhitespace(t *testing.T) {
 	}
 }
 
-// TestClosestKey pins U2: a near-miss key resolves to the intended canonical key,
+// TestClosestKey checks that a near-miss key resolves to the intended canonical key,
 // while an unrelated string draws no suggestion.
 func TestClosestKey(t *testing.T) {
 	t.Parallel()
@@ -58,7 +58,7 @@ func TestClosestKey(t *testing.T) {
 	}
 }
 
-// TestBooleanValueHelpers pins V1: IsBooleanKey identifies the boolean keys and
+// TestBooleanValueHelpers checks that IsBooleanKey identifies the boolean keys and
 // ValidBooleanValue accepts both polarities (case-insensitive, trimmed) while
 // rejecting anything else; a non-boolean key is always reported valid.
 func TestBooleanValueHelpers(t *testing.T) {
@@ -79,7 +79,7 @@ func TestBooleanValueHelpers(t *testing.T) {
 	}
 }
 
-// TestNegativeNumericValue pins V2: a negative component is detected for the plain
+// TestNegativeNumericValue checks that a negative component is detected for the plain
 // numeric keys and for either side of a "n/total" pair key, while a well-formed
 // non-negative value (and a non-numeric key) is not flagged.
 func TestNegativeNumericValue(t *testing.T) {

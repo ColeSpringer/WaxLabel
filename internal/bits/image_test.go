@@ -11,8 +11,11 @@ func TestSniffImage(t *testing.T) {
 		0x00, 0x00, 0x00, 0x01, // height 1
 		0x08, 0x06, 0x00, 0x00, 0x00, // bitdepth 8, colortype 6 (RGBA)
 	}
-	// 3x5 GIF89a, GCT depth 8.
-	gif := append([]byte("GIF89a"), 0x03, 0x00, 0x05, 0x00, 0x77, 0x00, 0x00)
+	// 3x5 GIF89a with a Global Color Table (flag 0x80) and size field 7 -> depth 8, 256 colors.
+	gif := append([]byte("GIF89a"), 0x03, 0x00, 0x05, 0x00, 0xF7, 0x00, 0x00)
+	// 3x5 GIF89a with NO Global Color Table (high bit clear): depth and colors stay zero
+	// rather than being fabricated from the then-reserved size field.
+	gifNoGCT := append([]byte("GIF89a"), 0x03, 0x00, 0x05, 0x00, 0x77, 0x00, 0x00)
 	// 3x5 baseline JPEG: SOI then SOF0 (precision 8, 3 components).
 	jpeg := []byte{
 		0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08,
@@ -73,7 +76,8 @@ func TestSniffImage(t *testing.T) {
 		want ImageInfo
 	}{
 		{"png", png, ImageInfo{MIME: "image/png", Width: 1, Height: 1, Depth: 32}},
-		{"gif", gif, ImageInfo{MIME: "image/gif", Width: 3, Height: 5, Depth: 8}},
+		{"gif", gif, ImageInfo{MIME: "image/gif", Width: 3, Height: 5, Depth: 8, Colors: 256}},
+		{"gif-no-gct", gifNoGCT, ImageInfo{MIME: "image/gif", Width: 3, Height: 5}},
 		{"jpeg", jpeg, ImageInfo{MIME: "image/jpeg", Width: 3, Height: 5, Depth: 24}},
 		{"jpeg-fill", jpegFill, ImageInfo{MIME: "image/jpeg", Width: 3, Height: 5, Depth: 24}},
 		{"webp-vp8x", webpVP8X, ImageInfo{MIME: "image/webp", Width: 3, Height: 5}},
@@ -147,7 +151,7 @@ func TestSniffBMPNegativeWidth(t *testing.T) {
 	}
 }
 
-// TestSniffBMPOS2Header is the L11 regression: an OS/2 2.x BITMAPINFOHEADER2 (a 16-byte DIB
+// TestSniffBMPOS2Header checks that an OS/2 2.x BITMAPINFOHEADER2 (a 16-byte DIB
 // header) shares the BITMAPINFOHEADER width/height/depth field offsets (18/22/28), so its
 // dimensions are read rather than reported as 0x0.
 func TestSniffBMPOS2Header(t *testing.T) {

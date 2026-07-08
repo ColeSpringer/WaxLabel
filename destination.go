@@ -164,7 +164,7 @@ func (p *Plan) saveBack(ctx context.Context) (*Document, SaveResult, error) {
 	committed, werr := p.writeFile(ctx, p.doc.path, src)
 	if committed {
 		// Bytes are in place (the rename succeeded), even if a later step like the
-		// directory fsync errored; mark the plan so a second SaveBack is refused (M2).
+		// directory fsync errored; mark the plan so a second SaveBack is refused.
 		p.committed = true
 	}
 	newID, _ := fileIdentity(p.doc.path)
@@ -240,7 +240,7 @@ func absResolved(path string) (resolved string, reliable bool) {
 func (p *Plan) writeTo(ctx context.Context, dst Destination) (*Document, SaveResult, error) {
 	// A nil destination writer would panic on the first bits.Write deref; reject it
 	// up front with a clean error, mirroring the nil-source/nil-reader guards on the
-	// parse entry points (parse.go, source.go) (B2).
+	// parse entry points (parse.go, source.go).
 	if dst.w == nil {
 		return nil, SaveResult{}, fmt.Errorf("%w: nil writer", waxerr.ErrInvalidData)
 	}
@@ -299,7 +299,7 @@ func (p *Plan) streamCopy(ctx context.Context, dst io.Writer, source core.Reader
 		// Defense-in-depth behind Editor.Prepare, which already refuses a no-audio file
 		// (so a no-audio document never reaches Execute): never verify the "essence" of a
 		// file the parser flagged WarnNoAudioFrames, which would hash non-audio bytes as
-		// if they were audio (H1). Not load-bearing, but it keeps the verify path honest
+		// if they were audio. Not load-bearing, but it keeps the verify path honest
 		// on its own terms.
 		if hasNoAudioWarning(p.doc.media) {
 			return nil, fmt.Errorf("%w: cannot verify audio essence of a no-audio file", waxerr.ErrInvalidData)

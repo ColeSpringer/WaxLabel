@@ -8,7 +8,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestCapabilitiesOriginalDateVersion (C1): ORIGINALDATE is reported lossy onto a v2.3
+// TestCapabilitiesOriginalDateVersion: ORIGINALDATE is reported lossy onto a v2.3
 // MP3 (TORY stores the year only) and lossless onto v2.4 (TDOR keeps the full date), so
 // a transfer onto a v2.3 destination grades the truncation Lossy instead of claiming it
 // carried. The file-less query (nil media, the PlanTransfer simulation) does not panic

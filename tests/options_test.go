@@ -21,7 +21,7 @@ func TestWithLimitsBoundsAllocation(t *testing.T) {
 	}
 }
 
-// TestWithLimitsZeroFieldUsesDefault (D2): a partially-specified Limits keeps the
+// TestWithLimitsZeroFieldUsesDefault: a partially-specified Limits keeps the
 // default bound for any zero field rather than reading zero as "reject everything"
 // (a literal zero MaxAllocBytes would refuse the STREAMINFO allocation).
 func TestWithLimitsZeroFieldUsesDefault(t *testing.T) {
@@ -148,7 +148,7 @@ func TestPaddingFloorWiring(t *testing.T) {
 
 	// A floor (Min == Target) grows the region: an edit that would fit the fixture's
 	// small existing padding must instead reserve at least Min, not reuse the smaller
-	// leftover (the B1 fix - Min now gates the reuse branch).
+	// leftover (the fix - Min now gates the reuse branch).
 	floorPlan, err := mustParseBytes(t, src).Edit().Set(tag.Title, "Floor").
 		Prepare(wl.WithPadding(wl.PaddingPolicy{Target: 200000, Min: 200000, ReuseInPlace: true}))
 	if err != nil {

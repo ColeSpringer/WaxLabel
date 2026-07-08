@@ -96,7 +96,7 @@ func TestCapsChaptersMaxItemsJSON(t *testing.T) {
 	}
 }
 
-// TestCapsM4BChapterTitleByteConstraint covers Finding 14: the MP4 chapters capability surfaces its
+// TestCapsM4BChapterTitleByteConstraint: the MP4 chapters capability surfaces its
 // 255-byte title cap as a constraint, so `caps --format m4b` documents the truncation a copy reports.
 func TestCapsM4BChapterTitleByteConstraint(t *testing.T) {
 	out, _, code := runCLI(t, "caps", "--format", "m4b")

@@ -90,7 +90,7 @@ func TestBitDepthMeaningful(t *testing.T) {
 	}
 }
 
-// TestRenderLintSanitizes (#3): a finding whose message or key is file-derived
+// TestRenderLintSanitizes: a finding whose message or key is file-derived
 // (the inherited-encoder message carries the raw inherited stamp; a custom-key finding
 // carries the raw field name) is escaped on render, so lint cannot leak control
 // bytes to the terminal.
@@ -129,11 +129,11 @@ func TestRenderTagsEmptyValue(t *testing.T) {
 	}
 }
 
-// TestRenderTagsSanitizes (R1): an embedded ESC/CR in a tag value is shown as a
+// TestRenderTagsSanitizes: an embedded ESC/CR in a tag value is shown as a
 // visible escape, never a raw control byte that could drive the terminal.
 func TestRenderTagsSanitizes(t *testing.T) {
 	ts := tag.NewTagSet()
-	ts.Set(tag.Title, "a\x1b[31mX\rY") // ANSI CSI + mid-line CR (the report's repro)
+	ts.Set(tag.Title, "a\x1b[31mX\rY") // ANSI CSI + mid-line CR
 	var buf bytes.Buffer
 	renderTags(&buf, ts)
 	out := buf.String()
@@ -203,7 +203,7 @@ func TestRenderTagsMultiLineAligns(t *testing.T) {
 	}
 }
 
-// TestRenderPicturesDescriptionSingleEscaped (R1): p.Description prints via %q,
+// TestRenderPicturesDescriptionSingleEscaped: p.Description prints via %q,
 // which already escapes control chars; it must not also be run through
 // SanitizeText (that would double-escape \x1b into \\x1b).
 func TestRenderPicturesDescriptionSingleEscaped(t *testing.T) {
@@ -223,7 +223,7 @@ func TestRenderPicturesDescriptionSingleEscaped(t *testing.T) {
 	}
 }
 
-// TestPictureRowUnknownDims (R2): a picture with no known dimensions renders "--",
+// TestPictureRowUnknownDims: a picture with no known dimensions renders "--",
 // the tool-wide placeholder for an absent value, not a lone "?". A known size still
 // renders "WxH".
 func TestPictureRowUnknownDims(t *testing.T) {
@@ -240,7 +240,7 @@ func TestPictureRowUnknownDims(t *testing.T) {
 	}
 }
 
-// TestRenderTagsKeyCountHeader (U2): the header counts keys explicitly, with
+// TestRenderTagsKeyCountHeader: the header counts keys explicitly, with
 // singular/plural agreement.
 func TestRenderTagsKeyCountHeader(t *testing.T) {
 	two := tag.NewTagSet()
@@ -260,7 +260,7 @@ func TestRenderTagsKeyCountHeader(t *testing.T) {
 	}
 }
 
-// TestAudioLineOmittedForDegenerate (M4): a record carrying only a bare codec
+// TestAudioLineOmittedForDegenerate: a record carrying only a bare codec
 // name with no technical detail drops the audio line; a real stream still renders
 // one. The "container (codec unknown)" signal is kept even without properties,
 // since it tells the user the container parsed but the codec was not identified.
@@ -294,12 +294,10 @@ func TestNativeSizeZeroPadding(t *testing.T) {
 	}
 }
 
-// TestDumpNativeZeroPaddingShowsBytes is the producer-side guard for the 0 B padding render: writing
-// a FLAC with no reserved padding leaves a zero-length PADDING block, and dump --native must show it
-// as "0 B", not blank. Unlike TestNativeSizeZeroPadding (which feeds the renderer a hand-built
-// "PADDING" entry), this drives a real FLAC end to end, so a relabel of FLAC's block name that broke
-// the nativeSize coupling would fail here.
-func TestDumpNativeZeroPaddingShowsBytes(t *testing.T) {
+// TestDumpNativeNoPaddingOmitsBlock covers the behavior: --no-padding (--padding 0) on the
+// grow path leaves no PADDING block at all - a FLAC with no PADDING block is valid - rather than
+// a useless zero-length one. The native view therefore shows no PADDING block.
+func TestDumpNativeNoPaddingOmitsBlock(t *testing.T) {
 	t.Parallel()
 	f := copyFixture(t, sampleFLAC)
 	if _, _, code := runCLI(t, "set", f, "--set", "TITLE=X", "--no-padding"); code != 0 {
@@ -309,16 +307,7 @@ func TestDumpNativeZeroPaddingShowsBytes(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("dump --native exit = %d", code)
 	}
-	var paddingLine string
-	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "PADDING") {
-			paddingLine = line
-		}
-	}
-	if paddingLine == "" {
-		t.Fatalf("no PADDING block in the native view:\n%s", out)
-	}
-	if !strings.Contains(paddingLine, "0 B") {
-		t.Errorf("zero-length PADDING block should render 0 B, got %q", paddingLine)
+	if strings.Contains(out, "PADDING") {
+		t.Errorf("--no-padding should leave no PADDING block, but one appears:\n%s", out)
 	}
 }

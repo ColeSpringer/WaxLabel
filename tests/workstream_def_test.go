@@ -19,11 +19,11 @@ var writableFixtures = []string{
 	sampleFLAC, sampleOgg, sampleOpus, sampleMP3, sampleWAV, sampleMP4, sampleAAC, sampleMKA, sampleAIFF,
 }
 
-// --- D1: present-but-empty (zero-length) collapses to absent; IsNoOp is honest ---
+// --- present-but-empty (zero-length) collapses to absent; IsNoOp is honest ---
 
 // TestZeroLengthEditIsNoOp proves a Set/Add of no values on an absent key is a true
 // no-op across every writable format: the key collapses to absent before planning, so
-// IsNoOp reports true and Changes is empty rather than minting a phantom rewrite (#3).
+// IsNoOp reports true and Changes is empty rather than minting a phantom rewrite.
 func TestZeroLengthEditIsNoOp(t *testing.T) {
 	absent := tag.MustKey("WAXTEST_ABSENT")
 	for _, f := range writableFixtures {
@@ -49,7 +49,7 @@ func TestZeroLengthEditIsNoOp(t *testing.T) {
 }
 
 // TestZeroLengthSaveBackWritesNothing confirms the honest no-op reaches SaveBack: it
-// commits nothing and leaves the file's bytes and mtime untouched (before D1 the
+// commits nothing and leaves the file's bytes and mtime untouched (before the
 // phantom change rewrote the file and bumped its mtime).
 func TestZeroLengthSaveBackWritesNothing(t *testing.T) {
 	absent := tag.MustKey("WAXTEST_ABSENT")
@@ -87,7 +87,7 @@ func TestZeroLengthSaveBackWritesNothing(t *testing.T) {
 	}
 }
 
-// TestEmptyStringValueNotNormalized proves the D1 normalization is scoped strictly to
+// TestEmptyStringValueNotNormalized proves the normalization is scoped strictly to
 // zero-length: a present empty-string value ([""], what `set KEY=` produces) is left
 // intact and, on a format that stores it (FLAC/Vorbis), is a real change that round-trips
 // as a present empty value rather than collapsing to absent.
@@ -108,7 +108,7 @@ func TestEmptyStringValueNotNormalized(t *testing.T) {
 	}
 }
 
-// --- D2: zero-value Document / nil sources are safe ---
+// --- zero-value Document / nil sources are safe ---
 
 // TestZeroValueDocumentSafe exercises every public Document method on both a nil
 // *Document and an uninitialized &Document{}: the read accessors return the safe zero
@@ -197,7 +197,7 @@ func TestParseNilSourceRejected(t *testing.T) {
 	}
 }
 
-// --- D3: ErrNeedsFile for a path-less SaveBack ---
+// --- ErrNeedsFile for a path-less SaveBack ---
 
 // TestSaveBackNeedsFile confirms a document parsed without a path (Parse) cannot
 // SaveBack and reports the typed ErrNeedsFile sentinel.
@@ -216,7 +216,7 @@ func TestSaveBackNeedsFile(t *testing.T) {
 	}
 }
 
-// --- D5: single-valued-multi plan-report warning ---
+// --- single-valued-multi plan-report warning ---
 
 // TestSingleValuedMultiWarning checks a known single-valued key given several values
 // raises the WarnSingleValuedMulti plan warning (so it flows into the report and JSON),
@@ -239,7 +239,7 @@ func TestSingleValuedMultiWarning(t *testing.T) {
 	}
 }
 
-// --- E1: WAV ISFT stamp strip (library, via WithStripEncoderStamp) ---
+// --- WAV ISFT stamp strip (library, via WithStripEncoderStamp) ---
 
 // TestWAVStripEncoderStampDropsEmptyLIST builds a WAV whose only INFO item is a
 // transcoder ISFT stamp, strips it, and verifies the stamp is gone and the now-empty
@@ -303,7 +303,7 @@ func TestWAVStripEncoderStampLeavesUserISFT(t *testing.T) {
 	}
 }
 
-// --- E2: AAC (ADTS) duration/bitrate via the frame walk ---
+// --- AAC (ADTS) duration/bitrate via the frame walk ---
 
 // adtsStreamRDB is adtsStream with number_of_raw_data_blocks set on every frame, so a
 // frame carries rdb+1 raw data blocks (rdb+1)*1024 samples.
@@ -398,7 +398,7 @@ func TestAACWalkPropagatesIOError(t *testing.T) {
 	}
 }
 
-// --- E5: lint conflicting-families deduped per key ---
+// --- lint conflicting-families deduped per key ---
 
 // TestLintConflictingFamiliesDedup confirms a key whose sources disagree is reported
 // once even when several of its family entries are unselected (sample.webm carries two
@@ -415,7 +415,7 @@ func TestLintConflictingFamiliesDedup(t *testing.T) {
 	}
 }
 
-// --- G: fresh-tag id3 version policy (MP3 v2.3; AAC/WAV/AIFF v2.4) ---
+// --- fresh-tag id3 version policy (MP3 v2.3; AAC/WAV/AIFF v2.4) ---
 
 // TestFreshID3VersionPolicy forces a fresh id3 tag (a custom key has no native home in
 // WAV/AIFF and creates an id3 frame in MP3/AAC) and confirms the from-scratch version

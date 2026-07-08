@@ -551,7 +551,7 @@ func clusterRuns(children []l1elem) [][2]int64 {
 // reprojection of the edited set, which equals a fresh parse of the written cover set. When the
 // covers were not rewritten they were preserved verbatim from base, and detectChanges already
 // found base equal to the reprojection, so it is correct either way - both funnel through
-// reprojectPictures so the change verdict and the result view cannot drift (the M6 bug).
+// reprojectPictures so the change verdict and the result view cannot drift.
 func resultPictures(pics []core.Picture) []core.Picture {
 	return reprojectPictures(pics)
 }
@@ -560,7 +560,7 @@ func resultPictures(pics []core.Picture) []core.Picture {
 // result view equals a fresh parse of the written attachments. A picture WaxLabel writes gets a
 // cover-convention file name (cover.<ext>/small_cover.<ext> via coverFileStem), so an image or a
 // --force octet-stream cover reads back as a picture - the latter as an Unrecognized() cover (the
-// L9 read/write symmetry) rather than vanishing and re-registering as a fresh attachment on every
+// read/write symmetry) rather than vanishing and re-registering as a fresh attachment on every
 // copy. A picture the read gate would NOT project (isCoverAttachment: a non-image, non-octet MIME
 // such as a caller's text/plain, which reads back as a plain attachment) is dropped here so the
 // two agree; normal edit/transfer paths carry only image/* or octet-stream picture MIMEs, so this

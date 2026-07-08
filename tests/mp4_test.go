@@ -258,8 +258,8 @@ func TestMP4ReadsSampleFixture(t *testing.T) {
 	if len(f.Genres) != 1 || f.Genres[0] != "Jazz" {
 		t.Errorf("fixture genre = %v", f.Genres)
 	}
-	// Bitrate is derived from the audio-essence byte total and the track duration
-	// (U5); a real fixture with audio must report a positive average.
+	// Bitrate is derived from the audio-essence byte total and the track duration;
+	// a real fixture with audio must report a positive average.
 	if br := doc.Properties().First().Bitrate; br <= 0 {
 		t.Errorf("MP4 bitrate = %d, want > 0", br)
 	}

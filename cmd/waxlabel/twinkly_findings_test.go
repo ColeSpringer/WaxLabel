@@ -17,7 +17,7 @@ func mp4Atom(name string, body []byte) []byte {
 	return append(b, body...)
 }
 
-// TestMP4MetaZeroTailExit4 covers F1 at the CLI: an MP4 whose moov.udta.meta has no ilst and
+// TestMP4MetaZeroTailExit4 covers the CLI path: an MP4 whose moov.udta.meta has no ilst and
 // ends in >=8 zero bytes must fail with exit 4 (invalid-data) on dump and set - never parse as
 // a silent, tag-losing "Saved".
 func TestMP4MetaZeroTailExit4(t *testing.T) {
@@ -45,7 +45,7 @@ func TestMP4MetaZeroTailExit4(t *testing.T) {
 	}
 }
 
-// TestID3CorruptVersionExit4 covers F9: an ID3v2 header with an out-of-range major version (5)
+// TestID3CorruptVersionExit4: an ID3v2 header with an out-of-range major version (5)
 // on valid MPEG audio is a recognized container whose contents are corrupt - invalid-data
 // (exit 4), not an unsupported format (exit 3).
 func TestID3CorruptVersionExit4(t *testing.T) {
@@ -64,7 +64,7 @@ func TestID3CorruptVersionExit4(t *testing.T) {
 	}
 }
 
-// TestMP3MalformedAPICSurfaced covers F8 at the CLI: an MP3 whose ID3v2 APIC frame is
+// TestMP3MalformedAPICSurfaced covers the CLI path: an MP3 whose ID3v2 APIC frame is
 // malformed (its MIME field has no NUL terminator, so decodeAPIC fails) must surface
 // invalid-picture on dump and lint - not silently drop the cover and report "no issues".
 func TestMP3MalformedAPICSurfaced(t *testing.T) {
@@ -97,7 +97,7 @@ func TestMP3MalformedAPICSurfaced(t *testing.T) {
 	}
 }
 
-// TestEmptyWAVJSONNoBitrate covers F10: a zero-duration file (header-only PCM WAV) must not
+// TestEmptyWAVJSONNoBitrate: a zero-duration file (header-only PCM WAV) must not
 // emit bitrateBps in JSON, matching the human view's Duration()>0 gate so the two agree.
 func TestEmptyWAVJSONNoBitrate(t *testing.T) {
 	emptyWAV := filepath.Join("..", "..", "testdata", "empty.wav")

@@ -13,7 +13,7 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestNilContextRejected (M1): every public ctx-taking entry point returns a clean
+// TestNilContextRejected: every public ctx-taking entry point returns a clean
 // error for a nil context instead of panicking on the first ctx.Err() deref.
 func TestNilContextRejected(t *testing.T) {
 	data := readFixture(t, sampleFLAC)
@@ -52,7 +52,7 @@ func TestNilContextRejected(t *testing.T) {
 	wantNil("HashFile", err)
 }
 
-// TestAddedPictureValidation (M2): a picture added to an editor whose bytes are not
+// TestAddedPictureValidation: a picture added to an editor whose bytes are not
 // a recognized image is rejected, unless opted out; a file's pre-existing pictures
 // are never re-validated, and a transfer carrying already-embedded art still works.
 func TestAddedPictureValidation(t *testing.T) {
@@ -115,7 +115,7 @@ func TestAddedPictureValidation(t *testing.T) {
 	}
 }
 
-// TestRemovePicturesMatchOnce (#3): RemovePictures evaluates the caller's match
+// TestRemovePicturesMatchOnce: RemovePictures evaluates the caller's match
 // predicate exactly once per picture, including pictures added on the same editor -
 // the old two-pass sync (DeleteFunc over both the picture list and the added set)
 // invoked it twice for added pictures.
@@ -132,7 +132,7 @@ func TestRemovePicturesMatchOnce(t *testing.T) {
 	}
 }
 
-// TestInvalidKeyHint (L2): a hand-built lowercase tag.Key fails Prepare with a
+// TestInvalidKeyHint: a hand-built lowercase tag.Key fails Prepare with a
 // message that points the caller at ParseKey/MustKey.
 func TestInvalidKeyHint(t *testing.T) {
 	doc := mustParseFile(t, sampleFLAC)
@@ -145,7 +145,7 @@ func TestInvalidKeyHint(t *testing.T) {
 	}
 }
 
-// TestChapterWarningsSurface (L3/L4): a chapter edit's sanity warnings flow through
+// TestChapterWarningsSurface: a chapter edit's sanity warnings flow through
 // the plan report - a chapter past the file end, and two chapters sharing a start.
 func TestChapterWarningsSurface(t *testing.T) {
 	doc := mustParseFile(t, sampleM4B)
@@ -177,7 +177,7 @@ func TestChapterWarningsSurface(t *testing.T) {
 	}
 }
 
-// TestCopyChaptersNoSanityWarnings (#2): a transfer carries the source's chapters
+// TestCopyChaptersNoSanityWarnings: a transfer carries the source's chapters
 // verbatim, so it must not emit the edit-time chapter sanity warnings about them -
 // even when the source's chapters run past the (shorter) destination's duration.
 func TestCopyChaptersNoSanityWarnings(t *testing.T) {
@@ -283,7 +283,7 @@ func TestLegacyConflictWarning(t *testing.T) {
 		t.Errorf("a numeric genre re-projected to the existing value should not warn; got %v", genre.Report().Warnings)
 	}
 	// The same edit re-projects to the value already on disk, so it must read as an
-	// immediate no-op: IsNoOp() and Changes() agree (#2), not a churning rewrite.
+	// immediate no-op: IsNoOp() and Changes() agree, not a churning rewrite.
 	if !genre.IsNoOp() {
 		t.Error("GENRE=17 over an existing Rock: IsNoOp() = false, want true (re-projection is a no-op)")
 	}
@@ -301,7 +301,7 @@ func TestLegacyConflictWarning(t *testing.T) {
 	}
 }
 
-// TestRejectNULInEditValues (D1): a NUL byte in a value the edit sets, in a chapter
+// TestRejectNULInEditValues: a NUL byte in a value the edit sets, in a chapter
 // title, or in an added picture's description is refused at Prepare - a NUL silently
 // truncates the field on a C-string format - rather than written and cut.
 func TestRejectNULInEditValues(t *testing.T) {
@@ -343,7 +343,7 @@ func TestRejectNULInEditValues(t *testing.T) {
 }
 
 // TestPictureMIMESniffReconcile exercises the two Picture sniff methods in isolation.
-// SniffAuthoritative (the embed path, and now every codec read path, per the Cluster B tests
+// SniffAuthoritative (the embed path, and now every codec read path, per the tests
 // TestMP4CoverSniffedAuthoritatively and TestID3BlankMIMESniffed) lets a recognized image's
 // bytes win over a caller-declared MIME or dimension that disagrees, so a mislabeled cover is
 // never stored or reported under a contradicting MIME. SniffInto is the fill-only variant: it
@@ -440,7 +440,7 @@ func TestSaveBackRefusesReExecute(t *testing.T) {
 	}
 }
 
-// TestUninitializedDocMessages (M6): the message papercuts report clearly - a zero
+// TestUninitializedDocMessages: the message papercuts report clearly - a zero
 // Document's hash entry points, ParseFile(""), and a name-less Parse of
 // unidentifiable bytes all give specific, actionable errors.
 func TestUninitializedDocMessages(t *testing.T) {
@@ -466,7 +466,7 @@ func TestUninitializedDocMessages(t *testing.T) {
 	}
 }
 
-// TestWriteToNilWriterRejected (B2): Plan.Execute with a WriteTo whose writer is nil
+// TestWriteToNilWriterRejected: Plan.Execute with a WriteTo whose writer is nil
 // returns a clean error instead of panicking on the first write deref.
 func TestWriteToNilWriterRejected(t *testing.T) {
 	src := readFixture(t, sampleFLAC)
@@ -480,14 +480,14 @@ func TestWriteToNilWriterRejected(t *testing.T) {
 	}
 }
 
-// TestNoOpDowngradeOnReprojection (#2): when a codec re-projects an edit back to
+// TestNoOpDowngradeOnReprojection: when a codec re-projects an edit back to
 // the value already on disk - a numeric genre (17 -> Rock) or an integer track
 // number (02 -> 2) - the plan must read as an immediate no-op so IsNoOp() and
 // Changes() agree. Before the fix the raw edit differed from base (so the fast-path
 // no-op gate missed it) while the projected result equalled base (so Changes() was
 // empty), and set/copy/lint --fix churned the file forever. (The former "wav dropped
 // empty" case is gone: WAV/AIFF now store a present-empty value in their native chunk
-// like every other format (L1), so setting an absent key to present-empty is a real
+// like every other format, so setting an absent key to present-empty is a real
 // change, not a dropped-then-no-op.)
 func TestNoOpDowngradeOnReprojection(t *testing.T) {
 	cases := []struct {
@@ -517,7 +517,7 @@ func TestNoOpDowngradeOnReprojection(t *testing.T) {
 	}
 }
 
-// TestNoOpDowngradeConvergesAndIsIdempotent (#2): a numeric-genre edit whose
+// TestNoOpDowngradeConvergesAndIsIdempotent: a numeric-genre edit whose
 // projection differs from the current value writes once; re-parsing and repeating
 // the same edit is then a no-op whose WriteTo reproduces the source bytes exactly,
 // identically across runs - no perpetual churn.

@@ -110,7 +110,12 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		if err != nil {
 			return nil, err
 		}
-		d.info, _ = parseInfo(body) // type already confirmed INFO
+		// type already confirmed INFO; a cap breach is a hard error (mirroring the
+		// embedded-id3 sibling below), while a truncated/malformed list stays tolerant.
+		d.info, err = parseInfo(body, opts.Limits.MaxElements)
+		if errors.Is(err, waxerr.ErrSizeTooLarge) {
+			return nil, err
+		}
 		d.infoIdx = i
 		markDup(d, infoIdxs[1:])
 	}

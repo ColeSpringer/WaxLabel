@@ -61,7 +61,7 @@ func TestProjectTransferDispositions(t *testing.T) {
 		}
 	}
 
-	// carried sums the field unit (TITLE) and the 2-chapter set's Count: 1 + 2 = 3 (C2).
+	// carried sums the field unit (TITLE) and the 2-chapter set's Count: 1 + 2 = 3.
 	carried, lossy, dropped := (TransferReport{Items: items}).Counts()
 	if carried != 3 || lossy != 1 || dropped != 1 {
 		t.Errorf("counts = (%d,%d,%d), want (3,1,1)", carried, lossy, dropped)
@@ -264,9 +264,9 @@ func TestChaptersLoseMetadata(t *testing.T) {
 	}
 }
 
-// TestChaptersLoseMetadataInteriorEnds checks the MP4 QuickTime loss predicate (the L1
-// fix). It matches ChapterLossStartTitleOnly except the final chapter's explicit end is
-// kept (the text track stores it), so only an interior gapped end is a loss.
+// TestChaptersLoseMetadataInteriorEnds checks the MP4 QuickTime loss predicate. It
+// matches ChapterLossStartTitleOnly except the final chapter's explicit end is kept
+// (the text track stores it), so only an interior gapped end is a loss.
 func TestChaptersLoseMetadataInteriorEnds(t *testing.T) {
 	sec := func(s int) time.Duration { return time.Duration(s) * time.Second }
 	cases := []struct {
@@ -369,7 +369,7 @@ func TestProjectTransferChapterGrading(t *testing.T) {
 	}
 }
 
-// TestProjectTransferSyncedLyricsTimestampClamp checks the L3 upgrade: a synced-lyric line
+// TestProjectTransferSyncedLyricsTimestampClamp checks the upgrade: a synced-lyric line
 // past the destination's SyncedLyricsTimeMax grades Lossy (the write clamps it), while a set
 // within the ceiling carries. The destination stores the language too (no metadata loss), so
 // the timestamp clamp is the only thing that can make it lossy.

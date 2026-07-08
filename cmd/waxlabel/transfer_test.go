@@ -103,7 +103,7 @@ func TestCopyReportMatchesResult(t *testing.T) {
 	}
 }
 
-// TestCopySyncedLyricsNewlineReportsLossy covers Finding 7: a SYLT line whose text carries an
+// TestCopySyncedLyricsNewlineReportsLossy: a SYLT line whose text carries an
 // embedded newline is flattened to a space by the FLAC/Ogg LRC store, a silent content change, so a
 // copy to an LRC-backed destination must grade the synced-lyrics carry Lossy, not lossless. The CLI's
 // LRC input cannot author an embedded newline (it reads as a line break), so the source is built
@@ -148,7 +148,7 @@ func TestCopySyncedLyricsNewlineReportsLossy(t *testing.T) {
 	}
 }
 
-// TestCopyDateReductionReasonNotWrong covers Finding 11: v2.3 splits a date across TYER/TDAT/TIME, so
+// TestCopyDateReductionReasonNotWrong: v2.3 splits a date across TYER/TDAT/TIME, so
 // which component a value loses varies. The shared transfer reason must be component-agnostic (never
 // a wrong "seconds dropped" for a month-precision value); the per-value [value-reduced] write warning
 // carries the specific component. Copying 2021-06, a T10, and a T10:30:45 to MP3 each grades the date
@@ -480,7 +480,7 @@ func TestDiffPictureContentsDiffer(t *testing.T) {
 		t.Errorf("expected a contents-differ line:\n%s", out)
 	}
 
-	// L6: the equal-count contents change must be unambiguous in JSON too - both counts are 1,
+	// the equal-count contents change must be unambiguous in JSON too - both counts are 1,
 	// so a consumer needs pictures.changed rather than an a != b guess (which reads as a no-op).
 	jout, _, jcode := runCLI(t, "--json", "diff", a, b)
 	if jcode != 1 {

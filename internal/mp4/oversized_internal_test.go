@@ -15,7 +15,7 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestCheckItemSizes is the unit test of the write-side oversized-item guard (H1): a covr item
+// TestCheckItemSizes is the unit test of the write-side oversized-item guard: a covr item
 // past the limit reports ErrPictureTooLarge, any other ilst item reports ErrSizeTooLarge, an
 // item within the limit passes, and a zero/unset limit falls back to the 256 MiB library ceiling
 // (so a normal item still passes rather than the guard rejecting everything or panicking).
@@ -39,7 +39,7 @@ func TestCheckItemSizes(t *testing.T) {
 	}
 }
 
-// TestReadPayloadWholeFailsLoudOnOversize is the discriminating read-side regression for H1: a
+// TestReadPayloadWholeFailsLoudOnOversize is the discriminating read-side regression: a
 // node whose declared payload exceeds the cap must fail loudly with ErrSizeTooLarge *before*
 // reading or allocating, where the old min(payloadSize, cap) silently truncated to the cap. A
 // tiny source proves the size check fires first (no read, no 64 MiB allocation): the old helper
@@ -59,7 +59,7 @@ func TestReadPayloadWholeFailsLoudOnOversize(t *testing.T) {
 	}
 }
 
-// TestCheckBuiltItemsFloorsAtParsedItems covers the #1 fix: an item already present at parse
+// TestCheckBuiltItemsFloorsAtParsedItems covers the fix: an item already present at parse
 // (read within the parse limit) must not be rejected on write even when the write limit is far
 // smaller - checkBuiltItems floors the limit at the largest parsed item. A genuinely new item
 // larger than anything the file already held is still rejected.
@@ -146,7 +146,7 @@ func mkMP4WithUdtaMeta(meta []byte) []byte {
 	return slices.Concat(ftyp, moov, mdat)
 }
 
-// TestParseRejectsUndersizedMetaGap covers the F2 fix: a moov.udta.meta with a gap between where
+// TestParseRejectsUndersizedMetaGap covers the fix: a moov.udta.meta with a gap between where
 // its children end and its own end corrupts a create-ilst edit (buildCreated appends the new ilst
 // at meta.end(), but a re-parse resolves the first child earlier, so the ilst lands misaligned).
 // walkAtoms tolerates an all-zero gap (the udta-terminator rule), so parse must reject it here.
@@ -181,7 +181,7 @@ func TestParseRejectsUndersizedMetaGap(t *testing.T) {
 	}
 }
 
-// TestEmptyMetaRoundTripsTagEdit locks in the lossless empty-meta upgrade the F2 gap check leaves
+// TestEmptyMetaRoundTripsTagEdit locks in the lossless empty-meta upgrade the gap check leaves
 // intact: a size-8 empty meta (no ilst, no gap) still accepts a tag edit - the create-ilst path
 // inserts an ilst inside the existing meta - and the written file re-parses with the tag present.
 func TestEmptyMetaRoundTripsTagEdit(t *testing.T) {

@@ -16,7 +16,7 @@ import (
 func TestSplitNumberPairs(t *testing.T) {
 	// wantVals asserts a key is present with exactly vals; wantAbsent asserts it is
 	// absent. They are kept distinct (rather than one helper keyed on nil) so the
-	// present-empty vs absent distinction A2 turns on can never be conflated in a test.
+	// present-empty vs absent distinction can never be conflated in a test.
 	wantVals := func(t *testing.T, ts tag.TagSet, key tag.Key, vals ...string) {
 		t.Helper()
 		got, ok := ts.Get(key)

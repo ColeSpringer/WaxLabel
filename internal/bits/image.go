@@ -172,10 +172,14 @@ func sniffGIF(data []byte) (ImageInfo, bool) {
 	w := int(binary.LittleEndian.Uint16(data[6:8]))
 	h := int(binary.LittleEndian.Uint16(data[8:10]))
 	packed := data[10]
-	depth := int(packed&0x07) + 1 // bits per primary color in the GCT
-	var colors int
-	if packed&0x80 != 0 { // a Global Color Table is present: 2^(size+1) entries
-		colors = 1 << ((packed & 0x07) + 1)
+	// The low 3 bits are the GCT size field n; a Global Color Table holds 2^(n+1)
+	// entries and its palette indices are n+1 bits wide. Both are meaningful only when a
+	// Global Color Table is present (the high bit); with no table the size field is
+	// reserved, so leave depth and colors zero rather than fabricating a depth from it.
+	var depth, colors int
+	if packed&0x80 != 0 {
+		depth = int(packed&0x07) + 1
+		colors = 1 << depth
 	}
 	return ImageInfo{MIME: "image/gif", Width: w, Height: h, Depth: depth, Colors: colors}, true
 }

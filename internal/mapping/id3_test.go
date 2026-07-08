@@ -6,7 +6,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestID3TXXXKeyTCMP is the L3 regression: ffmpeg's TXXX:TCMP user frame folds onto canonical
+// TestID3TXXXKeyTCMP checks that ffmpeg's TXXX:TCMP user frame folds onto canonical
 // COMPILATION (case- and whitespace-insensitive), matching the dedicated TCMP text frame.
 func TestID3TXXXKeyTCMP(t *testing.T) {
 	for _, desc := range []string{"TCMP", "tcmp", " Tcmp "} {

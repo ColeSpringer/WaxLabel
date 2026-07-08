@@ -24,7 +24,7 @@ type LintFix struct {
 //
 // The finding codes are the canonical parse-warning codes (the same ones dump
 // prints), so this keys off exactly what lint reports - no private alias to keep in
-// step with the linter (C1). No other finding is acted on: dropping an
+// step with the linter. No other finding is acted on: dropping an
 // unsniffable-but-valid cover would be silent data loss, a malformed date cannot be
 // guessed, conflicting families have no winner, and missing audio cannot be
 // synthesized. The encoder fix clears the canonical ENCODER key and, via

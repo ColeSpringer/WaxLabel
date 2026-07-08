@@ -48,7 +48,7 @@ func pictureComment(p core.Picture) string {
 	return "METADATA_BLOCK_PICTURE=" + base64.StdEncoding.EncodeToString(vorbis.RenderPicture(p))
 }
 
-// TestPlanRejectsOversizedNewCover checks the O3 write-side cap: a NEWLY added cover whose
+// TestPlanRejectsOversizedNewCover checks the write-side cap: a newly added cover whose
 // base64 footprint exceeds the write limit is refused with ErrPictureTooLarge (the same error
 // the sibling MP4/FLAC/ID3 covers return), rather than emitting a file a default-limit reader
 // would then choke on - a failure --verify's output-sized structural re-parse cannot catch.

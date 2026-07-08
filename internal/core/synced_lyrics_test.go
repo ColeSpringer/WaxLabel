@@ -115,7 +115,7 @@ func TestLRCTimestampForms(t *testing.T) {
 	}
 }
 
-// TestParseLRCCarriageReturns is the L4 regression: classic-Mac pure-CR line endings (and CRLF)
+// TestParseLRCCarriageReturns is a regression guard: classic-Mac pure-CR line endings (and CRLF)
 // must be split like LF, not read as one concatenated line.
 func TestParseLRCCarriageReturns(t *testing.T) {
 	for _, sep := range []string{"\r", "\r\n", "\n"} {
@@ -126,7 +126,7 @@ func TestParseLRCCarriageReturns(t *testing.T) {
 	}
 }
 
-// TestParseLRCRejectsOutOfRangeSeconds is the L5 regression: a seconds field >= 60 is malformed
+// TestParseLRCRejectsOutOfRangeSeconds is a regression guard: a seconds field >= 60 is malformed
 // in every form, and minutes >= 60 are rejected only in the three-part HH:MM:SS form; the
 // two-part MM:SS form keeps a large minute count for a long track ("[120:00.00]").
 func TestParseLRCRejectsOutOfRangeSeconds(t *testing.T) {
@@ -228,7 +228,7 @@ func TestFormatLRCFlattensNewlines(t *testing.T) {
 	}
 }
 
-// TestFormatLRCSpaceSeparator pins the Finding 2 convention: FormatLRC separates a timestamp from
+// TestFormatLRCSpaceSeparator pins the convention: FormatLRC separates a timestamp from
 // non-empty text with exactly one space, while an empty-text clear marker stays a bare timestamp
 // with no trailing space.
 func TestFormatLRCSpaceSeparator(t *testing.T) {
@@ -242,7 +242,7 @@ func TestFormatLRCSpaceSeparator(t *testing.T) {
 	}
 }
 
-// TestLRCTimestampShapedTextRoundTrip is the Finding 2 corruption repro: a lyric whose text is
+// TestLRCTimestampShapedTextRoundTrip is the corruption repro: a lyric whose text is
 // itself a literal [mm:ss.xx]-shaped string used to corrupt on FLAC/Ogg - FormatLRC wrote
 // "[00:03.000][00:05.000]hi" with no separator, which ParseLRC read back as two phantom lines. The
 // space separator disambiguates it, so it now round-trips as one line whose text keeps the
@@ -280,7 +280,7 @@ func TestParseLRCTimestampTextSeparator(t *testing.T) {
 	}
 }
 
-// FuzzLRCDoubleParse asserts double-parse idempotency for Finding 2: ParseLRC(FormatLRC(ParseLRC(x)))
+// FuzzLRCDoubleParse asserts double-parse idempotency: ParseLRC(FormatLRC(ParseLRC(x)))
 // equals ParseLRC(x) line for line. It holds for arbitrary input because ParseLRC's output never
 // contains an embedded newline (it splits on them), so FormatLRC's one non-inverse - flattening an
 // embedded newline to a space - never fires on already-parsed lines. Constructed-line equality is
@@ -366,7 +366,7 @@ func TestSyncedLyricsLoseMetadata(t *testing.T) {
 	if !SyncedLyricsLoseMetadata(withDesc, SyncedLyricsLossLanguage) {
 		t.Error("a set with a descriptor should be lossy under the LRC store")
 	}
-	// Finding 7: an embedded line break in a line's text is flattened to a space by the LRC store,
+	// An embedded line break in a line's text is flattened to a space by the LRC store,
 	// so a set carrying one is a lossy carry even with no language or descriptor.
 	for _, brk := range []string{"a\nb", "a\r\nb", "a\rb"} {
 		set := []SyncedLyrics{{Lines: []SyncedLine{{Time: 0, Text: brk}}}}

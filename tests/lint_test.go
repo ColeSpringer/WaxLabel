@@ -88,7 +88,7 @@ func TestLintDuplicatePicture(t *testing.T) {
 	}
 }
 
-// TestDuplicatePictureMessageAgrees is the M9 regression: the editor's edit-scope warning and the
+// TestDuplicatePictureMessageAgrees is a regression guard: the editor's edit-scope warning and the
 // linter's whole-set finding must produce the SAME duplicate-picture message even when the
 // identical bytes appear under different roles (front + back) - naming a single occurrence's role
 // made the two disagree by iteration order. The message names both roles in a stable order.
@@ -120,7 +120,7 @@ func TestDuplicatePictureMessageAgrees(t *testing.T) {
 		t.Fatal("linter did not flag duplicate-picture on the written file")
 	}
 	if editorMsg != lintMsg {
-		t.Errorf("duplicate-picture messages diverge (M9):\n  editor: %q\n  linter: %q", editorMsg, lintMsg)
+		t.Errorf("duplicate-picture messages diverge:\n  editor: %q\n  linter: %q", editorMsg, lintMsg)
 	}
 	for _, role := range []string{"Front cover", "Back cover"} {
 		if !strings.Contains(lintMsg, role) {

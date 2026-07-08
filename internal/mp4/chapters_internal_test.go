@@ -350,7 +350,7 @@ func TestEmptyEditOffset(t *testing.T) {
 	if got, sat := emptyEditOffset(elst(0), 1000); got != 0 || sat {
 		t.Errorf("empty-elst offset = %v/sat=%v, want 0/false", got, sat)
 	}
-	// L5: a segment_duration read back as exactly MaxUint32 is a clamped leading offset (a
+	// A segment_duration read back as exactly MaxUint32 is a clamped leading offset (a
 	// first chapter past the u32 movie-timescale ceiling), so saturated must be set - that is
 	// how mergeChapters learns to take the exact chpl start over the clamped QuickTime one.
 	if got, sat := emptyEditOffset(elst(1, entry(math.MaxUint32, -1)...), 1000); !sat {

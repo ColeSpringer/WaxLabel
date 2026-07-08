@@ -31,7 +31,7 @@ func apicBody(mime string, ptype byte, data []byte) []byte {
 	return append(b, data...)
 }
 
-// TestMP4CoverSniffedAuthoritatively (H1): the covr type code no longer dictates the MIME.
+// TestMP4CoverSniffedAuthoritatively: the covr type code no longer dictates the MIME.
 // A PNG under the implicit type 0 - or mislabeled under the JPEG type 13 - reads image/png
 // because the bytes win; an unrecognizable implicit cover reads honestly as the unrecognized
 // MIME rather than the old manufactured image/jpeg.
@@ -59,7 +59,7 @@ func TestMP4CoverSniffedAuthoritatively(t *testing.T) {
 	}
 }
 
-// TestMP4CarriedCoverPreservedOnTagOnlyEdit (H1 write-side guard gap): a tag-only edit must
+// TestMP4CarriedCoverPreservedOnTagOnlyEdit (write-side guard gap): a tag-only edit must
 // not re-encode a carried cover through coverType's JPEG default. A GIF stored under the
 // implicit covr type 0 (now read as image/gif) is carried verbatim on a --set TITLE edit - no
 // format error - and its bytes and type code survive, so a reparse still reads image/gif
@@ -101,7 +101,7 @@ func TestMP4PictureChangeRejectsCarriedUnsupportedCover(t *testing.T) {
 	}
 }
 
-// TestID3BlankMIMESniffed (H1/M11): a blank-MIME APIC reads the type its bytes imply (bytes
+// TestID3BlankMIMESniffed: a blank-MIME APIC reads the type its bytes imply (bytes
 // win over the old blank->"image/" coercion); over unrecognizable bytes it reads the
 // unrecognized MIME rather than "image/".
 func TestID3BlankMIMESniffed(t *testing.T) {
@@ -126,7 +126,7 @@ func TestID3BlankMIMESniffed(t *testing.T) {
 	}
 }
 
-// TestID3MislabeledAPICBytesWin (H1): a JPEG declared as image/png reads back as image/jpeg -
+// TestID3MislabeledAPICBytesWin: a JPEG declared as image/png reads back as image/jpeg -
 // the recognizable bytes override the declared MIME, matching the authoritative read path.
 func TestID3MislabeledAPICBytesWin(t *testing.T) {
 	frame := apicFrameRaw(apicBody("image/png", 3, tinyJPEG()))
@@ -137,7 +137,7 @@ func TestID3MislabeledAPICBytesWin(t *testing.T) {
 	}
 }
 
-// TestID3BlankMIMEUnrecognizedRoundTrips (M11): after the read fix a blank-MIME APIC over
+// TestID3BlankMIMEUnrecognizedRoundTrips: after the read fix a blank-MIME APIC over
 // unrecognizable bytes reads as the unrecognized MIME and, on a later edit, round-trips to
 // that same explicit MIME (not the old blank->"image/") - a stable, consistent round-trip.
 func TestID3BlankMIMEUnrecognizedRoundTrips(t *testing.T) {
@@ -186,7 +186,7 @@ func TestMP4MalformedCoverNotDuplicatedOnEdit(t *testing.T) {
 	}
 }
 
-// TestFLACPictureSniffedAuthoritatively (Finding 6): a FLAC native PICTURE block declared image/png
+// TestFLACPictureSniffedAuthoritatively: a FLAC native PICTURE block declared image/png
 // but carrying GIF bytes reads back image/gif - recognizable bytes win, matching the ID3/MP4/Matroska
 // read paths and closing the FLAC/Ogg read-path gap.
 func TestFLACPictureSniffedAuthoritatively(t *testing.T) {
@@ -197,7 +197,7 @@ func TestFLACPictureSniffedAuthoritatively(t *testing.T) {
 	}
 }
 
-// TestFLACMislabeledPictureNoOpFidelity (Finding 6, the crown-jewel no-op invariant): the read-path
+// TestFLACMislabeledPictureNoOpFidelity (the crown-jewel no-op invariant): the read-path
 // sniff is a pure projection, so a no-op write on a FLAC whose native PICTURE is mislabeled must be
 // byte-identical (the block is cloned verbatim, not re-emitted from the sniffed MIME), and a
 // title-only edit must leave the picture's stored MIME on disk untouched while the read view still
@@ -231,7 +231,7 @@ func TestFLACMislabeledPictureNoOpFidelity(t *testing.T) {
 	}
 }
 
-// TestFLACCommentCoverMIMENotRewrittenOnEdit is the re-serialization guard for Finding 6: a FLAC
+// TestFLACCommentCoverMIMENotRewrittenOnEdit is the re-serialization guard: a FLAC
 // cover stored as a base64 METADATA_BLOCK_PICTURE comment reads (projects) as its true type
 // (image/gif), but a tag-only edit must materialize it into a native block with its STORED MIME
 // (image/png), never the sniffed type - the sniff is a display projection, so it must not leak into
@@ -261,7 +261,7 @@ func TestFLACCommentCoverMIMENotRewrittenOnEdit(t *testing.T) {
 	}
 }
 
-// TestFLACPictureSetEditPreservesUntouchedCoverMIME extends the Finding 6 re-serialization guard to
+// TestFLACPictureSetEditPreservesUntouchedCoverMIME extends the re-serialization guard to
 // a picture-set edit: adding a second, different cover must not rewrite a pre-existing mislabeled
 // cover's stored MIME. media.Pictures holds the stored type (the sniff is a display-only projection),
 // so the untouched cover is re-emitted as image/png while the read view still reports image/gif.
@@ -297,7 +297,7 @@ func TestFLACPictureSetEditPreservesUntouchedCoverMIME(t *testing.T) {
 	}
 }
 
-// TestMatroskaAttachmentSniffedAuthoritatively (Cluster B, third site): a Matroska attachment
+// TestMatroskaAttachmentSniffedAuthoritatively (third site): a Matroska attachment
 // declared image/png but carrying JPEG bytes reads back image/jpeg - recognizable bytes win,
 // matching the ID3/MP4 read paths.
 func TestMatroskaAttachmentSniffedAuthoritatively(t *testing.T) {

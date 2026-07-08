@@ -456,7 +456,7 @@ func checkBoxSize32(name [4]byte, totalLen int64) error {
 }
 
 // checkItemSizes rejects any ilst item whose payload exceeds the alloc limit - the write-side
-// half of H1's read/write symmetry. readPayloadWhole caps an ilst item read at the same limit,
+// half of the read/write symmetry. readPayloadWhole caps an ilst item read at the same limit,
 // so without this guard the writer could emit a cover or freeform it cannot read back. It
 // inspects every item buildItems returns - the canonical atoms, the covr, and the preserved/
 // unknown items - so an oversized preserved freeform is caught too, not only the cover. An

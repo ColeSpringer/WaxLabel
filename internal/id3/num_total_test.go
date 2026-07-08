@@ -21,7 +21,7 @@ func frameValue(frames []Frame, id string) (string, bool) {
 	return "", false
 }
 
-// TestNumTotalNonNumericDropsTotal covers Finding 3: composing "n/total" into a TRCK/TPOS frame is
+// TestNumTotalNonNumericDropsTotal covers composing "n/total" into a TRCK/TPOS frame is
 // gated on the result being a valid numeric value the reader splits back. A non-numeric number
 // (TRACKNUMBER="A1") plus a canonical TRACKTOTAL cannot compose - "A1/12" reads back as one literal
 // value with the total lost - so the number is written verbatim and the total is dropped and
@@ -72,7 +72,7 @@ func TestNumTotalNonNumericDropsTotal(t *testing.T) {
 	}
 }
 
-// TestNumTotalDropIdempotent covers the idempotency half of Finding 3: after the total is dropped,
+// TestNumTotalDropIdempotent covers the idempotency half: after the total is dropped,
 // re-rendering the retained number (now with no total) writes the same value and flags nothing.
 func TestNumTotalDropIdempotent(t *testing.T) {
 	base := tag.NewTagSet()
@@ -102,7 +102,7 @@ func TestNumTotalUnchangedPairNotFlagged(t *testing.T) {
 	}
 }
 
-// TestExtractDatePartYearBounded covers Finding 10: extractDatePart's year component must be exactly
+// TestExtractDatePartYearBounded checks extractDatePart's year component is exactly
 // 4 digits bounded by end-of-string or '-', so a malformed 5-digit year or a non-canonical compact
 // form yields no year (routing the value to dropped) rather than a silently-truncated wrong value.
 func TestExtractDatePartYearBounded(t *testing.T) {

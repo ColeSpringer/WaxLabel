@@ -18,7 +18,7 @@ func docWithCover(first byte) *Document {
 	}}
 }
 
-// TestRemovePicturesMatchCannotMutateDocument covers the F3 fix: RemovePictures is the only editor
+// TestRemovePicturesMatchCannotMutateDocument covers the fix: RemovePictures is the only editor
 // method that hands a Picture to user code, and Edit() seeds the editor with Data aliasing the
 // immutable Document. A match predicate that writes p.Data must therefore not reach the Document's
 // bytes - RemovePictures hands match a Data-detached copy.
@@ -35,7 +35,7 @@ func TestRemovePicturesMatchCannotMutateDocument(t *testing.T) {
 	}
 }
 
-// TestRemovePicturesNoRaceWithPictures is the -race regression for F3: a mutating RemovePictures
+// TestRemovePicturesNoRaceWithPictures is the -race regression: a mutating RemovePictures
 // predicate running concurrently with doc.Pictures() reads must not race on shared picture bytes.
 // Before the fix, match received Data aliasing the Document, so its writes raced the reader's copy;
 // after it, match writes only its own detached probe, so there is no shared write. It passes with

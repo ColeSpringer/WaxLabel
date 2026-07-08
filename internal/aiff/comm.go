@@ -73,7 +73,7 @@ func extended80ToFloat(b []byte) float64 {
 // buildTrack assembles audio properties from the COMM geometry and an effective
 // sample-frame count. AIFF records the frame count directly in COMM, so the caller
 // normally passes c.numFrames; for a truncated SSND of a constant-frame-size
-// encoding it passes the smaller count the surviving bytes actually hold (C3), so
+// encoding it passes the smaller count the surviving bytes actually hold, so
 // the reported duration matches what is decodable - the WAV behavior, where the
 // duration follows the present data length. c.numFrames itself is left untouched so
 // the writer's COMM bytes stay verbatim.

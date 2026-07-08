@@ -311,7 +311,7 @@ func TestSetNoOpWritesNothing(t *testing.T) {
 	}
 }
 
-// TestSetNoEditsRejected (U1): an in-place `set <file>` with no edit flags is a usage
+// TestSetNoEditsRejected: an in-place `set <file>` with no edit flags is a usage
 // error (exit 2), treating it as a missing edit flag rather than a deliberate no-op. With
 // -o it is a verbatim copy and stays allowed.
 func TestSetNoEditsRejected(t *testing.T) {
@@ -430,7 +430,7 @@ func TestVerifyWholeFileFlag(t *testing.T) {
 	}
 }
 
-// TestVerifyQuietTSV (#6): --quiet emits one tab-separated "essence<TAB>path" line
+// TestVerifyQuietTSV: --quiet emits one tab-separated "essence<TAB>path" line
 // per file, with no labels and no blank line between records, so the output pipes
 // cleanly into sort/uniq for deduplication.
 func TestVerifyQuietTSV(t *testing.T) {
@@ -458,7 +458,7 @@ func TestVerifyQuietTSV(t *testing.T) {
 	}
 }
 
-// TestVerifyQuietWholeFileThreeColumns (#6): under --whole-file the quiet line
+// TestVerifyQuietWholeFileThreeColumns: under --whole-file the quiet line
 // carries the whole-file digest as a third column.
 func TestVerifyQuietWholeFileThreeColumns(t *testing.T) {
 	t.Parallel()
@@ -475,7 +475,7 @@ func TestVerifyQuietWholeFileThreeColumns(t *testing.T) {
 	}
 }
 
-// TestVerifyQuietNoOpUnderJSON (#6): --quiet is a text-mode choice; under --json the
+// TestVerifyQuietNoOpUnderJSON: --quiet is a text-mode choice; under --json the
 // stream shape is unchanged (a JSON array, not TSV).
 func TestVerifyQuietNoOpUnderJSON(t *testing.T) {
 	t.Parallel()
@@ -492,7 +492,7 @@ func TestVerifyQuietNoOpUnderJSON(t *testing.T) {
 	}
 }
 
-// TestSetQuietSilentOnSuccess (#4): a single-file set -q prints nothing on success
+// TestSetQuietSilentOnSuccess: a single-file set -q prints nothing on success
 // (no plan preview, no outcome line) on either stream.
 func TestSetQuietSilentOnSuccess(t *testing.T) {
 	t.Parallel()
@@ -512,7 +512,7 @@ func TestSetQuietSilentOnSuccess(t *testing.T) {
 	}
 }
 
-// TestSetQuietKeepsSummaryAndErrors (#4): quiet suppresses the per-file preview and
+// TestSetQuietKeepsSummaryAndErrors: quiet suppresses the per-file preview and
 // outcome but keeps the multi-file summary and any per-file error.
 func TestSetQuietKeepsSummaryAndErrors(t *testing.T) {
 	t.Parallel()
@@ -703,7 +703,7 @@ func TestDirectoryAsInput(t *testing.T) {
 
 // TestTempCreateErrorNamesDir checks the atomic-write temp-create failure names
 // the destination directory rather than the internal temp pattern. It also
-// guards the E2/E3 interaction: the wrapped *fs.PathError must keep this message
+// guards the interaction: the wrapped *fs.PathError must keep this message
 // and not be flattened into "no such file: <temp-name>". The trigger is an
 // existing-but-unwritable directory (a missing -o dir is now caught up front as a
 // usage error - see TestSetOutputParentDirMissing - so it never reaches the write).
@@ -731,9 +731,9 @@ func TestTempCreateErrorNamesDir(t *testing.T) {
 	}
 }
 
-// TestSetOutputParentDirMissing (#6): a -o path whose parent directory does not exist is a
+// TestSetOutputParentDirMissing: a -o path whose parent directory does not exist is a
 // not-found error (exit 6, like every other missing path) reported before the plan prints, not
-// a late temp-create io error and no longer a usage error (M10). A parent that EXISTS but is a
+// a late temp-create io error and no longer a usage error. A parent that exists but is a
 // regular file stays a usage error (exit 2) - it is a bad invocation, not a missing path.
 func TestSetOutputParentDirMissing(t *testing.T) {
 	t.Parallel()
@@ -1101,7 +1101,7 @@ func TestSetJSONErrorIsPerFileObject(t *testing.T) {
 // TestSetRecursiveNoFiles checks a --recursive walk that matches no audio files
 // aligns set with its dry-run twin plan: a "no audio files found" note on stderr and
 // exit 0 (not a usage error), so the two agree on the empty-walk outcome, with []
-// (not null) under --json for both (E1).
+// (not null) under --json for both.
 func TestSetRecursiveNoFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1130,7 +1130,7 @@ func TestSetRecursiveNoFiles(t *testing.T) {
 // TestLintFixRecursiveNoFiles checks that lint --fix treats a --recursive walk
 // matching no audio files as an error (exit 2) rather than a silent success - while
 // read-only lint of the same empty walk stays exit 0. Unlike set (which aligns with
-// its dry-run twin plan at exit 0, E1), lint --fix has no such twin, so it keeps the
+// its dry-run twin plan at exit 0), lint --fix has no such twin, so it keeps the
 // mutating-command guard.
 func TestLintFixRecursiveNoFiles(t *testing.T) {
 	t.Parallel()
@@ -1150,7 +1150,7 @@ func TestLintFixRecursiveNoFiles(t *testing.T) {
 	}
 }
 
-// TestResolvePaddingFlag (U4): the flag-to-policy resolver maps --padding /
+// TestResolvePaddingFlag: the flag-to-policy resolver maps --padding /
 // --no-padding to a write option plus whether a flag was given, and rejects misuse,
 // independent of any file.
 func TestResolvePaddingFlag(t *testing.T) {
@@ -1172,7 +1172,7 @@ func TestResolvePaddingFlag(t *testing.T) {
 		// to --no-padding is proven by TestPaddingZeroShrinksLikeNoPadding.
 		{"0", false, "--padding 0"},
 		{"200000", false, "--padding 200000 (floor sets Min=Target)"},
-		// U4: --padding and --no-padding combine cleanly when --padding is any spelling
+		// --padding and --no-padding combine cleanly when --padding is any spelling
 		// of zero (they then agree), rather than being rejected by a string "!= 0" test.
 		{"0", true, "--padding 0 --no-padding"},
 		{"00", true, "--padding 00 --no-padding"},
@@ -1198,7 +1198,7 @@ func TestResolvePaddingFlag(t *testing.T) {
 	}
 }
 
-// TestPaddingNoPadding (U3): --no-padding drops the padding the default reserves,
+// TestPaddingNoPadding: --no-padding drops the padding the default reserves,
 // and the default plan advertises the controls.
 func TestPaddingNoPadding(t *testing.T) {
 	t.Parallel()
@@ -1218,13 +1218,13 @@ func TestPaddingNoPadding(t *testing.T) {
 		t.Fatalf("plan --no-padding exit = %d", code)
 	}
 	// FLAC has a padding concept, so --no-padding now confirms it positively
-	// ("padding: none") rather than omitting the line (U7).
+	// ("padding: none") rather than omitting the line.
 	if !strings.Contains(out, "padding: none") {
 		t.Errorf("--no-padding should confirm 'padding: none'; got:\n%s", out)
 	}
 }
 
-// TestPaddingZeroShrinksLikeNoPadding (U1): "--padding 0" means no padding, the
+// TestPaddingZeroShrinksLikeNoPadding: "--padding 0" means no padding, the
 // same as --no-padding. It must drop the default-reserved padding and produce a
 // file the same size as the --no-padding write - not keep the existing region in
 // place, which is the ReuseInPlace behavior a positive --padding floor uses.
@@ -1244,7 +1244,7 @@ func TestPaddingZeroShrinksLikeNoPadding(t *testing.T) {
 	}
 	def := sizeAfter()                  // default 8 KiB padding
 	none := sizeAfter("--no-padding")   // padding stripped
-	zero := sizeAfter("--padding", "0") // U1: must behave like --no-padding
+	zero := sizeAfter("--padding", "0") // must behave like --no-padding
 	if zero >= def {
 		t.Errorf("--padding 0 size %d should be smaller than the default-padded %d", zero, def)
 	}
@@ -1253,7 +1253,7 @@ func TestPaddingZeroShrinksLikeNoPadding(t *testing.T) {
 	}
 }
 
-// TestPaddingPresetPrecedence (U3): an explicit --padding overrides the preset's
+// TestPaddingPresetPrecedence: an explicit --padding overrides the preset's
 // padding policy, so "--preset minimal --padding N" reserves padding even though
 // minimal alone writes none.
 func TestPaddingPresetPrecedence(t *testing.T) {
@@ -1261,7 +1261,7 @@ func TestPaddingPresetPrecedence(t *testing.T) {
 	file := copyFixture(t, sampleFLAC)
 	bare, _, _ := runCLI(t, "plan", file, "--set", "TITLE=Pad", "--preset", "minimal")
 	if !strings.Contains(bare, "padding: none") {
-		t.Errorf("--preset minimal alone should confirm 'padding: none' (U7); got:\n%s", bare)
+		t.Errorf("--preset minimal alone should confirm 'padding: none'; got:\n%s", bare)
 	}
 	over, _, code := runCLI(t, "plan", file, "--set", "TITLE=Pad", "--preset", "minimal", "--padding", "16384")
 	if code != 0 {
@@ -1273,7 +1273,7 @@ func TestPaddingPresetPrecedence(t *testing.T) {
 	}
 }
 
-// TestPaddingFlagValidation (U3): combining the flags, or a negative/non-integer
+// TestPaddingFlagValidation: combining the flags, or a negative/non-integer
 // value, is a usage error (exit 2) through the CLI.
 func TestPaddingFlagValidation(t *testing.T) {
 	t.Parallel()
@@ -1357,7 +1357,7 @@ func TestMalformedValueNotesTolerant(t *testing.T) {
 	}
 }
 
-// TestValueNotesDeferredUntilFiles (#4): the invocation-level value note must not
+// TestValueNotesDeferredUntilFiles: the invocation-level value note must not
 // print on a run that acts on no real file - otherwise it advises about a value that
 // was never acted on because nothing was written.
 func TestValueNotesDeferredUntilFiles(t *testing.T) {
@@ -1373,7 +1373,7 @@ func TestValueNotesDeferredUntilFiles(t *testing.T) {
 		t.Errorf("value note must not print on a directory-only run:\n%s", errb)
 	}
 	// An empty --recursive walk now aligns with plan: exit 0 with a "nothing to do"
-	// advisory, not a usage error (E1). The value note still must not print, since no
+	// advisory, not a usage error. The value note still must not print, since no
 	// file was acted on.
 	_, errb, code = runCLI(t, "set", t.TempDir(), "--recursive", "--set", "TRACKNUMBER=abc")
 	if code != 0 {
@@ -1420,7 +1420,7 @@ func TestWhitespaceNumericNote(t *testing.T) {
 	}
 }
 
-// TestDumpSanitizesEndToEnd (R1): a tag value carrying an ESC/CR survives in the
+// TestDumpSanitizesEndToEnd: a tag value carrying an ESC/CR survives in the
 // file but is escaped on dump - no raw control byte reaches the terminal.
 func TestDumpSanitizesEndToEnd(t *testing.T) {
 	t.Parallel()
@@ -1440,7 +1440,7 @@ func TestDumpSanitizesEndToEnd(t *testing.T) {
 	}
 }
 
-// TestDiffSanitized (D1/R1): the diff command's change preview escapes control
+// TestDiffSanitized: the diff command's change preview escapes control
 // bytes too, since it now shares tag.Change.String() with the write-plan preview.
 func TestDiffSanitized(t *testing.T) {
 	t.Parallel()
@@ -1882,7 +1882,7 @@ func TestDumpJSONPerFileError(t *testing.T) {
 // error to stdout as an envelope even when cobra aborts during command/flag
 // resolution (before it binds the persistent flag). The envelope shape follows the
 // resolved command: an unknown command stays a bare object, while a bad flag on a
-// list command (dump) is wrapped in that command's documented one-element array (E2).
+// list command (dump) is wrapped in that command's documented one-element array.
 func TestJSONErrorRoutingOnEarlyAbort(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

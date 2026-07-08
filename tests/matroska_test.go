@@ -682,7 +682,7 @@ func mkSimpleNested(name, value string, sub ...[]byte) []byte {
 
 // mkAudioCluster returns a minimal one-block audio Cluster. A synth fixture needs it
 // to carry real audio essence: without a cluster the parser flags WarnNoAudioFrames
-// (no audio) and Editor.Prepare refuses to write a no-audio file (H1). Real .mka files
+// (no audio) and Editor.Prepare refuses to write a no-audio file. Real .mka files
 // always carry clusters; the synth fixtures omitted them to focus on tag/chapter logic,
 // which a single preserved block does not disturb.
 func mkAudioCluster() []byte {

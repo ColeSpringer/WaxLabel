@@ -11,7 +11,7 @@ import (
 // notagsFLAC is a FLAC with no canonical tags, so an edit's changes are unambiguous.
 const notagsFLAC = "../testdata/notags.flac"
 
-// TestTrackNumberSlashIsLibrarySemantic (A2): the "n/total" split is a public-library
+// TestTrackNumberSlashIsLibrarySemantic: the "n/total" split is a public-library
 // normalization, not just a CLI nicety - a caller doing Set(tag.TrackNumber, "3/12")
 // gets the canonical pair, here observed through the plan's field-level changes.
 func TestTrackNumberSlashIsLibrarySemantic(t *testing.T) {
@@ -32,7 +32,7 @@ func TestTrackNumberSlashIsLibrarySemantic(t *testing.T) {
 	}
 }
 
-// TestTrackNumberNULRejected (A2): a NUL in a slash number is rejected by Prepare
+// TestTrackNumberNULRejected: a NUL in a slash number is rejected by Prepare
 // before the split, not smuggled into the derived TRACKTOTAL (which rejectInvalidValues
 // does not scan, since it is not a patched key). This is the load-bearing reason
 // splitNumberPairs runs *after* the NUL guard. execve blocks a NUL in CLI argv, so

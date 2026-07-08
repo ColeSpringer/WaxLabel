@@ -30,7 +30,7 @@ func TestClassifyBrokenPipe(t *testing.T) {
 	}
 }
 
-// TestBrokenPipeExitsZeroSilently is the L7 regression: a run whose context was cancelled by a
+// TestBrokenPipeExitsZeroSilently is a regression guard: a run whose context was cancelled by a
 // closed output pipe (SIGPIPE, cancel cause errBrokenPipe) exits 0 with nothing on stderr - the
 // Unix convention for `waxlabel dump --recursive DIR | head` - rather than the 130 a real Ctrl-C
 // yields. The cancel cause is the only thing distinguishing the two; both leave the parse

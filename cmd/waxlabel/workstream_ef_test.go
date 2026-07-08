@@ -19,7 +19,7 @@ func lintHasEncoderNoise(t *testing.T, path string) bool {
 	return strings.Contains(out, "inherited-encoder")
 }
 
-// --- E1: WAV ISFT encoder stamp is clearable from the CLI ---
+// --- WAV ISFT encoder stamp is clearable from the CLI ---
 
 // TestWAVEncoderStampClearedBySetEdits checks each of the three set-side triggers drops
 // the WAV ISFT transcoder stamp so a re-lint is clean of inherited-encoder.
@@ -58,7 +58,7 @@ func TestWAVLintFixClearsEncoderStamp(t *testing.T) {
 }
 
 // TestWAVSetEncoderNoSplitBrain checks that setting ENCODER drops the old ISFT stamp
-// rather than leaving a new id3 ENCODER beside a surviving ISFT (#2's split-brain).
+// rather than leaving a new id3 ENCODER beside a surviving ISFT (split-brain).
 func TestWAVSetEncoderNoSplitBrain(t *testing.T) {
 	f := copyFixture(t, sampleWAV)
 	if _, errb, code := runCLI(t, "set", f, "--set", "ENCODER=MyTool"); code != 0 {
@@ -73,7 +73,7 @@ func TestWAVSetEncoderNoSplitBrain(t *testing.T) {
 	}
 }
 
-// --- E3: native counts render with a unit, not as bytes ---
+// --- native counts render with a unit, not as bytes ---
 
 // TestNativeOggPagesUnit checks the Ogg "audio pages" count renders as "N pages", never
 // as a byte size.
@@ -119,7 +119,7 @@ func nativeLine(t *testing.T, out, kind string) string {
 	return ""
 }
 
-// --- E6: chapter writes on former refusal fixtures ---
+// --- chapter writes on former refusal fixtures ---
 //
 // The chapter-unsupported CLI path is not reachable for these fixtures: MP3/AAC/AIFF/WAV
 // use ID3 CHAP/CTOC, FLAC/Ogg use VorbisComment CHAPTERxxx, and MP4/Matroska use their
@@ -140,7 +140,7 @@ func TestAddChapterAcrossFormats(t *testing.T) {
 	}
 }
 
-// --- F1: long values elided in human output, full in JSON ---
+// --- long values elided in human output, full in JSON ---
 
 // TestLongValueElidedHumanFullJSON checks a pathologically long value is elided (with a
 // length hint) in the human plan preview, while --json keeps the exact bytes.
@@ -166,7 +166,7 @@ func TestLongValueElidedHumanFullJSON(t *testing.T) {
 	}
 }
 
-// --- F2: set -o - is rejected ---
+// --- set -o - is rejected ---
 
 // TestSetOutputDashRejected checks "set -o -" is a usage error, not a write to a file
 // literally named "-".
@@ -181,7 +181,7 @@ func TestSetOutputDashRejected(t *testing.T) {
 	}
 }
 
-// --- F3: caps --format webm reports the cover-refusing variant ---
+// --- caps --format webm reports the cover-refusing variant ---
 
 // TestCapsFormatWebM checks caps --format webm is accepted and reports cover write as
 // unsupported, while plain matroska still reports it writable.

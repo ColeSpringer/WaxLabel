@@ -18,7 +18,7 @@ func v22WithUnknownFrame(t *testing.T) []byte {
 	), mp3Audio(t)...)
 }
 
-// TestMP3V22UnknownFrameNoPhantom is the F1 regression: an unknown ID3v2.2 frame is
+// TestMP3V22UnknownFrameNoPhantom is a regression guard: an unknown ID3v2.2 frame is
 // preserved under a space-padded "TXY " ID when the tag is modernized to v2.3, but that
 // non-conformant ID must never surface as a phantom canonical tag - not on the first
 // read, not on re-read of the written file, and not in the plan preview (which must

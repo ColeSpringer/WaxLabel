@@ -12,7 +12,7 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestMP4TrackNumberZeroWarns checks the MP4-specific TRACKNUMBER=0 case (L2). decodePair drops
+// TestMP4TrackNumberZeroWarns checks the MP4-specific TRACKNUMBER=0 case. decodePair drops
 // a 0 slot on read (its num>0/total>0 guards treat 0 as unset), so a user's 0 never round-trips
 // and the write must warn - even when the pair does not collapse: 0 paired with a real total
 // still loses the 0 on read (0/12 reads back as total-only), while the representable total is
@@ -49,7 +49,7 @@ func TestMP4TrackNumberZeroWarns(t *testing.T) {
 }
 
 // TestMP4CompilationCoercionWarns verifies that COMPILATION is a single boolean byte (cpil), so a
-// non-boolean value is coerced to false and WRITTEN (0) rather than dropped (L2). The write must
+// non-boolean value is coerced to false and written (0) rather than dropped. The write must
 // surface a value-coerced warning naming the key - the honest disposition, since the key does land
 // on disk - rather than the old value-dropped, which contradicted the change set showing ["0"]. A
 // recognized boolean spelling stores faithfully and must not warn.

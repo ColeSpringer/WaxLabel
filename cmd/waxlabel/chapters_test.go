@@ -179,7 +179,7 @@ func TestSetAddChapterDedupsExactDuplicates(t *testing.T) {
 	}
 }
 
-// TestSetReAddExistingMP4ChapterNoDuplicate covers Finding 4: an MP4 chapter reads back a derived
+// TestSetReAddExistingMP4ChapterNoDuplicate: an MP4 chapter reads back a derived
 // End (from the next chapter's start) while a CLI addition has End == 0, so requiring End equality in
 // the dedup made re-adding an existing chapter write a duplicate. Matching Start+Title (and End only
 // when the addition carries one) dedups it: re-adding "0:00=Opening Credits" to a file that already

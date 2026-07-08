@@ -34,7 +34,7 @@ func TestCodecCapabilitiesNilSafe(t *testing.T) {
 // capsBlockMarkers bound the machine-generated capability table in the README. The
 // table is rendered from the codec Capabilities (the same structured source `caps`
 // renders), so the README's per-format picture and chapter facts cannot silently
-// drift from the code (the caps-vs-README class - F5's Matroska chapters and P2's m4a
+// drift from the code (the caps-vs-README class - Matroska chapters and m4a
 // cover types). TestReadmeCapabilityBlockDerived regenerates the block and asserts the
 // committed README carries it verbatim; on a capability change, run the test to see the
 // new block in the failure output and paste it between the markers.
@@ -72,7 +72,7 @@ func capCell(c wl.Capability) string {
 // TestReadmeCapabilityBlockDerived (Prevention) renders the capability block from the
 // codecs and asserts the committed README carries it verbatim between the markers, so
 // the README's caps facts are literally generated, not hand-maintained - closing the
-// caps-vs-README drift class (F5/P2).
+// caps-vs-README drift class.
 func TestReadmeCapabilityBlockDerived(t *testing.T) {
 	readme, err := os.ReadFile("../README.md")
 	if err != nil {

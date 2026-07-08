@@ -12,7 +12,7 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestCopyChapterTitleTooLongReportsLossy covers Finding 14: MP4's Nero chpl truncates a chapter
+// TestCopyChapterTitleTooLongReportsLossy checks that MP4's Nero chpl truncates a chapter
 // title past 255 bytes, so copying a chapter whose title exceeds that to MP4 must grade the chapter
 // set Lossy (with the truncation reason) rather than advertise a clean carry. FLAC/Ogg have no such
 // cap, so the same title stays Carried there.
@@ -62,7 +62,7 @@ func chapterItem(t *testing.T, r wl.TransferReport) wl.TransferItem {
 	return wl.TransferItem{}
 }
 
-// TestCopyTrimsMediaType covers Finding 9 on the copy path: a source whose MEDIATYPE comment carries
+// TestCopyTrimsMediaType covers the copy path: a source whose MEDIATYPE comment carries
 // surrounding whitespace (stored raw here, bypassing the writer's own trim) transfers the trimmed
 // single-token value to the destination, matching the set path so set, lint, and copy agree on the
 // stored form. REPLAYGAIN_* keys describe the source's own audio, so copy excludes them entirely
@@ -96,8 +96,8 @@ func tinyGIF() []byte {
 	return append([]byte("GIF89a"), 0x03, 0x00, 0x05, 0x00, 0x77, 0x00, 0x00)
 }
 
-// TestPrepareTransferMP4ZeroTrackDropped is the finding-1 regression: MP4 drops a literal 0 in a
-// trkn/disk slot on read (L2), so the transfer grading must report TRACKNUMBER=0 (even paired with
+// TestPrepareTransferMP4ZeroTrackDropped is a regression guard: MP4 drops a literal 0 in a
+// trkn/disk slot on read, so the transfer grading must report TRACKNUMBER=0 (even paired with
 // a real total) as dropped, not carried - keeping the report in sync with what the writer stores
 // and reads back.
 func TestPrepareTransferMP4ZeroTrackDropped(t *testing.T) {
@@ -464,7 +464,7 @@ func TestPlanTransferMatroskaToMP4ChapterLoss(t *testing.T) {
 	}
 	// Only the final chapter carries an explicit end, with no interior gap and a uniform
 	// language: MP4's QuickTime text track stores the last chapter's end, so this is carried,
-	// not lossy (the L1 fix - it was graded Lossy when the last end was flagged unconditionally).
+	// not lossy (the fix - it was graded Lossy when the last end was flagged unconditionally).
 	lastEndOnly := withChapters(
 		wl.Chapter{Start: 0, Title: "One", LanguageIETF: "en-US"},
 		wl.Chapter{Start: ms(300), End: ms(600), Title: "Two", LanguageIETF: "en-US"},
@@ -830,7 +830,7 @@ func TestWavForcedID3NumericGenreWarns(t *testing.T) {
 	}
 }
 
-// TestTransferCarriesV23MultiValueWarning is the F11 regression: a copy that carries a
+// TestTransferCarriesV23MultiValueWarning is a regression guard: a copy that carries a
 // multi-value field verbatim onto an ID3v2.3 destination - while another field changes, so
 // the multi-value frame is preserved rather than re-rendered - must surface the
 // [id3-multi-value] caveat, the same one a direct multi-value set warns. The earlier gap

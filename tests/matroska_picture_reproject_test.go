@@ -11,7 +11,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestMatroskaNonFrontCoverCopyIdempotent is the M6 regression: a picture whose role Matroska
+// TestMatroskaNonFrontCoverCopyIdempotent is a regression guard: a picture whose role Matroska
 // reduces to Other must not re-trigger an attachment rewrite on every copy. detectChanges now
 // compares base against the reprojected edited set, so re-applying an already-stored non-front
 // cover (same bytes) is a true no-op instead of churning a fresh random FileUID each time.
@@ -22,7 +22,7 @@ func TestMatroskaNonFrontCoverCopyIdempotent(t *testing.T) {
 		mkStr(idFileMime, "image/png"),
 		mkEl(idFileData, png),
 	)))
-	data := buildMatroska("matroska", "M6", cover)
+	data := buildMatroska("matroska", "cover", cover)
 	doc := mustParseBytes(t, data)
 	if pics := doc.Pictures(); len(pics) != 1 || pics[0].Type != wl.PicOther {
 		t.Fatalf("setup: expected 1 Other-role cover, got %+v", doc.Pictures())
@@ -41,14 +41,14 @@ func TestMatroskaNonFrontCoverCopyIdempotent(t *testing.T) {
 	}
 }
 
-// TestMatroskaForceNonImageReprojectsAsCover is the L9 read/write-symmetry regression (it replaces
-// the old L15 assertion): a non-image cover embedded under --force is written under the cover-art
+// TestMatroskaForceNonImageReprojectsAsCover is the read/write-symmetry regression: a non-image
+// cover embedded under --force is written under the cover-art
 // file name (cover.<ext>), so it now reads back as one Unrecognized() picture rather than vanishing
 // as a plain attachment. The result view and a fresh reparse must AGREE on that 1 picture (the
 // write-fidelity invariant), and its bytes and front-cover role round-trip while the MIME stays
 // application/octet-stream (unrecognized, not sniffed to a real image).
 func TestMatroskaForceNonImageReprojectsAsCover(t *testing.T) {
-	data := buildMatroska("matroska", "L9", nil)
+	data := buildMatroska("matroska", "force-cover", nil)
 	nonImage := wl.Picture{Type: wl.PicFrontCover, MIME: "application/octet-stream", Data: []byte("plain file, not an image")}
 	plan, err := mustParseBytes(t, data).Edit().AddPicture(nonImage).Prepare(wl.WithUnrecognizedPictures())
 	if err != nil {
@@ -75,7 +75,7 @@ func TestMatroskaForceNonImageReprojectsAsCover(t *testing.T) {
 	}
 }
 
-// TestMatroskaForceCoverNoAccumulation is the L9 report repro: repeating
+// TestMatroskaForceCoverNoAccumulation is the report repro: repeating
 // `--remove-pictures --add-cover garbage.bin --force` must not stack cover_1/cover_2/... covers
 // (the forced cover is now a removable picture, so --remove-pictures clears the prior one before
 // the re-add), and a final --remove-pictures leaves zero covers. A foreign non-cover attachment
@@ -87,7 +87,7 @@ func TestMatroskaForceCoverNoAccumulation(t *testing.T) {
 		mkStr(idFileMime, "text/plain"),
 		mkEl(idFileData, []byte("Dear hiring manager,")),
 	)))
-	data := buildMatroska("matroska", "L9", letter)
+	data := buildMatroska("matroska", "force-cover", letter)
 
 	forceCover := func(src []byte) []byte {
 		t.Helper()
@@ -183,7 +183,7 @@ func TestMatroskaForeignOctetCoverReprojects(t *testing.T) {
 	if len(pics) != 1 || pics[0].MIME != "application/octet-stream" {
 		t.Fatalf("foreign cover.bin projected %+v, want 1 octet-stream picture", pics)
 	}
-	// It is removable via the picture API (the whole point of L9).
+	// It is removable via the picture API.
 	plan, err := mustParseBytes(t, data).Edit().RemovePictures(func(wl.Picture) bool { return true }).Prepare()
 	if err != nil {
 		t.Fatal(err)

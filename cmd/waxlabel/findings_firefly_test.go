@@ -84,7 +84,7 @@ func TestEmptyValueKeptOnGeneralFormats(t *testing.T) {
 	}
 }
 
-// TestWAVAIFFPresentEmptyNativeRoundTrip is the L1 regression: WAV INFO items (ZSTR, so a
+// TestWAVAIFFPresentEmptyNativeRoundTrip is a regression guard: WAV INFO items (ZSTR, so a
 // present-empty value is a size-1 NUL item) and AIFF text chunks (genuinely zero-length) now
 // store a present-empty value, so a bare file round-trips `set ARTIST=` as present-empty like
 // every other format - no forced ID3 chunk needed.
@@ -96,7 +96,7 @@ func TestWAVAIFFPresentEmptyNativeRoundTrip(t *testing.T) {
 				t.Fatalf("set ARTIST= exit %d", code)
 			}
 			if v := tagValues(decodeJSONOne[jsonDocument](t, mustDumpJSON(t, bare)), "ARTIST"); len(v) != 1 || v[0] != "" {
-				t.Errorf("bare native chunk: ARTIST = %v, want a kept present-empty value (L1)", v)
+				t.Errorf("bare native chunk: ARTIST = %v, want a kept present-empty value", v)
 			}
 		})
 	}

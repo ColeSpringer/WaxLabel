@@ -9,11 +9,11 @@ import (
 )
 
 // TestNumberPairReadPathAgreesAcrossFormats is the cross-format agreement check for the
-// track/disc normalization (M3): a slashed TRACKNUMBER stored natively must read back as the
+// track/disc normalization: a slashed TRACKNUMBER stored natively must read back as the
 // same (TrackNumber, TrackTotal) canonical pair on every text codec, so dump, copy, and diff
 // agree on one file. Per-format tests miss this; the point is that the formats agree. FLAC
 // exercises the vorbis/wav post-pass (tag.NormalizeNumberPairs), MP3 the ID3 emitNumTotal path,
-// and Matroska the projectTag path, the three mechanisms M3 keeps in lockstep through the shared
+// and Matroska the projectTag path, the three mechanisms kept in lockstep through the shared
 // tag.NumberTotalSplit. A malformed pair ("abc/1", "1/2/3") stays verbatim on the number key
 // everywhere.
 //
@@ -69,7 +69,7 @@ func TestNumberPairReadPathExplicitTotalWins(t *testing.T) {
 	}
 }
 
-// TestNumberPairReadPathByteIdenticalNoOp is the M3 "why this is safe" guarantee: normalizing
+// TestNumberPairReadPathByteIdenticalNoOp is the "why this is safe" guarantee: normalizing
 // "4/9" on read must not perturb the file. The native Vorbis comment stays verbatim, so a
 // no-op edit stays a no-op and the bytes are byte-identical (the read-time split lives only in
 // the canonical projection, not on disk).

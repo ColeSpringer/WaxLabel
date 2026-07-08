@@ -50,7 +50,7 @@ func runCLIBounded(t *testing.T, d time.Duration, args ...string) (stdout, stder
 	}
 }
 
-// TestFifoInputRejectedFast (#1, A1): a FIFO handed to a read command no longer
+// TestFifoInputRejectedFast: a FIFO handed to a read command no longer
 // hangs (opening a FIFO's read end blocks until a writer appears). A directly-named
 // FIFO is rejected fast as a usage error (exit 2) both with and without --recursive,
 // with no writer ever attached.
@@ -75,7 +75,7 @@ func TestFifoInputRejectedFast(t *testing.T) {
 	})
 }
 
-// TestFifoInWalkedTreeSkipped (A1): a FIFO discovered inside a walked directory is
+// TestFifoInWalkedTreeSkipped: a FIFO discovered inside a walked directory is
 // skipped like a non-audio file (not a usage error), so a stale pipe cannot wedge a
 // batch - while the real audio files in the same tree are still processed, and the
 // walk never blocks on the pipe.
@@ -104,7 +104,7 @@ func TestFifoInWalkedTreeSkipped(t *testing.T) {
 	}
 }
 
-// TestFifoInBatchIsPerElementError (Fix 4): a directly-named FIFO between two good
+// TestFifoInBatchIsPerElementError: a directly-named FIFO between two good
 // files is recorded as that path's per-element usage error rather than aborting the
 // whole batch - and crucially the FIFO is never opened (its read would block), so the
 // run returns promptly (runCLIBounded). The good files still process. This is the
@@ -144,7 +144,7 @@ func TestFifoInBatchIsPerElementError(t *testing.T) {
 	}
 }
 
-// TestFifoRejectedByNonExpandingCommands (#3, A1): caps and diff parse operands
+// TestFifoRejectedByNonExpandingCommands: caps and diff parse operands
 // directly (no expandPaths), yet still reject a FIFO fast as a usage error (exit 2)
 // with no hang - the checkRegularInputs guard, not just the library backstop.
 func TestFifoRejectedByNonExpandingCommands(t *testing.T) {

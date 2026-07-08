@@ -865,15 +865,29 @@ func notifyValueNotes(errOut io.Writer, e *editFlags, asJSON bool) {
 	if asJSON {
 		return
 	}
+	// Track each resolved key's most recent spelling and trimmed value so two differently-
+	// spelled --set assignments that alias to the same field (e.g. DATE and RECORDINGDATE) with
+	// conflicting values surface a note - last-write-wins silently discards one.
+	type seenSet struct{ spelling, value string }
+	seen := map[tag.Key]seenSet{}
 	for _, kv := range e.set {
 		k, v, err := splitAssign(kv)
 		if err != nil {
 			continue // a malformed assignment is already reported by patch()
 		}
-		// Match the writer's numeric trim so the advisory describes the stored value.
-		// A padded number is checked in its trimmed form, and whitespace-only input uses
-		// the empty-value note below instead of a misleading malformed-value note.
+		// Match the writer's numeric trim so the advisory - and the alias-collision check below -
+		// compare the stored form. A padded number is checked trimmed, and whitespace-only input
+		// uses the empty-value note below instead of a misleading malformed-value note.
 		v = tag.TrimTokenValue(k, v)
+		// Compare on the trimmed value (what the patch stores), so a whitespace-only difference
+		// between two aliased spellings is not flagged as a false conflict; run before the
+		// empty-value continue below, so "--set DATE= --set RECORDINGDATE=2021" is still caught.
+		spelling := strings.TrimSpace(kv[:strings.IndexByte(kv, '=')])
+		if prev, ok := seen[k]; ok && !strings.EqualFold(prev.spelling, spelling) && prev.value != v {
+			fmt.Fprintf(errOut, "note: --set %s and --set %s refer to the same field (%s); last value %q was used\n",
+				tag.SanitizeLine(prev.spelling), tag.SanitizeLine(spelling), tag.SanitizeLine(string(k)), tag.SanitizeLine(v))
+		}
+		seen[k] = seenSet{spelling: spelling, value: v}
 		if v == "" {
 			// A present-but-empty --set value, distinct from --clear (which removes the
 			// key). No file has been inspected yet, so the note cannot promise a specific

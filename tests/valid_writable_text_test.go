@@ -9,7 +9,7 @@ import (
 )
 
 // TestValidWritableText exercises the public single-source validator behind both the editor's
-// authored-text rejection and the CLI's boundary check (F5): clean text passes, a NUL byte (valid
+// authored-text rejection and the CLI's boundary check: clean text passes, a NUL byte (valid
 // UTF-8 U+0000, the case a UTF-8-only check would miss) is rejected, and invalid UTF-8 is rejected -
 // both wrapping ErrInvalidData.
 func TestValidWritableText(t *testing.T) {

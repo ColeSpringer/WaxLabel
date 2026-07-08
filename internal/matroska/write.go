@@ -178,7 +178,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// under the cover-art file name and reads back as an Unrecognized() picture (removable, and
 	// rebuilt not accumulated on re-add), so the reported "+ pictures" is accurate. It stays
 	// flagged as an invalid picture on read/lint, which is the correct place for the "not a
-	// recognized image" signal (L9).
+	// recognized image" signal.
 
 	pl, err := planAbsorb(d, base, edited, ch, ek, report)
 	if err == nil {
@@ -220,8 +220,8 @@ func detectChanges(base, edited *core.Media) changes {
 		// Compare base against the reprojected edited set (roles reduced to the cover-art
 		// file-name convention, description sanitized, MIME re-sniffed), not the raw edited roles:
 		// a role Matroska cannot represent would otherwise look like a change on every copy even
-		// though the on-disk cover set is already identical (M6). A --force non-image now reprojects
-		// too, so re-adding an identical one is a no-op instead of accumulating a fresh cover_<n> (L9).
+		// though the on-disk cover set is already identical. A --force non-image now reprojects
+		// too, so re-adding an identical one is a no-op instead of accumulating a fresh cover_<n>.
 		pictures: !core.EqualPictures(base.Pictures, reprojectPictures(edited.Pictures)),
 		chapters: !core.EqualChapters(base.Chapters, edited.Chapters),
 	}
@@ -474,7 +474,11 @@ func forEachSurvivingContribution(g tagGroup, ek map[tag.Key]bool, fn func(scope
 		if droppedByEdit(st, ek) || !st.hasValue {
 			continue
 		}
-		for _, c := range projectTag(st.name, st.value, g.scope) {
+		// Sanitize the raw SimpleTag value to match the canonical TagSet (parse.go
+		// projects through core.SanitizeUTF8). Without this, an invalid-UTF-8 value
+		// never folds against the sanitized canonical value, so it is never subtracted
+		// and gets re-emitted - growing by one copy on every unrelated edit.
+		for _, c := range projectTag(st.name, core.SanitizeUTF8(st.value), g.scope) {
 			fn(c)
 		}
 	}

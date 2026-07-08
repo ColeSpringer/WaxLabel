@@ -95,7 +95,7 @@ func (d *Document) resolveSource(explicit core.ReaderAtSized, remedy string) (co
 	// "no source available" below. This is the shared chokepoint for the write and
 	// hash paths, so it fixes a zeroDoc.HashAudioEssence/HashFile at once; the generic
 	// message then fires only for an initialized-but-detached Parse doc, where
-	// supplying a source genuinely is the remedy. (M6)
+	// supplying a source genuinely is the remedy.
 	if d.zero() {
 		return nil, noop, fmt.Errorf("%w: document is not initialized; use ParseFile/Parse", waxerr.ErrInvalidData)
 	}

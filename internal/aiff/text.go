@@ -19,7 +19,7 @@ func textTags(items []textItem) tag.TagSet {
 			continue
 		}
 		// Surface a present-empty (genuinely zero-length) text chunk as a present-empty value,
-		// not absent, so --set TITLE= round-trips like the other formats (L1). Every chunk in the
+		// not absent, so --set TITLE= round-trips like the other formats. Every chunk in the
 		// list is present; an absent key simply has no chunk.
 		ts.AddNativeItem(key, it.text())
 	}
@@ -77,7 +77,7 @@ func textRepresentable(ts tag.TagSet) bool {
 // Comment value. Existing keys keep their original relative order; keys newly
 // present in the edited set are appended in the set's order. A present-empty value is
 // emitted as a genuinely zero-length chunk (textTags surfaces it as present-empty), so
-// --set TITLE= round-trips through the native chunk like the other formats (L1); only an
+// --set TITLE= round-trips through the native chunk like the other formats; only an
 // absent key emits no chunk.
 func rebuildText(orig []textItem, edited tag.TagSet) []outChunk {
 	var out []outChunk

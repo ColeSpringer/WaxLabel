@@ -9,7 +9,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestAbsorbClusterlessReportsNoAudioStart is the Finding-7 regression: for a clusterless
+// TestAbsorbClusterlessReportsNoAudioStart is a regression: for a clusterless
 // (audio-less) segment with trailing bytes, the absorb write path once reported
 // AudioStart = segDataEnd (a nonzero scalar) while a fresh parse and the shift path reported 0 -
 // AudioRanges was empty in every case, so only the informational scalar disagreed. buildResult now

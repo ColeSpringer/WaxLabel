@@ -2,7 +2,7 @@ package core
 
 import "testing"
 
-// TestProjectPicturesSniffs covers the display-projection half of Finding 6: ProjectPictures lets
+// TestProjectPicturesSniffs covers the display-projection half: ProjectPictures lets
 // each picture's own bytes decide its MIME (matching the id3/mp4/matroska read projection), so a GIF
 // mislabeled image/png shows image/gif and a junk/blank cover degrades to UnrecognizedMIME (which
 // lint flags) - all on an independent clone (Data shared, read-only) that leaves the caller's

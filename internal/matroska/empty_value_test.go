@@ -8,7 +8,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestManagedTagWithoutTagStringStaysNative guards the A1 empty-value change against
+// TestManagedTagWithoutTagStringStaysNative guards the empty-value change against
 // over-reach: a managed SimpleTag (its name maps to a canonical key) that carries only
 // a TagBinary or only nested sub-tags - no TagString of its own - must stay native-only,
 // not surface as a spurious empty canonical value (ARTIST=[""]). parseSimpleTag leaves

@@ -38,7 +38,7 @@ func hasWarn(ws []core.Warning, code core.WarningCode) bool {
 	return false
 }
 
-// TestParseRejectsMoovTrailingGap covers Finding 1: a moov with no udta and a gap between where its
+// TestParseRejectsMoovTrailingGap covers a moov with no udta and a gap between where its
 // last complete child ends and moov.end() would misalign a create-ilst edit - buildCreated appends
 // the new udta at moov.end() (the no-udta/no-meta default branch), past the stray zeros walkAtoms
 // tolerated (the udta-terminator rule), so the output re-parses misaligned. parse must reject it, the
@@ -68,8 +68,8 @@ func TestParseRejectsMoovTrailingGap(t *testing.T) {
 	}
 }
 
-// TestParseAcceptsMoovCleanTail is the must-not-reject half of Finding 1: the moov guard is scoped
-// exactly to a udta-less moov that leaves a real gap, so it must NOT reject a moov whose child tiles
+// TestParseAcceptsMoovCleanTail is the must-not-reject half: the moov guard is scoped
+// exactly to a udta-less moov that leaves a real gap, so it must not reject a moov whose child tiles
 // exactly to its end, a moov padded with a legal trailing free atom, or a moov that zero-pads *around
 // a present udta* (a muxer's alternative to a free atom) - all of which write correctly today. The
 // last case is the load-bearing scoping proof: with a udta present the insert targets udta.end(), not
@@ -92,7 +92,7 @@ func TestParseAcceptsMoovCleanTail(t *testing.T) {
 	}
 }
 
-// TestParseWarnsCleanTruncatedMoov covers the warn half of Finding 1: a moov clamped to EOF whose
+// TestParseWarnsCleanTruncatedMoov covers the warn half: a moov clamped to EOF whose
 // surviving children still tile exactly to the clamped end has no misaligning gap and is accepted,
 // but the degraded structure must be surfaced with a truncation warning rather than reported clean.
 func TestParseWarnsCleanTruncatedMoov(t *testing.T) {

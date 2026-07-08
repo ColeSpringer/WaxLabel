@@ -9,7 +9,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestPlanLintFixPreservesCleanEncoder is the M2 regression: the inherited-encoder finding
+// TestPlanLintFixPreservesCleanEncoder is a regression guard: the inherited-encoder finding
 // also fires on a bare transcoder vendor string, so lint --fix must not clear a clean,
 // user-set ENCODER tag as collateral. The clear is gated on the ENCODER value itself being a
 // transcoder stamp, while the vendor neutralization (WithStripEncoderStamp) stays outside that
@@ -38,7 +38,7 @@ func TestPlanLintFixPreservesCleanEncoder(t *testing.T) {
 	}
 }
 
-// TestPlanLintFixClearsStampEncoder is the M2 companion: when the ENCODER value IS a
+// TestPlanLintFixClearsStampEncoder is the companion: when the ENCODER value is a
 // transcoder stamp, lint --fix still clears it (the gate reuses the linter's own noise test,
 // so it can never disagree with the finding).
 func TestPlanLintFixClearsStampEncoder(t *testing.T) {
@@ -79,7 +79,7 @@ func hasInheritedEncoder(doc *wl.Document) bool {
 	return false
 }
 
-// TestPlanLintFixMultiValueEncoderRemovesStamp is the finding-3 regression: when ENCODER carries
+// TestPlanLintFixMultiValueEncoderRemovesStamp is a regression guard: when ENCODER carries
 // several values and a later one is a transcoder stamp, lint --fix removes only the stamp value
 // (keeping the clean one), rather than inspecting only the first value and leaving the stamp - so
 // a re-lint of the saved file is clean and the clean value survives.

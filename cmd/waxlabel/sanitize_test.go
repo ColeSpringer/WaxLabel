@@ -183,7 +183,7 @@ func TestBoundarySanitizesHostileFilename(t *testing.T) {
 	})
 }
 
-// TestUnidentifiedFilenameEscapedOnce covers Finding 12: the library's "could not identify %q"
+// TestUnidentifiedFilenameEscapedOnce: the library's "could not identify %q"
 // already escapes control bytes once via %q, so the CLI must pass the raw source name (jsonFileName),
 // not an already-sanitized displayName - otherwise a tab in the name is double-escaped in the error.
 // A tab-in-name failure must escape exactly once in both the human error and the JSON error.message.

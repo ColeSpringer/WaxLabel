@@ -233,7 +233,7 @@ func changedSourceCases() []changedSourceCase {
 	}
 }
 
-// TestSaveAsFileGuardsChangedSource checks the F1 guard on SaveAsFile: a ParseFile source
+// TestSaveAsFileGuardsChangedSource checks the guard on SaveAsFile: a ParseFile source
 // that changed on disk since parse is refused with ErrSourceChanged, so the stale byte
 // offsets never copy the wrong bytes (and an in-place target is never silently corrupted).
 // Both a size change and a fingerprint-only change are caught, on an in-place target and another path.
@@ -270,7 +270,7 @@ func TestSaveAsFileGuardsChangedSource(t *testing.T) {
 	}
 }
 
-// TestWriteToGuardsChangedSource checks the F1 guard on WriteTo(w, nil): a ParseFile source
+// TestWriteToGuardsChangedSource checks the guard on WriteTo(w, nil): a ParseFile source
 // that changed on disk is refused before any bytes are streamed. A streaming writer never
 // clobbers the source, so this is a derived write - the precise inode+size+fingerprint check.
 func TestWriteToGuardsChangedSource(t *testing.T) {
@@ -295,7 +295,7 @@ func TestWriteToGuardsChangedSource(t *testing.T) {
 	}
 }
 
-// TestDerivedWriteUnchangedSourceSucceeds is the happy path that actually enters the F1
+// TestDerivedWriteUnchangedSourceSucceeds is the happy path that actually enters the
 // guard and passes: a ParseFile document whose source is unchanged writes cleanly via both
 // SaveAsFile(otherPath) and WriteTo(w, nil). Without it, an always-fire regression in the
 // guard would slip past the change-detection tests, which never reach a passing guard.
@@ -322,7 +322,7 @@ func TestDerivedWriteUnchangedSourceSucceeds(t *testing.T) {
 	}
 }
 
-// TestDerivedWriteIgnoresMtimeTouch pins the precise same-path/derived asymmetry F1
+// TestDerivedWriteIgnoresMtimeTouch pins the precise same-path/derived asymmetry the guard
 // introduces. Bumping only the source's mtime (bytes identical) must NOT block a derived
 // write: a moved audio region always changes size and/or the fingerprint, so mtime says
 // nothing about whether the planned offsets are still valid. The same touch DOES block an
@@ -379,7 +379,7 @@ func TestDerivedWriteIgnoresMtimeTouch(t *testing.T) {
 	})
 }
 
-// TestGuardBypassedForStableSources checks the F1 escape hatches: when the write copies from
+// TestGuardBypassedForStableSources checks the escape hatches: when the write copies from
 // bytes that cannot go stale, the guard does not run even if a file on disk changed. An
 // explicit WriteTo(w, source) uses caller-supplied bytes; an OpenSource document holds its
 // bytes in memory.

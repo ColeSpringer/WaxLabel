@@ -5,6 +5,7 @@
 package flac
 
 import (
+	"encoding/binary"
 	"slices"
 
 	"github.com/colespringer/waxlabel/internal/core"
@@ -110,9 +111,9 @@ func (d *doc) Clone() core.NativeDoc {
 		streamInfo:      d.streamInfo,
 		// preserved so a picture edit on a cloned doc still re-appends the undecodable blocks
 		malformedPictureBlocks: cloneByteSlices(d.malformedPictureBlocks),
-		flacStart:       d.flacStart,
-		audioStart:      d.audioStart,
-		audioEnd:        d.audioEnd,
+		flacStart:              d.flacStart,
+		audioStart:             d.audioStart,
+		audioEnd:               d.audioEnd,
 	}
 	c.blocks = make([]block, len(d.blocks))
 	for i, b := range d.blocks {
@@ -144,7 +145,10 @@ func (d *doc) Describe() []core.NativeEntry {
 		e := core.NativeEntry{Kind: blockName(b.code), Size: len(b.body)}
 		switch b.code {
 		case blkVorbisComment:
-			e.Note = "vendor=" + d.vendor
+			// Decode each block's own vendor rather than reusing d.vendor (the first
+			// block's), so a non-conformant file with duplicate VORBIS_COMMENT blocks
+			// reports the right vendor for each.
+			e.Note = "vendor=" + vendorOf(b.body)
 		case blkPicture:
 			e.Note = "embedded picture"
 		}
@@ -154,4 +158,23 @@ func (d *doc) Describe() []core.NativeEntry {
 		out = append(out, core.NativeEntry{Kind: "ID3v1 (trailing)", Size: len(d.trailingID3v1), Note: "preserved"})
 	}
 	return out
+}
+
+// vendorOf extracts the vendor string from a VORBIS_COMMENT block body without a
+// full comment-list parse: the body opens with a little-endian uint32 length
+// followed by the vendor bytes. A body too short to hold the length, or a length
+// that overruns it (a malformed block), falls back to whatever bytes remain so a
+// duplicate block still reports its own vendor rather than borrowing the first
+// block's. The sz<0 guard matches the codebase's int(uint32) overflow handling on a
+// 32-bit int. The human and --json renderers sanitize terminal-control bytes, so
+// returning the raw vendor bytes here is safe.
+func vendorOf(body []byte) string {
+	if len(body) < 4 {
+		return string(body)
+	}
+	sz := int(binary.LittleEndian.Uint32(body[:4]))
+	if sz < 0 || sz > len(body)-4 {
+		return string(body[4:])
+	}
+	return string(body[4 : 4+sz])
 }

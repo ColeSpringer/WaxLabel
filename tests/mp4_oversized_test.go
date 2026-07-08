@@ -10,7 +10,7 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestMP4OversizedCoverFailsLoudNotTruncated covers H1's read side: a covr item whose payload
+// TestMP4OversizedCoverFailsLoudNotTruncated covers the read side: a covr item whose payload
 // exceeds the configured alloc limit must fail loudly with ErrSizeTooLarge rather than silently
 // truncate to a partial, unreadable cover (the old min(payloadSize, maxMetaChunk) behavior). The
 // limit is exercised with a small WithLimits so the test needs only a few KiB, not a 64+ MiB

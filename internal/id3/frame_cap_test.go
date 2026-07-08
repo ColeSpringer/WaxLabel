@@ -76,7 +76,7 @@ func TestRenderFrontTagClampsPadding(t *testing.T) {
 	}
 }
 
-// TestCheckSizeFrameCapBoundary is the F2 regression: the write path enforces the same
+// TestCheckSizeFrameCapBoundary is a regression: the write path enforces the same
 // element cap the reader uses, at the exact off-by-one boundary. The reader's
 // CheckElementCap errors at len >= max on the PRE-append count, so it accepts a tag of
 // exactly max frames; CheckSize must therefore accept max (a strict > test) and reject only

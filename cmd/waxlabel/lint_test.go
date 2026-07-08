@@ -28,7 +28,7 @@ func TestLintReportsFindings(t *testing.T) {
 	}
 }
 
-// TestDumpLintCodeAlignment (§6 C1/C2/C3): a condition both dump and lint surface uses
+// TestDumpLintCodeAlignment: a condition both dump and lint surface uses
 // the same code and message in each. dump prints the parse-warning codes; lint now
 // reuses them verbatim (inherited-encoder, trailing-id3v1) instead of its old private
 // aliases (encoder-noise, stale-legacy-tag), and one shared builder makes the
@@ -37,7 +37,7 @@ func TestLintReportsFindings(t *testing.T) {
 func TestDumpLintCodeAlignment(t *testing.T) {
 	t.Parallel()
 
-	// C1: dump and lint name the same conditions with the same codes on an MP3 that
+	// dump and lint name the same conditions with the same codes on an MP3 that
 	// carries an inherited encoder stamp and a trailing ID3v1.
 	dumpOut, _, _ := runCLI(t, "dump", sampleMP3)
 	lintOut, _, _ := runCLI(t, "lint", sampleMP3)
@@ -56,7 +56,7 @@ func TestDumpLintCodeAlignment(t *testing.T) {
 		}
 	}
 
-	// C2: the conflicting-families condition reads identically in dump and lint (shared
+	// the conflicting-families condition reads identically in dump and lint (shared
 	// wording + the same " (KEY)" suffix). chapters.mka carries a cross-target ENCODER
 	// conflict.
 	mka := filepath.Join("..", "..", "testdata", "chapters.mka")
@@ -83,7 +83,7 @@ func TestDumpLintCodeAlignment(t *testing.T) {
 		t.Error("expected a conflicting-families finding in lint --json")
 	}
 
-	// C3: dump signposts lint when it surfaced warnings, and stays quiet on a clean file.
+	// dump signposts lint when it surfaced warnings, and stays quiet on a clean file.
 	if !strings.Contains(dumpOut, `run "waxlabel lint"`) {
 		t.Errorf("dump with warnings should point at lint:\n%s", dumpOut)
 	}
@@ -203,7 +203,7 @@ func TestLintFixJSONOperations(t *testing.T) {
 	}
 }
 
-// TestLintFixNothingToFix is the M8 regression: on a clean file --fix has nothing to do, so it
+// TestLintFixNothingToFix is a regression guard: on a clean file --fix has nothing to do, so it
 // prints "nothing to fix" (the NoOpPlan "no changes" sentinel no longer masks that branch) and
 // the --json operations array is empty rather than leaking the sentinel.
 func TestLintFixNothingToFix(t *testing.T) {
@@ -279,7 +279,7 @@ func TestVerifyEmptyMP3Exit4(t *testing.T) {
 	}
 }
 
-// TestDumpJSONSchemaVersion: per-file dump objects now carry schemaVersion (U6).
+// TestDumpJSONSchemaVersion: per-file dump objects now carry schemaVersion.
 func TestDumpJSONSchemaVersion(t *testing.T) {
 	t.Parallel()
 	out, _, _ := runCLI(t, "--json", "dump", sampleFLAC)

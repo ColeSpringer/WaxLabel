@@ -7,7 +7,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestEditorSetResolvesAlias is the L13 regression: the key-taking editor methods resolve tag
+// TestEditorSetResolvesAlias is a regression guard: the key-taking editor methods resolve tag
 // aliases, so Set(tag.Key("DATE"), ...) lands on the canonical RECORDINGDATE on every format
 // instead of a custom DATE field - callers no longer have to pre-resolve.
 func TestEditorSetResolvesAlias(t *testing.T) {
