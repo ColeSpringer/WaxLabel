@@ -176,6 +176,68 @@ func TestProjectTransferSplitsUnrepresentableCovers(t *testing.T) {
 	}
 }
 
+// TestProjectTransferSplitsPicturesByMetadataLoss checks that when a destination stores image bytes
+// losslessly but drops role and description (MP4's covr), a mixed set is partitioned per picture
+// rather than flipped whole. A front cover with no description round-trips (Carried) while a back
+// cover loses its role (Lossy), so front plus back reports 1 carried, 1 lossy instead of the
+// 0 carried, 2 lossy an earlier version reported. The item order is pinned
+// carried-then-lossy-then-dropped for stable output.
+func TestProjectTransferSplitsPicturesByMetadataLoss(t *testing.T) {
+	pics := Capability{
+		Write: AccessFull, PictureLoss: PictureLossRoleAndDescription,
+		PictureMIMEs: []string{"image/jpeg", "image/png", "image/bmp"},
+	}
+	caps := NewCapabilities(FormatMP4, false, Capability{Write: AccessFull}, pics,
+		Capability{Write: AccessNone}, AccessNone, nil)
+
+	pictureDisps := func(items []TransferItem) []Disposition {
+		var out []Disposition
+		for _, it := range items {
+			if it.Kind == TransferPicture {
+				out = append(out, it.Disposition)
+			}
+		}
+		return out
+	}
+
+	// Front + back cover, both representable, no descriptions: the front round-trips, the back
+	// loses its role. Exactly one carried, one lossy, carried first with an empty reason.
+	m := &Media{Format: FormatFLAC, Pictures: []Picture{
+		{Type: PicFrontCover, MIME: "image/jpeg"},
+		{Type: PicBackCover, MIME: "image/jpeg"},
+	}}
+	items := ProjectTransfer(m, caps)
+	disps := pictureDisps(items)
+	if len(disps) != 2 || disps[0] != Carried || disps[1] != Lossy {
+		t.Fatalf("picture dispositions = %v, want [Carried Lossy]", disps)
+	}
+	for _, it := range items {
+		if it.Kind == TransferPicture && it.Disposition == Carried {
+			if it.Count != 1 || it.Reason != "" {
+				t.Errorf("carried picture item = %+v, want count 1 with empty reason", it)
+			}
+		}
+		if it.Kind == TransferPicture && it.Disposition == Lossy && it.Count != 1 {
+			t.Errorf("lossy picture item = %+v, want count 1", it)
+		}
+	}
+	if c, l, d := (TransferReport{Items: items}).Counts(); c != 1 || l != 1 || d != 0 {
+		t.Errorf("counts = (%d,%d,%d), want (1,1,0)", c, l, d)
+	}
+
+	// Adding an unrepresentable cover locks the full three-item order: carried, then lossy, then
+	// the dropped-MIME item.
+	m2 := &Media{Format: FormatFLAC, Pictures: []Picture{
+		{Type: PicFrontCover, MIME: "image/jpeg"}, // carried
+		{Type: PicBackCover, MIME: "image/png"},   // lossy: role dropped
+		{Type: PicFrontCover, MIME: "image/gif"},  // dropped: unrepresentable MIME
+	}}
+	got := pictureDisps(ProjectTransfer(m2, caps))
+	if len(got) != 3 || got[0] != Carried || got[1] != Lossy || got[2] != Dropped {
+		t.Errorf("picture item order = %v, want [Carried Lossy Dropped]", got)
+	}
+}
+
 // TestProjectTransferReasonUsesSniffedMIME checks that a dropped cover's reason names the
 // sniffed type used to reject it, not a wrong or empty stored label. A GIF mislabeled as
 // JPEG, and an unlabeled GIF, both read "cannot store image/gif".

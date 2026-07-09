@@ -127,6 +127,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	// frameRenderID marks a COMM/USLT frame managed only when its description is empty,
 	// so there is at most one managed COMM and one managed USLT to reuse.
 	origLangs := map[string]string{}    // "COMM"/"USLT"/"SYLT" -> 3-byte language
+	var origSyltDesc string             // first projecting lyrics SYLT's content descriptor (authored-set fallback)
 	origTXXXDesc := map[string]string{} // TXXX render token -> original description (verbatim casing)
 	for _, f := range orig {
 		switch f.ID {
@@ -135,13 +136,17 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 				origLangs[rid] = string(f.Body[1:4])
 			}
 		case "SYLT":
-			// Recover the first lyrics SYLT language as the fallback for a re-rendered set
-			// whose modeled language is unset, so a line-only edit keeps it. Only a projecting
-			// lyrics frame qualifies; a chord or trivia SYLT that appears first must not donate
-			// its language to the lyrics set.
+			// Recover the first lyrics SYLT's language and content descriptor as fallbacks for a
+			// re-rendered set whose modeled value is unset, so a line-only edit keeps them. Only a
+			// projecting lyrics frame qualifies; a chord or trivia SYLT that appears first must not
+			// donate its metadata to the lyrics set. Both are captured under the origLangs
+			// seen-guard, so they come from the same first projecting SYLT.
 			if _, seen := origLangs["SYLT"]; !seen && syltProjectsLyrics(f.Body) {
 				if l, ok := syltFrameLanguage(f.Body); ok {
 					origLangs["SYLT"] = l
+				}
+				if d, ok := syltFrameDescriptor(f.Body); ok {
+					origSyltDesc = d
 				}
 			}
 		case "TXXX":
@@ -283,16 +288,18 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	}
 
 	// Append edited synced lyrics. SYLT is self-contained (no element-ID references), so
-	// frame position is not significant. A set with an empty language falls back to the
-	// first original SYLT's language so an authored line-only edit preserves it - but a
-	// faithful carry passes no fallback, so a no-language source set (FLAC/Ogg store none)
-	// reads back with no language instead of inheriting the destination's.
+	// frame position is not significant. A set with an empty language or descriptor falls back to
+	// the first original SYLT's language and descriptor, so an authored line-only edit preserves
+	// them. A faithful carry passes no fallback, so a no-metadata source set (FLAC/Ogg store
+	// neither) reads back with none instead of inheriting the destination's.
 	if se.SyncedLyricsChanged && len(se.SyncedLyrics) > 0 {
 		fallbackLang := origLangs["SYLT"]
+		fallbackDesc := origSyltDesc
 		if se.SyncedLyricsCarried {
 			fallbackLang = ""
+			fallbackDesc = ""
 		}
-		syltF, overflow := syltFrames(se.SyncedLyrics, version, fallbackLang)
+		syltF, overflow := syltFrames(se.SyncedLyrics, version, fallbackLang, fallbackDesc)
 		out = append(out, syltF...)
 		info.SyncedLyricsOverflow = overflow
 	}

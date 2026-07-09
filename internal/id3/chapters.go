@@ -276,7 +276,13 @@ func decodeCTOC(body []byte) (ctocFrame, bool) {
 func chapterFrames(chs []core.Chapter, duration time.Duration, version byte) (frames []Frame, overflow bool) {
 	filled := core.CloneChapters(chs)
 	// Interior open ends -> the next chapter's start (gapless), shared with the MP4 paths so the
-	// rule cannot drift. It leaves the last chapter open.
+	// rule cannot drift. It leaves the last chapter open. FillInteriorEnds gates on a strictly
+	// greater next start, so two chapters sharing a start (a degenerate case already surfaced by a
+	// duplicate-chapter warning) leave the interior one open rather than giving it End == Start, an
+	// empty interval. That is why coincident-start chapters serialize with asymmetric ends: the
+	// interior one stays open (encodeCHAP's 0xFFFFFFFF sentinel) while the trailing fill below
+	// bounds only the last chapter. No data is lost, and the duplicate start is already warned, so
+	// this is left as-is rather than special-cased in cross-format shared code.
 	core.FillInteriorEnds(filled)
 	// Trailing open chapter -> the media duration (ID3-local). When the duration is unknown (0)
 	// or not past the last start, the chapter stays open and encodeCHAP emits the sentinel - no

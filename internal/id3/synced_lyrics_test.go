@@ -29,7 +29,7 @@ func syltSet() core.SyncedLyrics {
 func TestSYLTRoundTrip(t *testing.T) {
 	in := syltSet()
 	for _, version := range []byte{3, 4} {
-		frames, _ := syltFrames([]core.SyncedLyrics{in}, version, "")
+		frames, _ := syltFrames([]core.SyncedLyrics{in}, version, "", "")
 		got, ws := ProjectSyncedLyrics(tagWith(version, frames))
 		if len(ws) != 0 {
 			t.Errorf("v%d: unexpected warnings %v", version, ws)
@@ -77,7 +77,7 @@ func TestSYLTLanguageNormalization(t *testing.T) {
 // being stored verbatim yet dropped to empty on read.
 func TestSYLTLanguageWriteMatchesRead(t *testing.T) {
 	for _, lang := range []string{"xxx", "XXX", ""} {
-		frames, _ := syltFrames([]core.SyncedLyrics{{Language: lang, Lines: []core.SyncedLine{{Time: 0, Text: "x"}}}}, 4, "")
+		frames, _ := syltFrames([]core.SyncedLyrics{{Language: lang, Lines: []core.SyncedLine{{Time: 0, Text: "x"}}}}, 4, "", "")
 		if len(frames) != 1 {
 			t.Fatalf("language %q: got %d frames, want 1", lang, len(frames))
 		}
@@ -93,7 +93,7 @@ func TestSYLTLanguageWriteMatchesRead(t *testing.T) {
 // TestSYLTEmptyLanguageFallback checks a re-rendered set whose modeled language is empty
 // falls back to the supplied original language, so a line-only edit keeps it.
 func TestSYLTEmptyLanguageFallback(t *testing.T) {
-	frames, _ := syltFrames([]core.SyncedLyrics{{Lines: []core.SyncedLine{{Time: 0, Text: "x"}}}}, 4, "deu")
+	frames, _ := syltFrames([]core.SyncedLyrics{{Lines: []core.SyncedLine{{Time: 0, Text: "x"}}}}, 4, "deu", "")
 	got, _, ok := decodeSYLT(frames[0].Body)
 	if !ok || got.Language != "deu" {
 		t.Fatalf("fallback language = %q (ok=%v), want deu", got.Language, ok)
@@ -141,7 +141,7 @@ func TestSYLTLeadingNewlineStripped(t *testing.T) {
 func TestSYLTMultipleSets(t *testing.T) {
 	a := core.SyncedLyrics{Language: "eng", Lines: []core.SyncedLine{{Time: 0, Text: "english"}}}
 	b := core.SyncedLyrics{Language: "spa", Lines: []core.SyncedLine{{Time: 0, Text: "espanol"}}}
-	frames, _ := syltFrames([]core.SyncedLyrics{a, b}, 4, "")
+	frames, _ := syltFrames([]core.SyncedLyrics{a, b}, 4, "", "")
 	got, _ := ProjectSyncedLyrics(tagWith(4, frames))
 	if len(got) != 2 || got[0].Language != "eng" || got[1].Language != "spa" {
 		t.Fatalf("got %+v, want eng then spa", got)
@@ -182,7 +182,7 @@ func TestSYLTSkipsEmptySet(t *testing.T) {
 		{Language: "eng"}, // no lines, must be skipped
 		{Language: "spa", Lines: []core.SyncedLine{{Time: time.Second, Text: "x"}}},
 	}
-	frames, _ := syltFrames(sets, 4, "")
+	frames, _ := syltFrames(sets, 4, "", "")
 	if len(frames) != 1 {
 		t.Fatalf("got %d SYLT frames, want 1 (the empty set skipped)", len(frames))
 	}
@@ -252,18 +252,53 @@ func TestSYLTCarriedLanguageNotInherited(t *testing.T) {
 	}
 }
 
+// TestSYLTDescriptorPreservedOnAuthoring checks that authoring lyric lines over a SYLT carrying a
+// content descriptor preserves that descriptor. The language fallback already kept the language, but
+// the descriptor was blanked, because an authored set carries Description=="". A faithful
+// cross-format carry must not inherit the descriptor, so the two cases are asserted side by side to
+// pin the SyncedLyricsCarried guard, the same way the language fallback is gated.
+func TestSYLTDescriptorPreservedOnAuthoring(t *testing.T) {
+	// A projecting lyrics SYLT already in the destination, with a content descriptor.
+	described := buildSYLT(encLatin1, "eng", syltFmtMillis, syltContentLyrics, "Karaoke",
+		[]core.SyncedLine{{Time: 0, Text: "old"}})
+	orig := []Frame{{ID: "SYLT", Body: described}}
+	// An authored edit sets lines but no descriptor (Description == "").
+	noDescSet := []core.SyncedLyrics{{Lines: []core.SyncedLine{{Time: time.Second, Text: "lyric"}}}}
+
+	descriptor := func(se StructuredEdit) string {
+		out, _ := RebuildFrames(orig, tag.NewTagSet(), tag.NewTagSet(), 4, se, WriteOpts{})
+		for _, f := range out {
+			if f.ID == "SYLT" && syltProjectsLyrics(f.Body) {
+				sl, _, _ := decodeSYLT(f.Body)
+				return sl.Description
+			}
+		}
+		t.Fatal("no projecting lyrics SYLT in the rebuilt frames")
+		return ""
+	}
+
+	// Authored (not carried): the file's descriptor is preserved.
+	if got := descriptor(StructuredEdit{SyncedLyrics: noDescSet, SyncedLyricsChanged: true}); got != "Karaoke" {
+		t.Errorf("authored line-only edit descriptor = %q, want \"Karaoke\" (preserved)", got)
+	}
+	// Carried: a faithful carry of a descriptor-less set must not inherit the destination's.
+	if got := descriptor(StructuredEdit{SyncedLyrics: noDescSet, SyncedLyricsChanged: true, SyncedLyricsCarried: true}); got != "" {
+		t.Errorf("carried lyrics SYLT descriptor = %q, want empty (must not inherit the destination's Karaoke)", got)
+	}
+}
+
 // TestSYLTTimestampOverflow checks a line past the SYLT 32-bit millisecond field (~49.7
 // days) is reported as clamped, so the codec can surface a warning instead of silently
 // moving the lyric.
 func TestSYLTTimestampOverflow(t *testing.T) {
 	// ~60 days, past the 32-bit millisecond ceiling.
 	set := core.SyncedLyrics{Lines: []core.SyncedLine{{Time: 60 * 24 * time.Hour, Text: "way out"}}}
-	_, overflow := syltFrames([]core.SyncedLyrics{set}, 4, "")
+	_, overflow := syltFrames([]core.SyncedLyrics{set}, 4, "", "")
 	if !overflow {
 		t.Error("expected overflow for a line past the 32-bit ms field")
 	}
 	// A normal line does not report overflow.
-	if _, ov := syltFrames([]core.SyncedLyrics{syltSet()}, 4, ""); ov {
+	if _, ov := syltFrames([]core.SyncedLyrics{syltSet()}, 4, "", ""); ov {
 		t.Error("a normal set should not report overflow")
 	}
 }
@@ -275,7 +310,7 @@ func TestSYLTTimestampFullRange(t *testing.T) {
 	const maxMs = 0xFFFFFFFF
 	wantD := time.Duration(maxMs) * time.Millisecond
 	set := core.SyncedLyrics{Lines: []core.SyncedLine{{Time: wantD, Text: "edge"}}}
-	frames, overflow := syltFrames([]core.SyncedLyrics{set}, 4, "")
+	frames, overflow := syltFrames([]core.SyncedLyrics{set}, 4, "", "")
 	if overflow {
 		t.Error("a line at exactly 0xFFFFFFFF ms should not report overflow")
 	}
@@ -292,7 +327,7 @@ func TestSYLTTimestampFullRange(t *testing.T) {
 // clamps to the full uint32 max and reports overflow.
 func TestSYLTTimestampClampsAtFullMax(t *testing.T) {
 	over := core.SyncedLyrics{Lines: []core.SyncedLine{{Time: time.Duration(0x100000000) * time.Millisecond, Text: "past"}}}
-	frames, overflow := syltFrames([]core.SyncedLyrics{over}, 4, "")
+	frames, overflow := syltFrames([]core.SyncedLyrics{over}, 4, "", "")
 	if !overflow {
 		t.Error("a line past 0xFFFFFFFF ms should report overflow")
 	}
@@ -325,14 +360,14 @@ func TestSyltLangBytesCanonicalizesCase(t *testing.T) {
 // bytes in the frame prove the encoder performed the fold.
 func TestSYLTUppercaseLanguageWrittenLowercase(t *testing.T) {
 	explicit := core.SyncedLyrics{Language: "ENG", Lines: []core.SyncedLine{{Time: time.Second, Text: "x"}}}
-	frames, _ := syltFrames([]core.SyncedLyrics{explicit}, 4, "")
+	frames, _ := syltFrames([]core.SyncedLyrics{explicit}, 4, "", "")
 	if lang := string(frames[0].Body[1:4]); lang != "eng" {
 		t.Errorf("explicit language stored = %q, want eng", lang)
 	}
 	// Line-only edit: the modeled language is empty, so the file's uppercase code arrives via
 	// fallbackLang and is canonicalized on re-encode.
 	inherited := core.SyncedLyrics{Lines: []core.SyncedLine{{Time: time.Second, Text: "new"}}}
-	frames, _ = syltFrames([]core.SyncedLyrics{inherited}, 4, "ENG")
+	frames, _ = syltFrames([]core.SyncedLyrics{inherited}, 4, "ENG", "")
 	if lang := string(frames[0].Body[1:4]); lang != "eng" {
 		t.Errorf("inherited language stored = %q, want eng (canonicalized on re-encode)", lang)
 	}
@@ -366,7 +401,7 @@ func FuzzDecodeSYLT(f *testing.F) {
 	// buildSYLT writes a BOM on every UTF-16 string. Add hand-built bytes where only the
 	// descriptor carries one.
 	f.Add(syltLEDescBOMLessLines())
-	roundtrip, _ := syltFrames([]core.SyncedLyrics{syltSet()}, 4, "")
+	roundtrip, _ := syltFrames([]core.SyncedLyrics{syltSet()}, 4, "", "")
 	f.Add(roundtrip[0].Body)
 	f.Fuzz(func(t *testing.T, body []byte) {
 		sl, _, ok := decodeSYLT(body)

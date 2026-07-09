@@ -66,6 +66,20 @@ func TestStrictEscalatesNewWriteLossesEndToEnd(t *testing.T) {
 		}
 	})
 
+	// value-coerced (keyed): TRACKNUMBER=03 on an M4A stores the integer 3 (trkn is a uint16), so
+	// the leading zero is normalized away. That is a coercion --strict must catch, the number half of
+	// the family alongside COMPILATION's boolean coercion. The error names the key and the coercion.
+	t.Run("value-coerced number keyed", func(t *testing.T) {
+		m4a := copyFixture(t, notagsM4A)
+		_, stderr, code := runCLI(t, "set", m4a, "--set", "TRACKNUMBER=03", "--strict")
+		if code != 2 {
+			t.Fatalf("exit = %d, want 2", code)
+		}
+		if !strings.Contains(stderr, "TRACKNUMBER") || !strings.Contains(stderr, "coerced") {
+			t.Errorf("strict error = %q, want it to name TRACKNUMBER and the coercion", stderr)
+		}
+	})
+
 	// chapter-title-truncated (keyless): a >255-byte chapter title cannot fit MP4's chpl
 	// single-byte length prefix, so it is trimmed - a loss --strict must now catch.
 	t.Run("chapter-title-truncated keyless", func(t *testing.T) {

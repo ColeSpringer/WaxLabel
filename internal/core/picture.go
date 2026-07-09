@@ -99,24 +99,33 @@ const (
 	PictureLossRoleAndDescription
 )
 
+// pictureLosesMetadata reports whether storing a single picture p under a destination whose picture
+// loss is loss would drop role or description metadata p actually carries. PicturesLoseMetadata
+// folds it over a whole set, and [ProjectTransfer] uses it to partition a set into carried and
+// lossy covers, so the whole-set write warning and the per-picture transfer split grade each cover
+// the same way. A plain front cover with no description is never flagged.
+func pictureLosesMetadata(p Picture, loss PictureLoss) bool {
+	switch loss {
+	case PictureLossRoleAndDescription:
+		return p.Type != PicFrontCover || p.Description != ""
+	case PictureLossRoleOnly:
+		// A PicOther picture already round-trips as Other (Matroska's small_cover), so only a
+		// role that is neither front cover nor Other is lost.
+		return p.Type != PicFrontCover && p.Type != PicOther
+	}
+	return false
+}
+
 // PicturesLoseMetadata reports whether storing pics under a destination whose
-// picture loss is loss would drop role and/or description metadata the pictures
+// picture loss is loss would drop role or description metadata the pictures
 // actually carry. Write-time picture-metadata warnings and transfer disposition
 // both use this predicate, so a copy reported lossy is the same case whose write
-// warns. A plain front cover with no description is never flagged.
+// warns. A plain front cover with no description is never flagged. It folds
+// pictureLosesMetadata over the set: a set loses metadata if any picture does.
 func PicturesLoseMetadata(pics []Picture, loss PictureLoss) bool {
 	for _, p := range pics {
-		switch loss {
-		case PictureLossRoleAndDescription:
-			if p.Type != PicFrontCover || p.Description != "" {
-				return true
-			}
-		case PictureLossRoleOnly:
-			// A PicOther picture already round-trips as Other (Matroska's small_cover), so
-			// only a role that is neither front cover nor Other is lost.
-			if p.Type != PicFrontCover && p.Type != PicOther {
-				return true
-			}
+		if pictureLosesMetadata(p, loss) {
+			return true
 		}
 	}
 	return false

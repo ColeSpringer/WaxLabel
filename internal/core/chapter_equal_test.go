@@ -89,19 +89,25 @@ func TestEqualChaptersModuloEnds(t *testing.T) {
 			durA: 0, durB: 0, want: false,
 		},
 		{
-			name: "byte-identical lists are equal despite differing durations",
-			// The trailing rule normalizes per-file: a 50s end runs to EOF in a 50s file but
-			// sits mid-file in a 100s file. Byte-identical chapter metadata must still compare
-			// equal, so the fast path returns early before the per-file normalization diverges.
+			name: "differing durations make a byte-identical trailing end distinct",
+			// The trailing rule normalizes per file. A 50s end runs to EOF in a 50s file, so its
+			// End canonicalizes to 0, but it sits mid-file in a 100s file, where its End stays 50s.
+			// The two lists therefore canonicalize differently and are not equal, even though their
+			// metadata is byte-identical. This is the case the duration-blind fast path got wrong,
+			// so the fast path now gates on equal durations. It is also the more accurate answer: a
+			// [0,50s] chapter covers a 50s file entirely but only the first half of a 100s file.
 			a:    []Chapter{ch(0, 50*s, "A")},
 			b:    []Chapter{ch(0, 50*s, "A")},
-			durA: 50 * s, durB: 100 * s, want: true,
+			durA: 50 * s, durB: 100 * s, want: false,
 		},
 		{
-			name: "byte-identical lists are equal when one duration is unknown",
+			name: "unknown duration makes a byte-identical trailing end distinct",
+			// With durB == 0 the trailing end cannot be shown to run to EOF, so it is not
+			// normalized and stays 50s, distinct from the 50s file's run-to-EOF end (normalized to
+			// 0). Reporting it equal instead would bring back the non-transitive mka/mp3/flac shape.
 			a:    []Chapter{ch(0, 50*s, "A")},
 			b:    []Chapter{ch(0, 50*s, "A")},
-			durA: 50 * s, durB: 0, want: true,
+			durA: 50 * s, durB: 0, want: false,
 		},
 	}
 	for _, tc := range cases {
@@ -114,6 +120,45 @@ func TestEqualChaptersModuloEnds(t *testing.T) {
 				t.Errorf("EqualChaptersModuloEnds (swapped) = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestEqualChaptersModuloEndsTransitive pins the property this comparison must hold: because
+// equality is the same canonical normalized form, it is transitive. Three files carrying the same
+// [0,50s] chapter but with different durations (unknown, 50s, 100s) must never produce A==B and
+// B==C yet A!=C.
+func TestEqualChaptersModuloEndsTransitive(t *testing.T) {
+	s := time.Second
+	chs := []Chapter{{Start: 0, End: 50 * s, Title: "A"}}
+	files := []struct {
+		name string
+		dur  time.Duration
+	}{
+		{"mka", 0},        // unknown duration: the 50s end cannot be shown to run to EOF
+		{"mp3", 50 * s},   // end runs to EOF, so it normalizes to open
+		{"flac", 100 * s}, // end sits mid-file, so it stays bounded
+	}
+	eq := func(i, j int) bool { return EqualChaptersModuloEnds(chs, chs, files[i].dur, files[j].dur) }
+
+	// Check every ordered triple for a transitivity violation: no A==B and B==C with A!=C.
+	for i := range files {
+		for j := range files {
+			for k := range files {
+				if eq(i, j) && eq(j, k) && !eq(i, k) {
+					t.Errorf("non-transitive: %s==%s and %s==%s but %s!=%s",
+						files[i].name, files[j].name, files[j].name, files[k].name, files[i].name, files[k].name)
+				}
+			}
+		}
+	}
+	// The two verdicts the shape hinges on. A same-duration pair is equal, while the 50s and 100s
+	// files differ because their ends canonicalize to open and bounded respectively. The old
+	// byte-identical fast path forced both to equal, which is what broke transitivity.
+	if !eq(1, 1) {
+		t.Error("same-duration identical chapters must be equal (mp3 == mp3)")
+	}
+	if eq(1, 2) {
+		t.Error("a 50s file and a 100s file with the same [0,50s] chapter must differ (mp3 != flac)")
 	}
 }
 

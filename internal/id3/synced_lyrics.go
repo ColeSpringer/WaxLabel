@@ -168,20 +168,38 @@ func syltFrameLanguage(body []byte) (string, bool) {
 	return string(body[1:4]), true
 }
 
-// syltFrames renders synced-lyrics sets as SYLT frames (one per set, in order). fallbackLang
-// is the raw 3-byte language of the first original SYLT, used for a set whose modeled
-// language is empty so a line-only edit keeps the file's existing language. A set with no
-// lines emits no frame: a line-less SYLT projects to nothing on re-read, so writing one
-// would create a frame with no model value. This matches the Vorbis LRC store's
-// syncedLyricsComments. It reports whether any line's timestamp was clamped to the 32-bit
-// millisecond field.
-func syltFrames(sets []core.SyncedLyrics, version byte, fallbackLang string) (frames []Frame, overflow bool) {
+// syltFrameDescriptor returns the content descriptor of a SYLT frame body, decoded per its encoding
+// byte (Latin-1/UTF-16/UTF-8) exactly as decodeSYLT and syltProjectsLyrics read it. It is the
+// empty-descriptor fallback when re-rendering an edited set whose modeled descriptor is unset, so a
+// line-only edit keeps the file's existing descriptor rather than blanking it. Plain cutEncoded (not
+// the tracked variant) is correct: the descriptor is the first string, so the shared UTF-16-BOM
+// state the tracked variant threads across later lines does not matter here. The descriptor is not
+// fixed-width, so it is decoded through cutEncoded rather than sliced by hand.
+func syltFrameDescriptor(body []byte) (string, bool) {
+	if len(body) < 6 || !validEncoding(body[0]) {
+		return "", false
+	}
+	desc, _, ok := cutEncoded(body[0], body[6:])
+	if !ok {
+		return "", false
+	}
+	return core.SanitizeUTF8(desc), true
+}
+
+// syltFrames renders synced-lyrics sets as SYLT frames (one per set, in order). fallbackLang and
+// fallbackDesc are the raw 3-byte language and content descriptor of the first original projecting
+// SYLT, used for a set whose modeled language or descriptor is empty so a line-only edit keeps the
+// file's existing values (a CLI-authored set carries neither). A set with no lines emits no frame: a
+// line-less SYLT projects to nothing on re-read, so writing one would create a frame with no model
+// value. This matches the Vorbis LRC store's syncedLyricsComments. It reports whether any line's
+// timestamp was clamped to the 32-bit millisecond field.
+func syltFrames(sets []core.SyncedLyrics, version byte, fallbackLang, fallbackDesc string) (frames []Frame, overflow bool) {
 	frames = make([]Frame, 0, len(sets))
 	for _, sl := range sets {
 		if len(sl.Lines) == 0 {
 			continue
 		}
-		body, ov := encodeSYLT(sl, version, fallbackLang)
+		body, ov := encodeSYLT(sl, version, fallbackLang, fallbackDesc)
 		overflow = overflow || ov
 		frames = append(frames, Frame{ID: "SYLT", Body: body})
 	}
@@ -192,11 +210,18 @@ func syltFrames(sets []core.SyncedLyrics, version byte, fallbackLang string) (fr
 // timestamp format and the lyrics content type. Each line's text is prefixed with the
 // conventional line-break marker (a newline), which decodeSYLT strips on read, so the
 // modeled text round-trips. The encoding is chosen across the descriptor and every line so
-// a non-Latin-1 lyric upgrades the whole frame consistently. It reports whether any line's
-// timestamp was clamped to the 32-bit millisecond field (~49.7 days).
-func encodeSYLT(sl core.SyncedLyrics, version byte, fallbackLang string) (body []byte, overflow bool) {
+// a non-Latin-1 lyric upgrades the whole frame consistently. An empty modeled descriptor
+// falls back to fallbackDesc (the first original SYLT's descriptor) so an authored line-only
+// edit keeps it, mirroring the language fallback; the chosen descriptor is used for both the
+// encoding decision and the written bytes so the two cannot disagree. It reports whether any
+// line's timestamp was clamped to the 32-bit millisecond field (~49.7 days).
+func encodeSYLT(sl core.SyncedLyrics, version byte, fallbackLang, fallbackDesc string) (body []byte, overflow bool) {
+	desc := sl.Description
+	if desc == "" {
+		desc = fallbackDesc // keep the file's existing descriptor on a line-only edit
+	}
 	values := make([]string, 0, len(sl.Lines)+1)
-	values = append(values, sl.Description)
+	values = append(values, desc)
 	for _, ln := range sl.Lines {
 		values = append(values, "\n"+ln.Text)
 	}
@@ -209,7 +234,7 @@ func encodeSYLT(sl core.SyncedLyrics, version byte, fallbackLang string) (body [
 	out := []byte{enc}
 	out = append(out, syltLangBytes(lang)...)
 	out = append(out, syltFmtMillis, syltContentLyrics)
-	out = append(out, encodeString(enc, sl.Description)...)
+	out = append(out, encodeString(enc, desc)...)
 	out = append(out, term(enc)...)
 	for _, ln := range sl.Lines {
 		out = append(out, encodeString(enc, "\n"+ln.Text)...)

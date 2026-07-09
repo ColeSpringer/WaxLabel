@@ -253,6 +253,12 @@ type droppedValue struct {
 	Key       tag.Key
 	Value     string
 	ZeroUnset bool
+	// Normalized is the canonical on-disk form of a coerced trkn/disk number slot ("03" becomes
+	// "3"), set only by appendSlotCoerced, so the coercion warning can show what was actually
+	// stored rather than just that the value changed. It is empty for a COMPILATION coercion, whose
+	// stored form is always "0 (false)", and for every drop, where the value is lost rather than
+	// normalized.
+	Normalized string
 }
 
 // droppedValues returns the canonical values this edit would genuinely lose at the iTunes
@@ -280,36 +286,72 @@ func droppedValues(ts tag.TagSet) []droppedValue {
 // coercedValues returns the canonical values this edit stores in a normalized form because
 // the iTunes atom cannot hold the literal. Unlike droppedValues, these ARE written (the
 // change set shows the stored value); the warning only tells the user the literal was
-// normalized. It reuses the droppedValue (key, value) carrier. Currently only COMPILATION:
-// cpil is a single boolean byte, so boolItem coerces a non-boolean like "maybe" to 0 (false)
-// and writes it, rather than dropping it. An empty value is exempt (it stores nothing).
+// normalized. It reuses the droppedValue (key, value) carrier. Two cases:
+//   - COMPILATION: cpil is a single boolean byte, so boolItem coerces a non-boolean like "maybe"
+//     to 0 (false) and writes it, rather than dropping it.
+//   - a trkn/disk number slot stored non-canonically ("03", "+3"): the uint16 atom holds the
+//     integer 3, so the leading zero or sign is normalized away and reads back as "3". Reporting it
+//     keeps the direct-set write path in step with the copy grade (WithValueReduction), so a bare
+//     set TRACKNUMBER=03 emits a coercion note just as a copy of it grades Lossy.
+//
+// An empty value is exempt because it stores nothing. A dropped slot never appears here: drop and
+// reduce are mutually exclusive per slot, since a reduced value is numeric, positive, and in range,
+// so no drop predicate fires on it.
 func coercedValues(ts tag.TagSet) []droppedValue {
 	var out []droppedValue
 	if v, ok := ts.First(tag.Compilation); ok && compilationValueDropped(v) {
 		out = append(out, droppedValue{Key: tag.Compilation, Value: strings.TrimSpace(v)})
 	}
+	out = appendCoercedPair(out, ts, tag.TrackNumber, tag.TrackTotal)
+	out = appendCoercedPair(out, ts, tag.DiscNumber, tag.DiscTotal)
 	return out
 }
 
-// appendDroppedPair adds the dropped slot(s) of one trkn/disk pair. It mirrors
-// numTotal/ParseNumPair's slot resolution exactly - a combined "n/total" in the
-// number field feeds the total slot, an explicit total key overrides it - so it
-// names the same slots the encoder reads. TRACKNUMBER and TRACKTOTAL share one trkn
-// atom, so each slot is judged against its own source string (TRACKTOTAL=abc names
-// TRACKTOTAL, not the merged pair).
-func appendDroppedPair(out []droppedValue, ts tag.TagSet, numKey, totKey tag.Key) []droppedValue {
+// resolvePairSlots resolves the two slots a trkn/disk number/total pair edits, the same way the
+// encoder's numTotal/tag.ParseNumPair do: split the number field on "/" (tag.SplitNumberTotal), then
+// let a present, raw-non-empty explicit total key override the "/total" tail. Like ParseNumPair, the
+// override gates on the raw string rather than the trimmed one, so a whitespace-only total (which
+// ParseNumPair reads as 0 and whose tail it discards) overrides here too and leaves no stale tail.
+// The drop report (appendDroppedPair) and the coercion report (appendCoercedPair) share this one
+// resolution, so they cannot drift on the "3/09" split rule.
+func resolvePairSlots(ts tag.TagSet, numKey, totKey tag.Key) (numPart, totPart string) {
 	numStr, _ := ts.First(numKey)
 	totStr, _ := ts.First(totKey)
-	// Resolve the two slots exactly as the encoder's tag.ParseNumPair does: split the
-	// number field on "/" with the shared tag.SplitNumberTotal, then let a present (raw
-	// non-empty) explicit total key override the "/total" tail. The override gates on the
-	// raw string, not the trimmed one - matching ParseNumPair - so a whitespace-only total
-	// (which ParseNumPair reads as 0, discarding any tail) overrides here too and does not
-	// leave a stale tail this would misreport as dropped.
-	numPart, totPart := tag.SplitNumberTotal(numStr)
+	numPart, totPart = tag.SplitNumberTotal(numStr)
 	if totStr != "" {
 		totPart = strings.TrimSpace(totStr)
 	}
+	return numPart, totPart
+}
+
+// appendCoercedPair adds the normalized slot(s) of one trkn/disk pair, resolving the two slots via
+// resolvePairSlots (shared with appendDroppedPair) so it names the same slots the encoder reads. It
+// is the reduce-side parallel of appendDroppedPair.
+func appendCoercedPair(out []droppedValue, ts tag.TagSet, numKey, totKey tag.Key) []droppedValue {
+	numPart, totPart := resolvePairSlots(ts, numKey, totKey)
+	out = appendSlotCoerced(out, numKey, numPart)
+	out = appendSlotCoerced(out, totKey, totPart)
+	return out
+}
+
+// appendSlotCoerced records one trkn/disk slot the encoder stores in a normalized form (a leading
+// zero or sign the uint16 atom drops), carrying the canonical integer it becomes so the warning can
+// show the on-disk value. It is the reduce-side parallel of appendSlotDrop. reducedSlotValue does
+// the single parse and hands back both the trimmed literal and its canonical form, so this needs no
+// second parse and no discarded error coupled to the predicate's internals.
+func appendSlotCoerced(out []droppedValue, key tag.Key, slot string) []droppedValue {
+	if trimmed, canonical, ok := reducedSlotValue(slot); ok {
+		return append(out, droppedValue{Key: key, Value: trimmed, Normalized: canonical})
+	}
+	return out
+}
+
+// appendDroppedPair adds the dropped slot(s) of one trkn/disk pair. It resolves the two slots via
+// resolvePairSlots (shared with appendCoercedPair) so drop and coercion name the same slots the
+// encoder reads. TRACKNUMBER and TRACKTOTAL share one trkn atom, so each slot is judged against its
+// own source string (TRACKTOTAL=abc names TRACKTOTAL, not the merged pair).
+func appendDroppedPair(out []droppedValue, ts tag.TagSet, numKey, totKey tag.Key) []droppedValue {
+	numPart, totPart := resolvePairSlots(ts, numKey, totKey)
 	// decodePair drops a literal 0 in EITHER slot on read (its num>0/total>0 guards treat 0 as
 	// unset), so a 0 written to a slot never round-trips - report it per slot, not only when the
 	// whole pair collapses to absent. TRACKNUMBER=0 with TRACKTOTAL=12 still loses the 0 on read.
@@ -355,6 +397,36 @@ func slotValueDropped(s string) bool {
 	return uint16ValueDropped(s) || isRepresentableZero(s)
 }
 
+// reducedSlotValue reports whether a resolved trkn/disk slot is representable but stored in a
+// normalized form and, when so, hands back both the trimmed input and the canonical integer it
+// becomes. A slot is reduced when it is a positive integer within the uint16 range whose canonical
+// decimal differs from the input, i.e. a leading zero or an explicit sign ("03", "+3") stored as 3.
+// It is the single parse both the reduction predicate (slotValueReduced) and the writer's coercion
+// note (appendSlotCoerced) read, so they cannot drift on what "normalized" means, and the note needs
+// no second parse with a discarded error.
+//
+// The n > 0 guard matters here: a representable zero ("0"/"00"/"+0") fits uint16 yet reads back
+// absent, because decodePair treats a 0 slot as unset. That makes it a drop (isRepresentableZero /
+// slotValueDropped), not a reduction. dispose checks the drop predicate before this one, so a 0
+// never reaches here anyway, but the guard is what keeps it graded Dropped rather than mislabeled
+// Lossy. Non-numeric and out-of-uint16 values are the drop predicate's job too, not this one.
+func reducedSlotValue(s string) (trimmed, canonical string, reduced bool) {
+	trimmed = strings.TrimSpace(s)
+	n, err := strconv.Atoi(trimmed)
+	if err != nil || n <= 0 || n > 0xFFFF {
+		return trimmed, "", false
+	}
+	canonical = strconv.Itoa(n)
+	return trimmed, canonical, canonical != trimmed
+}
+
+// slotValueReduced is the bool-only reduction predicate the transfer grading (WithValueReduction)
+// and numberComponentReduced consume; it delegates to reducedSlotValue.
+func slotValueReduced(s string) bool {
+	_, _, reduced := reducedSlotValue(s)
+	return reduced
+}
+
 // uint16ValueDropped reports whether the trimmed slot string holds a value the
 // uint16 trkn/disk atom cannot represent: a non-numeric value, a negative, or one
 // past 65535. An empty slot is not a drop. A literal 0 also passes this check because
@@ -382,6 +454,15 @@ func uint16ValueDropped(s string) bool {
 func numberComponentDropped(s string) bool {
 	num, _ := tag.SplitNumberTotal(s)
 	return slotValueDropped(num)
+}
+
+// numberComponentReduced is the transfer-layer value-reduction predicate for TRACKNUMBER and
+// DISCNUMBER, the reduce-side parallel of numberComponentDropped. It judges only the number side of
+// a possible "n/total" value (the embedded total is graded separately by its own total key) via
+// slotValueReduced.
+func numberComponentReduced(s string) bool {
+	num, _ := tag.SplitNumberTotal(s)
+	return slotValueReduced(num)
 }
 
 // vocabValueDropped builds the value-drop predicate for a vocabulary atom such as stik or

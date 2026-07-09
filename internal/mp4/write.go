@@ -76,9 +76,18 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueDropped, msg, dv.Key)
 	}
 	for _, cv := range coercedValues(edited.Tags) {
-		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueCoerced,
-			fmt.Sprintf("%s value %q is not a valid boolean and was stored as 0 (false)", cv.Key, cv.Value),
-			cv.Key)
+		// The wording follows the coercion kind. It gates on Normalized, the field the numeric
+		// message prints, rather than on a specific key, so a coercion added to coercedValues later
+		// cannot slip into the numeric branch and print an empty stored value. A trkn/disk number
+		// carries its stored integer in Normalized, so show it: a bare "normalized" note would leave
+		// the same "what did it store?" ambiguity this change is meant to remove. A coercion with no
+		// Normalized (COMPILATION, which stores a non-boolean as 0/false) keeps the boolean wording.
+		// This mirrors the ZeroUnset message-switch on the drop path above.
+		msg := fmt.Sprintf("%s value %q is not a valid boolean and was stored as 0 (false)", cv.Key, cv.Value)
+		if cv.Normalized != "" {
+			msg = fmt.Sprintf("%s value %q was stored as %s (numbers are kept as integers)", cv.Key, cv.Value, cv.Normalized)
+		}
+		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueCoerced, msg, cv.Key)
 	}
 
 	// A chapter edit rewrites the whole moov.udta (folding any ilst change into one

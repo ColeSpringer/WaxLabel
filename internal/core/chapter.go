@@ -230,10 +230,19 @@ func EqualChapters(a, b []Chapter) bool {
 // EqualChaptersModuloEnds reports whether two chapter lists are equal once each list's
 // reconstructable ends are normalized away, so a difference the destination codecs would
 // themselves reconstruct is not reported as a change. It is what diff uses in place of
-// EqualChapters. Byte-identical lists take the fast path and stay equal whatever the durations:
-// the normalization below reads each list against its own media duration, so a 50s trailing end
-// (run-to-EOF in a 50s file, mid-file in a 100s file) would otherwise make two files with the
-// same chapter metadata compare unequal.
+// EqualChapters. Two lists are equal when they share the same canonical normalized form: each is
+// reduced by normalizeReconstructableEnds against its own media duration, and the results are
+// compared literally. Because equality is defined by the canonical form, it is transitive, so A==B
+// and B==C imply A==C.
+//
+// The fast path fires only on equal durations. When durA == durB and the lists are byte-identical,
+// they normalize to the same form, so the slow path would return true anyway; short-circuiting
+// there just skips the two normalization clones on the common diff case, a file compared against a
+// metadata-only-edited copy of itself. The durA == durB condition is not optional. Two
+// byte-identical lists at different durations can normalize differently, because the trailing-end
+// rule below depends on the duration: a 50s trailing end runs to EOF in a 50s file but sits
+// mid-file in a 100s file. A duration-blind fast path would call those equal and break transitivity
+// (mka equals mp3 and mka equals flac while mp3 differs from flac).
 //
 // On the interior gapless rule (End == next.Start) diff and copy agree that the end is
 // reconstructable ("0 lossy"); the shared chapterEndReachesNextStart predicate keeps grading and
@@ -244,12 +253,18 @@ func EqualChapters(a, b []Chapter) bool {
 // trailing end and is intended: a run-to-EOF end carries nothing a shorter store would lose,
 // while copy's grade turns on whether the store can hold a last end at all.
 //
-// durA/durB are the two files' media durations, used only for the trailing rule. Non-end fields
-// (Start, Title, Language, Hidden, Disabled, ...) are compared with ==, so any real difference
-// outside the reconstructable-end axis still counts.
+// durA/durB are the two files' media durations, used only for the trailing rule. When a file's
+// duration is unknown (0), its trailing end cannot be shown to run to EOF, so a bounded trailing
+// end there stays distinct. Reporting it equal instead would bring back the non-transitive
+// mka/mp3/flac shape, so the conservative reading, "cannot prove equal, so not equal", is the one
+// that keeps transitivity. Non-end fields (Start, Title, Language, Hidden, Disabled, and so on) are
+// compared with ==, so any real difference outside the reconstructable-end axis still counts.
 func EqualChaptersModuloEnds(a, b []Chapter, durA, durB time.Duration) bool {
-	if EqualChapters(a, b) {
-		return true // identical metadata is equal regardless of the two files' durations
+	// Byte-identical lists at the same duration normalize to the same form, so the slow path would
+	// return true anyway; skip its two clones. See the doc comment for why the guard must gate on
+	// durA == durB.
+	if durA == durB && EqualChapters(a, b) {
+		return true
 	}
 	return EqualChapters(normalizeReconstructableEnds(a, durA), normalizeReconstructableEnds(b, durB))
 }
@@ -269,6 +284,13 @@ func EqualChaptersModuloEnds(a, b []Chapter, durA, durB time.Duration) bool {
 // a written end reads back as floor(duration) ms while Properties().Duration() is
 // nanosecond-precise; without the truncation floor(dur)ms >= dur would be false and a genuine
 // run-to-EOF trailing chapter would wrongly count as different.
+//
+// A duration that truncates to 0 ms is treated like an unknown one, so the durMs > 0 guard below
+// leaves the trailing end distinct rather than normalizing it. This covers both an unknown duration
+// (0) and the sub-millisecond case, which real media never produces. At whole-ms resolution a
+// sub-ms end cannot be shown to reach EOF: End >= 0 holds for every end, which would normalize even
+// a chapter that stops well short of it. Leaving it distinct keeps the conservative "cannot prove
+// equal, so not equal" reading that transitivity depends on.
 func normalizeReconstructableEnds(chs []Chapter, dur time.Duration) []Chapter {
 	out := CloneChapters(chs)
 	durMs := dur.Truncate(time.Millisecond)

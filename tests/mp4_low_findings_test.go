@@ -120,6 +120,70 @@ func TestMP4CompilationCoercionWarns(t *testing.T) {
 	}
 }
 
+// TestMP4NumberNormalizationCoercionWarns covers the direct-set path: a non-canonical trkn/disk
+// number (a leading zero or a sign) is stored as its 16-bit integer, so the write surfaces a
+// value-coerced warning worded for a number and showing the stored value, rather than the boolean
+// wording COMPILATION uses, which would leave "what did it store?" ambiguous. The copy path already
+// grades 03 as lossy (WithValueReduction); this brings the write path in line with it.
+func TestMP4NumberNormalizationCoercionWarns(t *testing.T) {
+	base := mp4Tagged(mp4Text("\xa9nam", "T"))
+
+	coercionMsg := func(p *wl.Plan, key tag.Key) (string, bool) {
+		for _, w := range p.Report().Warnings {
+			if w.Code == wl.WarnValueCoerced && slices.Contains(w.Keys, key) {
+				return w.Message, true
+			}
+		}
+		return "", false
+	}
+
+	// A leading-zero TRACKNUMBER coerces to the integer 3: the warning must be number-worded and
+	// name the stored value, so the report says what is on disk.
+	p, err := mustParseBytes(t, base).Edit().Set(tag.TrackNumber, "03").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg, ok := coercionMsg(p, tag.TrackNumber); !ok {
+		t.Errorf("TRACKNUMBER=03 must warn value-coerced; got %v", p.Report().Warnings)
+	} else if strings.Contains(msg, "boolean") {
+		t.Errorf("TRACKNUMBER coercion must not use the boolean wording; got %q", msg)
+	} else if !strings.Contains(msg, `"03"`) || !strings.Contains(msg, "stored as 3") {
+		t.Errorf("TRACKNUMBER=03 coercion must name the literal and the stored integer 3; got %q", msg)
+	}
+
+	// A signed DISCNUMBER likewise coerces to its integer.
+	pSigned, err := mustParseBytes(t, base).Edit().Set(tag.DiscNumber, "+2").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg, ok := coercionMsg(pSigned, tag.DiscNumber); !ok {
+		t.Errorf("DISCNUMBER=+2 must warn value-coerced; got %v", pSigned.Report().Warnings)
+	} else if strings.Contains(msg, "boolean") || !strings.Contains(msg, "stored as 2") {
+		t.Errorf("DISCNUMBER=+2 coercion must be number-worded and show 2; got %q", msg)
+	}
+
+	// A canonical number stores faithfully and must not warn.
+	pOK, err := mustParseBytes(t, base).Edit().Set(tag.TrackNumber, "3").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := coercionMsg(pOK, tag.TrackNumber); ok {
+		t.Errorf("canonical TRACKNUMBER=3 must not warn value-coerced; got %v", pOK.Report().Warnings)
+	}
+
+	// The boolean coercion path is unchanged: COMPILATION=maybe keeps the boolean wording, so the
+	// two coercion messages stay distinguishable.
+	pBool, err := mustParseBytes(t, base).Edit().Set(tag.Compilation, "maybe").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg, ok := coercionMsg(pBool, tag.Compilation); !ok {
+		t.Errorf("COMPILATION=maybe must warn value-coerced; got %v", pBool.Report().Warnings)
+	} else if !strings.Contains(msg, "boolean") {
+		t.Errorf("COMPILATION coercion must keep the boolean wording; got %q", msg)
+	}
+}
+
 // TestMP4TruncatedMdatOverrunsTrailingMoov verifies that a final mdat whose declared size runs
 // past EOF is clamped, swallowing whatever follows it. When a moov sits after such an
 // mdat the parser never sees it, so the failure must be reported as truncation (the real

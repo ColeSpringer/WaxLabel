@@ -190,20 +190,45 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 		}
 		if len(rep) > 0 {
 			disp, reason := dispose(dst.Pictures, dst.ReadOnly, len(rep), "pictures", nil)
-			// dispose reports picture sets as Carried when the image bytes themselves carry
-			// byte-for-byte. MP4 and Matroska can still drop role or description metadata,
-			// so upgrade the disposition only when these specific pictures carry metadata
-			// covered by the destination's PictureLoss rule. A plain front cover with no
-			// description still reports Carried. Evaluated on the representable subset only.
-			if disp == Carried && PicturesLoseMetadata(rep, dst.Pictures.PictureLoss) {
-				disp = Lossy
-				if reason = dst.Pictures.Fidelity; reason == "" {
-					reason = strings.Join(dst.Pictures.Constraints, "; ")
+			if disp == Carried {
+				// dispose reports picture sets as Carried when the image bytes themselves carry
+				// byte-for-byte. MP4 and Matroska can still drop a picture's role or description,
+				// but that loss is per-picture, so partition the representable subset: covers that
+				// keep their metadata stay Carried, and those that lose it become Lossy. Copying a
+				// front cover plus a back cover then reports 1 carried, 1 lossy, rather than the
+				// whole set flipped to lossy by the one affected cover. Only the Carried branch
+				// splits. A Dropped target (read-only, or no picture support) or a Lossy one keeps a
+				// single full-count item with its target-level reason. The Lossy case is defensive:
+				// no picture capability uses AccessPartial today.
+				var carried, lossy []Picture
+				for _, p := range rep {
+					if pictureLosesMetadata(p, dst.Pictures.PictureLoss) {
+						lossy = append(lossy, p)
+					} else {
+						carried = append(carried, p)
+					}
 				}
+				// Deterministic item order for stable human/JSON output: carried first (empty
+				// Reason), then lossy, then the dropped-MIME item emitted below. Counts() sums
+				// multiple picture items, so the headline stays exact.
+				if len(carried) > 0 {
+					items = append(items, TransferItem{
+						Kind: TransferPicture, Count: len(carried), Disposition: Carried,
+					})
+				}
+				if len(lossy) > 0 {
+					// Use dst.Pictures.Reason() rather than an inline Fidelity/Constraints check, so
+					// the lossy-picture reason is worded like the chapter and synced-lyrics paths
+					// below and is never empty.
+					items = append(items, TransferItem{
+						Kind: TransferPicture, Count: len(lossy), Disposition: Lossy, Reason: dst.Pictures.Reason(),
+					})
+				}
+			} else {
+				items = append(items, TransferItem{
+					Kind: TransferPicture, Count: len(rep), Disposition: disp, Reason: reason,
+				})
 			}
-			items = append(items, TransferItem{
-				Kind: TransferPicture, Count: len(rep), Disposition: disp, Reason: reason,
-			})
 		}
 		if len(unrepMIMEs) > 0 {
 			items = append(items, TransferItem{

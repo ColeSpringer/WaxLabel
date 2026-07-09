@@ -328,7 +328,10 @@ path:
   `CUESHEET` block, or a WAV carrying native `cue `/`adtl` chapters, projects no chapters
   (those bytes are preserved verbatim, never edited). ID3 `CHAP` stores start, end, and
   title but no per-chapter language or hidden/disabled flags; `CHAPTERxxx` stores start and
-  title only. Copying chapters that carry the dropped fields reports a lossy carry.
+  title only. Copying chapters that carry the dropped fields reports a lossy carry. Two chapters
+  that share an identical start time (already flagged by a `duplicate-chapter` warning) serialize
+  with asymmetric ends in ID3 `CHAP`: the interior chapter is left open while the final one is
+  filled to the media duration. This is a known, degenerate case with no data loss.
 - **Synced lyrics are metadata-only.** MP3/AAC/AIFF/WAV use ID3v2 `SYLT`, which
   keeps the language, descriptor, and millisecond timestamps. Authoring new lines
   replaces the lyric text but preserves the existing `SYLT` language unless
@@ -376,6 +379,20 @@ path:
   represented (an overflow past 65535 or a non-numeric value keeps the latter wording). This is
   MP4-specific: the text-based number/total ID3 formats (MP3/AAC/AIFF/WAV) store the digits
   literally, so a `0` there is preserved.
+- **MP4 QuickTime chapters can misread the final chapter's end in ffmpeg/VLC when the first
+  chapter starts after 0:00.** WaxLabel writes the QuickTime chapter text track with a leading empty
+  edit (the iTunes and Apple Books form). ffmpeg, ffprobe, and VLC apply that edit as an offset to
+  chapter *starts* (correct) but derive the last chapter's *end* from the track's shortened media
+  duration, so they report the final chapter ending early when the first chapter does not begin at
+  0:00. WaxLabel's own reader and the Nero `chpl` list always read the chapters correctly, and
+  iTunes and Apple Books read the edit as intended. No single output form satisfies both stacks:
+  extending the media duration to satisfy ffmpeg makes WaxLabel's own read wrong, and dropping the
+  empty edit loses the first chapter's start. **Workaround:** if ffmpeg/VLC chapter compatibility
+  matters, start the first chapter at 0:00 (label the intro rather than leaving it unlabeled).
+  WaxLabel then writes a single normal edit with no empty edit, and ffmpeg reads every chapter,
+  including the last one's end, correctly. A future option could add an ffmpeg-compatible chapter
+  mode that bounds the text track's last end and teaches the reader to canonicalize the bounded
+  form.
 - **WAV/AIFF dual tag containers consolidate on edit.** A WAV or AIFF can carry both an
   embedded `id3`/`ID3 ` chunk and native `LIST`/`INFO` (WAV) or text (AIFF) chunks. When they
   hold conflicting values for the same key, the documented precedence applies (the id3 chunk
