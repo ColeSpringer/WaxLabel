@@ -400,14 +400,16 @@ func hasFlag(args []string, name string) bool {
 // noteNoFiles prints a note when a path list is empty - reachable only when a
 // --recursive walk matched no audio files (MinimumNArgs(1) guarantees at least
 // one argument otherwise) - so editing a typo'd or audio-free directory is not a
-// silent success. set and plan share it for an identical message; JSON output is
-// unaffected (it still emits []).
-func noteNoFiles(w io.Writer, paths []string) {
-	if len(paths) == 0 {
-		// A "note:" prefix (not "waxlabel:") so this exit-0 advisory does not read as a
-		// failure line - the run succeeded, there was simply nothing to do.
-		fmt.Fprintln(w, "note: no audio files found")
+// silent success. set and plan share it for an identical message. It is a text-mode
+// diagnostic suppressed under --json (whose stdout shape is fixed, still emitting []),
+// matching the sibling noteSkipped.
+func noteNoFiles(w io.Writer, paths []string, asJSON bool) {
+	if asJSON || len(paths) != 0 {
+		return
 	}
+	// A "note:" prefix (not "waxlabel:") so this exit-0 advisory does not read as a
+	// failure line - the run succeeded, there was simply nothing to do.
+	fmt.Fprintln(w, "note: no audio files found")
 }
 
 // noteSkipped reports how many regular files a --recursive walk passed over for not

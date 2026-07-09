@@ -69,6 +69,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	if err := id3.CheckSize(version, newFrames, bits.DefaultLimits.MaxElements); err != nil {
 		return nil, err
 	}
+	if err := id3.RebuildError(info); err != nil {
+		return nil, err
+	}
 
 	// Size and render the front ID3v2 tag, dropping it entirely when no frame survives (an
 	// edit that clears every frame, or a --legacy strip on a tagless file) rather than

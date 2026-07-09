@@ -197,33 +197,19 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 				// keep their metadata stay Carried, and those that lose it become Lossy. Copying a
 				// front cover plus a back cover then reports 1 carried, 1 lossy, rather than the
 				// whole set flipped to lossy by the one affected cover. Only the Carried branch
-				// splits. A Dropped target (read-only, or no picture support) or a Lossy one keeps a
-				// single full-count item with its target-level reason. The Lossy case is defensive:
-				// no picture capability uses AccessPartial today.
-				var carried, lossy []Picture
+				// splits (the dropped-MIME item is emitted separately below). A Dropped/Lossy target
+				// keeps a single full-count item; the Lossy case is defensive (no picture capability
+				// uses AccessPartial today). dst.Pictures.Reason() words the lossy reason like the
+				// chapter and synced-lyrics paths and is never empty.
+				var carried, lossy int
 				for _, p := range rep {
 					if pictureLosesMetadata(p, dst.Pictures.PictureLoss) {
-						lossy = append(lossy, p)
+						lossy++
 					} else {
-						carried = append(carried, p)
+						carried++
 					}
 				}
-				// Deterministic item order for stable human/JSON output: carried first (empty
-				// Reason), then lossy, then the dropped-MIME item emitted below. Counts() sums
-				// multiple picture items, so the headline stays exact.
-				if len(carried) > 0 {
-					items = append(items, TransferItem{
-						Kind: TransferPicture, Count: len(carried), Disposition: Carried,
-					})
-				}
-				if len(lossy) > 0 {
-					// Use dst.Pictures.Reason() rather than an inline Fidelity/Constraints check, so
-					// the lossy-picture reason is worded like the chapter and synced-lyrics paths
-					// below and is never empty.
-					items = append(items, TransferItem{
-						Kind: TransferPicture, Count: len(lossy), Disposition: Lossy, Reason: dst.Pictures.Reason(),
-					})
-				}
+				items = appendCarriedLossyItems(items, TransferPicture, carried, lossy, dst.Pictures.Reason())
 			} else {
 				items = append(items, TransferItem{
 					Kind: TransferPicture, Count: len(rep), Disposition: disp, Reason: reason,
@@ -239,51 +225,93 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 	}
 	if n := len(src.Chapters); n > 0 {
 		disp, reason := dispose(dst.Chapters, dst.ReadOnly, n, "chapters", nil)
-		// Start+title-only destinations carry starts and titles but drop other chapter
-		// metadata. Upgrade only sets carrying metadata the destination cannot represent;
-		// plain chapter lists remain Carried.
-		if disp == Carried && ChaptersLoseMetadata(src.Chapters, dst.Chapters.ChapterLoss) {
-			disp = Lossy
-			reason = dst.Chapters.Reason()
-		}
-		// A title longer than the format's byte cap (MP4's 255-byte chpl length prefix) is
-		// truncated on write, a silent content loss the metadata check above does not cover, so
-		// grade it Lossy too. Checked only when still Carried, so a set already Lossy keeps its
-		// (broader) reason. len is the byte length, matching the chpl prefix.
-		if disp == Carried && dst.Chapters.ChapterTitleByteMax > 0 {
-			for _, c := range src.Chapters {
-				if len(c.Title) > dst.Chapters.ChapterTitleByteMax {
-					disp = Lossy
-					reason = "chapter title is too long and was truncated"
-					break
+		if disp == Carried {
+			// dispose reports chapter sets as Carried when the timeline itself carries. A start+title
+			// destination can still drop per-chapter metadata (an interior gapped end, per-chapter
+			// language, hidden/disabled flags), and MP4's chpl byte cap can truncate an over-long
+			// title - both per-chapter losses. So partition the set the way pictures are partitioned:
+			// chapters that keep everything stay Carried; those that lose metadata OR have an over-long
+			// title become Lossy. Copying a plain chapter beside a hidden/flagged one then reports N-1
+			// carried, 1 lossy, rather than the whole set flipped by the one affected chapter. Only the
+			// Carried branch splits; a Dropped/Lossy target keeps a single full-count item below.
+			var carried, lossy int
+			lostMetadata := false
+			for i, c := range src.Chapters {
+				metaLoss := ChapterLosesMetadata(src.Chapters, i, dst.Chapters.ChapterLoss)
+				titleLoss := dst.Chapters.ChapterTitleByteMax > 0 && len(c.Title) > dst.Chapters.ChapterTitleByteMax
+				if metaLoss || titleLoss {
+					lossy++
+					lostMetadata = lostMetadata || metaLoss
+				} else {
+					carried++
 				}
 			}
+			// The merged lossy item carries a single reason. A chapter lossy only via the title cap,
+			// sitting beside a metadata-lossy one, reports the metadata reason - matching the prior
+			// precedence (metadata was checked before the title cap) and the picture path. Use the
+			// metadata reason when any lossy chapter lost metadata, else the title-cap message (len is
+			// the byte length, matching MP4's 255-byte chpl length prefix).
+			lossyReason := dst.Chapters.Reason()
+			if !lostMetadata {
+				lossyReason = "chapter title is too long and was truncated"
+			}
+			items = appendCarriedLossyItems(items, TransferChapter, carried, lossy, lossyReason)
+		} else {
+			items = append(items, TransferItem{
+				Kind: TransferChapter, Count: n, Disposition: disp, Reason: reason,
+			})
 		}
-		items = append(items, TransferItem{
-			Kind: TransferChapter, Count: n, Disposition: disp, Reason: reason,
-		})
 	}
 	if n := len(src.SyncedLyrics); n > 0 {
 		disp, reason := dispose(dst.SyncedLyrics, dst.ReadOnly, n, "synced lyrics", nil)
-		// LRC destinations carry the timed text but drop the per-set language and
-		// descriptor. Upgrade only sets carrying metadata the destination cannot
-		// represent; plain timed-text sets remain Carried.
-		if disp == Carried && SyncedLyricsLoseMetadata(src.SyncedLyrics, dst.SyncedLyrics.SyncedLyricsLoss) {
-			disp = Lossy
-			reason = dst.SyncedLyrics.Reason()
+		if disp == Carried {
+			// LRC destinations carry the timed text but drop each set's per-set language/descriptor
+			// (and flatten embedded line breaks), and a line timestamp past the destination's field
+			// is clamped on write - both per-set losses. So partition the set the way pictures and
+			// chapters are: sets that keep everything stay Carried; those that lose metadata OR clamp
+			// a timestamp become Lossy. Copying a plain lyric set beside one carrying a descriptor an
+			// LRC target drops then reports 1 carried, 1 lossy, rather than the whole set flipped.
+			var carried, lossy int
+			lostMetadata := false
+			for _, sl := range src.SyncedLyrics {
+				metaLoss := SyncedLyricsSetLosesMetadata(sl, dst.SyncedLyrics.SyncedLyricsLoss)
+				clampLoss := SyncedLyricsSetClampOverflows(sl, dst.SyncedLyrics.SyncedLyricsTimeMax)
+				if metaLoss || clampLoss {
+					lossy++
+					lostMetadata = lostMetadata || metaLoss
+				} else {
+					carried++
+				}
+			}
+			// The merged lossy item carries a single reason. A set lossy only via a clamp, beside a
+			// metadata-lossy one, reports the metadata reason - matching the prior precedence (metadata
+			// checked before the clamp) and the chapter path.
+			lossyReason := dst.SyncedLyrics.Reason()
+			if !lostMetadata {
+				lossyReason = "a synced-lyric timestamp is too large and was clamped"
+			}
+			items = appendCarriedLossyItems(items, TransferSyncedLyric, carried, lossy, lossyReason)
+		} else {
+			items = append(items, TransferItem{
+				Kind: TransferSyncedLyric, Count: n, Disposition: disp, Reason: reason,
+			})
 		}
-		// A line timestamp past the destination's 32-bit millisecond field (SYLT) or LRC
-		// re-parse ceiling is clamped on write, a silent content loss the metadata check above
-		// does not cover, so grade it Lossy too - the synced-lyrics analogue of the chapter
-		// title-byte-cap upgrade. Checked only when still Carried, so a set already Lossy keeps
-		// its (broader) reason.
-		if disp == Carried && SyncedLyricsClampOverflows(src.SyncedLyrics, dst.SyncedLyrics.SyncedLyricsTimeMax) {
-			disp = Lossy
-			reason = "a synced-lyric timestamp is too large and was clamped"
-		}
-		items = append(items, TransferItem{
-			Kind: TransferSyncedLyric, Count: n, Disposition: disp, Reason: reason,
-		})
+	}
+	return items
+}
+
+// appendCarriedLossyItems appends the carried-then-lossy items for a per-item-partitioned metadata
+// set (pictures, chapters, synced lyrics), pinning the deterministic order and empty-reason invariant
+// all three share: the carried item first with an empty Reason, then a single merged lossy item with
+// lossyReason. A zero count emits no item, and Counts() sums the multiple items so the headline stays
+// exact. Only the Carried-disposition branch of each kind splits; a Dropped/Lossy target keeps one
+// full-count item and does not call this.
+func appendCarriedLossyItems(items []TransferItem, kind TransferKind, carried, lossy int, lossyReason string) []TransferItem {
+	if carried > 0 {
+		items = append(items, TransferItem{Kind: kind, Count: carried, Disposition: Carried})
+	}
+	if lossy > 0 {
+		items = append(items, TransferItem{Kind: kind, Count: lossy, Disposition: Lossy, Reason: lossyReason})
 	}
 	return items
 }

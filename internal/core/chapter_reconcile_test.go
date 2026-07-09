@@ -95,4 +95,19 @@ func TestReconcileChapterOverlaps(t *testing.T) {
 			t.Error("a single chapter cannot overlap")
 		}
 	})
+
+	t.Run("coincident next start preserves the authored end", func(t *testing.T) {
+		// Two chapters share a start and A carries a real authored end past it (End > next). The
+		// old next >= Start guard truncated A.End onto the shared start (a zero-length interval,
+		// which the writer then serializes as open); the strict next > Start guard leaves A's end
+		// intact. base=nil so this reads as an edit-introduced change - eligible for reconciliation
+		// but for the coincident guard.
+		chs := []Chapter{ch(0, 100, "A"), {Start: 0, Title: "B"}}
+		if ReconcileChapterOverlaps(chs, nil) {
+			t.Error("a coincident next start must not reconcile (would collapse A to zero-length)")
+		}
+		if chs[0].End != 100*ms {
+			t.Errorf("A.End = %v, want 100ms preserved (not truncated onto the shared start)", chs[0].End)
+		}
+	})
 }

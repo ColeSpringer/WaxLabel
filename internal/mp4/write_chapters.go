@@ -231,12 +231,13 @@ type byteRep struct {
 // covered by a replacement - so udta siblings and meta children outside the
 // ilst/chpl ranges survive a chapter rewrite verbatim.
 func spliceBytes(src []byte, reps []byteRep) ([]byte, error) {
-	// Order by start; on a tie, a zero-width insert (oldLen==0) sorts before a same-offset
-	// replace. sort.Slice is not stable, so two reps sharing a start (a combined tag+chapter
-	// edit where a chpl insert lands exactly at meta.end()) would otherwise order by luck - and
-	// emitting the replace first advances pos past the insert's start, tripping the r.start<pos
-	// guard below. The tie-break makes the insert-before-replace output deterministic.
-	sort.Slice(reps, func(i, j int) bool {
+	// Order by start; on a tie, a zero-width insert (oldLen==0) sorts before a same-offset replace
+	// (a combined tag+chapter edit where a chpl insert lands exactly at meta.end()). Emitting the
+	// replace first would advance pos past the insert's start, tripping the r.start<pos guard below,
+	// so the oldLen tie-break forces insert-before-replace regardless of input order. SliceStable
+	// (not Slice) additionally pins the order of two reps sharing both start and width, keeping the
+	// output bytes reproducible even though the codec does not generate such a pair.
+	sort.SliceStable(reps, func(i, j int) bool {
 		if reps[i].start != reps[j].start {
 			return reps[i].start < reps[j].start
 		}

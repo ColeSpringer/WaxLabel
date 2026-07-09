@@ -193,17 +193,31 @@ func syltFrameDescriptor(body []byte) (string, bool) {
 // line-less SYLT projects to nothing on re-read, so writing one would create a frame with no model
 // value. This matches the Vorbis LRC store's syncedLyricsComments. It reports whether any line's
 // timestamp was clamped to the 32-bit millisecond field.
-func syltFrames(sets []core.SyncedLyrics, version byte, fallbackLang, fallbackDesc string) (frames []Frame, overflow bool) {
+func syltFrames(sets []core.SyncedLyrics, version byte, fallbackLang, fallbackDesc string) (frames []Frame, overflow, invalidNUL bool) {
 	frames = make([]Frame, 0, len(sets))
 	for _, sl := range sets {
 		if len(sl.Lines) == 0 {
 			continue
 		}
+		// Defense-in-depth: a NUL in the modeled line text or authored descriptor would silently
+		// truncate the NUL-terminated SYLT text/descriptor field. The editor already rejects an
+		// authored NUL; flag one here too so a library caller that bypasses the editor surfaces
+		// waxerr.ErrInvalidData (via RebuildError) rather than writing a truncated frame. Only these
+		// values need checking: fallbackDesc/fallbackLang come from decoded SYLT strings, which
+		// cannot contain a NUL (it is the field terminator on read).
+		if strings.IndexByte(sl.Description, 0) >= 0 {
+			invalidNUL = true
+		}
+		for _, ln := range sl.Lines {
+			if strings.IndexByte(ln.Text, 0) >= 0 {
+				invalidNUL = true
+			}
+		}
 		body, ov := encodeSYLT(sl, version, fallbackLang, fallbackDesc)
 		overflow = overflow || ov
 		frames = append(frames, Frame{ID: "SYLT", Body: body})
 	}
-	return frames, overflow
+	return frames, overflow, invalidNUL
 }
 
 // encodeSYLT renders a SYLT frame body for the write version: always the millisecond

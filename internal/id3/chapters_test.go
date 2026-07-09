@@ -184,6 +184,27 @@ func TestChapterTimeClampsBelowSentinel(t *testing.T) {
 	}
 }
 
+// TestChapterEndNotAboveStartSerializesOpen checks that a library-authored chapter whose End is not
+// strictly above Start (a zero-length or backwards span) serializes as open, writing the 0xFFFFFFFF
+// unused sentinel rather than an invalid interval, matching Matroska's renderChapterAtom. encodeCHAP
+// is called directly so the guard is exercised without chapterFrames' end-fill.
+func TestChapterEndNotAboveStartSerializesOpen(t *testing.T) {
+	for _, ch := range []core.Chapter{
+		{Start: 2 * time.Second, End: 1 * time.Second, Title: "backwards"},   // End < Start
+		{Start: 2 * time.Second, End: 2 * time.Second, Title: "zero-length"}, // End == Start
+	} {
+		body, _ := encodeCHAP("a", ch, 4)
+		_, rest, ok := cutLatin1(body) // element ID, then start(4)+end(4)+offsets(8)
+		if !ok || len(rest) < 8 {
+			t.Fatalf("could not read CHAP end field from %x", body)
+		}
+		if end := binary.BigEndian.Uint32(rest[4:8]); end != chapFieldUnused {
+			t.Errorf("End=%v Start=%v serialized end %#08x, want the unused sentinel %#08x",
+				ch.End, ch.Start, end, chapFieldUnused)
+		}
+	}
+}
+
 // TestChapterCTOCOrdering checks the projection orders chapters by the CTOC child list,
 // not by the on-disk CHAP order, and appends a CHAP the CTOC does not reference.
 func TestChapterCTOCOrdering(t *testing.T) {
@@ -261,8 +282,9 @@ func TestCheckChapterCount(t *testing.T) {
 }
 
 // TestChapterCTOCSubsetKeepsUnreferenced checks that when a CTOC references only a subset of
-// the CHAP frames, the unreferenced chapters are still appended in file order. This is the
-// regression case: file order [a,b,c] with CTOC [b] must yield [b,a,c], not drop a.
+// the CHAP frames, the unreferenced chapters are still projected, not dropped. This is the
+// regression case: file order [a,b,c] with CTOC [b] must keep a and c. With the start-sort the
+// projection is [a,b,c] (start order); the guard here is that all three survive.
 func TestChapterCTOCSubsetKeepsUnreferenced(t *testing.T) {
 	mk := func(id string, start time.Duration, title string) Frame {
 		body, _ := encodeCHAP(id, core.Chapter{Start: start, Title: title}, 4)
@@ -279,7 +301,7 @@ func TestChapterCTOCSubsetKeepsUnreferenced(t *testing.T) {
 	for _, c := range got {
 		titles = append(titles, c.Title)
 	}
-	want := []string{"b", "a", "c"} // b first (CTOC), then a and c unreferenced in file order
+	want := []string{"a", "b", "c"} // start-sorted; a and c (unreferenced) must not be dropped
 	if len(titles) != len(want) {
 		t.Fatalf("titles = %v, want %v (unreferenced chapters must not be dropped)", titles, want)
 	}
@@ -287,6 +309,57 @@ func TestChapterCTOCSubsetKeepsUnreferenced(t *testing.T) {
 		if titles[i] != want[i] {
 			t.Errorf("title[%d] = %q, want %q", i, titles[i], want[i])
 		}
+	}
+}
+
+// TestChapterProjectionStartSorted checks that CHAP/CTOC frames stored out of start order project
+// in start order. Two files that carry the same chapters but store them in different frame/CTOC
+// order project to an identical list, so diff reports no difference and SetChapters(doc.Chapters()...)
+// is idempotent (re-projecting the sorted output is a no-op).
+func TestChapterProjectionStartSorted(t *testing.T) {
+	mk := func(id string, start time.Duration, title string) Frame {
+		body, _ := encodeCHAP(id, core.Chapter{Start: start, Title: title}, 4)
+		return Frame{ID: "CHAP", Body: body}
+	}
+	// Chapters stored latest-start-first, with a CTOC that also lists them out of start order.
+	reversed := []Frame{
+		mk("c", 3*time.Second, "c"),
+		mk("b", 2*time.Second, "b"),
+		mk("a", 1*time.Second, "a"),
+		{ID: "CTOC", Body: encodeCTOC("toc", []string{"c", "b", "a"})},
+	}
+	got, _ := ProjectChapters(tagWith(4, reversed))
+	var titles []string
+	for _, c := range got {
+		titles = append(titles, c.Title)
+	}
+	if want := []string{"a", "b", "c"}; !slices.Equal(titles, want) {
+		t.Fatalf("out-of-order source projected %v, want %v (start-sorted)", titles, want)
+	}
+
+	// A file storing the same chapters in start order must project the identical list, so a
+	// frame-order-only difference is invisible to diff.
+	forward := []Frame{
+		mk("a", 1*time.Second, "a"),
+		mk("b", 2*time.Second, "b"),
+		mk("c", 3*time.Second, "c"),
+		{ID: "CTOC", Body: encodeCTOC("toc", []string{"a", "b", "c"})},
+	}
+	fwd, _ := ProjectChapters(tagWith(4, forward))
+	if !core.EqualChapters(got, fwd) {
+		t.Errorf("reversed vs forward frame order projected differently: %+v vs %+v", got, fwd)
+	}
+
+	// SetChapters(doc.Chapters()...) idempotency: storing the projected chapters and re-reading
+	// reaches a fixpoint, so a second store+read makes no further change. (The first store fills
+	// open interior ends via chapterFrames; from there the start-sorted projection is stable - the
+	// stable-sort of an already-sorted list is a no-op.)
+	once, _ := chapterFrames(got, 0, 4)
+	pass1, _ := ProjectChapters(tagWith(4, once))
+	twice, _ := chapterFrames(pass1, 0, 4)
+	pass2, _ := ProjectChapters(tagWith(4, twice))
+	if !core.EqualChapters(pass1, pass2) {
+		t.Errorf("store+read not idempotent: %+v vs %+v", pass1, pass2)
 	}
 }
 

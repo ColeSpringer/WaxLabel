@@ -1,8 +1,10 @@
 package id3
 
 import (
+	"cmp"
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/colespringer/waxlabel/internal/core"
@@ -60,11 +62,14 @@ const (
 // against a hostile frame, since in practice a CHAP carries just a TIT2.
 const maxChapterSubframes = 16
 
-// ProjectChapters decodes a tag's CHAP/CTOC frames into an ordered, flat chapter list
+// ProjectChapters decodes a tag's CHAP/CTOC frames into a start-ordered, flat chapter list
 // plus any read warnings (a flattened nested table of contents). It returns nil chapters
-// when the tag carries none. Ordering follows the top-level CTOC's child element-ID list
-// when present, falling back to the first CTOC, then to the CHAP frames' file order; a
-// CHAP not referenced by the chosen CTOC is appended in file order so no chapter is lost.
+// when the tag carries none. Chapters are stable-sorted by start time, so a source that stored
+// CHAP/CTOC out of start order still projects in time order, making a load->store round-trip a
+// no-op (mirrors the Vorbis and Matroska projectors). The CTOC/CHAP order built below only breaks
+// ties between equal-start chapters: the top-level CTOC's child element-ID list when present,
+// falling back to the first CTOC, then to the CHAP frames' file order; a CHAP not referenced by
+// the chosen CTOC is appended in file order so no chapter is lost.
 func ProjectChapters(t *Tag) ([]core.Chapter, []core.Warning) {
 	if t == nil {
 		return nil, nil
@@ -131,6 +136,11 @@ func ProjectChapters(t *Tag) ([]core.Chapter, []core.Warning) {
 			ordered = append(ordered, chaps[i].ch)
 		}
 	}
+	// Stable-sort by start so an out-of-order source projects in time order and a load->store
+	// round-trip is a no-op; the CTOC/file order built above breaks ties for equal-start chapters
+	// deterministically. Mirrors internal/vorbis/chapters.go and internal/matroska/sortChapters.
+	// Only the projected view changes - a tag-only edit still preserves the on-disk frame order.
+	slices.SortStableFunc(ordered, func(a, b core.Chapter) int { return cmp.Compare(a.Start, b.Start) })
 
 	var ws []core.Warning
 	if len(tocs) > 1 {
@@ -308,7 +318,10 @@ func chapterFrames(chs []core.Chapter, duration time.Duration, version byte) (fr
 func encodeCHAP(id string, ch core.Chapter, version byte) ([]byte, bool) {
 	startMs, ov1 := durationToMs(ch.Start, chapTimeMax)
 	endMs, ov2 := chapFieldUnused, false
-	if ch.End > 0 {
+	// Only a closed chapter writes an explicit end. End <= Start (a zero-length or backwards span
+	// a library caller may author) is treated as "open" and emits the unused sentinel, matching
+	// Matroska's renderChapterAtom - serializing such an end would only write an invalid interval.
+	if ch.End > ch.Start {
 		endMs, ov2 = durationToMs(ch.End, chapTimeMax)
 	}
 	out := append(encodeLatin1(id), 0)

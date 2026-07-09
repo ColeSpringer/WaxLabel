@@ -52,7 +52,7 @@ func newPlanCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			noteNoFiles(cmd.ErrOrStderr(), paths)
+			noteNoFiles(cmd.ErrOrStderr(), paths, asJSON)
 			noteSkipped(cmd.ErrOrStderr(), skipped, asJSON)
 			if err := notifyInvocationNotes(cmd.ErrOrStderr(), ce, &ef, realOf, paths, pathErrors, asJSON); err != nil {
 				return err

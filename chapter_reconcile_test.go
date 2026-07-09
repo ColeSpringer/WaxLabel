@@ -107,6 +107,64 @@ func TestChapterOverlapReconciledID3EndToEnd(t *testing.T) {
 	}
 }
 
+// TestCoincidentStartChapterEndPreservedRoundTrip covers the reconcile-then-serialize path for two
+// chapters that share a start where the earlier one carries a real authored end past it. The
+// reconcile must not collapse that end onto the shared start (the strict next > Start guard), and
+// the writer must then serialize the surviving end rather than an invalid interval (the End > Start
+// guard). It runs on the two container families with an explicit per-chapter end field, ID3 (mp3)
+// and Matroska (mka). MP4 is deliberately excluded: it stores only start+title for interior
+// chapters and derives their ends from the next start, dropping any interior end (with a
+// chapter-metadata-dropped warning) whichever way the reconcile grades it, so it cannot represent
+// this property. notags.mka is 1s long, so every time here is comfortably in bounds.
+func TestCoincidentStartChapterEndPreservedRoundTrip(t *testing.T) {
+	ms := time.Millisecond
+	ctx := context.Background()
+
+	authored := []Chapter{
+		{Start: 0, Title: "Pre"},
+		{Start: 500 * ms, End: 600 * ms, Title: "A"}, // authored end past the shared 500ms start
+		{Start: 500 * ms, Title: "B"},                // coincident start with A
+	}
+
+	for _, tc := range []struct{ name, src, ext string }{
+		{"id3", "testdata/notags.mp3", ".mp3"},
+		{"matroska", "testdata/notags.mka", ".mka"},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			base, err := ParseFile(ctx, tc.src)
+			if err != nil {
+				t.Fatalf("parse %s: %v", tc.src, err)
+			}
+			plan, err := base.Edit().SetChapters(authored...).Prepare()
+			if err != nil {
+				t.Fatalf("prepare: %v", err)
+			}
+			out := filepath.Join(t.TempDir(), "out"+tc.ext)
+			if _, _, err := plan.Execute(ctx, SaveAsFile(out)); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			got, err := ParseFile(ctx, out)
+			if err != nil {
+				t.Fatalf("re-parse: %v", err)
+			}
+			var a *Chapter
+			for i := range got.Chapters() {
+				if c := got.Chapters()[i]; c.Title == "A" {
+					a = &c
+				}
+			}
+			if a == nil {
+				t.Fatalf("chapter A not found after round-trip; chapters=%+v", got.Chapters())
+			}
+			// The old next >= Start guard collapsed A onto the shared start; the fix keeps End=600ms.
+			if a.End != 600*ms {
+				t.Errorf("chapter A End = %v, want 600ms preserved end to end", a.End)
+			}
+		})
+	}
+}
+
 // TestChapterPreExistingOverlapNotReconciledOnTagEdit is the control: a file whose chapters
 // already overlap on disk (both sides pre-existing) keeps them byte-identical through an
 // unrelated tag edit - reconciliation is scoped to edit-introduced overlaps and gated on a

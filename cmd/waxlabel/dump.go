@@ -38,7 +38,7 @@ func newDumpCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			noteNoFiles(cmd.ErrOrStderr(), paths)
+			noteNoFiles(cmd.ErrOrStderr(), paths, jsonMode(cmd))
 			noteSkipped(cmd.ErrOrStderr(), skipped, jsonMode(cmd))
 			// dump reports parsed metadata. A no-audio file is still a successful
 			// metadata read, so it exits 0 and carries the file-health signal as a

@@ -238,6 +238,82 @@ func TestProjectTransferSplitsPicturesByMetadataLoss(t *testing.T) {
 	}
 }
 
+// TestProjectTransferSplitsChaptersByMetadataLoss checks that a chapter set copied to a start+title
+// destination is partitioned per chapter rather than flipped whole (the chapter analogue of the
+// picture split). It asserts the reconstructable-end boundary explicitly, since that is the whole
+// subtlety of the per-index predicate: a chapter whose interior end reaches the next start
+// reconstructs and carries, while a gapped end is a real loss. The title-byte-cap axis splits the
+// same way.
+func TestProjectTransferSplitsChaptersByMetadataLoss(t *testing.T) {
+	chapterItems := func(items []TransferItem) []TransferItem {
+		var out []TransferItem
+		for _, it := range items {
+			if it.Kind == TransferChapter {
+				out = append(out, it)
+			}
+		}
+		return out
+	}
+	// Start+title destination (FLAC/Ogg model): a gapless interior end reconstructs from the next
+	// start, a gapped one cannot, and an open last chapter has no end to lose.
+	startTitle := NewCapabilities(FormatFLAC, false, Capability{Write: AccessFull},
+		Capability{Write: AccessNone},
+		Capability{Write: AccessFull, ChapterLoss: ChapterLossStartTitleOnly}, AccessNone, nil)
+
+	// The reconstructable-end boundary, isolated: two 2-chapter sets differing ONLY in whether the
+	// first chapter's end reaches the second's start. The second chapter is open, so it carries in
+	// both; only the first's grade flips.
+	reconstructable := &Media{Format: FormatMatroska, Chapters: []Chapter{
+		{Start: 0, End: 10 * time.Second, Title: "A"}, // end == B.Start -> reconstructable, carried
+		{Start: 10 * time.Second, Title: "B"},         // open last -> carried
+	}}
+	if c, l, _ := (TransferReport{Items: ProjectTransfer(reconstructable, startTitle)}).Counts(); c != 2 || l != 0 {
+		t.Errorf("reconstructable-end set counts = (%d carried, %d lossy), want (2, 0): a gapless end must grade carried", c, l)
+	}
+	gapped := &Media{Format: FormatMatroska, Chapters: []Chapter{
+		{Start: 0, End: 5 * time.Second, Title: "A"}, // end 5s != B.Start 10s -> gapped, lossy
+		{Start: 10 * time.Second, Title: "B"},        // open last -> carried
+	}}
+	if c, l, _ := (TransferReport{Items: ProjectTransfer(gapped, startTitle)}).Counts(); c != 1 || l != 1 {
+		t.Errorf("gapped-end set counts = (%d carried, %d lossy), want (1, 1): a gapped end must grade lossy", c, l)
+	}
+
+	// A mixed set: reconstructable end (carried), gapped interior end (lossy), open last (carried) ->
+	// 1 lossy, N-1 carried, carried item first with an empty reason and the lossy item a metadata reason.
+	mixed := &Media{Format: FormatMatroska, Chapters: []Chapter{
+		{Start: 0, End: 10 * time.Second, Title: "A"},                // reaches B -> carried
+		{Start: 10 * time.Second, End: 15 * time.Second, Title: "B"}, // gapped (C at 20) -> lossy
+		{Start: 20 * time.Second, Title: "C"},                        // open last -> carried
+	}}
+	got := chapterItems(ProjectTransfer(mixed, startTitle))
+	if len(got) != 2 || got[0].Disposition != Carried || got[1].Disposition != Lossy {
+		t.Fatalf("mixed chapter items = %+v, want [Carried, Lossy]", got)
+	}
+	if got[0].Count != 2 || got[0].Reason != "" {
+		t.Errorf("carried chapter item = %+v, want count 2 with an empty reason", got[0])
+	}
+	if got[1].Count != 1 || got[1].Reason == "" {
+		t.Errorf("lossy chapter item = %+v, want count 1 with a metadata reason", got[1])
+	}
+
+	// Title-byte-cap axis, no metadata loss: only the over-long title is lossy, with the truncation
+	// reason (not the metadata reason), the rest carried.
+	titleCap := NewCapabilities(FormatMP4, false, Capability{Write: AccessFull},
+		Capability{Write: AccessNone},
+		Capability{Write: AccessFull, ChapterTitleByteMax: 3}, AccessNone, nil)
+	m2 := &Media{Format: FormatMatroska, Chapters: []Chapter{
+		{Start: 0, Title: "ok"},                     // within the 3-byte cap -> carried
+		{Start: time.Second, Title: "way too long"}, // exceeds it -> lossy
+	}}
+	got2 := chapterItems(ProjectTransfer(m2, titleCap))
+	if len(got2) != 2 || got2[0].Disposition != Carried || got2[1].Disposition != Lossy {
+		t.Fatalf("title-cap chapter items = %+v, want [Carried, Lossy]", got2)
+	}
+	if got2[1].Reason != "chapter title is too long and was truncated" {
+		t.Errorf("title-cap lossy reason = %q, want the truncation message", got2[1].Reason)
+	}
+}
+
 // TestProjectTransferReasonUsesSniffedMIME checks that a dropped cover's reason names the
 // sniffed type used to reject it, not a wrong or empty stored label. A GIF mislabeled as
 // JPEG, and an unlabeled GIF, both read "cannot store image/gif".
@@ -466,6 +542,63 @@ func TestProjectTransferSyncedLyricsTimestampClamp(t *testing.T) {
 	atMax := []SyncedLyrics{{Lines: []SyncedLine{{Time: 100 * time.Second, Text: "edge"}}}}
 	if it := syncedItem(atMax); it.Disposition != Carried {
 		t.Errorf("a line exactly at the ceiling = %s, want Carried (clamp is strictly greater)", it.Disposition)
+	}
+}
+
+// TestProjectTransferSplitsSyncedLyricsByMetadataLoss checks that a synced-lyrics set is partitioned
+// per set, like pictures and chapters. An LRC destination drops each set's language and descriptor,
+// so a set carrying one is lossy while a plain set carries: two sets, one plain and one with a
+// descriptor, report 1 carried, 1 lossy rather than the whole set flipped. The timestamp-clamp axis
+// splits the same way, taking the clamp reason when no set lost metadata.
+func TestProjectTransferSplitsSyncedLyricsByMetadataLoss(t *testing.T) {
+	syncedItems := func(items []TransferItem) []TransferItem {
+		var out []TransferItem
+		for _, it := range items {
+			if it.Kind == TransferSyncedLyric {
+				out = append(out, it)
+			}
+		}
+		return out
+	}
+	// LRC destination: drops each set's per-set language/descriptor, with a timestamp ceiling too.
+	lrc := NewCapabilities(FormatFLAC, false, Capability{Write: AccessFull},
+		Capability{Write: AccessNone}, Capability{Write: AccessNone}, AccessNone, nil).
+		WithSyncedLyrics(Capability{Write: AccessFull, SyncedLyricsLoss: SyncedLyricsLossLanguage, SyncedLyricsTimeMax: 100 * time.Second})
+
+	// One plain set (carried) beside one carrying a descriptor (lossy metadata).
+	m := &Media{Format: FormatMatroska, SyncedLyrics: []SyncedLyrics{
+		{Lines: []SyncedLine{{Time: 0, Text: "plain"}}},
+		{Description: "chorus", Lines: []SyncedLine{{Time: time.Second, Text: "meta"}}},
+	}}
+	got := syncedItems(ProjectTransfer(m, lrc))
+	if len(got) != 2 || got[0].Disposition != Carried || got[1].Disposition != Lossy {
+		t.Fatalf("synced-lyrics items = %+v, want [Carried, Lossy]", got)
+	}
+	if got[0].Count != 1 || got[0].Reason != "" {
+		t.Errorf("carried synced item = %+v, want count 1 with an empty reason", got[0])
+	}
+	if got[1].Count != 1 || got[1].Reason == "" {
+		t.Errorf("lossy synced item = %+v, want count 1 with a metadata reason", got[1])
+	}
+	if c, l, d := (TransferReport{Items: ProjectTransfer(m, lrc)}).Counts(); c != 1 || l != 1 || d != 0 {
+		t.Errorf("counts = (%d,%d,%d), want (1,1,0)", c, l, d)
+	}
+
+	// Timestamp-clamp axis, no metadata loss: only the over-ceiling set is lossy, with the clamp
+	// reason (not the metadata reason).
+	clampOnly := NewCapabilities(FormatMP3, false, Capability{Write: AccessFull},
+		Capability{Write: AccessNone}, Capability{Write: AccessNone}, AccessNone, nil).
+		WithSyncedLyrics(Capability{Write: AccessFull, SyncedLyricsTimeMax: 100 * time.Second})
+	m2 := &Media{Format: FormatMatroska, SyncedLyrics: []SyncedLyrics{
+		{Lines: []SyncedLine{{Time: 0, Text: "ok"}}},                   // within -> carried
+		{Lines: []SyncedLine{{Time: 200 * time.Second, Text: "late"}}}, // over -> lossy
+	}}
+	got2 := syncedItems(ProjectTransfer(m2, clampOnly))
+	if len(got2) != 2 || got2[0].Disposition != Carried || got2[1].Disposition != Lossy {
+		t.Fatalf("clamp-axis synced items = %+v, want [Carried, Lossy]", got2)
+	}
+	if got2[1].Reason != "a synced-lyric timestamp is too large and was clamped" {
+		t.Errorf("clamp-axis lossy reason = %q, want the clamp message", got2[1].Reason)
 	}
 }
 

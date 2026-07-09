@@ -99,6 +99,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		if err := id3.CheckSize(version, frames, bits.DefaultLimits.MaxElements); err != nil {
 			return nil, err
 		}
+		if err := id3.RebuildError(id3Info); err != nil {
+			return nil, err
+		}
 		newID3 = srcTag.WithFrames(frames)
 	}
 
@@ -123,6 +126,13 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		return nil, err
 	}
 	report.Operations = ops
+	if emitID3 {
+		// The embedded-container op lines (pictures/chapters/synced lyrics) come from the shared
+		// id3.ContainerOps, which owns the change-flag-and-count gate.
+		report.Operations = append(report.Operations, id3.ContainerOps(
+			picturesChanged, len(edited.Pictures), chaptersChanged, len(edited.Chapters),
+			syncedLyricsChanged, len(edited.SyncedLyrics))...)
+	}
 	if id3Info.UsedV23Multi {
 		report.Operations = append(report.Operations, "v2.3 multi-value NUL-separated storage")
 		report.Warnings = core.Warn(report.Warnings, core.WarnID3MultiValue,
@@ -227,17 +237,6 @@ func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, 
 	}
 	if len(created) > 0 {
 		outs = insertBeforeSSND(outs, created)
-	}
-	if emitID3 {
-		if n := id3.APICCount(newID3); n > 0 {
-			ops = append(ops, fmt.Sprintf("pictures: %d", n))
-		}
-		if n := id3.ChapterCount(newID3); n > 0 {
-			ops = append(ops, fmt.Sprintf("chapters: %d", n))
-		}
-		if n := id3.SyncedLyricsCount(newID3); n > 0 {
-			ops = append(ops, fmt.Sprintf("synced lyrics: %d", n))
-		}
 	}
 	return outs, ops
 }

@@ -100,6 +100,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		if err := id3.CheckSize(version, frames, bits.DefaultLimits.MaxElements); err != nil {
 			return nil, err
 		}
+		if err := id3.RebuildError(id3Info); err != nil {
+			return nil, err
+		}
 		newID3 = srcTag.WithFrames(frames)
 	}
 
@@ -123,6 +126,13 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		return nil, err
 	}
 	report.Operations = ops
+	if emitID3 {
+		// The embedded-container op lines (pictures/chapters/synced lyrics) come from the shared
+		// id3.ContainerOps, which owns the change-flag-and-count gate.
+		report.Operations = append(report.Operations, id3.ContainerOps(
+			picturesChanged, len(edited.Pictures), chaptersChanged, len(edited.Chapters),
+			syncedLyricsChanged, len(edited.SyncedLyrics))...)
+	}
 	if stampToStrip {
 		// Surface the strip even when it empties the LIST (which records no rewrite op),
 		// so a plan that only drops the stamp is not reported as a contentless rewrite.
@@ -218,17 +228,6 @@ func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, 
 	}
 	if len(created) > 0 {
 		outs = insertBeforeData(outs, created)
-	}
-	if emitID3 {
-		if n := id3.APICCount(newID3); n > 0 {
-			ops = append(ops, fmt.Sprintf("pictures: %d", n))
-		}
-		if n := id3.ChapterCount(newID3); n > 0 {
-			ops = append(ops, fmt.Sprintf("chapters: %d", n))
-		}
-		if n := id3.SyncedLyricsCount(newID3); n > 0 {
-			ops = append(ops, fmt.Sprintf("synced lyrics: %d", n))
-		}
 	}
 	return outs, ops
 }

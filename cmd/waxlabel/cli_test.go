@@ -1530,8 +1530,10 @@ func TestLintRecursive(t *testing.T) {
 	}
 }
 
-// TestDumpRecursiveNoFiles: a directory with no audio files notes it on stderr and
-// still emits an empty JSON array (not null), the shared no-files behavior.
+// TestDumpRecursiveNoFiles: a directory with no audio files still emits an empty JSON array
+// (not null) under --json, and the exit-0 advisories (no-files and skipped-file notes) are
+// suppressed under --json so the stream shape stays clean, matching noteSkipped. The text-mode
+// note is covered by TestNoFilesNoteSuppressedUnderJSON.
 func TestDumpRecursiveNoFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1542,8 +1544,8 @@ func TestDumpRecursiveNoFiles(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
 	}
-	if !strings.Contains(errb, "no audio files found") {
-		t.Errorf("expected a no-files note on stderr, got: %q", errb)
+	if errb != "" {
+		t.Errorf("expected no advisory on stderr under --json, got: %q", errb)
 	}
 	if strings.TrimSpace(out) != "[]" {
 		t.Errorf("JSON output = %q, want [] (not null)", strings.TrimSpace(out))

@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -124,6 +125,117 @@ func TestDumpJSONNoAudioNoError(t *testing.T) {
 	if !sawNoAudio {
 		t.Errorf("no element carried the no-audio warning:\n%s", out)
 	}
+}
+
+// TestNoFilesNoteSuppressedUnderJSON checks that an empty --recursive walk under --json writes
+// nothing to stderr (the stdout shape stays a clean []), matching the sibling noteSkipped, while
+// text mode still prints the "no audio files found" advisory so an empty walk is not a silent
+// success. It runs on both dump and lint, the read commands that walk directories.
+func TestNoFilesNoteSuppressedUnderJSON(t *testing.T) {
+	t.Parallel()
+	for _, cmd := range []string{"dump", "lint"} {
+		cmd := cmd
+		t.Run(cmd, func(t *testing.T) {
+			t.Parallel()
+			empty := t.TempDir()
+
+			// --json: nothing on stderr, exit 0.
+			stdout, stderr, code := runCLI(t, "--json", cmd, "--recursive", empty)
+			if code != 0 {
+				t.Fatalf("%s --json empty walk exit = %d, want 0; stderr=%q", cmd, code, stderr)
+			}
+			if stderr != "" {
+				t.Errorf("%s --json empty walk wrote to stderr: %q, want nothing (suppressed like noteSkipped)", cmd, stderr)
+			}
+			if strings.TrimSpace(stdout) != "[]" {
+				t.Errorf("%s --json empty walk stdout = %q, want []", cmd, stdout)
+			}
+
+			// Text mode: the advisory still fires so the empty walk is not a silent no-op.
+			_, textErr, code := runCLI(t, cmd, "--recursive", empty)
+			if code != 0 {
+				t.Fatalf("%s (text) empty walk exit = %d, want 0", cmd, code)
+			}
+			if !strings.Contains(textErr, "no audio files found") {
+				t.Errorf("%s (text) empty walk stderr = %q, want the no-audio-files advisory", cmd, textErr)
+			}
+		})
+	}
+}
+
+// TestWAVAIFFStructuralOpsGatedOnChange checks that WAV and AIFF gate each id3-container op
+// (pictures/chapters/synced lyrics) on its own change flag and canonical model count, like MP3 and
+// AAC. An edit that actually adds a container reports it with the model count
+// (len(edited.SyncedLyrics)); a tag-only edit on a file already carrying those containers emits
+// none of the ops, because they are carried through unchanged rather than rewritten.
+func TestWAVAIFFStructuralOpsGatedOnChange(t *testing.T) {
+	t.Parallel()
+	cover := writeTempImage(t, "cover.png", minimalPNG())
+	for _, tc := range []struct{ name, fixture string }{
+		{"wav", "../../testdata/notags.wav"},
+		{"aiff", "../../testdata/notags.aiff"},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// An actual synced-lyrics edit still reports the op, with the model set count (1).
+			if ops := planOperations(t, copyFixture(t, tc.fixture), "--add-synced-lyric", "0:01=Hi"); !slices.Contains(ops, "synced lyrics: 1") {
+				t.Errorf("adding synced lyrics: operations = %v, want a 'synced lyrics: 1' op", ops)
+			}
+
+			// Author a file carrying synced lyrics, a cover, and a chapter.
+			f := copyFixture(t, tc.fixture)
+			if _, errb, code := runCLI(t, "set", f,
+				"--add-synced-lyric", "0:01=Hi",
+				"--add-cover", cover,
+				"--add-chapter", "0:00=Intro"); code != 0 {
+				t.Fatalf("authoring exit %d: %s", code, errb)
+			}
+
+			// A tag-only edit carries all three containers through unchanged, so none of their
+			// per-container ops appear - only the tag rewrite itself.
+			ops := planOperations(t, f, "--set", "TITLE=Hello")
+			for _, op := range ops {
+				if strings.HasPrefix(op, "synced lyrics:") || strings.HasPrefix(op, "pictures:") || strings.HasPrefix(op, "chapters:") {
+					t.Errorf("tag-only edit emitted a spurious container op %q; operations=%v", op, ops)
+				}
+			}
+		})
+	}
+}
+
+// TestMP3PictureClearOmitsZeroCountOp checks that clearing pictures on MP3 (through the shared
+// RenderFrontTag) emits no "pictures: 0" op, matching the chapters and synced-lyrics lines and the
+// WAV/AIFF gate, so all four codecs read uniformly. The removal is still recorded as a change, so
+// nothing is silently lost.
+func TestMP3PictureClearOmitsZeroCountOp(t *testing.T) {
+	t.Parallel()
+	cover := writeTempImage(t, "cover.png", minimalPNG())
+	f := copyFixture(t, "../../testdata/notags.mp3")
+	// Keep a TITLE so the write is a frame rewrite, not a full tag removal - isolating the
+	// picture-line behavior rather than the removal path.
+	if _, errb, code := runCLI(t, "set", f, "--set", "TITLE=Keep", "--add-cover", cover); code != 0 {
+		t.Fatalf("authoring exit %d: %s", code, errb)
+	}
+	ops := planOperations(t, f, "--remove-pictures")
+	for _, op := range ops {
+		if strings.HasPrefix(op, "pictures:") {
+			t.Errorf("picture-clear emitted %q; 'pictures: 0' must be suppressed. operations=%v", op, ops)
+		}
+	}
+}
+
+// planOperations runs `plan --json <file> <args...>` and returns the single report's operations.
+func planOperations(t *testing.T, file string, args ...string) []string {
+	t.Helper()
+	out, errb, code := runCLI(t, append([]string{"--json", "plan", file}, args...)...)
+	if code != 0 {
+		t.Fatalf("plan exit %d: %s", code, errb)
+	}
+	return decodeJSONOne[struct {
+		Operations []string `json:"operations"`
+	}](t, out).Operations
 }
 
 // caps has no warnings field, so JSON mode represents a readable no-audio file

@@ -72,7 +72,7 @@ func newLintCmd() *cobra.Command {
 			if fix && len(paths) == 0 {
 				return usagef("no audio files found")
 			}
-			noteNoFiles(cmd.ErrOrStderr(), paths)
+			noteNoFiles(cmd.ErrOrStderr(), paths, jsonMode(cmd))
 			noteSkipped(cmd.ErrOrStderr(), skipped, jsonMode(cmd))
 			if fix {
 				if slices.Contains(paths, stdinArg) {

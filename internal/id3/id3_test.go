@@ -206,18 +206,37 @@ func TestResolveGenres(t *testing.T) {
 	}{
 		{"(17)", []string{"Rock"}, true},
 		{"17", []string{"Rock"}, true},
+		{"7", []string{"Hip-Hop"}, true}, // bare canonical index resolves
+		{"0", []string{"Blues"}, true},   // 0 is a valid index, not "empty"
 		{"Rock", []string{"Rock"}, false},
 		{"(51)(39)", []string{"Techno-Industrial", "Noise"}, true}, // multiple numeric references
 		{"(17)Hardcore", []string{"Rock", "Hardcore"}, true},       // reference + refinement
-		{"(Indie)Refined", []string{"Indie", "Refined"}, false},    // non-numeric parenthetical
+		{"(Indie)Refined", []string{"(Indie)", "Refined"}, false},  // non-numeric parenthetical kept verbatim
 		{"(RX)", []string{"Remix"}, true},
 		{"(CR)", []string{"Cover"}, true},
-		{"RX", []string{"Remix"}, true},    // bare special reference resolves like (RX)
-		{"CR", []string{"Cover"}, true},    // bare special reference resolves like (CR)
-		{"rx", []string{"rx"}, false},      // case-sensitive (the spec form is uppercase): lowercase stays a literal name
-		{"(rx)", []string{"rx"}, false},    // parenthesized lowercase is literal too
-		{"(255)", []string{"(255)"}, true}, // out of range, kept literal, still numeric syntax
+		{"RX", []string{"Remix"}, true},     // bare special reference resolves like (RX)
+		{"CR", []string{"Cover"}, true},     // bare special reference resolves like (CR)
+		{"rx", []string{"rx"}, false},       // case-sensitive (the spec form is uppercase): lowercase stays a literal name
+		{"(rx)", []string{"(rx)"}, false},   // parenthesized lowercase is literal too, parens preserved
+		{"(255)", []string{"(255)"}, false}, // out of range: kept literal AND no longer flagged numeric
 		{"Custom Genre", []string{"Custom Genre"}, false},
+		// Only a canonical integer is a bare ID3v1 index; a padded or signed form stays literal.
+		{"007", []string{"007"}, false},
+		{"+7", []string{"+7"}, false},
+		{"08", []string{"08"}, false},
+		{"-5", []string{"-5"}, false}, // passes the Itoa guard, rejected by genreName's range check
+		// A parenthesized zero-padded index still resolves as an explicit reference, while an
+		// out-of-range one and a foreign name or empty token stay literal and non-numeric.
+		{"(07)", []string{"Hip-Hop"}, true}, // parenthesized zero-pad is an explicit index reference
+		{"(192)", []string{"(192)"}, false},
+		{"(Pop)", []string{"(Pop)"}, false},
+		{"()", []string{"()"}, false},
+		// An unterminated reference's literal text keeps its lone "(" verbatim rather than dropping
+		// it (matching the paren-token preservation above); the "((" escape still unescapes, even
+		// after a space before the escaped paren.
+		{"(hello", []string{"(hello"}, false},
+		{"(17)(hello", []string{"Rock", "(hello"}, true},
+		{"(17) ((Live)", []string{"Rock", "(Live)"}, true},
 	}
 	for _, c := range cases {
 		got, num := resolveGenres(c.in)
@@ -313,6 +332,37 @@ func TestProjectBareSpecialGenreReinterpreted(t *testing.T) {
 		}
 		if !proj.NumericGenre {
 			t.Errorf("bare TCON %q should set NumericGenre so the read-side warning fires", c.raw)
+		}
+	}
+}
+
+// TestNumericGenreWarningSurfaces checks that both user-visible numeric-genre surfaces stay in
+// step: the read projection's NumericGenre flag (which drives the [numeric-genre] read warning) and
+// detectNumericGenres (which drives the symmetric write warning). Both consume resolveGenres, so a
+// zero-padded "007" and an out-of-range "(192)" must warn on neither, while a canonical "7" warns on
+// both.
+func TestNumericGenreWarningSurfaces(t *testing.T) {
+	// Read surface: NumericGenre must be false for the newly-literal forms, true for a real index.
+	for _, c := range []struct {
+		raw  string
+		want bool
+	}{{"007", false}, {"(192)", false}, {"7", true}} {
+		frames := []Frame{{ID: "TCON", Body: encodeTextFrame(encLatin1, []string{c.raw})}}
+		if got := Project(buildTag(t, 4, frames)).NumericGenre; got != c.want {
+			t.Errorf("read surface: TCON %q -> NumericGenre %v, want %v", c.raw, got, c.want)
+		}
+	}
+	// Write surface: an edit setting GENRE to a newly-literal form must not be flagged; a canonical
+	// index still is. changed[Genre] gates detection, so mark it.
+	changed := map[tag.Key]bool{tag.Genre: true}
+	for _, c := range []struct {
+		val  string
+		want []string
+	}{{"007", nil}, {"(192)", nil}, {"7", []string{"7"}}} {
+		edited := tag.NewTagSet()
+		edited.Set(tag.Genre, c.val)
+		if got := detectNumericGenres(changed, edited); !slices.Equal(got, c.want) {
+			t.Errorf("write surface: GENRE=%q -> detectNumericGenres %v, want %v", c.val, got, c.want)
 		}
 	}
 }

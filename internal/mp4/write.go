@@ -566,7 +566,18 @@ func shiftOffset(e uint64, insertion, delta int64) uint64 {
 // assemble turns the sorted, disjoint edits into a rewrite segment list: copy
 // the gaps from the source, emit each edit's literal bytes.
 func assemble(edits []edit, size int64) ([]bits.Segment, error) {
-	sort.Slice(edits, func(i, j int) bool { return edits[i].off < edits[j].off })
+	// Order by offset; on a tie, a zero-width insert (oldLen==0) sorts before a same-offset
+	// replace. Emitting the replace first would advance pos past the insert's offset and trip the
+	// e.off < pos overlap guard below, so the oldLen tie-break forces insert-before-replace
+	// regardless of input order. SliceStable (not Slice) additionally pins the order of two edits
+	// sharing both offset and width: the codec avoids generating those, but a stable sort keeps the
+	// output bytes reproducible if it ever does. Mirrors spliceBytes in write_chapters.go.
+	sort.SliceStable(edits, func(i, j int) bool {
+		if edits[i].off != edits[j].off {
+			return edits[i].off < edits[j].off
+		}
+		return edits[i].oldLen < edits[j].oldLen
+	})
 	var segs []bits.Segment
 	pos := int64(0)
 	for _, e := range edits {

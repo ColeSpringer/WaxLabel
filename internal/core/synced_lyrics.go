@@ -73,17 +73,29 @@ const (
 // embedded line break in a line's text is flattened to a space by the LRC store (FormatLRC), a
 // silent content change, so a set carrying one is a lossy carry too.
 func SyncedLyricsLoseMetadata(sls []SyncedLyrics, loss SyncedLyricsLoss) bool {
+	for _, sl := range sls {
+		if SyncedLyricsSetLosesMetadata(sl, loss) {
+			return true
+		}
+	}
+	return false
+}
+
+// SyncedLyricsSetLosesMetadata reports whether writing one set sl to a destination with loss would
+// discard its metadata. SyncedLyricsLoseMetadata is the fold of this over all sets, so the whole-set
+// and per-set graders cannot drift; the per-set form lets a transfer report grade each set carried
+// vs lossy, mirroring the per-picture ([pictureLosesMetadata]) and per-chapter ([ChapterLosesMetadata])
+// splits.
+func SyncedLyricsSetLosesMetadata(sl SyncedLyrics, loss SyncedLyricsLoss) bool {
 	if loss != SyncedLyricsLossLanguage {
 		return false
 	}
-	for _, sl := range sls {
-		if sl.Language != "" || sl.Description != "" {
+	if sl.Language != "" || sl.Description != "" {
+		return true
+	}
+	for _, ln := range sl.Lines {
+		if strings.ContainsAny(ln.Text, "\r\n") {
 			return true
-		}
-		for _, ln := range sl.Lines {
-			if strings.ContainsAny(ln.Text, "\r\n") {
-				return true
-			}
 		}
 	}
 	return false
@@ -103,14 +115,24 @@ func SyncedLyricsMetadataDroppedMessage() string {
 // the synced-lyrics analogue of the chapter-title byte-cap check, letting a transfer grade a
 // clamping copy Lossy instead of a clean carry.
 func SyncedLyricsClampOverflows(sls []SyncedLyrics, max time.Duration) bool {
+	for _, sl := range sls {
+		if SyncedLyricsSetClampOverflows(sl, max) {
+			return true
+		}
+	}
+	return false
+}
+
+// SyncedLyricsSetClampOverflows reports whether one set sl carries a line timestamp past max.
+// SyncedLyricsClampOverflows is the fold of this over all sets, letting a transfer grade each set's
+// clamp loss independently. max == 0 means no limit (nothing overflows).
+func SyncedLyricsSetClampOverflows(sl SyncedLyrics, max time.Duration) bool {
 	if max <= 0 {
 		return false
 	}
-	for _, sl := range sls {
-		for _, ln := range sl.Lines {
-			if ln.Time > max {
-				return true
-			}
+	for _, ln := range sl.Lines {
+		if ln.Time > max {
+			return true
 		}
 	}
 	return false

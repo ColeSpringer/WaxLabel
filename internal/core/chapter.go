@@ -70,9 +70,10 @@ type Chapter struct {
 }
 
 // ChapterLoss names chapter metadata a destination format cannot preserve, such as
-// formats that store only start+title. It is recorded on the chapters [Capability]
-// so transfer reports and direct-edit warnings use the same [ChaptersLoseMetadata]
-// predicate, matching [PictureLoss] for pictures.
+// formats that store only start+title. It is recorded on the chapters [Capability] so
+// direct-edit warnings ([ChaptersLoseMetadata], whole-set) and transfer reports
+// ([ChapterLosesMetadata], per-chapter) share one grading rule - the latter is the fold body
+// of the former - and classify the same chapter sets as lossy, matching [PictureLoss].
 type ChapterLoss uint8
 
 const (
@@ -121,47 +122,55 @@ const (
 // [ChapterLossStartTitleOnly]'s except the final chapter's explicit end is kept, because
 // the text track stores it - only an interior gapped end vanishes.
 func ChaptersLoseMetadata(chs []Chapter, loss ChapterLoss) bool {
+	for i := range chs {
+		if ChapterLosesMetadata(chs, i, loss) {
+			return true
+		}
+	}
+	return false
+}
+
+// ChapterLosesMetadata reports whether writing chapter i of chs to a destination with loss would
+// discard metadata on that one chapter. ChaptersLoseMetadata is exactly the fold of this over the
+// whole list, so the whole-set and per-chapter graders can never drift. The per-index form lets a
+// transfer report grade each chapter separately (carried vs lossy), mirroring the per-picture split
+// in ProjectTransfer. The per-loss rules match ChaptersLoseMetadata's doc: for ChapterLossLangFlags
+// (ID3 CHAP) the start/end/title survive and only a language or Hidden/Disabled flag is a loss; the
+// start+title models additionally lose an end the store cannot reconstruct (see chapterLosesStartTitle).
+func ChapterLosesMetadata(chs []Chapter, i int, loss ChapterLoss) bool {
 	switch loss {
 	case ChapterLossLangFlags:
-		for _, c := range chs {
-			if c.Hidden || c.Disabled || c.Language != "" || c.LanguageIETF != "" {
-				return true
-			}
-		}
-		return false
+		c := chs[i]
+		return c.Hidden || c.Disabled || c.Language != "" || c.LanguageIETF != ""
 	case ChapterLossStartTitleOnly:
-		return chaptersLoseStartTitle(chs, false)
+		return chapterLosesStartTitle(chs, i, false)
 	case ChapterLossInteriorEndsLangFlags:
-		return chaptersLoseStartTitle(chs, true)
+		return chapterLosesStartTitle(chs, i, true)
 	default:
 		return false
 	}
 }
 
-// chaptersLoseStartTitle is the shared predicate for the start+title chapter models. A
-// Hidden or Disabled chapter, an interior chapter's gapped end (an End that is neither zero
-// nor the next chapter's Start), or any per-chapter language (ISO or IETF) counts as loss,
-// since none of these stores holds a per-chapter language field - the language axis matches
-// the ID3 CHAP path exactly. Only a genuine language counts: the read path has already
-// normalized the ubiquitous Matroska "und" default to empty, so a plain mkvmerge file carries
-// none here (ChaptersLoseMetadata's doc has the full rationale). The final chapter's explicit
-// end counts as loss only when keepLastEnd is false: FLAC/Ogg and MP4's Nero chpl store no end
-// at all, so the last end vanishes there, but MP4's QuickTime text track stores it, so
-// keepLastEnd spares it.
-func chaptersLoseStartTitle(chs []Chapter, keepLastEnd bool) bool {
-	for i, c := range chs {
-		if c.Hidden || c.Disabled || c.Language != "" || c.LanguageIETF != "" {
-			return true
+// chapterLosesStartTitle is the per-index predicate for the start+title chapter models (the body of
+// the ChaptersLoseMetadata fold). A Hidden or Disabled chapter, or any per-chapter language (ISO or
+// IETF), counts as loss, since none of these stores holds a per-chapter language field - the
+// language axis matches the ID3 CHAP path exactly. Only a genuine language counts: the read path has
+// already normalized the ubiquitous Matroska "und" default to empty, so a plain mkvmerge file
+// carries none here (ChaptersLoseMetadata's doc has the full rationale). The end rule is
+// position-dependent: the final chapter's explicit end counts as loss only when keepLastEnd is false
+// (FLAC/Ogg and MP4's Nero chpl store no end at all; MP4's QuickTime text track stores it, so
+// keepLastEnd spares it), and an interior explicit end counts as loss unless it reaches the next
+// chapter's start (a gapless interval a start-only store reconstructs).
+func chapterLosesStartTitle(chs []Chapter, i int, keepLastEnd bool) bool {
+	c := chs[i]
+	if c.Hidden || c.Disabled || c.Language != "" || c.LanguageIETF != "" {
+		return true
+	}
+	if c.End > 0 {
+		if i == len(chs)-1 {
+			return !keepLastEnd // the store holds no end at all; the final end is lost
 		}
-		if c.End > 0 {
-			if i == len(chs)-1 {
-				if !keepLastEnd {
-					return true // the store holds no end at all; the final end is lost
-				}
-			} else if !chapterEndReachesNextStart(chs, i) {
-				return true // an interior gapped end cannot be inferred from the next start
-			}
-		}
+		return !chapterEndReachesNextStart(chs, i) // an interior gapped end cannot be inferred
 	}
 	return false
 }
@@ -169,7 +178,7 @@ func chaptersLoseStartTitle(chs []Chapter, keepLastEnd bool) bool {
 // chapterEndReachesNextStart reports whether chapter i's End coincides with the next
 // chapter's Start - a gapless interior interval a start-only store can reconstruct by
 // inferring the end from the following start. It is the single interior-end predicate
-// shared by chaptersLoseStartTitle (chapter-loss grading) and normalizeReconstructableEnds
+// shared by chapterLosesStartTitle (chapter-loss grading) and normalizeReconstructableEnds
 // (diff equivalence), so the two cannot drift on what "gapless" means. A last chapter (no
 // i+1) is never gapless-interior. It is the query-side dual of FillInteriorEnds (which sets
 // the end this predicate then recognizes).
@@ -248,7 +257,7 @@ func EqualChapters(a, b []Chapter) bool {
 // reconstructable ("0 lossy"); the shared chapterEndReachesNextStart predicate keeps grading and
 // diff from drifting on it. The trailing run-to-EOF rule is diff-specific and does not mirror
 // copy: copy grades any trailing end dropped to a start-only store (FLAC/Ogg,
-// chaptersLoseStartTitle with keepLastEnd=false) as lossy even when it runs to EOF, while diff
+// chapterLosesStartTitle with keepLastEnd=false) as lossy even when it runs to EOF, while diff
 // treats a last end that reaches EOF as reconstructable. The divergence is confined to the
 // trailing end and is intended: a run-to-EOF end carries nothing a shorter store would lose,
 // while copy's grade turns on whether the store can hold a last end at all.
@@ -277,7 +286,7 @@ func EqualChaptersModuloEnds(a, b []Chapter, durA, durB time.Duration) bool {
 // duration).
 //
 // The trailing rule intentionally differs from the format-based grading in
-// chaptersLoseStartTitle (keepLastEnd): grading asks whether the destination store *can hold* a
+// chapterLosesStartTitle (keepLastEnd): grading asks whether the destination store *can hold* a
 // last end, while diff asks whether the last end is merely "until EOF" and so carries no
 // information a shorter store would lose. dur is truncated to whole milliseconds before the
 // comparison because the ID3 CHAP writer floors a filled trailing end to ms (durationToMs), so
@@ -323,9 +332,10 @@ func normalizeReconstructableEnds(chs []Chapter, dur time.Duration) []Chapter {
 // "new" and shorten an unrelated pre-existing overlap.)
 //
 // It mutates chs in place, so the caller passes a clone. The truncation is guarded by
-// next >= chs[i].Start, so End can never drop below Start even if a caller passes an unsorted
-// list (a no-op there rather than latent End<Start corruption). A list shorter than two
-// chapters is a safe no-op.
+// next > chs[i].Start, so End always stays strictly above Start: a coincident next start
+// (next == Start) is left alone rather than collapsing a real authored end onto the start (an
+// empty interval), and an unsorted list where next < Start is a no-op rather than latent
+// End<Start corruption. A list shorter than two chapters is a safe no-op.
 func ReconcileChapterOverlaps(chs, base []Chapter) bool {
 	baseStarts := make(map[time.Duration]bool, len(base))
 	baseEnds := make(map[time.Duration]bool, len(base))
@@ -338,7 +348,7 @@ func ReconcileChapterOverlaps(chs, base []Chapter) bool {
 	changed := false
 	for i := 0; i+1 < len(chs); i++ {
 		next := chs[i+1].Start
-		if chs[i].End > 0 && chs[i].End > next && next >= chs[i].Start &&
+		if chs[i].End > 0 && chs[i].End > next && next > chs[i].Start &&
 			(!baseEnds[chs[i].End] || !baseStarts[next]) {
 			chs[i].End = next
 			changed = true

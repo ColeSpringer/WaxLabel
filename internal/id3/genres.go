@@ -123,7 +123,11 @@ func resolveGenres(v string) (names []string, numeric bool) {
 		if name, ok := specialGenre(v); ok {
 			return []string{name}, true
 		}
-		if n, err := strconv.Atoi(v); err == nil {
+		// Only a canonical integer is an ID3v1 index: strconv.Itoa(n) == v keeps 7->Hip-Hop
+		// and 0->Blues but leaves "+7", "007", "08" literal (their canonical form differs).
+		// "-5" passes this guard (Itoa(-5) == "-5") and is then rejected by genreName's range
+		// check, so it too stays literal.
+		if n, err := strconv.Atoi(v); err == nil && strconv.Itoa(n) == v {
 			if g, ok := genreName(n); ok {
 				return []string{g}, true
 			}
@@ -144,18 +148,26 @@ func resolveGenres(v string) (names []string, numeric bool) {
 			names = append(names, name)
 			numeric = true
 		} else if n, err := strconv.Atoi(ref); err == nil {
-			numeric = true
 			if g, ok := genreName(n); ok {
 				names = append(names, g)
+				numeric = true // flag only when it actually resolved
 			} else {
-				names = append(names, "("+ref+")") // out of range: keep the literal
+				names = append(names, "("+ref+")") // out of range: keep literal, no reinterpretation
 			}
 		} else {
-			names = append(names, ref)
+			names = append(names, "("+ref+")") // preserve the non-numeric paren token verbatim
 		}
 		v = v[end+1:]
 	}
-	if rest := strings.TrimSpace(strings.TrimPrefix(v, "(")); rest != "" {
+	if rest := strings.TrimSpace(v); rest != "" {
+		// A leading "((" escapes a literal "(" that begins the refinement text; unescape it to a
+		// single "(". A lone leading "(" here is the literal text of an unterminated reference (e.g.
+		// "(17)(hello" or a bare "(hello"), so it is kept verbatim rather than stripped - matching
+		// the paren-token preservation of the reference branches above. Trimming space first also
+		// lets the "((" unescape fire after a "(17) ((Live)"-style space before the escaped paren.
+		if strings.HasPrefix(rest, "((") {
+			rest = rest[1:]
+		}
 		names = append(names, rest)
 	}
 	if len(names) == 0 {

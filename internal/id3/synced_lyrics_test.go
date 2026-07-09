@@ -2,12 +2,14 @@ package id3
 
 import (
 	"encoding/binary"
+	"errors"
 	"testing"
 	"time"
 	"unicode/utf8"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/tag"
+	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // syltSet is a sample synced-lyrics set reused across the SYLT tests.
@@ -29,7 +31,7 @@ func syltSet() core.SyncedLyrics {
 func TestSYLTRoundTrip(t *testing.T) {
 	in := syltSet()
 	for _, version := range []byte{3, 4} {
-		frames, _ := syltFrames([]core.SyncedLyrics{in}, version, "", "")
+		frames, _, _ := syltFrames([]core.SyncedLyrics{in}, version, "", "")
 		got, ws := ProjectSyncedLyrics(tagWith(version, frames))
 		if len(ws) != 0 {
 			t.Errorf("v%d: unexpected warnings %v", version, ws)
@@ -77,7 +79,7 @@ func TestSYLTLanguageNormalization(t *testing.T) {
 // being stored verbatim yet dropped to empty on read.
 func TestSYLTLanguageWriteMatchesRead(t *testing.T) {
 	for _, lang := range []string{"xxx", "XXX", ""} {
-		frames, _ := syltFrames([]core.SyncedLyrics{{Language: lang, Lines: []core.SyncedLine{{Time: 0, Text: "x"}}}}, 4, "", "")
+		frames, _, _ := syltFrames([]core.SyncedLyrics{{Language: lang, Lines: []core.SyncedLine{{Time: 0, Text: "x"}}}}, 4, "", "")
 		if len(frames) != 1 {
 			t.Fatalf("language %q: got %d frames, want 1", lang, len(frames))
 		}
@@ -93,7 +95,7 @@ func TestSYLTLanguageWriteMatchesRead(t *testing.T) {
 // TestSYLTEmptyLanguageFallback checks a re-rendered set whose modeled language is empty
 // falls back to the supplied original language, so a line-only edit keeps it.
 func TestSYLTEmptyLanguageFallback(t *testing.T) {
-	frames, _ := syltFrames([]core.SyncedLyrics{{Lines: []core.SyncedLine{{Time: 0, Text: "x"}}}}, 4, "deu", "")
+	frames, _, _ := syltFrames([]core.SyncedLyrics{{Lines: []core.SyncedLine{{Time: 0, Text: "x"}}}}, 4, "deu", "")
 	got, _, ok := decodeSYLT(frames[0].Body)
 	if !ok || got.Language != "deu" {
 		t.Fatalf("fallback language = %q (ok=%v), want deu", got.Language, ok)
@@ -141,7 +143,7 @@ func TestSYLTLeadingNewlineStripped(t *testing.T) {
 func TestSYLTMultipleSets(t *testing.T) {
 	a := core.SyncedLyrics{Language: "eng", Lines: []core.SyncedLine{{Time: 0, Text: "english"}}}
 	b := core.SyncedLyrics{Language: "spa", Lines: []core.SyncedLine{{Time: 0, Text: "espanol"}}}
-	frames, _ := syltFrames([]core.SyncedLyrics{a, b}, 4, "", "")
+	frames, _, _ := syltFrames([]core.SyncedLyrics{a, b}, 4, "", "")
 	got, _ := ProjectSyncedLyrics(tagWith(4, frames))
 	if len(got) != 2 || got[0].Language != "eng" || got[1].Language != "spa" {
 		t.Fatalf("got %+v, want eng then spa", got)
@@ -182,7 +184,7 @@ func TestSYLTSkipsEmptySet(t *testing.T) {
 		{Language: "eng"}, // no lines, must be skipped
 		{Language: "spa", Lines: []core.SyncedLine{{Time: time.Second, Text: "x"}}},
 	}
-	frames, _ := syltFrames(sets, 4, "", "")
+	frames, _, _ := syltFrames(sets, 4, "", "")
 	if len(frames) != 1 {
 		t.Fatalf("got %d SYLT frames, want 1 (the empty set skipped)", len(frames))
 	}
@@ -293,13 +295,51 @@ func TestSYLTDescriptorPreservedOnAuthoring(t *testing.T) {
 func TestSYLTTimestampOverflow(t *testing.T) {
 	// ~60 days, past the 32-bit millisecond ceiling.
 	set := core.SyncedLyrics{Lines: []core.SyncedLine{{Time: 60 * 24 * time.Hour, Text: "way out"}}}
-	_, overflow := syltFrames([]core.SyncedLyrics{set}, 4, "", "")
+	_, overflow, _ := syltFrames([]core.SyncedLyrics{set}, 4, "", "")
 	if !overflow {
 		t.Error("expected overflow for a line past the 32-bit ms field")
 	}
 	// A normal line does not report overflow.
-	if _, ov := syltFrames([]core.SyncedLyrics{syltSet()}, 4, "", ""); ov {
+	if _, ov, _ := syltFrames([]core.SyncedLyrics{syltSet()}, 4, "", ""); ov {
 		t.Error("a normal set should not report overflow")
+	}
+}
+
+// TestSyncedLyricsNULFlaggedAndErrored checks the shared NUL-guard mechanism: RebuildFrames flags
+// an embedded NUL in a modeled line's text or in an authored descriptor via RebuildInfo, and
+// RebuildError turns that flag into a waxerr.ErrInvalidData, while a clean set flags neither and
+// errors not at all. Each codec calls RebuildError next to CheckSize; the end-to-end wiring is
+// covered by the root package's TestSyncedLyricsNULRejectedAtCodec.
+func TestSyncedLyricsNULFlaggedAndErrored(t *testing.T) {
+	infoFor := func(sl core.SyncedLyrics) RebuildInfo {
+		_, info := RebuildFrames(nil, tag.NewTagSet(), tag.NewTagSet(), 4, StructuredEdit{
+			SyncedLyrics: []core.SyncedLyrics{sl}, SyncedLyricsChanged: true,
+		}, WriteOpts{})
+		return info
+	}
+
+	// A NUL in the line text is flagged and yields a hard error.
+	nulLine := infoFor(core.SyncedLyrics{Lines: []core.SyncedLine{{Text: "before\x00after"}}})
+	if !nulLine.SyncedLyricsInvalidNUL {
+		t.Error("a NUL in line text should set SyncedLyricsInvalidNUL")
+	}
+	if err := RebuildError(nulLine); !errors.Is(err, waxerr.ErrInvalidData) {
+		t.Errorf("RebuildError for a NUL line = %v, want waxerr.ErrInvalidData", err)
+	}
+
+	// A NUL in the descriptor is flagged too (the line here is clean, so only the descriptor trips it).
+	nulDesc := infoFor(core.SyncedLyrics{Description: "d\x00e", Lines: []core.SyncedLine{{Text: "ok"}}})
+	if !nulDesc.SyncedLyricsInvalidNUL {
+		t.Error("a NUL in the descriptor should set SyncedLyricsInvalidNUL")
+	}
+
+	// A clean set flags nothing and errors not at all.
+	clean := infoFor(core.SyncedLyrics{Description: "chorus", Lines: []core.SyncedLine{{Text: "clean"}}})
+	if clean.SyncedLyricsInvalidNUL {
+		t.Error("a clean synced-lyrics set must not set SyncedLyricsInvalidNUL")
+	}
+	if err := RebuildError(clean); err != nil {
+		t.Errorf("RebuildError on a clean rebuild = %v, want nil", err)
 	}
 }
 
@@ -310,7 +350,7 @@ func TestSYLTTimestampFullRange(t *testing.T) {
 	const maxMs = 0xFFFFFFFF
 	wantD := time.Duration(maxMs) * time.Millisecond
 	set := core.SyncedLyrics{Lines: []core.SyncedLine{{Time: wantD, Text: "edge"}}}
-	frames, overflow := syltFrames([]core.SyncedLyrics{set}, 4, "", "")
+	frames, overflow, _ := syltFrames([]core.SyncedLyrics{set}, 4, "", "")
 	if overflow {
 		t.Error("a line at exactly 0xFFFFFFFF ms should not report overflow")
 	}
@@ -327,7 +367,7 @@ func TestSYLTTimestampFullRange(t *testing.T) {
 // clamps to the full uint32 max and reports overflow.
 func TestSYLTTimestampClampsAtFullMax(t *testing.T) {
 	over := core.SyncedLyrics{Lines: []core.SyncedLine{{Time: time.Duration(0x100000000) * time.Millisecond, Text: "past"}}}
-	frames, overflow := syltFrames([]core.SyncedLyrics{over}, 4, "", "")
+	frames, overflow, _ := syltFrames([]core.SyncedLyrics{over}, 4, "", "")
 	if !overflow {
 		t.Error("a line past 0xFFFFFFFF ms should report overflow")
 	}
@@ -360,14 +400,14 @@ func TestSyltLangBytesCanonicalizesCase(t *testing.T) {
 // bytes in the frame prove the encoder performed the fold.
 func TestSYLTUppercaseLanguageWrittenLowercase(t *testing.T) {
 	explicit := core.SyncedLyrics{Language: "ENG", Lines: []core.SyncedLine{{Time: time.Second, Text: "x"}}}
-	frames, _ := syltFrames([]core.SyncedLyrics{explicit}, 4, "", "")
+	frames, _, _ := syltFrames([]core.SyncedLyrics{explicit}, 4, "", "")
 	if lang := string(frames[0].Body[1:4]); lang != "eng" {
 		t.Errorf("explicit language stored = %q, want eng", lang)
 	}
 	// Line-only edit: the modeled language is empty, so the file's uppercase code arrives via
 	// fallbackLang and is canonicalized on re-encode.
 	inherited := core.SyncedLyrics{Lines: []core.SyncedLine{{Time: time.Second, Text: "new"}}}
-	frames, _ = syltFrames([]core.SyncedLyrics{inherited}, 4, "ENG", "")
+	frames, _, _ = syltFrames([]core.SyncedLyrics{inherited}, 4, "ENG", "")
 	if lang := string(frames[0].Body[1:4]); lang != "eng" {
 		t.Errorf("inherited language stored = %q, want eng (canonicalized on re-encode)", lang)
 	}
@@ -401,7 +441,7 @@ func FuzzDecodeSYLT(f *testing.F) {
 	// buildSYLT writes a BOM on every UTF-16 string. Add hand-built bytes where only the
 	// descriptor carries one.
 	f.Add(syltLEDescBOMLessLines())
-	roundtrip, _ := syltFrames([]core.SyncedLyrics{syltSet()}, 4, "", "")
+	roundtrip, _, _ := syltFrames([]core.SyncedLyrics{syltSet()}, 4, "", "")
 	f.Add(roundtrip[0].Body)
 	f.Fuzz(func(t *testing.T, body []byte) {
 		sl, _, ok := decodeSYLT(body)

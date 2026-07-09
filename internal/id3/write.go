@@ -10,6 +10,7 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/mapping"
 	"github.com/colespringer/waxlabel/tag"
+	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // WriteOpts are the inputs to a frame rebuild. The multi-value policy is the
@@ -95,6 +96,11 @@ type RebuildInfo struct {
 	// the SYLT frame's 32-bit millisecond field (~49.7 days). The caller surfaces it as a
 	// synced-lyrics-timestamp-clamped warning.
 	SyncedLyricsOverflow bool
+	// SyncedLyricsInvalidNUL is set when a synced-lyrics edit's modeled line text or descriptor
+	// carries an embedded NUL, which the NUL-terminated SYLT field would silently truncate. Unlike
+	// the warnings above, this is a hard error: the caller turns it into waxerr.ErrInvalidData via
+	// RebuildError and refuses the write, rather than writing a truncated frame.
+	SyncedLyricsInvalidNUL bool
 }
 
 // ReducedDate pairs a date key with the value an edit attempted to store before a
@@ -299,9 +305,10 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 			fallbackLang = ""
 			fallbackDesc = ""
 		}
-		syltF, overflow := syltFrames(se.SyncedLyrics, version, fallbackLang, fallbackDesc)
+		syltF, overflow, invalidNUL := syltFrames(se.SyncedLyrics, version, fallbackLang, fallbackDesc)
 		out = append(out, syltF...)
 		info.SyncedLyricsOverflow = overflow
+		info.SyncedLyricsInvalidNUL = invalidNUL
 	}
 
 	info.DroppedDates = detectDroppedDates(changed, edited, version)
@@ -321,6 +328,25 @@ type FrontTag struct {
 	Padding    int64          // padding bytes written (0 when dropped)
 	Operations []string       // report operation lines this emission adds, in order
 	Warnings   []core.Warning // report warnings this emission adds
+}
+
+// ContainerOps returns the write-report operation lines for the embedded ID3 containers -
+// pictures, chapters, and synced lyrics - each gated on its own change flag and canonical model
+// count. A cleared container (count 0) emits no line: "pictures: 0" reads oddly and the removal is
+// already captured by the tag rewrite/removal op. It is the single gate shared by RenderFrontTag
+// (MP3/AAC) and the WAV/AIFF planChunks callers, so the four ID3-backed codecs cannot drift on it.
+func ContainerOps(picturesChanged bool, pictureCount int, chaptersChanged bool, chapterCount int, syncedLyricsChanged bool, syncedLyricsCount int) []string {
+	var ops []string
+	if picturesChanged && pictureCount > 0 {
+		ops = append(ops, fmt.Sprintf("pictures: %d", pictureCount))
+	}
+	if chaptersChanged && chapterCount > 0 {
+		ops = append(ops, fmt.Sprintf("chapters: %d", chapterCount))
+	}
+	if syncedLyricsChanged && syncedLyricsCount > 0 {
+		ops = append(ops, fmt.Sprintf("synced lyrics: %d", syncedLyricsCount))
+	}
+	return ops
 }
 
 // RenderFrontTag sizes and renders the leading ID3v2 tag for a codec that stores tags only
@@ -365,19 +391,10 @@ func RenderFrontTag(srcTag *Tag, version byte, newFrames []Frame, info RebuildIn
 	if tagsChanged {
 		ft.Operations = append(ft.Operations, "ID3v2 frame rewrite")
 	}
-	if picturesChanged {
-		ft.Operations = append(ft.Operations, fmt.Sprintf("pictures: %d", pictureCount))
-	}
-	if chaptersChanged && chapterCount > 0 {
-		// Suppress the count line on a clear (count 0): "chapters: 0" reads oddly, and the
-		// removal is already captured by the tag rewrite/removal op - matching WAV/AIFF,
-		// which gate their chapter op on the written count.
-		ft.Operations = append(ft.Operations, fmt.Sprintf("chapters: %d", chapterCount))
-	}
-	if syncedLyricsChanged && syncedLyricsCount > 0 {
-		// Suppress the count line on a clear (count 0), like chapters above.
-		ft.Operations = append(ft.Operations, fmt.Sprintf("synced lyrics: %d", syncedLyricsCount))
-	}
+	// The pictures/chapters/synced-lyrics op lines come from the shared ContainerOps, slotted here
+	// between the frame-rewrite and tag-creation ops.
+	ft.Operations = append(ft.Operations, ContainerOps(picturesChanged, pictureCount,
+		chaptersChanged, chapterCount, syncedLyricsChanged, syncedLyricsCount)...)
 	if !hadTag {
 		ft.Operations = append(ft.Operations, fmt.Sprintf("ID3v2.%d tag creation", version))
 	}
@@ -1003,6 +1020,18 @@ func AppendRebuildWarnings(ws []core.Warning, info RebuildInfo, retained tag.Tag
 			"a synced-lyric timestamp exceeded the SYLT frame's 32-bit millisecond field (~49.7 days) and was clamped")
 	}
 	return ws
+}
+
+// RebuildError returns a hard error for a rebuild loss that must fail the write rather than only
+// warn: a synced-lyrics line or descriptor carrying an embedded NUL, which the NUL-terminated SYLT
+// field would silently truncate. It returns nil when no such loss occurred. Each ID3-backed codec
+// calls it right where it calls CheckSize, so one sentinel and one message cover MP3, AAC, WAV, and
+// AIFF - the same waxerr.ErrInvalidData a faithful copy already produces for such text.
+func RebuildError(info RebuildInfo) error {
+	if info.SyncedLyricsInvalidNUL {
+		return fmt.Errorf("%w: synced-lyrics line contains a NUL byte", waxerr.ErrInvalidData)
+	}
+	return nil
 }
 
 // CarryProjectionWarnings returns warnings for a post-write MP3/AAC document. Front-tag codecs

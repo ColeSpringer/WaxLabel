@@ -350,7 +350,7 @@ func runSet(cmd *cobra.Command, paths []string, pathErrors map[string]error, rea
 	// outcome. A directory arg WITHOUT --recursive is still a pre-flight usage error
 	// (walk.go), so this is reached only for a genuine empty walk, never a misuse.
 	if len(paths) == 0 {
-		noteNoFiles(errOut, paths)
+		noteNoFiles(errOut, paths, asJSON)
 		if asJSON {
 			return emitJSONList(out, nil)
 		}
