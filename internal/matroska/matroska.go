@@ -121,7 +121,8 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	}
 	// Matroska/WebM has no metadata-padding concept exposed by the writer, so the
 	// padding controls do not apply.
-	return core.NewCapabilities(core.FormatMatroska, false, fields, pictures, chapters, core.AccessNone, nil)
+	return core.NewCapabilities(core.FormatMatroska, false, fields, pictures, chapters, core.AccessNone, nil).
+		WithFieldClassifier(TransferClassifier)
 }
 
 // EssenceExtent returns the Matroska essence-digest inputs: a versioned extent

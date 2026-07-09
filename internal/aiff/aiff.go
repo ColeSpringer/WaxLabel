@@ -101,7 +101,8 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	// lyrics, like chapters and pictures, require an ID3 chunk (the native text chunks
 	// cannot hold them); an edit forces one into existence, so the write stays AccessFull.
 	return core.NewCapabilities(core.FormatAIFF, false, fields, pictures, chapters, core.AccessNone, perField).
-		WithSyncedLyrics(id3.SyncedLyricsCapability())
+		WithSyncedLyrics(id3.SyncedLyricsCapability()).
+		WithFieldClassifier(id3.TransferClassifier)
 }
 
 // ID3Tag returns the parsed ID3-chunk tag, or nil when the file has none.

@@ -166,6 +166,17 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 			}
 		}
 		disp, reason := dispose(dst.Field(k), dst.ReadOnly, len(graded), "this field", graded)
+		// A field the format-level capability grades Carried can still be dropped or reduced
+		// by a per-field decision the writer makes from the whole tag set: cardinality it
+		// collapses, a key its namespace reserves, or a value that depends on a sibling
+		// field. The classifier sees all three, so it can override a falsely-clean Carried to
+		// match the write. It never overrides a correct Dropped/Lossy, so consult it only for
+		// a Carried grade.
+		if disp == Carried && dst.fieldClassifier != nil {
+			if d, r, ok := dst.fieldClassifier(k, graded, src.Tags); ok {
+				disp, reason = d, r
+			}
+		}
 		items = append(items, TransferItem{
 			Kind: TransferField, Key: k, Count: len(vals),
 			Disposition: disp, Reason: reason,

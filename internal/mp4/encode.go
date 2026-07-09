@@ -447,6 +447,43 @@ func uint16ValueDropped(s string) bool {
 	return n < 0 || n > 0xFFFF
 }
 
+// pairSlotKeys are the trkn/disk pair slots stored as fixed binary uint16 fields, in the
+// order restoreUnstorablePairSlots scans them.
+var pairSlotKeys = []tag.Key{tag.TrackNumber, tag.TrackTotal, tag.DiscNumber, tag.DiscTotal}
+
+// restoreUnstorablePairSlots returns a copy of edited with any trkn/disk slot whose edited
+// value is genuinely unstorable restored from base, plus whether any slot was restored. MP4
+// homes a track/disc number in a fixed binary uint16, so a value the atom cannot hold would
+// clear the slot and erase a good existing value; restoring keeps the old value rather than
+// deleting it. A slot is restored only when the edited value is unstorable (uint16ValueDropped:
+// non-numeric, negative, or past 65535) AND base holds a storable, present value for it.
+// Deliberately excluded: a representable literal 0 (the separate ZeroUnset case, written as
+// 0/N and read back absent by design - uint16ValueDropped is false for it), an empty or
+// cleared slot (also false), and a base slot that is itself unstorable (nothing worth
+// restoring). The caller runs the value-dropped warning pass on the pre-restore tags, so the
+// warning still fires; restoring base's value then lets an edit that changed nothing else
+// collapse to a true no-op that still carries the warning forward.
+func restoreUnstorablePairSlots(base, edited tag.TagSet) (tag.TagSet, bool) {
+	out := edited
+	restored := false
+	for _, key := range pairSlotKeys {
+		ev, _ := edited.First(key)
+		if !uint16ValueDropped(ev) {
+			continue // storable, empty, or a representable 0: leave the edited slot as-is
+		}
+		bv, ok := base.First(key)
+		if !ok || bv == "" || uint16ValueDropped(bv) {
+			continue // base has no storable value to restore for this slot
+		}
+		if !restored {
+			out = edited.Clone()
+			restored = true
+		}
+		out.Set(key, bv)
+	}
+	return out, restored
+}
+
 // numberComponentDropped is the transfer-layer value-drop predicate for TRACKNUMBER and
 // DISCNUMBER. It judges only the number side of a possible "n/total" value; the embedded
 // total is graded separately. It does not reproduce pairItem's pair-level zero collapse

@@ -215,7 +215,19 @@ type Capabilities struct {
 	Padding      AccessLevel
 	GenericField Capability             // default for canonical keys
 	perField     map[tag.Key]Capability // overrides
+	// fieldClassifier is the per-field transfer hook WithFieldClassifier attaches, nil unless a
+	// codec sets one. It is unexported so it never JSON-marshals (Capabilities is a public
+	// alias); WithFieldClassifier documents what it grades and when ProjectTransfer runs it.
+	fieldClassifier FieldClassifier
 }
+
+// FieldClassifier is the per-field transfer-grading hook [Capabilities.WithFieldClassifier]
+// attaches. It receives a field's canonical key, the values the destination would store, and
+// the whole source tag set, and returns an overriding disposition and reason plus whether to
+// apply them - a false third result leaves the format-level grade untouched. Naming the shape
+// once keeps the struct field, the setter, and the codec classifiers that satisfy it from
+// drifting.
+type FieldClassifier func(key tag.Key, values []string, all tag.TagSet) (Disposition, string, bool)
 
 // NewCapabilities builds a Capabilities with the given padding level and per-field
 // overrides.
@@ -237,6 +249,23 @@ func NewCapabilities(f Format, readOnly bool, generic, pictures, chapters Capabi
 // Capability, whose AccessNone read/write reports "no synced lyrics".
 func (c Capabilities) WithSyncedLyrics(sl Capability) Capabilities {
 	c.SyncedLyrics = sl
+	return c
+}
+
+// WithFieldClassifier returns a copy of c with a per-field transfer classifier. It is the
+// third and most granular of the transfer grading hooks: [WithValueReduction] and
+// [WithValueDrop] decide per value (func(string) bool, consumed in [dispose]'s value loop
+// with drop-before-reduce precedence), while this one alone sees a field's cardinality,
+// its key, and its sibling fields. Codecs use it to grade the writer-side drops those
+// per-value predicates cannot express: Matroska keeping only the first of a multi-value
+// TITLE (cardinality), a Vorbis reserved-namespace custom key (the key), an ID3 total
+// whose sibling number is non-numeric (a cross-field decision). [ProjectTransfer] consults
+// it only for a field graded Carried, which it may override to Dropped or Lossy to match a
+// writer-side drop; it never overrides a field the format-level capability already graded
+// Dropped or Lossy. The three hooks stay separate because they differ in granularity;
+// folding them into one is a larger refactor not warranted pre-v1.0.
+func (c Capabilities) WithFieldClassifier(fn FieldClassifier) Capabilities {
+	c.fieldClassifier = fn
 	return c
 }
 

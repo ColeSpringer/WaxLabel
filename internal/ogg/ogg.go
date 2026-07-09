@@ -78,7 +78,8 @@ func (c Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabili
 	// OggTags/OpusTags padding is round-tripped as-is; there is no padding control,
 	// so AccessNone.
 	return core.NewCapabilities(c.format, false, fields, pictures, chapters, core.AccessNone, nil).
-		WithSyncedLyrics(vorbis.SyncedLyricsCapability())
+		WithSyncedLyrics(vorbis.SyncedLyricsCapability()).
+		WithFieldClassifier(vorbis.TransferClassifier)
 }
 
 // EssenceExtent returns the Ogg essence-digest inputs: a versioned extent name

@@ -204,10 +204,6 @@ func renderTags(w io.Writer, ts tag.TagSet) {
 	// the layout prints one value per line (the key repeated for a multi-valued
 	// field), matching the JSON shape (keyed by distinct key, values under "values").
 	n := ts.Len()
-	keyWord := "keys"
-	if n == 1 {
-		keyWord = "key"
-	}
 	// One pass over the keys computes both the alignment width and the conflict count
 	// (a known single-valued key holding several differing values prints extra
 	// "(conflict)" rows below, so the header would otherwise undercount the visible
@@ -230,7 +226,7 @@ func renderTags(w io.Writer, ts tag.TagSet) {
 	if width > keyColumn {
 		width = keyColumn
 	}
-	fmt.Fprintf(w, "  tags (%d %s", n, keyWord)
+	fmt.Fprintf(w, "  tags (%s", pluralUnit(n, "key"))
 	if conflicts > 0 {
 		fmt.Fprintf(w, ", %d in conflict", conflicts)
 	}
@@ -403,7 +399,14 @@ func renderSyncedLyrics(w io.Writer, sets []wl.SyncedLyrics) {
 	if len(sets) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "  synced lyrics (%d):\n", len(sets))
+	// Count both sets and the total timed lines. The bare "(N)" the picture and chapter
+	// headers use would read as N lines here, but N is the number of sets, so name both
+	// quantities to remove that ambiguity.
+	lines := 0
+	for _, sl := range sets {
+		lines += len(sl.Lines)
+	}
+	fmt.Fprintf(w, "  synced lyrics (%s, %s):\n", pluralUnit(len(sets), "set"), pluralUnit(lines, "line"))
 	for i, sl := range sets {
 		if h := syncedLyricsHeader(sl, i, len(sets)); h != "" {
 			fmt.Fprintf(w, "    %s\n", h)
@@ -412,6 +415,18 @@ func renderSyncedLyrics(w io.Writer, sets []wl.SyncedLyrics) {
 			fmt.Fprintf(w, "      %s  %s\n", wl.FormatChapterTime(ln.Time), syncedLineText(ln.Text))
 		}
 	}
+}
+
+// pluralUnit formats a count with its unit, adding an "s" for anything but 1 ("1 set",
+// "5 lines", "1 key"). It is the shared count-with-noun rule for the dump headers that name
+// their unit: the tags header ("N key(s)") and the synced-lyrics header, which counts two
+// nested quantities (sets and their total lines) rather than the single bare "(N)" the
+// picture and chapter headers show.
+func pluralUnit(n int, unit string) string {
+	if n == 1 {
+		return fmt.Sprintf("1 %s", unit)
+	}
+	return fmt.Sprintf("%d %ss", n, unit)
 }
 
 // syncedLyricsHeader renders a set's marker line: its language and descriptor, plus a

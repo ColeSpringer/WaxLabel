@@ -79,7 +79,7 @@ func runCapsFiles(cmd *cobra.Command, args []string) error {
 	if err := checkEmptyOperands(args...); err != nil {
 		return err
 	}
-	realOf, cleanup, err := readInputs(cmd.InOrStdin(), args)
+	realOf, cleanup, err := readInputs(cmd.InOrStdin(), maxSizeFlag(cmd), args)
 	if err != nil {
 		return err
 	}

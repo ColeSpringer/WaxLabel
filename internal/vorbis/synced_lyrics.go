@@ -1,6 +1,7 @@
 package vorbis
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/colespringer/waxlabel/internal/core"
@@ -30,16 +31,33 @@ func isSyncedLyricsComment(name string) bool {
 // SYNCEDLYRICS comment is owned by this model: unrelated edits preserve them, and a
 // synced-lyrics edit replaces them. Returns nil when none carries timed lines.
 func ProjectSyncedLyrics(comments []Comment) []core.SyncedLyrics {
+	sets, _ := ProjectSyncedLyricsReport(comments)
+	return sets
+}
+
+// ProjectSyncedLyricsReport is [ProjectSyncedLyrics] plus read warnings: it surfaces a
+// [core.WarnSyncedLyricsTruncated] when the LRC document carried more than the modeled line
+// cap and lines past it were dropped on read. The FLAC and Ogg parse paths use it so that
+// truncation is not silent; the write re-projection uses the plain [ProjectSyncedLyrics]
+// and ignores the warning.
+func ProjectSyncedLyricsReport(comments []Comment) ([]core.SyncedLyrics, []core.Warning) {
 	for _, cm := range comments {
 		if !isSyncedLyricsComment(cm.Name) {
 			continue
 		}
-		if lines := core.ParseLRC(core.SanitizeUTF8(cm.Value)); len(lines) > 0 {
-			// LRC carries no language or descriptor; only the timed lines survive.
-			return []core.SyncedLyrics{{Lines: lines}}
+		lines, truncated := core.ParseLRCReport(core.SanitizeUTF8(cm.Value))
+		if len(lines) == 0 {
+			continue
 		}
+		// LRC carries no language or descriptor; only the timed lines survive.
+		var ws []core.Warning
+		if truncated {
+			ws = []core.Warning{{Code: core.WarnSyncedLyricsTruncated,
+				Message: fmt.Sprintf("a SYNCEDLYRICS comment carried more than %d synced-lyric lines; the lines past the limit were dropped on read", core.MaxSyncedLines)}}
+		}
+		return []core.SyncedLyrics{{Lines: lines}}, ws
 	}
-	return nil
+	return nil, nil
 }
 
 // syncedLyricsComments renders synced-lyrics sets as a single SYNCEDLYRICS comment holding
@@ -84,6 +102,7 @@ func SyncedLyricsCapability() core.Capability {
 		Write:            core.AccessFull,
 		Representation:   "SYNCEDLYRICS comment (LRC)",
 		Fidelity:         "timed text stored; per-set language and descriptor dropped",
+		Constraints:      []string{fmt.Sprintf("at most %d synced-lyric lines (lines past the cap are dropped on read)", core.MaxSyncedLines)},
 		MaxItems:         1,
 		SyncedLyricsLoss: core.SyncedLyricsLossLanguage,
 		// A line past the LRC re-parse ceiling is clamped on write (see the ClampLRCTime call

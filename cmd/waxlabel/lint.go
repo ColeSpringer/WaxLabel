@@ -176,7 +176,7 @@ func worstFinding(findings []wl.Finding) wl.LintSeverity {
 
 // runLint reports findings per file.
 func runLint(cmd *cobra.Command, paths []string, pathErrors map[string]error) error {
-	realOf, cleanup, err := readInputs(cmd.InOrStdin(), paths)
+	realOf, cleanup, err := readInputs(cmd.InOrStdin(), maxSizeFlag(cmd), paths)
 	if err != nil {
 		return err
 	}

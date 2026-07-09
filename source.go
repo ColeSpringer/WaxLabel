@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
 
 	"github.com/colespringer/waxlabel/internal/core"
@@ -136,11 +137,33 @@ func OpenSource(ctx context.Context, r io.Reader, opts ...ParseOption) (*Source,
 	if r == nil {
 		return nil, fmt.Errorf("%w: nil reader", waxerr.ErrInvalidData)
 	}
-	data, err := io.ReadAll(r)
+	// Resolve the options once, before the read, and reuse the resolved struct for the
+	// parse below: the ingest cap must come from the same options the parse sees, and a
+	// second resolveParseOptions pass would re-run every option needlessly.
+	po := resolveParseOptions(opts)
+	limit := po.MaxSourceBytes
+	// A bound at the int64 ceiling can never be exceeded by a real stream and would overflow
+	// the limit+1 probe below to a negative that io.LimitReader reads as "nothing", so treat
+	// it as unbounded.
+	if limit >= math.MaxInt64 {
+		limit = 0
+	}
+	// Bound the buffering so an endless stream cannot exhaust memory. Read limit+1 bytes so a
+	// stream of exactly limit still parses while the first byte past it trips the guard; a
+	// plain io.LimitReader would instead truncate at the limit and misparse the shortened
+	// bytes. A non-positive limit keeps the read unbounded.
+	reader := r
+	if limit > 0 {
+		reader = io.LimitReader(r, limit+1)
+	}
+	data, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, err
 	}
-	doc, err := parseSource(ctx, core.BytesSource(data), "", resolveParseOptions(opts))
+	if limit > 0 && int64(len(data)) > limit {
+		return nil, fmt.Errorf("%w: stream exceeds %s", waxerr.ErrSizeTooLarge, HumanBytes(limit))
+	}
+	doc, err := parseSource(ctx, core.BytesSource(data), "", po)
 	if err != nil {
 		return nil, err
 	}

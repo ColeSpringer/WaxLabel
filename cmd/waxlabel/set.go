@@ -46,7 +46,9 @@ func newSetCmd() *cobra.Command {
 			"and requires -o (editing standard input in place is meaningless). The plan\n" +
 			"is printed before each outcome. Its warnings describe the write plan: what\n" +
 			"the write changes, downgrades, or drops. Run 'lint' on the saved file to\n" +
-			"check post-write metadata cleanliness.\n\n" +
+			"check post-write metadata cleanliness. A 'set' with no edit flags is a usage\n" +
+			"error (exit 2), since it is almost always a forgotten flag; to preview an\n" +
+			"unedited file without writing, use 'plan <file>', which needs no edits.\n\n" +
 			editPrecedenceHelp,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -93,7 +95,7 @@ func newSetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			realOf, cleanup, err := readInputs(cmd.InOrStdin(), args)
+			realOf, cleanup, err := readInputs(cmd.InOrStdin(), maxSizeFlag(cmd), args)
 			if err != nil {
 				return err
 			}

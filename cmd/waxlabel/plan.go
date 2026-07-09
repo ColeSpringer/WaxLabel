@@ -43,7 +43,7 @@ func newPlanCmd() *cobra.Command {
 				return err
 			}
 			asJSON := jsonMode(cmd)
-			realOf, cleanup, err := readInputs(cmd.InOrStdin(), args)
+			realOf, cleanup, err := readInputs(cmd.InOrStdin(), maxSizeFlag(cmd), args)
 			if err != nil {
 				return err
 			}

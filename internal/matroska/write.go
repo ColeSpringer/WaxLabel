@@ -17,6 +17,27 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
+// multiTitleDroppedReason is the message for a multi-value TITLE that Matroska stores
+// only the first of. The write warning ([Codec.Plan]) and the transfer classifier
+// ([TransferClassifier]) both use it, so the copy report and the write-time warning cannot
+// drift after a future edit.
+const multiTitleDroppedReason = "Matroska stores only the first TITLE value; additional values were dropped"
+
+// TransferClassifier grades the one field whose Matroska transfer fate the format-level
+// capability cannot express: a multi-value TITLE. Matroska homes the canonical Title in the
+// single-valued Info.Title element, so only the first value survives - a cardinality loss
+// the per-value predicates cannot see. It reports Lossy, not Dropped: the first value is
+// still written, so the value is present but reduced, and the write-time warning still
+// fires. It reuses multiTitleDroppedReason so the report and that warning stay in step.
+// Every other field is left to the format-level grade. It is a plain [core.FieldClassifier]
+// (registered by value, not called), so it captures nothing and allocates no closure.
+func TransferClassifier(key tag.Key, values []string, _ tag.TagSet) (core.Disposition, string, bool) {
+	if key == tag.Title && len(values) > 1 {
+		return core.Lossy, multiTitleDroppedReason, true
+	}
+	return core.Carried, "", false
+}
+
 // Plan computes the byte-level rewrite that turns the original Matroska/WebM into
 // the edited media. It is preservation-first, mirroring the WAV/MP4 pattern: the
 // cluster media is copied byte-for-byte and only the affected Segment children
@@ -145,14 +166,16 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// other canonical key keeps its full value list via the per-value SimpleTag loop. When an
 	// edit leaves more than one TITLE value, the extras are dropped at render - surface that as
 	// a keyed, --strict-visible WarnValueDropped (the same code MP4 uses for a trkn the atom
-	// cannot hold). Gate on ch.title (Title is split out from ch.simple in detectChanges), and
-	// place it here, before the planAbsorb/planShift split, so an absorb-then-shift retry cannot
-	// render it twice. Storage stays first-value-only; this only closes the honesty gap, and is
-	// complementary to the set-time single-valued-multi lint (which flags the input, not the drop).
+	// cannot hold). The reason is a shared const the transfer classifier also uses, so the
+	// write warning and the copy report cannot drift. Gate on ch.title (Title is split out from
+	// ch.simple in detectChanges), and place it here, before the planAbsorb/planShift split, so
+	// an absorb-then-shift retry cannot render it twice. Storage stays first-value-only; this
+	// only closes the honesty gap, and is complementary to the set-time single-valued-multi lint
+	// (which flags the input, not the drop).
 	if ch.title {
 		if vals, _ := edited.Tags.Get(tag.Title); len(vals) > 1 {
 			report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueDropped,
-				"Matroska stores only the first TITLE value; additional values were dropped", tag.Title)
+				multiTitleDroppedReason, tag.Title)
 		}
 	}
 

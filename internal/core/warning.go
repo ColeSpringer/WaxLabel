@@ -192,10 +192,13 @@ const (
 	// the synced-lyrics model, so the frame is skipped rather than misrepresented as lyrics.
 	// It is preserved verbatim through an unrelated edit. Keyless.
 	WarnSyncedLyricsContentType
-	// WarnSyncedLyricsMetadataDropped means a direct synced-lyrics edit carried a per-set
-	// language or descriptor the destination cannot store. The VorbisComment LRC store
-	// keeps the timed text only (see [SyncedLyricsLoss]). It is scoped to authored sets and
-	// is keyless because it describes the synced-lyrics set, not a tag field.
+	// WarnSyncedLyricsMetadataDropped means a direct synced-lyrics edit carried per-set
+	// metadata the destination cannot store faithfully. Two cases share it: the VorbisComment
+	// LRC store keeps the timed text only, dropping a per-set language or descriptor (see
+	// [SyncedLyricsLoss]); and an ID3 SYLT store given the language "xxx"/"XXX" writes it but
+	// reads it back as no language, since "xxx" is the ID3 "undefined" marker. Either way the
+	// timed text is unaffected (exit 0). It is scoped to authored sets and is keyless because
+	// it describes the synced-lyrics set, not a tag field.
 	WarnSyncedLyricsMetadataDropped
 	// WarnSyncedLyricsTimestampClamped means a synced-lyric line's timestamp exceeded the
 	// ID3v2 SYLT frame's 32-bit millisecond field (~49.7 days) and was clamped on write,
@@ -235,6 +238,14 @@ const (
 	// pre-existing on-disk overlap is left verbatim, and it does not escalate --strict. Keyless: it
 	// describes the chapter set, not a tag field.
 	WarnChapterOverlapReconciled
+	// WarnSyncedLyricsTruncated means a parsed synced-lyrics set carried more than the
+	// modeled per-set line cap (65,536 lines, roughly 18 hours of one-per-second lines) and
+	// the lines past it were dropped on read. It fires for both the ID3v2 SYLT decode and the
+	// VorbisComment LRC store, so a scanner sees the same code either way. The threshold is
+	// effectively unreachable, but the cap was previously silent; this removes that. Keyless:
+	// it describes the synced-lyrics set, not a tag field. Appended to the end of the block so
+	// the existing codes keep their numbers.
+	WarnSyncedLyricsTruncated
 )
 
 func (c WarningCode) String() string {
@@ -317,6 +328,8 @@ func (c WarningCode) String() string {
 		return "synced-lyrics-metadata-dropped"
 	case WarnSyncedLyricsTimestampClamped:
 		return "synced-lyrics-timestamp-clamped"
+	case WarnSyncedLyricsTruncated:
+		return "synced-lyrics-truncated"
 	case WarnInvalidTagKey:
 		return "invalid-tag-key"
 	case WarnNumberTotalConflict:

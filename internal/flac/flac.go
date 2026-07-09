@@ -52,7 +52,8 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 	// FLAC rewrites its metadata block every edit, so it both grows and shrinks
 	// padding: --padding and --no-padding fully apply.
 	return core.NewCapabilities(core.FormatFLAC, false, fields, pictures, chapters, core.AccessFull, nil).
-		WithSyncedLyrics(vorbis.SyncedLyricsCapability())
+		WithSyncedLyrics(vorbis.SyncedLyricsCapability()).
+		WithFieldClassifier(vorbis.TransferClassifier)
 }
 
 // EssenceExtent returns the FLAC essence-digest inputs: the versioned extent

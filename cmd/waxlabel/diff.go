@@ -26,9 +26,9 @@ func newDiffCmd() *cobra.Command {
 		Short: "Compare two files' canonical metadata",
 		Example: "  waxlabel diff old.flac new.flac\n" +
 			"  waxlabel diff --quiet a.mp3 b.mp3",
-		Long: "Compare the canonical tags, pictures, and chapters of two files and\n" +
-			"report what was added, removed, or changed going from <a> to <b>. The\n" +
-			"exit code follows diff(1): 0 if the metadata is identical, 1 if it\n" +
+		Long: "Compare the canonical tags, pictures, chapters, and synced lyrics of two\n" +
+			"files and report what was added, removed, or changed going from <a> to <b>.\n" +
+			"The exit code follows diff(1): 0 if the metadata is identical, 1 if it\n" +
 			"differs, and 2 or more on error. With --quiet nothing is printed and\n" +
 			"only the exit code is set. One operand may be \"-\" to read it from\n" +
 			"standard input.",
@@ -45,7 +45,7 @@ func newDiffCmd() *cobra.Command {
 			if args[0] == stdinArg && args[1] == stdinArg {
 				return usagef("only one operand may be read from standard input (%q)", stdinArg)
 			}
-			realOf, cleanup, err := readInputs(cmd.InOrStdin(), args)
+			realOf, cleanup, err := readInputs(cmd.InOrStdin(), maxSizeFlag(cmd), args)
 			if err != nil {
 				return err
 			}

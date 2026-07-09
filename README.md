@@ -134,8 +134,11 @@ Common edit flags:
   synced-lyric *lines*. On MP3/AAC/AIFF/WAV the ID3v2 `SYLT` ISO-639-2 language comes
   from `--synced-lyrics-lang` when given; without it, an existing set's language is
   preserved (a line-only edit does not discard it), and a first set authored with no
-  flag is left undefined. FLAC/Ogg have no language field, so `--synced-lyrics-lang`
-  is dropped there. The `TIMESTAMP` grammar matches `--add-chapter`.
+  flag is left undefined. Setting the language to `xxx` (the ISO-639-2 "undefined"
+  marker) stores it but reads back with no language, and warns. FLAC/Ogg have no
+  language field, so `--synced-lyrics-lang` is dropped there. The `TIMESTAMP` grammar
+  matches `--add-chapter`. A set holds at most 65,536 lines (about 18 hours at one line
+  per second); a longer set drops the extra lines on read and warns.
 - `--preset preserve|compatible|minimal`, `--legacy preserve|strip`, and
   `--no-padding` shape the write; `--padding N` reserves *at least* N bytes of padding
   after the metadata (FLAC defaults to 8192; MP3/AAC/MP4 reuse the existing region; `0`
@@ -379,6 +382,14 @@ path:
   represented (an overflow past 65535 or a non-numeric value keeps the latter wording). This is
   MP4-specific: the text-based number/total ID3 formats (MP3/AAC/AIFF/WAV) store the digits
   literally, so a `0` there is preserved.
+- **An unstorable MP4 `trkn`/`disk` edit keeps the existing value instead of erasing it.**
+  Because a track/disc slot is a fixed binary `uint16`, an edit that sets it to a value the atom
+  cannot hold (non-numeric, negative, or past 65535) cannot be stored. Rather than clearing the
+  slot and discarding a good existing value, WaxLabel restores the file's current value for that
+  slot and still warns that the requested value was dropped (so `--strict` still exits 2). This
+  again diverges from the text formats (MP3/AAC/AIFF/WAV), which store the raw string verbatim.
+  Clearing the field (`--clear`) still removes it, and a literal `0` still follows the absent-sentinel
+  rule above.
 - **MP4 QuickTime chapters can misread the final chapter's end in ffmpeg/VLC when the first
   chapter starts after 0:00.** WaxLabel writes the QuickTime chapter text track with a leading empty
   edit (the iTunes and Apple Books form). ffmpeg, ffprobe, and VLC apply that edit as an offset to

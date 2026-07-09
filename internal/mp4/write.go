@@ -90,6 +90,21 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueCoerced, msg, cv.Key)
 	}
 
+	// A trkn/disk number is a fixed binary uint16, so an edit that makes a slot genuinely
+	// unstorable would clear it and erase a good existing value. When base still holds a
+	// storable value for that slot, restore it so the edit does not silently delete good data.
+	// This runs after the warning passes above (which read the pre-restore edited.Tags, so the
+	// value-dropped warning still fires) and before every downstream build, so buildItems, the
+	// chapter path, and buildResult all see the restored value. Restoring base's value makes an
+	// edit that changed nothing else collapse to a true no-op via DowngradeNoOp below, which
+	// carries the warning forward so --strict still escalates. This diverges from the text
+	// formats (MP3/AAC/AIFF/WAV), which store the raw string; the help/README note the reason.
+	if patched, restored := restoreUnstorablePairSlots(base.Tags, edited.Tags); restored {
+		ec := *edited
+		ec.Tags = patched
+		edited = &ec
+	}
+
 	// A chapter edit rewrites the whole moov.udta (folding any ilst change into one
 	// delta); a tag/picture-only edit keeps the lighter in-place ilst path.
 	if chaptersChanged {

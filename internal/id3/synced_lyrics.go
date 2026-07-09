@@ -3,6 +3,7 @@ package id3
 import (
 	"cmp"
 	"encoding/binary"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -49,7 +50,10 @@ func SyncedLyricsCapability() core.Capability {
 		Write:          core.AccessFull,
 		Representation: "ID3v2 SYLT frame",
 		Fidelity:       "lossless",
-		Constraints:    []string{"synced-lyric timestamps limited to a 32-bit millisecond field (~49.7 days)"},
+		Constraints: []string{
+			"synced-lyric timestamps limited to a 32-bit millisecond field (~49.7 days)",
+			fmt.Sprintf("at most %d synced-lyric lines per set (lines past the cap are dropped on read)", maxSyltLines),
+		},
 		// A line past the 32-bit ms field is clamped on write (see encodeSYLT); expose the
 		// ceiling so a transfer grades a clamping copy Lossy rather than a clean carry.
 		SyncedLyricsTimeMax: msToDuration(syltTimeMax),
@@ -115,10 +119,20 @@ func decodeSYLT(body []byte) (core.SyncedLyrics, []core.Warning, bool) {
 			Message: "a SYLT frame carries a non-lyric content type, which is not modeled; it was skipped"}}, false
 	}
 	var lines []core.SyncedLine
-	for len(rest) > 0 && len(lines) < maxSyltLines {
+	capped := false
+	for len(rest) > 0 {
 		text, after, tok := cutEncodedTracked(enc, rest, order)
 		if !tok || len(after) < 4 {
 			break // truncated entry: keep what parsed
+		}
+		// A valid line entry decoded, but the per-set cap is already full: drop it and flag
+		// the truncation. Checking the cap here, after decoding a real entry rather than at
+		// the loop top, means trailing padding or a malformed tail after exactly maxSyltLines
+		// lines is not mistaken for a dropped line - the same cap-before-append test the LRC
+		// path uses.
+		if len(lines) >= maxSyltLines {
+			capped = true
+			break
 		}
 		ms := binary.BigEndian.Uint32(after[0:4])
 		rest = after[4:]
@@ -135,7 +149,12 @@ func decodeSYLT(body []byte) (core.SyncedLyrics, []core.Warning, bool) {
 	// out of order. encodeSYLT preserves slice order, so re-rendering a sorted model set is
 	// byte-stable.
 	slices.SortStableFunc(lines, func(a, b core.SyncedLine) int { return cmp.Compare(a.Time, b.Time) })
-	return core.SyncedLyrics{Language: lang, Description: core.SanitizeUTF8(desc), Lines: lines}, nil, true
+	var ws []core.Warning
+	if capped {
+		ws = []core.Warning{{Code: core.WarnSyncedLyricsTruncated,
+			Message: fmt.Sprintf("a SYLT frame carried more than %d synced-lyric lines; the lines past the limit were dropped on read", maxSyltLines)}}
+	}
+	return core.SyncedLyrics{Language: lang, Description: core.SanitizeUTF8(desc), Lines: lines}, ws, true
 }
 
 // syltProjectsLyrics reports whether a SYLT frame projects into the synced-lyrics model (a

@@ -52,6 +52,53 @@ func TestDroppedValues(t *testing.T) {
 	}
 }
 
+// TestRestoreUnstorablePairSlots pins the gate for preserving a good existing trkn/disk value
+// when an edit makes a slot genuinely unstorable: it restores from base only when the edited
+// value is unstorable AND base holds a storable, present value. A representable 0, an empty
+// slot, an unstorable base, and a storable edit are all left untouched.
+func TestRestoreUnstorablePairSlots(t *testing.T) {
+	cases := []struct {
+		name         string
+		base, edited map[tag.Key]string
+		wantRestored bool
+		wantVals     map[tag.Key]string // checked when restored
+	}{
+		{"overflow restores base", map[tag.Key]string{tag.TrackNumber: "2"}, map[tag.Key]string{tag.TrackNumber: "99999"}, true, map[tag.Key]string{tag.TrackNumber: "2"}},
+		{"non-numeric restores base", map[tag.Key]string{tag.TrackNumber: "5"}, map[tag.Key]string{tag.TrackNumber: "abc"}, true, map[tag.Key]string{tag.TrackNumber: "5"}},
+		{"fractional restores base", map[tag.Key]string{tag.TrackNumber: "5"}, map[tag.Key]string{tag.TrackNumber: "3.5"}, true, map[tag.Key]string{tag.TrackNumber: "5"}},
+		{"disc slot restores base", map[tag.Key]string{tag.DiscNumber: "1"}, map[tag.Key]string{tag.DiscNumber: "x"}, true, map[tag.Key]string{tag.DiscNumber: "1"}},
+		{"only the unstorable slot is restored", map[tag.Key]string{tag.TrackNumber: "2", tag.TrackTotal: "9"}, map[tag.Key]string{tag.TrackNumber: "99999", tag.TrackTotal: "12"}, true, map[tag.Key]string{tag.TrackNumber: "2", tag.TrackTotal: "12"}},
+		{"no base value: nothing to restore", nil, map[tag.Key]string{tag.TrackNumber: "99999"}, false, nil},
+		{"unstorable base is not restored", map[tag.Key]string{tag.TrackNumber: "88888"}, map[tag.Key]string{tag.TrackNumber: "99999"}, false, nil},
+		{"literal zero is left alone (ZeroUnset)", map[tag.Key]string{tag.TrackNumber: "2"}, map[tag.Key]string{tag.TrackNumber: "0"}, false, nil},
+		{"empty edited slot stays cleared", map[tag.Key]string{tag.TrackNumber: "2"}, map[tag.Key]string{tag.TrackNumber: ""}, false, nil},
+		{"storable edit is not restored", map[tag.Key]string{tag.TrackNumber: "2"}, map[tag.Key]string{tag.TrackNumber: "3"}, false, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			base, edited := tag.NewTagSet(), tag.NewTagSet()
+			for k, v := range c.base {
+				base.Set(k, v)
+			}
+			for k, v := range c.edited {
+				edited.Set(k, v)
+			}
+			out, restored := restoreUnstorablePairSlots(base, edited)
+			if restored != c.wantRestored {
+				t.Fatalf("restored = %v, want %v", restored, c.wantRestored)
+			}
+			if !restored {
+				return
+			}
+			for k, want := range c.wantVals {
+				if got, _ := out.First(k); got != want {
+					t.Errorf("restored %s = %q, want %q", k, got, want)
+				}
+			}
+		})
+	}
+}
+
 // TestCoercedValues checks that coercedValues names a trkn/disk slot stored in a normalized form
 // (a leading zero or sign the uint16 atom drops) and carries the canonical integer it becomes, so
 // the write warning can show the on-disk value. A dropped slot (0, overflow, non-numeric) is not

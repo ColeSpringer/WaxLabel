@@ -2,6 +2,12 @@ package waxlabel
 
 import "github.com/colespringer/waxlabel/internal/core"
 
+// DefaultMaxSourceBytes is the default ceiling [OpenSource] applies to a non-seekable
+// stream it buffers whole into memory (2 GiB). A stream larger than this fails with
+// [waxerr.ErrSizeTooLarge]; pass [WithMaxSourceBytes](0) to lift the cap entirely. The
+// CLI applies the same default to buffered standard input via its --max-size flag.
+const DefaultMaxSourceBytes = core.DefaultMaxSourceBytes
+
 // Option types are distinct per phase so an option valid only for one phase
 // cannot be passed to another at compile time.
 type (
@@ -36,6 +42,16 @@ func WithLimits(l Limits) ParseOption {
 		}
 		o.Limits = l
 	}
+}
+
+// WithMaxSourceBytes bounds how many bytes [OpenSource] buffers from a non-seekable
+// stream before parsing. A stream that exceeds n fails with [waxerr.ErrSizeTooLarge]
+// instead of exhausting memory as an endless stream is spooled. n <= 0 disables the cap,
+// restoring the unbounded read. The default when the option is not supplied is
+// [DefaultMaxSourceBytes] (2 GiB). It has no effect on [Parse] or [ParseFile], which read
+// from a sized source and never buffer a stream.
+func WithMaxSourceBytes(n int64) ParseOption {
+	return func(o *core.ParseOptions) { o.MaxSourceBytes = n }
 }
 
 // WithSourceName sets the display name used for the source in the

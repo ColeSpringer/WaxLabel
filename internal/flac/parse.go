@@ -135,7 +135,9 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 
 	media.Tags, media.Families = projectComments(d.comments)
 	media.Chapters = projectChapters(d.comments)
-	media.SyncedLyrics = projectSyncedLyrics(d.comments)
+	var syncedWarnings []core.Warning
+	media.SyncedLyrics, syncedWarnings = projectSyncedLyricsReport(d.comments)
+	warnings = append(warnings, syncedWarnings...)
 	warnings = append(warnings, encoderNoiseWarnings(d.vendor, d.comments)...)
 	warnings = append(warnings, invalidKeyWarnings(d.comments)...)
 

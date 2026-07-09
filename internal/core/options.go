@@ -112,6 +112,15 @@ func (p ID3MultiValuePolicy) String() string {
 	}
 }
 
+// DefaultMaxSourceBytes is the default ceiling on a non-seekable stream buffered
+// whole into memory before parsing: standard input at the CLI and an io.Reader at
+// OpenSource. A stream larger than this fails with waxerr.ErrSizeTooLarge rather than
+// exhausting RAM or disk. A value <= 0 disables the cap. It bounds stream ingest, not a
+// single parser allocation (that is bits.Limits), so it lives beside ParseOptions and no
+// codec consults it. It is defined here, not in the public waxlabel package, so
+// DefaultParseOptions can reference it without an import cycle; waxlabel re-exports it.
+const DefaultMaxSourceBytes int64 = 2 << 30 // 2 GiB
+
 // ParseOptions are the resolved (non-functional) parse settings a codec sees.
 type ParseOptions struct {
 	Limits bits.Limits
@@ -122,11 +131,17 @@ type ParseOptions struct {
 	// keys on the real path's extension. Empty falls back to the path argument (and
 	// is "" for the path-less Parse/OpenSource, which is exactly what this fixes).
 	SourceName string
+	// MaxSourceBytes bounds a non-seekable stream read whole into memory before parsing
+	// (OpenSource, buffered stdin). >0 caps the read and yields waxerr.ErrSizeTooLarge
+	// past it; <= 0 leaves the read unbounded. It is a stream-ingest guard consulted only
+	// by the buffering entry points, not by any codec, so it stays a plain field rather
+	// than folding into bits.Limits.
+	MaxSourceBytes int64
 }
 
 // DefaultParseOptions returns parse options with conservative limits.
 func DefaultParseOptions() ParseOptions {
-	return ParseOptions{Limits: bits.DefaultLimits}
+	return ParseOptions{Limits: bits.DefaultLimits, MaxSourceBytes: DefaultMaxSourceBytes}
 }
 
 // WriteOptions are the resolved write settings a codec sees.

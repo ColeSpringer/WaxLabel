@@ -29,7 +29,7 @@ func newDumpCmd() *cobra.Command {
 			"reads from standard input.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			realOf, cleanup, err := readInputs(cmd.InOrStdin(), args)
+			realOf, cleanup, err := readInputs(cmd.InOrStdin(), maxSizeFlag(cmd), args)
 			if err != nil {
 				return err
 			}

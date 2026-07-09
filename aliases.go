@@ -211,6 +211,7 @@ const (
 	WarnSyncedLyricsContentType      = core.WarnSyncedLyricsContentType
 	WarnSyncedLyricsMetadataDropped  = core.WarnSyncedLyricsMetadataDropped
 	WarnSyncedLyricsTimestampClamped = core.WarnSyncedLyricsTimestampClamped
+	WarnSyncedLyricsTruncated        = core.WarnSyncedLyricsTruncated
 
 	WarnInvalidTagKey = core.WarnInvalidTagKey
 

@@ -101,6 +101,13 @@ type RebuildInfo struct {
 	// the warnings above, this is a hard error: the caller turns it into waxerr.ErrInvalidData via
 	// RebuildError and refuses the write, rather than writing a truncated frame.
 	SyncedLyricsInvalidNUL bool
+	// SyncedLyricsLangUndefined is set when an authored synced-lyrics set carried a non-empty
+	// language that normalizes to the ID3 "undefined" marker ("xxx"/"XXX"): the value is
+	// stored (exit 0) but reads back with no language, so the caller surfaces it as a
+	// metadata-dropped warning rather than letting the downgrade go unnoticed. Only an
+	// explicitly-authored language triggers it - a faithful carry of a no-language source set
+	// has an empty language and reads back empty, so it is not flagged.
+	SyncedLyricsLangUndefined bool
 }
 
 // ReducedDate pairs a date key with the value an edit attempted to store before a
@@ -309,6 +316,17 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 		out = append(out, syltF...)
 		info.SyncedLyricsOverflow = overflow
 		info.SyncedLyricsInvalidNUL = invalidNUL
+		// An explicitly-authored language that normalizes to the ID3 "undefined" marker
+		// ("xxx"/"XXX") is stored but reads back with no language, so flag the silent
+		// downgrade. syltLanguage is the read-side normalizer, so this fires exactly when a
+		// fresh parse would report no language. A no-language carry has an empty Language and
+		// does not trip it.
+		for _, sl := range se.SyncedLyrics {
+			if sl.Language != "" && syltLanguage(sl.Language) == "" {
+				info.SyncedLyricsLangUndefined = true
+				break
+			}
+		}
 	}
 
 	info.DroppedDates = detectDroppedDates(changed, edited, version)
@@ -788,6 +806,36 @@ func detectDroppedTotals(changed map[tag.Key]bool, edited tag.TagSet) []tag.Key 
 	return dropped
 }
 
+// TransferClassifier grades the fields whose ID3 transfer fate the format-level capability
+// cannot express: a TRACKTOTAL or DISCTOTAL whose sibling number is non-numeric. ID3 stores
+// a total only as the second half of a "number/total" frame, so when the number cannot form
+// a valid numeric value the total has nowhere to go and the writer drops it (see
+// [AppendRebuildWarnings]). A copy that carries such a total - a TRACKTOTAL beside a
+// non-numeric TRACKNUMBER - must report it Dropped rather than a clean carry. It calls the
+// same composeNumTotal decision the writer uses, so the copy report and the write drop
+// cannot drift; composeNumTotal composes a lone total cleanly ("/total"), so a standalone
+// TRACKTOTAL is not falsely dropped. The four ID3-backed codecs (MP3, AAC, AIFF, WAV) share
+// it; every other field is left to the format-level grade. It is a plain
+// [core.FieldClassifier] (registered by value, not called), so it captures nothing and
+// allocates no closure.
+func TransferClassifier(key tag.Key, _ []string, all tag.TagSet) (core.Disposition, string, bool) {
+	var numKey tag.Key
+	switch key {
+	case tag.TrackTotal:
+		numKey = tag.TrackNumber
+	case tag.DiscTotal:
+		numKey = tag.DiscNumber
+	default:
+		return core.Carried, "", false
+	}
+	num, _ := all.First(numKey)
+	total, _ := all.First(key)
+	if _, dropped := composeNumTotal(numKey, num, total); dropped {
+		return core.Dropped, "the number it attaches to is non-numeric, so ID3 cannot store this total (a total is written only as the second half of \"number/total\")", true
+	}
+	return core.Carried, "", false
+}
+
 // renderDate renders a v2.4 date frame directly from an ISO date key.
 func renderDate(version byte, id string, edited tag.TagSet, key tag.Key) ([]Frame, bool) {
 	v, ok := edited.First(key)
@@ -1018,6 +1066,10 @@ func AppendRebuildWarnings(ws []core.Warning, info RebuildInfo, retained tag.Tag
 	if info.SyncedLyricsOverflow {
 		ws = core.Warn(ws, core.WarnSyncedLyricsTimestampClamped,
 			"a synced-lyric timestamp exceeded the SYLT frame's 32-bit millisecond field (~49.7 days) and was clamped")
+	}
+	if info.SyncedLyricsLangUndefined {
+		ws = core.Warn(ws, core.WarnSyncedLyricsMetadataDropped,
+			"the synced-lyrics language \"xxx\" is the ID3 \"undefined\" marker, so it is stored but reads back with no language")
 	}
 	return ws
 }

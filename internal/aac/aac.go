@@ -78,7 +78,8 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	// ID3 front-tag padding is grow-only (ReuseOrTarget), identical to MP3: a forced
 	// rewrite can grow the region, but a fit-in-place edit cannot shrink it.
 	return core.NewCapabilities(core.FormatAAC, false, fields, pictures, chapters, core.AccessPartial, perField).
-		WithSyncedLyrics(id3.SyncedLyricsCapability())
+		WithSyncedLyrics(id3.SyncedLyricsCapability()).
+		WithFieldClassifier(id3.TransferClassifier)
 }
 
 // ID3Tag returns the parsed front ID3 tag, or nil when the file has none.

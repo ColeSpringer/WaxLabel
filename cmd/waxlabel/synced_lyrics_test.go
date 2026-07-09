@@ -105,6 +105,88 @@ func TestCLIAddSyncedLyric(t *testing.T) {
 	}
 }
 
+// reportHasWarning reports whether a set/plan --json report array carries a warning with
+// the given code.
+func reportHasWarning(t *testing.T, out, code string) bool {
+	t.Helper()
+	for _, r := range decodeJSONList[jsonReport](t, out) {
+		for _, w := range r.Warnings {
+			if w.Code == code {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestCLISyncedLyricsLangUndefinedWarns: authoring an ID3 synced-lyrics language of "xxx"
+// (the ISO-639-2 "undefined" marker, case-insensitively) is accepted and stored (exit 0),
+// but must warn that it reads back with no language, since a silent downgrade is exactly
+// what this surfaces. A real language does not warn. The lines themselves still store.
+func TestCLISyncedLyricsLangUndefinedWarns(t *testing.T) {
+	t.Parallel()
+	const code = "synced-lyrics-metadata-dropped"
+
+	for _, lang := range []string{"xxx", "XXX"} {
+		file := copyFixture(t, "../../testdata/notags.mp3")
+		out, errb, exit := runCLI(t, "--json", "set", file, "--add-synced-lyric", "0:01=hi", "--synced-lyrics-lang", lang)
+		if exit != 0 {
+			t.Fatalf("--synced-lyrics-lang %q exit = %d, want 0: %s", lang, exit, errb)
+		}
+		if !reportHasWarning(t, out, code) {
+			t.Errorf("--synced-lyrics-lang %q: missing %q warning\n%s", lang, code, out)
+		}
+	}
+
+	// A real language stores cleanly with no undefined-marker warning.
+	file := copyFixture(t, "../../testdata/notags.mp3")
+	out, errb, exit := runCLI(t, "--json", "set", file, "--add-synced-lyric", "0:01=hi", "--synced-lyrics-lang", "eng")
+	if exit != 0 {
+		t.Fatalf("--synced-lyrics-lang eng exit = %d, want 0: %s", exit, errb)
+	}
+	if reportHasWarning(t, out, code) {
+		t.Errorf("--synced-lyrics-lang eng should not warn about an undefined marker\n%s", out)
+	}
+}
+
+// TestPluralUnit checks the count formatter behind the synced-lyrics dump header.
+func TestPluralUnit(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		n    int
+		unit string
+		want string
+	}{
+		{1, "set", "1 set"},
+		{2, "set", "2 sets"},
+		{0, "line", "0 lines"},
+		{5, "line", "5 lines"},
+	}
+	for _, c := range cases {
+		if got := pluralUnit(c.n, c.unit); got != c.want {
+			t.Errorf("pluralUnit(%d, %q) = %q, want %q", c.n, c.unit, got, c.want)
+		}
+	}
+}
+
+// TestCLISyncedLyricsDumpHeaderCountsLines checks the dump header names both the set count
+// and the total line count, so the number no longer misreads as a line count.
+func TestCLISyncedLyricsDumpHeaderCountsLines(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, "../../testdata/notags.mp3")
+	if _, errb, code := runCLI(t, "set", file,
+		"--add-synced-lyric", "0:01=a", "--add-synced-lyric", "0:05=b", "--add-synced-lyric", "0:09=c"); code != 0 {
+		t.Fatalf("set exit %d: %s", code, errb)
+	}
+	out, _, code := runCLI(t, "dump", file)
+	if code != 0 {
+		t.Fatalf("dump exit %d", code)
+	}
+	if !strings.Contains(out, "synced lyrics (1 set, 3 lines):") {
+		t.Errorf("dump header should read \"synced lyrics (1 set, 3 lines):\", got:\n%s", out)
+	}
+}
+
 // TestCLICapsSyncedLyrics checks caps reports the synced-lyrics dimension as writable for
 // the SYLT and LRC formats.
 func TestCLICapsSyncedLyrics(t *testing.T) {

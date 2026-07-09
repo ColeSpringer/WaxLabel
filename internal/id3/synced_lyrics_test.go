@@ -115,6 +115,56 @@ func TestSYLTTimestampFormatSkipped(t *testing.T) {
 	}
 }
 
+// TestSYLTTruncationPrecision pins that decodeSYLT flags truncation only when a genuine line
+// is dropped at the cap, not merely because trailing bytes remain. Exactly maxSyltLines lines
+// followed by an incomplete trailing entry decode in full with no warning; one line past the
+// cap warns and keeps exactly maxSyltLines.
+func TestSYLTTruncationPrecision(t *testing.T) {
+	makeLines := func(n int) []core.SyncedLine {
+		ls := make([]core.SyncedLine, n)
+		for i := range ls {
+			ls[i] = core.SyncedLine{Time: time.Duration(i) * time.Millisecond, Text: "x"}
+		}
+		return ls
+	}
+	truncated := func(ws []core.Warning) bool {
+		for _, w := range ws {
+			if w.Code == core.WarnSyncedLyricsTruncated {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Exactly the cap, then a stray incomplete trailing entry (too few bytes for a line): all
+	// lines decode and none is dropped, so there is no truncation warning.
+	full := buildSYLT(encLatin1, "eng", syltFmtMillis, syltContentLyrics, "", makeLines(maxSyltLines))
+	full = append(full, 0x00, 0x00) // an empty string plus a partial timestamp: not a full line
+	got, ws, ok := decodeSYLT(full)
+	if !ok {
+		t.Fatal("decodeSYLT(full) not ok")
+	}
+	if len(got.Lines) != maxSyltLines {
+		t.Errorf("kept %d lines, want maxSyltLines %d", len(got.Lines), maxSyltLines)
+	}
+	if truncated(ws) {
+		t.Errorf("exactly maxSyltLines + trailing padding must not warn truncated: %v", ws)
+	}
+
+	// One genuine line past the cap is dropped, so decodeSYLT warns and keeps the cap.
+	over := buildSYLT(encLatin1, "eng", syltFmtMillis, syltContentLyrics, "", makeLines(maxSyltLines+1))
+	got, ws, ok = decodeSYLT(over)
+	if !ok {
+		t.Fatal("decodeSYLT(over) not ok")
+	}
+	if len(got.Lines) != maxSyltLines {
+		t.Errorf("kept %d lines, want the cap %d", len(got.Lines), maxSyltLines)
+	}
+	if !truncated(ws) {
+		t.Errorf("one line past the cap must warn truncated: %v", ws)
+	}
+}
+
 // TestSYLTContentTypeSkipped checks a non-lyric content type is skipped with a content-type
 // warning rather than mismodeled as lyrics.
 func TestSYLTContentTypeSkipped(t *testing.T) {

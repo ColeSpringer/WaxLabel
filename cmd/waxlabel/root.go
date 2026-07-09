@@ -6,6 +6,7 @@ import (
 	"runtime/debug"
 	"strings"
 
+	wl "github.com/colespringer/waxlabel"
 	"github.com/spf13/cobra"
 )
 
@@ -42,6 +43,12 @@ func newRootCmd() *cobra.Command {
 		},
 	}
 	root.PersistentFlags().Bool("json", false, "emit machine-readable JSON instead of human output")
+	// Bound a streamed "-"/stdin input so an endless pipe cannot exhaust disk or memory.
+	// Human-readable (2GiB, 500MB, a raw byte count) via a custom value; 0 disables the
+	// cap. Only the stdin-reading commands consult it; a named file is read in place and
+	// never buffered, so the limit does not apply to it.
+	maxSize := byteSizeValue(wl.DefaultMaxSourceBytes)
+	root.PersistentFlags().Var(&maxSize, "max-size", "maximum size of a streamed '-'/stdin input (e.g. 2GiB, 500MB; 0 = unlimited)")
 	// Our own --version flag, so it routes through RunE (where --json is honored) rather
 	// than cobra's pre-RunE text-only template.
 	root.Flags().Bool("version", false, "print the waxlabel version and exit")

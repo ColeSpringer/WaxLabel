@@ -174,11 +174,11 @@ func CloneSyncedLyrics(sls []SyncedLyrics) []SyncedLyrics {
 	return out
 }
 
-// maxSyncedLines caps how many timed lines one [ParseLRC] call accumulates, a
+// MaxSyncedLines caps how many timed lines one [ParseLRC] call accumulates, a
 // defense-in-depth bound against a hostile SYNCEDLYRICS comment packed with minimal
 // timestamp tags. The cap is far past any real song's line count. The ID3 SYLT decoder
 // caps its own line count separately through the element-cap machinery.
-const maxSyncedLines = 1 << 16
+const MaxSyncedLines = 1 << 16
 
 // maxLRCField bounds an LRC hour, minute, or second field before it can overflow a
 // time.Duration. It is set well below the point where the assembled hour+minute+second
@@ -232,7 +232,7 @@ const maxLRCOffsetMs = 1 << 40
 // LRC convention and the millisecond form WaxLabel emits both parse. A line with a
 // timestamp but no text is kept as an empty-text clear marker. Lines are returned sorted by
 // timestamp (stably, preserving file order among equal times) and capped at
-// [maxSyncedLines]. A document with no timestamped line yields nil.
+// [MaxSyncedLines]. A document with no timestamped line yields nil.
 //
 // WaxLabel separates a line's timestamp from its text with one space (see [FormatLRC]) and
 // strips exactly that space here, so its own output round-trips even when the text is itself a
@@ -252,6 +252,18 @@ const maxLRCOffsetMs = 1 << 40
 // and round-trips its own output losslessly (it emits no offset). A leading UTF-8 BOM (from
 // a Windows editor) is stripped so the first line is not lost.
 func ParseLRC(text string) []SyncedLine {
+	lines, _ := ParseLRCReport(text)
+	return lines
+}
+
+// ParseLRCReport is [ParseLRC] plus a truncation flag: truncated is true when the input
+// carried more than the modeled per-set line cap (MaxSyncedLines) and a timed line past it
+// was dropped. The public [ParseLRC] wraps it and discards the flag to keep its
+// func(string) []SyncedLine signature; the VorbisComment read path uses this variant to
+// surface a [WarnSyncedLyricsTruncated] instead of capping silently. truncated is false
+// for a set that fits (trailing blank lines past a full set do not count, since none was
+// dropped).
+func ParseLRCReport(text string) (lines []SyncedLine, truncated bool) {
 	text = strings.TrimPrefix(text, "\ufeff")
 	// Normalize CRLF and lone-CR (classic-Mac) line endings to LF before splitting, so a
 	// pure-CR file is not read as one giant line with every lyric concatenated.
@@ -261,22 +273,26 @@ func ParseLRC(text string) []SyncedLine {
 	var offsetMs int64
 	hasOffset := false
 	for _, raw := range strings.Split(text, "\n") {
-		if len(out) >= maxSyncedLines {
-			break
-		}
 		times, lineOffset, lineHasOffset, body := leadingTimestamps(raw)
 		if lineHasOffset && !hasOffset {
 			offsetMs, hasOffset = lineOffset, true
 		}
 		for _, d := range times {
-			if len(out) >= maxSyncedLines {
+			if len(out) >= MaxSyncedLines {
+				// The set is full but a timed line remains: it is dropped, so flag the
+				// truncation rather than returning a short set silently. Breaking here (and out
+				// of the outer loop below) also stops scanning a pathological over-cap file.
+				truncated = true
 				break
 			}
 			out = append(out, SyncedLine{Time: d, Text: body}) // raw time; the offset is applied below
 		}
+		if truncated {
+			break
+		}
 	}
 	if len(out) == 0 {
-		return nil
+		return nil, false
 	}
 	// Apply the document offset after collection so a tag found on a later line still shifts
 	// the earlier lines, then sort.
@@ -286,7 +302,7 @@ func ParseLRC(text string) []SyncedLine {
 		}
 	}
 	slices.SortStableFunc(out, func(a, b SyncedLine) int { return cmp.Compare(a.Time, b.Time) })
-	return out
+	return out, truncated
 }
 
 // FormatLRC renders timed lyric lines as an LRC document: one "[mm:ss.mmm] text" line per

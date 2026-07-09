@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // stdinArg is the conventional path that means "read standard input". It is kept
@@ -19,8 +22,10 @@ const stdinArg = "-"
 // bufferStdin copies all of standard input to a temp file (a pipe has no ReaderAt
 // or Size, which the parsers need) and returns its path plus a cleanup that
 // removes it. stdin is consumed here, so a caller must invoke this at most once
-// per run.
-func bufferStdin(stdin io.Reader) (path string, cleanup func(), err error) {
+// per run. maxSize bounds the copy: a positive value stops an endless pipe from filling
+// the disk, failing with waxerr.ErrSizeTooLarge past the limit; a non-positive value
+// keeps the copy unbounded.
+func bufferStdin(stdin io.Reader, maxSize int64) (path string, cleanup func(), err error) {
 	noop := func() {}
 	tmp, err := os.CreateTemp("", "waxlabel-stdin-*")
 	if err != nil {
@@ -38,12 +43,32 @@ func bufferStdin(stdin io.Reader) (path string, cleanup func(), err error) {
 		deregister()
 		_ = os.Remove(name)
 	}
-	if _, err := io.Copy(tmp, stdin); err != nil {
+	// A bound at the int64 ceiling can never be exceeded by a real stream and would overflow
+	// the maxSize+1 probe below to a negative that io.LimitReader reads as "nothing", so
+	// treat it as unbounded.
+	if maxSize >= math.MaxInt64 {
+		maxSize = 0
+	}
+	// Copy at most maxSize+1 bytes so a stream of exactly maxSize still buffers while the
+	// first byte past it is caught below; a plain io.LimitReader would truncate at the
+	// limit and misparse the shortened bytes. written carries the actual count so the
+	// over-limit check does not re-stat the temp file.
+	src := stdin
+	if maxSize > 0 {
+		src = io.LimitReader(stdin, maxSize+1)
+	}
+	written, err := io.Copy(tmp, src)
+	if err != nil {
 		_ = tmp.Close()
 		cleanup()
 		return "", noop, err
 	}
-	if err := tmp.Close(); err != nil {
+	if maxSize > 0 && written > maxSize {
+		_ = tmp.Close()
+		cleanup()
+		return "", noop, fmt.Errorf("%w: standard input exceeds %s", waxerr.ErrSizeTooLarge, wl.HumanBytes(maxSize))
+	}
+	if err = tmp.Close(); err != nil {
 		cleanup()
 		return "", noop, err
 	}
@@ -56,7 +81,7 @@ func bufferStdin(stdin io.Reader) (path string, cleanup func(), err error) {
 // with a usage error. It returns realOf, which maps each original argument to the path
 // to parse, plus a cleanup that removes the temp file. The original argument remains
 // the display name, so "-" never appears as a temp path.
-func readInputs(stdin io.Reader, paths []string) (realOf func(string) string, cleanup func(), err error) {
+func readInputs(stdin io.Reader, maxSize int64, paths []string) (realOf func(string) string, cleanup func(), err error) {
 	cleanup = func() {}
 	seenStdin := false
 	for _, p := range paths {
@@ -70,7 +95,7 @@ func readInputs(stdin io.Reader, paths []string) (realOf func(string) string, cl
 	}
 	stdinReal := ""
 	if seenStdin {
-		real, cl, e := bufferStdin(stdin)
+		real, cl, e := bufferStdin(stdin, maxSize)
 		if e != nil {
 			return nil, cleanup, e
 		}

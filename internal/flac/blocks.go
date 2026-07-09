@@ -101,6 +101,13 @@ func projectSyncedLyrics(comments []comment) []core.SyncedLyrics {
 	return vorbis.ProjectSyncedLyrics(toVorbis(comments))
 }
 
+// projectSyncedLyricsReport is projectSyncedLyrics plus the read warning for an LRC document
+// truncated at the modeled line cap, used by the parse path so that truncation is surfaced
+// rather than silent.
+func projectSyncedLyricsReport(comments []comment) ([]core.SyncedLyrics, []core.Warning) {
+	return vorbis.ProjectSyncedLyricsReport(toVorbis(comments))
+}
+
 // encoderNoiseWarnings flags inherited transcoder stamps (e.g. ffmpeg's
 // "encoder=Lavf..."), the typical signature of an acquired file.
 func encoderNoiseWarnings(vendor string, comments []comment) []core.Warning {

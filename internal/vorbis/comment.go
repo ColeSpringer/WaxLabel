@@ -390,6 +390,28 @@ func reservedNamespace(name string) string {
 	return ""
 }
 
+// TransferClassifier grades the fields whose Vorbis transfer fate the format-level
+// capability cannot express: a custom key whose native Vorbis name falls in a reserved
+// namespace (CHAPTERxxx chapters, SYNCEDLYRICS synced lyrics, METADATA_BLOCK_PICTURE cover
+// art). A Vorbis writer drops such a key rather than emit a stray comment a reader would
+// silently consume as structured data (see [RebuildWarnings]), so a copy that carries one -
+// e.g. a Matroska CHAPTER050NAME custom tag copied to FLAC/Ogg - must report it Dropped
+// rather than a clean carry. It reuses the same reservedNamespace decision the writer makes,
+// keeping the copy report and the write drop in step; FLAC and Ogg share it. Every ordinary
+// key is left to the format-level grade.
+//
+// The direction inverts the writer: the writer classifies the stored comment name, while
+// this classifies the native name of a canonical key (mapping.VorbisName). The two align
+// only while VorbisName(customKey) equals the raw stored name, which a negative transfer
+// test guards. It is a plain [core.FieldClassifier] (registered by value, not called), so it
+// captures nothing and allocates no closure.
+func TransferClassifier(key tag.Key, _ []string, _ tag.TagSet) (core.Disposition, string, bool) {
+	if ns := reservedNamespace(mapping.VorbisName(key)); ns != "" {
+		return core.Dropped, fmt.Sprintf("the %s namespace is reserved for structured data, so it cannot be written as a Vorbis custom field", ns), true
+	}
+	return core.Carried, "", false
+}
+
 // DiffKeys returns the canonical keys whose values differ between base and
 // edited (added, removed, or modified).
 func DiffKeys(base, edited tag.TagSet) map[tag.Key]bool {
