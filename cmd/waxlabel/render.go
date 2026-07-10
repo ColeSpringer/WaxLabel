@@ -54,6 +54,11 @@ func renderDocument(w io.Writer, path string, doc *wl.Document, native bool) {
 	if line := audioLine(doc.Properties()); line != "" {
 		fmt.Fprintf(w, "  audio:   %s\n", line)
 	}
+	// Free padding reserved after the metadata (FLAC PADDING block today). Shown only when the
+	// format models it, so a non-FLAC file's line stays absent rather than reporting 0.
+	if pad := doc.Padding(); pad > 0 {
+		fmt.Fprintf(w, "  padding: %s\n", wl.HumanBytes(pad))
+	}
 	renderTags(w, doc.Tags())
 	renderPictures(w, doc.Pictures())
 	renderChapters(w, doc.Chapters())
@@ -327,7 +332,18 @@ func pictureRow(p wl.Picture) string {
 	if p.Width > 0 && p.Height > 0 {
 		dim = fmt.Sprintf("%dx%d", p.Width, p.Height)
 	}
-	return fmt.Sprintf("%-12s %-22s %-9s %s", tag.SanitizeLine(p.Type.String()), tag.SanitizeLine(p.MIME), dim, wl.HumanBytes(int64(len(p.Data))))
+	// Depth/colors ride the trailing free-form size column rather than a new fixed column, so
+	// the shared "%-12s %-22s %-9s %s" width (dump listing and plan's added-picture detail)
+	// stays intact. Colors is shown only for an indexed image (non-zero palette).
+	size := wl.HumanBytes(int64(len(p.Data)))
+	if p.Depth > 0 {
+		if p.Colors > 0 {
+			size = fmt.Sprintf("%s (%d-bit, %d colors)", size, p.Depth, p.Colors)
+		} else {
+			size = fmt.Sprintf("%s (%d-bit)", size, p.Depth)
+		}
+	}
+	return fmt.Sprintf("%-12s %-22s %-9s %s", tag.SanitizeLine(p.Type.String()), tag.SanitizeLine(p.MIME), dim, size)
 }
 
 // renderPictures prints one line per embedded picture, numbered 1-based so the index

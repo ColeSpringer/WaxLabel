@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -224,6 +225,60 @@ func TestMP3PictureClearOmitsZeroCountOp(t *testing.T) {
 			t.Errorf("picture-clear emitted %q; 'pictures: 0' must be suppressed. operations=%v", op, ops)
 		}
 	}
+}
+
+// TestNoOpJSONOperationsEmpty checks that a no-op plan/set/copy emits "operations": [] in
+// JSON, not the human "no changes" sentinel: the operations array is defined as the structural
+// write list (README), and a no-op writes nothing. This brings plan/set/copy in line with
+// lint --fix, which already normalizes a no-op to [].
+func TestNoOpJSONOperationsEmpty(t *testing.T) {
+	t.Parallel()
+
+	type report struct {
+		NoOp       bool     `json:"noOp"`
+		Operations []string `json:"operations"`
+	}
+	assertEmpty := func(name string, r report) {
+		t.Helper()
+		if !r.NoOp {
+			t.Errorf("%s: noOp = false, want true (setup did not produce a no-op)", name)
+		}
+		if len(r.Operations) != 0 {
+			t.Errorf("%s: operations = %v, want [] (not the 'no changes' sentinel)", name, r.Operations)
+		}
+	}
+
+	// plan with no edits is a pure no-op.
+	planF := copyFixture(t, "../../testdata/notags.flac")
+	out, errb, code := runCLI(t, "--json", "plan", planF)
+	if code != 0 {
+		t.Fatalf("plan exit %d: %s", code, errb)
+	}
+	assertEmpty("plan", decodeJSONOne[report](t, out))
+
+	// set to the value the file already holds is a no-op.
+	setF := copyFixture(t, "../../testdata/notags.flac")
+	if _, errb, code := runCLI(t, "set", setF, "--set", "TITLE=Same"); code != 0 {
+		t.Fatalf("authoring set exit %d: %s", code, errb)
+	}
+	out, errb, code = runCLI(t, "--json", "set", setF, "--set", "TITLE=Same")
+	if code != 0 {
+		t.Fatalf("no-op set exit %d: %s", code, errb)
+	}
+	assertEmpty("set", decodeJSONOne[report](t, out))
+
+	// copy of a metadata-free source onto a copy of itself carries nothing: a no-op copy. Copy
+	// emits a single JSON object (not the list plan/set do), so decode it directly.
+	copyDst := copyFixture(t, "../../testdata/notags.flac")
+	cout, errb, code := runCLI(t, "--json", "copy", "../../testdata/notags.flac", copyDst)
+	if code != 0 {
+		t.Fatalf("no-op copy exit %d: %s", code, errb)
+	}
+	var jc report
+	if err := json.Unmarshal([]byte(cout), &jc); err != nil {
+		t.Fatalf("copy JSON: %v\n%s", err, cout)
+	}
+	assertEmpty("copy", jc)
 }
 
 // planOperations runs `plan --json <file> <args...>` and returns the single report's operations.

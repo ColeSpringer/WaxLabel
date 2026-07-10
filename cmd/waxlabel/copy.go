@@ -24,8 +24,8 @@ func newCopyCmd() *cobra.Command {
 		Short: "Copy metadata from one file onto another (cross-format)",
 		Example: "  waxlabel copy source.flac dest.mp3\n" +
 			"  waxlabel copy --dry-run source.flac dest.m4a",
-		Long: "Read <source>, project its canonical tags, pictures, and chapters onto\n" +
-			"<dest>, and rewrite <dest> in place. The two files need not share a\n" +
+		Long: "Read <source>, project its canonical tags, pictures, chapters, and synced\n" +
+			"lyrics onto <dest>, and rewrite <dest> in place. The two files need not share a\n" +
 			"format: each value is carried, downgraded, or dropped according to what\n" +
 			"<dest>'s format can store, and that loss report is printed before the\n" +
 			"write. The copy overlays the source onto the destination - keys present\n" +

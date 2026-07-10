@@ -59,6 +59,7 @@ func newRootCmd() *cobra.Command {
 		newVerifyCmd(),
 		newCopyCmd(),
 		newDiffCmd(),
+		newExportPictureCmd(),
 		newLintCmd(),
 		newCapsCmd(),
 		newKeysCmd(),

@@ -95,6 +95,7 @@ waxlabel caps --format flac
 waxlabel keys
 waxlabel copy source.flac dest.m4a
 waxlabel diff before.flac after.flac
+waxlabel export-picture track.flac -o cover.jpg
 ```
 
 Commands:
@@ -110,6 +111,7 @@ Commands:
 | `keys` | List the canonical tag vocabulary and cardinality. |
 | `copy <source> <dest>` | Overlay source metadata onto the destination, reporting values that carry, downgrade, or drop. |
 | `diff <a> <b>` | Compare canonical tags, pictures, chapters, and synced lyrics. |
+| `export-picture <file>` | Write one embedded picture to a file with `-o`. `--picture` selects by role or 1-based index; the default is the sole front cover. The input is never modified. |
 
 Common edit flags:
 
@@ -194,7 +196,10 @@ warning; an `info` finding never flips the exit. The codes:
   `stray-leading-id3`, `trailing-id3v1`, `legacy-ape` (legacy containers `--fix` can
   strip), `invalid-picture` (a picture stored as `application/octet-stream` - an unsniffable
   or `--force`-embedded cover; the check is the stored MIME, not a re-sniff of the bytes),
-  `truncated-audio`,
+  `truncated-audio` (declared audio bytes are missing; detected only where the container or
+  codec declares an expected length - WAV, AIFF, and MP4 by declared size, and VBR MP3 by the
+  Xing frame count - so a clean lint on FLAC, AAC, Ogg, or Matroska is not a completeness
+  guarantee),
   `invalid-tag-key` (a native name mapping to no canonical key), `conflicting-families`
   (a key's native source fields disagree), `duplicate-picture`, `multiple-front-covers`,
   `single-valued-multi` (a single-valued key carrying several values), `malformed-number`,
@@ -240,6 +245,12 @@ file error, not necessarily the first error encountered. The precedence is:
 A broken output pipe ranks last, below every real failure, so a genuine per-file error in
 the same run still sets the exit code; only when the closed pipe is the sole outcome does the
 run exit 0.
+
+The stream size cap (7) sits below invalid-data (4) in this ranking, but it is also enforced
+pre-flight: a `-`/standard-input stream over `--max-size` is refused as it is read, before any
+named file in the same run is parsed. So in a mixed `-` plus named-file run, exit 7 can
+short-circuit a corrupt named file's would-be exit 4. The ranking above governs errors that
+parsing surfaces; it does not override that pre-flight refusal.
 
 ## Core Concepts
 
@@ -288,8 +299,9 @@ entire file.
 When `set` authors a structural edit a format cannot store at all - cover art on a
 WebM file (`[picture-unsupported]`), or chapters on a format with no chapter store
 (`[chapters-unsupported]`) - it drops that item with a warning and applies the rest of
-the edit, the same way a cross-format copy drops what the destination cannot hold. Each
-drop warning is promoted to a failure under `--strict`.
+the edit, the same way a cross-format copy drops what the destination cannot hold. Under
+`set`, `--strict` promotes each such drop warning to a failure; `copy` has no `--strict`
+flag (passing one is a usage error), so its drops are never escalated.
 
 The capability table below is generated from the same codec capability model used
 by `waxlabel caps`.

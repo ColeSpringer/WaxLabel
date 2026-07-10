@@ -41,12 +41,21 @@ func (v *byteSizeValue) Type() string { return "size" }
 // (powers of 1000) and KiB/MiB/GiB/TiB are binary (powers of 1024), matched
 // case-insensitively with an optional space before the unit. A bare unit letter (K, M,
 // G, T) is binary, so a value round-trips with HumanBytes' binary output. "0" (any zero)
-// means unlimited. A negative, empty, or unparseable value is rejected.
+// means unlimited. A redundant leading '+' is accepted; a negative, empty, or unparseable
+// value is rejected (a leading '-' reports "must not be negative").
 func parseByteSize(s string) (int64, error) {
 	trimmed := strings.TrimSpace(s)
 	if trimmed == "" {
 		return 0, fmt.Errorf("empty size")
 	}
+	// A leading '-' is a negative size: name it as such. The digit-only number scan below never
+	// consumes the sign, so without this check "-5MB" would fall through to the generic
+	// "expected a leading number" and the num < 0 branch would be dead. A leading '+' is a
+	// redundant positive sign; strip it so "+5MB" parses like "5MB".
+	if strings.HasPrefix(trimmed, "-") {
+		return 0, fmt.Errorf("invalid size %q: must not be negative", s)
+	}
+	trimmed = strings.TrimPrefix(trimmed, "+")
 	// Split the leading number (digits and an optional decimal point) from the unit.
 	i := 0
 	for i < len(trimmed) && (trimmed[i] >= '0' && trimmed[i] <= '9' || trimmed[i] == '.') {

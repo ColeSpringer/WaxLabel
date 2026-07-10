@@ -138,10 +138,13 @@ func WithWebMSubset() WriteOption {
 // WithAllowUnsupportedDrop makes [Editor.Prepare] drop a whole structural edit the
 // destination format cannot store at all - authored synced lyrics or chapters on a format
 // that has no such store, or cover art on a WebM file - with a warning, rather than failing
-// the write. It mirrors how a cross-format copy silently drops what the destination cannot
-// hold, so a set that combines a storable edit with an unstorable one still applies the
-// storable part and succeeds. By default such an edit is a hard error. The CLI passes this
-// for set and plan; --strict promotes the resulting drop warning back to a failure.
+// the write. It also drops just the individual covers whose image format the destination
+// stores pictures but cannot label (a GIF added to an MP4, which labels only JPEG/PNG/BMP),
+// keeping any it can, so a PNG added alongside survives. It mirrors how a cross-format copy
+// silently drops what the destination cannot hold, so a set that combines a storable edit
+// with an unstorable one still applies the storable part and succeeds. By default such an
+// edit is a hard error. The CLI passes this for set and plan; --strict promotes the resulting
+// drop warning back to a failure.
 func WithAllowUnsupportedDrop() WriteOption {
 	return func(o *core.WriteOptions) { o.AllowUnsupportedDrop = true }
 }

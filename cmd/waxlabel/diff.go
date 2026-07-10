@@ -135,9 +135,11 @@ func computeDiff(a, b *wl.Document) diffResult {
 		picsDiffer: !wl.EqualPictures(pa, pb),
 		chapsA:     len(ca),
 		chapsB:     len(cb),
-		// Duration-aware so diff agrees with how copy grades chapters: a reconstructable end
-		// difference (a gapless interior end, or a trailing end that runs to EOF) is not a
-		// difference. Properties is a method on the Document here (not the codec-path field).
+		// Duration-aware trailing normalization: a reconstructable end difference (a gapless
+		// interior end, or a trailing end that runs to EOF) is not a difference. copy opens a
+		// run-to-EOF trailing end before writing, so the destination refills it to its own EOF
+		// and a copied file's chapters stay equal here even when the two durations differ.
+		// Properties is a method on the Document here (not the codec-path field).
 		chapsDiffer:  !wl.EqualChaptersModuloEnds(ca, cb, a.Properties().Duration(), b.Properties().Duration()),
 		syncedA:      len(sa),
 		syncedB:      len(sb),

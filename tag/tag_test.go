@@ -2,6 +2,7 @@ package tag
 
 import (
 	"errors"
+	"maps"
 	"slices"
 	"testing"
 
@@ -220,6 +221,74 @@ func TestProjectAndPatchRoundTrip(t *testing.T) {
 	}
 	if out.MusicBrainz.RecordingID != "mbid-123" {
 		t.Errorf("MB RecordingID = %q", out.MusicBrainz.RecordingID)
+	}
+}
+
+// TestProjectPlayCountErrorsToZero: the typed PlayCount follows ParseNumPair's convention -
+// surrounding whitespace is trimmed, and every parse error (including int overflow) yields 0
+// rather than strconv.Atoi's partial value - so a malformed raw PLAYCOUNT does not leak a
+// half-parsed or garbage count into the projection. The raw bytes remain via TagSet.Get.
+func TestProjectPlayCountErrorsToZero(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want int
+	}{
+		{"42", 42},
+		{"  7 ", 7},                 // surrounding whitespace trimmed
+		{"99999999999999999999", 0}, // int overflow -> 0 (not a partial value)
+		{"not-a-number", 0},         // non-numeric -> 0
+		{"12x", 0},                  // trailing garbage -> 0 (whole-value parse)
+		{"", 0},                     // absent -> 0
+	}
+	for _, c := range cases {
+		ts := NewTagSet()
+		if c.raw != "" {
+			ts.Set(PlayCount, c.raw)
+		}
+		if got := Project(ts).PlayCount; got != c.want {
+			t.Errorf("Project PLAYCOUNT %q = %d, want %d", c.raw, got, c.want)
+		}
+	}
+}
+
+// TestProjectNewAccessors: the audiobook/provenance accessors project from their canonical
+// keys and round-trip through Patch (both sides of the mirror), so a Project -> Patch -> Apply
+// keeps them rather than silently dropping them. MediaType is distinct from Media.
+func TestProjectNewAccessors(t *testing.T) {
+	ts := NewTagSet()
+	ts.Set(Media, "CD") // the pre-existing release-medium field, distinct from MediaType
+	ts.Set(MediaType, "2")
+	ts.Set(Description, "short blurb")
+	ts.Set(LongDescription, "the full description")
+	ts.Set(Narrator, "A Reader")
+	ts.Set(SourceURL, "https://example.com/x")
+	ts.Set(SourceID, "abc-123")
+	ts.Set(AcquisitionDate, "2026-01-02")
+	ts.Set(EncodingHistory, "lame 3.100")
+
+	fields := func(tg Tags) map[string]string {
+		return map[string]string{
+			"Media": tg.Media, "MediaType": tg.MediaType, "Description": tg.Description,
+			"LongDescription": tg.LongDescription, "Narrator": tg.Narrator,
+			"SourceURL": tg.SourceURL, "SourceID": tg.SourceID,
+			"AcquisitionDate": tg.AcquisitionDate, "EncodingHistory": tg.EncodingHistory,
+		}
+	}
+	want := map[string]string{
+		"Media": "CD", "MediaType": "2", "Description": "short blurb",
+		"LongDescription": "the full description", "Narrator": "A Reader",
+		"SourceURL": "https://example.com/x", "SourceID": "abc-123",
+		"AcquisitionDate": "2026-01-02", "EncodingHistory": "lame 3.100",
+	}
+
+	if got := fields(Project(ts)); !maps.Equal(got, want) {
+		t.Errorf("Project accessors = %v, want %v", got, want)
+	}
+	// Both sides of the mirror: Project reads them AND Patch writes them, so a round-trip
+	// preserves every one. A key populated on only one side would drop here.
+	round := fields(Project(Project(ts).Patch().Apply(NewTagSet())))
+	if !maps.Equal(round, want) {
+		t.Errorf("Project -> Patch round-trip = %v, want %v", round, want)
 	}
 }
 

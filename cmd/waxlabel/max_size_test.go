@@ -30,9 +30,12 @@ func TestParseByteSize(t *testing.T) {
 		{"4kB", 4000, false},                 // a trailing B without an i is decimal
 		{"1.5KiB", 1536, false},              // a fractional value is allowed
 		{"7TiB", 7 << 40, false},             // large but well within int64
+		{"+5MB", 5 * 1000 * 1000, false},     // a redundant leading '+' is accepted
 		{"", 0, true},
 		{"abc", 0, true},
 		{"12zz", 0, true},
+		{"-5", 0, true},                  // a negative bare count is rejected
+		{"-5MB", 0, true},                // a negative value with a unit is rejected
 		{"9223372036854775808", 0, true}, // 2^63: int64(total) would wrap to a negative "unlimited"
 		{"8388608TiB", 0, true},          // 8388608 * 2^40 = 2^63: same overflow via a unit
 	}

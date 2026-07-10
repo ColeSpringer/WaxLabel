@@ -211,6 +211,8 @@ func TestResolveGenres(t *testing.T) {
 		{"Rock", []string{"Rock"}, false},
 		{"(51)(39)", []string{"Techno-Industrial", "Noise"}, true}, // multiple numeric references
 		{"(17)Hardcore", []string{"Rock", "Hardcore"}, true},       // reference + refinement
+		{"(17)Rock", []string{"Rock"}, true},                       // refinement repeating the reference name is folded
+		{"(17)rock", []string{"Rock", "rock"}, true},               // case-folded repeat is out of scope: kept as authored
 		{"(Indie)Refined", []string{"(Indie)", "Refined"}, false},  // non-numeric parenthetical kept verbatim
 		{"(RX)", []string{"Remix"}, true},
 		{"(CR)", []string{"Cover"}, true},

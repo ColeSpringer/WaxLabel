@@ -148,6 +148,27 @@ func MIMERepresentable(c Capability, mime string) bool {
 	return false
 }
 
+// PartitionRepresentable splits pics into the covers a pictures capability c can store and
+// the effective MIME type of each cover it cannot, one entry per dropped cover in first-seen
+// order (so UnrepresentableReason can dedup them and a dropped item's count stays right). It
+// also returns keptIdx: the original index in pics of each kept cover, so a caller carrying a
+// per-picture slice parallel to pics (the editor's added-mask) can filter it in the same pass
+// rather than re-running the representability test. This is the one per-image split shared by
+// ProjectTransfer's report, PrepareTransfer's write filter, and the editor's drop-unsupported
+// path, so the three cannot drift on which covers a destination keeps. Each cover's effective
+// MIME is computed once.
+func PartitionRepresentable(c Capability, pics []Picture) (kept []Picture, keptIdx []int, droppedMIMEs []string) {
+	for i, p := range pics {
+		if mime := p.EffectiveMIME(); MIMERepresentable(c, mime) {
+			kept = append(kept, p)
+			keptIdx = append(keptIdx, i)
+		} else {
+			droppedMIMEs = append(droppedMIMEs, mime)
+		}
+	}
+	return kept, keptIdx, droppedMIMEs
+}
+
 // NumericGenreCapability returns the GENRE override for codecs that can store a
 // recognized genre as a numeric reference under --numeric-genre. Reading the value back
 // yields the canonical genre name, so spelling or case may change. The capability is

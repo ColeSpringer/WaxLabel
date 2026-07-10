@@ -277,3 +277,106 @@ func TestMP4TruncatedMdatOverrunsTrailingMoov(t *testing.T) {
 		t.Errorf("error = %v, want a truncation diagnostic (not a bare 'no moov box')", err)
 	}
 }
+
+// TestMP4UnsupportedCoverFormatDropsAndContinues: set with a GIF cover (a format MP4's covr
+// atom cannot label) under the drop option drops just that cover with a picture-unsupported
+// warning while a storable TITLE edit in the same command still applies - matching how copy
+// handles a GIF and WebM handles an unstorable cover, rather than hard-aborting the whole edit
+// and losing the TITLE. A PNG added alongside survives, and a direct library AddPicture without
+// the drop option still hits the hard-error backstop.
+func TestMP4UnsupportedCoverFormatDropsAndContinues(t *testing.T) {
+	src := readFixture(t, "../testdata/notags.m4a")
+
+	// TITLE + a GIF cover under the drop option: the GIF drops, the TITLE applies, and the
+	// picture-unsupported warning names the MIME like copy's dropped-cover report item.
+	plan, err := mustParseBytes(t, src).Edit().
+		Set(tag.Title, "Keep Me").
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyGIF()}).
+		Prepare(wl.WithAllowUnsupportedDrop())
+	if err != nil {
+		t.Fatalf("set with a GIF cover under the drop option must not fail: %v", err)
+	}
+	if !reportHasWarning(plan.Report().Warnings, wl.WarnPictureUnsupported) {
+		t.Errorf("expected a picture-unsupported warning; got %v", plan.Report().Warnings)
+	}
+	named := false
+	for _, w := range plan.Report().Warnings {
+		if w.Code == wl.WarnPictureUnsupported && strings.Contains(w.Message, "image/gif") {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("picture-unsupported warning should name image/gif (like copy's report item); got %v", plan.Report().Warnings)
+	}
+	re := mustParseBytes(t, applyToBytes(t, src, plan))
+	if got, _ := re.Tags().Get(tag.Title); len(got) != 1 || got[0] != "Keep Me" {
+		t.Errorf("TITLE = %v, want [Keep Me] (storable edit applied despite the dropped cover)", got)
+	}
+	if n := len(re.Pictures()); n != 0 {
+		t.Errorf("result has %d pictures, want 0 (GIF dropped, base had none)", n)
+	}
+
+	// A PNG added alongside the GIF survives: only the unrepresentable cover drops.
+	planMix, err := mustParseBytes(t, src).Edit().
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).
+		AddPicture(wl.Picture{Type: wl.PicBackCover, Data: tinyGIF()}).
+		Prepare(wl.WithAllowUnsupportedDrop())
+	if err != nil {
+		t.Fatalf("mixed PNG+GIF set under the drop option must not fail: %v", err)
+	}
+	if !reportHasWarning(planMix.Report().Warnings, wl.WarnPictureUnsupported) {
+		t.Errorf("mixed set: expected a picture-unsupported warning; got %v", planMix.Report().Warnings)
+	}
+	if pics := mustParseBytes(t, applyToBytes(t, src, planMix)).Pictures(); len(pics) != 1 || pics[0].MIME != "image/png" {
+		t.Errorf("mixed set result pictures = %+v, want one image/png (GIF dropped, PNG kept)", pics)
+	}
+
+	// Without the drop option, a direct library AddPicture of a GIF still hard-errors (backstop).
+	if _, err := mustParseBytes(t, src).Edit().
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyGIF()}).
+		Prepare(); !errors.Is(err, waxerr.ErrUnsupportedTag) {
+		t.Errorf("direct AddPicture of a GIF (no drop option) err = %v, want ErrUnsupportedTag", err)
+	}
+}
+
+// TestMP4DroppedCoverDrawsNoSanityNote: a cover the format-drop removes must not draw the
+// added-picture sanity warnings, because those scope to the KEPT set. A dropped GIF front cover
+// no longer makes "multiple front covers", and a dropped exotic (--force) cover no longer reads
+// "invalid picture". Covers that survive the drop still warn as authored.
+func TestMP4DroppedCoverDrawsNoSanityNote(t *testing.T) {
+	src := readFixture(t, "../testdata/notags.m4a")
+
+	// Two front covers, one a GIF MP4 cannot store: after the GIF drops, only one front cover
+	// remains, so multiple-front-covers must not fire.
+	plan, err := mustParseBytes(t, src).Edit().
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyGIF()}).
+		Prepare(wl.WithAllowUnsupportedDrop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reportHasWarning(plan.Report().Warnings, wl.WarnMultipleFrontCovers) {
+		t.Errorf("a dropped GIF front cover should not trip multiple-front-covers; got %v", plan.Report().Warnings)
+	}
+	if !reportHasWarning(plan.Report().Warnings, wl.WarnPictureUnsupported) {
+		t.Errorf("expected a picture-unsupported warning for the dropped GIF; got %v", plan.Report().Warnings)
+	}
+	if pics := mustParseBytes(t, applyToBytes(t, src, plan)).Pictures(); len(pics) != 1 || pics[0].MIME != "image/png" {
+		t.Errorf("result pictures = %+v, want one image/png (GIF dropped, PNG kept)", pics)
+	}
+
+	// An exotic (unrecognized) cover added under --force is unrepresentable in MP4, so it drops;
+	// the invalid-picture note that would flag it must not fire once it is out of the kept set.
+	planForce, err := mustParseBytes(t, src).Edit().
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: []byte("\x00exotic-bytes-not-sniffable")}).
+		Prepare(wl.WithUnrecognizedPictures(), wl.WithAllowUnsupportedDrop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reportHasWarning(planForce.Report().Warnings, wl.WarnInvalidPicture) {
+		t.Errorf("a dropped exotic cover should not trip invalid-picture; got %v", planForce.Report().Warnings)
+	}
+	if !reportHasWarning(planForce.Report().Warnings, wl.WarnPictureUnsupported) {
+		t.Errorf("expected a picture-unsupported warning for the dropped exotic cover; got %v", planForce.Report().Warnings)
+	}
+}

@@ -177,10 +177,12 @@ func TestChapterWarningsSurface(t *testing.T) {
 	}
 }
 
-// TestCopyChaptersNoSanityWarnings: a transfer carries the source's chapters
-// verbatim, so it must not emit the edit-time chapter sanity warnings about them -
-// even when the source's chapters run past the (shorter) destination's duration.
-func TestCopyChaptersNoSanityWarnings(t *testing.T) {
+// TestCopyChaptersDestinationFitWarnings: a transfer carries the source's chapters
+// verbatim, so it suppresses the source-authoring sanity warnings it authored none of
+// (duplicate-chapter). It still surfaces the destination-fit signal chapter-past-duration
+// when a carried chapter starts beyond the (shorter) destination's playable length, matching
+// what set warns - a copied chapter that overshoots cannot be given a bounded end there.
+func TestCopyChaptersDestinationFitWarnings(t *testing.T) {
 	src := mustParseFile(t, sampleM4B)                               // ~9s, chapters at 0:00 / 0:03 / 0:06
 	dst := mustParseFile(t, copyToTemp(t, "../testdata/sample.m4a")) // ~1s
 	plan, report, err := src.PrepareTransfer(dst)
@@ -197,9 +199,37 @@ func TestCopyChaptersNoSanityWarnings(t *testing.T) {
 	if !carried {
 		t.Skip("chapters were not carried in this transfer; cannot exercise the suppression")
 	}
-	if reportHasWarning(plan.Report().Warnings, wl.WarnChapterPastDuration) ||
-		reportHasWarning(plan.Report().Warnings, wl.WarnDuplicateChapter) {
-		t.Errorf("a faithful chapter carry should emit no chapter sanity warnings; got %v", plan.Report().Warnings)
+	// The 0:03 / 0:06 chapters start past the ~1s destination, so the destination-fit signal fires.
+	if !reportHasWarning(plan.Report().Warnings, wl.WarnChapterPastDuration) {
+		t.Errorf("a carried chapter overshooting the destination should warn chapter-past-duration; got %v", plan.Report().Warnings)
+	}
+	// The source authored no duplicate starts, so the source-authoring sanity warning stays suppressed.
+	if reportHasWarning(plan.Report().Warnings, wl.WarnDuplicateChapter) {
+		t.Errorf("a faithful chapter carry must not emit source-authoring sanity warnings; got %v", plan.Report().Warnings)
+	}
+}
+
+// TestCopyRunToEOFChapterStaysEqual guards the copy-then-diff chapter axis: when a
+// source's final chapter runs to the source EOF, copy opens that trailing end so the
+// destination refills it to its own (longer) EOF. The copied file's chapters then compare
+// equal under the same duration-aware normalization diff uses, even though the two durations
+// differ. It asserts the chapter axis directly, not the global diff exit: copy excludes
+// own-audio keys (ENCODER) so a full diff after a copy legitimately still reports a difference.
+func TestCopyRunToEOFChapterStaysEqual(t *testing.T) {
+	src := mustParseFile(t, chaptersMKA)  // ~0.6s, Finale runs 0.400 -> 0.600 (source EOF)
+	dstBytes := readFixture(t, notagsMP3) // ~2.04s, longer than the source
+	dst := mustParseBytes(t, dstBytes)
+
+	plan, _, err := src.PrepareTransfer(dst)
+	if err != nil {
+		t.Fatalf("PrepareTransfer: %v", err)
+	}
+	out := mustParseBytes(t, applyToBytes(t, dstBytes, plan))
+
+	if !wl.EqualChaptersModuloEnds(src.Chapters(), out.Chapters(),
+		src.Properties().Duration(), out.Properties().Duration()) {
+		t.Errorf("copied chapters differ under duration-aware normalization\n src=%+v (%v)\n dst=%+v (%v)",
+			src.Chapters(), src.Properties().Duration(), out.Chapters(), out.Properties().Duration())
 	}
 }
 

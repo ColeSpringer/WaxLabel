@@ -156,6 +156,14 @@ func toJSONReport(path string, plan *wl.Plan) jsonReport {
 	for _, x := range r.Warnings {
 		warnings = append(warnings, jsonWarning{Code: x.Code.String(), Message: x.Message})
 	}
+	// A no-op plan stamps Operations with the shared "no changes" sentinel (core.NoOpPlan) that
+	// drives the human "no changes" line; the JSON operations array is defined as the structural
+	// write list (README), so a no-op writes nothing and it must serialize as [] rather than leak
+	// the sentinel. Mirror the same normalization lint --fix applies.
+	operations := r.Operations
+	if plan.IsNoOp() {
+		operations = nil
+	}
 	// nonNil on each collection so it serializes as [] (never null/omitted) - a
 	// consumer iterating.operations[]/.warnings[] works on a clean plan too.
 	return jsonReport{
@@ -163,7 +171,7 @@ func toJSONReport(path string, plan *wl.Plan) jsonReport {
 		File:          jsonFileName(path),
 		NoOp:          plan.IsNoOp(),
 		Changes:       toJSONChanges(plan.Changes()),
-		Operations:    nonNil(r.Operations),
+		Operations:    nonNil(operations),
 		BytesBefore:   r.BytesBefore,
 		BytesAfter:    r.BytesAfter,
 		PaddingAfter:  r.PaddingAfter,

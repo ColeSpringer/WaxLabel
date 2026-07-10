@@ -72,6 +72,21 @@ type Tags struct {
 
 	Rating    string
 	PlayCount int
+
+	// Acquisition provenance: where the file came from and how it was produced.
+	SourceURL       string
+	SourceID        string
+	AcquisitionDate string
+	EncodingHistory string
+
+	// Audiobook / spoken-word fields. MediaType is the iTunes stik media-kind code
+	// (a numeric string, e.g. "2" for audiobook), distinct from Media (the release
+	// medium). Description/LongDescription are the short and full blurbs; Narrator is
+	// the reader/performer.
+	MediaType       string
+	Description     string
+	LongDescription string
+	Narrator        string
 }
 
 // MusicBrainzIDs collects the MusicBrainz identifiers. RecordingID corresponds
@@ -160,11 +175,27 @@ func Project(ts TagSet) Tags {
 			AlbumPeak: first(ReplayGainAlbumPeak),
 		},
 		Rating: first(Rating),
+
+		SourceURL:       first(SourceURL),
+		SourceID:        first(SourceID),
+		AcquisitionDate: first(AcquisitionDate),
+		EncodingHistory: first(EncodingHistory),
+
+		MediaType:       first(MediaType),
+		Description:     first(Description),
+		LongDescription: first(LongDescription),
+		Narrator:        first(Narrator),
 	}
 
 	t.TrackNumber, t.TrackTotal = ParseNumPair(first(TrackNumber), first(TrackTotal))
 	t.DiscNumber, t.DiscTotal = ParseNumPair(first(DiscNumber), first(DiscTotal))
-	t.PlayCount, _ = strconv.Atoi(first(PlayCount))
+	// Match ParseNumPair's convention (trim surrounding whitespace, every error including
+	// overflow yields 0) rather than leaving PlayCount at strconv.Atoi's partial 0 on error.
+	if pc, err := strconv.Atoi(strings.TrimSpace(first(PlayCount))); err == nil {
+		t.PlayCount = pc
+	} else {
+		t.PlayCount = 0
+	}
 	t.Performers = parsePerformers(all(Performer))
 	return t
 }
@@ -253,6 +284,16 @@ func (t Tags) Patch() TagPatch {
 
 	setStr(Rating, t.Rating)
 	setNum(PlayCount, t.PlayCount)
+
+	setStr(SourceURL, t.SourceURL)
+	setStr(SourceID, t.SourceID)
+	setStr(AcquisitionDate, t.AcquisitionDate)
+	setStr(EncodingHistory, t.EncodingHistory)
+
+	setStr(MediaType, t.MediaType)
+	setStr(Description, t.Description)
+	setStr(LongDescription, t.LongDescription)
+	setStr(Narrator, t.Narrator)
 
 	return p
 }

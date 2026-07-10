@@ -416,6 +416,31 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		edited.Pictures = e.base.Pictures
 		picturesDropped = true
 	}
+	// Cover format: a destination that stores pictures but only in certain image formats (MP4's
+	// covr labels only JPEG/PNG/BMP) drops just the covers it cannot label, keeping any it can,
+	// so a storable TITLE/chapter edit in the same command still applies - matching how copy
+	// drops an unrepresentable cover while carrying the rest. Gated on the drop option: without
+	// it the codec's plan-time checkCoverFormats stays the hard-error backstop (so a direct
+	// library AddPicture still refuses a GIF). Distinct from the WebM whole-set picturesDropped
+	// above, which the >= AccessPartial guard and !picturesDropped exclude. Partition once so the
+	// kept picture slice and its added-mask stay positionally aligned for the sanity warnings.
+	keptPics, keptMask := e.pictures, e.addedMask
+	var pictureFormatsDropped bool
+	var droppedPictureMIMEs []string
+	if wo.AllowUnsupportedDrop && e.picsTouched && !picturesDropped && len(e.pictures) > 0 &&
+		caps.Pictures.Write >= core.AccessPartial {
+		kept, keptIdx, dropped := core.PartitionRepresentable(caps.Pictures, e.pictures)
+		if len(dropped) > 0 {
+			mask := make([]bool, len(kept))
+			for i, orig := range keptIdx {
+				mask[i] = orig < len(e.addedMask) && e.addedMask[orig]
+			}
+			edited.Pictures = kept
+			keptPics, keptMask = kept, mask
+			pictureFormatsDropped = true
+			droppedPictureMIMEs = dropped
+		}
+	}
 	// Truncate an over-cap synced-lyrics set to the modeled per-set line cap before planning,
 	// so the written file and the plan result agree on the line count. A write-path truncation
 	// would leave the plan over-counting. Skipped for a set already dropped whole above.
@@ -488,6 +513,24 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 				"a chapter's end overlapped the next chapter's start and was truncated to keep the chapters non-overlapping")
 		}
 	}
+	// A faithful carry still surfaces chapters that overshoot the DESTINATION's playable
+	// length (a destination-fit signal legitimate for copy), while suppressing the
+	// source-authoring sanity warnings (duplicate-chapter, single-valued-multi) it authored
+	// none of. Every copied chapter is authored fresh from the source, so the whole list is
+	// new; unlike appendChapterWarnings this does not consult an isNew gate (full-struct
+	// equality against the destination base), which would otherwise skip a copied chapter
+	// that happens to equal a pre-existing destination one and still overshoots.
+	if e.chaptersTouched && e.carried && !chaptersDropped {
+		if dur := e.base.Properties.Duration(); dur > 0 {
+			for _, c := range e.chapters {
+				if c.Start > dur {
+					wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnChapterPastDuration, fmt.Sprintf(
+						"chapter at %s starts past the file duration (%s); check the timestamp",
+						core.FormatChapterTime(c.Start), core.FormatChapterTime(dur)))
+				}
+			}
+		}
+	}
 	// Warn when the destination cannot store every field in the authored synced-lyrics
 	// list. The LRC store keeps timed text but drops the per-set language and descriptor,
 	// mirroring the chapter metadata-dropped warning above. SyncedLyricsLoss is
@@ -518,6 +561,15 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnPictureUnsupported,
 			core.PictureUnsupportedMessage())
 	}
+	// A cover-format drop must surface its own warning here, independent of whether the picture
+	// set still changed: when every added cover is unrepresentable the kept set collapses back to
+	// base, so picturesChanged is false and the codec's checkCoverFormats never runs. Emitting
+	// from the drop flag (not the plan) keeps the loss visible, names the exact MIMEs like copy's
+	// report item, and rides WarnPictureUnsupported so --strict escalates it exactly like WebM.
+	if pictureFormatsDropped {
+		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnPictureUnsupported,
+			core.UnrepresentableReason(e.base.Format, droppedPictureMIMEs))
+	}
 	if syncedLyricsTruncated {
 		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnSyncedLyricsTruncated,
 			core.SyncedLyricsTruncatedMessage())
@@ -532,7 +584,10 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// picture set dropped whole above skips this too, so the single unsupported drop
 	// warning is the only signal rather than a sanity note about art that is not written.
 	if e.picsTouched && !e.carried && !picturesDropped {
-		wp.Report.Warnings = appendPictureWarnings(wp.Report.Warnings, e.pictures, e.addedMask)
+		// Pass the kept set and its filtered mask (equal to e.pictures/e.addedMask when no cover
+		// format was dropped): a dropped --force GIF then draws no spurious invalid/duplicate note,
+		// while covers that survived the drop still warn as authored.
+		wp.Report.Warnings = appendPictureWarnings(wp.Report.Warnings, keptPics, keptMask)
 	}
 	// Surface a known single-valued key the edit leaves holding multiple values as a
 	// non-fatal plan warning, so a library caller sees the cardinality the typed

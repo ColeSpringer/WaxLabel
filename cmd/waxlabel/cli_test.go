@@ -161,6 +161,48 @@ func TestDumpJSONOmitsBitDepthForLossy(t *testing.T) {
 	}
 }
 
+// TestDumpSurfacesPaddingAndPictureDepth checks the observability additions: a FLAC PADDING
+// block surfaces as paddingBytes (a text "padding:" line and a JSON field), and a picture's
+// color depth surfaces as depth. A non-FLAC file omits paddingBytes; a non-indexed image
+// omits colors.
+func TestDumpSurfacesPaddingAndPictureDepth(t *testing.T) {
+	t.Parallel()
+
+	// FLAC padding: text line and JSON field.
+	ftext, _, code := runCLI(t, "dump", sampleFLAC)
+	if code != 0 {
+		t.Fatalf("dump flac exit %d", code)
+	}
+	if !strings.Contains(ftext, "padding:") {
+		t.Errorf("FLAC dump text should show a padding: line:\n%s", ftext)
+	}
+	fout, _, _ := runCLI(t, "dump", sampleFLAC, "--json")
+	fd := decodeJSONOne[jsonDocument](t, fout)
+	if fd.Properties == nil || fd.Properties.PaddingBytes <= 0 {
+		t.Errorf("FLAC paddingBytes should be > 0; got %+v", fd.Properties)
+	}
+
+	// A non-FLAC file with no modeled padding omits the field entirely.
+	mout, _, _ := runCLI(t, "dump", sampleMP3, "--json")
+	if strings.Contains(mout, "paddingBytes") {
+		t.Errorf("MP3 dump should omit paddingBytes (not modeled):\n%s", mout)
+	}
+
+	// Picture depth: sample.mka carries a 24-bit (non-indexed) PNG cover, so depth is 24 and
+	// colors is omitted.
+	pout, _, _ := runCLI(t, "dump", sampleMKA, "--json")
+	pd := decodeJSONOne[jsonDocument](t, pout)
+	if len(pd.Pictures) == 0 {
+		t.Fatalf("sample.mka should carry a cover:\n%s", pout)
+	}
+	if pd.Pictures[0].Depth != 24 {
+		t.Errorf("cover depth = %d, want 24", pd.Pictures[0].Depth)
+	}
+	if pd.Pictures[0].Colors != 0 {
+		t.Errorf("a non-indexed PNG should report colors 0 (omitted), got %d", pd.Pictures[0].Colors)
+	}
+}
+
 func TestDumpChapters(t *testing.T) {
 	t.Parallel()
 	// Text dump lists chapters with their titles.

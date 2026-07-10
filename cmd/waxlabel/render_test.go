@@ -240,6 +240,24 @@ func TestPictureRowUnknownDims(t *testing.T) {
 	}
 }
 
+// TestPictureRowDepthColors: depth and (for an indexed image) palette size ride the trailing
+// size column, so the shared fixed-width layout is unchanged. A non-indexed image shows only
+// the depth; a picture with unknown depth shows neither.
+func TestPictureRowDepthColors(t *testing.T) {
+	truecolor := pictureRow(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Width: 64, Height: 48, Depth: 24, Data: []byte("xx")})
+	if !strings.Contains(truecolor, "(24-bit)") || strings.Contains(truecolor, "colors") {
+		t.Errorf("non-indexed depth should render \"(24-bit)\" with no color count:\n%q", truecolor)
+	}
+	indexed := pictureRow(wl.Picture{Type: wl.PicFrontCover, MIME: "image/gif", Width: 4, Height: 4, Depth: 8, Colors: 256, Data: []byte("xx")})
+	if !strings.Contains(indexed, "(8-bit, 256 colors)") {
+		t.Errorf("indexed image should render depth and palette size:\n%q", indexed)
+	}
+	unknown := pictureRow(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: []byte("xx")})
+	if strings.Contains(unknown, "-bit") {
+		t.Errorf("unknown depth should render no depth annotation:\n%q", unknown)
+	}
+}
+
 // TestRenderTagsKeyCountHeader: the header counts keys explicitly, with
 // singular/plural agreement.
 func TestRenderTagsKeyCountHeader(t *testing.T) {

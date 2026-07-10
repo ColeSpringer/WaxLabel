@@ -91,7 +91,8 @@ type jsonProperties struct {
 	Channels      int    `json:"channels,omitempty"`
 	BitsPerSample int    `json:"bitsPerSample,omitempty"`
 	DurationMs    int64  `json:"durationMs,omitempty"`
-	BitrateBps    int    `json:"bitrateBps,omitempty"` // meaningful average bits per second, not a nominal PCM header rate; omitted (like durationMs) when the duration is under one millisecond (text dump shows kbps)
+	BitrateBps    int    `json:"bitrateBps,omitempty"`   // meaningful average bits per second, not a nominal PCM header rate; omitted (like durationMs) when the duration is under one millisecond (text dump shows kbps)
+	PaddingBytes  int64  `json:"paddingBytes,omitempty"` // free padding reserved after the metadata (FLAC PADDING block); omitted when 0 (not modeled by the format)
 }
 
 type jsonTag struct {
@@ -107,6 +108,8 @@ type jsonPicture struct {
 	MIME        string `json:"mime"`
 	Width       int    `json:"width,omitempty"`
 	Height      int    `json:"height,omitempty"`
+	Depth       int    `json:"depth,omitempty"`  // color depth in bits per pixel; omitted when unknown (0)
+	Colors      int    `json:"colors,omitempty"` // palette size for indexed images; omitted when 0 (non-indexed)
 	Bytes       int    `json:"bytes"`
 	Description string `json:"description,omitempty"`
 }
@@ -186,6 +189,7 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 			BitsPerSample: bitsPerSample,
 			DurationMs:    props.Duration().Milliseconds(),
 			BitrateBps:    bitrateBps,
+			PaddingBytes:  doc.Padding(),
 		},
 		// All four iterable collections are inited non-nil (not just tags/pictures) so a
 		// no-tags / no-chapters / no-warnings file emits "[]" rather than null or an
@@ -206,6 +210,8 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 			MIME:        p.MIME,
 			Width:       p.Width,
 			Height:      p.Height,
+			Depth:       p.Depth,
+			Colors:      p.Colors,
 			Bytes:       len(p.Data),
 			Description: p.Description,
 		})

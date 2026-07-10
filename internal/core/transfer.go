@@ -139,7 +139,7 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 			// skip explicitly, but keep the copy lossless.
 			items = append(items, TransferItem{
 				Kind: TransferField, Key: k, Count: len(vals), Disposition: Excluded,
-				Reason: "not transferred; describes this file's own audio, not the work; the destination keeps its own value",
+				Reason: "not transferred; describes this file's own audio, not the work, so the destination keeps whatever it already had for this key",
 			})
 			continue
 		}
@@ -188,17 +188,9 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 	if len(src.Pictures) > 0 {
 		// Split the set by per-image representability. A destination such as MP4 can store
 		// covers only in certain MIME types, so it drops just the unsupported covers instead
-		// of failing the whole transfer. Each cover's effective MIME is computed once and
-		// reused for the split decision and the dropped reason.
-		var rep []Picture
-		var unrepMIMEs []string
-		for _, p := range src.Pictures {
-			if mime := p.EffectiveMIME(); MIMERepresentable(dst.Pictures, mime) {
-				rep = append(rep, p)
-			} else {
-				unrepMIMEs = append(unrepMIMEs, mime)
-			}
-		}
+		// of failing the whole transfer. PartitionRepresentable is the same split the write
+		// filter and the editor's drop path use, so the report cannot drift from the write.
+		rep, _, unrepMIMEs := PartitionRepresentable(dst.Pictures, src.Pictures)
 		if len(rep) > 0 {
 			disp, reason := dispose(dst.Pictures, dst.ReadOnly, len(rep), "pictures", nil)
 			if disp == Carried {
@@ -230,7 +222,7 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 		if len(unrepMIMEs) > 0 {
 			items = append(items, TransferItem{
 				Kind: TransferPicture, Count: len(unrepMIMEs), Disposition: Dropped,
-				Reason: unrepresentableReason(dst.Format, unrepMIMEs),
+				Reason: UnrepresentableReason(dst.Format, unrepMIMEs),
 			})
 		}
 	}
@@ -383,11 +375,12 @@ func dispose(c Capability, readOnly bool, count int, noun string, values []strin
 	return Carried, ""
 }
 
-// unrepresentableReason names the destination format and the distinct MIME types it
+// UnrepresentableReason names the destination format and the distinct MIME types it
 // cannot store, in first-seen order, for a dropped-cover item's reason. mimes are the
 // effective MIMEs rejected by MIMERepresentable, so a GIF mislabeled as JPEG reports
-// "cannot store image/gif" rather than the stored label.
-func unrepresentableReason(dst Format, mimes []string) string {
+// "cannot store image/gif" rather than the stored label. The editor's drop-unsupported
+// path reuses it so a set-time cover-format drop reads the same as copy's report item.
+func UnrepresentableReason(dst Format, mimes []string) string {
 	seen := map[string]bool{}
 	var distinct []string
 	for _, m := range mimes {

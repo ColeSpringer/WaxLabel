@@ -168,7 +168,15 @@ func resolveGenres(v string) (names []string, numeric bool) {
 		if strings.HasPrefix(rest, "((") {
 			rest = rest[1:]
 		}
-		names = append(names, rest)
+		// Skip a refinement that just repeats the genre it immediately follows: "(17)Rock" resolves
+		// the reference to "Rock", so a trailing "Rock" would yield ["Rock","Rock"]. A distinct
+		// refinement ("(4)Eurodisco" -> ["Disco","Eurodisco"]) is still kept. The len(names)==0 guard
+		// is load-bearing: an unterminated reference ("(hello") leaves names empty and reaches here,
+		// so indexing names[len(names)-1] without it would panic. Only the exact adjacent repeat is
+		// folded; case-folded or non-adjacent repeats are left as authored.
+		if len(names) == 0 || rest != names[len(names)-1] {
+			names = append(names, rest)
+		}
 	}
 	if len(names) == 0 {
 		names = []string{strings.TrimSpace(v)}

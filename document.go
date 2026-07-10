@@ -154,6 +154,27 @@ func (d *Document) Native() NativeDoc {
 	return d.media.Native.Clone()
 }
 
+// Padding reports the total bytes of free padding the format reserves after its metadata,
+// so a caller can see how much slack a metadata rewrite can grow into before the audio must
+// move. Only FLAC models an explicit padding block today; every other format reports 0, so a
+// caller should read 0 as "not reported" rather than "no slack". It sums the native base's
+// PADDING entries directly (never through the deep-cloning [Document.Native], which would copy
+// multi-megabyte embedded picture bodies just to total padding); Describe copies no block
+// bodies. A native entry's Size is a byte count only when its Unit is empty, so the Unit guard
+// keeps a future non-byte "PADDING" quantity from being summed as bytes.
+func (d *Document) Padding() int64 {
+	if d.zero() || d.media.Native == nil {
+		return 0
+	}
+	var total int64
+	for _, e := range d.media.Native.Describe() {
+		if e.Kind == "PADDING" && e.Unit == "" {
+			total += int64(e.Size)
+		}
+	}
+	return total
+}
+
 // Identity returns the recorded source identity (path, size, timestamps, and
 // structural fingerprint) used for save-back change detection.
 func (d *Document) Identity() Identity {
