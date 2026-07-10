@@ -149,7 +149,9 @@ func TestCLISyncedLyricsWriteTruncationStrict(t *testing.T) {
 	var b strings.Builder
 	for i := 0; i < cap+1; i++ {
 		// One distinct LRC line (minute i, second 0), a valid MM:SS form well within the ceiling.
-		b.WriteString("[" + strconv.Itoa(i) + ":00.000]x\n")
+		b.WriteString("[")
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString(":00.000]x\n")
 	}
 	lrc := filepath.Join(t.TempDir(), "over.lrc")
 	if err := os.WriteFile(lrc, []byte(b.String()), 0o644); err != nil {
