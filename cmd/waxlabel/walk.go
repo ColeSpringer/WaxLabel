@@ -45,8 +45,8 @@ func bufferStdin(stdin io.Reader, maxSize int64) (path string, cleanup func(), e
 	}
 	// A bound at the int64 ceiling can never be exceeded by a real stream and would overflow
 	// the maxSize+1 probe below to a negative that io.LimitReader reads as "nothing", so
-	// treat it as unbounded.
-	if maxSize >= math.MaxInt64 {
+	// treat it as unbounded. Nothing exceeds MaxInt64, so this is an equality check.
+	if maxSize == math.MaxInt64 {
 		maxSize = 0
 	}
 	// Copy at most maxSize+1 bytes so a stream of exactly maxSize still buffers while the

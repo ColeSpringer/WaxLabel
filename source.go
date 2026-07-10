@@ -144,8 +144,8 @@ func OpenSource(ctx context.Context, r io.Reader, opts ...ParseOption) (*Source,
 	limit := po.MaxSourceBytes
 	// A bound at the int64 ceiling can never be exceeded by a real stream and would overflow
 	// the limit+1 probe below to a negative that io.LimitReader reads as "nothing", so treat
-	// it as unbounded.
-	if limit >= math.MaxInt64 {
+	// it as unbounded. Nothing exceeds MaxInt64, so this is an equality check.
+	if limit == math.MaxInt64 {
 		limit = 0
 	}
 	// Bound the buffering so an endless stream cannot exhaust memory. Read limit+1 bytes so a
