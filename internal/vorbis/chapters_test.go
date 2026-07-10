@@ -1,6 +1,8 @@
 package vorbis
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -48,6 +50,47 @@ func TestVorbisChapterEmitsCommonForm(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("comment %d = %v, want %v", i, got[i], want[i])
 		}
+	}
+}
+
+// TestVorbisChapterThousandFitsThreeDigits checks the exactly-1000 case: ffmpeg/ffprobe parse
+// CHAPTERxxx with a fixed 3-digit key (CHAPTER%03d), so a 1-based CHAPTER1000 (4 digits) would be
+// unreadable and drop chapters there. Numbering from 0 keeps every key 3-digit
+// (CHAPTER000..CHAPTER999), which ffmpeg reads in full, while WaxLabel still round-trips all 1000.
+// The boundary is pinned too: 999 chapters keep the common 1-based CHAPTER001 form.
+func TestVorbisChapterThousandFitsThreeDigits(t *testing.T) {
+	// Boundary: 999 chapters stay 1-based (CHAPTER001..), the common foobar2000 form.
+	if cc999, _ := chapterComments(make([]core.Chapter, 999)); cc999[0].Name != "CHAPTER001" {
+		t.Errorf("999 chapters first key = %q, want the 1-based CHAPTER001 form", cc999[0].Name)
+	}
+
+	const n = 1000
+	in := make([]core.Chapter, n)
+	for i := range in {
+		in[i] = core.Chapter{Start: time.Duration(i) * time.Millisecond, Title: fmt.Sprintf("C%d", i+1)}
+	}
+	cc, overflow := chapterComments(in)
+	if overflow {
+		t.Fatalf("unexpected overflow authoring %d chapters", n)
+	}
+	// Every CHAPTERxxx start key is CHAPTER + exactly 3 digits, numbered 0-based so ffmpeg's
+	// fixed 3-digit parser reads all 1000.
+	const wantLen = len(chapterNamePrefix) + 3
+	seen := map[string]bool{}
+	for _, c := range cc {
+		if strings.HasSuffix(c.Name, "NAME") {
+			continue
+		}
+		if len(c.Name) != wantLen {
+			t.Errorf("chapter key %q width = %d, want %d (CHAPTER + 3 digits)", c.Name, len(c.Name), wantLen)
+		}
+		seen[c.Name] = true
+	}
+	if !seen["CHAPTER000"] || !seen["CHAPTER999"] {
+		t.Errorf("want 0-based keys CHAPTER000..CHAPTER999; present 000=%v 999=%v", seen["CHAPTER000"], seen["CHAPTER999"])
+	}
+	if got := ProjectChapters(cc); len(got) != n {
+		t.Fatalf("round-trip projected %d chapters, want %d", len(got), n)
 	}
 }
 

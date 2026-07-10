@@ -12,6 +12,7 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/tag"
 )
 
 // --add-chapter dedups on the fields the CLI can author: start, end, and title.
@@ -432,6 +433,71 @@ func TestNumberTotalNonNumericDropsTotalCLI(t *testing.T) {
 	if dumped, _, _ := runCLI(t, "--json", "dump", g); !strings.Contains(dumped, "A1/12") {
 		t.Errorf("TRACKNUMBER=A1/12 alone must round-trip verbatim:\n%s", dumped)
 	}
+}
+
+// TestMP4MalformedNumberPairDropsNumberCLI covers the MP4 write path end to end: a malformed
+// slashed TRACKNUMBER ("1/2/3", "3/abc") is not a storable number/total, so MP4 keeps it whole and
+// drops it against the number slot - warning "TRACKNUMBER ... dropped" with no phantom TRACKTOTAL,
+// storing nothing - rather than leniently cutting a partial number off the first '/'. A copy of a
+// FLAC that keeps "1/2/3" whole into MP4 grades TRACKNUMBER dropped, and diff of the two agrees the
+// number differs, so copy and diff cannot disagree on the value.
+func TestMP4MalformedNumberPairDropsNumberCLI(t *testing.T) {
+	t.Parallel()
+	notagsM4A := filepath.Join("..", "..", "testdata", "notags.m4a")
+
+	for _, val := range []string{"1/2/3", "3/abc"} {
+		t.Run("plan "+val, func(t *testing.T) {
+			t.Parallel()
+			out, _, code := runCLI(t, "plan", notagsM4A, "--set", "TRACKNUMBER="+val)
+			if code != 0 {
+				t.Fatalf("plan exit = %d, want 0:\n%s", code, out)
+			}
+			if !strings.Contains(out, "value-dropped") || !strings.Contains(out, `TRACKNUMBER value "`+val+`"`) {
+				t.Errorf("want a value-dropped warning naming TRACKNUMBER %q:\n%s", val, out)
+			}
+			if strings.Contains(out, "TRACKTOTAL") {
+				t.Errorf("a malformed slashed number must not fabricate a TRACKTOTAL warning:\n%s", out)
+			}
+			f := copyFixture(t, notagsM4A)
+			if _, stderr, code := runCLI(t, "set", f, "--set", "TRACKNUMBER="+val); code != 0 {
+				t.Fatalf("set exit = %d: %s", code, stderr)
+			}
+			if dumped, _, _ := runCLI(t, "--json", "dump", f); strings.Contains(dumped, `"TRACKNUMBER"`) || strings.Contains(dumped, `"TRACKTOTAL"`) {
+				t.Errorf("a malformed slashed number stores nothing in MP4:\n%s", dumped)
+			}
+		})
+	}
+
+	t.Run("copy and diff agree on 1/2/3 into mp4", func(t *testing.T) {
+		t.Parallel()
+		src := buildTransferSource(t, notagsFLAC, func(e *wl.Editor) *wl.Editor {
+			return e.Set(tag.TrackNumber, "1/2/3")
+		})
+		dst := copyFixture(t, notagsM4A)
+		out, _, code := runCLI(t, "--json", "copy", src, dst)
+		if code != 0 {
+			t.Fatalf("copy exit = %d, want 0\n%s", code, out)
+		}
+		var jc jsonCopy
+		if err := json.Unmarshal([]byte(out), &jc); err != nil {
+			t.Fatalf("copy JSON: %v\n%s", err, out)
+		}
+		if it := fieldItem(t, jc, "TRACKNUMBER"); it.Disposition != "dropped" {
+			t.Errorf("TRACKNUMBER copy disposition = %q, want dropped; reason=%q", it.Disposition, it.Reason)
+		}
+
+		dout, _, dcode := runCLI(t, "--json", "diff", src, dst)
+		if dcode > 1 {
+			t.Fatalf("diff --json exit = %d (>1 is an error)\n%s", dcode, dout)
+		}
+		var jd jsonDiff
+		if err := json.Unmarshal([]byte(dout), &jd); err != nil {
+			t.Fatalf("diff JSON: %v\n%s", err, dout)
+		}
+		if !hasTagChange(jd, "TRACKNUMBER") {
+			t.Errorf("diff must report TRACKNUMBER differs (FLAC keeps 1/2/3, MP4 stored nothing); tags=%+v", jd.Tags)
+		}
+	})
 }
 
 // TestReservedChapterKeyDroppedWithWarning: a custom key in the reserved CHAPTERxxx

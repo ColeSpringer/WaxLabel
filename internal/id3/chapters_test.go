@@ -184,24 +184,75 @@ func TestChapterTimeClampsBelowSentinel(t *testing.T) {
 	}
 }
 
-// TestChapterEndNotAboveStartSerializesOpen checks that a library-authored chapter whose End is not
-// strictly above Start (a zero-length or backwards span) serializes as open, writing the 0xFFFFFFFF
-// unused sentinel rather than an invalid interval, matching Matroska's renderChapterAtom. encodeCHAP
-// is called directly so the guard is exercised without chapterFrames' end-fill.
-func TestChapterEndNotAboveStartSerializesOpen(t *testing.T) {
-	for _, ch := range []core.Chapter{
-		{Start: 2 * time.Second, End: 1 * time.Second, Title: "backwards"},   // End < Start
-		{Start: 2 * time.Second, End: 2 * time.Second, Title: "zero-length"}, // End == Start
-	} {
-		body, _ := encodeCHAP("a", ch, 4)
-		_, rest, ok := cutLatin1(body) // element ID, then start(4)+end(4)+offsets(8)
-		if !ok || len(rest) < 8 {
-			t.Fatalf("could not read CHAP end field from %x", body)
-		}
-		if end := binary.BigEndian.Uint32(rest[4:8]); end != chapFieldUnused {
-			t.Errorf("End=%v Start=%v serialized end %#08x, want the unused sentinel %#08x",
-				ch.End, ch.Start, end, chapFieldUnused)
-		}
+// TestChapterEndSerialization checks encodeCHAP's end-field guard directly (without chapterFrames'
+// end-fill): a bounded zero-length end (End == Start, nonzero) serializes endMs == startMs, so a
+// past/at-duration trailing chapter is bounded rather than the ~49.7-day sentinel. A backwards end
+// (End < Start), an unset end (End == 0), and the t=0 corner (Start == End == 0, indistinguishable
+// from unset) all serialize the 0xFFFFFFFF unused sentinel (open) rather than an invalid interval.
+func TestChapterEndSerialization(t *testing.T) {
+	cases := []struct {
+		name        string
+		ch          core.Chapter
+		wantBounded bool // true: end field == start field; false: end field == unused sentinel
+	}{
+		{"zero-length nonzero is bounded", core.Chapter{Start: 2 * time.Second, End: 2 * time.Second, Title: "zero-length"}, true},
+		{"backwards end stays open", core.Chapter{Start: 2 * time.Second, End: 1 * time.Second, Title: "backwards"}, false},
+		{"unset end stays open", core.Chapter{Start: 2 * time.Second, Title: "open"}, false},
+		{"t=0 zero-length stays open", core.Chapter{Start: 0, End: 0, Title: "origin"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			body, _ := encodeCHAP("a", c.ch, 4)
+			_, rest, ok := cutLatin1(body) // element ID, then start(4)+end(4)+offsets(8)
+			if !ok || len(rest) < 8 {
+				t.Fatalf("could not read CHAP time fields from %x", body)
+			}
+			start := binary.BigEndian.Uint32(rest[0:4])
+			end := binary.BigEndian.Uint32(rest[4:8])
+			switch {
+			case c.wantBounded && end == chapFieldUnused:
+				t.Errorf("End=%v Start=%v serialized the open sentinel, want a bounded end", c.ch.End, c.ch.Start)
+			case c.wantBounded && end != start:
+				t.Errorf("bounded zero-length end = %#08x, want endMs == startMs %#08x", end, start)
+			case !c.wantBounded && end != chapFieldUnused:
+				t.Errorf("End=%v Start=%v serialized end %#08x, want the unused sentinel %#08x",
+					c.ch.End, c.ch.Start, end, chapFieldUnused)
+			}
+		})
+	}
+}
+
+// TestChapterTrailingEndBoundedPastDuration checks the past/at-duration trailing fill: when the
+// last chapter starts past (or exactly at) the media duration, chapterFrames fills a bounded
+// zero-length end (endMs == startMs) instead of leaving it open, so ffprobe/VLC do not render the
+// 0xFFFFFFFF sentinel as ~49.7 days. The raw end bytes are inspected so the assertion pins the exact
+// serialized end field (endMs == startMs, and specifically not the 0xFFFFFFFF sentinel) at the byte
+// level rather than through a decode round-trip.
+func TestChapterTrailingEndBoundedPastDuration(t *testing.T) {
+	cases := []struct {
+		name     string
+		start    time.Duration
+		duration time.Duration
+	}{
+		{"start past duration", 99 * time.Second, 2 * time.Second},
+		{"start equals duration", 5 * time.Second, 5 * time.Second},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			frames, _ := chapterFrames([]core.Chapter{{Start: c.start, Title: "A"}}, c.duration, 4)
+			_, rest, ok := cutLatin1(frames[0].Body) // element ID, then start(4)+end(4)+offsets(8)
+			if !ok || len(rest) < 8 {
+				t.Fatalf("could not read CHAP time fields from %x", frames[0].Body)
+			}
+			startMs := binary.BigEndian.Uint32(rest[0:4])
+			endMs := binary.BigEndian.Uint32(rest[4:8])
+			if endMs == chapFieldUnused {
+				t.Error("past/at-duration trailing end serialized the 0xFFFFFFFF sentinel, want a bounded zero-length end")
+			}
+			if endMs != startMs {
+				t.Errorf("past/at-duration trailing end = %d, want == start %d (bounded zero-length)", endMs, startMs)
+			}
+		})
 	}
 }
 

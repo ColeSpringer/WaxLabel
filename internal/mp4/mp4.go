@@ -129,9 +129,9 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 	// sign/leading-zero-only delta as no change (tag.NumericValuesEqual). Only a genuinely
 	// unrepresentable slot (overflow, non-numeric, or a 0 that reads back absent) is a loss, so the
 	// number fields carry the value-drop predicate without a reduction wrapper.
-	add(tag.TrackNumber, core.WithValueDrop(fields, numberComponentDropped))
+	add(tag.TrackNumber, core.WithValueDrop(fields, numberComponentDropped(tag.TrackNumber)))
 	add(tag.TrackTotal, core.WithValueDrop(fields, slotValueDropped))
-	add(tag.DiscNumber, core.WithValueDrop(fields, numberComponentDropped))
+	add(tag.DiscNumber, core.WithValueDrop(fields, numberComponentDropped(tag.DiscNumber)))
 	add(tag.DiscTotal, core.WithValueDrop(fields, slotValueDropped))
 	add(tag.MediaType, core.WithValueDrop(fields, mediaTypeValueDropped))
 	add(tag.Compilation, core.WithValueDrop(fields, compilationValueDropped))

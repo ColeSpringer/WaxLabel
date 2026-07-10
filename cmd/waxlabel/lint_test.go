@@ -222,6 +222,48 @@ func TestLintFixNothingToFix(t *testing.T) {
 	}
 }
 
+// TestLintFixNoAudioGraceful is a regression guard: a no-audio (tag-only or truncated) file
+// cannot be written, but --fix must route it into the same graceful "nothing to fix / left
+// unchanged" path as any other unfixable finding instead of surfacing Prepare's opaque write
+// refusal. It leaves the file unchanged, exits 4 (the no-audio finding remains), and under --json
+// reports no-audio in remaining with no {"error": ...} envelope.
+func TestLintFixNoAudioGraceful(t *testing.T) {
+	t.Parallel()
+	out, _, code := runCLI(t, "lint", "--fix", copyFixture(t, td("empty.mp3")))
+	if code != 4 {
+		t.Errorf("lint --fix on a no-audio file exit = %d, want 4 (no-audio finding remains)", code)
+	}
+	for _, want := range []string{"nothing to fix", "no-audio", "left unchanged"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("lint --fix on a no-audio file missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "refusing to write") {
+		t.Errorf("lint --fix leaked the opaque Prepare write refusal:\n%s", out)
+	}
+
+	jout, _, jcode := runCLI(t, "--json", "lint", "--fix", copyFixture(t, td("empty.mp3")))
+	if jcode != 4 {
+		t.Errorf("--json lint --fix on a no-audio file exit = %d, want 4", jcode)
+	}
+	jf := decodeJSONOne[jsonLintFix](t, jout)
+	if jf.Error != nil {
+		t.Errorf("--json lint --fix on a no-audio file emitted an error envelope %+v, want the finding in remaining", jf.Error)
+	}
+	if jf.Committed {
+		t.Error("--json lint --fix on a no-audio file reported committed=true, want false (left unchanged)")
+	}
+	var sawNoAudio bool
+	for _, f := range jf.Remaining {
+		if f.Code == "no-audio" {
+			sawNoAudio = true
+		}
+	}
+	if !sawNoAudio {
+		t.Errorf("--json lint --fix remaining = %+v, want a no-audio finding", jf.Remaining)
+	}
+}
+
 // TestSetStripEncoder: --strip-encoder clears the ENCODER tag.
 func TestSetStripEncoder(t *testing.T) {
 	t.Parallel()

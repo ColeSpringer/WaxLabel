@@ -7,8 +7,9 @@ import (
 
 // TestNumericValuesEqual pins the numeric-key equality: leading '+' and leading zeros do not make
 // a numeric value different, including inside a slashed "n/total" pair, while a genuinely different
-// number, a non-numeric token, or a mismatched count stays distinct. A non-numeric key falls back
-// to exact slice equality.
+// number, a non-numeric token, or a mismatched count stays distinct. MEDIATYPE (the stik slot an
+// MP4 atom canonicalizes) folds the same way even though it is not in numericKeys. A key in neither
+// category falls back to exact slice equality.
 func TestNumericValuesEqual(t *testing.T) {
 	cases := []struct {
 		name string
@@ -30,6 +31,10 @@ func TestNumericValuesEqual(t *testing.T) {
 		{"empty is not zero", TrackNumber, []string{""}, []string{"0"}, false},
 		{"non-numeric token verbatim", TrackNumber, []string{"abc"}, []string{"abc"}, true},
 		{"count mismatch", TrackNumber, []string{"3"}, []string{"3", "4"}, false},
+		// MEDIATYPE folds like a numeric slot (it is the stik atom an MP4 canonicalizes), even
+		// though it is not in numericKeys: "01" and "1" are the same media kind.
+		{"mediatype leading zero equal", MediaType, []string{"01"}, []string{"1"}, true},
+		{"mediatype different", MediaType, []string{"2"}, []string{"1"}, false},
 		{"non-numeric key exact only", Title, []string{"03"}, []string{"3"}, false},
 		{"non-numeric key equal", Title, []string{"x"}, []string{"x"}, true},
 	}

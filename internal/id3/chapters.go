@@ -275,11 +275,16 @@ func decodeCTOC(body []byte) (ctocFrame, bool) {
 // mutated. Two separate rules apply:
 //   - Interior open chapter -> the next chapter's start (a gapless interval) via the shared
 //     core.FillInteriorEnds, so the ID3 writer and the MP4 read/write paths cannot drift on it.
-//   - Trailing open chapter -> the media duration, when the duration is known and past the last
-//     start. This is genuinely ID3-local (core.FillInteriorEnds leaves the last chapter open;
-//     MP4 derives a bounded last end from the QuickTime text track's last-sample duration, not
-//     from Chapter.End). When the duration is unknown (0) or not past the last start, the
-//     trailing chapter stays open and encodeCHAP emits the sentinel - no worse than before.
+//   - Trailing open chapter -> a bounded end, whenever the duration is known (> 0): the media
+//     duration when it is past the last start, or a zero-length end (End = Start) when the last
+//     start is at or past the ms-floored duration, so a past/at-duration trailing chapter
+//     serializes endMs == startMs instead of the sentinel. This is genuinely ID3-local
+//     (core.FillInteriorEnds leaves the last chapter open; MP4 derives a bounded last end from the
+//     QuickTime text track's last-sample duration, not from Chapter.End; and Matroska's
+//     renderChapterAtom still treats End == Start as open, a divergence that only affects
+//     deliberately zero-length library-authored chapters and is accepted to keep this fix scoped
+//     to ID3). When the duration is unknown (0) the trailing chapter stays open and encodeCHAP
+//     emits the sentinel - no worse than before.
 //
 // Precondition: len(chs) <= 255. The CTOC entry count is a single byte (see encodeCTOC), so
 // a longer list would wrap it. Callers must enforce MaxChapters before writing.
@@ -294,11 +299,15 @@ func chapterFrames(chs []core.Chapter, duration time.Duration, version byte) (fr
 	// bounds only the last chapter. No data is lost, and the duplicate start is already warned, so
 	// this is left as-is rather than special-cased in cross-format shared code.
 	core.FillInteriorEnds(filled)
-	// Trailing open chapter -> the media duration (ID3-local). When the duration is unknown (0)
-	// or not past the last start, the chapter stays open and encodeCHAP emits the sentinel - no
-	// worse than before.
-	if n := len(filled); n > 0 && filled[n-1].End == 0 && duration > filled[n-1].Start {
-		filled[n-1].End = duration
+	// Trailing open chapter -> a bounded end (ID3-local), whenever the duration is known (> 0).
+	// A duration past the last start fills a run-to-EOF end (End = duration); a duration at or
+	// before the last start (a chapter authored past the ms-floored media duration) fills a
+	// bounded zero-length end (End = Start) rather than leaving it open, so encodeCHAP serializes
+	// endMs == startMs instead of the 0xFFFFFFFF sentinel a player renders as ~49.7 days. Using
+	// max(duration, start) keeps the end from running backwards. When the duration is unknown (0)
+	// the chapter stays open and encodeCHAP emits the sentinel - no worse than before.
+	if n := len(filled); n > 0 && filled[n-1].End == 0 && duration > 0 {
+		filled[n-1].End = max(duration, filled[n-1].Start)
 	}
 	childIDs := make([]string, len(filled))
 	for i, ch := range filled {
@@ -318,10 +327,14 @@ func chapterFrames(chs []core.Chapter, duration time.Duration, version byte) (fr
 func encodeCHAP(id string, ch core.Chapter, version byte) ([]byte, bool) {
 	startMs, ov1 := durationToMs(ch.Start, chapTimeMax)
 	endMs, ov2 := chapFieldUnused, false
-	// Only a closed chapter writes an explicit end. End <= Start (a zero-length or backwards span
-	// a library caller may author) is treated as "open" and emits the unused sentinel, matching
-	// Matroska's renderChapterAtom - serializing such an end would only write an invalid interval.
-	if ch.End > ch.Start {
+	// A closed chapter writes an explicit end, including a bounded zero-length end (End == Start,
+	// nonzero) so a past/at-duration trailing chapter serializes endMs == startMs rather than the
+	// ~49.7-day sentinel. A backwards end (End < Start) or an unset one (End == 0) is treated as
+	// "open" and emits the unused sentinel - serializing it would only write an invalid interval.
+	// This bounds a zero-length end everywhere except at t=0: a chapter authored with
+	// Start == End == 0 cannot be distinguished from an unset end, so it stays open (the one
+	// documented corner of the bounded-zero-length behavior).
+	if ch.End >= ch.Start && ch.End > 0 {
 		endMs, ov2 = durationToMs(ch.End, chapTimeMax)
 	}
 	out := append(encodeLatin1(id), 0)

@@ -113,19 +113,31 @@ func ProjectChapters(comments []Comment) []core.Chapter {
 }
 
 // chapterComments renders a chapter list as CHAPTERxxx (+ optional CHAPTERxxxNAME)
-// comments in the common-writer form: 1-based, 3-digit numbers. A chapter with an empty
-// title emits no CHAPTERxxxNAME, so it round-trips to a titleless chapter rather than an
-// empty-string title.
+// comments in the common-writer form: 3-digit numbers, 1-based for the usual case. A chapter
+// with an empty title emits no CHAPTERxxxNAME, so it round-trips to a titleless chapter rather
+// than an empty-string title.
+//
+// The index is numbered from 0 instead of 1 once there are 1000 or more chapters. ffmpeg and
+// ffprobe parse the CHAPTERxxx convention with a fixed 3-digit key (CHAPTER%03d), so a 4-digit
+// key is unreadable there: at exactly 1000 chapters a 1-based CHAPTER1000 would be 4 digits, and
+// numbering from 0 keeps the whole run 3-digit (CHAPTER000..CHAPTER999) so ffmpeg reads all 1000.
+// Below 1000 the common 1-based CHAPTER001 form is unchanged. Past 1000 no 3-digit scheme fits, so
+// the tail (index >= 1000) is 4-digit and best-effort for ffmpeg; WaxLabel's own reader accepts any
+// digit count and round-trips every chapter regardless.
 func chapterComments(chs []core.Chapter) ([]Comment, bool) {
 	out := make([]Comment, 0, len(chs))
 	overflow := false
+	base := 1
+	if len(chs) >= 1000 {
+		base = 0
+	}
 	for i, ch := range chs {
 		start := ch.Start
 		if start > maxChapterDuration {
 			start = maxChapterDuration // clamp to the reader's ceiling so it round-trips, not silently dropped
 			overflow = true
 		}
-		num := fmt.Sprintf("%s%03d", chapterNamePrefix, i+1)
+		num := fmt.Sprintf("%s%03d", chapterNamePrefix, base+i)
 		out = append(out, Comment{Name: num, Value: formatChapterTime(start)})
 		if ch.Title != "" {
 			out = append(out, Comment{Name: num + "NAME", Value: ch.Title})

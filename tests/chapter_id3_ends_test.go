@@ -70,6 +70,84 @@ func TestID3ChapterOpenEndsMaterialized(t *testing.T) {
 	}
 }
 
+// TestID3ChapterTrailingEndBoundedPastDuration checks the past/at-duration trailing chapter across
+// the ID3-backed formats: authoring a chapter that starts past the media duration serializes a
+// bounded zero-length end (End == Start) rather than the 0xFFFFFFFF sentinel that ffprobe/players
+// render as ~49.7 days. WaxLabel's own decoder reads a bounded start==end back as End == Start and
+// the sentinel back as End == 0, so asserting End == Start (not merely != 0) distinguishes the two.
+func TestID3ChapterTrailingEndBoundedPastDuration(t *testing.T) {
+	for _, fx := range id3ChapterFixtures {
+		t.Run(fx.format.String(), func(t *testing.T) {
+			src, err := os.ReadFile(fx.path)
+			if err != nil {
+				t.Fatalf("read fixture: %v", err)
+			}
+			doc := mustParseBytes(t, src)
+			// A whole-ms start well past the media duration, so the trailing fill bounds it to a
+			// zero-length end (max(duration, start) == start) instead of leaving it open.
+			past := doc.Properties().Duration().Truncate(time.Millisecond) + 5*time.Second
+			plan, err := doc.Edit().SetChapters(
+				wl.Chapter{Start: 0, Title: "A"},
+				wl.Chapter{Start: past, Title: "Past"},
+			).Prepare()
+			if err != nil {
+				t.Fatalf("Prepare: %v", err)
+			}
+			chs := mustParseBytes(t, applyToBytes(t, src, plan)).Chapters()
+			if len(chs) != 2 {
+				t.Fatalf("got %d chapters, want 2", len(chs))
+			}
+			last := chs[len(chs)-1]
+			if last.End == 0 {
+				t.Error("past-duration trailing chapter reads back open: the end regressed to the 0xFFFFFFFF sentinel")
+			}
+			if last.End != last.Start {
+				t.Errorf("past-duration trailing chapter End = %v, want == Start %v (bounded zero-length)", last.End, last.Start)
+			}
+		})
+	}
+}
+
+// TestID3ChapterPastDurationCopyDiffIdentical pins the cross-package interaction the bounded
+// past-duration end depends on: a past-duration chapter now reads back bounded (End == Start)
+// instead of open, and core.normalizeReconstructableEnds must still fold that bounded end (always
+// >= the media duration) back to open just as it did the old sentinel - so copying the chapters
+// into a different-duration destination still diffs as chapters-identical. A regression in that
+// fold surfaces here as a spurious chapter difference.
+func TestID3ChapterPastDurationCopyDiffIdentical(t *testing.T) {
+	srcBytes, err := os.ReadFile("../testdata/notags.mp3")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	srcDoc := mustParseBytes(t, srcBytes)
+	past := srcDoc.Properties().Duration().Truncate(time.Millisecond) + 5*time.Second
+	plan, err := srcDoc.Edit().SetChapters(
+		wl.Chapter{Start: 0, Title: "A"},
+		wl.Chapter{Start: past, Title: "Past"},
+	).Prepare()
+	if err != nil {
+		t.Fatalf("author chapters: %v", err)
+	}
+	authored := mustParseBytes(t, applyToBytes(t, srcBytes, plan))
+
+	// Copy the chapters into a destination of a different duration (AAC), then diff.
+	dstBytes, err := os.ReadFile("../testdata/notags.aac")
+	if err != nil {
+		t.Fatalf("read dest: %v", err)
+	}
+	tplan, _, err := authored.PrepareTransfer(mustParseBytes(t, dstBytes))
+	if err != nil {
+		t.Fatalf("PrepareTransfer: %v", err)
+	}
+	copied := mustParseBytes(t, applyToBytes(t, dstBytes, tplan))
+
+	if !wl.EqualChaptersModuloEnds(authored.Chapters(), copied.Chapters(),
+		authored.Properties().Duration(), copied.Properties().Duration()) {
+		t.Errorf("past-duration chapters diff as different after copy across durations:\n src=%+v (dur %v)\n dst=%+v (dur %v)",
+			authored.Chapters(), authored.Properties().Duration(), copied.Chapters(), copied.Properties().Duration())
+	}
+}
+
 // TestID3ChapterReapplyOpenEndsNoOp checks that authoring open-ended chapters and then
 // re-authoring the identical open-ended chapters collapses to a no-op. After the first write
 // the file carries filled ends (interior -> next start, trailing -> duration), so the second

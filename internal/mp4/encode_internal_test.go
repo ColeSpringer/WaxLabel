@@ -11,7 +11,9 @@ import (
 // write cannot store without mutation. Track and disc slots are uint16, so
 // non-numeric, negative, and >65535 values are lost. A literal "0" fits uint16, but
 // pairItem can collapse the whole pair to absent; that user-supplied 0 is reported
-// unless a non-zero counterpart keeps the pair.
+// unless a non-zero counterpart keeps the pair. A malformed slashed value (a non-numeric
+// tail, e.g. "1/2/3" or "3/abc") is not a storable number/total: it is kept whole and
+// dropped against the number slot, never split into a phantom TRACKTOTAL.
 func TestDroppedValues(t *testing.T) {
 	cases := []struct {
 		name string
@@ -26,6 +28,10 @@ func TestDroppedValues(t *testing.T) {
 		{"both zero flags both slots", map[tag.Key]string{tag.TrackNumber: "0", tag.TrackTotal: "0"}, []tag.Key{tag.TrackNumber, tag.TrackTotal}},
 		{"total zero alone collapses the pair", map[tag.Key]string{tag.TrackTotal: "0"}, []tag.Key{tag.TrackTotal}},
 		{"track valid", map[tag.Key]string{tag.TrackNumber: "3"}, nil},
+		{"well-formed pair not dropped", map[tag.Key]string{tag.TrackNumber: "3/12"}, nil},
+		{"malformed slashed value drops the number, not a phantom total", map[tag.Key]string{tag.TrackNumber: "1/2/3"}, []tag.Key{tag.TrackNumber}},
+		{"valid number with junk total drops the whole number", map[tag.Key]string{tag.TrackNumber: "3/abc"}, []tag.Key{tag.TrackNumber}},
+		{"disc malformed slashed value drops the number", map[tag.Key]string{tag.DiscNumber: "1/2/3"}, []tag.Key{tag.DiscNumber}},
 		{"total slot named, not the pair", map[tag.Key]string{tag.TrackNumber: "3", tag.TrackTotal: "abc"}, []tag.Key{tag.TrackTotal}},
 		{"explicit total overrides the /tail", map[tag.Key]string{tag.TrackNumber: "3/5", tag.TrackTotal: "abc"}, []tag.Key{tag.TrackTotal}},
 		{"whitespace total overrides, no false drop", map[tag.Key]string{tag.TrackNumber: "3/70000", tag.TrackTotal: "   "}, nil},
@@ -160,9 +166,14 @@ func TestCoercedValues(t *testing.T) {
 
 // TestNumberSlotTransferGrading checks that a copy grades a canonical or normalized trkn/disk
 // number (a leading zero or sign, which the uint16 atom stores as the same integer) Carried, and
-// an unrepresentable one (overflow, or the 0-reads-back-absent case) Dropped. A leading zero or
-// sign is a numerically-lossless canonicalization, so copy grades it Carried, matching diff, which
-// treats a sign/leading-zero-only delta as no change.
+// an unrepresentable one (overflow, the 0-reads-back-absent case, or a malformed slashed value)
+// Dropped. A leading zero or sign is a numerically-lossless canonicalization, so copy grades it
+// Carried, matching diff, which treats a sign/leading-zero-only delta as no change.
+//
+// This grades through core.ProjectTransfer over the MP4 codec's Capabilities - the same capability
+// layer (WithValueDrop) the caps command reports and the copy command consumes - so the malformed
+// slashed cases below confirm the guarded-split predicate rides the shared layer rather than any
+// per-command logic.
 func TestNumberSlotTransferGrading(t *testing.T) {
 	caps := Codec{}.Capabilities(nil, core.WriteOptions{})
 	cases := []struct {
@@ -178,7 +189,10 @@ func TestNumberSlotTransferGrading(t *testing.T) {
 		{"number overflow is dropped", tag.TrackNumber, "70000", core.Dropped},
 		{"number zero is dropped", tag.TrackNumber, "0", core.Dropped},
 		{"number double-zero is dropped", tag.TrackNumber, "00", core.Dropped},
+		{"number malformed slashed value is dropped", tag.TrackNumber, "1/2/3", core.Dropped},
+		{"number valid with junk total is dropped", tag.TrackNumber, "3/abc", core.Dropped},
 		{"disc leading zero is carried", tag.DiscNumber, "03", core.Carried},
+		{"disc malformed slashed value is dropped", tag.DiscNumber, "1/2/3", core.Dropped},
 		{"total leading zero is carried", tag.TrackTotal, "03", core.Carried},
 		{"total canonical is carried", tag.TrackTotal, "12", core.Carried},
 		{"total zero is dropped", tag.TrackTotal, "0", core.Dropped},

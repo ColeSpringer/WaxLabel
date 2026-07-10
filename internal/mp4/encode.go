@@ -253,15 +253,28 @@ func coverItem(pics []core.Picture) item {
 	return item{name: atomName("covr"), payload: payload}
 }
 
-// numTotal resolves the number/total a trkn/disk atom encodes, reusing the
-// canonical pair parser (which tolerates a slash-combined "n/total" or stray
-// spaces in the number field, with an explicit total key winning) and clamping to
-// the 16-bit range the atom stores.
+// numTotal resolves the number/total a trkn/disk atom encodes. It consumes the same slots
+// resolvePairSlots resolves - a genuine "n/total" pair is split on "/", a malformed or
+// non-numeric value (e.g. "1/2/3", "3/abc") is kept whole on the number slot, and an explicit
+// total key wins - then parses each resolved slot as a plain integer (any parse failure, including
+// a whole non-numeric value, reads as 0) and clamps to the 16-bit range the atom stores. Sharing
+// one resolution with the drop report (appendDroppedPair) keeps storage and the warning in
+// lockstep, so a value the report names dropped is not silently stored as a lenient partial.
 func numTotal(ts tag.TagSet, numKey, totKey tag.Key) (num, total uint16) {
-	numStr, _ := ts.First(numKey)
-	totStr, _ := ts.First(totKey)
-	n, tot := tag.ParseNumPair(numStr, totStr)
-	return clampUint16(n), clampUint16(tot)
+	numPart, totPart := resolvePairSlots(ts, numKey, totKey)
+	return clampUint16(slotInt(numPart)), clampUint16(slotInt(totPart))
+}
+
+// slotInt parses a resolved trkn/disk slot as a plain integer (trimmed), treating any parse
+// failure as 0. A whole non-numeric value resolvePairSlots kept intact ("1/2/3", "3/abc") fails
+// to parse and so reads as 0, which pairItem renders as an absent slot rather than a lenient
+// partial extracted from the first '/'.
+func slotInt(s string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // clampUint16 returns n as a uint16, or 0 if it is out of range.
@@ -323,17 +336,24 @@ func coercedValues(ts tag.TagSet) []droppedValue {
 	return out
 }
 
-// resolvePairSlots resolves the two slots a trkn/disk number/total pair edits, the same way the
-// encoder's numTotal/tag.ParseNumPair do: split the number field on "/" (tag.SplitNumberTotal), then
-// let a present, raw-non-empty explicit total key override the "/total" tail. Like ParseNumPair, the
-// override gates on the raw string rather than the trimmed one, so a whitespace-only total (which
-// ParseNumPair reads as 0 and whose tail it discards) overrides here too and leaves no stale tail.
-// The drop report (appendDroppedPair) and the coercion report (appendCoercedPair) share this one
-// resolution, so they cannot drift on the "3/09" split rule.
+// resolvePairSlots resolves the two slots a trkn/disk number/total pair edits, through the guarded
+// tag.NumberTotalSplit so it matches the canonical model and restoreUnstorablePairSlots rather than
+// leniently cutting on the first '/'. A genuine numeric pair ("3/12", "3/09") splits into its number
+// and total; a value NumberTotalSplit declines to split (no '/', or a malformed/non-numeric pair like
+// "1/2/3" or "3/abc") is kept whole (trimmed) on the number slot with no total, so it is judged - and
+// dropped - against the number slot instead of fabricating a phantom total from the tail. A present,
+// raw-non-empty explicit total key then overrides the tail; like ParseNumPair the override gates on
+// the raw string, so a whitespace-only total overrides too and leaves no stale tail. The encoder
+// (numTotal) and the drop report (appendDroppedPair) share this one resolution, so storage and the
+// warning cannot drift on the split rule.
 func resolvePairSlots(ts tag.TagSet, numKey, totKey tag.Key) (numPart, totPart string) {
 	numStr, _ := ts.First(numKey)
 	totStr, _ := ts.First(totKey)
-	numPart, totPart = tag.SplitNumberTotal(numStr)
+	if num, tot, split := tag.NumberTotalSplit(numKey, numStr); split {
+		numPart, totPart = num, tot
+	} else {
+		numPart, totPart = strings.TrimSpace(numStr), ""
+	}
 	if totStr != "" {
 		totPart = strings.TrimSpace(totStr)
 	}
@@ -448,13 +468,20 @@ func restoreUnstorablePairSlots(base, edited tag.TagSet) (tag.TagSet, bool) {
 	return out, restored
 }
 
-// numberComponentDropped is the transfer-layer value-drop predicate for TRACKNUMBER and
-// DISCNUMBER. It judges only the number side of a possible "n/total" value; the embedded
-// total is graded separately. It does not reproduce pairItem's pair-level zero collapse
-// because that rule depends on the sibling total slot.
-func numberComponentDropped(s string) bool {
-	num, _ := tag.SplitNumberTotal(s)
-	return slotValueDropped(num)
+// numberComponentDropped builds the transfer-layer value-drop predicate for a TRACKNUMBER or
+// DISCNUMBER key. WithValueDrop fixes the predicate signature to func(string) bool with no key, but
+// the guarded split needs one, so this is a closure factory keyed on the number key (mirroring
+// vocabValueDropped below). It resolves the number side through the same guarded tag.NumberTotalSplit
+// the writer uses: a genuine "n/total" pair is judged on its number substring, while a malformed or
+// non-numeric value ("1/2/3", "3/abc") is kept whole and judged (and dropped) as one value, so copy
+// grading stays in lockstep with the writer instead of grading a lenient partial carried. The
+// embedded total is graded separately; the pair-level zero collapse is not reproduced here because
+// that rule depends on the sibling total slot.
+func numberComponentDropped(k tag.Key) func(string) bool {
+	return func(s string) bool {
+		num, _, _ := tag.NumberTotalSplit(k, s)
+		return slotValueDropped(num)
+	}
 }
 
 // vocabValueDropped builds the value-drop predicate for a vocabulary atom such as stik or

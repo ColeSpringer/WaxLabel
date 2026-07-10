@@ -194,8 +194,11 @@ warning; an `info` finding never flips the exit. The codes:
   icon/other-icon picture type).
 - Warnings: `inherited-encoder` (a transcoder/encoder stamp `--fix` can clear),
   `stray-leading-id3`, `trailing-id3v1`, `legacy-ape` (legacy containers `--fix` can
-  strip), `invalid-picture` (a picture stored as `application/octet-stream` - an unsniffable
-  or `--force`-embedded cover; the check is the stored MIME, not a re-sniff of the bytes),
+  strip), `invalid-picture` (a cover that reads back as `application/octet-stream` - an
+  unsniffable or `--force`-embedded cover. The lint re-sniffs the bytes, so a
+  mislabeled-but-valid image is recovered to its real type and not flagged. A failed sniff
+  only overwrites an empty MIME, so junk bytes stored under a plausible image label keep that
+  label and are not flagged either),
   `truncated-audio` (declared audio bytes are missing; detected only where the container or
   codec declares an expected length - WAV, AIFF, and MP4 by declared size, and VBR MP3 by the
   Xing frame count - so a clean lint on FLAC, AAC, Ogg, or Matroska is not a completeness
@@ -347,6 +350,15 @@ path:
   with no value reads back as absent rather than present-empty; this is consistent
   across formats and matches how `--clear` and a set-empty value are distinguished
   elsewhere.
+- **A trailing empty value in a multi-valued field may be dropped on the ID3 path.** On
+  the ID3-backed MP3, AAC, and WAV formats, a *trailing* empty value in a multi-valued field
+  (e.g. an `ARTIST` list ending in an empty string) is dropped on write, matching TagLib and
+  mutagen. FLAC, Ogg, M4A, MKA, and AIFF keep it. Interior empty values are preserved
+  everywhere, so only a trailing empty value is ever affected, and no information is lost.
+- **A single-valued number key given several values may read back differently per format.**
+  Assigning multiple values to a single-valued number key - already flagged by the
+  `single-valued-multi` warning - where one of them is a slashed `n/total` pair is degenerate
+  misuse: the per-format readback can differ, but no information is lost.
 - **Native-cue chapters are not read.** MP3/AAC/AIFF/WAV chapters use ID3v2 `CHAP`/`CTOC`,
   and FLAC/Ogg use the VorbisComment `CHAPTERxxx` convention. A FLAC ripped with a
   `CUESHEET` block, or a WAV carrying native `cue `/`adtl` chapters, projects no chapters

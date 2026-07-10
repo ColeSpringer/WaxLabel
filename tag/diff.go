@@ -10,15 +10,17 @@ import (
 
 // NumericValuesEqual reports whether two value slices for key k are equal at the presentation
 // level: a numeric key's values are equal when they differ only by a leading '+' or leading zeros
-// ("03" == "3", "+3" == "3"), including within a slashed "n/total" pair ("3/012" == "3/12"). A
-// non-numeric key falls back to exact slice equality. It is a pure value predicate and does not
-// itself decide when such a delta should count as "no change" - only some keys are canonicalized by
-// some formats (a 16-bit MP4 trkn/disk atom drops a leading sign or zeros; text formats keep "03"
-// verbatim), so the caller scopes it to the keys and format pairs where the delta is a lossless-copy
-// artifact rather than a genuine byte difference (see the diff command). It never changes stored
-// bytes; this is a compare-layer predicate only.
+// ("03" == "3", "+3" == "3"), including within a slashed "n/total" pair ("3/012" == "3/12"). The
+// MEDIATYPE key (the iTunes stik media-kind slot) folds the same way: its value is a single token
+// with no slash, so the shared numeric-token path canonicalizes its sign and leading zeros too. A
+// key in neither category falls back to exact slice equality. It is a pure value predicate and does
+// not itself decide when such a delta should count as "no change" - only some keys are canonicalized
+// by some formats (a 16-bit MP4 trkn/disk/stik atom drops a leading sign or zeros; text formats keep
+// "03" verbatim), so the caller scopes it to the keys and format pairs where the delta is a
+// lossless-copy artifact rather than a genuine byte difference (see the diff command). It never
+// changes stored bytes; this is a compare-layer predicate only.
 func NumericValuesEqual(k Key, a, b []string) bool {
-	if !IsNumericKey(k) {
+	if !IsNumericKey(k) && !IsMediaTypeKey(k) {
 		return slices.Equal(a, b)
 	}
 	if len(a) != len(b) {

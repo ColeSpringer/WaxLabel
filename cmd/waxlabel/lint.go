@@ -244,6 +244,19 @@ func lintFixOne(ctx context.Context, path string) (fixOutcome, error) {
 	if err != nil {
 		return fixOutcome{}, err
 	}
+	// A no-audio file cannot be written: Prepare's guard refuses every no-audio write with an
+	// opaque ErrInvalidData ("refusing to write..."), which would surface here as an error and,
+	// under --json, as an {"error": ...} envelope instead of the finding. Short-circuit before
+	// PlanLintFix/Prepare so a no-audio file routes into the same graceful "nothing to fix / not
+	// auto-fixed / left unchanged" path as every other unfixable finding, surfacing no-audio in
+	// remaining. Gating on the warning (not an empty fix plan) also covers a no-audio file that
+	// carries an otherwise-fixable finding: that plan would be non-empty yet still hit the write
+	// refusal, so an empty-plan check would leave it broken.
+	for _, w := range doc.Warnings() {
+		if w.Code == wl.WarnNoAudioFrames {
+			return fixOutcome{path: path, remaining: doc.Lint(), committed: false}, nil
+		}
+	}
 	fix := doc.PlanLintFix()
 	plan, err := doc.Edit().Apply(fix.Patch).Prepare(fix.Options...)
 	if err != nil {

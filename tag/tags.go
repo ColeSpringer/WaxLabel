@@ -448,6 +448,9 @@ func SplitNumberValue(ts *TagSet, numKey Key, value string, setTotal bool) {
 // track and disc number/total, and the play count. Rating is excluded (it is a
 // free-form string), and so is MediaType (vocabulary-only, no typed accessor). It
 // backs [IsNumericKey] and the set-time malformed-value note.
+//
+// It is deliberately not [IsMP4CanonicalKey]: this set carries PlayCount and omits MediaType,
+// the reverse of what a 16-bit MP4 atom normalizes, so do not fold the two together.
 var numericKeys = map[Key]bool{
 	TrackNumber: true,
 	TrackTotal:  true,
@@ -666,6 +669,15 @@ var replayGainKeys = map[Key]bool{
 // IsMediaTypeKey reports whether k is the MEDIATYPE (iTunes stik media-kind) key,
 // whose value is a non-negative integer.
 func IsMediaTypeKey(k Key) bool { return k == MediaType }
+
+// IsMP4CanonicalKey reports whether a 16-bit MP4 integer atom canonicalizes k's value on
+// decode - dropping a leading sign or leading zeros ("01" -> "1"). Those are the four number
+// slots ([Key.NumberPair]: the track/disc number and total, packed into trkn/disk) plus
+// MEDIATYPE (the stik media-kind atom). It is the key gate the diff command's cross-format
+// numeric fold uses, so the fold applies only where an MP4 atom genuinely normalizes the value,
+// not to every numeric key. It is deliberately not [numericKeys] (which carries PlayCount, not
+// MediaType); keep the two sets apart.
+func IsMP4CanonicalKey(k Key) bool { return k.NumberPair() || IsMediaTypeKey(k) }
 
 // IsReplayGainKey reports whether k is a canonical ReplayGain gain or peak key.
 func IsReplayGainKey(k Key) bool { return replayGainKeys[k] }
