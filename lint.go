@@ -244,6 +244,12 @@ func lintValues(ts tag.TagSet) []Finding {
 		}
 		vals, _ := ts.Get(k)
 		for _, v := range vals {
+			// Trim the value the same way set does before it validates, so lint and set cannot
+			// disagree on a whitespace-only or space-padded trimmable value. A whitespace-only
+			// numeric ("   ") trims to empty and is skipped as the benign empty-value case set
+			// writes; a space-padded number (" 3 ") validates on its trimmed form. TrimTokenValue
+			// early-returns for a non-trimmable key, so those validators see the value unchanged.
+			v = tag.TrimTokenValue(k, v)
 			if v != "" && !val.Valid(k, v) {
 				out = append(out, Finding{LintWarning, val.LintCode,
 					fmt.Sprintf("%q %s", v, val.LintDetail), k})

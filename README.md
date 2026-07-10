@@ -225,14 +225,17 @@ Exit code summary:
   `multiple-vorbis-comment`, `duplicate-icon`).
 - `5`: source changed since parse.
 - `6`: I/O or not-found error.
+- `7`: a streamed input (`-`/standard input under `--max-size`) exceeded the configured
+  size cap. This is a resource-limit refusal, not corruption: a raw stream carries no
+  declared size, so it is kept distinct from the exit-4 invalid-data class.
 - `130`: canceled or timed out.
 
 For multi-file commands, WaxLabel returns the code for the highest-precedence
 file error, not necessarily the first error encountered. The precedence is:
 
-> canceled/timeout (130) > source-changed (5) > invalid-data (4) > unsupported
-> format/tag/stream/alignment (3) > I/O (6) > not-found (6) > usage/invalid-key
-> (2) > generic error (1) > broken-pipe (0)
+> canceled/timeout (130) > source-changed (5) > invalid-data (4) > input-too-large
+> (7) > unsupported format/tag/stream/alignment (3) > I/O (6) > not-found (6) >
+> usage/invalid-key (2) > generic error (1) > broken-pipe (0)
 
 A broken output pipe ranks last, below every real failure, so a genuine per-file error in
 the same run still sets the exit code; only when the closed pipe is the sole outcome does the
@@ -281,6 +284,12 @@ entire file.
 | Matroska / WebM | read/write | Scoped SimpleTags, segment title, attachments, and default-edition chapters. Subtitle lyric tracks are outside the metadata model. WebM cannot write cover attachments. |
 | AAC (ADTS) | read/write | Front ID3v2 tag plus ADTS frames. A new tag is written as ID3v2.4, including `CHAP`/`CTOC` chapters and `SYLT` synced lyrics. |
 | AIFF / AIFF-C | read/write | Native text chunks plus embedded `ID3 `, including `CHAP`/`CTOC` chapters and `SYLT` synced lyrics; chunks are preserved. |
+
+When `set` authors a structural edit a format cannot store at all - cover art on a
+WebM file (`[picture-unsupported]`), or chapters on a format with no chapter store
+(`[chapters-unsupported]`) - it drops that item with a warning and applies the rest of
+the edit, the same way a cross-format copy drops what the destination cannot hold. Each
+drop warning is promoted to a failure under `--strict`.
 
 The capability table below is generated from the same codec capability model used
 by `waxlabel caps`.
@@ -350,8 +359,13 @@ path:
   warning. An authored synced-lyrics language must be a 3-letter code (the ISO-639-2
   shape, e.g. `eng`); the shape is validated, not registry membership. LRC is
   line-based: a newline inside one lyric line is flattened to a
-  space on FLAC/Ogg, while `SYLT` keeps it. MP4 and Matroska represent synced
-  lyrics as timed-text or subtitle tracks, not metadata, so WaxLabel does not model
+  space on FLAC/Ogg, while `SYLT` keeps it. A set carrying more than 65,536 lines
+  (about 18 hours of one-per-second lines) is truncated to that cap on write with a
+  `[synced-lyrics-truncated]` warning that `--strict` promotes to a failure. MP4 and
+  Matroska represent synced lyrics as timed-text or subtitle tracks, not metadata, so
+  WaxLabel does not model them: `set` drops an authored synced-lyrics set on those
+  formats with a `[synced-lyrics-unsupported]` warning (and `--strict` fails) rather
+  than refusing the whole edit, so a set that also writes storable tags still applies
   them. LRC `[offset:]` follows foobar2000 behavior: effective timestamp =
   timestamp - offset. WaxLabel writes one space between a line's timestamp and its
   text so a lyric that itself begins with a `[mm:ss]`-shaped string round-trips; an
@@ -363,6 +377,11 @@ path:
   any description, and reads back as a front cover. A plain front cover with no description
   round-trips losslessly; copying a described or non-front cover to MP4 reports the
   per-picture metadata loss.
+- **MP4 stores a multi-valued field as several data atoms.** The iTunes `ilst` writes each
+  value of a multi-valued field (e.g. two `ARTIST` values) as a separate `data` atom under one
+  item. WaxLabel writes and reads back every value, but many third-party readers surface only the
+  first, so an edit that authors such a field reports an informational `[mp4-multi-value]` note.
+  It is not a loss (`--strict` is unaffected).
 - **MP4 metadata is read only at `moov.udta.meta.ilst`.** An iTunes `ilst` placed
   directly under `moov.meta` (no intervening `udta`) and the QuickTime `mdta`-keys form
   (`moov.meta` with a `keys` table) are not read, so such a file reads as having no tags.

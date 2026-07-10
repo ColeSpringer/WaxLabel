@@ -108,6 +108,42 @@ func SyncedLyricsMetadataDroppedMessage() string {
 	return "LRC synced lyrics store timed text only; the per-set language, descriptor, and embedded line breaks are dropped"
 }
 
+// SyncedLyricsUnsupportedMessage returns the drop warning text for a destination format
+// that has no synced-lyrics store at all, so the whole set is dropped rather than stored
+// lossily. It is distinct from SyncedLyricsMetadataDroppedMessage (a set that is stored but
+// loses a per-set field): here the format holds no synced lyrics, so nothing is stored.
+func SyncedLyricsUnsupportedMessage(f Format) string {
+	return fmt.Sprintf("%s %s file cannot store synced lyrics; the set was dropped", IndefiniteArticle(f.String()), f)
+}
+
+// SyncedLyricsTruncatedMessage returns the edit-time warning text for an authored set whose
+// line count exceeded the modeled per-set cap and was truncated on write. It mirrors the
+// read-path truncation wording so a scanner sees a consistent message on either path.
+func SyncedLyricsTruncatedMessage() string {
+	return fmt.Sprintf("the authored synced-lyrics set carried more than %d lines; the lines past the limit were dropped", MaxSyncedLines)
+}
+
+// TruncateSyncedLyrics caps each set's line count to MaxSyncedLines, returning a fresh outer
+// slice (the input and its sets are never mutated) and whether any set was truncated. The
+// write path uses it before planning so an authored over-cap set is stored at the same cap
+// the read path enforces, and so the plan result counts the lines that will actually be
+// written rather than the over-cap author intent. A set within the cap is carried through
+// unchanged (its Lines slice is shared, never modified), so a document that fits round-trips
+// byte-identically and a repeated Prepare stays deterministic. Unlike the chapter-count cap,
+// which is a hard error (256 chapters is a small, deliberate list), the far larger
+// synced-lyrics line cap is astronomically high, so exceeding it is truncated and warned.
+func TruncateSyncedLyrics(sls []SyncedLyrics) (out []SyncedLyrics, truncated bool) {
+	out = make([]SyncedLyrics, 0, len(sls))
+	for _, sl := range sls {
+		if len(sl.Lines) > MaxSyncedLines {
+			sl.Lines = slices.Clone(sl.Lines[:MaxSyncedLines])
+			truncated = true
+		}
+		out = append(out, sl)
+	}
+	return out, truncated
+}
+
 // SyncedLyricsClampOverflows reports whether any line in sls carries a timestamp past max, so
 // the destination's writer would clamp it (SYLT's 32-bit ms field, or the LRC store's
 // MaxLRCTime). max == 0 means no limit (nothing overflows). The comparison is strictly
@@ -264,6 +300,25 @@ func ParseLRC(text string) []SyncedLine {
 // for a set that fits (trailing blank lines past a full set do not count, since none was
 // dropped).
 func ParseLRCReport(text string) (lines []SyncedLine, truncated bool) {
+	return parseLRC(text, MaxSyncedLines)
+}
+
+// ParseLRCFull is [ParseLRC] without the per-set line cap, for trusted input already held
+// whole in memory (the CLI's --synced-lyrics-file), so the downstream write-time cap in
+// [TruncateSyncedLyrics] is the single truncation-and-warning point rather than a silent drop
+// at file-read time. Untrusted media parsing keeps using the capped ParseLRC/ParseLRCReport: a
+// hostile SYNCEDLYRICS comment must stay bounded. The returned slice is bounded by the input
+// size (each line needs a bracketed timestamp), so a caller that already buffered the file adds
+// no unbounded allocation.
+func ParseLRCFull(text string) []SyncedLine {
+	lines, _ := parseLRC(text, 0)
+	return lines
+}
+
+// parseLRC is the shared LRC reader behind ParseLRCReport (capped) and ParseLRCFull (uncapped).
+// lineCap <= 0 disables the per-set cap. truncated is true only when a timed line was dropped
+// because the cap was reached.
+func parseLRC(text string, lineCap int) (lines []SyncedLine, truncated bool) {
 	text = strings.TrimPrefix(text, "\ufeff")
 	// Normalize CRLF and lone-CR (classic-Mac) line endings to LF before splitting, so a
 	// pure-CR file is not read as one giant line with every lyric concatenated.
@@ -278,7 +333,7 @@ func ParseLRCReport(text string) (lines []SyncedLine, truncated bool) {
 			offsetMs, hasOffset = lineOffset, true
 		}
 		for _, d := range times {
-			if len(out) >= MaxSyncedLines {
+			if lineCap > 0 && len(out) >= lineCap {
 				// The set is full but a timed line remains: it is dropped, so flag the
 				// truncation rather than returning a short set silently. Breaking here (and out
 				// of the outer loop below) also stops scanning a pathological over-cap file.

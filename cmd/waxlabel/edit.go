@@ -640,6 +640,13 @@ func (e *editFlags) compile(extra ...wl.WriteOption) (*compiledEdit, error) {
 		return nil, err
 	}
 	opts = append(opts, extra...)
+	// set and plan drop a whole structural edit the destination cannot store at all (synced
+	// lyrics or chapters on a format with no such store, cover art on WebM) with a warning,
+	// rather than failing the file, so a mixed edit still applies its storable part - the same
+	// leniency a cross-format copy already has. --strict re-escalates the drop to a failure.
+	// copy assembles its options through resolveWriteFlags, not here, and keeps its own drop
+	// behavior.
+	opts = append(opts, wl.WithAllowUnsupportedDrop())
 	patch, err := e.patch()
 	if err != nil {
 		return nil, err
@@ -957,8 +964,11 @@ func noteMalformedValue(errOut io.Writer, k tag.Key, v string) {
 //   - WarnChaptersFlattened: can describe pre-existing on-read file state, not this edit.
 //   - WarnPaddingClamped: about padding size, not tag content.
 //   - Advisory/sanity codes (number-total-conflict, chapter-overlap-reconciled,
-//     chapter-past-duration, duplicate-*, multiple-front-covers, legacy-conflict) and all
-//     read-path codes: they describe the file, not an edit loss.
+//     chapter-past-duration, duplicate-*, multiple-front-covers, legacy-conflict) and the
+//     read-path codes: they describe the file, not an edit loss. WarnSyncedLyricsTruncated is
+//     the one dual-path code escalated below - it fires on the write path when an authored set
+//     exceeds the line cap (an edit loss) and, on the effectively unreachable read path, when a
+//     file already over the cap is edited (both mean the set cannot round-trip in full).
 var strictEscalatingCodes = map[wl.WarningCode]bool{
 	// Value-level losses: dropped, coerced, precision-reduced, or a single-valued key given
 	// multiple values.
@@ -980,6 +990,15 @@ var strictEscalatingCodes = map[wl.WarningCode]bool{
 	// Synced-lyrics losses: a dropped per-set field, or a timestamp clamped to the 32-bit field.
 	wl.WarnSyncedLyricsMetadataDropped:  true,
 	wl.WarnSyncedLyricsTimestampClamped: true,
+	// An authored synced-lyrics set truncated to the modeled per-set line cap: lines were
+	// dropped on write, so --strict must catch it (unlike the read-path truncation, which
+	// describes pre-existing file state, this is an edit loss).
+	wl.WarnSyncedLyricsTruncated: true,
+	// Whole structural edits the destination format cannot store at all, dropped rather than
+	// refused: the edit asked for something the file cannot hold, so a CI gate must catch it.
+	wl.WarnSyncedLyricsUnsupported: true,
+	wl.WarnPictureUnsupported:      true,
+	wl.WarnChaptersUnsupported:     true,
 }
 
 // strictWarningGate applies the per-file --strict escalation for plan and set: when a
@@ -1180,8 +1199,15 @@ func (ce *compiledEdit) prepare(ctx context.Context, realPath, origPath string) 
 	}
 	// Synced lyrics authored from a file or individual lines replace the existing set list.
 	// Appending to one of several existing sets would be ambiguous because native stores
-	// key sets differently. --clear-synced-lyrics alone removes them all.
+	// key sets differently. --clear-synced-lyrics alone removes them all. When a clear is
+	// combined with authoring, clear first so the authored set starts fresh: the clear marks
+	// the set so an ID3 SYLT rewrite drops the inherited language/descriptor instead of
+	// restoring the one the user asked to remove. A plain author (no clear) keeps that
+	// inheritance convenience.
 	if len(ce.syncedLyrics) > 0 {
+		if ce.clearSyncedLyrics {
+			ed.ClearSyncedLyrics()
+		}
 		ed.SetSyncedLyrics(ce.syncedLyrics...)
 	} else if ce.clearSyncedLyrics {
 		ed.ClearSyncedLyrics()

@@ -583,6 +583,7 @@ func TestClassifyError(t *testing.T) {
 		{"chained-stream", fmt.Errorf("w: %w", waxerr.ErrChainedStream), 3, "unsupported-stream"},
 		{"unaligned-stream", fmt.Errorf("w: %w", waxerr.ErrUnalignedStream), 3, "unsupported-alignment"},
 		{"invalid-data", fmt.Errorf("w: %w", waxerr.ErrInvalidData), 4, "invalid-data"},
+		{"input-too-large", fmt.Errorf("w: %w", waxerr.ErrInputTooLarge), 7, "input-too-large"},
 		{"source-changed", fmt.Errorf("w: %w", waxerr.ErrSourceChanged), 5, "source-changed"},
 		{"unclassified", errors.New("boom"), 1, "error"},
 	}
@@ -636,8 +637,8 @@ func TestSentinelsHaveNoProgramPrefix(t *testing.T) {
 	for _, err := range []error{
 		waxerr.ErrUnsupportedFormat, waxerr.ErrInvalidData,
 		waxerr.ErrUnsupportedTag, waxerr.ErrPictureTooLarge, waxerr.ErrSizeTooLarge,
-		waxerr.ErrTooDeep, waxerr.ErrSourceChanged, waxerr.ErrChainedStream,
-		waxerr.ErrUnalignedStream, waxerr.ErrInvalidKey,
+		waxerr.ErrInputTooLarge, waxerr.ErrTooDeep, waxerr.ErrSourceChanged,
+		waxerr.ErrChainedStream, waxerr.ErrUnalignedStream, waxerr.ErrInvalidKey,
 	} {
 		if strings.HasPrefix(err.Error(), "waxlabel:") {
 			t.Errorf("sentinel %q should not embed the program prefix", err.Error())
@@ -2014,6 +2015,7 @@ func TestErrClassRankCoversEveryErrorClass(t *testing.T) {
 		waxerr.ErrUnalignedStream,
 		waxerr.ErrSourceChanged,
 		waxerr.ErrInvalidData,
+		waxerr.ErrInputTooLarge,
 		&fs.PathError{Op: "open", Path: "x", Err: fs.ErrNotExist}, // not-found
 		&fs.PathError{Op: "open", Path: "x", Err: errors.New("disk failure")}, // io
 		context.Canceled,
@@ -2038,5 +2040,43 @@ func TestErrClassRankCoversEveryErrorClass(t *testing.T) {
 	if !(errClassRank["invalid-data"] > errClassRank["not-found"] && errClassRank["not-found"] > errClassRank["usage"]) {
 		t.Errorf("precedence broken: want invalid-data(%d) > not-found(%d) > usage(%d)",
 			errClassRank["invalid-data"], errClassRank["not-found"], errClassRank["usage"])
+	}
+}
+
+// TestInputTooLargeAggregateRank pins where an over-cap streamed input sits in the multi-file
+// aggregate: below a corrupt file (a resource cap is less severe than corruption) but above an
+// unsupported format. So a run mixing an over-cap stream with a corrupt file exits 4 (the corrupt
+// file wins), while one mixing it with an unsupported format exits 7 (the over-cap wins). The
+// aggregate is order-independent (worseError), so both orders are checked. A CLI --max-size failure
+// on stdin actually aborts the whole invocation up front (bufferStdin runs before the per-file
+// loop), so the rank is exercised through the worseError fold directly rather than end to end.
+func TestInputTooLargeAggregateRank(t *testing.T) {
+	t.Parallel()
+	inputTooLarge := fmt.Errorf("w: %w", waxerr.ErrInputTooLarge)
+	corrupt := fmt.Errorf("w: %w", waxerr.ErrInvalidData)
+	unsupported := fmt.Errorf("w: %w", waxerr.ErrUnsupportedFormat)
+
+	fold := func(errs ...error) int {
+		var worst error
+		for _, e := range errs {
+			if worseError(worst, e) {
+				worst = e
+			}
+		}
+		return classifyError(worst).exitCode
+	}
+	for _, tc := range []struct {
+		name string
+		errs []error
+		want int
+	}{
+		{"over-cap then corrupt", []error{inputTooLarge, corrupt}, 4},
+		{"corrupt then over-cap", []error{corrupt, inputTooLarge}, 4},
+		{"over-cap then unsupported", []error{inputTooLarge, unsupported}, 7},
+		{"unsupported then over-cap", []error{unsupported, inputTooLarge}, 7},
+	} {
+		if got := fold(tc.errs...); got != tc.want {
+			t.Errorf("%s: aggregate exit = %d, want %d", tc.name, got, tc.want)
+		}
 	}
 }

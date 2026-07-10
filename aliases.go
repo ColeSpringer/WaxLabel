@@ -212,6 +212,12 @@ const (
 	WarnSyncedLyricsMetadataDropped  = core.WarnSyncedLyricsMetadataDropped
 	WarnSyncedLyricsTimestampClamped = core.WarnSyncedLyricsTimestampClamped
 	WarnSyncedLyricsTruncated        = core.WarnSyncedLyricsTruncated
+	WarnSyncedLyricsUnsupported      = core.WarnSyncedLyricsUnsupported
+
+	WarnPictureUnsupported  = core.WarnPictureUnsupported
+	WarnChaptersUnsupported = core.WarnChaptersUnsupported
+
+	WarnMP4MultiValue = core.WarnMP4MultiValue
 
 	WarnInvalidTagKey = core.WarnInvalidTagKey
 
@@ -260,6 +266,12 @@ func EqualSyncedLyrics(a, b []SyncedLyrics) bool { return core.EqualSyncedLyrics
 // [SyncedLyrics] from an LRC file. LRC has no per-set language field; set it on
 // SyncedLyrics yourself when the destination can store it.
 func ParseLRC(text string) []SyncedLine { return core.ParseLRC(text) }
+
+// ParseLRCFull is [ParseLRC] without the per-set line cap, for trusted input already held
+// whole in memory (such as a user-provided LRC file), so a downstream write-time cap is the
+// single truncation-and-warning point rather than a silent drop at read. Parsing untrusted
+// media keeps using the capped [ParseLRC]. The returned slice is bounded by the input size.
+func ParseLRCFull(text string) []SyncedLine { return core.ParseLRCFull(text) }
 
 // FormatLRC renders timed lyric lines as an LRC document ("[mm:ss.mmm]text" per line, in
 // order). It round-trips losslessly through [ParseLRC]; the per-set language and

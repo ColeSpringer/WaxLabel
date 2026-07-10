@@ -246,6 +246,28 @@ const (
 	// it describes the synced-lyrics set, not a tag field. Appended to the end of the block so
 	// the existing codes keep their numbers.
 	WarnSyncedLyricsTruncated
+	// WarnSyncedLyricsUnsupported means an edit authored synced lyrics for a destination whose
+	// format has no synced-lyrics store at all (for example MP4), so the whole set was dropped
+	// rather than the write being refused. It is distinct from WarnSyncedLyricsMetadataDropped,
+	// which describes a set that IS stored but loses a per-set field: here nothing is stored.
+	// Keyless: it describes the synced-lyrics set, not a tag field.
+	WarnSyncedLyricsUnsupported
+	// WarnPictureUnsupported means an edit added cover art to a destination whose format cannot
+	// store it (a WebM file, whose subset excludes Attachments), so the picture was dropped
+	// rather than the write being refused. Keyless: it describes the picture, not a tag field.
+	WarnPictureUnsupported
+	// WarnChaptersUnsupported means an edit authored chapters for a destination whose format has
+	// no chapter store at all, so the whole list was dropped rather than the write being refused.
+	// It is distinct from WarnChapterMetadataDropped, which describes chapters that ARE stored but
+	// lose a field. Keyless: it describes the chapter set, not a tag field.
+	WarnChaptersUnsupported
+	// WarnMP4MultiValue means an MP4 field holds more than one value, which the iTunes ilst stores
+	// as multiple data atoms under one item. That round-trips through WaxLabel, but many third-party
+	// readers surface only the first atom, so the extra values are effectively invisible to them. It
+	// is informational (the values are fully written and read back), distinct from the ID3v2.3
+	// NUL-separated multi-value note and the WAV/AIFF native-value reduction, so it does not escalate
+	// --strict. It carries the affected key (Warning.Keys).
+	WarnMP4MultiValue
 )
 
 func (c WarningCode) String() string {
@@ -330,6 +352,14 @@ func (c WarningCode) String() string {
 		return "synced-lyrics-timestamp-clamped"
 	case WarnSyncedLyricsTruncated:
 		return "synced-lyrics-truncated"
+	case WarnSyncedLyricsUnsupported:
+		return "synced-lyrics-unsupported"
+	case WarnPictureUnsupported:
+		return "picture-unsupported"
+	case WarnChaptersUnsupported:
+		return "chapters-unsupported"
+	case WarnMP4MultiValue:
+		return "mp4-multi-value"
 	case WarnInvalidTagKey:
 		return "invalid-tag-key"
 	case WarnNumberTotalConflict:

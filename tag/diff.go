@@ -8,6 +8,84 @@ import (
 	"github.com/colespringer/waxlabel/internal/bits"
 )
 
+// NumericValuesEqual reports whether two value slices for key k are equal at the presentation
+// level: a numeric key's values are equal when they differ only by a leading '+' or leading zeros
+// ("03" == "3", "+3" == "3"), including within a slashed "n/total" pair ("3/012" == "3/12"). A
+// non-numeric key falls back to exact slice equality. It is a pure value predicate and does not
+// itself decide when such a delta should count as "no change" - only some keys are canonicalized by
+// some formats (a 16-bit MP4 trkn/disk atom drops a leading sign or zeros; text formats keep "03"
+// verbatim), so the caller scopes it to the keys and format pairs where the delta is a lossless-copy
+// artifact rather than a genuine byte difference (see the diff command). It never changes stored
+// bytes; this is a compare-layer predicate only.
+func NumericValuesEqual(k Key, a, b []string) bool {
+	if !IsNumericKey(k) {
+		return slices.Equal(a, b)
+	}
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !numericTokenEqual(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// numericTokenEqual compares one numeric value, splitting a slashed "n/total" pair (SplitNumberTotal)
+// and comparing each side by its canonical integer form.
+func numericTokenEqual(a, b string) bool {
+	an, at := SplitNumberTotal(a)
+	bn, bt := SplitNumberTotal(b)
+	return canonicalNumeric(an) == canonicalNumeric(bn) && canonicalNumeric(at) == canonicalNumeric(bt)
+}
+
+// canonicalNumeric returns the canonical decimal form of a numeric token, dropping a leading '+'
+// and leading zeros ("03" -> "3", "+3" -> "3", "-03" -> "-3", any all-zero form -> "0"). A token
+// that is not a plain integer (empty, a sign with no digits, or any non-digit character) is
+// returned trimmed and verbatim, so a genuinely different or non-numeric value stays distinct
+// rather than folding to a shared canonical form. It works at the string level rather than parsing
+// to an int, so a value past the int range (an absurd but possible tag value) still canonicalizes
+// its sign and leading zeros instead of falling through to a verbatim, spuriously-unequal compare.
+func canonicalNumeric(s string) string {
+	s = strings.TrimSpace(s)
+	digits := s
+	neg := false
+	if len(digits) > 0 && (digits[0] == '+' || digits[0] == '-') {
+		neg = digits[0] == '-'
+		digits = digits[1:]
+	}
+	if digits == "" || !isAllASCIIDigits(digits) {
+		return s // not a plain integer: compare verbatim
+	}
+	// Drop leading zeros, keeping at least one digit.
+	i := 0
+	for i < len(digits)-1 && digits[i] == '0' {
+		i++
+	}
+	digits = digits[i:]
+	if digits == "0" {
+		return "0" // an all-zero value is unsigned ("-0"/"+0"/"00" all fold to "0")
+	}
+	if neg {
+		return "-" + digits
+	}
+	return digits
+}
+
+// isAllASCIIDigits reports whether s is non-empty and entirely ASCII digits.
+func isAllASCIIDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // ChangeKind names how one key differs between two tag sets.
 type ChangeKind uint8
 

@@ -176,6 +176,36 @@ func TestValueNotes(t *testing.T) {
 	}
 }
 
+// TestLintSetAgreeOnWhitespaceNumeric checks that lint and set treat a whitespace-only or
+// space-padded numeric the same way: set trims the value before deciding, so a whitespace-only
+// TRACKNUMBER is the benign empty-value case (exit 0), and lint must reach the same verdict
+// rather than validating the untrimmed value and flagging a malformed number.
+func TestLintSetAgreeOnWhitespaceNumeric(t *testing.T) {
+	t.Parallel()
+
+	// A whitespace-only numeric: set writes the benign empty value (exit 0), lint stays clean.
+	f := copyFixture(t, "../../testdata/notags.flac")
+	if _, errb, code := runCLI(t, "set", f, "--set", "TRACKNUMBER=   "); code != 0 {
+		t.Fatalf("set TRACKNUMBER=whitespace exit %d: %s", code, errb)
+	}
+	if out, _, code := runCLI(t, "lint", f); code != 0 {
+		t.Errorf("lint of a whitespace-only TRACKNUMBER = exit %d, want 0 (clean, matching set)\n%s", code, out)
+	}
+
+	// A space-padded number validates on its trimmed form and stores the trimmed value.
+	g := copyFixture(t, "../../testdata/notags.flac")
+	if _, errb, code := runCLI(t, "set", g, "--set", "TRACKNUMBER= 3 "); code != 0 {
+		t.Fatalf("set TRACKNUMBER=' 3 ' exit %d: %s", code, errb)
+	}
+	if out, _, code := runCLI(t, "lint", g); code != 0 {
+		t.Errorf("lint of a space-padded TRACKNUMBER = exit %d, want 0\n%s", code, out)
+	}
+	dump, _, _ := runCLI(t, "dump", "--json", g)
+	if got := tagValues(decodeJSONOne[jsonDocument](t, dump), "TRACKNUMBER"); len(got) != 1 || got[0] != "3" {
+		t.Errorf("stored TRACKNUMBER = %v, want [3] (trimmed)", got)
+	}
+}
+
 // TestPictureEditing adds a roled picture with a description, then removes it by role.
 // Description-only and unknown-role misuses remain usage errors.
 func TestPictureEditing(t *testing.T) {

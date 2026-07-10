@@ -25,6 +25,14 @@ var (
 	// ErrSizeTooLarge means a declared length would exceed the bounded
 	// allocation limit for untrusted input.
 	ErrSizeTooLarge = errors.New("declared size too large")
+	// ErrInputTooLarge means a user-configured resource cap on a streamed input was
+	// exceeded - the CLI's --max-size on a buffered '-'/stdin stream, or the library's
+	// WithMaxSourceBytes. Unlike ErrSizeTooLarge (a container that declares an
+	// oversized internal length, i.e. corruption), a raw stream carries no declared
+	// size, so exceeding the cap is a resource-limit refusal, not malformed data. It is
+	// a distinct sentinel so the CLI can map it to its own exit code and a message
+	// without the "declared size" framing.
+	ErrInputTooLarge = errors.New("input too large")
 	// ErrTooDeep means nested structure exceeded the recursion-depth limit.
 	ErrTooDeep = errors.New("structure nested too deeply")
 	// ErrSourceChanged means a save-back target no longer matches the source

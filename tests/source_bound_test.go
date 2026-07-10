@@ -13,9 +13,11 @@ import (
 
 // TestOpenSourceMaxSourceBytesBoundary pins the exact ingest boundary: a stream of
 // exactly the limit still parses (the read buffers limit+1 and compares, so len == limit
-// passes), while one byte past the limit fails with ErrSizeTooLarge rather than being
-// silently truncated and misparsed. The input is a fixed valid FLAC and the limit is
-// varied around its size, so all three boundary positions are exercised with one fixture.
+// passes), while one byte past the limit fails with ErrInputTooLarge rather than being
+// silently truncated and misparsed. ErrInputTooLarge is distinct from ErrSizeTooLarge: a
+// raw stream carries no declared size, so exceeding a user cap is a resource-limit refusal,
+// not corruption. The input is a fixed valid FLAC and the limit is varied around its size,
+// so all three boundary positions are exercised with one fixture.
 func TestOpenSourceMaxSourceBytesBoundary(t *testing.T) {
 	src := readFixture(t, sampleFLAC)
 	size := int64(len(src))
@@ -34,8 +36,8 @@ func TestOpenSourceMaxSourceBytesBoundary(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s, err := wl.OpenSource(ctx, bytes.NewReader(src), wl.WithMaxSourceBytes(tc.limit))
 			if tc.wantErr {
-				if !errors.Is(err, waxerr.ErrSizeTooLarge) {
-					t.Fatalf("OpenSource(limit=%d) err = %v, want ErrSizeTooLarge", tc.limit, err)
+				if !errors.Is(err, waxerr.ErrInputTooLarge) {
+					t.Fatalf("OpenSource(limit=%d) err = %v, want ErrInputTooLarge", tc.limit, err)
 				}
 				return
 			}

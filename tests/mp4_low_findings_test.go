@@ -12,6 +12,93 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
+// TestMP4MultiValueInteropNote checks that a multi-valued text field on MP4 surfaces the
+// informational mp4-multi-value note (the iTunes ilst stores it as several data atoms, which many
+// readers show only the first of), round-trips all values, and does not escalate --strict (it is
+// informational, nothing is lost). A single-valued field and a structured slot do not warn.
+func TestMP4MultiValueInteropNote(t *testing.T) {
+	src := readFixture(t, "../testdata/notags.m4a")
+
+	// A multi-valued ARTIST surfaces the note, keyed on ARTIST, and round-trips both values.
+	plan, err := mustParseBytes(t, src).Edit().Set(tag.Artist, "A", "B").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	noted := false
+	for _, w := range plan.Report().Warnings {
+		if w.Code == wl.WarnMP4MultiValue && slices.Contains(w.Keys, tag.Artist) {
+			noted = true
+		}
+	}
+	if !noted {
+		t.Errorf("a multi-valued MP4 ARTIST must surface mp4-multi-value; got %v", plan.Report().Warnings)
+	}
+	re := mustParseBytes(t, applyToBytes(t, src, plan))
+	if got, _ := re.Tags().Get(tag.Artist); len(got) != 2 || got[0] != "A" || got[1] != "B" {
+		t.Errorf("round-trip ARTIST = %v, want [A B] (all values written)", got)
+	}
+
+	// A single-valued field does not warn.
+	pSingle, err := mustParseBytes(t, src).Edit().Set(tag.Artist, "Solo").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range pSingle.Report().Warnings {
+		if w.Code == wl.WarnMP4MultiValue {
+			t.Errorf("a single-valued ARTIST must not warn mp4-multi-value; got %v", pSingle.Report().Warnings)
+		}
+	}
+
+	notesKey := func(plan *wl.Plan, key tag.Key) bool {
+		for _, w := range plan.Report().Warnings {
+			if w.Code == wl.WarnMP4MultiValue && slices.Contains(w.Keys, key) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// A multi-valued custom (freeform ----) key also writes one data atom per value, so it warns too.
+	custom := tag.MustKey("CUSTOMTAG")
+	pFree, err := mustParseBytes(t, src).Edit().Set(custom, "A", "B").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !notesKey(pFree, custom) {
+		t.Errorf("a multi-valued freeform key must surface mp4-multi-value; got %v", pFree.Report().Warnings)
+	}
+
+	// A multi-valued numeric genre writes one gnre atom per genre, so it warns as well.
+	pGnre, err := mustParseBytes(t, src).Edit().Set(tag.Genre, "Rock", "Jazz").Prepare(wl.WithNumericGenre())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !notesKey(pGnre, tag.Genre) {
+		t.Errorf("a multi-valued numeric genre must surface mp4-multi-value; got %v", pGnre.Report().Warnings)
+	}
+
+	// The note is authored-scoped: an unrelated edit on a file that ALREADY holds a multi-valued
+	// field must not warn about that untouched field, so a plain edit does not emit interop noise.
+	withMulti := applyToBytes(t, src, plan) // the file now stores ARTIST=[A,B]
+	pUnrelated, err := mustParseBytes(t, withMulti).Edit().Set(tag.Title, "New Title").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range pUnrelated.Report().Warnings {
+		if w.Code == wl.WarnMP4MultiValue {
+			t.Errorf("an unrelated edit must not warn about a pre-existing multi-valued field; got %v", pUnrelated.Report().Warnings)
+		}
+	}
+	// But re-authoring the multi-valued field (adding a third value) does warn again.
+	pReauthor, err := mustParseBytes(t, withMulti).Edit().Set(tag.Artist, "A", "B", "C").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !notesKey(pReauthor, tag.Artist) {
+		t.Errorf("re-authoring a multi-valued ARTIST must warn; got %v", pReauthor.Report().Warnings)
+	}
+}
+
 // TestMP4TrackNumberZeroWarns checks the MP4-specific TRACKNUMBER=0 case. decodePair drops
 // a 0 slot on read (its num>0/total>0 guards treat 0 as unset), so a user's 0 never round-trips
 // and the write must warn - even when the pair does not collapse: 0 paired with a real total
@@ -120,12 +207,12 @@ func TestMP4CompilationCoercionWarns(t *testing.T) {
 	}
 }
 
-// TestMP4NumberNormalizationCoercionWarns covers the direct-set path: a non-canonical trkn/disk
-// number (a leading zero or a sign) is stored as its 16-bit integer, so the write surfaces a
-// value-coerced warning worded for a number and showing the stored value, rather than the boolean
-// wording COMPILATION uses, which would leave "what did it store?" ambiguous. The copy path already
-// grades 03 as lossy (WithValueReduction); this brings the write path in line with it.
-func TestMP4NumberNormalizationCoercionWarns(t *testing.T) {
+// TestMP4NumberNormalizationNotCoerced covers the direct-set path: a non-canonical trkn/disk number
+// (a leading zero or a sign) is stored as its 16-bit integer, but the leading zero or sign is a
+// numerically-lossless canonicalization, so the write does NOT surface a value-coerced warning for
+// it (a copy grades it Carried and diff treats it as no change). The boolean COMPILATION coercion,
+// which genuinely stores a fabricated value, still warns.
+func TestMP4NumberNormalizationNotCoerced(t *testing.T) {
 	base := mp4Tagged(mp4Text("\xa9nam", "T"))
 
 	coercionMsg := func(p *wl.Plan, key tag.Key) (string, bool) {
@@ -137,42 +224,25 @@ func TestMP4NumberNormalizationCoercionWarns(t *testing.T) {
 		return "", false
 	}
 
-	// A leading-zero TRACKNUMBER coerces to the integer 3: the warning must be number-worded and
-	// name the stored value, so the report says what is on disk.
-	p, err := mustParseBytes(t, base).Edit().Set(tag.TrackNumber, "03").Prepare()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if msg, ok := coercionMsg(p, tag.TrackNumber); !ok {
-		t.Errorf("TRACKNUMBER=03 must warn value-coerced; got %v", p.Report().Warnings)
-	} else if strings.Contains(msg, "boolean") {
-		t.Errorf("TRACKNUMBER coercion must not use the boolean wording; got %q", msg)
-	} else if !strings.Contains(msg, `"03"`) || !strings.Contains(msg, "stored as 3") {
-		t.Errorf("TRACKNUMBER=03 coercion must name the literal and the stored integer 3; got %q", msg)
-	}
-
-	// A signed DISCNUMBER likewise coerces to its integer.
-	pSigned, err := mustParseBytes(t, base).Edit().Set(tag.DiscNumber, "+2").Prepare()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if msg, ok := coercionMsg(pSigned, tag.DiscNumber); !ok {
-		t.Errorf("DISCNUMBER=+2 must warn value-coerced; got %v", pSigned.Report().Warnings)
-	} else if strings.Contains(msg, "boolean") || !strings.Contains(msg, "stored as 2") {
-		t.Errorf("DISCNUMBER=+2 coercion must be number-worded and show 2; got %q", msg)
+	// A leading-zero TRACKNUMBER and a signed DISCNUMBER store as their integers with no warning.
+	for _, c := range []struct {
+		key tag.Key
+		val string
+	}{
+		{tag.TrackNumber, "03"},
+		{tag.DiscNumber, "+2"},
+		{tag.TrackNumber, "3"},
+	} {
+		p, err := mustParseBytes(t, base).Edit().Set(c.key, c.val).Prepare()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := coercionMsg(p, c.key); ok {
+			t.Errorf("%s=%q must not warn value-coerced (numeric canonicalization is not a loss); got %v", c.key, c.val, p.Report().Warnings)
+		}
 	}
 
-	// A canonical number stores faithfully and must not warn.
-	pOK, err := mustParseBytes(t, base).Edit().Set(tag.TrackNumber, "3").Prepare()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := coercionMsg(pOK, tag.TrackNumber); ok {
-		t.Errorf("canonical TRACKNUMBER=3 must not warn value-coerced; got %v", pOK.Report().Warnings)
-	}
-
-	// The boolean coercion path is unchanged: COMPILATION=maybe keeps the boolean wording, so the
-	// two coercion messages stay distinguishable.
+	// The boolean coercion path is unchanged: COMPILATION=maybe still warns, worded for a boolean.
 	pBool, err := mustParseBytes(t, base).Edit().Set(tag.Compilation, "maybe").Prepare()
 	if err != nil {
 		t.Fatal(err)

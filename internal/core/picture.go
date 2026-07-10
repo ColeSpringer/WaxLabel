@@ -265,6 +265,15 @@ func ClonePictures(ps []Picture) []Picture {
 	return out
 }
 
+// PictureUnsupportedMessage returns the drop warning text for a destination whose format
+// cannot store cover art at all, so an added picture is dropped rather than the write refused.
+// It is produced by the format-independent picture-write capability gate (Pictures.Write below
+// AccessPartial), so it names no specific format - today only a WebM file (whose subset excludes
+// Attachments) reaches it, and the Matroska writer's own refusal path names WebM explicitly.
+func PictureUnsupportedMessage() string {
+	return "this file's format cannot store cover art; the picture was dropped"
+}
+
 // EqualPictures reports whether two picture slices are identical by content.
 func EqualPictures(a, b []Picture) bool {
 	if len(a) != len(b) {

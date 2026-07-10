@@ -526,6 +526,16 @@ func FuzzMatroskaParse(f *testing.F) {
 	// clamps to 4 bytes must not be mistaken for a real CRC - a title edit on it
 	// once wrote a title that a re-parse could not read back.
 	f.Add([]byte("\x810\x18S\x80gA0\x15I\xa9f\xc9\xbf0000000"))
+	// Regression: a deeply nested SimpleTag chain. Capturing raw at every recursion
+	// level once amplified retained memory to roughly nesting-depth times the subtree
+	// size; only the top-level tag keeps raw now, so this must parse within bounds.
+	{
+		node := mkSimple("LEAF", "deep")
+		for i := 0; i < 40; i++ {
+			node = mkEl(idSimpleTag, concat(mkStr(idTagName, "N"), node))
+		}
+		f.Add(buildMatroska("matroska", "", mkEl(idTags, mkEl(idTag, concat(mkEl(idTargets, nil), node)))))
+	}
 	ctx := context.Background()
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// Ensure the EBML magic leads so detection lands on Matroska.

@@ -52,6 +52,26 @@ func TestDroppedValues(t *testing.T) {
 	}
 }
 
+// TestBoolItemDropsEmpty checks that boolItem drops a present-empty COMPILATION value rather
+// than fabricating a definite 0 (which would read back as a real, strict-clean false). This
+// mirrors the MP4 empty-number drop; the remaining cross-format split - MP4 drops the empty
+// value while FLAC keeps it verbatim - is intentional and matches how numbers behave, so a
+// future reader should not "fix" it into a fabricated 0.
+func TestBoolItemDropsEmpty(t *testing.T) {
+	for _, v := range []string{"", "   "} {
+		if _, ok := boolItem("cpil", []string{v}); ok {
+			t.Errorf("boolItem(%q) stored an atom, want dropped (a present-empty value is not a definite 0)", v)
+		}
+	}
+	if _, ok := boolItem("cpil", nil); ok {
+		t.Error("boolItem(nil) stored an atom, want dropped")
+	}
+	// A real boolean still stores.
+	if _, ok := boolItem("cpil", []string{"1"}); !ok {
+		t.Error("boolItem(\"1\") dropped a real boolean")
+	}
+}
+
 // TestRestoreUnstorablePairSlots pins the gate for preserving a good existing trkn/disk value
 // when an edit makes a slot genuinely unstorable: it restores from base only when the edited
 // value is unstorable AND base holds a storable, present value. A representable 0, an empty
@@ -99,63 +119,50 @@ func TestRestoreUnstorablePairSlots(t *testing.T) {
 	}
 }
 
-// TestCoercedValues checks that coercedValues names a trkn/disk slot stored in a normalized form
-// (a leading zero or sign the uint16 atom drops) and carries the canonical integer it becomes, so
-// the write warning can show the on-disk value. A dropped slot (0, overflow, non-numeric) is not
-// here, because drop and reduce are mutually exclusive, and COMPILATION's coercion carries no
-// Normalized (its stored form is always "0 (false)").
+// TestCoercedValues checks that coercedValues names only a COMPILATION non-boolean stored as 0
+// (false). A trkn/disk number's leading zero or sign is a numerically-lossless canonicalization,
+// not a coercion worth warning, so no number slot appears here (a copy grades it Carried and diff
+// treats it as no change). A dropped slot (0, overflow, non-numeric) is not here either.
 func TestCoercedValues(t *testing.T) {
-	cases := []struct {
-		name       string
-		set        map[tag.Key]string
-		wantKey    tag.Key // the number key expected coerced, or "" for none
-		wantNormal string  // the expected Normalized value
-	}{
-		{"leading zero", map[tag.Key]string{tag.TrackNumber: "03"}, tag.TrackNumber, "3"},
-		{"signed", map[tag.Key]string{tag.DiscNumber: "+2"}, tag.DiscNumber, "2"},
-		{"total leading zero", map[tag.Key]string{tag.TrackTotal: "09"}, tag.TrackTotal, "9"},
-		{"embedded total normalized", map[tag.Key]string{tag.TrackNumber: "3/09"}, tag.TrackTotal, "9"},
-		{"canonical is not coerced", map[tag.Key]string{tag.TrackNumber: "3"}, "", ""},
-		{"zero is dropped not coerced", map[tag.Key]string{tag.TrackNumber: "0"}, "", ""},
-		{"overflow is dropped not coerced", map[tag.Key]string{tag.TrackNumber: "70000"}, "", ""},
+	// A non-boolean COMPILATION is the one coercion reported.
+	ts := tag.NewTagSet()
+	ts.Set(tag.Compilation, "maybe")
+	if cvs := coercedValues(ts); len(cvs) != 1 || cvs[0].Key != tag.Compilation {
+		t.Fatalf("coercedValues = %+v, want one COMPILATION coercion", cvs)
 	}
-	for _, c := range cases {
+
+	// No trkn/disk number form is reported as coerced: a leading zero, a sign, a slashed total,
+	// and a canonical value all leave the number keys out of coercedValues.
+	for _, c := range []struct {
+		name string
+		set  map[tag.Key]string
+	}{
+		{"leading zero", map[tag.Key]string{tag.TrackNumber: "03"}},
+		{"signed", map[tag.Key]string{tag.DiscNumber: "+2"}},
+		{"total leading zero", map[tag.Key]string{tag.TrackTotal: "09"}},
+		{"embedded total normalized", map[tag.Key]string{tag.TrackNumber: "3/09"}},
+		{"canonical", map[tag.Key]string{tag.TrackNumber: "3"}},
+	} {
 		t.Run(c.name, func(t *testing.T) {
-			ts := tag.NewTagSet()
+			nts := tag.NewTagSet()
 			for k, v := range c.set {
-				ts.Set(k, v)
+				nts.Set(k, v)
 			}
-			cvs := coercedValues(ts)
-			if c.wantKey == "" {
-				for _, cv := range cvs {
-					if cv.Key == tag.TrackNumber || cv.Key == tag.TrackTotal ||
-						cv.Key == tag.DiscNumber || cv.Key == tag.DiscTotal {
-						t.Errorf("expected no number coercion, got %+v", cv)
-					}
+			for _, cv := range coercedValues(nts) {
+				if cv.Key == tag.TrackNumber || cv.Key == tag.TrackTotal ||
+					cv.Key == tag.DiscNumber || cv.Key == tag.DiscTotal {
+					t.Errorf("number slot wrongly reported coerced: %+v", cv)
 				}
-				return
-			}
-			var found *droppedValue
-			for i := range cvs {
-				if cvs[i].Key == c.wantKey {
-					found = &cvs[i]
-					break
-				}
-			}
-			if found == nil {
-				t.Fatalf("expected a coercion for %s, got %+v", c.wantKey, cvs)
-			}
-			if found.Normalized != c.wantNormal {
-				t.Errorf("Normalized = %q, want %q", found.Normalized, c.wantNormal)
 			}
 		})
 	}
 }
 
-// TestNumberSlotTransferGrading checks that a copy grades a normalized trkn/disk number (a leading
-// zero or sign) Lossy, a canonical one Carried, and an unrepresentable one (overflow, or the
-// 0-reads-back-absent case) Dropped. Without the reduction predicate a copy graded 03 as Carried
-// while diff reported the 03 -> 3 change, the contradiction this pins shut.
+// TestNumberSlotTransferGrading checks that a copy grades a canonical or normalized trkn/disk
+// number (a leading zero or sign, which the uint16 atom stores as the same integer) Carried, and
+// an unrepresentable one (overflow, or the 0-reads-back-absent case) Dropped. A leading zero or
+// sign is a numerically-lossless canonicalization, so copy grades it Carried, matching diff, which
+// treats a sign/leading-zero-only delta as no change.
 func TestNumberSlotTransferGrading(t *testing.T) {
 	caps := Codec{}.Capabilities(nil, core.WriteOptions{})
 	cases := []struct {
@@ -164,15 +171,15 @@ func TestNumberSlotTransferGrading(t *testing.T) {
 		val  string
 		want core.Disposition
 	}{
-		{"number leading zero is lossy", tag.TrackNumber, "03", core.Lossy},
-		{"number signed is lossy", tag.TrackNumber, "+3", core.Lossy},
+		{"number leading zero is carried", tag.TrackNumber, "03", core.Carried},
+		{"number signed is carried", tag.TrackNumber, "+3", core.Carried},
 		{"number canonical is carried", tag.TrackNumber, "3", core.Carried},
 		{"number ceiling is carried", tag.TrackNumber, "65535", core.Carried},
 		{"number overflow is dropped", tag.TrackNumber, "70000", core.Dropped},
 		{"number zero is dropped", tag.TrackNumber, "0", core.Dropped},
 		{"number double-zero is dropped", tag.TrackNumber, "00", core.Dropped},
-		{"disc leading zero is lossy", tag.DiscNumber, "03", core.Lossy},
-		{"total leading zero is lossy", tag.TrackTotal, "03", core.Lossy},
+		{"disc leading zero is carried", tag.DiscNumber, "03", core.Carried},
+		{"total leading zero is carried", tag.TrackTotal, "03", core.Carried},
 		{"total canonical is carried", tag.TrackTotal, "12", core.Carried},
 		{"total zero is dropped", tag.TrackTotal, "0", core.Dropped},
 	}
@@ -190,9 +197,10 @@ func TestNumberSlotTransferGrading(t *testing.T) {
 
 // TestNumberDispositionAgreesWithRoundTrip pins the contract directly: for a range of number forms,
 // copy's per-item disposition and diff's equality verdict must agree. A form is graded Carried by
-// copy exactly when it round-trips byte-identically through the real encode (pairItem) and decode
-// (decodePair), which is exactly when diff would report no change. The bug this guards against was
-// copy and diff disagreeing, so it asserts the whole property, not just today's examples.
+// copy exactly when it round-trips through the real encode (pairItem) and decode (decodePair) to a
+// numerically-equal value, which is exactly when the numeric-aware diff would report no change. The
+// diff verdict uses numeric equality (tag.NumericValuesEqual): a leading zero or sign stored as the
+// same integer is no change, so copy grades it Carried too.
 func TestNumberDispositionAgreesWithRoundTrip(t *testing.T) {
 	caps := Codec{}.Capabilities(nil, core.WriteOptions{})
 	forms := []string{"3", "12", "65535", "03", "003", "+3", "0", "00", "+0", "70000", "-3", "abc"}
@@ -202,7 +210,7 @@ func TestNumberDispositionAgreesWithRoundTrip(t *testing.T) {
 			ts.Set(tag.TrackNumber, form)
 			disp := dispositionOf(core.ProjectTransfer(&core.Media{Tags: ts}, caps), tag.TrackNumber)
 			back, present := roundTripTrackNumber(form)
-			diffEqual := present && back == form
+			diffEqual := present && tag.NumericValuesEqual(tag.TrackNumber, []string{back}, []string{form})
 			if (disp == core.Carried) != diffEqual {
 				t.Errorf("form %q: copy disposition=%v but diff-equal=%v (round-trip=%q present=%v) - copy and diff disagree",
 					form, disp, diffEqual, back, present)

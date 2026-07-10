@@ -5,6 +5,43 @@ import (
 	"testing"
 )
 
+// TestNumericValuesEqual pins the numeric-key equality: leading '+' and leading zeros do not make
+// a numeric value different, including inside a slashed "n/total" pair, while a genuinely different
+// number, a non-numeric token, or a mismatched count stays distinct. A non-numeric key falls back
+// to exact slice equality.
+func TestNumericValuesEqual(t *testing.T) {
+	cases := []struct {
+		name string
+		key  Key
+		a, b []string
+		want bool
+	}{
+		{"leading zero equal", TrackNumber, []string{"03"}, []string{"3"}, true},
+		{"sign equal", TrackNumber, []string{"+3"}, []string{"3"}, true},
+		{"negative sign kept", TrackNumber, []string{"-03"}, []string{"-3"}, true},
+		{"minus zero folds to zero", TrackNumber, []string{"-0"}, []string{"0"}, true},
+		{"slashed pair equal", TrackNumber, []string{"3/012"}, []string{"3/12"}, true},
+		// A value past the int range still canonicalizes its leading zero (string-level, no parse).
+		{"huge leading zero equal", TrackNumber, []string{"0999999999999999999999"}, []string{"999999999999999999999"}, true},
+		{"huge genuinely different", TrackNumber, []string{"999999999999999999998"}, []string{"999999999999999999999"}, false},
+		{"different number", TrackNumber, []string{"3"}, []string{"4"}, false},
+		{"negative vs positive", TrackNumber, []string{"-3"}, []string{"3"}, false},
+		{"different total", TrackNumber, []string{"3/12"}, []string{"3/13"}, false},
+		{"empty is not zero", TrackNumber, []string{""}, []string{"0"}, false},
+		{"non-numeric token verbatim", TrackNumber, []string{"abc"}, []string{"abc"}, true},
+		{"count mismatch", TrackNumber, []string{"3"}, []string{"3", "4"}, false},
+		{"non-numeric key exact only", Title, []string{"03"}, []string{"3"}, false},
+		{"non-numeric key equal", Title, []string{"x"}, []string{"x"}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := NumericValuesEqual(c.key, c.a, c.b); got != c.want {
+				t.Errorf("NumericValuesEqual(%v, %v, %v) = %v, want %v", c.key, c.a, c.b, got, c.want)
+			}
+		})
+	}
+}
+
 func TestDiff(t *testing.T) {
 	var base, edited TagSet
 	base.Set(Title, "Old")

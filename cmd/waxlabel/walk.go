@@ -66,7 +66,7 @@ func bufferStdin(stdin io.Reader, maxSize int64) (path string, cleanup func(), e
 	if maxSize > 0 && written > maxSize {
 		_ = tmp.Close()
 		cleanup()
-		return "", noop, fmt.Errorf("%w: standard input exceeds %s", waxerr.ErrSizeTooLarge, wl.HumanBytes(maxSize))
+		return "", noop, fmt.Errorf("%w: standard input exceeds %s", waxerr.ErrInputTooLarge, wl.HumanBytes(maxSize))
 	}
 	if err = tmp.Close(); err != nil {
 		cleanup()

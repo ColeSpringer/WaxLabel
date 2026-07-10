@@ -76,18 +76,29 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueDropped, msg, dv.Key)
 	}
 	for _, cv := range coercedValues(edited.Tags) {
-		// The wording follows the coercion kind. It gates on Normalized, the field the numeric
-		// message prints, rather than on a specific key, so a coercion added to coercedValues later
-		// cannot slip into the numeric branch and print an empty stored value. A trkn/disk number
-		// carries its stored integer in Normalized, so show it: a bare "normalized" note would leave
-		// the same "what did it store?" ambiguity this change is meant to remove. A coercion with no
-		// Normalized (COMPILATION, which stores a non-boolean as 0/false) keeps the boolean wording.
-		// This mirrors the ZeroUnset message-switch on the drop path above.
+		// Only COMPILATION reaches here: cpil is a single boolean byte, so a non-boolean is stored
+		// as 0 (false) rather than dropped. A trkn/disk number's leading zero or sign is a
+		// numerically-lossless canonicalization, not a coercion worth warning, so it is not
+		// reported (see coercedValues).
 		msg := fmt.Sprintf("%s value %q is not a valid boolean and was stored as 0 (false)", cv.Key, cv.Value)
-		if cv.Normalized != "" {
-			msg = fmt.Sprintf("%s value %q was stored as %s (numbers are kept as integers)", cv.Key, cv.Value, cv.Normalized)
-		}
 		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueCoerced, msg, cv.Key)
+	}
+	// Note each multi-valued field THIS EDIT wrote: the iTunes ilst stores it as several data atoms
+	// under one item, which round-trips through WaxLabel but which many readers surface only the first
+	// atom of. It covers every multi-valued field the ilst writes as per-value atoms (text, freeform,
+	// and numeric-genre), not just the standard text atoms. It is scoped to a key the edit changed, so
+	// an unrelated edit does not lecture about a file's pre-existing multi-valued field (matching the
+	// authored scope of the chapter/picture sanity checks, and the effective scope of the dropped/
+	// coerced passes, whose stored values are always storable). Informational (nothing is lost), so it
+	// does not escalate --strict. Computed here so both the ilst path and the chapter path (which
+	// shares this report) carry it.
+	for _, k := range multiValueDataKeys(edited.Tags) {
+		vals, _ := edited.Tags.Get(k)
+		if bv, _ := base.Tags.Get(k); slices.Equal(bv, vals) {
+			continue // the field was already multi-valued and this edit did not touch it
+		}
+		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnMP4MultiValue,
+			fmt.Sprintf("%s has %d values, stored as %d MP4 data atoms; some readers surface only the first", k, len(vals), len(vals)), k)
 	}
 
 	// A trkn/disk number is a fixed binary uint16, so an edit that makes a slot genuinely

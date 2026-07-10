@@ -126,6 +126,85 @@ func TestTrackNumberSlashSplitsAcrossFormats(t *testing.T) {
 	}
 }
 
+// TestDiffNumericSignLeadingZeroNotAChange checks that diff does not report a spurious change
+// when two files' numeric values differ only by a leading sign or zeros - the form a text format
+// keeps verbatim ("+3") while MP4 canonicalizes to its 16-bit integer ("3"). The two are the same
+// numbering, so diff must treat them as equal.
+func TestDiffNumericSignLeadingZeroNotAChange(t *testing.T) {
+	flac := copyFixture(t, td("notags.flac"))
+	m4a := copyFixture(t, td("notags.m4a"))
+	if _, _, code := runCLI(t, "set", flac, "--set", "TRACKNUMBER=+3", "-q"); code != 0 {
+		t.Fatalf("set flac exit %d", code)
+	}
+	if _, _, code := runCLI(t, "set", m4a, "--set", "TRACKNUMBER=3", "-q"); code != 0 {
+		t.Fatalf("set m4a exit %d", code)
+	}
+
+	out, _, code := runCLI(t, "--json", "diff", flac, m4a)
+	if code > 1 {
+		t.Fatalf("diff exit %d: %s", code, out)
+	}
+	if diffHasKeyChange(t, out, "TRACKNUMBER") {
+		t.Errorf("diff reported a TRACKNUMBER change across formats; +3 and 3 are the same number\n%s", out)
+	}
+}
+
+// TestDiffNumericFoldScopedToNumberSlotsAndCrossFormat guards the two narrowings of the numeric
+// diff fold. Within one format both files store the value verbatim, so a leading-zero delta is a
+// genuine on-disk difference diff must report. And only the track/disc slots a 16-bit MP4 atom
+// canonicalizes fold - a key no format canonicalizes (play count) keeps a leading-zero delta as a
+// real change even across formats.
+func TestDiffNumericFoldScopedToNumberSlotsAndCrossFormat(t *testing.T) {
+	// Same format (FLAC vs FLAC), track number 03 vs 3: a genuine difference, reported.
+	a := copyFixture(t, td("notags.flac"))
+	b := copyFixture(t, td("notags.flac"))
+	if _, _, code := runCLI(t, "set", a, "--set", "TRACKNUMBER=03", "-q"); code != 0 {
+		t.Fatalf("set a exit %d", code)
+	}
+	if _, _, code := runCLI(t, "set", b, "--set", "TRACKNUMBER=3", "-q"); code != 0 {
+		t.Fatalf("set b exit %d", code)
+	}
+	out, _, code := runCLI(t, "--json", "diff", a, b)
+	if code > 1 {
+		t.Fatalf("diff exit %d: %s", code, out)
+	}
+	if !diffHasKeyChange(t, out, "TRACKNUMBER") {
+		t.Errorf("same-format 03 vs 3 must report a TRACKNUMBER change (both stored verbatim)\n%s", out)
+	}
+
+	// Cross-format play count 007 vs 7: no format canonicalizes play count, so the delta is real.
+	fl := copyFixture(t, td("notags.flac"))
+	m4 := copyFixture(t, td("notags.m4a"))
+	if _, _, code := runCLI(t, "set", fl, "--set", "PLAYCOUNT=007", "-q"); code != 0 {
+		t.Fatalf("set flac playcount exit %d", code)
+	}
+	if _, _, code := runCLI(t, "set", m4, "--set", "PLAYCOUNT=7", "-q"); code != 0 {
+		t.Fatalf("set m4a playcount exit %d", code)
+	}
+	out2, _, code2 := runCLI(t, "--json", "diff", fl, m4)
+	if code2 > 1 {
+		t.Fatalf("diff exit %d: %s", code2, out2)
+	}
+	if !diffHasKeyChange(t, out2, "PLAYCOUNT") {
+		t.Errorf("cross-format play count 007 vs 7 must report a change (no format canonicalizes it)\n%s", out2)
+	}
+}
+
+// diffHasKeyChange reports whether a diff --json output lists a change for the given key.
+func diffHasKeyChange(t *testing.T, out, key string) bool {
+	t.Helper()
+	var jd jsonDiff
+	if err := json.Unmarshal([]byte(out), &jd); err != nil {
+		t.Fatalf("invalid diff JSON: %v\n%s", err, out)
+	}
+	for _, tc := range jd.Tags {
+		if tc.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
 // TestSetClearConflictRefused checks that the same key cannot be both written and
 // cleared in one command. The conflict is refused up front regardless of typed order;
 // set+add on one key stays legal.

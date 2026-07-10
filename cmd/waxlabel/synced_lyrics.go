@@ -66,7 +66,11 @@ func (e *editFlags) syncedLyricsAdds() ([]wl.SyncedLyrics, error) {
 		if err := checkArgText(content, "--synced-lyrics-file: "+e.syncedLyricsFile); err != nil {
 			return nil, err
 		}
-		fileLines := wl.ParseLRC(content)
+		// Parse the file uncapped: the content is already fully in memory, so the line count
+		// is bounded by the file size. Delivering every line lets the write-time cap in the
+		// library truncate and warn once (visible to --json and --strict), rather than this
+		// read silently dropping lines past the cap.
+		fileLines := wl.ParseLRCFull(content)
 		if len(fileLines) == 0 {
 			return nil, usagef("--synced-lyrics-file: %s: no timed lyric lines found (want LRC lines like [00:12.00]Text)", e.syncedLyricsFile)
 		}

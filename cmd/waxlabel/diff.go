@@ -129,7 +129,7 @@ func computeDiff(a, b *wl.Document) diffResult {
 	ca, cb := a.Chapters(), b.Chapters()
 	sa, sb := a.SyncedLyrics(), b.SyncedLyrics()
 	return diffResult{
-		tags:       tag.Diff(a.Tags(), b.Tags()),
+		tags:       numericAwareTagDiff(a.Tags(), b.Tags(), a.Format(), b.Format()),
 		picsA:      len(pa),
 		picsB:      len(pb),
 		picsDiffer: !wl.EqualPictures(pa, pb),
@@ -143,6 +143,44 @@ func computeDiff(a, b *wl.Document) diffResult {
 		syncedB:      len(sb),
 		syncedDiffer: !wl.EqualSyncedLyrics(sa, sb),
 	}
+}
+
+// numericAwareTagDiff is tag.Diff with a narrow refinement: a track/disc number/total whose old and
+// new values differ only by a leading '+' or leading zeros ("+3"/"03" vs "3") is not reported as a
+// change when the two files are different formats. Those slots are the only fields a format (MP4, as
+// a 16-bit integer) canonicalizes, so a cross-format copy legitimately turns "+3" into "3"; treating
+// that delta as no change keeps diff in step with how copy grades it (Carried), the same
+// reconstructable-difference reasoning the chapter diff applies to gapless ends.
+//
+// The fold is deliberately scoped. It is NOT applied when the two files share a format: both then
+// store the value the same way, so "03" vs "3" is a genuine on-disk difference to report. And it is
+// NOT applied to other numeric keys (play count, BPM, ...), which no format canonicalizes - folding
+// those would hide a real difference under a rationale that does not hold for them. Added and removed
+// keys are unaffected; only a same-key change is filtered.
+func numericAwareTagDiff(a, b tag.TagSet, fa, fb wl.Format) []tag.Change {
+	changes := tag.Diff(a, b)
+	if fa == fb {
+		return changes // same format stores both values verbatim; any numeric delta is genuine
+	}
+	out := changes[:0]
+	for _, c := range changes {
+		if c.Kind == tag.ChangeChanged && isNumberSlotKey(c.Key) && tag.NumericValuesEqual(c.Key, c.Old, c.New) {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// isNumberSlotKey reports whether k is one of the track/disc number/total slots a 16-bit MP4 atom
+// stores as an integer - the only canonical keys whose leading sign or zeros a cross-format write
+// drops, so the only keys a diff should fold a sign/leading-zero-only delta on.
+func isNumberSlotKey(k tag.Key) bool {
+	switch k {
+	case tag.TrackNumber, tag.TrackTotal, tag.DiscNumber, tag.DiscTotal:
+		return true
+	}
+	return false
 }
 
 // renderDiff prints the canonical-metadata delta with diff-style -/+/~ markers.

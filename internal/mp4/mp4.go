@@ -123,22 +123,16 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 	if opts.NumericGenre {
 		add(tag.Genre, core.NumericGenreCapability("numeric gnre atom"))
 	}
-	// trkn/disk slots also grade a representable-but-normalized value (a leading zero or sign, "03"
-	// stored as 3) as Lossy, so copy agrees with diff, which reports the 03 -> 3 change. Because
-	// dispose draws a reduction's reason from c.Reason(), that reason has to live on a capability
-	// whose Fidelity describes it, so the number fields get their own Fidelity rather than the
-	// generic "lossless" one. Wrapping drop around reduction keeps a genuinely unrepresentable slot
-	// Dropped.
-	//
-	// numberFields is a shallow struct copy, so only the Fidelity string (a value field) is
-	// replaced. The Constraints slice stays shared with fields and is never mutated here, the same
-	// way the MediaType and Compilation caps below also derive from fields without cloning it.
-	numberFields := fields
-	numberFields.Fidelity = "trkn/disk store the number as a 16-bit integer, so a non-canonical form (leading zeros or a sign) is normalized"
-	add(tag.TrackNumber, core.WithValueDrop(core.WithValueReduction(numberFields, numberComponentReduced), numberComponentDropped))
-	add(tag.TrackTotal, core.WithValueDrop(core.WithValueReduction(numberFields, slotValueReduced), slotValueDropped))
-	add(tag.DiscNumber, core.WithValueDrop(core.WithValueReduction(numberFields, numberComponentReduced), numberComponentDropped))
-	add(tag.DiscTotal, core.WithValueDrop(core.WithValueReduction(numberFields, slotValueReduced), slotValueDropped))
+	// trkn/disk slots store the number as a 16-bit integer, so a non-canonical form (a leading
+	// zero or sign, "03"/"+3" stored as 3) is normalized on write. That normalization is
+	// numerically lossless, so a copy grades it Carried, matching the diff command, which treats a
+	// sign/leading-zero-only delta as no change (tag.NumericValuesEqual). Only a genuinely
+	// unrepresentable slot (overflow, non-numeric, or a 0 that reads back absent) is a loss, so the
+	// number fields carry the value-drop predicate without a reduction wrapper.
+	add(tag.TrackNumber, core.WithValueDrop(fields, numberComponentDropped))
+	add(tag.TrackTotal, core.WithValueDrop(fields, slotValueDropped))
+	add(tag.DiscNumber, core.WithValueDrop(fields, numberComponentDropped))
+	add(tag.DiscTotal, core.WithValueDrop(fields, slotValueDropped))
 	add(tag.MediaType, core.WithValueDrop(fields, mediaTypeValueDropped))
 	add(tag.Compilation, core.WithValueDrop(fields, compilationValueDropped))
 	// Padding is grow-only: a forced rewrite can reserve a region, but a fit-in-place

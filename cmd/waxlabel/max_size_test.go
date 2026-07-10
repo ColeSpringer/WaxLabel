@@ -50,9 +50,9 @@ func TestParseByteSize(t *testing.T) {
 }
 
 // TestMaxSizeStdinBoundary drives the CLI at the exact ingest boundary: a valid FLAC
-// piped to `dump -` still dumps when --max-size equals its size, exits 4 (invalid-data,
-// where ErrSizeTooLarge maps) when the cap is one byte under, and dumps again when the
-// cap is disabled with 0.
+// piped to `dump -` still dumps when --max-size equals its size, exits 7 (input-too-large,
+// where ErrInputTooLarge maps - a user resource cap on a stream, not corruption) when the
+// cap is one byte under, and dumps again when the cap is disabled with 0.
 func TestMaxSizeStdinBoundary(t *testing.T) {
 	t.Parallel()
 	data, err := os.ReadFile(sampleFLAC)
@@ -67,11 +67,14 @@ func TestMaxSizeStdinBoundary(t *testing.T) {
 	}
 
 	_, errb, code := runCLIStdin(t, string(data), "dump", "--max-size", under, "-")
-	if code != 4 {
-		t.Errorf("dump - over the limit exit = %d, want 4; stderr=%q", code, errb)
+	if code != 7 {
+		t.Errorf("dump - over the limit exit = %d, want 7; stderr=%q", code, errb)
 	}
 	if !strings.Contains(errb, "exceeds") {
 		t.Errorf("over-limit stderr should explain the size cap, got %q", errb)
+	}
+	if strings.Contains(errb, "declared size") {
+		t.Errorf("over-limit stderr must not use the corruption 'declared size' framing, got %q", errb)
 	}
 
 	if _, errb, code := runCLIStdin(t, string(data), "dump", "--max-size", "0", "-"); code != 0 {
@@ -91,8 +94,8 @@ func (endlessReader) Read(p []byte) (int, error) {
 }
 
 // TestMaxSizeStopsEndlessStdin is the no-hang guard: a bounded `dump -` on an endless
-// stream stops at the cap and exits 4 promptly instead of buffering forever. A regression
-// that dropped the bound would spool the endless reader and hang, which the timeout
+// stream stops at the cap and exits 7 (input-too-large) promptly instead of buffering forever.
+// A regression that dropped the bound would spool the endless reader and hang, which the timeout
 // converts into a prompt failure.
 func TestMaxSizeStopsEndlessStdin(t *testing.T) {
 	t.Parallel()
@@ -108,8 +111,8 @@ func TestMaxSizeStopsEndlessStdin(t *testing.T) {
 	}()
 	select {
 	case r := <-done:
-		if r.code != 4 {
-			t.Errorf("endless stdin exit = %d, want 4 (bounded, invalid-data); stderr=%q", r.code, r.errb)
+		if r.code != 7 {
+			t.Errorf("endless stdin exit = %d, want 7 (bounded, input-too-large); stderr=%q", r.code, r.errb)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("bounded dump - hung on an endless stream")

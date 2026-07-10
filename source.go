@@ -161,7 +161,7 @@ func OpenSource(ctx context.Context, r io.Reader, opts ...ParseOption) (*Source,
 		return nil, err
 	}
 	if limit > 0 && int64(len(data)) > limit {
-		return nil, fmt.Errorf("%w: stream exceeds %s", waxerr.ErrSizeTooLarge, HumanBytes(limit))
+		return nil, fmt.Errorf("%w: stream exceeds %s", waxerr.ErrInputTooLarge, HumanBytes(limit))
 	}
 	doc, err := parseSource(ctx, core.BytesSource(data), "", po)
 	if err != nil {

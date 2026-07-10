@@ -36,6 +36,12 @@ type StructuredEdit struct {
 	// silently inherit the destination's. An authored line-only edit leaves this false and
 	// keeps the documented CLI convenience of preserving the file's existing language.
 	SyncedLyricsCarried bool
+	// SyncedLyricsCleared marks the synced-lyrics set as explicitly cleared before this edit
+	// authored a new one, so the same language/descriptor fallback is skipped: a clear means
+	// "start fresh," so an authored set with no language reads back with none instead of
+	// inheriting the cleared one. It is distinct from SyncedLyricsCarried (a faithful transfer)
+	// so the edit is not mislabeled; both suppress the fallback.
+	SyncedLyricsCleared bool
 	// MediaDuration is the file's playable length, used only to bound a trailing open-ended
 	// chapter (End == 0) at CHAP serialization time so a spec-conforming reader sees a
 	// concrete end instead of the 0xFFFFFFFF "unused" sentinel (~49.7 days). Zero (unknown
@@ -308,7 +314,10 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	if se.SyncedLyricsChanged && len(se.SyncedLyrics) > 0 {
 		fallbackLang := origLangs["SYLT"]
 		fallbackDesc := origSyltDesc
-		if se.SyncedLyricsCarried {
+		// A faithful carry (no inheritance) and an explicit clear-then-author (start fresh) both
+		// suppress the fallback, so an authored set with no language reads back with none rather
+		// than silently inheriting the destination's existing SYLT language and descriptor.
+		if se.SyncedLyricsCarried || se.SyncedLyricsCleared {
 			fallbackLang = ""
 			fallbackDesc = ""
 		}

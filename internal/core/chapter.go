@@ -216,6 +216,14 @@ func ChapterMetadataDroppedMessage(loss ChapterLoss) string {
 	}
 }
 
+// ChaptersUnsupportedMessage returns the drop warning text for a destination format that
+// has no chapter store at all, so the whole list is dropped rather than the write refused.
+// It is distinct from ChapterMetadataDroppedMessage (chapters that ARE stored but lose a
+// field): here the format holds no chapters, so nothing is stored.
+func ChaptersUnsupportedMessage(f Format) string {
+	return fmt.Sprintf("%s %s file cannot store chapters; they were dropped", IndefiniteArticle(f.String()), f)
+}
+
 // EqualChapters reports whether two chapter slices are identical by content,
 // including order. It is the chapter analogue of EqualPictures, so a codec can
 // detect a chapter edit the same way it detects a picture edit.

@@ -353,6 +353,11 @@ func parseTag(src core.ReaderAtSized, tagEl element, depth *bits.Depth, limit in
 			if err != nil {
 				return err
 			}
+			// Capture raw only for the top-level SimpleTag: its bytes already span the
+			// whole nested subtree, and only a top-level tag's raw is ever consumed by
+			// the write path. Capturing at every nesting level re-copied nearly the whole
+			// subtree per level, so retained memory grew with depth times subtree size.
+			st.raw = captureRaw(src, el, limit)
 			g.tags = append(g.tags, st)
 		}
 		return nil
@@ -384,7 +389,9 @@ func parseTargets(src core.ReaderAtSized, targets element, depth *bits.Depth, li
 // parseSimpleTag reads a SimpleTag (name/value/language) and recurses into any
 // nested sub-tags. eachChild's depth guard bounds the recursion.
 func parseSimpleTag(src core.ReaderAtSized, st element, depth *bits.Depth, limit int64) (simpleTag, error) {
-	s := simpleTag{raw: captureRaw(src, st, limit)}
+	// Leave raw nil here: the caller sets it on the top-level tag only. A nested
+	// sub-tag's raw is never read (its bytes are already part of the top-level raw).
+	s := simpleTag{}
 	err := eachChild(src, st.dataStart, st.dataEnd, depth, limit, func(el element) error {
 		switch el.id {
 		case idTagName:

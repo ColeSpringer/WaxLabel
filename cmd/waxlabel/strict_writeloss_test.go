@@ -66,17 +66,26 @@ func TestStrictEscalatesNewWriteLossesEndToEnd(t *testing.T) {
 		}
 	})
 
-	// value-coerced (keyed): TRACKNUMBER=03 on an M4A stores the integer 3 (trkn is a uint16), so
-	// the leading zero is normalized away. That is a coercion --strict must catch, the number half of
-	// the family alongside COMPILATION's boolean coercion. The error names the key and the coercion.
-	t.Run("value-coerced number keyed", func(t *testing.T) {
+	// value-coerced (keyed): COMPILATION=maybe on an M4A is not a valid boolean, so cpil stores it
+	// as 0 (false) rather than dropping it. That is a coercion --strict must catch; the error names
+	// the key and the coercion.
+	t.Run("value-coerced boolean keyed", func(t *testing.T) {
 		m4a := copyFixture(t, notagsM4A)
-		_, stderr, code := runCLI(t, "set", m4a, "--set", "TRACKNUMBER=03", "--strict")
+		_, stderr, code := runCLI(t, "set", m4a, "--set", "COMPILATION=maybe", "--strict")
 		if code != 2 {
 			t.Fatalf("exit = %d, want 2", code)
 		}
-		if !strings.Contains(stderr, "TRACKNUMBER") || !strings.Contains(stderr, "coerced") {
-			t.Errorf("strict error = %q, want it to name TRACKNUMBER and the coercion", stderr)
+		if !strings.Contains(stderr, "COMPILATION") || !strings.Contains(stderr, "coerced") {
+			t.Errorf("strict error = %q, want it to name COMPILATION and the coercion", stderr)
+		}
+	})
+
+	// A trkn/disk leading zero or sign is a numerically-lossless canonicalization, not a coercion,
+	// so TRACKNUMBER=03 stores 3 without warning and does NOT trip --strict.
+	t.Run("number canonicalization is not a strict loss", func(t *testing.T) {
+		m4a := copyFixture(t, notagsM4A)
+		if _, stderr, code := runCLI(t, "set", m4a, "--set", "TRACKNUMBER=03", "--strict"); code != 0 {
+			t.Errorf("TRACKNUMBER=03 --strict exit = %d, want 0 (a leading zero is not a loss): %s", code, stderr)
 		}
 	})
 

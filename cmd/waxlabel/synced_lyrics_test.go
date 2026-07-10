@@ -259,15 +259,46 @@ func TestCLISyncedLyricsLangUppercaseCanonicalized(t *testing.T) {
 	}
 }
 
-// TestCLISyncedLyricsUnsupported checks authoring synced lyrics on a format that cannot
-// store them (MP4) fails cleanly rather than silently dropping.
+// TestCLISyncedLyricsUnsupported checks authoring synced lyrics on a format that cannot store
+// them (MP4) drops the set with a warning rather than failing, so a mixed edit still applies
+// its storable part (a copy behaves the same way). A storable TITLE alongside the unsupported
+// set is written, the drop surfaces as synced-lyrics-unsupported, and --strict re-escalates it
+// to a failure.
 func TestCLISyncedLyricsUnsupported(t *testing.T) {
+	const code = "synced-lyrics-unsupported"
+
+	// A mixed edit: the storable TITLE lands, the unsupported synced-lyrics set is dropped.
 	file := copyFixture(t, "../../testdata/notags.m4a")
-	_, errb, code := runCLI(t, "set", file, "--add-synced-lyric", "0:00=Hi")
-	if code == 0 {
-		t.Fatal("expected a non-zero exit setting synced lyrics on MP4")
+	out, errb, exit := runCLI(t, "--json", "set", file, "--set", "TITLE=KeepMe", "--add-synced-lyric", "0:00=Hi")
+	if exit != 0 {
+		t.Fatalf("set with an unsupported synced-lyrics set exit = %d, want 0: %s", exit, errb)
 	}
-	if errb == "" {
-		t.Error("expected an error message on stderr")
+	if !reportHasWarning(t, out, code) {
+		t.Errorf("dropping synced lyrics on MP4 must warn %q\n%s", code, out)
+	}
+	dump, _, _ := runCLI(t, "dump", "--json", file)
+	jd := decodeJSONOne[jsonDocument](t, dump)
+	if got := tagValues(jd, "TITLE"); len(got) != 1 || got[0] != "KeepMe" {
+		t.Errorf("TITLE = %v, want [KeepMe] (the storable edit still applies)", got)
+	}
+	if len(jd.SyncedLyrics) != 0 {
+		t.Errorf("synced lyrics = %+v, want none (dropped on an MP4)", jd.SyncedLyrics)
+	}
+
+	// An all-unstorable request is a no-op success that still surfaces the drop warning.
+	file2 := copyFixture(t, "../../testdata/notags.m4a")
+	out2, errb2, exit2 := runCLI(t, "--json", "set", file2, "--add-synced-lyric", "0:00=Hi")
+	if exit2 != 0 {
+		t.Fatalf("all-unstorable set exit = %d, want 0: %s", exit2, errb2)
+	}
+	if !reportHasWarning(t, out2, code) {
+		t.Errorf("an all-unstorable set must still warn %q\n%s", code, out2)
+	}
+
+	// --strict re-escalates the drop to a per-file failure.
+	file3 := copyFixture(t, "../../testdata/notags.m4a")
+	_, _, exit3 := runCLI(t, "set", file3, "--strict", "--add-synced-lyric", "0:00=Hi")
+	if exit3 == 0 {
+		t.Error("--strict must fail when an authored synced-lyrics set is dropped as unsupported")
 	}
 }

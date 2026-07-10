@@ -188,6 +188,21 @@ type WriteOptions struct {
 	// lyric set (FLAC/Ogg have no language) must not, or the report says "carried" while the
 	// bytes gain a language the source never had.
 	Carried bool
+	// AllowUnsupportedDrop makes [Editor.Prepare] drop a whole structural edit the
+	// destination format cannot store at all - authored chapters or synced lyrics on a
+	// format with no such store, or cover art on WebM - with a warning, instead of failing
+	// the write. It matches how a copy silently drops what the destination cannot hold, so a
+	// set that mixes a storable edit with an unstorable one still applies the storable part.
+	// Off by default (the whole-item capability gates are hard errors); the CLI enables it for
+	// set and plan, where --strict re-escalates the drop warnings to a failure.
+	AllowUnsupportedDrop bool
+	// SyncedLyricsCleared marks that the synced-lyrics set was explicitly cleared before this
+	// edit authored a new one, so an ID3 SYLT rewrite skips its fallback to the destination's
+	// existing SYLT language and descriptor: a cleared-then-authored set with no language reads
+	// back with none instead of silently inheriting the old one. It is distinct from Carried (a
+	// faithful transfer), which would mislabel the edit. Off by default; [Editor.ClearSyncedLyrics]
+	// sets it, and a plain authored set leaves it off to keep the inheritance convenience.
+	SyncedLyricsCleared bool
 }
 
 // DefaultWriteOptions returns the preservation-first defaults.

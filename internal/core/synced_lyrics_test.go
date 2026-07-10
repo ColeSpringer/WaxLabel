@@ -1,6 +1,8 @@
 package core
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -25,6 +27,32 @@ func TestParseLRCBasics(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("line %d = %+v, want %+v", i, got[i], want[i])
 		}
+	}
+}
+
+// TestParseLRCReportTruncation checks the read-path per-set line cap: an LRC document with
+// more than MaxSyncedLines timed lines is truncated to the cap and reports truncated=true, so
+// the VorbisComment read surfaces a warning rather than dropping lines silently. A document
+// within the cap reports truncated=false. This is the read counterpart to the write-path
+// TruncateSyncedLyrics cap; both keep a >cap set from being handled silently.
+func TestParseLRCReportTruncation(t *testing.T) {
+	var b strings.Builder
+	const over = MaxSyncedLines + 5
+	for i := 0; i < over; i++ {
+		// One distinct timestamp per line (minute i, seconds 0), each a valid MM:SS form well
+		// within the LRC minute ceiling.
+		fmt.Fprintf(&b, "[%d:00.000]x\n", i)
+	}
+	lines, truncated := ParseLRCReport(b.String())
+	if !truncated {
+		t.Errorf("a >cap LRC document must report truncated=true")
+	}
+	if len(lines) != MaxSyncedLines {
+		t.Errorf("truncated line count = %d, want the cap %d", len(lines), MaxSyncedLines)
+	}
+	// A set within the cap does not report truncation.
+	if _, tr := ParseLRCReport("[00:01.00]a\n[00:02.00]b"); tr {
+		t.Errorf("a within-cap document wrongly reported truncated=true")
 	}
 }
 

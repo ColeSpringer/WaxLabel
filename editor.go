@@ -43,6 +43,12 @@ type Editor struct {
 	chaptersTouched     bool
 	syncedLyrics        []core.SyncedLyrics
 	syncedLyricsTouched bool
+	// syncedLyricsCleared marks that the synced-lyrics set was explicitly cleared before this
+	// edit, so an ID3 SYLT rewrite must not fall back to the destination's existing SYLT
+	// language and descriptor: a clear means "start fresh," so an authored set with no language
+	// reads back with none rather than silently inheriting the cleared one. A plain authored
+	// set (no preceding clear) leaves this false and keeps that inheritance convenience.
+	syncedLyricsCleared bool
 	// carried marks this editor as a faithful carry from a source (the transfer
 	// engine), not a user-authored edit, so [Editor.Prepare] suppresses the edit-time
 	// sanity warnings that flag authoring mistakes - the chapter past-duration /
@@ -181,7 +187,11 @@ func (e *Editor) ClearChapters() *Editor {
 // Time with a stable sort, matching [ParseLRC] and [Editor.SetChapters]. The line slices
 // are deep-copied so later caller mutations cannot change the pending edit. A format that
 // cannot write synced lyrics reports that through [Capabilities], and [Editor.Prepare]
-// rejects the write.
+// rejects the write (or, under [WithAllowUnsupportedDrop], drops the set with a warning).
+//
+// It leaves the explicit-clear marker untouched, so calling it after [Editor.ClearSyncedLyrics]
+// authors a fresh set that does not inherit the destination's existing ID3 SYLT language, while
+// a plain SetSyncedLyrics with no preceding clear keeps that inheritance convenience.
 func (e *Editor) SetSyncedLyrics(sls ...SyncedLyrics) *Editor {
 	e.syncedLyrics = make([]core.SyncedLyrics, 0, len(sls))
 	for _, sl := range sls {
@@ -200,10 +210,14 @@ func (e *Editor) SetSyncedLyrics(sls ...SyncedLyrics) *Editor {
 	return e
 }
 
-// ClearSyncedLyrics removes all synced lyrics.
+// ClearSyncedLyrics removes all synced lyrics. It also marks the set as explicitly cleared,
+// so a following [Editor.SetSyncedLyrics] authors a fresh set that does not inherit the
+// destination's existing ID3 SYLT language or descriptor. A clear with no following set just
+// removes the synced lyrics.
 func (e *Editor) ClearSyncedLyrics() *Editor {
 	e.syncedLyrics = nil
 	e.syncedLyricsTouched = true
+	e.syncedLyricsCleared = true
 	return e
 }
 
@@ -226,6 +240,11 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// faithful transfer (e.g. the ID3 SYLT language fallback). Set at the single transfer
 	// chokepoint (transfer.go), so every carry path inherits it and authored edits do not.
 	wo.Carried = e.carried
+	// Propagate the explicit-clear marker so an ID3 SYLT rewrite skips its language/descriptor
+	// fallback: a cleared-then-authored set starts fresh instead of inheriting the destination's
+	// existing SYLT metadata. It is distinct from Carried (a faithful transfer), which would
+	// mislabel the edit.
+	wo.SyncedLyricsCleared = e.syncedLyricsCleared
 
 	// An editor from a zero-value Document (Document.Edit guards that case) has no
 	// base media to plan against; report it cleanly rather than deref a nil base
@@ -344,41 +363,68 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// Compute capabilities once under these write options. The chapter gate below and
 	// the value-reduction check after planning must read the same write policy.
 	caps := codec.Capabilities(e.base, wo)
-	// Refuse to silently drop chapters on a format that cannot store them. This is a
-	// format-independent capability gate (it reads the destination's Chapters write
-	// level); the analogous picture refusal - a cover onto WebM - is enforced
-	// separately as a WebM-specific check inside the Matroska writer, not here, so the
-	// two share intent but neither site nor mechanism. Guard on a non-empty list so
-	// ClearChapters() on a chapterless format stays a harmless no-op. A format-incapable
-	// destination in a transfer is handled earlier (ProjectTransfer marks chapters
-	// Dropped before SetChapters runs), so chaptersTouched is false there and this
-	// never fires.
-	if e.chaptersTouched && len(e.chapters) > 0 &&
-		caps.Chapters.Write < core.AccessPartial {
-		return nil, fmt.Errorf("%w: chapters cannot be written to %s %s file",
-			waxerr.ErrUnsupportedTag, core.IndefiniteArticle(e.base.Format.String()), e.base.Format)
+	// A whole structural edit the destination cannot store at all is either a hard error
+	// (the default) or, when the caller opts into dropping unsupported edits, removed with a
+	// warning so the storable part of the edit still applies (matching how a cross-format
+	// copy drops what the destination cannot hold). A dropped item builds a fresh edited.X
+	// and records the drop; its metadata-loss and sanity warnings below are then skipped so
+	// exactly one warning surfaces per drop. The drops run before the chapter reconcile and
+	// codec.Plan so the plan sees the storable remainder. A format-incapable destination in a
+	// transfer is handled earlier (ProjectTransfer marks the item Dropped before it is set),
+	// so the touched flags are false there and none of this fires.
+	var chaptersDropped, syncedLyricsDropped, picturesDropped bool
+
+	// Chapters: refuse (or drop) a chapter edit on a format with no chapter store. Guard on a
+	// non-empty list so ClearChapters() on a chapterless format stays a harmless no-op.
+	if e.chaptersTouched && len(e.chapters) > 0 && caps.Chapters.Write < core.AccessPartial {
+		if !wo.AllowUnsupportedDrop {
+			return nil, fmt.Errorf("%w: chapters cannot be written to %s %s file",
+				waxerr.ErrUnsupportedTag, core.IndefiniteArticle(e.base.Format.String()), e.base.Format)
+		}
+		edited.Chapters = nil
+		chaptersDropped = true
 	}
-	// Enforce the destination's chapter-count limit before the writer sees the list.
-	// ID3 CTOC and MP4 Nero chpl use single-byte counts, so allowing 256 entries would
-	// produce a malformed container. Transfers apply the same limit before calling
-	// SetChapters, which leaves this path for direct edits.
-	if e.chaptersTouched && caps.Chapters.MaxItems > 0 && len(e.chapters) > caps.Chapters.MaxItems {
+	// The chapter-count limit stays a hard error even under the drop option: ID3 CTOC and MP4
+	// Nero chpl use single-byte counts, so allowing 256 entries would produce a malformed
+	// container, and silently truncating a small deliberate list is worse than refusing.
+	// Skipped once the whole list is already dropped. Transfers apply the same limit before
+	// calling SetChapters, which leaves this path for direct edits.
+	if !chaptersDropped && e.chaptersTouched && caps.Chapters.MaxItems > 0 && len(e.chapters) > caps.Chapters.MaxItems {
 		return nil, fmt.Errorf("%w: %d chapters exceeds the %d %s can store",
 			waxerr.ErrUnsupportedTag, len(e.chapters), caps.Chapters.MaxItems, e.base.Format)
 	}
-	// Reject authored synced lyrics when the destination has no metadata store for them,
-	// using the same capability gate as chapters above. MP4 and Matroska can carry timed
-	// lyric tracks, but those tracks are outside this metadata model. A clear on an
-	// unsupported format stays a no-op, and MaxItems is enforced before the writer sees the
-	// list (the LRC store holds a single set).
-	if e.syncedLyricsTouched && len(e.syncedLyrics) > 0 &&
-		caps.SyncedLyrics.Write < core.AccessPartial {
-		return nil, fmt.Errorf("%w: synced lyrics cannot be written to %s %s file",
-			waxerr.ErrUnsupportedTag, core.IndefiniteArticle(e.base.Format.String()), e.base.Format)
+	// Synced lyrics: refuse (or drop) an authored set on a format with no synced-lyrics store.
+	// MP4 and Matroska can carry timed lyric tracks, but those tracks are outside this
+	// metadata model. A clear on an unsupported format stays a no-op.
+	if e.syncedLyricsTouched && len(e.syncedLyrics) > 0 && caps.SyncedLyrics.Write < core.AccessPartial {
+		if !wo.AllowUnsupportedDrop {
+			return nil, fmt.Errorf("%w: synced lyrics cannot be written to %s %s file",
+				waxerr.ErrUnsupportedTag, core.IndefiniteArticle(e.base.Format.String()), e.base.Format)
+		}
+		edited.SyncedLyrics = nil
+		syncedLyricsDropped = true
 	}
-	if e.syncedLyricsTouched && caps.SyncedLyrics.MaxItems > 0 && len(e.syncedLyrics) > caps.SyncedLyrics.MaxItems {
+	// The synced-lyrics set-count limit stays a hard error (the LRC store holds a single set).
+	if !syncedLyricsDropped && e.syncedLyricsTouched && caps.SyncedLyrics.MaxItems > 0 && len(e.syncedLyrics) > caps.SyncedLyrics.MaxItems {
 		return nil, fmt.Errorf("%w: %d synced-lyrics sets exceeds the %d %s can store",
 			waxerr.ErrUnsupportedTag, len(e.syncedLyrics), caps.SyncedLyrics.MaxItems, e.base.Format)
+	}
+	// Cover art: WebM excludes the Attachments element, so a cover edit on it cannot be
+	// stored. Under the drop option, remove the pictures here; otherwise the Matroska writer's
+	// plan-time cover refusal (keyed on the same absent capability) remains the backstop.
+	if wo.AllowUnsupportedDrop && e.picsTouched && len(e.pictures) > 0 && caps.Pictures.Write < core.AccessPartial {
+		edited.Pictures = e.base.Pictures
+		picturesDropped = true
+	}
+	// Truncate an over-cap synced-lyrics set to the modeled per-set line cap before planning,
+	// so the written file and the plan result agree on the line count. A write-path truncation
+	// would leave the plan over-counting. Skipped for a set already dropped whole above.
+	var syncedLyricsTruncated bool
+	if e.syncedLyricsTouched && !syncedLyricsDropped && len(edited.SyncedLyrics) > 0 {
+		if capped, truncated := core.TruncateSyncedLyrics(edited.SyncedLyrics); truncated {
+			edited.SyncedLyrics = capped
+			syncedLyricsTruncated = true
+		}
 	}
 	// Do not reject a parsed 1-2 byte SYLT language here. Some files store NUL-padded short
 	// codes, and the writer preserves them on read-then-write; longer values are truncated
@@ -393,7 +439,7 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// Prepare() recomputes identically and the note stays deterministic); the !e.carried gate
 	// preserves faithful-transfer fidelity.
 	var chaptersReconciled bool
-	if e.chaptersTouched && !e.carried {
+	if e.chaptersTouched && !e.carried && !chaptersDropped {
 		reconciled := core.CloneChapters(e.chapters)
 		if core.ReconcileChapterOverlaps(reconciled, e.base.Chapters) {
 			edited.Chapters = reconciled
@@ -411,7 +457,10 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// --add-chapter merges into the SetChapters list (so warning about them would
 	// flag chapters the user never touched). A faithful carry (the transfer engine)
 	// authors nothing, so it suppresses these entirely via the carried flag.
-	if e.chaptersTouched && !e.carried {
+	// A chapter list dropped whole above skips these too, so the single unsupported drop
+	// warning is the only signal rather than a flurry of sanity notes about chapters that
+	// will not be written.
+	if e.chaptersTouched && !e.carried && !chaptersDropped {
 		wp.Report.Warnings = appendChapterWarnings(wp.Report.Warnings, e.chapters, e.base.Chapters, e.base.Properties.Duration())
 		// Matroska/WebM can store explicit chapter end times. A CLI chapter rebuild has
 		// no end-time syntax, so warn when it replaces ended chapters with open-ended ones.
@@ -444,11 +493,34 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// mirroring the chapter metadata-dropped warning above. SyncedLyricsLoss is
 	// option-independent, so use the capability value already computed for the write plan.
 	// A transfer that carries source metadata is already graded in its transfer report.
-	if e.syncedLyricsTouched && !e.carried {
+	// A set dropped whole above skips this, so the single unsupported drop warning stands
+	// alone (the metadata-loss code would otherwise describe a set that is not written).
+	if e.syncedLyricsTouched && !e.carried && !syncedLyricsDropped {
 		if loss := caps.SyncedLyrics.SyncedLyricsLoss; core.SyncedLyricsLoseMetadata(e.syncedLyrics, loss) {
 			wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnSyncedLyricsMetadataDropped,
 				core.SyncedLyricsMetadataDroppedMessage())
 		}
+	}
+	// Surface the whole-item structural drops and the synced-lyrics truncation recorded above.
+	// They are appended after planning so they ride the same plan-report Warnings path the CLI
+	// and JSON render, and so --strict (which reads these codes) escalates a drop or truncation
+	// to a failure. A drop still surfaces even when the remaining edit is a byte-identical
+	// no-op, so an all-unstorable set reports the loss instead of silently succeeding.
+	if chaptersDropped {
+		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnChaptersUnsupported,
+			core.ChaptersUnsupportedMessage(e.base.Format))
+	}
+	if syncedLyricsDropped {
+		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnSyncedLyricsUnsupported,
+			core.SyncedLyricsUnsupportedMessage(e.base.Format))
+	}
+	if picturesDropped {
+		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnPictureUnsupported,
+			core.PictureUnsupportedMessage())
+	}
+	if syncedLyricsTruncated {
+		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnSyncedLyricsTruncated,
+			core.SyncedLyricsTruncatedMessage())
 	}
 	// Surface edit-time picture sanity warnings for the pictures this edit authored
 	// (added via AddPicture, tracked by addedMask) - an unrecognized image embedded
@@ -456,8 +528,10 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// makes a second - so the user sees what a picture edit introduced without being
 	// lectured about a file's pre-existing art (which stays the linter's whole-set
 	// concern, mirroring how the chapter checks scope to newly-authored chapters). A
-	// faithful carry authors nothing, so it suppresses these via the carried flag.
-	if e.picsTouched && !e.carried {
+	// faithful carry authors nothing, so it suppresses these via the carried flag. A
+	// picture set dropped whole above skips this too, so the single unsupported drop
+	// warning is the only signal rather than a sanity note about art that is not written.
+	if e.picsTouched && !e.carried && !picturesDropped {
 		wp.Report.Warnings = appendPictureWarnings(wp.Report.Warnings, e.pictures, e.addedMask)
 	}
 	// Surface a known single-valued key the edit leaves holding multiple values as a

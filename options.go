@@ -135,6 +135,17 @@ func WithWebMSubset() WriteOption {
 	return func(o *core.WriteOptions) { o.WebMSubset = true }
 }
 
+// WithAllowUnsupportedDrop makes [Editor.Prepare] drop a whole structural edit the
+// destination format cannot store at all - authored synced lyrics or chapters on a format
+// that has no such store, or cover art on a WebM file - with a warning, rather than failing
+// the write. It mirrors how a cross-format copy silently drops what the destination cannot
+// hold, so a set that combines a storable edit with an unstorable one still applies the
+// storable part and succeeds. By default such an edit is a hard error. The CLI passes this
+// for set and plan; --strict promotes the resulting drop warning back to a failure.
+func WithAllowUnsupportedDrop() WriteOption {
+	return func(o *core.WriteOptions) { o.AllowUnsupportedDrop = true }
+}
+
 // WithID3MultiValue selects how multiple values for one field are stored in an
 // ID3v2.3 tag, which has no standard multi-value text form. ID3v2.4 always
 // NUL-separates regardless; the v2.3 compatibility impact is flagged in the

@@ -636,6 +636,12 @@ func classifyError(err error) classifiedError {
 	case errors.Is(err, waxerr.ErrSourceChanged):
 		c.exitCode, c.code, c.hint = 5, "source-changed",
 			"the file changed since it was read; re-run to pick up the new contents"
+	case errors.Is(err, waxerr.ErrInputTooLarge):
+		// A user-configured resource cap on a streamed input (--max-size / WithMaxSourceBytes)
+		// was exceeded. It is not corruption (a raw stream has no declared size), so it gets its
+		// own exit code rather than being folded into invalid-data (exit 4). Follows the
+		// split-sentinel precedent of the chained/unaligned-stream refusals.
+		c.exitCode, c.code = 7, "input-too-large"
 	case errors.Is(err, waxerr.ErrInvalidData),
 		errors.Is(err, waxerr.ErrSizeTooLarge),
 		errors.Is(err, waxerr.ErrTooDeep),
@@ -674,6 +680,7 @@ var errClassRank = map[string]int{
 	"timeout":               100, // exit 130
 	"source-changed":        90,  // exit 5
 	"invalid-data":          80,  // exit 4: a corrupt file
+	"input-too-large":       75,  // exit 7: a streamed input over the user's --max-size cap (not corruption)
 	"unsupported-format":    70,  // exit 3
 	"unsupported-tag":       65,  // exit 3
 	"unsupported-stream":    64,  // exit 3: a chained/multiplexed Ogg stream
