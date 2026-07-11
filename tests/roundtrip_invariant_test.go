@@ -44,7 +44,9 @@ func TestRoundTripInvariant(t *testing.T) {
 		{"flac over-range synced lyric", read(notagsFLAC),
 			func(e *wl.Editor) { e.SetSyncedLyrics(overLyric) }},
 		{"flac malformed picture + add cover", flacWithMalformedPicture(),
-			func(e *wl.Editor) { e.AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}) }},
+			func(e *wl.Editor) {
+				e.AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()})
+			}},
 		{"wav duplicate title + tag edit",
 			wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Title A"}, [2]string{"INAM", "Title B"}), wavData(400)),
 			func(e *wl.Editor) { e.Set(tag.Artist, "New Artist") }},

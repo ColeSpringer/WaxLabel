@@ -28,8 +28,8 @@ func flacWithCommentBlockVendor(vendor string, comments []vorbis.Comment, native
 		out = append(out, flacBlock(6, false, vorbis.RenderPicture(np))...) // PICTURE (block type 6)
 	}
 	out = append(out, flacBlock(4, false, vorbis.RenderCommentList(vendor, comments))...) // VORBIS_COMMENT
-	out = append(out, flacBlock(1, true, make([]byte, 4))...)                              // PADDING (last)
-	return append(out, 0xFF, 0xF8)                                                         // frame sync
+	out = append(out, flacBlock(1, true, make([]byte, 4))...)                             // PADDING (last)
+	return append(out, 0xFF, 0xF8)                                                        // frame sync
 }
 
 // commentPictureValue renders p as the base64 METADATA_BLOCK_PICTURE comment value (the Ogg

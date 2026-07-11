@@ -10,7 +10,7 @@ import (
 // TestWAVAIFFPresentEmptyRoundTripIdempotent is the library-level regression: WAV INFO items
 // (a size-1 NUL for an empty ZSTR) and AIFF text chunks (genuinely zero-length) now store a
 // present-empty value in their native chunk, so `--set COPYRIGHT=` reads back present-empty
-// (['']) like every other format, and re-applying the same edit is a byte-stable no-op.
+// ([""]) like every other format, and re-applying the same edit is a byte-stable no-op.
 func TestWAVAIFFPresentEmptyRoundTripIdempotent(t *testing.T) {
 	for _, fx := range []string{notagsWAV, notagsAIFF} {
 		t.Run(filepath.Base(fx), func(t *testing.T) {

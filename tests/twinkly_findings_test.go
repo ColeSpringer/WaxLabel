@@ -180,10 +180,10 @@ func TestVorbisSyncedLyricOverflowClampsAndWarns(t *testing.T) {
 // PICTURE block whose body is too short to decode (warned + skipped at parse).
 func flacWithMalformedPicture() []byte {
 	out := []byte("fLaC")
-	out = append(out, flacBlock(0, false, validStreamInfo())...)      // STREAMINFO
-	out = append(out, flacBlock(4, false, renderVC("TITLE=x"))...)    // VORBIS_COMMENT
+	out = append(out, flacBlock(0, false, validStreamInfo())...)       // STREAMINFO
+	out = append(out, flacBlock(4, false, renderVC("TITLE=x"))...)     // VORBIS_COMMENT
 	out = append(out, flacBlock(6, true, []byte{0, 0, 0, 3, 1, 2})...) // PICTURE, truncated body, last
-	return append(out, 0xFF, 0xF8)                                    // audio
+	return append(out, 0xFF, 0xF8)                                     // audio
 }
 
 func TestFLACMalformedPicturePreservedAcrossPictureEdit(t *testing.T) {
