@@ -1,0 +1,102 @@
+name: Release
+
+# Build and publish the CLI binaries whenever a version tag (v*) is pushed. Binaries are
+# built from the checked-out tag; the tag is linked in as the version with -ldflags so a
+# binary reports it deterministically (resolveVersion in cmd/waxlabel prefers it).
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Creating the Release and uploading assets needs write access to the repo contents.
+permissions:
+  contents: write
+
+# One release run per tag; never cancel a run mid-upload.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: build and publish binaries
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # Gate: rerun the race suite (ci.yml also runs it on main) against the exact tagged
+      # tree before any binary is published. ffmpeg-dependent differential tests skip
+      # cleanly when ffmpeg is absent.
+      - name: Test
+        run: go test -race ./...
+
+      - name: Build archives
+        env:
+          CGO_ENABLED: '0'
+          GOFLAGS: -trimpath
+        run: |
+          set -euo pipefail
+          out="${PWD}/dist"
+          mkdir -p "$out"
+          # Link the tag in as the version so each binary reports it regardless of how
+          # build info would derive a version from VCS.
+          ldflags="-s -w -X main.version=${VERSION}"
+
+          build() {
+            local os="$1" arch="$2"
+            local exe="waxlabel"
+            [ "$os" = "windows" ] && exe="waxlabel.exe"
+            local d="stage/${os}_${arch}"
+            mkdir -p "$d"
+            echo "building ${os}/${arch}"
+            GOOS="$os" GOARCH="$arch" go build -ldflags "$ldflags" -o "$d/$exe" ./cmd/waxlabel
+            cp LICENSE README.md "$d/"
+
+            local base="waxlabel_${VERSION}_${os}_${arch}"
+            if [ "$os" = "windows" ]; then
+              zip -q -j -X "$out/${base}.zip" "$d/$exe" "$d/LICENSE" "$d/README.md"
+            else
+              tar -C "$d" -czf "$out/${base}.tar.gz" "$exe" LICENSE README.md
+            fi
+          }
+
+          build linux   amd64
+          build linux   arm64
+          build darwin  amd64
+          build darwin  arm64
+          build windows amd64
+          build windows arm64
+
+          # All targets share these ldflags, so running the native (linux/amd64) binary
+          # confirms the version was linked in for the whole set before publishing.
+          got="$(./stage/linux_amd64/waxlabel version)"
+          want="waxlabel version ${VERSION}"
+          if [ "$got" != "$want" ]; then
+            echo "::error::version stamp check failed: got '${got}', want '${want}'"
+            exit 1
+          fi
+
+          # Checksums over the archives. Bare globs keep the names free of a ./ prefix.
+          ( cd "$out" && sha256sum *.tar.gz *.zip > checksums.txt )
+          rm -rf stage
+          echo "built artifacts:"
+          ls -la "$out"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # If the maintainer already created the Release for this tag (with hand-written
+          # notes), just attach the binaries. Otherwise create it with generated notes.
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release upload "$VERSION" dist/* --clobber
+          else
+            gh release create "$VERSION" dist/* --title "$VERSION" --generate-notes --verify-tag
+          fi

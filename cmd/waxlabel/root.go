@@ -238,9 +238,19 @@ func wrapUsageErrors(cmd *cobra.Command) {
 	}
 }
 
-// resolveVersion reports the build version from the embedded module info, or
-// "dev" for an untagged build (the common case during development).
+// version, when set with -ldflags "-X main.version=<tag>" at build time, is the release
+// version and takes precedence. Release binaries set it to report an exact tag
+// deterministically, rather than the version build info derives from VCS (which varies
+// with checkout depth and dirty state). go install and plain builds leave it empty and
+// fall back to the build-info version below.
+var version string
+
+// resolveVersion reports the release version linked in at build time, else the module or
+// VCS version from build info, else "dev" when build info carries neither.
 func resolveVersion() string {
+	if version != "" {
+		return version
+	}
 	if bi, ok := debug.ReadBuildInfo(); ok {
 		if v := bi.Main.Version; v != "" && v != "(devel)" {
 			return v
