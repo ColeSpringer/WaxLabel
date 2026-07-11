@@ -2,6 +2,7 @@ package mp3
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"time"
 
@@ -46,12 +47,30 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	// random audio; the strict gate belongs on this sniff, unlike the WAV/AIFF path whose
 	// trailing tag sits at a declared chunk boundary.
 	tailEnd := size
-	if size-128 >= d.audioStart {
-		if tail, err := bits.ReadSlice(src, size-128, 128, limit); err == nil && id3.LooksLikeID3v1(tail) {
-			d.id3v1 = tail
-			tailEnd = size - 128
-			warnings = core.Warn(warnings, core.WarnTrailingID3v1,
-				"legacy ID3v1 tag follows the audio; preserved")
+	// Scan backward in 128-byte steps while each block is a valid ID3v1 trailer, so a
+	// double-stacked (or deeper) ID3v1 run some re-tagging tools leave behind is captured as one
+	// contiguous block and fully stripped by a single --legacy strip, rather than needing one run
+	// per block. The strict LooksLikeID3v1 gate is kept per block, so audio bytes that happen to
+	// land on a 128-byte boundary are never mistaken for a tag.
+	id3v1Start := size
+	for id3v1Start-128 >= d.audioStart {
+		block, err := bits.ReadSlice(src, id3v1Start-128, 128, limit)
+		if err != nil || !id3.LooksLikeID3v1(block) {
+			break
+		}
+		id3v1Start -= 128
+	}
+	if id3v1Start < size {
+		if run, err := bits.ReadSlice(src, id3v1Start, size-id3v1Start, limit); err == nil {
+			d.id3v1 = run
+			tailEnd = id3v1Start
+			// Report the run length: a re-tagging tool can leave several stacked ID3v1 tags, and a
+			// singular message would understate what was found and preserved (or stripped).
+			msg := "legacy ID3v1 tag follows the audio; preserved"
+			if blocks := (size - id3v1Start) / 128; blocks > 1 {
+				msg = fmt.Sprintf("%d stacked legacy ID3v1 tags follow the audio; preserved", blocks)
+			}
+			warnings = core.Warn(warnings, core.WarnTrailingID3v1, msg)
 		}
 	}
 	var apeTag *ape.Tag

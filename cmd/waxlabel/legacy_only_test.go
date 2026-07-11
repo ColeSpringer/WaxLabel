@@ -1,11 +1,100 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// id3v1Block builds a valid 128-byte ID3v1 tag whose title is set (padding zeroed, a numeric year
+// and genre so the strict LooksLikeID3v1 gate accepts it).
+func id3v1Block(title string) []byte {
+	b := make([]byte, 128)
+	copy(b[0:3], "TAG")
+	copy(b[3:33], title)
+	copy(b[93:97], "2020") // year
+	b[127] = 255           // genre: unknown
+	return b
+}
+
+// stackedID3v1MP3 returns an MP3 (from a fixture that carries no trailing legacy tag) with n
+// contiguous ID3v1 tags appended, as a re-tagging tool that never removes the old tag leaves.
+func stackedID3v1MP3(t *testing.T, n int) []byte {
+	t.Helper()
+	audio, err := os.ReadFile(td("notags.mp3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := audio
+	for i := 0; i < n; i++ {
+		out = append(out, id3v1Block("Tag")...)
+	}
+	return out
+}
+
+// trailingID3v1Count counts contiguous 128-byte "TAG" blocks at the end of b.
+func trailingID3v1Count(b []byte) int {
+	n := 0
+	for len(b) >= 128 && bytes.Equal(b[len(b)-128:len(b)-128+3], []byte("TAG")) {
+		n++
+		b = b[:len(b)-128]
+	}
+	return n
+}
+
+// TestLegacyStripRemovesStackedID3v1 checks that a single --legacy strip clears an entire stacked
+// ID3v1 run (not just the last block), and that a normal edit preserves the whole run rather than
+// truncating an inner block.
+func TestLegacyStripRemovesStackedID3v1(t *testing.T) {
+	t.Parallel()
+	stacked := stackedID3v1MP3(t, 2)
+	if got := trailingID3v1Count(stacked); got != 2 {
+		t.Fatalf("fixture setup: trailing ID3v1 blocks = %d, want 2", got)
+	}
+
+	// The trailing-id3v1 warning reports the run length rather than reading singular.
+	raw := filepath.Join(t.TempDir(), "raw.mp3")
+	if err := os.WriteFile(raw, stacked, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, _, _ := runCLI(t, "dump", raw); !strings.Contains(out, "2 stacked legacy ID3v1") {
+		t.Errorf("dump should report the stacked ID3v1 run length, not a singular message; got:\n%s", out)
+	}
+
+	// One --legacy strip removes both blocks.
+	strip := filepath.Join(t.TempDir(), "strip.mp3")
+	if err := os.WriteFile(strip, stacked, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, errb, code := runCLI(t, "set", strip, "--legacy", "strip", "--set", "TITLE=X"); code != 0 {
+		t.Fatalf("legacy strip exit = %d\n%s", code, errb)
+	}
+	stripped, err := os.ReadFile(strip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := trailingID3v1Count(stripped); got != 0 {
+		t.Errorf("after one --legacy strip, trailing ID3v1 blocks = %d, want 0", got)
+	}
+
+	// A normal edit preserves the full run: the inner block is not truncated by a fixed-128 copy.
+	norm := filepath.Join(t.TempDir(), "norm.mp3")
+	if err := os.WriteFile(norm, stacked, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, errb, code := runCLI(t, "set", norm, "--set", "TITLE=Y"); code != 0 {
+		t.Fatalf("normal edit exit = %d\n%s", code, errb)
+	}
+	edited, err := os.ReadFile(norm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := trailingID3v1Count(edited); got != 2 {
+		t.Errorf("after a normal edit, preserved trailing ID3v1 blocks = %d, want 2 (no inner-block truncation)", got)
+	}
+}
 
 // flacBodyEmptyVorbis builds a minimal FLAC with an empty Vorbis comment (no canonical tags), so a
 // legacy container prepended/appended to it is the only metadata.

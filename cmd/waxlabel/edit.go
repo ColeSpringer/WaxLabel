@@ -435,31 +435,42 @@ func pictureRoleList() string {
 // resolveRemovals turns the --remove-picture selectors into the set of picture
 // indices (into pics, which is the file's pictures in dump order) to remove. A
 // selector is a 1-based dump index or a cover-art role name; an out-of-range index
-// or an unrecognized role is a usage error. A role that matches no picture is a
-// no-op (so a bulk "remove every back cover" does not fail on a file without one),
-// not an error. The returned map drives a shift-proof closure in prepare.
-func resolveRemovals(selectors []string, pics []wl.Picture) (map[int]bool, error) {
-	targets := map[int]bool{}
+// or an unrecognized role is a usage error. A role that matches no picture removes
+// nothing (so a bulk "remove every back cover" does not fail on a file without one)
+// but is reported in missedRoles so prepare can surface a warning that fails
+// --strict - the miss is not silent. The returned map drives a shift-proof closure
+// in prepare. missedRoles is deduped and in the role's canonical name.
+func resolveRemovals(selectors []string, pics []wl.Picture) (targets map[int]bool, missedRoles []string, err error) {
+	targets = map[int]bool{}
+	seenMiss := map[string]bool{}
 	for _, sel := range selectors {
 		s := strings.TrimSpace(sel)
 		if n, err := strconv.Atoi(s); err == nil {
 			if n < 1 || n > len(pics) {
-				return nil, usagef("--remove-picture index %d is out of range (file has %d picture(s))", n, len(pics))
+				return nil, nil, usagef("--remove-picture index %d is out of range (file has %d picture(s))", n, len(pics))
 			}
 			targets[n-1] = true
 			continue
 		}
 		pt, ok := pictureRole(s)
 		if !ok {
-			return nil, usagef("--remove-picture wants a role name or a 1-based index, got %q; valid roles: %s", sel, pictureRoleList())
+			return nil, nil, usagef("--remove-picture wants a role name or a 1-based index, got %q; valid roles: %s", sel, pictureRoleList())
 		}
+		matched := false
 		for i, p := range pics {
 			if p.Type == pt {
 				targets[i] = true
+				matched = true
+			}
+		}
+		if !matched {
+			if role := pt.String(); !seenMiss[role] {
+				seenMiss[role] = true
+				missedRoles = append(missedRoles, role)
 			}
 		}
 	}
-	return targets, nil
+	return targets, missedRoles, nil
 }
 
 // chapterAdds parses the --add-chapter "TIMESTAMP=Title" assignments into chapters,
@@ -624,11 +635,15 @@ type compiledEdit struct {
 	clearChapters bool         // --clear-chapters
 	// syncedLyrics is the single authored synced-lyrics set (0 or 1), validated at
 	// compile time; it replaces any existing synced lyrics.
-	syncedLyrics      []wl.SyncedLyrics
-	clearSyncedLyrics bool      // --clear-synced-lyrics
-	unknownKeys       []tag.Key // --set/--add keys outside the canonical vocabulary, first-seen order
-	clearKeys         []tag.Key // --clear keys outside the canonical vocabulary, first-seen order
-	paddingFlag       bool      // whether --padding/--no-padding was given, for the per-format note
+	syncedLyrics []wl.SyncedLyrics
+	// syncedLyricsDroppedLines are the 1-based --synced-lyrics-file line numbers the LRC parser
+	// dropped (no timed lyric, not recognized structure). Invocation-global (the file is parsed
+	// once), it is noted onto each file's editor so every plan warns of the partial input drop.
+	syncedLyricsDroppedLines []int
+	clearSyncedLyrics        bool      // --clear-synced-lyrics
+	unknownKeys              []tag.Key // --set/--add keys outside the canonical vocabulary, first-seen order
+	clearKeys                []tag.Key // --clear keys outside the canonical vocabulary, first-seen order
+	paddingFlag              bool      // whether --padding/--no-padding was given, for the per-format note
 }
 
 // compile resolves the edit flags into a compiledEdit, surfacing any usage error
@@ -667,24 +682,25 @@ func (e *editFlags) compile(extra ...wl.WriteOption) (*compiledEdit, error) {
 	if err != nil {
 		return nil, err
 	}
-	syncedLyrics, err := e.syncedLyricsAdds()
+	syncedLyrics, syncedLyricsDropped, err := e.syncedLyricsAdds()
 	if err != nil {
 		return nil, err
 	}
 	return &compiledEdit{
-		patch:             patch,
-		opts:              opts,
-		addPics:           addPics,
-		replaceFront:      len(e.addCover) > 0, // only --add-cover replaces; --add-picture front-cover appends
-		removePics:        e.removePicture,
-		rmPics:            e.rmPics,
-		chapters:          chapters,
-		clearChapters:     e.clearChapters,
-		syncedLyrics:      syncedLyrics,
-		clearSyncedLyrics: e.clearSyncedLyrics,
-		unknownKeys:       e.unknownAssignKeys(),
-		clearKeys:         e.unknownClearKeys(),
-		paddingFlag:       padFlag,
+		patch:                    patch,
+		opts:                     opts,
+		addPics:                  addPics,
+		replaceFront:             len(e.addCover) > 0, // only --add-cover replaces; --add-picture front-cover appends
+		removePics:               e.removePicture,
+		rmPics:                   e.rmPics,
+		chapters:                 chapters,
+		clearChapters:            e.clearChapters,
+		syncedLyrics:             syncedLyrics,
+		syncedLyricsDroppedLines: syncedLyricsDropped,
+		clearSyncedLyrics:        e.clearSyncedLyrics,
+		unknownKeys:              e.unknownAssignKeys(),
+		clearKeys:                e.unknownClearKeys(),
+		paddingFlag:              padFlag,
 	}, nil
 }
 
@@ -999,6 +1015,11 @@ var strictEscalatingCodes = map[wl.WarningCode]bool{
 	wl.WarnSyncedLyricsUnsupported: true,
 	wl.WarnPictureUnsupported:      true,
 	wl.WarnChaptersUnsupported:     true,
+	// Authored input silently dropped in part: LRC lines that produced no timed lyric, or a
+	// --remove-picture role that matched nothing. Both are user input that did not fully apply,
+	// so --strict must catch the loss rather than exit 0.
+	wl.WarnSyncedLyricsLineDropped: true,
+	wl.WarnPictureSelectorMiss:     true,
 }
 
 // strictWarningGate applies the per-file --strict escalation for plan and set: when a
@@ -1139,7 +1160,7 @@ func (ce *compiledEdit) prepare(ctx context.Context, realPath, origPath string) 
 	// aligned with doc.Pictures() and a removal cannot shift the indices of later
 	// pictures out from under the selectors.
 	if len(ce.removePics) > 0 {
-		targets, err := resolveRemovals(ce.removePics, doc.Pictures())
+		targets, missedRoles, err := resolveRemovals(ce.removePics, doc.Pictures())
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1148,6 +1169,10 @@ func (ce *compiledEdit) prepare(ctx context.Context, realPath, origPath string) 
 			i++
 			return targets[i]
 		})
+		// A role that matched no picture removed nothing; note it on this file's editor so the
+		// plan warns (and --strict fails) rather than the miss passing silently. It is per-file:
+		// the same role may match in one file of a bulk run and miss in another.
+		ed.NotePictureSelectorMiss(missedRoles...)
 	}
 	// An --add-cover replaces any existing front cover rather than appending a
 	// duplicate. Clear pre-existing front covers first so the common case leaves
@@ -1209,6 +1234,9 @@ func (ce *compiledEdit) prepare(ctx context.Context, realPath, origPath string) 
 			ed.ClearSyncedLyrics()
 		}
 		ed.SetSyncedLyrics(ce.syncedLyrics...)
+		// Carry the invocation's LRC parse drops onto this file's editor so the plan warns (and
+		// --strict fails) when the --synced-lyrics-file input lost lines rather than exit 0.
+		ed.NoteSyncedLyricsDropped(ce.syncedLyricsDroppedLines...)
 	} else if ce.clearSyncedLyrics {
 		ed.ClearSyncedLyrics()
 	}

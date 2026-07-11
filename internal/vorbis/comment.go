@@ -177,7 +177,14 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapte
 	out := make([]Comment, 0, len(orig))
 	emit := func(k tag.Key, name string) {
 		vals, _ := edited.Get(k)
+		// Canonicalize a recognized boolean word to "1"/"0" on write (COMPILATION=true -> 1),
+		// matching MP4's cpil and keeping copy (Carried) and diff (no change) in agreement across
+		// formats. An unrecognized value ("maybe") is left as text by CanonicalBoolValue.
+		boolean := tag.IsBooleanKey(k)
 		for _, v := range vals {
+			if boolean {
+				v = tag.CanonicalBoolValue(v)
+			}
 			out = append(out, Comment{Name: name, Value: v})
 		}
 		emitted[k] = true

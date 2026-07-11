@@ -31,7 +31,13 @@ func newDiffCmd() *cobra.Command {
 			"The exit code follows diff(1): 0 if the metadata is identical, 1 if it\n" +
 			"differs, and 2 or more on error. With --quiet nothing is printed and\n" +
 			"only the exit code is set. One operand may be \"-\" to read it from\n" +
-			"standard input.",
+			"standard input.\n\n" +
+			"A track/disc number or total is compared numerically (so \"007\" equals\n" +
+			"\"7\") only when at least one side is an MP4, the one format whose integer\n" +
+			"atoms canonicalize the value; between two text formats the literal strings\n" +
+			"are compared. A slash inside a *total* field (TRACKTOTAL=1/2) is out of\n" +
+			"spec: FLAC/Ogg keep it as literal text while MP3/M4A drop it, so two such\n" +
+			"files can differ on that field by design.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()

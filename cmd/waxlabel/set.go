@@ -33,8 +33,10 @@ func newSetCmd() *cobra.Command {
 			"  waxlabel set song.flac --strip-encoder -o cleaned.flac",
 		Long: "Apply the given edits and write the result. By default it rewrites each\n" +
 			"file in place atomically (temp file, fsync, rename); a no-op writes\n" +
-			"nothing. With -o it writes a single complete new file instead, leaving\n" +
-			"the original untouched (so -o takes exactly one input). Because the write\n" +
+			"nothing. With -o it writes a single complete new file, leaving the\n" +
+			"original untouched (so -o takes exactly one input) - unless -o names the\n" +
+			"input file itself, which is a deliberate in-place write that overwrites\n" +
+			"it (no --overwrite needed for that self-target case). Because the write\n" +
 			"is atomic (a temp file in -o's directory, then a rename onto it), -o must\n" +
 			"name a regular file in a writable directory; it is not a discard sink, so\n" +
 			"-o /dev/null fails - omit -o or use 'plan' to write nothing. Multiple files\n" +

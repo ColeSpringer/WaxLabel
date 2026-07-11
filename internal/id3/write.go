@@ -90,6 +90,13 @@ type RebuildInfo struct {
 	// itself ("A1/12" with no canonical TRACKTOTAL) is preserved verbatim and is not a drop. See
 	// detectDroppedTotals.
 	DroppedTotals []tag.Key
+	// DroppedTrailingValues lists the keys an edit touched whose trailing empty element the write
+	// cannot represent: a NUL-separated frame emits no trailing terminator, and the read path strips
+	// a trailing empty (see the read-strip floor in decodeStringsTracked), so the empty vanishes with
+	// no byte-level delta to reveal it. Only populated when the values are written NUL-separated (all
+	// of v2.4, or v2.3 under ID3MultiNullSep); repeat-frame and slash-join do not drop it. The caller
+	// surfaces it as a value-dropped warning keyed to each affected key. See detectDroppedTrailingValues.
+	DroppedTrailingValues []tag.Key
 	// ChapterOverflow is set when a chapter edit clamped a start or end past the CHAP
 	// frame's 32-bit millisecond field (~49.7 days). The caller surfaces it as a
 	// chapter-start-overflow warning.
@@ -342,6 +349,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	info.ReducedDates = detectReducedDates(changed, edited, version)
 	info.NumericGenres = detectNumericGenres(changed, edited)
 	info.DroppedTotals = detectDroppedTotals(changed, edited)
+	info.DroppedTrailingValues = detectDroppedTrailingValues(changed, edited, version, opts.Multi)
 	return out, info
 }
 
@@ -685,6 +693,14 @@ func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, o
 		if !has || len(vals) == 0 {
 			return nil, false
 		}
+		// Canonicalize a recognized boolean word to "1"/"0" before rendering (TCMP has no
+		// dedicated case, so a COMPILATION edit lands here), matching MP4's cpil and FLAC's
+		// Vorbis emit so the three formats store the flag identically. Gated on the resolved
+		// canonical key, which renderText (frame-token only) cannot see; an unrecognized value
+		// stays as text. Copied rather than mutated in place so the edited tag set is untouched.
+		if tag.IsBooleanKey(key) {
+			vals = canonicalBoolValues(vals)
+		}
 		return renderText(version, token, vals, opts.Multi)
 	}
 }
@@ -714,6 +730,17 @@ func txxxKeyForToken(upperDesc string) tag.Key {
 func renderText(version byte, id string, values []string, pol core.ID3MultiValuePolicy) ([]Frame, bool) {
 	return renderByPolicy(version, id, values, pol,
 		func(v []string) []byte { return encodeTextFrame(chooseEncoding(version, v), v) })
+}
+
+// canonicalBoolValues returns a copy of vals with each recognized boolean word normalized to
+// "1"/"0" via [tag.CanonicalBoolValue]. A fresh slice is returned so the caller's edited tag set
+// is not mutated in place.
+func canonicalBoolValues(vals []string) []string {
+	out := make([]string, len(vals))
+	for i, v := range vals {
+		out[i] = tag.CanonicalBoolValue(v)
+	}
+	return out
 }
 
 // renderByPolicy renders a text-like ID3 frame under the configured multi-value
@@ -812,6 +839,39 @@ func detectDroppedTotals(changed map[tag.Key]bool, edited tag.TagSet) []tag.Key 
 			dropped = append(dropped, p.totKey)
 		}
 	}
+	return dropped
+}
+
+// detectDroppedTrailingValues finds the keys an edit touched whose value ends in a trailing
+// empty element (len > 1 with a final "") that the write cannot represent. A NUL-separated frame
+// emits no trailing terminator, so the trailing empty an edit set (e.g. ARTIST=[A, B, ""]) has no
+// representation and the read path strips exactly it (the len > 1 && trailing "" floor in
+// decodeStringsTracked). It models that floor, so there are no false positives: a lone [""] is
+// len 1 and round-trips, and interior or leading empties are kept.
+//
+// The strip only happens when the multi-value is written NUL-separated: always on v2.4, and on
+// v2.3 only under ID3MultiNullSep. ID3MultiRepeatFrame writes one frame per value, so the trailing
+// empty survives as its own frame and reads back; ID3MultiSlash collapses the whole multi-value
+// into one slash-joined value, so the trailing empty is not dropped as a distinct value either.
+// Warning under those policies would be a false positive that wrongly fails --strict, so the
+// detector returns nothing for them. Scoped to changed keys because the read path always strips a
+// trailing empty, so one can only enter the model through the edit. The result is sorted for
+// deterministic warning order.
+func detectDroppedTrailingValues(changed map[tag.Key]bool, edited tag.TagSet, version byte, pol core.ID3MultiValuePolicy) []tag.Key {
+	if version < 4 && pol != core.ID3MultiNullSep {
+		return nil // repeat-frame preserves the empty; slash-join collapses the whole multi-value
+	}
+	var dropped []tag.Key
+	for k := range changed {
+		vals, ok := edited.Get(k)
+		if !ok || len(vals) <= 1 {
+			continue
+		}
+		if vals[len(vals)-1] == "" {
+			dropped = append(dropped, k)
+		}
+	}
+	slices.Sort(dropped)
 	return dropped
 }
 
@@ -1038,6 +1098,15 @@ func AppendRebuildWarnings(ws []core.Warning, info RebuildInfo, retained tag.Tag
 		}
 		ws = core.WarnKeyed(ws, core.WarnValueDropped,
 			fmt.Sprintf("%s cannot be represented in ID3 because the number it attaches to is non-numeric (the total is stored only as the second half of \"number/total\") and was dropped", k), k)
+	}
+	// Emit the trailing-empty drops unconditionally, not behind the retained-guard the date and
+	// total loops use: retained is the re-projected (already-stripped) set, so retained.First(ARTIST)
+	// returns the surviving "A", and a retained-guarded loop would then suppress every trailing-empty
+	// warning. No container keeps a trailing empty (WAV's LIST/INFO strips it too), so emitting
+	// unconditionally is correct.
+	for _, k := range info.DroppedTrailingValues {
+		ws = core.WarnKeyed(ws, core.WarnValueDropped,
+			fmt.Sprintf("%s: a trailing empty value cannot be represented in an ID3 text frame and was dropped", k), k)
 	}
 	for _, rd := range info.ReducedDates {
 		// Suppress only when another container still carries the attempted precision:

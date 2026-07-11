@@ -539,6 +539,41 @@ func TestReleaseDateV23StoredNotDropped(t *testing.T) {
 	}
 }
 
+// TestDroppedTrailingValuesByPolicy pins the trailing-empty detector to the write representation.
+// A NUL-separated frame strips a trailing empty (so it is a real drop that must warn), while
+// repeat-frame preserves the empty as its own frame and slash-join collapses the whole
+// multi-value, so neither drops the trailing empty and neither must warn. v2.4 always writes
+// NUL-separated regardless of policy. A lone empty and a value with no trailing empty never flag.
+func TestDroppedTrailingValuesByPolicy(t *testing.T) {
+	trailing := []string{"A", "B", ""}
+	flagged := func(keys []tag.Key) bool { return len(keys) == 1 && keys[0] == tag.Artist }
+	cases := []struct {
+		name    string
+		version byte
+		pol     core.ID3MultiValuePolicy
+		vals    []string
+		want    bool
+	}{
+		{"v23-nullsep drops", 3, core.ID3MultiNullSep, trailing, true},
+		{"v23-repeat preserves", 3, core.ID3MultiRepeatFrame, trailing, false},
+		{"v23-slash collapses", 3, core.ID3MultiSlash, trailing, false},
+		{"v24-nullsep drops", 4, core.ID3MultiNullSep, trailing, true},
+		{"v24-repeat is still nullsep", 4, core.ID3MultiRepeatFrame, trailing, true},
+		{"lone empty round-trips", 3, core.ID3MultiNullSep, []string{""}, false},
+		{"no trailing empty", 3, core.ID3MultiNullSep, []string{"A", "B"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			edited := tag.NewTagSet()
+			edited.Set(tag.Artist, c.vals...)
+			_, info := RebuildFrames(nil, tag.NewTagSet(), edited, c.version, StructuredEdit{}, WriteOpts{Multi: c.pol})
+			if got := flagged(info.DroppedTrailingValues); got != c.want {
+				t.Errorf("DroppedTrailingValues flagged=%v, want %v (keys=%v)", got, c.want, info.DroppedTrailingValues)
+			}
+		})
+	}
+}
+
 func TestNumericGenreWrite(t *testing.T) {
 	base := tag.NewTagSet()
 	edited := tag.NewTagSet()

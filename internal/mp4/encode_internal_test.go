@@ -38,7 +38,9 @@ func TestDroppedValues(t *testing.T) {
 		{"disc zero collapses the pair, flagged", map[tag.Key]string{tag.DiscNumber: "0"}, []tag.Key{tag.DiscNumber}},
 		{"disc non-numeric", map[tag.Key]string{tag.DiscNumber: "x"}, []tag.Key{tag.DiscNumber}},
 		{"mediatype non-numeric", map[tag.Key]string{tag.MediaType: "abc"}, []tag.Key{tag.MediaType}},
-		{"mediatype uint32 stores fine", map[tag.Key]string{tag.MediaType: "70000"}, nil},
+		{"mediatype in the single byte the atom stores", map[tag.Key]string{tag.MediaType: "2"}, nil},
+		{"mediatype past 255 dropped, not widened", map[tag.Key]string{tag.MediaType: "256"}, []tag.Key{tag.MediaType}},
+		{"mediatype uint32 past the byte is dropped", map[tag.Key]string{tag.MediaType: "70000"}, []tag.Key{tag.MediaType}},
 		{"mediatype negative", map[tag.Key]string{tag.MediaType: "-1"}, []tag.Key{tag.MediaType}},
 	}
 	for _, c := range cases {

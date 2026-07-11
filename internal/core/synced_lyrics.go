@@ -300,7 +300,8 @@ func ParseLRC(text string) []SyncedLine {
 // for a set that fits (trailing blank lines past a full set do not count, since none was
 // dropped).
 func ParseLRCReport(text string) (lines []SyncedLine, truncated bool) {
-	return parseLRC(text, MaxSyncedLines)
+	lines, truncated, _ = parseLRC(text, MaxSyncedLines)
+	return lines, truncated
 }
 
 // ParseLRCFull is [ParseLRC] without the per-set line cap, for trusted input already held
@@ -311,14 +312,28 @@ func ParseLRCReport(text string) (lines []SyncedLine, truncated bool) {
 // size (each line needs a bracketed timestamp), so a caller that already buffered the file adds
 // no unbounded allocation.
 func ParseLRCFull(text string) []SyncedLine {
-	lines, _ := parseLRC(text, 0)
+	lines, _, _ := parseLRC(text, 0)
 	return lines
 }
 
-// parseLRC is the shared LRC reader behind ParseLRCReport (capped) and ParseLRCFull (uncapped).
-// lineCap <= 0 disables the per-set cap. truncated is true only when a timed line was dropped
-// because the cap was reached.
-func parseLRC(text string, lineCap int) (lines []SyncedLine, truncated bool) {
+// ParseLRCReportFull is [ParseLRCFull] plus the 1-based line numbers of input lines that produced
+// no timed lyric and are not recognized LRC structure - a malformed timestamp (e.g. "[9:99.99]bad")
+// or a plain untimed text line - i.e. content the parser drops silently. Blank lines, ID metadata
+// tags ([ar:]/[ti:]/[al:]/[au:]/[by:]/[re:]/[ve:]), [offset:]/[length:] tags, and bare [section]
+// headers are recognized structure and are not reported. Like ParseLRCFull it is uncapped, for
+// trusted whole-file input; the CLI surfaces droppedLines as a warning that fails under --strict so
+// a partial drop does not pass with exit 0.
+func ParseLRCReportFull(text string) (lines []SyncedLine, droppedLines []int) {
+	lines, _, droppedLines = parseLRC(text, 0)
+	return lines, droppedLines
+}
+
+// parseLRC is the shared LRC reader behind ParseLRCReport (capped) and ParseLRCFull/
+// ParseLRCReportFull (uncapped). lineCap <= 0 disables the per-set cap. truncated is true only when
+// a timed line was dropped because the cap was reached. dropped holds the 1-based line numbers of
+// non-blank lines that yielded no timed lyric and are not recognized LRC structure (see
+// countsAsDroppedLRCLine); the capped media path discards it, the uncapped CLI path surfaces it.
+func parseLRC(text string, lineCap int) (lines []SyncedLine, truncated bool, dropped []int) {
 	text = strings.TrimPrefix(text, "\ufeff")
 	// Normalize CRLF and lone-CR (classic-Mac) line endings to LF before splitting, so a
 	// pure-CR file is not read as one giant line with every lyric concatenated.
@@ -327,10 +342,16 @@ func parseLRC(text string, lineCap int) (lines []SyncedLine, truncated bool) {
 	var out []SyncedLine
 	var offsetMs int64
 	hasOffset := false
-	for _, raw := range strings.Split(text, "\n") {
+	for i, raw := range strings.Split(text, "\n") {
 		times, lineOffset, lineHasOffset, body := leadingTimestamps(raw)
 		if lineHasOffset && !hasOffset {
 			offsetMs, hasOffset = lineOffset, true
+		}
+		// A line that produced no timed lyric and is not recognized structure is a silent
+		// content drop. Derive it from the parser's own decision (len(times) == 0) rather than a
+		// parallel scanner, so the count tracks what parseLRC actually stores.
+		if len(times) == 0 && countsAsDroppedLRCLine(raw) {
+			dropped = append(dropped, i+1)
 		}
 		for _, d := range times {
 			if lineCap > 0 && len(out) >= lineCap {
@@ -347,7 +368,7 @@ func parseLRC(text string, lineCap int) (lines []SyncedLine, truncated bool) {
 		}
 	}
 	if len(out) == 0 {
-		return nil, false
+		return nil, false, dropped
 	}
 	// Apply the document offset after collection so a tag found on a later line still shifts
 	// the earlier lines, then sort.
@@ -357,7 +378,57 @@ func parseLRC(text string, lineCap int) (lines []SyncedLine, truncated bool) {
 		}
 	}
 	slices.SortStableFunc(out, func(a, b SyncedLine) int { return cmp.Compare(a.Time, b.Time) })
-	return out, truncated
+	return out, truncated, dropped
+}
+
+// lrcIDTagPrefixes are the LRC ID metadata tag names whose lines legitimately carry no timed
+// lyric: artist, title, album, author, creator (by), re-editor (re), version (ve), and the length
+// tag. [offset:] is recognized separately via parseLRCOffsetTag. A line matching one of these is
+// recognized structure, not a dropped content line.
+var lrcIDTagPrefixes = []string{"ar:", "ti:", "al:", "au:", "by:", "re:", "ve:", "length:"}
+
+// countsAsDroppedLRCLine reports whether a raw LRC line that produced no timed lyric represents a
+// silently dropped content line - a malformed timestamp like "[9:99.99]bad" or a plain untimed
+// text line - as opposed to recognized structure that legitimately holds no lyric: a blank line,
+// an LRC ID metadata tag, an [offset:] or [length:] tag, or a bare [section] header (a lone bracket
+// group whose inner text carries no colon). It examines the first bracket group with the same
+// parseLRCTime/parseLRCOffsetTag helpers the parser uses, so the count tracks the parser's own
+// accept/skip decision rather than a divergent scanner. Called only for a line with no timed lyric,
+// so a valid timestamp never reaches the time check below (leadingTimestamps already collected it).
+func countsAsDroppedLRCLine(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return false // blank / whitespace-only line
+	}
+	if trimmed[0] != '[' {
+		return true // plain untimed text
+	}
+	end := strings.IndexByte(trimmed, ']')
+	if end < 0 {
+		return true // unclosed bracket: the remainder is text
+	}
+	// Recognized structure only when the bracket group spans the whole line: "[Chorus] text" still
+	// drops the trailing text, so it is not a bare section header.
+	if end != len(trimmed)-1 {
+		return true
+	}
+	inner := trimmed[1:end]
+	if _, ok := parseLRCTime(inner); ok {
+		return false // a valid timestamp (defensive; leadingTimestamps would have collected it)
+	}
+	if _, ok := parseLRCOffsetTag(inner); ok {
+		return false // [offset:N]
+	}
+	if !strings.Contains(inner, ":") {
+		return false // bare [section] header
+	}
+	lower := strings.ToLower(strings.TrimSpace(inner))
+	for _, p := range lrcIDTagPrefixes {
+		if strings.HasPrefix(lower, p) {
+			return false // [ar:], [ti:], ..., [length:]
+		}
+	}
+	return true // a colon'd group that is neither a valid timestamp nor recognized metadata
 }
 
 // FormatLRC renders timed lyric lines as an LRC document: one "[mm:ss.mmm] text" line per

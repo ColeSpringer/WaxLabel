@@ -56,6 +56,15 @@ type Editor struct {
 	// lecture about metadata the user authored none of (a source's own conflicting
 	// single-valued key, or its chapter timings).
 	carried bool
+	// syncedLyricsDroppedLines records the 1-based line numbers of authored LRC input that
+	// produced no timed lyric and were dropped (a front-end parse diagnostic, set via
+	// [Editor.NoteSyncedLyricsDropped]). [Editor.Prepare] surfaces it as a
+	// WarnSyncedLyricsLineDropped so a partial input drop does not pass silently.
+	syncedLyricsDroppedLines []int
+	// pictureSelectorMisses records cover-art role names a removal named that matched no picture
+	// in this file (set via [Editor.NotePictureSelectorMiss]). [Editor.Prepare] surfaces each as a
+	// WarnPictureSelectorMiss so a role that removed nothing is visible rather than a silent no-op.
+	pictureSelectorMisses []string
 }
 
 // Apply records an explicit patch (set/clear/add operations) after any already
@@ -207,6 +216,30 @@ func (e *Editor) SetSyncedLyrics(sls ...SyncedLyrics) *Editor {
 		e.syncedLyrics = append(e.syncedLyrics, sl)
 	}
 	e.syncedLyricsTouched = true
+	return e
+}
+
+// NoteSyncedLyricsDropped records the 1-based line numbers of authored LRC input that produced no
+// timed lyric and were dropped, so [Editor.Prepare] surfaces a WarnSyncedLyricsLineDropped. It is a
+// front-end diagnostic (the CLI's --synced-lyrics-file parse), carried on the editor rather than the
+// SyncedLyrics content type so the library model stays free of a parse-time concern. Passing no line
+// numbers is a no-op.
+func (e *Editor) NoteSyncedLyricsDropped(lines ...int) *Editor {
+	if len(lines) > 0 {
+		e.syncedLyricsDroppedLines = append(e.syncedLyricsDroppedLines, lines...)
+	}
+	return e
+}
+
+// NotePictureSelectorMiss records cover-art role names a removal named that matched no picture in
+// this file, so [Editor.Prepare] surfaces a WarnPictureSelectorMiss per role rather than the removal
+// being a silent no-op. It is per-file (a role matched in one file may miss in another), so a
+// front-end computes the misses against this file's pictures and hands them here. Passing no roles is
+// a no-op.
+func (e *Editor) NotePictureSelectorMiss(roles ...string) *Editor {
+	if len(roles) > 0 {
+		e.pictureSelectorMisses = append(e.pictureSelectorMisses, roles...)
+	}
 	return e
 }
 
@@ -580,6 +613,18 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	if syncedLyricsTruncated {
 		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnSyncedLyricsTruncated,
 			core.SyncedLyricsTruncatedMessage())
+	}
+	// Surface the front-end-authored input diagnostics: LRC lines dropped during parse, and a
+	// picture-removal role that matched nothing in this file. Both are user input that did not fully
+	// apply, carried on the editor by the CLI (a carry authors none of them), so they ride the plan
+	// report and the CLI's --strict gate escalates them.
+	if n := len(e.syncedLyricsDroppedLines); n > 0 {
+		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnSyncedLyricsLineDropped, fmt.Sprintf(
+			"%d synced-lyric line(s) had no timestamp and were dropped (lines: %s)", n, formatLineList(e.syncedLyricsDroppedLines)))
+	}
+	for _, role := range e.pictureSelectorMisses {
+		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnPictureSelectorMiss, fmt.Sprintf(
+			"no %s picture to remove; the role matched nothing in this file", role))
 	}
 	// Surface edit-time picture sanity warnings for the pictures this edit authored
 	// (added via AddPicture, tracked by addedMask) - an unrecognized image embedded
@@ -1157,6 +1202,15 @@ func sameTotal(explicit, derived string) bool {
 	e, eerr := strconv.Atoi(explicit)
 	d, derr := strconv.Atoi(derived)
 	return eerr == nil && derr == nil && e == d
+}
+
+// formatLineList renders 1-based line numbers as a comma-separated string for a warning message.
+func formatLineList(lines []int) string {
+	s := make([]string, len(lines))
+	for i, n := range lines {
+		s[i] = strconv.Itoa(n)
+	}
+	return strings.Join(s, ", ")
 }
 
 // validatePictures enforces the single-icon rule: picture types 1 and 2 must

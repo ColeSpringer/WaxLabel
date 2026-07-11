@@ -431,3 +431,70 @@ func FuzzParseLRC(f *testing.F) {
 		}
 	})
 }
+
+// TestParseLRCReportFullDroppedLines checks that the reporting parse variant returns the 1-based
+// line numbers of content the parser silently drops (a malformed timestamp, or a plain untimed
+// text line) while excluding recognized structure: blank lines, ID metadata tags, offset/length
+// tags, and bare section headers. Those exclusions are what keep an ordinary annotated LRC from
+// being flagged.
+func TestParseLRCReportFullDroppedLines(t *testing.T) {
+	in := strings.Join([]string{
+		"[ar:Artist]",        // 1: id tag, not dropped
+		"[00:01.00]good",     // 2: timed line
+		"[9:99.99]bad stamp", // 3: malformed timestamp, dropped
+		"just some text",     // 4: plain text, dropped
+		"[Chorus]",           // 5: bare section header, not dropped
+		"[offset:+200]",      // 6: offset tag, not dropped
+		"[length:03:45]",     // 7: length tag, not dropped
+		"",                   // 8: blank, not dropped
+		"   ",                // 9: whitespace, not dropped
+		"[00:05.00]good two", // 10: timed line
+	}, "\n")
+	lines, dropped := ParseLRCReportFull(in)
+	if len(lines) != 2 {
+		t.Fatalf("timed lines = %d, want 2: %+v", len(lines), lines)
+	}
+	want := []int{3, 4}
+	if len(dropped) != len(want) {
+		t.Fatalf("dropped lines = %v, want %v", dropped, want)
+	}
+	for i := range want {
+		if dropped[i] != want[i] {
+			t.Errorf("dropped[%d] = %d, want %d", i, dropped[i], want[i])
+		}
+	}
+}
+
+// TestCountsAsDroppedLRCLine pins the per-line classifier the drop count reads: recognized
+// structure yields no drop, while malformed timestamps and untimed text do.
+func TestCountsAsDroppedLRCLine(t *testing.T) {
+	cases := []struct {
+		line    string
+		dropped bool
+	}{
+		{"", false},
+		{"   ", false},
+		{"[ar:Artist]", false},
+		{"[ti:Title]", false},
+		{"[al:Album]", false},
+		{"[au:Author]", false},
+		{"[by:Creator]", false},
+		{"[re:Editor]", false},
+		{"[ve:1.0]", false},
+		{"[offset:+200]", false},
+		{"[offset:-250]", false},
+		{"[length:03:45]", false},
+		{"[Chorus]", false},  // bare section header (no colon)
+		{"[Verse 1]", false}, // bare section header with a space
+		{"just some text", true},
+		{"[9:99.99]bad", true},       // trailing text after a bad stamp
+		{"[9:99.99]", true},          // bare bad stamp
+		{"[Note: whatever]", true},   // colon'd group that is not recognized metadata
+		{"[Chorus] with text", true}, // a section marker abutting lyric text drops the text
+	}
+	for _, c := range cases {
+		if got := countsAsDroppedLRCLine(c.line); got != c.dropped {
+			t.Errorf("countsAsDroppedLRCLine(%q) = %v, want %v", c.line, got, c.dropped)
+		}
+	}
+}

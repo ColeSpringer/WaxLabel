@@ -226,6 +226,10 @@ const (
 	WarnValueCoerced = core.WarnValueCoerced
 
 	WarnChapterOverlapReconciled = core.WarnChapterOverlapReconciled
+
+	WarnSyncedLyricsLineDropped = core.WarnSyncedLyricsLineDropped
+
+	WarnPictureSelectorMiss = core.WarnPictureSelectorMiss
 )
 
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated
@@ -272,6 +276,16 @@ func ParseLRC(text string) []SyncedLine { return core.ParseLRC(text) }
 // single truncation-and-warning point rather than a silent drop at read. Parsing untrusted
 // media keeps using the capped [ParseLRC]. The returned slice is bounded by the input size.
 func ParseLRCFull(text string) []SyncedLine { return core.ParseLRCFull(text) }
+
+// ParseLRCReportFull is [ParseLRCFull] plus the 1-based line numbers of input lines the parser
+// dropped silently - non-blank lines that produced no timed lyric and are not recognized LRC
+// structure (a malformed timestamp, or plain untimed text). Blank lines, ID metadata tags,
+// [offset:]/[length:] tags, and bare [section] headers are recognized structure and are not
+// reported. The CLI uses it to warn (and fail --strict) when a --synced-lyrics-file drops lines
+// rather than storing them silently.
+func ParseLRCReportFull(text string) (lines []SyncedLine, droppedLines []int) {
+	return core.ParseLRCReportFull(text)
+}
 
 // FormatLRC renders timed lyric lines as an LRC document ("[mm:ss.mmm]text" per line, in
 // order). It round-trips losslessly through [ParseLRC]; the per-set language and

@@ -243,29 +243,20 @@ func pairItem(name string, ts tag.TagSet, numKey, totKey tag.Key, trailing bool)
 	return item{name: atomName(name), payload: renderData(typeImplicit, v)}, true
 }
 
-// mediaTypeItem builds the iTunes "stik" media-kind atom from the canonical
-// MediaType value (a decimal integer). The value is written in the minimal big-
-// endian width that holds it (1, 2, or 4 bytes), so any stik that parsed in
-// round-trips rather than being dropped; a non-numeric or out-of-range value is
-// skipped.
+// mediaTypeItem builds the iTunes "stik" media-kind atom from the canonical MediaType value (a
+// decimal integer). The iTunes stik vocabulary is a single byte (the defined media kinds are 0-14),
+// so a value past 255 is rejected (item{}, false) rather than widening the atom to 2 or 4 bytes;
+// a non-numeric value is likewise skipped. This must agree with ValidMediaTypeValue, which reports
+// the same value as dropped so the writer's value-dropped warning fires for it.
 func mediaTypeItem(vals []string) (item, bool) {
 	if len(vals) == 0 {
 		return item{}, false
 	}
 	n, err := strconv.ParseUint(strings.TrimSpace(vals[0]), 10, 32)
-	if err != nil {
+	if err != nil || n > 0xFF {
 		return item{}, false
 	}
-	var v []byte
-	switch {
-	case n <= 0xFF:
-		v = []byte{byte(n)}
-	case n <= 0xFFFF:
-		v = []byte{byte(n >> 8), byte(n)}
-	default:
-		v = []byte{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n)}
-	}
-	return item{name: atomName("stik"), payload: renderData(typeSignedInt, v)}, true
+	return item{name: atomName("stik"), payload: renderData(typeSignedInt, []byte{byte(n)})}, true
 }
 
 // boolItem builds a single-byte boolean atom (cpil) from a canonical boolean

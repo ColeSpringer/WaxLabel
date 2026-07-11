@@ -96,3 +96,49 @@ func TestCanonicalCopyDiffAgreement(t *testing.T) {
 		}
 	}
 }
+
+// TestCompilationBooleanCopyDiffAgreement is the copy/diff guard for the COMPILATION boolean:
+// because every format now normalizes a recognized boolean word to "1"/"0" on write, a copy of it
+// across FLAC and M4A grades carried and diff reports no change, so the two agree. Before the
+// normalization, FLAC kept the literal "true" while M4A stored "1", so copy graded carried yet diff
+// reported "true -> 1" - the drift this pins shut.
+func TestCompilationBooleanCopyDiffAgreement(t *testing.T) {
+	t.Parallel()
+	pairs := []struct{ name, src, dst string }{
+		{"flac-mp4", notagsFLAC, notagsM4A},
+		{"mp4-flac", notagsM4A, notagsFLAC},
+	}
+	for _, val := range []string{"true", "yes", "1", "false", "no", "0"} {
+		for _, pr := range pairs {
+			val, pr := val, pr
+			t.Run(pr.name+"/"+val, func(t *testing.T) {
+				t.Parallel()
+				src := buildTransferSource(t, pr.src, func(e *wl.Editor) *wl.Editor {
+					return e.Set(tag.Compilation, val)
+				})
+				if len(tagValues(dumpJSON(t, src), string(tag.Compilation))) == 0 {
+					t.Skipf("source %s did not store COMPILATION=%q", pr.name, val)
+				}
+				jc, dst := copyReportPath(t, src, pr.dst)
+				grade, ok := fieldGrade(jc, string(tag.Compilation))
+				if !ok {
+					t.Fatalf("copy report has no COMPILATION field though the source holds it")
+				}
+				dout, _, dcode := runCLI(t, "--json", "diff", src, dst)
+				if dcode > 1 {
+					t.Fatalf("diff --json exit = %d (>1 is an error)\n%s", dcode, dout)
+				}
+				var jd jsonDiff
+				if err := json.Unmarshal([]byte(dout), &jd); err != nil {
+					t.Fatalf("diff JSON: %v\n%s", err, dout)
+				}
+				if grade != "carried" {
+					t.Errorf("COMPILATION=%q (%s): copy grade = %q, want carried (a boolean word normalizes losslessly)", val, pr.name, grade)
+				}
+				if hasTagChange(jd, string(tag.Compilation)) {
+					t.Errorf("COMPILATION=%q (%s): diff reports a change, want none (copy and diff must agree)", val, pr.name)
+				}
+			})
+		}
+	}
+}

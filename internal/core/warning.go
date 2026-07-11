@@ -127,8 +127,10 @@ const (
 	// negative, or one past 65535) or a non-numeric stik media kind; an ID3v2.3 date with no valid
 	// 4-digit year (no TYER/TORY frame renders); an ID3 track/disc total that cannot attach to a
 	// non-numeric number (composing "A1/12" would re-read as one literal value with the total lost);
-	// and a Vorbis custom key in a reserved namespace - CHAPTERxxx chapters, SYNCEDLYRICS synced
-	// lyrics, or METADATA_BLOCK_PICTURE cover art - that cannot be written as a tag.
+	// an ID3 text frame whose edited value ends in a trailing empty element (ARTIST=[A, B, ""]),
+	// which the NUL-separated frame emits no terminator for and the read path strips, so the empty
+	// cannot round-trip; and a Vorbis custom key in a reserved namespace - CHAPTERxxx chapters,
+	// SYNCEDLYRICS synced lyrics, or METADATA_BLOCK_PICTURE cover art - that cannot be written as a tag.
 	// It is a plan-time warning carrying the offending key (Warning.Keys), surfaced before the write
 	// rather than vanishing with exit 0, so the user (and the CLI's --strict gate) sees the loss.
 	WarnValueDropped
@@ -268,6 +270,21 @@ const (
 	// NUL-separated multi-value note and the WAV/AIFF native-value reduction, so it does not escalate
 	// --strict. It carries the affected key (Warning.Keys).
 	WarnMP4MultiValue
+	// WarnSyncedLyricsLineDropped means an authored LRC input carried non-blank lines that produced
+	// no timed lyric and are not recognized LRC structure - a malformed timestamp (e.g. "[9:99.99]bad")
+	// or a plain untimed text line - so those lines were dropped while the rest were stored. Recognized
+	// structure (blank lines, ID metadata tags like [ar:]/[ti:]/[al:], [offset:]/[length:] tags, and
+	// bare [section] headers) is not counted. It is surfaced so a partial drop does not pass silently
+	// with exit 0; the CLI's --strict gate escalates it. Keyless: it describes the synced-lyrics input,
+	// not a tag field. Appended to the end of the block so the existing codes keep their numbers.
+	WarnSyncedLyricsLineDropped
+	// WarnPictureSelectorMiss means a picture removal named a valid cover-art role (e.g. "artist") that
+	// matched no picture in the file, so the selector removed nothing. An out-of-range index stays a
+	// hard usage error; a role that matches nothing is a plan-time warning rather than a silent no-op,
+	// so a lossless-pipeline user (and the CLI's --strict gate) sees that the requested removal did not
+	// apply. Keyless: it names the role in prose, not a tag field. Appended to the end of the block so
+	// the existing codes keep their numbers.
+	WarnPictureSelectorMiss
 )
 
 func (c WarningCode) String() string {
@@ -368,6 +385,10 @@ func (c WarningCode) String() string {
 		return "value-coerced"
 	case WarnChapterOverlapReconciled:
 		return "chapter-overlap-reconciled"
+	case WarnSyncedLyricsLineDropped:
+		return "synced-lyrics-line-dropped"
+	case WarnPictureSelectorMiss:
+		return "picture-remove-role-miss"
 	default:
 		return "unknown"
 	}

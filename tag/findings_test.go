@@ -79,6 +79,23 @@ func TestBooleanValueHelpers(t *testing.T) {
 	}
 }
 
+// TestCanonicalBoolValue checks that recognized boolean spellings normalize to "1"/"0"
+// (case-insensitive, trimmed) while an unrecognized value is returned unchanged, so a codec
+// can canonicalize a valid boolean losslessly and leave anything else as literal text.
+func TestCanonicalBoolValue(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"1": "1", "true": "1", "TRUE": "1", "Yes": "1", " yes ": "1",
+		"0": "0", "false": "0", "No": "0", " NO ": "0",
+		"maybe": "maybe", "2": "2", "": "",
+	}
+	for in, want := range cases {
+		if got := CanonicalBoolValue(in); got != want {
+			t.Errorf("CanonicalBoolValue(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // TestNegativeNumericValue checks that a negative component is detected for the plain
 // numeric keys and for either side of a "n/total" pair key, while a well-formed
 // non-negative value (and a non-numeric key) is not flagged.

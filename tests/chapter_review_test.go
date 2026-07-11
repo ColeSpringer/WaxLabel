@@ -111,18 +111,37 @@ func TestMP4ClearChaptersRemovesUdtaCleanly(t *testing.T) {
 	}
 }
 
-func TestMP4MediaTypeWideValueRoundTrips(t *testing.T) {
-	// A stik value above one byte must not be dropped on write.
+func TestMP4MediaTypeWideValueDropped(t *testing.T) {
+	// A stik value past the single byte the atom stores (the iTunes media kinds are 0-14) is
+	// dropped and warned, not widened into a 2- or 4-byte atom: the conscious conformance choice
+	// over preserving an out-of-vocabulary value. A value that fits (2) still stores.
 	data := mp4Tagged(mp4Text("\xa9nam", "T"))
-	out := applyToBytes(t, data, func() *wl.Plan {
-		p, err := mustParseBytes(t, data).Edit().Set(tag.MediaType, "256").Prepare()
-		if err != nil {
-			t.Fatal(err)
+	p, err := mustParseBytes(t, data).Edit().Set(tag.MediaType, "256").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dropped := false
+	for _, w := range p.Report().Warnings {
+		if w.Code == wl.WarnValueDropped {
+			dropped = true
 		}
-		return p
-	}())
-	if v, ok := mustParseBytes(t, out).Get(tag.MediaType); !ok || len(v) != 1 || v[0] != "256" {
-		t.Errorf("MediaType round-trip = %v (ok=%v), want [256]", v, ok)
+	}
+	if !dropped {
+		t.Errorf("MEDIATYPE=256 must warn value-dropped; got %v", p.Report().Warnings)
+	}
+	out := applyToBytes(t, data, p)
+	if v, ok := mustParseBytes(t, out).Get(tag.MediaType); ok {
+		t.Errorf("MEDIATYPE=256 must be absent from the written file (not a widened atom), got %v", v)
+	}
+
+	// A value inside the byte range stores and round-trips.
+	p2, err := mustParseBytes(t, data).Edit().Set(tag.MediaType, "2").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out2 := applyToBytes(t, data, p2)
+	if v, ok := mustParseBytes(t, out2).Get(tag.MediaType); !ok || len(v) != 1 || v[0] != "2" {
+		t.Errorf("MediaType=2 round-trip = %v (ok=%v), want [2]", v, ok)
 	}
 }
 

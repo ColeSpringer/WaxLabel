@@ -117,7 +117,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 			report.Operations = append(report.Operations, "APEv2 preservation")
 		}
 		if id3v1Len > 0 {
-			segs = append(segs, bits.Copy(d.size-128, 128))
+			// Copy the full detected ID3v1 run (id3v1Len), not a hardcoded 128: a double-stacked
+			// trailer captured by the parser is 256+ bytes, and a literal 128 here would preserve
+			// only the last block and silently truncate the inner one on a normal edit.
+			segs = append(segs, bits.Copy(d.size-id3v1Len, id3v1Len))
 			report.Operations = append(report.Operations, "ID3v1 preservation")
 		}
 	}

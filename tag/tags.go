@@ -637,6 +637,23 @@ func ParseBool(s string) bool {
 	}
 }
 
+// CanonicalBoolValue normalizes a recognized boolean spelling to the canonical "1"/"0" a boolean
+// tag stores: "1"/"true"/"yes" (the [ParseBool] affirmatives) become "1", and "0"/"false"/"no"
+// become "0", case-insensitively and whitespace-trimmed. An unrecognized value (e.g. "maybe") is
+// returned unchanged, so a codec can canonicalize a valid boolean losslessly while leaving
+// anything else as literal text. It mirrors the "1" convention [Tags.Patch] writes and matches
+// MP4's cpil canonicalization, so FLAC, ID3, and MP4 store a boolean field identically.
+func CanonicalBoolValue(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes":
+		return "1"
+	case "0", "false", "no":
+		return "0"
+	default:
+		return v
+	}
+}
+
 // ValidBooleanValue reports whether v is a recognized boolean spelling for the
 // boolean key k - "1"/"true"/"yes" or "0"/"false"/"no", case-insensitive and
 // whitespace-trimmed, the affirmatives matching [ParseBool] exactly plus their
@@ -700,17 +717,17 @@ func (k Key) DescribesOwnAudio() bool {
 	return ownAudioEncodingKeys[k] || replayGainKeys[k]
 }
 
-// ValidMediaTypeValue reports whether v is a value the MEDIATYPE (iTunes stik media
-// kind) key accepts: a non-negative integer in the uint32 range the atom stores. It
-// mirrors the MP4 encoder's strconv.ParseUint(...,32) so a value the encoder would
-// drop is flagged while one it stores (including a large 70000) passes. A non-MediaType
-// key is reported valid - there is nothing to check.
+// ValidMediaTypeValue reports whether v is a value the MEDIATYPE (iTunes stik media kind) key
+// accepts: a non-negative integer no greater than 255, the single byte the stik atom stores (the
+// defined iTunes media kinds are 0-14). It mirrors the MP4 encoder's mediaTypeItem, which rejects a
+// value past 255 rather than widening the atom, so a value the encoder drops is flagged here too:
+// 256 fails, 2 passes. A non-MediaType key is reported valid - there is nothing to check.
 func ValidMediaTypeValue(k Key, v string) bool {
 	if k != MediaType {
 		return true
 	}
-	_, err := strconv.ParseUint(strings.TrimSpace(v), 10, 32)
-	return err == nil
+	n, err := strconv.ParseUint(strings.TrimSpace(v), 10, 32)
+	return err == nil && n <= 0xFF
 }
 
 // ValidReplayGainValue reports whether v is a value the ReplayGain key k accepts: a

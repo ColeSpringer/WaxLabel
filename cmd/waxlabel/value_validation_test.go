@@ -62,7 +62,7 @@ func TestValueDroppedWarningM4A(t *testing.T) {
 	t.Parallel()
 	notagsM4A := filepath.Join("..", "..", "testdata", "notags.m4a")
 
-	for _, kv := range []string{"TRACKNUMBER=abc", "TRACKNUMBER=70000", "TRACKNUMBER=-3", "TRACKNUMBER=0", "MEDIATYPE=abc"} {
+	for _, kv := range []string{"TRACKNUMBER=abc", "TRACKNUMBER=70000", "TRACKNUMBER=-3", "TRACKNUMBER=0", "MEDIATYPE=abc", "MEDIATYPE=256"} {
 		if out, _, _ := runCLI(t, "plan", copyFixture(t, notagsM4A), "--set", kv); !strings.Contains(out, "value-dropped") {
 			t.Errorf("plan --set %s: missing value-dropped warning:\n%s", kv, out)
 		}
@@ -91,7 +91,9 @@ func TestValueDroppedWarningM4A(t *testing.T) {
 	if overflow, _, _ := runCLI(t, "plan", copyFixture(t, notagsM4A), "--set", "TRACKNUMBER=70000"); !strings.Contains(overflow, "cannot be represented") {
 		t.Errorf("plan TRACKNUMBER=70000: a uint16 overflow should keep the 'cannot be represented' wording:\n%s", overflow)
 	}
-	for _, kv := range []string{"MEDIATYPE=70000", "TRACKNUMBER=5"} {
+	// MEDIATYPE=2 is a defined stik media kind (fits the single byte the atom stores), so it is
+	// written and does not warn - the counterpart to the MEDIATYPE=256 drop above.
+	for _, kv := range []string{"MEDIATYPE=2", "TRACKNUMBER=5"} {
 		if out, _, _ := runCLI(t, "plan", copyFixture(t, notagsM4A), "--set", kv); strings.Contains(out, "value-dropped") {
 			t.Errorf("plan --set %s: unexpected value-dropped warning:\n%s", kv, out)
 		}

@@ -38,8 +38,10 @@ func splitSyncedLyric(s string) (wl.SyncedLine, error) {
 // existing sets would be ambiguous because synced-lyrics sets are keyed differently by
 // native stores. The LRC file is read and timestamps are validated once, before any target
 // file is parsed, so bad input is reported once for the whole invocation. Returns nil when
-// neither authoring flag was given.
-func (e *editFlags) syncedLyricsAdds() ([]wl.SyncedLyrics, error) {
+// neither authoring flag was given. droppedLines carries the 1-based --synced-lyrics-file line
+// numbers the parser dropped (no timed lyric, not recognized LRC structure), so a per-file
+// warning can surface the partial input loss rather than let it pass silently at exit 0.
+func (e *editFlags) syncedLyricsAdds() (sets []wl.SyncedLyrics, droppedLines []int, err error) {
 	// Validate the author-provided language once for the whole run, alongside the timestamps,
 	// but only when lyrics are actually being authored: a bare --synced-lyrics-lang alongside
 	// --clear-synced-lyrics tags nothing, so its value is unused and must not fail the run. A
@@ -48,48 +50,50 @@ func (e *editFlags) syncedLyricsAdds() ([]wl.SyncedLyrics, error) {
 	// longer value would be padded or truncated.
 	authoring := e.syncedLyricsFile != "" || len(e.addSyncedLyric) > 0
 	if authoring && e.syncedLyricsLang != "" && !validLanguageCode(e.syncedLyricsLang) {
-		return nil, usagef("--synced-lyrics-lang %q must be 3 ASCII letters (e.g. eng)", e.syncedLyricsLang)
+		return nil, nil, usagef("--synced-lyrics-lang %q must be 3 ASCII letters (e.g. eng)", e.syncedLyricsLang)
 	}
 	var lines []wl.SyncedLine
 	if e.syncedLyricsFile != "" {
 		if err := checkRegularFile(e.syncedLyricsFile, false); err != nil {
-			return nil, fmt.Errorf("--synced-lyrics-file: %w", err)
+			return nil, nil, fmt.Errorf("--synced-lyrics-file: %w", err)
 		}
 		data, err := os.ReadFile(e.syncedLyricsFile)
 		if err != nil {
-			return nil, fmt.Errorf("--synced-lyrics-file: %s: %w", e.syncedLyricsFile, err)
+			return nil, nil, fmt.Errorf("--synced-lyrics-file: %s: %w", e.syncedLyricsFile, err)
 		}
 		content := string(data)
 		// Validate the file content at the boundary, like the argv author-text inputs, so a NUL
 		// byte (valid UTF-8, missed by a UTF-8-only check) or invalid UTF-8 in the LRC is a usage
 		// error (exit 2) rather than deferring to the library's exit-4 corrupt-media backstop.
 		if err := checkArgText(content, "--synced-lyrics-file: "+e.syncedLyricsFile); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		// Parse the file uncapped: the content is already fully in memory, so the line count
 		// is bounded by the file size. Delivering every line lets the write-time cap in the
 		// library truncate and warn once (visible to --json and --strict), rather than this
-		// read silently dropping lines past the cap.
-		fileLines := wl.ParseLRCFull(content)
+		// read silently dropping lines past the cap. The reporting variant also returns the line
+		// numbers dropped for having no timed lyric, so a partial-LRC drop is surfaced rather than silent.
+		fileLines, dropped := wl.ParseLRCReportFull(content)
 		if len(fileLines) == 0 {
-			return nil, usagef("--synced-lyrics-file: %s: no timed lyric lines found (want LRC lines like [00:12.00]Text)", e.syncedLyricsFile)
+			return nil, nil, usagef("--synced-lyrics-file: %s: no timed lyric lines found (want LRC lines like [00:12.00]Text)", e.syncedLyricsFile)
 		}
 		lines = append(lines, fileLines...)
+		droppedLines = dropped
 	}
 	for _, s := range e.addSyncedLyric {
 		ln, err := splitSyncedLyric(s)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		lines = append(lines, ln)
 	}
 	if len(lines) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	// Store one set containing every authored line. The library sorts by timestamp.
 	// Lowercase the language here so the model, JSON dump, and encoded ISO-639-2
 	// bytes agree; validation has already limited the input to ASCII letters.
-	return []wl.SyncedLyrics{{Language: strings.ToLower(e.syncedLyricsLang), Lines: lines}}, nil
+	return []wl.SyncedLyrics{{Language: strings.ToLower(e.syncedLyricsLang), Lines: lines}}, droppedLines, nil
 }
 
 // validLanguageCode reports whether s is exactly three ASCII letters, the shape of an
