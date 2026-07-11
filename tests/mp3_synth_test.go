@@ -63,6 +63,72 @@ func id3v1(title, artist string, genre byte) []byte {
 	return b
 }
 
+// mp3XingFrameVariant builds one MPEG-1 Layer 3 frame (128 kbps, 44.1 kHz, 417 bytes) carrying a
+// Xing header with a frame-count field. When crc is set the frame's protection bit is cleared and
+// the Xing sits 2 bytes later, behind the optional MPEG CRC; mono shrinks the side-information block
+// that precedes it. Both shifts move where the Xing lands, which is exactly what readVBR must probe.
+func mp3XingFrameVariant(mono, crc bool, declared uint32) []byte {
+	const frameLen = 417
+	f := make([]byte, frameLen)
+	f[0] = 0xFF
+	f[1] = 0xFB // MPEG-1 Layer 3, protection bit set (no CRC)
+	if crc {
+		f[1] = 0xFA // protection bit cleared: a 2-byte CRC follows the header
+	}
+	f[2] = 0x90 // 128 kbps, 44.1 kHz, no padding
+	if mono {
+		f[3] = 0xC0 // channel mode 3 = mono (stereo side info is larger)
+	}
+	side := 32 // MPEG-1 stereo
+	if mono {
+		side = 17
+	}
+	off := 4 + side // 4-byte header + side info
+	if crc {
+		off += 2 // skip the CRC
+	}
+	copy(f[off:off+4], "Xing")
+	f[off+7] = 1 // flags low byte: frame-count present
+	binary.BigEndian.PutUint32(f[off+8:off+12], declared)
+	return f
+}
+
+// mp3VBRVariantFile pairs a Xing frame with a bare second frame so parseMPEG's two-frame consensus
+// accepts the stream.
+func mp3VBRVariantFile(mono, crc bool, declared uint32) []byte {
+	f0 := mp3XingFrameVariant(mono, crc, declared)
+	f1 := make([]byte, len(f0))
+	copy(f1[:4], f0[:4]) // same header so the next-frame check agrees
+	return append(f0, f1...)
+}
+
+func TestMP3VBRXingOffsetProbing(t *testing.T) {
+	// The Xing header sits after an optional 2-byte MPEG CRC and a channel-dependent side-info
+	// block. readVBR must probe both the CRC-less and CRC-present offsets, for mono and stereo, or
+	// a CRC-protected VBR file falls back to the CBR estimate and reports the wrong duration.
+	const samplesPerFrame = 1152 // MPEG-1 Layer 3
+	declared := uint32(2)
+	for _, c := range []struct {
+		name      string
+		mono, crc bool
+	}{
+		{"stereo behind CRC", false, true},
+		{"stereo without CRC", false, false},
+		{"mono behind CRC", true, true},
+		{"mono without CRC", true, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			doc := mustParseBytes(t, mp3VBRVariantFile(c.mono, c.crc, declared))
+			if doc.Format() != wl.FormatMP3 {
+				t.Fatalf("format = %v, want MP3", doc.Format())
+			}
+			if got := doc.Properties().Tracks[0].TotalSamples; got != uint64(declared)*samplesPerFrame {
+				t.Errorf("TotalSamples = %d, want %d (Xing frame count not read)", got, uint64(declared)*samplesPerFrame)
+			}
+		})
+	}
+}
+
 func TestMP3NumericGenreRead(t *testing.T) {
 	data := append(id3v2(3, textFrame(3, "TCON", "(17)"), textFrame(3, "TIT2", "T")), mp3Audio(t)...)
 	doc := mustParseBytes(t, data)

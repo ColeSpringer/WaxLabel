@@ -8,6 +8,7 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/id3"
 	"github.com/colespringer/waxlabel/internal/vorbis"
+	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -134,6 +135,13 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	}
 
 	media.Tags, media.Families = projectComments(d.comments)
+	// Project FLAC's legacy containers (leading ID3v2, trailing ID3v1) into family entries
+	// so a value living only in one is surfaced (never promoted into the Vorbis-only
+	// canonical set) and a conflict with a Vorbis value is flagged, giving FLAC the parity
+	// MP3 already has.
+	legacyFams, legacyOpaque := flacLegacyFamilies(media.Tags, d.leadingID3, d.trailingID3v1, maxElements)
+	media.Families = append(media.Families, legacyFams...)
+	media.LegacyOpaqueContent = legacyOpaque
 	media.Chapters = projectChapters(d.comments)
 	var syncedWarnings []core.Warning
 	media.SyncedLyrics, syncedWarnings = projectSyncedLyricsReport(d.comments)
@@ -224,6 +232,46 @@ func extractCommentPictures(comments []comment, limit int64) (kept []comment, pi
 		pics = append(pics, pic)
 	}
 	return kept, pics, ws
+}
+
+// flacLegacyFamilies projects FLAC's legacy containers (its leading ID3v2 and trailing ID3v1)
+// into family/source entries, mirroring MP3's legacyFamilies. Each entry is marked Legacy and
+// unselected when it disagrees with the authoritative Vorbis value. media.Tags stays Vorbis-only,
+// so this surfaces a legacy value (in dump --native and, if it conflicts, as a finding) without
+// promoting it into the canonical set. It also reports opaque when a leading ID3v2 carries non-tag
+// content the FLAC canonical does not fold in (pictures, chapters, synced lyrics) or is unreadable
+// - content a legacy strip cannot prove redundant. The leading ID3v2 bytes were already read at
+// parse, so this re-parses them in memory without touching the source.
+func flacLegacyFamilies(auth tag.TagSet, leadingID3, trailingID3v1 []byte, maxElements int) (fams []core.FamilyValue, opaque bool) {
+	add := func(key tag.Key, value string, fam core.Family) {
+		fams = append(fams, core.FamilyValue{
+			Key: key, Family: fam, Scope: core.ScopeTrack,
+			Values: []string{value}, Selected: core.FamilySelected(auth, key, value), Legacy: true,
+		})
+	}
+	if v1, ok := id3.ParseV1(trailingID3v1); ok {
+		for _, p := range v1.Pairs() {
+			add(p.Key, p.Value, core.FamilyID3v1)
+		}
+	}
+	if len(leadingID3) > 0 {
+		t, err := id3.ParseTag(leadingID3, maxElements)
+		if err != nil {
+			// An unreadable leading ID3v2 cannot be proven redundant with the canonical set.
+			opaque = true
+		} else {
+			proj := id3.Project(t)
+			for key, vals := range proj.Tags.All() {
+				for _, v := range vals {
+					add(key, v, core.FamilyID3v2)
+				}
+			}
+			if len(proj.Pictures) > 0 || len(proj.Chapters) > 0 || len(proj.SyncedLyrics) > 0 {
+				opaque = true
+			}
+		}
+	}
+	return fams, opaque
 }
 
 // id3v2Len returns the total byte length of a stray leading ID3v2 tag given its

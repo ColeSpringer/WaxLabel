@@ -60,6 +60,16 @@ func renderDocument(w io.Writer, path string, doc *wl.Document, native bool) {
 		fmt.Fprintf(w, "  padding: %s\n", wl.HumanBytes(pad))
 	}
 	renderTags(w, doc.Tags())
+	// Surface metadata the canonical tags view omits because it lives only in a legacy
+	// container, which a bare "(none)" would otherwise hide. A container can hold both a
+	// unique tag and opaque non-tag content, so the two notes are independent: each prints
+	// on its own rather than one shadowing the other. See --native for the full provenance.
+	if lo := doc.LegacyOnlyKeys(); len(lo) > 0 {
+		fmt.Fprintf(w, "  note:    %s only in a legacy container; see --native\n", pluralUnit(len(lo), "tag"))
+	}
+	if doc.HasOpaqueLegacyContent() {
+		fmt.Fprintln(w, "  note:    a legacy container holds non-tag metadata not shown; see --native")
+	}
 	renderPictures(w, doc.Pictures())
 	renderChapters(w, doc.Chapters())
 	renderSyncedLyrics(w, doc.SyncedLyrics())
@@ -520,7 +530,7 @@ func renderNative(w io.Writer, doc *wl.Document) {
 		// jargon. Each row is one native field's contribution to a canonical key;
 		// "(conflict)" marks a value the projection did not select.
 		fmt.Fprintf(w, "  families (%d):\n", len(fams))
-		fmt.Fprintln(w, "    (which native container supplied each canonical value)")
+		fmt.Fprintln(w, "    (provenance of tag values across containers)")
 		for _, f := range fams {
 			flag := ""
 			if !f.Selected {

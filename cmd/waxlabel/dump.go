@@ -79,8 +79,12 @@ type jsonDocument struct {
 	Chapters     []jsonChapter      `json:"chapters"`
 	SyncedLyrics []jsonSyncedLyrics `json:"syncedLyrics"`
 	Warnings     []jsonWarning      `json:"warnings"`
-	Native       []jsonNative       `json:"native,omitempty"`
-	Sources      []jsonSource       `json:"sources,omitempty"`
+	// LegacyOnly names canonical keys whose value lives only in a legacy container
+	// (see Document.LegacyOnlyKeys). Deliberately not gated on --native, so default
+	// JSON stops hiding a value the canonical tags view omits. Omitted when empty.
+	LegacyOnly []string     `json:"legacyOnly,omitempty"`
+	Native     []jsonNative `json:"native,omitempty"`
+	Sources    []jsonSource `json:"sources,omitempty"`
 }
 
 type jsonProperties struct {
@@ -236,6 +240,9 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 	}
 	for _, x := range doc.Warnings() {
 		jd.Warnings = append(jd.Warnings, jsonWarning{Code: x.Code.String(), Message: x.Message})
+	}
+	for _, k := range doc.LegacyOnlyKeys() {
+		jd.LegacyOnly = append(jd.LegacyOnly, string(k))
 	}
 	if native {
 		if nd := doc.Native(); nd != nil {

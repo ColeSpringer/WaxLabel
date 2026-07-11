@@ -82,6 +82,13 @@ type FamilyValue struct {
 	Scope    Scope
 	Values   []string
 	Selected bool
+	// Legacy marks a contribution from a non-authoritative, alternate container
+	// (MP3's ID3v1/APEv2, FLAC's leading ID3v2 / trailing ID3v1) rather than the
+	// format's canonical tag set. It distinguishes a value that lives only in such a
+	// container - which dump would otherwise omit and a legacy strip would destroy -
+	// from a native container's own scoped families, and disambiguates FamilyID3v2,
+	// which is canonical for MP3 but legacy for FLAC.
+	Legacy bool
 }
 
 // NativeEntry is a human-readable summary of one native metadata block, for
@@ -124,6 +131,13 @@ type Media struct {
 	Warnings     []Warning
 	Native       NativeDoc
 	Identity     Identity
+
+	// LegacyOpaqueContent records that a legacy container holds non-tag content the
+	// canonical projection does not fold in (an MP3 APEv2's binary items, a FLAC
+	// leading ID3v2's pictures/chapters/synced lyrics, or an unreadable such
+	// container). A legacy strip cannot prove such a container fully redundant, so
+	// the safe auto-fix keeps it; dump surfaces it rather than hiding it.
+	LegacyOpaqueContent bool
 
 	// AudioStart and AudioEnd bound the audio essence within the source: the
 	// bytes the rewrite must copy verbatim and the essence digest must hash.
@@ -172,6 +186,8 @@ func (m *Media) Clone() *Media {
 		Identity:     m.Identity,
 		AudioStart:   m.AudioStart,
 		AudioEnd:     m.AudioEnd,
+
+		LegacyOpaqueContent: m.LegacyOpaqueContent,
 	}
 	if m.AudioRanges != nil {
 		c.AudioRanges = make([][2]int64, len(m.AudioRanges))

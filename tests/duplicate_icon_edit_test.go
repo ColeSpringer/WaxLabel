@@ -132,15 +132,30 @@ func TestDuplicateIconDirectPictureEditStillRefused(t *testing.T) {
 	}
 }
 
-func TestDuplicateIconTransferCarryingSecondIconStillRefused(t *testing.T) {
-	// Control: a transfer that carries pictures producing a second icon still fails, even though
-	// transfers opt into WithUnrecognizedPictures - the icon-count rule is structural, not gated
-	// on that option (picsTouched=true because the transfer authored the picture set).
+func TestDuplicateIconTransferCarryingSecondIconSucceeds(t *testing.T) {
+	// A transfer faithfully carries the source picture set, so the source's own duplicate icons
+	// must not abort the copy as if the user had authored a second icon; the carried flag
+	// suppresses the icon-count rule (like the other faithful-carry checks). lint still flags the
+	// carried result, so the duplicate stays discoverable.
+	dstData := flacWithVendor("test", "TITLE=Dst")
 	src := mustParseBytes(t, flacTwoType1Icons(vorbis.Comment{Name: "TITLE", Value: "Src"}))
-	dst := mustParseBytes(t, flacWithVendor("test", "TITLE=Dst"))
-	_, _, err := src.PrepareTransfer(dst)
-	if !errors.Is(err, waxerr.ErrInvalidData) {
-		t.Fatalf("a transfer carrying two type-1 icons should be refused, got %v", err)
+	plan, _, err := src.PrepareTransfer(mustParseBytes(t, dstData))
+	if err != nil {
+		t.Fatalf("a transfer carrying two type-1 icons should succeed, got %v", err)
+	}
+	re := mustParseBytes(t, applyToBytes(t, dstData, plan))
+	if got := countType1(re); got != 2 {
+		t.Errorf("expected 2 type-1 icons carried, got %d", got)
+	}
+	found := false
+	for _, f := range re.Lint() {
+		if f.Code == "duplicate-icon" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected the duplicate-icon finding on the carried result")
 	}
 }
 

@@ -463,6 +463,86 @@ func TestMP4MultiMdatTrailingMoovFingerprinted(t *testing.T) {
 	}
 }
 
+func TestMP4MalformedTextAtomNotDuplicatedOnEdit(t *testing.T) {
+	// A known atom whose content does not decode cleanly (here an invalid-UTF-8 \xa9nam) is
+	// preserved verbatim, but buildItems still re-emits the fresh canonical atom of the same type.
+	// Without de-duplicating preserved items by atom identity the output would carry two \xa9nam
+	// atoms; the fresh value must win the read-back, the stale mojibake must not linger, and the
+	// audio essence must be untouched.
+	data := mp4Tagged(mp4Text("\xa9nam", "\xff\xfe mojibake")) // invalid UTF-8: preserved, not owned
+	if got := mustParseBytes(t, data).Fields().Title; got != "" {
+		t.Fatalf("setup: a malformed \\xa9nam should not project a title, got %q", got)
+	}
+	before := essenceOf(t, data)
+
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Fresh Title").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+
+	if got := bytes.Count(out, []byte("\xa9nam")); got != 1 {
+		t.Errorf("output carries %d \\xa9nam atoms, want exactly 1 (malformed duplicate not dropped)", got)
+	}
+	re := mustParseBytes(t, out)
+	if re.Fields().Title != "Fresh Title" {
+		t.Errorf("title read back = %q, want the fresh value (stale mojibake preserved instead?)", re.Fields().Title)
+	}
+	if !essenceOf(t, out).Equal(before) {
+		t.Error("audio essence changed across the edit")
+	}
+}
+
+func TestMP4MalformedCoverNotDuplicatedOnPictureEdit(t *testing.T) {
+	// A covr whose data atoms do not parse is preserved verbatim; changing the picture set
+	// re-emits a fresh covr. The malformed duplicate must be dropped so a conformant single covr
+	// remains, holding the new image.
+	badCovr := mp4Atom("covr", []byte("not a data atom"))
+	data := mp4Tagged(mp4Text("\xa9nam", "T"), badCovr)
+	if got := mustParseBytes(t, data).Pictures(); len(got) != 0 {
+		t.Fatalf("setup: a malformed covr should project no picture, got %d", len(got))
+	}
+
+	plan, err := mustParseBytes(t, data).Edit().
+		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+
+	if got := bytes.Count(out, []byte("covr")); got != 1 {
+		t.Errorf("output carries %d covr atoms, want exactly 1 (malformed duplicate not dropped)", got)
+	}
+	re := mustParseBytes(t, out)
+	pics := re.Pictures()
+	if len(pics) != 1 || pics[0].MIME != "image/png" || !bytes.Equal(pics[0].Data, tinyPNG()) {
+		t.Errorf("picture after edit = %+v, want the single fresh PNG", pics)
+	}
+}
+
+func TestMP4ForeignFreeformSurvivesCanonicalFreeformEdit(t *testing.T) {
+	// A com.apple.iTunes freeform with a mixed-case internal name (iTunNORM) is preserved verbatim.
+	// An edit that authors a custom canonical key emits its own "----" atom, so de-duplication must
+	// key freeforms by mean+name rather than the shared "----" fourcc, or the foreign atom would be
+	// wrongly dropped.
+	foreign := mp4Freeform("com.apple.iTunes", "iTunNORM", "00000123 00000456")
+	data := mp4Tagged(mp4Text("\xa9nam", "T"), foreign)
+
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Key("MY_CUSTOM"), "custom-value").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+
+	if !bytes.Contains(out, []byte("iTunNORM")) {
+		t.Error("foreign iTunNORM freeform dropped by the canonical-freeform edit")
+	}
+	re := mustParseBytes(t, out)
+	if vs, ok := re.Get(tag.Key("MY_CUSTOM")); !ok || len(vs) != 1 || vs[0] != "custom-value" {
+		t.Errorf("custom freeform key = %v (ok=%v), want [custom-value]", vs, ok)
+	}
+}
+
 func TestMP4FragmentedRejected(t *testing.T) {
 	// A top-level moof marks a fragmented file, which is out of scope and must fail
 	// loudly rather than corrupt offset tables.

@@ -172,11 +172,18 @@ func codecName(version, layer int) string {
 // the total frame count, which gives an accurate duration for variable-bitrate
 // streams. frame points at the start of the first frame header.
 func readVBR(frame []byte, info *mpegInfo) {
-	// Xing/Info sits after the header and side information.
+	// Xing/Info sits after the header and side information, offset by an optional
+	// 2-byte MPEG CRC when the protection bit is clear. Probe the CRC-less offset
+	// first (no reliance on the sometimes-inaccurate protection bit), then the
+	// CRC-present one. With a CRC present, the CRC-less offset lands on the last two
+	// side-info bytes plus the first two of "Xing", which cannot spell "Xing"/"Info",
+	// so there is no false early match.
 	side := sideInfoSize(info.version, info.channels)
-	if off := 4 + side; off+12 <= len(frame) {
-		tag := string(frame[off : off+4])
-		if tag == "Xing" || tag == "Info" {
+	for _, off := range [2]int{4 + side, 4 + 2 + side} {
+		if off+12 > len(frame) {
+			continue
+		}
+		if tag := string(frame[off : off+4]); tag == "Xing" || tag == "Info" {
 			flags := binary.BigEndian.Uint32(frame[off+4 : off+8])
 			if flags&0x1 != 0 { // frame count present
 				info.vbrFrames = binary.BigEndian.Uint32(frame[off+8 : off+12])

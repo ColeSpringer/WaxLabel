@@ -53,9 +53,11 @@ func newLintCmd() *cobra.Command {
 			"a contradictory state; it outranks a wrong path in a multi-file run. A\n" +
 			"structural parse/IO error keeps its own (higher) exit class.\n\n" +
 			"With --fix, apply only the safe, non-destructive remediations - clearing\n" +
-			"the encoder stamp and stripping legacy containers - then save in place,\n" +
-			"reporting what changed. Pictures are never dropped automatically; every\n" +
-			"finding --fix does not address is reported as \"not auto-fixed\". With\n" +
+			"the encoder stamp and stripping legacy containers that are fully redundant\n" +
+			"with the canonical tags - then save in place, reporting what changed. A\n" +
+			"legacy container holding a value or content that lives nowhere else is kept.\n" +
+			"Pictures are never dropped automatically; every finding --fix does not\n" +
+			"address is reported as \"not auto-fixed\". With\n" +
 			"--recursive, directory arguments are walked for audio files. A single\n" +
 			"\"-\" reads from standard input (read-only; not valid with --fix).",
 		Args: cobra.MinimumNArgs(1),

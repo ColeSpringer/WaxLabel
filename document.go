@@ -136,6 +136,37 @@ func (d *Document) Families() []FamilyValue {
 	return out
 }
 
+// LegacyOnlyKeys returns canonical keys whose value exists only in a legacy
+// container (an alternate, non-authoritative block such as MP3 ID3v1/APEv2 or
+// FLAC's leading ID3v2 / trailing ID3v1) and not in the authoritative tag set.
+// These are the values dump would otherwise omit and a legacy strip would
+// destroy, so the safe auto-fix keeps their container and dump surfaces them.
+func (d *Document) LegacyOnlyKeys() []tag.Key {
+	if d.zero() {
+		return nil
+	}
+	var out []tag.Key
+	seen := make(map[tag.Key]bool)
+	for _, f := range d.media.Families {
+		if f.Legacy && !d.media.Tags.Has(f.Key) && !seen[f.Key] {
+			seen[f.Key] = true
+			out = append(out, f.Key)
+		}
+	}
+	return out
+}
+
+// HasOpaqueLegacyContent reports whether a legacy container holds non-tag content
+// (an APEv2 binary item, a leading ID3v2's picture/chapter/synced-lyric frames, or
+// an unreadable such container) that the canonical projection does not fold in. A
+// legacy strip cannot prove such a container redundant, so the safe fix keeps it.
+func (d *Document) HasOpaqueLegacyContent() bool {
+	if d.zero() {
+		return false
+	}
+	return d.media.LegacyOpaqueContent
+}
+
 // Warnings returns the non-fatal conditions found during parse (preserved
 // legacy tags, inherited encoder stamps, unknown blocks, and so on).
 func (d *Document) Warnings() []Warning {

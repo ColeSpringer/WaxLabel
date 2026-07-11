@@ -8,8 +8,8 @@ import (
 // LintFix is the safe, non-destructive remediation derived from a document's
 // lint findings: the tag patch and write options that, applied together and
 // saved, clear what can be safely cleared. It is deliberately conservative -
-// only the encoder stamp and stale legacy containers are touched - so applying
-// it can never lose data a user might want to keep.
+// only the encoder stamp and provably-redundant legacy containers are touched -
+// so applying it can never lose data a user might want to keep.
 type LintFix struct {
 	Patch   tag.TagPatch
 	Options []WriteOption
@@ -20,7 +20,18 @@ type LintFix struct {
 //
 //   - inherited-encoder: clear the ENCODER software stamp ([tag.Encoder]);
 //   - stray-leading-id3 / trailing-id3v1 / legacy-ape: strip the legacy
-//     ID3v1/APEv2/stray-ID3 containers ([WithLegacyPolicy] [LegacyStrip]).
+//     ID3v1/APEv2/stray-ID3 containers ([WithLegacyPolicy] [LegacyStrip]), but only
+//     when WaxLabel can prove them fully redundant with the canonical set.
+//
+// The legacy strip is [LegacyStrip], which is all-or-nothing (it strips every legacy
+// container). So it is skipped when any legacy container holds unique data the strip
+// would destroy - a tag present only in a legacy container ([Document.LegacyOnlyKeys])
+// or non-tag content the projection does not fold in ([Document.HasOpaqueLegacyContent]:
+// an APEv2 binary item, a leading ID3v2's pictures/chapters/lyrics, or an unreadable
+// container). A mixed file (one redundant container plus one carrying unique data)
+// conservatively keeps both; the pre-existing legacy warning still fires so lint exits
+// non-zero, and the legacy-only-tags info explains why the container was preserved. An
+// explicit [WithLegacyPolicy] [LegacyStrip] still strips unconditionally.
 //
 // The finding codes are the canonical parse-warning codes (the same ones dump
 // prints), so this keys off exactly what lint reports - no private alias to keep in
@@ -35,6 +46,9 @@ type LintFix struct {
 func (d *Document) PlanLintFix() LintFix {
 	var fix LintFix
 	encoderCleared, legacyStripped := false, false
+	// Auto-strip a legacy container only when it is provably, fully redundant with the
+	// canonical set. Computed once (the primitives would otherwise run per matching finding).
+	legacyLoses := len(d.LegacyOnlyKeys()) > 0 || d.HasOpaqueLegacyContent()
 	for _, f := range d.Lint() {
 		switch f.Code {
 		case "inherited-encoder":
@@ -71,7 +85,7 @@ func (d *Document) PlanLintFix() LintFix {
 				encoderCleared = true
 			}
 		case "stray-leading-id3", "trailing-id3v1", "legacy-ape":
-			if !legacyStripped {
+			if !legacyStripped && !legacyLoses {
 				fix.Options = append(fix.Options, WithLegacyPolicy(LegacyStrip))
 				legacyStripped = true
 			}

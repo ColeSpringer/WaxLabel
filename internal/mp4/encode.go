@@ -71,8 +71,51 @@ func buildItems(edited tag.TagSet, covr []item, preserved []item, numericGenre b
 	}
 
 	out = append(out, covr...)
-	out = append(out, preserved...)
+	return dedupePreservedItems(out, preserved)
+}
+
+// dedupePreservedItems appends the preserved items (unknown atoms and foreign freeforms kept
+// verbatim) after the rebuilt canonical items, dropping any preserved item whose atom identity a
+// rebuilt item already emits. A known atom with malformed content is owned:false, so it is kept
+// verbatim by preservedItems while buildItems re-emits the fresh canonical atom of the same type;
+// without this de-duplication the output would carry two atoms of one identity (e.g. a corrupt
+// \xa9nam beside the re-rendered one). It reasons about the whole rebuilt output, so a file with a
+// valid and a malformed covr, edited with pictures unchanged, carries the valid covr via covrItems
+// and the malformed duplicate is dropped - a conformant file has one covr, no canonical data lost.
+func dedupePreservedItems(built, preserved []item) []item {
+	emitted := map[itemKey]bool{}
+	for _, it := range built {
+		emitted[itemIdentity(it)] = true
+	}
+	out := built
+	for _, it := range preserved {
+		if !emitted[itemIdentity(it)] {
+			out = append(out, it)
+		}
+	}
 	return out
+}
+
+// itemKey is an ilst item's de-duplication identity: the four-cc name, plus the mean and name of a
+// freeform "----" atom. Keeping mean/name as their own comparable fields avoids both a separator
+// hack and cloning the (potentially large) payload into a string just to key a map.
+type itemKey struct {
+	name    [4]byte
+	mean    string
+	subName string
+}
+
+// itemIdentity keys an ilst item by the atom slot a rebuilt canonical item would occupy. For most
+// atoms that is the four-cc alone, but a freeform "----" atom must be keyed by its mean+name too:
+// several legitimate foreign freeforms share the "----" four-cc and differ only there, so keying on
+// the four-cc alone would wrongly drop them. A malformed freeform leaves mean/name empty, which
+// cannot match a rebuilt (always parseable, always com.apple.iTunes-mean) item, so it is preserved.
+func itemIdentity(it item) itemKey {
+	if it.id() == "----" {
+		mean, name, _, _ := parseMeanName(it.payload)
+		return itemKey{name: it.name, mean: mean, subName: name}
+	}
+	return itemKey{name: it.name}
 }
 
 // covrItems returns the owned (successfully decoded) covr item(s) among parsed ilst items, so an

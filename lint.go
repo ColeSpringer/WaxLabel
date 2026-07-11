@@ -70,6 +70,8 @@ func (d *Document) Lint() []Finding {
 
 	out = append(out, lintWarnings(d.media.Warnings)...)
 	out = append(out, lintFamilies(d.media.Families)...)
+	out = append(out, lintLegacyOnly(d.LegacyOnlyKeys())...)
+	out = append(out, lintOpaqueLegacy(d.media.LegacyOpaqueContent)...)
 	// Lint the display projection so a cover whose bytes disagree with its stored MIME (a GIF
 	// mislabeled image/png, or junk under a valid-looking label) is judged by its real type - the
 	// unrecognized-MIME and format checks then see what a reader would. media.Pictures stays stored
@@ -133,6 +135,33 @@ func lintFamilies(fams []core.FamilyValue) []Finding {
 		})
 	}
 	return out
+}
+
+// lintLegacyOnly reports canonical keys whose value lives only in a legacy container (see
+// [Document.LegacyOnlyKeys]). It is LintInfo so it does not flip the clean exit: the value is
+// preserved, not lost, and the pre-existing legacy-container warning already carries the
+// LintWarning severity. This finding explains why lint --fix intentionally leaves the container
+// in place - the values would be destroyed by a strip - and points at dump --native to see them.
+func lintLegacyOnly(keys []tag.Key) []Finding {
+	if len(keys) == 0 {
+		return nil
+	}
+	return []Finding{{LintInfo, "legacy-only-tags",
+		fmt.Sprintf("%d tag(s) present only in a legacy container; see dump --native", len(keys)), ""}}
+}
+
+// lintOpaqueLegacy reports that a legacy container holds non-tag content the canonical view does
+// not fold in (an APEv2 binary item, a leading ID3v2's pictures/chapters/lyrics, or an unreadable
+// such container). It is LintInfo, like lintLegacyOnly: nothing is lost, the pre-existing legacy
+// warning already carries the LintWarning severity. It explains why lint --fix intentionally leaves
+// the container in place - a strip would destroy content that lives nowhere else - completing the
+// symmetry with the legacy-only-tags finding, which covers unique tags rather than non-tag content.
+func lintOpaqueLegacy(opaque bool) []Finding {
+	if !opaque {
+		return nil
+	}
+	return []Finding{{LintInfo, "legacy-opaque-content",
+		"a legacy container holds non-tag content (picture, chapter, or binary item) not shown; see dump --native", ""}}
 }
 
 // duplicatePictureMessage and multipleFrontCoversMessage are the shared human

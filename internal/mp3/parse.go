@@ -140,6 +140,12 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	// flagged as conflicts when they disagree with the authoritative ID3v2 value.
 	media.Families = append(media.Families, legacyFamilies(media.Tags, d.id3v1, apeTag)...)
 
+	// An APEv2 carrying a binary/cover/locator item (NonText) holds content Pairs()
+	// skips, so it is not projected as a tag or family and a legacy strip cannot prove
+	// it fully redundant. Mark it so the safe fix preserves it and dump surfaces it.
+	// ID3v1 is pure text and never opaque.
+	media.LegacyOpaqueContent = apeHasNonText(apeTag)
+
 	media.Properties = core.Properties{Container: "MP3", Tracks: []core.AudioTrack{d.track}}
 	media.Warnings = warnings
 	media.Identity = core.Identity{Size: size}
@@ -169,6 +175,22 @@ func buildTrack(info mpegInfo, audioBytes int64) core.AudioTrack {
 	return t
 }
 
+// apeHasNonText reports whether an APEv2 tag carries a binary/cover/locator item (NonText),
+// which Pairs() skips, so it is neither a projected tag nor a family and a legacy strip cannot
+// prove it redundant. Shared by parse and the post-write result builder so the two agree on when
+// an APEv2 counts as opaque legacy content. A nil tag is never opaque.
+func apeHasNonText(t *ape.Tag) bool {
+	if t == nil {
+		return false
+	}
+	for _, it := range t.Items {
+		if it.NonText {
+			return true
+		}
+	}
+	return false
+}
+
 // legacyFamilies builds family/source entries for the trailing ID3v1 and APEv2
 // containers. Each entry is marked unselected (a conflict) when its value
 // disagrees with the authoritative ID3v2 value for the same key.
@@ -177,7 +199,7 @@ func legacyFamilies(auth tag.TagSet, id3v1 []byte, apeTag *ape.Tag) []core.Famil
 	add := func(key tag.Key, value string, fam core.Family) {
 		out = append(out, core.FamilyValue{
 			Key: key, Family: fam, Scope: core.ScopeTrack,
-			Values: []string{value}, Selected: core.FamilySelected(auth, key, value),
+			Values: []string{value}, Selected: core.FamilySelected(auth, key, value), Legacy: true,
 		})
 	}
 	if v1, ok := id3.ParseV1(id3v1); ok {

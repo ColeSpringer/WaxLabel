@@ -90,7 +90,7 @@ waxlabel export-picture track.flac -o cover.jpg
 | `dump <file>...` | Show tags, audio properties, pictures, chapters, synced lyrics, and warnings. `--native` also shows native blocks. |
 | `plan <file>...` | Preview an edit without writing. |
 | `set <file>...` | Apply edits and save. Use `-o` for a new output file. |
-| `lint <file>...` | Report metadata issues. `--fix` applies only safe fixes. |
+| `lint <file>...` | Report metadata issues. `--fix` applies only safe, non-destructive fixes; a legacy container is stripped only when fully redundant with the canonical tags. |
 | `verify <file>...` | Print tag-independent audio-essence digests. `--whole-file` hashes every byte. |
 | `caps <file>` or `caps --format <name>` | Show what a file or format can store and edit. |
 | `keys` | List the canonical tag vocabulary and cardinality. |

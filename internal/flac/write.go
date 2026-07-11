@@ -127,7 +127,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// write proceeds rather than collapsing to a silent no-op.
 	report.Warnings = vorbis.RebuildWarnings(report.Warnings, rebuildInfo)
 
-	result := buildResult(edited, d, newVendor, finalBlocks, newComments, newLeadingLen, audioOutStart, audioLen, newTrailingLen, newSize)
+	result := buildResult(edited, d, newVendor, finalBlocks, newComments, newLeadingLen, audioOutStart, audioLen, newTrailingLen, newSize, opts.Limits.MaxElements)
 
 	// FLAC stores Vorbis values verbatim, so this downgrade only catches values the rebuild
 	// dropped, such as empty strings. A legacy strip or vendor neutralization remains a real
@@ -362,7 +362,7 @@ func serializeMetadata(blocks []block, d *doc, pol core.PaddingPolicy) (out []by
 // buildResult constructs the post-write Media so the engine can return a
 // Document without re-parsing (needed for the io.Writer destination).
 func buildResult(edited *core.Media, orig *doc, newVendor string, newBlocks []block, newComments []comment,
-	newLeadingLen, audioStart, audioLen, trailingLen, newSize int64) *core.Media {
+	newLeadingLen, audioStart, audioLen, trailingLen, newSize int64, maxElements int) *core.Media {
 
 	nd := &doc{
 		vendor:     newVendor,
@@ -392,14 +392,22 @@ func buildResult(edited *core.Media, orig *doc, newVendor string, newBlocks []bl
 	// set present-but-empty (which Vorbis cannot store) is correctly absent here.
 	// Building the Media directly also avoids cloning edited's (shared) native.
 	tags, families := projectComments(newComments)
+	// Re-project the preserved legacy containers (leading ID3v2, trailing ID3v1) into the family
+	// view and recompute whether they hold opaque non-tag content, so the returned Document matches
+	// a fresh parse of the written bytes (conflicts recomputed against the new Vorbis values). A
+	// legacy strip left these byte slices empty, so this contributes nothing then, as a re-parse of
+	// the stripped output would report nothing. Mirrors the MP3 result builder.
+	legacyFams, legacyOpaque := flacLegacyFamilies(tags, nd.leadingID3, nd.trailingID3v1, maxElements)
+	families = append(families, legacyFams...)
 	return &core.Media{
-		Format:       core.FormatFLAC,
-		Properties:   edited.Properties.Clone(),
-		Tags:         tags,
-		Families:     families,
-		Pictures:     core.ClonePictures(edited.Pictures),
-		Chapters:     projectChapters(newComments),
-		SyncedLyrics: projectSyncedLyrics(newComments),
+		Format:              core.FormatFLAC,
+		Properties:          edited.Properties.Clone(),
+		Tags:                tags,
+		Families:            families,
+		LegacyOpaqueContent: legacyOpaque,
+		Pictures:            core.ClonePictures(edited.Pictures),
+		Chapters:            projectChapters(newComments),
+		SyncedLyrics:        projectSyncedLyrics(newComments),
 		// Recompute inherited-encoder warnings from the vendor and comments that were written.
 		// Other warnings carry verbatim because CHAPTERxxx and SYNCEDLYRICS projections emit
 		// no warnings today; if that changes, this must rederive those warnings too.

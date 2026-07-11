@@ -171,17 +171,20 @@ func buildResult(edited *core.Media, base *doc, newTag *id3.Tag, tagBytes []byte
 	// written tag no longer flattens. AAC uses the same helper for the same front-tag path.
 	warnings := id3.CarryProjectionWarnings(edited.Warnings, proj.Warnings)
 	return &core.Media{
-		Format:       core.FormatMP3,
-		Properties:   edited.Properties.Clone(),
-		Tags:         proj.Tags,
-		Families:     families,
-		Pictures:     core.ClonePictures(edited.Pictures),
-		Chapters:     proj.Chapters,
-		SyncedLyrics: proj.SyncedLyrics,
-		Warnings:     warnings,
-		Native:       nd,
-		Identity:     core.Identity{Size: newSize},
-		AudioStart:   nd.audioStart,
-		AudioEnd:     nd.audioEnd,
+		Format:     core.FormatMP3,
+		Properties: edited.Properties.Clone(),
+		Tags:       proj.Tags,
+		Families:   families,
+		// Recompute opaque legacy content from the APEv2 actually preserved, so the returned
+		// Document matches a fresh parse (a legacy strip left nd.apeTag nil, so this is false then).
+		LegacyOpaqueContent: apeHasNonText(nd.apeTag),
+		Pictures:            core.ClonePictures(edited.Pictures),
+		Chapters:            proj.Chapters,
+		SyncedLyrics:        proj.SyncedLyrics,
+		Warnings:            warnings,
+		Native:              nd,
+		Identity:            core.Identity{Size: newSize},
+		AudioStart:          nd.audioStart,
+		AudioEnd:            nd.audioEnd,
 	}
 }

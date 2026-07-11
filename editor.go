@@ -319,12 +319,16 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		Chapters:     e.base.Chapters,
 		SyncedLyrics: e.base.SyncedLyrics,
 		Families:     e.base.Families,
-		Warnings:     e.base.Warnings,
-		Native:       e.base.Native,
-		Identity:     e.base.Identity,
-		AudioStart:   e.base.AudioStart,
-		AudioEnd:     e.base.AudioEnd,
-		AudioRanges:  e.base.AudioRanges,
+		// Carry the base's legacy-opaque flag alongside its families: the codec result builders
+		// recompute both from the bytes they write, but a no-op path that returns this edit-intent
+		// Media directly must still reflect the file's current legacy state.
+		LegacyOpaqueContent: e.base.LegacyOpaqueContent,
+		Warnings:            e.base.Warnings,
+		Native:              e.base.Native,
+		Identity:            e.base.Identity,
+		AudioStart:          e.base.AudioStart,
+		AudioEnd:            e.base.AudioEnd,
+		AudioRanges:         e.base.AudioRanges,
 	}
 	if e.picsTouched {
 		edited.Pictures = e.pictures
@@ -335,11 +339,14 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	if e.syncedLyricsTouched {
 		edited.SyncedLyrics = e.syncedLyrics
 	}
-	// Enforce the icon-count rule only when this edit wrote the picture set. Tags-only
+	// Enforce the icon-count rule only when this edit authored the picture set. Tags-only
 	// edits use the file's existing pictures, so duplicate type-1 or type-2 icons in
-	// the source file should not block unrelated tag edits or lint fixes. Picture
-	// edits still set picsTouched and are validated here.
-	if e.picsTouched {
+	// the source file should not block unrelated tag edits or lint fixes. A faithful carry
+	// authors nothing (like the other carried-suppressed checks above), so a copy must not
+	// reject the source's own duplicate icons as if the user authored them; lint still flags
+	// the carried result. Direct picture edits set picsTouched without carried and are
+	// validated here.
+	if e.picsTouched && !e.carried {
 		if err := validatePictures(edited.Pictures); err != nil {
 			return nil, err
 		}
@@ -806,10 +813,12 @@ func appendLegacyConflictWarnings(ws []core.Warning, fams []core.FamilyValue, pa
 			continue
 		}
 		seen[f.Key] = true
-		// The remedy names the options that actually resolve the conflict: drop the stale
-		// legacy container (--legacy strip) or let lint --fix do it.
+		// The remedy names what actually resolves the conflict. --legacy strip always drops the
+		// stale container. lint --fix does so too, but only when every legacy container is fully
+		// redundant with the canonical set; on a mixed file (one redundant, one holding unique
+		// data) its all-or-nothing strip declines, so it is qualified rather than promised.
 		ws = core.Warn(ws, core.WarnLegacyConflict, fmt.Sprintf(
-			"preserved %s tag still holds the old %s value and now conflicts with the edit; use --legacy strip or lint --fix",
+			"preserved %s tag still holds the old %s value and now conflicts with the edit; use --legacy strip to drop it (lint --fix does so only when the legacy container is fully redundant)",
 			f.Family, f.Key))
 	}
 	return ws
