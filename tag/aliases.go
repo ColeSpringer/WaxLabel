@@ -24,6 +24,11 @@ var keyAliases = map[string]Key{
 	"TRACK":        TrackNumber,
 	"ALBUM ARTIST": AlbumArtist,
 	"ALBUM_ARTIST": AlbumArtist,
+	// DJMIXER is the only multi-token role key, so fold its spaced/underscored/hyphenated
+	// spellings (which validKeyByte accepts as custom keys, a quiet mismatch) onto the canonical.
+	"DJ MIXER": DJMixer,
+	"DJ_MIXER": DJMixer,
+	"DJ-MIXER": DJMixer,
 }
 
 // AliasKey returns the canonical key for a recognized alternative spelling.

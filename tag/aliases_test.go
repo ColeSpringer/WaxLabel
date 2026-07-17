@@ -39,3 +39,21 @@ func TestKeyAliases(t *testing.T) {
 		t.Error("KeyAliases(TrackTotal) must not include the self-alias TRACKTOTAL")
 	}
 }
+
+// TestDJMixerAliases folds the spaced/underscored/hyphenated spellings of the only
+// multi-token role key onto canonical DJMIXER, so an edit under "DJ MIXER" resolves to it
+// instead of silently becoming a custom key. Bare DJMIXER stays a valid canonical key,
+// not an alias of itself.
+func TestDJMixerAliases(t *testing.T) {
+	for _, spelling := range []string{"DJ MIXER", "DJ-MIXER", "DJ_MIXER", "dj mixer"} {
+		if k, ok := AliasKey(spelling); !ok || k != DJMixer {
+			t.Errorf("AliasKey(%q) = %q, %v; want DJMIXER, true", spelling, k, ok)
+		}
+	}
+	if k, err := ParseKey("DJMIXER"); err != nil || k != DJMixer {
+		t.Errorf("ParseKey(DJMIXER) = %q, %v; want DJMIXER, nil", k, err)
+	}
+	if _, ok := AliasKey("DJMIXER"); ok {
+		t.Error("DJMIXER must not be an alias of itself")
+	}
+}

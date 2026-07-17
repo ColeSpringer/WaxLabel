@@ -143,6 +143,16 @@ func Project(t *Tag) Projection {
 			emitNumTotal(emit, decodeTextFrame(f.Body), tag.DiscNumber, tag.DiscTotal, "TPOS")
 		case isDateFrame(f.ID):
 			dp.add(f.ID, decodeTextFrame(f.Body))
+		case f.ID == "TIPL" || f.ID == "IPLS":
+			// The involved-people list holds one function/name pair per credit. Project only the
+			// functions we model (folding case and read-only aliases); unknown involvements are
+			// left unprojected here and preserved on write. decodeInvolvedPeople already drops
+			// nameless pairs, so every pair here has a name. TIPL must precede the T-prefix tail.
+			for _, p := range decodeInvolvedPeople(f.Body) {
+				if k, ok := mapping.ID3InvolvedRoleKey(p.Function); ok {
+					emit(k, p.Name, f.ID)
+				}
+			}
 		case strings.HasPrefix(f.ID, "T"):
 			key, ok := mapping.ID3FrameKey(f.ID)
 			if !ok {

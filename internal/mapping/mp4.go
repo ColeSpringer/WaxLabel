@@ -66,6 +66,14 @@ var mp4Freeform = map[string]tag.Key{
 	"originaldate":                 tag.OriginalDate,
 	"NARRATOR":                     tag.Narrator, // de-facto audiobook narrator freeform
 	"LYRICIST":                     tag.Lyricist, // MP4 has no standard lyricist atom
+	// Contributor roles: MP4 has no standard atoms, so store the canonical uppercase names
+	// as com.apple.iTunes freeforms (MP4 uses MIXER/DJMIXER, not the ID3-only mix/DJ-mix).
+	"PRODUCER": tag.Producer,
+	"ENGINEER": tag.Engineer,
+	"MIXER":    tag.Mixer,
+	"ARRANGER": tag.Arranger,
+	"WRITER":   tag.Writer,
+	"DJMIXER":  tag.DJMixer,
 }
 
 var (
@@ -85,6 +93,13 @@ func init() {
 	for name, k := range mp4Freeform {
 		keyMP4Freeform[k] = name
 		freeformFold[normalizeKey(name)] = k
+	}
+	// Read-only aliases: fold the multi-token DJMIXER spelling variants a foreign freeform
+	// might use onto the canonical key. Seeded into freeformFold only, never keyMP4Freeform:
+	// giving one key several names would make its single write spelling nondeterministic, so
+	// writes still emit the canonical "DJMIXER".
+	for _, name := range []string{"DJ MIXER", "DJ_MIXER", "DJ-MIXER"} {
+		freeformFold[normalizeKey(name)] = tag.DJMixer
 	}
 }
 
@@ -108,7 +123,9 @@ func MP4KeyText(key tag.Key) (string, bool) {
 // hand-edited atom using non-standard casing still resolves into the canonical
 // view rather than being hidden from dump/diff/copy. Case and surrounding whitespace
 // are folded (via the shared normalizeKey), not separators, so "musicbrainz_album_id"
-// still misses "MusicBrainz Album Id".
+// still misses "MusicBrainz Album Id"; the one exception is the multi-token DJMIXER key,
+// whose separator variants ("DJ MIXER"/"DJ_MIXER"/"DJ-MIXER") are seeded as explicit read
+// aliases in init.
 func MP4FreeformKey(name string) (tag.Key, bool) {
 	// Fast path for standard-cased names (the common case): an exact hit avoids the normalizeKey
 	// allocation. The fold table has no collisions, so this returns the same key the fold would.

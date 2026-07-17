@@ -8,9 +8,12 @@ import (
 
 // DecodeText decodes a plain text frame's value(s), for callers outside the
 // package that need a frame's textual content (e.g. encoder-noise detection). It
-// returns nil for non-text, user-defined (TXXX), or opaque frames.
+// returns nil for non-text, user-defined (TXXX), or opaque frames, and for the
+// involved-people frames TIPL and TMCL, whose bodies are NUL-separated function/name
+// pairs rather than plain text. (IPLS, their v2.3 counterpart, begins with 'I', so the
+// leading-'T' check already excludes it without an explicit case.)
 func DecodeText(f Frame) []string {
-	if f.Opaque || f.ID == "TXXX" || len(f.ID) == 0 || f.ID[0] != 'T' {
+	if f.Opaque || f.ID == "TXXX" || f.ID == "TIPL" || f.ID == "TMCL" || len(f.ID) == 0 || f.ID[0] != 'T' {
 		return nil
 	}
 	return decodeTextFrame(f.Body)
@@ -98,6 +101,38 @@ func decodeLangText(body []byte) (desc, text string, ok bool) {
 		return "", "", false
 	}
 	return desc, decodeStringTracked(enc, rest, order), true
+}
+
+// involvedPerson is one function/name pair from a TIPL/IPLS involved-people list, in
+// which the involvement function comes first and the person's name second.
+type involvedPerson struct {
+	Function string
+	Name     string
+}
+
+// decodeInvolvedPeople decodes a TIPL/IPLS body (an encoding byte followed by a
+// NUL-separated function/name list) into ordered pairs. The body is byte-identical to a
+// multi-value text frame, so it reuses decodeStrings and then pairs the flat list as
+// [func, name, func, name, ...]. A trailing unpaired function is dropped, and a pair with
+// an empty name is dropped (matching Picard's "and name" guard: a nameless involvement
+// carries no data).
+func decodeInvolvedPeople(body []byte) []involvedPerson {
+	if len(body) == 0 {
+		return nil
+	}
+	enc := body[0]
+	if !validEncoding(enc) {
+		enc = encLatin1
+	}
+	flat := decodeStrings(enc, body[1:])
+	var out []involvedPerson
+	for i := 0; i+1 < len(flat); i += 2 {
+		if flat[i+1] == "" {
+			continue // nameless involvement: nothing to project or preserve
+		}
+		out = append(out, involvedPerson{Function: flat[i], Name: flat[i+1]})
+	}
+	return out
 }
 
 // isDateFrame reports whether id is one of the date frames the projector

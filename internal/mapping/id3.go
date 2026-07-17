@@ -1,6 +1,10 @@
 package mapping
 
-import "github.com/colespringer/waxlabel/tag"
+import (
+	"strings"
+
+	"github.com/colespringer/waxlabel/tag"
+)
 
 // This file holds the ID3v2 <-> canonical mapping tables shared by the id3
 // codec. Only the simple 1:1 text frames and the TXXX user-frame descriptions
@@ -74,6 +78,12 @@ var txxxAliases = map[string]tag.Key{
 	// That escalation is defensible: the file is genuinely redundant, and flagging it is lint's
 	// job.)
 	"TCMP": tag.Compilation,
+	// DJMIXER is the only multi-token role key, so fold its spaced/underscored/hyphenated
+	// spellings onto the canonical when they arrive as a foreign TXXX user frame. The write
+	// path always targets TIPL/IPLS, never TXXX, so this only widens what is accepted on read.
+	"DJ MIXER": tag.DJMixer,
+	"DJ_MIXER": tag.DJMixer,
+	"DJ-MIXER": tag.DJMixer,
 }
 
 // txxxDescForKey gives the preferred TXXX description to write for a canonical
@@ -89,11 +99,54 @@ var txxxDescForKey = map[tag.Key]string{
 	tag.MBDiscID:            "MusicBrainz Disc Id",
 	tag.AcoustID:            "Acoustid Id",
 	tag.AcoustIDFingerprint: "Acoustid Fingerprint",
+	// WRITER rides the generic TXXX fallback; the Picard spelling is "Writer".
+	tag.Writer: "Writer",
 }
+
+// id3InvolvedRoles maps a credit key to the exact TIPL/IPLS involvement string Picard
+// writes (the de-facto interop spelling). Note the two that diverge from the canonical key
+// name: MIXER writes "mix" and DJMIXER writes "DJ-mix". WRITER is intentionally absent - it
+// is a TXXX:Writer user frame, not an involved-people entry.
+var id3InvolvedRoles = map[tag.Key]string{
+	tag.Producer: "producer",
+	tag.Engineer: "engineer",
+	tag.Mixer:    "mix",
+	tag.Arranger: "arranger",
+	tag.DJMixer:  "DJ-mix",
+}
+
+// id3InvolvedOrder is the deterministic emit order for the involved-people roles, so a
+// rebuilt TIPL/IPLS frame is byte-stable across writes.
+var id3InvolvedOrder = []tag.Key{tag.Producer, tag.Engineer, tag.Mixer, tag.Arranger, tag.DJMixer}
+
+// id3InvolvedReadAliases seeds extra read-only involvement spellings that non-Picard
+// taggers (Kid3/Mp3tag/foobar) use for the two roles whose Picard function diverges from
+// the canonical key name. Read folds them onto the canonical key; writes always use the
+// canonical id3InvolvedRoles spelling ("mix"/"DJ-mix"). Without this a file using "mixer"
+// or "dj-mixer" would be preserved-but-invisible, even though MIXER/DJMIXER round-trip on
+// Vorbis/MP4/APE - the involved-people analog of the txxxAliases long-tail folding.
+var id3InvolvedReadAliases = map[string]tag.Key{
+	"mixer":    tag.Mixer,
+	"djmixer":  tag.DJMixer,
+	"dj-mixer": tag.DJMixer,
+	"dj mix":   tag.DJMixer,
+	"dj mixer": tag.DJMixer,
+	"dj_mixer": tag.DJMixer,
+}
+
+// id3InvolvedByFunc maps a case-folded involvement function to its canonical key, built at
+// init from both id3InvolvedRoles and id3InvolvedReadAliases.
+var id3InvolvedByFunc = map[string]tag.Key{}
 
 func init() {
 	for id, k := range id3TextFrames {
 		id3KeyFrames[k] = id
+	}
+	for k, fn := range id3InvolvedRoles {
+		id3InvolvedByFunc[strings.ToLower(fn)] = k
+	}
+	for fn, k := range id3InvolvedReadAliases {
+		id3InvolvedByFunc[strings.ToLower(fn)] = k
 	}
 }
 
@@ -133,4 +186,29 @@ func ID3TXXXDesc(key tag.Key) string {
 		return d
 	}
 	return string(key)
+}
+
+// ID3InvolvedFunction returns the TIPL/IPLS involvement string a credit key writes, and
+// whether key is an involved-people role at all (false for WRITER and every non-credit key).
+func ID3InvolvedFunction(key tag.Key) (string, bool) {
+	fn, ok := id3InvolvedRoles[key]
+	return fn, ok
+}
+
+// ID3InvolvedRoleKey maps an involvement function to its canonical key, folding case and
+// surrounding whitespace and consulting both the canonical Picard spellings and the
+// read-only aliases. It is lenient where Picard is strict; the write path always emits the
+// canonical id3InvolvedRoles spelling, so a folded value normalizes on the next edit that
+// touches the frame. ok is false for an unmodeled involvement (e.g. "mastering").
+func ID3InvolvedRoleKey(fn string) (tag.Key, bool) {
+	k, ok := id3InvolvedByFunc[strings.ToLower(strings.TrimSpace(fn))]
+	return k, ok
+}
+
+// ID3InvolvedKeys returns the involved-people role keys in deterministic emit order. The
+// returned slice is shared and read-only - it backs per-frame and per-render iteration in the
+// id3 codec, so it must not be mutated. (id3InvolvedOrder has len==cap, so an append reallocates
+// rather than corrupting it, but callers should still only range over the result.)
+func ID3InvolvedKeys() []tag.Key {
+	return id3InvolvedOrder
 }

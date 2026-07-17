@@ -202,6 +202,12 @@ func TestProjectAndPatchRoundTrip(t *testing.T) {
 		TrackTotal:  12,
 		Genres:      []string{"Jazz"},
 		Lyricists:   []string{"L1", "L2"},
+		Producers:   []string{"P1", "P2"},
+		Engineers:   []string{"E1"},
+		Mixers:      []string{"M1", "M2"},
+		Arrangers:   []string{"Ar1"},
+		Writers:     []string{"W1", "W2"},
+		DJMixers:    []string{"DJ1"},
 		Compilation: true,
 		MusicBrainz: MusicBrainzIDs{RecordingID: "mbid-123"},
 	}
@@ -216,6 +222,21 @@ func TestProjectAndPatchRoundTrip(t *testing.T) {
 	}
 	if !slices.Equal(out.Lyricists, in.Lyricists) {
 		t.Errorf("Lyricists = %v, want %v (multivalued projection must survive)", out.Lyricists, in.Lyricists)
+	}
+	for _, c := range []struct {
+		name      string
+		got, want []string
+	}{
+		{"Producers", out.Producers, in.Producers},
+		{"Engineers", out.Engineers, in.Engineers},
+		{"Mixers", out.Mixers, in.Mixers},
+		{"Arrangers", out.Arrangers, in.Arrangers},
+		{"Writers", out.Writers, in.Writers},
+		{"DJMixers", out.DJMixers, in.DJMixers},
+	} {
+		if !slices.Equal(c.got, c.want) {
+			t.Errorf("%s = %v, want %v (multivalued role projection must survive)", c.name, c.got, c.want)
+		}
 	}
 	if out.TrackNumber != 3 || out.TrackTotal != 12 {
 		t.Errorf("track = %d/%d, want 3/12", out.TrackNumber, out.TrackTotal)

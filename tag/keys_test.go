@@ -21,6 +21,7 @@ var allKeyConstants = []Key{
 	TitleSort, ArtistSort, AlbumSort, AlbumArtistSort, ComposerSort,
 	ISRC, Barcode, CatalogNumber, Label, Media, DiscSubtitle,
 	Conductor, Remixer, Performer, EncodedBy, Encoder,
+	Producer, Engineer, Mixer, Arranger, Writer, DJMixer,
 	AcoustID, AcoustIDFingerprint,
 	Compilation,
 	MBReleaseID, MBReleaseGroupID, MBRecordingID, MBReleaseTrackID, MBWorkID, MBDiscID, MBArtistID, MBAlbumArtistID,
@@ -74,7 +75,9 @@ func TestKnownKeysMatchConstants(t *testing.T) {
 // TestMultivalued keeps the cardinality signal aligned with the fields the typed Tags
 // projection stores as slices.
 func TestMultivalued(t *testing.T) {
-	multi := []Key{Artist, Composer, Lyricist, Genre, Comment, Performer, MBArtistID, MBAlbumArtistID}
+	multi := []Key{Artist, Composer, Lyricist, Genre, Comment, Performer,
+		Producer, Engineer, Mixer, Arranger, Writer, DJMixer,
+		MBArtistID, MBAlbumArtistID}
 	isMulti := make(map[Key]bool, len(multi))
 	for _, k := range multi {
 		isMulti[k] = true

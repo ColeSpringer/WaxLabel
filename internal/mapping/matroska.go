@@ -48,6 +48,13 @@ var matroskaTags = map[string]tag.Key{
 	"PUBLISHER":      tag.Label,
 	"REMIXED_BY":     tag.Remixer,
 	"CONTENT_GROUP":  tag.Grouping,
+	// DJMIXER is the only multi-token role key, and Matroska names are conventionally
+	// underscore-separated, so fold its underscored/spaced/hyphenated spellings onto the
+	// canonical key, matching the ID3/MP4/CLI alias tables. WaxLabel still writes the identity
+	// "DJMIXER" (no matroskaNames entry); this only widens read acceptance.
+	"DJ_MIXER": tag.DJMixer,
+	"DJ MIXER": tag.DJMixer,
+	"DJ-MIXER": tag.DJMixer,
 }
 
 // technicalTags are SimpleTag names that are structural/statistical rather than

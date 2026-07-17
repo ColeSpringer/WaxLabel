@@ -112,9 +112,10 @@ func (k Key) Known() bool {
 func (k Key) Description() string { return vocabulary[k] }
 
 // Multivalued reports whether key canonically holds an ordered list of values
-// (multiple artists, composers, lyricists, genres, comments, performers, or per-artist
-// MusicBrainz IDs) rather than a single one. A consumer rendering an edit form uses it to
-// choose between one input and a repeatable list. The set mirrors the
+// (multiple artists, composers, lyricists, genres, comments, performers,
+// contributor roles, or per-artist MusicBrainz IDs) rather than a single one. A
+// consumer rendering an edit form uses it to choose between one input and a
+// repeatable list. The set mirrors the
 // list-valued ([]string) fields of the typed [Tags] projection, so the
 // structured signal and the typed sugar agree on which fields are plural. It is
 // the key's inherent cardinality; a custom (unknown) key is single-valued, and a
@@ -222,6 +223,15 @@ const (
 	EncodedBy Key = "ENCODEDBY"
 	Encoder   Key = "ENCODER"
 
+	// Contributor roles (multivalued credit lists). On ID3 the first five map to the
+	// involved-people list (TIPL in v2.4, IPLS in v2.3); WRITER is a TXXX:Writer user frame.
+	Producer Key = "PRODUCER"
+	Engineer Key = "ENGINEER"
+	Mixer    Key = "MIXER"
+	Arranger Key = "ARRANGER"
+	Writer   Key = "WRITER"
+	DJMixer  Key = "DJMIXER"
+
 	// Acoustic fingerprint (stored, never computed by WaxLabel).
 	AcoustID            Key = "ACOUSTID_ID"
 	AcoustIDFingerprint Key = "ACOUSTID_FINGERPRINT"
@@ -303,6 +313,12 @@ var vocabulary = map[Key]string{
 	Performer:           "performer, optionally role-qualified",
 	EncodedBy:           "encoding person",
 	Encoder:             "encoding software/tool",
+	Producer:            "producer",
+	Engineer:            "engineer",
+	Mixer:               "mixer",
+	Arranger:            "arranger",
+	Writer:              "writer",
+	DJMixer:             "DJ mixer",
 	AcoustID:            "AcoustID identifier",
 	AcoustIDFingerprint: "AcoustID fingerprint",
 	Compilation:         "part-of-compilation flag",
@@ -333,6 +349,7 @@ var vocabulary = map[Key]string{
 // multivalued is the set of canonical keys that hold a list of distinct values
 // rather than a single one. It is kept in lockstep with the list-valued fields of
 // the typed [Tags] projection: Artists, Composers, Lyricists, Genres, Comment, Performers,
+// the contributor-role credits (Producers/Engineers/Mixers/Arrangers/Writers/DJMixers),
 // and the per-artist MusicBrainz IDs. Keys absent here are single-valued.
 var multivalued = map[Key]bool{
 	Artist:          true,
@@ -341,6 +358,12 @@ var multivalued = map[Key]bool{
 	Genre:           true,
 	Comment:         true,
 	Performer:       true,
+	Producer:        true,
+	Engineer:        true,
+	Mixer:           true,
+	Arranger:        true,
+	Writer:          true,
+	DJMixer:         true,
 	MBArtistID:      true,
 	MBAlbumArtistID: true,
 }

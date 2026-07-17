@@ -50,3 +50,34 @@ func TestMP4LyricistFreeform(t *testing.T) {
 		}
 	}
 }
+
+// TestMP4RoleFreeforms pins the contributor-role freeform mappings. MP4 has no standard atoms
+// for these, so each role is a com.apple.iTunes freeform written under the canonical uppercase
+// name (MIXER/DJMIXER, not the ID3-only mix/DJ-mix); the read path folds foreign casing back
+// onto the canonical key.
+func TestMP4RoleFreeforms(t *testing.T) {
+	cases := []struct {
+		key       tag.Key
+		name      string
+		spellings []string
+	}{
+		{tag.Producer, "PRODUCER", []string{"PRODUCER", "Producer", "producer"}},
+		{tag.Engineer, "ENGINEER", []string{"ENGINEER", "Engineer", "engineer"}},
+		{tag.Mixer, "MIXER", []string{"MIXER", "Mixer", "mixer"}},
+		{tag.Arranger, "ARRANGER", []string{"ARRANGER", "Arranger", "arranger"}},
+		{tag.Writer, "WRITER", []string{"WRITER", "Writer", "writer"}},
+		// The multi-token DJMIXER also folds its separator variants (read-only aliases), while
+		// its single write spelling stays the canonical "DJMIXER" (checked via c.name below).
+		{tag.DJMixer, "DJMIXER", []string{"DJMIXER", "djmixer", "DjMixer", "DJ MIXER", "DJ_MIXER", "DJ-MIXER", "dj mixer"}},
+	}
+	for _, c := range cases {
+		if got := MP4KeyFreeform(c.key); got != c.name {
+			t.Errorf("MP4KeyFreeform(%s) = %q, want %q", c.key, got, c.name)
+		}
+		for _, spelling := range c.spellings {
+			if k, ok := MP4FreeformKey(spelling); !ok || k != c.key {
+				t.Errorf("MP4FreeformKey(%q) = %q, %v; want %s, true (case must fold)", spelling, k, ok, c.key)
+			}
+		}
+	}
+}

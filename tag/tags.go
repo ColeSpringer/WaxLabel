@@ -63,6 +63,15 @@ type Tags struct {
 	EncodedBy string
 	Encoder   string
 
+	// Contributor-role credits (multivalued). On ID3 the first five ride the
+	// involved-people list (TIPL/IPLS), and Writers rides a TXXX:Writer user frame.
+	Producers []string
+	Engineers []string
+	Mixers    []string
+	Arrangers []string
+	Writers   []string
+	DJMixers  []string
+
 	AcoustID            string
 	AcoustIDFingerprint string
 
@@ -154,6 +163,13 @@ func Project(ts TagSet) Tags {
 		Remixer:   first(Remixer),
 		EncodedBy: first(EncodedBy),
 		Encoder:   first(Encoder),
+
+		Producers: all(Producer),
+		Engineers: all(Engineer),
+		Mixers:    all(Mixer),
+		Arrangers: all(Arranger),
+		Writers:   all(Writer),
+		DJMixers:  all(DJMixer),
 
 		AcoustID:            first(AcoustID),
 		AcoustIDFingerprint: first(AcoustIDFingerprint),
@@ -263,6 +279,12 @@ func (t Tags) Patch() TagPatch {
 	setStr(EncodedBy, t.EncodedBy)
 	setStr(Encoder, t.Encoder)
 	setMulti(Performer, formatPerformers(t.Performers))
+	setMulti(Producer, t.Producers)
+	setMulti(Engineer, t.Engineers)
+	setMulti(Mixer, t.Mixers)
+	setMulti(Arranger, t.Arrangers)
+	setMulti(Writer, t.Writers)
+	setMulti(DJMixer, t.DJMixers)
 
 	setStr(AcoustID, t.AcoustID)
 	setStr(AcoustIDFingerprint, t.AcoustIDFingerprint)

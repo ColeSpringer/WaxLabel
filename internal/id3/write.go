@@ -97,6 +97,13 @@ type RebuildInfo struct {
 	// of v2.4, or v2.3 under ID3MultiNullSep); repeat-frame and slash-join do not drop it. The caller
 	// surfaces it as a value-dropped warning keyed to each affected key. See detectDroppedTrailingValues.
 	DroppedTrailingValues []tag.Key
+	// DroppedInvolvedEmpties lists the involved-people role keys an edit touched whose value carried
+	// an empty element the TIPL/IPLS frame cannot store. Unlike a plain multi-value text frame, which
+	// keeps interior empties, the involved-people body is function/name pairs and a nameless pair is
+	// dropped on both write and read (Picard's name-required guard), so an empty at any position
+	// vanishes. The caller surfaces it as a value-dropped warning keyed to each affected role. See
+	// detectDroppedInvolvedEmpties.
+	DroppedInvolvedEmpties []tag.Key
 	// ChapterOverflow is set when a chapter edit clamped a start or end past the CHAP
 	// frame's 32-bit millisecond field (~49.7 days). The caller surfaces it as a
 	// chapter-start-overflow warning.
@@ -152,9 +159,11 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	// and custom TXXX frames keep their original description casing.
 	// frameRenderID marks a COMM/USLT frame managed only when its description is empty,
 	// so there is at most one managed COMM and one managed USLT to reuse.
-	origLangs := map[string]string{}    // "COMM"/"USLT"/"SYLT" -> 3-byte language
-	var origSyltDesc string             // first projecting lyrics SYLT's content descriptor (authored-set fallback)
-	origTXXXDesc := map[string]string{} // TXXX render token -> original description (verbatim casing)
+	origLangs := map[string]string{}          // "COMM"/"USLT"/"SYLT" -> 3-byte language
+	var origSyltDesc string                   // first projecting lyrics SYLT's content descriptor (authored-set fallback)
+	origTXXXDesc := map[string]string{}       // TXXX render token -> original description (verbatim casing)
+	var origInvolved []involvedPerson         // well-formed TIPL/IPLS involvements we do not model, preserved on write
+	seenInvolved := map[involvedPerson]bool{} // dedup across repeated or multiple involved-people frames
 	for _, f := range orig {
 		switch f.ID {
 		case "COMM", "USLT":
@@ -180,6 +189,26 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 				if desc, _, ok := decodeUserText(f.Body); ok {
 					origTXXXDesc[rid] = desc
 				}
+			}
+		case "TIPL", "IPLS":
+			// Recover well-formed involvements we do not model (mastering, recording, ...) so a
+			// role edit that re-renders this frame does not silently drop them. Fold case on the
+			// known-check via the same lookup the read path uses: a capitalized "Producer" already
+			// re-emits from `edited`, so exact-string matching would misclassify it as unknown and
+			// duplicate it. Dedup by exact (function, name) so repeated or multiple frames (the scan
+			// walks them all) do not write the same pair twice. The write version always equals the
+			// source version, so a preserved unknown stays in the frame it came from (v2.3 IPLS
+			// legitimately holds instrument credits); splitting v2.4 TMCL instrument credits out of
+			// TIPL is a separate, deferred feature (see the package's TMCL scope note).
+			for _, p := range decodeInvolvedPeople(f.Body) {
+				if _, known := mapping.ID3InvolvedRoleKey(p.Function); known {
+					continue
+				}
+				if seenInvolved[p] {
+					continue
+				}
+				seenInvolved[p] = true
+				origInvolved = append(origInvolved, p)
 			}
 		}
 	}
@@ -250,7 +279,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 		}
 		if dirty[rid] {
 			if !emitted[rid] {
-				frames, v23multi := renderUnit(rid, edited, version, opts, origLangs, origTXXXDesc)
+				frames, v23multi := renderUnit(rid, edited, version, opts, origLangs, origTXXXDesc, origInvolved)
 				out = append(out, frames...)
 				info.UsedV23Multi = info.UsedV23Multi || v23multi
 				emitted[rid] = true
@@ -287,7 +316,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	}
 	slices.Sort(leftover)
 	for _, rid := range leftover {
-		frames, v23multi := renderUnit(rid, edited, version, opts, origLangs, origTXXXDesc)
+		frames, v23multi := renderUnit(rid, edited, version, opts, origLangs, origTXXXDesc, origInvolved)
 		out = append(out, frames...)
 		info.UsedV23Multi = info.UsedV23Multi || v23multi
 		emitted[rid] = true
@@ -350,6 +379,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	info.NumericGenres = detectNumericGenres(changed, edited)
 	info.DroppedTotals = detectDroppedTotals(changed, edited)
 	info.DroppedTrailingValues = detectDroppedTrailingValues(changed, edited, version, opts.Multi)
+	info.DroppedInvolvedEmpties = detectDroppedInvolvedEmpties(changed, edited)
 	return out, info
 }
 
@@ -485,6 +515,12 @@ func frameRenderID(f Frame) (string, bool) {
 		return "USLT", true
 	case "TCON", "TRCK", "TPOS":
 		return f.ID, true
+	case "TIPL", "IPLS":
+		// Managed so a role edit re-renders the frame (and drops a stale cross-version
+		// sibling). TIPL already lands here via the T-prefix tail; naming IPLS makes it
+		// managed too (it round-tripped unmanaged before). TMCL is intentionally left as a
+		// pass-through T frame.
+		return f.ID, true
 	}
 	if isDateFrame(f.ID) {
 		return f.ID, true
@@ -540,6 +576,8 @@ func frameKeys(f Frame) []tag.Key {
 		return []tag.Key{tag.TrackNumber, tag.TrackTotal}
 	case "TPOS":
 		return []tag.Key{tag.DiscNumber, tag.DiscTotal}
+	case "TIPL", "IPLS":
+		return mapping.ID3InvolvedKeys()
 	case "TYER", "TDAT", "TIME", "TDRC":
 		return []tag.Key{tag.RecordingDate}
 	case "TDRL":
@@ -600,6 +638,13 @@ func keyRenderIDs(key tag.Key, version byte) []string {
 			return []string{"TDOR"}
 		}
 		return []string{"TORY"}
+	case tag.Producer, tag.Engineer, tag.Mixer, tag.Arranger, tag.DJMixer:
+		// The involved-people list: TIPL in v2.4, IPLS in v2.3. Without this the roles would
+		// wrongly fall through to a TXXX:PRODUCER user frame below.
+		if version >= 4 {
+			return []string{"TIPL"}
+		}
+		return []string{"IPLS"}
 	}
 	if id, ok := mapping.ID3KeyFrame(key); ok {
 		return []string{id}
@@ -624,7 +669,7 @@ func rawFrameIDKey(key tag.Key) bool {
 // renderUnit renders the frame(s) for a render token from the edited tag set,
 // returning an empty slice when the underlying field is now absent (the frame is
 // dropped). It also reports whether a v2.3 NUL-separated multi-value was emitted.
-func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, origLangs, origTXXXDesc map[string]string) ([]Frame, bool) {
+func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, origLangs, origTXXXDesc map[string]string, origInvolved []involvedPerson) ([]Frame, bool) {
 	switch {
 	case strings.HasPrefix(token, "TXXX\x00"):
 		key := txxxKeyForToken(token[len("TXXX\x00"):])
@@ -684,6 +729,39 @@ func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, o
 		return renderDatePart(version, "TIME", edited, tag.RecordingDate, partHourMin)
 	case token == "TORY":
 		return renderDatePart(version, "TORY", edited, tag.OriginalDate, partYear)
+	case token == "TIPL" || token == "IPLS":
+		// Gather all five role keys from `edited`, not just changed ones: an unchanged sibling
+		// role on the same frame must re-emit, which is the property that lets a role edit avoid
+		// a StructuredEdit flag. Then append the recovered unknown involvements (already
+		// case-folded-known-filtered and deduped in RebuildFrames), in original order.
+		var flat []string
+		for _, k := range mapping.ID3InvolvedKeys() {
+			fn, ok := mapping.ID3InvolvedFunction(k)
+			if !ok {
+				continue
+			}
+			vals, has := edited.Get(k)
+			if !has {
+				continue
+			}
+			for _, name := range vals {
+				if name == "" {
+					continue // a nameless credit carries no data and would not read back
+				}
+				flat = append(flat, fn, name)
+			}
+		}
+		for _, p := range origInvolved {
+			flat = append(flat, p.Function, p.Name)
+		}
+		if len(flat) == 0 {
+			return nil, false
+		}
+		// The internal function/name NUL-separation is the spec-defined TIPL/IPLS body, not the
+		// de-facto v2.3 multi-value extension, so bypass renderByPolicy and report v23multi=false:
+		// routing a conformant multi-person IPLS through the policy would falsely trip the v2.3
+		// multi-value warning.
+		return []Frame{{ID: token, Body: encodeTextFrame(chooseEncoding(version, flat), flat)}}, false
 	default: // simple or pass-through text frame
 		key, ok := mapping.ID3FrameKey(token)
 		if !ok {
@@ -857,17 +935,46 @@ func detectDroppedTotals(changed map[tag.Key]bool, edited tag.TagSet) []tag.Key 
 // detector returns nothing for them. Scoped to changed keys because the read path always strips a
 // trailing empty, so one can only enter the model through the edit. The result is sorted for
 // deterministic warning order.
+//
+// The involved-people role keys are excluded here: they render through the TIPL/IPLS
+// function/name path, which drops an empty at any position (not just a trailing one) on every
+// version and policy, so their empties are reported by detectDroppedInvolvedEmpties instead.
+// (WRITER is not an involved-people role - it rides a TXXX text frame - so it stays covered here.)
 func detectDroppedTrailingValues(changed map[tag.Key]bool, edited tag.TagSet, version byte, pol core.ID3MultiValuePolicy) []tag.Key {
 	if version < 4 && pol != core.ID3MultiNullSep {
 		return nil // repeat-frame preserves the empty; slash-join collapses the whole multi-value
 	}
 	var dropped []tag.Key
 	for k := range changed {
+		if _, isInvolvedRole := mapping.ID3InvolvedFunction(k); isInvolvedRole {
+			continue // handled by detectDroppedInvolvedEmpties (all positions, all versions/policies)
+		}
 		vals, ok := edited.Get(k)
 		if !ok || len(vals) <= 1 {
 			continue
 		}
 		if vals[len(vals)-1] == "" {
+			dropped = append(dropped, k)
+		}
+	}
+	slices.Sort(dropped)
+	return dropped
+}
+
+// detectDroppedInvolvedEmpties finds the involved-people role keys an edit touched whose value
+// carries an empty element the TIPL/IPLS frame cannot store. Unlike a plain multi-value text
+// frame, which keeps interior empties, the involved-people body is function/name pairs and a
+// nameless pair is dropped on both write (renderUnit skips it) and read (decodeInvolvedPeople's
+// name-required guard, matching Picard), so an empty at any position - leading, interior, or
+// trailing - vanishes. It is version- and policy-independent, and scoped to changed keys because
+// an empty can only enter the model through an edit. The result is sorted for deterministic order.
+func detectDroppedInvolvedEmpties(changed map[tag.Key]bool, edited tag.TagSet) []tag.Key {
+	var dropped []tag.Key
+	for _, k := range mapping.ID3InvolvedKeys() {
+		if !changed[k] {
+			continue
+		}
+		if vals, ok := edited.Get(k); ok && slices.Contains(vals, "") {
 			dropped = append(dropped, k)
 		}
 	}
@@ -1107,6 +1214,10 @@ func AppendRebuildWarnings(ws []core.Warning, info RebuildInfo, retained tag.Tag
 	for _, k := range info.DroppedTrailingValues {
 		ws = core.WarnKeyed(ws, core.WarnValueDropped,
 			fmt.Sprintf("%s: a trailing empty value cannot be represented in an ID3 text frame and was dropped", k), k)
+	}
+	for _, k := range info.DroppedInvolvedEmpties {
+		ws = core.WarnKeyed(ws, core.WarnValueDropped,
+			fmt.Sprintf("%s: an empty credit value cannot be represented in the ID3 involved-people frame and was dropped", k), k)
 	}
 	for _, rd := range info.ReducedDates {
 		// Suppress only when another container still carries the attempted precision:

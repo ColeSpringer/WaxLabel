@@ -78,6 +78,32 @@ func TestParseAPELyricist(t *testing.T) {
 	}
 }
 
+// TestParseAPERoles checks a few APE contributor-role items surface as their canonical keys
+// case-insensitively, keeping the APE role projection aligned with the other formats.
+func TestParseAPERoles(t *testing.T) {
+	data := buildAPE(map[string]string{"Producer": "Alice", "MIXER": "Bob", "djmixer": "Cara"})
+	tg, ok, err := ParseAt(core.BytesSource(data), int64(len(data)), 1<<20, 1000)
+	if err != nil || !ok {
+		t.Fatalf("ParseAt: ok=%v err=%v", ok, err)
+	}
+	got := map[tag.Key]string{}
+	for _, p := range tg.Pairs() {
+		got[p.Key] = p.Value
+	}
+	for _, c := range []struct {
+		key  tag.Key
+		want string
+	}{
+		{tag.Producer, "Alice"},
+		{tag.Mixer, "Bob"},
+		{tag.DJMixer, "Cara"},
+	} {
+		if got[c.key] != c.want {
+			t.Errorf("APE role %s projected to %q, want %q (full map %v)", c.key, got[c.key], c.want, got)
+		}
+	}
+}
+
 func TestParseAPEAbsent(t *testing.T) {
 	src := core.BytesSource([]byte("not an ape tag at all, just some bytes...."))
 	if _, ok, _ := ParseAt(src, 40, 1<<20, 1000); ok {
