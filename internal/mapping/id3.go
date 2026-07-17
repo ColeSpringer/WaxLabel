@@ -18,6 +18,12 @@ var id3TextFrames = map[string]tag.Key{
 	"TALB": tag.Album,
 	"TPE2": tag.AlbumArtist,
 	"TCOM": tag.Composer,
+	// TEXT is the ID3v2.3/2.4 "Lyricist/Text writer" frame (v2.2 TXT, upgraded on read).
+	// A non-conformant file carrying both a TEXT frame and a TXXX:LYRICIST user frame
+	// projects two LYRICIST values; LYRICIST is multivalued, so both are kept rather than
+	// flagged as single-valued-multi (unlike the single-valued TCMP dual-representation edge
+	// below), and WaxLabel never writes such a file.
+	"TEXT": tag.Lyricist,
 	"TPE3": tag.Conductor,
 	"TPE4": tag.Remixer,
 	"TCOP": tag.Copyright,

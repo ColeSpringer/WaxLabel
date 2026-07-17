@@ -151,6 +151,7 @@ var apeKeys = map[string]tag.Key{
 	"album":        tag.Album,
 	"album artist": tag.AlbumArtist,
 	"composer":     tag.Composer,
+	"lyricist":     tag.Lyricist,
 	"genre":        tag.Genre,
 	"track":        tag.TrackNumber,
 	"disc":         tag.DiscNumber,

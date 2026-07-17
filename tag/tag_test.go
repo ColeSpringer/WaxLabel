@@ -201,6 +201,7 @@ func TestProjectAndPatchRoundTrip(t *testing.T) {
 		TrackNumber: 3,
 		TrackTotal:  12,
 		Genres:      []string{"Jazz"},
+		Lyricists:   []string{"L1", "L2"},
 		Compilation: true,
 		MusicBrainz: MusicBrainzIDs{RecordingID: "mbid-123"},
 	}
@@ -212,6 +213,9 @@ func TestProjectAndPatchRoundTrip(t *testing.T) {
 	}
 	if !slices.Equal(out.Artists, in.Artists) {
 		t.Errorf("Artists = %v, want %v", out.Artists, in.Artists)
+	}
+	if !slices.Equal(out.Lyricists, in.Lyricists) {
+		t.Errorf("Lyricists = %v, want %v (multivalued projection must survive)", out.Lyricists, in.Lyricists)
 	}
 	if out.TrackNumber != 3 || out.TrackTotal != 12 {
 		t.Errorf("track = %d/%d, want 3/12", out.TrackNumber, out.TrackTotal)

@@ -670,6 +670,45 @@ func TestTXXXLongTailRoundTrip(t *testing.T) {
 	}
 }
 
+// TestLyricistTXXXUpgradesToTEXT covers the backward-compatible upgrade: a legacy file
+// storing a TXXX:LYRICIST user frame reads onto canonical LYRICIST, and a rewrite that
+// edits LYRICIST drops the stale TXXX and re-renders the value as the conformant TEXT
+// frame, leaving exactly one frame and no duplicate.
+func TestLyricistTXXXUpgradesToTEXT(t *testing.T) {
+	orig := []Frame{{ID: "TXXX", Body: encodeUserText(4, "LYRICIST", []string{"Old"})}}
+
+	base := Project(buildTag(t, 4, orig)).Tags
+	if v, _ := base.First(tag.Lyricist); v != "Old" {
+		t.Fatalf("legacy TXXX:LYRICIST projected %q, want Old", v)
+	}
+
+	edited := base.Clone()
+	edited.Set(tag.Lyricist, "New")
+
+	out, _ := RebuildFrames(orig, base, edited, 4, StructuredEdit{}, WriteOpts{})
+
+	var textFrames, txxxLyricist int
+	for _, f := range out {
+		switch f.ID {
+		case "TEXT":
+			textFrames++
+			if vals := decodeTextFrame(f.Body); !slices.Equal(vals, []string{"New"}) {
+				t.Errorf("TEXT frame values = %v, want [New]", vals)
+			}
+		case "TXXX":
+			if desc, _, ok := decodeUserText(f.Body); ok && strings.EqualFold(strings.TrimSpace(desc), "LYRICIST") {
+				txxxLyricist++
+			}
+		}
+	}
+	if textFrames != 1 {
+		t.Errorf("TEXT frame count = %d, want exactly 1 (%+v)", textFrames, out)
+	}
+	if txxxLyricist != 0 {
+		t.Errorf("TXXX:LYRICIST frame count = %d, want 0 (stale user frame not dropped)", txxxLyricist)
+	}
+}
+
 // TestTXXXCustomDescriptionCasePreserved verifies that editing a custom TXXX value
 // preserves the original description casing instead of rewriting it as the uppercased
 // canonical key. Aliased keys still write their preferred Picard spelling.

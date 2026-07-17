@@ -14,7 +14,7 @@ import (
 // vocabulary entry, or adding a vocabulary entry without a constant, fails this
 // test instead of breaking discovery output quietly.
 var allKeyConstants = []Key{
-	Title, Artist, Album, AlbumArtist, Composer, Genre,
+	Title, Artist, Album, AlbumArtist, Composer, Lyricist, Genre,
 	TrackNumber, TrackTotal, DiscNumber, DiscTotal,
 	RecordingDate, ReleaseDate, OriginalDate,
 	Comment, Lyrics, Grouping, Copyright,
@@ -74,7 +74,7 @@ func TestKnownKeysMatchConstants(t *testing.T) {
 // TestMultivalued keeps the cardinality signal aligned with the fields the typed Tags
 // projection stores as slices.
 func TestMultivalued(t *testing.T) {
-	multi := []Key{Artist, Composer, Genre, Comment, Performer, MBArtistID, MBAlbumArtistID}
+	multi := []Key{Artist, Composer, Lyricist, Genre, Comment, Performer, MBArtistID, MBAlbumArtistID}
 	isMulti := make(map[Key]bool, len(multi))
 	for _, k := range multi {
 		isMulti[k] = true

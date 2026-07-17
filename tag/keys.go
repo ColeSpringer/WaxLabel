@@ -112,7 +112,7 @@ func (k Key) Known() bool {
 func (k Key) Description() string { return vocabulary[k] }
 
 // Multivalued reports whether key canonically holds an ordered list of values
-// (multiple artists, composers, genres, comments, performers, or per-artist
+// (multiple artists, composers, lyricists, genres, comments, performers, or per-artist
 // MusicBrainz IDs) rather than a single one. A consumer rendering an edit form uses it to
 // choose between one input and a repeatable list. The set mirrors the
 // list-valued ([]string) fields of the typed [Tags] projection, so the
@@ -176,6 +176,7 @@ const (
 	Album       Key = "ALBUM"
 	AlbumArtist Key = "ALBUMARTIST"
 	Composer    Key = "COMPOSER"
+	Lyricist    Key = "LYRICIST"
 	Genre       Key = "GENRE"
 
 	// Numbering. Total may be carried separately or as "n/total" natively;
@@ -273,6 +274,7 @@ var vocabulary = map[Key]string{
 	Album:               "album/release title",
 	AlbumArtist:         "album artist",
 	Composer:            "composer",
+	Lyricist:            "lyricist",
 	Genre:               "genre",
 	TrackNumber:         "track number within the disc",
 	TrackTotal:          "total tracks on the disc",
@@ -330,11 +332,12 @@ var vocabulary = map[Key]string{
 
 // multivalued is the set of canonical keys that hold a list of distinct values
 // rather than a single one. It is kept in lockstep with the list-valued fields of
-// the typed [Tags] projection: Artists, Composers, Genres, Comment, Performers, and the
-// per-artist MusicBrainz IDs. Keys absent here are single-valued.
+// the typed [Tags] projection: Artists, Composers, Lyricists, Genres, Comment, Performers,
+// and the per-artist MusicBrainz IDs. Keys absent here are single-valued.
 var multivalued = map[Key]bool{
 	Artist:          true,
 	Composer:        true,
+	Lyricist:        true,
 	Genre:           true,
 	Comment:         true,
 	Performer:       true,

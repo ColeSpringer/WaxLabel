@@ -61,6 +61,23 @@ func TestParseAPE(t *testing.T) {
 	}
 }
 
+// TestParseAPELyricist checks an APE "Lyricist" item surfaces as canonical LYRICIST
+// case-insensitively, keeping the APE lyricist projection aligned with the other formats.
+func TestParseAPELyricist(t *testing.T) {
+	data := buildAPE(map[string]string{"Lyricist": "Bernie Taupin"})
+	tg, ok, err := ParseAt(core.BytesSource(data), int64(len(data)), 1<<20, 1000)
+	if err != nil || !ok {
+		t.Fatalf("ParseAt: ok=%v err=%v", ok, err)
+	}
+	got := map[tag.Key]string{}
+	for _, p := range tg.Pairs() {
+		got[p.Key] = p.Value
+	}
+	if got[tag.Lyricist] != "Bernie Taupin" {
+		t.Errorf("APE Lyricist projected to %v, want LYRICIST=Bernie Taupin", got)
+	}
+}
+
 func TestParseAPEAbsent(t *testing.T) {
 	src := core.BytesSource([]byte("not an ape tag at all, just some bytes...."))
 	if _, ok, _ := ParseAt(src, 40, 1<<20, 1000); ok {

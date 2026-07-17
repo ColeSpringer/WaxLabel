@@ -18,6 +18,7 @@ type Tags struct {
 	Album       string
 	AlbumArtist string
 	Composers   []string
+	Lyricists   []string
 	Genres      []string
 
 	TrackNumber int
@@ -124,6 +125,7 @@ func Project(ts TagSet) Tags {
 		Album:       first(Album),
 		AlbumArtist: first(AlbumArtist),
 		Composers:   all(Composer),
+		Lyricists:   all(Lyricist),
 		Genres:      all(Genre),
 
 		RecordingDate: first(RecordingDate),
@@ -226,6 +228,7 @@ func (t Tags) Patch() TagPatch {
 	setStr(Album, t.Album)
 	setStr(AlbumArtist, t.AlbumArtist)
 	setMulti(Composer, t.Composers)
+	setMulti(Lyricist, t.Lyricists)
 	setMulti(Genre, t.Genres)
 
 	setNum(TrackNumber, t.TrackNumber)

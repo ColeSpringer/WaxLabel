@@ -65,6 +65,7 @@ var mp4Freeform = map[string]tag.Key{
 	"ISRC":                         tag.ISRC,
 	"originaldate":                 tag.OriginalDate,
 	"NARRATOR":                     tag.Narrator, // de-facto audiobook narrator freeform
+	"LYRICIST":                     tag.Lyricist, // MP4 has no standard lyricist atom
 }
 
 var (
