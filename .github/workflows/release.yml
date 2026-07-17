@@ -24,8 +24,8 @@ jobs:
     env:
       VERSION: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           check-latest: true
@@ -94,9 +94,11 @@ jobs:
         run: |
           set -euo pipefail
           # If the maintainer already created the Release for this tag (with hand-written
-          # notes), just attach the binaries. Otherwise create it with generated notes.
+          # notes), just attach the binaries. Otherwise create it as a draft so a bare tag
+          # push never auto-publishes: the maintainer reviews the generated notes, trims them
+          # to a short summary, and publishes by hand.
           if gh release view "$VERSION" >/dev/null 2>&1; then
             gh release upload "$VERSION" dist/* --clobber
           else
-            gh release create "$VERSION" dist/* --title "$VERSION" --generate-notes --verify-tag
+            gh release create "$VERSION" dist/* --title "$VERSION" --generate-notes --verify-tag --draft
           fi
