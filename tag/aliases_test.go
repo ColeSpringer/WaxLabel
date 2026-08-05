@@ -21,7 +21,10 @@ func TestKeyAliases(t *testing.T) {
 		{Lyrics, []string{"UNSYNCEDLYRICS"}},
 		{DiscNumber, []string{"DISC"}},
 		{TrackNumber, []string{"TRACK"}},
-		{Title, nil}, // a key with no aliases returns nil
+		{ReleaseStatus, []string{"MUSICBRAINZ_ALBUMSTATUS"}},
+		{ReleaseType, []string{"MUSICBRAINZ_ALBUMTYPE"}},
+		{ReleaseCountry, nil}, // every format spells it RELEASECOUNTRY or gets a mapping entry
+		{Title, nil},          // a key with no aliases returns nil
 	}
 	for _, tc := range cases {
 		if got := KeyAliases(tc.key); !slices.Equal(got, tc.want) {
@@ -55,5 +58,30 @@ func TestDJMixerAliases(t *testing.T) {
 	}
 	if _, ok := AliasKey("DJMIXER"); ok {
 		t.Error("DJMIXER must not be an alias of itself")
+	}
+}
+
+// TestReleaseDetailAliases folds the MUSICBRAINZ_ALBUM* spellings (the APE convention and the
+// legacy Picard names) onto canonical RELEASESTATUS and RELEASETYPE, so a --set under either
+// spelling resolves to the canonical key instead of silently creating a custom one. The
+// canonical names stay valid keys, not aliases of themselves.
+func TestReleaseDetailAliases(t *testing.T) {
+	for _, c := range []struct {
+		spelling string
+		want     Key
+	}{
+		{"MUSICBRAINZ_ALBUMSTATUS", ReleaseStatus},
+		{"musicbrainz_albumstatus", ReleaseStatus},
+		{"MUSICBRAINZ_ALBUMTYPE", ReleaseType},
+		{"musicbrainz_albumtype", ReleaseType},
+	} {
+		if k, ok := AliasKey(c.spelling); !ok || k != c.want {
+			t.Errorf("AliasKey(%q) = %q, %v; want %s, true", c.spelling, k, ok, c.want)
+		}
+	}
+	for _, k := range []Key{ReleaseCountry, ReleaseStatus, ReleaseType} {
+		if _, ok := AliasKey(string(k)); ok {
+			t.Errorf("%s must not be an alias of itself", k)
+		}
 	}
 }

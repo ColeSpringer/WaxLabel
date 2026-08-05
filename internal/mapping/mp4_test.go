@@ -1,6 +1,7 @@
 package mapping
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/colespringer/waxlabel/tag"
@@ -81,3 +82,57 @@ func TestMP4RoleFreeforms(t *testing.T) {
 		}
 	}
 }
+
+// TestMP4ReleaseDetailFreeforms pins the release-detail freeform mappings. MP4 spells these
+// with the same mixed-case Picard names as the ID3 TXXX descriptions. Without a table entry
+// the atoms miss decodeFreeform's valid-key fallback (validKeyByte rejects lowercase) and stay
+// preserved-but-invisible, so this is the mapping that makes them project at all; the write
+// side keeps the exact Picard spelling so the next save does not rename Picard's atom.
+func TestMP4ReleaseDetailFreeforms(t *testing.T) {
+	cases := []struct {
+		key  tag.Key
+		name string
+	}{
+		{tag.ReleaseCountry, "MusicBrainz Album Release Country"},
+		{tag.ReleaseStatus, "MusicBrainz Album Status"},
+		{tag.ReleaseType, "MusicBrainz Album Type"},
+	}
+	for _, c := range cases {
+		if got := MP4KeyFreeform(c.key); got != c.name {
+			t.Errorf("MP4KeyFreeform(%s) = %q, want %q", c.key, got, c.name)
+		}
+		for _, spelling := range []string{c.name, strings.ToLower(c.name), strings.ToUpper(c.name)} {
+			if k, ok := MP4FreeformKey(spelling); !ok || k != c.key {
+				t.Errorf("MP4FreeformKey(%q) = %q, %v; want %s, true (case must fold)", spelling, k, ok, c.key)
+			}
+		}
+	}
+	// The uppercase canonical spelling is deliberately absent from this table: an
+	// "----:com.apple.iTunes:RELEASECOUNTRY" atom is owned by the codec's valid-key
+	// fallback instead, which is what lets it rebuild under the Picard name on the next
+	// write rather than being renamed back and forth.
+	for _, c := range cases {
+		if k, ok := MP4FreeformKey(string(c.key)); ok {
+			t.Errorf("MP4FreeformKey(%q) = %q, true; want no table entry (the codec's valid-key fallback owns it)", c.key, k)
+		}
+	}
+	// The APE/legacy-Picard underscored spellings fold on read (seeded into freeformFold
+	// only), so the same string means the same key here as on Vorbis. The write spelling
+	// stays the Picard name.
+	for _, c := range []struct {
+		name string
+		want tag.Key
+	}{
+		{"MUSICBRAINZ_ALBUMSTATUS", tag.ReleaseStatus},
+		{"musicbrainz_albumtype", tag.ReleaseType},
+	} {
+		if k, ok := MP4FreeformKey(c.name); !ok || k != c.want {
+			t.Errorf("MP4FreeformKey(%q) = %q, %v; want %s, true", c.name, k, ok, c.want)
+		}
+	}
+	if got := MP4KeyFreeform(tag.ReleaseStatus); got != picardStatusName {
+		t.Errorf("MP4KeyFreeform(RELEASESTATUS) = %q, want the Picard name %q", got, picardStatusName)
+	}
+}
+
+const picardStatusName = "MusicBrainz Album Status"

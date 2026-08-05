@@ -317,6 +317,32 @@ func TestProjectNewAccessors(t *testing.T) {
 	}
 }
 
+// TestProjectReleaseDetailAccessors: the three release-detail accessors project from their
+// canonical keys and round-trip through Patch, so a Project -> Patch -> Apply keeps them.
+// ReleaseTypes is the multivalued one (a primary type plus secondary types), so the two-value
+// case is what proves it did not collapse to a scalar on either side of the mirror.
+func TestProjectReleaseDetailAccessors(t *testing.T) {
+	ts := NewTagSet()
+	ts.Set(ReleaseCountry, "GB")
+	ts.Set(ReleaseStatus, "official")
+	ts.Set(ReleaseType, "album", "compilation")
+
+	check := func(label string, tg Tags) {
+		if tg.ReleaseCountry != "GB" {
+			t.Errorf("%s: ReleaseCountry = %q, want GB", label, tg.ReleaseCountry)
+		}
+		if tg.ReleaseStatus != "official" {
+			t.Errorf("%s: ReleaseStatus = %q, want official", label, tg.ReleaseStatus)
+		}
+		if want := []string{"album", "compilation"}; !slices.Equal(tg.ReleaseTypes, want) {
+			t.Errorf("%s: ReleaseTypes = %v, want %v", label, tg.ReleaseTypes, want)
+		}
+	}
+	check("Project", Project(ts))
+	// Both sides of the mirror: a field populated on only one side drops here.
+	check("Project -> Patch", Project(Project(ts).Patch().Apply(NewTagSet())))
+}
+
 func TestParseNumPairSlashConvention(t *testing.T) {
 	n, tot := ParseNumPair("3/12", "")
 	if n != 3 || tot != 12 {
@@ -400,6 +426,44 @@ func TestValidReplayGainValue(t *testing.T) {
 	// A non-ReplayGain key is never flagged.
 	if !ValidReplayGainValue(Title, "1e3") {
 		t.Error("a non-ReplayGain key should never be flagged")
+	}
+}
+
+// TestValidReleaseCountryValue checks the RELEASECOUNTRY shape contract: exactly two ASCII
+// letters, whitespace-tolerant and case-blind, which covers ISO 3166-1 alpha-2 plus
+// MusicBrainz's XW/XE pseudo-codes without a whitelist to keep current. The key is also
+// trimmable, so a spaced value stores as the bare code rather than keeping its padding.
+func TestValidReleaseCountryValue(t *testing.T) {
+	for _, v := range []string{"GB", "US", "XW", "XE", "gb", " GB "} {
+		if !ValidReleaseCountryValue(ReleaseCountry, v) {
+			t.Errorf("ValidReleaseCountryValue(%q) = false, want true", v)
+		}
+	}
+	for _, v := range []string{"", "G", "GBR", "United Kingdom", "G1", "  ", "G-"} {
+		if ValidReleaseCountryValue(ReleaseCountry, v) {
+			t.Errorf("ValidReleaseCountryValue(%q) = true, want false", v)
+		}
+	}
+	// A non-ReleaseCountry key is never flagged.
+	if !ValidReleaseCountryValue(Title, "United Kingdom") {
+		t.Error("a non-ReleaseCountry key should never be flagged")
+	}
+	// The country code is a single token, so its surrounding whitespace is dropped on store.
+	if !IsTrimmableKey(ReleaseCountry) {
+		t.Error("IsTrimmableKey(RELEASECOUNTRY) = false, want true")
+	}
+	if got := TrimTokenValue(ReleaseCountry, " GB "); got != "GB" {
+		t.Errorf("TrimTokenValue(RELEASECOUNTRY, %q) = %q, want GB", " GB ", got)
+	}
+	// Status and type are free-text vocabularies, not fixed-shape tokens: they neither trim
+	// nor carry a validator.
+	for _, k := range []Key{ReleaseStatus, ReleaseType} {
+		if IsTrimmableKey(k) {
+			t.Errorf("IsTrimmableKey(%s) = true, want false (free text, not a single token)", k)
+		}
+		if _, ok := ValidatorFor(k); ok {
+			t.Errorf("ValidatorFor(%s) reports a contract; status and type are free text", k)
+		}
 	}
 }
 

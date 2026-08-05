@@ -69,6 +69,17 @@ var txxxAliases = map[string]tag.Key{
 	"REPLAYGAIN_TRACK_PEAK":        tag.ReplayGainTrackPeak,
 	"REPLAYGAIN_ALBUM_GAIN":        tag.ReplayGainAlbumGain,
 	"REPLAYGAIN_ALBUM_PEAK":        tag.ReplayGainAlbumPeak,
+	// Picard spells the release-level detail as mixed-case "MusicBrainz Album ..." user
+	// frames. The bare canonical spellings need no entry: ID3TXXXKey falls through to
+	// tag.ParseKey, which yields the same key.
+	"MUSICBRAINZ ALBUM RELEASE COUNTRY": tag.ReleaseCountry,
+	"MUSICBRAINZ ALBUM STATUS":          tag.ReleaseStatus,
+	"MUSICBRAINZ ALBUM TYPE":            tag.ReleaseType,
+	// The APE/legacy-Picard underscored spellings. This path consults only this table and
+	// tag.ParseKey, never tag.AliasKey, so a foreign frame using them needs an entry here
+	// or the same string would fold on Vorbis and stay custom on ID3.
+	"MUSICBRAINZ_ALBUMSTATUS": tag.ReleaseStatus,
+	"MUSICBRAINZ_ALBUMTYPE":   tag.ReleaseType,
 	// ffmpeg writes the compilation flag as a TXXX:TCMP user frame, not only the dedicated
 	// TCMP text frame (which id3Frames already maps), so fold that spelling onto COMPILATION
 	// too. Compilation still writes back as the dedicated TCMP frame (it is not in
@@ -101,6 +112,10 @@ var txxxDescForKey = map[tag.Key]string{
 	tag.AcoustIDFingerprint: "Acoustid Fingerprint",
 	// WRITER rides the generic TXXX fallback; the Picard spelling is "Writer".
 	tag.Writer: "Writer",
+	// The release-level detail: write the Picard names so Picard reads our output back.
+	tag.ReleaseCountry: "MusicBrainz Album Release Country",
+	tag.ReleaseStatus:  "MusicBrainz Album Status",
+	tag.ReleaseType:    "MusicBrainz Album Type",
 }
 
 // id3InvolvedRoles maps a credit key to the exact TIPL/IPLS involvement string Picard

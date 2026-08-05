@@ -52,6 +52,12 @@ type Tags struct {
 	Media         string
 	DiscSubtitle  string
 
+	ReleaseCountry string
+	ReleaseStatus  string
+	// ReleaseTypes is multivalued: one primary release-group type plus any
+	// secondary types (e.g. "album" then "compilation").
+	ReleaseTypes []string
+
 	Conductor string
 	Remixer   string
 	// Performers are the credited performers in PERFORMER order, which is
@@ -158,6 +164,10 @@ func Project(ts TagSet) Tags {
 		Label:         first(Label),
 		Media:         first(Media),
 		DiscSubtitle:  first(DiscSubtitle),
+
+		ReleaseCountry: first(ReleaseCountry),
+		ReleaseStatus:  first(ReleaseStatus),
+		ReleaseTypes:   all(ReleaseType),
 
 		Conductor: first(Conductor),
 		Remixer:   first(Remixer),
@@ -273,6 +283,10 @@ func (t Tags) Patch() TagPatch {
 	setStr(Label, t.Label)
 	setStr(Media, t.Media)
 	setStr(DiscSubtitle, t.DiscSubtitle)
+
+	setStr(ReleaseCountry, t.ReleaseCountry)
+	setStr(ReleaseStatus, t.ReleaseStatus)
+	setMulti(ReleaseType, t.ReleaseTypes)
 
 	setStr(Conductor, t.Conductor)
 	setStr(Remixer, t.Remixer)
@@ -581,20 +595,21 @@ func EmptyNumberWithTotal(k Key, v string) bool {
 }
 
 // IsTrimmableKey reports whether a value stored under k is a single-token value whose surrounding
-// whitespace is never meaningful - a numeric, date, media-type, or ReplayGain key. [TrimTokenValue],
-// the editor's per-key trim gate, and the transfer grade all key off this one predicate, so the
-// stored form, the write, and the copy report cannot disagree on which keys trim; adding a
-// trim-eligible key here updates all three at once.
+// whitespace is never meaningful - a numeric, date, media-type, ReplayGain, or release-country key.
+// [TrimTokenValue], the editor's per-key trim gate, and the transfer grade all key off this one
+// predicate, so the stored form, the write, and the copy report cannot disagree on which keys trim;
+// adding a trim-eligible key here updates all three at once.
 func IsTrimmableKey(k Key) bool {
-	return numericKeys[k] || dateKeySet[k] || IsMediaTypeKey(k) || IsReplayGainKey(k)
+	return numericKeys[k] || dateKeySet[k] || IsMediaTypeKey(k) ||
+		IsReplayGainKey(k) || IsReleaseCountryKey(k)
 }
 
 // TrimTokenValue removes surrounding whitespace from a trimmable value (see [IsTrimmableKey]) and
 // leaves other values unchanged. The editor and CLI advisories share this helper so stored values
-// match the forms [ValidNumericValue] and [ValidPartialDate] accept. MEDIATYPE and the REPLAYGAIN_*
-// keys are single-token values ("2", "-7.30 dB") where a stray leading or trailing space is never
-// meaningful, so they trim the same way; internal whitespace (the space before "dB") and digits,
-// including leading zeros, are preserved.
+// match the forms [ValidNumericValue] and [ValidPartialDate] accept. MEDIATYPE, RELEASECOUNTRY, and
+// the REPLAYGAIN_* keys are single-token values ("2", "GB", "-7.30 dB") where a stray leading or
+// trailing space is never meaningful, so they trim the same way; internal whitespace (the space
+// before "dB") and digits, including leading zeros, are preserved.
 func TrimTokenValue(k Key, v string) string {
 	if IsTrimmableKey(k) {
 		return strings.TrimSpace(v)
@@ -755,6 +770,31 @@ func ValidMediaTypeValue(k Key, v string) bool {
 	return err == nil && n <= 0xFF
 }
 
+// IsReleaseCountryKey reports whether k is the RELEASECOUNTRY key, whose value is an
+// ISO 3166-1 alpha-2 country code.
+func IsReleaseCountryKey(k Key) bool { return k == ReleaseCountry }
+
+// ValidReleaseCountryValue reports whether v is a value RELEASECOUNTRY accepts: exactly
+// two ASCII letters, ignoring surrounding whitespace. That is the ISO 3166-1 alpha-2 shape,
+// and it also admits MusicBrainz's XW (worldwide) and XE (Europe) without a country
+// whitelist to keep current. Case is not checked: "gb" names the same country as "GB". A
+// non-ReleaseCountry key is reported valid.
+func ValidReleaseCountryValue(k Key, v string) bool {
+	if k != ReleaseCountry {
+		return true
+	}
+	s := strings.TrimSpace(v)
+	if len(s) != 2 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if b := s[i]; !(b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z') {
+			return false
+		}
+	}
+	return true
+}
+
 // ValidReplayGainValue reports whether v is a value the ReplayGain key k accepts: a
 // decimal number with an optional leading sign (a positive gain is conventionally written
 // "+2.34 dB"), optionally suffixed with a case-insensitive "dB" (the conventional gain
@@ -839,6 +879,9 @@ var validators = []Validator{
 		"is not a boolean (1/true/yes/0/false/no)", "does not look like a boolean (1/true/yes/0/false/no)"},
 	{IsMediaTypeKey, ValidMediaTypeValue, "malformed-number",
 		"is not a non-negative integer", "does not look like a non-negative integer"},
+	{IsReleaseCountryKey, ValidReleaseCountryValue, "malformed-country",
+		"is not a two-letter country code (ISO 3166-1 alpha-2, e.g. GB)",
+		"does not look like a two-letter country code (ISO 3166-1 alpha-2, e.g. GB)"},
 	{IsReplayGainKey, ValidReplayGainValue, "malformed-number",
 		"is not a ReplayGain value (e.g. -7.30 dB)", "does not look like a ReplayGain value (e.g. -7.30 dB)"},
 }

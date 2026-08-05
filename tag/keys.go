@@ -113,9 +113,9 @@ func (k Key) Description() string { return vocabulary[k] }
 
 // Multivalued reports whether key canonically holds an ordered list of values
 // (multiple artists, composers, lyricists, genres, comments, performers,
-// contributor roles, or per-artist MusicBrainz IDs) rather than a single one. A
-// consumer rendering an edit form uses it to choose between one input and a
-// repeatable list. The set mirrors the
+// contributor roles, per-artist MusicBrainz IDs, or release-group types) rather
+// than a single one. A consumer rendering an edit form uses it to choose between
+// one input and a repeatable list. The set mirrors the
 // list-valued ([]string) fields of the typed [Tags] projection, so the
 // structured signal and the typed sugar agree on which fields are plural. It is
 // the key's inherent cardinality; a custom (unknown) key is single-valued, and a
@@ -214,6 +214,13 @@ const (
 	Media         Key = "MEDIA"
 	DiscSubtitle  Key = "DISCSUBTITLE"
 
+	// MusicBrainz release-level detail. Picard spells these as themselves on Vorbis
+	// but uses mixed-case "MusicBrainz Album ..." names on ID3 and MP4, and the
+	// MUSICBRAINZ_ALBUM* names on APE; the mapping layer folds all of them here.
+	ReleaseCountry Key = "RELEASECOUNTRY"
+	ReleaseStatus  Key = "RELEASESTATUS"
+	ReleaseType    Key = "RELEASETYPE"
+
 	// Credits. EncodedBy is the person who encoded the file; Encoder is the
 	// software/tool that did it (the transcoder stamp). They are distinct keys
 	// so a single ENCODER edit reaches the tool stamp on every format.
@@ -308,6 +315,9 @@ var vocabulary = map[Key]string{
 	Label:               "record label",
 	Media:               "physical media type",
 	DiscSubtitle:        "disc subtitle",
+	ReleaseCountry:      "country this edition was released in (ISO 3166-1 alpha-2)",
+	ReleaseStatus:       "release status (official, promotion, bootleg, pseudo-release)",
+	ReleaseType:         "release group type (album, single, EP, and secondary types)",
 	Conductor:           "conductor",
 	Remixer:             "remixer",
 	Performer:           "performer, optionally role-qualified",
@@ -350,7 +360,7 @@ var vocabulary = map[Key]string{
 // rather than a single one. It is kept in lockstep with the list-valued fields of
 // the typed [Tags] projection: Artists, Composers, Lyricists, Genres, Comment, Performers,
 // the contributor-role credits (Producers/Engineers/Mixers/Arrangers/Writers/DJMixers),
-// and the per-artist MusicBrainz IDs. Keys absent here are single-valued.
+// the per-artist MusicBrainz IDs, and ReleaseTypes. Keys absent here are single-valued.
 var multivalued = map[Key]bool{
 	Artist:          true,
 	Composer:        true,
@@ -364,6 +374,7 @@ var multivalued = map[Key]bool{
 	Arranger:        true,
 	Writer:          true,
 	DJMixer:         true,
+	ReleaseType:     true, // one primary release-group type plus any secondary types
 	MBArtistID:      true,
 	MBAlbumArtistID: true,
 }

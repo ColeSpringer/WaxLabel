@@ -104,6 +104,38 @@ func TestParseAPERoles(t *testing.T) {
 	}
 }
 
+// TestParseAPEReleaseDetail checks the release-detail items surface as their canonical keys.
+// APE uses its own MUSICBRAINZ_ALBUMSTATUS / MUSICBRAINZ_ALBUMTYPE names, which need explicit
+// entries (Pairs consults apeKeys then tag.ParseKey, never tag.AliasKey), while RELEASECOUNTRY
+// resolves through the ParseKey fallthrough. Matching is case-insensitive throughout.
+func TestParseAPEReleaseDetail(t *testing.T) {
+	data := buildAPE(map[string]string{
+		"RELEASECOUNTRY":          "GB",
+		"MUSICBRAINZ_ALBUMSTATUS": "official",
+		"musicbrainz_albumtype":   "album",
+	})
+	tg, ok, err := ParseAt(core.BytesSource(data), int64(len(data)), 1<<20, 1000)
+	if err != nil || !ok {
+		t.Fatalf("ParseAt: ok=%v err=%v", ok, err)
+	}
+	got := map[tag.Key]string{}
+	for _, p := range tg.Pairs() {
+		got[p.Key] = p.Value
+	}
+	for _, c := range []struct {
+		key  tag.Key
+		want string
+	}{
+		{tag.ReleaseCountry, "GB"},
+		{tag.ReleaseStatus, "official"},
+		{tag.ReleaseType, "album"},
+	} {
+		if got[c.key] != c.want {
+			t.Errorf("APE %s projected to %q, want %q (full map %v)", c.key, got[c.key], c.want, got)
+		}
+	}
+}
+
 func TestParseAPEAbsent(t *testing.T) {
 	src := core.BytesSource([]byte("not an ape tag at all, just some bytes...."))
 	if _, ok, _ := ParseAt(src, 40, 1<<20, 1000); ok {

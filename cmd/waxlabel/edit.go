@@ -940,7 +940,8 @@ func notifyValueNotes(errOut io.Writer, e *editFlags, asJSON bool) {
 // unconditional persistence, and the per-file value-dropped warning is the
 // authoritative drop signal. It reads the same [tag.ValidatorFor] registry
 // [Document.Lint] consumes, so the set-time note and the linter cannot disagree on what
-// a malformed value is: numeric, date, boolean, MEDIATYPE, and ReplayGain. The
+// a malformed value is: numeric, date, boolean, MEDIATYPE, ReplayGain, and
+// RELEASECOUNTRY. The
 // note is a single line, so the key and value are run through [tag.SanitizeLine] - they
 // are the user's own --set input, but a control byte must not reach the terminal raw
 // and an embedded newline must not forge a line. (SanitizeLine, not SanitizeText, to

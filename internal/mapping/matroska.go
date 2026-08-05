@@ -55,6 +55,13 @@ var matroskaTags = map[string]tag.Key{
 	"DJ_MIXER": tag.DJMixer,
 	"DJ MIXER": tag.DJMixer,
 	"DJ-MIXER": tag.DJMixer,
+	// The APE/legacy-Picard spellings for release status and type, folded here because this
+	// read path consults only this table and tag.ParseKey, never tag.AliasKey. Read-only:
+	// WaxLabel writes the identity RELEASESTATUS/RELEASETYPE. Matroska's own COUNTRY is
+	// deliberately not mapped to RELEASECOUNTRY: the spec defines it as a nesting qualifier
+	// that scopes sibling tags to a country, not as this release's country.
+	"MUSICBRAINZ_ALBUMSTATUS": tag.ReleaseStatus,
+	"MUSICBRAINZ_ALBUMTYPE":   tag.ReleaseType,
 }
 
 // technicalTags are SimpleTag names that are structural/statistical rather than

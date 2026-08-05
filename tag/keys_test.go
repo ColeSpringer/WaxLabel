@@ -20,6 +20,7 @@ var allKeyConstants = []Key{
 	Comment, Lyrics, Grouping, Copyright,
 	TitleSort, ArtistSort, AlbumSort, AlbumArtistSort, ComposerSort,
 	ISRC, Barcode, CatalogNumber, Label, Media, DiscSubtitle,
+	ReleaseCountry, ReleaseStatus, ReleaseType,
 	Conductor, Remixer, Performer, EncodedBy, Encoder,
 	Producer, Engineer, Mixer, Arranger, Writer, DJMixer,
 	AcoustID, AcoustIDFingerprint,
@@ -77,7 +78,7 @@ func TestKnownKeysMatchConstants(t *testing.T) {
 func TestMultivalued(t *testing.T) {
 	multi := []Key{Artist, Composer, Lyricist, Genre, Comment, Performer,
 		Producer, Engineer, Mixer, Arranger, Writer, DJMixer,
-		MBArtistID, MBAlbumArtistID}
+		ReleaseType, MBArtistID, MBAlbumArtistID}
 	isMulti := make(map[Key]bool, len(multi))
 	for _, k := range multi {
 		isMulti[k] = true

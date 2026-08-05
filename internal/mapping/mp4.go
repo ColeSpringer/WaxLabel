@@ -66,6 +66,12 @@ var mp4Freeform = map[string]tag.Key{
 	"originaldate":                 tag.OriginalDate,
 	"NARRATOR":                     tag.Narrator, // de-facto audiobook narrator freeform
 	"LYRICIST":                     tag.Lyricist, // MP4 has no standard lyricist atom
+	// Release-level detail, under the same mixed-case Picard names ID3 uses as TXXX
+	// descriptions. Without these the atoms miss decodeFreeform's valid-key fallback
+	// (validKeyByte rejects lowercase) and stay preserved but invisible.
+	"MusicBrainz Album Release Country": tag.ReleaseCountry,
+	"MusicBrainz Album Status":          tag.ReleaseStatus,
+	"MusicBrainz Album Type":            tag.ReleaseType,
 	// Contributor roles: MP4 has no standard atoms, so store the canonical uppercase names
 	// as com.apple.iTunes freeforms (MP4 uses MIXER/DJMIXER, not the ID3-only mix/DJ-mix).
 	"PRODUCER": tag.Producer,
@@ -101,6 +107,11 @@ func init() {
 	for _, name := range []string{"DJ MIXER", "DJ_MIXER", "DJ-MIXER"} {
 		freeformFold[normalizeKey(name)] = tag.DJMixer
 	}
+	// Likewise the APE/legacy-Picard spellings for release status and type: this path never
+	// consults tag.AliasKey, so without these the same string folds on Vorbis and stays a
+	// custom key here. Writes still emit the Picard "MusicBrainz Album Status"/"... Type".
+	freeformFold[normalizeKey("MUSICBRAINZ_ALBUMSTATUS")] = tag.ReleaseStatus
+	freeformFold[normalizeKey("MUSICBRAINZ_ALBUMTYPE")] = tag.ReleaseType
 }
 
 // MP4TextKey returns the canonical key for a four-character text atom name and

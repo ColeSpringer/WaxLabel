@@ -29,6 +29,12 @@ var keyAliases = map[string]Key{
 	"DJ MIXER": DJMixer,
 	"DJ_MIXER": DJMixer,
 	"DJ-MIXER": DJMixer,
+	// The legacy Picard spellings for release status and type, still the current APE
+	// convention. Like every entry here this also retargets edits, so a --set under the
+	// alias writes the canonical key; the write spelling itself never changes.
+	// RELEASECOUNTRY needs no alias; every format spells it that way already.
+	"MUSICBRAINZ_ALBUMSTATUS": ReleaseStatus,
+	"MUSICBRAINZ_ALBUMTYPE":   ReleaseType,
 }
 
 // AliasKey returns the canonical key for a recognized alternative spelling.

@@ -167,6 +167,11 @@ var apeKeys = map[string]tag.Key{
 	"isrc":         tag.ISRC,
 	"catalog":      tag.CatalogNumber,
 	"label":        tag.Label,
+	// APE's own spellings for release status and type. Pairs consults this table then
+	// tag.ParseKey and never tag.AliasKey, so these are needed here even though the alias
+	// table carries them too; release country resolves through the ParseKey fallthrough.
+	"musicbrainz_albumstatus": tag.ReleaseStatus,
+	"musicbrainz_albumtype":   tag.ReleaseType,
 }
 
 // Pairs returns the canonical key/value pairs the APE tag supplies (text items

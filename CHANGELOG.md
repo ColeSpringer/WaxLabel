@@ -2,6 +2,31 @@
 
 All notable changes to this project are documented here.
 
+## [1.3.0]
+
+### Added
+
+- Three canonical release-detail keys (writable): `RELEASECOUNTRY`, `RELEASESTATUS`, and
+  `RELEASETYPE`, the last multivalued (one primary release-group type plus any secondary
+  types). Stored natively on Vorbis and Matroska,
+  as `TXXX:MusicBrainz Album Release Country` / `... Album Status` / `... Album Type` on ID3,
+  as those same names in MP4 `com.apple.iTunes` freeforms, and on APE as `RELEASECOUNTRY` /
+  `MUSICBRAINZ_ALBUMSTATUS` / `MUSICBRAINZ_ALBUMTYPE`, the last two also accepted as aliases.
+  `RELEASECOUNTRY` takes a two-letter code (ISO 3166-1 alpha-2, plus MusicBrainz's `XW`/`XE`),
+  checked by the new `malformed-country` lint code.
+
+### Changed
+
+- Several spellings now project under the canonical keys instead of as custom fields, so
+  consumers keyed on the old names must move: on ID3 the frames above (previously
+  `MUSICBRAINZ ALBUM RELEASE COUNTRY` / `... STATUS` / `... TYPE`), on MP4 the equivalent
+  atoms (which did not project at all), and `MUSICBRAINZ_ALBUMSTATUS` / `MUSICBRAINZ_ALBUMTYPE`
+  on every format. Editing under an alias spelling likewise writes the canonical key, so
+  `--set MUSICBRAINZ_ALBUMTYPE=album` now stores `RELEASETYPE`. A file carrying two spellings
+  of one key lints `single-valued-multi`; on ID3 and Matroska the next edit that touches the
+  key collapses them to one element, while MP4 merges them into a single multi-value atom on
+  any write, which keeps both values and so keeps the lint.
+
 ## [1.2.0]
 
 ### Added

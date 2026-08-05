@@ -8,9 +8,9 @@ import (
 )
 
 // TestLintAndNoteAgree checks that set-time notes and Document.Lint use the same value
-// validators. Numeric, date, boolean, MEDIATYPE, and ReplayGain values should get the
-// same malformed verdict in both paths. RATING is free-form and is flagged by neither.
-// Valid values trigger neither path.
+// validators. Numeric, date, boolean, MEDIATYPE, ReplayGain, and RELEASECOUNTRY values
+// should get the same malformed verdict in both paths. RATING is free-form and is flagged
+// by neither, as are RELEASESTATUS and RELEASETYPE. Valid values trigger neither path.
 func TestLintAndNoteAgree(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -31,6 +31,11 @@ func TestLintAndNoteAgree(t *testing.T) {
 		{"TRACKNUMBER=abc", true},
 		{"RECORDINGDATE=banana", true},
 		{"RECORDINGDATE=2021-06", false},
+		{"RELEASECOUNTRY=United Kingdom", true},
+		{"RELEASECOUNTRY=GB", false},
+		{"RELEASECOUNTRY=XW", false},      // the MusicBrainz worldwide pseudo-code
+		{"RELEASESTATUS=official", false}, // an open vocabulary: no shape to check
+		{"RELEASETYPE=album", false},
 	}
 	for _, c := range cases {
 		c := c

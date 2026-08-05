@@ -254,7 +254,8 @@ func lintPictures(pics []Picture) []Finding {
 // lintValues reports tag values that violate their key's typed contract, driven by
 // the shared [tag.ValidatorFor] registry so the linter and the CLI's set-time note
 // ([noteMalformedValue]) apply exactly the same rule per category - numeric, date,
-// boolean, MEDIATYPE (a non-negative int), and ReplayGain (a decimal/dB). This is the
+// boolean, MEDIATYPE (a non-negative int), ReplayGain (a decimal/dB), and
+// RELEASECOUNTRY (a two-letter code). This is the
 // single source the "lint and set agree" contract needs: it folds in the former
 // lintDates/lintNumbers and closes the gap where COMPILATION was set-validated but not
 // lint-validated, and MEDIATYPE/REPLAYGAIN at neither. A present-but-empty value is

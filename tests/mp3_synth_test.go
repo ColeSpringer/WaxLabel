@@ -31,20 +31,25 @@ func id3v2(version byte, frames ...[]byte) []byte {
 	return append(out, body...)
 }
 
-// textFrame23 builds a Latin-1 text frame for v2.3/v2.4 (plain 4-byte size is
-// valid for both small frames since the value is well under 128 per byte here we
-// keep it tiny, but use sync-safe for v2.4 correctness).
-func textFrame(version byte, id, text string) []byte {
-	body := append([]byte{0}, text...) // encoding 0 = Latin-1
-	var sz []byte
+// id3Frame wraps a frame body in a v2.3/v2.4 header: 4-char id, size, two flag bytes.
+// v2.4 sizes are sync-safe; v2.3 uses a plain 4-byte big-endian count. Every frame builder
+// below goes through here so the version-dependent size rule lives in one place.
+func id3Frame(version byte, id string, body []byte) []byte {
+	sz := []byte{byte(len(body) >> 24), byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}
 	if version >= 4 {
 		sz = syncsafe(len(body))
-	} else {
-		sz = []byte{byte(len(body) >> 24), byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}
 	}
-	out := append([]byte(id), sz...)
-	out = append(out, 0, 0) // flags
-	return append(out, body...)
+	return slices.Concat([]byte(id), sz, []byte{0, 0}, body)
+}
+
+// textFrame builds a Latin-1 text frame.
+func textFrame(version byte, id, text string) []byte {
+	return id3Frame(version, id, append([]byte{0}, text...)) // encoding 0 = Latin-1
+}
+
+// txxxFrame builds a TXXX user frame: encoding byte, description, NUL, value.
+func txxxFrame(version byte, desc, value string) []byte {
+	return id3Frame(version, "TXXX", slices.Concat([]byte{0}, []byte(desc), []byte{0}, []byte(value)))
 }
 
 // textFrame22 builds a v2.2 (3-char ID, 3-byte size, no flags) text frame.
