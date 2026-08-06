@@ -2,6 +2,36 @@
 
 All notable changes to this project are documented here.
 
+## [1.4.0]
+
+### Added
+
+- Fragmented MP4 (a top-level `moof`) is now read instead of rejected: tags in the initial
+  movie box project normally, the file carries a `fragmented` warning, and only the write is
+  refused, with the new `waxerr.ErrFragmented` sentinel (exit 3, `unsupported-fragmentation`).
+  Such a file reports read-only in `caps`.
+- MP4 `saio` sample-auxiliary offset tables are collected and shifted on a rewrite. They were
+  never patched before, so a growing edit corrupted them.
+- README documents the exit codes and their aggregate precedence.
+
+### Fixed
+
+- MP4 files whose `moov` declares `mvex` but carries no fragment are ordinary progressive
+  files; they were rejected outright and now read and write normally.
+- MP4 offset-table collection resolves the `moov > trak > mdia > minf > stbl` path instead of
+  searching by name. It previously recursed the whole `moov`, so an `ilst` item named `stco`,
+  or one named `stbl` holding a crafted table, was decoded as a real offset table, failing the
+  parse or corrupting a write.
+- An `iloc` is now refused wherever it sits, not only in `moov.udta.meta`. The spec's usual
+  placement is a top-level `meta`, and a growing edit there shifted the media out from under
+  its extents while reporting success.
+- A shrinking MP4 rewrite (clearing chapters) no longer wraps a chunk offset that points
+  inside the replaced metadata region. Such an offset used to be written to a `co64` as a
+  ~18-exabyte value and the write reported success; it is now refused as invalid data.
+- MP4 files this codec cannot rewrite at all - one carrying an `iloc`, or a `saio` whose
+  version is unrecognized - now report read-only, matching the fragmented case. A transfer
+  onto one reports per-item drops instead of failing the whole plan.
+
 ## [1.3.0]
 
 ### Added

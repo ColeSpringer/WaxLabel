@@ -47,6 +47,13 @@ var (
 	// from ErrInvalidData (a corrupt file) and from ErrChainedStream (a different
 	// unwritable shape), so each surfaces its own machine code.
 	ErrUnalignedStream = errors.New("stream not cleanly page-aligned")
+	// ErrFragmented means an MP4 carries movie fragments (a top-level moof), so a
+	// preservation-first rewrite is not possible: the stco/co64 offset fixups cannot
+	// reach a fragment's trun sample offsets, and a metadata resize would desynchronize
+	// the media. The file is well-formed and reads fine, so it is a write-refusal,
+	// distinct from ErrInvalidData (a corrupt file) and from ErrUnsupportedFormat (a
+	// container this version cannot parse at all).
+	ErrFragmented = errors.New("fragmented container")
 	// ErrInvalidKey means a canonical key failed validation.
 	ErrInvalidKey = errors.New("invalid tag key")
 	// ErrNeedsFile means a path-bound operation (SaveBack) was attempted on a

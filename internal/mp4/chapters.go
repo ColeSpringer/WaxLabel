@@ -755,14 +755,14 @@ func sampleSizes(src core.ReaderAtSized, stbl node, nSamples int, limit int64) (
 // chunkOffsets returns the chunk file offsets from stco (32-bit) or co64 (64-bit).
 func chunkOffsets(src core.ReaderAtSized, stbl node, limit int64) ([]uint64, bool) {
 	if stco, ok := stbl.find("stco"); ok {
-		t, err := parseOffsetTable(src, stco, false, limit)
+		t, err := parseOffsetTable(src, stco, limit)
 		if err != nil {
 			return nil, false
 		}
 		return t.entries, true
 	}
 	if co64, ok := stbl.find("co64"); ok {
-		t, err := parseOffsetTable(src, co64, true, limit)
+		t, err := parseOffsetTable(src, co64, limit)
 		if err != nil {
 			return nil, false
 		}

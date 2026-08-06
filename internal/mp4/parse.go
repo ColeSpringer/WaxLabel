@@ -23,8 +23,12 @@ const maxMetaChunk = 64 << 20
 // parse reads an MP4 file's atom structure into a neutral Media: the iTunes tags
 // from moov.udta.meta.ilst, the audio geometry from the sample tables, the
 // chunk-offset tables and mdat ranges a preservation-first rewrite needs, and
-// every top-level atom preserved as the rewrite base. Fragmented files (a
-// top-level moof, or a moov declaring movie fragments) are rejected.
+// every top-level atom preserved as the rewrite base. A top-level moof (movie
+// fragments) is recorded and warned rather than rejected: the initial movie box's
+// tags read exactly, and only the rewrite is refused, at Plan. A moov declaring
+// mvex without any fragment present is an ordinary progressive file and is read
+// and written normally. A fragmented media segment - fragments with no movie box
+// at all - is still rejected here.
 func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) (*core.Media, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -59,8 +63,12 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			if b, err := readPayloadPrefix(src, a, 4, limit); err == nil && len(b) >= 4 {
 				d.majorBrand = string(b[:4])
 			}
-		case "moof", "styp":
-			return nil, fmt.Errorf("%w: fragmented MP4 (moof) is not supported", waxerr.ErrUnsupportedFormat)
+		case "moof":
+			// Movie fragments. The file reads fine (the init moov's ilst carries the tags) but
+			// is not rewritable: the stco/co64 fixups cannot reach a fragment's trun sample
+			// offsets, so a metadata resize would desynchronize the media. Refused at Plan,
+			// mirroring how the Ogg codec records a chained stream and refuses only the rewrite.
+			d.fragmented = true
 		case "mdat":
 			d.mdats = append(d.mdats, [2]int64{a.payloadOff(), a.size - a.headerLen})
 			if a.truncated {
@@ -71,6 +79,16 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		}
 	}
 	if !haveMoov {
+		// A fragmented media segment has no movie box by design, so it keeps the exit-3
+		// classification the in-loop rejection used to give it rather than falling through to
+		// the invalid-data "no moov box" diagnostic. This deliberately runs ahead of the
+		// truncation branch below, inverting the precedence that branch argues for: a segment
+		// has no trailing moov to overrun, so "an mdat overran a trailing moov" would name a
+		// cause that cannot exist here. Truncation still wins for every non-segment shape.
+		if d.fragmented || hasTopLevel(d, "styp") {
+			return nil, fmt.Errorf("%w: fragmented MP4 media segment (no moov box)",
+				waxerr.ErrUnsupportedFormat)
+		}
 		// A truncated final mdat that overruns its declared end swallows whatever
 		// follows it (clamped to EOF). When a moov sits after such an mdat it is never
 		// seen, so report the truncation - the real cause - rather than a misleading
@@ -79,9 +97,6 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			return nil, fmt.Errorf("%w: MP4 mdat atom declares more bytes than the file holds (truncated; a trailing moov was overrun)", waxerr.ErrInvalidData)
 		}
 		return nil, fmt.Errorf("%w: MP4 has no moov box", waxerr.ErrInvalidData)
-	}
-	if _, ok := moov.find("mvex"); ok {
-		return nil, fmt.Errorf("%w: fragmented MP4 (moov/mvex) is not supported", waxerr.ErrUnsupportedFormat)
 	}
 	d.moov = refPtr(moov)
 
@@ -108,6 +123,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	if err := collectOffsetTables(ctx, src, moov, d, limit); err != nil {
 		return nil, err
 	}
+	d.hasIloc = hasIlocBox(top, moov)
 	parseProperties(src, moov, d, limit)
 
 	// Tag path: moov.udta.meta.ilst. Each level is optional; record what exists so
@@ -188,6 +204,13 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	if moov.truncated {
 		media.Warnings = core.WarnTruncated(media.Warnings, "the moov atom")
 	}
+	// Movie fragments: the initial movie box's tags are read exactly (so the wording
+	// avoids "best-effort"); what degrades is the duration - an empty_moov file reports 0
+	// - and the essence digest, which cannot reach a fragment's samples.
+	if d.fragmented {
+		media.Warnings = core.Warn(media.Warnings, core.WarnFragmented,
+			"fragmented MP4 (movie fragments): tags from the initial movie box are read, writing is refused")
+	}
 	media.Properties = core.Properties{Container: "MP4", Tracks: []core.AudioTrack{d.track}}
 	setEssence(d, media)
 	// Average bitrate from the audio-essence byte total and the track duration,
@@ -222,31 +245,112 @@ func mediaWarnings(tags tag.TagSet, numericGenre bool) []core.Warning {
 	return ws
 }
 
-// collectOffsetTables reads every stco/co64 in moov into the doc (all stco then
-// all co64; the order is immaterial since each table is later patched at its own
-// recorded source offset), parsing their entries so the writer can shift them
-// when the metadata is resized without re-reading the source.
-func collectOffsetTables(ctx context.Context, src core.ReaderAtSized, moov node, d *doc, limit int64) error {
-	stco := moov.findAll("stco", nil)
-	co64 := moov.findAll("co64", nil)
-	for _, a := range stco {
-		t, err := parseOffsetTable(src, a, false, limit)
-		if err != nil {
-			return err
+// nodesNamed returns the nodes in list carrying the given name.
+func nodesNamed(list []node, name string) []node {
+	want := atomName(name)
+	var out []node
+	for _, c := range list {
+		if c.name == want {
+			out = append(out, c)
 		}
-		d.offTables = append(d.offTables, t)
 	}
-	for _, a := range co64 {
-		t, err := parseOffsetTable(src, a, true, limit)
-		if err != nil {
-			return err
+	return out
+}
+
+// sampleTables returns every sample table in moov, resolved along the spec path
+// moov > trak > mdia > minf > stbl rather than by a name search.
+//
+// The distinction is load-bearing: trak, mdia, minf, and stbl are all container atoms, so
+// walkAtoms descends into an ilst item that happens to carry one of those four-ccs, and
+// findAll would reach it through udta > meta > ilst. A crafted offset table inside such an
+// item is then decoded as a real one - failing the parse on a bogus entry count, or
+// emitting a byte patch inside the very region a growing write replaces, which trips
+// assemble's overlap guard. Walking the path closes that whole class rather than the
+// direct-child case alone.
+func sampleTables(moov node) []node {
+	var out []node
+	for _, trak := range nodesNamed(moov.children, "trak") {
+		for _, mdia := range nodesNamed(trak.children, "mdia") {
+			for _, minf := range nodesNamed(mdia.children, "minf") {
+				out = append(out, nodesNamed(minf.children, "stbl")...)
+			}
 		}
-		d.offTables = append(d.offTables, t)
+	}
+	return out
+}
+
+// collectOffsetTables reads the offset tables in moov into the doc, parsing their
+// entries so the writer can shift them when the metadata is resized without re-reading
+// the source: the stco/co64 chunk offsets into d.offTables and the saio sample-auxiliary
+// offsets into d.auxTables. Scoping to sampleTables also removes any need to reason about
+// a traf-contained saio: a traf is never an stbl, and a file carrying fragments is
+// refused.
+//
+// Tables land in document order per stbl, replacing the old "all stco then all co64"
+// grouping. The order stays immaterial: each table is patched at its own recorded source
+// offset.
+//
+// A malformed saio degrades to a write refusal instead of failing the parse. The tag list
+// and movie box do not depend on it, so a file whose ilst reads perfectly must still dump,
+// lint, and verify - and did, before saio was collected at all. A broken stco/co64 stays
+// fatal: it leaves the media itself unaddressable.
+func collectOffsetTables(ctx context.Context, src core.ReaderAtSized, moov node, d *doc, limit int64) error {
+	for _, stbl := range sampleTables(moov) {
+		for _, a := range stbl.children {
+			switch a.id() {
+			case "stco", "co64", "saio":
+			default:
+				continue
+			}
+			t, err := parseOffsetTable(src, a, limit)
+			if err != nil {
+				if a.id() == "saio" {
+					d.auxUnknown = true
+					continue
+				}
+				return err
+			}
+			if a.id() == "saio" {
+				d.auxTables = append(d.auxTables, t)
+				continue
+			}
+			d.offTables = append(d.offTables, t)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	return nil
+}
+
+// hasIlocBox reports whether a meta box carries an iloc item-location box. Its extents
+// are absolute file offsets that nothing patches, so a rewrite that moves bytes strands
+// them wherever the box sits - not only when it shares the moov.udta.meta this codec
+// rewrites. The three placements the spec allows for a meta are checked (top level, moov,
+// and moov.udta) rather than searching the tree by name, so an ilst item named "meta"
+// cannot force a spurious refusal.
+func hasIlocBox(top []node, moov node) bool {
+	metas := append(nodesNamed(top, "meta"), nodesNamed(moov.children, "meta")...)
+	for _, udta := range nodesNamed(moov.children, "udta") {
+		metas = append(metas, nodesNamed(udta.children, "meta")...)
+	}
+	for _, m := range metas {
+		if _, ok := m.find("iloc"); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// hasTopLevel reports whether the file carries a top-level atom with the given name.
+func hasTopLevel(d *doc, name string) bool {
+	want := atomName(name)
+	for _, a := range d.topLevel {
+		if a.name == want {
+			return true
+		}
+	}
+	return false
 }
 
 // boundedCount reports whether `declared` fixed-width entries (each `width` bytes, after a
@@ -259,9 +363,20 @@ func boundedCount(declared, header, width, avail int64) bool {
 	return header+declared*width <= avail
 }
 
-// parseOffsetTable decodes one stco/co64 atom: a 4-byte version/flags, a 4-byte
-// entry count, then that many 32- or 64-bit chunk offsets.
-func parseOffsetTable(src core.ReaderAtSized, a node, co64 bool, limit int64) (offsetTable, error) {
+// parseOffsetTable decodes one stco/co64/saio atom: a 4-byte version/flags, a
+// per-box optional prefix, a 4-byte entry count, then that many 32- or 64-bit
+// offsets. The entry width comes from the atom itself rather than from the caller -
+// co64 is always 64-bit, and a saio's width is its own FullBox version (0: 32-bit,
+// 1: 64-bit) - so a mixed-width set of tables decodes correctly in one pass.
+//
+// A saio's layout is ISO/IEC 14496-12 section 8.7.13: version/flags(4), then
+// aux_info_type(4) + aux_info_type_parameter(4) only when flags&1, then
+// entry_count(4), then the offsets.
+//
+// It stays a pure decoder (no doc argument): the chapter reader parses a track's
+// stco/co64 through it with no document in hand, so the one unpatchable case reports
+// itself through errSkipTable and the collector records it.
+func parseOffsetTable(src core.ReaderAtSized, a node, limit int64) (offsetTable, error) {
 	body, err := readPayloadWhole(src, a, maxMetaChunk, limit)
 	if err != nil {
 		return offsetTable{}, err
@@ -269,24 +384,50 @@ func parseOffsetTable(src core.ReaderAtSized, a node, co64 bool, limit int64) (o
 	if len(body) < 8 {
 		return offsetTable{}, fmt.Errorf("%w: %s atom too short", waxerr.ErrInvalidData, a.id())
 	}
-	t := offsetTable{offset: a.offset, headerLen: a.headerLen, size: a.size, co64: co64}
+	t := offsetTable{offset: a.offset, headerLen: a.headerLen, size: a.size, name: a.name}
 	copy(t.verFlags[:], body[0:4])
+	switch a.id() {
+	case "co64":
+		t.co64 = true
+	case "saio":
+		// The FullBox word is version(1 byte) | flags(3 bytes): body[0] carries the
+		// version (the entry width), and the aux_info_type_present flag is the low bit of
+		// body[3], the last flags byte.
+		switch body[0] {
+		case 0: // 32-bit offsets
+		case 1:
+			t.co64 = true
+		default:
+			// An unrecognized saio version: the entry width is unknown, so guessing 32-bit
+			// would write 4-byte entries over 8-byte data. Like any other saio malformation
+			// this drops the table and refuses the write; the file still reads.
+			return offsetTable{}, fmt.Errorf("%w: saio version %d is not supported", waxerr.ErrUnsupportedFormat, body[0])
+		}
+		if body[3]&1 != 0 {
+			t.entryPrefix = 8 // aux_info_type + aux_info_type_parameter
+		}
+	}
+	// Re-guard for the prefix: a saio carrying the aux pair has a 16-byte minimum body,
+	// so the len < 8 check above does not cover reading its entry_count at body[12:16].
+	if int64(len(body)) < 8+t.entryPrefix {
+		return offsetTable{}, fmt.Errorf("%w: %s atom too short", waxerr.ErrInvalidData, a.id())
+	}
 	// int64 throughout: count is a 32-bit field, and count*width (up to ~3.4e10 for
 	// co64) overflows a 32-bit int - the body bound caps count so the allocation
 	// stays proportional to the bytes actually read.
-	count := int64(binary.BigEndian.Uint32(body[4:8]))
+	count := int64(binary.BigEndian.Uint32(body[4+t.entryPrefix : 8+t.entryPrefix]))
 	width := int64(4)
-	if co64 {
+	if t.co64 {
 		width = 8
 	}
-	if !boundedCount(count, 8, width, int64(len(body))) {
+	if !boundedCount(count, 8+t.entryPrefix, width, int64(len(body))) {
 		return offsetTable{}, fmt.Errorf("%w: %s declares %d entries but is %d bytes",
 			waxerr.ErrInvalidData, a.id(), count, len(body))
 	}
 	t.entries = make([]uint64, count)
 	for i := int64(0); i < count; i++ {
-		off := 8 + i*width
-		if co64 {
+		off := 8 + t.entryPrefix + i*width
+		if t.co64 {
 			t.entries[i] = binary.BigEndian.Uint64(body[off : off+8])
 		} else {
 			t.entries[i] = uint64(binary.BigEndian.Uint32(body[off : off+4]))

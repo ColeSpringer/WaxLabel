@@ -17,8 +17,11 @@
 // (referenced from the audio track via a tref "chap", its samples in an mdat
 // appended at end-of-file) so the edit is visible to iTunes and Apple Books.
 //
-// Fragmented MP4 is not writable: a top-level moof, or a moov declaring movie
-// fragments via mvex, is rejected during parse.
+// Fragmented MP4 is readable but not writable: a file with a top-level moof parses
+// normally (the initial movie box carries the tags) and reports ReadOnly, and only
+// the rewrite is refused, with waxerr.ErrFragmented. A moov that declares mvex but
+// carries no fragment is an ordinary progressive file and is written normally. A
+// fragmented media segment - fragments with no moov at all - is rejected at parse.
 //
 // The codec is reimplemented from ISO/IEC 14496-12 and the iTunes metadata
 // conventions; reference implementations were consulted for design only.
@@ -48,8 +51,9 @@ func (Codec) Extensions() []string { return []string{".m4a", ".mp4", ".m4b", ".a
 func (Codec) SkipsLeadingID3() bool { return false }
 
 // Sniff matches an "....ftyp" header - the file-type atom that opens virtually
-// every MP4/M4A file. The brand inside ftyp is not inspected here; a fragmented
-// or otherwise unsupported variant is detected and rejected in Parse.
+// every MP4/M4A file. The brand inside ftyp is not inspected here; an unsupported
+// variant is detected in Parse, which rejects a movie-box-less fragmented segment
+// and reads (but marks unwritable) a fragmented file.
 func (Codec) Sniff(header []byte) bool {
 	return len(header) >= 8 && string(header[4:8]) == "ftyp"
 }
@@ -63,7 +67,11 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 // fully writable; chapters are read from both the Nero chpl and a QuickTime
 // chapter text track, and a chapter edit rewrites both representations. The
 // numeric "gnre" genre is read but always rewritten as the text genre.
-func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabilities {
+//
+// Support is per-file in one respect: a fragmented file (a top-level moof) reads
+// normally but cannot be rewritten, so it reports ReadOnly. A format-level query
+// (m == nil) reports writable, since the format at large is.
+func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "iTunes ilst atom (text / freeform ----)", Fidelity: "lossless",
@@ -135,9 +143,26 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 	add(tag.DiscTotal, core.WithValueDrop(fields, slotValueDropped))
 	add(tag.MediaType, core.WithValueDrop(fields, mediaTypeValueDropped))
 	add(tag.Compilation, core.WithValueDrop(fields, compilationValueDropped))
+	// ReadOnly comes from the same predicate Plan refuses on, so the capability a caller
+	// is shown matches what a write would actually do (the report==result invariant the
+	// Codec contract states).
+	//
+	// Only ReadOnly is set: the field/picture/chapter levels keep describing the FORMAT
+	// (and the editor's own gates key off them), and core.dispose short-circuits on
+	// ReadOnly before consulting them, so transfer reporting is already correct. Dropping
+	// them to AccessNone would be actively harmful - the editor refuses a chapter edit
+	// with ErrUnsupportedTag and "chapters cannot be written to an MP4 file" before Plan
+	// runs, pre-empting the precise refusal with a wrong sentinel and a false claim about
+	// the format.
+	readOnly := false
+	if m != nil {
+		if d, ok := m.Native.(*doc); ok && d != nil {
+			readOnly = d.refuseWrite() != nil
+		}
+	}
 	// Padding is grow-only: a forced rewrite can reserve a region, but a fit-in-place
 	// edit reuses the existing free space and cannot shrink it.
-	return core.NewCapabilities(core.FormatMP4, false, fields, pictures, chapters, core.AccessPartial, perField)
+	return core.NewCapabilities(core.FormatMP4, readOnly, fields, pictures, chapters, core.AccessPartial, perField)
 }
 
 // EssenceExtent returns the MP4 essence-digest inputs: a versioned extent name

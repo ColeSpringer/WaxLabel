@@ -230,6 +230,8 @@ const (
 	WarnSyncedLyricsLineDropped = core.WarnSyncedLyricsLineDropped
 
 	WarnPictureSelectorMiss = core.WarnPictureSelectorMiss
+
+	WarnFragmented = core.WarnFragmented
 )
 
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated

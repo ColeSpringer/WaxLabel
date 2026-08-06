@@ -43,6 +43,15 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
+	// The unwritable shapes, shared with Capabilities so the two cannot disagree. This
+	// sits after the no-op fast path (matching the Ogg ordering rationale in
+	// internal/ogg/write.go): copying a file unchanged is always safe, even for one we
+	// will not rewrite, so an unchanged fragmented file still copies verbatim through
+	// core.NoOpPlan and SaveBack still skips it.
+	if err := d.refuseWrite(); err != nil {
+		return nil, err
+	}
+
 	if d.moov == nil {
 		return nil, fmt.Errorf("%w: MP4 has no moov box to write tags into", waxerr.ErrInvalidData)
 	}
@@ -199,13 +208,11 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		for _, anc := range lay.ancestors {
 			edits = append(edits, sizePatch(anc, delta))
 		}
-		for _, t := range d.offTables {
-			e, err := offsetPatch(t, delta, lay.regionStart)
-			if err != nil {
-				return nil, err
-			}
-			edits = append(edits, e)
+		es, err := patchTables(delta, lay.regionStart, nil, d.offTables, d.auxTables)
+		if err != nil {
+			return nil, err
 		}
+		edits = append(edits, es...)
 	}
 	segs, err := assemble(edits, d.size)
 	if err != nil {
@@ -550,9 +557,31 @@ func largestItemPayload(items []item) int64 {
 	return maxLen
 }
 
-// offsetPatch re-renders a chunk-offset table with every entry past the
-// insertion point shifted by delta, so the media chunks resolve to their new
-// positions after the metadata grew.
+// patchTables renders the offset-fixup edits for every table in the given groups,
+// skipping any the skip predicate rejects (nil skips none). Chunk-offset and
+// sample-auxiliary tables shift by the same rule from the same insertion point, so all
+// three write paths share this one implementation: a fix applied to the chunk-offset loop
+// and missed on the aux loop would otherwise leave the two silently inconsistent.
+func patchTables(delta, insertion int64, skip func(offsetTable) bool, groups ...[]offsetTable) ([]edit, error) {
+	var out []edit
+	for _, g := range groups {
+		for _, t := range g {
+			if skip != nil && skip(t) {
+				continue
+			}
+			e, err := offsetPatch(t, delta, insertion)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+// offsetPatch re-renders an offset table (a chunk-offset stco/co64, or a
+// sample-auxiliary saio) with every entry past the insertion point shifted by delta,
+// so the media resolves to its new position after the metadata grew.
 func offsetPatch(t offsetTable, delta, insertion int64) (edit, error) {
 	width := 4
 	if t.co64 {
@@ -560,33 +589,54 @@ func offsetPatch(t offsetTable, delta, insertion int64) (edit, error) {
 	}
 	buf := make([]byte, len(t.entries)*width)
 	for i, e := range t.entries {
-		e = shiftOffset(e, insertion, delta)
+		e, ok := shiftOffset(e, insertion, delta)
+		if !ok {
+			return edit{}, fmt.Errorf("%w: an offset in %s does not resolve to a position in the rewritten file; it points inside the metadata region being replaced",
+				waxerr.ErrInvalidData, t.id())
+		}
 		if t.co64 {
 			binary.BigEndian.PutUint64(buf[i*8:], e)
 		} else {
 			if e > math.MaxUint32 {
-				return edit{}, fmt.Errorf("%w: a chunk offset would exceed 4 GiB; the file needs a 64-bit (co64) table",
-					waxerr.ErrSizeTooLarge)
+				// Name the box rather than prescribe a remedy: a 32-bit stco widens to a co64,
+				// but a version 0 saio widens to a version 1 saio, so "the file needs a co64"
+				// would be wrong for half the tables that reach here.
+				return edit{}, fmt.Errorf("%w: an offset in %s would exceed 4 GiB; the file needs 64-bit offset tables",
+					waxerr.ErrSizeTooLarge, t.id())
 			}
 			binary.BigEndian.PutUint32(buf[i*4:], uint32(e))
 		}
 	}
-	entriesOff := t.offset + t.headerLen + 8 // after the 4-byte version/flags and 4-byte count
+	// After the 4-byte version/flags, any per-box prefix (a saio's aux_info_type pair),
+	// and the 4-byte count.
+	entriesOff := t.offset + t.headerLen + 8 + t.entryPrefix
 	return edit{off: entriesOff, oldLen: int64(len(t.entries) * width), lit: buf}, nil
 }
 
 // shiftOffset moves a chunk offset that lies past the insertion point by delta,
 // so the media chunk resolves to its new position after the metadata changed
-// size. delta is usually a grow (positive) but can be a small shrink (negative)
-// - a just-smaller tag list written with zero padding leaves a 1-7 byte gap a
-// free atom cannot fill - so the adjustment is signed. The same rule is used to
-// rewrite the offset bytes and to update the returned document, so the two
-// cannot disagree.
-func shiftOffset(e uint64, insertion, delta int64) uint64 {
+// size. delta is usually a grow (positive) but can be a shrink (negative) - a
+// chapter clear drops a whole text track out of moov - so the adjustment is
+// signed. The same rule is used to rewrite the offset bytes and to update the
+// returned document, so the two cannot disagree.
+//
+// ok is false when the shift would carry the offset below the start of the file,
+// which means the source offset pointed inside the region being rewritten: a
+// malformed file, since a chunk offset addresses media in an mdat. The offset is
+// returned unchanged in that case. Letting the subtraction wrap would write a
+// ~18-exabyte offset into a 64-bit table and emit a silently corrupt file, so the
+// byte-writing caller refuses instead - the same posture as the 4 GiB check in
+// offsetPatch. An offset at or above 2^63 fails here too: int64 cannot address it,
+// so it is not a valid position in the file either.
+func shiftOffset(e uint64, insertion, delta int64) (uint64, bool) {
 	if e > uint64(insertion) {
-		return uint64(int64(e) + delta)
+		shifted := int64(e) + delta
+		if shifted < 0 {
+			return e, false
+		}
+		return uint64(shifted), true
 	}
-	return e
+	return e, true
 }
 
 // assemble turns the sorted, disjoint edits into a rewrite segment list: copy
@@ -635,7 +685,7 @@ func operations(d *doc, lay layout, delta int64, pics int) []string {
 		ops = append(ops, "ilst rewrite in place (media not moved)")
 	default:
 		ops = append(ops, fmt.Sprintf("ilst rewrite (+%d bytes metadata)", delta))
-		ops = append(ops, fmt.Sprintf("%d chunk-offset table shift(s)", len(d.offTables)))
+		ops = append(ops, fmt.Sprintf("%d offset table shift(s)", len(d.offTables)+len(d.auxTables)))
 	}
 	if pics > 0 {
 		ops = append(ops, fmt.Sprintf("pictures: %d", pics))

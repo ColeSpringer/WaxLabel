@@ -259,10 +259,16 @@ type offsetTable struct {
 	offset    int64 // atom start in the source
 	headerLen int64
 	size      int64
-	co64      bool     // true: 64-bit entries (co64); false: 32-bit (stco)
-	verFlags  [4]byte  // the FullBox version/flags following the header
-	entries   []uint64 // chunk offsets
+	name      [4]byte // source atom (stco, co64, saio), for error messages
+	co64      bool    // true: 64-bit entries (co64, or a version 1 saio); false: 32-bit
+	// entryPrefix is the byte count between the version/flags word and entry_count: a
+	// saio's optional aux_info_type pair when flags&1, and 0 for stco/co64.
+	entryPrefix int64
+	verFlags    [4]byte  // the FullBox version/flags following the header
+	entries     []uint64 // chunk offsets
 }
+
+func (t offsetTable) id() string { return string(t.name[:]) }
 
 // fmtCfg is the decoder-critical sample-entry configuration mixed into the
 // essence digest: the codec four-cc plus the audio geometry, so identical media

@@ -112,7 +112,31 @@ atomically and refuses an existing target unless `--overwrite` is given.
 
 `lint --json` findings carry a machine-readable `code` and `severity`; the exit code
 reflects the highest-precedence result. See `waxlabel <command> --help` and the
-package documentation for the exit-code table and finding codes.
+package documentation for the finding codes.
+
+### Exit codes
+
+Every failure carries a stable machine `code` (in `--json`, the error envelope's
+`code` field) alongside its exit status:
+
+| Exit | Machine code | Meaning |
+| --- | --- | --- |
+| 0 | none, or `broken-pipe` | Success, or a closed output pipe (`... \| head`) |
+| 1 | `error` | Unclassified failure |
+| 2 | `usage`, `invalid-key`, `needs-file` | Bad invocation, or an invalid canonical key |
+| 3 | `unsupported-format`, `unsupported-tag`, `unsupported-stream`, `unsupported-alignment`, `unsupported-fragmentation` | The file reads, but the requested write is refused |
+| 4 | `invalid-data` | The file is corrupt or violates its format |
+| 5 | `source-changed` | The file changed between the read and the save-back |
+| 6 | `not-found`, `io` | A wrong path, or a local I/O failure |
+| 7 | `input-too-large` | A streamed input exceeded `--max-size` |
+| 130 | `canceled`, `timeout` | Interrupted, or the deadline expired |
+
+A multi-file run exits with the most-severe class it saw, which is not the numeric
+maximum: `canceled`/`timeout` > `source-changed` > `invalid-data` > `input-too-large`
+> `unsupported-format` > `unsupported-tag` > `unsupported-stream` >
+`unsupported-alignment` > `unsupported-fragmentation` > `io` > `not-found` >
+`usage`/`invalid-key`/`needs-file` > `error` > `broken-pipe`. So a corrupt file
+(exit 4) outranks a mistyped path (exit 6).
 
 ## Format Support
 
@@ -122,7 +146,7 @@ package documentation for the exit-code table and finding codes.
 | Ogg Vorbis / Opus | read/write | Vorbis comments, `METADATA_BLOCK_PICTURE`, `CHAPTERxxx` chapters, `SYNCEDLYRICS` (LRC). |
 | MP3 | read/write | ID3v2 (`CHAP`/`CTOC` chapters, `SYLT` lyrics); new tags are ID3v2.3. ID3v1/APEv2 are surfaced as legacy. |
 | WAV | read/write | RIFF LIST/INFO plus embedded `id3 ` (chapters and lyrics); chunks are preserved. |
-| MP4 / M4A / M4B | read/write | iTunes `ilst`, cover art, Nero and QuickTime chapters. Fragmented MP4 is rejected. |
+| MP4 / M4A / M4B | read/write | iTunes `ilst`, cover art, Nero and QuickTime chapters. Fragmented MP4 (a `moof`) is read-only; a `moov` declaring `mvex` with no fragment present is written normally. |
 | Matroska / WebM | read/write | Scoped SimpleTags, segment title, attachments, default-edition chapters. WebM cannot write cover attachments. |
 | AAC (ADTS) | read/write | Front ID3v2 tag (new tags are ID3v2.4) plus ADTS frames. |
 | AIFF / AIFF-C | read/write | Native text chunks plus embedded `ID3 `; chunks are preserved. |

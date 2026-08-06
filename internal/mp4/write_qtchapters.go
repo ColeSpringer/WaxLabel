@@ -205,18 +205,18 @@ func assembleQT(d *doc, edited *core.Media, reg udtaRegion, clearing bool, mts u
 	// wholesale (and its old samples are abandoned), so patching it would both
 	// overlap that edit and point at dead bytes. These all relocate by the
 	// moov-internal delta, so they are computed before the trailing mdat reclaim.
+	// The replaced chapter track's own tables are skipped: its bytes are rewritten
+	// wholesale, so patching one would both overlap that edit and point at dead bytes.
+	// Guarded on a non-zero delta like the sibling paths - at delta 0 every patch would
+	// re-emit the bytes already there, for a full entry buffer per table.
 	p.moovDelta = sumDelta(edits)
-	for _, t := range d.offTables {
-		if withinChapTrak(d, t) {
-			continue
-		}
-		e, err := offsetPatch(t, p.moovDelta, d.moov.offset)
+	if p.moovDelta != 0 {
+		es, err := patchTables(p.moovDelta, d.moov.offset,
+			func(t offsetTable) bool { return withinChapTrak(d, t) }, d.offTables, d.auxTables)
 		if err != nil {
 			return nil, err
 		}
-		edits = append(edits, e)
-	}
-	if p.moovDelta != 0 {
+		edits = append(edits, es...)
 		edits = append(edits, sizePatch(*d.moov, p.moovDelta))
 	}
 
@@ -302,21 +302,13 @@ func buildQTChapterResult(edited *core.Media, base *doc, p *qtPlan) *core.Media 
 	moov.size += p.moovDelta
 	nd.moov = &moov
 
-	for _, t := range base.offTables {
-		if withinChapTrak(base, t) {
-			continue // the replaced/removed chapter track's table is gone from the output
-		}
-		nt := t
-		nt.offset = t.offset + netShift(p.edits, t.offset)
-		nt.entries = slices.Clone(t.entries)
-		for i, e := range nt.entries {
-			nt.entries[i] = uint64(int64(e) + netShift(p.edits, int64(e)))
-		}
-		nd.offTables = append(nd.offTables, nt)
-	}
+	// Both table groups relocate by the same edit list, and both drop the replaced
+	// chapter track's own table (its bytes are gone from the output).
+	nd.offTables = relocateTables(base.offTables, p.edits, func(t offsetTable) bool { return withinChapTrak(base, t) })
+	nd.auxTables = relocateTables(base.auxTables, p.edits, func(t offsetTable) bool { return withinChapTrak(base, t) })
 	if !clearing {
 		nd.offTables = append(nd.offTables, offsetTable{
-			offset: p.chapStcoOff, headerLen: 8, size: p.chapStcoSize,
+			offset: p.chapStcoOff, headerLen: 8, size: p.chapStcoSize, name: chapStcoName(p.chapStcoCo64),
 			co64: p.chapStcoCo64, entries: []uint64{uint64(p.mdatPayloadOff)},
 		})
 	}
@@ -560,6 +552,36 @@ func backpatchStco(trak []byte, off int, value int64, co64 bool) {
 	binary.BigEndian.PutUint32(trak[off:off+4], uint32(value))
 }
 
+// relocateTables moves one group of offset tables into a QuickTime-chapter result
+// document, dropping any the skip predicate rejects. Unlike the ilst path's single delta,
+// a chapter rewrite relocates each position by the edit list's own netShift. The
+// chunk-offset and sample-auxiliary groups relocate identically, so both share this.
+func relocateTables(src []offsetTable, edits []edit, skip func(offsetTable) bool) []offsetTable {
+	out := make([]offsetTable, 0, len(src))
+	for _, t := range src {
+		if skip != nil && skip(t) {
+			continue
+		}
+		nt := t
+		nt.offset = t.offset + netShift(edits, t.offset)
+		nt.entries = slices.Clone(t.entries)
+		for i, e := range nt.entries {
+			nt.entries[i] = uint64(int64(e) + netShift(edits, int64(e)))
+		}
+		out = append(out, nt)
+	}
+	return out
+}
+
+// chapStcoName is the four-cc of the freshly written chapter track's offset table, so a
+// result document's table names its own box the way a parsed one does.
+func chapStcoName(co64 bool) [4]byte {
+	if co64 {
+		return atomName("co64")
+	}
+	return atomName("stco")
+}
+
 // withinChapTrak reports whether an offset table lives inside the chapter track
 // being replaced - its bytes are rewritten wholesale, so it must not be patched
 // separately.
@@ -571,7 +593,8 @@ func withinChapTrak(d *doc, t offsetTable) bool {
 // reclaim on a replace/clear, and whether one was found. All conditions must hold: the
 // existing chapter track has EXACTLY ONE chunk offset, that offset is the payload start
 // of a top-level mdat, that mdat ends at end-of-file, AND the mdat holds NO other track's
-// chunk offset (no audio, video, or subtitle samples). Together they prove the mdat holds
+// chunk offset (no audio, video, or subtitle samples) and no sample auxiliary information.
+// Together they prove the mdat holds
 // only this chapter track's samples and is the last atom, so deleting it shifts nothing
 // earlier (every netShift stays correct) and reclaims no other media. A foreign multi-chunk
 // chapter track, a chapter mdat shared with another track (a chapter chunk at the front of
@@ -594,6 +617,14 @@ func standaloneTrailingChapterMdat(d *doc) (atomRef, bool) {
 		// dangling into the appended chapter mdat. The check spans every non-chapter track,
 		// not just the first audio one, so a multi-track file is handled correctly.
 		if mdatHoldsNonChapterChunk(d, [2]int64{a.payloadOff(), a.end()}) {
+			return atomRef{}, false
+		}
+		// Sample auxiliary information (CENC) also lives in an mdat, but a saio is
+		// deliberately kept out of nonChapterTables (an aux offset is not a media chunk, so
+		// it must not move the essence trim). Check it separately: an mdat holding the
+		// chapter chunk at its payload start plus aux data later would otherwise be deleted,
+		// orphaning every saio offset just patched.
+		if mdatHoldsChunk([2]int64{a.payloadOff(), a.end()}, d.auxTables) {
 			return atomRef{}, false
 		}
 		return a, true
@@ -640,7 +671,7 @@ func qtChapterOps(d *doc, edited *core.Media, needIlst, clearing bool, delta int
 		ops = append(ops, "ilst rewrite")
 	}
 	if delta != 0 {
-		ops = append(ops, fmt.Sprintf("%d chunk-offset table shift(s)", len(d.offTables)))
+		ops = append(ops, fmt.Sprintf("%d offset table shift(s)", len(d.offTables)+len(d.auxTables)))
 	}
 	if len(edited.Pictures) > 0 {
 		ops = append(ops, fmt.Sprintf("pictures: %d", len(edited.Pictures)))

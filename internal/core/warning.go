@@ -285,6 +285,13 @@ const (
 	// apply. Keyless: it names the role in prose, not a tag field. Appended to the end of the block so
 	// the existing codes keep their numbers.
 	WarnPictureSelectorMiss
+	// WarnFragmented means an MP4 carries movie fragments (a top-level moof). The tags in
+	// the initial movie box are read exactly; what degrades is the duration (an empty_moov
+	// file reports 0) and the essence digest, which cannot cover a fragment's samples. The
+	// file is unwritable, so an edit is refused with waxerr.ErrFragmented. Keyless: it
+	// describes the container, not a tag field. Appended to the end of the block so the
+	// existing codes keep their numbers.
+	WarnFragmented
 )
 
 func (c WarningCode) String() string {
@@ -389,6 +396,8 @@ func (c WarningCode) String() string {
 		return "synced-lyrics-line-dropped"
 	case WarnPictureSelectorMiss:
 		return "picture-remove-role-miss"
+	case WarnFragmented:
+		return "fragmented"
 	default:
 		return "unknown"
 	}

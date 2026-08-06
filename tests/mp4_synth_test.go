@@ -111,11 +111,110 @@ func mp4SounTrak(trackID int, stcoOff uint32) []byte {
 // mp4Moov assembles the movie box: one audio trak (with a one-entry stco) and the
 // given udta. The stco entry points at stcoOff.
 func mp4Moov(udta []byte, stcoOff uint32) []byte {
-	stbl := mp4Atom("stbl", slices.Concat(mp4StsdAudio(), mp4Stco(stcoOff)))
+	return mp4MoovExtra(udta, stcoOff, nil, nil)
+}
+
+// mp4MoovExtra is mp4Moov with two extension points: stblExtra is appended to the audio
+// track's stbl (beside the stco - where a saio belongs), and moovExtra to the moov itself
+// (an mvex). Threading them through the builder rather than splicing bytes post-hoc keeps
+// the two-pass assemblers patching the moov size and the stco entry for free.
+func mp4MoovExtra(udta []byte, stcoOff uint32, stblExtra, moovExtra []byte) []byte {
+	stbl := mp4Atom("stbl", slices.Concat(mp4StsdAudio(), mp4Stco(stcoOff), stblExtra))
 	minf := mp4Atom("minf", stbl)
 	mdia := mp4Atom("mdia", slices.Concat(mp4HdlrSoun(), mp4Mdhd(), minf))
 	trak := mp4Atom("trak", mdia)
-	return mp4Atom("moov", slices.Concat(trak, udta))
+	return mp4Atom("moov", slices.Concat(trak, udta, moovExtra))
+}
+
+// mp4Mvex builds an mvex declaring one trex: the forward declaration a muxer emits when
+// fragments MAY follow. With no moof present the file is an ordinary progressive one.
+func mp4Mvex() []byte {
+	trex := mp4Atom("trex", slices.Concat([]byte{0, 0, 0, 0}, mp4be32(1), make([]byte, 16)))
+	return mp4Atom("mvex", trex)
+}
+
+// mp4Saio builds a saio sample-auxiliary-offset box (ISO/IEC 14496-12 8.7.13): version 0
+// gives 32-bit entries and version 1 gives 64-bit, and auxType sets flags&1, which
+// inserts the aux_info_type + aux_info_type_parameter pair ahead of the entry count.
+func mp4Saio(version uint8, auxType bool, offsets ...uint32) []byte {
+	var flags byte
+	if auxType {
+		flags = 1
+	}
+	body := []byte{version, 0, 0, flags}
+	if auxType {
+		body = append(body, []byte("cenc")...) // aux_info_type
+		body = append(body, mp4be32(0)...)     // aux_info_type_parameter
+	}
+	body = append(body, mp4be32(len(offsets))...)
+	for _, o := range offsets {
+		if version == 1 {
+			b := make([]byte, 8)
+			binary.BigEndian.PutUint64(b, uint64(o))
+			body = append(body, b...)
+			continue
+		}
+		body = append(body, mp4be32(int(o))...)
+	}
+	return mp4Atom("saio", body)
+}
+
+// mp4BoxPayload returns the payload of the first real box with the given four-cc: a name
+// match whose preceding 4-byte size field describes a box that fits the file. Matching the
+// bare name would also hit the same ASCII inside a tag value, cover art, chapter text, or
+// mdat filler, giving a false pass or an out-of-range index.
+func mp4BoxPayload(t *testing.T, data []byte, name string) []byte {
+	t.Helper()
+	for i := 0; i < len(data); {
+		j := bytes.Index(data[i:], []byte(name))
+		if j < 0 {
+			break
+		}
+		at := i + j
+		if at >= 4 {
+			size := int(binary.BigEndian.Uint32(data[at-4 : at]))
+			if size >= 8 && at-4+size <= len(data) {
+				return data[at+4 : at-4+size]
+			}
+		}
+		i = at + 1
+	}
+	t.Fatalf("no %s box in output", name)
+	return nil
+}
+
+// mp4SaioEntries decodes the offsets of the first saio in data and reports the entry
+// width it used, so a test can pin that a version 1 table stayed 64-bit across a rewrite.
+func mp4SaioEntries(t *testing.T, data []byte) (offsets []uint64, width int) {
+	t.Helper()
+	body := mp4BoxPayload(t, data, "saio")
+	if len(body) < 8 {
+		t.Fatalf("saio payload is %d bytes, too short to decode", len(body))
+	}
+	prefix := 0
+	if body[3]&1 != 0 {
+		prefix = 8
+	}
+	width = 4
+	if body[0] == 1 {
+		width = 8
+	}
+	if len(body) < 8+prefix {
+		t.Fatalf("saio payload is %d bytes, too short for its %d-byte aux-type prefix", len(body), prefix)
+	}
+	count := int(binary.BigEndian.Uint32(body[4+prefix : 8+prefix]))
+	if len(body) < 8+prefix+count*width {
+		t.Fatalf("saio declares %d entries but its payload is only %d bytes", count, len(body))
+	}
+	for i := range count {
+		off := 8 + prefix + i*width
+		if width == 8 {
+			offsets = append(offsets, binary.BigEndian.Uint64(body[off:off+8]))
+			continue
+		}
+		offsets = append(offsets, uint64(binary.BigEndian.Uint32(body[off:off+4])))
+	}
+	return offsets, width
 }
 
 func mp4Ftyp() []byte {
@@ -125,10 +224,18 @@ func mp4Ftyp() []byte {
 // mp4AssembleUdta builds ftyp + moov(trak + udta(udtaKids)) + mdat, patching the
 // stco entry to point at the mdat payload.
 func mp4AssembleUdta(udtaKids ...[]byte) []byte {
+	return mp4AssembleExtra(nil, nil, udtaKids...)
+}
+
+// mp4AssembleExtra is mp4AssembleUdta threading mp4MoovExtra's two extension points (an
+// stbl child such as a saio, and a moov child such as an mvex) through the same two-pass
+// build, so the stco entry and every enclosing box size stay correct as the extras
+// change the layout.
+func mp4AssembleExtra(stblExtra, moovExtra []byte, udtaKids ...[]byte) []byte {
 	mdatPayload := bytes.Repeat([]byte{0xA7}, 120)
 	build := func(stcoOff uint32) []byte {
 		udta := mp4Atom("udta", slices.Concat(udtaKids...))
-		return slices.Concat(mp4Ftyp(), mp4Moov(udta, stcoOff), mp4Atom("mdat", mdatPayload))
+		return slices.Concat(mp4Ftyp(), mp4MoovExtra(udta, stcoOff, stblExtra, moovExtra), mp4Atom("mdat", mdatPayload))
 	}
 	tmp := build(0)
 	j := bytes.Index(tmp, []byte("mdat"))
@@ -543,14 +650,21 @@ func TestMP4ForeignFreeformSurvivesCanonicalFreeformEdit(t *testing.T) {
 	}
 }
 
-func TestMP4FragmentedRejected(t *testing.T) {
-	// A top-level moof marks a fragmented file, which is out of scope and must fail
-	// loudly rather than corrupt offset tables.
+func TestMP4FragmentedReadNotWritten(t *testing.T) {
+	// A top-level moof marks a fragmented file. Its initial movie box carries readable
+	// tags, so it parses (with a fragmented warning); only the rewrite is refused, since
+	// the offset fixups cannot reach a fragment's trun sample offsets.
 	data := mp4Tagged(mp4Text("\xa9nam", "T"))
 	data = append(data, mp4Atom("moof", make([]byte, 16))...)
-	_, err := wl.Parse(context.Background(), wl.BytesSource(data))
-	if !errors.Is(err, waxerr.ErrUnsupportedFormat) {
-		t.Fatalf("fragmented parse error = %v, want ErrUnsupportedFormat", err)
+	doc := mustParseBytes(t, data)
+	if got := doc.Fields().Title; got != "T" {
+		t.Errorf("Title = %q, want T", got)
+	}
+	if !hasWarning(doc, wl.WarnFragmented) {
+		t.Errorf("expected a fragmented warning; got %v", doc.Warnings())
+	}
+	if _, err := doc.Edit().Set(tag.Title, "Edited").Prepare(); !errors.Is(err, waxerr.ErrFragmented) {
+		t.Fatalf("fragmented write error = %v, want ErrFragmented", err)
 	}
 }
 

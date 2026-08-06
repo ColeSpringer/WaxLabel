@@ -25,19 +25,21 @@ func mp4be16(n int) []byte {
 }
 
 // mp4AudioTrakChap builds an audio trak (track_id 1) that references the chapter
-// text track via a tref "chap", with its single stco entry at audioStco.
-func mp4AudioTrakChap(chapTrackID int, audioStco uint32) []byte {
+// text track via a tref "chap", with its single stco entry at audioStco. stblExtra is
+// appended to its stbl (a saio, in the sample-auxiliary tests).
+func mp4AudioTrakChap(chapTrackID int, audioStco uint32, stblExtra ...[]byte) []byte {
 	tkhd := mp4Atom("tkhd", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 8), mp4be32(1), make([]byte, 4)))
 	tref := mp4Atom("tref", mp4Atom("chap", mp4be32(chapTrackID)))
-	stbl := mp4Atom("stbl", slices.Concat(mp4StsdAudio(), mp4Stco(audioStco)))
+	stbl := mp4Atom("stbl", slices.Concat(mp4StsdAudio(), mp4Stco(audioStco), slices.Concat(stblExtra...)))
 	minf := mp4Atom("minf", stbl)
 	mdia := mp4Atom("mdia", slices.Concat(mp4HdlrSoun(), mp4Mdhd(), minf))
 	return mp4Atom("trak", slices.Concat(tkhd, tref, mdia))
 }
 
 // mp4TextTrak builds a chapter text trak: one sample per title at the given media
-// timescale, with the chunk offset at textStco.
-func mp4TextTrak(trackID, timescale int, startsMS []int, titles []string, textStco uint32) []byte {
+// timescale, with the chunk offset at textStco. stblExtra is appended to its stbl (a
+// saio, in the sample-auxiliary tests).
+func mp4TextTrak(trackID, timescale int, startsMS []int, titles []string, textStco uint32, stblExtra ...[]byte) []byte {
 	var stts []byte
 	for i := range titles {
 		delta := 1000
@@ -54,7 +56,7 @@ func mp4TextTrak(trackID, timescale int, startsMS []int, titles []string, textSt
 	}
 	stszAtom := mp4Atom("stsz", slices.Concat([]byte{0, 0, 0, 0}, mp4be32(0), mp4be32(len(titles)), sizes))
 	stcoAtom := mp4Atom("stco", slices.Concat([]byte{0, 0, 0, 0}, mp4be32(1), mp4be32(int(textStco))))
-	stbl := mp4Atom("stbl", slices.Concat(sttsAtom, stscAtom, stszAtom, stcoAtom))
+	stbl := mp4Atom("stbl", slices.Concat(sttsAtom, stscAtom, stszAtom, stcoAtom, slices.Concat(stblExtra...)))
 	minf := mp4Atom("minf", stbl)
 	mdhd := mp4Atom("mdhd", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 8), mp4be32(timescale), mp4be32(0)))
 	hdlr := mp4Atom("hdlr", slices.Concat(make([]byte, 8), []byte("text"), make([]byte, 12)))

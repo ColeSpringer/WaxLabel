@@ -633,6 +633,11 @@ func classifyError(err error) classifiedError {
 		// A well-formed but non-page-aligned Ogg stream: a write refusal (exit 3), not a
 		// corrupt file (exit 4) - the stream reads fine, it just cannot be rewritten safely.
 		c.exitCode, c.code = 3, "unsupported-alignment"
+	case errors.Is(err, waxerr.ErrFragmented):
+		// A fragmented MP4: another well-formed-but-unwritable shape. It reads fine (the
+		// initial movie box carries the tags), so it is a write refusal (exit 3) with its own
+		// code rather than a corrupt file or a collapsed unsupported-format.
+		c.exitCode, c.code = 3, "unsupported-fragmentation"
 	case errors.Is(err, waxerr.ErrSourceChanged):
 		c.exitCode, c.code, c.hint = 5, "source-changed",
 			"the file changed since it was read; re-run to pick up the new contents"
@@ -676,22 +681,23 @@ func isUsageError(err error) bool {
 // in README.md; TestErrClassRankCoversEveryErrorClass pins that every code
 // classifyError can produce is ranked here, so a new class cannot silently fall to 0.
 var errClassRank = map[string]int{
-	"canceled":              100, // exit 130: an interrupted run dominates
-	"timeout":               100, // exit 130
-	"source-changed":        90,  // exit 5
-	"invalid-data":          80,  // exit 4: a corrupt file
-	"input-too-large":       75,  // exit 7: a streamed input over the user's --max-size cap (not corruption)
-	"unsupported-format":    70,  // exit 3
-	"unsupported-tag":       65,  // exit 3
-	"unsupported-stream":    64,  // exit 3: a chained/multiplexed Ogg stream
-	"unsupported-alignment": 63,  // exit 3: a non-page-aligned Ogg stream
-	"io":                    60,  // exit 6
-	"not-found":             55,  // exit 6: a wrong path
-	"usage":                 20,  // exit 2: a bad invocation
-	"invalid-key":           20,  // exit 2
-	"needs-file":            20,  // exit 2: a path-less SaveBack (library callers)
-	"error":                 10,  // exit 1: the unclassified fallback
-	"broken-pipe":           5,   // exit 0: a closed output pipe, below every real failure so one still wins
+	"canceled":                  100, // exit 130: an interrupted run dominates
+	"timeout":                   100, // exit 130
+	"source-changed":            90,  // exit 5
+	"invalid-data":              80,  // exit 4: a corrupt file
+	"input-too-large":           75,  // exit 7: a streamed input over the user's --max-size cap (not corruption)
+	"unsupported-format":        70,  // exit 3
+	"unsupported-tag":           65,  // exit 3
+	"unsupported-stream":        64,  // exit 3: a chained/multiplexed Ogg stream
+	"unsupported-alignment":     63,  // exit 3: a non-page-aligned Ogg stream
+	"unsupported-fragmentation": 62,  // exit 3: a fragmented MP4
+	"io":                        60,  // exit 6
+	"not-found":                 55,  // exit 6: a wrong path
+	"usage":                     20,  // exit 2: a bad invocation
+	"invalid-key":               20,  // exit 2
+	"needs-file":                20,  // exit 2: a path-less SaveBack (library callers)
+	"error":                     10,  // exit 1: the unclassified fallback
+	"broken-pipe":               5,   // exit 0: a closed output pipe, below every real failure so one still wins
 }
 
 // worseError reports whether candidate is a more-severe aggregate error than

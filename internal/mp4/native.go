@@ -5,6 +5,7 @@ import (
 	"slices"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // item is one decoded ilst child: the four-character atom name and its raw
@@ -55,12 +56,23 @@ type doc struct {
 	nextTrackIDOff int64  // absolute offset of mvhd's next_track_ID field (0 if unread)
 
 	items     []item        // decoded ilst children (nil when no ilst)
-	offTables []offsetTable // every stco/co64 in moov, in document order
-	mdats     [][2]int64    // mdat payload ranges (offset, length), in document order
+	offTables []offsetTable // every stbl stco/co64 in moov, in document order
+	// auxTables holds every stbl saio in moov, kept apart from offTables because a saio
+	// locates sample auxiliary information (CENC) rather than a media chunk. Both live in
+	// an mdat and both shift on a resize, but only a chunk offset marks an mdat as audio
+	// essence, so merging the two would skew the essence trim (firstNonChapterChunk) and
+	// silently change the essence digest.
+	auxTables []offsetTable
+	mdats     [][2]int64 // mdat payload ranges (offset, length), in document order
 	// mdatTruncated records that an mdat atom's declared size overran EOF and was
 	// clamped - a truncated file. Set from the atom walk's own clamp, so the 64-bit
 	// mdat size that would overflow an offset+size computation never reaches one.
 	mdatTruncated bool
+	fragmented    bool // a top-level moof: readable, but Plan refuses the rewrite
+	auxUnknown    bool // a saio with an unrecognized version: offsets cannot be patched
+	// hasIloc records an iloc item-location box inside moov.udta.meta. Its absolute file
+	// offsets sit in the very region an ilst rewrite replaces, so a write is refused.
+	hasIloc bool
 
 	// udtaRaw is the verbatim moov.udta payload (nil when there is no udta). A
 	// chapter rewrite splices the new ilst/chpl byte ranges into it and copies
@@ -89,6 +101,31 @@ type doc struct {
 
 func (d *doc) Format() core.Format { return core.FormatMP4 }
 
+// refuseWrite reports why this document cannot be rewritten at all, or nil when it can.
+// Plan returns the error and Capabilities reports ReadOnly from the same call, so the
+// capability a caller is shown and the outcome of an actual write cannot diverge - a
+// second, hand-maintained copy of the predicate would drift the moment either side gained
+// a case. Each refusal here is unconditional: a file matching one cannot be written by any
+// edit, which is what ReadOnly claims. A refusal that depended on what the edit contained
+// would belong in Plan alone.
+func (d *doc) refuseWrite() error {
+	switch {
+	case d.fragmented:
+		return fmt.Errorf("%w: refusing to rewrite a fragmented MP4; a metadata resize cannot fix up a movie fragment's sample offsets (tags are readable)",
+			waxerr.ErrFragmented)
+	case d.auxUnknown:
+		return fmt.Errorf("%w: MP4 has a saio box this codec cannot decode; its sample auxiliary offsets cannot be shifted safely",
+			waxerr.ErrUnsupportedFormat)
+	case d.hasIloc:
+		// An iloc holds absolute file offsets that nothing patches, so any rewrite that
+		// moves bytes strands them. Nothing audio-shaped carries one (it is a HEIF/MPEG-21
+		// box), so refuse on presence rather than parse its nibble-packed extent table.
+		return fmt.Errorf("%w: MP4 carries an iloc item-location box this codec cannot relocate",
+			waxerr.ErrUnsupportedFormat)
+	}
+	return nil
+}
+
 // Clone deep-copies the document so Document accessors stay detached.
 func (d *doc) Clone() core.NativeDoc {
 	c := *d
@@ -116,6 +153,11 @@ func (d *doc) Clone() core.NativeDoc {
 		t.entries = slices.Clone(t.entries)
 		c.offTables[i] = t
 	}
+	c.auxTables = make([]offsetTable, len(d.auxTables))
+	for i, t := range d.auxTables {
+		t.entries = slices.Clone(t.entries)
+		c.auxTables[i] = t
+	}
 	c.mdats = slices.Clone(d.mdats)
 	return &c
 }
@@ -138,6 +180,10 @@ func (d *doc) Describe() []core.NativeEntry {
 			note = "movie box"
 		case "mdat":
 			note = d.track.Codec + " media data"
+		case "moof":
+			// Fragmented files are dumpable, so name the box rather than let it fall
+			// through to "preserved", which would imply inert padding.
+			note = "movie fragment"
 		case "ftyp":
 			note = "file type"
 			if d.majorBrand != "" {

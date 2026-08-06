@@ -624,6 +624,7 @@ func TestClassifyError(t *testing.T) {
 		{"unsupported", fmt.Errorf("w: %w", waxerr.ErrUnsupportedFormat), 3, "unsupported-format"},
 		{"chained-stream", fmt.Errorf("w: %w", waxerr.ErrChainedStream), 3, "unsupported-stream"},
 		{"unaligned-stream", fmt.Errorf("w: %w", waxerr.ErrUnalignedStream), 3, "unsupported-alignment"},
+		{"fragmented", fmt.Errorf("w: %w", waxerr.ErrFragmented), 3, "unsupported-fragmentation"},
 		{"invalid-data", fmt.Errorf("w: %w", waxerr.ErrInvalidData), 4, "invalid-data"},
 		{"input-too-large", fmt.Errorf("w: %w", waxerr.ErrInputTooLarge), 7, "input-too-large"},
 		{"source-changed", fmt.Errorf("w: %w", waxerr.ErrSourceChanged), 5, "source-changed"},
@@ -680,7 +681,8 @@ func TestSentinelsHaveNoProgramPrefix(t *testing.T) {
 		waxerr.ErrUnsupportedFormat, waxerr.ErrInvalidData,
 		waxerr.ErrUnsupportedTag, waxerr.ErrPictureTooLarge, waxerr.ErrSizeTooLarge,
 		waxerr.ErrInputTooLarge, waxerr.ErrTooDeep, waxerr.ErrSourceChanged,
-		waxerr.ErrChainedStream, waxerr.ErrUnalignedStream, waxerr.ErrInvalidKey,
+		waxerr.ErrChainedStream, waxerr.ErrUnalignedStream, waxerr.ErrFragmented,
+		waxerr.ErrInvalidKey,
 	} {
 		if strings.HasPrefix(err.Error(), "waxlabel:") {
 			t.Errorf("sentinel %q should not embed the program prefix", err.Error())
@@ -2055,6 +2057,7 @@ func TestErrClassRankCoversEveryErrorClass(t *testing.T) {
 		waxerr.ErrUnsupportedTag,
 		waxerr.ErrChainedStream,
 		waxerr.ErrUnalignedStream,
+		waxerr.ErrFragmented,
 		waxerr.ErrSourceChanged,
 		waxerr.ErrInvalidData,
 		waxerr.ErrInputTooLarge,

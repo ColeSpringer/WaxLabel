@@ -89,8 +89,8 @@ func buildResult(edited *core.Media, base *doc, newItems []item, lay layout, del
 
 // shiftStructure relocates the parts of a rewritten document that move when a
 // metadata region changes size: it grows the moov box and shifts, by delta, every
-// chunk-offset table entry past the insertion point plus any offset-table atom,
-// mdat range, and top-level atom that lies at or past regionEnd. Both the
+// chunk-offset and sample-auxiliary table entry past the insertion point plus any
+// offset-table atom, mdat range, and top-level atom that lies at or past regionEnd. Both the
 // ilst-only and the chapter (udta) rewrite paths share it, so the two result
 // builders cannot drift in how they keep the media playable. (insertion is the
 // region start - chunk offsets at or before it never move; regionEnd is where
@@ -100,17 +100,8 @@ func shiftStructure(nd, base *doc, insertion, regionEnd, delta int64) {
 	moov.size += delta
 	nd.moov = &moov
 
-	for _, t := range base.offTables {
-		nt := t
-		if t.offset >= regionEnd {
-			nt.offset = t.offset + delta
-		}
-		nt.entries = slices.Clone(t.entries)
-		for i, e := range nt.entries {
-			nt.entries[i] = shiftOffset(e, insertion, delta)
-		}
-		nd.offTables = append(nd.offTables, nt)
-	}
+	nd.offTables = shiftTables(base.offTables, insertion, regionEnd, delta)
+	nd.auxTables = shiftTables(base.auxTables, insertion, regionEnd, delta)
 
 	nd.mdats = make([][2]int64, len(base.mdats))
 	for i, m := range base.mdats {
@@ -130,6 +121,29 @@ func shiftStructure(nd, base *doc, insertion, regionEnd, delta int64) {
 		}
 		nd.topLevel = append(nd.topLevel, a)
 	}
+}
+
+// shiftTables relocates one group of offset tables into a result document: the atom's own
+// offset moves when it lies at or past regionEnd, and every entry past the insertion point
+// moves by delta. The chunk-offset and sample-auxiliary groups relocate identically, so
+// both go through this one function and cannot drift apart.
+func shiftTables(src []offsetTable, insertion, regionEnd, delta int64) []offsetTable {
+	out := make([]offsetTable, 0, len(src))
+	for _, t := range src {
+		nt := t
+		if t.offset >= regionEnd {
+			nt.offset = t.offset + delta
+		}
+		nt.entries = slices.Clone(t.entries)
+		for i, e := range nt.entries {
+			// The ok result is unreachable here: Plan refuses an underflowing table in
+			// offsetPatch before any result document is built. shiftOffset returns the offset
+			// unchanged in that case, so discarding ok keeps the inert value.
+			nt.entries[i], _ = shiftOffset(e, insertion, delta)
+		}
+		out = append(out, nt)
+	}
+	return out
 }
 
 // resultUdtaRaw reconstructs the post-write udta payload after a tag/picture edit

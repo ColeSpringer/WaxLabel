@@ -58,13 +58,11 @@ func planChapters(d *doc, edited *core.Media, needIlst, picturesChanged bool, op
 		for _, anc := range reg.ancestors {
 			edits = append(edits, sizePatch(anc, delta))
 		}
-		for _, t := range d.offTables {
-			e, err := offsetPatch(t, delta, reg.regionStart)
-			if err != nil {
-				return nil, err
-			}
-			edits = append(edits, e)
+		es, err := patchTables(delta, reg.regionStart, nil, d.offTables, d.auxTables)
+		if err != nil {
+			return nil, err
 		}
+		edits = append(edits, es...)
 	}
 	segs, err := assemble(edits, d.size)
 	if err != nil {
@@ -325,7 +323,7 @@ func chapterOps(d *doc, edited *core.Media, needIlst bool, delta int64) []string
 		ops = append(ops, "ilst rewrite")
 	}
 	if delta != 0 {
-		ops = append(ops, fmt.Sprintf("%d chunk-offset table shift(s)", len(d.offTables)))
+		ops = append(ops, fmt.Sprintf("%d offset table shift(s)", len(d.offTables)+len(d.auxTables)))
 	}
 	if len(edited.Pictures) > 0 {
 		ops = append(ops, fmt.Sprintf("pictures: %d", len(edited.Pictures)))

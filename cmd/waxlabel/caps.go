@@ -178,10 +178,16 @@ func buildCaps(file, container string, caps wl.Capabilities) jsonCaps {
 		Chapters:      capDim(caps.Chapters),
 		SyncedLyrics:  capDim(caps.SyncedLyrics),
 		Padding:       caps.Padding.String(),
-		// Always a non-nil array so `caps --json` of a read-only format (no editable
-		// keys) emits "keys": [] - a consumer iterating.keys[] never breaks. Latent
-		// today (all shipping formats are writable) but pinned for the frozen schema.
+		// Always a non-nil array so `caps --json` of a read-only file (no editable keys)
+		// emits "keys": [] - a consumer iterating .keys[] never breaks.
 		Keys: []jsonCapKey{},
+	}
+	// A read-only verdict outranks the per-field levels, which keep describing the format
+	// (MP4 reports its fields Full even for a fragmented file it cannot write). Listing
+	// ~60 editable keys under "(read-only)" would contradict itself, so skip the loop and
+	// let the empty-array promise above hold.
+	if jc.ReadOnly {
+		return jc
 	}
 	for _, k := range tag.KnownKeys() {
 		fc := caps.Field(k)
@@ -235,7 +241,16 @@ func renderCaps(w io.Writer, jc jsonCaps) {
 	}
 	fmt.Fprintf(w, "  %-9s %s\n", "format:", format)
 	if jc.ReadOnly {
-		fmt.Fprintln(w, "  (read-only: this format cannot be written)")
+		// MP4 is the first codec whose verdict is per-file (a fragmented file is unwritable
+		// while the format is not), so a file-scoped query says so rather than libelling the
+		// whole format. The dimension rows below still report the format's write levels, which
+		// would otherwise read as a flat contradiction, so the per-file line says what they
+		// describe.
+		if jc.File != "" {
+			fmt.Fprintln(w, "  (read-only: this file cannot be written; the levels below describe the format)")
+		} else {
+			fmt.Fprintln(w, "  (read-only: this format cannot be written)")
+		}
 	}
 	renderCapDim(w, "fields", jc.Fields)
 	renderCapDim(w, "pictures", jc.Pictures)
