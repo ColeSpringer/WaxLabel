@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,17 +12,34 @@ import (
 	"testing"
 )
 
-// epipeWriter fails every write with EPIPE, simulating a downstream reader that closed the
-// output pipe. The sanitizing writer writes through immediately (holding back only an incomplete
-// UTF-8 tail, and JSON is ASCII), so the EPIPE propagates up to dispatch as it would from a real
-// closed stdout - without the async SIGPIPE goroutine setting a cancel cause.
+// epipeWriter fails every write with EPIPE, simulating a reader that closed the output
+// pipe. The sanitizing writer passes bytes straight through, so the EPIPE reaches dispatch
+// as it would from a real closed stdout, with no SIGPIPE goroutine setting a cancel cause.
 type epipeWriter struct{}
 
 func (epipeWriter) Write(p []byte) (int, error) { return 0, syscall.EPIPE }
 
-// TestClassifyBrokenPipe pins the classification directly: errBrokenPipe maps to exit 0, code
-// "broken-pipe", and an empty message so renderError stays silent. This is the leaf the two
-// end-to-end tests below depend on.
+// TestIsBrokenPipeRecognizesEPIPE: EPIPE must classify the same on every platform,
+// including Windows, where only a synthesized one can occur. pipe_windows_test.go covers
+// the errnos Windows really returns.
+func TestIsBrokenPipeRecognizesEPIPE(t *testing.T) {
+	t.Parallel()
+	if !isBrokenPipe(syscall.EPIPE) {
+		t.Error("isBrokenPipe(EPIPE) = false, want true")
+	}
+	if !isBrokenPipe(fmt.Errorf("write stdout: %w", syscall.EPIPE)) {
+		t.Error("isBrokenPipe must unwrap a wrapped EPIPE")
+	}
+	if isBrokenPipe(errors.New("disk on fire")) {
+		t.Error("isBrokenPipe(unrelated error) = true, want false")
+	}
+	if isBrokenPipe(nil) {
+		t.Error("isBrokenPipe(nil) = true, want false")
+	}
+}
+
+// TestClassifyBrokenPipe: errBrokenPipe maps to exit 0, code "broken-pipe", and an empty
+// message so renderError stays silent. The leaf the end-to-end tests below rely on.
 func TestClassifyBrokenPipe(t *testing.T) {
 	t.Parallel()
 	c := classifyError(errBrokenPipe)
@@ -30,16 +49,12 @@ func TestClassifyBrokenPipe(t *testing.T) {
 	}
 }
 
-// TestBrokenPipeExitsZeroSilently is a regression guard: a run whose context was cancelled by a
-// closed output pipe (SIGPIPE, cancel cause errBrokenPipe) exits 0 with nothing on stderr - the
-// Unix convention for `waxlabel dump --recursive DIR | head` - rather than the 130 a real Ctrl-C
-// yields. The cancel cause is the only thing distinguishing the two; both leave the parse
-// returning context.Canceled (checkContext). A cancelled context makes ParseFile fail up front,
-// which is exactly the state a mid-stream SIGPIPE leaves for the files not yet reached.
+// TestBrokenPipeExitsZeroSilently: a run cancelled by a closed output pipe exits 0 and
+// silent, not the 130 a real Ctrl-C yields. Both leave the parse returning
+// context.Canceled, so the cancel cause is the only thing telling them apart.
 func TestBrokenPipeExitsZeroSilently(t *testing.T) {
 	t.Parallel()
-	// A directory of two files, so the multi-file loop is exercised: neither must emit a
-	// "canceled" line, and the aggregate must be exit 0.
+	// Two files, so the multi-file loop runs.
 	dir := t.TempDir()
 	data, err := os.ReadFile(sampleFLAC)
 	if err != nil {
@@ -64,9 +79,8 @@ func TestBrokenPipeExitsZeroSilently(t *testing.T) {
 	}
 }
 
-// TestRealCancelStillExits130 is the companion guard: a genuine interrupt (cancel with the
-// default context.Canceled cause, not errBrokenPipe) still exits 130 and reports the cancel, so
-// the broken-pipe carve-out does not swallow a real Ctrl-C.
+// TestRealCancelStillExits130 is the companion: the broken-pipe carve-out must not swallow
+// a real Ctrl-C.
 func TestRealCancelStillExits130(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancelCause(context.Background())
@@ -79,11 +93,9 @@ func TestRealCancelStillExits130(t *testing.T) {
 	}
 }
 
-// TestBrokenPipeSyncEPIPEExitsZero guards the JSON/single-result race: dump --json writes its
-// whole array in one terminal emitJSONList call, so a closed pipe surfaces as a SYNCHRONOUS EPIPE
-// with no chance for the async SIGPIPE goroutine to set the cancel cause first. dispatch must
-// still map that raw EPIPE to a silent exit 0 (not exit 6 "io"), because WaxLabel only writes to
-// stdout/stderr. The context is uncancelled here, exactly modelling that race.
+// TestBrokenPipeSyncEPIPEExitsZero guards the JSON race: dump --json writes its array in
+// one call, so a closed pipe surfaces as a synchronous EPIPE before the async SIGPIPE
+// goroutine sets a cause. The uncancelled context here models exactly that.
 func TestBrokenPipeSyncEPIPEExitsZero(t *testing.T) {
 	t.Parallel()
 	var errb bytes.Buffer
@@ -96,9 +108,8 @@ func TestBrokenPipeSyncEPIPEExitsZero(t *testing.T) {
 	}
 }
 
-// TestBrokenPipeJSONPreservesRealError guards the rank-5 contract: when the terminal JSON write
-// EPIPEs but a genuine per-file error was recorded (a junk file among the inputs), that error's
-// exit class (unsupported-format, exit 3) must win over broken-pipe, not be discarded to exit 0/6.
+// TestBrokenPipeJSONPreservesRealError: a genuine per-file error outranks broken-pipe, so
+// a junk file among the inputs still exits 3.
 func TestBrokenPipeJSONPreservesRealError(t *testing.T) {
 	t.Parallel()
 	junk := filepath.Join(t.TempDir(), "x.txt")

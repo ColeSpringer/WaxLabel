@@ -20,13 +20,21 @@ jobs:
   # the toolchain stays a single source of truth. Differential tests that shell
   # out to ffmpeg/ffprobe skip cleanly here when the tools are absent (see the
   # dedicated `differential` job below for the guaranteed-present gate).
+  #
+  # Windows runs the full suite, not just a compile: the filesystem semantics the
+  # write path depends on (rename over an open handle, directory fsync, the
+  # read-only attribute, broken-pipe errnos) differ there in ways only running the
+  # tests catches. The race detector needs cgo, and the windows runners ship
+  # mingw-w64 gcc, so CGO_ENABLED is pinned rather than left to the default.
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    env:
+      CGO_ENABLED: 1
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -37,25 +45,20 @@ jobs:
         run: go build ./...
       - name: Vet
         run: go vet ./...
+      # release.yml ships a windows/arm64 zip. Nothing else in CI compiles that
+      # target, so cross-build it once here; it costs seconds and closes the gap
+      # between what is tested and what is released. Ahead of the test step on
+      # purpose: as a compile gate it must still report when a test fails, or a
+      # broken arm64 build ships behind an unrelated red test.
+      - name: Cross-build windows/arm64
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          GOOS: windows
+          GOARCH: arm64
+          CGO_ENABLED: 0
+        run: go build ./...
       - name: Test (race)
         run: go test ./... -race
-
-  # Cross-platform compile + vet sanity. Tests are not executed on Windows for
-  # the skeleton (the race detector needs a C toolchain there, and OS-specific
-  # test behavior is unverified); building proves the pure-Go library compiles.
-  build-windows:
-    name: build (windows-latest)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          check-latest: true
-      - name: Build
-        run: go build ./...
-      - name: Vet
-        run: go vet ./...
 
   # The write-side differential is the real proof of interoperability: with
   # ffmpeg/ffprobe guaranteed present, the per-format differential tests run

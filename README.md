@@ -54,8 +54,14 @@ func main() {
 	}
 
 	_, result, err := plan.Execute(ctx, waxlabel.SaveBack())
-	if err != nil {
+	// A failed write is an error AND Committed false. An error with Committed true
+	// means the bytes landed and a step after them did not; the edit is applied and
+	// the plan is spent, so it is a warning, not a reason to abort.
+	if err != nil && !result.Committed {
 		log.Fatal(err)
+	}
+	if err != nil {
+		log.Println("warning:", err)
 	}
 	fmt.Println("committed:", result.Committed)
 }

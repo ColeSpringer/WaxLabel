@@ -54,11 +54,9 @@ func newSetCmd() *cobra.Command {
 			editPrecedenceHelp,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// A present-but-empty -o ("") is indistinguishable from cobra's unset
-			// default in every downstream `output != ""` check, so a `set f -o ''`
-			// would silently fall through to an in-place save-back and overwrite the
-			// input. Reject it once here (before checkSetStdin), which guarantees a
-			// present -o is non-empty and keeps every later check valid.
+			// A present-but-empty -o is indistinguishable from cobra's unset default in
+			// every downstream `output != ""` check, so `set f -o ''` would fall through
+			// to an in-place save. Rejected once here, which keeps every later check valid.
 			if cmd.Flags().Changed("output") && output == "" {
 				return usagef("output path (-o) cannot be empty")
 			}
@@ -127,11 +125,10 @@ func newSetCmd() *cobra.Command {
 			if err := notifyInvocationNotes(cmd.ErrOrStderr(), ce, &ef, realOf, paths, pathErrors, jsonMode(cmd)); err != nil {
 				return err
 			}
-			// An unquoted value with spaces (--set TITLE=Two Words) leaves a stray bare-word
-			// positional beside the real input; set would write a truncated tag to each named
-			// file before the stray word fails not-found. Refuse the whole run up front (exit
-			// 2, nothing written) so a script cannot misread a partial write as success. plan
-			// refuses identically via the shared helper, but with the bare hint.
+			// An unquoted value (--set TITLE=Two Words) leaves a stray positional beside the
+			// real input, and set would write a truncated tag to each named file before the
+			// stray word fails not-found. Refuse the whole run so a script cannot misread a
+			// partial write as success.
 			if err := refuseUnquotedValue(&ef, realOf, args, true); err != nil {
 				return err
 			}
@@ -148,115 +145,87 @@ func newSetCmd() *cobra.Command {
 	return markListCommand(cmd)
 }
 
-// checkOutputTarget validates the -o destination before any write. A directory can
-// never be the target (the atomic rename fails EISDIR, and --overwrite cannot fix
-// that), so it is rejected up front with a clear message rather than the leaked
-// temp-file error a later rename would produce. An existing entry is refused unless
-// --overwrite, except when it resolves to the single input itself (set f -o f is
-// effectively in-place) - resolution is canonical-path equality (see sameWriteTarget),
-// so a symlink or ./alias of the input is exempt, but a hardlink of it is not: the atomic
-// rename would break the link and leave the source path's bytes intact, so a hardlink
-// target must pass --overwrite like any unrelated file (this matches the library's own
-// sameFileTarget definition). inputReal is realOf(paths[0]): when it does not exist the
-// overwrite guard stays silent, since the parse will then fail and write nothing -
-// so the target is safe, and the more-relevant not-found error should surface
-// instead of an "already exists" pointing at the wrong operand.
+// checkOutputTarget validates the -o destination before any write. A directory is
+// rejected up front, since the rename would fail EISDIR and leak a temp-file error that
+// --overwrite cannot fix. An existing entry needs --overwrite unless it resolves to the
+// input itself, by canonical-path equality (see sameWriteTarget): a symlink or ./alias is
+// exempt, a hardlink is not, since the rename would break the link and leave the source
+// bytes intact.
+//
+// When inputReal does not exist the overwrite guard stays silent, so the more relevant
+// not-found surfaces instead of an "already exists" naming the wrong operand.
 func checkOutputTarget(output, inputReal string, overwrite bool) error {
-	// "-" is the stdin/stdout sentinel, not a filename. set is an atomic file-replace
-	// command (streaming to stdout is the library's WriteTo, a different model), so
-	// reject it up front rather than write a literal file named "-" in the cwd.
+	// "-" is the stdin/stdout sentinel, not a filename; streaming to stdout is the
+	// library's WriteTo, a different model.
 	if output == stdinArg {
 		return usagef("-o - is not supported; set writes a named file")
 	}
-	// Stat (follows symlinks) so a directory - or a symlink to one - is caught.
+	// Stat follows symlinks, so a directory or a symlink to one is caught.
 	if fi, err := os.Stat(output); err == nil && fi.IsDir() {
 		return usagef("-o target %q is a directory, not a file", output)
 	}
-	// Verify the destination directory exists now (before the plan renders), so a
-	// mistyped -o path fails up front rather than only at the atomic-write temp create
-	// - which would otherwise print the whole plan first and then a late I/O error.
-	// Checked even under --overwrite: a missing parent dir cannot be overwritten.
+	// Before the plan renders, so a mistyped -o path fails up front instead of printing
+	// the whole plan and then a late I/O error from the temp create. Checked even under
+	// --overwrite: a missing parent dir cannot be overwritten.
 	parent := filepath.Dir(output)
 	if fi, err := os.Stat(parent); err != nil {
-		// A missing (or otherwise unstattable) -o parent directory classifies as not-found /
-		// I/O (exit 6), like every other missing path - so a script branching on exit codes
-		// treats "-o typo/out.flac" the same as a missing input file. Returning the raw
-		// *fs.PathError yields the clean "<dir>: no such file or directory" not-found message.
-		// (It was usagef/exit-2 for the not-exist case before, inconsistent with the rest.)
+		// Exit 6, like every other missing path, so a script treats "-o typo/out.flac" the
+		// same as a missing input. The raw *fs.PathError gives the clean not-found message.
 		return err
 	} else if !fi.IsDir() {
-		// The parent EXISTS but is a regular file, not a missing path: still a usage error.
+		// Exists but is a regular file, so a usage error rather than not-found.
 		return usagef("-o target directory %q is not a directory", parent)
 	}
-	// Resolve the symlink the way writeAtomic will, once, and thread it to both the
-	// non-regular-target check and the writability probe so they inspect the exact file and
-	// directory the write lands on - and cannot drift from writeAtomic's resolution rule.
+	// Resolved once, writeAtomic's way, and threaded to both checks below so neither can
+	// drift from the file and directory the write really lands on.
 	resolved := wl.ResolveWriteTarget(output)
-	// Refuse a non-regular target (a FIFO, device, socket, or dangling symlink) even with
-	// --overwrite: writeAtomic renames its temp over the resolved target, which would
-	// silently destroy a special node or, for a dangling link, write a stray new file.
-	// --overwrite is meant to replace an existing regular file, not a special path.
+	// A FIFO, device, socket, or dangling symlink is refused even with --overwrite, which
+	// means "replace an existing regular file", not "destroy a special node".
 	if err := checkOutputRegular(output, resolved); err != nil {
 		return err
 	}
-	// Resolve the existence/--overwrite policy BEFORE probing writability, so the actionable
-	// "already exists; pass --overwrite" wins over an unwritable-directory error, and a refused
-	// invocation (which writes nothing) does not touch the filesystem with a probe temp file.
+	// Policy before the writability probe, so the actionable "already exists" wins over an
+	// unwritable-directory error and a refused invocation writes no probe temp file.
 	if !overwrite {
-		// Lstat (does not follow) so a dangling symlink, which Stat would report absent,
-		// still counts as an entry the rename would destroy.
+		// Lstat does not follow, so a dangling symlink still counts as an entry the rename
+		// would destroy.
 		if _, err := os.Lstat(output); err == nil {
-			// An entry exists. It is allowed only when it resolves to the single input (an
-			// in-place -o), or the input is missing (the parse fails first and writes
-			// nothing); otherwise refuse with the actionable hint. "Resolves to the input" is
-			// canonical-path equality (sameWriteTarget), not inode identity: a hardlink of the
-			// input shares its inode but has a distinct canonical path, and the atomic rename
-			// would break the link and leave the source bytes intact, so it is refused here and
-			// must pass --overwrite. The input-exists gate is kept so a missing input still falls
-			// through (its parse fails first with the more-relevant not-found error).
+			// Allowed only when it resolves to the single input, by canonical path rather
+			// than inode: a hardlink shares the inode but the rename would break the link
+			// and leave the source bytes intact. A missing input falls through so its parse
+			// reports the more relevant not-found.
 			if _, ierr := os.Stat(inputReal); ierr == nil && !sameWriteTarget(output, inputReal) {
 				return usagef("-o target %q already exists; pass --overwrite to replace the existing file", output)
 			}
 		}
 	}
-	// The write will proceed: probe that the resolved target's directory is writable now - the
-	// same temp create writeAtomic performs - so an unwritable destination fails up front
-	// rather than after the whole plan is previewed and only the late atomic write errors.
+	// The same temp create writeAtomic performs, so an unwritable destination fails before
+	// the plan is previewed rather than after.
 	return checkOutputDirWritable(resolved)
 }
 
-// sameWriteTarget reports whether the -o output and the single input resolve to the same file
-// the atomic write would land on: canonical-path equality after write-target symlink
-// resolution. A symlink to the input, or a relative/absolute alias of it, compares equal (a
-// genuine in-place -o); a hardlink of the input - same inode but a distinct canonical path -
-// does not, so it falls through to the "already exists; pass --overwrite" gate. inputReal is not
-// pre-canonicalized, so the resolution here (via wl.ResolveWriteTarget, writeAtomic's own rule)
-// is what makes ./f, an absolute/relative mix, and a symlink-to-input all compare equal.
+// sameWriteTarget reports whether the -o output and the single input resolve to the file
+// the atomic write would land on, by canonical-path equality. A symlink or ./alias of the
+// input compares equal, a genuine in-place -o; a hardlink does not, so it falls through to
+// the "already exists" gate.
 //
-// It is deliberately not the library's sameFileTarget, despite asking a near-identical question:
-// that guard fails closed toward "same" so an unreliable compare refuses a source-clobbering
-// write (protective for it), whereas this gate reads the answer inverted (same -> skip the
-// --overwrite prompt), so it must fail closed toward "different" to still require --overwrite. On
-// an Abs failure (a removed or inaccessible cwd) it therefore compares the cleaned paths -
-// absResolved's own best effort - rather than calling the two equal: `set f -o f` still matches
-// (identical cleaned path), but `set input -o existing` on two distinct paths no longer skips the
-// gate to silently overwrite existing.
+// Deliberately not the library's sameFileTarget, despite the near-identical question. That
+// guard fails closed toward "same" so an unreliable compare refuses a source-clobbering
+// write. This gate reads the answer inverted (same means skip the --overwrite prompt), so
+// it must fail closed toward "different". On an Abs failure it compares cleaned paths:
+// `set f -o f` still matches, while two distinct paths no longer skip the gate.
 //
-// The compare is on the canonical path string, so on a case-insensitive filesystem (macOS,
-// Windows) or across a bind mount the same underlying file spelled two ways ("Foo.flac" vs
-// "foo.flac", or /mnt/a/f vs a bind-mounted /mnt/b/f) resolves to two distinct strings and does
-// not read as in-place: the write is refused pending --overwrite rather than silently allowed.
-// That fails safe (no clobber, just an extra flag) and matches the library's sameFileTarget, which
-// compares the same way. The prior os.SameFile inode check accepted those aliases, but it could
-// not tell a case-fold alias from a hardlink - the distinction this gate exists to draw - so the
-// string compare is the right trade.
+// How an alias reads depends on how far EvalSymlinks canonicalizes per platform. Windows
+// normalizes each component to its real on-disk spelling, so a case-fold alias correctly
+// reads as in-place. macOS keeps the caller's spelling, and no platform collapses a bind
+// mount, so there the write is refused pending --overwrite. That direction fails safe.
 func sameWriteTarget(output, inputReal string) bool {
 	return absOrClean(wl.ResolveWriteTarget(output)) == absOrClean(wl.ResolveWriteTarget(inputReal))
 }
 
-// absOrClean returns path made absolute, or - when filepath.Abs cannot read the working
-// directory - the cleaned (possibly still relative) path. It mirrors the library's absResolved so
-// a degraded cwd yields a best-effort comparison instead of giving up.
+// absOrClean returns path made absolute, or the cleaned path when filepath.Abs cannot read
+// the working directory. Mirrors the library's absResolved, so a degraded cwd still yields
+// a best-effort comparison.
 func absOrClean(path string) string {
 	if abs, err := filepath.Abs(path); err == nil {
 		return abs
@@ -264,13 +233,10 @@ func absOrClean(path string) string {
 	return filepath.Clean(path)
 }
 
-// checkOutputRegular refuses an -o target that is not a regular file or a symlink that
-// resolves to one: a FIFO, device, socket, or a dangling symlink. writeAtomic renames its
-// temp over resolved (the wl.ResolveWriteTarget result the caller threads in), so a special
-// node would be silently replaced by a regular file and a dangling link would leave a stray
-// new file at its (non-existent) target. This is refused even under --overwrite, which
-// replaces an existing regular file, not a special path. A target that does not exist (a
-// fresh write) is allowed; the parent directory was already validated.
+// checkOutputRegular refuses an -o target that is not a regular file or a symlink to one.
+// writeAtomic renames its temp over resolved, so a special node would be silently replaced
+// and a dangling link would leave a stray file at its non-existent target. A target that
+// does not exist is a fresh write and allowed.
 func checkOutputRegular(output, resolved string) error {
 	li, err := os.Lstat(output)
 	if err != nil {
@@ -282,9 +248,8 @@ func checkOutputRegular(output, resolved string) error {
 		}
 		return nil
 	}
-	// A symlink: it must resolve to a regular file. ResolveWriteTarget returns the literal
-	// output path when the link cannot be resolved (a dangling link or a loop), so an unchanged
-	// path signals an unresolvable symlink the write would turn into a stray file.
+	// ResolveWriteTarget returns the literal path when a link cannot be resolved, so an
+	// unchanged path here means a dangling link or a loop.
 	if resolved == output {
 		return usagef("-o target %q is a dangling symlink; point it at a regular file or choose another path", output)
 	}
@@ -296,13 +261,10 @@ func checkOutputRegular(output, resolved string) error {
 	return nil
 }
 
-// checkOutputDirWritable probes that the resolved -o target's directory accepts a write, by
-// creating and removing a temp file there - the operation writeAtomic performs to land its
-// atomic rename. Running it here surfaces a read-only filesystem or a permission failure
-// before the plan is previewed, instead of as a late I/O error after the whole preview
-// printed. resolved is the wl.ResolveWriteTarget path, so the probe inspects the same
-// directory writeAtomic places its temp in. On failure it returns the library's own
-// wl.NewTempCreateError, so the up-front and late errors read identically.
+// checkOutputDirWritable probes the resolved target's directory with the same temp create
+// writeAtomic performs, so a read-only filesystem fails before the plan is previewed
+// rather than as a late I/O error. It returns wl.NewTempCreateError, so the up-front and
+// late errors read identically.
 func checkOutputDirWritable(resolved string) error {
 	dir := filepath.Dir(resolved)
 	f, err := os.CreateTemp(dir, ".waxlabel-writecheck-*.tmp")
@@ -331,28 +293,19 @@ func checkSetStdin(args []string, output string) error {
 	return nil
 }
 
-// runSet applies the compiled edit to each path and saves it. Each file's plan is
-// previewed before its write, so a failed write still shows what was attempted;
-// the most-severe error class sets the exit code (worseError) while the remaining
-// files still process.
-// JSON output is always an array, one element per input; a multi-file text run
-// ends with a one-line summary. With quiet (text mode only), the per-file plan and
-// outcome are suppressed while errors and the summary remain, so a single-file
-// `set -q` is silent on success. The returned error is alreadyRendered, preserving
-// the exit class without rendering a second time.
+// runSet applies the compiled edit to each path and saves it, previewing each plan before
+// its write so a failure still shows what was attempted. The most-severe error class sets
+// the exit code while the remaining files process. JSON is always an array; a multi-file
+// text run ends with a summary. quiet suppresses the per-file plan and outcome, so a
+// single-file `set -q` is silent on success.
 func runSet(cmd *cobra.Command, paths []string, pathErrors map[string]error, realOf func(string) string, ce *compiledEdit, output string, strict, quiet, verify bool) error {
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 	asJSON := jsonMode(cmd)
-	// quiet is a text-mode presentation choice; under --json the stream shape is
-	// fixed, so it has no effect there.
-	quiet = quiet && !asJSON
-	// An empty path list is only reachable when a --recursive walk matched no audio
-	// files: cobra requires >=1 argument, the -o path already rejects len != 1, and a
-	// passed-through nonexistent file fails per-file with exit 6. Align with plan (the
-	// dry-run twin): a "nothing to do" advisory and exit 0, with [] under --json, rather
-	// than a usage error - so `plan DIR -r` and `set DIR -r` agree on the empty-walk
-	// outcome. A directory arg WITHOUT --recursive is still a pre-flight usage error
-	// (walk.go), so this is reached only for a genuine empty walk, never a misuse.
+	quiet = quiet && !asJSON // a text-mode choice; the JSON stream shape is fixed
+	// Only reachable from a --recursive walk that matched nothing: cobra requires an
+	// argument, -o rejects len != 1, and a nonexistent file fails per-file. Matches plan,
+	// the dry-run twin: an advisory and exit 0 rather than a usage error. A directory
+	// without --recursive is already a pre-flight usage error in walk.go.
 	if len(paths) == 0 {
 		noteNoFiles(errOut, paths, asJSON)
 		if asJSON {
@@ -379,11 +332,9 @@ func runSet(cmd *cobra.Command, paths []string, pathErrors map[string]error, rea
 	}
 
 	for _, path := range paths {
-		// A path expandPaths recorded as a pre-flight failure (a directory without
-		// --recursive, or a directly-named FIFO/device) is this file's per-element error,
-		// checked before any parse or write - so the rest of the batch still saves and a
-		// recorded FIFO is never opened (its read would block). This mirrors the read
-		// commands' guardPathErrors; set has its own write loop, so it checks inline.
+		// A pre-flight failure expandPaths recorded, checked before any parse so the rest
+		// of the batch still saves and a recorded FIFO is never opened, since its read
+		// would block. The read commands use guardPathErrors; set has its own write loop.
 		if e := pathErrors[path]; e != nil {
 			fail(path, e)
 			continue
@@ -398,29 +349,20 @@ func runSet(cmd *cobra.Command, paths []string, pathErrors map[string]error, rea
 		if ce.paddingFlag {
 			pnoter.note(doc.Capabilities())
 		}
-		// Under --strict, an escalating plan warning (a single-valued key given multiple
-		// values, or a value the format would drop) fails the file before any write (a
-		// per-file usage error, exit 2); otherwise the write proceeds and the plan report
-		// carries the warning for the human and JSON output (the gate prints no stderr note -
-		// the library attaches the signal to the report). The strict failure is one array
-		// element so a multi-file run's aggregate exit code stays order-independent
-		// (worseError), like every other per-file error - the invocation-level unknown-key
-		// guardrail, which is file-independent, aborts up front instead (notifyInvocationNotes).
+		// Under --strict an escalating plan warning fails the file before any write (exit
+		// 2); otherwise the write proceeds and the report carries the warning. One array
+		// element, like every other per-file error, so the aggregate exit stays
+		// order-independent. The file-independent unknown-key guardrail aborts up front.
 		if err := gate.check(plan); err != nil {
 			fail(path, err)
 			continue
 		}
-		// A verbatim -o copy of an unchanged file has no change plan worth previewing:
-		// renderReport would print "no changes (already up to date)" only for the next
-		// line to report it wrote a file. Suppress that preview and let renderSaveOutcome
-		// print one honest line instead - UNLESS the no-op carries a warning (a
-		// value-dropped edit whose value the format could not store), which is the only
-		// signal the edit was rejected and so must still be shown. -o takes exactly one
-		// input, so this is never mid-list.
+		// A verbatim -o copy would print "no changes (already up to date)" only for the
+		// next line to report it wrote a file, so suppress that preview and let
+		// renderSaveOutcome print one honest line. A warning still shows: it is the only
+		// signal the edit was rejected. -o takes one input, so this is never mid-list.
 		previewNoOp := output != "" && plan.IsNoOp() && len(plan.Report().Warnings) == 0
-		// Print the plan before the write so the preview is shown even if the write
-		// then fails (the help promises this ordering); JSON aggregates instead, and
-		// quiet suppresses the preview entirely.
+		// Before the write, so the help's promised ordering holds even when it then fails.
 		if !asJSON && !quiet && !previewNoOp {
 			if rendered > 0 {
 				fmt.Fprintln(out)
@@ -430,31 +372,36 @@ func runSet(cmd *cobra.Command, paths []string, pathErrors map[string]error, rea
 		}
 		dst := wl.SaveBack()
 		if output != "" {
-			// WaxLabel never transcodes, so a mismatched output extension means a
-			// misnamed file; warn (on stderr, non-fatally) but still write. Gated on the
-			// non-JSON path: under --json the sibling stderr notes are suppressed too, so this
-			// one must be as well, keeping the machine run's stderr clean.
+			// No transcoding, so a mismatched extension means a misnamed file. Non-fatal,
+			// and suppressed under --json like every sibling stderr note.
 			if !asJSON {
 				warnExtensionMismatch(errOut, output, doc.Format())
 			}
 			dst = wl.SaveAsFile(output)
 		}
 		_, res, err := plan.Execute(cmd.Context(), dst)
-		if err != nil {
+		// Committed decides the outcome, not err: a post-commit failure leaves a changed
+		// file, not a failed one (see writeFailed).
+		if writeFailed(res, err) {
 			fail(path, err)
 			continue
 		}
+		// The file WRITTEN: under -o that is the output, while path is the untouched input.
+		written := path
+		if output != "" {
+			written = output
+		}
+		warnPostCommit(errOut, asJSON, written, err)
 		if res.Committed {
 			changed++
 		} else {
 			unchanged++
 		}
-		// The essence is only re-read on a committed write (a no-op writes no temp), so
-		// nothing is verified otherwise. Computed once and shared by the human and JSON
-		// paths so they cannot disagree.
+		// A no-op writes no temp, so nothing is verified. Computed once, so the human and
+		// JSON paths cannot disagree.
 		verified := verify && res.Committed
 		if asJSON {
-			items = append(items, toJSONSetResult(path, output, plan, res, verified))
+			items = append(items, toJSONSetResult(path, output, plan, res, verified, err))
 		} else if !quiet {
 			renderSaveOutcome(out, path, output, res, plan.IsNoOp())
 			if verified {
@@ -468,8 +415,7 @@ func runSet(cmd *cobra.Command, paths []string, pathErrors map[string]error, rea
 			return err
 		}
 	} else if len(paths) > 1 {
-		// The blank line separates the summary from the per-file output above it;
-		// under quiet there is none, so drop the separator to avoid a leading blank.
+		// Separates the summary from the per-file output; under quiet there is none.
 		if !quiet {
 			fmt.Fprintln(out)
 		}
@@ -478,11 +424,9 @@ func runSet(cmd *cobra.Command, paths []string, pathErrors map[string]error, rea
 	return alreadyRendered(worstErr)
 }
 
-// warnExtensionMismatch prints a non-fatal note when the output path's extension
-// does not match the source format. WaxLabel rewrites metadata without
-// transcoding, so writing e.g. FLAC bytes to "out.mp3" produces a misnamed file;
-// the extension is advisory, so the write still proceeds. A path with no
-// extension, or a format whose extensions are unknown, is left alone.
+// warnExtensionMismatch notes an output extension that does not match the source format,
+// which without transcoding means a misnamed file. Advisory, so the write proceeds. A path
+// with no extension, or an unknown format, is left alone.
 func warnExtensionMismatch(w io.Writer, output string, f wl.Format) {
 	ext := strings.ToLower(filepath.Ext(output))
 	if ext == "" {
@@ -495,11 +439,9 @@ func warnExtensionMismatch(w io.Writer, output string, f wl.Format) {
 	fmt.Fprintf(w, "waxlabel: warning: writing %s data to %s; WaxLabel does not transcode\n", f, output)
 }
 
-// renderSaveOutcome reports where the bytes went: a new file, an in-place save,
-// or nothing for a no-op save-back. noOp is the plan's no-op status, used only for
-// the -o path: a verbatim copy of an unchanged file prints one honest line (its
-// change preview was suppressed upstream), with no leading blank since -o takes a
-// single input and is never mid-list.
+// renderSaveOutcome reports where the bytes went: a new file, an in-place save, or nothing
+// for a no-op save-back. noOp matters only for -o, where a verbatim copy prints one line
+// with no leading blank, since -o takes a single input and is never mid-list.
 func renderSaveOutcome(w io.Writer, path, output string, res wl.SaveResult, noOp bool) {
 	switch {
 	case output != "" && noOp:
@@ -513,26 +455,26 @@ func renderSaveOutcome(w io.Writer, path, output string, res wl.SaveResult, noOp
 	}
 }
 
-// jsonSetResult is the machine-readable outcome of a save: the plan plus where
-// the bytes landed and whether they were committed. Verified is a pointer so it is
-// present only when --verify was given and the write actually committed (so the
-// audio essence was re-read and matched); a normal run omits it entirely rather
-// than emit "verified": false, which would read like a failed check.
+// jsonSetResult is the machine-readable outcome of a save: the plan, where the bytes
+// landed, and whether they committed. Verified is a pointer so a normal run omits it
+// rather than emitting "verified": false, which would read like a failed check.
 type jsonSetResult struct {
 	jsonReport
+	jsonPostWrite
 	Committed bool   `json:"committed"`
 	Verified  *bool  `json:"verified,omitempty"`
 	Output    string `json:"output,omitempty"`
 	Size      int64  `json:"size"`
 }
 
-func toJSONSetResult(path, output string, plan *wl.Plan, res wl.SaveResult, verified bool) jsonSetResult {
+func toJSONSetResult(path, output string, plan *wl.Plan, res wl.SaveResult, verified bool, postWrite error) jsonSetResult {
 	r := jsonSetResult{
 		jsonReport: toJSONReport(path, plan),
 		Committed:  res.Committed,
 		Output:     output,
 		Size:       res.Dest.Size,
 	}
+	r.setPostWrite(postWrite)
 	// Emit verified only when verification actually ran (a committed --verify write),
 	// so a normal run omits the field rather than showing "verified": false.
 	if verified {

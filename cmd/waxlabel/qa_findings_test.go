@@ -165,11 +165,9 @@ func TestNoFilesNoteSuppressedUnderJSON(t *testing.T) {
 	}
 }
 
-// TestWAVAIFFStructuralOpsGatedOnChange checks that WAV and AIFF gate each id3-container op
-// (pictures/chapters/synced lyrics) on its own change flag and canonical model count, like MP3 and
-// AAC. An edit that actually adds a container reports it with the model count
-// (len(edited.SyncedLyrics)); a tag-only edit on a file already carrying those containers emits
-// none of the ops, because they are carried through unchanged rather than rewritten.
+// TestWAVAIFFStructuralOpsGatedOnChange: WAV and AIFF gate each id3-container op on its own
+// change flag and model count, like MP3 and AAC. An edit that adds a container reports it
+// with the count; a tag-only edit on a file already carrying them emits no ops.
 func TestWAVAIFFStructuralOpsGatedOnChange(t *testing.T) {
 	t.Parallel()
 	cover := writeTempImage(t, "cover.png", minimalPNG())
@@ -196,7 +194,7 @@ func TestWAVAIFFStructuralOpsGatedOnChange(t *testing.T) {
 			}
 
 			// A tag-only edit carries all three containers through unchanged, so none of their
-			// per-container ops appear - only the tag rewrite itself.
+			// per-container ops appear, only the tag rewrite itself.
 			ops := planOperations(t, f, "--set", "TITLE=Hello")
 			for _, op := range ops {
 				if strings.HasPrefix(op, "synced lyrics:") || strings.HasPrefix(op, "pictures:") || strings.HasPrefix(op, "chapters:") {
@@ -215,7 +213,7 @@ func TestMP3PictureClearOmitsZeroCountOp(t *testing.T) {
 	t.Parallel()
 	cover := writeTempImage(t, "cover.png", minimalPNG())
 	f := copyFixture(t, "../../testdata/notags.mp3")
-	// Keep a TITLE so the write is a frame rewrite, not a full tag removal - isolating the
+	// Keep a TITLE so the write is a frame rewrite, not a full tag removal, isolating the
 	// picture-line behavior rather than the removal path.
 	if _, errb, code := runCLI(t, "set", f, "--set", "TITLE=Keep", "--add-cover", cover); code != 0 {
 		t.Fatalf("authoring exit %d: %s", code, errb)
@@ -321,8 +319,8 @@ func TestCapsFormatADTSAlias(t *testing.T) {
 }
 
 // A bare numeric GENRE warns on an ID3 target because it reads back as the genre
-// name. Formats that keep the value literally - Vorbis (FLAC), and WAV in its LIST/INFO
-// IGNR slot - should not warn. AIFF stores genre only in its ID3 chunk, so it warns like
+// name. Formats that keep the value literally, Vorbis and WAV in its LIST/INFO IGNR
+// slot, should not warn. AIFF stores genre only in its ID3 chunk, so it warns like
 // MP3/AAC (it is not exempt the way WAV is, despite both carrying a native container).
 func TestNumericGenreWriteWarnAsymmetry(t *testing.T) {
 	t.Parallel()
@@ -379,11 +377,10 @@ func TestNumericGenreWriteWarnAsymmetry(t *testing.T) {
 	}
 }
 
-// TestNumberTotalNonNumericDropsTotalCLI covers end to end on an ID3 target: a non-numeric
-// TRACKNUMBER plus a canonical TRACKTOTAL cannot compose "n/total" (the reader would read "A1/12" as
-// one literal value with the total lost), so the number is written verbatim, the total is dropped
-// with a value-dropped warning, and it reads back as "A1" - never the corrupt "A1/12". The write is
-// idempotent, and a literal "A1/12" set alone is preserved verbatim and unwarned.
+// TestNumberTotalNonNumericDropsTotalCLI: a non-numeric TRACKNUMBER plus a TRACKTOTAL
+// cannot compose "n/total", so the number is written verbatim, the total dropped with a
+// warning, and it reads back "A1" rather than the corrupt "A1/12". The write is idempotent,
+// and a literal "A1/12" set alone is preserved unwarned.
 func TestNumberTotalNonNumericDropsTotalCLI(t *testing.T) {
 	t.Parallel()
 	notagsMP3 := filepath.Join("..", "..", "testdata", "notags.mp3")
@@ -435,12 +432,10 @@ func TestNumberTotalNonNumericDropsTotalCLI(t *testing.T) {
 	}
 }
 
-// TestMP4MalformedNumberPairDropsNumberCLI covers the MP4 write path end to end: a malformed
-// slashed TRACKNUMBER ("1/2/3", "3/abc") is not a storable number/total, so MP4 keeps it whole and
-// drops it against the number slot - warning "TRACKNUMBER ... dropped" with no phantom TRACKTOTAL,
-// storing nothing - rather than leniently cutting a partial number off the first '/'. A copy of a
-// FLAC that keeps "1/2/3" whole into MP4 grades TRACKNUMBER dropped, and diff of the two agrees the
-// number differs, so copy and diff cannot disagree on the value.
+// TestMP4MalformedNumberPairDropsNumberCLI: a malformed slashed TRACKNUMBER is not a
+// storable number/total, so MP4 keeps it whole and drops it with no phantom TRACKTOTAL,
+// rather than cutting a partial number off the first '/'. A copy from FLAC grades it
+// dropped and diff agrees the number differs, so the two cannot disagree.
 func TestMP4MalformedNumberPairDropsNumberCLI(t *testing.T) {
 	t.Parallel()
 	notagsM4A := filepath.Join("..", "..", "testdata", "notags.m4a")
@@ -503,7 +498,7 @@ func TestMP4MalformedNumberPairDropsNumberCLI(t *testing.T) {
 // TestReservedChapterKeyDroppedWithWarning: a custom key in the reserved CHAPTERxxx
 // namespace cannot be written as a Vorbis custom field (on read the chapter model owns it), so
 // setting CHAPTER005=hijack on a FLAC must warn value-dropped and leave the key absent from the tag
-// view - not claim it was written and then lose it silently.
+// view, not claim it was written and then lose it silently.
 func TestReservedChapterKeyDroppedWithWarning(t *testing.T) {
 	t.Parallel()
 	f := copyFixture(t, filepath.Join("..", "..", "testdata", "notags.flac"))
@@ -568,9 +563,7 @@ func TestMalformedYearDroppedNotTruncated(t *testing.T) {
 // must not preempt the clearer refusal or touch the target path.
 func TestSetOutputExistsBeatsWritabilityProbe(t *testing.T) {
 	t.Parallel()
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: directory permissions do not prevent the write")
-	}
+	requireUnwritableDir(t)
 	dir := t.TempDir()
 	existing := filepath.Join(dir, "out.flac")
 	if err := os.WriteFile(existing, []byte("x"), 0o644); err != nil {

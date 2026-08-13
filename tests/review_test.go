@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -102,12 +103,9 @@ func TestPictureTooLargeRejected(t *testing.T) {
 	}
 }
 
-// TestDiffSanitizesHostileKey: a custom field name carrying control bytes could still
-// reach the diff renderer through some path (defense in depth), so Change.String must
-// escape the KEY as well as the values - otherwise the diff command and the write-plan
-// preview would leak the control bytes to the terminal. The Vorbis reader now drops such a
-// name on projection (Key.Valid rejects it, emitting invalid-tag-key), so this exercises
-// the sanitizer directly at the tag layer where a hostile key is injected unvalidated.
+// TestDiffSanitizesHostileKey: Change.String must escape the KEY as well as the values, or
+// diff and the write-plan preview would leak control bytes. The Vorbis reader drops such a
+// name on projection, so this drives the sanitizer directly at the tag layer.
 func TestDiffSanitizesHostileKey(t *testing.T) {
 	edited := tag.NewTagSet()
 	edited.Add(tag.Title, "x")
@@ -269,11 +267,10 @@ func TestInvalidKeyRejectedOnWrite(t *testing.T) {
 	}
 }
 
-// Any rewrite collapses extra VORBIS_COMMENT blocks to a single one, honoring the
-// multiple-vorbis-comment lint's promise that the extras are dropped when the file is
-// rewritten. This holds for tag edits (which re-render the comment block) and equally for
-// picture-only, padding-only, and legacy-strip edits, where all three change flags are
-// false yet the de-dup guard must still fire.
+// Any rewrite collapses extra VORBIS_COMMENT blocks to one, honoring the
+// multiple-vorbis-comment lint's promise. It holds for tag edits, which re-render the
+// block, and equally for picture-only, padding-only, and legacy-strip edits, where every
+// change flag is false yet the de-dup guard must still fire.
 func TestExtraVorbisBlocksCollapsedOnAnyEdit(t *testing.T) {
 	data := flacWithTwoVC()
 
@@ -315,7 +312,7 @@ func TestExtraVorbisBlocksCollapsedOnAnyEdit(t *testing.T) {
 
 	t.Run("legacy-strip collapses extras", func(t *testing.T) {
 		// A trailing ID3v1 makes the legacy strip a real edit with no comment/vendor/picture
-		// change - the third all-flags-false path.
+		// change, the third all-flags-false path.
 		src := withTrailingID3v1(data)
 		doc := mustParseBytes(t, src)
 		plan, err := doc.Edit().Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
@@ -354,7 +351,14 @@ func TestSaveAsFilePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o644 {
-		t.Errorf("new file mode = %o, want 0644", perm)
+	// Windows has no POSIX mode: os.Stat reports 0666 for any writable file and 0444 for
+	// one carrying the read-only attribute, so 0644 is simply unreachable there. The
+	// property under test, not left at os.CreateTemp's owner-only 0600, holds on both.
+	want := os.FileMode(0o644)
+	if runtime.GOOS == "windows" {
+		want = 0o666
+	}
+	if perm := info.Mode().Perm(); perm != want {
+		t.Errorf("new file mode = %o, want %o", perm, want)
 	}
 }

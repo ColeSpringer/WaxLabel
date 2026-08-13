@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -40,6 +41,20 @@ func runCLIStdin(t *testing.T, stdin string, args ...string) (stdout, stderr str
 	var out, errb bytes.Buffer
 	code = dispatch(context.Background(), args, strings.NewReader(stdin), &out, &errb)
 	return out.String(), errb.String(), code
+}
+
+// requireUnwritableDir skips a test whose premise is that chmod 0o555 on a directory blocks
+// creating files in it. Root ignores the mode. Windows does not model directory writability
+// as a mode at all, and os.Geteuid returns -1 there so the root check never fires; enforcing
+// it needs an ACL deny entry, more machinery than a negative-path assertion is worth.
+func requireUnwritableDir(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("windows: directory writability is an ACL, not a mode; os.Chmod cannot make a directory unwritable")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: directory permissions do not prevent the write")
+	}
 }
 
 // copyFixture copies a fixture into a fresh temp file the test may modify.
@@ -132,13 +147,10 @@ func TestDumpJSONCodecCanonical(t *testing.T) {
 	}
 }
 
-// TestDumpJSONOmitsBitDepthForLossy covers lossy codecs such as AAC, which
-// decode to PCM at the decoder's chosen depth. A container-stored "16-bit" is noise. The JSON
-// dump zeroes bitsPerSample for such codecs and omitempty drops it - matching the
-// text view's bitDepthMeaningful gate so the two never disagree. A lossless FLAC,
-// whose depth is a real stored width, keeps it. The AAC fixtures store a literal
-// 16 at the parser (see internal/mp4 sampleSize), so this exercises the gate, not
-// an already-absent field.
+// TestDumpJSONOmitsBitDepthForLossy: a lossy codec decodes to PCM at the decoder's chosen
+// depth, so a container-stored "16-bit" is noise and omitempty drops it, matching the text
+// view's gate. Lossless FLAC keeps its real stored width. The AAC fixtures store a literal
+// 16 at the parser, so this exercises the gate rather than an already-absent field.
 func TestDumpJSONOmitsBitDepthForLossy(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "dump", sampleM4B, "--json")
@@ -336,7 +348,7 @@ func TestSetNoOpWritesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Re-set the title to its current value so the edit resolves to a no-op (a
-	// bare `set file` with no edit flags is now a usage error - see TestSetNoEditsRejected).
+	// bare `set file` with no edit flags is now a usage error; see TestSetNoEditsRejected).
 	out, _, code := runCLI(t, "set", file, "--set", "TITLE=Original Title")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
@@ -640,11 +652,9 @@ func TestClassifyError(t *testing.T) {
 	}
 }
 
-// TestClassifyNotFoundMessage checks the file-not-found message form and, just
-// as importantly, that a *fs.PathError a caller has already wrapped with context
-// (a temp-file create, a cover read) is not flattened back into "no such file":
-// os.IsNotExist does not unwrap, so the caller's message survives and the error
-// classifies as the generic I/O class.
+// TestClassifyNotFoundMessage checks the not-found message form, and that a *fs.PathError a
+// caller already wrapped is not flattened back into it: os.IsNotExist does not unwrap, so
+// the caller's message survives and the error classifies as generic I/O.
 func TestClassifyNotFoundMessage(t *testing.T) {
 	t.Parallel()
 	bare := &fs.PathError{Op: "open", Path: "/x.flac", Err: fs.ErrNotExist}
@@ -660,11 +670,10 @@ func TestClassifyNotFoundMessage(t *testing.T) {
 	if c.code != "io" || c.exitCode != 6 {
 		t.Errorf("wrapped class = (%d,%q), want (6,\"io\")", c.exitCode, c.code)
 	}
-	// "<label>: <path>: <bare cause>" - the bare PathError.Err string, with no "open"
-	// verb and no doubled path. (The OS-level "no such file or directory" wording is
-	// pinned end to end by TestAddCoverMissingFileContext; here fs.ErrNotExist reads
-	// "file does not exist", so derive the want from it rather than hardcode a reason.)
-	if want := "cover image: /x.png: " + fs.ErrNotExist.Error(); c.message != want {
+	// "<label>: <path>: <reason>", with no "open" verb and no doubled path. The reason is
+	// the canonical wording, not the raw cause, so a synthetic fs.ErrNotExist reads like a
+	// real one. TestAddCoverMissingFileContext pins the same wording end to end.
+	if want := "cover image: /x.png: " + notFoundReason; c.message != want {
 		t.Errorf("wrapped message = %q, want %q", c.message, want)
 	}
 	if strings.Contains(c.message, "open") {
@@ -708,8 +717,8 @@ func TestDumpMissingFilePathOnce(t *testing.T) {
 }
 
 // TestPlanMissingFileMessage checks plan (now a per-file command) reports a
-// missing file in the per-file form - the path once, then the bare reason, with
-// no raw "open <path>:" prefix - matching dump and verify.
+// missing file in the per-file form: the path once, then the bare reason, with no
+// raw "open <path>:" prefix, matching dump and verify.
 func TestPlanMissingFileMessage(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "nope.flac")
@@ -746,17 +755,13 @@ func TestDirectoryAsInput(t *testing.T) {
 	}
 }
 
-// TestTempCreateErrorNamesDir checks the atomic-write temp-create failure names
-// the destination directory rather than the internal temp pattern. It also
-// guards the interaction: the wrapped *fs.PathError must keep this message
-// and not be flattened into "no such file: <temp-name>". The trigger is an
-// existing-but-unwritable directory (a missing -o dir is now caught up front as a
-// usage error - see TestSetOutputParentDirMissing - so it never reaches the write).
+// TestTempCreateErrorNamesDir: the temp-create failure names the destination directory,
+// not the internal temp pattern, and the wrapped *fs.PathError keeps that message rather
+// than flattening to "no such file: <temp-name>". Triggered by an unwritable directory,
+// since a missing -o dir is caught up front and never reaches the write.
 func TestTempCreateErrorNamesDir(t *testing.T) {
 	t.Parallel()
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: directory permissions do not prevent the temp create")
-	}
+	requireUnwritableDir(t)
 	file := copyFixture(t, sampleFLAC)
 	roDir := filepath.Join(t.TempDir(), "ro")
 	if err := os.Mkdir(roDir, 0o555); err != nil {
@@ -779,7 +784,7 @@ func TestTempCreateErrorNamesDir(t *testing.T) {
 // TestSetOutputParentDirMissing: a -o path whose parent directory does not exist is a
 // not-found error (exit 6, like every other missing path) reported before the plan prints, not
 // a late temp-create io error and no longer a usage error. A parent that exists but is a
-// regular file stays a usage error (exit 2) - it is a bad invocation, not a missing path.
+// regular file stays a usage error (exit 2): a bad invocation, not a missing path.
 func TestSetOutputParentDirMissing(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -1172,11 +1177,9 @@ func TestSetRecursiveNoFiles(t *testing.T) {
 	}
 }
 
-// TestLintFixRecursiveNoFiles checks that lint --fix treats a --recursive walk
-// matching no audio files as an error (exit 2) rather than a silent success - while
-// read-only lint of the same empty walk stays exit 0. Unlike set (which aligns with
-// its dry-run twin plan at exit 0), lint --fix has no such twin, so it keeps the
-// mutating-command guard.
+// TestLintFixRecursiveNoFiles: lint --fix treats an empty --recursive walk as exit 2 rather
+// than a silent success, while read-only lint of the same walk stays 0. set aligns with its
+// dry-run twin plan at 0 instead; lint --fix has no twin, so it keeps the mutating guard.
 func TestLintFixRecursiveNoFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1227,12 +1230,10 @@ func TestResolvePaddingFlag(t *testing.T) {
 			t.Errorf("%s: opt=%v given=%v err=%v, want option,true,nil", c.desc, opt, given, err)
 		}
 	}
-	// Misuse is a usage error: a positive padding alongside --no-padding (they
-	// contradict), a negative count, a non-integer, and an absurd byte count above the
-	// sanity cap. Large padding values are reachable from a plain edit, so they must
-	// be rejected before allocation.
-	// "   " is a degenerate but explicit value (not the unset "" sentinel), so it is a
-	// bad byte count, not silently the default.
+	// Misuse is a usage error: padding alongside --no-padding, a negative count, a
+	// non-integer, and a byte count above the sanity cap, which must be rejected before
+	// allocation. "   " is explicit rather than the unset "" sentinel, so it is a bad
+	// count and not silently the default.
 	for _, c := range []struct {
 		padding   string
 		noPadding bool
@@ -1271,7 +1272,7 @@ func TestPaddingNoPadding(t *testing.T) {
 
 // TestPaddingZeroShrinksLikeNoPadding: "--padding 0" means no padding, the
 // same as --no-padding. It must drop the default-reserved padding and produce a
-// file the same size as the --no-padding write - not keep the existing region in
+// file the same size as the --no-padding write, not keep the existing region in
 // place, which is the ReuseInPlace behavior a positive --padding floor uses.
 func TestPaddingZeroShrinksLikeNoPadding(t *testing.T) {
 	t.Parallel()
@@ -1403,12 +1404,12 @@ func TestMalformedValueNotesTolerant(t *testing.T) {
 }
 
 // TestValueNotesDeferredUntilFiles: the invocation-level value note must not
-// print on a run that acts on no real file - otherwise it advises about a value that
+// print on a run that acts on no real file, or it advises about a value that
 // was never acted on because nothing was written.
 func TestValueNotesDeferredUntilFiles(t *testing.T) {
 	t.Parallel()
 	// A directory without --recursive is now a per-element usage error (exit 2), not a
-	// whole-batch abort, but it is still not an actionable input - so the value note
+	// whole-batch abort, but it is still not an actionable input, so the value note
 	// must stay silent (anyInputExists skips a path with a recorded pre-flight error).
 	_, errb, code := runCLI(t, "set", t.TempDir(), "--set", "TRACKNUMBER=abc")
 	if code != 2 {
@@ -1466,7 +1467,7 @@ func TestWhitespaceNumericNote(t *testing.T) {
 }
 
 // TestDumpSanitizesEndToEnd: a tag value carrying an ESC/CR survives in the
-// file but is escaped on dump - no raw control byte reaches the terminal.
+// file but is escaped on dump, so no raw control byte reaches the terminal.
 func TestDumpSanitizesEndToEnd(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -1674,7 +1675,7 @@ func TestPlanSingleValuedMultiNote(t *testing.T) {
 }
 
 // TestSetCustomMultiValueNoSingleValuedNote: a custom key explicitly given several
-// values gets the unknown-key note but not the single-valued-multi note - a custom
+// values gets the unknown-key note but not the single-valued-multi note: a custom
 // field legitimately holds a list (the values read back in full).
 func TestSetCustomMultiValueNoSingleValuedNote(t *testing.T) {
 	t.Parallel()
@@ -1883,11 +1884,9 @@ func TestContentFaithfulDetection(t *testing.T) {
 	}
 }
 
-// TestPlanJSONErrorIsPerFileObject pins plan's single-file --json failure shape:
-// like set, a one-element array whose entry carries the classified per-file error
-// (plan is a per-file command), not the bare terminal {schemaVersion,error}
-// envelope - that envelope is reserved for command-resolution failures, covered by
-// TestJSONErrorRoutingOnEarlyAbort.
+// TestPlanJSONErrorIsPerFileObject pins plan's single-file --json failure shape: a
+// one-element array carrying the classified per-file error, not the bare terminal envelope,
+// which is reserved for command-resolution failures.
 func TestPlanJSONErrorIsPerFileObject(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "nope.flac")
@@ -1925,11 +1924,9 @@ func TestDumpJSONPerFileError(t *testing.T) {
 	}
 }
 
-// TestJSONErrorRoutingOnEarlyAbort checks that --json still routes the terminal
-// error to stdout as an envelope even when cobra aborts during command/flag
-// resolution (before it binds the persistent flag). The envelope shape follows the
-// resolved command: an unknown command stays a bare object, while a bad flag on a
-// list command (dump) is wrapped in that command's documented one-element array.
+// TestJSONErrorRoutingOnEarlyAbort: --json still routes the terminal error to stdout when
+// cobra aborts before binding the persistent flag. The shape follows the resolved command:
+// an unknown command stays a bare object, a bad flag on a list command gets its array.
 func TestJSONErrorRoutingOnEarlyAbort(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -1962,19 +1959,13 @@ func TestJSONErrorRoutingOnEarlyAbort(t *testing.T) {
 	}
 }
 
-// TestSetShowsPlanBeforeFailedWrite checks that the plan preview is printed even
-// when the write fails, matching the help ("the plan is printed before the
-// outcome"). The trigger is an IN-PLACE edit of a file in an existing-but-unwritable
-// directory: the file stays readable, so the parse and plan succeed, and only the
-// atomic in-place write's temp create then fails (io). An -o write to an unwritable dir
-// is instead caught by the up-front writability probe before the plan renders, so this
-// uses the in-place path, which has no such probe (TestTempCreateErrorNamesDir covers
-// the -o probe's exit code and message).
+// TestSetShowsPlanBeforeFailedWrite: the plan preview prints even when the write fails, as
+// the help promises. An in-place edit in an unwritable directory keeps the file readable,
+// so only the temp create fails. It uses the in-place path because an -o write is caught
+// by the up-front probe before the plan renders.
 func TestSetShowsPlanBeforeFailedWrite(t *testing.T) {
 	t.Parallel()
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: directory permissions do not prevent the write")
-	}
+	requireUnwritableDir(t)
 	roDir := filepath.Join(t.TempDir(), "ro")
 	if err := os.Mkdir(roDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -2040,13 +2031,10 @@ func TestWriteWrapped(t *testing.T) {
 	}
 }
 
-// TestErrClassRankCoversEveryErrorClass pins the invariant worseError relies on:
-// every error class classifyError can produce has an entry in errClassRank. A
-// missing entry would silently fall to rank 0, below the generic "error" rank, so
-// in a multi-file run that class would lose the aggregate exit code to any other
-// failure. The check is bidirectional, so the rank map and the classified vocabulary
-// cannot drift apart: if you add a class to classifyError, add it to errClassRank and
-// to the samples here.
+// TestErrClassRankCoversEveryErrorClass pins worseError's invariant: every class
+// classifyError produces has an errClassRank entry. A missing one falls to rank 0, below
+// the generic "error", so that class would lose the aggregate exit to any other failure.
+// Bidirectional, so adding a class means adding it to errClassRank and to the samples.
 func TestErrClassRankCoversEveryErrorClass(t *testing.T) {
 	t.Parallel()
 	samples := []error{
@@ -2088,13 +2076,10 @@ func TestErrClassRankCoversEveryErrorClass(t *testing.T) {
 	}
 }
 
-// TestInputTooLargeAggregateRank pins where an over-cap streamed input sits in the multi-file
-// aggregate: below a corrupt file (a resource cap is less severe than corruption) but above an
-// unsupported format. So a run mixing an over-cap stream with a corrupt file exits 4 (the corrupt
-// file wins), while one mixing it with an unsupported format exits 7 (the over-cap wins). The
-// aggregate is order-independent (worseError), so both orders are checked. A CLI --max-size failure
-// on stdin actually aborts the whole invocation up front (bufferStdin runs before the per-file
-// loop), so the rank is exercised through the worseError fold directly rather than end to end.
+// TestInputTooLargeAggregateRank places an over-cap streamed input in the aggregate: below
+// a corrupt file, above an unsupported format. Both orders are checked, since the
+// aggregate is order-independent. Driven through worseError directly because a real
+// --max-size failure on stdin aborts the invocation before the per-file loop.
 func TestInputTooLargeAggregateRank(t *testing.T) {
 	t.Parallel()
 	inputTooLarge := fmt.Errorf("w: %w", waxerr.ErrInputTooLarge)

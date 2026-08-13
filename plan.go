@@ -12,45 +12,34 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// Plan is a resolved, ready-to-execute write produced by [Editor.Prepare]. It
-// owns the byte-level rewrite and its report together, so [Plan.Report] is
-// exactly what [Plan.Execute] will carry out - the two cannot drift.
+// Plan is a resolved, ready-to-execute write produced by [Editor.Prepare]. It owns the
+// byte-level rewrite and its report together, so [Plan.Report] cannot drift from what
+// [Plan.Execute] carries out.
 //
-// [Plan.Execute] may mutate the Plan (a committed [SaveBack] is recorded so further
-// writes on it are refused), so a single Plan is not safe for concurrent Execute
-// calls; prepare a fresh Plan per goroutine. [Plan.Report]/[Plan.Changes] and the
-// rest of the read surface are pure and need no such care.
+// Execute may mutate the Plan, so one Plan is not safe for concurrent Execute calls;
+// prepare a fresh Plan per goroutine. The read surface is pure.
 type Plan struct {
 	doc  *Document
 	plan *core.WritePlan
 	opts core.WriteOptions
-	// committed records that this plan already wrote bytes over its own source file:
-	// a [SaveBack], or a [SaveAsFile] whose target resolves to the source path (the
-	// rename succeeded). Once set, [Plan.Execute] refuses any further write on this
-	// plan: the segments describe the original->edited transform against the source
-	// as parsed, so re-reading the now-rewritten file would corrupt the output (and a
-	// second SaveBack would otherwise report a confusing "source changed"). Repeat
-	// writes that never clobber the source, such as several [WriteTo] or [SaveAsFile]
-	// runs to other paths, never set this and stay valid while the source bytes are stable.
+	// committed records that this plan already wrote over its own source file, via
+	// [SaveBack] or a [SaveAsFile] onto the source path. Once set, [Plan.Execute] refuses
+	// further writes: the segments describe a transform against the source AS PARSED, so
+	// re-reading the rewritten file would corrupt the output. Writes to other paths never
+	// set it and stay valid while the source bytes are stable.
 	committed bool
 }
 
-// zero reports whether p is uninitialized: a nil Plan, a hand-built &Plan{} that never
-// went through [Editor.Prepare], or a plan whose source document is zero. The read
-// methods return empty values in that state, and Execute turns it into a regular error
-// before reaching saveBack, saveAsFile, or writeTo. It is safe on a nil receiver.
+// zero reports whether p is uninitialized: nil, hand-built, or holding a zero document.
+// The read methods return empty values in that state and Execute returns a regular error.
+// Safe on a nil receiver.
 func (p *Plan) zero() bool { return p == nil || p.plan == nil || p.doc.zero() }
 
-// Report describes what executing the plan will do: the operations, the
-// before/after sizes, the padding to be written, and any warnings. It performs
-// no I/O. An uninitialized plan reports the empty WriteReport.
+// Report describes what executing the plan will do: operations, before/after sizes,
+// padding, warnings. No I/O. An uninitialized plan reports the empty WriteReport.
 //
-// It returns a defensive copy: the Operations and Warnings slices (the only
-// reference types in a report) are cloned, and the warnings are run through the
-// deep [core.CloneWarnings] so a caller mutating a returned warning's Keys cannot
-// reach back into the plan's own report. Without this a consumer iterating
-// Report().Warnings and editing Keys would corrupt a later Report() of the same
-// plan.
+// The slices are cloned, warnings deeply, so a caller editing a returned warning's Keys
+// cannot corrupt a later Report of the same plan.
 func (p *Plan) Report() WriteReport {
 	if p.zero() {
 		return WriteReport{}
@@ -72,14 +61,9 @@ func (p *Plan) IsNoOp() bool {
 	return p.plan.NoOp
 }
 
-// String renders the full human-readable preview of the plan: the field-level
-// changes block (each line through the sanitizing [tag.Change.String]) followed
-// by the [WriteReport] body (operations, size, padding, warnings). It is the
-// complete preview a library consumer prints with fmt.Println(plan) - safe to
-// send to a terminal by construction, since the only untrusted values (the change
-// values) are sanitized. It carries no path header (that is CLI display context)
-// and no trailing newline; a no-op plan renders just the report's "no changes"
-// line.
+// String renders the human-readable preview: the changes block, then the [WriteReport]
+// body. Terminal-safe by construction, since the only untrusted values are sanitized by
+// [tag.Change.String]. No path header, no trailing newline.
 func (p *Plan) String() string {
 	// Return before Report or Changes so an uninitialized plan prints a clear sentinel
 	// instead of a misleading all-zero rewrite report.
@@ -94,10 +78,8 @@ func (p *Plan) String() string {
 	var b strings.Builder
 	b.WriteString("changes:\n")
 	for _, c := range changes {
-		// Indent the change lines deeper than the report body's operations (2
-		// spaces), so a removed-key change ("- KEY: ...") nests under "changes:"
-		// rather than reading as a sibling operation line. This mirrors the CLI's
-		// hierarchy (changes deeper than operations).
+		// Deeper than the report's 2-space operations, so a removed-key change nests
+		// under "changes:" instead of reading as a sibling operation.
 		b.WriteString("    ")
 		b.WriteString(c.String())
 		b.WriteByte('\n')
@@ -106,22 +88,18 @@ func (p *Plan) String() string {
 	return b.String()
 }
 
-// Changes reports the field-level delta this plan will apply: each canonical key
-// added, removed, or changed, plus picture, chapter, and synced-lyrics count-deltas when
-// those sets differ. It diffs the pre-edit tags against the plan's
-// post-codec-projection result - what the write actually lands, including date
-// and number normalization - so the preview matches reality and a no-op plan
-// yields no changes. It performs no I/O.
+// Changes reports the field-level delta: each canonical key added, removed, or changed,
+// plus picture, chapter, and synced-lyrics count deltas. It diffs the pre-edit tags
+// against the post-codec-projection result, so the preview matches what the write lands,
+// normalization included. No I/O.
 func (p *Plan) Changes() []tag.Change {
-	// An uninitialized plan has no delta to report.
 	if p.zero() {
 		return nil
 	}
 	base := p.doc.media
 	edited := p.plan.Result
 	if edited == nil {
-		// A plan with no computed result changes nothing; diff base against itself.
-		edited = base
+		edited = base // no computed result changes nothing
 	}
 	changes := tag.Diff(base.Tags, edited.Tags)
 	if !core.EqualPictures(base.Pictures, edited.Pictures) {
@@ -136,14 +114,10 @@ func (p *Plan) Changes() []tag.Change {
 	return changes
 }
 
-// countChange renders a picture- or chapter-set change as a [tag.Change] under a
-// reserved lowercase pseudo-key ("pictures"/"chapters"). The key is
-// intentionally lowercase so it can never collide with a canonical tag key
-// (which is always uppercase) while still flowing through the one shared change
-// render/JSON path. The Old/New values are clean integer counts (no prose), so a
-// machine consumer can parse them; an equal-count content change (a cover swap or
-// a retitled chapter) is reported as ChangeChanged with matching counts ("N ->
-// N"), and a defensive 0->0 lands there too rather than as a bogus "added 0".
+// countChange renders a picture- or chapter-set change as a [tag.Change] under a reserved
+// lowercase pseudo-key, lowercase so it cannot collide with a canonical key while still
+// using the one shared render/JSON path. Old/New are bare integers so a machine consumer
+// can parse them; an equal-count content change reports ChangeChanged with matching counts.
 func countChange(key tag.Key, before, after int) tag.Change {
 	c := tag.Change{Key: key}
 	switch {
@@ -161,16 +135,20 @@ func countChange(key tag.Key, before, after int) tag.Change {
 		c.New = []string{strconv.Itoa(after)}
 		c.Count = after
 	}
-	// Count mirrors the integer the text render highlights (the added/resulting count,
-	// or the removed count) so a JSON consumer reads it directly instead of the bogus
-	// stringified Old/New a count change formerly leaked into the machine output.
+	// Count mirrors the integer the text render highlights, so a JSON consumer reads it
+	// directly rather than the stringified Old/New.
 	return c
 }
 
-// SaveResult reports the outcome of a save. Committed is true once the new
-// bytes are in place (the rename succeeded); a later directory-fsync error is
-// still returned, but with Committed true. Dest is the resulting file's
-// identity, and Doc is the post-write document (also returned directly).
+// SaveResult reports the outcome of a save. Committed is true once the new bytes are
+// in place (the rename succeeded); a later directory-fsync error is still returned,
+// but with Committed true. Committed, not the error, is what says whether the file
+// changed. See [Plan.Execute] for how the two combine.
+//
+// Dest is the identity of what is at the destination now: the written file after a
+// commit, and otherwise whatever is still there (the untouched original for an
+// in-place write, or the zero value when nothing exists at the target). Doc is the
+// post-write document, also returned directly; it is nil only for a failed write.
 type SaveResult struct {
 	Committed bool
 	Dest      Identity
@@ -178,8 +156,19 @@ type SaveResult struct {
 }
 
 // Execute carries out the plan against dst, one of [SaveBack], [SaveAsFile], or
-// [WriteTo]. It returns the post-write [Document] and a [SaveResult]; on error,
-// the SaveResult still carries what is known (e.g. Committed=false).
+// [WriteTo]. It returns the post-write [Document] and a [SaveResult].
+//
+// A failed write is err != nil AND Committed false; neither alone is enough, because
+// the two vary independently:
+//
+//   - err nil, Committed true: the bytes landed.
+//   - err nil, Committed false: a no-op plan, which writes nothing by contract. The
+//     Document is the unchanged one. Not a failure.
+//   - err non-nil, Committed true: the write succeeded and a step after it did not
+//     (see [SaveResult]). The edit is applied and the plan is spent, so treat it as a
+//     success carrying a warning; retrying is refused and would be wrong.
+//   - err non-nil, Committed false: nothing was written. The Document is nil, since
+//     there is no post-write file to describe.
 //
 // A plan may be executed more than once as long as no execution writes over its own
 // source file. Repeated [WriteTo] or [SaveAsFile] runs to other paths are valid while the
@@ -187,20 +176,15 @@ type SaveResult struct {
 // execution writes over the source, [Execute] refuses later runs; re-edit the returned
 // Document to write again.
 func (p *Plan) Execute(ctx context.Context, dst Destination) (*Document, SaveResult, error) {
-	// An uninitialized plan has no rewrite to carry out.
 	if p.zero() {
 		return nil, SaveResult{}, fmt.Errorf("%w: plan is not initialized; call Editor.Prepare to build a plan", waxerr.ErrInvalidData)
 	}
 	if err := checkContext(ctx); err != nil {
 		return nil, SaveResult{}, err
 	}
-	// An in-place commit spends the plan: its segments describe the original->edited
-	// transform against the source as parsed, so re-executing ANY destination after the
-	// file was rewritten in place would re-read the already-rewritten bytes (a resized
-	// metadata region shifts every later copy offset) and corrupt the output. Refuse it
-	// here, before dispatch, so an in-place write followed by any second write is caught,
-	// not only a second SaveBack. Runs that never write over the source never set
-	// committed and stay valid.
+	// An in-place commit spends the plan for EVERY destination, not just a second
+	// SaveBack: a resized metadata region shifts every later copy offset, so re-reading
+	// the rewritten bytes would corrupt the output. Refused before dispatch.
 	if p.committed {
 		return nil, SaveResult{}, fmt.Errorf("%w: this plan already wrote %s in place; re-edit the returned Document to write again", waxerr.ErrInvalidData, p.doc.path)
 	}
@@ -225,16 +209,11 @@ func (p *Plan) resultDocument(path string, src core.ReaderAtSized, id core.Ident
 	}
 	media := res.Clone()
 	// A returned Document needs the structural fingerprint so later SaveBack calls keep
-	// using strong change detection. fileIdentity omits it, so recompute it at the shared
-	// result path for saveBack and saveAsFile. writeTo passes path="", so it is skipped.
-	// media is the result clone, so the hash covers the post-write metadata region.
+	// strong change detection; fileIdentity omits it. writeTo passes path="" and skips this.
 	if path != "" && !id.HasFinger {
 		if fSrc, err := openFileSource(path); err == nil {
-			// Use the document's own parse limit (p.opts.Limits is a WriteOptions field no option
-			// sets, so always DefaultLimits); this matches the p.doc.limits stamp below and the
-			// verifySourceUnchanged fingerprint, and reproduces the exact limit the parse-time
-			// fingerprint used, so a returned Document's identity agrees with a fresh ParseFile
-			// under the same options (see Document.fingerprintLimit).
+			// The document's own parse limit, so a returned Document's identity agrees with a
+			// fresh ParseFile under the same options (see Document.fingerprintLimit).
 			if fp, ok := core.Fingerprint(fSrc, media, p.doc.fingerprintLimit()); ok {
 				id.Fingerprint, id.HasFinger = fp, true
 			}
@@ -242,7 +221,7 @@ func (p *Plan) resultDocument(path string, src core.ReaderAtSized, id core.Ident
 		}
 	}
 	media.Identity = id
-	// Inherit the base document's parse limits so a re-edit of this result verifies under the
-	// same ceilings the original parse cleared (see Document.limits).
+	// Inherit the base parse limits so a re-edit verifies under the ceilings the original
+	// parse cleared.
 	return &Document{media: media, path: path, src: src, limits: p.doc.limits}
 }

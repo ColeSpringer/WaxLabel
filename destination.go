@@ -33,61 +33,51 @@ type Destination struct {
 }
 
 // SaveBack rewrites the original file in place, atomically (temp file, fsync,
-// rename, directory fsync). It requires the document to have come from
-// [ParseFile], verifies the file has not changed since parse
+// rename, directory fsync where the platform has one). It requires the document to
+// have come from [ParseFile], verifies the file has not changed since parse
 // ([waxerr.ErrSourceChanged] otherwise), and writes nothing for a no-op plan.
+//
+// A handle the CALLER still holds on the path fails the rename on Windows; close it
+// before saving. The library releases its own.
 func SaveBack() Destination { return Destination{kind: destSaveBack} }
 
-// SaveAsFile writes a complete file at path (atomically). Unlike SaveBack it is
-// never a no-op: a fresh destination is always written whole. It OVERWRITES any existing
-// file at path (atomically replacing it via a temp file and rename) - it does not refuse an
-// existing target, so the caller is responsible for the "do not clobber" check. The CLI's
-// copy -o guard is a CLI-level policy, not a library one. (If a hard guard is later wanted, the
-// safe route is an additive SaveAsNewFile(path) that returns a waxerr-wrapped "exists" error,
-// not a default-refuse flip of this function's contract.) Writing to a path that resolves to the
-// document's own source file spends the plan just as SaveBack does (see [Plan.Execute]); writing
-// to other paths leaves the plan reusable.
+// SaveAsFile writes a complete file at path (atomically). Unlike SaveBack it is never a
+// no-op: a fresh destination is always written whole.
 //
-// For a [ParseFile] document it verifies the source file has not changed since parse
-// ([waxerr.ErrSourceChanged] otherwise), as SaveBack does: the copied byte offsets come
-// from the source as parsed, so a changed source would produce a corrupt file. Writing
-// in place (a target that resolves to the source) uses the full check; writing to another
-// path uses the precise inode+size+fingerprint check, so a benign mtime-only touch does
-// not block it. An [OpenSource] document reads stable in-memory bytes and is not checked.
+// It OVERWRITES an existing file at path without refusing, so the "do not clobber" check
+// is the caller's; the CLI's -o guard is CLI policy, not a library one. Writing to a path
+// that resolves to the document's own source spends the plan as SaveBack does; other
+// paths leave it reusable.
 //
-// It needs a document that can resolve its own source bytes - one from [ParseFile]
-// or [OpenSource]. A detached document from [Parse] carries no source, so SaveAsFile
-// fails with [waxerr.ErrInvalidData]; write it with [WriteTo] and an explicit source
-// instead.
+// For a [ParseFile] document it verifies the source has not changed since parse
+// ([waxerr.ErrSourceChanged] otherwise), since the copied byte offsets came from the
+// source as parsed. An in-place target gets the full mtime-inclusive check, another path
+// the inode+size+fingerprint one so a benign touch does not block it. An [OpenSource]
+// document reads stable bytes and is not checked.
+//
+// A detached [Parse] document carries no source and fails with [waxerr.ErrInvalidData];
+// write it with [WriteTo] and an explicit source.
 func SaveAsFile(path string) Destination { return Destination{kind: destSaveAsFile, path: path} }
 
-// WriteTo streams the complete output to w. The source bytes to copy come from
-// source (required when the document is detached, i.e. from [Parse]); for a
-// [ParseFile] or [OpenSource] document, pass nil to use its own source.
+// WriteTo streams the complete output to w. source is required for a detached [Parse]
+// document; pass nil to use a [ParseFile] or [OpenSource] document's own.
 //
-// When it reopens a [ParseFile] document's own source (source is nil), it first verifies
-// that file has not changed since parse ([waxerr.ErrSourceChanged] otherwise), as SaveBack
-// does - a streaming write never clobbers the source, so it uses the precise
-// inode+size+fingerprint check. An explicit source or an [OpenSource] document supplies
-// stable bytes and is not checked.
+// Reopening a [ParseFile] source verifies it is unchanged first, with the precise
+// inode+size+fingerprint check since a streaming write never clobbers it. An explicit
+// source or an [OpenSource] document is not checked.
 func WriteTo(w io.Writer, source ReaderAtSized) Destination {
 	return Destination{kind: destWriteTo, w: w, source: source}
 }
 
-// verifySourceUnchanged confirms the on-disk source has not changed under the parsed
-// document since parse. It returns the source's current identity - so every caller can
-// report SaveResult{Dest: current} - and wraps [waxerr.ErrSourceChanged] on mismatch. It
-// recomputes the same stat plus the structural fingerprint of the metadata region as the
-// original save-back check, reusing the already-open src (the same handle the write copies
-// from) for the fingerprint, so no third open is needed. samePath selects the strength:
+// verifySourceUnchanged confirms the on-disk source has not changed since parse. It
+// returns the current identity, so every caller can report SaveResult{Dest: current}, and
+// wraps [waxerr.ErrSourceChanged] on mismatch. The fingerprint reuses the already-open
+// src, so no third open is needed. samePath selects the strength:
 //
-//   - samePath == true (SaveBack, or a SaveAsFile whose target resolves to the source):
-//     the full mtime-inclusive [Identity.Matches], staying conservative about clobbering
-//     the source.
-//   - samePath == false (a derived write - SaveAsFile to another path, WriteTo): the
-//     content-only [Identity.MatchesContent] (inode+size+fingerprint), so a benign
-//     mtime-only touch during a long parse->write window does not spuriously block a write
-//     whose planned byte offsets are still valid.
+//   - true (an in-place write): the full mtime-inclusive [Identity.Matches], staying
+//     conservative about clobbering the source.
+//   - false (a derived write): the content-only [Identity.MatchesContent], so a benign
+//     mtime touch during a long parse-to-write window does not block a still-valid write.
 func (p *Plan) verifySourceUnchanged(src core.ReaderAtSized, samePath bool) (core.Identity, error) {
 	current, err := fileIdentity(p.doc.path)
 	if err != nil {
@@ -97,22 +87,17 @@ func (p *Plan) verifySourceUnchanged(src core.ReaderAtSized, samePath bool) (cor
 	if !samePath {
 		match = p.doc.media.Identity.MatchesContent
 	}
-	// Cheap stat comparison first (inode/size, plus mtime for a same-path write). current
-	// carries no fingerprint yet, so match skips its fingerprint arm here: a moved, resized, or
-	// re-inoded source is rejected without the read + SHA-256 the fingerprint would cost -
-	// potentially many MB for a large-cover file.
+	// Cheap stat first. current carries no fingerprint yet, so match skips that arm: a
+	// moved, resized, or re-inoded source is rejected without the read and SHA-256 a
+	// fingerprint costs, potentially many MB for a large cover.
 	if ok, why := match(current); !ok {
 		return current, fmt.Errorf("%w: %s", waxerr.ErrSourceChanged, why)
 	}
-	// Stat matched; now fold in the structural fingerprint of the metadata region and re-check,
-	// so a tamper that preserved size, mtime, and inode is still caught.
+	// Now fold in the metadata region's fingerprint, so a tamper that preserved size,
+	// mtime, and inode is still caught.
 	if p.doc.media.Identity.HasFinger {
-		// Fingerprint under the document's own PARSE limit, not p.opts.Limits (a WriteOptions
-		// field no WriteOption ever sets, so always DefaultLimits). A document parsed with an
-		// elevated WithLimits and a >256 MiB metadata region would otherwise silently skip its
-		// save-time fingerprint (core.Fingerprint returns ok=false), degrading the guard to
-		// inode+size+mtime. Using the same limit the parse-time fingerprint used keeps the two
-		// symmetric (see fingerprintLimit).
+		// The document's own PARSE limit. Anything smaller would make core.Fingerprint skip
+		// silently for an elevated-limit document, degrading the guard to inode+size+mtime.
 		if fp, ok := core.Fingerprint(src, p.doc.media, p.doc.fingerprintLimit()); ok {
 			current.Fingerprint, current.HasFinger = fp, true
 			if ok, why := match(current); !ok {
@@ -123,14 +108,10 @@ func (p *Plan) verifySourceUnchanged(src core.ReaderAtSized, samePath bool) (cor
 	return current, nil
 }
 
-// fingerprintLimit is the alloc ceiling for a save-time structural fingerprint: the
-// document's parse limit used verbatim, so save/result fingerprinting stays symmetric with the
-// parse-time fingerprint (the codecs pass the raw opts.Limits.MaxAllocBytes) and never allocates
-// past a caller's explicit WithLimits cap - a deliberately tight sub-default limit is honored,
-// not floored. The default is used only when the recorded limit is non-positive, which happens
-// solely for a Document built without a resolved limit (a hand-constructed one in a test); a
-// zero limit would otherwise make core.Fingerprint skip silently (bits.ReadSlice rejects a
-// non-positive limit), degrading save-back change detection to inode+size+mtime.
+// fingerprintLimit is the alloc ceiling for a save-time fingerprint: the document's parse
+// limit verbatim, so it stays symmetric with the parse-time one and never allocates past a
+// caller's WithLimits cap. The default applies only to a Document built without a resolved
+// limit, where a zero would make core.Fingerprint skip silently.
 func (d *Document) fingerprintLimit() int64 {
 	if d.limits.MaxAllocBytes > 0 {
 		return d.limits.MaxAllocBytes
@@ -142,16 +123,14 @@ func (p *Plan) saveBack(ctx context.Context) (*Document, SaveResult, error) {
 	if p.doc.path == "" {
 		return nil, SaveResult{}, fmt.Errorf("%w: SaveBack needs a file; use SaveAsFile or WriteTo", waxerr.ErrNeedsFile)
 	}
-	// The already-committed guard lives in Execute (it covers every destination, not
-	// just a second SaveBack), so by here this plan has not yet written.
+	// Execute holds the already-committed guard, so this plan has not yet written.
 	src, err := openFileSource(p.doc.path)
 	if err != nil {
 		return nil, SaveResult{}, err
 	}
 	defer src.Close()
 
-	// Strong change detection: an in-place save uses the full check (mtime included),
-	// staying conservative about clobbering the source.
+	// An in-place save uses the full mtime-inclusive check.
 	if current, err := p.verifySourceUnchanged(src, true); err != nil {
 		return nil, SaveResult{Dest: current}, err
 	}
@@ -161,15 +140,19 @@ func (p *Plan) saveBack(ctx context.Context) (*Document, SaveResult, error) {
 		return p.doc, SaveResult{Committed: false, Dest: p.doc.media.Identity, Doc: p.doc}, nil
 	}
 
-	committed, werr := p.writeFile(ctx, p.doc.path, src)
-	if committed {
-		// Bytes are in place (the rename succeeded), even if a later step like the
-		// directory fsync errored; mark the plan so a second SaveBack is refused.
-		p.committed = true
+	// The hook closes src before the rename replaces the path it was opened from; the
+	// defer above stays as the backstop, and a double Close is harmless.
+	committed, werr := p.writeFile(ctx, p.doc.path, src, func() { src.Close() })
+	destID, _ := fileIdentity(p.doc.path)
+	if !committed {
+		// No post-write file to describe, so no Document.
+		return nil, SaveResult{Committed: false, Dest: destID}, werr
 	}
-	newID, _ := fileIdentity(p.doc.path)
-	resDoc := p.resultDocument(p.doc.path, nil, newID)
-	return resDoc, SaveResult{Committed: committed, Dest: newID, Doc: resDoc}, werr
+	// Bytes are in place (the rename succeeded), even if a later step like the
+	// directory fsync errored; mark the plan so a second SaveBack is refused.
+	p.committed = true
+	resDoc := p.resultDocument(p.doc.path, nil, destID)
+	return resDoc, SaveResult{Committed: true, Dest: destID, Doc: resDoc}, werr
 }
 
 func (p *Plan) saveAsFile(ctx context.Context, path string) (*Document, SaveResult, error) {
@@ -179,41 +162,35 @@ func (p *Plan) saveAsFile(ctx context.Context, path string) (*Document, SaveResu
 	}
 	defer closer()
 
-	// A ParseFile document resolves its source by reopening the current on-disk file, so a
-	// change since parse would make the planned byte offsets copy the wrong bytes - and for an
-	// in-place target, silently replace the source with the corruption. Verify the source is
-	// unchanged first, as SaveBack does. An in-place target gets the full mtime-inclusive check;
-	// another path gets the precise inode+size+fingerprint check. An OpenSource document reads
-	// stable in-memory bytes (no reopen), and a detached Parse doc fails resolveSource above, so
-	// neither reaches here.
+	// A ParseFile document reopens its source, so a change since parse would copy the wrong
+	// bytes, and for an in-place target write that corruption over the source. An
+	// OpenSource document reads stable bytes and a detached Parse doc failed above.
 	if p.doc.reopensFileSource() {
 		if current, err := p.verifySourceUnchanged(src, sameFileTarget(path, p.doc.path)); err != nil {
 			return nil, SaveResult{Dest: current}, err
 		}
 	}
 
-	committed, werr := p.writeFile(ctx, path, src)
-	if committed && sameFileTarget(path, p.doc.path) {
-		// This write replaced the plan's source file, so later executions would read bytes
-		// that no longer match the planned segments. Treat it like SaveBack and spend the
-		// plan. The match is by resolved path rather than inode because an atomic rename to
-		// a hardlink alias leaves the original source bytes intact.
+	// The closer is the release hook: the target may resolve to the source, which the
+	// rename then replaces. It is idempotent, so the defer above still backstops.
+	committed, werr := p.writeFile(ctx, path, src, closer)
+	destID, _ := fileIdentity(path)
+	if !committed {
+		return nil, SaveResult{Committed: false, Dest: destID}, werr
+	}
+	if sameFileTarget(path, p.doc.path) {
+		// This replaced the plan's source, so spend the plan as SaveBack does. Matched by
+		// resolved path, not inode: a rename to a hardlink alias leaves the source intact.
 		p.committed = true
 	}
-	newID, _ := fileIdentity(path)
-	resDoc := p.resultDocument(path, nil, newID)
-	return resDoc, SaveResult{Committed: committed, Dest: newID, Doc: resDoc}, werr
+	resDoc := p.resultDocument(path, nil, destID)
+	return resDoc, SaveResult{Committed: true, Dest: destID, Doc: resDoc}, werr
 }
 
 // sameFileTarget reports whether an atomic write to dst would replace the path the
-// document was parsed from. It compares absolute paths after write-target symlink
-// resolution. A symlink to the source resolves to the source and is guarded; a hardlink
-// alias is not, because the atomic rename replaces only the alias directory entry and
-// leaves the source path's bytes intact.
-//
-// If either path cannot be made absolute (filepath.Abs needs the working directory, which a
-// removed or inaccessible cwd denies), the comparison is unreliable. Treat that case as a
-// match so the guard fails closed.
+// document was parsed from, comparing absolute paths after symlink resolution. A symlink
+// to the source is guarded; a hardlink alias is not, since the rename replaces only the
+// alias entry. An unreliable comparison (Abs failed) reads as a match, failing closed.
 func sameFileTarget(dst, src string) bool {
 	if src == "" {
 		return false // a detached document (from Parse) has no source file to clobber
@@ -238,9 +215,7 @@ func absResolved(path string) (resolved string, reliable bool) {
 }
 
 func (p *Plan) writeTo(ctx context.Context, dst Destination) (*Document, SaveResult, error) {
-	// A nil destination writer would panic on the first bits.Write deref; reject it
-	// up front with a clean error, mirroring the nil-source/nil-reader guards on the
-	// parse entry points (parse.go, source.go).
+	// Would panic on the first bits.Write deref.
 	if dst.w == nil {
 		return nil, SaveResult{}, fmt.Errorf("%w: nil writer", waxerr.ErrInvalidData)
 	}
@@ -250,19 +225,15 @@ func (p *Plan) writeTo(ctx context.Context, dst Destination) (*Document, SaveRes
 	}
 	defer closer()
 
-	// Like SaveAsFile, a ParseFile document with no explicit source reopens the on-disk file,
-	// so verify it is unchanged before copying its (possibly stale) byte offsets. A streaming
-	// writer never clobbers the source, so this is always a derived write - the precise
-	// inode+size+fingerprint check (mtime skipped). An explicit WriteTo(w, source) or an
-	// OpenSource document reads caller-supplied / in-memory bytes and needs no check.
+	// A reopened ParseFile source may be stale. Always a derived write (a stream never
+	// clobbers the source), so the mtime-skipping check. Supplied bytes need no check.
 	if dst.source == nil && p.doc.reopensFileSource() {
 		if current, err := p.verifySourceUnchanged(src, false); err != nil {
 			return nil, SaveResult{Dest: current}, err
 		}
 	}
 
-	// A streaming destination cannot be re-read, so VerifyEssence (which checks
-	// the written bytes) does not apply here.
+	// A streaming destination cannot be re-read, so VerifyEssence does not apply.
 	if _, err := bits.Write(ctx, dst.w, src, p.plan.Segments, nil); err != nil {
 		return nil, SaveResult{}, err
 	}
@@ -271,15 +242,28 @@ func (p *Plan) writeTo(ctx context.Context, dst Destination) (*Document, SaveRes
 	return resDoc, SaveResult{Committed: true, Dest: id, Doc: resDoc}, nil
 }
 
-// writeFile performs an atomic write of the plan to path, copying from src.
-// When VerifyEssence is set it hashes the source audio once as it is copied,
-// then re-reads the written output's audio extent and compares - confirming the
-// rewrite preserved the essence before the file is committed. (The output read
-// hits the page cache, so it guards the copy logic rather than disk media.)
-func (p *Plan) writeFile(ctx context.Context, path string, src core.ReaderAtSized) (bool, error) {
+// writeFile performs an atomic write of the plan to path, copying from src. When
+// VerifyEssence is set it hashes the source audio as it copies, then re-reads the written
+// extent and compares before committing.
+//
+// release closes src. writeFile owns that call rather than the caller's defer because the
+// rename may replace the very path src was opened from.
+func (p *Plan) writeFile(ctx context.Context, path string, src core.ReaderAtSized, release func()) (bool, error) {
 	var srcEssence []byte
 	write := func(f *os.File) error {
 		sum, err := p.streamCopy(ctx, f, src)
+		// The copy is the source's last read, so release here. On Windows os.Open takes no
+		// FILE_SHARE_DELETE, so a handle open on the file writeAtomic is about to rename
+		// over fails MoveFileEx and every in-place save with it.
+		//
+		// Safe because writeAtomic runs write to completion before verify: the closures
+		// SHARE srcEssence rather than snapshotting it, so a concurrent or reordered verify
+		// would break this.
+		//
+		// Opening with FILE_SHARE_DELETE does NOT work: MoveFileEx still refuses. Replacing
+		// an open target needs SetFileInformationByHandle + FileRenameInfoEx, unreachable
+		// from stdlib, and that still fails on a read-only target. Do not retry this.
+		release()
 		srcEssence = sum
 		return err
 	}
@@ -296,11 +280,8 @@ func (p *Plan) streamCopy(ctx context.Context, dst io.Writer, source core.Reader
 	var tap bits.Tap
 	var hasher *bits.Hasher
 	if p.opts.VerifyEssence {
-		// Defense-in-depth behind Editor.Prepare, which already refuses a no-audio file
-		// (so a no-audio document never reaches Execute): never verify the "essence" of a
-		// file the parser flagged WarnNoAudioFrames, which would hash non-audio bytes as
-		// if they were audio. Not load-bearing, but it keeps the verify path honest
-		// on its own terms.
+		// Behind Prepare's own no-audio refusal, so not load-bearing. Verifying the
+		// "essence" of a no-audio file would hash non-audio bytes as if they were audio.
 		if hasNoAudioWarning(p.doc.media) {
 			return nil, fmt.Errorf("%w: cannot verify audio essence of a no-audio file", waxerr.ErrInvalidData)
 		}
@@ -309,10 +290,8 @@ func (p *Plan) streamCopy(ctx context.Context, dst io.Writer, source core.Reader
 		hasher.Mix(cfg)
 		tap = hasher
 	}
-	// Buffer the destination file. A renumbering Ogg rewrite emits three small
-	// segments per audio page (an 18-byte header copy, an 8-byte patch, the body
-	// copy); without buffering those become thousands of tiny writes to the temp
-	// file. The tap still sees the raw source bytes, so verification is unaffected.
+	// A renumbering Ogg rewrite emits three small segments per audio page, which without
+	// buffering become thousands of tiny writes. The tap still sees raw source bytes.
 	bw := bufio.NewWriterSize(dst, 1<<16)
 	if _, err := bits.Write(ctx, bw, source, p.plan.Segments, tap); err != nil {
 		return nil, err
@@ -343,22 +322,17 @@ func (p *Plan) verifyOutput(ctx context.Context, out io.ReaderAt, srcEssence []b
 	if !bytes.Equal(outSum, srcEssence) {
 		return fmt.Errorf("%w: written audio essence does not match the source", waxerr.ErrInvalidData)
 	}
-	// Structural re-parse: the essence hash re-reads the same verbatim media bytes, so it alone
-	// cannot notice a corrupt container wrapped around them (the MP4 truncated-moov write that
-	// motivated this passed --verify while producing a self-unreadable file). Parsing the output
-	// back - the large mdat/audio essence is never read, only its range recorded - catches any
-	// codec's structurally invalid rewrite before it is committed, and the result is discarded.
+	// The essence hash re-reads the same verbatim media bytes, so it cannot notice a
+	// corrupt container wrapped around them; an MP4 truncated-moov write passed --verify
+	// while producing a self-unreadable file. Re-parsing catches that. The essence is
+	// never read here, only its range recorded, and the result is discarded.
 	if codec, ok := core.ForFormat(p.doc.media.Format); ok {
 		size := bits.OutputLen(p.plan.Segments)
-		// This verifies our own just-written output, so it must not reject a valid rewrite for a
-		// resource-limit reason it should clear. Take, per field, the more permissive of the
-		// document's parse-time limits and the library defaults: the doc's limits cover a structure
-		// an elevated WithLimits accepted (a deep tree or an oversized cover the defaults would
-		// reject), while the defaults cover a rewrite that grew past a caller's tight parse cap, since
-		// an edit can add elements the input lacked. The writers' own size checks (id3.CheckSize and
-		// the like) gate against DefaultLimits rather than the document's, so the output already fits
-		// the defaults. Finally floor the alloc cap at the output size: no single element can exceed
-		// the whole file, and a hostile declared size still cannot overrun it.
+		// Verifying our own output, so it must not reject a valid rewrite over a limit it
+		// should clear. Per field, the more permissive of the document's parse limits and the
+		// defaults: the former covers what an elevated WithLimits accepted, the latter a
+		// rewrite that grew past a tight parse cap. Floored at the output size, since no
+		// element can exceed the whole file.
 		def := bits.DefaultLimits
 		limits := bits.Limits{
 			MaxAllocBytes: max(p.doc.limits.MaxAllocBytes, def.MaxAllocBytes, size),
@@ -373,9 +347,8 @@ func (p *Plan) verifyOutput(ctx context.Context, out io.ReaderAt, srcEssence []b
 	return nil
 }
 
-// sizedReaderAt pairs an io.ReaderAt with a known size to satisfy core.ReaderAtSized, so the
-// --verify structural re-parse can read the still-open temp file in place, without loading it
-// into memory the way core.BytesSource would.
+// sizedReaderAt pairs an io.ReaderAt with a known size, so the --verify re-parse can read
+// the still-open temp file in place rather than loading it into memory.
 type sizedReaderAt struct {
 	io.ReaderAt
 	size int64
@@ -392,13 +365,11 @@ func (p *Plan) essenceExtent() (string, []byte) {
 	return "audio-extent-v1", nil
 }
 
-// tempCreateError reports a failure to create the atomic-write temp file. It
-// names the destination directory (which the user chose) but not the internal
-// temp pattern (which they did not), while still unwrapping to the underlying
-// *os.PathError so the failure classifies as a local I/O error. It deliberately
-// does not satisfy os.IsNotExist (it is not a *PathError itself), so a missing
-// destination directory stays in the I/O class rather than being reported as a
-// "no such file" on a temp name the user never named.
+// tempCreateError reports a failed atomic-write temp create. It names the destination
+// directory the user chose, not the internal temp pattern, and unwraps to the
+// *os.PathError so it still classifies as local I/O. It deliberately does not satisfy
+// os.IsNotExist, so a missing directory is not reported as "no such file" on a temp name
+// the user never named.
 type tempCreateError struct {
 	dir string
 	err error // the os.CreateTemp failure, normally an *os.PathError
@@ -414,20 +385,17 @@ func (e *tempCreateError) Error() string {
 
 func (e *tempCreateError) Unwrap() error { return e.err }
 
-// NewTempCreateError builds the same temp-create failure [writeAtomic] returns when a
-// destination directory rejects a write: it names dir (not the random temp file) and unwraps
-// to err so the failure classifies as local I/O. It is exported so a caller that probes a
-// directory's writability up front - the CLI's -o pre-check - surfaces the identical error
-// (same message and exit class) the late atomic write would, instead of re-implementing it.
+// NewTempCreateError builds the same failure [writeAtomic] returns when a destination
+// directory rejects a write. Exported so a caller probing writability up front, like the
+// CLI's -o pre-check, reports the identical message and exit class the late write would.
 func NewTempCreateError(dir string, err error) error {
 	return &tempCreateError{dir: dir, err: err}
 }
 
-// ResolveWriteTarget returns the path an atomic write will rename over: the symlink-resolved
-// target when path resolves (so the rewrite updates the file a link points at, leaving the
-// link in place), else path verbatim (a fresh target or a dangling link). It is the single
-// resolution rule [writeAtomic] uses; a caller pre-checking an -o destination resolves the
-// same way so its probe inspects the directory the write actually lands in.
+// ResolveWriteTarget returns the path an atomic write will rename over: the
+// symlink-resolved target, else path verbatim for a fresh target or dangling link. The
+// single rule [writeAtomic] uses, so a caller pre-checking an -o destination inspects the
+// directory the write really lands in.
 func ResolveWriteTarget(path string) string {
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		return resolved
@@ -437,20 +405,16 @@ func ResolveWriteTarget(path string) string {
 
 // writeAtomic writes via a temp file in the destination directory, fsyncs it,
 // optionally verifies it (before commit), renames it over path, then fsyncs the
-// directory. It returns committed=true once the rename succeeds (even if the
-// later directory fsync errors, since the data is already in place).
+// directory where the platform supports it (see fsyncDir). It returns
+// committed=true once the rename succeeds (even if the later directory fsync
+// errors, since the data is already in place).
 func writeAtomic(path string, write, verify func(*os.File) error, preserveMtime bool, origMtimeUnixNano int64) (bool, error) {
-	// Resolve a symlink to its target so the rewrite updates the file the link
-	// points at and leaves the link in place; otherwise the atomic rename would
-	// replace the symlink with a regular file (silent data divergence from the
-	// real target). A path that does not resolve - a brand-new SaveAsFile target,
-	// a dangling link - falls back to the literal path. A hard link is still
-	// broken by the rename (an unavoidable consequence of atomic replace); that is
-	// documented behavior, not worked around here.
+	// Follow a symlink so the rewrite updates the file it points at and leaves the link in
+	// place; the rename would otherwise replace the link with a regular file. A hard link
+	// is still broken by the rename, which is documented behavior.
 	target := ResolveWriteTarget(path)
 	dir := filepath.Dir(target)
-	// The temp file must live in the target's directory so the rename is on one
-	// filesystem (os.Rename cannot cross devices) and lands beside the real file.
+	// The temp must share the target's directory: os.Rename cannot cross devices.
 	tmp, err := os.CreateTemp(dir, ".waxlabel-*.tmp")
 	if err != nil {
 		return false, &tempCreateError{dir: dir, err: err}
@@ -479,12 +443,15 @@ func writeAtomic(path string, write, verify func(*os.File) error, preserveMtime 
 		return false, err
 	}
 
-	// Mode and mtime are best-effort and deliberately not fatal: many media
-	// libraries live on FAT/exFAT drives that do not support per-file chmod, and
-	// failing the whole save over a cosmetic attribute would be worse than the
-	// data write succeeding. Carry over an existing file's mode; widen a brand-
-	// new file from os.CreateTemp's 0600 to a conventional 0644.
-	if info, err := os.Stat(target); err == nil {
+	// Mode and mtime are best-effort: many media libraries live on FAT/exFAT, which has
+	// no per-file chmod, and failing a save over a cosmetic attribute is worse than not
+	// carrying it. An existing file's mode carries over; a new one widens from
+	// os.CreateTemp's 0600 to 0644.
+	//
+	// One stat, reused below. A second could see a different mode, if a sync client set
+	// the file read-only mid-write, and act on it after the temp took the first reading.
+	info, statErr := os.Stat(target)
+	if statErr == nil {
 		_ = os.Chmod(tmpName, info.Mode())
 	} else {
 		_ = os.Chmod(tmpName, 0o644)
@@ -494,23 +461,20 @@ func writeAtomic(path string, write, verify func(*os.File) error, preserveMtime 
 		_ = os.Chtimes(tmpName, mt, mt)
 	}
 
-	if err := os.Rename(tmpName, target); err != nil {
+	// Must run AFTER the chmod above: earlier, the temp would inherit an already-cleared
+	// mode and the save would strip the user's read-only attribute. The chmod likewise
+	// stays before the rename, or a 0600 source's replacement is briefly world-readable.
+	restoreReadOnly := clearTargetReadOnly(target, info)
+	// Unconditional: on failure it restores the untouched original, on success it
+	// re-applies to the file just renamed in. Skipping it when committed would rest on
+	// the chmod above having stuck, and that error is discarded.
+	defer restoreReadOnly()
+
+	// Precondition: no handle this process holds on target may still be open, which is
+	// why writeFile releases the source right after the copy.
+	if err := renameReplace(tmpName, target); err != nil {
 		return false, err
 	}
 	committed = true
 	return true, fsyncDir(dir)
-}
-
-// fsyncDir flushes a directory entry so the rename is durable. Best-effort:
-// platforms that cannot open a directory for sync return nil.
-func fsyncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return nil
-	}
-	defer d.Close()
-	if err := d.Sync(); err != nil {
-		return fmt.Errorf("directory fsync: %w", err)
-	}
-	return nil
 }

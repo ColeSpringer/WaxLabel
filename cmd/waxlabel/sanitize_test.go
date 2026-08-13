@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -15,17 +16,15 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// hostilePayload is an OSC "set terminal title" sequence (ESC ] 0 ; ... BEL) - the
+// hostilePayload is an OSC "set terminal title" sequence (ESC ] 0 ; ... BEL): the
 // exact terminal-hijack class the sanitizing output boundary exists to neutralize.
 // Both ESC (0x1b) and BEL (0x07) are control bytes that must never reach the
 // terminal raw.
 const hostilePayload = "evil\x1b]0;pwned\x07end"
 
-// assertSafe asserts s carries no raw terminal-control byte and that the hostile
-// ESC survived as a visible \x1b escape - proving the field was actually rendered,
-// not silently dropped. ESC is representation-stable (it is \x1b under %q and under
-// SanitizeText/SanitizeLine alike), so keying on it does not assume which escaper
-// ran.
+// assertSafe asserts s carries no raw control byte and that the hostile ESC survived as a
+// visible \x1b escape, proving the field was rendered rather than silently dropped. ESC
+// reads the same under %q and both sanitizers, so this does not assume which one ran.
 func assertSafe(t *testing.T, label, s string) {
 	t.Helper()
 	if !strings.Contains(s, `\x1b`) {
@@ -34,13 +33,10 @@ func assertSafe(t *testing.T, label, s string) {
 	assertNoRawControl(t, label, s)
 }
 
-// assertNoRawControl fails on any byte the sanitizer is contracted to escape: a C0
-// control other than tab/newline, DEL, a C1 control, or an invalid UTF-8 byte. It
-// restates the bar of the unexported tag.controlRune independently - a security
-// backstop wants its own statement of the threshold - and scans with a manual
-// decode loop so an invalid byte surfaces as size==1 (a plain range would hide it).
-// Tab and newline are allowed: the boundary keeps them deliberately (the newline
-// separates output lines and carries multi-line tag values).
+// assertNoRawControl fails on any byte the sanitizer must escape. It restates
+// tag.controlRune's bar independently, since a security backstop wants its own threshold,
+// and decodes manually so an invalid byte surfaces as size==1 rather than being hidden by
+// a plain range. Tab and newline are allowed: the boundary keeps them deliberately.
 func assertNoRawControl(t *testing.T, label, s string) {
 	t.Helper()
 	for i := 0; i < len(s); {
@@ -89,11 +85,9 @@ func seedValue(t *testing.T, src string, key tag.Key, val string) string {
 	return out
 }
 
-// hostileNamedCopy copies src into a temp file whose *name* embeds hostilePayload.
-// A Linux filename may hold any byte but '/' and NUL, so such a name - handed over
-// by a shell glob or the --recursive walk - reaches a record header or an error
-// line before a byte of the file is parsed. It skips the test if the filesystem
-// refuses the name.
+// hostileNamedCopy copies src into a temp file whose NAME embeds hostilePayload. A Linux
+// filename may hold any byte but '/' and NUL, so one from a glob or a --recursive walk
+// reaches a header or error line before a byte is parsed. Skips if the filesystem refuses.
 func hostileNamedCopy(t *testing.T, src string) string {
 	t.Helper()
 	data, err := os.ReadFile(src)
@@ -107,13 +101,11 @@ func hostileNamedCopy(t *testing.T, src string) string {
 	return dst
 }
 
-// TestBoundarySanitizesHostileContent drives each human command end to end through
-// dispatch (the real boundary, via runCLI) with a file whose *content* carries a
-// terminal-hijack sequence, asserting stdout renders it as a visible escape and
-// that neither stream leaks a raw control byte. This covers the renderer classes
-// the boundary stands behind: dump tags, the dump --native blocks (Matroska, where
-// the segment title is file-controlled - the native leak the plan names), the
-// plan/set change preview, the diff change line, and the lint finding line.
+// TestBoundarySanitizesHostileContent drives each human command through the real boundary
+// with a file whose CONTENT carries a terminal-hijack sequence, asserting stdout renders a
+// visible escape and neither stream leaks a raw control byte. Covers the renderer classes
+// the boundary stands behind: dump tags and --native blocks, the change preview, the diff
+// line, and the lint finding line.
 func TestBoundarySanitizesHostileContent(t *testing.T) {
 	t.Parallel()
 	hostileFLAC := seedValue(t, sampleFLAC, tag.Title, hostilePayload)
@@ -145,12 +137,9 @@ func TestBoundarySanitizesHostileContent(t *testing.T) {
 	}
 }
 
-// TestBoundarySanitizesHostileFilename covers the larger class: the file *path* is
-// printed - in a record header on stdout, and in an error line on stderr - before
-// or without any content being parsed. It exercises a hostile name through the
-// per-file commands' headers and through both error-line shapes (the per-file
-// "waxlabel: <path>: ..." that dump writes, and the terminal "no such file:
-// <path>" that diff routes through renderError).
+// TestBoundarySanitizesHostileFilename covers the larger class: the PATH is printed, in a
+// header on stdout and an error line on stderr, before or without any content being parsed.
+// It drives a hostile name through the per-file headers and both error-line shapes.
 func TestBoundarySanitizesHostileFilename(t *testing.T) {
 	t.Parallel()
 	named := hostileNamedCopy(t, sampleFLAC)
@@ -185,10 +174,17 @@ func TestBoundarySanitizesHostileFilename(t *testing.T) {
 
 // TestUnidentifiedFilenameEscapedOnce: the library's "could not identify %q"
 // already escapes control bytes once via %q, so the CLI must pass the raw source name (jsonFileName),
-// not an already-sanitized displayName - otherwise a tab in the name is double-escaped in the error.
+// not an already-sanitized displayName, or a tab in the name is double-escaped.
 // A tab-in-name failure must escape exactly once in both the human error and the JSON error.message.
 func TestUnidentifiedFilenameEscapedOnce(t *testing.T) {
 	t.Parallel()
+	// Windows rejects control bytes in a filename outright (ERROR_INVALID_NAME), so the
+	// hostile name this test needs cannot be created there and the escaping it guards is
+	// unreachable. The sanitizing output boundary is exercised on every platform by the
+	// value-derived cases; only the filename-derived one needs a POSIX name.
+	if runtime.GOOS == "windows" {
+		t.Skip("windows: a control byte is not a legal filename character")
+	}
 	path := filepath.Join(t.TempDir(), "na\tme.bin") // an actual tab byte in the name
 	if err := os.WriteFile(path, []byte("not an audio file"), 0o644); err != nil {
 		t.Fatal(err)
@@ -222,15 +218,12 @@ func TestUnidentifiedFilenameEscapedOnce(t *testing.T) {
 	}
 }
 
-// TestBoundaryJSONStaysRaw pins the deliberate exemption: --json is the machine
-// contract, so the boundary unwraps to the raw stream for it. A value carrying DEL
-// (0x7f) and a C1 control (U+009B) - both of which json.Encoder emits raw - must
-// survive byte-for-byte, and the output must stay valid JSON. (Sanitizing it would
-// rewrite those bytes as \x7f/\x9b, which are not valid JSON string escapes.)
+// TestBoundaryJSONStaysRaw pins the deliberate exemption: --json is the machine contract,
+// so the boundary unwraps to the raw stream. DEL and a C1 control, both of which
+// json.Encoder emits raw, must survive byte-for-byte and leave valid JSON; sanitizing
+// would rewrite them as \x7f and \x9b, which are not valid JSON escapes.
 func TestBoundaryJSONStaysRaw(t *testing.T) {
 	t.Parallel()
-	// The value carries DEL (0x7f) and a C1 control (U+009B); json.Encoder emits
-	// both raw, so they must survive byte-for-byte through the exempted JSON path.
 	src := seedValue(t, sampleFLAC, tag.Title, "raw\x7f\u009bbytes")
 	stdout, _, code := runCLI(t, "dump", "--json", src)
 	if code != 0 {
@@ -305,11 +298,10 @@ func TestWarningAndFindingStringEscapeNewline(t *testing.T) {
 	}
 }
 
-// TestSanitizingWriterRuneSplit exercises the boundary's rune-boundary hardening,
-// which the fmt-based renderers never trigger (each emits a complete UTF-8 unit in
-// one Write): a multi-byte rune split across two Writes must be reassembled, not
-// escaped as a stray invalid lead byte, while a control byte in the same stream is
-// still escaped. "€" is 0xE2 0x82 0xAC.
+// TestSanitizingWriterRuneSplit exercises hardening the fmt-based renderers never trigger,
+// each emitting a complete UTF-8 unit per Write: a rune split across two Writes must be
+// reassembled, not escaped as a stray lead byte, while a control byte is still escaped.
+// "€" is 0xE2 0x82 0xAC.
 func TestSanitizingWriterRuneSplit(t *testing.T) {
 	var under bytes.Buffer
 	sw := newSanitizingWriter(&under)
@@ -333,7 +325,7 @@ func TestSanitizingWriterRuneSplit(t *testing.T) {
 }
 
 // failOnceWriter writes through to a buffer, but fails the one write for which
-// failNext is set - so a test can make the underlying stream error on a chosen
+// failNext is set, so a test can make the underlying stream error on a chosen
 // Write and then recover.
 type failOnceWriter struct {
 	got      bytes.Buffer

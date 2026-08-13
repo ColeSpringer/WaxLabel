@@ -2,6 +2,31 @@
 
 All notable changes to this project are documented here.
 
+## [1.4.1]
+
+### Fixed
+
+- Every in-place write failed on Windows with `Access is denied`. The library held its own read
+  handle on the source across the rename that replaces it, which a Windows rename refuses, so
+  `set`, `copy`, and `lint --fix` were broken in the shipped Windows binaries, as was `SaveBack`
+  for library callers. The handle is now released once the copy is done.
+- The post-rename directory fsync always failed on Windows, so even a successful save returned
+  an error. It is now a no-op there, where the filesystem already journals the rename.
+- A write whose bytes landed but whose post-commit step then failed was reported as a per-file
+  failure and counted unchanged. Such a write is applied and its plan is spent, so it is now
+  counted as changed and the step is named in a warning on stderr (a `postWriteWarning` field
+  under `--json`), leaving the exit code clean. Behavior change; affects Linux too, where an
+  ENOSPC or EIO from the directory fsync produced the same wrong report.
+- `Plan.Execute` returned a Document for a write that never happened, describing the untouched
+  original. A failed save now returns a nil Document, matching every other failure path.
+  Behavior change for library callers.
+- Editing a read-only file failed on Windows, where a rename refuses such a target. The
+  attribute is now cleared for the rename and carried over to the rewritten file.
+- `waxlabel dump --recursive DIR | head` exited 6 on Windows instead of exiting 0 silently: the
+  broken-pipe check tested only `EPIPE`, which Windows never returns.
+- A missing file's human message read `The system cannot find the file specified.` on Windows
+  while `--json` said `no such file or directory`. Both now use the canonical wording.
+
 ## [1.4.0]
 
 ### Added

@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -36,13 +35,10 @@ func subformatOf(container, format string) string {
 	return format
 }
 
-// writeJSON writes v as indented JSON followed by a newline. JSON is the machine
-// contract - scripts read the exact bytes - so it bypasses the human sanitizing
-// boundary: when w is a sanitizingWriter it unwraps to the raw underlying stream.
-// (json.Encoder already escapes C0 controls but emits DEL and the C1 controls
-// raw; sanitizing its output would corrupt those values and emit invalid JSON.)
-// All JSON output - the list/single records, the caps report, and the error
-// envelope - flows through here, so this one unwrap exempts every JSON path.
+// writeJSON writes v as indented JSON. Scripts read the exact bytes, so it unwraps a
+// sanitizingWriter to the raw stream: json.Encoder escapes C0 controls but emits DEL and
+// C1 raw, and sanitizing those would emit invalid JSON. Every JSON path flows through
+// here, so this one unwrap exempts them all.
 func writeJSON(w io.Writer, v any) error {
 	if sw, ok := w.(*sanitizingWriter); ok {
 		w = sw.Raw()
@@ -52,11 +48,8 @@ func writeJSON(w io.Writer, v any) error {
 	return enc.Encode(v)
 }
 
-// nonNil returns s, or an empty (non-nil) slice when s is nil, so a JSON collection
-// field assigned from it always marshals as [] rather than null. It is the single
-// idiom for the "every iterable field is always an array" invariant on the
-// report structs when the source slice can be nil; a field built by append is
-// instead initialized to []T{} at its struct literal, same effect.
+// nonNil returns s, or an empty non-nil slice, so a JSON collection field marshals as []
+// rather than null. A field built by append is initialized to []T{} instead, same effect.
 func nonNil[T any](s []T) []T {
 	if s == nil {
 		return []T{}
@@ -64,32 +57,23 @@ func nonNil[T any](s []T) []T {
 	return s
 }
 
-// sanitizingWriter is the human-output boundary. Every byte written through it is
-// run through [tag.SanitizeText], so a terminal-control sequence carried by
-// untrusted file bytes - a tag value, a native block label, a parse-warning
-// snippet, even a hostile filename printed in a record header or an error line -
-// is neutralized regardless of which renderer produced it. dispatch wraps stdout
-// and stderr in one once, so a renderer added later that forgets to escape cannot
-// leak a terminal-control sequence. The boundary deliberately keeps '\n' (it
-// separates output lines and carries multi-line values), so it does not stop the
-// lower-severity newline line-forgery class - that relies on the per-field
-// [tag.SanitizeLine] sweep at single-line sites. The JSON paths unwrap via
-// [sanitizingWriter.Raw] so the machine contract keeps the exact bytes.
+// sanitizingWriter is the human-output boundary: every byte runs through
+// [tag.SanitizeText], so a terminal-control sequence from untrusted file bytes is
+// neutralized whichever renderer produced it. dispatch wraps stdout and stderr once, so a
+// renderer added later that forgets to escape still cannot leak one. SanitizeText is
+// idempotent, so this composes with the per-field escapes already in place.
 //
-// SanitizeText is idempotent over its own (printable-ASCII) output, so the
-// boundary composes with the per-field and String() escapes already in place with
-// no double-escaping.
+// It keeps '\n' deliberately, since that separates lines and carries multi-line values, so
+// newline line-forgery is left to the per-field [tag.SanitizeLine] sweep. JSON unwraps via
+// [sanitizingWriter.Raw].
 //
-// It assumes writes are serialized - cobra drives one command's renderers
-// sequentially, so Write is never called concurrently - and is therefore not safe
-// for concurrent use: Write mutates the partial-rune buffer without locking.
+// Not safe for concurrent use: Write mutates buf without locking. Cobra drives one
+// command's renderers sequentially, so writes are serialized.
 type sanitizingWriter struct {
 	w io.Writer
-	// buf holds a trailing incomplete UTF-8 sequence (< utf8.UTFMax bytes) carried
-	// between Writes, so a rune split across two writes is not escaped as if its
-	// lead byte were invalid. Every human write today is a single fmt.Fprint* call
-	// (a complete UTF-8 unit), so buf stays empty in practice. Close flushes any
-	// remainder.
+	// buf holds a trailing incomplete UTF-8 sequence carried between Writes, so a rune
+	// split across two is not escaped as if its lead byte were invalid. Every human write
+	// today is one complete fmt.Fprint* call, so it stays empty in practice.
 	buf []byte
 }
 
@@ -98,12 +82,10 @@ func newSanitizingWriter(w io.Writer) *sanitizingWriter { return &sanitizingWrit
 // Raw returns the underlying writer so the JSON path can emit exact bytes.
 func (s *sanitizingWriter) Raw() io.Writer { return s.w }
 
-// Write sanitizes p and writes it to the underlying stream, holding back a
-// trailing incomplete UTF-8 sequence for the next call. On success it reports the
-// whole of p consumed (the held-back tail is buffered, not rejected). On an
-// underlying write error it commits nothing: the prior held tail is left intact
-// (no buffered byte is lost) and it reports 0 of p consumed, so a retry recomposes
-// the identical write.
+// Write sanitizes p, holding back a trailing incomplete UTF-8 sequence for the next call.
+// Success reports all of p consumed, since the held tail is buffered rather than rejected.
+// An underlying error commits nothing and reports 0, leaving the prior tail intact so a
+// retry recomposes the identical write.
 func (s *sanitizingWriter) Write(p []byte) (int, error) {
 	data := p
 	if len(s.buf) > 0 {
@@ -134,17 +116,15 @@ func (s *sanitizingWriter) Close() error {
 	return err
 }
 
-// incompleteSuffix reports the length of a trailing run of bytes that forms an
-// incomplete UTF-8 sequence - a multi-byte rune missing its final bytes, which a
-// following write could still complete. It returns 0 when the data ends on a rune
-// boundary, including when the final byte is genuinely invalid UTF-8 (which the
-// sanitizer should escape now, not hold for a completion that cannot come).
+// incompleteSuffix reports the length of a trailing multi-byte rune missing its final
+// bytes, which a following write could still complete. It returns 0 when the data ends on
+// a rune boundary, including on a genuinely invalid final byte, which the sanitizer should
+// escape now rather than hold for a completion that cannot come.
 func incompleteSuffix(p []byte) int {
 	if len(p) == 0 {
 		return 0
 	}
-	// Step back over continuation bytes (10xxxxxx) to the lead byte of the final
-	// sequence - at most utf8.UTFMax-1, since a UTF-8 rune is at most UTFMax bytes.
+	// Step back over continuation bytes to the final sequence's lead byte.
 	start := len(p) - 1
 	for start > 0 && len(p)-start < utf8.UTFMax && p[start]&0xC0 == 0x80 {
 		start--
@@ -155,20 +135,16 @@ func incompleteSuffix(p []byte) int {
 	return len(p) - start
 }
 
-// jsonMode reports whether --json was requested, reading it from the command's
-// (already-parsed) flags. The persistent flag is shared with the root, so this
-// works inside a RunE - by which point the command has resolved and parsed.
+// jsonMode reads --json from the command's already-parsed flags, so it works inside a
+// RunE. The persistent flag is shared with the root.
 func jsonMode(cmd *cobra.Command) bool {
 	v, _ := cmd.Flags().GetBool("json")
 	return v
 }
 
-// wantsJSON reports whether --json appears in the raw args. dispatch uses it to
-// route a terminal error even when cobra aborted before it could bind the
-// persistent flag (an unknown command or a bad flag), where jsonMode would
-// wrongly read false. It mirrors pflag's bool-flag forms: --json sets true,
-// --json=value uses strconv.ParseBool, and an unparseable value leaves the prior
-// state unchanged.
+// wantsJSON reports whether --json appears in the raw args, so dispatch can route a
+// terminal error even when cobra aborted before binding the persistent flag and jsonMode
+// would read false. Mirrors pflag's bool forms.
 func wantsJSON(args []string) bool {
 	v := false
 	for _, a := range args {
@@ -193,29 +169,22 @@ type jsonWarning struct {
 	Message string `json:"message"`
 }
 
-// jsonErrBody is the machine code and message for a failure, used both in the
-// terminal error envelope and in per-file error entries. Hint carries the same
-// actionable guidance the human render shows (the leading-dash "use --" pointer on a
-// usage error, the "re-run" pointer on source-changed), single-sourced from
-// classifiedError.hint so the two surfaces cannot drift; it is omitted when empty.
+// jsonErrBody is the machine code and message for a failure, in both the terminal envelope
+// and per-file entries. Hint is the same guidance the human render shows, single-sourced
+// from classifiedError.hint so the two cannot drift.
 type jsonErrBody struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 	Hint    string `json:"hint,omitempty"`
 }
 
-// jsonErrorEntry is the per-file error element shared by every list command's
-// --json output (dump, verify, lint, caps, plan, set). On a per-file failure the
-// element carries only the schema version, the file, and the classified error -
-// none of the command-specific result fields, which would otherwise leak as zero
-// values (plan's null operations array, set's phantom committed flag and echoed
-// output path) and let a scripted consumer mistake a failed file for a partial
-// success. Centralizing the shape here is what keeps the commands from drifting:
-// a per-file error is this, and only this. Every command result struct (jsonDocument,
-// jsonReport, ...) keeps a matching Error field with the same JSON shape, so a
-// consumer can unmarshal every element of a mixed success/failure array into the one
-// command type and branch on whether Error is set - the production path emits this
-// type, the consumer decodes into theirs.
+// jsonErrorEntry is the per-file error element every list command's --json output shares.
+// It carries only the schema version, file, and classified error: the command-specific
+// fields would leak as zero values (a null operations array, a phantom committed flag) and
+// let a consumer mistake a failed file for a partial success.
+//
+// Every command result struct keeps a matching Error field with the same shape, so a
+// consumer can unmarshal a mixed array into its own type and branch on Error being set.
 type jsonErrorEntry struct {
 	SchemaVersion int         `json:"schemaVersion"`
 	File          string      `json:"file"`
@@ -235,8 +204,7 @@ func humanDuration(d time.Duration) string {
 		return "0:00"
 	}
 	if d < time.Minute {
-		// Round to centiseconds first; a value just under a minute (59.999s) would
-		// otherwise print as "60.00s" instead of falling through to "1:00".
+		// Centiseconds first: 59.999s would otherwise print "60.00s" instead of "1:00".
 		cs := d.Round(10 * time.Millisecond)
 		if cs < time.Minute {
 			return fmt.Sprintf("%.2fs", cs.Seconds())
@@ -255,19 +223,12 @@ func humanDuration(d time.Duration) string {
 	return fmt.Sprintf("%d:%02d", m, s)
 }
 
-// perFile runs a per-path command (dump, verify, plan, caps): it processes each path
-// independently, captures the most-severe error class for the exit code (worseError,
-// not the first error seen), routes per-file errors to stderr (text) or into the
-// JSON result as the shared jsonErrorEntry, separates text records with a blank line
-// only between records actually written, and emits the per-file results as a JSON
-// array (always, even for a single path). noSeparator drops that inter-record blank
-// line, for a one-line-per-file (TSV) renderer - verify --quiet - whose output pipes
-// into sort/uniq where a blank line would be spurious. A per-file failure - including
-// plan's --strict single-valued-multi guardrail - is one array element so the
-// aggregate exit code stays order-independent (worseError); the invocation-level
-// unknown-key guardrail, which is file-independent, still aborts up front. The
-// returned error is alreadyRendered, so dispatch keeps the exit class without
-// re-rendering.
+// perFile runs a per-path command (dump, verify, plan, caps): each path independently,
+// keeping the most-severe error class rather than the first, with per-file errors on
+// stderr or in the JSON array. Text records are separated by a blank line only between
+// records actually written; noSeparator drops it for a one-line-per-file renderer whose
+// output pipes into sort/uniq. A per-file failure is one array element, so the aggregate
+// exit stays order-independent; the file-independent unknown-key guardrail aborts up front.
 func perFile[P any](
 	cmd *cobra.Command,
 	paths []string,
@@ -284,12 +245,10 @@ func perFile[P any](
 	for _, path := range paths {
 		p, err := compute(cmd.Context(), path)
 		if err != nil {
-			// A closed output pipe cancelled the shared context; the files not yet reached are
-			// not our failure to report. Stop silently (dispatch turns the run's broken-pipe cause
-			// into exit 0) rather than emitting a "canceled" line per un-dumped file. Gate on
-			// isPipeClose too, matching dispatch, so a genuine file error that merely races the
-			// pipe-close is still recorded and rendered, not swallowed by the break. Any error seen
-			// before the break stays in worstErr and still sets the exit code.
+			// A closed output pipe cancelled the context, so the files not yet reached are
+			// not ours to report; stop silently rather than print "canceled" per file. Also
+			// gated on isPipeClose so a genuine file error racing the close is still
+			// recorded. Anything already in worstErr still sets the exit code.
 			if errors.Is(context.Cause(cmd.Context()), errBrokenPipe) && isPipeClose(err) {
 				break
 			}
@@ -315,11 +274,9 @@ func perFile[P any](
 	}
 	if asJSON {
 		if werr := emitJSONList(out, items); werr != nil {
-			// The terminal array write failed - almost always a closed output pipe (EPIPE). A
-			// genuine per-file error already recorded outranks a broken pipe (errClassRank), so
-			// surface worstErr when present so its exit class still stands; otherwise return the
-			// write error, which dispatch maps to broken-pipe (exit 0). Returning werr
-			// unconditionally would drop an accumulated exit-4 to broken-pipe/io.
+			// Almost always a closed output pipe. A recorded per-file error outranks that,
+			// so surface worstErr when present; returning werr unconditionally would drop an
+			// accumulated exit 4 to broken-pipe.
 			if worstErr != nil {
 				return alreadyRendered(worstErr)
 			}
@@ -329,11 +286,10 @@ func perFile[P any](
 	return alreadyRendered(worstErr)
 }
 
-// emitJSONList writes the per-file items as a JSON array - always, even for a
-// single path - so a list command's --json output can be consumed uniformly
-// (iterate, or jq '.[]') no matter how many paths were given. An empty result
-// (e.g. a --recursive walk that matched no audio files) marshals as [] rather
-// than null. diff and copy are single-result commands and do not use this.
+// emitJSONList writes the per-file items as a JSON array, always, even for a single path,
+// so a list command's --json output is consumed the same way however many paths were
+// given. An empty result marshals as [] rather than null. diff and copy are
+// single-result commands and do not use this.
 func emitJSONList(w io.Writer, items []any) error {
 	if items == nil {
 		items = []any{}
@@ -341,14 +297,10 @@ func emitJSONList(w io.Writer, items []any) error {
 	return writeJSON(w, items)
 }
 
-// listCommandAnnotation marks a command whose --json output is a JSON array (one
-// element per input, via perFile/emitJSONList above). dispatch reads it to wrap a
-// pre-flight error (a bad flag, missing args, or a dir without --recursive) in the
-// same single-element array shape, so `dump --json... | jq '.[]'` keeps working even
-// when the command fails before its per-file loop. It travels with the command
-// at construction (markListCommand), so adding a list command later sets this in its
-// own constructor rather than in a second hand-maintained list the renderer would
-// have to track.
+// listCommandAnnotation marks a command whose --json output is an array. dispatch reads it
+// to wrap a pre-flight error in the same single-element shape, so `dump --json | jq '.[]'`
+// keeps working when the command fails before its per-file loop. Set at construction, so a
+// new list command cannot be forgotten in a second hand-maintained list.
 const listCommandAnnotation = "waxlabel/emitsJSONList"
 
 // markListCommand tags cmd as a list command (see listCommandAnnotation) and returns
@@ -361,14 +313,10 @@ func markListCommand(cmd *cobra.Command) *cobra.Command {
 	return cmd
 }
 
-// emitsJSONList reports whether the command args resolve to emits its --json output as
-// a list (one element per input), so dispatch wraps a pre-flight error in the same
-// single-element array shape. It resolves the command with cobra's own Find -
-// which already handles "--", a flag before the subcommand, and the --format value -
-// rather than re-scanning raw args, then reads the list-command annotation. caps is a
-// list command over files but answers a single object under --format (a format query,
-// not a per-file list), so that one case stays an object; an unknown command resolves
-// to the root (no annotation) and stays an object too.
+// emitsJSONList reports whether args resolve to a command whose --json output is a list.
+// It resolves via cobra's own Find, which already handles "--", a flag before the
+// subcommand, and the --format value. caps is a list command but answers a single object
+// under --format; an unknown command resolves to the root and stays an object too.
 func emitsJSONList(root *cobra.Command, args []string) bool {
 	cmd, _, err := root.Find(args)
 	if err != nil || cmd == nil || cmd.Annotations[listCommandAnnotation] != "true" {
@@ -380,10 +328,8 @@ func emitsJSONList(root *cobra.Command, args []string) bool {
 	return true
 }
 
-// hasFlag reports whether the long flag --name appears in args, in either the
-// "--name value" or "--name=value" spelling. It stops at the POSIX "--" terminator,
-// so a positional that merely looks like the flag (a file literally named --format,
-// passed after --) is not mistaken for it.
+// hasFlag reports whether --name appears in args, in either spelling. It stops at "--", so
+// a positional that merely looks like the flag is not mistaken for it.
 func hasFlag(args []string, name string) bool {
 	long := "--" + name
 	for _, a := range args {
@@ -397,27 +343,20 @@ func hasFlag(args []string, name string) bool {
 	return false
 }
 
-// noteNoFiles prints a note when a path list is empty - reachable only when a
-// --recursive walk matched no audio files (MinimumNArgs(1) guarantees at least
-// one argument otherwise) - so editing a typo'd or audio-free directory is not a
-// silent success. set and plan share it for an identical message. It is a text-mode
-// diagnostic suppressed under --json (whose stdout shape is fixed, still emitting []),
-// matching the sibling noteSkipped.
+// noteNoFiles prints a note when a path list is empty, reachable only from a --recursive
+// walk that matched nothing, so a typo'd or audio-free directory is not a silent success.
+// Text-mode only: the JSON stdout shape is fixed and still emits [].
 func noteNoFiles(w io.Writer, paths []string, asJSON bool) {
 	if asJSON || len(paths) != 0 {
 		return
 	}
-	// A "note:" prefix (not "waxlabel:") so this exit-0 advisory does not read as a
-	// failure line - the run succeeded, there was simply nothing to do.
+	// "note:" rather than "waxlabel:", so an exit-0 advisory does not read as a failure.
 	fmt.Fprintln(w, "note: no audio files found")
 }
 
-// noteSkipped reports how many regular files a --recursive walk passed over for not
-// matching a known audio extension, so a directory of unrecognized files is not a
-// silent near-no-op (it pairs with noteNoFiles: when nothing matched, this explains
-// why). It is a text-mode diagnostic suppressed under --json (whose stdout shape is
-// fixed) and when nothing was skipped, and uses the same "note:" prefix as the other
-// exit-0 advisories.
+// noteSkipped reports how many files a --recursive walk passed over by extension, so a
+// directory of unrecognized files is not a silent near-no-op. Pairs with noteNoFiles,
+// which it explains when nothing matched.
 func noteSkipped(w io.Writer, skipped int, asJSON bool) {
 	if asJSON || skipped == 0 {
 		return
@@ -425,15 +364,11 @@ func noteSkipped(w io.Writer, skipped int, asJSON bool) {
 	fmt.Fprintf(w, "note: %d file(s) skipped (not recognized by extension)\n", skipped)
 }
 
-// usageError marks a bad-arguments failure, which maps to exit code 2. The extra
-// fields are set only at the cobra-origin sites that dead-end with no guidance (an
-// unknown flag, a bad arg count, an unknown command): cmd is the resolved command
-// path for the help hint (empty falls back to "waxlabel"), wantsHint requests the
-// "run '<cmd> --help' for usage" pointer, multiline marks the message as
-// trusted multi-line cobra text whose newlines/tabs must be preserved on render,
-// and hint carries an explicit hint line that overrides the wantsHint pointer (for
-// example, leading-dash path guidance on an unknown flag/shorthand). The hand-written usagef messages leave all
-// four zero: they are single-line and already self-document.
+// usageError marks a bad-arguments failure, exit 2. The extra fields are set only at the
+// cobra-origin sites that dead-end with no guidance: cmd names the command for the help
+// hint, wantsHint asks for the "run --help" pointer, multiline marks trusted cobra text
+// whose newlines must survive rendering, and hint overrides the wantsHint pointer. The
+// hand-written usagef messages leave all four zero, being single-line and self-documenting.
 type usageError struct {
 	msg       string
 	cmd       string
@@ -448,13 +383,10 @@ func usagef(format string, args ...any) error {
 	return &usageError{msg: fmt.Sprintf(format, args...)}
 }
 
-// checkArgText reclassifies the library's writable-text rejection (a NUL byte or invalid UTF-8)
-// as a CLI usage error (exit 2): a bad command-line value is a bad invocation, not a corrupt
-// media file. It reads the bare reason phrase from the library's WritableTextReason - the same
-// rule the library backstop enforces - so the CLI boundary and the backstop cannot drift, and the
-// message needs no error-string surgery. The four argv inputs cannot carry a NUL (argv is
-// NUL-terminated), but --synced-lyrics-file content can, so the shared validator is what closes
-// that path. what names the offending input for the message.
+// checkArgText reclassifies the library's writable-text rejection as exit 2: a bad
+// command-line value is a bad invocation, not a corrupt media file. The reason phrase comes
+// from WritableTextReason, the same rule the library backstop enforces, so the two cannot
+// drift. argv cannot carry a NUL, but --synced-lyrics-file content can.
 func checkArgText(value, what string) error {
 	if reason := wl.WritableTextReason(value); reason != "" {
 		return usagef("%s %s", what, reason)
@@ -484,19 +416,16 @@ type jsonError struct {
 	Error         jsonErrBody `json:"error"`
 }
 
-// renderError writes the terminal error as JSON or as a human-readable line,
-// using one shared classification for both. emitList wraps the JSON envelope in a
-// single-element array for a list command, so its pre-flight failures keep the
-// documented array shape that `jq '.[]'` relies on; a non-list command (and the
-// human path) is unaffected.
+// renderError writes the terminal error as JSON or a human line, from one shared
+// classification. emitList wraps the JSON envelope in a single-element array for a list
+// command, so its pre-flight failures keep the array shape `jq '.[]'` relies on.
 func renderError(w io.Writer, jsonMode, emitList bool, err error) {
 	if err == nil {
 		return
 	}
 	c := classifyError(err)
-	// A broken output pipe is silent: the downstream reader closed the pipe deliberately, so
-	// printing an error (to a possibly-still-open stderr) would be noise, and there may be no
-	// stdout to write a JSON envelope to anyway. exitCodeFor still returns its 0.
+	// Silent: the reader closed the pipe deliberately, and there may be no stdout left to
+	// write an envelope to. exitCodeFor still returns 0.
 	if c.code == "broken-pipe" {
 		return
 	}
@@ -512,13 +441,10 @@ func renderError(w io.Writer, jsonMode, emitList bool, err error) {
 		}
 		return
 	}
-	// Pick the sanitizer by message shape. A single-line message can embed a
-	// file-derived path (e.g. "<path>: no such file or directory" from a hostile
-	// glob/walk arg), so SanitizeLine escapes \n/\t too, blocking line-forgery. A multiline message
-	// is trusted cobra text (the "unknown command... Did you mean this?" block), so
-	// SanitizeText preserves its real newlines/tabs while still escaping ESC/CSI/BEL/
-	// CR - otherwise the suggestion shows literal \x0a/\x09. The output boundary
-	// backstops control bytes either way; the JSON branch above keeps c.message raw.
+	// A single-line message can embed a file-derived path, so SanitizeLine escapes \n and
+	// \t too, blocking line-forgery. A multiline one is trusted cobra text, where
+	// SanitizeText keeps the real newlines while still escaping ESC/CSI/BEL/CR; otherwise
+	// the suggestion block would show literal \x0a.
 	sanitize := tag.SanitizeLine
 	if c.multiline {
 		sanitize = tag.SanitizeText
@@ -533,30 +459,70 @@ func renderError(w io.Writer, jsonMode, emitList bool, err error) {
 // doubled. Library sentinels do not embed it, but direct errors may still carry one.
 func cleanMessage(msg string) string { return strings.TrimPrefix(msg, "waxlabel: ") }
 
-// perFileError writes the standard per-file failure line - "waxlabel: <path>:
-// <reason>" - to w, single-sourcing the format and the displayName/perFileReason
-// pair every per-file command shares (dump/verify via perFile, lint, set, and copy,
-// which cannot use the perFile generic because it has two named operands).
+// perFileError writes the standard "waxlabel: <path>: <reason>" failure line, so every
+// per-file command shares one format and one displayName/perFileReason pair.
 func perFileError(w io.Writer, path string, err error) {
 	fmt.Fprintf(w, "waxlabel: %s: %s\n", displayName(path), perFileReason(err))
 }
 
-// perFileReason renders a per-file error for a command that already prints the
-// path itself (dump, verify). A bare *fs.PathError restates the path ("open
-// /x: no such file or directory"), so it is reduced to its underlying reason to
-// keep the path from appearing twice on the line; every other error keeps its
-// (prefix-cleaned) message.
+// perFileReason renders a per-file error for a command that already prints the path, so a
+// bare *fs.PathError is reduced to its underlying reason rather than naming the path twice.
+//
+// A not-found is normalized to classifyError's wording, so the human line and the --json
+// envelope agree on every platform. Only not-found: a permission failure still reads
+// "Access is denied." on Windows and "permission denied" on Unix. See deferred-work.md.
 func perFileReason(err error) string {
 	if pe, ok := err.(*fs.PathError); ok {
+		if errors.Is(pe.Err, fs.ErrNotExist) {
+			return notFoundReason
+		}
 		return pe.Err.Error()
 	}
 	return cleanMessage(err.Error())
 }
 
-// classifiedError is every user-visible representation of a terminal error.
-// multiline marks a message whose embedded newlines/tabs are trusted and must be
-// preserved on the human render (a cobra command suggestion block), so renderError
-// picks the newline-preserving sanitizer for it.
+// notFoundReason is the canonical not-found wording, shared by the human per-file
+// line and the --json envelope. POSIX phrasing, because that is what already shipped.
+const notFoundReason = "no such file or directory"
+
+// writeFailed reports whether a [wl.Plan.Execute] result is a genuine per-file failure.
+// The question is "did the bytes land", not "was there an error": an error after a
+// committed write leaves the edit applied and the plan spent, so calling it a failure
+// would state the opposite of what happened. Such a write counts as changed, with
+// warnPostCommit naming the step. set, copy, and lint --fix all branch here.
+func writeFailed(res wl.SaveResult, err error) bool { return err != nil && !res.Committed }
+
+// warnPostCommit notes a committed write whose post-commit step failed (see writeFailed).
+// path must be the file WRITTEN, which under set -o is the output, not the input. Nil
+// errors and --json runs are no-ops: there the note rides jsonPostWrite instead.
+func warnPostCommit(w io.Writer, asJSON bool, path string, err error) {
+	if err == nil || asJSON {
+		return
+	}
+	fmt.Fprintf(w, "waxlabel: %s: written, but a step after the write failed: %s\n",
+		displayName(path), postWriteReason(err))
+}
+
+// jsonPostWrite carries a post-commit failure in the writing commands' payloads. A
+// warning, not an error envelope: committed stays true. Kept out of the report's warnings
+// array, which carries library plan warnings.
+type jsonPostWrite struct {
+	PostWriteWarning string `json:"postWriteWarning,omitempty"`
+}
+
+func (j *jsonPostWrite) setPostWrite(err error) {
+	if err != nil {
+		j.PostWriteWarning = postWriteReason(err)
+	}
+}
+
+// postWriteReason renders a post-commit failure for the stderr note and the JSON
+// field. Not perFileReason: that drops a *fs.PathError's path as a duplicate of the
+// one its caller printed, but a post-commit step names the directory, not the file.
+func postWriteReason(err error) string { return cleanMessage(err.Error()) }
+
+// classifiedError is every user-visible representation of a terminal error. multiline
+// marks trusted cobra text whose newlines must survive the human render.
 type classifiedError struct {
 	exitCode  int
 	code      string
@@ -565,18 +531,17 @@ type classifiedError struct {
 	multiline bool
 }
 
-// errBrokenPipe is the cancel cause the SIGPIPE goroutine (main) uses so a closed output pipe
-// is distinguishable from a real interrupt: both leave a canceled op returning context.Canceled,
-// but only a broken pipe carries this cause. dispatch re-tags the terminal error with it, and
-// classifyError maps it to a silent exit 0 - the Unix convention for `... | head`.
+// errBrokenPipe is the SIGPIPE goroutine's cancel cause, the only thing distinguishing a
+// closed pipe from a real interrupt: both leave a canceled op returning context.Canceled.
+// classifyError maps it to a silent exit 0, the Unix convention for `... | head`.
 var errBrokenPipe = errors.New("broken output pipe")
 
-// isPipeClose reports whether err is the symptom of a closed output pipe: the shared context's
-// cancellation, or an EPIPE from a write that raced the reader's close. perFile's loop pairs it
-// with the errBrokenPipe cancel cause to stop silently on a broken pipe, so a genuine file error
-// that merely coincided with the pipe closing is still recorded rather than swallowed.
+// isPipeClose reports whether err is the symptom of a closed output pipe: the context's
+// cancellation, or a broken-pipe errno from a write that raced the reader's close.
+// perFile pairs it with the errBrokenPipe cause, so a genuine file error that merely
+// coincided with the close is still recorded.
 func isPipeClose(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, syscall.EPIPE)
+	return errors.Is(err, context.Canceled) || isBrokenPipe(err)
 }
 
 // classifyError maps a terminal error to a stable exit code and machine code so
@@ -626,26 +591,21 @@ func classifyError(err error) classifiedError {
 	case errors.Is(err, waxerr.ErrUnsupportedTag):
 		c.exitCode, c.code = 3, "unsupported-tag"
 	case errors.Is(err, waxerr.ErrChainedStream):
-		// A chained/multiplexed Ogg stream: a distinct write-refusal, not collapsed into
-		// unsupported-tag - two different refusal reasons reading as one code loses signal.
+		// Its own code, not folded into unsupported-tag: two refusal reasons reading as
+		// one lose signal.
 		c.exitCode, c.code = 3, "unsupported-stream"
 	case errors.Is(err, waxerr.ErrUnalignedStream):
-		// A well-formed but non-page-aligned Ogg stream: a write refusal (exit 3), not a
-		// corrupt file (exit 4) - the stream reads fine, it just cannot be rewritten safely.
+		// Reads fine, just cannot be rewritten safely, so a refusal and not a corrupt file.
 		c.exitCode, c.code = 3, "unsupported-alignment"
 	case errors.Is(err, waxerr.ErrFragmented):
-		// A fragmented MP4: another well-formed-but-unwritable shape. It reads fine (the
-		// initial movie box carries the tags), so it is a write refusal (exit 3) with its own
-		// code rather than a corrupt file or a collapsed unsupported-format.
+		// Another well-formed-but-unwritable shape: the initial movie box carries the tags.
 		c.exitCode, c.code = 3, "unsupported-fragmentation"
 	case errors.Is(err, waxerr.ErrSourceChanged):
 		c.exitCode, c.code, c.hint = 5, "source-changed",
 			"the file changed since it was read; re-run to pick up the new contents"
 	case errors.Is(err, waxerr.ErrInputTooLarge):
-		// A user-configured resource cap on a streamed input (--max-size / WithMaxSourceBytes)
-		// was exceeded. It is not corruption (a raw stream has no declared size), so it gets its
-		// own exit code rather than being folded into invalid-data (exit 4). Follows the
-		// split-sentinel precedent of the chained/unaligned-stream refusals.
+		// A user-configured --max-size cap, not corruption: a raw stream has no declared
+		// size, so this is not invalid-data.
 		c.exitCode, c.code = 7, "input-too-large"
 	case errors.Is(err, waxerr.ErrInvalidData),
 		errors.Is(err, waxerr.ErrSizeTooLarge),
@@ -654,10 +614,8 @@ func classifyError(err error) classifiedError {
 		c.exitCode, c.code = 4, "invalid-data"
 	case isNotFoundPathError(err):
 		pe, _ := err.(*fs.PathError) // guaranteed by isNotFoundPathError
-		// Per-file "<path>: no such file or directory", matching the line dump/set/verify
-		// already print, so the human and --json not-found phrasing agree across commands
-		//.
-		c.exitCode, c.code, c.message = 6, "not-found", pe.Path+": no such file or directory"
+		// Matches the per-file line dump/set/verify print, so human and --json agree.
+		c.exitCode, c.code, c.message = 6, "not-found", pe.Path+": "+notFoundReason
 	case isLocalIOError(err):
 		c.exitCode, c.code = 6, "io"
 	}
@@ -669,17 +627,12 @@ func isUsageError(err error) bool {
 	return ok
 }
 
-// errClassRank orders per-file error classes by severity for a multi-file run's
-// aggregate exit code, most-severe first. The aggregate reports the worst class
-// seen, not merely the first file's error: a genuinely broken file (invalid-data)
-// must outrank a wrong path (not-found), which must outrank a bad invocation
-// (usage). The numeric exit code deliberately does not follow this order; numeric-max would
-// let not-found/io (6) outrank invalid-data (4), i.e. "you typed a bad filename"
-// would beat "this file is corrupt". Keyed off classifyError(err).code so it tracks
-// the vocabulary the exit-code table documents; an unrecognized code ranks lowest
-// (0) and never masks a known class above it. Keep in sync with the precedence list
-// in README.md; TestErrClassRankCoversEveryErrorClass pins that every code
-// classifyError can produce is ranked here, so a new class cannot silently fall to 0.
+// errClassRank orders per-file error classes for a multi-file run's aggregate exit code,
+// most-severe first: a broken file must outrank a wrong path, which must outrank a bad
+// invocation. The numeric exit code deliberately does not follow this order, since
+// numeric-max would let not-found (6) beat invalid-data (4). An unrecognized code ranks 0
+// and never masks a known class. Keep in sync with README's precedence list;
+// TestErrClassRankCoversEveryErrorClass pins that no code falls to 0 silently.
 var errClassRank = map[string]int{
 	"canceled":                  100, // exit 130: an interrupted run dominates
 	"timeout":                   100, // exit 130
@@ -700,12 +653,9 @@ var errClassRank = map[string]int{
 	"broken-pipe":               5,   // exit 0: a closed output pipe, below every real failure so one still wins
 }
 
-// worseError reports whether candidate is a more-severe aggregate error than
-// current for a multi-file run, by errClassRank - so the run's exit code reflects
-// the most-severe failure rather than the first one encountered. A nil current is
-// always replaced. Equal-rank errors keep the incumbent (the first seen), which is
-// harmless since equal rank means an equal exit code. Used by the per-file loops
-// (dump/verify/plan/caps via perFile, set, lint).
+// worseError reports whether candidate outranks current by errClassRank, so a run's exit
+// code reflects the most-severe failure rather than the first. Equal ranks keep the
+// incumbent, which is harmless since they share an exit code.
 func worseError(current, candidate error) bool {
 	if current == nil {
 		return true
@@ -713,23 +663,18 @@ func worseError(current, candidate error) bool {
 	return errClassRank[classifyError(candidate).code] > errClassRank[classifyError(current).code]
 }
 
-// isNotFoundPathError reports whether err is, at the top level, a "file does not
-// exist" *fs.PathError - the one shape the CLI restates as a clean
-// "<path>: no such file or directory". The assertion is deliberately direct (not errors.As):
-//   - an error a caller already wrapped with context (a temp-file create, a
-//     cover read) keeps that message and classifies as the generic I/O class;
-//   - a *os.LinkError/*os.SyscallError that os.IsNotExist would also accept
-//     (e.g. a rename race) stays in the I/O class too, since "not-found" promises
-//     the clean path-only message we can produce only for a *fs.PathError.
+// isNotFoundPathError reports whether err is, at the top level, a not-exist *fs.PathError,
+// the one shape the CLI restates as a clean "<path>: no such file or directory". The
+// assertion is direct rather than errors.As on purpose: an error a caller already wrapped
+// keeps its own message, and a *os.LinkError stays in the I/O class, since only a
+// *fs.PathError yields the clean path-only message "not-found" promises.
 func isNotFoundPathError(err error) bool {
 	pe, ok := err.(*fs.PathError)
 	return ok && os.IsNotExist(pe)
 }
 
-// isLocalIOError reports whether err is a local filesystem failure. The kinds
-// the write/read paths actually produce: os.Open and fsync return *fs.PathError;
-// the atomic save-back's os.Rename returns *os.LinkError; lower-level syscall
-// wrappers return *os.SyscallError. All map to the "io" exit class.
+// isLocalIOError reports whether err is a local filesystem failure: the three shapes the
+// read and write paths produce, all mapping to the "io" exit class.
 func isLocalIOError(err error) bool {
 	if _, ok := errors.AsType[*fs.PathError](err); ok {
 		return true
@@ -762,19 +707,17 @@ func looksLikePath(s string) bool {
 	return strings.ContainsAny(s, "/\\") || isAudioExtension(filepath.Ext(s))
 }
 
-// looksLikePathFlag reports whether an unknown-flag error message's offending token
-// looks like a file path, which is when the leading-dash "--" hint is more useful than
-// the generic --help pointer. A genuine flag typo (including a dotted "--log.level=debug")
-// keeps the --help hint. The token is the last space-separated word of cobra's message
-// ("unknown flag: --x" / "unknown shorthand flag: 'x' in -x"); the fixed prefix carries
+// looksLikePathFlag reports whether an unknown-flag message's offending token looks like a
+// path, where the leading-dash hint beats the generic --help pointer. A genuine flag typo
+// keeps --help. The token is the last word of cobra's message, whose fixed prefix carries
 // no path bytes.
 func looksLikePathFlag(msg string) bool {
 	return looksLikePath(msg[strings.LastIndexByte(msg, ' ')+1:])
 }
 
-// looksLikeBareWord reports whether s is a plain word (not path-shaped) - what an
-// unquoted value fragment looks like (the "Words" left over from `--set TITLE=Two
-// Words`) rather than a real file path. It backs the quoting hint.
+// looksLikeBareWord reports whether s is a plain word rather than a path: what an unquoted
+// value fragment looks like, the "Words" left over from `--set TITLE=Two Words`. It backs
+// the quoting hint.
 func looksLikeBareWord(s string) bool {
 	return !looksLikePath(s)
 }
@@ -792,15 +735,15 @@ func normalizeExecuteError(err error) error {
 			switch p {
 			case "unknown command", "unknown subcommand":
 				// Cobra's trusted multi-line "Did you mean this?" block: preserve its
-				// newlines/tabs and point at the command list. cmd stays empty so
-				// the hint falls back to "waxlabel" - an unknown command should list the
-				// commands, not a subcommand's flags.
+				// newlines and point at the command list. cmd stays empty so the hint falls
+				// back to "waxlabel", since an unknown command should list the commands
+				// rather than a subcommand's flags.
 				ue.multiline, ue.wantsHint = true, true
 			case "unknown flag", "unknown shorthand":
 				// Backstop for a flag error that reaches here untyped; in practice cobra
-				// routes flag-parse failures through FlagErrorFunc (wrapUsageErrors), which
-				// attaches dashPathHint the same way. Only when the token looks like a
-				// path - else a genuine typo is left to the help hint.
+				// routes flag-parse failures through FlagErrorFunc, which attaches
+				// dashPathHint the same way. Only when the token looks like a path, so a
+				// genuine typo is left to the help hint.
 				if looksLikePathFlag(msg) {
 					ue.hint = dashPathHint
 				}

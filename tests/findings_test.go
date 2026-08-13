@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -106,7 +107,7 @@ func TestAddedPictureValidation(t *testing.T) {
 		t.Errorf("tags-only edit re-validated a pre-existing picture: %v", err)
 	}
 
-	// Regression: transferring the carrier onto another file still succeeds - the
+	// Regression: transferring the carrier onto another file still succeeds: the
 	// transfer engine opts picture validation out, carrying already-embedded art that
 	// the header sniff would reject (copy has no --force).
 	dest := mustParseFile(t, copyToTemp(t, sampleFLAC))
@@ -146,7 +147,7 @@ func TestInvalidKeyHint(t *testing.T) {
 }
 
 // TestChapterWarningsSurface: a chapter edit's sanity warnings flow through
-// the plan report - a chapter past the file end, and two chapters sharing a start.
+// the plan report: a chapter past the file end, and two chapters sharing a start.
 func TestChapterWarningsSurface(t *testing.T) {
 	doc := mustParseFile(t, sampleM4B)
 	dur := doc.Properties().Duration()
@@ -177,11 +178,10 @@ func TestChapterWarningsSurface(t *testing.T) {
 	}
 }
 
-// TestCopyChaptersDestinationFitWarnings: a transfer carries the source's chapters
-// verbatim, so it suppresses the source-authoring sanity warnings it authored none of
-// (duplicate-chapter). It still surfaces the destination-fit signal chapter-past-duration
-// when a carried chapter starts beyond the (shorter) destination's playable length, matching
-// what set warns - a copied chapter that overshoots cannot be given a bounded end there.
+// TestCopyChaptersDestinationFitWarnings: a transfer carries chapters verbatim, so it
+// suppresses the source-authoring warnings it authored none of. It still surfaces
+// chapter-past-duration when a carried chapter starts beyond the shorter destination's
+// playable length, matching what set warns.
 func TestCopyChaptersDestinationFitWarnings(t *testing.T) {
 	src := mustParseFile(t, sampleM4B)                               // ~9s, chapters at 0:00 / 0:03 / 0:06
 	dst := mustParseFile(t, copyToTemp(t, "../testdata/sample.m4a")) // ~1s
@@ -209,12 +209,10 @@ func TestCopyChaptersDestinationFitWarnings(t *testing.T) {
 	}
 }
 
-// TestCopyRunToEOFChapterStaysEqual guards the copy-then-diff chapter axis: when a
-// source's final chapter runs to the source EOF, copy opens that trailing end so the
-// destination refills it to its own (longer) EOF. The copied file's chapters then compare
-// equal under the same duration-aware normalization diff uses, even though the two durations
-// differ. It asserts the chapter axis directly, not the global diff exit: copy excludes
-// own-audio keys (ENCODER) so a full diff after a copy legitimately still reports a difference.
+// TestCopyRunToEOFChapterStaysEqual: when a source's final chapter runs to its EOF, copy
+// opens that trailing end so the destination refills it to its own longer EOF, and the two
+// compare equal under diff's duration-aware normalization. It asserts the chapter axis
+// directly, since copy excludes own-audio keys so a full diff still reports a difference.
 func TestCopyRunToEOFChapterStaysEqual(t *testing.T) {
 	src := mustParseFile(t, chaptersMKA)  // ~0.6s, Finale runs 0.400 -> 0.600 (source EOF)
 	dstBytes := readFixture(t, notagsMP3) // ~2.04s, longer than the source
@@ -277,11 +275,9 @@ func TestLegacyConflictWarning(t *testing.T) {
 		t.Errorf("setting the legacy value verbatim should not warn; got %v", same.Report().Warnings)
 	}
 
-	// A multi-value edit that keeps the legacy value present is NOT a conflict: the
-	// legacy ARTIST "Sample Artist" still appears in ARTIST=[Sample Artist, Extra].
-	// Each legacy family entry is single-valued, so a naive slice-equality check would
-	// falsely flag this (the regression this guards against); FamilySelected, which
-	// tests presence in the whole edited set, does not.
+	// Not a conflict: the legacy ARTIST still appears in ARTIST=[Sample Artist, Extra].
+	// Legacy entries are single-valued, so a naive slice-equality check would flag this;
+	// FamilySelected tests presence in the whole edited set instead.
 	keepLegacy, err := mustParseFile(t, path).Edit().
 		Set(tag.Artist, "Sample Artist").Add(tag.Artist, "Extra").Prepare()
 	if err != nil {
@@ -332,8 +328,8 @@ func TestLegacyConflictWarning(t *testing.T) {
 }
 
 // TestRejectNULInEditValues: a NUL byte in a value the edit sets, in a chapter
-// title, or in an added picture's description is refused at Prepare - a NUL silently
-// truncates the field on a C-string format - rather than written and cut.
+// title, or in an added picture's description is refused at Prepare rather than written
+// and cut, since a NUL silently truncates the field on a C-string format.
 func TestRejectNULInEditValues(t *testing.T) {
 	path := copyToTemp(t, sampleFLAC)
 
@@ -360,7 +356,7 @@ func TestRejectNULInEditValues(t *testing.T) {
 	}
 
 	// A NUL in a chapter title is rejected on a chapter-capable format (Matroska), so
-	// the NUL - not a missing-chapter-support gate - is the reason.
+	// the NUL, not a missing-chapter-support gate, is the reason.
 	if _, err := mustParseFile(t, sampleMKA).Edit().
 		SetChapters(wl.Chapter{Start: 0, Title: "bad\x00title"}).Prepare(); !errors.Is(err, waxerr.ErrInvalidData) {
 		t.Errorf("NUL in chapter title: err = %v, want ErrInvalidData", err)
@@ -373,15 +369,11 @@ func TestRejectNULInEditValues(t *testing.T) {
 }
 
 // TestPictureMIMESniffReconcile exercises the two Picture sniff methods in isolation.
-// SniffAuthoritative (the embed path, and now every codec read path, per the tests
-// TestMP4CoverSniffedAuthoritatively and TestID3BlankMIMESniffed) lets a recognized image's
-// bytes win over a caller-declared MIME or dimension that disagrees, so a mislabeled cover is
-// never stored or reported under a contradicting MIME. SniffInto is the fill-only variant: it
-// fills only empty fields and never relabels a set MIME. The decoders no longer call it, but its
-// fill-only contract is still used elsewhere and pinned here. A failed sniff keeps the caller's
-// MIME under both.
+// SniffAuthoritative lets a recognized image's bytes win over a disagreeing caller-declared
+// MIME, so a mislabeled cover is never stored under a contradicting one. SniffInto is the
+// fill-only variant, which never relabels. A failed sniff keeps the caller's MIME in both.
 func TestPictureMIMESniffReconcile(t *testing.T) {
-	// Embed path: PNG bytes wrongly declared JPEG with a bogus width - both corrected.
+	// Embed path: PNG bytes wrongly declared JPEG with a bogus width; both corrected.
 	embed := wl.Picture{Type: wl.PicFrontCover, MIME: "image/jpeg", Width: 999, Data: tinyPNG()}
 	if !embed.SniffAuthoritative() {
 		t.Fatal("tinyPNG should sniff as a recognized image")
@@ -449,7 +441,7 @@ func TestSaveBackRefusesReExecute(t *testing.T) {
 	// A committed SaveBack spends the plan for EVERY destination, not just a second
 	// SaveBack: re-reading the rewritten file with the original layout's segments would
 	// corrupt the output, so SaveAsFile and WriteTo are refused too.
-	if _, _, err := plan.Execute(ctx, wl.SaveAsFile(t.TempDir()+"/out.flac")); !errors.Is(err, waxerr.ErrInvalidData) {
+	if _, _, err := plan.Execute(ctx, wl.SaveAsFile(filepath.Join(t.TempDir(), "out.flac"))); !errors.Is(err, waxerr.ErrInvalidData) {
 		t.Errorf("SaveAsFile after a committed SaveBack err = %v, want ErrInvalidData", err)
 	}
 	var buf bytes.Buffer
@@ -470,7 +462,7 @@ func TestSaveBackRefusesReExecute(t *testing.T) {
 	}
 }
 
-// TestUninitializedDocMessages: the message papercuts report clearly - a zero
+// TestUninitializedDocMessages: the message papercuts report clearly. A zero
 // Document's hash entry points, ParseFile(""), and a name-less Parse of
 // unidentifiable bytes all give specific, actionable errors.
 func TestUninitializedDocMessages(t *testing.T) {
@@ -483,7 +475,7 @@ func TestUninitializedDocMessages(t *testing.T) {
 		t.Errorf("zeroDoc.HashFile err = %v, want it to mention 'not initialized'", err)
 	}
 	// An empty path is a caller mistake, classified as ErrInvalidData (exit 4) like the
-	// other nil/empty-input guards - deliberately not the fs.ErrNotExist a bare
+	// other nil/empty-input guards, deliberately not the fs.ErrNotExist a bare
 	// os.Stat("") would have produced (an empty path is an invalid argument, not a
 	// missing file). Pin the class so the deliberate change is not silently undone.
 	if _, err := wl.ParseFile(ctx, ""); !errors.Is(err, waxerr.ErrInvalidData) || !strings.Contains(err.Error(), "input filename is empty") {
@@ -510,15 +502,10 @@ func TestWriteToNilWriterRejected(t *testing.T) {
 	}
 }
 
-// TestNoOpDowngradeOnReprojection: when a codec re-projects an edit back to
-// the value already on disk - a numeric genre (17 -> Rock) or an integer track
-// number (02 -> 2) - the plan must read as an immediate no-op so IsNoOp() and
-// Changes() agree. Before the fix the raw edit differed from base (so the fast-path
-// no-op gate missed it) while the projected result equalled base (so Changes() was
-// empty), and set/copy/lint --fix churned the file forever. (The former "wav dropped
-// empty" case is gone: WAV/AIFF now store a present-empty value in their native chunk
-// like every other format, so setting an absent key to present-empty is a real
-// change, not a dropped-then-no-op.)
+// TestNoOpDowngradeOnReprojection: when a codec re-projects an edit back to the value
+// already on disk, a numeric genre or an integer track number, the plan must read as an
+// immediate no-op so IsNoOp and Changes agree. The raw edit differing from base while the
+// projected result equalled it used to make set and lint --fix churn the file forever.
 func TestNoOpDowngradeOnReprojection(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -550,7 +537,7 @@ func TestNoOpDowngradeOnReprojection(t *testing.T) {
 // TestNoOpDowngradeConvergesAndIsIdempotent: a numeric-genre edit whose
 // projection differs from the current value writes once; re-parsing and repeating
 // the same edit is then a no-op whose WriteTo reproduces the source bytes exactly,
-// identically across runs - no perpetual churn.
+// identically across runs, with no perpetual churn.
 func TestNoOpDowngradeConvergesAndIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	path := copyToTemp(t, sampleMP3) // GENRE=Rock

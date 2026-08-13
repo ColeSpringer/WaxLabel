@@ -2,15 +2,12 @@ package main
 
 import "sync"
 
-// A second interrupt forces os.Exit, which skips deferred cleanups. Temp files a run creates
-// (today the buffered-stdin file) register their removal here so the signal goroutine can drain
-// them before that forced exit, so a hard quit does not leak a /tmp/waxlabel-stdin-* file.
+// A second interrupt forces os.Exit, which skips deferred cleanups. Temp files register
+// their removal here so the signal goroutine can drain them first. Entries are keyed by
+// id and dropped as each command cleans up, so the registry holds only in-flight temps.
 //
-// registerCleanup returns a deregister func that the normal cleanup path calls, so the registry
-// only ever holds temps still in flight; each is dropped the moment its command cleans up. That
-// keeps it from growing across the many in-process command runs the test suite drives, and lets
-// one command drain its own temp without disturbing another concurrent command's entry, since
-// every entry is keyed by id rather than pooled in one slice.
+// Best-effort on Windows, where a delete needs the handle closed and a drain cannot force
+// that mid-write. POSIX unlinks an open file regardless.
 var (
 	cleanupMu  sync.Mutex
 	cleanupID  uint64
@@ -35,10 +32,9 @@ func registerCleanup(fn func()) (deregister func()) {
 	}
 }
 
-// runCleanups runs and clears every still-registered cleanup. It is called by the signal
-// goroutine just before os.Exit, where deferred calls do not fire; a cleanup a normal-path
-// deregister already removed is simply absent. It is idempotent (a second call finds an empty
-// registry) and iterates a snapshot so a concurrent register/deregister cannot race the loop.
+// runCleanups runs and clears every still-registered cleanup, called by the signal goroutine
+// just before os.Exit. Idempotent, and iterates a snapshot so a concurrent register cannot
+// race the loop.
 func runCleanups() {
 	cleanupMu.Lock()
 	fns := cleanupFns

@@ -13,22 +13,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// errLintFindings is the sentinel lint returns when a file's worst finding is a
-// warning (no error-severity finding, no structural error). It is plain
-// (unclassified), so it maps to exit code 1 - the linter / diff(1) convention of
-// "1 = issues found" - and is returned already-rendered so no error line prints over
-// the findings. A structural parse/IO error outranks it and keeps its own exit class
-// (so a script can tell an exit-4 parse failure from exit-1 "issues found").
+// errLintFindings is returned when a file's worst finding is a warning. Unclassified, so
+// it exits 1, the diff(1) convention for "issues found", and already-rendered so no error
+// line prints over the findings. A structural error outranks it and keeps its own class.
 var errLintFindings = errors.New("issues found")
 
-// errLintErrorFindings is the sentinel lint returns when a file carries an
-// error-severity finding (no-audio, a duplicate tag block, multiple Vorbis comments,
-// a duplicate picture icon) but no structural parse/IO error. It wraps ErrInvalidData
-// so it classifies as invalid-data (exit 4) - the same class verify/AudioDigest give a
-// no-audio file - making "valid-but-contradictory metadata" a distinct exit from a
-// mere warning (exit 1). Folded through worseError, it outranks a not-found/io/
-// unsupported file in a multi-file run (a broken file beats a wrong path, per the
-// exit-code philosophy) while still losing to canceled/source-changed.
+// errLintErrorFindings is returned for an error-severity finding with no structural
+// error. It wraps ErrInvalidData for exit 4, the class verify gives a no-audio file, so
+// "valid but contradictory metadata" is distinct from a mere warning. Through worseError
+// it outranks a not-found in a multi-file run, while still losing to canceled.
 var errLintErrorFindings = fmt.Errorf("%w: lint found an invalid or contradictory state", waxerr.ErrInvalidData)
 
 // newLintCmd builds the "lint" command, which reports metadata issues (stale
@@ -66,11 +59,9 @@ func newLintCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// A --recursive walk that matched no audio files is an error for the
-			// mutating --fix path - so a script cannot read "nothing happened" as
-			// success - but a harmless empty read otherwise (noteNoFiles + exit 0).
-			// This guard is scoped to --fix and runs before noteNoFiles so the
-			// returned error is printed once, not doubled by the note.
+			// Matching no files is an error only for the mutating --fix path, so a script
+			// cannot read "nothing happened" as success. Before noteNoFiles, so the error
+			// prints once rather than doubled by the note.
 			if fix && len(paths) == 0 {
 				return usagef("no audio files found")
 			}
@@ -90,20 +81,13 @@ func newLintCmd() *cobra.Command {
 	return markListCommand(cmd)
 }
 
-// lintLoop runs a lint-style per-file command: it processes each path, captures
-// the most-severe structural error (worseError, not the first one seen), tracks the
-// worst finding severity across all files, and emits per-file text or JSON (the
-// shared jsonErrorEntry on failure). It is perFile with a finding accumulator and
-// lint's exit contract, so runLint and runLintFix differ only in their compute/
-// severity/render helpers, not in the loop.
+// lintLoop runs a lint-style per-file command: perFile plus a finding accumulator and
+// lint's exit contract, so runLint and runLintFix differ only in their helpers. It keeps
+// the most-severe structural error, not the first seen.
 //
-// The finding severity maps to a sentinel that is folded into the SAME worseError
-// comparison as a structural error, not gated behind "no structural error": an
-// error-severity finding (errLintErrorFindings, invalid-data/exit 4) must outrank a
-// separate file's not-found/io (exit 6), matching the "a broken file beats a wrong
-// path" exit-code philosophy - gating it behind worstErr==nil would let the wrong
-// path win. A warning (errLintFindings, exit 1) still loses to any structural error,
-// preserving the prior behavior.
+// The finding severity folds into the SAME worseError comparison as a structural error,
+// not gated behind "no structural error": an error-severity finding (exit 4) must outrank
+// another file's not-found (exit 6), since a broken file beats a wrong path.
 func lintLoop[T any](
 	cmd *cobra.Command,
 	paths []string,
@@ -147,8 +131,8 @@ func lintLoop[T any](
 			return err
 		}
 	}
-	// Map the worst finding to its sentinel and fold it into worseError alongside any
-	// structural error, so the aggregate exit reflects the most-severe class overall.
+	// Folded in alongside any structural error, so the aggregate exit reflects the
+	// most-severe class overall.
 	var findingErr error
 	switch {
 	case maxSev >= wl.LintError:
@@ -162,12 +146,9 @@ func lintLoop[T any](
 	return alreadyRendered(worstErr)
 }
 
-// worstFinding returns the most-severe severity among a file's findings (LintInfo,
-// the zero value, when there are none). lintLoop accumulates this across files and
-// applies the LintWarning/LintError thresholds itself, so reporting the raw max -
-// rather than a separate "has an issue" bool - keeps the predicate minimal: a
-// sub-threshold LintInfo finding (a custom-key note) is below LintWarning, so it
-// never makes a run non-clean.
+// worstFinding returns the most-severe severity among a file's findings, LintInfo when
+// there are none. lintLoop applies the thresholds itself, so a sub-threshold LintInfo
+// finding never makes a run non-clean.
 func worstFinding(findings []wl.Finding) wl.LintSeverity {
 	var worst wl.LintSeverity
 	for _, f := range findings {
@@ -205,55 +186,57 @@ func renderLint(w io.Writer, path string, findings []wl.Finding) {
 		return
 	}
 	for _, f := range findings {
-		// A finding's message and key can be file-derived (e.g. the encoder-noise
-		// message carries the raw inherited stamp; a custom-key finding carries the raw
-		// field name), but Finding.String now self-sanitizes, so it is safe to print
-		// directly (the output boundary is a second backstop).
+		// Message and key can be file-derived, but Finding.String self-sanitizes.
 		fmt.Fprintf(w, "  %s\n", f.String())
 	}
 }
 
-// runLintFix applies the safe remediations to each file and saves, reporting the
-// field-level changes (the shared write-plan preview) and the findings that still
-// remain afterward. A remaining warning-or-worse finding still yields exit 1.
+// runLintFix applies the safe remediations to each file and saves, reporting the changes
+// and what still remains. A remaining warning-or-worse finding still yields exit 1.
 func runLintFix(cmd *cobra.Command, paths []string, pathErrors map[string]error) error {
+	errOut, asJSON := cmd.ErrOrStderr(), jsonMode(cmd)
+	// A post-commit failure rides the outcome rather than the error return, so the note
+	// is emitted here, where stderr is in scope.
+	fixOne := func(ctx context.Context, path string) (fixOutcome, error) {
+		o, err := lintFixOne(ctx, path)
+		warnPostCommit(errOut, asJSON, path, o.postWrite)
+		return o, err
+	}
 	return lintLoop(cmd, paths,
-		guardPathErrors(pathErrors, lintFixOne),
+		guardPathErrors(pathErrors, fixOne),
 		func(o fixOutcome) wl.LintSeverity { return worstFinding(o.remaining) },
 		func(path string, o fixOutcome) any { return toJSONLintFix(o) },
 		func(w io.Writer, path string, o fixOutcome) { renderLintFix(w, o) },
 	)
 }
 
-// fixOutcome is one file's lint --fix result: the field-level changes applied, the
-// structural operations performed (e.g. stripping a legacy ID3v1 trailer), the
-// findings that still remain afterward, and whether the save committed new bytes.
+// fixOutcome is one file's lint --fix result: the changes applied, the structural
+// operations performed, what still remains, and whether the save committed.
 type fixOutcome struct {
 	path       string
 	changes    []tag.Change
 	operations []string
 	remaining  []wl.Finding
 	committed  bool
+	// postWrite is a step that failed after the bytes were committed, so it travels as a
+	// note on a successful outcome rather than an error.
+	postWrite error
 }
 
-// lintFixOne parses path, applies the safe remediation, saves in place, then
-// re-lints the saved file. Re-linting (rather than trusting the fixer's intent)
-// keeps the report honest: the canonical fix cannot reach every source of a
-// finding - a transcoder stamp held in a native vendor string survives a
-// Clear(ENCODER) - so "remaining" is whatever a fresh lint would now show.
+// lintFixOne parses path, applies the safe remediation, saves in place, then re-lints.
+// Re-linting rather than trusting the fixer's intent keeps the report honest: a
+// transcoder stamp in a native vendor string survives Clear(ENCODER), so "remaining" is
+// whatever a fresh lint would now show.
 func lintFixOne(ctx context.Context, path string) (fixOutcome, error) {
 	doc, err := wl.ParseFile(ctx, path)
 	if err != nil {
 		return fixOutcome{}, err
 	}
-	// A no-audio file cannot be written: Prepare's guard refuses every no-audio write with an
-	// opaque ErrInvalidData ("refusing to write..."), which would surface here as an error and,
-	// under --json, as an {"error": ...} envelope instead of the finding. Short-circuit before
-	// PlanLintFix/Prepare so a no-audio file routes into the same graceful "nothing to fix / not
-	// auto-fixed / left unchanged" path as every other unfixable finding, surfacing no-audio in
-	// remaining. Gating on the warning (not an empty fix plan) also covers a no-audio file that
-	// carries an otherwise-fixable finding: that plan would be non-empty yet still hit the write
-	// refusal, so an empty-plan check would leave it broken.
+	// Prepare refuses every no-audio write with an opaque ErrInvalidData, which would
+	// surface as an error envelope instead of the finding. Short-circuit so no-audio
+	// routes into the same graceful "not auto-fixed" path as every other unfixable
+	// finding. Gated on the warning rather than an empty fix plan, which would miss a
+	// no-audio file that also carries a fixable finding.
 	for _, w := range doc.Warnings() {
 		if w.Code == wl.WarnNoAudioFrames {
 			return fixOutcome{path: path, remaining: doc.Lint(), committed: false}, nil
@@ -265,13 +248,14 @@ func lintFixOne(ctx context.Context, path string) (fixOutcome, error) {
 		return fixOutcome{}, err
 	}
 	_, res, err := plan.Execute(ctx, wl.SaveBack())
-	if err != nil {
+	// Committed decides the outcome, not err (see writeFailed).
+	if writeFailed(res, err) {
 		return fixOutcome{}, err
 	}
-	// Determine the findings that remain after the fix. When the save committed new
-	// bytes, re-parse to see the true post-fix state; when it wrote nothing the
-	// file is byte-identical to what we parsed, so doc.Lint() still holds - avoid
-	// re-parsing (which would re-hash every embedded picture) in that case.
+	postWrite := err // named: the struct literal below is past several other err assignments
+	// A committed save needs a re-parse for the true post-fix state. An uncommitted one
+	// left the file byte-identical, so doc.Lint() still holds and re-parsing would
+	// needlessly re-hash every embedded picture.
 	var remaining []wl.Finding
 	if res.Committed {
 		after, err := wl.ParseFile(ctx, path)
@@ -282,12 +266,10 @@ func lintFixOne(ctx context.Context, path string) (fixOutcome, error) {
 	} else {
 		remaining = doc.Lint()
 	}
-	// NoOpPlan stamps operations with a shared "no changes" sentinel (core.NoOpPlan), not a real
-	// remediation step, so a no-op --fix would otherwise both suppress renderLintFix's "nothing
-	// to fix" branch (its len==0 guard never fires) and leak "no changes" into the --json
-	// operations array. Treat a no-op as having no operations; a committed legacy-strip is not a
-	// no-op, so its real structural operations are preserved (README: non-empty operations =>
-	// bytes were written).
+	// A no-op plan stamps operations with core.NoOpPlan, a sentinel rather than a real
+	// step, which would suppress renderLintFix's "nothing to fix" branch and leak "no
+	// changes" into the JSON array. A committed legacy-strip is not a no-op, so its real
+	// operations survive (README: non-empty operations means bytes were written).
 	operations := plan.Report().Operations
 	if plan.IsNoOp() {
 		operations = nil
@@ -298,22 +280,19 @@ func lintFixOne(ctx context.Context, path string) (fixOutcome, error) {
 		operations: operations,
 		remaining:  remaining,
 		committed:  res.Committed,
+		postWrite:  postWrite,
 	}, nil
 }
 
 // renderLintFix prints what --fix did to one file: the fields it changed (or
 // "nothing to fix"), the findings it left for the user, and the save outcome.
 func renderLintFix(w io.Writer, o fixOutcome) {
-	// --fix rejects "-" (stdin) up front (see newLintCmd), so o.path is always a real
-	// file - no "<stdin>" relabel is needed, unlike the other record headers - but it
-	// is still escaped for the single-line header and the "saved" line below, so a
-	// hostile filename from a --recursive walk cannot forge a line (e.g. a fake
-	// "saved /etc/passwd").
+	// --fix rejects "-", so o.path is always a real file and needs no "<stdin>" relabel.
+	// Still escaped, so a hostile filename cannot forge a fake "saved /etc/passwd" line.
 	name := tag.SanitizeLine(o.path)
 	fmt.Fprintf(w, "%s\n", name)
-	// A legacy-container strip is a structural operation with no field change, so
-	// "nothing to fix" holds only when both the changes and the operations are empty
-	// - otherwise the strip would be invisible (the README promises it is reported).
+	// A legacy-container strip is a structural operation with no field change, so both
+	// lists must be empty or the strip would go unreported.
 	if len(o.changes) == 0 && len(o.operations) == 0 {
 		fmt.Fprintln(w, "  nothing to fix")
 	} else {
@@ -321,9 +300,8 @@ func renderLintFix(w io.Writer, o fixOutcome) {
 		for _, c := range o.changes {
 			renderChangeLine(w, "    ", c)
 		}
-		// Operations render glyph-free, not with a leading "- ": these lines sit directly
-		// below the change lines above, where "- KEY" means a removed key, so a dash here
-		// would read as another removal rather than a structural step.
+		// Glyph-free: these sit below the change lines, where "- KEY" means a removed key,
+		// so a dash here would read as another removal rather than a structural step.
 		for _, op := range o.operations {
 			fmt.Fprintf(w, "    %s\n", op)
 		}
@@ -335,15 +313,13 @@ func renderLintFix(w io.Writer, o fixOutcome) {
 	if o.committed {
 		fmt.Fprintf(w, "  saved %s\n", name)
 	} else {
-		// No bytes written: nothing was auto-fixable. Any remaining findings are
-		// already listed above, so don't claim the file is "clean" here.
+		// Not "clean": any remaining findings are already listed above.
 		fmt.Fprintf(w, "  left unchanged\n")
 	}
 }
 
-// jsonLint is the machine-readable lint result for one file. A failed element is
-// emitted as the shared jsonErrorEntry; this struct keeps a matching Error field so
-// a consumer can decode every array element into it (see jsonErrorEntry).
+// jsonLint is the machine-readable lint result for one file. The Error field matches
+// jsonErrorEntry, so a consumer can decode every array element into this one struct.
 type jsonLint struct {
 	SchemaVersion int           `json:"schemaVersion"`
 	File          string        `json:"file"`
@@ -358,11 +334,9 @@ type jsonFinding struct {
 	Key      string `json:"key,omitempty"`
 }
 
-// jsonLintFix is the machine-readable lint --fix result for one file. Remaining
-// holds the findings a fresh lint of the saved file still reports (what --fix
-// could not safely resolve). A failed element is emitted as the shared
-// jsonErrorEntry; this struct keeps a matching Error field so a consumer can decode
-// every array element into it (see jsonErrorEntry).
+// jsonLintFix is the machine-readable lint --fix result for one file. Remaining holds
+// what a fresh lint of the saved file still reports. The Error field matches
+// jsonErrorEntry, as in jsonLint.
 type jsonLintFix struct {
 	SchemaVersion int          `json:"schemaVersion"`
 	File          string       `json:"file"`
@@ -373,6 +347,7 @@ type jsonLintFix struct {
 	Operations []string      `json:"operations"`
 	Remaining  []jsonFinding `json:"remaining"`
 	Committed  bool          `json:"committed"`
+	jsonPostWrite
 }
 
 func toJSONLint(path string, findings []wl.Finding) jsonLint {
@@ -384,10 +359,8 @@ func toJSONLint(path string, findings []wl.Finding) jsonLint {
 }
 
 func toJSONLintFix(o fixOutcome) jsonLintFix {
-	// nonNil on operations (from plan.Report().Operations, which can be nil) so it is
-	// always "[]", never null - matching findings/remaining/changes, which their
-	// to-JSON helpers already build non-nil.
-	return jsonLintFix{
+	// nonNil so operations serializes as "[]", never null, matching the other lists.
+	j := jsonLintFix{
 		SchemaVersion: schemaVersion,
 		File:          jsonFileName(o.path),
 		Changes:       toJSONChanges(o.changes),
@@ -395,10 +368,11 @@ func toJSONLintFix(o fixOutcome) jsonLintFix {
 		Remaining:     toJSONFindings(o.remaining),
 		Committed:     o.committed,
 	}
+	j.setPostWrite(o.postWrite)
+	return j
 }
 
-// toJSONFindings converts a finding list to its JSON form, shared by lint and
-// lint --fix so the finding shape cannot drift.
+// toJSONFindings is shared by lint and lint --fix so the finding shape cannot drift.
 func toJSONFindings(findings []wl.Finding) []jsonFinding {
 	out := make([]jsonFinding, 0, len(findings))
 	for _, f := range findings {
