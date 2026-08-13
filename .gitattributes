@@ -1,0 +1,26 @@
+* text=auto eol=lf
+
+# Media fixtures must reach the decoders byte for byte.
+*.aac -text
+*.afc -text
+*.aif -text
+*.aifc -text
+*.aiff -text
+*.alac -text
+*.flac -text
+*.m4a -text
+*.m4b -text
+*.mk3d -text
+*.mka -text
+*.mks -text
+*.mkv -text
+*.mp3 -text
+*.mp4 -text
+*.oga -text
+*.ogg -text
+*.opus -text
+*.wav -text
+*.wave -text
+*.webm -text
+
+testdata/** -text

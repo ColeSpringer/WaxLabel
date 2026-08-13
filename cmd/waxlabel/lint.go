@@ -81,13 +81,11 @@ func newLintCmd() *cobra.Command {
 	return markListCommand(cmd)
 }
 
-// lintLoop runs a lint-style per-file command: perFile plus a finding accumulator and
-// lint's exit contract, so runLint and runLintFix differ only in their helpers. It keeps
-// the most-severe structural error, not the first seen.
-//
-// The finding severity folds into the SAME worseError comparison as a structural error,
-// not gated behind "no structural error": an error-severity finding (exit 4) must outrank
-// another file's not-found (exit 6), since a broken file beats a wrong path.
+// lintLoop runs a lint-style per-file command: perFile plus a finding accumulator and lint's
+// exit contract, so runLint and runLintFix differ only in their helpers. It keeps the
+// most-severe structural error, not the first seen. Finding severity folds into that same
+// worseError comparison rather than being gated behind "no structural error", since an
+// error-severity finding (exit 4) must outrank another file's not-found (exit 6).
 func lintLoop[T any](
 	cmd *cobra.Command,
 	paths []string,
@@ -105,11 +103,18 @@ func lintLoop[T any](
 	for _, path := range paths {
 		t, err := compute(cmd.Context(), path)
 		if err != nil {
+			// A closed output pipe cancelled the context, so the files not yet reached are
+			// not ours to report; stop silently rather than print a line for each. Gated on
+			// isPipeClose so a genuine file error racing the close is still recorded. The
+			// same carve-out perFile makes, for the loop it mirrors.
+			if errors.Is(context.Cause(cmd.Context()), errBrokenPipe) && isPipeClose(err) {
+				break
+			}
 			if worseError(worstErr, err) {
 				worstErr = err
 			}
 			if asJSON {
-				items = append(items, errorEntry(path, classifyError(err)))
+				items = append(items, errorEntry(path, err))
 			} else {
 				perFileError(errOut, path, err)
 			}
@@ -126,13 +131,9 @@ func lintLoop[T any](
 			rendered++
 		}
 	}
-	if asJSON {
-		if err := emitJSONList(out, items); err != nil {
-			return err
-		}
-	}
 	// Folded in alongside any structural error, so the aggregate exit reflects the
-	// most-severe class overall.
+	// most-severe class overall. Before the JSON write, so a pipe closing there cannot drop
+	// a finding's exit class.
 	var findingErr error
 	switch {
 	case maxSev >= wl.LintError:
@@ -142,6 +143,17 @@ func lintLoop[T any](
 	}
 	if findingErr != nil && worseError(worstErr, findingErr) {
 		worstErr = findingErr
+	}
+	if asJSON {
+		if werr := emitJSONList(out, items); werr != nil {
+			// Almost always a closed output pipe, which a recorded per-file error or an
+			// error-severity finding outranks; returning werr unconditionally would drop
+			// an accumulated exit 4 to broken-pipe.
+			if worstErr != nil {
+				return alreadyRendered(worstErr)
+			}
+			return werr
+		}
 	}
 	return alreadyRendered(worstErr)
 }
@@ -224,19 +236,18 @@ type fixOutcome struct {
 }
 
 // lintFixOne parses path, applies the safe remediation, saves in place, then re-lints.
-// Re-linting rather than trusting the fixer's intent keeps the report honest: a
-// transcoder stamp in a native vendor string survives Clear(ENCODER), so "remaining" is
-// whatever a fresh lint would now show.
+// Re-linting rather than trusting the fixer's intent keeps the report honest: a transcoder
+// stamp in a native vendor string survives Clear(ENCODER), so "remaining" is whatever a
+// fresh lint would now show.
 func lintFixOne(ctx context.Context, path string) (fixOutcome, error) {
 	doc, err := wl.ParseFile(ctx, path)
 	if err != nil {
 		return fixOutcome{}, err
 	}
 	// Prepare refuses every no-audio write with an opaque ErrInvalidData, which would
-	// surface as an error envelope instead of the finding. Short-circuit so no-audio
-	// routes into the same graceful "not auto-fixed" path as every other unfixable
-	// finding. Gated on the warning rather than an empty fix plan, which would miss a
-	// no-audio file that also carries a fixable finding.
+	// surface as an error envelope instead of the finding. Short-circuit so no-audio takes
+	// the same "not auto-fixed" path as every other unfixable finding. Gated on the warning
+	// rather than an empty fix plan, which would miss a no-audio file that is also fixable.
 	for _, w := range doc.Warnings() {
 		if w.Code == wl.WarnNoAudioFrames {
 			return fixOutcome{path: path, remaining: doc.Lint(), committed: false}, nil
@@ -266,10 +277,10 @@ func lintFixOne(ctx context.Context, path string) (fixOutcome, error) {
 	} else {
 		remaining = doc.Lint()
 	}
-	// A no-op plan stamps operations with core.NoOpPlan, a sentinel rather than a real
-	// step, which would suppress renderLintFix's "nothing to fix" branch and leak "no
-	// changes" into the JSON array. A committed legacy-strip is not a no-op, so its real
-	// operations survive (README: non-empty operations means bytes were written).
+	// A no-op plan stamps operations with core.NoOpPlan, a sentinel rather than a real step,
+	// which would suppress renderLintFix's "nothing to fix" branch and leak "no changes"
+	// into the JSON array. A committed legacy-strip is not a no-op, so its real operations
+	// survive (README: non-empty operations means bytes were written).
 	operations := plan.Report().Operations
 	if plan.IsNoOp() {
 		operations = nil
@@ -288,7 +299,7 @@ func lintFixOne(ctx context.Context, path string) (fixOutcome, error) {
 // "nothing to fix"), the findings it left for the user, and the save outcome.
 func renderLintFix(w io.Writer, o fixOutcome) {
 	// --fix rejects "-", so o.path is always a real file and needs no "<stdin>" relabel.
-	// Still escaped, so a hostile filename cannot forge a fake "saved /etc/passwd" line.
+	// Still escaped: a hostile filename must not forge a fake "saved /etc/passwd" line.
 	name := tag.SanitizeLine(o.path)
 	fmt.Fprintf(w, "%s\n", name)
 	// A legacy-container strip is a structural operation with no field change, so both
@@ -300,8 +311,8 @@ func renderLintFix(w io.Writer, o fixOutcome) {
 		for _, c := range o.changes {
 			renderChangeLine(w, "    ", c)
 		}
-		// Glyph-free: these sit below the change lines, where "- KEY" means a removed key,
-		// so a dash here would read as another removal rather than a structural step.
+		// Glyph-free: below the change lines "- KEY" means a removed key, so a dash here
+		// would read as another removal rather than a structural step.
 		for _, op := range o.operations {
 			fmt.Fprintf(w, "    %s\n", op)
 		}

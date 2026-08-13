@@ -11,13 +11,10 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// TestCodecCapabilitiesNilSafe proves every registered codec answers a
-// file-agnostic capability query (m == nil, as PlanTransfer makes) without
-// panicking and self-reports the format it claims. Step 14 threaded a *core.Media
-// into Capabilities; the 8 file-uniform codecs ignore it and Matroska nil-guards
-// before reading docType, so a nil file must be safe for all of them. The named
-// import below ensures registration regardless of how this file is compiled, so the
-// test does not silently depend on a sibling importing the package.
+// TestCodecCapabilitiesNilSafe proves every registered codec answers a file-agnostic
+// capability query (m == nil, as PlanTransfer makes) without panicking and self-reports the
+// format it claims. The file-uniform codecs ignore the *core.Media and Matroska nil-guards
+// before reading docType, so a nil file must be safe for all of them.
 func TestCodecCapabilitiesNilSafe(t *testing.T) {
 	codecs := core.Codecs()
 	if len(codecs) == 0 {
@@ -31,13 +28,11 @@ func TestCodecCapabilitiesNilSafe(t *testing.T) {
 	}
 }
 
-// capsBlockMarkers bound the machine-generated capability table in the README. The
-// table is rendered from the codec Capabilities (the same structured source `caps`
-// renders), so the README's per-format picture and chapter facts cannot silently
-// drift from the code (the caps-vs-README class - Matroska chapters and m4a
-// cover types). TestReadmeCapabilityBlockDerived regenerates the block and asserts the
-// committed README carries it verbatim; on a capability change, run the test to see the
-// new block in the failure output and paste it between the markers.
+// These bound the machine-generated capability table in the README, rendered from the codec
+// Capabilities so its per-format picture and chapter facts cannot drift from the code.
+// TestReadmeCapabilityBlockDerived regenerates the block and asserts the committed README
+// carries it verbatim; on a capability change, run the test and paste the block from its
+// failure output between the markers.
 const (
 	capsBlockBegin = "<!-- BEGIN caps (generated from codec Capabilities; see tests/capability_test.go) -->"
 	capsBlockEnd   = "<!-- END caps -->"
@@ -69,10 +64,9 @@ func capCell(c wl.Capability) string {
 	return s
 }
 
-// TestReadmeCapabilityBlockDerived (Prevention) renders the capability block from the
-// codecs and asserts the committed README carries it verbatim between the markers, so
-// the README's caps facts are literally generated, not hand-maintained - closing the
-// caps-vs-README drift class.
+// TestReadmeCapabilityBlockDerived renders the capability block from the codecs and asserts
+// the committed README carries it verbatim between the markers, so its caps facts are
+// generated rather than hand-maintained.
 func TestReadmeCapabilityBlockDerived(t *testing.T) {
 	readme, err := os.ReadFile("../README.md")
 	if err != nil {
@@ -84,10 +78,18 @@ func TestReadmeCapabilityBlockDerived(t *testing.T) {
 		t.Fatalf("README is missing the caps markers (%q … %q); insert this block between them:\n\n%s",
 			capsBlockBegin, capsBlockEnd, want)
 	}
-	if strings.TrimSpace(got) != strings.TrimSpace(want) {
-		t.Errorf("README caps block is stale; replace the content between the markers with:\n\n%s\n\ngot:\n\n%s", want, got)
+	gotLF, wantLF := normalizeEOL(got), normalizeEOL(want)
+	if strings.TrimSpace(gotLF) != strings.TrimSpace(wantLF) {
+		t.Errorf("README caps block is stale; replace the content between the markers with:\n\n%s\n\ngot:\n\n%s", want, gotLF)
 	}
 }
+
+// normalizeEOL rewrites CRLF to LF. The README is read from the working tree, whose line
+// endings belong to whoever cloned the repo (Git for Windows defaults to core.autocrlf=true),
+// while the want block is built with \n. Comparing raw would measure that checkout policy
+// instead of capability drift. The repo's .gitattributes pins LF, so this is the second line
+// of defense rather than the only one.
+func normalizeEOL(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
 
 // extractBetween returns the text strictly between the first begin and the next end
 // marker, and whether both were found in order.

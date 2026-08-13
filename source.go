@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"time"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/waxerr"
@@ -19,9 +20,9 @@ type fileSource struct {
 }
 
 func openFileSource(path string) (*fileSource, error) {
-	// Stat before Open: opening the read end of a FIFO blocks until a writer appears, so
-	// a non-regular path must be rejected before os.Open or the parse hangs before any
-	// guard runs. os.Stat follows symlinks, so a symlink to a regular file still works.
+	// Stat before Open: opening the read end of a FIFO blocks until a writer appears, so a
+	// non-regular path must be rejected before os.Open or the parse hangs before any guard
+	// runs. Stat follows symlinks, so a symlink to a regular file still works.
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, err
@@ -61,10 +62,27 @@ func fileIdentity(path string) (core.Identity, error) {
 	id := core.Identity{
 		Path:            path,
 		Size:            info.Size(),
-		ModTimeUnixNano: info.ModTime().UnixNano(),
+		ModTimeUnixNano: unixNanoOrZero(info.ModTime()),
 	}
 	id.INode, id.Device = sysInodeDevice(info)
 	return id, nil
+}
+
+// The window time.Time.UnixNano is defined over; outside it the result wraps.
+var (
+	minRepresentableTime = time.Unix(0, math.MinInt64)
+	maxRepresentableTime = time.Unix(0, math.MaxInt64)
+)
+
+// unixNanoOrZero returns t as Unix nanoseconds, or 0 where UnixNano is undefined (outside
+// roughly 1678-2262). 0 already means "mtime unknown" to Identity.Matches, so such a file
+// is treated the way a stream is: never compared, never preserved. So is a file dated
+// exactly at the epoch, a real time this sentinel cannot distinguish.
+func unixNanoOrZero(t time.Time) int64 {
+	if t.Before(minRepresentableTime) || t.After(maxRepresentableTime) {
+		return 0
+	}
+	return t.UnixNano()
 }
 
 // reopensFileSource reports whether resolving this document's own source reopens its file
@@ -74,19 +92,18 @@ func (d *Document) reopensFileSource() bool {
 	return d.src == nil && d.path != ""
 }
 
-// resolveSource selects the bytes to read for a write or a hash: an explicit source, else
-// the document's in-memory source (OpenSource), else its file reopened (ParseFile). Shared
-// by the write and hash paths. remedy is the caller-specific "here is how to supply a
-// source" hint, since a generic one is half-wrong for each.
+// resolveSource selects the bytes to read for a write or a hash: an explicit source, else the
+// document's in-memory source (OpenSource), else its file reopened (ParseFile). remedy is the
+// caller-specific "how to supply a source" hint, since a generic one is half-wrong for each.
 //
-// The closer must always be called and is idempotent: the write path calls it early, as
-// soon as the copy is done so the rename is not blocked by a handle on the file it
-// replaces, and keeps its defer as the backstop.
+// The closer must always be called and is idempotent: the write path calls it as soon as the
+// copy is done, so the rename is not blocked by a handle on the file it replaces, and keeps
+// its defer as the backstop.
 func (d *Document) resolveSource(explicit core.ReaderAtSized, remedy string) (core.ReaderAtSized, func(), error) {
 	noop := func() {}
-	// A zero Document has nothing to write or hash. Reported with Prepare's wording so the
-	// generic message below fires only for an initialized-but-detached Parse doc, where
-	// supplying a source really is the remedy.
+	// A zero Document has nothing to write or hash. Prepare's wording, so the generic
+	// message below fires only for an initialized-but-detached Parse doc, where supplying a
+	// source really is the remedy.
 	if d.zero() {
 		return nil, noop, fmt.Errorf("%w: document is not initialized; use ParseFile/Parse", waxerr.ErrInvalidData)
 	}

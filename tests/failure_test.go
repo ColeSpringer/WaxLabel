@@ -13,8 +13,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// failWriter errors after accepting limit bytes, simulating a write failure
-// (e.g. a full disk) partway through.
+// failWriter errors after accepting limit bytes, simulating a full disk partway through.
 type failWriter struct {
 	limit, written int
 }
@@ -61,8 +60,7 @@ func TestContextCancellationStopsExecute(t *testing.T) {
 	}
 }
 
-// SaveBack must be atomic and leave no temp litter, and a no-op must write
-// nothing.
+// SaveBack must be atomic and leave no temp litter, and a no-op must write nothing.
 func TestSaveBackLeavesNoTempLitter(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sample.flac")
@@ -100,8 +98,8 @@ func TestSaveAsFileToBadDirFailsCleanly(t *testing.T) {
 	}
 }
 
-// mtime is updated by default (so scanners notice the edit) and kept with
-// WithPreserveModTime.
+// mtime is updated by default, so scanners notice the edit, and kept with
+// WithPreserveModTime, including a timestamp from before the epoch.
 func TestModTimePolicy(t *testing.T) {
 	past := time.Date(2020, 1, 1, 12, 0, 0, 0, time.UTC)
 
@@ -132,6 +130,27 @@ func TestModTimePolicy(t *testing.T) {
 		}
 		if got := statMod(t, path); !got.Equal(past) {
 			t.Errorf("WithPreserveModTime: mtime = %v, want %v", got, past)
+		}
+	})
+
+	// A pre-1970 mtime is a negative Unix nanosecond count, which a > 0 guard drops: the
+	// save then updated the timestamp it had promised to keep.
+	t.Run("WithPreserveModTime keeps a pre-epoch mtime", func(t *testing.T) {
+		ancient := time.Date(1969, 7, 20, 20, 17, 0, 0, time.UTC)
+		path := copyToTemp(t, sampleFLAC)
+		if err := os.Chtimes(path, ancient, ancient); err != nil {
+			t.Skipf("filesystem rejected a pre-epoch mtime: %v", err)
+		}
+		if got := statMod(t, path); !got.Equal(ancient) {
+			t.Skipf("filesystem did not store a pre-epoch mtime (kept %v)", got)
+		}
+		doc := mustParseFile(t, path)
+		plan, _ := doc.Edit().Set(tag.Title, "c").Prepare(wl.WithPreserveModTime())
+		if _, _, err := plan.Execute(context.Background(), wl.SaveBack()); err != nil {
+			t.Fatal(err)
+		}
+		if got := statMod(t, path); !got.Equal(ancient) {
+			t.Errorf("WithPreserveModTime: mtime = %v, want %v", got, ancient)
 		}
 	})
 }

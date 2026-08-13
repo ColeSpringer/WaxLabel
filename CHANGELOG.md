@@ -26,6 +26,22 @@ All notable changes to this project are documented here.
   broken-pipe check tested only `EPIPE`, which Windows never returns.
 - A missing file's human message read `The system cannot find the file specified.` on Windows
   while `--json` said `no such file or directory`. Both now use the canonical wording.
+- A per-file `--json` error and its stderr line stated one failure two ways: `open a.flac:
+  permission denied` against `a.flac: permission denied`, and `canceled` against `context
+  canceled`. They now agree. The JSON message drops the path already in `file` and Go's
+  syscall verb, and an interrupted or timed-out run's human line reads `canceled` or
+  `operation timed out`.
+- A directory whose fsync answers `EINVAL`, as some FUSE and network mounts do, warned after
+  every save. It now counts as the platform having no such step, alongside `ENOSYS`/`ENOTSUP`.
+  `ENOSPC`, `EIO`, and `EDQUOT` still surface.
+- `--preserve-mtime` updated the timestamp on a file dated before 1970 instead of keeping it.
+- A failed atomic commit named the internal temp file. A Windows sharing violation read
+  `rename C:\...\.waxlabel-2559819126.tmp C:\...\track.flac: Access is denied.`; it now
+  names the destination alone, the way the temp-create failure already did.
+- `lint --recursive DIR | head` printed a per-file line for every file it had not reached
+  instead of stopping silently, and `lint --json ... | head` exited 0 even when a file
+  carried an error-severity finding. lint's per-file loop now handles a closed output pipe
+  the way the other list commands already did.
 
 ## [1.4.0]
 

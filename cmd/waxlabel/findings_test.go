@@ -3,15 +3,18 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestUnknownCommandSuggestionNotMangled: cobra's multi-line "Did you mean
-// this?" suggestion is trusted CLI text, so it must render with real newlines and a
-// real tab, never the literal \x0a/\x09 the single-line path would escape.
+// TestUnknownCommandSuggestionNotMangled: cobra's multi-line "Did you mean this?" suggestion
+// is trusted CLI text, so it must render with real newlines and a real tab, never the
+// literal \x0a/\x09 the single-line path would escape.
 func TestUnknownCommandSuggestionNotMangled(t *testing.T) {
 	_, stderr, code := runCLI(t, "dumps")
 	if code != 2 {
@@ -29,10 +32,9 @@ func TestUnknownCommandSuggestionNotMangled(t *testing.T) {
 	}
 }
 
-// TestUsageHintOnDeadEnds: a cobra dead-end with no built-in guidance, an arg-count
-// failure or an unknown flag, gains a "run '<cmd> --help' for usage"
-// pointer, with the resolved command path. A self-documenting usagef message does
-// not (it would be redundant).
+// TestUsageHintOnDeadEnds: a cobra dead-end with no built-in guidance, an arg-count failure
+// or an unknown flag, gains a "run '<cmd> --help' for usage" pointer with the resolved
+// command path. A self-documenting usagef message does not, since it would be redundant.
 func TestUsageHintOnDeadEnds(t *testing.T) {
 	_, stderr, code := runCLI(t, "set")
 	if code != 2 || !strings.Contains(stderr, "run 'waxlabel set --help' for usage") {
@@ -60,15 +62,14 @@ func TestUsageHintOnDeadEnds(t *testing.T) {
 	}
 }
 
-// TestRemovedWritePoliciesRejected verifies that removed write-policy names stay
-// outside the CLI surface. They are rejected as unknown flag values (exit 2)
-// listing only the supported options, while every supported value still parses.
+// TestRemovedWritePoliciesRejected: removed write-policy names stay outside the CLI surface,
+// rejected as unknown flag values (exit 2) listing only the supported options, while every
+// supported value still parses.
 func TestRemovedWritePoliciesRejected(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
 
-	// The removed legacy policies are now unknown values: a usage error (exit 2)
-	// naming the survivors, not a stub write-time failure.
+	// Now unknown values: a usage error naming the survivors, not a write-time failure.
 	for _, v := range []string{"reconcile", "update-existing"} {
 		_, stderr, code := runCLI(t, "set", file, "--set", "TITLE=x", "--legacy", v)
 		if code != 2 {
@@ -97,10 +98,11 @@ func TestRemovedWritePoliciesRejected(t *testing.T) {
 	}
 }
 
-// TestCopyNotFoundMatchesOtherCommands: copy's per-input parse failure reads
-// as the "waxlabel: <path>: <reason>" line dump/verify/set print, and the --json
-// not-found message uses the same "<path>: no such file or directory" phrasing, so
-// the human and machine forms agree across every command.
+// TestCopyNotFoundMatchesOtherCommands: copy's per-input parse failure reads as the
+// "waxlabel: <path>: <reason>" line dump/verify/set print. Its --json form is the error
+// envelope, which has no file field and carries the path in the message; the per-file
+// commands emit the other shape, where file carries the path and message is the reason
+// alone. What this pins is the shared not-found wording, not agreement between the shapes.
 func TestCopyNotFoundMatchesOtherCommands(t *testing.T) {
 	dst := copyFixture(t, sampleM4B)
 	missing := filepath.Join(t.TempDir(), "nope.flac")
@@ -113,9 +115,8 @@ func TestCopyNotFoundMatchesOtherCommands(t *testing.T) {
 		t.Errorf("copy not-found human message = %q, want it to contain %q", stderr, want)
 	}
 
-	// JSON path is the machine contract: the not-found code plus the unified message.
-	// Decoded rather than substring-matched on the raw output: a Windows path's
-	// backslashes are JSON-escaped, so the raw path never appears literally there.
+	// Decoded rather than substring-matched: a Windows path's backslashes are JSON-escaped,
+	// so the raw path never appears literally in the output.
 	stdout, _, code := runCLI(t, "copy", missing, dst, "--json")
 	if code != 6 {
 		t.Fatalf("copy --json missing src exit = %d, want 6\n%s", code, stdout)
@@ -175,9 +176,8 @@ func TestSetOutputOverwriteGuard(t *testing.T) {
 		}
 	}
 
-	// A dangling symlink at the target is still an existing entry the atomic rename
-	// would destroy, so it must be refused too: os.Stat follows the link and would
-	// miss it, so the guard uses Lstat.
+	// A dangling symlink is still an existing entry the atomic rename would destroy, so it
+	// is refused too. os.Stat follows the link and would miss it, so the guard uses Lstat.
 	dir := t.TempDir()
 	dangling := filepath.Join(dir, "dangling.flac")
 	if err := os.Symlink(filepath.Join(dir, "no-such-target"), dangling); err != nil {
@@ -191,10 +191,9 @@ func TestSetOutputOverwriteGuard(t *testing.T) {
 		if fi, err := os.Lstat(dangling); err != nil || fi.Mode()&os.ModeSymlink == 0 {
 			t.Errorf("dangling -o symlink was clobbered despite refusal (mode %v, err %v)", fi.Mode(), err)
 		}
-		// A dangling symlink is refused even WITH --overwrite: it resolves to no regular
-		// file, so the atomic write would leave a stray new file at the (non-existent)
-		// target instead of replacing a real one. --overwrite replaces an existing file,
-		// not a broken link, so the user must point it somewhere real or pick another path.
+		// Refused even WITH --overwrite: it resolves to no regular file, so the atomic write
+		// would leave a stray file at the non-existent target instead of replacing a real
+		// one. --overwrite replaces an existing file, not a broken link.
 		if _, _, code = runCLI(t, "set", in, "--set", "TITLE=X", "-o", dangling, "--overwrite"); code != 2 {
 			t.Errorf("dangling -o symlink with --overwrite should still be refused: code %d, want 2", code)
 		}
@@ -203,16 +202,14 @@ func TestSetOutputOverwriteGuard(t *testing.T) {
 		}
 	}
 
-	// A missing input plus an existing -o target reports the input's not-found
-	// (exit 6), not "already exists": the parse fails and writes nothing, so the
-	// target is safe and the more-relevant error surfaces.
+	// A missing input plus an existing -o target reports the input's not-found, not "already
+	// exists": the parse writes nothing, so the target is safe and the better error wins.
 	missing := filepath.Join(t.TempDir(), "missing.flac")
 	if _, _, code = runCLI(t, "set", missing, "--set", "TITLE=X", "-o", existing); code != 6 {
 		t.Errorf("missing input + existing -o: code %d, want 6 (not-found), not 2", code)
 	}
 
-	// A directory -o target is rejected with a clear message, even with --overwrite
-	// (the rename could never succeed).
+	// A directory -o target is rejected even with --overwrite: the rename could never work.
 	subdir := filepath.Join(t.TempDir(), "outdir")
 	if err := os.Mkdir(subdir, 0o755); err != nil {
 		t.Fatal(err)
@@ -227,9 +224,8 @@ func TestSetOutputOverwriteGuard(t *testing.T) {
 }
 
 // TestSetOverwriteWithoutOutputWarns: --overwrite only governs the -o replace-existing gate,
-// so passing it without -o is a silent no-op. set notes that on stderr (exit stays 0) rather
-// than ignore it, and the note stays on stderr even under --json so the JSON stdout array is
-// left intact.
+// so passing it without -o is a no-op. set notes that on stderr rather than ignore it, exit
+// stays 0, and the note stays on stderr even under --json so the JSON array is left intact.
 func TestSetOverwriteWithoutOutputWarns(t *testing.T) {
 	in := copyFixture(t, sampleFLAC)
 
@@ -241,8 +237,7 @@ func TestSetOverwriteWithoutOutputWarns(t *testing.T) {
 		t.Errorf("--overwrite without -o should note it has no effect on stderr; got %q", stderr)
 	}
 
-	// Under --json the advisory stays on stderr; the stdout array is still valid JSON and does
-	// not carry the advisory (assert against the stderr stream, not the JSON array).
+	// Under --json the advisory stays on stderr and the stdout array is still valid JSON.
 	in2 := copyFixture(t, sampleFLAC)
 	stdout, stderr, code := runCLI(t, "set", in2, "--set", "TITLE=X", "--overwrite", "--json")
 	if code != 0 {
@@ -259,8 +254,8 @@ func TestSetOverwriteWithoutOutputWarns(t *testing.T) {
 	}
 }
 
-// TestSetOutputNoOpVerbatim: -o on an unchanged file prints one honest line,
-// not a "no changes" preview followed by a contradictory "Wrote" line.
+// TestSetOutputNoOpVerbatim: -o on an unchanged file prints one honest line, not a "no
+// changes" preview followed by a contradictory "Wrote" line.
 func TestSetOutputNoOpVerbatim(t *testing.T) {
 	in := copyFixture(t, sampleFLAC)
 	out := filepath.Join(t.TempDir(), "out.flac")
@@ -277,9 +272,9 @@ func TestSetOutputNoOpVerbatim(t *testing.T) {
 	}
 }
 
-// TestStrictBeforeNotFound: a strict-key misuse is checked upfront, so it
-// stays exit 2 even when the file is missing; the non-strict note waits for a real
-// file, so a missing file is reported as not-found without a premature key lecture.
+// TestStrictBeforeNotFound: a strict-key misuse is checked up front, so it stays exit 2 even
+// when the file is missing. The non-strict note waits for a real file, so a missing one is
+// reported as not-found without a premature key lecture.
 func TestStrictBeforeNotFound(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "nope.flac")
 
@@ -297,10 +292,9 @@ func TestStrictBeforeNotFound(t *testing.T) {
 	}
 }
 
-// TestHelpTopicExitCode: an unknown help topic exits non-zero like an unknown
-// command; a valid topic and bare help exit 0. A valid command followed by a stray
-// token that resolves to nothing (e.g. "help set bogus") is rejected too, but a
-// flag after a valid command (stripped before RunE) is not.
+// TestHelpTopicExitCode: an unknown help topic exits non-zero like an unknown command, while
+// a valid topic and bare help exit 0. A stray token that resolves to nothing ("help set
+// bogus") is rejected too, but a flag after a valid command, stripped before RunE, is not.
 func TestHelpTopicExitCode(t *testing.T) {
 	if _, _, code := runCLI(t, "help", "bogus"); code != 2 {
 		t.Errorf("help bogus exit = %d, want 2", code)
@@ -319,10 +313,9 @@ func TestHelpTopicExitCode(t *testing.T) {
 	}
 }
 
-// TestBareInvocationExitsUsage: a bare `waxlabel` with no subcommand is a
-// usage error (exit 2) so a script can tell "no command" from success, with the
-// help printed to stderr, while --help/-h stay exit 0 with help on stdout, and a
-// --json bare run still gets the machine-readable error envelope.
+// TestBareInvocationExitsUsage: a bare `waxlabel` is a usage error (exit 2) so a script can
+// tell "no command" from success, with help on stderr, while --help/-h stay exit 0 with help
+// on stdout and a --json bare run still gets the machine-readable envelope.
 func TestBareInvocationExitsUsage(t *testing.T) {
 	t.Parallel()
 	stdout, stderr, code := runCLI(t)
@@ -335,8 +328,7 @@ func TestBareInvocationExitsUsage(t *testing.T) {
 	if !strings.Contains(stderr, "Usage:") || !strings.Contains(stderr, "Available Commands:") {
 		t.Errorf("stderr should carry the help text: %q", stderr)
 	}
-	// An explicit failure line follows the help so the non-zero exit is obvious in a
-	// log that captured stderr.
+	// An explicit failure line follows the help, so the non-zero exit is obvious in a log.
 	if !strings.Contains(stderr, "waxlabel: no command given") {
 		t.Errorf("stderr should carry the explicit 'no command given' line: %q", stderr)
 	}
@@ -363,8 +355,8 @@ func TestBareInvocationExitsUsage(t *testing.T) {
 }
 
 // TestMultiFileExitMostSevere: the exit code is the most-severe failure's class, not the
-// first file's, independent of argument order. A corrupt file outranks a missing path,
-// where first-error capture would yield 4 one way and 6 the other.
+// first file's, independent of argument order. A corrupt file outranks a missing path, where
+// first-error capture would yield 4 one way and 6 the other.
 func TestMultiFileExitMostSevere(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -389,10 +381,10 @@ func TestMultiFileExitMostSevere(t *testing.T) {
 	}
 }
 
-// TestAddCoverNonRegularIsUsageError: an --add-cover pointed at a
-// directory (or other non-regular file) is a usage error (exit 2), consistent with
-// every other non-regular input, rather than the exit-6 io error os.ReadFile would
-// raise. A genuinely missing cover still falls through to the read and stays io.
+// TestAddCoverNonRegularIsUsageError: an --add-cover pointed at a directory or other
+// non-regular file is a usage error (exit 2), like every other non-regular input, rather than
+// the exit-6 io error os.ReadFile would raise. A missing cover still falls through and stays
+// io.
 func TestAddCoverNonRegularIsUsageError(t *testing.T) {
 	t.Parallel()
 	f := copyFixture(t, sampleFLAC)
@@ -412,8 +404,7 @@ func TestAddCoverNonRegularIsUsageError(t *testing.T) {
 }
 
 // TestPlanJSONErrorEntryMinimal: a per-file error element is exactly
-// {schemaVersion,file,error}: no null "operations" array and none of the other
-// zeroed plan fields leaking through.
+// {schemaVersion,file,error}, with no null "operations" array or other zeroed plan fields.
 func TestPlanJSONErrorEntryMinimal(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "nope.flac")
@@ -442,9 +433,8 @@ func TestPlanJSONErrorEntryMinimal(t *testing.T) {
 	}
 }
 
-// TestSetJSONErrorNoPhantomOutput: a failed set's per-file error element
-// does not echo the (unwritten) output path or carry committed/size, and the output
-// file is never created.
+// TestSetJSONErrorNoPhantomOutput: a failed set's per-file error element does not echo the
+// unwritten output path or carry committed/size, and the output file is never created.
 func TestSetJSONErrorNoPhantomOutput(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -472,8 +462,8 @@ func TestSetJSONErrorNoPhantomOutput(t *testing.T) {
 }
 
 // TestPreflightErrorEnvelopeShape: a list command wraps a pre-flight failure in the same
-// one-element array its successful output uses, so `jq '.[]'` works however the run ends. A
-// non-list command, caps --format, and an unknown command keep the bare object.
+// one-element array its successful output uses, so `jq '.[]'` works however the run ends.
+// A non-list command, caps --format, and an unknown command keep the bare object.
 func TestPreflightErrorEnvelopeShape(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -514,12 +504,10 @@ func TestPreflightErrorEnvelopeShape(t *testing.T) {
 }
 
 // TestStrictGuardrailShapes pins how the two --strict guardrails surface. The
-// file-independent unknown-key one aborts up front as a single pre-flight error, wrapped
-// in the one-element array every list command uses. The per-file single-valued-multi one
-// is an array element, so it joins the most-severe-wins aggregate instead of aborting:
-// paired with a missing file it yields exit 6 with both elements, whatever the argument
-// order. An earlier abort-on-first design dropped the not-found element and flipped the
-// exit to 2.
+// file-independent unknown-key one aborts up front as a single pre-flight error, wrapped in
+// the one-element array every list command uses. The per-file single-valued-multi one is an
+// array element, so it joins the most-severe-wins aggregate instead of aborting: paired with
+// a missing file it yields exit 6 with both elements, whatever the argument order.
 func TestStrictGuardrailShapes(t *testing.T) {
 	t.Parallel()
 
@@ -563,9 +551,8 @@ func TestStrictGuardrailShapes(t *testing.T) {
 	}
 }
 
-// TestDiffQuietJSONEmitsObject: --json overrides --quiet, so a quiet JSON
-// diff still emits the documented object (the exit code carries the verdict either
-// way), while a plain --quiet diff still prints nothing.
+// TestDiffQuietJSONEmitsObject: --json overrides --quiet, so a quiet JSON diff still emits
+// the documented object, while a plain --quiet diff prints nothing.
 func TestDiffQuietJSONEmitsObject(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "--json", "diff", "--quiet", sampleFLAC, notagsFLAC)
@@ -586,10 +573,9 @@ func TestDiffQuietJSONEmitsObject(t *testing.T) {
 	}
 }
 
-// TestRecursiveWalkFollowsSymlinkedAudio: the no-hang hardening must not break
-// the documented "symlinks are followed" behavior: a recursive walk still picks up
-// a symlink that points at a real audio file (resolved via os.Stat), even though
-// filepath.WalkDir does not follow symlinks itself.
+// TestRecursiveWalkFollowsSymlinkedAudio: the no-hang hardening must not break the documented
+// "symlinks are followed" behavior. A recursive walk still picks up a symlink pointing at a
+// real audio file, resolved via os.Stat, even though filepath.WalkDir does not follow them.
 func TestRecursiveWalkFollowsSymlinkedAudio(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()
@@ -622,9 +608,9 @@ func TestRecursiveWalkFollowsSymlinkedAudio(t *testing.T) {
 	}
 }
 
-// TestRecursiveWalkThroughSymlinkedDirRoot: a symlink-to-directory as the --recursive root
-// is followed and its audio found. WalkDir would refuse to descend the symlink node, so the
-// root is resolved first, with matches still listed under the original argument name.
+// TestRecursiveWalkThroughSymlinkedDirRoot: a symlink-to-directory as the --recursive root is
+// followed and its audio found. WalkDir refuses to descend the symlink node, so the root is
+// resolved first, with matches still listed under the original argument name.
 func TestRecursiveWalkThroughSymlinkedDirRoot(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()
@@ -647,8 +633,7 @@ func TestRecursiveWalkThroughSymlinkedDirRoot(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0 (symlinked-dir root should be walked); stderr=%q", code, errb)
 	}
-	// The audio is found and listed under the original arg name (linkdir), not the
-	// resolved target (realdir).
+	// Listed under the original arg name (linkdir), not the resolved target (realdir).
 	if !strings.Contains(out, filepath.Join("linkdir", "inside.flac")) {
 		t.Errorf("walk did not list the audio under the original arg name 'linkdir':\n%s", out)
 	}
@@ -698,9 +683,8 @@ func TestRecursiveWalkReportsDanglingSymlink(t *testing.T) {
 	}
 }
 
-// TestDirectoryWithoutRecursiveNoDoublePath checks that a directory passed without
-// --recursive is reported once. The per-file renderer already prefixes the path, so
-// the error detail should not repeat it.
+// TestDirectoryWithoutRecursiveNoDoublePath: a directory passed without --recursive is named
+// once. The per-file renderer already prefixes the path, so the detail must not repeat it.
 func TestDirectoryWithoutRecursiveNoDoublePath(t *testing.T) {
 	t.Parallel()
 	d := t.TempDir() // a directory, not a file
@@ -725,10 +709,9 @@ func TestDirectoryWithoutRecursiveNoDoublePath(t *testing.T) {
 	}
 }
 
-// TestNonExpandingCommandsRejectNonRegular: caps, diff, and copy parse their
-// operands directly (no directory expansion), but still reject a non-regular input -
-// here a directory, as an exit-2 usage error, matching dump/verify/plan/set/lint
-// rather than falling through to the library's exit-4 backstop.
+// TestNonExpandingCommandsRejectNonRegular: caps, diff, and copy parse their operands
+// directly with no directory expansion, but still reject a non-regular input as an exit-2
+// usage error, matching dump/verify/plan/set/lint rather than the library's exit-4 backstop.
 func TestNonExpandingCommandsRejectNonRegular(t *testing.T) {
 	t.Parallel()
 	d := t.TempDir() // a directory, not a file
@@ -755,8 +738,8 @@ func TestNonExpandingCommandsRejectNonRegular(t *testing.T) {
 	}
 }
 
-// TestCopyRejectsStdin: copy has no streaming model, so "-" as either operand
-// is a usage error (exit 2), not an attempt to open a file literally named "-".
+// TestCopyRejectsStdin: copy has no streaming model, so "-" as either operand is a usage
+// error (exit 2), not an attempt to open a file literally named "-".
 func TestCopyRejectsStdin(t *testing.T) {
 	dst := copyFixture(t, sampleFLAC)
 	_, stderr, code := runCLI(t, "copy", "-", dst)
@@ -768,9 +751,8 @@ func TestCopyRejectsStdin(t *testing.T) {
 	}
 }
 
-// TestReadCommandsRejectRepeatedStdin checks that read commands accept at most one
-// "-". A second one would replay the buffered stdin bytes as a duplicate input, so it
-// is a usage error.
+// TestReadCommandsRejectRepeatedStdin: read commands accept at most one "-". A second would
+// replay the buffered stdin bytes as a duplicate input, so it is a usage error.
 func TestReadCommandsRejectRepeatedStdin(t *testing.T) {
 	for _, cmd := range []string{"dump", "verify", "lint", "plan"} {
 		_, stderr, code := runCLI(t, cmd, "-", "-")
@@ -780,8 +762,8 @@ func TestReadCommandsRejectRepeatedStdin(t *testing.T) {
 	}
 }
 
-// TestRejectEmptyScalarFlags checks that empty scalar flags fail as usage errors on both set
-// and plan instead of being treated as unset.
+// TestRejectEmptyScalarFlags: empty scalar flags fail as usage errors on both set and plan
+// instead of being treated as unset.
 func TestRejectEmptyScalarFlags(t *testing.T) {
 	file := copyFixture(t, sampleFLAC)
 	for _, flag := range []string{"--preset", "--legacy", "--padding", "--synced-lyrics-file"} {
@@ -795,8 +777,8 @@ func TestRejectEmptyScalarFlags(t *testing.T) {
 	}
 }
 
-// TestCapsNoArgsHasHint: `caps` with neither a file nor --format dead-ends with
-// the same "run '... --help' for usage" pointer the other commands print.
+// TestCapsNoArgsHasHint: `caps` with neither a file nor --format dead-ends with the same
+// "run '... --help' for usage" pointer the other commands print.
 func TestCapsNoArgsHasHint(t *testing.T) {
 	_, stderr, code := runCLI(t, "caps")
 	if code != 2 {
@@ -807,8 +789,8 @@ func TestCapsNoArgsHasHint(t *testing.T) {
 	}
 }
 
-// TestEmptyWalkNoteNotAFailure: a --recursive walk that matches no audio files
-// prints a "note:" line (not a "waxlabel:" failure line) and still exits 0.
+// TestEmptyWalkNoteNotAFailure: a --recursive walk that matches no audio files prints a
+// "note:" line rather than a "waxlabel:" failure line, and still exits 0.
 func TestEmptyWalkNoteNotAFailure(t *testing.T) {
 	dir := t.TempDir()
 	_, stderr, code := runCLI(t, "plan", dir, "--recursive")
@@ -823,10 +805,10 @@ func TestEmptyWalkNoteNotAFailure(t *testing.T) {
 	}
 }
 
-// TestRecursiveSkippedFileNote verifies that a recursive walk that passes over files
-// with unrecognized extensions prints a text-mode "N file(s) skipped" note, so a
-// directory of mostly non-audio files is not a silent near-no-op. The note counts only
-// regular files the extension filter rejected and is suppressed under --json.
+// TestRecursiveSkippedFileNote: a walk that passes over unrecognized extensions prints a
+// text-mode "N file(s) skipped" note, so a directory of mostly non-audio files is not a
+// silent near-no-op. It counts only files the extension filter rejected, and --json
+// suppresses it.
 func TestRecursiveSkippedFileNote(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -860,9 +842,8 @@ func TestRecursiveSkippedFileNote(t *testing.T) {
 	}
 }
 
-// TestRecursiveSkippedCountsSymlinks verifies that a symlinked non-audio file counts
-// toward the skipped tally too, matching how the inclusion side treats symlinks as
-// candidates so the count is not short by the symlinked entries.
+// TestRecursiveSkippedCountsSymlinks: a symlinked non-audio file counts toward the skipped
+// tally too, matching how the inclusion side treats symlinks as candidates.
 func TestRecursiveSkippedCountsSymlinks(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -891,8 +872,8 @@ func TestRecursiveSkippedCountsSymlinks(t *testing.T) {
 }
 
 // TestSetVerifyConfirmation: a committed --verify save confirms the check with a human
-// "Output verified (audio essence + structure)" line and a JSON "verified": true, while
-// a run without --verify omits the field so a normal save does not read like a check.
+// "Output verified (audio essence + structure)" line and a JSON "verified": true, while a run
+// without --verify omits the field so a normal save does not read like a check.
 func TestSetVerifyConfirmation(t *testing.T) {
 	out, _, code := runCLI(t, "set", copyFixture(t, sampleFLAC), "--set", "TITLE=Verified", "--verify")
 	if code != 0 {
@@ -919,7 +900,7 @@ func TestSetVerifyConfirmation(t *testing.T) {
 
 // TestUnquotedValueHint: `--set TITLE=Two Words` leaves a stray positional beside a real
 // input. set refuses the whole run so a script cannot misread a truncated tag as partial
-// success; the read-only plan keeps the same text as an advisory and previews as usual.
+// success; plan refuses with the same text minus the "nothing was written" suffix.
 func TestUnquotedValueHint(t *testing.T) {
 	file := copyFixture(t, sampleFLAC)
 	before, err := os.ReadFile(file)
@@ -939,8 +920,8 @@ func TestUnquotedValueHint(t *testing.T) {
 		t.Error("set refused the unquoted-value run but still modified the named file")
 	}
 
-	// plan now refuses identically to set (its preview is meant to be authoritative),
-	// but with the bare hint and no "nothing was written" suffix (plan never writes).
+	// plan refuses identically, its preview being authoritative, but with the bare hint and
+	// no "nothing was written" suffix, since plan never writes.
 	if _, pstderr, pcode := runCLI(t, "plan", file, "--set", "TITLE=Two", "Words"); pcode != 2 {
 		t.Fatalf("plan stray bare word exit = %d, want 2 (refused); stderr=%s", pcode, pstderr)
 	} else if !strings.Contains(pstderr, "must be quoted") {
@@ -958,8 +939,8 @@ func TestUnquotedValueHint(t *testing.T) {
 		t.Errorf("no bare word, so no quoting hint expected; got:\n%s", stderr)
 	}
 
-	// No false positive: a legitimate extensionless audio file (which looks like a bare
-	// word) given on its own resolves, so it is edited, not refused.
+	// No false positive: an extensionless audio file looks like a bare word but resolves,
+	// so it is edited rather than refused.
 	extless := filepath.Join(t.TempDir(), "song")
 	if err := os.WriteFile(extless, before, 0o644); err != nil {
 		t.Fatal(err)
@@ -969,16 +950,16 @@ func TestUnquotedValueHint(t *testing.T) {
 	}
 }
 
-// TestEmptyFilenameUsage verifies that an empty operand is a usage error (exit 2) at
-// the CLI boundary, not the library's ErrInvalidData (exit 4), so in a multi-file run
-// it does not outrank a real not-found by masquerading as a corrupt file.
+// TestEmptyFilenameUsage: an empty operand is a usage error (exit 2) at the CLI boundary, not
+// the library's ErrInvalidData (exit 4), so in a multi-file run it cannot outrank a real
+// not-found by masquerading as a corrupt file.
 func TestEmptyFilenameUsage(t *testing.T) {
 	t.Parallel()
 	if _, _, code := runCLI(t, "dump", ""); code != 2 {
 		t.Errorf(`dump "" exit = %d, want 2 (usage)`, code)
 	}
-	// Beside a missing file the empty operand is still caught up front (exit 2) and
-	// never classifies as invalid-data (exit 4) over the not-found.
+	// Beside a missing file it is still caught up front and never classifies as
+	// invalid-data over the not-found.
 	out, _, code := runCLI(t, "--json", "dump", "", "missing.flac")
 	if code != 2 {
 		t.Errorf(`dump "" missing.flac exit = %d, want 2`, code)
@@ -986,9 +967,8 @@ func TestEmptyFilenameUsage(t *testing.T) {
 	if strings.Contains(out, "invalid-data") {
 		t.Errorf("empty filename must not classify as invalid-data:\n%s", out)
 	}
-	// copy, diff, and caps parse operands directly (no expandPaths) but reject an empty
-	// operand the same way via their own boundary checks, caps included, so a multi-file
-	// caps run does not mis-class an empty name as invalid-data (exit 4).
+	// copy, diff, and caps parse operands directly, with no expandPaths, but reject an empty
+	// operand the same way via their own boundary checks.
 	if _, _, code := runCLI(t, "copy", "", filepath.Join(t.TempDir(), "x.flac")); code != 2 {
 		t.Errorf(`copy "" dst exit = %d, want 2`, code)
 	}
@@ -1003,9 +983,8 @@ func TestEmptyFilenameUsage(t *testing.T) {
 	}
 }
 
-// TestDiffPerFilePathPrefix verifies that a parse failure in diff is reported with
-// the per-file "waxlabel: <path>: <reason>" prefix the other commands print, so the
-// failing operand is named.
+// TestDiffPerFilePathPrefix: a parse failure in diff is reported with the per-file
+// "waxlabel: <path>: <reason>" prefix, so the failing operand is named.
 func TestDiffPerFilePathPrefix(t *testing.T) {
 	t.Parallel()
 	png := writeTempImage(t, "red.png", minimalPNG()) // a non-audio file diff cannot parse
@@ -1018,35 +997,32 @@ func TestDiffPerFilePathPrefix(t *testing.T) {
 	}
 }
 
-// TestJSONErrorCarriesHint verifies that a usage error whose human render shows a
-// hint, such as the leading-dash "use --" pointer, carries that same hint in the JSON
-// envelope. A per-file error entry can carry a hint too, such as source-changed's
-// "re-run" pointer.
+// TestJSONErrorCarriesHint: a usage error whose human render shows a hint, such as the
+// leading-dash "use --" pointer, carries that same hint in the JSON envelope. A per-file
+// entry can carry one too, such as source-changed's "re-run" pointer.
 func TestJSONErrorCarriesHint(t *testing.T) {
 	t.Parallel()
-	// A leading-dash file path is read by cobra as an unknown flag; the usage envelope
-	// then carries the "put -- before it" hint, now in JSON and not only the human line.
+	// Cobra reads a leading-dash file path as an unknown flag; the usage envelope then
+	// carries the "put -- before it" hint, in JSON and not only the human line.
 	out, _, code := runCLI(t, "--json", "dump", "-track.flac")
 	if code != 2 {
 		t.Fatalf("leading-dash arg exit = %d, want 2; out=%s", code, out)
 	}
-	// dump is a list command, so its pre-flight error is a single-element array,
-	// and the hint rides on that element.
+	// dump is a list command, so its pre-flight error is a single-element array.
 	je := decodeJSONOne[jsonError](t, out)
 	if !strings.Contains(je.Error.Hint, "--") {
 		t.Errorf("JSON usage envelope hint missing the '--' guidance; got %q\n%s", je.Error.Hint, out)
 	}
-	// The shared per-file error element single-sources the same hint from the classified
-	// error, so a bulk-run entry can carry one too.
-	entry := errorEntry("f.flac", classifiedError{code: "source-changed", message: "x", hint: "re-run to pick up the new contents"})
-	if entry.Error.Hint != "re-run to pick up the new contents" {
-		t.Errorf("per-file error entry dropped the hint: %q", entry.Error.Hint)
+	// The per-file element single-sources the same hint, so a bulk-run entry carries one
+	// too. Compared whole, not just for "re-run", so the actionable half cannot go missing.
+	wantHint := "the file changed since it was read; re-run to pick up the new contents"
+	if got := errorEntry("f.flac", fmt.Errorf("reading: %w", waxerr.ErrSourceChanged)).Error.Hint; got != wantHint {
+		t.Errorf("per-file error entry hint = %q, want %q", got, wantHint)
 	}
 }
 
-// TestPlanJSONEmptyChangesArray verifies that a no-op plan's --json output emits
-// "changes": [] (a non-null empty array), not an omitted field, so a scripting
-// consumer can iterate changes unconditionally.
+// TestPlanJSONEmptyChangesArray: a no-op plan's --json output emits "changes": [], not null
+// and not an omitted field, so a consumer can iterate changes unconditionally.
 func TestPlanJSONEmptyChangesArray(t *testing.T) {
 	t.Parallel()
 	// plan with no edits previews a no-op: no field changes.
@@ -1059,10 +1035,10 @@ func TestPlanJSONEmptyChangesArray(t *testing.T) {
 	}
 }
 
-// TestVorbisAliasCanonicalized verifies that a recognized alias (DATE, YEAR, TOTALTRACKS, ...) is
-// resolved to its canonical key, so editing one targets the real field, replacing the
-// value rather than appending a stray duplicate. It is not flagged as a custom field, and
-// is accepted under --strict. A genuinely unknown key is still flagged and rejected.
+// TestVorbisAliasCanonicalized: a recognized alias (DATE, YEAR, TOTALTRACKS, ...) resolves to
+// its canonical key, so editing one replaces the real field rather than appending a stray
+// duplicate. It is not flagged as a custom field and is accepted under --strict, while a
+// genuinely unknown key is still flagged and rejected.
 func TestVorbisAliasCanonicalized(t *testing.T) {
 	// DATE replaces the existing RECORDINGDATE rather than creating a second value.
 	f := copyFixture(t, sampleFLAC)
@@ -1079,8 +1055,8 @@ func TestVorbisAliasCanonicalized(t *testing.T) {
 		t.Errorf("DATE should replace RECORDINGDATE with one value, not duplicate it:\n%s", out)
 	}
 
-	// Under --strict, DATE is accepted (it resolves to a known key, so the guardrail does
-	// not reject it) and is stored as RECORDINGDATE even on a non-Vorbis format.
+	// Under --strict, DATE resolves to a known key so the guardrail accepts it, and it is
+	// stored as RECORDINGDATE even on a non-Vorbis format.
 	mp3 := copyFixture(t, sampleMP3)
 	if _, _, code := runCLI(t, "set", "--strict", mp3, "--set", "DATE=2021"); code != 0 {
 		t.Errorf("--strict --set DATE on MP3 exit = %d, want 0 (DATE resolves to a known key)", code)
@@ -1098,8 +1074,8 @@ func TestVorbisAliasCanonicalized(t *testing.T) {
 	}
 }
 
-// TestJSONVersionFlag verifies that `--json --version` emits the JSON version object,
-// not cobra's plain text template; plain `--version` stays text. Both exit 0.
+// TestJSONVersionFlag: `--json --version` emits the JSON version object, not cobra's plain
+// text template, while plain `--version` stays text. Both exit 0.
 func TestJSONVersionFlag(t *testing.T) {
 	stdout, _, code := runCLI(t, "--json", "--version")
 	if code != 0 {

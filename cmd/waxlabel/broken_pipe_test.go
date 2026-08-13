@@ -12,16 +12,16 @@ import (
 	"testing"
 )
 
-// epipeWriter fails every write with EPIPE, simulating a reader that closed the output
-// pipe. The sanitizing writer passes bytes straight through, so the EPIPE reaches dispatch
-// as it would from a real closed stdout, with no SIGPIPE goroutine setting a cancel cause.
+// epipeWriter fails every write with EPIPE, simulating a reader that closed the output pipe.
+// The sanitizing writer passes bytes straight through, so the EPIPE reaches dispatch as it
+// would from a real closed stdout, with no SIGPIPE goroutine setting a cancel cause.
 type epipeWriter struct{}
 
 func (epipeWriter) Write(p []byte) (int, error) { return 0, syscall.EPIPE }
 
-// TestIsBrokenPipeRecognizesEPIPE: EPIPE must classify the same on every platform,
-// including Windows, where only a synthesized one can occur. pipe_windows_test.go covers
-// the errnos Windows really returns.
+// TestIsBrokenPipeRecognizesEPIPE: EPIPE must classify the same on every platform, including
+// Windows, where only a synthesized one can occur. pipe_windows_test.go covers the errnos
+// Windows really returns.
 func TestIsBrokenPipeRecognizesEPIPE(t *testing.T) {
 	t.Parallel()
 	if !isBrokenPipe(syscall.EPIPE) {
@@ -50,8 +50,8 @@ func TestClassifyBrokenPipe(t *testing.T) {
 }
 
 // TestBrokenPipeExitsZeroSilently: a run cancelled by a closed output pipe exits 0 and
-// silent, not the 130 a real Ctrl-C yields. Both leave the parse returning
-// context.Canceled, so the cancel cause is the only thing telling them apart.
+// silent, not the 130 a real Ctrl-C yields. Both leave the parse returning context.Canceled,
+// so the cancel cause is the only thing telling them apart.
 func TestBrokenPipeExitsZeroSilently(t *testing.T) {
 	t.Parallel()
 	// Two files, so the multi-file loop runs.
@@ -93,9 +93,9 @@ func TestRealCancelStillExits130(t *testing.T) {
 	}
 }
 
-// TestBrokenPipeSyncEPIPEExitsZero guards the JSON race: dump --json writes its array in
-// one call, so a closed pipe surfaces as a synchronous EPIPE before the async SIGPIPE
-// goroutine sets a cause. The uncancelled context here models exactly that.
+// TestBrokenPipeSyncEPIPEExitsZero guards the JSON race: dump --json writes its array in one
+// call, so a closed pipe surfaces as a synchronous EPIPE before the async SIGPIPE goroutine
+// sets a cause. The uncancelled context here models that.
 func TestBrokenPipeSyncEPIPEExitsZero(t *testing.T) {
 	t.Parallel()
 	var errb bytes.Buffer
@@ -105,6 +105,47 @@ func TestBrokenPipeSyncEPIPEExitsZero(t *testing.T) {
 	}
 	if errb.Len() != 0 {
 		t.Errorf("a broken pipe must be silent, got stderr %q", errb.String())
+	}
+}
+
+// TestLintBrokenPipeExitsZeroSilently: lint runs its own per-file loop, which must honor a
+// closed output pipe the way dump's does. Without the carve-out, `lint --recursive BIG | head`
+// prints a line per remaining file and exits 130.
+func TestLintBrokenPipeExitsZeroSilently(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a.flac", "b.flac"} {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(errBrokenPipe)
+
+	var out, errb bytes.Buffer
+	code := dispatch(ctx, []string{"lint", "--recursive", dir}, strings.NewReader(""), &out, &errb)
+	if code != 0 {
+		t.Errorf("broken-pipe lint exit = %d, want 0; stderr=%q", code, errb.String())
+	}
+	if errb.Len() != 0 {
+		t.Errorf("a broken pipe must be silent on stderr, got %q", errb.String())
+	}
+}
+
+// TestLintBrokenPipeKeepsFindingExit: a closed pipe on lint's JSON write must not drop an
+// error-severity finding's exit 4 to broken-pipe's 0. The reader going away does not make
+// the file clean.
+func TestLintBrokenPipeKeepsFindingExit(t *testing.T) {
+	t.Parallel()
+	var errb bytes.Buffer
+	code := dispatch(context.Background(), []string{"--json", "lint", emptyMP3}, strings.NewReader(""), epipeWriter{}, &errb)
+	if code != 4 {
+		t.Errorf("EPIPE on the lint JSON write with an error-severity finding exit = %d, want 4", code)
 	}
 }
 
