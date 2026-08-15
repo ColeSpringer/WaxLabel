@@ -35,11 +35,21 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	chaptersChanged := !core.EqualChapters(base.Chapters, edited.Chapters)
 	report := core.WriteReport{Format: core.FormatMP4, BytesBefore: edited.Identity.Size}
 
+	// --numeric-genre swaps the text "\xa9gen" atom for the numeric "gnre" one, which
+	// changes how the value is stored and not the value itself, so the tag comparison above
+	// cannot see it. Without this the flag would apply only to the files whose genre also
+	// changed. The && is what makes it false when the flag is absent, since not passing it is
+	// not a request to re-encode back to the name.
+	encodingRewrite := opts.NumericGenre && genreEncodingChanged(d.items, edited.Tags)
+	// The encoding the rebuild writes: what this edit asked for, or the numeric form the file
+	// already holds, so an unrelated edit does not silently undo an earlier --numeric-genre run.
+	numericGenre := numericGenreEncoding(d.items, edited.Tags, opts.NumericGenre)
+
 	// Fast path: nothing changed. NoOpPlan emits a verbatim copy (so SaveAsFile/
 	// WriteTo still produce a whole file) flagged NoOp so SaveBack skips it. Explicit
 	// padding requests run the layout below so a grow-only MP4 padding edit can take
 	// effect when it enlarges the moov region.
-	if !tagsChanged && !picturesChanged && !chaptersChanged && !opts.PaddingExplicit {
+	if !tagsChanged && !picturesChanged && !chaptersChanged && !opts.PaddingExplicit && !encodingRewrite {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
@@ -128,9 +138,17 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// A chapter edit rewrites the whole moov.udta (folding any ilst change into one
 	// delta); a tag/picture-only edit keeps the lighter in-place ilst path.
 	if chaptersChanged {
-		pl, err := planChapters(d, edited, tagsChanged || picturesChanged, picturesChanged, opts, report)
+		// An encoding rewrite forces the ilst rebuild too: needIlst is what decides whether
+		// buildChapterUdta builds new items at all, so without it the chapter paths would
+		// splice the source ilst back in verbatim and drop the request.
+		pl, err := planChapters(d, edited, tagsChanged || picturesChanged || encodingRewrite, picturesChanged, opts, report)
 		if err != nil || pl == nil {
 			return pl, err
+		}
+		if encodingRewrite {
+			// Appended after the fact: both chapter paths assign report.Operations wholesale,
+			// so a line staked on the report they take by value would be discarded.
+			pl.Report.Operations = append(pl.Report.Operations, core.EncodingRewriteOp("genre"))
 		}
 		// Collapse a chapter edit that re-projected to base's exact chapters/tags/
 		// pictures to a true no-op, so re-applying an identical list does not churn the
@@ -159,7 +177,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 			// pl.Report.Warnings (not the outer report): planChapters took report by value, so
 			// warnings appended during planning live only on pl.Report.
 			if np := core.DowngradeNoOp(core.FormatMP4, edited.Identity.Size, base, pl.Result,
-				base.Tags.Equal(pl.Result.Tags), false, pl.Report.Warnings); np != nil {
+				base.Tags.Equal(pl.Result.Tags), encodingRewrite, pl.Report.Warnings); np != nil {
 				return np, nil
 			}
 		}
@@ -171,7 +189,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// when the picture set changed; otherwise the parsed covr is carried verbatim so a
 	// tag-only edit never rewrites a carried cover through coverType's JPEG default.
 	covr := coverItemsToWrite(edited.Pictures, d.items, picturesChanged)
-	newItems := buildItems(edited.Tags, covr, preservedItems(d.items), opts.NumericGenre)
+	newItems := buildItems(edited.Tags, covr, preservedItems(d.items), numericGenre)
 	if err := checkBuiltItems(newItems, d.items, opts.Limits.MaxAllocBytes); err != nil {
 		return nil, err
 	}
@@ -222,6 +240,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report.BytesAfter = total
 	report.PaddingAfter = lay.freeContent
 	report.Operations = operations(d, lay, delta, len(edited.Pictures))
+	if encodingRewrite {
+		report.Operations = append(report.Operations, core.EncodingRewriteOp("genre"))
+	}
 
 	result := buildResult(edited, d, newItems, lay, delta, total, int64(len(newIlst)))
 	// Collapse to a true no-op when the ilst rebuild re-projected to base's values
@@ -233,8 +254,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// COMPILATION=maybe re-applied to a file already cpil=0 is exactly this case.
 	// delta != 0 means the layout grew the moov region. That makes an explicit padding
 	// increase a real structural change, while a reuse-in-place edit with equal tags stays
-	// a no-op.
-	if np := core.DowngradeNoOp(core.FormatMP4, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), delta != 0, report.Warnings); np != nil {
+	// a no-op. An encoding rewrite is structural for the same reason: a gnre atom
+	// re-projects to the genre name it replaced, and it can be the same size as the text
+	// atom it replaced, so nothing else here can tell the write apart from a no-op.
+	if np := core.DowngradeNoOp(core.FormatMP4, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), delta != 0 || encodingRewrite, report.Warnings); np != nil {
 		return np, nil
 	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil

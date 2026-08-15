@@ -35,12 +35,29 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	report := core.WriteReport{Format: core.FormatMP3, BytesBefore: edited.Identity.Size}
 
+	// Choose the ID3v2 version (preserve the source's; the format default for a
+	// brand-new tag). Hoisted above the fast path so the encoding predicate can see the
+	// source frames.
+	srcTag := d.id3
+	if srcTag == nil {
+		srcTag = id3.NewEmpty(core.DefaultID3Version(core.FormatMP3))
+	}
+	version := srcTag.WriteVersion()
+	// One WriteOpts for both the predicate and the rebuild: they must render from identical
+	// options, or the predicate could green-light a write the rebuild then renders differently.
+	wopts := id3.WriteOpts{Multi: opts.ID3Multi, NumericGenre: opts.NumericGenre}
+	// A requested write encoding (--numeric-genre) changes how a value is stored, not the
+	// value itself, so the tag comparison above cannot see it. Without this the flag would
+	// apply only to the files whose genre also changed, producing exactly the
+	// mixed-representation library it exists to eliminate.
+	encodingRewrite := id3.EncodingRewriteNeeded(srcTag, edited.Tags, wopts)
+
 	// Fast path: nothing changed. NoOpPlan emits a verbatim copy (so SaveAsFile/
 	// WriteTo still produce a whole file) flagged NoOp so SaveBack skips it. Explicit
 	// padding requests run the front-tag renderer below so a padding-only edit can take
 	// effect. A chapters- or synced-lyrics-only edit (CHAP/CTOC, SYLT) must defeat the
 	// no-op gate too.
-	if !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !legacyChange && !opts.PaddingExplicit {
+	if !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !legacyChange && !opts.PaddingExplicit && !encodingRewrite {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 	// Re-check the ID3 CTOC count at the codec boundary. Only a chapter edit re-renders
@@ -51,13 +68,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		}
 	}
 
-	// Choose the ID3v2 version (preserve the source's; the format default for a
-	// brand-new tag) and rebuild the frame list.
-	srcTag := d.id3
-	if srcTag == nil {
-		srcTag = id3.NewEmpty(core.DefaultID3Version(core.FormatMP3))
-	}
-	version := srcTag.WriteVersion()
+	// Rebuild the frame list.
 	newFrames, info := id3.RebuildFrames(srcTag.Frames(), base.Tags, edited.Tags, version,
 		id3.StructuredEdit{
 			Pictures: edited.Pictures, PicturesChanged: picturesChanged,
@@ -66,7 +77,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 			SyncedLyricsCarried: opts.Carried,
 			SyncedLyricsCleared: opts.SyncedLyricsCleared,
 			MediaDuration:       edited.Properties.Duration(),
-		}, id3.WriteOpts{Multi: opts.ID3Multi, NumericGenre: opts.NumericGenre})
+		}, wopts)
 	if err := id3.CheckSize(version, newFrames, bits.DefaultLimits.MaxElements); err != nil {
 		return nil, err
 	}
@@ -89,6 +100,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	regionDiffers := int64(len(ft.Bytes)) != d.id3Len
 	if regionDiffers && !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !legacyChange {
 		report.Operations = append(report.Operations, core.PaddingOp(d.id3Len, int64(len(ft.Bytes))-ft.Padding, ft.Padding))
+	}
+	if encodingRewrite {
+		report.Operations = append(report.Operations, core.EncodingRewriteOp("genre"))
 	}
 
 	// Assemble the output: the new ID3v2 tag (when any), the verbatim audio, then the
@@ -134,8 +148,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, info, result.Tags)
 	// Collapse to a true no-op when the ID3 rebuild re-projected to base's values
 	// (e.g. GENRE=17 -> Rock); a legacy strip stays a real write. DowngradeNoOp carries
-	// the value-dropped warning forward so a dropped date still surfaces on a no-op.
-	if np := core.DowngradeNoOp(core.FormatMP3, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), legacyChange || regionDiffers, report.Warnings); np != nil {
+	// the value-dropped warning forward so a dropped date still surfaces on a no-op. An
+	// encoding rewrite is structural for the same reason: "(17)" re-projects to Rock and
+	// occupies the same bytes, so nothing else here can tell the write apart from a no-op.
+	if np := core.DowngradeNoOp(core.FormatMP3, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), legacyChange || regionDiffers || encodingRewrite, report.Warnings); np != nil {
 		return np, nil
 	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil

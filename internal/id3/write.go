@@ -152,6 +152,16 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 			dirty[rid] = true
 		}
 	}
+	// A write-encoding option changes how a value is stored, not the value itself, so
+	// diffKeys sees nothing and the frame would otherwise be preserved verbatim. Route
+	// through keyRenderIDs so a key's render tokens stay defined in one place - not for v2.2
+	// coverage: decodeFrame upgrades TCO to TCON through the v2.2 table, so orig only ever
+	// holds TCON.
+	if encodingRewriteNeeded(orig, version, edited, opts) {
+		for _, rid := range keyRenderIDs(tag.Genre, version) {
+			dirty[rid] = true
+		}
+	}
 
 	// The read path does not expose the COMM/USLT 3-byte language and stores a TXXX
 	// description under its uppercased canonical key, so recover both from the original
@@ -706,11 +716,7 @@ func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, o
 		}
 		return []Frame{{ID: "USLT", Body: encodeLangText(version, unitLang(origLangs, "USLT"), "", text)}}, false
 	case token == "TCON":
-		vals, ok := edited.Get(tag.Genre)
-		if !ok || len(vals) == 0 {
-			return nil, false
-		}
-		return renderText(version, "TCON", genreValues(vals, version, opts.NumericGenre, opts.Multi), opts.Multi)
+		return genreFrames(version, edited, opts)
 	case token == "TRCK":
 		return renderNumTotal(version, "TRCK", edited, tag.TrackNumber, tag.TrackTotal)
 	case token == "TPOS":
@@ -1380,6 +1386,117 @@ func extractDatePart(iso string, part datePart) string {
 	return ""
 }
 
+// genreFrames renders the TCON frame(s) for the edited genre under the write options,
+// returning no frame when the field is absent or empty (the frame is dropped). Both the
+// writer and EncodingRewriteNeeded go through it, so the predicate can never compute a
+// different render than the write performs.
+func genreFrames(version byte, edited tag.TagSet, opts WriteOpts) ([]Frame, bool) {
+	vals, ok := edited.Get(tag.Genre)
+	if !ok || len(vals) == 0 {
+		return nil, false
+	}
+	return renderText(version, "TCON", genreValues(vals, version, opts.NumericGenre, opts.Multi), opts.Multi)
+}
+
+// EncodingRewriteNeeded reports whether re-rendering under the requested write-encoding
+// options would store a different representation of an otherwise unchanged canonical value,
+// so a codec's no-op fast path lets the write through instead of silently dropping the
+// request. src may be nil (a codec whose file carries no ID3 container), in which case
+// nothing is stored to differ from.
+//
+// Only an explicitly requested option counts. The absence of --numeric-genre is not a
+// request to re-encode a numeric TCON back to its name, so a file already storing "(17)" is
+// left alone and repeated runs converge instead of ping-ponging. It is deliberately narrow
+// in the other direction too: a stored form the conversion cannot improve on is left alone
+// rather than rewritten into a different-but-not-better one. The guards below say which.
+//
+// Numeric genre is the only option wired. The v2.3 multi-value policy is the known second
+// case - changing it on a file whose canonical values are unchanged is the identical silent
+// no-op, through these same gates - but every write passes some policy, so it carries no
+// "was it requested" signal and needs a policy-explicit write option first. The name is the
+// encoding class rather than the genre so that fix stays inside this package.
+func EncodingRewriteNeeded(src *Tag, edited tag.TagSet, opts WriteOpts) bool {
+	if src == nil {
+		return false
+	}
+	return encodingRewriteNeeded(src.Frames(), src.WriteVersion(), edited, opts)
+}
+
+// encodingRewriteNeeded is EncodingRewriteNeeded over a raw frame list, so the rebuilder can
+// reach the same verdict from the frames it already holds.
+func encodingRewriteNeeded(orig []Frame, version byte, edited tag.TagSet, opts WriteOpts) bool {
+	if !opts.NumericGenre {
+		return false
+	}
+	var stored []string
+	found := false
+	for _, f := range orig {
+		if f.ID != "TCON" || f.Opaque {
+			continue
+		}
+		found = true
+		stored = append(stored, DecodeText(f)...)
+	}
+	if !found {
+		return false // no stored genre to re-encode
+	}
+	// Both sides are compared as decoded value lists. Comparing genreValues' output against
+	// the stored frame directly would be asymmetric and churn correct files: a slash join
+	// collapses N values into one frame body, and a repeat-frame policy spreads them across N
+	// frames. Rendering and decoding back normalizes the join, the frame count, and the text
+	// encoding (so a Latin-1 frame does not read as different from a UTF-16 one) in one step.
+	want := renderedGenreValues(version, edited, opts)
+	if len(want) == 0 {
+		return false // the edit drops the genre; a removal is not a re-encoding
+	}
+	// The conversion must actually have produced a reference. A special reference (RX/CR) has
+	// no ID3v1 index, a literal beginning with "(" is only escaped, and a slash join disables
+	// the conversion outright - in each case the render carries no generated reference, and
+	// firing would replace a reference the file already holds with its plain name, or apply
+	// an unrelated escaping, rather than the normalisation the flag asked for. Testing the
+	// rendered values against the references the conversion could generate covers all three
+	// without re-deriving when genreValues decides to convert.
+	if !slices.ContainsFunc(want, generatedReference(edited, version)) {
+		return false
+	}
+	// A stored value that packs several canonical values into one frame value - ID3v2.3's
+	// "(17)(8)" and "(17)Hard" reference-and-refinement forms - cannot be re-rendered: the
+	// writer emits one value per canonical entry, so the rewrite would silently downgrade a
+	// spec-legal frame to the nonstandard NUL-separated extension (and raise its own
+	// compatibility warning). Leave it alone rather than trade one representation problem
+	// for another.
+	if len(stored) != len(want) {
+		return false
+	}
+	return !slices.Equal(stored, want)
+}
+
+// generatedReference returns a predicate reporting whether a rendered genre value is one the
+// numeric conversion generated, rather than a name or an escaped literal that passed through.
+func generatedReference(edited tag.TagSet, version byte) func(string) bool {
+	vals, _ := edited.Get(tag.Genre)
+	refs := make(map[string]bool, len(vals))
+	for _, v := range vals {
+		if r, ok := genreReference(v, version); ok {
+			refs[r] = true
+		}
+	}
+	return func(rendered string) bool { return refs[rendered] }
+}
+
+// renderedGenreValues renders the genre under opts and decodes the result back, giving the
+// value list the write would actually store. Going through the renderer rather than reading
+// genreValues directly is what normalizes the multi-value join, the frame count, and the
+// text encoding, so the comparison in encodingRewriteNeeded is symmetric on both sides.
+func renderedGenreValues(version byte, edited tag.TagSet, opts WriteOpts) []string {
+	frames, _ := genreFrames(version, edited, opts)
+	var out []string
+	for _, f := range frames {
+		out = append(out, DecodeText(f)...)
+	}
+	return out
+}
+
 // genreValues converts standard genre names to numeric references when WithNumericGenre is
 // set; other names pass through. Literal names beginning with "(" are escaped at positions
 // where the reader would parse "(ref)" syntax. Generated numeric and special references
@@ -1395,12 +1512,8 @@ func genreValues(names []string, version byte, numeric bool, pol core.ID3MultiVa
 	out := make([]string, len(names))
 	for i, n := range names {
 		if numeric {
-			if idx := genreIndex(n); idx >= 0 {
-				if version >= 4 {
-					out[i] = strconv.Itoa(idx)
-				} else {
-					out[i] = "(" + strconv.Itoa(idx) + ")"
-				}
+			if ref, ok := genreReference(n, version); ok {
+				out[i] = ref
 				continue // a generated reference is never escaped
 			}
 		}
@@ -1413,6 +1526,31 @@ func genreValues(names []string, version byte, numeric bool, pol core.ID3MultiVa
 		}
 	}
 	return out
+}
+
+// genreReference returns the write version's reference form for a value that names a
+// standard genre - "(17)" in v2.3, "17" in v2.4 - and whether one exists.
+//
+// A bare reference the caller supplied ("17") is resolved through the read path first, so a
+// single --numeric-genre pass normalizes it to the version's canonical form rather than
+// writing it through verbatim and leaving a library mixing "17" and "(17)". A parenthesized
+// value is deliberately not resolved: "(17)" is stored as the escaped literal "((17)" by
+// long-standing behavior, which the escape branch below owns. RX and CR resolve to names
+// with no ID3v1 index, so they fall through and keep the reference the file already holds.
+func genreReference(name string, version byte) (string, bool) {
+	idx := genreIndex(name)
+	if idx < 0 && !strings.HasPrefix(name, "(") {
+		if resolved, isRef := resolveGenres(name); isRef && len(resolved) == 1 {
+			idx = genreIndex(resolved[0])
+		}
+	}
+	if idx < 0 {
+		return "", false
+	}
+	if version >= 4 {
+		return strconv.Itoa(idx), true
+	}
+	return "(" + strconv.Itoa(idx) + ")", true
 }
 
 // genreParseLeading reports whether value i lands where resolveGenres parses from the

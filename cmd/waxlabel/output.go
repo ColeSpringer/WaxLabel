@@ -612,6 +612,11 @@ func classifyError(err error) classifiedError {
 	case errors.Is(err, waxerr.ErrFragmented):
 		// Another well-formed-but-unwritable shape: the initial movie box carries the tags.
 		c.exitCode, c.code = 3, "unsupported-fragmentation"
+	case errors.Is(err, waxerr.ErrPictureTooLarge):
+		// A supplied image too large for the destination's block, atom, or frame. The file
+		// itself reads fine, so a write refusal and not a corrupt file. It must sit above
+		// the invalid-data case below, which would otherwise claim it: Go switch order decides.
+		c.exitCode, c.code = 3, "picture-too-large"
 	case errors.Is(err, waxerr.ErrSourceChanged):
 		c.exitCode, c.code, c.hint = 5, "source-changed",
 			"the file changed since it was read; re-run to pick up the new contents"
@@ -621,8 +626,7 @@ func classifyError(err error) classifiedError {
 		c.exitCode, c.code = 7, "input-too-large"
 	case errors.Is(err, waxerr.ErrInvalidData),
 		errors.Is(err, waxerr.ErrSizeTooLarge),
-		errors.Is(err, waxerr.ErrTooDeep),
-		errors.Is(err, waxerr.ErrPictureTooLarge):
+		errors.Is(err, waxerr.ErrTooDeep):
 		c.exitCode, c.code = 4, "invalid-data"
 	case isNotFoundPathError(err):
 		pe, _ := err.(*fs.PathError) // guaranteed by isNotFoundPathError
@@ -644,6 +648,10 @@ func isUsageError(err error) bool {
 // invocation. The exit codes deliberately do not follow this order, since numeric-max would
 // let not-found (6) beat invalid-data (4). An unrecognized code ranks 0 and never masks a
 // known class. Keep in sync with README's precedence list.
+//
+// picture-too-large ranks last among the exit-3 classes. They share an exit code, so rank
+// only picks which message the run reports, and a file that cannot be rewritten at all is
+// worth surfacing over one where only this invocation's supplied cover was too big.
 var errClassRank = map[string]int{
 	"canceled":                  100, // exit 130: an interrupted run dominates
 	"timeout":                   100, // exit 130
@@ -655,6 +663,7 @@ var errClassRank = map[string]int{
 	"unsupported-stream":        64,  // exit 3: a chained/multiplexed Ogg stream
 	"unsupported-alignment":     63,  // exit 3: a non-page-aligned Ogg stream
 	"unsupported-fragmentation": 62,  // exit 3: a fragmented MP4
+	"picture-too-large":         61,  // exit 3: a supplied cover the destination cannot hold
 	"io":                        60,  // exit 6
 	"not-found":                 55,  // exit 6: a wrong path
 	"usage":                     20,  // exit 2: a bad invocation

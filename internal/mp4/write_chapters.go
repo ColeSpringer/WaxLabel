@@ -96,7 +96,10 @@ func buildChapterUdta(d *doc, edited *core.Media, needIlst, picturesChanged bool
 	var newIlst []byte
 	if needIlst {
 		covr := coverItemsToWrite(edited.Pictures, d.items, picturesChanged)
-		newItems = buildItems(edited.Tags, covr, preservedItems(d.items), opts.NumericGenre)
+		// The same encoding decision the ilst path makes, recomputed rather than threaded
+		// through: a chapter edit must not undo an earlier --numeric-genre run either.
+		numericGenre := numericGenreEncoding(d.items, edited.Tags, opts.NumericGenre)
+		newItems = buildItems(edited.Tags, covr, preservedItems(d.items), numericGenre)
 		if err := checkBuiltItems(newItems, d.items, opts.Limits.MaxAllocBytes); err != nil {
 			return nil, udtaRegion{}, err
 		}

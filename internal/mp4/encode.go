@@ -1,6 +1,7 @@
 package mp4
 
 import (
+	"bytes"
 	"encoding/binary"
 	"strconv"
 	"strings"
@@ -52,13 +53,9 @@ func buildItems(edited tag.TagSet, covr []item, preserved []item, numericGenre b
 			if len(vals) == 0 {
 				continue // present-but-empty: nothing to store
 			}
-			// Numeric genre: emit the legacy "gnre" atom (a 1-based ID3v1 index) only
-			// when every value resolves to a standard genre; otherwise the whole field
-			// falls through to the text "\xa9gen" atom so an order-preserving mix of
-			// standard and custom genres is kept verbatim.
-			if key == tag.Genre && numericGenre {
-				if indices, ok := allGenreIndices(vals); ok {
-					out = append(out, gnreItem(indices))
+			if key == tag.Genre {
+				if it, ok := genreItem(vals, numericGenre); ok {
+					out = append(out, it)
 					continue
 				}
 			}
@@ -214,6 +211,89 @@ func gnreItem(indices []int) item {
 		payload = append(payload, renderData(typeImplicit, v[:])...)
 	}
 	return item{name: atomName("gnre"), payload: payload}
+}
+
+// genreItem builds the ilst item the genre lands in: the legacy numeric "gnre" atom (a
+// 1-based ID3v1 index) when the encoding was requested and every value resolves to a
+// standard genre, and the text "\xa9gen" atom otherwise, so an order-preserving mix of
+// standard and custom genres is kept verbatim. It reports false when there is nothing to
+// store, or when the genre has no mapped text atom, leaving buildItems' freeform branch to
+// handle it. buildItems and the two predicates below all go through it, so none of them can
+// assume a different item than the write emits.
+func genreItem(vals []string, numericGenre bool) (item, bool) {
+	if len(vals) == 0 {
+		return item{}, false
+	}
+	if numericGenre {
+		if indices, ok := allGenreIndices(vals); ok {
+			return gnreItem(indices), true
+		}
+	}
+	name, ok := mapping.MP4KeyText(tag.Genre)
+	if !ok {
+		return item{}, false
+	}
+	return textItem(atomName(name), vals), true
+}
+
+// genreEncodingChanged reports whether writing the edited genre numerically would store it
+// differently from the parsed ilst. It is MP4's encoding-rewrite predicate, the counterpart
+// to id3.EncodingRewriteNeeded: MP4 has no ID3v2 container and buildItems rebuilds every
+// item from the edited tags, so the ID3 rebuilder's dirty-frame gate does not apply here and
+// the stored atom is compared against the one the write would build.
+//
+// The genre lives in one of two atoms, so crossing between the text "\xa9gen" and the
+// numeric "gnre" is a change, as is a differing gnre payload. Two text atoms compare equal
+// because a text-to-text difference is a canonical value change the caller's tag comparison
+// already sees, and a genre present on only one side is an addition or removal, likewise
+// already visible. A size delta is not enough on its own: it is non-zero for "Rock" only by
+// luck, and a two-character genre name would collapse it to zero.
+func genreEncodingChanged(source []item, edited tag.TagSet) bool {
+	vals, _ := edited.Get(tag.Genre)
+	built, bOK := genreItem(vals, true)
+	sName, sPayload, sOK := findGenreItem(source)
+	if !sOK || !bOK {
+		return false
+	}
+	if sName != built.id() {
+		return true
+	}
+	return sName == "gnre" && !bytes.Equal(sPayload, built.payload)
+}
+
+// numericGenreEncoding reports whether the rebuild writes the genre as the numeric gnre
+// atom: because this edit asked for it, or because the parsed ilst already stores it that
+// way and still holds the value being written.
+//
+// The second clause is what keeps an earlier --numeric-genre run from being undone. buildItems
+// rebuilds every item from the canonical tags, so without it a plain `--set TITLE=x` would
+// silently convert an existing gnre back to the text atom, and the file would ping-pong
+// between the two representations on alternating edits. A genre edit that changes the value
+// still drops back to text, matching the ID3 codecs, where a TCON a canonical change dirties
+// is re-rendered from the write options and one no change touched is preserved verbatim.
+func numericGenreEncoding(source []item, edited tag.TagSet, requested bool) bool {
+	if requested {
+		return true
+	}
+	name, payload, ok := findGenreItem(source)
+	if !ok || name != "gnre" {
+		return false
+	}
+	vals, _ := edited.Get(tag.Genre)
+	built, ok := genreItem(vals, true)
+	return ok && bytes.Equal(built.payload, payload)
+}
+
+// findGenreItem finds the genre item among parsed ilst items, returning its atom name and
+// payload. Both spellings count: the text "\xa9gen" that mapping.MP4KeyText writes and the
+// numeric "gnre" that gnreItem writes.
+func findGenreItem(items []item) (name string, payload []byte, ok bool) {
+	for _, it := range items {
+		if it.name == atomName("\xa9gen") || it.name == atomName("gnre") {
+			return it.id(), it.payload, true
+		}
+	}
+	return "", nil, false
 }
 
 // freeformItem builds a "----" freeform item under the com.apple.iTunes mean.

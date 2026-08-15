@@ -629,6 +629,9 @@ func TestClassifyError(t *testing.T) {
 		{"chained-stream", fmt.Errorf("w: %w", waxerr.ErrChainedStream), 3, "unsupported-stream"},
 		{"unaligned-stream", fmt.Errorf("w: %w", waxerr.ErrUnalignedStream), 3, "unsupported-alignment"},
 		{"fragmented", fmt.Errorf("w: %w", waxerr.ErrFragmented), 3, "unsupported-fragmentation"},
+		// A healthy file whose supplied cover does not fit: a write refusal, not corruption,
+		// so exit 3 and not the exit 4 a quarantine script acts on.
+		{"picture-too-large", fmt.Errorf("w: %w", waxerr.ErrPictureTooLarge), 3, "picture-too-large"},
 		{"invalid-data", fmt.Errorf("w: %w", waxerr.ErrInvalidData), 4, "invalid-data"},
 		{"input-too-large", fmt.Errorf("w: %w", waxerr.ErrInputTooLarge), 7, "input-too-large"},
 		{"source-changed", fmt.Errorf("w: %w", waxerr.ErrSourceChanged), 5, "source-changed"},
@@ -2048,6 +2051,7 @@ func TestErrClassRankCoversEveryErrorClass(t *testing.T) {
 		waxerr.ErrChainedStream,
 		waxerr.ErrUnalignedStream,
 		waxerr.ErrFragmented,
+		waxerr.ErrPictureTooLarge,
 		waxerr.ErrSourceChanged,
 		waxerr.ErrInvalidData,
 		waxerr.ErrInputTooLarge,

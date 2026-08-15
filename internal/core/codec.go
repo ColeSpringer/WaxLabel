@@ -140,6 +140,19 @@ func PaddingOp(oldRegion, newContent, padAfter int64) string {
 	return fmt.Sprintf("padding %d -> %d", max(int64(0), oldRegion-newContent), padAfter)
 }
 
+// EncodingRewriteOp formats the operation line for a write that stores a value in a
+// different representation than the file currently holds - a --numeric-genre run turning
+// "Rock" into "(17)". It is reported whenever that re-encoding happens, including alongside
+// a genuine value change, so the plan says which form was written.
+//
+// It is load-bearing on the encoding-only write: nothing changes canonically, and "Rock" and
+// "(17)" are the same length, so neither a frame-rewrite nor a padding line fires and the
+// plan would otherwise report a real write with no operations at all. what names the field
+// ("genre"); the wording is format-neutral because MP4 has no ID3v2 frames.
+func EncodingRewriteOp(what string) string {
+	return what + " encoding rewrite"
+}
+
 // DowngradeNoOp returns a clean no-op plan when a codec's projected post-write
 // result is metadata-equivalent to base - the edit re-projected to the values
 // already present (GENRE=17 -> Rock, TRACKNUMBER=03 -> 3, a dropped empty or

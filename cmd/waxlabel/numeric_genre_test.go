@@ -8,6 +8,32 @@ import (
 	"testing"
 )
 
+// tconText returns the decoded text of the first ID3v2 TCON (genre) frame: a 10-byte frame
+// header, then a text-encoding byte, then the text. Every offset is bounded against
+// len(data) so a malformed or truncated frame fails the test cleanly instead of panicking.
+// The fixtures here carry exactly one TCON, so the first match is the genre frame; a wrong
+// match would fail the value assertion regardless. It reads the size field as a plain
+// big-endian integer, which agrees with ID3v2.4's sync-safe encoding for any value under
+// 128 - every genre body qualifies - so one helper serves both versions. It also finds the
+// frame inside a WAV "id3 " or AIFF "ID3 " chunk, since the search is over the whole file.
+func tconText(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := bytes.Index(data, []byte("TCON"))
+	if i < 0 || i+10 > len(data) {
+		t.Fatalf("no usable TCON frame in %s", path)
+	}
+	size := int(data[i+4])<<24 | int(data[i+5])<<16 | int(data[i+6])<<8 | int(data[i+7])
+	end := i + 10 + size
+	if size < 1 || end > len(data) {
+		t.Fatalf("TCON frame size %d out of bounds (i=%d, len=%d)", size, i, len(data))
+	}
+	return string(data[i+11 : end]) // skip the 1-byte text-encoding marker
+}
+
 // TestNumericGenreFlag covers the --numeric-genre flag end to end: it is bound on
 // editFlags and resolves in writeOptions(), so both set and plan accept it via
 // compile() with no per-caller wiring. With the flag, a recognized genre is stored
@@ -18,29 +44,6 @@ import (
 func TestNumericGenreFlag(t *testing.T) {
 	t.Parallel()
 	notagsMP3 := filepath.Join("..", "..", "testdata", "notags.mp3")
-
-	// tconText returns the decoded text of the first ID3v2 TCON (genre) frame: a
-	// 10-byte frame header, then a text-encoding byte, then the text. Every offset is
-	// bounded against len(data) so a malformed or truncated frame fails the test cleanly
-	// instead of panicking. The fixtures here carry exactly one TCON, so the first match
-	// is the genre frame; a wrong match would fail the value assertion below regardless.
-	tconText := func(t *testing.T, path string) string {
-		t.Helper()
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		i := bytes.Index(data, []byte("TCON"))
-		if i < 0 || i+10 > len(data) {
-			t.Fatalf("no usable TCON frame in %s", path)
-		}
-		size := int(data[i+4])<<24 | int(data[i+5])<<16 | int(data[i+6])<<8 | int(data[i+7])
-		end := i + 10 + size
-		if size < 1 || end > len(data) {
-			t.Fatalf("TCON frame size %d out of bounds (i=%d, len=%d)", size, i, len(data))
-		}
-		return string(data[i+11 : end]) // skip the 1-byte text-encoding marker
-	}
 
 	// With the flag: the numeric reference. Rock is genre 17 in the ID3v1 list, and
 	// ID3v2.3 writes a numeric reference parenthesized.

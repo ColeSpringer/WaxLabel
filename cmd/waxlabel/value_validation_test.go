@@ -125,10 +125,23 @@ func TestValueDroppedWarningVisibleOnNoOpOutput(t *testing.T) {
 // TestMatroskaSingleValuedMultiWarning checks the edit intent, not only Matroska's
 // re-projected result. Info.Title stores one value, so TITLE=A plus TITLE=B must warn
 // even though the codec result collapses to one value. --strict escalates it to exit 2.
+//
+// The FLAC/ALBUM row pins the same warning on the default (non-strict) path of a format
+// that stores the extra values fine: the typed projection still reads only the first, so
+// the note fires and the run exits 0, which is the designed outcome rather than a gap.
 func TestMatroskaSingleValuedMultiWarning(t *testing.T) {
 	t.Parallel()
-	if out, _, _ := runCLI(t, "plan", copyFixture(t, notagsMKA), "--set", "TITLE=A", "--add", "TITLE=B"); !strings.Contains(out, "single-valued-multi") {
-		t.Errorf("plan TITLE A+B on Matroska: missing single-valued-multi warning:\n%s", out)
+	for _, c := range []struct{ name, fixture, key string }{
+		{"matroska TITLE", notagsMKA, "TITLE"},
+		{"flac ALBUM", sampleFLAC, "ALBUM"},
+	} {
+		out, _, code := runCLI(t, "plan", copyFixture(t, c.fixture), "--set", c.key+"=A", "--add", c.key+"=B")
+		if !strings.Contains(out, "single-valued-multi") {
+			t.Errorf("plan %s A+B on %s: missing single-valued-multi warning:\n%s", c.key, c.name, out)
+		}
+		if code != 0 {
+			t.Errorf("plan %s A+B on %s: exit = %d, want 0 (a note, not a failure)", c.key, c.name, code)
+		}
 	}
 	if _, _, code := runCLI(t, "set", copyFixture(t, notagsMKA), "--set", "TITLE=A", "--add", "TITLE=B", "--strict"); code != 2 {
 		t.Errorf("set --strict TITLE A+B on Matroska: exit = %d, want 2", code)

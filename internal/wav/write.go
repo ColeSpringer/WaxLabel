@@ -49,11 +49,20 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	report := core.WriteReport{Format: core.FormatWAV, BytesBefore: edited.Identity.Size}
 
+	// One WriteOpts for both the predicate and the rebuild: they must render from identical
+	// options, or the predicate could green-light a write the rebuild then renders differently.
+	wopts := id3.WriteOpts{Multi: opts.ID3Multi, NumericGenre: opts.NumericGenre}
+	// A requested write encoding (--numeric-genre) changes how a value is stored, not the
+	// value itself, so the tag comparison above cannot see it. It reaches only the id3
+	// chunk: LIST/INFO IGNR stores the genre name literally, and a file with no id3 chunk
+	// passes a nil tag, for which the predicate is false.
+	encodingRewrite := id3.EncodingRewriteNeeded(d.id3, edited.Tags, wopts)
+
 	// Fast path: nothing changed. NoOpPlan emits a verbatim copy (so SaveAsFile/
 	// WriteTo still produce a whole file) flagged NoOp so SaveBack skips it. A
 	// chapters- or synced-lyrics-only edit (CHAP/CTOC, SYLT in the id3 chunk) must defeat
 	// the gate too.
-	if !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !stripINFO && !stampToStrip {
+	if !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !stripINFO && !stampToStrip && !encodingRewrite {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 	// Re-check the ID3 CTOC count at the codec boundary. Only a chapter edit re-renders
@@ -97,7 +106,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 				SyncedLyricsCarried: opts.Carried,
 				SyncedLyricsCleared: opts.SyncedLyricsCleared,
 				MediaDuration:       edited.Properties.Duration(),
-			}, id3.WriteOpts{Multi: opts.ID3Multi, NumericGenre: opts.NumericGenre})
+			}, wopts)
 		if err := id3.CheckSize(version, frames, bits.DefaultLimits.MaxElements); err != nil {
 			return nil, err
 		}
@@ -144,6 +153,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		report.Warnings = core.Warn(report.Warnings, core.WarnID3MultiValue,
 			"a multi-value field was written NUL-separated in ID3v2.3, a de-facto extension some readers do not split")
 	}
+	if encodingRewrite {
+		report.Operations = append(report.Operations, core.EncodingRewriteOp("genre"))
+	}
 	report.BytesAfter = lay.total
 
 	result := buildResult(edited, d, newInfo, newID3, lay)
@@ -152,10 +164,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// helper checks the re-projected output before warning.
 	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, id3Info, result.Tags)
 	// Collapse to a true no-op when the containers re-projected to base's values
-	// (a numeric genre, a dropped empty); an INFO strip or encoder-stamp removal stays
-	// a real write. DowngradeNoOp carries the value-dropped warning forward so a dropped
-	// date still surfaces on a no-op.
-	if np := core.DowngradeNoOp(core.FormatWAV, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), stripINFO || stampToStrip, report.Warnings); np != nil {
+	// (a numeric genre, a dropped empty); an INFO strip, an encoder-stamp removal, or an
+	// encoding rewrite stays a real write. DowngradeNoOp carries the value-dropped warning
+	// forward so a dropped date still surfaces on a no-op.
+	if np := core.DowngradeNoOp(core.FormatWAV, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), stripINFO || stampToStrip || encodingRewrite, report.Warnings); np != nil {
 		return np, nil
 	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil

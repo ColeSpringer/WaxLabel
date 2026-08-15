@@ -113,8 +113,10 @@ shaping is controlled by `--preset`, `--legacy`, and `--padding`. Run
 
 Read commands accept `-` for standard input, and `dump`, `verify`, `lint`, `plan`,
 and `set` can walk directories with `--recursive`. Format is detected from a file's
-leading bytes, not its extension. All data commands accept `--json`. `-o` writes
-atomically and refuses an existing target unless `--overwrite` is given.
+leading bytes, not its extension, except under `--recursive`: the walker picks its
+candidates by extension first, so a valid FLAC named `noext` is skipped by a recursive
+run while working normally when named directly. All data commands accept `--json`. `-o`
+writes atomically and refuses an existing target unless `--overwrite` is given.
 
 `lint --json` findings carry a machine-readable `code` and `severity`; the exit code
 reflects the highest-precedence result. See `waxlabel <command> --help` and the
@@ -130,7 +132,7 @@ Every failure carries a stable machine `code` (in `--json`, the error envelope's
 | 0 | none, or `broken-pipe` | Success, or a closed output pipe (`... \| head`) |
 | 1 | `error` | Unclassified failure |
 | 2 | `usage`, `invalid-key`, `needs-file` | Bad invocation, or an invalid canonical key |
-| 3 | `unsupported-format`, `unsupported-tag`, `unsupported-stream`, `unsupported-alignment`, `unsupported-fragmentation` | The file reads, but the requested write is refused |
+| 3 | `unsupported-format`, `unsupported-tag`, `unsupported-stream`, `unsupported-alignment`, `unsupported-fragmentation`, `picture-too-large` | The format is unsupported, or the file reads but the requested write is refused |
 | 4 | `invalid-data` | The file is corrupt or violates its format |
 | 5 | `source-changed` | The file changed between the read and the save-back |
 | 6 | `not-found`, `io` | A wrong path, or a local I/O failure |
@@ -140,7 +142,8 @@ Every failure carries a stable machine `code` (in `--json`, the error envelope's
 A multi-file run exits with the most-severe class it saw, which is not the numeric
 maximum: `canceled`/`timeout` > `source-changed` > `invalid-data` > `input-too-large`
 > `unsupported-format` > `unsupported-tag` > `unsupported-stream` >
-`unsupported-alignment` > `unsupported-fragmentation` > `io` > `not-found` >
+`unsupported-alignment` > `unsupported-fragmentation` > `picture-too-large` >
+`io` > `not-found` >
 `usage`/`invalid-key`/`needs-file` > `error` > `broken-pipe`. So a corrupt file
 (exit 4) outranks a mistyped path (exit 6).
 

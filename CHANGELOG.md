@@ -6,6 +6,20 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- `--numeric-genre` did nothing when the stored genre already matched the requested value, so a
+  bulk normalisation run re-encoded only the files whose genre also changed. It now rewrites
+  whenever the stored representation differs, on MP3, AAC, AIFF, MP4, and on WAV files carrying
+  an `id3 ` chunk. A file that cannot be rewritten at all, such as a fragmented MP4, now reports
+  that refusal rather than silently reporting no changes.
+- On MP4 an unrelated edit converted an existing numeric `gnre` atom back to the text one,
+  undoing an earlier `--numeric-genre` run. The stored encoding is now kept unless the genre's
+  value changes.
+- `--set GENRE=17 --numeric-genre` stored the bare `17` on ID3v2.3 where `--set GENRE=Rock`
+  stored `(17)`, so one pass could leave a library holding both. A supplied reference now
+  reaches the same stored form as a supplied name.
+- An oversized picture exited 4 (`invalid-data`, "the file is corrupt") for a healthy file. It
+  now exits 3 with the new `picture-too-large` code. Behavior change for scripts branching on
+  the exit code.
 - Every in-place write failed on Windows with `Access is denied`. The library held its own read
   handle on the source across the rename that replaces it, which a Windows rename refuses, so
   `set`, `copy`, and `lint --fix` were broken in the shipped Windows binaries, as was `SaveBack`

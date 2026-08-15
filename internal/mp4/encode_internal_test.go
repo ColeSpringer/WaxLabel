@@ -285,3 +285,84 @@ func sameKeySet(a, b []tag.Key) bool {
 	}
 	return true
 }
+
+// mp4GenreSet builds a tag set holding just a genre, for the two genre-encoding predicates.
+func mp4GenreSet(vals ...string) tag.TagSet {
+	ts := tag.NewTagSet()
+	if len(vals) > 0 {
+		ts.Set(tag.Genre, vals...)
+	}
+	return ts
+}
+
+// TestGenreEncodingChanged pins MP4's encoding-rewrite predicate: it fires when writing the
+// edited genre numerically would move it between the text "\xa9gen" atom and the numeric
+// "gnre" one, or change a gnre payload, and stays quiet otherwise. It deliberately does not
+// lean on a size delta - "Rock" and a 2-byte gnre differ in length only by luck, and a
+// two-character genre name would collapse that difference to zero.
+func TestGenreEncodingChanged(t *testing.T) {
+	text := func(v string) []item { return []item{textItem(atomName("\xa9gen"), []string{v})} }
+	numeric := func(idx ...int) []item { return []item{gnreItem(idx)} }
+	other := []item{textItem(atomName("\xa9nam"), []string{"Title"})}
+
+	cases := []struct {
+		name   string
+		source []item
+		edited tag.TagSet
+		want   bool
+	}{
+		{"text stored, numeric requested", text("Rock"), mp4GenreSet("Rock"), true},
+		{"numeric already stored", numeric(17), mp4GenreSet("Rock"), false},
+		{"numeric stored for a different genre", numeric(17), mp4GenreSet("Jazz"), true},
+		{"custom genre has no numeric form", text("Chiptune Surf"), mp4GenreSet("Chiptune Surf"), false},
+		{"no genre either side", other, mp4GenreSet(), false},
+		// Adding or removing a genre is a canonical change the caller's tag comparison
+		// already sees, so neither is reported as an encoding rewrite; labelling a removal
+		// one would put "genre encoding rewrite" on a write that deletes the genre.
+		{"genre added", other, mp4GenreSet("Rock"), false},
+		{"genre removed", text("Rock"), mp4GenreSet(), false},
+		// A two-character name is the case a size comparison would miss: "Pop" cut to "Po"
+		// and a 2-byte gnre payload are the same length, so only the atom name tells them
+		// apart. Blues is index 0, so the stored name and the numeric form both fit 2 bytes.
+		{"same-size text and numeric", text("Po"), mp4GenreSet("Rock"), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := genreEncodingChanged(c.source, c.edited); got != c.want {
+				t.Errorf("genreEncodingChanged = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestNumericGenreEncodingPreserved pins the other half: an edit that did not ask for the
+// numeric encoding still writes it when the file already stores it and the genre's value is
+// unchanged. Without this buildItems, which rebuilds every item from the canonical tags,
+// would convert an existing gnre back to the text atom on any unrelated edit, undoing an
+// earlier --numeric-genre run and ping-ponging the file between the two forms.
+func TestNumericGenreEncodingPreserved(t *testing.T) {
+	gnre := []item{gnreItem([]int{17})}
+	text := []item{textItem(atomName("\xa9gen"), []string{"Rock"})}
+
+	cases := []struct {
+		name      string
+		source    []item
+		edited    tag.TagSet
+		requested bool
+		want      bool
+	}{
+		{"requested outright", text, mp4GenreSet("Rock"), true, true},
+		{"stored numeric, unrelated edit", gnre, mp4GenreSet("Rock"), false, true},
+		{"stored numeric, genre value changed", gnre, mp4GenreSet("Jazz"), false, false},
+		{"stored numeric, genre cleared", gnre, mp4GenreSet(), false, false},
+		{"stored as text", text, mp4GenreSet("Rock"), false, false},
+		{"no genre stored", nil, mp4GenreSet("Rock"), false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := numericGenreEncoding(c.source, c.edited, c.requested); got != c.want {
+				t.Errorf("numericGenreEncoding = %v, want %v", got, c.want)
+			}
+		})
+	}
+}

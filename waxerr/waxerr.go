@@ -19,8 +19,13 @@ var (
 	ErrInvalidData = errors.New("invalid data")
 	// ErrUnsupportedTag means a tag exists that this version cannot model.
 	ErrUnsupportedTag = errors.New("unsupported tag")
-	// ErrPictureTooLarge means an embedded picture exceeded a configured or
-	// format-imposed size limit.
+	// ErrPictureTooLarge means content the write supplied exceeded a configured or
+	// format-imposed size limit for its destination: a FLAC picture block, an MP4 covr
+	// atom, an ID3 APIC frame, or a whole Ogg comment header (which is where Vorbis
+	// base64-encodes its cover art, so in practice that too is an oversized picture).
+	// The input file itself is well-formed and reads fine; only the write is refused, so
+	// it is a write-refusal and not corruption - distinct from ErrInvalidData, and
+	// classified with the other write refusals.
 	ErrPictureTooLarge = errors.New("picture too large")
 	// ErrSizeTooLarge means a declared length would exceed the bounded
 	// allocation limit for untrusted input.
