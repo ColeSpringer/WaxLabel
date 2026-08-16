@@ -565,7 +565,8 @@ func parseStsd(src core.ReaderAtSized, stsd node, d *doc, limit int64) {
 	// reported properties (channels/sample-rate left unset) rather than misreading them;
 	// stsd is still preserved verbatim on write, and the salt stays deterministic. >=2
 	// (not ==2) so an unknown future version also skips rather than misparses.
-	if version := binary.BigEndian.Uint16(b[24:26]); version >= 2 {
+	version := binary.BigEndian.Uint16(b[24:26])
+	if version >= 2 {
 		copy(d.cfg.codec[:], b[12:16])
 		d.track.Codec = string(d.cfg.codec[:])
 		return
@@ -578,6 +579,62 @@ func parseStsd(src core.ReaderAtSized, stsd node, d *doc, limit int64) {
 	d.track.Channels = int(d.cfg.channels)
 	d.track.BitsPerSample = int(d.cfg.sampleSize)
 	d.track.SampleRate = int(d.cfg.sampleRate)
+	// An ALAC entry's sample_size field is conventionally 16 whatever the payload
+	// depth; the depth the decoder uses is in the magic cookie. Only the reported
+	// track is corrected - d.cfg keeps the raw entry value, so the essence-digest
+	// salt (and every stored ALAC digest) is unchanged.
+	if d.track.Codec == "alac" {
+		if depth := alacCookieBitDepth(b, version); depth > 0 {
+			d.track.BitsPerSample = depth
+		}
+	}
+}
+
+// alacCookieBitDepth returns the bit depth declared by the ALAC magic cookie
+// (the 'alac' child box of the sample entry), or 0 when the cookie is absent,
+// truncated, or implausible. b is the stsd payload prefix with the entry at
+// b[8]; version selects the v0 or v1 fixed-field length. A QuickTime-style
+// cookie wrapped in a 'wave' box is found one level down.
+func alacCookieBitDepth(b []byte, version uint16) int {
+	off := 8 + 36 // extensions follow the fixed AudioSampleEntry fields
+	if version == 1 {
+		off += 16 // v1 appends four QuickTime bytes-per-packet/frame/sample fields
+	}
+	end := len(b)
+	if size := int64(binary.BigEndian.Uint32(b[8:12])); size > 0 && 8+size < int64(end) {
+		end = int(8 + size)
+	}
+	return alacCookieScan(b, off, end)
+}
+
+// alacCookieScan walks sibling boxes in b[off:end] looking for the ALAC magic
+// cookie, descending into a 'wave' wrapper. The cookie layout is a 12-byte box
+// header (size, type, version/flags) followed by the 24-byte ALACSpecificConfig,
+// whose sixth byte (offset 5, after the u32 frameLength and u8 compatibleVersion)
+// is bitDepth. Recursion depth is bounded by the buffer: each
+// level consumes an 8-byte header of an at-most-256-byte prefix.
+func alacCookieScan(b []byte, off, end int) int {
+	for off+8 <= end {
+		size := binary.BigEndian.Uint32(b[off : off+4])
+		if size < 8 || int64(size) > int64(end-off) {
+			return 0 // malformed or truncated by the prefix read: keep the entry value
+		}
+		switch string(b[off+4 : off+8]) {
+		case "alac":
+			if size >= 36 {
+				if depth := int(b[off+17]); depth > 0 && depth <= 32 {
+					return depth
+				}
+			}
+			return 0
+		case "wave":
+			if depth := alacCookieScan(b, off+8, off+int(size)); depth > 0 {
+				return depth
+			}
+		}
+		off += int(size)
+	}
+	return 0
 }
 
 // setEssence records the audio-essence byte ranges from the mdat atoms. A single

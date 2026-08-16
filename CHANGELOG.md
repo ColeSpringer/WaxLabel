@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here.
 
+## [1.4.2]
+
+### Fixed
+
+- ALAC files reported 16 bits per sample whatever the real depth: the MP4 sample entry pins
+  that field at 16 by convention. The depth is now read from the ALAC magic cookie.
+
 ## [1.4.1]
 
 ### Fixed

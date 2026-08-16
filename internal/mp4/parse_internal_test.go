@@ -23,6 +23,30 @@ func mkStsdPayload(soundVersion uint16) []byte {
 	return b
 }
 
+// mkAlacStsdPayload builds an stsd payload with one v0 'alac' sample entry whose
+// fixed sample_size field carries the conventional 16 while the nested magic
+// cookie declares cookieDepth bits.
+func mkAlacStsdPayload(cookieDepth byte) []byte {
+	b := make([]byte, 8+36+36)
+	be := binary.BigEndian
+	be.PutUint32(b[4:8], 1)      // entry_count
+	be.PutUint32(b[8:12], 36+36) // entry size: fixed fields + cookie box
+	copy(b[12:16], "alac")
+	be.PutUint16(b[22:24], 1)         // data_reference_index
+	be.PutUint16(b[32:34], 2)         // channels
+	be.PutUint16(b[34:36], 16)        // sample_size, pinned at 16 by convention
+	be.PutUint32(b[40:44], 44100<<16) // sample_rate 16.16
+	be.PutUint32(b[44:48], 36)        // cookie box size
+	copy(b[48:52], "alac")            // cookie box type
+	be.PutUint32(b[56:60], 4096)      // frameLength
+	b[61] = cookieDepth               // bitDepth
+	b[62], b[63], b[64] = 40, 10, 14  // pb, mb, kb
+	b[65] = 2                         // numChannels
+	be.PutUint16(b[66:68], 255)       // maxRun
+	be.PutUint32(b[76:80], 44100)     // sampleRate
+	return b
+}
+
 // parseStsdPayload wraps a payload in an 8-byte stsd box header and runs parseStsd.
 func parseStsdPayload(t *testing.T, payload []byte) *doc {
 	t.Helper()
@@ -58,6 +82,63 @@ func TestParseStsdV2SkipsGeometry(t *testing.T) {
 	if d0.cfg.channels != 0xFFFF || d0.cfg.sampleSize != 0xFFFF || d0.cfg.sampleRate != 0xFFFF {
 		t.Errorf("v0 entry should read fixed-offset geometry: channels=%d sampleSize=%d sampleRate=%d",
 			d0.cfg.channels, d0.cfg.sampleSize, d0.cfg.sampleRate)
+	}
+}
+
+// TestParseStsdAlacCookieBitDepth checks that an ALAC entry's reported bit depth
+// comes from the magic cookie rather than the sample entry's sample_size field,
+// which convention pins at 16 whatever the payload depth. The essence-digest salt
+// keeps the raw entry value so existing ALAC digests are unchanged.
+func TestParseStsdAlacCookieBitDepth(t *testing.T) {
+	d := parseStsdPayload(t, mkAlacStsdPayload(24))
+	if d.track.BitsPerSample != 24 {
+		t.Errorf("BitsPerSample = %d, want 24 (from the magic cookie)", d.track.BitsPerSample)
+	}
+	if d.cfg.sampleSize != 16 {
+		t.Errorf("cfg.sampleSize = %d, want the raw entry value 16 (digest salt must not change)", d.cfg.sampleSize)
+	}
+}
+
+// TestParseStsdAlacCookieFallback checks the degrade paths: when the cookie is
+// absent, truncated, or declares an implausible depth, the entry's sample_size
+// stands.
+func TestParseStsdAlacCookieFallback(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		payload []byte
+	}{
+		{"no cookie", mkAlacStsdPayload(24)[:8+36]},
+		{"implausible depth 0", mkAlacStsdPayload(0)},
+		{"implausible depth 64", mkAlacStsdPayload(64)},
+		{"truncated cookie box", mkAlacStsdPayload(24)[:8+36+12]},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := append([]byte(nil), c.payload...)
+			binary.BigEndian.PutUint32(p[8:12], uint32(len(p)-8)) // entry size matches the trim
+			d := parseStsdPayload(t, p)
+			if d.track.BitsPerSample != 16 {
+				t.Errorf("BitsPerSample = %d, want the entry value 16", d.track.BitsPerSample)
+			}
+		})
+	}
+}
+
+// TestParseStsdAlacWaveWrappedCookie checks the QuickTime layout: a v1 sound
+// entry with the cookie inside a 'wave' wrapper, after the four extra v1 fields.
+func TestParseStsdAlacWaveWrappedCookie(t *testing.T) {
+	plain := mkAlacStsdPayload(24)
+	cookie := plain[44:80]
+	b := make([]byte, 8+36+16+8+len(cookie))
+	be := binary.BigEndian
+	copy(b, plain[:44])                           // stsd header + fixed entry fields
+	be.PutUint32(b[8:12], uint32(len(b)-8))       // entry size
+	be.PutUint16(b[24:26], 1)                     // sound-entry version 1
+	be.PutUint32(b[60:64], uint32(8+len(cookie))) // wave box size
+	copy(b[64:68], "wave")
+	copy(b[68:], cookie)
+	d := parseStsdPayload(t, b)
+	if d.track.BitsPerSample != 24 {
+		t.Errorf("BitsPerSample = %d, want 24 (cookie inside wave)", d.track.BitsPerSample)
 	}
 }
 
