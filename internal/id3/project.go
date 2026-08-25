@@ -153,6 +153,24 @@ func Project(t *Tag) Projection {
 					emit(k, p.Name, f.ID)
 				}
 			}
+		case f.ID == "MVIN":
+			// Apple's movement number/total frame, an "n/total" pair like TRCK. Not
+			// T-prefixed, so the generic text tail below never reaches it.
+			for _, v := range decodeTextFrame(f.Body) {
+				num, total, _ := movementSplit(v)
+				if num != "" {
+					emit(tag.Movement, num, "MVIN")
+				}
+				if total != "" {
+					emit(tag.MovementTotal, total, "MVIN")
+				}
+			}
+		case f.ID == "MVNM":
+			// Apple's movement-name frame; also not T-prefixed, so without this case
+			// the frame would stay preserved but invisible.
+			for _, v := range decodeTextFrame(f.Body) {
+				emit(tag.MovementName, v, "MVNM")
+			}
 		case strings.HasPrefix(f.ID, "T"):
 			key, ok := mapping.ID3FrameKey(f.ID)
 			if !ok {
@@ -205,4 +223,28 @@ func emitNumTotal(emit func(tag.Key, string, string), vals []string, numKey, tot
 			emit(totKey, total, src)
 		}
 	}
+}
+
+// movementSplit splits an MVIN "number/total" value into its number and total substrings,
+// the movement analog of [tag.NumberTotalSplit] (which is hard-gated to the track/disc keys,
+// and whose [tag.ValidNumericValue] gate passes anything for a non-member key, so it cannot
+// be widened here). A value splits only when it contains a '/', each side is empty or a
+// valid movement integer ([tag.ValidMP4IntValue], so unsigned and within uint16), and the
+// sides are not both empty; anything else - no slash, a malformed side ("abc/1"), a bare "/"
+// - stays whole on the number side with split=false, matching NumberTotalSplit's
+// malformed-stays-verbatim contract. The MVIN read case and composeMovementPair both go
+// through it, so compose and read cannot drift.
+func movementSplit(v string) (num, total string, split bool) {
+	if !strings.ContainsRune(v, '/') {
+		return v, "", false
+	}
+	n, t := tag.SplitNumberTotal(v)
+	if n == "" && t == "" {
+		return v, "", false
+	}
+	valid := func(s string) bool { return s == "" || tag.ValidMP4IntValue(tag.Movement, s) }
+	if !valid(n) || !valid(t) {
+		return v, "", false
+	}
+	return n, t, true
 }

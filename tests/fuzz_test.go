@@ -54,19 +54,28 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte("\x00\x00\x00\x10ftypM4A \x00\x00\x00\x00\x00\x00\x00\x11moov\x00\x00\x00\x09chpl\x00\x00\x00\x00\x05"))                                 // chpl v0 declaring 5 chapters, none present
 	f.Add([]byte("\x00\x00\x00\x1cftyp00000000000000000000\x00\x00\x00\x11moov\x00\x00\x00\x00udta\x00"))                                                 // ftyp(28)+moov(17){udta zero-body}: a created tag must not append past the stray zero
 	f.Add([]byte("\x00\x00\x00\x10ftypM4A \x00\x00\x00\x00\x00\x00\x00\xffmoov\x00\x00\x00\bfree\x00\x00\x00\x00"))                                       // truncated moov (declares 255, clamps to EOF) with a gap after its free child: reject, not write 2x-size
-	f.Add([]byte("\x1a\x45\xdf\xa3\x84\x42\x82\x81m"))                                                                                                    // EBML magic + truncated DocType
-	f.Add([]byte("\x1a\x45\xdf\xa3\xff"))                                                                                                                 // EBML magic, unknown-size header
-	f.Add([]byte("\x1a\x45\xdf\xa3\x80\x18\x53\x80\x67\xff"))                                                                                             // empty EBML header + unknown-size Segment
-	f.Add([]byte("\x1a\x45\xdf\xa3\x80\x18\x53\x80\x67\x88\x10\x43\xa7\x70\x84\x45\xb9\x81\xb6"))                                                         // EBML + Segment{Chapters{EditionEntry{empty ChapterAtom}}}
-	f.Add([]byte("FORM\x00\x00\x00\x04AIFF"))                                                                                                             // AIFF, no chunks
-	f.Add([]byte("FORM\xff\xff\xff\xffAIFCFVER\xff\xff\xff\xff"))                                                                                         // absurd FORM + chunk sizes
-	f.Add([]byte("FORM\x00\x00\x00\x12AIFFCOMM\x00\x00\x00\x06\x00\x02\x00\x00\x00\x01"))                                                                 // truncated COMM (no 80-bit rate)
-	f.Add([]byte("FORM\x00\x00\x00\x14AIFFSSND\x00\x00\x00\x08\x00\x00\x00\x00\x00\x00\x00\x00"))                                                         // SSND-only, header but no frames
-	f.Add([]byte("FORM\x00\x00\x00\x1eAIFCCOMM\x00\x00\x00\x12\x00\x02\x00\x00\x00\x01\x00\x10\x7f\xff\x80\x00\x00\x00\x00\x00\x00\x00"))                 // AIFF-C 18-byte COMM, 0x7FFF-exponent Inf/NaN rate decoded
-	f.Add([]byte("FORM\x00\x00\x00\x0eAIFFANNO\x00\x00\x00\x06hello\x00"))                                                                                // lone ANNO comment chunk
-	f.Add([]byte{0xFF, 0xF1, 0x50, 0x40, 0x01, 0x00, 0xFC})                                                                                               // valid ADTS header, frame_length 8 but only 7 bytes present (short payload)
-	f.Add([]byte{0xFF, 0xF1, 0x50, 0x00, 0x00, 0x00, 0x00})                                                                                               // ADTS sync but frame_length 0 (below header)
-	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x00"), 0xFF, 0xF1, 0x50, 0x40, 0x01, 0x5F, 0xFC))                                                    // empty front ID3 then a bare ADTS frame
+	f.Add(mp4AllITunesAtoms())                                                                                                                            // every owned iTunes structured atom
+	f.Add(mp4Tagged(                                                                                                                                      // malformed structured atoms: must stay preserved-not-owned, no panic
+		mp4Atom("rtng", mp4Data(21, nil)),                   // empty integer value
+		mp4Atom("pgap", mp4Data(21, []byte{0, 1})),          // 2-byte boolean
+		mp4Atom("tmpo", mp4Data(21, []byte{0, 0, 0, 0, 1})), // 5-byte integer
+	))
+	if b, err := os.ReadFile(notagsMP3); err == nil {
+		f.Add(append(id3v2(3, textFrame(3, "MVIN", "ab/cd/12")), b...)) // garbage MVIN pair: projects verbatim, round-trips, no panic
+	}
+	f.Add([]byte("\x1a\x45\xdf\xa3\x84\x42\x82\x81m"))                                                                                    // EBML magic + truncated DocType
+	f.Add([]byte("\x1a\x45\xdf\xa3\xff"))                                                                                                 // EBML magic, unknown-size header
+	f.Add([]byte("\x1a\x45\xdf\xa3\x80\x18\x53\x80\x67\xff"))                                                                             // empty EBML header + unknown-size Segment
+	f.Add([]byte("\x1a\x45\xdf\xa3\x80\x18\x53\x80\x67\x88\x10\x43\xa7\x70\x84\x45\xb9\x81\xb6"))                                         // EBML + Segment{Chapters{EditionEntry{empty ChapterAtom}}}
+	f.Add([]byte("FORM\x00\x00\x00\x04AIFF"))                                                                                             // AIFF, no chunks
+	f.Add([]byte("FORM\xff\xff\xff\xffAIFCFVER\xff\xff\xff\xff"))                                                                         // absurd FORM + chunk sizes
+	f.Add([]byte("FORM\x00\x00\x00\x12AIFFCOMM\x00\x00\x00\x06\x00\x02\x00\x00\x00\x01"))                                                 // truncated COMM (no 80-bit rate)
+	f.Add([]byte("FORM\x00\x00\x00\x14AIFFSSND\x00\x00\x00\x08\x00\x00\x00\x00\x00\x00\x00\x00"))                                         // SSND-only, header but no frames
+	f.Add([]byte("FORM\x00\x00\x00\x1eAIFCCOMM\x00\x00\x00\x12\x00\x02\x00\x00\x00\x01\x00\x10\x7f\xff\x80\x00\x00\x00\x00\x00\x00\x00")) // AIFF-C 18-byte COMM, 0x7FFF-exponent Inf/NaN rate decoded
+	f.Add([]byte("FORM\x00\x00\x00\x0eAIFFANNO\x00\x00\x00\x06hello\x00"))                                                                // lone ANNO comment chunk
+	f.Add([]byte{0xFF, 0xF1, 0x50, 0x40, 0x01, 0x00, 0xFC})                                                                               // valid ADTS header, frame_length 8 but only 7 bytes present (short payload)
+	f.Add([]byte{0xFF, 0xF1, 0x50, 0x00, 0x00, 0x00, 0x00})                                                                               // ADTS sync but frame_length 0 (below header)
+	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x00"), 0xFF, 0xF1, 0x50, 0x40, 0x01, 0x5F, 0xFC))                                    // empty front ID3 then a bare ADTS frame
 	// Regression seeds recovered from prior fuzz runs.
 	f.Add([]byte("\x00\x00\x00\bftyp0000moov0")) // MP4: 8-byte ftyp box then a short moov tail
 	f.Add([]byte("RIFF0000WAVE000000000"))       // WAV: RIFF/WAVE with ASCII-digit chunk sizes

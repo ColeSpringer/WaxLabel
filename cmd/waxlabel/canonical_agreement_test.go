@@ -44,8 +44,16 @@ func fieldGrade(jc jsonCopy, key string) (string, bool) {
 // the numeric-fold, MEDIATYPE, and lenient-split drifts at once.
 func TestCanonicalCopyDiffAgreement(t *testing.T) {
 	t.Parallel()
-	keys := []tag.Key{tag.TrackNumber, tag.TrackTotal, tag.DiscNumber, tag.DiscTotal, tag.MediaType}
-	values := []string{"01", "+3", "007", "1/2/3", "3/abc", "5"}
+	// ITUNESADVISORY and BPM ride the same matrix: both are MP4-canonical integer atoms
+	// (rtng, tmpo). "174.0" is BPM's all-zero-fraction spelling, which tmpo stores as the
+	// same whole number: carried and diff-folded for BPM, dropped (a decimal) everywhere
+	// else. "174.99" is a genuine fraction: tmpo rounds it with a coercion warning, so BPM
+	// grades lossy on the MP4 legs and diff reports the change - agreement holds from the
+	// lossy side. "+3" is dropped on the unsigned keys (ParseUint) and never diff-folded
+	// there, while the signed trkn slots store and fold it.
+	keys := []tag.Key{tag.TrackNumber, tag.TrackTotal, tag.DiscNumber, tag.DiscTotal,
+		tag.MediaType, tag.ITunesAdvisory, tag.BPM}
+	values := []string{"01", "+3", "007", "1/2/3", "3/abc", "5", "128", "174.0", "174.99"}
 	pairs := []struct{ name, src, dst string }{
 		{"text-text", notagsFLAC, notagsFLAC}, // FLAC -> FLAC (verbatim both sides)
 		{"text-mp4", notagsFLAC, notagsM4A},   // FLAC -> M4A (MP4 canonicalizes/drops)
@@ -108,21 +116,43 @@ func TestCompilationBooleanCopyDiffAgreement(t *testing.T) {
 		{"flac-mp4", notagsFLAC, notagsM4A},
 		{"mp4-flac", notagsM4A, notagsFLAC},
 	}
+	runBooleanCopyDiffAgreement(t, tag.Compilation, pairs)
+}
+
+// TestGaplessBooleanCopyDiffAgreement clones the boolean guard for ITUNESGAPLESS across the
+// MP3 and Matroska legs. Its ID3 home is a TXXX user frame, the first boolean key stored
+// there, so this locks the TXXX-branch canonicalization: without it MP3 would keep the
+// literal "yes" while FLAC stores "1", and copy would grade carried what diff reports
+// changed. The MKA legs lock the same canonicalization in the Matroska SimpleTag emit.
+func TestGaplessBooleanCopyDiffAgreement(t *testing.T) {
+	t.Parallel()
+	pairs := []struct{ name, src, dst string }{
+		{"flac-mp3", notagsFLAC, notagsMP3},
+		{"mp3-flac", notagsMP3, notagsFLAC},
+		{"flac-mka", notagsFLAC, notagsMKA},
+		{"mka-flac", notagsMKA, notagsFLAC},
+	}
+	runBooleanCopyDiffAgreement(t, tag.ITunesGapless, pairs)
+}
+
+// runBooleanCopyDiffAgreement is the shared body: every recognized boolean word copies
+// carried and diffs identical across each format pair.
+func runBooleanCopyDiffAgreement(t *testing.T, key tag.Key, pairs []struct{ name, src, dst string }) {
 	for _, val := range []string{"true", "yes", "1", "false", "no", "0"} {
 		for _, pr := range pairs {
 			val, pr := val, pr
 			t.Run(pr.name+"/"+val, func(t *testing.T) {
 				t.Parallel()
 				src := buildTransferSource(t, pr.src, func(e *wl.Editor) *wl.Editor {
-					return e.Set(tag.Compilation, val)
+					return e.Set(key, val)
 				})
-				if len(tagValues(dumpJSON(t, src), string(tag.Compilation))) == 0 {
-					t.Skipf("source %s did not store COMPILATION=%q", pr.name, val)
+				if len(tagValues(dumpJSON(t, src), string(key))) == 0 {
+					t.Skipf("source %s did not store %s=%q", pr.name, key, val)
 				}
 				jc, dst := copyReportPath(t, src, pr.dst)
-				grade, ok := fieldGrade(jc, string(tag.Compilation))
+				grade, ok := fieldGrade(jc, string(key))
 				if !ok {
-					t.Fatalf("copy report has no COMPILATION field though the source holds it")
+					t.Fatalf("copy report has no %s field though the source holds it", key)
 				}
 				dout, _, dcode := runCLI(t, "--json", "diff", src, dst)
 				if dcode > 1 {
@@ -133,10 +163,10 @@ func TestCompilationBooleanCopyDiffAgreement(t *testing.T) {
 					t.Fatalf("diff JSON: %v\n%s", err, dout)
 				}
 				if grade != "carried" {
-					t.Errorf("COMPILATION=%q (%s): copy grade = %q, want carried (a boolean word normalizes losslessly)", val, pr.name, grade)
+					t.Errorf("%s=%q (%s): copy grade = %q, want carried (a boolean word normalizes losslessly)", key, val, pr.name, grade)
 				}
-				if hasTagChange(jd, string(tag.Compilation)) {
-					t.Errorf("COMPILATION=%q (%s): diff reports a change, want none (copy and diff must agree)", val, pr.name)
+				if hasTagChange(jd, string(key)) {
+					t.Errorf("%s=%q (%s): diff reports a change, want none (copy and diff must agree)", key, val, pr.name)
 				}
 			})
 		}

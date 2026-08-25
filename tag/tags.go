@@ -103,6 +103,18 @@ type Tags struct {
 	Description     string
 	LongDescription string
 	Narrator        string
+
+	// iTunes structured fields. ITunesAdvisory, BPM, Movement, and MovementTotal
+	// stay strings: their atoms hold unsigned values (and tmpo accepts fractions
+	// as text elsewhere), which the signed int projection cannot carry.
+	ITunesAdvisory string
+	ITunesGapless  bool
+	ShowMovement   bool
+	BPM            string
+	Work           string
+	MovementName   string
+	Movement       string
+	MovementTotal  string
 }
 
 // MusicBrainzIDs collects the MusicBrainz identifiers. RecordingID corresponds
@@ -213,6 +225,15 @@ func Project(ts TagSet) Tags {
 		Description:     first(Description),
 		LongDescription: first(LongDescription),
 		Narrator:        first(Narrator),
+
+		ITunesAdvisory: first(ITunesAdvisory),
+		ITunesGapless:  ParseBool(first(ITunesGapless)),
+		ShowMovement:   ParseBool(first(ShowMovement)),
+		BPM:            first(BPM),
+		Work:           first(Work),
+		MovementName:   first(MovementName),
+		Movement:       first(Movement),
+		MovementTotal:  first(MovementTotal),
 	}
 
 	t.TrackNumber, t.TrackTotal = ParseNumPair(first(TrackNumber), first(TrackTotal))
@@ -333,6 +354,19 @@ func (t Tags) Patch() TagPatch {
 	setStr(Description, t.Description)
 	setStr(LongDescription, t.LongDescription)
 	setStr(Narrator, t.Narrator)
+
+	setStr(ITunesAdvisory, t.ITunesAdvisory)
+	if t.ITunesGapless {
+		p.Set(ITunesGapless, "1")
+	}
+	if t.ShowMovement {
+		p.Set(ShowMovement, "1")
+	}
+	setStr(BPM, t.BPM)
+	setStr(Work, t.Work)
+	setStr(MovementName, t.MovementName)
+	setStr(Movement, t.Movement)
+	setStr(MovementTotal, t.MovementTotal)
 
 	return p
 }
@@ -508,12 +542,15 @@ var dateKeySet = map[Key]bool{
 	AcquisitionDate: true,
 }
 
-// booleanKeys is the canonical keys whose value is a boolean flag - today only
-// Compilation, whose typed [Tags] projection is a bool ([ParseBool]). Kept as a
-// set so [IsBooleanKey] is the single boolean-key definition the set-time
-// malformed-value note reads, mirroring numericKeys/dateKeySet.
+// booleanKeys is the canonical keys whose value is a boolean flag - Compilation,
+// ITunesGapless, and ShowMovement, whose typed [Tags] projections are bools
+// ([ParseBool]). Kept as a set so [IsBooleanKey] is the single boolean-key
+// definition the set-time malformed-value note reads, mirroring
+// numericKeys/dateKeySet.
 var booleanKeys = map[Key]bool{
-	Compilation: true,
+	Compilation:   true,
+	ITunesGapless: true,
+	ShowMovement:  true,
 }
 
 // IsNumericKey reports whether k canonically holds a numeric value (one with an
@@ -525,7 +562,7 @@ func IsNumericKey(k Key) bool { return numericKeys[k] }
 func IsDateKey(k Key) bool { return dateKeySet[k] }
 
 // IsBooleanKey reports whether k canonically holds a boolean flag (one with a
-// bool projection in [Tags]): today only Compilation.
+// bool projection in [Tags]): Compilation, ITunesGapless, and ShowMovement.
 func IsBooleanKey(k Key) bool { return booleanKeys[k] }
 
 // ValidNumericValue reports whether v is a value the numeric key k accepts
@@ -595,21 +632,21 @@ func EmptyNumberWithTotal(k Key, v string) bool {
 }
 
 // IsTrimmableKey reports whether a value stored under k is a single-token value whose surrounding
-// whitespace is never meaningful - a numeric, date, media-type, ReplayGain, or release-country key.
-// [TrimTokenValue], the editor's per-key trim gate, and the transfer grade all key off this one
-// predicate, so the stored form, the write, and the copy report cannot disagree on which keys trim;
-// adding a trim-eligible key here updates all three at once.
+// whitespace is never meaningful - a numeric, date, MP4-integer, BPM, ReplayGain, or
+// release-country key. [TrimTokenValue], the editor's per-key trim gate, and the transfer grade
+// all key off this one predicate, so the stored form, the write, and the copy report cannot
+// disagree on which keys trim; adding a trim-eligible key here updates all three at once.
 func IsTrimmableKey(k Key) bool {
-	return numericKeys[k] || dateKeySet[k] || IsMediaTypeKey(k) ||
+	return numericKeys[k] || dateKeySet[k] || IsMP4IntKey(k) || IsBPMKey(k) ||
 		IsReplayGainKey(k) || IsReleaseCountryKey(k)
 }
 
 // TrimTokenValue removes surrounding whitespace from a trimmable value (see [IsTrimmableKey]) and
 // leaves other values unchanged. The editor and CLI advisories share this helper so stored values
-// match the forms [ValidNumericValue] and [ValidPartialDate] accept. MEDIATYPE, RELEASECOUNTRY, and
-// the REPLAYGAIN_* keys are single-token values ("2", "GB", "-7.30 dB") where a stray leading or
-// trailing space is never meaningful, so they trim the same way; internal whitespace (the space
-// before "dB") and digits, including leading zeros, are preserved.
+// match the forms [ValidNumericValue] and [ValidPartialDate] accept. The MP4-integer keys, BPM,
+// RELEASECOUNTRY, and the REPLAYGAIN_* keys are single-token values ("2", "128", "GB", "-7.30 dB")
+// where a stray leading or trailing space is never meaningful, so they trim the same way; internal
+// whitespace (the space before "dB") and digits, including leading zeros, are preserved.
 func TrimTokenValue(k Key, v string) string {
 	if IsTrimmableKey(k) {
 		return strings.TrimSpace(v)
@@ -727,14 +764,115 @@ var replayGainKeys = map[Key]bool{
 // whose value is a non-negative integer.
 func IsMediaTypeKey(k Key) bool { return k == MediaType }
 
-// IsMP4CanonicalKey reports whether a 16-bit MP4 integer atom canonicalizes k's value on
-// decode - dropping a leading sign or leading zeros ("01" -> "1"). Those are the four number
-// slots ([Key.NumberPair]: the track/disc number and total, packed into trkn/disk) plus
-// MEDIATYPE (the stik media-kind atom). It is the key gate the diff command's cross-format
-// numeric fold uses, so the fold applies only where an MP4 atom genuinely normalizes the value,
-// not to every numeric key. It is deliberately not [numericKeys] (which carries PlayCount, not
-// MediaType); keep the two sets apart.
-func IsMP4CanonicalKey(k Key) bool { return k.NumberPair() || IsMediaTypeKey(k) }
+// mp4IntKeyMax maps each canonical key stored as an unsigned MP4 integer atom to
+// the largest value its atom can hold: the one-byte stik and rtng, and the
+// two-byte ©mvi and ©mvc. It is the single width table [ValidMP4IntValue] and the
+// MP4 encoder both derive from, so the validator and the atom cannot disagree on
+// range. BPM (tmpo) is deliberately absent: its validator accepts fractions.
+var mp4IntKeyMax = map[Key]uint64{
+	MediaType:      0xFF,
+	ITunesAdvisory: 0xFF,
+	Movement:       0xFFFF,
+	MovementTotal:  0xFFFF,
+}
+
+// IsMP4IntKey reports whether k is a canonical key stored as an unsigned MP4
+// integer atom: MEDIATYPE (stik), ITUNESADVISORY (rtng), MOVEMENT (©mvi), and
+// MOVEMENTTOTAL (©mvc).
+func IsMP4IntKey(k Key) bool { _, ok := mp4IntKeyMax[k]; return ok }
+
+// ValidMP4IntValue reports whether v is a value the MP4-integer key k accepts: a
+// non-negative integer no greater than the key's atom can hold (255 for the
+// one-byte stik/rtng, 65535 for the two-byte movement atoms), ignoring
+// surrounding whitespace. It mirrors the MP4 encoder's intItem, which rejects a
+// value past the atom's width rather than widening it, so a value the encoder
+// drops is flagged here too. The parse is ParseUint, which rejects a leading '+'
+// - intended, since the atom stores an unsigned magnitude with no sign to round-
+// trip. A key that is not an MP4-integer key is reported valid.
+func ValidMP4IntValue(k Key, v string) bool {
+	max, ok := mp4IntKeyMax[k]
+	if !ok {
+		return true
+	}
+	n, err := strconv.ParseUint(strings.TrimSpace(v), 10, 64)
+	return err == nil && n <= max
+}
+
+// IsBPMKey reports whether k is the BPM (beats-per-minute) key, whose value is a
+// non-negative decimal number.
+func IsBPMKey(k Key) bool { return k == BPM }
+
+// ValidBPMValue reports whether v is a value the BPM key accepts: a non-negative
+// decimal number no greater than 65535 (the two-byte tmpo atom's ceiling),
+// fractions included ("174.99" - DJ tools write fractional BPM), ignoring
+// surrounding whitespace. It mirrors [ValidReplayGainValue]'s shape: a byte
+// pre-scan for the conventional decimal form - digits and at most one '.' -
+// then ParseFloat, so the scientific, hex, and underscored forms ParseFloat
+// alone would accept ("1e3", "0x1p7", "1_0") are rejected. No sign is allowed:
+// the atom stores an unsigned magnitude. Text formats store the value verbatim;
+// the MP4 encoder's tmpoItem drops exactly what this rejects and rounds the
+// rest, so the drop report and the atom stay in lockstep. A non-BPM key is
+// reported valid.
+func ValidBPMValue(k Key, v string) bool {
+	if k != BPM {
+		return true
+	}
+	s := strings.TrimSpace(v)
+	if s == "" {
+		return false
+	}
+	dots := 0
+	for i := 0; i < len(s); i++ {
+		switch b := s[i]; {
+		case b == '.':
+			if dots++; dots > 1 {
+				return false
+			}
+		case b < '0' || b > '9':
+			return false
+		}
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return false
+	}
+	// The byte-scan already rejects "NaN"/"Inf" (their letters), so this is a
+	// defensive finite check.
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return false
+	}
+	return f <= 65535
+}
+
+// BPMStoredWhole returns the whole-number decimal form the MP4 tmpo atom stores for a BPM
+// value, and whether storing it changes the numeric value (a genuine fraction rounds to
+// nearest; a respell such as "174.0" or "0174" is numerically lossless). ok is false for a
+// value [ValidBPMValue] rejects, which the atom drops instead. The MP4 encoder, its
+// coercion report, and the diff fold all derive from this one decision, so "does tmpo store
+// the same number" cannot be answered differently in different places.
+func BPMStoredWhole(v string) (stored string, roundChanged, ok bool) {
+	s := strings.TrimSpace(v)
+	if !ValidBPMValue(BPM, s) {
+		return "", false, false
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return "", false, false
+	}
+	r := math.Round(f)
+	return strconv.FormatUint(uint64(r), 10), r != f, true
+}
+
+// IsMP4CanonicalKey reports whether an MP4 integer atom canonicalizes k's value on
+// decode - dropping a leading sign or leading zeros ("01" -> "1"), or rounding a
+// fraction. Those are the four number slots ([Key.NumberPair]: the track/disc
+// number and total, packed into trkn/disk), the unsigned integer atoms
+// ([IsMP4IntKey]: stik, rtng, ©mvi, ©mvc), and BPM (the tmpo atom rounds to a
+// whole number). It is the key gate the diff command's cross-format numeric fold
+// uses, so the fold applies only where an MP4 atom genuinely normalizes the value,
+// not to every numeric key. It is deliberately not [numericKeys] (which carries
+// PlayCount and none of the atom-backed keys); keep the two sets apart.
+func IsMP4CanonicalKey(k Key) bool { return k.NumberPair() || IsMP4IntKey(k) || IsBPMKey(k) }
 
 // IsReplayGainKey reports whether k is a canonical ReplayGain gain or peak key.
 func IsReplayGainKey(k Key) bool { return replayGainKeys[k] }
@@ -759,15 +897,14 @@ func (k Key) DescribesOwnAudio() bool {
 
 // ValidMediaTypeValue reports whether v is a value the MEDIATYPE (iTunes stik media kind) key
 // accepts: a non-negative integer no greater than 255, the single byte the stik atom stores (the
-// defined iTunes media kinds are 0-14). It mirrors the MP4 encoder's mediaTypeItem, which rejects a
-// value past 255 rather than widening the atom, so a value the encoder drops is flagged here too:
-// 256 fails, 2 passes. A non-MediaType key is reported valid - there is nothing to check.
+// defined iTunes media kinds are 0-14). It is a wrapper over [ValidMP4IntValue], kept for public
+// API stability - including its any-other-key-is-valid contract, so it stays a no-op for the
+// other MP4-integer keys rather than newly judging them.
 func ValidMediaTypeValue(k Key, v string) bool {
 	if k != MediaType {
 		return true
 	}
-	n, err := strconv.ParseUint(strings.TrimSpace(v), 10, 32)
-	return err == nil && n <= 0xFF
+	return ValidMP4IntValue(k, v)
 }
 
 // IsReleaseCountryKey reports whether k is the RELEASECOUNTRY key, whose value is an
@@ -877,8 +1014,10 @@ var validators = []Validator{
 		"is not YYYY, YYYY-MM, or YYYY-MM-DD", "is not YYYY / YYYY-MM / YYYY-MM-DD"},
 	{IsBooleanKey, ValidBooleanValue, "malformed-boolean",
 		"is not a boolean (1/true/yes/0/false/no)", "does not look like a boolean (1/true/yes/0/false/no)"},
-	{IsMediaTypeKey, ValidMediaTypeValue, "malformed-number",
+	{IsMP4IntKey, ValidMP4IntValue, "malformed-number",
 		"is not a non-negative integer", "does not look like a non-negative integer"},
+	{IsBPMKey, ValidBPMValue, "malformed-number",
+		"is not a non-negative number", "does not look like a non-negative number"},
 	{IsReleaseCountryKey, ValidReleaseCountryValue, "malformed-country",
 		"is not a two-letter country code (ISO 3166-1 alpha-2, e.g. GB)",
 		"does not look like a two-letter country code (ISO 3166-1 alpha-2, e.g. GB)"},

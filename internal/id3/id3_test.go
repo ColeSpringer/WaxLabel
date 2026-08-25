@@ -772,7 +772,8 @@ func TestRebuildBreadthV24(t *testing.T) {
 	edited.Set(tag.Barcode, "0123456789")
 	edited.Set(tag.ReleaseDate, "2020-01-02")
 	edited.Set(tag.OriginalDate, "1999")
-	edited.Set(tag.Key("TBPM"), "128")
+	edited.Set(tag.BPM, "128")
+	edited.Set(tag.Key("TKEY"), "Am")
 
 	out, _ := RebuildFrames(nil, tag.NewTagSet(), edited, 4, StructuredEdit{}, WriteOpts{})
 	got := Project(buildTag(t, 4, out)).Tags
@@ -783,6 +784,31 @@ func TestRebuildBreadthV24(t *testing.T) {
 		if !ok || !slices.Equal(want, gotv) {
 			t.Errorf("key %s round-trip = %v (ok=%v), want %v", k, gotv, ok, want)
 		}
+	}
+}
+
+// TestRebuildRawMappedFrameID pins the raw frame-ID fallback: a value authored under a
+// mapped frame's own identifier (tag.Key("TBPM"), what `--set TBPM=128` produces) still
+// emits the frame instead of resolving only to the absent canonical BPM key and silently
+// writing nothing. The frame then projects back under the canonical key, since TBPM is
+// mapped on read.
+func TestRebuildRawMappedFrameID(t *testing.T) {
+	edited := tag.NewTagSet()
+	edited.Set(tag.Key("TBPM"), "128")
+	out, _ := RebuildFrames(nil, tag.NewTagSet(), edited, 4, StructuredEdit{}, WriteOpts{})
+
+	found := false
+	for _, f := range out {
+		if f.ID == "TBPM" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no TBPM frame in rebuild output (%d frames); the raw-ID value was silently lost", len(out))
+	}
+	got := Project(buildTag(t, 4, out)).Tags
+	if v, _ := got.Get(tag.BPM); !slices.Equal(v, []string{"128"}) {
+		t.Errorf("BPM read back = %v, want [128] (the raw TBPM frame projects under the canonical key)", v)
 	}
 }
 

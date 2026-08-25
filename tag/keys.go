@@ -281,6 +281,19 @@ const (
 	Description     Key = "DESCRIPTION"
 	LongDescription Key = "LONGDESCRIPTION"
 	Narrator        Key = "NARRATOR"
+
+	// iTunes structured fields. Each has a structured MP4 atom as its native
+	// home (rtng, pgap, shwm, tmpo, ©wrk, ©mvn, ©mvi, ©mvc); ID3 stores BPM,
+	// MOVEMENTNAME, and the movement pair natively (TBPM, MVNM, MVIN) and the
+	// rest as TXXX user frames; Vorbis/Matroska/APE spell them as themselves.
+	ITunesAdvisory Key = "ITUNESADVISORY"
+	ITunesGapless  Key = "ITUNESGAPLESS"
+	ShowMovement   Key = "SHOWMOVEMENT"
+	BPM            Key = "BPM"
+	Work           Key = "WORK"
+	MovementName   Key = "MOVEMENTNAME"
+	Movement       Key = "MOVEMENT"
+	MovementTotal  Key = "MOVEMENTTOTAL"
 )
 
 // vocabulary maps every known key to its description. KnownKeys derives its
@@ -354,6 +367,14 @@ var vocabulary = map[Key]string{
 	Description:         "short description / blurb",
 	LongDescription:     "long description",
 	Narrator:            "audiobook narrator",
+	ITunesAdvisory:      "iTunes content advisory (numeric; 1 = explicit, 2 = clean, 0 = none, legacy 4 = explicit), from rtng",
+	ITunesGapless:       "iTunes gapless-playback flag, from pgap",
+	ShowMovement:        "show-movement flag (display work/movement instead of title), from shwm",
+	BPM:                 "beats per minute, from tmpo/TBPM",
+	Work:                "classical work title",
+	MovementName:        "movement name within the work",
+	Movement:            "movement number within the work",
+	MovementTotal:       "total movements in the work",
 }
 
 // multivalued is the set of canonical keys that hold a list of distinct values

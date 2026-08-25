@@ -36,6 +36,13 @@ var mp4Text = map[string]tag.Key{
 	"soar":    tag.ArtistSort,
 	"sonm":    tag.TitleSort,
 	"soco":    tag.ComposerSort,
+	"\xa9wrk": tag.Work,         // classical work title
+	"\xa9mvn": tag.MovementName, // movement name
+	// iTunes "encoded by" - the person, distinct from the ©too tool stamp. One known
+	// interop wrinkle: ffmpeg folds BOTH ©too and ©enc onto its single "encoder" tag, so
+	// ffprobe shows whichever atom comes later when a file carries both; iTunes and Mp3tag
+	// keep them distinct, which is the semantic this mapping follows.
+	"\xa9enc": tag.EncodedBy,
 }
 
 // mp4Freeform maps a "com.apple.iTunes" freeform name to its canonical key.
@@ -112,6 +119,16 @@ func init() {
 	// custom key here. Writes still emit the Picard "MusicBrainz Album Status"/"... Type".
 	freeformFold[normalizeKey("MUSICBRAINZ_ALBUMSTATUS")] = tag.ReleaseStatus
 	freeformFold[normalizeKey("MUSICBRAINZ_ALBUMTYPE")] = tag.ReleaseType
+	// The iTunes structured keys and ENCODEDBY, read-only: a mixed-case freeform variant
+	// ("iTunesAdvisory") folds onto the canonical key like it already does on ID3/Vorbis.
+	// Never seeded into mp4Freeform - these keys write structured or ©-text atoms, and the
+	// upper-case canonical spellings already fall through decodeFreeform's valid-key path.
+	for _, k := range []tag.Key{
+		tag.ITunesAdvisory, tag.ITunesGapless, tag.ShowMovement, tag.BPM,
+		tag.Work, tag.MovementName, tag.Movement, tag.MovementTotal, tag.EncodedBy,
+	} {
+		freeformFold[normalizeKey(string(k))] = k
+	}
 }
 
 // MP4TextKey returns the canonical key for a four-character text atom name and

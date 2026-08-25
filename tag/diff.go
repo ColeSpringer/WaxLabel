@@ -11,23 +11,33 @@ import (
 // NumericValuesEqual reports whether two value slices for key k are equal at the presentation
 // level: a numeric key's values are equal when they differ only by a leading '+' or leading zeros
 // ("03" == "3", "+3" == "3"), including within a slashed "n/total" pair ("3/012" == "3/12"). The
-// MEDIATYPE key (the iTunes stik media-kind slot) folds the same way: its value is a single token
-// with no slash, so the shared numeric-token path canonicalizes its sign and leading zeros too. A
-// key in neither category falls back to exact slice equality. It is a pure value predicate and does
-// not itself decide when such a delta should count as "no change" - only some keys are canonicalized
-// by some formats (a 16-bit MP4 trkn/disk/stik atom drops a leading sign or zeros; text formats keep
-// "03" verbatim), so the caller scopes it to the keys and format pairs where the delta is a
-// lossless-copy artifact rather than a genuine byte difference (see the diff command). It never
-// changes stored bytes; this is a compare-layer predicate only.
+// unsigned MP4-integer keys (the stik/rtng/©mvi/©mvc slots) fold leading zeros but NOT a sign:
+// their atoms drop a signed value instead of storing it (ParseUint), so "+1" and "1" are a stored
+// value against a dropped one, not two spellings of one number. BPM folds any spelling tmpo
+// stores as the same number without rounding ("174.0", "0174" == "174", via [BPMStoredWhole]),
+// while a genuine fraction ("174.99" vs "175") compares verbatim, so tmpo's warned rounding still
+// reports as a change. A key in none of these categories falls back to exact slice equality. It
+// is a pure value predicate and does not itself decide when such a delta should count as "no
+// change" - only some keys are canonicalized by some formats, so the caller scopes it to the keys
+// and format pairs where the delta is a lossless-copy artifact rather than a genuine byte
+// difference (see the diff command). It never changes stored bytes; this is a compare-layer
+// predicate only.
 func NumericValuesEqual(k Key, a, b []string) bool {
-	if !IsNumericKey(k) && !IsMediaTypeKey(k) {
+	if !IsNumericKey(k) && !IsMP4IntKey(k) && !IsBPMKey(k) {
 		return slices.Equal(a, b)
 	}
 	if len(a) != len(b) {
 		return false
 	}
+	canon := canonicalNumeric
+	switch {
+	case IsBPMKey(k):
+		canon = canonicalBPMToken
+	case IsMP4IntKey(k):
+		canon = canonicalUnsignedToken
+	}
 	for i := range a {
-		if !numericTokenEqual(a[i], b[i]) {
+		if !numericTokenEqual(a[i], b[i], canon) {
 			return false
 		}
 	}
@@ -35,11 +45,37 @@ func NumericValuesEqual(k Key, a, b []string) bool {
 }
 
 // numericTokenEqual compares one numeric value, splitting a slashed "n/total" pair (SplitNumberTotal)
-// and comparing each side by its canonical integer form.
-func numericTokenEqual(a, b string) bool {
+// and comparing each side by its canonical form.
+func numericTokenEqual(a, b string, canon func(string) string) bool {
 	an, at := SplitNumberTotal(a)
 	bn, bt := SplitNumberTotal(b)
-	return canonicalNumeric(an) == canonicalNumeric(bn) && canonicalNumeric(at) == canonicalNumeric(bt)
+	return canon(an) == canon(bn) && canon(at) == canon(bt)
+}
+
+// canonicalBPMToken folds a BPM token to the whole number tmpo stores, but only when storing
+// does not round ([BPMStoredWhole]): "174.0", "0174", and even "174.000000000000001" (which
+// ParseFloat collapses to 174, so the atom stores it unwarned) all fold to "174". Any other
+// value - a rounded fraction, a signed value, or something invalid - compares verbatim
+// (trimmed), so a warned rounding still reports and a value MP4 drops never equates to one it
+// stores.
+func canonicalBPMToken(s string) string {
+	if stored, roundChanged, ok := BPMStoredWhole(s); ok && !roundChanged {
+		return stored
+	}
+	return strings.TrimSpace(s)
+}
+
+// canonicalUnsignedToken is canonicalNumeric for the unsigned MP4-integer keys: leading zeros
+// fold, a sign does not. Their atoms parse with ParseUint, which drops "+1"/"-1" rather than
+// storing 1, so folding the sign would equate a dropped value with a stored one. The decimal
+// point needs no special case: canonicalNumeric already leaves a non-integer verbatim, and the
+// atoms drop decimals.
+func canonicalUnsignedToken(s string) string {
+	t := strings.TrimSpace(s)
+	if len(t) > 0 && (t[0] == '+' || t[0] == '-') {
+		return t
+	}
+	return canonicalNumeric(t)
 }
 
 // canonicalNumeric returns the canonical decimal form of a numeric token, dropping a leading '+'

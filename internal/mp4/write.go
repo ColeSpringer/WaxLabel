@@ -10,6 +10,7 @@ import (
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -80,10 +81,11 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	}
 
 	// Surface canonical values the iTunes atoms cannot represent. droppedValues names the ones
-	// genuinely lost (trkn/disk outside uint16, a non-numeric stik), coercedValues the ones
-	// stored in a normalized form (a non-boolean cpil written as 0). Both read the same raw
-	// canonical strings the encoder consumes, and both the ilst and chapter rewrite paths build
-	// from edited.Tags, so the shared report covers both.
+	// genuinely lost (trkn/disk outside uint16, an invalid integer or BPM atom value),
+	// coercedValues the ones stored in a normalized form (a non-boolean cpil/pgap/shwm written
+	// as 0, a fractional BPM rounded). Both read the same raw canonical strings the encoder
+	// consumes, and both the ilst and chapter rewrite paths build from edited.Tags, so the
+	// shared report covers both.
 	for _, dv := range droppedValues(edited.Tags) {
 		msg := fmt.Sprintf("%s value %q cannot be represented in this format and was dropped", dv.Key, dv.Value)
 		if dv.ZeroUnset {
@@ -95,12 +97,26 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueDropped, msg, dv.Key)
 	}
 	for _, cv := range coercedValues(edited.Tags) {
-		// Only COMPILATION reaches here: cpil is a single boolean byte, so a non-boolean is stored
-		// as 0 (false) rather than dropped. A trkn/disk number's leading zero or sign is a
-		// numerically-lossless canonicalization, not a coercion worth warning, so it is not
-		// reported (see coercedValues).
-		msg := fmt.Sprintf("%s value %q is not a valid boolean and was stored as 0 (false)", cv.Key, cv.Value)
+		// The boolean atoms (cpil, pgap, shwm) each hold a single byte, so a non-boolean is
+		// stored as 0 (false) rather than dropped; a valid fractional BPM rounds to the nearest
+		// whole number in tmpo. A numerically-lossless canonicalization (a trkn/disk leading
+		// zero or sign, "174.0") is not a coercion worth warning, so it is not reported (see
+		// coercedValues).
+		var msg string
+		if tag.IsBooleanKey(cv.Key) {
+			msg = fmt.Sprintf("%s value %q is not a valid boolean and was stored as 0 (false)", cv.Key, cv.Value)
+		} else {
+			msg = fmt.Sprintf("%s value %q is not an integer and was rounded to %s", cv.Key, cv.Value, cv.Stored)
+		}
 		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueCoerced, msg, cv.Key)
+	}
+	// A structured single-atom key given more than one value stores only the first; the
+	// surplus is a genuine loss the encoders read past silently, so name it. The editor's
+	// single-valued-multi warning covers only authored edits, and this pass covers the copy
+	// path too.
+	for _, ev := range extraStructuredValues(edited.Tags) {
+		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueDropped,
+			fmt.Sprintf("%s holds multiple values but its MP4 atom stores only the first; dropped %q", ev.Key, ev.Value), ev.Key)
 	}
 	// Note each multi-valued field THIS EDIT wrote: the iTunes ilst stores it as several data atoms
 	// under one item, which round-trips through WaxLabel but which many readers surface only the first
@@ -120,16 +136,17 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 			fmt.Sprintf("%s has %d values, stored as %d MP4 data atoms; some readers surface only the first", k, len(vals), len(vals)), k)
 	}
 
-	// A trkn/disk number is a fixed binary uint16, so an edit that makes a slot genuinely
-	// unstorable would clear it and erase a good existing value. When base still holds a
-	// storable value for that slot, restore it so the edit does not silently delete good data.
-	// This runs after the warning passes above (which read the pre-restore edited.Tags, so the
-	// value-dropped warning still fires) and before every downstream build, so buildItems, the
-	// chapter path, and buildResult all see the restored value. Restoring base's value makes an
-	// edit that changed nothing else collapse to a true no-op via DowngradeNoOp below, which
-	// carries the warning forward so --strict still escalates. This diverges from the text
-	// formats (MP3/AAC/AIFF/WAV), which store the raw string; the help/README note the reason.
-	if patched, restored := restoreUnstorablePairSlots(base.Tags, edited.Tags); restored {
+	// A trkn/disk number is a fixed binary uint16 - and the integer and BPM atoms are
+	// fixed-width too - so an edit that makes a slot genuinely unstorable would clear it and
+	// erase a good existing value. When base still holds a storable value for that slot,
+	// restore it so the edit does not silently delete good data. This runs after the warning
+	// passes above (which read the pre-restore edited.Tags, so the value-dropped warning still
+	// fires) and before every downstream build, so buildItems, the chapter path, and
+	// buildResult all see the restored value. Restoring base's value makes an edit that
+	// changed nothing else collapse to a true no-op via DowngradeNoOp below, which carries the
+	// warning forward so --strict still escalates. This diverges from the text formats
+	// (MP3/AAC/AIFF/WAV), which store the raw string; the help/README note the reason.
+	if patched, restored := restoreUnstorableSlots(base.Tags, edited.Tags); restored {
 		ec := *edited
 		ec.Tags = patched
 		edited = &ec

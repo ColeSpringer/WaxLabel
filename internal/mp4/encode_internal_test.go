@@ -111,7 +111,7 @@ func TestRestoreUnstorablePairSlots(t *testing.T) {
 			for k, v := range c.edited {
 				edited.Set(k, v)
 			}
-			out, restored := restoreUnstorablePairSlots(base, edited)
+			out, restored := restoreUnstorableSlots(base, edited)
 			if restored != c.wantRestored {
 				t.Fatalf("restored = %v, want %v", restored, c.wantRestored)
 			}
@@ -127,10 +127,11 @@ func TestRestoreUnstorablePairSlots(t *testing.T) {
 	}
 }
 
-// TestCoercedValues checks that coercedValues names only a COMPILATION non-boolean stored as 0
+// TestCoercedValues checks that coercedValues reports a COMPILATION non-boolean stored as 0
 // (false). A trkn/disk number's leading zero or sign is a numerically-lossless canonicalization,
 // not a coercion worth warning, so no number slot appears here (a copy grades it Carried and diff
-// treats it as no change). A dropped slot (0, overflow, non-numeric) is not here either.
+// treats it as no change). A dropped slot (0, overflow, non-numeric) is not here either. The
+// iTunes structured keys' coercions are covered in TestITunesCoercedValues.
 func TestCoercedValues(t *testing.T) {
 	// A non-boolean COMPILATION is the one coercion reported.
 	ts := tag.NewTagSet()

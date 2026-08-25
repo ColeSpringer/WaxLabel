@@ -8,9 +8,10 @@ import (
 )
 
 // TestLintAndNoteAgree checks that set-time notes and Document.Lint use the same value
-// validators. Numeric, date, boolean, MEDIATYPE, ReplayGain, and RELEASECOUNTRY values
-// should get the same malformed verdict in both paths. RATING is free-form and is flagged
-// by neither, as are RELEASESTATUS and RELEASETYPE. Valid values trigger neither path.
+// validators. Numeric, date, boolean, MP4-integer, BPM, ReplayGain, and RELEASECOUNTRY
+// values should get the same malformed verdict in both paths. RATING is free-form and is
+// flagged by neither, as are RELEASESTATUS, RELEASETYPE, WORK, and MOVEMENTNAME. Valid
+// values trigger neither path.
 func TestLintAndNoteAgree(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -36,6 +37,16 @@ func TestLintAndNoteAgree(t *testing.T) {
 		{"RELEASECOUNTRY=XW", false},      // the MusicBrainz worldwide pseudo-code
 		{"RELEASESTATUS=official", false}, // an open vocabulary: no shape to check
 		{"RELEASETYPE=album", false},
+		{"ITUNESADVISORY=1", false},
+		{"ITUNESADVISORY=256", true}, // past the single byte the rtng atom stores
+		{"ITUNESADVISORY=1.5", true},
+		{"ITUNESGAPLESS=maybe", true},
+		{"ITUNESGAPLESS=yes", false},
+		{"BPM=174.99", false}, // fractional BPM is common (Serato/MIK/Traktor) and lints clean
+		{"BPM=abc", true},
+		{"MOVEMENT=3/12", true}, // no pair syntax at the tag level; the ID3 codec owns the MVIN join
+		{"MOVEMENT=3", false},
+		{"WORK=anything at all", false}, // free text: no shape to check
 	}
 	for _, c := range cases {
 		c := c
@@ -67,13 +78,23 @@ func TestValueDroppedWarningM4A(t *testing.T) {
 	t.Parallel()
 	notagsM4A := filepath.Join("..", "..", "testdata", "notags.m4a")
 
-	for _, kv := range []string{"TRACKNUMBER=abc", "TRACKNUMBER=70000", "TRACKNUMBER=-3", "TRACKNUMBER=0", "MEDIATYPE=abc", "MEDIATYPE=256"} {
+	for _, kv := range []string{"TRACKNUMBER=abc", "TRACKNUMBER=70000", "TRACKNUMBER=-3", "TRACKNUMBER=0",
+		"MEDIATYPE=abc", "MEDIATYPE=256", "ITUNESADVISORY=256", "MOVEMENT=70000", "BPM=abc"} {
 		if out, _, _ := runCLI(t, "plan", copyFixture(t, notagsM4A), "--set", kv); !strings.Contains(out, "value-dropped") {
 			t.Errorf("plan --set %s: missing value-dropped warning:\n%s", kv, out)
 		}
 		if _, _, code := runCLI(t, "set", copyFixture(t, notagsM4A), "--set", kv, "--strict"); code != 2 {
 			t.Errorf("set --strict --set %s: exit = %d, want 2", kv, code)
 		}
+	}
+
+	// A fractional BPM stores (rounded to nearest, exit 0 with a value-coerced warning), and
+	// --strict escalates the coercion to exit 2 like a drop, the Compilation-mirror behavior.
+	if out, _, code := runCLI(t, "plan", copyFixture(t, notagsM4A), "--set", "BPM=174.99"); !strings.Contains(out, "value-coerced") || code != 0 {
+		t.Errorf("plan BPM=174.99: want a value-coerced warning at exit 0, got exit %d:\n%s", code, out)
+	}
+	if _, _, code := runCLI(t, "set", copyFixture(t, notagsM4A), "--set", "BPM=174.99", "--strict"); code != 2 {
+		t.Errorf("set --strict BPM=174.99: exit = %d, want 2 (a coercion escalates like a drop)", code)
 	}
 
 	// The shared trkn atom names the offending slot: TRACKTOTAL, not TRACKNUMBER.

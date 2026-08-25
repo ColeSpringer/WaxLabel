@@ -44,6 +44,10 @@ var id3TextFrames = map[string]tag.Key{
 	"TSO2": tag.AlbumArtistSort,
 	"TSOC": tag.ComposerSort,
 	"TCMP": tag.Compilation,
+	"TBPM": tag.BPM, // beats per minute
+	// MVNM is Apple's movement-name frame; not T-prefixed, so the id3 read
+	// path needs its own case (the generic text case is T-gated).
+	"MVNM": tag.MovementName,
 }
 
 // id3KeyFrames is the inverse of id3TextFrames, built at init.

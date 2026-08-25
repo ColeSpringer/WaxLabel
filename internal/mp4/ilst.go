@@ -86,7 +86,19 @@ func decodeItem(it item) itemResult {
 	case "cpil":
 		return decodeBool(it, tag.Compilation)
 	case "stik":
-		return decodeMediaType(it)
+		return decodeInt(it, tag.MediaType)
+	case "rtng":
+		return decodeInt(it, tag.ITunesAdvisory)
+	case "tmpo":
+		return decodeInt(it, tag.BPM)
+	case "\xa9mvi":
+		return decodeInt(it, tag.Movement)
+	case "\xa9mvc":
+		return decodeInt(it, tag.MovementTotal)
+	case "pgap":
+		return decodeBool(it, tag.ITunesGapless)
+	case "shwm":
+		return decodeBool(it, tag.ShowMovement)
 	default:
 		key, ok := mapping.MP4TextKey(it.id())
 		if !ok {
@@ -226,19 +238,26 @@ func decodeGnre(it item) itemResult {
 	return itemResult{contribs: contribs, numericGenre: true, owned: true}
 }
 
-// decodeMediaType decodes the iTunes "stik" media-kind atom (a small integer;
-// 2 = audiobook) into the canonical MediaType key as its decimal string, so it
-// round-trips exactly rather than being normalized to a name.
-func decodeMediaType(it item) itemResult {
+// decodeInt decodes an iTunes integer atom (stik, rtng, tmpo, ©mvi, ©mvc) into
+// its canonical key as the decimal string, so it round-trips exactly rather
+// than being normalized to a name. Only an integer-bearing data type is owned
+// (the signed-int code iTunes writes, or the classic implicit 0): a text-typed
+// data atom would have its ASCII bytes misread as a big-endian number and then
+// be rewritten as that bogus integer on the next edit, so it stays preserved
+// verbatim like any other malformed known atom.
+func decodeInt(it item, key tag.Key) itemResult {
 	atoms, ok := parseDataAtoms(it.payload)
 	if !ok || len(atoms) != 1 {
+		return itemResult{owned: false}
+	}
+	if atoms[0].typ != typeSignedInt && atoms[0].typ != typeImplicit {
 		return itemResult{owned: false}
 	}
 	n, ok := intFromBytes(atoms[0].value)
 	if !ok {
 		return itemResult{owned: false}
 	}
-	return itemResult{contribs: []core.Contribution{{Key: tag.MediaType, Value: strconv.FormatUint(n, 10), Source: "stik"}}, owned: true}
+	return itemResult{contribs: []core.Contribution{{Key: key, Value: strconv.FormatUint(n, 10), Source: it.id()}}, owned: true}
 }
 
 // intFromBytes reads a big-endian unsigned integer from 1-4 bytes (the width an
@@ -256,10 +275,15 @@ func intFromBytes(b []byte) (uint64, bool) {
 	return n, true
 }
 
-// decodeBool decodes a single-byte boolean atom (cpil) into "1"/"0".
+// decodeBool decodes a single-byte boolean atom (cpil, pgap, shwm) into "1"/"0". Like
+// decodeInt, only an integer-bearing data type is owned: a text-typed atom would read
+// ASCII "0" (0x30, non-zero) as true, so it stays preserved verbatim instead.
 func decodeBool(it item, key tag.Key) itemResult {
 	atoms, ok := parseDataAtoms(it.payload)
 	if !ok || len(atoms) != 1 || len(atoms[0].value) != 1 {
+		return itemResult{owned: false}
+	}
+	if atoms[0].typ != typeSignedInt && atoms[0].typ != typeImplicit {
 		return itemResult{owned: false}
 	}
 	val := "0"

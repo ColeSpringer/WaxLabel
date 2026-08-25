@@ -764,6 +764,16 @@ func buildAlbumGroup(group *tagGroup, base, edited tag.TagSet, covered, albumOwn
 				}
 			}
 		}
+		if tag.IsBooleanKey(k) {
+			// Canonicalize a recognized boolean word to "1"/"0", matching the Vorbis, ID3,
+			// and MP4 writers so every format stores a boolean field identically. Applied
+			// after the unchanged-key comparison above, so a preserved verbatim value is
+			// untouched and only a fresh emit normalizes. vals is already a private slice
+			// (Get clones; subtractFold allocates), so rewriting in place is safe.
+			for i, v := range vals {
+				vals[i] = tag.CanonicalBoolValue(v)
+			}
+		}
 		name := mapping.MatroskaTagName(k)
 		for _, v := range vals {
 			// A present empty value from `set KEY=` is emitted as a zero-length SimpleTag,

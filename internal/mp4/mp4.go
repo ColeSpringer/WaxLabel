@@ -113,9 +113,9 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 		},
 	}
 	// Per-field value-drop predicates expose the values the iTunes atom encoders cannot
-	// store: out-of-uint16 trkn/disk slots and invalid stik/cpil values. Transfer uses these
-	// predicates before applying fields so a dropped source value does not overwrite a valid
-	// destination value.
+	// store: out-of-uint16 trkn/disk slots and invalid integer, BPM, or boolean atom values.
+	// Transfer uses these predicates before applying fields so a dropped source value does
+	// not overwrite a valid destination value.
 	//
 	// Under --numeric-genre, recognized genres are written as numeric "gnre" atoms and
 	// re-read as canonical ID3 genre names; the capability is value-blind, so it reports
@@ -143,6 +143,18 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	add(tag.DiscTotal, core.WithValueDrop(fields, slotValueDropped))
 	add(tag.MediaType, core.WithValueDrop(fields, mediaTypeValueDropped))
 	add(tag.Compilation, core.WithValueDrop(fields, compilationValueDropped))
+	add(tag.ITunesAdvisory, core.WithValueDrop(fields, advisoryValueDropped))
+	add(tag.Movement, core.WithValueDrop(fields, movementValueDropped))
+	add(tag.MovementTotal, core.WithValueDrop(fields, movementTotalValueDropped))
+	// BPM carries a reduction predicate beside the drop one: the tmpo atom rounds a valid
+	// fraction to the nearest whole number, so a copy of "174.99" grades Lossy (the reader
+	// gets 175) rather than a false clean carry. bpmValueCoerced is the same decision the
+	// writer's coercion warning fires on, so the grade and the warning cannot drift.
+	bpmField := fields
+	bpmField.Fidelity = "stored as a whole number in the tmpo atom; a fractional value rounds to nearest"
+	add(tag.BPM, core.WithValueDrop(core.WithValueReduction(bpmField, bpmValueReduced), bpmValueDropped))
+	add(tag.ITunesGapless, core.WithValueDrop(fields, gaplessValueDropped))
+	add(tag.ShowMovement, core.WithValueDrop(fields, showMovementValueDropped))
 	// ReadOnly comes from the same predicate Plan refuses on, so the capability a caller
 	// is shown matches what a write would actually do (the report==result invariant the
 	// Codec contract states).
@@ -162,7 +174,27 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	}
 	// Padding is grow-only: a forced rewrite can reserve a region, but a fit-in-place
 	// edit reuses the existing free space and cannot shrink it.
-	return core.NewCapabilities(core.FormatMP4, readOnly, fields, pictures, chapters, core.AccessPartial, perField)
+	return core.NewCapabilities(core.FormatMP4, readOnly, fields, pictures, chapters, core.AccessPartial, perField).
+		WithFieldClassifier(transferClassifier)
+}
+
+// transferClassifier grades the one field shape whose MP4 transfer fate the format-level
+// capability cannot express: a structured single-atom key given more than one value stores
+// only the first (the writer names the surplus in a value-dropped warning), so the copy must
+// grade it Lossy rather than a clean carry. Every other field is left to the format-level
+// grade.
+func transferClassifier(key tag.Key, values []string, _ tag.TagSet) (core.Disposition, string, bool) {
+	if structuredSingleAtomKeys[key] && len(values) > 1 {
+		return core.Lossy, "this field is a single-value MP4 atom; only the first value is stored", true
+	}
+	return core.Carried, "", false
+}
+
+// bpmValueReduced adapts the writer's coercion decision to the capability layer's
+// per-value reduction predicate.
+func bpmValueReduced(v string) bool {
+	_, coerced := bpmValueCoerced(v)
+	return coerced
 }
 
 // EssenceExtent returns the MP4 essence-digest inputs: a versioned extent name

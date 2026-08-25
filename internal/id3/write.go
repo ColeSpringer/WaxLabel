@@ -82,13 +82,13 @@ type RebuildInfo struct {
 	// where a native container keeps the literal number (WAV/AIFF INFO/text). See
 	// detectNumericGenres.
 	NumericGenres []string
-	// DroppedTotals lists the TRACKTOTAL/DISCTOTAL keys whose canonical value cannot be composed
-	// into a valid "n/total" TRCK/TPOS frame because the number field is non-numeric (e.g.
-	// TRACKNUMBER="A1"): the reader would read "A1/12" as one literal value with the total merged
-	// in and lost, so renderNumTotal preserves the number verbatim and drops the total. The caller
-	// surfaces it as a value-dropped warning keyed to the total. An embedded total in the number
-	// itself ("A1/12" with no canonical TRACKTOTAL) is preserved verbatim and is not a drop. See
-	// detectDroppedTotals.
+	// DroppedTotals lists the TRACKTOTAL/DISCTOTAL/MOVEMENTTOTAL keys whose canonical value
+	// cannot be composed into a valid "n/total" TRCK/TPOS/MVIN frame because the number field is
+	// non-numeric (e.g. TRACKNUMBER="A1"): the reader would read "A1/12" as one literal value
+	// with the total merged in and lost, so the pair render preserves the number verbatim and
+	// drops the total. The caller surfaces it as a value-dropped warning keyed to the total. An
+	// embedded total in the number itself ("A1/12" with no canonical TRACKTOTAL) is preserved
+	// verbatim and is not a drop. See detectDroppedTotals.
 	DroppedTotals []tag.Key
 	// DroppedTrailingValues lists the keys an edit touched whose trailing empty element the write
 	// cannot represent: a NUL-separated frame emits no trailing terminator, and the read path strips
@@ -525,6 +525,10 @@ func frameRenderID(f Frame) (string, bool) {
 		return "USLT", true
 	case "TCON", "TRCK", "TPOS":
 		return f.ID, true
+	case "MVIN", "MVNM":
+		// Apple's movement frames are managed but not T-prefixed, so the T-prefix
+		// tail below never reaches them.
+		return f.ID, true
 	case "TIPL", "IPLS":
 		// Managed so a role edit re-renders the frame (and drops a stale cross-version
 		// sibling). TIPL already lands here via the T-prefix tail; naming IPLS makes it
@@ -586,6 +590,10 @@ func frameKeys(f Frame) []tag.Key {
 		return []tag.Key{tag.TrackNumber, tag.TrackTotal}
 	case "TPOS":
 		return []tag.Key{tag.DiscNumber, tag.DiscTotal}
+	case "MVIN":
+		return []tag.Key{tag.Movement, tag.MovementTotal}
+	case "MVNM":
+		return []tag.Key{tag.MovementName}
 	case "TIPL", "IPLS":
 		return mapping.ID3InvolvedKeys()
 	case "TYER", "TDAT", "TIME", "TDRC":
@@ -625,6 +633,8 @@ func keyRenderIDs(key tag.Key, version byte) []string {
 		return []string{"TRCK"}
 	case tag.DiscNumber, tag.DiscTotal:
 		return []string{"TPOS"}
+	case tag.Movement, tag.MovementTotal:
+		return []string{"MVIN"}
 	case tag.Genre:
 		return []string{"TCON"}
 	case tag.MBRecordingID:
@@ -693,6 +703,13 @@ func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, o
 		if orig, ok := origTXXXDesc[token]; ok && desc == string(key) {
 			desc = orig
 		}
+		// Canonicalize a recognized boolean word to "1"/"0", mirroring the default branch
+		// below: ITUNESGAPLESS/SHOWMOVEMENT are boolean keys whose ID3 home is a TXXX user
+		// frame, and without this "yes" would be stored verbatim here while FLAC/MP4 store
+		// "1". COMPILATION never reaches this branch (its render token is always TCMP).
+		if tag.IsBooleanKey(key) {
+			vals = canonicalBoolValues(vals)
+		}
 		return renderByPolicy(version, "TXXX", vals, opts.Multi,
 			func(v []string) []byte { return encodeUserText(version, desc, v) })
 	case token == "UFID":
@@ -721,6 +738,8 @@ func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, o
 		return renderNumTotal(version, "TRCK", edited, tag.TrackNumber, tag.TrackTotal)
 	case token == "TPOS":
 		return renderNumTotal(version, "TPOS", edited, tag.DiscNumber, tag.DiscTotal)
+	case token == "MVIN":
+		return renderMovementPair(version, edited)
 	case token == "TDRC":
 		return renderDate(version, "TDRC", edited, tag.RecordingDate)
 	case token == "TDRL":
@@ -769,11 +788,22 @@ func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, o
 		// multi-value warning.
 		return []Frame{{ID: token, Body: encodeTextFrame(chooseEncoding(version, flat), flat)}}, false
 	default: // simple or pass-through text frame
-		key, ok := mapping.ID3FrameKey(token)
-		if !ok {
+		key, mapped := mapping.ID3FrameKey(token)
+		if !mapped {
 			key = tag.Key(token)
 		}
 		vals, has := edited.Get(key)
+		if mapped && (!has || len(vals) == 0) {
+			// A raw frame-ID key (--set TBPM=128) carries its values under the frame's own
+			// name, not the canonical key the frame maps to. Without this fallback the
+			// token would resolve only to the absent canonical key and the authored value
+			// would be silently lost (the pre-mapping behavior emitted the frame).
+			if raw := tag.Key(token); raw.Valid() {
+				if rv, rok := edited.Get(raw); rok && len(rv) > 0 {
+					key, vals, has = raw, rv, true
+				}
+			}
+		}
 		if !has || len(vals) == 0 {
 			return nil, false
 		}
@@ -904,22 +934,79 @@ func composeNumTotal(numKey tag.Key, num, canonicalTotal string) (value string, 
 	return num, canonicalTotal != ""
 }
 
-// detectDroppedTotals finds the TRACKTOTAL/DISCTOTAL keys whose canonical value composeNumTotal
-// cannot fit into a valid "n/total" frame, so the caller can warn rather than drop the total
-// silently. Scoped to a pair the edit touched: an untouched pair keeps its original frame, and an
-// embedded total in the number itself ("A1/12" alone) is preserved verbatim and is not a drop.
+// renderMovementPair renders the MVIN frame from the movement number and optional total as
+// "n/total", the movement sibling of renderNumTotal.
+func renderMovementPair(version byte, edited tag.TagSet) ([]Frame, bool) {
+	num, _ := edited.First(tag.Movement)
+	total, _ := edited.First(tag.MovementTotal)
+	if num == "" && total == "" {
+		return nil, false
+	}
+	value, _ := composeMovementPair(num, total)
+	enc := chooseEncoding(version, []string{value})
+	return []Frame{{ID: "MVIN", Body: encodeTextFrame(enc, []string{value})}}, false
+}
+
+// composeMovementPair is composeNumTotal's sibling for the MVIN movement pair, shared by
+// renderMovementPair (what to write) and detectDroppedTotals (whether to warn). MOVEMENT stays
+// outside the track/disc machinery (tag.NumberTotalSplit is hard-gated to those keys, and its
+// ValidNumericValue gate passes anything for a non-member), so the gates here are
+// tag.ValidMP4IntValue per side and a re-run of movementSplit on the composed value - compose
+// and read share that one helper, so a composed frame always splits back. An invalid number
+// (non-numeric, signed, or past uint16) is preserved verbatim with any canonical total reported
+// dropped, TRCK-equivalent; a number already carrying valid pair syntax ("3/12") composes with
+// an explicit canonical total winning over the embedded one.
+func composeMovementPair(num, canonicalTotal string) (value string, totalDropped bool) {
+	if _, _, split := movementSplit(num); strings.TrimSpace(num) != "" && !split &&
+		!tag.ValidMP4IntValue(tag.Movement, num) {
+		return num, canonicalTotal != ""
+	}
+	nPart, embeddedTotal := tag.SplitNumberTotal(num)
+	finalTotal := canonicalTotal
+	if finalTotal == "" {
+		finalTotal = embeddedTotal
+	}
+	if finalTotal == "" {
+		return nPart, false
+	}
+	if composed := nPart + "/" + finalTotal; validMovementPair(composed) {
+		return composed, false
+	}
+	// Compose failed: preserve the number verbatim. A canonical total is thereby dropped; an
+	// embedded one stays inside the preserved num.
+	return num, canonicalTotal != ""
+}
+
+// validMovementPair reports whether a composed MVIN value splits back through movementSplit,
+// so what compose emits is exactly what the read path will split.
+func validMovementPair(v string) bool {
+	_, _, split := movementSplit(v)
+	return split
+}
+
+// detectDroppedTotals finds the TRACKTOTAL/DISCTOTAL/MOVEMENTTOTAL keys whose canonical value
+// the pair compose cannot fit into a valid "n/total" frame, so the caller can warn rather than
+// drop the total silently. Scoped to a pair the edit touched: an untouched pair keeps its
+// original frame, and an embedded total in the number itself ("A1/12" alone) is preserved
+// verbatim and is not a drop.
 func detectDroppedTotals(changed map[tag.Key]bool, edited tag.TagSet) []tag.Key {
 	var dropped []tag.Key
-	for _, p := range []struct{ numKey, totKey tag.Key }{
-		{tag.TrackNumber, tag.TrackTotal},
-		{tag.DiscNumber, tag.DiscTotal},
+	for _, p := range []struct {
+		numKey, totKey tag.Key
+		compose        func(num, total string) (string, bool)
+	}{
+		{tag.TrackNumber, tag.TrackTotal,
+			func(n, t string) (string, bool) { return composeNumTotal(tag.TrackNumber, n, t) }},
+		{tag.DiscNumber, tag.DiscTotal,
+			func(n, t string) (string, bool) { return composeNumTotal(tag.DiscNumber, n, t) }},
+		{tag.Movement, tag.MovementTotal, composeMovementPair},
 	} {
 		if !changed[p.numKey] && !changed[p.totKey] {
 			continue // neither field edited; the original frame is preserved, nothing newly dropped
 		}
 		num, _ := edited.First(p.numKey)
 		total, _ := edited.First(p.totKey)
-		if _, totalDropped := composeNumTotal(p.numKey, num, total); totalDropped {
+		if _, totalDropped := p.compose(num, total); totalDropped {
 			dropped = append(dropped, p.totKey)
 		}
 	}
@@ -989,31 +1076,42 @@ func detectDroppedInvolvedEmpties(changed map[tag.Key]bool, edited tag.TagSet) [
 }
 
 // TransferClassifier grades the fields whose ID3 transfer fate the format-level capability
-// cannot express: a TRACKTOTAL or DISCTOTAL whose sibling number is non-numeric. ID3 stores
-// a total only as the second half of a "number/total" frame, so when the number cannot form
-// a valid numeric value the total has nowhere to go and the writer drops it (see
-// [AppendRebuildWarnings]). A copy that carries such a total - a TRACKTOTAL beside a
-// non-numeric TRACKNUMBER - must report it Dropped rather than a clean carry. It calls the
-// same composeNumTotal decision the writer uses, so the copy report and the write drop
-// cannot drift; composeNumTotal composes a lone total cleanly ("/total"), so a standalone
-// TRACKTOTAL is not falsely dropped. The four ID3-backed codecs (MP3, AAC, AIFF, WAV) share
-// it; every other field is left to the format-level grade. It is a plain
-// [core.FieldClassifier] (registered by value, not called), so it captures nothing and
-// allocates no closure.
-func TransferClassifier(key tag.Key, _ []string, all tag.TagSet) (core.Disposition, string, bool) {
-	var numKey tag.Key
+// cannot express. A TRACKTOTAL, DISCTOTAL, or MOVEMENTTOTAL whose sibling number cannot
+// join it in a valid "number/total" frame has nowhere to go - the writer drops it (see
+// [AppendRebuildWarnings]) - so a copy carrying one must report it Dropped rather than a
+// clean carry; each calls the same compose decision its writer uses, so the copy report
+// and the write drop cannot drift, and a lone total is not falsely dropped (both composers
+// render "/total" cleanly). A MOVEMENT already carrying pair syntax ("3/12") is graded
+// Lossy: the MVIN frame stores it, but the read path splits it into MOVEMENT and
+// MOVEMENTTOTAL, so the value does not carry back under one key (the track/disc numbers
+// cannot hit this - their read passes split the slash before grading). The four ID3-backed
+// codecs (MP3, AAC, AIFF, WAV) share it; every other field is left to the format-level
+// grade. It is a plain [core.FieldClassifier] (registered by value, not called), so it
+// captures nothing and allocates no closure.
+func TransferClassifier(key tag.Key, values []string, all tag.TagSet) (core.Disposition, string, bool) {
 	switch key {
-	case tag.TrackTotal:
-		numKey = tag.TrackNumber
-	case tag.DiscTotal:
-		numKey = tag.DiscNumber
-	default:
-		return core.Carried, "", false
-	}
-	num, _ := all.First(numKey)
-	total, _ := all.First(key)
-	if _, dropped := composeNumTotal(numKey, num, total); dropped {
-		return core.Dropped, "the number it attaches to is non-numeric, so ID3 cannot store this total (a total is written only as the second half of \"number/total\")", true
+	case tag.TrackTotal, tag.DiscTotal:
+		numKey := tag.TrackNumber
+		if key == tag.DiscTotal {
+			numKey = tag.DiscNumber
+		}
+		num, _ := all.First(numKey)
+		total, _ := all.First(key)
+		if _, dropped := composeNumTotal(numKey, num, total); dropped {
+			return core.Dropped, "the number it attaches to is non-numeric, so ID3 cannot store this total (a total is written only as the second half of \"number/total\")", true
+		}
+	case tag.MovementTotal:
+		num, _ := all.First(tag.Movement)
+		total, _ := all.First(key)
+		if _, dropped := composeMovementPair(num, total); dropped {
+			return core.Dropped, "it cannot join the movement number in a valid \"number/total\" MVIN frame, so ID3 cannot store this total", true
+		}
+	case tag.Movement:
+		if len(values) > 0 {
+			if _, _, split := movementSplit(values[0]); split {
+				return core.Lossy, "stored in the MVIN \"number/total\" frame, which reads back split into MOVEMENT and MOVEMENTTOTAL", true
+			}
+		}
 	}
 	return core.Carried, "", false
 }
@@ -1209,8 +1307,13 @@ func AppendRebuildWarnings(ws []core.Warning, info RebuildInfo, retained tag.Tag
 		if v, _ := retained.First(k); v != "" {
 			continue // retained in another container (e.g. WAV's LIST/INFO); not actually dropped
 		}
-		ws = core.WarnKeyed(ws, core.WarnValueDropped,
-			fmt.Sprintf("%s cannot be represented in ID3 because the number it attaches to is non-numeric (the total is stored only as the second half of \"number/total\") and was dropped", k), k)
+		msg := fmt.Sprintf("%s cannot be represented in ID3 because the number it attaches to is non-numeric (the total is stored only as the second half of \"number/total\") and was dropped", k)
+		if k == tag.MovementTotal {
+			// The movement pair can also fail to compose on a valid-looking but
+			// out-of-contract side (a sign, or past 65535), so "non-numeric" would mislead.
+			msg = fmt.Sprintf("%s cannot join the movement number in a valid \"number/total\" MVIN frame and was dropped", k)
+		}
+		ws = core.WarnKeyed(ws, core.WarnValueDropped, msg, k)
 	}
 	// Emit the trailing-empty drops unconditionally, not behind the retained-guard the date and
 	// total loops use: retained is the re-projected (already-stripped) set, so retained.First(ARTIST)

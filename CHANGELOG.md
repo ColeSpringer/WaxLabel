@@ -2,6 +2,53 @@
 
 All notable changes to this project are documented here.
 
+## [1.5.0]
+
+### Added
+
+- Eight canonical iTunes keys (writable): `ITUNESADVISORY` (content advisory; integer 0-255,
+  1 = explicit, 2 = clean, 0 = none, legacy 4 = explicit), `ITUNESGAPLESS` and `SHOWMOVEMENT`
+  (booleans), `BPM` (non-negative decimal up to 65535, fractions accepted), `WORK`,
+  `MOVEMENTNAME`, and the `MOVEMENT`/`MOVEMENTTOTAL` pair (integers 0-65535, no pair syntax
+  at the tag level). Stored as the structured MP4 atoms (`rtng`, `pgap`, `shwm`, `tmpo`,
+  `©wrk`, `©mvn`, `©mvi`, `©mvc`), on ID3 as `TBPM`, `MVNM`, and one `MVIN` `n/total` frame
+  plus `TXXX` user frames for the rest (`WORK` as Picard's `TXXX:WORK`), and under their own
+  names on Vorbis, Matroska, and APE. `ENCODEDBY` now maps to the MP4 `©enc` atom.
+
+### Changed
+
+- The MP4 atoms above previously survived edits only as preserved unknown items and were
+  invisible to dump, diff, copy, and `Get`; they now project and rebuild like any owned atom.
+- ID3 `TBPM` previously round-tripped as the custom key `TBPM`; it now projects as `BPM`.
+  Consumers keyed on `TBPM` must move.
+- A freeform `----:ITUNESADVISORY`-style MP4 representation migrates to the structured atom
+  on the next edit; a stale ID3 `TXXX:BPM` migrates to `TBPM` on the next edit that changes
+  the key. `ENCODEDBY`'s MP4 write spelling moves from a freeform to `©enc`.
+- Recognized boolean words canonicalize to `1`/`0` on ID3 `TXXX` frames for boolean keys, so
+  `ITUNESGAPLESS=yes` stores `1` on MP3 as it does on FLAC and MP4.
+- These names no longer draw the custom-key lint info, and their values are validated: an
+  invalid or out-of-range value now drops with a warning on MP4 writes (escalated by
+  `--strict`) instead of writing a freeform, and a copy into MP4 excludes such a value
+  (the destination keeps its own). A fractional `BPM` rounds to nearest on MP4 with a
+  coercion warning, which `--strict` escalates to exit 2 like a drop; a copy of one into
+  MP4 grades lossy. On an MP4 edit that makes one of these values unstorable, an existing
+  stored value is kept (with the warning) rather than deleted, matching the track/disc
+  slots.
+- `lint` now flags a malformed value on these keys (`malformed-number`/`malformed-boolean`,
+  exit 1) where it previously passed them as custom text. A library carrying free-text BPM
+  values ("120-125", "Unknown") flips a lint gate on upgrade.
+- ffmpeg folds both `©too` and `©enc` onto its single `encoder` tag, so ffprobe reports
+  whichever atom comes later when a file carries `ENCODER` and `ENCODEDBY` together; iTunes
+  and Mp3tag keep them distinct.
+- Setting a raw mapped frame ID as a key (`--set TBPM=128`) silently wrote nothing once the
+  frame joined the mapping table; the value is now written to that frame and reads back
+  under the canonical key. Same fix for the other mapped frame IDs.
+- Giving a structured single-atom MP4 key several values now warns that only the first is
+  stored, and a copy grades it lossy; previously the surplus vanished silently
+  (pre-existing for `MEDIATYPE`/`COMPILATION` and the track/disc slots).
+- Matroska now canonicalizes boolean words to `1`/`0` on write like FLAC, ID3, and MP4, so
+  `ITUNESGAPLESS=yes` stores `1` on MKA too.
+
 ## [1.4.2]
 
 ### Fixed

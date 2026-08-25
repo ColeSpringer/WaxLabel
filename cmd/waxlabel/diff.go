@@ -153,20 +153,24 @@ func computeDiff(a, b *wl.Document) diffResult {
 	}
 }
 
-// numericAwareTagDiff is tag.Diff with a narrow refinement: a track/disc number/total or MEDIATYPE
-// whose old and new values differ only by a leading '+' or leading zeros ("+3"/"01" vs "3"/"1") is
-// not reported as a change when one of the two files is an MP4. Those slots are the only fields a
-// format (MP4, as a 16-bit integer trkn/disk/stik atom) canonicalizes, so a copy into or out of an
-// MP4 legitimately turns "01" into "1"; treating that delta as no change keeps diff in step with how
-// copy grades it (Carried), the same reconstructable-difference reasoning the chapter diff applies to
-// gapless ends.
+// numericAwareTagDiff is tag.Diff with a narrow refinement: a key an MP4 integer atom
+// canonicalizes ([tag.IsMP4CanonicalKey]: the track/disc number/total, MEDIATYPE,
+// ITUNESADVISORY, the movement pair, and BPM) whose old and new values differ only by a leading
+// '+' or leading zeros ("+3"/"01" vs "3"/"1") is not reported as a change when one of the two
+// files is an MP4. Those are exactly the slots MP4 stores as an integer atom
+// (trkn/disk/stik/rtng/©mvi/©mvc/tmpo), so a copy into or out of an MP4 legitimately turns "01"
+// into "1"; treating that delta as no change keeps diff in step with how copy grades it
+// (Carried), the same reconstructable-difference reasoning the chapter diff applies to gapless
+// ends. For BPM the fold also covers an all-zero fraction ("174.0" vs "174" - tmpo stores the
+// same whole number, unwarned), while a genuine fraction ("174.99" vs "175") still reports:
+// tmpo's rounding there is a warned coercion, not a spelling artifact.
 //
-// The fold is deliberately scoped. It applies only when at least one side is an MP4 (the format that
-// canonicalizes); a text-to-text pair - same format or cross-format - stores the value verbatim, so
-// "01" vs "1" is a genuine on-disk difference to report. And it is NOT applied to other numeric keys
-// (play count, BPM, ...), which no format canonicalizes - folding those would hide a real difference
-// under a rationale that does not hold for them. Added and removed keys are unaffected; only a
-// same-key change is filtered.
+// The fold is deliberately scoped. It applies only when at least one side is an MP4 (the format
+// that canonicalizes); a text-to-text pair - same format or cross-format - stores the value
+// verbatim, so "01" vs "1" is a genuine on-disk difference to report. And it is NOT applied to
+// other numeric keys (play count, ...), which no format canonicalizes - folding those would hide
+// a real difference under a rationale that does not hold for them. Added and removed keys are
+// unaffected; only a same-key change is filtered.
 func numericAwareTagDiff(a, b tag.TagSet, fa, fb wl.Format) []tag.Change {
 	changes := tag.Diff(a, b)
 	if fa != wl.FormatMP4 && fb != wl.FormatMP4 {
