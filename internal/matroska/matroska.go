@@ -68,7 +68,13 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "Matroska SimpleTag + Info.Title",
 		Fidelity:       "lossless",
-		Constraints:    []string{"canonical edits written at album scope and removed from any track/edition/chapter scope that also held the key; unedited scoped tags preserved verbatim"},
+		Constraints: []string{
+			"a canonical edit keeps a still-wanted value at the target scope that holds it; " +
+				"values the edit removes are dropped from every scope; new values are written at album scope; " +
+				"unedited scoped tags are preserved verbatim",
+			"a key split across scopes reads back in scope order (album first), so a pure cross-scope reorder is a no-op; " +
+				"a key spread over several album-scope Tag blocks is album-owned in all of them and re-emits in edited order on any change",
+		},
 	}
 	pictures := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,

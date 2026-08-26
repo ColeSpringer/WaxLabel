@@ -351,7 +351,8 @@ func TestShiftConvergence(t *testing.T) {
 	if !ch.pictures {
 		t.Fatal("setup: picture change not detected")
 	}
-	r, err := renderChanged(d, base, edited, ch, editedKeySet(base.Tags, edited.Tags))
+	ed := computeEditDecisions(d.groups, albumGroupIndex(d.groups), base.Tags, edited.Tags)
+	r, err := renderChanged(d, base, edited, ch, ed)
 	if err != nil {
 		t.Fatalf("renderChanged: %v", err)
 	}

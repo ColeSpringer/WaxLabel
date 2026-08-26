@@ -184,6 +184,20 @@ func TestMatroskaWarnsWhenExtraTitleValueDropped(t *testing.T) {
 	}
 }
 
+// TestTransferClassifierDropsTechnicalName pins that TransferClassifier routes a
+// reserved Matroska technical name to Dropped with a non-empty reason, while a name
+// merely adjacent to the reserved set gets no verdict from this classifier (leaving
+// it to the format-level grade).
+func TestTransferClassifierDropsTechnicalName(t *testing.T) {
+	disp, reason, ok := TransferClassifier(tag.Key("DURATION"), []string{"x"}, tag.TagSet{})
+	if !ok || disp != core.Dropped || reason == "" {
+		t.Errorf("TransferClassifier(DURATION) = %v, %q, %v; want Dropped, non-empty reason, true", disp, reason, ok)
+	}
+	if _, _, ok := TransferClassifier(tag.Key("DURATION_X"), []string{"v"}, tag.TagSet{}); ok {
+		t.Errorf("TransferClassifier(DURATION_X) returned a verdict, want none")
+	}
+}
+
 // structuredChaptersMKA builds a Matroska file whose default-edition chapter carries the
 // full structure modern mkvmerge writes: a ChapLanguage, a ChapLanguageIETF, and explicit
 // hidden/disabled flags. allModeled controls whether the chapter has only modeled children

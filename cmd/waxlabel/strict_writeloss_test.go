@@ -25,6 +25,7 @@ func TestStrictEscalatesWriteLossFamily(t *testing.T) {
 		wl.WarnChapterMetadataDropped,
 		wl.WarnSyncedLyricsMetadataDropped,
 		wl.WarnSyncedLyricsTimestampClamped,
+		wl.WarnNumericGenre,
 	}
 	for _, c := range escalating {
 		if !strictEscalatingCodes[c] {
@@ -44,6 +45,61 @@ func TestStrictEscalatesWriteLossFamily(t *testing.T) {
 			t.Errorf("--strict must NOT escalate %v (not an edit-caused loss)", c)
 		}
 	}
+}
+
+// TestStrictEscalatesNumericGenreCoercion: a bare numeric genre reference stored
+// on an ID3-backed format reads back as its genre name; --strict must fail it
+// whether or not --numeric-genre is involved, including when the write no-ops
+// because the file already projects the coerced name. WAV without an id3 chunk
+// keeps the literal text and passes.
+func TestStrictEscalatesNumericGenreCoercion(t *testing.T) {
+	t.Parallel()
+	aacFixture := filepath.Join("..", "..", "testdata", "notags.aac")
+	for _, tc := range []struct{ name, fixture string }{
+		{"mp3", notagsMP3},
+		{"aac", aacFixture},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := copyFixture(t, tc.fixture)
+			_, stderr, code := runCLI(t, "set", f, "--set", "GENRE=17", "--strict")
+			if code != 2 {
+				t.Fatalf("exit = %d, want 2; stderr: %s", code, stderr)
+			}
+			if !strings.Contains(stderr, "GENRE") || !strings.Contains(stderr, "numeric") {
+				t.Errorf("stderr must name GENRE and the numeric coercion: %s", stderr)
+			}
+			// Write it without --strict, then re-apply: the identical loss on a
+			// no-op plan must still escalate.
+			if _, _, code := runCLI(t, "set", f, "--set", "GENRE=17"); code != 0 {
+				t.Fatalf("non-strict write failed")
+			}
+			if _, _, code := runCLI(t, "set", f, "--set", "GENRE=17", "--strict"); code != 2 {
+				t.Errorf("re-applied identical loss: exit = %d, want 2", code)
+			}
+		})
+	}
+	t.Run("wav keeps the literal value", func(t *testing.T) {
+		f := copyFixture(t, filepath.Join("..", "..", "testdata", "notags.wav"))
+		if _, stderr, code := runCLI(t, "set", f, "--set", "GENRE=17", "--strict"); code != 0 {
+			t.Errorf("exit = %d, want 0 (LIST/INFO IGNR keeps the literal); stderr: %s", code, stderr)
+		}
+	})
+	// With --numeric-genre the same loss also trips the capability reduction; the
+	// strict error must report it once, through the numeric-genre wording that
+	// names the value, not twice.
+	t.Run("numeric-genre flag does not double-report", func(t *testing.T) {
+		f := copyFixture(t, notagsMP3)
+		_, stderr, code := runCLI(t, "set", f, "--set", "GENRE=17", "--strict", "--numeric-genre")
+		if code != 2 {
+			t.Fatalf("exit = %d, want 2; stderr: %s", code, stderr)
+		}
+		if !strings.Contains(stderr, "numeric reference") {
+			t.Errorf("strict error must carry the numeric-genre wording: %s", stderr)
+		}
+		if strings.Contains(stderr, "re-read as its canonical name") {
+			t.Errorf("strict error restates the same loss as a capability reduction: %s", stderr)
+		}
+	})
 }
 
 // TestStrictEscalatesNewWriteLossesEndToEnd drives the broadened --strict through the CLI: a

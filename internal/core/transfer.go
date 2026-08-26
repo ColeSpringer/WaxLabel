@@ -75,10 +75,12 @@ type TransferItem struct {
 }
 
 // TransferReport is the result of projecting a source document's canonical
-// metadata onto a destination format: one item per field and chapter-set, in source
-// order, and one or two picture items (a destination that stores only certain cover
-// MIME types splits the set into a carried and a dropped item). It is purely
-// descriptive (no I/O) and is built from the same projection a transfer write applies.
+// metadata onto a destination format: one item per field, in source order, then
+// the picture, chapter, and synced-lyrics sets. Each of those three sets may split
+// into a carried item (always first, with an empty Reason) plus one merged lossy
+// item; the picture set can also add a third dropped item naming unrepresentable
+// cover MIME types. It is purely descriptive (no I/O) and is built from the same
+// projection a transfer write applies.
 type TransferReport struct {
 	Source Format
 	Dest   Format
@@ -122,9 +124,8 @@ func (r TransferReport) Lossless() bool {
 // container only under certain options) is reflected here without this function
 // needing the options itself.
 //
-// The picture set may split into two items when the destination stores only certain
-// cover MIME types (see [Representable]): the representable subset is graded as usual,
-// and the rest become one Dropped item naming the unsupported MIME types.
+// The picture set can also add a Dropped item naming unrepresentable cover MIME
+// types (see [Representable]), on top of any carried/lossy split.
 //
 // PlanTransfer (simulation) and the transfer apply path both use this computation, so
 // the reported fates match the write filter.

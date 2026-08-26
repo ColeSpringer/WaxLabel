@@ -636,3 +636,61 @@ func TestSetBareDiscTrackAliasResolves(t *testing.T) {
 		t.Errorf("DISC=1/2: DISCTOTAL = %v, want [2]", v)
 	}
 }
+
+// TestSetMatroskaNativeSpellingReplaces: setting a Matroska native tag
+// spelling now resolves to the canonical key before the write, so it replaces the field's
+// value instead of appending a second, custom-keyed value that projects onto the same
+// canonical key.
+func TestSetMatroskaNativeSpellingReplaces(t *testing.T) {
+	// sample.mka carries an inherited-encoder warning unrelated to this alias fix (ffmpeg's
+	// ENCODER stamp); fix it up front so the later lint assertions isolate the alias behavior.
+	f := copyFixture(t, td("sample.mka"))
+	if _, errb, code := runCLI(t, "lint", "--fix", f); code != 0 {
+		t.Fatalf("lint --fix baseline: code=%d stderr=%q", code, errb)
+	}
+	if _, errb, code := runCLI(t, "set", f, "--set", "PART_NUMBER=7", "-q"); code != 0 {
+		t.Fatalf("set PART_NUMBER=7: code=%d stderr=%q", code, errb)
+	}
+	jd := decodeJSONOne[jsonDocument](t, mustDumpJSON(t, f))
+	if v := tagValues(jd, "TRACKNUMBER"); !slices.Equal(v, []string{"7"}) {
+		t.Errorf("PART_NUMBER=7 should replace TRACKNUMBER with [7]; got %v", v)
+	}
+	if _, errb, code := runCLI(t, "lint", f); code != 0 {
+		t.Errorf("lint after PART_NUMBER=7: code=%d stderr=%q", code, errb)
+	}
+
+	g := copyFixture(t, td("sample.mka"))
+	if _, errb, code := runCLI(t, "lint", "--fix", g); code != 0 {
+		t.Fatalf("lint --fix baseline: code=%d stderr=%q", code, errb)
+	}
+	if _, errb, code := runCLI(t, "set", g, "--set", "TOTAL_PARTS=9", "-q"); code != 0 {
+		t.Fatalf("set TOTAL_PARTS=9: code=%d stderr=%q", code, errb)
+	}
+	gjd := decodeJSONOne[jsonDocument](t, mustDumpJSON(t, g))
+	if v := tagValues(gjd, "TRACKTOTAL"); !slices.Equal(v, []string{"9"}) {
+		t.Errorf("TOTAL_PARTS=9 should replace TRACKTOTAL with [9]; got %v", v)
+	}
+	if _, errb, code := runCLI(t, "lint", g); code != 0 {
+		t.Errorf("lint after TOTAL_PARTS=9: code=%d stderr=%q", code, errb)
+	}
+
+	// --strict succeeds: PART_NUMBER resolves to the canonical TRACKNUMBER, so the
+	// unknown-key pre-flight never fires.
+	h := copyFixture(t, td("sample.mka"))
+	if _, errb, code := runCLI(t, "set", h, "--strict", "--set", "PART_NUMBER=7", "-q"); code != 0 {
+		t.Errorf("set --strict PART_NUMBER=7: code=%d stderr=%q", code, errb)
+	}
+
+	// Cross-format spot check: the alias applies on every format, not just Matroska.
+	ff := copyFixture(t, td("notags.flac"))
+	if _, errb, code := runCLI(t, "set", ff, "--set", "PUBLISHER=X", "-q"); code != 0 {
+		t.Fatalf("set PUBLISHER=X: code=%d stderr=%q", code, errb)
+	}
+	fjd := decodeJSONOne[jsonDocument](t, mustDumpJSON(t, ff))
+	if v := tagValues(fjd, "LABEL"); !slices.Equal(v, []string{"X"}) {
+		t.Errorf("PUBLISHER=X should project LABEL=[X]; got %v", v)
+	}
+	if v := tagValues(fjd, "PUBLISHER"); v != nil {
+		t.Errorf("PUBLISHER must not remain as a custom key; got %v", v)
+	}
+}

@@ -66,10 +66,10 @@ type layout struct {
 // errFallback when the layout is not absorption-friendly (no Void, an edit in the
 // post-cluster tail, a drop of an element, or a position that would overflow its
 // width), so Plan tries planShift instead.
-func planAbsorb(d *doc, base, edited *core.Media, ch changes, ek map[tag.Key]bool, report core.WriteReport) (*core.WritePlan, error) {
+func planAbsorb(d *doc, base, edited *core.Media, ch changes, ed *editDecisions, report core.WriteReport) (*core.WritePlan, error) {
 	wb := d.wb
 
-	r, err := renderChanged(d, base, edited, ch, ek)
+	r, err := renderChanged(d, base, edited, ch, ed)
 	if err != nil {
 		return nil, err
 	}
@@ -232,10 +232,10 @@ type rendered struct {
 // has already guaranteed an Info element exists when the title changed, so the
 // only failure here is an unparseable captured Info - a real ErrInvalidData, kept
 // distinct from the internal errFallback that signals "try the shift path".
-func renderChanged(d *doc, base, edited *core.Media, ch changes, ek map[tag.Key]bool) (*rendered, error) {
+func renderChanged(d *doc, base, edited *core.Media, ch changes, ed *editDecisions) (*rendered, error) {
 	r := &rendered{title: d.segTitle, titlePresent: d.hasSegTitle}
 	if ch.simple {
-		r.tags, r.groups = renderTags(d, base.Tags, edited.Tags, ek)
+		r.tags, r.groups = renderTags(d, base.Tags, edited.Tags, ed)
 	}
 	if ch.title {
 		et, ok := edited.Tags.First(tag.Title)

@@ -35,6 +35,26 @@ var keyAliases = map[string]Key{
 	// RELEASECOUNTRY needs no alias; every format spells it that way already.
 	"MUSICBRAINZ_ALBUMSTATUS": ReleaseStatus,
 	"MUSICBRAINZ_ALBUMTYPE":   ReleaseType,
+	// The Matroska native tag spellings, folded onto the canonical keys the
+	// Matroska reader already projects them to. Without these an edit under the
+	// native spelling wrote a custom field that projected back onto the canonical
+	// key, so a set behaved as an append. Like every entry here they retarget
+	// edits on every format and extend the Vorbis read fold. ENCODER is omitted:
+	// its canonical spelling is itself.
+	"LEAD_PERFORMER": Artist,
+	"DATE_RECORDED":  RecordingDate,
+	"DATE_RELEASED":  ReleaseDate,
+	"DATE_RELEASE":   ReleaseDate,
+	"DATE_ORIGINAL":  OriginalDate,
+	"ORIGINAL_DATE":  OriginalDate,
+	"ENCODED_BY":     EncodedBy,
+	"PART_NUMBER":    TrackNumber,
+	"TOTAL_PARTS":    TrackTotal,
+	"TOTAL_DISCS":    DiscTotal,
+	"CATALOG_NUMBER": CatalogNumber,
+	"PUBLISHER":      Label,
+	"REMIXED_BY":     Remixer,
+	"CONTENT_GROUP":  Grouping,
 }
 
 // AliasKey returns the canonical key for a recognized alternative spelling.

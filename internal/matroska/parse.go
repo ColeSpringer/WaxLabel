@@ -607,55 +607,92 @@ func project(d *doc) (tag.TagSet, []core.FamilyValue) {
 // duplicate it, so the primary emit fold-dedups TITLE only. A genuinely different TITLE
 // still surfaces and buildFamilies reports the scoped disagreement.
 func projectFlat(contribs []scopedContribution) tag.TagSet {
-	type keyScope struct {
-		key   tag.Key
-		scope core.Scope
-	}
-	values := map[keyScope][]string{}
+	byKey := map[tag.Key][]scopedContribution{}
 	var keyOrder []tag.Key
-	scopeOrder := map[tag.Key][]core.Scope{}
 	for _, c := range contribs {
-		// First sighting of a key extends keyOrder; first sighting of a (key, scope)
-		// extends that key's scope order. The maps already hold enough state for both
-		// checks, so no separate seen sets are needed.
-		ks := keyScope{c.key, c.scope}
-		if len(scopeOrder[c.key]) == 0 {
+		if len(byKey[c.key]) == 0 {
 			keyOrder = append(keyOrder, c.key)
 		}
-		if len(values[ks]) == 0 {
-			scopeOrder[c.key] = append(scopeOrder[c.key], c.scope)
-		}
-		values[ks] = append(values[ks], c.value)
+		byKey[c.key] = append(byKey[c.key], c)
 	}
-
 	ts := tag.NewTagSet()
 	for _, key := range keyOrder {
-		scopes := scopeOrder[key]
-		primary := scopes[0]
-		for _, s := range scopes {
-			if s == core.ScopeAlbum {
-				primary = core.ScopeAlbum // album is the canonical scope when present
-				break
-			}
-		}
-		present := map[string]bool{}
-		emit := func(scope core.Scope, dedup bool) {
-			for _, v := range values[keyScope{key, scope}] {
-				if dedup && present[core.Fold(v)] {
-					continue
-				}
-				ts.Add(key, v)
-				present[core.Fold(v)] = true
-			}
-		}
-		emit(primary, key == tag.Title) // primary scope verbatim (TITLE suppresses its own echo)
-		for _, s := range scopes {
-			if s != primary {
-				emit(s, true) // other scopes: cross-scope echoes suppressed, distinct values kept
+		ck := byKey[key]
+		for _, e := range projectionOrder(key, ck) {
+			if e.emitted {
+				ts.Add(key, ck[e.index].value)
 			}
 		}
 	}
 	return ts
+}
+
+// contributionEmit is one contribution's fate in the flat projection: its index in
+// the key's contribution slice, and whether the projection emits it or suppresses
+// it as a cross-scope echo.
+type contributionEmit struct {
+	index   int
+	emitted bool
+}
+
+// projectionOrder resolves one canonical key's contributions (in the order the
+// parse walk produced them) into the order the flat projection visits them, each
+// flagged emitted or suppressed. It is the single decision point for "does this
+// SimpleTag's value reach the canonical set, and in what position": the reader
+// ([projectFlat]) turns the emitted ones into TagSet values, and the writer
+// (computeEditDecisions) uses the same verdict to decide which values a scoped
+// tag can still be trusted to carry. Keeping one implementation is what stops the
+// write side's model of the reader from rotting.
+//
+// The rule: scopes in first-seen order, with album as the primary scope when
+// present and the first-seen scope otherwise. Every primary-scope contribution
+// emits, in order, so intra-scope duplicates and case variants stay visible - the
+// one exception is [tag.Title], which is single-valued in the authoritative
+// Info.Title contribution and so fold-dedups against itself. A contribution at any
+// other scope emits only when its folded value is not already present, collapsing
+// album/track echoes while still surfacing genuinely distinct scoped values.
+func projectionOrder(key tag.Key, contribs []scopedContribution) []contributionEmit {
+	if len(contribs) == 0 {
+		return nil
+	}
+	var scopes []core.Scope
+	seen := map[core.Scope]bool{}
+	for _, c := range contribs {
+		if !seen[c.scope] {
+			seen[c.scope] = true
+			scopes = append(scopes, c.scope)
+		}
+	}
+	primary := scopes[0]
+	for _, s := range scopes {
+		if s == core.ScopeAlbum {
+			primary = core.ScopeAlbum // album is the canonical scope when present
+			break
+		}
+	}
+	present := map[string]bool{}
+	out := make([]contributionEmit, 0, len(contribs))
+	visit := func(scope core.Scope, dedup bool) {
+		for i, c := range contribs {
+			if c.scope != scope {
+				continue
+			}
+			f := core.Fold(c.value)
+			if dedup && present[f] {
+				out = append(out, contributionEmit{index: i})
+				continue
+			}
+			present[f] = true
+			out = append(out, contributionEmit{index: i, emitted: true})
+		}
+	}
+	visit(primary, key == tag.Title) // primary scope verbatim (TITLE suppresses its own echo)
+	for _, s := range scopes {
+		if s != primary {
+			visit(s, true) // other scopes: cross-scope echoes suppressed, distinct values kept
+		}
+	}
+	return out
 }
 
 // projectTag maps one SimpleTag name/value to canonical contributions, splitting

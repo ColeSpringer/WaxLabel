@@ -145,12 +145,28 @@ func renderTransfer(w io.Writer, src, dst string, r wl.TransferReport, srcLabel,
 	// displayName escapes the paths, so a hostile filename cannot forge a header line.
 	fmt.Fprintf(w, "%s -> %s: transfer %s -> %s\n", displayName(src), displayName(dst), srcLabel, dstLabel)
 	fmt.Fprintf(w, "  %d carried, %d lossy, %d dropped\n", carried, lossy, dropped)
+	// A set kind (pictures, chapters, synced lyrics) that split into a carried
+	// part plus a lossy or dropped remainder shows its carried part too, so a
+	// split set does not read as items gone missing. Carried fields stay
+	// suppressed: the detail block is a loss report, and per-field carried lines
+	// would drown it.
+	splitKinds := map[wl.TransferKind]bool{}
 	for _, it := range r.Items {
-		if it.Disposition == wl.Carried {
+		if it.Kind != wl.TransferField && it.Disposition != wl.Carried {
+			splitKinds[it.Kind] = true
+		}
+	}
+	for _, it := range r.Items {
+		if it.Disposition == wl.Carried && !splitKinds[it.Kind] {
 			continue
 		}
-		// Reason can carry file-derived text, and a newline would forge a report line.
-		fmt.Fprintf(w, "  %-7s %s: %s\n", it.Disposition, transferLabel(it), tag.SanitizeLine(it.Reason))
+		// Reason can carry file-derived text, and a newline would forge a report
+		// line; a carried item has no reason, so it takes no colon.
+		fmt.Fprintf(w, "  %-7s %s", it.Disposition, transferLabel(it))
+		if it.Reason != "" {
+			fmt.Fprintf(w, ": %s", tag.SanitizeLine(it.Reason))
+		}
+		fmt.Fprintln(w)
 	}
 }
 

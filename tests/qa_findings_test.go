@@ -252,7 +252,10 @@ func TestMP4ChapterReapplyMultiNoOpQT(t *testing.T) {
 // builds its result view differently.
 func TestMP4ChapterReapplyMultiNoOpChpl(t *testing.T) {
 	build := func(stcoOff uint32) []byte {
-		moov := mp4Atom("moov", mp4AudioTrakTkhd(int(uint32(0xFFFFFFFF)), stcoOff))
+		// -1 encodes the max track id 0xFFFFFFFF through mp4be32's uint32
+		// conversion on every int width; int(uint32(0xFFFFFFFF)) overflows a
+		// 32-bit int at compile time.
+		moov := mp4Atom("moov", mp4AudioTrakTkhd(-1, stcoOff))
 		return slices.Concat(mp4Ftyp(), moov, mp4Atom("mdat", bytes.Repeat([]byte{0xA7}, 64)))
 	}
 	tmp := build(0)

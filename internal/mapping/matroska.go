@@ -68,7 +68,7 @@ var matroskaTags = map[string]tag.Key{
 // descriptive metadata. They are preserved in the native tree but not projected
 // into the canonical set, the same way the WAV codec preserves the ISFT software
 // stamp without surfacing it. mkvmerge writes the BPS / NUMBER_OF_* / DURATION
-// statistics; "_STATISTICS_"-prefixed names are excluded by prefix.
+// statistics; "_STATISTICS"-prefixed names are excluded by prefix.
 var technicalTags = map[string]bool{
 	"DURATION":                      true,
 	"BPS":                           true,
@@ -76,6 +76,24 @@ var technicalTags = map[string]bool{
 	"NUMBER_OF_BYTES":               true,
 	"NUMBER_OF_BYTES_UNCOMPRESSED":  true,
 	"NUMBER_OF_FRAMES_UNCOMPRESSED": true,
+}
+
+// MatroskaTechnicalName reports whether a SimpleTag name is one of Matroska's
+// reserved technical/statistics names: the mkvmerge BPS / NUMBER_OF_* / DURATION
+// statistics, plus any _STATISTICS-prefixed name. These are derived from the
+// stream, preserved in the native tree, and never projected to a canonical key,
+// so the writer must never emit one either. The read filter (MatroskaTagKey) and
+// the matroska writer's emission gate share this one predicate, so the two sets
+// cannot drift.
+func MatroskaTechnicalName(name string) bool {
+	return technicalName(normalizeKey(name))
+}
+
+// technicalName is MatroskaTechnicalName over an already-normalized name, so the
+// per-SimpleTag read path (MatroskaTagKey) does not normalize the same string
+// twice.
+func technicalName(up string) bool {
+	return technicalTags[up] || strings.HasPrefix(up, "_STATISTICS")
 }
 
 // MatroskaTagKey returns the canonical key a Matroska TagName projects to, and
@@ -86,7 +104,7 @@ var technicalTags = map[string]bool{
 // trips to the matching custom key without an explicit entry.
 func MatroskaTagKey(name string) (tag.Key, bool) {
 	up := normalizeKey(name)
-	if up == "" || technicalTags[up] || strings.HasPrefix(up, "_STATISTICS") {
+	if up == "" || technicalName(up) {
 		return "", false
 	}
 	if k, ok := matroskaTags[up]; ok {

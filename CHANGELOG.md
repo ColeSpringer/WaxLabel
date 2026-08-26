@@ -48,6 +48,46 @@ All notable changes to this project are documented here.
   (pre-existing for `MEDIATYPE`/`COMPILATION` and the track/disc slots).
 - Matroska now canonicalizes boolean words to `1`/`0` on write like FLAC, ID3, and MP4, so
   `ITUNESGAPLESS=yes` stores `1` on MKA too.
+- The Matroska native tag spellings (`PART_NUMBER`, `TOTAL_PARTS`, `TOTAL_DISCS`,
+  `LEAD_PERFORMER`, `DATE_RECORDED`, `DATE_RELEASED`, `DATE_RELEASE`, `DATE_ORIGINAL`,
+  `ORIGINAL_DATE`, `ENCODED_BY`, `CATALOG_NUMBER`, `PUBLISHER`, `REMIXED_BY`,
+  `CONTENT_GROUP`) are now aliases of their canonical keys. `--set PART_NUMBER=x` previously
+  wrote a custom field that projected back onto `TRACKNUMBER`, so a set behaved as an append
+  and left a single-valued key holding conflicting values; it now replaces. The aliases apply
+  on every format, and Vorbis-family, ID3 `TXXX`, MP4 freeform, and APE reads now fold these
+  spellings onto the canonical keys, so a set replaces a foreign field stored under the
+  spelling instead of appending beside it.
+- `--strict` did not escalate the numeric-genre coercion: `--set GENRE=17` stores a reference
+  that reads back as `Rock` on MP3, AAC, AIFF, and WAV files carrying an `id3 ` chunk, and the
+  identical loss failed with `--numeric-genre` but passed without it. It now exits 2 either
+  way, including when the write no-ops because the file already projects the coerced name;
+  existing `--strict` runs that set a bare numeric genre change from exit 0 to exit 2. WAV
+  files whose genre stays literal in `LIST/INFO` are unaffected.
+
+### Fixed
+
+- `copy` graded a bare numeric genre reference (`GENRE=17`) as a clean carry onto MP3, AAC,
+  AIFF, and WAV-with-id3 destinations even though the destination reads it back as the genre
+  name. It now grades lossy with the reason; spelled-out genres and MP4 destinations still
+  carry clean.
+- With `--numeric-genre`, setting a bare numeric genre warned twice for the same loss: the
+  `[numeric-genre]` warning plus a generic `[value-reduced]` capability reduction. The
+  capability reduction is now suppressed when the numeric-genre warning already names it.
+- Setting one of Matroska's reserved technical tag names (`DURATION`, `BPS`, `NUMBER_OF_*`,
+  `_STATISTICS_*`) reported an empty plan but wrote the element into the native store anyway,
+  where no read path would ever surface it. The value is now dropped with a keyed warning
+  (escalated by `--strict`), and a plan whose rendered result equals the file is now an honest
+  no-op instead of reporting a tags rewrite with no changes.
+- Writing a canonical key that Matroska carried in more than one target scope collapsed it
+  into the album-scope `Tag` block, silently relocating a per-track value to per-album scope
+  (reachable through `lint --fix`). A still-wanted value now stays at the scope that holds it;
+  removed values are dropped from every scope, and only values new to the file are written at
+  album scope.
+- `copy` printed only the lossy line of a chapter, picture, or synced-lyrics set that split
+  into carried and lossy parts, so a two-chapter transfer showed `lossy chapters (1)` with no
+  counterpart and read as a chapter gone missing. The carried sibling now prints beside it.
+  The `TransferReport` doc comment also attributed splits to pictures alone; chapter and
+  synced-lyrics sets split the same way.
 
 ## [1.4.2]
 

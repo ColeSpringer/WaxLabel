@@ -119,6 +119,29 @@ func init() {
 	// custom key here. Writes still emit the Picard "MusicBrainz Album Status"/"... Type".
 	freeformFold[normalizeKey("MUSICBRAINZ_ALBUMSTATUS")] = tag.ReleaseStatus
 	freeformFold[normalizeKey("MUSICBRAINZ_ALBUMTYPE")] = tag.ReleaseType
+	// The Matroska native tag spellings, read-only like the entries above: they are
+	// edit aliases on every format (tag/aliases.go), so a freeform atom using one
+	// must fold onto the same canonical key or a set under the spelling would
+	// append beside the atom instead of replacing it. Writes keep the canonical
+	// spellings (none is seeded into mp4Freeform).
+	for name, k := range map[string]tag.Key{
+		"LEAD_PERFORMER": tag.Artist,
+		"DATE_RECORDED":  tag.RecordingDate,
+		"DATE_RELEASED":  tag.ReleaseDate,
+		"DATE_RELEASE":   tag.ReleaseDate,
+		"DATE_ORIGINAL":  tag.OriginalDate,
+		"ORIGINAL_DATE":  tag.OriginalDate,
+		"ENCODED_BY":     tag.EncodedBy,
+		"PART_NUMBER":    tag.TrackNumber,
+		"TOTAL_PARTS":    tag.TrackTotal,
+		"TOTAL_DISCS":    tag.DiscTotal,
+		"CATALOG_NUMBER": tag.CatalogNumber,
+		"PUBLISHER":      tag.Label,
+		"REMIXED_BY":     tag.Remixer,
+		"CONTENT_GROUP":  tag.Grouping,
+	} {
+		freeformFold[normalizeKey(name)] = k
+	}
 	// The iTunes structured keys and ENCODEDBY, read-only: a mixed-case freeform variant
 	// ("iTunesAdvisory") folds onto the canonical key like it already does on ID3/Vorbis.
 	// Never seeded into mp4Freeform - these keys write structured or ©-text atoms, and the

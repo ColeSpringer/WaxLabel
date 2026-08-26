@@ -893,11 +893,27 @@ func appendValueReducedWarnings(ws []core.Warning, caps core.Capabilities, patch
 		if slices.Equal(editedVals, resultVals) {
 			continue // the write did not actually reduce the value
 		}
+		if hasKeyedWarning(ws, core.WarnNumericGenre, k) {
+			// The numeric-genre warning already reports this exact loss and names the
+			// value; a generic capability reduction on top would state it twice.
+			continue
+		}
 		// Use the same reason text as transfer so edit and copy describe the loss the
 		// same way.
 		ws = core.WarnKeyed(ws, core.WarnValueReduced, fmt.Sprintf("%s: %s", k, fc.Reason()), k)
 	}
 	return ws
+}
+
+// hasKeyedWarning reports whether ws already carries a warning with the given
+// code keyed to k.
+func hasKeyedWarning(ws []core.Warning, code core.WarningCode, k tag.Key) bool {
+	for _, w := range ws {
+		if w.Code == code && slices.Contains(w.Keys, k) {
+			return true
+		}
+	}
+	return false
 }
 
 // appendChapterWarnings adds the non-fatal chapter sanity warnings for the

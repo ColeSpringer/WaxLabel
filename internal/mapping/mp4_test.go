@@ -136,3 +136,22 @@ func TestMP4ReleaseDetailFreeforms(t *testing.T) {
 }
 
 const picardStatusName = "MusicBrainz Album Status"
+
+// TestMP4FreeformKeyMatroskaNativeSpellings: the Matroska native spellings fold
+// on freeform reads like they do on Vorbis, so the same string means the same
+// canonical key on every format. Writes keep the canonical spellings.
+func TestMP4FreeformKeyMatroskaNativeSpellings(t *testing.T) {
+	for name, want := range map[string]tag.Key{
+		"LEAD_PERFORMER": tag.Artist, "DATE_RECORDED": tag.RecordingDate,
+		"DATE_RELEASED": tag.ReleaseDate, "DATE_RELEASE": tag.ReleaseDate,
+		"DATE_ORIGINAL": tag.OriginalDate, "ORIGINAL_DATE": tag.OriginalDate,
+		"ENCODED_BY": tag.EncodedBy, "PART_NUMBER": tag.TrackNumber,
+		"TOTAL_PARTS": tag.TrackTotal, "TOTAL_DISCS": tag.DiscTotal,
+		"CATALOG_NUMBER": tag.CatalogNumber, "publisher": tag.Label,
+		"REMIXED_BY": tag.Remixer, "CONTENT_GROUP": tag.Grouping,
+	} {
+		if k, ok := MP4FreeformKey(name); !ok || k != want {
+			t.Errorf("MP4FreeformKey(%q) = %q, %v; want %s, true", name, k, ok, want)
+		}
+	}
+}

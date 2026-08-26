@@ -993,6 +993,12 @@ var strictEscalatingCodes = map[wl.WarningCode]bool{
 	wl.WarnValueCoerced:      true,
 	wl.WarnValueReduced:      true,
 	wl.WarnSingleValuedMulti: true,
+	// A bare numeric genre reference stored on an ID3-backed format reads back as
+	// its genre name: the same observable loss --numeric-genre surfaces as
+	// value-reduced, so the gate must not depend on that unrelated flag. WAV
+	// without an id3 chunk keeps the literal text in LIST/INFO IGNR and does not
+	// warn.
+	wl.WarnNumericGenre: true,
 	// Structure the destination cannot hold: a secondary language / binary / nested sub-tag,
 	// or picture metadata beyond the raw bytes.
 	wl.WarnTagStructureDropped:    true,
@@ -1075,12 +1081,13 @@ func strictWarningReason(w wl.Warning) string {
 		return w.Message
 	}
 	switch w.Code {
-	case wl.WarnValueDropped, wl.WarnValueReduced:
-		// Both messages carry wording a fixed reason here could not: a drop's value-specific or
-		// ZeroUnset "reads back as absent" phrasing, and a reduction's exact precision loss (e.g.
-		// an ORIGINALDATE reduced to a year by ID3v2.3 date frames). Each names its own key, so
-		// echo the plan-body message rather than re-deriving one, keeping --strict in lockstep
-		// with the warning the user sees.
+	case wl.WarnValueDropped, wl.WarnValueReduced, wl.WarnNumericGenre:
+		// These messages carry wording a fixed reason here could not: a drop's value-specific or
+		// ZeroUnset "reads back as absent" phrasing, a reduction's exact precision loss (e.g. an
+		// ORIGINALDATE reduced to a year by ID3v2.3 date frames), and a numeric-genre message that
+		// names both the key and the numeric value it resolved. Each names its own key, so echo
+		// the plan-body message rather than re-deriving one, keeping --strict in lockstep with the
+		// warning the user sees.
 		return w.Message
 	case wl.WarnValueCoerced:
 		return fmt.Sprintf("%s: value is not valid for this format and would be stored coerced", keys)

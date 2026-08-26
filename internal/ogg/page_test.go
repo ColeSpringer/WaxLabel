@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"strconv"
 	"testing"
 	"unsafe"
 
@@ -12,12 +13,20 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestRawPageBytesMatchesStructSize keeps the retained-byte accounting honest. The
-// budget constant must match the real struct size so future field additions or padding
-// changes cannot silently undercount the scan budget.
+// TestRawPageBytesMatchesStructSize keeps the retained-byte accounting honest: the
+// budget constant must be at least the real struct size so future field additions
+// or padding changes cannot silently undercount the scan budget, and on 64-bit
+// ports (the tight case) it must equal it, so a shrunk struct cannot leave the
+// constant over-charging and rejecting legitimate long files early. The 32-bit
+// layouts are smaller (60: int64 and slice headers align to 4 there), which only
+// over-counts and makes the budget more conservative.
 func TestRawPageBytesMatchesStructSize(t *testing.T) {
-	if got := int(unsafe.Sizeof(rawPage{})); got != rawPageBytes {
-		t.Errorf("unsafe.Sizeof(rawPage{}) = %d, but rawPageBytes = %d; update the const or pack the struct", got, rawPageBytes)
+	got := int(unsafe.Sizeof(rawPage{}))
+	if got > rawPageBytes {
+		t.Errorf("unsafe.Sizeof(rawPage{}) = %d exceeds rawPageBytes = %d; raise the const so the scan budget cannot undercount", got, rawPageBytes)
+	}
+	if strconv.IntSize == 64 && got != rawPageBytes {
+		t.Errorf("unsafe.Sizeof(rawPage{}) = %d, but rawPageBytes = %d; 64-bit is the tight case, update the const to match", got, rawPageBytes)
 	}
 }
 

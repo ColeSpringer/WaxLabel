@@ -233,7 +233,7 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapte
 		// derived total gets its own comment only when the total key has no native comment;
 		// otherwise the explicit TRACKTOTAL/TOTALTRACKS is left to the normal loop (kept verbatim
 		// if untouched, replaced in place if changed) so it is neither duplicated nor moved. This
-		// tracks the read-path split ([tag.NumberTotalSplit]) and Matroska's droppedByEdit so write
+		// tracks the read-path split ([tag.NumberTotalSplit]) and Matroska's edit decisions so write
 		// and projection agree. An unrelated edit leaves the pair alone, so the fall-through below
 		// preserves the slash comment verbatim.
 		if k == tag.TrackNumber || k == tag.DiscNumber {

@@ -9,11 +9,13 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -1787,6 +1789,54 @@ func TestCopyChaptersIntoOggIsLossy(t *testing.T) {
 	dump, _, _ := runCLI(t, "dump", dst)
 	if !strings.Contains(dump, "chapters (") {
 		t.Errorf("chapters did not transfer into the Ogg destination:\n%s", dump)
+	}
+}
+
+// TestCopySplitChapterSetShowsCarriedSibling: a chapter set that splits into
+// carried and lossy parts prints both lines, so the lossy line cannot read as a
+// chapter gone missing; the carried line has no reason and no trailing colon.
+func TestCopySplitChapterSetShowsCarriedSibling(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	// Chapter one's end meets chapter two's start (reconstructable on a
+	// start+title destination, so it carries); chapter two's explicit trailing
+	// end cannot be reconstructed there, so it grades lossy.
+	src := copyFixture(t, notagsMP3)
+	doc, err := wl.ParseFile(ctx, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := doc.Edit().SetChapters(
+		wl.Chapter{Start: 0, End: 2 * time.Second, Title: "One"},
+		wl.Chapter{Start: 2 * time.Second, End: 4 * time.Second, Title: "Two"},
+	).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := plan.Execute(ctx, wl.SaveBack()); err != nil {
+		t.Fatal(err)
+	}
+	re, err := wl.ParseFile(ctx, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chs := re.Chapters(); len(chs) != 2 || chs[1].End == 0 {
+		t.Fatalf("setup: chapters did not persist with an explicit trailing end: %+v", chs)
+	}
+
+	dst := copyFixture(t, notagsFLAC)
+	stdout, stderr, code := runCLI(t, "copy", src, dst)
+	if code != 0 {
+		t.Fatalf("copy failed: %s", stderr)
+	}
+	if !strings.Contains(stdout, "carried chapters (1)") {
+		t.Errorf("missing carried sibling line:\n%s", stdout)
+	}
+	if !regexp.MustCompile(`(?m)^  lossy\s+chapters \(1\)`).MatchString(stdout) {
+		t.Errorf("missing lossy chapters detail line:\n%s", stdout)
+	}
+	if regexp.MustCompile(`carried chapters \(1\):`).MatchString(stdout) {
+		t.Errorf("carried line must not end in a colon:\n%s", stdout)
 	}
 }
 

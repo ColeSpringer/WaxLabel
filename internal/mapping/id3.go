@@ -99,6 +99,26 @@ var txxxAliases = map[string]tag.Key{
 	"DJ MIXER": tag.DJMixer,
 	"DJ_MIXER": tag.DJMixer,
 	"DJ-MIXER": tag.DJMixer,
+	// The Matroska native tag spellings are edit aliases on every format
+	// (tag/aliases.go), so a foreign TXXX frame using one folds onto the same
+	// canonical key here too. Without these an edit under the spelling retargets
+	// the canonical frame while the TXXX frame keeps reading as a custom key, so a
+	// set behaves as an append and a clear leaves the frame behind. Read-only:
+	// none of them appears in txxxDescForKey, so writes keep their frames.
+	"LEAD_PERFORMER": tag.Artist,
+	"DATE_RECORDED":  tag.RecordingDate,
+	"DATE_RELEASED":  tag.ReleaseDate,
+	"DATE_RELEASE":   tag.ReleaseDate,
+	"DATE_ORIGINAL":  tag.OriginalDate,
+	"ORIGINAL_DATE":  tag.OriginalDate,
+	"ENCODED_BY":     tag.EncodedBy,
+	"PART_NUMBER":    tag.TrackNumber,
+	"TOTAL_PARTS":    tag.TrackTotal,
+	"TOTAL_DISCS":    tag.DiscTotal,
+	"CATALOG_NUMBER": tag.CatalogNumber,
+	"PUBLISHER":      tag.Label,
+	"REMIXED_BY":     tag.Remixer,
+	"CONTENT_GROUP":  tag.Grouping,
 }
 
 // txxxDescForKey gives the preferred TXXX description to write for a canonical

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"hash/crc32"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 
@@ -516,6 +517,142 @@ func TestMatroskaWriteMultiScopeSet(t *testing.T) {
 	if hasWarning(re, wl.WarnConflictingFamilies) {
 		t.Error("conflicting-families warning should be gone after a single-value set")
 	}
+}
+
+// assertFamilyScopes asserts the exact set of Matroska target scopes that carry
+// key after a write, so a value kept in place cannot silently relocate.
+func assertFamilyScopes(t *testing.T, doc *wl.Document, key tag.Key, want ...wl.Scope) {
+	t.Helper()
+	got := map[wl.Scope]bool{}
+	for _, fv := range doc.Families() {
+		if fv.Key == key {
+			got[fv.Scope] = true
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("%s carried at %d scopes, want %d (%v)", key, len(got), len(want), got)
+	}
+	for _, s := range want {
+		if !got[s] {
+			t.Errorf("%s missing at scope %v; families: %+v", key, s, doc.Families())
+		}
+	}
+}
+
+// TestMatroskaWriteMultiScopeSetKeepsTrackValueInPlace: an edit that keeps only
+// the track-scoped value leaves it at track scope instead of relocating it to the
+// album Tag block.
+func TestMatroskaWriteMultiScopeSetKeepsTrackValueInPlace(t *testing.T) {
+	data := buildMatroska("matroska", "T", multiScopeTags(false, mkSimple("COMPOSER", "TC")))
+	out, re := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.Encoder, "track-enc"))
+	if n := bytes.Count(out, []byte("ENCODER")); n != 1 {
+		t.Errorf("ENCODER written %d times, want 1", n)
+	}
+	if v, _ := re.Get(tag.Encoder); len(v) != 1 || v[0] != "track-enc" {
+		t.Errorf("ENCODER = %v, want [track-enc]", v)
+	}
+	assertFamilyScopes(t, re, tag.Encoder, wl.ScopeTrack)
+	if v, _ := re.Get(tag.Artist); len(v) != 1 || v[0] != "AA" {
+		t.Errorf("album ARTIST = %v, want [AA] (preserved)", v)
+	}
+	if v, _ := re.Get(tag.Composer); len(v) != 1 || v[0] != "TC" {
+		t.Errorf("track COMPOSER = %v, want [TC] (preserved)", v)
+	}
+	if hasWarning(re, wl.WarnConflictingFamilies) {
+		t.Error("conflicting-families warning should be gone")
+	}
+}
+
+// TestMatroskaWriteMultiScopeSetKeepsAlbumValueInPlace is the mirror case: keeping
+// only the album-scoped value leaves the album Tag block carrying it and strips the
+// track group's stale copy, without relocating anything.
+func TestMatroskaWriteMultiScopeSetKeepsAlbumValueInPlace(t *testing.T) {
+	data := buildMatroska("matroska", "T", multiScopeTags(false, mkSimple("COMPOSER", "TC")))
+	out, re := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.Encoder, "album-enc"))
+	if n := bytes.Count(out, []byte("ENCODER")); n != 1 {
+		t.Errorf("ENCODER written %d times, want 1", n)
+	}
+	if v, _ := re.Get(tag.Encoder); len(v) != 1 || v[0] != "album-enc" {
+		t.Errorf("ENCODER = %v, want [album-enc]", v)
+	}
+	assertFamilyScopes(t, re, tag.Encoder, wl.ScopeAlbum)
+	if v, _ := re.Get(tag.Artist); len(v) != 1 || v[0] != "AA" {
+		t.Errorf("album ARTIST = %v, want [AA] (preserved)", v)
+	}
+	if v, _ := re.Get(tag.Composer); len(v) != 1 || v[0] != "TC" {
+		t.Errorf("track COMPOSER = %v, want [TC] (the track group keeps its other tag)", v)
+	}
+	if hasWarning(re, wl.WarnConflictingFamilies) {
+		t.Error("conflicting-families warning should be gone")
+	}
+}
+
+// TestMatroskaWriteMultiScopeAppendKeepsScopes: appending a value to a key split
+// across scopes keeps both existing values where they are and writes only the new
+// one at album scope. The read-back order is scope-emergent: album values project
+// first, then the narrower scopes.
+func TestMatroskaWriteMultiScopeAppendKeepsScopes(t *testing.T) {
+	data := buildMatroska("matroska", "T", multiScopeTags(false))
+	out, re := saveMatroska(t, data, mustParseBytes(t, data).Edit().
+		Set(tag.Encoder, "album-enc", "track-enc", "new-enc"))
+	if n := bytes.Count(out, []byte("ENCODER")); n != 3 {
+		t.Errorf("ENCODER written %d times, want 3", n)
+	}
+	want := []string{"album-enc", "new-enc", "track-enc"}
+	if v, _ := re.Get(tag.Encoder); !slices.Equal(v, want) {
+		t.Errorf("ENCODER = %v, want %v", v, want)
+	}
+	assertFamilyScopes(t, re, tag.Encoder, wl.ScopeAlbum, wl.ScopeTrack)
+}
+
+// TestMatroskaWriteMultiScopeReorderIsNoOp: a pure cross-scope reorder is an
+// ordering Matroska cannot represent, so it collapses to a clean no-op rather than
+// rewriting the file to the same projection.
+func TestMatroskaWriteMultiScopeReorderIsNoOp(t *testing.T) {
+	data := buildMatroska("matroska", "T", multiScopeTags(false))
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Encoder, "track-enc", "album-enc").Prepare()
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if !plan.IsNoOp() {
+		t.Errorf("a pure cross-scope reorder should be a no-op; changes: %v", plan.Changes())
+	}
+	var w writerTo
+	if _, _, err := plan.Execute(context.Background(), wl.WriteTo(&w, wl.BytesSource(data))); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !bytes.Equal(w.b, data) {
+		t.Errorf("no-op reorder rewrote the file: in=%d out=%d bytes", len(data), len(w.b))
+	}
+}
+
+// TestMatroskaWriteSlashPairSurvivesWhenBothHalvesKept: a track-scoped slash number
+// carries two canonical keys in one SimpleTag. Editing the number half down to the
+// value that tag already holds keeps the whole tag at track scope, so the unedited
+// total rides along and no TOTAL_PARTS is synthesized at album scope.
+func TestMatroskaWriteSlashPairSurvivesWhenBothHalvesKept(t *testing.T) {
+	data := buildMatroska("matroska", "T", mkEl(idTags, concat(
+		mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)),
+			mkSimple("ARTIST", "AA"), mkSimple("PART_NUMBER", "7"))),
+		mkEl(idTag, concat(
+			mkEl(idTargets, concat(mkUint(idTgtTypeVal, 50), mkUint(idTagTrackUID, 7))),
+			mkSimple("PART_NUMBER", "2/10"))),
+	)))
+	out, re := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.TrackNumber, "2"))
+	if n := bytes.Count(out, []byte("PART_NUMBER")); n != 1 {
+		t.Errorf("PART_NUMBER written %d times, want 1 (the album copy is dropped)", n)
+	}
+	if bytes.Contains(out, []byte("TOTAL_PARTS")) {
+		t.Error("the surviving slash tag still carries the total; no TOTAL_PARTS should be emitted")
+	}
+	if v, _ := re.Get(tag.TrackNumber); len(v) != 1 || v[0] != "2" {
+		t.Errorf("TrackNumber = %v, want [2]", v)
+	}
+	if v, _ := re.Get(tag.TrackTotal); len(v) != 1 || v[0] != "10" {
+		t.Errorf("TrackTotal = %v, want [10] (carried by the surviving slash tag)", v)
+	}
+	assertFamilyScopes(t, re, tag.TrackNumber, wl.ScopeTrack)
+	assertFamilyScopes(t, re, tag.TrackTotal, wl.ScopeTrack)
 }
 
 // TestMatroskaWriteMultiScopeCRCRecompute: a CRC-bearing track group that must be
@@ -1128,5 +1265,77 @@ func TestMatroskaWriteUnknownSizeSegment(t *testing.T) {
 	}
 	if !bytes.HasPrefix(out, file[:idx+len(segID)+1]) {
 		t.Errorf("unknown-size Segment header (EBML header + Segment ID + 0xFF) not preserved on write")
+	}
+}
+
+// uidTrackTag builds one Tag element narrowed to a track UID, so a fixture can
+// carry the same key in several UID-scoped groups.
+func uidTrackTag(uid uint64, tags ...[]byte) []byte {
+	return mkEl(idTag, concat(mkEl(idTargets, concat(mkUint(idTgtTypeVal, 50), mkUint(idTagTrackUID, uid))), concat(tags...)))
+}
+
+// TestMatroskaWriteUneditedTotalKeepsMultiplicity: editing the track number away
+// from one of two slash tags must not halve the unedited total's multiplicity.
+// The surviving slash tag keeps its "10", so the album re-emit has to carry the
+// full [10 10] rather than subtracting the surviving copy, which the reader
+// would then suppress as an echo.
+func TestMatroskaWriteUneditedTotalKeepsMultiplicity(t *testing.T) {
+	data := buildMatroska("matroska", "T", mkEl(idTags, concat(
+		uidTrackTag(7, mkSimple("PART_NUMBER", "1/10")),
+		uidTrackTag(8, mkSimple("PART_NUMBER", "2/10")),
+	)))
+	if v, _ := mustParseBytes(t, data).Get(tag.TrackTotal); !slices.Equal(v, []string{"10", "10"}) {
+		t.Fatalf("setup: base TRACKTOTAL = %v, want [10 10]", v)
+	}
+	_, re := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.TrackNumber, "1"))
+	if v, _ := re.Get(tag.TrackNumber); len(v) != 1 || v[0] != "1" {
+		t.Errorf("TRACKNUMBER = %v, want [1]", v)
+	}
+	if v, _ := re.Get(tag.TrackTotal); !slices.Equal(v, []string{"10", "10"}) {
+		t.Errorf("TRACKTOTAL = %v, want [10 10] (unedited multiplicity preserved)", v)
+	}
+}
+
+// TestMatroskaWriteBooleanCanonicalizesEveryScope: a boolean set must land as one
+// canonical "1", not leave a differently-spelled scoped copy behind that re-reads
+// as a second value on a single-valued key.
+func TestMatroskaWriteBooleanCanonicalizesEveryScope(t *testing.T) {
+	album := mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("COMPILATION", "yes")))
+	data := buildMatroska("matroska", "T", mkEl(idTags, concat(album, uidTrackTag(7, mkSimple("COMPILATION", "yes")))))
+	out, re := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.Compilation, "Yes"))
+	if v, _ := re.Get(tag.Compilation); len(v) != 1 || v[0] != "1" {
+		t.Errorf("COMPILATION = %v, want [1]", v)
+	}
+	if n := bytes.Count(out, []byte("COMPILATION")); n != 1 {
+		t.Errorf("COMPILATION written %d times, want 1", n)
+	}
+}
+
+// TestMatroskaWriteBooleanClaimStillCanonicalizes: a boolean word kept by an
+// exact scoped match must still be stored canonically; the same command must not
+// store "1" or "yes" depending on which scoped copies happen to exist.
+func TestMatroskaWriteBooleanClaimStillCanonicalizes(t *testing.T) {
+	album := mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("COMPILATION", "1")))
+	data := buildMatroska("matroska", "T", mkEl(idTags, concat(album, uidTrackTag(7, mkSimple("COMPILATION", "yes")))))
+	_, re := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.Compilation, "yes"))
+	if v, _ := re.Get(tag.Compilation); len(v) != 1 || v[0] != "1" {
+		t.Errorf("COMPILATION = %v, want [1] (canonicalized on write)", v)
+	}
+}
+
+// TestMatroskaWriteTwoAlbumBlocksAppendKeepsOrder: a key spread over two
+// album-scope Tag blocks is album-owned in both, so an append re-emits the whole
+// list in edited order instead of leaving one value stranded in the second block
+// where it re-reads ahead of the appended value.
+func TestMatroskaWriteTwoAlbumBlocksAppendKeepsOrder(t *testing.T) {
+	tag0 := mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "AA"), mkSimple("ENCODER", "A")))
+	tag1 := mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ENCODER", "B")))
+	data := buildMatroska("matroska", "T", mkEl(idTags, concat(tag0, tag1)))
+	_, re := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.Encoder, "B", "C"))
+	if v, _ := re.Get(tag.Encoder); !slices.Equal(v, []string{"B", "C"}) {
+		t.Errorf("ENCODER = %v, want [B C] (edited order)", v)
+	}
+	if v, _ := re.Get(tag.Artist); len(v) != 1 || v[0] != "AA" {
+		t.Errorf("ARTIST = %v, want [AA] (preserved)", v)
 	}
 }

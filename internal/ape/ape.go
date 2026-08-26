@@ -172,6 +172,24 @@ var apeKeys = map[string]tag.Key{
 	// table carries them too; release country resolves through the ParseKey fallthrough.
 	"musicbrainz_albumstatus": tag.ReleaseStatus,
 	"musicbrainz_albumtype":   tag.ReleaseType,
+	// The Matroska native tag spellings are edit aliases on every format
+	// (tag/aliases.go), so APE items using them must project onto the same
+	// canonical keys here or a set under the spelling would append beside the
+	// item instead of replacing it.
+	"lead_performer": tag.Artist,
+	"date_recorded":  tag.RecordingDate,
+	"date_released":  tag.ReleaseDate,
+	"date_release":   tag.ReleaseDate,
+	"date_original":  tag.OriginalDate,
+	"original_date":  tag.OriginalDate,
+	"encoded_by":     tag.EncodedBy,
+	"part_number":    tag.TrackNumber,
+	"total_parts":    tag.TrackTotal,
+	"total_discs":    tag.DiscTotal,
+	"catalog_number": tag.CatalogNumber,
+	"publisher":      tag.Label,
+	"remixed_by":     tag.Remixer,
+	"content_group":  tag.Grouping,
 }
 
 // Pairs returns the canonical key/value pairs the APE tag supplies (text items

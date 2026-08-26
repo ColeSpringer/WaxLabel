@@ -550,7 +550,9 @@ func TestWAVTruncatedDataChunkWarns(t *testing.T) {
 	t.Run("streaming sentinel not flagged", func(t *testing.T) {
 		// 0xFFFFFFFF means "size unknown" - the audio is whatever follows, not a
 		// truncation. (A 0 size is the other sentinel; it reads as no-audio instead.)
-		dataHdr := slices.Concat([]byte("data"), wavLE32(int(^uint32(0))))
+		// wavLE32(-1) yields the same four 0xFF bytes on every int width, where
+		// int(^uint32(0)) overflows a 32-bit int at compile time.
+		dataHdr := slices.Concat([]byte("data"), wavLE32(-1))
 		data := wavFile(wavFmtPCM(), slices.Concat(dataHdr, make([]byte, 400)))
 		doc := mustParseBytes(t, data)
 		if hasWarning(doc, wl.WarnTruncatedAudio) {

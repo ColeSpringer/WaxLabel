@@ -18,7 +18,8 @@ type LintFix struct {
 // PlanLintFix maps a document's lint findings to the safe remediation. Two
 // finding classes are auto-fixed, both non-destructive:
 //
-//   - inherited-encoder: clear the ENCODER software stamp ([tag.Encoder]);
+//   - inherited-encoder: remove the transcoder-stamp values from ENCODER
+//     ([tag.Encoder]), clearing the key only when every value is a stamp;
 //   - stray-leading-id3 / trailing-id3v1 / legacy-ape: strip the legacy
 //     ID3v1/APEv2/stray-ID3 containers ([WithLegacyPolicy] [LegacyStrip]), but only
 //     when WaxLabel can prove them fully redundant with the canonical set.
@@ -38,7 +39,8 @@ type LintFix struct {
 // step with the linter. No other finding is acted on: dropping an
 // unsniffable-but-valid cover would be silent data loss, a malformed date cannot be
 // guessed, conflicting families have no winner, and missing audio cannot be
-// synthesized. The encoder fix clears the canonical ENCODER key and, via
+// synthesized. The encoder fix removes the transcoder-stamp values from the canonical
+// ENCODER key (clearing it only when every value is a stamp) and, via
 // [WithStripEncoderStamp], also handles native stamps the canonical key cannot reach:
 // the WAV ISFT INFO item and the FLAC/Ogg/Opus comment-header vendor string. Vendor fields
 // are mandatory, so they are rewritten to a neutral value instead of removed. This plan is

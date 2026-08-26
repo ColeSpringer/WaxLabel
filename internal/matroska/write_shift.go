@@ -8,7 +8,6 @@ import (
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
-	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -73,9 +72,9 @@ func directOffsetMap(m map[int64]int64) offsetMap {
 // by a short bounded layout fixpoint (resolveShiftLayout). The common art operation
 // (embedding an album cover that pushes the clusters past a VINT-width boundary)
 // takes the Cues rebuild path. Only a genuinely unrebuildable index is refused.
-func planShift(d *doc, base, edited *core.Media, ch changes, ek map[tag.Key]bool, report core.WriteReport) (*core.WritePlan, error) {
+func planShift(d *doc, base, edited *core.Media, ch changes, ed *editDecisions, report core.WriteReport) (*core.WritePlan, error) {
 	wb := d.wb
-	r, err := renderChanged(d, base, edited, ch, ek)
+	r, err := renderChanged(d, base, edited, ch, ed)
 	if err != nil {
 		return nil, err
 	}

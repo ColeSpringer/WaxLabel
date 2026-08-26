@@ -34,9 +34,11 @@ const (
 // can exhaust memory. Tests can pass a smaller scanBudget directly.
 const maxOggScanBytes = 64 << 20
 
-// rawPageBytes is one retained rawPage's fixed heap cost on 64-bit builds. The lacing
-// table is counted separately as len(p.segs), so max-lacing pages are charged for
-// their real footprint.
+// rawPageBytes is the fixed heap cost on 64-bit builds, the tight case where
+// unsafe.Sizeof(rawPage{}) equals this constant; 32-bit layouts are smaller
+// (60 bytes: int64 and slice headers align to 4 there), over-counting the scan
+// budget which keeps it conservative. The lacing table is counted separately as
+// len(p.segs), so max-lacing pages are charged for their real footprint.
 const rawPageBytes = 72
 
 // rawPage is one parsed Ogg page header plus the location of its body. Audio

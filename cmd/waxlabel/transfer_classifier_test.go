@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"testing"
 
@@ -179,4 +180,41 @@ func TestCopyVorbisOrdinaryKeysCarried(t *testing.T) {
 		}
 	}
 	assertReportMatchesReality(t, jc, srcDoc, dstDoc)
+}
+
+// TestCopyNumericGenreToID3IsLossy: a bare numeric genre reference carried onto an
+// ID3-backed destination reads back as its genre name, so the copy report must
+// grade it lossy instead of a clean carry. A spelled-out genre still carries
+// clean, and an MP4 destination stores the literal text.
+func TestCopyNumericGenreToID3IsLossy(t *testing.T) {
+	lossyGenre := regexp.MustCompile(`(?m)^  lossy\s+GENRE:`)
+	src := buildTransferSource(t, notagsFLAC, func(e *wl.Editor) *wl.Editor { return e.Set(tag.Genre, "17") })
+
+	dst := copyFixture(t, notagsMP3)
+	stdout, stderr, code := runCLI(t, "copy", src, dst)
+	if code != 0 {
+		t.Fatalf("copy to mp3 failed: %s", stderr)
+	}
+	if !lossyGenre.MatchString(stdout) {
+		t.Errorf("copy of GENRE=17 to mp3 reported no lossy GENRE line:\n%s", stdout)
+	}
+
+	m4a := copyFixture(t, notagsM4A)
+	stdout, stderr, code = runCLI(t, "copy", src, m4a)
+	if code != 0 {
+		t.Fatalf("copy to m4a failed: %s", stderr)
+	}
+	if lossyGenre.MatchString(stdout) {
+		t.Errorf("copy of GENRE=17 to m4a graded lossy; the literal text is stored:\n%s", stdout)
+	}
+
+	named := buildTransferSource(t, notagsFLAC, func(e *wl.Editor) *wl.Editor { return e.Set(tag.Genre, "Rock") })
+	dst2 := copyFixture(t, notagsMP3)
+	stdout, stderr, code = runCLI(t, "copy", named, dst2)
+	if code != 0 {
+		t.Fatalf("copy of a named genre failed: %s", stderr)
+	}
+	if lossyGenre.MatchString(stdout) {
+		t.Errorf("copy of GENRE=Rock to mp3 graded lossy:\n%s", stdout)
+	}
 }

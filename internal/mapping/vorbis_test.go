@@ -20,6 +20,8 @@ func TestCanonicalVorbisAliases(t *testing.T) {
 		"Track":        tag.TrackNumber, // ...as does bare TRACK
 		"ALBUM ARTIST": tag.AlbumArtist, // spaced and underscored album-artist variants
 		"album_artist": tag.AlbumArtist,
+		"PUBLISHER":    tag.Label,               // Matroska native spelling folds through tag.AliasKey
+		"PART_NUMBER":  tag.TrackNumber,         // ...as do the rest of the Matroska native spellings
 		"WEIRD_CUSTOM": tag.Key("WEIRD_CUSTOM"), // unknown passes through, uppercased
 		"weird_custom": tag.Key("WEIRD_CUSTOM"),
 	}

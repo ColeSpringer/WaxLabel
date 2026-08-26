@@ -12,19 +12,25 @@ func TestKeyAliases(t *testing.T) {
 		key  Key
 		want []string
 	}{
-		{RecordingDate, []string{"DATE", "YEAR"}},
-		{OriginalDate, []string{"ORIGINALYEAR"}},
-		{TrackTotal, []string{"TOTALTRACKS"}}, // self-alias TRACKTOTAL excluded
-		{DiscTotal, []string{"TOTALDISCS"}},   // self-alias DISCTOTAL excluded
+		{RecordingDate, []string{"DATE", "DATE_RECORDED", "YEAR"}},
+		{OriginalDate, []string{"DATE_ORIGINAL", "ORIGINALYEAR", "ORIGINAL_DATE"}},
+		{TrackTotal, []string{"TOTALTRACKS", "TOTAL_PARTS"}}, // self-alias TRACKTOTAL excluded
+		{DiscTotal, []string{"TOTALDISCS", "TOTAL_DISCS"}},   // self-alias DISCTOTAL excluded
 		{AlbumArtist, []string{"ALBUM ARTIST", "ALBUM_ARTIST"}},
-		{Label, []string{"ORGANIZATION"}},
+		{Label, []string{"ORGANIZATION", "PUBLISHER"}},
 		{Lyrics, []string{"UNSYNCEDLYRICS"}},
 		{DiscNumber, []string{"DISC"}},
-		{TrackNumber, []string{"TRACK"}},
+		{TrackNumber, []string{"PART_NUMBER", "TRACK"}},
 		{ReleaseStatus, []string{"MUSICBRAINZ_ALBUMSTATUS"}},
 		{ReleaseType, []string{"MUSICBRAINZ_ALBUMTYPE"}},
 		{ReleaseCountry, nil}, // every format spells it RELEASECOUNTRY or gets a mapping entry
 		{Title, nil},          // a key with no aliases returns nil
+		{Artist, []string{"LEAD_PERFORMER"}},
+		{ReleaseDate, []string{"DATE_RELEASE", "DATE_RELEASED"}},
+		{EncodedBy, []string{"ENCODED_BY"}},
+		{CatalogNumber, []string{"CATALOG_NUMBER"}},
+		{Remixer, []string{"REMIXED_BY"}},
+		{Grouping, []string{"CONTENT_GROUP"}},
 	}
 	for _, tc := range cases {
 		if got := KeyAliases(tc.key); !slices.Equal(got, tc.want) {
@@ -83,5 +89,29 @@ func TestReleaseDetailAliases(t *testing.T) {
 		if _, ok := AliasKey(string(k)); ok {
 			t.Errorf("%s must not be an alias of itself", k)
 		}
+	}
+}
+
+// TestMatroskaNativeSpellingAliases pins the Matroska native spellings as edit
+// aliases: each resolves to the canonical key the Matroska reader already
+// projects it to, and ENCODER stays out (its canonical spelling is itself).
+func TestMatroskaNativeSpellingAliases(t *testing.T) {
+	cases := map[string]Key{
+		"LEAD_PERFORMER": Artist, "DATE_RECORDED": RecordingDate,
+		"DATE_RELEASED": ReleaseDate, "DATE_RELEASE": ReleaseDate,
+		"DATE_ORIGINAL": OriginalDate, "ORIGINAL_DATE": OriginalDate,
+		"ENCODED_BY": EncodedBy, "PART_NUMBER": TrackNumber,
+		"TOTAL_PARTS": TrackTotal, "TOTAL_DISCS": DiscTotal,
+		"CATALOG_NUMBER": CatalogNumber, "PUBLISHER": Label,
+		"REMIXED_BY": Remixer, "CONTENT_GROUP": Grouping,
+	}
+	for spelling, want := range cases {
+		got, ok := AliasKey(spelling)
+		if !ok || got != want {
+			t.Errorf("AliasKey(%q) = %v, %v; want %v, true", spelling, got, ok, want)
+		}
+	}
+	if _, ok := AliasKey("ENCODER"); ok {
+		t.Error("ENCODER must not be an alias entry; ParseKey already resolves it")
 	}
 }

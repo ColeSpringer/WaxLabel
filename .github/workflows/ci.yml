@@ -59,6 +59,16 @@ jobs:
         run: go build ./...
       - name: Test (race)
         run: go test ./... -race
+      # The suite must stay green on 32-bit targets; linux/386 is the cheapest one.
+      # CGO_ENABLED=0 avoids needing a 32-bit C toolchain, and the race detector
+      # does not support 386, so this is the plain suite. Placed after the race run
+      # so the primary suite reports first.
+      - name: Test (linux/386)
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          GOARCH: "386"
+          CGO_ENABLED: 0
+        run: go test ./...
 
   # The write-side differential is the real proof of interoperability: with
   # ffmpeg/ffprobe guaranteed present, the per-format differential tests run

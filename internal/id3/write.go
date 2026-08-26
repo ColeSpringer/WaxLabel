@@ -1415,9 +1415,11 @@ func CarryProjectionWarnings(sourceWarnings, newTagWarnings []core.Warning) []co
 //   - GENRE is AccessPartial when --numeric-genre is set and the ID3 tag is the authoritative
 //     genre store for this codec (genreViaID3). That holds always for MP3/AAC/AIFF (no native
 //     genre slot wins over ID3), but for WAV only when an id3 chunk is present - a bare WAV's
-//     native LIST/INFO IGNR keeps the genre as text, losslessly.
+//     native LIST/INFO IGNR keeps the genre as text, losslessly. Off --numeric-genre the
+//     GENRE override is value-scoped instead: only a bare numeric reference grades a
+//     transfer Lossy, since TCON resolves it back to the genre name on read.
 //
-// Returns nil when neither applies, so a codec with a lossless write passes no overrides.
+// Returns nil when none applies, so a codec with a lossless write passes no overrides.
 func PerFieldCapabilities(writeVersion byte, numericGenre, genreViaID3 bool) map[tag.Key]core.Capability {
 	var perField map[tag.Key]core.Capability
 	add := func(k tag.Key, c core.Capability) {
@@ -1433,8 +1435,19 @@ func PerFieldCapabilities(writeVersion byte, numericGenre, genreViaID3 bool) map
 		add(tag.OriginalDate, core.WithValueDrop(core.WithValueReduction(core.OriginalDateV23Capability(), reducesToYear), v23DateDropped))
 		add(tag.RecordingDate, core.WithValueDrop(core.WithValueReduction(core.RecordingDateV23Capability(), reducesDatePrecision), v23DateDropped))
 	}
-	if numericGenre && genreViaID3 {
+	switch {
+	case numericGenre && genreViaID3:
 		add(tag.Genre, core.NumericGenreCapability("numeric ID3 TCON reference"))
+	case genreViaID3:
+		// Even without --numeric-genre, a bare numeric reference written verbatim to
+		// TCON is resolved back to the genre name on read, so a transfer carrying
+		// such a value grades Lossy. Write stays AccessFull: the edit path reports
+		// this loss through WarnNumericGenre, not a capability reduction.
+		add(tag.Genre, core.WithValueReduction(core.Capability{
+			Read: core.AccessFull, Write: core.AccessFull,
+			Representation: "ID3 TCON",
+			Fidelity:       "a bare numeric genre reference reads back as its genre name",
+		}, isNumericGenreRef))
 	}
 	return perField
 }

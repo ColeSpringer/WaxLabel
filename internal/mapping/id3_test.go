@@ -171,3 +171,24 @@ func TestID3ReleaseDetailTXXX(t *testing.T) {
 		}
 	}
 }
+
+// TestID3TXXXKeyMatroskaNativeSpellings: the Matroska native spellings are edit
+// aliases on every format, so a foreign TXXX frame using one must fold onto the
+// same canonical key here too. Without an entry the frame would read as a custom
+// key while an edit under the same spelling retargets the canonical key, turning
+// a set into an append and leaving the frame unclearable.
+func TestID3TXXXKeyMatroskaNativeSpellings(t *testing.T) {
+	for desc, want := range map[string]tag.Key{
+		"LEAD_PERFORMER": tag.Artist, "DATE_RECORDED": tag.RecordingDate,
+		"DATE_RELEASED": tag.ReleaseDate, "DATE_RELEASE": tag.ReleaseDate,
+		"DATE_ORIGINAL": tag.OriginalDate, "ORIGINAL_DATE": tag.OriginalDate,
+		"ENCODED_BY": tag.EncodedBy, "PART_NUMBER": tag.TrackNumber,
+		"TOTAL_PARTS": tag.TrackTotal, "TOTAL_DISCS": tag.DiscTotal,
+		"CATALOG_NUMBER": tag.CatalogNumber, "publisher": tag.Label,
+		"REMIXED_BY": tag.Remixer, "CONTENT_GROUP": tag.Grouping,
+	} {
+		if k, ok := ID3TXXXKey(desc); !ok || k != want {
+			t.Errorf("ID3TXXXKey(%q) = %q, %v; want %s, true", desc, k, ok, want)
+		}
+	}
+}

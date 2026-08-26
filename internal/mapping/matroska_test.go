@@ -58,3 +58,24 @@ func TestMatroskaCountryNotReleaseCountry(t *testing.T) {
 		t.Errorf("MatroskaTagKey(\"COUNTRY\") = %q, %v; want the custom key COUNTRY, true", k, ok)
 	}
 }
+
+// TestMatroskaTechnicalNamesSharedPredicate pins the reserved technical set the
+// read filter and the write gate share: the literal statistics names, any
+// _STATISTICS-prefixed name, and nothing else.
+func TestMatroskaTechnicalNamesSharedPredicate(t *testing.T) {
+	for _, name := range []string{"DURATION", "BPS", "NUMBER_OF_FRAMES", "NUMBER_OF_BYTES",
+		"NUMBER_OF_BYTES_UNCOMPRESSED", "NUMBER_OF_FRAMES_UNCOMPRESSED",
+		"_STATISTICS_WRITING_APP", "_STATISTICS_TAGS", "_STATISTICS_ANYTHING", "duration"} {
+		if !MatroskaTechnicalName(name) {
+			t.Errorf("MatroskaTechnicalName(%q) = false, want true", name)
+		}
+		if _, ok := MatroskaTagKey(name); ok {
+			t.Errorf("MatroskaTagKey(%q) projects, want filtered", name)
+		}
+	}
+	for _, name := range []string{"_STATISTIC_X", "STATISTICS_X", "DURATION_X", "X_DURATION", "BPS_X", "NUMBER_OF_X", "TITLE"} {
+		if MatroskaTechnicalName(name) {
+			t.Errorf("MatroskaTechnicalName(%q) = true, want false", name)
+		}
+	}
+}

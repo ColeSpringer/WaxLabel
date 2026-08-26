@@ -213,6 +213,17 @@ func TestCheckIndexCaptured(t *testing.T) {
 	}
 }
 
+// preserveDecisions builds the edit decisions checkPreservable consults for a doc
+// whose given canonical keys changed value, so the raw-capture gates can be driven
+// without running a whole write.
+func preserveDecisions(d *doc, keys ...tag.Key) *editDecisions {
+	base, edited := tag.NewTagSet(), tag.NewTagSet()
+	for _, k := range keys {
+		edited.Set(k, "new")
+	}
+	return computeEditDecisions(d.groups, albumGroupIndex(d.groups), base, edited)
+}
+
 // TestCheckPreservable: an edit is refused when an element the writer must copy
 // verbatim could not be captured (raw==nil from an over-limit size), rather than
 // silently dropping it.
@@ -223,12 +234,12 @@ func TestCheckPreservable(t *testing.T) {
 		{scope: core.ScopeAlbum, raw: []byte{1}},
 		{scope: core.ScopeTrack, trackUID: true, raw: nil},
 	}}
-	if err := checkPreservable(d, changes{simple: true}, nil); err == nil {
+	if err := checkPreservable(d, changes{simple: true}, preserveDecisions(d)); err == nil {
 		t.Error("uncaptured tag group should be refused")
 	}
 	// A non-image attachment whose bytes weren't captured.
 	d2 := &doc{attachments: []attachment{{image: false, raw: nil}}}
-	if err := checkPreservable(d2, changes{pictures: true}, nil); err == nil {
+	if err := checkPreservable(d2, changes{pictures: true}, preserveDecisions(d2)); err == nil {
 		t.Error("uncaptured attachment should be refused")
 	}
 	// All captured -> fine.
@@ -236,7 +247,7 @@ func TestCheckPreservable(t *testing.T) {
 		groups:      []tagGroup{{scope: core.ScopeAlbum, raw: []byte{1}}},
 		attachments: []attachment{{image: true}},
 	}
-	if err := checkPreservable(ok, changes{simple: true, pictures: true}, nil); err != nil {
+	if err := checkPreservable(ok, changes{simple: true, pictures: true}, preserveDecisions(ok)); err != nil {
 		t.Errorf("fully-captured doc should pass: %v", err)
 	}
 
@@ -244,15 +255,14 @@ func TestCheckPreservable(t *testing.T) {
 	// its surviving SimpleTag's raw must have been captured, even though the group's
 	// whole-element raw is nil (a large group whose dropped key shrank it under the
 	// limit). A surviving tag with no raw is refused.
-	ek := map[tag.Key]bool{tag.Encoder: true}
 	rerender := &doc{groups: []tagGroup{
 		{scope: core.ScopeAlbum, raw: []byte{1}},
 		{scope: core.ScopeTrack, trackUID: true, raw: nil, targetsRaw: []byte{1}, tags: []simpleTag{
-			{name: "ENCODER", raw: []byte{1}}, // dropped (edited), raw not required
-			{name: "TITLE", raw: nil},         // kept, but its raw wasn't captured
+			{name: "ENCODER", value: "old", hasValue: true, raw: []byte{1}}, // dropped (edited to a different value), raw not required
+			{name: "TITLE", raw: nil}, // kept, but its raw wasn't captured
 		}},
 	}}
-	if err := checkPreservable(rerender, changes{simple: true}, ek); err == nil {
+	if err := checkPreservable(rerender, changes{simple: true}, preserveDecisions(rerender, tag.Encoder)); err == nil {
 		t.Error("re-rendered group with an uncaptured surviving tag should be refused")
 	}
 	// Same group, but the scope-narrowing Targets bytes weren't captured: the
@@ -260,11 +270,11 @@ func TestCheckPreservable(t *testing.T) {
 	noTargets := &doc{groups: []tagGroup{
 		{scope: core.ScopeAlbum, raw: []byte{1}},
 		{scope: core.ScopeTrack, trackUID: true, raw: nil, targetsRaw: nil, tags: []simpleTag{
-			{name: "ENCODER", raw: []byte{1}}, // dropped
-			{name: "TITLE", raw: []byte{1}},   // kept
+			{name: "ENCODER", value: "old", hasValue: true, raw: []byte{1}}, // dropped
+			{name: "TITLE", raw: []byte{1}},                                 // kept
 		}},
 	}}
-	if err := checkPreservable(noTargets, changes{simple: true}, ek); err == nil {
+	if err := checkPreservable(noTargets, changes{simple: true}, preserveDecisions(noTargets, tag.Encoder)); err == nil {
 		t.Error("re-rendered scope-narrowing group with uncaptured Targets should be refused")
 	}
 	// A re-rendered group where every SimpleTag is dropped needs neither the
@@ -272,10 +282,10 @@ func TestCheckPreservable(t *testing.T) {
 	emptied := &doc{groups: []tagGroup{
 		{scope: core.ScopeAlbum, raw: []byte{1}},
 		{scope: core.ScopeTrack, trackUID: true, raw: nil, targetsRaw: nil, tags: []simpleTag{
-			{name: "ENCODER", raw: nil}, // dropped (edited); its raw is irrelevant
+			{name: "ENCODER", value: "old", hasValue: true, raw: nil}, // dropped (edited to a different value); its raw is irrelevant
 		}},
 	}}
-	if err := checkPreservable(emptied, changes{simple: true}, ek); err != nil {
+	if err := checkPreservable(emptied, changes{simple: true}, preserveDecisions(emptied, tag.Encoder)); err != nil {
 		t.Errorf("a fully-emptied re-rendered group should pass: %v", err)
 	}
 
@@ -286,7 +296,7 @@ func TestCheckPreservable(t *testing.T) {
 			{name: "TITLE", raw: nil}, // managed title, bytes uncapturable
 		}},
 	}}
-	if err := checkPreservable(noInfoTitle, changes{simple: true}, nil); err == nil {
+	if err := checkPreservable(noInfoTitle, changes{simple: true}, preserveDecisions(noInfoTitle)); err == nil {
 		t.Error("an uncapturable managed title with no Info should be refused")
 	}
 	// With an Info element the same title migrates to Info.Title, so its raw is not needed.
@@ -295,7 +305,7 @@ func TestCheckPreservable(t *testing.T) {
 			{name: "TITLE", raw: nil},
 		}},
 	}}
-	if err := checkPreservable(withInfo, changes{simple: true}, nil); err != nil {
+	if err := checkPreservable(withInfo, changes{simple: true}, preserveDecisions(withInfo)); err != nil {
 		t.Errorf("a migratable managed title (Info present) needs no raw: %v", err)
 	}
 }
@@ -342,11 +352,11 @@ func TestMatroskaNameRoundTrip(t *testing.T) {
 // Strict validators reject a Tag without Targets, and the returned tagGroup
 // should match a fresh parse of the rendered bytes.
 func TestBuildAlbumGroupEmitsTargets(t *testing.T) {
+	base := tag.NewTagSet()
 	edited := tag.NewTagSet()
 	edited.Set(tag.Artist, "X")
-	ek := map[tag.Key]bool{tag.Artist: true}
 
-	out, rendered := buildAlbumGroup(nil, tag.NewTagSet(), edited, nil, nil, ek, false)
+	out, rendered := buildAlbumGroup(nil, -1, base, edited, nil, nil, nil, computeEditDecisions(nil, -1, base, edited), false)
 
 	// White-box: the synthesized album group records an empty, album-scope Targets.
 	if out.targetsRaw == nil {
@@ -370,5 +380,32 @@ func TestBuildAlbumGroupEmitsTargets(t *testing.T) {
 	child, ok := readElement(src, tagEl.dataStart, tagEl.dataEnd, limit)
 	if !ok || child.id != idTargets {
 		t.Errorf("first Tag child id = %#x, want Targets %#x", child.id, idTargets)
+	}
+}
+
+// TestKeepInPlaceGroupWithoutRaw: a group that holds an edited key but keeps its
+// value in place has nothing to drop, yet its whole-element bytes may be
+// uncaptured. The write must fall back to re-rendering it from its captured
+// parts, not refuse the edit or silently drop the group.
+func TestKeepInPlaceGroupWithoutRaw(t *testing.T) {
+	d := &doc{groups: []tagGroup{
+		{scope: core.ScopeAlbum, raw: []byte{1}, tags: []simpleTag{
+			{name: "ENCODER", value: "album-enc", hasValue: true, raw: []byte{1}},
+		}},
+		{scope: core.ScopeTrack, trackUID: true, raw: nil, targetsRaw: []byte{1}, tags: []simpleTag{
+			{name: "ENCODER", value: "track-enc", hasValue: true, raw: []byte{1}},
+		}},
+	}}
+	base := tagSet(keyVals{tag.Encoder, []string{"album-enc", "track-enc"}})
+	edited := tagSet(keyVals{tag.Encoder, []string{"track-enc"}})
+	ed := computeEditDecisions(d.groups, 0, base, edited)
+	if ed.dropped(1, 0) {
+		t.Fatal("setup: the track value should be kept in place")
+	}
+	if err := checkPreservable(d, changes{simple: true}, ed); err != nil {
+		t.Errorf("checkPreservable refused a kept-in-place group whose parts are captured: %v", err)
+	}
+	if _, raw, keep := renderNonAlbumGroup(d.groups[1], 1, ed); !keep || raw == nil {
+		t.Errorf("renderNonAlbumGroup dropped the kept-in-place group (keep=%v raw=%v), want a re-render from parts", keep, raw != nil)
 	}
 }

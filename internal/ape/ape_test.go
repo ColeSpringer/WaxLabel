@@ -218,3 +218,29 @@ func TestParseAPEItemHugeSizeRejected(t *testing.T) {
 		t.Errorf("items = %d, want 0 (an oversized item size must be rejected, not panic)", len(tg.Items))
 	}
 }
+
+// TestParseAPEMatroskaNativeSpellings: the Matroska native spellings are edit
+// aliases on every format, so APE items using them must project onto the same
+// canonical keys (Pairs consults apeKeys then tag.ParseKey, never tag.AliasKey).
+func TestParseAPEMatroskaNativeSpellings(t *testing.T) {
+	data := buildAPE(map[string]string{
+		"Publisher":      "Matador",
+		"PART_NUMBER":    "3",
+		"CATALOG_NUMBER": "OLE-1234",
+	})
+	tg, ok, err := ParseAt(core.BytesSource(data), int64(len(data)), 1<<20, 1000)
+	if err != nil || !ok {
+		t.Fatalf("ParseAt: ok=%v err=%v", ok, err)
+	}
+	got := map[tag.Key]string{}
+	for _, p := range tg.Pairs() {
+		got[p.Key] = p.Value
+	}
+	for k, want := range map[tag.Key]string{
+		tag.Label: "Matador", tag.TrackNumber: "3", tag.CatalogNumber: "OLE-1234",
+	} {
+		if got[k] != want {
+			t.Errorf("APE %s = %q, want %q (full map %v)", k, got[k], want, got)
+		}
+	}
+}
