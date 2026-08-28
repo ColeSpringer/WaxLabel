@@ -342,3 +342,29 @@ func TestLintFixStripsRedundantFLACLeadingID3v2(t *testing.T) {
 		t.Error("the Vorbis title must survive the strip")
 	}
 }
+
+// TestFLACLeadingID3ConflictWarns pins the legacy-conflict gate: it keys on a family
+// entry actually being legacy, not on the container's name, so FLAC's stray leading
+// ID3v2 warns exactly as MP3's ID3v1 does when an edit leaves it holding a stale
+// value. The APEv2-native formats, whose APE tag is their own store, must not.
+func TestFLACLeadingID3ConflictWarns(t *testing.T) {
+	// The legacy value must AGREE before the edit: the warning is for a divergence the
+	// edit introduces, not one the file already had.
+	src := append(id3v2(4, textFrame(4, "TIT2", "Current")), flacWithComments("TITLE=Current")...)
+	plan, err := mustParseBytes(t, src).Edit().Set(tag.Title, "Edited").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !planHasWarning(plan, wl.WarnLegacyConflict) {
+		t.Error("editing TITLE past a stale leading ID3v2 should warn about the legacy conflict")
+	}
+
+	wv := readFixture(t, sampleWV)
+	plan2, err := mustParseBytes(t, wv).Edit().Set(tag.Title, "Edited").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planHasWarning(plan2, wl.WarnLegacyConflict) {
+		t.Error("an APEv2-native file must not warn about a conflict with its own tag")
+	}
+}

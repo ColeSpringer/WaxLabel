@@ -30,8 +30,12 @@ func New() Codec { return Codec{} }
 
 func init() { core.Register(New()) }
 
-func (Codec) Format() core.Format  { return core.FormatAAC }
-func (Codec) Extensions() []string { return []string{".aac"} }
+func (Codec) Format() core.Format { return core.FormatAAC }
+
+// Extensions claims ".adts" alongside ".aac": ADTS is the byte framing this format
+// is, and the extension is common enough that a --recursive walk skipping it is a
+// bug rather than a nicety.
+func (Codec) Extensions() []string { return []string{".aac", ".adts"} }
 
 // SkipsLeadingID3 reports true because raw AAC commonly carries a leading ID3v2 tag.
 func (Codec) SkipsLeadingID3() bool { return true }

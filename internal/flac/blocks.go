@@ -1,44 +1,16 @@
 package flac
 
 import (
-	"encoding/binary"
-	"fmt"
-	"math"
-	"time"
-
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/tag"
-	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // parseStreamInfo decodes the 34-byte STREAMINFO body into an AudioTrack. The
-// bit-packed region holds a 20-bit sample rate, 3-bit channel count (less
-// one), 5-bit bits-per-sample (less one), and 36-bit total sample count.
+// decode is shared with the Ogg FLAC mapping via internal/vorbis, whose
+// identification packet ends with the same block.
 func parseStreamInfo(body []byte) (core.AudioTrack, error) {
-	if len(body) < streamInfoLen {
-		return core.AudioTrack{}, fmt.Errorf("%w: STREAMINFO is %d bytes, need %d", waxerr.ErrInvalidData, len(body), streamInfoLen)
-	}
-	t := core.AudioTrack{Codec: "flac"}
-	t.MinBlockSize = int(binary.BigEndian.Uint16(body[0:2]))
-	t.MaxBlockSize = int(binary.BigEndian.Uint16(body[2:4]))
-
-	t.SampleRate = int(body[10])<<12 | int(body[11])<<4 | int(body[12])>>4
-	t.Channels = int(body[12]>>1&0x07) + 1
-	t.BitsPerSample = int((body[12]&0x01)<<4|body[13]>>4) + 1
-	t.TotalSamples = uint64(body[13]&0x0F)<<32 | uint64(body[14])<<24 |
-		uint64(body[15])<<16 | uint64(body[16])<<8 | uint64(body[17])
-	copy(t.MD5[:], body[18:34])
-
-	if t.SampleRate == 0 {
-		return t, fmt.Errorf("%w: STREAMINFO sample rate is zero", waxerr.ErrInvalidData)
-	}
-	// Guard against pathological inputs (e.g. SampleRate 1 with TotalSamples
-	// near 2^36) overflowing the int64 nanoseconds of time.Duration into garbage.
-	if ns := float64(t.TotalSamples) / float64(t.SampleRate) * float64(time.Second); ns >= 0 && ns < math.MaxInt64 {
-		t.Duration = time.Duration(ns)
-	}
-	return t, nil
+	return vorbis.ParseStreamInfo(body)
 }
 
 // The Vorbis comment list and PICTURE block byte codecs, the canonical

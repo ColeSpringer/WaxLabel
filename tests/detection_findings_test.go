@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"strings"
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
@@ -69,20 +68,19 @@ func TestID3PrefixedContainerIsUnsupported(t *testing.T) {
 	}
 }
 
-// TestRF64IsRejectedLoudly checks that RF64/BW64 sniffs as WAV and receives the parser's
-// explicit out-of-scope error instead of a generic detection failure.
-func TestRF64IsRejectedLoudly(t *testing.T) {
+// TestRF64SniffsAsWAV checks that the 64-bit RIFF forms route to the WAV codec on
+// content alone, so their ds64-resolved sizes are read rather than the file falling
+// through to a generic "could not identify".
+func TestRF64SniffsAsWAV(t *testing.T) {
 	for _, magic := range []string{"RF64", "BW64"} {
 		t.Run(magic, func(t *testing.T) {
-			data := make([]byte, 64)
-			copy(data[0:4], magic)
-			copy(data[8:12], "WAVE")
-			_, err := wl.Parse(context.Background(), wl.BytesSource(data))
-			if !errors.Is(err, waxerr.ErrUnsupportedFormat) {
-				t.Fatalf("%s err = %v, want ErrUnsupportedFormat", magic, err)
+			data := rf64File(magic, 16, wavFmtPCM(), wavData(64))
+			doc, err := wl.Parse(context.Background(), wl.BytesSource(data))
+			if err != nil {
+				t.Fatalf("%s parse: %v", magic, err)
 			}
-			if !strings.Contains(err.Error(), "out of scope") {
-				t.Errorf("%s err = %q, want the loud 'out of scope' rejection, not 'could not identify'", magic, err)
+			if doc.Format() != wl.FormatWAV {
+				t.Errorf("%s format = %v, want WAV", magic, doc.Format())
 			}
 		})
 	}

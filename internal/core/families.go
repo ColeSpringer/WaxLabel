@@ -1,6 +1,10 @@
 package core
 
-import "github.com/colespringer/waxlabel/tag"
+import (
+	"slices"
+
+	"github.com/colespringer/waxlabel/tag"
+)
 
 // Contribution is one canonical value decoded from one native entry, tagged with
 // a source label so conflicts between distinct entries for the same key surface.
@@ -55,3 +59,42 @@ func BuildFamilies(contribs []Contribution, family Family) []FamilyValue {
 // distinctValues counts case- and space-insensitive distinct values using the
 // same fold rule as dump duplicate markers.
 func distinctValues(vals []string) int { return tag.DistinctValues(vals) }
+
+// DiffKeys returns the canonical keys whose values differ between base and edited -
+// added, removed, or modified. It is the change set every minimal-change rebuild
+// consults to decide which native entries to re-render and which to leave verbatim,
+// shared so the Vorbis and APE writers cannot come to different verdicts about the
+// same edit.
+func DiffKeys(base, edited tag.TagSet) map[tag.Key]bool {
+	changed := map[tag.Key]bool{}
+	for _, k := range base.Keys() {
+		bv, _ := base.Get(k)
+		ev, has := edited.Get(k)
+		if !has || !slices.Equal(bv, ev) {
+			changed[k] = true
+		}
+	}
+	for _, k := range edited.Keys() {
+		if !base.Has(k) {
+			changed[k] = true
+		}
+	}
+	return changed
+}
+
+// LegacyFamilies projects a legacy container's key/value pairs into family entries.
+// media.Tags stays whatever the format's authoritative store holds, so this surfaces a
+// value living only in a preserved container - and flags it when it disagrees - without
+// promoting it into the canonical set. Every Legacy entry is what the editor's
+// legacy-conflict warning fires on, so building them in one place is what keeps that
+// warning from either missing a container or firing on a format's own store.
+func LegacyFamilies(auth tag.TagSet, family Family, pairs []Contribution) []FamilyValue {
+	out := make([]FamilyValue, 0, len(pairs))
+	for _, p := range pairs {
+		out = append(out, FamilyValue{
+			Key: p.Key, Family: family, Scope: ScopeTrack,
+			Values: []string{p.Value}, Selected: FamilySelected(auth, p.Key, p.Value), Legacy: true,
+		})
+	}
+	return out
+}

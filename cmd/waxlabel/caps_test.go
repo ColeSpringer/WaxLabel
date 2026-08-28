@@ -246,9 +246,9 @@ func TestParseFormat(t *testing.T) {
 		{"aiff", "AIFF"},
 		{"aac", "AAC (ADTS)"},
 		{"ogg", "Ogg Vorbis"},
-		{"oga", "Ogg Vorbis"},
 		{"vorbis", "Ogg Vorbis"},
 		{"opus", "Ogg Opus"},
+		{"oggflac", "Ogg FLAC"},
 		{"mka", "Matroska"},
 		{"mkv", "Matroska"},
 		{"matroska", "Matroska"},
@@ -257,7 +257,8 @@ func TestParseFormat(t *testing.T) {
 		{"webm", "Matroska"},
 	}
 	for _, c := range cases {
-		f, _, _, ok := parseFormat(c.in)
+		f, _, _, err := parseFormat(c.in)
+		ok := err == nil
 		if !ok {
 			t.Errorf("parseFormat(%q) failed", c.in)
 			continue
@@ -266,7 +267,23 @@ func TestParseFormat(t *testing.T) {
 			t.Errorf("parseFormat(%q) = %q, want %q", c.in, f.String(), c.want)
 		}
 	}
-	if _, _, _, ok := parseFormat("nonsense"); ok {
+	if _, _, _, err := parseFormat("nonsense"); err == nil {
 		t.Error(`parseFormat("nonsense") should fail`)
+	}
+	// .oga is claimed by both Ogg codecs that use it, so the extension alone cannot
+	// pick one; the error must name both rather than silently taking the first.
+	_, _, _, err := parseFormat("oga")
+	if err == nil {
+		t.Fatal(`parseFormat("oga") should report the ambiguity`)
+	}
+	for _, want := range []string{"Ogg Vorbis", "Ogg FLAC"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("parseFormat(\"oga\") error = %q, want it to name %q", err, want)
+		}
+	}
+	// .ogg is claimed by both codecs too, but "ogg" as a format name has always meant
+	// Vorbis, so the alias resolves it rather than refusing the commonest spelling.
+	if f, _, _, err := parseFormat("ogg"); err != nil || f.String() != "Ogg Vorbis" {
+		t.Errorf(`parseFormat("ogg") = %v, %v; want Ogg Vorbis`, f, err)
 	}
 }

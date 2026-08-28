@@ -62,17 +62,21 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			"chained or multiplexed Ogg stream; the first logical stream is read best-effort and writing is refused")
 	}
 
-	hp, err := reassembleHeaders(src, pages, d.serial, limit)
+	hp, err := reassembleHeaders(src, pages, d.serial, limit, opts.Limits.MaxElements)
 	if err != nil {
 		return nil, err
 	}
 	d.kind = hp.kind
 	d.idPacket = hp.id
 	d.setupPacket = hp.setup
+	d.flacBlocks = hp.flacBlocks
 	d.clean = hp.clean && !d.chained
-	if d.kind == kindOpus {
+	switch d.kind {
+	case kindOpus:
 		d.format = core.FormatOggOpus
-	} else {
+	case kindFLAC:
+		d.format = core.FormatOggFLAC
+	default:
 		d.format = core.FormatOggVorbis
 	}
 
@@ -131,6 +135,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		d.trailingLen = size - d.audioEnd
 	}
 
+	// Native PICTURE blocks are decoded before the comment list so a FLAC stream
+	// carrying both forms orders its covers native-first, matching internal/flac.
+	d.decodeFLACPictures(limit, &warnings)
 	if err := d.decodeComments(hp.comment, limit, opts.Limits.MaxElements, &warnings); err != nil {
 		return nil, err
 	}
@@ -172,10 +179,11 @@ type headerPackets struct {
 	kind           kind
 	id             []byte
 	comment        []byte
-	setup          []byte // Vorbis only
-	lastHeaderPage int    // index into pages of the page where the last header packet ends
-	audioByteStart int64  // absolute offset of the first audio byte (may sit mid-page when not clean)
-	clean          bool   // id alone on the first page and the last header packet ends at a page boundary
+	setup          []byte   // Vorbis only
+	flacBlocks     []fblock // FLAC only: one metadata block per header packet
+	lastHeaderPage int      // index into pages of the page where the last header packet ends
+	audioByteStart int64    // absolute offset of the first audio byte (may sit mid-page when not clean)
+	clean          bool     // id alone on the first page and the last header packet ends at a page boundary
 }
 
 // reassembleHeaders walks the chosen serial's pages, reassembling packets across
@@ -183,7 +191,7 @@ type headerPackets struct {
 // collected. It also reports whether the stream is cleanly page-aligned: the id
 // packet alone on the first page and the last header packet ending exactly at a
 // page boundary, so audio begins on a fresh page that can be copied verbatim.
-func reassembleHeaders(src core.ReaderAtSized, pages []rawPage, serial uint32, limit int64) (headerPackets, error) {
+func reassembleHeaders(src core.ReaderAtSized, pages []rawPage, serial uint32, limit int64, maxElements int) (headerPackets, error) {
 	var hp headerPackets
 	need := 0
 	var packets [][]byte
@@ -225,14 +233,19 @@ func reassembleHeaders(src core.ReaderAtSized, pages []rawPage, serial uint32, l
 				}
 				hp.kind, need = k, n
 			}
-			if len(packets) == need {
+			if headersDone(hp.kind, need, packets) {
 				hp.lastHeaderPage = gi
 				hp.clean = idAlone && si == len(p.segs)-1
 				// o has advanced past this completing segment, so this is the first
 				// byte after the last header packet - where audio begins (the page
 				// body start for a clean stream, or mid-page when it is not).
 				hp.audioByteStart = p.bodyOff() + int64(o)
-				return finishHeaders(hp, packets)
+				return finishHeaders(hp, packets, maxElements)
+			}
+			// FLAC's header run is delimited by the last-block flag rather than a
+			// count, so it needs its own bound; the other two are capped by need.
+			if err := bits.CheckElementCap(len(packets), maxElements, "Ogg FLAC header packets"); err != nil {
+				return hp, err
 			}
 		}
 		if !seenFirstPage {
@@ -243,8 +256,35 @@ func reassembleHeaders(src core.ReaderAtSized, pages []rawPage, serial uint32, l
 	return hp, fmt.Errorf("%w: incomplete Ogg header packets", waxerr.ErrInvalidData)
 }
 
-func finishHeaders(hp headerPackets, packets [][]byte) (headerPackets, error) {
+// headersDone reports whether the header run is complete. Vorbis and Opus declare
+// a fixed packet count in their identification header; the FLAC mapping does not
+// (its count field is allowed to read "unknown"), so its run ends where a metadata
+// block sets the last-block flag - the same authority a FLAC decoder uses.
+func headersDone(k kind, need int, packets [][]byte) bool {
+	if k != kindFLAC {
+		return len(packets) == need
+	}
+	if len(packets) < 2 {
+		return false // the identification packet carries STREAMINFO; blocks follow it
+	}
+	last := packets[len(packets)-1]
+	return len(last) > 0 && last[0]&0x80 != 0
+}
+
+func finishHeaders(hp headerPackets, packets [][]byte, maxElements int) (headerPackets, error) {
 	hp.id = packets[0]
+	if hp.kind == kindFLAC {
+		if err := checkFLACID(hp.id); err != nil {
+			return hp, err
+		}
+		blocks, comment, err := splitFLACBlocks(packets[1:], maxElements)
+		if err != nil {
+			return hp, err
+		}
+		hp.flacBlocks = blocks
+		hp.comment = comment
+		return hp, nil
+	}
 	hp.comment = packets[1]
 	if hp.kind == kindVorbis {
 		hp.setup = packets[2]
@@ -260,8 +300,28 @@ func detectKind(pkt []byte) (kind, int, error) {
 		return kindVorbis, 3, nil
 	case bytes.HasPrefix(pkt, opusHead):
 		return kindOpus, 2, nil
+	case bytes.HasPrefix(pkt, flacID):
+		// The FLAC mapping's own count field may read "unknown", so the header run is
+		// closed by the last-block flag instead; need is unused for this kind.
+		return kindFLAC, 0, nil
 	}
-	return 0, 0, fmt.Errorf("%w: unrecognized Ogg codec (not Vorbis or Opus)", waxerr.ErrUnsupportedFormat)
+	return 0, 0, fmt.Errorf("%w: unrecognized Ogg codec (not Vorbis, Opus, or FLAC)", waxerr.ErrUnsupportedFormat)
+}
+
+// decodeFLACPictures decodes the native PICTURE blocks of a FLAC mapping. A
+// malformed picture is warned and skipped, but its raw body is preserved in the
+// native doc (and re-emitted on a picture edit) so it is not destroyed.
+func (d *doc) decodeFLACPictures(limit int64, warnings *[]core.Warning) {
+	pics, malformed, ws := decodeFLACBlockPictures(d.flacBlocks, limit)
+	d.pictures = append(d.pictures, pics...)
+	d.malformedPictureBlocks = malformed
+	*warnings = append(*warnings, ws...)
+	for _, b := range d.flacBlocks {
+		if b.code > flacBlkPicture && b.code != flacBlkInvalid {
+			*warnings = core.Warn(*warnings, core.WarnUnknownBlock,
+				fmt.Sprintf("metadata block type %d preserved verbatim", b.code))
+		}
+	}
 }
 
 // decodeComments parses the comment header packet into the vendor string, tag
@@ -280,6 +340,13 @@ func (d *doc) decodeComments(pkt []byte, limit int64, maxElements int, warnings 
 			return fmt.Errorf("%w: Vorbis comment header signature missing", waxerr.ErrInvalidData)
 		}
 		list = pkt[len(vorbisComment):]
+	case kindFLAC:
+		// The mapping requires a VORBIS_COMMENT block, but a stream missing one is read
+		// with an empty comment list rather than refused; the writer inserts the block.
+		if len(pkt) == 0 {
+			return nil
+		}
+		list = pkt[4:] // strip the FLAC metadata block header
 	default: // Opus
 		if !bytes.HasPrefix(pkt, opusTags) {
 			return fmt.Errorf("%w: OpusTags signature missing", waxerr.ErrInvalidData)
@@ -311,6 +378,12 @@ func (d *doc) decodeComments(pkt []byte, limit int64, maxElements int, warnings 
 			continue
 		}
 		d.pictures = append(d.pictures, pic)
+		if d.kind == kindFLAC {
+			// FLAC's native store is the PICTURE block, so record the comment-sourced
+			// subset: the writer materializes exactly these when it re-renders the comment
+			// block (which strips the entry), instead of dropping the cover.
+			d.commentPictures = append(d.commentPictures, pic)
+		}
 	}
 	return nil
 }
@@ -320,6 +393,17 @@ func (d *doc) decodeComments(pkt []byte, limit int64, maxElements int, warnings 
 func (d *doc) properties(lastGranule uint64) core.Properties {
 	t := core.AudioTrack{Codec: d.kind.String()}
 	switch d.kind {
+	case kindFLAC:
+		// STREAMINFO rides in the identification packet and carries the full track
+		// description, including a total sample count that beats the final granule
+		// when the encoder wrote one.
+		if si, err := vorbis.ParseStreamInfo(d.streamInfo()); err == nil {
+			t = si
+		}
+		if t.TotalSamples == 0 {
+			t.TotalSamples = lastGranule
+			t.Duration = core.SamplesToDuration(lastGranule, t.SampleRate)
+		}
 	case kindVorbis:
 		// \x01vorbis(7) | version(4) | channels(1) | sample_rate(4) |
 		// bitrate_max(4) | bitrate_nominal(4) |...

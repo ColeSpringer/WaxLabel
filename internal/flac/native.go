@@ -9,43 +9,26 @@ import (
 	"slices"
 
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/vorbis"
 )
 
-// FLAC metadata block type codes.
+// FLAC metadata block type codes and the 24-bit body limit, from internal/vorbis so
+// the native stream and the Ogg mapping cannot disagree about them.
 const (
-	blkStreamInfo    = 0
-	blkPadding       = 1
-	blkApplication   = 2
-	blkSeekTable     = 3
-	blkVorbisComment = 4
-	blkCueSheet      = 5
-	blkPicture       = 6
-	blkInvalid       = 127
+	blkStreamInfo    = vorbis.BlockStreamInfo
+	blkPadding       = vorbis.BlockPadding
+	blkApplication   = vorbis.BlockApplication
+	blkSeekTable     = vorbis.BlockSeekTable
+	blkVorbisComment = vorbis.BlockVorbisComment
+	blkCueSheet      = vorbis.BlockCueSheet
+	blkPicture       = vorbis.BlockPicture
+	blkInvalid       = vorbis.BlockInvalid
 
-	streamInfoLen = 34
-	maxBlockBody  = 1<<24 - 1 // 24-bit length field
+	streamInfoLen = vorbis.StreamInfoLen
+	maxBlockBody  = vorbis.MaxBlockBody
 )
 
-func blockName(code byte) string {
-	switch code {
-	case blkStreamInfo:
-		return "STREAMINFO"
-	case blkPadding:
-		return "PADDING"
-	case blkApplication:
-		return "APPLICATION"
-	case blkSeekTable:
-		return "SEEKTABLE"
-	case blkVorbisComment:
-		return "VORBIS_COMMENT"
-	case blkCueSheet:
-		return "CUESHEET"
-	case blkPicture:
-		return "PICTURE"
-	default:
-		return "UNKNOWN"
-	}
-}
+func blockName(code byte) string { return vorbis.BlockName(code) }
 
 // block is one raw metadata block, header excluded. The body is preserved
 // verbatim so unedited blocks (SEEKTABLE, CUESHEET, APPLICATION, unknown

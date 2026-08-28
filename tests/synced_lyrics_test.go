@@ -22,6 +22,7 @@ var syncedLyricsFixtures = map[wl.Format]string{
 	wl.FormatFLAC:      "../testdata/notags.flac",
 	wl.FormatOggVorbis: "../testdata/notags.ogg",
 	wl.FormatOggOpus:   "../testdata/notags.opus",
+	wl.FormatOggFLAC:   "../testdata/notags.oga",
 }
 
 // sampleSyncedLines is the timed-line subset every synced-lyrics format stores (SYLT keeps

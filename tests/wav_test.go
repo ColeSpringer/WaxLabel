@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	sampleWAV = "../testdata/sample.wav"
-	notagsWAV = "../testdata/notags.wav"
+	sampleWAV  = "../testdata/sample.wav"
+	sampleRF64 = "../testdata/sample-rf64.wav" // ffmpeg-authored RF64: real ds64, marked data size
+	notagsWAV  = "../testdata/notags.wav"
 )
 
 func TestWAVParse(t *testing.T) {

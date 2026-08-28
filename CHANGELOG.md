@@ -2,6 +2,57 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Added
+
+- WavPack (`.wv`), Monkey's Audio (`.ape`), and Musepack (`.mpc`), written through APEv2,
+  which is now a writable container: items, multi-values, and the `Cover Art` convention.
+- Ogg FLAC (`.oga`), sharing the Ogg page layer. Cover art is a native `PICTURE` block.
+- WMA/ASF (`.wma`, `.asf`), read-only: Content Description, `WM/*`, and `WM/Picture`.
+- RF64 and BW64. `ds64` is recomputed on save-back and the form is never downgraded.
+- `.m4r`, `.mpga`, `.adts`, and `.mov` as claimed extensions.
+
+### Fixed
+
+- An APE tag whose footer claimed a header record that is not there moved the tag's
+  start 32 bytes into the audio, so a rewrite wrote the tag over it while `--verify`
+  passed (both sides derived the extent from the same wrong offset). The record is now
+  confirmed before the flag is believed.
+- An APE slash pair (`Track=3/12`) is rewritten as a number plus a total on an edit to
+  either half, so clearing a total takes effect and an unrelated edit no longer appends
+  a total item the file never had.
+- An APE tag whose item list was cut short by the element limit is no longer rewritten,
+  which would have deleted every item the parse did not read.
+- An APE text item whose bytes are not valid UTF-8 (APEv1's code page) reads as Latin-1
+  with a warning instead of poisoning a later `copy`, and its raw bytes still round-trip.
+  An APEv1 tag keeps its version and footer-only shape on write.
+- WavPack bit depth comes from the storage width, not the magnitude field, which tracks
+  how loud the recording is; a 32-bit stream reported 13-bit. A streamed file's
+  "unknown" sample count is recognized, instead of reporting 27 hours.
+- An absurd declared header size in a Monkey's Audio or WavPack file no longer hides the
+  file's real APEv2 tag behind a second one appended on write.
+- RF64 truncation is reported when the `ds64` size happens to equal `0xFFFFFFFF`, the
+  streaming sentinel that only applies to a size nothing resolved.
+- ASF duration, bitrate, and sample count are range-checked, and the audio extent is
+  bounded at the Data Object, so a rebuilt index no longer changes a WMA's audio digest.
+- An edit to a read-only file reports the format's own refusal for chapters, pictures,
+  and synced lyrics, as it already did for tags, instead of exiting 0 with a warning
+  about the format's storage.
+
+### Changed
+
+- `--recursive` now descends into `.mov`, `.m4r`, `.mpga`, and `.adts`, and reports each
+  `.wma` it finds as failed (exit 3) rather than skipping it, since WMA cannot be written.
+- `caps --format` refuses an extension claimed by more than one format, naming both.
+  `.oga` and `.ogg` are now Ogg Vorbis and Ogg FLAC alike; pass `oggflac` to pick FLAC.
+  `ogg` still names Ogg Vorbis, as it always has.
+- The legacy-conflict warning is gated on a container being legacy, not on its name. An
+  APEv2-native file no longer warns about its own tag; a FLAC whose stray leading ID3v2
+  disagrees with an edit now does.
+- An APE `DATE` resolves to `RECORDINGDATE`, and a slashed `Track` splits into the
+  canonical number/total pair.
+
 ## [1.5.0]
 
 ### Added

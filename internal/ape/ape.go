@@ -1,16 +1,31 @@
-// Package ape implements read-only parsing of APEv1/APEv2 tags for internal
-// codecs. An APE tag is a foreign/legacy container in the formats WaxLabel
-// writes (it shows up trailing some MP3s): WaxLabel surfaces its values in the
-// family/source view and preserves its bytes verbatim, but the native tag stays
-// authoritative. It is reimplemented from the public APE tag specification.
+// Package ape implements APEv1/APEv2 tags for internal codecs, both reading and
+// writing. It plays two roles.
+//
+// In MP3 an APE tag is a foreign/legacy container that shows up trailing some
+// files: WaxLabel surfaces its values in the family/source view and preserves its
+// bytes verbatim, but the native ID3 tag stays authoritative.
+//
+// In WavPack, Monkey's Audio, and Musepack it is the native tag store, so this
+// package is also a writer: [Project] gives the canonical view, [Rebuild] applies
+// an edit with minimal change, and [Render] emits the tag bytes.
+//
+// APE is free-form UTF-8 key/value with no registry, so the conventions it stores
+// are only the ones third-party tools already read. Cover art is in (the
+// "Cover Art (Front)" binary item foobar2000 and Mp3tag write); chapters and synced
+// lyrics have no APE convention and are not invented here.
+//
+// It is reimplemented from the public APE tag specification.
 package ape
 
 import (
 	"encoding/binary"
+	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/mapping"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -32,15 +47,79 @@ type Tag struct {
 	Items   []Item
 	Offset  int64 // absolute start of the tag (header if present, else first item)
 	Size    int64 // total bytes occupied, including any header and the footer
+	// HasHeader records that a header record was found ahead of the items, so a
+	// rewrite keeps the shape the file had rather than adding or dropping one.
+	HasHeader bool
+	// Truncated records that the item list was cut short by the element cap, so Items
+	// is not the whole tag. A codec that rebuilds the tag from Items must refuse to
+	// write rather than silently dropping what it could not see.
+	Truncated bool
 }
 
-// Item is one APE key/value pair. Text values may carry NUL-separated multiple
-// values; NonText marks binary, external/locator, and reserved items - anything
-// that is not a UTF-8 text value - which are preserved but not projected.
+// Item is one APE key/value pair.
+//
+// Data holds the payload exactly as it sits in the file, for every item type. A
+// parsed item is written back from those bytes, so an item WaxLabel did not edit
+// round-trips byte for byte even when its text is not valid UTF-8 (APEv1 was
+// effectively Latin-1, and such items still turn up in APEv2 tags).
+//
+// Value is the decoded text view of a text item, NUL-separated for a multi-valued
+// key, and empty for a non-text item (binary, external/locator, reserved). An item
+// built by the writer sets Value and leaves Data nil; [Item.Payload] resolves either
+// shape.
+//
+// Flags is the item's whole 32-bit flag field, kept verbatim. Only bits 0-2 are
+// defined (bit 0 read-only, bits 1-2 the item type), but a rewrite that re-renders
+// a preserved item must not quietly clear the read-only bit or an undefined one -
+// preserve-unknown has to hold at the byte level, not just for the payload.
 type Item struct {
-	Key     string
-	Value   string
-	NonText bool
+	Key   string
+	Value string
+	Data  []byte
+	Flags uint32
+}
+
+// Item flag bits. Bits 1-2 are the item type: 0 is UTF-8 text and everything else
+// (binary, external/locator, reserved) is not projected as a value.
+const (
+	flagReadOnly  = 1 << 0
+	itemTypeShift = 1
+	itemTypeMask  = 3
+
+	itemTypeText   = 0
+	itemTypeBinary = 1
+)
+
+// NonText reports whether the item carries something other than UTF-8 text, and so
+// is preserved but not projected as a tag value.
+func (i Item) NonText() bool { return (i.Flags>>itemTypeShift)&itemTypeMask != itemTypeText }
+
+// ReadOnly reports the item's read-only bit, which some taggers set on items a user
+// should not edit. WaxLabel preserves it rather than acting on it.
+func (i Item) ReadOnly() bool { return i.Flags&flagReadOnly != 0 }
+
+// Payload returns the item's bytes: the ones parsed from the file when it has them,
+// so a preserved item is re-rendered exactly as it was found, and otherwise the
+// encoding of Value, for an item the writer built.
+func (i Item) Payload() []byte {
+	if i.Data != nil {
+		return i.Data
+	}
+	return []byte(i.Value)
+}
+
+// Clone deep-copies the tag so a native document holding one stays detached.
+func (t *Tag) Clone() *Tag {
+	if t == nil {
+		return nil
+	}
+	c := *t
+	c.Items = make([]Item, len(t.Items))
+	for i, it := range t.Items {
+		it.Data = slices.Clone(it.Data)
+		c.Items[i] = it
+	}
+	return &c
 }
 
 // ParseAt looks for an APE footer ending at endOff (the file size, or the start
@@ -55,6 +134,9 @@ func ParseAt(src core.ReaderAtSized, endOff, limit int64, maxElements int) (*Tag
 	if err != nil || string(foot[:8]) != preamble {
 		return nil, false, nil //nolint:nilerr // absence is not an error
 	}
+	if binary.LittleEndian.Uint32(foot[20:24])&flagIsHeader != 0 {
+		return nil, false, nil // this record marks itself a header, so it is not the footer
+	}
 	version := int(binary.LittleEndian.Uint32(foot[8:12]))
 	tagSize := int64(binary.LittleEndian.Uint32(foot[12:16])) // items + footer
 	itemCount := binary.LittleEndian.Uint32(foot[16:20])
@@ -67,32 +149,47 @@ func ParseAt(src core.ReaderAtSized, endOff, limit int64, maxElements int) (*Tag
 	itemsLen := tagSize - footerLen
 
 	items := []Item{}
+	truncated := false
 	if itemsLen > 0 {
 		raw, err := bits.ReadSlice(src, itemsStart, itemsLen, limit)
 		if err != nil {
 			return nil, false, nil //nolint:nilerr
 		}
-		items = parseItems(raw, itemCount, maxElements)
+		items, truncated = parseItems(raw, itemCount, maxElements)
 	}
 
+	// The has-header flag decides where the tag STARTS, which for the codecs that own
+	// an APE tag is also where the verbatim audio copy ends. Trusting the bit alone lets
+	// a file that merely sets it move the boundary 32 bytes into the last audio block,
+	// so the rewrite writes the tag over audio - and --verify certifies the result,
+	// because both sides derive the essence extent from the same wrong offset. Confirm
+	// an APETAGEX record is really there before believing it.
 	offset := itemsStart
 	size := tagSize
-	if flags&flagHasHeader != 0 {
-		offset -= footerLen
-		size += footerLen
+	hasHeader := false
+	if flags&flagHasHeader != 0 && itemsStart >= footerLen {
+		if head, err := bits.ReadSlice(src, itemsStart-footerLen, footerLen, limit); err == nil &&
+			string(head[:8]) == preamble {
+			offset -= footerLen
+			size += footerLen
+			hasHeader = true
+		}
 	}
-	if offset < 0 {
-		return nil, false, nil // a header flag with too small a tagSize; malformed
-	}
-	return &Tag{Version: version, Items: items, Offset: offset, Size: size}, true, nil
+	return &Tag{
+		Version: version, Items: items, Offset: offset, Size: size,
+		HasHeader: hasHeader, Truncated: truncated,
+	}, true, nil
 }
 
-// parseItems decodes up to count items from the item region. It stops on
-// malformed input and caps the decoded list at maxElements. MP3 writes preserve
-// the raw APE region separately, so truncating this decoded view does not drop
-// bytes on write.
-func parseItems(raw []byte, count uint32, maxElements int) []Item {
-	var items []Item
+// parseItems decodes up to count items from the item region. It stops on malformed
+// input and caps the decoded list at maxElements, reporting truncated when the cap
+// cut the list short.
+//
+// The cap is not fatal here because MP3 preserves the raw APE region separately and
+// only reads this decoded view. The codecs that own an APE tag rebuild the whole tag
+// from Items, so for them a truncated list would be silent data loss; they refuse to
+// write a tag flagged [Tag.Truncated] instead.
+func parseItems(raw []byte, count uint32, maxElements int) (items []Item, truncated bool) {
 	pos := 0
 	for range count {
 		if pos+8 > len(raw) {
@@ -119,17 +216,32 @@ func parseItems(raw []byte, count uint32, maxElements int) []Item {
 		// exits through the lenient parse path. Hitting the cap just stops decoding;
 		// raw bytes are kept elsewhere.
 		if bits.CheckElementCap(len(items), maxElements, "APE items") != nil {
-			break // cap reached: stop decoding; the raw region is preserved elsewhere
+			return items, true // cap reached: the caller decides whether that is fatal
 		}
-		items = append(items, Item{
-			Key:   key,
-			Value: string(value),
-			// Item-type bits (1-2): 0 == UTF-8 text. Everything else (binary,
-			// external/locator, reserved) is non-text and not projected.
-			NonText: (flags>>1)&3 != 0,
-		})
+		it := Item{Key: key, Flags: flags, Data: value}
+		if !it.NonText() {
+			it.Value = decodeText(value)
+		}
+		items = append(items, it)
 	}
-	return items
+	return items, false
+}
+
+// decodeText renders a text item's bytes as a string: as UTF-8 when they are valid
+// (what APEv2 requires and what every modern tagger writes), else as Latin-1, so an
+// APEv1 item - or an out-of-spec APEv2 one - yields a usable value instead of a
+// string the canonical model will later refuse. This mirrors the RIFF LIST/INFO read
+// path, which faces the same legacy code page. [InvalidUTF8Warnings] reports the
+// files this fires on, and the item's raw bytes are preserved either way.
+func decodeText(b []byte) string {
+	if utf8.Valid(b) {
+		return string(b)
+	}
+	r := make([]rune, len(b))
+	for i, c := range b {
+		r[i] = rune(c) // Latin-1: each byte is its own code point
+	}
+	return string(r)
 }
 
 // cutKey reads a NUL-terminated ASCII key, returning it and the number of bytes
@@ -141,55 +253,6 @@ func cutKey(b []byte) (string, int) {
 		}
 	}
 	return "", -1
-}
-
-// apeKeys folds common APE item names onto canonical keys. Names not listed pass
-// through as the uppercased key. Matching is case-insensitive.
-var apeKeys = map[string]tag.Key{
-	"title":        tag.Title,
-	"artist":       tag.Artist,
-	"album":        tag.Album,
-	"album artist": tag.AlbumArtist,
-	"composer":     tag.Composer,
-	"lyricist":     tag.Lyricist,
-	"producer":     tag.Producer,
-	"engineer":     tag.Engineer,
-	"mixer":        tag.Mixer,
-	"arranger":     tag.Arranger,
-	"writer":       tag.Writer,
-	"djmixer":      tag.DJMixer,
-	"genre":        tag.Genre,
-	"track":        tag.TrackNumber,
-	"disc":         tag.DiscNumber,
-	"year":         tag.RecordingDate,
-	"comment":      tag.Comment,
-	"lyrics":       tag.Lyrics,
-	"isrc":         tag.ISRC,
-	"catalog":      tag.CatalogNumber,
-	"label":        tag.Label,
-	// APE's own spellings for release status and type. Pairs consults this table then
-	// tag.ParseKey and never tag.AliasKey, so these are needed here even though the alias
-	// table carries them too; release country resolves through the ParseKey fallthrough.
-	"musicbrainz_albumstatus": tag.ReleaseStatus,
-	"musicbrainz_albumtype":   tag.ReleaseType,
-	// The Matroska native tag spellings are edit aliases on every format
-	// (tag/aliases.go), so APE items using them must project onto the same
-	// canonical keys here or a set under the spelling would append beside the
-	// item instead of replacing it.
-	"lead_performer": tag.Artist,
-	"date_recorded":  tag.RecordingDate,
-	"date_released":  tag.ReleaseDate,
-	"date_release":   tag.ReleaseDate,
-	"date_original":  tag.OriginalDate,
-	"original_date":  tag.OriginalDate,
-	"encoded_by":     tag.EncodedBy,
-	"part_number":    tag.TrackNumber,
-	"total_parts":    tag.TrackTotal,
-	"total_discs":    tag.DiscTotal,
-	"catalog_number": tag.CatalogNumber,
-	"publisher":      tag.Label,
-	"remixed_by":     tag.Remixer,
-	"content_group":  tag.Grouping,
 }
 
 // Pairs returns the canonical key/value pairs the APE tag supplies (text items
@@ -204,16 +267,12 @@ func (t *Tag) Pairs() []struct {
 	}
 	var out []kv
 	for _, it := range t.Items {
-		if it.NonText {
+		if it.NonText() {
 			continue
 		}
-		key, ok := apeKeys[strings.ToLower(it.Key)]
+		key, ok := mapping.CanonicalAPE(it.Key)
 		if !ok {
-			k, err := tag.ParseKey(it.Key)
-			if err != nil {
-				continue
-			}
-			key = k
+			continue
 		}
 		for v := range strings.SplitSeq(it.Value, "\x00") {
 			if v != "" {

@@ -102,7 +102,18 @@ type doc struct {
 	fmtCfg fmtChunk
 	track  core.AudioTrack
 	size   int64
+
+	// form is the container's 12-byte header id: "RIFF", or "RF64"/"BW64" for the
+	// 64-bit extension. It is carried so a rewrite keeps the form it was given -
+	// never silently downgrading an RF64 file to RIFF - and ds64 holds that
+	// extension's decoded sizes (nil for plain RIFF).
+	form [4]byte
+	ds64 *ds64
 }
+
+// isRF64 reports whether the container uses the 64-bit RIFF extension, whose sizes
+// live in the ds64 chunk rather than the 32-bit chunk headers.
+func (d *doc) isRF64() bool { return d.ds64 != nil }
 
 func (d *doc) Format() core.Format { return core.FormatWAV }
 
@@ -111,6 +122,7 @@ func (d *doc) Clone() core.NativeDoc {
 	c := *d
 	c.chunks = slices.Clone(d.chunks)
 	c.info = slices.Clone(d.info)
+	c.ds64 = d.ds64.clone()
 	if d.id3 != nil {
 		c.id3 = d.id3.Clone()
 	}

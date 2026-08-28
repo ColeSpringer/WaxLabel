@@ -203,7 +203,7 @@ func apeHasNonText(t *ape.Tag) bool {
 		return false
 	}
 	for _, it := range t.Items {
-		if it.NonText {
+		if it.NonText() {
 			return true
 		}
 	}

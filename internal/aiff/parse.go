@@ -272,7 +272,9 @@ var formDialect = iff.Dialect{Order: binary.BigEndian, AudioID: [4]byte{'S', 'S'
 // shared iff walker, then copies the result into d. It reads only chunk headers (never
 // bodies), so a large SSND chunk costs nothing.
 func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, formEnd, limit int64, maxElements int) error {
-	res, err := iff.WalkChunks(ctx, src, d.size, formEnd, limit, maxElements, formDialect)
+	res, err := iff.WalkChunks(ctx, src, iff.WalkOptions{
+		Size: d.size, End: formEnd, Limit: limit, MaxElements: maxElements, Dialect: formDialect,
+	})
 	if err != nil {
 		return err
 	}

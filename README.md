@@ -5,8 +5,9 @@ audio-file metadata: tags, embedded pictures, chapters, and synced lyrics. It is
 preservation-first: edits are planned against the parsed native structure, metadata
 is rewritten only where needed, and audio bytes are copied rather than transcoded.
 
-It reads and writes FLAC, Ogg Vorbis, Ogg Opus, MP3, WAV, MP4/M4A, raw AAC/ADTS,
-Matroska/WebM, and AIFF/AIFF-C.
+It reads and writes FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, MP3, WAV (including RF64/BW64),
+MP4/M4A, raw AAC/ADTS, Matroska/WebM, AIFF/AIFF-C, WavPack, Monkey's Audio, and Musepack,
+and reads WMA/ASF.
 
 The public API lives in `github.com/colespringer/waxlabel` and
 `github.com/colespringer/waxlabel/tag`; codec packages are internal.
@@ -153,12 +154,17 @@ maximum: `canceled`/`timeout` > `source-changed` > `invalid-data` > `input-too-l
 | --- | --- | --- |
 | FLAC | read/write | Vorbis comments, FLAC pictures, `CHAPTERxxx` chapters, `SYNCEDLYRICS` (LRC); padding is fully controllable. |
 | Ogg Vorbis / Opus | read/write | Vorbis comments, `METADATA_BLOCK_PICTURE`, `CHAPTERxxx` chapters, `SYNCEDLYRICS` (LRC). |
+| Ogg FLAC (`.oga`) | read/write | Vorbis comments and chapters as above; cover art is a native FLAC `PICTURE` block, not a comment. |
 | MP3 | read/write | ID3v2 (`CHAP`/`CTOC` chapters, `SYLT` lyrics); new tags are ID3v2.3. ID3v1/APEv2 are surfaced as legacy. |
-| WAV | read/write | RIFF LIST/INFO plus embedded `id3 ` (chapters and lyrics); chunks are preserved. |
-| MP4 / M4A / M4B | read/write | iTunes `ilst`, cover art, Nero and QuickTime chapters. Fragmented MP4 (a `moof`) is read-only; a `moov` declaring `mvex` with no fragment present is written normally. |
+| WAV / RF64 / BW64 | read/write | RIFF LIST/INFO plus embedded `id3 ` (chapters and lyrics); chunks are preserved. The 64-bit RF64/BW64 form is kept on save-back, with `ds64` recomputed. |
+| MP4 / M4A / M4B / MOV | read/write | iTunes `ilst`, cover art, Nero and QuickTime chapters. Fragmented MP4 (a `moof`) is read-only; a `moov` declaring `mvex` with no fragment present is written normally. |
 | Matroska / WebM | read/write | Scoped SimpleTags, segment title, attachments, default-edition chapters. WebM cannot write cover attachments. |
 | AAC (ADTS) | read/write | Front ID3v2 tag (new tags are ID3v2.4) plus ADTS frames. |
 | AIFF / AIFF-C | read/write | Native text chunks plus embedded `ID3 `; chunks are preserved. |
+| WavPack | read/write | APEv2 items and the `Cover Art` convention; a trailing ID3v1 is surfaced as legacy. |
+| Monkey's Audio | read/write | APEv2 as above; SV3.98+ and the older inline header are both read. |
+| Musepack | read/write | APEv2 as above, for both SV7 and SV8. A leading ID3v2 is surfaced as legacy. |
+| WMA / ASF | read-only | Content Description, `WM/*` descriptors, and `WM/Picture` cover art. WaxLabel does not write ASF. |
 
 When `set` authors a structural edit a format cannot store (e.g. cover art on WebM,
 or chapters on a format with no chapter store), it drops that item with a warning and
@@ -175,9 +181,14 @@ The table below is generated from the same capability model used by `waxlabel ca
 | MP3 | read full, write full · APIC frame | read full, write full · ID3v2 CHAP/CTOC frames | read full, write full · ID3v2 SYLT frame |
 | MP4 | read full, write full · covr atom (JPEG/PNG/BMP) | read full, write full · Nero chpl and a QuickTime chapter text track | read none, write none |
 | Matroska | read full, write full · AttachedFile (image attachment) | read full, write full · Chapters > EditionEntry > ChapterAtom (default edition) | read none, write none |
+| Monkey's Audio | read full, write full · APEv2 Cover Art item | read none, write none | read none, write none |
+| Musepack | read full, write full · APEv2 Cover Art item | read none, write none | read none, write none |
+| Ogg FLAC | read full, write full · FLAC PICTURE block | read full, write full · VorbisComment CHAPTERxxx | read full, write full · SYNCEDLYRICS comment (LRC) |
 | Ogg Opus | read full, write full · METADATA_BLOCK_PICTURE | read full, write full · VorbisComment CHAPTERxxx | read full, write full · SYNCEDLYRICS comment (LRC) |
 | Ogg Vorbis | read full, write full · METADATA_BLOCK_PICTURE | read full, write full · VorbisComment CHAPTERxxx | read full, write full · SYNCEDLYRICS comment (LRC) |
 | WAV | read full, write full · APIC (id3 chunk) | read full, write full · ID3v2 CHAP/CTOC frames (id3 chunk) | read full, write full · ID3v2 SYLT frame |
+| WMA | read full, write none · WM/Picture descriptor | read none, write none | read none, write none |
+| WavPack | read full, write full · APEv2 Cover Art item | read none, write none | read none, write none |
 <!-- END caps -->
 
 Some format-specific limits are intentional (for example, MP4 cover art drops the

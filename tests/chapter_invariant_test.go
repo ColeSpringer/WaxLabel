@@ -77,6 +77,7 @@ var chapterFixtures = map[wl.Format]string{
 	wl.FormatFLAC:      "../testdata/notags.flac",
 	wl.FormatOggVorbis: "../testdata/notags.ogg",
 	wl.FormatOggOpus:   "../testdata/notags.opus",
+	wl.FormatOggFLAC:   "../testdata/notags.oga",
 	wl.FormatMP4:       "../testdata/notags.m4a",
 	wl.FormatMatroska:  "../testdata/notags.mka",
 }

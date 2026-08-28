@@ -22,6 +22,7 @@ const (
 	FamilyRIFF
 	FamilyMatroska
 	FamilyAIFF
+	FamilyASF
 )
 
 func (f Family) String() string {
@@ -44,6 +45,8 @@ func (f Family) String() string {
 		return "matroska"
 	case FamilyAIFF:
 		return "aiff"
+	case FamilyASF:
+		return "asf"
 	default:
 		return "unknown"
 	}

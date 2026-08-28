@@ -1,6 +1,7 @@
 package ogg
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
@@ -63,8 +64,9 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	// Chapters and synced lyrics are stored as Vorbis comments, so an edit to either rebuilds
 	// the list like a tag edit.
 	newComments := d.comments
+	commentsChanged := tagsChanged || chaptersChanged || syncedLyricsChanged
 	var rebuildInfo vorbis.RebuildInfo
-	if tagsChanged || chaptersChanged || syncedLyricsChanged {
+	if commentsChanged {
 		newComments, rebuildInfo = vorbis.Rebuild(d.comments, edited.Tags, changed, edited.Chapters, chaptersChanged, edited.SyncedLyrics, syncedLyricsChanged)
 		report.Operations = append(report.Operations, "Vorbis comment rewrite")
 	}
@@ -83,7 +85,7 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	// tag/chapter edit has none): buildCommentPacket below only reads full, so aliasing newComments
 	// when nothing is appended is safe.
 	full := newComments
-	if len(edited.Pictures) > 0 {
+	if d.kind != kindFLAC && len(edited.Pictures) > 0 {
 		full = slices.Clone(newComments)
 		for _, p := range edited.Pictures {
 			full = append(full, vorbis.Comment{
@@ -117,33 +119,63 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	if limit <= 0 {
 		limit = bits.DefaultLimits.MaxAllocBytes
 	}
-	if d.origCommentPacketLen > limit {
-		limit = d.origCommentPacketLen // preserve data already in the file, read within the parse limit
+	// Floor at the largest header packet the file already carries. Those bytes were read
+	// within the (possibly raised) parse limit, so an unrelated edit must stay possible
+	// under a lower write limit - and for Vorbis the setup packet is copied verbatim, so
+	// guarding it against the bare limit would refuse an edit over a packet the edit does
+	// not even touch.
+	limit = max(limit, d.origMaxHeaderPacket())
+
+	// Build the header tail packets (with the possibly-neutralized vendor) once, here, so
+	// the whole-packet guard weighs the exact bytes the re-pagination below emits. Page 0
+	// (the id packet, alone) is normally copied verbatim; the FLAC mapping rebuilds it when
+	// its header-packet count changes.
+	newBlocks := d.flacBlocks
+	page0 := bits.Copy(0, d.page0Len)
+	page0Len := d.page0Len
+	var tailPackets [][]byte
+	if d.kind == kindFLAC {
+		newBlocks = rebuildFLACBlocks(d, newVendor, newComments, edited.Pictures, commentsChanged || vendorChanged, picturesChanged)
+		if err := checkFLACBlockSizes(newBlocks); err != nil {
+			return nil, err
+		}
+		tailPackets = flacHeaderPackets(newBlocks)
+		// Rebuild page 0 whenever the identification packet's BYTES change, not merely
+		// when the block count does. A file whose declared count was already wrong - or
+		// was the spec's "unknown" zero - would otherwise keep that value on disk while
+		// buildResult records the true one, breaking the result-equals-a-fresh-parse
+		// promise. STREAMINFO is carried through untouched either way.
+		if idPacket := flacIDWithCount(d.idPacket, len(newBlocks)); !bytes.Equal(idPacket, d.idPacket) {
+			p0, _ := paginateBOS(d.serial, idPacket)
+			page0, page0Len = bits.Lit(p0), int64(len(p0))
+		}
+	} else {
+		commentPacket := d.buildCommentPacket(newVendor, full)
+		tailPackets = [][]byte{commentPacket}
+		if d.kind == kindVorbis {
+			tailPackets = append(tailPackets, d.setupPacket)
+		}
+	}
+	// Every header packet is reassembled (and capped) individually on re-read, so the guard
+	// is per-packet: for Vorbis and Opus that is the one comment packet, for FLAC each
+	// metadata block's packet - a single oversized cover must not slip through because the
+	// comment block alone stayed small.
+	for _, pkt := range tailPackets {
+		if int64(len(pkt)) > limit {
+			return nil, fmt.Errorf("%w: Ogg %s is %s (max %s; raise the write allocation limit to keep it)",
+				waxerr.ErrPictureTooLarge, headerPacketName(d.kind, pkt), bits.HumanBytes(int64(len(pkt))), bits.HumanBytes(limit))
+		}
 	}
 
-	// Build the comment packet (with the possibly-neutralized vendor) once, here, so the
-	// whole-packet guard weighs the exact bytes the re-pagination below emits.
-	commentPacket := d.buildCommentPacket(newVendor, full)
-	if int64(len(commentPacket)) > limit {
-		return nil, fmt.Errorf("%w: Ogg comment header is %s (max %s; raise the write allocation limit to keep it)",
-			waxerr.ErrPictureTooLarge, bits.HumanBytes(int64(len(commentPacket))), bits.HumanBytes(limit))
-	}
-
-	// Re-paginate the header tail (everything after the BOS id page): the new
-	// comment packet, plus the Vorbis setup packet preserved verbatim.
-	tailPackets := [][]byte{commentPacket}
-	if d.kind == kindVorbis {
-		tailPackets = append(tailPackets, d.setupPacket)
-	}
+	// Re-paginate the header tail (everything after the BOS id page).
 	tailBytes, tailPages := paginate(d.serial, 1, tailPackets)
 	newHeaderPages := 1 + tailPages
 	delta := newHeaderPages - d.headerPages
 
-	newAudioStart := d.page0Len + int64(len(tailBytes))
+	newAudioStart := page0Len + int64(len(tailBytes))
 	shift := newAudioStart - d.audioStart
 
-	// Page 0 (the id packet, alone) is copied verbatim; then the new header tail.
-	segs := []bits.Segment{bits.Copy(0, d.page0Len), bits.Lit(tailBytes)}
+	segs := []bits.Segment{page0, bits.Lit(tailBytes)}
 
 	newAudioPages := make([]apage, len(d.audioPages))
 	if delta == 0 {
@@ -194,7 +226,7 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	// collapsing to a "No metadata changes" no-op.
 	report.Warnings = vorbis.RebuildWarnings(report.Warnings, rebuildInfo)
 
-	result := buildResult(edited, d, newVendor, newComments, newAudioPages, newHeaderPages, newAudioStart, shift, newSize)
+	result := buildResult(edited, d, newVendor, newComments, newBlocks, newAudioPages, newHeaderPages, page0Len, newAudioStart, shift, newSize, limit)
 	// Ogg stores Vorbis values verbatim, so this downgrade only catches values the rebuild
 	// dropped, such as empty strings. Vendor neutralization has no canonical-tag diff, so it
 	// must be passed as the structural-change flag.
@@ -230,9 +262,13 @@ func (d *doc) buildCommentPacket(vendor string, comments []vorbis.Comment) []byt
 // Document without re-parsing. The audio pages keep their bodies (and thus the
 // essence) and only shift in offset (and, when renumbered, sequence/CRC), so the
 // result equals a fresh parse of the written bytes.
-func buildResult(edited *core.Media, base *doc, newVendor string, newComments []vorbis.Comment,
-	newAudioPages []apage, newHeaderPages int, newAudioStart, shift, newSize int64) *core.Media {
+func buildResult(edited *core.Media, base *doc, newVendor string, newComments []vorbis.Comment, newBlocks []fblock,
+	newAudioPages []apage, newHeaderPages int, newPage0Len, newAudioStart, shift, newSize, limit int64) *core.Media {
 
+	idPacket := base.idPacket
+	if base.kind == kindFLAC {
+		idPacket = flacIDWithCount(idPacket, len(newBlocks))
+	}
 	nd := &doc{
 		format:      base.format,
 		kind:        base.kind,
@@ -240,16 +276,25 @@ func buildResult(edited *core.Media, base *doc, newVendor string, newComments []
 		vendor:      newVendor,
 		comments:    newComments,
 		pictures:    core.ClonePictures(edited.Pictures),
-		idPacket:    base.idPacket,
+		flacBlocks:  newBlocks,
+		idPacket:    idPacket,
 		setupPacket: base.setupPacket,
 		commentPad:  base.commentPad,
-		page0Len:    base.page0Len,
+		page0Len:    newPage0Len,
 		headerPages: newHeaderPages,
 		audioStart:  newAudioStart,
 		audioPages:  newAudioPages,
 		audioEnd:    base.audioEnd + shift,
 		trailingLen: base.trailingLen,
 		clean:       true,
+	}
+	if base.kind == kindFLAC {
+		// Re-derive the picture state from the blocks actually written, the same way a
+		// fresh parse would. Carrying the source's fields instead would keep an
+		// undecodable PICTURE block listed as "preserved" after it was already re-emitted
+		// into newBlocks, so a second picture edit on the returned document would drop it.
+		_, nd.malformedPictureBlocks, _ = decodeFLACBlockPictures(newBlocks, limit)
+		nd.commentPictures = commentSourcedPictures(newComments, limit)
 	}
 	tags, families := vorbis.Project(newComments)
 	media := &core.Media{

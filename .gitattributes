@@ -2,25 +2,35 @@
 
 # Media fixtures must reach the decoders byte for byte.
 *.aac -text
+*.adts -text
 *.afc -text
 *.aif -text
 *.aifc -text
 *.aiff -text
 *.alac -text
+*.ape -text
+*.asf -text
 *.flac -text
 *.m4a -text
 *.m4b -text
+*.m4r -text
 *.mk3d -text
 *.mka -text
 *.mks -text
 *.mkv -text
+*.mov -text
 *.mp3 -text
 *.mp4 -text
+*.mp+ -text
+*.mpc -text
+*.mpga -text
 *.oga -text
 *.ogg -text
 *.opus -text
 *.wav -text
 *.wave -text
 *.webm -text
+*.wma -text
+*.wv -text
 
 testdata/** -text

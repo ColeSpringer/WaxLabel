@@ -248,3 +248,45 @@ func movementSplit(v string) (num, total string, split bool) {
 	}
 	return n, t, true
 }
+
+// LegacyV1Families projects a preserved ID3v1 tag into legacy family entries. MP3,
+// FLAC, and the APEv2-native containers all carry one as a non-authoritative trailer,
+// so the projection lives here rather than being written out per codec.
+func LegacyV1Families(auth tag.TagSet, raw []byte) []core.FamilyValue {
+	v1, ok := ParseV1(raw)
+	if !ok {
+		return nil
+	}
+	contribs := make([]core.Contribution, 0, 8)
+	for _, p := range v1.Pairs() {
+		contribs = append(contribs, core.Contribution{Key: p.Key, Value: p.Value})
+	}
+	return core.LegacyFamilies(auth, core.FamilyID3v1, contribs)
+}
+
+// LegacyV2Families projects a preserved, non-authoritative ID3v2 tag into legacy family
+// entries, and reports whether it also carries content the canonical set does not fold
+// in - pictures, chapters, or synced lyrics - which a legacy strip cannot prove
+// redundant. FLAC's stray leading tag and Musepack's both take this path.
+//
+// An unreadable tag reports opaque with no entries: nothing about it can be shown to be
+// redundant with what the authoritative store holds.
+func LegacyV2Families(auth tag.TagSet, raw []byte, maxElements int) ([]core.FamilyValue, bool) {
+	if len(raw) == 0 {
+		return nil, false
+	}
+	t, err := ParseTag(raw, maxElements)
+	if err != nil {
+		return nil, true
+	}
+	proj := Project(t)
+	var contribs []core.Contribution
+	for _, k := range proj.Tags.Keys() {
+		vals, _ := proj.Tags.Get(k)
+		for _, v := range vals {
+			contribs = append(contribs, core.Contribution{Key: k, Value: v})
+		}
+	}
+	opaque := len(proj.Pictures) > 0 || len(proj.Chapters) > 0 || len(proj.SyncedLyrics) > 0
+	return core.LegacyFamilies(auth, core.FamilyID3v2, contribs), opaque
+}

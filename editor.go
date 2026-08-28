@@ -414,9 +414,17 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// so the touched flags are false there and none of this fires.
 	var chaptersDropped, syncedLyricsDropped, picturesDropped bool
 
+	// The structural gates below are skipped for a read-only file. Dropping an item there
+	// would report the FORMAT's storage limits ("a WMA file cannot store chapters") for a
+	// write that was never going to happen for a different reason, and would let the edit
+	// collapse into a silent exit-0 no-op while the same edit to a tag exits 3. Leaving the
+	// item in place carries the edit down to the codec, whose own refusal names the real
+	// reason - the single predicate its Capabilities reports ReadOnly from.
+	structuralGates := !caps.ReadOnly
+
 	// Chapters: refuse (or drop) a chapter edit on a format with no chapter store. Guard on a
 	// non-empty list so ClearChapters() on a chapterless format stays a harmless no-op.
-	if e.chaptersTouched && len(e.chapters) > 0 && caps.Chapters.Write < core.AccessPartial {
+	if structuralGates && e.chaptersTouched && len(e.chapters) > 0 && caps.Chapters.Write < core.AccessPartial {
 		if !wo.AllowUnsupportedDrop {
 			return nil, fmt.Errorf("%w: chapters cannot be written to %s %s file",
 				waxerr.ErrUnsupportedTag, core.IndefiniteArticle(e.base.Format.String()), e.base.Format)
@@ -436,7 +444,7 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// Synced lyrics: refuse (or drop) an authored set on a format with no synced-lyrics store.
 	// MP4 and Matroska can carry timed lyric tracks, but those tracks are outside this
 	// metadata model. A clear on an unsupported format stays a no-op.
-	if e.syncedLyricsTouched && len(e.syncedLyrics) > 0 && caps.SyncedLyrics.Write < core.AccessPartial {
+	if structuralGates && e.syncedLyricsTouched && len(e.syncedLyrics) > 0 && caps.SyncedLyrics.Write < core.AccessPartial {
 		if !wo.AllowUnsupportedDrop {
 			return nil, fmt.Errorf("%w: synced lyrics cannot be written to %s %s file",
 				waxerr.ErrUnsupportedTag, core.IndefiniteArticle(e.base.Format.String()), e.base.Format)
@@ -452,7 +460,7 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// Cover art: WebM excludes the Attachments element, so a cover edit on it cannot be
 	// stored. Under the drop option, remove the pictures here; otherwise the Matroska writer's
 	// plan-time cover refusal (keyed on the same absent capability) remains the backstop.
-	if wo.AllowUnsupportedDrop && e.picsTouched && len(e.pictures) > 0 && caps.Pictures.Write < core.AccessPartial {
+	if structuralGates && wo.AllowUnsupportedDrop && e.picsTouched && len(e.pictures) > 0 && caps.Pictures.Write < core.AccessPartial {
 		edited.Pictures = e.base.Pictures
 		picturesDropped = true
 	}
@@ -843,7 +851,11 @@ func appendLegacyConflictWarnings(ws []core.Warning, fams []core.FamilyValue, pa
 	}
 	seen := map[tag.Key]bool{}
 	for _, f := range fams {
-		if f.Family != core.FamilyID3v1 && f.Family != core.FamilyAPEv2 {
+		// Gate on the Legacy marker, not on the family name: APEv2 is a legacy container
+		// in MP3 but the native, authoritative store in WavPack, Monkey's Audio, and
+		// Musepack, where an edit writes it directly and there is no divergence to warn
+		// about. The parser sets Legacy on exactly the entries a rewrite does not update.
+		if !f.Legacy {
 			continue
 		}
 		// Skip an already-warned key, a key the edit does not touch, a pre-existing

@@ -13,12 +13,16 @@ import (
 	// Register the codecs
 	_ "github.com/colespringer/waxlabel/internal/aac"
 	_ "github.com/colespringer/waxlabel/internal/aiff"
+	_ "github.com/colespringer/waxlabel/internal/apen"
+	_ "github.com/colespringer/waxlabel/internal/asf"
 	_ "github.com/colespringer/waxlabel/internal/flac"
 	_ "github.com/colespringer/waxlabel/internal/matroska"
 	_ "github.com/colespringer/waxlabel/internal/mp3"
 	_ "github.com/colespringer/waxlabel/internal/mp4"
+	_ "github.com/colespringer/waxlabel/internal/musepack"
 	_ "github.com/colespringer/waxlabel/internal/ogg"
 	_ "github.com/colespringer/waxlabel/internal/wav"
+	_ "github.com/colespringer/waxlabel/internal/wavpack"
 )
 
 // errNilContext reports a nil [context.Context] handed to a public ctx-taking

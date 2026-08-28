@@ -44,8 +44,17 @@ func New() Codec { return Codec{} }
 
 func init() { core.Register(New()) }
 
-func (Codec) Format() core.Format  { return core.FormatMP4 }
-func (Codec) Extensions() []string { return []string{".m4a", ".mp4", ".m4b", ".alac"} }
+func (Codec) Format() core.Format { return core.FormatMP4 }
+
+// Extensions claims the MP4 family names. ".m4r" is Apple's ringtone extension - a
+// plain AAC-in-MP4 file. ".mov" is QuickTime, the same box structure this codec
+// already parses; claiming it means a --recursive walk descends into QuickTime files
+// and rewrites their metadata, which is deliberate. Both are here so a recursive walk
+// does not skip them and warnExtensionMismatch does not call a legitimate write a
+// transcode.
+func (Codec) Extensions() []string {
+	return []string{".m4a", ".mp4", ".m4b", ".m4r", ".mov", ".alac"}
+}
 
 // SkipsLeadingID3 reports false because MP4 parsers expect an atom box at offset 0.
 func (Codec) SkipsLeadingID3() bool { return false }

@@ -18,14 +18,16 @@ import (
 	"github.com/colespringer/waxlabel/internal/vorbis"
 )
 
-// kind distinguishes the two Ogg codecs WaxLabel writes. Both store tags as a
-// Vorbis comment list; they differ in the comment-header framing and in which
-// header packets are decoder-critical.
+// kind distinguishes the three Ogg codecs WaxLabel writes. All store tags as a
+// Vorbis comment list; they differ in the comment-header framing, in which
+// header packets are decoder-critical, and - for FLAC alone - in carrying cover
+// art as a native PICTURE block rather than a METADATA_BLOCK_PICTURE comment.
 type kind uint8
 
 const (
 	kindVorbis kind = iota
 	kindOpus
+	kindFLAC
 )
 
 // String is the codec name surfaced in the raw model and JSON properties.codec.
@@ -37,8 +39,13 @@ const (
 // consistent. The text dump uppercases independently, so this affects only the
 // raw/JSON view, not display.
 func (k kind) String() string {
-	if k == kindOpus {
+	switch k {
+	case kindOpus:
 		return "Opus"
+	case kindFLAC:
+		// The raw name the native FLAC parser reports; CanonicalCodec uppercases it,
+		// so Ogg FLAC and native FLAC read identically.
+		return "flac"
 	}
 	return "Vorbis"
 }
@@ -70,9 +77,17 @@ type doc struct {
 	comments []vorbis.Comment // tag comments (METADATA_BLOCK_PICTURE excluded)
 	pictures []core.Picture   // decoded from METADATA_BLOCK_PICTURE comments
 
-	idPacket    []byte // packet 1 (Vorbis identification / OpusHead), verbatim
-	setupPacket []byte // Vorbis setup header (packet 3), verbatim; nil for Opus
+	idPacket    []byte // packet 1 (Vorbis identification / OpusHead / \x7FFLAC), verbatim
+	setupPacket []byte // Vorbis setup header (packet 3), verbatim; nil for Opus and FLAC
 	commentPad  []byte // bytes after the comment list in the comment packet (Opus padding), preserved
+
+	// FLAC mapping only: every header packet after the identification packet is one
+	// FLAC metadata block, kept verbatim so untouched blocks (SEEKTABLE, CUESHEET,
+	// APPLICATION, unknown types) round-trip byte-for-byte. Cover art lives in
+	// PICTURE blocks here, not in the comment list.
+	flacBlocks             []fblock
+	malformedPictureBlocks [][]byte       // PICTURE bodies that failed to decode, preserved
+	commentPictures        []core.Picture // covers found as METADATA_BLOCK_PICTURE comments
 
 	// origCommentPacketLen is the raw comment header packet length as parsed. reassembleHeaders
 	// caps the summed comment packet at the alloc limit on re-read, so the write path floors its
@@ -102,14 +117,28 @@ func (d *doc) Clone() core.NativeDoc {
 	c.setupPacket = slices.Clone(d.setupPacket)
 	c.commentPad = slices.Clone(d.commentPad)
 	c.audioPages = slices.Clone(d.audioPages)
+	// Each block and each preserved picture body is copied too: cloning only the slice
+	// headers would leave every payload aliased to the document that handed it out.
+	c.flacBlocks = make([]fblock, len(d.flacBlocks))
+	for i, b := range d.flacBlocks {
+		c.flacBlocks[i] = b.clone()
+	}
+	c.malformedPictureBlocks = make([][]byte, len(d.malformedPictureBlocks))
+	for i, b := range d.malformedPictureBlocks {
+		c.malformedPictureBlocks[i] = slices.Clone(b)
+	}
+	c.commentPictures = core.ClonePictures(d.commentPictures)
 	return &c
 }
 
 // Describe summarizes the native structure for the dump/native views.
 func (d *doc) Describe() []core.NativeEntry {
 	idKind, commentKind := "Vorbis identification header", "Vorbis comment header"
-	if d.kind == kindOpus {
+	switch d.kind {
+	case kindOpus:
 		idKind, commentKind = "OpusHead", "OpusTags"
+	case kindFLAC:
+		idKind, commentKind = "FLAC identification header", "VORBIS_COMMENT"
 	}
 	out := []core.NativeEntry{
 		{Kind: idKind, Size: len(d.idPacket)},
@@ -118,8 +147,17 @@ func (d *doc) Describe() []core.NativeEntry {
 	if len(d.setupPacket) > 0 {
 		out = append(out, core.NativeEntry{Kind: "Vorbis setup header", Size: len(d.setupPacket), Note: "preserved"})
 	}
-	for range d.pictures {
-		out = append(out, core.NativeEntry{Kind: "METADATA_BLOCK_PICTURE", Note: "embedded picture"})
+	if d.kind == kindFLAC {
+		for _, b := range d.flacBlocks {
+			if b.code == flacBlkVorbisComment {
+				continue // already listed above
+			}
+			out = append(out, core.NativeEntry{Kind: flacBlockName(b.code), Size: len(b.body)})
+		}
+	} else {
+		for range d.pictures {
+			out = append(out, core.NativeEntry{Kind: "METADATA_BLOCK_PICTURE", Note: "embedded picture"})
+		}
 	}
 	out = append(out, core.NativeEntry{Kind: "audio pages", Size: len(d.audioPages), Unit: "pages"})
 	if len(d.commentPad) > 0 {

@@ -292,6 +292,14 @@ const (
 	// describes the container, not a tag field. Appended to the end of the block so the
 	// existing codes keep their numbers.
 	WarnFragmented
+	// WarnInvalidText means a stored text value's bytes were not valid UTF-8 and were
+	// decoded through a legacy code page instead. The value is readable but is a
+	// best-effort reading, and another reader may render it differently.
+	WarnInvalidText
+	// WarnElementCap means a container held more elements than the configured limit
+	// allows, so the parsed model is a partial view. A codec that rebuilds its whole
+	// metadata region from that model must refuse to write rather than drop the rest.
+	WarnElementCap
 )
 
 func (c WarningCode) String() string {
@@ -396,6 +404,10 @@ func (c WarningCode) String() string {
 		return "synced-lyrics-line-dropped"
 	case WarnPictureSelectorMiss:
 		return "picture-remove-role-miss"
+	case WarnInvalidText:
+		return "invalid-text"
+	case WarnElementCap:
+		return "element-cap"
 	case WarnFragmented:
 		return "fragmented"
 	default:

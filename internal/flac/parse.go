@@ -243,35 +243,9 @@ func extractCommentPictures(comments []comment, limit int64) (kept []comment, pi
 // - content a legacy strip cannot prove redundant. The leading ID3v2 bytes were already read at
 // parse, so this re-parses them in memory without touching the source.
 func flacLegacyFamilies(auth tag.TagSet, leadingID3, trailingID3v1 []byte, maxElements int) (fams []core.FamilyValue, opaque bool) {
-	add := func(key tag.Key, value string, fam core.Family) {
-		fams = append(fams, core.FamilyValue{
-			Key: key, Family: fam, Scope: core.ScopeTrack,
-			Values: []string{value}, Selected: core.FamilySelected(auth, key, value), Legacy: true,
-		})
-	}
-	if v1, ok := id3.ParseV1(trailingID3v1); ok {
-		for _, p := range v1.Pairs() {
-			add(p.Key, p.Value, core.FamilyID3v1)
-		}
-	}
-	if len(leadingID3) > 0 {
-		t, err := id3.ParseTag(leadingID3, maxElements)
-		if err != nil {
-			// An unreadable leading ID3v2 cannot be proven redundant with the canonical set.
-			opaque = true
-		} else {
-			proj := id3.Project(t)
-			for key, vals := range proj.Tags.All() {
-				for _, v := range vals {
-					add(key, v, core.FamilyID3v2)
-				}
-			}
-			if len(proj.Pictures) > 0 || len(proj.Chapters) > 0 || len(proj.SyncedLyrics) > 0 {
-				opaque = true
-			}
-		}
-	}
-	return fams, opaque
+	fams = id3.LegacyV1Families(auth, trailingID3v1)
+	leading, opaque := id3.LegacyV2Families(auth, leadingID3, maxElements)
+	return append(fams, leading...), opaque
 }
 
 // id3v2Len returns the total byte length of a stray leading ID3v2 tag given its

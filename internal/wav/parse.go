@@ -43,23 +43,34 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	if err != nil {
 		return nil, fmt.Errorf("%w: WAV file shorter than a RIFF header", waxerr.ErrInvalidData)
 	}
-	switch {
-	case string(hdr[0:4]) == "RF64" || string(hdr[0:4]) == "BW64":
-		return nil, fmt.Errorf("%w: RF64/BW64 (>4 GiB WAV) is out of scope", waxerr.ErrUnsupportedFormat)
-	case string(hdr[0:4]) != "RIFF" || string(hdr[8:12]) != "WAVE":
+	form := string(hdr[0:4])
+	rf64 := form == "RF64" || form == "BW64"
+	if (!rf64 && form != "RIFF") || string(hdr[8:12]) != "WAVE" {
 		return nil, fmt.Errorf("%w: missing RIFF/WAVE marker", waxerr.ErrInvalidData)
 	}
 
-	// The RIFF size delimits the container; bytes beyond it are appended out-of-RIFF
+	d := &doc{size: size, infoIdx: -1, id3Idx: -1, dataIdx: -1}
+	copy(d.form[:], hdr[0:4])
+
+	// The container size delimits it; bytes beyond it are appended out-of-container
 	// data (e.g. an ID3v1 tag), not chunks. Trust it as the walk boundary only when
 	// sane - a bogus 0 or 0xFFFFFFFF falls back to the file size so no chunk is
-	// missed.
-	riffEnd := 8 + int64(binary.LittleEndian.Uint32(hdr[4:8]))
-	if riffEnd < 12 || riffEnd > size {
+	// missed. For RF64 the 32-bit field is the 0xFFFFFFFF marker and the real size
+	// lives in ds64, which must therefore be read before the walk.
+	declaredSize := uint64(binary.LittleEndian.Uint32(hdr[4:8]))
+	if rf64 {
+		t, err := parseDS64(src, size, limit)
+		if err != nil {
+			return nil, err
+		}
+		d.ds64 = t
+		declaredSize = t.riffSize
+	}
+	riffEnd := 8 + int64(declaredSize)
+	if riffEnd < 12 || riffEnd > size || declaredSize > uint64(size) {
 		riffEnd = size
 	}
 
-	d := &doc{size: size, infoIdx: -1, id3Idx: -1, dataIdx: -1}
 	if err := walkChunks(ctx, src, d, riffEnd, limit, opts.Limits.MaxElements); err != nil {
 		return nil, err
 	}
@@ -265,7 +276,16 @@ var riffDialect = iff.Dialect{Order: binary.LittleEndian, AudioID: [4]byte{'d', 
 // shared iff walker, then copies the result into d. It reads only chunk headers (never
 // bodies), so a large data chunk costs nothing.
 func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, riffEnd, limit int64, maxElements int) error {
-	res, err := iff.WalkChunks(ctx, src, d.size, riffEnd, limit, maxElements, riffDialect)
+	opts := iff.WalkOptions{
+		Size: d.size, End: riffEnd, Limit: limit, MaxElements: maxElements, Dialect: riffDialect,
+	}
+	// Only an RF64/BW64 file has 64-bit sizes to resolve. Leaving the hook nil for plain
+	// RIFF keeps the walk on its original path instead of calling a method that would
+	// decline for every chunk of every file.
+	if d.ds64 != nil {
+		opts.SizeOverride = d.ds64.override
+	}
+	res, err := iff.WalkChunks(ctx, src, opts)
 	if err != nil {
 		return err
 	}
@@ -329,25 +349,7 @@ func buildTrack(fc fmtChunk, dataLen int64) core.AudioTrack {
 	return t
 }
 
-// codecName maps a WAVE format tag to a human-readable codec name. Only the
-// common tags are named; the rest report their numeric tag.
-func codecName(format uint16) string {
-	switch format {
-	case 0x0001:
-		return "PCM"
-	case 0x0003:
-		return "IEEE float"
-	case 0x0006:
-		return "A-law"
-	case 0x0007:
-		return "mu-law"
-	case 0x0011:
-		return "IMA ADPCM"
-	case 0x0055:
-		return "MP3"
-	case 0xFFFE:
-		return "PCM (extensible)"
-	default:
-		return fmt.Sprintf("WAVE format 0x%04X", format)
-	}
-}
+// codecName maps a WAVE format tag to a codec name. The table is shared with the ASF
+// reader, whose Stream Properties object carries the same structure, so one format tag
+// cannot read as two different codecs depending on the container.
+func codecName(format uint16) string { return core.WaveFormatCodec(format) }

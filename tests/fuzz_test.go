@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -23,27 +25,50 @@ func FuzzParse(f *testing.F) {
 	// edge cases such as multi-page packets and truncated pages.
 	for _, p := range []string{
 		sampleFLAC, "../testdata/notags.flac", sampleOgg, sampleOpus, notagsOgg, "../testdata/notags.opus",
+		sampleOggFLAC, notagsOggFLAC,
 		sampleMP3, sampleMP324, notagsMP3, sampleWAV, notagsWAV, sampleMP4, notagsMP4,
 		sampleMKA, sampleWebM, notagsMKA, chaptersMKA, sampleAIFF, notagsAIFF, sampleAIFC, sampleM4B,
-		sampleAAC, notagsAAC,
+		sampleAAC, notagsAAC, sampleRF64, sampleWV, notagsWV, sampleAPE, notagsAPE, sampleWMA, notagsWMA,
 	} {
 		if b, err := os.ReadFile(p); err == nil {
 			f.Add(b)
 		}
 	}
-	f.Add([]byte("ID3\x03\x00\x00\x00\x00\x00\x7f"))                                                                                                      // ID3v2.3 header claiming 127 body bytes it lacks
-	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x10"), []byte("TIT2")...))                                                                           // truncated v2.4 frame
-	f.Add([]byte("\xff\xfb\x90\x00"))                                                                                                                     // bare MPEG-1 Layer 3 frame header, no body
-	f.Add([]byte("fLaC"))                                                                                                                                 // marker only, no blocks
-	f.Add([]byte("fLaC\x00\x00\x00\x22"))                                                                                                                 // STREAMINFO header, no body
-	f.Add([]byte("fLaC\x80\xff\xff\xff"))                                                                                                                 // last block, absurd length
-	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x0a"), []byte("fLaC")...))                                                                           // stray ID3 then truncated
-	f.Add([]byte("OggS\x00\x02"))                                                                                                                         // Ogg capture pattern, truncated header
-	f.Add([]byte("OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\xff"))                                     // page header claiming a 255-byte body it lacks
+	f.Add([]byte("ID3\x03\x00\x00\x00\x00\x00\x7f"))                                                                          // ID3v2.3 header claiming 127 body bytes it lacks
+	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x10"), []byte("TIT2")...))                                               // truncated v2.4 frame
+	f.Add([]byte("\xff\xfb\x90\x00"))                                                                                         // bare MPEG-1 Layer 3 frame header, no body
+	f.Add([]byte("fLaC"))                                                                                                     // marker only, no blocks
+	f.Add([]byte("fLaC\x00\x00\x00\x22"))                                                                                     // STREAMINFO header, no body
+	f.Add([]byte("fLaC\x80\xff\xff\xff"))                                                                                     // last block, absurd length
+	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x0a"), []byte("fLaC")...))                                               // stray ID3 then truncated
+	f.Add([]byte("OggS\x00\x02"))                                                                                             // Ogg capture pattern, truncated header
+	f.Add([]byte("OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\xff"))         // page header claiming a 255-byte body it lacks
+	f.Add(synthOggFLAC(append([]byte{4}, vorbis.RenderCommentList("v", nil)...)))                                             // Ogg FLAC, comment block only
+	f.Add(synthOggFLAC(append([]byte{6}, 0xFF, 0xFF, 0xFF, 0xFF)))                                                            // Ogg FLAC, undecodable PICTURE block
+	f.Add([]byte("OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x05\x7fFLAC")) // Ogg FLAC signature, identification packet truncated
+	f.Add([]byte("wvpk\x18\x00\x00\x00\x10\x04"))                                                                             // wvpk marker, block header truncated
+	f.Add(append([]byte("wvpk\x18\x00\x00\x00\x10\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x18\xbc\x54\x00\x00\x00\x00"),
+		apeTagBinaryItem("Cover Art (Front)", []byte("no-nul-here"))...)) // WavPack with a malformed cover item
+	f.Add([]byte("wvpk0000\x10\x040000000000000000000000000000APETAGEX0000A\x00\x00\x000000000000000000")) // APE footer landing inside the first WavPack block
+	f.Add([]byte("MAC \x96\x0f\x00\x00"))                                                                  // MAC marker, descriptor truncated
+	f.Add(append(legacyAPEHeader(3970, 2000, 0, 2, 44100, 1, 100), make([]byte, 64)...))                   // pre-3.98 inline header
+	f.Add([]byte("MAC \x96\x0f\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff"))
+	f.Add([]byte("MAC 0000\xe6\x00\x00\x00" + strings.Repeat("0", 136)))                                                                                  // descriptor length landing exactly on the rewritten file's end                                                                                 // descriptor declaring absurd region sizes
+	f.Add(asfFile(asfStreamProperties(0x0161, 2, 44100, 16), asfContentDescription("T", "A", "", "", "")))                                                // minimal ASF
+	f.Add(asfFile(asfExtContentDescription(asfDescriptor{"WM/Picture", 1, []byte{3, 0xFF, 0xFF, 0xFF, 0xFF}})))                                           // WM/Picture declaring an absurd image length
+	f.Add(asfFile(asfHeaderExtension(asfDescriptor{"WM/AlbumTitle", 0, asfUTF16("x")})))                                                                  // nested Metadata record
+	f.Add([]byte("RF640000WAVEds64\x1c\x00\x00\x00000000000000000\xdd0000000000\x00\x00data\xff\xff\xff\xff"))                                            // ds64 dataSize above MaxInt64
+	f.Add(mpcSV8(44100, 0, 0, 2))                                                                                                                         // Musepack SV8, keyed packets
+	f.Add(mpcSV7(100, 0))                                                                                                                                 // Musepack SV7, fixed header
+	f.Add(append([]byte("MPCK"), mpcPacket("SH", []byte{0, 0, 0, 0, 8, 0xFF, 0xFF, 0xFF, 0xFF})...))                                                      // SH whose varlen sample count never terminates
+	f.Add(append(id3v2(4, textFrame(4, "TIT2", "x")), mpcSV7(4, 0)...))                                                                                   // SV7 behind a leading ID3v2
 	f.Add([]byte("RIFF\x04\x00\x00\x00WAVE"))                                                                                                             // RIFF/WAVE, no chunks
 	f.Add([]byte("RIFF\xff\xff\xff\xffWAVEdata\xff\xff\xff\xff"))                                                                                         // absurd RIFF + data sizes
 	f.Add([]byte("RIFF\x10\x00\x00\x00WAVELIST\x04\x00\x00\x00INFO"))                                                                                     // empty INFO list
-	f.Add([]byte("RF64\x04\x00\x00\x00WAVE"))                                                                                                             // RF64, must be rejected, not panic
+	f.Add([]byte("RF64\x04\x00\x00\x00WAVE"))                                                                                                             // RF64 with no ds64 chunk: reject, not panic
+	f.Add([]byte("RF64\xff\xff\xff\xffWAVEds64\x1c\x00\x00\x00"))                                                                                         // RF64 whose ds64 body is entirely missing
+	f.Add(rf64File("RF64", 1<<40, wavFmtPCM(), wavData(8)))                                                                                               // well-formed RF64 with an absurd sample count
+	f.Add(rf64File("BW64", 4, wavFmtPCM(), wavInfo([2]string{"INAM", "x"}), wavData(8)))                                                                  // BW64 with a tag chunk
 	f.Add([]byte("\x00\x00\x00\x10ftypM4A \x00\x00\x00\x00"))                                                                                             // ftyp only, no moov
 	f.Add([]byte("\x00\x00\x00\x08ftyp\x00\x00\x00\x08moov"))                                                                                             // empty moov, no tracks
 	f.Add([]byte("\x00\x00\x00\x08ftyp\x00\x00\x00\x01moov\xff\xff\xff\xff\xff\xff\xff\xff"))                                                             // 64-bit atom, absurd size
@@ -136,14 +161,14 @@ func FuzzParse(f *testing.F) {
 			// non-page-aligned Ogg (ErrUnalignedStream), an oversized layout
 			// (ErrInvalidData), an MP4 whose crafted offsets would overflow a 32-bit
 			// table on a grow (ErrSizeTooLarge), a fragmented MP4 (ErrFragmented), an
-			// MP4 carrying an unpatchable absolute-offset box (ErrUnsupportedFormat), or
-			// a Matroska layout the writer does not handle - no reserved Void, a position
+			// MP4 carrying an unpatchable absolute-offset box (ErrUnsupportedFormat), a
+			// Matroska layout the writer does not handle - no reserved Void, a position
 			// that would overflow its width, a Title with no Info element
-			// (ErrUnsupportedTag).
+			// (ErrUnsupportedTag) - or any WMA at all, which is read-only by design.
 			if errors.Is(err, waxerr.ErrChainedStream) || errors.Is(err, waxerr.ErrInvalidData) ||
 				errors.Is(err, waxerr.ErrUnalignedStream) || errors.Is(err, waxerr.ErrSizeTooLarge) ||
 				errors.Is(err, waxerr.ErrUnsupportedTag) || errors.Is(err, waxerr.ErrFragmented) ||
-				(doc.Format() == wl.FormatMP4 && errors.Is(err, waxerr.ErrUnsupportedFormat)) {
+				((doc.Format() == wl.FormatMP4 || doc.Format() == wl.FormatWMA) && errors.Is(err, waxerr.ErrUnsupportedFormat)) {
 				return
 			}
 			t.Fatalf("edit prepare failed: %v", err)

@@ -186,6 +186,24 @@ func paginate(serial, startSeq uint32, packets [][]byte) (out []byte, pageCount 
 	return out, pageCount
 }
 
+// paginateBOS builds the beginning-of-stream page holding one packet alone: the
+// identification header, which every Ogg mapping puts on a page of its own. It is
+// used only when that packet's bytes change - the FLAC mapping's header-packet
+// count - since page 0 is otherwise copied verbatim.
+func paginateBOS(serial uint32, pkt []byte) ([]byte, int) {
+	var lacing []byte
+	n := len(pkt)
+	for n >= maxSegments {
+		lacing = append(lacing, maxSegments)
+		n -= maxSegments
+	}
+	lacing = append(lacing, byte(n))
+	if len(lacing) > maxSegments {
+		return nil, 0 // unreachable for a real identification packet (>64 KiB)
+	}
+	return buildPage(flagBOS, 0, serial, 0, lacing, pkt), 1
+}
+
 // patchCRC recomputes a page's CRC after only its 4-byte sequence number (at
 // offset 18) changed, without re-reading the page body. The Ogg CRC has init 0
 // and no final XOR, so it is linear: the new CRC is the old CRC XOR the CRC of a

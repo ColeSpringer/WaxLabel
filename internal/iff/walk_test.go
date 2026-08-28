@@ -30,7 +30,9 @@ func chunkBytes(d Dialect, id string, body []byte) []byte {
 
 func walk(t *testing.T, data []byte, end int64, d Dialect) Result {
 	t.Helper()
-	res, err := WalkChunks(context.Background(), bytes.NewReader(data), int64(len(data)), end, 1<<20, 100, d)
+	res, err := WalkChunks(context.Background(), bytes.NewReader(data), WalkOptions{
+		Size: int64(len(data)), End: end, Limit: 1 << 20, MaxElements: 100, Dialect: d,
+	})
 	if err != nil {
 		t.Fatalf("WalkChunks: %v", err)
 	}
@@ -118,7 +120,9 @@ func TestWalkChunksID3v1TailNoAudio(t *testing.T) {
 // TestWalkChunksNoChunks: an empty container yields ErrInvalidData with the dialect noun.
 func TestWalkChunksNoChunks(t *testing.T) {
 	data := make([]byte, 12) // header only, no chunks
-	_, err := WalkChunks(context.Background(), bytes.NewReader(data), 12, 12, 1<<20, 100, riff)
+	_, err := WalkChunks(context.Background(), bytes.NewReader(data), WalkOptions{
+		Size: 12, End: 12, Limit: 1 << 20, MaxElements: 100, Dialect: riff,
+	})
 	if !errors.Is(err, waxerr.ErrInvalidData) {
 		t.Errorf("err = %v, want ErrInvalidData", err)
 	}

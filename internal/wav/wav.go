@@ -18,7 +18,13 @@
 // see write.go: by default both present containers are kept in sync, INFO is
 // the home for a bare file, and pictures or any value INFO cannot represent
 // force an id3 chunk; nothing is ever lost. All other chunks are preserved
-// verbatim. RF64/BW64 (the >4 GiB extension) is out of scope and returns an error.
+// verbatim.
+//
+// RF64/BW64 (the 64-bit extension, EBU Tech 3306) is read and written in the same
+// pass: the sizes that no longer fit a 32-bit field read 0xFFFFFFFF and their real
+// values come from the mandatory leading "ds64" chunk, which the writer regenerates
+// from the new layout. The form is preserved - an RF64 file is never rewritten as
+// plain RIFF, which would truncate its sizes.
 //
 // The codec is reimplemented from the RIFF/WAVE and ID3 specifications;
 // reference implementations were consulted for design only.
@@ -48,8 +54,7 @@ func (Codec) SkipsLeadingID3() bool { return false }
 
 // Sniff matches a "RIFF....WAVE" header, plus the 64-bit RF64/BW64 variants, which also
 // carry "WAVE" at offset 8. Detection is content-only, so matching them here is what
-// routes such a file to Parse, where the out-of-scope 64-bit rejection can explain the
-// limit instead of falling through to a generic "could not identify".
+// routes all three forms to Parse.
 func (Codec) Sniff(header []byte) bool {
 	if len(header) < 12 || string(header[8:12]) != "WAVE" {
 		return false

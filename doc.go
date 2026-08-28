@@ -16,6 +16,13 @@
 // WaxLabel treats inherited and generated metadata as data to read, preserve,
 // override, and deduplicate.
 //
+// # Formats
+//
+// FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, MP3, WAV (including the 64-bit RF64 and
+// BW64 forms), MP4/M4A, raw AAC/ADTS, Matroska/WebM, AIFF/AIFF-C, WavPack,
+// Monkey's Audio, and Musepack are read and written. WMA/ASF is read-only:
+// writing it is an explicit non-goal, so a WMA file is only ever a source.
+//
 // # Object model
 //
 // [Parse], [ParseFile], and [OpenSource] return an immutable, detached
@@ -50,7 +57,8 @@
 // # Acknowledgements
 //
 // All code is reimplemented from public specifications (ID3v2, the Vorbis
-// comment format, FLAC, ISO/IEC 14496-12, RIFF/WAVE, RFC 3533/7845/9559).
-// Reference implementations were consulted for design but not copied; see the
-// README acknowledgements.
+// comment format, FLAC, ISO/IEC 14496-12, RIFF/WAVE, EBU Tech 3306 for RF64,
+// the APEv2 tag, WavPack, Monkey's Audio, Musepack, ASF, and RFC
+// 3533/7845/9559). Reference implementations were consulted for design but not
+// copied; see the README acknowledgements.
 package waxlabel

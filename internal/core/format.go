@@ -15,7 +15,8 @@ const (
 	FormatUnknown Format = iota
 	// FormatFLAC identifies FLAC.
 	FormatFLAC
-	// FormatOggVorbis and FormatOggOpus identify Ogg-hosted Vorbis and Opus streams.
+	// FormatOggVorbis, FormatOggOpus, and FormatOggFLAC identify Ogg-hosted
+	// Vorbis, Opus, and FLAC streams.
 	FormatOggVorbis
 	FormatOggOpus
 	FormatMP3
@@ -24,6 +25,11 @@ const (
 	FormatAAC // raw ADTS
 	FormatMatroska
 	FormatAIFF
+	FormatOggFLAC
+	FormatWavPack
+	FormatMonkeysAudio
+	FormatWMA
+	FormatMusepack
 )
 
 func (f Format) String() string {
@@ -46,6 +52,16 @@ func (f Format) String() string {
 		return "Matroska"
 	case FormatAIFF:
 		return "AIFF"
+	case FormatOggFLAC:
+		return "Ogg FLAC"
+	case FormatWavPack:
+		return "WavPack"
+	case FormatMonkeysAudio:
+		return "Monkey's Audio"
+	case FormatWMA:
+		return "WMA"
+	case FormatMusepack:
+		return "Musepack"
 	default:
 		return "unknown"
 	}
@@ -69,17 +85,20 @@ func DefaultID3Version(f Format) byte {
 // Implemented reports whether this version can parse the format at all.
 func (f Format) Implemented() bool {
 	switch f {
-	case FormatFLAC, FormatOggVorbis, FormatOggOpus, FormatMP3, FormatWAV, FormatMP4, FormatAAC, FormatMatroska, FormatAIFF:
+	case FormatFLAC, FormatOggVorbis, FormatOggOpus, FormatOggFLAC, FormatWavPack, FormatMonkeysAudio, FormatWMA, FormatMusepack, FormatMP3, FormatWAV, FormatMP4, FormatAAC, FormatMatroska, FormatAIFF:
 		return true
 	}
 	return false
 }
 
 // Writable reports whether this version can write the format back. Matroska is
-// tag-writable (tags, segment title, attachments) and chapter-writable.
+// tag-writable (tags, segment title, attachments) and chapter-writable. WMA is
+// read-only - WaxLabel never writes an ASF file - though nothing depends on this
+// method to enforce it: the refusal lives in the codec, where the reported
+// capability and the actual write outcome come from one predicate.
 func (f Format) Writable() bool {
 	switch f {
-	case FormatFLAC, FormatOggVorbis, FormatOggOpus, FormatMP3, FormatWAV, FormatMP4, FormatAAC, FormatMatroska, FormatAIFF:
+	case FormatFLAC, FormatOggVorbis, FormatOggOpus, FormatOggFLAC, FormatWavPack, FormatMonkeysAudio, FormatMusepack, FormatMP3, FormatWAV, FormatMP4, FormatAAC, FormatMatroska, FormatAIFF:
 		return true
 	}
 	return false

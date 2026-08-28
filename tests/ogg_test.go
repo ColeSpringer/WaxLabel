@@ -16,10 +16,18 @@ import (
 )
 
 const (
-	sampleOgg  = "../testdata/sample.ogg"
-	sampleOpus = "../testdata/sample.opus"
-	notagsOgg  = "../testdata/notags.ogg"
+	sampleOgg     = "../testdata/sample.ogg"
+	sampleOpus    = "../testdata/sample.opus"
+	sampleOggFLAC = "../testdata/sample.oga"
+	notagsOgg     = "../testdata/notags.ogg"
+	notagsOggFLAC = "../testdata/notags.oga"
 )
+
+// oggFixtures is every Ogg mapping WaxLabel writes. The page layer, the comment
+// codec, and the rewrite path are shared, so the invariants below run over all
+// three; only cover-art storage differs (FLAC uses a native PICTURE block), and
+// that is transparent to these tests.
+var oggFixtures = []string{sampleOgg, sampleOpus, sampleOggFLAC}
 
 // pattern returns n deterministic bytes - a stand-in cover payload large enough
 // to push the comment header past one page when needed.
@@ -54,6 +62,7 @@ func TestOggParse(t *testing.T) {
 	}{
 		{sampleOgg, wl.FormatOggVorbis, "Vorbis", 44100, 2, "Sample Title", true},
 		{sampleOpus, wl.FormatOggOpus, "Opus", 48000, 2, "Sample Title", true},
+		{sampleOggFLAC, wl.FormatOggFLAC, "FLAC", 44100, 2, "Sample Title", true},
 	}
 	for _, c := range cases {
 		doc := mustParseFile(t, c.path)
@@ -86,7 +95,7 @@ func TestOggParse(t *testing.T) {
 // TestOggRoundTripPreservesEssence is the core invariant: editing tags must not
 // disturb the audio packet payloads (the essence), and the values must read back.
 func TestOggRoundTripPreservesEssence(t *testing.T) {
-	for _, f := range []string{sampleOgg, sampleOpus} {
+	for _, f := range oggFixtures {
 		src := readFixture(t, f)
 		before := essenceOf(t, src)
 
@@ -121,7 +130,7 @@ func TestOggRoundTripPreservesEssence(t *testing.T) {
 }
 
 func TestOggNoOpWritesNothing(t *testing.T) {
-	for _, f := range []string{sampleOgg, sampleOpus} {
+	for _, f := range oggFixtures {
 		path := copyToTemp(t, f)
 		doc := mustParseFile(t, path)
 		plan, err := doc.Edit().Set(tag.Title, doc.Fields().Title).Prepare() // same value
@@ -144,7 +153,7 @@ func TestOggNoOpWritesNothing(t *testing.T) {
 // TestOggCoverSmall adds and removes a small cover (one comment page, no
 // renumber) and confirms the picture round-trips and the essence is intact.
 func TestOggCoverSmall(t *testing.T) {
-	for _, f := range []string{sampleOgg, sampleOpus} {
+	for _, f := range oggFixtures {
 		src := readFixture(t, f)
 		before := essenceOf(t, src)
 
@@ -179,7 +188,7 @@ func TestOggCoverSmall(t *testing.T) {
 // audio essence must still be byte-identical and the picture must survive.
 func TestOggCoverRenumberPreservesEssence(t *testing.T) {
 	cover := pattern(70000) // base64 ~93 KiB > one 65025-byte page body
-	for _, f := range []string{sampleOgg, sampleOpus} {
+	for _, f := range oggFixtures {
 		src := readFixture(t, f)
 		before := essenceOf(t, src)
 
@@ -220,7 +229,7 @@ func TestOggCoverRenumberPreservesEssence(t *testing.T) {
 // together with a renumbering cover add, so the buffered file write, the renumber
 // loop, and output verification are all covered end to end.
 func TestOggSaveBackVerifyEssence(t *testing.T) {
-	for _, f := range []string{sampleOgg, sampleOpus} {
+	for _, f := range oggFixtures {
 		path := copyToTemp(t, f)
 		plan, err := mustParseFile(t, path).Edit().
 			Set(tag.Album, "Verified").
@@ -283,7 +292,7 @@ func TestOggChainedReadBestEffortWriteRefused(t *testing.T) {
 // by length and copied from the source, never buffered) survive a rewrite.
 func TestOggPreservesTrailingBytes(t *testing.T) {
 	junk := []byte("TRAILING-JUNK-PRESERVE-ME")
-	for _, f := range []string{sampleOgg, sampleOpus} {
+	for _, f := range oggFixtures {
 		src := append(slices.Clone(readFixture(t, f)), junk...)
 		before := essenceOf(t, src)
 
@@ -322,6 +331,11 @@ func TestOggExtensionRouting(t *testing.T) {
 	if got := mustParseFile(t, sampleOgg).Format(); got != wl.FormatOggVorbis {
 		t.Errorf("sample.ogg parsed as %v", got)
 	}
+	// .oga is claimed by both Ogg Vorbis and Ogg FLAC, so only the identification
+	// packet can tell them apart.
+	if got := mustParseFile(t, sampleOggFLAC).Format(); got != wl.FormatOggFLAC {
+		t.Errorf("sample.oga parsed as %v", got)
+	}
 }
 
 // Write-side differential: an independent tool must read back what we wrote
@@ -329,7 +343,7 @@ func TestOggExtensionRouting(t *testing.T) {
 
 func TestOggDifferentialFFprobeReadsOurTags(t *testing.T) {
 	requireTool(t, "ffprobe")
-	for _, f := range []string{sampleOgg, sampleOpus} {
+	for _, f := range oggFixtures {
 		path := copyToTemp(t, f)
 		plan, err := mustParseFile(t, path).Edit().
 			Set(tag.Title, "Differential Title").
@@ -342,7 +356,7 @@ func TestOggDifferentialFFprobeReadsOurTags(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Ogg Vorbis/Opus carry tags at the stream level.
+		// Ogg carries tags at the stream level for all three mappings.
 		out, err := exec.Command("ffprobe", "-hide_banner", "-loglevel", "error",
 			"-show_entries", "stream_tags", "-of", "json", path).Output()
 		if err != nil {
@@ -374,7 +388,7 @@ func TestOggDifferentialFFprobeReadsOurTags(t *testing.T) {
 func TestOggDifferentialFFmpegDecodesRenumbered(t *testing.T) {
 	requireTool(t, "ffmpeg")
 	cover := pattern(70000) // forces the renumber path
-	for _, f := range []string{sampleOgg, sampleOpus} {
+	for _, f := range oggFixtures {
 		path := copyToTemp(t, f)
 		plan, err := mustParseFile(t, path).Edit().
 			Set(tag.Title, "Valid Ogg").

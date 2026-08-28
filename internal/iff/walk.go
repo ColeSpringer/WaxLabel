@@ -52,13 +52,35 @@ type Result struct {
 	OuterOff, OuterLen int64
 }
 
-// WalkChunks records every top-level chunk in [12, end) by id and source range, reading
-// only chunk headers (never bodies) so a large audio chunk costs nothing. size is the
-// whole-file length and end the container boundary (riffEnd/formEnd), which the caller has
-// already clamped to size. It stops at a miscounted trailer after the audio chunk so the
-// trailing-region copy can preserve it verbatim, and returns [waxerr.ErrInvalidData] when
-// no chunk is found.
-func WalkChunks(ctx context.Context, r io.ReaderAt, size, end, limit int64, maxElements int, d Dialect) (Result, error) {
+// WalkOptions carries the walk's inputs. They are a struct rather than positional
+// parameters because there are enough of them that call sites stop being readable, and
+// because SizeOverride is optional - most containers do not have one.
+type WalkOptions struct {
+	// Size is the whole-file length; End the container boundary (riffEnd/formEnd), which
+	// the caller has already clamped to Size.
+	Size, End int64
+	// Limit caps a single read; MaxElements caps the chunk count.
+	Limit       int64
+	MaxElements int
+	Dialect     Dialect
+	// SizeOverride supplies a chunk's real body length when the 32-bit size field cannot
+	// carry it - RF64/BW64, where the field reads 0xFFFFFFFF and the true 64-bit size lives
+	// in the ds64 chunk. It is called once per chunk in file order with the declared value;
+	// returning false leaves that value in force, which is what keeps plain RIFF's reading of
+	// 0xFFFFFFFF as the streaming "size unknown" sentinel untouched.
+	//
+	// It may be stateful (RF64's matches repeated chunk ids to successive table entries in
+	// file order), so a given function value serves one walk. Leave it nil, or supply a
+	// function that always declines, for a container with no such extension.
+	SizeOverride func(id [4]byte, declared uint32) (int64, bool)
+}
+
+// WalkChunks records every top-level chunk in [12, End) by id and source range, reading
+// only chunk headers (never bodies) so a large audio chunk costs nothing. It stops at a
+// miscounted trailer after the audio chunk so the trailing-region copy can preserve it
+// verbatim, and returns [waxerr.ErrInvalidData] when no chunk is found.
+func WalkChunks(ctx context.Context, r io.ReaderAt, opts WalkOptions) (Result, error) {
+	size, end, limit, maxElements, d := opts.Size, opts.End, opts.Limit, opts.MaxElements, opts.Dialect
 	res := Result{AudioIdx: -1}
 	off := int64(12)
 	// Require the full 8-byte header within the container (off+8 <= end, and end <= size):
@@ -76,7 +98,25 @@ func WalkChunks(ctx context.Context, r io.ReaderAt, size, end, limit int64, maxE
 		}
 		var id [4]byte
 		copy(id[:], head[0:4])
-		declaredLen := int64(d.Order.Uint32(head[4:8]))
+		declared := d.Order.Uint32(head[4:8])
+		declaredLen := int64(declared)
+		// resolved records that a 64-bit extension supplied the real size. Once it has,
+		// the on-disk 0xFFFFFFFF is that extension's marker, not the streaming "size
+		// unknown" sentinel, so an overrun of the resolved size is real truncation. Testing
+		// the resolved value against the sentinel instead would exempt exactly the size
+		// range RF64 exists to express.
+		resolved := false
+		if opts.SizeOverride != nil {
+			if n, ok := opts.SizeOverride(id, declared); ok {
+				if n < 0 {
+					break // an override that could not be represented as a length; preserve the rest
+				}
+				declaredLen, resolved = n, true
+			}
+		}
+		// sizeUnknown is the streaming sentinel: a declared 0xFFFFFFFF that nothing
+		// resolved. Such a chunk clamps to the file rather than counting as truncated.
+		sizeUnknown := !resolved && declared == 0xFFFFFFFF
 		bodyOff := off + 8
 		// Stop at a miscounted trailer so the trailing-region copy keeps [off, end) verbatim,
 		// rather than appending a phantom chunk whose header the writer would rewrite
@@ -106,8 +146,8 @@ func WalkChunks(ctx context.Context, r io.ReaderAt, size, end, limit int64, maxE
 			// The declared audio size ran past EOF: a truncated file. The 0xFFFFFFFF "size
 			// unknown" streaming sentinel also overruns but is not truncation; a 0 size never
 			// overruns (it reads as no-audio).
-			res.AudioTruncated = overran && declaredLen != 0xFFFFFFFF
-		} else if overran && declaredLen != 0xFFFFFFFF {
+			res.AudioTruncated = overran && !sizeUnknown
+		} else if overran && !sizeUnknown {
 			// Record clamped non-audio chunks so callers can warn. The streaming sentinel
 			// means "size unknown", not an overrun.
 			res.OversizedChunks = append(res.OversizedChunks, id)

@@ -37,9 +37,9 @@ func newCapsCmd() *cobra.Command {
 				if len(args) > 0 {
 					return usagef("caps --format takes no file arguments")
 				}
-				f, opts, container, ok := parseFormat(format)
-				if !ok {
-					return usagef("unknown format %q; try one of: %s", format, formatHint())
+				f, opts, container, err := parseFormat(format)
+				if err != nil {
+					return usagef("%s", err)
 				}
 				return runCapsFormat(cmd, f, container, opts...)
 			}
@@ -300,21 +300,27 @@ func renderCapDim(w io.Writer, label string, d *jsonCapDim) {
 // empty - the human format line uses it to distinguish WebM from Matroska, which
 // share one Format). It accepts any file extension a codec claims (with or without a
 // leading dot) and a few friendly aliases for the formats whose name is not an
-// extension (the two Ogg codecs and Matroska/WebM). Matching is case-insensitive.
-func parseFormat(s string) (f wl.Format, opts []wl.WriteOption, container string, ok bool) {
+// extension (the three Ogg codecs and Matroska/WebM). Matching is case-insensitive.
+//
+// It returns an error rather than a bare "not found" because an extension can be
+// claimed by more than one format - .oga is legitimately both Ogg Vorbis and Ogg
+// FLAC - and answering with whichever codec registered first would be a coin flip.
+// Such a name is refused, naming the alternatives so the caller can pick one.
+func parseFormat(s string) (f wl.Format, opts []wl.WriteOption, container string, err error) {
 	norm := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(s)), ".")
 	switch norm {
-	case "vorbis", "oggvorbis":
-		return wl.FormatOggVorbis, nil, "", true
+	case "ogg", "vorbis", "oggvorbis":
+		// Both Ogg Vorbis and Ogg FLAC claim the .ogg extension, but "ogg" as a format
+		// NAME has always meant Vorbis - so it is resolved here rather than left to the
+		// ambiguity check below, which would refuse the most common spelling of all.
+		return wl.FormatOggVorbis, nil, "", nil
 	case "opus", "oggopus":
-		return wl.FormatOggOpus, nil, "", true
-	case "adts":
-		// ADTS is the byte framing of an AAC stream and the format's own label is
-		// "AAC (ADTS)", so accept it as a friendly alias for aac, which otherwise only
-		// matches the .aac extension.
-		return wl.FormatAAC, nil, "", true
+		return wl.FormatOggOpus, nil, "", nil
+	case "oggflac":
+		// .oga names both this and Ogg Vorbis, so the unambiguous spelling is the alias.
+		return wl.FormatOggFLAC, nil, "", nil
 	case "matroska":
-		return wl.FormatMatroska, nil, "", true
+		return wl.FormatMatroska, nil, "", nil
 	case "webm":
 		// WebM is not a distinct Format - it is a subset of Matroska whose defining
 		// restriction is that cover attachments are outside the subset. Describe it via
@@ -322,19 +328,32 @@ func parseFormat(s string) (f wl.Format, opts []wl.WriteOption, container string
 		// (the codec's own, reused - not a parallel copy), so the format-level "webm"
 		// answer matches what a real.webm file reports. The "WebM" container label
 		// makes the human header say WebM (the JSON format stays the bare "Matroska").
-		return wl.FormatMatroska, []wl.WriteOption{wl.WithWebMSubset()}, "WebM", true
+		return wl.FormatMatroska, []wl.WriteOption{wl.WithWebMSubset()}, "WebM", nil
 	}
+	var hits []wl.Format
 	for _, cand := range wl.Formats() {
 		for _, ext := range wl.ExtensionsFor(cand) {
 			if strings.TrimPrefix(ext, ".") == norm {
-				return cand, nil, "", true
+				hits = append(hits, cand)
+				break
 			}
 		}
 	}
-	return wl.FormatUnknown, nil, "", false
+	switch len(hits) {
+	case 1:
+		return hits[0], nil, "", nil
+	case 0:
+		return wl.FormatUnknown, nil, "", fmt.Errorf("unknown format %q; try one of: %s", s, formatHint())
+	}
+	names := make([]string, len(hits))
+	for i, h := range hits {
+		names[i] = h.String()
+	}
+	return wl.FormatUnknown, nil, "", fmt.Errorf("%q names more than one format (%s); name the one you mean",
+		s, strings.Join(names, ", "))
 }
 
 // formatHint lists representative format names for the unknown-format error.
 func formatHint() string {
-	return "flac, mp3, mp4 (m4a), wav, aiff, aac, ogg (vorbis), opus, matroska (mka), webm"
+	return "flac, mp3, mp4 (m4a), wav, aiff, aac, ogg (vorbis), opus, oggflac, matroska (mka), webm, wv, ape, mpc, wma"
 }

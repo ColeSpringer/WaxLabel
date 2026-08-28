@@ -16,7 +16,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/colespringer/waxlabel/internal/bits"
@@ -421,22 +420,7 @@ func TransferClassifier(key tag.Key, _ []string, _ tag.TagSet) (core.Disposition
 
 // DiffKeys returns the canonical keys whose values differ between base and
 // edited (added, removed, or modified).
-func DiffKeys(base, edited tag.TagSet) map[tag.Key]bool {
-	changed := map[tag.Key]bool{}
-	for _, k := range base.Keys() {
-		bv, _ := base.Get(k)
-		ev, has := edited.Get(k)
-		if !has || !slices.Equal(bv, ev) {
-			changed[k] = true
-		}
-	}
-	for _, k := range edited.Keys() {
-		if !base.Has(k) {
-			changed[k] = true
-		}
-	}
-	return changed
-}
+func DiffKeys(base, edited tag.TagSet) map[tag.Key]bool { return core.DiffKeys(base, edited) }
 
 // EncoderNoise flags inherited transcoder stamps (e.g. ffmpeg's
 // "encoder=Lavf..." comment or vendor string), the typical signature of a file

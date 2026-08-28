@@ -306,30 +306,51 @@ type outLayout struct {
 }
 
 // assemble turns the output chunks into a rewrite segment list and recomputes
-// the RIFF size, returning the layout needed to build the post-write document.
+// the container size, returning the layout needed to build the post-write
+// document. An RF64/BW64 source keeps its form: the 32-bit size fields that
+// cannot carry the value stay at the 0xFFFFFFFF marker and the regenerated ds64
+// chunk carries the real ones, so a rewrite never silently downgrades a 64-bit
+// file to plain RIFF (which would truncate its sizes).
 func assemble(d *doc, outs []outChunk) (segs []bits.Segment, lay outLayout, err error) {
 	lay = outLayout{infoIdx: -1, id3Idx: -1, dataIdx: -1}
+	rf64 := d.isRF64()
+	if rf64 {
+		outs = stripDS64(outs)
+	}
 	var chunksTotal int64
 	for _, oc := range outs {
-		if oc.bodyLen > math.MaxUint32 {
+		if oc.bodyLen > math.MaxUint32 && !rf64 {
 			return nil, lay, fmt.Errorf("%w: chunk %q body is %d bytes (max %d)",
 				waxerr.ErrSizeTooLarge, string(oc.id[:]), oc.bodyLen, int64(math.MaxUint32))
 		}
 		chunksTotal += 8 + oc.bodyLen + (oc.bodyLen & 1)
 	}
 	chunksTotal += d.trailingLen
-	riffSize := 4 + chunksTotal // "WAVE" + all chunks (in-RIFF trailing included)
-	// Out-of-RIFF trailing is appended after the RIFF chunk, not counted in its
-	// size, so a strict reader walking by the RIFF size does not misparse it.
+
+	var ds64Body []byte
+	if rf64 {
+		// The ds64 body length is known before the container size (its table depends only
+		// on the output chunks' lengths), so the size it reports can include its own chunk.
+		table, dataSize := ds64Overrides(outs)
+		chunksTotal += 8 + int64(ds64MinBody+len(table)*ds64Entry)
+		ds64Body = renderDS64(uint64(4+chunksTotal), dataSize, d.ds64.sampleCount, table)
+		outs = append([]outChunk{{
+			id: [4]byte{'d', 's', '6', '4'}, body: ds64Body, bodyLen: int64(len(ds64Body)),
+		}}, outs...)
+	}
+
+	riffSize := 4 + chunksTotal // "WAVE" + all chunks (in-container trailing included)
+	// Out-of-container trailing is appended after the RIFF chunk, not counted in its
+	// size, so a strict reader walking by that size does not misparse it.
 	lay.total = 8 + riffSize + d.outerLen
-	if riffSize > math.MaxUint32 {
+	if riffSize > math.MaxUint32 && !rf64 {
 		return nil, lay, fmt.Errorf("%w: WAV output is %d bytes, exceeding the 4 GiB RIFF limit (use RF64)",
 			waxerr.ErrSizeTooLarge, lay.total)
 	}
 
 	var head [12]byte
-	copy(head[0:4], "RIFF")
-	binary.LittleEndian.PutUint32(head[4:8], uint32(riffSize))
+	copy(head[0:4], d.headerID())
+	binary.LittleEndian.PutUint32(head[4:8], sizeField(riffSize, rf64))
 	copy(head[8:12], "WAVE")
 	segs = append(segs, bits.Lit(head[:]))
 
@@ -338,7 +359,9 @@ func assemble(d *doc, outs []outChunk) (segs []bits.Segment, lay outLayout, err 
 	for _, oc := range outs {
 		var ch [8]byte
 		copy(ch[0:4], oc.id[:])
-		binary.LittleEndian.PutUint32(ch[4:8], uint32(oc.bodyLen))
+		// In RF64 the data chunk's size field is always the marker, whether or not the
+		// value would fit, matching what RF64 writers emit and what the ds64 chunk is for.
+		binary.LittleEndian.PutUint32(ch[4:8], sizeField(oc.bodyLen, rf64 && (oc.role == roleData || oc.bodyLen > math.MaxUint32)))
 		segs = append(segs, bits.Lit(ch[:]))
 		running += 8
 		idx := len(lay.chunks)
@@ -376,6 +399,52 @@ func assemble(d *doc, outs []outChunk) (segs []bits.Segment, lay outLayout, err 
 	return segs, lay, nil
 }
 
+// sizeField renders a 32-bit chunk-size field, substituting the RF64 marker when the
+// real size lives in the ds64 chunk instead.
+func sizeField(n int64, marked bool) uint32 {
+	if marked {
+		return rf64Marker
+	}
+	return uint32(n)
+}
+
+// headerID is the container's 12-byte header id, defaulting to "RIFF" for a document
+// built without one (a synthesized result, or a zero-value doc).
+func (d *doc) headerID() string {
+	if d.form == ([4]byte{}) {
+		return "RIFF"
+	}
+	return string(d.form[:])
+}
+
+// stripDS64 removes the source ds64 chunk from the output list. It is regenerated
+// from the new layout rather than copied, since the sizes it carries are exactly
+// what a metadata rewrite moves.
+func stripDS64(outs []outChunk) []outChunk {
+	kept := outs[:0:0]
+	for _, oc := range outs {
+		if string(oc.id[:]) != "ds64" {
+			kept = append(kept, oc)
+		}
+	}
+	return kept
+}
+
+// ds64Overrides derives the ds64 chunk's data size and chunk-size table from the
+// output chunks: the data chunk's real length, plus one table entry per other chunk
+// whose length no longer fits a 32-bit field.
+func ds64Overrides(outs []outChunk) (table []ds64Size, dataSize uint64) {
+	for _, oc := range outs {
+		switch {
+		case oc.role == roleData && dataSize == 0:
+			dataSize = uint64(oc.bodyLen)
+		case oc.bodyLen > math.MaxUint32:
+			table = append(table, ds64Size{id: oc.id, size: uint64(oc.bodyLen)})
+		}
+	}
+	return table, dataSize
+}
+
 // buildResult constructs the post-write Media so the engine can return a
 // Document without re-parsing. Its canonical view is re-projected (via the same
 // project used by Parse) from the containers actually written, so it equals a
@@ -391,6 +460,14 @@ func buildResult(edited *core.Media, base *doc, newInfo []infoItem, newID3 *id3.
 		fmtCfg:  base.fmtCfg,
 		track:   base.track,
 		size:    lay.total,
+		form:    base.form,
+		ds64:    base.ds64.clone(),
+	}
+	if nd.ds64 != nil {
+		// Keep the carried ds64 in step with the bytes just written, so the result document
+		// describes the output rather than the source it was derived from.
+		nd.ds64.riffSize = uint64(lay.total - 8 - base.outerLen)
+		nd.ds64.dataSize = uint64(base.dataLen)
 	}
 	if lay.infoIdx >= 0 {
 		nd.info = newInfo

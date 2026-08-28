@@ -91,16 +91,21 @@ const (
 
 // Format values.
 const (
-	FormatUnknown   = core.FormatUnknown
-	FormatFLAC      = core.FormatFLAC
-	FormatOggVorbis = core.FormatOggVorbis
-	FormatOggOpus   = core.FormatOggOpus
-	FormatMP3       = core.FormatMP3
-	FormatWAV       = core.FormatWAV
-	FormatMP4       = core.FormatMP4
-	FormatAAC       = core.FormatAAC
-	FormatMatroska  = core.FormatMatroska
-	FormatAIFF      = core.FormatAIFF
+	FormatUnknown      = core.FormatUnknown
+	FormatFLAC         = core.FormatFLAC
+	FormatOggVorbis    = core.FormatOggVorbis
+	FormatOggOpus      = core.FormatOggOpus
+	FormatMP3          = core.FormatMP3
+	FormatWAV          = core.FormatWAV
+	FormatMP4          = core.FormatMP4
+	FormatAAC          = core.FormatAAC
+	FormatMatroska     = core.FormatMatroska
+	FormatAIFF         = core.FormatAIFF
+	FormatOggFLAC      = core.FormatOggFLAC
+	FormatWavPack      = core.FormatWavPack
+	FormatMonkeysAudio = core.FormatMonkeysAudio
+	FormatWMA          = core.FormatWMA
+	FormatMusepack     = core.FormatMusepack
 )
 
 // PictureType values (matching ID3 APIC / FLAC PICTURE type IDs).
@@ -158,6 +163,7 @@ const (
 	FamilyRIFF     = core.FamilyRIFF
 	FamilyMatroska = core.FamilyMatroska
 	FamilyAIFF     = core.FamilyAIFF
+	FamilyASF      = core.FamilyASF
 )
 
 // Scope values annotate the target a family value applies to. Most formats are
@@ -231,7 +237,8 @@ const (
 
 	WarnPictureSelectorMiss = core.WarnPictureSelectorMiss
 
-	WarnFragmented = core.WarnFragmented
+	WarnFragmented  = core.WarnFragmented
+	WarnInvalidText = core.WarnInvalidText
 )
 
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated

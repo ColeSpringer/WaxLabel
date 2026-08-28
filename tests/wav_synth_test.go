@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"slices"
-	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -364,20 +363,128 @@ func TestWAVAppendedDataKeptOutsideRiffSize(t *testing.T) {
 	}
 }
 
-func TestWAVRF64Rejected(t *testing.T) {
-	// RF64/BW64 (the >4 GiB extension) is out of scope and must fail loudly. Use a
-	// .wav file path so detection routes to the WAV codec by extension and its own
-	// RF64 branch runs - a bare byte source would instead fail generically at
-	// detection (Sniff rejects RF64 and there is no extension to fall back to).
+// rf64File assembles an RF64 (or BW64) file: the 64-bit header, a leading ds64
+// chunk carrying the real container and data sizes, then the given chunks. The
+// data chunk's own size field is rewritten to the 0xFFFFFFFF marker so the file
+// exercises the ds64 resolution path rather than the plain 32-bit one.
+func rf64File(magic string, sampleCount uint64, chunks ...[]byte) []byte {
+	body := []byte("WAVE")
+	var dataSize uint64
+	for _, c := range chunks {
+		if string(c[0:4]) == "data" {
+			dataSize = uint64(binary.LittleEndian.Uint32(c[4:8]))
+			c = slices.Clone(c)
+			copy(c[4:8], []byte{0xFF, 0xFF, 0xFF, 0xFF})
+		}
+		body = append(body, c...)
+	}
+	ds := make([]byte, 28)
+	binary.LittleEndian.PutUint64(ds[8:16], dataSize)
+	binary.LittleEndian.PutUint64(ds[16:24], sampleCount)
+	body = slices.Concat(body[:4], wavChunk("ds64", ds), body[4:])
+	binary.LittleEndian.PutUint64(body[12:20], uint64(len(body))) // ds64.riffSize
+
+	out := append([]byte(magic), []byte{0xFF, 0xFF, 0xFF, 0xFF}...)
+	return append(out, body...)
+}
+
+// TestWAVRF64RoundTrip checks the 64-bit RIFF extension end to end: the ds64 chunk
+// resolves the marked sizes on read, and a metadata edit keeps the RF64 form with a
+// regenerated ds64 rather than downgrading to plain RIFF (which would truncate the
+// sizes the extension exists to carry).
+func TestWAVRF64RoundTrip(t *testing.T) {
+	for _, magic := range []string{"RF64", "BW64"} {
+		t.Run(magic, func(t *testing.T) {
+			src := rf64File(magic, 16, wavFmtPCM(), wavInfo([2]string{"INAM", "Before"}), wavData(64))
+			doc := mustParseBytes(t, src)
+			if doc.Format() != wl.FormatWAV {
+				t.Fatalf("format = %v, want WAV", doc.Format())
+			}
+			if got := doc.Fields().Title; got != "Before" {
+				t.Fatalf("title = %q, want Before", got)
+			}
+			if tr := doc.Properties().First(); tr.SampleRate != 44100 || tr.Channels != 2 {
+				t.Errorf("track = %+v, want 44100 Hz stereo", tr)
+			}
+
+			plan, err := doc.Edit().Set(tag.Title, "After").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := applyToBytes(t, src, plan)
+
+			if string(out[0:4]) != magic {
+				t.Errorf("output header = %q, want the %s form preserved", out[0:4], magic)
+			}
+			if got := binary.LittleEndian.Uint32(out[4:8]); got != 0xFFFFFFFF {
+				t.Errorf("output container size field = %#x, want the RF64 marker", got)
+			}
+			if string(out[12:16]) != "ds64" {
+				t.Fatalf("ds64 is not the first chunk: %q", out[12:16])
+			}
+			if got, want := binary.LittleEndian.Uint64(out[20:28]), uint64(len(out)-8); got != want {
+				t.Errorf("ds64.riffSize = %d, want %d", got, want)
+			}
+			if got := binary.LittleEndian.Uint64(out[28:36]); got != 64 {
+				t.Errorf("ds64.dataSize = %d, want 64", got)
+			}
+			if got := binary.LittleEndian.Uint64(out[36:44]); got != 16 {
+				t.Errorf("ds64.sampleCount = %d, want the source value 16 carried through", got)
+			}
+			re := mustParseBytes(t, out)
+			if re.Fields().Title != "After" {
+				t.Errorf("title after edit = %q", re.Fields().Title)
+			}
+			if ws := re.Warnings(); len(ws) != 0 {
+				t.Errorf("unexpected warnings after an RF64 rewrite: %v", ws)
+			}
+		})
+	}
+}
+
+// TestWAVRF64FixtureRoundTrip runs the same edit against an independently authored
+// RF64 file (ffmpeg -rf64 always), so the ds64 reading is checked against a real
+// writer's bytes and not only against the shape this package synthesizes.
+func TestWAVRF64FixtureRoundTrip(t *testing.T) {
+	src := readFixture(t, sampleRF64)
+	doc := mustParseBytes(t, src)
+	if got := doc.Fields().Title; got != "Sample Title" {
+		t.Fatalf("title = %q, want Sample Title", got)
+	}
+	before := essenceOf(t, src)
+
+	plan, err := doc.Edit().Set(tag.Album, "Edited Album").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, src, plan)
+
+	if string(out[0:4]) != "RF64" {
+		t.Errorf("output header = %q, want RF64 preserved", out[0:4])
+	}
+	if got, want := binary.LittleEndian.Uint64(out[20:28]), uint64(len(out)-8); got != want {
+		t.Errorf("ds64.riffSize = %d, want %d", got, want)
+	}
+	if after := essenceOf(t, out); !before.Equal(after) {
+		t.Error("audio essence changed across an RF64 tag edit")
+	}
+	re := mustParseBytes(t, out)
+	if re.Fields().Album != "Edited Album" {
+		t.Errorf("album after edit = %q", re.Fields().Album)
+	}
+	if re.Properties().First().Duration != doc.Properties().First().Duration {
+		t.Error("duration changed across the rewrite")
+	}
+}
+
+// TestWAVRF64WithoutDS64Rejected: the ds64 chunk is mandatory, and a file claiming
+// the 64-bit form without one has no way to report its real sizes. That is corrupt
+// input (exit 4), not an unsupported format.
+func TestWAVRF64WithoutDS64Rejected(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavData(64))
 	copy(data[0:4], "RF64")
-	path := writeTempFile(t, "x.wav", data)
-	_, err := wl.ParseFile(context.Background(), path)
-	if !errors.Is(err, waxerr.ErrUnsupportedFormat) {
-		t.Fatalf("RF64 parse error = %v, want ErrUnsupportedFormat", err)
-	}
-	if !strings.Contains(err.Error(), "RF64") {
-		t.Errorf("expected the codec's explicit RF64 message, got %v", err)
+	if _, err := wl.Parse(context.Background(), wl.BytesSource(data)); !errors.Is(err, waxerr.ErrInvalidData) {
+		t.Fatalf("RF64 without ds64: err = %v, want ErrInvalidData", err)
 	}
 }
 

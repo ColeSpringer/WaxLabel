@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"math"
 	"slices"
 	"strings"
@@ -108,6 +109,10 @@ func canonicalCodecName(raw string) string {
 		return "AC-3" // normalizes the MP4 "ac-3" fourcc to match Matroska's "AC-3"
 	case "EC-3", "EAC3":
 		return "E-AC-3" // Dolby Digital Plus: MP4 "ec-3" / Matroska "EAC3"
+	case "WAVPACK DSD":
+		return "WavPack" // the DSD mode is the profile detail, not a different codec
+	case "MUSEPACK SV7", "MUSEPACK SV8":
+		return "Musepack" // the stream version is the profile detail, not a different codec
 	case "MPEG-1 LAYER 3", "MPEG-2 LAYER 3", "MPEG-2.5 LAYER 3":
 		return "MP3"
 	case "MPEG-1 LAYER 2", "MPEG-2 LAYER 2", "MPEG-2.5 LAYER 2":
@@ -145,4 +150,43 @@ func (p Properties) Duration() time.Duration {
 		}
 	}
 	return max
+}
+
+// WaveFormatCodec maps a WAVEFORMATEX format tag to a codec name. The structure is
+// shared: a RIFF "fmt " chunk and an ASF Stream Properties object both describe their
+// audio with one, so the two containers must name the same tag the same way or one
+// file's codec would read differently depending on which container carried it. An
+// unrecognized tag reports its hex value rather than being guessed at.
+func WaveFormatCodec(format uint16) string {
+	switch format {
+	case 0x0001:
+		return "PCM"
+	case 0x0002:
+		return "ADPCM"
+	case 0x0003:
+		return "IEEE float"
+	case 0x0006:
+		return "A-law"
+	case 0x0007:
+		return "mu-law"
+	case 0x000A:
+		return "WMA Voice"
+	case 0x0011:
+		return "IMA ADPCM"
+	case 0x0055:
+		return "MP3"
+	case 0x00FF:
+		return "AAC"
+	case 0x0160:
+		return "WMA v1"
+	case 0x0161:
+		return "WMA v2"
+	case 0x0162:
+		return "WMA Pro"
+	case 0x0163:
+		return "WMA Lossless"
+	case 0xFFFE:
+		return "PCM (extensible)"
+	}
+	return fmt.Sprintf("WAVE format 0x%04X", format)
 }
