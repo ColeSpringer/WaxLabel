@@ -193,6 +193,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	media.Pictures = pics
 	media.Chapters = chapters
 	media.Warnings = mediaWarnings(tags, families)
+	media.Warnings = append(media.Warnings, invalidKeyWarnings(d)...)
 	media.Properties = core.Properties{Container: containerName(d.docType), Tracks: d.tracks}
 	if audioStart >= 0 && audioEnd > audioStart {
 		media.AudioStart = audioStart
@@ -693,6 +694,36 @@ func projectionOrder(key tag.Key, contribs []scopedContribution) []contributionE
 		}
 	}
 	return out
+}
+
+// invalidKeyWarnings reports the SimpleTag names the canonical vocabulary cannot represent,
+// so a value the native tree preserves but the tag set never receives is not silent. It walks
+// the same groups project does and applies the same drop decision, so the set flagged is
+// exactly the set omitted.
+func invalidKeyWarnings(d *doc) []core.Warning {
+	var ws []core.Warning
+	seen := map[string]bool{}
+	for _, g := range d.groups {
+		for _, st := range g.tags {
+			if !st.hasValue || seen[st.name] || !unprojectableTagName(st.name) {
+				continue
+			}
+			seen[st.name] = true
+			ws = core.WarnInvalidKey(ws, st.name)
+		}
+	}
+	return ws
+}
+
+// unprojectableTagName reports whether a SimpleTag name is dropped because the canonical
+// vocabulary cannot represent it, as opposed to being dropped on purpose. A technical name
+// (mkvmerge's BPS / NUMBER_OF_* / DURATION statistics) is a deliberate exclusion and must not
+// be reported as a loss; an empty name is not a key at all.
+func unprojectableTagName(name string) bool {
+	if _, ok := mapping.MatroskaTagKey(name); ok {
+		return false
+	}
+	return strings.TrimSpace(name) != "" && !mapping.MatroskaTechnicalName(name)
 }
 
 // projectTag maps one SimpleTag name/value to canonical contributions, splitting

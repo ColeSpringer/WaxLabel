@@ -19,3 +19,14 @@ func TestRIFFTrackNumberAliases(t *testing.T) {
 		t.Errorf("RIFFKeyInfo(TrackNumber) = %q,%v, want IPRT,true", id, ok)
 	}
 }
+
+// TestRIFFEncoderIsISFT pins the software stamp to ENCODER on both sides, so a WAV read
+// agrees with ffprobe's encoder= and an ENCODER write has an INFO slot to land in.
+func TestRIFFEncoderIsISFT(t *testing.T) {
+	if k, ok := RIFFInfoKey("ISFT"); !ok || k != tag.Encoder {
+		t.Errorf("RIFFInfoKey(ISFT) = %s,%v, want ENCODER,true", k, ok)
+	}
+	if id, ok := RIFFKeyInfo(tag.Encoder); !ok || id != "ISFT" {
+		t.Errorf("RIFFKeyInfo(ENCODER) = %q,%v, want ISFT,true", id, ok)
+	}
+}

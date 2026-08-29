@@ -275,7 +275,7 @@ func TestSYLTNonLyricLanguageNotInherited(t *testing.T) {
 // TestSYLTCarriedLanguageNotInherited is a regression: a faithful carry of a
 // no-language synced-lyrics set must not inherit the destination's existing SYLT language.
 // An authored line-only edit still keeps it (the documented CLI convenience), so the two
-// dispositions are asserted side by side to pin the SyncedLyricsCarried gate.
+// dispositions are asserted side by side to pin the Carried gate.
 func TestSYLTCarriedLanguageNotInherited(t *testing.T) {
 	// A leading projecting lyrics SYLT already in the destination, in English.
 	engLyrics := buildSYLT(encLatin1, "eng", syltFmtMillis, syltContentLyrics, "", []core.SyncedLine{{Time: 0, Text: "old"}})
@@ -295,7 +295,7 @@ func TestSYLTCarriedLanguageNotInherited(t *testing.T) {
 	}
 
 	// Carried: the destination's "eng" must not leak onto the no-language source set.
-	if got := lyricLang(StructuredEdit{SyncedLyrics: noLangSet, SyncedLyricsChanged: true, SyncedLyricsCarried: true}); got != "" {
+	if got := lyricLang(StructuredEdit{SyncedLyrics: noLangSet, SyncedLyricsChanged: true, Carried: true}); got != "" {
 		t.Errorf("carried lyrics SYLT language = %q, want empty (must not inherit the destination's eng)", got)
 	}
 	// Authored (not carried): the documented convenience still inherits "eng".
@@ -308,7 +308,7 @@ func TestSYLTCarriedLanguageNotInherited(t *testing.T) {
 // content descriptor preserves that descriptor. The language fallback already kept the language, but
 // the descriptor was blanked, because an authored set carries Description=="". A faithful
 // cross-format carry must not inherit the descriptor, so the two cases are asserted side by side to
-// pin the SyncedLyricsCarried guard, the same way the language fallback is gated.
+// pin the Carried guard, the same way the language fallback is gated.
 func TestSYLTDescriptorPreservedOnAuthoring(t *testing.T) {
 	// A projecting lyrics SYLT already in the destination, with a content descriptor.
 	described := buildSYLT(encLatin1, "eng", syltFmtMillis, syltContentLyrics, "Karaoke",
@@ -334,7 +334,7 @@ func TestSYLTDescriptorPreservedOnAuthoring(t *testing.T) {
 		t.Errorf("authored line-only edit descriptor = %q, want \"Karaoke\" (preserved)", got)
 	}
 	// Carried: a faithful carry of a descriptor-less set must not inherit the destination's.
-	if got := descriptor(StructuredEdit{SyncedLyrics: noDescSet, SyncedLyricsChanged: true, SyncedLyricsCarried: true}); got != "" {
+	if got := descriptor(StructuredEdit{SyncedLyrics: noDescSet, SyncedLyricsChanged: true, Carried: true}); got != "" {
 		t.Errorf("carried lyrics SYLT descriptor = %q, want empty (must not inherit the destination's Karaoke)", got)
 	}
 }

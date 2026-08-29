@@ -19,6 +19,11 @@ All notable changes to this project are documented here.
 - A note when one `--set` key is given twice with different values, naming the value that
   survived. `--set DATE` plus `--set RECORDINGDATE` was already noted; one spelling twice
   was not.
+- `copy --strict`, which refuses (exit 2) when the projection is not lossless or when
+  writing the destination would itself lose metadata, writing nothing. `set --strict`
+  already did the second half.
+- `dump --native` shows the description a `COMM`, `USLT`, or `TXXX` frame carries, so a
+  described frame is identifiable instead of a bare four-character id and a size.
 
 ### Fixed
 
@@ -68,6 +73,74 @@ All notable changes to this project are documented here.
 - `dump --json` on an RF64 or BW64 file reports `"subformat": "RF64"`/`"BW64"` rather than
   `"WAV"`, which the parser already tracked and preserved on write. `properties.container`
   carries the same value for library callers.
+- `--legacy strip` says what it destroys. It removes legacy containers unconditionally, so
+  a value living only there died silently, contradicting the frozen contract that unaffected
+  data is preserved and warned about, never stripped. `set`, `copy`, and `--preset minimal`
+  now warn naming the lost keys, and `--strict` refuses the write. The warning judges the
+  edit's own tags, so a strip that is also writing the value does not claim to be losing it.
+  `lint --fix` cannot reach it: it chooses the strip only when nothing would be lost.
+  On WAV the same flag consolidates LIST/INFO into the `id3 ` chunk, which cannot carry an
+  item with no canonical key (`IENG`, `ISBJ`); that drop is now reported too.
+- `copy` onto a read-only destination exits 3 with the codec's own refusal, after printing
+  the per-field drops. It reported every field dropped and then exited 0, because nothing
+  was set on the destination editor and the write collapsed into a no-op before the codec
+  could refuse. A WMA keeps `unsupported-format` and a fragmented MP4 keeps
+  `unsupported-fragmentation`. A transfer with nothing to carry still exits 0, and a
+  writable destination that drops an item it cannot store is unaffected.
+- A described ID3 `COMM` frame is read as `COMMENT`. Such a frame (Windows Explorer and
+  CDDB-era taggers write one) was invisible to `dump`, `lint` and `diff`, and `copy`
+  reported a clean lossless carry while leaving it behind. It is now also managed on write:
+  a single described frame keeps its description and language across an edit, and a merge
+  that cannot keep one warns (`comment-description-dropped`, which `--strict` escalates).
+  Machine descriptions (`iTunNORM`, `iTunSMPB`, ReplayGain) stay unprojected and untouched.
+  With several comment frames, the first frame's language now wins rather than the last.
+- WAV `ISFT` is `ENCODER` on both sides. A stock ffmpeg WAV showed no `ENCODER` under
+  `dump` while `ffprobe` showed `encoder=Lavf`, and writing `ENCODER` created an `id3 `
+  chunk for a value LIST/INFO has a slot for. Three consequences worth knowing: clearing
+  `ENCODER` (which `--strip-encoder` does) now removes the `ISFT` item, since that is where
+  the key lives; a WAV whose `id3 ` chunk and `ISFT` disagree reports `conflicting-families`
+  and the two are brought into agreement on the next write, as they already were for every
+  other key both containers hold; and an inherited transcoder stamp is never promoted into
+  an `id3 ` chunk a write creates, so an unrelated edit does not author a second copy of the
+  noise the linter flags.
+- `lint --fix` no longer restructures a LIST/INFO-only WAV. Reading `IPRT=4/9` splits it
+  into a track number and a total, and the total had no INFO slot, so the fix spawned an
+  `id3 ` chunk holding it and rewrote `IPRT` to a bare `4`. The pair is recombined into the
+  one item it came from, so the round trip is byte-stable. `DISCNUMBER` has no INFO
+  identifier at all and still promotes the file.
+- WAV duration and bitrate for a compressed payload come from the `fact` chunk's sample
+  count, which is now parsed. A one-second MS-ADPCM file reported 1.408 s at the nominal
+  128 kbps, and a WAV carrying MP3 payload reported both as null. The declared count is
+  sanity-checked before it is trusted, so a hostile `0xFFFFFFFF` falls back instead of
+  reporting 27 hours. `totalSamples` for such a format is now 0 rather than a block count,
+  which was wrong by three orders of magnitude. PCM, IEEE float, A-law and mu-law are
+  unchanged: their byte rate is exact.
+- APEv2 no longer writes the item names the specification reserves (`ID3`, `TAG`, `OggS`,
+  `MP+`), each of which is magic another structure is found by. Such a key is dropped with
+  a warning that `--strict` escalates, and `copy` grades it dropped rather than carrying it.
+  A file that already holds such an item keeps it, whether the edit leaves it alone or tries
+  to change it, so a refused write never costs the value the file already had on top of the
+  one it could not store.
+- A canonical key can no longer contain `~` (0x7E). The rule is the intersection of every
+  format's key syntax, and the Vorbis comment specification stops at 0x7D, so the promise
+  that a valid key is representable everywhere was false. `~` in a key is now exit 2
+  (`invalid-key`); a file already carrying one is preserved verbatim, as any unrepresentable
+  native key is.
+- Every format that holds string keys now reports one it cannot represent
+  (`invalid-tag-key`): APEv2 items, ID3 `TXXX` descriptions, MP4 freeform names, Matroska
+  `SimpleTag` names and ASF `WM/*` descriptors, alongside the Vorbis comments that already
+  did. Such a value is preserved on disk but never reaches the canonical set, so without
+  this it was absent from `dump`, `lint` and `diff` while `copy` reported a clean lossless
+  carry. Deliberate exclusions - Matroska's `BPS`/`NUMBER_OF_*` statistics, ASF's technical
+  descriptors - are not reported, since nothing is lost there.
+- An ID3v2.3 date stored in full but read back respelled (`2001-02-03 10:20` comes back as
+  `2001-02-03T10:20`, since the frames store neither separator) is reported as a coercion
+  and escalated by `--strict`. It was neither a drop nor a precision loss, so nothing
+  reported it. The three date fates now come from one predicted-read-back rule rather than
+  separate scanners.
+- `dump`'s human `format:` line names the container rather than the codec family where the
+  two differ, so an RF64, BW64, AIFC or WebM file is no longer reported as WAV, AIFF or
+  Matroska. `--json` already reported it as `subformat`; `copy` and `caps` say it too.
 - `dump`'s `paddingBytes` and `plan`'s padding agree in three more places. A FLAC holding
   several `PADDING` blocks under-reported by four bytes per extra block, which a rewrite
   reclaims when it collapses them. An MP4 whose `free` atom uses the 64-bit largesize form
@@ -87,17 +160,27 @@ All notable changes to this project are documented here.
   disagrees with an edit now does.
 - An APE `DATE` resolves to `RECORDINGDATE`, and a slashed `Track` splits into the
   canonical number/total pair.
-- **`lint` reports more, and some files that were clean will now exit 1.** The new
-  findings are `chapter-past-duration` and `duplicate-chapter` (previously raised only at
-  write time, while `set --help` pointed at `lint`) and `chained-stream` (which `dump`
-  already reported). All three are warnings.
-- Two new exit-3 refusals. Authoring a second file-icon picture was exit 4
-  (`invalid-data`), which said the file was corrupt when only the write was impossible;
-  it is now exit 3 (`unsupported-tag`), and no longer outranks a genuinely corrupt file in
-  a batch run. FLAC and Ogg cap chapters at 1000, the size of the `CHAPTERxxx` 3-digit
-  namespace; a file already holding more becomes chapter-uneditable at exit 3, while its
-  tag edits keep working, and a `copy` from such a source now drops the chapter set rather
-  than carrying it (the same rule the 255-chapter formats already follow).
+- **`lint` reports more, and some files that were clean will now exit 1.** The full list of
+  new findings, all warnings: `chapter-past-duration` and `duplicate-chapter` (previously
+  raised only at write time, while `set --help` pointed at `lint`); `chained-stream` (which
+  `dump` already reported); `trailing-bytes`, for a region of a WAV, AIFF or Ogg belonging
+  to no chunk or page (the bytes were already preserved, the silence was the gap);
+  `oversized-chunk`, which `dump` reported but `lint` did not, and which is also how bytes
+  appended after an MP4's last atom read; `invalid-tag-key` on four more formats; and
+  `non-conforming-icon`, for a file-icon picture that is not the 32x32 PNG ID3v2 requires.
+  Mapping WAV `ISFT` to `ENCODER` also means a WAV whose `id3 ` chunk and `ISFT` disagree is
+  a new `conflicting-families` finding, which `lint --fix` resolves. FLAC reports no trailing
+  region: it cannot tell one from audio (see `docs/deferred-work.md`).
+- **New refusals, where a write that could not happen used to exit 0 or name the wrong
+  fault.** `copy` onto a read-only destination (WMA, a fragmented MP4) is exit 3 instead of
+  a silent exit 0, and `~` in a canonical key is exit 2 instead of accepted; both are
+  described under Fixed. Authoring a second file-icon picture was exit 4 (`invalid-data`),
+  which said the file was corrupt when only the write was impossible; it is now exit 3
+  (`unsupported-tag`), and no longer outranks a genuinely corrupt file in a batch run. FLAC
+  and Ogg cap chapters at 1000, the size of the `CHAPTERxxx` 3-digit namespace; a file
+  already holding more becomes chapter-uneditable at exit 3, while its tag edits keep
+  working, and a `copy` from such a source now drops the chapter set rather than carrying
+  it (the same rule the 255-chapter formats already follow).
 
 ## [1.5.0]
 

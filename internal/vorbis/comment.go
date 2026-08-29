@@ -363,8 +363,7 @@ func InvalidKeyWarnings(comments []Comment) []core.Warning {
 		if _, valid := canonicalTagKey(cm.Name); valid {
 			continue
 		}
-		ws = core.Warn(ws, core.WarnInvalidTagKey,
-			"tag key not represented in canonical tags (not carried): "+tag.SanitizeLine(cm.Name))
+		ws = core.WarnInvalidKey(ws, cm.Name)
 	}
 	return ws
 }

@@ -78,9 +78,9 @@ func infoTags(items []infoItem) tag.TagSet {
 		ts.AddNativeItem(key, it.text())
 	}
 	// IPRT/ITRK map to TrackNumber, so a non-standard IPRT="4/9" would otherwise read
-	// verbatim while ID3/MP4 split it - normalize here so every read path agrees.
-	// INFO has no TrackTotal slot (mapping/riff.go), so a subsequent edit spills the
-	// derived total into the forced id3 chunk; a plain read->write stays byte-identical.
+	// verbatim while ID3/MP4 split it - normalize here so every read path agrees. The
+	// write side recombines the pair into one IPRT (infoValue), so the split costs the
+	// file neither an id3 chunk nor a byte on round-trip.
 	tag.NormalizeNumberPairs(&ts)
 	return ts
 }
@@ -131,9 +131,21 @@ func infoFamilies(auth tag.TagSet, items []infoItem) []core.FamilyValue {
 // LIST/INFO: each must map to an INFO identifier and carry at most one value (a
 // present-but-empty value is representable - stored as a size-1 NUL INFO item, see infoValue).
 // A key that fails forces the richer id3 chunk so no value is lost.
+//
+// TrackTotal is the one key with no identifier of its own that can still be representable:
+// infoTags splits a slashed IPRT into number and total on read, so infoValue recombines
+// them into the one item they came from. Without this a plain IPRT="4/9" file could not
+// be rewritten without spawning an id3 chunk to hold the half it had just invented.
+// DiscNumber and DiscTotal stay unrepresentable - RIFF INFO has no disc identifier at
+// all, so there is no item for them to ride on.
 func infoRepresentable(ts tag.TagSet) bool {
 	for _, k := range ts.Keys() {
 		if _, ok := mapping.RIFFKeyInfo(k); !ok {
+			if k == tag.TrackTotal {
+				if _, ok := infoTrackPair(ts); ok {
+					continue
+				}
+			}
 			return false
 		}
 		if vs, _ := ts.Get(k); len(vs) > 1 {
@@ -144,25 +156,31 @@ func infoRepresentable(ts tag.TagSet) bool {
 }
 
 // rebuildInfo produces the INFO item list for an edited tag set. Unmapped items
-// (IENG, ILNG, the ISFT encoder stamp, ...) are preserved verbatim in place;
-// mapped items are re-rendered from the edited set or dropped when their key is
-// now absent; keys newly present in the edited set are appended in the set's
-// order. Multi-value mapped keys (which also forced an id3 chunk) store their
-// first value here, INFO being single-valued. When stripStamp is set, a
-// transcoder-stamp ISFT item (the WAV encoder leftover) is dropped rather than
-// preserved; it is the one removable native stamp a canonical ENCODER edit cannot
-// reach. An emptied list then drops the LIST chunk via the caller's len check.
+// (IENG, ILNG, ISBJ, ...) are preserved verbatim in place; mapped items are
+// re-rendered from the edited set or dropped when their key is now absent; keys
+// newly present in the edited set are appended in the set's order. Multi-value
+// mapped keys (which also forced an id3 chunk) store their first value here, INFO
+// being single-valued. An emptied list then drops the LIST chunk via the caller's
+// len check.
+//
+// stripStamp drops a transcoder-stamp ISFT item. The test is on the ITEM, not on the
+// canonical ENCODER value: with an id3 chunk present that value is the chunk's TSSE, so
+// judging by it would delete a clean user ISFT on the strength of a stamp in a different
+// container, and would leave a stamped ISFT in place when the TSSE is clean. Marking the
+// key emitted is what stops the append loop writing the stamp straight back from the same
+// value. The caller decides when the flag applies (see Plan).
 func rebuildInfo(orig []infoItem, edited tag.TagSet, stripStamp bool) []infoItem {
 	out := make([]infoItem, 0, len(orig))
 	emitted := map[tag.Key]bool{}
 	for _, it := range orig {
 		key, ok := mapping.RIFFInfoKey(it.id4())
 		if !ok {
-			if stripStamp && isTranscoderISFT(it) {
-				continue // drop the inherited encoder stamp instead of preserving it
-			}
 			out = append(out, it) // unmapped: preserve the raw bytes verbatim
 			continue
+		}
+		if stripStamp && isTranscoderISFT(it) {
+			emitted[key] = true
+			continue // the stamp is what the strip targets; do not re-render it
 		}
 		if emitted[key] {
 			continue // a non-conformant file with duplicate mapped items: keep one
@@ -197,8 +215,48 @@ func rebuildInfo(orig []infoItem, edited tag.TagSet, stripStamp bool) []infoItem
 // empty value is a size-1 NUL item (renderInfo writes len(raw)+1 bytes), distinct from an
 // absent key (no item at all). This lets a present-empty value round-trip through INFO like the
 // other formats, rather than being dropped and relying on a forced ID3 chunk.
+//
+// TrackNumber recombines with TrackTotal into the "4/9" IPRT reads, so the split infoTags
+// performs is undone by the write and a read-write round trip is byte-stable. TrackTotal
+// itself is never asked for: it has no identifier, and rebuildInfo only queries keys that
+// map to one.
 func infoValue(ts tag.TagSet, key tag.Key) (string, bool) {
-	return ts.First(key)
+	v, ok := ts.First(key)
+	if !ok {
+		return v, ok
+	}
+	if key == tag.TrackNumber {
+		if joined, ok := infoTrackPair(ts); ok {
+			return joined, true
+		}
+	}
+	return v, true
+}
+
+// infoTrackPair returns the single IPRT value that stores both TrackNumber and TrackTotal,
+// and whether one exists. It is the shared decision behind infoRepresentable (may the total
+// ride on the number's item?) and infoValue (what does that item hold?), so the writer
+// cannot claim a pair is storable and then store something else.
+//
+// The join must survive the read that will undo it, which is why it is checked against
+// [tag.NumberTotalSplit] - the very rule infoTags applies - rather than assumed. A
+// non-numeric number ("A1") composes to "A1/9", which reads back as one literal value with
+// the total merged in and lost; the pair is unrepresentable there, so the total forces the
+// id3 chunk instead, and ID3's own writer refuses the same composition for the same reason.
+func infoTrackPair(ts tag.TagSet) (string, bool) {
+	num, ok := ts.First(tag.TrackNumber)
+	if !ok {
+		return "", false
+	}
+	total, ok := ts.First(tag.TrackTotal)
+	if !ok || total == "" {
+		return "", false
+	}
+	joined := num + "/" + total
+	if n, t, split := tag.NumberTotalSplit(tag.TrackNumber, joined); split && n == num && t == total {
+		return joined, true
+	}
+	return "", false
 }
 
 // nativeReducedWarnings notes each multi-valued key reduced to its first value in
@@ -235,11 +293,30 @@ func renderInfo(items []infoItem) []byte {
 	return out
 }
 
+// unmappedInfoIDs lists, in file order and without repeats, the INFO identifiers that project
+// to no canonical key (IENG, ISBJ, IKEY, ...). Everywhere else those items are preserved
+// verbatim; a LegacyStrip drops the whole LIST chunk, which is the one path that destroys
+// them, and there is no id3 frame for them to move into because they have no canonical key.
+func unmappedInfoIDs(items []infoItem) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, it := range items {
+		id := it.id4()
+		if _, mapped := mapping.RIFFInfoKey(id); mapped || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
 // isTranscoderISFT reports whether it is an ISFT software item carrying an
-// inherited transcoder stamp ("Lavf..." from ffmpeg). It is the single predicate
-// shared by encoderNoise (which warns about it) and rebuildInfo (which drops it
-// under WithStripEncoderStamp), so the stamp the warning flags is exactly the one
-// the strip removes.
+// inherited transcoder stamp ("Lavf..." from ffmpeg). It is the single predicate shared by
+// encoderNoise (which warns about it), hasTranscoderISFT (which tells Plan a strip would
+// change the file), and rebuildInfo (which drops it under WithStripEncoderStamp), so the
+// stamp the warning flags is exactly the one the strip removes - and a user's own ISFT,
+// which is not a stamp, is left alone by the option.
 func isTranscoderISFT(it infoItem) bool {
 	return it.id4() == "ISFT" && core.IsTranscoderStamp(it.text())
 }

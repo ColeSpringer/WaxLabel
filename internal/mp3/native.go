@@ -65,11 +65,7 @@ func (d *doc) Describe() []core.NativeEntry {
 			Note: fmt.Sprintf("%d frames", len(d.id3.Frames())),
 		})
 		for _, f := range d.id3.Frames() {
-			note := ""
-			if f.Opaque {
-				note = "preserved (opaque)"
-			}
-			out = append(out, core.NativeEntry{Kind: "  " + f.ID, Size: len(f.Body), Note: note})
+			out = append(out, core.NativeEntry{Kind: "  " + f.ID, Size: len(f.Body), Note: id3.FrameNote(f)})
 		}
 	}
 	out = append(out, core.NativeEntry{

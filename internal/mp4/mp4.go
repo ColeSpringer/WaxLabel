@@ -175,16 +175,21 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	// with ErrUnsupportedTag and "chapters cannot be written to an MP4 file" before Plan
 	// runs, pre-empting the precise refusal with a wrong sentinel and a false claim about
 	// the format.
-	readOnly := false
+	// Keep the refusal itself, not just its existence: a fragmented file is
+	// ErrFragmented (a distinct exit-code row) while an iloc/saio file is
+	// ErrUnsupportedFormat, so a caller that declines before reaching Plan - the transfer
+	// path - returns the same error a write would rather than flattening the two.
+	var refusal error
 	if m != nil {
 		if d, ok := m.Native.(*doc); ok && d != nil {
-			readOnly = d.refuseWrite() != nil
+			refusal = d.refuseWrite()
 		}
 	}
 	// Padding is grow-only: a forced rewrite can reserve a region, but a fit-in-place
 	// edit reuses the existing free space and cannot shrink it.
-	return core.NewCapabilities(core.FormatMP4, readOnly, fields, pictures, chapters, core.AccessPartial, perField).
-		WithFieldClassifier(transferClassifier)
+	return core.NewCapabilities(core.FormatMP4, refusal != nil, fields, pictures, chapters, core.AccessPartial, perField).
+		WithFieldClassifier(transferClassifier).
+		WithReadOnlyReason(refusal)
 }
 
 // transferClassifier grades the one field shape whose MP4 transfer fate the format-level

@@ -106,11 +106,17 @@ func Project(t *Tag) Projection {
 			}
 		case f.ID == "TXXX":
 			if desc, vals, ok := decodeUserText(f.Body); ok {
-				if key, kok := mapping.ID3TXXXKey(desc); kok {
-					src := "TXXX\x00" + strings.ToUpper(strings.TrimSpace(desc))
-					for _, v := range vals {
-						emit(key, v, src)
-					}
+				key, kok := mapping.ID3TXXXKey(desc)
+				if !kok {
+					// The description is not representable as a canonical key (a lowercase-only
+					// or punctuation-bearing one), so the frame is preserved but its value never
+					// reaches the tag set. Say so rather than let it vanish from every view.
+					warnings = core.WarnInvalidKey(warnings, desc)
+					continue
+				}
+				src := "TXXX\x00" + strings.ToUpper(strings.TrimSpace(desc))
+				for _, v := range vals {
+					emit(key, v, src)
 				}
 			}
 		case f.ID == "UFID":
@@ -118,12 +124,33 @@ func Project(t *Tag) Projection {
 				emit(tag.MBRecordingID, id, "UFID")
 			}
 		case f.ID == "COMM":
-			if desc, vals, ok := decodeCommentFrame(f.Body); ok && desc == "" {
+			// A described comment is still a comment: Windows Explorer and CDDB-era taggers
+			// write one, and leaving it unprojected made it invisible to dump, lint and diff
+			// and made copy report a clean lossless carry while leaving it behind. Only a
+			// machine description (iTunes normalization, ReplayGain) stays out, through the
+			// predicate the writer's management gates also consult.
+			//
+			// The source label is the literal "COMM", not a description-derived string:
+			// core.BuildFamilies marks a key unselected when distinct SOURCES supply distinct
+			// values, so a per-description source would turn an ordinary file carrying one
+			// plain and one described comment into a spurious conflicting-families finding.
+			// One source reads both as a multi-valued COMMENT, which is what the key is. The
+			// TXXX precedent does not generalize: different TXXX descriptions land on
+			// different canonical keys and so never collide on one.
+			if desc, vals, ok := decodeCommentFrame(f.Body); ok && !mapping.ID3TechnicalCommentDesc(desc) {
 				for _, v := range vals {
 					emit(tag.Comment, v, "COMM")
 				}
 			}
 		case f.ID == "USLT":
+			// Only an empty-description USLT projects, deliberately - unlike COMM above,
+			// which projects any non-technical description. tag.Lyrics is not multivalued
+			// (tag/keys.go) and renderUnit's USLT branch takes edited.First(tag.Lyrics), so
+			// projecting a described USLT beside a plain one would manufacture a
+			// single-valued-multi finding on read and then silently collapse to the first on
+			// any write: strictly worse than preserved-but-invisible. A described USLT
+			// descriptor usually marks an alternate or translated set, which is a different
+			// thing from "the lyrics", whereas a described comment is still a comment.
 			if desc, text, ok := decodeLangText(f.Body); ok && desc == "" {
 				emit(tag.Lyrics, text, "USLT")
 			}

@@ -5,10 +5,12 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/id3"
+	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -41,11 +43,18 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	syncedLyricsChanged := !core.EqualSyncedLyrics(base.SyncedLyrics, edited.SyncedLyrics)
 	// LegacyStrip consolidates tags into the id3 chunk by dropping LIST/INFO.
 	stripINFO := opts.Legacy == core.LegacyStrip && infoPresent
-	// A WithStripEncoderStamp edit removes a transcoder-stamp ISFT that no canonical
-	// tag edit reaches. It is a real change even when the canonical tags are
-	// untouched (for example, a WAV carrying only an inherited ISFT), so it must
-	// defeat the no-op fast path below and force an INFO rewrite.
-	stampToStrip := opts.StripEncoderStamp && infoPresent && hasTranscoderISFT(d.info)
+	// A WithStripEncoderStamp edit removes a transcoder-stamp ISFT item. The strip targets
+	// the stamp the FILE carries, never a value this edit authored: the CLI turns the option
+	// on for any ENCODER edit (to keep the containers in step), so without this gate
+	// --set ENCODER=Lavf62.3.100 would filter out the user's own value and write it nowhere,
+	// ISFT being the INFO home for the key. A removal leaves no value to write either way.
+	//
+	// A strip is a real change even when the canonical tags are untouched (a WAV carrying
+	// only an inherited ISFT, or one whose id3 chunk holds a clean ENCODER while INFO holds
+	// the stamp), so it must defeat the no-op fast path below and force an INFO rewrite.
+	encoderAuthored := core.DiffKeys(base.Tags, edited.Tags)[tag.Encoder]
+	stripISFT := opts.StripEncoderStamp && !encoderAuthored
+	stampToStrip := stripISFT && infoPresent && hasTranscoderISFT(d.info)
 
 	report := core.WriteReport{Format: core.FormatWAV, BytesBefore: edited.Identity.Size}
 
@@ -81,7 +90,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// Build the new INFO items (synced to the edited set; unmapped items kept).
 	var newInfo []infoItem
 	if writeINFO {
-		newInfo = rebuildInfo(d.info, edited.Tags, opts.StripEncoderStamp)
+		newInfo = rebuildInfo(d.info, edited.Tags, stripISFT)
 	}
 
 	// Build the new id3 tag. id3.RewriteBase picks the diff base: no id3 chunk
@@ -98,12 +107,12 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		version := srcTag.WriteVersion()
 		id3Base := id3.RewriteBase(base.Tags, srcTag, id3Present, stripINFO)
 		var frames []id3.Frame
-		frames, id3Info = id3.RebuildFrames(srcTag.Frames(), id3Base, edited.Tags, version,
+		frames, id3Info = id3.RebuildFrames(srcTag.Frames(), id3Base, id3Tags(edited.Tags, id3Present, encoderAuthored), version,
 			id3.StructuredEdit{
 				Pictures: edited.Pictures, PicturesChanged: picturesChanged,
 				Chapters: edited.Chapters, ChaptersChanged: chaptersChanged,
 				SyncedLyrics: edited.SyncedLyrics, SyncedLyricsChanged: syncedLyricsChanged,
-				SyncedLyricsCarried: opts.Carried,
+				Carried:             opts.Carried,
 				SyncedLyricsCleared: opts.SyncedLyricsCleared,
 				MediaDuration:       edited.Properties.Duration(),
 			}, wopts)
@@ -143,6 +152,17 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 			picturesChanged, len(edited.Pictures), chaptersChanged, len(edited.Chapters),
 			syncedLyricsChanged, len(edited.SyncedLyrics))...)
 	}
+	if stripINFO {
+		// LegacyStrip consolidates the mapped items into the id3 chunk, but an unmapped item
+		// has no canonical key and so no frame to move into: dropping the chunk destroys it.
+		// doc.go's contract is that unaffected data is warned about, never stripped silently,
+		// and this is the one WAV path that would. (AIFF is safe by construction: it only
+		// collects text chunks that map, so its strip moves every one of them.)
+		if ids := unmappedInfoIDs(d.info); len(ids) > 0 {
+			report.Warnings = core.Warn(report.Warnings, core.WarnLegacyStripDropped,
+				core.StripDroppedMessage("LIST/INFO chunk", []string{"items no canonical key can hold (" + strings.Join(ids, ", ") + ")"}))
+		}
+	}
 	if stampToStrip {
 		// Surface the strip even when it empties the LIST (which records no rewrite op),
 		// so a plan that only drops the stamp is not reported as a contentless rewrite.
@@ -171,6 +191,45 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		return np, nil
 	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
+}
+
+// id3Tags is the set the embedded id3 chunk renders from: edited, minus an inherited
+// transcoder stamp when this write is CREATING the chunk and the stamp is not something the
+// edit authored.
+//
+// The stamp reaches the canonical set from the ISFT item, so without this a wholly unrelated
+// edit that happens to force an id3 chunk (a DISCNUMBER, which INFO has no slot for) would
+// copy ffmpeg's leftover into a second container and make WaxLabel manufacture a second copy
+// of the noise it lints against. It is the same judgement the transfer policy already makes
+// when it excludes ENCODER from a copy: a stamp describes this file's own audio, not the
+// work, so it is preserved where it is and never propagated.
+//
+// An id3 chunk that already holds a stamped TSSE keeps it: refusing to author the stamp is
+// not a licence to delete one the file came with, and the linter flags it either way.
+func id3Tags(edited tag.TagSet, id3Present, encoderAuthored bool) tag.TagSet {
+	if id3Present || encoderAuthored {
+		return edited
+	}
+	vals, ok := edited.Get(tag.Encoder)
+	if !ok {
+		return edited
+	}
+	clean := make([]string, 0, len(vals))
+	for _, v := range vals {
+		if !core.IsTranscoderStamp(v) {
+			clean = append(clean, v)
+		}
+	}
+	if len(clean) == len(vals) {
+		return edited
+	}
+	out := edited.Clone()
+	if len(clean) == 0 {
+		out.Delete(tag.Encoder)
+	} else {
+		out.Set(tag.Encoder, clean...)
+	}
+	return out
 }
 
 // planChunks builds the output chunk list in source order, re-rendering or
@@ -458,10 +517,14 @@ func buildResult(edited *core.Media, base *doc, newInfo []infoItem, newID3 *id3.
 		dataOff: lay.dataOff,
 		dataLen: base.dataLen,
 		fmtCfg:  base.fmtCfg,
-		track:   base.track,
-		size:    lay.total,
-		form:    base.form,
-		ds64:    base.ds64.clone(),
+		// The audio and its fact chunk are copied verbatim, so the declared sample
+		// count still describes the output.
+		factSamples: base.factSamples,
+		hasFact:     base.hasFact,
+		track:       base.track,
+		size:        lay.total,
+		form:        base.form,
+		ds64:        base.ds64.clone(),
 	}
 	if nd.ds64 != nil {
 		// Keep the carried ds64 in step with the bytes just written, so the result document
@@ -481,6 +544,7 @@ func buildResult(edited *core.Media, base *doc, newInfo []infoItem, newID3 *id3.
 	nd.outerLen = base.outerLen
 	nd.outerOff = lay.total - base.outerLen
 	nd.trailingLen = base.trailingLen
+	nd.trailingID3v1 = base.trailingID3v1
 	nd.trailingOff = nd.outerOff - base.trailingLen
 
 	tags, pics, chapters, syncedLyrics, families, numericGenre, projWs := project(nd)

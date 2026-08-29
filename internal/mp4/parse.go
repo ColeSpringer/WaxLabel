@@ -52,6 +52,15 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 
 	d := &doc{size: size}
+	// A top-level atom whose declared size ran past EOF is clamped so the complete earlier
+	// atoms still read. That is also what junk appended to a file looks like: the first four
+	// bytes read as an enormous size and the remainder becomes one phantom atom. mdat and
+	// moov get their own truncated-audio warnings below; every other name would otherwise be
+	// absorbed in silence, which is the RIFF oversized-chunk condition under another
+	// container.
+	if last := top[len(top)-1]; last.truncated && last.id() != "mdat" && last.id() != "moov" {
+		d.oversizedAtom = last.id()
+	}
 	var moov node
 	haveMoov := false
 	for _, a := range top {
@@ -190,6 +199,12 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	media.Chapters = d.chapters
 	media.Families = families
 	media.Warnings = mediaWarnings(tags, numericGenre)
+	media.Warnings = append(media.Warnings, invalidKeyWarnings(d)...)
+	if d.oversizedAtom != "" {
+		media.Warnings = core.Warn(media.Warnings, core.WarnOversizedChunk,
+			fmt.Sprintf("the %q atom declares more bytes than the file holds and was clamped to EOF; "+
+				"bytes appended after the last atom read this way", d.oversizedAtom))
+	}
 	if chapterConflict {
 		media.Warnings = core.Warn(media.Warnings, core.WarnChapterSourceConflict,
 			"the Nero chpl list and the QuickTime chapter text track disagree")

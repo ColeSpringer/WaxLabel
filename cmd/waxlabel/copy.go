@@ -18,6 +18,7 @@ func newCopyCmd() *cobra.Command {
 		preset string
 		legacy string
 		dryRun bool
+		strict bool
 	)
 	cmd := &cobra.Command{
 		Use:   "copy <source> <dest>",
@@ -81,11 +82,17 @@ func newCopyCmd() *cobra.Command {
 			srcLabel := transferFormatLabel(srcDoc.Format(), srcDoc.Properties().Container)
 			dstLabel := transferFormatLabel(dstDoc.Format(), dstDoc.Properties().Container)
 			if err != nil {
-				// The report still explains the failure, so show it before returning.
+				// The report still explains the failure - which fields could not be carried,
+				// and why - so it is shown on both surfaces before returning, not just the
+				// human one. A refused copy is exactly when a script needs the detail.
 				if !asJSON {
 					renderTransfer(out, srcPath, dstPath, report, srcLabel, dstLabel)
+					return err
 				}
-				return err
+				if jerr := writeJSON(out, toJSONCopyError(srcPath, dstPath, report, err)); jerr != nil {
+					return jerr
+				}
+				return alreadyRendered(err)
 			}
 
 			// Preview before touching the destination.
@@ -93,6 +100,33 @@ func newCopyCmd() *cobra.Command {
 				renderTransfer(out, srcPath, dstPath, report, srcLabel, dstLabel)
 				// nil pictures: the transfer report above already details the carried ones.
 				renderReport(out, dstPath, plan, nil)
+			}
+			// --strict fails a copy that is not a faithful carry, before any write. Two
+			// conditions, because a transfer can lose metadata two ways: the projection can
+			// grade an item lossy or dropped (the report), and the destination codec can
+			// warn about what the write itself does to a value it accepted (the plan). The
+			// second is not a formality - WarnLegacyStripDropped is emitted outside the
+			// carried gate, and every codec-emitted warning survives a carry - so it reuses
+			// the same gate set and plan reports.
+			if strict {
+				err := strictTransferError(report)
+				if err == nil {
+					if gerr := newStrictWarningGate(true).check(plan); gerr != nil {
+						err = fmt.Errorf("%s: %w", dstPath, gerr)
+					}
+				}
+				if err != nil {
+					// A strict run writes nothing, so this envelope is the user's only account
+					// of what to fix. Counts alone would not name the items, which is the same
+					// reasoning that keeps set --strict's key list uncapped.
+					if !asJSON {
+						return err
+					}
+					if jerr := writeJSON(out, toJSONCopyError(srcPath, dstPath, report, err)); jerr != nil {
+						return jerr
+					}
+					return alreadyRendered(err)
+				}
 			}
 			if dryRun {
 				if asJSON {
@@ -116,9 +150,21 @@ func newCopyCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&preset, "preset", "", "write policy preset: preserve|compatible|minimal")
-	cmd.Flags().StringVar(&legacy, "legacy", "", "legacy-tag policy: preserve|strip")
+	cmd.Flags().StringVar(&legacy, "legacy", "", "legacy-tag policy: preserve|strip. strip removes the DESTINATION's ID3v1/APEv2/stray-ID3 containers unconditionally, warning when one holds the only copy of a value")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview the transfer without modifying the destination")
+	cmd.Flags().BoolVar(&strict, "strict", false, "fail (exit 2) instead of writing when the transfer is not lossless or the write would lose metadata")
 	return cmd
+}
+
+// strictTransferError fails a --strict copy whose projection is not a faithful carry,
+// naming what was lost. It reads TransferReport.Lossless, the same predicate the report
+// header counts, so the summary the user sees and the refusal cannot disagree.
+func strictTransferError(report wl.TransferReport) error {
+	if report.Lossless() {
+		return nil
+	}
+	_, lossy, dropped := report.Counts()
+	return usagef("transfer is not lossless: %d lossy, %d dropped (omit --strict to write anyway)", lossy, dropped)
 }
 
 // transferLabel names a transfer item for display: the key for a field, or a
@@ -175,7 +221,11 @@ func renderTransfer(w io.Writer, src, dst string, r wl.TransferReport, srcLabel,
 // format keeps its Format string. The JSON sourceFormat/destFormat stay the bare Format:
 // "WebM" is a container subtype, the format identity is Matroska.
 func transferFormatLabel(f wl.Format, container string) string {
-	if f == wl.FormatMatroska && container != "" {
+	// Any container that names itself something other than its codec family gets that name:
+	// WebM and Matroska share a Format, and so do WAV/RF64/BW64 and AIFF/AIFC. Naming only
+	// the family would tell an RF64 user their 64-bit file is a WAV, which is the very
+	// distinction Properties.Container exists to draw and which --json already reports.
+	if container != "" && container != f.String() {
 		return container
 	}
 	return f.String()
@@ -201,6 +251,17 @@ type jsonTransferItem struct {
 	Count       int    `json:"count"`
 	Disposition string `json:"disposition"`
 	Reason      string `json:"reason,omitempty"`
+}
+
+// toJSONCopyError is the envelope for a copy that is refused before the write: the same
+// transfer array a successful run emits, plus the error that stopped it. Returning the bare
+// error instead would leave a script with a code and no account of which items were lost,
+// while the human surface printed the whole report.
+func toJSONCopyError(src, dst string, r wl.TransferReport, err error) jsonCopy {
+	jc := toJSONCopy(src, dst, r, nil, false, false, nil)
+	c := classifyError(err)
+	jc.Error = &jsonErrBody{Code: c.code, Message: perFileReason(err), Hint: c.hint}
+	return jc
 }
 
 func toJSONCopy(src, dst string, r wl.TransferReport, plan *wl.Plan, dryRun, committed bool, postWrite error) jsonCopy {

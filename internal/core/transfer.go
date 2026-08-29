@@ -116,6 +116,14 @@ func (r TransferReport) Lossless() bool {
 	return lossy == 0 && dropped == 0
 }
 
+// HasDropped reports whether the destination could not store at least one item. It is
+// the "this transfer asked to write something and could not" test, distinct from
+// [TransferReport.Lossless], which a merely downgraded item also fails.
+func (r TransferReport) HasDropped() bool {
+	_, _, dropped := r.Counts()
+	return dropped > 0
+}
+
 // ProjectTransfer computes how each piece of src's canonical metadata fares
 // against the destination capabilities dst: a field/picture/chapter that the
 // destination writes fully is Carried, one it writes with reduced fidelity is

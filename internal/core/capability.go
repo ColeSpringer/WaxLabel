@@ -209,7 +209,7 @@ func RecordingDateV23Capability() Capability {
 	return Capability{
 		Read: AccessFull, Write: AccessFull,
 		Representation: "ID3v2.3 TYER+TDAT+TIME",
-		Fidelity:       "ID3v2.3 date frames store reduced precision, so a finer component was dropped",
+		Fidelity:       "ID3v2.3 date frames store the parts separately, so a finer component is dropped or the value reads back respelled",
 	}
 }
 
@@ -240,6 +240,9 @@ type Capabilities struct {
 	// codec sets one. It is unexported so it never JSON-marshals (Capabilities is a public
 	// alias); WithFieldClassifier documents what it grades and when ProjectTransfer runs it.
 	fieldClassifier FieldClassifier
+	// readOnlyReason is the refusal WithReadOnlyReason attaches, nil unless a codec sets
+	// one. Unexported for the same reason as fieldClassifier.
+	readOnlyReason error
 }
 
 // FieldClassifier is the per-field transfer-grading hook [Capabilities.WithFieldClassifier]
@@ -289,6 +292,23 @@ func (c Capabilities) WithFieldClassifier(fn FieldClassifier) Capabilities {
 	c.fieldClassifier = fn
 	return c
 }
+
+// WithReadOnlyReason returns a copy of c carrying the error the codec would return if
+// asked to write this file. A codec that sets ReadOnly has already computed a precise
+// refusal (an ASF file is unsupported-format, a fragmented MP4 is unsupported-fragmentation,
+// and those are distinct exit-code rows); attaching it here lets a caller that refuses
+// before reaching Plan - the transfer path - return the codec's own answer instead of
+// synthesizing a vaguer one, and keeps the ReadOnly predicate and its reason from being
+// computed in two places.
+func (c Capabilities) WithReadOnlyReason(err error) Capabilities {
+	c.readOnlyReason = err
+	return c
+}
+
+// ReadOnlyReason returns the refusal a codec attached for a read-only file, or nil when
+// none was attached (the literal Capabilities{ReadOnly: true} fallbacks for an unknown or
+// unimplemented format). A caller acting on it supplies its own generic error for nil.
+func (c Capabilities) ReadOnlyReason() error { return c.readOnlyReason }
 
 // Field returns the capability for key, falling back to GenericField when
 // there is no specific override.

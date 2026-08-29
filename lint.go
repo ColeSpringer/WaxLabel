@@ -101,7 +101,8 @@ func lintWarnings(ws []core.Warning) []Finding {
 		switch w.Code {
 		case core.WarnStrayLeadingID3, core.WarnTrailingID3v1, core.WarnLegacyAPE,
 			core.WarnInheritedEncoder, core.WarnInvalidPicture, core.WarnTruncatedAudio,
-			core.WarnInvalidTagKey, core.WarnChainedStream:
+			core.WarnInvalidTagKey, core.WarnChainedStream, core.WarnTrailingBytes,
+			core.WarnOversizedChunk:
 			out = append(out, Finding{LintWarning, w.Code.String(), w.Message, ""})
 		case core.WarnMultipleVorbisComment, core.WarnDuplicateTagBlock, core.WarnNoAudioFrames:
 			out = append(out, Finding{LintError, w.Code.String(), w.Message, ""})
@@ -259,6 +260,12 @@ func lintPictures(pics []Picture) []Finding {
 			out = append(out, Finding{LintWarning, "invalid-picture",
 				fmt.Sprintf("%s picture is not a recognized image type (%s)", p.Type, p.MIME), ""})
 		}
+		if reason, bad := core.NonConformingIcon(p); bad {
+			// The code comes from the warning's own String, not a literal: the edit-time
+			// warning and this finding are documented to report the same condition under the
+			// same code, and a hand-written copy would let a rename split them silently.
+			out = append(out, Finding{LintWarning, core.WarnNonConformingIcon.String(), reason, ""})
+		}
 		h := hashes[i]
 		if seen[h] {
 			out = append(out, Finding{LintWarning, "duplicate-picture", duplicatePictureMessage(distinctSortedRoles(pics, hashes, h)), ""})
@@ -271,6 +278,9 @@ func lintPictures(pics []Picture) []Finding {
 	if fronts > 1 {
 		out = append(out, Finding{LintWarning, "multiple-front-covers", multipleFrontCoversMessage(fronts), ""})
 	}
+	// LintError, not the LintWarning non-conforming-icon gets: two type-1 pictures make the
+	// frame set ambiguous and unrepairable without choosing one, while an oversized icon is
+	// unambiguous and every reader renders it. Do not "fix" the asymmetry.
 	if icon, otherIcon := core.CountIcons(pics); icon > 1 || otherIcon > 1 {
 		out = append(out, Finding{LintError, "duplicate-icon",
 			"picture types 1/2 must be unique", ""})

@@ -1,7 +1,9 @@
 package core
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 )
@@ -77,6 +79,42 @@ func CountIcons(pics []Picture) (icon, otherIcon int) {
 		}
 	}
 	return icon, otherIcon
+}
+
+// fileIconSide is the pixel dimension ID3v2 section 4.14 requires of a type-1 file icon,
+// which must be a 32x32 PNG.
+const fileIconSide = 32
+
+// fileIconMIME is the image type that section requires. Both halves of the rule are one
+// predicate so the edit-time warning and the lint finding cannot enforce different ones.
+const fileIconMIME = "image/png"
+
+// NonConformingIcon reports whether p is a type-1 file icon that violates ID3v2 4.14's
+// shape rule (a 32x32 PNG), and returns the reason. Dimensions and MIME are already
+// decoded on every path that builds a Picture, so this reads what is there rather than
+// re-sniffing.
+//
+// The vocabulary is format-agnostic on purpose: FLAC and Vorbis METADATA_BLOCK_PICTURE
+// inherit ID3's picture types, so the same type-1 means the same thing there. A zero
+// dimension is not judged - it means the sniff could not determine one, and inventing a
+// violation from a missing measurement would flag valid art.
+//
+// An unsniffable picture is not judged either: it already draws the invalid-picture
+// finding, and adding "is application/octet-stream; the type requires image/png" would
+// report the same fact twice under two codes. The MIME comparison folds case, the way
+// [MIMERepresentable] does, so a caller-supplied "image/PNG" is not a violation.
+func NonConformingIcon(p Picture) (string, bool) {
+	if p.Type != PicFileIcon || p.Unrecognized() {
+		return "", false
+	}
+	switch {
+	case p.MIME != "" && !strings.EqualFold(p.MIME, fileIconMIME):
+		return fmt.Sprintf("file-icon picture is %s; the type requires %s", p.MIME, fileIconMIME), true
+	case p.Width > 0 && p.Height > 0 && (p.Width != fileIconSide || p.Height != fileIconSide):
+		return fmt.Sprintf("file-icon picture is %dx%d; the type requires %dx%d",
+			p.Width, p.Height, fileIconSide, fileIconSide), true
+	}
+	return "", false
 }
 
 // PictureLoss names which picture metadata a destination format drops when it

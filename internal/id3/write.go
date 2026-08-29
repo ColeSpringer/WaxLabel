@@ -30,16 +30,19 @@ type StructuredEdit struct {
 	ChaptersChanged     bool
 	SyncedLyrics        []core.SyncedLyrics
 	SyncedLyricsChanged bool
-	// SyncedLyricsCarried marks the synced-lyrics edit as a faithful cross-format carry, so
-	// the empty-language fallback to the destination's existing SYLT language is skipped: a
-	// carry of a no-language set (FLAC/Ogg store none) must read back with no language, not
-	// silently inherit the destination's. An authored line-only edit leaves this false and
-	// keeps the documented CLI convenience of preserving the file's existing language.
-	SyncedLyricsCarried bool
+	// Carried marks the whole edit as a faithful cross-format carry rather than something the
+	// user authored, which changes two decisions about metadata the DESTINATION already had.
+	// The synced-lyrics empty-language fallback is skipped: a carry of a no-language set
+	// (FLAC/Ogg store none) must read back with no language, not silently inherit the
+	// destination's. And a re-rendered comment does not keep the destination's COMM
+	// description: labelling a value that arrived from somewhere else "Ripped by EAC" is a
+	// claim about text that is no longer there. An authored edit leaves this false and keeps
+	// both conveniences.
+	Carried bool
 	// SyncedLyricsCleared marks the synced-lyrics set as explicitly cleared before this edit
 	// authored a new one, so the same language/descriptor fallback is skipped: a clear means
 	// "start fresh," so an authored set with no language reads back with none instead of
-	// inheriting the cleared one. It is distinct from SyncedLyricsCarried (a faithful transfer)
+	// inheriting the cleared one. It is distinct from Carried (a faithful transfer)
 	// so the edit is not mislabeled; both suppress the fallback.
 	SyncedLyricsCleared bool
 	// MediaDuration is the file's playable length, used only to bound a trailing open-ended
@@ -60,8 +63,15 @@ type RebuildInfo struct {
 	// numeric year and so rendered no v2.3 frame at all - a silent drop the caller
 	// surfaces as a value-dropped warning. Empty on v2.4 (TDRC/TDOR store the full
 	// string) and for values that do carry a year (only the sub-year precision is lost,
-	// which is not a drop). See detectDroppedDates.
+	// which is not a drop). See detectDateFates.
 	DroppedDates []tag.Key
+	// CoercedDates lists date keys whose v2.3 rendering stores every component but reads back
+	// spelled differently: "2001-02-03 10:20" comes back as "2001-02-03T10:20", because TYER/
+	// TDAT/TIME store neither separator and the read path recomposes with 'T'. Nothing is lost,
+	// so this is neither DroppedDates nor ReducedDates; the caller surfaces it as a
+	// value-coerced warning. Scoped to RecordingDate (OriginalDate renders only TORY and cannot
+	// coerce). See detectDateFates and classifyV23Date.
+	CoercedDates []ReducedDate
 	// ReducedDates lists date keys whose v2.3 rendering silently lost precision finer than
 	// the rendered frames capture: a month with no full date drops to the year (TDAT needs a
 	// full DDMM), and an hour with no minute drops to the date (TIME needs a full HHMM). Each
@@ -69,7 +79,7 @@ type RebuildInfo struct {
 	// for the warning text and the precision-aware suppression. Scoped to RecordingDate;
 	// OriginalDate's v2.3 reductions are reported through the capability-based value-reduced
 	// path (its TORY field is AccessPartial), so listing it here would double-warn. See
-	// detectReducedDates and reducesDatePrecision.
+	// detectDateFates and reducesDatePrecision.
 	ReducedDates []ReducedDate
 	// HasDroppedMalformedPicture is set when a picture edit replaced the APIC frames and
 	// at least one original APIC could not be decoded (a malformed cover). Those raw
@@ -121,6 +131,13 @@ type RebuildInfo struct {
 	// the warnings above, this is a hard error: the caller turns it into waxerr.ErrInvalidData via
 	// RebuildError and refuses the write, rather than writing a truncated frame.
 	SyncedLyricsInvalidNUL bool
+	// CommentDescriptionDropped is set when a Comment rewrite could not keep a description
+	// one of the managed COMM frames carried: several managed frames, one frame whose edited
+	// Comment resolved to several values, or a faithful carry (where the destination's
+	// description does not label the value that arrived). The authored single-frame,
+	// single-value case keeps the description and does not set this. Clearing Comment does
+	// not either - the description goes with the value the user removed.
+	CommentDescriptionDropped bool
 	// SyncedLyricsLangUndefined is set when an authored synced-lyrics set carried a non-empty
 	// language that normalizes to the ID3 "undefined" marker ("xxx"/"XXX"): the value is
 	// stored (exit 0) but reads back with no language, so the caller surfaces it as a
@@ -163,22 +180,41 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 		}
 	}
 
-	// The read path does not expose the COMM/USLT 3-byte language and stores a TXXX
-	// description under its uppercased canonical key, so recover both from the original
-	// frames when rewriting. Re-rendered comment and lyric frames keep their language,
-	// and custom TXXX frames keep their original description casing.
-	// frameRenderID marks a COMM/USLT frame managed only when its description is empty,
-	// so there is at most one managed COMM and one managed USLT to reuse.
+	// The read path does not expose the COMM/USLT 3-byte language or a COMM description, and
+	// stores a TXXX description under its uppercased canonical key, so recover them from the
+	// original frames when rewriting. Re-rendered comment and lyric frames keep their
+	// language, a single re-rendered comment keeps its description, and custom TXXX frames
+	// keep their original description casing. There can be several managed COMM frames
+	// (every non-technical one is managed), so each recovery takes the first.
 	origLangs := map[string]string{}          // "COMM"/"USLT"/"SYLT" -> 3-byte language
 	var origSyltDesc string                   // first projecting lyrics SYLT's content descriptor (authored-set fallback)
 	origTXXXDesc := map[string]string{}       // TXXX render token -> original description (verbatim casing)
 	var origInvolved []involvedPerson         // well-formed TIPL/IPLS involvements we do not model, preserved on write
 	seenInvolved := map[involvedPerson]bool{} // dedup across repeated or multiple involved-people frames
+	var managedComments int                   // managed COMM frames, which a Comment edit merges into one
+	var firstCommentDesc string               // first managed COMM's description, kept when the merge is unambiguous
+	var anyCommentDesc bool                   // any managed COMM carries a description worth preserving
 	for _, f := range orig {
 		switch f.ID {
 		case "COMM", "USLT":
-			if rid, managed := frameRenderID(f); managed && len(f.Body) >= 4 {
+			rid, managed := frameRenderID(f)
+			if !managed {
+				break
+			}
+			// First wins, matching the SYLT branch below. Without the guard the LAST managed
+			// frame's language won, which was latent while only one COMM could be managed and
+			// is reachable now that described ones are.
+			if _, seen := origLangs[rid]; !seen && len(f.Body) >= 4 {
 				origLangs[rid] = string(f.Body[1:4])
+			}
+			if f.ID == "COMM" {
+				managedComments++
+				if desc, _, ok := decodeCommentFrame(f.Body); ok && desc != "" {
+					anyCommentDesc = true
+					if managedComments == 1 {
+						firstCommentDesc = desc
+					}
+				}
 			}
 		case "SYLT":
 			// Recover the first lyrics SYLT's language and content descriptor as fallbacks for a
@@ -227,6 +263,25 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	var info RebuildInfo
 	emitted := map[string]bool{}
 	firstAPIC := -1
+
+	// A Comment edit merges every managed COMM into one frame, which can only keep one
+	// description. Keep it when the merge is unambiguous - one source frame, one edited
+	// value - and otherwise flatten and let the caller warn. A cleared Comment is not a
+	// description drop: the value and its description go together, deliberately.
+	//
+	// A faithful carry never keeps it. The description labels the comment the DESTINATION
+	// had; a value arriving from another file is not the thing it labels, so stamping the
+	// destination's "Ripped by EAC" onto the source's comment would assert something false.
+	// An authored edit is the opposite case: the user is editing that comment's own text,
+	// and the description is its field name.
+	keepCommentDesc := ""
+	editedComments, _ := edited.Get(tag.Comment)
+	if managedComments == 1 && len(editedComments) == 1 && !se.Carried {
+		keepCommentDesc = firstCommentDesc
+	}
+	if dirty["COMM"] && anyCommentDesc && len(editedComments) > 0 && keepCommentDesc == "" {
+		info.CommentDescriptionDropped = true
+	}
 
 	for _, f := range orig {
 		if f.ID == "APIC" {
@@ -289,7 +344,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 		}
 		if dirty[rid] {
 			if !emitted[rid] {
-				frames, v23multi := renderUnit(rid, edited, version, opts, origLangs, origTXXXDesc, origInvolved)
+				frames, v23multi := renderUnit(rid, edited, version, opts, origLangs, origTXXXDesc, origInvolved, keepCommentDesc)
 				out = append(out, frames...)
 				info.UsedV23Multi = info.UsedV23Multi || v23multi
 				emitted[rid] = true
@@ -326,7 +381,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	}
 	slices.Sort(leftover)
 	for _, rid := range leftover {
-		frames, v23multi := renderUnit(rid, edited, version, opts, origLangs, origTXXXDesc, origInvolved)
+		frames, v23multi := renderUnit(rid, edited, version, opts, origLangs, origTXXXDesc, origInvolved, keepCommentDesc)
 		out = append(out, frames...)
 		info.UsedV23Multi = info.UsedV23Multi || v23multi
 		emitted[rid] = true
@@ -363,7 +418,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 		// A faithful carry (no inheritance) and an explicit clear-then-author (start fresh) both
 		// suppress the fallback, so an authored set with no language reads back with none rather
 		// than silently inheriting the destination's existing SYLT language and descriptor.
-		if se.SyncedLyricsCarried || se.SyncedLyricsCleared {
+		if se.Carried || se.SyncedLyricsCleared {
 			fallbackLang = ""
 			fallbackDesc = ""
 		}
@@ -384,8 +439,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 		}
 	}
 
-	info.DroppedDates = detectDroppedDates(changed, edited, version)
-	info.ReducedDates = detectReducedDates(changed, edited, version)
+	info.DroppedDates, info.ReducedDates, info.CoercedDates = detectDateFates(changed, edited, version)
 	info.NumericGenres = detectNumericGenres(changed, edited)
 	info.DroppedTotals = detectDroppedTotals(changed, edited)
 	info.DroppedTrailingValues = detectDroppedTrailingValues(changed, edited, version, opts.Multi)
@@ -482,9 +536,9 @@ func RenderFrontTag(srcTag *Tag, version byte, newFrames []Frame, info RebuildIn
 }
 
 // frameRenderID returns a frame's render token and whether the frame is managed
-// (modelled by the canonical projection, hence re-rendered when its field
-// changes). Unmanaged frames - URLs, POPM, PRIV, described comments, non-MB
-// UFIDs, opaque frames - are always preserved verbatim.
+// (modelled by the canonical projection, hence re-rendered when its field changes).
+// Unmanaged frames - URLs, POPM, PRIV, machine-described comments, described lyrics,
+// non-MusicBrainz UFIDs, opaque frames - are always preserved verbatim.
 func frameRenderID(f Frame) (string, bool) {
 	if f.Opaque {
 		return "", false
@@ -505,15 +559,20 @@ func frameRenderID(f Frame) (string, bool) {
 		}
 		return "UFID", true
 	case "COMM":
-		// Only an empty-description COMM is managed as the canonical Comment; a described
-		// COMM, such as iTunNORM or a ReplayGain note, is preserved verbatim. The flat
-		// Comment model has no per-comment language, so editing Comment merges multiple
-		// empty-description COMM frames in different languages into one frame. The texts
-		// are still retained under Comment, and untouched Comment frames are preserved
-		// verbatim. Preserving the language split would require a language-aware comment
-		// model across codecs.
+		// Managed exactly when projected (internal/id3/project.go), through the same
+		// predicate: a machine-described COMM (iTunNORM, ReplayGain) is neither read as
+		// COMMENT nor touched on write, while every other COMM - described or not - is both.
+		// Projecting without managing is the combination that must not ship: an edit would
+		// mark the unit dirty, preserve the described frame verbatim, and then append a
+		// second fresh COMM, so a re-parse would read two comments where the plan promised
+		// one.
+		//
+		// The flat Comment model has no per-comment language, so editing Comment merges
+		// several managed COMM frames into one; renderUnit keeps the single-frame case's
+		// description and language, and the caller warns when the collapse is genuinely
+		// ambiguous. Untouched Comment frames are preserved verbatim.
 		desc, _, ok := decodeCommentFrame(f.Body)
-		if !ok || desc != "" {
+		if !ok || mapping.ID3TechnicalCommentDesc(desc) {
 			return "", false
 		}
 		return "COMM", true
@@ -574,7 +633,7 @@ func frameKeys(f Frame) []tag.Key {
 		return []tag.Key{tag.MBRecordingID}
 	case "COMM":
 		desc, _, ok := decodeCommentFrame(f.Body)
-		if !ok || desc != "" {
+		if !ok || mapping.ID3TechnicalCommentDesc(desc) {
 			return nil
 		}
 		return []tag.Key{tag.Comment}
@@ -689,7 +748,7 @@ func rawFrameIDKey(key tag.Key) bool {
 // renderUnit renders the frame(s) for a render token from the edited tag set,
 // returning an empty slice when the underlying field is now absent (the frame is
 // dropped). It also reports whether a v2.3 NUL-separated multi-value was emitted.
-func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, origLangs, origTXXXDesc map[string]string, origInvolved []involvedPerson) ([]Frame, bool) {
+func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, origLangs, origTXXXDesc map[string]string, origInvolved []involvedPerson, commentDesc string) ([]Frame, bool) {
 	switch {
 	case strings.HasPrefix(token, "TXXX\x00"):
 		key := txxxKeyForToken(token[len("TXXX\x00"):])
@@ -723,9 +782,13 @@ func renderUnit(token string, edited tag.TagSet, version byte, opts WriteOpts, o
 		if !ok || len(vals) == 0 {
 			return nil, false
 		}
+		// commentDesc is non-empty only for the unambiguous single-frame, single-value
+		// merge, so a described comment from Windows Explorer or a CDDB-era tagger survives
+		// an edit intact rather than being flattened to a bare one. The caller warns for
+		// every other shape.
 		lang := unitLang(origLangs, "COMM")
 		return renderByPolicy(version, "COMM", vals, opts.Multi,
-			func(v []string) []byte { return encodeComment(version, lang, "", v) })
+			func(v []string) []byte { return encodeComment(version, lang, commentDesc, v) })
 	case token == "USLT":
 		text, ok := edited.First(tag.Lyrics)
 		if !ok {
@@ -1180,86 +1243,135 @@ func isNumericGenreRef(v string) bool {
 	return numeric
 }
 
-// detectDroppedDates finds the year-anchored date keys whose edited value cannot be
-// represented at all on a v2.3 tag, so the caller can warn rather than drop silently.
-// TYER (RecordingDate) and TORY (OriginalDate) need a numeric year: a touched value
-// with none (e.g. "Unknown Date") renders no frame, a silent loss. ReleaseDate is
-// excluded - on v2.3 it maps to TXXX:RELEASEDATE, which stores the string verbatim,
-// so it never drops. v2.4 stores the full string (TDRC/TDOR) and returns nothing here.
+// detectDateFates classifies the date keys this edit changed, in one pass, into the three
+// fates a v2.3 tag can give them. Each populates its own RebuildInfo field and its own
+// warning, but they are answers to a single question - what will the read path give back? -
+// so they are decided together from one [classifyV23Date] per value rather than by three
+// scanners re-asking it.
 //
-// The check is per key, not per render token: a single RecordingDate dirties three
-// tokens (TYER/TDAT/TIME), and a common "2021"/"2021-05" legitimately renders only
-// TYER while TDAT/TIME yield nothing - so a per-token "no frame" test would falsely
-// flag a perfectly stored date. A date is dropped iff the key has a non-empty value
-// but no extractable year, which also preserves a shaped-but-invalid "2021-13-45"
-// (its year extracts, so only the day/month is lost, not the whole value).
-func detectDroppedDates(changed map[tag.Key]bool, edited tag.TagSet, version byte) []tag.Key {
+// v2.4 stores the full string in TDRC/TDOR, so nothing is lost and nothing is classified.
+//
+// The keys differ per fate, deliberately. A drop is checked for both date keys, because
+// TYER and TORY both need a valid 4-digit year and both render nothing without one. A
+// reduction and a coercion are scoped to RecordingDate: OriginalDate renders only TORY, so
+// its sub-year loss is reported through the capability path (reducesToYear, with its own
+// cross-container suppression) and listing it here would double-warn, and a year-only frame
+// cannot respell anything.
+func detectDateFates(changed map[tag.Key]bool, edited tag.TagSet, version byte) (dropped []tag.Key, reduced, coerced []ReducedDate) {
 	if version >= 4 {
-		return nil
+		return nil, nil, nil
 	}
-	var dropped []tag.Key
 	for _, k := range []tag.Key{tag.RecordingDate, tag.OriginalDate} {
 		if !changed[k] {
 			continue
 		}
-		if v, _ := edited.First(k); v23DateDropped(v) {
+		v, _ := edited.First(k)
+		switch classifyV23Date(v) {
+		case dateDropped:
 			dropped = append(dropped, k)
+		case dateReduced:
+			if k == tag.RecordingDate {
+				reduced = append(reduced, ReducedDate{Key: k, Value: v})
+			}
+		case dateCoerced:
+			if k == tag.RecordingDate {
+				coerced = append(coerced, ReducedDate{Key: k, Value: v})
+			}
 		}
 	}
-	return dropped
+	return dropped, reduced, coerced
+}
+
+// dateFate is what a v2.3 tag does to a date value, as one classification rather than a set
+// of independent tests. Every consumer - detectDateFates, and the two transfer-capability
+// predicates below - reads the same answer, so they cannot come to disagree about one value.
+type dateFate uint8
+
+const (
+	dateExact   dateFate = iota // reads back byte-identical
+	dateDropped                 // no frame renders at all
+	dateReduced                 // stored with a component the value carried missing
+	dateCoerced                 // every component survives, spelled differently on read-back
+)
+
+// classifyV23Date answers one question - what will the read path give back for this value? -
+// and derives the four fates from it, rather than letting separate scanners answer it
+// separately and drift.
+//
+// v2.3 splits a date-time across TYER (YYYY), TDAT (DDMM) and TIME (HHMM), each
+// all-or-nothing, and [composeV23Date] recomposes them on read. So the rendered parts are
+// exactly the three extractDatePart calls the writer makes, and the read-back is what
+// composeV23Date makes of them. A component the value carries that no frame captures is a
+// reduction; a value whose components all survive but whose spelling changes (a space
+// date-time separator recomposed as 'T') is a coercion.
+//
+// It models the RecordingDate triple. OriginalDate renders only TORY, so its sub-year loss is
+// a reduction the capability path reports (reducesToYear) and it can never coerce; only the
+// drop answer, which turns on the year alone, is shared with it.
+func classifyV23Date(iso string) dateFate {
+	if iso == "" {
+		return dateExact
+	}
+	year := extractDatePart(iso, partYear)
+	if year == "" {
+		return dateDropped // both TYER and TORY need a valid 4-digit year
+	}
+	ddmm := extractDatePart(iso, partDayMonth)
+	hhmm := extractDatePart(iso, partHourMin)
+	switch {
+	case hasSubYearPart(iso) && ddmm == "": // a month with no full date: TDAT needs DDMM
+		return dateReduced
+	case hasSubDayPart(iso) && hhmm == "": // an hour with no minute: TIME needs HHMM
+		return dateReduced
+	case hasSubMinutePart(iso) && hhmm != "": // TIME has no seconds field
+		return dateReduced
+	}
+	if composeV23Date(year, ddmm, hhmm) != iso {
+		return dateCoerced
+	}
+	return dateExact
+}
+
+// v23DateReadBack composes the value the read path returns for iso once a v2.3 tag has
+// stored it, so a warning can quote the round-trip rather than describe it in prose.
+func v23DateReadBack(iso string) string {
+	return composeV23Date(
+		extractDatePart(iso, partYear),
+		extractDatePart(iso, partDayMonth),
+		extractDatePart(iso, partHourMin))
 }
 
 // v23DateDropped reports whether a v2.3 tag drops the date value v entirely: a non-empty
 // value with no valid 4-digit year renders no TYER/TORY frame (both fields need one, and a
-// 5-digit or compact non-canonical form yields none). It is the single predicate the write
-// (detectDroppedDates) and the transfer capability's value-drop grading share, so the transfer
+// 5-digit or compact non-canonical form yields none). It is the transfer capability's
+// value-drop predicate, reading the same classification detectDateFates does, so the transfer
 // report cannot drift from the write.
 func v23DateDropped(v string) bool {
-	return v != "" && extractDatePart(v, partYear) == ""
+	return classifyV23Date(v) == dateDropped
 }
 
-// detectReducedDates finds RecordingDate edits whose finer precision a v2.3 tag drops:
-// a month with no full date, or an hour with no minute. OriginalDate is intentionally
-// excluded because the capability path reports its v2.3 TORY reduction and uses different
-// cross-container suppression. Listing it here too would double-warn.
-func detectReducedDates(changed map[tag.Key]bool, edited tag.TagSet, version byte) []ReducedDate {
-	if version >= 4 {
-		return nil
-	}
-	var reduced []ReducedDate
-	k := tag.RecordingDate
-	if changed[k] {
-		if v, _ := edited.First(k); reducesDatePrecision(v) {
-			reduced = append(reduced, ReducedDate{Key: k, Value: v})
-		}
-	}
-	return reduced
-}
-
-// reducesDatePrecision reports whether a v2.3 tag would store iso with less precision
-// than it carries. v2.3 splits a date-time across TYER (year), TDAT (DDMM, needs a full
-// YYYY-MM-DD) and TIME (HHMM, needs YYYY-MM-DDTHH:MM), each all-or-nothing. A value
-// carrying a component the rendered frames cannot capture loses it:
-//   - a month with no full date ("2021-03", non-canonical "2021-3"/"2021-03-1") -> only TYER,
-//     month/day dropped;
-//   - an hour with no minute ("2021-03-15T10") -> TYER+TDAT only, the hour dropped;
-//   - seconds past a full minute ("2021-03-15T10:30:45") -> TIME stores only HHMM, the
-//     seconds dropped.
-//
-// A bare year, a full date, or a date-time to the minute render losslessly and are excluded.
-// The tool stores values verbatim (no normalization), so the non-canonical forms are reachable
-// too. A value with no extractable year drops entirely and is handled by detectDroppedDates
-// instead.
+// reducesDatePrecision reports whether a v2.3 tag would store iso with less precision than
+// it carries: a month with no full date ("2021-03"), an hour with no minute
+// ("2021-03-15T10"), or seconds past a full minute ("2021-03-15T10:30:45"). A bare year, a
+// full date, or a date-time to the minute render losslessly. A value with no extractable
+// year drops entirely and is v23DateDropped's answer instead. See [classifyV23Date], which
+// owns the rule.
 func reducesDatePrecision(iso string) bool {
-	if extractDatePart(iso, partYear) == "" {
-		return false
+	return classifyV23Date(iso) == dateReduced
+}
+
+// v23DateNotVerbatim reports whether a v2.3 tag gives the value back changed - a component
+// lost, or the same components respelled. It is the transfer capability's fidelity test,
+// which is a wider question than the write path's: a copy must grade the field Lossy for
+// either outcome, or the report promises a faithful carry that the plan's own value-coerced
+// warning then contradicts and copy --strict fails on. The write path keeps the two apart,
+// because each has its own warning.
+func v23DateNotVerbatim(iso string) bool {
+	switch classifyV23Date(iso) {
+	case dateReduced, dateCoerced:
+		return true
 	}
-	monthLost := hasSubYearPart(iso) && extractDatePart(iso, partDayMonth) == ""
-	hourLost := hasSubDayPart(iso) && extractDatePart(iso, partHourMin) == ""
-	// HHMM is stored (a full minute renders) yet the value carries seconds: v2.3 TIME has
-	// no seconds field, so they are dropped.
-	secondsLost := hasSubMinutePart(iso) && extractDatePart(iso, partHourMin) != ""
-	return monthLost || hourLost || secondsLost
+	return false
 }
 
 // hasSubYearPart reports whether iso carries content beyond its 4-digit year, in a form whose
@@ -1337,6 +1449,16 @@ func AppendRebuildWarnings(ws []core.Warning, info RebuildInfo, retained tag.Tag
 		ws = core.WarnKeyed(ws, core.WarnValueReduced,
 			fmt.Sprintf("%s value %q carries finer precision than ID3v2.3 date frames can store (TDAT needs a full day, TIME a full minute) and was reduced", rd.Key, rd.Value), rd.Key)
 	}
+	for _, cd := range info.CoercedDates {
+		// Same cross-container suppression as the reductions above: a container that still
+		// carries the literal value (WAV's ICRD) makes the round-trip lossless overall.
+		if v, _ := retained.First(cd.Key); v == cd.Value {
+			continue
+		}
+		ws = core.WarnKeyed(ws, core.WarnValueCoerced,
+			fmt.Sprintf("%s value %q is stored as separate ID3v2.3 date frames and reads back as %q",
+				cd.Key, cd.Value, v23DateReadBack(cd.Value)), cd.Key)
+	}
 	for _, gv := range info.NumericGenres {
 		// Suppress only where a native container still carries the literal number: on MP3/AAC (and
 		// AIFF, whose genre lives only in its ID3 chunk) the retained GENRE reads back as the genre
@@ -1368,6 +1490,11 @@ func AppendRebuildWarnings(ws []core.Warning, info RebuildInfo, retained tag.Tag
 	if info.SyncedLyricsLangUndefined {
 		ws = core.Warn(ws, core.WarnSyncedLyricsMetadataDropped,
 			"the synced-lyrics language \"xxx\" is the ID3 \"undefined\" marker, so it is stored but reads back with no language")
+	}
+	if info.CommentDescriptionDropped {
+		ws = core.WarnKeyed(ws, core.WarnCommentDescriptionDropped,
+			"a description one of this file's comment frames carried could not be kept when the comment was rewritten; the comment text is written in full",
+			tag.Comment)
 	}
 	return ws
 }
@@ -1433,7 +1560,7 @@ func PerFieldCapabilities(writeVersion byte, numericGenre, genreViaID3 bool) map
 		// values to the minute. Values with no numeric year render no frame, so the drop
 		// predicate matches the write path.
 		add(tag.OriginalDate, core.WithValueDrop(core.WithValueReduction(core.OriginalDateV23Capability(), reducesToYear), v23DateDropped))
-		add(tag.RecordingDate, core.WithValueDrop(core.WithValueReduction(core.RecordingDateV23Capability(), reducesDatePrecision), v23DateDropped))
+		add(tag.RecordingDate, core.WithValueDrop(core.WithValueReduction(core.RecordingDateV23Capability(), v23DateNotVerbatim), v23DateDropped))
 	}
 	switch {
 	case numericGenre && genreViaID3:

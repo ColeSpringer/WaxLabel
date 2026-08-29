@@ -26,5 +26,5 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, _ core.WriteOpt
 	}
 	// The same predicate Capabilities reports ReadOnly from, so the advertised
 	// capability and the actual write outcome cannot diverge.
-	return nil, d.refuseWrite()
+	return nil, refuseWrite()
 }

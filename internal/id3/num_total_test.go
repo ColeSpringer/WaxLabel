@@ -88,7 +88,7 @@ func TestNumTotalDropIdempotent(t *testing.T) {
 }
 
 // TestNumTotalUnchangedPairNotFlagged: an unchanged track pair (base == edited) is never flagged
-// dropped - only a pair the edit touched can be - matching detectDroppedDates' anchored-on-changed
+// dropped - only a pair the edit touched can be - matching detectDateFates' anchored-on-changed
 // rule, so an unrelated edit does not warn about a pre-existing non-numeric number.
 func TestNumTotalUnchangedPairNotFlagged(t *testing.T) {
 	base := tag.NewTagSet()

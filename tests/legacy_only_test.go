@@ -92,7 +92,7 @@ func TestLintFixPreservesID3v1OnlyMetadata(t *testing.T) {
 	// ID3v1 carries the only copy of the title/artist (no front ID3v2). A legacy strip would
 	// destroy them, so the safe fix must decline it and the values must survive.
 	data := slices.Clone(mp3Audio(t))
-	data = append(data, id3v1("V1 Only Title", "V1 Only Artist", 255)...)
+	data = append(data, id3v1("V1 Only Title", "V1 Only Artist", "", "", "", 255)...)
 
 	doc := mustParseBytes(t, data)
 	if len(doc.LegacyOnlyKeys()) == 0 {
@@ -152,7 +152,7 @@ func TestLintFixStripsRedundantID3v1(t *testing.T) {
 	// safe fix still strips it.
 	data := id3v2(3, textFrame(3, "TIT2", "Same Title"))
 	data = append(data, mp3Audio(t)...)
-	data = append(data, id3v1("Same Title", "", 255)...)
+	data = append(data, id3v1("Same Title", "", "", "", "", 255)...)
 
 	doc := mustParseBytes(t, data)
 	if got := doc.LegacyOnlyKeys(); len(got) != 0 {
@@ -160,7 +160,7 @@ func TestLintFixStripsRedundantID3v1(t *testing.T) {
 	}
 
 	out := applyLintFix(t, data)
-	if bytes.HasSuffix(out, id3v1("Same Title", "", 255)) {
+	if bytes.HasSuffix(out, id3v1("Same Title", "", "", "", "", 255)) {
 		t.Error("lint --fix should strip a fully redundant ID3v1")
 	}
 	if mustParseBytes(t, out).Fields().Title != "Same Title" {
@@ -198,7 +198,7 @@ func TestLintFixPreservesFLACLeadingID3v2Only(t *testing.T) {
 
 func TestLintFixPreservesFLACTrailingID3v1Only(t *testing.T) {
 	// A trailing ID3v1 holds the only title. Same parity as MP3: keep it.
-	data := slices.Concat(flacWithVendor("test"), id3v1("Trailing Only", "", 255))
+	data := slices.Concat(flacWithVendor("test"), id3v1("Trailing Only", "", "", "", "", 255))
 
 	doc := mustParseBytes(t, data)
 	if doc.Format() != wl.FormatFLAC {

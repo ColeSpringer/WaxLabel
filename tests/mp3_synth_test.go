@@ -59,11 +59,17 @@ func textFrame22(id, text string) []byte {
 	return append(out, body...)
 }
 
-func id3v1(title, artist string, genre byte) []byte {
+// id3v1 builds a 128-byte ID3v1 trailer. Every text field is a parameter so one hand-written
+// offset table serves every test: a second builder covering more fields would have to be kept
+// in lockstep with this one, and the offsets are exactly what a typo breaks silently.
+func id3v1(title, artist, album, year, comment string, genre byte) []byte {
 	b := make([]byte, 128)
 	copy(b[0:3], "TAG")
 	copy(b[3:33], title)
 	copy(b[33:63], artist)
+	copy(b[63:93], album)
+	copy(b[93:97], year)
+	copy(b[97:127], comment)
 	b[127] = genre
 	return b
 }
@@ -219,7 +225,7 @@ func TestMP3VersionPreserved(t *testing.T) {
 func TestMP3LegacyConflictSurfaced(t *testing.T) {
 	data := id3v2(3, textFrame(3, "TIT2", "V2 Title"))
 	data = append(data, mp3Audio(t)...)
-	data = append(data, id3v1("V1 Different Title", "", 255)...)
+	data = append(data, id3v1("V1 Different Title", "", "", "", "", 255)...)
 
 	doc := mustParseBytes(t, data)
 	if doc.Fields().Title != "V2 Title" {
@@ -275,7 +281,7 @@ func TestMP3APELegacyView(t *testing.T) {
 func TestMP3PostWriteRetainsLegacyFamilies(t *testing.T) {
 	data := id3v2(3, textFrame(3, "TIT2", "V2 Title"))
 	data = append(data, mp3Audio(t)...)
-	data = append(data, id3v1("V1 Different", "", 255)...)
+	data = append(data, id3v1("V1 Different", "", "", "", "", 255)...)
 
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Edited").Prepare()
 	if err != nil {
@@ -361,7 +367,7 @@ func put32le(b []byte, v int) {
 func TestMP3StripLegacy(t *testing.T) {
 	data := id3v2(3, textFrame(3, "TIT2", "Keep"))
 	data = append(data, mp3Audio(t)...)
-	data = append(data, id3v1("Old V1", "", 255)...)
+	data = append(data, id3v1("Old V1", "", "", "", "", 255)...)
 
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Keep").
 		Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
@@ -372,7 +378,7 @@ func TestMP3StripLegacy(t *testing.T) {
 		t.Fatal("stripping a present legacy tag is not a no-op")
 	}
 	out := applyToBytes(t, data, plan)
-	if bytes.HasSuffix(out, id3v1("Old V1", "", 255)) {
+	if bytes.HasSuffix(out, id3v1("Old V1", "", "", "", "", 255)) {
 		t.Error("ID3v1 should have been stripped")
 	}
 	if mustParseBytes(t, out).Fields().Title != "Keep" {

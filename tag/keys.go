@@ -23,15 +23,28 @@ import (
 // native editing hatch), not as keys.
 type Key string
 
-// Validity rules: a key is non-empty, uppercase, printable ASCII (0x20-0x7E)
+// Validity rules: a key is non-empty, uppercase, printable ASCII (0x20-0x7D)
 // excluding '=' (which separates key from value in Vorbis comments) and
 // excluding lowercase letters. Vorbis comment names are case-insensitive, so
 // canonical keys are normalized to uppercase; requiring that here keeps the
 // canonical form unique, so direct comparisons and round-trips can't silently
-// disagree because of case. This is also the strictest native vocabulary, so a
-// key valid here is representable everywhere a string key is.
+// disagree because of case.
+//
+// The upper bound is 0x7D, not 0x7E, because the Vorbis comment specification stops
+// there: a '~' is a legal APEv2 and ID3 TXXX name byte but not a legal Vorbis field
+// name, and this rule is a charset FLOOR - the intersection of what every format's key
+// syntax accepts - so that a key valid here is representable everywhere a string key is.
+// Admitting the one byte that breaks that would make the promise false for the sake of a
+// character nobody uses.
+//
+// Format-local rules about specific NAMES layer on top of this rather than joining it:
+// APEv2 forbids the item names ID3/TAG/OggS/MP+ ([ape.ReservedItemName]) and Vorbis
+// reserves the CHAPTERxxx and SYNCEDLYRICS namespaces, neither of which is expressible
+// as a byte predicate and neither of which is a charset question. The split is
+// deliberate: a charset floor belongs here, a value-level rule belongs to the format
+// that has it.
 func validKeyByte(b byte) bool {
-	return b >= 0x20 && b <= 0x7E && b != '=' && !(b >= 'a' && b <= 'z')
+	return b >= 0x20 && b <= 0x7D && b != '=' && !(b >= 'a' && b <= 'z')
 }
 
 // ParseKey trims surrounding whitespace, normalizes the result to uppercase,
@@ -67,9 +80,11 @@ func ParseKey(s string) (Key, error) {
 }
 
 // invalidKeyByteError formats ParseKey's "disallowed byte" error. A printable
-// ASCII offender (0x20-0x7E) is shown as a character - "contains '=' at offset 3"
-// reads better than "0x3d" - while a control or non-ASCII byte keeps the
-// unambiguous hex form.
+// ASCII offender is shown as a character - "contains '=' at offset 3" reads better than
+// "0x3d" - while a control or non-ASCII byte keeps the unambiguous hex form. The range
+// here is printable ASCII at large (through 0x7E), deliberately wider than validKeyByte:
+// it decides how to RENDER an offender, and '~' is a rejected byte that still reads
+// better as a character than as hex.
 func invalidKeyByteError(s string, b byte, offset int) error {
 	if b >= 0x20 && b <= 0x7E {
 		return fmt.Errorf("%w: %q contains %q at offset %d", waxerr.ErrInvalidKey, s, rune(b), offset)
@@ -87,7 +102,7 @@ func MustKey(s string) Key {
 }
 
 // Valid reports whether k satisfies the key rules (non-empty, uppercase,
-// printable ASCII without '='). The exported Key constants are always valid; a
+// printable ASCII 0x20-0x7D without '='). The exported Key constants are always valid; a
 // hand-built Key such as Key("title") is not - use [ParseKey] to normalize.
 func (k Key) Valid() bool {
 	if k == "" {

@@ -104,6 +104,9 @@ type doc struct {
 	// counted in the FORM size.
 	trailingOff int64
 	trailingLen int64
+	// trailingID3v1 records that the walk stopped on a recognized ID3v1 trailer rather than
+	// on corruption, so the preserved region is named for what it is.
+	trailingID3v1 bool
 	// outerOff/outerLen capture bytes after the FORM chunk - data appended outside
 	// the declared FORM size (e.g. a tacked-on tag). Preserved verbatim but kept
 	// outside the recomputed FORM size so a strict reader does not misparse them.
@@ -136,10 +139,18 @@ func (d *doc) Describe() []core.NativeEntry {
 		switch {
 		case i == d.id3Idx:
 			note := "0 frames"
+			var frames []id3.Frame
 			if d.id3 != nil {
-				note = fmt.Sprintf("ID3v2.%d, %d frames", d.id3.SrcVersion(), len(d.id3.Frames()))
+				frames = d.id3.Frames()
+				note = fmt.Sprintf("ID3v2.%d, %d frames", d.id3.SrcVersion(), len(frames))
 			}
 			out = append(out, core.NativeEntry{Kind: "ID3 chunk", Size: int(ch.bodyLen), Note: note})
+			// List the frames as MP3 and AAC do, so a described COMM here is as identifiable
+			// as the same frame inside an MP3 - which is the question the technical-description
+			// denylist exists to let a user answer.
+			for _, f := range frames {
+				out = append(out, core.NativeEntry{Kind: "  " + f.ID, Size: len(f.Body), Note: id3.FrameNote(f)})
+			}
 		case i == d.commIdx:
 			out = append(out, core.NativeEntry{Kind: "COMM", Size: int(ch.bodyLen), Note: d.track.Codec})
 		case i == d.ssndIdx:
@@ -151,4 +162,13 @@ func (d *doc) Describe() []core.NativeEntry {
 		}
 	}
 	return out
+}
+
+// trailingWhat names the in-container trailing region for the parse warning, or "" when the
+// walk could not tell what the bytes are.
+func (d *doc) trailingWhat() string {
+	if d.trailingID3v1 {
+		return core.TrailingID3v1What
+	}
+	return ""
 }

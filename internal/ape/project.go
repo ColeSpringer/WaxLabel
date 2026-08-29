@@ -8,6 +8,7 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/mapping"
 	"github.com/colespringer/waxlabel/tag"
+	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // Projection is the canonical view of an APE tag: the tag set, the decoded cover
@@ -70,6 +71,33 @@ func Project(t *Tag) Projection {
 		Families: core.BuildFamilies(contribs, core.FamilyAPEv2),
 		Warnings: warnings,
 	}
+}
+
+// InvalidKeyWarnings flags text items whose name cannot be represented as a canonical key,
+// so they are preserved in the item list but do not reach the tag set. APEv2 item names run
+// the full printable-ASCII range, while the canonical vocabulary stops at 0x7D (the floor the
+// Vorbis comment specification sets), so an item named MOOD~X is legal on disk and
+// unprojectable here. Without this the value would simply be missing from dump and lint, and
+// a copy would report a clean lossless carry while leaving it behind.
+//
+// It mirrors [Project]'s own drop decision, so the set flagged is exactly the set omitted.
+// Cover items and other binary items are not keys and are skipped; a reserved name is a write
+// rule, not a read one, so an item that already carries one still projects.
+func InvalidKeyWarnings(t *Tag) []core.Warning {
+	if t == nil {
+		return nil
+	}
+	var ws []core.Warning
+	for _, it := range t.Items {
+		if it.NonText() {
+			continue
+		}
+		if _, ok := mapping.CanonicalAPE(it.Key); ok {
+			continue
+		}
+		ws = core.WarnInvalidKey(ws, it.Key)
+	}
+	return ws
 }
 
 // InvalidUTF8Warnings flags text items whose bytes are not valid UTF-8. APEv2
@@ -140,5 +168,32 @@ func Capabilities(f core.Format, readOnly bool) core.Capabilities {
 		Constraints:    []string{"the Cover Art convention names only front and back covers; any other role is written as a front cover, and descriptions have nowhere to go"},
 		PictureLoss:    core.PictureLossRoleAndDescription,
 	}
-	return core.NewCapabilities(f, readOnly, fields, pictures, core.Capability{}, core.AccessNone, nil)
+	caps := core.NewCapabilities(f, readOnly, fields, pictures, core.Capability{}, core.AccessNone, nil).
+		WithFieldClassifier(TransferClassifier)
+	if readOnly {
+		// Carry the reason, not just the flag, the way asf and mp4 do: a caller that declines
+		// before reaching Plan (the transfer path) then returns the codec's own refusal rather
+		// than a generic one. No APEv2-backed container reports read-only today, so this exists
+		// so the first that does is not the one to discover the gap.
+		caps = caps.WithReadOnlyReason(fmt.Errorf("%w: this %s file cannot be written", waxerr.ErrUnsupportedFormat, f))
+	}
+	return caps
+}
+
+// TransferClassifier grades the one field shape whose APE transfer fate the format-level
+// capability cannot express: a key whose item name the specification reserves
+// ([ReservedItemName]). The writer drops such a key rather than plant ID3/Ogg/Musepack magic
+// inside the tag, so a copy that carried it - reporting a clean carry for a value that then
+// vanishes - would break the report-equals-write invariant [core.ProjectTransfer] exists to
+// hold. It reuses the writer's own predicate, so the copy report and the write drop cannot
+// drift. Every other key is left to the format-level grade.
+//
+// It is attached here rather than per codec so all four APEv2-backed containers (WavPack,
+// Monkey's Audio, Musepack, and any future one) get it from the shared Capabilities, the
+// same way they share the writer.
+func TransferClassifier(key tag.Key, _ []string, _ tag.TagSet) (core.Disposition, string, bool) {
+	if ReservedItemName(mapping.APEName(key)) {
+		return core.Dropped, "the APEv2 specification reserves this item name, so it cannot be written", true
+	}
+	return core.Carried, "", false
 }

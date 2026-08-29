@@ -102,7 +102,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 				Pictures: edited.Pictures, PicturesChanged: picturesChanged,
 				Chapters: edited.Chapters, ChaptersChanged: chaptersChanged,
 				SyncedLyrics: edited.SyncedLyrics, SyncedLyricsChanged: syncedLyricsChanged,
-				SyncedLyricsCarried: opts.Carried,
+				Carried:             opts.Carried,
 				SyncedLyricsCleared: opts.SyncedLyricsCleared,
 				MediaDuration:       edited.Properties.Duration(),
 			}, wopts)
@@ -422,6 +422,7 @@ func buildResult(edited *core.Media, base *doc, newText []outChunk, newID3 *id3.
 	nd.outerLen = base.outerLen
 	nd.outerOff = lay.total - base.outerLen
 	nd.trailingLen = base.trailingLen
+	nd.trailingID3v1 = base.trailingID3v1
 	nd.trailingOff = nd.outerOff - base.trailingLen
 
 	tags, pics, chapters, syncedLyrics, families, numericGenre, projWs := project(nd)

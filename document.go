@@ -141,19 +141,13 @@ func (d *Document) Families() []FamilyValue {
 // FLAC's leading ID3v2 / trailing ID3v1) and not in the authoritative tag set.
 // These are the values dump would otherwise omit and a legacy strip would
 // destroy, so the safe auto-fix keeps their container and dump surfaces them.
+// The parsed tags are the authority here; [Editor.Prepare] asks the same question
+// of a pending write's tags, via the shared rule.
 func (d *Document) LegacyOnlyKeys() []tag.Key {
 	if d.zero() {
 		return nil
 	}
-	var out []tag.Key
-	seen := make(map[tag.Key]bool)
-	for _, f := range d.media.Families {
-		if f.Legacy && !d.media.Tags.Has(f.Key) && !seen[f.Key] {
-			seen[f.Key] = true
-			out = append(out, f.Key)
-		}
-	}
-	return out
+	return core.LegacyOnlyKeys(d.media.Families, d.media.Tags)
 }
 
 // HasOpaqueLegacyContent reports whether a legacy container holds non-tag content

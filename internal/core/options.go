@@ -10,7 +10,8 @@ type LegacyPolicy uint8
 const (
 	// LegacyPreserve keeps legacy containers byte-for-byte and warns.
 	LegacyPreserve LegacyPolicy = iota
-	// LegacyStrip removes them.
+	// LegacyStrip removes them. Anything held only there is destroyed, so a write under
+	// this policy warns (WarnLegacyStripDropped) rather than stripping silently.
 	LegacyStrip
 )
 
@@ -168,11 +169,15 @@ type WriteOptions struct {
 	// HEIC/AVIF/JXL cover, or a transfer carrying an already-embedded one) is embedded
 	// rather than rejected. Off by default: a junk or empty picture is refused.
 	AllowUnrecognizedPictures bool
-	// StripEncoderStamp asks writers to remove inherited encoder stamps held outside the
-	// canonical tag set. WAV drops a transcoder-stamped ISFT INFO item. FLAC, Ogg Vorbis,
-	// and Opus rewrite a transcoder-stamped comment-header vendor string to a neutral value
-	// because the vendor field is mandatory. All paths gate on IsTranscoderStamp. Off by
-	// default; the CLI enables it when an edit clears, sets, or strips ENCODER.
+	// StripEncoderStamp asks writers to remove an inherited encoder stamp without the
+	// caller filtering the value itself. WAV drops a transcoder-stamped ISFT INFO item,
+	// judged on that item's own bytes rather than on the merged canonical ENCODER, and
+	// stands aside when the edit authored the value (ISFT is ENCODER's INFO home, so an
+	// explicit clear reaches it through the ordinary write path).
+	// FLAC, Ogg Vorbis, and Opus rewrite a transcoder-stamped comment-header vendor
+	// string to a neutral value because the vendor field is mandatory and no canonical
+	// edit reaches it. All paths gate on IsTranscoderStamp. Off by default; the CLI
+	// enables it when an edit clears, sets, or strips ENCODER.
 	StripEncoderStamp bool
 	// WebMSubset narrows a file-less Matroska capability query to the WebM subset, so
 	// the format-level question ("what can a .webm hold?") reports cover-art write as

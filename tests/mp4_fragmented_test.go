@@ -155,13 +155,16 @@ func TestMP4UnwritableFilesReportReadOnly(t *testing.T) {
 
 func TestMP4UnwritableDestinationDropsTransfer(t *testing.T) {
 	// With ReadOnly reported, a transfer onto such a file reports clean per-item drops
-	// instead of failing the whole plan with a codec error.
+	// AND returns the codec's own refusal: the report says what could not be carried, the
+	// error says the write will not happen. Returning only the drops let the transfer
+	// collapse into a silent no-op that exited 0, while the same edit through the editor
+	// exited 3.
 	src := mustParseBytes(t, mp4Tagged(mp4Text("\xa9nam", "Source Title")))
 	for name, data := range map[string][]byte{"iloc": mp4IlocFile(), "unknown saio": mp4UnknownSaioFile()} {
 		t.Run(name, func(t *testing.T) {
 			_, report, err := src.PrepareTransfer(mustParseBytes(t, data))
-			if err != nil {
-				t.Fatalf("PrepareTransfer onto a read-only destination must not error: %v", err)
+			if !errors.Is(err, waxerr.ErrUnsupportedFormat) {
+				t.Fatalf("PrepareTransfer error = %v, want ErrUnsupportedFormat (the codec's own refusal)", err)
 			}
 			for _, it := range report.Items {
 				if it.Kind == wl.TransferField && it.Key == tag.Title {
@@ -175,19 +178,21 @@ func TestMP4UnwritableDestinationDropsTransfer(t *testing.T) {
 }
 
 func TestMP4FragmentedTransferDropsEverything(t *testing.T) {
-	// The first real exercise of ReadOnly: true. A read-only destination drops every
-	// item, and the plan writes nothing.
+	// The first real exercise of ReadOnly: true. A read-only destination drops every item
+	// and the transfer is refused with the codec's own error - ErrFragmented here, not the
+	// generic unsupported-format the iloc/saio cases give, since the two are distinct
+	// exit-code rows and flattening them would lose the reason.
 	src := mustParseBytes(t, mp4Tagged(
 		mp4Text("\xa9nam", "Source Title"),
 		mp4Text("\xa9ART", "Source Artist"),
 	))
 	dstBytes := mp4Fragmented("Fragged")
 	plan, report, err := src.PrepareTransfer(mustParseBytes(t, dstBytes))
-	if err != nil {
-		t.Fatalf("PrepareTransfer onto a read-only destination must not error: %v", err)
+	if !errors.Is(err, waxerr.ErrFragmented) {
+		t.Fatalf("PrepareTransfer error = %v, want ErrFragmented", err)
 	}
-	if !plan.IsNoOp() {
-		t.Error("a transfer onto a read-only destination should plan no change")
+	if plan != nil {
+		t.Error("a refused transfer must return no plan")
 	}
 	if len(report.Items) == 0 {
 		t.Fatal("expected transfer items to report on")

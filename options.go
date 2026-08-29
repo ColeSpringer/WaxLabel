@@ -74,7 +74,11 @@ func WithPadding(p PaddingPolicy) WriteOption {
 	}
 }
 
-// WithLegacyPolicy sets how legacy/foreign tag containers are handled.
+// WithLegacyPolicy sets how legacy/foreign tag containers are handled. [LegacyStrip]
+// removes them unconditionally, so a value or non-tag content held only there is
+// destroyed; the plan carries a [WarnLegacyStripDropped] warning naming what goes, which
+// the CLI's --strict promotes to a refusal. [Document.PlanLintFix] never chooses the
+// strip in that case.
 func WithLegacyPolicy(p LegacyPolicy) WriteOption {
 	return func(o *core.WriteOptions) { o.Legacy = p }
 }
@@ -115,13 +119,18 @@ func WithUnrecognizedPictures() WriteOption {
 	return func(o *core.WriteOptions) { o.AllowUnrecognizedPictures = true }
 }
 
-// WithStripEncoderStamp asks the writer to drop a removable inherited
-// transcoder/encoder stamp that lives in a native field no canonical-tag edit can
-// reach: the WAV ISFT INFO item (e.g. ffmpeg's "Lavf...") and the Ogg/Opus/FLAC
-// comment-header vendor string. Each is acted on only when it [IsTranscoderStamp].
-// The ISFT item is dropped; the vendor string is a mandatory codec field, so it is
-// rewritten to WaxLabel's neutral value rather than removed (NeutralizeVendor). Pair it
-// with clearing or setting [tag.Encoder] so a canonical ENCODER stamp does not survive.
+// WithStripEncoderStamp asks the writer to drop a removable inherited transcoder/encoder
+// stamp without the caller having to filter the value itself: the WAV ISFT INFO item (e.g.
+// ffmpeg's "Lavf...") and the Ogg/Opus/FLAC comment-header vendor string. Each is judged on
+// its own bytes by [IsTranscoderStamp], not on the file's canonical ENCODER, so a clean user
+// ISFT survives even when another container holds a stamp, and a stamped one goes even when
+// it does not. The ISFT item is dropped; the vendor string is a mandatory codec field, so it
+// is rewritten to WaxLabel's neutral value rather than removed (NeutralizeVendor).
+//
+// It never overrides a value the edit itself authored: ISFT is [tag.Encoder]'s INFO home, so
+// an edit setting ENCODER writes that value and the strip stands aside. Clearing
+// [tag.Encoder] removes the ISFT through the ordinary write path, and pairing the two is
+// idempotent - pair them so a stamp held elsewhere (a WAV id3 chunk's TSSE) does not survive.
 func WithStripEncoderStamp() WriteOption {
 	return func(o *core.WriteOptions) { o.StripEncoderStamp = true }
 }
@@ -173,7 +182,9 @@ var (
 		o.Padding = core.PaddingPolicy{Target: 4096, Max: 1 << 20, ReuseInPlace: true}
 		o.PaddingExplicit = true
 	}
-	// Minimal writes the smallest reasonable file: no padding, strip legacy.
+	// Minimal writes the smallest reasonable file: no padding, strip legacy. The strip is
+	// unconditional, so a legacy container holding the only copy of a value is destroyed
+	// with a [WarnLegacyStripDropped] warning.
 	Minimal WriteOption = func(o *core.WriteOptions) {
 		o.Legacy = core.LegacyStrip
 		o.Padding = core.PaddingPolicy{Target: 0, Max: 0}

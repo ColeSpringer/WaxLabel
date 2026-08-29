@@ -6,16 +6,19 @@ import "github.com/colespringer/waxlabel/tag"
 // codec. RIFF INFO is a small, fixed vocabulary of four-character chunk
 // identifiers, each holding a single NUL-terminated string - far less
 // expressive than ID3 or Vorbis comments. Only the well-established identifiers
-// map to canonical keys; anything else (IENG, ILNG, ISBJ, IKEY, the ISFT
-// software stamp, ...) is preserved verbatim in the native document but not
-// projected, since inventing a canonical key from an arbitrary 4CC would be
-// both ugly and lossy on round-trip.
+// map to canonical keys; anything else (IENG, ILNG, ISBJ, IKEY, ...) is
+// preserved verbatim in the native document but not projected, since inventing
+// a canonical key from an arbitrary 4CC would be both ugly and lossy on
+// round-trip.
 //
 // The mapped set mirrors ffmpeg's ff_riff_info_conv so files written by the
 // ffmpeg family (the realistic acquired-WAV case) read correctly and our output
-// reads back in ffprobe. ISFT is deliberately left out: it is the encoder
-// stamp (the WAV analogue of an "encoder=Lavf" comment), so it is preserved and
-// scanned for inherited-encoder noise rather than surfaced as a tag.
+// reads back in ffprobe. ISFT is the software stamp ffprobe reports as
+// "encoder=", so it is ENCODER's INFO home on both sides: reading it means dump
+// agrees with ffprobe, and writing it means a canonical ENCODER edit no longer
+// spawns an id3 chunk to hold a value INFO has a slot for. It is still scanned
+// for inherited-encoder noise (internal/wav/info.go), which is a judgement about
+// the value, not about where it lives.
 
 // riffInfoKeys maps a four-character INFO identifier to its canonical key.
 var riffInfoKeys = map[string]tag.Key{
@@ -28,6 +31,7 @@ var riffInfoKeys = map[string]tag.Key{
 	"ICOP": tag.Copyright,
 	"IPRT": tag.TrackNumber,
 	"ITRK": tag.TrackNumber, // ffmpeg also reads track numbers from ITRK
+	"ISFT": tag.Encoder,
 }
 
 // riffKeyInfo is the inverse of riffInfoKeys, built at init.

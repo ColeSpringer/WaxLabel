@@ -32,7 +32,9 @@ type LintFix struct {
 // container). A mixed file (one redundant container plus one carrying unique data)
 // conservatively keeps both; the pre-existing legacy warning still fires so lint exits
 // non-zero, and the legacy-only-tags info explains why the container was preserved. An
-// explicit [WithLegacyPolicy] [LegacyStrip] still strips unconditionally.
+// explicit [WithLegacyPolicy] [LegacyStrip] still strips unconditionally, but warns about
+// what it destroys - the two gates are exact complements, so this plan can never trip that
+// warning.
 //
 // The finding codes are the canonical parse-warning codes (the same ones dump
 // prints), so this keys off exactly what lint reports - no private alias to keep in
@@ -41,10 +43,11 @@ type LintFix struct {
 // guessed, conflicting families have no winner, and missing audio cannot be
 // synthesized. The encoder fix removes the transcoder-stamp values from the canonical
 // ENCODER key (clearing it only when every value is a stamp) and, via
-// [WithStripEncoderStamp], also handles native stamps the canonical key cannot reach:
-// the WAV ISFT INFO item and the FLAC/Ogg/Opus comment-header vendor string. Vendor fields
-// are mandatory, so they are rewritten to a neutral value instead of removed. This plan is
-// derived from the parsed document only; the saved file's next lint is the final result.
+// [WithStripEncoderStamp], also strips the WAV ISFT INFO item and neutralizes the
+// FLAC/Ogg/Opus comment-header vendor string, which no canonical key reaches. Vendor
+// fields are mandatory, so they are rewritten to a neutral value instead of removed. This
+// plan is derived from the parsed document only; the saved file's next lint is the final
+// result.
 func (d *Document) PlanLintFix() LintFix {
 	var fix LintFix
 	encoderCleared, legacyStripped := false, false
@@ -57,17 +60,18 @@ func (d *Document) PlanLintFix() LintFix {
 			if !encoderCleared {
 				// Remove only the transcoder-stamp values from a (possibly multi-valued) ENCODER,
 				// preserving any clean user-set value. The inherited-encoder finding also fires on a
-				// bare Vorbis vendor string or WAV ISFT with no ENCODER tag at all, so an
-				// unconditional Clear would destroy a clean ENCODER as collateral - but checking
-				// only the FIRST value would equally miss a stamp in a later value (EncoderNoise
-				// flags any stamped ENCODER comment) or clear a clean earlier value. So filter:
+				// bare Vorbis vendor string with no ENCODER tag at all, so an unconditional Clear
+				// would destroy a clean ENCODER as collateral - but checking only the FIRST value
+				// would equally miss a stamp in a later value (EncoderNoise flags any stamped
+				// ENCODER comment) or clear a clean earlier value. So filter:
 				// clear when every value is a stamp, set the survivors when only some are, and leave
 				// a stamp-free ENCODER untouched. IsTranscoderStamp reuses the linter's own noise
 				// test (matches Lavf/libavformat, not Lavc), so a "Lavc.. libvorbis" ENCODER is
 				// preserved while a "Lavf.." one is removed - the filter can never disagree with the
 				// finding. WithStripEncoderStamp stays OUTSIDE this gate: it neutralizes the vendor
-				// string and ISFT (neither a canonical ENCODER tag), which must still be remediated
-				// when only they carry the stamp. Do not fold them.
+				// string, which is no canonical ENCODER tag and must still be remediated when only it
+				// carries the stamp. Do not fold them. The WAV ISFT item is reached by both this filter
+				// and the option, which apply the same per-value test and so agree.
 				if v, ok := d.Get(tag.Encoder); ok {
 					clean := make([]string, 0, len(v))
 					for _, s := range v {

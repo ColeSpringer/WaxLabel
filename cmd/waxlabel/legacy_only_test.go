@@ -8,14 +8,18 @@ import (
 	"testing"
 )
 
-// id3v1Block builds a valid 128-byte ID3v1 tag whose title is set (padding zeroed, a numeric year
-// and genre so the strict LooksLikeID3v1 gate accepts it).
-func id3v1Block(title string) []byte {
+// id3v1Block builds a valid 128-byte ID3v1 tag (padding zeroed, a numeric year and genre so
+// the strict LooksLikeID3v1 gate accepts it). Every text field is a parameter so this one
+// hand-written offset table serves every test in the package: a second builder covering more
+// fields would have to be kept in lockstep, and the offsets are what a typo breaks silently.
+func id3v1Block(title, album, comment string, genre byte) []byte {
 	b := make([]byte, 128)
 	copy(b[0:3], "TAG")
 	copy(b[3:33], title)
+	copy(b[63:93], album)
 	copy(b[93:97], "2020") // year
-	b[127] = 255           // genre: unknown
+	copy(b[97:127], comment)
+	b[127] = genre
 	return b
 }
 
@@ -29,7 +33,7 @@ func stackedID3v1MP3(t *testing.T, n int) []byte {
 	}
 	out := audio
 	for i := 0; i < n; i++ {
-		out = append(out, id3v1Block("Tag")...)
+		out = append(out, id3v1Block("Tag", "", "", 255)...)
 	}
 	return out
 }

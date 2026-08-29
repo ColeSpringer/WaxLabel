@@ -287,14 +287,19 @@ func TestWAVStripEncoderStampKeepsOtherInfo(t *testing.T) {
 
 // TestWAVStripEncoderStampLeavesUserISFT confirms the strip is gated on
 // IsTranscoderStamp: a user's own ISFT (not a transcoder stamp) is preserved, so a
-// strip of a file without a transcoder stamp is a no-op.
+// strip of a file without a transcoder stamp is a no-op. ISFT reads as ENCODER, so
+// the strip is asserted on its own here; pairing it with a Clear would be a real
+// canonical removal and would drop the item for a different reason.
 func TestWAVStripEncoderStampLeavesUserISFT(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"ISFT", "My Editor 1.0"}), wavData(400))
 	doc := mustParseBytes(t, data)
 	if hasWarning(doc, wl.WarnInheritedEncoder) {
 		t.Fatal("a non-transcoder ISFT should not warn")
 	}
-	plan, err := doc.Edit().Clear(tag.Encoder).Prepare(wl.WithStripEncoderStamp())
+	if v, _ := doc.Get(tag.Encoder); len(v) != 1 || v[0] != "My Editor 1.0" {
+		t.Errorf("ENCODER = %v, want [My Editor 1.0] from ISFT", v)
+	}
+	plan, err := doc.Edit().Prepare(wl.WithStripEncoderStamp())
 	if err != nil {
 		t.Fatal(err)
 	}

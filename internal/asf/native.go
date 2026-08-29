@@ -42,22 +42,29 @@ type doc struct {
 	sampleRate    int
 	byteRate      int
 	bitsPerSample int
+	// invalidKeys names the descriptors the canonical vocabulary cannot represent, so a
+	// value the native view preserves but the tag set never receives is reported rather than
+	// silently absent - which for a read-only source is the difference between a copy that
+	// says it carried everything and one that says what it left behind.
+	invalidKeys []string
 }
 
 func (d *doc) Format() core.Format { return core.FormatWMA }
 
-// refuseWrite reports why this document cannot be rewritten. For ASF the answer is
-// unconditional: WaxLabel reads WMA but never writes it.
+// refuseWrite reports why an ASF document cannot be rewritten. For ASF the answer is
+// unconditional - WaxLabel reads WMA but never writes it - so it takes no document and
+// the file-less capability query gives the same answer as a parsed file.
 //
-// Plan returns this error and Capabilities derives its ReadOnly flag from the same
-// call, so the capability a caller is shown and the outcome of an actual write cannot
-// diverge - which is the reason the refusal lives here rather than in
-// [core.Format.Writable], a public-API bookkeeping method no write path consults.
+// Plan returns this error, Capabilities derives its ReadOnly flag from the same call and
+// carries the error itself for a caller that refuses before reaching Plan, so the
+// capability shown, the reason given, and the outcome of an actual write cannot diverge -
+// which is the reason the refusal lives here rather than in [core.Format.Writable], a
+// public-API bookkeeping method no write path consults.
 //
 // The sentinel is ErrUnsupportedFormat, not ErrUnsupportedTag: the latter is
 // documented as "a tag exists that this version cannot model", which misdescribes a
 // format that is simply not written.
-func (d *doc) refuseWrite() error {
+func refuseWrite() error {
 	return fmt.Errorf("%w: WaxLabel reads WMA/ASF but does not write it; save to another format instead",
 		waxerr.ErrUnsupportedFormat)
 }

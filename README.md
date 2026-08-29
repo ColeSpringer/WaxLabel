@@ -101,7 +101,7 @@ waxlabel export-picture track.flac -o cover.jpg
 | `verify <file>...` | Print tag-independent audio-essence digests. `--whole-file` hashes every byte. |
 | `caps <file>` or `caps --format <name>` | Show what a file or format can store and edit. |
 | `keys` | List the canonical tag vocabulary and cardinality. |
-| `copy <source> <dest>` | Overlay source metadata onto the destination, reporting what carries, downgrades, or drops. |
+| `copy <source> <dest>` | Overlay source metadata onto the destination, reporting what carries, downgrades, or drops. `--strict` refuses a transfer that is not lossless. |
 | `diff <a> <b>` | Compare canonical tags, pictures, chapters, and synced lyrics. |
 | `export-picture <file>` | Write one embedded picture to `-o` FILE. `--picture` selects by role or index. |
 
@@ -110,7 +110,10 @@ picture (`--add-cover`, `--add-picture`, `--remove-picture`), chapter
 (`--add-chapter`, `--clear-chapters`), and synced-lyric
 (`--synced-lyrics-file`, `--add-synced-lyric`, `--synced-lyrics-lang`) flags. Write
 shaping is controlled by `--preset`, `--legacy`, and `--padding`. Run
-`waxlabel <command> --help` for the full flag list.
+`waxlabel <command> --help` for the full flag list. `--legacy strip` (and
+`--preset minimal`, which implies it) removes ID3v1/APEv2/stray-ID3 containers
+unconditionally; when one holds the only copy of a value, the plan says so and
+`--strict` refuses the write.
 
 Read commands accept `-` for standard input, and `dump`, `verify`, `lint`, `plan`,
 and `set` can walk directories with `--recursive`. Format is detected from a file's
@@ -169,6 +172,10 @@ maximum: `canceled`/`timeout` > `source-changed` > `invalid-data` > `input-too-l
 When `set` authors a structural edit a format cannot store (e.g. cover art on WebM,
 or chapters on a format with no chapter store), it drops that item with a warning and
 applies the rest of the edit. `set --strict` promotes such drops to failures.
+`copy --strict` does the same for a transfer: it refuses when the projection is not
+lossless, or when writing the destination would itself lose metadata. Copying onto a
+read-only destination (WMA, a fragmented MP4) is a refused write at exit 3, not a
+silent no-op, after the per-field report is printed.
 
 The table below is generated from the same capability model used by `waxlabel caps`.
 

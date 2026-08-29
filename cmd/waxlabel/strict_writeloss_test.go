@@ -159,9 +159,9 @@ func TestStrictEscalatesNewWriteLossesEndToEnd(t *testing.T) {
 	})
 }
 
-// TestStrictExcludedAndCarryUnaffected guards the Finding 2 boundary from the CLI side: an
+// TestStrictExcludedAndCarryUnaffected guards the escalation boundary from the CLI side: an
 // excluded code (id3-multi-value, a value stored in full) still exits 0 under --strict, and a
-// lossy copy is unaffected because copy exposes no --strict flag.
+// carry the destination stores in full stays clean on both commands.
 func TestStrictExcludedAndCarryUnaffected(t *testing.T) {
 	notagsMP3 := filepath.Join("..", "..", "testdata", "notags.mp3")
 
@@ -174,16 +174,15 @@ func TestStrictExcludedAndCarryUnaffected(t *testing.T) {
 		}
 	})
 
-	// copy exposes no --strict flag, so the broadened family adds no escalation surface there; a
-	// genuinely lossy carry (an M4B's chapters -> FLAC drops the ends) still succeeds, and
-	// passing --strict to copy is an unknown-flag usage error rather than a silently-honored gate.
-	t.Run("copy has no strict flag and a lossy carry succeeds", func(t *testing.T) {
-		flac := copyFixture(t, notagsFLAC)
-		if _, _, code := runCLI(t, "copy", sampleM4B, flac); code != 0 {
-			t.Errorf("lossy m4b->flac carry exit = %d, want 0", code)
+	// An M4B's chapters carry to FLAC in full (their run-to-EOF ends are reconstructable, so
+	// the transfer grades them Carried), which is the case copy --strict must not fail: the
+	// gate is "this transfer lost something", not "this transfer crossed a format boundary".
+	t.Run("a full carry succeeds with and without --strict", func(t *testing.T) {
+		if _, _, code := runCLI(t, "copy", sampleM4B, copyFixture(t, notagsFLAC)); code != 0 {
+			t.Errorf("m4b->flac carry exit = %d, want 0", code)
 		}
-		if _, _, code := runCLI(t, "copy", "--strict", sampleM4B, copyFixture(t, notagsFLAC)); code == 0 {
-			t.Error("copy --strict should be an unknown-flag usage error, not accepted")
+		if _, _, code := runCLI(t, "copy", "--strict", sampleM4B, copyFixture(t, notagsFLAC)); code != 0 {
+			t.Errorf("m4b->flac carry under --strict exit = %d, want 0 (nothing was lost)", code)
 		}
 	})
 }

@@ -160,6 +160,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	warnings = append(warnings, syncedWarnings...)
 	warnings = append(warnings, vorbis.EncoderNoise(d.vendor, d.comments)...)
 	warnings = append(warnings, vorbis.InvalidKeyWarnings(d.comments)...)
+	// Recorded above only for a clean single stream; a chained file's tail is other
+	// streams, which chained-stream already reports.
+	warnings = core.WarnTrailing(warnings, d.trailingLen, "after the Ogg stream", "")
 
 	// Essence ranges (audio page bodies, interleaved with page headers, so not one
 	// contiguous run) were collected above.

@@ -98,6 +98,9 @@ type TrailerPlan struct {
 	Bytes      []byte
 	ID3v1      []byte
 	Operations []string
+	// Rebuild records what it could not write here, for PlanTrailingWrite to turn into
+	// warnings; see [RebuildInfo].
+	Rebuild RebuildInfo
 }
 
 // RebuildTrailer applies an edit to the trailing region. It is the whole write side
@@ -116,7 +119,7 @@ func RebuildTrailer(t Trailer, base, edited tag.TagSet, pictures []core.Picture,
 			"rewriting it would drop the ones that were not read (raise the limit to edit this file)",
 			waxerr.ErrSizeTooLarge)
 	}
-	p.Items = Rebuild(t.Items(), base, edited, pictures, picturesChanged)
+	p.Items, p.Rebuild = Rebuild(t.Items(), base, edited, pictures, picturesChanged)
 	if tagsChanged {
 		p.Operations = append(p.Operations, "APEv2 rewrite")
 	}
@@ -247,6 +250,7 @@ func PlanTrailingWrite(w TrailingWrite, base, edited *core.Media, opts core.Writ
 		return nil, err
 	}
 	report.Operations = append(report.Operations, tp.Operations...)
+	report.Warnings = RebuildWarnings(report.Warnings, tp.Rebuild)
 
 	var segs []bits.Segment
 	newLeadingLen := int64(len(w.Leading))

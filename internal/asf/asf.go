@@ -62,15 +62,16 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	return parse(ctx, src, opts)
 }
 
-// Capabilities reports WMA's support: full reads, no writes. ReadOnly is derived
-// from the same refuseWrite the Plan path calls, so the two cannot disagree.
+// Capabilities reports WMA's support: full reads, no writes. ReadOnly and the reason it
+// carries both come from the same refuseWrite the Plan path calls, so the three cannot
+// disagree.
 //
 // Only ReadOnly is set. The field, picture, and chapter levels keep describing what
 // the FORMAT holds, because core.dispose short-circuits on ReadOnly before consulting
 // them and the editor's own gates key off them: dropping them to AccessNone would make
 // the editor refuse a picture edit with a wrong sentinel before Plan could give the
 // precise refusal.
-func (Codec) Capabilities(m *core.Media, _ core.WriteOptions) core.Capabilities {
+func (Codec) Capabilities(_ *core.Media, _ core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessNone,
 		Representation: "ASF descriptor", Fidelity: "read-only",
@@ -79,13 +80,11 @@ func (Codec) Capabilities(m *core.Media, _ core.WriteOptions) core.Capabilities 
 		Read: core.AccessFull, Write: core.AccessNone,
 		Representation: "WM/Picture descriptor", Fidelity: "read-only",
 	}
-	readOnly := true
-	if m != nil {
-		if d, ok := m.Native.(*doc); ok && d != nil {
-			readOnly = d.refuseWrite() != nil
-		}
-	}
-	return core.NewCapabilities(core.FormatWMA, readOnly, fields, pictures, core.Capability{}, core.AccessNone, nil)
+	// Keep the refusal itself, not just its existence: a caller that declines before
+	// reaching Plan (the transfer path) then returns this exact error rather than
+	// synthesizing one, so copy and set fail a WMA destination the same way.
+	caps := core.NewCapabilities(core.FormatWMA, true, fields, pictures, core.Capability{}, core.AccessNone, nil)
+	return caps.WithReadOnlyReason(refuseWrite())
 }
 
 // EssenceExtent returns the ASF essence-digest inputs: a versioned extent name and

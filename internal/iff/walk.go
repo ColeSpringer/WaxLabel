@@ -47,6 +47,10 @@ type Result struct {
 	// well-formed chunk (a corrupt region, or an ID3v1 trailer a writer miscounted inside
 	// the container size): preserved verbatim and counted in the container size.
 	TrailingOff, TrailingLen int64
+	// TrailingIsID3v1 records that the walk stopped on a recognized ID3v1 trailer rather
+	// than on corruption, so a caller reporting the region can say what it is instead of
+	// calling a well-formed tag bytes that belong to nothing.
+	TrailingIsID3v1 bool
 	// OuterOff/Len capture bytes after the container: preserved verbatim but kept outside
 	// the recomputed container size.
 	OuterOff, OuterLen int64
@@ -129,7 +133,11 @@ func WalkChunks(ctx context.Context, r io.ReaderAt, opts WalkOptions) (Result, e
 		//     chunk, since the audio chunk's own declared size legitimately overruns when the
 		//     file is truncated or streaming (AudioIdx is set only past this point, so that
 		//     chunk clamps-and-keeps as the last chunk instead of breaking the walk).
-		if isID3v1Tail(id, off, end) || (res.AudioIdx >= 0 && bodyOff+declaredLen > end) {
+		if isID3v1Tail(id, off, end) {
+			res.TrailingIsID3v1 = true
+			break
+		}
+		if res.AudioIdx >= 0 && bodyOff+declaredLen > end {
 			break
 		}
 		bodyLen := declaredLen

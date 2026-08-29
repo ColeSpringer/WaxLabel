@@ -35,6 +35,69 @@ func NewEmpty() *Tag { return &Tag{Version: writeVersion, HasHeader: true} }
 // what an edit changed.
 func DiffKeys(base, edited tag.TagSet) map[tag.Key]bool { return core.DiffKeys(base, edited) }
 
+// reservedItemNames are the four item names the APEv2 specification forbids, mapped to what
+// each would collide with: writing one puts a false signature inside the tag of a file the
+// very readers that scan for it will open. One table, so a fifth entry cannot be dropped
+// correctly while the warning misattributes it.
+var reservedItemNames = map[string]string{
+	"ID3":  "an ID3v2 header's",
+	"TAG":  "an ID3v1 tag's",
+	"OggS": "an Ogg page's",
+	"MP+":  "a Musepack stream's",
+}
+
+// ReservedItemName reports whether name is one the APEv2 specification reserves. The
+// comparison is case-folded because the canonical key arrives uppercased (the CLI
+// uppercases keys, so "OggS" reaches the writer as "OGGS") and because a reader scanning
+// for the magic is not case-sensitive about the hazard either.
+//
+// This is a value-level rule about four specific strings, not a charset, so it lives here
+// rather than in tag.Key's byte predicate - the same split internal/vorbis makes for its
+// reserved namespaces.
+//
+// The specification's companion 2-to-255 character length rule is deliberately NOT enforced
+// alongside it, and the two should not be folded together by a later pass: a reserved name
+// is a collision hazard (ID3 and TAG are actual tag magic, so writing one plants a false
+// signature inside the file), while a one-character name is not. --set X=1 writes fine today
+// and real APEv2 readers accept it, so enforcing the bound would newly drop a working key
+// for no interop gain.
+func ReservedItemName(name string) bool {
+	_, ok := reservedMagic(name)
+	return ok
+}
+
+// reservedMagic returns what a reserved item name would collide with, and whether the name is
+// reserved at all. The comparison folds case, so the lookup is a scan rather than a map hit.
+func reservedMagic(name string) (string, bool) {
+	for r, magic := range reservedItemNames {
+		if strings.EqualFold(name, r) {
+			return magic, true
+		}
+	}
+	return "", false
+}
+
+// RebuildInfo records what [Rebuild] could not write, for the caller to surface as
+// warnings. Returning it rather than warning in place keeps Rebuild free of core.Warning
+// assembly, mirroring internal/vorbis.
+type RebuildInfo struct {
+	// ReservedKeys lists the canonical keys whose item name the specification reserves, in
+	// the order the rebuild reached them. Their values are not written.
+	ReservedKeys []tag.Key
+}
+
+// RebuildWarnings appends the write-time warnings for what [Rebuild] recorded: a key whose
+// item name is reserved was dropped rather than written. It is WarnValueDropped, which is
+// already strict-escalating, so a CI gate catches the loss.
+func RebuildWarnings(prior []core.Warning, info RebuildInfo) []core.Warning {
+	for _, k := range info.ReservedKeys {
+		magic, _ := reservedMagic(string(k)) // k reached ReservedKeys through the same lookup
+		prior = core.WarnKeyed(prior, core.WarnValueDropped,
+			fmt.Sprintf("%s is an item name the APEv2 specification reserves (it is %s magic) and cannot be written", k, magic), k)
+	}
+	return prior
+}
+
 // Rebuild produces the new item list with minimal change: item order is preserved,
 // unknown and non-text items keep their bytes and their flags (including the
 // read-only bit, which a naive re-render would clear), an item whose canonical key
@@ -44,11 +107,23 @@ func DiffKeys(base, edited tag.TagSet) map[tag.Key]bool { return core.DiffKeys(b
 // pictures is the edited cover set; it is applied only when picturesChanged, so a
 // tag-only edit leaves the source's cover items untouched rather than re-encoding
 // them under a synthesized file name.
-func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, picturesChanged bool) []Item {
+//
+// A key whose item name is reserved ([ReservedItemName]) is not written, and is recorded
+// in the returned RebuildInfo so the caller can warn. A pre-existing item with such a name
+// is preserved either way - whether this edit leaves it alone or tries to change it - so a
+// refused write never costs the user the value the file already had on top of the one it
+// could not store.
+func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, picturesChanged bool) ([]Item, RebuildInfo) {
 	changed := DiffKeys(base, edited)
 	emitted := map[tag.Key]bool{}
+	// reservedDropped records the keys emit refused, so the orig loop can put the item the
+	// file already had back rather than leaving the user with neither the new value nor the
+	// old one. emit marks a key emitted before it decides, which is what keeps the append
+	// loop from retrying it.
+	reservedDropped := map[tag.Key]bool{}
 	out := make([]Item, 0, len(orig)+len(pictures))
 	picturesEmitted := false
+	var info RebuildInfo
 
 	emitPictures := func() {
 		for _, p := range pictures {
@@ -76,6 +151,11 @@ func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, pict
 		emitted[k] = true
 		vals, ok := edited.Get(k)
 		if !ok || len(vals) == 0 {
+			return
+		}
+		if ReservedItemName(name) {
+			info.ReservedKeys = append(info.ReservedKeys, k)
+			reservedDropped[k] = true
 			return
 		}
 		boolean := tag.IsBooleanKey(k)
@@ -160,6 +240,12 @@ func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, pict
 		// Re-render in place under the item's own spelling, so an edit to a file
 		// written by another tagger does not rename its items.
 		emit(key, it.Key, it.Flags)
+		if reservedDropped[key] {
+			// The new value could not be written, so keep the bytes the file came with:
+			// refusing to author the hazard is not a licence to delete an item the user
+			// already had, and dropping both would leave neither value.
+			out = append(out, it)
+		}
 	}
 
 	// Keys the edit added, in the canonical order the tag set reports, under the
@@ -172,7 +258,7 @@ func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, pict
 	if picturesChanged && !picturesEmitted {
 		emitPictures()
 	}
-	return out
+	return out, info
 }
 
 // malformedCovers returns the cover items whose payload did not decode. A picture

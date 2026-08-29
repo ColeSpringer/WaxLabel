@@ -50,7 +50,9 @@ func jsonFileName(path string) string {
 // renderDocument writes the human-readable view of a parsed file.
 func renderDocument(w io.Writer, path string, doc *wl.Document, native bool) {
 	fmt.Fprintf(w, "%s\n", displayName(path))
-	fmt.Fprintf(w, "  format:  %s\n", doc.Format())
+	// The container's own name where it differs from the codec family (RF64/BW64, AIFC,
+	// WebM), so the human line says what --json's subformat already says.
+	fmt.Fprintf(w, "  format:  %s\n", transferFormatLabel(doc.Format(), doc.Properties().Container))
 	if line := audioLine(doc.Properties()); line != "" {
 		fmt.Fprintf(w, "  audio:   %s\n", line)
 	}

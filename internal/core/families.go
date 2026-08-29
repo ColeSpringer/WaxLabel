@@ -2,6 +2,7 @@ package core
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/colespringer/waxlabel/tag"
 )
@@ -80,6 +81,56 @@ func DiffKeys(base, edited tag.TagSet) map[tag.Key]bool {
 		}
 	}
 	return changed
+}
+
+// StripDroppedMessage is the wording for a LegacyStrip write that destroyed data held only in
+// the container it removed. container names what went ("legacy container", "LIST/INFO chunk")
+// and lost describes what went with it; the skeleton is shared so the two producers - the
+// editor, for a legacy container, and the WAV codec, for the native chunk that policy also
+// removes - cannot describe one policy two ways. It names the remedy, since a warning about a
+// flag the user typed is only useful if it says what to type instead.
+func StripDroppedMessage(container string, lost []string) string {
+	return "--legacy strip removed the " + container + " along with " + strings.Join(lost, " and ") +
+		"; omit it to keep the " + container
+}
+
+// LegacyStripDroppedMessage is [StripDroppedMessage] for the legacy containers: the keys whose
+// sole copy was there, the opaque non-tag content the projection cannot fold in, or both. The
+// two halves share one message because a write has one remedy for them.
+func LegacyStripDroppedMessage(keys []tag.Key, opaque bool) string {
+	var lost []string
+	if len(keys) > 0 {
+		names := make([]string, len(keys))
+		for i, k := range keys {
+			names[i] = string(k)
+		}
+		lost = append(lost, "values held only there ("+strings.Join(names, ", ")+")")
+	}
+	if opaque {
+		lost = append(lost, "content the canonical view does not carry")
+	}
+	return StripDroppedMessage("legacy container", lost)
+}
+
+// LegacyOnlyKeys returns, in family order, the canonical keys that exist only in a legacy
+// container (MP3 ID3v1/APEv2, FLAC's leading ID3v2 or trailing ID3v1) and not in auth.
+// These are exactly the values a legacy strip destroys.
+//
+// auth is an explicit argument rather than being read off a Media because the two callers
+// ask about different authorities and both are right: [Document.LegacyOnlyKeys] asks what
+// the parsed file holds, so dump and the safe auto-fix can see values the canonical set
+// omits, while the editor asks what the pending write holds, so a strip that is also
+// setting ALBUM does not claim to be losing ALBUM. Same rule, two authorities.
+func LegacyOnlyKeys(fams []FamilyValue, auth tag.TagSet) []tag.Key {
+	var out []tag.Key
+	seen := make(map[tag.Key]bool)
+	for _, f := range fams {
+		if f.Legacy && !auth.Has(f.Key) && !seen[f.Key] {
+			seen[f.Key] = true
+			out = append(out, f.Key)
+		}
+	}
+	return out
 }
 
 // LegacyFamilies projects a legacy container's key/value pairs into family entries.

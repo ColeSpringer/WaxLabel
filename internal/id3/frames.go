@@ -5,6 +5,7 @@ import (
 	"slices"
 
 	"github.com/colespringer/waxlabel/internal/bits"
+	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
@@ -311,6 +312,34 @@ func RenderedSize(frames []Frame) int64 {
 		total += int64(10 + len(f.Body))
 	}
 	return total
+}
+
+// FrameNote is the dump --native note for one frame: what it is beyond its four-character
+// id. A described frame - COMM, USLT, TXXX - carries its identity in a description the id
+// does not show, so a bare "COMM 20 B" line leaves the reader unable to tell an iTunes
+// normalization block from a real comment, or to audit which descriptions the technical
+// denylist ([mapping.ID3TechnicalCommentDesc]) is keeping out of the canonical view. The
+// description is a stored string, so it goes through [tag.SanitizeLine]: a control byte
+// must not reach the terminal raw and an embedded newline must not forge a line.
+//
+// MP3 and AAC share it, since they list frames identically.
+func FrameNote(f Frame) string {
+	if f.Opaque {
+		return "preserved (opaque)"
+	}
+	var desc string
+	switch f.ID {
+	case "COMM":
+		desc, _, _ = decodeCommentFrame(f.Body)
+	case "TXXX":
+		desc, _, _ = decodeUserText(f.Body)
+	case "USLT":
+		desc, _, _ = decodeLangText(f.Body)
+	}
+	if desc == "" {
+		return ""
+	}
+	return "description: " + tag.SanitizeLine(desc)
 }
 
 // FrontTagPadding reports the free padding inside a front ID3v2 region, or 0 for a file

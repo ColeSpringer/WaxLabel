@@ -463,7 +463,7 @@ func TestDateDecompositionV23(t *testing.T) {
 	}
 }
 
-// TestDroppedDateDetection checks detectDroppedDates: a year-anchored date key
+// TestDroppedDateDetection checks the dropped-date fate: a year-anchored date key
 // whose edited value has no extractable numeric year renders no v2.3 frame and so is
 // dropped; the caller turns RebuildInfo.DroppedDates into a value-dropped
 // warning. The detection is year-anchored and per key, so a stored or year-bearing
@@ -519,7 +519,7 @@ func TestDroppedDateOnlyTouchedKeys(t *testing.T) {
 
 // TestReleaseDateV23StoredNotDropped confirms the exclusion is safe: a non-date
 // ReleaseDate string on v2.3 renders a real TXXX:RELEASEDATE frame, so it genuinely
-// is not dropped (and must not warn). detectDroppedDates excludes it for this reason.
+// is not dropped (and must not warn). detectDateFates excludes it for this reason.
 func TestReleaseDateV23StoredNotDropped(t *testing.T) {
 	base := tag.NewTagSet()
 	edited := tag.NewTagSet()
@@ -961,22 +961,34 @@ func TestRebuildCOMMMultiValuePolicy(t *testing.T) {
 // unmanaged (preserved verbatim, never re-rendered).
 func TestFrameRenderIDUnmanaged(t *testing.T) {
 	unmanaged := []Frame{
-		{ID: "WXXX", Body: []byte{0}},                                      // URL frame
-		{ID: "PRIV", Body: []byte{1, 2}},                                   // binary
-		{ID: "APIC", Body: []byte{0}},                                      // picture (handled separately)
-		{ID: "TIT2", Body: []byte{0}, Opaque: true},                        // opaque
-		{ID: "UFID", Body: append([]byte("other.example"), 0)},             // non-MusicBrainz UFID
-		{ID: "COMM", Body: encodeComment(4, "eng", "desc", []string{"x"})}, // described comment
+		{ID: "WXXX", Body: []byte{0}},                          // URL frame
+		{ID: "PRIV", Body: []byte{1, 2}},                       // binary
+		{ID: "APIC", Body: []byte{0}},                          // picture (handled separately)
+		{ID: "TIT2", Body: []byte{0}, Opaque: true},            // opaque
+		{ID: "UFID", Body: append([]byte("other.example"), 0)}, // non-MusicBrainz UFID
+		// A machine-described comment: iTunes state, not something a person wrote. This is
+		// the assertion that matters, since projecting one would let an unrelated COMMENT
+		// edit consume it.
+		{ID: "COMM", Body: encodeComment(4, "eng", "iTunNORM", []string{"x"})},
+		{ID: "COMM", Body: encodeComment(4, "eng", "replaygain_track_gain", []string{"x"})},
 	}
 	for _, f := range unmanaged {
 		if _, managed := frameRenderID(f); managed {
 			t.Errorf("frame %q (opaque=%v) should be unmanaged", f.ID, f.Opaque)
 		}
 	}
-	// A MusicBrainz UFID and an empty-description COMM are managed.
-	mb := Frame{ID: "UFID", Body: encodeUFID(musicBrainzOwner, "id")}
-	if _, managed := frameRenderID(mb); !managed {
-		t.Error("MusicBrainz UFID should be managed")
+	// A MusicBrainz UFID is managed, and so is a COMM whose description is an ordinary
+	// human one - managed exactly when projected, or an edit would append a second frame
+	// beside the one it preserved.
+	managed := []Frame{
+		{ID: "UFID", Body: encodeUFID(musicBrainzOwner, "id")},
+		{ID: "COMM", Body: encodeComment(4, "eng", "", []string{"x"})},
+		{ID: "COMM", Body: encodeComment(4, "eng", "desc", []string{"x"})},
+	}
+	for _, f := range managed {
+		if _, ok := frameRenderID(f); !ok {
+			t.Errorf("frame %q should be managed", f.ID)
+		}
 	}
 }
 

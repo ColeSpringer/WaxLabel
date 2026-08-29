@@ -120,6 +120,19 @@ var asfNames = map[string]tag.Key{
 // against the shared alias table and the canonical vocabulary, so a descriptor
 // nobody has mapped by hand still surfaces under a sensible key instead of
 // vanishing.
+// ASFUnrepresentable reports whether a descriptor name is dropped from the canonical view
+// because no key can represent it, as opposed to being excluded on purpose. A name the table
+// maps to the empty key is a deliberate exclusion (a technical or player-state descriptor) and
+// is not a loss to report; a name that simply cannot parse as a key is.
+func ASFUnrepresentable(name string) bool {
+	norm := strings.ToLower(strings.TrimSpace(name))
+	if _, listed := asfNames[norm]; listed {
+		return false
+	}
+	_, ok := CanonicalASF(name)
+	return !ok
+}
+
 func CanonicalASF(name string) (tag.Key, bool) {
 	norm := strings.ToLower(strings.TrimSpace(name))
 	if k, ok := asfNames[norm]; ok {

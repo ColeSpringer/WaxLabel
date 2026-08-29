@@ -15,8 +15,11 @@ import (
 // destination is judged as a real write would be.
 //
 // A read-only destination format reports everything dropped; an unimplemented
-// destination is an error. Use [Document.PrepareTransfer] when you have an actual
-// destination file and want an executable plan as well.
+// destination is an error. It does not refuse a read-only destination the way
+// [Document.PrepareTransfer] does: there is no destination file here to refuse, and the
+// whole point of a format-level simulation is to describe the projection. Use
+// PrepareTransfer when you have an actual destination file and want an executable plan
+// as well.
 func (d *Document) PlanTransfer(dst Format, opts ...WriteOption) (TransferReport, error) {
 	if d.zero() {
 		return TransferReport{}, fmt.Errorf("%w: document is not initialized; use ParseFile/Parse", waxerr.ErrInvalidData)
@@ -63,6 +66,21 @@ func (d *Document) PrepareTransfer(dst *Document, opts ...WriteOption) (*Plan, T
 	caps := dst.Capabilities(opts...)
 	items := core.ProjectTransfer(d.media, caps)
 	report := TransferReport{Source: d.media.Format, Dest: dst.media.Format, Items: items}
+
+	// A read-only destination that had something to store is a refused write, not a
+	// clean run of per-item drops. Without this the transfer sets nothing on the editor,
+	// the codec's no-op fast path returns a NoOpPlan, and the codec's own refusal is
+	// never reached - so a copy onto a WMA reports every field dropped and then exits 0,
+	// while the same edit through set exits 3.
+	//
+	// Gated on a dropped item, not on ReadOnly alone: a transfer with nothing to carry, or
+	// one whose every value the destination already holds, writes nothing and legitimately
+	// succeeds - refusing those would make copy stricter than set on the same file, which
+	// is the inconsistency this fixes. The error is the codec's own, so ASF keeps
+	// unsupported-format and a fragmented MP4 keeps unsupported-fragmentation.
+	if caps.ReadOnly && report.HasDropped() {
+		return nil, report, readOnlyRefusal(caps)
+	}
 
 	ed := dst.Edit()
 	// The whole transfer is a faithful carry from the source, not a user-authored
@@ -140,4 +158,15 @@ func (d *Document) PrepareTransfer(dst *Document, opts ...WriteOption) (*Plan, T
 		return nil, report, err
 	}
 	return plan, report, nil
+}
+
+// readOnlyRefusal returns the error to fail a transfer onto a read-only destination
+// with: the codec's own refusal when it attached one, and a generic unsupported-format
+// error for the [Capabilities] fallbacks that carry none (an unknown or unimplemented
+// format, which has no codec to ask).
+func readOnlyRefusal(caps Capabilities) error {
+	if err := caps.ReadOnlyReason(); err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: %s files cannot be written", waxerr.ErrUnsupportedFormat, caps.Format)
 }

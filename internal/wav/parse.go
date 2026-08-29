@@ -22,6 +22,11 @@ import (
 // alongside the user's MaxAllocBytes limit (whichever is smaller wins).
 const maxMetaChunk = 64 << 20
 
+// maxFactChunk bounds the "fact" read. Only the leading 4-byte dwSampleLength is
+// decoded; a longer fact chunk (the spec leaves room for format-specific fields) is
+// preserved verbatim on rewrite like any other chunk.
+const maxFactChunk = 4
+
 // maxFmtChunk bounds the "fmt " read. Only the first 16 bytes are decoded (and a
 // WAVE_FORMAT_EXTENSIBLE chunk is 40), so there is no reason to read a chunk that
 // declares a larger body into memory - the rest is copied from the source on
@@ -98,6 +103,22 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			if fc, ok := parseFmt(body); ok {
 				d.fmtCfg = fc
 				fmtFound = true
+			}
+		case ch.id4() == "fact" && !d.hasFact:
+			body, err := bits.ReadSlice(src, ch.bodyOff, min(ch.bodyLen, maxFactChunk), limit)
+			if err != nil {
+				return nil, err
+			}
+			if len(body) == maxFactChunk {
+				// In an RF64/BW64 container the 32-bit field is the marker and the real count
+				// lives in ds64 (EBU Tech 3306), exactly as for the chunk sizes. Reading it
+				// from there makes the two agree by construction rather than by the sanity
+				// gate happening to reject 0xFFFFFFFF.
+				d.factSamples = uint64(binary.LittleEndian.Uint32(body))
+				if d.ds64 != nil {
+					d.factSamples = d.ds64.sampleCount
+				}
+				d.hasFact = true
 			}
 		case ch.id4() == "LIST":
 			// Peek the list type before reading the whole body, so a large non-INFO
@@ -180,7 +201,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			fmt.Sprintf("the %q chunk declares more bytes than the file holds and was clamped to EOF", string(id[:])))
 	}
 
-	d.track = buildTrack(d.fmtCfg, d.dataLen)
+	d.track = buildTrack(d.fmtCfg, d.dataLen, d.factSamples, d.hasFact)
 
 	media := &core.Media{
 		Format:     core.FormatWAV,
@@ -265,6 +286,11 @@ func mediaWarnings(d *doc, numericGenre bool) []core.Warning {
 	}
 	ws = append(ws, encoderNoise(d.info)...)
 	ws = append(ws, id3.EncoderNoise(d.id3)...)
+	// Both regions survive a rewrite byte for byte (write.go), so this is the only
+	// place they are ever mentioned. The in-RIFF one is counted in the recomputed
+	// container size; the outer one deliberately is not.
+	ws = core.WarnTrailing(ws, d.trailingLen, "after the last RIFF chunk", d.trailingWhat())
+	ws = core.WarnTrailing(ws, d.outerLen, "after the RIFF container", "")
 	return ws
 }
 
@@ -297,6 +323,7 @@ func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, riffEnd, li
 	d.dataTruncated = res.AudioTruncated
 	d.oversizedChunks = res.OversizedChunks
 	d.trailingOff, d.trailingLen = res.TrailingOff, res.TrailingLen
+	d.trailingID3v1 = res.TrailingIsID3v1
 	d.outerOff, d.outerLen = res.OuterOff, res.OuterLen
 	return nil
 }
@@ -323,10 +350,20 @@ func parseFmt(b []byte) (fmtChunk, bool) {
 	}, true
 }
 
-// buildTrack assembles audio properties from the fmt geometry and data length.
-// For PCM (and other constant-rate forms) the duration follows directly from the
-// byte rate; total samples follow from the block alignment.
-func buildTrack(fc fmtChunk, dataLen int64) core.AudioTrack {
+// buildTrack assembles audio properties from the fmt geometry, the data length, and the
+// fact chunk's declared sample count.
+//
+// A constant-rate PCM family (PCM, IEEE float, A-law, mu-law) keeps the byte-rate
+// formulas, which are exact for it: duration is dataLen/byteRate, bitrate is the
+// declared byte rate, and a sample frame is blockAlign bytes. Everything else has a
+// nominal or absent avgBytesPerSec and a blockAlign that is a compressed block rather
+// than a sample frame, so those formulas are wrong by whatever the compression ratio
+// happens to be - an MS-ADPCM second reads as 1.4 s, and a block count reads as a sample
+// count off by three orders of magnitude. For those the declared sample count is the only
+// real length, and the bitrate follows from the bytes actually stored. Where neither is
+// usable the duration falls back to the nominal byte rate (better than nothing) and the
+// sample count stays 0 rather than reporting a block count as samples.
+func buildTrack(fc fmtChunk, dataLen int64, factSamples uint64, hasFact bool) core.AudioTrack {
 	t := core.AudioTrack{
 		Codec: codecName(fc.audioFormat),
 		// Cap the uint32->int conversions so a hostile fmt value cannot overflow
@@ -336,17 +373,87 @@ func buildTrack(fc fmtChunk, dataLen int64) core.AudioTrack {
 		Channels:      int(fc.channels),
 		BitsPerSample: int(fc.bitsPerSample),
 	}
-	if fc.byteRate > 0 {
-		t.Bitrate = int(min(int64(fc.byteRate)*8, math.MaxInt32))
+	constant := constantRatePCM(fc.audioFormat)
+	if !constant && hasFact {
+		if dur, ok := factDuration(factSamples, fc, dataLen); ok {
+			t.Duration = dur
+			t.TotalSamples = factSamples
+		}
+	}
+	if t.Duration == 0 && fc.byteRate > 0 {
 		secs := float64(dataLen) / float64(fc.byteRate)
 		if secs > 0 && secs < float64(math.MaxInt64)/float64(time.Second) {
 			t.Duration = time.Duration(secs * float64(time.Second))
 		}
 	}
-	if fc.blockAlign > 0 {
-		t.TotalSamples = uint64(dataLen / int64(fc.blockAlign))
+	if constant {
+		if fc.byteRate > 0 {
+			t.Bitrate = int(min(int64(fc.byteRate)*8, math.MaxInt32))
+		}
+		if fc.blockAlign > 0 {
+			t.TotalSamples = uint64(dataLen / int64(fc.blockAlign))
+		}
+		return t
 	}
+	t.Bitrate = core.AverageBitrate(dataLen, t.Duration.Seconds())
 	return t
+}
+
+// constantRatePCM reports whether a WAVE format tag names an uncompressed family whose
+// avgBytesPerSec is exact and whose blockAlign is one sample frame. WAVE_FORMAT_EXTENSIBLE
+// counts: its SubFormat GUID is PCM or IEEE float in every file that uses it in practice,
+// and treating it otherwise would regress the ordinary 24-bit and multichannel case.
+func constantRatePCM(format uint16) bool {
+	switch format {
+	case 0x0001, 0x0003, 0x0006, 0x0007, 0xFFFE: // PCM, IEEE float, A-law, mu-law, extensible
+		return true
+	}
+	return false
+}
+
+// factSanityRatio bounds how far the duration a fact chunk declares may sit from the one
+// the nominal byte rate implies. It is deliberately loose: avgBytesPerSec is the value the
+// fact count exists to correct, so this rejects garbage (a 0xFFFFFFFF sample count reads
+// as tens of thousands of times the byte-rate estimate) without second-guessing an honest
+// disagreement like MS-ADPCM's 1.4x.
+const factSanityRatio = 8
+
+// minFactBitrate is the floor an implied average bitrate must clear for a declared sample
+// count to be believed: below 1 kbps there is no audio codec a RIFF file carries, only a
+// count that is too large for the bytes stored. It backstops the byte-rate comparison, which
+// says nothing when the declared rate is itself nonsense.
+const minFactBitrate = 1000
+
+// factDuration converts a declared sample count into a duration, reporting ok=false when
+// the value cannot be trusted. dwSampleLength is attacker-controlled and some writers put
+// bytes there rather than sample frames, so 0xFFFFFFFF on a 20 KB file would otherwise
+// report a 27-hour duration and a nonsense bitrate.
+//
+// Two bounds, because either input can be the nonsense one. The declared duration must land
+// within factSanityRatio of the byte-rate estimate when there is a byte rate to compare
+// against (an MP3-in-WAV declares 0, so there often is not); and the audio it claims must be
+// stored at a plausible bitrate, which catches an absurd sampleRate the byte-rate comparison
+// cannot see - rate 1 with 800000 samples is 9.3 days of audio in 100 KB, at 1 bit per
+// second.
+func factDuration(samples uint64, fc fmtChunk, dataLen int64) (time.Duration, bool) {
+	if samples == 0 || dataLen <= 0 {
+		return 0, false
+	}
+	dur := core.SamplesToDuration(samples, int(min(int64(fc.sampleRate), math.MaxInt32)))
+	if dur <= 0 {
+		return 0, false
+	}
+	if core.AverageBitrate(dataLen, dur.Seconds()) < minFactBitrate {
+		return 0, false
+	}
+	if fc.byteRate > 0 {
+		est := float64(dataLen) / float64(fc.byteRate)
+		secs := dur.Seconds()
+		if secs > est*factSanityRatio || secs*factSanityRatio < est {
+			return 0, false
+		}
+	}
+	return dur, true
 }
 
 // codecName maps a WAVE format tag to a codec name. The table is shared with the ASF

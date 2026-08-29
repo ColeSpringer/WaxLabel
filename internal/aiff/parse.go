@@ -261,6 +261,11 @@ func mediaWarnings(d *doc, numericGenre bool) []core.Warning {
 		ws = core.Warn(ws, core.WarnNumericGenre, "a numeric genre reference was resolved to a name")
 	}
 	ws = append(ws, id3.EncoderNoise(d.id3)...)
+	// Both regions survive a rewrite byte for byte (write.go), so this is the only
+	// place they are ever mentioned. The in-FORM one is counted in the recomputed
+	// container size; the outer one deliberately is not.
+	ws = core.WarnTrailing(ws, d.trailingLen, "after the last IFF chunk", d.trailingWhat())
+	ws = core.WarnTrailing(ws, d.outerLen, "after the FORM container", "")
 	return ws
 }
 
@@ -286,6 +291,7 @@ func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, formEnd, li
 	d.ssndTruncated = res.AudioTruncated
 	d.oversizedChunks = res.OversizedChunks
 	d.trailingOff, d.trailingLen = res.TrailingOff, res.TrailingLen
+	d.trailingID3v1 = res.TrailingIsID3v1
 	d.outerOff, d.outerLen = res.OuterOff, res.OuterLen
 	return nil
 }

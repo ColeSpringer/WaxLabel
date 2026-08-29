@@ -244,6 +244,47 @@ func ID3InvolvedRoleKey(fn string) (tag.Key, bool) {
 	return k, ok
 }
 
+// technicalCommentDescs are COMM descriptions that mark a frame as machine data rather
+// than a human comment: iTunes writes its normalization, gapless, and playback state under
+// these, and ReplayGain analysers write theirs under a REPLAYGAIN_* description. Such a
+// frame is preserved in the native tag but never projected as COMMENT, and the writer never
+// manages one, so an unrelated edit cannot consume it.
+var technicalCommentDescs = map[string]bool{
+	"ITUNNORM": true,
+	"ITUNSMPB": true,
+	"ITUNPGAP": true,
+	"ITUNMOVI": true,
+	"ITUNEXTC": true,
+}
+
+// technicalCommentPrefixes cover the families whose descriptions vary per entry, so an
+// exact table cannot name them all.
+var technicalCommentPrefixes = []string{"ITUNES_CDDB", "REPLAYGAIN"}
+
+// ID3TechnicalCommentDesc reports whether a COMM description marks the frame as machine
+// data rather than a comment a person wrote. The read filter and the writer's management
+// gates consult this one predicate, so the set of frames projected and the set of frames
+// managed cannot drift - the same reason [MatroskaTechnicalName] exists.
+//
+// The list is expected to be incomplete. Other conventions exist (Songs-DB_*,
+// MusicMatch_*, CDDB*, and some rippers' literal "ID3v1 Comment"), and adding an entry is
+// a one-line change. A miss is recoverable rather than destructive: projecting a machine
+// comment as COMMENT makes it visible and carries it on a copy, but destroys nothing until
+// COMMENT is itself edited. Worth running over a real library before treating the list as
+// settled.
+func ID3TechnicalCommentDesc(desc string) bool {
+	up := normalizeKey(desc)
+	if technicalCommentDescs[up] {
+		return true
+	}
+	for _, p := range technicalCommentPrefixes {
+		if strings.HasPrefix(up, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // ID3InvolvedKeys returns the involved-people role keys in deterministic emit order. The
 // returned slice is shared and read-only - it backs per-frame and per-render iteration in the
 // id3 codec, so it must not be mutated. (id3InvolvedOrder has len==cap, so an append reallocates

@@ -305,7 +305,7 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	patchKeys := e.patch.Keys()
 	for _, k := range patchKeys {
 		if !k.Valid() {
-			return nil, fmt.Errorf("%w: %q (keys are uppercase printable ASCII without '=' (spaces and punctuation are allowed); build them with tag.ParseKey or tag.MustKey, which accept any case)", waxerr.ErrInvalidKey, k)
+			return nil, fmt.Errorf("%w: %q (keys are uppercase ASCII 0x20-0x7D without '=' (spaces and punctuation are allowed, '~' is not); build them with tag.ParseKey or tag.MustKey, which accept any case)", waxerr.ErrInvalidKey, k)
 		}
 	}
 
@@ -586,6 +586,38 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		if loss := caps.SyncedLyrics.SyncedLyricsLoss; core.SyncedLyricsLoseMetadata(e.syncedLyrics, loss) {
 			wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnSyncedLyricsMetadataDropped,
 				core.SyncedLyricsMetadataDroppedMessage())
+		}
+	}
+	// An explicit LegacyStrip destroys whatever lives only in the legacy containers it
+	// removes, which doc.go's frozen contract says must never happen silently. The keys are
+	// computed against the EDITED tags, not the parsed ones: this edit may be writing the very
+	// value the legacy container held, and claiming to lose ALBUM while setting ALBUM would be
+	// a false alarm - and would fire for nearly every key of a copy, which sets most of the
+	// source's keys on the destination editor.
+	//
+	// Deliberately outside the !e.carried gate below. That flag suppresses warnings which
+	// lecture about metadata the user authored none of; here the user passed --legacy strip
+	// themselves and it is the destination's own data that disappears, and copy has its own
+	// --legacy flag, so suppressing on a carry would reproduce the hole one command over.
+	//
+	// lint --fix cannot reach this: PlanLintFix adds LegacyStrip only when neither predicate
+	// holds (lintfix.go), computed from the same two primitives against the same document, so
+	// the conditions are exact complements. WAV and AIFF are excluded by construction - they
+	// reuse LegacyStrip to mean "consolidate into the id3 chunk", and never mark a family
+	// Legacy - so a strip there stays silent.
+	if wo.Legacy == core.LegacyStrip {
+		// A key the parsed file already carried canonically was never held only in the legacy
+		// container, whatever this edit then did to it. Without the filter, --clear TITLE
+		// --legacy strip claims TITLE is "held only there" because the edit removed it from
+		// the authority the rule tests - a loss the user asked for, reported as one the strip
+		// caused. It is also what makes the lint --fix complement hold: PlanLintFix clears a
+		// stamped ENCODER, and a legacy container echoing that stamp would otherwise read as
+		// legacy-only and fail its own fix under --strict.
+		lost := slices.DeleteFunc(core.LegacyOnlyKeys(e.base.Families, editedTags),
+			func(k tag.Key) bool { return e.base.Tags.Has(k) })
+		if len(lost) > 0 || e.base.LegacyOpaqueContent {
+			wp.Report.Warnings = core.WarnKeyed(wp.Report.Warnings, core.WarnLegacyStripDropped,
+				core.LegacyStripDroppedMessage(lost, e.base.LegacyOpaqueContent), lost...)
 		}
 	}
 	// Surface the whole-item structural drops and the synced-lyrics truncation recorded above.
@@ -1022,6 +1054,12 @@ func appendPictureWarnings(ws []core.Warning, pics []core.Picture, addedMask []b
 			if p.Unrecognized() {
 				ws = core.Warn(ws, core.WarnInvalidPicture, fmt.Sprintf(
 					"added %s picture is not a recognized image type (%s)", p.Type, p.MIME))
+			}
+			// The file-icon shape rule, scoped to this edit's additions like the duplicate
+			// and front-cover checks: a file's pre-existing non-conforming icon stays the
+			// linter's whole-set concern.
+			if reason, bad := core.NonConformingIcon(p); bad {
+				ws = core.Warn(ws, core.WarnNonConformingIcon, "added "+reason)
 			}
 		}
 		if p.Type == core.PicFrontCover {

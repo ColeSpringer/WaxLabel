@@ -54,6 +54,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	warnings = append(warnings, proj.Warnings...)
 	warnings = append(warnings, ape.EncoderNoise(d.trailer.Items())...)
 	warnings = append(warnings, ape.InvalidUTF8Warnings(d.trailer.Tag)...)
+	warnings = append(warnings, ape.InvalidKeyWarnings(d.trailer.Tag)...)
 	media.Families = append(media.Families, ape.LegacyFamilies(media.Tags, d.trailer.ID3v1)...)
 
 	d.track = buildTrack(h, d.trailer.Start)

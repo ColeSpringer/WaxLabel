@@ -239,6 +239,11 @@ const (
 
 	WarnFragmented  = core.WarnFragmented
 	WarnInvalidText = core.WarnInvalidText
+
+	WarnTrailingBytes             = core.WarnTrailingBytes
+	WarnLegacyStripDropped        = core.WarnLegacyStripDropped
+	WarnCommentDescriptionDropped = core.WarnCommentDescriptionDropped
+	WarnNonConformingIcon         = core.WarnNonConformingIcon
 )
 
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated

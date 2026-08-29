@@ -84,9 +84,9 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringArrayVar(&e.addSyncedLyric, "add-synced-lyric", nil, "add synced lyric line TIMESTAMP=Text (e.g. 1:30=Verse; repeatable); combined lines replace any existing synced lyrics")
 	f.StringVar(&e.syncedLyricsLang, "synced-lyrics-lang", "", "a 3-letter language code (the ISO-639-2 shape, e.g. eng) for synced lyrics authored by --synced-lyrics-file or --add-synced-lyric; the shape is validated, not registry membership")
 	f.BoolVar(&e.clearSyncedLyrics, "clear-synced-lyrics", false, "remove all synced lyrics")
-	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear the ENCODER software stamp left behind by an encoder or transcoder, including FLAC/Ogg vendor stamps")
+	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear ENCODER, the software stamp an encoder or transcoder leaves behind, wherever the format stores it (a WAV ISFT item and a FLAC/Ogg vendor string included)")
 	f.StringVar(&e.preset, "preset", "", "write policy preset: preserve|compatible|minimal")
-	f.StringVar(&e.legacy, "legacy", "", "legacy-tag policy: preserve|strip")
+	f.StringVar(&e.legacy, "legacy", "", "legacy-tag policy: preserve|strip. strip removes ID3v1/APEv2/stray-ID3 containers unconditionally, warning when one holds the only copy of a value (--strict then refuses)")
 	f.StringVar(&e.padding, "padding", "", "reserve at least N bytes of padding after the metadata (FLAC default 8192; MP3/AAC/MP4 reuse the existing region; 0 writes none, like --no-padding)")
 	f.BoolVar(&e.noPadding, "no-padding", false, "write no padding after the metadata (no effect on Ogg/WAV/AIFF/Matroska, which have no padding region)")
 	f.BoolVar(&e.numericGenre, "numeric-genre", false, "write a recognized genre as its numeric reference instead of its name: ID3's TCON on MP3/AAC/AIFF, MP4's gnre atom, and on WAV only where an 'id3 ' chunk exists or the same edit creates one (LIST/INFO IGNR stores the name literally). FLAC, Ogg, and Matroska have no numeric genre representation, so it has no effect there")
@@ -667,10 +667,12 @@ func (e *editFlags) compile(extra ...wl.WriteOption) (*compiledEdit, error) {
 		return nil, err
 	}
 	// When the edit touches ENCODER (--set/--clear/--add ENCODER, or --strip-encoder,
-	// which all land as an op on the key), also strip a removable inherited encoder
-	// stamp held in a native field no canonical edit reaches - the WAV ISFT. This
-	// drops the transcoder leftover and prevents a split-brain (a fresh id3 ENCODER
-	// beside a surviving ISFT=Lavf); codecs without such a stamp ignore the option.
+	// which all land as an op on the key), also remove a removable inherited stamp the
+	// canonical edit may not reach: a FLAC/Ogg vendor string, which no tag edit can touch,
+	// and a WAV ISFT the edit is not itself writing. This prevents a split-brain (a fresh
+	// ENCODER beside a surviving vendor=Lavf); codecs without such a stamp ignore the
+	// option, and a codec that would collide with an authored value skips it (see the WAV
+	// writer's encoderAuthored gate).
 	if patch.Touches(tag.Encoder) {
 		opts = append(opts, wl.WithStripEncoderStamp())
 	}
@@ -1022,7 +1024,10 @@ func noteMalformedValue(notes *cappedNotes, k tag.Key, v string) {
 //   - WarnPaddingClamped: about padding size, not tag content.
 //   - Advisory/sanity codes (number-total-conflict, chapter-overlap-reconciled,
 //     chapter-past-duration, duplicate-*, multiple-front-covers, legacy-conflict) and the
-//     read-path codes: they describe the file, not an edit loss. WarnSyncedLyricsTruncated is
+//     read-path codes (trailing-bytes among them): they describe the file, not an edit loss.
+//   - WarnNonConformingIcon: a file icon that is not a 32x32 PNG is written in full and every
+//     reader renders it, so only conformance suffers - the same reason its lint finding is a
+//     warning while duplicate-icon is an error. WarnSyncedLyricsTruncated is
 //     the one dual-path code escalated below - it fires on the write path when an authored set
 //     exceeds the line cap (an edit loss) and, on the effectively unreachable read path, when a
 //     file already over the cap is edited (both mean the set cannot round-trip in full).
@@ -1043,9 +1048,18 @@ var strictEscalatingCodes = map[wl.WarningCode]bool{
 	// or picture metadata beyond the raw bytes.
 	wl.WarnTagStructureDropped:    true,
 	wl.WarnPictureMetadataDropped: true,
+	// An ID3 comment description the merged COMM frame cannot keep. The comment text
+	// survives in full; the label does not, which is a metadata loss like the two above.
+	wl.WarnCommentDescriptionDropped: true,
 	// Chapter losses. The *MetadataDropped/*EndsDropped codes are editor-emitted only when the
-	// edit is not a faithful carry (gated on !carried), so a copy/transfer never emits them and
-	// escalating them cannot make a carry fail (see the carry-safety note on the copy command).
+	// edit is not a faithful carry (gated on !carried), so a transfer never emits them.
+	//
+	// That gate does NOT cover this map as a whole, and a reader should not assume it does.
+	// WarnLegacyStripDropped is emitted outside it deliberately (the user asked for the strip
+	// and it is the destination's own data that dies), and every codec-emitted code here -
+	// WarnCommentDescriptionDropped among them - survives a carry because the codec never sees
+	// the flag. A copy onto an MP3 can therefore produce an escalating warning, which is why
+	// copy --strict is defined as a real gate rather than a formality.
 	wl.WarnChapterEndsDropped:     true,
 	wl.WarnChapterTitleTruncated:  true,
 	wl.WarnChapterStartOverflow:   true,
@@ -1067,6 +1081,11 @@ var strictEscalatingCodes = map[wl.WarningCode]bool{
 	// so --strict must catch the loss rather than exit 0.
 	wl.WarnSyncedLyricsLineDropped: true,
 	wl.WarnPictureSelectorMiss:     true,
+	// Data destroyed by an explicit write POLICY rather than a format limit: --legacy strip
+	// removed a container holding the only copy of a value, or content the canonical view does
+	// not carry. Every other legacy code describes the file's pre-existing state and stays out;
+	// this one describes what this write destroyed, which is exactly what --strict is for.
+	wl.WarnLegacyStripDropped: true,
 }
 
 // strictWarningGate applies the per-file --strict escalation for plan and set: when a
@@ -1129,12 +1148,18 @@ func strictWarningReason(w wl.Warning) string {
 		// the plan-body message rather than re-deriving one, keeping --strict in lockstep with the
 		// warning the user sees.
 		return w.Message
+	case wl.WarnLegacyStripDropped:
+		// Echo the plan-body message: it names the keys, the opaque content, and the remedy, and
+		// a bare key list here would read as a format limitation rather than a chosen policy.
+		return w.Message
 	case wl.WarnValueCoerced:
 		return fmt.Sprintf("%s: value is not valid for this format and would be stored coerced", keys)
 	case wl.WarnSingleValuedMulti:
 		return fmt.Sprintf("%s: single-valued but given multiple values", keys)
 	case wl.WarnTagStructureDropped:
 		return fmt.Sprintf("%s: edit drops the tag's secondary language, binary value, or nested sub-tags", keys)
+	case wl.WarnCommentDescriptionDropped:
+		return fmt.Sprintf("%s: the rewrite drops a description one of the file's comment frames carried", keys)
 	default:
 		return keys
 	}

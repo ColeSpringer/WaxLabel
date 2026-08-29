@@ -92,7 +92,7 @@ func TestRebuildPreservesItemFlags(t *testing.T) {
 	edited.Add(tag.Title, "New")
 	edited.Add(tag.Key("LOCKED"), "keep")
 
-	got := Rebuild(orig, base, edited, nil, false)
+	got, _ := Rebuild(orig, base, edited, nil, false)
 	tg := parseRendered(t, got)
 	if len(tg.Items) != 3 {
 		t.Fatalf("items = %d, want 3", len(tg.Items))
@@ -118,7 +118,7 @@ func TestRebuildKeepsSourceSpelling(t *testing.T) {
 	edited.Add(tag.AlbumArtist, "New")
 	edited.Add(tag.TrackNumber, "3")
 
-	got := Rebuild(orig, base, edited, nil, false)
+	got, _ := Rebuild(orig, base, edited, nil, false)
 	if len(got) != 2 {
 		t.Fatalf("items = %+v, want two", got)
 	}
@@ -140,7 +140,7 @@ func TestRebuildClearRemovesItem(t *testing.T) {
 	edited := tag.NewTagSet()
 	edited.Add(tag.Artist, "Kept")
 
-	got := Rebuild(orig, base, edited, nil, false)
+	got, _ := Rebuild(orig, base, edited, nil, false)
 	if len(got) != 1 || got[0].Key != "Artist" {
 		t.Errorf("items = %+v, want only Artist", got)
 	}
@@ -212,12 +212,12 @@ func TestRebuildPictures(t *testing.T) {
 	ts := tag.NewTagSet()
 	ts.Add(tag.Title, "T")
 
-	unchanged := Rebuild(orig, ts, ts, nil, false)
+	unchanged, _ := Rebuild(orig, ts, ts, nil, false)
 	if !bytes.Equal(unchanged[0].Data, old.Data) {
 		t.Error("a tag-only edit re-encoded the cover item")
 	}
 
-	replaced := Rebuild(orig, ts, ts, []core.Picture{{Type: core.PicFrontCover, Data: png}}, true)
+	replaced, _ := Rebuild(orig, ts, ts, []core.Picture{{Type: core.PicFrontCover, Data: png}}, true)
 	if len(replaced) != 2 {
 		t.Fatalf("items = %+v, want the cover replaced in place", replaced)
 	}
@@ -226,7 +226,7 @@ func TestRebuildPictures(t *testing.T) {
 		t.Errorf("replaced cover = %+v (err %v), want the new bytes", got, err)
 	}
 
-	cleared := Rebuild(orig, ts, ts, nil, true)
+	cleared, _ := Rebuild(orig, ts, ts, nil, true)
 	if len(cleared) != 1 || cleared[0].Key != "Title" {
 		t.Errorf("items after clearing pictures = %+v, want only Title", cleared)
 	}
@@ -285,7 +285,7 @@ func TestRebuildSlashPair(t *testing.T) {
 		{"unrelated edit", func(ts *tag.TagSet) { ts.Set(tag.Title, "New") }, []string{"Track=3/12", "Title=New"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			got := Rebuild(orig, base, edit(c.mut), nil, false)
+			got, _ := Rebuild(orig, base, edit(c.mut), nil, false)
 			if !slices.Equal(names(got), c.want) {
 				t.Errorf("items = %v, want %v", names(got), c.want)
 			}
@@ -302,7 +302,7 @@ func TestRebuildEditedItemKeepsFlags(t *testing.T) {
 	edited := tag.NewTagSet()
 	edited.Add(tag.Title, "New")
 
-	got := Rebuild(orig, base, edited, nil, false)
+	got, _ := Rebuild(orig, base, edited, nil, false)
 	if len(got) != 1 || got[0].Value != "New" {
 		t.Fatalf("items = %+v, want the value rewritten", got)
 	}
@@ -317,7 +317,7 @@ func TestRebuildEditedItemKeepsFlags(t *testing.T) {
 func TestRebuildKeepsMalformedCover(t *testing.T) {
 	bad := Item{Key: coverFrontKey, Data: []byte("no-nul-terminator"), Flags: itemTypeBinary << itemTypeShift}
 	ts := tag.NewTagSet()
-	got := Rebuild([]Item{bad}, ts, ts, []core.Picture{{Type: core.PicFrontCover, Data: tinyPNGBytes()}}, true)
+	got, _ := Rebuild([]Item{bad}, ts, ts, []core.Picture{{Type: core.PicFrontCover, Data: tinyPNGBytes()}}, true)
 	if len(got) != 2 {
 		t.Fatalf("items = %d, want the new cover plus the undecodable one", len(got))
 	}
@@ -412,7 +412,7 @@ func TestDecodeTextLatin1Fallback(t *testing.T) {
 	base := Project(tg).Tags
 	edited := base.Clone()
 	edited.Set(tag.Title, "New")
-	got := Rebuild(tg.Items, base, edited, nil, false)
+	got, _ := Rebuild(tg.Items, base, edited, nil, false)
 	if !bytes.Equal(got[0].Data, latin1) {
 		t.Errorf("untouched item = %q, want its original bytes", got[0].Data)
 	}
@@ -438,7 +438,8 @@ func TestRebuildEmptyValueRoundTrips(t *testing.T) {
 
 	edited := tag.NewTagSet()
 	edited.Add(tag.Title, "")
-	tg := parseRendered(t, Rebuild(orig, base, edited, nil, false))
+	items, _ := Rebuild(orig, base, edited, nil, false)
+	tg := parseRendered(t, items)
 	if len(tg.Items) != 1 || tg.Items[0].Value != "" {
 		t.Fatalf("items = %+v, want one empty-valued Title", tg.Items)
 	}
@@ -447,7 +448,7 @@ func TestRebuildEmptyValueRoundTrips(t *testing.T) {
 	}
 
 	cleared := tag.NewTagSet()
-	if got := Rebuild(orig, base, cleared, nil, false); len(got) != 0 {
+	if got, _ := Rebuild(orig, base, cleared, nil, false); len(got) != 0 {
 		t.Errorf("a cleared key should emit no item, got %+v", got)
 	}
 }
@@ -473,7 +474,7 @@ func TestRebuildDropsEmptyWithinMultiValue(t *testing.T) {
 			for _, v := range c.vals {
 				edited.Add(tag.Artist, v)
 			}
-			got := Rebuild(nil, base, edited, nil, false)
+			got, _ := Rebuild(nil, base, edited, nil, false)
 			if c.want == "" {
 				if len(got) != 0 {
 					t.Fatalf("items = %+v, want none: every value was empty", got)

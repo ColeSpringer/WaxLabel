@@ -302,6 +302,44 @@ const (
 	// allows, so the parsed model is a partial view. A codec that rebuilds its whole
 	// metadata region from that model must refuse to write rather than drop the rest.
 	WarnElementCap
+	// WarnTrailingBytes means the file carries bytes that belong to no chunk or page:
+	// appended junk, a truncated write, or a trailer a tool left behind. They are
+	// preserved verbatim across an edit, and a region after the container is kept
+	// outside the recomputed container size so a strict reader does not misparse it.
+	// Nothing is lost, but the file is not what its own structure declares, which is
+	// what a tagger wants to know. Keyless: it describes a byte region, not a tag
+	// field. Appended to the end of the block so the existing codes keep their numbers.
+	WarnTrailingBytes
+	// WarnLegacyStripDropped means an explicit LegacyStrip write policy destroyed data
+	// that lived only in the legacy container it removed: a canonical value no other
+	// container held, non-tag content the projection does not fold in, or both. Unlike
+	// every other legacy warning this describes a loss the write policy caused, not the
+	// file's pre-existing state, which is why it escalates under --strict. It is deliberately
+	// one code rather than two: the lint side splits legacy-only-tags from
+	// legacy-opaque-content because they answer two questions about a container that is being
+	// kept, while here there is one question and one remedy - drop --legacy strip. Carries the
+	// lost keys when there are any; the opaque-only case is keyless. Appended to the end of
+	// the block so the existing codes keep their numbers.
+	WarnLegacyStripDropped
+	// WarnCommentDescriptionDropped means a comment edit could not keep a description one of
+	// the file's comment frames carried. ID3 COMM frames are described and languaged; the
+	// canonical COMMENT key is neither, so an edit that merges several described frames into
+	// one, or spreads one described frame's slot across several values, has nowhere to put
+	// the descriptions. The comment TEXT is written in full - only the label is lost.
+	// Reusing WarnTagStructureDropped would avoid a new code, but that one's documentation
+	// is written entirely about Matroska album-scope tags and "secondary language"
+	// misdescribes a comment description. Appended to the end of the block so the existing
+	// codes keep their numbers.
+	WarnCommentDescriptionDropped
+	// WarnNonConformingIcon means a type-1 file-icon picture is not the 32x32 PNG ID3v2
+	// section 4.14 requires. Unlike its neighbour WarnDuplicatePicture this is a warning
+	// rather than an error, and the asymmetry is deliberate: two type-1 pictures make the
+	// frame set ambiguous and unrepairable without choosing one, while a single oversized
+	// icon is unambiguous and every reader renders it - only conformance suffers. The
+	// picture is written either way. Its String() is "non-conforming-icon" to match the
+	// linter's finding code, so the two never drift. Appended to the end of the block so
+	// the existing codes keep their numbers.
+	WarnNonConformingIcon
 )
 
 func (c WarningCode) String() string {
@@ -412,6 +450,14 @@ func (c WarningCode) String() string {
 		return "element-cap"
 	case WarnFragmented:
 		return "fragmented"
+	case WarnTrailingBytes:
+		return "trailing-bytes"
+	case WarnLegacyStripDropped:
+		return "legacy-strip-dropped"
+	case WarnCommentDescriptionDropped:
+		return "comment-description-dropped"
+	case WarnNonConformingIcon:
+		return "non-conforming-icon"
 	default:
 		return "unknown"
 	}
@@ -515,6 +561,43 @@ func NativeReducedWarnings(ts tag.TagSet, container string, reduces func(tag.Key
 func WarnTruncated(ws []Warning, subject string) []Warning {
 	return Warn(ws, WarnTruncatedAudio, subject+" declares more audio than the file holds; file may be truncated")
 }
+
+// WarnTrailing appends a trailing-bytes warning for a region of n bytes, or returns ws
+// unchanged when the region is empty. subject says where the bytes sit ("after the last
+// RIFF chunk", "after the Ogg stream"), which is the part that differs between the
+// container walkers; the promise the codecs share - the bytes are preserved verbatim - is
+// worded once here so they cannot describe the same condition three ways.
+//
+// what names the region when the walker could identify it. A container walk that stops on a
+// well-formed ID3v1 trailer knows exactly what those 128 bytes are, and calling them bytes
+// that belong to nothing would be false. The code stays trailing-bytes rather than
+// trailing-id3v1: that one drives PlanLintFix's legacy strip, which on WAV and AIFF means
+// "consolidate the native tags into the ID3 chunk" and would restructure the file without
+// removing the trailer the finding is about.
+func WarnTrailing(ws []Warning, n int64, subject, what string) []Warning {
+	if n <= 0 {
+		return ws
+	}
+	if what == "" {
+		what = "belong to no chunk or page"
+	}
+	return Warn(ws, WarnTrailingBytes, fmt.Sprintf("%d byte(s) %s %s; preserved verbatim", n, subject, what))
+}
+
+// WarnInvalidKey appends an invalid-tag-key warning for a native key the canonical
+// vocabulary cannot represent. The item stays in the native document; what it cannot do is
+// reach the tag set, so dump, lint, diff and copy would all behave as though the value were
+// not there. Every read path that drops a key for this reason says so in the same words, so
+// a user comparing two formats sees one condition rather than five.
+func WarnInvalidKey(ws []Warning, name string) []Warning {
+	return Warn(ws, WarnInvalidTagKey,
+		"tag key not represented in canonical tags (not carried): "+tag.SanitizeLine(name))
+}
+
+// TrailingID3v1What is [WarnTrailing]'s what for a region a container walk recognized as an
+// ID3v1 tag. WAV and AIFF preserve such a trailer but do not project it, so the wording says
+// so rather than implying the bytes are junk.
+const TrailingID3v1What = "are an ID3v1 tag this format preserves but does not read"
 
 // ConflictingFamiliesMessage is the shared keyless wording for the conflicting-families
 // condition: more than one native field supplied a different value for a key, so no

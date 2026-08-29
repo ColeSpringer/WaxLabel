@@ -127,6 +127,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		}
 	}
 
+	for _, name := range d.invalidKeys {
+		warnings = core.WarnInvalidKey(warnings, name)
+	}
 	media.Warnings = warnings
 	media.Identity = core.Identity{Size: size}
 	media.Identity.Fingerprint, media.Identity.HasFinger = core.Fingerprint(src, media, limit)
@@ -350,6 +353,9 @@ func (d *doc) descriptor(name string, valueType uint16, value []byte, emit func(
 	}
 	key, ok := mapping.CanonicalASF(name)
 	if !ok {
+		if mapping.ASFUnrepresentable(name) {
+			d.invalidKeys = append(d.invalidKeys, name)
+		}
 		return
 	}
 	emit(key, text, name)

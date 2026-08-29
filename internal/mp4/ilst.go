@@ -376,6 +376,32 @@ func project(d *doc) (tags tag.TagSet, pics []core.Picture, families []core.Fami
 	return core.BuildTagSet(contribs), pics, core.BuildFamilies(contribs, core.FamilyMP4), numericGenre
 }
 
+// invalidKeyWarnings reports the iTunes freeform names the canonical vocabulary cannot
+// represent. decodeFreeform preserves such an item verbatim and contributes nothing, which
+// without this leaves the value absent from every canonical view with nothing said. It
+// mirrors that function's own gate, so the set flagged is exactly the set it drops for this
+// reason - a foreign mean, a binary payload or invalid UTF-8 are different exclusions and
+// stay silent, as they are not key-representability questions.
+func invalidKeyWarnings(d *doc) []core.Warning {
+	var ws []core.Warning
+	seen := map[string]bool{}
+	for _, it := range d.items {
+		if it.id() != "----" {
+			continue
+		}
+		mean, name, _, ok := parseMeanName(it.payload)
+		if !ok || mean != itunesMean || seen[name] {
+			continue
+		}
+		if _, known := mapping.MP4FreeformKey(name); known || tag.Key(name).Valid() {
+			continue
+		}
+		seen[name] = true
+		ws = core.WarnInvalidKey(ws, name)
+	}
+	return ws
+}
+
 // owned reports whether the canonical rebuild owns an item - i.e. re-renders it
 // from the edited tag set. Items it does not own (unknown atoms, foreign-mean
 // freeforms, parse failures) are preserved verbatim. It is recomputed wherever
