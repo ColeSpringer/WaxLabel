@@ -76,13 +76,6 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	}
 	d.audioStart = c.Pos()
 	d.audioEnd = size
-	// Note: FLAC carries no declared encoded-essence size (STREAMINFO holds the
-	// decoded TotalSamples, not a byte length), so a mid-stream truncation with an
-	// intact STREAMINFO is undetectable without decoding the frames. Unlike WAV/AIFF/
-	// MP4 there is nothing to compare the file size against, so no truncated-audio
-	// warning is emitted here; a deliberate known limitation, not an oversight. A
-	// per-byte bitrate floor was considered and rejected - lossless silence can
-	// legitimately compress to tens of bps, which would false-flag valid audio.
 
 	if len(d.blocks) == 0 || d.blocks[0].code != blkStreamInfo {
 		return nil, fmt.Errorf("%w: STREAMINFO must be the first block", waxerr.ErrInvalidData)
@@ -106,6 +99,20 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 		return nil, err
 	}
 	d.streamInfo = streamInfo
+
+	// FLAC declares no encoded-essence byte length (STREAMINFO holds the decoded
+	// TotalSamples), so a truncation or appended junk is visible only in the
+	// frames themselves; frameTailWarnings holds the walk's full story. A located
+	// trailing region is carved out of the audio extent like the other formats'
+	// trailing regions, keeping it out of the essence digest and the bitrate
+	// while the writer still copies it verbatim.
+	tailWarnings, trailingJunk, err := frameTailWarnings(ctx, src, d, limit)
+	if err != nil {
+		return nil, err
+	}
+	warnings = append(warnings, tailWarnings...)
+	d.trailingJunk = trailingJunk
+	d.audioEnd -= trailingJunk
 
 	media := &core.Media{
 		Format:     core.FormatFLAC,

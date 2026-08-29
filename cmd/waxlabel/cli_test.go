@@ -459,7 +459,7 @@ func TestVerifyEssenceStableAcrossTagEdit(t *testing.T) {
 		t.Fatalf("verify exit = %d", code)
 	}
 	v1 := decodeJSONOne[jsonVerify](t, out1)
-	if !strings.HasPrefix(v1.Essence, "sha256/flac-frames-v1:") {
+	if !strings.HasPrefix(v1.Essence, "sha256/flac-frames-v2:") {
 		t.Errorf("essence = %q", v1.Essence)
 	}
 
@@ -505,7 +505,7 @@ func TestVerifyQuietTSV(t *testing.T) {
 		if len(cols) != 2 {
 			t.Errorf("line %q has %d tab-separated columns, want 2 (essence, path)", line, len(cols))
 		}
-		if !strings.HasPrefix(cols[0], "sha256/flac-frames-v1:") {
+		if !strings.HasPrefix(cols[0], "sha256/flac-frames-v2:") {
 			t.Errorf("first column %q is not an essence digest", cols[0])
 		}
 	}

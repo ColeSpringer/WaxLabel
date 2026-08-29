@@ -2,6 +2,7 @@ package waxlabel_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"testing"
@@ -233,5 +234,47 @@ func TestFLACCommentPictureOutOfRangeTypeMaterializes(t *testing.T) {
 	if len(rp) != 1 || !bytes.Equal(rp[0].Data, tinyPNG()) {
 		t.Errorf("materialized out-of-range cover: got %d pictures, data intact = %v (presence/identity, not byte-identity)",
 			len(rp), len(rp) == 1 && bytes.Equal(rp[0].Data, tinyPNG()))
+	}
+}
+
+// TestFLACCommentPictureSurvivesChainedEdits covers the write path that clones
+// the comment block verbatim (here a padding-only edit): the returned Document
+// must still know the cover lives in a picture comment, so a second, chained
+// tag edit materializes it instead of silently dropping it.
+func TestFLACCommentPictureSurvivesChainedEdits(t *testing.T) {
+	ctx := context.Background()
+	pic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}
+	src := flacWithCommentBlock([]vorbis.Comment{
+		{Name: vorbis.PictureComment, Value: commentPictureValue(pic)},
+		{Name: "TITLE", Value: "Old"},
+	})
+
+	plan1, err := mustParseBytes(t, src).Edit().Prepare(wl.WithPadding(wl.PaddingPolicy{Target: 256}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w1 writerTo
+	res, _, err := plan1.Execute(ctx, wl.WriteTo(&w1, wl.BytesSource(src)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mustParseBytes(t, w1.b).Pictures(); len(got) != 1 {
+		t.Fatalf("after padding-only edit: got %d pictures, want 1", len(got))
+	}
+
+	plan2, err := res.Edit().Set(tag.Title, "New").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w2 writerTo
+	if _, _, err := plan2.Execute(ctx, wl.WriteTo(&w2, wl.BytesSource(w1.b))); err != nil {
+		t.Fatal(err)
+	}
+	re := mustParseBytes(t, w2.b)
+	if got := re.Pictures(); len(got) != 1 || !bytes.Equal(got[0].Data, tinyPNG()) {
+		t.Fatalf("chained tag edit dropped or altered the comment cover: %d pictures", len(got))
+	}
+	if bytes.Contains(w2.b, []byte(vorbis.PictureComment)) {
+		t.Error("METADATA_BLOCK_PICTURE comment survived the chained tag edit; it must be materialized")
 	}
 }

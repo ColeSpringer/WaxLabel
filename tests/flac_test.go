@@ -378,8 +378,8 @@ func TestAudioEssenceStableAcrossTagEdit(t *testing.T) {
 	if !before.Equal(after) {
 		t.Errorf("essence changed across a tag-only edit:\n  before %s\n  after  %s", before, after)
 	}
-	if before.ExtentVersion != "flac-frames-v1" {
-		t.Errorf("ExtentVersion = %q, want flac-frames-v1", before.ExtentVersion)
+	if before.ExtentVersion != "flac-frames-v2" {
+		t.Errorf("ExtentVersion = %q, want flac-frames-v2", before.ExtentVersion)
 	}
 }
 
@@ -431,13 +431,13 @@ func tinyJPEG() []byte {
 	}
 }
 
-// TestFLACTruncationNotFlagged documents the deliberate non-detection: FLAC carries no
-// declared encoded-essence size, so a mid-stream cut is undetectable without
-// decoding and must never be flagged truncated. A valid FLAC - including a minimal,
-// effectively zero-bitrate one - must stay clean; a per-byte bitrate floor would
-// false-flag silent or low-bitrate lossless audio, which internal/flac/parse.go
-// explicitly declines to flag.
-func TestFLACTruncationNotFlagged(t *testing.T) {
+// TestFLACValidFilesNotFlaggedTruncated guards the frame-tail walk against
+// false positives: a valid FLAC - including a minimal, effectively
+// zero-bitrate one whose STREAMINFO declares no total - must stay clean.
+// Truncation is detected from the frames themselves (frameTailWarnings), never
+// from a per-byte bitrate floor, which would false-flag silent or low-bitrate
+// lossless audio.
+func TestFLACValidFilesNotFlaggedTruncated(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		data []byte
@@ -447,7 +447,7 @@ func TestFLACTruncationNotFlagged(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if doc := mustParseBytes(t, tc.data); hasWarning(doc, wl.WarnTruncatedAudio) {
-				t.Errorf("FLAC must never be flagged truncated; got %v", doc.Warnings())
+				t.Errorf("valid FLAC flagged truncated; got %v", doc.Warnings())
 			}
 		})
 	}

@@ -58,7 +58,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		newComments, rebuildInfo = rebuildComments(d.comments, edited.Tags, changed, edited.Chapters, chaptersChanged, edited.SyncedLyrics, syncedLyricsChanged)
 	}
 
-	newBlocks, ops := rebuildBlocks(d, newVendor, newComments, edited.Pictures, commentsChanged, vendorChanged, picturesChanged)
+	newBlocks, ops, commentsReRendered := rebuildBlocks(d, newVendor, newComments, edited.Pictures, commentsChanged, vendorChanged, picturesChanged)
 	if vendorChanged {
 		ops = append(ops, "vendor stamp neutralized")
 	}
@@ -109,12 +109,19 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	audioOutStart := newLeadingLen + 4 + int64(len(metaBytes))
 	segs = append(segs, bits.Copy(d.audioStart, audioLen))
 
+	// Trailing junk sits between the audio and any ID3v1 trailer and is copied
+	// verbatim, as its parse warning promises; it is not a legacy tag, so a
+	// legacy strip does not touch it.
+	if d.trailingJunk > 0 {
+		segs = append(segs, bits.Copy(d.audioEnd, d.trailingJunk))
+	}
+
 	newTrailingLen := int64(len(d.trailingID3v1))
 	if stripLegacy && len(d.trailingID3v1) > 0 {
 		report.Operations = append(report.Operations, "trailing ID3v1 strip")
 		newTrailingLen = 0
 	} else if len(d.trailingID3v1) > 0 {
-		segs = append(segs, bits.Copy(d.audioEnd, newTrailingLen))
+		segs = append(segs, bits.Copy(d.audioEnd+d.trailingJunk, newTrailingLen))
 		report.Operations = append(report.Operations, "trailing ID3v1 preservation")
 	}
 
@@ -127,7 +134,11 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// write proceeds rather than collapsing to a silent no-op.
 	report.Warnings = vorbis.RebuildWarnings(report.Warnings, rebuildInfo)
 
-	result := buildResult(edited, d, newVendor, finalBlocks, newComments, newLeadingLen, audioOutStart, audioLen, newTrailingLen, newSize, opts.Limits.MaxElements)
+	// When the comment block was cloned verbatim and pictures were not
+	// re-emitted, a comment-embedded cover still lives in that block, so the
+	// result doc must keep knowing about it for a later chained edit.
+	keepCommentPics := !commentsReRendered && !picturesChanged
+	result := buildResult(edited, d, newVendor, finalBlocks, newComments, newLeadingLen, audioOutStart, audioLen, newTrailingLen, newSize, opts.Limits.MaxElements, keepCommentPics)
 
 	// FLAC stores Vorbis values verbatim, so this downgrade only catches values the rebuild
 	// dropped, such as empty strings. A legacy strip or vendor neutralization remains a real
@@ -168,7 +179,11 @@ func checkBlockSizes(blocks []block) error {
 // tag OR chapter edit changed the Vorbis comment list (chapters are CHAPTERxxx comments).
 // vendorChanged forces the Vorbis comment block to be re-rendered with newVendor even when
 // the comment values themselves are unchanged.
-func rebuildBlocks(d *doc, newVendor string, newComments []comment, pictures []core.Picture, commentsChanged, vendorChanged, picturesChanged bool) ([]block, []string) {
+// The third return reports whether the comment block was re-rendered from
+// newComments (as opposed to cloned verbatim): the result builder keys the
+// comment-cover carry on it, since a re-render also materialized those covers
+// into native blocks.
+func rebuildBlocks(d *doc, newVendor string, newComments []comment, pictures []core.Picture, commentsChanged, vendorChanged, picturesChanged bool) ([]block, []string, bool) {
 	var out []block
 	var ops []string
 	vorbisHandled := false
@@ -274,7 +289,7 @@ func rebuildBlocks(d *doc, newVendor string, newComments []comment, pictures []c
 	if picturesChanged {
 		ops = append(ops, fmt.Sprintf("pictures: %d block(s)", len(pictures)))
 	}
-	return out, ops
+	return out, ops, commentBlockReRendered
 }
 
 // paddingBlocks returns PADDING blocks that together occupy exactly budget bytes (each
@@ -362,7 +377,7 @@ func serializeMetadata(blocks []block, d *doc, pol core.PaddingPolicy) (out []by
 // buildResult constructs the post-write Media so the engine can return a
 // Document without re-parsing (needed for the io.Writer destination).
 func buildResult(edited *core.Media, orig *doc, newVendor string, newBlocks []block, newComments []comment,
-	newLeadingLen, audioStart, audioLen, trailingLen, newSize int64, maxElements int) *core.Media {
+	newLeadingLen, audioStart, audioLen, trailingLen, newSize int64, maxElements int, keepCommentPics bool) *core.Media {
 
 	nd := &doc{
 		vendor:     newVendor,
@@ -371,6 +386,9 @@ func buildResult(edited *core.Media, orig *doc, newVendor string, newBlocks []bl
 		flacStart:  newLeadingLen,
 		audioStart: audioStart,
 		audioEnd:   audioStart + audioLen,
+		// Copied verbatim right after the audio, so a chained edit on this
+		// Document keeps preserving it and the extents match a fresh parse.
+		trailingJunk: orig.trailingJunk,
 		// The written output re-appended each undecodable PICTURE block (rebuildBlocks), so the
 		// result doc must carry them too - otherwise a chained picture edit on this returned
 		// Document (no re-parse) would drop every raw blkPicture and, finding this slice empty,
@@ -379,6 +397,12 @@ func buildResult(edited *core.Media, orig *doc, newVendor string, newBlocks []bl
 	}
 	if newLeadingLen > 0 {
 		nd.leadingID3 = slices.Clone(orig.leadingID3)
+	}
+	// Carry the comment-embedded covers only while they still live as a
+	// picture comment in a verbatim-cloned block; a re-render materialized
+	// them into native blocks, where a second carry would duplicate them.
+	if keepCommentPics {
+		nd.commentPictures = core.ClonePictures(orig.commentPictures)
 	}
 	if trailingLen > 0 {
 		nd.trailingID3v1 = slices.Clone(orig.trailingID3v1)

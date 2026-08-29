@@ -34,13 +34,20 @@ func FuzzParse(f *testing.F) {
 			f.Add(b)
 		}
 	}
-	f.Add([]byte("ID3\x03\x00\x00\x00\x00\x00\x7f"))                                                                          // ID3v2.3 header claiming 127 body bytes it lacks
-	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x10"), []byte("TIT2")...))                                               // truncated v2.4 frame
-	f.Add([]byte("\xff\xfb\x90\x00"))                                                                                         // bare MPEG-1 Layer 3 frame header, no body
-	f.Add([]byte("fLaC"))                                                                                                     // marker only, no blocks
-	f.Add([]byte("fLaC\x00\x00\x00\x22"))                                                                                     // STREAMINFO header, no body
-	f.Add([]byte("fLaC\x80\xff\xff\xff"))                                                                                     // last block, absurd length
-	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x0a"), []byte("fLaC")...))                                               // stray ID3 then truncated
+	f.Add([]byte("ID3\x03\x00\x00\x00\x00\x00\x7f"))                            // ID3v2.3 header claiming 127 body bytes it lacks
+	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x10"), []byte("TIT2")...)) // truncated v2.4 frame
+	f.Add([]byte("\xff\xfb\x90\x00"))                                           // bare MPEG-1 Layer 3 frame header, no body
+	f.Add([]byte("fLaC"))                                                       // marker only, no blocks
+	f.Add([]byte("fLaC\x00\x00\x00\x22"))                                       // STREAMINFO header, no body
+	f.Add([]byte("fLaC\x80\xff\xff\xff"))                                       // last block, absurd length
+	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x0a"), []byte("fLaC")...)) // stray ID3 then truncated
+	// A minimal STREAMINFO declaring 192 samples (fLaC marker, one last-block
+	// STREAMINFO, 44.1 kHz stereo 16-bit, 192-sample blocks) for the frame-tail
+	// walk: once with a complete one-frame stream plus junk, once with the
+	// frame's payload cut behind an intact header.
+	flacTail := "fLaC\x80\x00\x00\x22\x00\xc0\x00\xc0\x00\x00\x00\x00\x00\x00\x0a\xc4\x42\xf0\x00\x00\x00\xc0\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+	f.Add([]byte(flacTail + "\xff\xf8\x19\x18\x00\xed\x00\x12\x34\x00\x12\x34\x60\x78" + "junkjunk"))                         // valid frame, then trailing junk
+	f.Add([]byte(flacTail + "\xff\xf8\x19\x18\x00\xed\x00\x12"))                                                              // frame cut behind its header
 	f.Add([]byte("OggS\x00\x02"))                                                                                             // Ogg capture pattern, truncated header
 	f.Add([]byte("OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\xff"))         // page header claiming a 255-byte body it lacks
 	f.Add(synthOggFLAC(append([]byte{4}, vorbis.RenderCommentList("v", nil)...)))                                             // Ogg FLAC, comment block only

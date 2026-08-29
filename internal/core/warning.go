@@ -79,10 +79,12 @@ const (
 	WarnNoAudioFrames
 	// WarnTruncatedAudio means the container declares more audio than the file
 	// actually holds: a positive declared essence size whose end runs past the file
-	// (WAV data / AIFF SSND / MP4 mdat), or a VBR MP3 whose Xing/Info frame count
-	// implies far more audio than the bytes present. It is the "some-but-not-all"
-	// counterpart to WarnNoAudioFrames (zero essence); only the reliable per-format
-	// signals are emitted, so a clean file is never flagged.
+	// (WAV data / AIFF SSND / MP4 mdat), a VBR MP3 whose Xing/Info frame count
+	// implies far more audio than the bytes present, or a FLAC whose frames stop
+	// short of STREAMINFO's declared sample count (or whose final frame's tail
+	// bytes are missing). It is the
+	// "some-but-not-all" counterpart to WarnNoAudioFrames (zero essence); only the
+	// reliable per-format signals are emitted, so a clean file is never flagged.
 	WarnTruncatedAudio
 	// WarnChapterPastDuration means a chapter starts beyond the file's playable
 	// length - usually a mistyped timestamp. The editor raises it on the chapters an
@@ -302,8 +304,8 @@ const (
 	// allows, so the parsed model is a partial view. A codec that rebuilds its whole
 	// metadata region from that model must refuse to write rather than drop the rest.
 	WarnElementCap
-	// WarnTrailingBytes means the file carries bytes that belong to no chunk or page:
-	// appended junk, a truncated write, or a trailer a tool left behind. They are
+	// WarnTrailingBytes means the file carries bytes that belong to no chunk, page,
+	// or frame: appended junk, a truncated write, or a trailer a tool left behind. They are
 	// preserved verbatim across an edit, and a region after the container is kept
 	// outside the recomputed container size so a strict reader does not misparse it.
 	// Nothing is lost, but the file is not what its own structure declares, which is

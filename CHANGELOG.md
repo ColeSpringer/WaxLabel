@@ -24,6 +24,12 @@ All notable changes to this project are documented here.
   already did the second half.
 - `dump --native` shows the description a `COMM`, `USLT`, or `TXXX` frame carries, so a
   described frame is identifiable instead of a bare four-character id and a size.
+- FLAC truncation and trailing-junk detection, from a walk over the frame headers at the
+  end of the audio region: a stream stopping short of STREAMINFO's declared sample count
+  is flagged truncated, and bytes past the final frame's CRC-located end are flagged and
+  carved out of the audio extent (still copied verbatim on rewrites), so a junk-appended
+  rip dedup-matches its clean twin under `verify`. The extent name becomes
+  `flac-frames-v2`; persisted `flac-frames-v1` digests stay labeled v1.
 
 ### Fixed
 
@@ -169,8 +175,8 @@ All notable changes to this project are documented here.
   appended after an MP4's last atom read; `invalid-tag-key` on four more formats; and
   `non-conforming-icon`, for a file-icon picture that is not the 32x32 PNG ID3v2 requires.
   Mapping WAV `ISFT` to `ENCODER` also means a WAV whose `id3 ` chunk and `ISFT` disagree is
-  a new `conflicting-families` finding, which `lint --fix` resolves. FLAC reports no trailing
-  region: it cannot tell one from audio (see `docs/deferred-work.md`).
+  a new `conflicting-families` finding, which `lint --fix` resolves. FLAC gained its own
+  trailing-region detection later; see the frame-tail entry above.
 - **New refusals, where a write that could not happen used to exit 0 or name the wrong
   fault.** `copy` onto a read-only destination (WMA, a fragmented MP4) is exit 3 instead of
   a silent exit 0, and `~` in a canonical key is exit 2 instead of accepted; both are

@@ -61,6 +61,11 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 // name and the decoder-critical STREAMINFO configuration (sample rate, channel
 // count, bit depth, and block-size bounds) mixed into the hash ahead of the
 // audio frames, so identical packets under different config hash differently.
+// v2 excludes a trailing region the frame-tail walk located (v1 hashed those
+// bytes as audio); per AudioDigest's contract the refinement is a new name, so
+// a persisted v1 hash stays labeled v1 rather than silently disagreeing. The
+// walk's search is bounded by min(4 MiB, the parse alloc limit), so what v2
+// excludes is deterministic for a given file and configuration.
 func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 	t := m.Properties.First()
 	var b [16]byte
@@ -71,5 +76,5 @@ func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 	b[13] = byte(t.MinBlockSize)
 	b[14] = byte(t.MaxBlockSize >> 8)
 	b[15] = byte(t.MaxBlockSize)
-	return "flac-frames-v1", b[:]
+	return "flac-frames-v2", b[:]
 }

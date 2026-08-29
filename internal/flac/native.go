@@ -78,7 +78,11 @@ type doc struct {
 
 	flacStart  int64 // offset of "fLaC" (== len(leadingID3))
 	audioStart int64 // first audio byte (after last metadata block)
-	audioEnd   int64 // one past last audio byte (== size - len(trailingID3v1))
+	audioEnd   int64 // one past last audio byte (excludes trailingJunk and trailingID3v1)
+	// trailingJunk is the length of the region between the final frame's end and
+	// any ID3v1 trailer, located by frameTailWarnings: outside the audio extent,
+	// copied verbatim on a rewrite.
+	trailingJunk int64
 }
 
 func (d *doc) Format() core.Format { return core.FormatFLAC }
@@ -97,6 +101,7 @@ func (d *doc) Clone() core.NativeDoc {
 		flacStart:              d.flacStart,
 		audioStart:             d.audioStart,
 		audioEnd:               d.audioEnd,
+		trailingJunk:           d.trailingJunk,
 	}
 	c.blocks = make([]block, len(d.blocks))
 	for i, b := range d.blocks {
@@ -136,6 +141,9 @@ func (d *doc) Describe() []core.NativeEntry {
 			e.Note = "embedded picture"
 		}
 		out = append(out, e)
+	}
+	if d.trailingJunk > 0 {
+		out = append(out, core.NativeEntry{Kind: "trailing bytes", Size: int(d.trailingJunk), Note: "preserved"})
 	}
 	if len(d.trailingID3v1) > 0 {
 		out = append(out, core.NativeEntry{Kind: "ID3v1 (trailing)", Size: len(d.trailingID3v1), Note: "preserved"})
