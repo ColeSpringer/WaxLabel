@@ -51,6 +51,10 @@ func (d *doc) Clone() core.NativeDoc {
 	return &c
 }
 
+// PaddingBytes reports the free padding inside the front ID3v2 region, the slack a tag
+// rewrite grows into before the audio has to move. It is 0 for a file with no front tag.
+func (d *doc) PaddingBytes() int64 { return id3.FrontTagPadding(d.id3) }
+
 // Describe summarizes the native structure for the dump/native views.
 func (d *doc) Describe() []core.NativeEntry {
 	var out []core.NativeEntry

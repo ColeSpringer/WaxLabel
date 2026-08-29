@@ -422,3 +422,73 @@ func TestDecodeTextLatin1Fallback(t *testing.T) {
 func tinyPNGBytes() []byte {
 	return []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00")
 }
+
+// TestRebuildEmptyValueRoundTrips: an APEv2 item may hold a zero-length value, so a
+// present [""] - what `set KEY=` produces - writes an empty item instead of removing the
+// key, and reads back as one empty value. A zero-length value *slice* is still how a clear
+// removes the item.
+//
+// This is the write half of the round trip that Project and Pairs complete; it runs here,
+// on the shared APEv2 writer, because that writer is the one store WavPack, Monkey's Audio
+// and Musepack share, and Musepack has no fixture of its own.
+func TestRebuildEmptyValueRoundTrips(t *testing.T) {
+	orig := []Item{{Key: "Title", Value: "Old"}}
+	base := tag.NewTagSet()
+	base.Add(tag.Title, "Old")
+
+	edited := tag.NewTagSet()
+	edited.Add(tag.Title, "")
+	tg := parseRendered(t, Rebuild(orig, base, edited, nil, false))
+	if len(tg.Items) != 1 || tg.Items[0].Value != "" {
+		t.Fatalf("items = %+v, want one empty-valued Title", tg.Items)
+	}
+	if vals, ok := Project(tg).Tags.Get(tag.Title); !ok || len(vals) != 1 || vals[0] != "" {
+		t.Errorf("projected TITLE = %q ok=%v, want one empty value", vals, ok)
+	}
+
+	cleared := tag.NewTagSet()
+	if got := Rebuild(orig, base, cleared, nil, false); len(got) != 0 {
+		t.Errorf("a cleared key should emit no item, got %+v", got)
+	}
+}
+
+// TestRebuildDropsEmptyWithinMultiValue: the NUL join cannot express an empty run, so an
+// empty value inside a multi-value set is dropped on write. Without this the writer emits
+// an item its own reader discards - bytes on disk that no dump, diff, or copy can see -
+// which is exactly the report-equals-write gap the transfer contract exists to prevent.
+func TestRebuildDropsEmptyWithinMultiValue(t *testing.T) {
+	base := tag.NewTagSet()
+	for _, c := range []struct {
+		name string
+		vals []string
+		want string // "" means: no item at all
+	}{
+		{"all empty", []string{"", ""}, ""},
+		{"one empty", []string{"A", ""}, "A"},
+		{"leading empty", []string{"", "B"}, "B"},
+		{"both present", []string{"A", "B"}, "A\x00B"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			edited := tag.NewTagSet()
+			for _, v := range c.vals {
+				edited.Add(tag.Artist, v)
+			}
+			got := Rebuild(nil, base, edited, nil, false)
+			if c.want == "" {
+				if len(got) != 0 {
+					t.Fatalf("items = %+v, want none: every value was empty", got)
+				}
+				return
+			}
+			if len(got) != 1 || got[0].Value != c.want {
+				t.Fatalf("items = %+v, want one item valued %q", got, c.want)
+			}
+			// The written item must read back as the value set that produced it.
+			tg := parseRendered(t, got)
+			vals, _ := Project(tg).Tags.Get(tag.Artist)
+			if want := splitItemValues(c.want); !slices.Equal(vals, want) {
+				t.Errorf("read back %q, want %q", vals, want)
+			}
+		})
+	}
+}

@@ -25,6 +25,12 @@ import (
 // the title (CHAPTERxxxNAME) comments.
 const chapterNamePrefix = "CHAPTER"
 
+// MaxChapters is the most chapters the CHAPTERxxx convention can hold inside its 3-digit
+// namespace: a 1000-entry list numbers CHAPTER000..CHAPTER999, and one more would need a
+// 4-digit key that no other reader recognizes. Formats backed by VorbisComment enforce it
+// through Capabilities.Chapters.MaxItems.
+const MaxChapters = 1000
+
 // maxChapterSec is the largest whole-second chapter offset parseChapterTime accepts
 // (1,000,000 hours). Anything past it is treated as malformed on read, so the writer
 // clamps to it: an over-range edited chapter is stored at the ceiling (and warned) rather
@@ -121,14 +127,15 @@ func ProjectChapters(comments []Comment) []core.Chapter {
 // ffprobe parse the CHAPTERxxx convention with a fixed 3-digit key (CHAPTER%03d), so a 4-digit
 // key is unreadable there: at exactly 1000 chapters a 1-based CHAPTER1000 would be 4 digits, and
 // numbering from 0 keeps the whole run 3-digit (CHAPTER000..CHAPTER999) so ffmpeg reads all 1000.
-// Below 1000 the common 1-based CHAPTER001 form is unchanged. Past 1000 no 3-digit scheme fits, so
-// the tail (index >= 1000) is 4-digit and best-effort for ffmpeg; WaxLabel's own reader accepts any
-// digit count and round-trips every chapter regardless.
+// Below 1000 the common 1-based CHAPTER001 form is unchanged. Past MaxChapters no 3-digit scheme
+// fits; the editor refuses such a list before it reaches here, so the 4-digit tail this loop would
+// emit is defensive only. WaxLabel's own reader accepts any digit count and round-trips every
+// chapter regardless, which is how a file that already holds one stays readable.
 func chapterComments(chs []core.Chapter) ([]Comment, bool) {
 	out := make([]Comment, 0, len(chs))
 	overflow := false
 	base := 1
-	if len(chs) >= 1000 {
+	if len(chs) >= MaxChapters {
 		base = 0
 	}
 	for i, ch := range chs {

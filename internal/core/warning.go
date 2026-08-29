@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/colespringer/waxlabel/tag"
 )
@@ -83,14 +84,15 @@ const (
 	// counterpart to WarnNoAudioFrames (zero essence); only the reliable per-format
 	// signals are emitted, so a clean file is never flagged.
 	WarnTruncatedAudio
-	// WarnChapterPastDuration means an edited chapter starts beyond the file's
-	// playable length - usually a mistyped timestamp. It is an edit-time sanity
-	// warning on the user's chapter input (gated on a known, non-zero duration), not
-	// a lint of pre-existing on-disk chapters; the chapter is still written.
+	// WarnChapterPastDuration means a chapter starts beyond the file's playable
+	// length - usually a mistyped timestamp. The editor raises it on the chapters an
+	// edit introduces (gated on a known, non-zero duration) and still writes them; lint
+	// raises the same code on the chapters a file already holds.
 	WarnChapterPastDuration
-	// WarnDuplicateChapter means an edited chapter list has two chapters sharing a
-	// start time - navigation will land on only one. An edit-time sanity warning;
-	// the chapters are still written faithfully.
+	// WarnDuplicateChapter means a chapter list has two chapters sharing a start time -
+	// navigation will land on only one. As with WarnChapterPastDuration the editor
+	// raises it on an edit's own chapters, writing them faithfully, and lint raises it
+	// on what is already on disk.
 	WarnDuplicateChapter
 	// WarnSingleValuedMulti means an edit leaves a known single-valued key holding
 	// more than one value. The writer stores them faithfully, but a reader using the
@@ -525,6 +527,59 @@ func WarnTruncated(ws []Warning, subject string) []Warning {
 // pattern.
 func ConflictingFamiliesMessage() string {
 	return "multiple source fields supplied conflicting values"
+}
+
+// ChapterPastDurationMessage is the shared wording for the chapter-past-duration
+// condition. The editor raises it on the chapters an edit introduces and the linter
+// raises it on the chapters a file already holds; sharing the wording here is what keeps
+// the two readings identical, as with [ConflictingFamiliesMessage].
+func ChapterPastDurationMessage(start, duration time.Duration) string {
+	return fmt.Sprintf("chapter at %s starts past the file duration (%s); check the timestamp",
+		FormatChapterTime(start), FormatChapterTime(duration))
+}
+
+// DuplicateChapterMessage is the shared wording for the duplicate-chapter condition,
+// shared between the editor and the linter for the same reason as
+// [ChapterPastDurationMessage].
+func DuplicateChapterMessage(start time.Duration) string {
+	return fmt.Sprintf("two or more chapters share the start %s", FormatChapterTime(start))
+}
+
+// ChaptersPastDuration returns the chapters starting beyond the file's playable length, in
+// list order. A zero or unknown duration returns none: a truncated or header-only file
+// reports 0 (and already warns no-audio), which would otherwise flag every chapter as
+// beyond 0:00.
+//
+// The rule lives here because three callers ask it - the editor for the chapters an edit
+// introduces, the editor again for a faithful transfer's carried set, and the linter for
+// what is already on disk - and they differ only in which chapters they pass in, never in
+// what counts as past the end.
+func ChaptersPastDuration(chapters []Chapter, duration time.Duration) []Chapter {
+	if duration <= 0 {
+		return nil
+	}
+	var out []Chapter
+	for _, c := range chapters {
+		if c.Start > duration {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// DuplicateChapterStarts returns each start time shared by two or more chapters, in
+// first-seen order, so one collision is reported once however many chapters share it. The
+// list order is not assumed to be sorted: a codec's projection is not the editor's sorted
+// set. Shared by the editor and the linter for the same reason as [ChaptersPastDuration].
+func DuplicateChapterStarts(chapters []Chapter) []time.Duration {
+	counts := make(map[time.Duration]int, len(chapters))
+	var out []time.Duration
+	for _, c := range chapters {
+		if counts[c.Start]++; counts[c.Start] == 2 {
+			out = append(out, c.Start)
+		}
+	}
+	return out
 }
 
 // CloneWarnings deep-copies a warning slice, detaching each Warning.Keys so a

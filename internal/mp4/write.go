@@ -367,10 +367,10 @@ func planLayout(d *doc, newIlst []byte, opts core.WriteOptions) (layout, error) 
 			// Exact fit: just the ilst, no padding - but only when no floor is requested
 			// (a zero-leftover region cannot satisfy a positive floor).
 			lay.regionBytes = newIlst
-		case leftover >= 8 && leftover-8 >= floor:
+		case leftover >= freeAtomHeaderLen && leftover-freeAtomHeaderLen >= floor:
 			// Fits with room for a free atom whose padding still meets the floor: reuse
 			// the region in place (delta 0).
-			lay.regionBytes, lay.freeOff, lay.freeLen, lay.freeContent = appendFree(newIlst, leftover-8)
+			lay.regionBytes, lay.freeOff, lay.freeLen, lay.freeContent = appendFree(newIlst, leftover-freeAtomHeaderLen)
 		default:
 			// Does not fit, leaves a 1-7 byte remainder a free atom cannot represent, or
 			// the leftover would fall below the floor: grow with fresh padding (ClampTarget

@@ -78,7 +78,7 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringArrayVar(&e.removePicture, "remove-picture", nil, "remove pictures by role name or 1-based dump index, e.g. back-cover or 2 (repeatable; removals apply before adds)")
 	f.BoolVar(&e.rmPics, "remove-pictures", false, "remove all embedded pictures")
 	f.BoolVar(&e.force, "force", false, "embed --add-cover/--add-picture input even if it is not a recognized image (PNG/JPEG/GIF/WebP/BMP/TIFF); unrecognized bytes are stored as application/octet-stream. The check is header-only, not a full image decode")
-	f.StringArrayVar(&e.addChapter, "add-chapter", nil, "add a chapter TIMESTAMP=Title (e.g. 1:30=Verse; repeatable); formats with chapter-count caps reject over-limit lists (255 for ID3 and MP4). CLI-created chapters have no end time, so replacing a Matroska list that had explicit ends (--clear-chapters plus this flag) drops them; a plain --add-chapter keeps existing chapters, and their ends where the format stores them (FLAC/Ogg CHAPTERxxx store none), except that a start-only insert overlapping an existing chapter truncates that chapter's end to the new start (reported as [chapter-overlap-reconciled])")
+	f.StringArrayVar(&e.addChapter, "add-chapter", nil, "add a chapter TIMESTAMP=Title (e.g. 1:30=Verse; repeatable); formats with chapter-count caps reject over-limit lists (255 for ID3 and MP4, 1000 for FLAC/Ogg). CLI-created chapters have no end time, so replacing a Matroska list that had explicit ends (--clear-chapters plus this flag) drops them; a plain --add-chapter keeps existing chapters, and their ends where the format stores them (FLAC/Ogg CHAPTERxxx store none), except that a start-only insert overlapping an existing chapter truncates that chapter's end to the new start (reported as [chapter-overlap-reconciled])")
 	f.BoolVar(&e.clearChapters, "clear-chapters", false, "remove all chapters (applied before --add-chapter, so combining them keeps only the added chapters)")
 	f.StringVar(&e.syncedLyricsFile, "synced-lyrics-file", "", "set synced lyrics from an LRC file, replacing any existing synced lyrics (MP3/AAC/AIFF/WAV keep the language; FLAC/Ogg drop it)")
 	f.StringArrayVar(&e.addSyncedLyric, "add-synced-lyric", nil, "add synced lyric line TIMESTAMP=Text (e.g. 1:30=Verse; repeatable); combined lines replace any existing synced lyrics")
@@ -839,9 +839,11 @@ func notifyUnknownKeys(errOut io.Writer, ce *compiledEdit, strict, asJSON bool) 
 	note, err := guardrailKeys(ce.unknownKeys, strict, asJSON, func(ks []tag.Key) error {
 		return usagef("unknown key(s) not in the canonical vocabulary: %s (omit --strict to write them as custom fields)", keyList(ks))
 	})
+	notes := &cappedNotes{w: errOut, noun: "unknown key(s)"}
 	for _, k := range note {
-		fmt.Fprintf(errOut, "note: %s is not a known key; treated as a custom field where the format permits%s\n", k, didYouMean(k))
+		notes.printf("note: %s is not a known key; treated as a custom field where the format permits%s\n", k, didYouMean(k))
 	}
+	notes.done()
 	// One trailing hint after the per-key lines (not per key, so five unknown keys do
 	// not repeat it five times) points at the discovery command for the canonical
 	// vocabulary. Only when at least one key was actually noted.
@@ -872,8 +874,10 @@ func notifyClearKeys(errOut io.Writer, ce *compiledEdit, asJSON bool) {
 	if asJSON {
 		return
 	}
+	notes := &cappedNotes{w: errOut, noun: "unknown key(s)"}
+	defer notes.done()
 	for _, k := range ce.clearKeys {
-		fmt.Fprintf(errOut, "note: %s is not a known key (clearing affects only a custom field of that exact name)%s\n", k, didYouMean(k))
+		notes.printf("note: %s is not a known key (clearing affects only a custom field of that exact name)%s\n", k, didYouMean(k))
 	}
 }
 
@@ -888,17 +892,32 @@ func notifyValueNotes(errOut io.Writer, e *editFlags, asJSON bool) {
 	if asJSON {
 		return
 	}
-	// Track each resolved key's most recent spelling and trimmed value so two differently-
-	// spelled --set assignments that alias to the same field (e.g. DATE and RECORDINGDATE) with
-	// conflicting values surface a note - last-write-wins silently discards one.
-	type seenSet struct{ spelling, value string }
-	seen := map[tag.Key]seenSet{}
-	for _, kv := range e.set {
+	notes := &cappedNotes{w: errOut, noun: "note(s)"}
+	defer notes.done()
+
+	// Track each resolved key's spellings and its running value, so two --set assignments
+	// that land on the same field surface a note: last-write-wins silently discards one,
+	// whether the user wrote one spelling twice or two aliases (DATE and RECORDINGDATE).
+	// The note is emitted at the key's last assignment rather than at each collision, so
+	// the value it names is the value that actually survived.
+	type seenSet struct {
+		first, other string // the first spelling, and the first differing one (if any)
+		value        string
+		collided     bool
+	}
+	seen := map[tag.Key]*seenSet{}
+	lastAt := map[tag.Key]int{}
+	for i, kv := range e.set {
+		if k, _, err := splitAssign(kv); err == nil {
+			lastAt[k] = i
+		}
+	}
+	for i, kv := range e.set {
 		k, v, err := splitAssign(kv)
 		if err != nil {
 			continue // a malformed assignment is already reported by patch()
 		}
-		// Match the writer's numeric trim so the advisory - and the alias-collision check below -
+		// Match the writer's numeric trim so the advisory - and the collision check below -
 		// compare the stored form. A padded number is checked trimmed, and whitespace-only input
 		// uses the empty-value note below instead of a misleading malformed-value note.
 		v = tag.TrimTokenValue(k, v)
@@ -906,27 +925,47 @@ func notifyValueNotes(errOut io.Writer, e *editFlags, asJSON bool) {
 		// between two aliased spellings is not flagged as a false conflict; run before the
 		// empty-value continue below, so "--set DATE= --set RECORDINGDATE=2021" is still caught.
 		spelling := strings.TrimSpace(kv[:strings.IndexByte(kv, '=')])
-		if prev, ok := seen[k]; ok && !strings.EqualFold(prev.spelling, spelling) && prev.value != v {
-			fmt.Fprintf(errOut, "note: --set %s and --set %s refer to the same field (%s); last value %q was used\n",
-				tag.SanitizeLine(prev.spelling), tag.SanitizeLine(spelling), tag.SanitizeLine(string(k)), tag.SanitizeLine(v))
+		prev, ok := seen[k]
+		if !ok {
+			prev = &seenSet{first: spelling}
+			seen[k] = prev
+		} else {
+			if prev.value != v {
+				prev.collided = true // a value was discarded, so it is worth a note
+			}
+			if prev.other == "" && !strings.EqualFold(prev.first, spelling) {
+				prev.other = spelling
+			}
 		}
-		seen[k] = seenSet{spelling: spelling, value: v}
+		prev.value = v
+		if prev.collided && i == lastAt[k] {
+			// Two spellings need the field they share spelled out; one spelling twice reads
+			// as a plain mistake and does not.
+			if prev.other == "" {
+				notes.printf("note: --set %s was given more than once; last value %q was used\n",
+					tag.SanitizeLine(prev.first), tag.SanitizeLine(v))
+			} else {
+				notes.printf("note: --set %s and --set %s refer to the same field (%s); last value %q was used\n",
+					tag.SanitizeLine(prev.first), tag.SanitizeLine(prev.other),
+					tag.SanitizeLine(string(k)), tag.SanitizeLine(v))
+			}
+		}
 		if v == "" {
 			// A present-but-empty --set value, distinct from --clear (which removes the
 			// key). No file has been inspected yet, so the note cannot promise a specific
 			// format outcome: some formats store the empty value and some drop an empty
 			// field. The typed check skips empties, so a bare KEY= never double-notes.
-			fmt.Fprintf(errOut, "note: %s= writes an empty value (some formats may drop an empty field rather than store it); use --clear %s to remove it\n", k, k)
+			notes.printf("note: %s= writes an empty value (some formats may drop an empty field rather than store it); use --clear %s to remove it\n", k, k)
 			continue
 		}
-		noteMalformedValue(errOut, k, v)
+		noteMalformedValue(notes, k, v)
 	}
 	for _, kv := range e.add {
 		// An empty --add value is not the same as an empty --set value: --clear is a
 		// replacement operation, not an append. Numeric trimming still mirrors the writer.
 		if k, v, err := splitAssign(kv); err == nil {
 			if v = tag.TrimTokenValue(k, v); v != "" {
-				noteMalformedValue(errOut, k, v)
+				noteMalformedValue(notes, k, v)
 			}
 		}
 	}
@@ -946,10 +985,11 @@ func notifyValueNotes(errOut io.Writer, e *editFlags, asJSON bool) {
 // are the user's own --set input, but a control byte must not reach the terminal raw
 // and an embedded newline must not forge a line. (SanitizeLine, not SanitizeText, to
 // match the single-line convention.)
-func noteMalformedValue(errOut io.Writer, k tag.Key, v string) {
+func noteMalformedValue(notes *cappedNotes, k tag.Key, v string) {
 	ks, vs := tag.SanitizeLine(string(k)), tag.SanitizeLine(v)
 	if val, ok := tag.ValidatorFor(k); ok && !val.Valid(k, v) {
-		fmt.Fprintf(errOut, "note: %s=%s %s; kept as text where the format supports it\n", ks, vs, val.NoteDetail)
+		_, detail := val.Details(k, v)
+		notes.printf("note: %s=%s %s; kept as text where the format supports it\n", ks, vs, detail)
 		return
 	}
 	// A numeric value that parses but is negative round-trips faithfully, so it is not
@@ -957,9 +997,9 @@ func noteMalformedValue(errOut io.Writer, k tag.Key, v string) {
 	// unusual. A "/total" value with an empty number side is valid too, but easy to type by
 	// accident; use else-if so "/-5" reports only the negative note.
 	if tag.IsNumericKey(k) && tag.NegativeNumericValue(k, v) {
-		fmt.Fprintf(errOut, "note: %s=%s is negative (numbering is normally non-negative); some formats cannot store a negative number and will drop it\n", ks, vs)
+		notes.printf("note: %s=%s is negative (numbering is normally non-negative); some formats cannot store a negative number and will drop it\n", ks, vs)
 	} else if tag.EmptyNumberWithTotal(k, v) {
-		fmt.Fprintf(errOut, "note: %s=%s has no number component; the number is left unset\n", ks, vs)
+		notes.printf("note: %s=%s has no number component; the number is left unset\n", ks, vs)
 	}
 }
 
@@ -1136,7 +1176,47 @@ func (n *paddingNoter) note(caps wl.Capabilities) {
 	fmt.Fprintf(n.errOut, "note: padding control does not apply to %s; --padding/--no-padding has no effect\n", caps.Format)
 }
 
+// noteListCap is the most items any one advisory spells out - as per-item note lines, or
+// inside a one-line list - before it counts the rest instead. Ten is enough to show the
+// pattern; past that the listing buries the plan output it is meant to annotate, and a
+// --set of thousands of keys would emit thousands of stderr lines. It is the same
+// aggregation the unknown-key hint already does for its trailing pointer.
+const noteListCap = 10
+
+// cappedNotes writes at most noteListCap advisory lines and counts the rest, so a bulk
+// edit's notes annotate the run instead of burying it. done emits the single aggregate
+// line, in the shape of noteSkipped; noun names what was held back. Every caller must
+// call done, and a caller that wrote nothing prints nothing.
+type cappedNotes struct {
+	w     io.Writer
+	noun  string
+	shown int
+	held  int
+}
+
+func (c *cappedNotes) printf(format string, a ...any) {
+	if c.shown >= noteListCap {
+		c.held++
+		return
+	}
+	c.shown++
+	fmt.Fprintf(c.w, format, a...)
+}
+
+func (c *cappedNotes) done() {
+	if c.held > 0 {
+		fmt.Fprintf(c.w, "note: %d more %s not listed\n", c.held, c.noun)
+	}
+}
+
 // keyList renders keys as a comma-separated string for a one-line message.
+//
+// Deliberately uncapped, unlike the per-key note lines. Its callers are failure reports -
+// the --strict unknown-key usage error and a strict-escalated warning's key list - and a
+// strict run writes nothing, so this string is the user's only account of what needs
+// fixing. It also reaches --json as the error envelope's message, where a truncated list
+// would let a batch script recover ten keys per run. One long line is the lesser cost:
+// what noteListCap exists to prevent is thousands of *lines*.
 func keyList(keys []tag.Key) string {
 	s := make([]string, len(keys))
 	for i, k := range keys {

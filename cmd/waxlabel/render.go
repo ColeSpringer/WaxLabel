@@ -54,8 +54,8 @@ func renderDocument(w io.Writer, path string, doc *wl.Document, native bool) {
 	if line := audioLine(doc.Properties()); line != "" {
 		fmt.Fprintf(w, "  audio:   %s\n", line)
 	}
-	// Free padding reserved after the metadata (FLAC PADDING block today). Shown only when the
-	// format models it, so a non-FLAC file's line stays absent rather than reporting 0.
+	// Free padding around the metadata. Shown only when the format reserves one, so a file
+	// with no padding region stays silent rather than reporting 0.
 	if pad := doc.Padding(); pad > 0 {
 		fmt.Fprintf(w, "  padding: %s\n", wl.HumanBytes(pad))
 	}
@@ -605,8 +605,9 @@ func renderReport(w io.Writer, path string, plan *wl.Plan, addedPics []wl.Pictur
 		fmt.Fprintf(w, "  padding: %s  (--padding N / --no-padding to change)\n", wl.HumanBytes(r.PaddingAfter))
 	} else if wl.CapabilitiesFor(r.Format).Padding != wl.AccessNone {
 		// Positive confirmation that no padding will be written - but only for a format
-		// that has a padding concept. On Ogg/WAV/AIFF/Matroska PaddingAfter is always 0,
-		// and a "padding: none" line there would contradict the "padding control does not
+		// that has a padding concept. WAV/AIFF/Matroska report 0 and Ogg reports only the
+		// comment padding it round-trips, none of which the user can control, so a
+		// "padding: none" line there would contradict the "padding control does not
 		// apply to %s" note those formats emit.
 		fmt.Fprintln(w, "  padding: none")
 	}

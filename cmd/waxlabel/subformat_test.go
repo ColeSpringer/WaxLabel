@@ -11,12 +11,14 @@ import (
 // Matroska and AIFC from AIFF. Plain formats report the same value for both fields.
 func TestSubformatJSON(t *testing.T) {
 	sampleAIFC := filepath.Join("..", "..", "testdata", "sample.aifc")
+	sampleRF64 := filepath.Join("..", "..", "testdata", "sample-rf64.wav")
 
 	cases := []struct {
 		name, path, wantFormat, wantSub string
 	}{
 		{"webm", sampleWebMF, "Matroska", "WebM"},
 		{"aifc", sampleAIFC, "AIFF", "AIFC"},
+		{"rf64", sampleRF64, "WAV", "RF64"},
 		{"flac", sampleFLAC, "FLAC", "FLAC"}, // plain: subformat == format
 	}
 	for _, c := range cases {

@@ -125,10 +125,15 @@ func TestDuplicateIconLintFixRemediatesEncoderStamp(t *testing.T) {
 
 func TestDuplicateIconDirectPictureEditStillRefused(t *testing.T) {
 	// Control: authoring a second icon is still caught (picsTouched=true -> validatePictures runs).
+	// It is a refused write, not corrupt input, so the sentinel is ErrUnsupportedTag: the file
+	// itself parsed fine and only this edit is impossible.
 	data := flacWithCommentBlock(nil, pngIcon()) // one icon to start
 	_, err := mustParseBytes(t, data).Edit().AddPicture(pngIcon()).Prepare()
-	if !errors.Is(err, waxerr.ErrInvalidData) {
+	if !errors.Is(err, waxerr.ErrUnsupportedTag) {
 		t.Fatalf("adding a second type-1 icon should be refused, got %v", err)
+	}
+	if errors.Is(err, waxerr.ErrInvalidData) {
+		t.Errorf("a refused icon write must not be reported as corrupt data: %v", err)
 	}
 }
 

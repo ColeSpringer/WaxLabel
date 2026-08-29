@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/tag"
@@ -59,9 +60,10 @@ func (f Finding) String() string {
 
 // Lint inspects a document for issues a tagger would want to surface or fix:
 // stale legacy containers, inherited encoder noise, conflicting family values,
-// duplicate or invalid pictures, malformed dates and numbers, single-valued keys
-// carrying several values, and custom (non-vocabulary) keys. It reads only the
-// parsed document (no I/O) and never modifies it.
+// duplicate or invalid pictures, chapters that collide or start past the audio,
+// malformed dates and numbers, single-valued keys carrying several values, and
+// custom (non-vocabulary) keys. It reads only the parsed document (no I/O) and
+// never modifies it.
 func (d *Document) Lint() []Finding {
 	if d.zero() {
 		return nil
@@ -77,6 +79,7 @@ func (d *Document) Lint() []Finding {
 	// unrecognized-MIME and format checks then see what a reader would. media.Pictures stays stored
 	// for the write path; the projection is a read-only view.
 	out = append(out, lintPictures(core.ProjectPictures(d.media.Pictures))...)
+	out = append(out, lintChapters(d.media.Chapters, d.media.Properties.Duration())...)
 	out = append(out, lintValues(d.media.Tags)...)
 	out = append(out, lintNegativeNumbers(d.media.Tags)...)
 	out = append(out, lintCardinality(d.media.Tags)...)
@@ -98,7 +101,7 @@ func lintWarnings(ws []core.Warning) []Finding {
 		switch w.Code {
 		case core.WarnStrayLeadingID3, core.WarnTrailingID3v1, core.WarnLegacyAPE,
 			core.WarnInheritedEncoder, core.WarnInvalidPicture, core.WarnTruncatedAudio,
-			core.WarnInvalidTagKey:
+			core.WarnInvalidTagKey, core.WarnChainedStream:
 			out = append(out, Finding{LintWarning, w.Code.String(), w.Message, ""})
 		case core.WarnMultipleVorbisComment, core.WarnDuplicateTagBlock, core.WarnNoAudioFrames:
 			out = append(out, Finding{LintError, w.Code.String(), w.Message, ""})
@@ -108,6 +111,30 @@ func lintWarnings(ws []core.Warning) []Finding {
 			// dump and lint both report it) but it does not flip the clean exit.
 			out = append(out, Finding{LintInfo, w.Code.String(), w.Message, ""})
 		}
+	}
+	return out
+}
+
+// lintChapters reports the two chapter defects a tagger acts on, whoever wrote them:
+// two chapters sharing a start (navigation lands on only one) and a chapter starting
+// past the file's playable length (usually a mistyped timestamp). The editor raises the
+// same pair on the chapters an edit introduces; this is the answer for a file WaxLabel
+// did not write, which is what set --help points at when it says to lint the saved file.
+//
+// Both rules come from [core.ChaptersPastDuration] and [core.DuplicateChapterStarts],
+// which the editor calls too, so the file view and the edit view cannot come to differ on
+// what a defect is - only on which chapters they ask about. The unknown-duration gate
+// (a truncated or header-only file reports 0, which would otherwise flag every chapter as
+// beyond 0:00) lives in that shared rule rather than being restated here.
+func lintChapters(chapters []core.Chapter, duration time.Duration) []Finding {
+	var out []Finding
+	for _, c := range core.ChaptersPastDuration(chapters, duration) {
+		out = append(out, Finding{LintWarning, core.WarnChapterPastDuration.String(),
+			core.ChapterPastDurationMessage(c.Start, duration), ""})
+	}
+	for _, start := range core.DuplicateChapterStarts(chapters) {
+		out = append(out, Finding{LintWarning, core.WarnDuplicateChapter.String(),
+			core.DuplicateChapterMessage(start), ""})
 	}
 	return out
 }
@@ -282,8 +309,9 @@ func lintValues(ts tag.TagSet) []Finding {
 			// early-returns for a non-trimmable key, so those validators see the value unchanged.
 			v = tag.TrimTokenValue(k, v)
 			if v != "" && !val.Valid(k, v) {
+				detail, _ := val.Details(k, v)
 				out = append(out, Finding{LintWarning, val.LintCode,
-					fmt.Sprintf("%q %s", v, val.LintDetail), k})
+					fmt.Sprintf("%q %s", v, detail), k})
 			}
 		}
 	}

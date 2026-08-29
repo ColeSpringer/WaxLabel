@@ -115,6 +115,17 @@ type doc struct {
 // live in the ds64 chunk rather than the 32-bit chunk headers.
 func (d *doc) isRF64() bool { return d.ds64 != nil }
 
+// containerName is the subformat label reported in Properties.Container: "WAV" for a
+// plain RIFF container, and the header id itself ("RF64" or "BW64") for the 64-bit
+// extension, so a caller can tell the forms apart. It mirrors AIFF, which reports its
+// FORM type (AIFF vs AIFC) the same way.
+func (d *doc) containerName() string {
+	if id := d.headerID(); id != "RIFF" {
+		return id
+	}
+	return "WAV"
+}
+
 func (d *doc) Format() core.Format { return core.FormatWAV }
 
 // Clone deep-copies the document so Document accessors stay detached.

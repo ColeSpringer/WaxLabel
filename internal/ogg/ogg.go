@@ -88,6 +88,7 @@ func (c Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabili
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "VorbisComment CHAPTERxxx",
 		Fidelity:       "start and title stored",
+		MaxItems:       vorbis.MaxChapters, // CHAPTERxxx is a 3-digit namespace
 		Constraints:    []string{"CHAPTERxxx stores start and title only (no end time, language, or flags)"},
 		ChapterLoss:    core.ChapterLossStartTitleOnly,
 	}

@@ -119,6 +119,19 @@ type NativeDoc interface {
 	Describe() []NativeEntry
 }
 
+// PaddingReporter is the optional interface a NativeDoc satisfies when its format
+// reserves a free region a metadata rewrite can grow into. It reports the same number
+// the codec's own write path puts in [WriteReport.PaddingAfter] for an untouched file,
+// so the read accessor and a plan agree. A doc that does not implement it has no padding
+// region to report.
+//
+// This is an interface rather than a field on NativeEntry because padding is not always
+// a describable block: ID3 padding lives inside the tag's declared size, so there is no
+// entry to hang it on.
+type PaddingReporter interface {
+	PaddingBytes() int64
+}
+
 // Media is the neutral parsed representation a codec produces and the engine
 // wraps in a Document. It carries both the canonical projection (Tags,
 // Pictures, Properties) and the native base (Native) needed for

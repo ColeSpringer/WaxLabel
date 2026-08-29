@@ -25,9 +25,9 @@ var errLintFindings = errors.New("issues found")
 var errLintErrorFindings = fmt.Errorf("%w: lint found an invalid or contradictory state", waxerr.ErrInvalidData)
 
 // newLintCmd builds the "lint" command, which reports metadata issues (stale
-// legacy tags, encoder noise, conflicting families, bad pictures, malformed
-// dates, missing audio) and, with --fix, applies the safe non-destructive
-// remediations and saves.
+// legacy tags, encoder noise, conflicting families, bad pictures, chapter defects,
+// a chained stream, malformed dates, missing audio) and, with --fix, applies the
+// safe non-destructive remediations and saves.
 func newLintCmd() *cobra.Command {
 	var fix bool
 	var recursive bool
@@ -38,7 +38,8 @@ func newLintCmd() *cobra.Command {
 			"  waxlabel lint --fix --recursive album/",
 		Long: "Inspect each file for issues a tagger would want to surface: stale legacy\n" +
 			"tag containers, inherited encoder stamps, conflicting source values,\n" +
-			"duplicate or unrecognized pictures, malformed dates, and missing audio.\n" +
+			"duplicate or unrecognized pictures, chapters that collide or start past the\n" +
+			"audio, a chained Ogg stream, malformed dates, and missing audio.\n" +
 			"Exit code 0 means clean and 1 means warning-level issues were found. An\n" +
 			"error-severity finding - missing audio, a duplicate tag block, multiple\n" +
 			"Vorbis comment blocks, or a duplicate picture icon - exits 4 (invalid-data),\n" +

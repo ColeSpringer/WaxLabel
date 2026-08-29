@@ -113,7 +113,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		if err := id3.RebuildError(id3Info); err != nil {
 			return nil, err
 		}
-		newID3 = srcTag.WithFrames(frames)
+		newID3 = srcTag.WithFrames(frames, 0) // the embedded id3 chunk is rendered without padding
 	}
 
 	// An empty container is not emitted (no point writing a header-only INFO or

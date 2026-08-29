@@ -569,14 +569,10 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// equality against the destination base), which would otherwise skip a copied chapter
 	// that happens to equal a pre-existing destination one and still overshoots.
 	if e.chaptersTouched && e.carried && !chaptersDropped {
-		if dur := e.base.Properties.Duration(); dur > 0 {
-			for _, c := range e.chapters {
-				if c.Start > dur {
-					wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnChapterPastDuration, fmt.Sprintf(
-						"chapter at %s starts past the file duration (%s); check the timestamp",
-						core.FormatChapterTime(c.Start), core.FormatChapterTime(dur)))
-				}
-			}
+		dur := e.base.Properties.Duration()
+		for _, c := range core.ChaptersPastDuration(e.chapters, dur) {
+			wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnChapterPastDuration,
+				core.ChapterPastDurationMessage(c.Start, dur))
 		}
 	}
 	// Warn when the destination cannot store every field in the authored synced-lyrics
@@ -946,37 +942,22 @@ func appendChapterWarnings(ws []core.Warning, chapters, base []core.Chapter, dur
 	}
 	isNew := func(c core.Chapter) bool { return !baseSet[c] }
 
-	if duration > 0 {
-		for _, c := range chapters {
-			if isNew(c) && c.Start > duration {
-				ws = core.Warn(ws, core.WarnChapterPastDuration, fmt.Sprintf(
-					"chapter at %s starts past the file duration (%s); check the timestamp",
-					core.FormatChapterTime(c.Start), core.FormatChapterTime(duration)))
-			}
+	for _, c := range core.ChaptersPastDuration(chapters, duration) {
+		if isNew(c) {
+			ws = core.Warn(ws, core.WarnChapterPastDuration,
+				core.ChapterPastDurationMessage(c.Start, duration))
 		}
 	}
-	// Walk each run of equal starts once; warn only when the run contains a
-	// newly-added chapter, so a collision among untouched pre-existing chapters stays
-	// quiet while one the edit introduces is surfaced.
-	for i := 0; i < len(chapters); {
-		j := i
-		for j+1 < len(chapters) && chapters[j+1].Start == chapters[i].Start {
-			j++
-		}
-		if j > i {
-			runHasNew := false
-			for k := i; k <= j; k++ {
-				if isNew(chapters[k]) {
-					runHasNew = true
-					break
-				}
-			}
-			if runHasNew {
-				ws = core.Warn(ws, core.WarnDuplicateChapter, fmt.Sprintf(
-					"two or more chapters share the start %s", core.FormatChapterTime(chapters[i].Start)))
+	// Warn about a collision only when a newly-added chapter is part of it, so one among
+	// untouched pre-existing chapters stays quiet here - lint reports those, on the file
+	// rather than on the edit.
+	for _, start := range core.DuplicateChapterStarts(chapters) {
+		for _, c := range chapters {
+			if c.Start == start && isNew(c) {
+				ws = core.Warn(ws, core.WarnDuplicateChapter, core.DuplicateChapterMessage(start))
+				break
 			}
 		}
-		i = j + 1
 	}
 	return ws
 }
@@ -1243,13 +1224,18 @@ func formatLineList(lines []int) string {
 
 // validatePictures enforces the single-icon rule: picture types 1 and 2 must
 // each appear at most once.
+//
+// The sentinel is ErrUnsupportedTag, not ErrInvalidData: the source file parsed fine
+// and only the requested write is impossible, which is the same shape as the
+// chapter-count refusal above. Reporting it as corruption would also let a bad flag
+// combination outrank a genuinely corrupt file in a multi-file run's exit code.
 func validatePictures(pics []core.Picture) error {
 	icon, otherIcon := core.CountIcons(pics)
 	if icon > 1 {
-		return fmt.Errorf("%w: more than one file-icon picture (type 1)", waxerr.ErrInvalidData)
+		return fmt.Errorf("%w: more than one file-icon picture (type 1)", waxerr.ErrUnsupportedTag)
 	}
 	if otherIcon > 1 {
-		return fmt.Errorf("%w: more than one other-file-icon picture (type 2)", waxerr.ErrInvalidData)
+		return fmt.Errorf("%w: more than one other-file-icon picture (type 2)", waxerr.ErrUnsupportedTag)
 	}
 	return nil
 }

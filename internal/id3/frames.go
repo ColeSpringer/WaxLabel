@@ -90,8 +90,11 @@ const (
 // padding (a zero ID byte), an invalid identifier, or truncation. major selects
 // the header geometry; tagUnsync (v2.4) forces per-frame de-unsynchronisation
 // even when a frame does not set its own flag.
-func parseFrames(body []byte, major byte, tagUnsync bool, maxElements int) ([]Frame, error) {
-	var frames []Frame
+//
+// rest is the byte count left after the last frame it read: the tag's free padding when
+// the walk stopped on a zero ID, and the unread remainder when it stopped on a malformed
+// one. Only ParseTag records it, and only for a whole tag.
+func parseFrames(body []byte, major byte, tagUnsync bool, maxElements int) (frames []Frame, rest int, err error) {
 	pos := 0
 	hdr := 10
 	idLen := 4
@@ -106,7 +109,7 @@ func parseFrames(body []byte, major byte, tagUnsync bool, maxElements int) ([]Fr
 		// of minimum-size (6/10 B) frames still amplifies into one Frame descriptor
 		// each; cap the count so a hostile tag cannot accumulate them to OOM.
 		if err := bits.CheckElementCap(len(frames), maxElements, "ID3 frames"); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		id := string(body[pos : pos+idLen])
 		if !validFrameID(id) {
@@ -137,7 +140,7 @@ func parseFrames(body []byte, major byte, tagUnsync bool, maxElements int) ([]Fr
 
 		frames = append(frames, decodeFrame(id, flags, raw, major, tagUnsync))
 	}
-	return frames, nil
+	return frames, len(body) - pos, nil
 }
 
 // decodeFrame normalises one raw frame: it upgrades a v2.2 identifier, converts
@@ -308,6 +311,19 @@ func RenderedSize(frames []Frame) int64 {
 		total += int64(10 + len(f.Body))
 	}
 	return total
+}
+
+// FrontTagPadding reports the free padding inside a front ID3v2 region, or 0 for a file
+// with no front tag. ID3 padding has no describable block of its own - it lives inside the
+// tag's declared size - so this is what Document.Padding reports for the ID3-fronted
+// codecs. The number is [Tag.Padding]: measured where the tag was parsed, and restamped by
+// RenderFrontTag on the tag a rewrite produces, so a read of the written file and the
+// plan that wrote it report the same region.
+func FrontTagPadding(t *Tag) int64 {
+	if t == nil {
+		return 0
+	}
+	return t.Padding()
 }
 
 // renderFrame renders one frame's on-disk bytes for the write version. An opaque

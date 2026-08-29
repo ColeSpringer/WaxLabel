@@ -53,12 +53,8 @@ func Project(t *Tag) Projection {
 			if !ok {
 				continue
 			}
-			// APE stores multiple values for one key as NUL-separated runs inside a single
-			// item, so the split is the multi-value decode, not a heuristic.
-			for v := range strings.SplitSeq(it.Value, "\x00") {
-				if v != "" {
-					contribs = append(contribs, core.Contribution{Key: key, Value: v, Source: it.Key})
-				}
+			for _, v := range splitItemValues(it.Value) {
+				contribs = append(contribs, core.Contribution{Key: key, Value: v, Source: it.Key})
 			}
 		}
 	}

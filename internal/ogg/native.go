@@ -131,6 +131,16 @@ func (d *doc) Clone() core.NativeDoc {
 	return &c
 }
 
+// PaddingBytes reports the bytes after the comment list inside the comment packet (Opus's
+// RFC 7845 padding), which the writer round-trips as-is. There is no padding control on
+// Ogg, so the number is the same before and after an edit.
+//
+// A FLAC PADDING block under the FLAC mapping is deliberately not counted, even though
+// dump --native lists it: rebuildFLACBlocks drops such a block on every rewrite (Ogg
+// re-paginates the header region, so padding there buys nothing), so counting it would
+// report slack that no rewrite grows into and that the next edit deletes.
+func (d *doc) PaddingBytes() int64 { return int64(len(d.commentPad)) }
+
 // Describe summarizes the native structure for the dump/native views.
 func (d *doc) Describe() []core.NativeEntry {
 	idKind, commentKind := "Vorbis identification header", "Vorbis comment header"

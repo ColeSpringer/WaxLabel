@@ -182,6 +182,11 @@ func buildUdtaRegion(d *doc, newIlst []byte, needIlst bool, chapters []core.Chap
 			freeContent = fc
 			appends = append(appends, renderFullBox(atomName("meta"), append(hdlrAtom(), region...))...)
 		}
+	} else {
+		// The ilst region is not rewritten (a chapters-only edit), so the file's existing
+		// free atom survives verbatim. Report the padding that will still be there, not
+		// none: the write leaves exactly the region the native view already describes.
+		freeContent = d.PaddingBytes()
 	}
 
 	switch {
@@ -290,8 +295,8 @@ func fitIlst(newIlst []byte, oldRegionLen, pad int64) ([]byte, int64) {
 	switch {
 	case leftover == 0:
 		return newIlst, 0
-	case leftover >= 8:
-		b, _, _, fc := appendFree(newIlst, leftover-8)
+	case leftover >= freeAtomHeaderLen:
+		b, _, _, fc := appendFree(newIlst, leftover-freeAtomHeaderLen)
 		return b, fc
 	default:
 		b, _, _, fc := appendFree(newIlst, pad)

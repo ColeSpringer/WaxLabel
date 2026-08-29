@@ -12,6 +12,13 @@ All notable changes to this project are documented here.
 - WMA/ASF (`.wma`, `.asf`), read-only: Content Description, `WM/*`, and `WM/Picture`.
 - RF64 and BW64. `ds64` is recomputed on save-back and the form is never downgraded.
 - `.m4r`, `.mpga`, `.adts`, and `.mov` as claimed extensions.
+- `dump` reports `paddingBytes` wherever a padding region exists, not only on FLAC: MP3
+  and AAC (inside the ID3v2 tag), MP4 (the `free` atom next to `ilst`), and Ogg Opus
+  (RFC 7845 comment padding). The figure matches what `plan` reports for an in-place
+  write. An Ogg FLAC `PADDING` block is not counted: every Ogg rewrite drops it.
+- A note when one `--set` key is given twice with different values, naming the value that
+  survived. `--set DATE` plus `--set RECORDINGDATE` was already noted; one spelling twice
+  was not.
 
 ### Fixed
 
@@ -39,6 +46,34 @@ All notable changes to this project are documented here.
 - An edit to a read-only file reports the format's own refusal for chapters, pictures,
   and synced lyrics, as it already did for tags, instead of exiting 0 with a warning
   about the format's storage.
+- `set KEY=` stores an empty value on WavPack, Monkey's Audio, and Musepack instead of
+  removing the item, matching every other writable format, and `dump` reports it as a
+  present-empty value rather than an absent key, as LIST/INFO already did. `--clear` still
+  removes it. A zero-length item in an MP3's trailing APEv2 stays uncounted in the legacy
+  view, as ID3v1's blank fields are, so it does not block `lint --fix` from stripping an
+  otherwise redundant container.
+- `malformed-date` says which fault it found. `"2001-13-01" is not YYYY, YYYY-MM, or
+  YYYY-MM-DD` was false: the shape is right and the month does not exist. Such a value now
+  reads `is not a real date`, and a genuine shape fault keeps the old wording.
+- `set` with thousands of keys printed one `note:` line per key, for unknown keys and for
+  per-value advisories alike. Each surface now lists ten and counts the rest. The
+  `--strict` failure message still names every key: a strict run writes nothing, so that
+  list is the only account of what to fix.
+- A malformed value says which fault it found where a category has more than one. `BPM`
+  and the MP4 integer keys (`MEDIATYPE`, `ITUNESADVISORY`, `MOVEMENT`, `MOVEMENTTOTAL`)
+  said "is not a non-negative number" for a plainly non-negative number that merely
+  exceeded the atom's ceiling; they now name the ceiling, which differs per key. A
+  negative ReplayGain *peak* is reported as negative rather than as an unrecognized
+  ReplayGain value.
+- `dump --json` on an RF64 or BW64 file reports `"subformat": "RF64"`/`"BW64"` rather than
+  `"WAV"`, which the parser already tracked and preserved on write. `properties.container`
+  carries the same value for library callers.
+- `dump`'s `paddingBytes` and `plan`'s padding agree in three more places. A FLAC holding
+  several `PADDING` blocks under-reported by four bytes per extra block, which a rewrite
+  reclaims when it collapses them. An MP4 whose `free` atom uses the 64-bit largesize form
+  under-reported by eight, which a rewrite reclaims by re-rendering the atom with a 32-bit
+  header. And a chapters-only MP4 edit planned "padding: none" for a `free` atom the write
+  leaves untouched.
 
 ### Changed
 
@@ -52,6 +87,17 @@ All notable changes to this project are documented here.
   disagrees with an edit now does.
 - An APE `DATE` resolves to `RECORDINGDATE`, and a slashed `Track` splits into the
   canonical number/total pair.
+- **`lint` reports more, and some files that were clean will now exit 1.** The new
+  findings are `chapter-past-duration` and `duplicate-chapter` (previously raised only at
+  write time, while `set --help` pointed at `lint`) and `chained-stream` (which `dump`
+  already reported). All three are warnings.
+- Two new exit-3 refusals. Authoring a second file-icon picture was exit 4
+  (`invalid-data`), which said the file was corrupt when only the write was impossible;
+  it is now exit 3 (`unsupported-tag`), and no longer outranks a genuinely corrupt file in
+  a batch run. FLAC and Ogg cap chapters at 1000, the size of the `CHAPTERxxx` 3-digit
+  namespace; a file already holding more becomes chapter-uneditable at exit 3, while its
+  tag edits keep working, and a `copy` from such a source now drops the chapter set rather
+  than carrying it (the same rule the 255-chapter formats already follow).
 
 ## [1.5.0]
 

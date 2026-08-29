@@ -96,7 +96,7 @@ type jsonProperties struct {
 	BitsPerSample int    `json:"bitsPerSample,omitempty"`
 	DurationMs    int64  `json:"durationMs,omitempty"`
 	BitrateBps    int    `json:"bitrateBps,omitempty"`   // meaningful average bits per second, not a nominal PCM header rate; omitted (like durationMs) when the duration is under one millisecond (text dump shows kbps)
-	PaddingBytes  int64  `json:"paddingBytes,omitempty"` // free padding reserved after the metadata (FLAC PADDING block); omitted when 0 (not modeled by the format)
+	PaddingBytes  int64  `json:"paddingBytes,omitempty"` // free padding around the metadata, matching what plan reports for an in-place write; omitted when 0 (no padding region)
 }
 
 type jsonTag struct {

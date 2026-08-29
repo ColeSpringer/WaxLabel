@@ -1,6 +1,7 @@
 package tag
 
 import (
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -692,11 +693,67 @@ func ValidPartialDate(s string) bool {
 	if strings.HasPrefix(s, "0000") {
 		return false
 	}
-	for _, layout := range []string{"2006-01-02", "2006-01", "2006"} {
+	for _, layout := range partialDateLayouts {
 		if len(s) == len(layout) {
 			if _, err := time.Parse(layout, s); err == nil {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// partialDateLayouts are the accepted reduced precisions, longest first. Both
+// [ValidPartialDate] and partialDateShaped read them, so adding a precision cannot leave
+// the two disagreeing about what shape a date may take.
+var partialDateLayouts = []string{"2006-01-02", "2006-01", "2006"}
+
+// The two halves of the malformed-date complaint. A value that is not shaped like one of
+// the accepted layouts gets the shape wording; one that is gets the calendar wording from
+// [partialDateDetail], because telling a user that "2001-13-01" is not YYYY-MM-DD is
+// simply false - it is exactly that, naming a month that does not exist.
+const (
+	dateShapeLintDetail = "is not YYYY, YYYY-MM, or YYYY-MM-DD"
+	dateShapeNoteDetail = "is not YYYY / YYYY-MM / YYYY-MM-DD"
+	// One wording serves both surfaces here: unlike the shape complaint, there are no
+	// layouts to spell out differently for each.
+	dateCalendarDetail = "is not a real date"
+)
+
+// partialDateDetail explains why a date value failed [ValidPartialDate], as the lint tail
+// and the set-time note tail. A value with the digit layout of an accepted reduced
+// precision failed on the calendar - an out-of-range month, a day past the month's length,
+// or year 0000 - while everything else, non-canonical padding ("2021-6-1") included,
+// failed on shape. It backs the date validator's Detail hook, so both surfaces classify a
+// value the same way.
+func partialDateDetail(_ Key, v string) (lint, note string) {
+	if partialDateShaped(v) {
+		return dateCalendarDetail, dateCalendarDetail
+	}
+	return dateShapeLintDetail, dateShapeNoteDetail
+}
+
+// partialDateShaped reports whether v matches one of [partialDateLayouts] positionally -
+// a digit everywhere the layout has one, a hyphen everywhere it has one - saying nothing
+// about whether the date it names exists. Reading the layouts rather than restating them
+// is what keeps it stricter than a "looks datish" guess: the zero-padded widths are
+// exactly what separates a shape complaint from a calendar one, and they are defined once.
+func partialDateShaped(v string) bool {
+	v = strings.TrimSpace(v)
+	for _, layout := range partialDateLayouts {
+		if len(v) != len(layout) {
+			continue
+		}
+		ok := true
+		for i := 0; i < len(layout) && ok; i++ {
+			if layout[i] == '-' {
+				ok = v[i] == '-'
+			} else {
+				ok = isAllASCIIDigits(v[i : i+1])
+			}
+		}
+		if ok {
+			return true
 		}
 	}
 	return false
@@ -841,8 +898,12 @@ func ValidBPMValue(k Key, v string) bool {
 	if math.IsNaN(f) || math.IsInf(f, 0) {
 		return false
 	}
-	return f <= 65535
+	return f <= maxBPM
 }
+
+// maxBPM is the largest BPM the two-byte MP4 tmpo atom can hold. [ValidBPMValue] and
+// bpmDetail share it so the check and the message it produces cannot disagree.
+const maxBPM = 65535
 
 // BPMStoredWhole returns the whole-number decimal form the MP4 tmpo atom stores for a BPM
 // value, and whether storing it changes the numeric value (a genuine fraction rounds to
@@ -989,6 +1050,56 @@ func ValidReplayGainValue(k Key, v string) bool {
 	return true
 }
 
+// A rejected value in a range-checked category fails one of two ways: it is not a number
+// of the right shape at all, or it is one and simply exceeds what the destination atom can
+// hold. Saying "is not a non-negative number" about BPM=70000 is false - it is exactly
+// that - so the over-range case names the ceiling instead, the way partialDateDetail names
+// the calendar.
+func overRangeDetail(what string, max uint64) (lint, note string) {
+	return fmt.Sprintf("is %s but exceeds the maximum of %d", what, max),
+		fmt.Sprintf("is %s but exceeds the maximum of %d", what, max)
+}
+
+// mp4IntDetail explains an MP4-integer rejection. The ceiling is per key (a one-byte stik
+// or rtng, a two-byte movement index), which is why Detail is given the key.
+func mp4IntDetail(k Key, v string) (lint, note string) {
+	max, ok := mp4IntKeyMax[k]
+	if ok {
+		if n, err := strconv.ParseUint(strings.TrimSpace(v), 10, 64); err == nil && n > max {
+			return overRangeDetail("a non-negative integer", max)
+		}
+	}
+	return "is not a non-negative integer", "does not look like a non-negative integer"
+}
+
+// bpmDetail explains a BPM rejection: over the two-byte tmpo ceiling, or not a
+// non-negative decimal at all.
+func bpmDetail(_ Key, v string) (lint, note string) {
+	s := strings.TrimSpace(v)
+	if f, err := strconv.ParseFloat(s, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) &&
+		f > maxBPM && !strings.ContainsAny(s, "+-") {
+		return overRangeDetail("a non-negative number", maxBPM)
+	}
+	return "is not a non-negative number", "does not look like a non-negative number"
+}
+
+// replayGainDetail separates a negative peak from a value that is not a ReplayGain figure
+// at all. A peak is an amplitude, so "-0.5" is well-formed and simply cannot be negative;
+// the generic wording would send the user looking for a syntax error that is not there.
+func replayGainDetail(k Key, v string) (lint, note string) {
+	if k == ReplayGainTrackPeak || k == ReplayGainAlbumPeak {
+		s := strings.TrimSpace(v)
+		s = strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(s, "dB"), "DB"))
+		if strings.HasPrefix(s, "-") {
+			if _, err := strconv.ParseFloat(s, 64); err == nil {
+				return "is negative; a peak is an amplitude, never signed",
+					"is negative; a peak is an amplitude, never signed"
+			}
+		}
+	}
+	return "is not a ReplayGain value (e.g. -7.30 dB)", "does not look like a ReplayGain value (e.g. -7.30 dB)"
+}
+
 // Validator is the value contract for one category of canonical key - the single
 // source the linter ([Document.Lint]) and the CLI's set-time malformed-value note
 // both consume, so the "lint and set agree" contract cannot drift. Applies reports
@@ -1002,6 +1113,23 @@ type Validator struct {
 	LintCode   string
 	LintDetail string
 	NoteDetail string
+	// Detail refines LintDetail/NoteDetail for one rejected value, for a category with
+	// more than one way to fail. It takes the key as well as the value because a category
+	// can be range-checked per key (the MP4 integer atoms differ in width). Nil where the
+	// category has a single failure mode; use [Validator.Details], which falls back to the
+	// fixed pair.
+	Detail func(k Key, value string) (lint, note string)
+}
+
+// Details returns the human tails to append for key k's rejected value: the per-value
+// refinement when the category has one, otherwise the category's fixed pair. Both
+// surfaces call it, so the linter's finding and the set-time note cannot describe one
+// rejected value two different ways.
+func (v Validator) Details(k Key, value string) (lint, note string) {
+	if v.Detail != nil {
+		return v.Detail(k, value)
+	}
+	return v.LintDetail, v.NoteDetail
 }
 
 // validators is the category registry. The category key-sets are disjoint, so a key
@@ -1009,20 +1137,21 @@ type Validator struct {
 // with no canonical numeric contract.
 var validators = []Validator{
 	{IsNumericKey, ValidNumericValue, "malformed-number",
-		"is not a number", "does not look like a number"},
+		"is not a number", "does not look like a number", nil},
 	{IsDateKey, func(_ Key, v string) bool { return ValidPartialDate(v) }, "malformed-date",
-		"is not YYYY, YYYY-MM, or YYYY-MM-DD", "is not YYYY / YYYY-MM / YYYY-MM-DD"},
+		dateShapeLintDetail, dateShapeNoteDetail, partialDateDetail},
 	{IsBooleanKey, ValidBooleanValue, "malformed-boolean",
-		"is not a boolean (1/true/yes/0/false/no)", "does not look like a boolean (1/true/yes/0/false/no)"},
+		"is not a boolean (1/true/yes/0/false/no)", "does not look like a boolean (1/true/yes/0/false/no)", nil},
 	{IsMP4IntKey, ValidMP4IntValue, "malformed-number",
-		"is not a non-negative integer", "does not look like a non-negative integer"},
+		"is not a non-negative integer", "does not look like a non-negative integer", mp4IntDetail},
 	{IsBPMKey, ValidBPMValue, "malformed-number",
-		"is not a non-negative number", "does not look like a non-negative number"},
+		"is not a non-negative number", "does not look like a non-negative number", bpmDetail},
 	{IsReleaseCountryKey, ValidReleaseCountryValue, "malformed-country",
 		"is not a two-letter country code (ISO 3166-1 alpha-2, e.g. GB)",
-		"does not look like a two-letter country code (ISO 3166-1 alpha-2, e.g. GB)"},
+		"does not look like a two-letter country code (ISO 3166-1 alpha-2, e.g. GB)", nil},
 	{IsReplayGainKey, ValidReplayGainValue, "malformed-number",
-		"is not a ReplayGain value (e.g. -7.30 dB)", "does not look like a ReplayGain value (e.g. -7.30 dB)"},
+		"is not a ReplayGain value (e.g. -7.30 dB)", "does not look like a ReplayGain value (e.g. -7.30 dB)",
+		replayGainDetail},
 }
 
 // ValidatorFor returns the value contract for key k, and whether k has one. A key in

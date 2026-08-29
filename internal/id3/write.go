@@ -456,7 +456,7 @@ func RenderFrontTag(srcTag *Tag, version byte, newFrames []Frame, info RebuildIn
 	padSize, clamped := clampPadding(nonPad, padSize)
 	ft := FrontTag{
 		Bytes:   Render(version, newFrames, int(padSize)),
-		Tag:     srcTag.WithFrames(newFrames),
+		Tag:     srcTag.WithFrames(newFrames, padSize),
 		Padding: padSize,
 	}
 	if clamped {

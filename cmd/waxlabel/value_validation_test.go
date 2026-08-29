@@ -211,3 +211,73 @@ func TestArgTextValidationIsUsageError(t *testing.T) {
 		}
 	}
 }
+
+// TestMalformedValueNamesTheRealFault: a category with more than one way to fail must say
+// which one happened. "2001-13-01" is exactly YYYY-MM-DD, so calling it the wrong shape is
+// false - the month is what does not exist - and BPM=70000 is plainly a non-negative
+// number that merely exceeds the atom's ceiling. A value that really is the wrong shape
+// keeps the shape wording. Both surfaces read one classifier, so the set-time note and the
+// lint finding agree per value (TestLintAndNoteAgree pins the verdict; this pins the
+// reason).
+func TestMalformedValueNamesTheRealFault(t *testing.T) {
+	t.Parallel()
+	// want is the substring both surfaces must carry. wantNote overrides it for the cases
+	// where the note keeps its own "does not look like" phrasing, which is the pre-existing
+	// per-surface convention for a shape fault: only the reason has to agree, not the voice.
+	cases := []struct {
+		kv, code, want, wantNote string
+	}{
+		// Right shape, impossible date.
+		{"RECORDINGDATE=2001-13-01", "malformed-date", "is not a real date", ""},
+		{"RECORDINGDATE=2001-02-30", "malformed-date", "is not a real date", ""},
+		{"RECORDINGDATE=0000", "malformed-date", "is not a real date", ""},
+		// Genuinely the wrong shape: unpadded, and not a date at all.
+		{"RECORDINGDATE=2021-6-1", "malformed-date", "is not YYYY", ""},
+		{"RECORDINGDATE=banana", "malformed-date", "is not YYYY", ""},
+		// A real number past its atom's ceiling, which differs per key.
+		{"BPM=70000", "malformed-number", "exceeds the maximum of 65535", ""},
+		{"MEDIATYPE=9999", "malformed-number", "exceeds the maximum of 255", ""},
+		{"ITUNESADVISORY=256", "malformed-number", "exceeds the maximum of 255", ""},
+		{"MOVEMENT=70000", "malformed-number", "exceeds the maximum of 65535", ""},
+		// Not a number at all: the shape wording still applies.
+		{"BPM=abc", "malformed-number", "is not a non-negative number", "does not look like a non-negative number"},
+		{"MEDIATYPE=abc", "malformed-number", "is not a non-negative integer", "does not look like a non-negative integer"},
+		// A well-formed figure that a peak simply cannot be.
+		{"REPLAYGAIN_TRACK_PEAK=-0.5", "malformed-number", "a peak is an amplitude", ""},
+		{"REPLAYGAIN_TRACK_GAIN=loud", "malformed-number", "is not a ReplayGain value", "does not look like a ReplayGain value"},
+	}
+	for _, c := range cases {
+		t.Run(c.kv, func(t *testing.T) {
+			t.Parallel()
+			f := copyFixture(t, sampleFLAC)
+			_, note, code := runCLI(t, "set", f, "--set", c.kv)
+			if code != 0 {
+				t.Fatalf("set exit = %d\n%s", code, note)
+			}
+			wantNote := c.wantNote
+			if wantNote == "" {
+				wantNote = c.want
+			}
+			if !strings.Contains(note, wantNote) {
+				t.Errorf("set note = %q, want it to contain %q", note, wantNote)
+			}
+			out, _, _ := runCLI(t, "--json", "lint", f)
+			jl := decodeJSONList[jsonLint](t, out)
+			if len(jl) != 1 {
+				t.Fatalf("want one lint result, got %d: %s", len(jl), out)
+			}
+			var msg string
+			for _, fnd := range jl[0].Findings {
+				if fnd.Code == c.code {
+					msg = fnd.Message
+				}
+			}
+			if msg == "" {
+				t.Fatalf("lint reported no %s for %q:\n%s", c.code, c.kv, out)
+			}
+			if !strings.Contains(msg, c.want) {
+				t.Errorf("lint message = %q, want it to contain %q", msg, c.want)
+			}
+		})
+	}
+}

@@ -274,10 +274,39 @@ func (t *Tag) Pairs() []struct {
 		if !ok {
 			continue
 		}
-		for v := range strings.SplitSeq(it.Value, "\x00") {
-			if v != "" {
-				out = append(out, kv{key, v})
+		for _, v := range splitItemValues(it.Value) {
+			// Skip an empty value here, unlike Project. This is the legacy-container view
+			// (an MP3's trailing APEv2 alongside its authoritative ID3v2), where an empty
+			// item carries nothing to preserve: counting it would make the key look
+			// legacy-only and stop lint --fix from stripping an otherwise redundant
+			// container. ID3v1's Pairs skips its blank fields for the same reason.
+			if v == "" {
+				continue
 			}
+			out = append(out, kv{key, v})
+		}
+	}
+	return out
+}
+
+// splitItemValues decodes one text item's value into its canonical values. APEv2 stores
+// multiple values for one key as NUL-separated runs inside a single item, so the split is
+// the multi-value decode, not a heuristic.
+//
+// A wholly empty item yields one empty value: an APEv2 item may hold a zero-length value,
+// and that is what `set KEY=` writes, so dropping it would report the key absent on a file
+// that carries it. Empty runs inside a multi-run value are dropped instead, because a
+// trailing or doubled NUL there is a writer's terminator rather than a value the file means
+// to carry - and because the writer cannot express such a value through the NUL join, so
+// keeping it would report a value no rewrite can store.
+func splitItemValues(value string) []string {
+	if value == "" {
+		return []string{""}
+	}
+	var out []string
+	for v := range strings.SplitSeq(value, "\x00") {
+		if v != "" {
+			out = append(out, v)
 		}
 	}
 	return out

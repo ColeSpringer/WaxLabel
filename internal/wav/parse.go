@@ -198,7 +198,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	warnings = append(warnings, projWs...)
 	warnings = append(warnings, mediaWarnings(d, numericGenre)...)
 
-	media.Properties = core.Properties{Container: "WAV", Tracks: []core.AudioTrack{d.track}}
+	media.Properties = core.Properties{Container: d.containerName(), Tracks: []core.AudioTrack{d.track}}
 	media.Warnings = warnings
 	media.Identity = core.Identity{Size: size}
 	media.Identity.Fingerprint, media.Identity.HasFinger = core.Fingerprint(src, media, limit)

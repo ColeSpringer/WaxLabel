@@ -36,7 +36,16 @@ type Tag struct {
 	writeVersion byte
 	revision     byte
 	frames       []Frame
+	// padding is the free bytes after the last frame inside the tag region: measured on
+	// read, and restamped by RenderFrontTag for the tag a rewrite produces. Measuring it
+	// rather than deriving it from a re-render is what makes it right for every source
+	// shape - a v2.2 tag's 6-byte frame headers, an extended header, a footer - none of
+	// which RenderedSize models, since that function sizes what the writer will emit.
+	padding int64
 }
+
+// Padding reports the free bytes inside the tag region, after the last frame.
+func (t *Tag) Padding() int64 { return t.padding }
 
 // SrcVersion reports the ID3v2 minor version that was parsed (2, 3, or 4).
 func (t *Tag) SrcVersion() byte { return t.srcVersion }
@@ -86,11 +95,14 @@ func (t *Tag) Clone() *Tag {
 	return &c
 }
 
-// WithFrames returns a copy of the tag carrying frames, for building the
-// post-write document.
-func (t *Tag) WithFrames(frames []Frame) *Tag {
+// WithFrames returns a copy of the tag carrying frames and the padding the rewrite sized,
+// for building the post-write document. The padding is passed rather than inherited: the
+// source tag's measured padding describes the region on disk, which is exactly what the
+// rewrite is replacing.
+func (t *Tag) WithFrames(frames []Frame, padding int64) *Tag {
 	c := *t
 	c.frames = frames
+	c.padding = padding
 	return &c
 }
 
@@ -214,11 +226,12 @@ func ParseTag(data []byte, maxElements int) (*Tag, error) {
 		body = skipExtHeader(body, major)
 	}
 
-	frames, err := parseFrames(body, major, tagUnsync, maxElements)
+	frames, rest, err := parseFrames(body, major, tagUnsync, maxElements)
 	if err != nil {
 		return nil, err
 	}
 	t.frames = frames
+	t.padding = int64(rest)
 	return t, nil
 }
 

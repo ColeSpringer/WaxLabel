@@ -171,9 +171,10 @@ func TestDumpJSONOmitsBitDepthForLossy(t *testing.T) {
 	}
 }
 
-// TestDumpSurfacesPaddingAndPictureDepth: a FLAC PADDING block surfaces as paddingBytes (a
-// text "padding:" line and a JSON field), and a picture's color depth as depth. A non-FLAC
-// file omits paddingBytes; a non-indexed image omits colors.
+// TestDumpSurfacesPaddingAndPictureDepth: padding surfaces as paddingBytes (a text
+// "padding:" line and a JSON field) on every format that reserves a padding region, not
+// only FLAC, and a picture's color depth surfaces as depth. A format with no padding
+// region omits paddingBytes; a non-indexed image omits colors.
 func TestDumpSurfacesPaddingAndPictureDepth(t *testing.T) {
 	t.Parallel()
 
@@ -191,10 +192,18 @@ func TestDumpSurfacesPaddingAndPictureDepth(t *testing.T) {
 		t.Errorf("FLAC paddingBytes should be > 0; got %+v", fd.Properties)
 	}
 
-	// A non-FLAC file with no modeled padding omits the field entirely.
+	// ID3 padding lives inside the tag's declared size rather than a describable block,
+	// so it is reported through the codec rather than by scanning the native view.
 	mout, _, _ := runCLI(t, "dump", sampleMP3, "--json")
-	if strings.Contains(mout, "paddingBytes") {
-		t.Errorf("MP3 dump should omit paddingBytes (not modeled):\n%s", mout)
+	md := decodeJSONOne[jsonDocument](t, mout)
+	if md.Properties == nil || md.Properties.PaddingBytes <= 0 {
+		t.Errorf("MP3 paddingBytes should be > 0; got %+v", md.Properties)
+	}
+
+	// A format with no padding region at all still omits the field entirely.
+	wout, _, _ := runCLI(t, "dump", sampleWAV, "--json")
+	if strings.Contains(wout, "paddingBytes") {
+		t.Errorf("WAV dump should omit paddingBytes (no padding region):\n%s", wout)
 	}
 
 	// sample.mka carries a 24-bit non-indexed PNG cover, so depth is 24 and colors omitted.

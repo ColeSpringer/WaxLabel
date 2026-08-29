@@ -143,6 +143,32 @@ func (d *doc) Describe() []core.NativeEntry {
 	return out
 }
 
+// PaddingBytes reports the region a metadata rewrite grows into before the audio has to
+// move: the number a plan reports as PaddingAfter when the write reuses the file's own
+// padding. FLAC both grows and shrinks it.
+//
+// It is not a plain sum of the PADDING bodies. A rewrite drops every source PADDING block
+// and lays down fresh padding filling the same region, so k blocks collapse into one and
+// k-1 four-byte headers become usable payload; summing bodies alone would under-report by
+// exactly that. Budgeting the whole region and running it back through paddingBlocks - the
+// writer's own split - keeps the two exact even where the region needs several blocks.
+func (d *doc) PaddingBytes() int64 {
+	budget := 0
+	for _, b := range d.blocks {
+		if b.code == blkPadding {
+			budget += 4 + len(b.body) // the block header is reusable space too
+		}
+	}
+	if budget == 0 {
+		return 0
+	}
+	var total int64
+	for _, pb := range paddingBlocks(budget) {
+		total += int64(len(pb.body))
+	}
+	return total
+}
+
 // vendorOf extracts the vendor string from a VORBIS_COMMENT block body without a
 // full comment-list parse: the body opens with a little-endian uint32 length
 // followed by the vendor bytes. A body too short to hold the length, or a length

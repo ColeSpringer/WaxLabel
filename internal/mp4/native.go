@@ -170,6 +170,23 @@ func cloneRef(r *atomRef) *atomRef {
 	return &c
 }
 
+// PaddingBytes reports the payload of the free/skip atom adjacent to ilst - the only
+// padding this codec reuses in place, and the number a plan reports as PaddingAfter.
+// A stray free atom elsewhere in the file is not counted: the writer cannot grow into it,
+// so counting it would promise slack that does not exist.
+//
+// The subtraction is the 8-byte header the writer will emit, not the source atom's own
+// headerLen. A rewrite replaces the region with a freshly rendered free atom, which always
+// uses the 32-bit header; a source atom written in the 64-bit largesize form therefore
+// yields 8 more usable bytes than its payload, and reporting its payload would make the
+// figure jump across an otherwise in-place save-back.
+func (d *doc) PaddingBytes() int64 {
+	if d.free == nil {
+		return 0
+	}
+	return max(0, d.free.size-freeAtomHeaderLen)
+}
+
 // Describe summarizes the native atom structure for the dump/native views.
 func (d *doc) Describe() []core.NativeEntry {
 	out := make([]core.NativeEntry, 0, len(d.topLevel)+len(d.items)+2)

@@ -782,6 +782,12 @@ func itemBytes(it item) []byte {
 }
 
 // renderAtom wraps a payload in an atom header: [size][name][payload].
+// freeAtomHeaderLen is the header renderAtom emits: the 32-bit size plus the four-byte
+// name. Padding sizing subtracts it on both sides - the writer when it lays a free atom
+// down, the native view when it reports how much room one leaves - so a source atom in the
+// 64-bit largesize form does not make the two disagree.
+const freeAtomHeaderLen = 8
+
 func renderAtom(name [4]byte, payload []byte) []byte {
 	b := make([]byte, 8+len(payload))
 	binary.BigEndian.PutUint32(b[0:4], uint32(8+len(payload)))

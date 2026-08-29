@@ -14,7 +14,7 @@ func tconTag(version byte, bodies ...string) *Tag {
 	for _, b := range bodies {
 		frames = append(frames, Frame{ID: "TCON", Body: encodeTextFrame(encLatin1, []string{b})})
 	}
-	return NewEmpty(version).WithFrames(frames)
+	return NewEmpty(version).WithFrames(frames, 0)
 }
 
 func genreSet(vals ...string) tag.TagSet {
@@ -182,7 +182,7 @@ func TestGenreReference(t *testing.T) {
 // sides are decoded before comparison, so the text encoding cannot masquerade as an
 // encoding rewrite and churn the file.
 func TestEncodingRewriteNeededIgnoresTextEncoding(t *testing.T) {
-	src := NewEmpty(3).WithFrames([]Frame{{ID: "TCON", Body: encodeTextFrame(encUTF16, []string{"(17)"})}})
+	src := NewEmpty(3).WithFrames([]Frame{{ID: "TCON", Body: encodeTextFrame(encUTF16, []string{"(17)"})}}, 0)
 	if EncodingRewriteNeeded(src, genreSet("Rock"), WriteOpts{NumericGenre: true}) {
 		t.Error("a UTF-16 (17) already stores the requested representation; no rewrite is needed")
 	}

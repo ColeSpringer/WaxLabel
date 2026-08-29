@@ -64,6 +64,14 @@ func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, pict
 	// which is how a --clear removes the item. flags carries the source item's flag
 	// word so an edited value keeps its read-only bit and any undefined bits; a newly
 	// created item passes 0.
+	//
+	// A lone empty value is stored rather than dropped: an APEv2 item may hold a
+	// zero-length value, so a present [""] (what `set KEY=` produces) writes an empty
+	// item instead of removing the key, the same distinction the editor draws before the
+	// codec sees the set and the same one LIST/INFO makes for its ZSTR items. Within a
+	// multi-value set an empty value is dropped, because the NUL join has no way to
+	// express it: this is the exact inverse of splitItemValues, so every item written
+	// here reads back as the value set that produced it.
 	emit := func(k tag.Key, name string, flags uint32) {
 		emitted[k] = true
 		vals, ok := edited.Get(k)
@@ -76,9 +84,10 @@ func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, pict
 			if boolean {
 				v = tag.CanonicalBoolValue(v)
 			}
-			if v != "" {
-				kept = append(kept, v)
+			if v == "" && len(vals) > 1 {
+				continue
 			}
+			kept = append(kept, v)
 		}
 		if len(kept) == 0 {
 			return
