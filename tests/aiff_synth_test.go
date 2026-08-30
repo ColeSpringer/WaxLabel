@@ -749,3 +749,54 @@ func TestAIFFTruncatedSSNDWarns(t *testing.T) {
 		}
 	})
 }
+
+// aiffWithFormSize rebuilds an AIFF with an arbitrary declared FORM size, leaving every
+// chunk byte untouched.
+func aiffWithFormSize(data []byte, declared uint32) []byte {
+	out := slices.Clone(data)
+	binary.BigEndian.PutUint32(out[4:8], declared)
+	return out
+}
+
+// TestAIFFShortFormSizeRecovered: a FORM size shorter than the file hides every chunk past
+// it, so a tagger that appended a NAME chunk without updating the header loses those tags and
+// a rewrite emits a second one beside the stranded copy. WAV had the same defect; both walk
+// through iff.WalkChunksRecovering now.
+func TestAIFFShortFormSizeRecovered(t *testing.T) {
+	name := aiffText("NAME", "Stranded")
+	full := aiffFile("AIFF", aiffCOMM(2, 100, 16, 44100), aiffSSND(400), name)
+	data := aiffWithFormSize(full, uint32(len(full)-8-len(name)))
+
+	doc := mustParseBytes(t, data)
+	if got := doc.Fields().Title; got != "Stranded" {
+		t.Errorf("TITLE = %q, want Stranded (the NAME chunk past the declared size)", got)
+	}
+	if !hasWarning(doc, wl.WarnDistrustedBlockSize) {
+		t.Errorf("distrusting the declared size must be reported: %v", doc.Warnings())
+	}
+	plan, err := doc.Edit().Set(tag.Artist, "Added").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	if n := bytes.Count(out, []byte("NAME")); n != 1 {
+		t.Errorf("output holds %d NAME chunks, want 1", n)
+	}
+	if got := mustParseBytes(t, out).Fields().Title; got != "Stranded" {
+		t.Errorf("TITLE after rewrite = %q, want Stranded", got)
+	}
+}
+
+// TestAIFFAppendedBytesStillTrailing: genuinely appended data does not tile as chunks, so the
+// retry is not adopted and the honest verdict stands.
+func TestAIFFAppendedBytesStillTrailing(t *testing.T) {
+	base := aiffFile("AIFF", aiffCOMM(2, 100, 16, 44100), aiffSSND(400))
+	data := append(slices.Clone(base), bytes.Repeat([]byte{0xCD}, 40)...)
+	doc := mustParseBytes(t, data)
+	if hasWarning(doc, wl.WarnDistrustedBlockSize) {
+		t.Errorf("appended junk must not be adopted as chunks: %v", doc.Warnings())
+	}
+	if got := doc.Properties().Duration(); got <= 0 {
+		t.Errorf("duration = %v, want the audio's", got)
+	}
+}

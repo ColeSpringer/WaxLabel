@@ -2,7 +2,6 @@ package waxlabel
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/waxerr"
@@ -125,23 +124,12 @@ func (d *Document) PrepareTransfer(dst *Document, opts ...WriteOption) (*Plan, T
 				ed.Set(it.Key, vals...)
 			}
 		case core.TransferChapter:
-			chapters := core.CloneChapters(d.media.Chapters)
-			// If the source's final chapter runs to the source's own EOF, open its end so the
-			// destination codec refills it to the DESTINATION's EOF. Written literally, a
-			// run-to-EOF end sits mid-file on a longer destination, so diff (duration-aware
-			// trailing normalization) would report a spurious chapter difference despite a
-			// faithful "0 lossy" carry. Truncate the source duration to whole milliseconds to
-			// mirror diff's normalizeReconstructableEnds exactly (the ID3 CHAP writer floors ends
-			// to ms): without it, an ns-precise duration just above a ms-floored trailing end
-			// would fail to open a genuine run-to-EOF chapter and copy/diff would still disagree.
-			// Only a run-to-EOF trailing end is opened; a genuine early-ending final chapter is
-			// preserved literally. Opening never changes a loss grade (an open end is carried),
-			// so the report stays accurate.
-			srcDurMs := d.media.Properties.Duration().Truncate(time.Millisecond)
-			if n := len(chapters); n > 0 && srcDurMs > 0 && chapters[n-1].End >= srcDurMs {
-				chapters[n-1].End = 0
-			}
-			ed.SetChapters(chapters...)
+			// core.OpenRunToEOFEnd opens a final chapter that runs to the source's own EOF so the
+			// destination codec refills it to the DESTINATION's EOF; ProjectTransfer grades the
+			// same list, so the report describes what this writes. Clone after it: it returns the
+			// input untouched when there is nothing to open.
+			ed.SetChapters(core.CloneChapters(
+				core.OpenRunToEOFEnd(d.media.Chapters, d.media.Properties.Duration()))...)
 		case core.TransferSyncedLyric:
 			ed.SetSyncedLyrics(core.CloneSyncedLyrics(d.media.SyncedLyrics)...)
 		}

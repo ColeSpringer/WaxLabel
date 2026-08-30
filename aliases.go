@@ -244,7 +244,21 @@ const (
 	WarnLegacyStripDropped        = core.WarnLegacyStripDropped
 	WarnCommentDescriptionDropped = core.WarnCommentDescriptionDropped
 	WarnNonConformingIcon         = core.WarnNonConformingIcon
+	WarnDuplicateTagBlockDropped  = core.WarnDuplicateTagBlockDropped
 )
+
+// IsDiscardWarning reports whether a warning code means the edit's content was thrown away
+// rather than stored in an altered form. It is what tells a plan that changed no bytes
+// because its edit was discarded apart from one that changed no bytes because the file was
+// already up to date.
+func IsDiscardWarning(c WarningCode) bool { return core.IsDiscardWarning(c) }
+
+// HasDiscardWarning reports whether any warning in ws is a discard ([IsDiscardWarning]).
+func HasDiscardWarning(ws []Warning) bool { return core.HasDiscardWarning(ws) }
+
+// NoChangesLine is the one-line summary for a plan that writes no bytes: whether the file was
+// already up to date, or the edit was discarded. Shared so every renderer words it the same.
+func NoChangesLine(discarded bool) string { return core.NoChangesLine(discarded) }
 
 // BytesSource returns a ReaderAtSized backed by b (which must not be mutated
 // while in use). It is handy for parsing or writing in-memory data.

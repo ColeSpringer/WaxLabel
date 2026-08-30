@@ -22,13 +22,15 @@ func newVerifyCmd() *cobra.Command {
 			"  waxlabel verify --whole-file --quiet *.flac | sort",
 		Long: "Compute each file's audio-essence digest - a hash of the encoded audio\n" +
 			"plus its decoder-critical configuration, independent of tags - which\n" +
-			"answers \"is this the same audio?\" for deduplication. The digest carries\n" +
-			"a versioned extent name, so it stays interpretable across library-wide\n" +
-			"refinements. With --whole-file, also compute the whole-file identity. With\n" +
-			"--recursive, directory arguments are walked for audio files. With --quiet,\n" +
-			"print one tab-separated \"essence<TAB>path\" line per file (essence, whole-file,\n" +
-			"then path under --whole-file) for piping into sort/uniq to find duplicates. A\n" +
-			"single \"-\" reads from standard input.",
+			"answers \"is this the same audio?\" for deduplication. The digest is\n" +
+			"container-scoped: the same audio remuxed into another container (FLAC in\n" +
+			".flac vs .oga) hashes differently. It carries a versioned extent name, so it\n" +
+			"stays interpretable across library-wide refinements. With --whole-file, also\n" +
+			"compute the whole-file identity. With --recursive, directory arguments are\n" +
+			"walked for audio files. With --quiet, print one tab-separated\n" +
+			"\"essence<TAB>path\" line per file (essence, whole-file, then path under\n" +
+			"--whole-file) for piping into sort/uniq to find duplicates. A single \"-\"\n" +
+			"reads from standard input.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			realOf, cleanup, err := readInputs(cmd.InOrStdin(), maxSizeFlag(cmd), args)

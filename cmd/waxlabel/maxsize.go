@@ -44,6 +44,21 @@ func (v *byteSizeValue) Type() string { return "size" }
 // means unlimited. A redundant leading '+' is accepted; a negative, empty, or unparseable
 // value is rejected (a leading '-' reports "must not be negative").
 func parseByteSize(s string) (int64, error) {
+	total, err := byteSizeFloat(s)
+	if err != nil {
+		return 0, err
+	}
+	// float64(math.MaxInt64) rounds up to 2^63, so this comparison also rejects a total of
+	// exactly 2^63, which int64(total) would otherwise wrap to a negative "unlimited" value.
+	if total >= float64(math.MaxInt64) {
+		return 0, fmt.Errorf("invalid size %q: too large", s)
+	}
+	return int64(total), nil
+}
+
+// byteSizeFloat is parseByteSize's numeric half: the value in bytes before it is truncated to
+// an int64, so a caller that must reject a fractional result can see one.
+func byteSizeFloat(s string) (float64, error) {
 	trimmed := strings.TrimSpace(s)
 	if trimmed == "" {
 		return 0, fmt.Errorf("empty size")
@@ -76,13 +91,25 @@ func parseByteSize(s string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("invalid size %q: %v", s, err)
 	}
-	total := num * float64(mult)
-	// float64(math.MaxInt64) rounds up to 2^63, so this comparison also rejects a total of
-	// exactly 2^63, which int64(total) would otherwise wrap to a negative "unlimited" value.
-	if total >= float64(math.MaxInt64) {
-		return 0, fmt.Errorf("invalid size %q: too large", s)
+	return num * float64(mult), nil
+}
+
+// parseByteSizeExact is parseByteSize for a value that must land on a whole byte. "1.5KiB" is
+// 1536 and passes; "0.4" and "1.9KiB" would truncate, which silently changes what was asked
+// for, so they are rejected rather than rounded.
+func parseByteSizeExact(s string) (int64, error) {
+	n, err := parseByteSize(s)
+	if err != nil {
+		return 0, err
 	}
-	return int64(total), nil
+	total, err := byteSizeFloat(s)
+	if err != nil {
+		return 0, err
+	}
+	if total != math.Trunc(total) {
+		return 0, fmt.Errorf("invalid size %q: must be a whole number of bytes", s)
+	}
+	return n, nil
 }
 
 // unitMultiplier maps a size unit suffix to its byte multiplier. An empty suffix or a bare

@@ -687,3 +687,127 @@ func TestWAVTruncatedDataChunkWarns(t *testing.T) {
 		}
 	})
 }
+
+// wavWithRiffSize rebuilds a WAV with an arbitrary declared RIFF size, leaving every chunk
+// byte untouched. It is how the malformed-size cases below differ from a correct file.
+func wavWithRiffSize(data []byte, declared uint32) []byte {
+	out := slices.Clone(data)
+	binary.LittleEndian.PutUint32(out[4:8], declared)
+	return out
+}
+
+// TestWAVTooSmallRiffSizeRecovers: a declared RIFF size that is in range but far too small
+// used to be trusted as the walk boundary, so data and every LIST/id3 chunk past it were
+// never seen: the file read as no-audio with the rest reported as trailing bytes. The walk
+// must retry against the file size and adopt that result, which recovers the whole file.
+func TestWAVTooSmallRiffSizeRecovers(t *testing.T) {
+	full := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Recovered"}), wavData(400))
+	// 30 bytes covers "WAVE" plus the fmt chunk and stops before the INFO list.
+	data := wavWithRiffSize(full, 30)
+
+	doc := mustParseBytes(t, data)
+	if got := doc.Fields().Title; got != "Recovered" {
+		t.Errorf("TITLE = %q, want Recovered (the INFO list past the declared size)", got)
+	}
+	if hasWarning(doc, wl.WarnNoAudioFrames) {
+		t.Errorf("the data chunk is present past the declared size; no-audio must not fire: %v", doc.Warnings())
+	}
+	if hasWarning(doc, wl.WarnTrailingBytes) {
+		t.Errorf("the recovered chunks are in-container, not trailing bytes: %v", doc.Warnings())
+	}
+	if !hasWarning(doc, wl.WarnDistrustedBlockSize) {
+		t.Errorf("distrusting the declared size must be reported: %v", doc.Warnings())
+	}
+	if d := doc.Properties().Duration(); d <= 0 {
+		t.Errorf("duration = %v, want the recovered data chunk's", d)
+	}
+}
+
+// TestWAVShortRiffSizeStrandedTagRecovered: a tagger that appended a LIST without updating
+// the RIFF size leaves it outside the container, invisible to the read - and a rewrite then
+// emits a second LIST beside the stranded one, so the file carries two.
+func TestWAVShortRiffSizeStrandedTagRecovered(t *testing.T) {
+	full := wavFile(wavFmtPCM(), wavData(400), wavInfo([2]string{"INAM", "Stranded"}))
+	// A size covering everything but the trailing LIST, as if it predated the append.
+	data := wavWithRiffSize(full, uint32(len(full)-8-len(wavInfo([2]string{"INAM", "Stranded"}))))
+
+	doc := mustParseBytes(t, data)
+	if got := doc.Fields().Title; got != "Stranded" {
+		t.Errorf("TITLE = %q, want Stranded (the LIST past the declared size)", got)
+	}
+	plan, err := doc.Edit().Set(tag.Artist, "Added").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	if n := bytes.Count(out, []byte("LIST")); n != 1 {
+		t.Errorf("output holds %d LIST chunks, want 1", n)
+	}
+	re := mustParseBytes(t, out)
+	if got := re.Fields().Title; got != "Stranded" {
+		t.Errorf("TITLE after rewrite = %q, want Stranded", got)
+	}
+}
+
+// TestWAVTruncatedNoRecovery is the other half of the rule: when the wide re-walk finds no
+// audio, the narrow result stands. A genuinely tag-only file with appended junk must keep its
+// honest no-audio plus trailing-bytes verdict rather than having the junk parsed as chunks.
+func TestWAVTruncatedNoRecovery(t *testing.T) {
+	base := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Tagged"}))
+	data := append(slices.Clone(base), bytes.Repeat([]byte{0xAB}, 64)...)
+
+	doc := mustParseBytes(t, data)
+	if got := doc.Fields().Title; got != "Tagged" {
+		t.Errorf("TITLE = %q, want Tagged", got)
+	}
+	if !hasWarning(doc, wl.WarnNoAudioFrames) {
+		t.Errorf("a WAV with no data chunk must still warn no-audio: %v", doc.Warnings())
+	}
+	if !hasWarning(doc, wl.WarnTrailingBytes) {
+		t.Errorf("bytes past the container must still report as trailing: %v", doc.Warnings())
+	}
+	if hasWarning(doc, wl.WarnDistrustedBlockSize) {
+		t.Errorf("nothing was recovered, so the declared size was not distrusted: %v", doc.Warnings())
+	}
+}
+
+// TestWAVMalformedRiffSizesUnchanged guards the sizes the existing fallback already handled,
+// so the recovery retry does not disturb them.
+func TestWAVMalformedRiffSizesUnchanged(t *testing.T) {
+	full := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Intact"}), wavData(400))
+	declared := binary.LittleEndian.Uint32(full[4:8])
+	cases := map[string]uint32{
+		"zero":      0,
+		"all ones":  0xFFFFFFFF,
+		"one short": declared - 1,
+		"one long":  declared + 1,
+		"oversized": declared + 4096,
+		"exact":     declared,
+	}
+	for name, sz := range cases {
+		t.Run(name, func(t *testing.T) {
+			doc := mustParseBytes(t, wavWithRiffSize(full, sz))
+			if got := doc.Fields().Title; got != "Intact" {
+				t.Errorf("TITLE = %q, want Intact", got)
+			}
+			if hasWarning(doc, wl.WarnNoAudioFrames) {
+				t.Errorf("the data chunk is present; no-audio must not fire: %v", doc.Warnings())
+			}
+		})
+	}
+}
+
+// TestWAVAppendedBytesStillTrailing: a correct declared size with genuine out-of-container
+// bytes after it keeps reporting them as trailing. The recovery only runs when no data chunk
+// was found, so this file never reaches it.
+func TestWAVAppendedBytesStillTrailing(t *testing.T) {
+	base := wavFile(wavFmtPCM(), wavData(400))
+	data := append(slices.Clone(base), bytes.Repeat([]byte{0xCD}, 40)...)
+	doc := mustParseBytes(t, data)
+	if !hasWarning(doc, wl.WarnTrailingBytes) {
+		t.Errorf("appended out-of-container bytes must report as trailing: %v", doc.Warnings())
+	}
+	if hasWarning(doc, wl.WarnDistrustedBlockSize) {
+		t.Errorf("a correct declared size must not be distrusted: %v", doc.Warnings())
+	}
+}

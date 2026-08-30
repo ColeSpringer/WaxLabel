@@ -28,7 +28,10 @@ type Chunk struct {
 type Dialect struct {
 	Order   binary.ByteOrder // chunk-size byte order
 	AudioID [4]byte          // the audio chunk id ("data" for WAV, "SSND" for AIFF)
-	Noun    string           // names the chunk family in cap/error messages ("RIFF chunks" / "IFF chunks")
+	// FormatID is the chunk describing the audio geometry ("fmt " for WAV, "COMM" for AIFF).
+	// A recovered walk must find it and AudioID before its result is trusted.
+	FormatID [4]byte
+	Noun     string // names the chunk family in cap/error messages ("RIFF chunks" / "IFF chunks")
 }
 
 // Result is the outcome of WalkChunks: the chunk list plus the derived regions a
@@ -77,9 +80,52 @@ type WalkOptions struct {
 	// file order), so a given function value serves one walk. Leave it nil, or supply a
 	// function that always declines, for a container with no such extension.
 	SizeOverride func(id [4]byte, declared uint32) (int64, bool)
+	// TrustedEnd suppresses [WalkChunksRecovering]'s retry: End came from a 64-bit size
+	// extension (RF64/BW64's ds64) rather than the header's 32-bit field, so it is
+	// authoritative and a shorter-than-the-file boundary is a fact, not a stale value.
+	TrustedEnd bool
 }
 
-// WalkChunks records every top-level chunk in [12, End) by id and source range, reading
+// WalkChunksRecovering is [WalkChunks] with one retry when the container boundary is short of
+// the file. A header whose declared size predates an appended chunk hides everything past it:
+// the tags read as absent, and a rewrite then emits a second tag chunk beside the stranded
+// one. The retry walks to Size and is adopted only when it accounts for every byte - the
+// format and audio chunks present, no trailing remainder, no clamped chunk - which genuinely
+// appended data (an ID3v1 trailer, junk) does not satisfy, so such a file keeps its honest
+// trailing-bytes verdict.
+//
+// distrusted reports that the retry was adopted, so the caller can warn. The retry re-reads
+// headers only, and a stateful SizeOverride is not re-entered: TrustedEnd is set exactly for
+// the containers that have one.
+func WalkChunksRecovering(ctx context.Context, r io.ReaderAt, opts WalkOptions) (res Result, distrusted bool, err error) {
+	res, err = WalkChunks(ctx, r, opts)
+	if err != nil || opts.TrustedEnd || opts.End >= opts.Size {
+		return res, false, err
+	}
+	wide := opts
+	wide.End = opts.Size
+	retry, rerr := WalkChunks(ctx, r, wide)
+	if rerr != nil || !accountsForWholeFile(retry, opts.Dialect) {
+		return res, false, nil
+	}
+	return retry, true, nil
+}
+
+// accountsForWholeFile reports whether a walk tiled the file into well-formed chunks with a
+// complete audio description and nothing left over.
+func accountsForWholeFile(res Result, d Dialect) bool {
+	if res.AudioIdx < 0 || res.TrailingLen > 0 || res.OuterLen > 0 || len(res.OversizedChunks) > 0 {
+		return false
+	}
+	for _, c := range res.Chunks {
+		if c.ID == d.FormatID {
+			return true
+		}
+	}
+	return false
+}
+
+// WalkChunks records every top-level chunk in [12, End) by id and source range, reading// WalkChunks records every top-level chunk in [12, End) by id and source range, reading
 // only chunk headers (never bodies) so a large audio chunk costs nothing. It stops at a
 // miscounted trailer after the audio chunk so the trailing-region copy can preserve it
 // verbatim, and returns [waxerr.ErrInvalidData] when no chunk is found.

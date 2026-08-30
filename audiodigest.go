@@ -58,6 +58,10 @@ func WithHashSource(src ReaderAtSized) HashOption {
 // files with byte-identical packets but different channel mapping are correctly
 // distinct. This answers "is this the same audio?", independent of tags.
 //
+// The digest is container-scoped: the config prefix and the named extent are both the
+// container's, so the same FLAC frames in a .flac and an .oga hash differently. Comparing one
+// codec's audio across two containers is a different question this does not answer.
+//
 // It is distinct from whole-file identity ([Document.HashFile]) and from a
 // decoded-PCM hash (which needs a decoder and is test-only).
 func (d *Document) HashAudioEssence(ctx context.Context, opts ...HashOption) (AudioDigest, error) {

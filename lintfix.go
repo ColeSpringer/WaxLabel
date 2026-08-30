@@ -66,9 +66,9 @@ func (d *Document) PlanLintFix() LintFix {
 				// ENCODER comment) or clear a clean earlier value. So filter:
 				// clear when every value is a stamp, set the survivors when only some are, and leave
 				// a stamp-free ENCODER untouched. IsTranscoderStamp reuses the linter's own noise
-				// test (matches Lavf/libavformat, not Lavc), so a "Lavc.. libvorbis" ENCODER is
-				// preserved while a "Lavf.." one is removed - the filter can never disagree with the
-				// finding. WithStripEncoderStamp stays OUTSIDE this gate: it neutralizes the vendor
+				// test, so the filter can never disagree with the finding: every value it names a
+				// stamp (Lavf/libavformat and Lavc/libavcodec alike) goes, and a genuine user-set
+				// ENCODER stays. WithStripEncoderStamp stays OUTSIDE this gate: it neutralizes the vendor
 				// string, which is no canonical ENCODER tag and must still be remediated when only it
 				// carries the stamp. Do not fold them. The WAV ISFT item is reached by both this filter
 				// and the option, which apply the same per-value test and so agree.

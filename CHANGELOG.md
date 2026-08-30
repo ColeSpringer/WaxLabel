@@ -30,9 +30,49 @@ All notable changes to this project are documented here.
   carved out of the audio extent (still copied verbatim on rewrites), so a junk-appended
   rip dedup-matches its clean twin under `verify`. The extent name becomes
   `flac-frames-v2`; persisted `flac-frames-v1` digests stay labeled v1.
+- QuickTime `keys`/`mdta` metadata, the shape `ffmpeg -movflags +use_metadata_tags`
+  writes: the `keys` index is read and its items decoded, so such a file reports tags
+  instead of nothing, and an edit writes keys entries rather than four-character atoms.
+  Apple's `com.apple.quicktime.*` names and ffmpeg's bare ones both resolve.
+- Classic QuickTime `moov.udta` text atoms (`(c)nam`, `(c)swr`, ...), a plain `.mov`'s
+  whole tag store, are read and written. Multi-language entries keep their translations,
+  and a value the file also keeps in an `ilst` is rewritten to match rather than left to
+  disagree. `dump --native` lists `moov.udta`.
+- `duplicate-tag-block-dropped`, a write-time warning for a rewrite that discards a
+  duplicate tag container holding content the written set does not, across WAV, AIFF, FLAC
+  and Ogg FLAC. `--strict` escalates it; a redundant duplicate stays silent. Ogg FLAC also
+  gains the read-side `multiple-vorbis-comment` warning native FLAC already had.
 
 ### Fixed
 
+- An MP4's final chapter kept its real end. The QuickTime reader canonicalized an end
+  landing on the movie duration back to open, so `dump` showed `null` where ffprobe showed
+  the duration and `SetChapters(End: duration)` did not round-trip. The end is now reported
+  verbatim. A chapter starting past the file end still reads open: that tail is a
+  placeholder our own writer invents, not a value the file states.
+- `copy` graded a final chapter running to the source's own end of file as lossy while the
+  transfer opened it and lost nothing. Both now read one rule.
+- `Lavc`/`libavcodec` counts as a transcoder stamp alongside `Lavf`/`libavformat`, so an
+  `ENCODER` naming the codec is flagged and removed rather than kept. `lint --fix` now
+  discards a value like `Lavc61.19.101 libopus`, which `--strip-encoder` also removes.
+- Ogg Vorbis reports its measured average bitrate, like every other format, instead of the
+  identification header's `bitrate_nominal` encoder target, which read several times high
+  on a VBR file. Nominal is kept only when nothing can be measured.
+- A WAV or AIFF whose header declares less than its own chunks occupy is re-walked against
+  the file size, recovering tags and audio previously reported as missing - including a
+  `LIST`/`NAME` appended without updating the header, which a rewrite used to duplicate. A
+  truncated or genuinely tag-appended file keeps its `no-audio`/`trailing-bytes` verdict.
+- `--padding` accepts the size suffixes `--max-size` does (`8KiB`, `32k`, `31.5KiB`), and
+  rejects a value that would truncate rather than turning `0.4` into a silent `--no-padding`.
+- An empty value for a key ID3 cannot store one for (`GENRE=`, `TRACKNUMBER=`, `DISCNUMBER=`,
+  `MOVEMENT=`) was dropped silently, and genre also left a stub `TCON` frame behind. The drop
+  is reported and no stub is written; the plain text frames still store a present-empty value.
+- A plan whose edit was wholly discarded (cover art on WebM) reported "no changes (already
+  up to date)", which says the file holds what was asked for. It now says the edit was
+  discarded, from the same predicate `--strict` gates on.
+- An MP4 key held by both its `ilst` and its `moov.udta` atoms reports the ilst value once,
+  with the udta value surfaced as a family entry. Merging the two doubled the value and let an
+  unrelated edit store both in the ilst, after which the disagreement no longer showed.
 - An APE tag whose footer claimed a header record that is not there moved the tag's
   start 32 bytes into the audio, so a rewrite wrote the tag over it while `--verify`
   passed (both sides derived the extent from the same wrong offset). The record is now

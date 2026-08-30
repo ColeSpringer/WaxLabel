@@ -576,11 +576,13 @@ func renderReport(w io.Writer, path string, plan *wl.Plan, addedPics []wl.Pictur
 	r := plan.Report()
 	name := displayName(path)
 	if plan.IsNoOp() {
-		fmt.Fprintf(w, "%s: no changes (already up to date)\n", name)
 		// A no-op can still carry a warning the user must see - an edit whose only effect
 		// was a value the format could not store (value-dropped) leaves the bytes
 		// unchanged yet is not what the user asked for. Surface it rather than hide it
-		// behind "no changes". A genuinely clean no-op has no warnings, so this is silent.
+		// behind "no changes", and when the warning is a discard say so in the headline:
+		// "already up to date" would claim the file holds what was asked for. The predicate
+		// is the library's, shared with Plan.String, so the two lines cannot drift.
+		fmt.Fprintf(w, "%s: %s\n", name, wl.NoChangesLine(wl.HasDiscardWarning(r.Warnings)))
 		for _, x := range r.Warnings {
 			fmt.Fprintf(w, "  warning: %s\n", x.String())
 		}

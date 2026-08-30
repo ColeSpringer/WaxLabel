@@ -31,6 +31,11 @@ func buildResult(edited *core.Media, base *doc, newItems []item, lay layout, del
 		hasQTChapters:   base.hasQTChapters,
 		chapterConflict: base.chapterConflict,
 		items:           newItems,
+		// This path runs only when the store outside the ilst region is untouched (the keys
+		// index gained nothing and no udta text atom needed syncing), so the decoded store
+		// carries forward as-is; only the atom offsets past the region shift.
+		metaHandler: base.metaHandler,
+		keyNames:    slices.Clone(base.keyNames),
 	}
 	shiftStructure(nd, base, lay.regionStart, regionEnd, delta)
 
@@ -61,12 +66,26 @@ func buildResult(edited *core.Media, base *doc, newItems []item, lay layout, del
 	// when it sits after the rewritten ilst region. Carry the captured udta bytes
 	// forward (with the ilst region change applied) so a later chapter edit on this
 	// result can splice into them without a reparse.
-	if base.chpl != nil {
-		c := *base.chpl
-		if c.offset >= regionEnd {
-			c.offset += delta
+	shift := func(r atomRef) atomRef {
+		if r.offset >= regionEnd {
+			r.offset += delta
 		}
+		return r
+	}
+	if base.chpl != nil {
+		c := shift(*base.chpl)
 		nd.chpl = &c
+	}
+	if base.keys != nil {
+		k := shift(*base.keys)
+		nd.keys = &k
+	}
+	for _, r := range base.udtaKids {
+		nd.udtaKids = append(nd.udtaKids, shift(r))
+	}
+	for _, u := range base.udtaTexts {
+		u.ref = shift(u.ref)
+		nd.udtaTexts = append(nd.udtaTexts, u)
 	}
 	nd.udtaRaw = resultUdtaRaw(base, lay)
 	carryChapterRefs(nd, base, regionEnd, delta)

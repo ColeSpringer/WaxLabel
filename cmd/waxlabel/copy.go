@@ -145,7 +145,7 @@ func newCopyCmd() *cobra.Command {
 			if asJSON {
 				return writeJSON(out, toJSONCopy(srcPath, dstPath, report, plan, false, res.Committed, err))
 			}
-			renderSaveOutcome(out, dstPath, "", res, plan.IsNoOp())
+			renderSaveOutcome(out, dstPath, "", res, plan.IsNoOp(), wl.HasDiscardWarning(plan.Report().Warnings))
 			return nil
 		},
 	}

@@ -219,7 +219,12 @@ func chapterDeltas(chapters []core.Chapter, mts, movieTimescale uint32, movieDur
 		case movieDurUnits > starts[i]:
 			next = movieDurUnits
 		default:
-			next = starts[i] + uint64(mts) // a one-second tail when nothing else bounds it
+			// A one-media-unit tail when nothing else bounds it: the chapter starts at or past
+			// the movie duration, so there is no real end to encode. One unit (not one second)
+			// is the same value the coincident-start path below produces, and it is what
+			// isPlaceholderTail recognizes so the read leaves the chapter open rather than
+			// reporting a fabricated end.
+			next = starts[i] + 1
 		}
 		// The input is stably sorted by start, so starts[i] <= next normally holds; a
 		// zero raw gap is a genuine collision (or a last chapter the movie duration does
@@ -350,7 +355,7 @@ func buildStco(co64 bool) []byte {
 // offset, the next sample's time as End, and titles capped like the samples. It
 // mirrors decodeTextTrack exactly - including applying the offset in the Duration
 // domain after the per-sample scale, and recovering the last chapter's end from the
-// final stts boundary (canonicalized to open at the movie duration) - so the
+// final stts boundary (open only for the placeholder tail) - so the
 // post-write result equals a reparse with no scale-rounding drift. The offset is 0 for
 // a zero-start list (or an unknown movie timescale), so such a write round-trips unchanged.
 // saturated reports whether any stts delta clamped (a per-gap span past ~13.25 h read back as
@@ -387,14 +392,14 @@ func qtWriteRoundTrip(chapters []core.Chapter, mts, movieTimescale uint32, movie
 		}
 	}
 	// Mirror decodeTextTrack's last-end recovery exactly: the final stts boundary (the last
-	// cumulative sum plus the last delta) is the last chapter's end, left open both when it
-	// canonicalizes to the movie duration and when it is the synthetic 1 s placeholder tail for a
-	// chapter starting at/past a known movie duration (isPlaceholderTail). A written list is
-	// always under maxChapterSamples, so the reader's completed flag is always true here.
+	// cumulative sum plus the last delta) is the last chapter's end, reported verbatim except
+	// for the synthetic one-unit placeholder tail on a chapter starting at/past a known movie
+	// duration (isPlaceholderTail), which stays open. deltas[last] is the unit-grid twin of the
+	// read's endTime - times[last]. A written list is always under maxChapterSamples, so the
+	// reader's completed flag is always true here.
 	last := len(chapters) - 1
 	lastEnd := addClamp(scaleToDuration(cum[last]+uint64(deltas[last]), mts), offset)
-	if !isPlaceholderTail(out[last].Start, lastEnd, movieTimescale, movieDuration) &&
-		!endIsMovieDuration(lastEnd, movieTimescale, movieDuration) {
+	if !isPlaceholderTail(out[last].Start, uint64(deltas[last]), mts, movieTimescale, movieDuration) {
 		out[last].End = lastEnd
 	}
 	return out, saturated

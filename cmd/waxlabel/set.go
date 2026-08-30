@@ -389,7 +389,7 @@ func runSet(cmd *cobra.Command, paths []string, pathErrors map[string]error, rea
 		if asJSON {
 			items = append(items, toJSONSetResult(path, output, plan, res, verified, err))
 		} else if !quiet {
-			renderSaveOutcome(out, path, output, res, plan.IsNoOp())
+			renderSaveOutcome(out, path, output, res, plan.IsNoOp(), wl.HasDiscardWarning(plan.Report().Warnings))
 			if verified {
 				fmt.Fprintln(out, "Output verified (audio essence + structure)")
 			}
@@ -428,12 +428,20 @@ func warnExtensionMismatch(w io.Writer, output string, f wl.Format) {
 // renderSaveOutcome reports where the bytes went: a new file, an in-place save, or nothing
 // for a no-op save-back. noOp matters only for -o, where a verbatim copy prints one line with
 // no leading blank, since -o takes a single input and is never mid-list.
-func renderSaveOutcome(w io.Writer, path, output string, res wl.SaveResult, noOp bool) {
+//
+// discarded says the plan wrote nothing because the edit was thrown away, not because the
+// file already held it. It reads the same library predicate the plan line above does, so the
+// two cannot say different things about one run.
+func renderSaveOutcome(w io.Writer, path, output string, res wl.SaveResult, noOp, discarded bool) {
 	switch {
+	case output != "" && noOp && discarded:
+		fmt.Fprintf(w, "Edit discarded; wrote a verbatim copy to %s (%s)\n", output, wl.HumanBytes(res.Dest.Size))
 	case output != "" && noOp:
 		fmt.Fprintf(w, "No metadata changes; wrote a verbatim copy to %s (%s)\n", output, wl.HumanBytes(res.Dest.Size))
 	case output != "":
 		fmt.Fprintf(w, "\nWrote %s (%s)\n", output, wl.HumanBytes(res.Dest.Size))
+	case !res.Committed && discarded:
+		fmt.Fprintf(w, "\nEdit discarded; %s left untouched\n", path)
 	case !res.Committed:
 		fmt.Fprintf(w, "\nNo changes; %s left untouched\n", path)
 	default:

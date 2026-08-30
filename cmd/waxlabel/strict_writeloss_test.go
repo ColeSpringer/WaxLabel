@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -26,6 +30,9 @@ func TestStrictEscalatesWriteLossFamily(t *testing.T) {
 		wl.WarnSyncedLyricsMetadataDropped,
 		wl.WarnSyncedLyricsTimestampClamped,
 		wl.WarnNumericGenre,
+		// The write-path half of the duplicate-tag-block pair: this rewrite discarded a
+		// duplicate container that held a value the survivor does not.
+		wl.WarnDuplicateTagBlockDropped,
 	}
 	for _, c := range escalating {
 		if !strictEscalatingCodes[c] {
@@ -39,6 +46,9 @@ func TestStrictEscalatesWriteLossFamily(t *testing.T) {
 		wl.WarnNativeValueReduced, // the full set is kept in the winning container
 		wl.WarnChaptersFlattened,  // can describe pre-existing on-read state, not this edit
 		wl.WarnPaddingClamped,     // about padding size, not tag content
+		// The read-path half: the file holds two containers, which is true before any edit.
+		// Its write-path sibling above is what escalates.
+		wl.WarnDuplicateTagBlock,
 	}
 	for _, c := range excluded {
 		if strictEscalatingCodes[c] {
@@ -183,6 +193,222 @@ func TestStrictExcludedAndCarryUnaffected(t *testing.T) {
 		}
 		if _, _, code := runCLI(t, "copy", "--strict", sampleM4B, copyFixture(t, notagsFLAC)); code != 0 {
 			t.Errorf("m4b->flac carry under --strict exit = %d, want 0 (nothing was lost)", code)
+		}
+	})
+}
+
+// TestStrictCatchesDroppedDuplicateTagBlock: a WAV with two LIST/INFO chunks keeps only the
+// first on rewrite. When the second holds a value the first does not, that rewrite destroys
+// it, so --strict must refuse the file at exit 2; when the second is fully redundant the
+// write is silent and exits 0. The read-path duplicate-tag-block warning fires in every case
+// and never escalates on its own.
+func TestStrictCatchesDroppedDuplicateTagBlock(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		dup      [][2]string
+		wantExit int
+	}{
+		{"different value for the same key", [][2]string{{"INAM", "OddTitle"}}, 2},
+		// The write itself now stores the duplicate's value, so nothing dies with it.
+		{"value the edit itself writes", [][2]string{{"INAM", "Written"}}, 0},
+		{"key the survivor does not hold", [][2]string{{"IART", "Ghost Artist"}}, 2},
+		{"redundant subset", [][2]string{{"INAM", "First"}}, 0},
+		{"empty duplicate", nil, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			file := writeTempFile(t, "dup.wav", wavTwoInfoLists(c.dup))
+			args := []string{"set", "--strict", "--set", "ALBUM=Anything", file}
+			if c.name == "value the edit itself writes" {
+				args = []string{"set", "--strict", "--set", "TITLE=Written", file}
+			}
+			_, errb, code := runCLI(t, args...)
+			if code != c.wantExit {
+				t.Errorf("exit = %d, want %d: %s", code, c.wantExit, errb)
+			}
+			if c.wantExit == 2 && !strings.Contains(errb, "duplicate tag chunk held content no other container does") {
+				t.Errorf("strict refusal did not say what the write destroys:\n%s", errb)
+			}
+		})
+	}
+}
+
+// TestDuplicateTagBlockDropWarnsWithoutStrict: without --strict the same write proceeds and
+// reports the loss, so the warning and the strict decision read the same signal.
+func TestDuplicateTagBlockDropWarnsWithoutStrict(t *testing.T) {
+	t.Parallel()
+	file := writeTempFile(t, "dup.wav", wavTwoInfoLists([][2]string{{"INAM", "OddTitle"}}))
+	out, errb, code := runCLI(t, "set", "--set", "ALBUM=Anything", file)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0: %s", code, errb)
+	}
+	if !strings.Contains(out, "duplicate-tag-block-dropped") {
+		t.Errorf("the plan did not report the dropped duplicate:\n%s", out)
+	}
+}
+
+// wavTwoInfoLists builds a WAV holding two LIST/INFO chunks: an authoritative first one with
+// INAM=First, and a duplicate carrying the given 4CC/value pairs. Only the first survives a
+// rewrite, so what the second holds decides whether that rewrite destroys anything.
+func wavTwoInfoLists(dup [][2]string) []byte {
+	chunk := func(id string, body []byte) []byte {
+		if len(body)%2 == 1 {
+			body = append(slices.Clone(body), 0) // RIFF chunks pad to an even length
+		}
+		h := make([]byte, 4)
+		binary.LittleEndian.PutUint32(h, uint32(len(body)))
+		return slices.Concat([]byte(id), h, body)
+	}
+	info := func(pairs [][2]string) []byte {
+		body := []byte("INFO")
+		for _, p := range pairs {
+			body = append(body, chunk(p[0], append([]byte(p[1]), 0))...)
+		}
+		return chunk("LIST", body)
+	}
+	fmtBody := make([]byte, 16)
+	binary.LittleEndian.PutUint16(fmtBody[0:], 1)      // PCM
+	binary.LittleEndian.PutUint16(fmtBody[2:], 2)      // channels
+	binary.LittleEndian.PutUint32(fmtBody[4:], 44100)  // sample rate
+	binary.LittleEndian.PutUint32(fmtBody[8:], 176400) // byte rate
+	binary.LittleEndian.PutUint16(fmtBody[12:], 4)     // block align
+	binary.LittleEndian.PutUint16(fmtBody[14:], 16)    // bits per sample
+	inner := slices.Concat([]byte("WAVE"), chunk("fmt ", fmtBody),
+		info([][2]string{{"INAM", "First"}}), info(dup), chunk("data", make([]byte, 4000)))
+	sz := make([]byte, 4)
+	binary.LittleEndian.PutUint32(sz, uint32(len(inner)))
+	return slices.Concat([]byte("RIFF"), sz, inner)
+}
+
+// writeTempFile writes data to a fresh temp directory and returns its path.
+func writeTempFile(t *testing.T, name string, data []byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestDiscardSetIsStrictSubset enumerates every warning code rather than restating the
+// discard list, so a code added to either set is checked without editing this test. A discard
+// that --strict ignored would let a plan say "the edit was discarded" and still exit 0.
+func TestDiscardSetIsStrictSubset(t *testing.T) {
+	for c := wl.WarningCode(0); c <= wl.WarnDuplicateTagBlockDropped; c++ {
+		if c.String() == "" {
+			continue // an unassigned code in the block
+		}
+		if wl.IsDiscardWarning(c) && !strictEscalatingCodes[c] {
+			t.Errorf("%v is a discard but --strict does not escalate it", c)
+		}
+	}
+	// The whole-item losses: nothing the user asked for was stored.
+	for _, c := range []wl.WarningCode{
+		wl.WarnValueDropped, wl.WarnLegacyStripDropped, wl.WarnDuplicateTagBlockDropped,
+		wl.WarnSyncedLyricsUnsupported, wl.WarnPictureUnsupported, wl.WarnChaptersUnsupported,
+		wl.WarnPictureSelectorMiss,
+	} {
+		if !wl.IsDiscardWarning(c) {
+			t.Errorf("%v means the item was not stored at all; it must count as a discard", c)
+		}
+	}
+	// Partial losses keep the item, so "the edit was discarded" would overstate them - even
+	// for the ones named "*Dropped".
+	for _, c := range []wl.WarningCode{
+		wl.WarnPictureMetadataDropped, wl.WarnCommentDescriptionDropped, wl.WarnChapterEndsDropped,
+		wl.WarnChapterMetadataDropped, wl.WarnSyncedLyricsMetadataDropped,
+		wl.WarnSyncedLyricsLineDropped, wl.WarnTagStructureDropped,
+		wl.WarnValueCoerced, wl.WarnValueReduced, wl.WarnSingleValuedMulti, wl.WarnNumericGenre,
+		wl.WarnChapterTitleTruncated, wl.WarnChapterStartOverflow,
+		wl.WarnSyncedLyricsTimestampClamped, wl.WarnSyncedLyricsTruncated,
+		wl.WarnDuplicateTagBlock,
+	} {
+		if wl.IsDiscardWarning(c) {
+			t.Errorf("%v keeps the item in an altered or partial form; it is not a discard", c)
+		}
+	}
+}
+
+// TestDiscardedEditNotReportedAsUpToDate is the report's repro: adding cover art to a WebM
+// leaves the bytes unchanged because the format cannot store it, so the plan is a no-op - but
+// "already up to date" says the file holds what was asked for, which is the opposite of what
+// happened. Both the plan line and the save outcome must say the edit was discarded.
+func TestDiscardedEditNotReportedAsUpToDate(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, "../../testdata/sample.webm")
+	png := writeTempImage(t, "cover.png", minimalPNG())
+
+	out, errb, code := runCLI(t, "set", file, "--add-picture", "front-cover="+png)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0: %s", code, errb)
+	}
+	if strings.Contains(out, "already up to date") {
+		t.Errorf("a discarded edit must not report the file as already up to date:\n%s", out)
+	}
+	if !strings.Contains(out, "the edit was discarded") {
+		t.Errorf("the plan line did not say the edit was discarded:\n%s", out)
+	}
+	if !strings.Contains(out, "Edit discarded;") {
+		t.Errorf("the save outcome did not say the edit was discarded:\n%s", out)
+	}
+	if !strings.Contains(out, "picture-unsupported") {
+		t.Errorf("the warning that explains the discard is missing:\n%s", out)
+	}
+}
+
+// TestCleanNoOpStillReportsUpToDate is the other side: a genuine no-op carries no warning and
+// must keep its original wording.
+func TestCleanNoOpStillReportsUpToDate(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, sampleFLAC)
+	out, _, code := runCLI(t, "set", file, "--set", "TITLE=Original Title")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !strings.Contains(out, "already up to date") {
+		t.Errorf("a clean no-op must still report the file as already up to date:\n%s", out)
+	}
+}
+
+// TestEmptyGenreDroppedOnID3: --set GENRE= wrote a stub TCON the genre read path then drops,
+// so the file grew a frame no reader reports and the loss was silent. The plain text frames
+// keep storing a present-empty value, which is the cross-format contract.
+func TestEmptyGenreDroppedOnID3(t *testing.T) {
+	t.Parallel()
+	t.Run("id3-backed formats drop and report it", func(t *testing.T) {
+		t.Parallel()
+		for _, fix := range []string{"notags.mp3", "notags.aac", "notags.aiff"} {
+			file := copyFixture(t, filepath.Join("..", "..", "testdata", fix))
+			out, _, code := runCLI(t, "set", file, "--set", "GENRE=")
+			if code != 0 {
+				t.Fatalf("%s: exit = %d, want 0", fix, code)
+			}
+			if !strings.Contains(out, "value-dropped") {
+				t.Errorf("%s: the dropped empty genre was not reported:\n%s", fix, out)
+			}
+			raw, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(raw, []byte("TCON")) {
+				t.Errorf("%s: a stub TCON frame was written for an empty genre", fix)
+			}
+			if _, _, code := runCLI(t, "set", copyFixture(t, filepath.Join("..", "..", "testdata", fix)),
+				"--strict", "--set", "GENRE="); code != 2 {
+				t.Errorf("%s: --strict exit = %d, want 2", fix, code)
+			}
+		}
+	})
+	t.Run("other text fields still store a present empty", func(t *testing.T) {
+		t.Parallel()
+		file := copyFixture(t, filepath.Join("..", "..", "testdata", "notags.mp3"))
+		if _, _, code := runCLI(t, "set", file, "--set", "TITLE=", "-q"); code != 0 {
+			t.Fatalf("set TITLE= exit %d", code)
+		}
+		if v := tagValues(decodeJSONOne[jsonDocument](t, mustDumpJSON(t, file)), "TITLE"); len(v) != 1 || v[0] != "" {
+			t.Errorf("TITLE = %v, want the present-empty value every other format keeps", v)
 		}
 	})
 }

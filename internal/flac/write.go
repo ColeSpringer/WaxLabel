@@ -58,7 +58,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		newComments, rebuildInfo = rebuildComments(d.comments, edited.Tags, changed, edited.Chapters, chaptersChanged, edited.SyncedLyrics, syncedLyricsChanged)
 	}
 
-	newBlocks, ops, commentsReRendered := rebuildBlocks(d, newVendor, newComments, edited.Pictures, commentsChanged, vendorChanged, picturesChanged)
+	newBlocks, ops, commentsReRendered, dupDropped := rebuildBlocks(d, newVendor, newComments, edited.Pictures, commentsChanged, vendorChanged, picturesChanged)
 	if vendorChanged {
 		ops = append(ops, "vendor stamp neutralized")
 	}
@@ -139,6 +139,11 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// result doc must keep knowing about it for a later chained edit.
 	keepCommentPics := !commentsReRendered && !picturesChanged
 	result := buildResult(edited, d, newVendor, finalBlocks, newComments, newLeadingLen, audioOutStart, audioLen, newTrailingLen, newSize, opts.Limits.MaxElements, keepCommentPics)
+	if dupDropped {
+		// Only the first comment block survives; warn when an extra held content the written
+		// set does not.
+		report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "Vorbis comment block", result.Tags, d.dupContent)
+	}
 
 	// FLAC stores Vorbis values verbatim, so this downgrade only catches values the rebuild
 	// dropped, such as empty strings. A legacy strip or vendor neutralization remains a real
@@ -182,11 +187,13 @@ func checkBlockSizes(blocks []block) error {
 // The third return reports whether the comment block was re-rendered from
 // newComments (as opposed to cloned verbatim): the result builder keys the
 // comment-cover carry on it, since a re-render also materialized those covers
-// into native blocks.
-func rebuildBlocks(d *doc, newVendor string, newComments []comment, pictures []core.Picture, commentsChanged, vendorChanged, picturesChanged bool) ([]block, []string, bool) {
+// into native blocks. The fourth reports whether an extra Vorbis comment block was dropped,
+// so the caller can warn when values died with it.
+func rebuildBlocks(d *doc, newVendor string, newComments []comment, pictures []core.Picture, commentsChanged, vendorChanged, picturesChanged bool) ([]block, []string, bool, bool) {
 	var out []block
 	var ops []string
 	vorbisHandled := false
+	dupDropped := false
 	picturesEmitted := false
 	// commentBlockReRendered records that the comment block was re-rendered from the (already
 	// picture-comment-stripped) newComments, so the materialization below can fire on the real
@@ -217,6 +224,7 @@ func rebuildBlocks(d *doc, newVendor string, newComments []comment, pictures []c
 			// (all three change flags false) still collapses duplicates - the gate alone would
 			// clone every extra block verbatim.
 			if vorbisHandled {
+				dupDropped = true
 				continue
 			}
 			if !commentsChanged && !vendorChanged && !dropPictureComment {
@@ -289,7 +297,7 @@ func rebuildBlocks(d *doc, newVendor string, newComments []comment, pictures []c
 	if picturesChanged {
 		ops = append(ops, fmt.Sprintf("pictures: %d block(s)", len(pictures)))
 	}
-	return out, ops, commentBlockReRendered
+	return out, ops, commentBlockReRendered, dupDropped
 }
 
 // paddingBlocks returns PADDING blocks that together occupy exactly budget bytes (each

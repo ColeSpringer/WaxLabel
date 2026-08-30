@@ -22,6 +22,8 @@ type chunk struct {
 	// is authoritative; duplicates are preserved verbatim on a no-op but dropped
 	// when the file is rewritten.
 	dupTag bool
+	// dupContent is what this duplicate holds, graded against the written set at write time.
+	dupContent core.DuplicateContent
 }
 
 // id4 returns the chunk identifier as a string.

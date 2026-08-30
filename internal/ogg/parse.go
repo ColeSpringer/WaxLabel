@@ -70,6 +70,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	d.idPacket = hp.id
 	d.setupPacket = hp.setup
 	d.flacBlocks = hp.flacBlocks
+	d.dupContent = hp.dupContent
 	d.clean = hp.clean && !d.chained
 	switch d.kind {
 	case kindOpus:
@@ -138,6 +139,10 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	// Native PICTURE blocks are decoded before the comment list so a FLAC stream
 	// carrying both forms orders its covers native-first, matching internal/flac.
 	d.decodeFLACPictures(limit, &warnings)
+	if len(d.dupContent) > 0 {
+		warnings = core.Warn(warnings, core.WarnMultipleVorbisComment,
+			"more than one Vorbis comment block; the first is authoritative and the extras are dropped if the file is rewritten")
+	}
 	if err := d.decodeComments(hp.comment, limit, opts.Limits.MaxElements, &warnings); err != nil {
 		return nil, err
 	}
@@ -182,11 +187,12 @@ type headerPackets struct {
 	kind           kind
 	id             []byte
 	comment        []byte
-	setup          []byte   // Vorbis only
-	flacBlocks     []fblock // FLAC only: one metadata block per header packet
-	lastHeaderPage int      // index into pages of the page where the last header packet ends
-	audioByteStart int64    // absolute offset of the first audio byte (may sit mid-page when not clean)
-	clean          bool     // id alone on the first page and the last header packet ends at a page boundary
+	setup          []byte                  // Vorbis only
+	flacBlocks     []fblock                // FLAC only: one metadata block per header packet
+	dupContent     []core.DuplicateContent // FLAC only: what each extra comment block holds
+	lastHeaderPage int                     // index into pages of the page where the last header packet ends
+	audioByteStart int64                   // absolute offset of the first audio byte (may sit mid-page when not clean)
+	clean          bool                    // id alone on the first page and the last header packet ends at a page boundary
 }
 
 // reassembleHeaders walks the chosen serial's pages, reassembling packets across
@@ -243,7 +249,7 @@ func reassembleHeaders(src core.ReaderAtSized, pages []rawPage, serial uint32, l
 				// byte after the last header packet - where audio begins (the page
 				// body start for a clean stream, or mid-page when it is not).
 				hp.audioByteStart = p.bodyOff() + int64(o)
-				return finishHeaders(hp, packets, maxElements)
+				return finishHeaders(hp, packets, maxElements, limit)
 			}
 			// FLAC's header run is delimited by the last-block flag rather than a
 			// count, so it needs its own bound; the other two are capped by need.
@@ -274,18 +280,19 @@ func headersDone(k kind, need int, packets [][]byte) bool {
 	return len(last) > 0 && last[0]&0x80 != 0
 }
 
-func finishHeaders(hp headerPackets, packets [][]byte, maxElements int) (headerPackets, error) {
+func finishHeaders(hp headerPackets, packets [][]byte, maxElements int, limit int64) (headerPackets, error) {
 	hp.id = packets[0]
 	if hp.kind == kindFLAC {
 		if err := checkFLACID(hp.id); err != nil {
 			return hp, err
 		}
-		blocks, comment, err := splitFLACBlocks(packets[1:], maxElements)
+		blocks, comment, dups, err := splitFLACBlocks(packets[1:], maxElements, limit)
 		if err != nil {
 			return hp, err
 		}
 		hp.flacBlocks = blocks
 		hp.comment = comment
+		hp.dupContent = dups
 		return hp, nil
 	}
 	hp.comment = packets[1]
@@ -395,6 +402,9 @@ func (d *doc) decodeComments(pkt []byte, limit int64, maxElements int, warnings 
 // final granule position.
 func (d *doc) properties(lastGranule uint64) core.Properties {
 	t := core.AudioTrack{Codec: d.kind.String()}
+	// nominalBitrate is the Vorbis identification header's encoder target, held aside as the
+	// fallback the tail of this function applies when nothing can be measured.
+	var nominalBitrate int
 	switch d.kind {
 	case kindFLAC:
 		// STREAMINFO rides in the identification packet and carries the full track
@@ -414,10 +424,12 @@ func (d *doc) properties(lastGranule uint64) core.Properties {
 			t.Channels = int(d.idPacket[11])
 			t.SampleRate = int(binary.LittleEndian.Uint32(d.idPacket[12:16]))
 		}
+		// bitrate_nominal is the encoder's target, not what the file holds: on a real VBR
+		// file it reads several times the delivered rate. It is kept only as a last resort
+		// below, for a chained or unseekable stream where no duration is known and the
+		// measured average cannot be computed.
 		if len(d.idPacket) >= 24 {
-			if nominal := int32(binary.LittleEndian.Uint32(d.idPacket[20:24])); nominal > 0 {
-				t.Bitrate = int(nominal)
-			}
+			nominalBitrate = int(int32(binary.LittleEndian.Uint32(d.idPacket[20:24])))
 		}
 		t.TotalSamples = lastGranule
 		t.Duration = core.SamplesToDuration(lastGranule, t.SampleRate)
@@ -436,14 +448,20 @@ func (d *doc) properties(lastGranule uint64) core.Properties {
 			t.Duration = core.SamplesToDuration(t.TotalSamples, 48000)
 		}
 	}
-	// A nominal bitrate from the Vorbis identification header wins; otherwise
-	// derive an average from the audio page bodies via the shared core helper.
+	// Derive the average from the audio page bodies, the same measured figure Ogg Opus, Ogg
+	// FLAC and every other container report, so one number means one thing across formats.
+	// The Vorbis identification header's bitrate_nominal is used only when nothing can be
+	// measured (a zero duration: a chained or unseekable stream), which is better than
+	// reporting no bitrate at all.
 	if t.Bitrate == 0 {
 		var audioBytes int64
 		for _, ap := range d.audioPages {
 			audioBytes += ap.bodyLen
 		}
 		t.Bitrate = core.AverageBitrate(audioBytes, t.Duration.Seconds())
+	}
+	if t.Bitrate == 0 && nominalBitrate > 0 {
+		t.Bitrate = nominalBitrate
 	}
 	return core.Properties{Container: "Ogg", Tracks: []core.AudioTrack{t}}
 }

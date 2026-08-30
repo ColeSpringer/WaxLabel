@@ -131,6 +131,12 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 		if vcCount > 1 {
 			warnings = core.Warn(warnings, core.WarnMultipleVorbisComment,
 				"more than one Vorbis comment block; the first is authoritative and the extras are dropped if the file is rewritten")
+			// Record what this extra block holds; the writer grades it against what it stores.
+			// An unparseable extra carries nothing readable, so it stays silent.
+			if _, extra, err := parseVorbisComment(b.body, limit, maxElements); err == nil {
+				lose, _ := projectComments(extra)
+				d.dupContent = append(d.dupContent, core.DuplicateContent{Tags: lose})
+			}
 			continue
 		}
 		vendor, comments, err := parseVorbisComment(b.body, limit, maxElements)

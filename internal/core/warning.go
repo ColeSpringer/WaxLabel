@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/colespringer/waxlabel/tag"
@@ -342,6 +343,12 @@ const (
 	// linter's finding code, so the two never drift. Appended to the end of the block so
 	// the existing codes keep their numbers.
 	WarnNonConformingIcon
+	// WarnDuplicateTagBlockDropped means a rewrite discarded a duplicate tag container holding
+	// content the written set does not. It is the write-path counterpart of
+	// WarnDuplicateTagBlock, which describes the file and so stays out of the strict set. A
+	// redundant duplicate is silent. Appended to the end of the block so the existing codes
+	// keep their numbers.
+	WarnDuplicateTagBlockDropped
 )
 
 func (c WarningCode) String() string {
@@ -460,6 +467,8 @@ func (c WarningCode) String() string {
 		return "comment-description-dropped"
 	case WarnNonConformingIcon:
 		return "non-conforming-icon"
+	case WarnDuplicateTagBlockDropped:
+		return "duplicate-tag-block-dropped"
 	default:
 		return "unknown"
 	}
@@ -665,6 +674,82 @@ func DuplicateChapterStarts(chapters []Chapter) []time.Duration {
 		}
 	}
 	return out
+}
+
+// IsDiscardWarning reports whether the thing asked for was not stored at all, so a plan
+// carrying it and no byte change did not apply the edit. The per-item losses are out even
+// though several are named "*Dropped": a picture missing its description IS stored, so
+// calling the edit discarded would overstate it. So are coerce, reduce, clamp and truncate.
+func IsDiscardWarning(c WarningCode) bool {
+	switch c {
+	case WarnValueDropped, WarnLegacyStripDropped, WarnDuplicateTagBlockDropped,
+		WarnSyncedLyricsUnsupported, WarnPictureUnsupported, WarnChaptersUnsupported,
+		WarnPictureSelectorMiss:
+		return true
+	}
+	return false
+}
+
+// HasDiscardWarning reports whether any warning in ws is a discard (see [IsDiscardWarning]).
+func HasDiscardWarning(ws []Warning) bool {
+	for _, w := range ws {
+		if IsDiscardWarning(w.Code) {
+			return true
+		}
+	}
+	return false
+}
+
+// NoChangesLine is the one-line summary for a plan that writes no bytes. A plan whose only
+// effect was discarded still writes nothing, so a bare "already up to date" would state the
+// opposite of what happened; it says the edit was discarded instead. Both
+// [WriteReport.String] and the CLI render through it so the two cannot word it differently.
+func NoChangesLine(discarded bool) string {
+	if discarded {
+		return "no changes written (the edit was discarded)"
+	}
+	return "no changes (already up to date)"
+}
+
+// AppendDuplicateBlockDropped names what the duplicate tag containers a rewrite discards held
+// that written does not. Grading against what the write stores, not the parse-time winner,
+// keeps --strict from refusing a write that loses nothing. Cover art, chapters and synced
+// lyrics carry no canonical key, so they are counted rather than named.
+func AppendDuplicateBlockDropped(ws []Warning, container string, written tag.TagSet, dups []DuplicateContent) []Warning {
+	seen := map[tag.Key]bool{}
+	var keys []tag.Key
+	var extra []string
+	var pics, chaps, lyrics int
+	for _, d := range dups {
+		for _, k := range UnsubsumedKeys(written, d.Tags) {
+			if !seen[k] {
+				seen[k] = true
+				keys = append(keys, k)
+			}
+		}
+		pics += d.Pictures
+		chaps += d.Chapters
+		lyrics += d.SyncedLyrics
+	}
+	names := make([]string, 0, len(keys)+3)
+	for _, k := range keys {
+		names = append(names, string(k))
+	}
+	for _, c := range []struct {
+		n    int
+		unit string
+	}{{pics, "picture"}, {chaps, "chapter"}, {lyrics, "synced lyric set"}} {
+		if c.n > 0 {
+			extra = append(extra, fmt.Sprintf("%d %s(s)", c.n, c.unit))
+		}
+	}
+	names = append(names, extra...)
+	if len(names) == 0 {
+		return ws
+	}
+	return WarnKeyed(ws, WarnDuplicateTagBlockDropped,
+		fmt.Sprintf("a duplicate %s held content no other container does (%s); this rewrite drops it",
+			container, strings.Join(names, ", ")), keys...)
 }
 
 // CloneWarnings deep-copies a warning slice, detaching each Warning.Keys so a

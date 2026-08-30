@@ -72,6 +72,9 @@ func parseDataAtoms(p []byte) ([]dataAtom, bool) {
 
 // decodeItem decodes one ilst item into canonical contributions and pictures.
 func decodeItem(it item) itemResult {
+	if it.mdta() {
+		return decodeMdtaItem(it)
+	}
 	switch it.id() {
 	case "----":
 		return decodeFreeform(it)
@@ -106,6 +109,35 @@ func decodeItem(it item) itemResult {
 		}
 		return decodeText(it, key)
 	}
+}
+
+// decodeMdtaItem decodes an item keyed by the resolved keys-index name rather than a
+// four-character atom. An unrepresentable key leaves the item unowned, so it is preserved
+// verbatim. Cover art is the one non-text value here, stored under the name "covr".
+func decodeMdtaItem(it item) itemResult {
+	if it.key == mdtaCoverKey {
+		return decodeCover(it)
+	}
+	key, ok := mapping.MP4MdtaKey(it.key)
+	if !ok {
+		return itemResult{owned: false}
+	}
+	atoms, ok := parseDataAtoms(it.payload)
+	if !ok {
+		return itemResult{owned: false}
+	}
+	var contribs []core.Contribution
+	src := "mdta:" + it.key
+	for _, a := range atoms {
+		if a.typ != typeUTF8 && a.typ != typeImplicit {
+			return itemResult{owned: false} // binary payload: preserve verbatim
+		}
+		if !utf8.Valid(a.value) {
+			return itemResult{owned: false}
+		}
+		contribs = append(contribs, core.Contribution{Key: key, Value: string(a.value), Source: src})
+	}
+	return itemResult{contribs: contribs, owned: true}
 }
 
 // decodeText decodes a plain UTF-8 text item (possibly multi-value). An
@@ -373,7 +405,28 @@ func project(d *doc) (tags tag.TagSet, pics []core.Picture, families []core.Fami
 		pics = append(pics, r.pics...)
 		numericGenre = numericGenre || r.numericGenre
 	}
-	return core.BuildTagSet(contribs), pics, core.BuildFamilies(contribs, core.FamilyMP4), numericGenre
+	// A udta-level value is promoted only for a key the ilst does not hold: merging the two
+	// would fold a genuine disagreement into a multi-value the next write stores as one,
+	// losing the conflict. A key both stores hold becomes a family entry instead, like a
+	// legacy container's value, so a disagreement still reaches conflicting-families.
+	ilstTags := core.BuildTagSet(contribs)
+	var secondary []core.Contribution
+	for _, c := range udtaContributions(d.udtaTexts) {
+		if ilstTags.Has(c.Key) {
+			secondary = append(secondary, c)
+			continue
+		}
+		contribs = append(contribs, c)
+	}
+	tags = core.BuildTagSet(contribs)
+	families = core.BuildFamilies(contribs, core.FamilyMP4)
+	for _, c := range secondary {
+		families = append(families, core.FamilyValue{
+			Key: c.Key, Family: core.FamilyMP4, Scope: core.ScopeTrack,
+			Values: []string{c.Value}, Selected: core.FamilySelected(tags, c.Key, c.Value),
+		})
+	}
+	return tags, pics, families, numericGenre
 }
 
 // invalidKeyWarnings reports the iTunes freeform names the canonical vocabulary cannot

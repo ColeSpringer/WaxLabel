@@ -107,6 +107,12 @@ type RebuildInfo struct {
 	// of v2.4, or v2.3 under ID3MultiNullSep); repeat-frame and slash-join do not drop it. The caller
 	// surfaces it as a value-dropped warning keyed to each affected key. See detectDroppedTrailingValues.
 	DroppedTrailingValues []tag.Key
+	// DroppedEmptyValues lists the keys an edit set to an all-empty value that no frame was
+	// written for, so the key reads back absent. A plain text frame stores a present-empty
+	// value and reads it back; the genre, number-pair, movement and date frames cannot, and
+	// silently dropped it. Read off the frames actually rendered, so it cannot drift from the
+	// encoder. See detectDroppedEmptyValues.
+	DroppedEmptyValues []tag.Key
 	// DroppedInvolvedEmpties lists the involved-people role keys an edit touched whose value carried
 	// an empty element the TIPL/IPLS frame cannot store. Unlike a plain multi-value text frame, which
 	// keeps interior empties, the involved-people body is function/name pairs and a nameless pair is
@@ -163,6 +169,9 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 
 	picturesChanged := se.PicturesChanged
 	changed := diffKeys(base, edited)
+	// produced records which render tokens actually emitted a frame, so the all-empty drop is
+	// read off the render rather than re-derived per key.
+	produced := map[string]bool{}
 	dirty := map[string]bool{}
 	for k := range changed {
 		for _, rid := range keyRenderIDs(k, version) {
@@ -348,6 +357,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 				out = append(out, frames...)
 				info.UsedV23Multi = info.UsedV23Multi || v23multi
 				emitted[rid] = true
+				produced[rid] = len(frames) > 0
 			}
 			continue // a changed key's frame is rendered once; drop duplicates
 		}
@@ -385,6 +395,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 		out = append(out, frames...)
 		info.UsedV23Multi = info.UsedV23Multi || v23multi
 		emitted[rid] = true
+		produced[rid] = len(frames) > 0
 	}
 
 	// Place new pictures where the originals were (or at the end if none existed).
@@ -443,6 +454,7 @@ func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	info.NumericGenres = detectNumericGenres(changed, edited)
 	info.DroppedTotals = detectDroppedTotals(changed, edited)
 	info.DroppedTrailingValues = detectDroppedTrailingValues(changed, edited, version, opts.Multi)
+	info.DroppedEmptyValues = detectDroppedEmptyValues(changed, edited, produced, version, info)
 	info.DroppedInvolvedEmpties = detectDroppedInvolvedEmpties(changed, edited)
 	return out, info
 }
@@ -1117,6 +1129,36 @@ func detectDroppedTrailingValues(changed map[tag.Key]bool, edited tag.TagSet, ve
 	return dropped
 }
 
+// detectDroppedEmptyValues finds the keys this edit set to an all-empty value for which no
+// frame was written, so the key reads back absent. Scoped to changed keys because an empty
+// value only enters the model through an edit. Keys the date and total detectors already
+// report are skipped so one drop warns once.
+func detectDroppedEmptyValues(changed map[tag.Key]bool, edited tag.TagSet, produced map[string]bool, version byte, info RebuildInfo) []tag.Key {
+	reported := make(map[tag.Key]bool, len(info.DroppedDates)+len(info.DroppedTotals))
+	for _, k := range info.DroppedDates {
+		reported[k] = true
+	}
+	for _, k := range info.DroppedTotals {
+		reported[k] = true
+	}
+	var dropped []tag.Key
+	for k := range changed {
+		vals, ok := edited.Get(k)
+		if !ok || len(vals) == 0 || !allEmpty(vals) || reported[k] {
+			continue
+		}
+		wrote := false
+		for _, rid := range keyRenderIDs(k, version) {
+			wrote = wrote || produced[rid]
+		}
+		if !wrote {
+			dropped = append(dropped, k)
+		}
+	}
+	slices.Sort(dropped)
+	return dropped
+}
+
 // detectDroppedInvolvedEmpties finds the involved-people role keys an edit touched whose value
 // carries an empty element the TIPL/IPLS frame cannot store. Unlike a plain multi-value text
 // frame, which keeps interior empties, the involved-people body is function/name pairs and a
@@ -1436,6 +1478,15 @@ func AppendRebuildWarnings(ws []core.Warning, info RebuildInfo, retained tag.Tag
 		ws = core.WarnKeyed(ws, core.WarnValueDropped,
 			fmt.Sprintf("%s: a trailing empty value cannot be represented in an ID3 text frame and was dropped", k), k)
 	}
+	// Suppressed when another container still stores the empty value (WAV's LIST/INFO holds
+	// one), since the file as a whole did not lose it.
+	for _, k := range info.DroppedEmptyValues {
+		if v, ok := retained.Get(k); ok && len(v) > 0 {
+			continue
+		}
+		ws = core.WarnKeyed(ws, core.WarnValueDropped,
+			fmt.Sprintf("%s: an empty value cannot be represented in this ID3 frame and was dropped; use --clear to remove the key", k), k)
+	}
 	for _, k := range info.DroppedInvolvedEmpties {
 		ws = core.WarnKeyed(ws, core.WarnValueDropped,
 			fmt.Sprintf("%s: an empty credit value cannot be represented in the ID3 involved-people frame and was dropped", k), k)
@@ -1633,12 +1684,28 @@ func extractDatePart(iso string, part datePart) string {
 // returning no frame when the field is absent or empty (the frame is dropped). Both the
 // writer and EncodingRewriteNeeded go through it, so the predicate can never compute a
 // different render than the write performs.
+//
+// The all-empty guard is what the doc above claimed and the code did not: the old len == 0
+// test let GENRE="" through to a TCON the genre read path then drops. The plain text frames
+// store a present-empty value and read it back, so the guard belongs here, not in the shared
+// render path. detectDroppedEmptyValues reports the drop.
 func genreFrames(version byte, edited tag.TagSet, opts WriteOpts) ([]Frame, bool) {
 	vals, ok := edited.Get(tag.Genre)
-	if !ok || len(vals) == 0 {
+	if !ok || allEmpty(vals) {
 		return nil, false
 	}
 	return renderText(version, "TCON", genreValues(vals, version, opts.NumericGenre, opts.Multi), opts.Multi)
+}
+
+// allEmpty reports whether every value in a set is the empty string (including the empty
+// set).
+func allEmpty(values []string) bool {
+	for _, v := range values {
+		if v != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // EncodingRewriteNeeded reports whether re-rendering under the requested write-encoding

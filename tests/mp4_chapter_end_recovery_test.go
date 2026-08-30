@@ -10,9 +10,8 @@ import (
 
 // TestMP4ChapterLastEndRecoveredBelowMovieDuration is a regression guard: the QuickTime
 // reader recovers the last chapter's end from the stts running total. An explicit end that
-// lands below the movie duration must survive the round trip (only an end that reaches the
-// movie duration is canonicalized back to open), and the in-memory result must equal a fresh
-// reparse.
+// lands below the movie duration must survive the round trip, and the in-memory result must
+// equal a fresh reparse.
 func TestMP4ChapterLastEndRecoveredBelowMovieDuration(t *testing.T) {
 	src := readFixture(t, sampleM4B) // movie duration 9 s
 	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
@@ -36,11 +35,10 @@ func TestMP4ChapterLastEndRecoveredBelowMovieDuration(t *testing.T) {
 	}
 }
 
-// TestMP4ChapterOpenLastCanonicalizedAtMovieDuration is the companion to the single-chapter
-// discriminator: a multi-chapter list whose open last chapter spans to the movie duration
-// reads that end back as open (End 0), so the encoder's "tail to end-of-movie" bytes do not
-// resurrect a spurious near-EOF end.
-func TestMP4ChapterOpenLastCanonicalizedAtMovieDuration(t *testing.T) {
+// TestMP4ChapterOpenLastMaterializesMovieDuration pins the direction the last-chapter end
+// takes: an open last chapter is written as a span to the movie duration and read back as
+// that end, not canonicalized to 0. Only one of the two can round trip; this is the choice.
+func TestMP4ChapterOpenLastMaterializesMovieDuration(t *testing.T) {
 	src := readFixture(t, sampleM4B) // movie duration 9 s
 	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(
@@ -51,18 +49,44 @@ func TestMP4ChapterOpenLastCanonicalizedAtMovieDuration(t *testing.T) {
 	if !equalChapterLists(res.Chapters(), re.Chapters()) {
 		t.Errorf("result %+v != reparse %+v", res.Chapters(), re.Chapters())
 	}
-	if chs := re.Chapters(); len(chs) != 2 || chs[1].End != 0 {
-		t.Errorf("open last chapter End = %v, want 0 (canonicalized at the movie duration)", chs[len(chs)-1].End)
+	chs := re.Chapters()
+	if len(chs) != 2 {
+		t.Fatalf("got %d chapters, want 2", len(chs))
+	}
+	if chs[1].End != 9*time.Second {
+		t.Errorf("open last chapter End = %v, want 9s (the movie duration it spans to)", chs[1].End)
 	}
 }
 
-// TestMP4ChapterOpenLastPastMovieDurationReadsOpen is a regression guard: a last chapter
-// authored to start at or past the movie duration gets a synthetic 1 s placeholder tail on
-// write (chapterDeltas' default branch), which used to read back as a fabricated 1 s end
-// (endIsMovieDuration cannot canonicalize a span a full second past the duration). It must now
-// read back open (End 0), with the in-memory result equal to a fresh reparse - the read and
-// the write predictor move in lockstep. The within-duration open case
-// (TestMP4ChapterOpenLastCanonicalizedAtMovieDuration) still reads open via endIsMovieDuration.
+// TestMP4ChapterConcreteEndAtMovieDurationRoundTrips is the reversal's payoff, and the
+// report's own repro: an authored last-chapter end that lands exactly on the movie duration
+// must read back as that value, not as null. Driven through SetChapters rather than copy,
+// since Document.Transfer opens a run-to-EOF end before writing and would exercise the
+// destination refill instead of the read.
+func TestMP4ChapterConcreteEndAtMovieDurationRoundTrips(t *testing.T) {
+	src := readFixture(t, sampleMP4) // movie duration 1000 ms
+	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
+		return e.SetChapters(
+			wl.Chapter{Start: 0, End: 500 * time.Millisecond, Title: "A"},
+			wl.Chapter{Start: 500 * time.Millisecond, End: 1000 * time.Millisecond, Title: "B"},
+		)
+	})
+	if !equalChapterLists(res.Chapters(), re.Chapters()) {
+		t.Errorf("result %+v != reparse %+v", res.Chapters(), re.Chapters())
+	}
+	chs := re.Chapters()
+	if len(chs) != 2 {
+		t.Fatalf("got %d chapters, want 2", len(chs))
+	}
+	if chs[1].End != 1000*time.Millisecond {
+		t.Errorf("last chapter End = %v, want 1s (authored at the movie duration, reported verbatim)", chs[1].End)
+	}
+}
+
+// TestMP4ChapterOpenLastPastMovieDurationReadsOpen pins the open half of the asymmetry: a
+// last chapter starting past the movie duration gets a synthetic placeholder tail on write
+// that isPlaceholderTail recognizes, so it reads back open rather than as an end our own
+// writer invented. The result must still equal a fresh reparse.
 func TestMP4ChapterOpenLastPastMovieDurationReadsOpen(t *testing.T) {
 	src := readFixture(t, sampleM4B) // movie duration 9 s
 	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
@@ -79,10 +103,35 @@ func TestMP4ChapterOpenLastPastMovieDurationReadsOpen(t *testing.T) {
 		t.Fatalf("got %d chapters, want 2", len(chs))
 	}
 	if chs[1].End != 0 {
-		t.Errorf("past-duration open last chapter End = %v, want 0 (no fabricated 1 s placeholder tail)", chs[1].End)
+		t.Errorf("past-duration open last chapter End = %v, want 0 (no fabricated placeholder tail)", chs[1].End)
 	}
 	if chs[1].Start != 9500*time.Millisecond {
 		t.Errorf("past-duration last chapter Start = %v, want 9.5s (exact)", chs[1].Start)
+	}
+}
+
+// TestMP4ChapterPlaceholderTailOnUnitGrid pins the placeholder predicate where a Duration
+// comparison would stop firing. At the 90 kHz chapter timescale the gap between adjacent units
+// is 11111 ns except at unit counts 4 mod 9, which round up to 11112 while scaleToDuration(1)
+// stays 11111. Unit 810004 is such a count and sits past the 9 s movie duration.
+func TestMP4ChapterPlaceholderTailOnUnitGrid(t *testing.T) {
+	src := readFixture(t, sampleM4B) // movie duration 9 s, chapter media timescale 90000
+	const pastDuration = 9000044444 * time.Nanosecond
+	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
+		return e.SetChapters(
+			wl.Chapter{Start: 0, Title: "A"},
+			wl.Chapter{Start: pastDuration, Title: "Epilogue"},
+		)
+	})
+	if !equalChapterLists(res.Chapters(), re.Chapters()) {
+		t.Errorf("result %+v != reparse %+v (read and write predictor must agree on the unit grid)", res.Chapters(), re.Chapters())
+	}
+	chs := re.Chapters()
+	if len(chs) != 2 {
+		t.Fatalf("got %d chapters, want 2", len(chs))
+	}
+	if chs[1].End != 0 {
+		t.Errorf("past-duration open last chapter End = %v, want 0 (one-unit placeholder tail, recognized on the unit grid)", chs[1].End)
 	}
 }
 
@@ -220,10 +269,11 @@ func TestMP4ChapterOversizedStartPrefersChpl(t *testing.T) {
 	}
 }
 
-// TestMP4ChapterCoincidentOpenLastMirrors covers the corner the plan flags as a known
-// cosmetic edge: coincident starts with an open last chapter. Whatever last end the reader
-// recovers, the in-memory result must equal a fresh reparse (so re-apply idempotency holds),
-// and the coincident starts still read back exact from the chpl.
+// TestMP4ChapterCoincidentOpenLastMirrors covers the corner where coincident starts borrow
+// stts units that an open last chapter's own slack repays, so its recovered end lands a few
+// units short of the movie duration. Whatever last end the reader recovers, the in-memory
+// result must equal a fresh reparse (so re-apply idempotency holds), and the coincident
+// starts still read back exact from the chpl.
 func TestMP4ChapterCoincidentOpenLastMirrors(t *testing.T) {
 	src := readFixture(t, sampleM4B)
 	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
@@ -259,6 +309,9 @@ func TestMP4ChapterWriteReparseInvariant(t *testing.T) {
 		{"last-end-below-duration", []wl.Chapter{{Start: 0, Title: "A"}, {Start: sec(4), End: sec(6), Title: "B"}}},
 		{"open-last-within-duration", []wl.Chapter{{Start: 0, Title: "A"}, {Start: sec(4), Title: "B"}}},
 		{"open-last-past-duration", []wl.Chapter{{Start: 0, Title: "A"}, {Start: 9500 * time.Millisecond, Title: "Epilogue"}}},
+		// The last start lands on a media unit whose Duration rounds up (4 mod 9 at mts 90000),
+		// where a Duration-grid placeholder test and the unit-grid one disagree.
+		{"open-last-past-duration-unit-grid", []wl.Chapter{{Start: 0, Title: "A"}, {Start: 9000044444 * time.Nanosecond, Title: "Epilogue"}}},
 		{"coincident-open-last", []wl.Chapter{{Start: sec(2), Title: "A"}, {Start: sec(2), Title: "B"}}},
 		{"gap-past-stts-clamp", []wl.Chapter{{Start: 0, Title: "A"}, {Start: 14 * time.Hour, Title: "B"}}}, // stts saturation
 		{"oversized-start", []wl.Chapter{{Start: 5_000_000 * time.Second, Title: "Far"}}},                  // edit-list saturation

@@ -103,10 +103,11 @@ func TestSentinelToZero64(t *testing.T) {
 func TestChapterDeltasLastChapterBounded(t *testing.T) {
 	chs := []core.Chapter{{Start: 0}, {Start: 5 * time.Second}}
 	// An unknown movie duration (the sentinel maps to 0) must give the final
-	// chapter a one-second tail, not a multi-week span - the regression a raw
-	// 0xFFFFFFFF movieDuration would cause.
-	if d, _ := chapterDeltas(chs, 1000, 1000, 0); d[1] != 1000 {
-		t.Errorf("last delta with unknown duration = %d, want 1000 (1s tail)", d[1])
+	// chapter a one-unit tail, not a multi-week span - the regression a raw
+	// 0xFFFFFFFF movieDuration would cause. One unit is the value isPlaceholderTail
+	// recognizes, so the read leaves such a chapter open rather than reporting the tail.
+	if d, _ := chapterDeltas(chs, 1000, 1000, 0); d[1] != 1 {
+		t.Errorf("last delta with unknown duration = %d, want 1 (one-unit tail)", d[1])
 	}
 	// A real movie duration bounds the last chapter to the remaining span.
 	if d, _ := chapterDeltas(chs, 1000, 1000, 9000); d[1] != 4000 {
@@ -378,5 +379,35 @@ func TestSpliceBytesCoincidentOffsetOrdering(t *testing.T) {
 		if string(got) != want {
 			t.Errorf("spliceBytes = %q, want %q (insert must precede a same-offset replace, order-independent)", got, want)
 		}
+	}
+}
+
+// TestIsPlaceholderTail covers both synthetic tails: the one media unit chapterDeltas writes
+// now, and the whole second earlier releases wrote. Rejecting the second would make every
+// file they produced read back with a fabricated end, and keep it on the next write.
+func TestIsPlaceholderTail(t *testing.T) {
+	const mts, movieTS, movieDur = 90000, 1000, 9000 // 9 s movie, 90 kHz chapter track
+	past := 10 * time.Second
+	within := 5 * time.Second
+	cases := []struct {
+		name  string
+		start time.Duration
+		delta uint64
+		want  bool
+	}{
+		{"one unit past the duration", past, 1, true},
+		{"one second past the duration", past, mts, true},
+		{"a real end past the duration", past, 2 * mts, false},
+		{"one unit within the duration", within, 1, false},
+		{"exactly at the duration", 9 * time.Second, 1, true},
+	}
+	for _, c := range cases {
+		if got := isPlaceholderTail(c.start, c.delta, mts, movieTS, movieDur); got != c.want {
+			t.Errorf("%s: isPlaceholderTail = %v, want %v", c.name, got, c.want)
+		}
+	}
+	// Unknown movie timing disables the test entirely.
+	if isPlaceholderTail(past, 1, mts, 0, 0) {
+		t.Error("an unknown movie duration must not recognize a placeholder")
 	}
 }

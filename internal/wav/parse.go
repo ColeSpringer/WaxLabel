@@ -76,11 +76,17 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		riffEnd = size
 	}
 
-	if err := walkChunks(ctx, src, d, riffEnd, limit, opts.Limits.MaxElements); err != nil {
+	// rf64: declaredSize comes from ds64, so the boundary is authoritative and never retried.
+	distrusted, err := walkChunks(ctx, src, d, riffEnd, rf64, limit, opts.Limits.MaxElements)
+	if err != nil {
 		return nil, err
 	}
 
 	var warnings []core.Warning
+	if distrusted {
+		warnings = core.Warn(warnings, core.WarnDistrustedBlockSize,
+			fmt.Sprintf("the RIFF header declared %d bytes, short of the file's own chunks; the file size was used instead", declaredSize))
+	}
 
 	// Decode the small structural chunks.
 	if d.dataIdx >= 0 {
@@ -150,6 +156,18 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		}
 		d.infoIdx = i
 		markDup(d, infoIdxs[1:])
+		// Record what each dropped LIST/INFO holds; the writer grades it against what it stores.
+		for _, j := range infoIdxs[1:] {
+			body, err := bits.ReadSlice(src, d.chunks[j].bodyOff, min(d.chunks[j].bodyLen, maxMetaChunk), limit)
+			if err != nil {
+				continue
+			}
+			items, err := parseInfo(body, opts.Limits.MaxElements)
+			if err != nil {
+				continue // unparseable: nothing readable dies with it
+			}
+			d.chunks[j].dupContent = core.DuplicateContent{Tags: infoTags(items)}
+		}
 	}
 
 	// The first id3 chunk that parses is authoritative; every other id3 chunk -
@@ -177,8 +195,22 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 	if d.id3Idx >= 0 {
 		for _, i := range id3Idxs {
-			if i != d.id3Idx {
-				d.chunks[i].dupTag = true
+			if i == d.id3Idx {
+				continue
+			}
+			d.chunks[i].dupTag = true
+			body, err := bits.ReadSlice(src, d.chunks[i].bodyOff, min(d.chunks[i].bodyLen, maxMetaChunk), limit)
+			if err != nil {
+				continue
+			}
+			tg, perr := id3.ParseTag(body, opts.Limits.MaxElements)
+			if perr != nil {
+				continue // unparseable: nothing readable dies with it
+			}
+			p := id3.Project(tg)
+			d.chunks[i].dupContent = core.DuplicateContent{
+				Tags: p.Tags, Pictures: len(p.Pictures), Chapters: len(p.Chapters),
+				SyncedLyrics: len(p.SyncedLyrics),
 			}
 		}
 	}
@@ -296,14 +328,18 @@ func mediaWarnings(d *doc, numericGenre bool) []core.Warning {
 
 // riffDialect parameterizes the shared IFF/RIFF walker for WAV: little-endian chunk
 // sizes and a "data" audio chunk.
-var riffDialect = iff.Dialect{Order: binary.LittleEndian, AudioID: [4]byte{'d', 'a', 't', 'a'}, Noun: "RIFF chunks"}
+var riffDialect = iff.Dialect{
+	Order: binary.LittleEndian, AudioID: [4]byte{'d', 'a', 't', 'a'},
+	FormatID: [4]byte{'f', 'm', 't', ' '}, Noun: "RIFF chunks",
+}
 
 // walkChunks records every top-level RIFF chunk by identifier and source range via the
 // shared iff walker, then copies the result into d. It reads only chunk headers (never
 // bodies), so a large data chunk costs nothing.
-func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, riffEnd, limit int64, maxElements int) error {
+func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, riffEnd int64, trustedEnd bool, limit int64, maxElements int) (distrusted bool, err error) {
 	opts := iff.WalkOptions{
 		Size: d.size, End: riffEnd, Limit: limit, MaxElements: maxElements, Dialect: riffDialect,
+		TrustedEnd: trustedEnd,
 	}
 	// Only an RF64/BW64 file has 64-bit sizes to resolve. Leaving the hook nil for plain
 	// RIFF keeps the walk on its original path instead of calling a method that would
@@ -311,9 +347,9 @@ func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, riffEnd, li
 	if d.ds64 != nil {
 		opts.SizeOverride = d.ds64.override
 	}
-	res, err := iff.WalkChunks(ctx, src, opts)
+	res, distrusted, err := iff.WalkChunksRecovering(ctx, src, opts)
 	if err != nil {
-		return err
+		return false, err
 	}
 	d.chunks = make([]chunk, len(res.Chunks))
 	for i, c := range res.Chunks {
@@ -325,7 +361,7 @@ func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, riffEnd, li
 	d.trailingOff, d.trailingLen = res.TrailingOff, res.TrailingLen
 	d.trailingID3v1 = res.TrailingIsID3v1
 	d.outerOff, d.outerLen = res.OuterOff, res.OuterLen
-	return nil
+	return distrusted, nil
 }
 
 // isID3Chunk reports whether a chunk identifier holds an embedded ID3v2 tag.

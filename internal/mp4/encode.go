@@ -126,12 +126,21 @@ type itemKey struct {
 	subName string
 }
 
+// mdtaItemKey keys an mdta item by its resolved key name rather than its four-byte index:
+// the index is an artifact of the keys table, so two items naming the same key can carry
+// different indices and must still de-duplicate. It reuses subName, which no mdta item
+// otherwise sets.
+func mdtaItemKey(key string) itemKey { return itemKey{subName: key} }
+
 // itemIdentity keys an ilst item by the atom slot a rebuilt canonical item would occupy. For most
 // atoms that is the four-cc alone, but a freeform "----" atom must be keyed by its mean+name too:
 // several legitimate foreign freeforms share the "----" four-cc and differ only there, so keying on
 // the four-cc alone would wrongly drop them. A malformed freeform leaves mean/name empty, which
 // cannot match a rebuilt (always parseable, always com.apple.iTunes-mean) item, so it is preserved.
 func itemIdentity(it item) itemKey {
+	if it.mdta() {
+		return mdtaItemKey(it.key)
+	}
 	if it.id() == "----" {
 		mean, name, _, _ := parseMeanName(it.payload)
 		return itemKey{name: it.name, mean: mean, subName: name}
@@ -148,11 +157,20 @@ func itemIdentity(it item) itemKey {
 func covrItems(items []item) []item {
 	var out []item
 	for _, it := range items {
-		if it.name == atomName("covr") && owned(it) {
+		if isCoverItem(it) && owned(it) {
 			out = append(out, it)
 		}
 	}
 	return out
+}
+
+// isCoverItem reports whether an item is cover art. An mdta store names it by keys index, so
+// the four-cc test alone would miss it and a tag-only edit would carry no cover forward.
+func isCoverItem(it item) bool {
+	if it.mdta() {
+		return it.key == mdtaCoverKey
+	}
+	return it.name == atomName("covr")
 }
 
 // coverItemsToWrite resolves the covr ilst item(s) to emit past the fast path. When the picture
@@ -528,6 +546,30 @@ func droppedValues(ts tag.TagSet) []droppedValue {
 		}
 	}
 	return out
+}
+
+// itunesDroppedValues, itunesCoercedValues and itunesExtraStructuredValues gate their
+// iTunes-atom passes on the store: an mdta ilst holds every value as UTF-8 text, so nothing
+// they model is lost or coerced there.
+func itunesDroppedValues(ts tag.TagSet, itunes bool) []droppedValue {
+	if !itunes {
+		return nil
+	}
+	return droppedValues(ts)
+}
+
+func itunesCoercedValues(ts tag.TagSet, itunes bool) []droppedValue {
+	if !itunes {
+		return nil
+	}
+	return coercedValues(ts)
+}
+
+func itunesExtraStructuredValues(ts tag.TagSet, itunes bool) []droppedValue {
+	if !itunes {
+		return nil
+	}
+	return extraStructuredValues(ts)
 }
 
 // coercedValues returns the canonical values this edit stores in a normalized form because the

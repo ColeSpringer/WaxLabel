@@ -646,11 +646,9 @@ func TestMP4ChapterNonZeroStartRoundTrip(t *testing.T) {
 }
 
 func TestMP4ChapterSingleNonZeroStart(t *testing.T) {
-	// Single-chapter case (the report's reproduction): one chapter at a non-zero
-	// start round-trips with its start preserved and its End left open (a lone
-	// chapter runs to EOF - End 0 on both the request and the read-back), the result
-	// equals a reparse with no source conflict, and a second identical set is a
-	// no-op. Before the fix the first set zero-anchored the QuickTime track, so it
+	// One chapter at a non-zero start keeps its start and materializes its End at the movie
+	// duration: the text track has no "open" on the wire, so the span to the movie end is what
+	// gets reported. Before the fix the first set zero-anchored the QuickTime track, so it
 	// conflicted with the chpl and never reached this stable state.
 	src := readFixture(t, sampleM4B)
 	set := func(e *wl.Editor) *wl.Editor {
@@ -664,13 +662,14 @@ func TestMP4ChapterSingleNonZeroStart(t *testing.T) {
 	if len(chs) != 1 || chs[0].Start != 4*time.Second || chs[0].Title != "Only" {
 		t.Fatalf("single chapter not preserved at 4s: %+v", chs)
 	}
-	if chs[0].End != 0 {
-		t.Errorf("a lone chapter's End should stay open (0); got %v", chs[0].End)
+	if chs[0].End != 9*time.Second {
+		t.Errorf("a lone chapter's End = %v, want 9s (the movie duration it spans to)", chs[0].End)
 	}
 	if chapterWarn(re, wl.WarnChapterSourceConflict) {
 		t.Error("a single non-zero-start chapter must not report a source conflict")
 	}
-	// Idempotency: re-applying the same edit to the written file changes nothing.
+	// Idempotency: re-applying the same edit (still open-ended) to the written file changes
+	// nothing - an open last chapter and one ending at the movie duration are the same bytes.
 	plan2, err := set(re.Edit()).Prepare()
 	if err != nil {
 		t.Fatal(err)

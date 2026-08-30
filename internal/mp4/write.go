@@ -86,7 +86,11 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// as 0, a fractional BPM rounded). Both read the same raw canonical strings the encoder
 	// consumes, and both the ilst and chapter rewrite paths build from edited.Tags, so the
 	// shared report covers both.
-	for _, dv := range droppedValues(edited.Tags) {
+	// Every predicate below models an iTunes atom's fixed binary width. An mdta store writes
+	// each value as UTF-8 text instead, so none of them applies there and reporting one would
+	// be a false loss that --strict escalates.
+	itunesAtoms := !mdtaStore(d)
+	for _, dv := range itunesDroppedValues(edited.Tags, itunesAtoms) {
 		msg := fmt.Sprintf("%s value %q cannot be represented in this format and was dropped", dv.Key, dv.Value)
 		if dv.ZeroUnset {
 			// The 0 bytes ARE written (0/N), but decodePair treats a 0 slot as unset and reads it
@@ -96,7 +100,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		}
 		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueDropped, msg, dv.Key)
 	}
-	for _, cv := range coercedValues(edited.Tags) {
+	for _, cv := range itunesCoercedValues(edited.Tags, itunesAtoms) {
 		// The boolean atoms (cpil, pgap, shwm) each hold a single byte, so a non-boolean is
 		// stored as 0 (false) rather than dropped; a valid fractional BPM rounds to the nearest
 		// whole number in tmpo. A numerically-lossless canonicalization (a trkn/disk leading
@@ -114,7 +118,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// surplus is a genuine loss the encoders read past silently, so name it. The editor's
 	// single-valued-multi warning covers only authored edits, and this pass covers the copy
 	// path too.
-	for _, ev := range extraStructuredValues(edited.Tags) {
+	for _, ev := range itunesExtraStructuredValues(edited.Tags, itunesAtoms) {
 		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueDropped,
 			fmt.Sprintf("%s holds multiple values but its MP4 atom stores only the first; dropped %q", ev.Key, ev.Value), ev.Key)
 	}
@@ -146,7 +150,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// changed nothing else collapse to a true no-op via DowngradeNoOp below, which carries the
 	// warning forward so --strict still escalates. This diverges from the text formats
 	// (MP3/AAC/AIFF/WAV), which store the raw string; the help/README note the reason.
-	if patched, restored := restoreUnstorableSlots(base.Tags, edited.Tags); restored {
+	if patched, restored := restoreUnstorableSlots(base.Tags, edited.Tags); restored && itunesAtoms {
 		ec := *edited
 		ec.Tags = patched
 		edited = &ec
@@ -206,9 +210,19 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// when the picture set changed; otherwise the parsed covr is carried verbatim so a
 	// tag-only edit never rewrites a carried cover through coverType's JPEG default.
 	covr := coverItemsToWrite(edited.Pictures, d.items, picturesChanged)
-	newItems := buildItems(edited.Tags, covr, preservedItems(d.items), numericGenre)
+	newItems, newKeys := buildIlstItems(d, edited.Tags, covr, numericGenre)
 	if err := checkBuiltItems(newItems, d.items, opts.Limits.MaxAllocBytes); err != nil {
 		return nil, err
+	}
+	// Resolve which QuickTime store this edit writes to and what it must change outside the
+	// ilst region (a grown mdta keys index, udta-level text atoms kept in sync with the
+	// canonical value). Anything there means the whole udta is rebuilt instead.
+	qw, err := planQTMeta(d, edited, newKeys, true)
+	if err != nil {
+		return nil, err
+	}
+	if qw.needsUdtaRegion() {
+		return planQTMetaWrite(d, base, edited, newItems, qw, encodingRewrite, opts, report)
 	}
 	var ilstPayload []byte
 	for _, it := range newItems {
@@ -228,10 +242,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	if err != nil {
 		return nil, err
 	}
-	if lay.paddingClamped {
-		report.Warnings = core.Warn(report.Warnings, core.WarnPaddingClamped,
-			fmt.Sprintf("requested padding exceeded the %d-byte limit and was clamped to it", maxPadding))
-	}
+	report.Warnings = paddingClampWarning(report.Warnings, lay.paddingClamped)
 	delta := int64(len(lay.regionBytes)) - (lay.regionEnd - lay.regionStart)
 	total := d.size + delta
 	if err := checkSizes(lay.ancestors, delta); err != nil {
@@ -278,6 +289,16 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		return np, nil
 	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
+}
+
+// paddingClampWarning appends the clamp warning shared by every path that emits fresh
+// padding, so the in-place ilst layout and the udta region rebuild word it identically.
+func paddingClampWarning(ws []core.Warning, clamped bool) []core.Warning {
+	if !clamped {
+		return ws
+	}
+	return core.Warn(ws, core.WarnPaddingClamped,
+		fmt.Sprintf("requested padding exceeded the %d-byte limit and was clamped to it", maxPadding))
 }
 
 // checkCoverFormats rejects a cover whose image format an MP4 covr atom cannot

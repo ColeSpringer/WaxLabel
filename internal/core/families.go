@@ -133,6 +133,34 @@ func LegacyOnlyKeys(fams []FamilyValue, auth tag.TagSet) []tag.Key {
 	return out
 }
 
+// DuplicateContent is what a discarded duplicate tag container held, so the writer can tell a
+// redundant duplicate from one whose content dies with it. Tags is compared per key and per
+// value (a duplicate holding fewer keys, or fewer values for one key, is still redundant);
+// the counts cover what no canonical key can express.
+type DuplicateContent struct {
+	Tags         tag.TagSet
+	Pictures     int
+	Chapters     int
+	SyncedLyrics int
+}
+
+// UnsubsumedKeys returns, in losing's key order, the canonical keys for which losing holds a
+// value winning does not.
+func UnsubsumedKeys(winning, losing tag.TagSet) []tag.Key {
+	var out []tag.Key
+	for _, k := range losing.Keys() {
+		lost, _ := losing.Get(k)
+		kept, _ := winning.Get(k)
+		for _, v := range lost {
+			if !slices.Contains(kept, v) {
+				out = append(out, k)
+				break
+			}
+		}
+	}
+	return out
+}
+
 // LegacyFamilies projects a legacy container's key/value pairs into family entries.
 // media.Tags stays whatever the format's authoritative store holds, so this surfaces a
 // value living only in a preserved container - and flags it when it disagrees - without

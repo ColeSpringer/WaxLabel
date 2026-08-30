@@ -1,6 +1,10 @@
 package mapping
 
-import "github.com/colespringer/waxlabel/tag"
+import (
+	"strings"
+
+	"github.com/colespringer/waxlabel/tag"
+)
 
 // This file holds the MP4/iTunes metadata <-> canonical mapping shared by the
 // mp4 codec. iTunes-style tags live in a "moov.udta.meta.ilst" atom list. Each
@@ -87,6 +91,65 @@ var mp4Freeform = map[string]tag.Key{
 	"ARRANGER": tag.Arranger,
 	"WRITER":   tag.Writer,
 	"DJMIXER":  tag.DJMixer,
+}
+
+// quickTimeKeyPrefix is the reverse-DNS namespace Apple's own recorders put in front of
+// every mdta key name. ffmpeg's "-movflags +use_metadata_tags" writes bare names under the
+// same mdta namespace instead, so the read strips this prefix when present and then matches
+// the bare table below - covering both producers with one vocabulary.
+const quickTimeKeyPrefix = "com.apple.quicktime."
+
+// mp4Mdta maps a bare mdta key name (after quickTimeKeyPrefix is stripped) to its canonical
+// key. Several names fold onto one key on purpose: a file carrying both "date" and
+// "creationdate", or both "encoder" and "software", contributes each under its own source
+// label, so a disagreement between them surfaces as a conflicting family rather than one
+// value silently winning.
+var mp4Mdta = map[string]tag.Key{
+	"title":        tag.Title,
+	"artist":       tag.Artist,
+	"albumartist":  tag.AlbumArtist,
+	"album":        tag.Album,
+	"composer":     tag.Composer,
+	"comment":      tag.Comment,
+	"description":  tag.Description,
+	"genre":        tag.Genre,
+	"encoder":      tag.Encoder,
+	"software":     tag.Encoder,
+	"copyright":    tag.Copyright,
+	"date":         tag.RecordingDate,
+	"creationdate": tag.RecordingDate,
+	"publisher":    tag.Label,
+	"grouping":     tag.Grouping,
+	"lyrics":       tag.Lyrics,
+}
+
+// keyMP4Mdta is the write spelling for each canonical key that has a conventional bare mdta
+// name. It is hand-written rather than inverted from mp4Mdta because that table is
+// many-to-one: inverting it would make the write spelling for Encoder and RecordingDate
+// depend on map iteration order.
+var keyMP4Mdta = map[tag.Key]string{
+	tag.Title:         "title",
+	tag.Artist:        "artist",
+	tag.AlbumArtist:   "albumartist",
+	tag.Album:         "album",
+	tag.Composer:      "composer",
+	tag.Comment:       "comment",
+	tag.Description:   "description",
+	tag.Genre:         "genre",
+	tag.Encoder:       "encoder",
+	tag.Copyright:     "copyright",
+	tag.RecordingDate: "date",
+	tag.Label:         "publisher",
+	tag.Grouping:      "grouping",
+	tag.Lyrics:        "lyrics",
+}
+
+// mp4UdtaText holds the four-character text atoms that appear as direct children of
+// moov.udta in classic QuickTime files but have no iTunes ilst counterpart, so they are not
+// in mp4Text. The udta read consults mp4Text first and this table second.
+var mp4UdtaText = map[string]tag.Key{
+	"\xa9swr": tag.Encoder, // QuickTime "software" - where a Lavf stamp lands on a .mov
+	"\xa9inf": tag.Comment, // QuickTime "information"
 }
 
 var (
@@ -195,4 +258,40 @@ func MP4KeyFreeform(key tag.Key) string {
 		return name
 	}
 	return string(key)
+}
+
+// MP4MdtaKey returns the canonical key for an mdta key name and whether it resolves. The
+// "com.apple.quicktime." prefix is stripped first, so Apple's spelling and ffmpeg's bare one
+// land on the same key. An unlisted name falls back to the canonical vocabulary, the same
+// fallback decodeFreeform uses, so a key WaxLabel wrote reads back.
+func MP4MdtaKey(name string) (tag.Key, bool) {
+	bare := strings.TrimPrefix(name, quickTimeKeyPrefix)
+	if k, ok := mp4Mdta[bare]; ok {
+		return k, true
+	}
+	if k := tag.Key(bare); k.Valid() {
+		return k, true
+	}
+	return "", false
+}
+
+// MP4KeyMdta returns the bare mdta key name a canonical key writes to. Keys without a
+// conventional QuickTime name use the canonical key string itself, which MP4MdtaKey's
+// fallback reads back, so any canonical field round-trips through an mdta store.
+func MP4KeyMdta(key tag.Key) string {
+	if name, ok := keyMP4Mdta[key]; ok {
+		return name
+	}
+	return string(key)
+}
+
+// MP4UdtaTextKey returns the canonical key for a four-character text atom sitting directly
+// under moov.udta. It is MP4TextKey widened by the udta-only atoms (mp4UdtaText) that never
+// appear in an iTunes ilst, so the shared four-cc vocabulary stays in one table.
+func MP4UdtaTextKey(name string) (tag.Key, bool) {
+	if k, ok := mp4Text[name]; ok {
+		return k, true
+	}
+	k, ok := mp4UdtaText[name]
+	return k, ok
 }

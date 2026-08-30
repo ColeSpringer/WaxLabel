@@ -87,7 +87,7 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear ENCODER, the software stamp an encoder or transcoder leaves behind, wherever the format stores it (a WAV ISFT item and a FLAC/Ogg vendor string included)")
 	f.StringVar(&e.preset, "preset", "", "write policy preset: preserve|compatible|minimal")
 	f.StringVar(&e.legacy, "legacy", "", "legacy-tag policy: preserve|strip. strip removes ID3v1/APEv2/stray-ID3 containers unconditionally, warning when one holds the only copy of a value (--strict then refuses)")
-	f.StringVar(&e.padding, "padding", "", "reserve at least N bytes of padding after the metadata (FLAC default 8192; MP3/AAC/MP4 reuse the existing region; 0 writes none, like --no-padding)")
+	f.StringVar(&e.padding, "padding", "", "reserve at least N bytes of padding after the metadata, with the same size suffixes as --max-size (e.g. 8KiB; FLAC default 8192; MP3/AAC/MP4 reuse the existing region; 0 writes none, like --no-padding)")
 	f.BoolVar(&e.noPadding, "no-padding", false, "write no padding after the metadata (no effect on Ogg/WAV/AIFF/Matroska, which have no padding region)")
 	f.BoolVar(&e.numericGenre, "numeric-genre", false, "write a recognized genre as its numeric reference instead of its name: ID3's TCON on MP3/AAC/AIFF, MP4's gnre atom, and on WAV only where an 'id3 ' chunk exists or the same edit creates one (LIST/INFO IGNR stores the name literally). FLAC, Ogg, and Matroska have no numeric genre representation, so it has no effect there")
 	f.BoolVar(&e.strict, "strict", false, "fail (exit 2), instead of just noting it, on an unknown key or any edit the destination format cannot store faithfully: a value dropped, coerced, or reduced in precision; a single-valued key given multiple values; a dropped picture, chapter, or synced-lyrics field; or a truncated chapter title or clamped timestamp")
@@ -534,6 +534,12 @@ func (e *editFlags) writeOptions() ([]wl.WriteOption, bool, error) {
 // generous ceiling, far above any real cover.
 const maxPaddingBytes = 64 << 20
 
+// parsePaddingBytes parses a --padding value through the project's one reverse size parser, so
+// it accepts and rejects the same spellings --max-size does. A value that would truncate is
+// refused rather than rounded: "--padding 0.4" silently meaning --no-padding is worse than an
+// error. The message is parseByteSize's own, so it still says which part was wrong.
+func parsePaddingBytes(s string) (int64, error) { return parseByteSizeExact(s) }
+
 // resolvePaddingFlag turns the --padding/--no-padding values into a write option
 // (nil when neither is set, leaving the default 8 KiB policy in place) plus whether
 // a padding flag was given at all (which the per-format applicability note reads -
@@ -559,9 +565,9 @@ func resolvePaddingFlag(padding string, noPadding bool) (opt wl.WriteOption, fla
 	// given (the default sentinel), but a whitespace-only "   " WAS given and is not a
 	// valid byte count, so it must fail the parse below rather than silently default.
 	if padding != "" {
-		v, perr := strconv.ParseInt(strings.TrimSpace(padding), 10, 64)
-		if perr != nil || v < 0 {
-			return nil, false, usagef("--padding wants a non-negative byte count, got %q", padding)
+		v, perr := parsePaddingBytes(padding)
+		if perr != nil {
+			return nil, false, usagef("--padding %v", perr)
 		}
 		if v > maxPaddingBytes {
 			return nil, false, usagef("--padding %d is too large (max %d bytes, 64 MiB)", v, maxPaddingBytes)
@@ -1025,6 +1031,9 @@ func noteMalformedValue(notes *cappedNotes, k tag.Key, v string) {
 //   - Advisory/sanity codes (number-total-conflict, chapter-overlap-reconciled,
 //     chapter-past-duration, duplicate-*, multiple-front-covers, legacy-conflict) and the
 //     read-path codes (trailing-bytes among them): they describe the file, not an edit loss.
+//     duplicate-tag-block is the sharpest case: it says the file holds two containers, which
+//     is true before any edit. Its write-path counterpart duplicate-tag-block-dropped IS
+//     escalated below, firing only when this rewrite discards content nothing else holds.
 //   - WarnNonConformingIcon: a file icon that is not a 32x32 PNG is written in full and every
 //     reader renders it, so only conformance suffers - the same reason its lint finding is a
 //     warning while duplicate-icon is an error. WarnSyncedLyricsTruncated is
@@ -1086,6 +1095,12 @@ var strictEscalatingCodes = map[wl.WarningCode]bool{
 	// not carry. Every other legacy code describes the file's pre-existing state and stays out;
 	// this one describes what this write destroyed, which is exactly what --strict is for.
 	wl.WarnLegacyStripDropped: true,
+	// A rewrite discarded a duplicate tag container (a second LIST/INFO, a second id3/ID3
+	// chunk, a second Vorbis comment block) that held a value the surviving one does not. Like
+	// the legacy-strip code above this describes destruction by this write, not the file's
+	// pre-existing state, so it escalates while its read-path sibling duplicate-tag-block does
+	// not. A fully redundant duplicate never emits it.
+	wl.WarnDuplicateTagBlockDropped: true,
 }
 
 // strictWarningGate applies the per-file --strict escalation for plan and set: when a
@@ -1151,6 +1166,11 @@ func strictWarningReason(w wl.Warning) string {
 	case wl.WarnLegacyStripDropped:
 		// Echo the plan-body message: it names the keys, the opaque content, and the remedy, and
 		// a bare key list here would read as a format limitation rather than a chosen policy.
+		return w.Message
+	case wl.WarnDuplicateTagBlockDropped:
+		// Echo the plan-body message for the same reason: a bare key list would read as a format
+		// limitation, when what happened is that a second tag container held the only copy of
+		// these values and the rewrite collapses the two.
 		return w.Message
 	case wl.WarnValueCoerced:
 		return fmt.Sprintf("%s: value is not valid for this format and would be stored coerced", keys)

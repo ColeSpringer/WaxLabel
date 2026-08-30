@@ -71,6 +71,48 @@ func mp4HdlrMdir() []byte {
 	return mp4Atom("hdlr", slices.Concat(make([]byte, 8), []byte("mdirappl"), make([]byte, 9)))
 }
 
+// mp4HdlrMdta builds the metadata handler an ffmpeg "+use_metadata_tags" file carries: the
+// ilst items under it are keyed by index into a sibling "keys" box, not by four-cc name.
+func mp4HdlrMdta() []byte {
+	return mp4Atom("hdlr", slices.Concat(make([]byte, 8), []byte("mdta"), make([]byte, 12)))
+}
+
+// mp4Keys builds a "keys" box indexing the given key names under the "mdta" namespace.
+// Entry i is ilst index i+1. ffmpeg writes bare names here ("title"); Apple's own recorders
+// write the reverse-DNS form ("com.apple.quicktime.title").
+func mp4Keys(names ...string) []byte {
+	body := slices.Concat([]byte{0, 0, 0, 0}, mp4be32(len(names)))
+	for _, n := range names {
+		body = slices.Concat(body, mp4be32(8+len(n)), []byte("mdta"), []byte(n))
+	}
+	return mp4Atom("keys", body)
+}
+
+// mp4KeyItem builds an mdta ilst item keyed by a 1-based keys index: its four-byte atom
+// name is the index itself.
+func mp4KeyItem(index int, value string) []byte {
+	return slices.Concat(mp4be32(8+len(mp4Data(1, []byte(value)))), mp4be32(index), mp4Data(1, []byte(value)))
+}
+
+// mp4KeyItemData builds an mdta ilst item from pre-rendered data sub-atoms (cover art, say).
+func mp4KeyItemData(index int, data []byte) []byte {
+	return slices.Concat(mp4be32(8+len(data)), mp4be32(index), data)
+}
+
+// mp4QTTextEntry builds one [uint16 size][uint16 language]<text> entry of a classic
+// QuickTime udta text atom. Several concatenate into one atom, one per language.
+func mp4QTTextEntry(lang uint16, text string) []byte {
+	h := make([]byte, 4)
+	binary.BigEndian.PutUint16(h[0:2], uint16(len(text)))
+	binary.BigEndian.PutUint16(h[2:4], lang)
+	return append(h, text...)
+}
+
+// mp4UdtaText builds a classic QuickTime udta-level text atom from its entries.
+func mp4UdtaText(name string, entries ...[]byte) []byte {
+	return mp4Atom(name, slices.Concat(entries...))
+}
+
 func mp4HdlrSoun() []byte {
 	return mp4Atom("hdlr", slices.Concat(make([]byte, 8), []byte("soun"), make([]byte, 12)))
 }

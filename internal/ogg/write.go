@@ -131,11 +131,16 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	// (the id packet, alone) is normally copied verbatim; the FLAC mapping rebuilds it when
 	// its header-packet count changes.
 	newBlocks := d.flacBlocks
+	var flacDupContent []core.DuplicateContent
 	page0 := bits.Copy(0, d.page0Len)
 	page0Len := d.page0Len
 	var tailPackets [][]byte
 	if d.kind == kindFLAC {
-		newBlocks = rebuildFLACBlocks(d, newVendor, newComments, edited.Pictures, commentsChanged || vendorChanged, picturesChanged)
+		var dupDropped bool
+		newBlocks, dupDropped = rebuildFLACBlocks(d, newVendor, newComments, edited.Pictures, commentsChanged || vendorChanged, picturesChanged)
+		if dupDropped {
+			flacDupContent = d.dupContent
+		}
 		if err := checkFLACBlockSizes(newBlocks); err != nil {
 			return nil, err
 		}
@@ -227,6 +232,9 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	report.Warnings = vorbis.RebuildWarnings(report.Warnings, rebuildInfo)
 
 	result := buildResult(edited, d, newVendor, newComments, newBlocks, newAudioPages, newHeaderPages, page0Len, newAudioStart, shift, newSize, limit)
+	// Only the first Vorbis comment block survives; warn when an extra held content the
+	// written set does not, matching native FLAC.
+	report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "Vorbis comment block", result.Tags, flacDupContent)
 	// Ogg stores Vorbis values verbatim, so this downgrade only catches values the rebuild
 	// dropped, such as empty strings. Vendor neutralization has no canonical-tag diff, so it
 	// must be passed as the structural-change flag.

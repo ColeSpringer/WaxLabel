@@ -421,3 +421,22 @@ func TestRebuildPreservesPictureComment(t *testing.T) {
 		t.Errorf("rebuild = %v\n            want %v", got, want)
 	}
 }
+
+// TestNeutralizeVendorCodecStamp: the comment-header vendor string is where a transcode
+// leaves its mark on a FLAC/Ogg file, and libavcodec's stamp counts like libavformat's. A
+// genuine encoder's vendor must survive untouched, since no canonical key can restore it.
+func TestNeutralizeVendorCodecStamp(t *testing.T) {
+	for _, v := range []string{"Lavc61.19.101 libopus", "libavcodec 60.31.102", "Lavf61.7.100"} {
+		got, changed := NeutralizeVendor(v, true)
+		if !changed || got != WaxLabelVendor {
+			t.Errorf("NeutralizeVendor(%q, true) = %q, %v; want %q, true", v, got, changed, WaxLabelVendor)
+		}
+	}
+	const clean = "reference libFLAC 1.4.3 20230623"
+	if got, changed := NeutralizeVendor(clean, true); changed || got != clean {
+		t.Errorf("NeutralizeVendor(%q, true) = %q, %v; want it preserved", clean, got, changed)
+	}
+	if got, changed := NeutralizeVendor("Lavc61.19.101 libopus", false); changed || got != "Lavc61.19.101 libopus" {
+		t.Errorf("NeutralizeVendor without the strip flag changed the vendor: %q, %v", got, changed)
+	}
+}

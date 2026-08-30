@@ -135,8 +135,8 @@ Every failure carries a stable machine `code` (in `--json`, the error envelope's
 | --- | --- | --- |
 | 0 | none, or `broken-pipe` | Success, or a closed output pipe (`... \| head`) |
 | 1 | `error` | Unclassified failure |
-| 2 | `usage`, `invalid-key`, `needs-file` | Bad invocation, or an invalid canonical key |
-| 3 | `unsupported-format`, `unsupported-tag`, `unsupported-stream`, `unsupported-alignment`, `unsupported-fragmentation`, `picture-too-large` | The format is unsupported, or the file reads but the requested write is refused |
+| 2 | `usage`, `invalid-key`, `needs-file` | Bad invocation, an invalid canonical key, or a `--strict` refusal |
+| 3 | `unsupported-format`, `unsupported-tag`, `unsupported-stream`, `unsupported-alignment`, `unsupported-fragmentation`, `picture-too-large` | The format is unsupported, or the file reads but the format refuses the requested write |
 | 4 | `invalid-data` | The file is corrupt or violates its format |
 | 5 | `source-changed` | The file changed between the read and the save-back |
 | 6 | `not-found`, `io` | A wrong path, or a local I/O failure |
@@ -160,7 +160,7 @@ maximum: `canceled`/`timeout` > `source-changed` > `invalid-data` > `input-too-l
 | Ogg FLAC (`.oga`) | read/write | Vorbis comments and chapters as above; cover art is a native FLAC `PICTURE` block, not a comment. |
 | MP3 | read/write | ID3v2 (`CHAP`/`CTOC` chapters, `SYLT` lyrics); new tags are ID3v2.3. ID3v1/APEv2 are surfaced as legacy. |
 | WAV / RF64 / BW64 | read/write | RIFF LIST/INFO plus embedded `id3 ` (chapters and lyrics); chunks are preserved. The 64-bit RF64/BW64 form is kept on save-back, with `ds64` recomputed. |
-| MP4 / M4A / M4B / MOV | read/write | iTunes `ilst`, cover art, Nero and QuickTime chapters. Fragmented MP4 (a `moof`) is read-only; a `moov` declaring `mvex` with no fragment present is written normally. |
+| MP4 / M4A / M4B / MOV | read/write | iTunes `ilst`, the `mdta` keys store ffmpeg's `+use_metadata_tags` writes, classic `moov.udta` text atoms, cover art, Nero and QuickTime chapters. Fragmented MP4 (a `moof`) is read-only; a `moov` declaring `mvex` with no fragment present is written normally. |
 | Matroska / WebM | read/write | Scoped SimpleTags, segment title, attachments, default-edition chapters. WebM cannot write cover attachments. |
 | AAC (ADTS) | read/write | Front ID3v2 tag (new tags are ID3v2.4) plus ADTS frames. |
 | AIFF / AIFF-C | read/write | Native text chunks plus embedded `ID3 `; chunks are preserved. |
@@ -171,7 +171,7 @@ maximum: `canceled`/`timeout` > `source-changed` > `invalid-data` > `input-too-l
 
 When `set` authors a structural edit a format cannot store (e.g. cover art on WebM,
 or chapters on a format with no chapter store), it drops that item with a warning and
-applies the rest of the edit. `set --strict` promotes such drops to failures.
+applies the rest of the edit. `set --strict` promotes such drops to failures (exit 2).
 `copy --strict` does the same for a transfer: it refuses when the projection is not
 lossless, or when writing the destination would itself lose metadata. Copying onto a
 read-only destination (WMA, a fragmented MP4) is a refused write at exit 3, not a

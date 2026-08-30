@@ -63,7 +63,7 @@ type WriteReport struct {
 // String renders the report as the human-readable block the CLI and library
 // consumers print: the operations (falling back to "rewrite metadata" when the
 // codec named none), the before/after size, the padding when any is written, and
-// any warnings - or "no changes (already up to date)" for a no-op. Sizes are
+// any warnings - or the [NoChangesLine] summary for a no-op. Sizes are
 // humanized via [bits.HumanBytes].
 //
 // The operation and size lines are library-generated; the warning line is safe
@@ -79,8 +79,10 @@ func (r WriteReport) String() string {
 		// A no-op can still carry a warning the consumer must see - an edit whose only
 		// effect was a value the format could not store (value-dropped) leaves the bytes
 		// unchanged yet is not what was asked for, so it must not vanish behind a bare "no
-		// changes". A clean no-op has no warnings, so this stays just that one line.
-		s := "no changes (already up to date)"
+		// changes". When that warning is a discard, the headline itself says so rather than
+		// claiming the file is already up to date. A clean no-op has no warnings, so this
+		// stays just that one line.
+		s := NoChangesLine(HasDiscardWarning(r.Warnings))
 		for _, x := range r.Warnings {
 			s += "\n  warning: " + x.String()
 		}

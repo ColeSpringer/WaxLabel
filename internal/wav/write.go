@@ -138,7 +138,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		report.Warnings = append(report.Warnings, nativeReducedWarnings(edited.Tags)...)
 	}
 
-	outs, ops := planChunks(d, newInfo, newID3, emitINFO, emitID3, stripINFO)
+	outs, ops, dupLost := planChunks(d, newInfo, newID3, emitINFO, emitID3, stripINFO)
 
 	segs, lay, err := assemble(d, outs)
 	if err != nil {
@@ -168,6 +168,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		// so a plan that only drops the stamp is not reported as a contentless rewrite.
 		report.Operations = append(report.Operations, "ISFT encoder stamp strip")
 	}
+
 	if id3Info.UsedV23Multi {
 		report.Operations = append(report.Operations, "v2.3 multi-value NUL-separated storage")
 		report.Warnings = core.Warn(report.Warnings, core.WarnID3MultiValue,
@@ -179,6 +180,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report.BytesAfter = lay.total
 
 	result := buildResult(edited, d, newInfo, newID3, lay)
+	report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "tag chunk", result.Tags, dupLost)
 	// Surface ID3 rebuild losses only when the file as a whole loses them. WAV also writes
 	// RecordingDate to native LIST/INFO ICRD, where it can survive verbatim; the shared
 	// helper checks the re-projected output before warning.
@@ -235,10 +237,9 @@ func id3Tags(edited tag.TagSet, id3Present, encoderAuthored bool) tag.TagSet {
 // planChunks builds the output chunk list in source order, re-rendering or
 // dropping the tag containers and copying everything else (including the data
 // chunk) verbatim, then inserting any newly created tag container before the
-// data chunk.
-func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, stripINFO bool) ([]outChunk, []string) {
-	var outs []outChunk
-	var ops []string
+// data chunk. dupLost collects the canonical keys the dropped duplicate containers held and
+// the surviving one does not, so the caller can warn about the values this write destroys.
+func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, stripINFO bool) (outs []outChunk, ops []string, dupLost []core.DuplicateContent) {
 	infoRewritten, id3Rewritten := false, false
 
 	for i, ch := range d.chunks {
@@ -269,6 +270,7 @@ func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, 
 				// Drop it on rewrite so the output carries a single, consistent copy
 				// rather than a stale shadow of the authoritative one.
 				ops = append(ops, "duplicate tag chunk drop")
+				dupLost = append(dupLost, ch.dupContent)
 				continue
 			}
 			// A lone id3 chunk whose body failed to parse leaves no authoritative id3
@@ -301,7 +303,7 @@ func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, 
 	if len(created) > 0 {
 		outs = insertBeforeData(outs, created)
 	}
-	return outs, ops
+	return outs, ops, dupLost
 }
 
 // infoOut builds the LIST/INFO output chunk from rendered INFO items.

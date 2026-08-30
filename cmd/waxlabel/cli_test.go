@@ -1356,9 +1356,46 @@ func TestPaddingFlagValidation(t *testing.T) {
 		{"plan", file, "--padding", "-1"},
 		{"plan", file, "--padding", "abc"},
 		{"plan", file, "--padding", "99999999999"}, // above the 64 MiB sanity cap
+		{"plan", file, "--padding", "1QiB"},        // unknown unit
+		{"plan", file, "--padding", "0.4"},         // a fraction would silently truncate to 0
+		{"plan", file, "--padding", "1.9KiB"},      // and this one to 1945
+		{"plan", file, "--padding", "1GiB"},        // a valid suffix, still above the cap
 	} {
 		if _, _, code := runCLI(t, args...); code != 2 {
 			t.Errorf("args %v exit = %d, want 2 (usage)", args, code)
+		}
+	}
+	// The rejection keeps parseByteSize's own wording rather than flattening every failure to
+	// one message, so it still says which part of the value was wrong.
+	if _, errb, _ := runCLI(t, "plan", file, "--padding", "1QiB"); !strings.Contains(errb, "unknown unit") {
+		t.Errorf("--padding 1QiB error lost the unit detail: %s", errb)
+	}
+}
+
+// TestPaddingAcceptsSizeSuffixes: --padding reads the same size spellings --max-size does, so
+// "8KiB" is not a usage error while "2GiB" is fine on the other flag.
+func TestPaddingAcceptsSizeSuffixes(t *testing.T) {
+	t.Parallel()
+	file := copyFixture(t, sampleFLAC)
+	planPadding := func(args ...string) int64 {
+		out, errb, code := runCLI(t, append([]string{"--json", "plan", file}, args...)...)
+		if code != 0 {
+			t.Fatalf("plan exit = %d for %v: %s", code, args, errb)
+		}
+		return decodeJSONList[jsonReport](t, out)[0].PaddingAfter
+	}
+	cases := map[string]int64{
+		"32768":   32768,
+		"32KiB":   32768,
+		"32 KiB":  32768,
+		"32k":     32768, // a bare unit letter is binary, matching HumanBytes' output
+		"33KB":    33000,
+		"32.0KiB": 32768, // a fractional spelling landing on a whole byte is fine
+		"31.5KiB": 32256,
+	}
+	for spelling, want := range cases {
+		if got := planPadding("--set", "TITLE=X", "--padding", spelling); got < want {
+			t.Errorf("--padding %q PaddingAfter = %d, want >= %d", spelling, got, want)
 		}
 	}
 }
@@ -1807,17 +1844,17 @@ func TestCopyChaptersIntoOggIsLossy(t *testing.T) {
 func TestCopySplitChapterSetShowsCarriedSibling(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	// Chapter one's end meets chapter two's start (reconstructable on a
-	// start+title destination, so it carries); chapter two's explicit trailing
-	// end cannot be reconstructed there, so it grades lossy.
+	// Chapter one's end meets chapter two's start, so it carries; chapter two's ends early,
+	// well inside the 1 s fixture, so it grades lossy. Both stay below the file duration: a
+	// trailing end at or past it is a run-to-EOF end the transfer opens and diff folds away.
 	src := copyFixture(t, notagsMP3)
 	doc, err := wl.ParseFile(ctx, src)
 	if err != nil {
 		t.Fatal(err)
 	}
 	plan, err := doc.Edit().SetChapters(
-		wl.Chapter{Start: 0, End: 2 * time.Second, Title: "One"},
-		wl.Chapter{Start: 2 * time.Second, End: 4 * time.Second, Title: "Two"},
+		wl.Chapter{Start: 0, End: 400 * time.Millisecond, Title: "One"},
+		wl.Chapter{Start: 400 * time.Millisecond, End: 700 * time.Millisecond, Title: "Two"},
 	).Prepare()
 	if err != nil {
 		t.Fatal(err)

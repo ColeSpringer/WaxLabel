@@ -85,7 +85,10 @@ type doc struct {
 	// FLAC metadata block, kept verbatim so untouched blocks (SEEKTABLE, CUESHEET,
 	// APPLICATION, unknown types) round-trip byte-for-byte. Cover art lives in
 	// PICTURE blocks here, not in the comment list.
-	flacBlocks             []fblock
+	flacBlocks []fblock
+	// dupContent is what each extra Vorbis comment block holds. Only the first survives a
+	// rewrite, so the writer grades these against what it stores.
+	dupContent             []core.DuplicateContent
 	malformedPictureBlocks [][]byte       // PICTURE bodies that failed to decode, preserved
 	commentPictures        []core.Picture // covers found as METADATA_BLOCK_PICTURE comments
 
@@ -128,6 +131,7 @@ func (d *doc) Clone() core.NativeDoc {
 		c.malformedPictureBlocks[i] = slices.Clone(b)
 	}
 	c.commentPictures = core.ClonePictures(d.commentPictures)
+	c.dupContent = slices.Clone(d.dupContent)
 	return &c
 }
 

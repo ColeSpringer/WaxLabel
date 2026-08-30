@@ -129,7 +129,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		report.Warnings = append(report.Warnings, nativeReducedWarnings(edited.Tags)...)
 	}
 
-	outs, ops := planChunks(d, newText, newID3, emitText, emitID3, stripText)
+	outs, ops, dupLost := planChunks(d, newText, newID3, emitText, emitID3, stripText)
 
 	segs, lay, err := assemble(d, outs)
 	if err != nil {
@@ -156,6 +156,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	result := buildResult(edited, d, newText, newID3, lay)
 	// Surface ID3 rebuild losses the bytes cannot show. AIFF's native text chunks store
 	// no dates, so a v2.3 ID3 date drop or reduction is a file-level loss.
+	report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "ID3 chunk", result.Tags, dupLost)
 	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, id3Info, result.Tags)
 	// Collapse to a true no-op when the containers re-projected to base's values
 	// (e.g. a numeric genre); a native-text strip and an encoding rewrite stay real writes.
@@ -172,9 +173,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 // sound chunk) verbatim. The native text chunks are regrouped at the position of
 // the first one (their order among themselves is not significant); a newly
 // created container is inserted before the SSND chunk.
-func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, stripText bool) ([]outChunk, []string) {
-	var outs []outChunk
-	var ops []string
+func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, stripText bool) (outs []outChunk, ops []string, dupLost []core.DuplicateContent) {
 	textGroupEmitted, id3Rewritten := false, false
 
 	firstTextIdx := -1
@@ -214,6 +213,7 @@ func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, 
 			// Redundant duplicate ID3 chunk: drop on rewrite so the output carries a
 			// single, consistent copy rather than a stale shadow.
 			ops = append(ops, "duplicate ID3 chunk drop")
+			dupLost = append(dupLost, ch.dupContent)
 			continue
 		default:
 			// A stale ID3-identified chunk reaches the default only when it parsed as
@@ -252,7 +252,7 @@ func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, 
 	if len(created) > 0 {
 		outs = insertBeforeSSND(outs, created)
 	}
-	return outs, ops
+	return outs, ops, dupLost
 }
 
 // id3Out builds the "ID3 " output chunk from a rendered ID3v2 tag.

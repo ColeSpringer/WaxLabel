@@ -16,9 +16,18 @@ import (
 type item struct {
 	name    [4]byte
 	payload []byte
+	// key is the mdta key name this item resolved to through the meta's "keys" index, empty
+	// for an ordinary four-character iTunes item. It is resolved once at parse time so
+	// decodeItem stays a pure function of one item and needs no keys table threaded through
+	// every caller of owned().
+	key string
 }
 
 func (it item) id() string { return string(it.name[:]) }
+
+// mdta reports whether this item is keyed by a "keys" index rather than a four-character
+// atom name.
+func (it item) mdta() bool { return it.key != "" }
 
 // doc is the MP4 native document: the top-level atom layout, references to the
 // tag-path atoms (moov / udta / meta / ilst) and an adjacent free padding atom,
@@ -32,6 +41,7 @@ type doc struct {
 	udta *atomRef // moov.udta, if present
 	meta *atomRef // moov.udta.meta, if present
 	ilst *atomRef // moov.udta.meta.ilst, if present
+	keys *atomRef // moov.udta.meta.keys, if present (an mdta-handler store)
 	free *atomRef // a free or skip padding atom adjacent to ilst inside meta, if present (reusable)
 	chpl *atomRef // moov.udta.chpl Nero chapter list, if present
 
@@ -55,7 +65,18 @@ type doc struct {
 	nextTrackID    uint32 // a track id free for a new chapter track
 	nextTrackIDOff int64  // absolute offset of mvhd's next_track_ID field (0 if unread)
 
-	items     []item        // decoded ilst children (nil when no ilst)
+	items []item // decoded ilst children (nil when no ilst)
+	// metaHandler is moov.udta.meta's hdlr handler_type ("mdir" for iTunes, "mdta" for a
+	// keys-indexed store, "" when there is no meta or no readable hdlr). keyNames is the
+	// decoded "keys" index, entry i naming ilst index i+1.
+	metaHandler string
+	keyNames    []string
+	// udtaTexts holds the classic QuickTime text atoms decoded from direct moov.udta
+	// children (a plain .mov's whole tag store). They are kept apart from items because they
+	// live outside meta entirely and are re-rendered through the udta splice, not the ilst.
+	// udtaKids lists every direct udta child in order, decoded or not, for the native view.
+	udtaTexts []udtaText
+	udtaKids  []atomRef
 	offTables []offsetTable // every stbl stco/co64 in moov, in document order
 	// auxTables holds every stbl saio in moov, kept apart from offTables because a saio
 	// locates sample auxiliary information (CENC) rather than a media chunk. Both live in
@@ -141,6 +162,14 @@ func (d *doc) Clone() core.NativeDoc {
 	c.ilst = cloneRef(d.ilst)
 	c.free = cloneRef(d.free)
 	c.chpl = cloneRef(d.chpl)
+	c.keys = cloneRef(d.keys)
+	c.keyNames = slices.Clone(d.keyNames)
+	c.udtaKids = slices.Clone(d.udtaKids)
+	c.udtaTexts = make([]udtaText, len(d.udtaTexts))
+	for i, u := range d.udtaTexts {
+		u.entries = slices.Clone(u.entries)
+		c.udtaTexts[i] = u
+	}
 	c.audioTrak = cloneRef(d.audioTrak)
 	c.audioTref = cloneRef(d.audioTref)
 	c.audioTrefRaw = slices.Clone(d.audioTrefRaw)
@@ -220,17 +249,39 @@ func (d *doc) Describe() []core.NativeEntry {
 		}
 		out = append(out, core.NativeEntry{Kind: a.id(), Size: int(a.size), Note: note})
 	}
-	if d.ilst != nil {
+	if len(d.udtaKids) > 0 {
 		out = append(out, core.NativeEntry{
-			Kind: "moov.udta.meta.ilst", Size: int(d.ilst.size),
-			Note: fmt.Sprintf("%d items", len(d.items)),
+			Kind: "moov.udta", Size: int(d.udta.size),
+			Note: fmt.Sprintf("%d atom%s", len(d.udtaKids), pluralS(len(d.udtaKids))),
 		})
-		for _, it := range d.items {
-			note := ""
-			if !owned(it) {
-				note = "preserved"
+		for _, c := range d.udtaKids {
+			note := "preserved"
+			switch {
+			case c.id() == "meta":
+				note = "metadata"
+				if d.metaHandler != "" {
+					note = "metadata (" + d.metaHandler + " handler)"
+				}
+			case c.id() == "chpl":
+				note = "Nero chapter list"
+			case d.udtaTextNamed(c.name) != nil:
+				note = "" // a decoded QuickTime text atom, like an owned ilst item
 			}
-			out = append(out, core.NativeEntry{Kind: "  " + itemLabel(it.name), Size: len(it.payload) + 8, Note: note})
+			out = append(out, core.NativeEntry{Kind: "  " + itemLabel(c.name), Size: int(c.size), Note: note})
+		}
+	}
+	if d.ilst != nil {
+		note := fmt.Sprintf("%d item%s", len(d.items), pluralS(len(d.items)))
+		if d.metaHandler != "" {
+			note += " (" + d.metaHandler + " handler)"
+		}
+		out = append(out, core.NativeEntry{Kind: "moov.udta.meta.ilst", Size: int(d.ilst.size), Note: note})
+		for _, it := range d.items {
+			rowNote := ""
+			if !owned(it) {
+				rowNote = "preserved"
+			}
+			out = append(out, core.NativeEntry{Kind: "  " + itemDisplay(it), Size: len(it.payload) + 8, Note: rowNote})
 		}
 	}
 	if d.chpl != nil {
@@ -248,6 +299,14 @@ func (d *doc) Describe() []core.NativeEntry {
 	return out
 }
 
+// pluralS returns the "s" that turns a unit noun plural for every count but one.
+func pluralS(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
 // itemLabel renders an ilst item name for display, showing the 0xA9 prefix atoms
 // as "(c)nam" rather than an unprintable byte.
 func itemLabel(name [4]byte) string {
@@ -255,4 +314,23 @@ func itemLabel(name [4]byte) string {
 		return "(c)" + string(name[1:])
 	}
 	return string(name[:])
+}
+
+// itemDisplay renders an ilst item's identity for the native view. An mdta item's name is a
+// binary keys index, so the resolved key name is shown instead of four unprintable bytes.
+func itemDisplay(it item) string {
+	if it.mdta() {
+		return it.key
+	}
+	return itemLabel(it.name)
+}
+
+// udtaTextNamed returns the decoded udta text atom with this four-character name, or nil.
+func (d *doc) udtaTextNamed(name [4]byte) *udtaText {
+	for i := range d.udtaTexts {
+		if d.udtaTexts[i].name == name {
+			return &d.udtaTexts[i]
+		}
+	}
+	return nil
 }

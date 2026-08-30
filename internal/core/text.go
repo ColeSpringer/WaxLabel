@@ -19,12 +19,14 @@ func SanitizeUTF8(s string) string {
 }
 
 // IsTranscoderStamp reports whether s looks like an inherited transcoder/encoder
-// stamp. ffmpeg's libavformat writes "Lavf<version>", the typical signature of a
-// file produced by transcoding; surfacing it lets a tagger dedupe the noise. It
-// is the single predicate shared by every codec's encoder-noise check.
+// stamp. ffmpeg's libavformat writes "Lavf<version>" and its libavcodec "Lavc<version>
+// <codec>"; both describe the transcode that produced the file rather than the work, so both
+// count and --strip-encoder / lint --fix remove either. It is the single predicate shared by
+// every codec's encoder-noise check.
 func IsTranscoderStamp(s string) bool {
 	s = strings.ToLower(s)
-	return strings.Contains(s, "lavf") || strings.Contains(s, "libavformat")
+	return strings.Contains(s, "lavf") || strings.Contains(s, "libavformat") ||
+		strings.Contains(s, "lavc") || strings.Contains(s, "libavcodec")
 }
 
 // IndefiniteArticle returns "a" or "an" to precede name, so an interpolated format

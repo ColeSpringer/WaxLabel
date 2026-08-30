@@ -203,6 +203,22 @@ func FillInteriorEnds(chs []Chapter) {
 	}
 }
 
+// OpenRunToEOFEnd reopens a final chapter whose end runs to the source's own end of file, so
+// the destination refills it to ITS end of file; written literally it would sit mid-file on a
+// longer destination and diff would report a difference the copy did not cause. The ms
+// truncation mirrors normalizeReconstructableEnds, whose ID3 CHAP ends are ms-floored. Shared
+// by the transfer edit and ProjectTransfer's grading so the report matches the write.
+func OpenRunToEOFEnd(chs []Chapter, srcDuration time.Duration) []Chapter {
+	n := len(chs)
+	srcDurMs := srcDuration.Truncate(time.Millisecond)
+	if n == 0 || srcDurMs <= 0 || chs[n-1].End < srcDurMs {
+		return chs
+	}
+	out := CloneChapters(chs)
+	out[n-1].End = 0
+	return out
+}
+
 // ChapterMetadataDroppedMessage returns the edit-time warning text for the fields a
 // destination cannot preserve.
 func ChapterMetadataDroppedMessage(loss ChapterLoss) string {

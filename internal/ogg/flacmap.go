@@ -91,30 +91,39 @@ func checkFLACID(pkt []byte) error {
 // splitFLACBlocks turns the header packets after the identification packet into
 // metadata blocks, one per packet, and reports the full packet bytes of the
 // first VORBIS_COMMENT block so the shared comment decoder can read it.
-func splitFLACBlocks(packets [][]byte, maxElements int) (blocks []fblock, comment []byte, err error) {
+func splitFLACBlocks(packets [][]byte, maxElements int, limit int64) (blocks []fblock, comment []byte, dups []core.DuplicateContent, err error) {
 	for _, pkt := range packets {
 		if err := bits.CheckElementCap(len(blocks), maxElements, "Ogg FLAC metadata blocks"); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if len(pkt) < 4 {
-			return nil, nil, fmt.Errorf("%w: Ogg FLAC header packet is %d bytes, too short for a metadata block", waxerr.ErrInvalidData, len(pkt))
+			return nil, nil, nil, fmt.Errorf("%w: Ogg FLAC header packet is %d bytes, too short for a metadata block", waxerr.ErrInvalidData, len(pkt))
 		}
 		code := pkt[0] & 0x7F
 		if code == flacBlkInvalid {
-			return nil, nil, fmt.Errorf("%w: invalid FLAC block type 127", waxerr.ErrInvalidData)
+			return nil, nil, nil, fmt.Errorf("%w: invalid FLAC block type 127", waxerr.ErrInvalidData)
 		}
 		n := int(pkt[1])<<16 | int(pkt[2])<<8 | int(pkt[3])
 		if len(pkt)-4 < n {
-			return nil, nil, fmt.Errorf("%w: truncated %s block (%d bytes declared, %d present)",
+			return nil, nil, nil, fmt.Errorf("%w: truncated %s block (%d bytes declared, %d present)",
 				waxerr.ErrInvalidData, flacBlockName(code), n, len(pkt)-4)
 		}
 		b := fblock{code: code, body: pkt[4 : 4+n]}
-		if code == flacBlkVorbisComment && comment == nil {
+		switch {
+		case code != flacBlkVorbisComment:
+		case comment == nil:
 			comment = pkt[:4+n]
+		default:
+			// Only the first comment block survives a rewrite, matching native FLAC. Record
+			// what each extra holds so the writer can warn when dropping it loses something.
+			if _, extra, _, err := vorbis.ParseCommentList(b.body, limit, maxElements); err == nil {
+				lose, _ := vorbis.Project(extra)
+				dups = append(dups, core.DuplicateContent{Tags: lose})
+			}
 		}
 		blocks = append(blocks, b)
 	}
-	return blocks, comment, nil
+	return blocks, comment, dups, nil
 }
 
 // flacHeaderPackets renders the header packets that follow the identification
@@ -132,8 +141,8 @@ func flacHeaderPackets(blocks []fblock) [][]byte {
 // first VORBIS_COMMENT block is re-rendered (extras are dropped), pictures are
 // re-emitted at the position of the first PICTURE block, and every other block
 // is cloned verbatim.
-func rebuildFLACBlocks(d *doc, vendor string, comments []vorbis.Comment, pictures []core.Picture, commentsChanged, picturesChanged bool) []fblock {
-	out := make([]fblock, 0, len(d.flacBlocks)+len(pictures))
+func rebuildFLACBlocks(d *doc, vendor string, comments []vorbis.Comment, pictures []core.Picture, commentsChanged, picturesChanged bool) (out []fblock, dupDropped bool) {
+	out = make([]fblock, 0, len(d.flacBlocks)+len(pictures))
 	commentHandled := false
 	picturesEmitted := false
 	commentReRendered := false
@@ -157,6 +166,7 @@ func rebuildFLACBlocks(d *doc, vendor string, comments []vorbis.Comment, picture
 		switch b.code {
 		case flacBlkVorbisComment:
 			if commentHandled {
+				dupDropped = true
 				continue // only the first comment block survives a rewrite
 			}
 			commentHandled = true
@@ -200,7 +210,7 @@ func rebuildFLACBlocks(d *doc, vendor string, comments []vorbis.Comment, picture
 			out = append(out, fblock{code: flacBlkPicture, body: vorbis.RenderPicture(p)})
 		}
 	}
-	return out
+	return out, dupDropped
 }
 
 // checkFLACBlockSizes rejects any block whose body exceeds the 24-bit length

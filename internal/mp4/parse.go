@@ -9,6 +9,7 @@ import (
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/internal/mapping"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -152,12 +153,33 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 				d.udtaRaw = raw
 			}
 		}
+		for _, c := range udta.children {
+			d.udtaKids = append(d.udtaKids, refOf(c))
+		}
 		if chpl, ok := udta.find("chpl"); ok {
 			d.chpl = refPtr(chpl)
 			chplNode, haveChpl = chpl, true
 		}
+		// Classic QuickTime keeps its tags as direct udta children ("\xa9nam", "\xa9swr", ...)
+		// with no meta wrapper. Decode them before the meta branch so a file carrying both
+		// stores contributes from both; the two carry distinct source labels, so a
+		// disagreement surfaces as a conflicting family rather than one silently winning.
+		decodeUdtaTexts(src, udta, d, limit)
 		if meta, ok := udta.find("meta"); ok {
 			ilst, hasIlst := meta.find("ilst")
+			// The handler decides how the ilst items are keyed: "mdta" makes them 1-based
+			// indices into a sibling "keys" box, anything else the four-character iTunes names.
+			// Without this every mdta item falls to the unknown-atom branch and the file reports
+			// no tags at all.
+			if hdlr, ok := meta.find("hdlr"); ok {
+				d.metaHandler = handlerType(src, hdlr, limit)
+			}
+			if keys, ok := meta.find("keys"); ok {
+				d.keys = refPtr(keys)
+				if b, err := readPayloadWhole(src, keys, maxMetaChunk, limit); err == nil {
+					d.keyNames = parseKeys(b)
+				}
+			}
 			// A gap between where meta's children end and meta.end() corrupts a create-ilst
 			// edit: buildCreated appends the new ilst at meta.end(), but a re-parse resolves the
 			// first child at childStart/last-child-end (earlier), so the ilst lands misaligned.
@@ -451,7 +473,9 @@ func parseOffsetTable(src core.ReaderAtSized, a node, limit int64) (offsetTable,
 	return t, nil
 }
 
-// decodeIlst reads each ilst child atom's payload into the doc's item list.
+// decodeIlst reads each ilst child atom's payload into the doc's item list, resolving an
+// mdta-handler item's index against the keys box read just above. An index the keys table
+// does not cover leaves key empty, so the item is preserved verbatim rather than dropped.
 func decodeIlst(ctx context.Context, src core.ReaderAtSized, ilst node, d *doc, limit int64) error {
 	for _, c := range ilst.children {
 		if err := ctx.Err(); err != nil {
@@ -464,9 +488,31 @@ func decodeIlst(ctx context.Context, src core.ReaderAtSized, ilst node, d *doc, 
 		if err != nil {
 			return err
 		}
-		d.items = append(d.items, item{name: c.name, payload: payload})
+		it := item{name: c.name, payload: payload}
+		if d.metaHandler == mdtaHandler {
+			it.key = resolveMdtaKey(c.name, d.keyNames)
+		}
+		d.items = append(d.items, it)
 	}
 	return nil
+}
+
+// decodeUdtaTexts decodes the classic QuickTime text atoms sitting directly under udta into
+// d.udtaTexts. Only the mapped four-character names are decoded; every other udta child
+// (chpl, meta, and anything foreign) is left to the verbatim d.udtaRaw splice.
+func decodeUdtaTexts(src core.ReaderAtSized, udta node, d *doc, limit int64) {
+	for _, c := range udta.children {
+		if _, ok := mapping.MP4UdtaTextKey(c.id()); !ok {
+			continue
+		}
+		payload, err := readPayloadWhole(src, c, maxMetaChunk, limit)
+		if err != nil {
+			continue
+		}
+		if u, ok := decodeUdtaText(refOf(c), payload); ok {
+			d.udtaTexts = append(d.udtaTexts, u)
+		}
+	}
 }
 
 // reusablePadding reports whether an atom id is padding WaxLabel can overwrite in place.

@@ -71,6 +71,7 @@ func planChapters(d *doc, edited *core.Media, needIlst, picturesChanged bool, op
 
 	report.BytesAfter = total
 	report.PaddingAfter = reg.freeContent
+	report.Warnings = paddingClampWarning(report.Warnings, reg.paddingClamped)
 	report.Operations = chapterOps(d, edited, needIlst, delta)
 	if n := truncatedTitleCount(edited.Chapters); n > 0 {
 		report.Warnings = core.Warn(report.Warnings, core.WarnChapterTitleTruncated,
@@ -94,12 +95,14 @@ func planChapters(d *doc, edited *core.Media, needIlst, picturesChanged bool, op
 func buildChapterUdta(d *doc, edited *core.Media, needIlst, picturesChanged bool, opts core.WriteOptions) ([]item, udtaRegion, error) {
 	var newItems []item
 	var newIlst []byte
+	var qw qtMetaWrite
 	if needIlst {
 		covr := coverItemsToWrite(edited.Pictures, d.items, picturesChanged)
 		// The same encoding decision the ilst path makes, recomputed rather than threaded
 		// through: a chapter edit must not undo an earlier --numeric-genre run either.
 		numericGenre := numericGenreEncoding(d.items, edited.Tags, opts.NumericGenre)
-		newItems = buildItems(edited.Tags, covr, preservedItems(d.items), numericGenre)
+		var newKeys []string
+		newItems, newKeys = buildIlstItems(d, edited.Tags, covr, numericGenre)
 		if err := checkBuiltItems(newItems, d.items, opts.Limits.MaxAllocBytes); err != nil {
 			return nil, udtaRegion{}, err
 		}
@@ -108,8 +111,18 @@ func buildChapterUdta(d *doc, edited *core.Media, needIlst, picturesChanged bool
 			payload = append(payload, itemBytes(it)...)
 		}
 		newIlst = renderAtom(atomName("ilst"), payload)
+		// The same store bookkeeping the tag-only path does: an mdta keys index that gained
+		// an entry must be rewritten in this region too, or the fresh items would name an
+		// index past the table; udta-level text atoms are kept in sync with the ilst.
+		var err error
+		if qw, err = planQTMeta(d, edited, newKeys, false); err != nil {
+			return nil, udtaRegion{}, err
+		}
 	}
-	reg, err := buildUdtaRegion(d, newIlst, needIlst, edited.Chapters, opts)
+	reg, err := buildUdtaRegion(d, udtaWrite{
+		ilst: newIlst, needIlst: needIlst, chapters: edited.Chapters, chapterEdit: true,
+		reps: qw.reps, appends: qw.appends, metaDelta: qw.metaDelta,
+	}, opts)
 	return newItems, reg, err
 }
 
@@ -125,28 +138,49 @@ type udtaRegion struct {
 	udtaHeaderLen          int64
 	ancestors              []atomRef
 	freeContent            int64
+	paddingClamped         bool
+}
+
+// udtaWrite is what one udta region rebuild must place. reps offsets are relative to the udta
+// payload start, like every other byteRep here. chapterEdit gates the chpl entirely: a
+// tag-only rebuild must neither re-render it from the merged list nor read an empty list as a
+// clear.
+type udtaWrite struct {
+	ilst        []byte
+	needIlst    bool
+	chapters    []core.Chapter
+	chapterEdit bool
+	reps        []byteRep
+	appends     []byte
+	// metaDelta is the net byte change of the reps that sit inside the meta box (a rewritten
+	// keys index). meta's own size field is patched from the ilst resize, so a change to any
+	// other meta child has to be added there or meta under-declares its content and the
+	// following atom parses at the wrong offset.
+	metaDelta int64
 }
 
 // buildUdtaRegion produces the new moov.udta: it splices the new ilst (when tags
-// or pictures changed) and the new chpl into the preserved udta bytes, creating
-// the wrappers when they are absent and dropping the chpl when the chapter list
-// is cleared.
-func buildUdtaRegion(d *doc, newIlst []byte, needIlst bool, chapters []core.Chapter, opts core.WriteOptions) (udtaRegion, error) {
-	pad := opts.Padding.ClampTarget()
+// or pictures changed), the new chpl, and any caller-supplied replacements into the
+// preserved udta bytes, creating the wrappers when they are absent and dropping the chpl
+// when the chapter list is cleared.
+func buildUdtaRegion(d *doc, w udtaWrite, opts core.WriteOptions) (udtaRegion, error) {
+	newIlst, needIlst, chapters := w.ilst, w.needIlst, w.chapters
+	var padClamped bool
 	hasIlst := needIlst && len(newIlst) > 8 // an empty ilst is just its 8-byte header
-	needChpl := len(chapters) > 0
+	needChpl := w.chapterEdit && len(chapters) > 0
 
 	if d.udta == nil {
 		var payload []byte
 		var freeContent int64
 		if hasIlst {
-			region, fc := fitIlst(newIlst, 0, pad)
-			freeContent = fc
+			region, fc, cl := fitIlst(newIlst, 0, opts.Padding)
+			freeContent, padClamped = fc, padClamped || cl
 			payload = append(payload, renderFullBox(atomName("meta"), append(hdlrAtom(), region...))...)
 		}
 		if needChpl {
 			payload = append(payload, renderChpl(d.chplVersion, chapters)...)
 		}
+		payload = append(payload, w.appends...)
 		at := d.moov.end()
 		reg := udtaRegion{regionStart: at, regionEnd: at, udtaOff: at, udtaHeaderLen: 8, ancestors: []atomRef{*d.moov}}
 		if len(payload) == 0 {
@@ -155,31 +189,32 @@ func buildUdtaRegion(d *doc, newIlst []byte, needIlst bool, chapters []core.Chap
 		reg.regionBytes = renderAtom(atomName("udta"), payload)
 		reg.udtaPayload = payload
 		reg.freeContent = freeContent
+		reg.paddingClamped = padClamped
 		return reg, nil
 	}
 
 	ups := d.udta.offset + d.udta.headerLen
-	var reps []byteRep
-	var appends []byte
+	reps := append([]byteRep(nil), w.reps...)
+	appends := append([]byte(nil), w.appends...)
 	var freeContent int64
 
 	if needIlst {
 		switch {
 		case d.ilst != nil:
 			startR, endR := ilstRegionRel(d, ups)
-			region, fc := fitIlst(newIlst, endR-startR, pad)
-			freeContent = fc
+			region, fc, cl := fitIlst(newIlst, endR-startR, opts.Padding)
+			freeContent, padClamped = fc, padClamped || cl
 			reps = append(reps, byteRep{start: startR, oldLen: endR - startR, repl: region})
-			reps = append(reps, metaSizeRep(d, ups, d.meta.size+int64(len(region))-(endR-startR)))
+			reps = append(reps, metaSizeRep(d, ups, d.meta.size+int64(len(region))-(endR-startR)+w.metaDelta))
 		case d.meta != nil:
-			region, fc := fitIlst(newIlst, 0, pad)
-			freeContent = fc
+			region, fc, cl := fitIlst(newIlst, 0, opts.Padding)
+			freeContent, padClamped = fc, padClamped || cl
 			insR := d.meta.end() - ups
 			reps = append(reps, byteRep{start: insR, oldLen: 0, repl: region})
-			reps = append(reps, metaSizeRep(d, ups, d.meta.size+int64(len(region))))
+			reps = append(reps, metaSizeRep(d, ups, d.meta.size+int64(len(region))+w.metaDelta))
 		case hasIlst:
-			region, fc := fitIlst(newIlst, 0, pad)
-			freeContent = fc
+			region, fc, cl := fitIlst(newIlst, 0, opts.Padding)
+			freeContent, padClamped = fc, padClamped || cl
 			appends = append(appends, renderFullBox(atomName("meta"), append(hdlrAtom(), region...))...)
 		}
 	} else {
@@ -189,13 +224,15 @@ func buildUdtaRegion(d *doc, newIlst []byte, needIlst bool, chapters []core.Chap
 		freeContent = d.PaddingBytes()
 	}
 
-	switch {
-	case d.chpl != nil && needChpl:
-		reps = append(reps, byteRep{start: d.chpl.offset - ups, oldLen: d.chpl.size, repl: renderChpl(d.chplVersion, chapters)})
-	case d.chpl != nil: // cleared: drop the chpl
-		reps = append(reps, byteRep{start: d.chpl.offset - ups, oldLen: d.chpl.size})
-	case needChpl: // no existing chpl: append a new one
-		appends = append(appends, renderChpl(d.chplVersion, chapters)...)
+	if w.chapterEdit {
+		switch {
+		case d.chpl != nil && needChpl:
+			reps = append(reps, byteRep{start: d.chpl.offset - ups, oldLen: d.chpl.size, repl: renderChpl(d.chplVersion, chapters)})
+		case d.chpl != nil: // cleared: drop the chpl
+			reps = append(reps, byteRep{start: d.chpl.offset - ups, oldLen: d.chpl.size})
+		case needChpl: // no existing chpl: append a new one
+			appends = append(appends, renderChpl(d.chplVersion, chapters)...)
+		}
 	}
 
 	payload, err := spliceBytes(d.udtaRaw, reps)
@@ -212,7 +249,7 @@ func buildUdtaRegion(d *doc, newIlst []byte, needIlst bool, chapters []core.Chap
 	reg := udtaRegion{
 		regionStart: d.udta.offset, regionEnd: d.udta.end(),
 		udtaOff: d.udta.offset, udtaHeaderLen: 8,
-		ancestors: []atomRef{*d.moov}, freeContent: freeContent,
+		ancestors: []atomRef{*d.moov}, freeContent: freeContent, paddingClamped: padClamped,
 	}
 	if len(payload) == 0 {
 		// The udta became empty (e.g. ClearChapters on a chpl-only udta): drop the
@@ -290,17 +327,21 @@ func metaSizeRep(d *doc, ups, newSize int64) byteRep {
 // surplus as free padding when it fits in place and falling back to fresh padding
 // otherwise - the same rule planLayout uses, so chapter and tag edits leave the
 // same in-place slack. It returns the bytes and the free payload length.
-func fitIlst(newIlst []byte, oldRegionLen, pad int64) ([]byte, int64) {
+func fitIlst(newIlst []byte, oldRegionLen int64, pol core.PaddingPolicy) (region []byte, freeContent int64, clamped bool) {
+	pad := pol.ClampTarget()
+	if pad > maxPadding {
+		pad, clamped = maxPadding, true
+	}
 	leftover := oldRegionLen - int64(len(newIlst))
 	switch {
-	case leftover == 0:
-		return newIlst, 0
-	case leftover >= freeAtomHeaderLen:
+	case leftover == 0 && pol.Min <= 0:
+		return newIlst, 0, false
+	case leftover >= freeAtomHeaderLen && leftover-freeAtomHeaderLen >= pol.Min:
 		b, _, _, fc := appendFree(newIlst, leftover-freeAtomHeaderLen)
-		return b, fc
+		return b, fc, false
 	default:
 		b, _, _, fc := appendFree(newIlst, pad)
-		return b, fc
+		return b, fc, clamped
 	}
 }
 
@@ -364,33 +405,7 @@ func buildChapterResult(edited *core.Media, base *doc, items []item, reg udtaReg
 	shiftStructure(nd, base, reg.regionStart, reg.regionEnd, delta)
 	carryChapterRefs(nd, base, reg.regionEnd, delta)
 
-	// Recover the new meta/ilst/free/chpl offsets by re-walking the rendered udta
-	// payload, so they equal what a fresh parse would find.
-	if len(reg.udtaPayload) > 0 {
-		nd.udta = &atomRef{name: atomName("udta"), offset: reg.udtaOff, headerLen: reg.udtaHeaderLen,
-			size: reg.udtaHeaderLen + int64(len(reg.udtaPayload))}
-		ups := reg.udtaOff + reg.udtaHeaderLen
-		for _, k := range walkUdta(reg.udtaPayload) {
-			switch k.id() {
-			case "meta":
-				m := atomRefAt(k, ups)
-				nd.meta = &m
-				for _, mk := range k.children {
-					switch mk.id() {
-					case "ilst":
-						r := atomRefAt(mk, ups)
-						nd.ilst = &r
-					case "free":
-						r := atomRefAt(mk, ups)
-						nd.free = &r
-					}
-				}
-			case "chpl":
-				r := atomRefAt(k, ups)
-				nd.chpl = &r
-			}
-		}
-	}
+	applyUdtaRefs(nd, reg)
 
 	tags, pics, families, numericGenre := project(nd)
 	out := &core.Media{
@@ -406,6 +421,62 @@ func buildChapterResult(edited *core.Media, base *doc, items []item, reg udtaReg
 	}
 	setEssence(nd, out)
 	return out
+}
+
+// applyUdtaRefs recovers the rewritten user-data state by re-walking the rendered udta
+// payload: the udta/meta/ilst/free/keys/chpl offsets, the meta handler and keys index, and
+// the decoded QuickTime text atoms. Decoding the bytes just written (rather than carrying
+// the write's own intent forward) is what makes the result equal a fresh parse of the
+// output. Both udta-region write paths use it, so neither can drift from the other.
+func applyUdtaRefs(nd *doc, reg udtaRegion) {
+	if len(reg.udtaPayload) == 0 {
+		return
+	}
+	nd.udta = &atomRef{name: atomName("udta"), offset: reg.udtaOff, headerLen: reg.udtaHeaderLen,
+		size: reg.udtaHeaderLen + int64(len(reg.udtaPayload))}
+	ups := reg.udtaOff + reg.udtaHeaderLen
+	payloadOf := func(n node) []byte {
+		lo, hi := n.offset+n.headerLen, n.offset+n.size
+		if lo < 0 || hi < lo || hi > int64(len(reg.udtaPayload)) {
+			return nil
+		}
+		return reg.udtaPayload[lo:hi]
+	}
+	nd.metaHandler = ""
+	nd.keyNames = nil
+	nd.udtaTexts = nil
+	for _, k := range walkUdta(reg.udtaPayload) {
+		ref := atomRefAt(k, ups)
+		nd.udtaKids = append(nd.udtaKids, ref)
+		switch k.id() {
+		case "meta":
+			m := ref
+			nd.meta = &m
+			for _, mk := range k.children {
+				r := atomRefAt(mk, ups)
+				switch mk.id() {
+				case "ilst":
+					nd.ilst = &r
+				case "free":
+					nd.free = &r
+				case "keys":
+					nd.keys = &r
+					nd.keyNames = parseKeys(payloadOf(mk))
+				case "hdlr":
+					if b := payloadOf(mk); len(b) >= 12 {
+						nd.metaHandler = string(b[8:12])
+					}
+				}
+			}
+		case "chpl":
+			r := ref
+			nd.chpl = &r
+		default:
+			if u, ok := decodeUdtaText(ref, payloadOf(k)); ok {
+				nd.udtaTexts = append(nd.udtaTexts, u)
+			}
+		}
+	}
 }
 
 // chplRoundTrip simulates the chpl encode->decode round trip - a start rounded to

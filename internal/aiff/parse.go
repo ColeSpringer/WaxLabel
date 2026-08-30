@@ -64,11 +64,17 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 
 	d := &doc{size: size, commIdx: -1, ssndIdx: -1, id3Idx: -1}
 	copy(d.formType[:], hdr[8:12])
-	if err := walkChunks(ctx, src, d, formEnd, limit, opts.Limits.MaxElements); err != nil {
+	distrusted, err := walkChunks(ctx, src, d, formEnd, limit, opts.Limits.MaxElements)
+	if err != nil {
 		return nil, err
 	}
 
 	var warnings []core.Warning
+	if distrusted {
+		warnings = core.Warn(warnings, core.WarnDistrustedBlockSize,
+			fmt.Sprintf("the FORM header declared %d bytes, short of the file's own chunks; the file size was used instead",
+				binary.BigEndian.Uint32(hdr[4:8])))
+	}
 	isAIFC := formType == "AIFC"
 
 	// First pass over the walked chunks: decode COMM, collect the native text
@@ -126,8 +132,23 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 	if d.id3Idx >= 0 {
 		for _, i := range id3Idxs {
-			if i != d.id3Idx {
-				d.chunks[i].dupTag = true
+			if i == d.id3Idx {
+				continue
+			}
+			d.chunks[i].dupTag = true
+			// Record what this dropped chunk holds; the writer grades it against what it stores.
+			body, err := bits.ReadSlice(src, d.chunks[i].bodyOff, min(d.chunks[i].bodyLen, maxMetaChunk), limit)
+			if err != nil {
+				continue
+			}
+			tg, perr := id3.ParseTag(body, opts.Limits.MaxElements)
+			if perr != nil {
+				continue // unparseable: nothing readable dies with it
+			}
+			p := id3.Project(tg)
+			d.chunks[i].dupContent = core.DuplicateContent{
+				Tags: p.Tags, Pictures: len(p.Pictures), Chapters: len(p.Chapters),
+				SyncedLyrics: len(p.SyncedLyrics),
 			}
 		}
 	}
@@ -271,17 +292,20 @@ func mediaWarnings(d *doc, numericGenre bool) []core.Warning {
 
 // formDialect parameterizes the shared IFF/RIFF walker for AIFF: big-endian chunk sizes
 // and an "SSND" audio chunk.
-var formDialect = iff.Dialect{Order: binary.BigEndian, AudioID: [4]byte{'S', 'S', 'N', 'D'}, Noun: "IFF chunks"}
+var formDialect = iff.Dialect{
+	Order: binary.BigEndian, AudioID: [4]byte{'S', 'S', 'N', 'D'},
+	FormatID: [4]byte{'C', 'O', 'M', 'M'}, Noun: "IFF chunks",
+}
 
 // walkChunks records every top-level IFF chunk by identifier and source range via the
 // shared iff walker, then copies the result into d. It reads only chunk headers (never
 // bodies), so a large SSND chunk costs nothing.
-func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, formEnd, limit int64, maxElements int) error {
-	res, err := iff.WalkChunks(ctx, src, iff.WalkOptions{
+func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, formEnd, limit int64, maxElements int) (distrusted bool, err error) {
+	res, distrusted, err := iff.WalkChunksRecovering(ctx, src, iff.WalkOptions{
 		Size: d.size, End: formEnd, Limit: limit, MaxElements: maxElements, Dialect: formDialect,
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 	d.chunks = make([]chunk, len(res.Chunks))
 	for i, c := range res.Chunks {
@@ -293,7 +317,7 @@ func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, formEnd, li
 	d.trailingOff, d.trailingLen = res.TrailingOff, res.TrailingLen
 	d.trailingID3v1 = res.TrailingIsID3v1
 	d.outerOff, d.outerLen = res.OuterOff, res.OuterLen
-	return nil
+	return distrusted, nil
 }
 
 // soundDataStart returns the offset of the first sample frame within an SSND

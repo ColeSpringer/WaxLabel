@@ -216,7 +216,7 @@ func collectMvhd(src core.ReaderAtSized, mvhd node, d *doc, limit int64) {
 	po := mvhd.payloadOff()
 	// Read the timescale/duration through readMvhdTiming - the SAME decode movieTimingOf uses on a
 	// reparse - so the write path's d.movieTimescale/d.movieDuration cannot drift from it (a drift
-	// would desync the chapter last-end canonicalization and churn the file). next_track_ID is read
+	// would desync the chapter last-end recovery and churn the file). next_track_ID is read
 	// separately below at its own, later threshold: a valid-but-truncated mvhd (present timing, cut
 	// off before byte 96/108) still populates the timing.
 	d.movieTimescale, d.movieDuration = readMvhdTiming(b)
@@ -274,7 +274,7 @@ func decodeQTChapters(src core.ReaderAtSized, moov node, limit int64) (chapters 
 	// with the absolute chpl rather than self-reporting a source conflict. The movie
 	// timescale and duration are read locally because collectMvhd has not populated
 	// d.movieTimescale/d.movieDuration at this point (resolveChapters runs before it); the
-	// duration lets decodeTextTrack canonicalize an open last chapter's recovered end.
+	// duration lets decodeTextTrack recognize the placeholder tail on a past-duration chapter.
 	movieTimescale, movieDuration := movieTimingOf(src, moov, limit)
 	offset, offsetSaturated := chapterEditOffset(src, text, movieTimescale, limit)
 	chapters, saturated, ok = decodeTextTrack(src, text, offset, movieTimescale, movieDuration, limit)
@@ -287,7 +287,7 @@ func decodeQTChapters(src core.ReaderAtSized, moov node, limit int64) (chapters 
 
 // movieTimingOf reads moov's mvhd movie timescale and duration at resolveChapters time, before
 // collectMvhd populates d. It returns zeros when the mvhd is absent or unreadable, so the chapter
-// decode applies no edit-list offset and no last-end canonicalization. A caller wanting only the
+// decode applies no edit-list offset and no placeholder-tail detection. A caller wanting only the
 // timescale reads the first return and ignores the duration.
 func movieTimingOf(src core.ReaderAtSized, moov node, limit int64) (timescale uint32, duration uint64) {
 	mvhd, ok := moov.find("mvhd")
@@ -306,7 +306,7 @@ func movieTimingOf(src core.ReaderAtSized, moov node, limit int64) (timescale ui
 // zero. Per-field guards return the timescale even on a payload truncated before the duration
 // (or before next_track_ID). It is the single decode both movieTimingOf (reparse) and collectMvhd
 // (write path) call, so the two cannot drift on the offsets or thresholds - the read and write
-// chapter timing must agree or the last-end canonicalization desyncs.
+// chapter timing must agree or the last-end recovery desyncs.
 func readMvhdTiming(b []byte) (timescale uint32, duration uint64) {
 	if len(b) < 1 {
 		return 0, 0
@@ -550,8 +550,8 @@ func trackID(src core.ReaderAtSized, tkhd node, limit int64) (uint32, bool) {
 // bytes in mdat (located via stsc/stsz/stco|co64) carry its title. offset is the
 // edit-list presentation delay (0 when there is none), added to every start and
 // closed End so the chapter times are absolute. The last chapter's end is recovered
-// from the stts running total (movieTimescale/movieDuration canonicalize a span that
-// reaches end-of-movie back to open); see the recovery block below. saturated reports
+// from the stts running total and reported verbatim, except for the synthetic tail on a
+// chapter starting past movieDuration; see the recovery block below. saturated reports
 // whether any stts delta reads back as the clamp value (a per-gap span past ~13.25 h at
 // the 90 kHz chapter timescale that the 32-bit field could not hold), which corrupts the
 // QuickTime starts - the caller then prefers the exact Nero chpl over this lossy track.
@@ -609,32 +609,27 @@ func decodeTextTrack(src core.ReaderAtSized, trak node, offset time.Duration, mo
 	// start. Trust it only when the stts walk ran to completion (the maxChapterSamples-capped
 	// case has no true final boundary, so the last chapter stays open) and every sample was
 	// located (len(chapters) == len(times), so the last decoded chapter really is the last
-	// sample). Canonicalize an end that lands on the movie duration back to open: the encoder
-	// writes an open last chapter's span all the way to the movie duration, so recovering it
-	// verbatim would resurrect a spurious near-EOF end and break open-ended idempotency.
+	// sample). The recovered end is reported verbatim.
 	//
-	// Known cosmetic edge: when coincident starts borrow stts units (chapterDeltas) that
-	// cannot fully repay from an open last chapter's own slack, its recovered end lands a few
-	// units short of the movie duration and misses this canonicalization, reading back a
-	// near-EOF end instead of open. qtWriteRoundTrip mirrors the exact computation, so the
-	// result still equals a reparse (re-apply idempotency holds); only the displayed end is
-	// off, and the fine chapter media timescale makes such sub-unit collisions rare.
+	// Verbatim is a deliberate reversal. The wire has no "open": a last chapter ending at the
+	// movie duration and one left open are identical bytes, so only one of the two can round
+	// trip. This picks the concrete end, so SetChapters(End: duration) survives and dump
+	// agrees with ffprobe.
 	//
-	// A second cosmetic edge, now scoped to a *known* movie duration: chapterDeltas gives an open
-	// last chapter that starts at or past the movie duration a one-second placeholder tail, which
-	// endIsMovieDuration cannot canonicalize (the tail lands a full second past the duration, not
-	// on it). When the movie duration is known, isPlaceholderTail recognizes that exact 1 s tail
-	// and leaves the chapter open, so a chapter authored past the file end no longer reads back
-	// with a fabricated 1 s end. It only remains a cosmetic edge on a file whose movie duration is
-	// unknown (the 0xFFFFFFFF sentinel or a truncated mvhd): there the read cannot tell the
-	// placeholder from a genuine 1 s last chapter, so the tail survives - still mirror-consistent
-	// (qtWriteRoundTrip produces the same, so no churn). The lone accepted residual on a known
-	// duration is an end authored to exactly Start+1s past it, wire-identical to the placeholder.
+	// The exception is the synthetic tail chapterDeltas writes for an open last chapter past
+	// the movie duration (isPlaceholderTail). The asymmetry is deliberate: the movie duration
+	// is a value ffprobe also reports, while that tail is our own writer's fabrication. An
+	// unknown movie duration disables the test and the tail reads as a real end, still
+	// mirror-consistent and below the display grid.
 	if completed && len(chapters) == len(times) {
 		last := len(chapters) - 1
+		// Compare on the media-unit grid, not the Duration grid: scaleToDuration rounds, so at a
+		// fine timescale the gap between two adjacent units is not a fixed number of nanoseconds
+		// and a Duration-level test for the placeholder would fire on some timescales and not
+		// others, breaking the read/predictor mirror per fixture. endTime - times[last] is the
+		// exact unit delta the writer emitted; deltas[n-1] is its twin in qtWriteRoundTrip.
 		lastEnd := addClamp(scaleToDuration(endTime, timescale), offset)
-		if !isPlaceholderTail(chapters[last].Start, lastEnd, movieTimescale, movieDuration) &&
-			!endIsMovieDuration(lastEnd, movieTimescale, movieDuration) {
+		if !isPlaceholderTail(chapters[last].Start, endTime-times[last], timescale, movieTimescale, movieDuration) {
 			chapters[last].End = lastEnd
 		}
 	}
@@ -926,48 +921,25 @@ func chaptersAgree(a, b []core.Chapter) bool {
 	return true
 }
 
-// endIsMovieDuration reports whether a recovered last-chapter end coincides with the movie
-// duration (within +/-1 movie-timescale unit) - i.e. the chapter track spans to end-of-movie
-// and the end should stay open (End 0) rather than pin a spurious near-EOF value. The
-// comparison is on the movie-timescale grid so it is exact at any timescale, including a
-// coarse one (e.g. 600). It returns false when the movie timing is unknown (no
-// canonicalization possible), leaving the recovered end intact.
-func endIsMovieDuration(lastEnd time.Duration, movieTimescale uint32, movieDuration uint64) bool {
-	if movieTimescale == 0 || movieDuration == 0 {
-		return false
-	}
-	units := durationToUnits(lastEnd, movieTimescale)
-	if units > movieDuration {
-		return units-movieDuration <= 1
-	}
-	return movieDuration-units <= 1
-}
-
-// isPlaceholderTail reports whether a recovered last-chapter end is the synthetic one-second
+// isPlaceholderTail reports whether the last chapter's stts span is the synthetic one-unit
 // tail chapterDeltas writes for an open last chapter that starts at or past a known movie
-// duration (its "next = starts[i] + mts" default branch), as opposed to a genuinely authored
+// duration (its "next = starts[i] + 1" default branch), as opposed to a genuinely authored
 // end. When true, both the read (decodeTextTrack) and the write predictor (qtWriteRoundTrip)
-// leave the last chapter open (End 0) instead of resurrecting the placeholder as a real 1 s
-// end, which endIsMovieDuration cannot canonicalize (the tail lands a full second past the
-// movie duration, not on it).
+// leave the last chapter open (End 0) instead of resurrecting the placeholder as a real end.
 //
-// The exact-1s test does not fully disambiguate: an explicit end of exactly Start+1s past the
-// duration is wire-identical to the placeholder (both drive chapterDeltas to a one-second mts
-// delta), so that degenerate case also reads open - an accepted residual, since it needs a
-// chapter authored to end exactly one second past the file's end. It is still strictly better
-// than a plain start>=duration test, which would wrongly open every past-duration end
-// (2 s, 0.5 s, ...). A zero movie duration or unknown timescale disables it, leaving the
-// unknown-duration 1 s-placeholder cosmetic edge (documented at decodeTextTrack) intact. The
-// read and predictor compute lastStart/lastEnd identically, so this fires on both or neither -
-// the write==reparse invariant holds.
-func isPlaceholderTail(lastStart, lastEnd time.Duration, movieTimescale uint32, movieDuration uint64) bool {
+// lastDeltaUnits is on the media-unit grid because both sides hold the exact unit value while
+// scaleToDuration rounds, so a Duration comparison would hold on only some timescales. A whole
+// second is accepted too: earlier releases wrote that tail, and rejecting it would make every
+// such file read back with a fabricated end - and keep it, since the next write re-encodes
+// what it read. An authored end of exactly that length reads open, the accepted residual.
+func isPlaceholderTail(lastStart time.Duration, lastDeltaUnits uint64, mediaTimescale uint32, movieTimescale uint32, movieDuration uint64) bool {
 	if movieTimescale == 0 || movieDuration == 0 {
 		return false
 	}
 	if lastStart < scaleToDuration(movieDuration, movieTimescale) {
 		return false
 	}
-	return lastEnd == lastStart+time.Second
+	return lastDeltaUnits == 1 || (mediaTimescale != 0 && lastDeltaUnits == uint64(mediaTimescale))
 }
 
 // mdhdFields decodes a mdhd atom's media timescale and duration (version 0 or 1).

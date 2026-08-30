@@ -236,6 +236,11 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 		}
 	}
 	if n := len(src.Chapters); n > 0 {
+		// Grade the list the transfer actually writes: it opens a final chapter running to the
+		// source's own EOF (OpenRunToEOFEnd) so the destination refills it, and an open end is
+		// carried. Grading src.Chapters raw would report a lossy trailing end against a
+		// start+title destination that the copy opens and never loses.
+		chapters := OpenRunToEOFEnd(src.Chapters, src.Properties.Duration())
 		disp, reason := dispose(dst.Chapters, dst.ReadOnly, n, "chapters", nil)
 		if disp == Carried {
 			// dispose reports chapter sets as Carried when the timeline itself carries. A start+title
@@ -248,8 +253,8 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 			// Carried branch splits; a Dropped/Lossy target keeps a single full-count item below.
 			var carried, lossy int
 			lostMetadata := false
-			for i, c := range src.Chapters {
-				metaLoss := ChapterLosesMetadata(src.Chapters, i, dst.Chapters.ChapterLoss)
+			for i, c := range chapters {
+				metaLoss := ChapterLosesMetadata(chapters, i, dst.Chapters.ChapterLoss)
 				titleLoss := dst.Chapters.ChapterTitleByteMax > 0 && len(c.Title) > dst.Chapters.ChapterTitleByteMax
 				if metaLoss || titleLoss {
 					lossy++

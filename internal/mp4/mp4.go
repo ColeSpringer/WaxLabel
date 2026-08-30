@@ -83,8 +83,11 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
-		Representation: "iTunes ilst atom (text / freeform ----)", Fidelity: "lossless",
-		Constraints: []string{"the long tail is stored as com.apple.iTunes freeform atoms"},
+		Representation: "iTunes ilst atoms, an mdta keys store, or moov.udta text atoms", Fidelity: "lossless",
+		Constraints: []string{
+			"the long tail is stored as com.apple.iTunes freeform atoms",
+			"values go to one store per file: the ilst when the file has one, else its moov.udta text atoms",
+		},
 	}
 	pictures := core.Capability{
 		// Write is Full: the image set carries losslessly (byte-for-byte). The covr atom

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -412,5 +413,35 @@ func TestOggDifferentialFFmpegDecodesRenumbered(t *testing.T) {
 		if got := mustParseFile(t, path).Fields().Title; got != "Valid Ogg" {
 			t.Errorf("%s: title after edit = %q", f, got)
 		}
+	}
+}
+
+// TestOggBitrateIsMeasured: every Ogg codec reports a measured average, so one bitrate number
+// means the same thing across formats. Vorbis preferred bitrate_nominal, the encoder target,
+// which reads 96 kbps on a fixture whose whole-file rate is 44. A measured average over part
+// of a file cannot exceed the whole file's byte rate, which is the bound to pin.
+func TestOggBitrateIsMeasured(t *testing.T) {
+	for _, path := range oggFixtures {
+		t.Run(path, func(t *testing.T) {
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			doc := mustParseFile(t, path)
+			p := doc.Properties()
+			secs := p.Duration().Seconds()
+			if secs <= 0 {
+				t.Fatalf("fixture duration = %v, want a positive duration", p.Duration())
+			}
+			whole := int(float64(info.Size()) * 8 / secs)
+			got := p.First().Bitrate
+			if got <= 0 {
+				t.Fatalf("bitrate = %d, want a measured value", got)
+			}
+			if got > whole {
+				t.Errorf("bitrate = %d bps, above the whole-file rate of %d bps; that is an encoder target, not a measurement",
+					got, whole)
+			}
+		})
 	}
 }

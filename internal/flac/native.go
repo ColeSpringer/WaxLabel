@@ -73,6 +73,9 @@ type doc struct {
 	// that carries an undecodable cover. At parse this aliases the entry in blocks; Clone copies
 	// them independently.
 	malformedPictureBlocks [][]byte
+	// dupContent is what each extra Vorbis comment block holds. A rewrite keeps only the
+	// first, so the writer grades these against what it stores.
+	dupContent []core.DuplicateContent
 
 	streamInfo core.AudioTrack
 
@@ -98,6 +101,7 @@ func (d *doc) Clone() core.NativeDoc {
 		streamInfo:      d.streamInfo,
 		// preserved so a picture edit on a cloned doc still re-appends the undecodable blocks
 		malformedPictureBlocks: cloneByteSlices(d.malformedPictureBlocks),
+		dupContent:             slices.Clone(d.dupContent),
 		flacStart:              d.flacStart,
 		audioStart:             d.audioStart,
 		audioEnd:               d.audioEnd,

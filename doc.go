@@ -7,7 +7,8 @@
 // preservation-first editing, a public writable canonical key vocabulary, a
 // plan-before-write workflow ([Editor.Prepare] producing a [Plan] whose
 // [Plan.Report] matches exactly what [Plan.Execute] will do), and versioned
-// audio-essence identity for library-wide deduplication.
+// audio-essence identity for deduplicating a library within a container format
+// (the digest is container-scoped; see [Document.HashAudioEssence]).
 //
 // WaxLabel is built for music-organization tools that need complete metadata
 // for libraries sourced from uneven inputs such as YouTube. Those files are
@@ -52,7 +53,9 @@
 //   - Prepare then Execute share state so the plan and the write cannot
 //     disagree; a no-op SaveBack writes nothing.
 //   - [AudioDigest] carries an algorithm and a versioned extent so persisted
-//     dedup hashes survive across library-wide refinements.
+//     dedup hashes survive across library-wide refinements. The extent is the
+//     container's, so remuxing the same audio into a different container gives a
+//     different digest.
 //
 // # Acknowledgements
 //
