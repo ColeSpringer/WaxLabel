@@ -77,10 +77,10 @@ func TestParseStreamInfoRejectsZeroRate(t *testing.T) {
 
 func TestVorbisCommentRoundTrip(t *testing.T) {
 	comments := []comment{
-		{"TITLE", "Hello"},
-		{"ARTIST", "World"},
-		{"ARTIST", "Second"}, // multi-value preserved in order
-		{"DESCRIPTION", "has = equals = signs"},
+		{name: "TITLE", value: "Hello"},
+		{name: "ARTIST", value: "World"},
+		{name: "ARTIST", value: "Second"}, // multi-value preserved in order
+		{name: "DESCRIPTION", value: "has = equals = signs"},
 	}
 	body := renderVorbisComment("WaxLabel/0.1", comments)
 	vendor, got, err := parseVorbisComment(body, 1<<20, 0)
@@ -131,9 +131,10 @@ func TestRenderBlockHeader(t *testing.T) {
 	}
 }
 
-func TestParseVorbisCommentSkipsEntriesWithoutEquals(t *testing.T) {
-	// An entry lacking '=' is dropped from the projection.
-	comments := []comment{{"TITLE", "ok"}}
+func TestParseVorbisCommentPreservesEntriesWithoutEquals(t *testing.T) {
+	// An entry lacking '=' is well framed, so it is kept verbatim and rendered back
+	// unchanged rather than destroyed on the next rewrite.
+	comments := []comment{{name: "TITLE", value: "ok"}}
 	body := renderVorbisComment("v", comments)
 	// Append a malformed entry manually.
 	bad := []byte("noequalshere")
@@ -142,11 +143,20 @@ func TestParseVorbisCommentSkipsEntriesWithoutEquals(t *testing.T) {
 	// Bump the comment count from 1 to 2.
 	// vendor len (4) + vendor (1) => count at offset 5.
 	body[5] = 2
-	_, got, err := parseVorbisComment(body, 1<<20, 0)
+	vendor, got, err := parseVorbisComment(body, 1<<20, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].name != "TITLE" {
-		t.Errorf("got %v, want only the valid TITLE entry", got)
+	if len(got) != 2 {
+		t.Fatalf("got %v, want the TITLE entry and the unseparated one", got)
+	}
+	if got[0].name != "TITLE" || got[0].unseparated {
+		t.Errorf("first entry = %+v, want the parsed TITLE", got[0])
+	}
+	if !got[1].unseparated || got[1].name != "" || got[1].value != string(bad) {
+		t.Errorf("second entry = %+v, want the raw bytes under an empty name", got[1])
+	}
+	if out := renderVorbisComment(vendor, got); !slices.Equal(out, body) {
+		t.Errorf("re-render changed the block:\n got %q\nwant %q", out, body)
 	}
 }

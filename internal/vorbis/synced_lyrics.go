@@ -42,6 +42,9 @@ func ProjectSyncedLyrics(comments []Comment) []core.SyncedLyrics {
 // and ignores the warning.
 func ProjectSyncedLyricsReport(comments []Comment) ([]core.SyncedLyrics, []core.Warning) {
 	for _, cm := range comments {
+		if cm.Unseparated {
+			continue // no name to match the SYNCEDLYRICS convention against
+		}
 		if !isSyncedLyricsComment(cm.Name) {
 			continue
 		}

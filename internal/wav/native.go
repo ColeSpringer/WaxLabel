@@ -79,6 +79,12 @@ type doc struct {
 
 	info []infoItem // decoded INFO items in order (nil if no INFO chunk)
 	id3  *id3.Tag   // decoded embedded ID3v2 tag (nil if no id3 chunk)
+	// infoTail is how many bytes at the end of the LIST/INFO chunk could not be read as
+	// items. rebuildInfo re-renders the chunk from info alone, so those bytes die on the
+	// next rewrite; the write path reports that rather than losing them silently. A
+	// post-write document rebuilds this doc from scratch, so the count does not survive
+	// into a file that no longer has the region.
+	infoTail int64
 
 	dataOff int64 // data chunk body offset (audio essence start)
 	dataLen int64 // data chunk body length (audio essence length)
@@ -90,6 +96,9 @@ type doc struct {
 	// oversizedChunks holds non-audio chunk ids whose declared body ran past EOF and was
 	// clamped, so the parser can surface a warning.
 	oversizedChunks [][4]byte
+	// unknownSizeChunks holds chunk ids that declared the 0xFFFFFFFF size-unknown value,
+	// whose extent was therefore taken as the rest of the file.
+	unknownSizeChunks [][4]byte
 
 	// trailingOff/trailingLen capture leftover bytes inside the RIFF chunk after
 	// the last well-formed chunk (rare: a corrupt region), preserved verbatim and
@@ -159,9 +168,11 @@ func (d *doc) Describe() []core.NativeEntry {
 	for i, ch := range d.chunks {
 		switch i {
 		case d.infoIdx:
+			// Name the unreadable tail so the item count stops disagreeing with the chunk
+			// size in silence.
+			note := fmt.Sprintf("%d items", len(d.info)) + core.UnparsedNote(d.infoTail)
 			out = append(out, core.NativeEntry{
-				Kind: "LIST/INFO", Size: int(ch.bodyLen),
-				Note: fmt.Sprintf("%d items", len(d.info)),
+				Kind: "LIST/INFO", Size: int(ch.bodyLen), Note: note,
 			})
 			for _, it := range d.info {
 				out = append(out, core.NativeEntry{Kind: "  " + it.id4(), Size: len(it.raw)})
@@ -171,7 +182,7 @@ func (d *doc) Describe() []core.NativeEntry {
 			var frames []id3.Frame
 			if d.id3 != nil {
 				frames = d.id3.Frames()
-				note = fmt.Sprintf("ID3v2.%d, %d frames", d.id3.SrcVersion(), len(frames))
+				note = fmt.Sprintf("ID3v2.%d, ", d.id3.SrcVersion()) + id3.FramesNote(d.id3)
 			}
 			out = append(out, core.NativeEntry{Kind: "id3 chunk", Size: int(ch.bodyLen), Note: note})
 			// List the frames as MP3 and AAC do, so a described COMM here is as identifiable

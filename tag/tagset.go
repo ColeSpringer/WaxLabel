@@ -66,6 +66,20 @@ func (s TagSet) Len() int { return len(s.order) }
 // clones.
 func (s TagSet) ValueCount(key Key) int { return len(s.values[key]) }
 
+// AnyValue reports whether key holds a value satisfying match, without copying the value
+// slice. [TagSet.Get]'s defensive clone is right for a caller that keeps the values and
+// wrong for one that only asks a question about them: the family view asks once per native
+// item, so a file with tens of thousands of items mapping to one key pays a clone of the
+// whole value list per item. match is never called for an absent key.
+func (s TagSet) AnyValue(key Key, match func(string) bool) bool {
+	for _, v := range s.values[key] {
+		if match(v) {
+			return true
+		}
+	}
+	return false
+}
+
 // Keys returns the present keys in their preserved order.
 func (s TagSet) Keys() []Key { return slices.Clone(s.order) }
 

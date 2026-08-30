@@ -136,7 +136,7 @@ func EncoderNoise(items []Item) []core.Warning {
 			continue
 		}
 		if core.IsTranscoderStamp(it.Value) {
-			ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder item: "+it.Value)
+			ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder item: "+core.WarnSnippet(it.Value))
 		}
 	}
 	return ws

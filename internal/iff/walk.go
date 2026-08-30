@@ -46,6 +46,13 @@ type Result struct {
 	// OversizedChunks lists non-audio chunk ids whose declared body ran past EOF and was
 	// clamped. Audio chunk overruns are reported separately via AudioTruncated.
 	OversizedChunks [][4]byte
+	// UnknownSizeChunks lists chunk ids that declared the 0xFFFFFFFF size-unknown sentinel
+	// nothing resolved, so the extent was taken as the rest of the file. It is not
+	// truncation (a non-seekable writer emits it legitimately) and so is exempt from both
+	// AudioTruncated and OversizedChunks, but it costs the reader every chunk that follows,
+	// which is why it is reported at all. An RF64/BW64 size resolved through ds64 is not
+	// here: resolving it clears the sentinel reading.
+	UnknownSizeChunks [][4]byte
 	// TrailingOff/Len capture leftover bytes still inside the container after the last
 	// well-formed chunk (a corrupt region, or an ID3v1 trailer a writer miscounted inside
 	// the container size): preserved verbatim and counted in the container size.
@@ -125,7 +132,7 @@ func accountsForWholeFile(res Result, d Dialect) bool {
 	return false
 }
 
-// WalkChunks records every top-level chunk in [12, End) by id and source range, reading// WalkChunks records every top-level chunk in [12, End) by id and source range, reading
+// WalkChunks records every top-level chunk in [12, End) by id and source range, reading
 // only chunk headers (never bodies) so a large audio chunk costs nothing. It stops at a
 // miscounted trailer after the audio chunk so the trailing-region copy can preserve it
 // verbatim, and returns [waxerr.ErrInvalidData] when no chunk is found.
@@ -150,23 +157,26 @@ func WalkChunks(ctx context.Context, r io.ReaderAt, opts WalkOptions) (Result, e
 		copy(id[:], head[0:4])
 		declared := d.Order.Uint32(head[4:8])
 		declaredLen := int64(declared)
-		// resolved records that a 64-bit extension supplied the real size. Once it has,
-		// the on-disk 0xFFFFFFFF is that extension's marker, not the streaming "size
-		// unknown" sentinel, so an overrun of the resolved size is real truncation. Testing
-		// the resolved value against the sentinel instead would exempt exactly the size
-		// range RF64 exists to express.
-		resolved := false
+		// A 64-bit extension supplies the real size where it has one. An overrun of a
+		// resolved size is real truncation: testing the resolved value against 0xFFFFFFFF
+		// instead would exempt exactly the size range RF64 exists to express.
 		if opts.SizeOverride != nil {
 			if n, ok := opts.SizeOverride(id, declared); ok {
 				if n < 0 {
 					break // an override that could not be represented as a length; preserve the rest
 				}
-				declaredLen, resolved = n, true
+				declaredLen = n
 			}
 		}
-		// sizeUnknown is the streaming sentinel: a declared 0xFFFFFFFF that nothing
-		// resolved. Such a chunk clamps to the file rather than counting as truncated.
-		sizeUnknown := !resolved && declared == 0xFFFFFFFF
+		// sizeUnknown is the streaming sentinel: a declared 0xFFFFFFFF in a container with
+		// no 64-bit size extension. Such a chunk clamps to the file rather than counting as
+		// truncated. The test is on the container, not on this chunk: inside an RF64/BW64 the
+		// value is always that extension's marker, so a chunk ds64 does not resolve - one
+		// missing from the table, or declaring a size no signed length can hold - keeps its
+		// 32-bit size and clamps as any other overrun, which is what rf64.go's sizeFits says
+		// it does. Reading it as the streaming sentinel there would exempt a genuinely
+		// truncated RF64 from truncated-audio.
+		sizeUnknown := opts.SizeOverride == nil && declared == 0xFFFFFFFF
 		bodyOff := off + 8
 		// Stop at a miscounted trailer so the trailing-region copy keeps [off, end) verbatim,
 		// rather than appending a phantom chunk whose header the writer would rewrite
@@ -205,6 +215,11 @@ func WalkChunks(ctx context.Context, r io.ReaderAt, opts WalkOptions) (Result, e
 			// Record clamped non-audio chunks so callers can warn. The streaming sentinel
 			// means "size unknown", not an overrun.
 			res.OversizedChunks = append(res.OversizedChunks, id)
+		}
+		if sizeUnknown && overran {
+			// Exempt from both signals above, but the clamp still swallows everything after
+			// this chunk, so the caller gets its own code to report that.
+			res.UnknownSizeChunks = append(res.UnknownSizeChunks, id)
 		}
 		next := bodyOff + bodyLen + (bodyLen & 1) // word-alignment pad byte
 		if next <= off {

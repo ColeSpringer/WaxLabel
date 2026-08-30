@@ -115,6 +115,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// a v2.3 date whose month/time precision could not be stored. AAC has no other tag
 	// container, and fresh tags are v2.4, so this only fires on a preserved v2.3 tag.
 	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, info, result.Tags)
+	report.Warnings = id3.AppendMalformedTailDropped(report.Warnings, d.id3)
 	// Collapse to a true no-op when the ID3 rebuild re-projected to base's values; AAC has
 	// no strip flag, so an encoding rewrite is the only thing that forces the write.
 	// DowngradeNoOp carries the value-dropped warning forward so a dropped date still

@@ -163,6 +163,15 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 				core.StripDroppedMessage("LIST/INFO chunk", []string{"items no canonical key can hold (" + strings.Join(ids, ", ") + ")"}))
 		}
 	}
+	if d.infoIdx >= 0 && d.infoTail > 0 {
+		// rebuildInfo re-renders the chunk from the items alone, so a region the parser could
+		// not read as items has nowhere to go. Under --legacy strip this fires alongside
+		// legacy-strip-dropped: two distinct losses, items with no canonical key and bytes
+		// that were never items. A true no-op never reaches here, and core.DowngradeNoOp does
+		// not carry this code, so an unchanged file stays quiet.
+		report.Warnings = core.Warn(report.Warnings, core.WarnMalformedTagEntryDropped,
+			fmt.Sprintf("%d byte(s) of the LIST/INFO chunk could not be read as items and are not carried into the rewritten chunk", d.infoTail))
+	}
 	if stampToStrip {
 		// Surface the strip even when it empties the LIST (which records no rewrite op),
 		// so a plan that only drops the stamp is not reported as a contentless rewrite.
@@ -185,6 +194,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// RecordingDate to native LIST/INFO ICRD, where it can survive verbatim; the shared
 	// helper checks the re-projected output before warning.
 	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, id3Info, result.Tags)
+	report.Warnings = id3.AppendMalformedTailDropped(report.Warnings, d.id3)
 	// Collapse to a true no-op when the containers re-projected to base's values
 	// (a numeric genre, a dropped empty); an INFO strip, an encoder-stamp removal, or an
 	// encoding rewrite stays a real write. DowngradeNoOp carries the value-dropped warning

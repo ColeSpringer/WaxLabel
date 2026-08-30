@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/binary"
 	"os"
 	"path/filepath"
 	"slices"
@@ -253,33 +252,15 @@ func TestDuplicateTagBlockDropWarnsWithoutStrict(t *testing.T) {
 // INAM=First, and a duplicate carrying the given 4CC/value pairs. Only the first survives a
 // rewrite, so what the second holds decides whether that rewrite destroys anything.
 func wavTwoInfoLists(dup [][2]string) []byte {
-	chunk := func(id string, body []byte) []byte {
-		if len(body)%2 == 1 {
-			body = append(slices.Clone(body), 0) // RIFF chunks pad to an even length
-		}
-		h := make([]byte, 4)
-		binary.LittleEndian.PutUint32(h, uint32(len(body)))
-		return slices.Concat([]byte(id), h, body)
-	}
 	info := func(pairs [][2]string) []byte {
 		body := []byte("INFO")
 		for _, p := range pairs {
-			body = append(body, chunk(p[0], append([]byte(p[1]), 0))...)
+			body = append(body, wavItem(p[0], p[1])...)
 		}
-		return chunk("LIST", body)
+		return wavChunk("LIST", body)
 	}
-	fmtBody := make([]byte, 16)
-	binary.LittleEndian.PutUint16(fmtBody[0:], 1)      // PCM
-	binary.LittleEndian.PutUint16(fmtBody[2:], 2)      // channels
-	binary.LittleEndian.PutUint32(fmtBody[4:], 44100)  // sample rate
-	binary.LittleEndian.PutUint32(fmtBody[8:], 176400) // byte rate
-	binary.LittleEndian.PutUint16(fmtBody[12:], 4)     // block align
-	binary.LittleEndian.PutUint16(fmtBody[14:], 16)    // bits per sample
-	inner := slices.Concat([]byte("WAVE"), chunk("fmt ", fmtBody),
-		info([][2]string{{"INAM", "First"}}), info(dup), chunk("data", make([]byte, 4000)))
-	sz := make([]byte, 4)
-	binary.LittleEndian.PutUint32(sz, uint32(len(inner)))
-	return slices.Concat([]byte("RIFF"), sz, inner)
+	return wavWrap(slices.Concat(wavFmtChunk(),
+		info([][2]string{{"INAM", "First"}}), info(dup), wavChunk("data", make([]byte, 4000))))
 }
 
 // writeTempFile writes data to a fresh temp directory and returns its path.
@@ -296,10 +277,11 @@ func writeTempFile(t *testing.T, name string, data []byte) string {
 // discard list, so a code added to either set is checked without editing this test. A discard
 // that --strict ignored would let a plan say "the edit was discarded" and still exit 0.
 func TestDiscardSetIsStrictSubset(t *testing.T) {
-	for c := wl.WarningCode(0); c <= wl.WarnDuplicateTagBlockDropped; c++ {
-		if c.String() == "" {
-			continue // an unassigned code in the block
-		}
+	// Walk the whole code space rather than stopping at a named code or at the first
+	// unnamed one: either bound would silently narrow the invariant when a code is appended
+	// to the block (or added without a String() case), which is the opposite of what this
+	// test is for. WarningCode is a uint8, so c wraps to 0 and ends the loop.
+	for c := wl.WarningCode(1); c != 0; c++ {
 		if wl.IsDiscardWarning(c) && !strictEscalatingCodes[c] {
 			t.Errorf("%v is a discard but --strict does not escalate it", c)
 		}

@@ -63,8 +63,32 @@ func (Codec) SkipsLeadingID3() bool { return false }
 // every MP4/M4A file. The brand inside ftyp is not inspected here; an unsupported
 // variant is detected in Parse, which rejects a movie-box-less fragmented segment
 // and reads (but marks unwritable) a fragmented file.
+//
+// Some writers emit a leading free/skip/wide box before ftyp, and the parser is already
+// fine with that - walkAtoms handles top-level atoms generically and only moov is required
+// - so detection steps over such a box rather than declaring the file unsupported. The
+// bound is the header window itself (64 bytes, what [core.DetectLeading] reads): a leading
+// box that does not fit inside it hides the ftyp behind it, and the file stays
+// unidentified. Each step advances by at least a box header, so the walk terminates.
 func (Codec) Sniff(header []byte) bool {
-	return len(header) >= 8 && string(header[4:8]) == "ftyp"
+	for off := 0; off+8 <= len(header); {
+		switch string(header[off+4 : off+8]) {
+		case "ftyp":
+			return true
+		case "free", "skip", "wide":
+			// A size below 8 is the "0" (extends to EOF) or "1" (64-bit size follows)
+			// form, neither of which names a next box inside this window. Read as int64 so
+			// a hostile size cannot wrap the offset on a 32-bit platform.
+			size := int64(binary.BigEndian.Uint32(header[off : off+4]))
+			if size < 8 || int64(off)+size > int64(len(header)) {
+				return false
+			}
+			off += int(size)
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // Parse reads metadata from src into a Media.

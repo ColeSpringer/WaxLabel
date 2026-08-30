@@ -46,7 +46,7 @@ func (d *doc) Describe() []core.NativeEntry {
 		out = append(out, core.NativeEntry{
 			Kind: fmt.Sprintf("ID3v2.%d", d.id3.SrcVersion()),
 			Size: int(d.id3Len),
-			Note: fmt.Sprintf("%d frames", len(d.id3.Frames())),
+			Note: id3.FramesNote(d.id3),
 		})
 		for _, f := range d.id3.Frames() {
 			out = append(out, core.NativeEntry{Kind: "  " + f.ID, Size: len(f.Body), Note: id3.FrameNote(f)})

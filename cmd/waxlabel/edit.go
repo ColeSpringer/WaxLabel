@@ -1030,7 +1030,10 @@ func noteMalformedValue(notes *cappedNotes, k tag.Key, v string) {
 //   - WarnPaddingClamped: about padding size, not tag content.
 //   - Advisory/sanity codes (number-total-conflict, chapter-overlap-reconciled,
 //     chapter-past-duration, duplicate-*, multiple-front-covers, legacy-conflict) and the
-//     read-path codes (trailing-bytes among them): they describe the file, not an edit loss.
+//     read-path codes (trailing-bytes, unknown-chunk-size and malformed-tag-entry among
+//     them): they describe the file, not an edit loss. unknown-chunk-size is the mildest -
+//     a non-seekable writer emits the sentinel legitimately, and a rewrite replaces it with
+//     a real size - which is why lint reports it at info severity too.
 //     duplicate-tag-block is the sharpest case: it says the file holds two containers, which
 //     is true before any edit. Its write-path counterpart duplicate-tag-block-dropped IS
 //     escalated below, firing only when this rewrite discards content nothing else holds.
@@ -1101,6 +1104,13 @@ var strictEscalatingCodes = map[wl.WarningCode]bool{
 	// pre-existing state, so it escalates while its read-path sibling duplicate-tag-block does
 	// not. A fully redundant duplicate never emits it.
 	wl.WarnDuplicateTagBlockDropped: true,
+	// A rewrite could not carry a region of a tag container the parser never read: an
+	// unreadable LIST/INFO tail, or an ID3 frame region past a size that overran the tag.
+	// The bytes are gone from the written file, which is destruction by this write, so it
+	// escalates while its read-path sibling malformed-tag-entry does not. It gets no
+	// strictWarningReason case: the warning is keyless (it carries a byte count, not a key),
+	// and strictWarningReason returns the message verbatim for a keyless warning.
+	wl.WarnMalformedTagEntryDropped: true,
 }
 
 // strictWarningGate applies the per-file --strict escalation for plan and set: when a
@@ -1135,7 +1145,12 @@ func (g *strictWarningGate) check(plan *wl.Plan) error {
 	if len(reasons) == 0 {
 		return nil
 	}
-	return usagef("%s (omit --strict to write anyway)", strings.Join(reasons, "; "))
+	// "write anyway" would be false for the discard family, where omitting --strict drops
+	// the item either way and can write no bytes at all. One hint that is unconditionally
+	// true beats a per-reason one: without --strict the same warning is printed and the
+	// operation proceeds, and the fate of the specific item is already stated by the reason
+	// text and the plan body. The wording must not say "edit" - this gate runs for copy too.
+	return usagef("%s (omit --strict to continue with a warning)", strings.Join(reasons, "; "))
 }
 
 // strictWarningReason renders one escalating warning for the --strict error. Most codes get a

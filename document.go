@@ -187,6 +187,14 @@ func (d *Document) Native() NativeDoc {
 // than a promise that the file has no slack anywhere (a Matroska Void, for one, absorbs
 // growth without being modeled here).
 //
+// One shape breaks that equality, deliberately: an ID3v2 tag whose frame walk stopped on a
+// frame declaring more bytes than the tag holds reports 0, because the remainder is a
+// region nothing could read rather than free space - [Document.Lint] and the parse warnings
+// call it out as malformed-tag-entry, and dump --native counts it as unparsed bytes. A
+// rewrite still reuses the region, so a plan for that file reports the padding it will
+// write. The two answer different questions there: what the file holds now, and what the
+// write will lay down.
+//
 // The number comes from the native base's [core.PaddingReporter], read directly rather
 // than through the deep-cloning [Document.Native], which would copy multi-megabyte
 // embedded picture bodies just to total padding. An interface rather than a scan of

@@ -86,6 +86,9 @@ func ProjectChapters(comments []Comment) []core.Chapter {
 	byIndex := map[int]*entry{}
 	var order []int
 	for _, cm := range comments {
+		if cm.Unseparated {
+			continue // no name to match the CHAPTERxxx convention against
+		}
 		idx, isTitle, ok := parseChapterName(cm.Name)
 		if !ok {
 			continue

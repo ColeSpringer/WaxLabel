@@ -5,6 +5,7 @@ import (
 	"slices"
 
 	"github.com/colespringer/waxlabel/internal/bits"
+	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -95,7 +96,12 @@ const (
 // rest is the byte count left after the last frame it read: the tag's free padding when
 // the walk stopped on a zero ID, and the unread remainder when it stopped on a malformed
 // one. Only ParseTag records it, and only for a whole tag.
-func parseFrames(body []byte, major byte, tagUnsync bool, maxElements int) (frames []Frame, rest int, err error) {
+//
+// malformed names the frame whose declared size ran past the end of the tag, and is empty
+// when the walk stopped cleanly - on padding, on a non-frame identifier, or on a body too
+// short to hold another header. It is what tells ParseTag whether rest is free padding or a
+// region nothing can read.
+func parseFrames(body []byte, major byte, tagUnsync bool, maxElements int) (frames []Frame, rest int, malformed string, err error) {
 	pos := 0
 	hdr := 10
 	idLen := 4
@@ -110,7 +116,7 @@ func parseFrames(body []byte, major byte, tagUnsync bool, maxElements int) (fram
 		// of minimum-size (6/10 B) frames still amplifies into one Frame descriptor
 		// each; cap the count so a hostile tag cannot accumulate them to OOM.
 		if err := bits.CheckElementCap(len(frames), maxElements, "ID3 frames"); err != nil {
-			return nil, 0, err
+			return nil, 0, "", err
 		}
 		id := string(body[pos : pos+idLen])
 		if !validFrameID(id) {
@@ -134,14 +140,32 @@ func parseFrames(body []byte, major byte, tagUnsync bool, maxElements int) (fram
 		// Compare in int64: a v2.3 plain 32-bit size can be up to 0xFFFFFFFF, which
 		// on a 32-bit platform would wrap to a negative int and slip past the guard.
 		if size < 0 || int64(start)+size > int64(len(body)) {
-			break // truncated frame; stop rather than over-read
+			// The frame declares more bytes than the tag holds. Stop rather than over-read,
+			// and name it: what follows is unreadable, not free padding. Report the id the
+			// rest of the output uses, so a v2.2 tag does not warn about a "TAL" frame that
+			// dump lists as TALB.
+			return frames, len(body) - pos, reportedFrameID(id, major), nil
 		}
 		raw := body[start : start+int(size)]
 		pos = start + int(size)
 
 		frames = append(frames, decodeFrame(id, flags, raw, major, tagUnsync))
 	}
-	return frames, len(body) - pos, nil
+	return frames, len(body) - pos, "", nil
+}
+
+// reportedFrameID renders a frame identifier the way the decoded frame list does: a v2.2
+// id is upgraded to its v2.3/v2.4 spelling, falling back to the space-padded form for one
+// the table does not know. [decodeFrame] applies the same two rules to the frames it keeps,
+// so a diagnostic naming a frame cannot spell it differently from the listing beside it.
+func reportedFrameID(id string, major byte) string {
+	if major != 2 {
+		return id
+	}
+	if up, ok := upgradeV22ID(id); ok {
+		return up
+	}
+	return padID(id)
 }
 
 // decodeFrame normalises one raw frame: it upgrades a v2.2 identifier, converts
@@ -340,6 +364,19 @@ func FrameNote(f Frame) string {
 		return ""
 	}
 	return "description: " + tag.SanitizeLine(desc)
+}
+
+// FramesNote is the native-view note for a described ID3v2 tag: its frame count, plus the
+// byte count of a region the frame walk could not read (see [Tag.MalformedTail]). Padding
+// is not counted as unparsed - it is free space the tag legitimately holds - but a
+// malformed tail is not padding either, so without this the block size would silently
+// disagree with the frames listed under it. All four ID3-backed codecs render through it.
+func FramesNote(t *Tag) string {
+	if t == nil {
+		return "0 frames"
+	}
+	_, tail := t.MalformedTail()
+	return fmt.Sprintf("%d frames", len(t.Frames())) + core.UnparsedNote(tail)
 }
 
 // FrontTagPadding reports the free padding inside a front ID3v2 region, or 0 for a file

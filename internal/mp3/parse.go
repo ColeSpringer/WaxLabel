@@ -30,10 +30,11 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	var warnings []core.Warning
 
 	// Front ID3v2 tag.
-	tg, id3Len, err := id3.ReadFront(src, size, limit, opts.Limits.MaxElements)
+	tg, id3Len, frontWs, err := id3.ReadFront(src, size, limit, opts.Limits.MaxElements)
 	if err != nil {
 		return nil, err
 	}
+	warnings = append(warnings, frontWs...)
 	d.id3 = tg
 	d.id3Len = id3Len
 	d.audioStart = d.id3Len

@@ -245,6 +245,10 @@ const (
 	WarnCommentDescriptionDropped = core.WarnCommentDescriptionDropped
 	WarnNonConformingIcon         = core.WarnNonConformingIcon
 	WarnDuplicateTagBlockDropped  = core.WarnDuplicateTagBlockDropped
+
+	WarnMalformedTagEntry        = core.WarnMalformedTagEntry
+	WarnMalformedTagEntryDropped = core.WarnMalformedTagEntryDropped
+	WarnUnknownChunkSize         = core.WarnUnknownChunkSize
 )
 
 // IsDiscardWarning reports whether a warning code means the edit's content was thrown away

@@ -41,10 +41,13 @@ type block struct {
 func (b block) clone() block { return block{code: b.code, body: slices.Clone(b.body)} }
 
 // comment is one Vorbis "NAME=value" entry, keeping the original name spelling
-// so unedited comments preserve their exact form.
+// so unedited comments preserve their exact form. unseparated marks an entry with no
+// "=" at all: name is empty and value holds the entry bytes verbatim (see
+// [vorbis.Comment]).
 type comment struct {
-	name  string
-	value string
+	name        string
+	value       string
+	unseparated bool
 }
 
 // doc is the FLAC native document: the parsed blocks in original order plus

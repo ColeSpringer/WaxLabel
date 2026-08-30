@@ -26,16 +26,23 @@ import (
 
 // Comment is one Vorbis "NAME=value" entry. The original name spelling is kept
 // so unedited comments preserve their exact form on rewrite.
+//
+// Unseparated marks an entry with no "=" at all. Such an entry is well framed - the list
+// walk knows exactly where it starts and ends - but the model cannot interpret it, so Name
+// is empty and Value holds the entry bytes verbatim, the way an opaque ID3 frame carries a
+// body the model cannot reinterpret. [RenderCommentList] writes it back unchanged; every
+// projector skips it.
 type Comment struct {
-	Name  string
-	Value string
+	Name        string
+	Value       string
+	Unseparated bool
 }
 
 // ParseCommentList decodes a comment list (little-endian lengths): a vendor
 // string, a count, then that many "NAME=value" entries. It returns the number
 // of body bytes consumed so a caller can handle whatever follows the list - the
-// Vorbis framing bit, or Opus comment-header padding. Entries without '=' are
-// dropped from the result (but still consumed). maxElements caps how many
+// Vorbis framing bit, or Opus comment-header padding. An entry without '=' is kept
+// verbatim as an Unseparated comment rather than dropped. maxElements caps how many
 // comments accumulate (0 disables it): the count field is an attacker-controlled
 // uint32 and the body can be large (an Ogg comment packet is bounded only by the
 // alloc limit), so without the cap a body packed with minimum entries amplifies
@@ -54,12 +61,17 @@ func ParseCommentList(body []byte, limit int64, maxElements int) (vendor string,
 		if c.Err() != nil {
 			break
 		}
-		name, value, ok := strings.Cut(string(entry), "=")
-		if !ok {
-			continue // malformed entry without '='; drop from projection
-		}
+		// The cap counts a malformed entry too: it allocates a descriptor like any other,
+		// so a body packed with them must hit ErrSizeTooLarge rather than slip past.
 		if capErr := bits.CheckElementCap(len(comments), maxElements, "Vorbis comments"); capErr != nil {
 			return vendor, comments, c.Pos(), capErr
+		}
+		name, value, ok := strings.Cut(string(entry), "=")
+		if !ok {
+			// No separator: keep the entry bytes verbatim so a rewrite preserves them
+			// instead of destroying a region the walk framed perfectly well.
+			comments = append(comments, Comment{Value: string(entry), Unseparated: true})
+			continue
 		}
 		comments = append(comments, Comment{Name: name, Value: value})
 	}
@@ -78,7 +90,12 @@ func RenderCommentList(vendor string, comments []Comment) []byte {
 	buf.WriteString(vendor)
 	writeU32LE(&buf, uint32(len(comments)))
 	for _, cm := range comments {
-		entry := cm.Name + "=" + cm.Value
+		// An entry that had no separator is written back exactly as it was read; composing
+		// "=" + Value would corrupt the very bytes the parse kept in order to preserve.
+		entry := cm.Value
+		if !cm.Unseparated {
+			entry = cm.Name + "=" + cm.Value
+		}
 		writeU32LE(&buf, uint32(len(entry)))
 		buf.WriteString(entry)
 	}
@@ -102,6 +119,9 @@ func Project(comments []Comment) (tag.TagSet, []core.FamilyValue) {
 	names := map[tag.Key]map[string]bool{} // distinct native names per key
 	var fams []core.FamilyValue
 	for _, cm := range comments {
+		if cm.Unseparated {
+			continue // no name to key off; Rebuild preserves the entry verbatim
+		}
 		if reservedNamespace(cm.Name) != "" {
 			continue // owned by structured metadata projectors, not the custom tag view
 		}
@@ -195,12 +215,16 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapte
 	// ordering, or relabel and relocate an untouched one.
 	hasNative := map[tag.Key]bool{}
 	for _, cm := range orig {
-		if isChapterComment(cm.Name) || isSyncedLyricsComment(cm.Name) {
+		if cm.Unseparated || isChapterComment(cm.Name) || isSyncedLyricsComment(cm.Name) {
 			continue
 		}
 		hasNative[mapping.CanonicalVorbis(cm.Name)] = true
 	}
 	for _, cm := range orig {
+		if cm.Unseparated {
+			out = append(out, cm) // no name to key off; preserve the entry verbatim
+			continue
+		}
 		if isChapterComment(cm.Name) {
 			if !chaptersChanged {
 				out = append(out, cm) // preserve verbatim on an unrelated edit
@@ -356,7 +380,17 @@ func RebuildWarnings(prior []core.Warning, info RebuildInfo) []core.Warning {
 // exactly as Project skips them.
 func InvalidKeyWarnings(comments []Comment) []core.Warning {
 	var ws []core.Warning
+	unseparated, first := 0, ""
 	for _, cm := range comments {
+		if cm.Unseparated {
+			// A different malformation with the same consequences: the entry is in the file
+			// and preserved, but nothing can read it as a key and a value. Collected rather
+			// than emitted here so a list full of them is one warning, not tens of thousands.
+			if unseparated++; unseparated == 1 {
+				first = cm.Value
+			}
+			continue
+		}
 		if reservedNamespace(cm.Name) != "" {
 			continue
 		}
@@ -365,7 +399,7 @@ func InvalidKeyWarnings(comments []Comment) []core.Warning {
 		}
 		ws = core.WarnInvalidKey(ws, cm.Name)
 	}
-	return ws
+	return core.WarnUnseparatedEntry(ws, first, unseparated)
 }
 
 // canonicalTagKey resolves a Vorbis comment name to its canonical key and reports whether that
@@ -433,6 +467,9 @@ func EncoderNoise(vendor string, comments []Comment) []core.Warning {
 	vendorEchoed := false
 	if vendorStamp {
 		for _, cm := range comments {
+			if cm.Unseparated {
+				continue // no name; it names no field, least of all ENCODER
+			}
 			// Match case-insensitively: a transcoder writes the same stamp into both,
 			// and a casing difference between the two should still collapse to one note.
 			if strings.EqualFold(cm.Name, "ENCODER") && strings.EqualFold(cm.Value, vendor) {
@@ -444,15 +481,18 @@ func EncoderNoise(vendor string, comments []Comment) []core.Warning {
 	switch {
 	case vendorStamp && vendorEchoed:
 		ws = core.Warn(ws, core.WarnInheritedEncoder,
-			"transcoder stamp in vendor string and encoder comment: "+vendor)
+			"transcoder stamp in vendor string and encoder comment: "+core.WarnSnippet(vendor))
 	case vendorStamp:
 		// Name the field explicitly: dump shows the ENCODER *tag* (e.g. "Lavc..."),
 		// while this stamp is the container *vendor string* (never a tag), so without
 		// the distinction the warning reads as contradicting the displayed ENCODER.
 		ws = core.Warn(ws, core.WarnInheritedEncoder,
-			"container vendor string (distinct from the ENCODER tag) is a transcoder stamp: "+vendor)
+			"container vendor string (distinct from the ENCODER tag) is a transcoder stamp: "+core.WarnSnippet(vendor))
 	}
 	for _, cm := range comments {
+		if cm.Unseparated {
+			continue // no name; it names no field, least of all ENCODER
+		}
 		if !strings.EqualFold(cm.Name, "ENCODER") || !core.IsTranscoderStamp(cm.Value) {
 			continue
 		}
@@ -460,7 +500,7 @@ func EncoderNoise(vendor string, comments []Comment) []core.Warning {
 		if vendorEchoed && strings.EqualFold(cm.Value, vendor) {
 			continue
 		}
-		ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder comment: "+cm.Value)
+		ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder comment: "+core.WarnSnippet(cm.Value))
 	}
 	return ws
 }

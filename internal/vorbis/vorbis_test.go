@@ -83,7 +83,7 @@ func TestRebuildDropsReservedKey(t *testing.T) {
 // via the generic key path (which would bypass the reserved-namespace guard, reopening the silent
 // side channel). The existing comment is preserved verbatim - matching chapters and synced lyrics.
 func TestRebuildSetOnExistingPictureCommentDrops(t *testing.T) {
-	orig := []Comment{{"TITLE", "Keep"}, {"METADATA_BLOCK_PICTURE", "not-valid-base64!!"}}
+	orig := []Comment{{Name: "TITLE", Value: "Keep"}, {Name: "METADATA_BLOCK_PICTURE", Value: "not-valid-base64!!"}}
 	edited := tag.NewTagSet()
 	edited.Set(tag.Title, "Keep")
 	edited.Set(tag.Key("METADATA_BLOCK_PICTURE"), "hijack") // must not overwrite the existing comment
@@ -177,7 +177,7 @@ func TestParseCommentListCountCapped(t *testing.T) {
 // would preserve it as padding), while a parser that ignored the count would
 // wrongly swallow it - which a plain non-"=" tail could not detect.
 func TestParseCommentListReportsConsumed(t *testing.T) {
-	body := RenderCommentList("vend", []Comment{{"A", "1"}, {"B", "2"}})
+	body := RenderCommentList("vend", []Comment{{Name: "A", Value: "1"}, {Name: "B", Value: "2"}})
 	extra := []byte("EXTRA=ignored")
 	tail := append([]byte{byte(len(extra)), 0, 0, 0}, extra...) // a valid length-prefixed entry
 	in := append(slices.Clone(body), tail...)
@@ -189,7 +189,7 @@ func TestParseCommentListReportsConsumed(t *testing.T) {
 	if vendor != "vend" {
 		t.Errorf("vendor = %q", vendor)
 	}
-	if len(cs) != 2 || cs[0] != (Comment{"A", "1"}) || cs[1] != (Comment{"B", "2"}) {
+	if len(cs) != 2 || cs[0] != (Comment{Name: "A", Value: "1"}) || cs[1] != (Comment{Name: "B", Value: "2"}) {
 		t.Fatalf("comments = %v, want exactly the two declared by the count", cs)
 	}
 	if n != int64(len(body)) {
@@ -205,8 +205,8 @@ func TestParseCommentListReportsConsumed(t *testing.T) {
 // multi-value of the same name is not.
 func TestProjectMarksConflicts(t *testing.T) {
 	_, fams := Project([]Comment{
-		{"DATE", "2020"}, {"YEAR", "2019"}, // both -> RecordingDate, disagree
-		{"ARTIST", "A"}, {"ARTIST", "B"}, // ordinary multi-value
+		{Name: "DATE", Value: "2020"}, {Name: "YEAR", Value: "2019"}, // both -> RecordingDate, disagree
+		{Name: "ARTIST", Value: "A"}, {Name: "ARTIST", Value: "B"}, // ordinary multi-value
 	})
 	selected := map[tag.Key]bool{}
 	for _, f := range fams {
@@ -225,10 +225,10 @@ func TestProjectMarksConflicts(t *testing.T) {
 // appends genuinely new keys.
 func TestRebuildMinimalChange(t *testing.T) {
 	orig := []Comment{
-		{"TITLE", "Old"},
-		{"date", "2019"}, // alias of RecordingDate, lower-case spelling
-		{"YEAR", "2019"}, // second alias -> should be dropped when the key changes
-		{"ARTIST", "Keep"},
+		{Name: "TITLE", Value: "Old"},
+		{Name: "date", Value: "2019"}, // alias of RecordingDate, lower-case spelling
+		{Name: "YEAR", Value: "2019"}, // second alias -> should be dropped when the key changes
+		{Name: "ARTIST", Value: "Keep"},
 	}
 	base := tag.NewTagSet()
 	base.Set(tag.Title, "Old")
@@ -245,10 +245,10 @@ func TestRebuildMinimalChange(t *testing.T) {
 	// first occurrence (preferred spelling DATE); the YEAR alias dropped; GENRE
 	// appended.
 	want := []Comment{
-		{"TITLE", "Old"},
-		{"DATE", "2020"},
-		{"ARTIST", "Keep"},
-		{"GENRE", "Rock"},
+		{Name: "TITLE", Value: "Old"},
+		{Name: "DATE", Value: "2020"},
+		{Name: "ARTIST", Value: "Keep"},
+		{Name: "GENRE", Value: "Rock"},
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("rebuild = %v\n            want %v", got, want)
@@ -261,9 +261,9 @@ func TestRebuildMinimalChange(t *testing.T) {
 // canonicalizes to its preferred spelling (DATE).
 func TestRebuildPreservesEditedKeyCasing(t *testing.T) {
 	orig := []Comment{
-		{"artist", "A"},
-		{"title", "Old"},
-		{"year", "2019"}, // alias of RecordingDate, lower-case
+		{Name: "artist", Value: "A"},
+		{Name: "title", Value: "Old"},
+		{Name: "year", Value: "2019"}, // alias of RecordingDate, lower-case
 	}
 	base := tag.NewTagSet()
 	base.Set(tag.Artist, "A")
@@ -276,9 +276,9 @@ func TestRebuildPreservesEditedKeyCasing(t *testing.T) {
 
 	got, _ := Rebuild(orig, edited, DiffKeys(base, edited), nil, false, nil, false)
 	want := []Comment{
-		{"artist", "A"},  // untouched: verbatim casing
-		{"title", "New"}, // edited but keeps the file's lowercase spelling
-		{"DATE", "2020"}, // alias canonicalizes to the preferred Vorbis spelling
+		{Name: "artist", Value: "A"},  // untouched: verbatim casing
+		{Name: "title", Value: "New"}, // edited but keeps the file's lowercase spelling
+		{Name: "DATE", Value: "2020"}, // alias canonicalizes to the preferred Vorbis spelling
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("rebuild = %v\n            want %v", got, want)
@@ -290,7 +290,7 @@ func TestRebuildPreservesEditedKeyCasing(t *testing.T) {
 // distinct stamp in each is reported twice.
 func TestEncoderNoiseDeduplicatesVendorEcho(t *testing.T) {
 	t.Run("same value collapses to one", func(t *testing.T) {
-		ws := EncoderNoise("Lavf60.3.100", []Comment{{"ENCODER", "Lavf60.3.100"}})
+		ws := EncoderNoise("Lavf60.3.100", []Comment{{Name: "ENCODER", Value: "Lavf60.3.100"}})
 		if len(ws) != 1 {
 			t.Fatalf("got %d warnings, want 1: %v", len(ws), ws)
 		}
@@ -299,19 +299,19 @@ func TestEncoderNoiseDeduplicatesVendorEcho(t *testing.T) {
 		}
 	})
 	t.Run("case-variant value still collapses", func(t *testing.T) {
-		ws := EncoderNoise("Lavf60.3.100", []Comment{{"ENCODER", "lavf60.3.100"}})
+		ws := EncoderNoise("Lavf60.3.100", []Comment{{Name: "ENCODER", Value: "lavf60.3.100"}})
 		if len(ws) != 1 {
 			t.Fatalf("got %d warnings, want 1 (case-insensitive dedup): %v", len(ws), ws)
 		}
 	})
 	t.Run("distinct values stay separate", func(t *testing.T) {
-		ws := EncoderNoise("Lavf60.3.100", []Comment{{"ENCODER", "Lavf58.0.0"}})
+		ws := EncoderNoise("Lavf60.3.100", []Comment{{Name: "ENCODER", Value: "Lavf58.0.0"}})
 		if len(ws) != 2 {
 			t.Fatalf("got %d warnings, want 2: %v", len(ws), ws)
 		}
 	})
 	t.Run("encoder comment only", func(t *testing.T) {
-		ws := EncoderNoise("normal vendor", []Comment{{"ENCODER", "libavformat 60"}})
+		ws := EncoderNoise("normal vendor", []Comment{{Name: "ENCODER", Value: "libavformat 60"}})
 		if len(ws) != 1 {
 			t.Fatalf("got %d warnings, want 1: %v", len(ws), ws)
 		}
@@ -382,8 +382,8 @@ func TestParsePictureClampsOutOfRangeType(t *testing.T) {
 func TestProjectSkipsPictureComment(t *testing.T) {
 	for _, name := range []string{"METADATA_BLOCK_PICTURE", "metadata_block_picture"} {
 		ts, fams := Project([]Comment{
-			{"TITLE", "T"},
-			{name, "not-valid-base64!!"},
+			{Name: "TITLE", Value: "T"},
+			{Name: name, Value: "not-valid-base64!!"},
 		})
 		if vals, ok := ts.Get(tag.Key(name)); ok {
 			t.Errorf("%s leaked as a tag: %v", name, vals)
@@ -404,8 +404,8 @@ func TestProjectSkipsPictureComment(t *testing.T) {
 // remain ordinary preserved comments.
 func TestRebuildPreservesPictureComment(t *testing.T) {
 	orig := []Comment{
-		{"TITLE", "Old"},
-		{"METADATA_BLOCK_PICTURE", "not-valid-base64!!"},
+		{Name: "TITLE", Value: "Old"},
+		{Name: "METADATA_BLOCK_PICTURE", Value: "not-valid-base64!!"},
 	}
 	base := tag.NewTagSet()
 	base.Set(tag.Title, "Old")
@@ -414,8 +414,8 @@ func TestRebuildPreservesPictureComment(t *testing.T) {
 
 	got, _ := Rebuild(orig, edited, DiffKeys(base, edited), nil, false, nil, false)
 	want := []Comment{
-		{"TITLE", "New"},
-		{"METADATA_BLOCK_PICTURE", "not-valid-base64!!"}, // preserved verbatim
+		{Name: "TITLE", Value: "New"},
+		{Name: "METADATA_BLOCK_PICTURE", Value: "not-valid-base64!!"}, // preserved verbatim
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("rebuild = %v\n            want %v", got, want)

@@ -21,7 +21,7 @@ func parseStreamInfo(body []byte) (core.AudioTrack, error) {
 func toVorbis(cs []comment) []vorbis.Comment {
 	out := make([]vorbis.Comment, len(cs))
 	for i, c := range cs {
-		out[i] = vorbis.Comment{Name: c.name, Value: c.value}
+		out[i] = vorbis.Comment{Name: c.name, Value: c.value, Unseparated: c.unseparated}
 	}
 	return out
 }
@@ -29,7 +29,7 @@ func toVorbis(cs []comment) []vorbis.Comment {
 func fromVorbis(cs []vorbis.Comment) []comment {
 	out := make([]comment, len(cs))
 	for i, c := range cs {
-		out[i] = comment{name: c.Name, value: c.Value}
+		out[i] = comment{name: c.Name, value: c.Value, unseparated: c.Unseparated}
 	}
 	return out
 }

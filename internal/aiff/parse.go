@@ -185,6 +185,10 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		warnings = core.Warn(warnings, core.WarnOversizedChunk,
 			fmt.Sprintf("the %q chunk declares more bytes than the file holds and was clamped to EOF", string(id[:])))
 	}
+	// A chunk declared the size-unknown sentinel, so everything past it was read as its
+	// body. AIFF shares the walker that detects it, so warning on WAV alone would be
+	// arbitrary. Not truncation, but the reader loses whatever followed.
+	warnings = core.WarnUnknownSize(warnings, d.unknownSizeChunks)
 
 	// For a truncated SSND of a constant-frame-size encoding, report the duration the
 	// surviving sample bytes actually decode to (matching WAV), rather than COMM's
@@ -314,6 +318,7 @@ func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, formEnd, li
 	d.ssndIdx = res.AudioIdx
 	d.ssndTruncated = res.AudioTruncated
 	d.oversizedChunks = res.OversizedChunks
+	d.unknownSizeChunks = res.UnknownSizeChunks
 	d.trailingOff, d.trailingLen = res.TrailingOff, res.TrailingLen
 	d.trailingID3v1 = res.TrailingIsID3v1
 	d.outerOff, d.outerLen = res.OuterOff, res.OuterLen

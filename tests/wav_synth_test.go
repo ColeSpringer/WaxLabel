@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -665,6 +666,27 @@ func TestWAVTruncatedDataChunkWarns(t *testing.T) {
 		if hasWarning(doc, wl.WarnTruncatedAudio) {
 			t.Errorf("a streaming-sentinel data size must not be flagged truncated; got %v", doc.Warnings())
 		}
+		// Not truncation, but the clamp takes the rest of the file as audio, so a LIST/INFO
+		// sitting after the data chunk is swallowed and the file reads as untagged. Report
+		// that rather than leave the reader no signal at all.
+		if !hasWarning(doc, wl.WarnUnknownChunkSize) {
+			t.Errorf("the size-unknown sentinel left no signal at all; got %v", doc.Warnings())
+		}
+		// Info severity: a non-seekable writer emits the sentinel legitimately, so a piped
+		// capture must still lint clean.
+		found := false
+		for _, f := range doc.Lint() {
+			if f.Code != "unknown-chunk-size" {
+				continue
+			}
+			found = true
+			if f.Severity != wl.LintInfo {
+				t.Errorf("unknown-chunk-size severity = %v, want info", f.Severity)
+			}
+		}
+		if !found {
+			t.Errorf("lint did not promote the warning: %v", doc.Lint())
+		}
 	})
 	t.Run("intact file not flagged", func(t *testing.T) {
 		data := wavFile(wavFmtPCM(), wavData(400))
@@ -809,5 +831,234 @@ func TestWAVAppendedBytesStillTrailing(t *testing.T) {
 	}
 	if hasWarning(doc, wl.WarnDistrustedBlockSize) {
 		t.Errorf("a correct declared size must not be distrusted: %v", doc.Warnings())
+	}
+}
+
+// wavInfoNoPad builds a LIST/INFO chunk whose items carry no word-alignment pad byte after
+// an odd-size value. That is what a buggy writer emits, and it desynchronizes every item
+// after the first odd one for a reader that steps over the byte unconditionally.
+func wavInfoNoPad(pairs ...[2]string) []byte {
+	body := []byte("INFO")
+	for _, p := range pairs {
+		val := append([]byte(p[1]), 0)
+		body = append(body, []byte(p[0])...)
+		body = append(body, wavLE32(len(val))...)
+		body = append(body, val...)
+	}
+	return wavChunk("LIST", body)
+}
+
+// wavInfoWithTail builds a well-formed LIST/INFO chunk with a region appended that no item
+// walk can read: too short to hold another item header, and not the clean end of the list.
+func wavInfoWithTail(tail []byte, pairs ...[2]string) []byte {
+	body := []byte("INFO")
+	for _, p := range pairs {
+		val := append([]byte(p[1]), 0)
+		body = append(body, []byte(p[0])...)
+		body = append(body, wavLE32(len(val))...)
+		body = append(body, val...)
+		if len(val)&1 == 1 {
+			body = append(body, 0)
+		}
+	}
+	return wavChunk("LIST", append(body, tail...))
+}
+
+// unpaddedInfoPairs is the malformed shape: four items whose first is odd-size and
+// unpadded, so every item after it lands one byte off for a reader that steps over the
+// word-alignment byte unconditionally.
+var unpaddedInfoPairs = [][2]string{
+	{"INAM", "Song"}, {"IART", "Band"}, {"IPRD", "Album"}, {"ICMT", "Note"},
+}
+
+// TestWAVUnpaddedInfoReadsEveryItem: the walk used to desynchronize on the missing pad
+// byte, stop on the garbage with a nil error and no warning, and then destroy everything
+// past that point on the next rewrite, because rebuildInfo re-renders the chunk from the
+// items alone. Every item must now be read, the condition reported, and the values kept
+// across an unrelated edit.
+func TestWAVUnpaddedInfoReadsEveryItem(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		data []byte
+	}{
+		{"riff", wavFile(wavFmtPCM(), wavInfoNoPad(unpaddedInfoPairs...), wavData(400))},
+		{"rf64", rf64File("RF64", 100, wavFmtPCM(), wavInfoNoPad(unpaddedInfoPairs...), wavData(400))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := mustParseBytes(t, tc.data)
+			f := doc.Fields()
+			if f.Title != "Song" || f.Album != "Album" {
+				t.Errorf("title = %q, album = %q, want Song / Album", f.Title, f.Album)
+			}
+			if len(f.Artists) != 1 || f.Artists[0] != "Band" {
+				t.Errorf("artists = %v, want [Band]", f.Artists)
+			}
+			if v, _ := doc.Get(tag.Comment); len(v) != 1 || v[0] != "Note" {
+				t.Errorf("COMMENT = %v, want [Note]", v)
+			}
+			if !hasWarning(doc, wl.WarnMalformedTagEntry) {
+				t.Errorf("the missing pad byte went unreported: %v", doc.Warnings())
+			}
+			if !lintHasCode(doc, "malformed-tag-entry") {
+				t.Errorf("lint did not promote the warning: %v", doc.Lint())
+			}
+			// An unrelated edit re-renders the list properly padded, so the values that used
+			// to die past the desync survive and the file stops reporting the condition.
+			plan, err := doc.Edit().Set(tag.Genre, "Rock").Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			re := mustParseBytes(t, applyToBytes(t, tc.data, plan))
+			if re.Fields().Album != "Album" {
+				t.Errorf("IPRD did not survive the edit: album = %q", re.Fields().Album)
+			}
+			if v, _ := re.Get(tag.Comment); len(v) != 1 || v[0] != "Note" {
+				t.Errorf("ICMT did not survive the edit: COMMENT = %v", v)
+			}
+			if hasWarning(re, wl.WarnMalformedTagEntry) {
+				t.Errorf("the rewritten file still reports the condition it fixed: %v", re.Warnings())
+			}
+		})
+	}
+}
+
+// TestWAVWellFormedInfoStaysQuiet is the control: a properly padded list must not gain the
+// warning, or every ordinary WAV would report one.
+func TestWAVWellFormedInfoStaysQuiet(t *testing.T) {
+	doc := mustParseBytes(t, wavFile(wavFmtPCM(), wavInfo(unpaddedInfoPairs...), wavData(400)))
+	if hasWarning(doc, wl.WarnMalformedTagEntry) {
+		t.Errorf("a well-formed LIST/INFO must stay quiet: %v", doc.Warnings())
+	}
+}
+
+// TestWAVUnreadableInfoTailReportedOnWrite: a region the item walk cannot read has
+// nowhere to go in a rebuilt chunk, so the read warning is not enough - the write must say
+// the bytes are gone.
+func TestWAVUnreadableInfoTailReportedOnWrite(t *testing.T) {
+	data := wavFile(wavFmtPCM(),
+		wavInfoWithTail([]byte{0x01, 0x02, 0x03}, [2]string{"INAM", "Song"}), wavData(400))
+	doc := mustParseBytes(t, data)
+	if !hasWarning(doc, wl.WarnMalformedTagEntry) {
+		t.Fatalf("the unreadable tail went unreported on read: %v", doc.Warnings())
+	}
+	plan, err := doc.Edit().Set(tag.Artist, "Band").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasWarn(plan.Report().Warnings, wl.WarnMalformedTagEntryDropped) {
+		t.Errorf("the write did not report the dropped region: %v", plan.Report().Warnings)
+	}
+}
+
+// TestWAVClampedOversizeInfoReportsOversizedOnly: a LIST whose declared size runs past EOF
+// was cut by the walker, not by the writer, so naming an unread tail would double-report a
+// condition oversized-chunk already states.
+func TestWAVClampedOversizeInfoReportsOversizedOnly(t *testing.T) {
+	list := wavInfo([2]string{"INAM", "Song"})
+	over := slices.Clone(list)
+	copy(over[4:8], wavLE32(1<<20)) // declare a megabyte the file does not hold
+	doc := mustParseBytes(t, wavFile(wavFmtPCM(), over, wavData(400)))
+	if !hasWarning(doc, wl.WarnOversizedChunk) {
+		t.Fatalf("the clamped LIST was not reported: %v", doc.Warnings())
+	}
+	if hasWarning(doc, wl.WarnMalformedTagEntry) {
+		t.Errorf("a clamped chunk must not also report an unreadable tail: %v", doc.Warnings())
+	}
+}
+
+// TestWAVWriteLossIsNotGatedOnHowTheRegionArose documents the split the read
+// suppression must not leak into: the read message is silenced where another code already
+// names the condition, but what a rewrite destroys is reported whatever put it there. The
+// two suppression cases are a clamped chunk (which swallows the rest of the file, so the
+// write is refused as no-audio before it can lose anything) and a body longer than the
+// 64 MiB metadata read - reachable, but only with a fixture that large, so the guard here
+// is the ordinary case: a file that carries both an unreadable region and a real edit.
+func TestWAVWriteLossIsNotGatedOnHowTheRegionArose(t *testing.T) {
+	data := wavFile(wavFmtPCM(),
+		wavInfoWithTail([]byte{0x01, 0x02, 0x03}, [2]string{"INAM", "Song"}), wavData(400))
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Artist, "Band").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasWarn(plan.Report().Warnings, wl.WarnMalformedTagEntryDropped) {
+		t.Errorf("the write did not report what it destroys: %v", plan.Report().Warnings)
+	}
+}
+
+// TestWAVSentinelInfoDoesNotDoubleReport: a LIST the walker clamped because it declared the
+// size-unknown value is reported as unknown-chunk-size, so naming an unreadable tail as
+// well would both duplicate the diagnosis and make set --strict refuse a file whose only
+// defect is the streaming sentinel.
+func TestWAVSentinelInfoDoesNotDoubleReport(t *testing.T) {
+	list := wavInfoWithTail([]byte{0x01, 0x02, 0x03}, [2]string{"INAM", "Song"})
+	copy(list[4:8], wavLE32(-1)) // the 0xFFFFFFFF size-unknown value
+	doc := mustParseBytes(t, wavFile(wavFmtPCM(), list, wavData(400)))
+	if !hasWarning(doc, wl.WarnUnknownChunkSize) {
+		t.Fatalf("the sentinel went unreported: %v", doc.Warnings())
+	}
+	if hasWarning(doc, wl.WarnMalformedTagEntry) {
+		t.Errorf("a clamped chunk must not also report an unreadable tail: %v", doc.Warnings())
+	}
+}
+
+// TestWAVBytesPastTheTerminatorReportedAndRefused: renderInfo writes an item's value up to
+// its first NUL plus one terminator, so bytes the item declared past it die on the next
+// rewrite. They used to go unmentioned on both sides, and set --strict exited 0.
+func TestWAVBytesPastTheTerminatorReportedAndRefused(t *testing.T) {
+	item := slices.Concat([]byte("INAM"), wavLE32(16), []byte("Song\x00HIDDENDATA\x00"))
+	data := wavFile(wavFmtPCM(), wavChunk("LIST", append([]byte("INFO"), item...)), wavData(400))
+	doc := mustParseBytes(t, data)
+	if doc.Fields().Title != "Song" {
+		t.Errorf("title = %q, want Song", doc.Fields().Title)
+	}
+	if !hasWarning(doc, wl.WarnMalformedTagEntry) {
+		t.Fatalf("the bytes past the terminator went unreported: %v", doc.Warnings())
+	}
+	plan, err := doc.Edit().Set(tag.Artist, "Band").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasWarn(plan.Report().Warnings, wl.WarnMalformedTagEntryDropped) {
+		t.Errorf("the write did not report the dropped bytes: %v", plan.Report().Warnings)
+	}
+}
+
+// TestWAVListAlignmentZerosStayQuiet is the false-positive control: a writer that rounds a
+// LIST body up to a four-byte boundary leaves zeros the item model does not carry but a
+// rewrite re-creates, so warning about them would fail --strict on an ordinary file.
+func TestWAVListAlignmentZerosStayQuiet(t *testing.T) {
+	list := wavInfoWithTail(make([]byte, 8), [2]string{"INAM", "Song"})
+	doc := mustParseBytes(t, wavFile(wavFmtPCM(), list, wavData(400)))
+	if hasWarning(doc, wl.WarnMalformedTagEntry) {
+		t.Errorf("alignment zeros are not a loss: %v", doc.Warnings())
+	}
+	// They are not read as an item either: a run of zeros has no printable identifier, and
+	// re-emitting one would write a non-conformant item back out.
+	for _, e := range doc.Native().Describe() {
+		if strings.HasPrefix(e.Kind, "  \x00") {
+			t.Errorf("a run of zeros was read as an INFO item: %q", e.Kind)
+		}
+	}
+}
+
+// TestRF64UnresolvedMarkerIsNotTheStreamingSentinel: inside an RF64/BW64 container the
+// 32-bit 0xFFFFFFFF is always the ds64 marker, so a chunk ds64 does not resolve keeps its
+// own size and clamps like any other overrun. Reading it as the streaming sentinel exempted
+// a genuinely truncated RF64 from truncated-audio.
+func TestRF64UnresolvedMarkerIsNotTheStreamingSentinel(t *testing.T) {
+	src := rf64File("RF64", 16, wavFmtPCM(), wavData(64))
+	// Blank the ds64 data size so the override declines for the data chunk, leaving its
+	// on-disk 0xFFFFFFFF unresolved.
+	i := bytes.Index(src, []byte("ds64"))
+	if i < 0 {
+		t.Fatal("no ds64 chunk")
+	}
+	binary.LittleEndian.PutUint64(src[i+8+8:i+8+16], 1<<40) // a data size the file cannot hold
+	doc := mustParseBytes(t, src)
+	if hasWarning(doc, wl.WarnUnknownChunkSize) {
+		t.Errorf("an RF64 marker is not the streaming sentinel: %v", doc.Warnings())
+	}
+	if !hasWarning(doc, wl.WarnTruncatedAudio) {
+		t.Errorf("a data chunk declaring more than the file holds is truncation: %v", doc.Warnings())
 	}
 }

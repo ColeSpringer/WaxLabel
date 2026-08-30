@@ -42,10 +42,26 @@ type Tag struct {
 	// shape - a v2.2 tag's 6-byte frame headers, an extended header, a footer - none of
 	// which RenderedSize models, since that function sizes what the writer will emit.
 	padding int64
+	// malformedID names the frame whose declared size ran past the end of the tag, and
+	// malformedTail counts the bytes from that frame's header to the end of the region. The
+	// walk cannot read past such a frame, so those bytes are not free padding (padding is 0
+	// for that stop) and a rewrite - which renders frames plus padding - replaces them with
+	// zeros. Both are cleared by WithFrames: a rewritten tag has no malformed tail.
+	malformedID   string
+	malformedTail int64
 }
 
 // Padding reports the free bytes inside the tag region, after the last frame.
 func (t *Tag) Padding() int64 { return t.padding }
+
+// MalformedTail reports the frame whose declared size overran the tag and the byte count
+// from its header to the end of the tag region, or ("", 0) when the tag parsed cleanly.
+func (t *Tag) MalformedTail() (string, int64) {
+	if t == nil {
+		return "", 0
+	}
+	return t.malformedID, t.malformedTail
+}
 
 // SrcVersion reports the ID3v2 minor version that was parsed (2, 3, or 4).
 func (t *Tag) SrcVersion() byte { return t.srcVersion }
@@ -103,6 +119,7 @@ func (t *Tag) WithFrames(frames []Frame, padding int64) *Tag {
 	c := *t
 	c.frames = frames
 	c.padding = padding
+	c.malformedID, c.malformedTail = "", 0 // a rewritten tag has no unreadable tail
 	return &c
 }
 
@@ -139,29 +156,36 @@ func TagSize(header []byte) (int64, bool) {
 }
 
 // ReadFront reads a leading ID3v2 tag from the start of src, returning the parsed
-// tag and its on-disk length, or (nil, 0, nil) when src has no readable leading
-// ID3. It is the shared front-tag read for the codecs whose authoritative
-// container is a front ID3v2 tag (MP3 and raw AAC); FLAC, which only preserves a
-// stray leading ID3 verbatim, reads the raw bytes itself. size is the source size
-// (the tag must fit within it); limit bounds the allocation.
-func ReadFront(src core.ReaderAtSized, size, limit int64, maxElements int) (*Tag, int64, error) {
+// tag, its on-disk length, and any read warning; it returns a nil tag and length 0
+// when src has no readable leading ID3. It is the shared front-tag read for the codecs
+// whose authoritative container is a front ID3v2 tag (MP3 and raw AAC); FLAC, which only
+// preserves a stray leading ID3 verbatim, reads the raw bytes itself. size is the source
+// size (the tag must fit within it); limit bounds the allocation.
+func ReadFront(src core.ReaderAtSized, size, limit int64, maxElements int) (*Tag, int64, []core.Warning, error) {
 	hdr, err := bits.ReadSlice(src, 0, 10, limit)
 	if err != nil {
-		return nil, 0, nil // too short to hold an ID3 header: no front tag
+		return nil, 0, nil, nil // too short to hold an ID3 header: no front tag
 	}
 	total, ok := TagSize(hdr)
-	if !ok || total > size {
-		return nil, 0, nil
+	if !ok {
+		return nil, 0, nil, nil // no ID3v2 header here
+	}
+	if total > size {
+		// The header is a real one whose declared size runs past the end of the file. That
+		// is a tag we cannot read, not a file without one, so it must not vanish silently:
+		// the bytes stay in place (they are audio to every other reader) and are reported.
+		return nil, 0, core.Warn(nil, core.WarnMalformedTagEntry,
+			fmt.Sprintf("the leading ID3v2 tag declares %d bytes but the file holds %d; the tag could not be read", total, size)), nil
 	}
 	tagBytes, err := bits.ReadSlice(src, 0, total, limit)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
 	tg, err := ParseTag(tagBytes, maxElements)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
-	return tg, total, nil
+	return tg, total, nil, nil
 }
 
 // syncSafe decodes a 28-bit sync-safe integer from four bytes (each contributes
@@ -226,12 +250,18 @@ func ParseTag(data []byte, maxElements int) (*Tag, error) {
 		body = skipExtHeader(body, major)
 	}
 
-	frames, rest, err := parseFrames(body, major, tagUnsync, maxElements)
+	frames, rest, malformed, err := parseFrames(body, major, tagUnsync, maxElements)
 	if err != nil {
 		return nil, err
 	}
 	t.frames = frames
-	t.padding = int64(rest)
+	if malformed != "" {
+		// The remainder is a region the walk could not read, not free space a rewrite may
+		// reuse. Counting it as padding would let dump report it as room the file has.
+		t.malformedID, t.malformedTail = malformed, int64(rest)
+	} else {
+		t.padding = int64(rest)
+	}
 	return t, nil
 }
 

@@ -146,6 +146,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// Surface ID3 rebuild losses the bytes cannot show. MP3 has no other tag container, so
 	// an ID3 date drop or reduction is always a file-level loss.
 	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, info, result.Tags)
+	report.Warnings = id3.AppendMalformedTailDropped(report.Warnings, d.id3)
 	// Collapse to a true no-op when the ID3 rebuild re-projected to base's values
 	// (e.g. GENRE=17 -> Rock); a legacy strip stays a real write. DowngradeNoOp carries
 	// the value-dropped warning forward so a dropped date still surfaces on a no-op. An

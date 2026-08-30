@@ -158,6 +158,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// no dates, so a v2.3 ID3 date drop or reduction is a file-level loss.
 	report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "ID3 chunk", result.Tags, dupLost)
 	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, id3Info, result.Tags)
+	report.Warnings = id3.AppendMalformedTailDropped(report.Warnings, d.id3)
 	// Collapse to a true no-op when the containers re-projected to base's values
 	// (e.g. a numeric genre); a native-text strip and an encoding rewrite stay real writes.
 	// DowngradeNoOp carries the value-dropped warning forward so a dropped date still

@@ -206,7 +206,7 @@ func decodeCHAP(body []byte, major byte) (string, core.Chapter, bool) {
 	if endMs != chapFieldUnused {
 		ch.End = msToDuration(endMs)
 	}
-	if subs, _, err := parseFrames(rest[16:], major, false, maxChapterSubframes); err == nil {
+	if subs, _, _, err := parseFrames(rest[16:], major, false, maxChapterSubframes); err == nil {
 		for _, sf := range subs {
 			if sf.ID == "TIT2" {
 				if vals := decodeTextFrame(sf.Body); len(vals) > 0 {
@@ -226,7 +226,7 @@ func chapHasExtraSubframes(body []byte, major byte) bool {
 	if !ok || len(rest) < 16 {
 		return false
 	}
-	subs, _, err := parseFrames(rest[16:], major, false, maxChapterSubframes)
+	subs, _, _, err := parseFrames(rest[16:], major, false, maxChapterSubframes)
 	if err != nil {
 		return false
 	}

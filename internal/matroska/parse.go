@@ -799,7 +799,7 @@ func mediaWarnings(ts tag.TagSet, fams []core.FamilyValue) []core.Warning {
 	if vs, ok := ts.Get(tag.Encoder); ok {
 		for _, v := range vs {
 			if core.IsTranscoderStamp(v) {
-				ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder stamp: "+v)
+				ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder stamp: "+core.WarnSnippet(v))
 			}
 		}
 	}

@@ -61,9 +61,10 @@ func (f Finding) String() string {
 // Lint inspects a document for issues a tagger would want to surface or fix:
 // stale legacy containers, inherited encoder noise, conflicting family values,
 // duplicate or invalid pictures, chapters that collide or start past the audio,
-// malformed dates and numbers, single-valued keys carrying several values, and
-// custom (non-vocabulary) keys. It reads only the parsed document (no I/O) and
-// never modifies it.
+// malformed dates and numbers, single-valued keys carrying several values,
+// custom (non-vocabulary) keys, a tag entry the container holds but no reader can
+// interpret, and a chunk whose declared size the container leaves unknown. It reads
+// only the parsed document (no I/O) and never modifies it.
 func (d *Document) Lint() []Finding {
 	if d.zero() {
 		return nil
@@ -102,14 +103,17 @@ func lintWarnings(ws []core.Warning) []Finding {
 		case core.WarnStrayLeadingID3, core.WarnTrailingID3v1, core.WarnLegacyAPE,
 			core.WarnInheritedEncoder, core.WarnInvalidPicture, core.WarnTruncatedAudio,
 			core.WarnInvalidTagKey, core.WarnChainedStream, core.WarnTrailingBytes,
-			core.WarnOversizedChunk:
+			core.WarnOversizedChunk, core.WarnMalformedTagEntry:
 			out = append(out, Finding{LintWarning, w.Code.String(), w.Message, ""})
 		case core.WarnMultipleVorbisComment, core.WarnDuplicateTagBlock, core.WarnNoAudioFrames:
 			out = append(out, Finding{LintError, w.Code.String(), w.Message, ""})
-		case core.WarnNumericGenre:
-			// Informational, like negative-numeric/custom-key: a numeric genre
-			// reference resolved to a name, worth surfacing in lint (README promises
-			// dump and lint both report it) but it does not flip the clean exit.
+		case core.WarnNumericGenre, core.WarnUnknownChunkSize:
+			// Informational, like negative-numeric/custom-key: worth surfacing in lint
+			// (README promises dump and lint both report it) without flipping the clean
+			// exit. A numeric genre reference resolved to a name, and a size-unknown chunk
+			// is what a non-seekable writer legitimately emits - so a piped WAV capture
+			// must not fail lint, though what the sentinel costs the reader (anything
+			// after the chunk) is still worth reporting.
 			out = append(out, Finding{LintInfo, w.Code.String(), w.Message, ""})
 		}
 	}

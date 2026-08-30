@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/colespringer/waxlabel/internal/bits"
@@ -97,6 +98,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	// list and id3 chunk candidate indices (resolving the authoritative one and
 	// duplicates afterward, so a corrupt-then-valid id3 pair is handled correctly).
 	fmtFound := false
+	infoPadRescued, infoTailClamped := false, false
 	var infoIdxs, id3Idxs []int
 	for i := range d.chunks {
 		ch := d.chunks[i]
@@ -150,9 +152,26 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		}
 		// type already confirmed INFO; a cap breach is a hard error (mirroring the
 		// embedded-id3 sibling below), while a truncated/malformed list stays tolerant.
-		d.info, err = parseInfo(body, opts.Limits.MaxElements)
+		var unread int
+		d.info, unread, infoPadRescued, err = parseInfo(body, opts.Limits.MaxElements)
 		if errors.Is(err, waxerr.ErrSizeTooLarge) {
 			return nil, err
+		}
+		if err == nil {
+			// What a rewrite destroys: the bytes the item model does not carry, plus any the
+			// read above did not even see (maxMetaChunk cuts a body the alloc limit would
+			// still have allowed). rebuildInfo re-renders from the items alone, so all of it
+			// dies whatever put it there - which is why this is not gated on how the region
+			// came to be. An error path leaves it 0 rather than claiming the whole chunk.
+			d.infoTail = int64(unread) + max(0, d.chunks[i].bodyLen-int64(len(body)))
+			// The READ warning is suppressed where another code already names the same
+			// condition: the walker clamped this chunk to EOF, which oversized-chunk (or
+			// unknown-chunk-size, for the streaming sentinel) reports. Such a chunk is
+			// necessarily the last one the walk recorded, which is what keeps this from
+			// suppressing a different LIST that merely shares the id.
+			infoTailClamped = i == len(d.chunks)-1 &&
+				(slices.Contains(d.oversizedChunks, d.chunks[i].id) ||
+					slices.Contains(d.unknownSizeChunks, d.chunks[i].id))
 		}
 		d.infoIdx = i
 		markDup(d, infoIdxs[1:])
@@ -162,7 +181,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			if err != nil {
 				continue
 			}
-			items, err := parseInfo(body, opts.Limits.MaxElements)
+			items, _, _, err := parseInfo(body, opts.Limits.MaxElements)
 			if err != nil {
 				continue // unparseable: nothing readable dies with it
 			}
@@ -231,6 +250,20 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	for _, id := range d.oversizedChunks {
 		warnings = core.Warn(warnings, core.WarnOversizedChunk,
 			fmt.Sprintf("the %q chunk declares more bytes than the file holds and was clamped to EOF", string(id[:])))
+	}
+	// A chunk declared the size-unknown sentinel, so everything past it was read as its
+	// body. Not truncation, but the reader loses whatever followed.
+	warnings = core.WarnUnknownSize(warnings, d.unknownSizeChunks)
+	// The LIST/INFO read could not account for the whole chunk. Both live here rather than
+	// in mediaWarnings because a rewrite writes a well-formed list, so the post-write
+	// document must not still report a condition the rewrite removed.
+	if infoPadRescued {
+		warnings = core.Warn(warnings, core.WarnMalformedTagEntry,
+			"a LIST/INFO item is not followed by its word-alignment pad byte; the list was re-synchronized to read the items after it")
+	}
+	if d.infoTail > 0 && !infoTailClamped {
+		warnings = core.Warn(warnings, core.WarnMalformedTagEntry,
+			fmt.Sprintf("%d byte(s) of the LIST/INFO chunk could not be read as items; a rewrite drops them", d.infoTail))
 	}
 
 	d.track = buildTrack(d.fmtCfg, d.dataLen, d.factSamples, d.hasFact)
@@ -358,6 +391,7 @@ func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, riffEnd int
 	d.dataIdx = res.AudioIdx
 	d.dataTruncated = res.AudioTruncated
 	d.oversizedChunks = res.OversizedChunks
+	d.unknownSizeChunks = res.UnknownSizeChunks
 	d.trailingOff, d.trailingLen = res.TrailingOff, res.TrailingLen
 	d.trailingID3v1 = res.TrailingIsID3v1
 	d.outerOff, d.outerLen = res.OuterOff, res.OuterLen

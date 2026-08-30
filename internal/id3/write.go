@@ -1443,6 +1443,23 @@ func hasSubMinutePart(iso string) bool {
 	return len(iso) >= 18 && iso[16] == ':' && iso[17] >= '0' && iso[17] <= '9'
 }
 
+// AppendMalformedTailDropped appends a malformed-tag-entry-dropped warning when the tag
+// being rewritten carried a region the parser could not read (see [Tag.MalformedTail]). A
+// rewrite renders frames plus padding, so those bytes are replaced and gone. It is the
+// write-path counterpart of the malformed-tag-entry warning [Project] raises, split from it
+// for the same reason as the duplicate-tag-block pair: the read code describes the file
+// before any edit. srcTag may be nil (a file with no ID3 tag), which warns nothing. Shared
+// by the four codecs that rewrite an ID3 tag so they cannot word one loss four ways.
+func AppendMalformedTailDropped(ws []core.Warning, srcTag *Tag) []core.Warning {
+	id, n := srcTag.MalformedTail()
+	if id == "" || n <= 0 {
+		return ws
+	}
+	return core.Warn(ws, core.WarnMalformedTagEntryDropped,
+		fmt.Sprintf("%d byte(s) after the malformed %s frame could not be read and are not carried into the rewritten tag",
+			n, core.WarnSnippet(id)))
+}
+
 // AppendRebuildWarnings appends warnings for losses found while rebuilding ID3 frames:
 // dates that render no v2.3 frame at all, dates whose v2.3 TDAT/TIME rendering drops
 // precision, and malformed pictures dropped during a picture edit. Date warnings are
@@ -1574,7 +1591,7 @@ func RebuildError(info RebuildInfo) error {
 //     the malformed cover the source-parse warning described is gone from the output.
 func CarryProjectionWarnings(sourceWarnings, newTagWarnings []core.Warning) []core.Warning {
 	out := core.CloneWarnings(sourceWarnings)
-	for _, code := range []core.WarningCode{core.WarnChaptersFlattened, core.WarnInvalidPicture} {
+	for _, code := range []core.WarningCode{core.WarnChaptersFlattened, core.WarnInvalidPicture, core.WarnMalformedTagEntry} {
 		if len(core.WarningsWithCode(newTagWarnings, code)) == 0 {
 			out = core.WarningsWithoutCode(out, code)
 		}

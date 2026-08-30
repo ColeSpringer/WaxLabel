@@ -1,6 +1,7 @@
 package id3
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/colespringer/waxlabel/internal/core"
@@ -40,7 +41,7 @@ func EncoderNoise(t *Tag) []core.Warning {
 		}
 		for _, v := range DecodeText(f) {
 			if core.IsTranscoderStamp(v) {
-				ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder stamp: "+v)
+				ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder stamp: "+core.WarnSnippet(v))
 			}
 		}
 	}
@@ -84,6 +85,15 @@ func Project(t *Tag) Projection {
 	var dp dateParts
 	var warnings []core.Warning
 	numeric := false
+
+	// A frame whose declared size overran the tag stopped the walk, so everything from its
+	// header on is unread. Every ID3-backed codec projects through here, so MP3, AAC and the
+	// embedded id3 chunks in WAV and AIFF all inherit the diagnostic.
+	if id, n := t.MalformedTail(); id != "" {
+		warnings = core.Warn(warnings, core.WarnMalformedTagEntry,
+			fmt.Sprintf("the %s frame declares more bytes than the tag holds; the %d byte(s) from it to the end of the tag could not be read",
+				core.WarnSnippet(id), n))
+	}
 
 	emit := func(key tag.Key, val, src string) {
 		contribs = append(contribs, core.Contribution{Key: key, Value: val, Source: src})
@@ -314,6 +324,10 @@ func LegacyV2Families(auth tag.TagSet, raw []byte, maxElements int) ([]core.Fami
 			contribs = append(contribs, core.Contribution{Key: k, Value: v})
 		}
 	}
-	opaque := len(proj.Pictures) > 0 || len(proj.Chapters) > 0 || len(proj.SyncedLyrics) > 0
+	// A region the frame walk could not read is content nothing can show to be redundant,
+	// exactly like the unparseable-tag case above: a strip would destroy it, so the caller
+	// must treat the container as opaque and refuse to prove the strip safe.
+	malformed, _ := t.MalformedTail()
+	opaque := malformed != "" || len(proj.Pictures) > 0 || len(proj.Chapters) > 0 || len(proj.SyncedLyrics) > 0
 	return core.LegacyFamilies(auth, core.FamilyID3v2, contribs), opaque
 }

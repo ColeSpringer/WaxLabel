@@ -800,3 +800,23 @@ func TestAIFFAppendedBytesStillTrailing(t *testing.T) {
 		t.Errorf("duration = %v, want the audio's", got)
 	}
 }
+
+// TestAIFFSentinelSSNDSizeReported: AIFF shares the walker that exempts a 0xFFFFFFFF
+// size-unknown chunk from the truncation and oversized signals, so warning on WAV and not
+// here would be arbitrary. The exemption stays; what it costs the reader is now reported.
+func TestAIFFSentinelSSNDSizeReported(t *testing.T) {
+	ssnd := aiffSSND(400)
+	copy(ssnd[4:8], []byte{0xFF, 0xFF, 0xFF, 0xFF})
+	doc := mustParseBytes(t, aiffFile("AIFF", aiffCOMM(2, 100, 16, 44100), ssnd))
+	if !hasWarning(doc, wl.WarnUnknownChunkSize) {
+		t.Errorf("the size-unknown sentinel left no signal at all; got %v", doc.Warnings())
+	}
+	if hasWarning(doc, wl.WarnTruncatedAudio) {
+		t.Errorf("a size-unknown SSND must not be flagged truncated; got %v", doc.Warnings())
+	}
+	// The control: an ordinary AIFF must not gain the warning.
+	clean := mustParseBytes(t, aiffFile("AIFF", aiffCOMM(2, 100, 16, 44100), aiffSSND(400)))
+	if hasWarning(clean, wl.WarnUnknownChunkSize) {
+		t.Errorf("an ordinary AIFF must stay quiet: %v", clean.Warnings())
+	}
+}

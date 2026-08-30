@@ -275,7 +275,7 @@ func mediaWarnings(tags tag.TagSet, numericGenre bool) []core.Warning {
 	if vs, ok := tags.Get(tag.Encoder); ok {
 		for _, v := range vs {
 			if core.IsTranscoderStamp(v) {
-				ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder stamp: "+v)
+				ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder stamp: "+core.WarnSnippet(v))
 			}
 		}
 	}

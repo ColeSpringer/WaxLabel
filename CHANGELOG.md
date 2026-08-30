@@ -42,9 +42,61 @@ All notable changes to this project are documented here.
   duplicate tag container holding content the written set does not, across WAV, AIFF, FLAC
   and Ogg FLAC. `--strict` escalates it; a redundant duplicate stays silent. Ogg FLAC also
   gains the read-side `multiple-vorbis-comment` warning native FLAC already had.
+- `malformed-tag-entry`, one read-side warning for an entry a tag container holds but no
+  reader can interpret: a RIFF INFO list missing a word-alignment pad byte, a Vorbis
+  comment with no `=`, an ID3 frame or tag header whose declared size overruns. `lint`
+  reports it as a warning.
+- `malformed-tag-entry-dropped`, its write-side counterpart, for a rewrite that cannot
+  carry a region the parser never read. `--strict` escalates it.
+- `unknown-chunk-size`, for a WAV or AIFF chunk declaring the `0xFFFFFFFF` size-unknown
+  value. `lint` reports it at info severity, so a piped capture still exits 0.
+- `lint --fix` reports anything its rewrite destroyed as `lost in the rewrite` (`lost` in
+  `--json`). Re-linting cannot show it: the condition is gone from the output.
 
 ### Fixed
 
+- A WAV or RF64 LIST/INFO list missing a word-alignment pad byte lost every item past the
+  first odd-size one. The reader stepped over a byte that was not there, stopped on the
+  garbage without a word, and the next rewrite rebuilt the chunk from what it had read. The
+  list now re-synchronizes; a region still unreadable is warned about on read and reported
+  as dropped on write.
+- A Vorbis comment entry with no `=` was dropped at parse and erased by the next rewrite.
+  The entry is framed by its own length prefix, so it is now kept verbatim and rendered
+  back unchanged, across FLAC, Ogg Vorbis, Ogg Opus and Ogg FLAC.
+- An ID3 frame whose declared size overruns the tag stopped the frame walk silently, and
+  the unread remainder was counted as free padding. It is now warned about, `dump` no
+  longer reports padding the file does not have, and a rewrite says what it could not
+  carry. A front tag header declaring more bytes than the whole file is warned about too,
+  instead of reading as no tag at all.
+- The `--strict` refusal said `(omit --strict to write anyway)`, which is false for the
+  discard family: without the flag the item is dropped either way, and for something the
+  format cannot store no bytes are written at all. It now says `(omit --strict to continue
+  with a warning)`.
+- A WAV or AIFF chunk declaring the `0xFFFFFFFF` size-unknown value left no signal. The
+  clamp takes the rest of the file as that chunk, so a LIST/INFO after a sentinel-sized
+  `data` chunk is swallowed into the audio extent and the file reads as untagged. The size
+  is still clamped; the condition is now reported.
+- An MP4 whose writer emitted a leading `free`, `skip` or `wide` box before `ftyp` was
+  unsupported (exit 3), though the parser handles it. Detection steps over such a box
+  inside its 64-byte window.
+- A LIST/INFO item declaring bytes past its NUL terminator lost them on rewrite in silence:
+  the writer emits the value up to the terminator plus one NUL. They are counted and
+  reported now. A run of alignment zeros still is not, since a rewrite re-creates it.
+- An RF64/BW64 chunk whose `ds64` entry is missing or unusable read as the plain-RIFF
+  streaming sentinel, which exempted a truncated file from `truncated-audio`. Inside those
+  containers the 32-bit `0xFFFFFFFF` is always the `ds64` marker, so such a chunk keeps its
+  own size and clamps like any other overrun.
+- Warnings that quote file-derived text - an inherited encoder stamp, an unreadable comment
+  entry, a key the vocabulary cannot represent - elide an oversized value instead of
+  splicing it whole. A comment list full of unreadable entries is one warning with a count,
+  not one per entry.
+- The family view graded each native item against the whole authoritative value list, so a
+  tag container at the element cap cost quadratic time. It indexes once per key.
+- `dump --native` accounts for the region of an ID3v2 tag the frame walk could not read,
+  the way it does for a LIST/INFO chunk, so the block size no longer disagrees with the
+  frames listed under it.
+- A stray leading ID3v2 whose frame walk stopped early now counts as opaque legacy content,
+  so `lint --fix` keeps it instead of stripping a region nothing could read.
 - An MP4's final chapter kept its real end. The QuickTime reader canonicalized an end
   landing on the movie duration back to open, so `dump` showed `null` where ffprobe showed
   the duration and `SetChapters(End: duration)` did not round-trip. The end is now reported

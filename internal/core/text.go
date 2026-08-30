@@ -2,6 +2,7 @@ package core
 
 import (
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/colespringer/waxlabel/tag"
@@ -67,13 +68,42 @@ func Fold(s string) string { return tag.Fold(s) }
 // space-insensitively. It is the shared rule for deciding whether a secondary
 // tag container agrees with the authoritative value.
 func ContainsFold(vals []string, value string) bool {
-	value = strings.TrimSpace(value)
 	for _, v := range vals {
-		if strings.EqualFold(strings.TrimSpace(v), value) {
+		if EqualFoldValue(v, value) {
 			return true
 		}
 	}
 	return false
+}
+
+// EqualFoldValue reports whether two tag values match under the family view's comparison:
+// case-insensitive and ignoring surrounding space. [ContainsFold] and [FamilySelected] both
+// resolve the rule here, so the slice form and the set form cannot come to disagree on what
+// counts as the same value.
+func EqualFoldValue(a, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+// FoldValueKey returns the index key under which [EqualFoldValue] treats a value as equal:
+// space-trimmed, with each rune replaced by the smallest rune in its simple-fold orbit.
+// [strings.EqualFold] compares rune by rune over exactly those orbits and requires equal
+// rune counts, so two values share this key precisely when EqualFoldValue reports them
+// equal. It exists so [FamilySelector] can index instead of rescan; a caller comparing two
+// values should use EqualFoldValue, which allocates nothing.
+func FoldValueKey(s string) string {
+	var b strings.Builder
+	s = strings.TrimSpace(s)
+	b.Grow(len(s))
+	for _, r := range s {
+		lo := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			if f < lo {
+				lo = f
+			}
+		}
+		b.WriteRune(lo)
+	}
+	return b.String()
 }
 
 // FamilySelected reports whether a secondary tag container's value for key should
@@ -83,6 +113,39 @@ func ContainsFold(vals []string, value string) bool {
 // field - e.g. ID3v2 ARTIST=[A,B] against an ID3v1 artist of "B". Shared by the
 // codecs that surface a secondary container (MP3's ID3v1/APE, WAV's INFO/id3).
 func FamilySelected(auth tag.TagSet, key tag.Key, value string) bool {
-	avs, ok := auth.Get(key)
-	return !ok || ContainsFold(avs, value)
+	if !auth.Has(key) {
+		return true
+	}
+	// Ask the set rather than take a copy of its values: this runs once per native item,
+	// and a file whose items all map to one key would otherwise clone the whole value list
+	// that many times.
+	return auth.AnyValue(key, func(v string) bool { return EqualFoldValue(v, value) })
+}
+
+// FamilySelector answers [FamilySelected] over many values without rescanning auth for
+// each one. A container's family view asks once per native item, so a file whose items all
+// map to one key makes the scan quadratic: a crafted LIST/INFO at the element cap is tens
+// of seconds of CPU for a parse that reads no audio. The per-key value index is built on
+// the first question about that key, so an ordinary file with a handful of items pays only
+// a map it never fills.
+//
+// It is exactly [FamilySelected], not an approximation: the index is keyed on
+// [FoldValueKey], whose equality is [EqualFoldValue]'s by construction.
+func FamilySelector(auth tag.TagSet) func(tag.Key, string) bool {
+	index := map[tag.Key]map[string]bool{}
+	return func(key tag.Key, value string) bool {
+		if !auth.Has(key) {
+			return true
+		}
+		keys, built := index[key]
+		if !built {
+			keys = map[string]bool{}
+			auth.AnyValue(key, func(v string) bool {
+				keys[FoldValueKey(v)] = true
+				return false // never match: visit every value
+			})
+			index[key] = keys
+		}
+		return keys[FoldValueKey(value)]
+	}
 }

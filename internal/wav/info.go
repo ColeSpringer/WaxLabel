@@ -19,44 +19,103 @@ import (
 // bits.CheckElementCap - the one hard error this returns - so a crafted multi-MB
 // LIST cannot amplify allocation past the WithLimits knob, matching every sibling
 // parser.
-func parseInfo(body []byte, maxElements int) (items []infoItem, err error) {
+//
+// unread is how many bytes of body the item model does not carry, so the caller can report
+// what a rewrite destroys rather than losing it silently: the region past the last item,
+// plus anything an item declared after its ZSTR terminator, which renderInfo will not write
+// back. padRescued reports that re-synchronizing over a missing word-alignment pad byte
+// actually recovered an item; a list whose only unpadded item is its last parses whole
+// either way, so it stays quiet.
+func parseInfo(body []byte, maxElements int) (items []infoItem, unread int, padRescued bool, err error) {
 	if len(body) < 4 || string(body[0:4]) != "INFO" {
-		return nil, nil
+		return nil, 0, false, nil
 	}
 	pos := 4
-	for pos+8 <= len(body) {
+	fellBack := false
+	for pos+8 <= len(body) && plausibleInfoItem(body, pos) {
 		var id [4]byte
 		copy(id[:], body[pos:pos+4])
+		// plausibleInfoItem already rejected a size that is negative (the int(uint32)
+		// hazard on a 32-bit platform) or runs past the body, so the slice below is safe.
 		size := int(binary.LittleEndian.Uint32(body[pos+4 : pos+8]))
 		start := pos + 8
-		// Phrase the bound as a subtraction so a hostile size cannot overflow the
-		// addition start+size into a negative int on a 32-bit platform (which would
-		// slip past the guard and panic on the slice below). start <= len(body)
-		// holds from the loop condition, so len(body)-start is non-negative.
-		if size < 0 || size > len(body)-start {
-			break // truncated item; stop rather than over-read (tolerated, nil error)
-		}
 		// ZSTR: the value ends at the first NUL. Cutting there (rather than only
 		// trimming trailing NULs) means an interior NUL cannot survive into the
 		// canonical string and later truncate an id3 text frame. Clone so the item
 		// does not alias the larger body buffer.
 		content := body[start : start+size]
 		if i := bytes.IndexByte(content, 0); i >= 0 {
+			// renderInfo writes the cut value plus one NUL, so whatever the item declared
+			// past its terminator has nowhere to go on a rewrite.
+			unread += unreadableBytes(content[i+1:])
 			content = content[:i]
 		}
 		// Cap the item count before appending so a hostile LIST full of zero-length
-		// items cannot balloon allocation - the truncation break above stays benign,
-		// only a genuine cap breach is fatal.
+		// items cannot balloon allocation - stopping on an implausible header stays
+		// benign, only a genuine cap breach is fatal.
 		if err := bits.CheckElementCap(len(items), maxElements, "RIFF INFO items"); err != nil {
-			return nil, err
+			return nil, 0, false, err
 		}
 		items = append(items, infoItem{id: id, raw: slices.Clone(content)})
+		if fellBack {
+			padRescued = true // the resynchronization above recovered this item
+			fellBack = false
+		}
 		pos = start + size
 		if size&1 == 1 {
-			pos++ // word-alignment pad byte
+			// The spec puts a word-alignment pad byte after an odd-size item. Step over it
+			// when the file actually has one - the byte is the zero a writer pads with, or
+			// something readable follows it - and stay put when it is missing, which is a
+			// writer bug that desynchronizes every item after this one. Staying both
+			// re-synchronizes the walk and keeps the unread count off a byte that is
+			// really there; stepping keeps a genuine pad byte out of it.
+			if pos < len(body) && (body[pos] == 0 || plausibleInfoItem(body, pos+1)) {
+				pos++
+			} else {
+				fellBack = true
+			}
 		}
 	}
-	return items, nil
+	return items, unread + unreadableBytes(body[pos:]), padRescued, nil
+}
+
+// unreadableBytes reports how many of b's bytes a rewrite would destroy. An all-zero run is
+// alignment padding a writer added and renderInfo re-adds, so it costs nothing and is not
+// reported - without this every LIST whose writer rounded its size up to four would draw a
+// warning and fail --strict. Anything else is content the item model cannot carry.
+func unreadableBytes(b []byte) int {
+	for _, c := range b {
+		if c != 0 {
+			return len(b)
+		}
+	}
+	return 0
+}
+
+// plausibleInfoItem reports whether p could begin another INFO item, or is the clean end
+// of the list. An item is a printable-ASCII 4CC - every real INFO identifier is one -
+// whose declared size fits the rest of the body. It is both the walk's gate, so a run of
+// alignment zeros is not read as an item whose 4CC no reader can print, and the tie-break
+// between the two candidate positions after an odd-size item: the spec-correct padded one
+// and the unpadded one a writer that omitted the pad byte leaves behind. p can be
+// len(body)+1 (the padded candidate after a final unpadded odd item), which is neither an
+// item nor a clean end.
+func plausibleInfoItem(body []byte, p int) bool {
+	if p == len(body) {
+		return true
+	}
+	if p < 0 || p+8 > len(body) {
+		return false
+	}
+	for _, c := range body[p : p+4] {
+		if c < 0x20 || c > 0x7E {
+			return false
+		}
+	}
+	// int(uint32) can be negative on a 32-bit platform, the same hazard the item loop
+	// guards; a negative size is not a plausible item.
+	size := int(binary.LittleEndian.Uint32(body[p+4 : p+8]))
+	return size >= 0 && size <= len(body)-(p+8)
 }
 
 // infoTags projects INFO items into a canonical TagSet, mapping only the known
@@ -93,10 +152,13 @@ func infoTags(items []infoItem) tag.TagSet {
 // set. A duplicate text item is kept in auth (both selected), since both values survive.
 func infoFamilies(auth tag.TagSet, items []infoItem) []core.FamilyValue {
 	var out []core.FamilyValue
+	// One selector for the whole list: a LIST at the element cap whose items all map to one
+	// key would make a per-item scan of auth quadratic.
+	selected := core.FamilySelector(auth)
 	add := func(key tag.Key, v string) {
 		out = append(out, core.FamilyValue{
 			Key: key, Family: core.FamilyRIFF, Scope: core.ScopeTrack,
-			Values: []string{v}, Selected: core.FamilySelected(auth, key, v),
+			Values: []string{v}, Selected: selected(key, v),
 		})
 	}
 	for _, it := range items {
@@ -339,7 +401,7 @@ func encoderNoise(items []infoItem) []core.Warning {
 	var ws []core.Warning
 	for _, it := range items {
 		if isTranscoderISFT(it) {
-			ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder stamp: "+it.text())
+			ws = core.Warn(ws, core.WarnInheritedEncoder, "inherited encoder stamp: "+core.WarnSnippet(it.text()))
 		}
 	}
 	return ws

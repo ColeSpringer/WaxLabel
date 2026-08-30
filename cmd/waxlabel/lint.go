@@ -26,8 +26,9 @@ var errLintErrorFindings = fmt.Errorf("%w: lint found an invalid or contradictor
 
 // newLintCmd builds the "lint" command, which reports metadata issues (stale
 // legacy tags, encoder noise, conflicting families, bad pictures, chapter defects,
-// a chained stream, malformed dates, missing audio) and, with --fix, applies the
-// safe non-destructive remediations and saves.
+// a chained stream, malformed dates, an entry no reader can interpret, a chunk of
+// unknown size, missing audio) and, with --fix, applies the safe non-destructive
+// remediations and saves.
 func newLintCmd() *cobra.Command {
 	var fix bool
 	var recursive bool
@@ -39,7 +40,9 @@ func newLintCmd() *cobra.Command {
 		Long: "Inspect each file for issues a tagger would want to surface: stale legacy\n" +
 			"tag containers, inherited encoder stamps, conflicting source values,\n" +
 			"duplicate or unrecognized pictures, chapters that collide or start past the\n" +
-			"audio, a chained Ogg stream, malformed dates, and missing audio.\n" +
+			"audio, a chained Ogg stream, malformed dates, a tag entry no reader can\n" +
+			"interpret, a chunk whose size the container leaves unknown, and missing\n" +
+			"audio.\n" +
 			"Exit code 0 means clean and 1 means warning-level issues were found. An\n" +
 			"error-severity finding - missing audio, a duplicate tag block, multiple\n" +
 			"Vorbis comment blocks, or a duplicate picture icon - exits 4 (invalid-data),\n" +
@@ -50,6 +53,8 @@ func newLintCmd() *cobra.Command {
 			"the encoder stamp and stripping legacy containers that are fully redundant\n" +
 			"with the canonical tags - then save in place, reporting what changed. A\n" +
 			"legacy container holding a value or content that lives nowhere else is kept.\n" +
+			"A rewrite still cannot carry a region no parser could read, so anything it\n" +
+			"destroys on the way is reported as lost in the rewrite.\n" +
 			"Pictures are never dropped automatically; every finding --fix does not\n" +
 			"address is reported as \"not auto-fixed\". With\n" +
 			"--recursive, directory arguments are walked for audio files. A single\n" +
@@ -231,6 +236,11 @@ type fixOutcome struct {
 	operations []string
 	remaining  []wl.Finding
 	committed  bool
+	// lost are the write-loss warnings the fix plan carried: --fix promises only
+	// provably-safe repairs, so a rewrite that destroyed something on the way (a region of
+	// a malformed tag container, say) must say so rather than report the condition as
+	// cleared. Only populated for a committed save, since an uncommitted one lost nothing.
+	lost []wl.Warning
 	// postWrite is a step that failed after the bytes were committed, so it travels as a
 	// note on a successful outcome rather than an error.
 	postWrite error
@@ -286,12 +296,26 @@ func lintFixOne(ctx context.Context, path string) (fixOutcome, error) {
 	if plan.IsNoOp() {
 		operations = nil
 	}
+	// The fix is meant to be non-destructive, and PlanLintFix's own gates make its two
+	// repairs so. A rewrite can still lose something the fix did not choose - bytes no
+	// parser could read are re-rendered away by any write - and re-linting cannot show it,
+	// since the condition is gone from the output. Surface the plan's own write-loss
+	// warnings, graded by the same set --strict escalates.
+	var lost []wl.Warning
+	if res.Committed {
+		for _, w := range plan.Report().Warnings {
+			if strictEscalatingCodes[w.Code] {
+				lost = append(lost, w)
+			}
+		}
+	}
 	return fixOutcome{
 		path:       path,
 		changes:    plan.Changes(),
 		operations: operations,
 		remaining:  remaining,
 		committed:  res.Committed,
+		lost:       lost,
 		postWrite:  postWrite,
 	}, nil
 }
@@ -321,6 +345,10 @@ func renderLintFix(w io.Writer, o fixOutcome) {
 	for _, f := range o.remaining {
 		// Finding.String self-sanitizes the file-derived text (see renderLint).
 		fmt.Fprintf(w, "  not auto-fixed: %s\n", f.String())
+	}
+	for _, x := range o.lost {
+		// Warning.String self-sanitizes, like Finding.String above.
+		fmt.Fprintf(w, "  lost in the rewrite: %s\n", x.String())
 	}
 	if o.committed {
 		fmt.Fprintf(w, "  saved %s\n", name)
@@ -358,7 +386,10 @@ type jsonLintFix struct {
 	Changes    []jsonChange  `json:"changes"`
 	Operations []string      `json:"operations"`
 	Remaining  []jsonFinding `json:"remaining"`
-	Committed  bool          `json:"committed"`
+	// Lost is what the rewrite destroyed on the way, graded by the same set --strict
+	// escalates. Empty for the usual fix, which loses nothing.
+	Lost      []jsonWarning `json:"lost"`
+	Committed bool          `json:"committed"`
 	jsonPostWrite
 }
 
@@ -378,10 +409,21 @@ func toJSONLintFix(o fixOutcome) jsonLintFix {
 		Changes:       toJSONChanges(o.changes),
 		Operations:    nonNil(o.operations),
 		Remaining:     toJSONFindings(o.remaining),
+		Lost:          toJSONWarnings(o.lost),
 		Committed:     o.committed,
 	}
 	j.setPostWrite(o.postWrite)
 	return j
+}
+
+// toJSONWarnings renders a warning list for the machine stream, never nil so it
+// serializes as "[]" like the sibling lists.
+func toJSONWarnings(ws []wl.Warning) []jsonWarning {
+	out := make([]jsonWarning, 0, len(ws))
+	for _, w := range ws {
+		out = append(out, jsonWarning{Code: w.Code.String(), Message: w.Message})
+	}
+	return out
 }
 
 // toJSONFindings is shared by lint and lint --fix so the finding shape cannot drift.

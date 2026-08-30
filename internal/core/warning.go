@@ -349,6 +349,31 @@ const (
 	// redundant duplicate is silent. Appended to the end of the block so the existing codes
 	// keep their numbers.
 	WarnDuplicateTagBlockDropped
+	// WarnMalformedTagEntry means a tag container held an entry the parser could not read:
+	// a RIFF INFO list that desynchronized on a missing pad byte, a Vorbis comment with no
+	// "=" separator, or an ID3 frame whose declared size ran past the tag. One code covers
+	// all three because they are one condition - the container is well formed, an entry
+	// inside it is not - and a user comparing two formats should see one condition rather
+	// than three. It describes the file, so it stays out of the strict set; its write-path
+	// counterpart WarnMalformedTagEntryDropped is what escalates. Appended to the end of the
+	// block so the existing codes keep their numbers.
+	WarnMalformedTagEntry
+	// WarnMalformedTagEntryDropped means a rewrite could not carry a region the parser never
+	// read (see WarnMalformedTagEntry), so the written file is missing those bytes. It is the
+	// write-path counterpart, split from the read code for the same reason as the
+	// duplicate-tag-block pair: the read code describes the file before any edit. It is
+	// deliberately not a discard - the edit itself applied in full - so IsDiscardWarning
+	// leaves it out. Appended to the end of the block so the existing codes keep their
+	// numbers.
+	WarnMalformedTagEntryDropped
+	// WarnUnknownChunkSize means a chunk declared the 0xFFFFFFFF size-unknown value that
+	// nothing resolved, so its extent was taken as the rest of the file. That is what a
+	// non-seekable writer emits and is not truncation, but it costs the reader everything
+	// after the chunk: a LIST/INFO sitting past a sentinel-sized data chunk is swallowed
+	// into the audio extent and reads as no tags at all. Lint reports it at info severity so
+	// the very common piped-WAV case still exits clean. Appended to the end of the block so
+	// the existing codes keep their numbers.
+	WarnUnknownChunkSize
 )
 
 func (c WarningCode) String() string {
@@ -469,6 +494,12 @@ func (c WarningCode) String() string {
 		return "non-conforming-icon"
 	case WarnDuplicateTagBlockDropped:
 		return "duplicate-tag-block-dropped"
+	case WarnMalformedTagEntry:
+		return "malformed-tag-entry"
+	case WarnMalformedTagEntryDropped:
+		return "malformed-tag-entry-dropped"
+	case WarnUnknownChunkSize:
+		return "unknown-chunk-size"
 	default:
 		return "unknown"
 	}
@@ -602,7 +633,66 @@ func WarnTrailing(ws []Warning, n int64, subject, what string) []Warning {
 // a user comparing two formats sees one condition rather than five.
 func WarnInvalidKey(ws []Warning, name string) []Warning {
 	return Warn(ws, WarnInvalidTagKey,
-		"tag key not represented in canonical tags (not carried): "+tag.SanitizeLine(name))
+		"tag key not represented in canonical tags (not carried): "+WarnSnippet(name))
+}
+
+// WarnUnseparatedEntry appends one malformed-tag-entry warning for a comment list holding
+// entries with no "=" separator, quoting the first and counting the rest. It is worded
+// after [WarnInvalidKey] because the observable consequences are identical: the entry is
+// absent from the tags and from a copy, and the bytes stay in the file. FLAC and every Ogg
+// mapping share the comment codec, so they share this wording too.
+//
+// One warning rather than one per entry: the condition is a property of the list, and a
+// crafted comment packet can hold entries by the tens of thousands, which per-entry would
+// turn a 400 KiB file into megabytes of dump and lint output.
+func WarnUnseparatedEntry(ws []Warning, first string, n int) []Warning {
+	if n <= 0 {
+		return ws
+	}
+	msg := "comment entry has no '=' separator (preserved in place, not carried): " + WarnSnippet(first)
+	if n > 1 {
+		msg += fmt.Sprintf(" (and %d more)", n-1)
+	}
+	return Warn(ws, WarnMalformedTagEntry, msg)
+}
+
+// WarnUnknownSize appends an unknown-chunk-size warning for each chunk id declaring the
+// 0xFFFFFFFF size-unknown value. The wording is neutral about why the sentinel is there - a
+// non-seekable writer emits it legitimately - and says what it costs the reader, which is
+// the part a user acts on. WAV and AIFF share the walker that detects it, so they share
+// this loop rather than each spelling it out beside their oversized-chunk sibling.
+func WarnUnknownSize(ws []Warning, ids [][4]byte) []Warning {
+	for _, id := range ids {
+		ws = Warn(ws, WarnUnknownChunkSize,
+			fmt.Sprintf("the %q chunk declares the 0xFFFFFFFF size-unknown value; its extent was taken as the rest of the file, so any chunk after it is not read", string(id[:])))
+	}
+	return ws
+}
+
+// warnSnippetBytes bounds how much of a file-derived name, entry or stamp a warning
+// message quotes. Each of those is bounded only by the alloc limit, so without this a
+// crafted 1 MiB item becomes a 1 MiB line in dump and lint. It is far wider than any real
+// one, so only an abnormal one changes shape - much tighter than the threshold a displayed
+// tag value gets, since this text is spliced into one line of prose.
+const warnSnippetBytes = 96
+
+// WarnSnippet renders file-derived text for a warning message: a short value passes through
+// sanitized and unchanged, and an oversized one is elided. Every warning that splices bytes
+// the file chose - a native key name, an unseparated comment entry, an inherited encoder
+// stamp - goes through it, so none of them can flood a terminal and they all elide the same
+// way. [tag.ElideValueAt] owns the cut, so the hint reads as it does in dump and diff.
+func WarnSnippet(s string) string { return tag.SanitizeLine(tag.ElideValueAt(s, warnSnippetBytes)) }
+
+// UnparsedNote is the native-view suffix naming a region inside a described block that the
+// parser could not read - an unreadable LIST/INFO tail, an ID3 frame region past a size
+// that overran the tag. It keeps the dump honest: without it the block's size disagrees
+// with its listed contents in silence, which is the very condition malformed-tag-entry
+// reports. Empty when nothing went unread, so a clean block's note is unchanged.
+func UnparsedNote(n int64) string {
+	if n <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(", %d unparsed byte(s)", n)
 }
 
 // TrailingID3v1What is [WarnTrailing]'s what for a region a container walk recognized as an

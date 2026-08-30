@@ -39,9 +39,9 @@ func TestVorbisChapterEmitsCommonForm(t *testing.T) {
 		{Start: 0}, // titleless: no CHAPTER002NAME
 	})
 	want := []Comment{
-		{"CHAPTER001", "00:01:30.500"},
-		{"CHAPTER001NAME", "Named"},
-		{"CHAPTER002", "00:00:00.000"},
+		{Name: "CHAPTER001", Value: "00:01:30.500"},
+		{Name: "CHAPTER001NAME", Value: "Named"},
+		{Name: "CHAPTER002", Value: "00:00:00.000"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
@@ -98,10 +98,10 @@ func TestVorbisChapterThousandFitsThreeDigits(t *testing.T) {
 // and 0- or 1-based numbering, ordering by the numeric index.
 func TestVorbisChapterAcceptsAnyDigitsAndBase(t *testing.T) {
 	comments := []Comment{
-		{"CHAPTER0", "00:00:00.000"}, // 0-based, 1 digit
-		{"CHAPTER0NAME", "Zero"},
-		{"CHAPTER00001", "00:00:05.000"}, // 5 digits
-		{"CHAPTER00001NAME", "One"},
+		{Name: "CHAPTER0", Value: "00:00:00.000"}, // 0-based, 1 digit
+		{Name: "CHAPTER0NAME", Value: "Zero"},
+		{Name: "CHAPTER00001", Value: "00:00:05.000"}, // 5 digits
+		{Name: "CHAPTER00001NAME", Value: "One"},
 	}
 	got := ProjectChapters(comments)
 	if len(got) != 2 || got[0].Title != "Zero" || got[1].Title != "One" || got[1].Start != 5*time.Second {
@@ -115,12 +115,12 @@ func TestVorbisChapterAcceptsAnyDigitsAndBase(t *testing.T) {
 // chapter ahead of the 5s one). Equal-start chapters break ties by index (stable sort).
 func TestVorbisChapterSortsByStart(t *testing.T) {
 	comments := []Comment{
-		{"CHAPTER001", "00:00:10.000"}, // lower index, later time
-		{"CHAPTER001NAME", "Late"},
-		{"CHAPTER002", "00:00:05.000"}, // higher index, earlier time
-		{"CHAPTER002NAME", "Early"},
-		{"CHAPTER003", "00:00:05.000"}, // equal start to CHAPTER002: ties break by index
-		{"CHAPTER003NAME", "EarlyTie"},
+		{Name: "CHAPTER001", Value: "00:00:10.000"}, // lower index, later time
+		{Name: "CHAPTER001NAME", Value: "Late"},
+		{Name: "CHAPTER002", Value: "00:00:05.000"}, // higher index, earlier time
+		{Name: "CHAPTER002NAME", Value: "Early"},
+		{Name: "CHAPTER003", Value: "00:00:05.000"}, // equal start to CHAPTER002: ties break by index
+		{Name: "CHAPTER003NAME", Value: "EarlyTie"},
 	}
 	got := ProjectChapters(comments)
 	if len(got) != 3 {
@@ -160,9 +160,9 @@ func TestVorbisChapterFractionScaling(t *testing.T) {
 // tag projection (they are chapters, not custom tag fields).
 func TestVorbisChapterOwnership(t *testing.T) {
 	comments := []Comment{
-		{"TITLE", "Song"},
-		{"CHAPTER001", "00:00:00.000"},
-		{"CHAPTER001NAME", "Intro"},
+		{Name: "TITLE", Value: "Song"},
+		{Name: "CHAPTER001", Value: "00:00:00.000"},
+		{Name: "CHAPTER001NAME", Value: "Intro"},
 	}
 	ts, _ := Project(comments)
 	for _, k := range ts.Keys() {
@@ -177,8 +177,8 @@ func TestVorbisChapterOwnership(t *testing.T) {
 // see TestRebuildPreservesUnrelatedChapter).
 func TestVorbisChapterMalformedNotAChapter(t *testing.T) {
 	comments := []Comment{
-		{"CHAPTER001", "not-a-time"},
-		{"CHAPTER002NAME", "orphan title"},
+		{Name: "CHAPTER001", Value: "not-a-time"},
+		{Name: "CHAPTER002NAME", Value: "orphan title"},
 	}
 	if got := ProjectChapters(comments); len(got) != 0 {
 		t.Errorf("malformed chapter comments yielded %+v, want none", got)
@@ -190,10 +190,10 @@ func TestVorbisChapterMalformedNotAChapter(t *testing.T) {
 // preserved verbatim, including a malformed one.
 func TestRebuildOwnsChapters(t *testing.T) {
 	orig := []Comment{
-		{"TITLE", "Old"},
-		{"CHAPTER001", "00:00:00.000"},
-		{"CHAPTER001NAME", "Intro"},
-		{"CHAPTER002", "garbage"}, // malformed: preserved on unrelated edits
+		{Name: "TITLE", Value: "Old"},
+		{Name: "CHAPTER001", Value: "00:00:00.000"},
+		{Name: "CHAPTER001NAME", Value: "Intro"},
+		{Name: "CHAPTER002", Value: "garbage"}, // malformed: preserved on unrelated edits
 	}
 
 	// Unrelated (title-only) edit: every CHAPTERxxx comment is preserved verbatim.

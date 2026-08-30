@@ -266,13 +266,26 @@ const maxDisplayValueBytes = 4096
 // hint; a caller needing the exact value reads it from the structured fields. It is
 // applied before sanitizing, so the hint and the boundary are computed on the real
 // value, and the caller's [SanitizeLine]/[SanitizeText] then escapes the result.
-func ElideValue(v string) string {
-	if len(v) <= maxDisplayValueBytes {
+func ElideValue(v string) string { return ElideValueAt(v, maxDisplayValueBytes) }
+
+// ElideValueAt is [ElideValue] with a caller-chosen threshold, for text held to a tighter
+// bound than a displayed tag value: a warning quoting a file-derived key or entry, which is
+// one line of prose rather than a field of its own. Sharing the cut keeps one back-off rule
+// and one hint spelling across both.
+//
+// A prefix that backs all the way off (max lands inside a run of continuation bytes, which
+// is what a binary blob looks like) keeps the raw cut instead of eliding to nothing: the
+// caller sanitizes, and [SanitizeLine] escapes an invalid byte rather than emitting it.
+func ElideValueAt(v string, max int) string {
+	if max < 1 || len(v) <= max {
 		return v
 	}
-	keep := maxDisplayValueBytes
+	keep := max
 	for keep > 0 && !utf8.RuneStart(v[keep]) {
 		keep-- // back up off a UTF-8 continuation byte so the prefix ends on a rune
+	}
+	if keep == 0 {
+		keep = max
 	}
 	return v[:keep] + "…[+" + bits.HumanBytes(int64(len(v)-keep)) + "]"
 }

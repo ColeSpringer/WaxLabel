@@ -274,10 +274,18 @@ func mp4AssembleUdta(udtaKids ...[]byte) []byte {
 // build, so the stco entry and every enclosing box size stay correct as the extras
 // change the layout.
 func mp4AssembleExtra(stblExtra, moovExtra []byte, udtaKids ...[]byte) []byte {
+	return mp4AssembleLeading(nil, stblExtra, moovExtra, udtaKids...)
+}
+
+// mp4AssembleLeading is mp4AssembleExtra with a third extension point: bytes placed before
+// ftyp, for the free/skip/wide box some writers reserve there. It is the same two-pass
+// build, so the leading box shifts the media and the stco entry follows it.
+func mp4AssembleLeading(leading, stblExtra, moovExtra []byte, udtaKids ...[]byte) []byte {
 	mdatPayload := bytes.Repeat([]byte{0xA7}, 120)
 	build := func(stcoOff uint32) []byte {
 		udta := mp4Atom("udta", slices.Concat(udtaKids...))
-		return slices.Concat(mp4Ftyp(), mp4MoovExtra(udta, stcoOff, stblExtra, moovExtra), mp4Atom("mdat", mdatPayload))
+		return slices.Concat(leading, mp4Ftyp(),
+			mp4MoovExtra(udta, stcoOff, stblExtra, moovExtra), mp4Atom("mdat", mdatPayload))
 	}
 	tmp := build(0)
 	j := bytes.Index(tmp, []byte("mdat"))
@@ -1083,4 +1091,31 @@ func TestMP4TruncatedMdatWarns(t *testing.T) {
 			t.Errorf("expected truncated-audio on a 64-bit overflowing mdat; got %v", doc.Warnings())
 		}
 	})
+}
+
+// TestMP4LeadingFreeAtomParsesAndSurvives: detection now looks past a leading free box, so
+// such a file must also parse and keep that box across a write - the parser was already
+// generic over top-level atoms, and detection was the only barrier.
+func TestMP4LeadingFreeAtomParsesAndSurvives(t *testing.T) {
+	free := mp4Atom("free", []byte{0, 0, 0, 0, 0, 0, 0, 0})
+	data := mp4AssembleLeading(free, nil, nil, mp4Meta(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "Song"))))
+	doc := mustParseBytes(t, data)
+	if doc.Format() != wl.FormatMP4 {
+		t.Fatalf("format = %v, want MP4", doc.Format())
+	}
+	if doc.Fields().Title != "Song" {
+		t.Errorf("title = %q, want Song", doc.Fields().Title)
+	}
+	plan, err := doc.Edit().Set(tag.Artist, "Band").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	if !bytes.HasPrefix(out, free) {
+		t.Errorf("the leading free atom did not survive the write")
+	}
+	re := mustParseBytes(t, out)
+	if len(re.Fields().Artists) != 1 || re.Fields().Artists[0] != "Band" {
+		t.Errorf("artists = %v, want [Band]", re.Fields().Artists)
+	}
 }
