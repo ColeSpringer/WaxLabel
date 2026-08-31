@@ -489,6 +489,54 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 			droppedPictureMIMEs = dropped
 		}
 	}
+	// Picture slots: a destination whose picture store is a set of uniquely-named slots
+	// (APE's two Cover Art items) holds one picture per slot, and the added-aware
+	// partition resolves the set here, where which pictures this edit authored is known:
+	// an added picture claims a slot from a pre-existing same-role one - the edit targets
+	// the slot, so adding a front cover replaces the file's front rather than losing to
+	// it - while an added picture left with no slot at all is refused like an
+	// unrepresentable cover format, or dropped with a warning under the same drop option.
+	// A displaced pre-existing picture is dropped with its own warning; it is the
+	// destination's data, so refusing the edit for it would make replacement impossible.
+	// A faithful transfer never conflicts here: PrepareTransfer filters the source set
+	// through the same partition before it reaches the editor. Resolving before the plan
+	// keeps the codec's writer a pure backstop and the added-scoped picture sanity
+	// warnings below accurate about the set actually written.
+	var slotDroppedRoles, slotReplacedRoles []core.PictureType
+	var slotReason string
+	if structuralGates && e.picsTouched && !picturesDropped && len(keptPics) > 0 &&
+		caps.Pictures.Write >= core.AccessPartial {
+		if keptIdx, reason, ok := core.PartitionPictureSlotsEdited(caps.Pictures, keptPics, keptMask); ok && len(keptIdx) < len(keptPics) {
+			slotReason = reason
+			keptFlag := make([]bool, len(keptPics))
+			for _, i := range keptIdx {
+				keptFlag[i] = true
+			}
+			for i, p := range keptPics {
+				if keptFlag[i] {
+					continue
+				}
+				if i < len(keptMask) && keptMask[i] {
+					slotDroppedRoles = append(slotDroppedRoles, p.Type)
+				} else {
+					slotReplacedRoles = append(slotReplacedRoles, p.Type)
+				}
+			}
+			if len(slotDroppedRoles) > 0 && !wo.AllowUnsupportedDrop {
+				return nil, fmt.Errorf("%w: the %s picture cannot be stored in %s %s file (%s)",
+					waxerr.ErrUnsupportedTag, slotDroppedRoles[0],
+					core.IndefiniteArticle(e.base.Format.String()), e.base.Format, slotReason)
+			}
+			kept := make([]core.Picture, 0, len(keptIdx))
+			mask := make([]bool, 0, len(keptIdx))
+			for _, i := range keptIdx {
+				kept = append(kept, keptPics[i])
+				mask = append(mask, i < len(keptMask) && keptMask[i])
+			}
+			edited.Pictures = kept
+			keptPics, keptMask = kept, mask
+		}
+	}
 	// Truncate an over-cap synced-lyrics set to the modeled per-set line cap before planning,
 	// so the written file and the plan result agree on the line count. A write-path truncation
 	// would leave the plan over-counting. Skipped for a set already dropped whole above.
@@ -645,6 +693,18 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	if pictureFormatsDropped {
 		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnPictureUnsupported,
 			core.UnrepresentableReason(e.base.Format, droppedPictureMIMEs))
+	}
+	// Slot losses resolved above: an added picture with no slot, and a pre-existing
+	// picture an added one displaced. Worded like the APE writer's own backstop warning,
+	// and emitted from the recorded lists so the loss survives an edit that collapses to
+	// a byte-identical no-op (an added picture whose whole effect was resolved away).
+	for _, role := range slotDroppedRoles {
+		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnPictureUnsupported,
+			fmt.Sprintf("the %s picture was dropped: %s", role, slotReason))
+	}
+	for _, role := range slotReplacedRoles {
+		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnPictureUnsupported,
+			fmt.Sprintf("the file's %s picture was replaced by this edit's picture: %s", role, slotReason))
 	}
 	if syncedLyricsTruncated {
 		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnSyncedLyricsTruncated,

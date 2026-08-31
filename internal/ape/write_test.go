@@ -313,16 +313,275 @@ func TestRebuildEditedItemKeepsFlags(t *testing.T) {
 
 // TestRebuildKeepsMalformedCover: a picture edit re-emits the decoded cover set, which
 // by definition excludes a cover whose payload did not decode. Dropping it would destroy
-// bytes the read path reported as preserved.
+// bytes the read path reported as preserved. The undecodable item here is a back cover
+// while the edit writes a front, so the two names cannot collide.
 func TestRebuildKeepsMalformedCover(t *testing.T) {
-	bad := Item{Key: coverFrontKey, Data: []byte("no-nul-terminator"), Flags: itemTypeBinary << itemTypeShift}
+	bad := Item{Key: coverBackKey, Data: []byte("no-nul-terminator"), Flags: itemTypeBinary << itemTypeShift}
 	ts := tag.NewTagSet()
-	got, _ := Rebuild([]Item{bad}, ts, ts, []core.Picture{{Type: core.PicFrontCover, Data: tinyPNGBytes()}}, true)
+	got, info := Rebuild([]Item{bad}, ts, ts, []core.Picture{{Type: core.PicFrontCover, Data: tinyPNGBytes()}}, true)
 	if len(got) != 2 {
 		t.Fatalf("items = %d, want the new cover plus the undecodable one", len(got))
 	}
 	if !bytes.Equal(got[1].Data, bad.Data) {
 		t.Errorf("undecodable cover = %q, want its bytes preserved", got[1].Data)
+	}
+	if ws := RebuildWarnings(nil, info); len(ws) != 0 {
+		t.Errorf("warnings = %+v, want none for a collision-free preserve", ws)
+	}
+}
+
+// TestRebuildCoverSlots pins APEv2 name uniqueness for the cover items: the convention
+// has exactly two item names, so at most one front and one back cover can be written.
+// An exact front or back claims its own slot (first in the set wins a tie) and never
+// another, since writing a known front as the back cover would falsify a role the
+// source asserted. Any other role's name is already being rewritten, so it takes
+// whichever slot is free, front first; only a picture left with no free slot is
+// dropped, and warned.
+func TestRebuildCoverSlots(t *testing.T) {
+	ts := tag.NewTagSet()
+	pic := func(pt core.PictureType, payload string) core.Picture {
+		return core.Picture{Type: pt, Data: []byte(payload)}
+	}
+	for _, c := range []struct {
+		name        string
+		pics        []core.Picture
+		wantKeys    []string
+		wantData    []string // image bytes per written item, matching wantKeys
+		wantDropped []core.PictureType
+	}{
+		{"front then artist spills to back", []core.Picture{pic(core.PicFrontCover, "F"), pic(core.PicArtist, "A")},
+			[]string{coverFrontKey, coverBackKey}, []string{"F", "A"}, nil},
+		{"artist then front", []core.Picture{pic(core.PicArtist, "A"), pic(core.PicFrontCover, "F")},
+			[]string{coverBackKey, coverFrontKey}, []string{"A", "F"}, nil},
+		{"lone artist takes the front", []core.Picture{pic(core.PicArtist, "A")},
+			[]string{coverFrontKey}, []string{"A"}, nil},
+		{"artist and back both fit", []core.Picture{pic(core.PicArtist, "A"), pic(core.PicBackCover, "B")},
+			[]string{coverFrontKey, coverBackKey}, []string{"A", "B"}, nil},
+		{"two spills fill both slots", []core.Picture{pic(core.PicArtist, "A"), pic(core.PicComposer, "C")},
+			[]string{coverFrontKey, coverBackKey}, []string{"A", "C"}, nil},
+		{"third spill has no slot", []core.Picture{pic(core.PicFrontCover, "F"), pic(core.PicArtist, "A"), pic(core.PicBand, "B")},
+			[]string{coverFrontKey, coverBackKey}, []string{"F", "A"}, []core.PictureType{core.PicBand}},
+		{"a losing front never fakes a back", []core.Picture{pic(core.PicFrontCover, "F1"), pic(core.PicFrontCover, "F2")},
+			[]string{coverFrontKey}, []string{"F1"}, []core.PictureType{core.PicFrontCover}},
+		{"two backs keep the first", []core.Picture{pic(core.PicBackCover, "B1"), pic(core.PicBackCover, "B2"), pic(core.PicFrontCover, "F")},
+			[]string{coverBackKey, coverFrontKey}, []string{"B1", "F"}, []core.PictureType{core.PicBackCover}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, info := Rebuild(nil, ts, ts, c.pics, true)
+			if len(got) != len(c.wantKeys) {
+				t.Fatalf("items = %+v, want %d covers %v", got, len(c.wantKeys), c.wantKeys)
+			}
+			for i, it := range got {
+				if it.Key != c.wantKeys[i] {
+					t.Errorf("item %d name = %q, want %q", i, it.Key, c.wantKeys[i])
+				}
+				p, err := DecodeCover(it.Key, it.Data)
+				if err != nil {
+					t.Fatalf("DecodeCover(%q): %v", it.Key, err)
+				}
+				if string(p.Data) != c.wantData[i] {
+					t.Errorf("item %d image = %q, want %q", i, p.Data, c.wantData[i])
+				}
+			}
+			if !slices.Equal(info.SlotDroppedCovers, c.wantDropped) {
+				t.Errorf("SlotDroppedCovers = %v, want %v", info.SlotDroppedCovers, c.wantDropped)
+			}
+			ws := RebuildWarnings(nil, info)
+			if len(ws) != len(c.wantDropped) {
+				t.Fatalf("warnings = %+v, want one per dropped picture (%d)", ws, len(c.wantDropped))
+			}
+			for _, w := range ws {
+				if w.Code != core.WarnPictureUnsupported {
+					t.Errorf("warning code = %v, want WarnPictureUnsupported", w.Code)
+				}
+			}
+		})
+	}
+}
+
+// TestRebuildReplacesNonTextItemOnAuthoredName: an edit that adds a key whose
+// conventional item name a preserved non-text item occupies must not write both, or the
+// tag holds two items with one name. The edit targets that name, so the opaque payload
+// is replaced and the loss warned, the same policy Matroska applies to a binary value
+// under an edited key.
+func TestRebuildReplacesNonTextItemOnAuthoredName(t *testing.T) {
+	for _, spelling := range []string{"Title", "TITLE"} { // readers compare names case-insensitively
+		t.Run(spelling, func(t *testing.T) {
+			orig := []Item{{Key: spelling, Data: []byte{1, 2, 3}, Flags: itemTypeBinary << itemTypeShift}}
+			base := tag.NewTagSet()
+			edited := tag.NewTagSet()
+			edited.Add(tag.Title, "New")
+
+			items, info := Rebuild(orig, base, edited, nil, false)
+			if len(items) != 1 || items[0].NonText() || items[0].Value != "New" {
+				t.Fatalf("items = %+v, want only the new text Title", items)
+			}
+			if !slices.Equal(info.NonTextReplaced, []tag.Key{tag.Title}) {
+				t.Errorf("NonTextReplaced = %v, want [TITLE]", info.NonTextReplaced)
+			}
+			ws := RebuildWarnings(nil, info)
+			if len(ws) != 1 || ws[0].Code != core.WarnTagStructureDropped || !slices.Contains(ws[0].Keys, tag.Title) {
+				t.Errorf("warnings = %+v, want one tag-structure-dropped keyed TITLE", ws)
+			}
+		})
+	}
+}
+
+// TestRebuildKeepsPreexistingNameCollision: a text item and a non-text item already
+// sharing a name is the file's own state, not something this edit authors, so both
+// survive an edit to the key (and an unrelated one) rather than being repaired by
+// deletion.
+func TestRebuildKeepsPreexistingNameCollision(t *testing.T) {
+	orig := []Item{
+		{Key: "Title", Value: "Old"},
+		{Key: "Title", Data: []byte{9}, Flags: itemTypeBinary << itemTypeShift},
+	}
+	base := tag.NewTagSet()
+	base.Add(tag.Title, "Old")
+	edited := base.Clone()
+	edited.Set(tag.Title, "New")
+
+	items, info := Rebuild(orig, base, edited, nil, false)
+	if len(items) != 2 || items[0].Value != "New" || !items[1].NonText() {
+		t.Fatalf("items = %+v, want the rewritten text item plus the preserved binary one", items)
+	}
+	if len(info.NonTextReplaced) != 0 {
+		t.Errorf("NonTextReplaced = %v, want none for a pre-existing collision", info.NonTextReplaced)
+	}
+}
+
+// TestRebuildRefusesCoverNameTextItem: the Cover Art names are typed binary by the
+// convention, so a text value under one would collide with any cover item and confuse
+// readers that look the name up. It is refused like a reserved name: recorded for the
+// warning, with a pre-existing item's bytes kept.
+func TestRebuildRefusesCoverNameTextItem(t *testing.T) {
+	base := tag.NewTagSet()
+	edited := tag.NewTagSet()
+	key := tag.Key("COVER ART (FRONT)")
+	edited.Add(key, "x")
+
+	items, info := Rebuild(nil, base, edited, nil, false)
+	if len(items) != 0 {
+		t.Fatalf("items = %+v, want none: a text cover-name item must not be authored", items)
+	}
+	if !slices.Equal(info.CoverNameKeys, []tag.Key{key}) {
+		t.Errorf("CoverNameKeys = %v, want [%s]", info.CoverNameKeys, key)
+	}
+	ws := RebuildWarnings(nil, info)
+	if len(ws) != 1 || ws[0].Code != core.WarnValueDropped || !slices.Contains(ws[0].Keys, key) {
+		t.Errorf("warnings = %+v, want one value-dropped keyed %s", ws, key)
+	}
+
+	// A file that already carries such a text item keeps its bytes when the refused edit
+	// targeted it, matching the reserved-name preserve.
+	orig := []Item{{Key: "Cover Art (Front)", Value: "old"}}
+	preserved := tag.NewTagSet()
+	preserved.Add(key, "old")
+	changed := preserved.Clone()
+	changed.Set(key, "new")
+	items, _ = Rebuild(orig, preserved, changed, nil, false)
+	if len(items) != 1 || items[0].Value != "old" {
+		t.Errorf("items = %+v, want the original text item preserved on a refused set", items)
+	}
+}
+
+// TestRebuildPictureEditReplacesCoverNameTextItem: a picture edit writing a cover claims
+// its item name, so a preserved text item squatting on that name is dropped and warned
+// rather than emitted alongside as a duplicate. A cover name the edit does not write
+// keeps its squatter.
+func TestRebuildPictureEditReplacesCoverNameTextItem(t *testing.T) {
+	orig := []Item{{Key: "Cover Art (Front)", Value: "junk-text"}}
+	base := Project(&Tag{Items: orig}).Tags
+	edited := base.Clone()
+
+	items, info := Rebuild(orig, base, edited, []core.Picture{{Type: core.PicFrontCover, Data: tinyPNGBytes()}}, true)
+	if len(items) != 1 || !items[0].NonText() || items[0].Key != coverFrontKey {
+		t.Fatalf("items = %+v, want only the written cover item", items)
+	}
+	if !slices.Equal(info.CoverTextReplaced, []tag.Key{"COVER ART (FRONT)"}) {
+		t.Errorf("CoverTextReplaced = %v, want the squatting key", info.CoverTextReplaced)
+	}
+	ws := RebuildWarnings(nil, info)
+	if len(ws) != 1 || ws[0].Code != core.WarnValueDropped {
+		t.Errorf("warnings = %+v, want one value-dropped", ws)
+	}
+
+	items, info = Rebuild(orig, base, edited, []core.Picture{{Type: core.PicBackCover, Data: tinyPNGBytes()}}, true)
+	if len(items) != 2 {
+		t.Fatalf("items = %+v, want the back cover plus the untouched front-name text item", items)
+	}
+	if len(info.CoverTextReplaced) != 0 {
+		t.Errorf("CoverTextReplaced = %v, want none when the name is not written", info.CoverTextReplaced)
+	}
+}
+
+// TestRebuildReplacesMalformedCoverOnNameCollision: when a picture edit writes a cover
+// under a name an undecodable item already holds, keeping both would break APEv2 name
+// uniqueness. The edit targets that very slot, so the undecodable bytes are replaced,
+// and the drop is warned rather than silent.
+func TestRebuildReplacesMalformedCoverOnNameCollision(t *testing.T) {
+	bad := Item{Key: "COVER ART (FRONT)", Data: []byte("no-nul-terminator"), Flags: itemTypeBinary << itemTypeShift}
+	ts := tag.NewTagSet()
+	got, info := Rebuild([]Item{bad}, ts, ts, []core.Picture{{Type: core.PicFrontCover, Data: tinyPNGBytes()}}, true)
+	if len(got) != 1 || got[0].Key != coverFrontKey {
+		t.Fatalf("items = %+v, want a single front-cover item", got)
+	}
+	p, err := DecodeCover(got[0].Key, got[0].Data)
+	if err != nil || !bytes.Equal(p.Data, tinyPNGBytes()) {
+		t.Errorf("written cover = %+v (err %v), want the new image bytes", p, err)
+	}
+	if !slices.Equal(info.MalformedCoversReplaced, []string{"COVER ART (FRONT)"}) {
+		t.Errorf("MalformedCoversReplaced = %v, want the original item name", info.MalformedCoversReplaced)
+	}
+	ws := RebuildWarnings(nil, info)
+	if len(ws) != 1 || ws[0].Code != core.WarnMalformedTagEntryDropped {
+		t.Errorf("warnings = %+v, want one malformed-tag-entry-dropped warning", ws)
+	}
+}
+
+// TestRebuildSpillAvoidsMalformedSlot: a role that is being downgraded anyway has no
+// claim on a specific name, so it takes a slot no undecodable item holds when one is
+// free, and the junk bytes survive. Only when every free slot is junk-held does the
+// spill displace one, warned, rather than dropping the user's picture.
+func TestRebuildSpillAvoidsMalformedSlot(t *testing.T) {
+	badFront := Item{Key: coverFrontKey, Data: []byte("no-nul"), Flags: itemTypeBinary << itemTypeShift}
+	badBack := Item{Key: coverBackKey, Data: []byte("no-nul"), Flags: itemTypeBinary << itemTypeShift}
+	ts := tag.NewTagSet()
+	artist := []core.Picture{{Type: core.PicArtist, Data: tinyPNGBytes()}}
+
+	got, info := Rebuild([]Item{badFront}, ts, ts, artist, true)
+	if len(got) != 2 || got[0].Key != coverBackKey || !bytes.Equal(got[1].Data, badFront.Data) {
+		t.Fatalf("items = %+v, want the artist written as the back cover and the junk front preserved", got)
+	}
+	if len(info.MalformedCoversReplaced) != 0 || len(info.SlotDroppedCovers) != 0 {
+		t.Errorf("info = %+v, want no replacement and no drop", info)
+	}
+
+	got, info = Rebuild([]Item{badFront, badBack}, ts, ts, artist, true)
+	if len(got) != 2 || got[0].Key != coverFrontKey || !bytes.Equal(got[1].Data, badBack.Data) {
+		t.Fatalf("items = %+v, want the artist written as the front cover and the junk back preserved", got)
+	}
+	if !slices.Equal(info.MalformedCoversReplaced, []string{coverFrontKey}) {
+		t.Errorf("MalformedCoversReplaced = %v, want the displaced front", info.MalformedCoversReplaced)
+	}
+}
+
+// TestPartitionCoverSlotsAddedPriority: within a slot's exact-role claimants, a picture
+// this edit added beats one the file already had, so adding a front cover replaces the
+// existing front rather than silently losing to it. With no added flags the earlier
+// picture wins, which is what a faithful transfer of a two-front source carries.
+func TestPartitionCoverSlotsAddedPriority(t *testing.T) {
+	pics := []core.Picture{
+		{Type: core.PicFrontCover, Data: []byte("old")},
+		{Type: core.PicFrontCover, Data: []byte("new")},
+	}
+	kept, dropped := PartitionCoverSlots(pics, []bool{false, true})
+	if !slices.Equal(kept, []int{1}) || !slices.Equal(dropped, []int{0}) {
+		t.Errorf("added-aware partition kept %v dropped %v, want the added picture kept", kept, dropped)
+	}
+	kept, dropped = PartitionCoverSlots(pics, nil)
+	if !slices.Equal(kept, []int{0}) || !slices.Equal(dropped, []int{1}) {
+		t.Errorf("plain partition kept %v dropped %v, want the first picture kept", kept, dropped)
 	}
 }
 

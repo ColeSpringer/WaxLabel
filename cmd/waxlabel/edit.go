@@ -1192,7 +1192,11 @@ func strictWarningReason(w wl.Warning) string {
 	case wl.WarnSingleValuedMulti:
 		return fmt.Sprintf("%s: single-valued but given multiple values", keys)
 	case wl.WarnTagStructureDropped:
-		return fmt.Sprintf("%s: edit drops the tag's secondary language, binary value, or nested sub-tags", keys)
+		// Two writers emit this code for different losses (a Matroska SimpleTag's
+		// structure; an APE non-text item displaced by an edited value). Each message
+		// describes its own loss without naming the key, so prefix the keys and echo it
+		// rather than bake one writer's wording in.
+		return fmt.Sprintf("%s: %s", keys, w.Message)
 	case wl.WarnCommentDescriptionDropped:
 		return fmt.Sprintf("%s: the rewrite drops a description one of the file's comment frames carried", keys)
 	default:

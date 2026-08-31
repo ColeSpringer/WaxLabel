@@ -84,16 +84,73 @@ type RebuildInfo struct {
 	// ReservedKeys lists the canonical keys whose item name the specification reserves, in
 	// the order the rebuild reached them. Their values are not written.
 	ReservedKeys []tag.Key
+	// SlotDroppedCovers lists the roles of the pictures the two-name Cover Art convention
+	// had no item left for ([PartitionCoverSlots]), in set order. They are not written; a
+	// transfer filters them out before the writer, so this fires for direct edits.
+	SlotDroppedCovers []core.PictureType
+	// MalformedCoversReplaced lists the names of undecodable cover items dropped because
+	// this picture edit wrote a decodable cover under the same item name. Keeping both
+	// would break APEv2 name uniqueness, and the edit targeted that very slot.
+	MalformedCoversReplaced []string
+	// CoverNameKeys lists the keys refused because their item name belongs to the Cover
+	// Art convention, which types those items binary: a text item there would collide
+	// with any cover and mislead a reader that looks the name up. Like a reserved name,
+	// the value is not written and a pre-existing item under the name is preserved -
+	// unless the same edit also writes a cover under that name, which then displaces the
+	// preserved text item too (recorded in CoverTextReplaced), since the name can hold
+	// only the cover.
+	CoverNameKeys []tag.Key
+	// NonTextReplaced lists the keys whose freshly authored text item displaced a
+	// preserved non-text item of the same name. The names fold case, as readers compare
+	// them; a text item and a non-text one already sharing a name in the source is
+	// pre-existing state and is left alone.
+	NonTextReplaced []tag.Key
+	// CoverTextReplaced lists the projected keys of text items that squatted on a Cover
+	// Art name this picture edit wrote its cover under, so the text item was dropped
+	// rather than emitted as a duplicate of the cover item.
+	CoverTextReplaced []tag.Key
 }
 
-// RebuildWarnings appends the write-time warnings for what [Rebuild] recorded: a key whose
-// item name is reserved was dropped rather than written. It is WarnValueDropped, which is
-// already strict-escalating, so a CI gate catches the loss.
+// RebuildWarnings appends the write-time warnings for what [Rebuild] recorded: a key
+// whose item name is reserved, or is a Cover Art name the convention types binary, was
+// dropped rather than written (WarnValueDropped); a picture was left without a cover
+// item (WarnPictureUnsupported); an undecodable cover item was replaced by a decodable
+// one under its name (WarnMalformedTagEntryDropped); a non-text item lost its name to an
+// authored text item, or a text item lost a Cover Art name to a written cover
+// (WarnTagStructureDropped / WarnValueDropped). Every code escalates the CLI's --strict
+// gate, so none of the losses passes silently.
 func RebuildWarnings(prior []core.Warning, info RebuildInfo) []core.Warning {
 	for _, k := range info.ReservedKeys {
 		magic, _ := reservedMagic(string(k)) // k reached ReservedKeys through the same lookup
 		prior = core.WarnKeyed(prior, core.WarnValueDropped,
 			fmt.Sprintf("%s is an item name the APEv2 specification reserves (it is %s magic) and cannot be written", k, magic), k)
+	}
+	for _, k := range info.CoverNameKeys {
+		prior = core.WarnKeyed(prior, core.WarnValueDropped,
+			fmt.Sprintf("%s is a Cover Art item name, which the convention types binary; a text value cannot be written (cover art is edited as a picture)", k), k)
+	}
+	for _, t := range info.SlotDroppedCovers {
+		prior = core.Warn(prior, core.WarnPictureUnsupported,
+			fmt.Sprintf("the %s picture was dropped: %s", t, CoverSlotsReason))
+	}
+	for _, name := range info.MalformedCoversReplaced {
+		// WarnMalformedTagEntryDropped, not the read path's WarnInvalidPicture: the item's
+		// bytes are gone from the written file, destruction by this write, which is the
+		// class that code exists to escalate under --strict (a --force'd unrecognized
+		// cover also warns invalid-picture at plan time, so escalating that code would
+		// turn an opted-in embed into a refusal).
+		prior = core.Warn(prior, core.WarnMalformedTagEntryDropped,
+			fmt.Sprintf("an undecodable %s item was replaced by this picture edit", name))
+	}
+	for _, k := range info.NonTextReplaced {
+		// The message does not name the key: the CLI's --strict reason prefixes the
+		// warning's Keys itself for this code, matching the Matroska emitter's shape.
+		prior = core.WarnKeyed(prior, core.WarnTagStructureDropped,
+			"a non-text item under this name was replaced by the edited value; APEv2 item names are unique, so its payload could not be kept", k)
+	}
+	for _, k := range info.CoverTextReplaced {
+		prior = core.WarnKeyed(prior, core.WarnValueDropped,
+			fmt.Sprintf("%s: a text item held this Cover Art name; the picture edit wrote its cover there, so the text value could not be kept", k), k)
 	}
 	return prior
 }
@@ -108,29 +165,72 @@ func RebuildWarnings(prior []core.Warning, info RebuildInfo) []core.Warning {
 // tag-only edit leaves the source's cover items untouched rather than re-encoding
 // them under a synthesized file name.
 //
-// A key whose item name is reserved ([ReservedItemName]) is not written, and is recorded
-// in the returned RebuildInfo so the caller can warn. A pre-existing item with such a name
-// is preserved either way - whether this edit leaves it alone or tries to change it - so a
-// refused write never costs the user the value the file already had on top of the one it
-// could not store.
+// A key whose item name is reserved ([ReservedItemName]) or belongs to the Cover Art
+// convention ([IsCoverKey], whose items are binary pictures, not text) is not written,
+// and is recorded in the returned RebuildInfo so the caller can warn. A pre-existing item
+// with such a name is preserved either way - whether this edit leaves it alone or tries
+// to change it - so a refused write never costs the user the value the file already had
+// on top of the one it could not store.
+//
+// APEv2 item names are unique within a tag, and readers compare them case-insensitively,
+// so the rebuild never authors a duplicate: a freshly authored text item displaces a
+// preserved non-text item of the same name, and a written cover item displaces a text
+// item squatting on its name - each recorded for a warning. A collision the source
+// already carried is the file's own state and is preserved as found.
 func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, picturesChanged bool) ([]Item, RebuildInfo) {
 	changed := DiffKeys(base, edited)
 	emitted := map[tag.Key]bool{}
-	// reservedDropped records the keys emit refused, so the orig loop can put the item the
-	// file already had back rather than leaving the user with neither the new value nor the
-	// old one. emit marks a key emitted before it decides, which is what keeps the append
-	// loop from retrying it.
-	reservedDropped := map[tag.Key]bool{}
+	// nameRefused records the keys emit refused (a reserved or Cover Art item name), so
+	// the orig loop can put the item the file already had back rather than leaving the
+	// user with neither the new value nor the old one. emit marks a key emitted before it
+	// decides, which is what keeps the append loop from retrying it.
+	nameRefused := map[tag.Key]bool{}
+	// origTextFold holds the case-folded names of the source's text items. An emit under
+	// a name found here re-renders an existing item, so any same-named non-text item is a
+	// pre-existing collision to preserve; a name not found here is freshly authored and
+	// claims the name (authoredText), displacing a non-text holder in the final pass.
+	// authoredCovers is the cover-name analogue, filled by emitPictures.
+	origTextFold := map[string]bool{}
+	authoredText := map[string]tag.Key{}
+	authoredCovers := map[string]bool{}
 	out := make([]Item, 0, len(orig)+len(pictures))
 	picturesEmitted := false
 	var info RebuildInfo
 
 	emitPictures := func() {
-		for _, p := range pictures {
-			out = append(out, EncodeCover(p))
+		// One item per cover name: APEv2 item names are unique within a tag, and the
+		// convention has exactly two, so the slot assignment decides who is written and
+		// under which name. The editor and a transfer already resolved the set through
+		// the same engine, so a drop here is a backstop; it is still recorded for
+		// RebuildWarnings. Slots an undecodable item holds are passed as blocked, so a
+		// spilling role picks a free name over displacing junk when it can.
+		malformed := malformedCovers(orig)
+		blocked := map[string]bool{}
+		for _, it := range malformed {
+			blocked[coverKey(coverPictureType(it.Key))] = true
 		}
-		for _, it := range malformedCovers(orig) {
-			out = append(out, it) // undecodable, so not in the edited set; still the user's bytes
+		keptIdx, names := assignCoverSlots(pictures, nil, blocked)
+		kept := make([]bool, len(pictures))
+		for j, i := range keptIdx {
+			kept[i] = true
+			authoredCovers[strings.ToLower(names[j])] = true
+			out = append(out, encodeCoverAs(pictures[i], names[j]))
+		}
+		for i, p := range pictures {
+			if !kept[i] {
+				info.SlotDroppedCovers = append(info.SlotDroppedCovers, p.Type)
+			}
+		}
+		for _, it := range malformed {
+			// An undecodable cover is not in the edited set, so it is normally preserved -
+			// still the user's bytes. But when this edit writes a decodable cover under the
+			// very name the undecodable item holds, keeping both would emit a duplicate
+			// name; the edit claimed that slot, so the junk is replaced, and warned.
+			if authoredCovers[strings.ToLower(coverKey(coverPictureType(it.Key)))] {
+				info.MalformedCoversReplaced = append(info.MalformedCoversReplaced, it.Key)
+				continue
+			}
+			out = append(out, it)
 		}
 		picturesEmitted = true
 	}
@@ -155,7 +255,14 @@ func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, pict
 		}
 		if ReservedItemName(name) {
 			info.ReservedKeys = append(info.ReservedKeys, k)
-			reservedDropped[k] = true
+			nameRefused[k] = true
+			return
+		}
+		if IsCoverKey(name) {
+			// The convention types this item binary; authoring it as text would collide
+			// with any cover item and mislead a reader that looks the name up.
+			info.CoverNameKeys = append(info.CoverNameKeys, k)
+			nameRefused[k] = true
 			return
 		}
 		boolean := tag.IsBooleanKey(k)
@@ -172,6 +279,9 @@ func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, pict
 		if len(kept) == 0 {
 			return
 		}
+		if fold := strings.ToLower(name); !origTextFold[fold] {
+			authoredText[fold] = k // a fresh name: it displaces a non-text holder below
+		}
 		out = append(out, Item{Key: name, Value: strings.Join(kept, "\x00"), Flags: flags})
 	}
 
@@ -184,6 +294,7 @@ func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, pict
 		if it.NonText() {
 			continue
 		}
+		origTextFold[strings.ToLower(it.Key)] = true
 		if k, ok := mapping.CanonicalAPE(it.Key); ok {
 			hasNative[k] = true
 		}
@@ -240,7 +351,7 @@ func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, pict
 		// Re-render in place under the item's own spelling, so an edit to a file
 		// written by another tagger does not rename its items.
 		emit(key, it.Key, it.Flags)
-		if reservedDropped[key] {
+		if nameRefused[key] {
 			// The new value could not be written, so keep the bytes the file came with:
 			// refusing to author the hazard is not a licence to delete an item the user
 			// already had, and dropping both would leave neither value.
@@ -257,6 +368,32 @@ func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, pict
 	}
 	if picturesChanged && !picturesEmitted {
 		emitPictures()
+	}
+	// The name-uniqueness pass: a preserved item whose name this edit's fresh output now
+	// holds is displaced, whatever order the two landed in out. authoredText can never
+	// hold a cover name (emit refuses those), so a non-text item displaced here is never
+	// a cover this edit just wrote; the text items a written cover displaces are the ones
+	// squatting on its name. Collisions the source already carried are in neither map.
+	if len(authoredText) > 0 || len(authoredCovers) > 0 {
+		kept := out[:0]
+		for _, it := range out {
+			fold := strings.ToLower(it.Key)
+			if it.NonText() {
+				if k, ok := authoredText[fold]; ok {
+					info.NonTextReplaced = append(info.NonTextReplaced, k)
+					continue
+				}
+			} else if authoredCovers[fold] {
+				k, ok := mapping.CanonicalAPE(it.Key)
+				if !ok {
+					k = tag.Key(strings.ToUpper(it.Key))
+				}
+				info.CoverTextReplaced = append(info.CoverTextReplaced, k)
+				continue
+			}
+			kept = append(kept, it)
+		}
+		out = kept
 	}
 	return out, info
 }

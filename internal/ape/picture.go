@@ -49,6 +49,107 @@ func coverKey(t core.PictureType) string {
 	return coverFrontKey
 }
 
+// CoverSlotsReason explains a picture dropped because the convention's item names ran
+// out. The transfer report's dropped-picture item and the write-time warning both use it,
+// so a copy's grade and the write it predicts describe the same loss the same way.
+const CoverSlotsReason = "the Cover Art convention stores at most one front and one back cover item, leaving no item name free"
+
+// PartitionCoverSlots splits pics into the pictures the two-name Cover Art convention can
+// hold and the rest. APEv2 item names are unique within a tag, so at most one picture per
+// name can be written: one front item and one back item. added marks the pictures an edit
+// authored (nil when the distinction does not exist, as in a transfer projection); see
+// [assignCoverSlots] for the claim order. Both index slices are ascending, so emission
+// keeps the set's order.
+//
+// It is the selection behind the capability's slot partition, the editor's pre-plan
+// resolution, and the writer's emit, so the three cannot disagree about who has a slot.
+func PartitionCoverSlots(pics []core.Picture, added []bool) (keptIdx, droppedIdx []int) {
+	keptIdx, _ = assignCoverSlots(pics, added, nil)
+	kept := make([]bool, len(pics))
+	for _, i := range keptIdx {
+		kept[i] = true
+	}
+	for i := range pics {
+		if !kept[i] {
+			droppedIdx = append(droppedIdx, i)
+		}
+	}
+	return keptIdx, droppedIdx
+}
+
+// assignCoverSlots is the one slot-assignment engine. An exact front or back claims its
+// own slot and never the other, since writing a known front as the back cover would
+// falsify a role the source asserted; any other role's name is already being rewritten,
+// so it takes whichever slot is free, front before back. Within a claim tier a picture
+// the edit added beats one the file already had (the edit targets the slot; a nil added
+// treats all pictures alike), and the earlier picture wins among equals - what a
+// faithful transfer of a two-front source carries.
+//
+// blocked names slots an undecodable cover item holds. A spilling picture prefers an
+// unblocked slot so the junk bytes survive, but takes a blocked one over being dropped;
+// an exact role claims its slot regardless, since that is a targeted replacement. Blocking
+// never changes who is kept - only which name they get and whether junk is displaced - so
+// the file-blind capability partition and the writer agree on every picture's fate.
+//
+// keptIdx is ascending; names[j] is the item name assigned to pics[keptIdx[j]].
+func assignCoverSlots(pics []core.Picture, added []bool, blocked map[string]bool) (keptIdx []int, names []string) {
+	taken := map[string]bool{}
+	slot := make(map[int]string, 2)
+	isAdded := func(i int) bool { return added != nil && i < len(added) && added[i] }
+	// Two sweeps per tier put added pictures ahead of pre-existing ones while keeping
+	// each group's own order stable.
+	forEachByPriority := func(visit func(i int, p core.Picture)) {
+		for i, p := range pics {
+			if isAdded(i) {
+				visit(i, p)
+			}
+		}
+		for i, p := range pics {
+			if !isAdded(i) {
+				visit(i, p)
+			}
+		}
+	}
+	forEachByPriority(func(i int, p core.Picture) {
+		if p.Type != core.PicFrontCover && p.Type != core.PicBackCover {
+			return
+		}
+		if name := coverKey(p.Type); !taken[name] {
+			taken[name] = true
+			slot[i] = name
+		}
+	})
+	forEachByPriority(func(i int, p core.Picture) {
+		if p.Type == core.PicFrontCover || p.Type == core.PicBackCover {
+			return
+		}
+		free := ""
+		for _, name := range []string{coverFrontKey, coverBackKey} {
+			if taken[name] {
+				continue
+			}
+			if !blocked[name] {
+				free = name
+				break
+			}
+			if free == "" {
+				free = name // junk-held: displace it only when nothing else is free
+			}
+		}
+		if free != "" {
+			taken[free] = true
+			slot[i] = free
+		}
+	})
+	for i := range pics {
+		if name, ok := slot[i]; ok {
+			keptIdx = append(keptIdx, i)
+			names = append(names, name)
+		}
+	}
+	return keptIdx, names
+}
+
 // DecodeCover decodes a cover-art item's payload into a Picture. The stored file
 // name is a file name, not a description - that is what the tools writing this
 // convention put there - so it is not projected as one; the MIME type and geometry
@@ -74,8 +175,11 @@ func DecodeCover(name string, data []byte) (core.Picture, error) {
 // uses for its type, and a payload of "filename\0" plus the image bytes. The file
 // name is synthesized from the role and the image's type, since the picture's
 // description has no home in this convention and a file name is not one.
-func EncodeCover(p core.Picture) Item {
-	name := coverKey(p.Type)
+func EncodeCover(p core.Picture) Item { return encodeCoverAs(p, coverKey(p.Type)) }
+
+// encodeCoverAs renders p under an assigned item name, which the slot assignment may
+// pick apart from the role's own (a spilled role stored under the free back name).
+func encodeCoverAs(p core.Picture, name string) Item {
 	file := strings.ToLower(strings.ReplaceAll(name, " ", "_")) + coverExt(p.EffectiveMIME())
 	data := make([]byte, 0, len(file)+1+len(p.Data))
 	data = append(data, file...)

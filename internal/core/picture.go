@@ -135,6 +135,12 @@ const (
 	// dropping both role and description. MP4's covr atom does this: every cover reads
 	// back as a front cover with no description.
 	PictureLossRoleAndDescription
+	// PictureLossNonCoverRoleAndDescription means the format preserves the front- and
+	// back-cover roles exactly but stores any other role under one of those two names,
+	// and drops descriptions. APE's two-item Cover Art convention does this: a front or
+	// back cover round-trips, while an artist picture reads back as whichever cover
+	// name had room for it.
+	PictureLossNonCoverRoleAndDescription
 )
 
 // pictureLosesMetadata reports whether storing a single picture p under a destination whose picture
@@ -150,6 +156,10 @@ func pictureLosesMetadata(p Picture, loss PictureLoss) bool {
 		// A PicOther picture already round-trips as Other (Matroska's small_cover), so only a
 		// role that is neither front cover nor Other is lost.
 		return p.Type != PicFrontCover && p.Type != PicOther
+	case PictureLossNonCoverRoleAndDescription:
+		// Front and back covers round-trip exactly; any other role reads back as a cover,
+		// and a description is dropped either way.
+		return (p.Type != PicFrontCover && p.Type != PicBackCover) || p.Description != ""
 	}
 	return false
 }

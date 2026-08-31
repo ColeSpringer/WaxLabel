@@ -181,7 +181,8 @@ func EncodingRewriteOp(what string) string {
 //
 // Because NoOpPlan starts from a warning-free report, DowngradeNoOp re-attaches the
 // input-loss warnings from the codec's pre-downgrade report: values the format could not
-// store, values it stored with reduced precision, picture metadata it dropped, a numeric
+// store, values it stored with reduced precision, picture metadata it dropped, a picture
+// the destination could not store at all (an APE cover left without a slot), a numeric
 // genre reference the input supplied that reads back as a name, chapter titles trimmed to
 // a container limit, chapter metadata the format cannot hold, a chapter timestamp clamped
 // to a 32-bit field, chapter hierarchy flattened on projection, and synced-lyrics
@@ -201,7 +202,7 @@ func DowngradeNoOp(format Format, size int64, base, result *Media, tagsEqual, st
 		return nil
 	}
 	np := NoOpPlan(WriteReport{Format: format, BytesBefore: size}, size, base)
-	np.Report.Warnings = append(np.Report.Warnings, WarningsWithCode(priorWarnings, WarnValueDropped, WarnValueCoerced, WarnValueReduced, WarnPictureMetadataDropped, WarnNumericGenre, WarnChapterTitleTruncated, WarnChapterMetadataDropped, WarnChapterStartOverflow, WarnChaptersFlattened, WarnSyncedLyricsMetadataDropped, WarnSyncedLyricsTimestampClamped, WarnCommentDescriptionDropped, WarnLegacyStripDropped)...)
+	np.Report.Warnings = append(np.Report.Warnings, WarningsWithCode(priorWarnings, WarnValueDropped, WarnValueCoerced, WarnValueReduced, WarnPictureMetadataDropped, WarnPictureUnsupported, WarnNumericGenre, WarnChapterTitleTruncated, WarnChapterMetadataDropped, WarnChapterStartOverflow, WarnChaptersFlattened, WarnSyncedLyricsMetadataDropped, WarnSyncedLyricsTimestampClamped, WarnCommentDescriptionDropped, WarnLegacyStripDropped)...)
 	return np
 }
 

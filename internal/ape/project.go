@@ -164,10 +164,17 @@ func Capabilities(f core.Format, readOnly bool) core.Capabilities {
 	pictures := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "APEv2 Cover Art item",
-		Fidelity:       "image stored; description dropped",
-		Constraints:    []string{"the Cover Art convention names only front and back covers; any other role is written as a front cover, and descriptions have nowhere to go"},
-		PictureLoss:    core.PictureLossRoleAndDescription,
+		Fidelity:       "image stored; only the front and back cover roles round-trip, and descriptions are dropped",
+		Constraints:    []string{"the Cover Art convention holds one front and one back cover; another role is stored under a free cover name and reads back as that cover, and descriptions have nowhere to go"},
+		PictureLoss:    core.PictureLossNonCoverRoleAndDescription,
 	}
+	// Item names are unique within a tag, so the two cover names are slots: the writer
+	// keeps one picture per name (PartitionCoverSlots) and the partition here makes the
+	// editor and a transfer resolve - and grade - the slotless pictures the same way.
+	pictures = core.WithPictureSlots(pictures, func(pics []core.Picture, added []bool) []int {
+		keptIdx, _ := PartitionCoverSlots(pics, added)
+		return keptIdx
+	}, CoverSlotsReason)
 	caps := core.NewCapabilities(f, readOnly, fields, pictures, core.Capability{}, core.AccessNone, nil).
 		WithFieldClassifier(TransferClassifier)
 	if readOnly {
@@ -180,20 +187,26 @@ func Capabilities(f core.Format, readOnly bool) core.Capabilities {
 	return caps
 }
 
-// TransferClassifier grades the one field shape whose APE transfer fate the format-level
+// TransferClassifier grades the field shapes whose APE transfer fate the format-level
 // capability cannot express: a key whose item name the specification reserves
-// ([ReservedItemName]). The writer drops such a key rather than plant ID3/Ogg/Musepack magic
-// inside the tag, so a copy that carried it - reporting a clean carry for a value that then
-// vanishes - would break the report-equals-write invariant [core.ProjectTransfer] exists to
-// hold. It reuses the writer's own predicate, so the copy report and the write drop cannot
-// drift. Every other key is left to the format-level grade.
+// ([ReservedItemName]), and one whose name belongs to the Cover Art convention
+// ([IsCoverKey], whose items are binary pictures, so a text value has no home there). The
+// writer drops both rather than plant magic or a type-confused cover inside the tag, so a
+// copy that carried either - reporting a clean carry for a value that then vanishes -
+// would break the report-equals-write invariant [core.ProjectTransfer] exists to hold. It
+// reuses the writer's own predicates, so the copy report and the write drop cannot drift.
+// Every other key is left to the format-level grade.
 //
 // It is attached here rather than per codec so all four APEv2-backed containers (WavPack,
 // Monkey's Audio, Musepack, and any future one) get it from the shared Capabilities, the
 // same way they share the writer.
 func TransferClassifier(key tag.Key, _ []string, _ tag.TagSet) (core.Disposition, string, bool) {
-	if ReservedItemName(mapping.APEName(key)) {
+	name := mapping.APEName(key)
+	if ReservedItemName(name) {
 		return core.Dropped, "the APEv2 specification reserves this item name, so it cannot be written", true
+	}
+	if IsCoverKey(name) {
+		return core.Dropped, "the Cover Art convention types this item name binary, so a text value cannot be written", true
 	}
 	return core.Carried, "", false
 }

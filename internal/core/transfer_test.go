@@ -648,3 +648,75 @@ func TestProjectTransferTrimsNumericDateValues(t *testing.T) {
 		t.Errorf("TITLE graded %s; a non-numeric/non-date value should not be trimmed (the predicate should fire)", title.Disposition)
 	}
 }
+
+// TestProjectTransferPictureSlotPartition covers the set-level partition hook a
+// destination with named picture slots attaches (APE's two-item Cover Art convention):
+// pictures without a slot are graded Dropped with the capability's slot reason, the kept
+// ones still split carried/lossy, and a hook that keeps everything adds no item.
+func TestProjectTransferPictureSlotPartition(t *testing.T) {
+	keepFirst := func(ps []Picture, _ []bool) []int {
+		if len(ps) == 0 {
+			return nil
+		}
+		return []int{0}
+	}
+	pics := WithPictureSlots(Capability{Write: AccessFull, PictureLoss: PictureLossRoleAndDescription},
+		keepFirst, "one slot only")
+	caps := NewCapabilities(FormatWavPack, false, Capability{Write: AccessFull}, pics,
+		Capability{Write: AccessNone}, AccessNone, nil)
+
+	m := &Media{Format: FormatFLAC, Pictures: []Picture{
+		{Type: PicFrontCover, MIME: "image/jpeg"},
+		{Type: PicArtist, MIME: "image/jpeg"},
+	}}
+	items := ProjectTransfer(m, caps)
+	var disps []Disposition
+	for _, it := range items {
+		if it.Kind == TransferPicture {
+			disps = append(disps, it.Disposition)
+			if it.Disposition == Dropped {
+				if it.Count != 1 || it.Reason != "one slot only" {
+					t.Errorf("dropped item = %+v, want count 1 with the slot reason", it)
+				}
+			}
+		}
+	}
+	if len(disps) != 2 || disps[0] != Carried || disps[1] != Dropped {
+		t.Fatalf("picture dispositions = %v, want [Carried Dropped]", disps)
+	}
+	if c, l, d := (TransferReport{Items: items}).Counts(); c != 1 || l != 0 || d != 1 {
+		t.Errorf("counts = (%d,%d,%d), want (1,0,1)", c, l, d)
+	}
+
+	// A set the hook keeps whole grades exactly as before: no dropped item appears.
+	one := &Media{Format: FormatFLAC, Pictures: []Picture{{Type: PicFrontCover, MIME: "image/jpeg"}}}
+	for _, it := range ProjectTransfer(one, caps) {
+		if it.Kind == TransferPicture && it.Disposition == Dropped {
+			t.Errorf("single-picture set produced a dropped item: %+v", it)
+		}
+	}
+
+	// A destination that cannot write pictures at all reports the whole set dropped for
+	// that one reason; the slot partition must not peel a second dropped item off first.
+	none := caps
+	none.Pictures.Write = AccessNone
+	var pictureItems []TransferItem
+	for _, it := range ProjectTransfer(m, none) {
+		if it.Kind == TransferPicture {
+			pictureItems = append(pictureItems, it)
+		}
+	}
+	if len(pictureItems) != 1 || pictureItems[0].Count != 2 || pictureItems[0].Reason == "one slot only" {
+		t.Errorf("no-picture destination items = %+v, want one whole-set drop with the capability reason", pictureItems)
+	}
+
+	// The editor-facing form reports whether slots exist at all and passes the added
+	// flags through; a slotless capability tells the editor to leave the set alone.
+	if _, _, ok := PartitionPictureSlotsEdited(Capability{Write: AccessFull}, m.Pictures, nil); ok {
+		t.Error("a capability without slots claimed to have them")
+	}
+	keptIdx, reason, ok := PartitionPictureSlotsEdited(caps.Pictures, m.Pictures, []bool{false, true})
+	if !ok || reason != "one slot only" || len(keptIdx) != 1 {
+		t.Errorf("PartitionPictureSlotsEdited = %v,%q,%v, want the hook's selection and reason", keptIdx, reason, ok)
+	}
+}

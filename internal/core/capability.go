@@ -101,6 +101,17 @@ type Capability struct {
 	// all. It takes precedence over reducesValue in [dispose], so a value omitted by the
 	// writer is reported as dropped rather than merely lossy.
 	dropsValue func(string) bool
+	// slotPictures, when set on a pictures capability, selects which of a picture set the
+	// destination's fixed, uniquely-named slots can hold (APE's two-item Cover Art
+	// convention). added marks the pictures an edit authored, letting an added picture
+	// claim a slot from a pre-existing same-role one; a nil added treats all pictures
+	// alike (the transfer projection, which authors the whole set). It returns the kept
+	// indices in ascending order; the rest have no slot and are dropped by the writer, so
+	// [PartitionPictureSlots] and [PartitionPictureSlotsEdited] grade and filter them the
+	// same way. Unexported like the value predicates above; slotReason is the shared
+	// wording for the loss.
+	slotPictures func(pics []Picture, added []bool) []int
+	slotReason   string
 }
 
 // WithValueReduction returns a copy of c with a per-value reduction predicate. Internal
@@ -114,6 +125,18 @@ func WithValueReduction(c Capability, reduces func(string) bool) Capability {
 // it to keep transfer reports aligned with values their writer omits entirely.
 func WithValueDrop(c Capability, drops func(string) bool) Capability {
 	c.dropsValue = drops
+	return c
+}
+
+// WithPictureSlots returns a copy of the pictures capability c carrying a slot partition:
+// slots selects the pictures the destination's uniquely-named storage slots can hold
+// (kept indices, ascending; added marks edit-authored pictures, nil when the distinction
+// does not exist), and reason is the wording for the ones left without a slot. The
+// codec's writer must apply the same selection, so a transfer graded by
+// [PartitionPictureSlots] and the write it predicts cannot drift.
+func WithPictureSlots(c Capability, slots func(pics []Picture, added []bool) []int, reason string) Capability {
+	c.slotPictures = slots
+	c.slotReason = reason
 	return c
 }
 
@@ -167,6 +190,42 @@ func PartitionRepresentable(c Capability, pics []Picture) (kept []Picture, keptI
 		}
 	}
 	return kept, keptIdx, droppedMIMEs
+}
+
+// PartitionPictureSlots applies the pictures capability's slot partition (see
+// [WithPictureSlots]): kept are the pictures the destination's uniquely-named slots can
+// hold, in set order, and dropped counts the ones left without a slot, with the
+// capability's shared reason. A capability with no partition keeps the set whole. It is
+// the slot analogue of [PartitionRepresentable], shared by ProjectTransfer's report and
+// PrepareTransfer's write filter so the report cannot promise a picture the writer then
+// drops.
+func PartitionPictureSlots(c Capability, pics []Picture) (kept []Picture, dropped int, reason string) {
+	if c.slotPictures == nil || len(pics) == 0 {
+		return pics, 0, ""
+	}
+	keptIdx := c.slotPictures(pics, nil)
+	if len(keptIdx) == len(pics) {
+		return pics, 0, ""
+	}
+	kept = make([]Picture, 0, len(keptIdx))
+	for _, i := range keptIdx {
+		kept = append(kept, pics[i])
+	}
+	return kept, len(pics) - len(kept), c.slotReason
+}
+
+// PartitionPictureSlotsEdited is the editor's added-aware form of the slot partition:
+// added marks the pictures this edit authored, so an added picture claims a slot from a
+// pre-existing same-role one (the edit targets the slot) while a transfer-shaped call
+// with every picture added reduces to [PartitionPictureSlots]'s order-based selection.
+// It returns the kept indices (ascending), the capability's slot reason, and whether the
+// capability declares slots at all - false means the destination has no slot limit and
+// the editor leaves the set alone.
+func PartitionPictureSlotsEdited(c Capability, pics []Picture, added []bool) (keptIdx []int, reason string, ok bool) {
+	if c.slotPictures == nil {
+		return nil, "", false
+	}
+	return c.slotPictures(pics, added), c.slotReason, true
 }
 
 // NumericGenreCapability returns the GENRE override for codecs that can store a

@@ -244,3 +244,41 @@ func TestParseAPEMatroskaNativeSpellings(t *testing.T) {
 		}
 	}
 }
+
+// TestCarryWarningsRecomputesItemWarnings: the post-write warning set must match a
+// fresh parse of the output, so a parse-time warning about an item the rewrite removed
+// or replaced (an invalid-UTF-8 value rewritten, a squatting item displaced) is
+// recomputed from the written items rather than echoed from the source parse.
+func TestCarryWarningsRecomputesItemWarnings(t *testing.T) {
+	stale := []core.Warning{
+		{Code: core.WarnInvalidText, Message: `APE item "Artist" is not valid UTF-8; read as Latin-1`},
+		{Code: core.WarnInvalidTagKey, Message: "gone"},
+		{Code: core.WarnTrailingID3v1, Message: "legacy ID3v1 tag follows the audio; preserved"},
+	}
+	written := []Item{
+		{Key: "Artist", Value: "Fixed"},
+		{Key: "MOOD~X", Data: []byte("calm"), Value: "calm"},
+	}
+	got := CarryWarnings(stale, Projection{}, written, []byte("TAG"))
+
+	var texts, keys, legacy int
+	for _, w := range got {
+		switch w.Code {
+		case core.WarnInvalidText:
+			texts++
+		case core.WarnInvalidTagKey:
+			keys++
+		case core.WarnTrailingID3v1:
+			legacy++
+		}
+	}
+	if texts != 0 {
+		t.Errorf("warnings = %+v; the stale invalid-text warning must not survive a rewrite that fixed the item", got)
+	}
+	if keys != 1 {
+		t.Errorf("warnings = %+v, want exactly one invalid-key warning recomputed from the written MOOD~X item", got)
+	}
+	if legacy != 1 {
+		t.Errorf("warnings = %+v, want the trailing-ID3v1 note kept while the tag is present", got)
+	}
+}

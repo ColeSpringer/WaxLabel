@@ -123,6 +123,21 @@ func TestTransferClassifierGradesReservedKeys(t *testing.T) {
 	}
 }
 
+// TestTransferClassifierGradesCoverNameKeys: the writer refuses a text value under a
+// Cover Art name (the convention types those items binary), so a copy carrying such a
+// key must grade it Dropped or the report promises a value the writer then discards.
+func TestTransferClassifierGradesCoverNameKeys(t *testing.T) {
+	for _, k := range []tag.Key{"COVER ART (FRONT)", "COVER ART (BACK)"} {
+		d, reason, override := TransferClassifier(k, []string{"v"}, tag.NewTagSet())
+		if !override || d != core.Dropped {
+			t.Errorf("TransferClassifier(%s) = %v,%v, want Dropped,true", k, d, override)
+		}
+		if reason == "" {
+			t.Errorf("TransferClassifier(%s) gave no reason", k)
+		}
+	}
+}
+
 // TestCapabilitiesCarryTransferClassifier guards the attachment itself: the classifier is
 // only useful if the shared Capabilities install it, which is what gives all three
 // APEv2-backed codecs the same grading.

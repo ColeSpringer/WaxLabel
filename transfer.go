@@ -101,7 +101,11 @@ func (d *Document) PrepareTransfer(dst *Document, opts ...WriteOption) (*Plan, T
 	if !caps.ReadOnly && caps.Pictures.Write != core.AccessNone {
 		// PartitionRepresentable is the same per-image split ProjectTransfer's report and the
 		// editor's drop path use, so the write filter cannot drift from what the report grades.
+		// PartitionPictureSlots then applies the destination's slot selection (APE's two cover
+		// names), so a picture the report graded Dropped for want of a slot is not handed to
+		// the writer to drop again.
 		representable, _, _ := core.PartitionRepresentable(caps.Pictures, core.ClonePictures(d.media.Pictures))
+		representable, _, _ = core.PartitionPictureSlots(caps.Pictures, representable)
 		if len(representable) > 0 {
 			ed.ClearPictures()
 			for _, p := range representable {

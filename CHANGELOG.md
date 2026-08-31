@@ -2,6 +2,29 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- APEv2 cover writes keep item names unique, as the format requires. The Cover Art
+  convention has one front and one back item, and the picture set is resolved onto
+  those two slots: a front or back cover keeps its own name, any other role is stored
+  under a free cover name (reading back as that cover; warned `picture-metadata-dropped`
+  and graded lossy by `copy`), and an added cover replaces a same-role one the file
+  already had rather than losing to it. A picture with no name left is refused for
+  library callers without the unsupported-drop option and otherwise dropped with a
+  `picture-unsupported` warning that `--strict` escalates; `copy` grades it dropped. An
+  undecodable cover item keeps its slot against spilling roles, and is replaced (warned
+  `malformed-tag-entry-dropped`) only when the edit claims its exact name or no other
+  slot is free. A back cover with no description now grades as a clean carry.
+- The same uniqueness holds for every APEv2 item the rebuild authors: a set on a key
+  whose name a binary item occupies replaces that item (`tag-structure-dropped`), a
+  cover write displaces a text item squatting on its Cover Art name (`value-dropped`),
+  and a text value under a `Cover Art` name is refused outright like a reserved name,
+  with `copy` grading such a key dropped. Collisions a file already carried are still
+  preserved as found, and the post-write warning set recomputes its per-item findings
+  from the written items so a replaced item's parse-time warning does not outlive it.
+
 ## [1.6.0]
 
 ### Added

@@ -200,6 +200,19 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 		// of failing the whole transfer. PartitionRepresentable is the same split the write
 		// filter and the editor's drop path use, so the report cannot drift from the write.
 		rep, _, unrepMIMEs := PartitionRepresentable(dst.Pictures, src.Pictures)
+		// Then by slot: a destination with fixed, uniquely-named picture slots (APE's
+		// two-item Cover Art convention) holds only one picture per slot, so the ones left
+		// without a slot are graded Dropped below - the same selection PrepareTransfer's
+		// write filter applies and the codec's writer enforces. Skipped when the
+		// destination cannot write pictures at all (read-only, or no picture store): the
+		// whole set is then dropped for that one reason, not split across two causes. No
+		// shipping capability combines slots with either state; this keeps a future one
+		// from reporting the same loss twice.
+		var slotDropped int
+		var slotReason string
+		if !dst.ReadOnly && dst.Pictures.Write != AccessNone {
+			rep, slotDropped, slotReason = PartitionPictureSlots(dst.Pictures, rep)
+		}
 		if len(rep) > 0 {
 			disp, reason := dispose(dst.Pictures, dst.ReadOnly, len(rep), "pictures", nil)
 			if disp == Carried {
@@ -227,6 +240,11 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 					Kind: TransferPicture, Count: len(rep), Disposition: disp, Reason: reason,
 				})
 			}
+		}
+		if slotDropped > 0 {
+			items = append(items, TransferItem{
+				Kind: TransferPicture, Count: slotDropped, Disposition: Dropped, Reason: slotReason,
+			})
 		}
 		if len(unrepMIMEs) > 0 {
 			items = append(items, TransferItem{

@@ -124,7 +124,9 @@ func RebuildTrailer(t Trailer, base, edited tag.TagSet, pictures []core.Picture,
 		p.Operations = append(p.Operations, "APEv2 rewrite")
 	}
 	if picturesChanged {
-		p.Operations = append(p.Operations, fmt.Sprintf("pictures: %d", len(pictures)))
+		// Count the covers actually written, not the edited set: a picture the slot
+		// partition dropped is warned about, and the operation must not claim it.
+		p.Operations = append(p.Operations, fmt.Sprintf("pictures: %d", len(pictures)-len(p.Rebuild.SlotDroppedCovers)))
 	}
 	if len(p.Items) > 0 {
 		// Keep the source tag's version and header shape: an APEv1 tag relabelled APEv2
@@ -187,15 +189,18 @@ func LegacyFamilies(auth tag.TagSet, id3v1 []byte) []core.FamilyValue {
 }
 
 // CarryWarnings rebuilds the post-write warning set from what was actually written:
-// the projection's own warnings and the inherited-encoder check over the written
-// items, plus the source warnings that still hold. The trailing-ID3v1 note is dropped
-// when a strip removed it, so the result matches a fresh parse of the output rather
-// than echoing the source parse.
+// the projection's own warnings and the inherited-encoder, invalid-UTF-8, and
+// invalid-key checks over the written items, plus the source warnings that still hold.
+// The item-derived codes are recomputed rather than carried because a rewrite can
+// remove the item a parse-time warning described (an edit replacing an invalid-UTF-8
+// value, or the uniqueness pass displacing a squatting item); the trailing-ID3v1 note
+// is dropped when a strip removed it. The result then matches a fresh parse of the
+// output rather than echoing the source parse.
 func CarryWarnings(prior []core.Warning, proj Projection, items []Item, id3v1 []byte) []core.Warning {
 	var out []core.Warning
 	for _, w := range prior {
 		switch w.Code {
-		case core.WarnInvalidPicture, core.WarnInheritedEncoder:
+		case core.WarnInvalidPicture, core.WarnInheritedEncoder, core.WarnInvalidText, core.WarnInvalidTagKey:
 			continue // recomputed below from the written items
 		case core.WarnTrailingID3v1:
 			if len(id3v1) == 0 {
@@ -205,6 +210,9 @@ func CarryWarnings(prior []core.Warning, proj Projection, items []Item, id3v1 []
 		out = append(out, w)
 	}
 	out = append(out, proj.Warnings...)
+	written := &Tag{Items: items}
+	out = append(out, InvalidUTF8Warnings(written)...)
+	out = append(out, InvalidKeyWarnings(written)...)
 	return append(out, EncoderNoise(items)...)
 }
 
@@ -251,6 +259,13 @@ func PlanTrailingWrite(w TrailingWrite, base, edited *core.Media, opts core.Writ
 	}
 	report.Operations = append(report.Operations, tp.Operations...)
 	report.Warnings = RebuildWarnings(report.Warnings, tp.Rebuild)
+	// The Cover Art convention keeps only the front and back roles and no description, so
+	// a picture write that carries either warns, the way the MP4 and Matroska writers do
+	// for their own picture stores; the transfer report grades the same predicate.
+	if picturesChanged && core.PicturesLoseMetadata(edited.Pictures, core.PictureLossNonCoverRoleAndDescription) {
+		report.Warnings = core.Warn(report.Warnings, core.WarnPictureMetadataDropped,
+			"the Cover Art convention stores only front and back covers: another role reads back as the cover name it was stored under, and descriptions are dropped")
+	}
 
 	var segs []bits.Segment
 	newLeadingLen := int64(len(w.Leading))
