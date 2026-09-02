@@ -322,6 +322,13 @@ func PictureUnsupportedMessage() string {
 	return "this file's format cannot store cover art; the picture was dropped"
 }
 
+// PicturesReadOnlyMessage is the drop warning for a file whose cover art is read but
+// cannot be rewritten (an attachment inside a WebM file, whose subset has no
+// Attachments): the file keeps the cover art it had, and only the edit is dropped.
+func PicturesReadOnlyMessage() string {
+	return "cover art in this file is read-only; the picture edit was dropped and the file keeps its cover art"
+}
+
 // EqualPictures reports whether two picture slices are identical by content.
 func EqualPictures(a, b []Picture) bool {
 	if len(a) != len(b) {

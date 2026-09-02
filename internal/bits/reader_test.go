@@ -117,3 +117,16 @@ func TestWriteSegmentsTap(t *testing.T) {
 		t.Errorf("tapped %q, want %q", tap.buf.String(), "567")
 	}
 }
+
+// TestReadSliceZeroLength: a ReaderAt may answer a zero-length read at its end with
+// EOF, as bytes.Reader does and a file does not. There is nothing to fail on, so the
+// read succeeds on both.
+func TestReadSliceZeroLength(t *testing.T) {
+	r := bytes.NewReader([]byte("abc"))
+	if b, err := ReadSlice(r, 3, 0, 16); err != nil || len(b) != 0 {
+		t.Errorf("ReadSlice(end, 0) = %v, %v; want an empty slice", b, err)
+	}
+	if _, err := ReadSlice(r, 3, 1, 16); !errors.Is(err, waxerr.ErrInvalidData) {
+		t.Errorf("ReadSlice(end, 1) = %v; want ErrInvalidData", err)
+	}
+}

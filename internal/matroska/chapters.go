@@ -1,9 +1,7 @@
 package matroska
 
 import (
-	"cmp"
 	"math"
-	"slices"
 	"time"
 	"unicode/utf8"
 
@@ -111,14 +109,8 @@ func parseChapters(src core.ReaderAtSized, chapters element, depth *bits.Depth, 
 	// SetChapters(doc.Chapters()...) a no-op even when the source stored atoms out of
 	// start order. UIDs are reassigned by start time during re-render, so no parallel
 	// UID slice needs to be sorted with the projected chapters.
-	sortChapters(defChapters)
+	core.SortChaptersByStart(defChapters)
 	return defChapters, nil
-}
-
-// sortChapters stably orders chs by start time. Stability keeps same-start atoms in
-// file order, which is the order the UID queue consumes them.
-func sortChapters(chs []core.Chapter) {
-	slices.SortStableFunc(chs, func(a, b core.Chapter) int { return cmp.Compare(a.Start, b.Start) })
 }
 
 // parseEdition reads one EditionEntry: whether it is the default edition, the

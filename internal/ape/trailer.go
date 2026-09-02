@@ -248,7 +248,8 @@ func PlanTrailingWrite(w TrailingWrite, base, edited *core.Media, opts core.Writ
 
 	// Fast path: nothing changed. NoOpPlan emits a verbatim copy (so SaveAsFile and
 	// WriteTo still produce a whole file) flagged NoOp so SaveBack skips it. APE has no
-	// chapter or synced-lyrics convention, so neither can force a write here.
+	// chapter or synced-lyrics convention, so neither can force a write here (Musepack's
+	// chapters live in its stream, which this write copies verbatim).
 	if !tagsChanged && !picturesChanged && !stripLeading && !stripTrailing {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}

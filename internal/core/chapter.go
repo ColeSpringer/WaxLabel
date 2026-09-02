@@ -1,7 +1,9 @@
 package core
 
 import (
+	"cmp"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -238,6 +240,24 @@ func ChapterMetadataDroppedMessage(loss ChapterLoss) string {
 // field): here the format holds no chapters, so nothing is stored.
 func ChaptersUnsupportedMessage(f Format) string {
 	return fmt.Sprintf("%s %s file cannot store chapters; they were dropped", IndefiniteArticle(f.String()), f)
+}
+
+// ChaptersReadOnlyMessage is the drop warning for a destination whose chapter store is
+// read but not written (Musepack's SV8 packets). It differs from
+// ChaptersUnsupportedMessage in what was lost: only the edit. kept says whether the
+// file had chapters, which it then keeps.
+func ChaptersReadOnlyMessage(f Format, kept bool) string {
+	if kept {
+		return fmt.Sprintf("chapters in %s %s file are read-only; the chapter edit was dropped and the file keeps its chapters", IndefiniteArticle(f.String()), f)
+	}
+	return fmt.Sprintf("chapters in %s %s file are read-only; the added chapters were dropped", IndefiniteArticle(f.String()), f)
+}
+
+// SortChaptersByStart orders chs by start time, stably, so chapters sharing a start keep
+// their source order. Every projector and the editor sort through it, so a load and
+// store round-trip is a no-op for an out-of-order source in any format.
+func SortChaptersByStart(chs []Chapter) {
+	slices.SortStableFunc(chs, func(a, b Chapter) int { return cmp.Compare(a.Start, b.Start) })
 }
 
 // EqualChapters reports whether two chapter slices are identical by content,

@@ -1,10 +1,8 @@
 package id3
 
 import (
-	"cmp"
 	"encoding/binary"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/colespringer/waxlabel/internal/core"
@@ -136,11 +134,11 @@ func ProjectChapters(t *Tag) ([]core.Chapter, []core.Warning) {
 			ordered = append(ordered, chaps[i].ch)
 		}
 	}
-	// Stable-sort by start so an out-of-order source projects in time order and a load->store
+	// Sort by start so an out-of-order source projects in time order and a load->store
 	// round-trip is a no-op; the CTOC/file order built above breaks ties for equal-start chapters
-	// deterministically. Mirrors internal/vorbis/chapters.go and internal/matroska/sortChapters.
-	// Only the projected view changes - a tag-only edit still preserves the on-disk frame order.
-	slices.SortStableFunc(ordered, func(a, b core.Chapter) int { return cmp.Compare(a.Start, b.Start) })
+	// deterministically. Only the projected view changes - a tag-only edit still preserves the
+	// on-disk frame order.
+	core.SortChaptersByStart(ordered)
 
 	var ws []core.Warning
 	if len(tocs) > 1 {

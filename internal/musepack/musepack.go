@@ -8,6 +8,10 @@
 // wrote a leading ID3v2 tag; it is preserved verbatim and surfaced as legacy, never
 // promoted into the canonical set.
 //
+// SV8 also carries chapters, as CT packets inside the stream. They are read where the
+// reference decoder reads them and preserved through every rewrite, which copies the
+// stream verbatim; they are not written, so the chapters capability is read-only.
+//
 // It is reimplemented from the published Musepack SV7 and SV8 stream documentation;
 // reference implementations were consulted for design only.
 package musepack
@@ -60,10 +64,34 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	return parse(ctx, src, opts)
 }
 
-// Capabilities reports Musepack's support, which is entirely APEv2's: the shared
-// definition in internal/ape, so the codecs backed by it cannot drift.
-func (Codec) Capabilities(_ *core.Media, _ core.WriteOptions) core.Capabilities {
-	return ape.Capabilities(core.FormatMusepack, false)
+// Capabilities reports Musepack's support: APEv2's for fields and pictures, through the
+// shared definition in internal/ape so the codecs backed by it cannot drift, plus the
+// chapter store only this container has.
+func (Codec) Capabilities(m *core.Media, _ core.WriteOptions) core.Capabilities {
+	caps := ape.Capabilities(core.FormatMusepack, false)
+	caps.Chapters = chapterCapability(m)
+	return caps
+}
+
+// chapterCapability describes the SV8 chapter packets: read, and preserved by the
+// verbatim stream copy, but never written. A file-less query answers for SV8, the
+// version with the store; a parsed file answers from the predicate the parse read by,
+// so an SV7 file, or one whose chapters cannot be placed, reports none.
+func chapterCapability(m *core.Media) core.Capability {
+	if m != nil {
+		if d, ok := m.Native.(*doc); !ok || d == nil || !d.chapterStore() {
+			return core.Capability{}
+		}
+	}
+	return core.Capability{
+		Read: core.AccessFull, Write: core.AccessNone,
+		Representation: "SV8 chapter packets",
+		Fidelity:       "read-only",
+		Constraints: []string{
+			"the chapter packets sit inside the stream, which a rewrite copies verbatim: chapters are read and preserved, and a chapter edit is refused",
+			"SV7 streams have no chapter store",
+		},
+	}
 }
 
 // EssenceExtent returns the Musepack essence-digest inputs: a versioned extent name

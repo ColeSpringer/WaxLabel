@@ -46,6 +46,9 @@ var (
 	// the Header Extension object.
 	guidMetadata        = asfGUID(0xC5F8CBEA, 0x5BAF, 0x4877, [8]byte{0x84, 0x67, 0xAA, 0x8C, 0x44, 0xFA, 0x4C, 0xCA})
 	guidMetadataLibrary = asfGUID(0x44231C94, 0x9498, 0x49D1, [8]byte{0xA1, 0x41, 0x1D, 0x13, 0x4E, 0x45, 0x70, 0x54})
+	// guidMarker is the Marker Object: named navigation points on the presentation
+	// timeline, which is how a WMA audiobook stores its chapters.
+	guidMarker = asfGUID(0xF487CD01, 0xA951, 0x11CF, tailHdr6)
 	// guidData is the top-level Data Object holding the media packets. It is a sibling
 	// of the Header Object, not a child, so it is located by stepping past the header.
 	guidData = asfGUID(0x75B22636, 0x668E, 0x11CF, tailASF)

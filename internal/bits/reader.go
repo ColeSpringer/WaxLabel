@@ -268,6 +268,9 @@ func ReadSlice(r io.ReaderAt, off, n, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %d bytes exceeds limit %d", waxerr.ErrSizeTooLarge, n, limit)
 	}
 	buf := make([]byte, n)
+	if n == 0 {
+		return buf, nil // nothing to read; a ReaderAt may still answer EOF at its end
+	}
 	if _, err := r.ReadAt(buf, off); err != nil {
 		return nil, fmt.Errorf("%w: read %d at %d: %v", waxerr.ErrInvalidData, n, off, err)
 	}

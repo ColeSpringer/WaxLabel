@@ -36,6 +36,14 @@ type doc struct {
 	duration   time.Duration
 	maxBitrate uint32
 
+	// preroll is the File Properties offset every presentation time in the file carries,
+	// kept so the markers can be placed on the playback timeline whatever order the
+	// two objects came in.
+	preroll time.Duration
+	// markers are the Marker Object's entries as stored: presentation times with the
+	// preroll still in them. Chapters projects them.
+	markers []marker
+
 	haveAudio     bool
 	formatTag     uint16
 	channels      int
@@ -49,7 +57,29 @@ type doc struct {
 	invalidKeys []string
 }
 
+// marker is one Marker Object entry.
+type marker struct {
+	at   time.Duration
+	desc string
+}
+
 func (d *doc) Format() core.Format { return core.FormatWMA }
+
+// chapters projects the markers onto the playback timeline. A presentation time
+// carries the preroll, so it is subtracted, as it is from the play duration; a marker
+// inside the preroll lands at the start. The list is sorted by start, stably, so
+// markers sharing an instant keep their file order (mirrors the other projectors).
+func (d *doc) chapters() []core.Chapter {
+	if len(d.markers) == 0 {
+		return nil
+	}
+	chs := make([]core.Chapter, 0, len(d.markers))
+	for _, m := range d.markers {
+		chs = append(chs, core.Chapter{Start: max(0, m.at-d.preroll), Title: m.desc})
+	}
+	core.SortChaptersByStart(chs)
+	return chs
+}
 
 // refuseWrite reports why an ASF document cannot be rewritten. For ASF the answer is
 // unconditional - WaxLabel reads WMA but never writes it - so it takes no document and
@@ -74,6 +104,7 @@ func (d *doc) Clone() core.NativeDoc {
 	c := *d
 	c.objects = cloneSummaries(d.objects)
 	c.pictures = core.ClonePictures(d.pictures)
+	c.markers = slices.Clone(d.markers)
 	return &c
 }
 
@@ -111,6 +142,8 @@ func objectName(id guid) string {
 		return "Metadata"
 	case guidMetadataLibrary:
 		return "Metadata Library"
+	case guidMarker:
+		return "Marker"
 	case guidCodecList:
 		return "Codec List"
 	case guidStreamBitrate:

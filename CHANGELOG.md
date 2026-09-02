@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- Musepack SV8 chapter packets are read, where the reference decoder reads them: after
+  the seek table the seek-offset packet points at, else the run that ends at the end
+  marker. A transcode or `copy` out of an `.mpc` now carries its chapters instead of
+  dropping them silently; `dump`, `diff`, and `lint` see them. They are preserved by
+  every rewrite, which copies the stream verbatim, and not written: the capability reads
+  `read full, write none`, a chapter edit is refused (or dropped under the unsupported-drop
+  option, warned `chapters-unsupported` with read-only wording), and `copy` into an `.mpc`
+  grades chapters dropped as "cannot write". A packet stream whose header declares a
+  stream version other than 8 is refused, as the reference decoder refuses it.
+- WMA Marker Object entries are read as chapters, on the playback timeline (the preroll
+  subtracted, as for the duration), so a WMA audiobook's chapters carry out of it.
+- A chapter clear on a file whose chapters WaxLabel reads but cannot write is refused
+  rather than planned as a silent no-op that keeps them. The cover-art drop gate takes
+  the same shape, so clearing the cover a WebM file carries is dropped with a warning
+  under the unsupported-drop option instead of reaching the writer's refusal.
+- A caller-supplied source that answers a zero-length read at its end with EOF, as
+  `bytes.Reader` does, no longer fails a parse that reads an empty element there.
+
 ## [1.6.1]
 
 ### Fixed

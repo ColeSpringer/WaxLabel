@@ -180,7 +180,7 @@ func (e *Editor) ClearPictures() *Editor {
 // rejected at [Editor.Prepare]; ID3 CTOC and MP4 Nero chpl are capped at 255 entries.
 func (e *Editor) SetChapters(chs ...Chapter) *Editor {
 	e.chapters = slices.Clone(chs)
-	slices.SortStableFunc(e.chapters, func(a, b Chapter) int { return cmp.Compare(a.Start, b.Start) })
+	core.SortChaptersByStart(e.chapters)
 	e.chaptersTouched = true
 	return e
 }
@@ -422,14 +422,17 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// reason - the single predicate its Capabilities reports ReadOnly from.
 	structuralGates := !caps.ReadOnly
 
-	// Chapters: refuse (or drop) a chapter edit on a format with no chapter store. Guard on a
-	// non-empty list so ClearChapters() on a chapterless format stays a harmless no-op.
-	if structuralGates && e.chaptersTouched && len(e.chapters) > 0 && caps.Chapters.Write < core.AccessPartial {
+	// Chapters: refuse (or drop) a chapter edit on a format that cannot write chapters,
+	// whether it has no chapter store or one it only reads (Musepack's SV8 packets). The
+	// gate is a change against the file's own list, so ClearChapters() on a chapterless
+	// format stays a harmless no-op while a clear on a read-only store is refused: the
+	// chapters would otherwise stay and the plan would report nothing.
+	if structuralGates && e.chaptersTouched && caps.Chapters.Write < core.AccessPartial && !core.EqualChapters(e.chapters, e.base.Chapters) {
 		if !wo.AllowUnsupportedDrop {
 			return nil, fmt.Errorf("%w: chapters cannot be written to %s %s file",
 				waxerr.ErrUnsupportedTag, core.IndefiniteArticle(e.base.Format.String()), e.base.Format)
 		}
-		edited.Chapters = nil
+		edited.Chapters = e.base.Chapters
 		chaptersDropped = true
 	}
 	// The chapter-count limit stays a hard error even under the drop option: ID3 CTOC and MP4
@@ -458,9 +461,12 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 			waxerr.ErrUnsupportedTag, len(e.syncedLyrics), caps.SyncedLyrics.MaxItems, e.base.Format)
 	}
 	// Cover art: WebM excludes the Attachments element, so a cover edit on it cannot be
-	// stored. Under the drop option, remove the pictures here; otherwise the Matroska writer's
+	// stored. Under the drop option, drop the edit here; otherwise the Matroska writer's
 	// plan-time cover refusal (keyed on the same absent capability) remains the backstop.
-	if structuralGates && wo.AllowUnsupportedDrop && e.picsTouched && len(e.pictures) > 0 && caps.Pictures.Write < core.AccessPartial {
+	// The gate is a change against the file's own set, like the chapter gate above, so
+	// clearing the cover a WebM file carries is dropped with a warning rather than
+	// handed to the writer to refuse.
+	if structuralGates && wo.AllowUnsupportedDrop && e.picsTouched && caps.Pictures.Write < core.AccessPartial && !core.EqualPictures(e.pictures, e.base.Pictures) {
 		edited.Pictures = e.base.Pictures
 		picturesDropped = true
 	}
@@ -674,16 +680,22 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// to a failure. A drop still surfaces even when the remaining edit is a byte-identical
 	// no-op, so an all-unstorable set reports the loss instead of silently succeeding.
 	if chaptersDropped {
-		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnChaptersUnsupported,
-			core.ChaptersUnsupportedMessage(e.base.Format))
+		msg := core.ChaptersUnsupportedMessage(e.base.Format)
+		if caps.Chapters.Read != core.AccessNone {
+			msg = core.ChaptersReadOnlyMessage(e.base.Format, len(e.base.Chapters) > 0)
+		}
+		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnChaptersUnsupported, msg)
 	}
 	if syncedLyricsDropped {
 		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnSyncedLyricsUnsupported,
 			core.SyncedLyricsUnsupportedMessage(e.base.Format))
 	}
 	if picturesDropped {
-		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnPictureUnsupported,
-			core.PictureUnsupportedMessage())
+		msg := core.PictureUnsupportedMessage()
+		if len(e.base.Pictures) > 0 {
+			msg = core.PicturesReadOnlyMessage()
+		}
+		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnPictureUnsupported, msg)
 	}
 	// A cover-format drop must surface its own warning here, independent of whether the picture
 	// set still changed: when every added cover is unrepresentable the kept set collapses back to

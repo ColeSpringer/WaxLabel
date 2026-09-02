@@ -59,6 +59,21 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	d.trailer = trailer
 	warnings = append(warnings, tailWarnings...)
 
+	// The chapter packets sit inside the stream, before the trailer.
+	if d.chapterStore() {
+		at, walkWarnings, err := chapterRun(ctx, src, d.streamAt, d.trailer.Start, limit, opts.Limits.MaxElements)
+		if err != nil {
+			return nil, err
+		}
+		warnings = append(warnings, walkWarnings...)
+		if at >= 0 {
+			var chapterWarnings []core.Warning
+			d.chapters, d.ctEnd, chapterWarnings = readChapters(src, at, d.trailer.Start, h.sampleRate, limit, opts.Limits.MaxElements)
+			d.ctStart = at
+			warnings = append(warnings, chapterWarnings...)
+		}
+	}
+
 	media := &core.Media{
 		Format:     core.FormatMusepack,
 		Native:     d,
@@ -69,6 +84,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	media.Tags = proj.Tags
 	media.Families = proj.Families
 	media.Pictures = proj.Pictures
+	media.Chapters = d.chapters
 	warnings = append(warnings, proj.Warnings...)
 	warnings = append(warnings, ape.EncoderNoise(d.trailer.Items())...)
 	warnings = append(warnings, ape.InvalidUTF8Warnings(d.trailer.Tag)...)

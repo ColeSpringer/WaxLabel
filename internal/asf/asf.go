@@ -5,7 +5,8 @@
 // Properties (duration and preroll), Stream Properties (the WAVEFORMATEX describing
 // the audio), Content Description (five fixed text fields), Extended Content
 // Description (the open-ended "WM/*" descriptor list, where cover art also lives),
-// and a Header Extension nesting the Metadata and Metadata Library objects.
+// a Header Extension nesting the Metadata and Metadata Library objects, and a Marker
+// Object whose named markers are the chapters a WMA audiobook carries.
 //
 // It is read-only. Writing ASF is an explicit non-goal - a WMA file is only ever a
 // source here - and the refusal lives on the native document so the capability a
@@ -80,10 +81,14 @@ func (Codec) Capabilities(_ *core.Media, _ core.WriteOptions) core.Capabilities 
 		Read: core.AccessFull, Write: core.AccessNone,
 		Representation: "WM/Picture descriptor", Fidelity: "read-only",
 	}
+	chapters := core.Capability{
+		Read: core.AccessFull, Write: core.AccessNone,
+		Representation: "Marker Object", Fidelity: "read-only",
+	}
 	// Keep the refusal itself, not just its existence: a caller that declines before
 	// reaching Plan (the transfer path) then returns this exact error rather than
 	// synthesizing one, so copy and set fail a WMA destination the same way.
-	caps := core.NewCapabilities(core.FormatWMA, true, fields, pictures, core.Capability{}, core.AccessNone, nil)
+	caps := core.NewCapabilities(core.FormatWMA, true, fields, pictures, chapters, core.AccessNone, nil)
 	return caps.WithReadOnlyReason(refuseWrite())
 }
 

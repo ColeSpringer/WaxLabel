@@ -227,6 +227,14 @@ func parseItems(raw []byte, count uint32, maxElements int) (items []Item, trunca
 	return items, false
 }
 
+// ParseItemRun decodes a bare run of up to count items: the shape a Musepack SV8 chapter
+// packet carries after its preamble-less header record. It is parseItems itself, so a
+// chapter tag's items decode exactly as a trailing tag's do, and it reports whether the
+// element cap cut the list short.
+func ParseItemRun(raw []byte, count uint32, maxElements int) ([]Item, bool) {
+	return parseItems(raw, count, maxElements)
+}
+
 // decodeText renders a text item's bytes as a string: as UTF-8 when they are valid
 // (what APEv2 requires and what every modern tagger writes), else as Latin-1, so an
 // APEv1 item - or an out-of-spec APEv2 one - yields a usable value instead of a

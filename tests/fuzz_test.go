@@ -28,7 +28,7 @@ func FuzzParse(f *testing.F) {
 		sampleOggFLAC, notagsOggFLAC,
 		sampleMP3, sampleMP324, notagsMP3, sampleWAV, notagsWAV, sampleMP4, notagsMP4,
 		sampleMKA, sampleWebM, notagsMKA, chaptersMKA, sampleAIFF, notagsAIFF, sampleAIFC, sampleM4B,
-		sampleAAC, notagsAAC, sampleRF64, sampleWV, notagsWV, sampleAPE, notagsAPE, sampleWMA, notagsWMA,
+		sampleAAC, notagsAAC, sampleRF64, sampleWV, notagsWV, sampleAPE, notagsAPE, sampleWMA, notagsWMA, chaptersMPC,
 	} {
 		if b, err := os.ReadFile(p); err == nil {
 			f.Add(b)
@@ -69,6 +69,11 @@ func FuzzParse(f *testing.F) {
 	f.Add(mpcSV7(100, 0))                                                                                                                                 // Musepack SV7, fixed header
 	f.Add(append([]byte("MPCK"), mpcPacket("SH", []byte{0, 0, 0, 0, 8, 0xFF, 0xFF, 0xFF, 0xFF})...))                                                      // SH whose varlen sample count never terminates
 	f.Add(append(id3v2(4, textFrame(4, "TIT2", "x")), mpcSV7(4, 0)...))                                                                                   // SV7 behind a leading ID3v2
+	f.Add(mpcChaptered())                                                                                                                                 // SV8 with a chapter run before the end marker
+	f.Add(mpcSV8Stream(44100, 0, 2, mpcAudio(8), mpcPacket("CT", []byte{0xFF, 0xFF}), mpcChapter(0, []byte("junk")), mpcEnd()))                           // chapter packets with a never-ending start sample and a short tag
+	f.Add(mpcSV8Stream(44100, 0, 2, mpcSeekOffset(0), mpcAudio(8), mpcSeekTable(), mpcTitled(0, "x"), mpcEnd()))                                          // seek offset landing on the audio packet, chapters after the table
+	f.Add(asfFile(asfFileProperties(time.Minute, 3000), asfMarkers("m", asfMarker{at: time.Second, desc: "x"})))                                          // Marker Object inside the preroll
+	f.Add(asfFile(truncatedObject(asfMarkers("m", asfMarker{at: time.Second, desc: "x"}), 60)))                                                           // Marker Object truncated inside its first entry
 	f.Add([]byte("RIFF\x04\x00\x00\x00WAVE"))                                                                                                             // RIFF/WAVE, no chunks
 	f.Add([]byte("RIFF\xff\xff\xff\xffWAVEdata\xff\xff\xff\xff"))                                                                                         // absurd RIFF + data sizes
 	f.Add([]byte("RIFF\x10\x00\x00\x00WAVELIST\x04\x00\x00\x00INFO"))                                                                                     // empty INFO list

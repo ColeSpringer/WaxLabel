@@ -62,6 +62,10 @@ func TestRoundTripInvariant(t *testing.T) {
 			func(e *wl.Editor) { e.Set(tag.Title, "RoundTrip Title ZZ9") }},
 		{"wav clean tag edit", read(notagsWAV),
 			func(e *wl.Editor) { e.Set(tag.Title, "RoundTrip Title ZZ9") }},
+		{"musepack chapter packets + tag edit", mpcChaptered(),
+			func(e *wl.Editor) { e.Set(tag.Title, "RoundTrip Title ZZ9") }},
+		{"musepack editor-written chapters + tag edit", read(chaptersMPC),
+			func(e *wl.Editor) { e.Set(tag.Title, "RoundTrip Title ZZ9") }},
 	}
 
 	for _, c := range cases {

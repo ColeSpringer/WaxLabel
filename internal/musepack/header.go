@@ -77,37 +77,41 @@ func parseSV7(b []byte) (header, error) {
 // parseSV8 walks the packet stream for the "SH" stream header, which must be the
 // first packet after the magic. Later packets (seek table, replay gain, encoder
 // info, audio) are not decoded here: the tag store is the trailing APEv2 tag, and
-// the audio is copied verbatim.
+// the audio is copied verbatim. A packet key is two letters A-Z, as the reference
+// decoder requires; anything else ends the walk.
 func parseSV8(b []byte) (header, error) {
 	pos := len(sv8Magic)
-	for pos+2 <= len(b) {
-		key := string(b[pos : pos+2])
-		size, n, ok := readSize(b[pos+2:])
-		if !ok || size < uint64(2+n) || size > uint64(len(b)-pos) {
+	for pos < len(b) {
+		p, ok := parsePacket(b[pos:], int64(len(b)-pos))
+		if !ok {
 			break
 		}
-		payload := b[pos+2+n : pos+int(size)]
-		if key == "SH" {
-			h, err := parseSV8StreamHeader(payload)
+		if p.key == "SH" {
+			h, err := parseSV8StreamHeader(b[pos+p.hdrLen : pos+int(p.size)])
 			if err != nil {
 				return header{}, err
 			}
-			h.headerLen = int64(pos) + int64(size)
+			h.headerLen = int64(pos) + p.size
 			return h, nil
 		}
-		pos += int(size)
+		pos += int(p.size)
 	}
 	return header{}, fmt.Errorf("%w: Musepack SV8 stream has no SH stream header", waxerr.ErrInvalidData)
 }
 
 // parseSV8StreamHeader decodes an SH packet payload: a CRC, the stream version, the
 // sample and beginning-silence counts as variable-length numbers, then a bit-packed
-// tail holding the sample-rate index, band count, channel count, and block size.
+// tail holding the sample-rate index, band count, channel count, and block size. The
+// version must be 8: the reference decoder and ffmpeg both refuse any other inside a
+// packet stream, and the label, the chapter store, and the framing then agree.
 func parseSV8StreamHeader(b []byte) (header, error) {
 	if len(b) < 5 {
 		return header{}, fmt.Errorf("%w: SV8 stream header is %d bytes", waxerr.ErrInvalidData, len(b))
 	}
-	h := header{streamVersion: int(b[4])}
+	if b[4] != 8 {
+		return header{}, fmt.Errorf("%w: Musepack packet stream declares stream version %d", waxerr.ErrUnsupportedFormat, b[4])
+	}
+	h := header{streamVersion: 8}
 	pos := 5
 	samples, n, ok := readSize(b[pos:])
 	if !ok {

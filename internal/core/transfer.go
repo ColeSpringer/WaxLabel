@@ -375,7 +375,12 @@ func dispose(c Capability, readOnly bool, count int, noun string, values []strin
 	if c.Write == AccessNone {
 		// Destination-focused wording: the reason a user sees is "what the target
 		// format can't hold", not the source-side Representation string ("no covers",
-		// "not modeled"), which read as internal jargon in the loss report.
+		// "not modeled"), which read as internal jargon in the loss report. A store
+		// the destination reads but cannot write (Musepack's chapter packets, a cover
+		// inside a WebM file) says only that: the format may hold the item, or may not.
+		if c.Read != AccessNone {
+			return Dropped, "destination cannot write " + noun
+		}
 		return Dropped, "destination format does not store " + noun
 	}
 	if c.MaxItems > 0 && count > c.MaxItems {

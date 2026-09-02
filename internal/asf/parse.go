@@ -96,6 +96,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			d.readExtendedContentDescription(o.body, emit, &warnings, opts.Limits.MaxElements)
 		case guidHeaderExt:
 			d.readHeaderExtension(o.body, emit, &warnings, opts.Limits.MaxElements)
+		case guidMarker:
+			d.readMarkers(o.body, &warnings, opts.Limits.MaxElements)
 		}
 		d.objects = append(d.objects, objectSummary{id: o.id, size: len(o.body) + objectHeaderLen})
 	}
@@ -111,6 +113,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		Tags:       ts,
 		Families:   core.BuildFamilies(contribs, core.FamilyASF),
 		Pictures:   d.pictures,
+		Chapters:   d.chapters(),
 		AudioStart: d.dataStart,
 		AudioEnd:   d.dataEnd,
 		Properties: core.Properties{Container: "ASF", Tracks: d.tracks()},
@@ -182,6 +185,9 @@ func (d *doc) readFileProperties(b []byte) {
 	// duration. Range-check each before the conversion instead.
 	play, playOK := scaledDuration(binary.LittleEndian.Uint64(b[40:48]), hundredNS)
 	preroll, prerollOK := scaledDuration(binary.LittleEndian.Uint64(b[56:64]), time.Millisecond)
+	if prerollOK {
+		d.preroll = preroll
+	}
 	if playOK && prerollOK && play > preroll {
 		d.duration = play - preroll
 	}
@@ -195,6 +201,74 @@ func scaledDuration(ticks uint64, unit time.Duration) (time.Duration, bool) {
 		return 0, false
 	}
 	return time.Duration(ticks) * unit, true
+}
+
+// markerEntryLen is the fixed part of a marker entry: an 8-byte offset, the
+// presentation time, the entry length, a send time, flags, and the description length.
+const markerEntryLen = 30
+
+// readMarkers decodes the Marker Object. After a reserved GUID, the marker count, a
+// reserved word, and the object's own name come the entries, each its fixed fields and
+// then the description, a NUL-terminated UTF-16LE string behind its length in WCHARs.
+// The walk steps by that description length and ignores the entry length field, as
+// ffmpeg does, so a file reads the same here as in ffprobe. Times are kept as stored;
+// the preroll is applied when the chapters are projected, so the File Properties
+// object may come before or after this one. A list that ends before its declared
+// count, or a time no duration can hold, is reported rather than silently cut short.
+// The widths stay 32-bit-safe: the count and lengths are never narrowed to int.
+func (d *doc) readMarkers(b []byte, warnings *[]core.Warning, maxElements int) {
+	if len(b) < 24 {
+		return
+	}
+	count := binary.LittleEndian.Uint32(b[16:20])
+	pos := 24 + int(binary.LittleEndian.Uint16(b[22:24]))
+	short := func(read uint32) {
+		*warnings = core.Warn(*warnings, core.WarnMalformedTagEntry,
+			fmt.Sprintf("the Marker Object declares %d markers but ends after %d; the rest are not read", count, read))
+	}
+	for i := uint32(0); i < count; i++ {
+		if bits.CheckElementCap(int(i), maxElements, "ASF markers") != nil {
+			*warnings = core.Warn(*warnings, core.WarnElementCap,
+				"the Marker Object has more markers than the element limit allows; the rest are not read")
+			return
+		}
+		if pos+markerEntryLen > len(b) {
+			short(i)
+			return
+		}
+		at, ok := scaledDuration(binary.LittleEndian.Uint64(b[pos+8:pos+16]), hundredNS)
+		descLen := uint64(binary.LittleEndian.Uint32(b[pos+26:pos+30])) * 2
+		pos += markerEntryLen
+		desc := b[pos:]
+		cut := descLen > uint64(len(desc))
+		if !cut {
+			desc = desc[:descLen]
+		}
+		pos += len(desc)
+		if ok {
+			d.markers = append(d.markers, marker{at: at, desc: markerDescription(desc)})
+		} else {
+			*warnings = core.Warn(*warnings, core.WarnMalformedTagEntry,
+				fmt.Sprintf("marker %d has a presentation time past any duration; skipped", i+1))
+		}
+		if cut {
+			// The description ran to the object's end, so this was the last entry.
+			if i+1 < count {
+				short(i + 1)
+			}
+			return
+		}
+	}
+}
+
+// markerDescription decodes a marker's description: the string up to its NUL
+// terminator, since a chapter title cannot carry one, or all of it when the declared
+// length left the terminator out.
+func markerDescription(b []byte) string {
+	if s, _, ok := cutUTF16(b); ok {
+		return s
+	}
+	return utf16String(b)
 }
 
 // readStreamProperties decodes an audio stream's WAVEFORMATEX. Only the first audio

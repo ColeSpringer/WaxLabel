@@ -239,6 +239,7 @@ const (
 
 	WarnFragmented  = core.WarnFragmented
 	WarnInvalidText = core.WarnInvalidText
+	WarnElementCap  = core.WarnElementCap
 
 	WarnTrailingBytes             = core.WarnTrailingBytes
 	WarnLegacyStripDropped        = core.WarnLegacyStripDropped

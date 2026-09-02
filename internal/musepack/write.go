@@ -6,6 +6,7 @@ import (
 
 	"github.com/colespringer/waxlabel/internal/ape"
 	"github.com/colespringer/waxlabel/internal/core"
+	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // Plan computes the byte-level rewrite that turns the original file into the edited
@@ -24,6 +25,13 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	d, ok := edited.Native.(*doc)
 	if !ok || d == nil {
 		return nil, fmt.Errorf("musepack: edited media has no Musepack native document")
+	}
+	// The chapter packets are part of the stream this plan copies verbatim. The editor's
+	// capability gate refuses a chapter change before it reaches here; this is the
+	// backstop for a caller that bypasses it, worded apart from the gate so a test can
+	// tell which refused.
+	if !core.EqualChapters(base.Chapters, edited.Chapters) {
+		return nil, fmt.Errorf("%w: the Musepack writer copies the chapter packets verbatim and cannot apply a chapter change", waxerr.ErrUnsupportedTag)
 	}
 	w := ape.TrailingWrite{
 		Format: core.FormatMusepack, Trailer: d.trailer, Size: d.size, Leading: d.leadingID3,
@@ -48,6 +56,10 @@ func buildResult(edited *core.Media, base *doc, tp ape.TrailerPlan, newLeadingLe
 		header:     base.header,
 		track:      base.track,
 		size:       newSize,
+		chapters:   core.CloneChapters(base.chapters),
+	}
+	if base.ctEnd > base.ctStart {
+		nd.ctStart, nd.ctEnd = base.ctStart+shift, base.ctEnd+shift
 	}
 	proj := ape.Project(nd.trailer.Tag)
 	fams := append(proj.Families, ape.LegacyFamilies(proj.Tags, nd.trailer.ID3v1)...)
@@ -64,6 +76,7 @@ func buildResult(edited *core.Media, base *doc, tp ape.TrailerPlan, newLeadingLe
 		Tags:                proj.Tags,
 		Families:            append(fams, leadingFams...),
 		Pictures:            proj.Pictures,
+		Chapters:            core.CloneChapters(nd.chapters),
 		LegacyOpaqueContent: opaque,
 		Warnings:            warnings,
 		Native:              nd,
