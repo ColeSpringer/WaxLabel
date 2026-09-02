@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [1.6.2]
 
 ### Fixed
 
@@ -23,6 +23,8 @@ All notable changes to this project are documented here.
   under the unsupported-drop option instead of reaching the writer's refusal.
 - A caller-supplied source that answers a zero-length read at its end with EOF, as
   `bytes.Reader` does, no longer fails a parse that reads an empty element there.
+- The `element-cap` warning code is exported as `WarnElementCap`, so a library caller can
+  match it by name like every other code.
 
 ## [1.6.1]
 
