@@ -436,12 +436,13 @@ func (d *doc) properties(lastGranule uint64) core.Properties {
 	default: // Opus
 		// OpusHead(8) | version(1) | channels(1) | pre_skip(2) | input_rate(4) |
 		// output_gain(2) | mapping_family(1). Opus always decodes at 48 kHz; the
-		// input rate is informational. output_gain travels with the essence config.
+		// input rate is informational.
 		var preSkip uint64
 		if len(d.idPacket) >= 12 {
 			t.Channels = int(d.idPacket[9])
 			preSkip = uint64(binary.LittleEndian.Uint16(d.idPacket[10:12]))
 		}
+		t.OutputGain = opusOutputGain(d.idPacket)
 		t.SampleRate = 48000
 		if lastGranule > preSkip {
 			t.TotalSamples = lastGranule - preSkip

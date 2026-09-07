@@ -254,11 +254,10 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 		}
 	}
 	if n := len(src.Chapters); n > 0 {
-		// Grade the list the transfer actually writes: it opens a final chapter running to the
-		// source's own EOF (OpenRunToEOFEnd) so the destination refills it, and an open end is
-		// carried. Grading src.Chapters raw would report a lossy trailing end against a
-		// start+title destination that the copy opens and never loses.
-		chapters := OpenRunToEOFEnd(src.Chapters, src.Properties.Duration())
+		// Graded as given: the caller passes the list it will write, already carrying whatever
+		// run-to-EOF reopen or replacement it decided on, so the report cannot describe a
+		// different list from the write.
+		chapters := src.Chapters
 		disp, reason := dispose(dst.Chapters, dst.ReadOnly, n, "chapters", nil)
 		if disp == Carried {
 			// dispose reports chapter sets as Carried when the timeline itself carries. A start+title

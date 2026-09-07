@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"slices"
 	"strconv"
@@ -63,6 +64,10 @@ type editFlags struct {
 	// so - like --force - it resolves in writeOptions() and is shared by plan and set.
 	numericGenre bool
 
+	// outputGain is the raw --output-gain value in decibels; "" means unset, the same
+	// sentinel --padding uses.
+	outputGain string
+
 	strict bool // promote selected write notes, including unknown-key and dropped-value notes, to errors
 }
 
@@ -90,6 +95,7 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringVar(&e.padding, "padding", "", "reserve at least N bytes of padding after the metadata, with the same size suffixes as --max-size (e.g. 8KiB; FLAC default 8192; MP3/AAC/MP4 reuse the existing region; 0 writes none, like --no-padding)")
 	f.BoolVar(&e.noPadding, "no-padding", false, "write no padding after the metadata (no effect on Ogg/WAV/AIFF/Matroska, which have no padding region)")
 	f.BoolVar(&e.numericGenre, "numeric-genre", false, "write a recognized genre as its numeric reference instead of its name: ID3's TCON on MP3/AAC/AIFF, MP4's gnre atom, and on WAV only where an 'id3 ' chunk exists or the same edit creates one (LIST/INFO IGNR stores the name literally). FLAC, Ogg, and Matroska have no numeric genre representation, so it has no effect there")
+	f.StringVar(&e.outputGain, "output-gain", "", "set the decoder-applied output gain the stream header declares, in decibels (e.g. -3.5), rounded to the Q7.8 step the field stores. Only Ogg Opus has one; elsewhere it is dropped with a warning (--strict then refuses) and a read-only file fails. RFC 7845 applies R128_TRACK_GAIN and R128_ALBUM_GAIN on top of it, so update or clear them in the same edit")
 	f.BoolVar(&e.strict, "strict", false, "fail (exit 2), instead of just noting it, on an unknown key or any edit the destination format cannot store faithfully: a value dropped, coerced, or reduced in precision; a single-valued key given multiple values; a dropped picture, chapter, or synced-lyrics field; or a truncated chapter title or clamped timestamp")
 }
 
@@ -650,6 +656,11 @@ type compiledEdit struct {
 	unknownKeys              []tag.Key // --set/--add keys outside the canonical vocabulary, first-seen order
 	clearKeys                []tag.Key // --clear keys outside the canonical vocabulary, first-seen order
 	paddingFlag              bool      // whether --padding/--no-padding was given, for the per-format note
+
+	// outputGain is the --output-gain value as the Q7.8 integer the header stores;
+	// outputGainSet says whether the flag was given (0 is a meaningful gain).
+	outputGain    int
+	outputGainSet bool
 }
 
 // compile resolves the edit flags into a compiledEdit, surfacing any usage error
@@ -694,6 +705,12 @@ func (e *editFlags) compile(extra ...wl.WriteOption) (*compiledEdit, error) {
 	if err != nil {
 		return nil, err
 	}
+	var outputGain int
+	if e.outputGain != "" {
+		if outputGain, err = parseOutputGainDB(e.outputGain); err != nil {
+			return nil, err
+		}
+	}
 	return &compiledEdit{
 		patch:                    patch,
 		opts:                     opts,
@@ -709,7 +726,29 @@ func (e *editFlags) compile(extra ...wl.WriteOption) (*compiledEdit, error) {
 		unknownKeys:              e.unknownAssignKeys(),
 		clearKeys:                e.unknownClearKeys(),
 		paddingFlag:              padFlag,
+		outputGain:               outputGain,
+		outputGainSet:            e.outputGain != "",
 	}, nil
+}
+
+// outputGainStepsPerDB is the Q7.8 scale, the inverse of [wl.OutputGainDecibels].
+const outputGainStepsPerDB = 256
+
+// parseOutputGainDB converts a --output-gain decibel value into the signed Q7.8 integer
+// the Opus header stores, rounding to the nearest step.
+func parseOutputGainDB(s string) (int, error) {
+	db, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil || math.IsNaN(db) || math.IsInf(db, 0) {
+		return 0, usagef("--output-gain %q is not a decibel value", s)
+	}
+	// The bounds print through the shared formatter, which keeps enough digits that the
+	// ceiling is not rounded up into a value this very check rejects.
+	q78 := math.Round(db * outputGainStepsPerDB)
+	if q78 < math.MinInt16 || q78 > math.MaxInt16 {
+		return 0, usagef("--output-gain %s is outside the range the header stores (%s to %s)",
+			s, wl.OutputGainDB(math.MinInt16), wl.OutputGainDB(math.MaxInt16))
+	}
+	return int(q78), nil
 }
 
 // unknownAssignKeys returns the --set/--add keys outside the published canonical
@@ -1029,7 +1068,8 @@ func noteMalformedValue(notes *cappedNotes, k tag.Key, v string) {
 //   - WarnChaptersFlattened: can describe pre-existing on-read file state, not this edit.
 //   - WarnPaddingClamped: about padding size, not tag content.
 //   - Advisory/sanity codes (number-total-conflict, chapter-overlap-reconciled,
-//     chapter-past-duration, duplicate-*, multiple-front-covers, legacy-conflict) and the
+//     chapter-past-duration, duplicate-*, multiple-front-covers, legacy-conflict,
+//     output-gain-r128-tags) and the
 //     read-path codes (trailing-bytes, unknown-chunk-size and malformed-tag-entry among
 //     them): they describe the file, not an edit loss. unknown-chunk-size is the mildest -
 //     a non-seekable writer emits the sentinel legitimately, and a rewrite replaces it with
@@ -1088,6 +1128,7 @@ var strictEscalatingCodes = map[wl.WarningCode]bool{
 	wl.WarnSyncedLyricsUnsupported: true,
 	wl.WarnPictureUnsupported:      true,
 	wl.WarnChaptersUnsupported:     true,
+	wl.WarnOutputGainUnsupported:   true,
 	// Authored input silently dropped in part: LRC lines that produced no timed lyric, or a
 	// --remove-picture role that matched nothing. Both are user input that did not fully apply,
 	// so --strict must catch the loss rather than exit 0.
@@ -1391,6 +1432,9 @@ func (ce *compiledEdit) prepare(ctx context.Context, realPath, origPath string) 
 		ed.NoteSyncedLyricsDropped(ce.syncedLyricsDroppedLines...)
 	} else if ce.clearSyncedLyrics {
 		ed.ClearSyncedLyrics()
+	}
+	if ce.outputGainSet {
+		ed.SetOutputGain(ce.outputGain)
 	}
 	plan, err := ed.Prepare(ce.opts...)
 	if err != nil {

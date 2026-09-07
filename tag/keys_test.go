@@ -135,3 +135,29 @@ func TestParseKeyInvalidByteMessage(t *testing.T) {
 		t.Errorf("ParseKey error is not ErrInvalidKey: %v", err)
 	}
 }
+
+// TestR128GainKeysAreCustomOwnAudio: the Opus loudness tags sit outside the canonical
+// vocabulary on purpose (they are valid custom keys), but they describe this file's own
+// audio, so a metadata copy must leave the destination's alone.
+func TestR128GainKeysAreCustomOwnAudio(t *testing.T) {
+	for _, k := range []Key{"R128_TRACK_GAIN", "R128_ALBUM_GAIN"} {
+		if !IsR128GainKey(k) {
+			t.Errorf("IsR128GainKey(%s) = false, want true", k)
+		}
+		if k.Known() {
+			t.Errorf("%s.Known() = true, want false (deliberately outside the canonical vocabulary)", k)
+		}
+		if !k.Valid() {
+			t.Errorf("%s.Valid() = false, want a valid custom key", k)
+		}
+		if !k.DescribesOwnAudio() {
+			t.Errorf("%s.DescribesOwnAudio() = false, want true", k)
+		}
+		if IsReplayGainKey(k) {
+			t.Errorf("IsReplayGainKey(%s) = true; R128 values are plain Q7.8 integers, not dB text", k)
+		}
+	}
+	if IsR128GainKey("R128_TRACK_GAINX") {
+		t.Error("IsR128GainKey should not match a longer key")
+	}
+}

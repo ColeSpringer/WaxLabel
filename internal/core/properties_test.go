@@ -57,3 +57,36 @@ func TestCanonicalCodec(t *testing.T) {
 		}
 	}
 }
+
+// TestOutputGainDB renders the Opus Q7.8 output gain as the dB figure the CLI speaks.
+func TestOutputGainDB(t *testing.T) {
+	for _, c := range []struct {
+		gain int
+		want string
+	}{
+		{0, "0.00 dB"},
+		{-896, "-3.50 dB"},
+		{256, "1.00 dB"},
+		{-32768, "-128.00 dB"},
+		{32767, "127.9961 dB"},
+		// Adjacent Q7.8 steps are ~0.0039 dB apart, so two decimals would render a real
+		// change as no change at all.
+		{-897, "-3.5039 dB"},
+		{1, "0.0039 dB"},
+	} {
+		if got := OutputGainDB(c.gain); got != c.want {
+			t.Errorf("OutputGainDB(%d) = %q, want %q", c.gain, got, c.want)
+		}
+	}
+}
+
+// TestOutputGainWarningDiscardClassification: an unwritable gain is a discard (nothing was
+// stored), while the R128 advisory rides along with an edit that did apply.
+func TestOutputGainWarningDiscardClassification(t *testing.T) {
+	if !IsDiscardWarning(WarnOutputGainUnsupported) {
+		t.Error("WarnOutputGainUnsupported should be a discard warning")
+	}
+	if IsDiscardWarning(WarnOutputGainR128Tags) {
+		t.Error("WarnOutputGainR128Tags is advisory, not a discard")
+	}
+}

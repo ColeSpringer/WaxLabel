@@ -111,6 +111,14 @@ func (p *Plan) Changes() []tag.Change {
 	if !core.EqualSyncedLyrics(base.SyncedLyrics, edited.SyncedLyrics) {
 		changes = append(changes, countChange("synced lyrics", len(base.SyncedLyrics), len(edited.SyncedLyrics)))
 	}
+	if before, after := base.Properties.First().OutputGain, edited.Properties.First().OutputGain; before != after {
+		changes = append(changes, tag.Change{
+			Key:  "output gain",
+			Kind: tag.ChangeChanged,
+			Old:  []string{core.OutputGainDB(before)},
+			New:  []string{core.OutputGainDB(after)},
+		})
+	}
 	return changes
 }
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"slices"
@@ -443,5 +444,45 @@ func TestOggBitrateIsMeasured(t *testing.T) {
 					got, whole)
 			}
 		})
+	}
+}
+
+// TestOggDifferentialFFmpegAppliesOutputGain: ffprobe cannot show the header gain, but
+// every decoder applies it, so measure the decoded level. A -3.50 dB gain must lower the
+// mean volume by that much.
+func TestOggDifferentialFFmpegAppliesOutputGain(t *testing.T) {
+	requireTool(t, "ffmpeg")
+	meanVolume := func(path string) float64 {
+		t.Helper()
+		out, err := exec.Command("ffmpeg", "-hide_banner", "-nostats", "-i", path,
+			"-af", "volumedetect", "-f", "null", "-").CombinedOutput()
+		if err != nil {
+			t.Fatalf("ffmpeg volumedetect: %v\n%s", err, out)
+		}
+		i := bytes.Index(out, []byte("mean_volume:"))
+		if i < 0 {
+			t.Fatalf("no mean_volume in ffmpeg output:\n%s", out)
+		}
+		var v float64
+		if _, err := fmt.Sscanf(string(out[i+len("mean_volume:"):]), "%g dB", &v); err != nil {
+			t.Fatalf("parse mean_volume: %v\n%s", err, out[i:i+40])
+		}
+		return v
+	}
+
+	path := copyToTemp(t, sampleOpus)
+	before := meanVolume(path)
+
+	plan, err := mustParseFile(t, path).Edit().SetOutputGain(-896).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := plan.Execute(context.Background(), wl.SaveBack()); err != nil {
+		t.Fatal(err)
+	}
+	after := meanVolume(path)
+
+	if delta := before - after; delta < 3.3 || delta > 3.7 {
+		t.Errorf("mean volume moved %.2f dB (%.1f -> %.1f), want the -3.50 dB header gain applied", delta, before, after)
 	}
 }

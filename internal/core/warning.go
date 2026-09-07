@@ -374,6 +374,15 @@ const (
 	// the very common piped-WAV case still exits clean. Appended to the end of the block so
 	// the existing codes keep their numbers.
 	WarnUnknownChunkSize
+	// WarnOutputGainUnsupported means an edit set an output gain on a format that stores
+	// none, so the gain was dropped. Appended to the end of the block so the existing
+	// codes keep their numbers.
+	WarnOutputGainUnsupported
+	// WarnOutputGainR128Tags means a gain edit left the file's R128_TRACK_GAIN or
+	// R128_ALBUM_GAIN untouched. RFC 7845 applies those on top of the header gain, so a
+	// tool changing the header must update or remove them or the file plays at the wrong
+	// loudness. Advisory: the edit itself applied in full.
+	WarnOutputGainR128Tags
 )
 
 func (c WarningCode) String() string {
@@ -500,6 +509,10 @@ func (c WarningCode) String() string {
 		return "malformed-tag-entry-dropped"
 	case WarnUnknownChunkSize:
 		return "unknown-chunk-size"
+	case WarnOutputGainUnsupported:
+		return "output-gain-unsupported"
+	case WarnOutputGainR128Tags:
+		return "output-gain-r128-tags"
 	default:
 		return "unknown"
 	}
@@ -774,7 +787,7 @@ func IsDiscardWarning(c WarningCode) bool {
 	switch c {
 	case WarnValueDropped, WarnLegacyStripDropped, WarnDuplicateTagBlockDropped,
 		WarnSyncedLyricsUnsupported, WarnPictureUnsupported, WarnChaptersUnsupported,
-		WarnPictureSelectorMiss:
+		WarnPictureSelectorMiss, WarnOutputGainUnsupported:
 		return true
 	}
 	return false

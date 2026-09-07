@@ -152,6 +152,11 @@ func audioLine(p wl.Properties) string {
 		parts = append(parts, fmt.Sprintf("%d kbps", t.Bitrate/1000))
 		hasSubstantive = true
 	}
+	// The decoder applies the header gain, so a non-zero one changes how the file sounds.
+	if t.OutputGain != 0 {
+		parts = append(parts, "gain "+wl.OutputGainDB(t.OutputGain))
+		hasSubstantive = true
+	}
 	if !hasSubstantive {
 		return ""
 	}

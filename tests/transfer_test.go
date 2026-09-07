@@ -895,6 +895,7 @@ func TestTransferExcludesOwnAudioKeys(t *testing.T) {
 	ownAudio := []tag.Key{
 		tag.Encoder, tag.EncodedBy, tag.EncodingHistory, tag.AcoustIDFingerprint,
 		tag.ReplayGainTrackGain, tag.ReplayGainTrackPeak, tag.ReplayGainAlbumGain, tag.ReplayGainAlbumPeak,
+		"R128_TRACK_GAIN", "R128_ALBUM_GAIN",
 	}
 	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.Set(tag.ReplayGainTrackGain, "-6.5 dB")
@@ -905,6 +906,8 @@ func TestTransferExcludesOwnAudioKeys(t *testing.T) {
 		e.Set(tag.EncodingHistory, "A=PCM; A=FLAC")
 		e.Set(tag.AcoustIDFingerprint, "AQAAfingerprint")
 		e.Set(tag.Encoder, "SourceEnc 1.0")
+		e.Set("R128_TRACK_GAIN", "-896")
+		e.Set("R128_ALBUM_GAIN", "-512")
 		e.Set(tag.Title, "Shared Title")
 		e.Set(tag.AcoustID, "recording-xyz") // recording ID is portable
 	})

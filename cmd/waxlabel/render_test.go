@@ -329,3 +329,16 @@ func TestDumpNativeNoPaddingOmitsBlock(t *testing.T) {
 		t.Errorf("--no-padding should leave no PADDING block, but one appears:\n%s", out)
 	}
 }
+
+// TestAudioLineOutputGain: a non-zero header gain shows on the audio line; the common
+// zero does not.
+func TestAudioLineOutputGain(t *testing.T) {
+	with := audioLine(trackProps("Ogg", wl.AudioTrack{Codec: "Opus", SampleRate: 48000, Channels: 2, OutputGain: -896}))
+	if !strings.Contains(with, "gain -3.50 dB") {
+		t.Errorf("audio line = %q, want it to name the output gain", with)
+	}
+	without := audioLine(trackProps("Ogg", wl.AudioTrack{Codec: "Opus", SampleRate: 48000, Channels: 2}))
+	if strings.Contains(without, "gain") {
+		t.Errorf("audio line = %q, want no gain at 0", without)
+	}
+}

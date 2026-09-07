@@ -14,27 +14,11 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// parseOpusStreamWith builds and parses a minimal three-page Opus stream (OpusHead, an
-// OpusTags comment packet carrying "TITLE=Song" plus the given extra comments, then one audio
-// page). The comment packet must stay under 255 bytes so it fits a single page-lacing segment.
+// parseOpusStreamWith builds and parses a minimal three-page Opus stream with no output
+// gain. See [parseOpusStreamWithGain] for the layout.
 func parseOpusStreamWith(t *testing.T, comments ...string) *core.Media {
 	t.Helper()
-	const serial = 0x4F4747
-	head := []byte{'O', 'p', 'u', 's', 'H', 'e', 'a', 'd', 1, 2, 0, 0, 0x80, 0xBB, 0, 0, 0, 0, 0}
-	tags := opusTagsPacket("libopus 1.4", append([]string{"TITLE=Song"}, comments...)...)
-	if len(tags) > 255 {
-		t.Fatalf("comment packet is %d bytes; keep test covers small enough for single-segment lacing", len(tags))
-	}
-	audio := []byte("AUDIOPKT!!")
-	page0 := buildPage(flagBOS, 0, serial, 0, []byte{byte(len(head))}, head)
-	page1 := buildPage(0, 0, serial, 1, []byte{byte(len(tags))}, tags)
-	page2 := buildPage(0, 960, serial, 2, []byte{byte(len(audio))}, audio)
-	stream := append(append(append([]byte{}, page0...), page1...), page2...)
-	base, err := parse(context.Background(), core.BytesSource(stream), core.DefaultParseOptions())
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	return base
+	return parseOpusStreamWithGain(t, 0, comments...)
 }
 
 // smallCover is a tiny front cover whose base64 METADATA_BLOCK_PICTURE footprint

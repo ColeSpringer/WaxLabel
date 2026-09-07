@@ -39,6 +39,36 @@ type AudioTrack struct {
 	MinBlockSize int
 	MaxBlockSize int
 	MD5          [16]byte // MD5 of the decoded audio, per STREAMINFO
+
+	// OutputGain is the decoder-applied output gain the stream header declares, as Opus
+	// output_gain stores it: signed Q7.8 dB, 256 = +1 dB. Read from Ogg Opus only; the
+	// OpusHead a Matroska A_OPUS CodecPrivate or an MP4 dOps box carries is not read, so
+	// it reports 0 there and [Capabilities.OutputGain] grades those containers AccessNone.
+	OutputGain int
+}
+
+// OutputGainDecibels converts a Q7.8 output gain to decibels. It is the single definition
+// of the scale, so the string form and every machine-readable one agree.
+func OutputGainDecibels(gain int) float64 { return float64(gain) / 256 }
+
+// OutputGainDB renders a Q7.8 output gain as decibels, the unit a front-end speaks. Two
+// decimals is the readable form ("-3.50 dB"), but the Q7.8 step is ~0.0039 dB, so more are
+// emitted when the value needs them: a change line must never show an identical before and
+// after for a gain that did move.
+func OutputGainDB(gain int) string {
+	s := strings.TrimRight(fmt.Sprintf("%.4f", OutputGainDecibels(gain)), "0")
+	if n := strings.IndexByte(s, '.'); n >= 0 && len(s)-n < 3 {
+		s = fmt.Sprintf("%.2f", OutputGainDecibels(gain))
+	}
+	return s + " dB"
+}
+
+// OutputGainUnsupportedMessage returns the drop warning text for a format WaxLabel writes
+// no output gain to. It speaks of the write, not the container: an Opus stream muxed into
+// Matroska or MP4 does carry a header gain, which this parser does not read or write.
+func OutputGainUnsupportedMessage(f Format) string {
+	return fmt.Sprintf("an output gain cannot be written to %s %s file; the gain was dropped",
+		IndefiniteArticle(f.String()), f)
 }
 
 // AverageBitrate returns the average bits per second for audioBytes of encoded

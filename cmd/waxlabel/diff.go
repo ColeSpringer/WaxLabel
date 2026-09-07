@@ -121,11 +121,16 @@ type diffResult struct {
 	syncedA      int
 	syncedB      int
 	syncedDiffer bool
+	// gainA/gainB are the Ogg Opus header output gains, in Q7.8. The gain is a stream
+	// property rather than a tag, but set --output-gain edits it, so a diff that ignored
+	// it would call two files identical that this tool itself can tell apart.
+	gainA, gainB int
+	gainDiffer   bool
 }
 
 // identical reports whether the two files carry the same canonical metadata.
 func (d diffResult) identical() bool {
-	return len(d.tags) == 0 && !d.picsDiffer && !d.chapsDiffer && !d.syncedDiffer
+	return len(d.tags) == 0 && !d.picsDiffer && !d.chapsDiffer && !d.syncedDiffer && !d.gainDiffer
 }
 
 // computeDiff compares the canonical tags, pictures, chapters, and synced lyrics of a and
@@ -150,6 +155,9 @@ func computeDiff(a, b *wl.Document) diffResult {
 		syncedA:      len(sa),
 		syncedB:      len(sb),
 		syncedDiffer: !wl.EqualSyncedLyrics(sa, sb),
+		gainA:        a.Properties().First().OutputGain,
+		gainB:        b.Properties().First().OutputGain,
+		gainDiffer:   a.Properties().First().OutputGain != b.Properties().First().OutputGain,
 	}
 }
 
@@ -202,6 +210,9 @@ func renderDiff(w io.Writer, a, b string, d diffResult) {
 	renderCountDelta(w, "pictures", d.picsDiffer, d.picsA, d.picsB)
 	renderCountDelta(w, "chapters", d.chapsDiffer, d.chapsA, d.chapsB)
 	renderCountDelta(w, "synced lyrics", d.syncedDiffer, d.syncedA, d.syncedB)
+	if d.gainDiffer {
+		fmt.Fprintf(w, "  output gain: %s -> %s\n", wl.OutputGainDB(d.gainA), wl.OutputGainDB(d.gainB))
+	}
 }
 
 // renderChangeLine prints one tag change with diff-style -/+/~ markers at the
@@ -241,6 +252,16 @@ type jsonDiff struct {
 	Pictures      jsonDiffCount `json:"pictures"`
 	Chapters      jsonDiffCount `json:"chapters"`
 	SyncedLyrics  jsonDiffCount `json:"syncedLyrics"`
+	// OutputGain is present only when the two files' header gains differ; every other
+	// format reports none, so an always-present object would be noise on most diffs.
+	OutputGain *jsonDiffValue `json:"outputGain,omitempty"`
+}
+
+// jsonDiffValue is the delta for a single-valued property, the counterpart to
+// [jsonDiffCount] for a dimension that is one value rather than a set.
+type jsonDiffValue struct {
+	A string `json:"a"`
+	B string `json:"b"`
 }
 
 type jsonDiffTag struct {
@@ -268,6 +289,9 @@ func toJSONDiff(a, b string, d diffResult) jsonDiff {
 		Pictures:      jsonDiffCount{A: d.picsA, B: d.picsB, Changed: d.picsDiffer},
 		Chapters:      jsonDiffCount{A: d.chapsA, B: d.chapsB, Changed: d.chapsDiffer},
 		SyncedLyrics:  jsonDiffCount{A: d.syncedA, B: d.syncedB, Changed: d.syncedDiffer},
+	}
+	if d.gainDiffer {
+		jd.OutputGain = &jsonDiffValue{A: wl.OutputGainDB(d.gainA), B: wl.OutputGainDB(d.gainB)}
 	}
 	for _, t := range d.tags {
 		jd.Tags = append(jd.Tags, jsonDiffTag{Key: string(t.Key), Change: t.Kind.String(), A: t.Old, B: t.New})

@@ -2,6 +2,52 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Added
+
+- `Document.Transfer()`, a builder for a metadata copy that hands the transfer a
+  replacement timeline: `SetChapters` and `SetSyncedLyrics` write the list you pass instead
+  of the source's, so a caller that has already remapped a cut lands the copy in one write.
+  A replacement is written as given, against the destination's timeline, so a final chapter
+  meant to run to the destination's end carries a zero `End`; passing none is an explicit
+  "no chapters" that clears the destination's own. `PlanTransfer`/`PrepareTransfer` are the
+  no-replacement builder and are unchanged.
+- The Ogg Opus output gain, the decoder-applied gain the `OpusHead` declares. It reads into
+  `Properties` and shows in `dump` (`gain -3.50 dB`, `outputGainDb` in `--json`, an
+  `OpusHead` note in `--native`), `caps` (`output gain`), and `diff`, which no longer calls
+  two files identical when only their header gain differs; `Editor.SetOutputGain` and
+  `set --output-gain DB` write it, patching page 0 alone and leaving every audio page byte
+  for byte. The unit is the raw Q7.8 integer the spec and the R128 tags use; the CLI speaks
+  decibels. New codes: `output-gain-unsupported`, for a format that stores none (`--strict`
+  escalates it), and `output-gain-r128-tags`, an advisory for a gain change that leaves
+  `R128_TRACK_GAIN`/`R128_ALBUM_GAIN` set, which RFC 7845 applies on top of it.
+- QuickTime version 2 sound sample entries, the shape ffmpeg writes into a hi-res `.mov`.
+  Their float64 rate and 32-bit channel count are read, so such a file reports its geometry
+  instead of nothing.
+
+### Changed
+
+- **The Ogg Opus essence extent is `ogg-opus-packets-v2`**, hashing the `OpusHead` with its
+  `output_gain` masked, so a gain edit keeps the digest and two copies differing only in
+  gain dedup. `verify` labels the change; stored `ogg-opus-packets-v1` digests stay labeled
+  v1 and never compare equal, so every Opus digest needs a rehash.
+
+### Fixed
+
+- An MP4 whose `stsd` runs past the caller's allocation limit no longer parses with no
+  codec and no geometry, which gave the same bytes a different `mp4-mdat-v3` digest
+  depending on the limit. The prefix read is clamped to the limit instead of refused by it.
+- Hi-res ALAC and FLAC-in-MP4 report their real sample rate. The sample entry's 16.16 field
+  cannot hold a rate above 65535, so a 96 kHz file read back as 65535, 0, or 48000; the
+  rate now comes from the codec's own configuration, the ALAC magic cookie or the `dfLa`
+  `STREAMINFO` the FLAC-in-ISOBMFF spec makes authoritative, along with the channel count,
+  bit depth, and FLAC block-size bounds. The digest salt keeps the raw entry values, so
+  stored MP4 digests are unchanged.
+- `copy` excludes `R128_TRACK_GAIN` and `R128_ALBUM_GAIN`, as it already excluded the
+  `REPLAYGAIN_*` keys: they describe the source's own audio, so the destination keeps its
+  own.
+
 ## [1.6.2]
 
 ### Fixed

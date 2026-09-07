@@ -292,7 +292,13 @@ type Capabilities struct {
 	//     Matroska).
 	// The CLI reads it to tell the user when a padding flag does not (fully) apply,
 	// and caps renders it ("none"/"partial"/"full" via AccessLevel.String).
-	Padding      AccessLevel
+	Padding AccessLevel
+	// OutputGain grades whether this parser reads and writes the decoder-applied output
+	// gain a stream header declares. Only Ogg Opus is AccessFull; everywhere else an edit
+	// that sets one has nothing to write. AccessNone does not always mean the container
+	// holds no such gain: an Opus stream muxed into Matroska or MP4 carries an OpusHead
+	// inside its codec-private data, which this parser does not decode.
+	OutputGain   AccessLevel
 	GenericField Capability             // default for canonical keys
 	perField     map[tag.Key]Capability // overrides
 	// fieldClassifier is the per-field transfer hook WithFieldClassifier attaches, nil unless a
@@ -332,6 +338,13 @@ func NewCapabilities(f Format, readOnly bool, generic, pictures, chapters Capabi
 // Capability, whose AccessNone read/write reports "no synced lyrics".
 func (c Capabilities) WithSyncedLyrics(sl Capability) Capabilities {
 	c.SyncedLyrics = sl
+	return c
+}
+
+// WithOutputGain returns a copy of c with its output-gain capability set, the same opt-in
+// shape as [Capabilities.WithSyncedLyrics]. Codecs that do not call it keep AccessNone.
+func (c Capabilities) WithOutputGain(level AccessLevel) Capabilities {
+	c.OutputGain = level
 	return c
 }
 

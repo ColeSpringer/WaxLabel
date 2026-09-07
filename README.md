@@ -108,7 +108,8 @@ waxlabel export-picture track.flac -o cover.jpg
 Edits are driven by `--set KEY=VALUE`, `--add KEY=VALUE`, and `--clear KEY`, plus
 picture (`--add-cover`, `--add-picture`, `--remove-picture`), chapter
 (`--add-chapter`, `--clear-chapters`), and synced-lyric
-(`--synced-lyrics-file`, `--add-synced-lyric`, `--synced-lyrics-lang`) flags. Write
+(`--synced-lyrics-file`, `--add-synced-lyric`, `--synced-lyrics-lang`) flags, and
+`--output-gain` for the Ogg Opus header gain. Write
 shaping is controlled by `--preset`, `--legacy`, and `--padding`. Run
 `waxlabel <command> --help` for the full flag list. `--legacy strip` (and
 `--preset minimal`, which implies it) removes ID3v1/APEv2/stray-ID3 containers
@@ -156,7 +157,7 @@ maximum: `canceled`/`timeout` > `source-changed` > `invalid-data` > `input-too-l
 | Format | Metadata | Notes |
 | --- | --- | --- |
 | FLAC | read/write | Vorbis comments, FLAC pictures, `CHAPTERxxx` chapters, `SYNCEDLYRICS` (LRC); padding is fully controllable. |
-| Ogg Vorbis / Opus | read/write | Vorbis comments, `METADATA_BLOCK_PICTURE`, `CHAPTERxxx` chapters, `SYNCEDLYRICS` (LRC). |
+| Ogg Vorbis / Opus | read/write | Vorbis comments, `METADATA_BLOCK_PICTURE`, `CHAPTERxxx` chapters, `SYNCEDLYRICS` (LRC). Opus also carries the `OpusHead` output gain, which `--output-gain` patches in place. |
 | Ogg FLAC (`.oga`) | read/write | Vorbis comments and chapters as above; cover art is a native FLAC `PICTURE` block, not a comment. |
 | MP3 | read/write | ID3v2 (`CHAP`/`CTOC` chapters, `SYLT` lyrics); new tags are ID3v2.3. ID3v1/APEv2 are surfaced as legacy. |
 | WAV / RF64 / BW64 | read/write | RIFF LIST/INFO plus embedded `id3 ` (chapters and lyrics); chunks are preserved. The 64-bit RF64/BW64 form is kept on save-back, with `ds64` recomputed. |

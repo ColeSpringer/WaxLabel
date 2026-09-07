@@ -3,6 +3,7 @@ package ogg
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"slices"
 
 	"github.com/colespringer/waxlabel/internal/core"
@@ -94,37 +95,77 @@ func (c Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabili
 	}
 	// OggTags/OpusTags padding is round-tripped as-is; there is no padding control,
 	// so AccessNone.
-	return core.NewCapabilities(c.format, false, fields, pictures, chapters, core.AccessNone, nil).
+	caps := core.NewCapabilities(c.format, false, fields, pictures, chapters, core.AccessNone, nil).
 		WithSyncedLyrics(vorbis.SyncedLyricsCapability()).
 		WithFieldClassifier(vorbis.TransferClassifier)
+	if c.format == core.FormatOggOpus {
+		caps = caps.WithOutputGain(core.AccessFull)
+	}
+	return caps
+}
+
+// opusOutputGain returns the OpusHead's output gain (signed Q7.8 dB, little-endian at
+// bytes 16:18), or 0 when the header is too short to hold one.
+func opusOutputGain(head []byte) int {
+	if len(head) < 18 {
+		return 0
+	}
+	return int(int16(binary.LittleEndian.Uint16(head[16:18])))
+}
+
+// opusHeadWithGain returns a copy of the OpusHead with its output gain replaced, or an
+// unchanged copy when the header is too short to hold one.
+func opusHeadWithGain(head []byte, gain int) []byte {
+	out := slices.Clone(head)
+	if len(out) >= 18 {
+		binary.LittleEndian.PutUint16(out[16:18], uint16(int16(gain)))
+	}
+	return out
 }
 
 // EssenceExtent returns the Ogg essence-digest inputs: a versioned extent name
 // and the decoder-critical configuration mixed into the hash ahead of the audio
-// packet payloads. For Opus that is the OpusHead packet (channel mapping,
-// pre-skip, and the R128 output_gain); for Vorbis it is the identification
-// header plus the setup header (the codebooks), since identical packets decoded
-// with different codebooks are not the same audio; for FLAC it is STREAMINFO.
+// packet payloads. For Opus that is the OpusHead packet with its output_gain masked
+// (the gain is an editable playback control, not part of the encoded audio, so two
+// copies differing only in gain dedup); for Vorbis it is the identification header plus
+// the setup header (the codebooks), since identical packets decoded with different
+// codebooks are not the same audio; for FLAC it is STREAMINFO.
 func (c Codec) EssenceExtent(m *core.Media) (string, []byte) {
-	name := "ogg-vorbis-packets-v1"
-	switch c.format {
-	case core.FormatOggOpus:
-		name = "ogg-opus-packets-v1"
-	case core.FormatOggFLAC:
-		name = "ogg-flac-frames-v1"
-	}
 	d, ok := m.Native.(*doc)
 	if !ok || d == nil {
-		return name, nil
+		// No parsed document to read the mapping from: fall back to the format the codec
+		// instance was registered for, which names the same extent.
+		return extentForFormat(c.format), nil
 	}
 	switch d.kind {
 	case kindOpus:
-		return "ogg-opus-packets-v1", slices.Clone(d.idPacket)
+		return extentOpus, opusHeadWithGain(d.idPacket, 0)
 	case kindFLAC:
 		// STREAMINFO alone, not the whole identification packet: the packet also
 		// carries the header-packet count, which a metadata rewrite legitimately
 		// changes and which says nothing about the audio.
-		return "ogg-flac-frames-v1", slices.Clone(d.streamInfo())
+		return extentFLAC, slices.Clone(d.streamInfo())
 	}
-	return "ogg-vorbis-packets-v1", slices.Concat(d.idPacket, d.setupPacket)
+	return extentVorbis, slices.Concat(d.idPacket, d.setupPacket)
+}
+
+// The versioned essence-extent names, one per Ogg mapping. Named once so the two ways of
+// reaching an extent - by codec format and by parsed stream kind - cannot disagree, and a
+// version bump is a single edit.
+const (
+	extentVorbis = "ogg-vorbis-packets-v1"
+	// v2 masks the OpusHead output gain, an editable playback control that says nothing
+	// about the encoded audio. A v1 digest never compares equal to a v2 one.
+	extentOpus = "ogg-opus-packets-v2"
+	extentFLAC = "ogg-flac-frames-v1"
+)
+
+func extentForFormat(f core.Format) string {
+	switch f {
+	case core.FormatOggOpus:
+		return extentOpus
+	case core.FormatOggFLAC:
+		return extentFLAC
+	}
+	return extentVorbis
 }

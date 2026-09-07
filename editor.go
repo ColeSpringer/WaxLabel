@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -49,6 +50,8 @@ type Editor struct {
 	// reads back with none rather than silently inheriting the cleared one. A plain authored
 	// set (no preceding clear) leaves this false and keeps that inheritance convenience.
 	syncedLyricsCleared bool
+	outputGain          int
+	outputGainTouched   bool
 	// carried marks this editor as a faithful carry from a source (the transfer
 	// engine), not a user-authored edit, so [Editor.Prepare] suppresses the edit-time
 	// sanity warnings that flag authoring mistakes - the chapter past-duration /
@@ -179,10 +182,18 @@ func (e *Editor) ClearPictures() *Editor {
 // reports that through [Capabilities]. Lists above a format's hard count cap are
 // rejected at [Editor.Prepare]; ID3 CTOC and MP4 Nero chpl are capped at 255 entries.
 func (e *Editor) SetChapters(chs ...Chapter) *Editor {
-	e.chapters = slices.Clone(chs)
-	core.SortChaptersByStart(e.chapters)
+	e.chapters = normalizeChapters(chs)
 	e.chaptersTouched = true
 	return e
+}
+
+// normalizeChapters is the shared authored-list normalization: a private copy, sorted by
+// start. Shared by [Editor.SetChapters] and [Transfer.SetChapters] so a replacement list
+// reaches the writer in the same shape a direct edit does.
+func normalizeChapters(chs []Chapter) []core.Chapter {
+	out := core.CloneChapters(chs)
+	core.SortChaptersByStart(out)
+	return out
 }
 
 // ClearChapters removes all chapters.
@@ -202,21 +213,27 @@ func (e *Editor) ClearChapters() *Editor {
 // authors a fresh set that does not inherit the destination's existing ID3 SYLT language, while
 // a plain SetSyncedLyrics with no preceding clear keeps that inheritance convenience.
 func (e *Editor) SetSyncedLyrics(sls ...SyncedLyrics) *Editor {
-	e.syncedLyrics = make([]core.SyncedLyrics, 0, len(sls))
+	e.syncedLyrics = normalizeSyncedLyrics(sls)
+	e.syncedLyricsTouched = true
+	return e
+}
+
+// normalizeSyncedLyrics is the shared authored-set normalization: sets with no lines are
+// dropped (writers skip them, so keeping one would report a set nothing wrote), and each
+// surviving set's lines are deep-copied and stably sorted by time. Shared by
+// [Editor.SetSyncedLyrics] and [Transfer.SetSyncedLyrics] so a transfer's report counts the
+// same sets the editor writes.
+func normalizeSyncedLyrics(sls []SyncedLyrics) []core.SyncedLyrics {
+	out := make([]core.SyncedLyrics, 0, len(sls))
 	for _, sl := range sls {
-		// A set with no lines carries no model value: writers skip it because an empty SYLT
-		// or SYNCEDLYRICS comment projects to nothing on re-read. Dropping it here keeps the
-		// authored and rendered counts aligned across codecs, so a plan never reports a set
-		// it did not write.
 		if len(sl.Lines) == 0 {
 			continue
 		}
 		sl.Lines = slices.Clone(sl.Lines)
 		slices.SortStableFunc(sl.Lines, func(a, b SyncedLine) int { return cmp.Compare(a.Time, b.Time) })
-		e.syncedLyrics = append(e.syncedLyrics, sl)
+		out = append(out, sl)
 	}
-	e.syncedLyricsTouched = true
-	return e
+	return out
 }
 
 // NoteSyncedLyricsDropped records the 1-based line numbers of authored LRC input that produced no
@@ -254,6 +271,20 @@ func (e *Editor) ClearSyncedLyrics() *Editor {
 	return e
 }
 
+// SetOutputGain sets the decoder-applied output gain the stream header declares, as Opus
+// output_gain stores it: signed Q7.8 dB, 256 = +1 dB, so -896 is -3.50 dB. Only Ogg Opus
+// stores one; elsewhere [Editor.Prepare] refuses the edit (or, under
+// [WithAllowUnsupportedDrop], drops it with a warning). Transfers never carry it.
+//
+// RFC 7845 applies R128_TRACK_GAIN and R128_ALBUM_GAIN on top of the header gain, so a
+// caller moving loudness into the header sets those tags relative to it (typically 0) in
+// the same edit; Prepare warns when a gain change leaves them untouched.
+func (e *Editor) SetOutputGain(gain int) *Editor {
+	e.outputGain = gain
+	e.outputGainTouched = true
+	return e
+}
+
 // Native returns the native inspection view for the original parsed document.
 // It does not include pending editor changes; pictures, tags, or chapters added
 // on the editor are visible only after a save and reparse. Structural native
@@ -284,6 +315,10 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// below.
 	if e.base == nil {
 		return nil, fmt.Errorf("%w: document is not initialized; use ParseFile/Parse", waxerr.ErrInvalidData)
+	}
+	// The output gain is a signed 16-bit Q7.8 field; a value outside it has no encoding.
+	if e.outputGainTouched && (e.outputGain < math.MinInt16 || e.outputGain > math.MaxInt16) {
+		return nil, fmt.Errorf("%w: output gain %d is outside the signed 16-bit Q7.8 range", waxerr.ErrInvalidData, e.outputGain)
 	}
 
 	// Refuse to build a write plan for a file the parser determined has no real audio
@@ -403,6 +438,26 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// Compute capabilities once under these write options. The chapter gate below and
 	// the value-reduction check after planning must read the same write policy.
 	caps := codec.Capabilities(e.base, wo)
+	// The output gain lives in the stream header, not the tag store, so no
+	// tag/picture/chapter/lyric comparison sees it - and the ASF and fragmented-MP4 planners
+	// return a no-op when those are all equal. Without an explicit gate here a gain edit on
+	// such a file would exit 0 having written nothing. It sits outside structuralGates for
+	// that reason: a read-only file refuses with the codec's own reason instead.
+	var outputGainDropped bool
+	gainChanged := e.outputGainTouched && e.outputGain != e.base.Properties.First().OutputGain
+	if gainChanged {
+		switch {
+		case caps.ReadOnly:
+			return nil, readOnlyRefusal(caps)
+		case caps.OutputGain < core.AccessFull:
+			if !wo.AllowUnsupportedDrop {
+				return nil, fmt.Errorf("%w: an output gain cannot be written to %s %s file",
+					waxerr.ErrUnsupportedTag, core.IndefiniteArticle(e.base.Format.String()), e.base.Format)
+			}
+			outputGainDropped = true
+		}
+	}
+
 	// A whole structural edit the destination cannot store at all is either a hard error
 	// (the default) or, when the caller opts into dropping unsupported edits, removed with a
 	// warning so the storable part of the edit still applies (matching how a cross-format
@@ -573,6 +628,15 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 			chaptersReconciled = true
 		}
 	}
+	// edited shares the base's Properties, so overlay a clone rather than mutating the
+	// parsed document. The gate above already established the format writes an output gain,
+	// and every such parse reports a track; the length check is the guard against that
+	// invariant breaking, not a reachable path.
+	if gainChanged && !outputGainDropped && len(e.base.Properties.Tracks) > 0 {
+		props := e.base.Properties.Clone()
+		props.Tracks[0].OutputGain = e.outputGain
+		edited.Properties = props
+	}
 	wp, err := codec.Plan(context.Background(), e.base, edited, wo)
 	if err != nil {
 		return nil, err
@@ -689,6 +753,21 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	if syncedLyricsDropped {
 		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnSyncedLyricsUnsupported,
 			core.SyncedLyricsUnsupportedMessage(e.base.Format))
+	}
+	if outputGainDropped {
+		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnOutputGainUnsupported,
+			core.OutputGainUnsupportedMessage(e.base.Format))
+	}
+	// RFC 7845 applies the R128 loudness tags on top of the header gain, so moving the
+	// header while leaving them alone plays the file at the wrong loudness. Advisory: the
+	// gain edit itself applied in full, and only the caller knows the intended loudness.
+	if gainChanged && !outputGainDropped {
+		for _, k := range editedTags.Keys() {
+			if tag.IsR128GainKey(k) && !e.patch.Touches(k) {
+				wp.Report.Warnings = core.WarnKeyed(wp.Report.Warnings, core.WarnOutputGainR128Tags,
+					fmt.Sprintf("output gain changed but %s is still set; RFC 7845 applies it on top of the header gain, so update or clear it in the same edit", k), k)
+			}
+		}
 	}
 	if picturesDropped {
 		msg := core.PictureUnsupportedMessage()

@@ -3,6 +3,7 @@ package mp4
 import (
 	"bytes"
 	"encoding/binary"
+	"math"
 	"testing"
 
 	"github.com/colespringer/waxlabel/internal/core"
@@ -27,23 +28,101 @@ func mkStsdPayload(soundVersion uint16) []byte {
 // fixed sample_size field carries the conventional 16 while the nested magic
 // cookie declares cookieDepth bits.
 func mkAlacStsdPayload(cookieDepth byte) []byte {
+	return mkAlacStsdPayloadRates(cookieDepth, 44100, 44100, 2)
+}
+
+// mkAlacStsdPayloadRates builds the same v0 'alac' entry with the sample entry's own
+// 16.16 rate field and the magic cookie's rate and channel count chosen independently,
+// so a hi-res cookie can disagree with a rate field that cannot hold it.
+func mkAlacStsdPayloadRates(cookieDepth byte, entryRate, cookieRate uint32, cookieChannels byte) []byte {
 	b := make([]byte, 8+36+36)
 	be := binary.BigEndian
 	be.PutUint32(b[4:8], 1)      // entry_count
 	be.PutUint32(b[8:12], 36+36) // entry size: fixed fields + cookie box
 	copy(b[12:16], "alac")
-	be.PutUint16(b[22:24], 1)         // data_reference_index
-	be.PutUint16(b[32:34], 2)         // channels
-	be.PutUint16(b[34:36], 16)        // sample_size, pinned at 16 by convention
-	be.PutUint32(b[40:44], 44100<<16) // sample_rate 16.16
-	be.PutUint32(b[44:48], 36)        // cookie box size
-	copy(b[48:52], "alac")            // cookie box type
-	be.PutUint32(b[56:60], 4096)      // frameLength
-	b[61] = cookieDepth               // bitDepth
-	b[62], b[63], b[64] = 40, 10, 14  // pb, mb, kb
-	b[65] = 2                         // numChannels
-	be.PutUint16(b[66:68], 255)       // maxRun
-	be.PutUint32(b[76:80], 44100)     // sampleRate
+	be.PutUint16(b[22:24], 1)             // data_reference_index
+	be.PutUint16(b[32:34], 2)             // channels
+	be.PutUint16(b[34:36], 16)            // sample_size, pinned at 16 by convention
+	be.PutUint32(b[40:44], entryRate<<16) // sample_rate 16.16
+	be.PutUint32(b[44:48], 36)            // cookie box size
+	copy(b[48:52], "alac")                // cookie box type
+	be.PutUint32(b[56:60], 4096)          // frameLength
+	b[61] = cookieDepth                   // bitDepth
+	b[62], b[63], b[64] = 40, 10, 14      // pb, mb, kb
+	b[65] = cookieChannels                // numChannels
+	be.PutUint16(b[66:68], 255)           // maxRun
+	be.PutUint32(b[76:80], cookieRate)    // sampleRate
+	return b
+}
+
+// mkStreamInfo builds a 34-byte FLAC STREAMINFO body with a recognizable MD5 and fixed
+// block-size bounds.
+func mkStreamInfo(rate, channels, depth int, total uint64) []byte {
+	body := make([]byte, 34)
+	be := binary.BigEndian
+	be.PutUint16(body[0:2], 4096) // min block size
+	be.PutUint16(body[2:4], 4096) // max block size
+	body[10] = byte(rate >> 12)
+	body[11] = byte(rate >> 4)
+	body[12] = byte(rate<<4) | byte(channels-1)<<1 | byte((depth-1)>>4)
+	body[13] = byte((depth-1)&0x0F)<<4 | byte(total>>32)&0x0F
+	be.PutUint32(body[14:18], uint32(total))
+	for i := range body[18:34] {
+		body[18+i] = byte(i + 1)
+	}
+	return body
+}
+
+// mkDfLa builds a dfLa box (a FullBox wrapping FLAC metadata blocks) whose single block
+// carries the given type and body.
+func mkDfLa(blockType byte, body []byte) []byte {
+	b := make([]byte, 12+4+len(body))
+	binary.BigEndian.PutUint32(b[0:4], uint32(len(b)))
+	copy(b[4:8], "dfLa")
+	b[12] = 0x80 | blockType&0x7F // last-metadata-block flag
+	b[13], b[14], b[15] = byte(len(body)>>16), byte(len(body)>>8), byte(len(body))
+	copy(b[16:], body)
+	return b
+}
+
+// mkFlacStsdPayload builds an stsd payload with one v0 'fLaC' sample entry carrying the
+// given dfLa box. The entry's own 16.16 rate field holds the rate only when it fits, so a
+// muxer writes 0 above 65535.
+func mkFlacStsdPayload(entryRate uint32, dfla []byte) []byte {
+	b := make([]byte, 8+36+len(dfla))
+	be := binary.BigEndian
+	be.PutUint32(b[4:8], 1)                     // entry_count
+	be.PutUint32(b[8:12], uint32(36+len(dfla))) // entry size
+	copy(b[12:16], "fLaC")
+	be.PutUint16(b[22:24], 1)             // data_reference_index
+	be.PutUint16(b[32:34], 2)             // channels
+	be.PutUint16(b[34:36], 16)            // sample_size
+	be.PutUint32(b[40:44], entryRate<<16) // sample_rate 16.16
+	copy(b[44:], dfla)
+	return b
+}
+
+// mkV2StsdPayload builds an stsd payload with one version 2 sound sample entry: the
+// QuickTime layout whose float64 rate and uint32 channel count replace the fixed v0/v1
+// fields, followed by any extension boxes.
+func mkV2StsdPayload(fourcc string, rate float64, channels, bits uint32, ext []byte) []byte {
+	b := make([]byte, 8+72+len(ext))
+	be := binary.BigEndian
+	be.PutUint32(b[4:8], 1)                    // entry_count
+	be.PutUint32(b[8:12], uint32(72+len(ext))) // entry size
+	copy(b[12:16], fourcc)
+	be.PutUint16(b[22:24], 1)  // data_reference_index
+	be.PutUint16(b[24:26], 2)  // sound sample description version 2
+	be.PutUint16(b[32:34], 3)  // always 3
+	be.PutUint16(b[34:36], 16) // always 16
+	be.PutUint16(b[36:38], 0xFFFE)
+	be.PutUint32(b[40:44], 1<<16) // always 65536
+	be.PutUint32(b[44:48], 72)    // sizeOfStructOnly
+	be.PutUint64(b[48:56], math.Float64bits(rate))
+	be.PutUint32(b[56:60], channels)
+	be.PutUint32(b[60:64], 0x7F000000)
+	be.PutUint32(b[64:68], bits) // constBitsPerChannel
+	copy(b[80:], ext)
 	return b
 }
 
@@ -281,5 +360,219 @@ func TestBoundedCount(t *testing.T) {
 	// within int64, so the arithmetic does not overflow and the guard rejects it.
 	if boundedCount(0xFFFFFFFF, 8, 20, 8) {
 		t.Error("boundedCount(0xFFFFFFFF, 8, 20, 8) = true, want false (hostile count)")
+	}
+}
+
+// TestParseStsdAlacCookieSampleRate: the ALAC magic cookie is the decoder's configuration,
+// so its rate wins over the entry's 16.16 field, which cannot hold a rate above 65535. The
+// digest salt keeps the raw entry value, so stored ALAC digests are unchanged.
+func TestParseStsdAlacCookieSampleRate(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		entryRate uint32
+	}{
+		{"muxer wrote 0", 0},
+		{"muxer wrote a plausible but wrong rate", 44100},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d := parseStsdPayload(t, mkAlacStsdPayloadRates(24, c.entryRate, 96000, 2))
+			if d.track.SampleRate != 96000 {
+				t.Errorf("SampleRate = %d, want 96000 (from the magic cookie)", d.track.SampleRate)
+			}
+			if d.cfg.sampleRate != c.entryRate {
+				t.Errorf("cfg.sampleRate = %d, want the raw entry value %d", d.cfg.sampleRate, c.entryRate)
+			}
+		})
+	}
+}
+
+// TestParseStsdAlacCookieChannels: the cookie's channel count also wins.
+func TestParseStsdAlacCookieChannels(t *testing.T) {
+	d := parseStsdPayload(t, mkAlacStsdPayloadRates(24, 44100, 44100, 6))
+	if d.track.Channels != 6 {
+		t.Errorf("Channels = %d, want 6 (from the magic cookie)", d.track.Channels)
+	}
+	if d.cfg.channels != 2 {
+		t.Errorf("cfg.channels = %d, want the raw entry value 2", d.cfg.channels)
+	}
+}
+
+// TestParseStsdAlacCookieImplausibleRateKeepsEntry: a zero or all-ones cookie rate is not
+// a rate. The all-ones case would convert to a negative int on a 32-bit build.
+func TestParseStsdAlacCookieImplausibleRateKeepsEntry(t *testing.T) {
+	for _, rate := range []uint32{0, 0xFFFFFFFF} {
+		d := parseStsdPayload(t, mkAlacStsdPayloadRates(24, 44100, rate, 2))
+		if d.track.SampleRate != 44100 {
+			t.Errorf("cookie rate %d: SampleRate = %d, want the entry value 44100", rate, d.track.SampleRate)
+		}
+	}
+}
+
+// TestParseStsdFlacStreamInfoGeometry: the FLAC-in-ISOBMFF spec makes dfLa's STREAMINFO
+// the reader's source of truth, so it fills the whole geometry, block-size bounds and MD5
+// included. The entry keeps the codec four-cc and the digest salt keeps its raw fields.
+func TestParseStsdFlacStreamInfoGeometry(t *testing.T) {
+	d := parseStsdPayload(t, mkFlacStsdPayload(0, mkDfLa(0, mkStreamInfo(96000, 2, 24, 480000))))
+	if d.track.SampleRate != 96000 || d.track.Channels != 2 || d.track.BitsPerSample != 24 {
+		t.Errorf("geometry = %d Hz / %d ch / %d bit, want 96000/2/24",
+			d.track.SampleRate, d.track.Channels, d.track.BitsPerSample)
+	}
+	if d.track.MinBlockSize != 4096 || d.track.MaxBlockSize != 4096 {
+		t.Errorf("block sizes = %d/%d, want 4096/4096", d.track.MinBlockSize, d.track.MaxBlockSize)
+	}
+	var wantMD5 [16]byte
+	for i := range wantMD5 {
+		wantMD5[i] = byte(i + 1)
+	}
+	if d.track.MD5 != wantMD5 {
+		t.Errorf("MD5 = % x, want % x", d.track.MD5, wantMD5)
+	}
+	if got := string(d.cfg.codec[:]); got != "fLaC" {
+		t.Errorf("cfg.codec = %q, want fLaC", got)
+	}
+	if d.track.Codec != "fLaC" {
+		t.Errorf("Codec = %q, want the entry four-cc fLaC", d.track.Codec)
+	}
+	if d.cfg.sampleRate != 0 || d.cfg.channels != 2 || d.cfg.sampleSize != 16 {
+		t.Errorf("cfg = %d Hz / %d ch / %d bit, want the raw entry values 0/2/16",
+			d.cfg.sampleRate, d.cfg.channels, d.cfg.sampleSize)
+	}
+}
+
+// TestParseStsdFlacDfLaBeyondPrefixStillRead: STREAMINFO sits at a fixed offset inside
+// dfLa, so a box declaring more bytes than the bounded prefix read returned is still
+// usable.
+func TestParseStsdFlacDfLaBeyondPrefixStillRead(t *testing.T) {
+	dfla := mkDfLa(0, mkStreamInfo(96000, 2, 24, 480000))
+	binary.BigEndian.PutUint32(dfla[0:4], 1<<20) // a padding block the prefix read never reaches
+	d := parseStsdPayload(t, mkFlacStsdPayload(0, dfla))
+	if d.track.SampleRate != 96000 {
+		t.Errorf("SampleRate = %d, want 96000", d.track.SampleRate)
+	}
+}
+
+// TestParseStsdFlacDfLaFirstBlockNotStreamInfoIgnored: STREAMINFO must come first, so a
+// dfLa starting with another block type leaves the entry's own values standing.
+func TestParseStsdFlacDfLaFirstBlockNotStreamInfoIgnored(t *testing.T) {
+	d := parseStsdPayload(t, mkFlacStsdPayload(44100, mkDfLa(1, make([]byte, 34))))
+	if d.track.SampleRate != 44100 || d.track.BitsPerSample != 16 {
+		t.Errorf("geometry = %d Hz / %d bit, want the entry values 44100/16",
+			d.track.SampleRate, d.track.BitsPerSample)
+	}
+}
+
+// TestParseStsdFlacDfLaTruncatedIgnored: a STREAMINFO body short of its 34 bytes is not
+// decodable, so the entry's own values stand.
+func TestParseStsdFlacDfLaTruncatedIgnored(t *testing.T) {
+	full := mkFlacStsdPayload(44100, mkDfLa(0, mkStreamInfo(96000, 2, 24, 480000)))
+	p := full[:len(full)-10]
+	binary.BigEndian.PutUint32(p[8:12], uint32(len(p)-8))
+	d := parseStsdPayload(t, p)
+	if d.track.SampleRate != 44100 || d.track.BitsPerSample != 16 {
+		t.Errorf("geometry = %d Hz / %d bit, want the entry values 44100/16",
+			d.track.SampleRate, d.track.BitsPerSample)
+	}
+}
+
+// TestParseStsdV2Geometry: a version 2 sound entry carries its rate as a float64 and its
+// channel count as a uint32, so a hi-res .mov reports them instead of nothing. The digest
+// salt stays the four-cc plus zero geometry, as it was when v2 entries were skipped.
+func TestParseStsdV2Geometry(t *testing.T) {
+	d := parseStsdPayload(t, mkV2StsdPayload("lpcm", 96000, 2, 24, nil))
+	if d.track.SampleRate != 96000 || d.track.Channels != 2 || d.track.BitsPerSample != 24 {
+		t.Errorf("geometry = %d Hz / %d ch / %d bit, want 96000/2/24",
+			d.track.SampleRate, d.track.Channels, d.track.BitsPerSample)
+	}
+	if d.cfg.channels != 0 || d.cfg.sampleSize != 0 || d.cfg.sampleRate != 0 {
+		t.Errorf("v2 entry must leave the digest salt geometry zero: %+v", d.cfg)
+	}
+	_, salt := Codec{}.EssenceExtent(&core.Media{Native: d})
+	if want := append([]byte("lpcm"), make([]byte, 8)...); !bytes.Equal(salt, want) {
+		t.Errorf("essence salt = % x, want % x", salt, want)
+	}
+}
+
+// TestParseStsdV2RejectsBadRate: NaN, an infinity, a negative, and an absurd magnitude are
+// not rates; int(NaN) is implementation-defined and a wild rate poisons the reported track.
+func TestParseStsdV2RejectsBadRate(t *testing.T) {
+	for _, rate := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), -1, 1e300} {
+		d := parseStsdPayload(t, mkV2StsdPayload("lpcm", rate, 2, 24, nil))
+		if d.track.SampleRate != 0 {
+			t.Errorf("rate %v: SampleRate = %d, want 0", rate, d.track.SampleRate)
+		}
+	}
+}
+
+// TestParseStsdV2AlacCookieAfterStruct: a v2 'alac' entry's extensions start after the
+// declared struct size, so the magic cookie is found there.
+func TestParseStsdV2AlacCookieAfterStruct(t *testing.T) {
+	cookie := mkAlacStsdPayloadRates(24, 0, 96000, 2)[44:80]
+	d := parseStsdPayload(t, mkV2StsdPayload("alac", 0, 0, 0, cookie))
+	if d.track.SampleRate != 96000 || d.track.Channels != 2 || d.track.BitsPerSample != 24 {
+		t.Errorf("geometry = %d Hz / %d ch / %d bit, want 96000/2/24 (from the cookie)",
+			d.track.SampleRate, d.track.Channels, d.track.BitsPerSample)
+	}
+}
+
+// TestParseStsdV2WaveWrappedCookie: ffmpeg writes a .mov ALAC cookie inside a 'wave'
+// wrapper on a v2 entry.
+func TestParseStsdV2WaveWrappedCookie(t *testing.T) {
+	cookie := mkAlacStsdPayloadRates(24, 0, 96000, 2)[44:80]
+	wave := make([]byte, 8+len(cookie))
+	binary.BigEndian.PutUint32(wave[0:4], uint32(len(wave)))
+	copy(wave[4:8], "wave")
+	copy(wave[8:], cookie)
+	d := parseStsdPayload(t, mkV2StsdPayload("alac", 0, 0, 0, wave))
+	if d.track.SampleRate != 96000 || d.track.BitsPerSample != 24 {
+		t.Errorf("geometry = %d Hz / %d bit, want 96000/24 (cookie inside wave)",
+			d.track.SampleRate, d.track.BitsPerSample)
+	}
+}
+
+// TestParseStsdNonAlacEntryNotScanned: only the codecs whose configuration carries the
+// real geometry are scanned, so an AAC entry keeps its sample-entry values.
+func TestParseStsdNonAlacEntryNotScanned(t *testing.T) {
+	p := mkAlacStsdPayloadRates(24, 44100, 96000, 6)
+	copy(p[12:16], "mp4a")
+	d := parseStsdPayload(t, p)
+	if d.track.SampleRate != 44100 || d.track.Channels != 2 || d.track.BitsPerSample != 16 {
+		t.Errorf("geometry = %d Hz / %d ch / %d bit, want the entry values 44100/2/16",
+			d.track.SampleRate, d.track.Channels, d.track.BitsPerSample)
+	}
+}
+
+// TestParseStsdV2HugeStructSizeRejected: the declared struct size is attacker-controlled,
+// and a value near MaxInt32 overflows the extension offset to a negative on a 32-bit
+// build, indexing out of range. It must be rejected as malformed instead.
+func TestParseStsdV2HugeStructSizeRejected(t *testing.T) {
+	for _, size := range []uint32{0x7FFFFFFF, 0x80000000, 0xFFFFFFFF, 1 << 20} {
+		p := mkV2StsdPayload("alac", 96000, 2, 24, nil)
+		binary.BigEndian.PutUint32(p[44:48], size)
+		if d := parseStsdPayload(t, p); d.track.SampleRate != 0 {
+			t.Errorf("sizeOfStructOnly %#x: SampleRate = %d, want the entry left unread", size, d.track.SampleRate)
+		}
+	}
+}
+
+// TestParseStsdFlacDfLaTooSmallForStreamInfo: a dfLa declaring less than a STREAMINFO
+// block must not take its geometry from the bytes of the box that follows it.
+func TestParseStsdFlacDfLaTooSmallForStreamInfo(t *testing.T) {
+	short := make([]byte, 12) // box header + FullBox version/flags, no metadata block
+	binary.BigEndian.PutUint32(short[0:4], uint32(len(short)))
+	copy(short[4:8], "dfLa")
+	next := make([]byte, 60)
+	binary.BigEndian.PutUint32(next[0:4], uint32(len(next)))
+	copy(next[4:8], "junk")
+	for i := 8; i < len(next); i++ {
+		next[i] = 0x55
+	}
+
+	d := parseStsdPayload(t, mkFlacStsdPayload(44100, append(short, next...)))
+	if d.track.SampleRate != 44100 || d.track.Channels != 2 || d.track.BitsPerSample != 16 {
+		t.Errorf("geometry = %d Hz / %d ch / %d bit, want the entry values 44100/2/16",
+			d.track.SampleRate, d.track.Channels, d.track.BitsPerSample)
+	}
+	if d.track.MinBlockSize != 0 || d.track.MD5 != [16]byte{} {
+		t.Errorf("block sizes / MD5 were taken from the neighbouring box: %d/%x", d.track.MinBlockSize, d.track.MD5)
 	}
 }

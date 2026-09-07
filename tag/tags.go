@@ -817,6 +817,18 @@ var replayGainKeys = map[Key]bool{
 	ReplayGainAlbumPeak: true,
 }
 
+// r128GainKeys is the Opus loudness tags RFC 7845 defines. They are deliberately outside
+// the canonical vocabulary (they are ordinary custom keys), but they describe this file's
+// own audio, so a metadata copy must not carry them. They are not ReplayGain keys: the
+// value is a plain Q7.8 integer, not the "-3.50 dB" text the ReplayGain checks expect.
+var r128GainKeys = map[Key]bool{
+	"R128_TRACK_GAIN": true,
+	"R128_ALBUM_GAIN": true,
+}
+
+// IsR128GainKey reports whether k is one of the Opus R128 loudness keys.
+func IsR128GainKey(k Key) bool { return r128GainKeys[k] }
+
 // IsMediaTypeKey reports whether k is the MEDIATYPE (iTunes stik media-kind) key,
 // whose value is a non-negative integer.
 func IsMediaTypeKey(k Key) bool { return k == MediaType }
@@ -939,9 +951,9 @@ func IsMP4CanonicalKey(k Key) bool { return k.NumberPair() || IsMP4IntKey(k) || 
 func IsReplayGainKey(k Key) bool { return replayGainKeys[k] }
 
 // ownAudioEncodingKeys describes values tied to this file's encoded audio: encoder stamps,
-// encoding history, and sample fingerprints. ReplayGain keys are included through
-// replayGainKeys. ACOUSTID_ID is omitted because it identifies the recording rather than
-// this file's samples.
+// encoding history, and sample fingerprints. The ReplayGain and Opus R128 loudness keys are
+// included through replayGainKeys and r128GainKeys. ACOUSTID_ID is omitted because it
+// identifies the recording rather than this file's samples.
 var ownAudioEncodingKeys = map[Key]bool{
 	Encoder:             true,
 	EncodedBy:           true,
@@ -953,7 +965,7 @@ var ownAudioEncodingKeys = map[Key]bool{
 // than portable metadata about the work. Metadata-only transfers exclude such values so
 // destination files keep their own encoder, gain, and fingerprint data.
 func (k Key) DescribesOwnAudio() bool {
-	return ownAudioEncodingKeys[k] || replayGainKeys[k]
+	return ownAudioEncodingKeys[k] || replayGainKeys[k] || r128GainKeys[k]
 }
 
 // ValidMediaTypeValue reports whether v is a value the MEDIATYPE (iTunes stik media kind) key

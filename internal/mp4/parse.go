@@ -10,6 +10,7 @@ import (
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/mapping"
+	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -611,91 +612,195 @@ func parseMdhd(src core.ReaderAtSized, mdhd node, limit int64) (time.Duration, b
 // parseStsd fills the codec name and audio geometry from the first sample entry.
 // The AudioSampleEntry layout (after the entry's 8-byte size+4cc header): 6+2+8
 // reserved bytes, then channels(2), sample_size(2), 4 skipped, sample_rate(16.16).
-// That fixed layout holds for a v0 or v1 sound entry; a v2+ entry stores its
-// geometry in a different structure (a float64 sample rate and a uint32 channel
-// count at other offsets), so its version is checked first.
+// That fixed layout holds for a v0 or v1 sound entry; a v2 entry replaces it with the
+// QuickTime structure, whose float64 rate and uint32 channel count sit elsewhere.
+//
+// For the two entries whose configuration this parser decodes - the ALAC magic cookie and
+// the FLAC dfLa STREAMINFO - that configuration is the decoder's source of truth and
+// overrides the entry, whose 16.16 rate field cannot hold a hi-res rate at all. Only the
+// reported track is corrected; d.cfg keeps the raw entry values, so the essence-digest
+// salt (and every stored digest) is unchanged. Other codecs keep the entry's own fields:
+// an AAC entry's esds AudioSpecificConfig is not decoded, so a hi-res AAC reports no rate.
 func parseStsd(src core.ReaderAtSized, stsd node, d *doc, limit int64) {
-	b, err := readPayloadPrefix(src, stsd, 256, limit)
+	// Clamp to the alloc limit rather than letting ReadSlice refuse the read: a caller with
+	// a limit below the prefix would otherwise get no codec and no geometry at all, and
+	// d.cfg's zeroes would change the essence-digest salt for the same bytes.
+	b, err := readPayloadPrefix(src, stsd, min(int64(1024), limit), limit)
 	if err != nil || len(b) < 44 {
 		return
 	}
-	// The sound sample-entry version lives 16 bytes into the entry (which starts at
-	// b[8]); the len>=44 guard above already covers b[24:26]. A v2+ entry is parseable,
-	// but its geometry sits elsewhere - reading the v0/v1 offsets would feed bogus
-	// channels/sample-rate into the essence-digest salt. This intentionally degrades the
-	// reported properties (channels/sample-rate left unset) rather than misreading them;
-	// stsd is still preserved verbatim on write, and the salt stays deterministic. >=2
-	// (not ==2) so an unknown future version also skips rather than misparses.
-	version := binary.BigEndian.Uint16(b[24:26])
-	if version >= 2 {
-		copy(d.cfg.codec[:], b[12:16])
-		d.track.Codec = string(d.cfg.codec[:])
-		return
-	}
 	copy(d.cfg.codec[:], b[12:16])
-	d.cfg.channels = binary.BigEndian.Uint16(b[32:34])
-	d.cfg.sampleSize = binary.BigEndian.Uint16(b[34:36])
-	d.cfg.sampleRate = uint32(binary.BigEndian.Uint16(b[40:42])) // integer part of 16.16
 	d.track.Codec = string(d.cfg.codec[:])
-	d.track.Channels = int(d.cfg.channels)
-	d.track.BitsPerSample = int(d.cfg.sampleSize)
-	d.track.SampleRate = int(d.cfg.sampleRate)
-	// An ALAC entry's sample_size field is conventionally 16 whatever the payload
-	// depth; the depth the decoder uses is in the magic cookie. Only the reported
-	// track is corrected - d.cfg keeps the raw entry value, so the essence-digest
-	// salt (and every stored ALAC digest) is unchanged.
-	if d.track.Codec == "alac" {
-		if depth := alacCookieBitDepth(b, version); depth > 0 {
-			d.track.BitsPerSample = depth
-		}
-	}
-}
 
-// alacCookieBitDepth returns the bit depth declared by the ALAC magic cookie
-// (the 'alac' child box of the sample entry), or 0 when the cookie is absent,
-// truncated, or implausible. b is the stsd payload prefix with the entry at
-// b[8]; version selects the v0 or v1 fixed-field length. A QuickTime-style
-// cookie wrapped in a 'wave' box is found one level down.
-func alacCookieBitDepth(b []byte, version uint16) int {
-	off := 8 + 36 // extensions follow the fixed AudioSampleEntry fields
-	if version == 1 {
-		off += 16 // v1 appends four QuickTime bytes-per-packet/frame/sample fields
-	}
 	end := len(b)
 	if size := int64(binary.BigEndian.Uint32(b[8:12])); size > 0 && 8+size < int64(end) {
 		end = int(8 + size)
 	}
-	return alacCookieScan(b, off, end)
+
+	// The sound sample-entry version lives 16 bytes into the entry (which starts at b[8]);
+	// the len>=44 guard above already covers b[24:26]. A version past 2 is read with the v2
+	// layout: QuickTime has defined no later one, and its struct is self-describing (a
+	// declared size gates every field), so a v3 that keeps the prefix reads correctly and
+	// one that does not fails the size check rather than misparsing the v0/v1 offsets.
+	version := binary.BigEndian.Uint16(b[24:26])
+	extOff := 8 + 36 // extensions follow the fixed AudioSampleEntry fields
+	switch {
+	case version >= 2:
+		off, ok := parseSoundEntryV2(b, end, d)
+		if !ok {
+			return
+		}
+		extOff = off
+	default:
+		d.cfg.channels = binary.BigEndian.Uint16(b[32:34])
+		d.cfg.sampleSize = binary.BigEndian.Uint16(b[34:36])
+		d.cfg.sampleRate = uint32(binary.BigEndian.Uint16(b[40:42])) // integer part of 16.16
+		d.track.Channels = int(d.cfg.channels)
+		d.track.BitsPerSample = int(d.cfg.sampleSize)
+		d.track.SampleRate = int(d.cfg.sampleRate)
+		if version == 1 {
+			extOff += 16 // v1 appends four QuickTime bytes-per-packet/frame/sample fields
+		}
+	}
+	if fourcc := string(b[12:16]); fourcc == "alac" || fourcc == "fLaC" {
+		applyEntryConfig(d, scanEntryConfig(b, extOff, end, fourcc))
+	}
 }
 
-// alacCookieScan walks sibling boxes in b[off:end] looking for the ALAC magic
-// cookie, descending into a 'wave' wrapper. The cookie layout is a 12-byte box
-// header (size, type, version/flags) followed by the 24-byte ALACSpecificConfig,
-// whose sixth byte (offset 5, after the u32 frameLength and u8 compatibleVersion)
-// is bitDepth. Recursion depth is bounded by the buffer: each
-// level consumes an 8-byte header of an at-most-256-byte prefix.
-func alacCookieScan(b []byte, off, end int) int {
-	for off+8 <= end {
-		size := binary.BigEndian.Uint32(b[off : off+4])
-		if size < 8 || int64(size) > int64(end-off) {
-			return 0 // malformed or truncated by the prefix read: keep the entry value
-		}
-		switch string(b[off+4 : off+8]) {
-		case "alac":
-			if size >= 36 {
-				if depth := int(b[off+17]); depth > 0 && depth <= 32 {
-					return depth
-				}
-			}
-			return 0
-		case "wave":
-			if depth := alacCookieScan(b, off+8, off+int(size)); depth > 0 {
-				return depth
-			}
-		}
-		off += int(size)
+// parseSoundEntryV2 decodes a QuickTime version 2 sound sample entry's geometry onto
+// d.track and returns where its extension boxes start. The v2 struct replaces the fixed
+// v0/v1 fields with a declared struct size, a float64 rate, a uint32 channel count, and a
+// constant bits-per-channel that compressed codecs leave zero. d.cfg is left zero: the
+// digest salt has never carried v2 geometry, and filling it now would change every stored
+// digest for such a file.
+func parseSoundEntryV2(b []byte, end int, d *doc) (extOff int, ok bool) {
+	if len(b) < 68 {
+		return 0, false
 	}
-	return 0
+	// size > end-8 rather than 8+size > end: the declared size is attacker-controlled, and
+	// 8+size overflows to a negative extOff on a 32-bit build, which then indexes out of
+	// range. A size too large to be an int at all is already negative, so size < 72 rejects it.
+	size := int(binary.BigEndian.Uint32(b[44:48]))
+	if size < 72 || size > end-8 {
+		return 0, false
+	}
+	// NaN, an infinity, or an absurd magnitude is not a rate; int(NaN) is
+	// implementation-defined.
+	if f := math.Float64frombits(binary.BigEndian.Uint64(b[48:56])); f > 0 && f < math.MaxInt32 {
+		d.track.SampleRate = int(f)
+	}
+	if ch := binary.BigEndian.Uint32(b[56:60]); ch > 0 && ch <= 255 {
+		d.track.Channels = int(ch)
+	}
+	if depth := binary.BigEndian.Uint32(b[64:68]); depth > 0 && depth <= 64 {
+		d.track.BitsPerSample = int(depth)
+	}
+	return 8 + size, true
+}
+
+// dfLaStreamInfoEnd is where a dfLa box's first metadata block body ends, relative to the
+// box: the 8-byte box header, the 4-byte FullBox version/flags, the 4-byte
+// METADATA_BLOCK_HEADER, and the STREAMINFO body.
+const dfLaStreamInfoEnd = 8 + 4 + 4 + vorbis.StreamInfoLen
+
+// entryConfig is the geometry a codec's own configuration declares. streamInfo is set only
+// for a FLAC entry, whose STREAMINFO the FLAC-in-ISOBMFF spec makes authoritative for the
+// whole track, block-size bounds and MD5 included.
+type entryConfig struct {
+	sampleRate, channels, bitDepth int
+	streamInfo                     *core.AudioTrack
+}
+
+func (c entryConfig) empty() bool {
+	return c.streamInfo == nil && c.sampleRate == 0 && c.channels == 0 && c.bitDepth == 0
+}
+
+// scanEntryConfig walks sibling boxes in b[off:end] for the sample entry's codec
+// configuration, descending into a QuickTime 'wave' wrapper. The ALAC magic cookie is a
+// 12-byte box header (size, type, version/flags) followed by the 24-byte
+// ALACSpecificConfig: bitDepth at 5, numChannels at 9, and the sample rate at 20, after
+// the u32 frameLength and u8 compatibleVersion. Recursion depth is bounded by the buffer:
+// each level consumes an 8-byte header of an at-most-1024-byte prefix.
+func scanEntryConfig(b []byte, off, end int, fourcc string) entryConfig {
+	for off+8 <= end {
+		size := int(binary.BigEndian.Uint32(b[off : off+4]))
+		switch name := string(b[off+4 : off+8]); {
+		case name == "dfLa" && fourcc == "fLaC":
+			// STREAMINFO sits at a fixed offset, so a dfLa declaring more bytes than the
+			// bounded prefix read returned is still usable. The size still has to be large
+			// enough to hold one, or the read would take its geometry from the next box.
+			return entryConfig{streamInfo: dfLaStreamInfo(b, off, size)}
+		case size < 8 || size > end-off:
+			return entryConfig{} // malformed or truncated by the prefix read: keep the entry values
+		case name == "alac" && fourcc == "alac":
+			return alacCookieConfig(b, off, size)
+		case name == "wave":
+			if cfg := scanEntryConfig(b, off+8, off+size, fourcc); !cfg.empty() {
+				return cfg
+			}
+		}
+		off += size
+	}
+	return entryConfig{}
+}
+
+// alacCookieConfig decodes the ALACSpecificConfig at b[off:], dropping each field the
+// cookie leaves implausible. An all-ones rate would convert to a negative int on a 32-bit
+// build.
+func alacCookieConfig(b []byte, off, size int) entryConfig {
+	if size < 36 {
+		return entryConfig{}
+	}
+	var cfg entryConfig
+	if depth := int(b[off+17]); depth > 0 && depth <= 32 {
+		cfg.bitDepth = depth
+	}
+	if ch := int(b[off+21]); ch > 0 && ch <= 8 {
+		cfg.channels = ch
+	}
+	if r := binary.BigEndian.Uint32(b[off+32 : off+36]); r > 0 && r < math.MaxInt32 {
+		cfg.sampleRate = int(r)
+	}
+	return cfg
+}
+
+// dfLaStreamInfo decodes the STREAMINFO the dfLa box at b[off:] must open with, or nil
+// when the box is too small to hold one, opens with another block type, or is cut short of
+// its 34 bytes by the prefix read. Layout: the 8-byte box header, a 4-byte FullBox
+// version/flags, then METADATA_BLOCK_HEADER and body.
+func dfLaStreamInfo(b []byte, off, size int) *core.AudioTrack {
+	if size < dfLaStreamInfoEnd || off+dfLaStreamInfoEnd > len(b) || b[off+12]&0x7F != vorbis.BlockStreamInfo {
+		return nil
+	}
+	t, err := vorbis.ParseStreamInfo(b[off+16 : off+dfLaStreamInfoEnd])
+	if err != nil {
+		return nil
+	}
+	return &t
+}
+
+// applyEntryConfig overrides the sample entry's reported geometry with the codec
+// configuration's. The entry's Codec, Duration, and TotalSamples stand: the four-cc names
+// the container's spelling and the timing comes from mdhd.
+func applyEntryConfig(d *doc, cfg entryConfig) {
+	if si := cfg.streamInfo; si != nil {
+		d.track.SampleRate = si.SampleRate
+		d.track.Channels = si.Channels
+		d.track.BitsPerSample = si.BitsPerSample
+		d.track.MinBlockSize = si.MinBlockSize
+		d.track.MaxBlockSize = si.MaxBlockSize
+		d.track.MD5 = si.MD5
+		return
+	}
+	if cfg.sampleRate > 0 {
+		d.track.SampleRate = cfg.sampleRate
+	}
+	if cfg.channels > 0 {
+		d.track.Channels = cfg.channels
+	}
+	if cfg.bitDepth > 0 {
+		d.track.BitsPerSample = cfg.bitDepth
+	}
 }
 
 // setEssence records the audio-essence byte ranges from the mdat atoms. A single

@@ -82,6 +82,7 @@ func TestDescribesOwnAudio(t *testing.T) {
 	own := []Key{
 		Encoder, EncodedBy, EncodingHistory, AcoustIDFingerprint,
 		ReplayGainTrackGain, ReplayGainTrackPeak, ReplayGainAlbumGain, ReplayGainAlbumPeak,
+		"R128_TRACK_GAIN", "R128_ALBUM_GAIN",
 	}
 	for _, k := range own {
 		if !k.DescribesOwnAudio() {

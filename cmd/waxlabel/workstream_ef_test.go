@@ -190,11 +190,11 @@ func TestCapsFormatWebM(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("caps --format webm exit %d", code)
 	}
-	if !strings.Contains(out, "pictures: read full, write none") {
+	if !strings.Contains(out, "pictures:      read full, write none") {
 		t.Errorf("caps --format webm should report pictures write none:\n%s", out)
 	}
 	mka, _, _ := runCLI(t, "caps", "--format", "matroska")
-	if !strings.Contains(mka, "pictures: read full, write full") {
+	if !strings.Contains(mka, "pictures:      read full, write full") {
 		t.Errorf("caps --format matroska should still report pictures write full:\n%s", mka)
 	}
 }

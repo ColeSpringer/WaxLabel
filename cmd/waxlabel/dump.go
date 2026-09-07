@@ -97,6 +97,9 @@ type jsonProperties struct {
 	DurationMs    int64  `json:"durationMs,omitempty"`
 	BitrateBps    int    `json:"bitrateBps,omitempty"`   // meaningful average bits per second, not a nominal PCM header rate; omitted (like durationMs) when the duration is under one millisecond (text dump shows kbps)
 	PaddingBytes  int64  `json:"paddingBytes,omitempty"` // free padding around the metadata, matching what plan reports for an in-place write; omitted when 0 (no padding region)
+	// OutputGainDb is the decoder-applied output gain the stream header declares, in
+	// decibels. Only Ogg Opus stores one; omitted when 0.
+	OutputGainDb float64 `json:"outputGainDb,omitempty"`
 }
 
 type jsonTag struct {
@@ -194,6 +197,7 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 			DurationMs:    props.Duration().Milliseconds(),
 			BitrateBps:    bitrateBps,
 			PaddingBytes:  doc.Padding(),
+			OutputGainDb:  wl.OutputGainDecibels(t.OutputGain),
 		},
 		// All four iterable collections are inited non-nil (not just tags/pictures) so a
 		// no-tags / no-chapters / no-warnings file emits "[]" rather than null or an

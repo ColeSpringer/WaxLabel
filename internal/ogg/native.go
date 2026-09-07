@@ -154,8 +154,12 @@ func (d *doc) Describe() []core.NativeEntry {
 	case kindFLAC:
 		idKind, commentKind = "FLAC identification header", "VORBIS_COMMENT"
 	}
+	idNote := ""
+	if g := opusOutputGain(d.idPacket); d.kind == kindOpus && g != 0 {
+		idNote = "output gain " + core.OutputGainDB(g)
+	}
 	out := []core.NativeEntry{
-		{Kind: idKind, Size: len(d.idPacket)},
+		{Kind: idKind, Size: len(d.idPacket), Note: idNote},
 		{Kind: commentKind, Note: "vendor=" + d.vendor},
 	}
 	if len(d.setupPacket) > 0 {

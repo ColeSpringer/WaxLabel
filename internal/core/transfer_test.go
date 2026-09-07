@@ -720,3 +720,37 @@ func TestProjectTransferPictureSlotPartition(t *testing.T) {
 		t.Errorf("PartitionPictureSlotsEdited = %v,%q,%v, want the hook's selection and reason", keptIdx, reason, ok)
 	}
 }
+
+// TestProjectTransferGradesChaptersAsGiven pins that grading uses the list it is handed:
+// the run-to-EOF reopen belongs to the caller that assembles the write, so a final end at
+// the source duration grades Lossy against a start+title store until the caller opens it.
+func TestProjectTransferGradesChaptersAsGiven(t *testing.T) {
+	caps := NewCapabilities(FormatMP4, false,
+		Capability{Write: AccessFull}, Capability{Write: AccessFull},
+		Capability{Write: AccessFull, ChapterLoss: ChapterLossStartTitleOnly, Fidelity: "start and title only"},
+		AccessNone, nil)
+
+	chapterItem := func(chs []Chapter) TransferItem {
+		m := &Media{
+			Format:     FormatMatroska,
+			Properties: Properties{Tracks: []AudioTrack{{Duration: 10 * time.Second}}},
+			Chapters:   chs,
+		}
+		for _, it := range ProjectTransfer(m, caps) {
+			if it.Kind == TransferChapter {
+				return it
+			}
+		}
+		t.Fatal("no chapter item")
+		return TransferItem{}
+	}
+
+	literal := []Chapter{{Title: "A", End: 10 * time.Second}}
+	if it := chapterItem(literal); it.Disposition != Lossy {
+		t.Errorf("literal run-to-EOF end = %s, want Lossy", it.Disposition)
+	}
+	opened := OpenRunToEOFEnd(literal, 10*time.Second)
+	if it := chapterItem(opened); it.Disposition != Carried {
+		t.Errorf("pre-opened end = %s, want Carried", it.Disposition)
+	}
+}

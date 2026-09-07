@@ -131,8 +131,11 @@ type jsonCaps struct {
 	// Padding grades how completely the format honors the --padding/--no-padding
 	// controls: "none", "partial" (grow-only), or "full". Always present on a
 	// successful report.
-	Padding string       `json:"padding,omitempty"`
-	Keys    []jsonCapKey `json:"keys"`
+	Padding string `json:"padding,omitempty"`
+	// OutputGain grades whether the format stores the decoder-applied output gain its
+	// stream header declares: "full" for Ogg Opus, "none" everywhere else.
+	OutputGain string       `json:"outputGain,omitempty"`
+	Keys       []jsonCapKey `json:"keys"`
 
 	// humanFormat is the label the human report prints on the "format:" line - the
 	// container subtype for the Matroska family ("WebM"/"Matroska"), else the bare
@@ -178,6 +181,7 @@ func buildCaps(file, container string, caps wl.Capabilities) jsonCaps {
 		Chapters:      capDim(caps.Chapters),
 		SyncedLyrics:  capDim(caps.SyncedLyrics),
 		Padding:       caps.Padding.String(),
+		OutputGain:    caps.OutputGain.String(),
 		// Always a non-nil array so `caps --json` of a read-only file (no editable keys)
 		// emits "keys": [] - a consumer iterating .keys[] never breaks.
 		Keys: []jsonCapKey{},
@@ -239,7 +243,7 @@ func renderCaps(w io.Writer, jc jsonCaps) {
 	if format == "" {
 		format = jc.Format
 	}
-	fmt.Fprintf(w, "  %-9s %s\n", "format:", format)
+	fmt.Fprintf(w, "  %-*s %s\n", capLabelWidth, "format:", format)
 	if jc.ReadOnly {
 		// MP4 is the first codec whose verdict is per-file (a fragmented file is unwritable
 		// while the format is not), so a file-scoped query says so rather than libelling the
@@ -256,10 +260,13 @@ func renderCaps(w io.Writer, jc jsonCaps) {
 	renderCapDim(w, "pictures", jc.Pictures)
 	renderCapDim(w, "chapters", jc.Chapters)
 	renderCapDim(w, "synced lyrics", jc.SyncedLyrics)
+	// Padding and the output gain are single levels (none/partial/full), not read/write
+	// dimensions, so each gets its own one-word line rather than a renderCapDim row.
 	if jc.Padding != "" {
-		// Padding is a single level (none/partial/full), not a read/write dimension, so
-		// it gets its own one-word line rather than a renderCapDim row.
-		fmt.Fprintf(w, "  %-9s %s\n", "padding:", jc.Padding)
+		fmt.Fprintf(w, "  %-*s %s\n", capLabelWidth, "padding:", jc.Padding)
+	}
+	if jc.OutputGain != "" {
+		fmt.Fprintf(w, "  %-*s %s\n", capLabelWidth, "output gain:", jc.OutputGain)
 	}
 
 	fmt.Fprintf(w, "  editable keys (%d):\n", len(jc.Keys))
@@ -272,6 +279,10 @@ func renderCaps(w io.Writer, jc jsonCaps) {
 
 // renderCapDim writes one dimension line: its read/write levels, then the native
 // representation and fidelity, with any constraints on a following indented line.
+// capLabelWidth aligns every capability row's value, sized to the longest label
+// ("synced lyrics:"). Widen it if a longer dimension is ever added.
+const capLabelWidth = 14
+
 func renderCapDim(w io.Writer, label string, d *jsonCapDim) {
 	if d == nil {
 		return
@@ -287,7 +298,7 @@ func renderCapDim(w io.Writer, label string, d *jsonCapDim) {
 	if d.MaxItems > 0 {
 		line += fmt.Sprintf(" [max %d]", d.MaxItems)
 	}
-	fmt.Fprintf(w, "  %-9s %s\n", label+":", line)
+	fmt.Fprintf(w, "  %-*s %s\n", capLabelWidth, label+":", line)
 	if len(d.Constraints) > 0 {
 		// 12 spaces aligns "constraints:" under the dimension value above (the value
 		// starts at column 12: 2 leading + the 9-wide label + 1 space).

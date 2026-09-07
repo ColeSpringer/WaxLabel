@@ -36,7 +36,8 @@
 // Editing flows through [Document.Edit], which yields an [Editor]. The editor
 // records mutations against a presence-aware canonical [tag.TagSet]; calling
 // [Editor.Prepare] resolves them into a [Plan]. Executing the plan against a
-// [Destination] streams the result.
+// [Destination] streams the result. Copying metadata between files flows through
+// [Document.Transfer], the same shape for a transfer.
 //
 // # Frozen contracts
 //

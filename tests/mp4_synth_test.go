@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"math"
 	"slices"
 	"testing"
 
@@ -125,14 +126,84 @@ func mp4Mdhd() []byte {
 // mp4StsdAudio builds an stsd with a single mp4a AudioSampleEntry: stereo, 16-bit,
 // 44100 Hz.
 func mp4StsdAudio() []byte {
-	entryBody := slices.Concat(
+	return mp4Stsd(mp4StsdEntry("mp4a", 2, 16, 44100))
+}
+
+// mp4Stsd wraps sample entries in an stsd box.
+func mp4Stsd(entries ...[]byte) []byte {
+	return mp4Atom("stsd", slices.Concat([]byte{0, 0, 0, 0}, mp4be32(len(entries)), slices.Concat(entries...)))
+}
+
+// mp4StsdEntry builds a version 0 AudioSampleEntry with the given codec configuration
+// boxes as children. The 16.16 rate field holds no rate above 65535, so a muxer writes 0
+// there and the real rate lives in the configuration.
+func mp4StsdEntry(fourcc string, channels, sampleSize, rate int, children ...[]byte) []byte {
+	rateField := 0
+	if rate > 0 && rate <= 0xFFFF {
+		rateField = rate << 16
+	}
+	return mp4Atom(fourcc, slices.Concat(
 		make([]byte, 6), []byte{0, 1}, // reserved + data_ref_index
-		make([]byte, 8),                                 // reserved
-		[]byte{0, 2}, []byte{0, 16}, []byte{0, 0, 0, 0}, // channels, sample_size, predefined+reserved
-		[]byte{0xAC, 0x44, 0, 0}, // sample_rate 44100 << 16
-	)
-	entry := mp4Atom("mp4a", entryBody)
-	return mp4Atom("stsd", slices.Concat([]byte{0, 0, 0, 0}, mp4be32(1), entry))
+		make([]byte, 8),                                            // reserved
+		mp4be16(channels), mp4be16(sampleSize), []byte{0, 0, 0, 0}, // predefined + reserved
+		mp4be32(rateField),
+		slices.Concat(children...),
+	))
+}
+
+// mp4StsdEntryV2 builds a QuickTime version 2 sound sample entry: the fixed v0 fields
+// carry their required constants and the real geometry sits in the v2 struct.
+func mp4StsdEntryV2(fourcc string, rate float64, channels, bits int, children ...[]byte) []byte {
+	rateBits := make([]byte, 8)
+	binary.BigEndian.PutUint64(rateBits, math.Float64bits(rate))
+	return mp4Atom(fourcc, slices.Concat(
+		make([]byte, 6), []byte{0, 1}, // reserved + data_ref_index
+		mp4be16(2), mp4be16(0), mp4be32(0), // version 2, revision, vendor
+		mp4be16(3), mp4be16(16), mp4be16(0xFFFE), mp4be16(0), // the required v2 constants
+		mp4be32(1<<16), // always 65536
+		mp4be32(72),    // sizeOfStructOnly
+		rateBits,       // audioSampleRate
+		mp4be32(channels),
+		mp4be32(0x7F000000),
+		mp4be32(bits), // constBitsPerChannel
+		mp4be32(0),    // formatSpecificFlags
+		mp4be32(0),    // constBytesPerAudioPacket
+		mp4be32(0),    // constLPCMFramesPerAudioPacket
+		slices.Concat(children...),
+	))
+}
+
+// mp4AlacCookie builds the ALAC magic cookie box: a FullBox header followed by the
+// 24-byte ALACSpecificConfig.
+func mp4AlacCookie(rate, channels, depth int) []byte {
+	cfg := make([]byte, 24)
+	binary.BigEndian.PutUint32(cfg[0:4], 4096) // frameLength
+	cfg[5] = byte(depth)
+	cfg[6], cfg[7], cfg[8] = 40, 10, 14 // pb, mb, kb
+	cfg[9] = byte(channels)
+	binary.BigEndian.PutUint16(cfg[10:12], 255) // maxRun
+	binary.BigEndian.PutUint32(cfg[20:24], uint32(rate))
+	return mp4Atom("alac", slices.Concat([]byte{0, 0, 0, 0}, cfg))
+}
+
+// mp4StreamInfo builds a 34-byte FLAC STREAMINFO body.
+func mp4StreamInfo(rate, channels, depth, minBlock, maxBlock int, total uint64) []byte {
+	body := make([]byte, 34)
+	binary.BigEndian.PutUint16(body[0:2], uint16(minBlock))
+	binary.BigEndian.PutUint16(body[2:4], uint16(maxBlock))
+	body[10] = byte(rate >> 12)
+	body[11] = byte(rate >> 4)
+	body[12] = byte(rate<<4) | byte(channels-1)<<1 | byte((depth-1)>>4)
+	body[13] = byte((depth-1)&0x0F)<<4 | byte(total>>32)&0x0F
+	binary.BigEndian.PutUint32(body[14:18], uint32(total))
+	return body
+}
+
+// mp4DfLa builds the dfLa box a FLAC-in-MP4 sample entry carries, holding one STREAMINFO
+// metadata block.
+func mp4DfLa(streamInfo []byte) []byte {
+	hdr := []byte{0x80, byte(len(streamInfo) >> 16), byte(len(streamInfo) >> 8), byte(len(streamInfo))}
+	return mp4Atom("dfLa", slices.Concat([]byte{0, 0, 0, 0}, hdr, streamInfo))
 }
 
 func mp4Stco(offset uint32) []byte {
@@ -161,7 +232,13 @@ func mp4Moov(udta []byte, stcoOff uint32) []byte {
 // (an mvex). Threading them through the builder rather than splicing bytes post-hoc keeps
 // the two-pass assemblers patching the moov size and the stco entry for free.
 func mp4MoovExtra(udta []byte, stcoOff uint32, stblExtra, moovExtra []byte) []byte {
-	stbl := mp4Atom("stbl", slices.Concat(mp4StsdAudio(), mp4Stco(stcoOff), stblExtra))
+	return mp4MoovStsd(udta, stcoOff, stblExtra, moovExtra, mp4StsdAudio())
+}
+
+// mp4MoovStsd is mp4MoovExtra with the audio track's stsd supplied, for sample entries
+// other than the default mp4a one.
+func mp4MoovStsd(udta []byte, stcoOff uint32, stblExtra, moovExtra, stsd []byte) []byte {
+	stbl := mp4Atom("stbl", slices.Concat(stsd, mp4Stco(stcoOff), stblExtra))
 	minf := mp4Atom("minf", stbl)
 	mdia := mp4Atom("mdia", slices.Concat(mp4HdlrSoun(), mp4Mdhd(), minf))
 	trak := mp4Atom("trak", mdia)
@@ -281,11 +358,16 @@ func mp4AssembleExtra(stblExtra, moovExtra []byte, udtaKids ...[]byte) []byte {
 // ftyp, for the free/skip/wide box some writers reserve there. It is the same two-pass
 // build, so the leading box shifts the media and the stco entry follows it.
 func mp4AssembleLeading(leading, stblExtra, moovExtra []byte, udtaKids ...[]byte) []byte {
+	return mp4AssembleStsd(mp4StsdAudio(), leading, stblExtra, moovExtra, udtaKids...)
+}
+
+// mp4AssembleStsd is mp4AssembleLeading with the audio track's stsd supplied.
+func mp4AssembleStsd(stsd, leading, stblExtra, moovExtra []byte, udtaKids ...[]byte) []byte {
 	mdatPayload := bytes.Repeat([]byte{0xA7}, 120)
 	build := func(stcoOff uint32) []byte {
 		udta := mp4Atom("udta", slices.Concat(udtaKids...))
 		return slices.Concat(leading, mp4Ftyp(),
-			mp4MoovExtra(udta, stcoOff, stblExtra, moovExtra), mp4Atom("mdat", mdatPayload))
+			mp4MoovStsd(udta, stcoOff, stblExtra, moovExtra, stsd), mp4Atom("mdat", mdatPayload))
 	}
 	tmp := build(0)
 	j := bytes.Index(tmp, []byte("mdat"))

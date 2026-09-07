@@ -250,6 +250,9 @@ const (
 	WarnMalformedTagEntry        = core.WarnMalformedTagEntry
 	WarnMalformedTagEntryDropped = core.WarnMalformedTagEntryDropped
 	WarnUnknownChunkSize         = core.WarnUnknownChunkSize
+
+	WarnOutputGainUnsupported = core.WarnOutputGainUnsupported
+	WarnOutputGainR128Tags    = core.WarnOutputGainR128Tags
 )
 
 // IsDiscardWarning reports whether a warning code means the edit's content was thrown away
@@ -324,6 +327,15 @@ func ParseLRCReportFull(text string) (lines []SyncedLine, droppedLines []int) {
 // order). It round-trips losslessly through [ParseLRC]; the per-set language and
 // descriptor are not representable in LRC and are not emitted.
 func FormatLRC(lines []SyncedLine) string { return core.FormatLRC(lines) }
+
+// OutputGainDB renders an Opus output gain (signed Q7.8 dB, 256 = +1 dB, the unit
+// [AudioTrack.OutputGain] and [Editor.SetOutputGain] use) as decibels, so every front-end
+// prints the same figure.
+func OutputGainDB(gain int) string { return core.OutputGainDB(gain) }
+
+// OutputGainDecibels converts an Opus output gain (signed Q7.8 dB) to decibels, for a
+// front-end that renders the number itself rather than [OutputGainDB]'s text.
+func OutputGainDecibels(gain int) float64 { return core.OutputGainDecibels(gain) }
 
 // IsRecognizedImage reports whether data begins with the header of an image
 // format WaxLabel can identify (PNG, JPEG, GIF, WebP, BMP, or TIFF). It is a

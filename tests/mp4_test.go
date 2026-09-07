@@ -495,3 +495,58 @@ func TestMP4DurationIsEditListTrimmed(t *testing.T) {
 		t.Error("bitrate should be recomputed (positive) from the trimmed duration")
 	}
 }
+
+// TestMP4DifferentialFFmpegHiResALAC: real ffmpeg output at 96 kHz, where the sample
+// entry's 16.16 rate field cannot hold the rate. The .m4a leg carries a bare cookie on a
+// v0 entry and the .mov leg a wave-wrapped one on a QuickTime v2 entry; both must report
+// the codec configuration's geometry. The FLAC leg proves the dfLa STREAMINFO path.
+func TestMP4DifferentialFFmpegHiResALAC(t *testing.T) {
+	requireTool(t, "ffmpeg")
+	required := os.Getenv("WAXLABEL_REQUIRE_FFMPEG") != ""
+	dir := t.TempDir()
+
+	// t is a parameter, not a capture: the FLAC leg encodes inside its own subtest, and a
+	// Fatal/Skip must land on the T of the goroutine running it.
+	encode := func(t *testing.T, name string, codecArgs ...string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		args := append([]string{"-hide_banner", "-loglevel", "error", "-f", "lavfi",
+			"-i", "sine=frequency=1000:duration=1", "-ac", "2", "-ar", "96000"}, codecArgs...)
+		if out, err := exec.Command("ffmpeg", append(args, "-y", path)...).CombinedOutput(); err != nil {
+			if required {
+				t.Fatalf("ffmpeg %s: %v\n%s", name, err, out)
+			}
+			t.Skipf("ffmpeg cannot encode %s here: %v\n%s", name, err, out)
+		}
+		return path
+	}
+
+	for _, c := range []struct {
+		name     string
+		path     string
+		codec    string
+		bitDepth int
+	}{
+		{"m4a", encode(t, "hires.m4a", "-sample_fmt", "s32p", "-c:a", "alac"), "ALAC", 24},
+		{"mov", encode(t, "hires.mov", "-sample_fmt", "s32p", "-c:a", "alac"), "ALAC", 24},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			tr := mustParseFile(t, c.path).Properties().Tracks[0]
+			if tr.SampleRate != 96000 || tr.Channels != 2 {
+				t.Errorf("track = %d Hz / %d ch, want 96000/2", tr.SampleRate, tr.Channels)
+			}
+			if tr.Codec != c.codec || tr.BitsPerSample != c.bitDepth {
+				t.Errorf("codec = %q / %d bit, want %s / %d", tr.Codec, tr.BitsPerSample, c.codec, c.bitDepth)
+			}
+		})
+	}
+
+	// ffmpeg 8 muxes FLAC into MP4 without the experimental flag; older builds need it.
+	t.Run("flac", func(t *testing.T) {
+		path := encode(t, "hires.mp4", "-c:a", "flac", "-strict", "experimental")
+		tr := mustParseFile(t, path).Properties().Tracks[0]
+		if tr.SampleRate != 96000 || tr.Channels != 2 || tr.Codec != "FLAC" {
+			t.Errorf("track = %d Hz / %d ch / %q, want 96000/2/FLAC", tr.SampleRate, tr.Channels, tr.Codec)
+		}
+	})
+}
