@@ -633,13 +633,13 @@ func EmptyNumberWithTotal(k Key, v string) bool {
 }
 
 // IsTrimmableKey reports whether a value stored under k is a single-token value whose surrounding
-// whitespace is never meaningful - a numeric, date, MP4-integer, BPM, ReplayGain, or
+// whitespace is never meaningful - a numeric, date, MP4-integer, BPM, ReplayGain, R128 gain, or
 // release-country key. [TrimTokenValue], the editor's per-key trim gate, and the transfer grade
 // all key off this one predicate, so the stored form, the write, and the copy report cannot
 // disagree on which keys trim; adding a trim-eligible key here updates all three at once.
 func IsTrimmableKey(k Key) bool {
 	return numericKeys[k] || dateKeySet[k] || IsMP4IntKey(k) || IsBPMKey(k) ||
-		IsReplayGainKey(k) || IsReleaseCountryKey(k)
+		IsReplayGainKey(k) || IsReleaseCountryKey(k) || IsR128GainKey(k)
 }
 
 // TrimTokenValue removes surrounding whitespace from a trimmable value (see [IsTrimmableKey]) and
@@ -1005,6 +1005,28 @@ func ValidReleaseCountryValue(k Key, v string) bool {
 	return true
 }
 
+// ValidR128GainValue reports whether v is a value the R128 loudness key k accepts. RFC 7845
+// section 5.2.1 is exact: "an integer from -32768 to 32767, inclusive, represented in ASCII
+// as a base 10 number with no whitespace. A leading '+' or '-' character is valid. Leading
+// zeros are also permitted, but the value MUST be represented by no more than 6
+// characters". Surrounding whitespace is trimmed first, the way every other single-token
+// validator here does, so the stored form and the check agree. A non-R128 key is reported
+// valid.
+func ValidR128GainValue(k Key, v string) bool {
+	if !r128GainKeys[k] {
+		return true
+	}
+	// strconv.Atoi is exactly the RFC's grammar at base 10: an optional single sign then
+	// ASCII digits, with no exponent, hex, or underscore forms accepted. Only the
+	// 6-character cap and the range are the RFC's own additions.
+	s := strings.TrimSpace(v)
+	if len(s) > 6 {
+		return false
+	}
+	n, err := strconv.Atoi(s)
+	return err == nil && n >= math.MinInt16 && n <= math.MaxInt16
+}
+
 // ValidReplayGainValue reports whether v is a value the ReplayGain key k accepts: a
 // decimal number with an optional leading sign (a positive gain is conventionally written
 // "+2.34 dB"), optionally suffixed with a case-insensitive "dB" (the conventional gain
@@ -1164,6 +1186,9 @@ var validators = []Validator{
 	{IsReplayGainKey, ValidReplayGainValue, "malformed-number",
 		"is not a ReplayGain value (e.g. -7.30 dB)", "does not look like a ReplayGain value (e.g. -7.30 dB)",
 		replayGainDetail},
+	{IsR128GainKey, ValidR128GainValue, "malformed-number",
+		"is not an R128 gain (a signed integer, at most 6 characters, e.g. -573)",
+		"does not look like an R128 gain (a signed integer, at most 6 characters, e.g. -573)", nil},
 }
 
 // ValidatorFor returns the value contract for key k, and whether k has one. A key in

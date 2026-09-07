@@ -102,6 +102,87 @@ func mkFlacStsdPayload(entryRate uint32, dfla []byte) []byte {
 	return b
 }
 
+// mkEsds builds the esds box an AAC sample entry carries: the AudioSpecificConfig wrapped
+// in the ES / DecoderConfig / DecoderSpecificInfo descriptor nest, with one-byte lengths.
+func mkEsds(asc []byte) []byte {
+	descr := func(tag byte, body []byte) []byte {
+		return append([]byte{tag, byte(len(body))}, body...)
+	}
+	// objectTypeIndication 0x40 (MPEG-4 audio), streamType, bufferSizeDB, the two bitrates.
+	decoderCfg := descr(0x04, append(append([]byte{0x40, 0x15}, make([]byte, 11)...), descr(0x05, asc)...))
+	es := descr(0x03, append([]byte{0, 1, 0}, decoderCfg...))
+	b := append(append([]byte{0, 0, 0, 0, 'e', 's', 'd', 's'}, 0, 0, 0, 0), es...)
+	binary.BigEndian.PutUint32(b[0:4], uint32(len(b)))
+	return b
+}
+
+// mkMp4aStsdPayload builds an stsd payload with one v0 'mp4a' sample entry carrying the
+// given extension boxes. Like the FLAC and ALAC entries, its 16.16 rate field holds the
+// rate only when it fits, so a muxer writes 0 above 65535.
+func mkMp4aStsdPayload(entryRate uint32, entryChannels uint16, ext []byte) []byte {
+	b := make([]byte, 8+36+len(ext))
+	be := binary.BigEndian
+	be.PutUint32(b[4:8], 1)                    // entry_count
+	be.PutUint32(b[8:12], uint32(36+len(ext))) // entry size
+	copy(b[12:16], "mp4a")
+	be.PutUint16(b[22:24], 1) // data_reference_index
+	be.PutUint16(b[32:34], entryChannels)
+	be.PutUint16(b[34:36], 16)            // sample_size
+	be.PutUint32(b[40:44], entryRate<<16) // sample_rate 16.16
+	copy(b[44:], ext)
+	return b
+}
+
+// mkFlacThenTail builds an stsd whose fLaC entry is followed by more bytes, so a box inside
+// that entry which over-declares its size has something behind it to read into.
+func mkFlacThenTail(dfla, tail []byte) []byte {
+	b := make([]byte, 8+36+len(dfla))
+	be := binary.BigEndian
+	be.PutUint32(b[4:8], 2)                     // entry_count
+	be.PutUint32(b[8:12], uint32(36+len(dfla))) // first entry size
+	copy(b[12:16], "fLaC")
+	be.PutUint16(b[22:24], 1)         // data_reference_index
+	be.PutUint16(b[32:34], 2)         // channels
+	be.PutUint16(b[34:36], 16)        // sample_size
+	be.PutUint32(b[40:44], 44100<<16) // sample_rate 16.16
+	copy(b[44:], dfla)
+	return append(b, tail...)
+}
+
+// TestParseStsdEsdsKeepsDigestSalt: the AAC configuration corrects the reported track only.
+// d.cfg is the essence-digest salt and must keep the raw sample-entry values, or every
+// stored digest for an AAC file would move.
+func TestParseStsdEsdsKeepsDigestSalt(t *testing.T) {
+	d := parseStsdPayload(t, mkMp4aStsdPayload(0, 2, mkEsds([]byte{0x10, 0x10})))
+	if d.track.SampleRate != 96000 {
+		t.Errorf("track rate = %d, want 96000 from the config", d.track.SampleRate)
+	}
+	if d.cfg.sampleRate != 0 || d.cfg.channels != 2 || string(d.cfg.codec[:]) != "mp4a" {
+		t.Errorf("salt = %q %d Hz / %d ch, want the raw entry mp4a/0/2",
+			d.cfg.codec[:], d.cfg.sampleRate, d.cfg.channels)
+	}
+}
+
+// TestParseStsdFlacDfLaOverDeclaredStopsAtEntry: a dfLa declaring more bytes than its sample
+// entry holds must not decode STREAMINFO out of whatever follows the entry. The tail here is
+// the rest of a 96 kHz STREAMINFO, so a read that runs over reports 96000 rather than the
+// entry's own 44100.
+func TestParseStsdFlacDfLaOverDeclaredStopsAtEntry(t *testing.T) {
+	si := mkStreamInfo(96000, 2, 24, 480000)
+	dfla := make([]byte, 20) // a 50-byte box with only its first 20 bytes present
+	binary.BigEndian.PutUint32(dfla[0:4], dfLaStreamInfoEnd)
+	copy(dfla[4:8], "dfLa")
+	dfla[12] = 0x80 // last metadata block, type STREAMINFO
+	dfla[15] = byte(len(si))
+	copy(dfla[16:20], si[0:4])
+
+	d := parseStsdPayload(t, mkFlacThenTail(dfla, si[4:]))
+	if d.track.SampleRate != 44100 || d.track.BitsPerSample != 16 {
+		t.Errorf("geometry = %d Hz / %d bit, want the entry values 44100/16 (the dfLa is cut short by the entry)",
+			d.track.SampleRate, d.track.BitsPerSample)
+	}
+}
+
 // mkV2StsdPayload builds an stsd payload with one version 2 sound sample entry: the
 // QuickTime layout whose float64 rate and uint32 channel count replace the fixed v0/v1
 // fields, followed by any extension boxes.
@@ -529,8 +610,9 @@ func TestParseStsdV2WaveWrappedCookie(t *testing.T) {
 	}
 }
 
-// TestParseStsdNonAlacEntryNotScanned: only the codecs whose configuration carries the
-// real geometry are scanned, so an AAC entry keeps its sample-entry values.
+// TestParseStsdNonAlacEntryNotScanned: each scanned codec reads only its own
+// configuration box, so an mp4a entry carrying an ALAC magic cookie keeps its sample-entry
+// values. Only an esds would override them.
 func TestParseStsdNonAlacEntryNotScanned(t *testing.T) {
 	p := mkAlacStsdPayloadRates(24, 44100, 96000, 6)
 	copy(p[12:16], "mp4a")

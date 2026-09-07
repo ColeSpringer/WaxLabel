@@ -3,8 +3,10 @@ package waxlabel_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
+	"strconv"
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
@@ -106,6 +108,44 @@ func requireTool(t *testing.T, name string) {
 			"(it requires the full ffmpeg suite: ffmpeg and ffprobe)", name)
 	}
 	t.Skipf("%s not available", name)
+}
+
+// ffprobeAudio reports what ffprobe makes of a file's first audio stream: the played
+// sample rate, the channel count, and the profile name. It is the independent witness for
+// every rate a codec configuration declares rather than the container.
+func ffprobeAudio(t *testing.T, path string) (rate, channels int, profile string) {
+	t.Helper()
+	out, err := exec.Command("ffprobe", "-hide_banner", "-loglevel", "error",
+		"-select_streams", "a:0", "-show_entries", "stream=sample_rate,channels,profile",
+		"-of", "json", path).Output()
+	if err != nil {
+		// ffprobe says why on stderr - "missing mandatory atoms", an unreadable config -
+		// and without it a failure here is just an exit status.
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			t.Fatalf("ffprobe %s: %v\n%s", path, err, ee.Stderr)
+		}
+		t.Fatalf("ffprobe %s: %v", path, err)
+	}
+	var probe struct {
+		Streams []struct {
+			SampleRate string `json:"sample_rate"` // ffprobe reports it as a string
+			Channels   int    `json:"channels"`
+			Profile    string `json:"profile"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(out, &probe); err != nil {
+		t.Fatalf("ffprobe %s: %v\n%s", path, err, out)
+	}
+	if len(probe.Streams) == 0 {
+		t.Fatalf("ffprobe %s: no audio stream\n%s", path, out)
+	}
+	s := probe.Streams[0]
+	n, err := strconv.Atoi(s.SampleRate)
+	if err != nil {
+		t.Fatalf("ffprobe %s: sample_rate %q: %v", path, s.SampleRate, err)
+	}
+	return n, s.Channels, s.Profile
 }
 
 // lookupCI looks up a key case-insensitively (ffmpeg lowercases standard Vorbis

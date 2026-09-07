@@ -186,3 +186,149 @@ func TestCLIDiffSeesOutputGain(t *testing.T) {
 		t.Error("outputGain should be absent when neither file carries one")
 	}
 }
+
+// r128Fixture copies sample.opus and gives it the two R128 loudness tags.
+func r128Fixture(t *testing.T, track, album string) string {
+	t.Helper()
+	path := copyFixture(t, td("sample.opus"))
+	args := []string{"set", path, "--set", "R128_TRACK_GAIN=" + track}
+	if album != "" {
+		args = append(args, "--set", "R128_ALBUM_GAIN="+album)
+	}
+	if out, errb, code := runCLI(t, args...); code != 0 {
+		t.Fatalf("writing the R128 tags: exit = %d\n%s\n%s", code, out, errb)
+	}
+	return path
+}
+
+// TestCLIOutputGainRebasesR128: RFC 7845 applies the R128 tags on top of the header gain, so
+// the plan shows them moving with it and the write is clean even under --strict.
+func TestCLIOutputGainRebasesR128(t *testing.T) {
+	t.Parallel()
+	path := r128Fixture(t, "-896", "-512")
+	stdout, stderr, code := runCLI(t, "plan", path, "--output-gain", "-3.5")
+	if code != 0 {
+		t.Fatalf("plan exit = %d; stderr=%q", code, stderr)
+	}
+	for _, want := range []string{"~ R128_TRACK_GAIN: -896 -> 0", "~ R128_ALBUM_GAIN: -512 -> 384"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("plan output missing %q:\n%s", want, stdout)
+		}
+	}
+
+	out, _, code := runCLI(t, "set", path, "--output-gain", "-3.5", "--strict")
+	if code != 0 {
+		t.Fatalf("set --strict exit = %d:\n%s", code, out)
+	}
+	if strings.Contains(out, "output-gain-r128-tags") {
+		t.Errorf("a rebase leaves nothing to advise about:\n%s", out)
+	}
+	jd := dumpJSON(t, path)
+	if got := tagValues(jd, "R128_TRACK_GAIN"); len(got) != 1 || got[0] != "0" {
+		t.Errorf("R128_TRACK_GAIN = %v, want [0]", got)
+	}
+	if got := tagValues(jd, "R128_ALBUM_GAIN"); len(got) != 1 || got[0] != "384" {
+		t.Errorf("R128_ALBUM_GAIN = %v, want [384]", got)
+	}
+}
+
+// TestCLIOutputGainR128ExplicitSetWins: --output-gain's own help text tells the user to set
+// the tag, so that must not be refused as an unknown key, and it must beat the rebase.
+func TestCLIOutputGainR128ExplicitSetWins(t *testing.T) {
+	t.Parallel()
+	path := r128Fixture(t, "-896", "")
+	out, errb, code := runCLI(t, "set", path, "--output-gain", "-3.5", "--set", "R128_TRACK_GAIN=0", "--strict")
+	if code != 0 {
+		t.Fatalf("set --strict exit = %d:\n%s\n%s", code, out, errb)
+	}
+	if got := tagValues(dumpJSON(t, path), "R128_TRACK_GAIN"); len(got) != 1 || got[0] != "0" {
+		t.Errorf("R128_TRACK_GAIN = %v, want the explicit [0]", got)
+	}
+}
+
+// TestCLIKeepR128: the opt-out leaves both tags alone, says so, and stays advisory even
+// under --strict. Without --output-gain there is nothing to opt out of.
+func TestCLIKeepR128(t *testing.T) {
+	t.Parallel()
+	path := r128Fixture(t, "-896", "-512")
+	out, _, code := runCLI(t, "set", path, "--output-gain", "-3.5", "--keep-r128", "--strict")
+	if code != 0 {
+		t.Fatalf("set --keep-r128 --strict exit = %d:\n%s", code, out)
+	}
+	if !strings.Contains(out, "output-gain-r128-tags") {
+		t.Errorf("expected the kept-tag advisory:\n%s", out)
+	}
+	jd := dumpJSON(t, path)
+	if got := tagValues(jd, "R128_TRACK_GAIN"); len(got) != 1 || got[0] != "-896" {
+		t.Errorf("R128_TRACK_GAIN = %v, want the kept [-896]", got)
+	}
+	if jd.Properties == nil || jd.Properties.OutputGainDb != -3.5 {
+		t.Errorf("the gain edit should still have applied; got %v", jd.Properties)
+	}
+
+	if _, _, code := runCLI(t, "set", copyFixture(t, td("sample.opus")), "--keep-r128"); code != 2 {
+		t.Errorf("--keep-r128 without --output-gain exit = %d, want 2", code)
+	}
+}
+
+// TestCLIOutputGainR128Malformed: a value that is not a Q7.8 integer is noted when set and
+// cannot be rebased later, so a gain edit advises rather than silently leaving it wrong.
+func TestCLIOutputGainR128Malformed(t *testing.T) {
+	t.Parallel()
+	path := copyFixture(t, td("sample.opus"))
+	out, errb, code := runCLI(t, "set", path, "--set", "R128_TRACK_GAIN=abc")
+	if code != 0 {
+		t.Fatalf("set exit = %d:\n%s\n%s", code, out, errb)
+	}
+	if !strings.Contains(out+errb, "does not look like an R128 gain") {
+		t.Errorf("expected the value note:\n%s\n%s", out, errb)
+	}
+	plan, _, code := runCLI(t, "plan", path, "--output-gain", "-3.5")
+	if code != 0 {
+		t.Fatalf("plan exit = %d:\n%s", code, plan)
+	}
+	if !strings.Contains(plan, "output-gain-r128-tags") {
+		t.Errorf("expected the unrebasable-tag advisory:\n%s", plan)
+	}
+}
+
+// TestCLILintR128: the RFC defines these keys, so lint checks their values and does not
+// call them custom fields.
+func TestCLILintR128(t *testing.T) {
+	t.Parallel()
+	bad := copyFixture(t, td("sample.opus"))
+	if out, _, code := runCLI(t, "set", bad, "--set", "R128_TRACK_GAIN=abc"); code != 0 {
+		t.Fatalf("set exit = %d:\n%s", code, out)
+	}
+	out, _, code := runCLI(t, "--json", "lint", bad)
+	if code != 1 {
+		t.Fatalf("lint exit = %d, want 1 (findings present)\n%s", code, out)
+	}
+	found := false
+	for _, f := range decodeJSONList[jsonLint](t, out)[0].Findings {
+		if f.Key == "R128_TRACK_GAIN" {
+			if f.Code == "custom-key" {
+				t.Errorf("R128 keys are RFC-defined, not custom fields:\n%s", out)
+			}
+			if f.Code == "malformed-number" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("lint did not flag the malformed R128 value:\n%s", out)
+	}
+
+	// sample.opus carries ffmpeg's encoder stamps, so it is never finding-free; what matters
+	// is that valid R128 values contribute nothing.
+	good := r128Fixture(t, "-896", "-512")
+	out, _, code = runCLI(t, "--json", "lint", good)
+	if code > 1 {
+		t.Fatalf("lint exit = %d\n%s", code, out)
+	}
+	for _, f := range decodeJSONList[jsonLint](t, out)[0].Findings {
+		if f.Key == "R128_TRACK_GAIN" || f.Key == "R128_ALBUM_GAIN" {
+			t.Errorf("valid R128 values should draw no finding; got %s on %s:\n%s", f.Code, f.Key, out)
+		}
+	}
+}

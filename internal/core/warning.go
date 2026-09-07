@@ -379,9 +379,10 @@ const (
 	// codes keep their numbers.
 	WarnOutputGainUnsupported
 	// WarnOutputGainR128Tags means a gain edit left the file's R128_TRACK_GAIN or
-	// R128_ALBUM_GAIN untouched. RFC 7845 applies those on top of the header gain, so a
-	// tool changing the header must update or remove them or the file plays at the wrong
-	// loudness. Advisory: the edit itself applied in full.
+	// R128_ALBUM_GAIN unchanged where RFC 7845 would have rebased it: kept under
+	// [WriteOptions.KeepR128Gains], or not a Q7.8 integer and so not rebasable. Those tags
+	// apply on top of the header gain, so an unrebased one plays at the wrong loudness.
+	// Advisory: the edit itself applied in full.
 	WarnOutputGainR128Tags
 )
 

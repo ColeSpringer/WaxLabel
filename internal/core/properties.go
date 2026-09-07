@@ -149,9 +149,14 @@ func canonicalCodecName(raw string) string {
 		return "MP2"
 	case "MPEG-1 LAYER 1", "MPEG-2 LAYER 1", "MPEG-2.5 LAYER 1":
 		return "MP1"
+	case "HE-AAC", "HE-AAC V2", "XHE-AAC":
+		// The SBR/PS spellings an MP4 esds AudioSpecificConfig yields: still AAC, with the
+		// extension named in the profile.
+		return "AAC"
 	}
-	// The AAC object-type spellings ("AAC LC", "AAC Main", "AAC SSR") all canonicalize
-	// to "AAC"; a bare "AAC" is already canonical and falls through unchanged.
+	// The AAC object-type spellings ("AAC LC", "AAC Main", "AAC SSR", "AAC LTP", "AAC LD",
+	// "AAC ELD") all canonicalize to "AAC"; a bare "AAC" is already canonical and falls
+	// through unchanged.
 	if strings.HasPrefix(up, "AAC") {
 		return "AAC"
 	}

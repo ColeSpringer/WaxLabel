@@ -1,5 +1,7 @@
 package aac
 
+import "github.com/colespringer/waxlabel/internal/mpeg4audio"
+
 // adtsHeader is the decoded ADTS fixed header of a frame: the static stream
 // configuration (object type, sample rate, channels) plus the frame length. The
 // static config identifies the stream and feeds the essence digest; the frame
@@ -7,7 +9,7 @@ package aac
 // totalADTSSamples) and is deliberately kept out of the digest (see
 // Codec.EssenceExtent).
 type adtsHeader struct {
-	objectType  int // MPEG-4 Audio Object Type (= profile field + 1): 1 Main, 2 LC, 3 SSR (AOT 4 / LTP is rejected at decode)
+	objectType  int // MPEG-4 Audio Object Type (= profile field + 1): 1 Main, 2 LC, 3 SSR only, since decodeADTS rejects profile field 3 (AOT 4 / LTP)
 	sfIndex     int // sampling-frequency index (0..12)
 	sampleRate  int // decoded sample rate in Hz
 	chanConfig  int // channel-configuration field (0..7)
@@ -15,19 +17,6 @@ type adtsHeader struct {
 	frameLength int // total bytes of this frame (header + payload)
 	rawBlocks   int // number_of_raw_data_blocks_in_frame (0..3); the frame holds rawBlocks+1 AAC blocks
 }
-
-// adtsSampleRates maps the 4-bit sampling-frequency index to Hz. Indices 13-14
-// are reserved and 15 means "explicit rate in the AOT-specific config" (which is
-// never present in an ADTS header); all three are rejected by decodeADTS.
-var adtsSampleRates = [13]int{
-	96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050,
-	16000, 12000, 11025, 8000, 7350,
-}
-
-// adtsChannels maps the 3-bit channel configuration to a channel count. Config 0
-// means the layout is carried in the AOT-specific config (absent from ADTS), so
-// the count is unknown (0); config 7 is 7.1 (8 channels).
-var adtsChannels = [8]int{0, 1, 2, 3, 4, 5, 6, 8}
 
 // adtsHeaderSize is the ADTS fixed header length without the optional 2-byte CRC
 // (present when protection_absent is 0). decodeADTS only reads the fixed header;
@@ -65,8 +54,11 @@ func decodeADTS(b []byte) (adtsHeader, bool) {
 		return adtsHeader{}, false
 	}
 	sfIndex := int(b[2] >> 2 & 0x0F)
-	if sfIndex >= len(adtsSampleRates) {
-		return adtsHeader{}, false // 13/14 reserved, 15 explicit (never in ADTS)
+	// Indices 13-14 are reserved and 15 means "explicit rate in the AOT-specific
+	// config", which an ADTS header never carries; all three report no rate.
+	sampleRate := mpeg4audio.SampleRate(sfIndex)
+	if sampleRate == 0 {
+		return adtsHeader{}, false
 	}
 	chanConfig := int(b[2]&0x01)<<2 | int(b[3]>>6)
 	frameLength := int(b[3]&0x03)<<11 | int(b[4])<<3 | int(b[5]>>5)
@@ -76,29 +68,13 @@ func decodeADTS(b []byte) (adtsHeader, bool) {
 	return adtsHeader{
 		objectType:  profile + 1,
 		sfIndex:     sfIndex,
-		sampleRate:  adtsSampleRates[sfIndex],
+		sampleRate:  sampleRate,
 		chanConfig:  chanConfig,
-		channels:    adtsChannels[chanConfig],
+		channels:    mpeg4audio.ChannelCount(chanConfig),
 		frameLength: frameLength,
 		// number_of_raw_data_blocks_in_frame: the last 2 bits of byte 6. A frame holds
 		// rawBlocks+1 AAC blocks (1..4), each samplesPerAACFrame samples, so the duration
 		// walk must not assume a flat one block per frame.
 		rawBlocks: int(b[6] & 0x03),
 	}, true
-}
-
-// aotName names the AAC object type for the track's Codec field. Only AOT 1-3
-// can reach here - decodeADTS rejects profile field 3 (AOT 4 / LTP) - so there
-// is deliberately no LTP case; an unexpected value falls back to plain "AAC".
-func aotName(objectType int) string {
-	switch objectType {
-	case 1:
-		return "AAC Main"
-	case 2:
-		return "AAC LC"
-	case 3:
-		return "AAC SSR"
-	default:
-		return "AAC"
-	}
 }

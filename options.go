@@ -158,6 +158,16 @@ func WithAllowUnsupportedDrop() WriteOption {
 	return func(o *core.WriteOptions) { o.AllowUnsupportedDrop = true }
 }
 
+// WithKeepR128Gains leaves R128_TRACK_GAIN and R128_ALBUM_GAIN untouched when the same edit
+// changes the output gain, instead of rebasing them by the header delta. RFC 7845 applies
+// those tags on top of the header gain, so a compliant player's loudness moves with the
+// header: [Editor.Prepare] warns output-gain-r128-tags for each tag it kept. Use it when the
+// stored values are known to be stale and will be replaced separately; by default a gain
+// edit rebases them, which is what the RFC requires of a tool that moves the header.
+func WithKeepR128Gains() WriteOption {
+	return func(o *core.WriteOptions) { o.KeepR128Gains = true }
+}
+
 // WithID3MultiValue selects how multiple values for one field are stored in an
 // ID3v2.3 tag, which has no standard multi-value text form. ID3v2.4 always
 // NUL-separates regardless; the v2.3 compatibility impact is flagged in the

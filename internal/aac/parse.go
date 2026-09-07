@@ -7,6 +7,7 @@ import (
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/id3"
+	"github.com/colespringer/waxlabel/internal/mpeg4audio"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -130,7 +131,7 @@ const adtsScanChunk = 64 << 10
 // zero duration/bitrate (the honest answer for an unplayable fragment).
 func buildTrack(h adtsHeader, totalSamples uint64, audioBytes int64) core.AudioTrack {
 	t := core.AudioTrack{
-		Codec:      aotName(h.objectType),
+		Codec:      mpeg4audio.ObjectTypeName(h.objectType),
 		SampleRate: h.sampleRate,
 		Channels:   h.channels,
 	}

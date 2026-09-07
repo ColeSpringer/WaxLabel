@@ -12,7 +12,7 @@ import (
 // with the raw entry values, so two files differing only in the cookie hash the same.
 func TestMP4ALACSampleRateFromCookie(t *testing.T) {
 	build := func(cookieRate int) []byte {
-		return mp4AssembleStsd(mp4Stsd(mp4StsdEntry("alac", 2, 16, 0, mp4AlacCookie(cookieRate, 2, 24))), nil, nil, nil)
+		return mp4AssembleStsd(mp4Stsd(mp4StsdEntry("alac", 2, 16, 0, mp4AlacCookie(cookieRate, 2, 24))), nil, nil, nil, 44100)
 	}
 	doc := mustParseBytes(t, build(96000))
 	tr := doc.Properties().Tracks[0]
@@ -36,7 +36,7 @@ func TestMP4ALACSampleRateFromCookie(t *testing.T) {
 // authoritative, so a 96 kHz FLAC-in-MP4 reports its real geometry rather than the entry's.
 func TestMP4FLACSampleRateFromStreamInfo(t *testing.T) {
 	si := mp4StreamInfo(96000, 2, 24, 4096, 4096, 480000)
-	data := mp4AssembleStsd(mp4Stsd(mp4StsdEntry("fLaC", 2, 16, 0, mp4DfLa(si))), nil, nil, nil)
+	data := mp4AssembleStsd(mp4Stsd(mp4StsdEntry("fLaC", 2, 16, 0, mp4DfLa(si))), nil, nil, nil, 44100)
 	tr := mustParseBytes(t, data).Properties().Tracks[0]
 	if tr.SampleRate != 96000 || tr.Channels != 2 || tr.BitsPerSample != 24 {
 		t.Errorf("track = %d Hz / %d ch / %d bit, want 96000/2/24", tr.SampleRate, tr.Channels, tr.BitsPerSample)
@@ -54,7 +54,7 @@ func TestMP4FLACSampleRateFromStreamInfo(t *testing.T) {
 // been zero for such an entry.
 func TestMP4V2SoundEntryGeometry(t *testing.T) {
 	build := func(rate float64) []byte {
-		return mp4AssembleStsd(mp4Stsd(mp4StsdEntryV2("lpcm", rate, 2, 24)), nil, nil, nil)
+		return mp4AssembleStsd(mp4Stsd(mp4StsdEntryV2("lpcm", rate, 2, 24)), nil, nil, nil, 44100)
 	}
 	tr := mustParseBytes(t, build(96000)).Properties().Tracks[0]
 	if tr.SampleRate != 96000 || tr.Channels != 2 || tr.BitsPerSample != 24 {
@@ -69,14 +69,17 @@ func TestMP4V2SoundEntryGeometry(t *testing.T) {
 
 // TestMP4StsdPrefixIndependentOfAllocLimit: the stsd prefix read is clamped to the
 // caller's allocation limit rather than refused by it, so the same bytes report the same
-// geometry and hash to the same digest whatever limit the caller set.
+// geometry and hash to the same digest whatever limit the caller set. The rate a codec
+// reads from its own configuration is limit-dependent in the other direction - a
+// configuration past the prefix is simply not seen - so the pin here is the codec name and
+// the digest, which must not move.
 func TestMP4StsdPrefixIndependentOfAllocLimit(t *testing.T) {
 	// A second, padded entry pushes the stsd payload past the prefix a small limit allows.
 	stsd := mp4Stsd(
 		mp4StsdEntry("alac", 2, 16, 0, mp4AlacCookie(96000, 2, 24)),
 		mp4StsdEntry("mp4a", 2, 16, 44100, mp4Atom("pad", make([]byte, 500))),
 	)
-	data := mp4AssembleStsd(stsd, nil, nil, nil)
+	data := mp4AssembleStsd(stsd, nil, nil, nil, 44100)
 
 	want := essenceOf(t, data)
 	for _, limit := range []int64{1 << 20, 400, 64} {

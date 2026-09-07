@@ -32,9 +32,13 @@ func TestCanonicalCodec(t *testing.T) {
 		{"mp4a", "AAC", "mp4a"},     // MP4 fourcc
 		{"AAC LC", "AAC", "AAC LC"}, // raw-AAC object type
 		{"AAC", "AAC", ""},          // already canonical (Matroska)
-		{"alac", "ALAC", "alac"},    // MP4 fourcc, case
-		{"flac", "FLAC", "flac"},    // FLAC's lowercase
-		{"FLAC", "FLAC", ""},        // already canonical (Matroska)
+		{"AAC LTP", "AAC", "AAC LTP"},
+		{"HE-AAC", "AAC", "HE-AAC"},       // SBR, from an esds AudioSpecificConfig
+		{"HE-AAC v2", "AAC", "HE-AAC v2"}, // SBR + parametric stereo
+		{"xHE-AAC", "AAC", "xHE-AAC"},
+		{"alac", "ALAC", "alac"}, // MP4 fourcc, case
+		{"flac", "FLAC", "flac"}, // FLAC's lowercase
+		{"FLAC", "FLAC", ""},     // already canonical (Matroska)
 		{"MPEG-1 Layer 3", "MP3", "MPEG-1 Layer 3"},
 		{"MPEG-2.5 Layer 3", "MP3", "MPEG-2.5 Layer 3"},
 		{"MPEG-1 Layer 2", "MP2", "MPEG-1 Layer 2"},

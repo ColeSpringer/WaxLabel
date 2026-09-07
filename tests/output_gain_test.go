@@ -2,8 +2,10 @@ package waxlabel_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
@@ -153,47 +155,228 @@ func TestOutputGainZeroOnNonOpusIsNoOp(t *testing.T) {
 	}
 }
 
-// TestOutputGainR128Warning: RFC 7845 applies the R128 tags on top of the header gain, so
-// leaving them untouched while the header moves is an advisory. Touching them in the same
-// edit silences it.
-func TestOutputGainR128Warning(t *testing.T) {
-	withTags := writeBack(t, sampleOpus, func(e *wl.Editor) {
-		e.Set("R128_TRACK_GAIN", "-896")
-		e.Set("R128_ALBUM_GAIN", "-512")
-	})
+// applyPlan executes a prepared plan against src and returns the written bytes.
+func applyPlan(t *testing.T, plan *wl.Plan, src []byte) []byte {
+	t.Helper()
+	var buf writerTo
+	if _, _, err := plan.Execute(context.Background(), wl.WriteTo(&buf, wl.BytesSource(src))); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	return buf.b
+}
 
+// changesMention reports whether the change list names key.
+func changesMention(changes []tag.Change, key tag.Key) bool {
+	return slices.ContainsFunc(changes, func(c tag.Change) bool { return c.Key == key })
+}
+
+// r128Tagged writes an Opus file carrying both R128 loudness tags at the given values.
+func r128Tagged(t *testing.T, track, album string) []byte {
+	t.Helper()
+	return writeBack(t, sampleOpus, func(e *wl.Editor) {
+		e.Set("R128_TRACK_GAIN", track)
+		e.Set("R128_ALBUM_GAIN", album)
+	})
+}
+
+// r128WarningKeys returns the keys every R128 advisory in the report names.
+func r128WarningKeys(warnings []wl.Warning) []tag.Key {
+	var keys []tag.Key
+	for _, w := range warnings {
+		if w.Code == wl.WarnOutputGainR128Tags {
+			keys = append(keys, w.Keys...)
+		}
+	}
+	return keys
+}
+
+// TestOutputGainRebasesR128Tags: RFC 7845 applies the R128 tags on top of the header gain,
+// so a header change subtracts the same delta from each of them. The loudness a compliant
+// player produces is then unchanged, and there is nothing to warn about.
+func TestOutputGainRebasesR128Tags(t *testing.T) {
+	withTags := r128Tagged(t, "-896", "-512")
+	plan, err := mustParseBytes(t, withTags).Edit().SetOutputGain(-896).Prepare()
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if reportHasWarning(plan.Report().Warnings, wl.WarnOutputGainR128Tags) {
+		t.Errorf("a rebase leaves nothing to advise about; got %v", plan.Report().Warnings)
+	}
+	changes := plan.Changes()
+	for _, want := range []tag.Key{"R128_TRACK_GAIN", "R128_ALBUM_GAIN"} {
+		if !changesMention(changes, want) {
+			t.Errorf("Changes() should list %s; got %v", want, changes)
+		}
+	}
+
+	out := applyPlan(t, plan, withTags)
+	doc := mustParseBytes(t, out)
+	if got := doc.Properties().First().OutputGain; got != -896 {
+		t.Errorf("OutputGain = %d, want -896", got)
+	}
+	// header + tag is what a player applies, and it must be the same as before the edit.
+	for _, c := range []struct {
+		key  tag.Key
+		want string
+	}{{"R128_TRACK_GAIN", "0"}, {"R128_ALBUM_GAIN", "384"}} {
+		if got, _ := doc.Tags().First(c.key); got != c.want {
+			t.Errorf("%s = %q, want %q", c.key, got, c.want)
+		}
+	}
+}
+
+// TestOutputGainR128ExplicitOpsWin: a Set or Clear of an R128 key in the same edit is the
+// caller's own intent, which the rebase must not overwrite.
+func TestOutputGainR128ExplicitOpsWin(t *testing.T) {
+	withTags := r128Tagged(t, "-896", "-512")
+	plan, err := mustParseBytes(t, withTags).Edit().SetOutputGain(-896).
+		Set("R128_TRACK_GAIN", "0").Clear("R128_ALBUM_GAIN").Prepare()
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if reportHasWarning(plan.Report().Warnings, wl.WarnOutputGainR128Tags) {
+		t.Errorf("an explicit op says what the tag should be; got %v", plan.Report().Warnings)
+	}
+	doc := mustParseBytes(t, applyPlan(t, plan, withTags))
+	if got, _ := doc.Tags().First("R128_TRACK_GAIN"); got != "0" {
+		t.Errorf("R128_TRACK_GAIN = %q, want the explicit 0", got)
+	}
+	if doc.Tags().Has("R128_ALBUM_GAIN") {
+		t.Error("R128_ALBUM_GAIN should have been cleared")
+	}
+}
+
+// TestOutputGainR128OnlyEditDoesNotRebase: with no header change there is no delta, so an
+// edit that only touches the tags leaves every other value alone.
+func TestOutputGainR128OnlyEditDoesNotRebase(t *testing.T) {
+	withTags := r128Tagged(t, "-896", "-512")
+	plan, err := mustParseBytes(t, withTags).Edit().Set("R128_TRACK_GAIN", "-100").Prepare()
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if reportHasWarning(plan.Report().Warnings, wl.WarnOutputGainR128Tags) {
+		t.Errorf("an R128-only edit changes no header gain and must not warn; got %v", plan.Report().Warnings)
+	}
+	doc := mustParseBytes(t, applyPlan(t, plan, withTags))
+	if got, _ := doc.Tags().First("R128_ALBUM_GAIN"); got != "-512" {
+		t.Errorf("R128_ALBUM_GAIN = %q, want the untouched -512", got)
+	}
+}
+
+// TestOutputGainR128MalformedWarns: a value that is not a Q7.8 integer cannot be rebased, so
+// it is kept and advised about. Surrounding whitespace is not malformed - those values trim.
+func TestOutputGainR128MalformedWarns(t *testing.T) {
+	withTags := writeBack(t, sampleOpus, func(e *wl.Editor) {
+		e.Set("R128_TRACK_GAIN", "abc")
+		e.Set("R128_ALBUM_GAIN", " -573 ")
+	})
+	plan, err := mustParseBytes(t, withTags).Edit().SetOutputGain(-896).Prepare()
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if keys := r128WarningKeys(plan.Report().Warnings); !slices.Equal(keys, []tag.Key{"R128_TRACK_GAIN"}) {
+		t.Errorf("advisory keys = %v, want just the malformed R128_TRACK_GAIN", keys)
+	}
+	doc := mustParseBytes(t, applyPlan(t, plan, withTags))
+	if got, _ := doc.Tags().First("R128_TRACK_GAIN"); got != "abc" {
+		t.Errorf("R128_TRACK_GAIN = %q, want the unrebasable value kept", got)
+	}
+	if got, _ := doc.Tags().First("R128_ALBUM_GAIN"); got != "323" {
+		t.Errorf("R128_ALBUM_GAIN = %q, want -573 rebased by -896 to 323", got)
+	}
+}
+
+// TestOutputGainR128RebaseOverflowRefused: the R128 fields are signed 16-bit, so a rebase
+// that would leave the range refuses the edit rather than storing a number the field cannot
+// hold. It is a write refusal, not a corrupt file: the value on disk is legal and the gain
+// edit is legal, so ErrInvalidData (which the CLI renders as "corrupt or violates its
+// format") would be a false report. The message names the way out.
+func TestOutputGainR128RebaseOverflowRefused(t *testing.T) {
+	withTags := writeBack(t, sampleOpus, func(e *wl.Editor) { e.Set("R128_TRACK_GAIN", "-32000") })
+	_, err := mustParseBytes(t, withTags).Edit().SetOutputGain(3000).Prepare()
+	if !errors.Is(err, waxerr.ErrUnsupportedTag) {
+		t.Errorf("Prepare error = %v, want ErrUnsupportedTag", err)
+	}
+	if errors.Is(err, waxerr.ErrInvalidData) {
+		t.Errorf("a legal value and a legal edit must not report a corrupt file: %v", err)
+	}
+	if !strings.Contains(err.Error(), "--keep-r128") {
+		t.Errorf("the refusal should name the escape hatch: %v", err)
+	}
+	// -32768 is a legal RFC 7845 value, so it must not be the reason an unrelated edit fails
+	// until the rebase actually leaves the range.
+	legal := writeBack(t, sampleOpus, func(e *wl.Editor) { e.Set("R128_TRACK_GAIN", "-32768") })
+	if _, err := mustParseBytes(t, legal).Edit().SetOutputGain(-256).Set(tag.Title, "x").Prepare(); err != nil {
+		t.Errorf("a rebase that stays in range must not fail: %v", err)
+	}
+}
+
+// TestOutputGainR128MultiValueIsAtomic: a key is rebased whole or not at all, so the
+// advisory's "not rebased" is true of every value under it rather than half of them.
+func TestOutputGainR128MultiValueIsAtomic(t *testing.T) {
+	withTags := writeBack(t, sampleOpus, func(e *wl.Editor) {
+		e.Set("R128_TRACK_GAIN", "-896", "abc", "-512")
+	})
 	plan, err := mustParseBytes(t, withTags).Edit().SetOutputGain(-896).Prepare()
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	if !reportHasWarning(plan.Report().Warnings, wl.WarnOutputGainR128Tags) {
-		t.Fatalf("expected an R128 advisory; got %v", plan.Report().Warnings)
+		t.Fatalf("expected the unrebasable-value advisory; got %v", plan.Report().Warnings)
 	}
-	var keys []tag.Key
-	for _, w := range plan.Report().Warnings {
-		if w.Code == wl.WarnOutputGainR128Tags {
-			keys = append(keys, w.Keys...)
-		}
+	got, _ := mustParseBytes(t, applyPlan(t, plan, withTags)).Tags().Get("R128_TRACK_GAIN")
+	if want := []string{"-896", "abc", "-512"}; !slices.Equal(got, want) {
+		t.Errorf("R128_TRACK_GAIN = %v, want every value kept as found %v", got, want)
 	}
+}
+
+// TestOutputGainR128NotRebasedWhenGainDropped: no header moved, so the tags stay put.
+func TestOutputGainR128NotRebasedWhenGainDropped(t *testing.T) {
+	withTags := writeBack(t, "../testdata/sample.mp3", func(e *wl.Editor) {
+		e.Set("R128_TRACK_GAIN", "-896")
+	})
+	plan, err := mustParseBytes(t, withTags).Edit().SetOutputGain(-512).
+		Prepare(wl.WithAllowUnsupportedDrop())
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if !reportHasWarning(plan.Report().Warnings, wl.WarnOutputGainUnsupported) {
+		t.Fatalf("expected the gain drop warning; got %v", plan.Report().Warnings)
+	}
+	if reportHasWarning(plan.Report().Warnings, wl.WarnOutputGainR128Tags) {
+		t.Errorf("a dropped gain moves no header, so nothing to rebase; got %v", plan.Report().Warnings)
+	}
+	doc := mustParseBytes(t, applyPlan(t, plan, withTags))
+	if got, _ := doc.Tags().First("R128_TRACK_GAIN"); got != "-896" {
+		t.Errorf("R128_TRACK_GAIN = %q, want the untouched -896", got)
+	}
+}
+
+// TestOutputGainKeepR128Gains: the opt-out leaves both values as found and says so, for a
+// caller who knows the stored figures are stale.
+func TestOutputGainKeepR128Gains(t *testing.T) {
+	withTags := r128Tagged(t, "-896", "-512")
+	plan, err := mustParseBytes(t, withTags).Edit().SetOutputGain(-896).Prepare(wl.WithKeepR128Gains())
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	keys := r128WarningKeys(plan.Report().Warnings)
 	if !slices.Contains(keys, "R128_TRACK_GAIN") || !slices.Contains(keys, "R128_ALBUM_GAIN") {
 		t.Errorf("advisory keys = %v, want both R128 keys", keys)
 	}
-
-	updated, err := mustParseBytes(t, withTags).Edit().SetOutputGain(-896).
-		Set("R128_TRACK_GAIN", "0").Clear("R128_ALBUM_GAIN").Prepare()
-	if err != nil {
-		t.Fatalf("Prepare: %v", err)
+	for _, k := range []tag.Key{"R128_TRACK_GAIN", "R128_ALBUM_GAIN"} {
+		if changesMention(plan.Changes(), k) {
+			t.Errorf("Changes() should list only the gain, not %s; got %v", k, plan.Changes())
+		}
 	}
-	if reportHasWarning(updated.Report().Warnings, wl.WarnOutputGainR128Tags) {
-		t.Errorf("an edit that updates or clears the R128 tags must not warn; got %v", updated.Report().Warnings)
-	}
-
-	only, err := mustParseBytes(t, withTags).Edit().Set("R128_TRACK_GAIN", "-100").Prepare()
-	if err != nil {
-		t.Fatalf("Prepare: %v", err)
-	}
-	if reportHasWarning(only.Report().Warnings, wl.WarnOutputGainR128Tags) {
-		t.Errorf("an R128-only edit changes no header gain and must not warn; got %v", only.Report().Warnings)
+	doc := mustParseBytes(t, applyPlan(t, plan, withTags))
+	for _, c := range []struct {
+		key  tag.Key
+		want string
+	}{{"R128_TRACK_GAIN", "-896"}, {"R128_ALBUM_GAIN", "-512"}} {
+		if got, _ := doc.Tags().First(c.key); got != c.want {
+			t.Errorf("%s = %q, want the kept %q", c.key, got, c.want)
+		}
 	}
 }
 

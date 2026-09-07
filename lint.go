@@ -296,8 +296,8 @@ func lintPictures(pics []Picture) []Finding {
 // the shared [tag.ValidatorFor] registry so the linter and the CLI's set-time note
 // ([noteMalformedValue]) apply exactly the same rule per category - numeric, date,
 // boolean, the MP4-integer keys (non-negative ints: MEDIATYPE, ITUNESADVISORY, and
-// the movement pair), BPM (a non-negative decimal), ReplayGain (a decimal/dB), and
-// RELEASECOUNTRY (a two-letter code). This is the
+// the movement pair), BPM (a non-negative decimal), ReplayGain (a decimal/dB), the R128
+// gains (a signed 16-bit integer), and RELEASECOUNTRY (a two-letter code). This is the
 // single source the "lint and set agree" contract needs: it folds in the former
 // lintDates/lintNumbers and closes the gap where COMPILATION was set-validated but not
 // lint-validated, and MEDIATYPE/REPLAYGAIN at neither. A present-but-empty value is
@@ -376,11 +376,13 @@ func lintCardinality(ts tag.TagSet) []Finding {
 // lintCustomKeys reports keys outside the published canonical vocabulary. A custom
 // field round-trips faithfully, so this is informational, never a warning: it
 // never flips a clean file to a non-zero exit, it just tells a tagger which fields
-// are non-standard.
+// are non-standard. The R128 loudness keys are exempt: they are outside the vocabulary
+// because they describe the file's own audio rather than its metadata, but RFC 7845
+// defines them, so calling them non-standard would be wrong.
 func lintCustomKeys(ts tag.TagSet) []Finding {
 	var out []Finding
 	for _, k := range ts.Keys() {
-		if !k.Known() {
+		if !k.Known() && !tag.IsR128GainKey(k) {
 			out = append(out, Finding{LintInfo, "custom-key", "custom field, not a known key", k})
 		}
 	}

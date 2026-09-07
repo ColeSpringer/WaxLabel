@@ -10,36 +10,22 @@ import (
 	"testing"
 )
 
-// hiResALACFile writes a synthetic ALAC .m4a whose sample entry's 16.16 rate field is 0
-// (it cannot hold 96000) and whose magic cookie declares the real 96 kHz / 24-bit stereo
-// configuration.
-func hiResALACFile(t *testing.T) string {
-	t.Helper()
-	be32 := func(n int) []byte {
-		b := make([]byte, 4)
-		binary.BigEndian.PutUint32(b, uint32(n))
-		return b
-	}
-	be16 := func(n int) []byte {
-		b := make([]byte, 2)
-		binary.BigEndian.PutUint16(b, uint16(n))
-		return b
-	}
-	cookieCfg := make([]byte, 24)
-	binary.BigEndian.PutUint32(cookieCfg[0:4], 4096) // frameLength
-	cookieCfg[5] = 24                                // bitDepth
-	cookieCfg[6], cookieCfg[7], cookieCfg[8] = 40, 10, 14
-	cookieCfg[9] = 2                                    // numChannels
-	binary.BigEndian.PutUint16(cookieCfg[10:12], 255)   // maxRun
-	binary.BigEndian.PutUint32(cookieCfg[20:24], 96000) // sampleRate
-	cookie := mp4Atom("alac", slices.Concat([]byte{0, 0, 0, 0}, cookieCfg))
+func be32(n int) []byte {
+	b := make([]byte, 4)
+	binary.BigEndian.PutUint32(b, uint32(n))
+	return b
+}
 
-	entry := mp4Atom("alac", slices.Concat(
-		make([]byte, 6), []byte{0, 1}, make([]byte, 8),
-		be16(2), be16(16), []byte{0, 0, 0, 0},
-		be32(0), // 16.16 sample rate: 96000 does not fit
-		cookie,
-	))
+func be16(n int) []byte {
+	b := make([]byte, 2)
+	binary.BigEndian.PutUint16(b, uint16(n))
+	return b
+}
+
+// hiResFile writes a one-track .m4a around the given audio sample entry, with a 96 kHz
+// media timescale. It is the smallest file the dump path will read geometry out of.
+func hiResFile(t *testing.T, entry []byte) string {
+	t.Helper()
 	stsd := mp4Atom("stsd", slices.Concat([]byte{0, 0, 0, 0}, be32(1), entry))
 	mdhd := mp4Atom("mdhd", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 8), be32(96000), be32(96000)))
 	hdlr := mp4Atom("hdlr", slices.Concat(make([]byte, 8), []byte("soun"), make([]byte, 12)))
@@ -62,6 +48,48 @@ func hiResALACFile(t *testing.T) string {
 	return path
 }
 
+// hiResALACFile writes a synthetic ALAC .m4a whose sample entry's 16.16 rate field is 0
+// (it cannot hold 96000) and whose magic cookie declares the real 96 kHz / 24-bit stereo
+// configuration.
+func hiResALACFile(t *testing.T) string {
+	t.Helper()
+	cookieCfg := make([]byte, 24)
+	binary.BigEndian.PutUint32(cookieCfg[0:4], 4096) // frameLength
+	cookieCfg[5] = 24                                // bitDepth
+	cookieCfg[6], cookieCfg[7], cookieCfg[8] = 40, 10, 14
+	cookieCfg[9] = 2                                    // numChannels
+	binary.BigEndian.PutUint16(cookieCfg[10:12], 255)   // maxRun
+	binary.BigEndian.PutUint32(cookieCfg[20:24], 96000) // sampleRate
+	cookie := mp4Atom("alac", slices.Concat([]byte{0, 0, 0, 0}, cookieCfg))
+
+	return hiResFile(t, mp4Atom("alac", slices.Concat(
+		make([]byte, 6), []byte{0, 1}, make([]byte, 8),
+		be16(2), be16(16), []byte{0, 0, 0, 0},
+		be32(0), // 16.16 sample rate: 96000 does not fit
+		cookie,
+	)))
+}
+
+// hiResAACFile writes a synthetic AAC .m4a with the same unusable 16.16 rate field, its
+// real 96 kHz stereo geometry declared by the esds AudioSpecificConfig instead.
+func hiResAACFile(t *testing.T) string {
+	t.Helper()
+	descr := func(tag byte, body []byte) []byte {
+		return slices.Concat([]byte{tag, byte(len(body))}, body)
+	}
+	asc := []byte{0x10, 0x10} // AAC LC, samplingFrequencyIndex 0 (96000), stereo
+	decoderCfg := descr(0x04, slices.Concat([]byte{0x40, 0x15}, make([]byte, 11), descr(0x05, asc)))
+	es := descr(0x03, slices.Concat([]byte{0, 1, 0}, decoderCfg))
+	esds := mp4Atom("esds", slices.Concat([]byte{0, 0, 0, 0}, es))
+
+	return hiResFile(t, mp4Atom("mp4a", slices.Concat(
+		make([]byte, 6), []byte{0, 1}, make([]byte, 8),
+		be16(2), be16(16), []byte{0, 0, 0, 0},
+		be32(0), // 16.16 sample rate: 96000 does not fit
+		esds,
+	)))
+}
+
 // TestDumpJSONHiResALACSampleRate: the rate the CLI reports for a hi-res ALAC comes from
 // the magic cookie, the only place a 96 kHz rate fits.
 func TestDumpJSONHiResALACSampleRate(t *testing.T) {
@@ -78,6 +106,30 @@ func TestDumpJSONHiResALACSampleRate(t *testing.T) {
 	}
 	if jd.Properties.BitsPerSample != 24 {
 		t.Errorf("bitsPerSample = %d, want 24", jd.Properties.BitsPerSample)
+	}
+	stdout, _, code := runCLI(t, "dump", path)
+	if code != 0 {
+		t.Fatalf("dump exit = %d", code)
+	}
+	if !strings.Contains(stdout, "96000 Hz") {
+		t.Errorf("text dump should show 96000 Hz:\n%s", stdout)
+	}
+}
+
+// TestDumpJSONHiResAACSampleRate: the rate the CLI reports for a hi-res AAC comes from the
+// esds AudioSpecificConfig, and the object type it names becomes the codec profile.
+func TestDumpJSONHiResAACSampleRate(t *testing.T) {
+	t.Parallel()
+	path := hiResAACFile(t)
+	jd := dumpJSON(t, path)
+	if jd.Properties == nil {
+		t.Fatal("dump --json reported no properties")
+	}
+	if jd.Properties.SampleRate != 96000 {
+		t.Errorf("sampleRate = %d, want 96000", jd.Properties.SampleRate)
+	}
+	if jd.Properties.Codec != "AAC" || jd.Properties.CodecProfile != "AAC LC" {
+		t.Errorf("codec = %q/%q, want AAC with profile AAC LC", jd.Properties.Codec, jd.Properties.CodecProfile)
 	}
 	stdout, _, code := runCLI(t, "dump", path)
 	if code != 0 {

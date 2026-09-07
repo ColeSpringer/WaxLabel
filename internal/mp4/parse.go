@@ -10,6 +10,7 @@ import (
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/mapping"
+	"github.com/colespringer/waxlabel/internal/mpeg4audio"
 	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
@@ -615,12 +616,18 @@ func parseMdhd(src core.ReaderAtSized, mdhd node, limit int64) (time.Duration, b
 // That fixed layout holds for a v0 or v1 sound entry; a v2 entry replaces it with the
 // QuickTime structure, whose float64 rate and uint32 channel count sit elsewhere.
 //
-// For the two entries whose configuration this parser decodes - the ALAC magic cookie and
-// the FLAC dfLa STREAMINFO - that configuration is the decoder's source of truth and
-// overrides the entry, whose 16.16 rate field cannot hold a hi-res rate at all. Only the
-// reported track is corrected; d.cfg keeps the raw entry values, so the essence-digest
-// salt (and every stored digest) is unchanged. Other codecs keep the entry's own fields:
-// an AAC entry's esds AudioSpecificConfig is not decoded, so a hi-res AAC reports no rate.
+// For the three entries whose configuration this parser decodes - the ALAC magic cookie,
+// the FLAC dfLa STREAMINFO, and the AAC esds AudioSpecificConfig - that configuration is
+// the decoder's source of truth and overrides the entry, whose 16.16 rate field cannot
+// hold a hi-res rate at all. Only the reported track is corrected; d.cfg keeps the raw
+// entry values, so the essence-digest salt (and every stored digest) is unchanged.
+//
+// AAC alone needs the entry back, because an AudioSpecificConfig describes the core coder
+// and a player outputs an SBR stream at twice that rate. Three cases: a config that
+// declares SBR gives the played rate outright; a config that says nothing about SBR whose
+// entry rate is exactly double the core rate is an implicitly signalled stream the muxer
+// already decoded, so the entry stands; otherwise the config's core rate wins, including
+// over a config that explicitly denies SBR.
 func parseStsd(src core.ReaderAtSized, stsd node, d *doc, limit int64) {
 	// Clamp to the alloc limit rather than letting ReadSlice refuse the read: a caller with
 	// a limit below the prefix would otherwise get no codec and no geometry at all, and
@@ -662,7 +669,7 @@ func parseStsd(src core.ReaderAtSized, stsd node, d *doc, limit int64) {
 			extOff += 16 // v1 appends four QuickTime bytes-per-packet/frame/sample fields
 		}
 	}
-	if fourcc := string(b[12:16]); fourcc == "alac" || fourcc == "fLaC" {
+	if fourcc := string(b[12:16]); fourcc == "alac" || fourcc == "fLaC" || fourcc == "mp4a" {
 		applyEntryConfig(d, scanEntryConfig(b, extOff, end, fourcc))
 	}
 }
@@ -703,17 +710,19 @@ func parseSoundEntryV2(b []byte, end int, d *doc) (extOff int, ok bool) {
 // METADATA_BLOCK_HEADER, and the STREAMINFO body.
 const dfLaStreamInfoEnd = 8 + 4 + 4 + vorbis.StreamInfoLen
 
-// entryConfig is the geometry a codec's own configuration declares. streamInfo is set only
-// for a FLAC entry, whose STREAMINFO the FLAC-in-ISOBMFF spec makes authoritative for the
-// whole track, block-size bounds and MD5 included.
+// entryConfig is what a codec's own configuration declares. streamInfo is set only for a
+// FLAC entry, whose STREAMINFO the FLAC-in-ISOBMFF spec makes authoritative for the whole
+// track, block-size bounds and MD5 included; codec and asc only for an esds, whose object
+// type names the codec more precisely than the four-cc and whose AudioSpecificConfig needs
+// reconciling with the entry rather than simply replacing it.
 type entryConfig struct {
 	sampleRate, channels, bitDepth int
 	streamInfo                     *core.AudioTrack
+	codec                          string
+	asc                            *mpeg4audio.Config
 }
 
-func (c entryConfig) empty() bool {
-	return c.streamInfo == nil && c.sampleRate == 0 && c.channels == 0 && c.bitDepth == 0
-}
+func (c entryConfig) empty() bool { return c == entryConfig{} }
 
 // scanEntryConfig walks sibling boxes in b[off:end] for the sample entry's codec
 // configuration, descending into a QuickTime 'wave' wrapper. The ALAC magic cookie is a
@@ -729,9 +738,14 @@ func scanEntryConfig(b []byte, off, end int, fourcc string) entryConfig {
 			// STREAMINFO sits at a fixed offset, so a dfLa declaring more bytes than the
 			// bounded prefix read returned is still usable. The size still has to be large
 			// enough to hold one, or the read would take its geometry from the next box.
-			return entryConfig{streamInfo: dfLaStreamInfo(b, off, size)}
+			return entryConfig{streamInfo: dfLaStreamInfo(b, off, size, end)}
 		case size < 8 || size > end-off:
 			return entryConfig{} // malformed or truncated by the prefix read: keep the entry values
+		case name == "esds" && fourcc == "mp4a":
+			// Matched on the box name, never the four-cc: a QuickTime v1 entry wraps its esds
+			// in a wave box beside a 12-byte child literally named "mp4a", and the recursion
+			// below has to find the real one inside.
+			return esdsConfig(b, off, off+size)
 		case name == "alac" && fourcc == "alac":
 			return alacCookieConfig(b, off, size)
 		case name == "wave":
@@ -767,9 +781,11 @@ func alacCookieConfig(b []byte, off, size int) entryConfig {
 // dfLaStreamInfo decodes the STREAMINFO the dfLa box at b[off:] must open with, or nil
 // when the box is too small to hold one, opens with another block type, or is cut short of
 // its 34 bytes by the prefix read. Layout: the 8-byte box header, a 4-byte FullBox
-// version/flags, then METADATA_BLOCK_HEADER and body.
-func dfLaStreamInfo(b []byte, off, size int) *core.AudioTrack {
-	if size < dfLaStreamInfoEnd || off+dfLaStreamInfoEnd > len(b) || b[off+12]&0x7F != vorbis.BlockStreamInfo {
+// version/flags, then METADATA_BLOCK_HEADER and body. The bound is the sample entry's end,
+// not the buffer's: a dfLa declaring more bytes than it has would otherwise decode
+// STREAMINFO out of whatever box follows it.
+func dfLaStreamInfo(b []byte, off, size, end int) *core.AudioTrack {
+	if size < dfLaStreamInfoEnd || off+dfLaStreamInfoEnd > end || b[off+12]&0x7F != vorbis.BlockStreamInfo {
 		return nil
 	}
 	t, err := vorbis.ParseStreamInfo(b[off+16 : off+dfLaStreamInfoEnd])
@@ -780,8 +796,9 @@ func dfLaStreamInfo(b []byte, off, size int) *core.AudioTrack {
 }
 
 // applyEntryConfig overrides the sample entry's reported geometry with the codec
-// configuration's. The entry's Codec, Duration, and TotalSamples stand: the four-cc names
-// the container's spelling and the timing comes from mdhd.
+// configuration's. The entry's Duration and TotalSamples stand, since the timing comes
+// from mdhd; its four-cc stands too unless the configuration names the codec more
+// precisely, which only an esds objectTypeIndication does.
 func applyEntryConfig(d *doc, cfg entryConfig) {
 	if si := cfg.streamInfo; si != nil {
 		d.track.SampleRate = si.SampleRate
@@ -792,6 +809,13 @@ func applyEntryConfig(d *doc, cfg entryConfig) {
 		d.track.MD5 = si.MD5
 		return
 	}
+	if cfg.codec != "" {
+		// The raw spelling; the root parse canonicalizes it and keeps this as the profile.
+		d.track.Codec = cfg.codec
+	}
+	if cfg.asc != nil {
+		applyAACConfig(d, *cfg.asc)
+	}
 	if cfg.sampleRate > 0 {
 		d.track.SampleRate = cfg.sampleRate
 	}
@@ -800,6 +824,43 @@ func applyEntryConfig(d *doc, cfg entryConfig) {
 	}
 	if cfg.bitDepth > 0 {
 		d.track.BitsPerSample = cfg.bitDepth
+	}
+}
+
+// applyAACConfig reconciles an AudioSpecificConfig with the geometry the sample entry
+// already put on the track. The config describes the core coder, so it cannot simply
+// replace the entry: an SBR stream plays at twice the core rate, and a muxer that decoded
+// one may have written that played rate into the entry itself.
+func applyAACConfig(d *doc, asc mpeg4audio.Config) {
+	entryRate, entryChannels := d.track.SampleRate, d.track.Channels
+	switch {
+	case asc.SBR:
+		// Declared outright, including the downsampled case where the extension rate equals
+		// the core rate and doubling would be wrong.
+		if r := asc.OutputSampleRate(); r > 0 {
+			d.track.SampleRate = r
+		}
+		if ch := asc.OutputChannels(); ch > 0 {
+			d.track.Channels = ch
+		}
+	case !asc.SBRSignalled && asc.ObjectType == aacLC && asc.SampleRate > 0 && entryRate == 2*asc.SampleRate:
+		// An implicitly signalled HE-AAC stream copied into MP4: the config is the core
+		// coder's, but the muxer decoded the stream and wrote the played geometry into the
+		// entry. An entry landing on exactly double the core rate is the signal; corruption
+		// does not pick that value. A config that denies SBR never reaches here, and the
+		// core has to be AAC LC, which is what HE-AAC is defined over - an AAC LD or
+		// xHE-AAC track whose rates happen to sit 2:1 apart must not be relabeled.
+		d.track.Codec = "HE-AAC"
+		if entryChannels == 2 && asc.ChannelConfig == 1 {
+			d.track.Codec = "HE-AAC v2"
+		}
+	default:
+		if asc.SampleRate > 0 {
+			d.track.SampleRate = asc.SampleRate
+		}
+		if asc.Channels > 0 {
+			d.track.Channels = asc.Channels
+		}
 	}
 }
 

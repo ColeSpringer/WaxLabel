@@ -201,6 +201,13 @@ type WriteOptions struct {
 	// Off by default (the whole-item capability gates are hard errors); the CLI enables it for
 	// set and plan, where --strict re-escalates the drop warnings to a failure.
 	AllowUnsupportedDrop bool
+	// KeepR128Gains makes [Editor.Prepare] leave R128_TRACK_GAIN and R128_ALBUM_GAIN as it
+	// found them when the same edit changes the output gain, instead of rebasing them by the
+	// header delta. RFC 7845 applies those tags on top of the header gain, so keeping them
+	// moves the loudness a compliant player produces; Prepare warns for each tag it kept.
+	// Off by default (the RFC's own remedy is to update them); the CLI exposes it as
+	// --keep-r128, for a caller who knows the stored values are stale.
+	KeepR128Gains bool
 	// SyncedLyricsCleared marks that the synced-lyrics set was explicitly cleared before this
 	// edit authored a new one, so an ID3 SYLT rewrite skips its fallback to the destination's
 	// existing SYLT language and descriptor: a cleared-then-authored set with no language reads

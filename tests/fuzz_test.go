@@ -29,6 +29,9 @@ func FuzzParse(f *testing.F) {
 		sampleMP3, sampleMP324, notagsMP3, sampleWAV, notagsWAV, sampleMP4, notagsMP4,
 		sampleMKA, sampleWebM, notagsMKA, chaptersMKA, sampleAIFF, notagsAIFF, sampleAIFC, sampleM4B,
 		sampleAAC, notagsAAC, sampleRF64, sampleWV, notagsWV, sampleAPE, notagsAPE, sampleWMA, notagsWMA, chaptersMPC,
+		// The HE-AAC shapes, whose esds descriptor nest and AudioSpecificConfig the MP4 path
+		// decodes; heaac_v1.aac is the same stream as raw ADTS.
+		"../testdata/heaac_v1.m4a", "../testdata/heaac_v2.m4a", "../testdata/heaac_ds.m4a", heaacAAC,
 	} {
 		if b, err := os.ReadFile(p); err == nil {
 			f.Add(b)

@@ -17,11 +17,15 @@ All notable changes to this project are documented here.
   `Properties` and shows in `dump` (`gain -3.50 dB`, `outputGainDb` in `--json`, an
   `OpusHead` note in `--native`), `caps` (`output gain`), and `diff`, which no longer calls
   two files identical when only their header gain differs; `Editor.SetOutputGain` and
-  `set --output-gain DB` write it, patching page 0 alone and leaving every audio page byte
-  for byte. The unit is the raw Q7.8 integer the spec and the R128 tags use; the CLI speaks
-  decibels. New codes: `output-gain-unsupported`, for a format that stores none (`--strict`
-  escalates it), and `output-gain-r128-tags`, an advisory for a gain change that leaves
-  `R128_TRACK_GAIN`/`R128_ALBUM_GAIN` set, which RFC 7845 applies on top of it.
+  `set --output-gain DB` write it, leaving every audio page byte for byte (and touching page
+  0 alone when no R128 rebase accompanies it). The unit is the raw Q7.8 integer the spec and the R128 tags use; the CLI speaks
+  decibels. RFC 7845 applies `R128_TRACK_GAIN` and `R128_ALBUM_GAIN` on top of the header,
+  so a gain edit rebases them by the same change, leaving the loudness a player produces
+  where it was, unless the same edit sets or clears them or asks to keep them
+  (`WithKeepR128Gains`, `--keep-r128`); a rebase outside the signed 16-bit range refuses the
+  edit. New codes: `output-gain-unsupported`, for a format that stores none (`--strict`
+  escalates it), and `output-gain-r128-tags`, an advisory for an R128 tag a gain change left
+  alone: kept by request, or not a Q7.8 integer and so not rebasable.
 - QuickTime version 2 sound sample entries, the shape ffmpeg writes into a hi-res `.mov`.
   Their float64 rate and 32-bit channel count are read, so such a file reports its geometry
   instead of nothing.
@@ -44,6 +48,30 @@ All notable changes to this project are documented here.
   `STREAMINFO` the FLAC-in-ISOBMFF spec makes authoritative, along with the channel count,
   bit depth, and FLAC block-size bounds. The digest salt keeps the raw entry values, so
   stored MP4 digests are unchanged.
+- Hi-res AAC-in-MP4 too, from the `esds` AudioSpecificConfig. AAC needs the entry back,
+  because the config describes the core coder while an SBR stream plays at twice its rate:
+  a config declaring SBR gives the played rate outright (downsampled SBR, whose extension
+  rate equals the core rate, is not doubled); a config silent about SBR whose entry rate is
+  exactly double an AAC LC core rate is an implicitly signalled stream the muxer already
+  decoded, so the entry stands; otherwise the core rate wins, including over a config that
+  denies SBR. An implicit stream with an honest entry,
+  and raw ADTS, still report the core rate - only decoding the frames would find the
+  extension. `codecProfile` reads the object type (`AAC LC`, `HE-AAC`, `HE-AAC v2`,
+  `xHE-AAC`) where a config is present, the `mp4a` fourcc where none is. Digests unchanged.
+- An MP4 `mp4a` entry whose `esds` declares MPEG-1 or MPEG-2 audio reports `MP3` rather than
+  `AAC`.
+- A Matroska track's `OutputSamplingFrequency` is read, so an HE-AAC `.mka` reports the rate
+  a player produces instead of half of it. An `A_AAC*` `CodecPrivate` names the object type
+  and, when the track declares no output frequency, supplies the played rate and channel
+  count; where it says nothing about SBR the `CodecID` suffix (`/SBR`, `/LC`, ...) names the
+  profile. The digest salt stays on `SamplingFrequency`.
+- An MP4 `dfLa` box declaring more bytes than its sample entry holds no longer decodes
+  `STREAMINFO` out of the bytes that follow the entry.
+- `set --strict --set R128_TRACK_GAIN=0` is accepted rather than refused as an unknown key,
+  which is what `--output-gain`'s own help text tells you to write. The two RFC 7845 keys are
+  now validated (`lint` reports `malformed-number` for a value that is not a signed 16-bit
+  integer) and trimmed like the `REPLAYGAIN_*` keys, and `lint` no longer calls them
+  `custom-key`.
 - `copy` excludes `R128_TRACK_GAIN` and `R128_ALBUM_GAIN`, as it already excluded the
   `REPLAYGAIN_*` keys: they describe the source's own audio, so the destination keeps its
   own.

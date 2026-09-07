@@ -223,9 +223,6 @@ func TestOggCoverRenumberPreservesEssence(t *testing.T) {
 	}
 }
 
-// TestOggOpusR128NotMappedToReplayGain guards the plan's "Opus R128 distinct from
-// ReplayGain" rule: an R128_* tag passes through as its own canonical key and is
-// never folded into the ReplayGain keys.
 // TestOggSaveBackVerifyEssence exercises the SaveBack path with WithVerifyEssence
 // - which re-reads the written file and re-hashes its essence (verifyOutput) -
 // together with a renumbering cover add, so the buffered file write, the renumber
@@ -257,6 +254,9 @@ func TestOggSaveBackVerifyEssence(t *testing.T) {
 	}
 }
 
+// TestOggOpusR128NotMappedToReplayGain guards the "Opus R128 distinct from ReplayGain" rule:
+// an R128_* tag passes through as its own canonical key and is never folded into the
+// ReplayGain keys.
 func TestOggOpusR128NotMappedToReplayGain(t *testing.T) {
 	src := readFixture(t, sampleOpus)
 	plan, err := mustParseBytes(t, src).Edit().Set(tag.Key("R128_TRACK_GAIN"), "-2048").Prepare()

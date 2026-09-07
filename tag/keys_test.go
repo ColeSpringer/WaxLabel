@@ -156,8 +156,37 @@ func TestR128GainKeysAreCustomOwnAudio(t *testing.T) {
 		if IsReplayGainKey(k) {
 			t.Errorf("IsReplayGainKey(%s) = true; R128 values are plain Q7.8 integers, not dB text", k)
 		}
+		// RFC 7845 defines the value exactly, so these keys are validated and trimmed even
+		// though they are not canonical.
+		if !IsTrimmableKey(k) {
+			t.Errorf("IsTrimmableKey(%s) = false, want true", k)
+		}
+		if _, ok := ValidatorFor(k); !ok {
+			t.Errorf("ValidatorFor(%s) reported no contract, want the R128 gain one", k)
+		}
 	}
 	if IsR128GainKey("R128_TRACK_GAINX") {
 		t.Error("IsR128GainKey should not match a longer key")
+	}
+}
+
+// TestValidR128GainValue: RFC 7845 section 5.2.1 spells the value out - a base-10 integer in
+// the signed 16-bit range, optional sign, leading zeros allowed, at most 6 characters.
+func TestValidR128GainValue(t *testing.T) {
+	valid := []string{"-573", " 111 ", "+5", "-32768", "32767", "000573", "0"}
+	invalid := []string{"abc", "-3.5 dB", "40000", "-40000", "0000573", "- 5", "", "  ", "+", "-", "1e3", "5 5"}
+	for _, v := range valid {
+		if !ValidR128GainValue("R128_TRACK_GAIN", v) {
+			t.Errorf("ValidR128GainValue(%q) = false, want true", v)
+		}
+	}
+	for _, v := range invalid {
+		if ValidR128GainValue("R128_ALBUM_GAIN", v) {
+			t.Errorf("ValidR128GainValue(%q) = true, want false", v)
+		}
+	}
+	// A key outside the category has no opinion, matching every other validator here.
+	if !ValidR128GainValue(Title, "not a number") {
+		t.Error("ValidR128GainValue should report a non-R128 key valid")
 	}
 }

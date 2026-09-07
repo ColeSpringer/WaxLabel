@@ -48,8 +48,10 @@ const (
 	idCodecID         = 0x86
 	idAudio           = 0xE1
 	idSampFreq        = 0xB5
+	idOutSampFreq     = 0x78B5
 	idChannels        = 0x9F
 	idBitDepth        = 0x6264
+	idCodecPrivate    = 0x63A2
 	idTags            = 0x1254C367
 	idTag             = 0x7373
 	idTargets         = 0x63C0
@@ -351,6 +353,22 @@ func readString(src core.ReaderAtSized, el element, limit int64) (string, error)
 		return "", err
 	}
 	return strings.TrimRight(string(b), "\x00"), nil
+}
+
+// maxAudioSpecificConfig bounds the CodecPrivate prefix the AAC config decoder is given.
+// The decoder reads at most a few dozen bits past its header, so 32 bytes is provably every
+// byte it can consume, and a declared length beyond that is never allocated.
+const maxAudioSpecificConfig = 32
+
+// readBytesPrefix reads at most max bytes of a leaf element's data. Unlike [readBytes] a
+// longer element is not an error: the caller has declared it needs only a prefix, so a
+// hostile length costs a bounded read rather than the whole allocation.
+func readBytesPrefix(src core.ReaderAtSized, el element, max, limit int64) ([]byte, error) {
+	n := min(el.dataLen(), max)
+	if n <= 0 {
+		return nil, nil
+	}
+	return bits.ReadSlice(src, el.dataStart, n, limit)
 }
 
 // readBytes reads a leaf element's data. A length beyond the metadata cap or the

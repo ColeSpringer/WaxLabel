@@ -522,6 +522,10 @@ func FuzzMatroskaParse(f *testing.F) {
 	f.Add([]byte(magic))
 	f.Add([]byte(magic + "\x80\x18\x53\x80\x67\xff")) // header + unknown-size Segment
 	f.Add([]byte(magic + "\xff"))                     // unknown-size header
+	// An SBR track: OutputSamplingFrequency and an AudioSpecificConfig CodecPrivate, the two
+	// elements the AAC rate and profile come from.
+	f.Add(mkAudioTrackFile("A_AAC/MPEG4/LC/SBR", []byte{0x2b, 0x92, 0x08, 0x00},
+		mkFloat(idSampFreq, 22050), mkFloat(idOutSampFreq, 44100), mkUint(idChannels, 2)))
 	// Regression: an Info whose malformed "CRC-32" child has a junk size that
 	// clamps to 4 bytes must not be mistaken for a real CRC - a title edit on it
 	// once wrote a title that a re-parse could not read back.
@@ -594,39 +598,41 @@ func FuzzMatroskaParse(f *testing.F) {
 
 // Element IDs needed by the synth tests (mirroring the unexported codec consts).
 const (
-	idEBML        = 0x1A45DFA3
-	idDocType     = 0x4282
-	idSegment     = 0x18538067
-	idInfo        = 0x1549A966
-	idDuration    = 0x4489
-	idSegTitle    = 0x7BA9
-	idTracks      = 0x1654AE6B
-	idTrackEntry  = 0xAE
-	idTrackType   = 0x83
-	idCodecID     = 0x86
-	idAudio       = 0xE1
-	idChannels    = 0x9F
-	idSampFreq    = 0xB5
-	idBitDepth    = 0x6264
-	idCluster     = 0x1F43B675
-	idTimestamp   = 0xE7
-	idSimpleBlock = 0xA3
-	idCRC32       = 0xBF
-	idTags        = 0x1254C367
-	idTag         = 0x7373
-	idTargets     = 0x63C0
-	idTgtTypeVal  = 0x68CA
-	idTgtType     = 0x63CA
-	idTagTrackUID = 0x63C5
-	idTagChapUID  = 0x63C4
-	idSimpleTag   = 0x67C8
-	idTagName     = 0x45A3
-	idTagString   = 0x4487
-	idAttachments = 0x1941A469
-	idAttached    = 0x61A7
-	idFileName    = 0x466E
-	idFileMime    = 0x4660
-	idFileData    = 0x465C
+	idEBML         = 0x1A45DFA3
+	idDocType      = 0x4282
+	idSegment      = 0x18538067
+	idInfo         = 0x1549A966
+	idDuration     = 0x4489
+	idSegTitle     = 0x7BA9
+	idTracks       = 0x1654AE6B
+	idTrackEntry   = 0xAE
+	idTrackType    = 0x83
+	idCodecID      = 0x86
+	idAudio        = 0xE1
+	idChannels     = 0x9F
+	idSampFreq     = 0xB5
+	idOutSampFreq  = 0x78B5
+	idBitDepth     = 0x6264
+	idCodecPrivate = 0x63A2
+	idCluster      = 0x1F43B675
+	idTimestamp    = 0xE7
+	idSimpleBlock  = 0xA3
+	idCRC32        = 0xBF
+	idTags         = 0x1254C367
+	idTag          = 0x7373
+	idTargets      = 0x63C0
+	idTgtTypeVal   = 0x68CA
+	idTgtType      = 0x63CA
+	idTagTrackUID  = 0x63C5
+	idTagChapUID   = 0x63C4
+	idSimpleTag    = 0x67C8
+	idTagName      = 0x45A3
+	idTagString    = 0x4487
+	idAttachments  = 0x1941A469
+	idAttached     = 0x61A7
+	idFileName     = 0x466E
+	idFileMime     = 0x4660
+	idFileData     = 0x465C
 	// Chapters synth IDs (used by matroska_chapter_test.go).
 	idChapters      = 0x1043A770
 	idEditionEntry  = 0x45B9

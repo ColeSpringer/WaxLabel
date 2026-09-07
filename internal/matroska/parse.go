@@ -10,6 +10,7 @@ import (
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/mapping"
+	"github.com/colespringer/waxlabel/internal/mpeg4audio"
 	"github.com/colespringer/waxlabel/tag"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -276,6 +277,8 @@ func parseTracks(src core.ReaderAtSized, tracks element, depth *bits.Depth, limi
 func parseTrackEntry(src core.ReaderAtSized, entry element, depth *bits.Depth, limit int64, d *doc) {
 	var tt uint64
 	var codecID string
+	var outputRate int
+	var private element
 	var t core.AudioTrack
 	_ = eachChild(src, entry.dataStart, entry.dataEnd, depth, limit, func(el element) error {
 		switch el.id {
@@ -286,7 +289,13 @@ func parseTrackEntry(src core.ReaderAtSized, entry element, depth *bits.Depth, l
 		case idTrackNumber:
 			t.Index = intVal(readUint(src, el, limit))
 		case idAudio:
-			parseAudio(src, el, depth, limit, &t)
+			// Only overwrite when this element declared one: a malformed entry with a second,
+			// silent Audio child must not erase what the first one said.
+			if r := parseAudio(src, el, depth, limit, &t); r > 0 {
+				outputRate = r
+			}
+		case idCodecPrivate:
+			private = el // read below, and only for the codec whose config this parser decodes
 		}
 		return nil
 	})
@@ -295,25 +304,110 @@ func parseTrackEntry(src core.ReaderAtSized, entry element, depth *bits.Depth, l
 		return
 	}
 	t.Codec = codecName(codecID)
-	d.tracks = append(d.tracks, t)
-	if len(d.tracks) == 1 {
+	// The digest salt is SamplingFrequency, the element it has always been, so copy it
+	// before the played rate replaces the reported one.
+	if len(d.tracks) == 0 {
 		d.codecID = codecID
 		d.sampleRate = t.SampleRate
 		d.channels = t.Channels
 		d.bitDepth = t.BitsPerSample
 	}
+	// OutputSamplingFrequency is what a player produces; SamplingFrequency is the core
+	// coder's, half of it for an SBR stream.
+	if outputRate > 0 {
+		t.SampleRate = outputRate
+	}
+	if strings.HasPrefix(codecID, "A_AAC") {
+		// Read the private data only here, and only the prefix the decoder can consume: a
+		// Vorbis or FLAC CodecPrivate holds whole setup headers this parser has no use for,
+		// and an AAC one that declares megabytes should not be allocated to read 24 bytes.
+		// An unreadable one degrades to the CodecID, as the CodecID string itself degrades.
+		b, _ := readBytesPrefix(src, private, maxAudioSpecificConfig, limit)
+		applyAACCodecPrivate(&t, codecID, b, outputRate > 0)
+	}
+	d.tracks = append(d.tracks, t)
+}
+
+// applyAACCodecPrivate names an AAC track's profile and, when the container did not declare
+// an output rate, takes the played rate from the AudioSpecificConfig the CodecPrivate holds.
+// Without a usable config the CodecID's own suffix names the profile, which is all the
+// older mkvmerge and ffmpeg files that omit CodecPrivate carry.
+func applyAACCodecPrivate(t *core.AudioTrack, codecID string, private []byte, haveOutputRate bool) {
+	fromID := aacCodecIDProfile(codecID)
+	asc, ok := mpeg4audio.ParseConfig(private)
+	if !ok {
+		t.Codec = fromID
+		return
+	}
+	switch {
+	case asc.SBRSignalled || asc.SBR:
+		// The config addressed SBR, so it is the stream's own account of itself and outranks
+		// a suffix the muxer may have left stale.
+		t.Codec = asc.ProfileName()
+	case fromID != "AAC":
+		// The config said nothing about SBR, so the suffix's claim stands unopposed. Letting
+		// the config win here would turn A_AAC/MPEG4/LC/SBR into "AAC LC", losing a fact the
+		// same file reports correctly when it carries no CodecPrivate at all.
+		t.Codec = fromID
+	default:
+		t.Codec = asc.ProfileName()
+	}
+	if haveOutputRate || !asc.SBR {
+		return
+	}
+	// The container under-declared, so the config supplies the played geometry - the channel
+	// count with the rate, or a parametric-stereo track reads as stereo at one channel.
+	if r := asc.OutputSampleRate(); r > 0 {
+		t.SampleRate = r
+	}
+	if ch := asc.OutputChannels(); ch > 0 && t.Channels == asc.Channels {
+		t.Channels = ch
+	}
+}
+
+// aacCodecIDProfile names an AAC profile from the CodecID suffix: A_AAC/MPEG4/LC/SBR and
+// its MPEG2 sibling spell the object type where no CodecPrivate does.
+func aacCodecIDProfile(codecID string) string {
+	if strings.HasSuffix(codecID, "/SBR") {
+		return "HE-AAC"
+	}
+	switch {
+	case strings.HasSuffix(codecID, "/MAIN"):
+		return "AAC Main"
+	case strings.HasSuffix(codecID, "/LC"):
+		return "AAC LC"
+	case strings.HasSuffix(codecID, "/SSR"):
+		return "AAC SSR"
+	case strings.HasSuffix(codecID, "/LTP"):
+		return "AAC LTP"
+	}
+	return "AAC"
 }
 
 // parseAudio reads the Audio sub-element's sampling frequency, channel count, and
-// bit depth.
-func parseAudio(src core.ReaderAtSized, audio element, depth *bits.Depth, limit int64, t *core.AudioTrack) {
+// bit depth onto t, returning OutputSamplingFrequency separately (0 when absent or
+// unusable). The caller applies it after copying the digest salt, which stays on
+// SamplingFrequency.
+func parseAudio(src core.ReaderAtSized, audio element, depth *bits.Depth, limit int64, t *core.AudioTrack) int {
+	// Guard NaN/Inf and absurd magnitudes: int(NaN)/int(+Inf) is implementation-defined,
+	// and a wild rate poisons the essence config.
+	rate := func(el element) (int, bool) {
+		f, ok := readFloat(src, el, limit)
+		if !ok || !(f > 0) || f >= math.MaxInt32 {
+			return 0, false
+		}
+		return int(f), true
+	}
+	outputRate := 0
 	_ = eachChild(src, audio.dataStart, audio.dataEnd, depth, limit, func(el element) error {
 		switch el.id {
 		case idSampFreq:
-			// Guard NaN/Inf and absurd magnitudes: int(NaN)/int(+Inf) is
-			// implementation-defined, and a wild rate poisons the essence config.
-			if f, ok := readFloat(src, el, limit); ok && f > 0 && f < math.MaxInt32 {
-				t.SampleRate = int(f)
+			if r, ok := rate(el); ok {
+				t.SampleRate = r
+			}
+		case idOutSampFreq:
+			if r, ok := rate(el); ok {
+				outputRate = r
 			}
 		case idChannels:
 			t.Channels = intVal(readUint(src, el, limit))
@@ -322,6 +416,7 @@ func parseAudio(src core.ReaderAtSized, audio element, depth *bits.Depth, limit 
 		}
 		return nil
 	})
+	return outputRate
 }
 
 // parseTags reads every Tag (target group) into the native doc.
@@ -887,6 +982,8 @@ func codecName(id string) string {
 	case id == "A_VORBIS":
 		return "Vorbis"
 	case strings.HasPrefix(id, "A_AAC"):
+		// The object type, when the track carries one, comes from the CodecPrivate or the
+		// CodecID suffix; this is the fallback for neither.
 		return "AAC"
 	case strings.HasPrefix(id, "A_MPEG/L3"):
 		return "MP3"

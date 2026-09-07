@@ -153,11 +153,12 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 			continue
 		}
 		// Grade the value the writer would store, not the raw parsed bytes. Trimmable fields
-		// ([tag.IsTrimmableKey]: numeric, date, MP4-integer, BPM, ReplayGain, release-country)
-		// are trimmed before rendering, so value-level predicates should see the stored form
-		// (matching TrimTokenValue's own gate). ReplayGain keys are filtered upstream as
-		// own-audio, so every trimmable category except that one reaches here; keying off the
-		// shared predicate keeps this gate from drifting from TrimTokenValue when a key is added.
+		// ([tag.IsTrimmableKey]: numeric, date, MP4-integer, BPM, ReplayGain, R128 gain,
+		// release-country) are trimmed before rendering, so value-level predicates should see
+		// the stored form (matching TrimTokenValue's own gate). The ReplayGain and R128 keys
+		// are filtered upstream as own-audio, so every other trimmable category reaches here;
+		// keying off the shared predicate keeps this gate from drifting from TrimTokenValue
+		// when a key is added.
 		graded := vals
 		if tag.IsTrimmableKey(k) {
 			// Copy on write: most stored values are already clean, so they reuse vals.

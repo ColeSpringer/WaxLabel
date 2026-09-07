@@ -65,8 +65,10 @@ type editFlags struct {
 	numericGenre bool
 
 	// outputGain is the raw --output-gain value in decibels; "" means unset, the same
-	// sentinel --padding uses.
+	// sentinel --padding uses. keepR128 opts the same edit out of rebasing the R128
+	// loudness tags, and is meaningless without it.
 	outputGain string
+	keepR128   bool
 
 	strict bool // promote selected write notes, including unknown-key and dropped-value notes, to errors
 }
@@ -95,7 +97,8 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringVar(&e.padding, "padding", "", "reserve at least N bytes of padding after the metadata, with the same size suffixes as --max-size (e.g. 8KiB; FLAC default 8192; MP3/AAC/MP4 reuse the existing region; 0 writes none, like --no-padding)")
 	f.BoolVar(&e.noPadding, "no-padding", false, "write no padding after the metadata (no effect on Ogg/WAV/AIFF/Matroska, which have no padding region)")
 	f.BoolVar(&e.numericGenre, "numeric-genre", false, "write a recognized genre as its numeric reference instead of its name: ID3's TCON on MP3/AAC/AIFF, MP4's gnre atom, and on WAV only where an 'id3 ' chunk exists or the same edit creates one (LIST/INFO IGNR stores the name literally). FLAC, Ogg, and Matroska have no numeric genre representation, so it has no effect there")
-	f.StringVar(&e.outputGain, "output-gain", "", "set the decoder-applied output gain the stream header declares, in decibels (e.g. -3.5), rounded to the Q7.8 step the field stores. Only Ogg Opus has one; elsewhere it is dropped with a warning (--strict then refuses) and a read-only file fails. RFC 7845 applies R128_TRACK_GAIN and R128_ALBUM_GAIN on top of it, so update or clear them in the same edit")
+	f.StringVar(&e.outputGain, "output-gain", "", "set the decoder-applied output gain the stream header declares, in decibels (e.g. -3.5), rounded to the Q7.8 step the field stores. Only Ogg Opus has one; elsewhere it is dropped with a warning (--strict then refuses) and a read-only file fails. RFC 7845 applies R128_TRACK_GAIN and R128_ALBUM_GAIN on top of it, so they are rebased by the same change unless this invocation sets or clears them (--keep-r128 leaves them and warns)")
+	f.BoolVar(&e.keepR128, "keep-r128", false, "with --output-gain, leave R128_TRACK_GAIN and R128_ALBUM_GAIN as they are instead of rebasing them by the same change, and warn for each one kept. Use it when the stored values are stale and will be replaced separately")
 	f.BoolVar(&e.strict, "strict", false, "fail (exit 2), instead of just noting it, on an unknown key or any edit the destination format cannot store faithfully: a value dropped, coerced, or reduced in precision; a single-valued key given multiple values; a dropped picture, chapter, or synced-lyrics field; or a truncated chapter title or clamped timestamp")
 }
 
@@ -530,6 +533,11 @@ func (e *editFlags) writeOptions() ([]wl.WriteOption, bool, error) {
 	if e.numericGenre {
 		opts = append(opts, wl.WithNumericGenre())
 	}
+	// --keep-r128 opts out of the R128 rebase a gain edit otherwise performs. compile()
+	// rejects it without --output-gain, so it can only reach a write that moves the header.
+	if e.keepR128 {
+		opts = append(opts, wl.WithKeepR128Gains())
+	}
 	return opts, padFlag, nil
 }
 
@@ -711,6 +719,11 @@ func (e *editFlags) compile(extra ...wl.WriteOption) (*compiledEdit, error) {
 			return nil, err
 		}
 	}
+	// The rebase only happens when the header moves, so keeping the tags "as they are" has
+	// nothing to opt out of on its own.
+	if e.keepR128 && e.outputGain == "" {
+		return nil, usagef("--keep-r128 needs --output-gain")
+	}
 	return &compiledEdit{
 		patch:                    patch,
 		opts:                     opts,
@@ -790,7 +803,10 @@ func dedupUnknownKeys(keys []tag.Key) []tag.Key {
 	var out []tag.Key
 	seen := map[tag.Key]bool{}
 	for _, k := range keys {
-		if k.Known() || seen[k] {
+		// The R128 loudness keys sit outside the canonical vocabulary but are defined by
+		// RFC 7845, and --output-gain's own help text tells the user to set one. Noting them
+		// as possible typos - and refusing them under --strict - would contradict that.
+		if k.Known() || tag.IsR128GainKey(k) || seen[k] {
 			continue
 		}
 		seen[k] = true
@@ -1027,7 +1043,7 @@ func notifyValueNotes(errOut io.Writer, e *editFlags, asJSON bool) {
 // authoritative drop signal. It reads the same [tag.ValidatorFor] registry
 // [Document.Lint] consumes, so the set-time note and the linter cannot disagree on what
 // a malformed value is: numeric, date, boolean, the MP4-integer keys, BPM, ReplayGain,
-// and RELEASECOUNTRY. The
+// the R128 gains, and RELEASECOUNTRY. The
 // note is a single line, so the key and value are run through [tag.SanitizeLine] - they
 // are the user's own --set input, but a control byte must not reach the terminal raw
 // and an embedded newline must not forge a line. (SanitizeLine, not SanitizeText, to
@@ -1069,7 +1085,8 @@ func noteMalformedValue(notes *cappedNotes, k tag.Key, v string) {
 //   - WarnPaddingClamped: about padding size, not tag content.
 //   - Advisory/sanity codes (number-total-conflict, chapter-overlap-reconciled,
 //     chapter-past-duration, duplicate-*, multiple-front-covers, legacy-conflict,
-//     output-gain-r128-tags) and the
+//     output-gain-r128-tags - which fires for an R128 tag kept by request or one that could
+//     not be rebased) and the
 //     read-path codes (trailing-bytes, unknown-chunk-size and malformed-tag-entry among
 //     them): they describe the file, not an edit loss. unknown-chunk-size is the mildest -
 //     a non-seekable writer emits the sentinel legitimately, and a rewrite replaces it with

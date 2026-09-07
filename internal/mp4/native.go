@@ -230,7 +230,13 @@ func (d *doc) Describe() []core.NativeEntry {
 		case "moov":
 			note = "movie box"
 		case "mdat":
-			note = d.track.Codec + " media data"
+			// The sample entry's four-cc, not d.track.Codec: the native view shows container
+			// structure, and an entry whose codec configuration names an object type would
+			// otherwise print that instead of the box's own spelling.
+			note = "media data"
+			if d.cfg.codec != ([4]byte{}) {
+				note = string(d.cfg.codec[:]) + " media data"
+			}
 		case "moof":
 			// Fragmented files are dumpable, so name the box rather than let it fall
 			// through to "preserved", which would imply inert padding.

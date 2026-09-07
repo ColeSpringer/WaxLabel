@@ -32,7 +32,7 @@ func mp4AudioTrakChap(chapTrackID int, audioStco uint32, stblExtra ...[]byte) []
 	tref := mp4Atom("tref", mp4Atom("chap", mp4be32(chapTrackID)))
 	stbl := mp4Atom("stbl", slices.Concat(mp4StsdAudio(), mp4Stco(audioStco), slices.Concat(stblExtra...)))
 	minf := mp4Atom("minf", stbl)
-	mdia := mp4Atom("mdia", slices.Concat(mp4HdlrSoun(), mp4Mdhd(), minf))
+	mdia := mp4Atom("mdia", slices.Concat(mp4HdlrSoun(), mp4Mdhd(44100), minf))
 	return mp4Atom("trak", slices.Concat(tkhd, tref, mdia))
 }
 
@@ -180,7 +180,7 @@ func mp4AudioTrakTkhd(trackID int, audioStco uint32, extra ...[]byte) []byte {
 	tkhd := mp4Atom("tkhd", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 8), mp4be32(trackID), make([]byte, 4)))
 	stbl := mp4Atom("stbl", slices.Concat(mp4StsdAudio(), mp4Stco(audioStco)))
 	minf := mp4Atom("minf", stbl)
-	mdia := mp4Atom("mdia", slices.Concat(mp4HdlrSoun(), mp4Mdhd(), minf))
+	mdia := mp4Atom("mdia", slices.Concat(mp4HdlrSoun(), mp4Mdhd(44100), minf))
 	return mp4Atom("trak", slices.Concat(tkhd, slices.Concat(extra...), mdia))
 }
 

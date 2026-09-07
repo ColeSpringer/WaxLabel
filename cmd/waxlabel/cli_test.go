@@ -129,7 +129,7 @@ func TestDumpJSONCodecCanonical(t *testing.T) {
 	t.Parallel()
 	sampleOpus := filepath.Join("..", "..", "testdata", "sample.opus")
 	cases := []struct{ file, codec, profile string }{
-		{sampleM4B, "AAC", "mp4a"},   // MP4 fourcc preserved under canonical AAC
+		{sampleM4B, "AAC", "AAC LC"}, // the esds object type, more precise than the fourcc
 		{sampleFLAC, "FLAC", "flac"}, // FLAC's lowercase preserved
 		{sampleOpus, "Opus", ""},     // already canonical: no profile
 	}

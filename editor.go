@@ -276,9 +276,11 @@ func (e *Editor) ClearSyncedLyrics() *Editor {
 // stores one; elsewhere [Editor.Prepare] refuses the edit (or, under
 // [WithAllowUnsupportedDrop], drops it with a warning). Transfers never carry it.
 //
-// RFC 7845 applies R128_TRACK_GAIN and R128_ALBUM_GAIN on top of the header gain, so a
-// caller moving loudness into the header sets those tags relative to it (typically 0) in
-// the same edit; Prepare warns when a gain change leaves them untouched.
+// RFC 7845 applies R128_TRACK_GAIN and R128_ALBUM_GAIN on top of the header gain, so
+// [Editor.Prepare] rebases whichever of them the file carries by the same change, leaving
+// the loudness a compliant player produces unmoved. An explicit [Editor.Set] or
+// [Editor.Clear] of one of those keys in the same edit wins over the rebase, and
+// [WithKeepR128Gains] leaves them all alone with a warning.
 func (e *Editor) SetOutputGain(gain int) *Editor {
 	e.outputGain = gain
 	e.outputGainTouched = true
@@ -456,6 +458,20 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 			}
 			outputGainDropped = true
 		}
+	}
+	// RFC 7845 applies the R128 loudness tags on top of the header gain, so moving the
+	// header without them would play the file at a different loudness. Rebasing by the same
+	// delta keeps it where it was. editedTags is reassigned onto edited below, which copied
+	// the TagSet by value.
+	var r128Warnings []core.Warning
+	if gainChanged && !outputGainDropped {
+		var err error
+		r128Warnings, err = rebaseR128Gains(&editedTags, e.patch,
+			e.outputGain-e.base.Properties.First().OutputGain, wo.KeepR128Gains)
+		if err != nil {
+			return nil, err
+		}
+		edited.Tags = editedTags
 	}
 
 	// A whole structural edit the destination cannot store at all is either a hard error
@@ -758,17 +774,7 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnOutputGainUnsupported,
 			core.OutputGainUnsupportedMessage(e.base.Format))
 	}
-	// RFC 7845 applies the R128 loudness tags on top of the header gain, so moving the
-	// header while leaving them alone plays the file at the wrong loudness. Advisory: the
-	// gain edit itself applied in full, and only the caller knows the intended loudness.
-	if gainChanged && !outputGainDropped {
-		for _, k := range editedTags.Keys() {
-			if tag.IsR128GainKey(k) && !e.patch.Touches(k) {
-				wp.Report.Warnings = core.WarnKeyed(wp.Report.Warnings, core.WarnOutputGainR128Tags,
-					fmt.Sprintf("output gain changed but %s is still set; RFC 7845 applies it on top of the header gain, so update or clear it in the same edit", k), k)
-			}
-		}
-	}
+	wp.Report.Warnings = append(wp.Report.Warnings, r128Warnings...)
 	if picturesDropped {
 		msg := core.PictureUnsupportedMessage()
 		if len(e.base.Pictures) > 0 {
@@ -1293,7 +1299,8 @@ func dropEmptyValuedKeys(ts *tag.TagSet) {
 }
 
 // trimTokenValues applies [tag.TrimTokenValue] to the trimmable keys ([tag.IsTrimmableKey]:
-// numeric, date, media-type, and ReplayGain) touched by this edit, so stored values match the
+// numeric, date, MP4-integer, BPM, ReplayGain, R128 gain, and release-country) touched by
+// this edit, so stored values match the
 // trimmed form the validators accept. It is scoped to patched keys, like splitNumberPairs, so
 // carried source values are not rewritten.
 func trimTokenValues(ts *tag.TagSet, patch tag.TagPatch) {
@@ -1316,6 +1323,61 @@ func trimTokenValues(ts *tag.TagSet, patch tag.TagPatch) {
 			ts.Set(k, vals...)
 		}
 	}
+}
+
+// rebaseR128Gains moves the R128 loudness tags in ts by the same change the output gain
+// made, so the loudness a compliant player produces stays where it was. RFC 7845 applies
+// R128_TRACK_GAIN and R128_ALBUM_GAIN on top of the header gain, both in the same Q7.8 dB
+// scale, so the update is a plain subtraction of delta.
+//
+// Two gates keep it from overriding the caller:
+//   - A key the patch Touches carries an explicit intent - a Set, a Clear, an Add - and is
+//     left for that op to decide, the same precedence splitNumberPairs gives an explicit
+//     total.
+//   - keep (WithKeepR128Gains) leaves every value as found, for a caller who knows the
+//     stored figures are stale.
+//
+// Both cases, and a value that is not a Q7.8 integer to begin with, return an advisory: the
+// tag now disagrees with the header, and only the caller knows what it should say. A key is
+// rebased whole or not at all - a key carrying one unrebasable value keeps all of them, so
+// the advisory's "not rebased" is true of everything under it. A rebase that would leave
+// the 16-bit range the field is defined over refuses the edit instead of storing a number
+// the field cannot hold.
+func rebaseR128Gains(ts *tag.TagSet, patch tag.TagPatch, delta int, keep bool) ([]core.Warning, error) {
+	var warnings []core.Warning
+	for _, k := range ts.Keys() {
+		if !tag.IsR128GainKey(k) || patch.Touches(k) {
+			continue
+		}
+		if keep {
+			warnings = core.WarnKeyed(warnings, core.WarnOutputGainR128Tags,
+				fmt.Sprintf("output gain changed and %s was kept as requested; RFC 7845 applies it on top of the header gain, so a compliant player's loudness moves with the header", k), k)
+			continue
+		}
+		vals, _ := ts.Get(k)
+		rebased := make([]string, 0, len(vals))
+		for _, v := range vals {
+			if !tag.ValidR128GainValue(k, v) {
+				warnings = core.WarnKeyed(warnings, core.WarnOutputGainR128Tags,
+					fmt.Sprintf("output gain changed but %s=%q is not a Q7.8 integer, so it was not rebased; RFC 7845 applies it on top of the header gain, so set or clear it in the same edit", k, v), k)
+				rebased = nil
+				break
+			}
+			old, _ := strconv.Atoi(strings.TrimSpace(v)) // the validator already accepted it
+			n := old - delta
+			if n < math.MinInt16 || n > math.MaxInt16 {
+				// The file reads fine and the gain edit is legal; this one tag cannot hold the
+				// result, which is a write refusal rather than a corrupt file.
+				return nil, fmt.Errorf("%w: rebasing %s from %d by %d leaves %d, outside the signed 16-bit range the field holds; set or clear it in the same edit, or pass WithKeepR128Gains (--keep-r128) to leave it alone",
+					waxerr.ErrUnsupportedTag, k, old, delta, n)
+			}
+			rebased = append(rebased, strconv.Itoa(n))
+		}
+		if rebased != nil {
+			ts.Set(k, rebased...)
+		}
+	}
+	return warnings, nil
 }
 
 // splitNumberPairs normalizes a slash-combined "n/total" value on a track or disc

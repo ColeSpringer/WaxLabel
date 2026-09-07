@@ -88,7 +88,9 @@ type doc struct {
 	tracks      []core.AudioTrack
 	sawNonAudio bool // a video/subtitle/button track was present; gates the audio-only bitrate
 
-	// essence-digest config, captured from the first audio track.
+	// essence-digest config, captured from the first audio track. sampleRate is the
+	// SamplingFrequency element, not the played rate an SBR track reports: the salt has
+	// always been the core value and moving it would change every stored digest.
 	codecID    string
 	sampleRate int
 	channels   int

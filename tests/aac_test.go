@@ -13,6 +13,7 @@ import (
 const (
 	sampleAAC = "../testdata/sample.aac" // ffmpeg-authored: front ID3v2 + ADTS
 	notagsAAC = "../testdata/notags.aac" // bare ADTS, no ID3
+	heaacAAC  = "../testdata/heaac_v1.aac"
 )
 
 func TestAACParse(t *testing.T) {
@@ -176,5 +177,19 @@ func TestAACDifferentialFFmpegDecodes(t *testing.T) {
 		if got := mustParseFile(t, path).Fields().Title; got != "Valid AAC" {
 			t.Errorf("%s: title after edit = %q", f, got)
 		}
+	}
+}
+
+// TestAACImplicitSBRReportsCoreRate: an ADTS header cannot signal SBR, so an implicitly
+// signalled HE-AAC stream reads as the core coder it declares. Only a syntax parse of the
+// frames would find the extension, and the same stream in MP4 has the muxer's decoded
+// geometry to go on. The duration is still right: core samples over the core rate.
+func TestAACImplicitSBRReportsCoreRate(t *testing.T) {
+	tr := mustParseFile(t, heaacAAC).Properties().Tracks[0]
+	if tr.SampleRate != 22050 || tr.Channels != 2 {
+		t.Errorf("track = %d Hz / %d ch, want the core 22050/2", tr.SampleRate, tr.Channels)
+	}
+	if tr.Codec != "AAC" || tr.CodecProfile != "AAC LC" {
+		t.Errorf("codec = %q/%q, want AAC with profile AAC LC", tr.Codec, tr.CodecProfile)
 	}
 }

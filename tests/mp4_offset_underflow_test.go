@@ -36,7 +36,7 @@ func mp4AudioTrakChapCo64(chapTrackID int, chunk uint64) []byte {
 	tref := mp4Atom("tref", mp4Atom("chap", mp4be32(chapTrackID)))
 	stbl := mp4Atom("stbl", slices.Concat(mp4StsdAudio(), mp4Co64(chunk)))
 	minf := mp4Atom("minf", stbl)
-	mdia := mp4Atom("mdia", slices.Concat(mp4HdlrSoun(), mp4Mdhd(), minf))
+	mdia := mp4Atom("mdia", slices.Concat(mp4HdlrSoun(), mp4Mdhd(44100), minf))
 	return mp4Atom("trak", slices.Concat(tkhd, tref, mdia))
 }
 
