@@ -2,15 +2,15 @@ name: Fuzz
 
 # Runs every fuzz target for a bounded time, twice a week and on demand. CI runs the same
 # targets as plain tests (seed corpus only); this is where they get to explore. A push
-# that edits this file runs it briefly, so the discovery pipeline is checked when it
-# changes rather than at the next scheduled run.
+# that edits this file runs it briefly, so the pipeline is checked when it changes rather
+# than at the next scheduled run.
 on:
   schedule:
     - cron: '23 7 * * 0,3'
   workflow_dispatch:
     inputs:
       fuzztime:
-        description: Time to fuzz each target, as a go test -fuzztime value (2m, 30m, 2h)
+        description: Time to fuzz each target, as a go test -fuzztime value (2m, 20m). Targets run one after another inside the Fuzz step's 330-minute budget.
         default: 2m
         type: string
   push:
@@ -29,56 +29,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Discover the targets so a new FuzzXxx anywhere in the module is picked up without
-  # editing this file. `go test -list` prints each package's matching names followed by
-  # that package's "ok" line, which is what attributes a name to its package. dir is the
-  # package directory relative to the module root, for display and for the paths below.
-  targets:
-    name: list targets
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    outputs:
-      matrix: ${{ steps.list.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          check-latest: true
-      - id: list
-        run: |
-          set -euo pipefail
-          mod="$(go list -m)"
-          matrix="$(go test -list '^Fuzz' ./... | awk '
-            /^Fuzz/ { pending[n++] = $1; next }
-            $1 == "ok" { for (i = 0; i < n; i++) printf "%s %s\n", $2, pending[i]; n = 0 }
-          ' | jq -Rsc --arg mod "$mod" '
-            split("\n") | map(select(length > 0) | split(" ") | {
-              pkg: .[0],
-              dir: (if .[0] == $mod then "." else (.[0] | ltrimstr($mod + "/")) end),
-              target: .[1]
-            })')"
-          if [ "$matrix" = "[]" ]; then
-            echo "::error::no fuzz targets found"
-            exit 1
-          fi
-          echo "$matrix" | jq .
-          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
-
-  # One job per target: Go fuzzes a single target per invocation, and separate jobs keep
-  # one target's finding from hiding another's. No timeout-minutes on purpose; fuzztime
-  # bounds each job, and the platform's six-hour cap is the ceiling for a generous dispatch.
+  # One job, one line in the checks list. Go fuzzes a single target per invocation, so the
+  # targets run one after another, and a finding does not stop the run so it cannot hide
+  # another. The Fuzz step carries the time budget rather than the job: a step that hits
+  # its budget fails and the save and upload below still run, where a job that hits the
+  # platform's six-hour cap is cancelled and the failure-gated upload never runs. The
+  # budget leaves that cap room for the steps around the loop.
   fuzz:
-    name: fuzz ${{ matrix.target }} (${{ matrix.dir }})
-    needs: targets
+    name: fuzz
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.targets.outputs.matrix) }}
     env:
-      PKG: ${{ matrix.pkg }}
-      TARGET: ${{ matrix.target }}
       # A push that edits this file only needs to prove the pipeline runs.
       FUZZTIME: ${{ inputs.fuzztime || ((github.event_name == 'push' || github.event_name == 'pull_request') && '10s') || '2m' }}
     steps:
@@ -88,25 +48,52 @@ jobs:
           go-version-file: go.mod
           check-latest: true
       # The inputs a run finds interesting land in Go's fuzz cache and would die with the
-      # runner. Carry this target's slice of it to the next run so fuzzing accumulates
-      # instead of restarting from the seeds each time: the key is unique per run so every
-      # successful run saves, and the prefix restores the newest. An untouched cache is
-      # evicted after a week, which the twice-weekly schedule stays inside.
-      - uses: actions/cache@v6
+      # runner. Carry them to the next run so fuzzing accumulates instead of restarting from
+      # the seeds each time: the key is unique per run so every run saves, and the prefix
+      # restores the newest. The save is its own step below, so a finding does not cost the
+      # other targets their corpus. An untouched cache is evicted after a week, which the
+      # twice-weekly schedule stays inside.
+      - uses: actions/cache/restore@v6
         with:
-          path: ~/.cache/go-build/fuzz/${{ matrix.pkg }}/${{ matrix.target }}
-          key: fuzz-corpus-${{ matrix.pkg }}/${{ matrix.target }}-${{ github.run_id }}
-          restore-keys: fuzz-corpus-${{ matrix.pkg }}/${{ matrix.target }}-
+          path: ~/.cache/go-build/fuzz
+          key: corpus-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: corpus-
+      # Discover the targets so a new FuzzXxx anywhere in the module is picked up without
+      # editing this file. `go test -list` prints each package's matching names followed by
+      # that package's "ok" line, which is what attributes a name to its package.
       - name: Fuzz
-        run: go test "$PKG" -run '^$' -fuzz "^${TARGET}\$" -fuzztime "$FUZZTIME"
-      # A failing input is written under the package's testdata/fuzz/<Target>/. Upload it so
-      # the crasher outlives the runner; the fix lands it as an f.Add seed in the test, not
-      # as a corpus file (the project keeps seeds inline). The job index keeps the artifact
-      # name unique should two packages ever share a target name.
-      - name: Upload failing input
+        timeout-minutes: 330
+        run: |
+          set -euo pipefail
+          # The save below needs the path even when this step stops before fuzzing.
+          mkdir -p ~/.cache/go-build/fuzz
+          targets="$(go test -list '^Fuzz' ./... | awk '
+            /^Fuzz/ { pending[n++] = $1; next }
+            $1 == "ok" { for (i = 0; i < n; i++) print $2, pending[i]; n = 0 }
+          ')"
+          if [ -z "$targets" ]; then
+            echo "::error::no fuzz targets found"
+            exit 1
+          fi
+          status=0
+          while read -r pkg target; do
+            echo "::group::${target} (${pkg}, ${FUZZTIME})"
+            go test "$pkg" -run '^$' -fuzz "^${target}\$" -fuzztime "$FUZZTIME" </dev/null || status=1
+            echo "::endgroup::"
+          done <<< "$targets"
+          exit "$status"
+      - uses: actions/cache/save@v6
+        if: always()
+        with:
+          path: ~/.cache/go-build/fuzz
+          key: corpus-${{ github.run_id }}-${{ github.run_attempt }}
+      # A failing input is written under its package's testdata/fuzz/<Target>/. Upload them
+      # so the crashers outlive the runner; the fix lands each as an f.Add seed in the test,
+      # not as a corpus file (the project keeps seeds inline).
+      - name: Upload failing inputs
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: fuzz-failure-${{ matrix.target }}-${{ strategy.job-index }}
-          path: ${{ matrix.dir }}/testdata/fuzz/${{ matrix.target }}/*
+          name: fuzz-failures
+          path: '**/testdata/fuzz/**'
           if-no-files-found: ignore
