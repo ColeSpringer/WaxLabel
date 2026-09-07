@@ -212,8 +212,8 @@ func FillInteriorEnds(chs []Chapter) {
 // by the root transfer builder, which grades and writes the one list it produces.
 func OpenRunToEOFEnd(chs []Chapter, srcDuration time.Duration) []Chapter {
 	n := len(chs)
-	srcDurMs := srcDuration.Truncate(time.Millisecond)
-	if n == 0 || srcDurMs <= 0 || chs[n-1].End < srcDurMs {
+	srcEOF := srcDuration.Truncate(time.Millisecond)
+	if n == 0 || srcEOF <= 0 || chs[n-1].End < srcEOF {
 		return chs
 	}
 	out := CloneChapters(chs)
@@ -338,7 +338,7 @@ func EqualChaptersModuloEnds(a, b []Chapter, durA, durB time.Duration) bool {
 // nanosecond-precise; without the truncation floor(dur)ms >= dur would be false and a genuine
 // run-to-EOF trailing chapter would wrongly count as different.
 //
-// A duration that truncates to 0 ms is treated like an unknown one, so the durMs > 0 guard below
+// A duration that truncates to 0 ms is treated like an unknown one, so the eof > 0 guard below
 // leaves the trailing end distinct rather than normalizing it. This covers both an unknown duration
 // (0) and the sub-millisecond case, which real media never produces. At whole-ms resolution a
 // sub-ms end cannot be shown to reach EOF: End >= 0 holds for every end, which would normalize even
@@ -346,13 +346,13 @@ func EqualChaptersModuloEnds(a, b []Chapter, durA, durB time.Duration) bool {
 // equal, so not equal" reading that transitivity depends on.
 func normalizeReconstructableEnds(chs []Chapter, dur time.Duration) []Chapter {
 	out := CloneChapters(chs)
-	durMs := dur.Truncate(time.Millisecond)
+	eof := dur.Truncate(time.Millisecond)
 	for i := range out {
 		switch {
 		case out[i].End == 0:
 		case chapterEndReachesNextStart(out, i): // gapless interior
 			out[i].End = 0
-		case i == len(out)-1 && durMs > 0 && out[i].End >= durMs: // trailing runs to EOF
+		case i == len(out)-1 && eof > 0 && out[i].End >= eof: // trailing runs to EOF
 			out[i].End = 0
 		}
 	}

@@ -71,9 +71,7 @@ type blockHeader struct {
 	totalSamples   uint64
 	totalSamples32 uint32
 	blockIndex     uint64
-	blockSamples   uint32
 	flags          uint32
-	crc            uint32
 }
 
 // parseBlockHeader decodes the fixed 32-byte header at the start of b. avail is how

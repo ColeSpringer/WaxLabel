@@ -984,7 +984,7 @@ func groupTouchedBy(nTags, gi int, ed *editDecisions) bool {
 func hasManagedTitleTag(groups []tagGroup) bool {
 	for _, g := range groups {
 		for _, st := range g.tags {
-			if k, ok := mapping.MatroskaTagKey(st.name); ok && k == tag.Title {
+			if isManagedTitle(st) {
 				return true
 			}
 		}
@@ -1197,14 +1197,6 @@ func subtractFold(vals, covered []string) []string {
 func simpleTagBytes(name, value string) []byte {
 	payload := append(stringElement(idTagName, name), stringElement(idTagString, value)...)
 	return encElement(idSimpleTag, payload)
-}
-
-// isManaged reports whether a SimpleTag name maps to a canonical key the writer
-// owns (so it is re-synced rather than preserved). Title is managed too (dropped
-// from SimpleTags, since it lives in Info.Title).
-func isManaged(name string) bool {
-	_, ok := mapping.MatroskaTagKey(name)
-	return ok
 }
 
 // albumGroupIndex returns the index of the group to sync canonical tags into: the

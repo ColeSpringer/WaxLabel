@@ -5,36 +5,44 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # A weekly run on an idle main catches drift no push would: a new Go patch release
+  # (setup-go resolves the newest toolchain go.mod allows), a new ffmpeg in apt behind the
+  # differential gate, and new entries in the Go vulnerability database.
+  schedule:
+    - cron: '17 6 * * 1'
 
 # Least privilege: CI only needs to read the repository.
 permissions:
   contents: read
 
-# Newer pushes to the same ref supersede in-flight runs.
+# Newer pushes to the same ref supersede in-flight runs. The event name is part of the
+# group so a scheduled run never cancels a push run for the same ref, or the reverse.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # Core suite across operating systems. The Go version is read from go.mod so
-  # the toolchain stays a single source of truth. Differential tests that shell
-  # out to ffmpeg/ffprobe skip cleanly here when the tools are absent (see the
-  # dedicated `differential` job below for the guaranteed-present gate).
+  # Core suite across operating systems, plus native linux/arm64 since the release ships
+  # it. The Go version is read from go.mod so the toolchain stays a single source of
+  # truth. Differential tests that shell out to ffmpeg/ffprobe skip cleanly here when the
+  # tools are absent (see the dedicated `differential` job below for the
+  # guaranteed-present gate).
   #
-  # Windows runs the full suite, not just a compile: the filesystem semantics the
-  # write path depends on (rename over an open handle, directory fsync, the
-  # read-only attribute, broken-pipe errnos) differ there in ways only running the
-  # tests catches. The race detector needs cgo, and the windows runners ship
-  # mingw-w64 gcc, so CGO_ENABLED is pinned rather than left to the default.
+  # Windows runs the full suite, not just a compile: the filesystem semantics the write
+  # path depends on (rename over an open handle, directory fsync, the read-only attribute,
+  # broken-pipe errnos) differ there in ways only running the tests catches. The race
+  # detector needs cgo, and the windows runners ship mingw-w64 gcc, so CGO_ENABLED is
+  # pinned rather than left to the default.
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     env:
       CGO_ENABLED: 1
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -45,18 +53,22 @@ jobs:
         run: go build ./...
       - name: Vet
         run: go vet ./...
-      # release.yml ships a windows/arm64 zip. Nothing else in CI compiles that
-      # target, so cross-build it once here; it costs seconds and closes the gap
-      # between what is tested and what is released. Ahead of the test step on
-      # purpose: as a compile gate it must still report when a test fails, or a
-      # broken arm64 build ships behind an unrelated red test.
-      - name: Cross-build windows/arm64
+      # release.yml builds the targets listed in .github/release-targets with cgo off. The
+      # matrix runs four of them natively, but with cgo on for the race detector, so this
+      # is the one place every release build configuration compiles before a tag is cut;
+      # it costs seconds. Ahead of the test step on purpose: as a compile gate it must
+      # still report when a test fails, or a broken build ships behind an unrelated red
+      # test.
+      - name: Cross-build release targets
         if: matrix.os == 'ubuntu-latest'
         env:
-          GOOS: windows
-          GOARCH: arm64
           CGO_ENABLED: 0
-        run: go build ./...
+        run: |
+          set -euo pipefail
+          while read -r target; do
+            echo "building ${target}"
+            GOOS="${target%/*}" GOARCH="${target#*/}" go build ./...
+          done < .github/release-targets
       - name: Test (race)
         run: go test ./... -race
       # The suite must stay green on 32-bit targets; linux/386 is the cheapest one.
@@ -70,6 +82,53 @@ jobs:
           CGO_ENABLED: 0
         run: go test ./...
 
+  # Checks that do not depend on the OS, run once. gofmt and go mod tidy keep the tree
+  # canonical; staticcheck covers what go vet does not (dead code, standard library misuse,
+  # the style rules with a correctness bearing). Its version is pinned and bumped by hand
+  # alongside the Go version in go.mod.
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      # Tracked sources outside testdata, the files the go tool itself builds: gofmt given a
+      # directory would also walk fixtures and dot-directories.
+      - name: gofmt
+        run: |
+          set -euo pipefail
+          unformatted="$(git ls-files -- '*.go' | grep -v -e '^testdata/' -e '/testdata/' | xargs gofmt -l)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+      # -diff prints what tidy would change and exits non-zero when that is anything.
+      - name: go mod tidy
+        run: go mod tidy -diff
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+
+  # Known vulnerabilities in the module graph and the standard library, reported only where
+  # the code actually reaches them. The tool is deliberately unpinned: it is a client for a
+  # live database, and the newest client reads the newest schema.
+  vulncheck:
+    name: vulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
   # The write-side differential is the real proof of interoperability: with
   # ffmpeg/ffprobe guaranteed present, the per-format differential tests run
   # (instead of skipping) and gate the build, so each format's differential is
@@ -79,6 +138,7 @@ jobs:
   differential:
     name: differential (ffmpeg)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7

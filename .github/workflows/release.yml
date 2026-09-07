@@ -1,8 +1,10 @@
 name: Release
 
-# Build and publish the CLI binaries whenever a version tag (v*) is pushed. Binaries are
+# Build and publish the CLI binaries whenever a release tag (vX.Y.Z) is pushed. Binaries are
 # built from the checked-out tag; the tag is linked in as the version with -ldflags so a
-# binary reports it deterministically (resolveVersion in cmd/waxlabel prefers it).
+# binary reports it deterministically (resolveVersion in cmd/waxlabel prefers it). Every
+# v-prefixed tag starts a run so that a malformed one fails loudly at the first gate
+# instead of being ignored.
 on:
   push:
     tags:
@@ -21,6 +23,7 @@ jobs:
   release:
     name: build and publish binaries
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       VERSION: ${{ github.ref_name }}
     steps:
@@ -30,10 +33,32 @@ jobs:
           go-version-file: go.mod
           check-latest: true
 
-      # Gate: rerun the race suite (ci.yml also runs it on main) against the exact tagged
-      # tree before any binary is published. ffmpeg-dependent differential tests skip
-      # cleanly when ffmpeg is absent.
+      # Gate: a release tag is vX.Y.Z, and the changelog carries a section for it, closed
+      # before the tag is cut. A tag with no section was cut too early; fail here, before
+      # anything is built, rather than ship binaries the changelog does not know about.
+      - name: Check tag and changelog
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag ${VERSION} is not a release tag (vX.Y.Z)"
+            exit 1
+          fi
+          heading="## [${VERSION#v}]"
+          if ! grep -qxF -- "$heading" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '${heading}' section for tag ${VERSION}"
+            exit 1
+          fi
+
+      # Gate: rerun the race suite against the exact tagged tree before any binary is
+      # published, with ffmpeg present and required, so a release clears the same enforced
+      # differential suite as the CI gate on main instead of skipping it.
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
       - name: Test
+        env:
+          WAXLABEL_REQUIRE_FFMPEG: "1"
         run: go test -race ./...
 
       - name: Build archives
@@ -66,12 +91,9 @@ jobs:
             fi
           }
 
-          build linux   amd64
-          build linux   arm64
-          build darwin  amd64
-          build darwin  arm64
-          build windows amd64
-          build windows arm64
+          while read -r target; do
+            build "${target%/*}" "${target#*/}"
+          done < .github/release-targets
 
           # All targets share these ldflags, so running the native (linux/amd64) binary
           # confirms the version was linked in for the whole set before publishing.
