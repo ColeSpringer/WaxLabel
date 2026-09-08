@@ -151,7 +151,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		report.Warnings = append(report.Warnings, nativeReducedWarnings(edited.Tags, changed)...)
 	}
 
-	outs, ops, dupLost := planChunks(d, newInfo, newID3, emitINFO, emitID3, stripINFO)
+	outs, ops, dupLost := planChunks(d, newInfo, newID3, emitINFO, emitID3, stripINFO, infoBytesChange(d, newInfo))
 
 	segs, lay, err := assemble(d, outs)
 	if err != nil {
@@ -177,8 +177,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		// LegacyStrip consolidates the mapped items into the id3 chunk, but an unmapped item
 		// has no canonical key and so no frame to move into: dropping the chunk destroys it.
 		// doc.go's contract is that unaffected data is warned about, never stripped silently,
-		// and this is the one WAV path that would. (AIFF is safe by construction: it only
-		// collects text chunks that map, so its strip moves every one of them.)
+		// and this is the one WAV path that would. AIFF's strip has the same hole in a
+		// different shape - a mapped chunk whose value the projection did not select - and
+		// warns about it from its own Plan.
 		if ids := unmappedInfoIDs(d.info); len(ids) > 0 {
 			report.Warnings = core.Warn(report.Warnings, core.WarnLegacyStripDropped,
 				core.StripDroppedMessage("LIST/INFO chunk", []string{"items no canonical key can hold (" + strings.Join(ids, ", ") + ")"}))
@@ -270,7 +271,7 @@ func id3Tags(edited tag.TagSet, id3Present, encoderAuthored bool) tag.TagSet {
 // chunk) verbatim, then inserting any newly created tag container before the
 // data chunk. dupLost collects the canonical keys the dropped duplicate containers held and
 // the surviving one does not, so the caller can warn about the values this write destroys.
-func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, stripINFO bool) (outs []outChunk, ops []string, dupLost []core.DuplicateContent) {
+func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, stripINFO, infoBytesChange bool) (outs []outChunk, ops []string, dupLost []core.DuplicateContent) {
 	infoRewritten, id3Rewritten := false, false
 
 	for i, ch := range d.chunks {
@@ -283,10 +284,19 @@ func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, 
 			if emitINFO {
 				outs = append(outs, infoOut(newInfo))
 				infoRewritten = true
-				ops = append(ops, "LIST/INFO rewrite")
+				// A present chunk is always re-emitted, so the op reports the rewrite only
+				// when the bytes actually move; otherwise it describes work no reader could
+				// see. The chunk still has to be re-emitted: it is a literal in the segment
+				// list either way.
+				if infoBytesChange {
+					ops = append(ops, "LIST/INFO rewrite")
+				}
 				continue
 			}
-			continue // INFO present but now empty: drop it
+			// The edit emptied the chunk, so Execute deletes one the file had. Report the
+			// removal rather than leaving the plan to describe it as a bare rewrite.
+			ops = append(ops, "LIST/INFO drop")
+			continue
 		case d.id3Idx:
 			if emitID3 {
 				outs = append(outs, id3Out(newID3))
@@ -294,7 +304,8 @@ func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, 
 				ops = append(ops, "id3 chunk rewrite")
 				continue
 			}
-			continue // id3 present but now empty: drop it
+			ops = append(ops, "id3 chunk drop")
+			continue
 		default:
 			if ch.dupTag {
 				// Redundant duplicate tag container (a second LIST/INFO or id3 chunk).
@@ -341,6 +352,23 @@ func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, 
 func infoOut(items []infoItem) outChunk {
 	body := renderInfo(items)
 	return outChunk{id: [4]byte{'L', 'I', 'S', 'T'}, role: roleINFO, body: body, bodyLen: int64(len(body))}
+}
+
+// infoBytesChange reports whether re-emitting the LIST/INFO chunk from the item model will
+// change the chunk's bytes. Equal items are not enough: the chunk is re-rendered from the
+// items alone, so a region the parser could not read as items and a pad byte it
+// re-synchronized over both die on the way out. With equal items the render is determined, so
+// a body of the same length is the same body, and the length check catches both losses.
+//
+// This is deliberately not the same question equalInfoItems answers for the no-op gate, which
+// asks whether the edit changed the INFO CONTENT. A file carrying an unreadable tail must
+// still round-trip an empty edit untouched, so that gate stays item-based and this one, asked
+// only once a write is already happening, decides what the report claims.
+func infoBytesChange(d *doc, newInfo []infoItem) bool {
+	if d.infoIdx < 0 {
+		return true
+	}
+	return !equalInfoItems(newInfo, d.info) || int64(len(renderInfo(newInfo))) != d.chunks[d.infoIdx].bodyLen
 }
 
 // id3Out builds the "id3 " output chunk from a rendered ID3v2 tag.

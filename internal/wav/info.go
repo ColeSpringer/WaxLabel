@@ -123,7 +123,8 @@ func plausibleInfoItem(body []byte, p int) bool {
 // first-wins rule: a duplicate number key (two IPRT, both TrackNumber) keeps the first, since a
 // phantom multi-value TRACKNUMBER no writer can store would diff as a spurious change and trip
 // a false native-value-reduced warning; a duplicate text key (two INAM) accumulates, because
-// the ID3 chunk the writer forces preserves both.
+// both values survive the write: an untouched item keeps its own bytes, and an edit that
+// changes the key forces the id3 chunk that holds the pair.
 func infoTags(items []infoItem) tag.TagSet {
 	ts := tag.NewTagSet()
 	for _, it := range items {

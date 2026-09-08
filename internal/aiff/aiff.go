@@ -22,10 +22,13 @@
 // Precedence (read): the ID3 chunk is authoritative when present (it is the
 // richer container and the deliberate-tagger signal); otherwise the native text
 // chunks are. Both surface in the family view with conflicts flagged. Precedence
-// (write): see write.go. By default both present containers are kept in sync,
-// the native chunks are the home for a bare file, and pictures or any value the
-// native vocabulary cannot represent force an "ID3 " chunk; nothing is ever lost.
-// All other chunks are preserved verbatim. A >4 GiB output returns an error.
+// (write): see write.go: a key the edit changes is written to both present containers, while
+// a text chunk the edit leaves alone is copied verbatim, so a value the ID3 chunk disagrees
+// with is the file's own data and survives (an explicit set of the key is how a caller
+// resolves it). The native chunks are the home for a bare file, and pictures or any changed
+// value the native vocabulary cannot represent force an "ID3 " chunk; nothing is ever lost
+// except under --legacy strip, which warns about what it destroys. All other chunks are
+// preserved verbatim. A >4 GiB output returns an error.
 //
 // The codec is reimplemented from the AIFF / AIFF-C and ID3 specifications;
 // reference implementations were consulted for design only.

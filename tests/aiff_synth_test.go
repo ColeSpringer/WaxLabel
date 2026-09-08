@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"slices"
+	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -818,5 +819,106 @@ func TestAIFFSentinelSSNDSizeReported(t *testing.T) {
 	clean := mustParseBytes(t, aiffFile("AIFF", aiffCOMM(2, 100, 16, 44100), aiffSSND(400)))
 	if hasWarning(clean, wl.WarnUnknownChunkSize) {
 		t.Errorf("an ordinary AIFF must stay quiet: %v", clean.Warnings())
+	}
+}
+
+// TestAIFFConflictingTextChunkSurvivesUnrelatedEdit mirrors the WAV rule: a NAME chunk the
+// ID3 chunk disagrees with survives an edit that does not name TITLE.
+func TestAIFFConflictingTextChunkSurvivesUnrelatedEdit(t *testing.T) {
+	data := aiffFile("AIFF", stdCOMM(), aiffText("NAME", "Aiff Title"), aiffID3(id3v2(4, textFrame(4, "TIT2", "Id3 Title"))), aiffSSND(400))
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Album, "Z").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	if !bytes.Contains(out, []byte("Aiff Title")) {
+		t.Fatal("NAME chunk was overwritten by the ID3 value")
+	}
+	re := mustParseBytes(t, out)
+	if re.Fields().Title != "Id3 Title" {
+		t.Errorf("title = %q", re.Fields().Title)
+	}
+	conflict := false
+	for _, f := range re.Families() {
+		if f.Family == wl.FamilyAIFF && f.Key == tag.Title && !f.Selected {
+			conflict = true
+		}
+	}
+	if !conflict {
+		t.Errorf("the AIFF title conflict should still be reported: %+v", re.Families())
+	}
+
+	plan, err = re.Edit().Set(tag.Title, "Id3 Title").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.IsNoOp() || !slices.Contains(plan.Report().Operations, "native text chunk conflict resolved (TITLE)") {
+		t.Errorf("explicit set should resolve the conflict: noop=%v ops=%v", plan.IsNoOp(), plan.Report().Operations)
+	}
+	if bytes.Contains(applyToBytes(t, out, plan), []byte("Aiff Title")) {
+		t.Error("the conflicting NAME value should have been replaced")
+	}
+}
+
+// TestAIFFDuplicateNameChunksSurviveUnrelatedEdit: two NAME chunks are kept as they are by an
+// edit that does not name TITLE, with no ID3 chunk created to hold the second value.
+func TestAIFFDuplicateNameChunksSurviveUnrelatedEdit(t *testing.T) {
+	data := aiffFile("AIFF", stdCOMM(), aiffText("NAME", "one"), aiffText("NAME", "two"), aiffSSND(400))
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Artist, "A").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	if bytes.Count(out, []byte("NAME")) != 2 || bytes.Contains(out, []byte("ID3 ")) {
+		t.Errorf("NAME count = %d, ID3 present = %v", bytes.Count(out, []byte("NAME")), bytes.Contains(out, []byte("ID3 ")))
+	}
+}
+
+// TestAIFFEmptyEditOnConflictingChunksIsNoOp is the central promise of the untouched-chunk
+// rule: a file whose NAME chunk disagrees with its ID3 chunk is in its steady state, so an
+// edit that names nothing must not rewrite it. Without the gate the writer would restamp the
+// ID3 value over NAME on every pass, and no run of the tool would ever settle.
+func TestAIFFEmptyEditOnConflictingChunksIsNoOp(t *testing.T) {
+	data := aiffFile("AIFF", stdCOMM(), aiffText("NAME", "Aiff Title"),
+		aiffID3(id3v2(4, textFrame(4, "TIT2", "Id3 Title"))), aiffSSND(400))
+	plan, err := mustParseBytes(t, data).Edit().Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.IsNoOp() {
+		t.Errorf("an empty edit on a conflicting file must be a no-op; operations: %v", plan.Report().Operations)
+	}
+}
+
+// TestAIFFLegacyStripWarnsAboutDestroyedTextValues: --legacy strip is the one AIFF path that
+// destroys a native value rather than moving it, because a value the projection did not
+// select has no canonical key to ride into the ID3 chunk. doc.go's contract says a loss like
+// that must be reported.
+func TestAIFFLegacyStripWarnsAboutDestroyedTextValues(t *testing.T) {
+	data := aiffFile("AIFF", stdCOMM(), aiffText("NAME", "Aiff Title"),
+		aiffID3(id3v2(4, textFrame(4, "TIT2", "Id3 Title"))), aiffSSND(400))
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Album, "Z").Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(applyToBytes(t, data, plan), []byte("Aiff Title")) {
+		t.Fatal("the strip was expected to destroy the unselected NAME value")
+	}
+	w, ok := warningFor(plan, wl.WarnLegacyStripDropped)
+	if !ok {
+		t.Fatalf("the strip destroyed a value and reported nothing: %v", plan.Report().Warnings)
+	}
+	if !strings.Contains(w.Message, "TITLE") {
+		t.Errorf("the warning should name the key that was lost, got %q", w.Message)
+	}
+
+	// The control: an edit that writes the value the chunk held loses nothing, because the
+	// ID3 chunk the strip consolidates into now carries it.
+	rescue, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Aiff Title").Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := warningFor(rescue, wl.WarnLegacyStripDropped); ok {
+		t.Errorf("an edit that writes the native value must not report it lost: %v", rescue.Report().Warnings)
 	}
 }

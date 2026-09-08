@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
@@ -20,10 +21,12 @@ import (
 // Two tag containers are reconciled by the precedence policy (see the package
 // doc): the embedded "ID3 " chunk holds pictures and the full canonical set; the
 // native text chunks (NAME/AUTH/"(c) "/ANNO) hold the representable subset so the
-// ffmpeg family still reads the file. Both present containers are written from
-// the same edited set, so they end up in agreement; a value the native chunks
-// cannot represent (an unmapped key, a multi-value field other than Comment, or
-// any picture) forces an "ID3 " chunk so nothing is lost.
+// ffmpeg family still reads the file. A key this edit changed is written to both; a text
+// chunk the edit did not touch is copied verbatim, so a value the ID3 chunk disagrees with
+// and a duplicate NAME are the file's own data and survive. An explicit set of a key whose
+// chunk conflicts re-renders that chunk, which is how a caller resolves the disagreement. A
+// changed value the native chunks cannot represent (an unmapped key, a multi-value field
+// other than Comment, or any picture) forces an "ID3 " chunk so nothing is lost.
 func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.WriteOptions) (*core.WritePlan, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -42,6 +45,11 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	syncedLyricsChanged := !core.EqualSyncedLyrics(base.SyncedLyrics, edited.SyncedLyrics)
 	// LegacyStrip consolidates tags into the ID3 chunk by dropping the native ones.
 	stripText := opts.Legacy == core.LegacyStrip && textPresent
+	// The keys whose text chunks this write re-renders: the ones whose value moved, plus the
+	// ones the edit named outright (an explicit set of the already-projected value is how a
+	// caller resolves a chunk the ID3 chunk disagrees with). AIFF's native vocabulary maps no
+	// number key, so there is no number/total pair to fold together as WAV's IPRT needs.
+	changed := core.ChangedKeys(base.Tags, edited.Tags, opts.Touched)
 
 	report := core.WriteReport{Format: core.FormatAIFF, BytesBefore: edited.Identity.Size}
 
@@ -54,11 +62,26 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// passes a nil tag, for which the predicate is false.
 	encodingRewrite := id3.EncodingRewriteNeeded(d.id3, edited.Tags, wopts)
 
+	// Decide which containers receive the edited tags. Chapters and synced lyrics force an
+	// ID3 chunk because the native text chunks cannot store them (they are ID3 CHAP/CTOC and
+	// SYLT frames).
+	needID3 := id3Present || len(edited.Pictures) > 0 || len(edited.Chapters) > 0 || len(edited.SyncedLyrics) > 0 || !textRepresentable(edited.Tags, changed) || stripText
+	writeText := (textPresent && !stripText) || !needID3
+
+	// Build the new native text chunks (changed keys re-rendered; everything else verbatim).
+	var newText []outChunk
+	if writeText {
+		newText = rebuildText(d.texts, edited.Tags, changed)
+	}
+	// An explicit set of a key whose text chunk disagreed with the projection changes the
+	// chunks while leaving the canonical set as it was; it must defeat both no-op gates.
+	textRewrite := writeText && textPresent && !equalTextChunks(newText, d.texts)
+
 	// Fast path: nothing changed. NoOpPlan emits a verbatim copy (so SaveAsFile/
 	// WriteTo still produce a whole file) flagged NoOp so SaveBack skips it. A
 	// chapters- or synced-lyrics-only edit (CHAP/CTOC, SYLT in the ID3 chunk) must defeat
 	// the gate too.
-	if !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !stripText && !encodingRewrite {
+	if !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !stripText && !encodingRewrite && !textRewrite {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 	// Re-check the ID3 CTOC count at the codec boundary. Only a chapter edit re-renders
@@ -67,18 +90,6 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		if err := id3.CheckChapterCount(edited.Chapters); err != nil {
 			return nil, err
 		}
-	}
-
-	// Decide which containers receive the edited tags. Chapters and synced lyrics force an
-	// ID3 chunk because the native text chunks cannot store them (they are ID3 CHAP/CTOC and
-	// SYLT frames).
-	needID3 := id3Present || len(edited.Pictures) > 0 || len(edited.Chapters) > 0 || len(edited.SyncedLyrics) > 0 || !textRepresentable(edited.Tags) || stripText
-	writeText := (textPresent && !stripText) || !needID3
-
-	// Build the new native text chunks (synced to the edited set).
-	var newText []outChunk
-	if writeText {
-		newText = rebuildText(d.texts, edited.Tags)
 	}
 
 	// Build the new ID3 tag. id3.RewriteBase picks the diff base: no ID3 chunk means
@@ -126,22 +137,44 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// the emit flags, not needID3/writeText, so a full clear that emits no text chunk
 	// does not warn.
 	if emitText && emitID3 {
-		report.Warnings = append(report.Warnings, nativeReducedWarnings(edited.Tags)...)
+		report.Warnings = append(report.Warnings, nativeReducedWarnings(edited.Tags, changed)...)
 	}
 
-	outs, ops, dupLost := planChunks(d, newText, newID3, emitText, emitID3, stripText)
+	outs, ops, dupLost := planChunks(d, newText, newID3, emitText, emitID3, stripText, textBytesChange(d, newText))
 
 	segs, lay, err := assemble(d, outs)
 	if err != nil {
 		return nil, err
 	}
 	report.Operations = ops
+	// Only a chunk this plan actually writes can have had a conflict resolved in it; a strip
+	// or a full clear drops the chunks outright, and claiming a resolution there would
+	// describe something Execute does not do.
+	if emitText {
+		for _, k := range textConflictKeys(base.Families, changed) {
+			report.Operations = append(report.Operations, "native text chunk conflict resolved ("+string(k)+")")
+		}
+	}
 	if emitID3 {
 		// The embedded-container op lines (pictures/chapters/synced lyrics) come from the shared
 		// id3.ContainerOps, which owns the change-flag-and-count gate.
 		report.Operations = append(report.Operations, id3.ContainerOps(
 			picturesChanged, len(edited.Pictures), chaptersChanged, len(edited.Chapters),
 			syncedLyricsChanged, len(edited.SyncedLyrics))...)
+	}
+	if stripText {
+		// LegacyStrip consolidates the native values into the ID3 chunk, but a value the
+		// projection did not select has no canonical key to ride in on: dropping the chunks
+		// destroys it. doc.go's contract is that unaffected data is warned about, never
+		// stripped silently, and this is the one AIFF path that would.
+		if keys := strippedTextKeys(base.Families, edited.Tags); len(keys) > 0 {
+			names := make([]string, len(keys))
+			for i, k := range keys {
+				names[i] = string(k)
+			}
+			report.Warnings = core.Warn(report.Warnings, core.WarnLegacyStripDropped,
+				core.StripDroppedMessage("native text chunks", []string{"values the canonical set does not carry (" + strings.Join(names, ", ") + ")"}))
+		}
 	}
 	if id3Info.UsedV23Multi {
 		report.Operations = append(report.Operations, "v2.3 multi-value NUL-separated storage")
@@ -160,10 +193,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, id3Info, result.Tags)
 	report.Warnings = id3.AppendMalformedTailDropped(report.Warnings, d.id3)
 	// Collapse to a true no-op when the containers re-projected to base's values
-	// (e.g. a numeric genre); a native-text strip and an encoding rewrite stay real writes.
-	// DowngradeNoOp carries the value-dropped warning forward so a dropped date still
-	// surfaces on a no-op.
-	if np := core.DowngradeNoOp(core.FormatAIFF, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), stripText || encodingRewrite, report.Warnings); np != nil {
+	// (e.g. a numeric genre); a native-text strip, a re-rendered conflicting chunk, and an
+	// encoding rewrite stay real writes. DowngradeNoOp carries the value-dropped warning
+	// forward so a dropped date still surfaces on a no-op.
+	if np := core.DowngradeNoOp(core.FormatAIFF, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), stripText || encodingRewrite || textRewrite, report.Warnings); np != nil {
 		return np, nil
 	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
@@ -174,7 +207,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 // sound chunk) verbatim. The native text chunks are regrouped at the position of
 // the first one (their order among themselves is not significant); a newly
 // created container is inserted before the SSND chunk.
-func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, stripText bool) (outs []outChunk, ops []string, dupLost []core.DuplicateContent) {
+func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, stripText, textBytesChange bool) (outs []outChunk, ops []string, dupLost []core.DuplicateContent) {
 	textGroupEmitted, id3Rewritten := false, false
 
 	firstTextIdx := -1
@@ -197,19 +230,33 @@ func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, 
 				continue
 			}
 			// Regroup all native text chunks at the first one's position; drop the rest.
-			if i == firstTextIdx && emitText {
+			if i != firstTextIdx {
+				continue
+			}
+			if emitText {
 				outs = append(outs, newText...)
 				textGroupEmitted = true
-				ops = append(ops, "native text chunk rewrite")
+				// A present group is always re-emitted, so the op reports the rewrite only
+				// when the bytes actually move; otherwise it describes work no reader could
+				// see. The chunks are re-emitted as literals either way.
+				if textBytesChange {
+					ops = append(ops, "native text chunk rewrite")
+				}
+				continue
 			}
+			// The edit emptied every chunk, so Execute deletes a group the file had. Report
+			// the removal rather than leaving the plan to describe it as a bare rewrite.
+			ops = append(ops, "native text chunk drop")
 			continue
 		case i == d.id3Idx:
 			if emitID3 {
 				outs = append(outs, id3Out(newID3))
 				id3Rewritten = true
 				ops = append(ops, "ID3 chunk rewrite")
+				continue
 			}
-			continue // ID3 present but now empty: drop it
+			ops = append(ops, "ID3 chunk drop")
+			continue
 		case ch.dupTag:
 			// Redundant duplicate ID3 chunk: drop on rewrite so the output carries a
 			// single, consistent copy rather than a stale shadow.

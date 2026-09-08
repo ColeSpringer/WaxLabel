@@ -45,6 +45,17 @@ All notable changes to this project are documented here.
   unrelated edit, and an unrelated edit no longer spawns an id3 chunk to hold INFO's own
   duplicates. An explicit set of a conflicting key re-renders the INFO item and reports
   `LIST/INFO conflict resolved (KEY)`; a track edit updates every identifier that carried it.
+  AIFF's `NAME`, `AUTH`, `(c) ` and `ANNO` chunks follow the same rule, reporting
+  `native text chunk conflict resolved (KEY)`.
+- WAV and AIFF report what a write does to their native tag container. An edit that clears
+  every value deletes the container, which was reported as nothing at all (`LIST/INFO drop`,
+  `native text chunk drop`, and the same for an emptied id3 chunk), and a container the write
+  leaves byte for byte no longer claims a rewrite. The rewrite line tracks the bytes, not the
+  values, so a chunk that only loses an unreadable tail or moves when the group is regrouped
+  still reports one.
+- `--legacy strip` on an AIFF now reports the native text values it destroys. The strip
+  consolidates into the ID3 chunk, but a chunk value the projection did not select has no
+  canonical key to ride in on, so it was deleted with no warning at all.
 - `set --set ENCODER=<the stamp the file already carries>` on a WAV keeps the value instead of
   deleting it. The writer decided whether the edit authored the encoder from the value diff
   alone, so setting the key to what its `ISFT` item already held read as unauthored, and the
