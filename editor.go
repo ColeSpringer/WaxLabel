@@ -306,6 +306,7 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// faithful transfer (e.g. the ID3 SYLT language fallback). Set at the single transfer
 	// chokepoint (transfer.go), so every carry path inherits it and authored edits do not.
 	wo.Carried = e.carried
+	wo.Touched = touchedKeys(e.patch)
 	// Propagate the explicit-clear marker so an ID3 SYLT rewrite skips its language/descriptor
 	// fallback: a cleared-then-authored set starts fresh instead of inheriting the destination's
 	// existing SYLT metadata. It is distinct from Carried (a faithful transfer), which would
@@ -1296,6 +1297,22 @@ func dropEmptyValuedKeys(ts *tag.TagSet) {
 			ts.Delete(k)
 		}
 	}
+}
+
+// touchedKeys is the set of canonical keys this edit named, whatever the op. A native
+// store that can hold a value the projection did not select (WAV LIST/INFO, AIFF text
+// chunks) re-renders exactly these, so an explicit set of the already-projected value is
+// how a caller resolves such a conflict.
+func touchedKeys(p tag.TagPatch) map[tag.Key]bool {
+	keys := p.Keys()
+	if len(keys) == 0 {
+		return nil
+	}
+	out := make(map[tag.Key]bool, len(keys))
+	for _, k := range keys {
+		out[k] = true
+	}
+	return out
 }
 
 // trimTokenValues applies [tag.TrimTokenValue] to the trimmable keys ([tag.IsTrimmableKey]:

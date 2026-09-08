@@ -83,6 +83,19 @@ func DiffKeys(base, edited tag.TagSet) map[tag.Key]bool {
 	return changed
 }
 
+// ChangedKeys is the change set a native store consults when it can hold a value the
+// projection did not select (WAV LIST/INFO, AIFF text chunks): the keys whose value moved,
+// plus the keys the edit named outright. The second half is what lets an explicit set of the
+// already-projected value re-render a native item that disagrees with the projection, which a
+// diff of values alone cannot see. touched may be nil.
+func ChangedKeys(base, edited tag.TagSet, touched map[tag.Key]bool) map[tag.Key]bool {
+	changed := DiffKeys(base, edited)
+	for k := range touched {
+		changed[k] = true
+	}
+	return changed
+}
+
 // StripDroppedMessage is the wording for a LegacyStrip write that destroyed data held only in
 // the container it removed. container names what went ("legacy container", "LIST/INFO chunk")
 // and lost describes what went with it; the skeleton is shared so the two producers - the

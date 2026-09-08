@@ -15,10 +15,12 @@
 // Precedence (read): the id3 chunk is authoritative when present (it is the
 // richer container and the deliberate-tagger signal); otherwise LIST/INFO is.
 // Both surface in the family view with conflicts flagged. Precedence (write):
-// see write.go: by default both present containers are kept in sync, INFO is
-// the home for a bare file, and pictures or any value INFO cannot represent
-// force an id3 chunk; nothing is ever lost. All other chunks are preserved
-// verbatim.
+// see write.go: a key the edit changes is written to both present containers, while
+// an INFO item the edit leaves alone is copied verbatim, so a value the id3 chunk
+// disagrees with is the file's own data and survives (an explicit set of the key is
+// how a caller resolves it). INFO is the home for a bare file, and pictures or any
+// changed value INFO cannot represent force an id3 chunk; nothing is ever lost. All
+// other chunks are preserved verbatim.
 //
 // RF64/BW64 (the 64-bit extension, EBU Tech 3306) is read and written in the same
 // pass: the sizes that no longer fit a 32-bit field read 0xFFFFFFFF and their real

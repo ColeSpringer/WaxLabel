@@ -39,6 +39,17 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- A WAV's LIST/INFO items untouched by an edit are now copied verbatim instead of being
+  regenerated from the merged tag set: an INFO value the id3 chunk disagrees with, a second
+  identifier for the same key (`IPRT` and `ITRK`), and duplicate items all survive an
+  unrelated edit, and an unrelated edit no longer spawns an id3 chunk to hold INFO's own
+  duplicates. An explicit set of a conflicting key re-renders the INFO item and reports
+  `LIST/INFO conflict resolved (KEY)`; a track edit updates every identifier that carried it.
+- `set --set ENCODER=<the stamp the file already carries>` on a WAV keeps the value instead of
+  deleting it. The writer decided whether the edit authored the encoder from the value diff
+  alone, so setting the key to what its `ISFT` item already held read as unauthored, and the
+  inherited-stamp strip the CLI switches on for any `ENCODER` edit removed the value the user
+  had just written. Both now read the same signal: an edit naming the key.
 - An MP4 whose `stsd` runs past the caller's allocation limit no longer parses with no
   codec and no geometry, which gave the same bytes a different `mp4-mdat-v3` digest
   depending on the limit. The prefix read is clamped to the limit instead of refused by it.

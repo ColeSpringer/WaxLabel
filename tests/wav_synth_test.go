@@ -1062,3 +1062,238 @@ func TestRF64UnresolvedMarkerIsNotTheStreamingSentinel(t *testing.T) {
 		t.Errorf("a data chunk declaring more than the file holds is truncation: %v", doc.Warnings())
 	}
 }
+
+// TestWAVConflictingInfoValueSurvivesUnrelatedEdit: the id3 chunk wins the projection, but
+// the INFO item it disagrees with is the file's own data; an edit that does not name the key
+// leaves it byte for byte, warns nothing, and keeps the conflict visible in the families.
+func TestWAVConflictingInfoValueSurvivesUnrelatedEdit(t *testing.T) {
+	id3 := wavID3(id3v2(3, textFrame(3, "TIT2", "Id3 Title")))
+	info := wavInfo([2]string{"INAM", "Riff Title"})
+	data := wavFile(wavFmtPCM(), info, id3, wavData(400))
+
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Album, "Z").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range plan.Report().Warnings {
+		if w.Code == wl.WarnValueDropped || w.Code == wl.WarnNativeValueReduced {
+			t.Errorf("unrelated edit must not report a loss: %v", w)
+		}
+	}
+	out := applyToBytes(t, data, plan)
+	if !bytes.Contains(out, []byte("Riff Title")) {
+		t.Fatal("INFO title was overwritten by the id3 value")
+	}
+	re := mustParseBytes(t, out)
+	if re.Fields().Title != "Id3 Title" || re.Fields().Album != "Z" {
+		t.Errorf("title/album = %q/%q", re.Fields().Title, re.Fields().Album)
+	}
+	conflict := false
+	for _, f := range re.Families() {
+		if f.Family == wl.FamilyRIFF && f.Key == tag.Title && !f.Selected && f.Values[0] == "Riff Title" {
+			conflict = true
+		}
+	}
+	if !conflict {
+		t.Errorf("the RIFF title conflict should still be reported: %+v", re.Families())
+	}
+}
+
+// TestWAVAlternateTrackIdentifierSurvives: IPRT and ITRK both read as TRACKNUMBER; an
+// unrelated edit keeps both, and a track edit updates both so ffmpeg (which reads ITRK)
+// and IPRT readers agree.
+func TestWAVAlternateTrackIdentifierSurvives(t *testing.T) {
+	data := wavFile(wavFmtPCM(), wavInfo([2]string{"IPRT", "7"}, [2]string{"ITRK", "9"}), wavData(400))
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Album, "Z").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	if !bytes.Contains(out, []byte("ITRK")) || !bytes.Contains(out, []byte("IPRT")) {
+		t.Fatal("an unrelated edit dropped a track identifier")
+	}
+	if got := mustParseBytes(t, out).Fields().TrackNumber; got != 7 {
+		t.Errorf("track = %d, want 7 (first identifier wins)", got)
+	}
+
+	plan, err = mustParseBytes(t, out).Edit().Set(tag.TrackNumber, "3").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out = applyToBytes(t, out, plan)
+	items := infoItemsOf(t, out)
+	if items["IPRT"] != "3" || items["ITRK"] != "3" {
+		t.Errorf("after a track edit IPRT=%q ITRK=%q, want both 3", items["IPRT"], items["ITRK"])
+	}
+}
+
+// TestWAVDuplicateInfoItemsSurvive: two INAM and two ICMT items are the file's own shape.
+// An unrelated edit keeps all four without spilling them into a new id3 chunk; a title edit
+// collapses the title to one item and leaves the comments alone.
+func TestWAVDuplicateInfoItemsSurvive(t *testing.T) {
+	data := wavFile(wavFmtPCM(), wavInfo([2]string{"ICMT", "c1"}, [2]string{"ICMT", "c2"}, [2]string{"INAM", "t1"}, [2]string{"INAM", "t2"}), wavData(400))
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Album, "Z").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	if bytes.Contains(out, []byte("id3 ")) {
+		t.Error("an unrelated edit must not create an id3 chunk to hold INFO's own duplicates")
+	}
+	for _, v := range []string{"c1", "c2", "t1", "t2"} {
+		if !bytes.Contains(out, []byte(v)) {
+			t.Errorf("duplicate item %q lost", v)
+		}
+	}
+	plan, err = mustParseBytes(t, out).Edit().Set(tag.Title, "New").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out = applyToBytes(t, out, plan)
+	if bytes.Count(out, []byte("INAM")) != 1 || !bytes.Contains(out, []byte("c2")) {
+		t.Errorf("title edit should leave one INAM and both comments; got %d INAM", bytes.Count(out, []byte("INAM")))
+	}
+}
+
+// TestWAVExplicitSetResolvesInfoConflict: setting a key to the value the projection already
+// holds is how a user resolves a conflicting INFO item, so it is a real write that re-renders
+// the item and reports what it did.
+func TestWAVExplicitSetResolvesInfoConflict(t *testing.T) {
+	id3 := wavID3(id3v2(3, textFrame(3, "TIT2", "Id3 Title")))
+	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Riff Title"}), id3, wavData(400))
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Id3 Title").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.IsNoOp() {
+		t.Fatal("resolving a conflict must not be a no-op")
+	}
+	if !slices.Contains(plan.Report().Operations, "LIST/INFO conflict resolved (TITLE)") {
+		t.Errorf("operations = %v", plan.Report().Operations)
+	}
+	out := applyToBytes(t, data, plan)
+	if bytes.Contains(out, []byte("Riff Title")) {
+		t.Error("the conflicting INFO value should have been replaced")
+	}
+	for _, f := range mustParseBytes(t, out).Families() {
+		if !f.Selected {
+			t.Errorf("no conflict should remain: %+v", f)
+		}
+	}
+}
+
+// TestWAVTrackTotalEditRewritesPairItem: the total rides on IPRT, so editing only the total
+// must still re-render that item.
+func TestWAVTrackTotalEditRewritesPairItem(t *testing.T) {
+	data := wavFile(wavFmtPCM(), wavInfo([2]string{"IPRT", "4/9"}), wavData(400))
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.TrackTotal, "12").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := infoItemsOf(t, applyToBytes(t, data, plan))["IPRT"]; got != "4/12" {
+		t.Errorf("IPRT = %q, want 4/12", got)
+	}
+}
+
+// infoItemsOf returns the first value of each INFO identifier in a WAV's LIST/INFO chunk.
+func infoItemsOf(t *testing.T, wav []byte) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	i := 12
+	for i+8 <= len(wav) {
+		size := int(binary.LittleEndian.Uint32(wav[i+4:]))
+		if string(wav[i:i+4]) == "LIST" && i+12 <= len(wav) && string(wav[i+8:i+12]) == "INFO" {
+			break
+		}
+		i += 8 + size + size&1
+	}
+	if i+8 > len(wav) {
+		return out
+	}
+	size := int(binary.LittleEndian.Uint32(wav[i+4:]))
+	body := wav[i+12 : i+8+size]
+	for len(body) >= 8 {
+		id := string(body[:4])
+		n := int(binary.LittleEndian.Uint32(body[4:]))
+		val := body[8 : 8+n]
+		if _, dup := out[id]; !dup {
+			out[id] = string(bytes.TrimRight(val, "\x00"))
+		}
+		body = body[8+n+n&1:]
+	}
+	return out
+}
+
+// TestWAVTrackTotalSurvivesNumberOnlyEdit: the number and total share one IPRT item, so an
+// edit naming only the number still has to judge whether the total can ride along. Clearing
+// the number leaves the total no INFO home, which must force an id3 chunk rather than drop it.
+func TestWAVTrackTotalSurvivesNumberOnlyEdit(t *testing.T) {
+	data := wavFile(wavFmtPCM(), wavInfo([2]string{"IPRT", "4/9"}), wavData(400))
+	plan, err := mustParseBytes(t, data).Edit().Clear(tag.TrackNumber).Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := mustParseBytes(t, applyToBytes(t, data, plan))
+	if got, ok := re.Tags().Get(tag.TrackTotal); !ok || got[0] != "9" {
+		t.Errorf("TRACKTOTAL = %v (ok=%v), want [9] carried into the id3 chunk", got, ok)
+	}
+}
+
+// TestWAVUnrepresentableTrackTotalStillWarns: a non-numeric number cannot compose "A1/9", so
+// neither container can hold the total and the write must say so rather than lose it quietly.
+func TestWAVUnrepresentableTrackTotalStillWarns(t *testing.T) {
+	data := wavFile(wavFmtPCM(), wavInfo([2]string{"IPRT", "4/9"}), wavData(400))
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.TrackNumber, "A1").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasWarn(plan.Report().Warnings, wl.WarnValueDropped) {
+		t.Errorf("dropping TRACKTOTAL must warn: %v", plan.Report().Warnings)
+	}
+}
+
+// TestWAVSetEncoderToTheStoredStampKeepsIt: the CLI turns the stamp strip on for any edit
+// naming ENCODER, so the writer's gate has to read the same signal. Setting the key to the
+// value the ISFT item already holds is an authored value, not a stamp to remove.
+func TestWAVSetEncoderToTheStoredStampKeepsIt(t *testing.T) {
+	data := wavFile(wavFmtPCM(), wavInfo([2]string{"ISFT", "Lavf62.3.100"}), wavData(400))
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Encoder, "Lavf62.3.100").
+		Prepare(wl.WithStripEncoderStamp())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	if got, ok := mustParseBytes(t, out).Tags().Get(tag.Encoder); !ok || got[0] != "Lavf62.3.100" {
+		t.Errorf("ENCODER = %v (ok=%v), want the value the edit set", got, ok)
+	}
+}
+
+// TestWAVStripEncoderStampWithoutAnEncoderEditStillStrips: the gate above must not disarm the
+// option for a caller that never named the key.
+func TestWAVStripEncoderStampWithoutAnEncoderEditStillStrips(t *testing.T) {
+	data := wavFile(wavFmtPCM(), wavInfo([2]string{"ISFT", "Lavf62.3.100"}, [2]string{"INAM", "T"}), wavData(400))
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Album, "Z").Prepare(wl.WithStripEncoderStamp())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := applyToBytes(t, data, plan); bytes.Contains(out, []byte("Lavf62.3.100")) {
+		t.Error("an inherited stamp the edit did not author should still be stripped")
+	}
+}
+
+// TestWAVStrippedInfoReportsNoConflictResolution: --legacy strip deletes the LIST chunk, so a
+// plan that also claimed to have resolved a conflict inside it would describe a write that
+// never happened.
+func TestWAVStrippedInfoReportsNoConflictResolution(t *testing.T) {
+	id3 := wavID3(id3v2(3, textFrame(3, "TIT2", "Id3 Title")))
+	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Riff Title"}), id3, wavData(400))
+	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Id3 Title").Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.Report().Operations {
+		if strings.Contains(op, "conflict resolved") {
+			t.Errorf("a stripped LIST/INFO cannot have a conflict resolved in it: %v", plan.Report().Operations)
+		}
+	}
+}

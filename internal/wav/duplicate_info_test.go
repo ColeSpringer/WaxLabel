@@ -43,7 +43,7 @@ func TestDuplicateNumberInfoFirstWins(t *testing.T) {
 	if !ok || len(vals) != 1 || vals[0] != "1" {
 		t.Fatalf("TrackNumber = %v (ok=%v), want first-wins [\"1\"]", vals, ok)
 	}
-	if ws := nativeReducedWarnings(m.Tags); len(ws) != 0 {
+	if ws := nativeReducedWarnings(m.Tags, map[tag.Key]bool{tag.TrackNumber: true}); len(ws) != 0 {
 		t.Errorf("first-wins TrackNumber must not warn native-value-reduced, got %v", ws)
 	}
 	unselected := 0
@@ -73,7 +73,12 @@ func TestDuplicateTextInfoPreserved(t *testing.T) {
 	}
 	// The reduction to the single-valued INFO container is real and preserved in ID3, so the
 	// warning here is accurate, not the false one the number-pair case produced.
-	if ws := nativeReducedWarnings(m.Tags); len(ws) != 1 {
+	if ws := nativeReducedWarnings(m.Tags, map[tag.Key]bool{tag.Title: true}); len(ws) != 1 {
 		t.Errorf("duplicate Title should warn native-value-reduced exactly once, got %v", ws)
+	}
+	// An edit that does not name the key re-renders none of its items, so both survive in
+	// INFO itself and there is no reduction to report.
+	if ws := nativeReducedWarnings(m.Tags, nil); len(ws) != 0 {
+		t.Errorf("an untouched multi-value key must not warn native-value-reduced, got %v", ws)
 	}
 }

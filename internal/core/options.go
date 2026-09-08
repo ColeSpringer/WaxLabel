@@ -1,6 +1,9 @@
 package core
 
-import "github.com/colespringer/waxlabel/internal/bits"
+import (
+	"github.com/colespringer/waxlabel/internal/bits"
+	"github.com/colespringer/waxlabel/tag"
+)
 
 // LegacyPolicy controls what happens to legacy/foreign tag containers (stray
 // leading ID3v2, trailing ID3v1, APEv2) when writing. The default preserves
@@ -164,6 +167,11 @@ type WriteOptions struct {
 	NumericGenre bool
 	// ID3Multi selects the ID3v2.3 multi-value representation.
 	ID3Multi ID3MultiValuePolicy
+	// Touched holds every key the edit named (set, add, or clear), including a set to the
+	// value already projected. A native store that can disagree with the projection (WAV
+	// LIST/INFO, AIFF text chunks) re-renders those items, so an explicit set resolves a
+	// conflict the value diff alone cannot see.
+	Touched map[tag.Key]bool
 	// AllowUnrecognizedPictures opts the added-picture validation in [Editor.Prepare]
 	// out, so a picture whose bytes are not a recognized image header (an exotic
 	// HEIC/AVIF/JXL cover, or a transfer carrying an already-embedded one) is embedded

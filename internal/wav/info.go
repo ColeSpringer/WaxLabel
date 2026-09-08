@@ -200,8 +200,16 @@ func infoFamilies(auth tag.TagSet, items []infoItem) []core.FamilyValue {
 // be rewritten without spawning an id3 chunk to hold the half it had just invented.
 // DiscNumber and DiscTotal stay unrepresentable - RIFF INFO has no disc identifier at
 // all, so there is no item for them to ride on.
-func infoRepresentable(ts tag.TagSet) bool {
+//
+// Only the keys this edit changed are judged. An unchanged key is INFO-resident by
+// construction when there is no id3 chunk (it was read from an item, whatever its
+// cardinality), and rebuildInfo copies its items verbatim either way, so making it force a
+// second container would spawn one to hold INFO's own duplicates.
+func infoRepresentable(ts tag.TagSet, changed map[tag.Key]bool) bool {
 	for _, k := range ts.Keys() {
+		if !changed[k] {
+			continue
+		}
 		if _, ok := mapping.RIFFKeyInfo(k); !ok {
 			if k == tag.TrackTotal {
 				if _, ok := infoTrackPair(ts); ok {
@@ -217,13 +225,15 @@ func infoRepresentable(ts tag.TagSet) bool {
 	return true
 }
 
-// rebuildInfo produces the INFO item list for an edited tag set. Unmapped items
-// (IENG, ILNG, ISBJ, ...) are preserved verbatim in place; mapped items are
-// re-rendered from the edited set or dropped when their key is now absent; keys
-// newly present in the edited set are appended in the set's order. Multi-value
-// mapped keys (which also forced an id3 chunk) store their first value here, INFO
-// being single-valued. An emptied list then drops the LIST chunk via the caller's
-// len check.
+// rebuildInfo re-renders only the items whose canonical key this edit changed and copies
+// every other item verbatim, so a duplicate, a second identifier for the same key, and a
+// value the id3 chunk disagrees with all survive an unrelated edit. For a changed key, each
+// identifier that already carried it takes the edited value once (IPRT and ITRK both
+// update), same-identifier duplicates are dropped, and a key now absent drops every item.
+// Changed keys INFO did not hold are appended in the set's order; an untouched key that
+// lives only in the id3 chunk is not copied in, which keeps a no-op edit a no-op. Multi-value
+// mapped keys (which also forced an id3 chunk) store their first value here, INFO being
+// single-valued. An emptied list then drops the LIST chunk via the caller's len check.
 //
 // stripStamp drops a transcoder-stamp ISFT item. The test is on the ITEM, not on the
 // canonical ENCODER value: with an id3 chunk present that value is the chunk's TSSE, so
@@ -231,9 +241,10 @@ func infoRepresentable(ts tag.TagSet) bool {
 // container, and would leave a stamped ISFT in place when the TSSE is clean. Marking the
 // key emitted is what stops the append loop writing the stamp straight back from the same
 // value. The caller decides when the flag applies (see Plan).
-func rebuildInfo(orig []infoItem, edited tag.TagSet, stripStamp bool) []infoItem {
+func rebuildInfo(orig []infoItem, edited tag.TagSet, changed map[tag.Key]bool, stripStamp bool) []infoItem {
 	out := make([]infoItem, 0, len(orig))
-	emitted := map[tag.Key]bool{}
+	emittedID := map[[4]byte]bool{}
+	emittedKey := map[tag.Key]bool{}
 	for _, it := range orig {
 		key, ok := mapping.RIFFInfoKey(it.id4())
 		if !ok {
@@ -241,20 +252,27 @@ func rebuildInfo(orig []infoItem, edited tag.TagSet, stripStamp bool) []infoItem
 			continue
 		}
 		if stripStamp && isTranscoderISFT(it) {
-			emitted[key] = true
+			emittedKey[key] = true
 			continue // the stamp is what the strip targets; do not re-render it
 		}
-		if emitted[key] {
-			continue // a non-conformant file with duplicate mapped items: keep one
+		if !changed[key] {
+			out = append(out, it) // untouched: the file's own bytes, whatever the projection holds
+			continue
+		}
+		if emittedID[it.id] {
+			continue // this identifier already took the edited value
 		}
 		if v, ok := infoValue(edited, key); ok {
 			out = append(out, infoItem{id: it.id, raw: []byte(v)})
-			emitted[key] = true
+			emittedID[it.id] = true
+			emittedKey[key] = true
 		}
 		// else: key absent in the edited set - drop the item.
 	}
 	for _, k := range edited.Keys() {
-		if emitted[k] {
+		// The changed gate keeps a no-op a no-op: without it, a WAV whose INFO does not
+		// mirror its id3 chunk would gain an item on every write.
+		if !changed[k] || emittedKey[k] {
 			continue
 		}
 		id, ok := mapping.RIFFKeyInfo(k)
@@ -265,7 +283,29 @@ func rebuildInfo(orig []infoItem, edited tag.TagSet, stripStamp bool) []infoItem
 			var id4 [4]byte
 			copy(id4[:], id)
 			out = append(out, infoItem{id: id4, raw: []byte(v)})
-			emitted[k] = true
+			emittedKey[k] = true
+		}
+	}
+	return out
+}
+
+// equalInfoItems reports whether two item lists carry the same identifiers and bytes in
+// the same order.
+func equalInfoItems(a, b []infoItem) bool {
+	return slices.EqualFunc(a, b, func(x, y infoItem) bool { return x.id == y.id && bytes.Equal(x.raw, y.raw) })
+}
+
+// infoConflictKeys lists the keys this write re-renders whose RIFF family entry disagreed
+// with the projection: the conflicting items the write replaces. It is keyed on the same
+// change set rebuildInfo is, so a key dragged in by the track pair is reported like one the
+// edit named outright, and the report cannot claim more or less than the rewrite performs.
+func infoConflictKeys(fams []core.FamilyValue, changed map[tag.Key]bool) []tag.Key {
+	var out []tag.Key
+	seen := map[tag.Key]bool{}
+	for _, f := range fams {
+		if f.Family == core.FamilyRIFF && !f.Selected && changed[f.Key] && !seen[f.Key] {
+			seen[f.Key] = true
+			out = append(out, f.Key)
 		}
 	}
 	return out
@@ -321,16 +361,30 @@ func infoTrackPair(ts tag.TagSet) (string, bool) {
 	return "", false
 }
 
+// foldInfoTrackPair adds each half of the track number/total pair to a change set that names
+// the other. The two share one IPRT item (see infoTrackPair), so an edit to either re-renders
+// that item and both must be judged for representability: without the fold, clearing or
+// rewriting the number drops the total from the only item that could carry it, with no id3
+// chunk forced and no value-dropped warning.
+func foldInfoTrackPair(changed map[tag.Key]bool) map[tag.Key]bool {
+	if changed[tag.TrackNumber] || changed[tag.TrackTotal] {
+		changed[tag.TrackNumber] = true
+		changed[tag.TrackTotal] = true
+	}
+	return changed
+}
+
 // nativeReducedWarnings notes each multi-valued key reduced to its first value in
 // the single-valued LIST/INFO chunk while the full set is kept in the ID3 chunk
-// written alongside it. Every RIFF INFO slot is single-valued, so any mapped key
-// qualifies. core.NativeReducedWarnings applies the value-count and first-present
+// written alongside it. Every RIFF INFO slot is single-valued, so any mapped key this
+// edit changed qualifies; an unchanged key keeps its own items verbatim and loses
+// nothing. core.NativeReducedWarnings applies the value-count and first-present
 // checks, matching infoValue's treatment of present-empty values. The caller
 // invokes this only when both containers are emitted.
-func nativeReducedWarnings(ts tag.TagSet) []core.Warning {
+func nativeReducedWarnings(ts tag.TagSet, changed map[tag.Key]bool) []core.Warning {
 	return core.NativeReducedWarnings(ts, "LIST/INFO", func(k tag.Key) bool {
 		_, ok := mapping.RIFFKeyInfo(k)
-		return ok
+		return ok && changed[k]
 	})
 }
 

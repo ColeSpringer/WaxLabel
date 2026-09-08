@@ -22,8 +22,11 @@ import (
 // Two tag containers are reconciled by the precedence policy (see the package
 // doc): the embedded id3 chunk holds pictures and the full canonical set; the
 // RIFF-native LIST/INFO holds the representable subset so the ffmpeg family
-// still reads the file. Both present containers are written from the same edited
-// set, so they end up in agreement; a value INFO cannot represent (multi-value,
+// still reads the file. A key this edit changed is written to both; an INFO item the
+// edit did not touch is copied verbatim, so a value the id3 chunk disagrees with, a
+// duplicate, and a second identifier for one key are the file's own data and survive.
+// An explicit set of a key whose INFO item conflicts re-renders that item, which is how a
+// caller resolves the disagreement. A changed value INFO cannot represent (multi-value,
 // an unmapped key, or any picture) forces an id3 chunk so nothing is lost.
 func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.WriteOptions) (*core.WritePlan, error) {
 	if err := ctx.Err(); err != nil {
@@ -43,16 +46,23 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	syncedLyricsChanged := !core.EqualSyncedLyrics(base.SyncedLyrics, edited.SyncedLyrics)
 	// LegacyStrip consolidates tags into the id3 chunk by dropping LIST/INFO.
 	stripINFO := opts.Legacy == core.LegacyStrip && infoPresent
+	// The keys whose INFO items this write re-renders: the ones whose value moved, plus the
+	// ones the edit named outright (an explicit set of the already-projected value is how a
+	// caller resolves an INFO item the id3 chunk disagrees with), with the track number and
+	// total folded together because they share one item.
+	changed := foldInfoTrackPair(core.ChangedKeys(base.Tags, edited.Tags, opts.Touched))
+
 	// A WithStripEncoderStamp edit removes a transcoder-stamp ISFT item. The strip targets
-	// the stamp the FILE carries, never a value this edit authored: the CLI turns the option
-	// on for any ENCODER edit (to keep the containers in step), so without this gate
-	// --set ENCODER=Lavf62.3.100 would filter out the user's own value and write it nowhere,
-	// ISFT being the INFO home for the key. A removal leaves no value to write either way.
+	// the stamp the FILE carries, never a value this edit authored, so it reads the same
+	// signal the CLI switches the option on with (an op on the key, not a moved value):
+	// without that, --set ENCODER=Lavf62.3.100 on a file already carrying that stamp would
+	// filter out the user's own value and write it nowhere, ISFT being the INFO home for the
+	// key. A removal leaves no value to write either way.
 	//
 	// A strip is a real change even when the canonical tags are untouched (a WAV carrying
 	// only an inherited ISFT, or one whose id3 chunk holds a clean ENCODER while INFO holds
 	// the stamp), so it must defeat the no-op fast path below and force an INFO rewrite.
-	encoderAuthored := core.DiffKeys(base.Tags, edited.Tags)[tag.Encoder]
+	encoderAuthored := changed[tag.Encoder]
 	stripISFT := opts.StripEncoderStamp && !encoderAuthored
 	stampToStrip := stripISFT && infoPresent && hasTranscoderISFT(d.info)
 
@@ -67,11 +77,25 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// passes a nil tag, for which the predicate is false.
 	encodingRewrite := id3.EncodingRewriteNeeded(d.id3, edited.Tags, wopts)
 
+	// Decide which containers receive the edited tags. Chapters and synced lyrics force an
+	// id3 chunk because LIST/INFO cannot store them (they are ID3 CHAP/CTOC and SYLT frames).
+	needID3 := id3Present || len(edited.Pictures) > 0 || len(edited.Chapters) > 0 || len(edited.SyncedLyrics) > 0 || !infoRepresentable(edited.Tags, changed) || stripINFO
+	writeINFO := (infoPresent && !stripINFO) || !needID3
+
+	// Build the new INFO items (changed keys re-rendered; everything else kept verbatim).
+	var newInfo []infoItem
+	if writeINFO {
+		newInfo = rebuildInfo(d.info, edited.Tags, changed, stripISFT)
+	}
+	// An explicit set of a key whose INFO item disagreed with the projection changes INFO
+	// while leaving the canonical set as it was; it must defeat both no-op gates.
+	infoRewrite := writeINFO && infoPresent && !equalInfoItems(newInfo, d.info)
+
 	// Fast path: nothing changed. NoOpPlan emits a verbatim copy (so SaveAsFile/
 	// WriteTo still produce a whole file) flagged NoOp so SaveBack skips it. A
 	// chapters- or synced-lyrics-only edit (CHAP/CTOC, SYLT in the id3 chunk) must defeat
 	// the gate too.
-	if !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !stripINFO && !stampToStrip && !encodingRewrite {
+	if !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !stripINFO && !stampToStrip && !encodingRewrite && !infoRewrite {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 	// Re-check the ID3 CTOC count at the codec boundary. Only a chapter edit re-renders
@@ -80,17 +104,6 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		if err := id3.CheckChapterCount(edited.Chapters); err != nil {
 			return nil, err
 		}
-	}
-
-	// Decide which containers receive the edited tags. Chapters and synced lyrics force an
-	// id3 chunk because LIST/INFO cannot store them (they are ID3 CHAP/CTOC and SYLT frames).
-	needID3 := id3Present || len(edited.Pictures) > 0 || len(edited.Chapters) > 0 || len(edited.SyncedLyrics) > 0 || !infoRepresentable(edited.Tags) || stripINFO
-	writeINFO := (infoPresent && !stripINFO) || !needID3
-
-	// Build the new INFO items (synced to the edited set; unmapped items kept).
-	var newInfo []infoItem
-	if writeINFO {
-		newInfo = rebuildInfo(d.info, edited.Tags, stripISFT)
 	}
 
 	// Build the new id3 tag. id3.RewriteBase picks the diff base: no id3 chunk
@@ -135,7 +148,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// a plan-time note. Gate on the emit flags, not needID3/writeINFO, because a full
 	// clear can leave writeINFO true yet emit no INFO chunk.
 	if emitINFO && emitID3 {
-		report.Warnings = append(report.Warnings, nativeReducedWarnings(edited.Tags)...)
+		report.Warnings = append(report.Warnings, nativeReducedWarnings(edited.Tags, changed)...)
 	}
 
 	outs, ops, dupLost := planChunks(d, newInfo, newID3, emitINFO, emitID3, stripINFO)
@@ -145,6 +158,14 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		return nil, err
 	}
 	report.Operations = ops
+	// Only a chunk this plan actually writes can have had a conflict resolved in it; a strip
+	// or a full clear drops the LIST outright, and claiming a resolution there would describe
+	// something Execute does not do.
+	if emitINFO {
+		for _, k := range infoConflictKeys(base.Families, changed) {
+			report.Operations = append(report.Operations, "LIST/INFO conflict resolved ("+string(k)+")")
+		}
+	}
 	if emitID3 {
 		// The embedded-container op lines (pictures/chapters/synced lyrics) come from the shared
 		// id3.ContainerOps, which owns the change-flag-and-count gate.
@@ -199,7 +220,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// (a numeric genre, a dropped empty); an INFO strip, an encoder-stamp removal, or an
 	// encoding rewrite stays a real write. DowngradeNoOp carries the value-dropped warning
 	// forward so a dropped date still surfaces on a no-op.
-	if np := core.DowngradeNoOp(core.FormatWAV, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), stripINFO || stampToStrip || encodingRewrite, report.Warnings); np != nil {
+	if np := core.DowngradeNoOp(core.FormatWAV, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), stripINFO || stampToStrip || encodingRewrite || infoRewrite, report.Warnings); np != nil {
 		return np, nil
 	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
