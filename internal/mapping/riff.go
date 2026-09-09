@@ -6,7 +6,7 @@ import "github.com/colespringer/waxlabel/tag"
 // codec. RIFF INFO is a small, fixed vocabulary of four-character chunk
 // identifiers, each holding a single NUL-terminated string - far less
 // expressive than ID3 or Vorbis comments. Only the well-established identifiers
-// map to canonical keys; anything else (IENG, ILNG, ISBJ, IKEY, ...) is
+// map to canonical keys; anything else (ILNG, ISBJ, IKEY, ...) is
 // preserved verbatim in the native document but not projected, since inventing
 // a canonical key from an arbitrary 4CC would be both ugly and lossy on
 // round-trip.
@@ -32,6 +32,8 @@ var riffInfoKeys = map[string]tag.Key{
 	"IPRT": tag.TrackNumber,
 	"ITRK": tag.TrackNumber, // ffmpeg also reads track numbers from ITRK
 	"ISFT": tag.Encoder,
+	"ITCH": tag.EncodedBy, // ffmpeg's encoded_by
+	"IENG": tag.Engineer,
 }
 
 // riffKeyInfo is the inverse of riffInfoKeys, built at init.

@@ -61,7 +61,7 @@ func newLintCmd() *cobra.Command {
 			"\"-\" reads from standard input (read-only; not valid with --fix).",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			paths, skipped, pathErrors, err := expandPaths(args, recursive)
+			paths, skipped, leftovers, pathErrors, err := expandPaths(args, recursive)
 			if err != nil {
 				return err
 			}
@@ -73,6 +73,7 @@ func newLintCmd() *cobra.Command {
 			}
 			noteNoFiles(cmd.ErrOrStderr(), paths, jsonMode(cmd))
 			noteSkipped(cmd.ErrOrStderr(), skipped, jsonMode(cmd))
+			noteLeftovers(cmd.ErrOrStderr(), leftovers, jsonMode(cmd))
 			if fix {
 				if slices.Contains(paths, stdinArg) {
 					return usagef("cannot fix standard input; --fix writes changes back to a file")
@@ -372,6 +373,8 @@ type jsonFinding struct {
 	Code     string `json:"code"`
 	Message  string `json:"message"`
 	Key      string `json:"key,omitempty"`
+	// Fixable says whether lint --fix acts on this finding.
+	Fixable bool `json:"fixable"`
 }
 
 // jsonLintFix is the machine-readable lint --fix result for one file. Remaining holds
@@ -435,6 +438,7 @@ func toJSONFindings(findings []wl.Finding) []jsonFinding {
 			Code:     f.Code,
 			Message:  f.Message,
 			Key:      string(f.Key),
+			Fixable:  f.Fixable,
 		})
 	}
 	return out

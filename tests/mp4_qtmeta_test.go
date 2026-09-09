@@ -554,3 +554,28 @@ func TestMP4UdtaEmptyCanonicalEntryKeepsSiblings(t *testing.T) {
 		t.Error("an atom whose canonical entry is empty lost its other-language entry")
 	}
 }
+
+// TestMdtaForeignNamesFoldToCustomKeys: an mdta name that is not a valid key as spelled folds
+// to one (uppercased, other bytes replaced), so copy and diff see it, and an edit reuses the
+// file's own spelling rather than adding a second entry.
+func TestMdtaForeignNamesFoldToCustomKeys(t *testing.T) {
+	names := []string{"custom_key", "com.apple.quicktime.author", "org.example.thing"}
+	data := mp4MdtaFile(names, []string{"v1", "Ann", "x"})
+	doc := mustParseBytes(t, data)
+	for k, want := range map[tag.Key]string{"CUSTOM_KEY": "v1", "AUTHOR": "Ann", "ORG.EXAMPLE.THING": "x"} {
+		if v, ok := doc.Get(k); !ok || v[0] != want {
+			t.Errorf("%s = %v (%v), want %q", k, v, ok, want)
+		}
+	}
+	plan, err := doc.Edit().Set("CUSTOM_KEY", "v2").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	if bytes.Count(out, []byte("custom_key")) != 1 || bytes.Contains(out, []byte("CUSTOM_KEY")) {
+		t.Error("the edit should rewrite the existing custom_key entry, not add CUSTOM_KEY")
+	}
+	if v, _ := mustParseBytes(t, out).Get("CUSTOM_KEY"); !slices.Equal(v, []string{"v2"}) {
+		t.Errorf("CUSTOM_KEY after edit = %v", v)
+	}
+}

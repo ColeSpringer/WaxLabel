@@ -19,17 +19,28 @@ type LintFix struct {
 // finding classes are auto-fixed, both non-destructive:
 //
 //   - inherited-encoder: remove the transcoder-stamp values from ENCODER
-//     ([tag.Encoder]), clearing the key only when every value is a stamp;
+//     ([tag.Encoder]), clearing the key only when every value is a stamp, and neutralize a
+//     container vendor string or WAV ISFT item through [WithStripEncoderStamp];
 //   - stray-leading-id3 / trailing-id3v1 / legacy-ape: strip the legacy
 //     ID3v1/APEv2/stray-ID3 containers ([WithLegacyPolicy] [LegacyStrip]), but only
 //     when WaxLabel can prove them fully redundant with the canonical set.
 //
+// The encoder remediation is attempted for every inherited-encoder finding, not gated on
+// [Finding.Fixable]. The two say different things and both are wanted: Fixable answers "will
+// this finding go away", which is false for a stamp stored under a key nothing here reaches
+// (see [Document.encoderStampReachable]), while the option is unconditional because it is
+// always safe, writes nothing when there is nothing to strip, and reaches a vendor string no
+// canonical key names - a store no document-level predicate can see. A file whose only stamp
+// is out of reach therefore plans a write that changes nothing and lints the same afterward,
+// which is what lint --fix reports as "not auto-fixed".
+//
 // The legacy strip is [LegacyStrip], which is all-or-nothing (it strips every legacy
-// container). So it is skipped when any legacy container holds unique data the strip
-// would destroy - a tag present only in a legacy container ([Document.LegacyOnlyKeys])
-// or non-tag content the projection does not fold in ([Document.HasOpaqueLegacyContent]:
-// an APEv2 binary item, a leading ID3v2's pictures/chapters/lyrics, or an unreadable
-// container). A mixed file (one redundant container plus one carrying unique data)
+// container). That one IS gated on the finding's own [Finding.Fixable], which the linter
+// computes from the same primitives, so the marker a consumer reads and the strip this plans
+// cannot disagree: a strip is skipped when any legacy container holds unique data it would destroy
+// - a tag present only in a legacy container ([Document.LegacyOnlyKeys]) or non-tag content
+// the projection does not fold in ([Document.HasOpaqueLegacyContent]: an APEv2 binary item,
+// a leading ID3v2's pictures/chapters/lyrics, or an unreadable container). A mixed file (one redundant container plus one carrying unique data)
 // conservatively keeps both; the pre-existing legacy warning still fires so lint exits
 // non-zero, and the legacy-only-tags info explains why the container was preserved. An
 // explicit [WithLegacyPolicy] [LegacyStrip] still strips unconditionally, but warns about
@@ -51,9 +62,6 @@ type LintFix struct {
 func (d *Document) PlanLintFix() LintFix {
 	var fix LintFix
 	encoderCleared, legacyStripped := false, false
-	// Auto-strip a legacy container only when it is provably, fully redundant with the
-	// canonical set. Computed once (the primitives would otherwise run per matching finding).
-	legacyLoses := len(d.LegacyOnlyKeys()) > 0 || d.HasOpaqueLegacyContent()
 	for _, f := range d.Lint() {
 		switch f.Code {
 		case "inherited-encoder":
@@ -91,7 +99,7 @@ func (d *Document) PlanLintFix() LintFix {
 				encoderCleared = true
 			}
 		case "stray-leading-id3", "trailing-id3v1", "legacy-ape":
-			if !legacyStripped && !legacyLoses {
+			if !legacyStripped && f.Fixable {
 				fix.Options = append(fix.Options, WithLegacyPolicy(LegacyStrip))
 				legacyStripped = true
 			}

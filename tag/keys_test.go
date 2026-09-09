@@ -190,3 +190,27 @@ func TestValidR128GainValue(t *testing.T) {
 		t.Error("ValidR128GainValue should report a non-R128 key valid")
 	}
 }
+
+func TestFoldKey(t *testing.T) {
+	cases := []struct {
+		in   string
+		want Key
+		ok   bool
+	}{
+		{"MYCUSTOM", "MYCUSTOM", true},
+		{"custom_key", "CUSTOM_KEY", true},
+		{"author", "AUTHOR", true},
+		{"org.example.thing", "ORG.EXAMPLE.THING", true}, // a dot is a valid key byte and is kept
+		{"a=b", "A_B", true},
+		{"naïve", "NA_VE", true}, // one placeholder per rune, not per byte
+		{"tab\there", "TAB_HERE", true},
+		{"", "", false},
+		{"   ", "", false},
+	}
+	for _, c := range cases {
+		got, ok := FoldKey(c.in)
+		if got != c.want || ok != c.ok {
+			t.Errorf("FoldKey(%q) = %q, %v; want %q, %v", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}

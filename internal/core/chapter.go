@@ -8,14 +8,16 @@ import (
 )
 
 // FormatChapterTime renders a chapter offset as H:MM:SS.mmm - millisecond
-// precision, since adjacent chapters can be seconds apart. A negative offset is
-// clamped to zero. It is the single chapter-timestamp format shared by the text
-// chapter listing and the chapter sanity warnings, so a timestamp named in a
-// warning reads identically to the one in the listing it refers to.
+// precision, since adjacent chapters can be seconds apart, reporting the nearest
+// millisecond rather than the floor. A negative offset is clamped to zero. It is the single
+// chapter-timestamp format shared by the text chapter listing and the chapter sanity
+// warnings, so a timestamp named in a warning reads identically to the one in the listing
+// it refers to.
 func FormatChapterTime(d time.Duration) string {
 	if d < 0 {
 		d = 0
 	}
+	d = d.Round(time.Millisecond)
 	h := d / time.Hour
 	d -= h * time.Hour
 	m := d / time.Minute
@@ -203,6 +205,28 @@ func FillInteriorEnds(chs []Chapter) {
 			chs[i].End = chs[i+1].Start
 		}
 	}
+}
+
+// OpenPastDurationEnds reads a final chapter that starts at or past the media duration and
+// whose end equals its start as open (End 0). That zero-length end is what the ID3 CHAP
+// writer must store for an open chapter, so folding it makes an ID3 read agree with the
+// start-only stores, which report no end there. A zero duration leaves chs alone.
+func OpenPastDurationEnds(chs []Chapter, duration time.Duration) {
+	n := len(chs)
+	if n == 0 || duration <= 0 {
+		return
+	}
+	last := &chs[n-1]
+	if last.Start >= duration.Truncate(time.Millisecond) && last.End == last.Start {
+		last.End = 0
+	}
+}
+
+// ChaptersOpenedPastDuration is [OpenPastDurationEnds] as an expression, for a result
+// builder that adopts the list inline. It mutates and returns the same slice.
+func ChaptersOpenedPastDuration(chs []Chapter, duration time.Duration) []Chapter {
+	OpenPastDurationEnds(chs, duration)
+	return chs
 }
 
 // OpenRunToEOFEnd reopens a final chapter whose end runs to the source's own end of file, so

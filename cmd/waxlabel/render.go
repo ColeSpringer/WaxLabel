@@ -254,7 +254,7 @@ func renderTags(w io.Writer, ts tag.TagSet) {
 	}
 	fmt.Fprintln(w, "):")
 	// Values print in the column after the key (4-space indent + key width + 2);
-	// continuation lines of a multi-line value (lyrics, comments) align there too.
+	// continuation lines of a prose key's multi-line value align there too.
 	valueCol := 4 + width + 2
 	for k, vals := range ts.All() {
 		// A key is validated printable ASCII, but sanitize defensively so a hostile
@@ -283,10 +283,18 @@ func renderTags(w io.Writer, ts tag.TagSet) {
 			// the terminal; --json/--dump structured output keeps the exact bytes. The
 			// shared tag.ElideValue keeps the dump and the plan/diff change previews on one
 			// threshold and hint format.
-			writeWrappedSuffix(w, valueCol, tag.ElideValue(v), suffix)
+			if proseKeys[k] {
+				writeWrappedSuffix(w, valueCol, tag.ElideValue(v), suffix)
+				continue
+			}
+			fmt.Fprintln(w, tag.SanitizeLine(tag.ElideValue(v))+suffix)
 		}
 	}
 }
+
+// proseKeys hold free text where a line break is content; every other value prints on one
+// line with the break escaped, so a file-controlled value cannot forge a row.
+var proseKeys = map[tag.Key]bool{tag.Lyrics: true, tag.Comment: true, tag.Description: true, tag.LongDescription: true}
 
 // writeWrapped prints value followed by a newline, indenting every line after an
 // embedded newline to col so a multi-line value stays aligned under its first

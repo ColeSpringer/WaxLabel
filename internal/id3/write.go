@@ -1451,6 +1451,10 @@ func hasSubMinutePart(iso string) bool {
 // before any edit. srcTag may be nil (a file with no ID3 tag), which warns nothing. Shared
 // by the four codecs that rewrite an ID3 tag so they cannot word one loss four ways.
 func AppendMalformedTailDropped(ws []core.Warning, srcTag *Tag) []core.Warning {
+	if srcTag.Ignored() != "" {
+		return core.Warn(ws, core.WarnMalformedTagEntryDropped,
+			"the ignored ID3v2.2 tag is replaced by the rewritten tag and its contents are not carried")
+	}
 	id, n := srcTag.MalformedTail()
 	if id == "" || n <= 0 {
 		return ws

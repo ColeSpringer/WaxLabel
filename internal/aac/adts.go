@@ -16,6 +16,18 @@ type adtsHeader struct {
 	channels    int // decoded channel count (0 when chanConfig is 0 / carried in the AOT config)
 	frameLength int // total bytes of this frame (header + payload)
 	rawBlocks   int // number_of_raw_data_blocks_in_frame (0..3); the frame holds rawBlocks+1 AAC blocks
+	// protectionAbsent is the header's own flag: when it is clear a two-byte CRC follows the
+	// fixed header, so the raw data block starts two bytes later.
+	protectionAbsent bool
+}
+
+// headerLen is the bytes before the first raw data block: the fixed header, plus the CRC
+// when the header declares one.
+func (h adtsHeader) headerLen() int {
+	if h.protectionAbsent {
+		return adtsHeaderSize
+	}
+	return adtsHeaderSize + 2
 }
 
 // adtsHeaderSize is the ADTS fixed header length without the optional 2-byte CRC
@@ -75,6 +87,7 @@ func decodeADTS(b []byte) (adtsHeader, bool) {
 		// number_of_raw_data_blocks_in_frame: the last 2 bits of byte 6. A frame holds
 		// rawBlocks+1 AAC blocks (1..4), each samplesPerAACFrame samples, so the duration
 		// walk must not assume a flat one block per frame.
-		rawBlocks: int(b[6] & 0x03),
+		rawBlocks:        int(b[6] & 0x03),
+		protectionAbsent: b[1]&0x01 != 0,
 	}, true
 }

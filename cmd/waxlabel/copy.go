@@ -15,10 +15,11 @@ import (
 // --dry-run previews the transfer and the write without touching it.
 func newCopyCmd() *cobra.Command {
 	var (
-		preset string
-		legacy string
-		dryRun bool
-		strict bool
+		preset   string
+		legacy   string
+		id3Multi string
+		dryRun   bool
+		strict   bool
 	)
 	cmd := &cobra.Command{
 		Use:   "copy <source> <dest>",
@@ -42,7 +43,13 @@ func newCopyCmd() *cobra.Command {
 			if srcPath == stdinArg || dstPath == stdinArg {
 				return usagef("copy does not read standard input; pass file paths")
 			}
-			opts, err := resolveWriteFlags(preset, legacy)
+			// The same check plan and set apply: an explicitly empty write-shaping flag is
+			// indistinguishable from an unset one, so it is a usage error rather than a
+			// silent no-op. Flags copy does not define are skipped.
+			if err := rejectEmptyScalarFlags(cmd); err != nil {
+				return err
+			}
+			opts, err := resolveWriteFlags(preset, legacy, id3Multi)
 			if err != nil {
 				return err
 			}
@@ -151,6 +158,7 @@ func newCopyCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&preset, "preset", "", "write policy preset: preserve|compatible|minimal")
 	cmd.Flags().StringVar(&legacy, "legacy", "", "legacy-tag policy: preserve|strip. strip removes the DESTINATION's ID3v1/APEv2/stray-ID3 containers unconditionally, warning when one holds the only copy of a value")
+	cmd.Flags().StringVar(&id3Multi, "id3-multi", "", "how an ID3v2.3 tag (MP3) stores a multi-valued field: null (NUL-separated, the default, a de-facto extension some readers do not split), repeat (one frame per value), or slash (values joined with a slash). ID3v2.4 tags (WAV/AIFF/AAC) separate values natively and ignore it")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview the transfer without modifying the destination")
 	cmd.Flags().BoolVar(&strict, "strict", false, "fail (exit 2) instead of writing when the transfer is not lossless or the write would lose metadata")
 	return cmd

@@ -99,6 +99,7 @@ waxlabel export-picture track.flac -o cover.jpg
 | `set <file>...` | Apply edits and save. Use `-o` for a new output file. |
 | `lint <file>...` | Report metadata issues. `--fix` applies only safe, non-destructive fixes; a legacy container is stripped only when fully redundant with the canonical tags. |
 | `verify <file>...` | Print tag-independent audio-essence digests. `--whole-file` hashes every byte. |
+| `clean <dir>...` | List the `.waxlabel-*.tmp` files an interrupted write left behind; `--remove` deletes them, `--all` includes files newer than an hour. |
 | `caps <file>` or `caps --format <name>` | Show what a file or format can store and edit. |
 | `keys` | List the canonical tag vocabulary and cardinality. |
 | `copy <source> <dest>` | Overlay source metadata onto the destination, reporting what carries, downgrades, or drops. `--strict` refuses a transfer that is not lossless. |
@@ -110,7 +111,9 @@ picture (`--add-cover`, `--add-picture`, `--remove-picture`), chapter
 (`--add-chapter`, `--clear-chapters`), and synced-lyric
 (`--synced-lyrics-file`, `--add-synced-lyric`, `--synced-lyrics-lang`) flags, and
 `--output-gain` for the Ogg Opus header gain. Write
-shaping is controlled by `--preset`, `--legacy`, and `--padding`. Run
+shaping is controlled by `--preset`, `--legacy`, and `--padding`;
+`--id3-multi null|repeat|slash` picks how an ID3v2.3 (MP3) tag stores a multi-valued
+field. Run
 `waxlabel <command> --help` for the full flag list. `--legacy strip` (and
 `--preset minimal`, which implies it) removes ID3v1/APEv2/stray-ID3 containers
 unconditionally; when one holds the only copy of a value, the plan says so and
@@ -120,10 +123,13 @@ Read commands accept `-` for standard input, and `dump`, `verify`, `lint`, `plan
 and `set` can walk directories with `--recursive`. Format is detected from a file's
 leading bytes, not its extension, except under `--recursive`: the walker picks its
 candidates by extension first, so a valid FLAC named `noext` is skipped by a recursive
-run while working normally when named directly. All data commands accept `--json`. `-o`
+run while working normally when named directly. A directory the walk cannot read is
+reported as an `io` error for that path (exit 6) and the rest of the tree is still
+processed. All data commands accept `--json`. `-o`
 writes atomically and refuses an existing target unless `--overwrite` is given.
 
-`lint --json` findings carry a machine-readable `code` and `severity`; the exit code
+`lint --json` findings carry a machine-readable `code`, `severity`, and `fixable`
+(whether `--fix` acts on it); the exit code
 reflects the highest-precedence result. See `waxlabel <command> --help` and the
 package documentation for the finding codes.
 
@@ -163,7 +169,7 @@ maximum: `canceled`/`timeout` > `source-changed` > `invalid-data` > `input-too-l
 | WAV / RF64 / BW64 | read/write | RIFF LIST/INFO plus embedded `id3 ` (chapters and lyrics); chunks are preserved. The 64-bit RF64/BW64 form is kept on save-back, with `ds64` recomputed. |
 | MP4 / M4A / M4B / MOV | read/write | iTunes `ilst`, the `mdta` keys store ffmpeg's `+use_metadata_tags` writes, classic `moov.udta` text atoms, cover art, Nero and QuickTime chapters. Fragmented MP4 (a `moof`) is read-only; a `moov` declaring `mvex` with no fragment present is written normally. |
 | Matroska / WebM | read/write | Scoped SimpleTags, segment title, attachments, default-edition chapters. WebM cannot write cover attachments. |
-| AAC (ADTS) | read/write | Front ID3v2 tag (new tags are ID3v2.4) plus ADTS frames. |
+| AAC (ADTS) | read/write | Front ID3v2 tag (new tags are ID3v2.4) plus ADTS frames. HE-AAC is reported at its played rate, channel count and profile, read from the frames the header cannot signal it in. |
 | AIFF / AIFF-C | read/write | Native text chunks plus embedded `ID3 `; chunks are preserved. |
 | WavPack | read/write | APEv2 items and the `Cover Art` convention; a trailing ID3v1 is surfaced as legacy. |
 | Monkey's Audio | read/write | APEv2 as above; SV3.98+ and the older inline header are both read. |
@@ -208,11 +214,17 @@ documented in the package documentation and surfaced as warnings at write time.
 
 Input is treated as untrusted: parsers use bounded allocation and recursion limits,
 fuzz tests cover arbitrary input, and human output sanitizes terminal-control bytes
-(JSON output uses exact machine-readable values).
+and the invisible or reordering Unicode format characters (bidirectional controls, zero
+width space, word joiner, byte order mark, line and paragraph separators). A value's line
+breaks show as indented continuation lines only for the prose keys LYRICS, COMMENT,
+DESCRIPTION and LONGDESCRIPTION, and print as `\x0a` elsewhere (JSON output uses exact
+machine-readable values).
 
 Save-back writes go to a temp file in the target directory, are fsync'd, and renamed
-into place. If the source changed since parse, `SaveBack()` refuses with
-`waxerr.ErrSourceChanged` rather than overwriting newer bytes. Atomic renames have
+into place. A process killed mid-write (SIGKILL) can leave the temp file behind;
+recursive commands note such leftovers and `waxlabel clean` lists or removes them. If
+the source changed since parse, `SaveBack()` refuses with `waxerr.ErrSourceChanged`
+rather than overwriting newer bytes. Atomic renames have
 normal filesystem consequences: editing through a symlink rewrites the target and
 leaves the link, other hard links keep pointing at the old inode, and a read-only
 file can be replaced when its directory is writable (its mode is preserved).

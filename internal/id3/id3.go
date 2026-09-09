@@ -22,9 +22,10 @@ import (
 
 // Header flag bits (the ID3v2 header's sixth byte).
 const (
-	hdrUnsync    = 0x80 // whole-tag (v2.2/v2.3) or all-frames (v2.4) unsynchronisation
-	hdrExtHeader = 0x40 // an extended header follows (v2.3/v2.4)
-	hdrFooter    = 0x10 // a 10-byte footer trails the tag (v2.4)
+	hdrUnsync      = 0x80 // whole-tag (v2.2/v2.3) or all-frames (v2.4) unsynchronisation
+	hdrExtHeader   = 0x40 // an extended header follows (v2.3/v2.4)
+	hdrCompression = 0x40 // v2.2: compressed by an undefined scheme; the tag is ignored
+	hdrFooter      = 0x10 // a 10-byte footer trails the tag (v2.4)
 )
 
 // Tag is a parsed ID3v2 tag: the decoded frames in original order plus the
@@ -49,6 +50,17 @@ type Tag struct {
 	// zeros. Both are cleared by WithFrames: a rewritten tag has no malformed tail.
 	malformedID   string
 	malformedTail int64
+	// ignored is the reason the whole tag was skipped (a v2.2 compression flag), empty when
+	// it parsed. Its frames are empty and its region is unreadable rather than free.
+	ignored string
+}
+
+// Ignored reports why the whole tag was skipped, or "" when it parsed.
+func (t *Tag) Ignored() string {
+	if t == nil {
+		return ""
+	}
+	return t.ignored
 }
 
 // Padding reports the free bytes inside the tag region, after the last frame.
@@ -120,6 +132,7 @@ func (t *Tag) WithFrames(frames []Frame, padding int64) *Tag {
 	c.frames = frames
 	c.padding = padding
 	c.malformedID, c.malformedTail = "", 0 // a rewritten tag has no unreadable tail
+	c.ignored = ""
 	return &c
 }
 
@@ -237,6 +250,11 @@ func ParseTag(data []byte, maxElements int) (*Tag, error) {
 	t.writeVersion = major
 	if major == 2 {
 		t.writeVersion = 3 // modernise obsolete v2.2 on write
+	}
+
+	if major == 2 && flags&hdrCompression != 0 {
+		t.ignored = "the ID3v2.2 tag sets the compression flag, for which v2.2 defines no scheme; the tag is ignored"
+		return t, nil
 	}
 
 	// v2.2/v2.3 unsynchronisation covers the whole tag; undo it before parsing.

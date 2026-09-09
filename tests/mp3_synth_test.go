@@ -52,11 +52,15 @@ func txxxFrame(version byte, desc, value string) []byte {
 	return id3Frame(version, "TXXX", slices.Concat([]byte{0}, []byte(desc), []byte{0}, []byte(value)))
 }
 
-// textFrame22 builds a v2.2 (3-char ID, 3-byte size, no flags) text frame.
-func textFrame22(id, text string) []byte {
-	body := append([]byte{0}, text...)
+// frame22 builds a v2.2 frame: 3-char ID, 3-byte size, no flags.
+func frame22(id string, body []byte) []byte {
 	out := append([]byte(id), byte(len(body)>>16), byte(len(body)>>8), byte(len(body)))
 	return append(out, body...)
+}
+
+// textFrame22 builds a v2.2 Latin-1 text frame.
+func textFrame22(id, text string) []byte {
+	return frame22(id, append([]byte{0}, text...))
 }
 
 // id3v1 builds a 128-byte ID3v1 trailer. Every text field is a parameter so one hand-written

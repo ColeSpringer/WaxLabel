@@ -411,7 +411,7 @@ func renderInfo(items []infoItem) []byte {
 }
 
 // unmappedInfoIDs lists, in file order and without repeats, the INFO identifiers that project
-// to no canonical key (IENG, ISBJ, IKEY, ...). Everywhere else those items are preserved
+// to no canonical key (ILNG, ISBJ, IKEY, ...). Everywhere else those items are preserved
 // verbatim; a LegacyStrip drops the whole LIST chunk, which is the one path that destroys
 // them, and there is no id3 frame for them to move into because they have no canonical key.
 func unmappedInfoIDs(items []infoItem) []string {

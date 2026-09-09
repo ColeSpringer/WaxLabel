@@ -648,3 +648,23 @@ func TestMergeProvenance(t *testing.T) {
 		t.Error("expected a non-empty reason")
 	}
 }
+
+func TestMergeUnionDropsEmptyValues(t *testing.T) {
+	cases := []struct {
+		base, inc, want []string
+	}{
+		{[]string{""}, []string{"Inc"}, []string{"Inc"}},
+		{[]string{"   "}, []string{"Inc"}, []string{"Inc"}},
+		{[]string{"Base"}, []string{""}, []string{"Base"}},
+		{[]string{""}, []string{"  "}, []string{""}},
+	}
+	for _, c := range cases {
+		base, inc := NewTagSet(), NewTagSet()
+		base.Set(Genre, c.base...)
+		inc.Set(Genre, c.inc...)
+		got, _ := Merge(base, inc, Union)
+		if v, _ := got.Get(Genre); !slices.Equal(v, c.want) {
+			t.Errorf("Union(%q, %q) = %q, want %q", c.base, c.inc, v, c.want)
+		}
+	}
+}

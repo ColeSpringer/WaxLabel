@@ -48,12 +48,13 @@ func newPlanCmd() *cobra.Command {
 				return err
 			}
 			defer cleanup()
-			paths, skipped, pathErrors, err := expandPaths(args, recursive)
+			paths, skipped, leftovers, pathErrors, err := expandPaths(args, recursive)
 			if err != nil {
 				return err
 			}
 			noteNoFiles(cmd.ErrOrStderr(), paths, asJSON)
 			noteSkipped(cmd.ErrOrStderr(), skipped, asJSON)
+			noteLeftovers(cmd.ErrOrStderr(), leftovers, asJSON)
 			if err := notifyInvocationNotes(cmd.ErrOrStderr(), ce, &ef, realOf, paths, pathErrors, asJSON); err != nil {
 				return err
 			}

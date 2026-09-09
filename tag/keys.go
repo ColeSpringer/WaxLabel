@@ -116,6 +116,31 @@ func (k Key) Valid() bool {
 	return true
 }
 
+// FoldKey returns the key a foreign field name folds to: ASCII letters uppercased and every
+// rune the key charset disallows (an equals sign, a control, anything non-ASCII) replaced by
+// one underscore; a dot is a valid key byte and stays. ok is false when the trimmed name is
+// empty. It is how a native store's own spelling ("custom_key", "org.example.thing") becomes
+// a visible custom key; the store keeps its spelling on write by looking the folded key up.
+func FoldKey(s string) (Key, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", false
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteByte(byte(r) - ('a' - 'A'))
+		case r < 0x80 && validKeyByte(byte(r)):
+			b.WriteByte(byte(r))
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return Key(b.String()), true
+}
+
 // Known reports whether k is part of the published canonical vocabulary.
 func (k Key) Known() bool {
 	_, ok := vocabulary[k]

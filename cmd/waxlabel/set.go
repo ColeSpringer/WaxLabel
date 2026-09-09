@@ -100,20 +100,24 @@ func newSetCmd() *cobra.Command {
 			}
 			defer cleanup()
 
-			paths, skipped, pathErrors, err := expandPaths(args, recursive)
+			paths, skipped, leftovers, pathErrors, err := expandPaths(args, recursive)
 			if err != nil {
 				return err
 			}
 			// Before the per-file edit notes: this is input discovery, useful even when the
 			// walk then matches nothing to edit.
 			noteSkipped(cmd.ErrOrStderr(), skipped, jsonMode(cmd))
-			if output != "" && len(paths) != 1 {
-				return usagef("-o writes a single file, so it takes exactly one input (got %d)", len(paths))
+			noteLeftovers(cmd.ErrOrStderr(), leftovers, jsonMode(cmd))
+			// A directory the walk could not read is reported like any other per-path
+			// error, but nobody asked to write it, so it does not count as an input here.
+			inputs := namedInputs(paths, pathErrors)
+			if output != "" && len(inputs) != 1 {
+				return usagef("-o writes a single file, so it takes exactly one input (got %d)", len(inputs))
 			}
-			// Validate the -o destination before any write. len(paths)==1 is guaranteed
-			// here by the check above, so realOf(paths[0]) is the single input.
+			// Validate the -o destination before any write. len(inputs)==1 is guaranteed
+			// here by the check above, so realOf(inputs[0]) is the single input.
 			if output != "" {
-				if err := checkOutputTarget(output, realOf(paths[0]), overwrite); err != nil {
+				if err := checkOutputTarget(output, realOf(inputs[0]), overwrite); err != nil {
 					return err
 				}
 			}
@@ -255,7 +259,7 @@ func checkOutputRegular(output, resolved string) error {
 // errors read identically.
 func checkOutputDirWritable(resolved string) error {
 	dir := filepath.Dir(resolved)
-	f, err := os.CreateTemp(dir, ".waxlabel-writecheck-*.tmp")
+	f, err := os.CreateTemp(dir, wl.TempFilePrefix+"writecheck-*"+wl.TempFileSuffix)
 	if err != nil {
 		return wl.NewTempCreateError(dir, err)
 	}

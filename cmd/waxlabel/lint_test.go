@@ -330,3 +330,33 @@ func TestDumpJSONSchemaVersion(t *testing.T) {
 		t.Errorf("dump schemaVersion = %d, want %d", jd.SchemaVersion, schemaVersion)
 	}
 }
+
+// TestLintJSONFindingFixable: the fixable marker reaches JSON, so a scripted consumer can
+// tell which findings --fix will act on without hardcoding the codes.
+func TestLintJSONFindingFixable(t *testing.T) {
+	t.Parallel()
+	f := copyFixture(t, sampleFLAC)
+	if _, _, code := runCLI(t, "set", f, "--set", "MYCUSTOM=x"); code != 0 {
+		t.Fatalf("seed exit %d", code)
+	}
+	out, _, _ := runCLI(t, "--json", "lint", f)
+	seen := map[string]bool{}
+	for _, jl := range decodeJSONList[jsonLint](t, out) {
+		for _, fd := range jl.Findings {
+			seen[fd.Code] = true
+			switch fd.Code {
+			case "inherited-encoder":
+				if !fd.Fixable {
+					t.Errorf("inherited-encoder should report fixable: %+v", fd)
+				}
+			case "custom-key":
+				if fd.Fixable {
+					t.Errorf("custom-key is not auto-fixed and must not report fixable: %+v", fd)
+				}
+			}
+		}
+	}
+	if !seen["inherited-encoder"] || !seen["custom-key"] {
+		t.Errorf("fixture should lint both codes; saw %v", seen)
+	}
+}

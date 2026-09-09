@@ -319,8 +319,8 @@ func ParseLRCFull(text string) []SyncedLine {
 // ParseLRCReportFull is [ParseLRCFull] plus the 1-based line numbers of input lines that produced
 // no timed lyric and are not recognized LRC structure - a malformed timestamp (e.g. "[9:99.99]bad")
 // or a plain untimed text line - i.e. content the parser drops silently. Blank lines, ID metadata
-// tags ([ar:]/[ti:]/[al:]/[au:]/[by:]/[re:]/[ve:]), [offset:]/[length:] tags, and bare [section]
-// headers are recognized structure and are not reported. Like ParseLRCFull it is uncapped, for
+// tags ([ar:]/[ti:]/[al:]/[au:]/[by:]/[re:]/[ve:]) and [offset:]/[length:] tags are recognized
+// structure and are not reported; a bare [section] header is content and is. Like ParseLRCFull it is uncapped, for
 // trusted whole-file input; the CLI surfaces droppedLines as a warning that fails under --strict so
 // a partial drop does not pass with exit 0.
 func ParseLRCReportFull(text string) (lines []SyncedLine, droppedLines []int) {
@@ -390,8 +390,9 @@ var lrcIDTagPrefixes = []string{"ar:", "ti:", "al:", "au:", "by:", "re:", "ve:",
 // countsAsDroppedLRCLine reports whether a raw LRC line that produced no timed lyric represents a
 // silently dropped content line - a malformed timestamp like "[9:99.99]bad" or a plain untimed
 // text line - as opposed to recognized structure that legitimately holds no lyric: a blank line,
-// an LRC ID metadata tag, an [offset:] or [length:] tag, or a bare [section] header (a lone bracket
-// group whose inner text carries no colon). It examines the first bracket group with the same
+// an LRC ID metadata tag, or an [offset:] or [length:] tag. A bare bracket group that is neither
+// ([Chorus], a mistyped timestamp) is lyric-sheet content the parser drops, so it counts. It
+// examines the first bracket group with the same
 // parseLRCTime/parseLRCOffsetTag helpers the parser uses, so the count tracks the parser's own
 // accept/skip decision rather than a divergent scanner. Called only for a line with no timed lyric,
 // so a valid timestamp never reaches the time check below (leadingTimestamps already collected it).
@@ -418,9 +419,6 @@ func countsAsDroppedLRCLine(raw string) bool {
 	}
 	if _, ok := parseLRCOffsetTag(inner); ok {
 		return false // [offset:N]
-	}
-	if !strings.Contains(inner, ":") {
-		return false // bare [section] header
 	}
 	lower := strings.ToLower(strings.TrimSpace(inner))
 	for _, p := range lrcIDTagPrefixes {

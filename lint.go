@@ -39,6 +39,9 @@ type Finding struct {
 	Code     string
 	Message  string
 	Key      tag.Key // the field involved, or "" if not field-specific
+	// Fixable reports that [Document.PlanLintFix] acts on this finding: the inherited encoder
+	// stamp, and a legacy container fully redundant with the canonical set.
+	Fixable bool
 }
 
 // String renders the finding as "[severity] code: message (key)". The severity and
@@ -73,7 +76,8 @@ func (d *Document) Lint() []Finding {
 
 	out = append(out, lintWarnings(d.media.Warnings)...)
 	out = append(out, lintFamilies(d.media.Families)...)
-	out = append(out, lintLegacyOnly(d.LegacyOnlyKeys())...)
+	legacyOnly := d.LegacyOnlyKeys()
+	out = append(out, lintLegacyOnly(legacyOnly)...)
 	out = append(out, lintOpaqueLegacy(d.media.LegacyOpaqueContent)...)
 	// Lint the display projection so a cover whose bytes disagree with its stored MIME (a GIF
 	// mislabeled image/png, or junk under a valid-looking label) is judged by its real type - the
@@ -85,7 +89,48 @@ func (d *Document) Lint() []Finding {
 	out = append(out, lintNegativeNumbers(d.media.Tags)...)
 	out = append(out, lintCardinality(d.media.Tags)...)
 	out = append(out, lintCustomKeys(d.media.Tags)...)
+	d.markFixable(out, legacyOnly)
 	return out
+}
+
+// markFixable sets Fixable from the gates PlanLintFix applies, so the marker and the fix
+// cannot disagree. legacyOnly is the key list [Document.Lint] already computed.
+func (d *Document) markFixable(fs []Finding, legacyOnly []tag.Key) {
+	legacyRedundant := len(legacyOnly) == 0 && !d.HasOpaqueLegacyContent()
+	encoderReachable := d.encoderStampReachable()
+	for i := range fs {
+		switch fs[i].Code {
+		case "inherited-encoder":
+			fs[i].Fixable = encoderReachable
+		case "stray-leading-id3", "trailing-id3v1", "legacy-ape":
+			fs[i].Fixable = legacyRedundant
+		}
+	}
+}
+
+// encoderStampReachable reports whether the encoder remediation can reach the stamps this
+// file carries. It clears transcoder-stamp values from [tag.Encoder] and, through
+// [WithStripEncoderStamp], neutralizes a container vendor string and a WAV ISFT item; it has
+// no way to reach one stored under [tag.EncodedBy], which ID3's TENC frame and an APEv2
+// "Encoded By" item both project to. So a file whose ENCODER is clean while its ENCODEDBY is
+// stamped has nothing the fix can act on, and saying otherwise would promise a repair that
+// lint --fix then reports as not auto-fixed.
+//
+// A file carrying both reads reachable: the fix acts, and the stamp it cannot reach is
+// reported as remaining. A vendor-string stamp alongside a stamped ENCODEDBY reads
+// unreachable though the vendor strip would act, which errs toward promising too little.
+func (d *Document) encoderStampReachable() bool {
+	return hasTranscoderStamp(d, tag.Encoder) || !hasTranscoderStamp(d, tag.EncodedBy)
+}
+
+// hasTranscoderStamp reports whether any value under key is an inherited transcoder stamp,
+// by the same test the linter and the fix use.
+func hasTranscoderStamp(d *Document, key tag.Key) bool {
+	vals, ok := d.Get(key)
+	if !ok {
+		return false
+	}
+	return slices.ContainsFunc(vals, core.IsTranscoderStamp)
 }
 
 // lintWarnings promotes the parse-time warnings that a tagger usually acts on. Each
@@ -104,9 +149,9 @@ func lintWarnings(ws []core.Warning) []Finding {
 			core.WarnInheritedEncoder, core.WarnInvalidPicture, core.WarnTruncatedAudio,
 			core.WarnInvalidTagKey, core.WarnChainedStream, core.WarnTrailingBytes,
 			core.WarnOversizedChunk, core.WarnMalformedTagEntry:
-			out = append(out, Finding{LintWarning, w.Code.String(), w.Message, ""})
+			out = append(out, Finding{Severity: LintWarning, Code: w.Code.String(), Message: w.Message})
 		case core.WarnMultipleVorbisComment, core.WarnDuplicateTagBlock, core.WarnNoAudioFrames:
-			out = append(out, Finding{LintError, w.Code.String(), w.Message, ""})
+			out = append(out, Finding{Severity: LintError, Code: w.Code.String(), Message: w.Message})
 		case core.WarnNumericGenre, core.WarnUnknownChunkSize:
 			// Informational, like negative-numeric/custom-key: worth surfacing in lint
 			// (README promises dump and lint both report it) without flipping the clean
@@ -114,7 +159,7 @@ func lintWarnings(ws []core.Warning) []Finding {
 			// is what a non-seekable writer legitimately emits - so a piped WAV capture
 			// must not fail lint, though what the sentinel costs the reader (anything
 			// after the chunk) is still worth reporting.
-			out = append(out, Finding{LintInfo, w.Code.String(), w.Message, ""})
+			out = append(out, Finding{Severity: LintInfo, Code: w.Code.String(), Message: w.Message})
 		}
 	}
 	return out
@@ -134,12 +179,12 @@ func lintWarnings(ws []core.Warning) []Finding {
 func lintChapters(chapters []core.Chapter, duration time.Duration) []Finding {
 	var out []Finding
 	for _, c := range core.ChaptersPastDuration(chapters, duration) {
-		out = append(out, Finding{LintWarning, core.WarnChapterPastDuration.String(),
-			core.ChapterPastDurationMessage(c.Start, duration), ""})
+		out = append(out, Finding{Severity: LintWarning, Code: core.WarnChapterPastDuration.String(),
+			Message: core.ChapterPastDurationMessage(c.Start, duration)})
 	}
 	for _, start := range core.DuplicateChapterStarts(chapters) {
-		out = append(out, Finding{LintWarning, core.WarnDuplicateChapter.String(),
-			core.DuplicateChapterMessage(start), ""})
+		out = append(out, Finding{Severity: LintWarning, Code: core.WarnDuplicateChapter.String(),
+			Message: core.DuplicateChapterMessage(start)})
 	}
 	return out
 }
@@ -162,8 +207,8 @@ func lintFamilies(fams []core.FamilyValue) []Finding {
 		}
 		seen[f.Key] = true
 		out = append(out, Finding{
-			LintWarning, "conflicting-families",
-			core.ConflictingFamiliesMessage(), f.Key,
+			Severity: LintWarning, Code: "conflicting-families",
+			Message: core.ConflictingFamiliesMessage(), Key: f.Key,
 		})
 	}
 	return out
@@ -178,8 +223,8 @@ func lintLegacyOnly(keys []tag.Key) []Finding {
 	if len(keys) == 0 {
 		return nil
 	}
-	return []Finding{{LintInfo, "legacy-only-tags",
-		fmt.Sprintf("%d tag(s) present only in a legacy container; see dump --native", len(keys)), ""}}
+	return []Finding{{Severity: LintInfo, Code: "legacy-only-tags",
+		Message: fmt.Sprintf("%d tag(s) present only in a legacy container; see dump --native", len(keys))}}
 }
 
 // lintOpaqueLegacy reports that a legacy container holds non-tag content the canonical view does
@@ -192,8 +237,8 @@ func lintOpaqueLegacy(opaque bool) []Finding {
 	if !opaque {
 		return nil
 	}
-	return []Finding{{LintInfo, "legacy-opaque-content",
-		"a legacy container holds non-tag content (picture, chapter, or binary item) not shown; see dump --native", ""}}
+	return []Finding{{Severity: LintInfo, Code: "legacy-opaque-content",
+		Message: "a legacy container holds non-tag content (picture, chapter, or binary item) not shown; see dump --native"}}
 }
 
 // duplicatePictureMessage and multipleFrontCoversMessage are the shared human
@@ -261,18 +306,18 @@ func lintPictures(pics []Picture) []Finding {
 		// image format the sniff does not know degrades to exactly this, and dropping
 		// it would be silent data loss.
 		if p.Unrecognized() {
-			out = append(out, Finding{LintWarning, "invalid-picture",
-				fmt.Sprintf("%s picture is not a recognized image type (%s)", p.Type, p.MIME), ""})
+			out = append(out, Finding{Severity: LintWarning, Code: "invalid-picture",
+				Message: fmt.Sprintf("%s picture is not a recognized image type (%s)", p.Type, p.MIME)})
 		}
 		if reason, bad := core.NonConformingIcon(p); bad {
 			// The code comes from the warning's own String, not a literal: the edit-time
 			// warning and this finding are documented to report the same condition under the
 			// same code, and a hand-written copy would let a rename split them silently.
-			out = append(out, Finding{LintWarning, core.WarnNonConformingIcon.String(), reason, ""})
+			out = append(out, Finding{Severity: LintWarning, Code: core.WarnNonConformingIcon.String(), Message: reason})
 		}
 		h := hashes[i]
 		if seen[h] {
-			out = append(out, Finding{LintWarning, "duplicate-picture", duplicatePictureMessage(distinctSortedRoles(pics, hashes, h)), ""})
+			out = append(out, Finding{Severity: LintWarning, Code: "duplicate-picture", Message: duplicatePictureMessage(distinctSortedRoles(pics, hashes, h))})
 		}
 		seen[h] = true
 		if p.Type == core.PicFrontCover {
@@ -280,14 +325,14 @@ func lintPictures(pics []Picture) []Finding {
 		}
 	}
 	if fronts > 1 {
-		out = append(out, Finding{LintWarning, "multiple-front-covers", multipleFrontCoversMessage(fronts), ""})
+		out = append(out, Finding{Severity: LintWarning, Code: "multiple-front-covers", Message: multipleFrontCoversMessage(fronts)})
 	}
 	// LintError, not the LintWarning non-conforming-icon gets: two type-1 pictures make the
 	// frame set ambiguous and unrepairable without choosing one, while an oversized icon is
 	// unambiguous and every reader renders it. Do not "fix" the asymmetry.
 	if icon, otherIcon := core.CountIcons(pics); icon > 1 || otherIcon > 1 {
-		out = append(out, Finding{LintError, "duplicate-icon",
-			"picture types 1/2 must be unique", ""})
+		out = append(out, Finding{Severity: LintError, Code: "duplicate-icon",
+			Message: "picture types 1/2 must be unique"})
 	}
 	return out
 }
@@ -324,8 +369,8 @@ func lintValues(ts tag.TagSet) []Finding {
 			v = tag.TrimTokenValue(k, v)
 			if v != "" && !val.Valid(k, v) {
 				detail, _ := val.Details(k, v)
-				out = append(out, Finding{LintWarning, val.LintCode,
-					fmt.Sprintf("%q %s", v, detail), k})
+				out = append(out, Finding{Severity: LintWarning, Code: val.LintCode,
+					Message: fmt.Sprintf("%q %s", v, detail), Key: k})
 			}
 		}
 	}
@@ -346,8 +391,8 @@ func lintNegativeNumbers(ts tag.TagSet) []Finding {
 		vals, _ := ts.Get(k)
 		for _, v := range vals {
 			if v != "" && tag.NegativeNumericValue(k, v) {
-				out = append(out, Finding{LintInfo, "negative-numeric",
-					fmt.Sprintf("%q is negative (numbering is normally non-negative)", v), k})
+				out = append(out, Finding{Severity: LintInfo, Code: "negative-numeric",
+					Message: fmt.Sprintf("%q is negative (numbering is normally non-negative)", v), Key: k})
 			}
 		}
 	}
@@ -366,8 +411,8 @@ func lintCardinality(ts tag.TagSet) []Finding {
 	var out []Finding
 	for k, vals := range ts.All() {
 		if k.SingleValuedMulti(len(vals)) {
-			out = append(out, Finding{LintWarning, "single-valued-multi",
-				fmt.Sprintf("single-valued key holds %d values", len(vals)), k})
+			out = append(out, Finding{Severity: LintWarning, Code: "single-valued-multi",
+				Message: fmt.Sprintf("single-valued key holds %d values", len(vals)), Key: k})
 		}
 	}
 	return out
@@ -383,7 +428,7 @@ func lintCustomKeys(ts tag.TagSet) []Finding {
 	var out []Finding
 	for _, k := range ts.Keys() {
 		if !k.Known() && !tag.IsR128GainKey(k) {
-			out = append(out, Finding{LintInfo, "custom-key", "custom field, not a known key", k})
+			out = append(out, Finding{Severity: LintInfo, Code: "custom-key", Message: "custom field, not a known key", Key: k})
 		}
 	}
 	return out

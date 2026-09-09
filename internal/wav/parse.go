@@ -310,6 +310,7 @@ func project(d *doc) (tags tag.TagSet, pics []core.Picture, chapters []core.Chap
 		// A native cue/adtl WAV chapter list is preserved opaque but not projected (a known
 		// gap), so a bare WAV reports no chapters.
 		chapters = proj.Chapters
+		core.OpenPastDurationEnds(chapters, d.track.Duration)
 		syncedLyrics = proj.SyncedLyrics
 		projWarnings = proj.Warnings
 		families = proj.Families

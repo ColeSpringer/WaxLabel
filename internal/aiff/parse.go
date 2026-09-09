@@ -252,6 +252,7 @@ func project(d *doc) (tags tag.TagSet, pics []core.Picture, chapters []core.Chap
 		// Chapters and synced lyrics live only in the embedded ID3 chunk (CHAP/CTOC, SYLT);
 		// AIFF's native text chunks have no chapter or synced-lyrics concept.
 		chapters = proj.Chapters
+		core.OpenPastDurationEnds(chapters, d.track.Duration)
 		syncedLyrics = proj.SyncedLyrics
 		projWarnings = proj.Warnings
 		families = proj.Families

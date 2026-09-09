@@ -94,6 +94,9 @@ func Project(t *Tag) Projection {
 			fmt.Sprintf("the %s frame declares more bytes than the tag holds; the %d byte(s) from it to the end of the tag could not be read",
 				core.WarnSnippet(id), n))
 	}
+	if r := t.Ignored(); r != "" {
+		warnings = core.Warn(warnings, core.WarnMalformedTagEntry, r)
+	}
 
 	emit := func(key tag.Key, val, src string) {
 		contribs = append(contribs, core.Contribution{Key: key, Value: val, Source: src})
@@ -307,7 +310,8 @@ func LegacyV1Families(auth tag.TagSet, raw []byte) []core.FamilyValue {
 // redundant. FLAC's stray leading tag and Musepack's both take this path.
 //
 // An unreadable tag reports opaque with no entries: nothing about it can be shown to be
-// redundant with what the authoritative store holds.
+// redundant with what the authoritative store holds. A tag that parsed but was ignored
+// whole ([Tag.Ignored]) is unreadable in the same sense and reports opaque too.
 func LegacyV2Families(auth tag.TagSet, raw []byte, maxElements int) ([]core.FamilyValue, bool) {
 	if len(raw) == 0 {
 		return nil, false
@@ -326,8 +330,11 @@ func LegacyV2Families(auth tag.TagSet, raw []byte, maxElements int) ([]core.Fami
 	}
 	// A region the frame walk could not read is content nothing can show to be redundant,
 	// exactly like the unparseable-tag case above: a strip would destroy it, so the caller
-	// must treat the container as opaque and refuse to prove the strip safe.
+	// must treat the container as opaque and refuse to prove the strip safe. A tag ignored
+	// whole (a v2.2 compression flag) is the same case with no frames at all: it projects
+	// nothing, so without this it would read as provably empty and be stripped away.
 	malformed, _ := t.MalformedTail()
-	opaque := malformed != "" || len(proj.Pictures) > 0 || len(proj.Chapters) > 0 || len(proj.SyncedLyrics) > 0
+	opaque := malformed != "" || t.Ignored() != "" ||
+		len(proj.Pictures) > 0 || len(proj.Chapters) > 0 || len(proj.SyncedLyrics) > 0
 	return core.LegacyFamilies(auth, core.FamilyID3v2, contribs), opaque
 }

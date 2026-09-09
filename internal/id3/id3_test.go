@@ -1426,3 +1426,29 @@ func FuzzParseTag(f *testing.F) {
 		}
 	})
 }
+
+// TestV22CompressionFlagIgnoresTag: ID3v2.2 defines no compression scheme, so a tag with the
+// flag set is ignored as the spec directs, and says so.
+func TestV22CompressionFlagIgnoresTag(t *testing.T) {
+	tg, err := ParseTag(wrapTag(2, 0x40, rawFrame(2, "TT2", []byte("\x00Compressed"))), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tg.Frames()) != 0 {
+		t.Errorf("frames = %d, want none", len(tg.Frames()))
+	}
+	if tg.Ignored() == "" {
+		t.Error("the tag should report why it was ignored")
+	}
+	if tg.Padding() != 0 {
+		t.Errorf("padding = %d, want 0 (the region is unreadable, not free)", tg.Padding())
+	}
+	if n := tg.WithFrames(nil, 0).Ignored(); n != "" {
+		t.Errorf("a rewritten tag must not stay ignored: %q", n)
+	}
+	// The same bit on v2.3 is the extended-header flag and must keep working.
+	v3, err := ParseTag(wrapTag(3, 0x40, append([]byte{0, 0, 0, 6, 0, 0, 0, 0, 0, 0}, rawFrame(3, "TIT2", []byte("\x00T"))...)), 0)
+	if err != nil || len(v3.Frames()) != 1 {
+		t.Errorf("v2.3 extended header: err=%v frames=%d", err, len(v3.Frames()))
+	}
+}

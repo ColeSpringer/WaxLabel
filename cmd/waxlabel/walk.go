@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/waxerr"
@@ -122,13 +124,14 @@ func parseInput(ctx context.Context, realPath, origPath string, extra ...wl.Pars
 // FIFO rather than opening it is load-bearing: a per-file os.Open on one would block. Only
 // an invocation-level failure returns err and aborts the run.
 //
-// skipped counts regular files passed over for not matching a known audio extension, which
-// the caller surfaces as a text-mode note. Always zero without --recursive.
-func expandPaths(paths []string, recursive bool) (expanded []string, skipped int, pathErrors map[string]error, err error) {
+// skipped counts regular files passed over for not matching a known audio extension, and
+// leftovers the temp files an interrupted write left behind, both surfaced by the caller as
+// text-mode notes. Always zero without --recursive.
+func expandPaths(paths []string, recursive bool) (expanded []string, skipped, leftovers int, pathErrors map[string]error, err error) {
 	// Exit 2 before any stat, so it cannot fall through to ErrInvalidData and outrank a
 	// real not-found. The one invocation-level abort; everything below is per path.
 	if err := checkEmptyOperands(paths...); err != nil {
-		return nil, 0, nil, err
+		return nil, 0, 0, nil, err
 	}
 	pathErrors = map[string]error{}
 	if !recursive {
@@ -149,7 +152,7 @@ func expandPaths(paths []string, recursive bool) (expanded []string, skipped int
 				pathErrors[p] = cerr
 			}
 		}
-		return paths, 0, pathErrors, nil
+		return paths, 0, 0, pathErrors, nil
 	}
 	var out []string
 	for _, p := range paths {
@@ -167,11 +170,40 @@ func expandPaths(paths []string, recursive bool) (expanded []string, skipped int
 			out = append(out, p)
 			continue
 		}
-		files, sk := walkAudioFiles(p)
+		files, sk, lo, werrs := walkAudioFiles(p)
 		out = append(out, files...)
+		for path, e := range werrs {
+			pathErrors[path] = walkError{e}
+			out = append(out, path)
+		}
+		slices.Sort(out[len(out)-len(files)-len(werrs):])
 		skipped += sk
+		leftovers += lo
 	}
-	return out, skipped, pathErrors, nil
+	return out, skipped, leftovers, pathErrors, nil
+}
+
+// walkError marks a path expandPaths added because the tree walk could not read it, rather
+// than one the user named. It is reported like any other per-path error, but it is not an
+// input anybody asked to act on, so an arity rule such as -o's single-input check must not
+// count it: an unreadable subdirectory beside one audio file is still a one-file run.
+type walkError struct{ err error }
+
+func (e walkError) Error() string { return e.err.Error() }
+func (e walkError) Unwrap() error { return e.err }
+
+// namedInputs returns the paths the user actually asked to act on: everything expandPaths
+// produced except the directories it recorded as unreadable.
+func namedInputs(paths []string, pathErrors map[string]error) []string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		var we walkError
+		if errors.As(pathErrors[p], &we) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // guardPathErrors wraps a per-file compute so a path carrying a recorded pre-flight error
@@ -274,19 +306,24 @@ func isWalkCandidate(path string, d fs.DirEntry) bool {
 }
 
 // walkAudioFiles returns the audio files under root, sorted, selected by extension, plus a
-// count of candidates passed over. An entry's walk error is skipped so one unreadable file
-// does not fail the tree; a malformed file with a matching extension still surfaces its
-// parse error in the per-file loop. The count drives the "N file(s) skipped" note.
-func walkAudioFiles(root string) ([]string, int) {
+// count of candidates passed over, a count of the temp files an interrupted write left
+// behind, and the walk errors keyed by user-facing path. A malformed file with a matching
+// extension still surfaces its parse error in the per-file loop. The counts drive the
+// "N file(s) skipped" and leftover notes; the errors become io entries.
+func walkAudioFiles(root string) (files []string, skipped, leftovers int, errs map[string]error) {
 	// WalkDir lstats its root and never follows links, so a symlinked-directory argument
 	// would yield a node it refuses to descend. Resolve the root once and map matches back
 	// under the user's argument. Only the root: interior directory symlinks stay skipped,
 	// so this cannot reintroduce traversal-cycle risk.
 	walkRoot, linked := resolvedWalkRoot(root)
 	var out []string
-	skipped := 0
+	errs = map[string]error{}
 	_ = filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			// A directory the walk cannot read, or a root it cannot stat. WalkDir has already
+			// skipped it; recording it lets the per-file loop report it as io instead of the
+			// tree reading clean over a subtree nobody saw.
+			errs[rebaseWalkPath(root, walkRoot, linked, path)] = err
 			return nil
 		}
 		// Prune a hidden directory and its subtree: .git and .cache are not media trees.
@@ -297,8 +334,14 @@ func walkAudioFiles(root string) ([]string, int) {
 			}
 			return nil
 		}
-		// Not counted as skipped either: deliberately hidden, not unrecognized media.
+		// Not counted as skipped either: deliberately hidden, not unrecognized media. A
+		// leftover temp is the exception: nothing else would ever mention it. Counted by the
+		// same rule clean applies by default - a regular file older than the age gate - so
+		// the note never points at a command that then finds nothing.
 		if strings.HasPrefix(d.Name(), ".") {
+			if wl.IsTempFileName(d.Name()) && staleLeftover(d) {
+				leftovers++
+			}
 			return nil
 		}
 		if !isWalkCandidate(path, d) {
@@ -314,7 +357,15 @@ func walkAudioFiles(root string) ([]string, int) {
 		return nil
 	})
 	slices.Sort(out)
-	return out, skipped
+	return out, skipped, leftovers, errs
+}
+
+// staleLeftover reports whether a temp-named entry is one clean would list without --all: a
+// regular file last written before the age gate. Anything newer belongs to a write that may
+// still be running, and anything that is not a regular file is not a temp this wrote.
+func staleLeftover(d fs.DirEntry) bool {
+	info, err := d.Info()
+	return err == nil && info.Mode().IsRegular() && time.Since(info.ModTime()) >= cleanAgeGate
 }
 
 // resolvedWalkRoot returns the real directory to walk for a recursive root argument.

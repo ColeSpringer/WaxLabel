@@ -16,7 +16,8 @@ const (
 	// FillEmpty keeps base values only where base is present and non-empty,
 	// otherwise takes incoming. It never overwrites real data.
 	FillEmpty
-	// Union concatenates base then incoming values, dropping duplicates.
+	// Union concatenates base then incoming values, dropping duplicates and, like
+	// FillEmpty, empty and whitespace-only values.
 	Union
 )
 
@@ -127,16 +128,17 @@ func resolve(s Strategy, hasB bool, bv []string, hasI bool, iv []string) (sel []
 	}
 }
 
-// unionValues concatenates base then incoming, dropping values that are
-// duplicates after normalization (whitespace-trimmed, case-insensitive). The
-// first occurrence's original spelling is preserved.
+// unionValues concatenates base then incoming, dropping values that are duplicates after
+// normalization (whitespace-trimmed, case-insensitive) and values that normalize to empty,
+// which FillEmpty also treats as absent. The first occurrence's spelling is kept. When every
+// value is empty the first one survives, so a present-empty key stays present.
 func unionValues(a, b []string) []string {
 	out := make([]string, 0, len(a)+len(b))
 	seen := make(map[string]bool, len(a)+len(b))
 	appendUnique := func(vals []string) {
 		for _, v := range vals {
 			n := normalizeValue(v)
-			if seen[n] {
+			if n == "" || seen[n] {
 				continue
 			}
 			seen[n] = true
@@ -145,6 +147,17 @@ func unionValues(a, b []string) []string {
 	}
 	appendUnique(a)
 	appendUnique(b)
+	if len(out) == 0 {
+		// A fresh slice, never a sub-slice of an argument: the result belongs to the merged
+		// set, and sharing a backing array would let a later append into it reach across
+		// into the caller's own values.
+		if len(a) > 0 {
+			return append(out, a[0])
+		}
+		if len(b) > 0 {
+			return append(out, b[0])
+		}
+	}
 	return out
 }
 

@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
@@ -27,11 +28,43 @@ func apicHeader(body []byte) (enc byte, mime string, ptype byte, desc string, re
 	}
 	ptype = rest[0]
 	rest = rest[1:]
-	desc, rest, ok = cutEncoded(enc, rest)
+	desc, rest, ok = cutDescription(enc, strings.TrimSpace(mime), rest)
 	if !ok {
 		return 0, "", 0, "", nil, false
 	}
 	return enc, mime, ptype, desc, rest, true
+}
+
+// cutDescription splits a picture frame's description from its image. A missing terminator
+// puts the image's own bytes where the description should end, so a split at the first
+// terminator lands inside the image: a PNG carries a NUL at offset 8, in the IHDR length.
+// declared is the type the frame itself claims (an APIC MIME, a PIC format's MIME), read
+// through canonicalPictureMIME so the non-canonical spellings real taggers write still
+// count. It is what makes the malformed reading provable rather than guessed.
+//
+// A terminated frame keeps its split unless the bytes after it are not an image while the
+// whole remainder is an image of exactly the type the frame declares. Requiring the match
+// is what keeps a legitimate description from being eaten: the sniffer recognizes short,
+// weak signatures (a bare "BM"), so a description beginning with one would otherwise be
+// enough to fold it and its terminator into the image bytes. An unterminated frame has no
+// competing reading, so there any recognizable image wins.
+//
+// ok is false only when no terminator exists and rest is not an image.
+func cutDescription(enc byte, declared string, rest []byte) (desc string, data []byte, ok bool) {
+	desc, data, ok = cutEncoded(enc, rest)
+	if ok {
+		if _, isImage := bits.SniffImage(data); isImage {
+			return desc, data, true
+		}
+		if info, isImage := bits.SniffImage(rest); isImage && info.MIME == canonicalPictureMIME(declared) {
+			return "", rest, true
+		}
+		return desc, data, true
+	}
+	if _, isImage := bits.SniffImage(rest); isImage {
+		return "", rest, true
+	}
+	return desc, data, ok
 }
 
 // decodeAPIC decodes an APIC frame body into a Picture. A malformed frame yields ok=false
@@ -98,7 +131,7 @@ func convertPICtoAPIC(body []byte) []byte {
 	format := string(body[1:4])
 	ptype := body[4]
 	rest := body[5:]
-	desc, data, ok := cutEncoded(enc, rest)
+	desc, data, ok := cutDescription(enc, mimeForFormat(format), rest)
 	if !ok {
 		// Malformed v2.2 PIC frames sometimes omit the description terminator. With no
 		// unambiguous split point, keep the whole remainder as image data under an empty
@@ -112,6 +145,37 @@ func convertPICtoAPIC(body []byte) []byte {
 	out = append(out, term(enc)...)
 	out = append(out, data...)
 	return out
+}
+
+// canonicalPictureMIME folds a declared picture type onto the MIME the sniffer reports for
+// those bytes, so a comparison against a sniff is not defeated by the spellings real taggers
+// write: "image/jpg" and "JPEG" for a JPEG, "PNG" with no type at all, an upper-cased type,
+// a parameter after a semicolon. A declaration it does not recognize returns "", which
+// matches no sniff - the point of the comparison is a declaration that agrees with the
+// bytes, and one nothing can place agrees with nothing.
+func canonicalPictureMIME(declared string) string {
+	s := strings.ToLower(strings.TrimSpace(declared))
+	if i := strings.IndexByte(s, ';'); i >= 0 {
+		s = strings.TrimSpace(s[:i])
+	}
+	switch strings.TrimPrefix(s, "image/") {
+	case "jpg", "jpeg":
+		return "image/jpeg"
+	case "png":
+		return "image/png"
+	case "gif":
+		return "image/gif"
+	case "bmp":
+		return "image/bmp"
+	case "webp":
+		return "image/webp"
+	case "tif", "tiff":
+		return "image/tiff"
+	case "heic", "heif", "avif", "jxl":
+		return "image/" + strings.TrimPrefix(s, "image/")
+	default:
+		return ""
+	}
 }
 
 // mimeForFormat maps a v2.2 three-letter image format to a MIME type.

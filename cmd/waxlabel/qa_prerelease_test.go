@@ -70,9 +70,9 @@ func writeLRC(t *testing.T, content string) string {
 
 // TestSyncedLyricsPartialDrop checks that a --synced-lyrics-file whose lines partly fail to
 // produce a timed lyric warns and fails --strict, naming the dropped line numbers, while
-// recognized structure (id tags, offset/length tags, bare section headers, blank lines) is not
-// counted. An all-bad file still errors with the existing message, and a fully clean file is
-// silent.
+// recognized structure (id tags, offset/length tags, blank lines) is not counted. An all-bad
+// file still errors with the existing message, and a fully clean file is silent. A section
+// header is content the store cannot hold, so it counts and --strict refuses it.
 func TestSyncedLyricsPartialDrop(t *testing.T) {
 	t.Parallel()
 	partial := writeLRC(t, "[ar:Artist]\n[00:01.00]good\n[9:99.99]bad stamp\njust some text\n"+
@@ -82,17 +82,27 @@ func TestSyncedLyricsPartialDrop(t *testing.T) {
 	if !strings.Contains(out, "synced-lyrics-line-dropped") {
 		t.Errorf("plan with a partial LRC: want a synced-lyrics-line-dropped warning:\n%s", out)
 	}
-	if !strings.Contains(out, "lines: 3, 4") {
-		t.Errorf("the warning should name the dropped line numbers 3 and 4 (the metadata/section lines are not counted):\n%s", out)
+	if !strings.Contains(out, "lines: 3, 4, 5") {
+		t.Errorf("the warning should name the dropped line numbers 3, 4 and 5 (the metadata lines are not counted):\n%s", out)
 	}
 	if _, _, code := runCLI(t, "set", copyFixture(t, notagsFLAC), "--synced-lyrics-file", partial, "--strict"); code != 2 {
 		t.Errorf("set --strict with a partial LRC: exit = %d, want 2", code)
 	}
 
 	// A fully clean file (only timed lines and recognized structure) is silent.
-	clean := writeLRC(t, "[ti:Song]\n[00:01.00]One\n[Chorus]\n[00:12.50]Two\n")
+	clean := writeLRC(t, "[ti:Song]\n[00:01.00]One\n[00:12.50]Two\n")
 	if out, _, code := runCLI(t, "set", copyFixture(t, notagsFLAC), "--synced-lyrics-file", clean); code != 0 || strings.Contains(out, "synced-lyrics-line-dropped") {
 		t.Errorf("a clean LRC must not warn or fail; exit = %d:\n%s", code, out)
+	}
+
+	// A file whose only unstorable line is a section header still counts it, so --strict refuses.
+	sections := writeLRC(t, "[ti:Song]\n[00:01.00]One\n[Chorus]\n[00:12.50]Two\n")
+	out, _, code2 := runCLI(t, "set", copyFixture(t, notagsFLAC), "--synced-lyrics-file", sections)
+	if code2 != 0 || !strings.Contains(out, "synced-lyrics-line-dropped") || !strings.Contains(out, "lines: 3") {
+		t.Errorf("a section header must be counted and named; exit = %d:\n%s", code2, out)
+	}
+	if _, _, code := runCLI(t, "set", copyFixture(t, notagsFLAC), "--synced-lyrics-file", sections, "--strict"); code != 2 {
+		t.Errorf("set --strict with a section header: exit = %d, want 2", code)
 	}
 
 	// An all-bad file still yields the existing "no timed lyric lines" usage error.

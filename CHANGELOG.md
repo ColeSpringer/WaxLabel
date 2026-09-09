@@ -39,9 +39,40 @@ All notable changes to this project are documented here.
 - `UnrecognizedMIME`, `LinkMIME` and `RecognizedImageFormats`, so a caller can name the MIME
   a junk cover reads under, the `-->` URL-link sentinel, and the formats
   `IsRecognizedImage` accepts without hardcoding any of the three.
+- `Finding.Fixable` and the `fixable` field of `lint --json` say whether `lint --fix` acts on a
+  finding, decided by the same gates the fix applies.
+- `set` and `copy` take `--id3-multi null|repeat|slash`, the CLI form of `WithID3MultiValue`,
+  so an MP3 can be written with one frame per value for readers that do not split the
+  NUL-separated form.
+- `waxlabel clean DIR...` lists the `.waxlabel-*.tmp` files an interrupted write left beside
+  its target and deletes them with `--remove` (files newer than an hour are skipped unless
+  `--all`); `--recursive` follows a symlinked root and reports a subtree it cannot read as an
+  `io` error against that subtree (exit 6), cleaning the rest of the tree rather than calling
+  it clean or abandoning it. Recursive
+  `dump`/`plan`/`set`/`lint`/`verify` note how many such leftovers they passed, counting them
+  by the same rule so the note never points at a command that then finds nothing.
+  `IsTempFileName`, `TempFilePrefix` and `TempFileSuffix` expose the naming rule.
+- RIFF INFO `ITCH` (ffmpeg's `encoded_by`) and `IENG` read and write as `ENCODEDBY` and
+  `ENGINEER`. An MP4 mdta name that is not a valid key as spelled (`custom_key`,
+  `com.apple.quicktime.author`, `org.example.thing`) now folds to a custom key
+  (`CUSTOM_KEY`, `AUTHOR`, `ORG.EXAMPLE.THING`) so `copy` and `diff` see it, which also
+  surfaces a phone recording's `MAKE`, `MODEL` and `LOCATION.ISO6709`; an edit rewrites the
+  file's own entry under its original spelling. `tag.FoldKey` is the folding rule.
 
 ### Changed
 
+- `durationMs`, chapter `startMs`/`endMs`, synced-lyric `timeMs`, and the human chapter and
+  lyric timestamps round to the nearest millisecond instead of truncating. Only the display
+  changes: `diff` still compares the exact stored offsets, so a source whose chapter starts
+  between two milliseconds (Musepack, which stores sample offsets) reads as differing from a
+  copy into a store that keeps whole milliseconds (ID3 `CHAP`), as it did before.
+- Every LRC line the parser drops is now counted in `synced-lyrics-line-dropped`, including
+  a bare `[Chorus]`-style section header; only LRC metadata tags and blank lines are exempt.
+  `--strict` therefore refuses an LRC file carrying section headers.
+- Human output escapes the Unicode bidirectional controls, zero width space, word joiner,
+  byte order mark and line/paragraph separators as `\uXXXX`, and `dump`'s tag table now
+  prints a line break as `\x0a` for every key except LYRICS, COMMENT, DESCRIPTION and
+  LONGDESCRIPTION, whose values keep the indented multi-line display.
 - **The Ogg Opus essence extent is `ogg-opus-packets-v2`**, hashing the `OpusHead` with its
   `output_gain` masked, so a gain edit keeps the digest and two copies differing only in
   gain dedup. `verify` labels the change; stored `ogg-opus-packets-v1` digests stay labeled
@@ -98,10 +129,10 @@ All notable changes to this project are documented here.
   rate equals the core rate, is not doubled); a config silent about SBR whose entry rate is
   exactly double an AAC LC core rate is an implicitly signalled stream the muxer already
   decoded, so the entry stands; otherwise the core rate wins, including over a config that
-  denies SBR. An implicit stream with an honest entry,
-  and raw ADTS, still report the core rate - only decoding the frames would find the
-  extension. `codecProfile` reads the object type (`AAC LC`, `HE-AAC`, `HE-AAC v2`,
-  `xHE-AAC`) where a config is present, the `mp4a` fourcc where none is. Digests unchanged.
+  denies SBR. An MP4 implicit stream with an honest entry still reports the entry (raw
+  ADTS is a separate entry below). `codecProfile` reads the object type (`AAC LC`, `HE-AAC`,
+  `HE-AAC v2`, `xHE-AAC`) where a config is present, the `mp4a` fourcc where none is.
+  Digests unchanged.
 - An MP4 `mp4a` entry whose `esds` declares MPEG-1 or MPEG-2 audio reports `MP3` rather than
   `AAC`.
 - A Matroska track's `OutputSamplingFrequency` is read, so an HE-AAC `.mka` reports the rate
@@ -119,6 +150,24 @@ All notable changes to this project are documented here.
 - `copy` excludes `R128_TRACK_GAIN` and `R128_ALBUM_GAIN`, as it already excluded the
   `REPLAYGAIN_*` keys: they describe the source's own audio, so the destination keeps its
   own.
+- An ID3 picture frame whose description terminator is missing no longer splits inside the
+  image at the PNG header's first NUL: the description reads empty and the image is whole,
+  for v2.2 `PIC` and v2.3/v2.4 `APIC` alike (`APIC` used to drop the frame instead).
+- An ID3v2.2 tag with the compression flag set is ignored, as the spec directs for a scheme
+  it never defined, instead of being read as plain frames; the parse warns
+  `malformed-tag-entry` and a rewrite warns `malformed-tag-entry-dropped` (`--strict` refuses).
+- `--recursive` no longer skips an unreadable directory silently: the directory is reported
+  as an `io` error entry (exit 6) and the walk continues.
+- A chapter authored past the media duration now reads back with no end on MP3, WAV, AIFF
+  and AAC, as it already did on MP4 and the start-only stores; the ID3 `CHAP` frame still
+  carries the bounded `end == start` a player needs.
+- `tag.Merge` with `Union` no longer keeps empty and whitespace-only values beside real ones;
+  it treats them as absent, as `FillEmpty` already did.
+- Raw ADTS HE-AAC reported the core coder's rate, channel count and profile (22050 Hz, AAC
+  LC for a 44100 Hz HE-AAC stream; 1 channel for HE-AAC v2) while the same audio in MP4
+  reported the played values. The frames are now parsed (AAC-LC syntax through the SBR fill
+  element, and the SBR payload of a mono core through its parametric stereo extension), so
+  both containers agree with ffprobe. Digests are unchanged.
 
 ## [1.6.2]
 

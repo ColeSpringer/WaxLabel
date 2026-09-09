@@ -301,8 +301,9 @@ func ElideValueAt(v string, max int) string {
 // Kept verbatim: the horizontal tab and the newline (the multi-line value
 // renderer relies on \n, and a tab is benign alignment). Escaped: the C0
 // controls (0x00-0x1F except \t/\n), DEL (0x7F), the C1 controls (0x80-0x9F),
-// and any byte that is not valid UTF-8 (escaped one byte at a time). Every other
-// rune passes through unchanged.
+// the bidirectional and zero-width format controls as \uXXXX, and any byte that is
+// not valid UTF-8 (escaped one byte at a time). Every other rune passes through
+// unchanged.
 //
 // It keeps '\n'/'\t', so it backs the multi-line value display (the dump value
 // renderer, which owns the line break) and the CLI's sanitizing output boundary.
@@ -312,8 +313,9 @@ func ElideValueAt(v string, max int) string {
 // carry the exact bytes for scripts.
 func SanitizeText(s string) string { return sanitize(s, controlRune) }
 
-// SanitizeLine is [SanitizeText] that additionally escapes the horizontal tab and
-// the newline, for a single-line field - a tag key, a picture type or MIME, a
+// SanitizeLine is [SanitizeText] (control bytes as \xNN, the bidirectional and
+// zero-width format controls as \uXXXX) that additionally escapes the horizontal tab
+// and the newline, for a single-line field - a tag key, a picture type or MIME, a
 // chapter title, a native block label, a file path - where an embedded newline
 // would forge a fake line in a listing (output spoofing) or a tab would break
 // column alignment. Its output is printable ASCII, so it composes with the CLI's
@@ -325,7 +327,8 @@ func SanitizeText(s string) string { return sanitize(s, controlRune) }
 func SanitizeLine(s string) string { return sanitize(s, lineControlRune) }
 
 // sanitize returns s with every rune isControl reports as control rendered as a
-// visible \xNN escape. It is rune-aware - it decodes UTF-8 and escapes only
+// visible \xNN escape, and the bidirectional and zero-width format controls as
+// \uXXXX. It is rune-aware - it decodes UTF-8 and escapes only
 // genuine control codepoints, so multi-byte text survives - and escapes any byte
 // that is not valid UTF-8 one at a time. isControl must match only codepoints
 // <= U+00FF, so the escaped value fits one byte; both controlRune and
@@ -334,7 +337,7 @@ func SanitizeLine(s string) string { return sanitize(s, lineControlRune) }
 func sanitize(s string, isControl func(rune) bool) string {
 	// Fast path: a clean, valid-UTF-8 value (the common case) is returned
 	// unchanged with no allocation.
-	if utf8.ValidString(s) && strings.IndexFunc(s, isControl) < 0 {
+	if utf8.ValidString(s) && strings.IndexFunc(s, func(r rune) bool { return isControl(r) || formatControlRune(r) }) < 0 {
 		return s
 	}
 	var b strings.Builder
@@ -351,6 +354,8 @@ func sanitize(s string, isControl func(rune) bool) string {
 		if isControl(r) {
 			// isControl only matches codepoints <= U+00FF, so the value fits one byte.
 			writeHexEscape(&b, byte(r))
+		} else if formatControlRune(r) {
+			writeUnicodeEscape(&b, r)
 		} else {
 			b.WriteRune(r)
 		}
@@ -368,6 +373,33 @@ func writeHexEscape(b *strings.Builder, c byte) {
 	b.WriteString(`\x`)
 	b.WriteByte(hexDigits[c>>4])
 	b.WriteByte(hexDigits[c&0x0f])
+}
+
+// formatControlRune reports a Unicode control that reorders, hides or breaks text without
+// being a C0/C1 byte: the bidirectional overrides, isolates and marks, the Arabic letter
+// mark, the zero width space, word joiner and byte order mark, and the line and paragraph
+// separators some terminals render as line breaks. The zero width joiner and non-joiner
+// stay, since emoji sequences and Indic text need them.
+func formatControlRune(r rune) bool {
+	switch {
+	case r == 0x061C, r == 0x200B, r == 0x200E, r == 0x200F, r == 0x2060, r == 0xFEFF:
+		return true
+	case r >= 0x202A && r <= 0x202E, r >= 0x2066 && r <= 0x2069, r == 0x2028, r == 0x2029:
+		return true
+	}
+	return false
+}
+
+// writeUnicodeEscape writes r as a visible \uXXXX escape, for a format control whose
+// codepoint does not fit the one-byte \xNN form. Like [writeHexEscape] it avoids fmt's
+// reflection and per-call allocation; every rune formatControlRune matches is below U+10000,
+// so four digits always suffice.
+func writeUnicodeEscape(b *strings.Builder, r rune) {
+	b.WriteString(`\u`)
+	b.WriteByte(hexDigits[r>>12&0x0f])
+	b.WriteByte(hexDigits[r>>8&0x0f])
+	b.WriteByte(hexDigits[r>>4&0x0f])
+	b.WriteByte(hexDigits[r&0x0f])
 }
 
 // controlRune reports whether r is a control codepoint SanitizeText escapes: a

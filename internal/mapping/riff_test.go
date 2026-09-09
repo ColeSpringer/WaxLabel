@@ -30,3 +30,16 @@ func TestRIFFEncoderIsISFT(t *testing.T) {
 		t.Errorf("RIFFKeyInfo(ENCODER) = %q,%v, want ISFT,true", id, ok)
 	}
 }
+
+// TestRIFFTechnicianAndEngineerMapped: ITCH is ffmpeg's encoded_by and IENG its engineer;
+// both have canonical keys, so they read and write like the other INFO items.
+func TestRIFFTechnicianAndEngineerMapped(t *testing.T) {
+	for id, want := range map[string]tag.Key{"ITCH": tag.EncodedBy, "IENG": tag.Engineer} {
+		if k, ok := RIFFInfoKey(id); !ok || k != want {
+			t.Errorf("RIFFInfoKey(%q) = %q, %v; want %q", id, k, ok, want)
+		}
+		if got, ok := RIFFKeyInfo(want); !ok || got != id {
+			t.Errorf("RIFFKeyInfo(%q) = %q, %v; want %q", want, got, ok, id)
+		}
+	}
+}

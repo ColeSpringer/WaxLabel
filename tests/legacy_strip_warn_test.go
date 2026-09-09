@@ -190,10 +190,10 @@ func TestLegacyStripSilentOnWAV(t *testing.T) {
 
 // TestWAVLegacyStripWarnsAboutUnmappedItems closes the adjacent hole on the same flag: WAV
 // reuses LegacyStrip to mean "consolidate LIST/INFO into the id3 chunk", but an item with no
-// canonical key (IENG, ISBJ) has no frame to move into, so the chunk drop destroys it.
+// canonical key (IKEY, ISBJ) has no frame to move into, so the chunk drop destroys it.
 func TestWAVLegacyStripWarnsAboutUnmappedItems(t *testing.T) {
 	data := wavFile(wavFmtPCM(),
-		wavInfo([2]string{"INAM", "Song"}, [2]string{"IENG", "Alice"}, [2]string{"ISBJ", "Subj"}), wavData(400))
+		wavInfo([2]string{"INAM", "Song"}, [2]string{"IKEY", "Alice"}, [2]string{"ISBJ", "Subj"}), wavData(400))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "New").
 		Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
 	if err != nil {
@@ -203,7 +203,7 @@ func TestWAVLegacyStripWarnsAboutUnmappedItems(t *testing.T) {
 	if !ok {
 		t.Fatalf("unmapped INFO items were destroyed silently; warnings = %v", plan.Report().Warnings)
 	}
-	for _, id := range []string{"IENG", "ISBJ"} {
+	for _, id := range []string{"IKEY", "ISBJ"} {
 		if !strings.Contains(w.Message, id) {
 			t.Errorf("warning does not name %s: %q", id, w.Message)
 		}

@@ -262,17 +262,16 @@ func MP4KeyFreeform(key tag.Key) string {
 
 // MP4MdtaKey returns the canonical key for an mdta key name and whether it resolves. The
 // "com.apple.quicktime." prefix is stripped first, so Apple's spelling and ffmpeg's bare one
-// land on the same key. An unlisted name falls back to the canonical vocabulary, the same
-// fallback decodeFreeform uses, so a key WaxLabel wrote reads back.
+// land on the same key. An unlisted name folds through [tag.FoldKey], so a lowercase or
+// dotted name reads as a custom key and a key WaxLabel wrote reads back. That also surfaces
+// the keys a phone recorder writes - make, model, location.ISO6709 - as MAKE, MODEL and
+// LOCATION.ISO6709, which copy then carries.
 func MP4MdtaKey(name string) (tag.Key, bool) {
 	bare := strings.TrimPrefix(name, quickTimeKeyPrefix)
 	if k, ok := mp4Mdta[bare]; ok {
 		return k, true
 	}
-	if k := tag.Key(bare); k.Valid() {
-		return k, true
-	}
-	return "", false
+	return tag.FoldKey(bare)
 }
 
 // MP4KeyMdta returns the bare mdta key name a canonical key writes to. Keys without a

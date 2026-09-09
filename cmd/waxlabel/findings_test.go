@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -1092,5 +1093,49 @@ func TestJSONVersionFlag(t *testing.T) {
 	text, _, code := runCLI(t, "--version")
 	if code != 0 || !strings.HasPrefix(text, "waxlabel version ") {
 		t.Errorf("--version = %q (exit %d), want a 'waxlabel version...' line", text, code)
+	}
+}
+
+// TestRecursiveWalkNotesLeftoverTemps: a hidden temp the walker passes over is not media,
+// but a library scan should say it is there, since nothing else will. The count follows the
+// rule clean applies by default, so a temp young enough to belong to a write still running
+// is not named to a user whose next command would then report nothing.
+func TestRecursiveWalkNotesLeftoverTemps(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	data, err := os.ReadFile(sampleFLAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.flac"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTemp(t, dir, ".waxlabel-99.tmp", 2*time.Hour)
+
+	_, errb, code := runCLI(t, "dump", "--recursive", dir)
+	if code != 0 || !strings.Contains(errb, "1 leftover temp file") || !strings.Contains(errb, "waxlabel clean") {
+		t.Errorf("exit %d stderr %q", code, errb)
+	}
+	// The note and the command it names agree about what counts.
+	out, _, _ := runCLI(t, "clean", dir)
+	if !strings.Contains(out, ".waxlabel-99.tmp") {
+		t.Errorf("clean should list the leftover the note counted:\n%s", out)
+	}
+
+	// A temp written moments ago belongs to a write that may still be running; neither
+	// names it.
+	fresh := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fresh, "b.flac"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTemp(t, fresh, ".waxlabel-1.tmp", time.Minute)
+	if _, errb, _ := runCLI(t, "dump", "--recursive", fresh); strings.Contains(errb, "leftover") {
+		t.Errorf("a write in flight must not be reported as a leftover: %q", errb)
+	}
+
+	// The note is advisory prose, so it stays off both streams under --json.
+	outJSON, errJSON, _ := runCLI(t, "--json", "dump", "--recursive", dir)
+	if strings.Contains(outJSON, "leftover") || strings.Contains(errJSON, "leftover") {
+		t.Errorf("the note must stay out of --json output: stdout %q stderr %q", outJSON, errJSON)
 	}
 }

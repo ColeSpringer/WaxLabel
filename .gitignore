@@ -3,3 +3,6 @@
 /cmd/waxlabel/waxlabel
 
 /temp
+
+# Built table generator (`go build ./...` inside internal/mpeg4audio/gentables)
+/internal/mpeg4audio/gentables/gentables

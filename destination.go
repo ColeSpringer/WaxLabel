@@ -8,12 +8,28 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/waxerr"
 )
+
+// TempFilePrefix and TempFileSuffix bracket the names an atomic write gives the temp file
+// it creates beside its target. The prefix is exported so the CLI's own write probe can be
+// named from the same rule rather than a second literal that could drift.
+const (
+	TempFilePrefix = ".waxlabel-"
+	TempFileSuffix = ".tmp"
+)
+
+// IsTempFileName reports whether name is one of the temporary files an atomic write creates
+// beside its target (".waxlabel-*.tmp", and the CLI's ".waxlabel-writecheck-*.tmp" probe).
+// A SIGKILL mid-write leaves one behind; "waxlabel clean" lists and removes them.
+func IsTempFileName(name string) bool {
+	return strings.HasPrefix(name, TempFilePrefix) && strings.HasSuffix(name, TempFileSuffix)
+}
 
 type destKind uint8
 
@@ -436,7 +452,7 @@ func writeAtomic(path string, write, verify func(*os.File) error, preserveModTim
 	target := ResolveWriteTarget(path)
 	dir := filepath.Dir(target)
 	// The temp must share the target's directory: os.Rename cannot cross devices.
-	tmp, err := os.CreateTemp(dir, ".waxlabel-*.tmp")
+	tmp, err := os.CreateTemp(dir, TempFilePrefix+"*"+TempFileSuffix)
 	if err != nil {
 		return false, &tempCreateError{dir: dir, err: err}
 	}

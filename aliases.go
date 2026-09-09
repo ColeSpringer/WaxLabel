@@ -329,10 +329,11 @@ func ParseLRCFull(text string) []SyncedLine { return core.ParseLRCFull(text) }
 
 // ParseLRCReportFull is [ParseLRCFull] plus the 1-based line numbers of input lines the parser
 // dropped silently - non-blank lines that produced no timed lyric and are not recognized LRC
-// structure (a malformed timestamp, or plain untimed text). Blank lines, ID metadata tags,
-// [offset:]/[length:] tags, and bare [section] headers are recognized structure and are not
-// reported. The CLI uses it to warn (and fail --strict) when a --synced-lyrics-file drops lines
-// rather than storing them silently.
+// structure (a malformed timestamp, plain untimed text, or a bare [section] header, which is
+// lyric-sheet content no timed store can hold). Blank lines, ID metadata tags and
+// [offset:]/[length:] tags are recognized structure and are not reported. The CLI uses it to
+// warn (and fail --strict) when a --synced-lyrics-file drops lines rather than storing them
+// silently.
 func ParseLRCReportFull(text string) (lines []SyncedLine, droppedLines []int) {
 	return core.ParseLRCReportFull(text)
 }

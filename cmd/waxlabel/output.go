@@ -199,6 +199,10 @@ func errorEntry(path string, err error) jsonErrorEntry {
 	}
 }
 
+// roundMs converts a duration to milliseconds for JSON, reporting the nearest millisecond
+// rather than the floor so a sub-millisecond offset does not read one lower.
+func roundMs(d time.Duration) int64 { return int64(d.Round(time.Millisecond) / time.Millisecond) }
+
 // humanDuration formats a duration as H:MM:SS or M:SS. Sub-minute clips are
 // shown in seconds so short fixtures are not flattened to 0:00.
 func humanDuration(d time.Duration) string {
@@ -363,6 +367,15 @@ func noteSkipped(w io.Writer, skipped int, asJSON bool) {
 	fmt.Fprintf(w, "note: %d file(s) skipped (not recognized by extension)\n", skipped)
 }
 
+// noteLeftovers points at temp files an interrupted write left behind; the walker hides
+// dotfiles, so without this nothing would ever mention them. Off under --json.
+func noteLeftovers(w io.Writer, n int, asJSON bool) {
+	if n == 0 || asJSON {
+		return
+	}
+	fmt.Fprintf(w, "note: %d leftover temp file(s) from an interrupted write; run 'waxlabel clean --recursive DIR' to list or remove them\n", n)
+}
+
 // usageError marks a bad-arguments failure, exit 2. The extra fields are set only at the
 // cobra-origin sites that dead-end with no guidance: cmd names the command for the help
 // hint, wantsHint asks for the "run --help" pointer, multiline marks trusted cobra text
@@ -480,6 +493,13 @@ func perFileReason(err error) string {
 		return canceledReason
 	case errors.Is(err, context.DeadlineExceeded):
 		return timeoutReason
+	}
+	// A walkError is a marker this package puts around the walk's own *fs.PathError to keep
+	// it out of arity rules; unwrap it so the assertion below still sees the PathError and
+	// drops the path the caller is about to print itself.
+	var we walkError
+	if errors.As(err, &we) {
+		err = we.Unwrap()
 	}
 	if pe, ok := err.(*fs.PathError); ok {
 		if errors.Is(pe.Err, fs.ErrNotExist) {

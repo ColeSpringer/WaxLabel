@@ -34,12 +34,13 @@ func newDumpCmd() *cobra.Command {
 				return err
 			}
 			defer cleanup()
-			paths, skipped, pathErrors, err := expandPaths(args, recursive)
+			paths, skipped, leftovers, pathErrors, err := expandPaths(args, recursive)
 			if err != nil {
 				return err
 			}
 			noteNoFiles(cmd.ErrOrStderr(), paths, jsonMode(cmd))
 			noteSkipped(cmd.ErrOrStderr(), skipped, jsonMode(cmd))
+			noteLeftovers(cmd.ErrOrStderr(), leftovers, jsonMode(cmd))
 			// dump reports parsed metadata. A no-audio file is still a successful
 			// metadata read, so it exits 0 and carries the file-health signal as a
 			// warning. Commands that must hash, write, or fully lint audio essence
@@ -174,11 +175,11 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 	// bitrateBps is a meaningful average bitrate, not a nominal PCM header rate. A file with no
 	// whole-millisecond duration (a header-only PCM WAV, or a handful of sub-millisecond
 	// samples) has no average worth reporting, so zero it and let omitempty drop the field.
-	// Gate on the same Milliseconds() the durationMs field uses, so the JSON never shows a
-	// bitrate with no duration beside it. The human view's >=1000 kbps rounding threshold is a
+	// Gate on the same rounded millisecond count the durationMs field reports, so the JSON
+	// never shows a bitrate with no duration beside it. The human view's >=1000 kbps rounding threshold is a
 	// display artifact and stays out of raw bps.
 	bitrateBps := t.Bitrate
-	if props.Duration().Milliseconds() == 0 {
+	if roundMs(props.Duration()) == 0 {
 		bitrateBps = 0
 	}
 	format := doc.Format().String()
@@ -194,7 +195,7 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 			SampleRate:    t.SampleRate,
 			Channels:      t.Channels,
 			BitsPerSample: bitsPerSample,
-			DurationMs:    props.Duration().Milliseconds(),
+			DurationMs:    roundMs(props.Duration()),
 			BitrateBps:    bitrateBps,
 			PaddingBytes:  doc.Padding(),
 			OutputGainDb:  wl.OutputGainDecibels(t.OutputGain),
@@ -226,8 +227,8 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 	}
 	for _, c := range doc.Chapters() {
 		jd.Chapters = append(jd.Chapters, jsonChapter{
-			StartMs:      c.Start.Milliseconds(),
-			EndMs:        c.End.Milliseconds(),
+			StartMs:      roundMs(c.Start),
+			EndMs:        roundMs(c.End),
 			Title:        c.Title,
 			Language:     c.Language,
 			LanguageIETF: c.LanguageIETF,
@@ -238,7 +239,7 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 	for _, sl := range doc.SyncedLyrics() {
 		js := jsonSyncedLyrics{Language: sl.Language, Description: sl.Description, Lines: []jsonSyncedLine{}}
 		for _, ln := range sl.Lines {
-			js.Lines = append(js.Lines, jsonSyncedLine{TimeMs: ln.Time.Milliseconds(), Text: ln.Text})
+			js.Lines = append(js.Lines, jsonSyncedLine{TimeMs: roundMs(ln.Time), Text: ln.Text})
 		}
 		jd.SyncedLyrics = append(jd.SyncedLyrics, js)
 	}

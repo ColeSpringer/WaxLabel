@@ -1297,3 +1297,24 @@ func TestWAVStrippedInfoReportsNoConflictResolution(t *testing.T) {
 		}
 	}
 }
+
+// TestWAVTechnicianAndEngineerItemsProject: ITCH is ffmpeg's encoded_by; both it and IENG
+// have canonical keys and now read, copy and write like the other INFO items.
+func TestWAVTechnicianAndEngineerItemsProject(t *testing.T) {
+	data := wavFile(wavFmtPCM(), wavInfo([2]string{"ITCH", "Tech"}, [2]string{"IENG", "Eng"}), wavData(400))
+	doc := mustParseBytes(t, data)
+	if v, _ := doc.Get(tag.EncodedBy); !slices.Equal(v, []string{"Tech"}) {
+		t.Errorf("ENCODEDBY = %v", v)
+	}
+	if v, _ := doc.Get(tag.Engineer); !slices.Equal(v, []string{"Eng"}) {
+		t.Errorf("ENGINEER = %v", v)
+	}
+	plan, err := doc.Edit().Set(tag.EncodedBy, "New").Prepare()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := applyToBytes(t, data, plan)
+	if bytes.Contains(out, []byte("id3 ")) || infoItemsOf(t, out)["ITCH"] != "New" {
+		t.Errorf("ENCODEDBY should write to ITCH without an id3 chunk; ITCH=%q", infoItemsOf(t, out)["ITCH"])
+	}
+}

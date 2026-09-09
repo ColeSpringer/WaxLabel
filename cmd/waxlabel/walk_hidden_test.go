@@ -30,7 +30,7 @@ func TestWalkSkipsHiddenDirs(t *testing.T) {
 	}
 	writeEmptyFile(t, filepath.Join(root, "sub", "c.flac")) // normal subdir -> included
 
-	files, _ := walkAudioFiles(root)
+	files, _, _, _ := walkAudioFiles(root)
 	var bases []string
 	for _, f := range files {
 		bases = append(bases, filepath.Base(f))
@@ -55,7 +55,7 @@ func TestWalkHonorsExplicitHiddenRoot(t *testing.T) {
 	}
 	writeEmptyFile(t, filepath.Join(hiddenRoot, "x.flac"))
 
-	files, _ := walkAudioFiles(hiddenRoot)
+	files, _, _, _ := walkAudioFiles(hiddenRoot)
 	if len(files) != 1 || filepath.Base(files[0]) != "x.flac" {
 		t.Errorf("walk of explicitly-named hidden root = %v, want [x.flac]", files)
 	}

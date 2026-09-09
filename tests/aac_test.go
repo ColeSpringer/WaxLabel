@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"os/exec"
 	"testing"
+	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -180,16 +182,46 @@ func TestAACDifferentialFFmpegDecodes(t *testing.T) {
 	}
 }
 
-// TestAACImplicitSBRReportsCoreRate: an ADTS header cannot signal SBR, so an implicitly
-// signalled HE-AAC stream reads as the core coder it declares. Only a syntax parse of the
-// frames would find the extension, and the same stream in MP4 has the muxer's decoded
-// geometry to go on. The duration is still right: core samples over the core rate.
-func TestAACImplicitSBRReportsCoreRate(t *testing.T) {
-	tr := mustParseFile(t, heaacAAC).Properties().Tracks[0]
-	if tr.SampleRate != 22050 || tr.Channels != 2 {
-		t.Errorf("track = %d Hz / %d ch, want the core 22050/2", tr.SampleRate, tr.Channels)
+// TestAACImplicitSBRDetected: ADTS carries no SBR signalling, so the frames themselves are
+// parsed; the fixtures decode to the played geometry ffprobe reports, and the ADTS twin of
+// an MP4 stream now reports what the MP4 does.
+func TestAACImplicitSBRDetected(t *testing.T) {
+	cases := []struct {
+		path           string
+		rate, channels int
+		profile        string
+	}{
+		{heaacAAC, 44100, 2, "HE-AAC"},
+		{"../testdata/heaac_v2.aac", 48000, 2, "HE-AAC v2"},
+		{"../testdata/notags.aac", 44100, 1, "AAC LC"},
 	}
-	if tr.Codec != "AAC" || tr.CodecProfile != "AAC LC" {
-		t.Errorf("codec = %q/%q, want AAC with profile AAC LC", tr.Codec, tr.CodecProfile)
+	for _, c := range cases {
+		tr := mustParseFile(t, c.path).Properties().Tracks[0]
+		if tr.SampleRate != c.rate || tr.Channels != c.channels || tr.Codec != "AAC" || tr.CodecProfile != c.profile {
+			t.Errorf("%s: %d Hz / %d ch %s/%s, want %d/%d AAC/%s", c.path, tr.SampleRate, tr.Channels, tr.Codec, tr.CodecProfile, c.rate, c.channels, c.profile)
+		}
+		if tr.SampleRate > 0 && tr.TotalSamples > 0 {
+			want := core.SamplesToDuration(tr.TotalSamples, tr.SampleRate)
+			if d := tr.Duration - want; d < -time.Millisecond || d > time.Millisecond {
+				t.Errorf("%s: TotalSamples %d at %d Hz is %v, but Duration is %v", c.path, tr.TotalSamples, tr.SampleRate, want, tr.Duration)
+			}
+		}
+	}
+}
+
+// TestAACDigestUnchangedBySBRDetection pins the essence digest of the HE-AAC fixtures to the
+// values recorded before frame parsing existed, so the salt still comes from the header alone.
+func TestAACDigestUnchangedBySBRDetection(t *testing.T) {
+	for path, want := range map[string]string{
+		heaacAAC:                   "sha256/aac-adts-v1:0a36515dc52e76b86865cd32390377203874295adc8f99744146f4c67688a719",
+		"../testdata/heaac_v2.aac": "sha256/aac-adts-v1:3b5da3c46f7200e2f01f3137f2086ac3c816c92927739a0b1aa6bff848050ce3",
+	} {
+		got, err := mustParseFile(t, path).HashAudioEssence(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.String() != want {
+			t.Errorf("%s digest = %s, want %s", path, got, want)
+		}
 	}
 }

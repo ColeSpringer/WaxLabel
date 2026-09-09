@@ -399,8 +399,9 @@ func TestMP4DifferentialHEAACFixtures(t *testing.T) {
 
 // TestMP4DifferentialImplicitRemux: ffmpeg copying an implicitly signalled HE-AAC ADTS
 // stream into MP4 decodes it and writes the played geometry into the entry and the media
-// timescale. The profile is not compared: ffprobe's comes from decoding the frames, which
-// no header parse can match.
+// timescale. The ADTS source is checked beside it: its frames are parsed now, so the two
+// containers must report the same geometry and profile rather than the ADTS twin reporting
+// the core coder. ffprobe reads the ADTS profile field alone, so it grades geometry only.
 func TestMP4DifferentialImplicitRemux(t *testing.T) {
 	t.Parallel()
 	requireTool(t, "ffmpeg")
@@ -437,6 +438,15 @@ func TestMP4DifferentialImplicitRemux(t *testing.T) {
 			}
 			if tr.CodecProfile != tc.profile {
 				t.Errorf("CodecProfile = %q, want %q", tr.CodecProfile, tc.profile)
+			}
+			src := mustParseFile(t, tc.src).Properties().Tracks[0]
+			if src.SampleRate != tr.SampleRate || src.Channels != tr.Channels || src.CodecProfile != tr.CodecProfile {
+				t.Errorf("the ADTS source reads %d Hz / %d ch %s, but its MP4 twin reads %d/%d %s",
+					src.SampleRate, src.Channels, src.CodecProfile, tr.SampleRate, tr.Channels, tr.CodecProfile)
+			}
+			srcRate, srcChannels, _ := ffprobeAudio(t, tc.src)
+			if src.SampleRate != srcRate || src.Channels != srcChannels {
+				t.Errorf("the ADTS source reads %d Hz / %d ch, but ffprobe says %d/%d", src.SampleRate, src.Channels, srcRate, srcChannels)
 			}
 		})
 	}

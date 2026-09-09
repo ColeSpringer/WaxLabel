@@ -52,6 +52,8 @@ type editFlags struct {
 
 	preset string
 	legacy string
+	// id3Multi is the raw --id3-multi value; "" means unset, the preset/legacy sentinel.
+	id3Multi string
 
 	// padding is the raw --padding value (a byte count); "" means unset, mirroring
 	// the preset/legacy empty-string sentinel. noPadding is --no-padding. Both unset
@@ -94,6 +96,7 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.BoolVar(&e.stripEncoder, "strip-encoder", false, "clear ENCODER, the software stamp an encoder or transcoder leaves behind, wherever the format stores it (a WAV ISFT item and a FLAC/Ogg vendor string included)")
 	f.StringVar(&e.preset, "preset", "", "write policy preset: preserve|compatible|minimal")
 	f.StringVar(&e.legacy, "legacy", "", "legacy-tag policy: preserve|strip. strip removes ID3v1/APEv2/stray-ID3 containers unconditionally, warning when one holds the only copy of a value (--strict then refuses)")
+	f.StringVar(&e.id3Multi, "id3-multi", "", "how an ID3v2.3 tag (MP3) stores a multi-valued field: null (NUL-separated, the default, a de-facto extension some readers do not split), repeat (one frame per value), or slash (values joined with a slash). ID3v2.4 tags (WAV/AIFF/AAC) separate values natively and ignore it")
 	f.StringVar(&e.padding, "padding", "", "reserve at least N bytes of padding after the metadata, with the same size suffixes as --max-size (e.g. 8KiB; FLAC default 8192; MP3/AAC/MP4 reuse the existing region; 0 writes none, like --no-padding)")
 	f.BoolVar(&e.noPadding, "no-padding", false, "write no padding after the metadata (no effect on Ogg/WAV/AIFF/Matroska, which have no padding region)")
 	f.BoolVar(&e.numericGenre, "numeric-genre", false, "write a recognized genre as its numeric reference instead of its name: ID3's TCON on MP3/AAC/AIFF, MP4's gnre atom, and on WAV only where an 'id3 ' chunk exists or the same edit creates one (LIST/INFO IGNR stores the name literally). FLAC, Ogg, and Matroska have no numeric genre representation, so it has no effect there")
@@ -204,7 +207,7 @@ func refuseUnquotedValue(ef *editFlags, realOf func(string) string, args []strin
 // indistinguishable from unset values, so rejecting them keeps these flags aligned with the
 // unknown-value path. It reads Changed from the command so set and plan share one check.
 func rejectEmptyScalarFlags(cmd *cobra.Command) error {
-	for _, name := range []string{"preset", "legacy", "padding", "synced-lyrics-file"} {
+	for _, name := range []string{"preset", "legacy", "id3-multi", "padding", "synced-lyrics-file"} {
 		if cmd.Flags().Changed(name) {
 			if v, _ := cmd.Flags().GetString(name); v == "" {
 				return usagef("--%s cannot be empty", name)
@@ -502,7 +505,7 @@ func (e *editFlags) chapterAdds() ([]wl.Chapter, error) {
 // write options, applied in that order so an explicit option overrides the
 // preset's. An unknown name or a bad padding value is a usage error.
 func (e *editFlags) writeOptions() ([]wl.WriteOption, bool, error) {
-	opts, err := resolveWriteFlags(e.preset, e.legacy)
+	opts, err := resolveWriteFlags(e.preset, e.legacy, e.id3Multi)
 	if err != nil {
 		return nil, false, err
 	}
@@ -605,11 +608,11 @@ func resolvePaddingFlag(padding string, noPadding bool) (opt wl.WriteOption, fla
 	}
 }
 
-// resolveWriteFlags turns the shared -preset/-legacy flag values into library
+// resolveWriteFlags turns the shared -preset/-legacy/-id3-multi flag values into library
 // write options, applied in that order so an explicit -legacy overrides the
 // preset's legacy policy. It is shared by the edit commands (plan/set) and copy
 // so they parse these flags identically. An unknown name is a usage error.
-func resolveWriteFlags(preset, legacy string) ([]wl.WriteOption, error) {
+func resolveWriteFlags(preset, legacy, id3Multi string) ([]wl.WriteOption, error) {
 	var opts []wl.WriteOption
 	if preset != "" {
 		opt, ok := presetOptions[strings.ToLower(preset)]
@@ -625,6 +628,13 @@ func resolveWriteFlags(preset, legacy string) ([]wl.WriteOption, error) {
 		}
 		opts = append(opts, wl.WithLegacyPolicy(pol))
 	}
+	if id3Multi != "" {
+		pol, ok := id3MultiOptions[strings.ToLower(id3Multi)]
+		if !ok {
+			return nil, usagef("unknown --id3-multi %q (want null|repeat|slash)", id3Multi)
+		}
+		opts = append(opts, wl.WithID3MultiValue(pol))
+	}
 	return opts, nil
 }
 
@@ -637,6 +647,12 @@ var presetOptions = map[string]wl.WriteOption{
 var legacyOptions = map[string]wl.LegacyPolicy{
 	"preserve": wl.LegacyPreserve,
 	"strip":    wl.LegacyStrip,
+}
+
+var id3MultiOptions = map[string]wl.ID3MultiValuePolicy{
+	"null":   wl.ID3MultiNullSep,
+	"repeat": wl.ID3MultiRepeatFrame,
+	"slash":  wl.ID3MultiSlash,
 }
 
 // compiledEdit holds the invocation-level edit inputs resolved once: the tag

@@ -1,6 +1,8 @@
 package waxlabel_test
 
 import (
+	"bytes"
+	"encoding/binary"
 	"os"
 	"testing"
 	"time"
@@ -70,12 +72,12 @@ func TestID3ChapterOpenEndsMaterialized(t *testing.T) {
 	}
 }
 
-// TestID3ChapterTrailingEndBoundedPastDuration checks the past/at-duration trailing chapter across
-// the ID3-backed formats: authoring a chapter that starts past the media duration serializes a
-// bounded zero-length end (End == Start) rather than the 0xFFFFFFFF sentinel that ffprobe/players
-// render as ~49.7 days. WaxLabel's own decoder reads a bounded start==end back as End == Start and
-// the sentinel back as End == 0, so asserting End == Start (not merely != 0) distinguishes the two.
-func TestID3ChapterTrailingEndBoundedPastDuration(t *testing.T) {
+// TestID3ChapterTrailingEndPastDurationReadsOpen checks the past/at-duration trailing chapter
+// across the ID3-backed formats: authoring a chapter that starts past the media duration
+// serializes a bounded zero-length end (End == Start) rather than the 0xFFFFFFFF sentinel that
+// ffprobe/players render as ~49.7 days, and the reader folds that bounded end back to open so an
+// ID3 read agrees with the start-only stores.
+func TestID3ChapterTrailingEndPastDurationReadsOpen(t *testing.T) {
 	for _, fx := range id3ChapterFixtures {
 		t.Run(fx.format.String(), func(t *testing.T) {
 			src, err := os.ReadFile(fx.path)
@@ -93,16 +95,22 @@ func TestID3ChapterTrailingEndBoundedPastDuration(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Prepare: %v", err)
 			}
-			chs := mustParseBytes(t, applyToBytes(t, src, plan)).Chapters()
+			out := applyToBytes(t, src, plan)
+			chs := mustParseBytes(t, out).Chapters()
 			if len(chs) != 2 {
 				t.Fatalf("got %d chapters, want 2", len(chs))
 			}
 			last := chs[len(chs)-1]
-			if last.End == 0 {
-				t.Error("past-duration trailing chapter reads back open: the end regressed to the 0xFFFFFFFF sentinel")
+			if last.End != 0 {
+				t.Errorf("past-duration trailing chapter End = %v, want open (0) as every start-only store reads it", last.End)
 			}
-			if last.End != last.Start {
-				t.Errorf("past-duration trailing chapter End = %v, want == Start %v (bounded zero-length)", last.End, last.Start)
+			// The wire still holds a bounded end: the CHAP frame carries start and end as
+			// equal big-endian milliseconds, never the 0xFFFFFFFF sentinel.
+			startMs := uint32(past / time.Millisecond)
+			var be [4]byte
+			binary.BigEndian.PutUint32(be[:], startMs)
+			if n := bytes.Count(out, be[:]); n < 2 {
+				t.Errorf("CHAP frame should carry start and an equal end (%d ms found %d times)", startMs, n)
 			}
 		})
 	}

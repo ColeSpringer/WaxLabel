@@ -434,16 +434,16 @@ func FuzzParseLRC(f *testing.F) {
 
 // TestParseLRCReportFullDroppedLines checks that the reporting parse variant returns the 1-based
 // line numbers of content the parser silently drops (a malformed timestamp, or a plain untimed
-// text line) while excluding recognized structure: blank lines, ID metadata tags, offset/length
-// tags, and bare section headers. Those exclusions are what keep an ordinary annotated LRC from
-// being flagged.
+// text line, or a bare section header) while excluding recognized structure: blank lines, ID
+// metadata tags, and offset/length tags. Those exclusions are what keep an ordinary annotated
+// LRC from being flagged.
 func TestParseLRCReportFullDroppedLines(t *testing.T) {
 	in := strings.Join([]string{
 		"[ar:Artist]",        // 1: id tag, not dropped
 		"[00:01.00]good",     // 2: timed line
 		"[9:99.99]bad stamp", // 3: malformed timestamp, dropped
 		"just some text",     // 4: plain text, dropped
-		"[Chorus]",           // 5: bare section header, not dropped
+		"[Chorus]",           // 5: bare section header, dropped and counted
 		"[offset:+200]",      // 6: offset tag, not dropped
 		"[length:03:45]",     // 7: length tag, not dropped
 		"",                   // 8: blank, not dropped
@@ -454,7 +454,7 @@ func TestParseLRCReportFullDroppedLines(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("timed lines = %d, want 2: %+v", len(lines), lines)
 	}
-	want := []int{3, 4}
+	want := []int{3, 4, 5}
 	if len(dropped) != len(want) {
 		t.Fatalf("dropped lines = %v, want %v", dropped, want)
 	}
@@ -466,7 +466,7 @@ func TestParseLRCReportFullDroppedLines(t *testing.T) {
 }
 
 // TestCountsAsDroppedLRCLine pins the per-line classifier the drop count reads: recognized
-// structure yields no drop, while malformed timestamps and untimed text do.
+// structure yields no drop, while malformed timestamps, untimed text and bare bracket groups do.
 func TestCountsAsDroppedLRCLine(t *testing.T) {
 	cases := []struct {
 		line    string
@@ -484,8 +484,10 @@ func TestCountsAsDroppedLRCLine(t *testing.T) {
 		{"[offset:+200]", false},
 		{"[offset:-250]", false},
 		{"[length:03:45]", false},
-		{"[Chorus]", false},  // bare section header (no colon)
-		{"[Verse 1]", false}, // bare section header with a space
+		{"[Chorus]", true},      // bare section header: lyric-sheet content the parser drops
+		{"[Verse 1]", true},     // the same with a space
+		{"[nocolonhere]", true}, // a bare group is not structure whatever it spells
+		{"[00.00.00]", true},    // a mistyped timestamp reads as a bare group
 		{"just some text", true},
 		{"[9:99.99]bad", true},       // trailing text after a bad stamp
 		{"[9:99.99]", true},          // bare bad stamp

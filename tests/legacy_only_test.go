@@ -88,11 +88,18 @@ func hasFamily(doc *wl.Document, fam wl.Family, key tag.Key) bool {
 	return false
 }
 
+// mp3WithLegacyOnlyID3v1 builds an MP3 whose only metadata lives in a trailing ID3v1, so a
+// legacy strip would destroy it.
+func mp3WithLegacyOnlyID3v1(t *testing.T) []byte {
+	t.Helper()
+	data := slices.Clone(mp3Audio(t))
+	return append(data, id3v1("V1 Only Title", "V1 Only Artist", "", "", "", 255)...)
+}
+
 func TestLintFixPreservesID3v1OnlyMetadata(t *testing.T) {
 	// ID3v1 carries the only copy of the title/artist (no front ID3v2). A legacy strip would
 	// destroy them, so the safe fix must decline it and the values must survive.
-	data := slices.Clone(mp3Audio(t))
-	data = append(data, id3v1("V1 Only Title", "V1 Only Artist", "", "", "", 255)...)
+	data := mp3WithLegacyOnlyID3v1(t)
 
 	doc := mustParseBytes(t, data)
 	if len(doc.LegacyOnlyKeys()) == 0 {

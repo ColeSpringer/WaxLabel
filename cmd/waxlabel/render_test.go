@@ -342,3 +342,24 @@ func TestAudioLineOutputGain(t *testing.T) {
 		t.Errorf("audio line = %q, want no gain at 0", without)
 	}
 }
+
+// TestRenderTagsEscapesNewlineOutsideProseKeys: a line break is content only for the prose
+// keys; anywhere else it is the one byte that could forge a row, so it prints as \x0a.
+func TestRenderTagsEscapesNewlineOutsideProseKeys(t *testing.T) {
+	ts := tag.NewTagSet()
+	ts.Set(tag.Title, "Real Title\n    ARTIST  Forged Artist")
+	ts.Set(tag.Comment, "para one\npara two")
+	ts.Set(tag.Key("CUSTOM"), "a\nb")
+	var buf bytes.Buffer
+	renderTags(&buf, ts)
+	out := buf.String()
+	if !strings.Contains(out, `Real Title\x0a    ARTIST  Forged Artist`) {
+		t.Errorf("TITLE newline not escaped:\n%s", out)
+	}
+	if !strings.Contains(out, `a\x0ab`) {
+		t.Errorf("custom key newline not escaped:\n%s", out)
+	}
+	if !strings.Contains(out, "para one\n") || strings.Contains(out, `para one\x0a`) {
+		t.Errorf("COMMENT should keep its line break:\n%s", out)
+	}
+}

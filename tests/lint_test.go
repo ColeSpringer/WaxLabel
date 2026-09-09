@@ -291,3 +291,63 @@ func TestLintTruncatedAudio(t *testing.T) {
 		t.Errorf("expected truncated-audio finding; got %v", codes)
 	}
 }
+
+// TestLintFindingFixable: a finding says whether PlanLintFix acts on it, decided by the same
+// gates the fix uses, so a consumer need not hard-code the fixable codes.
+func TestLintFindingFixable(t *testing.T) {
+	stamped := mustParseBytes(t, flacWithVendor("Lavf61.7.100"))
+	var sawEncoder bool
+	for _, f := range stamped.Lint() {
+		if f.Code == "inherited-encoder" {
+			sawEncoder = true
+			if !f.Fixable {
+				t.Error("inherited-encoder should be fixable")
+			}
+		}
+	}
+	if !sawEncoder {
+		t.Fatal("fixture should lint inherited-encoder")
+	}
+	// A legacy container holding the only copy of a value is preserved, not fixable.
+	legacyOnly := mustParseBytes(t, mp3WithLegacyOnlyID3v1(t))
+	for _, f := range legacyOnly.Lint() {
+		if f.Code == "trailing-id3v1" && f.Fixable {
+			t.Error("a legacy-only trailing-id3v1 must not be fixable")
+		}
+	}
+	fix := legacyOnly.PlanLintFix()
+	if len(fix.Options) != 0 {
+		t.Errorf("PlanLintFix must agree with the marker: %+v", fix)
+	}
+}
+
+// TestLintEncoderFixableOnlyWhereTheFixReaches: the fix clears a stamp from ENCODER and
+// neutralizes a container vendor string, but nothing reaches one stored under ENCODEDBY
+// (ID3's TENC frame), so such a finding must not advertise a repair lint --fix then
+// declines.
+func TestLintEncoderFixableOnlyWhereTheFixReaches(t *testing.T) {
+	tencOnly := mustParseBytes(t, mp3WithFrames(t, id3Frame(4, "TENC", append([]byte{0}, "Lavf61.7.100"...))))
+	var saw bool
+	for _, f := range tencOnly.Lint() {
+		if f.Code != "inherited-encoder" {
+			continue
+		}
+		saw = true
+		if f.Fixable {
+			t.Error("a stamp only under ENCODEDBY is out of the fix's reach")
+		}
+	}
+	if !saw {
+		t.Fatal("a stamped TENC should lint inherited-encoder")
+	}
+	if fix := tencOnly.PlanLintFix(); len(fix.Patch.Keys()) != 0 {
+		t.Errorf("the fix has nothing to patch: %+v", fix.Patch)
+	}
+	// A stamp the fix does reach still reads fixable.
+	stamped := mustParseBytes(t, flacWithVendor("Lavf61.7.100"))
+	for _, f := range stamped.Lint() {
+		if f.Code == "inherited-encoder" && !f.Fixable {
+			t.Error("a vendor-string stamp is reachable and should read fixable")
+		}
+	}
+}

@@ -20,7 +20,9 @@ import (
 // exact terminal-hijack class the sanitizing output boundary exists to neutralize.
 // Both ESC (0x1b) and BEL (0x07) are control bytes that must never reach the
 // terminal raw.
-const hostilePayload = "evil\x1b]0;pwned\x07end"
+// The two invisible Unicode format characters ride along: a right-to-left override that
+// reorders what follows it and a zero width space that hides inside a value.
+const hostilePayload = "evil\x1b]0;pwned\x07end\u202e\u200b"
 
 // assertSafe asserts s carries no raw control byte and that the hostile ESC survived as a
 // visible \x1b escape, proving the field was rendered rather than silently dropped. ESC
@@ -55,10 +57,14 @@ func assertNoRawControl(t *testing.T, label, s string) {
 
 // forbiddenRaw is the independent restatement of tag.controlRune's bar (that
 // predicate is unexported): a control rune the sanitizer must escape from human
-// output. Tab and newline are intentionally exempt.
+// output, plus the invisible format runes that reorder or hide text. Tab and newline
+// are intentionally exempt.
 func forbiddenRaw(r rune) bool {
 	if r == '\t' || r == '\n' {
 		return false
+	}
+	if r == 0x202e || r == 0x200b {
+		return true
 	}
 	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
 }

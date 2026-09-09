@@ -59,7 +59,11 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			if err != nil {
 				return nil, err
 			}
-			d.track = buildTrack(h, samples, audioBytes)
+			sbr, ps, err := detectSBR(ctx, src, d.audioStart, d.audioEnd, h, limit)
+			if err != nil {
+				return nil, err
+			}
+			d.track = buildTrack(h, samples, audioBytes, sbr, ps)
 		}
 	}
 	// A non-empty essence region that decodes no whole ADTS frame is a.aac that is
@@ -91,6 +95,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		media.Tags = proj.Tags
 		media.Pictures = proj.Pictures
 		media.Chapters = proj.Chapters
+		core.OpenPastDurationEnds(media.Chapters, d.track.Duration)
 		media.SyncedLyrics = proj.SyncedLyrics
 		media.Families = proj.Families
 		if proj.NumericGenre {
@@ -109,8 +114,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 }
 
 // samplesPerAACFrame is the PCM sample count one AAC-LC raw data block decodes to.
-// SBR (HE-AAC) doubles the output rate, but the raw block still carries this many
-// samples at the signaled rate. An ADTS frame holds rawBlocks+1 such blocks.
+// SBR (HE-AAC) doubles the output rate, and the raw block still carries this many
+// samples at the signaled rate, so [buildTrack] doubles the count alongside the rate when
+// [detectSBR] finds the extension. An ADTS frame holds rawBlocks+1 such blocks.
 const samplesPerAACFrame = 1024
 
 // adtsScanChunk bounds each read of the frame walk. ADTS frames are at most 8191
@@ -129,17 +135,30 @@ const adtsScanChunk = 64 << 10
 // header, so this accuracy needs the O(frames) header walk; there is no Xing-style
 // shortcut. A stream too short to hold one whole frame yields zero samples and so a
 // zero duration/bitrate (the honest answer for an unplayable fragment).
-func buildTrack(h adtsHeader, totalSamples uint64, audioBytes int64) core.AudioTrack {
+func buildTrack(h adtsHeader, totalSamples uint64, audioBytes int64, sbr, ps bool) core.AudioTrack {
 	t := core.AudioTrack{
 		Codec:      mpeg4audio.ObjectTypeName(h.objectType),
 		SampleRate: h.sampleRate,
 		Channels:   h.channels,
 	}
+	if sbr {
+		t.SampleRate = 2 * h.sampleRate
+		t.Codec = "HE-AAC"
+		if ps {
+			t.Codec = "HE-AAC v2"
+			t.Channels = 2
+		}
+	}
 	if h.sampleRate <= 0 || totalSamples == 0 {
 		return t
 	}
+	// Frames count core samples; the played stream has twice as many at twice the rate, so
+	// the duration is unchanged and TotalSamples stays consistent with SampleRate.
+	if sbr {
+		totalSamples *= 2
+	}
 	t.TotalSamples = totalSamples
-	t.Duration = core.SamplesToDuration(totalSamples, h.sampleRate)
+	t.Duration = core.SamplesToDuration(totalSamples, t.SampleRate)
 	t.Bitrate = core.AverageBitrate(audioBytes, t.Duration.Seconds())
 	return t
 }

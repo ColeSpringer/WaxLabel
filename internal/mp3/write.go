@@ -199,7 +199,7 @@ func buildResult(edited *core.Media, base *doc, newTag *id3.Tag, tagBytes []byte
 		// Document matches a fresh parse (a legacy strip left nd.apeTag nil, so this is false then).
 		LegacyOpaqueContent: apeHasNonText(nd.apeTag),
 		Pictures:            core.ClonePictures(edited.Pictures),
-		Chapters:            proj.Chapters,
+		Chapters:            core.ChaptersOpenedPastDuration(proj.Chapters, nd.track.Duration),
 		SyncedLyrics:        proj.SyncedLyrics,
 		Warnings:            warnings,
 		Native:              nd,

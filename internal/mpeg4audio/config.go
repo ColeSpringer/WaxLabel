@@ -1,16 +1,30 @@
 // Package mpeg4audio decodes the MPEG-4 AudioSpecificConfig (ISO/IEC 14496-3
 // §1.6.2.1) and the sampling-frequency and channel-configuration tables it shares
 // with the ADTS header. Both the raw AAC codec and the MP4 esds box need them, so
-// they live here rather than in either; the package holds no state and runs no
-// init.
+// they live here rather than in either; the package holds no mutable state, and the Huffman
+// decoders are built on first use.
 //
-// The decoder answers one question: what geometry does this stream declare? It
+// The config decoder answers one question: what geometry does this stream declare? It
 // reads the header, follows the hierarchical SBR/PS signalling of AOT 5 and 29,
 // and reads the backward-compatible extension tail that an AAC-LC config appends
 // to say whether SBR is present. It deliberately stops at the first field it
 // cannot locate - a program config element, an extensionFlag3 payload, a codec
 // whose specific config it does not walk - and reports what it read up to there.
-// It is reimplemented from the specification; no reference implementation was
+//
+// [ParseRawDataBlock] and [ParseSBRSingleChannel] answer the same question for a stream that
+// declares nothing: raw ADTS has no field for SBR, so an HE-AAC stream there is only visible
+// in the frames. They walk the AAC-LC syntax to the fill element that carries the SBR
+// payload, and that payload to the extension that carries parametric stereo. Neither
+// reconstructs audio; both succeed only by landing exactly where the syntax says the element
+// ends, so a misread surfaces as a failure rather than a wrong answer.
+//
+// The AAC and SBR Huffman codebooks and the scalefactor band offsets those walks need are
+// generated from the text of the specification by the nested gentables module, which is run
+// by hand and needs a copy of the specification (never checked in):
+//
+//	cd gentables && go run . -spec /path/to/iso14496-3-2009.pdf -out ..
+//
+// Everything here is reimplemented from the specification; no reference implementation was
 // copied.
 package mpeg4audio
 
@@ -348,30 +362,4 @@ func parseGASpecificConfig(r *bitReader, chanCfg, aot int) bool {
 		}
 	}
 	return true
-}
-
-// bitReader reads big-endian bit fields from a byte slice. Every read is bounded
-// by what remains, so a truncated config stops the decode instead of reading past
-// the end or wrapping around.
-type bitReader struct {
-	b   []byte
-	pos int // index of the next bit
-}
-
-// remaining is the number of unread bits.
-func (r *bitReader) remaining() int { return len(r.b)*8 - r.pos }
-
-// read consumes the next n bits, most significant first. ok is false when fewer
-// than n bits remain, in which case nothing is consumed. n is at most 24, the
-// widest field in the config.
-func (r *bitReader) read(n int) (int, bool) {
-	if n <= 0 || n > 24 || r.remaining() < n {
-		return 0, false
-	}
-	v := 0
-	for range n {
-		v = v<<1 | int(r.b[r.pos>>3]>>(7-r.pos&7)&1)
-		r.pos++
-	}
-	return v, true
 }

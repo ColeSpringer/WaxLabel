@@ -104,19 +104,19 @@ func TestCopyLegacyStripWarns(t *testing.T) {
 func TestLegacyStripUnmappedWAVItems(t *testing.T) {
 	t.Parallel()
 	path := writeInfoOnlyWAV(t, "unmapped.wav",
-		[2]string{"INAM", "Song"}, [2]string{"IENG", "Alice"}, [2]string{"ISBJ", "Subj"})
+		[2]string{"INAM", "Song"}, [2]string{"IKEY", "Alice"}, [2]string{"ISBJ", "Subj"})
 	out, _, code := runCLI(t, "set", path, "--set", "TITLE=New", "--legacy", "strip")
 	if code != 0 {
 		t.Fatalf("set --legacy strip exit = %d, want 0", code)
 	}
-	for _, want := range []string{"legacy-strip-dropped", "IENG", "ISBJ"} {
+	for _, want := range []string{"legacy-strip-dropped", "IKEY", "ISBJ"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
 	}
 
 	strictPath := writeInfoOnlyWAV(t, "unmapped-strict.wav",
-		[2]string{"INAM", "Song"}, [2]string{"IENG", "Alice"})
+		[2]string{"INAM", "Song"}, [2]string{"IKEY", "Alice"})
 	if _, _, code := runCLI(t, "set", strictPath, "--set", "TITLE=New", "--legacy", "strip", "--strict"); code != 2 {
 		t.Errorf("--strict exit = %d, want 2", code)
 	}

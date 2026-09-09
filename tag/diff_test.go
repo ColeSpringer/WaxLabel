@@ -2,6 +2,7 @@ package tag
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -203,6 +204,34 @@ func TestSanitizeLine(t *testing.T) {
 	for _, c := range cases {
 		if got := SanitizeLine(c.in); got != c.want {
 			t.Errorf("SanitizeLine(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestSanitizeEscapesBidiAndZeroWidth(t *testing.T) {
+	cases := map[string]string{
+		"a\u202eb":                   `a\u202eb`,
+		"x\u200by":                   `x\u200by`,
+		"\u2066z":                    `\u2066z`,
+		"\u061c":                     `\u061c`,
+		"\U0001f468\u200d\U0001f469": "\U0001f468\u200d\U0001f469", // zero width joiner: emoji sequences keep rendering
+		"plain\ttab":                 "plain\ttab",
+	}
+	for in, want := range cases {
+		if got := SanitizeText(in); got != want {
+			t.Errorf("SanitizeText(%q) = %q, want %q", in, got, want)
+		}
+		// SanitizeLine escapes everything SanitizeText does, plus the tab and newline a
+		// single-line field must not carry.
+		got := SanitizeLine(in)
+		if strings.ContainsAny(got, "\t\n") {
+			t.Errorf("SanitizeLine(%q) = %q, want no raw tab or newline", in, got)
+		}
+		if strings.Contains(in, "\t") && !strings.Contains(got, `\x09`) {
+			t.Errorf("SanitizeLine(%q) = %q, want the tab as \\x09", in, got)
+		}
+		if strings.Contains(want, `\u`) && !strings.Contains(got, `\u`) {
+			t.Errorf("SanitizeLine(%q) = %q, want the format control escaped as SanitizeText does", in, got)
 		}
 	}
 }

@@ -150,7 +150,7 @@ func buildResult(edited *core.Media, base *doc, newTag *id3.Tag, tagBytes []byte
 		Tags:         proj.Tags,
 		Families:     proj.Families,
 		Pictures:     core.ClonePictures(edited.Pictures),
-		Chapters:     proj.Chapters,
+		Chapters:     core.ChaptersOpenedPastDuration(proj.Chapters, nd.track.Duration),
 		SyncedLyrics: proj.SyncedLyrics,
 		Warnings:     warnings,
 		Native:       nd,
