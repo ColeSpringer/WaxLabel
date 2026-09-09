@@ -81,6 +81,20 @@ const (
 	TransferSyncedLyric = core.TransferSyncedLyric
 )
 
+// Picture MIME constants.
+const (
+	// UnrecognizedMIME is the MIME a picture carries when its bytes are not a recognized
+	// image header: a cover in a format the sniff does not know, junk, or an empty payload.
+	// It is what [Picture.Unrecognized] tests and what lint's invalid-picture finding names.
+	UnrecognizedMIME = core.UnrecognizedMIME
+	// LinkMIME is the MIME a picture declares when its payload is a URL pointing at the
+	// image rather than the image bytes. ID3v2 and the FLAC PICTURE block share it.
+	LinkMIME = core.LinkMIME
+	// RecognizedImageFormats names the formats [IsRecognizedImage] accepts, for a caller
+	// writing its own message about a rejected cover.
+	RecognizedImageFormats = bits.RecognizedFormats
+)
+
 // Disposition values.
 const (
 	Carried  = core.Carried
@@ -337,11 +351,10 @@ func OutputGainDB(gain int) string { return core.OutputGainDB(gain) }
 // front-end that renders the number itself rather than [OutputGainDB]'s text.
 func OutputGainDecibels(gain int) float64 { return core.OutputGainDecibels(gain) }
 
-// IsRecognizedImage reports whether data begins with the header of an image
-// format WaxLabel can identify (PNG, JPEG, GIF, WebP, BMP, or TIFF). It is a
-// header sniff, not a full decode, so it cannot recognize every valid image
-// (AVIF/HEIC/JXL and the like return false); a caller embedding a deliberately
-// exotic cover should offer an explicit override rather than treat a false
+// IsRecognizedImage reports whether data begins with the header of an image format
+// WaxLabel can identify; [RecognizedImageFormats] names them. It is a header sniff, not a
+// full decode, so it cannot recognize every valid image; a caller embedding a cover in a
+// format outside that list should offer an explicit override rather than treat a false
 // negative as corruption. The CLI uses it to reject a non-image file passed as
 // cover art before embedding it, without reaching into internal packages.
 func IsRecognizedImage(data []byte) bool {

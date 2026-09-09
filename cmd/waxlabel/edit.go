@@ -84,7 +84,7 @@ func (e *editFlags) bind(cmd *cobra.Command) {
 	f.StringVar(&e.pictureDescription, "picture-description", "", "set the description on every picture added this run (--add-picture/--add-cover)")
 	f.StringArrayVar(&e.removePicture, "remove-picture", nil, "remove pictures by role name or 1-based dump index, e.g. back-cover or 2 (repeatable; removals apply before adds)")
 	f.BoolVar(&e.rmPics, "remove-pictures", false, "remove all embedded pictures")
-	f.BoolVar(&e.force, "force", false, "embed --add-cover/--add-picture input even if it is not a recognized image (PNG/JPEG/GIF/WebP/BMP/TIFF); unrecognized bytes are stored as application/octet-stream. The check is header-only, not a full image decode")
+	f.BoolVar(&e.force, "force", false, "embed --add-cover/--add-picture input even if it is not a recognized image ("+wl.RecognizedImageFormats+"); unrecognized bytes are stored as "+wl.UnrecognizedMIME+". The check is header-only, not a full image decode")
 	f.StringArrayVar(&e.addChapter, "add-chapter", nil, "add a chapter TIMESTAMP=Title (e.g. 1:30=Verse; repeatable); formats with chapter-count caps reject over-limit lists (255 for ID3 and MP4, 1000 for FLAC/Ogg). CLI-created chapters have no end time, so replacing a Matroska list that had explicit ends (--clear-chapters plus this flag) drops them; a plain --add-chapter keeps existing chapters, and their ends where the format stores them (FLAC/Ogg CHAPTERxxx store none), except that a start-only insert overlapping an existing chapter truncates that chapter's end to the new start (reported as [chapter-overlap-reconciled])")
 	f.BoolVar(&e.clearChapters, "clear-chapters", false, "remove all chapters (applied before --add-chapter, so combining them keeps only the added chapters)")
 	f.StringVar(&e.syncedLyricsFile, "synced-lyrics-file", "", "set synced lyrics from an LRC file, replacing any existing synced lyrics (MP3/AAC/AIFF/WAV keep the language; FLAC/Ogg drop it)")
@@ -376,7 +376,7 @@ func (e *editFlags) loadPictureFile(label string, pt wl.PictureType, path string
 		return wl.Picture{}, usagef("%s: %s: file is empty", label, path)
 	}
 	if !e.force && !wl.IsRecognizedImage(data) {
-		return wl.Picture{}, usagef("%s: %s: not a recognized image (PNG/JPEG/GIF/WebP/BMP/TIFF); use --force to embed anyway", label, path)
+		return wl.Picture{}, usagef("%s: %s: not a recognized image (%s); use --force to embed anyway", label, path, wl.RecognizedImageFormats)
 	}
 	p := wl.Picture{Type: pt, Data: data}
 	p.SniffInto()

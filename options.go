@@ -108,8 +108,8 @@ func WithNumericGenre() WriteOption {
 }
 
 // WithUnrecognizedPictures allows a picture whose bytes [IsRecognizedImage] does
-// not recognize (an empty payload, junk, or a deliberately exotic HEIC/AVIF/JXL
-// cover the header sniff cannot identify) to be embedded by [Editor.Prepare].
+// not recognize (an empty payload, junk, or a cover in an image format outside the
+// header sniff's list) to be embedded by [Editor.Prepare].
 // By default such a picture is rejected ([waxerr.ErrInvalidData]) so a direct
 // library caller cannot silently embed an application/octet-stream picture; pass
 // this to opt a known-exotic cover back in. Only pictures added via

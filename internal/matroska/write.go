@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/internal/mapping"
 	"github.com/colespringer/waxlabel/tag"
@@ -82,10 +83,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// Matroska cover art is cover.<ext> holding an image, or WaxLabel's unsniffable octet-stream
 	// --force cover. A picture with any other MIME (an authored text/plain or application/pdf) is
 	// not cover art: the reprojection would drop it, so change detection would collapse the edit to
-	// a silent no-op below and the bytes would vanish. Refuse it instead - the Plan-level backstop
-	// for a direct Editor.AddPicture with an exotic MIME (checked before the no-op gate, since a
-	// dropped picture leaves nothing for that gate to see). The CLI and transfer paths only ever
-	// produce image/* or octet-stream picture MIMEs, so this never fires for them; a foreign
+	// a silent no-op below and the bytes would vanish. Refuse it instead, checked before the
+	// no-op gate since a dropped picture leaves nothing for that gate to see. Every editor path
+	// runs the authoritative sniff, which settles an added picture's MIME at image/* or
+	// octet-stream, so this is a backstop rather than a live path; a foreign
 	// non-image attachment merely NAMED cover.* is not a projected picture (isCoverAttachment gates
 	// on octet-stream), so it is preserved verbatim and never reaches edited.Pictures.
 	for _, p := range edited.Pictures {
@@ -1367,14 +1368,13 @@ func uniqueAttachmentName(stem, ext string, used map[string]bool) string {
 	return name
 }
 
-// imageExt returns the conventional extension for a cover MIME.
+// imageExt returns the conventional extension for a cover MIME. The mapping is the sniffer's,
+// so a cover keeps its own type in the attachment name; a MIME the sniffer does not produce
+// (WaxLabel's unsniffable --force cover) falls back to .jpg, since the Matroska cover-art
+// convention wants an extension and the FileMimeType carries the truth either way.
 func imageExt(mime string) string {
-	switch mime {
-	case "image/png":
-		return ".png"
-	case "image/gif":
-		return ".gif"
-	default:
-		return ".jpg"
+	if ext := bits.ImageExtension(mime); ext != "" {
+		return ext
 	}
+	return ".jpg"
 }

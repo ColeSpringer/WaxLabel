@@ -21,12 +21,19 @@ type ImageInfo struct {
 	Colors int
 }
 
-// SniffImage identifies PNG, JPEG, GIF, WebP, BMP, and TIFF data and extracts
-// dimensions where the header carries them cheaply. It reports ok=false for
-// unrecognized or truncated data; callers should fall back to
+// SniffImage identifies PNG, JPEG, GIF, WebP, BMP, TIFF, HEIF/HEIC, AVIF, and
+// JPEG XL data and extracts dimensions where the header carries them cheaply. It
+// reports ok=false for unrecognized or truncated data; callers should fall back to
 // "application/octet-stream" and zero dimensions. Dimension extraction is
 // best-effort for the RIFF/IFD-based formats (WebP, TIFF): a recognized header
-// always yields the correct MIME even when the size fields cannot be read.
+// always yields the correct MIME even when the size fields cannot be read. The
+// ISOBMFF and JPEG XL headers carry no cheap geometry at all, so those report a
+// MIME alone.
+// RecognizedFormats names the formats [SniffImage] identifies, for a message that has to
+// tell a user what counts as an image. It is the one copy of that list: teaching the switch
+// below a format means editing the line above it.
+const RecognizedFormats = "PNG/JPEG/GIF/WebP/BMP/TIFF/HEIF/AVIF/JXL"
+
 func SniffImage(data []byte) (ImageInfo, bool) {
 	switch {
 	case hasPrefix(data, pngMagic):
@@ -41,6 +48,12 @@ func SniffImage(data []byte) (ImageInfo, bool) {
 		return sniffBMP(data)
 	case hasPrefix(data, tiffLE) || hasPrefix(data, tiffBE):
 		return sniffTIFF(data)
+	// The modern cover formats go last: their signatures cannot collide with the
+	// cases above, so adding them leaves every already-recognized header untouched.
+	case isFtyp(data):
+		return sniffISOBMFF(data)
+	case isJXL(data):
+		return sniffJXL(data)
 	default:
 		return ImageInfo{}, false
 	}
@@ -53,7 +66,170 @@ var (
 	bmpMagic = []byte("BM")
 	tiffLE   = []byte{'I', 'I', 0x2A, 0x00}
 	tiffBE   = []byte{'M', 'M', 0x00, 0x2A}
+	// The two JPEG XL forms: the bare codestream, and the ISOBMFF-style container
+	// whose first box is a 12-byte signature box.
+	jxlCodestream = []byte{0xFF, 0x0A}
+	jxlContainer  = []byte{0x00, 0x00, 0x00, 0x0C, 'J', 'X', 'L', ' ', 0x0D, 0x0A, 0x87, 0x0A}
 )
+
+// isobmffImageBrands maps the ISO base media file format brands that name an image format to
+// its registered media type. The image-sequence brands have their own types and keep them: a
+// sequence is not a still image, and saying so is the point of sniffing. Anything else in an
+// ftyp box (a plain isom/mp42 movie, an M4A) is not an image at all.
+var isobmffImageBrands = map[string]string{
+	"heic": "image/heic", "heix": "image/heic",
+	"mif1": "image/heif", "heim": "image/heif", "heis": "image/heif",
+	"avif": "image/avif",
+	"hevc": "image/heic-sequence", "hevx": "image/heic-sequence",
+	"msf1": "image/heif-sequence", "hevm": "image/heif-sequence", "hevs": "image/heif-sequence",
+	"avis": "image/avif-sequence",
+}
+
+// ImageExtension returns the conventional file extension, dot included, for a MIME
+// [SniffImage] can report, and "" for anything else. It lives beside the sniffer so a format
+// the sniffer learns cannot be left out of the file names codecs build from its result (a
+// Matroska cover.<ext> attachment, an APE Cover Art item); each caller supplies its own
+// fallback for the empty case.
+func ImageExtension(mime string) string {
+	switch mime {
+	case "image/png":
+		return ".png"
+	case "image/jpeg":
+		return ".jpg"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	case "image/bmp":
+		return ".bmp"
+	case "image/tiff":
+		return ".tiff"
+	case "image/heic":
+		return ".heic"
+	case "image/heif":
+		return ".heif"
+	case "image/avif":
+		return ".avif"
+	case "image/jxl":
+		return ".jxl"
+	case "image/heic-sequence":
+		return ".heics"
+	case "image/heif-sequence":
+		return ".heifs"
+	case "image/avif-sequence":
+		return ".avifs"
+	}
+	return ""
+}
+
+// isFtyp reports whether data opens with an ISO base media file format ftyp box, the
+// container HEIF, AVIF and several video formats share. Only the brand tells an image
+// from a movie, which sniffISOBMFF decides.
+func isFtyp(data []byte) bool {
+	return len(data) >= 12 && string(data[4:8]) == "ftyp"
+}
+
+// sniffISOBMFF maps an ftyp box's brands to an image MIME: the major brand at offset 8, else
+// any of the compatible brands that follow the minor version. The scan stops at the declared
+// box size. A size that cannot bound it - 0 ("to end of file"), 1 (a 64-bit size sits where
+// the major brand belongs), or one past the buffer - falls back to the major brand alone,
+// rather than reading on into a movie's payload where any 4-aligned brand string would turn
+// it into an image. No dimensions: an ISOBMFF image stores its geometry in an ispe property
+// nested inside meta, well past a header sniff.
+func sniffISOBMFF(data []byte) (ImageInfo, bool) {
+	end := int(binary.BigEndian.Uint32(data[0:4]))
+	if end < 16 || end > len(data) {
+		end = 12 // the major brand, and nothing the size failed to vouch for
+	}
+	for pos := 8; pos+4 <= end; pos += 4 {
+		if pos == 12 {
+			continue // minor_version sits between the major and compatible brands
+		}
+		if mime, ok := isobmffImageBrands[string(data[pos:pos+4])]; ok {
+			return ImageInfo{MIME: mime}, true
+		}
+	}
+	return ImageInfo{}, false
+}
+
+// isJXL reports whether data opens with either JPEG XL signature. It selects the case;
+// sniffJXL decides whether what follows a codestream signature is really an image.
+func isJXL(data []byte) bool {
+	return hasPrefix(data, jxlCodestream) || hasPrefix(data, jxlContainer)
+}
+
+// jxlMaxDim is the largest canvas size reported as an int. A coded JPEG XL size reaches 2^30
+// and an aspect ratio scales it further, which would wrap to a negative dimension on a 32-bit
+// build; a size past this is left unknown rather than reported wrong.
+const jxlMaxDim = 1<<31 - 1
+
+// jxlRatios maps the SizeHeader's aspect-ratio selector to the width:height pair it stands
+// for. Selector 0 is absent here: it means the width is coded explicitly instead.
+var jxlRatios = [8][2]uint64{1: {1, 1}, 2: {12, 10}, 3: {4, 3}, 4: {3, 2}, 5: {16, 9}, 6: {5, 4}, 7: {2, 1}}
+
+// sniffJXL recognizes both JPEG XL forms. The container's 12-byte signature box speaks for
+// itself. The bare codestream's signature is only two bytes, so it is accepted only when the
+// SizeHeader after it decodes - the rule sniffJPEG already applies to a Start-Of-Frame, since
+// two bytes of junk must not pass as an image. A container stores its canvas in a codestream
+// box further in, past a header sniff, so only the codestream form reports dimensions.
+func sniffJXL(data []byte) (ImageInfo, bool) {
+	if hasPrefix(data, jxlContainer) {
+		return ImageInfo{MIME: "image/jxl"}, true
+	}
+	b := &jxlBits{data: data[len(jxlCodestream):], ok: true}
+	small := b.u(1) == 1
+	height, width := uint64(0), uint64(0)
+	if small {
+		height = (uint64(b.u(5)) + 1) * 8
+	} else {
+		height = uint64(b.u32())
+	}
+	switch ratio := b.u(3); {
+	case ratio == 0 && small:
+		width = (uint64(b.u(5)) + 1) * 8
+	case ratio == 0:
+		width = uint64(b.u32())
+	default:
+		width = height * jxlRatios[ratio][0] / jxlRatios[ratio][1]
+	}
+	if !b.ok {
+		return ImageInfo{}, false
+	}
+	info := ImageInfo{MIME: "image/jxl"}
+	if width <= jxlMaxDim && height <= jxlMaxDim {
+		info.Width, info.Height = int(width), int(height)
+	}
+	return info, true
+}
+
+// jxlBits reads JPEG XL's bit-packed header fields, which fill each byte from its least
+// significant bit upward. Running past the buffer clears ok, so a truncated header yields no
+// size rather than a fabricated one.
+type jxlBits struct {
+	data []byte
+	pos  int // in bits
+	ok   bool
+}
+
+func (b *jxlBits) u(n int) uint32 {
+	var v uint32
+	for i := range n {
+		if b.pos>>3 >= len(b.data) {
+			b.ok = false
+			return 0
+		}
+		v |= uint32((b.data[b.pos>>3]>>(b.pos&7))&1) << i
+		b.pos++
+	}
+	return v
+}
+
+// u32 reads the SizeHeader's U32 encoding: a 2-bit selector picks the field width, and the
+// canvas size is one more than the bits that follow.
+func (b *jxlBits) u32() uint32 {
+	widths := [4]int{9, 13, 18, 30}
+	return 1 + b.u(widths[b.u(2)])
+}
 
 // isWebP reports whether data is a RIFF container carrying a WEBP form: "RIFF",
 // a 4-byte size, then "WEBP". The form-type check keeps a WAV file (RIFF...WAVE)

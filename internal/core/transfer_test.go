@@ -14,6 +14,25 @@ func tinyGIF() []byte {
 	return append([]byte("GIF89a"), 0x03, 0x00, 0x05, 0x00, 0x77, 0x00, 0x00)
 }
 
+// tinyWebP returns a minimal recognized WebP header, the other format outside that allowlist.
+func tinyWebP() []byte { return []byte("RIFF\x00\x00\x00\x00WEBP") }
+
+// tinyPNG returns a 1x1 RGBA PNG header and tinyJPEG a 3x5 baseline JPEG: two formats the
+// allowlist does include. Every picture the transfer tests grade by MIME carries real bytes,
+// since the effective MIME comes from the sniff and an empty payload has no image type at all.
+func tinyPNG() []byte {
+	return []byte{
+		0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A,
+		0x00, 0x00, 0x00, 0x0D, 'I', 'H', 'D', 'R',
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89,
+	}
+}
+
+func tinyJPEG() []byte {
+	return []byte{0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 0x05, 0x00, 0x03, 0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01}
+}
+
 // TestProjectTransferDispositions exercises all three dispositions in one pass,
 // including the Lossy path. Shipping codecs write a field Full or None, so the
 // test uses a synthetic capability set for the partial-write case.
@@ -124,9 +143,9 @@ func TestProjectTransferSplitsUnrepresentableCovers(t *testing.T) {
 
 	// Mixed: one representable JPEG, two unrepresentable (GIF, WebP).
 	m := &Media{Format: FormatFLAC, Pictures: []Picture{
-		{Type: PicFrontCover, MIME: "image/jpeg"},
-		{Type: PicFrontCover, MIME: "image/gif"},
-		{Type: PicFrontCover, MIME: "image/webp"},
+		{Type: PicFrontCover, MIME: "image/jpeg", Data: tinyJPEG()},
+		{Type: PicFrontCover, MIME: "image/gif", Data: tinyGIF()},
+		{Type: PicFrontCover, MIME: "image/webp", Data: tinyWebP()},
 	}}
 	items := ProjectTransfer(m, caps)
 	var carried, dropped *TransferItem
@@ -156,8 +175,8 @@ func TestProjectTransferSplitsUnrepresentableCovers(t *testing.T) {
 	// All-unrepresentable: only a Dropped item, no carried picture item, and the reason
 	// lists each distinct MIME once.
 	allGIF := &Media{Format: FormatFLAC, Pictures: []Picture{
-		{Type: PicFrontCover, MIME: "image/gif"},
-		{Type: PicBackCover, MIME: "image/gif"},
+		{Type: PicFrontCover, MIME: "image/gif", Data: tinyGIF()},
+		{Type: PicBackCover, MIME: "image/gif", Data: tinyGIF()},
 	}}
 	got := ProjectTransfer(allGIF, caps)
 	if len(got) != 1 || got[0].Disposition != Dropped || got[0].Count != 2 {
@@ -203,8 +222,8 @@ func TestProjectTransferSplitsPicturesByMetadataLoss(t *testing.T) {
 	// Front + back cover, both representable, no descriptions: the front round-trips, the back
 	// loses its role. Exactly one carried, one lossy, carried first with an empty reason.
 	m := &Media{Format: FormatFLAC, Pictures: []Picture{
-		{Type: PicFrontCover, MIME: "image/jpeg"},
-		{Type: PicBackCover, MIME: "image/jpeg"},
+		{Type: PicFrontCover, MIME: "image/jpeg", Data: tinyJPEG()},
+		{Type: PicBackCover, MIME: "image/jpeg", Data: tinyJPEG()},
 	}}
 	items := ProjectTransfer(m, caps)
 	disps := pictureDisps(items)
@@ -228,9 +247,9 @@ func TestProjectTransferSplitsPicturesByMetadataLoss(t *testing.T) {
 	// Adding an unrepresentable cover locks the full three-item order: carried, then lossy, then
 	// the dropped-MIME item.
 	m2 := &Media{Format: FormatFLAC, Pictures: []Picture{
-		{Type: PicFrontCover, MIME: "image/jpeg"}, // carried
-		{Type: PicBackCover, MIME: "image/png"},   // lossy: role dropped
-		{Type: PicFrontCover, MIME: "image/gif"},  // dropped: unrepresentable MIME
+		{Type: PicFrontCover, MIME: "image/jpeg", Data: tinyJPEG()}, // carried
+		{Type: PicBackCover, MIME: "image/png", Data: tinyPNG()},    // lossy: role dropped
+		{Type: PicFrontCover, MIME: "image/gif", Data: tinyGIF()},   // dropped: unrepresentable MIME
 	}}
 	got := pictureDisps(ProjectTransfer(m2, caps))
 	if len(got) != 3 || got[0] != Carried || got[1] != Lossy || got[2] != Dropped {
@@ -345,9 +364,9 @@ func TestProjectTransferReasonUsesSniffedMIME(t *testing.T) {
 // Representable must compare the MIME an authoritative sniff settles on (what AddPicture
 // stores), not the raw container label. A storable JPEG carried under a non-canonical
 // alias or odd casing is representable; a GIF mislabeled as JPEG is not (the bytes win);
-// a label-only picture (no bytes) falls back to the stored label.
+// a label-only picture (no bytes) is representable nowhere, whatever it claims.
 func TestRepresentableUsesSniffedMIME(t *testing.T) {
-	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 0x05, 0x00, 0x03, 0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01}
+	jpeg := tinyJPEG()
 	gif := tinyGIF()
 	mp4 := Capability{Write: AccessFull, PictureMIMEs: []string{"image/jpeg", "image/png", "image/bmp"}}
 
@@ -360,12 +379,13 @@ func TestRepresentableUsesSniffedMIME(t *testing.T) {
 	if Representable(mp4, Picture{MIME: "image/jpeg", Data: gif}) {
 		t.Error("a GIF mislabeled image/jpeg must not be representable (the bytes win over the label)")
 	}
-	// Label-only (no recognizable bytes): the stored label decides.
+	// Label-only (no recognizable bytes): an empty payload has no image type, so the label
+	// decides nothing and neither picture is representable.
 	if Representable(mp4, Picture{MIME: "image/gif"}) {
 		t.Error("a label-only image/gif (no bytes) must not be representable")
 	}
-	if !Representable(mp4, Picture{MIME: "image/png"}) {
-		t.Error("a label-only image/png (no bytes) should be representable")
+	if Representable(mp4, Picture{MIME: "image/png"}) {
+		t.Error("a label-only image/png (no bytes) must not be representable either: an empty payload is not a PNG")
 	}
 }
 

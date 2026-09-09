@@ -29,6 +29,16 @@ All notable changes to this project are documented here.
 - QuickTime version 2 sound sample entries, the shape ffmpeg writes into a hi-res `.mov`.
   Their float64 rate and 32-bit channel count are read, so such a file reports its geometry
   instead of nothing.
+- HEIF/HEIC, AVIF and JPEG XL to the image sniffer, so a cover in one of those formats
+  embeds under its own type instead of needing `--force` to go in as
+  `application/octet-stream`. The image-sequence brands report their own registered types
+  (`image/heic-sequence` and siblings), and a JPEG XL codestream reports its canvas size.
+  Cover file names built from a MIME (a Matroska `cover.<ext>` attachment, an APE Cover Art
+  item) now cover every format the sniffer knows, so a WebP or TIFF cover is no longer named
+  `.jpg` or left with no extension at all.
+- `UnrecognizedMIME`, `LinkMIME` and `RecognizedImageFormats`, so a caller can name the MIME
+  a junk cover reads under, the `-->` URL-link sentinel, and the formats
+  `IsRecognizedImage` accepts without hardcoding any of the three.
 
 ### Changed
 
@@ -39,6 +49,18 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- A picture whose bytes no decoder can read now reports the unrecognized MIME with no
+  dimensions whatever its container declared (an APIC or FLAC PICTURE claiming `image/png`
+  over junk), so `lint` flags it, `export-picture` labels it honestly, and a transfer never
+  re-labels it into a new container as the claimed type. The same rule applies to
+  `Editor.AddPicture`: a caller's MIME no longer survives over bytes the sniffer does not
+  recognize. A `-->` URL-link picture is the exception, since it describes its payload rather
+  than claiming an image format: it keeps its declaration, so a picture edit no longer rewrites
+  an ID3 or FLAC link as a broken cover holding a URL.
+- A cover in an image format the sniff does not know is carried into Matroska again instead of
+  being dropped. Matroska's picture capability claimed only `image/*`, while its writer and
+  reader both handle the unrecognized MIME under the cover-art name, so a transfer report
+  destroyed a cover the write would have stored.
 - A WAV's LIST/INFO items untouched by an edit are now copied verbatim instead of being
   regenerated from the merged tag set: an INFO value the id3 chunk disagrees with, a second
   identifier for the same key (`IPRT` and `ITRK`), and duplicate items all survive an

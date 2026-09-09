@@ -12,9 +12,9 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// unrecognizedMIME mirrors core.UnrecognizedMIME (not re-exported at the root package): the
-// MIME a picture reads under when its bytes are not a recognized image header.
-const unrecognizedMIME = "application/octet-stream"
+// unrecognizedMIME is the MIME a picture reads under when its bytes are not a recognized
+// image header, kept as a short local name for the assertions across this package.
+const unrecognizedMIME = wl.UnrecognizedMIME
 
 // covrItemAtom builds an MP4 covr ilst item holding one image data atom under the given covr
 // type code (0 = implicit, 13 = JPEG, 14 = PNG, 27 = BMP).

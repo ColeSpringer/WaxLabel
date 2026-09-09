@@ -1,6 +1,10 @@
 package bits
 
-import "testing"
+import (
+	"encoding/binary"
+	"fmt"
+	"testing"
+)
 
 func TestSniffImage(t *testing.T) {
 	// 1x1 RGBA PNG header (IHDR only; pixel data omitted, not needed).
@@ -249,5 +253,187 @@ func TestSniffIndexedColors(t *testing.T) {
 				t.Errorf("Colors = %d, want %d (info %+v)", got.Colors, tc.wantColors, got)
 			}
 		})
+	}
+}
+
+// zeroMinor is the all-zero minor version most ISOBMFF images carry.
+const zeroMinor = "\x00\x00\x00\x00"
+
+// realAVIFHeader is the first 32 bytes of an AVIF written by ffmpeg: the ftyp box verbatim,
+// so the synthetic boxes below are anchored to what an encoder actually emits.
+func realAVIFHeader() []byte {
+	return []byte("\x00\x00\x00\x20ftypavif\x00\x00\x00\x00avifmif1miafMA1A")
+}
+
+// ftypBox builds an ISOBMFF ftyp box: a big-endian size, the "ftyp" type, the major
+// brand, a minor version, then the compatible brands.
+func ftypBox(major, minor string, compatible ...string) []byte {
+	b := []byte{0, 0, 0, 0}
+	b = append(b, "ftyp"...)
+	b = append(b, major...)
+	b = append(b, minor...)
+	for _, c := range compatible {
+		b = append(b, c...)
+	}
+	binary.BigEndian.PutUint32(b[0:4], uint32(len(b)))
+	return b
+}
+
+// TestSniffISOBMFF covers the still-image brands of the ISO base media container: each
+// maps to its own MIME with no dimensions, a brand listed only as compatible still
+// counts, and a movie brand is not an image.
+func TestSniffISOBMFF(t *testing.T) {
+	cases := []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{"heic", ftypBox("heic", zeroMinor, "mif1"), "image/heic"},
+		{"heix", ftypBox("heix", zeroMinor), "image/heic"},
+		{"mif1", ftypBox("mif1", zeroMinor), "image/heif"},
+		{"heim", ftypBox("heim", zeroMinor), "image/heif"},
+		{"heis", ftypBox("heis", zeroMinor), "image/heif"},
+		{"avif", ftypBox("avif", zeroMinor, "mif1", "miaf"), "image/avif"},
+		// The sequence brands register their own media types and must not report a still image.
+		{"hevc", ftypBox("hevc", zeroMinor), "image/heic-sequence"},
+		{"hevx", ftypBox("hevx", zeroMinor), "image/heic-sequence"},
+		{"msf1", ftypBox("msf1", zeroMinor), "image/heif-sequence"},
+		{"hevm", ftypBox("hevm", zeroMinor), "image/heif-sequence"},
+		{"hevs", ftypBox("hevs", zeroMinor), "image/heif-sequence"},
+		{"avis", ftypBox("avis", zeroMinor), "image/avif-sequence"},
+		{"compatible-brand-only", ftypBox("mp42", zeroMinor, "mp41", "avif"), "image/avif"},
+		// A real AVIF header, byte for byte from an ffmpeg encode.
+		{"real-avif", realAVIFHeader(), "image/avif"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := SniffImage(tc.data)
+			if !ok {
+				t.Fatalf("SniffImage(%s) not recognized", tc.name)
+			}
+			if (got != ImageInfo{MIME: tc.want}) {
+				t.Errorf("got %+v, want %s with no dimensions", got, tc.want)
+			}
+		})
+	}
+
+	// A plain movie brand shares the container but is not cover art.
+	if _, ok := SniffImage(ftypBox("isom", "\x00\x00\x02\x00", "iso2", "mp41")); ok {
+		t.Error("an isom movie must not sniff as an image")
+	}
+	// The minor version sits between the major and compatible brands; reading it as a
+	// brand would turn any movie whose version happens to spell one into an image.
+	if _, ok := SniffImage(ftypBox("isom", "avif", "mp41")); ok {
+		t.Error("the minor version must not be read as a brand")
+	}
+	// Too short to hold even a major brand.
+	if _, ok := SniffImage([]byte{0, 0, 0, 0x10, 'f', 't', 'y', 'p'}); ok {
+		t.Error("a truncated ftyp box must not sniff as an image")
+	}
+	// The declared box size bounds the brand scan: a movie's payload after the box is not
+	// made of brands, so a 4-aligned "avif" in it must not turn the file into an image.
+	movie := append(ftypBox("isom", zeroMinor, "iso2"), []byte("\x00\x00\x01\x18moovavif")...)
+	if _, ok := SniffImage(movie); ok {
+		t.Error("a brand string in the payload past the ftyp box must not sniff as an image")
+	}
+}
+
+// TestSniffISOBMFFUnusableBoxSize covers the sizes that cannot bound the scan: 0 ("to end of
+// file"), 1 (a 64-bit size occupies the major brand's offset), and one past the buffer. Each
+// falls back to the major brand alone rather than reading on into the payload.
+func TestSniffISOBMFFUnusableBoxSize(t *testing.T) {
+	withSize := func(n uint32, b []byte) []byte {
+		out := append([]byte(nil), b...)
+		binary.BigEndian.PutUint32(out[0:4], n)
+		return out
+	}
+	// Major brand avif: still recognized, since the fallback always reads that one.
+	for _, size := range []uint32{0, 1000} {
+		if got, ok := SniffImage(withSize(size, ftypBox("avif", zeroMinor, "mif1"))); !ok || got.MIME != "image/avif" {
+			t.Errorf("box size %d: got %+v ok=%v, want image/avif from the major brand", size, got, ok)
+		}
+	}
+	// Major brand isom with a compatible avif: the unusable size must stop the scan before
+	// the compatible brands, which it could not vouch for.
+	for _, size := range []uint32{0, 1, 1000} {
+		if _, ok := SniffImage(withSize(size, ftypBox("isom", zeroMinor, "avif"))); ok {
+			t.Errorf("box size %d: compatible brands must not be scanned when the size cannot bound them", size)
+		}
+	}
+	// A real 64-bit box puts an 8-byte largesize where the major brand belongs, so there is
+	// no brand to read at the offset the fallback trusts.
+	large := append([]byte{0, 0, 0, 1}, "ftyp"...)
+	large = append(large, make([]byte, 8)...) // largesize
+	large = append(large, "avifmif1"...)      // the brands, at offset 16
+	if _, ok := SniffImage(large); ok {
+		t.Error("a 64-bit box size leaves no brand at offset 8; nothing should sniff")
+	}
+}
+
+// jxlCodestreamHeaders are the leading bytes of real JPEG XL files written by libjxl, one set
+// per SizeHeader path: the small sizes code the height in five bits with an aspect ratio, the
+// others code one or both dimensions through the wider U32 fields.
+var jxlCodestreamHeaders = map[string][]byte{
+	"1x1":       {0xFF, 0x0A, 0x00, 0x90, 0x01, 0x00, 0x13, 0x88},
+	"8x8":       {0xFF, 0x0A, 0x41, 0x06, 0x00, 0x13, 0x88, 0x02},
+	"64x48":     {0xFF, 0x0A, 0xCB, 0x06, 0x00, 0x13, 0x88, 0x02},
+	"256x256":   {0xFF, 0x0A, 0x7F, 0x06, 0x00, 0x13, 0x88, 0x02},
+	"300x201":   {0xFF, 0x0A, 0x40, 0x06, 0x56, 0x0E, 0x00, 0x13},
+	"17x1000":   {0xFF, 0x0A, 0x3A, 0x1F, 0x00, 0xC2, 0x00, 0x13},
+	"2000x1333": {0xFF, 0x0A, 0xA2, 0x29, 0xE8, 0xF9, 0x0C, 0x00},
+}
+
+// TestSniffJXL covers both JPEG XL forms. Real codestream headers must report their exact
+// canvas; the container signature reports the MIME alone; and a signature with nothing
+// decodable behind it is not an image, the rule sniffJPEG applies to a Start-Of-Frame.
+func TestSniffJXL(t *testing.T) {
+	for name, header := range jxlCodestreamHeaders {
+		t.Run("codestream-"+name, func(t *testing.T) {
+			got, ok := SniffImage(header)
+			if !ok {
+				t.Fatalf("SniffImage(%s) not recognized", name)
+			}
+			var w, h int
+			fmt.Sscanf(name, "%dx%d", &w, &h)
+			if (got != ImageInfo{MIME: "image/jxl", Width: w, Height: h}) {
+				t.Errorf("got %+v, want image/jxl %dx%d", got, w, h)
+			}
+		})
+	}
+	container := []byte{0x00, 0x00, 0x00, 0x0C, 'J', 'X', 'L', ' ', 0x0D, 0x0A, 0x87, 0x0A}
+	if got, ok := SniffImage(container); !ok || got != (ImageInfo{MIME: "image/jxl"}) {
+		t.Errorf("container: got %+v ok=%v, want image/jxl with no dimensions", got, ok)
+	}
+	// A lone 0xFF byte shares the codestream's first byte only.
+	if _, ok := SniffImage([]byte{0xFF}); ok {
+		t.Error("a single 0xFF must not sniff as JPEG XL")
+	}
+	// The bare two-byte signature, and a size header cut off part way, carry no canvas.
+	if _, ok := SniffImage([]byte{0xFF, 0x0A}); ok {
+		t.Error("a bare FF 0A signature must not sniff as JPEG XL")
+	}
+	if _, ok := SniffImage([]byte{0xFF, 0x0A, 0xCB}); ok {
+		t.Error("a JPEG XL truncated mid-SizeHeader must not sniff as valid")
+	}
+}
+
+// TestImageExtensionCoversEverySniffedMIME is the drift guard between the sniffer and the
+// file names codecs build from its result: every MIME SniffImage can report must have an
+// extension, so teaching the sniffer a format cannot silently leave covers misnamed.
+func TestImageExtensionCoversEverySniffedMIME(t *testing.T) {
+	mimes := map[string]bool{
+		"image/png": true, "image/jpeg": true, "image/gif": true,
+		"image/webp": true, "image/bmp": true, "image/tiff": true, "image/jxl": true,
+	}
+	for _, m := range isobmffImageBrands {
+		mimes[m] = true
+	}
+	for m := range mimes {
+		if ImageExtension(m) == "" {
+			t.Errorf("SniffImage can report %s but ImageExtension has no extension for it", m)
+		}
+	}
+	if ImageExtension("application/octet-stream") != "" {
+		t.Error("a non-image MIME must have no extension, leaving the fallback to the caller")
 	}
 }

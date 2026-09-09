@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -162,5 +163,60 @@ func TestExportPictureOverwriteGate(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(out); !bytes.Equal(got, minimalPNG()) {
 		t.Errorf("--overwrite did not write the cover bytes")
+	}
+}
+
+// mp3JunkCover returns an MP3 whose APIC declares image/png over bytes no decoder can read.
+// The tag is built here rather than authored through the CLI: a fixture for a CLI test must
+// not depend on the command under test to produce it.
+func mp3JunkCover(t *testing.T) []byte {
+	t.Helper()
+	audio, err := os.ReadFile(notagsMP3)
+	if err != nil {
+		t.Fatalf("read the audio fixture: %v", err)
+	}
+	// APIC body: Latin-1 encoding, NUL-terminated MIME, picture type, empty description,
+	// then a PNG with its signature stripped - bytes under a label nothing can decode.
+	body := []byte{0x00}
+	body = append(body, "image/png"...)
+	body = append(body, 0x00, 0x03, 0x00)
+	body = append(body, minimalPNG()[8:]...)
+	return append(id3v24Tag(t, "APIC", body), audio...)
+}
+
+// id3v24Tag wraps one frame in an ID3v2.4 tag. Both the tag and the frame size are
+// synchsafe: seven bits per byte, high bit clear.
+func id3v24Tag(t *testing.T, id string, body []byte) []byte {
+	t.Helper()
+	synchsafe := func(n int) []byte {
+		if n >= 1<<28 {
+			t.Fatalf("%d does not fit a synchsafe size", n)
+		}
+		return []byte{byte(n >> 21 & 0x7F), byte(n >> 14 & 0x7F), byte(n >> 7 & 0x7F), byte(n & 0x7F)}
+	}
+	frame := append([]byte(id), synchsafe(len(body))...)
+	frame = append(frame, 0x00, 0x00) // frame flags
+	frame = append(frame, body...)
+
+	tag := append([]byte("ID3"), 0x04, 0x00, 0x00) // version 2.4.0, no tag flags
+	tag = append(tag, synchsafe(len(frame))...)
+	return append(tag, frame...)
+}
+
+// TestExportPictureJunkReportsUnrecognized: a junk cover under a declared image/png is
+// written out under the unrecognized MIME, not the label its container lied with.
+func TestExportPictureJunkReportsUnrecognized(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	in := filepath.Join(dir, "lying.mp3")
+	if err := os.WriteFile(in, mp3JunkCover(t), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, _, code := runCLI(t, "export-picture", in, "-o", filepath.Join(dir, "cover.bin"))
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(out, "application/octet-stream") || strings.Contains(out, "image/png") {
+		t.Errorf("export should report the unrecognized MIME:\n%s", out)
 	}
 }

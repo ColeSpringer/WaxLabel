@@ -38,12 +38,13 @@ func apicHeader(body []byte) (enc byte, mime string, ptype byte, desc string, re
 // and is preserved opaque.
 //
 // The trimmed declared MIME is passed straight through (including the "-->" URL-link
-// sentinel) rather than coercing a blank MIME to "image/" - that read-side coercion is
-// dropped so an authoritative sniff can speak for the bytes. SniffAuthoritative then lets
-// recognizable bytes win over a mislabeled or blank declaration (a JPEG under a bogus MIME
-// reads as image/jpeg), and degrades a blank MIME over unrecognizable bytes to
-// UnrecognizedMIME rather than the old blank->"image/". encodeAPIC still re-adds "image/"
-// for an empty MIME at write, so a round-trip of a genuinely blank declaration is unaffected.
+// sentinel, which core.LinkMIME keeps out of the sniff so the frame round-trips) rather than
+// coercing a blank MIME to "image/" - that read-side coercion is dropped so an authoritative
+// sniff can speak for the bytes. SniffAuthoritative then lets recognizable bytes win over a
+// mislabeled or blank declaration (a JPEG under a bogus MIME reads as image/jpeg), and
+// degrades any other declaration over unrecognizable bytes to UnrecognizedMIME rather than
+// the old blank->"image/". encodeAPIC still re-adds "image/" for an empty MIME at write, so
+// a round-trip of a genuinely blank declaration is unaffected.
 func decodeAPIC(body []byte) (core.Picture, bool) {
 	_, mime, ptype, desc, rest, ok := apicHeader(body)
 	if !ok {

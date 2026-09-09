@@ -83,12 +83,15 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 		// front-cover role round-trips; any other role reads back as Other. The description
 		// is preserved in FileDescription, so the loss is role-only.
 		Fidelity: "image bytes lossless; only the front-cover role is preserved (other roles read back as Other)",
-		// The reader surfaces a cover only for an image/ attachment (a lowercase HasPrefix
-		// gate) and the writer stores the MIME verbatim, so every image/* subtype round-trips
-		// but a non-image attachment does not. Declaring the wildcard here keeps the transfer
-		// grade aligned with what actually reads back: a non-image cover grades Dropped instead
-		// of being carried and silently destroying the destination's real cover.
-		PictureMIMEs: []string{"image/*"},
+		// The reader surfaces a cover for an image/ attachment (a lowercase HasPrefix gate) or
+		// for an octet-stream one stored under the cover-art name, and the writer stores the
+		// MIME verbatim, so both round-trip while any other attachment does not. Declaring
+		// exactly that pair keeps the transfer grade aligned with what actually reads back:
+		// a non-cover MIME grades Dropped instead of being carried and silently destroying the
+		// destination's real cover, while a cover whose bytes the sniff cannot identify is
+		// carried rather than thrown away for want of a recognized type. isCoverAttachment is
+		// the read gate these two mirror.
+		PictureMIMEs: []string{"image/*", core.UnrecognizedMIME},
 		PictureLoss:  core.PictureLossRoleOnly,
 		Constraints: []string{
 			"not writable to WebM (Attachments is outside the WebM subset)",

@@ -208,11 +208,12 @@ func (t *Transfer) Prepare(dst *Document, opts ...WriteOption) (*Plan, TransferR
 	}
 
 	// Carry the source's already-embedded pictures verbatim: ProjectTransfer already
-	// graded them by the destination's capability, so an exotic-but-valid embedded
-	// cover (HEIC/AVIF/JXL, which the header sniff rejects by design) must keep
-	// carrying - copy has no --force to wave it through. Opt the added-picture
-	// validation out on a fresh slice so the caller's opts are not mutated; no other
-	// option toggles AllowUnrecognizedPictures, so prepending is order-safe.
+	// graded them by the destination's capability, so an embedded cover in an image format
+	// outside the header sniff's list must keep carrying - copy has no --force to wave it
+	// through - though it carries under the unrecognized MIME, since a label nothing can
+	// decode describes nothing. Opt the added-picture validation out on a fresh slice so
+	// the caller's opts are not mutated; no other option toggles AllowUnrecognizedPictures,
+	// so prepending is order-safe.
 	plan, err := ed.Prepare(append([]WriteOption{WithUnrecognizedPictures()}, opts...)...)
 	if err != nil {
 		return nil, report, err

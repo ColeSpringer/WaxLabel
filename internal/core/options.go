@@ -172,10 +172,10 @@ type WriteOptions struct {
 	// LIST/INFO, AIFF text chunks) re-renders those items, so an explicit set resolves a
 	// conflict the value diff alone cannot see.
 	Touched map[tag.Key]bool
-	// AllowUnrecognizedPictures opts the added-picture validation in [Editor.Prepare]
-	// out, so a picture whose bytes are not a recognized image header (an exotic
-	// HEIC/AVIF/JXL cover, or a transfer carrying an already-embedded one) is embedded
-	// rather than rejected. Off by default: a junk or empty picture is refused.
+	// AllowUnrecognizedPictures opts the added-picture validation in [Editor.Prepare] out,
+	// so a picture whose bytes are not a recognized image header (a cover in an image format
+	// outside bits.RecognizedFormats, or a transfer carrying an already-embedded one) is
+	// embedded rather than rejected. Off by default: a junk or empty picture is refused.
 	AllowUnrecognizedPictures bool
 	// StripEncoderStamp asks writers to remove an inherited encoder stamp without the
 	// caller filtering the value itself. WAV drops a transcoder-stamped ISFT INFO item,

@@ -742,8 +742,11 @@ func TestTXXXCustomDescriptionCasePreserved(t *testing.T) {
 	}
 }
 
+// TestPictureRoundTrip checks that an APIC survives encode and decode with its role,
+// description and bytes intact. The payload is a real PNG: decodeAPIC sniffs
+// authoritatively, so a declared type only survives when the bytes back it.
 func TestPictureRoundTrip(t *testing.T) {
-	pic := core.Picture{Type: core.PicFrontCover, MIME: "image/png", Description: "front", Data: []byte("\x89PNG-data")}
+	pic := core.Picture{Type: core.PicFrontCover, MIME: "image/png", Description: "front", Data: tinyPNGBytes()}
 	body := encodeAPIC(pic, 4)
 	got, ok := decodeAPIC(body)
 	if !ok {
@@ -752,6 +755,17 @@ func TestPictureRoundTrip(t *testing.T) {
 	if got.Type != core.PicFrontCover || got.MIME != "image/png" || got.Description != "front" ||
 		!bytes.Equal(got.Data, pic.Data) {
 		t.Errorf("picture round-trip = %+v", got)
+	}
+
+	// The same frame over bytes no decoder can read: the declared label does not survive,
+	// since it describes nothing.
+	junk := core.Picture{Type: core.PicFrontCover, MIME: "image/png", Description: "front", Data: []byte("\x89PNG-data")}
+	got, ok = decodeAPIC(encodeAPIC(junk, 4))
+	if !ok {
+		t.Fatal("decodeAPIC failed on the junk payload")
+	}
+	if got.MIME != core.UnrecognizedMIME || !bytes.Equal(got.Data, junk.Data) {
+		t.Errorf("junk picture = %+v, want %s with the bytes preserved", got, core.UnrecognizedMIME)
 	}
 }
 

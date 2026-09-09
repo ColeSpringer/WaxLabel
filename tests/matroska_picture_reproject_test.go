@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"slices"
-	"strings"
 	"testing"
 
 	wl "github.com/colespringer/waxlabel"
@@ -197,29 +196,31 @@ func TestMatroskaForeignOctetCoverReprojects(t *testing.T) {
 	}
 }
 
-// TestMatroskaNonCoverPictureRejected guards against silent data loss: a directly-authored
-// picture whose MIME is neither an image nor an unsniffable octet-stream cover (a caller doing
-// AddPicture{MIME:"text/plain"|"application/pdf"} + WithUnrecognizedPictures) cannot be stored as
-// Matroska cover art. The reprojection would drop it, collapsing the edit to a silent no-op, so
-// Prepare must refuse it with a clear error instead. The CLI and transfer paths never produce
-// such a MIME, so this only guards the direct library API.
-func TestMatroskaNonCoverPictureRejected(t *testing.T) {
+// TestMatroskaNonCoverMIMEStoredAsForcedCover guards against silent data loss for a
+// directly-authored picture whose declared MIME is neither an image nor an octet-stream
+// cover (a caller doing AddPicture{MIME:"text/plain"|"application/pdf"} +
+// WithUnrecognizedPictures). AddPicture settles the label from the bytes, so such a picture
+// reaches the writer as an unsniffable --force cover and is stored like one: the edit must
+// take effect and the bytes must read back, never collapse to a no-op. The writer keeps its
+// refusal as a backstop for a picture arriving under some other MIME, which no editor path
+// now produces.
+func TestMatroskaNonCoverMIMEStoredAsForcedCover(t *testing.T) {
 	data := buildMatroska("matroska", "reject", nil)
-	for _, mime := range []string{"text/plain", "application/pdf"} {
+	for _, mime := range []string{"text/plain", "application/pdf", "application/octet-stream"} {
 		pic := wl.Picture{Type: wl.PicFrontCover, MIME: mime, Data: []byte("not cover art")}
-		_, err := mustParseBytes(t, data).Edit().AddPicture(pic).Prepare(wl.WithUnrecognizedPictures())
-		if err == nil {
-			t.Errorf("MIME %q: Prepare succeeded, want a refusal (a non-image/non-octet picture is not cover art)", mime)
+		plan, err := mustParseBytes(t, data).Edit().AddPicture(pic).Prepare(wl.WithUnrecognizedPictures())
+		if err != nil {
+			t.Errorf("MIME %q: Prepare = %v, want the cover accepted under the unrecognized MIME", mime, err)
 			continue
 		}
-		if !strings.Contains(err.Error(), "cover art") {
-			t.Errorf("MIME %q: error = %v, want one mentioning cover art", mime, err)
+		var w writerTo
+		if _, _, err := plan.Execute(context.Background(), wl.WriteTo(&w, wl.BytesSource(data))); err != nil {
+			t.Errorf("MIME %q: Execute = %v", mime, err)
+			continue
 		}
-	}
-	// An octet-stream --force cover of the same shape is still accepted (it round-trips as an
-	// Unrecognized picture), so the refusal is scoped to genuinely non-cover MIMEs.
-	octet := wl.Picture{Type: wl.PicFrontCover, MIME: "application/octet-stream", Data: []byte("forced")}
-	if _, err := mustParseBytes(t, data).Edit().AddPicture(octet).Prepare(wl.WithUnrecognizedPictures()); err != nil {
-		t.Errorf("octet-stream --force cover must still be accepted, got %v", err)
+		got := mustParseBytes(t, w.b).Pictures()
+		if len(got) != 1 || got[0].MIME != unrecognizedMIME || !bytes.Equal(got[0].Data, pic.Data) {
+			t.Errorf("MIME %q: read back %+v, want one %s cover with the bytes intact", mime, got, unrecognizedMIME)
+		}
 	}
 }

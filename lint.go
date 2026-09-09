@@ -257,9 +257,9 @@ func lintPictures(pics []Picture) []Finding {
 	for i, p := range pics {
 		// A picture the codec could not sniff is stored as the unrecognized-image MIME;
 		// key on that (not a re-sniff) so a cover a codec already recognized is never
-		// false-flagged. Reported only - never auto-fixed - since a valid but
-		// unsniffable cover (WebP/AVIF) degrades to exactly this, and dropping it
-		// would be silent data loss.
+		// false-flagged. Reported only - never auto-fixed - since a valid cover in an
+		// image format the sniff does not know degrades to exactly this, and dropping
+		// it would be silent data loss.
 		if p.Unrecognized() {
 			out = append(out, Finding{LintWarning, "invalid-picture",
 				fmt.Sprintf("%s picture is not a recognized image type (%s)", p.Type, p.MIME), ""})

@@ -56,13 +56,20 @@ func (p PictureType) SingleIcon() bool {
 	return p == PicFileIcon || p == PicOtherFileIcon
 }
 
-// UnrecognizedMIME is the MIME a picture is stored under when [Picture.SniffInto]
-// cannot identify its bytes as an image (an exotic/unsniffable cover, junk, or an
-// empty payload all degrade to this). It is the single string the linter's
+// UnrecognizedMIME is the MIME a picture is stored under when the sniff cannot identify
+// its bytes as an image (a cover in a format the sniff does not know, junk, or an empty
+// payload all degrade to this). It is the single string the linter's
 // invalid-picture rule and the editor's plan-time picture warning both key on -
 // rather than re-sniffing - so a cover a codec already recognized is never
 // false-flagged and the two checks cannot drift.
 const UnrecognizedMIME = "application/octet-stream"
+
+// LinkMIME is the MIME a picture declares when its payload is a URL pointing at the image
+// rather than the image bytes themselves. ID3v2's APIC frame and the FLAC PICTURE block
+// share the convention, so it is a picture kind rather than a codec detail. The sniff leaves
+// it alone: there are no image bytes to read, and degrading the declaration would rewrite a
+// link as a broken cover the next time the file is written.
+const LinkMIME = "-->"
 
 // CountIcons returns how many type-1 (file icon) and type-2 (other file icon)
 // pictures are present. Both must be at most one. The writer's validation and
@@ -228,34 +235,42 @@ func (p *Picture) SniffInto() bool { return p.sniff(false) }
 // the embed-path counterpart to [Picture.SniffInto] ([Editor.AddPicture] uses it);
 // each dimension is taken only when the sniff determined it (non-zero), so a sniffer
 // that could not fill one does not clobber a caller value with a 0. A failed sniff
-// preserves the caller's values, degrading MIME to [UnrecognizedMIME] only when none
-// was set.
+// degrades the MIME to [UnrecognizedMIME] and clears the dimensions: a label nothing
+// can decode describes nothing. [LinkMIME] is the one declaration that survives, since
+// it describes the payload rather than claiming an image format.
 func (p *Picture) SniffAuthoritative() bool { return p.sniff(true) }
 
 // EffectiveMIME returns the MIME type an authoritative sniff would store: the canonical
-// sniffed type when the bytes are recognized, otherwise the stored label, or
-// [UnrecognizedMIME] when there is no label. It mirrors [Editor.AddPicture] without
-// mutating p, so representability checks use the type the writer will actually see
-// rather than a stale or non-canonical container label.
+// sniffed type when the bytes are recognized, [LinkMIME] for a URL payload, otherwise
+// [UnrecognizedMIME]. It mirrors [Editor.AddPicture] without mutating p, so representability
+// checks use the type the writer will actually see rather than a stale or non-canonical
+// container label.
 func (p Picture) EffectiveMIME() string {
 	if info, ok := bits.SniffImage(p.Data); ok {
 		return info.MIME
 	}
-	if p.MIME == "" {
-		return UnrecognizedMIME
+	if p.MIME == LinkMIME {
+		return LinkMIME
 	}
-	return p.MIME
+	return UnrecognizedMIME
 }
 
 // sniff backs [Picture.SniffInto] (fill-when-empty) and [Picture.SniffAuthoritative]
-// (bytes win). On a failed sniff both only set an empty MIME to [UnrecognizedMIME]; on
-// a success, authoritative overwrites MIME and every sniff-determined dimension, while
-// fill-when-empty sets only the fields the caller left zero.
+// (bytes win). On a failed sniff, authoritative degrades the MIME and clears every
+// dimension; fill-when-empty only sets an empty MIME. On a success, authoritative
+// overwrites MIME and every sniff-determined dimension, while fill-when-empty sets only
+// the fields the caller left zero.
 func (p *Picture) sniff(authoritative bool) bool {
+	if p.MIME == LinkMIME {
+		return false // a URL payload has no image header to read; see LinkMIME
+	}
 	info, ok := bits.SniffImage(p.Data)
 	if !ok {
-		if p.MIME == "" {
+		if authoritative || p.MIME == "" {
 			p.MIME = UnrecognizedMIME
+		}
+		if authoritative {
+			p.Width, p.Height, p.Depth, p.Colors = 0, 0, 0, 0
 		}
 		return false
 	}

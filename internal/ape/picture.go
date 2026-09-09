@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
 	"github.com/colespringer/waxlabel/waxerr"
 )
@@ -188,23 +189,7 @@ func encodeCoverAs(p core.Picture, name string) Item {
 	return Item{Key: name, Data: data, Flags: itemTypeBinary << itemTypeShift}
 }
 
-// coverExt is the conventional file extension for a picture MIME, used only to
-// build the stored file name. An unrecognized type gets none rather than a
-// misleading one.
-func coverExt(mime string) string {
-	switch mime {
-	case "image/jpeg":
-		return ".jpg"
-	case "image/png":
-		return ".png"
-	case "image/gif":
-		return ".gif"
-	case "image/bmp":
-		return ".bmp"
-	case "image/webp":
-		return ".webp"
-	case "image/tiff":
-		return ".tiff"
-	}
-	return ""
-}
+// coverExt is the conventional file extension for a picture MIME, used only to build the
+// stored file name. It is the sniffer's own mapping, so a cover keeps its own type here; an
+// unrecognized type gets no extension rather than a misleading one.
+func coverExt(mime string) string { return bits.ImageExtension(mime) }

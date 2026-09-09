@@ -120,8 +120,10 @@ func (e *Editor) SetTags(t tag.Tags) *Editor { return e.Apply(t.Patch()) }
 // image bytes via an authoritative header sniff ([Picture.SniffAuthoritative]):
 // when the bytes are a recognized image the sniffed MIME and dimensions win over
 // any the caller set, so a mislabeled cover cannot be embedded under a MIME that
-// contradicts it. (A file's stored picture, read by the decoders, keeps its own
-// MIME - that path fills only, via [Picture.SniffInto].)
+// contradicts it. An image the sniffer does not recognize is stored under
+// [UnrecognizedMIME] whatever MIME the caller set, and is refused unless
+// [WithUnrecognizedPictures] is given. (A file's stored picture, read by the
+// decoders, keeps its own MIME - that path fills only, via [Picture.SniffInto].)
 func (e *Editor) AddPicture(p Picture) *Editor {
 	p.SniffAuthoritative()
 	// Deep-copy the payload so the editor owns its bytes: the caller passes a Picture by
@@ -1277,8 +1279,8 @@ func validateAddedPictures(pics []core.Picture, addedMask []bool) error {
 	for i, p := range pics {
 		if i < len(addedMask) && addedMask[i] && !IsRecognizedImage(p.Data) {
 			return fmt.Errorf("%w: added %q picture is not a recognized image "+
-				"(PNG/JPEG/GIF/WebP/BMP/TIFF); pass WithUnrecognizedPictures to embed it anyway",
-				waxerr.ErrInvalidData, p.Type)
+				"(%s); pass WithUnrecognizedPictures to embed it anyway",
+				waxerr.ErrInvalidData, p.Type, RecognizedImageFormats)
 		}
 	}
 	return nil

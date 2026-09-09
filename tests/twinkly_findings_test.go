@@ -1,7 +1,6 @@
 package waxlabel_test
 
 import (
-	"bytes"
 	"context"
 	"os"
 	"strings"
@@ -9,6 +8,7 @@ import (
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
+	"github.com/colespringer/waxlabel/internal/vorbis"
 	"github.com/colespringer/waxlabel/tag"
 )
 
@@ -322,19 +322,15 @@ func TestTrailingID3v1StrictDetection(t *testing.T) {
 
 // --- Matroska non-image cover copy must not destroy the destination cover ---
 
-func TestMatroskaNonImageCoverPreservesDestPNG(t *testing.T) {
-	// Source: a FLAC with a genuinely non-image (octet-stream) cover.
-	nonImage := bytes.Repeat([]byte{0xDE, 0xAD, 0xBE, 0xEF}, 40) // 160 bytes, not any image signature
-	srcBytes := flacWithComments("TITLE=x")
-	addPlan, err := mustParseBytes(t, srcBytes).Edit().
-		AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "application/octet-stream", Data: nonImage}).
-		Prepare(wl.WithUnrecognizedPictures()) // deliberately embed a non-image cover
-	if err != nil {
-		t.Fatalf("add octet-stream cover: %v", err)
-	}
-	src := mustParseBytes(t, applyToBytes(t, srcBytes, addPlan))
+func TestMatroskaUnrepresentableCoverPreservesDestPNG(t *testing.T) {
+	// Source: a FLAC whose cover is a URL link, the one picture kind Matroska cannot store
+	// at all. An octet-stream cover would not do: Matroska writes and reads that one back
+	// under its cover-art name, so it is representable there.
+	srcBytes := flacWithCommentBlock([]vorbis.Comment{{Name: "TITLE", Value: "x"}},
+		wl.Picture{Type: wl.PicFrontCover, MIME: "-->", Data: []byte("http://example.com/cover.png")})
+	src := mustParseBytes(t, srcBytes)
 	if pics := src.Pictures(); len(pics) != 1 || strings.HasPrefix(pics[0].MIME, "image/") {
-		t.Fatalf("source cover should be a non-image octet-stream, got %v", pics)
+		t.Fatalf("source cover should be a non-image link picture, got %v", pics)
 	}
 
 	// Destination: sample.mka, which carries a real PNG cover.
@@ -347,7 +343,7 @@ func TestMatroskaNonImageCoverPreservesDestPNG(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareTransfer: %v", err)
 	}
-	// The non-image cover is graded Dropped (Matroska's picture cap is image/*).
+	// The link cover is graded Dropped (Matroska stores image/* and octet-stream, not a URL).
 	droppedPic := false
 	for _, it := range report.Items {
 		if it.Kind == wl.TransferPicture && it.Disposition == wl.Dropped {

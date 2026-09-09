@@ -399,9 +399,11 @@ func TestPictureMIMESniffReconcile(t *testing.T) {
 		t.Errorf("SniffInto Width = %d, want 1 filled from the sniff", read.Width)
 	}
 
-	// A failed sniff (junk bytes) leaves a caller-declared MIME intact under both.
+	// A failed sniff (junk bytes) under a declared label the sniffer does not know:
+	// authoritative degrades the MIME and clears the dimensions, since a label nothing can
+	// decode describes nothing, while fill-only leaves what the caller declared.
 	for _, authoritative := range []bool{true, false} {
-		junk := wl.Picture{MIME: "image/heic", Data: []byte("not an image")}
+		junk := wl.Picture{MIME: "image/x-icon", Width: 16, Height: 16, Data: []byte("not an image")}
 		var ok bool
 		if authoritative {
 			ok = junk.SniffAuthoritative()
@@ -411,8 +413,13 @@ func TestPictureMIMESniffReconcile(t *testing.T) {
 		if ok {
 			t.Fatalf("authoritative=%v: junk bytes should not sniff", authoritative)
 		}
-		if junk.MIME != "image/heic" {
-			t.Errorf("authoritative=%v: failed-sniff MIME = %q, want image/heic preserved", authoritative, junk.MIME)
+		wantMIME, wantSide := "image/x-icon", 16
+		if authoritative {
+			wantMIME, wantSide = unrecognizedMIME, 0
+		}
+		if junk.MIME != wantMIME || junk.Width != wantSide || junk.Height != wantSide {
+			t.Errorf("authoritative=%v: failed sniff = %s %dx%d, want %s %dx%d",
+				authoritative, junk.MIME, junk.Width, junk.Height, wantMIME, wantSide, wantSide)
 		}
 	}
 }
