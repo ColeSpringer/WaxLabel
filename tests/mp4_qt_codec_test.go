@@ -82,6 +82,7 @@ func TestMP4QuickTimeFourccCodecs(t *testing.T) {
 		// The ISOBMFF pair keep their width in a pcmC box. At 64 bits the fourcc alone
 		// would name the 32-bit float form, so the box names the codec too.
 		{"ipcm pcmC 24", mp4StsdEntry("ipcm", 2, 16, 48000, mp4PcmC(24)), 48000, "PCM", "ipcm", 2, 24},
+		{"ipcm pcmC 32", mp4StsdEntry("ipcm", 2, 16, 48000, mp4PcmC(32)), 48000, "PCM", "ipcm", 2, 32},
 		{"fpcm pcmC 32", mp4StsdEntry("fpcm", 2, 16, 48000, mp4PcmC(32)), 48000, "IEEE float", "fpcm", 2, 32},
 		{"fpcm pcmC 64", mp4StsdEntry("fpcm", 2, 16, 48000, mp4PcmC(64)), 48000, "IEEE float64", "", 2, 64},
 		// A pcmC behind a sibling box is still found: the walk skips what is not a codec
@@ -241,15 +242,22 @@ func TestMP4DifferentialFFmpegFourccs(t *testing.T) {
 			if tr.Codec != c.codec || tr.CodecProfile != c.profile {
 				t.Errorf("codec = %q / profile %q, want %q / %q", tr.Codec, tr.CodecProfile, c.codec, c.profile)
 			}
-			if tr.BitsPerSample != c.depth {
-				t.Errorf("bits per sample = %d, want %d", tr.BitsPerSample, c.depth)
-			}
 			rate, channels, _ := ffprobeAudio(t, path)
 			if tr.SampleRate != rate || tr.Channels != channels {
 				t.Errorf("geometry = %d Hz / %d ch, ffprobe says %d/%d", tr.SampleRate, tr.Channels, rate, channels)
 			}
-			if depth := ffprobeDepth(t, path); depth != tr.BitsPerSample {
+			// The width the file declares is the one both readers must agree on. The
+			// table's is the width the encode asked for, which binds only where the writer
+			// recorded it: ffmpeg 6.1 fills an ipcm track's pcmC from the encoder's sample
+			// format rather than its sample width, so a pcm_s24le encode declares 32 there
+			// and ffmpeg reads its own file back as pcm_s32le. ffmpeg 8 declares 24.
+			depth := ffprobeDepth(t, path)
+			switch {
+			case tr.BitsPerSample != depth:
 				t.Errorf("bits per sample = %d, ffprobe says %d", tr.BitsPerSample, depth)
+			case depth != c.depth:
+				t.Logf("%s declares %d bits for a %s encode, and ffprobe reads it back the same way",
+					c.file, depth, c.sample)
 			}
 		})
 	}
