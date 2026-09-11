@@ -154,7 +154,7 @@ func TestWavAiffID3FrameCapErrors(t *testing.T) {
 	tag := id3v2(3, frames...)
 	cases := map[string][]byte{
 		"wav":  wavFile(wavFmtPCM(), wavID3(tag), wavData(400)),
-		"aiff": aiffFile("AIFF", stdCOMM(), aiffSSND(400), aiffID3(tag)),
+		"aiff": aiffFile("AIFF", stdCOMM(), stdSSND(), aiffID3(tag)),
 	}
 	for name, data := range cases {
 		t.Run(name, func(t *testing.T) {

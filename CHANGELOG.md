@@ -16,8 +16,11 @@ All notable changes to this project are documented here.
   `lpcm` stream declares itself.
 - A hi-res ISOBMFF `ipcm`/`fpcm` track reports its sample rate. The 16.16 entry field holds
   nothing above 65535 and these entries carry no configuration, so the rate came out as 0.
-- AIFF-C `sowt` reads `PCM` with `PCM (little-endian)` as the profile, matching the same
-  fourcc read from a `.mov`.
+- AIFF-C reports its compression type as a `.mov` reports the same fourcc, codec and
+  `codecProfile` alike: `sowt` reads `PCM`/`sowt`, `ima4` reads `IMA ADPCM`/`ima4`, `.mp3`
+  reads `MP3`/`.mp3`, and a `ms` + WAVE-format-tag type names the codec that tag names,
+  instead of a second table of names (`AIFF-C XYZ!`, `PCM (little-endian)`) that only
+  AIFF spoke.
 - WAV and WMA name format tag 0x0050 `MP2`.
 - WMA Lossless bit depth comes from the codec extra bytes, where decoders read it, rather
   than from the `wBitsPerSample` the format treats as decoration.
@@ -26,9 +29,32 @@ All notable changes to this project are documented here.
   overflows to a negative number that passes the check. A malformed file no longer panics a
   32-bit build, and a WMA Data Object declaring an impossible length reports an unknown
   audio extent, on any platform, instead of one that ends before it starts.
+- AIFF-C `ima4` and MACE report their real length: COMM's `numSampleFrames` counts packets
+  for those types, so an `ima4` file read 64 times too short. Sample count, duration and
+  bitrate follow the packet layout, `ima4` reads 4-bit and `alaw`/`ulaw` 8-bit whatever
+  COMM says, `mac3` reads as `MAC3` the way ffmpeg reads it, and a packing the reader
+  cannot size keeps the declared count and reports no bitrate.
+- An AIFF of a layout the reader can size never reports more audio than its SSND chunk
+  holds, and says so with `truncated-audio` when COMM overstates. The count was capped by
+  the surviving bytes only for a truncated file; a well-formed file whose COMM overstates,
+  such as an `ima4` written with the spec-literal frame count, now reports the frames
+  present too, as WAV does, and the document a write returns agrees with a fresh parse of
+  the bytes it wrote.
+- A hostile AIFF COMM whose bitrate exceeds `int32` reports the saturated maximum rather
+  than an intermediate clamp divided down again.
+- The document an MP4 write returns carries the `invalid-tag-key` warnings a fresh parse of
+  the output raises for the freeform items it preserved, instead of dropping them.
+- An AIFF sample width that is not a whole number of bytes reports the bitrate of the bytes
+  actually stored, as ffprobe does: a 20-bit stream stores 3 bytes per sample, so stereo
+  44100 Hz reads 2116800 bps rather than the 1764000 the declared width implied.
 
 ### Changed
 
+- **The ASF essence extent is `asf-packets-v2`**, salting the WAVEFORMATEX fixed fields as
+  stored, the byte rate at its full width and the block align included; v1 kept 16 bits of
+  the byte rate, so two streams whose rates differed by a multiple of 65536 salted alike.
+  `verify` labels the change; stored `asf-packets-v1` digests stay labeled v1 and never
+  compare equal, so every WMA digest needs a rehash.
 - `dump` shows no bit depth for lossy WMA (v1, v2, Pro, Voice).
 
 ## [1.7.0]

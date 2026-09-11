@@ -6,8 +6,10 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/tag"
@@ -110,13 +112,52 @@ func requireTool(t *testing.T, name string) {
 	t.Skipf("%s not available", name)
 }
 
-// ffprobeAudio reports what ffprobe makes of a file's first audio stream: the played
-// sample rate, the channel count, and the profile name. It is the independent witness for
-// every rate a codec configuration declares rather than the container.
-func ffprobeAudio(t *testing.T, path string) (rate, channels int, profile string) {
+// ffmpegRequired reports whether a differential leg that cannot run here is a failure
+// rather than a skip: the CI differential job sets it, so a broken ffmpeg cannot turn the
+// gate green by skipping.
+func ffmpegRequired() bool { return os.Getenv("WAXLABEL_REQUIRE_FFMPEG") != "" }
+
+// ffmpegEncode runs ffmpeg with args and writes path, returning it. An encode ffmpeg
+// cannot do here (a codec this build lacks) skips the leg, or fails it under
+// WAXLABEL_REQUIRE_FFMPEG. t is the T of the leg, so a Fatal or Skip lands on the
+// goroutine running it.
+func ffmpegEncode(t *testing.T, path string, args ...string) string {
+	t.Helper()
+	full := append([]string{"-hide_banner", "-loglevel", "error"}, args...)
+	if out, err := exec.Command("ffmpeg", append(full, "-y", path)...).CombinedOutput(); err != nil {
+		if ffmpegRequired() {
+			t.Fatalf("ffmpeg %s: %v\n%s", filepath.Base(path), err, out)
+		}
+		t.Skipf("ffmpeg cannot encode %s here: %v\n%s", filepath.Base(path), err, out)
+	}
+	return path
+}
+
+// probeStream is what ffprobe makes of a file's first audio stream: every field the
+// differential tests compare, from one invocation. ffprobe writes most numbers as strings
+// in its JSON and leaves a field out, or writes "N/A", when the demuxer does not set it,
+// so an optional number reads as 0 when absent and Profile is empty then. SampleRate and
+// Channels are never absent for a stream ffprobe reads, so a witness missing them is an
+// error, not a 0 a comparison could pass on. TimeBase is the unit DurationTS counts in.
+type probeStream struct {
+	SampleRate    int
+	Channels      int
+	BitsPerSample int
+	BitRate       int
+	DurationTS    int64
+	Duration      time.Duration
+	Profile       string
+	TimeBase      string
+}
+
+// ffprobeStream is the independent witness for every property this library derives
+// rather than copies: a rate a codec configuration declares, a width a fourcc fixes, a
+// length a packet count implies.
+func ffprobeStream(t *testing.T, path string) probeStream {
 	t.Helper()
 	out, err := exec.Command("ffprobe", "-hide_banner", "-loglevel", "error",
-		"-select_streams", "a:0", "-show_entries", "stream=sample_rate,channels,profile",
+		"-select_streams", "a:0",
+		"-show_entries", "stream=sample_rate,channels,profile,bits_per_sample,duration_ts,duration,bit_rate,time_base",
 		"-of", "json", path).Output()
 	if err != nil {
 		// ffprobe says why on stderr - "missing mandatory atoms", an unreadable config -
@@ -128,11 +169,7 @@ func ffprobeAudio(t *testing.T, path string) (rate, channels int, profile string
 		t.Fatalf("ffprobe %s: %v", path, err)
 	}
 	var probe struct {
-		Streams []struct {
-			SampleRate string `json:"sample_rate"` // ffprobe reports it as a string
-			Channels   int    `json:"channels"`
-			Profile    string `json:"profile"`
-		} `json:"streams"`
+		Streams []map[string]any `json:"streams"`
 	}
 	if err := json.Unmarshal(out, &probe); err != nil {
 		t.Fatalf("ffprobe %s: %v\n%s", path, err, out)
@@ -140,12 +177,61 @@ func ffprobeAudio(t *testing.T, path string) (rate, channels int, profile string
 	if len(probe.Streams) == 0 {
 		t.Fatalf("ffprobe %s: no audio stream\n%s", path, out)
 	}
-	s := probe.Streams[0]
-	n, err := strconv.Atoi(s.SampleRate)
-	if err != nil {
-		t.Fatalf("ffprobe %s: sample_rate %q: %v", path, s.SampleRate, err)
+	fields := probe.Streams[0]
+	number := func(field string) float64 {
+		switch v := fields[field].(type) {
+		case nil:
+			return 0
+		case float64:
+			return v
+		case string:
+			if v == "" || v == "N/A" {
+				return 0
+			}
+			f, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				t.Fatalf("ffprobe %s: %s %q: %v", path, field, v, err)
+			}
+			return f
+		default:
+			t.Fatalf("ffprobe %s: %s is %T, want a number or string", path, field, v)
+			return 0
+		}
 	}
-	return n, s.Channels, s.Profile
+	profile, _ := fields["profile"].(string)
+	timeBase, _ := fields["time_base"].(string)
+	p := probeStream{
+		SampleRate:    int(number("sample_rate")),
+		Channels:      int(number("channels")),
+		BitsPerSample: int(number("bits_per_sample")),
+		BitRate:       int(number("bit_rate")),
+		DurationTS:    int64(number("duration_ts")),
+		Duration:      time.Duration(number("duration") * float64(time.Second)),
+		Profile:       profile,
+		TimeBase:      timeBase,
+	}
+	if p.SampleRate == 0 || p.Channels == 0 {
+		t.Fatalf("ffprobe %s: no sample rate or channel count for the audio stream\n%s", path, out)
+	}
+	return p
+}
+
+// ffmpegSine encodes one second of a 1 kHz sine at the given geometry with codecArgs
+// naming the codec (and any option it needs), the source every differential encode here
+// starts from, and returns path.
+func ffmpegSine(t *testing.T, path string, channels, rate int, codecArgs ...string) string {
+	t.Helper()
+	args := []string{"-f", "lavfi", "-i", "sine=frequency=1000:duration=1",
+		"-ac", strconv.Itoa(channels), "-ar", strconv.Itoa(rate)}
+	return ffmpegEncode(t, path, append(args, codecArgs...)...)
+}
+
+// ffprobeAudio reports the played sample rate, channel count and profile name of a
+// file's first audio stream.
+func ffprobeAudio(t *testing.T, path string) (rate, channels int, profile string) {
+	t.Helper()
+	s := ffprobeStream(t, path)
+	return s.SampleRate, s.Channels, s.Profile
 }
 
 // lookupCI looks up a key case-insensitively (ffmpeg lowercases standard Vorbis

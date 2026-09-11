@@ -38,7 +38,7 @@ func TestNativeContainerDropIsReported(t *testing.T) {
 		data     []byte
 	}{
 		{"wav", "LIST/INFO drop", wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "T"}), wavData(400))},
-		{"aiff", "native text chunk drop", aiffFile("AIFF", stdCOMM(), aiffText("NAME", "T"), aiffSSND(400))},
+		{"aiff", "native text chunk drop", aiffFile("AIFF", stdCOMM(), aiffText("NAME", "T"), stdSSND())},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ops := opsFor(t, tc.data, func(e *wl.Editor) { e.Clear(tag.Title) })
@@ -58,7 +58,7 @@ func TestUnchangedNativeContainerReportsNoRewrite(t *testing.T) {
 		data     []byte
 	}{
 		{"wav", "LIST/INFO rewrite", wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "T"}), wavData(400))},
-		{"aiff", "native text chunk rewrite", aiffFile("AIFF", stdCOMM(), aiffText("NAME", "T"), aiffSSND(400))},
+		{"aiff", "native text chunk rewrite", aiffFile("AIFF", stdCOMM(), aiffText("NAME", "T"), stdSSND())},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if ops := opsFor(t, tc.data, addCover); slices.Contains(ops, tc.op) {
@@ -88,9 +88,9 @@ func TestContainerRewriteReportedWhenOnlyTheBytesMove(t *testing.T) {
 		data          []byte
 	}{
 		{"aiff-post-nul-bytes", "native text chunk rewrite", "the rewrite drops what follows the terminator",
-			aiffFile("AIFF", stdCOMM(), aiffChunk("NAME", []byte("T\x00junk")), aiffSSND(400))},
+			aiffFile("AIFF", stdCOMM(), aiffChunk("NAME", []byte("T\x00junk")), stdSSND())},
 		{"aiff-split-group", "native text chunk rewrite", "regrouping moves the chunks between them",
-			aiffFile("AIFF", stdCOMM(), aiffText("NAME", "T"), aiffChunk("APPL", []byte("xx")), aiffText("ANNO", "c"), aiffSSND(400))},
+			aiffFile("AIFF", stdCOMM(), aiffText("NAME", "T"), aiffChunk("APPL", []byte("xx")), aiffText("ANNO", "c"), stdSSND())},
 		{"wav-unreadable-tail", "LIST/INFO rewrite", "the rewrite renders from the items alone",
 			wavFile(wavFmtPCM(), infoTail, wavData(400))},
 	} {

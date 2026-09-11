@@ -103,9 +103,9 @@ func truncatedSSNDOffset(declaredBody int, offset uint32, presentBody int) []byt
 }
 
 // TestAIFFTruncatedDurationRecomputed pins that a truncated PCM AIFF reports the
-// duration its surviving SSND bytes decode to (like WAV), while a truncated
-// compressed AIFF-C keeps COMM's declared frame count (its bytes do not map linearly
-// to frames). Both still flag truncated-audio.
+// duration its surviving SSND bytes decode to (like WAV), a truncated ima4 the
+// surviving packets' frames, and a type with no known packet layout COMM's declared
+// count, its bytes being unmappable. All still flag truncated-audio.
 func TestAIFFTruncatedDurationRecomputed(t *testing.T) {
 	t.Parallel()
 	const (
@@ -117,11 +117,8 @@ func TestAIFFTruncatedDurationRecomputed(t *testing.T) {
 	)
 	declaredBody := 8 + declaredFrames*frameSize
 	presentBody := 8 + presentFrames*frameSize
-	dur := func(frames int) time.Duration {
-		return time.Duration(float64(frames) / float64(rate) * float64(time.Second))
-	}
-	const tol = 2 * time.Millisecond
-	near := func(got, want time.Duration) bool { d := got - want; return d < tol && d > -tol }
+	dur := func(frames int) time.Duration { return sampleDuration(uint64(frames), int(rate)) }
+	near := func(got, want time.Duration) bool { return withinDuration(got, want, 2*time.Millisecond) }
 
 	// Full reference: every declared frame is present, no truncation.
 	full := mustParseBytes(t, aiffFile("AIFF",
@@ -145,16 +142,32 @@ func TestAIFFTruncatedDurationRecomputed(t *testing.T) {
 		t.Errorf("truncated PCM duration = %v, want ~%v (recomputed from present bytes)", got, dur(presentFrames))
 	}
 
-	// Truncated compressed AIFF-C (ima4): COMM's declared count is kept, since the
-	// bytes are not a constant size per frame.
+	// Truncated ima4: COMM counts packets of 64 frames in 34 bytes per channel, so the
+	// surviving packets set the duration, exactly as the surviving PCM frames do.
+	const packetBytes = 34 * channels
 	aifc := mustParseBytes(t, aiffFile("AIFC",
 		aiffCOMMC(channels, declaredFrames, sampleSize, rate, "ima4"),
-		truncatedSSND(declaredBody, presentBody)))
+		truncatedSSND(8+declaredFrames*packetBytes, 8+presentFrames*packetBytes)))
 	if !hasWarning(aifc, wl.WarnTruncatedAudio) {
 		t.Error("a truncated AIFF-C should still flag truncated-audio")
 	}
-	if got := aifc.Properties().Duration(); !near(got, dur(declaredFrames)) {
-		t.Errorf("truncated AIFF-C duration = %v, want ~%v (declared frames kept)", got, dur(declaredFrames))
+	if got := aifc.Properties().Duration(); !near(got, dur(presentFrames*64)) {
+		t.Errorf("truncated ima4 duration = %v, want ~%v (surviving packets)", got, dur(presentFrames*64))
+	}
+	if got := aifc.Properties().First().TotalSamples; got != presentFrames*64 {
+		t.Errorf("truncated ima4 total samples = %d, want %d", got, presentFrames*64)
+	}
+
+	// A type with no known packet layout keeps its declared count: its bytes cannot be
+	// mapped to frames.
+	unknown := mustParseBytes(t, aiffFile("AIFC",
+		aiffCOMMC(channels, declaredFrames, sampleSize, rate, "QDM2"),
+		truncatedSSND(declaredBody, presentBody)))
+	if !hasWarning(unknown, wl.WarnTruncatedAudio) {
+		t.Error("a truncated AIFF-C of unknown layout should still flag truncated-audio: it is the only signal")
+	}
+	if got := unknown.Properties().Duration(); !near(got, dur(declaredFrames)) {
+		t.Errorf("truncated unknown-type duration = %v, want ~%v (declared count kept)", got, dur(declaredFrames))
 	}
 
 	// SSND body truncated to fewer than the 8-byte sub-header: no sample bytes survive,

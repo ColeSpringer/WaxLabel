@@ -300,23 +300,13 @@ func TestMP4DifferentialFFmpegHiResAAC(t *testing.T) {
 	t.Parallel()
 	requireTool(t, "ffmpeg")
 	requireTool(t, "ffprobe")
-	required := os.Getenv("WAXLABEL_REQUIRE_FFMPEG") != ""
 	dir := t.TempDir()
 
 	// t is a parameter, not a capture: each leg encodes inside its own subtest, so a
 	// Fatal or Skip must land on the T of the goroutine running it.
 	encode := func(t *testing.T, name string) string {
 		t.Helper()
-		path := filepath.Join(dir, name)
-		args := []string{"-hide_banner", "-loglevel", "error", "-f", "lavfi",
-			"-i", "sine=frequency=1000:duration=1", "-ac", "2", "-ar", "96000", "-c:a", "aac", "-y", path}
-		if out, err := exec.Command("ffmpeg", args...).CombinedOutput(); err != nil {
-			if required {
-				t.Fatalf("ffmpeg %s: %v\n%s", name, err, out)
-			}
-			t.Skipf("ffmpeg cannot encode %s here: %v\n%s", name, err, out)
-		}
-		return path
+		return ffmpegSine(t, filepath.Join(dir, name), 2, 96000, "-c:a", "aac")
 	}
 	for _, name := range []string{"hires.m4a", "hires.mov"} {
 		t.Run(name, func(t *testing.T) {

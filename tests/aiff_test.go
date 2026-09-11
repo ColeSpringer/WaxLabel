@@ -107,9 +107,9 @@ func TestAIFFParseAIFC(t *testing.T) {
 		t.Errorf("AIFF-C 80-bit rate decoded to %d, want 44100", tr.SampleRate)
 	}
 	// sowt is little-endian PCM, a storage detail of one codec; the same fourcc reaches
-	// this reader from a .mov too, so the byte order is the profile and not the name.
-	if tr.Codec != "PCM" || tr.CodecProfile != "PCM (little-endian)" {
-		t.Errorf("codec = %q / profile %q, want PCM / PCM (little-endian) for sowt", tr.Codec, tr.CodecProfile)
+	// this reader from a .mov too, so the fourcc is the profile and not the name.
+	if tr.Codec != "PCM" || tr.CodecProfile != "sowt" {
+		t.Errorf("codec = %q / profile %q, want PCM / sowt", tr.Codec, tr.CodecProfile)
 	}
 	// An edit must preserve the AIFC form type and the FVER chunk.
 	src := readFixture(t, sampleAIFC)
@@ -312,8 +312,8 @@ func TestAIFFVerifyEssenceOnWrite(t *testing.T) {
 // precede the first sample frame and are not hashed as audio. Files with identical
 // sample frames but different offsets should hash the same.
 func TestAIFFSSNDOffsetExcludedFromEssence(t *testing.T) {
-	samples := bytes.Repeat([]byte{0xA7}, 400)
-	align := []byte{0xFF, 0xFF, 0xFF, 0xFF} // distinct so a leak would change the digest
+	samples := bytes.Repeat([]byte{0xA7}, 1000*4) // every frame stdCOMM declares
+	align := []byte{0xFF, 0xFF, 0xFF, 0xFF}       // distinct so a leak would change the digest
 
 	off0 := aiffFile("AIFF", stdCOMM(), aiffSSNDOffset(0, nil, samples))
 	off4 := aiffFile("AIFF", stdCOMM(), aiffSSNDOffset(4, align, samples))
@@ -336,8 +336,8 @@ func TestAIFFSSNDOffsetExcludedFromEssence(t *testing.T) {
 // a non-zero SSND offset returns a result document whose essence range matches a fresh
 // parse of the written output.
 func TestAIFFSSNDOffsetResultMatchesReparse(t *testing.T) {
-	samples := bytes.Repeat([]byte{0xA7}, 400)
-	align := []byte{0xFF, 0xFF, 0xFF, 0xFF} // distinct: a leak would change the digest
+	samples := bytes.Repeat([]byte{0xA7}, 1000*4) // every frame stdCOMM declares
+	align := []byte{0xFF, 0xFF, 0xFF, 0xFF}       // distinct: a leak would change the digest
 	data := aiffFile("AIFF", aiffText("NAME", "Old"), stdCOMM(), aiffSSNDOffset(4, align, samples))
 
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "New").Prepare()

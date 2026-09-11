@@ -90,7 +90,7 @@ func TestID3v23OriginalDateReduced(t *testing.T) {
 	}{
 		{"mp3", append(id3v2(3, textFrame(3, "TIT2", "T")), mp3Audio(t)...)},
 		{"aac", append(id3v2(3, textFrame(3, "TIT2", "T")), adtsStream(2, 20, 200)...)},
-		{"aiff", aiffFile("AIFF", stdCOMM(), aiffSSND(400), aiffID3(id3v2(3, textFrame(3, "TIT2", "T"))))},
+		{"aiff", aiffFile("AIFF", stdCOMM(), stdSSND(), aiffID3(id3v2(3, textFrame(3, "TIT2", "T"))))},
 		{"wav", wavFile(wavFmtPCM(), wavID3(id3v2(3, textFrame(3, "TIT2", "T"))), wavData(400))},
 	}
 	for _, c := range cases {
@@ -182,7 +182,7 @@ func TestID3v23DroppedDateWarns(t *testing.T) {
 	}{
 		{"mp3", append(id3v2(3, textFrame(3, "TYER", "2021")), mp3Audio(t)...)},
 		{"aac", append(id3v2(3, textFrame(3, "TYER", "2021")), adtsStream(2, 20, 200)...)},
-		{"aiff", aiffFile("AIFF", stdCOMM(), aiffSSND(400), aiffID3(id3v2(3, textFrame(3, "TYER", "2021"))))},
+		{"aiff", aiffFile("AIFF", stdCOMM(), stdSSND(), aiffID3(id3v2(3, textFrame(3, "TYER", "2021"))))},
 		{"wav", wavFile(wavFmtPCM(), wavID3(id3v2(3, textFrame(3, "TYER", "2021"))), wavData(400))},
 	}
 	for _, c := range cases {

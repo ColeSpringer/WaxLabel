@@ -3,13 +3,17 @@ package waxlabel_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
+	"path/filepath"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
 
 	wl "github.com/colespringer/waxlabel"
 	"github.com/colespringer/waxlabel/tag"
+	"github.com/colespringer/waxlabel/waxerr"
 )
 
 // TestRoundTripInvariant is the direct encoding of WaxLabel's core promise - "the plan reports
@@ -66,6 +70,15 @@ func TestRoundTripInvariant(t *testing.T) {
 			func(e *wl.Editor) { e.Set(tag.Title, "RoundTrip Title ZZ9") }},
 		{"musepack editor-written chapters + tag edit", read(chaptersMPC),
 			func(e *wl.Editor) { e.Set(tag.Title, "RoundTrip Title ZZ9") }},
+		// A truncated source: its count is the surviving bytes', and the write resolves the
+		// truncation by declaring what it wrote, so the re-parse sees a well-formed file
+		// whose COMM overstates. The result document must read the same as that file.
+		{"aiff truncated PCM + tag edit",
+			aiffFile("AIFF", stdCOMM(), truncatedSSND(8+1000*4, 8+100*4)),
+			func(e *wl.Editor) { e.Set(tag.Title, "RoundTrip Title ZZ9") }},
+		{"aiff truncated ima4 + tag edit",
+			aiffFile("AIFC", aiffCOMMC(2, 1000, 16, 44100, "ima4"), truncatedSSND(8+1000*68, 8+100*68)),
+			func(e *wl.Editor) { e.Set(tag.Title, "RoundTrip Title ZZ9") }},
 	}
 
 	for _, c := range cases {
@@ -94,11 +107,16 @@ func TestRoundTripInvariant(t *testing.T) {
 }
 
 // assertSameProjection fails if the plan's result document disagrees with a fresh re-parse of
-// the written bytes on any projected surface.
+// the written bytes on any projected surface, the audio properties included: a write
+// copies the audio, but the count a reader derives from it can depend on the container
+// state the write changes, as a truncated AIFF's once did.
 func assertSameProjection(t *testing.T, want, got *wl.Document) {
 	t.Helper()
 	if diff := tag.Diff(want.Tags(), got.Tags()); len(diff) != 0 {
 		t.Errorf("tags: result doc and re-parse disagree: %v", diff)
+	}
+	if a, b := want.Properties(), got.Properties(); !reflect.DeepEqual(a, b) {
+		t.Errorf("properties: result doc and re-parse disagree:\n  result=%+v\n  reparse=%+v", a, b)
 	}
 	if a, b := rtWarnKeys(want.Warnings()), rtWarnKeys(got.Warnings()); !slices.Equal(a, b) {
 		t.Errorf("warnings: result doc and re-parse disagree:\n  result=%v\n  reparse=%v", a, b)
@@ -163,4 +181,48 @@ func rtPicturesEqual(a, b []wl.Picture) bool {
 		}
 	}
 	return true
+}
+
+// TestRoundTripInvariantFixtures runs the same result-equals-re-parse check over every
+// fixture in testdata, and requires that sweep to have exercised every writable format,
+// so a format the adversarial table above does not reach is still held to the promise.
+func TestRoundTripInvariantFixtures(t *testing.T) {
+	paths, err := filepath.Glob("../testdata/*")
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("glob testdata: %v (%d files)", err, len(paths))
+	}
+	covered := map[wl.Format]bool{}
+	for _, path := range paths {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			doc := mustParseBytes(t, src)
+			if !doc.Format().Writable() {
+				t.Skip("read-only format")
+			}
+			covered[doc.Format()] = true
+			plan, err := doc.Edit().Set(tag.Title, "RoundTrip Title ZZ9").Prepare()
+			if err != nil {
+				// A header-only fixture has no audio essence, which Editor.Prepare refuses
+				// to write metadata to by design; there is no output to hold to the promise.
+				if errors.Is(err, waxerr.ErrInvalidData) && hasWarning(doc, wl.WarnNoAudioFrames) {
+					t.Skip("no audio essence: the editor refuses the write")
+				}
+				t.Fatalf("prepare: %v", err)
+			}
+			var w writerTo
+			result, _, err := plan.Execute(context.Background(), wl.WriteTo(&w, wl.BytesSource(src)))
+			if err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			assertSameProjection(t, result, mustParseBytes(t, w.b))
+		})
+	}
+	for f := wl.Format(1); f.Implemented(); f++ {
+		if f.Writable() && !covered[f] {
+			t.Errorf("no fixture in testdata exercises %s, a writable format", f)
+		}
+	}
 }

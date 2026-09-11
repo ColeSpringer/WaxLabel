@@ -22,7 +22,6 @@ package asf
 
 import (
 	"context"
-	"encoding/binary"
 
 	"github.com/colespringer/waxlabel/internal/core"
 )
@@ -92,19 +91,23 @@ func (Codec) Capabilities(_ *core.Media, _ core.WriteOptions) core.Capabilities 
 	return caps.WithReadOnlyReason(refuseWrite())
 }
 
-// EssenceExtent returns the ASF essence-digest inputs: a versioned extent name and
-// the decoder-critical stream configuration from the WAVEFORMATEX. The salt carries the
-// structure's own fields, wBitsPerSample included, not the WMA Lossless depth the codec
-// extra bytes correct it to: a stored digest must not move because the reader learned to
-// read one more field.
+// extentASF is the versioned essence-extent name. v2 salts the digest with the WAVEFORMATEX
+// as stored; v1 packed the fields one by one, narrowed the byte rate to 16 bits, so two
+// streams whose rates differed by a multiple of 65536 salted alike, and left the block
+// align out. A v1 digest never compares equal to a v2 one.
+const extentASF = "asf-packets-v2"
+
+// EssenceExtent returns the ASF essence-digest inputs: the versioned extent name and the
+// decoder-critical stream configuration, the first 16 bytes of the WAVEFORMATEX exactly
+// as the file stores them (format tag, channels, sample rate, byte rate, block align,
+// wBitsPerSample). The fixed field stands for the depth, not the WMA Lossless value the
+// codec extra bytes correct it to: the salt describes the stored structure, and the extra
+// bytes follow from the same encoder settings that shape the packets. A file with no audio
+// stream salts with zeros.
 func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
-	var b [12]byte
+	var w [16]byte
 	if d, ok := m.Native.(*doc); ok && d != nil {
-		binary.BigEndian.PutUint16(b[0:2], d.formatTag)
-		binary.BigEndian.PutUint16(b[2:4], uint16(d.channels))
-		binary.BigEndian.PutUint32(b[4:8], uint32(d.sampleRate))
-		binary.BigEndian.PutUint16(b[8:10], uint16(d.bitsPerSample))
-		binary.BigEndian.PutUint16(b[10:12], uint16(d.byteRate))
+		w = d.waveFormat
 	}
-	return "asf-packets-v1", b[:]
+	return extentASF, w[:]
 }

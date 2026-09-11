@@ -487,8 +487,8 @@ func TestWMALosslessDepthFromExtraBytes(t *testing.T) {
 
 // TestWMALosslessFixtureDepth reads a real Windows Media Lossless encode, then patches its
 // wBitsPerSample to disagree with the codec extra bytes. The extra bytes must still win:
-// that fixed field is what a decoder ignores. The digest extent is pinned because the salt
-// deliberately keeps the fixed field, so no stored digest moves.
+// that fixed field is what a decoder ignores. The digest is pinned: the salt is the
+// structure as stored, wBitsPerSample included, so the extra bytes never move it.
 func TestWMALosslessFixtureDepth(t *testing.T) {
 	src := readFixture(t, lossless24WMA)
 	doc := mustParseBytes(t, src)
@@ -503,8 +503,8 @@ func TestWMALosslessFixtureDepth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if digest.ExtentVersion != "asf-packets-v1" {
-		t.Errorf("extent = %q, want asf-packets-v1", digest.ExtentVersion)
+	if got := digest.String(); got != "sha256/asf-packets-v2:721bca220d3e17ae942a472ef6f45ac8347a1aaa54f4906a31bbd311a170fa90" {
+		t.Errorf("digest = %s, want the v2 digest of the unchanged fixture", got)
 	}
 
 	// The WAVEFORMATEX, found by its tag, channel count and sample rate - a byte pattern
@@ -518,6 +518,21 @@ func TestWMALosslessFixtureDepth(t *testing.T) {
 	binary.LittleEndian.PutUint16(patched[i+14:i+16], 16)
 	if got := mustParseBytes(t, patched).Properties().First().BitsPerSample; got != 24 {
 		t.Errorf("with wBitsPerSample patched to 16, bits per sample = %d, want 24", got)
+	}
+
+	// The two halves of "the structure as stored": the fixed field is salted, so patching
+	// it moves the digest, and the codec extra bytes the depth actually comes from are
+	// not, so patching those leaves it where it was.
+	if essenceOf(t, patched).Equal(digest) {
+		t.Error("patching wBitsPerSample left the digest unchanged: the salt dropped the stored field")
+	}
+	extra := slices.Clone(src)
+	binary.LittleEndian.PutUint16(extra[i+18:i+20], 16) // the Lossless depth, behind cbSize
+	if got := mustParseBytes(t, extra).Properties().First().BitsPerSample; got != 16 {
+		t.Fatalf("patched extra bytes gave depth %d, want 16: the offset is not the depth word", got)
+	}
+	if !essenceOf(t, extra).Equal(digest) {
+		t.Error("patching the codec extra bytes moved the digest: they leaked into the salt")
 	}
 }
 
@@ -627,5 +642,39 @@ func TestWMATruncatedHeaderRejected(t *testing.T) {
 	_, err := wl.Parse(context.Background(), wl.BytesSource(append(g, 0, 0, 0)))
 	if !errors.Is(err, waxerr.ErrInvalidData) {
 		t.Errorf("err = %v, want ErrInvalidData", err)
+	}
+}
+
+// TestWMADigestSaltCarriesByteRateAndBlockAlign: the asf-packets-v2 salt is the
+// WAVEFORMATEX as stored, so two streams over identical packets whose byte rates differ by
+// exactly 65536, which the v1 salt's 16-bit field could not tell apart, or whose block
+// aligns differ, which v1 never hashed, get different digests, while identical structures
+// agree.
+func TestWMADigestSaltCarriesByteRateAndBlockAlign(t *testing.T) {
+	t.Parallel()
+	packets := asfDataObject(bytes.Repeat([]byte{0xA5}, 128))
+	// The builder derives the byte rate and block align from PCM geometry, which Lossless
+	// does not follow, so both are set outright.
+	wave := func(byteRate uint32, blockAlign uint16) []byte {
+		w := asfWaveFormatEx(0x0163, 2, 44100, 24, asfLosslessExtra(24))
+		binary.LittleEndian.PutUint32(w[8:12], byteRate)
+		binary.LittleEndian.PutUint16(w[12:14], blockAlign)
+		return w
+	}
+	digest := func(byteRate uint32, blockAlign uint16) wl.AudioDigest {
+		return essenceOf(t, asfFileWithData(packets, asfStreamPropertiesRaw(wave(byteRate, blockAlign))))
+	}
+	ref := digest(144000, 13375)
+	if ref.ExtentVersion != "asf-packets-v2" {
+		t.Fatalf("extent = %q, want asf-packets-v2", ref.ExtentVersion)
+	}
+	if !ref.Equal(digest(144000, 13375)) {
+		t.Error("identical structures over identical packets must hash alike")
+	}
+	if ref.Equal(digest(144000+65536, 13375)) {
+		t.Error("byte rates 65536 apart hashed alike: the salt narrowed the field to 16 bits")
+	}
+	if ref.Equal(digest(144000, 13376)) {
+		t.Error("block aligns one apart hashed alike: the salt left the field out")
 	}
 }

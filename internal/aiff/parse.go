@@ -160,7 +160,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	// ssndAlign is the SSND "offset" field: block-alignment bytes that precede the
 	// first sample frame (almost always 0). soundDataStart advances past the 8-byte
 	// sub-header; adding ssndAlign below skips the declared alignment bytes as well,
-	// keeping them out of the essence digest and truncated-frame recompute. The clamp
+	// keeping them out of the essence digest and the packet count. The clamp
 	// treats a corrupt oversized offset as an empty sample range instead of leaving
 	// AudioStart greater than AudioEnd.
 	var ssndAlign int64
@@ -190,26 +190,18 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	// arbitrary. Not truncation, but the reader loses whatever followed.
 	warnings = core.WarnUnknownSize(warnings, d.unknownSizeChunks)
 
-	// For a truncated SSND of a constant-frame-size encoding, report the duration the
-	// surviving sample bytes actually decode to (matching WAV), rather than COMM's
-	// now-overstated numFrames - which would imply audio the file does not hold. The
-	// sample bytes are what survives past SSND's 8-byte offset/blockSize sub-header and
-	// its declared `offset` alignment bytes (bodyLen is already EOF-clamped in
-	// walkChunks); the max(0, ...) covers a body too short to even hold the sub-header
-	// or whose alignment offset exceeds the surviving bytes - both mean zero frames.
-	// A compressed AIFF-C (ima4/alaw/ulaw) keeps its declared count: its bytes do not
-	// map linearly to frames. COMM is left untouched, so only the reported track
-	// duration changes; the truncated-audio warning fires regardless of this.
-	frames := d.comm.numFrames
-	if d.ssndTruncated && d.comm.constantFrameSize() {
-		if fs := d.comm.frameSize(); fs > 0 {
-			audioBytes := max(int64(0), d.chunks[d.ssndIdx].bodyLen-ssndHeaderLen-ssndAlign)
-			if present := audioBytes / fs; uint64(present) < uint64(frames) {
-				frames = uint32(present)
-			}
-		}
+	// The audio bytes are what survives past SSND's 8-byte sub-header and the declared
+	// alignment bytes (bodyLen is already EOF-clamped in walkChunks); max(0, ...) covers a
+	// body shorter than either, and no SSND at all is no audio. buildTrack caps the
+	// declared count by them, so a truncated file and one whose COMM merely overstates
+	// both report the frames present. The second case gets its own truncated-audio
+	// warning, since nothing else says the two chunks disagree; the first already has
+	// the SSND one.
+	audioBytes := ssndAudioBytes(d.chunks, d.ssndIdx, ssndAlign)
+	d.track = buildTrack(d.comm, audioBytes)
+	if !d.ssndTruncated && d.comm.overstates(audioBytes) {
+		warnings = core.Warn(warnings, core.WarnTruncatedAudio, overstatedMessage)
 	}
-	d.track = buildTrack(d.comm, frames)
 
 	media := &core.Media{
 		Format:     core.FormatAIFF,
@@ -324,6 +316,16 @@ func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, formEnd, li
 	d.trailingID3v1 = res.TrailingIsID3v1
 	d.outerOff, d.outerLen = res.OuterOff, res.OuterLen
 	return distrusted, nil
+}
+
+// ssndAudioBytes is the count of SSND sample bytes a chunk list holds: the body past the
+// 8-byte sub-header and the declared alignment bytes, never negative, and 0 with no SSND.
+// Parse and the post-write document derive the track from it the same way.
+func ssndAudioBytes(chunks []chunk, ssndIdx int, ssndAlign int64) int64 {
+	if ssndIdx < 0 {
+		return 0
+	}
+	return max(int64(0), chunks[ssndIdx].bodyLen-ssndHeaderLen-ssndAlign)
 }
 
 // soundDataStart returns the offset of the first sample frame within an SSND

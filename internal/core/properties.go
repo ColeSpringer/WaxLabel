@@ -150,11 +150,11 @@ func canonicalCodecName(raw string) string {
 		return "MP2"
 	case "MPEG-1 LAYER 1", "MPEG-2 LAYER 1", "MPEG-2.5 LAYER 1", ".MP1":
 		return "MP1"
-	// The QuickTime/ISOBMFF PCM-family fourccs, beside AIFF-C's own spelling of one of
-	// them. Byte order, signedness and width are storage detail of a single codec rather
-	// than different codecs, so each reads "PCM" with the raw spelling kept as the
-	// profile. "RAW " carries a significant trailing space.
-	case "LPCM", "IPCM", "SOWT", "TWOS", "IN24", "IN32", "RAW ", "NONE", "PCM (LITTLE-ENDIAN)":
+	// The QuickTime/ISOBMFF PCM-family fourccs, which AIFF-C spells the same way. Byte
+	// order, signedness and width are storage detail of a single codec rather than
+	// different codecs, so each reads "PCM" with the raw spelling kept as the profile.
+	// "RAW " carries a significant trailing space.
+	case "LPCM", "IPCM", "SOWT", "TWOS", "IN24", "IN32", "RAW ", "NONE":
 		return "PCM"
 	case "FL32", "FPCM":
 		return "IEEE float"
@@ -166,6 +166,13 @@ func canonicalCodecName(raw string) string {
 		return "A-law"
 	case "IMA4":
 		return "IMA ADPCM"
+	// MACE has no descriptive name here, so its fourcc is the name; folding it to Apple's
+	// spelling keeps one codec reading as one, since ffmpeg's AIFF demuxer accepts "mac3"
+	// as MACE 3:1 too and [FourccSampleLayout] sizes it so.
+	case "MAC3":
+		return "MAC3"
+	case "MAC6":
+		return "MAC6"
 	case "HE-AAC", "HE-AAC V2", "XHE-AAC":
 		// The SBR/PS spellings an MP4 esds AudioSpecificConfig yields: still AAC, with the
 		// extension named in the profile.
@@ -243,4 +250,79 @@ func WaveFormatCodec(format uint16) string {
 		return "PCM (extensible)"
 	}
 	return fmt.Sprintf("WAVE format 0x%04X", format)
+}
+
+// SampleLayout is how a fixed-layout audio fourcc stores its samples. Depth is the width
+// the fourcc itself fixes, 0 when a container field carries it (a sample entry's
+// samplesize, a pcmC box, COMM's sampleSize). FramesPerPacket and PacketBytes describe a
+// packetized type: the frames one packet decodes to and the bytes it occupies per channel.
+// A byte-linear type has one frame per packet and no PacketBytes: each frame is the width
+// rounded up to whole bytes, per channel.
+type SampleLayout struct {
+	Depth           int
+	FramesPerPacket int
+	PacketBytes     int
+}
+
+// FourccSampleLayout reports the layout of a QuickTime/ISOBMFF sample-entry fourcc, or the
+// AIFF-C compression type that spells the same codec, and whether the fourcc fixes a layout
+// at all: the uncompressed and companded forms, and QuickTime's fixed-packet ima4 and MACE.
+// The MP4 and AIFF-C readers both key off this one table so a fourcc reports one width
+// whichever container carried it: a v1 sample entry stores 16 whatever the real width, and
+// an ima4 COMM says 16 from QuickTime and 4 from ffmpeg. Three rules read it, and a fourcc
+// added here turns all three on: the width, wherever Depth is set; MP4's fallback to the
+// media timescale when one of these entries leaves its 16.16 rate field zero, on membership
+// alone, since none of them carries a configuration declaring a rate; and AIFF-C's sample
+// count and nominal bitrate, from FramesPerPacket and PacketBytes, so a packetized entry
+// like IMA4 sits in the table with its geometry rather than as a special case somewhere
+// else. A QuickTime "ms" + WAVE-format-tag spelling of PCM, IEEE float, A-law or mu-law is
+// the byte-linear form that tag names. Matched case-insensitively, as [CanonicalCodec]
+// matches the same fourccs and ffmpeg's demuxers accept them.
+func FourccSampleLayout(fourcc string) (SampleLayout, bool) {
+	linear := func(depth int) (SampleLayout, bool) {
+		return SampleLayout{Depth: depth, FramesPerPacket: 1}, true
+	}
+	switch strings.ToUpper(fourcc) {
+	case "IN24":
+		return linear(24)
+	case "IN32", "FL32":
+		return linear(32)
+	case "FL64":
+		return linear(64)
+	case "ULAW", "ALAW":
+		return linear(8)
+	case "LPCM", "IPCM", "FPCM", "SOWT", "TWOS", "RAW ", "NONE":
+		return linear(0)
+	// The QuickTime sound-description constants, the ones ffmpeg's AIFF demuxer applies.
+	case "IMA4":
+		return SampleLayout{Depth: 4, FramesPerPacket: 64, PacketBytes: 34}, true
+	case "MAC3":
+		return SampleLayout{FramesPerPacket: 6, PacketBytes: 2}, true
+	case "MAC6":
+		return SampleLayout{FramesPerPacket: 6, PacketBytes: 1}, true
+	}
+	if tag, ok := QuickTimeWaveFormatTag(fourcc); ok {
+		switch tag {
+		case 0x0001, 0x0003:
+			return linear(0)
+		case 0x0006, 0x0007:
+			return linear(8)
+		}
+	}
+	return SampleLayout{}, false
+}
+
+// QuickTimeWaveFormatTag reports the WAVE format tag a QuickTime "ms" + tag fourcc spells,
+// big-endian in its last two bytes, and whether the fourcc has that shape. QTFF defines the
+// spelling for Windows codecs in a sound description, and ffmpeg's mov demuxer reads any
+// "ms"-prefixed fourcc outside its own table this way; no registered QuickTime sound
+// fourcc starts with "ms", and no byte-shape guard could tell a tag from an ordinary
+// fourcc, since registered tags include printable pairs (0x674F, Vorbis). The MP4 and
+// AIFF-C readers both name the codec through [WaveFormatCodec] from this one rule, so a
+// tag reads the same as it does from a WAV "fmt " chunk or an ASF stream.
+func QuickTimeWaveFormatTag(fourcc string) (uint16, bool) {
+	if len(fourcc) != 4 || !strings.HasPrefix(fourcc, "ms") {
+		return 0, false
+	}
+	return uint16(fourcc[2])<<8 | uint16(fourcc[3]), true
 }

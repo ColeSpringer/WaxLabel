@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -117,6 +118,7 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte("FORM\x00\x00\x00\x14AIFFSSND\x00\x00\x00\x08\x00\x00\x00\x00\x00\x00\x00\x00"))                                         // SSND-only, header but no frames
 	f.Add([]byte("FORM\x00\x00\x00\x1eAIFCCOMM\x00\x00\x00\x12\x00\x02\x00\x00\x00\x01\x00\x10\x7f\xff\x80\x00\x00\x00\x00\x00\x00\x00")) // AIFF-C 18-byte COMM, 0x7FFF-exponent Inf/NaN rate decoded
 	f.Add([]byte("FORM\x00\x00\x00\x0eAIFFANNO\x00\x00\x00\x06hello\x00"))                                                                // lone ANNO comment chunk
+	f.Add(aiffFile("AIFC", aiffCOMMCFrames(1, math.MaxUint32, 4, 44100, "ima4"), aiffSSND(68)))                                           // ima4 declaring 2^32-1 packets of 64 frames
 	f.Add([]byte{0xFF, 0xF1, 0x50, 0x40, 0x01, 0x00, 0xFC})                                                                               // valid ADTS header, frame_length 8 but only 7 bytes present (short payload)
 	f.Add([]byte{0xFF, 0xF1, 0x50, 0x00, 0x00, 0x00, 0x00})                                                                               // ADTS sync but frame_length 0 (below header)
 	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x00"), 0xFF, 0xF1, 0x50, 0x40, 0x01, 0x5F, 0xFC))                                    // empty front ID3 then a bare ADTS frame

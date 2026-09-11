@@ -98,9 +98,11 @@ func buildResult(edited *core.Media, base *doc, newItems []item, lay layout, del
 		Pictures:   pics,
 		Chapters:   nd.chapters,
 		Families:   families,
-		Warnings:   chapterWarnings(mediaWarnings(tags, numericGenre), base.chapterConflict),
-		Native:     nd,
-		Identity:   core.Identity{Size: total},
+		// The freeform items the canonical vocabulary cannot name are preserved verbatim,
+		// so the warning Parse raises for them still holds for the bytes written.
+		Warnings: append(chapterWarnings(mediaWarnings(tags, numericGenre), base.chapterConflict), invalidKeyWarnings(nd)...),
+		Native:   nd,
+		Identity: core.Identity{Size: total},
 	}
 	setEssence(nd, out)
 	return out

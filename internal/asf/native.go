@@ -52,9 +52,14 @@ type doc struct {
 	bitsPerSample int
 	// losslessDepth is the depth the WMA Lossless codec extra bytes declare, 0 when the
 	// stream is not Lossless or the bytes were absent or unreadable. It shadows
-	// bitsPerSample on the reported track only: the essence-digest salt keeps the fixed
-	// field, so no stored digest moves.
+	// bitsPerSample on the reported track only; the digest salt is the structure as
+	// stored, so the extra bytes never enter it.
 	losslessDepth int
+	// waveFormat is the first 16 bytes of the stream's WAVEFORMATEX as stored: format tag,
+	// channels, sample rate, byte rate, block align and wBitsPerSample. It is the
+	// essence-digest salt, kept as bytes so the digest hashes what the file says and no
+	// field is narrowed on the way in.
+	waveFormat [16]byte
 	// invalidKeys names the descriptors the canonical vocabulary cannot represent, so a
 	// value the native view preserves but the tag set never receives is reported rather than
 	// silently absent - which for a read-only source is the difference between a copy that

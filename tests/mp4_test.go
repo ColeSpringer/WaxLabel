@@ -502,36 +502,27 @@ func TestMP4DurationIsEditListTrimmed(t *testing.T) {
 // the codec configuration's geometry. The FLAC leg proves the dfLa STREAMINFO path.
 func TestMP4DifferentialFFmpegHiResALAC(t *testing.T) {
 	requireTool(t, "ffmpeg")
-	required := os.Getenv("WAXLABEL_REQUIRE_FFMPEG") != ""
 	dir := t.TempDir()
 
-	// t is a parameter, not a capture: the FLAC leg encodes inside its own subtest, and a
-	// Fatal/Skip must land on the T of the goroutine running it.
+	// Each leg encodes inside its own subtest, so a skip for a codec this ffmpeg cannot
+	// write lands on the leg rather than on the whole table.
 	encode := func(t *testing.T, name string, codecArgs ...string) string {
 		t.Helper()
-		path := filepath.Join(dir, name)
-		args := append([]string{"-hide_banner", "-loglevel", "error", "-f", "lavfi",
-			"-i", "sine=frequency=1000:duration=1", "-ac", "2", "-ar", "96000"}, codecArgs...)
-		if out, err := exec.Command("ffmpeg", append(args, "-y", path)...).CombinedOutput(); err != nil {
-			if required {
-				t.Fatalf("ffmpeg %s: %v\n%s", name, err, out)
-			}
-			t.Skipf("ffmpeg cannot encode %s here: %v\n%s", name, err, out)
-		}
-		return path
+		return ffmpegSine(t, filepath.Join(dir, name), 2, 96000, codecArgs...)
 	}
 
 	for _, c := range []struct {
 		name     string
-		path     string
+		file     string
 		codec    string
 		bitDepth int
 	}{
-		{"m4a", encode(t, "hires.m4a", "-sample_fmt", "s32p", "-c:a", "alac"), "ALAC", 24},
-		{"mov", encode(t, "hires.mov", "-sample_fmt", "s32p", "-c:a", "alac"), "ALAC", 24},
+		{"m4a", "hires.m4a", "ALAC", 24},
+		{"mov", "hires.mov", "ALAC", 24},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			tr := mustParseFile(t, c.path).Properties().Tracks[0]
+			path := encode(t, c.file, "-sample_fmt", "s32p", "-c:a", "alac")
+			tr := mustParseFile(t, path).Properties().Tracks[0]
 			if tr.SampleRate != 96000 || tr.Channels != 2 {
 				t.Errorf("track = %d Hz / %d ch, want 96000/2", tr.SampleRate, tr.Channels)
 			}

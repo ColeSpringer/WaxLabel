@@ -452,9 +452,14 @@ func buildResult(edited *core.Media, base *doc, newText []outChunk, newID3 *id3.
 		audioEnd:  lay.audioEnd,
 		ssndAlign: base.ssndAlign, // SSND copied verbatim; chained edits reuse the same alignment
 		comm:      base.comm,
-		track:     base.track,
 		size:      lay.total,
 	}
+	// The track and the COMM-overstates warning are derived from the chunks written, as
+	// Parse derives them, rather than copied from the source: the written SSND declares
+	// the bytes it holds, so a truncated source resolves into a file whose COMM merely
+	// overstates, and a fresh parse of it must read the same as this document.
+	audioBytes := ssndAudioBytes(lay.chunks, lay.ssndIdx, base.ssndAlign)
+	nd.track = buildTrack(base.comm, audioBytes)
 	// Rebuild the decoded native text items from the written chunks so a re-edit of
 	// the returned document (without re-parsing) sees the same values. newText is the
 	// roleText chunk set that assemble recorded into lay.textIdx, in the same order.
@@ -489,10 +494,20 @@ func buildResult(edited *core.Media, base *doc, newText []outChunk, newID3 *id3.
 		// once consolidated, so they are correctly absent here.) projWs carries the
 		// ID3-chunk chapter-flatten and synced-lyrics notes, re-derived from the written
 		// frames like Parse.
-		Warnings:   append(projWs, mediaWarnings(nd, numericGenre)...),
+		Warnings:   append(projWs, resultWarnings(nd, numericGenre, audioBytes)...),
 		Native:     nd,
 		Identity:   core.Identity{Size: lay.total},
 		AudioStart: lay.audioOff,
 		AudioEnd:   lay.audioEnd,
 	}
+}
+
+// resultWarnings is mediaWarnings plus the COMM-overstates warning Parse raises, so the
+// post-write document carries every warning a fresh parse of the output would.
+func resultWarnings(nd *doc, numericGenre bool, audioBytes int64) []core.Warning {
+	ws := mediaWarnings(nd, numericGenre)
+	if nd.comm.overstates(audioBytes) {
+		ws = core.Warn(ws, core.WarnTruncatedAudio, overstatedMessage)
+	}
+	return ws
 }

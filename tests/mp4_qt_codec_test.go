@@ -2,13 +2,8 @@ package waxlabel_test
 
 import (
 	"context"
-	"errors"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
-	"strconv"
-	"strings"
 	"testing"
 )
 
@@ -137,35 +132,6 @@ func TestMP4QuickTimeMP3Fixture(t *testing.T) {
 	}
 }
 
-// ffprobeDepth reports the stored sample width ffprobe reads from a file's first audio
-// stream, the independent witness for a depth this parser takes from a fourcc or a pcmC box
-// rather than from the sample entry's own field. bits_per_sample is the field that carries
-// it for every uncompressed and companded form (bits_per_raw_sample is set only where a
-// coded width differs from the raw one, so it is absent for most of these); 0 means ffprobe
-// named none.
-func ffprobeDepth(t *testing.T, path string) int {
-	t.Helper()
-	out, err := exec.Command("ffprobe", "-hide_banner", "-loglevel", "error",
-		"-select_streams", "a:0", "-show_entries", "stream=bits_per_sample",
-		"-of", "default=nw=1:nk=1", path).Output()
-	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			t.Fatalf("ffprobe %s: %v\n%s", path, err, ee.Stderr)
-		}
-		t.Fatalf("ffprobe %s: %v", path, err)
-	}
-	field := strings.TrimSpace(string(out))
-	if field == "" || field == "N/A" {
-		return 0
-	}
-	n, err := strconv.Atoi(field)
-	if err != nil {
-		t.Fatalf("ffprobe %s: bits_per_sample %q: %v", path, field, err)
-	}
-	return n
-}
-
 // TestMP4DifferentialFFmpegFourccs encodes each uncompressed fourcc with the real ffmpeg
 // and checks the codec, profile, geometry and depth against ffprobe reading the same
 // bytes. The stream-copy legs are the agreement case the whole table exists for: one MP3
@@ -173,26 +139,15 @@ func ffprobeDepth(t *testing.T, path string) int {
 func TestMP4DifferentialFFmpegFourccs(t *testing.T) {
 	requireTool(t, "ffmpeg")
 	requireTool(t, "ffprobe")
-	required := os.Getenv("WAXLABEL_REQUIRE_FFMPEG") != ""
 	dir := t.TempDir()
 
 	encode := func(t *testing.T, name string, args ...string) string {
 		t.Helper()
-		path := filepath.Join(dir, name)
-		full := append([]string{"-hide_banner", "-loglevel", "error"}, args...)
-		if out, err := exec.Command("ffmpeg", append(full, "-y", path)...).CombinedOutput(); err != nil {
-			if required {
-				t.Fatalf("ffmpeg %s: %v\n%s", name, err, out)
-			}
-			t.Skipf("ffmpeg cannot encode %s here: %v\n%s", name, err, out)
-		}
-		return path
+		return ffmpegEncode(t, filepath.Join(dir, name), args...)
 	}
 	sine := func(t *testing.T, name string, rate int, codecArgs ...string) string {
 		t.Helper()
-		args := []string{"-f", "lavfi", "-i", "sine=frequency=1000:duration=1", "-ac", "2",
-			"-ar", strconv.Itoa(rate)}
-		return encode(t, name, append(args, codecArgs...)...)
+		return ffmpegSine(t, filepath.Join(dir, name), 2, rate, codecArgs...)
 	}
 
 	// One subtest per leg: a skip for an ffmpeg that cannot write the container must not
@@ -242,22 +197,21 @@ func TestMP4DifferentialFFmpegFourccs(t *testing.T) {
 			if tr.Codec != c.codec || tr.CodecProfile != c.profile {
 				t.Errorf("codec = %q / profile %q, want %q / %q", tr.Codec, tr.CodecProfile, c.codec, c.profile)
 			}
-			rate, channels, _ := ffprobeAudio(t, path)
-			if tr.SampleRate != rate || tr.Channels != channels {
-				t.Errorf("geometry = %d Hz / %d ch, ffprobe says %d/%d", tr.SampleRate, tr.Channels, rate, channels)
+			p := ffprobeStream(t, path)
+			if tr.SampleRate != p.SampleRate || tr.Channels != p.Channels {
+				t.Errorf("geometry = %d Hz / %d ch, ffprobe says %d/%d", tr.SampleRate, tr.Channels, p.SampleRate, p.Channels)
 			}
 			// The width the file declares is the one both readers must agree on. The
 			// table's is the width the encode asked for, which binds only where the writer
 			// recorded it: ffmpeg 6.1 fills an ipcm track's pcmC from the encoder's sample
 			// format rather than its sample width, so a pcm_s24le encode declares 32 there
 			// and ffmpeg reads its own file back as pcm_s32le. ffmpeg 8 declares 24.
-			depth := ffprobeDepth(t, path)
 			switch {
-			case tr.BitsPerSample != depth:
-				t.Errorf("bits per sample = %d, ffprobe says %d", tr.BitsPerSample, depth)
-			case depth != c.depth:
+			case tr.BitsPerSample != p.BitsPerSample:
+				t.Errorf("bits per sample = %d, ffprobe says %d", tr.BitsPerSample, p.BitsPerSample)
+			case p.BitsPerSample != c.depth:
 				t.Logf("%s declares %d bits for a %s encode, and ffprobe reads it back the same way",
-					c.file, depth, c.sample)
+					c.file, p.BitsPerSample, c.sample)
 			}
 		})
 	}

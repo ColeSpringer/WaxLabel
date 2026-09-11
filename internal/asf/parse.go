@@ -309,6 +309,7 @@ func (d *doc) readStreamProperties(b []byte) {
 	}
 	w := b[54 : 54+typeLen]
 	d.haveAudio = true
+	copy(d.waveFormat[:], w[:16])
 	d.formatTag = binary.LittleEndian.Uint16(w[0:2])
 	d.channels = int(binary.LittleEndian.Uint16(w[2:4]))
 	d.sampleRate = int(binary.LittleEndian.Uint32(w[4:8]))

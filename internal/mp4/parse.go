@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
-	"strings"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
@@ -639,16 +638,19 @@ func parseStsd(src core.ReaderAtSized, stsd node, d *doc, timescale uint32, limi
 	copy(d.cfg.codec[:], b[12:16])
 	fourcc := string(d.cfg.codec[:])
 	d.track.Codec = fourcc
-	if strings.HasPrefix(fourcc, "ms") {
-		// QTFF's spelling for a Windows codec: "ms" then the WAVE format tag, big-endian,
-		// which is how ffmpeg's mov demuxer reads the same bytes. Every tag goes through the
-		// shared table, so "ms\x00\x55" names MP3 the way that tag does in a WAV "fmt "
-		// chunk or an ASF Stream Properties object, and one the table does not know reports
-		// its own hex rather than a fourcc holding a NUL. Fourccs outside this spelling are
-		// reported raw; render escapes what is not printable.
-		d.track.Codec = core.WaveFormatCodec(binary.BigEndian.Uint16(b[14:16]))
+	if tag, ok := core.QuickTimeWaveFormatTag(fourcc); ok {
+		// QTFF's spelling for a Windows codec, read as ffmpeg's mov demuxer reads the same
+		// bytes. Every tag goes through the shared table, so "ms\x00\x55" names MP3 the way
+		// that tag does in a WAV "fmt " chunk or an ASF Stream Properties object, and one
+		// the table does not know reports its own hex rather than a fourcc holding a NUL.
+		// Fourccs outside this spelling are reported raw; render escapes what is not
+		// printable.
+		d.track.Codec = core.WaveFormatCodec(tag)
 	}
 
+	// Asked once: the width the fourcc fixes drives the v0/v1 arm below, and membership
+	// alone drives the two rules after the switch.
+	layout, fixedLayout := core.FourccSampleLayout(fourcc)
 	end := len(b)
 	if size := int64(binary.BigEndian.Uint32(b[8:12])); size > 0 && 8+size < int64(end) {
 		end = int(8 + size)
@@ -675,8 +677,8 @@ func parseStsd(src core.ReaderAtSized, stsd node, d *doc, timescale uint32, limi
 		d.track.Channels = int(d.cfg.channels)
 		d.track.BitsPerSample = int(d.cfg.sampleSize)
 		d.track.SampleRate = int(d.cfg.sampleRate)
-		if depth, _ := pcmFourcc(fourcc); depth > 0 {
-			d.track.BitsPerSample = depth
+		if layout.Depth > 0 {
+			d.track.BitsPerSample = layout.Depth
 		}
 		if version == 1 {
 			extOff += 16 // v1 appends four QuickTime bytes-per-packet/frame/sample fields
@@ -688,7 +690,7 @@ func parseStsd(src core.ReaderAtSized, stsd node, d *doc, timescale uint32, limi
 		cfg = scanEntryConfig(b, extOff, end, fourcc)
 		applyEntryConfig(d, cfg)
 	}
-	if _, ok := pcmFourcc(fourcc); ok {
+	if fixedLayout {
 		if fourcc == "fpcm" && cfg.bitDepth == 0 {
 			// No readable pcmC. The entry's samplesize is the fixed 16 every writer stores
 			// there and no 16-bit float format exists, so report no width rather than one
@@ -704,33 +706,6 @@ func parseStsd(src core.ReaderAtSized, stsd node, d *doc, timescale uint32, limi
 			d.track.SampleRate = int(timescale)
 		}
 	}
-}
-
-// pcmFourcc reports whether a fourcc is one of the uncompressed QuickTime/ISOBMFF sample
-// entries, and the sample width it names (0 when the width lives elsewhere). Two rules key
-// off this one table. For the entries that name a width, the entry's samplesize field is
-// decoration - ffmpeg and QuickTime v1 entries write 16 whatever the real width - so the
-// fourcc is the figure the WAV twins and ffprobe report. And none of these entries carry a
-// codec configuration declaring a rate, so when the 16.16 rate field is zero, which is how
-// a v0 entry says the rate does not fit it, the media timescale is the only witness left.
-//
-// Matched case-insensitively, as the canonical codec table matches the same fourccs.
-func pcmFourcc(fourcc string) (depth int, ok bool) {
-	switch strings.ToUpper(fourcc) {
-	case "IN24":
-		return 24, true
-	case "IN32", "FL32":
-		return 32, true
-	case "FL64":
-		return 64, true
-	case "ULAW", "ALAW":
-		return 8, true
-	case "IMA4":
-		return 4, true
-	case "LPCM", "IPCM", "FPCM", "SOWT", "TWOS", "RAW ", "NONE":
-		return 0, true // the entry field or a pcmC box carries the width
-	}
-	return 0, false
 }
 
 // parseSoundEntryV2 decodes a QuickTime version 2 sound sample entry's geometry onto

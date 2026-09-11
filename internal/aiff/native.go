@@ -60,6 +60,7 @@ func (it textItem) text() string {
 // used for properties and the essence-digest configuration. The sample rate is
 // kept both decoded (for properties) and as its raw 80-bit bytes (for an exact
 // essence config). compType is the AIFF-C compression type (zero for plain AIFF).
+// numFrames is COMM's numSampleFrames, a packet count for the packetized types.
 type commChunk struct {
 	channels   uint16
 	numFrames  uint32
