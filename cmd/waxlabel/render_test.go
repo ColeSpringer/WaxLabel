@@ -76,6 +76,7 @@ func TestBitDepthMeaningful(t *testing.T) {
 	for _, c := range []string{
 		"FLAC", "ALAC", "PCM", "PCM (extensible)", "IEEE float", "IEEE float64",
 		"A-law", "mu-law", "IMA ADPCM", "WAVPACK4", "TTA1", "MLP",
+		"WMA Lossless", // the one WMA variant that does decode at a stored width
 	} {
 		if !bitDepthMeaningful(c) {
 			t.Errorf("bitDepthMeaningful(%q) = false, want true", c)
@@ -83,7 +84,8 @@ func TestBitDepthMeaningful(t *testing.T) {
 	}
 	// Lossy/perceptual codecs decode to PCM at an arbitrary depth, so any stored depth
 	// is meaningless and must be suppressed.
-	for _, c := range []string{"AAC", "MP3", "MP2", "MP1", "Opus", "Vorbis", "AC-3", "E-AC-3", "MPC"} {
+	for _, c := range []string{"AAC", "MP3", "MP2", "MP1", "Opus", "Vorbis", "AC-3", "E-AC-3", "MPC",
+		"Musepack", "WMA v1", "WMA v2", "WMA Pro", "WMA Voice"} {
 		if bitDepthMeaningful(c) {
 			t.Errorf("bitDepthMeaningful(%q) = true, want false", c)
 		}

@@ -106,8 +106,10 @@ func TestAIFFParseAIFC(t *testing.T) {
 	if tr.SampleRate != 44100 {
 		t.Errorf("AIFF-C 80-bit rate decoded to %d, want 44100", tr.SampleRate)
 	}
-	if tr.Codec != "PCM (little-endian)" {
-		t.Errorf("codec = %q, want PCM (little-endian) for sowt", tr.Codec)
+	// sowt is little-endian PCM, a storage detail of one codec; the same fourcc reaches
+	// this reader from a .mov too, so the byte order is the profile and not the name.
+	if tr.Codec != "PCM" || tr.CodecProfile != "PCM (little-endian)" {
+		t.Errorf("codec = %q / profile %q, want PCM / PCM (little-endian) for sowt", tr.Codec, tr.CodecProfile)
 	}
 	// An edit must preserve the AIFC form type and the FVER chunk.
 	src := readFixture(t, sampleAIFC)

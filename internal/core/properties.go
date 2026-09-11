@@ -124,8 +124,9 @@ func CanonicalCodec(raw string) (codec, profile string) {
 }
 
 // canonicalCodecName maps a raw codec name to its canonical form, or returns it
-// unchanged when it is already canonical (Opus, Vorbis, PCM, the Matroska names,
-// the WAV/AIFF descriptive names). Matched case-insensitively.
+// unchanged when it is already canonical (Opus, Vorbis, PCM, the Matroska names, most of
+// the WAV/AIFF descriptive names). Matched case-insensitively, so a single arm covers a
+// QuickTime fourcc and the descriptive spelling another container gives the same codec.
 func canonicalCodecName(raw string) string {
 	up := strings.ToUpper(raw)
 	switch up {
@@ -143,12 +144,28 @@ func canonicalCodecName(raw string) string {
 		return "WavPack" // the DSD mode is the profile detail, not a different codec
 	case "MUSEPACK SV7", "MUSEPACK SV8":
 		return "Musepack" // the stream version is the profile detail, not a different codec
-	case "MPEG-1 LAYER 3", "MPEG-2 LAYER 3", "MPEG-2.5 LAYER 3":
-		return "MP3"
-	case "MPEG-1 LAYER 2", "MPEG-2 LAYER 2", "MPEG-2.5 LAYER 2":
+	case "MPEG-1 LAYER 3", "MPEG-2 LAYER 3", "MPEG-2.5 LAYER 3", ".MP3":
+		return "MP3" // ".mp3" is QuickTime's fourcc for the same stream an esds names "MP3"
+	case "MPEG-1 LAYER 2", "MPEG-2 LAYER 2", "MPEG-2.5 LAYER 2", ".MP2":
 		return "MP2"
-	case "MPEG-1 LAYER 1", "MPEG-2 LAYER 1", "MPEG-2.5 LAYER 1":
+	case "MPEG-1 LAYER 1", "MPEG-2 LAYER 1", "MPEG-2.5 LAYER 1", ".MP1":
 		return "MP1"
+	// The QuickTime/ISOBMFF PCM-family fourccs, beside AIFF-C's own spelling of one of
+	// them. Byte order, signedness and width are storage detail of a single codec rather
+	// than different codecs, so each reads "PCM" with the raw spelling kept as the
+	// profile. "RAW " carries a significant trailing space.
+	case "LPCM", "IPCM", "SOWT", "TWOS", "IN24", "IN32", "RAW ", "NONE", "PCM (LITTLE-ENDIAN)":
+		return "PCM"
+	case "FL32", "FPCM":
+		return "IEEE float"
+	case "FL64":
+		return "IEEE float64"
+	case "ULAW":
+		return "mu-law"
+	case "ALAW":
+		return "A-law"
+	case "IMA4":
+		return "IMA ADPCM"
 	case "HE-AAC", "HE-AAC V2", "XHE-AAC":
 		// The SBR/PS spellings an MP4 esds AudioSpecificConfig yields: still AAC, with the
 		// extension named in the profile.
@@ -208,6 +225,8 @@ func WaveFormatCodec(format uint16) string {
 		return "WMA Voice"
 	case 0x0011:
 		return "IMA ADPCM"
+	case 0x0050:
+		return "MP2"
 	case 0x0055:
 		return "MP3"
 	case 0x00FF:

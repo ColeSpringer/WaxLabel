@@ -93,7 +93,10 @@ func (Codec) Capabilities(_ *core.Media, _ core.WriteOptions) core.Capabilities 
 }
 
 // EssenceExtent returns the ASF essence-digest inputs: a versioned extent name and
-// the decoder-critical stream configuration from the WAVEFORMATEX.
+// the decoder-critical stream configuration from the WAVEFORMATEX. The salt carries the
+// structure's own fields, wBitsPerSample included, not the WMA Lossless depth the codec
+// extra bytes correct it to: a stored digest must not move because the reader learned to
+// read one more field.
 func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 	var b [12]byte
 	if d, ok := m.Native.(*doc); ok && d != nil {

@@ -172,9 +172,17 @@ func mp4StsdEntryV1(fourcc string, channels, sampleSize, rate int, children ...[
 	))
 }
 
-// mp4StsdEntryV2 builds a QuickTime version 2 sound sample entry: the fixed v0 fields
-// carry their required constants and the real geometry sits in the v2 struct.
+// mp4StsdEntryV2 builds a QuickTime version 2 sound sample entry with no format-specific
+// flags, the shape every caller but the float-lpcm test wants.
 func mp4StsdEntryV2(fourcc string, rate float64, channels, bits int, children ...[]byte) []byte {
+	return mp4StsdEntryV2Flags(fourcc, rate, channels, bits, 0, children...)
+}
+
+// mp4StsdEntryV2Flags builds a QuickTime version 2 sound sample entry: the fixed v0 fields
+// carry their required constants and the real geometry sits in the v2 struct, whose
+// formatSpecificFlags word is the only place a float lpcm stream declares itself
+// (bit 0 is kAudioFormatFlagIsFloat).
+func mp4StsdEntryV2Flags(fourcc string, rate float64, channels, bits, flags int, children ...[]byte) []byte {
 	rateBits := make([]byte, 8)
 	binary.BigEndian.PutUint64(rateBits, math.Float64bits(rate))
 	return mp4Atom(fourcc, slices.Concat(
@@ -186,12 +194,18 @@ func mp4StsdEntryV2(fourcc string, rate float64, channels, bits int, children ..
 		rateBits,       // audioSampleRate
 		mp4be32(channels),
 		mp4be32(0x7F000000),
-		mp4be32(bits), // constBitsPerChannel
-		mp4be32(0),    // formatSpecificFlags
-		mp4be32(0),    // constBytesPerAudioPacket
-		mp4be32(0),    // constLPCMFramesPerAudioPacket
+		mp4be32(bits),  // constBitsPerChannel
+		mp4be32(flags), // formatSpecificFlags
+		mp4be32(0),     // constBytesPerAudioPacket
+		mp4be32(0),     // constLPCMFramesPerAudioPacket
 		slices.Concat(children...),
 	))
+}
+
+// mp4PcmC builds the ISOBMFF PCM configuration box an ipcm or fpcm entry carries: a
+// FullBox holding a format_flags byte (0 = big-endian) and the PCM sample size.
+func mp4PcmC(size byte) []byte {
+	return mp4Atom("pcmC", []byte{0, 0, 0, 0, 0, size})
 }
 
 // mp4AlacCookie builds the ALAC magic cookie box: a FullBox header followed by the

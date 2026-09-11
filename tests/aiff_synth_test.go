@@ -201,24 +201,28 @@ func TestAIFFCapabilitiesAndNative(t *testing.T) {
 
 func TestAIFFCCodecNames(t *testing.T) {
 	for _, tc := range []struct {
-		comp string
-		want string
+		comp        string
+		want        string
+		wantProfile string
 	}{
-		{"NONE", "PCM"},
-		{"twos", "PCM"},
-		{"sowt", "PCM (little-endian)"},
-		{"fl32", "IEEE float"},
-		{"fl64", "IEEE float64"},
-		{"ulaw", "mu-law"},
-		{"alaw", "A-law"},
-		{"ima4", "IMA ADPCM"},
-		{"XYZ!", "AIFF-C XYZ!"},             // unknown printable type passes through
-		{"\x01\x02\x03\x04", "AIFF-C ????"}, // non-printable bytes are sanitized
+		{"NONE", "PCM", ""},
+		{"twos", "PCM", ""},
+		// The one compression type whose name carries a storage detail rather than a
+		// different codec: it reads as PCM, with the byte order kept as the profile.
+		{"sowt", "PCM", "PCM (little-endian)"},
+		{"fl32", "IEEE float", ""},
+		{"fl64", "IEEE float64", ""},
+		{"ulaw", "mu-law", ""},
+		{"alaw", "A-law", ""},
+		{"ima4", "IMA ADPCM", ""},
+		{"XYZ!", "AIFF-C XYZ!", ""},             // unknown printable type passes through
+		{"\x01\x02\x03\x04", "AIFF-C ????", ""}, // non-printable bytes are sanitized
 	} {
 		data := aiffFile("AIFC", aiffCOMMC(2, 100, 16, 44100, tc.comp), aiffSSND(64))
-		got := mustParseBytes(t, data).Properties().First().Codec
-		if got != tc.want {
-			t.Errorf("compType %q -> codec %q, want %q", tc.comp, got, tc.want)
+		tr := mustParseBytes(t, data).Properties().First()
+		if tr.Codec != tc.want || tr.CodecProfile != tc.wantProfile {
+			t.Errorf("compType %q -> codec %q / profile %q, want %q / %q",
+				tc.comp, tr.Codec, tr.CodecProfile, tc.want, tc.wantProfile)
 		}
 	}
 }

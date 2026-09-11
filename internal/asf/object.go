@@ -3,6 +3,7 @@ package asf
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"unicode/utf16"
 
 	"github.com/colespringer/waxlabel/waxerr"
@@ -60,8 +61,11 @@ func parseHeaderObject(b []byte) ([]object, error) {
 	if size > uint64(len(b)) {
 		size = uint64(len(b)) // truncated: read what is present rather than refusing outright
 	}
-	count := int(binary.LittleEndian.Uint32(b[24:28]))
-	return walkObjects(b[30:size], count), nil
+	// The declared child count caps the walk. Clamp rather than convert straight to int: on
+	// a 32-bit build a count above MaxInt32 reads as negative, which walkObjects treats as
+	// "no cap" and so disables the very bound the field is there to impose.
+	count := binary.LittleEndian.Uint32(b[24:28])
+	return walkObjects(b[30:size], int(min(count, math.MaxInt32))), nil
 }
 
 // utf16String decodes a UTF-16LE string, dropping a trailing NUL terminator. ASF

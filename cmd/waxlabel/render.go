@@ -163,21 +163,21 @@ func audioLine(p wl.Properties) string {
 	return strings.Join(parts, ", ")
 }
 
-// bitDepthMeaningful reports whether codec stores samples at a fixed width, the
-// only case where a "bits per sample" figure describes the audio. It excludes the
-// lossy/perceptual codecs (AAC, MP1/2/3, Opus, Vorbis, AC-3, E-AC-3, Musepack), which
-// decode to PCM at the decoder's chosen depth so a container-stored depth (often a legacy
-// default like the 16 MP4 writes for AAC) is meaningless. Inverting the test this
-// way - a blacklist of the small, stable lossy set rather than a whitelist of the
-// open-ended lossless one - keeps a real depth for the long tail of PCM-family and
-// lossless codecs (A-law/mu-law, ADPCM, FLAC, ALAC, WavPack, TTA, MLP, ...) that the
-// parsers do report a depth for. codec is the canonical name (CanonicalCodec, so
-// AAC's object-type spellings already collapsed to "AAC"). DTS is deliberately not
-// excluded: its DTS-HD Master Audio variant is lossless and shares the same name, so
-// suppressing it would drop a real depth.
+// bitDepthMeaningful reports whether codec stores samples at a fixed width, the only case
+// where a "bits per sample" figure describes the audio. The lossy/perceptual codecs decode
+// to PCM at the decoder's chosen depth, so a container-stored one (the 16 MP4 writes for
+// AAC, the one a lossy WMA's WAVEFORMATEX carries) is noise. WMA Lossless is not among
+// them: it does decode at a stored width.
+//
+// A blacklist of the small, stable lossy set rather than a whitelist of the open-ended
+// lossless one, so the long tail that does report a real depth (A-law/mu-law, ADPCM, FLAC,
+// ALAC, WavPack, TTA, MLP, ...) keeps it. DTS is deliberately absent: its DTS-HD Master
+// Audio variant is lossless under the same name. codec is the canonical name, so AAC's
+// object-type spellings have already collapsed to "AAC".
 func bitDepthMeaningful(codec string) bool {
 	switch strings.ToUpper(codec) {
-	case "AAC", "MP1", "MP2", "MP3", "OPUS", "VORBIS", "AC-3", "E-AC-3", "MPC":
+	case "AAC", "MP1", "MP2", "MP3", "OPUS", "VORBIS", "AC-3", "E-AC-3", "MPC", "MUSEPACK",
+		"WMA V1", "WMA V2", "WMA PRO", "WMA VOICE":
 		return false
 	}
 	return true

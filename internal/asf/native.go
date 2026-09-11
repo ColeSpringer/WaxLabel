@@ -50,6 +50,11 @@ type doc struct {
 	sampleRate    int
 	byteRate      int
 	bitsPerSample int
+	// losslessDepth is the depth the WMA Lossless codec extra bytes declare, 0 when the
+	// stream is not Lossless or the bytes were absent or unreadable. It shadows
+	// bitsPerSample on the reported track only: the essence-digest salt keeps the fixed
+	// field, so no stored digest moves.
+	losslessDepth int
 	// invalidKeys names the descriptors the canonical vocabulary cannot represent, so a
 	// value the native view preserves but the tag set never receives is reported rather than
 	// silently absent - which for a read-only source is the difference between a copy that

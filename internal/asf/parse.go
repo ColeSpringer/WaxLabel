@@ -165,7 +165,10 @@ func locateData(src core.ReaderAtSized, headerEnd, size, limit int64) (start, en
 	// The Data Object's own body opens with a 16-byte File ID, an 8-byte total packet
 	// count, and two reserved bytes before the packets themselves.
 	const dataHeaderLen = objectHeaderLen + 16 + 8 + 2
-	if objLen < dataHeaderLen || headerEnd+objLen > size {
+	// Subtraction again, in int64: a length near MaxInt64 overflows headerEnd+objLen to a
+	// negative number that passes the test, publishing an extent that ends before it starts
+	// instead of the unknown extent every other malformed Data Object here reports.
+	if objLen < dataHeaderLen || objLen > size-headerEnd {
 		return 0, 0
 	}
 	return headerEnd + dataHeaderLen, headerEnd + objLen
@@ -271,9 +274,20 @@ func markerDescription(b []byte) string {
 	return utf16String(b)
 }
 
+// waveFormatWMALossless is the format tag WMA Lossless streams carry. It is named because
+// one rule keys off it alone: the depth those streams decode at lives outside the fixed
+// WAVEFORMATEX fields.
+const waveFormatWMALossless = 0x0163
+
 // readStreamProperties decodes an audio stream's WAVEFORMATEX. Only the first audio
 // stream is described; a WMA file with several is rare and the first is the one a
 // player selects.
+//
+// WMA Lossless additionally reads the codec extra bytes behind the structure, because
+// that is where the format keeps the depth a decoder works at; wBitsPerSample is
+// decoration there, and encoders do leave it disagreeing. Only 16 and 24 are taken: those
+// are the two depths the format defines, so a third value is a field this reader has
+// misread rather than a stream to describe, and the fixed field stands instead.
 func (d *doc) readStreamProperties(b []byte) {
 	if len(b) < 54 {
 		return
@@ -283,8 +297,14 @@ func (d *doc) readStreamProperties(b []byte) {
 	if streamType != guidAudioMedia || d.haveAudio {
 		return
 	}
+	// Every declared length below is bounds-checked by subtraction, never by adding it to an
+	// offset first: these are unvalidated uint32s, and on a 32-bit build a value near 2 GiB
+	// overflows the sum to a negative number that passes the check and panics on the slice.
+	// Each site's base is already known to sit within the buffer, so the subtraction is safe,
+	// and the "< 0" tests reject the uint32 values whose high bit made the conversion itself
+	// negative.
 	typeLen := int(binary.LittleEndian.Uint32(b[40:44]))
-	if typeLen < 16 || 54+typeLen > len(b) {
+	if typeLen < 16 || typeLen > len(b)-54 {
 		return
 	}
 	w := b[54 : 54+typeLen]
@@ -294,6 +314,13 @@ func (d *doc) readStreamProperties(b []byte) {
 	d.sampleRate = int(binary.LittleEndian.Uint32(w[4:8]))
 	d.byteRate = int(binary.LittleEndian.Uint32(w[8:12]))
 	d.bitsPerSample = int(binary.LittleEndian.Uint16(w[14:16]))
+	if d.formatTag == waveFormatWMALossless && typeLen >= 18 {
+		if cbSize := int(binary.LittleEndian.Uint16(w[16:18])); cbSize >= 18 && 18+cbSize <= typeLen {
+			if depth := int(binary.LittleEndian.Uint16(w[18:20])); depth == 16 || depth == 24 {
+				d.losslessDepth = depth
+			}
+		}
+	}
 }
 
 // contentDescriptionFields are the five fixed strings of the Content Description
@@ -362,7 +389,7 @@ func (d *doc) readHeaderExtension(b []byte, emit func(tag.Key, string, string), 
 		return
 	}
 	dataLen := int(binary.LittleEndian.Uint32(b[18:22]))
-	if dataLen < 0 || 22+dataLen > len(b) {
+	if dataLen < 0 || dataLen > len(b)-22 {
 		dataLen = len(b) - 22
 	}
 	for _, o := range walkObjects(b[22:22+dataLen], 0) {
@@ -394,7 +421,9 @@ func (d *doc) readMetadataRecords(b []byte, emit func(tag.Key, string, string), 
 		valueType := binary.LittleEndian.Uint16(b[pos+6 : pos+8])
 		valueLen := int(binary.LittleEndian.Uint32(b[pos+8 : pos+12]))
 		pos += 12
-		if nameLen < 0 || valueLen < 0 || pos+nameLen > len(b) || pos+nameLen+valueLen > len(b) {
+		// The value bound is only evaluated once the name bound has proved nameLen fits.
+		// nameLen comes from a uint16 and so is never negative.
+		if valueLen < 0 || nameLen > len(b)-pos || valueLen > len(b)-pos-nameLen {
 			return
 		}
 		name := utf16String(b[pos : pos+nameLen])
@@ -440,11 +469,17 @@ func (d *doc) tracks() []core.AudioTrack {
 	if !d.haveAudio {
 		return nil
 	}
+	// The codec extra bytes win where they were read: for WMA Lossless the fixed field is
+	// decoration and only the extra bytes name the depth a decoder works at.
+	depth := d.bitsPerSample
+	if d.losslessDepth > 0 {
+		depth = d.losslessDepth
+	}
 	t := core.AudioTrack{
 		Codec:         codecName(d.formatTag),
 		SampleRate:    d.sampleRate,
 		Channels:      d.channels,
-		BitsPerSample: d.bitsPerSample,
+		BitsPerSample: depth,
 		Duration:      d.duration,
 	}
 	// The WAVEFORMATEX byte rate is the stream's own average and is more accurate than

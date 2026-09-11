@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"math"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 	"unicode/utf16"
@@ -18,6 +20,11 @@ import (
 const (
 	sampleWMA = "../testdata/sample.wma"
 	notagsWMA = "../testdata/notags.wma"
+	// lossless24WMA is the ll-44100-2ch-24 cell of WaxFlow's WMA Lossless corpus: Windows'
+	// own encoder over a synthesized signal, copied here because ffmpeg cannot encode the
+	// format at all. Format tag 0x0163, 44100 Hz stereo, wBitsPerSample 24, and 18 codec
+	// extra bytes whose leading word repeats the depth.
+	lossless24WMA = "../testdata/lossless24.wma"
 )
 
 // ASF synthesis. ffmpeg writes WMA, but not the WM/Picture descriptor or the
@@ -75,6 +82,7 @@ const (
 	guidMetadataHex    = "eacbf8c5af5b77488467aa8c44fa4cca"
 	guidAudioMediaHex  = "409e69f84d5bcf11a8fd00805f5c442b"
 	guidNoErrCorrHex   = "00000000000000000000000000000000"
+	guidDataHex        = "3626b2758e66cf11a6d900aa0062ce6c"
 )
 
 // asfFileProperties builds a File Properties object with the given play duration and
@@ -87,16 +95,42 @@ func asfFileProperties(play time.Duration, prerollMS uint64) []byte {
 	return asfObject(guidFilePropsHex, b)
 }
 
-// asfStreamProperties builds an audio Stream Properties object carrying a WAVEFORMATEX.
+// asfStreamProperties builds an audio Stream Properties object carrying a WAVEFORMATEX
+// with no codec extra bytes.
 func asfStreamProperties(formatTag uint16, channels uint16, rate uint32, bits uint16) []byte {
+	return asfStreamPropertiesRaw(asfWaveFormatEx(formatTag, channels, rate, bits, nil))
+}
+
+// asfWaveFormatEx builds a WAVEFORMATEX with cbSize declaring the codec extra bytes that
+// follow it - the bytes a codec's own configuration rides in.
+func asfWaveFormatEx(formatTag, channels uint16, rate uint32, bits uint16, extra []byte) []byte {
 	w := make([]byte, 18)
 	binary.LittleEndian.PutUint16(w[0:2], formatTag)
 	binary.LittleEndian.PutUint16(w[2:4], channels)
 	binary.LittleEndian.PutUint32(w[4:8], rate)
-	binary.LittleEndian.PutUint32(w[8:12], uint32(rate)*uint32(channels)*uint32(bits)/8)
+	binary.LittleEndian.PutUint32(w[8:12], rate*uint32(channels)*uint32(bits)/8)
 	binary.LittleEndian.PutUint16(w[12:14], channels*bits/8)
 	binary.LittleEndian.PutUint16(w[14:16], bits)
+	binary.LittleEndian.PutUint16(w[16:18], uint16(len(extra)))
+	return append(w, extra...)
+}
 
+// asfLosslessExtra is the 18-byte WMA Lossless codec configuration, whose leading word is
+// the depth a decoder works at. The rest - a channel mask, then encoder settings - is the
+// shape a Windows Media encode carries, kept so the depth is read out of a realistic
+// structure rather than a lone word.
+func asfLosslessExtra(depth uint16) []byte {
+	b := make([]byte, 18)
+	binary.LittleEndian.PutUint16(b[0:2], depth)
+	binary.LittleEndian.PutUint32(b[2:6], 3) // channel mask: front left + front right
+	binary.LittleEndian.PutUint16(b[14:16], 0x01A1)
+	return b
+}
+
+// asfStreamPropertiesRaw wraps a whole WAVEFORMATEX - cbSize and any codec extra bytes
+// included - in an audio Stream Properties object, for the cases that turn on what sits
+// behind the fixed fields.
+func asfStreamPropertiesRaw(w []byte) []byte {
 	g, _ := hexBytes(guidAudioMediaHex)
 	e, _ := hexBytes(guidNoErrCorrHex)
 	b := append(slices.Clone(g), e...)
@@ -176,6 +210,23 @@ func asfFile(children ...[]byte) []byte {
 	binary.LittleEndian.PutUint32(head[24:28], uint32(len(children)))
 	head[28], head[29] = 0x01, 0x02
 	return append(append(head, body...), make([]byte, 256)...)
+}
+
+// asfDataObject builds the Data Object that follows the header: a 16-byte File ID, the
+// total packet count, two reserved bytes, then the media packets themselves.
+func asfDataObject(packets []byte) []byte {
+	b := make([]byte, 26)
+	binary.LittleEndian.PutUint64(b[16:24], 1) // total data packets
+	return asfObject(guidDataHex, append(b, packets...))
+}
+
+// asfFileWithData puts a real Data Object where asfFile leaves plain filler, so the file
+// has an audio extent at all. The header length is read back from the built bytes rather
+// than recomputed, so the two cannot drift apart.
+func asfFileWithData(data []byte, children ...[]byte) []byte {
+	full := asfFile(children...)
+	headerLen := int(binary.LittleEndian.Uint64(full[16:24]))
+	return append(slices.Clone(full[:headerLen]), data...)
 }
 
 // asfPictureValue builds a WM/Picture descriptor value: the type byte, the image
@@ -391,9 +442,183 @@ func TestWMACodecVariantsAllRead(t *testing.T) {
 		if got := doc.Properties().First().Codec; got != c.name {
 			t.Errorf("format tag %#04x -> codec %q, want %q", c.tag, got, c.name)
 		}
+		// With no codec extra bytes there is nothing to read behind the structure, so every
+		// variant reports the fixed field - Lossless included.
+		if got := doc.Properties().First().BitsPerSample; got != 16 {
+			t.Errorf("format tag %#04x -> bits per sample %d, want 16", c.tag, got)
+		}
 		if got := doc.Fields().Title; got != "T" {
 			t.Errorf("format tag %#04x: title = %q", c.tag, got)
 		}
+	}
+}
+
+// TestWMALosslessDepthFromExtraBytes: for WMA Lossless the depth a decoder works at lives
+// in the codec extra bytes, and wBitsPerSample is decoration a real encode does leave
+// disagreeing. Only 16 and 24 count, the two depths the format defines: anything else is a
+// field misread rather than a stream to describe, and the fixed field stands.
+func TestWMALosslessDepthFromExtraBytes(t *testing.T) {
+	lossless := asfWaveFormatEx(0x0163, 2, 44100, 16, asfLosslessExtra(24))
+	for _, c := range []struct {
+		name string
+		w    []byte
+		want int
+	}{
+		{"extra bytes correct the fixed field", lossless, 24},
+		{"the two agree", asfWaveFormatEx(0x0163, 2, 44100, 24, asfLosslessExtra(24)), 24},
+		{"no extra bytes", asfWaveFormatEx(0x0163, 2, 44100, 24, nil), 24},
+		// cbSize declares 18 bytes that are not there: the structure is short, so nothing
+		// behind it is read.
+		{"cbSize overruns the structure", lossless[:28], 16},
+		// The 10-byte configuration a WMA v2 stream carries, on the tag that carries it.
+		// The rule is one tag's, so the bytes are never touched here.
+		{"not lossless", asfWaveFormatEx(0x0161, 2, 44100, 16, make([]byte, 10)), 16},
+		{"depth absent from the extra bytes", asfWaveFormatEx(0x0163, 2, 44100, 16, asfLosslessExtra(0)), 16},
+		{"depth no decoder produces", asfWaveFormatEx(0x0163, 2, 44100, 16, asfLosslessExtra(32)), 16},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			data := asfFile(asfStreamPropertiesRaw(c.w), asfContentDescription("T", "", "", "", ""))
+			if got := mustParseBytes(t, data).Properties().First().BitsPerSample; got != c.want {
+				t.Errorf("bits per sample = %d, want %d", got, c.want)
+			}
+		})
+	}
+}
+
+// TestWMALosslessFixtureDepth reads a real Windows Media Lossless encode, then patches its
+// wBitsPerSample to disagree with the codec extra bytes. The extra bytes must still win:
+// that fixed field is what a decoder ignores. The digest extent is pinned because the salt
+// deliberately keeps the fixed field, so no stored digest moves.
+func TestWMALosslessFixtureDepth(t *testing.T) {
+	src := readFixture(t, lossless24WMA)
+	doc := mustParseBytes(t, src)
+	tr := doc.Properties().First()
+	if tr.Codec != "WMA Lossless" {
+		t.Errorf("codec = %q, want WMA Lossless", tr.Codec)
+	}
+	if tr.SampleRate != 44100 || tr.Channels != 2 || tr.BitsPerSample != 24 {
+		t.Errorf("track = %d Hz / %d ch / %d bit, want 44100/2/24", tr.SampleRate, tr.Channels, tr.BitsPerSample)
+	}
+	digest, err := doc.HashAudioEssence(context.Background(), wl.WithHashSource(wl.BytesSource(src)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digest.ExtentVersion != "asf-packets-v1" {
+		t.Errorf("extent = %q, want asf-packets-v1", digest.ExtentVersion)
+	}
+
+	// The WAVEFORMATEX, found by its tag, channel count and sample rate - a byte pattern
+	// that occurs once in the fixture. wBitsPerSample is the word at offset 14.
+	head := []byte{0x63, 0x01, 0x02, 0x00, 0x44, 0xAC, 0x00, 0x00}
+	i := bytes.Index(src, head)
+	if i < 0 || bytes.Contains(src[i+1:], head) {
+		t.Fatalf("WAVEFORMATEX pattern found %d times, want exactly 1", bytes.Count(src, head))
+	}
+	patched := slices.Clone(src)
+	binary.LittleEndian.PutUint16(patched[i+14:i+16], 16)
+	if got := mustParseBytes(t, patched).Properties().First().BitsPerSample; got != 24 {
+		t.Errorf("with wBitsPerSample patched to 16, bits per sample = %d, want 24", got)
+	}
+}
+
+// asfPatchU32 replaces the little-endian uint32 at off, first checking it holds want. A
+// change to the builders then fails the test loudly instead of silently patching whatever
+// bytes happen to sit at a stale offset.
+func asfPatchU32(t *testing.T, b []byte, off int, want, set uint32) []byte {
+	t.Helper()
+	if got := binary.LittleEndian.Uint32(b[off : off+4]); got != want {
+		t.Fatalf("offset %d holds %d, want %d: the ASF builders moved", off, got, want)
+	}
+	out := slices.Clone(b)
+	binary.LittleEndian.PutUint32(out[off:off+4], set)
+	return out
+}
+
+// TestWMAOverlongLengthsRejected: every declared length inside the header is an
+// unvalidated uint32 the reader turns into an int. On a 32-bit build a value near 2 GiB
+// overflows a "base + length" bounds check to a negative number, which passes the test and
+// then panics on the slice, so each guard compares against the bytes that remain instead.
+// On a 64-bit build these files simply parse to the same thing, which makes the linux/386
+// job the one that would catch a regression.
+func TestWMAOverlongLengthsRejected(t *testing.T) {
+	const nearMaxInt32 = 0x7FFFFFFF
+	// Every ASF object opens with a 16-byte GUID and an 8-byte size.
+	const objectHeader = 16 + 8
+
+	// A Stream Properties body carries the type-specific data length 40 bytes in, ahead of
+	// the WAVEFORMATEX the builder puts there.
+	props := asfStreamPropertiesRaw(asfWaveFormatEx(0x0161, 2, 44100, 16, nil))
+	overlongProps := asfPatchU32(t, props, objectHeader+40, 18, nearMaxInt32)
+
+	// A Header Extension body is a reserved GUID, a reserved word, then the size of the
+	// nested objects; the Metadata record inside it declares its own value length after the
+	// record count and four 16-bit fields.
+	ext := asfHeaderExtension(asfDescriptor{"WM/AlbumTitle", 0, asfUTF16("Album")})
+	const extDataLenAt = objectHeader + 16 + 2
+	const metaValueLenAt = extDataLenAt + 4 + objectHeader + 2 + 8
+	nested := uint32(len(ext) - (extDataLenAt + 4))
+	overlongExt := asfPatchU32(t, ext, extDataLenAt, nested, nearMaxInt32)
+	overlongRecord := asfPatchU32(t, ext, metaValueLenAt, uint32(len(asfUTF16("Album"))), nearMaxInt32)
+
+	// The stream description is dropped whole, since its length is what says where the
+	// WAVEFORMATEX ends.
+	t.Run("stream properties type length", func(t *testing.T) {
+		doc := mustParseBytes(t, asfFile(overlongProps, asfContentDescription("T", "", "", "", "")))
+		if got := doc.Properties().Tracks; len(got) != 0 {
+			t.Errorf("tracks = %v, want none: the WAVEFORMATEX was never readable", got)
+		}
+		if got := doc.Fields().Title; got != "T" {
+			t.Errorf("title = %q, want T: the rest of the header must still read", got)
+		}
+	})
+	// An overlong Header Extension is clamped to what is present rather than dropped, so
+	// the record nested in it still reads.
+	t.Run("header extension data length", func(t *testing.T) {
+		doc := mustParseBytes(t, asfFile(overlongExt))
+		if got := doc.Fields().Album; got != "Album" {
+			t.Errorf("album = %q, want Album: the nested records are still in the buffer", got)
+		}
+	})
+	// A record whose value runs past the object ends the walk, so the descriptor is gone.
+	t.Run("metadata record value length", func(t *testing.T) {
+		doc := mustParseBytes(t, asfFile(overlongRecord))
+		if got := doc.Fields().Album; got != "" {
+			t.Errorf("album = %q, want none: the record declares a value it does not hold", got)
+		}
+	})
+}
+
+// TestWMADataObjectLengthRejected: the Data Object's declared length is what bounds the
+// audio extent, and it is an unvalidated uint64. A length near MaxInt64 overflowed
+// headerEnd+objLen to a negative number that passed the bounds test, so the extent was
+// published ending before it began and the failure surfaced as "end before start" rather
+// than as the unknown extent every other malformed Data Object here reports.
+func TestWMADataObjectLengthRejected(t *testing.T) {
+	props := asfStreamProperties(0x0161, 2, 44100, 16)
+	good := asfFileWithData(asfDataObject(bytes.Repeat([]byte{0xA5}, 128)), props)
+	hash := func(t *testing.T, b []byte) error {
+		t.Helper()
+		_, err := mustParseBytes(t, b).HashAudioEssence(context.Background(), wl.WithHashSource(wl.BytesSource(b)))
+		return err
+	}
+	if err := hash(t, good); err != nil {
+		t.Fatalf("a well-formed Data Object should hash: %v", err)
+	}
+
+	// The object's size field sits 16 bytes into it, which begins where the header ends.
+	sizeAt := int(binary.LittleEndian.Uint64(good[16:24])) + 16
+	if got := binary.LittleEndian.Uint64(good[sizeAt : sizeAt+8]); got != uint64(len(good)-(sizeAt-16)) {
+		t.Fatalf("offset %d holds %d, want the Data Object's own length: the builders moved", sizeAt, got)
+	}
+	overlong := slices.Clone(good)
+	binary.LittleEndian.PutUint64(overlong[sizeAt:sizeAt+8], math.MaxInt64-1)
+
+	err := hash(t, overlong)
+	if !errors.Is(err, waxerr.ErrInvalidData) {
+		t.Fatalf("err = %v, want ErrInvalidData", err)
+	}
+	if !strings.Contains(err.Error(), "no audio essence") {
+		t.Errorf("err = %v, want the no-audio-essence refusal: an unreadable length leaves the extent unknown", err)
 	}
 }
 

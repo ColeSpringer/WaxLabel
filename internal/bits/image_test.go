@@ -437,3 +437,32 @@ func TestImageExtensionCoversEverySniffedMIME(t *testing.T) {
 		t.Error("a non-image MIME must have no extension, leaving the fallback to the caller")
 	}
 }
+
+// TestSniffTIFFOverlongIFDOffset: the first-IFD offset is an unvalidated uint32 from the
+// file, and cover art reaches this sniffer straight from a tag. On a 32-bit build an
+// offset near 2 GiB overflowed the "offset + 2 > len" bounds check to a negative number
+// that passed it and then panicked on the slice, so the guard compares against the bytes
+// that remain. The file still sniffs as a TIFF with no dimensions, which is what the
+// sniffer reports for any IFD it cannot reach.
+func TestSniffTIFFOverlongIFDOffset(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		offset []byte
+	}{
+		{"near MaxInt32", []byte{0xFF, 0xFF, 0xFF, 0x7F}},
+		{"high bit set", []byte{0x00, 0x00, 0x00, 0x80}},
+		{"just past the buffer", []byte{0x09, 0x00, 0x00, 0x00}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			data := append([]byte{'I', 'I', 0x2A, 0x00}, c.offset...)
+			data = append(data, 0x02, 0x00) // an entry count the offset never reaches
+			got, ok := SniffImage(data)
+			if !ok || got.MIME != "image/tiff" {
+				t.Fatalf("SniffImage = %+v, %v, want an image/tiff", got, ok)
+			}
+			if got.Width != 0 || got.Height != 0 {
+				t.Errorf("dimensions = %dx%d, want 0x0: the IFD is out of reach", got.Width, got.Height)
+			}
+		})
+	}
+}

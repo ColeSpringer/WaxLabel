@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
-	"time"
+	"strings"
 
 	"github.com/colespringer/waxlabel/internal/bits"
 	"github.com/colespringer/waxlabel/internal/core"
@@ -568,9 +568,11 @@ func parseProperties(src core.ReaderAtSized, moov node, d *doc, limit int64) {
 		return
 	}
 	mdia, _ := trak.find("mdia")
+	var timescale uint32
 	if mdhd, ok := mdia.find("mdhd"); ok {
-		if dur, ok := parseMdhd(src, mdhd, limit); ok {
-			d.track.Duration = dur
+		if ts, dur, ok := mdhdFields(src, mdhd, limit); ok && ts > 0 {
+			timescale = ts
+			d.track.Duration = scaleToDuration(dur, ts)
 		}
 	}
 	// Report the edit-list-trimmed playable duration. The raw mdhd duration can include
@@ -585,7 +587,7 @@ func parseProperties(src core.ReaderAtSized, moov node, d *doc, limit int64) {
 	if minf, ok := mdia.find("minf"); ok {
 		if stbl, ok := minf.find("stbl"); ok {
 			if stsd, ok := stbl.find("stsd"); ok {
-				parseStsd(src, stsd, d, limit)
+				parseStsd(src, stsd, d, timescale, limit)
 			}
 		}
 	}
@@ -598,16 +600,6 @@ func handlerType(src core.ReaderAtSized, hdlr node, limit int64) string {
 		return ""
 	}
 	return string(b[8:12])
-}
-
-// parseMdhd returns the media duration from a mdhd atom, reusing the shared field
-// decode and the shared unit->Duration conversion.
-func parseMdhd(src core.ReaderAtSized, mdhd node, limit int64) (time.Duration, bool) {
-	ts, dur, ok := mdhdFields(src, mdhd, limit)
-	if !ok || ts == 0 {
-		return 0, false
-	}
-	return scaleToDuration(dur, ts), true
 }
 
 // parseStsd fills the codec name and audio geometry from the first sample entry.
@@ -628,7 +620,15 @@ func parseMdhd(src core.ReaderAtSized, mdhd node, limit int64) (time.Duration, b
 // entry rate is exactly double the core rate is an implicitly signalled stream the muxer
 // already decoded, so the entry stands; otherwise the config's core rate wins, including
 // over a config that explicitly denies SBR.
-func parseStsd(src core.ReaderAtSized, stsd node, d *doc, limit int64) {
+//
+// The uncompressed entries need the same correction for a different reason: their fourcc
+// carries detail the fixed fields do not. A QuickTime "ms" + WAVE-format-tag fourcc names
+// a Windows codec through the same table WAV and ASF read that tag with, so the NUL-bearing
+// spelling never reaches the reported codec. The PCM-family fourccs name the sample width,
+// which the entry's samplesize field does not (writers store a fixed 16 there whatever the
+// real width); the ISOBMFF ipcm/fpcm pair keep theirs in a pcmC box instead; and a v2
+// entry's format flags are the only place a float lpcm stream differs from an integer one.
+func parseStsd(src core.ReaderAtSized, stsd node, d *doc, timescale uint32, limit int64) {
 	// Clamp to the alloc limit rather than letting ReadSlice refuse the read: a caller with
 	// a limit below the prefix would otherwise get no codec and no geometry at all, and
 	// d.cfg's zeroes would change the essence-digest salt for the same bytes.
@@ -637,7 +637,17 @@ func parseStsd(src core.ReaderAtSized, stsd node, d *doc, limit int64) {
 		return
 	}
 	copy(d.cfg.codec[:], b[12:16])
-	d.track.Codec = string(d.cfg.codec[:])
+	fourcc := string(d.cfg.codec[:])
+	d.track.Codec = fourcc
+	if strings.HasPrefix(fourcc, "ms") {
+		// QTFF's spelling for a Windows codec: "ms" then the WAVE format tag, big-endian,
+		// which is how ffmpeg's mov demuxer reads the same bytes. Every tag goes through the
+		// shared table, so "ms\x00\x55" names MP3 the way that tag does in a WAV "fmt "
+		// chunk or an ASF Stream Properties object, and one the table does not know reports
+		// its own hex rather than a fourcc holding a NUL. Fourccs outside this spelling are
+		// reported raw; render escapes what is not printable.
+		d.track.Codec = core.WaveFormatCodec(binary.BigEndian.Uint16(b[14:16]))
+	}
 
 	end := len(b)
 	if size := int64(binary.BigEndian.Uint32(b[8:12])); size > 0 && 8+size < int64(end) {
@@ -665,13 +675,62 @@ func parseStsd(src core.ReaderAtSized, stsd node, d *doc, limit int64) {
 		d.track.Channels = int(d.cfg.channels)
 		d.track.BitsPerSample = int(d.cfg.sampleSize)
 		d.track.SampleRate = int(d.cfg.sampleRate)
+		if depth, _ := pcmFourcc(fourcc); depth > 0 {
+			d.track.BitsPerSample = depth
+		}
 		if version == 1 {
 			extOff += 16 // v1 appends four QuickTime bytes-per-packet/frame/sample fields
 		}
 	}
-	if fourcc := string(b[12:16]); fourcc == "alac" || fourcc == "fLaC" || fourcc == "mp4a" {
-		applyEntryConfig(d, scanEntryConfig(b, extOff, end, fourcc))
+	var cfg entryConfig
+	switch fourcc {
+	case "alac", "fLaC", "mp4a", "ipcm", "fpcm":
+		cfg = scanEntryConfig(b, extOff, end, fourcc)
+		applyEntryConfig(d, cfg)
 	}
+	if _, ok := pcmFourcc(fourcc); ok {
+		if fourcc == "fpcm" && cfg.bitDepth == 0 {
+			// No readable pcmC. The entry's samplesize is the fixed 16 every writer stores
+			// there and no 16-bit float format exists, so report no width rather than one
+			// that cannot be true.
+			d.track.BitsPerSample = 0
+		}
+		// A v0 entry stores the rate as 16.16, which holds nothing above 65535, so ffmpeg
+		// writes zero for a hi-res ISOBMFF ipcm/fpcm track. These entries carry no
+		// configuration to recover it from, leaving the media timescale - which for an
+		// uncompressed track is the sample rate, and is what the .mov twin's v2 entry
+		// states outright.
+		if d.track.SampleRate == 0 && timescale > 0 && timescale < math.MaxInt32 {
+			d.track.SampleRate = int(timescale)
+		}
+	}
+}
+
+// pcmFourcc reports whether a fourcc is one of the uncompressed QuickTime/ISOBMFF sample
+// entries, and the sample width it names (0 when the width lives elsewhere). Two rules key
+// off this one table. For the entries that name a width, the entry's samplesize field is
+// decoration - ffmpeg and QuickTime v1 entries write 16 whatever the real width - so the
+// fourcc is the figure the WAV twins and ffprobe report. And none of these entries carry a
+// codec configuration declaring a rate, so when the 16.16 rate field is zero, which is how
+// a v0 entry says the rate does not fit it, the media timescale is the only witness left.
+//
+// Matched case-insensitively, as the canonical codec table matches the same fourccs.
+func pcmFourcc(fourcc string) (depth int, ok bool) {
+	switch strings.ToUpper(fourcc) {
+	case "IN24":
+		return 24, true
+	case "IN32", "FL32":
+		return 32, true
+	case "FL64":
+		return 64, true
+	case "ULAW", "ALAW":
+		return 8, true
+	case "IMA4":
+		return 4, true
+	case "LPCM", "IPCM", "FPCM", "SOWT", "TWOS", "RAW ", "NONE":
+		return 0, true // the entry field or a pcmC box carries the width
+	}
+	return 0, false
 }
 
 // parseSoundEntryV2 decodes a QuickTime version 2 sound sample entry's geometry onto
@@ -702,6 +761,19 @@ func parseSoundEntryV2(b []byte, end int, d *doc) (extOff int, ok bool) {
 	if depth := binary.BigEndian.Uint32(b[64:68]); depth > 0 && depth <= 64 {
 		d.track.BitsPerSample = int(depth)
 	}
+	// formatSpecificFlags, the word after constBitsPerChannel (size >= 72 above guarantees
+	// the bytes). An lpcm fourcc says only "linear PCM", so bit 0 - kAudioFormatFlagIsFloat -
+	// is the format's only statement that the samples are floats; the width then names which
+	// float form, as it does for the fl32/fl64 fourccs. A width no float format defines
+	// leaves the entry naming itself, the same rule the pcmC box follows.
+	if flags := binary.BigEndian.Uint32(b[68:72]); string(b[12:16]) == "lpcm" && flags&1 != 0 {
+		switch d.track.BitsPerSample {
+		case 32:
+			d.track.Codec = "IEEE float"
+		case 64:
+			d.track.Codec = "IEEE float64"
+		}
+	}
 	return 8 + size, true
 }
 
@@ -712,9 +784,10 @@ const dfLaStreamInfoEnd = 8 + 4 + 4 + vorbis.StreamInfoLen
 
 // entryConfig is what a codec's own configuration declares. streamInfo is set only for a
 // FLAC entry, whose STREAMINFO the FLAC-in-ISOBMFF spec makes authoritative for the whole
-// track, block-size bounds and MD5 included; codec and asc only for an esds, whose object
-// type names the codec more precisely than the four-cc and whose AudioSpecificConfig needs
-// reconciling with the entry rather than simply replacing it.
+// track, block-size bounds and MD5 included; asc only for an esds, whose AudioSpecificConfig
+// needs reconciling with the entry rather than simply replacing it. codec is set where the
+// configuration names the codec more precisely than the four-cc: an esds object type, and a
+// pcmC width that separates the two float forms one fourcc covers.
 type entryConfig struct {
 	sampleRate, channels, bitDepth int
 	streamInfo                     *core.AudioTrack
@@ -748,6 +821,8 @@ func scanEntryConfig(b []byte, off, end int, fourcc string) entryConfig {
 			return esdsConfig(b, off, off+size)
 		case name == "alac" && fourcc == "alac":
 			return alacCookieConfig(b, off, size)
+		case name == "pcmC" && (fourcc == "ipcm" || fourcc == "fpcm"):
+			return pcmCConfig(b, off, size, fourcc)
 		case name == "wave":
 			if cfg := scanEntryConfig(b, off+8, off+size, fourcc); !cfg.empty() {
 				return cfg
@@ -778,6 +853,31 @@ func alacCookieConfig(b []byte, off, size int) entryConfig {
 	return cfg
 }
 
+// pcmCConfig decodes the PCM configuration box an ISOBMFF ipcm or fpcm entry carries, a
+// FullBox whose 8-byte header and 4 version/flags bytes are followed by format_flags and
+// then PCM_sample_size. That is where these entries keep the width; their samplesize field
+// holds the same fixed 16 every writer puts there. A width the entry's fourcc does not
+// define is dropped rather than published. scanEntryConfig has already bounded off+size by
+// the buffer, so a declared size that covers the field is enough to read it.
+func pcmCConfig(b []byte, off, size int, fourcc string) entryConfig {
+	if size < 14 {
+		return entryConfig{}
+	}
+	var cfg entryConfig
+	switch depth := int(b[off+13]); {
+	case fourcc == "ipcm" && (depth == 16 || depth == 24 || depth == 32):
+		cfg.bitDepth = depth
+	case fourcc == "fpcm" && depth == 32:
+		cfg.bitDepth = depth
+	case fourcc == "fpcm" && depth == 64:
+		// The fourcc alone canonicalizes to "IEEE float", the 32-bit form; only the width
+		// separates the two, so name the codec here rather than let 64-bit samples read as
+		// the narrower one.
+		cfg.bitDepth, cfg.codec = depth, "IEEE float64"
+	}
+	return cfg
+}
+
 // dfLaStreamInfo decodes the STREAMINFO the dfLa box at b[off:] must open with, or nil
 // when the box is too small to hold one, opens with another block type, or is cut short of
 // its 34 bytes by the prefix read. Layout: the 8-byte box header, a 4-byte FullBox
@@ -798,7 +898,7 @@ func dfLaStreamInfo(b []byte, off, size, end int) *core.AudioTrack {
 // applyEntryConfig overrides the sample entry's reported geometry with the codec
 // configuration's. The entry's Duration and TotalSamples stand, since the timing comes
 // from mdhd; its four-cc stands too unless the configuration names the codec more
-// precisely, which only an esds objectTypeIndication does.
+// precisely, which an esds objectTypeIndication and a 64-bit pcmC width do.
 func applyEntryConfig(d *doc, cfg entryConfig) {
 	if si := cfg.streamInfo; si != nil {
 		d.track.SampleRate = si.SampleRate

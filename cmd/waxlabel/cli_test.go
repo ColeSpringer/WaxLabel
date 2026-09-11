@@ -25,6 +25,9 @@ var (
 	notagsFLAC = filepath.Join("..", "..", "testdata", "notags.flac")
 	sampleM4B  = filepath.Join("..", "..", "testdata", "sample_chapters.m4b")
 	emptyMP3   = filepath.Join("..", "..", "testdata", "empty.mp3") // tag-only/truncated MP3
+	mp3MOV     = filepath.Join("..", "..", "testdata", "mp3.mov")   // MP3 in a QuickTime ".mp3" entry
+	sampleWMA  = filepath.Join("..", "..", "testdata", "sample.wma")
+	lossless24 = filepath.Join("..", "..", "testdata", "lossless24.wma")
 )
 
 // runCLI drives the CLI exactly as dispatch does in main, capturing stdout, stderr, and the
@@ -132,6 +135,7 @@ func TestDumpJSONCodecCanonical(t *testing.T) {
 		{sampleM4B, "AAC", "AAC LC"}, // the esds object type, more precise than the fourcc
 		{sampleFLAC, "FLAC", "flac"}, // FLAC's lowercase preserved
 		{sampleOpus, "Opus", ""},     // already canonical: no profile
+		{mp3MOV, "MP3", ".mp3"},      // the QuickTime fourcc, demoted to the profile
 	}
 	for _, c := range cases {
 		out, _, code := runCLI(t, "dump", c.file, "--json")
@@ -139,7 +143,11 @@ func TestDumpJSONCodecCanonical(t *testing.T) {
 			t.Fatalf("%s: exit = %d\n%s", c.file, code, out)
 		}
 		jd := decodeJSONOne[jsonDocument](t, out)
-		if jd.Properties == nil || jd.Properties.Codec != c.codec || jd.Properties.CodecProfile != c.profile {
+		if jd.Properties == nil {
+			t.Errorf("%s: no properties block", c.file)
+			continue
+		}
+		if jd.Properties.Codec != c.codec || jd.Properties.CodecProfile != c.profile {
 			t.Errorf("%s: codec=%q profile=%q, want %q/%q", c.file, jd.Properties.Codec, jd.Properties.CodecProfile, c.codec, c.profile)
 		}
 	}
@@ -147,27 +155,68 @@ func TestDumpJSONCodecCanonical(t *testing.T) {
 
 // TestDumpJSONOmitsBitDepthForLossy: a lossy codec decodes to PCM at the decoder's chosen
 // depth, so a container-stored "16-bit" is noise and omitempty drops it, matching the text
-// view's gate. Lossless FLAC keeps its real width. The AAC fixtures store a literal 16 at
-// the parser, so this exercises the gate rather than an already-absent field.
+// view's gate. Lossless FLAC and WMA Lossless keep their real width. Every lossy fixture
+// here stores a literal 16 at the parser, so this exercises the gate rather than an
+// already-absent field.
 func TestDumpJSONOmitsBitDepthForLossy(t *testing.T) {
 	t.Parallel()
-	out, _, code := runCLI(t, "dump", sampleM4B, "--json")
-	if code != 0 {
-		t.Fatalf("exit = %d\n%s", code, out)
+	// Each fixture is its own subtest, so a failure on one still reports the rest.
+	for _, path := range []string{sampleM4B, sampleWMA, mp3MOV} {
+		t.Run("lossy "+filepath.Base(path), func(t *testing.T) {
+			out, _, code := runCLI(t, "dump", path, "--json")
+			if code != 0 {
+				t.Fatalf("exit = %d\n%s", code, out)
+			}
+			// The raw stream must not carry the key at all (omitempty over the zeroed field).
+			if strings.Contains(out, "bitsPerSample") {
+				t.Errorf("a lossy codec's dump should omit bitsPerSample:\n%s", out)
+			}
+			jd := decodeJSONOne[jsonDocument](t, out)
+			if jd.Properties == nil {
+				t.Fatal("no properties block")
+			}
+			if jd.Properties.BitsPerSample != 0 {
+				t.Errorf("bitsPerSample = %d, want 0 (omitted)", jd.Properties.BitsPerSample)
+			}
+		})
 	}
-	// The raw stream must not carry the key at all (omitempty over the zeroed field).
-	if strings.Contains(out, "bitsPerSample") {
-		t.Errorf("AAC/MP4 dump should omit bitsPerSample:\n%s", out)
+	// The lossless codecs keep their real, fixed-width depth.
+	for _, c := range []struct {
+		path string
+		want int
+	}{{sampleFLAC, 16}, {lossless24, 24}} {
+		t.Run("lossless "+filepath.Base(c.path), func(t *testing.T) {
+			out, _, code := runCLI(t, "dump", c.path, "--json")
+			if code != 0 {
+				t.Fatalf("exit = %d\n%s", code, out)
+			}
+			jd := decodeJSONOne[jsonDocument](t, out)
+			if jd.Properties == nil {
+				t.Fatal("no properties block")
+			}
+			if jd.Properties.BitsPerSample != c.want {
+				t.Errorf("bitsPerSample = %d, want %d (a real depth is kept)", jd.Properties.BitsPerSample, c.want)
+			}
+		})
 	}
-	jd := decodeJSONOne[jsonDocument](t, out)
-	if jd.Properties == nil || jd.Properties.BitsPerSample != 0 {
-		t.Errorf("AAC bitsPerSample = %d, want 0 (omitted)", jd.Properties.BitsPerSample)
-	}
-	// A lossless FLAC keeps its real, fixed-width depth.
-	fout, _, _ := runCLI(t, "dump", sampleFLAC, "--json")
-	fd := decodeJSONOne[jsonDocument](t, fout)
-	if fd.Properties == nil || fd.Properties.BitsPerSample != 16 {
-		t.Errorf("FLAC bitsPerSample = %d, want 16 (a real depth is kept)", fd.Properties.BitsPerSample)
+}
+
+// TestDumpTextOmitsBitDepthForLossy pins the human view to the same gate: neither a lossy
+// WMA nor a QuickTime MP3 track prints a width on its audio line.
+func TestDumpTextOmitsBitDepthForLossy(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{sampleWMA, mp3MOV} {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			out, _, code := runCLI(t, "dump", path)
+			if code != 0 {
+				t.Fatalf("exit = %d\n%s", code, out)
+			}
+			for _, line := range strings.Split(out, "\n") {
+				if strings.Contains(line, "audio:") && strings.Contains(line, "-bit") {
+					t.Errorf("audio line shows a bit depth: %s", line)
+				}
+			}
+		})
 	}
 }
 

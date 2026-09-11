@@ -2,6 +2,35 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- QuickTime and ISOBMFF audio fourccs (`.mp3`, `sowt`, `lpcm`, `ipcm`, `fl32`, `fpcm`,
+  `ulaw`, `ima4`, ...) report the canonical codec with the fourcc as `codecProfile`, so a
+  `.mov` MP3 reads `MP3`/`.mp3` like its `mp4a` twin. A QuickTime `ms` + WAVE-format-tag
+  fourcc names the codec that tag names in a WAV or WMA file.
+- Uncompressed MP4 entries report the width the format keeps, not the fixed 16 writers
+  store in the sample entry: the fourcc for `in24`/`in32`/`fl32`/`fl64`/`ulaw`/`alaw`/`ima4`,
+  the `pcmC` box for `ipcm`/`fpcm`, and a v2 entry's format flags, which are where a float
+  `lpcm` stream declares itself.
+- A hi-res ISOBMFF `ipcm`/`fpcm` track reports its sample rate. The 16.16 entry field holds
+  nothing above 65535 and these entries carry no configuration, so the rate came out as 0.
+- AIFF-C `sowt` reads `PCM` with `PCM (little-endian)` as the profile, matching the same
+  fourcc read from a `.mov`.
+- WAV and WMA name format tag 0x0050 `MP2`.
+- WMA Lossless bit depth comes from the codec extra bytes, where decoders read it, rather
+  than from the `wBitsPerSample` the format treats as decoration.
+- Declared lengths in a WMA file and a TIFF cover image are bounds-checked against the bytes
+  that remain rather than by adding them to an offset first, which a crafted length
+  overflows to a negative number that passes the check. A malformed file no longer panics a
+  32-bit build, and a WMA Data Object declaring an impossible length reports an unknown
+  audio extent, on any platform, instead of one that ends before it starts.
+
+### Changed
+
+- `dump` shows no bit depth for lossy WMA (v1, v2, Pro, Voice).
+
 ## [1.7.0]
 
 ### Added

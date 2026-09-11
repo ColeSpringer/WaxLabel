@@ -138,3 +138,18 @@ func TestWAVFactSurvivesEdit(t *testing.T) {
 		t.Errorf("duration after edit = %v, want 1s", got)
 	}
 }
+
+// TestWaveFormatTagMP2AcrossContainers: a WAVEFORMATEX describes the audio in both a RIFF
+// "fmt " chunk and an ASF Stream Properties object, so one format tag must name one codec
+// whichever container carried it. Tag 0x0050 is MPEG Layer 2; before it was mapped, both
+// containers reported the raw "WAVE format 0x0050".
+func TestWaveFormatTagMP2AcrossContainers(t *testing.T) {
+	wav := wavFile(wavFmtTag(0x0050, 2, 1152, 0, 44100, 32000), wavData(4096))
+	if got := mustParseBytes(t, wav).Properties().First().Codec; got != "MP2" {
+		t.Errorf("WAV codec = %q, want MP2", got)
+	}
+	asf := asfFile(asfStreamProperties(0x0050, 2, 44100, 0), asfContentDescription("T", "", "", "", ""))
+	if got := mustParseBytes(t, asf).Properties().First().Codec; got != "MP2" {
+		t.Errorf("ASF codec = %q, want MP2", got)
+	}
+}

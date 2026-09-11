@@ -207,14 +207,16 @@ func mkV2StsdPayload(fourcc string, rate float64, channels, bits uint32, ext []b
 	return b
 }
 
-// parseStsdPayload wraps a payload in an 8-byte stsd box header and runs parseStsd.
+// parseStsdPayload wraps a payload in an 8-byte stsd box header and runs parseStsd. The
+// timescale is zero: these payloads carry their own rate, and the fallback is for the
+// uncompressed entries that cannot.
 func parseStsdPayload(t *testing.T, payload []byte) *doc {
 	t.Helper()
 	raw := append([]byte{0, 0, 0, 0, 's', 't', 's', 'd'}, payload...)
 	binary.BigEndian.PutUint32(raw[0:4], uint32(len(raw)))
 	d := &doc{}
 	n := node{name: [4]byte{'s', 't', 's', 'd'}, offset: 0, headerLen: 8, size: int64(len(raw))}
-	parseStsd(core.BytesSource(raw), n, d, 1<<20)
+	parseStsd(core.BytesSource(raw), n, d, 0, 1<<20)
 	return d
 }
 

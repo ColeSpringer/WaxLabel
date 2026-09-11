@@ -51,13 +51,50 @@ func TestCanonicalCodec(t *testing.T) {
 		{"Opus", "Opus", ""},
 		{"Vorbis", "Vorbis", ""},
 		{"PCM", "PCM", ""},
-		{"PCM (little-endian)", "PCM (little-endian)", ""}, // AIFF detail kept as-is
-		{"WAVPACK4", "WAVPACK4", ""},                       // Matroska, no canonical mapping
+		{"WAVPACK4", "WAVPACK4", ""}, // Matroska, no canonical mapping
+		// The QuickTime/ISOBMFF fourccs and the AIFF-C spelling of one of them. The byte
+		// order, width and signedness each names is profile detail of one codec, so a
+		// stream reads the same whichever container carried it.
+		{".mp3", "MP3", ".mp3"}, // QuickTime's MP3 fourcc, the esds twin of "MP3"
+		{".mp2", "MP2", ".mp2"},
+		{"sowt", "PCM", "sowt"},
+		{"twos", "PCM", "twos"},
+		{"lpcm", "PCM", "lpcm"},
+		{"ipcm", "PCM", "ipcm"},
+		{"in24", "PCM", "in24"},
+		{"NONE", "PCM", "NONE"},
+		{"raw ", "PCM", "raw "},                               // the trailing space is part of the fourcc
+		{"PCM (little-endian)", "PCM", "PCM (little-endian)"}, // AIFF-C's name for sowt
+		{"fl32", "IEEE float", "fl32"},
+		{"fpcm", "IEEE float", "fpcm"},
+		{"fl64", "IEEE float64", "fl64"},
+		{"IEEE float", "IEEE float", ""}, // already canonical (WAV, AIFF-C)
+		{"ulaw", "mu-law", "ulaw"},
+		{"alaw", "A-law", "alaw"},
+		{"ima4", "IMA ADPCM", "ima4"},
 	}
 	for _, c := range cases {
 		codec, profile := CanonicalCodec(c.raw)
 		if codec != c.codec || profile != c.profile {
 			t.Errorf("CanonicalCodec(%q) = (%q, %q), want (%q, %q)", c.raw, codec, profile, c.codec, c.profile)
+		}
+	}
+}
+
+// TestWaveFormatCodec: a format tag names one codec whatever container carried the
+// WAVEFORMATEX, so the RIFF, ASF and QuickTime "ms" readers share this table.
+func TestWaveFormatCodec(t *testing.T) {
+	for _, c := range []struct {
+		tag  uint16
+		want string
+	}{
+		{0x0050, "MP2"}, // MPEG Layer 2; without it the tag read as "WAVE format 0x0050"
+		{0x0055, "MP3"},
+		{0x0163, "WMA Lossless"},
+		{0x1234, "WAVE format 0x1234"}, // unrecognized tags report themselves, not a guess
+	} {
+		if got := WaveFormatCodec(c.tag); got != c.want {
+			t.Errorf("WaveFormatCodec(%#04x) = %q, want %q", c.tag, got, c.want)
 		}
 	}
 }

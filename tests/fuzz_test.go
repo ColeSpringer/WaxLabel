@@ -29,6 +29,9 @@ func FuzzParse(f *testing.F) {
 		sampleMP3, sampleMP324, notagsMP3, sampleWAV, notagsWAV, sampleMP4, notagsMP4,
 		sampleMKA, sampleWebM, notagsMKA, chaptersMKA, sampleAIFF, notagsAIFF, sampleAIFC, sampleM4B,
 		sampleAAC, notagsAAC, sampleRF64, sampleWV, notagsWV, sampleAPE, notagsAPE, sampleWMA, notagsWMA, chaptersMPC,
+		// A QuickTime ".mp3" entry with its mdat ahead of the moov, and a WMA Lossless
+		// stream whose depth sits in the codec extra bytes.
+		mp3MOV, lossless24WMA,
 		// The HE-AAC shapes, whose esds descriptor nest and AudioSpecificConfig the MP4 path
 		// decodes; heaac_v1.aac is the same stream as raw ADTS.
 		"../testdata/heaac_v1.m4a", "../testdata/heaac_v2.m4a", "../testdata/heaac_ds.m4a", heaacAAC,
@@ -65,6 +68,7 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte("MAC \x96\x0f\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff"))
 	f.Add([]byte("MAC 0000\xe6\x00\x00\x00" + strings.Repeat("0", 136)))                                                                                  // descriptor length landing exactly on the rewritten file's end                                                                                 // descriptor declaring absurd region sizes
 	f.Add(asfFile(asfStreamProperties(0x0161, 2, 44100, 16), asfContentDescription("T", "A", "", "", "")))                                                // minimal ASF
+	f.Add(asfFile(asfStreamPropertiesRaw(asfWaveFormatEx(0x0163, 2, 44100, 16, asfLosslessExtra(24)))))                                                   // WMA Lossless, depth behind the structure
 	f.Add(asfFile(asfExtContentDescription(asfDescriptor{"WM/Picture", 1, []byte{3, 0xFF, 0xFF, 0xFF, 0xFF}})))                                           // WM/Picture declaring an absurd image length
 	f.Add(asfFile(asfHeaderExtension(asfDescriptor{"WM/AlbumTitle", 0, asfUTF16("x")})))                                                                  // nested Metadata record
 	f.Add([]byte("RF640000WAVEds64\x1c\x00\x00\x00000000000000000\xdd0000000000\x00\x00data\xff\xff\xff\xff"))                                            // ds64 dataSize above MaxInt64

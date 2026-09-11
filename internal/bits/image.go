@@ -438,8 +438,13 @@ func sniffTIFF(data []byte) (ImageInfo, bool) {
 	if len(data) < 8 {
 		return info, true
 	}
+	// Compare against len(data)-2 rather than ifd+2: the offset is an unvalidated uint32
+	// from the file, and on a 32-bit build a value near 2 GiB overflows the sum to a
+	// negative number that passes the test and then panics on the slice below. The len < 8
+	// guard above already proved the subtraction is safe, and ifd < 8 rejects the uint32
+	// values whose high bit made the conversion itself negative.
 	ifd := int(bo.Uint32(data[4:8]))
-	if ifd < 8 || ifd+2 > len(data) {
+	if ifd < 8 || ifd > len(data)-2 {
 		return info, true
 	}
 	count := int(bo.Uint16(data[ifd : ifd+2]))
