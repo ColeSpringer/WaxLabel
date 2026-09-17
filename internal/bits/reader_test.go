@@ -90,7 +90,7 @@ func TestWriteSegments(t *testing.T) {
 	}
 }
 
-// fakeTap records bytes copied from a claimed source range, byte-precisely.
+// fakeTap records bytes in [lo, hi).
 type fakeTap struct {
 	lo, hi int64
 	buf    bytes.Buffer
@@ -118,9 +118,7 @@ func TestWriteSegmentsTap(t *testing.T) {
 	}
 }
 
-// TestReadSliceZeroLength: a ReaderAt may answer a zero-length read at its end with
-// EOF, as bytes.Reader does and a file does not. There is nothing to fail on, so the
-// read succeeds on both.
+// TestReadSliceZeroLength: zero-length read at EOF succeeds.
 func TestReadSliceZeroLength(t *testing.T) {
 	r := bytes.NewReader([]byte("abc"))
 	if b, err := ReadSlice(r, 3, 0, 16); err != nil || len(b) != 0 {

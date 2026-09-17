@@ -30,11 +30,9 @@ func hasWarn(ws []wl.Warning, code wl.WarningCode) bool { return countWarning(ws
 
 // --- non-conformant Vorbis key validated at read ---
 
-// TestInvalidVorbisKeyWarnsPreservesAndCopiesClean covers the invalid-tag-key handling: an
-// empty-name Vorbis comment is dropped from the canonical model (the writer's Key.Valid gate
-// would reject it) and surfaced as a warning, so a copy no longer "carries" it and then aborts.
-// An unrelated set preserves the raw comment verbatim with post-write warnings equal to a fresh
-// re-parse (the round-trip invariant that catches a double-count).
+// invalid-tag-key handling: an empty-name Vorbis comment is dropped from the canonical model (the
+// writer's Key.Valid gate would reject it) and surfaced as a warning, so a copy no longer "carries"
+// it and then aborts.
 func TestInvalidVorbisKeyWarnsPreservesAndCopiesClean(t *testing.T) {
 	src := flacWithComments("TITLE=x", "=orphan") // a comment with an empty name
 	doc := mustParseBytes(t, src)
@@ -68,10 +66,9 @@ func TestInvalidVorbisKeyWarnsPreservesAndCopiesClean(t *testing.T) {
 	}
 }
 
-// TestDuplicateWAVTextValuePreservedOnSave is the end-to-end guard for the finding that a
-// blanket first-wins silently dropped a preservable text value. A WAV with two INAM (Title)
-// items must carry both through an unrelated edit: the write forces an ID3 chunk whose v2.4
-// TIT2 preserves both, so a re-parse still sees both. First-wins stays scoped to number keys.
+// end-to-end guard for the finding that a blanket first-wins silently dropped a preservable text
+// value. A WAV with two INAM (Title) items must carry both through an unrelated edit: the write
+// forces an ID3 chunk whose v2.4 TIT2 preserves both, so a re-parse still sees both.
 func TestDuplicateWAVTextValuePreservedOnSave(t *testing.T) {
 	src := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Title A"}, [2]string{"INAM", "Title B"}), wavData(400))
 	doc := mustParseBytes(t, src)
@@ -89,11 +86,8 @@ func TestDuplicateWAVTextValuePreservedOnSave(t *testing.T) {
 	}
 }
 
-// TestHostileVorbisKeyDroppedAndWarned covers the reader->model side of the hostile-key
-// defense (the direct-injection test in review_test.go covers Change.String's sanitizer). A
-// Vorbis comment whose name carries a control byte has no valid canonical key, so the reader
-// drops it from the model - it can never leak an un-sanitized key into a diff or preview - and
-// warns invalid-tag-key.
+// reader->model side of the hostile-key defense (the direct-injection test in review_test.go covers
+// Change.String's sanitizer).
 func TestHostileVorbisKeyDroppedAndWarned(t *testing.T) {
 	doc := mustParseBytes(t, flacWithComments("TITLE=x", "BAD\x1bKEY=v"))
 	if !hasWarn(doc.Warnings(), wl.WarnInvalidTagKey) {
@@ -213,10 +207,10 @@ func TestFLACMalformedPicturePreservedAcrossPictureEdit(t *testing.T) {
 	}
 }
 
-// TestFLACMalformedPictureSurvivesChainedEdit covers the finding that buildResult omitted the
-// malformed-block field from the in-memory result doc: a SECOND picture edit on the returned
-// Document (chained, with no re-parse between edits) must still preserve the undecodable block,
-// so a fresh parse of the twice-edited output still warns invalid-picture.
+// finding that buildResult omitted the malformed-block field from the in-memory result doc: a
+// SECOND picture edit on the returned Document (chained, with no re-parse between edits) must still
+// preserve the undecodable block, so a fresh parse of the twice-edited output still warns
+// invalid-picture.
 func TestFLACMalformedPictureSurvivesChainedEdit(t *testing.T) {
 	src := flacWithMalformedPicture()
 	plan, err := mustParseBytes(t, src).Edit().
@@ -258,11 +252,8 @@ func mp3WithMalformedAPIC(t *testing.T) []byte {
 	return append(append(tagBytes, frame...), frames...)
 }
 
-// TestMP3MalformedAPICWarningNotStaleAfterPictureEdit covers the finding that a picture edit
-// on an MP3 with a malformed APIC left a stale invalid-picture warning on the returned
-// Document. The edit drops the malformed APIC (HasDroppedMalformedPicture), so the returned
-// doc's warnings must equal a fresh re-parse of the output - which has no malformed cover and
-// so emits no invalid-picture. A tag-only edit preserves the APIC, so the warning stays there.
+// finding that a picture edit on an MP3 with a malformed APIC left a stale invalid-picture warning
+// on the returned Document.
 func TestMP3MalformedAPICWarningNotStaleAfterPictureEdit(t *testing.T) {
 	src := mp3WithMalformedAPIC(t)
 	doc := mustParseBytes(t, src)

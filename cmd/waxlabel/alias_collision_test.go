@@ -6,10 +6,8 @@ import (
 	"testing"
 )
 
-// TestAliasCollisionNote covers the alias-collision note: two differently-spelled
-// --set assignments that resolve to the same canonical field (DATE and RECORDINGDATE both
-// resolve to RECORDINGDATE) with conflicting values must warn that last-write-wins
-// discarded one. An identical value, and --json, must not surface it.
+// TestAliasCollisionNote: conflicting --set aliases for one canonical field warn that
+// last-write-wins discarded a value. Identical values and --json stay quiet.
 func TestAliasCollisionNote(t *testing.T) {
 	t.Parallel()
 	const marker = "refer to the same field"
@@ -24,8 +22,7 @@ func TestAliasCollisionNote(t *testing.T) {
 
 	t.Run("empty then set still warns", func(t *testing.T) {
 		t.Parallel()
-		// DATE= short-circuits the empty-value note; the collision tracking runs before that
-		// continue, so the differing RECORDINGDATE=2021 is still caught.
+		// Collision tracking runs before DATE= skips the empty-value note.
 		_, stderr, _ := runCLI(t, "set", copyFixture(t, sampleFLAC), "--set", "DATE=", "--set", "RECORDINGDATE=2021")
 		if !strings.Contains(stderr, marker) {
 			t.Errorf("empty DATE= then RECORDINGDATE=2021 should still note the collision; stderr:\n%s", stderr)
@@ -42,8 +39,7 @@ func TestAliasCollisionNote(t *testing.T) {
 
 	t.Run("whitespace-only difference on a trimmable key does not warn", func(t *testing.T) {
 		t.Parallel()
-		// TRACK and TRACKNUMBER both resolve to TRACKNUMBER (a trimmable numeric key), and
-		// "1" and " 1" both store as "1" - so this is not a real conflict and must not warn.
+		// TRACK/TRACKNUMBER trim to the same stored "1"; not a real conflict.
 		_, stderr, _ := runCLI(t, "set", copyFixture(t, sampleFLAC), "--set", "TRACK=1", "--set", "TRACKNUMBER= 1")
 		if strings.Contains(stderr, marker) {
 			t.Errorf("a whitespace-only difference on a trimmable key must not warn (both store \"1\"); stderr:\n%s", stderr)

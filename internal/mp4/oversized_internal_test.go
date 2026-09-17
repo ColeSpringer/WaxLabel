@@ -40,10 +40,9 @@ func TestCheckItemSizes(t *testing.T) {
 }
 
 // TestReadPayloadWholeFailsLoudOnOversize is the discriminating read-side regression: a
-// node whose declared payload exceeds the cap must fail loudly with ErrSizeTooLarge *before*
-// reading or allocating, where the old min(payloadSize, cap) silently truncated to the cap. A
-// tiny source proves the size check fires first (no read, no 64 MiB allocation): the old helper
-// would instead try to read maxMetaChunk bytes and surface a read error, not ErrSizeTooLarge.
+// node whose declared payload exceeds the cap must fail loudly with ErrSizeTooLarge
+// *before* reading or allocating, where the old min(payloadSize, cap) silently
+// truncated to the cap.
 func TestReadPayloadWholeFailsLoudOnOversize(t *testing.T) {
 	src := core.BytesSource(make([]byte, 16)) // never actually read: the size check returns first
 	// 100 MiB declared payload against the 64 MiB structural cap.
@@ -59,10 +58,9 @@ func TestReadPayloadWholeFailsLoudOnOversize(t *testing.T) {
 	}
 }
 
-// TestCheckBuiltItemsFloorsAtParsedItems covers the fix: an item already present at parse
-// (read within the parse limit) must not be rejected on write even when the write limit is far
-// smaller - checkBuiltItems floors the limit at the largest parsed item. A genuinely new item
-// larger than anything the file already held is still rejected.
+// TestCheckBuiltItemsFloorsAtParsedItems covers the fix: an item already present at
+// parse (read within the parse limit) must not be rejected on write even when the write
+// limit is far smaller - checkBuiltItems floors the limit at the largest parsed item.
 func TestCheckBuiltItemsFloorsAtParsedItems(t *testing.T) {
 	const limit = 100
 	parsed := []item{{name: atomName("covr"), payload: make([]byte, 500)}} // a large cover read at parse
@@ -146,13 +144,10 @@ func mkMP4WithUdtaMeta(meta []byte) []byte {
 	return slices.Concat(ftyp, moov, mdat)
 }
 
-// TestParseRejectsUndersizedMetaGap covers the fix: a moov.udta.meta with a gap between where
-// its children end and its own end corrupts a create-ilst edit (buildCreated appends the new ilst
-// at meta.end(), but a re-parse resolves the first child earlier, so the ilst lands misaligned).
-// walkAtoms tolerates an all-zero gap (the udta-terminator rule), so parse must reject it here.
-// Both the bare (9-11 byte) and FullBox-with-zero-pad (13-15 byte) shapes must be caught; an empty
-// bare meta (size 8), an empty FullBox meta (size 12), and a meta whose hdlr child tiles exactly to
-// its end must all still parse cleanly.
+// TestParseRejectsUndersizedMetaGap covers the fix: a moov.udta.meta with a gap between
+// where its children end and its own end corrupts a create-ilst edit (buildCreated
+// appends the new ilst at meta.end(), but a re-parse resolves the first child earlier,
+// so the ilst lands misaligned).
 func TestParseRejectsUndersizedMetaGap(t *testing.T) {
 	ctx := context.Background()
 	reject := map[string][]byte{

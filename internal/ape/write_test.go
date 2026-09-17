@@ -12,8 +12,7 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// parseRendered renders items and reads them back through the real parser, which is
-// the only way to know Render emitted a tag the reader accepts.
+// parseRendered: Render then ParseAt (only check the reader accepts).
 func parseRendered(t *testing.T, items []Item) *Tag {
 	t.Helper()
 	raw, err := Render(items, writeVersion, true)
@@ -48,10 +47,7 @@ func TestRenderRoundTrip(t *testing.T) {
 	}
 }
 
-// TestRenderHeaderAndFooterFlags pins the record layout: a header and a footer with
-// the same version, size, and count, differing only in the header marker, and a size
-// field that counts the items plus the footer (what a reader scanning back from the
-// end of a file needs) rather than the whole tag.
+// TestRenderHeaderAndFooterFlags: same version/size/count; size = items+footer.
 func TestRenderHeaderAndFooterFlags(t *testing.T) {
 	raw, err := Render([]Item{{Key: "Title", Value: "x"}}, writeVersion, true)
 	if err != nil {
@@ -75,10 +71,7 @@ func TestRenderHeaderAndFooterFlags(t *testing.T) {
 	}
 }
 
-// TestRebuildPreservesItemFlags is the byte-level preserve-unknown contract: an item
-// WaxLabel did not edit keeps its flags, including the read-only bit and the type
-// bits. A rebuild that re-rendered every item from its decoded value would clear
-// them silently.
+// TestRebuildPreservesItemFlags: untouched items keep flags (preserve-unknown).
 func TestRebuildPreservesItemFlags(t *testing.T) {
 	orig := []Item{
 		{Key: "Title", Value: "Old"},
@@ -108,8 +101,7 @@ func TestRebuildPreservesItemFlags(t *testing.T) {
 	}
 }
 
-// TestRebuildKeepsSourceSpelling: an edit to a file another tagger wrote must not
-// rename its items. New keys use the conventional APE spelling instead.
+// TestRebuildKeepsSourceSpelling: keep existing names; new keys use convention.
 func TestRebuildKeepsSourceSpelling(t *testing.T) {
 	orig := []Item{{Key: "ALBUM ARTIST", Value: "Old"}}
 	base := tag.NewTagSet()
@@ -130,8 +122,7 @@ func TestRebuildKeepsSourceSpelling(t *testing.T) {
 	}
 }
 
-// TestRebuildClearRemovesItem: a key cleared from the edited set writes no item,
-// which is how a --clear removes it from the file.
+// TestRebuildClearRemovesItem: cleared key writes no item.
 func TestRebuildClearRemovesItem(t *testing.T) {
 	orig := []Item{{Key: "Title", Value: "Gone"}, {Key: "Artist", Value: "Kept"}}
 	base := tag.NewTagSet()
@@ -146,8 +137,7 @@ func TestRebuildClearRemovesItem(t *testing.T) {
 	}
 }
 
-// TestCoverRoundTrip covers the cover-art convention end to end, including the
-// NUL-terminated file name the payload begins with.
+// TestCoverRoundTrip: cover convention including NUL file name.
 func TestCoverRoundTrip(t *testing.T) {
 	png := []byte("\x89PNG\r\n\x1a\n" + "\x00\x00\x00\rIHDR\x00\x00\x00\x02\x00\x00\x00\x03\x08\x06\x00\x00\x00")
 	for _, c := range []struct {
@@ -190,8 +180,7 @@ func TestDecodeCoverMalformed(t *testing.T) {
 	}
 }
 
-// TestProjectMalformedCoverWarns: a bad cover is surfaced, not silently dropped, and
-// its item survives for the rewrite to preserve.
+// TestProjectMalformedCoverWarns: warn; item survives for rewrite.
 func TestProjectMalformedCoverWarns(t *testing.T) {
 	tg := &Tag{Items: []Item{{Key: coverFrontKey, Data: []byte("junk"), Flags: itemTypeBinary << itemTypeShift}}}
 	pr := Project(tg)
@@ -203,8 +192,7 @@ func TestProjectMalformedCoverWarns(t *testing.T) {
 	}
 }
 
-// TestRebuildPictures replaces the cover set only on a picture edit, so a tag-only
-// edit does not re-encode an untouched cover.
+// TestRebuildPictures: covers rewrite only when picturesChanged.
 func TestRebuildPictures(t *testing.T) {
 	png := []byte("\x89PNG\r\n\x1a\n")
 	old := EncodeCover(core.Picture{Type: core.PicFrontCover, Data: []byte("old-bytes")})
@@ -232,8 +220,7 @@ func TestRebuildPictures(t *testing.T) {
 	}
 }
 
-// TestProjectNumberPairSplit: APE stores a slashed track the way the text codecs do,
-// so it must read back as the same canonical pair.
+// TestProjectNumberPairSplit: slashed track -> same canonical pair as text codecs.
 func TestProjectNumberPairSplit(t *testing.T) {
 	tg := &Tag{Items: []Item{{Key: "Track", Value: "4/9"}}}
 	pr := Project(tg)
@@ -252,10 +239,7 @@ func TestProjectNilTag(t *testing.T) {
 	}
 }
 
-// TestRebuildSlashPair pins the number/total convention: an APE "Track" item holds both
-// halves, so an edit to either must rewrite the number without the slash - otherwise a
-// cleared total resurfaces when the preserved "3/12" is re-projected, and an unrelated
-// edit appends a total item the file never had.
+// TestRebuildSlashPair: edit either half drops slash; mark both emitted.
 func TestRebuildSlashPair(t *testing.T) {
 	orig := []Item{{Key: "Track", Value: "3/12"}, {Key: "Title", Value: "T"}}
 	base := Project(&Tag{Items: orig}).Tags
@@ -281,7 +265,7 @@ func TestRebuildSlashPair(t *testing.T) {
 		{"set the total", func(ts *tag.TagSet) { ts.Set(tag.TrackTotal, "20") }, []string{"Track=3", "TRACKTOTAL=20", "Title=T"}},
 		{"clear the total", func(ts *tag.TagSet) { ts.Delete(tag.TrackTotal) }, []string{"Track=3", "Title=T"}},
 		{"set the number", func(ts *tag.TagSet) { ts.Set(tag.TrackNumber, "5") }, []string{"Track=5", "TRACKTOTAL=12", "Title=T"}},
-		// An edit that touches neither half leaves the slash alone and adds nothing.
+		// Untouched slash stays; no stray total.
 		{"unrelated edit", func(ts *tag.TagSet) { ts.Set(tag.Title, "New") }, []string{"Track=3/12", "Title=New"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -293,8 +277,7 @@ func TestRebuildSlashPair(t *testing.T) {
 	}
 }
 
-// TestRebuildEditedItemKeepsFlags: an item the edit REWRITES must keep its flag word,
-// not just an untouched one. The read-only bit and every undefined bit survive.
+// TestRebuildEditedItemKeepsFlags: rewritten items keep flag word.
 func TestRebuildEditedItemKeepsFlags(t *testing.T) {
 	orig := []Item{{Key: "Title", Value: "Old", Flags: flagReadOnly | 1<<20}}
 	base := tag.NewTagSet()
@@ -311,10 +294,7 @@ func TestRebuildEditedItemKeepsFlags(t *testing.T) {
 	}
 }
 
-// TestRebuildKeepsMalformedCover: a picture edit re-emits the decoded cover set, which
-// by definition excludes a cover whose payload did not decode. Dropping it would destroy
-// bytes the read path reported as preserved. The undecodable item here is a back cover
-// while the edit writes a front, so the two names cannot collide.
+// TestRebuildKeepsMalformedCover: undecodable back survives front picture edit.
 func TestRebuildKeepsMalformedCover(t *testing.T) {
 	bad := Item{Key: coverBackKey, Data: []byte("no-nul-terminator"), Flags: itemTypeBinary << itemTypeShift}
 	ts := tag.NewTagSet()
@@ -330,13 +310,7 @@ func TestRebuildKeepsMalformedCover(t *testing.T) {
 	}
 }
 
-// TestRebuildCoverSlots pins APEv2 name uniqueness for the cover items: the convention
-// has exactly two item names, so at most one front and one back cover can be written.
-// An exact front or back claims its own slot (first in the set wins a tie) and never
-// another, since writing a known front as the back cover would falsify a role the
-// source asserted. Any other role's name is already being rewritten, so it takes
-// whichever slot is free, front first; only a picture left with no free slot is
-// dropped, and warned.
+// TestRebuildCoverSlots: one front + one back; exact roles claim own slot; spill/drop.
 func TestRebuildCoverSlots(t *testing.T) {
 	ts := tag.NewTagSet()
 	pic := func(pt core.PictureType, payload string) core.Picture {
@@ -399,11 +373,7 @@ func TestRebuildCoverSlots(t *testing.T) {
 	}
 }
 
-// TestRebuildReplacesNonTextItemOnAuthoredName: an edit that adds a key whose
-// conventional item name a preserved non-text item occupies must not write both, or the
-// tag holds two items with one name. The edit targets that name, so the opaque payload
-// is replaced and the loss warned, the same policy Matroska applies to a binary value
-// under an edited key.
+// TestRebuildReplacesNonTextItemOnAuthoredName: authored text displaces same-name non-text.
 func TestRebuildReplacesNonTextItemOnAuthoredName(t *testing.T) {
 	for _, spelling := range []string{"Title", "TITLE"} { // readers compare names case-insensitively
 		t.Run(spelling, func(t *testing.T) {
@@ -427,10 +397,7 @@ func TestRebuildReplacesNonTextItemOnAuthoredName(t *testing.T) {
 	}
 }
 
-// TestRebuildKeepsPreexistingNameCollision: a text item and a non-text item already
-// sharing a name is the file's own state, not something this edit authors, so both
-// survive an edit to the key (and an unrelated one) rather than being repaired by
-// deletion.
+// TestRebuildKeepsPreexistingNameCollision: source name collision preserved.
 func TestRebuildKeepsPreexistingNameCollision(t *testing.T) {
 	orig := []Item{
 		{Key: "Title", Value: "Old"},
@@ -450,10 +417,7 @@ func TestRebuildKeepsPreexistingNameCollision(t *testing.T) {
 	}
 }
 
-// TestRebuildRefusesCoverNameTextItem: the Cover Art names are typed binary by the
-// convention, so a text value under one would collide with any cover item and confuse
-// readers that look the name up. It is refused like a reserved name: recorded for the
-// warning, with a pre-existing item's bytes kept.
+// TestRebuildRefusesCoverNameTextItem: text under Cover Art name refused; prior kept.
 func TestRebuildRefusesCoverNameTextItem(t *testing.T) {
 	base := tag.NewTagSet()
 	edited := tag.NewTagSet()
@@ -472,8 +436,7 @@ func TestRebuildRefusesCoverNameTextItem(t *testing.T) {
 		t.Errorf("warnings = %+v, want one value-dropped keyed %s", ws, key)
 	}
 
-	// A file that already carries such a text item keeps its bytes when the refused edit
-	// targeted it, matching the reserved-name preserve.
+	// Prior text under Cover Art name kept on refused set.
 	orig := []Item{{Key: "Cover Art (Front)", Value: "old"}}
 	preserved := tag.NewTagSet()
 	preserved.Add(key, "old")
@@ -485,10 +448,7 @@ func TestRebuildRefusesCoverNameTextItem(t *testing.T) {
 	}
 }
 
-// TestRebuildPictureEditReplacesCoverNameTextItem: a picture edit writing a cover claims
-// its item name, so a preserved text item squatting on that name is dropped and warned
-// rather than emitted alongside as a duplicate. A cover name the edit does not write
-// keeps its squatter.
+// TestRebuildPictureEditReplacesCoverNameTextItem: cover write displaces squatting text.
 func TestRebuildPictureEditReplacesCoverNameTextItem(t *testing.T) {
 	orig := []Item{{Key: "Cover Art (Front)", Value: "junk-text"}}
 	base := Project(&Tag{Items: orig}).Tags
@@ -515,10 +475,7 @@ func TestRebuildPictureEditReplacesCoverNameTextItem(t *testing.T) {
 	}
 }
 
-// TestRebuildReplacesMalformedCoverOnNameCollision: when a picture edit writes a cover
-// under a name an undecodable item already holds, keeping both would break APEv2 name
-// uniqueness. The edit targets that very slot, so the undecodable bytes are replaced,
-// and the drop is warned rather than silent.
+// TestRebuildReplacesMalformedCoverOnNameCollision: cover write replaces junk same name.
 func TestRebuildReplacesMalformedCoverOnNameCollision(t *testing.T) {
 	bad := Item{Key: "COVER ART (FRONT)", Data: []byte("no-nul-terminator"), Flags: itemTypeBinary << itemTypeShift}
 	ts := tag.NewTagSet()
@@ -539,10 +496,7 @@ func TestRebuildReplacesMalformedCoverOnNameCollision(t *testing.T) {
 	}
 }
 
-// TestRebuildSpillAvoidsMalformedSlot: a role that is being downgraded anyway has no
-// claim on a specific name, so it takes a slot no undecodable item holds when one is
-// free, and the junk bytes survive. Only when every free slot is junk-held does the
-// spill displace one, warned, rather than dropping the user's picture.
+// TestRebuildSpillAvoidsMalformedSlot: spill prefers free over junk-held slot.
 func TestRebuildSpillAvoidsMalformedSlot(t *testing.T) {
 	badFront := Item{Key: coverFrontKey, Data: []byte("no-nul"), Flags: itemTypeBinary << itemTypeShift}
 	badBack := Item{Key: coverBackKey, Data: []byte("no-nul"), Flags: itemTypeBinary << itemTypeShift}
@@ -566,10 +520,7 @@ func TestRebuildSpillAvoidsMalformedSlot(t *testing.T) {
 	}
 }
 
-// TestPartitionCoverSlotsAddedPriority: within a slot's exact-role claimants, a picture
-// this edit added beats one the file already had, so adding a front cover replaces the
-// existing front rather than silently losing to it. With no added flags the earlier
-// picture wins, which is what a faithful transfer of a two-front source carries.
+// TestPartitionCoverSlotsAddedPriority: added beats pre-existing; else earlier wins.
 func TestPartitionCoverSlotsAddedPriority(t *testing.T) {
 	pics := []core.Picture{
 		{Type: core.PicFrontCover, Data: []byte("old")},
@@ -585,8 +536,7 @@ func TestPartitionCoverSlotsAddedPriority(t *testing.T) {
 	}
 }
 
-// TestRenderRejectsOversizedTag: a tag past the size readers accept is refused, rather
-// than written as one they drop whole - taking the title and artist with it.
+// TestRenderRejectsOversizedTag: refuse tags past reader size cap.
 func TestRenderRejectsOversizedTag(t *testing.T) {
 	huge := Item{Key: coverFrontKey, Data: make([]byte, maxTagBytes+1), Flags: itemTypeBinary << itemTypeShift}
 	if _, err := Render([]Item{huge}, writeVersion, true); !errors.Is(err, waxerr.ErrPictureTooLarge) {
@@ -594,8 +544,7 @@ func TestRenderRejectsOversizedTag(t *testing.T) {
 	}
 }
 
-// TestRenderPreservesVersionAndShape: an APEv1 tag is not relabelled APEv2 (whose UTF-8
-// requirement its preserved bytes may not meet) and a footer-only tag stays footer-only.
+// TestRenderPreservesVersionAndShape: keep APEv1 and footer-only shape.
 func TestRenderPreservesVersionAndShape(t *testing.T) {
 	raw, err := Render([]Item{{Key: "Title", Value: "x"}}, 1000, false)
 	if err != nil {
@@ -613,10 +562,7 @@ func TestRenderPreservesVersionAndShape(t *testing.T) {
 	}
 }
 
-// TestParseAtRejectsUnbackedHeaderFlag is the audio-safety case: the has-header bit
-// decides where the tag starts, which for the codecs that own an APE tag is where the
-// verbatim audio copy ends. A file that merely sets the bit must not move that boundary
-// back into the audio.
+// TestParseAtRejectsUnbackedHeaderFlag: has-header bit needs real APETAGEX.
 func TestParseAtRejectsUnbackedHeaderFlag(t *testing.T) {
 	raw, err := Render([]Item{{Key: "Title", Value: "x"}}, writeVersion, false)
 	if err != nil {
@@ -639,8 +585,7 @@ func TestParseAtRejectsUnbackedHeaderFlag(t *testing.T) {
 	}
 }
 
-// TestParseTruncatedItemList records the element cap so a codec rebuilding the whole tag
-// from Items can refuse rather than delete what it never read.
+// TestParseTruncatedItemList: Truncated set when element cap cuts Items.
 func TestParseTruncatedItemList(t *testing.T) {
 	raw, err := Render([]Item{{Key: "A", Value: "1"}, {Key: "B", Value: "2"}, {Key: "C", Value: "3"}}, writeVersion, true)
 	if err != nil {
@@ -655,9 +600,7 @@ func TestParseTruncatedItemList(t *testing.T) {
 	}
 }
 
-// TestDecodeTextLatin1Fallback: an item whose bytes are not valid UTF-8 (APEv1's code
-// page, and out-of-spec APEv2 items) yields a usable value, and its raw bytes survive a
-// rewrite that does not touch it.
+// TestDecodeTextLatin1Fallback: non-UTF-8 -> Latin-1; raw bytes survive untouched rewrite.
 func TestDecodeTextLatin1Fallback(t *testing.T) {
 	latin1 := []byte("Bj\xf8rk")
 	tg := &Tag{Items: []Item{{Key: "Artist", Data: latin1, Value: decodeText(latin1)}, {Key: "Title", Value: "T"}}}
@@ -677,19 +620,13 @@ func TestDecodeTextLatin1Fallback(t *testing.T) {
 	}
 }
 
-// tinyPNGBytes is a minimal PNG header, enough for the cover codec to sniff.
+// tinyPNGBytes: minimal PNG for sniff.
 func tinyPNGBytes() []byte {
 	return []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00")
 }
 
-// TestRebuildEmptyValueRoundTrips: an APEv2 item may hold a zero-length value, so a
-// present [""] - what `set KEY=` produces - writes an empty item instead of removing the
-// key, and reads back as one empty value. A zero-length value *slice* is still how a clear
-// removes the item.
-//
-// This is the write half of the round trip that Project and Pairs complete; it runs here,
-// on the shared APEv2 writer, because that writer is the one store WavPack, Monkey's Audio
-// and Musepack share, and Musepack has no fixture of its own.
+// TestRebuildEmptyValueRoundTrips: [""] writes empty item; nil slice clears.
+// Shared APEv2 writer covers WavPack/MAC/Musepack.
 func TestRebuildEmptyValueRoundTrips(t *testing.T) {
 	orig := []Item{{Key: "Title", Value: "Old"}}
 	base := tag.NewTagSet()
@@ -712,10 +649,7 @@ func TestRebuildEmptyValueRoundTrips(t *testing.T) {
 	}
 }
 
-// TestRebuildDropsEmptyWithinMultiValue: the NUL join cannot express an empty run, so an
-// empty value inside a multi-value set is dropped on write. Without this the writer emits
-// an item its own reader discards - bytes on disk that no dump, diff, or copy can see -
-// which is exactly the report-equals-write gap the transfer contract exists to prevent.
+// TestRebuildDropsEmptyWithinMultiValue: empty within multi dropped (report==write).
 func TestRebuildDropsEmptyWithinMultiValue(t *testing.T) {
 	base := tag.NewTagSet()
 	for _, c := range []struct {
@@ -743,7 +677,7 @@ func TestRebuildDropsEmptyWithinMultiValue(t *testing.T) {
 			if len(got) != 1 || got[0].Value != c.want {
 				t.Fatalf("items = %+v, want one item valued %q", got, c.want)
 			}
-			// The written item must read back as the value set that produced it.
+			// Round-trip value set.
 			tg := parseRendered(t, got)
 			vals, _ := Project(tg).Tags.Get(tag.Artist)
 			if want := splitItemValues(c.want); !slices.Equal(vals, want) {

@@ -7,10 +7,8 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// doc is the Monkey's Audio native document: the decoded header and the trailing
-// containers (the APEv2 tag it writes and any legacy ID3v1 it preserves), whose start
-// is the end of the audio. It is the preservation-first base for rewrites and
-// satisfies core.NativeDoc.
+// doc is the native document: decoded header plus trailing APEv2/ID3v1.
+// Trailer.Start is the end of audio. Implements core.NativeDoc.
 type doc struct {
 	trailer ape.Trailer
 	header  header
@@ -20,7 +18,7 @@ type doc struct {
 
 func (d *doc) Format() core.Format { return core.FormatMonkeysAudio }
 
-// Clone deep-copies the document so Document accessors stay detached.
+// Clone deep-copies so Document accessors stay detached.
 func (d *doc) Clone() core.NativeDoc {
 	c := *d
 	c.trailer.Tag = d.trailer.Tag.Clone()
@@ -28,7 +26,7 @@ func (d *doc) Clone() core.NativeDoc {
 	return &c
 }
 
-// Describe summarizes the native structure for the dump/native views.
+// Describe summarizes native structure for dump/native views.
 func (d *doc) Describe() []core.NativeEntry {
 	return d.trailer.Describe("Monkey's Audio frames", d.track.Codec)
 }

@@ -9,11 +9,9 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestLavcStampReported: the ffmpeg codec stamp names the actual codec rather than only the
-// muxer, but it still describes the transcode that produced the file, so it is an inherited
-// encoder wherever a muxer stamp already was. This covers the read/report side across the
-// formats that carry ENCODER differently: a Vorbis comment (FLAC), an ID3 TSSE (MP3), an MP4
-// "\xa9too" atom, and a WAV ISFT item.
+// ffmpeg codec stamp names the actual codec rather than only the muxer, but it still describes the
+// transcode that produced the file, so it is an inherited encoder wherever a muxer stamp already
+// was.
 func TestLavcStampReported(t *testing.T) {
 	const stamp = "Lavc61.19.101 libopus"
 	for _, fixture := range []string{sampleFLAC, sampleMP3, sampleMP4, sampleWAV} {
@@ -41,10 +39,8 @@ func TestLavcStampReported(t *testing.T) {
 	}
 }
 
-// TestLavcStampStripped is the write side of the widening: --strip-encoder /
-// WithStripEncoderStamp judges the WAV ISFT item on its own bytes, so a codec stamp there is
-// now dropped like a muxer stamp already was. (The option never touches a canonical ENCODER
-// value; lint --fix does that, and TestLintFixClearsMatroskaStampPair covers it.)
+// write side of the widening: --strip-encoder / WithStripEncoderStamp judges the WAV ISFT item on
+// its own bytes, so a codec stamp there is now dropped like a muxer stamp already was.
 func TestLavcStampStripped(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Keep"}, [2]string{"ISFT", "Lavc61.19.101 libopus"}), wavData(400))
 	doc := mustParseBytes(t, data)

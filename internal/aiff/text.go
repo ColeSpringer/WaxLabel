@@ -9,12 +9,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// textTags projects native text chunks into a canonical TagSet, mapping only the
-// known identifiers. Items appear in file order; several ANNO chunks contribute
-// several Comment values. [tag.TagSet.AddNativeItem] applies the shared IFF first-wins rule
-// (see [infoTags]); AIFF maps no number key today, so in practice every mapped chunk projects
-// and a duplicate NAME (Title) is kept as a multi-value, preserved on write by the verbatim
-// copy of an untouched chunk, or by the ID3 chunk an edit that changes the key forces.
+// textTags projects native text chunks into a canonical TagSet, mapping only the known
+// identifiers.
 func textTags(items []textItem) tag.TagSet {
 	ts := tag.NewTagSet()
 	for _, it := range items {
@@ -33,12 +29,10 @@ func textTags(items []textItem) tag.TagSet {
 	return ts
 }
 
-// textFamilies builds AIFF family/source entries from native text chunks,
-// marking an entry unselected (a conflict) when its value disagrees with the
-// authoritative value for the same key. A duplicate number/total item reads back unselected
-// (textTags is first-wins for those); a duplicate text item stays in auth (both values are
-// kept), so both entries read selected. AIFF maps no number key today, so in practice every
-// entry is selected.
+// textFamilies builds AIFF family/source entries from native text chunks, marking an
+// entry unselected (a conflict) when its value disagrees with the authoritative value
+// for the same key. A duplicate number/total item reads back unselected (textTags is
+// first-wins for those);
 func textFamilies(auth tag.TagSet, items []textItem) []core.FamilyValue {
 	var out []core.FamilyValue
 	for _, it := range items {
@@ -58,15 +52,9 @@ func textFamilies(auth tag.TagSet, items []textItem) []core.FamilyValue {
 	return out
 }
 
-// textRepresentable reports whether every key in ts can be stored faithfully in
-// the native text chunks: each must map to a native identifier, and only Comment
-// (which writes as repeated ANNO chunks) may carry more than one value. A key
-// that fails forces the richer ID3 chunk so no value is lost.
-//
-// Only the keys this edit changed are judged. An unchanged key is chunk-resident by
-// construction when there is no ID3 chunk (it was read from a chunk, whatever its
-// cardinality), and rebuildText copies its chunks verbatim either way, so making it force a
-// second container would spawn one to hold the file's own duplicate NAME chunks.
+// textRepresentable reports whether every key in ts can be stored faithfully in the
+// native text chunks: each must map to a native identifier, and only Comment (which
+// writes as repeated ANNO chunks) may carry more than one value.
 func textRepresentable(ts tag.TagSet, changed map[tag.Key]bool) bool {
 	for _, k := range ts.Keys() {
 		if !changed[k] {
@@ -84,15 +72,9 @@ func textRepresentable(ts tag.TagSet, changed map[tag.Key]bool) bool {
 	return true
 }
 
-// rebuildText re-renders only the chunks whose canonical key this edit changed and copies
-// every other chunk verbatim, so a duplicate NAME and a value the ID3 chunk disagrees with
-// both survive an unrelated edit. For a changed key the chunks collapse to the edited value
-// (one ANNO per Comment value, ANNO being repeatable), a key now absent drops its chunks, and
-// a changed key the file did not hold is appended in the set's order; an untouched key that
-// lives only in the ID3 chunk is not copied in, which keeps a no-op edit a no-op. A
-// present-empty value is emitted as a genuinely zero-length chunk (textTags surfaces it as
-// present-empty), so --set TITLE= round-trips through the native chunk like the other
-// formats; only an absent key emits no chunk.
+// rebuildText re-renders only the chunks whose canonical key this edit changed and
+// copies every other chunk verbatim, so a duplicate NAME and a value the ID3 chunk
+// disagrees with both survive an unrelated edit.
 func rebuildText(orig []textItem, edited tag.TagSet, changed map[tag.Key]bool) []outChunk {
 	var out []outChunk
 	emitted := map[tag.Key]bool{}
@@ -152,15 +134,8 @@ func equalTextChunks(out []outChunk, orig []textItem) bool {
 	})
 }
 
-// textBytesChange reports whether re-emitting the native text chunks will change the bytes
-// they occupy. Equal chunk bodies are not enough: parse cuts a body at an interior NUL, so
-// anything past it dies on the way out, and the writer regroups the chunks at the first one's
-// position, which moves every chunk that sat between them.
-//
-// This is deliberately not the question equalTextChunks answers for the no-op gate, which asks
-// whether the edit changed the chunk CONTENT. A file whose chunks carry either quirk must
-// still round-trip an empty edit untouched, so that gate stays content-based and this one,
-// asked only once a write is already happening, decides what the report claims.
+// textBytesChange reports whether re-emitting the native text chunks will change the
+// bytes they occupy.
 func textBytesChange(d *doc, newText []outChunk) bool {
 	if !equalTextChunks(newText, d.texts) {
 		return true
@@ -191,12 +166,10 @@ func textConflictKeys(fams []core.FamilyValue, changed map[tag.Key]bool) []tag.K
 	return out
 }
 
-// strippedTextKeys lists the canonical keys whose native text chunk holds a value that is
-// going nowhere: the projection did not select it (the ID3 chunk disagreed, or it duplicates
-// a value the canonical set does not carry), and this edit did not write it either, so no
-// frame in the ID3 chunk will hold it. LegacyStrip drops the chunks, which destroys those
-// values, and doc.go's contract says that must never happen silently. Every other native
-// value is in the edited set and moves into the ID3 chunk with it.
+// strippedTextKeys lists the canonical keys whose native text chunk holds a value that
+// is going nowhere: the projection did not select it (the ID3 chunk disagreed, or it
+// duplicates a value the canonical set does not carry), and this edit did not write it
+// either, so no frame in the ID3 chunk will hold it.
 func strippedTextKeys(fams []core.FamilyValue, edited tag.TagSet) []tag.Key {
 	var out []tag.Key
 	seen := map[tag.Key]bool{}
@@ -221,13 +194,9 @@ func textOut(id [4]byte, value string) outChunk {
 	return outChunk{id: id, role: roleText, body: []byte(value), bodyLen: int64(len(value))}
 }
 
-// nativeReducedWarnings notes each multi-valued key reduced to its first value in
-// a single-valued native text chunk (NAME/AUTH/"(c) ") while the full set is kept
-// in the ID3 chunk written alongside it. Two kinds of key are excluded: Comment, which maps
-// to repeatable ANNO chunks and so is never reduced, and a key this edit did not change,
-// which keeps its own chunks verbatim and loses nothing. core.NativeReducedWarnings applies
-// the value-count and first-present checks, including the present-empty case, which is
-// dropped rather than reduced. The caller invokes this only when both containers are emitted.
+// nativeReducedWarnings notes each multi-valued key reduced to its first value in a
+// single-valued native text chunk (NAME/AUTH/"(c) ") while the full set is kept in the
+// ID3 chunk written alongside it.
 func nativeReducedWarnings(ts tag.TagSet, changed map[tag.Key]bool) []core.Warning {
 	return core.NativeReducedWarnings(ts, "text chunk", func(k tag.Key) bool {
 		_, ok := mapping.AIFFKeyText(k)

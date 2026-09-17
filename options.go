@@ -2,35 +2,28 @@ package waxlabel
 
 import "github.com/colespringer/waxlabel/internal/core"
 
-// DefaultMaxSourceBytes is the default ceiling [OpenSource] applies to a non-seekable
-// stream it buffers whole into memory (2 GiB). A stream larger than this fails with
-// [waxerr.ErrSizeTooLarge]; pass [WithMaxSourceBytes](0) to lift the cap entirely. The
-// CLI applies the same default to buffered standard input via its --max-size flag.
+// DefaultMaxSourceBytes is the default ceiling [OpenSource] applies when
+// buffering a non-seekable stream (2 GiB). Exceeding it fails with
+// [waxerr.ErrSizeTooLarge]; [WithMaxSourceBytes](0) lifts the cap. CLI uses the
+// same default for stdin via --max-size.
 const DefaultMaxSourceBytes = core.DefaultMaxSourceBytes
 
-// Option types are distinct per phase so an option valid only for one phase
-// cannot be passed to another at compile time.
+// Option types are distinct per phase so a wrong-phase option fails at compile time.
 type (
 	// ParseOption configures Parse, ParseFile, and OpenSource.
 	ParseOption func(*core.ParseOptions)
-	// WriteOption configures Prepare and the save destinations.
+	// WriteOption configures Prepare and save destinations.
 	WriteOption func(*core.WriteOptions)
 	// HashOption configures audio-essence hashing.
 	HashOption func(*hashOptions)
 )
 
-// WithLimits sets the bounded-allocation and recursion limits for untrusted
-// input. A zero field uses the default bound for that field (it is not
-// unlimited): a partial Limits{MaxDepth: 8} keeps the default MaxAllocBytes and
-// MaxElements rather than dropping them to zero, which would reject every
-// allocation (or, for MaxElements, silently disable the element-count cap).
+// WithLimits sets allocation and recursion limits for untrusted input. A zero
+// field uses the default for that field (not unlimited).
 func WithLimits(l Limits) ParseOption {
 	return func(o *core.ParseOptions) {
 		d := core.DefaultParseOptions().Limits
-		// Non-positive means "unset": fall back to the default rather than passing a negative
-		// through. ReadSlice now rejects a non-positive allocation limit, so a negative
-		// MaxAllocBytes would otherwise fail every bounded read; a negative depth/element cap is
-		// equally nonsensical.
+		// Non-positive means unset: use default.
 		if l.MaxAllocBytes <= 0 {
 			l.MaxAllocBytes = d.MaxAllocBytes
 		}
@@ -44,29 +37,21 @@ func WithLimits(l Limits) ParseOption {
 	}
 }
 
-// WithMaxSourceBytes bounds how many bytes [OpenSource] buffers from a non-seekable
-// stream before parsing. A stream that exceeds n fails with [waxerr.ErrSizeTooLarge]
-// instead of exhausting memory as an endless stream is spooled. n <= 0 disables the cap,
-// restoring the unbounded read. The default when the option is not supplied is
-// [DefaultMaxSourceBytes] (2 GiB). It has no effect on [Parse] or [ParseFile], which read
-// from a sized source and never buffer a stream.
+// WithMaxSourceBytes bounds how many bytes [OpenSource] buffers from a
+// non-seekable stream. n <= 0 disables the cap. Default is [DefaultMaxSourceBytes].
+// No effect on [Parse] or [ParseFile].
 func WithMaxSourceBytes(n int64) ParseOption {
 	return func(o *core.ParseOptions) { o.MaxSourceBytes = n }
 }
 
-// WithSourceName sets the display name used for the source in the
-// "could not identify" diagnostics, so a caller that parses buffered or
-// temp-file bytes (e.g. standard input) reports the original name instead of the
-// temp path. It is display-only: detection sniffs bytes, never names or extensions. The
-// option only affects the unidentified-format error; source identity and save-back checks
-// are unchanged. Without it the name falls back to the path argument, or "" for [Parse].
+// WithSourceName sets the display name in "could not identify" diagnostics
+// (e.g. original name for buffered stdin). Display-only; detection uses bytes.
 func WithSourceName(name string) ParseOption {
 	return func(o *core.ParseOptions) { o.SourceName = name }
 }
 
-// WithPadding sets the post-metadata padding policy for writes. It marks the policy as an
-// explicit request, so a padding-only change is still realized when no tag, picture, or
-// legacy edit is pending.
+// WithPadding sets post-metadata padding and marks it explicit so a
+// padding-only change is still realized.
 func WithPadding(p PaddingPolicy) WriteOption {
 	return func(o *core.WriteOptions) {
 		o.Padding = p
@@ -74,114 +59,76 @@ func WithPadding(p PaddingPolicy) WriteOption {
 	}
 }
 
-// WithLegacyPolicy sets how legacy/foreign tag containers are handled. [LegacyStrip]
-// removes them unconditionally, so a value or non-tag content held only there is
-// destroyed; the plan carries a [WarnLegacyStripDropped] warning naming what goes, which
-// the CLI's --strict promotes to a refusal. [Document.PlanLintFix] never chooses the
-// strip in that case.
+// WithLegacyPolicy sets legacy-container handling. [LegacyStrip] removes them
+// unconditionally; the plan warns [WarnLegacyStripDropped]. [Document.PlanLintFix]
+// never chooses strip when that would destroy unique data.
 func WithLegacyPolicy(p LegacyPolicy) WriteOption {
 	return func(o *core.WriteOptions) { o.Legacy = p }
 }
 
-// WithPreserveModTime keeps the file's modification time across a save-back
-// (by default the mtime is updated so scanners notice the edit).
+// WithPreserveModTime keeps mtime across save-back (default updates mtime).
 func WithPreserveModTime() WriteOption {
 	return func(o *core.WriteOptions) { o.PreserveModTime = true }
 }
 
-// WithVerifyEssence hashes the audio bytes while a rewrite copies them and compares
-// the written output with that copy stream. It is a copy-consistency check: it proves
-// the output matches the bytes read during the write, not a separate parse-time
-// baseline. For [SaveBack] and [SaveAsFile] it re-reads the temporary output before
-// commit, which checks the copy path through the page cache. A streaming [WriteTo]
-// cannot be re-read, so it verifies only the bytes copied from the source. The CLI
-// parses each file immediately before writing, so its source extent is fresh.
+// WithVerifyEssence hashes audio during copy and compares the written output.
+// SaveBack/SaveAsFile re-read the temp before commit. WriteTo verifies only
+// bytes copied from the source (stream cannot be re-read).
 func WithVerifyEssence() WriteOption {
 	return func(o *core.WriteOptions) { o.VerifyEssence = true }
 }
 
-// WithNumericGenre writes a recognized genre as its numeric reference (in
-// formats that support one, such as ID3's TCON) instead of the name. By default
-// the canonical name is written.
+// WithNumericGenre writes a recognized genre as its numeric reference where
+// supported (e.g. ID3 TCON). Default writes the canonical name.
 func WithNumericGenre() WriteOption {
 	return func(o *core.WriteOptions) { o.NumericGenre = true }
 }
 
-// WithUnrecognizedPictures allows a picture whose bytes [IsRecognizedImage] does
-// not recognize (an empty payload, junk, or a cover in an image format outside the
-// header sniff's list) to be embedded by [Editor.Prepare].
-// By default such a picture is rejected ([waxerr.ErrInvalidData]) so a direct
-// library caller cannot silently embed an application/octet-stream picture; pass
-// this to opt a known-exotic cover back in. Only pictures added via
-// [Editor.AddPicture] are validated - a file's pre-existing picture carried
-// through a tags-only edit is never affected.
+// WithUnrecognizedPictures allows embedding a picture [IsRecognizedImage]
+// rejects. Default refuses such AddPicture payloads. Pre-existing file pictures
+// on a tags-only edit are unaffected.
 func WithUnrecognizedPictures() WriteOption {
 	return func(o *core.WriteOptions) { o.AllowUnrecognizedPictures = true }
 }
 
-// WithStripEncoderStamp asks the writer to drop a removable inherited transcoder/encoder
-// stamp without the caller having to filter the value itself: the WAV ISFT INFO item (e.g.
-// ffmpeg's "Lavf...") and the Ogg/Opus/FLAC comment-header vendor string. Each is judged on
-// its own bytes by [IsTranscoderStamp], not on the file's canonical ENCODER, so a clean user
-// ISFT survives even when another container holds a stamp, and a stamped one goes even when
-// it does not. The ISFT item is dropped; the vendor string is a mandatory codec field, so it
-// is rewritten to WaxLabel's neutral value rather than removed (NeutralizeVendor).
-//
-// It never overrides a value the edit itself authored: ISFT is [tag.Encoder]'s INFO home, so
-// an edit setting ENCODER writes that value and the strip stands aside. Clearing
-// [tag.Encoder] removes the ISFT through the ordinary write path, and pairing the two is
-// idempotent - pair them so a stamp held elsewhere (a WAV id3 chunk's TSSE) does not survive.
+// WithStripEncoderStamp drops removable transcoder stamps: WAV ISFT and
+// Ogg/Opus/FLAC vendor string (rewritten to a neutral value; vendor is mandatory).
+// Judged per-field by [IsTranscoderStamp]. Does not override an edit that sets
+// [tag.Encoder].
 func WithStripEncoderStamp() WriteOption {
 	return func(o *core.WriteOptions) { o.StripEncoderStamp = true }
 }
 
-// WithWebMSubset narrows a file-less Matroska [CapabilitiesFor] query to the WebM
-// subset, which excludes cover-art attachments - so the format-level answer for
-// "webm" reports picture write as unsupported, matching what [Document.Capabilities]
-// reports for a parsed.webm file. It affects only the Matroska capability query;
-// every other codec ignores it, and it has no effect on a write.
+// WithWebMSubset narrows a file-less Matroska [CapabilitiesFor] query to WebM
+// (no cover attachments). Write path ignores it.
 func WithWebMSubset() WriteOption {
 	return func(o *core.WriteOptions) { o.WebMSubset = true }
 }
 
-// WithAllowUnsupportedDrop makes [Editor.Prepare] drop a whole structural edit the
-// destination format cannot store at all - authored synced lyrics or chapters on a format
-// that has no such store, or cover art on a WebM file - with a warning, rather than failing
-// the write. It also drops just the individual covers whose image format the destination
-// stores pictures but cannot label (a GIF added to an MP4, which labels only JPEG/PNG/BMP),
-// keeping any it can, so a PNG added alongside survives. It mirrors how a cross-format copy
-// silently drops what the destination cannot hold, so a set that combines a storable edit
-// with an unstorable one still applies the storable part and succeeds. By default such an
-// edit is a hard error. The CLI passes this for set and plan; --strict promotes the resulting
-// drop warning back to a failure.
+// WithAllowUnsupportedDrop makes [Editor.Prepare] drop unsupported structural
+// edits (synced lyrics/chapters with no store, WebM cover, unlabelable image
+// formats) with a warning instead of failing. CLI passes this for set/plan;
+// --strict promotes the drop warning to failure.
 func WithAllowUnsupportedDrop() WriteOption {
 	return func(o *core.WriteOptions) { o.AllowUnsupportedDrop = true }
 }
 
-// WithKeepR128Gains leaves R128_TRACK_GAIN and R128_ALBUM_GAIN untouched when the same edit
-// changes the output gain, instead of rebasing them by the header delta. RFC 7845 applies
-// those tags on top of the header gain, so a compliant player's loudness moves with the
-// header: [Editor.Prepare] warns output-gain-r128-tags for each tag it kept. Use it when the
-// stored values are known to be stale and will be replaced separately; by default a gain
-// edit rebases them, which is what the RFC requires of a tool that moves the header.
+// WithKeepR128Gains leaves R128_* untouched when changing output gain, instead
+// of rebasing per RFC 7845. Prepare warns output-gain-r128-tags for each kept tag.
 func WithKeepR128Gains() WriteOption {
 	return func(o *core.WriteOptions) { o.KeepR128Gains = true }
 }
 
-// WithID3MultiValue selects how multiple values for one field are stored in an
-// ID3v2.3 tag, which has no standard multi-value text form. ID3v2.4 always
-// NUL-separates regardless; the v2.3 compatibility impact is flagged in the
-// write report.
+// WithID3MultiValue selects ID3v2.3 multi-value storage. ID3v2.4 always NUL-separates.
 func WithID3MultiValue(p ID3MultiValuePolicy) WriteOption {
 	return func(o *core.WriteOptions) { o.ID3Multi = p }
 }
 
-// Policy presets bundle write options into a named intent. Apply one first,
-// then override individual options if needed:
+// Policy presets bundle write options. Apply one first, then override:
 //
 //	plan, _:= ed.Prepare(waxlabel.Preserve, waxlabel.WithVerifyEssence())
 var (
-	// Preserve is the default: keep legacy containers, reuse padding in place.
+	// Preserve is the default: keep legacy, reuse padding in place.
 	Preserve WriteOption = func(o *core.WriteOptions) {
 		o.Legacy = core.LegacyPreserve
 		o.Padding = core.DefaultPadding
@@ -192,9 +139,7 @@ var (
 		o.Padding = core.PaddingPolicy{Target: 4096, Max: 1 << 20, ReuseInPlace: true}
 		o.PaddingExplicit = true
 	}
-	// Minimal writes the smallest reasonable file: no padding, strip legacy. The strip is
-	// unconditional, so a legacy container holding the only copy of a value is destroyed
-	// with a [WarnLegacyStripDropped] warning.
+	// Minimal: no padding, strip legacy (unconditional; warns if unique data lost).
 	Minimal WriteOption = func(o *core.WriteOptions) {
 		o.Legacy = core.LegacyStrip
 		o.Padding = core.PaddingPolicy{Target: 0, Max: 0}

@@ -1,22 +1,10 @@
-// Package matroska implements reading and tag-writing Matroska / WebM
-// (.mka / .webm / .mkv) metadata. Tags (scoped SimpleTags), the segment title,
-// cover-art attachments, and chapters (the default EditionEntry) are writable;
-// cluster/essence rewriting is out of scope because it touches encoded audio.
-// The codec itself is internal.
+// Package matroska implements Matroska/WebM (.mka/.webm/.mkv) metadata.
+// Writable: scoped SimpleTags, Info.Title, cover attachments, default-edition
+// chapters. Cluster/essence rewrite is out of scope. Codec is internal.
 //
-// A Matroska file is an EBML document: a tree of length-prefixed elements. Tags
-// live in Segment.Tags as Tag elements, each scoping a set of SimpleTag
-// name/value pairs to the whole segment, a track, an edition, or a chapter via a
-// Targets element. The segment title lives in Segment.Info.Title (where ffmpeg
-// puts the file's "title"), and cover art lives in Segment.Attachments as an
-// image AttachedFile. The audio geometry comes from Segment.Tracks; the cluster
-// media payloads are never read - only their byte range is recorded.
-//
-// The codec is preservation-aware: the full scoped tag tree (including names
-// that do not project to a canonical key, and nested sub-tags) is kept in the
-// native document for inspection. It is reimplemented from the EBML/Matroska
-// specifications (RFC 8794 / RFC 9559); reference implementations informed design
-// only.
+// EBML tree: Tags as Tag+Targets+SimpleTag; title in Info.Title; cover in
+// Attachments; geometry from Tracks. Cluster payloads are ranged, not read.
+// Native doc keeps the full scoped tag tree. Reimplemented from RFC 8794/9559.
 package matroska
 
 import (
@@ -26,7 +14,7 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// Codec implements core.Codec for Matroska: read, plus tag/title/attachment write.
+// Codec implements core.Codec for Matroska (read + tag/title/attachment/chapter write).
 type Codec struct{}
 
 // New returns a Matroska codec.
@@ -37,11 +25,10 @@ func init() { core.Register(New()) }
 func (Codec) Format() core.Format  { return core.FormatMatroska }
 func (Codec) Extensions() []string { return []string{".mka", ".webm", ".mkv", ".mk3d", ".mks"} }
 
-// SkipsLeadingID3 reports false because Matroska/WebM files begin with an EBML header.
+// SkipsLeadingID3 is false: files begin with an EBML header.
 func (Codec) SkipsLeadingID3() bool { return false }
 
-// Sniff matches the EBML magic that opens every Matroska/WebM file, using the
-// same idEBML constant the parser matches against so the two cannot drift.
+// Sniff matches EBML magic via idEBML (same as the parser).
 func (Codec) Sniff(header []byte) bool {
 	return len(header) >= 4 && binary.BigEndian.Uint32(header[:4]) == idEBML
 }
@@ -51,18 +38,9 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 	return parse(ctx, src, opts)
 }
 
-// Capabilities reports Matroska as tag-writable: tags (scoped SimpleTags) and the
-// segment title round-trip fully, cover art writes as an image AttachedFile -
-// except into a WebM file, whose subset excludes Attachments - and chapters
-// (Chapters > EditionEntry > ChapterAtom) round-trip through the default edition.
-//
-// Cover-write support is file-aware: when m is the parsed file and it is WebM,
-// picture write is reported AccessNone (Attachments is outside the WebM subset),
-// so a transfer drops the cover up front instead of advertising it carried and
-// then failing at Plan time - the report==result transfer invariant. A nil m is a
-// format-level query (PlanTransfer, which has no destination file) and keeps the
-// optimistic Matroska answer; the Plan-level WebM refusal remains the backstop for
-// a direct cover add.
+// Capabilities: tags + title + default-edition chapters; cover as AttachedFile
+// except WebM (no Attachments). WebM picture Write=AccessNone when m is WebM
+// (report==result); nil m stays optimistic Matroska (Plan refuses WebM cover).
 func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
@@ -79,18 +57,9 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	pictures := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
 		Representation: "AttachedFile (image attachment)",
-		// Matroska defines only cover.<ext> (front) and small_cover.<ext>, so only the
-		// front-cover role round-trips; any other role reads back as Other. The description
-		// is preserved in FileDescription, so the loss is role-only.
+		// Role-only loss: cover.<ext>/small_cover.<ext>; description in FileDescription.
 		Fidelity: "image bytes lossless; only the front-cover role is preserved (other roles read back as Other)",
-		// The reader surfaces a cover for an image/ attachment (a lowercase HasPrefix gate) or
-		// for an octet-stream one stored under the cover-art name, and the writer stores the
-		// MIME verbatim, so both round-trip while any other attachment does not. Declaring
-		// exactly that pair keeps the transfer grade aligned with what actually reads back:
-		// a non-cover MIME grades Dropped instead of being carried and silently destroying the
-		// destination's real cover, while a cover whose bytes the sniff cannot identify is
-		// carried rather than thrown away for want of a recognized type. isCoverAttachment is
-		// the read gate these two mirror.
+		// image/* or octet-stream under cover name (mirrors isCoverAttachment); else Dropped.
 		PictureMIMEs: []string{"image/*", core.UnrecognizedMIME},
 		PictureLoss:  core.PictureLossRoleOnly,
 		Constraints: []string{
@@ -98,10 +67,7 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 			"only the front cover preserves its role; other picture roles read back as Other (descriptions are preserved)",
 		},
 	}
-	// Cover write is refused for WebM, which excludes Attachments. This is true for a
-	// parsed WebM file (detected from its docType) and for a file-less query that opts
-	// into the subset (WithWebMSubset, e.g. caps --format webm) - one gate, so the
-	// file-aware and format-level views cannot drift.
+	// WebM (parsed docType or WithWebMSubset): refuse cover write; one gate.
 	webm := opts.WebMSubset
 	if m != nil {
 		if d, ok := m.Native.(*doc); ok && isWebM(d.docType) {
@@ -111,10 +77,7 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 	if webm {
 		pictures.Write = core.AccessNone
 		pictures.Representation = "Attachments outside the WebM subset"
-		// The generic "not writable to WebM" note is now redundant: this is the WebM
-		// capability itself and it already reports AccessNone with the reason in
-		// Representation (which is what dispose surfaces).
-		pictures.Constraints = nil
+		pictures.Constraints = nil // reason is in Representation
 	}
 	chapters := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
@@ -126,22 +89,13 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 			"a chapter's end time is read only from an explicit ChapterTimeEnd; an absent end is left open-ended (zero), not inferred from the next chapter's start the way MP4 infers it",
 			"the CLI has no end-time syntax, so a --clear-chapters + --add-chapter rewrite drops explicit end times; library callers can set Chapter.End to keep them",
 		},
-		// No MaxItems: Matroska has no chapter-count cap (unlike MP4's 255-entry chpl).
 	}
-	// Matroska/WebM has no metadata-padding concept exposed by the writer, so the
-	// padding controls do not apply.
 	return core.NewCapabilities(core.FormatMatroska, false, fields, pictures, chapters, core.AccessNone, nil).
 		WithFieldClassifier(TransferClassifier)
 }
 
-// EssenceExtent returns the Matroska essence-digest inputs: a versioned extent
-// name and the decoder-critical config of the first audio track (CodecID plus
-// sample rate, channels, and bit depth) mixed in ahead of the hashed cluster
-// region, so identical cluster bytes under a different codec or geometry hash
-// differently. The hashed extent is the multi-range set of Cluster runs recorded at
-// parse (m.AudioRanges), which excludes any non-cluster level-1 element between
-// clusters (mid-stream Cues, Tags, or Void) so an edit that re-renders such an element
-// no longer changes the audio digest.
+// EssenceExtent: matroska-clusters-v2 + first-track CodecID/geometry, then
+// per-cluster runs (m.AudioRanges), excluding inter-cluster non-cluster elements.
 func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 	var cfg []byte
 	if d, ok := m.Native.(*doc); ok {
@@ -154,7 +108,5 @@ func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 		cfg = append(cfg, n[:2]...)
 		cfg = append(cfg, byte(d.bitDepth))
 	}
-	// v2 changed the hashed byte set to per-cluster runs, excluding inter-cluster
-	// non-cluster elements. Older persisted digests use a different algorithm.
-	return "matroska-clusters-v2", cfg
+	return "matroska-clusters-v2", cfg // v2: per-cluster runs
 }

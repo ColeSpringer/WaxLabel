@@ -19,8 +19,7 @@ func essenceDigest(data []byte, ranges [][2]int64) []byte {
 }
 
 // interClusterMKA builds a Matroska file whose Tags element sits between two clusters,
-// the layout that defeats a single-span essence extent. ARTIST is mid-stream, so editing
-// it resizes an element inside [firstCluster, lastCluster).
+// the layout that defeats a single-span essence extent.
 func interClusterMKA(artist string) []byte {
 	tags := encElement(idTags, encElement(idTag, cat(
 		encElement(idTargets, uintElement(idTgtTypeVal, 50)),
@@ -32,9 +31,8 @@ func interClusterMKA(artist string) []byte {
 	return segBytes(cat(mkInfo("Title"), emptyCluster(), tags, emptyCluster()))
 }
 
-// TestInterClusterEssenceExcludesMidStreamElement checks that Matroska essence digests hash
-// only Cluster runs. A tag-only edit that resizes a level-1 element between clusters should
-// keep the digest stable in both the source and rewritten result.
+// TestInterClusterEssenceExcludesMidStreamElement checks that Matroska essence digests
+// hash only Cluster runs.
 func TestInterClusterEssenceExcludesMidStreamElement(t *testing.T) {
 	src := interClusterMKA("Old")
 	base := parseMKA(t, src)

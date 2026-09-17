@@ -1,17 +1,13 @@
-// Package apen implements reading and writing Monkey's Audio (.ape) metadata for
-// the public waxlabel package. The codec itself is internal.
+// Package apen implements Monkey's Audio (.ape) metadata for the public waxlabel
+// package. The codec is internal.
 //
-// A Monkey's Audio file is a "MAC " header followed by compressed frames, then an
-// optional APEv2 tag and, after that, an optional legacy ID3v1 tag - the same
-// trailing-store shape WavPack and Musepack use, shared through internal/ape. APEv2
-// is the native, authoritative tag store; ID3v1 is preserved but never authoritative.
-// The audio is copied verbatim on every write.
+// Layout: "MAC " header, compressed frames, optional APEv2, optional trailing ID3v1.
+// Same trailing-store shape as WavPack/Musepack via internal/ape. APEv2 is authoritative;
+// ID3v1 is preserved only. Audio is copied verbatim on write.
 //
-// The package is named for the container to keep it distinct from internal/ape, the
-// APEv2 *tag* it happens to share a name and an extension with.
-//
-// It is reimplemented from the public Monkey's Audio header documentation;
-// reference implementations were consulted for design only.
+// Named for the container so it is distinct from internal/ape (the APEv2 tag).
+// Reimplemented from the public Monkey's Audio header docs; reference code informed
+// design only.
 package apen
 
 import (
@@ -33,12 +29,10 @@ func init() { core.Register(New()) }
 func (Codec) Format() core.Format  { return core.FormatMonkeysAudio }
 func (Codec) Extensions() []string { return []string{".ape"} }
 
-// SkipsLeadingID3 reports false because the file begins with the MAC marker. The
-// legacy ID3 a Monkey's Audio file can carry is a trailing ID3v1, not a front tag.
+// SkipsLeadingID3 is false: the file starts with MAC. Legacy ID3 here is trailing ID3v1.
 func (Codec) SkipsLeadingID3() bool { return false }
 
-// Sniff matches the "MAC " marker at offset 0. The trailing space is part of the
-// marker, so this does not claim arbitrary files beginning "MAC".
+// Sniff matches "MAC " at offset 0 (trailing space is part of the marker).
 func (Codec) Sniff(header []byte) bool {
 	return len(header) >= 4 && string(header[:4]) == fileMagic
 }
@@ -48,15 +42,13 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	return parse(ctx, src, opts)
 }
 
-// Capabilities reports Monkey's Audio's support, which is entirely APEv2's: the
-// shared definition in internal/ape, so the codecs backed by it cannot drift.
+// Capabilities is APEv2's shared definition in internal/ape.
 func (Codec) Capabilities(_ *core.Media, _ core.WriteOptions) core.Capabilities {
 	return ape.Capabilities(core.FormatMonkeysAudio, false)
 }
 
-// EssenceExtent returns the Monkey's Audio essence-digest inputs: a versioned extent
-// name and the decoder-critical configuration - the stream version, compression
-// level, format flags, and audio geometry - mixed into the hash ahead of the frames.
+// EssenceExtent returns monkeys-audio-v1 and decoder-critical header fields
+// (version, compression, flags, geometry) mixed ahead of the frames.
 func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 	var b [18]byte
 	if d, ok := m.Native.(*doc); ok && d != nil {
@@ -67,8 +59,7 @@ func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 		binary.BigEndian.PutUint16(b[6:8], h.bitsPerSample)
 		binary.BigEndian.PutUint16(b[8:10], h.channels)
 		binary.BigEndian.PutUint32(b[10:14], h.sampleRate)
-		// The whole frame size, not its high half: every documented value (9216, 73728,
-		// 294912) fits in 32 bits, so shifting would collapse them all to zero.
+		// Whole frame size: documented values fit in 32 bits; high-half alone would be zero.
 		binary.BigEndian.PutUint32(b[14:18], h.blocksPerFrame)
 	}
 	return "monkeys-audio-v1", b[:]

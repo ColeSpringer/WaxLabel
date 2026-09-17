@@ -7,40 +7,29 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestMP4FreeformKeyFoldsCase checks that MP4FreeformKey folds case (like the ID3/Matroska read
-// paths) so a foreign or hand-edited "----" atom whose name uses non-standard casing still resolves
-// into the canonical view. Folding is case-only, not separator-normalizing, so an underscore variant
-// still misses; a genuinely unknown name still returns false.
+// MP4FreeformKey folds case on read; separators are not normalized.
 func TestMP4FreeformKeyFoldsCase(t *testing.T) {
 	for _, name := range []string{"MusicBrainz Album Id", "musicbrainz album id", "MUSICBRAINZ ALBUM ID"} {
 		if k, ok := MP4FreeformKey(name); !ok || k != tag.MBReleaseID {
 			t.Errorf("MP4FreeformKey(%q) = %q, %v; want MBReleaseID, true (case must fold)", name, k, ok)
 		}
 	}
-	// Case folds; separators do not - underscores are not spaces.
 	if k, ok := MP4FreeformKey("musicbrainz_album_id"); ok {
 		t.Errorf("MP4FreeformKey(%q) = %q, true; want no match (folding is case-only, not separator-normalizing)", "musicbrainz_album_id", k)
 	}
-	// A genuinely unknown freeform name still misses.
 	if k, ok := MP4FreeformKey("Unknown Freeform"); ok {
 		t.Errorf("MP4FreeformKey(%q) = %q, true; want no match", "Unknown Freeform", k)
 	}
 }
 
-// TestMP4KeyFreeformSpellingUnchanged checks the write path is untouched by the read-side fold: a
-// canonical key still writes the exact Picard spelling, so folding the read never changes WaxLabel's
-// output (which would break Picard/ReplayGain interop).
+// Write spelling unchanged by read-side freeformFold.
 func TestMP4KeyFreeformSpellingUnchanged(t *testing.T) {
 	if got := MP4KeyFreeform(tag.MBReleaseID); got != "MusicBrainz Album Id" {
 		t.Errorf("MP4KeyFreeform(MBReleaseID) = %q, want the unchanged Picard spelling %q", got, "MusicBrainz Album Id")
 	}
 }
 
-// TestMP4LyricistFreeform pins the LYRICIST freeform mapping. MP4 has no standard lyricist
-// atom, so it is a com.apple.iTunes freeform: WaxLabel writes the canonical uppercase name,
-// and the read path folds foreign casing (Lyricist / lyricist) back onto LYRICIST. The
-// exact-case name already round-trips through decodeFreeform's valid-key fallback, so the
-// case fold is the behavior this table entry actually adds.
+// LYRICIST freeform: write uppercase; read folds case.
 func TestMP4LyricistFreeform(t *testing.T) {
 	if got := MP4KeyFreeform(tag.Lyricist); got != "LYRICIST" {
 		t.Errorf("MP4KeyFreeform(Lyricist) = %q, want LYRICIST", got)
@@ -52,10 +41,7 @@ func TestMP4LyricistFreeform(t *testing.T) {
 	}
 }
 
-// TestMP4RoleFreeforms pins the contributor-role freeform mappings. MP4 has no standard atoms
-// for these, so each role is a com.apple.iTunes freeform written under the canonical uppercase
-// name (MIXER/DJMIXER, not the ID3-only mix/DJ-mix); the read path folds foreign casing back
-// onto the canonical key.
+// Contributor roles as freeforms; MIXER/DJMIXER not ID3 mix/DJ-mix spellings.
 func TestMP4RoleFreeforms(t *testing.T) {
 	cases := []struct {
 		key       tag.Key
@@ -67,8 +53,6 @@ func TestMP4RoleFreeforms(t *testing.T) {
 		{tag.Mixer, "MIXER", []string{"MIXER", "Mixer", "mixer"}},
 		{tag.Arranger, "ARRANGER", []string{"ARRANGER", "Arranger", "arranger"}},
 		{tag.Writer, "WRITER", []string{"WRITER", "Writer", "writer"}},
-		// The multi-token DJMIXER also folds its separator variants (read-only aliases), while
-		// its single write spelling stays the canonical "DJMIXER" (checked via c.name below).
 		{tag.DJMixer, "DJMIXER", []string{"DJMIXER", "djmixer", "DjMixer", "DJ MIXER", "DJ_MIXER", "DJ-MIXER", "dj mixer"}},
 	}
 	for _, c := range cases {
@@ -83,11 +67,7 @@ func TestMP4RoleFreeforms(t *testing.T) {
 	}
 }
 
-// TestMP4ReleaseDetailFreeforms pins the release-detail freeform mappings. MP4 spells these
-// with the same mixed-case Picard names as the ID3 TXXX descriptions. Without a table entry
-// the atoms miss decodeFreeform's valid-key fallback (validKeyByte rejects lowercase) and stay
-// preserved-but-invisible, so this is the mapping that makes them project at all; the write
-// side keeps the exact Picard spelling so the next save does not rename Picard's atom.
+// Release-detail freeforms use Picard mixed-case names; uppercase canonical keys use codec fallback.
 func TestMP4ReleaseDetailFreeforms(t *testing.T) {
 	cases := []struct {
 		key  tag.Key
@@ -107,18 +87,13 @@ func TestMP4ReleaseDetailFreeforms(t *testing.T) {
 			}
 		}
 	}
-	// The uppercase canonical spelling is deliberately absent from this table: an
-	// "----:com.apple.iTunes:RELEASECOUNTRY" atom is owned by the codec's valid-key
-	// fallback instead, which is what lets it rebuild under the Picard name on the next
-	// write rather than being renamed back and forth.
+	// Uppercase canonical keys are not in mp4Freeform; codec valid-key fallback owns them.
 	for _, c := range cases {
 		if k, ok := MP4FreeformKey(string(c.key)); ok {
 			t.Errorf("MP4FreeformKey(%q) = %q, true; want no table entry (the codec's valid-key fallback owns it)", c.key, k)
 		}
 	}
-	// The APE/legacy-Picard underscored spellings fold on read (seeded into freeformFold
-	// only), so the same string means the same key here as on Vorbis. The write spelling
-	// stays the Picard name.
+	// APE/Picard underscored spellings fold on read only.
 	for _, c := range []struct {
 		name string
 		want tag.Key
@@ -137,9 +112,7 @@ func TestMP4ReleaseDetailFreeforms(t *testing.T) {
 
 const picardStatusName = "MusicBrainz Album Status"
 
-// TestMP4FreeformKeyMatroskaNativeSpellings: the Matroska native spellings fold
-// on freeform reads like they do on Vorbis, so the same string means the same
-// canonical key on every format. Writes keep the canonical spellings.
+// Matroska native spellings fold on freeform read; write keeps canonical spellings.
 func TestMP4FreeformKeyMatroskaNativeSpellings(t *testing.T) {
 	for name, want := range map[string]tag.Key{
 		"LEAD_PERFORMER": tag.Artist, "DATE_RECORDED": tag.RecordingDate,

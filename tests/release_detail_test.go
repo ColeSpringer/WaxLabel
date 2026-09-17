@@ -16,11 +16,9 @@ const (
 	picardType    = "MusicBrainz Album Type"
 )
 
-// TestReleaseDetailRoundTrip proves the three release-detail keys survive a real
-// set -> write -> reparse across the main storage mechanisms: a Vorbis comment (FLAC), ID3
-// TXXX user frames (MP3), MP4 com.apple.iTunes freeforms (M4A), the embedded-ID3 chunk WAV
-// and AIFF carry, and Matroska SimpleTags (MKA, identity names). RELEASETYPE holds two
-// values to exercise the multivalued projection.
+// three release-detail keys survive a real set -> write -> reparse across the main storage
+// mechanisms: a Vorbis comment (FLAC), ID3 TXXX user frames (MP3), MP4 com.apple.iTunes freeforms
+// (M4A), the embedded-ID3 chunk WAV and AIFF carry, and Matroska SimpleTags (MKA, identity names).
 func TestReleaseDetailRoundTrip(t *testing.T) {
 	details := []struct {
 		key  tag.Key
@@ -62,9 +60,9 @@ func TestReleaseDetailRoundTrip(t *testing.T) {
 	}
 }
 
-// TestReleaseDetailMP4PicardAtoms reads the atoms Picard actually writes. Before the mapping
-// entries existed decodeFreeform missed the mixed-case names and left the items unowned:
-// preserved on write, but invisible to Get, Fields, dump, diff, and copy.
+// atoms Picard actually writes. Before the mapping entries existed decodeFreeform missed the
+// mixed-case names and left the items unowned: preserved on write, but invisible to Get, Fields,
+// dump, diff, and copy.
 func TestReleaseDetailMP4PicardAtoms(t *testing.T) {
 	data := mp4Tagged(
 		mp4Freeform("com.apple.iTunes", picardCountry, "GB"),
@@ -83,8 +81,8 @@ func TestReleaseDetailMP4PicardAtoms(t *testing.T) {
 	}
 }
 
-// TestReleaseDetailPicardWriteSpelling checks the write spelling at the byte level on the two
-// formats that rename these keys. A canonical name in the output would not read back in Picard.
+// checks the write spelling at the byte level on the two formats that rename these keys. A
+// canonical name in the output would not read back in Picard.
 func TestReleaseDetailPicardWriteSpelling(t *testing.T) {
 	for _, f := range []string{sampleMP3, sampleMP4} {
 		src := readFixture(t, f)
@@ -111,9 +109,8 @@ func TestReleaseDetailPicardWriteSpelling(t *testing.T) {
 	}
 }
 
-// TestReleaseDetailID3LegacyMigration covers a pre-existing TXXX:RELEASECOUNTRY frame. It
-// reads onto the canonical key, and an edit that touches the key drops it as a stale
-// representation while writing the Picard-spelled frame. Same mechanism as TXXX:LYRICIST.
+// pre-existing TXXX:RELEASECOUNTRY frame. It reads onto the canonical key, and an edit that touches
+// the key drops it as a stale representation while writing the Picard-spelled frame.
 func TestReleaseDetailID3LegacyMigration(t *testing.T) {
 	data := append(id3v2(3, txxxFrame(3, "RELEASECOUNTRY", "US")), mp3Audio(t)...)
 
@@ -142,8 +139,8 @@ func TestReleaseDetailID3LegacyMigration(t *testing.T) {
 	}
 }
 
-// TestReleaseDetailMP4LegacyMigration covers an uppercase RELEASECOUNTRY atom, owned through
-// decodeFreeform's valid-key fallback. It must keep reading and rebuild under the Picard name.
+// uppercase RELEASECOUNTRY atom, owned through decodeFreeform's valid-key fallback. It must keep
+// reading and rebuild under the Picard name.
 func TestReleaseDetailMP4LegacyMigration(t *testing.T) {
 	data := mp4Tagged(mp4Text("\xa9nam", "T"), mp4Freeform("com.apple.iTunes", "RELEASECOUNTRY", "US"))
 
@@ -169,9 +166,7 @@ func TestReleaseDetailMP4LegacyMigration(t *testing.T) {
 	}
 }
 
-// TestReleaseDetailDualRepresentationID3 covers a file holding both TXXX:RELEASECOUNTRY and
-// the Picard spelling. They were two keys before this change and are one now, so both values
-// project, lint reports the redundancy, and repair is scoped to an edit that touches the key.
+// file holding both TXXX:RELEASECOUNTRY and the Picard spelling.
 func TestReleaseDetailDualRepresentationID3(t *testing.T) {
 	build := func(canonVal, picardVal string) []byte {
 		return append(id3v2(3,
@@ -226,8 +221,8 @@ func TestReleaseDetailDualRepresentationID3(t *testing.T) {
 	}
 }
 
-// TestReleaseDetailDualRepresentationMP4 is the MP4 arm: buildItems rebuilds every owned item
-// from the tag set, so any write coalesces the two atoms into one that carries both values.
+// MP4 arm: buildItems rebuilds every owned item from the tag set, so any write coalesces the two
+// atoms into one that carries both values.
 func TestReleaseDetailDualRepresentationMP4(t *testing.T) {
 	data := mp4Tagged(
 		mp4Text("\xa9nam", "T"),
@@ -261,11 +256,9 @@ func TestReleaseDetailDualRepresentationMP4(t *testing.T) {
 	}
 }
 
-// TestReleaseDetailMatroskaCountryUntouched pins that a bare COUNTRY SimpleTag stays a
-// custom key. The Matroska spec defines COUNTRY as a nesting qualifier scoping sibling tags
-// to a country, not as this release's country, so folding it would misread the file and
-// subject its free-text value to the two-letter malformed-country lint. A file carrying one
-// must keep lint-clean and keep its own key.
+// that a bare COUNTRY SimpleTag stays a custom key. The Matroska spec defines COUNTRY as a nesting
+// qualifier scoping sibling tags to a country, not as this release's country, so folding it would
+// misread the file and subject its free-text value to the two-letter malformed-country lint.
 func TestReleaseDetailMatroskaCountryUntouched(t *testing.T) {
 	src := readFixture(t, notagsMKA)
 	plan, err := mustParseBytes(t, src).Edit().Set(tag.Key("COUNTRY"), "United States").Prepare()
@@ -285,8 +278,8 @@ func TestReleaseDetailMatroskaCountryUntouched(t *testing.T) {
 	}
 }
 
-// TestReleaseDetailMatroskaRoundTrip writes the three keys under their identity names and
-// reads them back, including the underscored spellings folding on read.
+// three keys under their identity names and reads them back, including the underscored spellings
+// folding on read.
 func TestReleaseDetailMatroskaRoundTrip(t *testing.T) {
 	src := readFixture(t, sampleMKA)
 	plan, err := mustParseBytes(t, src).Edit().Set(tag.ReleaseCountry, "GB").Prepare()
@@ -312,9 +305,8 @@ func TestReleaseDetailMatroskaRoundTrip(t *testing.T) {
 	}
 }
 
-// TestReleaseDetailTypeNeverSlashSplit pins that a slash-joined RELEASETYPE stays one value.
-// Picard's v2.3 writer joins values with a separator, so a v2.3 file presents one value where
-// v2.4 or FLAC presents two. Splitting here would invent values the file does not carry.
+// that a slash-joined RELEASETYPE stays one value. Picard's v2.3 writer joins values with a
+// separator, so a v2.3 file presents one value where v2.4 or FLAC presents two.
 func TestReleaseDetailTypeNeverSlashSplit(t *testing.T) {
 	data := append(id3v2(3, txxxFrame(3, picardType, "album/compilation")), mp3Audio(t)...)
 	got := mustParseBytes(t, data).Fields().ReleaseTypes
@@ -323,9 +315,7 @@ func TestReleaseDetailTypeNeverSlashSplit(t *testing.T) {
 	}
 }
 
-// TestReleaseDetailDualTaggedMP3Families covers an MP3 carrying an ID3v2 tag and a trailing
-// APEv2 one. The APE item used to resolve to a key the ID3 side never held, so the row was
-// always selected; now both resolve to RELEASESTATUS and a disagreement surfaces in dump.
+// MP3 carrying an ID3v2 tag and a trailing APEv2 one.
 func TestReleaseDetailDualTaggedMP3Families(t *testing.T) {
 	build := func(apeVal string) []byte {
 		data := append(id3v2(3, txxxFrame(3, picardStatus, "official")), mp3Audio(t)...)

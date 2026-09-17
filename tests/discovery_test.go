@@ -7,10 +7,9 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestCapabilitiesFor checks the file-less, format-level capability query: a
-// registered format reports its real, writable support, and the result matches
-// what the file-aware Document.Capabilities reports for the same format (both
-// route through the one codec call).
+// checks the file-less, format-level capability query: a registered format reports its real,
+// writable support, and the result matches what the file-aware Document.Capabilities reports for
+// the same format (both route through the one codec call).
 func TestCapabilitiesFor(t *testing.T) {
 	caps := waxlabel.CapabilitiesFor(waxlabel.FormatFLAC)
 	if caps.Format != waxlabel.FormatFLAC {
@@ -29,9 +28,8 @@ func TestCapabilitiesFor(t *testing.T) {
 	}
 }
 
-// TestCapabilitiesForUnknownIsReadOnly locks the documented fallback: an unknown
-// or unimplemented format reports read-only rather than panicking, mirroring
-// Document.Capabilities's no-codec path.
+// documented fallback: an unknown or unimplemented format reports read-only rather than panicking,
+// mirroring Document.Capabilities's no-codec path.
 func TestCapabilitiesForUnknownIsReadOnly(t *testing.T) {
 	caps := waxlabel.CapabilitiesFor(waxlabel.FormatUnknown)
 	if !caps.ReadOnly {
@@ -42,10 +40,8 @@ func TestCapabilitiesForUnknownIsReadOnly(t *testing.T) {
 	}
 }
 
-// TestKnownKeysCardinalityIsDiscoverable proves a consumer can enumerate the
-// editable vocabulary and its cardinality with no hard-coded key list - the data
-// a UI needs to render an edit form - using only the public API surface this
-// build adds.
+// consumer can enumerate the editable vocabulary and its cardinality with no hard-coded key list;
+// the data a UI needs to render an edit form; using only the public API surface this build adds.
 func TestKnownKeysCardinalityIsDiscoverable(t *testing.T) {
 	keys := tag.KnownKeys()
 	if len(keys) == 0 {

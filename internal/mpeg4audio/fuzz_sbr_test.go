@@ -2,9 +2,7 @@ package mpeg4audio
 
 import "testing"
 
-// FuzzParseSBRSingleChannel asserts that walking an SBR payload over untrusted bytes never
-// panics and never reports a result from a walk it could not finish. The seeds are the real
-// payloads the parametric-stereo fixture carries.
+// FuzzParseSBRSingleChannel: no panic; ok only if full payload also parses.
 func FuzzParseSBRSingleChannel(f *testing.F) {
 	data, err := readFixtureFile("heaac_v2.aac")
 	if err == nil {

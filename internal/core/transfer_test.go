@@ -8,18 +8,15 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// tinyGIF returns a minimal recognized GIF89a header (3x5), a cover format the MP4 covr
-// allowlist does not include.
+// tinyGIF: minimal GIF89a (3x5); not on MP4 covr allowlist.
 func tinyGIF() []byte {
 	return append([]byte("GIF89a"), 0x03, 0x00, 0x05, 0x00, 0x77, 0x00, 0x00)
 }
 
-// tinyWebP returns a minimal recognized WebP header, the other format outside that allowlist.
+// tinyWebP: minimal WebP header; also outside MP4 allowlist.
 func tinyWebP() []byte { return []byte("RIFF\x00\x00\x00\x00WEBP") }
 
-// tinyPNG returns a 1x1 RGBA PNG header and tinyJPEG a 3x5 baseline JPEG: two formats the
-// allowlist does include. Every picture the transfer tests grade by MIME carries real bytes,
-// since the effective MIME comes from the sniff and an empty payload has no image type at all.
+// tinyPNG/tinyJPEG: allowlisted formats. Pictures need real bytes so sniff sets MIME.
 func tinyPNG() []byte {
 	return []byte{
 		0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A,
@@ -33,9 +30,7 @@ func tinyJPEG() []byte {
 	return []byte{0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 0x05, 0x00, 0x03, 0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01}
 }
 
-// TestProjectTransferDispositions exercises all three dispositions in one pass,
-// including the Lossy path. Shipping codecs write a field Full or None, so the
-// test uses a synthetic capability set for the partial-write case.
+// TestProjectTransferDispositions: Carried, Lossy, and Dropped in one pass. Synthetic caps for partial write.
 func TestProjectTransferDispositions(t *testing.T) {
 	var ts tag.TagSet
 	ts.Set("TITLE", "x")
@@ -80,16 +75,14 @@ func TestProjectTransferDispositions(t *testing.T) {
 		}
 	}
 
-	// carried sums the field unit (TITLE) and the 2-chapter set's Count: 1 + 2 = 3.
+	// Counts: TITLE (1) + chapters (2) = 3 carried.
 	carried, lossy, dropped := (TransferReport{Items: items}).Counts()
 	if carried != 3 || lossy != 1 || dropped != 1 {
 		t.Errorf("counts = (%d,%d,%d), want (3,1,1)", carried, lossy, dropped)
 	}
 }
 
-// TestProjectTransferMaxItems checks that a set exceeding the destination's hard
-// MaxItems cap is reported Dropped - the destination would reject the whole set at
-// write time, so reporting it carried would break the report==write invariant.
+// TestProjectTransferMaxItems: over MaxItems drops the whole set (report==write invariant).
 func TestProjectTransferMaxItems(t *testing.T) {
 	caps := NewCapabilities(FormatMP4, false,
 		Capability{Write: AccessFull}, Capability{Write: AccessFull},
@@ -110,8 +103,7 @@ func TestProjectTransferMaxItems(t *testing.T) {
 	}
 }
 
-// TestProjectTransferReadOnlyDropsEverything checks that a read-only destination
-// drops every item regardless of the per-field write level.
+// TestProjectTransferReadOnlyDropsEverything: read-only destination drops all items.
 func TestProjectTransferReadOnlyDropsEverything(t *testing.T) {
 	var ts tag.TagSet
 	ts.Set("TITLE", "x")
@@ -130,9 +122,7 @@ func TestProjectTransferReadOnlyDropsEverything(t *testing.T) {
 	}
 }
 
-// TestProjectTransferSplitsUnrepresentableCovers checks a destination that stores only
-// certain cover MIME types: unsupported covers become a separate Dropped item, while the
-// representable subset is graded as usual.
+// TestProjectTransferSplitsUnrepresentableCovers: MIME allowlist splits representable vs dropped items.
 func TestProjectTransferSplitsUnrepresentableCovers(t *testing.T) {
 	pics := Capability{
 		Write: AccessFull, PictureLoss: PictureLossRoleAndDescription,
@@ -141,7 +131,6 @@ func TestProjectTransferSplitsUnrepresentableCovers(t *testing.T) {
 	caps := NewCapabilities(FormatMP4, false, Capability{Write: AccessFull}, pics,
 		Capability{Write: AccessNone}, AccessNone, nil)
 
-	// Mixed: one representable JPEG, two unrepresentable (GIF, WebP).
 	m := &Media{Format: FormatFLAC, Pictures: []Picture{
 		{Type: PicFrontCover, MIME: "image/jpeg", Data: tinyJPEG()},
 		{Type: PicFrontCover, MIME: "image/gif", Data: tinyGIF()},
@@ -172,8 +161,7 @@ func TestProjectTransferSplitsUnrepresentableCovers(t *testing.T) {
 		t.Errorf("counts = (%d,%d,%d), want (1,0,2)", c, l, d)
 	}
 
-	// All-unrepresentable: only a Dropped item, no carried picture item, and the reason
-	// lists each distinct MIME once.
+	// All unrepresentable: one Dropped item; reason lists each MIME once.
 	allGIF := &Media{Format: FormatFLAC, Pictures: []Picture{
 		{Type: PicFrontCover, MIME: "image/gif", Data: tinyGIF()},
 		{Type: PicBackCover, MIME: "image/gif", Data: tinyGIF()},
@@ -186,8 +174,7 @@ func TestProjectTransferSplitsUnrepresentableCovers(t *testing.T) {
 		t.Errorf("reason = %q, want %q (distinct MIMEs only)", got[0].Reason, want)
 	}
 
-	// No PictureMIMEs restriction: the set stays a single item, byte-identical to the
-	// pre-split behavior (a format that stores any cover it accepts).
+	// No MIME restriction: single picture item.
 	open := NewCapabilities(FormatFLAC, false, Capability{Write: AccessFull},
 		Capability{Write: AccessFull}, Capability{Write: AccessNone}, AccessNone, nil)
 	if n := len(ProjectTransfer(m, open)); n != 1 {
@@ -195,12 +182,8 @@ func TestProjectTransferSplitsUnrepresentableCovers(t *testing.T) {
 	}
 }
 
-// TestProjectTransferSplitsPicturesByMetadataLoss checks that when a destination stores image bytes
-// losslessly but drops role and description (MP4's covr), a mixed set is partitioned per picture
-// rather than flipped whole. A front cover with no description round-trips (Carried) while a back
-// cover loses its role (Lossy), so front plus back reports 1 carried, 1 lossy instead of the
-// 0 carried, 2 lossy an earlier version reported. The item order is pinned
-// carried-then-lossy-then-dropped for stable output.
+// TestProjectTransferSplitsPicturesByMetadataLoss: per-picture split when covr drops role/description.
+// Order: carried, lossy, dropped.
 func TestProjectTransferSplitsPicturesByMetadataLoss(t *testing.T) {
 	pics := Capability{
 		Write: AccessFull, PictureLoss: PictureLossRoleAndDescription,
@@ -219,8 +202,6 @@ func TestProjectTransferSplitsPicturesByMetadataLoss(t *testing.T) {
 		return out
 	}
 
-	// Front + back cover, both representable, no descriptions: the front round-trips, the back
-	// loses its role. Exactly one carried, one lossy, carried first with an empty reason.
 	m := &Media{Format: FormatFLAC, Pictures: []Picture{
 		{Type: PicFrontCover, MIME: "image/jpeg", Data: tinyJPEG()},
 		{Type: PicBackCover, MIME: "image/jpeg", Data: tinyJPEG()},
@@ -244,12 +225,10 @@ func TestProjectTransferSplitsPicturesByMetadataLoss(t *testing.T) {
 		t.Errorf("counts = (%d,%d,%d), want (1,1,0)", c, l, d)
 	}
 
-	// Adding an unrepresentable cover locks the full three-item order: carried, then lossy, then
-	// the dropped-MIME item.
 	m2 := &Media{Format: FormatFLAC, Pictures: []Picture{
-		{Type: PicFrontCover, MIME: "image/jpeg", Data: tinyJPEG()}, // carried
-		{Type: PicBackCover, MIME: "image/png", Data: tinyPNG()},    // lossy: role dropped
-		{Type: PicFrontCover, MIME: "image/gif", Data: tinyGIF()},   // dropped: unrepresentable MIME
+		{Type: PicFrontCover, MIME: "image/jpeg", Data: tinyJPEG()},
+		{Type: PicBackCover, MIME: "image/png", Data: tinyPNG()},
+		{Type: PicFrontCover, MIME: "image/gif", Data: tinyGIF()},
 	}}
 	got := pictureDisps(ProjectTransfer(m2, caps))
 	if len(got) != 3 || got[0] != Carried || got[1] != Lossy || got[2] != Dropped {
@@ -257,12 +236,8 @@ func TestProjectTransferSplitsPicturesByMetadataLoss(t *testing.T) {
 	}
 }
 
-// TestProjectTransferSplitsChaptersByMetadataLoss checks that a chapter set copied to a start+title
-// destination is partitioned per chapter rather than flipped whole (the chapter analogue of the
-// picture split). It asserts the reconstructable-end boundary explicitly, since that is the whole
-// subtlety of the per-index predicate: a chapter whose interior end reaches the next start
-// reconstructs and carries, while a gapped end is a real loss. The title-byte-cap axis splits the
-// same way.
+// TestProjectTransferSplitsChaptersByMetadataLoss: per-chapter split for start+title stores.
+// Gapless interior end reconstructs (carried); gapped end is lossy. Title cap splits the same way.
 func TestProjectTransferSplitsChaptersByMetadataLoss(t *testing.T) {
 	chapterItems := func(items []TransferItem) []TransferItem {
 		var out []TransferItem
@@ -273,36 +248,29 @@ func TestProjectTransferSplitsChaptersByMetadataLoss(t *testing.T) {
 		}
 		return out
 	}
-	// Start+title destination (FLAC/Ogg model): a gapless interior end reconstructs from the next
-	// start, a gapped one cannot, and an open last chapter has no end to lose.
 	startTitle := NewCapabilities(FormatFLAC, false, Capability{Write: AccessFull},
 		Capability{Write: AccessNone},
 		Capability{Write: AccessFull, ChapterLoss: ChapterLossStartTitleOnly}, AccessNone, nil)
 
-	// The reconstructable-end boundary, isolated: two 2-chapter sets differing ONLY in whether the
-	// first chapter's end reaches the second's start. The second chapter is open, so it carries in
-	// both; only the first's grade flips.
 	reconstructable := &Media{Format: FormatMatroska, Chapters: []Chapter{
-		{Start: 0, End: 10 * time.Second, Title: "A"}, // end == B.Start -> reconstructable, carried
-		{Start: 10 * time.Second, Title: "B"},         // open last -> carried
+		{Start: 0, End: 10 * time.Second, Title: "A"}, // end == next start
+		{Start: 10 * time.Second, Title: "B"},
 	}}
 	if c, l, _ := (TransferReport{Items: ProjectTransfer(reconstructable, startTitle)}).Counts(); c != 2 || l != 0 {
 		t.Errorf("reconstructable-end set counts = (%d carried, %d lossy), want (2, 0): a gapless end must grade carried", c, l)
 	}
 	gapped := &Media{Format: FormatMatroska, Chapters: []Chapter{
-		{Start: 0, End: 5 * time.Second, Title: "A"}, // end 5s != B.Start 10s -> gapped, lossy
-		{Start: 10 * time.Second, Title: "B"},        // open last -> carried
+		{Start: 0, End: 5 * time.Second, Title: "A"}, // gapped end
+		{Start: 10 * time.Second, Title: "B"},
 	}}
 	if c, l, _ := (TransferReport{Items: ProjectTransfer(gapped, startTitle)}).Counts(); c != 1 || l != 1 {
 		t.Errorf("gapped-end set counts = (%d carried, %d lossy), want (1, 1): a gapped end must grade lossy", c, l)
 	}
 
-	// A mixed set: reconstructable end (carried), gapped interior end (lossy), open last (carried) ->
-	// 1 lossy, N-1 carried, carried item first with an empty reason and the lossy item a metadata reason.
 	mixed := &Media{Format: FormatMatroska, Chapters: []Chapter{
-		{Start: 0, End: 10 * time.Second, Title: "A"},                // reaches B -> carried
-		{Start: 10 * time.Second, End: 15 * time.Second, Title: "B"}, // gapped (C at 20) -> lossy
-		{Start: 20 * time.Second, Title: "C"},                        // open last -> carried
+		{Start: 0, End: 10 * time.Second, Title: "A"},
+		{Start: 10 * time.Second, End: 15 * time.Second, Title: "B"}, // gapped (C at 20s)
+		{Start: 20 * time.Second, Title: "C"},
 	}}
 	got := chapterItems(ProjectTransfer(mixed, startTitle))
 	if len(got) != 2 || got[0].Disposition != Carried || got[1].Disposition != Lossy {
@@ -315,14 +283,12 @@ func TestProjectTransferSplitsChaptersByMetadataLoss(t *testing.T) {
 		t.Errorf("lossy chapter item = %+v, want count 1 with a metadata reason", got[1])
 	}
 
-	// Title-byte-cap axis, no metadata loss: only the over-long title is lossy, with the truncation
-	// reason (not the metadata reason), the rest carried.
 	titleCap := NewCapabilities(FormatMP4, false, Capability{Write: AccessFull},
 		Capability{Write: AccessNone},
 		Capability{Write: AccessFull, ChapterTitleByteMax: 3}, AccessNone, nil)
 	m2 := &Media{Format: FormatMatroska, Chapters: []Chapter{
-		{Start: 0, Title: "ok"},                     // within the 3-byte cap -> carried
-		{Start: time.Second, Title: "way too long"}, // exceeds it -> lossy
+		{Start: 0, Title: "ok"},
+		{Start: time.Second, Title: "way too long"},
 	}}
 	got2 := chapterItems(ProjectTransfer(m2, titleCap))
 	if len(got2) != 2 || got2[0].Disposition != Carried || got2[1].Disposition != Lossy {
@@ -333,16 +299,14 @@ func TestProjectTransferSplitsChaptersByMetadataLoss(t *testing.T) {
 	}
 }
 
-// TestProjectTransferReasonUsesSniffedMIME checks that a dropped cover's reason names the
-// sniffed type used to reject it, not a wrong or empty stored label. A GIF mislabeled as
-// JPEG, and an unlabeled GIF, both read "cannot store image/gif".
+// TestProjectTransferReasonUsesSniffedMIME: drop reason uses sniffed MIME, not stored label.
 func TestProjectTransferReasonUsesSniffedMIME(t *testing.T) {
 	gif := tinyGIF()
 	pics := Capability{Write: AccessFull, PictureMIMEs: []string{"image/jpeg", "image/png", "image/bmp"}}
 	caps := NewCapabilities(FormatMP4, false, Capability{Write: AccessFull}, pics,
 		Capability{Write: AccessNone}, AccessNone, nil)
 
-	for _, label := range []string{"image/jpeg", ""} { // a wrong label, then an empty one
+	for _, label := range []string{"image/jpeg", ""} {
 		m := &Media{Format: FormatFLAC, Pictures: []Picture{{Type: PicFrontCover, MIME: label, Data: gif}}}
 		var dropped *TransferItem
 		items := ProjectTransfer(m, caps)
@@ -360,11 +324,7 @@ func TestProjectTransferReasonUsesSniffedMIME(t *testing.T) {
 	}
 }
 
-// TestRepresentableUsesSniffedMIME guards the per-image split against a false drop:
-// Representable must compare the MIME an authoritative sniff settles on (what AddPicture
-// stores), not the raw container label. A storable JPEG carried under a non-canonical
-// alias or odd casing is representable; a GIF mislabeled as JPEG is not (the bytes win);
-// a label-only picture (no bytes) is representable nowhere, whatever it claims.
+// TestRepresentableUsesSniffedMIME: Representable uses sniffed MIME. Bytes beat label; empty payload is not representable.
 func TestRepresentableUsesSniffedMIME(t *testing.T) {
 	jpeg := tinyJPEG()
 	gif := tinyGIF()
@@ -379,8 +339,6 @@ func TestRepresentableUsesSniffedMIME(t *testing.T) {
 	if Representable(mp4, Picture{MIME: "image/jpeg", Data: gif}) {
 		t.Error("a GIF mislabeled image/jpeg must not be representable (the bytes win over the label)")
 	}
-	// Label-only (no recognizable bytes): an empty payload has no image type, so the label
-	// decides nothing and neither picture is representable.
 	if Representable(mp4, Picture{MIME: "image/gif"}) {
 		t.Error("a label-only image/gif (no bytes) must not be representable")
 	}
@@ -389,9 +347,7 @@ func TestRepresentableUsesSniffedMIME(t *testing.T) {
 	}
 }
 
-// TestChaptersLoseMetadata checks the start+title-only loss predicate. Metadata the
-// destination drops flags a loss - including any per-chapter language, since these stores
-// hold no language field (uniform or varying alike). ChapterLossNone never flags a loss.
+// TestChaptersLoseMetadata: ChapterLossStartTitleOnly flags dropped metadata (incl. any language).
 func TestChaptersLoseMetadata(t *testing.T) {
 	sec := func(s int) time.Duration { return time.Duration(s) * time.Second }
 	cases := []struct {
@@ -406,9 +362,9 @@ func TestChaptersLoseMetadata(t *testing.T) {
 		{"varying-ietf", []Chapter{{LanguageIETF: "fr-FR"}, {Start: sec(5), LanguageIETF: "de-DE"}}, true},
 		{"hidden", []Chapter{{Hidden: true}}, true},
 		{"disabled", []Chapter{{Disabled: true}}, true},
-		{"gapped-end", []Chapter{{End: sec(3)}, {Start: sec(5)}}, true},      // gap inference cannot recover this
-		{"contiguous-end", []Chapter{{End: sec(5)}, {Start: sec(5)}}, false}, // End == next Start, inferred
-		{"last-end", []Chapter{{}, {Start: sec(5), End: sec(9)}}, true},      // last End always lost
+		{"gapped-end", []Chapter{{End: sec(3)}, {Start: sec(5)}}, true},
+		{"contiguous-end", []Chapter{{End: sec(5)}, {Start: sec(5)}}, false},
+		{"last-end", []Chapter{{}, {Start: sec(5), End: sec(9)}}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -422,9 +378,7 @@ func TestChaptersLoseMetadata(t *testing.T) {
 	}
 }
 
-// TestChaptersLoseMetadataInteriorEnds checks the MP4 QuickTime loss predicate. It
-// matches ChapterLossStartTitleOnly except the final chapter's explicit end is kept
-// (the text track stores it), so only an interior gapped end is a loss.
+// TestChaptersLoseMetadataInteriorEnds: MP4 keeps final end; only interior gapped end is lossy.
 func TestChaptersLoseMetadataInteriorEnds(t *testing.T) {
 	sec := func(s int) time.Duration { return time.Duration(s) * time.Second }
 	cases := []struct {
@@ -437,10 +391,10 @@ func TestChaptersLoseMetadataInteriorEnds(t *testing.T) {
 		{"varying-iso", []Chapter{{Language: "fre"}, {Start: sec(5), Language: "ger"}}, true},
 		{"hidden", []Chapter{{Hidden: true}}, true},
 		{"disabled", []Chapter{{Disabled: true}}, true},
-		{"gapped-interior-end", []Chapter{{End: sec(3)}, {Start: sec(5)}}, true},                     // interior gap cannot be inferred
-		{"contiguous-end", []Chapter{{End: sec(5)}, {Start: sec(5)}}, false},                         // End == next Start, inferred
-		{"last-end-kept", []Chapter{{}, {Start: sec(5), End: sec(9)}}, false},                        // the text track stores the final end
-		{"last-end-plus-interior-gap", []Chapter{{End: sec(3)}, {Start: sec(5), End: sec(9)}}, true}, // interior gap still lost
+		{"gapped-interior-end", []Chapter{{End: sec(3)}, {Start: sec(5)}}, true},
+		{"contiguous-end", []Chapter{{End: sec(5)}, {Start: sec(5)}}, false},
+		{"last-end-kept", []Chapter{{}, {Start: sec(5), End: sec(9)}}, false},
+		{"last-end-plus-interior-gap", []Chapter{{End: sec(3)}, {Start: sec(5), End: sec(9)}}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -451,9 +405,7 @@ func TestChaptersLoseMetadataInteriorEnds(t *testing.T) {
 	}
 }
 
-// TestChaptersLoseMetadataLangFlags checks the ID3 CHAP loss predicate. Start, end, and
-// title all survive, so gapped and last-chapter ends are not a loss. CHAP has no language
-// or visibility fields, so any language or Matroska visibility flag is a loss.
+// TestChaptersLoseMetadataLangFlags: CHAP keeps ends; language and visibility flags are lossy.
 func TestChaptersLoseMetadataLangFlags(t *testing.T) {
 	sec := func(s int) time.Duration { return time.Duration(s) * time.Second }
 	cases := []struct {
@@ -462,9 +414,9 @@ func TestChaptersLoseMetadataLangFlags(t *testing.T) {
 		want bool
 	}{
 		{"plain", []Chapter{{Start: 0, Title: "A"}, {Start: sec(5), Title: "B"}}, false},
-		{"gapped-end-kept", []Chapter{{End: sec(3)}, {Start: sec(5)}}, false},                 // CHAP stores ends
-		{"last-end-kept", []Chapter{{}, {Start: sec(5), End: sec(9)}}, false},                 // CHAP stores ends
-		{"uniform-iso", []Chapter{{Language: "eng"}, {Start: sec(5), Language: "eng"}}, true}, // no language field at all
+		{"gapped-end-kept", []Chapter{{End: sec(3)}, {Start: sec(5)}}, false},
+		{"last-end-kept", []Chapter{{}, {Start: sec(5), End: sec(9)}}, false},
+		{"uniform-iso", []Chapter{{Language: "eng"}, {Start: sec(5), Language: "eng"}}, true},
 		{"uniform-ietf", []Chapter{{LanguageIETF: "en-US"}, {Start: sec(5), LanguageIETF: "en-US"}}, true},
 		{"hidden", []Chapter{{Hidden: true}}, true},
 		{"disabled", []Chapter{{Disabled: true}}, true},
@@ -478,10 +430,7 @@ func TestChaptersLoseMetadataLangFlags(t *testing.T) {
 	}
 }
 
-// TestProjectTransferChapterGrading checks that a start+title-only destination marks
-// chapter sets Lossy only when they carry metadata the destination drops. Plain
-// chapters copy as Carried, and a lossless destination carries metadata-bearing
-// chapters as well.
+// TestProjectTransferChapterGrading: start+title destination marks Lossy only when metadata is dropped.
 func TestProjectTransferChapterGrading(t *testing.T) {
 	sec := func(s int) time.Duration { return time.Duration(s) * time.Second }
 	startTitleOnly := Capability{Write: AccessFull, ChapterLoss: ChapterLossStartTitleOnly, Fidelity: "start and title only"}
@@ -516,8 +465,6 @@ func TestProjectTransferChapterGrading(t *testing.T) {
 		t.Errorf("Matroska->Matroska chapters = %s, want Carried", it.Disposition)
 	}
 
-	// ID3 CHAP keeps ends but stores no per-chapter language. A Matroska source whose
-	// chapters carry language, even uniformly, copies as Lossy; plain chapters carry.
 	langFlags := Capability{Write: AccessFull, ChapterLoss: ChapterLossLangFlags, Fidelity: "language and flags dropped"}
 	mp3 := NewCapabilities(FormatMP3, false,
 		Capability{Write: AccessFull}, Capability{Write: AccessFull}, langFlags, AccessPartial, nil)
@@ -531,10 +478,7 @@ func TestProjectTransferChapterGrading(t *testing.T) {
 	}
 }
 
-// TestProjectTransferSyncedLyricsTimestampClamp checks the upgrade: a synced-lyric line
-// past the destination's SyncedLyricsTimeMax grades Lossy (the write clamps it), while a set
-// within the ceiling carries. The destination stores the language too (no metadata loss), so
-// the timestamp clamp is the only thing that can make it lossy.
+// TestProjectTransferSyncedLyricsTimestampClamp: line past SyncedLyricsTimeMax is Lossy (write clamps).
 func TestProjectTransferSyncedLyricsTimestampClamp(t *testing.T) {
 	dst := NewCapabilities(FormatMP3, false,
 		Capability{Write: AccessFull}, Capability{Write: AccessFull}, Capability{Write: AccessFull}, AccessPartial, nil).
@@ -558,18 +502,13 @@ func TestProjectTransferSyncedLyricsTimestampClamp(t *testing.T) {
 	if it := syncedItem(within); it.Disposition != Carried {
 		t.Errorf("a set within the ceiling = %s, want Carried", it.Disposition)
 	}
-	// A line exactly at the ceiling round-trips (strictly-greater clamp), so it carries.
-	atMax := []SyncedLyrics{{Lines: []SyncedLine{{Time: 100 * time.Second, Text: "edge"}}}}
+	atMax := []SyncedLyrics{{Lines: []SyncedLine{{Time: 100 * time.Second, Text: "edge"}}}} // clamp is strictly greater
 	if it := syncedItem(atMax); it.Disposition != Carried {
 		t.Errorf("a line exactly at the ceiling = %s, want Carried (clamp is strictly greater)", it.Disposition)
 	}
 }
 
-// TestProjectTransferSplitsSyncedLyricsByMetadataLoss checks that a synced-lyrics set is partitioned
-// per set, like pictures and chapters. An LRC destination drops each set's language and descriptor,
-// so a set carrying one is lossy while a plain set carries: two sets, one plain and one with a
-// descriptor, report 1 carried, 1 lossy rather than the whole set flipped. The timestamp-clamp axis
-// splits the same way, taking the clamp reason when no set lost metadata.
+// TestProjectTransferSplitsSyncedLyricsByMetadataLoss: per-set split for LRC (language/descriptor) and timestamp clamp.
 func TestProjectTransferSplitsSyncedLyricsByMetadataLoss(t *testing.T) {
 	syncedItems := func(items []TransferItem) []TransferItem {
 		var out []TransferItem
@@ -580,12 +519,10 @@ func TestProjectTransferSplitsSyncedLyricsByMetadataLoss(t *testing.T) {
 		}
 		return out
 	}
-	// LRC destination: drops each set's per-set language/descriptor, with a timestamp ceiling too.
 	lrc := NewCapabilities(FormatFLAC, false, Capability{Write: AccessFull},
 		Capability{Write: AccessNone}, Capability{Write: AccessNone}, AccessNone, nil).
 		WithSyncedLyrics(Capability{Write: AccessFull, SyncedLyricsLoss: SyncedLyricsLossLanguage, SyncedLyricsTimeMax: 100 * time.Second})
 
-	// One plain set (carried) beside one carrying a descriptor (lossy metadata).
 	m := &Media{Format: FormatMatroska, SyncedLyrics: []SyncedLyrics{
 		{Lines: []SyncedLine{{Time: 0, Text: "plain"}}},
 		{Description: "chorus", Lines: []SyncedLine{{Time: time.Second, Text: "meta"}}},
@@ -604,14 +541,12 @@ func TestProjectTransferSplitsSyncedLyricsByMetadataLoss(t *testing.T) {
 		t.Errorf("counts = (%d,%d,%d), want (1,1,0)", c, l, d)
 	}
 
-	// Timestamp-clamp axis, no metadata loss: only the over-ceiling set is lossy, with the clamp
-	// reason (not the metadata reason).
 	clampOnly := NewCapabilities(FormatMP3, false, Capability{Write: AccessFull},
 		Capability{Write: AccessNone}, Capability{Write: AccessNone}, AccessNone, nil).
 		WithSyncedLyrics(Capability{Write: AccessFull, SyncedLyricsTimeMax: 100 * time.Second})
 	m2 := &Media{Format: FormatMatroska, SyncedLyrics: []SyncedLyrics{
-		{Lines: []SyncedLine{{Time: 0, Text: "ok"}}},                   // within -> carried
-		{Lines: []SyncedLine{{Time: 200 * time.Second, Text: "late"}}}, // over -> lossy
+		{Lines: []SyncedLine{{Time: 0, Text: "ok"}}},
+		{Lines: []SyncedLine{{Time: 200 * time.Second, Text: "late"}}},
 	}}
 	got2 := syncedItems(ProjectTransfer(m2, clampOnly))
 	if len(got2) != 2 || got2[0].Disposition != Carried || got2[1].Disposition != Lossy {
@@ -622,8 +557,7 @@ func TestProjectTransferSplitsSyncedLyricsByMetadataLoss(t *testing.T) {
 	}
 }
 
-// TestProjectTransferEmptyMetadata: a source with no canonical metadata yields no
-// items (and so is trivially lossless).
+// TestProjectTransferEmptyMetadata: empty source yields no items.
 func TestProjectTransferEmptyMetadata(t *testing.T) {
 	m := &Media{Format: FormatFLAC}
 	items := ProjectTransfer(m, NewCapabilities(FormatMP4, false,
@@ -636,12 +570,8 @@ func TestProjectTransferEmptyMetadata(t *testing.T) {
 	}
 }
 
-// TestProjectTransferTrimsNumericDateValues checks that transfer grading sees the value
-// the writer stores. Numeric and date fields are trimmed before value-level predicates
-// run, while unrelated fields keep surrounding whitespace.
+// TestProjectTransferTrimsNumericDateValues: date/numeric fields trimmed before grading.
 func TestProjectTransferTrimsNumericDateValues(t *testing.T) {
-	// A drop predicate that fires only for surrounding whitespace proves whether trimming
-	// happened before grading.
 	dropsIfPadded := func(v string) bool { return v != strings.TrimSpace(v) }
 	padSensitive := WithValueDrop(Capability{Read: AccessFull, Write: AccessFull}, dropsIfPadded)
 	caps := NewCapabilities(FormatMP3, false,
@@ -649,8 +579,8 @@ func TestProjectTransferTrimsNumericDateValues(t *testing.T) {
 		map[tag.Key]Capability{tag.RecordingDate: padSensitive, tag.Title: padSensitive})
 
 	m := &Media{Tags: tag.NewTagSet()}
-	m.Tags.Set(tag.RecordingDate, " 2021 ") // a date field: trimmed before grading
-	m.Tags.Set(tag.Title, " padded ")       // a non-date field: not trimmed
+	m.Tags.Set(tag.RecordingDate, " 2021 ")
+	m.Tags.Set(tag.Title, " padded ")
 
 	var rec, title TransferItem
 	for _, it := range ProjectTransfer(m, caps) {
@@ -669,10 +599,7 @@ func TestProjectTransferTrimsNumericDateValues(t *testing.T) {
 	}
 }
 
-// TestProjectTransferPictureSlotPartition covers the set-level partition hook a
-// destination with named picture slots attaches (APE's two-item Cover Art convention):
-// pictures without a slot are graded Dropped with the capability's slot reason, the kept
-// ones still split carried/lossy, and a hook that keeps everything adds no item.
+// TestProjectTransferPictureSlotPartition: APE slot hook drops unslotted pictures; kept ones still split carried/lossy.
 func TestProjectTransferPictureSlotPartition(t *testing.T) {
 	keepFirst := func(ps []Picture, _ []bool) []int {
 		if len(ps) == 0 {
@@ -708,7 +635,6 @@ func TestProjectTransferPictureSlotPartition(t *testing.T) {
 		t.Errorf("counts = (%d,%d,%d), want (1,0,1)", c, l, d)
 	}
 
-	// A set the hook keeps whole grades exactly as before: no dropped item appears.
 	one := &Media{Format: FormatFLAC, Pictures: []Picture{{Type: PicFrontCover, MIME: "image/jpeg"}}}
 	for _, it := range ProjectTransfer(one, caps) {
 		if it.Kind == TransferPicture && it.Disposition == Dropped {
@@ -716,8 +642,7 @@ func TestProjectTransferPictureSlotPartition(t *testing.T) {
 		}
 	}
 
-	// A destination that cannot write pictures at all reports the whole set dropped for
-	// that one reason; the slot partition must not peel a second dropped item off first.
+	// No picture write: one whole-set drop; slot partition must not add a second item.
 	none := caps
 	none.Pictures.Write = AccessNone
 	var pictureItems []TransferItem
@@ -730,8 +655,6 @@ func TestProjectTransferPictureSlotPartition(t *testing.T) {
 		t.Errorf("no-picture destination items = %+v, want one whole-set drop with the capability reason", pictureItems)
 	}
 
-	// The editor-facing form reports whether slots exist at all and passes the added
-	// flags through; a slotless capability tells the editor to leave the set alone.
 	if _, _, ok := PartitionPictureSlotsEdited(Capability{Write: AccessFull}, m.Pictures, nil); ok {
 		t.Error("a capability without slots claimed to have them")
 	}
@@ -741,9 +664,7 @@ func TestProjectTransferPictureSlotPartition(t *testing.T) {
 	}
 }
 
-// TestProjectTransferGradesChaptersAsGiven pins that grading uses the list it is handed:
-// the run-to-EOF reopen belongs to the caller that assembles the write, so a final end at
-// the source duration grades Lossy against a start+title store until the caller opens it.
+// TestProjectTransferGradesChaptersAsGiven: grading uses chapters as given; OpenRunToEOFEnd is caller's job.
 func TestProjectTransferGradesChaptersAsGiven(t *testing.T) {
 	caps := NewCapabilities(FormatMP4, false,
 		Capability{Write: AccessFull}, Capability{Write: AccessFull},

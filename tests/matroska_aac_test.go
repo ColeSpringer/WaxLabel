@@ -27,10 +27,9 @@ func mkAudioTrackFile(codecID string, private []byte, audioKids ...[]byte) []byt
 	return concat(mkEl(idEBML, mkStr(idDocType, "matroska")), mkEl(idSegment, seg))
 }
 
-// TestMatroskaOutputSamplingFrequency: an SBR track declares the core rate in
-// SamplingFrequency and the played rate in OutputSamplingFrequency, and it is the played
-// one a listener hears. The digest salt stays on SamplingFrequency, so adding the output
-// element must not move it.
+// SBR track declares the core rate in SamplingFrequency and the played rate in
+// OutputSamplingFrequency, and it is the played one a listener hears. The digest salt stays on
+// SamplingFrequency, so adding the output element must not move it.
 func TestMatroskaOutputSamplingFrequency(t *testing.T) {
 	t.Parallel()
 	asc := mp4ASC(t, "2b920800") // hierarchical SBR: core 22050, extension 44100
@@ -51,8 +50,8 @@ func TestMatroskaOutputSamplingFrequency(t *testing.T) {
 	}
 }
 
-// TestMatroskaAACRateFromCodecPrivate: a muxer that omits OutputSamplingFrequency still
-// declares SBR in the CodecPrivate, which is enough to report the played rate.
+// muxer that omits OutputSamplingFrequency still declares SBR in the CodecPrivate, which is enough
+// to report the played rate.
 func TestMatroskaAACRateFromCodecPrivate(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -88,10 +87,9 @@ func TestMatroskaAACRateFromCodecPrivate(t *testing.T) {
 	}
 }
 
-// TestMatroskaAACCodecIDSBRSurvivesSilentConfig: a CodecPrivate that says nothing about SBR
-// does not contradict the CodecID's /SBR suffix, so the suffix stands. Letting the config win
-// made the same file report "AAC LC" with a CodecPrivate and "HE-AAC" without one - adding
-// information made the answer worse.
+// CodecPrivate that says nothing about SBR does not contradict the CodecID's /SBR suffix, so the
+// suffix stands. Letting the config win made the same file report "AAC LC" with a CodecPrivate and
+// "HE-AAC" without one; adding information made the answer worse.
 func TestMatroskaAACCodecIDSBRSurvivesSilentConfig(t *testing.T) {
 	t.Parallel()
 	kids := []([]byte){mkFloat(idSampFreq, 22050), mkUint(idChannels, 2)}
@@ -109,8 +107,8 @@ func TestMatroskaAACCodecIDSBRSurvivesSilentConfig(t *testing.T) {
 	}
 }
 
-// TestMatroskaAACProfileFallsBackToCodecID: a config that names nothing more specific than
-// the codec leaves the CodecID suffix as the best description available.
+// config that names nothing more specific than the codec leaves the CodecID suffix as the best
+// description available.
 func TestMatroskaAACProfileFallsBackToCodecID(t *testing.T) {
 	t.Parallel()
 	// Object type 17 (error-resilient AAC LC): a real type with no distinguishing name here.
@@ -125,8 +123,8 @@ func TestMatroskaAACProfileFallsBackToCodecID(t *testing.T) {
 	}
 }
 
-// TestMatroskaOutputSamplingFrequencyBeatsCodecPrivate: the container's own declaration is
-// the muxer's considered answer, so a config that disagrees does not override it.
+// container's own declaration is the muxer's considered answer, so a config that disagrees does not
+// override it.
 func TestMatroskaOutputSamplingFrequencyBeatsCodecPrivate(t *testing.T) {
 	t.Parallel()
 	data := mkAudioTrackFile("A_AAC", mp4ASC(t, "2b920800"),
@@ -136,8 +134,8 @@ func TestMatroskaOutputSamplingFrequencyBeatsCodecPrivate(t *testing.T) {
 	}
 }
 
-// TestMatroskaHostileOutputSamplingFrequency: a NaN, infinite, or negative output rate is
-// not a rate, and must leave the core rate standing rather than poisoning the track.
+// NaN, infinite, or negative output rate is not a rate, and must leave the core rate standing
+// rather than poisoning the track.
 func TestMatroskaHostileOutputSamplingFrequency(t *testing.T) {
 	t.Parallel()
 	for _, f := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), -44100, 0, math.MaxInt32} {
@@ -149,8 +147,8 @@ func TestMatroskaHostileOutputSamplingFrequency(t *testing.T) {
 	}
 }
 
-// TestMatroskaAACProfileFromCodecID: mkvmerge and older ffmpeg builds write no CodecPrivate
-// at all, and then the CodecID suffix is the only thing naming the object type.
+// mkvmerge and older ffmpeg builds write no CodecPrivate at all, and then the CodecID suffix is the
+// only thing naming the object type.
 func TestMatroskaAACProfileFromCodecID(t *testing.T) {
 	t.Parallel()
 	cases := []struct{ codecID, profile string }{
@@ -178,9 +176,8 @@ func TestMatroskaAACProfileFromCodecID(t *testing.T) {
 	}
 }
 
-// TestMatroskaLargeCodecPrivateReadsPrefixOnly: the config decoder consumes a couple of
-// dozen bytes, so a CodecPrivate declaring far more is read as a bounded prefix rather than
-// allocated whole. The answer must be the same as for the short form.
+// config decoder consumes a couple of dozen bytes, so a CodecPrivate declaring far more is read as
+// a bounded prefix rather than allocated whole. The answer must be the same as for the short form.
 func TestMatroskaLargeCodecPrivateReadsPrefixOnly(t *testing.T) {
 	t.Parallel()
 	asc := mp4ASC(t, "2b920800")
@@ -197,8 +194,8 @@ func TestMatroskaLargeCodecPrivateReadsPrefixOnly(t *testing.T) {
 	}
 }
 
-// TestMatroskaNonAACCodecPrivateIgnored: only an AAC track's CodecPrivate is an
-// AudioSpecificConfig; a FLAC one must not be read as though it were.
+// only an AAC track's CodecPrivate is an AudioSpecificConfig; a FLAC one must not be read as though
+// it were.
 func TestMatroskaNonAACCodecPrivateIgnored(t *testing.T) {
 	t.Parallel()
 	data := mkAudioTrackFile("A_FLAC", mp4ASC(t, "2b920800"),
@@ -209,9 +206,8 @@ func TestMatroskaNonAACCodecPrivateIgnored(t *testing.T) {
 	}
 }
 
-// TestMatroskaDifferentialHEAACRemux: ffmpeg copying an HE-AAC track into Matroska writes
-// the core rate in SamplingFrequency and the played one in OutputSamplingFrequency. Reading
-// only the first reports half the rate ffprobe does.
+// ffmpeg copying an HE-AAC track into Matroska writes the core rate in SamplingFrequency and the
+// played one in OutputSamplingFrequency. Reading only the first reports half the rate ffprobe does.
 func TestMatroskaDifferentialHEAACRemux(t *testing.T) {
 	t.Parallel()
 	requireTool(t, "ffmpeg")

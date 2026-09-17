@@ -19,11 +19,10 @@ func init() { core.Register(New()) }
 func (Codec) Format() core.Format  { return core.FormatWavPack }
 func (Codec) Extensions() []string { return []string{".wv"} }
 
-// SkipsLeadingID3 reports false because a WavPack file begins with a wvpk block.
-// The legacy ID3 a WavPack file can carry is a trailing ID3v1, not a front tag.
+// SkipsLeadingID3 is false: the file starts with wvpk. Legacy ID3 here is trailing ID3v1.
 func (Codec) SkipsLeadingID3() bool { return false }
 
-// Sniff matches the "wvpk" block marker at offset 0.
+// Sniff matches "wvpk" at offset 0.
 func (Codec) Sniff(header []byte) bool {
 	return len(header) >= 4 && string(header[:4]) == blockMagic
 }
@@ -33,21 +32,15 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	return parse(ctx, src, opts)
 }
 
-// Capabilities reports WavPack's support, which is entirely APEv2's: the shared
-// definition in internal/ape, so the three APE-backed codecs cannot drift. The
-// trailing ID3v1 a file may carry is legacy - preserved, never written to - so it
-// adds no capability.
+// Capabilities is APEv2's shared definition. Trailing ID3v1 adds no capability.
 func (Codec) Capabilities(_ *core.Media, _ core.WriteOptions) core.Capabilities {
 	return ape.Capabilities(core.FormatWavPack, false)
 }
 
-// EssenceExtent returns the WavPack essence-digest inputs: a versioned extent name
-// and the decoder-critical static configuration from the first block's flag word.
-//
-// It hashes the decoded fields rather than the raw flag word because that word also
-// carries per-block state (the initial/final block markers and the decorrelation
-// setup), which says nothing about the audio and would make two identical streams
-// hash differently over how their blocks happen to be laid out.
+// EssenceExtent returns wavpack-v1 and decoder-critical fields from the first
+// block. Hashes decoded fields, not the raw flag word: that word also carries
+// per-block state (initial/final markers, decorrelation) that would make identical
+// streams hash differently by block layout.
 func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 	var b [16]byte
 	if d, ok := m.Native.(*doc); ok && d != nil {

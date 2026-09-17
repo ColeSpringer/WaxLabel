@@ -6,9 +6,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestID3ITunesFrames pins the ID3 homes of the iTunes structured keys that have native
-// frames: TBPM for BPM and Apple's MVNM for the movement name, both ways. MVIN is a pair
-// frame decoded by the id3 package itself, so it is deliberately not in this table.
+// TBPM and MVNM text frames; MVIN is a pair frame in internal/id3.
 func TestID3ITunesFrames(t *testing.T) {
 	cases := []struct {
 		id  string
@@ -28,15 +26,13 @@ func TestID3ITunesFrames(t *testing.T) {
 	if _, ok := ID3FrameKey("MVIN"); ok {
 		t.Error("MVIN is a pair frame handled by the id3 codec, not the text-frame table")
 	}
-	// WORK has no ID3 frame: Picard's default home is TXXX:WORK (the generic fallthrough),
-	// and TIT1 stays Grouping.
+	// WORK has no text frame; Picard uses TXXX:WORK. TIT1 stays Grouping.
 	if id, ok := ID3KeyFrame(tag.Work); ok {
 		t.Errorf("ID3KeyFrame(WORK) = %q, true; want no dedicated frame (TXXX:WORK)", id)
 	}
 }
 
-// TestMP4ITunesTextAtoms pins the classic Apple text atoms for the work/movement-name pair
-// and the ©enc encoded-by atom, both ways.
+// ©wrk, ©mvn, ©enc text atoms round-trip.
 func TestMP4ITunesTextAtoms(t *testing.T) {
 	cases := []struct {
 		name string
@@ -56,10 +52,7 @@ func TestMP4ITunesTextAtoms(t *testing.T) {
 	}
 }
 
-// TestMP4ITunesFreeformFold checks that a mixed-case freeform spelling of each iTunes
-// structured key (and ENCODEDBY) folds onto the canonical key on read, like it already does
-// on ID3/Vorbis. Read-only: none of these keys write freeform (they own structured or
-// ©-text atoms), so the fold entries never change a write spelling.
+// iTunes structured keys fold on freeform read only; write uses structured or ©-text atoms.
 func TestMP4ITunesFreeformFold(t *testing.T) {
 	cases := []struct {
 		key       tag.Key

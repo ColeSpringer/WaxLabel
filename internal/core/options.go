@@ -5,16 +5,13 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// LegacyPolicy controls what happens to legacy/foreign tag containers (stray
-// leading ID3v2, trailing ID3v1, APEv2) when writing. The default preserves
-// them - WaxLabel never strips silently.
+// LegacyPolicy controls legacy tag containers (leading ID3v2, trailing ID3v1, APEv2) on write.
 type LegacyPolicy uint8
 
 const (
-	// LegacyPreserve keeps legacy containers byte-for-byte and warns.
+	// LegacyPreserve keeps legacy containers and warns on conflict.
 	LegacyPreserve LegacyPolicy = iota
-	// LegacyStrip removes them. Anything held only there is destroyed, so a write under
-	// this policy warns (WarnLegacyStripDropped) rather than stripping silently.
+	// LegacyStrip removes them; warns on data loss (WarnLegacyStripDropped).
 	LegacyStrip
 )
 
@@ -27,36 +24,21 @@ func (p LegacyPolicy) String() string {
 	}
 }
 
-// PaddingPolicy controls how much free space to leave after the metadata so a
-// later edit can grow in place without rewriting the audio. It is per-format
-// configurable rather than a blanket allowance: too little will not fit a
-// cover, too much wastes space at library scale.
+// PaddingPolicy controls post-metadata free space for in-place growth.
 type PaddingPolicy struct {
-	// Target is the padding to aim for after a rewrite, in bytes.
+	// Target is desired padding bytes after rewrite.
 	Target int64
-	// Min and Max bound the padding actually written, and Min is also a reuse
-	// floor: a rewrite reuses the existing region in place only while the leftover
-	// is still >= Min, otherwise it falls back to the clamped Target (so an
-	// explicit "reserve at least Min" grows a too-small region instead of silently
-	// reusing it). Max == 0 means "no explicit limit" (the format's hard cap still
-	// applies), so a zero-value policy with a positive Target is honored rather than
-	// clamped to nothing; to write no padding, set Target to 0.
+	// Min/Max bound written padding. Min is reuse floor for ReuseInPlace. Max==0: no cap.
 	Min int64
 	Max int64
-	// ReuseInPlace lets a rewrite that fits within existing padding avoid
-	// moving the audio at all.
+	// ReuseInPlace reuses existing padding when content still fits and leftover >= Min.
 	ReuseInPlace bool
 }
 
-// DefaultPadding is a sensible FLAC default: a few KiB, reused in place when
-// possible.
+// DefaultPadding is the FLAC-oriented default (8 KiB target, reuse in place).
 var DefaultPadding = PaddingPolicy{Target: 8192, Min: 0, Max: 1 << 20, ReuseInPlace: true}
 
-// ClampTarget returns Target bounded by Min and Max: a Max of 0 means "no upper
-// bound" (the caller still applies the format's hard cap), Target is floored to
-// Min, and a negative result to 0. This is the single definition of the padding
-// clamp the codecs share, so the "Max == 0 is unbounded" contract cannot drift
-// between per-codec copies.
+// ClampTarget returns Target clamped to Min/Max. Max==0 means no upper bound here.
 func (p PaddingPolicy) ClampTarget() int64 {
 	v := p.Target
 	if p.Max > 0 && v > p.Max {
@@ -71,15 +53,8 @@ func (p PaddingPolicy) ClampTarget() int64 {
 	return v
 }
 
-// ReuseOrTarget sizes the padding for a rewrite whose metadata sits in a single
-// front region (the ID3 front-tag codecs, MP3 and AAC). With ReuseInPlace and
-// new content that fits the original region, it fills the region exactly so the
-// audio offset and file size do not change - but only while the leftover is still
-// >= Min, so an explicit padding floor grows a too-small region rather than
-// reusing it; otherwise it falls back to the clamped Target (which also floors to
-// Min). origLen is the original region length, contentLen the new non-padding
-// content length. The origLen >= contentLen guard runs first, so origLen-contentLen
-// is non-negative before the floor comparison.
+// ReuseOrTarget sizes padding for a front metadata region (MP3/AAC ID3).
+// Reuses in place when content fits and leftover >= Min; else ClampTarget.
 func (p PaddingPolicy) ReuseOrTarget(origLen, contentLen int64) int64 {
 	if p.ReuseInPlace && origLen >= contentLen && origLen-contentLen >= p.Min {
 		return origLen - contentLen
@@ -87,21 +62,15 @@ func (p PaddingPolicy) ReuseOrTarget(origLen, contentLen int64) int64 {
 	return p.ClampTarget()
 }
 
-// ID3MultiValuePolicy controls how multiple values for one field are written in
-// ID3v2.3, which has no standard multi-value text representation. ID3v2.4 always
-// NUL-separates regardless of this setting; the compatibility impact of the v2.3
-// choice is flagged in the write report.
+// ID3MultiValuePolicy controls multi-value text in ID3v2.3. v2.4 always NUL-separates.
 type ID3MultiValuePolicy uint8
 
 const (
-	// ID3MultiNullSep stores values in one frame separated by NUL bytes - the
-	// v2.4 form; round-trips losslessly but is a de-facto extension in v2.3.
+	// ID3MultiNullSep: one frame, NUL-separated (v2.4 style).
 	ID3MultiNullSep ID3MultiValuePolicy = iota
-	// ID3MultiRepeatFrame writes one frame per value, so a reader that takes the
-	// first frame still sees a value.
+	// ID3MultiRepeatFrame: one frame per value.
 	ID3MultiRepeatFrame
-	// ID3MultiSlash joins values with " / " into a single value: maximally
-	// compatible but not separable on read-back.
+	// ID3MultiSlash: join with " / " (not separable on read).
 	ID3MultiSlash
 )
 
@@ -116,30 +85,15 @@ func (p ID3MultiValuePolicy) String() string {
 	}
 }
 
-// DefaultMaxSourceBytes is the default ceiling on a non-seekable stream buffered
-// whole into memory before parsing: standard input at the CLI and an io.Reader at
-// OpenSource. A stream larger than this fails with waxerr.ErrSizeTooLarge rather than
-// exhausting RAM or disk. A value <= 0 disables the cap. It bounds stream ingest, not a
-// single parser allocation (that is bits.Limits), so it lives beside ParseOptions and no
-// codec consults it. It is defined here, not in the public waxlabel package, so
-// DefaultParseOptions can reference it without an import cycle; waxlabel re-exports it.
+// DefaultMaxSourceBytes caps non-seekable stream buffering (stdin, OpenSource). <=0 disables.
 const DefaultMaxSourceBytes int64 = 2 << 30 // 2 GiB
 
 // ParseOptions are the resolved (non-functional) parse settings a codec sees.
 type ParseOptions struct {
 	Limits bits.Limits
-	// SourceName is the display name for this source in detection diagnostics (the
-	// "could not identify %q" error). A caller parsing from a temp file or buffer
-	// passes the original name so the temp path never leaks - the CLI supplies "-"'s
-	// display form for buffered standard input. It is display-only: detection still
-	// keys on the real path's extension. Empty falls back to the path argument (and
-	// is "" for the path-less Parse/OpenSource, which is exactly what this fixes).
+	// SourceName is display-only for detection errors (e.g. stdin as "-").
 	SourceName string
-	// MaxSourceBytes bounds a non-seekable stream read whole into memory before parsing
-	// (OpenSource, buffered stdin). >0 caps the read and yields waxerr.ErrSizeTooLarge
-	// past it; <= 0 leaves the read unbounded. It is a stream-ingest guard consulted only
-	// by the buffering entry points, not by any codec, so it stays a plain field rather
-	// than folding into bits.Limits.
+	// MaxSourceBytes caps stream buffering for OpenSource/stdin. >0 enforces; <=0 unbounded.
 	MaxSourceBytes int64
 }
 
@@ -152,76 +106,31 @@ func DefaultParseOptions() ParseOptions {
 type WriteOptions struct {
 	Limits  bits.Limits
 	Padding PaddingPolicy
-	// PaddingExplicit marks the padding policy as a user request rather than the
-	// opportunistic default. Codecs use it to run their authoritative serializer even when
-	// no tag, picture, or legacy change is pending, so padding-only edits are not lost to
-	// the fast-path no-op gate.
+	// PaddingExplicit: user requested padding; forces write even if tags unchanged.
 	PaddingExplicit bool
 	Legacy          LegacyPolicy
 	PreserveModTime bool
-	// VerifyEssence hashes the audio essence while it is copied and checks it
-	// against the source's parsed extent.
+	// VerifyEssence verifies audio hash on copy.
 	VerifyEssence bool
-	// NumericGenre writes a recognized genre as its numeric reference (ID3 TCON)
-	// rather than the name. Off by default (canonical name on write).
+	// NumericGenre writes recognized genre as numeric ID3 TCON reference.
 	NumericGenre bool
-	// ID3Multi selects the ID3v2.3 multi-value representation.
+	// ID3Multi selects ID3v2.3 multi-value encoding.
 	ID3Multi ID3MultiValuePolicy
-	// Touched holds every key the edit named (set, add, or clear), including a set to the
-	// value already projected. A native store that can disagree with the projection (WAV
-	// LIST/INFO, AIFF text chunks) re-renders those items, so an explicit set resolves a
-	// conflict the value diff alone cannot see.
+	// Touched: keys named by the edit (set/add/clear), including unchanged re-sets.
 	Touched map[tag.Key]bool
-	// AllowUnrecognizedPictures opts the added-picture validation in [Editor.Prepare] out,
-	// so a picture whose bytes are not a recognized image header (a cover in an image format
-	// outside bits.RecognizedFormats, or a transfer carrying an already-embedded one) is
-	// embedded rather than rejected. Off by default: a junk or empty picture is refused.
+	// AllowUnrecognizedPictures embeds pictures without recognized image headers.
 	AllowUnrecognizedPictures bool
-	// StripEncoderStamp asks writers to remove an inherited encoder stamp without the
-	// caller filtering the value itself. WAV drops a transcoder-stamped ISFT INFO item,
-	// judged on that item's own bytes rather than on the merged canonical ENCODER, and
-	// stands aside when the edit authored the value (ISFT is ENCODER's INFO home, so an
-	// explicit clear reaches it through the ordinary write path).
-	// FLAC, Ogg Vorbis, and Opus rewrite a transcoder-stamped comment-header vendor
-	// string to a neutral value because the vendor field is mandatory and no canonical
-	// edit reaches it. All paths gate on IsTranscoderStamp. Off by default; the CLI
-	// enables it when an edit clears, sets, or strips ENCODER.
+	// StripEncoderStamp removes transcoder stamps (WAV ISFT, FLAC/Ogg vendor). Gates on IsTranscoderStamp.
 	StripEncoderStamp bool
-	// WebMSubset narrows a file-less Matroska capability query to the WebM subset, so
-	// the format-level question ("what can a .webm hold?") reports cover-art write as
-	// unsupported - the same restriction the Matroska codec applies to a parsed WebM
-	// file, reused here so the file-aware and file-less views cannot drift. Only the
-	// Matroska Capabilities path consults it; every other codec ignores it.
+	// WebMSubset: file-less Matroska capability query uses WebM restrictions.
 	WebMSubset bool
-	// Carried marks this write as a faithful cross-format carry (a transfer/copy), not a
-	// user-authored edit, so codecs suppress author-convenience heuristics that would
-	// mislabel carried data. Off by default; the transfer engine sets it. Its first use is
-	// the ID3 SYLT language fallback: an authored line-only edit inherits the destination's
-	// existing SYLT language (a documented CLI convenience), but a carry of a no-language
-	// lyric set (FLAC/Ogg have no language) must not, or the report says "carried" while the
-	// bytes gain a language the source never had.
+	// Carried: transfer/copy write; suppresses author conveniences (e.g. SYLT language fallback).
 	Carried bool
-	// AllowUnsupportedDrop makes [Editor.Prepare] drop a whole structural edit the
-	// destination format cannot store at all - authored chapters or synced lyrics on a
-	// format with no such store, or cover art on WebM - with a warning, instead of failing
-	// the write. It matches how a copy silently drops what the destination cannot hold, so a
-	// set that mixes a storable edit with an unstorable one still applies the storable part.
-	// Off by default (the whole-item capability gates are hard errors); the CLI enables it for
-	// set and plan, where --strict re-escalates the drop warnings to a failure.
+	// AllowUnsupportedDrop drops unstorable structural edits with warning; --strict fails.
 	AllowUnsupportedDrop bool
-	// KeepR128Gains makes [Editor.Prepare] leave R128_TRACK_GAIN and R128_ALBUM_GAIN as it
-	// found them when the same edit changes the output gain, instead of rebasing them by the
-	// header delta. RFC 7845 applies those tags on top of the header gain, so keeping them
-	// moves the loudness a compliant player produces; Prepare warns for each tag it kept.
-	// Off by default (the RFC's own remedy is to update them); the CLI exposes it as
-	// --keep-r128, for a caller who knows the stored values are stale.
+	// KeepR128Gains leaves R128_* tags unrebased when output gain changes.
 	KeepR128Gains bool
-	// SyncedLyricsCleared marks that the synced-lyrics set was explicitly cleared before this
-	// edit authored a new one, so an ID3 SYLT rewrite skips its fallback to the destination's
-	// existing SYLT language and descriptor: a cleared-then-authored set with no language reads
-	// back with none instead of silently inheriting the old one. It is distinct from Carried (a
-	// faithful transfer), which would mislabel the edit. Off by default; [Editor.ClearSyncedLyrics]
-	// sets it, and a plain authored set leaves it off to keep the inheritance convenience.
+	// SyncedLyricsCleared: skip SYLT language/descriptor fallback after explicit clear.
 	SyncedLyricsCleared bool
 }
 

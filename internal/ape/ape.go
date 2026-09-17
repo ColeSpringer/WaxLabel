@@ -1,20 +1,13 @@
-// Package ape implements APEv1/APEv2 tags for internal codecs, both reading and
-// writing. It plays two roles.
+// Package ape implements APEv1/APEv2 tags for internal codecs.
 //
-// In MP3 an APE tag is a foreign/legacy container that shows up trailing some
-// files: WaxLabel surfaces its values in the family/source view and preserves its
-// bytes verbatim, but the native ID3 tag stays authoritative.
+// In MP3, APE is a trailing foreign/legacy container: family view + verbatim
+// preserve; ID3 stays authoritative.
 //
-// In WavPack, Monkey's Audio, and Musepack it is the native tag store, so this
-// package is also a writer: [Project] gives the canonical view, [Rebuild] applies
-// an edit with minimal change, and [Render] emits the tag bytes.
+// In WavPack, Monkey's Audio, and Musepack it is the native store: [Project],
+// [Rebuild], [Render]. Free-form UTF-8; only third-party conventions (e.g. Cover
+// Art). No chapter or synced-lyrics convention.
 //
-// APE is free-form UTF-8 key/value with no registry, so the conventions it stores
-// are only the ones third-party tools already read. Cover art is in (the
-// "Cover Art (Front)" binary item foobar2000 and Mp3tag write); chapters and synced
-// lyrics have no APE convention and are not invented here.
-//
-// It is reimplemented from the public APE tag specification.
+// Reimplemented from the public APE tag specification.
 package ape
 
 import (
@@ -40,38 +33,24 @@ const (
 	flagHasHeader = 1 << 31 // the tag is prefixed by a header record
 )
 
-// Tag is a parsed APE tag: its decoded items and the byte extent it occupies
-// (header, items, and footer) so a container codec can preserve or strip it.
+// Tag is a parsed APE tag: items and byte extent (header/items/footer).
 type Tag struct {
 	Version int
 	Items   []Item
-	Offset  int64 // absolute start of the tag (header if present, else first item)
-	Size    int64 // total bytes occupied, including any header and the footer
-	// HasHeader records that a header record was found ahead of the items, so a
-	// rewrite keeps the shape the file had rather than adding or dropping one.
+	Offset  int64 // absolute start (header if present, else first item)
+	Size    int64 // total bytes including header and footer
+	// HasHeader: rewrite keeps the on-disk shape.
 	HasHeader bool
-	// Truncated records that the item list was cut short by the element cap, so Items
-	// is not the whole tag. A codec that rebuilds the tag from Items must refuse to
-	// write rather than silently dropping what it could not see.
+	// Truncated: Items is incomplete (element cap). Rebuild must refuse.
 	Truncated bool
 }
 
 // Item is one APE key/value pair.
 //
-// Data holds the payload exactly as it sits in the file, for every item type. A
-// parsed item is written back from those bytes, so an item WaxLabel did not edit
-// round-trips byte for byte even when its text is not valid UTF-8 (APEv1 was
-// effectively Latin-1, and such items still turn up in APEv2 tags).
-//
-// Value is the decoded text view of a text item, NUL-separated for a multi-valued
-// key, and empty for a non-text item (binary, external/locator, reserved). An item
-// built by the writer sets Value and leaves Data nil; [Item.Payload] resolves either
-// shape.
-//
-// Flags is the item's whole 32-bit flag field, kept verbatim. Only bits 0-2 are
-// defined (bit 0 read-only, bits 1-2 the item type), but a rewrite that re-renders
-// a preserved item must not quietly clear the read-only bit or an undefined one -
-// preserve-unknown has to hold at the byte level, not just for the payload.
+// Data is the on-disk payload (all types); untouched items re-render from it
+// (including non-UTF-8 APEv1/Latin-1). Value is decoded text (NUL-separated multi);
+// empty for non-text. Writer-built items set Value and leave Data nil; [Item.Payload]
+// resolves either. Flags is the full 32-bit word (preserve-unknown at byte level).
 type Item struct {
 	Key   string
 	Value string
@@ -79,8 +58,7 @@ type Item struct {
 	Flags uint32
 }
 
-// Item flag bits. Bits 1-2 are the item type: 0 is UTF-8 text and everything else
-// (binary, external/locator, reserved) is not projected as a value.
+// Item flag bits. Bits 1-2: type (0 = text; else not projected).
 const (
 	flagReadOnly  = 1 << 0
 	itemTypeShift = 1
@@ -90,17 +68,13 @@ const (
 	itemTypeBinary = 1
 )
 
-// NonText reports whether the item carries something other than UTF-8 text, and so
-// is preserved but not projected as a tag value.
+// NonText: preserved, not projected as a tag value.
 func (i Item) NonText() bool { return (i.Flags>>itemTypeShift)&itemTypeMask != itemTypeText }
 
-// ReadOnly reports the item's read-only bit, which some taggers set on items a user
-// should not edit. WaxLabel preserves it rather than acting on it.
+// ReadOnly reports the read-only bit (preserved, not enforced).
 func (i Item) ReadOnly() bool { return i.Flags&flagReadOnly != 0 }
 
-// Payload returns the item's bytes: the ones parsed from the file when it has them,
-// so a preserved item is re-rendered exactly as it was found, and otherwise the
-// encoding of Value, for an item the writer built.
+// Payload: on-disk Data if present, else Value bytes.
 func (i Item) Payload() []byte {
 	if i.Data != nil {
 		return i.Data
@@ -108,7 +82,7 @@ func (i Item) Payload() []byte {
 	return []byte(i.Value)
 }
 
-// Clone deep-copies the tag so a native document holding one stays detached.
+// Clone deep-copies so Document accessors stay detached.
 func (t *Tag) Clone() *Tag {
 	if t == nil {
 		return nil
@@ -122,10 +96,8 @@ func (t *Tag) Clone() *Tag {
 	return &c
 }
 
-// ParseAt looks for an APE footer ending at endOff (the file size, or the start
-// of a trailing ID3v1 tag) and decodes the tag if present. ok is false when
-// there is no APE tag there. maxElements caps the decoded item list; callers
-// preserve the raw tag bytes separately.
+// ParseAt finds an APE footer ending at endOff. ok is false if none.
+// maxElements caps Items; callers keep raw bytes separately.
 func ParseAt(src core.ReaderAtSized, endOff, limit int64, maxElements int) (*Tag, bool, error) {
 	if endOff < footerLen {
 		return nil, false, nil
@@ -158,12 +130,8 @@ func ParseAt(src core.ReaderAtSized, endOff, limit int64, maxElements int) (*Tag
 		items, truncated = parseItems(raw, itemCount, maxElements)
 	}
 
-	// The has-header flag decides where the tag STARTS, which for the codecs that own
-	// an APE tag is also where the verbatim audio copy ends. Trusting the bit alone lets
-	// a file that merely sets it move the boundary 32 bytes into the last audio block,
-	// so the rewrite writes the tag over audio - and --verify certifies the result,
-	// because both sides derive the essence extent from the same wrong offset. Confirm
-	// an APETAGEX record is really there before believing it.
+	// Has-header moves the audio/tag boundary; confirm APETAGEX is present before
+	// trusting the bit (a lying flag would overwrite audio and pass --verify).
 	offset := itemsStart
 	size := tagSize
 	hasHeader := false
@@ -181,14 +149,9 @@ func ParseAt(src core.ReaderAtSized, endOff, limit int64, maxElements int) (*Tag
 	}, true, nil
 }
 
-// parseItems decodes up to count items from the item region. It stops on malformed
-// input and caps the decoded list at maxElements, reporting truncated when the cap
-// cut the list short.
-//
-// The cap is not fatal here because MP3 preserves the raw APE region separately and
-// only reads this decoded view. The codecs that own an APE tag rebuild the whole tag
-// from Items, so for them a truncated list would be silent data loss; they refuse to
-// write a tag flagged [Tag.Truncated] instead.
+// parseItems decodes up to count items; stops on malformed input; truncated if
+// maxElements cuts the list. Cap is not fatal here (MP3 keeps raw bytes). Codecs
+// that rebuild from Items refuse [Tag.Truncated].
 func parseItems(raw []byte, count uint32, maxElements int) (items []Item, truncated bool) {
 	pos := 0
 	for range count {
@@ -203,18 +166,13 @@ func parseItems(raw []byte, count uint32, maxElements int) (items []Item, trunca
 			break
 		}
 		pos += n
-		// Compare against len(raw)-pos instead of pos+size. On 32-bit builds, a
-		// crafted size near 2 GiB can overflow pos+size before the bounds check.
-		// pos is already within raw, and size < 0 catches uint32 values whose high
-		// bit becomes negative after int conversion.
+		// Use len(raw)-pos (not pos+size): on 32-bit, large size can overflow.
 		if size < 0 || size > len(raw)-pos {
 			break
 		}
 		value := raw[pos : pos+size]
 		pos += size
-		// Apply the cap after malformed-item checks so short or corrupt input still
-		// exits through the lenient parse path. Hitting the cap just stops decoding;
-		// raw bytes are kept elsewhere.
+		// Cap after malformed checks so short input stays lenient; raw bytes kept elsewhere.
 		if bits.CheckElementCap(len(items), maxElements, "APE items") != nil {
 			return items, true // cap reached: the caller decides whether that is fatal
 		}
@@ -227,20 +185,14 @@ func parseItems(raw []byte, count uint32, maxElements int) (items []Item, trunca
 	return items, false
 }
 
-// ParseItemRun decodes a bare run of up to count items: the shape a Musepack SV8 chapter
-// packet carries after its preamble-less header record. It is parseItems itself, so a
-// chapter tag's items decode exactly as a trailing tag's do, and it reports whether the
-// element cap cut the list short.
+// ParseItemRun decodes a bare item run (Musepack SV8 chapter tag after preamble-less
+// header). Same as parseItems; reports element-cap truncation.
 func ParseItemRun(raw []byte, count uint32, maxElements int) ([]Item, bool) {
 	return parseItems(raw, count, maxElements)
 }
 
-// decodeText renders a text item's bytes as a string: as UTF-8 when they are valid
-// (what APEv2 requires and what every modern tagger writes), else as Latin-1, so an
-// APEv1 item - or an out-of-spec APEv2 one - yields a usable value instead of a
-// string the canonical model will later refuse. This mirrors the RIFF LIST/INFO read
-// path, which faces the same legacy code page. [InvalidUTF8Warnings] reports the
-// files this fires on, and the item's raw bytes are preserved either way.
+// decodeText: UTF-8 when valid, else Latin-1 (APEv1 / out-of-spec APEv2).
+// Same legacy path as RIFF LIST/INFO. [InvalidUTF8Warnings] reports; raw bytes kept.
 func decodeText(b []byte) string {
 	if utf8.Valid(b) {
 		return string(b)
@@ -252,8 +204,7 @@ func decodeText(b []byte) string {
 	return string(r)
 }
 
-// cutKey reads a NUL-terminated ASCII key, returning it and the number of bytes
-// consumed (including the terminator), or n<0 if no terminator is found.
+// cutKey: NUL-terminated ASCII key and bytes consumed, or n<0.
 func cutKey(b []byte) (string, int) {
 	for i, c := range b {
 		if c == 0 {
@@ -263,8 +214,7 @@ func cutKey(b []byte) (string, int) {
 	return "", -1
 }
 
-// Pairs returns the canonical key/value pairs the APE tag supplies (text items
-// only), in item order, for the family/source view.
+// Pairs returns text-item canonical pairs in item order (family/source view).
 func (t *Tag) Pairs() []struct {
 	Key   tag.Key
 	Value string
@@ -283,11 +233,8 @@ func (t *Tag) Pairs() []struct {
 			continue
 		}
 		for _, v := range splitItemValues(it.Value) {
-			// Skip an empty value here, unlike Project. This is the legacy-container view
-			// (an MP3's trailing APEv2 alongside its authoritative ID3v2), where an empty
-			// item carries nothing to preserve: counting it would make the key look
-			// legacy-only and stop lint --fix from stripping an otherwise redundant
-			// container. ID3v1's Pairs skips its blank fields for the same reason.
+			// Skip empty (unlike Project): legacy view; empty would block lint --fix.
+			// Same as ID3v1 Pairs.
 			if v == "" {
 				continue
 			}
@@ -297,16 +244,9 @@ func (t *Tag) Pairs() []struct {
 	return out
 }
 
-// splitItemValues decodes one text item's value into its canonical values. APEv2 stores
-// multiple values for one key as NUL-separated runs inside a single item, so the split is
-// the multi-value decode, not a heuristic.
-//
-// A wholly empty item yields one empty value: an APEv2 item may hold a zero-length value,
-// and that is what `set KEY=` writes, so dropping it would report the key absent on a file
-// that carries it. Empty runs inside a multi-run value are dropped instead, because a
-// trailing or doubled NUL there is a writer's terminator rather than a value the file means
-// to carry - and because the writer cannot express such a value through the NUL join, so
-// keeping it would report a value no rewrite can store.
+// splitItemValues: NUL-separated multi-value decode.
+// Wholly empty item => one ""; empty runs inside multi are dropped (writer cannot
+// express them via NUL join; trailing NULs are terminators).
 func splitItemValues(value string) []string {
 	if value == "" {
 		return []string{""}

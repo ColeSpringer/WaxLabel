@@ -11,13 +11,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newCapsCmd builds the "caps" command, which reports what metadata a format can
-// edit and how faithfully it stores each field. It has two modes: caps <file>
-// answers the question for a file already in hand (file-aware, via
-// Document.Capabilities), and caps --format <name> answers it for a format with
-// no file (via wl.CapabilitiesFor) - the query an edit form for a not-yet-created
-// file needs. It dogfoods tag.KnownKeys, tag.Key.Multivalued, and the capability
-// model.
+// newCapsCmd builds the "caps" command: report editable metadata and fidelity.
+// File mode uses Document.Capabilities; --format uses wl.CapabilitiesFor.
 func newCapsCmd() *cobra.Command {
 	var format string
 	cmd := &cobra.Command{
@@ -44,9 +39,7 @@ func newCapsCmd() *cobra.Command {
 				return runCapsFormat(cmd, f, container, opts...)
 			}
 			if len(args) == 0 {
-				// Carry the resolved command path (not a literal, which goes stale on a
-				// rename) and request the --help pointer, so this dead-end prints the same
-				// hint line the other commands' usage errors do.
+				// CommandPath + wantsHint: same usage hint as other commands.
 				return &usageError{msg: "caps requires a file argument or --format", cmd: cmd.CommandPath(), wantsHint: true}
 			}
 			return runCapsFiles(cmd, args)
@@ -56,9 +49,7 @@ func newCapsCmd() *cobra.Command {
 	return markListCommand(cmd)
 }
 
-// runCapsFormat renders a single format's capabilities (no file). opts carry any
-// variant narrowing the format name implied (e.g. WithWebMSubset for "webm");
-// container is the human label for that variant ("WebM", else empty).
+// runCapsFormat renders format capabilities (no file). opts narrow variant (e.g. WebM).
 func runCapsFormat(cmd *cobra.Command, f wl.Format, container string, opts ...wl.WriteOption) error {
 	jc := buildCaps("", container, wl.CapabilitiesFor(f, opts...))
 	if jsonMode(cmd) {
@@ -68,14 +59,10 @@ func runCapsFormat(cmd *cobra.Command, f wl.Format, container string, opts ...wl
 	return nil
 }
 
-// runCapsFiles parses each file and reports its (file-aware) capabilities,
-// reusing the per-file harness so a parse failure on one file is reported without
-// aborting the rest.
+// runCapsFiles: per-file capabilities via perFile harness.
 func runCapsFiles(cmd *cobra.Command, args []string) error {
-	// An empty operand is a usage error (exit 2), caught before any parse so it does
-	// not reach the library's ErrInvalidData (exit 4) fallback and outrank a real
-	// not-found in a multi-file run, matching dump/verify/plan/set/lint and copy/diff.
-	// caps parses operands directly (no expandPaths), so it checks here.
+	// Empty operand: usage error before parse (avoids exit 4 outranking not-found).
+	// caps has no expandPaths, so check here.
 	if err := checkEmptyOperands(args...); err != nil {
 		return err
 	}
@@ -87,18 +74,14 @@ func runCapsFiles(cmd *cobra.Command, args []string) error {
 	if err := checkRegularInputs(realOf, true, args...); err != nil {
 		return err
 	}
-	// caps reports container capability, not file health. A no-audio file can still
-	// have readable capabilities, so caps exits 0; commands that must hash, write,
-	// or fully lint audio essence return invalid-data for the same condition.
+	// No-audio still has readable capabilities; caps exits 0 (unlike hash/write/lint).
 	return perFile(cmd, args,
 		func(ctx context.Context, path string) (jsonCaps, error) {
 			doc, err := parseInput(ctx, realOf(path), path)
 			if err != nil {
 				return jsonCaps{}, err
 			}
-			// The WebM/Matroska distinction lives only in the container subtype (both
-			// .mka and .webm are FormatMatroska), so pass it for the human header. This
-			// is the same signal copy.go uses for transfer labels.
+			// WebM/Matroska distinction is container subtype only (same as copy.go).
 			return buildCaps(path, doc.Properties().Container, doc.Capabilities()), nil
 		},
 		func(_ string, jc jsonCaps) any { return jc },
@@ -107,42 +90,29 @@ func runCapsFiles(cmd *cobra.Command, args []string) error {
 	)
 }
 
-// jsonCaps is the machine-readable capability report for one file or format. A
-// failed per-file element is emitted as the shared jsonErrorEntry; this struct keeps
-// a matching Error field so a consumer can decode every array element into it (see
-// jsonErrorEntry). Fields holds the default (generic) field capability shared by
-// every key; Keys lists each key with its per-key cardinality, so the common case
-// (a uniform field capability) is reported once rather than repeated per key.
+// jsonCaps: machine capability report. Error matches jsonErrorEntry.
+// Fields: generic field capability; Keys: per-key cardinality (avoids repeating uniform caps).
 type jsonCaps struct {
 	SchemaVersion int          `json:"schemaVersion"`
 	File          string       `json:"file,omitempty"`
 	Error         *jsonErrBody `json:"error,omitempty"`
 	Format        string       `json:"format,omitempty"`
-	// Subformat is the exact container subtype, such as "WebM" or "AIFC".
-	// Format stays at the codec family level, such as "Matroska" or "AIFF".
-	// caps has no nested properties.container field, so this gives JSON
-	// consumers the same subtype signal dump exposes.
+	// Subformat: container subtype ("WebM", "AIFC"). Format: codec family.
+	// Same subtype signal dump exposes via properties.container.
 	Subformat    string      `json:"subformat,omitempty"`
 	ReadOnly     bool        `json:"readOnly,omitempty"`
 	Fields       *jsonCapDim `json:"fields,omitempty"`
 	Pictures     *jsonCapDim `json:"pictures,omitempty"`
 	Chapters     *jsonCapDim `json:"chapters,omitempty"`
 	SyncedLyrics *jsonCapDim `json:"syncedLyrics,omitempty"`
-	// Padding grades how completely the format honors the --padding/--no-padding
-	// controls: "none", "partial" (grow-only), or "full". Always present on a
-	// successful report.
+	// Padding: "none", "partial" (grow-only), or "full".
 	Padding string `json:"padding,omitempty"`
-	// OutputGain grades whether the format stores the decoder-applied output gain its
-	// stream header declares: "full" for Ogg Opus, "none" everywhere else.
+	// OutputGain: "full" for Ogg Opus, "none" elsewhere.
 	OutputGain string       `json:"outputGain,omitempty"`
 	Keys       []jsonCapKey `json:"keys"`
 
-	// humanFormat is the label the human report prints on the "format:" line - the
-	// container subtype for the Matroska family ("WebM"/"Matroska"), else the bare
-	// Format string. It is unexported so encoding/json ignores it: the JSON "format"
-	// field stays the bare Format identity ("Matroska" even for WebM), matching copy's
-	// deliberate choice. Machine consumers should use Subformat for the exact subtype.
-	// See transferFormatLabel.
+	// humanFormat: human "format:" label (WebM/Matroska or bare Format). Unexported;
+	// JSON format stays codec family. Use Subformat for exact subtype.
 	humanFormat string
 }
 
@@ -163,10 +133,8 @@ type jsonCapKey struct {
 	Cardinality string `json:"cardinality"` // "single" or "multi"
 }
 
-// buildCaps projects a Capabilities into its JSON form. Only keys the format can
-// write are listed (the editable set); the format-independent vocabulary in full
-// is the keys command's job. container is the file's (or format's) container
-// subtype ("WebM"/"Matroska", else empty), used only for the human format label.
+// buildCaps projects Capabilities to JSON. Lists writable keys only (see keys command).
+// container: subtype for human format label.
 func buildCaps(file, container string, caps wl.Capabilities) jsonCaps {
 	format := caps.Format.String()
 	jc := jsonCaps{
@@ -182,21 +150,17 @@ func buildCaps(file, container string, caps wl.Capabilities) jsonCaps {
 		SyncedLyrics:  capDim(caps.SyncedLyrics),
 		Padding:       caps.Padding.String(),
 		OutputGain:    caps.OutputGain.String(),
-		// Always a non-nil array so `caps --json` of a read-only file (no editable keys)
-		// emits "keys": [] - a consumer iterating .keys[] never breaks.
+		// Non-nil keys so read-only JSON emits "keys": [].
 		Keys: []jsonCapKey{},
 	}
-	// A read-only verdict outranks the per-field levels, which keep describing the format
-	// (MP4 reports its fields Full even for a fragmented file it cannot write). Listing
-	// ~60 editable keys under "(read-only)" would contradict itself, so skip the loop and
-	// let the empty-array promise above hold.
+	// Read-only: skip key loop (per-field levels still describe format; empty keys[]).
 	if jc.ReadOnly {
 		return jc
 	}
 	for _, k := range tag.KnownKeys() {
 		fc := caps.Field(k)
 		if fc.Write < wl.AccessPartial {
-			continue // editable-only: skip a key the format cannot write
+			continue // skip non-writable keys
 		}
 		jc.Keys = append(jc.Keys, jsonCapKey{
 			Key:         string(k),
@@ -219,12 +183,7 @@ func capDim(c wl.Capability) *jsonCapDim {
 	}
 }
 
-// cardinalityOf reports whether key holds a single value or many under capability
-// c, as the strict enum "single" or "multi" (the jsonCapKey.Cardinality contract).
-// Cardinality is the key's inherent property (tag.Key.Multivalued) unless the
-// format restricts it to one (Capability.MaxValues == 1 forces single even on a
-// multi-valued key); the two are combined here so the signal a caller sees already
-// accounts for both.
+// cardinalityOf: "single" or "multi". Key.Multivalued unless MaxValues == 1.
 func cardinalityOf(key tag.Key, c wl.Capability) string {
 	if !key.Multivalued() || c.MaxValues == 1 {
 		return "single"
@@ -237,19 +196,14 @@ func renderCaps(w io.Writer, jc jsonCaps) {
 	if jc.File != "" {
 		fmt.Fprintln(w, displayName(jc.File))
 	}
-	// The human label distinguishes WebM from Matroska; fall back to the bare Format
-	// identity if no label was set (e.g. a zero-value jsonCaps).
+	// humanFormat distinguishes WebM/Matroska; fall back to jc.Format.
 	format := jc.humanFormat
 	if format == "" {
 		format = jc.Format
 	}
 	fmt.Fprintf(w, "  %-*s %s\n", capLabelWidth, "format:", format)
 	if jc.ReadOnly {
-		// MP4 is the first codec whose verdict is per-file (a fragmented file is unwritable
-		// while the format is not), so a file-scoped query says so rather than libelling the
-		// whole format. The dimension rows below still report the format's write levels, which
-		// would otherwise read as a flat contradiction, so the per-file line says what they
-		// describe.
+		// Per-file read-only (e.g. fragmented MP4): clarify dimension rows describe format.
 		if jc.File != "" {
 			fmt.Fprintln(w, "  (read-only: this file cannot be written; the levels below describe the format)")
 		} else {
@@ -260,8 +214,7 @@ func renderCaps(w io.Writer, jc jsonCaps) {
 	renderCapDim(w, "pictures", jc.Pictures)
 	renderCapDim(w, "chapters", jc.Chapters)
 	renderCapDim(w, "synced lyrics", jc.SyncedLyrics)
-	// Padding and the output gain are single levels (none/partial/full), not read/write
-	// dimensions, so each gets its own one-word line rather than a renderCapDim row.
+	// Padding/output gain are scalar levels, not read/write dimensions.
 	if jc.Padding != "" {
 		fmt.Fprintf(w, "  %-*s %s\n", capLabelWidth, "padding:", jc.Padding)
 	}
@@ -277,10 +230,8 @@ func renderCaps(w io.Writer, jc jsonCaps) {
 	renderKeyTable(w, "    ", rows)
 }
 
-// renderCapDim writes one dimension line: its read/write levels, then the native
-// representation and fidelity, with any constraints on a following indented line.
-// capLabelWidth aligns every capability row's value, sized to the longest label
-// ("synced lyrics:"). Widen it if a longer dimension is ever added.
+// renderCapDim: one dimension line plus optional constraints.
+// capLabelWidth fits longest label ("synced lyrics:").
 const capLabelWidth = 14
 
 func renderCapDim(w io.Writer, label string, d *jsonCapDim) {
@@ -300,45 +251,29 @@ func renderCapDim(w io.Writer, label string, d *jsonCapDim) {
 	}
 	fmt.Fprintf(w, "  %-*s %s\n", capLabelWidth, label+":", line)
 	if len(d.Constraints) > 0 {
-		// 12 spaces aligns "constraints:" under the dimension value above (the value
-		// starts at column 12: 2 leading + the 9-wide label + 1 space).
+		// 12 spaces: align constraints under value column.
 		fmt.Fprintf(w, "            constraints: %s\n", strings.Join(d.Constraints, "; "))
 	}
 }
 
-// parseFormat resolves a user-supplied format name to a Format, any write options
-// needed to describe it, and its container subtype label ("WebM" for webm, else
-// empty - the human format line uses it to distinguish WebM from Matroska, which
-// share one Format). It accepts any file extension a codec claims (with or without a
-// leading dot) and a few friendly aliases for the formats whose name is not an
-// extension (the three Ogg codecs and Matroska/WebM). Matching is case-insensitive.
-//
-// It returns an error rather than a bare "not found" because an extension can be
-// claimed by more than one format - .oga is legitimately both Ogg Vorbis and Ogg
-// FLAC - and answering with whichever codec registered first would be a coin flip.
-// Such a name is refused, naming the alternatives so the caller can pick one.
+// parseFormat resolves a format name to Format, write opts, and container label.
+// Accepts extensions (optional dot) and aliases (Ogg codecs, Matroska/WebM).
+// Case-insensitive. Ambiguous extensions (e.g. .oga) error with alternatives.
 func parseFormat(s string) (f wl.Format, opts []wl.WriteOption, container string, err error) {
 	norm := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(s)), ".")
 	switch norm {
 	case "ogg", "vorbis", "oggvorbis":
-		// Both Ogg Vorbis and Ogg FLAC claim the .ogg extension, but "ogg" as a format
-		// NAME has always meant Vorbis - so it is resolved here rather than left to the
-		// ambiguity check below, which would refuse the most common spelling of all.
+		// "ogg" means Vorbis despite shared .ogg extension.
 		return wl.FormatOggVorbis, nil, "", nil
 	case "opus", "oggopus":
 		return wl.FormatOggOpus, nil, "", nil
 	case "oggflac":
-		// .oga names both this and Ogg Vorbis, so the unambiguous spelling is the alias.
+		// .oga is ambiguous; use oggflac alias.
 		return wl.FormatOggFLAC, nil, "", nil
 	case "matroska":
 		return wl.FormatMatroska, nil, "", nil
 	case "webm":
-		// WebM is not a distinct Format - it is a subset of Matroska whose defining
-		// restriction is that cover attachments are outside the subset. Describe it via
-		// the Matroska codec under WithWebMSubset, which applies that one restriction
-		// (the codec's own, reused - not a parallel copy), so the format-level "webm"
-		// answer matches what a real.webm file reports. The "WebM" container label
-		// makes the human header say WebM (the JSON format stays the bare "Matroska").
+		// WebM is Matroska subset (WithWebMSubset). Container label "WebM"; JSON format stays Matroska.
 		return wl.FormatMatroska, []wl.WriteOption{wl.WithWebMSubset()}, "WebM", nil
 	}
 	var hits []wl.Format

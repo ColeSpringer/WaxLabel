@@ -11,15 +11,13 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// unseparatedEntry is the malformed entry every case below carries: well framed by the
-// list's length prefix, but with no separator, so no reader can split it into a key and a
-// value.
+// unseparatedEntry is the malformed entry every case below carries: well framed by the list's
+// length prefix, but with no separator, so no reader can split it into a key and a value.
 const unseparatedEntry = "noequalshere"
 
-// TestUnseparatedVorbisEntryPreservedAndReported: the entry used to be dropped at parse and
-// then erased by the next rewrite, which re-renders the list from the parsed comments. The
-// comment codec is shared, so one fix covers FLAC and every Ogg mapping; both the native
-// FLAC block and the Ogg FLAC packet form are driven here.
+// entry used to be dropped at parse and then erased by the next rewrite, which re-renders the list
+// from the parsed comments. The comment codec is shared, so one fix covers FLAC and every Ogg
+// mapping; both the native FLAC block and the Ogg FLAC packet form are driven here.
 func TestUnseparatedVorbisEntryPreservedAndReported(t *testing.T) {
 	body := renderVC("TITLE=Song", unseparatedEntry)
 	for _, tc := range []struct {
@@ -42,8 +40,8 @@ func TestUnseparatedVorbisEntryPreservedAndReported(t *testing.T) {
 			if !lintHasCode(doc, "malformed-tag-entry") {
 				t.Errorf("lint did not promote the warning: %v", doc.Lint())
 			}
-			// The bytes survive an unrelated edit, and a re-parse reports the condition
-			// exactly once - preserved, and not double-counted.
+			// The bytes survive an unrelated edit, and a re-parse reports the condition exactly once;
+			// preserved, and not double-counted.
 			plan, err := doc.Edit().Set(tag.Album, "New").Prepare()
 			if err != nil {
 				t.Fatal(err)
@@ -63,8 +61,7 @@ func TestUnseparatedVorbisEntryPreservedAndReported(t *testing.T) {
 	}
 }
 
-// TestSeparatedVorbisEntriesStayQuiet is the control: an ordinary comment list must not
-// draw the warning.
+// control: an ordinary comment list must not draw the warning.
 func TestSeparatedVorbisEntriesStayQuiet(t *testing.T) {
 	doc := mustParseBytes(t, flacWithComments("TITLE=Song", "ARTIST=Band"))
 	if hasWarning(doc, wl.WarnMalformedTagEntry) {
@@ -73,16 +70,13 @@ func TestSeparatedVorbisEntriesStayQuiet(t *testing.T) {
 }
 
 // overrunFrame builds an ID3 frame header whose declared size runs past the end of the tag,
-// followed by a short body. The walk cannot read past it, so everything from its header on
-// is unreadable rather than free padding.
+// followed by a short body.
 func overrunFrame(id string) []byte {
 	return slices.Concat([]byte(id), syncsafe(1<<20), []byte{0, 0}, []byte("short"))
 }
 
-// TestID3OverrunningFrameReportedAndDropped: the walk stopped on the overrunning frame with
-// no error and no signal, and ParseTag then recorded the unread remainder as free padding,
-// so dump reported room the file does not have. The write side lost the region too: a
-// rewrite renders frames plus padding, replacing it with zeros and never mentioning it.
+// walk stopped on the overrunning frame with no error and no signal, and ParseTag then recorded the
+// unread remainder as free padding, so dump reported room the file does not have.
 func TestID3OverrunningFrameReportedAndDropped(t *testing.T) {
 	data := mp3WithFrames(t, textFrame(4, "TIT2", "Song"), overrunFrame("TALB"))
 	doc := mustParseBytes(t, data)
@@ -121,8 +115,8 @@ func TestID3OverrunningFrameReportedAndDropped(t *testing.T) {
 	}
 }
 
-// TestID3CleanTagKeepsItsPadding is the control: a tag that stops on real padding still
-// reports it, so the malformed-tail rule did not swallow the ordinary case.
+// control: a tag that stops on real padding still reports it, so the malformed-tail rule did not
+// swallow the ordinary case.
 func TestID3CleanTagKeepsItsPadding(t *testing.T) {
 	tagBytes := id3v2(4, textFrame(4, "TIT2", "Song"))
 	tagBytes = slices.Concat(tagBytes, make([]byte, 64))
@@ -136,9 +130,8 @@ func TestID3CleanTagKeepsItsPadding(t *testing.T) {
 	}
 }
 
-// TestID3FrontTagOverrunningFileReported: a tag header declaring more bytes than the whole
-// file returned "no front tag" with a nil error, so the tag vanished from every view with
-// no diagnostic at all.
+// tag header declaring more bytes than the whole file returned "no front tag" with a nil error, so
+// the tag vanished from every view with no diagnostic at all.
 func TestID3FrontTagOverrunningFileReported(t *testing.T) {
 	audio := mp3Audio(t)
 	hdr := slices.Concat([]byte{'I', 'D', '3', 4, 0, 0}, syncsafe(1<<20))
@@ -148,9 +141,8 @@ func TestID3FrontTagOverrunningFileReported(t *testing.T) {
 	}
 }
 
-// TestManyUnseparatedEntriesReportOnce: the condition is a property of the list, and a
-// crafted comment packet can hold entries by the tens of thousands. One warning per entry
-// turned a 400 KiB file into megabytes of dump and lint output.
+// condition is a property of the list, and a crafted comment packet can hold entries by the tens of
+// thousands. One warning per entry turned a 400 KiB file into megabytes of dump and lint output.
 func TestManyUnseparatedEntriesReportOnce(t *testing.T) {
 	entries := make([]string, 0, 5001)
 	entries = append(entries, "TITLE=Song")
@@ -168,9 +160,8 @@ func TestManyUnseparatedEntriesReportOnce(t *testing.T) {
 	}
 }
 
-// TestWarningSnippetsAreBounded: a warning splices bytes the file chose, so an oversized
-// value must be elided rather than printed whole - a 1 MiB ENCODER containing "lavf" would
-// otherwise be a 1 MiB line in dump and lint.
+// warning splices bytes the file chose, so an oversized value must be elided rather than printed
+// whole; a 1 MiB ENCODER containing "lavf" would otherwise be a 1 MiB line in dump and lint.
 func TestWarningSnippetsAreBounded(t *testing.T) {
 	const big = 4096
 	for _, tc := range []struct{ name, entry string }{
@@ -192,10 +183,9 @@ func TestWarningSnippetsAreBounded(t *testing.T) {
 	}
 }
 
-// TestID3MalformedTailClearsOnThePostWriteDocument: the Document a write returns must match
-// a fresh parse of the bytes it wrote. The rewritten tag has no unreadable tail, so carrying
-// the read warning forward would have the result claim the region both still exists and was
-// dropped.
+// Document a write returns must match a fresh parse of the bytes it wrote. The rewritten tag has no
+// unreadable tail, so carrying the read warning forward would have the result claim the region both
+// still exists and was dropped.
 func TestID3MalformedTailClearsOnThePostWriteDocument(t *testing.T) {
 	data := mp3WithFrames(t, textFrame(4, "TIT2", "Song"), overrunFrame("TALB"))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Artist, "Band").Prepare()
@@ -215,9 +205,8 @@ func TestID3MalformedTailClearsOnThePostWriteDocument(t *testing.T) {
 	}
 }
 
-// TestID3v22MalformedFrameUsesTheUpgradedID: a v2.2 identifier is upgraded to its v2.3/v2.4
-// spelling everywhere else in the output, so the diagnostic must not name a frame the
-// listing beside it calls something different.
+// v2.2 identifier is upgraded to its v2.3/v2.4 spelling everywhere else in the output, so the
+// diagnostic must not name a frame the listing beside it calls something different.
 func TestID3v22MalformedFrameUsesTheUpgradedID(t *testing.T) {
 	// A v2.2 TAL (album) frame whose 3-byte size overruns the tag.
 	bad := slices.Concat([]byte("TAL"), []byte{0x0F, 0xFF, 0xFF}, []byte("short"))
@@ -233,9 +222,8 @@ func TestID3v22MalformedFrameUsesTheUpgradedID(t *testing.T) {
 	}
 }
 
-// TestID3MalformedTailShownInTheNativeView: zeroing the phantom padding removed the only
-// line that accounted for the region, so the block's size disagreed with its listed frames
-// in silence - the very condition the warning is about.
+// zeroing the phantom padding removed the only line that accounted for the region, so the block's
+// size disagreed with its listed frames in silence; the very condition the warning is about.
 func TestID3MalformedTailShownInTheNativeView(t *testing.T) {
 	data := mp3WithFrames(t, textFrame(4, "TIT2", "Song"), overrunFrame("TALB"))
 	var note string
@@ -249,9 +237,8 @@ func TestID3MalformedTailShownInTheNativeView(t *testing.T) {
 	}
 }
 
-// TestFLACStrayID3MalformedTailBlocksTheStrip: lint --fix strips a legacy container only
-// when it can prove it redundant. A region nothing read cannot be proven redundant, so the
-// container must grade opaque or the fix would destroy it.
+// lint --fix strips a legacy container only when it can prove it redundant. A region nothing read
+// cannot be proven redundant, so the container must grade opaque or the fix would destroy it.
 func TestFLACStrayID3MalformedTailBlocksTheStrip(t *testing.T) {
 	lead := id3v2(4, overrunFrame("TIT2"))
 	doc := mustParseBytes(t, append(lead, flacWithComments("TITLE=Song")...))

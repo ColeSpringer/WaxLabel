@@ -6,8 +6,7 @@ import (
 )
 
 // nestedSimpleTags builds one top-level SimpleTag wrapping `wraps` levels of nested
-// SimpleTags, the innermost carrying a payload-byte TagString. The returned bytes are
-// the top-level SimpleTag element, ready to drop inside a Tag.
+// SimpleTags, the innermost carrying a payload-byte TagString.
 func nestedSimpleTags(wraps, payload int) []byte {
 	node := encElement(idSimpleTag, cat(
 		stringElement(idTagName, "LEAF"),
@@ -20,8 +19,7 @@ func nestedSimpleTags(wraps, payload int) []byte {
 }
 
 // sumRawBytes totals len(raw) across the whole tag tree: each group's own bytes and
-// Targets bytes, plus every SimpleTag's raw at any nesting depth. nilNestedRaw counts
-// how many nested (non-top-level) SimpleTags still carry raw, which must be zero.
+// Targets bytes, plus every SimpleTag's raw at any nesting depth.
 func sumRawBytes(d *doc) (total, nilNestedRaw int) {
 	var walkSub func(st simpleTag)
 	walkSub = func(st simpleTag) {
@@ -45,9 +43,7 @@ func sumRawBytes(d *doc) (total, nilNestedRaw int) {
 
 // TestNestedSimpleTagAllocationBounded is the CI guard for the deep-nested SimpleTag
 // memory blowup: capturing raw at every recursion level retained roughly depth times
-// the subtree size. Capturing only the top-level tag's raw (which already spans the
-// whole nested subtree) keeps retained bytes at a small constant multiple of the file
-// size regardless of nesting depth.
+// the subtree size.
 func TestNestedSimpleTagAllocationBounded(t *testing.T) {
 	const (
 		wraps   = 50        // nesting levels; stays within the 64-level depth budget
@@ -60,9 +56,8 @@ func TestNestedSimpleTagAllocationBounded(t *testing.T) {
 	d := parseMKA(t, src).Native.(*doc)
 	total, nestedRaw := sumRawBytes(d)
 
-	// The retained raw bytes must stay within a small constant multiple of the file
-	// size (group raw plus one top-level tag raw, each spanning the nested subtree
-	// once). Before the fix this grew with nesting depth (~wraps times the subtree).
+	// The retained raw bytes must stay within a small constant multiple of the file size
+	// (group raw plus one top-level tag raw, each spanning the nested subtree once).
 	const bound = 4
 	if int64(total) > int64(bound)*int64(len(src)) {
 		t.Errorf("retained raw = %d bytes for a %d-byte file (%.1fx); want <= %dx (nesting is amplifying retention)",

@@ -10,10 +10,8 @@ import (
 
 // TestManagedTagWithoutTagStringStaysNative guards the empty-value change against
 // over-reach: a managed SimpleTag (its name maps to a canonical key) that carries only
-// a TagBinary or only nested sub-tags - no TagString of its own - must stay native-only,
-// not surface as a spurious empty canonical value (ARTIST=[""]). parseSimpleTag leaves
-// value=="" for both an empty TagString and an absent one, so the projection gates on
-// the hasValue presence bit, not the empty string.
+// a TagBinary or only nested sub-tags - no TagString of its own - must stay
+// native-only, not surface as a spurious empty canonical value (ARTIST=[""]).
 func TestManagedTagWithoutTagStringStaysNative(t *testing.T) {
 	const limit = int64(1 << 20)
 	cases := []struct {
@@ -48,10 +46,9 @@ func TestManagedTagWithoutTagStringStaysNative(t *testing.T) {
 	}
 }
 
-// TestEmptySimpleTagRoundTrip checks the SimpleTag half: the writer emits a present-empty
-// value ([""], what `set ARTIST=` produces) as a real zero-length SimpleTag, and the
-// parser reads it back as present-empty, not absent. Otherwise `set ARTIST=` becomes
-// indistinguishable from `--clear ARTIST`.
+// TestEmptySimpleTagRoundTrip checks the SimpleTag half: the writer emits a
+// present-empty value ([""], what `set ARTIST=` produces) as a real zero-length
+// SimpleTag, and the parser reads it back as present-empty, not absent.
 func TestEmptySimpleTagRoundTrip(t *testing.T) {
 	const limit = int64(1 << 20)
 	b := simpleTagBytes("ARTIST", "") // writer output for a present-empty value
@@ -105,7 +102,7 @@ func TestBuildAlbumGroupKeepsEmptyValue(t *testing.T) {
 
 // TestRenderInfoTitlePresence checks the Info.Title half: a present-but-empty title
 // (`set TITLE=`) writes a zero-length <Title> that parses back as present, while an
-// absent title (`--clear TITLE`) removes the element. The two stay distinguishable.
+// absent title (`--clear TITLE`) removes the element.
 func TestRenderInfoTitlePresence(t *testing.T) {
 	const limit = int64(1 << 20)
 

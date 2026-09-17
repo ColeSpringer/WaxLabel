@@ -7,8 +7,7 @@ import (
 	"testing"
 )
 
-// sampleM4A carries TRACKNUMBER=2 / TRACKTOTAL=10, the base value the preservation tests
-// expect an unstorable edit to keep.
+// sampleM4A has TRACKNUMBER=2 / TRACKTOTAL=10 for preservation tests.
 var sampleM4A = filepath.Join("..", "..", "testdata", "sample.m4a")
 
 // trackNumberOf dumps path and returns its TRACKNUMBER values (nil when absent).
@@ -17,11 +16,8 @@ func trackNumberOf(t *testing.T, path string) []string {
 	return tagValues(dumpJSON(t, path), "TRACKNUMBER")
 }
 
-// TestMP4UnstorableNumberPreservesBase: setting a trkn slot to a genuinely unstorable value
-// (past uint16) on a file that already has a valid one keeps the old value rather than
-// erasing it, still warns value-dropped, and - since nothing else changed - collapses to a
-// byte-identical no-op that --strict still escalates to exit 2. This is MP4's fixed-uint16
-// divergence from the text formats, which store the raw string.
+// TestMP4UnstorableNumberPreservesBase: unstorable trkn keeps base value, warns, byte-identical
+// no-op; --strict escalates (MP4 uint16 vs text raw string).
 func TestMP4UnstorableNumberPreservesBase(t *testing.T) {
 	t.Parallel()
 	orig, err := os.ReadFile(sampleM4A)
@@ -29,7 +25,7 @@ func TestMP4UnstorableNumberPreservesBase(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The edit keeps the base value, warns, and exits 0.
+	// Keeps base, warns, exit 0.
 	file := copyFixture(t, sampleM4A)
 	out, errb, code := runCLI(t, "set", file, "--set", "TRACKNUMBER=99999")
 	if code != 0 {
@@ -42,7 +38,7 @@ func TestMP4UnstorableNumberPreservesBase(t *testing.T) {
 		t.Errorf("TRACKNUMBER after unstorable edit = %v, want [2] (base preserved)", got)
 	}
 
-	// Preserving the base value makes the write a byte-identical no-op.
+	// Base preserved -> byte-identical no-op.
 	after, err := os.ReadFile(file)
 	if err != nil {
 		t.Fatal(err)
@@ -51,16 +47,14 @@ func TestMP4UnstorableNumberPreservesBase(t *testing.T) {
 		t.Errorf("unstorable edit that preserves the base value should be a byte-identical no-op")
 	}
 
-	// The dropped value still escalates under --strict.
+	// --strict still escalates dropped value.
 	strictFile := copyFixture(t, sampleM4A)
 	if _, _, code := runCLI(t, "set", strictFile, "--set", "TRACKNUMBER=99999", "--strict"); code != 2 {
 		t.Errorf("--strict on a dropped value exit = %d, want 2", code)
 	}
 }
 
-// TestMP4NumberZeroAndClearUnchanged guards the two cases the preservation gate must NOT
-// touch: a literal 0 still writes and reads back absent (the ZeroUnset case, which fits
-// uint16 and is not "unstorable"), and an explicit clear still removes the value.
+// TestMP4NumberZeroAndClearUnchanged: zero unset and explicit clear are outside preservation gate.
 func TestMP4NumberZeroAndClearUnchanged(t *testing.T) {
 	t.Parallel()
 

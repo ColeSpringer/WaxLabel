@@ -8,11 +8,8 @@ import (
 	"time"
 )
 
-// Tags is the typed convenience projection of a [TagSet]. It is lossy by
-// design: a struct's zero values cannot distinguish absent from empty from
-// cleared, so Tags is authoritative for nothing. Use it to read common fields
-// ergonomically ([Project]) and to write them as sugar ([Tags.Patch], which
-// only sets non-empty fields - clearing requires an explicit [TagPatch]).
+// Tags is a typed projection of [TagSet]. Lossy on presence. Prefer TagSet when
+// presence matters. [Project] reads; [Tags.Patch] sets non-empty fields only.
 type Tags struct {
 	Title       string
 	Artists     []string
@@ -27,15 +24,12 @@ type Tags struct {
 	DiscNumber  int
 	DiscTotal   int
 
-	// Three-way dates, kept as strings to preserve partial precision
-	// (year, year-month, full date) rather than forcing time.Time.
+	// Partial dates as strings (year / year-month / full).
 	RecordingDate string
 	ReleaseDate   string
 	OriginalDate  string
 
-	// Comment is multi-valued. AIFF ANNO, Vorbis comments, MP4 cmt atoms, and ID3 COMM
-	// frames can all store several comments, so the typed projection keeps the full list.
-	Comment   []string
+	Comment   []string // multi-valued across formats
 	Lyrics    string
 	Grouping  string
 	Copyright string
@@ -55,18 +49,12 @@ type Tags struct {
 
 	ReleaseCountry string
 	ReleaseStatus  string
-	// ReleaseTypes is multivalued: one primary release-group type plus any
-	// secondary types (e.g. "album" then "compilation").
-	ReleaseTypes []string
+	ReleaseTypes []string // primary then secondary
 
 	Conductor string
 	Remixer   string
-	// Performers are the credited performers in PERFORMER order, which is
-	// significant and round-trips: an ordered slice rather than a map so
-	// Project -> Patch does not reorder a multi-valued PERFORMER. A bare value
-	// lands as a PerformerCredit with an empty Role.
-	Performers []PerformerCredit
-	// EncodedBy is the encoding person; Encoder is the encoding software/tool.
+	Performers []PerformerCredit // ordered PERFORMER credits
+	// EncodedBy is the encoding person; Encoder is the encoding software.
 	EncodedBy string
 	Encoder   string
 
@@ -444,24 +432,8 @@ func TotalKey(k Key) Key {
 	}
 }
 
-// NumberTotalSplit splits a track/disc number value into its number and total substrings for
-// the read paths, so every codec that stores numbering as text splits a slashed value the same
-// way and agrees with the edit-time split (editor.splitNumberPairs). It is the single split
-// decision shared by ID3's emitNumTotal, Matroska's projectTag, and [NormalizeNumberPairs] (the
-// FLAC/Ogg and WAV post-pass), so those sites cannot drift.
-//
-// A genuine numeric pair ("4/9", "04/09", "0/12", "/2", "3/") splits on the first '/' via
-// [SplitNumberTotal], preserving the exact substrings (leading zeros and a literal 0 included),
-// each side "" when absent, and reports split=true. A value with no '/', a malformed pair whose
-// number or total side is non-numeric ("abc/1", "1/2/3"), or a bare "/" comes back whole as num
-// with an empty total and split=false, so it stays verbatim on the number key instead of
-// fabricating a total, matching what the editor leaves alone.
-//
-// A non-pair key returns split=false unchanged. That guard is not dead defense: Matroska's
-// projectTag and WAV's infoFamilies pass arbitrary mapped keys through here and rely on it, so
-// dropping it would split an Album or Title value that happens to contain a '/'. The validity
-// gate reuses [ValidNumericValue], so it cannot disagree with the linter on what a well-formed
-// pair is.
+// NumberTotalSplit splits a track/disc "n/total" for read paths ([SplitNumberTotal]).
+// Non-pair or malformed returns the value as num with split=false.
 func NumberTotalSplit(k Key, v string) (num, total string, split bool) {
 	if (k == TrackNumber || k == DiscNumber) &&
 		strings.ContainsRune(v, '/') && ValidNumericValue(k, v) {
@@ -471,17 +443,8 @@ func NumberTotalSplit(k Key, v string) (num, total string, split bool) {
 	return v, "", false
 }
 
-// NormalizeNumberPairs splits a slashed TRACKNUMBER/DISCNUMBER carried in a read projection into
-// a number key plus a derived total key, so the FLAC/Ogg and WAV read paths agree with the
-// ID3/MP4/Matroska projections and with the editor. Without it Tags() would show ["4/9"] while
-// the typed Fields() fabricated a total, and dump, copy, and diff would disagree on the same
-// file. It runs as a post-pass over a codec's projected [TagSet] and has no edit context, so its
-// total guard is "no total already present" rather than the editor's patch.Touches.
-//
-// An absent or multi-valued key is left alone; splitting a multi-value would invent a total no
-// writer can store and churn the file. A single value goes through [SplitNumberValue], which
-// sets the derived total only when the key has no value yet, so an explicit or present-empty
-// TRACKTOTAL wins over the slash's own total (matching [ParseNumPair]).
+// NormalizeNumberPairs splits slashed TRACKNUMBER/DISCNUMBER in a read projection
+// into number + total when no total is already present.
 func NormalizeNumberPairs(ts *TagSet) {
 	for _, numKey := range []Key{TrackNumber, DiscNumber} {
 		vals, ok := ts.Get(numKey)
@@ -492,16 +455,8 @@ func NormalizeNumberPairs(ts *TagSet) {
 	}
 }
 
-// SplitNumberValue applies a slashed track/disc number split to one key in ts. When value is a
-// genuine pair (per [NumberTotalSplit]) the number substring replaces numKey, or deletes it when
-// the number side is empty ("/12"), and the total is written to the companion total key when it
-// is non-empty and setTotal is true. A non-pair or malformed value is left untouched.
-//
-// This split-and-assign body is shared by [NormalizeNumberPairs] and the editor's edit-time
-// split. The two differ only in setTotal: the read pass passes "no total already present" (an
-// explicit total wins), the editor passes "the patch does not also touch the total key" (a slash
-// updates a base-carried total, but an explicit set wins). Keeping the body in one place stops
-// the number set/delete and leading-zero handling from drifting between them.
+// SplitNumberValue applies [NumberTotalSplit] to one key. setTotal controls whether
+// a derived total is written (read pass vs editor patch.Touches).
 func SplitNumberValue(ts *TagSet, numKey Key, value string, setTotal bool) {
 	num, total, split := NumberTotalSplit(numKey, value)
 	if !split {

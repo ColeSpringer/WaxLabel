@@ -7,10 +7,8 @@ import (
 	"testing"
 )
 
-// TestStrictTrailingEmptyValueDropped checks that an edit whose value ends in a trailing empty
-// element cannot round-trip through an ID3 text frame: the four ID3-backed formats warn
-// value-dropped and fail --strict, while the formats that store an empty value verbatim
-// (FLAC/Ogg/MP4/Matroska) round-trip it and stay exit 0.
+// TestStrictTrailingEmptyValueDropped: trailing empty in ID3 multi-value warns/fails --strict;
+// FLAC/Ogg/MP4/Matroska round-trip empty.
 func TestStrictTrailingEmptyValueDropped(t *testing.T) {
 	t.Parallel()
 	args := []string{"--set", "ARTIST=A", "--add", "ARTIST=B", "--add", "ARTIST="}
@@ -44,9 +42,8 @@ func TestStrictTrailingEmptyValueDropped(t *testing.T) {
 	}
 }
 
-// TestStrictTrailingEmptyRegression guards the boundary from the other side: a normal multi-value
-// ID3 edit with no trailing empty must stay exit 0 under --strict, and a lone empty value (one
-// element) round-trips and does not warn.
+// TestStrictTrailingEmptyRegression: normal ID3 multi-value stays exit 0 under --strict;
+// lone empty ARTIST= round-trips without warn.
 func TestStrictTrailingEmptyRegression(t *testing.T) {
 	t.Parallel()
 	mp3 := td("notags.mp3")
@@ -68,11 +65,8 @@ func writeLRC(t *testing.T, content string) string {
 	return p
 }
 
-// TestSyncedLyricsPartialDrop checks that a --synced-lyrics-file whose lines partly fail to
-// produce a timed lyric warns and fails --strict, naming the dropped line numbers, while
-// recognized structure (id tags, offset/length tags, blank lines) is not counted. An all-bad
-// file still errors with the existing message, and a fully clean file is silent. A section
-// header is content the store cannot hold, so it counts and --strict refuses it.
+// TestSyncedLyricsPartialDrop: partial LRC warns, names line numbers, fails --strict.
+// Metadata lines not counted; section headers count; all-bad -> usage error.
 func TestSyncedLyricsPartialDrop(t *testing.T) {
 	t.Parallel()
 	partial := writeLRC(t, "[ar:Artist]\n[00:01.00]good\n[9:99.99]bad stamp\njust some text\n"+
@@ -89,13 +83,13 @@ func TestSyncedLyricsPartialDrop(t *testing.T) {
 		t.Errorf("set --strict with a partial LRC: exit = %d, want 2", code)
 	}
 
-	// A fully clean file (only timed lines and recognized structure) is silent.
+	// Clean LRC: silent.
 	clean := writeLRC(t, "[ti:Song]\n[00:01.00]One\n[00:12.50]Two\n")
 	if out, _, code := runCLI(t, "set", copyFixture(t, notagsFLAC), "--synced-lyrics-file", clean); code != 0 || strings.Contains(out, "synced-lyrics-line-dropped") {
 		t.Errorf("a clean LRC must not warn or fail; exit = %d:\n%s", code, out)
 	}
 
-	// A file whose only unstorable line is a section header still counts it, so --strict refuses.
+	// Section header counted; --strict refuses.
 	sections := writeLRC(t, "[ti:Song]\n[00:01.00]One\n[Chorus]\n[00:12.50]Two\n")
 	out, _, code2 := runCLI(t, "set", copyFixture(t, notagsFLAC), "--synced-lyrics-file", sections)
 	if code2 != 0 || !strings.Contains(out, "synced-lyrics-line-dropped") || !strings.Contains(out, "lines: 3") {
@@ -105,7 +99,7 @@ func TestSyncedLyricsPartialDrop(t *testing.T) {
 		t.Errorf("set --strict with a section header: exit = %d, want 2", code)
 	}
 
-	// An all-bad file still yields the existing "no timed lyric lines" usage error.
+	// All-bad: existing "no timed lyric lines" usage error.
 	allbad := writeLRC(t, "just text\n[9:99.99]bad\n")
 	_, errb, code := runCLI(t, "set", copyFixture(t, notagsFLAC), "--synced-lyrics-file", allbad)
 	if code != 2 || !strings.Contains(errb, "no timed lyric lines") {
@@ -113,13 +107,11 @@ func TestSyncedLyricsPartialDrop(t *testing.T) {
 	}
 }
 
-// TestRemovePictureRoleMiss checks that a --remove-picture role matching no picture warns and
-// fails --strict rather than being a silent no-op, while an out-of-range index stays a hard usage
-// error and a role that matches removes cleanly with no warning.
+// TestRemovePictureRoleMiss: missing role warns/fails --strict; out-of-range index stays usage error.
 func TestRemovePictureRoleMiss(t *testing.T) {
 	t.Parallel()
 
-	// A role the file does not carry: warns, and fails --strict.
+	// Role not on file: warns; --strict fails.
 	out, _, _ := runCLI(t, "plan", copyFixture(t, notagsFLAC), "--remove-picture", "artist")
 	if !strings.Contains(out, "picture-remove-role-miss") {
 		t.Errorf("plan --remove-picture artist on a file with no artist picture: want a role-miss warning:\n%s", out)
@@ -128,12 +120,12 @@ func TestRemovePictureRoleMiss(t *testing.T) {
 		t.Errorf("set --strict --remove-picture artist (miss): exit = %d, want 2", code)
 	}
 
-	// An out-of-range index is still a hard usage error, not a warning.
+	// Out-of-range index: usage error, not warning.
 	if _, errb, code := runCLI(t, "set", copyFixture(t, notagsFLAC), "--remove-picture", "9"); code != 2 || !strings.Contains(errb, "out of range") {
 		t.Errorf("--remove-picture 9 (out of range): exit = %d, want 2 with an out-of-range error; stderr:\n%s", code, errb)
 	}
 
-	// A role that matches removes cleanly, with no role-miss warning even under --strict.
+	// Matching role removes cleanly under --strict.
 	png := writeTempImage(t, "back.png", minimalPNG())
 	withPic := filepath.Join(t.TempDir(), "withpic.flac")
 	if _, errb, code := runCLI(t, "set", copyFixture(t, notagsFLAC), "--add-picture", "back-cover="+png, "-o", withPic); code != 0 {
@@ -148,9 +140,7 @@ func TestRemovePictureRoleMiss(t *testing.T) {
 	}
 }
 
-// TestRemovePictureRoleMissPerFile checks the miss is attributed to the file that actually lacks
-// the role, not bled across a bulk run: with an artist picture only on the first file, a two-file
-// --remove-picture artist warns on the second file alone.
+// TestRemovePictureRoleMissPerFile: role-miss attributed to file lacking the role, not bulk bleed.
 func TestRemovePictureRoleMissPerFile(t *testing.T) {
 	t.Parallel()
 	png := writeTempImage(t, "artist.png", minimalPNG())
@@ -180,9 +170,7 @@ func TestRemovePictureRoleMissPerFile(t *testing.T) {
 	}
 }
 
-// TestMediaTypeOversizedDropped checks that a MEDIATYPE past the single byte the stik atom stores
-// is dropped and warned (and fails --strict) rather than widening the atom, and is absent from the
-// written file, while a value in range stores.
+// TestMediaTypeOversizedDropped: MEDIATYPE past stik byte dropped/warned; in-range stores.
 func TestMediaTypeOversizedDropped(t *testing.T) {
 	t.Parallel()
 
@@ -211,10 +199,7 @@ func TestMediaTypeOversizedDropped(t *testing.T) {
 	}
 }
 
-// TestSilentDropFailsStrictMatrix is the standing contract test for the invariant behind these
-// findings: a value or input the write silently drops must surface a warning and fail --strict,
-// never exit 0. Adding a future format or drop path to the matrix guards the whole contract in one
-// place, alongside the per-finding tests that pin the exact messages.
+// TestSilentDropFailsStrictMatrix: silent drops warn and fail --strict (contract test for all paths).
 func TestSilentDropFailsStrictMatrix(t *testing.T) {
 	t.Parallel()
 	partial := writeLRC(t, "[00:01.00]good\n[9:99.99]bad\n[00:05.00]good two\n")

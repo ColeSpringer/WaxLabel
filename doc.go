@@ -1,68 +1,53 @@
 // Package waxlabel is a pure-Go library for reading and writing audio-file
-// metadata (tags plus embedded cover art).
+// metadata: tags, embedded pictures, chapters, and synced lyrics.
 //
 // # Scope
 //
-// WaxLabel is the metadata member of the "Wax" family. Its design goals are
-// preservation-first editing, a public writable canonical key vocabulary, a
-// plan-before-write workflow ([Editor.Prepare] producing a [Plan] whose
-// [Plan.Report] matches exactly what [Plan.Execute] will do), and versioned
-// audio-essence identity for deduplicating a library within a container format
-// (the digest is container-scoped; see [Document.HashAudioEssence]).
+// Design goals: preservation-first edits, a public writable canonical key
+// vocabulary, plan-before-write ([Editor.Prepare] produces a [Plan] whose
+// [Plan.Report] matches [Plan.Execute]), and versioned audio-essence identity
+// for library dedup within a container ([Document.HashAudioEssence]; digests
+// are container-scoped).
 //
-// WaxLabel is built for music-organization tools that need complete metadata
-// for libraries sourced from uneven inputs such as YouTube. Those files are
-// usually sparse or inconsistently tagged rather than blank: source metadata
-// propagates, and transcoders often stamp an "encoder=Lavf..." comment.
-// WaxLabel treats inherited and generated metadata as data to read, preserve,
-// override, and deduplicate.
+// Typical inputs are sparse or inconsistently tagged (source metadata, transcoder
+// stamps like "encoder=Lavf..."). Inherited and generated metadata is data to
+// read, preserve, override, or deduplicate.
 //
 // # Formats
 //
-// FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, MP3, WAV (including the 64-bit RF64 and
-// BW64 forms), MP4/M4A, raw AAC/ADTS, Matroska/WebM, AIFF/AIFF-C, WavPack,
-// Monkey's Audio, and Musepack are read and written. WMA/ASF is read-only:
-// writing it is an explicit non-goal, so a WMA file is only ever a source.
+// Read/write: FLAC, Ogg Vorbis, Ogg Opus, Ogg FLAC, MP3, WAV (RF64/BW64),
+// MP4/M4A, raw AAC/ADTS, Matroska/WebM, AIFF/AIFF-C, WavPack, Monkey's Audio,
+// Musepack. WMA/ASF is read-only.
 //
 // # Object model
 //
 // [Parse], [ParseFile], and [OpenSource] return an immutable, detached
-// [Document]: it holds no OS resources and has no Close method, so a caller
-// may scan, cache, and discard it freely. Accessors return detached deep
-// copies of structural data - [Picture] payloads included, so a caller may
-// mutate anything an accessor returns without affecting the [Document] or a
-// later call. [Document.Inspect] skips picture bytes entirely for bulk scans.
+// [Document]: no OS resources, no Close. Accessors return deep copies
+// (including [Picture] payloads). [Document.Inspect] skips picture bytes for
+// bulk scans.
 //
-// Editing flows through [Document.Edit], which yields an [Editor]. The editor
-// records mutations against a presence-aware canonical [tag.TagSet]; calling
-// [Editor.Prepare] resolves them into a [Plan]. Executing the plan against a
-// [Destination] streams the result. Copying metadata between files flows through
-// [Document.Transfer], the same shape for a transfer.
+// Edit via [Document.Edit] -> [Editor.Prepare] -> [Plan] against a
+// [Destination]. Cross-file copy uses [Document.Transfer].
 //
 // # Frozen contracts
 //
-// The following contracts are stable across the v1 line; other surface may
-// still evolve:
+// Stable across v1; other surface may still evolve:
 //
-//   - The Document is immutable, detached, and serializable.
-//   - The presence-aware canonical [tag.TagSet]/[tag.TagPatch] is
-//     authoritative; the typed [tag.Tags] struct is a convenience projection.
-//   - The canonical key vocabulary ([tag.Key]) is public and writable.
-//   - Editing is preservation-first: the native document is the base and
-//     unaffected data (including legacy tags) is preserved and warned, never
-//     stripped silently.
-//   - Prepare then Execute share state so the plan and the write cannot
-//     disagree; a no-op SaveBack writes nothing.
-//   - [AudioDigest] carries an algorithm and a versioned extent so persisted
-//     dedup hashes survive across library-wide refinements. The extent is the
-//     container's, so remuxing the same audio into a different container gives a
-//     different digest.
+//   - Document is immutable, detached, and serializable.
+//   - Presence-aware [tag.TagSet]/[tag.TagPatch] are authoritative; typed
+//     [tag.Tags] is a convenience projection.
+//   - Canonical key vocabulary ([tag.Key]) is public and writable.
+//   - Preservation-first: native document is the base; unaffected data
+//     (including legacy tags) is preserved and warned, never stripped silently.
+//   - Prepare and Execute share state so plan and write cannot disagree; a
+//     no-op SaveBack writes nothing.
+//   - [AudioDigest] carries algorithm and versioned extent so persisted digests
+//     stay interpretable. Extent is container-scoped; remuxing changes the digest.
 //
 // # Acknowledgements
 //
-// All code is reimplemented from public specifications (ID3v2, the Vorbis
-// comment format, FLAC, ISO/IEC 14496-12, RIFF/WAVE, EBU Tech 3306 for RF64,
-// the APEv2 tag, WavPack, Monkey's Audio, Musepack, ASF, and RFC
-// 3533/7845/9559). Reference implementations were consulted for design but not
-// copied; see the README acknowledgements.
+// Reimplemented from public specs (ID3v2, Vorbis comments, FLAC, ISO/IEC
+// 14496-12, RIFF/WAVE, EBU Tech 3306, APEv2, WavPack, Monkey's Audio, Musepack,
+// ASF, RFC 3533/7845/9559). Reference implementations informed design but were
+// not copied; see the README acknowledgements.
 package waxlabel

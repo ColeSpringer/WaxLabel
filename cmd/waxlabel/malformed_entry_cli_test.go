@@ -7,10 +7,7 @@ import (
 	"testing"
 )
 
-// TestStrictHintDoesNotPromiseAWrite: the gate appended "(omit --strict to write anyway)"
-// unconditionally. That is true for a coercion or a reduction and false for the discard
-// family, where omitting --strict drops the item either way - and here writes no bytes at
-// all. One hint that is unconditionally true replaces it.
+// TestStrictHintDoesNotPromiseAWrite: discard-family hint must not say "write anyway" when no bytes write.
 func TestStrictHintDoesNotPromiseAWrite(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, "../../testdata/sample.webm")
@@ -65,15 +62,12 @@ func wavWrap(chunks []byte) []byte {
 	return slices.Concat([]byte("RIFF"), wavLE32(len(inner)), inner)
 }
 
-// wavWithListBody assembles a WAV around a verbatim LIST chunk body, so a test can hand in
-// a list the item walk cannot fully read.
+// wavWithListBody builds a WAV around a verbatim LIST chunk body (item walk may fail).
 func wavWithListBody(list []byte) []byte {
 	return wavWrap(slices.Concat(wavFmtChunk(), wavChunk("LIST", list), wavChunk("data", make([]byte, 4000))))
 }
 
-// wavUnpaddedInfo builds a WAV whose LIST/INFO items carry no word-alignment pad byte after
-// an odd-size value, so a reader that steps over the byte unconditionally desynchronizes on
-// the second item and loses every item after it on the next rewrite.
+// wavUnpaddedInfo: LIST/INFO items without word-align pad; unconditional pad step desyncs on rewrite.
 func wavUnpaddedInfo(pairs ...[2]string) []byte {
 	info := []byte("INFO")
 	for _, p := range pairs {
@@ -83,9 +77,7 @@ func wavUnpaddedInfo(pairs ...[2]string) []byte {
 	return wavWithListBody(info)
 }
 
-// TestLintReportsMalformedTagEntry: the read code has to reach lint as a warning-severity
-// finding, so a file that cannot be read in full fails a CI gate rather than passing
-// silently.
+// TestLintReportsMalformedTagEntry: malformed LIST/INFO reaches lint as warning (CI gate).
 func TestLintReportsMalformedTagEntry(t *testing.T) {
 	t.Parallel()
 	file := writeTempFile(t, "unpadded.wav",
@@ -111,7 +103,7 @@ func TestLintReportsMalformedTagEntry(t *testing.T) {
 	if !found {
 		t.Errorf("lint did not report malformed-tag-entry:\n%s", out)
 	}
-	// The values past the desync survive the rewrite, and the rewritten file lints clean.
+	// Values past desync survive rewrite; rewritten file lints clean.
 	if _, errb, code := runCLI(t, "set", file, "--set", "GENRE=Rock"); code != 0 {
 		t.Fatalf("set exit = %d: %s", code, errb)
 	}
@@ -126,12 +118,10 @@ func TestLintReportsMalformedTagEntry(t *testing.T) {
 	}
 }
 
-// TestLintUnknownChunkSizeStaysClean: the size-unknown sentinel is what a non-seekable
-// writer emits, so reporting it must not fail the very common piped-WAV case. It is info
-// severity: visible in lint, exit code untouched.
+// TestLintUnknownChunkSizeStaysClean: size-unknown sentinel (piped WAV) is info only; exit 0.
 func TestLintUnknownChunkSizeStaysClean(t *testing.T) {
 	t.Parallel()
-	data := wavUnpaddedInfo() // a LIST with no items is dropped by the walk; only fmt+data matter
+	data := wavUnpaddedInfo() // empty LIST dropped by walk; fmt+data matter
 	i := strings.Index(string(data), "data")
 	copy(data[i+4:i+8], []byte{0xFF, 0xFF, 0xFF, 0xFF})
 	file := writeTempFile(t, "sentinel.wav", data)
@@ -159,14 +149,10 @@ func TestLintUnknownChunkSizeStaysClean(t *testing.T) {
 	}
 }
 
-// TestStrictRefusesDroppedMalformedRegion: a region the item walk cannot read has nowhere
-// to go in a rebuilt LIST/INFO chunk, so the rewrite destroys it. That is destruction by
-// this write, which is exactly what --strict is for; without the flag the same write
-// proceeds and reports the loss.
+// TestStrictRefusesDroppedMalformedRegion: unreadable LIST region destroyed on rewrite; --strict refuses.
 func TestStrictRefusesDroppedMalformedRegion(t *testing.T) {
 	t.Parallel()
-	// One well-formed item, then three bytes no item walk can read: too short to hold
-	// another item header, and not the clean end of the list.
+	// Well-formed item, then 3 bytes no item walk can read.
 	list := slices.Concat([]byte("INFO"), []byte("INAM"), wavLE32(5), []byte("Song\x00"), []byte{0},
 		[]byte{0x01, 0x02, 0x03})
 	file := writeTempFile(t, "tail.wav", wavWithListBody(list))
@@ -187,14 +173,10 @@ func TestStrictRefusesDroppedMalformedRegion(t *testing.T) {
 	}
 }
 
-// TestLintFixReportsWhatItDestroyed: --fix promises only provably-safe repairs, and
-// re-linting cannot show what a rewrite destroyed on the way, because the condition is gone
-// from the output. A region no parser could read is re-rendered away by any write, so the
-// fix has to say so rather than report the file as clean.
+// TestLintFixReportsWhatItDestroyed: --fix must report bytes lost on rewrite (re-lint cannot).
 func TestLintFixReportsWhatItDestroyed(t *testing.T) {
 	t.Parallel()
-	// An ISFT transcoder stamp gives --fix something to do; the three trailing bytes are a
-	// region no item walk can read.
+	// ISFT gives --fix work; trailing 3 bytes unreadable to item walk.
 	list := slices.Concat([]byte("INFO"),
 		wavItem("INAM", "Song"), wavItem("ISFT", "Lavf61.7.100"), []byte{0x01, 0x02, 0x03})
 	file := writeTempFile(t, "fix.wav", wavWithListBody(list))
@@ -211,8 +193,7 @@ func TestLintFixReportsWhatItDestroyed(t *testing.T) {
 	}
 }
 
-// TestLintFixOnACleanFileReportsNoLoss is the control: the ordinary fix loses nothing, so
-// the new line must not appear on every run.
+// TestLintFixOnACleanFileReportsNoLoss: ordinary fix loses nothing; no "lost in the rewrite" line.
 func TestLintFixOnACleanFileReportsNoLoss(t *testing.T) {
 	t.Parallel()
 	list := slices.Concat([]byte("INFO"), wavItem("INAM", "Song"), wavItem("ISFT", "Lavf61.7.100"))

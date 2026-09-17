@@ -2,18 +2,13 @@ package core
 
 import "testing"
 
-// TestFoldValueKeyMatchesEqualFold pins the equivalence [FamilySelector] depends on: two
-// values share a fold key exactly when EqualFoldValue calls them equal. An index that
-// disagreed with the scalar comparison would mark a family entry as a conflict on one code
-// path and not the other.
+// TestFoldValueKeyMatchesEqualFold: FoldValueKey agrees with EqualFoldValue (FamilySelector depends on this).
 func TestFoldValueKeyMatchesEqualFold(t *testing.T) {
-	// The awkward cases: a fold orbit whose members are not each other's ToLower
-	// (Kelvin sign, long s, dotless i), plus space and multi-rune values.
 	vals := []string{
 		"", " ", "Rock", "rock", " rock ", "ROCK",
-		"K", "k", "K", // Kelvin sign folds with K/k
-		"s", "ſ", // long s folds with S/s
-		"ı", "i", "I", // dotless i does not fold with i
+		"K", "k", "K",
+		"s", "ſ",
+		"ı", "i", "I",
 		"Straße", "STRASSE",
 		"café", "CAFÉ",
 	}

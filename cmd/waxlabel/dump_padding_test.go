@@ -5,19 +5,14 @@ import (
 	"testing"
 )
 
-// TestDumpPaddingMatchesPlan: dump's paddingBytes is the read-side view of the region a
-// write grows into, so it must equal the padding a plan reports for an in-place edit of the
-// same file - on every format that reserves one, not only the one whose padding happens to
-// be a describable block. Default padding options only: --padding N reports the request
-// rather than what the file holds.
+// TestDumpPaddingMatchesPlan: dump paddingBytes must match plan padding for same-length edit.
 func TestDumpPaddingMatchesPlan(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{"sample.flac", "sample.mp3", "sample.aac", "sample.m4a"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			f := copyFixture(t, td(name))
-			// Write once through waxlabel so the file carries the padding this codec lays
-			// down, rather than whatever the fixture's original muxer left.
+			// Seed via waxlabel so padding reflects this codec, not the original muxer.
 			if _, errb, code := runCLI(t, "set", f, "--set", "ARTIST=AAAAAA"); code != 0 {
 				t.Fatalf("seeding write: exit = %d\n%s", code, errb)
 			}
@@ -25,10 +20,7 @@ func TestDumpPaddingMatchesPlan(t *testing.T) {
 			if jd.Properties == nil || jd.Properties.PaddingBytes <= 0 {
 				t.Fatalf("dump reported no paddingBytes for %s: %+v", name, jd.Properties)
 			}
-			// The planned edit is the same byte length as the seeded one, so it consumes
-			// exactly the metadata region already on disk and the padding left over is the
-			// padding the file holds now. A shorter or longer value would legitimately
-			// report a different figure, and a no-op plan reports none at all.
+			// Same-length edit reuses metadata region; leftover padding matches dump.
 			out, _, code := runCLI(t, "--json", "plan", f, "--set", "ARTIST=BBBBBB")
 			if code != 0 {
 				t.Fatalf("plan exit = %d\n%s", code, out)
@@ -45,11 +37,7 @@ func TestDumpPaddingMatchesPlan(t *testing.T) {
 	}
 }
 
-// TestDumpPaddingOgg: Ogg reports the comment padding it round-trips, which is what plan
-// reports too. sample.opus carries none, so the pair is 0 and the field stays omitted;
-// what matters is that the two surfaces agree and neither invents a figure. An Ogg FLAC
-// PADDING block is deliberately excluded - every rewrite drops it - so it must not appear
-// here either, even though dump --native lists such a block.
+// TestDumpPaddingOgg: dump and plan agree on Ogg comment padding (not Ogg FLAC PADDING block).
 func TestDumpPaddingOgg(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{"sample.opus", "sample.ogg", "sample.oga"} {
@@ -76,9 +64,7 @@ func TestDumpPaddingOgg(t *testing.T) {
 	}
 }
 
-// TestDumpPaddingAbsentWithoutARegion: a format that reserves no padding at all must keep
-// omitting the field, so 0 never gets rendered as "no slack" for a format that simply does
-// not model one.
+// TestDumpPaddingAbsentWithoutARegion: formats with no padding region omit paddingBytes.
 func TestDumpPaddingAbsentWithoutARegion(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{"sample.wav", "sample.aiff", "sample.mka", "sample.wv", "sample.ape"} {

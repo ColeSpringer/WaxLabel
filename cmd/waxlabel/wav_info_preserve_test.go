@@ -9,8 +9,7 @@ import (
 	"testing"
 )
 
-// spliceInfoAfterHeader inserts a LIST/INFO chunk right after the 12-byte RIFF/WAVE header
-// of a WAV file and fixes the RIFF size, the shape a hand-built conflict has.
+// spliceInfoAfterHeader: insert LIST/INFO after RIFF header and fix RIFF size.
 func spliceInfoAfterHeader(t *testing.T, path string, pairs ...[2]string) {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -25,8 +24,7 @@ func spliceInfoAfterHeader(t *testing.T, path string, pairs ...[2]string) {
 	}
 }
 
-// TestSetKeepsConflictingInfoUnderStrict: an id3 chunk and a LIST/INFO chunk that disagree on
-// the title; editing ALBUM under --strict succeeds and leaves the INFO title alone.
+// TestSetKeepsConflictingInfoUnderStrict: id3/INFO title conflict; --strict edit keeps INFO title.
 func TestSetKeepsConflictingInfoUnderStrict(t *testing.T) {
 	t.Parallel()
 	f := filepath.Join(t.TempDir(), "a.wav")
@@ -37,7 +35,7 @@ func TestSetKeepsConflictingInfoUnderStrict(t *testing.T) {
 	if err := os.WriteFile(f, src, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// COMPOSER has no INFO identifier, so this set creates the id3 chunk.
+	// COMPOSER has no INFO id; seed set creates id3 chunk.
 	if _, errb, code := runCLI(t, "set", f, "--set", "TITLE=Id3 Title", "--set", "COMPOSER=X", "-q"); code != 0 {
 		t.Fatalf("seed set exit %d: %s", code, errb)
 	}

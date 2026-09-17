@@ -9,20 +9,17 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// Every ASF object is a 16-byte GUID followed by a 64-bit total size that includes
-// the 24-byte prefix itself.
+// Object prefix: 16-byte GUID + 64-bit total size (includes the 24-byte prefix).
 const objectHeaderLen = 24
 
-// object is one ASF object: its type and the body bytes after the 24-byte prefix.
+// object is one ASF object: type and body after the 24-byte prefix.
 type object struct {
 	id   guid
 	body []byte
 }
 
-// walkObjects splits a region into consecutive ASF objects. It stops cleanly at the
-// first object that will not fit, so a truncated tail leaves the objects before it
-// readable; count, when non-zero, caps how many are returned (the Header Object
-// declares its child count).
+// walkObjects splits a region into consecutive objects. Stops at the first that
+// will not fit. count > 0 caps how many are returned (Header child count).
 func walkObjects(b []byte, count int) []object {
 	var out []object
 	for pos := 0; pos+objectHeaderLen <= len(b); {
@@ -42,9 +39,8 @@ func walkObjects(b []byte, count int) []object {
 	return out
 }
 
-// parseHeaderObject validates the file's leading Header Object and returns its child
-// objects. The 30-byte prefix is the object header plus a child count and two
-// reserved bytes.
+// parseHeaderObject validates the leading Header Object and returns its children.
+// Prefix is object header + child count + two reserved bytes (30 bytes).
 func parseHeaderObject(b []byte) ([]object, error) {
 	if len(b) < 30 {
 		return nil, fmt.Errorf("%w: ASF file shorter than a Header Object", waxerr.ErrInvalidData)
@@ -59,17 +55,15 @@ func parseHeaderObject(b []byte) ([]object, error) {
 		return nil, fmt.Errorf("%w: ASF Header Object declares %d bytes", waxerr.ErrInvalidData, size)
 	}
 	if size > uint64(len(b)) {
-		size = uint64(len(b)) // truncated: read what is present rather than refusing outright
+		size = uint64(len(b)) // truncated: read what is present
 	}
-	// The declared child count caps the walk. Clamp rather than convert straight to int: on
-	// a 32-bit build a count above MaxInt32 reads as negative, which walkObjects treats as
-	// "no cap" and so disables the very bound the field is there to impose.
+	// Clamp child count: on 32-bit, count > MaxInt32 becomes negative and walkObjects
+	// treats that as "no cap".
 	count := binary.LittleEndian.Uint32(b[24:28])
 	return walkObjects(b[30:size], int(min(count, math.MaxInt32))), nil
 }
 
-// utf16String decodes a UTF-16LE string, dropping a trailing NUL terminator. ASF
-// stores every text value this way, terminator included in the declared length.
+// utf16String decodes UTF-16LE, dropping a trailing NUL (ASF includes it in length).
 func utf16String(b []byte) string {
 	if len(b) < 2 {
 		return ""
@@ -84,8 +78,7 @@ func utf16String(b []byte) string {
 	return string(utf16.Decode(u))
 }
 
-// Descriptor value types, shared by the Extended Content Description, Metadata, and
-// Metadata Library objects.
+// Descriptor value types shared by Extended Content Description, Metadata, Library.
 const (
 	valUnicode = 0
 	valBytes   = 1
@@ -95,17 +88,14 @@ const (
 	valWord    = 5
 )
 
-// descriptorText renders a descriptor value as the text the canonical model stores.
-// The numeric types are rendered as decimal, which is how every ASF-aware tagger
-// displays them; a byte array has no text form and is reported as unrepresentable so
-// the caller can route it (cover art) or skip it.
+// descriptorText renders a descriptor for the canonical model. Numerics as decimal;
+// byte arrays have no text form (caller routes cover art or skips).
 func descriptorText(valueType uint16, v []byte) (string, bool) {
 	switch valueType {
 	case valUnicode:
 		return utf16String(v), true
 	case valBool:
-		// Officially a 32-bit value; some writers emit 16 bits. Accept either rather
-		// than dropping a flag over a width nobody agrees on.
+		// Spec says 32-bit; some writers emit 16. Accept either.
 		var n uint64
 		switch len(v) {
 		case 2:
@@ -135,5 +125,5 @@ func descriptorText(valueType uint16, v []byte) (string, bool) {
 		}
 		return fmt.Sprint(binary.LittleEndian.Uint16(v)), true
 	}
-	return "", false // valBytes and anything unrecognized
+	return "", false // valBytes and unrecognized
 }

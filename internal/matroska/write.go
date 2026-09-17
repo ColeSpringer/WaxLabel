@@ -18,29 +18,17 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// multiTitleDroppedReason is the message for a multi-value TITLE that Matroska stores
-// only the first of. The write warning ([Codec.Plan]) and the transfer classifier
-// ([TransferClassifier]) both use it, so the copy report and the write-time warning cannot
-// drift after a future edit.
+// multiTitleDroppedReason: shared by [Codec.Plan] warning and [TransferClassifier].
 const multiTitleDroppedReason = "Matroska stores only the first TITLE value; additional values were dropped"
 
-// technicalNameReason is shared by the plan warning and the transfer classifier so
-// the write warning and the copy report cannot drift.
+// technicalNameReason: shared by plan warning and transfer classifier.
 func technicalNameReason(name string) string {
 	return name + " is a reserved Matroska technical/statistics tag name (derived from the stream, never read back as a tag), so the value is not written"
 }
 
-// TransferClassifier grades the two field-level cases the format-level capability cannot
-// express. A multi-value TITLE: Matroska homes the canonical Title in the single-valued
-// Info.Title element, so only the first value survives - a cardinality loss the per-value
-// predicates cannot see. It reports Lossy, not Dropped: the first value is still written,
-// so the value is present but reduced, and the write-time warning still fires. It reuses
-// multiTitleDroppedReason so the report and that warning stay in step. A reserved Matroska
-// technical/statistics name (DURATION, BPS, a NUMBER_OF_* stat, or any _STATISTICS-prefixed
-// name): it reports Dropped, reusing technicalNameReason so the report and the write-time
-// warning stay in step there too. Every other field is left to the format-level grade. It
-// is a plain [core.FieldClassifier] (registered by value, not called), so it captures
-// nothing and allocates no closure.
+// TransferClassifier: multi-value TITLE => Lossy (Info.Title is single-valued;
+// first kept); reserved technical/statistics names => Dropped. Reuses shared
+// reason consts. Plain [core.FieldClassifier]; other fields use format grade.
 func TransferClassifier(key tag.Key, values []string, _ tag.TagSet) (core.Disposition, string, bool) {
 	if key == tag.Title && len(values) > 1 {
 		return core.Lossy, multiTitleDroppedReason, true
@@ -51,20 +39,9 @@ func TransferClassifier(key tag.Key, values []string, _ tag.TagSet) (core.Dispos
 	return core.Carried, "", false
 }
 
-// Plan computes the byte-level rewrite that turns the original Matroska/WebM into
-// the edited media. It is preservation-first, mirroring the WAV/MP4 pattern: the
-// cluster media is copied byte-for-byte and only the affected Segment children
-// (Tags, Info.Title, Attachments) are re-rendered.
-//
-// The size change is typically absorbed into a reserved Void element so the clusters
-// do not move - keeping every Cues/SeekHead position valid - which is the layout
-// mkvmerge and ffmpeg both write (SeekHead, Void, ..., Clusters). Only the SeekHead
-// entries for the header elements that shift within the rebuilt header are patched,
-// in place at their original width, and the affected CRC-32s recomputed. Two cases
-// force the tail to move instead (see planShift): the file has no usable Void, or a
-// shift pushes an indexed SeekPosition across a VINT-width boundary so it no longer
-// fits its original-width slot (patchSeekAbsorb fails). Seek targets and CRC-32s stay
-// correct in every case, and the cluster media is always copied byte-for-byte.
+// Plan: preservation-first rewrite. Clusters copied byte-for-byte; only Tags,
+// Info.Title, Attachments (and chapters) re-rendered. Prefer absorb into Void so
+// clusters stay put; else planShift. Seek targets and CRCs stay correct either way.
 func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.WriteOptions) (*core.WritePlan, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -80,15 +57,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	ch := detectChanges(base, edited)
 	report := core.WriteReport{Format: core.FormatMatroska, BytesBefore: edited.Identity.Size}
 
-	// Matroska cover art is cover.<ext> holding an image, or WaxLabel's unsniffable octet-stream
-	// --force cover. A picture with any other MIME (an authored text/plain or application/pdf) is
-	// not cover art: the reprojection would drop it, so change detection would collapse the edit to
-	// a silent no-op below and the bytes would vanish. Refuse it instead, checked before the
-	// no-op gate since a dropped picture leaves nothing for that gate to see. Every editor path
-	// runs the authoritative sniff, which settles an added picture's MIME at image/* or
-	// octet-stream, so this is a backstop rather than a live path; a foreign
-	// non-image attachment merely NAMED cover.* is not a projected picture (isCoverAttachment gates
-	// on octet-stream), so it is preserved verbatim and never reaches edited.Pictures.
+	// Cover is cover.<ext> or --force octet-stream. Other MIMEs refused before no-op
+	// (reprojection would drop them to a silent no-op). Editor sniff settles image/*
+	// or octet-stream; foreign non-image named cover.* stays as attachment.
 	for _, p := range edited.Pictures {
 		if !isCoverAttachment(p.MIME, coverFileName(p)) {
 			return nil, fmt.Errorf("%w: a %q picture cannot be stored as Matroska cover art (only an image, or an unsniffable --force cover, is supported)",
@@ -100,41 +71,24 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
-	// The edit's per-tag outcome, computed once and threaded into the preservation
-	// check, the covered-set pass, and every group render: a changed key must reach
-	// (and be dropped from) every scope that held it, not just album scope.
+	// Per-tag outcomes for preservation, covered-set, and group render (cross-scope).
 	ed := computeEditDecisions(d.groups, albumGroupIndex(d.groups), base.Tags, edited.Tags)
 
-	// A title edit normally rewrites only Info.Title (ch.title). But a TITLE
-	// SimpleTag carried at any Tag scope also projects into the canonical Title, so
-	// the cross-scope removal contract requires dropping it too - and that drop only
-	// happens on the Tags re-render path (renderTags). Force ch.simple so a
-	// title-only edit still reaches a stale scoped TITLE, the way every other key
-	// does; otherwise the projection would read two titles after the edit.
+	// TITLE SimpleTag also projects to Title: force ch.simple so title-only edits
+	// drop stale scoped TITLE via renderTags (else two titles after edit).
 	if ch.title && !ch.simple && hasManagedTitleTag(d.groups) {
 		ch.simple = true
 	}
 
-	// A source can carry its canonical title only in a scoped TITLE SimpleTag, with no
-	// Segment Info title. Info present: renderTags drops the managed TITLE because
-	// Info.Title is the canonical home, so force a title render here to migrate the
-	// scoped-only title there instead of letting it disappear on an unrelated tag edit.
-	// Info absent: there is nowhere to migrate it, so buildAlbumGroup/checkPreservable
-	// preserve the SimpleTag verbatim (or refuse if its bytes are uncapturable) - see
-	// those functions' infoPresent / d.wb.info branch.
+	// Scoped-only TITLE (no Info.Title): force title render to migrate when Info
+	// present; else buildAlbumGroup/checkPreservable keep or refuse the SimpleTag.
 	if ch.simple && !ch.title && !d.hasSegTitle && d.wb.info != nil {
 		if _, ok := edited.Tags.First(tag.Title); ok {
 			ch.title = true
 		}
 	}
 
-	// WebM does not include the Attachments element in its subset, so refuse to
-	// write cover art into a webm file rather than emit something strict WebM
-	// validators reject. Plain tag/Title writes to .webm remain fine. This Plan-level
-	// refusal is the backstop for a direct Editor.AddPicture; the transfer path is
-	// gated earlier by Capabilities (matroska.go reports pictures.Write=AccessNone
-	// for a WebM file, so copy/PlanTransfer drops the cover). Both key on isWebM and
-	// must stay in sync.
+	// WebM: refuse cover write (Plan backstop; Capabilities gates transfer). Keep isWebM in sync.
 	if ch.pictures && isWebM(d.docType) {
 		return nil, fmt.Errorf("%w: cover art cannot be written to %s WebM file (Attachments is not in the WebM subset)",
 			waxerr.ErrUnsupportedTag, core.IndefiniteArticle("WebM"))
@@ -147,10 +101,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 			waxerr.ErrUnsupportedTag)
 	}
 
-	// A SeekHead/Cues whose structure could not be captured (e.g. an over-limit
-	// declared size) cannot be repositioned, and copying it verbatim while other
-	// elements move would leave its offsets pointing at the wrong bytes - refuse
-	// rather than silently corrupt the index.
+	// Uncapturable SeekHead/Cues: refuse rather than corrupt indexes on move.
 	if err := checkIndexCaptured(d.wb); err != nil {
 		return nil, err
 	}
@@ -161,12 +112,8 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		return nil, err
 	}
 
-	// An edit that changes the value of an album-scope SimpleTag carrying structure the
-	// flat canonical model cannot hold (a secondary TagLanguage, a TagBinary value, or
-	// nested sub-tags) re-emits that value flat and drops the structure. The unchanged-tag
-	// case is preserved verbatim by buildAlbumGroup, so this fires only when the key was
-	// edited and the old bytes cannot be kept. Emit it as a keyed plan-time warning here,
-	// before planAbsorb, so an absorb-then-shift retry cannot render it twice.
+	// Edited album SimpleTag with uncapturable structure: WarnTagStructureDropped
+	// before planAbsorb (avoid double warn on absorb-then-shift).
 	if ch.simple {
 		if keys := tagStructureDropped(d, ed); len(keys) > 0 {
 			report.Warnings = core.WarnKeyed(report.Warnings, core.WarnTagStructureDropped,
@@ -174,11 +121,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		}
 	}
 
-	// An edit that supplies a reserved Matroska technical/statistics name (DURATION, BPS, a
-	// NUMBER_OF_* stat, or any _STATISTICS-prefixed name) is never emitted: those names are
-	// derived from the stream, not descriptive metadata, and the read filter never projects
-	// them back as a tag. base.Tags can never hold such a key (the read filter guarantees it),
-	// so its presence in edited.Tags means this edit or transfer supplied it - warn once per key.
+	// Reserved technical names never emitted; warn once per key if edit supplied them.
 	if ch.simple {
 		for _, k := range edited.Tags.Keys() {
 			if k == tag.Title {
@@ -190,17 +133,8 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		}
 	}
 
-	// Matroska homes the canonical Title in the single-valued Segment.Info.Title element, so
-	// only the first TITLE value survives a write (renderChanged pulls it with .First); every
-	// other canonical key keeps its full value list via the per-value SimpleTag loop. When an
-	// edit leaves more than one TITLE value, the extras are dropped at render - surface that as
-	// a keyed, --strict-visible WarnValueDropped (the same code MP4 uses for a trkn the atom
-	// cannot hold). The reason is a shared const the transfer classifier also uses, so the
-	// write warning and the copy report cannot drift. Gate on ch.title (Title is split out from
-	// ch.simple in detectChanges), and place it here, before the planAbsorb/planShift split, so
-	// an absorb-then-shift retry cannot render it twice. Storage stays first-value-only; this
-	// only closes the honesty gap, and is complementary to the set-time single-valued-multi lint
-	// (which flags the input, not the drop).
+	// Multi TITLE: only first survives Info.Title; WarnValueDropped before absorb/shift
+	// (shared reason with TransferClassifier).
 	if ch.title {
 		if vals, _ := edited.Tags.Get(tag.Title); len(vals) > 1 {
 			report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueDropped,
@@ -208,29 +142,18 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		}
 	}
 
-	// Re-rendering a default edition that carried nested sub-chapters or
-	// secondary-language titles drops that structure (the flat chapter model cannot
-	// hold it). Surface it as a plan-time warning rather than flattening silently -
-	// the established precedent for a lossy chapter write. A full clear is a removal,
-	// not a flatten, so it does not warn.
+	// Flattening nested/secondary chapter structure: plan-time warning (not on full clear).
 	if ch.chapters && len(edited.Chapters) > 0 && d.chapters != nil && d.chapters.defLossy {
 		report.Warnings = core.Warn(report.Warnings, core.WarnChaptersFlattened,
 			"chapter edit dropped the default edition's nested sub-chapters or secondary-language titles")
 	}
 
-	// Matroska stores cover art as cover.<ext>/small_cover.<ext>, so only the front
-	// cover's role round-trips. Other roles read back as Other, while the description is
-	// preserved. Surface that role-only loss as a plan-time warning; WebM picture writes
-	// were already refused above.
+	// Non-front cover role: plan-time role-loss warning.
 	if ch.pictures && core.PicturesLoseMetadata(edited.Pictures, core.PictureLossRoleOnly) {
 		report.Warnings = core.Warn(report.Warnings, core.WarnPictureMetadataDropped,
 			"Matroska preserves only the front cover's role; other picture roles read back as Other")
 	}
-	// A non-image cover embedded under --force no longer needs an honesty warning: it is stored
-	// under the cover-art file name and reads back as an Unrecognized() picture (removable, and
-	// rebuilt not accumulated on re-add), so the reported "+ pictures" is accurate. It stays
-	// flagged as an invalid picture on read/lint, which is the correct place for the "not a
-	// recognized image" signal.
+	// --force non-image cover: no honesty warning (reads as Unrecognized; lint flags).
 
 	pl, err := planAbsorb(d, base, edited, ch, ed, report)
 	if err != nil {
@@ -241,15 +164,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 			return nil, err
 		}
 	}
-	// Collapse to a clean no-op when the rendered result re-projects to base: an
-	// edit of only reserved technical names, or one whose every value survives at
-	// its existing scope. A title-touching edit is never downgraded (ch.title as
-	// the structural veto): Info.Title stores a single value, so a multi-value
-	// title set must stay a real, warned write even though the projection folds
-	// back to base, and a scoped-title migration must still land in Info.Title.
-	// The picture/chapter/synced-lyrics sets are compared inside DowngradeNoOp,
-	// and Matroska has no padding, legacy container, or vendor-stamp write that
-	// could force bytes without a metadata delta.
+	// Collapse to a clean no-op when the rendered result re-projects to base: an edit of
+	// only reserved technical names, or one whose every value survives at its existing
+	// scope.
 	if np := core.DowngradeNoOp(core.FormatMatroska, edited.Identity.Size, base, pl.Result,
 		base.Tags.Equal(pl.Result.Tags), ch.title, pl.Report.Warnings); np != nil {
 		return np, nil
@@ -285,10 +202,9 @@ func detectChanges(base, edited *core.Media) changes {
 		simple: !b.Equal(e),
 		title:  !slices.Equal(bt, et),
 		// Compare base against the reprojected edited set (roles reduced to the cover-art
-		// file-name convention, description sanitized, MIME re-sniffed), not the raw edited roles:
-		// a role Matroska cannot represent would otherwise look like a change on every copy even
-		// though the on-disk cover set is already identical. A --force non-image now reprojects
-		// too, so re-adding an identical one is a no-op instead of accumulating a fresh cover_<n>.
+		// file-name convention, description sanitized, MIME re-sniffed), not the raw edited
+		// roles: a role Matroska cannot represent would otherwise look like a change on every
+		// copy even though the on-disk cover set is already identical.
 		pictures: !core.EqualPictures(base.Pictures, reprojectPictures(edited.Pictures)),
 		chapters: !core.EqualChapters(base.Chapters, edited.Chapters),
 	}
@@ -298,11 +214,10 @@ func detectChanges(base, edited *core.Media) changes {
 // case-insensitive comparison the reader uses for the container label.
 func isWebM(docType string) bool { return strings.EqualFold(docType, "webm") }
 
-// checkIndexCaptured refuses the edit when a SeekHead/Cues element cannot be
-// safely rewritten: more than one is present (a linked index - only the last is
-// captured, so the others would be copied with stale offsets), or its single
-// instance was not captured at parse (a read failure or over-limit declared size).
-// Copying such an element verbatim while other elements shift corrupts its offsets.
+// checkIndexCaptured refuses the edit when a SeekHead/Cues element cannot be safely
+// rewritten: more than one is present (a linked index - only the last is captured, so
+// the others would be copied with stale offsets), or its single instance was not
+// captured at parse (a read failure or over-limit declared size).
 func checkIndexCaptured(wb *writeBase) error {
 	seeks, cues := 0, 0
 	for _, c := range wb.children {
@@ -324,12 +239,9 @@ func checkIndexCaptured(wb *writeBase) error {
 	return nil
 }
 
-// checkSegmentCRCCaptured refuses an edit when a Segment-level CRC-32 is present but its bytes
-// could not be captured for neutralization (an over-limit declared size left segVoidFromCRC nil).
-// Copying such a CRC verbatim over an edited body would leave a stale, invalid checksum, so this
-// fails loudly rather than emit it - the same contract checkIndexCaptured applies to the index
-// elements. The Segment CRC is the only CRC-32 that appears directly in wb.children (the rest live
-// inside their masters' captured raw bytes), so scanning for idCRC32 here is unambiguous.
+// checkSegmentCRCCaptured refuses an edit when a Segment-level CRC-32 is present but
+// its bytes could not be captured for neutralization (an over-limit declared size left
+// segVoidFromCRC nil).
 func checkSegmentCRCCaptured(wb *writeBase) error {
 	if wb.segVoidFromCRC != nil {
 		return nil // captured and neutralizable to a Void
@@ -343,11 +255,9 @@ func checkSegmentCRCCaptured(wb *writeBase) error {
 	return nil
 }
 
-// checkPreservable refuses the edit when an element the writer must copy verbatim
-// could not be captured (its bytes exceeded the alloc limit, so captureRaw
-// returned nil) - dropping it would silently lose data. It covers the groups and
-// non-canonical SimpleTags a tag edit preserves and the non-image attachments a
-// cover edit preserves.
+// checkPreservable refuses the edit when an element the writer must copy verbatim could
+// not be captured (its bytes exceeded the alloc limit, so captureRaw returned nil) -
+// dropping it would silently lose data.
 func checkPreservable(d *doc, ch changes, ed *editDecisions) error {
 	tooBig := func(what string) error {
 		return fmt.Errorf("%w: a Matroska %s is too large to rewrite within the alloc limit", waxerr.ErrUnsupportedTag, what)
@@ -355,10 +265,9 @@ func checkPreservable(d *doc, ch changes, ed *editDecisions) error {
 	if ch.simple {
 		for i, g := range d.groups {
 			if i == ed.albumIdx {
-				// Synced in place: every SimpleTag the edit keeps verbatim - a non-canonical
-				// tag, OR a managed tag whose canonical key was not edited (preserved with its
-				// language/binary/nested structure) - needs its captured bytes. A tag the edit
-				// drops is re-emitted flat from the canonical set and needs no raw.
+				// Synced in place: every SimpleTag the edit keeps verbatim - a non-canonical tag,
+				// OR a managed tag whose canonical key was not edited (preserved with its
+				// language/binary/nested structure) - needs its captured bytes.
 				for ti, st := range g.tags {
 					if ed.dropped(i, ti) || migratesToInfo(st, d.wb.info != nil) {
 						continue // re-emitted from the canonical set, or migrated to Info.Title: no raw needed
@@ -381,12 +290,9 @@ func checkPreservable(d *doc, ch changes, ed *editDecisions) error {
 					return tooBig("tag group")
 				}
 			}
-			// Re-rendered to drop its edited keys: every surviving SimpleTag needs
-			// its bytes, and a scope-narrowing group needs its Targets bytes too
-			// (else the rebuild would silently lose the narrowing). A target-less
-			// group needs neither - it carries only the kept SimpleTags. An
-			// untouched group whose whole-element bytes were not captured takes
-			// this path too: it is rebuilt from its captured parts.
+			// Re-rendered to drop its edited keys: every surviving SimpleTag needs its bytes,
+			// and a scope-narrowing group needs its Targets bytes too (else the rebuild would
+			// silently lose the narrowing).
 			kept := 0
 			for ti, st := range g.tags {
 				if ed.dropped(i, ti) {
@@ -429,16 +335,8 @@ var errFallback = fmt.Errorf("matroska: absorption not applicable")
 
 func isFallback(err error) bool { return errors.Is(err, errFallback) }
 
-// renderTags builds the new Tags element bytes from the edited canonical set,
-// returning nil when the result would be empty (so the Tags element is dropped).
-// It also returns the new group list for the result document. Non-canonical
-// SimpleTags (custom, technical, binary, nested) are preserved verbatim from their
-// captured raw bytes; canonical keys are synced into the album-scope group, written
-// under their Matroska-spec names. A non-album group is preserved verbatim unless one
-// of its SimpleTags is dropped by the edit's per-tag decision, in which case it is
-// re-rendered without that tag; a still-wanted value stays at the scope that holds
-// it, and only a dropped value's replacement re-emits at album scope. Title is
-// excluded - it lives in Info.Title.
+// renderTags builds the new Tags element bytes from the edited canonical set, returning
+// nil when the result would be empty (so the Tags element is dropped).
 func renderTags(d *doc, base, edited tag.TagSet, ed *editDecisions) (raw []byte, groups []tagGroup) {
 	covered, albumOwn, others := coveredByOtherScopes(d.groups, ed)
 	// A managed TITLE migrates to Info.Title only when an Info element exists; with
@@ -473,39 +371,9 @@ func renderTags(d *doc, base, edited tag.TagSet, ed *editDecisions) (raw []byte,
 }
 
 // coveredByOtherScopes returns, per canonical key, the projected values a non-album
-// group will still carry after the edit, so the album-group sync can leave an
-// unchanged value at its own scope instead of re-emitting it at album scope (which
-// would duplicate it on every save and risk a spurious cross-scope conflict). The
-// values are projected through projectTag - not a bare MatroskaTagKey lookup - so a
-// slash number (PART_NUMBER=3/12, which projects to TrackNumber=3 AND TrackTotal=12)
-// contributes to both canonical keys; a key-only set would miss the second and
-// duplicate it at album scope. Carrying the values (not just the keys) lets the sync
-// subtract exactly what a narrower scope preserves, so a key split across scopes with
-// different values (ENCODER album=Lavf + track=Lavc) keeps its album-only part.
-//
-// A SimpleTag the edit will drop (ed.dropped) carries nothing forward, so it is
-// excluded - otherwise its projected values would be subtracted from the album sync as
-// if still preserved, and a slash number whose component was edited would lose its
-// unedited half (it is dropped from the track group yet skipped at album scope). The
-// covered set must reflect post-edit survivors, using the same drop predicate as the
-// renderer, so the two cannot disagree on what a scope keeps.
-//
-// A narrower-scope value that only echoes an album value is not counted as covered.
-// projectFlat emits album values verbatim and suppresses the narrower echo, so the
-// album scope owns that canonical multiplicity. Subtracting the echo would collapse
-// album duplicates during an unrelated edit.
-//
-// A second group at album scope is different. The reader treats it as part of the
-// primary album emit, so its values are covered and subtractFold removes only the
-// matching number of album values. That keeps same-scope duplicates stable across
-// repeated edits instead of growing or shrinking them.
-// It also returns albumOwn: the album group's own surviving values as ordered lists, computed
-// from the same projection pass that builds albumFolds. buildAlbumGroup subtracts these from
-// its canonical re-emit so a value it preserves verbatim is not also emitted flat - returning
-// them here means that pass runs once, not a second time inside buildAlbumGroup.
-// The third result, others, is every surviving non-album-group contribution with its
-// scope, unfiltered: buildAlbumGroup's re-read simulation needs the full set, echoes
-// included, to predict what an emit projects back to.
+// group will still carry after the edit, so the album-group sync can leave an unchanged
+// value at its own scope instead of re-emitting it at album scope (which would
+// duplicate it on every save and risk a spurious cross-scope conflict).
 func coveredByOtherScopes(groups []tagGroup, ed *editDecisions) (covered, albumOwn map[tag.Key][]string, others map[tag.Key][]scopedContribution) {
 	// Per key, the case-folded values the album scope itself keeps after the edit, plus the
 	// same values as ordered lists (albumOwn) for buildAlbumGroup's subtraction.
@@ -551,10 +419,8 @@ func forEachSurvivingContribution(g tagGroup, gi int, ed *editDecisions, fn func
 		if ed.dropped(gi, ti) || !st.hasValue {
 			continue
 		}
-		// Sanitize the raw SimpleTag value to match the canonical TagSet (parse.go
-		// projects through core.SanitizeUTF8). Without this, an invalid-UTF-8 value
-		// never folds against the sanitized canonical value, so it is never subtracted
-		// and gets re-emitted - growing by one copy on every unrelated edit.
+		// Sanitize the raw SimpleTag value to match the canonical TagSet (parse.go projects
+		// through core.SanitizeUTF8).
 		for _, c := range projectTag(st.name, core.SanitizeUTF8(st.value), g.scope) {
 			fn(c)
 		}
@@ -562,9 +428,8 @@ func forEachSurvivingContribution(g tagGroup, gi int, ed *editDecisions, fn func
 }
 
 // renderGroup re-renders one Tag group. The album group is synced to the edited
-// canonical set; a non-album group is preserved verbatim or, when it carries an
-// edited key, re-rendered to drop that key. keep is false when the group becomes
-// empty.
+// canonical set; a non-album group is preserved verbatim or, when it carries an edited
+// key, re-rendered to drop that key.
 func renderGroup(g tagGroup, gi int, base, edited tag.TagSet, covered, albumOwn map[tag.Key][]string, others map[tag.Key][]scopedContribution, ed *editDecisions, isAlbum, infoPresent bool) (out tagGroup, raw []byte, keep bool) {
 	if !isAlbum {
 		return renderNonAlbumGroup(g, gi, ed)
@@ -576,16 +441,7 @@ func renderGroup(g tagGroup, gi int, base, edited tag.TagSet, covered, albumOwn 
 	return ng, gb, true
 }
 
-// renderNonAlbumGroup renders a track/edition/chapter/part-scoped group. When none
-// of its SimpleTags is dropped by the edit's per-tag decision, it is preserved
-// verbatim from its captured bytes (the fast path, keeping any UID, nested, or
-// binary tags - even a tag holding an edited canonical key, when its value is still
-// wanted at this scope). When at least one tag is dropped, the group is rebuilt from
-// the captured Targets plus the surviving SimpleTags - omitting each dropped tag,
-// whose value re-emits at album scope only if it is not kept in place at another
-// scope - with the CRC recomputed when the source group had one. The group is
-// dropped when nothing survives. checkPreservable has already guaranteed every kept
-// SimpleTag's raw (and the Targets when the group narrows scope) was captured.
+// renderNonAlbumGroup renders a track/edition/chapter/part-scoped group.
 func renderNonAlbumGroup(g tagGroup, gi int, ed *editDecisions) (out tagGroup, raw []byte, keep bool) {
 	if !groupTouchedBy(len(g.tags), gi, ed) && g.raw != nil {
 		return g, g.raw, true // preserve verbatim
@@ -611,19 +467,17 @@ func renderNonAlbumGroup(g tagGroup, gi int, ed *editDecisions) (out tagGroup, r
 	}
 	content = append(content, simple...)
 	rendered := masterElement(idTag, content, g.hasCRC)
-	// Carry the freshly rendered bytes (not the stale input raw, which still holds
-	// the dropped SimpleTags) so the returned document's group equals a fresh parse
-	// of the output - a re-edit of that document then preserves this group verbatim
-	// correctly instead of re-emitting the dropped key or dropping the group.
+	// Carry the freshly rendered bytes (not the stale input raw, which still holds the
+	// dropped SimpleTags) so the returned document's group equals a fresh parse of the
+	// output - a re-edit of that document then preserves this group verbatim correctly
+	// instead of re-emitting the dropped key or dropping the group.
 	out.raw = rendered
 	return out, rendered, true
 }
 
 // editDecisions carries the value-level outcome of one tag edit across the render
-// helpers: which parsed SimpleTags the edit drops, and per changed key the values
-// the album-scope sync must emit. One computation feeds the preservation check,
-// the covered-set pass, and both group renderers, so they cannot disagree on what
-// survives.
+// helpers: which parsed SimpleTags the edit drops, and per changed key the values the
+// album-scope sync must emit.
 type editDecisions struct {
 	ek        map[tag.Key]bool     // keys whose value lists changed (tag.Diff)
 	albumIdx  int                  // index of the group buildAlbumGroup syncs into, -1 if none
@@ -635,10 +489,9 @@ func (ed *editDecisions) dropped(gi, ti int) bool { return ed.drop[[2]int{gi, ti
 func (ed *editDecisions) edited(k tag.Key) bool   { return ed.ek[k] }
 
 // contribDecision is the fate of one canonical contribution a parsed SimpleTag
-// projects: whether the value survives at the scope that already holds it, and
-// whether keeping it claimed one of the edited values (so the album-scope re-emit
-// must not write that value a second time). echo marks a contribution the reader
-// suppresses as a cross-scope echo, decided after the album values are known.
+// projects: whether the value survives at the scope that already holds it, and whether
+// keeping it claimed one of the edited values (so the album-scope re-emit must not
+// write that value a second time).
 type contribDecision struct {
 	key       tag.Key
 	owner     [2]int // {group index, tag index} of the SimpleTag it came from
@@ -650,20 +503,7 @@ type contribDecision struct {
 }
 
 // computeEditDecisions resolves one edit against the parsed groups, once per write:
-// which SimpleTags drop, and per changed key the values the album-scope sync must
-// emit. The rule it implements is the capability constraint in matroska.go: a
-// still-wanted value stays at the scope that holds it, removed values drop from
-// every scope, and new values write at album scope.
-//
-// Contributions are classified through the same projectionOrder the reader uses, so
-// the write side cannot drift from what a re-read will see. Emitted contributions
-// resolve first (album-owned and boolean values always re-emit flat; a narrower one
-// is kept only for an exact, fold-unique match), suppressed echoes second, once the
-// album values are known. A SimpleTag drops when ANY of its contributions drops: a
-// slash number projects two keys, so editing the total away kills the tag even when
-// the number half matched, releasing the claimed half back to the album re-emit. A
-// tag that projects nothing under an edited key is preserved verbatim, and Title
-// stays key-level: it is homed in the single-valued Info.Title.
+// which SimpleTags drop, and per changed key the values the album-scope sync must emit.
 func computeEditDecisions(groups []tagGroup, albumIdx int, base, edited tag.TagSet) *editDecisions {
 	ed := &editDecisions{
 		ek:        editedKeySet(base, edited),
@@ -722,18 +562,14 @@ func computeEditDecisions(groups []tagGroup, albumIdx int, base, edited tag.TagS
 		for _, e := range projectionOrder(k, contribs[k]) {
 			d := contribDecision{key: k, owner: owners[k][e.index], value: contribs[k][e.index].value}
 			if !e.emitted {
-				// An echo does not kill its tag until the album values are known. A
-				// boolean echo never survives: the album emit is canonicalized to
-				// "1"/"0", so a differently spelled scoped copy would stop folding
-				// with it and re-read as a second value on a single-valued key.
+				// An echo does not kill its tag until the album values are known.
 				d.echo, d.kept = true, !boolean
 				ds = append(ds, d)
 				continue
 			}
-			// Album-scope copies would permute the re-emitted list, boolean copies
-			// would dodge the "1"/"0" canonicalization, and a fold-duplicated value
-			// kept in place would let the reader's echo suppression halve its
-			// multiplicity - none of those may claim.
+			// Album-scope copies would permute the re-emitted list, boolean copies would dodge
+			// the "1"/"0" canonicalization, and a fold-duplicated value kept in place would let
+			// the reader's echo suppression halve its multiplicity - none of those may claim.
 			d.claimable = groups[d.owner[0]].scope != core.ScopeAlbum && !boolean &&
 				folds[k][core.Fold(d.value)] == 1
 			ds = append(ds, d)
@@ -741,12 +577,11 @@ func computeEditDecisions(groups []tagGroup, albumIdx int, base, edited tag.TagS
 	}
 
 	// A tag with a contribution that can never be claimed is doomed outright; the
-	// remaining claims are then handed out in emission order among the surviving
-	// tags, one round per newly doomed tag: a denial dooms the loser's tag (any
-	// dropped contribution kills the whole SimpleTag), which releases its own
-	// claims for the next round, so a value freed by a dying tag is re-offered to
-	// a denied twin instead of being relocated to album scope. Dooming is
-	// monotone, so the loop terminates.
+	// remaining claims are then handed out in emission order among the surviving tags, one
+	// round per newly doomed tag: a denial dooms the loser's tag (any dropped contribution
+	// kills the whole SimpleTag), which releases its own claims for the next round, so a
+	// value freed by a dying tag is re-offered to a denied twin instead of being relocated
+	// to album scope.
 	doomed := map[[2]int]bool{}
 	for _, d := range ds {
 		if !d.echo && (!d.claimable || exact[d.key][d.value] == 0) {
@@ -788,10 +623,10 @@ func computeEditDecisions(groups []tagGroup, albumIdx int, base, edited tag.TagS
 	}
 	ed.setAlbumVals(edited, ds)
 
-	// Echoes are judged once the album values are known: one survives while its
-	// fold stays suppressed on re-read, covered by the album emit or by a value
-	// kept in place at a position that projects before it (ds follows
-	// projectionOrder per key, so a walk in order sees exactly the earlier folds).
+	// Echoes are judged once the album values are known: one survives while its fold stays
+	// suppressed on re-read, covered by the album emit or by a value kept in place at a
+	// position that projects before it (ds follows projectionOrder per key, so a walk in
+	// order sees exactly the earlier folds).
 	keptFolds := map[tag.Key]map[string]bool{}
 	noteKept := func(d *contribDecision) {
 		if d.claimed {
@@ -812,10 +647,8 @@ func computeEditDecisions(groups []tagGroup, albumIdx int, base, edited tag.TagS
 		}
 	}
 
-	// A dropped echo kills its tag, releasing any values that tag had claimed into
-	// the album re-emit. That can only grow albumVals, so a final pass re-judges
-	// the tags that project nothing but echoes: they hold no claims, so restoring
-	// one cannot disturb the values already settled, only preserve more.
+	// A dropped echo kills its tag, releasing any values that tag had claimed into the
+	// album re-emit.
 	releaseDoomedClaims(ds)
 	ed.setAlbumVals(edited, ds)
 	hasEmitted := map[[2]int]bool{}
@@ -903,9 +736,6 @@ func foldCovered(vals []string, value string) bool {
 }
 
 // meaningfulLang reports whether an EBML language string names a real language, i.e.
-// it is neither absent nor the "und" (undetermined) default. Matroska's TagLanguage and
-// ChapLanguage both default to "und", so an "und" value carries no information a flat
-// re-emit (which omits the element and reads back as "und") would lose.
 func meaningfulLang(lang string) bool {
 	return lang != "" && !strings.EqualFold(lang, "und")
 }
@@ -913,12 +743,7 @@ func meaningfulLang(lang string) bool {
 // tagStructureDropped returns the canonical keys whose album-scope SimpleTag carried
 // structure the flat canonical model cannot hold - a TagLanguage, a TagBinary value, or
 // nested sub-tags - that this edit drops because the key's value changed (ed.dropped),
-// re-emitting it flat at album scope. An unchanged structured tag is preserved verbatim
-// (by buildAlbumGroup at album scope, or renderNonAlbumGroup's verbatim carry elsewhere) and
-// is not reported. Every scope is scanned, not just album: a track/edition/chapter-scoped
-// structured tag whose key is edited is dropped and re-emitted flat at album scope too, the
-// same silent loss. Keys are de-duplicated in first-seen order so the warning names each
-// affected field once.
+// re-emitting it flat at album scope.
 func tagStructureDropped(d *doc, ed *editDecisions) []tag.Key {
 	var keys []tag.Key
 	seen := map[tag.Key]bool{}
@@ -927,10 +752,7 @@ func tagStructureDropped(d *doc, ed *editDecisions) []tag.Key {
 			if !ed.dropped(gi, ti) {
 				continue
 			}
-			// A plain string tag loses nothing on a flat re-emit. A TagLanguage of "und"
-			// (the EBML default mkvmerge writes on essentially every SimpleTag) is not a
-			// meaningful secondary language - re-emitting with no TagLanguage reads back as
-			// "und" too - so it does not count as lost structure and must not spuriously warn.
+			// A plain string tag loses nothing on a flat re-emit.
 			if !meaningfulLang(st.lang) && st.binary == 0 && len(st.sub) == 0 {
 				continue
 			}
@@ -945,22 +767,16 @@ func tagStructureDropped(d *doc, ed *editDecisions) []tag.Key {
 	return keys
 }
 
-// isManagedTitle reports whether a SimpleTag maps to the canonical Title, which is always
-// homed in Info.Title - so it is never kept as an album SimpleTag in the output. The album
-// re-emit already skips Title (k == tag.Title), and the preservation loop must skip it too:
-// otherwise a file whose title lives only in a SimpleTag, migrated to Info.Title on an
-// unrelated edit, would carry the title twice (Info.Title plus the stale SimpleTag).
+// isManagedTitle reports whether a SimpleTag maps to the canonical Title, which is
+// always homed in Info.Title - so it is never kept as an album SimpleTag in the output.
 func isManagedTitle(st simpleTag) bool {
 	k, ok := mapping.MatroskaTagKey(st.name)
 	return ok && k == tag.Title
 }
 
-// migratesToInfo reports whether a managed TITLE SimpleTag will migrate to Info.Title and
-// thus be dropped from the Tags element: it is a managed title AND an Info element exists
-// to receive it. With no Info, the SimpleTag is preserved verbatim instead. buildAlbumGroup
-// (which drops it) and checkPreservable (which then needs no captured raw for it) both
-// consult this one predicate, so the two gates cannot diverge and lose a title that only
-// one of them believed was migrating.
+// migratesToInfo reports whether a managed TITLE SimpleTag will migrate to Info.Title
+// and thus be dropped from the Tags element: it is a managed title AND an Info element
+// exists to receive it.
 func migratesToInfo(st simpleTag, infoPresent bool) bool {
 	return isManagedTitle(st) && infoPresent
 }
@@ -978,10 +794,7 @@ func groupTouchedBy(nTags, gi int, ed *editDecisions) bool {
 }
 
 // hasManagedTitleTag reports whether any Tag group carries a TITLE SimpleTag, which
-// projects into the canonical Title alongside Info.Title. Editing the title must
-// drop such a tag (the title is authoritative in Info.Title), but that drop only
-// happens on the Tags re-render path - so its presence promotes a title-only edit
-// to also re-render the Tags element.
+// projects into the canonical Title alongside Info.Title.
 func hasManagedTitleTag(groups []tagGroup) bool {
 	for _, g := range groups {
 		for _, st := range g.tags {
@@ -993,19 +806,14 @@ func hasManagedTitleTag(groups []tagGroup) bool {
 	return false
 }
 
-// narrowsScope reports whether the group's Targets restrict it below album scope
-// (a track/edition/chapter UID or any explicit target type/level). Such a group
-// must keep its captured Targets bytes through a re-render or it would silently
-// widen to the default album scope. A target-less group (the album group) is
-// handled separately and never reaches here.
+// narrowsScope reports whether the group's Targets restrict it below album scope (a
+// track/edition/chapter UID or any explicit target type/level).
 func narrowsScope(g tagGroup) bool {
 	return g.trackUID || g.editionUID || g.chapterUID || g.targetTypeValue != 0 || g.targetType != ""
 }
 
 // editedKeySet returns the canonical keys whose values differ between the base and
-// edited tag sets, via the shared tag.Diff primitive. computeEditDecisions consumes
-// this set to decide, per SimpleTag, whether its contribution stays at its own
-// scope or drops.
+// edited tag sets, via the shared tag.Diff primitive.
 func editedKeySet(base, edited tag.TagSet) map[tag.Key]bool {
 	ek := map[tag.Key]bool{}
 	for _, c := range tag.Diff(base, edited) {
@@ -1014,36 +822,19 @@ func editedKeySet(base, edited tag.TagSet) map[tag.Key]bool {
 	return ek
 }
 
-// buildAlbumGroup renders the album-scope group: the preserved Targets (carrying
-// any UID), the kept non-canonical SimpleTags verbatim, then the synced canonical
-// SimpleTags. group is the existing album group (nil when creating one). For an
-// unchanged key already carried verbatim by another scope, only the canonical values
-// that scope does not preserve are re-emitted here - so a value split across scopes
-// (ENCODER album=Lavf + track=Lavc) keeps its album-only part instead of being
-// dropped wholesale, while a fully covered key stays put (no duplication). A changed
-// key re-emits the values ed decided for album scope: a canonical edit defaults to
-// album scope and the other scopes drop it via renderNonAlbumGroup/ed.dropped.
-// albumOwn is the album group's own surviving projected values (from coveredByOtherScopes),
-// subtracted from the canonical re-emit so a value preserved verbatim - with its
-// language/binary/nested structure - is not also emitted flat.
+// buildAlbumGroup renders the album-scope group: the preserved Targets (carrying any
+// UID), the kept non-canonical SimpleTags verbatim, then the synced canonical
+// SimpleTags.
 func buildAlbumGroup(group *tagGroup, gi int, base, edited tag.TagSet, covered, albumOwn map[tag.Key][]string, others map[tag.Key][]scopedContribution, ed *editDecisions, infoPresent bool) (tagGroup, []byte) {
 	out := tagGroup{scope: core.ScopeAlbum}
 	var simple []byte
 	if group != nil {
 		out = *group
 		out.tags = nil
-		// Preserve every SimpleTag the edit does not drop, verbatim from its captured
-		// bytes - custom names, technical stats, binary, nested trees, AND managed tags
-		// whose canonical key was not edited (keeping the language, binary value, or
-		// secondary structure a flat re-emit would lose). A managed tag whose key WAS
-		// edited (ed.dropped) is dropped here; its new value is re-emitted flat at
-		// album scope below. checkPreservable has guaranteed each kept tag's raw.
-		//
-		// A managed TITLE is dropped here only when an Info element exists to migrate it
-		// to (Info.Title is its canonical home, and Plan forces a title render so it lands
-		// there). With no Info element there is nowhere to migrate it, so it is preserved
-		// verbatim like any other kept tag instead of being silently lost on an unrelated
-		// edit; the canonical re-emit below still skips Title, so it is not duplicated.
+		// Preserve every SimpleTag the edit does not drop, verbatim from its captured bytes -
+		// custom names, technical stats, binary, nested trees, AND managed tags whose
+		// canonical key was not edited (keeping the language, binary value, or secondary
+		// structure a flat re-emit would lose).
 		for ti, st := range group.tags {
 			if ed.dropped(gi, ti) || migratesToInfo(st, infoPresent) {
 				continue
@@ -1061,19 +852,15 @@ func buildAlbumGroup(group *tagGroup, gi int, base, edited tag.TagSet, covered, 
 		}
 		vals, _ := edited.Get(k)
 		if bv, _ := base.Get(k); slices.Equal(bv, vals) {
-			// Unchanged key carried verbatim elsewhere - by a narrower scope (covered) or
-			// by this album group's own preserved SimpleTags (albumOwn) - is re-emitted
-			// only for the canonical values not already preserved. A value split across
-			// scopes keeps its album-only part; a fully covered/preserved key is skipped.
-			// A changed key instead emits its album-scope decision, computed by ed: the
-			// values not kept in place at other scopes (see the else branch below).
+			// Unchanged key carried verbatim elsewhere - by a narrower scope (covered) or by
+			// this album group's own preserved SimpleTags (albumOwn) - is re-emitted only for
+			// the canonical values not already preserved.
 			if sub := slices.Concat(covered[k], albumOwn[k]); len(sub) > 0 {
 				emit := subtractFold(vals, sub)
 				if !reprojectsTo(k, vals, albumOwn[k], emit, others[k]) {
-					// A partially subtracted fold would leave the album emit
-					// suppressing the surviving narrower copies, shrinking the
-					// value's multiplicity on re-read: re-emit everything the album
-					// group itself does not preserve, and let the narrower copies
+					// A partially subtracted fold would leave the album emit suppressing the surviving
+					// narrower copies, shrinking the value's multiplicity on re-read: re-emit
+					// everything the album group itself does not preserve, and let the narrower copies
 					// ride along as suppressed echoes.
 					emit = subtractFold(vals, albumOwn[k])
 				}
@@ -1089,12 +876,8 @@ func buildAlbumGroup(group *tagGroup, gi int, base, edited tag.TagSet, covered, 
 			vals = slices.Clone(ed.albumVals[k])
 		}
 		if tag.IsBooleanKey(k) {
-			// Canonicalize a recognized boolean word to "1"/"0", matching the Vorbis, ID3,
-			// and MP4 writers so every format stores a boolean field identically. Applied
-			// after the unchanged-key comparison above, so a preserved verbatim value is
-			// untouched and only a fresh emit normalizes. vals is already a private slice
-			// (Get clones; subtractFold allocates; the changed-key branch clones
-			// albumVals), so rewriting in place is safe.
+			// Canonicalize a recognized boolean word to "1"/"0", matching the Vorbis, ID3, and
+			// MP4 writers so every format stores a boolean field identically.
 			for i, v := range vals {
 				vals[i] = tag.CanonicalBoolValue(v)
 			}
@@ -1104,31 +887,19 @@ func buildAlbumGroup(group *tagGroup, gi int, base, edited tag.TagSet, covered, 
 			continue // reserved technical name: never emitted, warned at plan time
 		}
 		for _, v := range vals {
-			// A present empty value from `set KEY=` is emitted as a zero-length SimpleTag,
-			// not skipped. Matroska preserves it like FLAC and Ogg; only the native
-			// WAV/AIFF INFO/text vocabularies drop such a value when no ID3 chunk is
-			// available to hold it. hasValue stays true so the result document projects it
-			// back into the canonical tag set.
+			// A present empty value from `set KEY=` is emitted as a zero-length SimpleTag, not
+			// skipped.
 			stb := simpleTagBytes(name, v)
 			simple = append(simple, stb...)
 			// Carry the freshly rendered bytes as this synthesized tag's raw, so the result
-			// document's album group equals a fresh parse of the output. A re-edit of that
-			// returned Document then preserves this tag verbatim (it is flat, so there is no
-			// structure to lose) instead of tripping checkPreservable's raw-availability gate,
-			// which exists to catch a parsed tag whose bytes were too big to capture - a case a
-			// synthesized tag must not be mistaken for. Mirrors renderNonAlbumGroup, which
-			// carries its re-rendered group bytes the same way.
+			// document's album group equals a fresh parse of the output.
 			out.tags = append(out.tags, simpleTag{name: name, value: v, hasValue: true, raw: stb})
 		}
 	}
 	if len(simple) == 0 {
 		return tagGroup{}, nil
 	}
-	// out already carries any existing Targets from group. A nil value means this
-	// is a newly created album group, which still needs the mandatory Targets
-	// child. An empty Targets element defaults to album scope (TargetTypeValue
-	// 50). Recording it on out keeps the returned doc consistent with a fresh
-	// parse of the rendered bytes.
+	// out already carries any existing Targets from group.
 	if out.targetsRaw == nil {
 		out.targetsRaw = encElement(idTargets, nil)
 	}
@@ -1141,15 +912,7 @@ func buildAlbumGroup(group *tagGroup, gi int, base, edited tag.TagSet, covered, 
 }
 
 // subtractFold removes covered values from vals by folded form, one occurrence at a
-// time, preserving survivor case and order. Per-occurrence subtraction is what keeps
-// duplicates stable: if the canonical carries a value twice and another scope covers it
-// once, only one copy is removed from the album sync.
-// reprojectsTo simulates a re-read of one key over a hypothetical album emit: the
-// album group's preserved copies plus the freshly emitted values, followed by the
-// surviving contributions at their own scopes, must project back to exactly the
-// base value list. It runs the reader's own projectionOrder so the check cannot
-// drift from the real read; order within the album scope mirrors the write
-// (preserved tags render before the canonical emit).
+// time, preserving survivor case and order.
 func reprojectsTo(key tag.Key, want, albumOwn, emit []string, others []scopedContribution) bool {
 	contribs := make([]scopedContribution, 0, len(albumOwn)+len(emit)+len(others))
 	for _, v := range albumOwn {
@@ -1212,11 +975,7 @@ func albumGroupIndex(groups []tagGroup) int {
 }
 
 // renderInfo splices the edited Title into the captured Info bytes (replacing,
-// inserting, or removing the Title child) and recomputes the CRC-32. It returns
-// the new Info element bytes and the new segment title. present is the Title key's
-// presence in the edited set, not "title != """: a present-but-empty title
-// (`set TITLE=`) writes a zero-length <Title> element, while an absent title
-// (`--clear TITLE`) removes it - the two must stay distinguishable on round-trip.
+// inserting, or removing the Title child) and recomputes the CRC-32.
 func renderInfo(ib *infoBlock, title string, present bool) (raw []byte, newTitle string) {
 	r := ib.raw
 	root, ok := readElement(core.BytesSource(r), 0, int64(len(r)), int64(len(r)))
@@ -1243,10 +1002,7 @@ func renderInfo(ib *infoBlock, title string, present bool) (raw []byte, newTitle
 	if ib.crc != nil {
 		// Recompute the CRC over the new content following the CRC element by reusing
 		// recomputeCRC (rather than a hardcoded content[0:6]): EBML permits an overlong CRC
-		// size VINT, so the 4 value bytes are not always at index 2. The captured offsets
-		// are element-relative (rewrite_read.go) and content excludes the element header, so
-		// rebase by headerLen. recomputeCRC rewrites only the 4 value bytes, leaving any
-		// overlong size VINT intact.
+		// size VINT, so the 4 value bytes are not always at index 2.
 		fixed := make([]byte, len(content))
 		copy(fixed, content)
 		recomputeCRC(fixed, &crcSpot{valOff: ib.crc.valOff - headerLen, contentStart: ib.crc.contentStart - headerLen})
@@ -1287,9 +1043,7 @@ func renderAttachments(d *doc, pics []core.Picture) (raw []byte, atts []attachme
 }
 
 // attachedFileBytes renders one AttachedFile from a picture under an already-unique
-// file name. The Matroska cover-art convention (cover.<ext>) lets a later parse
-// classify it; renderAttachments resolves names so same-role covers cannot share a
-// FileName. The mandatory FileUID is random, as the spec advises.
+// file name.
 func attachedFileBytes(p core.Picture, name string) ([]byte, attachment) {
 	payload := stringElement(idFileName, name)
 	payload = append(payload, stringElement(idFileMime, p.MIME)...)
@@ -1313,18 +1067,8 @@ func fileUID() uint64 { return randomUID() }
 // batch of created chapters or attachments cannot collide on one constant UID.
 var uidFallback atomic.Uint64
 
-// randomUID returns a random non-zero 64-bit UID, used for a created
-// AttachedFile's FileUID and a created ChapterAtom's ChapterUID. Both must be
-// non-zero and "as random as possible" per the spec, and - critically for the
-// several UIDs minted in one chapter write - must not repeat within a file (a
-// duplicate ChapterUID would make a chapter-scoped tag reference ambiguous). The
-// crypto/rand read effectively never fails; if it does, a monotonic time+counter
-// mix keeps successive UIDs distinct rather than collapsing to one constant.
-//
-// These UIDs are random per run, so Matroska writes that create or rebuild attachment
-// FileUIDs or ChapterUIDs are not byte-reproducible. The README documents that
-// limitation. The audio essence is still preserved; deterministic UIDs would need a
-// stable seed or content-derived scheme.
+// randomUID returns a random non-zero 64-bit UID, used for a created AttachedFile's
+// FileUID and a created ChapterAtom's ChapterUID.
 func randomUID() uint64 {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err == nil {
@@ -1355,11 +1099,9 @@ func coverFileStem(p core.Picture) string {
 	return "small_cover"
 }
 
-// uniqueAttachmentName resolves an AttachedFile name from its role stem and
-// extension, inserting a numeric suffix before the extension (cover.png,
-// cover_1.png, ...) until it does not collide with a name already used in this
-// Attachments element. Two same-role, same-MIME covers would otherwise both render
-// "cover.png". Built natively from the parts, so no path/filepath dependency.
+// uniqueAttachmentName resolves an AttachedFile name from its role stem and extension,
+// inserting a numeric suffix before the extension (cover.png, cover_1.png, ...) until
+// it does not collide with a name already used in this Attachments element.
 func uniqueAttachmentName(stem, ext string, used map[string]bool) string {
 	name := stem + ext
 	for i := 1; used[name]; i++ {
@@ -1368,10 +1110,7 @@ func uniqueAttachmentName(stem, ext string, used map[string]bool) string {
 	return name
 }
 
-// imageExt returns the conventional extension for a cover MIME. The mapping is the sniffer's,
-// so a cover keeps its own type in the attachment name; a MIME the sniffer does not produce
-// (WaxLabel's unsniffable --force cover) falls back to .jpg, since the Matroska cover-art
-// convention wants an extension and the FileMimeType carries the truth either way.
+// imageExt returns the conventional extension for a cover MIME.
 func imageExt(mime string) string {
 	if ext := bits.ImageExtension(mime); ext != "" {
 		return ext

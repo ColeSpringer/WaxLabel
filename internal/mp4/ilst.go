@@ -184,13 +184,7 @@ func decodePair(it item, numKey, totKey tag.Key) itemResult {
 	return itemResult{contribs: contribs, owned: true}
 }
 
-// decodeCover decodes covr image data atoms into pictures. The declared type code
-// seeds the MIME only when it is one of the three explicit image codes; an implicit
-// (0) or unknown type leaves it empty so the authoritative sniff decides. SniffAuthoritative
-// then lets the bytes win: a PNG stored under an implicit or a mislabeled JPEG code reads
-// as image/png (and the write-time checkCoverFormats guard sees a GIF/WebP as unsupported
-// rather than being fooled by a manufactured image/jpeg), while an unrecognizable cover
-// reads honestly as UnrecognizedMIME instead of a fabricated image/jpeg.
+// decodeCover decodes covr image data atoms into pictures.
 func decodeCover(it item) itemResult {
 	atoms, ok := parseDataAtoms(it.payload)
 	if !ok {
@@ -205,11 +199,8 @@ func decodeCover(it item) itemResult {
 	return itemResult{pics: pics, owned: true}
 }
 
-// coverMIME maps a covr data-atom type code to an image MIME, and coverType the
-// reverse - the single place the cover image-format mapping lives. Only the three
-// explicit image codes map; an implicit (0) or unknown type returns "" so the read
-// path's authoritative sniff, not a manufactured default, determines the MIME (an
-// implicit type historically defaulted to JPEG, which mislabeled a PNG/GIF cover).
+// coverMIME maps a covr data-atom type code to an image MIME, and coverType the reverse
+// - the single place the cover image-format mapping lives.
 func coverMIME(typ uint32) string {
 	switch typ {
 	case typeJPEG:
@@ -239,10 +230,8 @@ func coverType(mime string) uint32 {
 // both read this list.
 var coverMIMEs = []string{"image/jpeg", "image/png", "image/bmp"}
 
-// coverMIMESupported reports whether an MP4 covr atom can faithfully label this
-// image format. Any other format would be stored with a JPEG type flag over non-JPEG
-// bytes (a corrupt cover the reader would then mislabel image/jpeg), so the writer
-// rejects it instead - see the validation in Plan.
+// coverMIMESupported reports whether an MP4 covr atom can faithfully label this image
+// format.
 func coverMIMESupported(mime string) bool {
 	return slices.Contains(coverMIMEs, mime)
 }
@@ -270,13 +259,9 @@ func decodeGnre(it item) itemResult {
 	return itemResult{contribs: contribs, numericGenre: true, owned: true}
 }
 
-// decodeInt decodes an iTunes integer atom (stik, rtng, tmpo, ©mvi, ©mvc) into
-// its canonical key as the decimal string, so it round-trips exactly rather
-// than being normalized to a name. Only an integer-bearing data type is owned
-// (the signed-int code iTunes writes, or the classic implicit 0): a text-typed
-// data atom would have its ASCII bytes misread as a big-endian number and then
-// be rewritten as that bogus integer on the next edit, so it stays preserved
-// verbatim like any other malformed known atom.
+// decodeInt decodes an iTunes integer atom (stik, rtng, tmpo, ©mvi, ©mvc) into its
+// canonical key as the decimal string, so it round-trips exactly rather than being
+// normalized to a name.
 func decodeInt(it item, key tag.Key) itemResult {
 	atoms, ok := parseDataAtoms(it.payload)
 	if !ok || len(atoms) != 1 {
@@ -325,11 +310,8 @@ func decodeBool(it item, key tag.Key) itemResult {
 	return itemResult{contribs: []core.Contribution{{Key: key, Value: val, Source: key.String()}}, owned: true}
 }
 
-// decodeFreeform decodes a "----" freeform item. It is owned only when its mean
-// is com.apple.iTunes and its name maps to a canonical key (a known Picard name,
-// or a name that is already a valid canonical key - which is how this codec
-// writes custom keys). Foreign means and mixed-case iTunes-internal names
-// (iTunNORM, ...) are preserved verbatim.
+// decodeFreeform decodes a "----" freeform item. Foreign means and mixed-case
+// iTunes-internal names (iTunNORM, ...) are preserved verbatim.
 func decodeFreeform(it item) itemResult {
 	mean, name, dataStart, ok := parseMeanName(it.payload)
 	if !ok || mean != itunesMean {
@@ -405,10 +387,9 @@ func project(d *doc) (tags tag.TagSet, pics []core.Picture, families []core.Fami
 		pics = append(pics, r.pics...)
 		numericGenre = numericGenre || r.numericGenre
 	}
-	// A udta-level value is promoted only for a key the ilst does not hold: merging the two
-	// would fold a genuine disagreement into a multi-value the next write stores as one,
-	// losing the conflict. A key both stores hold becomes a family entry instead, like a
-	// legacy container's value, so a disagreement still reaches conflicting-families.
+	// A udta-level value is promoted only for a key the ilst does not hold: merging the
+	// two would fold a genuine disagreement into a multi-value the next write stores as
+	// one, losing the conflict.
 	ilstTags := core.BuildTagSet(contribs)
 	var secondary []core.Contribution
 	for _, c := range udtaContributions(d.udtaTexts) {
@@ -430,11 +411,9 @@ func project(d *doc) (tags tag.TagSet, pics []core.Picture, families []core.Fami
 }
 
 // invalidKeyWarnings reports the iTunes freeform names the canonical vocabulary cannot
-// represent. decodeFreeform preserves such an item verbatim and contributes nothing, which
-// without this leaves the value absent from every canonical view with nothing said. It
-// mirrors that function's own gate, so the set flagged is exactly the set it drops for this
-// reason - a foreign mean, a binary payload or invalid UTF-8 are different exclusions and
-// stay silent, as they are not key-representability questions.
+// represent. decodeFreeform preserves such an item verbatim and contributes nothing,
+// which without this leaves the value absent from every canonical view with nothing
+// said.
 func invalidKeyWarnings(d *doc) []core.Warning {
 	var ws []core.Warning
 	seen := map[string]bool{}
@@ -455,8 +434,8 @@ func invalidKeyWarnings(d *doc) []core.Warning {
 	return ws
 }
 
-// owned reports whether the canonical rebuild owns an item - i.e. re-renders it
-// from the edited tag set. Items it does not own (unknown atoms, foreign-mean
-// freeforms, parse failures) are preserved verbatim. It is recomputed wherever
-// needed rather than cached on the item, keeping projection a pure read.
+// owned reports whether the canonical rebuild owns an item - i.e. Items it does not own
+// (unknown atoms, foreign-mean freeforms, parse failures) are preserved verbatim. It is
+// recomputed wherever needed rather than cached on the item, keeping projection a pure
+// read.
 func owned(it item) bool { return decodeItem(it).owned }

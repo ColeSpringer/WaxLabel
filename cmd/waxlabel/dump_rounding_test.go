@@ -5,8 +5,7 @@ import (
 	"testing"
 )
 
-// TestDumpJSONRoundsMilliseconds: chapters.mpc's third chapter starts at sample 16000 of a
-// 44100 Hz stream (362.81 ms); the JSON reports the nearest millisecond, not the floor.
+// TestDumpJSONRoundsMilliseconds: chapter start 362.81 ms rounds to nearest ms in JSON.
 func TestDumpJSONRoundsMilliseconds(t *testing.T) {
 	t.Parallel()
 	jd := decodeJSONOne[jsonDocument](t, mustDumpJSON(t, td("chapters.mpc")))

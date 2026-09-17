@@ -10,19 +10,13 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// maxChannelBlocks bounds the block-group walk that counts channels. A WavPack
-// sample group carries at most two channels per block, so even a 32-channel stream
-// needs 16; the cap only stops a corrupt stream whose final-block flag never
-// arrives from walking the whole file.
+// maxChannelBlocks caps the channel-count walk. At most two channels per block, so
+// 32 channels need 16; the cap stops a corrupt stream with no final-block flag.
 const maxChannelBlocks = 64
 
-// parse reads a WavPack file's metadata into a neutral Media: the audio geometry
-// from the first block header, the canonical tags from the APEv2 tag, and the
-// legacy ID3v1 (preserved, never authoritative) in the family view.
-//
-// The tail is peeled the way MP3's is: an ID3v1 tag sits after the APEv2 tag when
-// both are present, so the peel runs end-first. Everything before what it finds is
-// audio and is copied verbatim on every write.
+// parse reads geometry from the first block, tags from APEv2, and legacy ID3v1
+// into the family view. Peel is end-first (ID3v1 after APEv2). Bytes before the
+// trailer are audio and are copied verbatim on write.
 func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) (*core.Media, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -42,8 +36,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 	d.header = h
 
-	// A trailing tag can never begin before the end of the first block, which is always
-	// audio; the floor keeps a crafted footer from swallowing the header just parsed.
+	// Floor: a trailing tag must start after the first block.
 	trailer, tailWarnings := ape.PeelTrailer(src, size, h.totalLen(), limit, opts.Limits.MaxElements)
 	d.trailer = trailer
 	warnings = append(warnings, tailWarnings...)
@@ -62,8 +55,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	warnings = append(warnings, ape.EncoderNoise(d.trailer.Items())...)
 	warnings = append(warnings, ape.InvalidUTF8Warnings(d.trailer.Tag)...)
 	warnings = append(warnings, ape.InvalidKeyWarnings(d.trailer.Tag)...)
-	// ID3v1 is legacy here exactly as it is in MP3: surfaced in the family view so a
-	// value living only there is visible, never promoted into the canonical set.
+	// ID3v1 is family-only; never promoted into the canonical set.
 	media.Families = append(media.Families, ape.LegacyFamilies(media.Tags, d.trailer.ID3v1)...)
 
 	d.track = buildTrack(ctx, src, d, limit)
@@ -79,10 +71,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	return media, nil
 }
 
-// buildTrack derives the audio track from the first block header, resolving a
-// non-standard sample rate from the first block's metadata sub-blocks and summing
-// the channel count across the first sample group (multichannel WavPack chains
-// several two-channel blocks per group).
+// buildTrack: first-block geometry, optional ID_SAMPLE_RATE sub-block, channel sum
+// over the first sample group (multichannel chains several blocks).
 func buildTrack(ctx context.Context, src core.ReaderAtSized, d *doc, limit int64) core.AudioTrack {
 	h := d.header
 	t := core.AudioTrack{
@@ -92,16 +82,13 @@ func buildTrack(ctx context.Context, src core.ReaderAtSized, d *doc, limit int64
 		BitsPerSample: h.bitsPerSample(),
 	}
 	if h.float() {
-		// A float stream's magnitude field describes the integer range the samples were
-		// derived from, not the storage; report the real 32-bit float width.
+		// Magnitude is the integer range samples came from, not storage; float is 32-bit.
 		t.BitsPerSample = 32
 	}
 	if h.totalSamples32 != totalSamplesUnknown {
 		t.TotalSamples = h.totalSamples
 	}
 
-	// Walk the first sample group: sum its blocks' channels, and read the first
-	// block's sub-blocks when the rate index says the rate is non-standard.
 	off := int64(0)
 	channels := 0
 	for i := 0; i < maxChannelBlocks && off+blockHeaderLen <= d.trailer.Start; i++ {
@@ -124,8 +111,7 @@ func buildTrack(ctx context.Context, src core.ReaderAtSized, d *doc, limit int64
 					t.SampleRate = rate
 				}
 				if isDSD {
-					// DSD is one bit per sample at a rate the sub-block carries, so the
-					// PCM-style depth the flag word describes does not apply.
+					// DSD: 1 bit/sample at the sub-block rate; PCM depth flags do not apply.
 					t.Codec, t.BitsPerSample = "WavPack DSD", 1
 				}
 			}

@@ -16,11 +16,8 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// FuzzParse asserts that the parser never panics on arbitrary input and that
-// accepted input stays internally consistent: a no-op write reproduces the input
-// bytes, and re-parsing succeeds. Run with:
-//
-//	go test -run x -fuzz FuzzParse
+// FuzzParse asserts that the parser never panics on arbitrary input and that accepted input stays
+// internally consistent: a no-op write reproduces the input bytes, and re-parsing succeeds.
 func FuzzParse(f *testing.F) {
 	// Seed with the real fixtures and hand-built malformations, including Ogg page
 	// edge cases such as multi-page packets and truncated pages.
@@ -48,10 +45,9 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte("fLaC\x00\x00\x00\x22"))                                       // STREAMINFO header, no body
 	f.Add([]byte("fLaC\x80\xff\xff\xff"))                                       // last block, absurd length
 	f.Add(append([]byte("ID3\x04\x00\x00\x00\x00\x00\x0a"), []byte("fLaC")...)) // stray ID3 then truncated
-	// A minimal STREAMINFO declaring 192 samples (fLaC marker, one last-block
-	// STREAMINFO, 44.1 kHz stereo 16-bit, 192-sample blocks) for the frame-tail
-	// walk: once with a complete one-frame stream plus junk, once with the
-	// frame's payload cut behind an intact header.
+	// A minimal STREAMINFO declaring 192 samples (fLaC marker, one last-block STREAMINFO, 44.1 kHz
+	// stereo 16-bit, 192-sample blocks) for the frame-tail walk: once with a complete one-frame stream
+	// plus junk, once with the frame's payload cut behind an intact header.
 	flacTail := "fLaC\x80\x00\x00\x22\x00\xc0\x00\xc0\x00\x00\x00\x00\x00\x00\x0a\xc4\x42\xf0\x00\x00\x00\xc0\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
 	f.Add([]byte(flacTail + "\xff\xf8\x19\x18\x00\xed\x00\x12\x34\x00\x12\x34\x60\x78" + "junkjunk"))                         // valid frame, then trailing junk
 	f.Add([]byte(flacTail + "\xff\xf8\x19\x18\x00\xed\x00\x12"))                                                              // frame cut behind its header
@@ -145,19 +141,16 @@ func FuzzParse(f *testing.F) {
 		_ = doc.Warnings()
 		_ = doc.Inspect()
 
-		// A no-op write must reproduce the exact input bytes. A read-only format may
-		// refuse any plan, including a no-op, so accept that and skip the write
-		// round-trip. The guard is scoped to non-writable formats so a writable format
-		// that wrongly reports ErrUnsupportedFormat still fails here.
+		// A no-op write must reproduce the exact input bytes. A read-only format may refuse any plan,
+		// including a no-op, so accept that and skip the write round-trip.
 		plan, err := doc.Edit().Prepare()
 		if err != nil {
 			if errors.Is(err, waxerr.ErrUnsupportedFormat) && !doc.Format().Writable() {
 				return
 			}
-			// A file the parser flagged as having no audio essence (WarnNoAudioFrames) is
-			// refused by Editor.Prepare (ErrInvalidData): it is a contradictory file the
-			// library declines to rewrite, not a regression. Accept it and skip the write
-			// round-trip (a no-audio seed has nothing to round-trip anyway).
+			// A file the parser flagged as having no audio essence (WarnNoAudioFrames) is refused by
+			// Editor.Prepare (ErrInvalidData): it is a contradictory file the library declines to rewrite, not
+			// a regression.
 			if errors.Is(err, waxerr.ErrInvalidData) && hasWarning(doc, wl.WarnNoAudioFrames) {
 				return
 			}
@@ -171,21 +164,15 @@ func FuzzParse(f *testing.F) {
 			t.Fatalf("no-op write changed bytes: in=%d out=%d", len(data), out.Len())
 		}
 
-		// An edit on accepted input must round-trip and re-parse. A codec may
-		// legitimately refuse to rewrite some shapes - a chained Ogg stream
-		// (ErrChainedStream), a non-page-aligned Ogg (ErrUnalignedStream), or an
-		// oversized layout (ErrInvalidData) - but any other error from a parsed
-		// document is a regression, so fail rather than silently accepting it.
+		// An edit on accepted input must round-trip and re-parse.
 		plan2, err := doc.Edit().Set(tag.Title, "fuzz").Prepare()
 		if err != nil {
-			// A codec may refuse some shapes: a chained Ogg (ErrChainedStream), a
-			// non-page-aligned Ogg (ErrUnalignedStream), an oversized layout
-			// (ErrInvalidData), an MP4 whose crafted offsets would overflow a 32-bit
-			// table on a grow (ErrSizeTooLarge), a fragmented MP4 (ErrFragmented), an
-			// MP4 carrying an unpatchable absolute-offset box (ErrUnsupportedFormat), a
-			// Matroska layout the writer does not handle - no reserved Void, a position
-			// that would overflow its width, a Title with no Info element
-			// (ErrUnsupportedTag) - or any WMA at all, which is read-only by design.
+			// A codec may refuse some shapes: a chained Ogg (ErrChainedStream), a non-page-aligned Ogg
+			// (ErrUnalignedStream), an oversized layout (ErrInvalidData), an MP4 whose crafted offsets would
+			// overflow a 32-bit table on a grow (ErrSizeTooLarge), a fragmented MP4 (ErrFragmented), an MP4
+			// carrying an unpatchable absolute-offset box (ErrUnsupportedFormat), a Matroska layout the writer
+			// does not handle; no reserved Void, a position that would overflow its width, a Title with no Info
+			// element (ErrUnsupportedTag), or any WMA at all, which is read-only by design.
 			if errors.Is(err, waxerr.ErrChainedStream) || errors.Is(err, waxerr.ErrInvalidData) ||
 				errors.Is(err, waxerr.ErrUnalignedStream) || errors.Is(err, waxerr.ErrSizeTooLarge) ||
 				errors.Is(err, waxerr.ErrUnsupportedTag) || errors.Is(err, waxerr.ErrFragmented) ||
@@ -202,10 +189,9 @@ func FuzzParse(f *testing.F) {
 			t.Fatalf("re-parse of edited output failed: %v", err)
 		}
 
-		// Chapter write: a chapter edit on an accepted MP4 rebuilds the QuickTime
-		// chapter track; on an accepted Matroska it re-renders the Chapters element. A
-		// crafted shape that parses must not panic that rewrite, and its output must
-		// re-parse. Other formats do not write chapters.
+		// Chapter write: a chapter edit on an accepted MP4 rebuilds the QuickTime chapter track; on an
+		// accepted Matroska it re-renders the Chapters element. A crafted shape that parses must not panic
+		// that rewrite, and its output must re-parse.
 		if doc.Format() == wl.FormatMP4 || doc.Format() == wl.FormatMatroska {
 			cp, err := doc.Edit().SetChapters(
 				wl.Chapter{Start: 0, End: time.Second, Title: "a"},
@@ -230,12 +216,9 @@ func FuzzParse(f *testing.F) {
 	})
 }
 
-// FuzzChainedMP4ChapterWrite exercises the returned-document chapter-write path. A
-// tag edit grows ilst inside meta, then a follow-up SetChapters on that returned
-// document must splice chpl into self-consistent bytes and parse again cleanly. Run
-// with:
-//
-//	go test -run x -fuzz FuzzChainedMP4ChapterWrite
+// FuzzChainedMP4ChapterWrite exercises the returned-document chapter-write path. A tag edit grows
+// ilst inside meta, then a follow-up SetChapters on that returned document must splice chpl into
+// self-consistent bytes and parse again cleanly.
 func FuzzChainedMP4ChapterWrite(f *testing.F) {
 	for _, p := range []string{sampleM4B, sampleMP4, notagsMP4} {
 		if b, err := os.ReadFile(p); err == nil {

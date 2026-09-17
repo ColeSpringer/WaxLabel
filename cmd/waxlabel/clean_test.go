@@ -21,9 +21,8 @@ func writeTemp(t *testing.T, dir, name string, age time.Duration) string {
 	return p
 }
 
-// TestCleanListsAndRemovesStaleTemps: clean lists the leftovers of an interrupted write,
-// removes them only with --remove, and by default leaves anything modified within the hour
-// (a write in flight) alone unless --all is given.
+// TestCleanListsAndRemovesStaleTemps: lists interrupted-write temps; --remove deletes stale
+// ones; fresh (<1h) temps need --all.
 func TestCleanListsAndRemovesStaleTemps(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -70,8 +69,7 @@ func TestCleanListsAndRemovesStaleTemps(t *testing.T) {
 	}
 }
 
-// TestCleanRejectsNonDirectoryBeforeRemoving: every operand is validated before anything is
-// deleted, so a bad argument cannot leave earlier directories half-cleaned and unreported.
+// TestCleanRejectsNonDirectoryBeforeRemoving: validate all operands before any deletion.
 func TestCleanRejectsNonDirectoryBeforeRemoving(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -89,8 +87,7 @@ func TestCleanRejectsNonDirectoryBeforeRemoving(t *testing.T) {
 	}
 }
 
-// TestCleanReportsUnreadableSubtree: a directory the scan cannot open is an error, not an
-// empty result, so clean never reports a library clean over a place nobody could look.
+// TestCleanReportsUnreadableSubtree: unreadable subtree is an error, not a silent clean bill.
 func TestCleanReportsUnreadableSubtree(t *testing.T) {
 	requireUnwritableDir(t)
 	dir := t.TempDir()
@@ -103,8 +100,7 @@ func TestCleanReportsUnreadableSubtree(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.Chmod(nope, 0o755) })
-	// A leftover elsewhere in the tree must still be found and removed: one unreadable
-	// album cannot be allowed to abandon everything the scan already collected.
+	// Readable leftovers elsewhere must still be removed despite one unreadable dir.
 	stale := writeTemp(t, dir, ".waxlabel-4.tmp", 3*24*time.Hour)
 	out, errb, code := runCLI(t, "clean", "--recursive", "--remove", dir)
 	if code != 6 {
@@ -116,19 +112,17 @@ func TestCleanReportsUnreadableSubtree(t *testing.T) {
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Error("an unreadable subtree stopped --remove from deleting elsewhere")
 	}
-	// The error names the directory that could not be opened, not the argument that is
-	// perfectly readable.
+	// Error names the unreadable subdirectory, not the walk root.
 	if !strings.Contains(errb, nope) {
 		t.Errorf("the error should name the unreadable subdirectory: %q", errb)
 	}
-	// An age is not a playback position: three days must not read as an hour count.
+	// Multi-day age prints in days, not hours.
 	if !strings.Contains(out, "3 day(s) old") {
 		t.Errorf("a multi-day age should read in days:\n%s", out)
 	}
 }
 
-// TestCleanReportsEmptyTreeAsClean: with nothing found and nothing unreadable, the summary
-// is the plain one; the hedged wording is reserved for a scan that could not see everything.
+// TestCleanReportsEmptyTreeAsClean: empty scan gets the plain clean summary, not hedged wording.
 func TestCleanReportsEmptyTreeAsClean(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "clean", "--recursive", t.TempDir())
@@ -137,8 +131,7 @@ func TestCleanReportsEmptyTreeAsClean(t *testing.T) {
 	}
 }
 
-// TestCleanFollowsSymlinkedRoot: a music directory reached through a symlink is walked, as
-// the audio commands walk it, instead of yielding one node the walk refuses to descend.
+// TestCleanFollowsSymlinkedRoot: symlinked root is walked like audio commands do.
 func TestCleanFollowsSymlinkedRoot(t *testing.T) {
 	t.Parallel()
 	real := t.TempDir()

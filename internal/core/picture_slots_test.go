@@ -2,10 +2,7 @@ package core
 
 import "testing"
 
-// TestPictureLossNonCoverRoleAndDescription pins APE's loss model: front and back
-// covers round-trip exactly (a plain back cover is NOT lossy, unlike MP4's
-// role-and-description loss), any other role is stored under a cover name, and a
-// description is dropped for every role.
+// TestPictureLossNonCoverRoleAndDescription: APE keeps front/back roles; other roles and descriptions are lossy.
 func TestPictureLossNonCoverRoleAndDescription(t *testing.T) {
 	loss := PictureLossNonCoverRoleAndDescription
 	for _, c := range []struct {

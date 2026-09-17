@@ -8,14 +8,8 @@ import (
 	"testing"
 )
 
-// tconText returns the decoded text of the first ID3v2 TCON (genre) frame: a 10-byte frame
-// header, then a text-encoding byte, then the text. Every offset is bounded against
-// len(data) so a malformed or truncated frame fails the test cleanly instead of panicking.
-// The fixtures here carry exactly one TCON, so the first match is the genre frame; a wrong
-// match would fail the value assertion regardless. It reads the size field as a plain
-// big-endian integer, which agrees with ID3v2.4's sync-safe encoding for any value under
-// 128 - every genre body qualifies - so one helper serves both versions. It also finds the
-// frame inside a WAV "id3 " or AIFF "ID3 " chunk, since the search is over the whole file.
+// tconText returns the first TCON frame body. Bounds-checked; plain BE size works for genre
+// bodies under 128 (sync-safe equivalent). Scans whole file for WAV/AIFF id3 chunks.
 func tconText(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -34,19 +28,13 @@ func tconText(t *testing.T, path string) string {
 	return string(data[i+11 : end]) // skip the 1-byte text-encoding marker
 }
 
-// TestNumericGenreFlag covers the --numeric-genre flag end to end: it is bound on
-// editFlags and resolves in writeOptions(), so both set and plan accept it via
-// compile() with no per-caller wiring. With the flag, a recognized genre is stored
-// as its ID3 numeric reference ("(17)" for Rock) instead of the name; without it the
-// name is stored. Either way dump resolves the stored form back to the canonical
-// name, so the flag changes only the on-disk encoding. If the shared wiring is
-// dropped, this fails as an "unknown flag" error or a name-encoded TCON frame.
+// TestNumericGenreFlag: --numeric-genre stores "(17)" for Rock; dump still resolves to name.
+// Shared editFlags wiring covers set and plan.
 func TestNumericGenreFlag(t *testing.T) {
 	t.Parallel()
 	notagsMP3 := filepath.Join("..", "..", "testdata", "notags.mp3")
 
-	// With the flag: the numeric reference. Rock is genre 17 in the ID3v1 list, and
-	// ID3v2.3 writes a numeric reference parenthesized.
+	// Rock is ID3 genre 17; flag stores "(17)".
 	num := copyFixture(t, notagsMP3)
 	if _, stderr, code := runCLI(t, "set", num, "--set", "GENRE=Rock", "--numeric-genre"); code != 0 {
 		t.Fatalf("set --numeric-genre: code=%d stderr=%s", code, stderr)
@@ -55,7 +43,7 @@ func TestNumericGenreFlag(t *testing.T) {
 		t.Errorf("TCON with --numeric-genre = %q, want %q", got, "(17)")
 	}
 
-	// Without the flag: the canonical name, confirming the flag is what changes it.
+	// Without flag: stores canonical name.
 	name := copyFixture(t, notagsMP3)
 	if _, _, code := runCLI(t, "set", name, "--set", "GENRE=Rock"); code != 0 {
 		t.Fatalf("set (no flag): code=%d", code)
@@ -64,8 +52,7 @@ func TestNumericGenreFlag(t *testing.T) {
 		t.Errorf("TCON without --numeric-genre = %q, want %q", got, "Rock")
 	}
 
-	// The numeric form still resolves back to the name on read (a round-trip detail
-	// the flag must not break), and plan accepts the flag too (shared wiring).
+	// Numeric form round-trips to name on dump; plan accepts the flag.
 	if stdout, _, code := runCLI(t, "dump", num); code != 0 || !strings.Contains(stdout, "Rock") {
 		t.Errorf("dump of numeric-genre file: code=%d, want it to resolve to Rock\n%s", code, stdout)
 	}
@@ -74,17 +61,13 @@ func TestNumericGenreFlag(t *testing.T) {
 	}
 }
 
-// Bare RX and CR TCON references resolve to Remix and Cover, matching the
-// parenthesized (RX)/(CR) forms. Writing one to an ID3 target warns because it
-// reads back under a different display name; dumping the written file reports the
-// same read-time warning. An explicitly escaped "(RX)" value stays literal and
-// must not warn.
+// TestBareRXCRGenreResolvesAndWarns: bare RX/CR warn on write and read; "(RX)" stays literal.
 func TestBareRXCRGenreResolvesAndWarns(t *testing.T) {
 	t.Parallel()
 	notagsMP3 := filepath.Join("..", "..", "testdata", "notags.mp3")
 
 	for _, c := range []struct{ in, want string }{{"RX", "Remix"}, {"CR", "Cover"}} {
-		// Write side: the plan report warns numeric-genre for the bare reference.
+		// Plan warns numeric-genre for bare reference.
 		out, _, code := runCLI(t, "plan", notagsMP3, "--set", "GENRE="+c.in)
 		if code != 0 {
 			t.Fatalf("plan GENRE=%s exit = %d, want 0", c.in, code)
@@ -93,8 +76,7 @@ func TestBareRXCRGenreResolvesAndWarns(t *testing.T) {
 			t.Errorf("bare GENRE=%s on an ID3 target must warn numeric-genre (reads back as %q):\n%s", c.in, c.want, out)
 		}
 
-		// After write, dump resolves the reference to the display name and raises the
-		// same read-time numeric-genre warning as a parenthesized reference.
+		// Dump resolves to display name with read-time numeric-genre warning.
 		f := copyFixture(t, notagsMP3)
 		if _, stderr, code := runCLI(t, "set", f, "--set", "GENRE="+c.in); code != 0 {
 			t.Fatalf("set GENRE=%s exit = %d: %s", c.in, code, stderr)
@@ -111,7 +93,7 @@ func TestBareRXCRGenreResolvesAndWarns(t *testing.T) {
 		}
 	}
 
-	// The parenthesized form stays escaped and round-trips verbatim.
+	// "(RX)" round-trips verbatim without warning.
 	if out, _, _ := runCLI(t, "plan", notagsMP3, "--set", "GENRE=(RX)"); strings.Contains(out, "numeric-genre") {
 		t.Errorf("(RX) round-trips verbatim and must not warn numeric-genre:\n%s", out)
 	}

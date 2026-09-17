@@ -9,20 +9,16 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// These live on the shared APEv2 writer rather than in a per-codec test, because that
-// writer and the shared Capabilities are the one store WavPack, Monkey's Audio and
-// Musepack use; Musepack has no fixture of its own and is covered here.
+// Shared APEv2 writer/Capabilities cover WavPack, MAC, Musepack.
 
-// TestReservedItemNameFolds pins the case-folded comparison: the canonical key arrives
-// uppercased (the CLI uppercases keys), so "OggS" reaches the writer as "OGGS" and the
-// hazard must still be recognized.
+// TestReservedItemNameFolds: case-folded ("OGGS" still reserved).
 func TestReservedItemNameFolds(t *testing.T) {
 	for _, name := range []string{"ID3", "id3", "TAG", "tag", "OggS", "OGGS", "MP+", "mp+"} {
 		if !ReservedItemName(name) {
 			t.Errorf("ReservedItemName(%q) = false, want true", name)
 		}
 	}
-	// The companion length rule is deliberately not enforced; see ReservedItemName.
+	// Length rule not enforced; see ReservedItemName.
 	for _, name := range []string{"X", "Title", "ID3v2", "TAGS", "MP", "Ogg"} {
 		if ReservedItemName(name) {
 			t.Errorf("ReservedItemName(%q) = true, want false", name)
@@ -30,8 +26,7 @@ func TestReservedItemNameFolds(t *testing.T) {
 	}
 }
 
-// TestRebuildDropsReservedKeys: a reserved item name is never authored, and the drop is
-// recorded so the caller can warn rather than lose the value silently.
+// TestRebuildDropsReservedKeys: reserved not authored; drop recorded.
 func TestRebuildDropsReservedKeys(t *testing.T) {
 	base := tag.NewTagSet()
 	edited := tag.NewTagSet()
@@ -66,9 +61,7 @@ func TestRebuildDropsReservedKeys(t *testing.T) {
 	}
 }
 
-// TestRebuildPreservesUntouchedReservedItem: refusing to author the hazard is not a licence
-// to delete bytes the file already had. An item the edit does not touch is preserved like
-// every other one the rebuild leaves alone.
+// TestRebuildPreservesUntouchedReservedItem: leave prior reserved item alone.
 func TestRebuildPreservesUntouchedReservedItem(t *testing.T) {
 	orig := []Item{{Key: "ID3", Value: "was already here"}, {Key: "Title", Value: "Old"}}
 	base := tag.NewTagSet()
@@ -86,9 +79,7 @@ func TestRebuildPreservesUntouchedReservedItem(t *testing.T) {
 	}
 }
 
-// TestRebuildKeepsReservedItemOnRefusedSet: a --set on a reserved key cannot be written, but
-// dropping the item the file already had would leave the user with neither the new value nor
-// the old one, and the removal would show in the plan as a change the user never asked for.
+// TestRebuildKeepsReservedItemOnRefusedSet: refused set keeps prior reserved item.
 func TestRebuildKeepsReservedItemOnRefusedSet(t *testing.T) {
 	orig := []Item{{Key: "ID3", Value: "oldvalue"}}
 	base := tag.NewTagSet()
@@ -105,9 +96,7 @@ func TestRebuildKeepsReservedItemOnRefusedSet(t *testing.T) {
 	}
 }
 
-// TestTransferClassifierGradesReservedKeys is the report-equals-write invariant: a copy must
-// grade a reserved key Dropped, not Carried, or the report promises a value the writer then
-// discards. Every ordinary key is left to the format-level grade.
+// TestTransferClassifierGradesReservedKeys: reserved => Dropped (report==write).
 func TestTransferClassifierGradesReservedKeys(t *testing.T) {
 	for _, k := range []tag.Key{"ID3", "TAG", "OGGS", "MP+"} {
 		d, reason, override := TransferClassifier(k, []string{"v"}, tag.NewTagSet())
@@ -123,9 +112,7 @@ func TestTransferClassifierGradesReservedKeys(t *testing.T) {
 	}
 }
 
-// TestTransferClassifierGradesCoverNameKeys: the writer refuses a text value under a
-// Cover Art name (the convention types those items binary), so a copy carrying such a
-// key must grade it Dropped or the report promises a value the writer then discards.
+// TestTransferClassifierGradesCoverNameKeys: Cover Art text => Dropped.
 func TestTransferClassifierGradesCoverNameKeys(t *testing.T) {
 	for _, k := range []tag.Key{"COVER ART (FRONT)", "COVER ART (BACK)"} {
 		d, reason, override := TransferClassifier(k, []string{"v"}, tag.NewTagSet())
@@ -138,9 +125,7 @@ func TestTransferClassifierGradesCoverNameKeys(t *testing.T) {
 	}
 }
 
-// TestCapabilitiesCarryTransferClassifier guards the attachment itself: the classifier is
-// only useful if the shared Capabilities install it, which is what gives all three
-// APEv2-backed codecs the same grading.
+// TestCapabilitiesCarryTransferClassifier: shared Capabilities install classifier.
 func TestCapabilitiesCarryTransferClassifier(t *testing.T) {
 	src := &core.Media{Tags: tag.NewTagSet()}
 	src.Tags.Add("ID3", "hazard")
@@ -158,10 +143,7 @@ func TestCapabilitiesCarryTransferClassifier(t *testing.T) {
 	}
 }
 
-// TestInvalidKeyWarningsFlagUnprojectableItems: APEv2 item names run the full printable-ASCII
-// range while the canonical vocabulary stops at 0x7D, so a legal on-disk name can be
-// unprojectable. Silence would leave the value missing from dump and lint while a copy called
-// the carry lossless.
+// TestInvalidKeyWarningsFlagUnprojectableItems: warn names past canonical 0x7D.
 func TestInvalidKeyWarningsFlagUnprojectableItems(t *testing.T) {
 	tg := &Tag{Items: []Item{{Key: "MOOD~X", Value: "calm"}, {Key: "Title", Value: "Song"}}}
 	ws := InvalidKeyWarnings(tg)
@@ -171,14 +153,14 @@ func TestInvalidKeyWarningsFlagUnprojectableItems(t *testing.T) {
 	if !strings.Contains(ws[0].Message, "MOOD~X") {
 		t.Errorf("message = %q, want it to name the item", ws[0].Message)
 	}
-	// The set flagged must be exactly the set Project omits, or the warning lies either way.
+	// Flagged set == Project omit set.
 	if _, ok := Project(tg).Tags.Get("MOOD~X"); ok {
 		t.Error("the item was projected, so it should not be flagged")
 	}
 	if _, ok := Project(tg).Tags.Get(tag.Title); !ok {
 		t.Error("an ordinary item was omitted from the projection")
 	}
-	// A reserved name is a WRITE rule; an item already carrying one still reads.
+	// Reserved is write-only; prior reserved still reads.
 	if ws := InvalidKeyWarnings(&Tag{Items: []Item{{Key: "ID3", Value: "x"}}}); len(ws) != 0 {
 		t.Errorf("a reserved item name was flagged as unreadable: %+v", ws)
 	}

@@ -2,23 +2,21 @@ package core
 
 import "testing"
 
-// TestIndefiniteArticle locks the a/an choice for every format name WaxLabel
-// interpolates, including the MP3/MP4 initialisms a plain leading-vowel rule gets
-// wrong (MP4 is not reachable via the chapter message, so this is its coverage).
+// TestIndefiniteArticle: a/an for format names (MP3/MP4 need vowel-sound rule).
 func TestIndefiniteArticle(t *testing.T) {
 	cases := map[string]string{
-		"AAC (ADTS)": "an", // vowel-initial
+		"AAC (ADTS)": "an",
 		"AIFF":       "an",
 		"Ogg Vorbis": "an",
 		"Ogg Opus":   "an",
-		"MP3":        "an", // "em-pee-three": vowel sound
+		"MP3":        "an",
 		"MP4":        "an",
-		"mp3":        "an", // case-insensitive
-		"FLAC":       "a",  // "flak": consonant
+		"mp3":        "an",
+		"FLAC":       "a",
 		"WAV":        "a",
 		"WebM":       "a",
 		"Matroska":   "a",
-		"":           "a", // defensive
+		"":           "a",
 	}
 	for name, want := range cases {
 		if got := IndefiniteArticle(name); got != want {
@@ -27,10 +25,7 @@ func TestIndefiniteArticle(t *testing.T) {
 	}
 }
 
-// TestIsTranscoderStamp locks the transcoder vocabulary. Both halves of the ffmpeg family
-// count: libavformat writes the muxer stamp and libavcodec the codec one, and matching only
-// the first left a "Lavc61.19.101 libopus" ENCODER surviving --strip-encoder and lint --fix.
-// A genuine encoder name must not match, or those paths would destroy a user's own value.
+// TestIsTranscoderStamp: Lavf/Lavc/libavformat/libavcodec stamps; real encoder names excluded.
 func TestIsTranscoderStamp(t *testing.T) {
 	stamps := []string{
 		"Lavf61.7.100",
@@ -39,7 +34,7 @@ func TestIsTranscoderStamp(t *testing.T) {
 		"Lavc61.19.101 libopus",
 		"Lavc60.31.102",
 		"libavcodec 60.31.102",
-		"LAVC61.19.101 LIBOPUS", // case-folded
+		"LAVC61.19.101 LIBOPUS",
 	}
 	for _, s := range stamps {
 		if !IsTranscoderStamp(s) {
@@ -53,7 +48,7 @@ func TestIsTranscoderStamp(t *testing.T) {
 		"LAME 3.100",
 		"iTunes 12.12.4.1",
 		"Nero AAC Encoder",
-		"My Favourite Lav Recorder", // "lav" alone is not the ffmpeg prefix
+		"My Favourite Lav Recorder",
 	}
 	for _, s := range clean {
 		if IsTranscoderStamp(s) {

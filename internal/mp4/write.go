@@ -14,14 +14,8 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// Plan computes the byte-level rewrite that turns the original MP4 into the
-// edited media. It is preservation-first: only the iTunes tag list (ilst) is
-// re-rendered, and a neighbouring free padding atom absorbs the size change so
-// the media data usually does not move at all (delta == 0, no offset fixups).
-// When the new tag list cannot fit the available padding, the enclosing
-// moov/udta/meta atom sizes are patched and every track's stco/co64 chunk-offset
-// table is shifted so the media stays playable - no atom is reordered and the
-// mdat bytes are copied verbatim.
+// Plan builds a preservation-first rewrite: re-render ilst (and QT stores as needed),
+// reuse free padding when possible, shift stco/co64 on growth; mdat copied verbatim.
 func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.WriteOptions) (*core.WritePlan, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -37,28 +31,20 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report := core.WriteReport{Format: core.FormatMP4, BytesBefore: edited.Identity.Size}
 
 	// --numeric-genre swaps the text "\xa9gen" atom for the numeric "gnre" one, which
-	// changes how the value is stored and not the value itself, so the tag comparison above
-	// cannot see it. Without this the flag would apply only to the files whose genre also
-	// changed. The && is what makes it false when the flag is absent, since not passing it is
-	// not a request to re-encode back to the name.
+	// changes how the value is stored and not the value itself, so the tag comparison
+	// above cannot see it.
 	encodingRewrite := opts.NumericGenre && genreEncodingChanged(d.items, edited.Tags)
 	// The encoding the rebuild writes: what this edit asked for, or the numeric form the file
 	// already holds, so an unrelated edit does not silently undo an earlier --numeric-genre run.
 	numericGenre := numericGenreEncoding(d.items, edited.Tags, opts.NumericGenre)
 
-	// Fast path: nothing changed. NoOpPlan emits a verbatim copy (so SaveAsFile/
-	// WriteTo still produce a whole file) flagged NoOp so SaveBack skips it. Explicit
-	// padding requests run the layout below so a grow-only MP4 padding edit can take
-	// effect when it enlarges the moov region.
+	// Fast path: nothing changed. NoOpPlan emits a verbatim copy (so SaveAsFile/ WriteTo
+	// still produce a whole file) flagged NoOp so SaveBack skips it.
 	if !tagsChanged && !picturesChanged && !chaptersChanged && !opts.PaddingExplicit && !encodingRewrite {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
 
-	// The unwritable shapes, shared with Capabilities so the two cannot disagree. This
-	// sits after the no-op fast path (matching the Ogg ordering rationale in
-	// internal/ogg/write.go): copying a file unchanged is always safe, even for one we
-	// will not rewrite, so an unchanged fragmented file still copies verbatim through
-	// core.NoOpPlan and SaveBack still skips it.
+	// The unwritable shapes, shared with Capabilities so the two cannot disagree.
 	if err := d.refuseWrite(); err != nil {
 		return nil, err
 	}
@@ -80,15 +66,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		}
 	}
 
-	// Surface canonical values the iTunes atoms cannot represent. droppedValues names the ones
-	// genuinely lost (trkn/disk outside uint16, an invalid integer or BPM atom value),
-	// coercedValues the ones stored in a normalized form (a non-boolean cpil/pgap/shwm written
-	// as 0, a fractional BPM rounded). Both read the same raw canonical strings the encoder
-	// consumes, and both the ilst and chapter rewrite paths build from edited.Tags, so the
-	// shared report covers both.
-	// Every predicate below models an iTunes atom's fixed binary width. An mdta store writes
-	// each value as UTF-8 text instead, so none of them applies there and reporting one would
-	// be a false loss that --strict escalates.
+	// Surface canonical values the iTunes atoms cannot represent. Both read the same raw
+	// canonical strings the encoder consumes, and both the ilst and chapter rewrite paths
+	// build from edited.Tags, so the shared report covers both.
 	itunesAtoms := !mdtaStore(d)
 	for _, dv := range itunesDroppedValues(edited.Tags, itunesAtoms) {
 		msg := fmt.Sprintf("%s value %q cannot be represented in this format and was dropped", dv.Key, dv.Value)
@@ -102,10 +82,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	}
 	for _, cv := range itunesCoercedValues(edited.Tags, itunesAtoms) {
 		// The boolean atoms (cpil, pgap, shwm) each hold a single byte, so a non-boolean is
-		// stored as 0 (false) rather than dropped; a valid fractional BPM rounds to the nearest
-		// whole number in tmpo. A numerically-lossless canonicalization (a trkn/disk leading
-		// zero or sign, "174.0") is not a coercion worth warning, so it is not reported (see
-		// coercedValues).
+		// stored as 0 (false) rather than dropped;
 		var msg string
 		if tag.IsBooleanKey(cv.Key) {
 			msg = fmt.Sprintf("%s value %q is not a valid boolean and was stored as 0 (false)", cv.Key, cv.Value)
@@ -114,23 +91,14 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		}
 		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueCoerced, msg, cv.Key)
 	}
-	// A structured single-atom key given more than one value stores only the first; the
-	// surplus is a genuine loss the encoders read past silently, so name it. The editor's
-	// single-valued-multi warning covers only authored edits, and this pass covers the copy
-	// path too.
+	// A structured single-atom key given more than one value stores only the first;
 	for _, ev := range itunesExtraStructuredValues(edited.Tags, itunesAtoms) {
 		report.Warnings = core.WarnKeyed(report.Warnings, core.WarnValueDropped,
 			fmt.Sprintf("%s holds multiple values but its MP4 atom stores only the first; dropped %q", ev.Key, ev.Value), ev.Key)
 	}
-	// Note each multi-valued field THIS EDIT wrote: the iTunes ilst stores it as several data atoms
-	// under one item, which round-trips through WaxLabel but which many readers surface only the first
-	// atom of. It covers every multi-valued field the ilst writes as per-value atoms (text, freeform,
-	// and numeric-genre), not just the standard text atoms. It is scoped to a key the edit changed, so
-	// an unrelated edit does not lecture about a file's pre-existing multi-valued field (matching the
-	// authored scope of the chapter/picture sanity checks, and the effective scope of the dropped/
-	// coerced passes, whose stored values are always storable). Informational (nothing is lost), so it
-	// does not escalate --strict. Computed here so both the ilst path and the chapter path (which
-	// shares this report) carry it.
+	// Note each multi-valued field THIS EDIT wrote: the iTunes ilst stores it as several
+	// data atoms under one item, which round-trips through WaxLabel but which many readers
+	// surface only the first atom of.
 	for _, k := range multiValueDataKeys(edited.Tags) {
 		vals, _ := edited.Tags.Get(k)
 		if bv, _ := base.Tags.Get(k); slices.Equal(bv, vals) {
@@ -141,15 +109,8 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	}
 
 	// A trkn/disk number is a fixed binary uint16 - and the integer and BPM atoms are
-	// fixed-width too - so an edit that makes a slot genuinely unstorable would clear it and
-	// erase a good existing value. When base still holds a storable value for that slot,
-	// restore it so the edit does not silently delete good data. This runs after the warning
-	// passes above (which read the pre-restore edited.Tags, so the value-dropped warning still
-	// fires) and before every downstream build, so buildItems, the chapter path, and
-	// buildResult all see the restored value. Restoring base's value makes an edit that
-	// changed nothing else collapse to a true no-op via DowngradeNoOp below, which carries the
-	// warning forward so --strict still escalates. This diverges from the text formats
-	// (MP3/AAC/AIFF/WAV), which store the raw string; the help/README note the reason.
+	// fixed-width too - so an edit that makes a slot genuinely unstorable would clear it
+	// and erase a good existing value.
 	if patched, restored := restoreUnstorableSlots(base.Tags, edited.Tags); restored && itunesAtoms {
 		ec := *edited
 		ec.Tags = patched
@@ -205,10 +166,10 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		return pl, nil
 	}
 
-	// Re-render the ilst from the edited canonical set, keeping the preserved
-	// items (unknown atoms, foreign freeforms) verbatim. The cover is re-encoded only
-	// when the picture set changed; otherwise the parsed covr is carried verbatim so a
-	// tag-only edit never rewrites a carried cover through coverType's JPEG default.
+	// Re-render the ilst from the edited canonical set, keeping the preserved items
+	// (unknown atoms, foreign freeforms) verbatim. otherwise the parsed covr is carried
+	// verbatim so a tag-only edit never rewrites a carried cover through coverType's JPEG
+	// default.
 	covr := coverItemsToWrite(edited.Pictures, d.items, picturesChanged)
 	newItems, newKeys := buildIlstItems(d, edited.Tags, covr, numericGenre)
 	if err := checkBuiltItems(newItems, d.items, opts.Limits.MaxAllocBytes); err != nil {
@@ -229,11 +190,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		ilstPayload = append(ilstPayload, itemBytes(it)...)
 	}
 	newIlst := renderAtom(atomName("ilst"), ilstPayload)
-	// Guard the aggregate ilst size against the 32-bit box-size field renderAtom/renderData write.
-	// checkSizes only guards 8-byte-header ancestors, so it structurally cannot see an ilst wrap
-	// inside a 64-bit moov; the created-ilst path additionally guards the fresh meta/udta wrappers
-	// in planLayout. Per-item payloads are already capped at MaxAllocBytes by checkBuiltItems, so
-	// only the aggregate can reach this ceiling.
+	// Guard the aggregate ilst size against the 32-bit box-size field
+	// renderAtom/renderData write. checkSizes only guards 8-byte-header ancestors, so it
+	// structurally cannot see an ilst wrap inside a 64-bit moov;
 	if err := checkBoxSize32(atomName("ilst"), 8+int64(len(ilstPayload))); err != nil {
 		return nil, err
 	}
@@ -273,18 +232,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	}
 
 	result := buildResult(edited, d, newItems, lay, delta, total, int64(len(newIlst)))
-	// Collapse to a true no-op when the ilst rebuild re-projected to base's values
-	// (e.g. TRACKNUMBER=03 -> 3, or an unrepresentable value the encoder dropped); a
-	// chapter edit took the planChapters path above, so nothing structural remains here.
-	// DowngradeNoOp carries the input-rejection warnings (value-dropped, value-coerced,
-	// picture-metadata-dropped) forward, so a rejected/coerced value or cover description still
-	// surfaces (and --strict still escalates) even though the write is a no-op. A coerced
-	// COMPILATION=maybe re-applied to a file already cpil=0 is exactly this case.
-	// delta != 0 means the layout grew the moov region. That makes an explicit padding
-	// increase a real structural change, while a reuse-in-place edit with equal tags stays
-	// a no-op. An encoding rewrite is structural for the same reason: a gnre atom
-	// re-projects to the genre name it replaced, and it can be the same size as the text
-	// atom it replaced, so nothing else here can tell the write apart from a no-op.
+	// Collapse to a true no-op when the ilst rebuild re-projected to base's values (e.g.
 	if np := core.DowngradeNoOp(core.FormatMP4, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), delta != 0 || encodingRewrite, report.Warnings); np != nil {
 		return np, nil
 	}
@@ -301,10 +249,9 @@ func paddingClampWarning(ws []core.Warning, clamped bool) []core.Warning {
 		fmt.Sprintf("requested padding exceeded the %d-byte limit and was clamped to it", maxPadding))
 }
 
-// checkCoverFormats rejects a cover whose image format an MP4 covr atom cannot
-// label. Only JPEG, PNG, and BMP have type codes; another format (WebP, GIF, ...)
-// would be stored with a JPEG type flag over non-JPEG bytes - a corrupt cover -
-// so fail loudly here rather than silently mislabel it.
+// checkCoverFormats rejects a cover whose image format an MP4 covr atom cannot label.
+// another format (WebP, GIF, ...) would be stored with a JPEG type flag over non-JPEG
+// bytes - a corrupt cover - so fail loudly here rather than silently mislabel it.
 func checkCoverFormats(pics []core.Picture) error {
 	for _, p := range pics {
 		if !coverMIMESupported(p.MIME) {
@@ -343,12 +290,6 @@ type layout struct {
 }
 
 // maxPadding caps the metadata padding the MP4 writer allocates for a free atom.
-// PaddingPolicy.Max == 0 means "no caller ceiling - apply the format's cap", and MP4 free
-// atoms have no small structural limit (unlike a FLAC PADDING block's 24-bit length), so
-// without this a programmatic WithPadding(Target: huge) would make([]byte, Target) and OOM at
-// the library layer (the CLI's 64 MiB cap protects only the CLI). 256 MiB matches the
-// library's default allocation ceiling (bits.DefaultLimits.MaxAllocBytes) and sits far above
-// any real tag-padding need.
 const maxPadding = 256 << 20
 
 // planLayout decides how to place the new ilst: reuse the existing ilst+free
@@ -376,9 +317,8 @@ func planLayout(d *doc, newIlst []byte, opts core.WriteOptions) (layout, error) 
 		regionLen := regionEnd - regionStart
 		leftover := regionLen - newLen
 		// floor is the --padding "reserve at least N" minimum (PaddingPolicy.Min); a
-		// reuse-in-place path may only keep the existing region while its leftover
-		// padding still meets it, otherwise the region must grow. Min defaults to 0,
-		// leaving the prior reuse behavior unchanged. Mirrors the FLAC/ID3 reuse floor.
+		// reuse-in-place path may only keep the existing region while its leftover padding
+		// still meets it, otherwise the region must grow.
 		floor := opts.Padding.Min
 
 		lay := layout{regionStart: regionStart, regionEnd: regionEnd, ilstOff: 0, freeOff: -1}
@@ -411,13 +351,9 @@ func planLayout(d *doc, newIlst []byte, opts core.WriteOptions) (layout, error) 
 	}
 	at := inner.end()
 	regionStart := at
-	// When inserting into an existing udta, place the new atom after its last
-	// complete child rather than at its raw end. A udta body can carry a tolerated
-	// trailing zero (QuickTime terminates its user-data list with a 32-bit zero;
-	// parse keeps it), and an atom appended after those zeros is shifted out of
-	// alignment, corrupting every following atom on re-parse. Replacing
-	// [clean, end) drops the stray tail. d.udtaRaw is nil only for an oversized
-	// udta, where the append-at-end behavior is kept.
+	// When inserting into an existing udta, place the new atom after its last complete
+	// child rather than at its raw end. A udta body can carry a tolerated trailing zero
+	// (QuickTime terminates its user-data list with a 32-bit zero;
 	if inner.name == atomName("udta") && d.udtaRaw != nil {
 		if clean := d.udta.offset + d.udta.headerLen + udtaCleanLen(d.udtaRaw); clean < at {
 			regionStart = clean
@@ -431,10 +367,8 @@ func planLayout(d *doc, newIlst []byte, opts core.WriteOptions) (layout, error) 
 	}, nil
 }
 
-// buildCreated renders the atom(s) to insert when the file had no ilst, choosing
-// the wrapper depth from which containers already exist. It returns the
-// innermost existing container to insert into, the bytes to insert, and where
-// the ilst/free land within those bytes.
+// buildCreated renders the atom(s) to insert when the file had no ilst, choosing the
+// wrapper depth from which containers already exist.
 func buildCreated(d *doc, newIlst []byte, pad int64) (inner atomRef, bytes []byte, ilstOff, freeOff, freeLen, freeContent int64, err error) {
 	ilstAndFree, fOff, fLen, fContent := appendFree(newIlst, pad)
 	switch {
@@ -454,9 +388,8 @@ func buildCreated(d *doc, newIlst []byte, pad int64) (inner atomRef, bytes []byt
 		return *d.udta, meta, int64(base), int64(base) + fOff, fLen, fContent, nil
 	default:
 		metaInner := append(hdlrAtom(), ilstAndFree...)
-		// The fresh udta wraps the fresh meta; udta is the outermost/largest box, so if it fits the
-		// enclosed meta does too. Both are rendered with 32-bit size fields and are invisible to
-		// checkSizes. udta total = 8 + meta total = 8 + metaPrefix() + len(metaInner).
+		// The fresh udta wraps the fresh meta; Both are rendered with 32-bit size fields and
+		// are invisible to checkSizes.
 		if err := checkBoxSize32(atomName("udta"), int64(8+metaPrefix()+len(metaInner))); err != nil {
 			return atomRef{}, nil, 0, 0, 0, 0, err
 		}
@@ -548,13 +481,9 @@ func checkSizes(ancestors []atomRef, delta int64) error {
 	return nil
 }
 
-// checkBoxSize32 fails when a freshly-rendered box's total size would overflow the 32-bit
-// box-size field renderAtom/renderData/renderFullBox write (they cast size to uint32 unchecked).
-// It centralizes the 8-byte-header assumption so the ilst guard, the created-wrapper guards, and
-// the chapter udta guard share one definition. It is the counterpart to checkSizes/sizePatch,
-// which patch *existing* ancestors (and write a 64-bit field when the header is 64-bit); this
-// guards the newly-built boxes those paths never see. totalLen is the whole box (header +
-// payload).
+// checkBoxSize32 fails when a freshly-rendered box's total size would overflow the
+// 32-bit box-size field renderAtom/renderData/renderFullBox write (they cast size to
+// uint32 unchecked).
 func checkBoxSize32(name [4]byte, totalLen int64) error {
 	if totalLen > math.MaxUint32 {
 		return fmt.Errorf("%w: %s atom would exceed the 4 GiB 32-bit size limit",
@@ -563,14 +492,10 @@ func checkBoxSize32(name [4]byte, totalLen int64) error {
 	return nil
 }
 
-// checkItemSizes rejects any ilst item whose payload exceeds the alloc limit - the write-side
-// half of the read/write symmetry. readPayloadWhole caps an ilst item read at the same limit,
-// so without this guard the writer could emit a cover or freeform it cannot read back. It
-// inspects every item buildItems returns - the canonical atoms, the covr, and the preserved/
-// unknown items - so an oversized preserved freeform is caught too, not only the cover. An
-// oversized covr reports ErrPictureTooLarge (the realistic hi-res-cover case); any other item
-// reports ErrSizeTooLarge. A zero/unset limit falls back to the 256 MiB library ceiling so a
-// caller that left Limits unset still cannot write an unreadable item.
+// checkItemSizes rejects any ilst item whose payload exceeds the alloc limit - the
+// write-side half of the read/write symmetry. readPayloadWhole caps an ilst item read
+// at the same limit, so without this guard the writer could emit a cover or freeform it
+// cannot read back.
 func checkItemSizes(items []item, limit int64) error {
 	if limit <= 0 {
 		limit = bits.DefaultLimits.MaxAllocBytes
@@ -590,13 +515,9 @@ func checkItemSizes(items []item, limit int64) error {
 	return nil
 }
 
-// checkBuiltItems is the single guard both write paths funnel buildItems' output through, so the
-// size check (and the floor below) cannot be applied inconsistently or forgotten at a call site.
-// It floors the write limit at the largest ilst item already present at parse: those items were
-// read within the (possibly raised) parse limit, so writing them back is always safe even when
-// the write limit defaults lower. Without the floor, an untouched oversized cover - parsed under
-// a raised MaxAllocBytes - would make an unrelated tag edit fail. A genuinely new item larger
-// than anything the file already held is still rejected.
+// checkBuiltItems is the single guard both write paths funnel buildItems' output
+// through, so the size check (and the floor below) cannot be applied inconsistently or
+// forgotten at a call site.
 func checkBuiltItems(items, parsed []item, limit int64) error {
 	if limit <= 0 {
 		limit = bits.DefaultLimits.MaxAllocBytes
@@ -619,10 +540,7 @@ func largestItemPayload(items []item) int64 {
 }
 
 // patchTables renders the offset-fixup edits for every table in the given groups,
-// skipping any the skip predicate rejects (nil skips none). Chunk-offset and
-// sample-auxiliary tables shift by the same rule from the same insertion point, so all
-// three write paths share this one implementation: a fix applied to the chunk-offset loop
-// and missed on the aux loop would otherwise leave the two silently inconsistent.
+// skipping any the skip predicate rejects (nil skips none).
 func patchTables(delta, insertion int64, skip func(offsetTable) bool, groups ...[]offsetTable) ([]edit, error) {
 	var out []edit
 	for _, g := range groups {
@@ -674,21 +592,10 @@ func offsetPatch(t offsetTable, delta, insertion int64) (edit, error) {
 	return edit{off: entriesOff, oldLen: int64(len(t.entries) * width), lit: buf}, nil
 }
 
-// shiftOffset moves a chunk offset that lies past the insertion point by delta,
-// so the media chunk resolves to its new position after the metadata changed
-// size. delta is usually a grow (positive) but can be a shrink (negative) - a
-// chapter clear drops a whole text track out of moov - so the adjustment is
-// signed. The same rule is used to rewrite the offset bytes and to update the
-// returned document, so the two cannot disagree.
-//
-// ok is false when the shift would carry the offset below the start of the file,
-// which means the source offset pointed inside the region being rewritten: a
-// malformed file, since a chunk offset addresses media in an mdat. The offset is
-// returned unchanged in that case. Letting the subtraction wrap would write a
-// ~18-exabyte offset into a 64-bit table and emit a silently corrupt file, so the
-// byte-writing caller refuses instead - the same posture as the 4 GiB check in
-// offsetPatch. An offset at or above 2^63 fails here too: int64 cannot address it,
-// so it is not a valid position in the file either.
+// shiftOffset moves a chunk offset that lies past the insertion point by delta, so the
+// media chunk resolves to its new position after the metadata changed size. The same
+// rule is used to rewrite the offset bytes and to update the returned document, so the
+// two cannot disagree.
 func shiftOffset(e uint64, insertion, delta int64) (uint64, bool) {
 	if e > uint64(insertion) {
 		shifted := int64(e) + delta
@@ -703,12 +610,9 @@ func shiftOffset(e uint64, insertion, delta int64) (uint64, bool) {
 // assemble turns the sorted, disjoint edits into a rewrite segment list: copy
 // the gaps from the source, emit each edit's literal bytes.
 func assemble(edits []edit, size int64) ([]bits.Segment, error) {
-	// Order by offset; on a tie, a zero-width insert (oldLen==0) sorts before a same-offset
-	// replace. Emitting the replace first would advance pos past the insert's offset and trip the
-	// e.off < pos overlap guard below, so the oldLen tie-break forces insert-before-replace
-	// regardless of input order. SliceStable (not Slice) additionally pins the order of two edits
-	// sharing both offset and width: the codec avoids generating those, but a stable sort keeps the
-	// output bytes reproducible if it ever does. Mirrors spliceBytes in write_chapters.go.
+	// Order by offset; Emitting the replace first would advance pos past the insert's
+	// offset and trip the e.off < pos overlap guard below, so the oldLen tie-break forces
+	// insert-before-replace regardless of input order.
 	sort.SliceStable(edits, func(i, j int) bool {
 		if edits[i].off != edits[j].off {
 			return edits[i].off < edits[j].off

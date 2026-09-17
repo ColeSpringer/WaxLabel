@@ -35,21 +35,9 @@ func apicHeader(body []byte) (enc byte, mime string, ptype byte, desc string, re
 	return enc, mime, ptype, desc, rest, true
 }
 
-// cutDescription splits a picture frame's description from its image. A missing terminator
-// puts the image's own bytes where the description should end, so a split at the first
-// terminator lands inside the image: a PNG carries a NUL at offset 8, in the IHDR length.
-// declared is the type the frame itself claims (an APIC MIME, a PIC format's MIME), read
-// through canonicalPictureMIME so the non-canonical spellings real taggers write still
-// count. It is what makes the malformed reading provable rather than guessed.
-//
-// A terminated frame keeps its split unless the bytes after it are not an image while the
-// whole remainder is an image of exactly the type the frame declares. Requiring the match
-// is what keeps a legitimate description from being eaten: the sniffer recognizes short,
-// weak signatures (a bare "BM"), so a description beginning with one would otherwise be
-// enough to fold it and its terminator into the image bytes. An unterminated frame has no
-// competing reading, so there any recognizable image wins.
-//
-// ok is false only when no terminator exists and rest is not an image.
+// cutDescription splits description from image bytes. Missing terminator would
+// land inside image data (PNG has NUL at offset 8); uses declared MIME to bound.
+
 func cutDescription(enc byte, declared string, rest []byte) (desc string, data []byte, ok bool) {
 	desc, data, ok = cutEncoded(enc, rest)
 	if ok {

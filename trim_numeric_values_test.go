@@ -7,9 +7,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestTrimTokenValues checks the same order Prepare uses: trim numeric values first,
-// then split number pairs. That stores the value WaxLabel already validates and lets
-// padded slash pairs keep their inner component trimming.
+// TestTrimTokenValues: Prepare order is trim numeric values, then split pairs.
 func TestTrimTokenValues(t *testing.T) {
 	wantVals := func(t *testing.T, ts tag.TagSet, key tag.Key, vals ...string) {
 		t.Helper()

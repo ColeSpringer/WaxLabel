@@ -45,8 +45,7 @@ func parseMKA(t *testing.T, data []byte) *core.Media {
 }
 
 // TestCoalesceClusterDescriptors checks that a contiguous run of minimum-size empty
-// Clusters retains one coalesced descriptor instead of one descriptor per cluster. A
-// non-cluster element between two runs breaks them into two descriptors.
+// Clusters retains one coalesced descriptor instead of one descriptor per cluster.
 func TestCoalesceClusterDescriptors(t *testing.T) {
 	const n = 200000
 	body := append(mkInfo("x"), bytes.Repeat(emptyCluster(), n)...)
@@ -73,8 +72,7 @@ func TestCoalesceClusterDescriptors(t *testing.T) {
 
 // TestCoalesceAlternationRejectedPastCap checks the separator case: a
 // Cluster/Void/Cluster/Void sequence defeats coalescing because each Void breaks the
-// run. Charging those separators against the element budget keeps descriptor growth
-// bounded and rejects an over-cap flood cleanly.
+// run.
 func TestCoalesceAlternationRejectedPastCap(t *testing.T) {
 	n := bits.DefaultLimits.MaxElements + 100
 	void := encElement(idVoid, nil)
@@ -91,10 +89,8 @@ func TestCoalesceAlternationRejectedPastCap(t *testing.T) {
 	}
 }
 
-// TestCoalesceWriteRoundTripsDescriptorCount checks that the writer and parser
-// coalesce the same way. After a shift-path edit on a 3-cluster file, both the
-// returned result document and a fresh parse of the written bytes should hold one
-// cluster descriptor.
+// TestCoalesceWriteRoundTripsDescriptorCount checks that the writer and parser coalesce
+// the same way.
 func TestCoalesceWriteRoundTripsDescriptorCount(t *testing.T) {
 	body := append(mkInfo("x"), bytes.Repeat(emptyCluster(), 3)...)
 	src := segBytes(body)
@@ -135,8 +131,7 @@ func TestCoalesceWriteRoundTripsDescriptorCount(t *testing.T) {
 
 // TestOffsetMapLookup covers the shift-path offset resolver's three cases: a direct
 // per-element hit, an interior cluster-run offset mapped by the run's uniform shift,
-// and the half-open [start, end) boundary. An offset at runEnd must resolve through
-// the next element's direct mapping, never through the run.
+// and the half-open [start, end) boundary.
 func TestOffsetMapLookup(t *testing.T) {
 	// run [100,130) shifts +1000; the element right after it (origStart 130) maps to a
 	// deliberately distinct 9999 so a boundary hit can be told apart from run + shift.

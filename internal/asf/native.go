@@ -9,25 +9,22 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// objectSummary is one header child object, for the native view.
+// objectSummary is one header child for the native view.
 type objectSummary struct {
 	id   guid
 	size int
 }
 
-// clone copies the summaries so a Document accessor stays detached.
 func cloneSummaries(s []objectSummary) []objectSummary { return slices.Clone(s) }
 
-// doc is the ASF native document: the decoded audio description and the header's
-// object list. Unlike the writable codecs it holds no preservation state, because
-// WaxLabel never rewrites an ASF file - see refuseWrite.
+// doc is the ASF native document: audio description and header object list.
+// No preservation state (ASF is never rewritten); see refuseWrite.
 type doc struct {
 	objects   []objectSummary
 	pictures  []core.Picture
 	headerEnd int64
-	// dataStart/dataEnd bound the Data Object's media packets: the audio essence. They
-	// are zero when the object could not be located, which reports the extent as unknown
-	// rather than guessing at the rest of the file.
+	// dataStart/dataEnd: Data Object media packets. Zero when not located
+	// (unknown extent; do not guess rest-of-file).
 	dataStart int64
 	dataEnd   int64
 	size      int64
@@ -36,12 +33,9 @@ type doc struct {
 	duration   time.Duration
 	maxBitrate uint32
 
-	// preroll is the File Properties offset every presentation time in the file carries,
-	// kept so the markers can be placed on the playback timeline whatever order the
-	// two objects came in.
+	// preroll from File Properties; subtracted when projecting markers.
 	preroll time.Duration
-	// markers are the Marker Object's entries as stored: presentation times with the
-	// preroll still in them. Chapters projects them.
+	// markers as stored (preroll still in presentation times). Chapters projects them.
 	markers []marker
 
 	haveAudio     bool
@@ -50,20 +44,12 @@ type doc struct {
 	sampleRate    int
 	byteRate      int
 	bitsPerSample int
-	// losslessDepth is the depth the WMA Lossless codec extra bytes declare, 0 when the
-	// stream is not Lossless or the bytes were absent or unreadable. It shadows
-	// bitsPerSample on the reported track only; the digest salt is the structure as
-	// stored, so the extra bytes never enter it.
+	// losslessDepth from WMA Lossless codec extra bytes (0 if N/A). Shadows
+	// bitsPerSample on the track only; digest salt stays the stored structure.
 	losslessDepth int
-	// waveFormat is the first 16 bytes of the stream's WAVEFORMATEX as stored: format tag,
-	// channels, sample rate, byte rate, block align and wBitsPerSample. It is the
-	// essence-digest salt, kept as bytes so the digest hashes what the file says and no
-	// field is narrowed on the way in.
+	// waveFormat: first 16 WAVEFORMATEX bytes as stored (essence-digest salt).
 	waveFormat [16]byte
-	// invalidKeys names the descriptors the canonical vocabulary cannot represent, so a
-	// value the native view preserves but the tag set never receives is reported rather than
-	// silently absent - which for a read-only source is the difference between a copy that
-	// says it carried everything and one that says what it left behind.
+	// invalidKeys: descriptors the canonical vocabulary cannot represent.
 	invalidKeys []string
 }
 
@@ -75,10 +61,8 @@ type marker struct {
 
 func (d *doc) Format() core.Format { return core.FormatWMA }
 
-// chapters projects the markers onto the playback timeline. A presentation time
-// carries the preroll, so it is subtracted, as it is from the play duration; a marker
-// inside the preroll lands at the start. The list is sorted by start, stably, so
-// markers sharing an instant keep their file order (mirrors the other projectors).
+// chapters projects markers onto the playback timeline (subtract preroll; clamp
+// at 0). Sorted by start, stably, so equal-time markers keep file order.
 func (d *doc) chapters() []core.Chapter {
 	if len(d.markers) == 0 {
 		return nil
@@ -91,25 +75,15 @@ func (d *doc) chapters() []core.Chapter {
 	return chs
 }
 
-// refuseWrite reports why an ASF document cannot be rewritten. For ASF the answer is
-// unconditional - WaxLabel reads WMA but never writes it - so it takes no document and
-// the file-less capability query gives the same answer as a parsed file.
-//
-// Plan returns this error, Capabilities derives its ReadOnly flag from the same call and
-// carries the error itself for a caller that refuses before reaching Plan, so the
-// capability shown, the reason given, and the outcome of an actual write cannot diverge -
-// which is the reason the refusal lives here rather than in [core.Format.Writable], a
-// public-API bookkeeping method no write path consults.
-//
-// The sentinel is ErrUnsupportedFormat, not ErrUnsupportedTag: the latter is
-// documented as "a tag exists that this version cannot model", which misdescribes a
-// format that is simply not written.
+// refuseWrite explains why ASF cannot be rewritten. Shared by Plan and
+// Capabilities so advertised capability and write outcome cannot diverge.
+// Uses ErrUnsupportedFormat (not ErrUnsupportedTag).
 func refuseWrite() error {
 	return fmt.Errorf("%w: WaxLabel reads WMA/ASF but does not write it; save to another format instead",
 		waxerr.ErrUnsupportedFormat)
 }
 
-// Clone deep-copies the document so Document accessors stay detached.
+// Clone deep-copies so Document accessors stay detached.
 func (d *doc) Clone() core.NativeDoc {
 	c := *d
 	c.objects = cloneSummaries(d.objects)
@@ -118,7 +92,7 @@ func (d *doc) Clone() core.NativeDoc {
 	return &c
 }
 
-// Describe summarizes the header's objects for the dump/native views.
+// Describe summarizes header objects for dump/native views.
 func (d *doc) Describe() []core.NativeEntry {
 	out := make([]core.NativeEntry, 0, len(d.objects)+2)
 	for _, o := range d.objects {
@@ -133,9 +107,7 @@ func (d *doc) Describe() []core.NativeEntry {
 	return out
 }
 
-// objectName is the spec's name for a header object, for the native view. An object
-// this codec does not read is still listed - by name where it is one of the known
-// ones, else as an opaque entry - so the view describes the whole header.
+// objectName is the spec name for a header object (opaque if unknown).
 func objectName(id guid) string {
 	switch id {
 	case guidFileProps:

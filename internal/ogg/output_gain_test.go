@@ -60,8 +60,7 @@ func TestParseOpusOutputGain(t *testing.T) {
 }
 
 // TestEssenceExtentOpusMasksOutputGain: the hashed configuration zeroes the output gain,
-// so a gain edit leaves the digest alone and two copies differing only in gain dedup. The
-// extent name is versioned so a v1 digest never compares equal to a v2 one.
+
 func TestEssenceExtentOpusMasksOutputGain(t *testing.T) {
 	nameA, cfgA := Codec{format: core.FormatOggOpus}.EssenceExtent(parseOpusStreamWithGain(t, -896))
 	nameB, cfgB := Codec{format: core.FormatOggOpus}.EssenceExtent(parseOpusStreamWithGain(t, 0))
@@ -164,8 +163,7 @@ func pageLen(t *testing.T, b []byte) int {
 }
 
 // TestPlanOpusOutputGainRewritesBOSPageOnly: a gain-only edit patches the OpusHead and
-// leaves every byte after the original page 0 alone, so the audio and the comment padding
-// survive on any stream, canonical or not.
+
 func TestPlanOpusOutputGainRewritesBOSPageOnly(t *testing.T) {
 	src, base, plan := planOpusGain(t, -896, nil)
 	if plan.NoOp {
@@ -320,8 +318,7 @@ func TestPlanOpusOutputGainKeepsEssenceConfig(t *testing.T) {
 }
 
 // TestPlanOpusOutputGainWithNoTagDelta: an edit that re-sets a tag to the value it already
-// holds leaves every comparison the no-op paths make equal, so only the gain can carry the
-// write. It pins the gate rather than the downgrade, which a gain-only edit never reaches.
+
 func TestPlanOpusOutputGainWithNoTagDelta(t *testing.T) {
 	_, _, plan := planOpusGain(t, -896, func(m *core.Media) { m.Tags.Set("TITLE", "Song") })
 	if plan.NoOp {

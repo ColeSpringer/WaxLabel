@@ -4,9 +4,7 @@ import (
 	"testing"
 )
 
-// doubledRateIndex returns the sampling-frequency index of twice the rate at index i, which
-// is the SBR rate of an implicitly signalled stream. ok is false when the doubled rate has
-// no index, which is what stops the SBR probe on a core rate above 48 kHz.
+// doubledRateIndex is SBR rate index (2x core); false above 48 kHz core.
 func doubledRateIndex(i int) (int, bool) {
 	want := SampleRate(i) * 2
 	for j := range 13 {
@@ -17,8 +15,7 @@ func doubledRateIndex(i int) (int, bool) {
 	return 0, false
 }
 
-// sbrFramesOf walks a fixture's frames and returns every SBR payload a single channel
-// element carried, along with the SBR sampling-frequency index they are parsed under.
+// sbrFramesOf returns SCE SBR payloads and SBR rate index from a fixture.
 func sbrFramesOf(t *testing.T, file string) ([]FrameInfo, int) {
 	t.Helper()
 	frames := walkADTS(t, readFixture(t, file))
@@ -42,9 +39,7 @@ func sbrFramesOf(t *testing.T, file string) ([]FrameInfo, int) {
 	return out, sbrIdx
 }
 
-// TestSBRFixtureFramesParse: every SBR payload of the parametric-stereo fixture parses, and
-// each one says so. The leftover is the fill the payload ends with, which the syntax caps
-// below a byte, so a walk that landed anywhere else could not report one.
+// TestSBRFixtureFramesParse: heaac_v2 SBR payloads parse with PS.
 func TestSBRFixtureFramesParse(t *testing.T) {
 	infos, sbrIdx := sbrFramesOf(t, "heaac_v2.aac")
 	if len(infos) == 0 {
@@ -62,9 +57,7 @@ func TestSBRFixtureFramesParse(t *testing.T) {
 	}
 }
 
-// TestSBRExtensionIDDecidesPS: the parametric-stereo answer comes from the extension id and
-// nothing else, so flipping that field in a copied payload flips the answer while the walk
-// consumes the same bits.
+// TestSBRExtensionIDDecidesPS: flipping bs_extension_id flips PS result.
 func TestSBRExtensionIDDecidesPS(t *testing.T) {
 	infos, sbrIdx := sbrFramesOf(t, "heaac_v2.aac")
 	if len(infos) == 0 {
@@ -93,8 +86,7 @@ func TestSBRExtensionIDDecidesPS(t *testing.T) {
 	}
 }
 
-// extensionIDPosition finds the bit offset of bs_extension_id in a payload by re-running the
-// walk and noting where the extended-data block starts.
+// extensionIDPosition finds bs_extension_id bit offset by re-walking to extended data.
 func extensionIDPosition(t *testing.T, info FrameInfo, sbrIdx int) (int, bool) {
 	t.Helper()
 	p := &sbrParser{r: &bitReader{b: info.SBRPayload}, bits: info.SBRBits, fs: SampleRate(sbrIdx), st: &SBRState{}}
@@ -158,10 +150,7 @@ func setBits2(b []byte, pos int, v uint32) {
 	}
 }
 
-// TestSBRFrequencyBandCounts pins the band derivation. Each case was computed by hand from
-// 4.6.18.3.2 - the start and stop minima for the rate, the offset row, the master table
-// flowchart - so a change to the algorithm has to be deliberate rather than merely
-// self-consistent. The first case is the header the parametric-stereo fixture carries.
+// TestSBRFrequencyBandCounts: hand-computed deriveBands cases from 4.6.18.3.2.
 func TestSBRFrequencyBandCounts(t *testing.T) {
 	cases := []struct {
 		name                          string
@@ -191,8 +180,7 @@ func TestSBRFrequencyBandCounts(t *testing.T) {
 	}
 }
 
-// TestSBRRejectsImpossibleRange: a header the QMF bank cannot represent is refused rather
-// than sized into a walk that would read the wrong number of bits.
+// TestSBRRejectsImpossibleRange: invalid QMF range refused.
 func TestSBRRejectsImpossibleRange(t *testing.T) {
 	// 33 QMF subbands at 48 kHz, one past the limit 4.6.18.3.6 sets for that rate.
 	if _, ok := deriveBands(sbrHeader{startFreq: 15, stopFreq: 15, freqScale: 2, alterScale: 1, noiseBands: 2}, 48000); ok {

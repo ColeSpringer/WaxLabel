@@ -4,12 +4,9 @@ import (
 	"hash/crc32"
 )
 
-// This file is the EBML writer: the inverse of the readVINT/readElement decoders
-// in ebml.go. An element is ID ++ data-size-VINT ++ payload. Element IDs are
-// emitted with their length-descriptor bits intact (the canonical ID form);
-// data sizes are VINTs with the marker bit stripped from the value. Values
-// (SeekPosition, CueClusterPosition) are plain big-endian unsigned integers, not
-// VINTs. Reimplemented from EBML/RFC 8794; nothing is copied.
+// This file is the EBML writer: the inverse of the readVINT/readElement decoders in
+// ebml.go. Values (SeekPosition, CueClusterPosition) are plain big-endian unsigned
+// integers, not VINTs.
 
 // idBytes returns an element ID's on-wire bytes. The ID already carries its
 // length-descriptor bits, so its magnitude fixes the byte count (0x80-0xFE => 1
@@ -27,10 +24,7 @@ func idBytes(id uint64) []byte {
 	}
 }
 
-// vintWidth returns the smallest VINT byte length that can hold n as a data
-// size. A k-byte VINT stores 7k value bits, but the all-ones pattern is the
-// reserved "unknown size" form, so a value that would fill k bytes exactly is
-// pushed to k+1 - keeping every size we write a definite one.
+// vintWidth returns the smallest VINT byte length that can hold n as a data size.
 func vintWidth(n uint64) int {
 	for k := 1; k <= 8; k++ {
 		if n < (uint64(1)<<(7*k))-1 {
@@ -45,12 +39,8 @@ func sizeVINT(n uint64) []byte {
 	return sizeVINTWidth(n, vintWidth(n))
 }
 
-// sizeVINTWidth encodes a data size as a width-byte VINT (the marker bit is set
-// in the first byte; the remaining bits hold the big-endian value). It is used
-// both for minimal sizes and to re-encode a value at a fixed original width so a
-// patched element does not change size. ok is false when n cannot fit width
-// value bits (or would collide with the all-ones unknown form), so a caller that
-// must preserve width can detect the rare overflow instead of corrupting.
+// sizeVINTWidth encodes a data size as a width-byte VINT (the marker bit is set in the
+// first byte; the remaining bits hold the big-endian value).
 func sizeVINTWidth(n uint64, width int) (out []byte) {
 	out, _ = sizeVINTWidthOK(n, width)
 	return out

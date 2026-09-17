@@ -7,10 +7,8 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// chapterUIDsByStart independently decodes the output's Chapters tree and returns
-// each top-level ChapterAtom's start time and ChapterUID. The tests need the pairing,
-// not just proof that some UID exists, because surviving chapters must keep their own
-// UID by start time.
+// chapterUIDsByStart independently decodes the output's Chapters tree and returns each top-level
+// ChapterAtom's start time and ChapterUID.
 func chapterUIDsByStart(t *testing.T, data []byte) map[time.Duration]uint64 {
 	t.Helper()
 	_, segData, segEnd, ok := elemRange(data, 0, len(data), idSegment, nil)
@@ -172,10 +170,7 @@ func eachChildField(data []byte, start, end int, fn func(id uint64, ds, de int))
 	}
 }
 
-// TestMatroskaChapterUIDsDuplicateStart covers two chapters with the same start: the
-// first originally UID-less and the second carrying UID 22. A rename forces a chapter
-// rebuild; UID 22 must stay on the second chapter while the UID-less chapter gets a
-// fresh UID.
+// two chapters with the same start: the first originally UID-less and the second carrying UID 22.
 func TestMatroskaChapterUIDsDuplicateStart(t *testing.T) {
 	chapters := mkEl(idChapters, mkEdition(true, nil,
 		mkAtom(0, uint64(ms(100)), uint64(ms(200)), "First"),   // file order: UID-less first
@@ -205,9 +200,7 @@ func TestMatroskaChapterUIDsDuplicateStart(t *testing.T) {
 	}
 }
 
-// TestMatroskaChapterUIDsInsertMiddle verifies that inserting a chapter keeps each
-// survivor matched to its own ChapterUID by start time. The inserted chapter gets a
-// fresh UID instead of taking the following survivor's UID by position.
+// inserting a chapter keeps each survivor matched to its own ChapterUID by start time.
 func TestMatroskaChapterUIDsInsertMiddle(t *testing.T) {
 	chapters := mkEl(idChapters, mkEdition(true, nil,
 		mkAtom(11, 0, uint64(ms(200)), "First"),
@@ -236,9 +229,7 @@ func TestMatroskaChapterUIDsInsertMiddle(t *testing.T) {
 	}
 }
 
-// TestMatroskaChapterUIDsDeleteMiddle verifies that deleting the middle chapter leaves
-// the first and third chapters with their own UIDs. The third keeps 33 by start time,
-// rather than taking the deleted middle chapter's UID by position.
+// deleting the middle chapter leaves the first and third chapters with their own UIDs.
 func TestMatroskaChapterUIDsDeleteMiddle(t *testing.T) {
 	chapters := mkEl(idChapters, mkEdition(true, nil,
 		mkAtom(11, 0, uint64(ms(200)), "First"),

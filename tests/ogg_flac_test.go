@@ -10,14 +10,12 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// The Ogg FLAC mapping is the one Ogg codec whose cover art is a native FLAC
-// PICTURE block rather than a METADATA_BLOCK_PICTURE comment, and the one whose
-// identification packet carries a count of the header packets that follow. Both
-// are synthesized here rather than shipped as binary fixtures.
+// The Ogg FLAC mapping is the one Ogg codec whose cover art is a native FLAC PICTURE block rather
+// than a METADATA_BLOCK_PICTURE comment, and the one whose identification packet carries a count of
+// the header packets that follow.
 
-// oggCRC is the Ogg page checksum: CRC-32 with polynomial 0x04c11db7, no input or
-// output reflection, zero init, and no final XOR. The test carries its own copy so
-// a synthesized page is checked against the spec, not against the writer's helper.
+// oggCRC is the Ogg page checksum: CRC-32 with polynomial 0x04c11db7, no input or output
+// reflection, zero init, and no final XOR.
 func oggCRC(b []byte) uint32 {
 	var crc uint32
 	for _, c := range b {
@@ -66,10 +64,8 @@ func flacBlockPacket(code byte, last bool, body []byte) []byte {
 	return append(h, body...)
 }
 
-// synthOggFLAC builds a minimal Ogg FLAC stream: the identification packet (the
-// mapping prologue plus STREAMINFO), one header packet per supplied block, and a
-// single audio page. The blocks are given as {code, body} pairs in order; the
-// last-block flag is set on the final one.
+// synthOggFLAC builds a minimal Ogg FLAC stream: the identification packet (the mapping prologue
+// plus STREAMINFO), one header packet per supplied block, and a single audio page.
 func synthOggFLAC(blocks ...[]byte) []byte {
 	const serial = 0x57ac7557
 	streamInfo := make([]byte, 34)
@@ -94,8 +90,7 @@ func synthOggFLAC(blocks ...[]byte) []byte {
 	return append(out, oggPage(0, 4096, serial, seq, []byte("AUDIO-FRAME-BYTES"))...)
 }
 
-// declaredHeaderPackets reads the identification packet's count of header packets
-// following it. A metadata rewrite that adds or drops a block must keep it honest.
+// declaredHeaderPackets reads the identification packet's count of header packets following it.
 func declaredHeaderPackets(t *testing.T, data []byte) int {
 	t.Helper()
 	if len(data) < 27 {
@@ -148,10 +143,9 @@ func TestOggFLACPreservesUnknownBlocks(t *testing.T) {
 	}
 }
 
-// TestOggFLACPictureIsNativeBlock pins the mapping's one divergence from Vorbis and
-// Opus: a cover is written as a FLAC PICTURE block, not a base64
-// METADATA_BLOCK_PICTURE comment, and the identification packet's header-packet
-// count follows the block it added.
+// mapping's one divergence from Vorbis and Opus: a cover is written as a FLAC PICTURE block, not a
+// base64 METADATA_BLOCK_PICTURE comment, and the identification packet's header-packet count
+// follows the block it added.
 func TestOggFLACPictureIsNativeBlock(t *testing.T) {
 	src := readFixture(t, notagsOggFLAC)
 	before := declaredHeaderPackets(t, src)
@@ -197,9 +191,8 @@ func TestOggFLACPictureIsNativeBlock(t *testing.T) {
 	}
 }
 
-// TestOggFLACCommentPictureMaterialized covers the cross-form file: some encoders
-// put a METADATA_BLOCK_PICTURE comment in an Ogg FLAC stream. It must read as a
-// cover, and a tag-only edit (which re-renders the comment block and so strips the
+// cross-form file: some encoders put a METADATA_BLOCK_PICTURE comment in an Ogg FLAC stream. It
+// must read as a cover, and a tag-only edit (which re-renders the comment block and so strips the
 // entry) must materialize it as a native PICTURE block rather than drop it.
 func TestOggFLACCommentPictureMaterialized(t *testing.T) {
 	pic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}
@@ -231,8 +224,8 @@ func TestOggFLACCommentPictureMaterialized(t *testing.T) {
 	}
 }
 
-// TestOggFLACWithoutCommentBlock exercises the create-a-comment-block path: the
-// mapping requires one, but a stream missing it is read rather than refused.
+// create-a-comment-block path: the mapping requires one, but a stream missing it is read rather
+// than refused.
 func TestOggFLACWithoutCommentBlock(t *testing.T) {
 	padding := append([]byte{1}, make([]byte, 8)...)
 	data := synthOggFLAC(padding)

@@ -7,18 +7,14 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// A Monkey's Audio file opens with the "MAC " marker and a version word. What
-// follows depends on that version: from 3.98 (3980) the file carries an
-// APE_DESCRIPTOR - which sizes every later region - followed by an APE_HEADER with
-// the audio geometry. Older files inline a single fixed header instead, and derive
-// the frame size from the version and compression level rather than storing it.
-// Both layouts are needed: 3.97 and earlier files are common in real libraries.
+// After "MAC " and a version word: from 3.98 (3980) an APE_DESCRIPTOR then
+// APE_HEADER; older files use a fixed legacy header and derive frame size from
+// version/compression. Both layouts are read.
 const (
 	fileMagic = "MAC "
-	// descriptorVersion is the first version that writes an APE_DESCRIPTOR.
+	// descriptorVersion is the first version with an APE_DESCRIPTOR.
 	descriptorVersion = 3980
-	// minVersion is the oldest version whose header layout is documented well enough
-	// to decode. Below it the format is a different container.
+	// minVersion is the oldest documented layout; below it is a different container.
 	minVersion = 3800
 
 	descriptorLen = 52
@@ -26,16 +22,14 @@ const (
 	legacyLen     = 32
 )
 
-// Format flag bits from the old header. From 3.98 the bit depth is an explicit
-// field, so these matter only for the legacy layout.
+// Legacy-layout format flags. From 3.98 bit depth is an explicit field.
 const (
 	flag8Bit  = 1 << 0
 	flag24Bit = 1 << 3
 )
 
-// Frame sizes for the legacy layout, which stores none. The value depends on the
-// version and, at the 3.8 boundary, on whether the extra-high compression level was
-// used.
+// Legacy frame sizes (not stored on disk). At 3.8, extra-high compression uses the
+// larger size.
 const (
 	blocksPerFrameV3950 = 73728 * 4
 	blocksPerFrameV3900 = 73728
@@ -43,8 +37,7 @@ const (
 	compressionExtraHi  = 4000
 )
 
-// header is the decoded audio description, assembled from whichever layout the file
-// uses so the rest of the codec sees one shape.
+// header is the decoded audio description in one shape for either on-disk layout.
 type header struct {
 	version          uint16
 	compressionLevel uint16
@@ -55,12 +48,11 @@ type header struct {
 	bitsPerSample    uint16
 	channels         uint16
 	sampleRate       uint32
-	// headerLen is the on-disk length of the descriptor and header region: the
-	// earliest offset at which a trailing tag could begin.
+	// headerLen is the on-disk descriptor+header length (floor for a trailing tag).
 	headerLen int64
 }
 
-// totalSamples is the decoded sample count: every frame but the last is full.
+// totalSamples: full frames plus the final partial frame.
 func (h header) totalSamples() uint64 {
 	if h.totalFrames == 0 {
 		return 0
@@ -68,10 +60,8 @@ func (h header) totalSamples() uint64 {
 	return uint64(h.totalFrames-1)*uint64(h.blocksPerFrame) + uint64(h.finalFrameBlocks)
 }
 
-// parseHeader decodes whichever header layout b begins with. b must hold at least
-// the descriptor and header (or the legacy header); a shorter read is reported as
-// truncated rather than misread. b is the leading window of the file, so a declared
-// region that runs past it is refused rather than trusted.
+// parseHeader decodes the layout at the front of b. Short or overrunning declared
+// regions are refused rather than trusted past the leading window.
 func parseHeader(b []byte) (header, error) {
 	var h header
 	if len(b) < 6 {
@@ -91,27 +81,19 @@ func parseHeader(b []byte) (header, error) {
 	return parseLegacyHeader(b, h)
 }
 
-// parseDescriptorHeader decodes the 3.98-and-later layout: an APE_DESCRIPTOR whose
-// nDescriptorBytes field locates the APE_HEADER that follows it.
+// parseDescriptorHeader: APE_DESCRIPTOR.nDescriptorBytes locates the APE_HEADER.
 func parseDescriptorHeader(b []byte, h header) (header, error) {
 	if len(b) < descriptorLen {
 		return h, fmt.Errorf("%w: APE_DESCRIPTOR is %d bytes, need %d", waxerr.ErrInvalidData, len(b), descriptorLen)
 	}
 	descBytes := int64(binary.LittleEndian.Uint32(b[8:12]))
 	hdrBytes := int64(binary.LittleEndian.Uint32(b[12:16]))
-	// A descriptor may be longer than the fields this version knows; trust its own
-	// length so the header is found where the writer put it. A short or absurd value
-	// falls back to the documented sizes rather than seeking into the audio.
-	//
-	// Both are clamped from above as well as below. headerLen is the floor a trailing
-	// tag must sit past, so an absurd nHeaderBytes would push it beyond the file and
-	// make the peel reject the file's real APEv2 tag - after which a rewrite appends a
-	// second one and the result no longer parses.
-	// The clamp tests the condition the USE below needs - room for the header that
-	// follows the descriptor - not merely that the descriptor's own length fits. A
-	// declared length landing exactly on the end of the read otherwise slips through here
-	// and fails there, which made the verdict depend on how many trailing bytes the file
-	// happened to have: a tag appended by a rewrite could flip it.
+	// Trust the writer's descriptor length when sane; else fall back to documented
+	// sizes. Clamp from above too: absurd nHeaderBytes would push headerLen past EOF,
+	// peel would miss the real APEv2, and rewrite would append a second tag.
+	// Clamp against room for the header after the descriptor, not only that the
+	// descriptor fits: a length landing exactly at end of read would otherwise pass
+	// here and fail later, flipping on whether a rewrite had already appended a tag.
 	if descBytes < descriptorLen || descBytes+headerLen > int64(len(b)) {
 		descBytes = descriptorLen
 	}
@@ -134,8 +116,7 @@ func parseDescriptorHeader(b []byte, h header) (header, error) {
 	return h, nil
 }
 
-// parseLegacyHeader decodes the pre-3.98 layout, whose 32 bytes carry the geometry
-// inline and leave the frame size to be derived.
+// parseLegacyHeader: pre-3.98 32-byte geometry; frame size is derived.
 func parseLegacyHeader(b []byte, h header) (header, error) {
 	if len(b) < legacyLen {
 		return h, fmt.Errorf("%w: legacy Monkey's Audio header is %d bytes, need %d", waxerr.ErrInvalidData, len(b), legacyLen)
@@ -156,9 +137,8 @@ func parseLegacyHeader(b []byte, h header) (header, error) {
 	default:
 		h.bitsPerSample = 16
 	}
-	// The embedded WAV header sits between the APE header and the frames, so it is part
-	// of the region a trailing tag must sit past. An absurd length is clamped to the
-	// bare header rather than pushing that floor beyond the file.
+	// Embedded WAV header is between APE header and frames; clamp absurd lengths
+	// so the trailing-tag floor stays inside the file.
 	if wavHeaderBytes < 0 || legacyLen+wavHeaderBytes > int64(len(b)) {
 		wavHeaderBytes = 0
 	}
@@ -166,10 +146,8 @@ func parseLegacyHeader(b []byte, h header) (header, error) {
 	return h, nil
 }
 
-// legacyBlocksPerFrame derives the frame size the pre-3.98 layout does not store.
-// The size grew twice: at 3.90, and again at 3.95; 3.8 already used the larger frame
-// at the extra-high compression level and above, which is the comparison the reference
-// decoder makes (an equality test would give an insane-level file an 8x-wrong length).
+// legacyBlocksPerFrame: grew at 3.90 and 3.95; at 3.8 extra-high already used the
+// larger size (>=, not ==: equality would mis-size insane-level files by 8x).
 func legacyBlocksPerFrame(version, compressionLevel uint16) uint32 {
 	switch {
 	case version >= 3950:

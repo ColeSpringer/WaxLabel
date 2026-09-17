@@ -21,16 +21,14 @@ func segmentFirstChildIsVoid(t *testing.T, b []byte) bool {
 	return b[ds] == 0xEC
 }
 
-// TestMatroskaSegmentCRCDroppedToVoid checks that a CRC-32 directly under the Segment covers the
-// whole segment body, so any edit makes it stale. The writer must neutralize it to a Void (not
-// copy the stale CRC), keeping the output valid (the CRC is spec-optional) without a whole-file
-// recompute. checkCRCs recurses into the Segment master, so it would flag a stale Segment CRC;
-// both the in-place absorb (layout) and the shift path are exercised.
+// CRC-32 directly under the Segment covers the whole segment body, so any edit makes it stale. The
+// writer must neutralize it to a Void (not copy the stale CRC), keeping the output valid (the CRC
+// is spec-optional) without a whole-file recompute.
 func TestMatroskaSegmentCRCDroppedToVoid(t *testing.T) {
 	tags := mkEl(idTags, mkEl(idTag, concat(
 		mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "AA"))))
-	// Segment children: Info(title), a padding Void (so a small edit can absorb in place), an
-	// audio Cluster, and Tags - wrapped in a leading CRC-32 covering the whole body.
+	// Segment children: Info(title), a padding Void (so a small edit can absorb in place), an audio
+	// Cluster, and Tags; wrapped in a leading CRC-32 covering the whole body.
 	seg := concat(
 		mkEl(idInfo, mkStr(idSegTitle, "Old")),
 		mkEl(0xEC, make([]byte, 64)), // Void padding (id 0xEC) enabling the in-place absorb path
@@ -70,10 +68,9 @@ func TestMatroskaSegmentCRCDroppedToVoid(t *testing.T) {
 	}
 }
 
-// TestMatroskaSegmentCRCUncapturableRefused covers the robustness gap: a Segment-level CRC-32
-// whose declared size exceeds the alloc limit cannot be captured for neutralization, so an edit
-// must refuse loudly (the same contract the index elements use) rather than copy the stale CRC
-// over an edited body and silently produce an invalid file.
+// robustness gap: a Segment-level CRC-32 whose declared size exceeds the alloc limit cannot be
+// captured for neutralization, so an edit must refuse loudly (the same contract the index elements
+// use) rather than copy the stale CRC over an edited body and silently produce an invalid file.
 func TestMatroskaSegmentCRCUncapturableRefused(t *testing.T) {
 	// A non-conformant Segment CRC declaring far more content (2000 bytes) than the 1 KiB parse
 	// limit will read, so its capture fails and segVoidFromCRC stays nil.

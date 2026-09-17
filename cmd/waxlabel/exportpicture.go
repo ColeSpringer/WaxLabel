@@ -11,9 +11,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newExportPictureCmd builds the "export-picture" command, which writes one embedded
-// picture's image bytes to a file. It is read-only on the input: the audio file is never
-// modified, only the selected cover is copied out verbatim.
+// newExportPictureCmd builds "export-picture": write one embedded picture's bytes
+// to a file. Read-only on the audio input.
 func newExportPictureCmd() *cobra.Command {
 	var (
 		output    string
@@ -40,8 +39,7 @@ func newExportPictureCmd() *cobra.Command {
 			if strings.TrimSpace(output) == "" {
 				return usagef("export-picture requires an output path (-o FILE)")
 			}
-			// export-picture writes a named image file; standard output is not a target
-			// (checkOutputTarget also rejects "-", but its message names set, so pre-empt it).
+			// Named image file only; pre-empt checkOutputTarget's set-oriented "-" message.
 			if output == stdinArg {
 				return usagef("-o - is not supported; export-picture writes a named file")
 			}
@@ -60,8 +58,7 @@ func newExportPictureCmd() *cobra.Command {
 			errOut := cmd.ErrOrStderr()
 			doc, err := parseInput(ctx, realOf(inPath), inPath)
 			if err != nil {
-				// Match the per-file "waxlabel: <path>: <reason>" human line the other commands
-				// print; JSON returns the raw error to dispatch, which emits the machine envelope.
+				// Human: per-file error line; JSON: raw error to dispatch.
 				if asJSON {
 					return err
 				}
@@ -73,22 +70,14 @@ func newExportPictureCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Refuse an output that IS the input file. Unlike set, export-picture has no in-place
-			// mode: writing the picture bytes over the audio would destroy it. checkOutputTarget is
-			// shared with set, whose -o legitimately targets the input for an atomic in-place rewrite,
-			// so it waves output==input through the overwrite gate - which here means os.WriteFile
-			// clobbering the audio with the cover. Guard it here, up front and unconditionally (even
-			// --overwrite cannot make in-place extraction meaningful). os.SameFile keys on inode
-			// identity, so it also catches a symlink to the input and a hardlink sharing its inode
-			// that a canonical-path compare would miss; it is false when the output does not yet exist.
+			// Refuse output == input. Unlike set, there is no in-place mode; checkOutputTarget
+			// allows that for set's atomic rewrite. os.SameFile catches symlink/hardlink aliases.
 			if oi, oerr := os.Stat(output); oerr == nil {
 				if ii, ierr := os.Stat(realOf(inPath)); ierr == nil && os.SameFile(oi, ii) {
 					return usagef("-o %q is the input file; export-picture cannot write the picture over the audio it reads", output)
 				}
 			}
-			// The output image is a distinct file from the audio input, so the -o overwrite gate
-			// refuses replacing an existing target unless --overwrite is passed (consistent with
-			// set). realOf(inPath) is the input's real path, the operand the collision check keys on.
+			// Overwrite gate like set; collision check keys on realOf(inPath).
 			if err := checkOutputTarget(output, realOf(inPath), overwrite); err != nil {
 				return err
 			}
@@ -112,13 +101,9 @@ func newExportPictureCmd() *cobra.Command {
 	return cmd
 }
 
-// resolveExportPicture resolves the --picture selector to exactly one picture in pics (the
-// file's pictures in dump order, the same list dump numbers). An explicit selector is a
-// 1-based dump index or a cover-art role name and must resolve to exactly one picture: a role
-// matching none, or several, is an error - unlike resolveRemovals, where a role matching
-// nothing is a harmless no-op (removal is a bulk operation; extract must pick a single file to
-// write). With no selector it defaults to the sole front cover, else the sole picture of any
-// type, else a usage error asking for --picture rather than silently picking among several.
+// resolveExportPicture picks exactly one picture from pics (dump order). Selector is a
+// 1-based index or role; zero or many matches are errors (unlike resolveRemovals, where a
+// missing role is a no-op). No selector: sole front cover, else sole picture, else usage error.
 func resolveExportPicture(selector string, pics []wl.Picture) (wl.Picture, error) {
 	if len(pics) == 0 {
 		return wl.Picture{}, usagef("file has no embedded pictures to export")
@@ -133,14 +118,14 @@ func resolveExportPicture(selector string, pics []wl.Picture) (wl.Picture, error
 		}
 		return wl.Picture{}, usagef("file has %d pictures and no single front cover; pass --picture with a role name or a 1-based index (roles: %s)", len(pics), pictureRoleList())
 	}
-	// A 1-based dump index picks exactly one picture.
+	// 1-based dump index.
 	if n, err := strconv.Atoi(sel); err == nil {
 		if n < 1 || n > len(pics) {
 			return wl.Picture{}, usagef("--picture index %d is out of range (file has %d picture(s))", n, len(pics))
 		}
 		return pics[n-1], nil
 	}
-	// A role name must resolve to exactly one picture.
+	// Role must match exactly one.
 	pt, ok := pictureRole(sel)
 	if !ok {
 		return wl.Picture{}, usagef("--picture wants a role name or a 1-based index, got %q; valid roles: %s", selector, pictureRoleList())
@@ -156,7 +141,7 @@ func resolveExportPicture(selector string, pics []wl.Picture) (wl.Picture, error
 	}
 }
 
-// picturesOfType returns the indices (into pics) of every picture of type pt, in order.
+// picturesOfType returns indices of pictures of type pt, in order.
 func picturesOfType(pics []wl.Picture, pt wl.PictureType) []int {
 	var idx []int
 	for i, p := range pics {
@@ -167,8 +152,7 @@ func picturesOfType(pics []wl.Picture, pt wl.PictureType) []int {
 	return idx
 }
 
-// jsonExportPicture is the machine-readable result of an export-picture: the input file, the
-// output path written, and the exported picture's metadata (the same jsonPicture dump emits).
+// jsonExportPicture is the machine-readable export result.
 type jsonExportPicture struct {
 	SchemaVersion int         `json:"schemaVersion"`
 	File          string      `json:"file"`

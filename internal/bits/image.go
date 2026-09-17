@@ -2,36 +2,21 @@ package bits
 
 import "encoding/binary"
 
-// ImageInfo is the result of sniffing an embedded picture: its MIME type and,
-// when derivable cheaply from the header, pixel dimensions and color depth.
-// WaxLabel never decodes pixels; it only reads headers, so a caller can fill a
-// FLAC PICTURE block's width/height/depth without an image library.
-//
-// Width, Height, and Depth come from the image header and are not trusted. WaxLabel
-// never allocates from these values, so a tiny file can claim huge dimensions without
-// exhausting memory. Callers that do more than echo the geometry must apply their own
-// bounds.
+// ImageInfo is MIME and header-derived dimensions. Header values are untrusted;
+// this package never allocates from them.
 type ImageInfo struct {
 	MIME   string
 	Width  int
 	Height int
 	Depth  int // bits per pixel across all channels; 0 if unknown
-	// Colors is the palette-entry count for indexed images: PNG color type 3 or a
-	// GIF global color table. It is 0 for non-indexed formats and unknown counts.
+	// Colors is palette entry count for indexed PNG/GIF; 0 otherwise.
 	Colors int
 }
 
-// SniffImage identifies PNG, JPEG, GIF, WebP, BMP, TIFF, HEIF/HEIC, AVIF, and
-// JPEG XL data and extracts dimensions where the header carries them cheaply. It
-// reports ok=false for unrecognized or truncated data; callers should fall back to
-// "application/octet-stream" and zero dimensions. Dimension extraction is
-// best-effort for the RIFF/IFD-based formats (WebP, TIFF): a recognized header
-// always yields the correct MIME even when the size fields cannot be read. The
-// ISOBMFF and JPEG XL headers carry no cheap geometry at all, so those report a
-// MIME alone.
-// RecognizedFormats names the formats [SniffImage] identifies, for a message that has to
-// tell a user what counts as an image. It is the one copy of that list: teaching the switch
-// below a format means editing the line above it.
+// SniffImage identifies PNG, JPEG, GIF, WebP, BMP, TIFF, HEIF/HEIC, AVIF, and JXL.
+// ok=false for unknown/truncated data. WebP/TIFF may yield MIME without dimensions.
+//
+// RecognizedFormats lists formats [SniffImage] handles; keep in sync with the switch.
 const RecognizedFormats = "PNG/JPEG/GIF/WebP/BMP/TIFF/HEIF/AVIF/JXL"
 
 func SniffImage(data []byte) (ImageInfo, bool) {
@@ -48,8 +33,7 @@ func SniffImage(data []byte) (ImageInfo, bool) {
 		return sniffBMP(data)
 	case hasPrefix(data, tiffLE) || hasPrefix(data, tiffBE):
 		return sniffTIFF(data)
-	// The modern cover formats go last: their signatures cannot collide with the
-	// cases above, so adding them leaves every already-recognized header untouched.
+	// HEIF/AVIF/JXL last; signatures do not collide with cases above.
 	case isFtyp(data):
 		return sniffISOBMFF(data)
 	case isJXL(data):
@@ -66,16 +50,12 @@ var (
 	bmpMagic = []byte("BM")
 	tiffLE   = []byte{'I', 'I', 0x2A, 0x00}
 	tiffBE   = []byte{'M', 'M', 0x00, 0x2A}
-	// The two JPEG XL forms: the bare codestream, and the ISOBMFF-style container
-	// whose first box is a 12-byte signature box.
+	// JPEG XL codestream and container signatures.
 	jxlCodestream = []byte{0xFF, 0x0A}
 	jxlContainer  = []byte{0x00, 0x00, 0x00, 0x0C, 'J', 'X', 'L', ' ', 0x0D, 0x0A, 0x87, 0x0A}
 )
 
-// isobmffImageBrands maps the ISO base media file format brands that name an image format to
-// its registered media type. The image-sequence brands have their own types and keep them: a
-// sequence is not a still image, and saying so is the point of sniffing. Anything else in an
-// ftyp box (a plain isom/mp42 movie, an M4A) is not an image at all.
+// isobmffImageBrands maps ftyp brands to image MIME types. Movies/M4A are excluded.
 var isobmffImageBrands = map[string]string{
 	"heic": "image/heic", "heix": "image/heic",
 	"mif1": "image/heif", "heim": "image/heif", "heis": "image/heif",
@@ -85,11 +65,7 @@ var isobmffImageBrands = map[string]string{
 	"avis": "image/avif-sequence",
 }
 
-// ImageExtension returns the conventional file extension, dot included, for a MIME
-// [SniffImage] can report, and "" for anything else. It lives beside the sniffer so a format
-// the sniffer learns cannot be left out of the file names codecs build from its result (a
-// Matroska cover.<ext> attachment, an APE Cover Art item); each caller supplies its own
-// fallback for the empty case.
+// ImageExtension returns ".ext" for MIME types [SniffImage] reports, else "".
 func ImageExtension(mime string) string {
 	switch mime {
 	case "image/png":
@@ -122,28 +98,21 @@ func ImageExtension(mime string) string {
 	return ""
 }
 
-// isFtyp reports whether data opens with an ISO base media file format ftyp box, the
-// container HEIF, AVIF and several video formats share. Only the brand tells an image
-// from a movie, which sniffISOBMFF decides.
+// isFtyp reports an ftyp box header.
 func isFtyp(data []byte) bool {
 	return len(data) >= 12 && string(data[4:8]) == "ftyp"
 }
 
-// sniffISOBMFF maps an ftyp box's brands to an image MIME: the major brand at offset 8, else
-// any of the compatible brands that follow the minor version. The scan stops at the declared
-// box size. A size that cannot bound it - 0 ("to end of file"), 1 (a 64-bit size sits where
-// the major brand belongs), or one past the buffer - falls back to the major brand alone,
-// rather than reading on into a movie's payload where any 4-aligned brand string would turn
-// it into an image. No dimensions: an ISOBMFF image stores its geometry in an ispe property
-// nested inside meta, well past a header sniff.
+// sniffISOBMFF maps ftyp brands to image MIME. Unusable box size (0, 1, past buffer)
+// scans major brand only, avoiding false positives in movie payload. No dimensions.
 func sniffISOBMFF(data []byte) (ImageInfo, bool) {
 	end := int(binary.BigEndian.Uint32(data[0:4]))
 	if end < 16 || end > len(data) {
-		end = 12 // the major brand, and nothing the size failed to vouch for
+		end = 12 // major brand only
 	}
 	for pos := 8; pos+4 <= end; pos += 4 {
 		if pos == 12 {
-			continue // minor_version sits between the major and compatible brands
+			continue // skip minor_version
 		}
 		if mime, ok := isobmffImageBrands[string(data[pos:pos+4])]; ok {
 			return ImageInfo{MIME: mime}, true
@@ -152,26 +121,19 @@ func sniffISOBMFF(data []byte) (ImageInfo, bool) {
 	return ImageInfo{}, false
 }
 
-// isJXL reports whether data opens with either JPEG XL signature. It selects the case;
-// sniffJXL decides whether what follows a codestream signature is really an image.
+// isJXL reports a JPEG XL signature prefix.
 func isJXL(data []byte) bool {
 	return hasPrefix(data, jxlCodestream) || hasPrefix(data, jxlContainer)
 }
 
-// jxlMaxDim is the largest canvas size reported as an int. A coded JPEG XL size reaches 2^30
-// and an aspect ratio scales it further, which would wrap to a negative dimension on a 32-bit
-// build; a size past this is left unknown rather than reported wrong.
+// jxlMaxDim caps reported dimensions; larger values wrap on 32-bit builds.
 const jxlMaxDim = 1<<31 - 1
 
-// jxlRatios maps the SizeHeader's aspect-ratio selector to the width:height pair it stands
-// for. Selector 0 is absent here: it means the width is coded explicitly instead.
+// jxlRatios maps aspect-ratio selector to width:height (0 means explicit width).
 var jxlRatios = [8][2]uint64{1: {1, 1}, 2: {12, 10}, 3: {4, 3}, 4: {3, 2}, 5: {16, 9}, 6: {5, 4}, 7: {2, 1}}
 
-// sniffJXL recognizes both JPEG XL forms. The container's 12-byte signature box speaks for
-// itself. The bare codestream's signature is only two bytes, so it is accepted only when the
-// SizeHeader after it decodes - the rule sniffJPEG already applies to a Start-Of-Frame, since
-// two bytes of junk must not pass as an image. A container stores its canvas in a codestream
-// box further in, past a header sniff, so only the codestream form reports dimensions.
+// sniffJXL accepts container by signature; codestream only if SizeHeader decodes (like JPEG SOF).
+// Container reports MIME only; dimensions need a codestream box past header sniff.
 func sniffJXL(data []byte) (ImageInfo, bool) {
 	if hasPrefix(data, jxlContainer) {
 		return ImageInfo{MIME: "image/jxl"}, true
@@ -202,9 +164,7 @@ func sniffJXL(data []byte) (ImageInfo, bool) {
 	return info, true
 }
 
-// jxlBits reads JPEG XL's bit-packed header fields, which fill each byte from its least
-// significant bit upward. Running past the buffer clears ok, so a truncated header yields no
-// size rather than a fabricated one.
+// jxlBits reads JPEG XL bit-packed fields LSB-first. Overrun clears ok.
 type jxlBits struct {
 	data []byte
 	pos  int // in bits
@@ -224,16 +184,13 @@ func (b *jxlBits) u(n int) uint32 {
 	return v
 }
 
-// u32 reads the SizeHeader's U32 encoding: a 2-bit selector picks the field width, and the
-// canvas size is one more than the bits that follow.
+// u32 reads SizeHeader U32: selector picks width; value is 1 + field.
 func (b *jxlBits) u32() uint32 {
 	widths := [4]int{9, 13, 18, 30}
 	return 1 + b.u(widths[b.u(2)])
 }
 
-// isWebP reports whether data is a RIFF container carrying a WEBP form: "RIFF",
-// a 4-byte size, then "WEBP". The form-type check keeps a WAV file (RIFF...WAVE)
-// from matching.
+// isWebP reports RIFF....WEBP (not WAVE).
 func isWebP(data []byte) bool {
 	return len(data) >= 12 && string(data[0:4]) == "RIFF" && string(data[8:12]) == "WEBP"
 }
@@ -250,10 +207,9 @@ func hasPrefix(b, prefix []byte) bool {
 	return true
 }
 
-// sniffPNG reads the IHDR chunk (always first): width, height, bit depth, and
-// color type, which together give bits per pixel.
+// sniffPNG reads IHDR for dimensions and depth.
 func sniffPNG(data []byte) (ImageInfo, bool) {
-	// 8 magic + 4 length + 4 "IHDR" + 13 IHDR data = 29 bytes minimum.
+	// 8 magic + 4 len + 4 "IHDR" + 13 data
 	if len(data) < 29 || string(data[12:16]) != "IHDR" {
 		return ImageInfo{}, false
 	}
@@ -269,29 +225,24 @@ func sniffPNG(data []byte) (ImageInfo, bool) {
 	return info, true
 }
 
-// pngPaletteColors walks the PNG chunk stream from the first chunk (offset 8, past
-// the signature) for the PLTE chunk, whose data length divided by 3 (one RGB triplet
-// per entry) is the palette entry count. Every step is bounds-checked. The length
-// guard is written as a subtraction so a hostile chunk length cannot overflow past
-// int range or loop forever. An absent, truncated, or garbage PLTE yields 0.
+// pngPaletteColors finds PLTE and returns entry count (len/3). Subtraction bounds
+// hostile chunk lengths on 32-bit. Missing/truncated PLTE returns 0.
 func pngPaletteColors(data []byte) int {
-	for pos := 8; pos+8 <= len(data); { // room for length(4) + type(4)
+	for pos := 8; pos+8 <= len(data); {
 		l := int(binary.BigEndian.Uint32(data[pos : pos+4]))
-		// Need l data bytes + a 4-byte CRC after the header; a negative l means the
-		// length overflowed int on a 32-bit build.
+		// l data + 4 CRC; negative l means int overflow on 32-bit
 		if l < 0 || l > len(data)-pos-8-4 {
 			break
 		}
 		if string(data[pos+4:pos+8]) == "PLTE" {
 			return l / 3
 		}
-		pos += 8 + l + 4 // length + type + data + CRC
+		pos += 8 + l + 4
 	}
 	return 0
 }
 
-// sniffJPEG scans marker segments for a Start-Of-Frame, which carries sample
-// precision, height, and width.
+// sniffJPEG scans for Start-Of-Frame dimensions.
 func sniffJPEG(data []byte) (ImageInfo, bool) {
 	i := 2 // skip SOI
 	for i < len(data) {
@@ -299,8 +250,7 @@ func sniffJPEG(data []byte) (ImageInfo, bool) {
 			i++
 			continue
 		}
-		// A marker is 0xFF followed by a non-0xFF byte; runs of 0xFF are fill
-		// padding and must be skipped, or a 0xFF run is mistaken for a marker.
+		// Skip 0xFF fill before the marker byte.
 		for i < len(data) && data[i] == 0xFF {
 			i++
 		}
@@ -308,9 +258,8 @@ func sniffJPEG(data []byte) (ImageInfo, bool) {
 			break
 		}
 		marker := data[i]
-		i++ // i now points at the segment (length field), if any
-		// Standalone markers (SOI, EOI, RSTn, TEM, and 0x00 byte stuffing)
-		// carry no length.
+		i++
+		// Standalone markers have no length field.
 		if marker == 0xD8 || marker == 0xD9 || (marker >= 0xD0 && marker <= 0xD7) || marker == 0x01 || marker == 0x00 {
 			continue
 		}
@@ -319,12 +268,12 @@ func sniffJPEG(data []byte) (ImageInfo, bool) {
 		}
 		segLen := int(binary.BigEndian.Uint16(data[i : i+2]))
 		if segLen < 2 {
-			break // malformed length (must include its own 2 bytes)
+			break
 		}
-		// SOF0-SOF15 except DHT(C4), JPG(C8), DAC(CC) carry frame geometry.
+		// SOF markers except DHT/JPG/DAC carry geometry.
 		if marker >= 0xC0 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC {
 			if i+7 >= len(data) {
-				return ImageInfo{}, false // truncated mid-SOF: no readable dimensions
+				return ImageInfo{}, false
 			}
 			precision := int(data[i+2])
 			h := int(binary.BigEndian.Uint16(data[i+3 : i+5]))
@@ -332,15 +281,13 @@ func sniffJPEG(data []byte) (ImageInfo, bool) {
 			components := int(data[i+7])
 			return ImageInfo{MIME: "image/jpeg", Width: w, Height: h, Depth: precision * components}, true
 		}
-		i += segLen // length field includes its own 2 bytes
+		i += segLen
 	}
-	// No Start-Of-Frame was found. Refuse magic-only or SOF-less data rather than
-	// accepting bytes with no readable geometry; an intact JPEG carries a complete SOF.
+	// Require a readable SOF, not magic alone.
 	return ImageInfo{}, false
 }
 
-// sniffGIF reads the logical-screen descriptor for dimensions and the global
-// color table size for depth.
+// sniffGIF reads logical screen descriptor and GCT size.
 func sniffGIF(data []byte) (ImageInfo, bool) {
 	if len(data) < 13 {
 		return ImageInfo{}, false
@@ -348,10 +295,7 @@ func sniffGIF(data []byte) (ImageInfo, bool) {
 	w := int(binary.LittleEndian.Uint16(data[6:8]))
 	h := int(binary.LittleEndian.Uint16(data[8:10]))
 	packed := data[10]
-	// The low 3 bits are the GCT size field n; a Global Color Table holds 2^(n+1)
-	// entries and its palette indices are n+1 bits wide. Both are meaningful only when a
-	// Global Color Table is present (the high bit); with no table the size field is
-	// reserved, so leave depth and colors zero rather than fabricating a depth from it.
+	// GCT size bits matter only when GCT present (high bit); else leave depth/colors 0.
 	var depth, colors int
 	if packed&0x80 != 0 {
 		depth = int(packed&0x07) + 1
@@ -360,28 +304,25 @@ func sniffGIF(data []byte) (ImageInfo, bool) {
 	return ImageInfo{MIME: "image/gif", Width: w, Height: h, Depth: depth, Colors: colors}, true
 }
 
-// sniffWebP reads dimensions from the first chunk after the WEBP form type. The
-// three bitstream chunks (VP8 lossy, VP8L lossless, VP8X extended) each encode
-// the canvas size differently; an unrecognized or truncated chunk yields just
-// the MIME. WebP carries no simple bits-per-pixel, so Depth stays zero.
+// sniffWebP reads canvas size from VP8/VP8L/VP8X chunk. Depth stays 0.
 func sniffWebP(data []byte) (ImageInfo, bool) {
 	info := ImageInfo{MIME: "image/webp"}
 	if len(data) < 16 {
 		return info, true
 	}
 	switch string(data[12:16]) {
-	case "VP8 ": // lossy: frame tag(3), start code 9d 01 2a, then 14-bit w,h
+	case "VP8 ":
 		if len(data) >= 30 && data[23] == 0x9d && data[24] == 0x01 && data[25] == 0x2a {
 			info.Width = int(binary.LittleEndian.Uint16(data[26:28]) & 0x3FFF)
 			info.Height = int(binary.LittleEndian.Uint16(data[28:30]) & 0x3FFF)
 		}
-	case "VP8L": // lossless: signature 0x2f, then 14-bit (w-1),(h-1) packed
+	case "VP8L":
 		if len(data) >= 25 && data[20] == 0x2f {
 			b := binary.LittleEndian.Uint32(data[21:25])
 			info.Width = int(b&0x3FFF) + 1
 			info.Height = int((b>>14)&0x3FFF) + 1
 		}
-	case "VP8X": // extended: 4 flag bytes, then 24-bit canvas (w-1),(h-1)
+	case "VP8X":
 		if len(data) >= 30 {
 			info.Width = (int(data[24]) | int(data[25])<<8 | int(data[26])<<16) + 1
 			info.Height = (int(data[27]) | int(data[28])<<8 | int(data[29])<<16) + 1
@@ -390,11 +331,8 @@ func sniffWebP(data []byte) (ImageInfo, bool) {
 	return info, true
 }
 
-// sniffBMP reads the DIB header for dimensions and bit depth. It handles the common
-// BITMAPINFOHEADER (size >= 40), the OS/2 2.x BITMAPINFOHEADER2 (size 16-64), and the legacy
-// BITMAPCOREHEADER (size 12). Every header >= 16 bytes shares the same width/height/depth field
-// offsets (18/22/28) - the branch reads nothing past offset 30 - so one case covers them all; a
-// top-down bitmap stores a negative height, which is normalized to its magnitude.
+// sniffBMP reads DIB dimensions/depth. Headers >=16 share offsets 18/22/28.
+// Negative height is top-down; take magnitude (hostile width sign too).
 func sniffBMP(data []byte) (ImageInfo, bool) {
 	info := ImageInfo{MIME: "image/bmp"}
 	if len(data) < 18 {
@@ -402,10 +340,7 @@ func sniffBMP(data []byte) (ImageInfo, bool) {
 	}
 	switch dibSize := binary.LittleEndian.Uint32(data[14:18]); {
 	case dibSize >= 16 && len(data) >= 30:
-		// Width and height are signed: a negative height legitimately encodes a
-		// top-down image, while a negative width is malformed. Either way take the
-		// magnitude, so a hostile sign bit cannot propagate as a ~4.29e9 value when
-		// the dimension is later stored as an unsigned 32-bit field.
+		// Signed w/h: normalize to magnitude for unsigned storage.
 		w := int(int32(binary.LittleEndian.Uint32(data[18:22])))
 		if w < 0 {
 			w = -w
@@ -425,10 +360,7 @@ func sniffBMP(data []byte) (ImageInfo, bool) {
 	return info, true
 }
 
-// sniffTIFF reads the first image file directory for the ImageWidth/ImageLength
-// tags. Byte order is set by the "II"/"MM" magic. It is best-effort: a directory
-// past the buffer, or width/height in an unexpected field type, leaves the
-// dimension zero while still reporting image/tiff.
+// sniffTIFF best-effort reads ImageWidth/ImageLength from first IFD.
 func sniffTIFF(data []byte) (ImageInfo, bool) {
 	info := ImageInfo{MIME: "image/tiff"}
 	bo := binary.ByteOrder(binary.BigEndian)
@@ -438,11 +370,7 @@ func sniffTIFF(data []byte) (ImageInfo, bool) {
 	if len(data) < 8 {
 		return info, true
 	}
-	// Compare against len(data)-2 rather than ifd+2: the offset is an unvalidated uint32
-	// from the file, and on a 32-bit build a value near 2 GiB overflows the sum to a
-	// negative number that passes the test and then panics on the slice below. The len < 8
-	// guard above already proved the subtraction is safe, and ifd < 8 rejects the uint32
-	// values whose high bit made the conversion itself negative.
+	// ifd > len(data)-2 avoids uint32 overflow panic on 32-bit (not ifd+2 > len).
 	ifd := int(bo.Uint32(data[4:8]))
 	if ifd < 8 || ifd > len(data)-2 {
 		return info, true
@@ -451,10 +379,7 @@ func sniffTIFF(data []byte) (ImageInfo, bool) {
 	for i, entry := 0, ifd+2; i < count && entry+12 <= len(data); i, entry = i+1, entry+12 {
 		field := bo.Uint16(data[entry : entry+2])
 		typ := bo.Uint16(data[entry+2 : entry+4])
-		// The 4-byte value field holds the value inline only when the entry's count
-		// is 1; for count > 1 it is a file offset to the values. ImageWidth and
-		// ImageLength are single-valued, so a count other than 1 is malformed -
-		// skip it rather than read the offset as a dimension.
+		// Inline value only when count==1; else field is offset.
 		if bo.Uint32(data[entry+4:entry+8]) != 1 {
 			continue
 		}
@@ -468,9 +393,7 @@ func sniffTIFF(data []byte) (ImageInfo, bool) {
 	return info, true
 }
 
-// tiffShortOrLong reads a single dimension value from a TIFF IFD entry's 4-byte
-// value field, which holds a SHORT (type 3, left-aligned) or LONG (type 4)
-// inline. Any other type is not a dimension this sniffer understands.
+// tiffShortOrLong reads SHORT or LONG inline IFD value.
 func tiffShortOrLong(bo binary.ByteOrder, typ uint16, b []byte) uint32 {
 	switch typ {
 	case 3: // SHORT

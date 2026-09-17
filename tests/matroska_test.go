@@ -23,9 +23,8 @@ const (
 	chaptersMKA = "../testdata/chapters.mka"
 )
 
-// TestMatroskaReadsSampleFixture exercises the committed real-ffmpeg fixture
-// without needing ffmpeg at test time: the title comes from Info.Title, the
-// numbering is split from ffmpeg's "n/total", and the date maps to RecordingDate.
+// committed real-ffmpeg fixture without needing ffmpeg at test time: the title comes from
+// Info.Title, the numbering is split from ffmpeg's "n/total", and the date maps to RecordingDate.
 func TestMatroskaReadsSampleFixture(t *testing.T) {
 	doc := mustParseFile(t, sampleMKA)
 	if doc.Format() != wl.FormatMatroska {
@@ -61,7 +60,6 @@ func TestMatroskaReadsSampleFixture(t *testing.T) {
 	}
 }
 
-// TestMatroskaProperties checks the audio geometry read from Segment.Tracks.
 func TestMatroskaProperties(t *testing.T) {
 	pr := mustParseFile(t, sampleMKA).Properties()
 	if pr.Container != "Matroska" {
@@ -79,13 +77,8 @@ func TestMatroskaProperties(t *testing.T) {
 	}
 }
 
-// TestMatroskaAverageBitrate covers the average-bitrate feature: Matroska has no
-// bitrate element, so for a single audio-only file it is derived from the cluster
-// byte span over the segment duration. sampleMKA is one FLAC audio track plus a
-// cover attachment - attachments are not tracks and sit outside the cluster
-// bounds, so the figure still computes cleanly - and reports a plausible non-zero
-// rate. (Multi-track or video-bearing files are gated to 0 so shared cluster bytes
-// never inflate an audio figure; the single-track condition is exercised here.)
+// average-bitrate feature: Matroska has no bitrate element, so for a single audio-only file it is
+// derived from the cluster byte span over the segment duration.
 func TestMatroskaAverageBitrate(t *testing.T) {
 	t.Parallel()
 	tr := mustParseFile(t, sampleMKA).Properties().First()
@@ -98,7 +91,6 @@ func TestMatroskaAverageBitrate(t *testing.T) {
 	}
 }
 
-// TestMatroskaCoverArt confirms the cover image is read from an AttachedFile.
 func TestMatroskaCoverArt(t *testing.T) {
 	pics := mustParseFile(t, sampleMKA).Pictures()
 	if len(pics) != 1 {
@@ -116,9 +108,8 @@ func TestMatroskaCoverArt(t *testing.T) {
 	}
 }
 
-// TestMatroskaWebMFixture reads the committed Opus/WebM fixture. ffmpeg places
-// the title in Info.Title here too, and stamps two ENCODER values at different
-// targets, which must surface as a scope conflict.
+// committed Opus/WebM fixture. ffmpeg places the title in Info.Title here too, and stamps two
+// ENCODER values at different targets, which must surface as a scope conflict.
 func TestMatroskaWebMFixture(t *testing.T) {
 	doc := mustParseFile(t, sampleWebM)
 	f := doc.Fields()
@@ -148,9 +139,8 @@ func TestMatroskaWebMFixture(t *testing.T) {
 	}
 }
 
-// TestMatroskaNoTags reads the metadata-stripped fixture: ffmpeg still stamps the
-// Lavf encoder, so the descriptive fields are empty but the inherited-encoder
-// warning fires - the "sparse, not blank" acquired case.
+// metadata-stripped fixture: ffmpeg still stamps the Lavf encoder, so the descriptive fields are
+// empty but the inherited-encoder warning fires; the "sparse, not blank" acquired case.
 func TestMatroskaNoTags(t *testing.T) {
 	doc := mustParseFile(t, notagsMKA)
 	f := doc.Fields()
@@ -162,8 +152,6 @@ func TestMatroskaNoTags(t *testing.T) {
 	}
 }
 
-// TestMatroskaWritable confirms Matroska is tag-writable: it is Implemented and
-// Writable, and capabilities report full tag/picture/chapter read and write.
 func TestMatroskaWritable(t *testing.T) {
 	if !wl.FormatMatroska.Implemented() {
 		t.Error("Matroska should be Implemented")
@@ -187,8 +175,8 @@ func TestMatroskaWritable(t *testing.T) {
 	}
 }
 
-// TestMatroskaAudioEssence checks the audio-essence digest: it is non-empty,
-// carries the Matroska extent version, and is deterministic across two parses.
+// checks the audio-essence digest: it is non-empty, carries the Matroska extent version, and is
+// deterministic across two parses.
 func TestMatroskaAudioEssence(t *testing.T) {
 	d1, err := mustParseFile(t, sampleMKA).HashAudioEssence(context.Background())
 	if err != nil {
@@ -206,9 +194,9 @@ func TestMatroskaAudioEssence(t *testing.T) {
 	}
 }
 
-// TestMatroskaScopeResolution synthesizes a file with album, track, edition, and
-// chapter targets plus pass-through and technical tag names, checking the
-// scope-aware projection and that the right things are and are not projected.
+// synthesizes a file with album, track, edition, and chapter targets plus pass-through and
+// technical tag names, checking the scope-aware projection and that the right things are and are
+// not projected.
 func TestMatroskaScopeResolution(t *testing.T) {
 	tags := mkEl(idTags, concat(
 		// Album-level (TargetTypeValue 50): ARTIST.
@@ -269,9 +257,8 @@ func TestMatroskaScopeResolution(t *testing.T) {
 	}
 }
 
-// TestMatroskaTargetTypeString confirms a Targets element that carries only the
-// informational TargetType string (no numeric TargetTypeValue) still scopes
-// correctly - the Picard / hand-authored case.
+// Targets element that carries only the informational TargetType string (no numeric
+// TargetTypeValue) still scopes correctly; the Picard / hand-authored case.
 func TestMatroskaTargetTypeString(t *testing.T) {
 	tags := mkEl(idTags, mkEl(idTag, concat(
 		mkEl(idTargets, mkStr(idTgtType, "TRACK")),
@@ -285,8 +272,6 @@ func TestMatroskaTargetTypeString(t *testing.T) {
 	}
 }
 
-// TestMatroskaUnknownSizeSegment confirms an unknown-size Segment (the streamed
-// form) is still walked to end-of-file without panicking.
 func TestMatroskaUnknownSizeSegment(t *testing.T) {
 	tags := mkEl(idTags, mkEl(idTag, concat(
 		mkEl(idTargets, nil),
@@ -307,10 +292,9 @@ func TestMatroskaUnknownSizeSegment(t *testing.T) {
 	}
 }
 
-// TestMatroskaUnknownSizeClusterTrailingTags confirms that Tags placed *after* an
-// unknown-size (streamed) Cluster are still read: the parser resolves the
-// cluster's end by skipping its children, rather than treating it as running to
-// the segment end and dropping everything after it.
+// Tags placed *after* an unknown-size (streamed) Cluster are still read: the parser resolves the
+// cluster's end by skipping its children, rather than treating it as running to the segment end and
+// dropping everything after it.
 func TestMatroskaUnknownSizeClusterTrailingTags(t *testing.T) {
 	info := mkEl(idInfo, mkStr(idSegTitle, "Streamed"))
 	tracks := mkEl(idTracks, mkEl(idTrackEntry, concat(mkUint(idTrackType, 2), mkStr(idCodecID, "A_OPUS"))))
@@ -328,8 +312,8 @@ func TestMatroskaUnknownSizeClusterTrailingTags(t *testing.T) {
 	}
 }
 
-// TestMatroskaHostileGeometry confirms a NaN/Inf sampling frequency and absurd
-// integer geometry do not poison the track properties with garbage values.
+// NaN/Inf sampling frequency and absurd integer geometry do not poison the track properties with
+// garbage values.
 func TestMatroskaHostileGeometry(t *testing.T) {
 	var inf [8]byte
 	binary.BigEndian.PutUint64(inf[:], math.Float64bits(math.Inf(1)))
@@ -347,8 +331,6 @@ func TestMatroskaHostileGeometry(t *testing.T) {
 	}
 }
 
-// TestMatroskaNestedTagPreserved confirms a nested sub-tag is preserved in the
-// native view even though only top-level SimpleTags project to the canonical set.
 func TestMatroskaNestedTagPreserved(t *testing.T) {
 	tags := mkEl(idTags, mkEl(idTag, concat(
 		mkEl(idTargets, nil),
@@ -374,9 +356,8 @@ func TestMatroskaNestedTagPreserved(t *testing.T) {
 	}
 }
 
-// TestMatroskaRejectsOverLimitTag confirms a tag value larger than the configured
-// MaxAllocBytes fails the parse with ErrSizeTooLarge rather than being silently
-// dropped - the alloc limit is surfaced, not bypassed.
+// tag value larger than the configured MaxAllocBytes fails the parse with ErrSizeTooLarge rather
+// than being silently dropped; the alloc limit is surfaced, not bypassed.
 func TestMatroskaRejectsOverLimitTag(t *testing.T) {
 	big := make([]byte, 4096)
 	for i := range big {
@@ -399,8 +380,8 @@ func TestMatroskaRejectsOverLimitTag(t *testing.T) {
 	}
 }
 
-// TestMatroskaNaNDuration confirms a NaN Duration float does not become a garbage
-// track duration (the float->int64 conversion of NaN is implementation-defined).
+// NaN Duration float does not become a garbage track duration (the float->int64 conversion of NaN
+// is implementation-defined).
 func TestMatroskaNaNDuration(t *testing.T) {
 	var nan [8]byte
 	binary.BigEndian.PutUint64(nan[:], math.Float64bits(math.NaN()))
@@ -419,8 +400,6 @@ func TestMatroskaNaNDuration(t *testing.T) {
 	}
 }
 
-// TestMatroskaMultiTrackDuration confirms the segment duration is applied to every
-// audio track, not just the first.
 func TestMatroskaMultiTrackDuration(t *testing.T) {
 	var dur [8]byte // Duration 1000.0 (x 1ms TimestampScale => 1s)
 	binary.BigEndian.PutUint64(dur[:], math.Float64bits(1000))
@@ -442,8 +421,8 @@ func TestMatroskaMultiTrackDuration(t *testing.T) {
 	}
 }
 
-// TestMatroskaPictureTypeNaming confirms cover-art role detection follows the
-// Matroska convention and does not misfire on substrings like "background".
+// cover-art role detection follows the Matroska convention and does not misfire on substrings like
+// "background".
 func TestMatroskaPictureTypeNaming(t *testing.T) {
 	cases := []struct {
 		name string
@@ -470,8 +449,8 @@ func TestMatroskaPictureTypeNaming(t *testing.T) {
 	}
 }
 
-// TestMatroskaDifferentialFFmpeg is the read-side differential: ffmpeg writes a
-// fresh file and our parser must read back exactly the tags ffmpeg was given.
+// read-side differential: ffmpeg writes a fresh file and our parser must read back exactly the tags
+// ffmpeg was given.
 func TestMatroskaDifferentialFFmpeg(t *testing.T) {
 	requireTool(t, "ffmpeg")
 	dir := t.TempDir()
@@ -505,13 +484,10 @@ func TestMatroskaDifferentialFFmpeg(t *testing.T) {
 	}
 }
 
-// FuzzMatroskaParse asserts the Matroska reader and writer never panic and never
-// corrupt the essence on whatever they accept. It forces EBML detection by
-// keeping the magic prefix, so arbitrary mutations exercise the codec itself
-// (unknown-size elements, truncated VINTs, hostile lengths) rather than being
-// routed elsewhere. A no-op write must reproduce the input; a Title edit either
-// refuses cleanly (a layout the writer does not handle) or re-parses to the new
-// title. Run with: go test -run x -fuzz FuzzMatroskaParse
+// FuzzMatroskaParse asserts the Matroska reader and writer never panic and never corrupt the
+// essence on whatever they accept. It forces EBML detection by keeping the magic prefix, so
+// arbitrary mutations exercise the codec itself (unknown-size elements, truncated VINTs, hostile
+// lengths) rather than being routed elsewhere.
 func FuzzMatroskaParse(f *testing.F) {
 	const magic = "\x1a\x45\xdf\xa3"
 	for _, p := range []string{sampleMKA, sampleWebM, notagsMKA} {
@@ -526,9 +502,9 @@ func FuzzMatroskaParse(f *testing.F) {
 	// elements the AAC rate and profile come from.
 	f.Add(mkAudioTrackFile("A_AAC/MPEG4/LC/SBR", []byte{0x2b, 0x92, 0x08, 0x00},
 		mkFloat(idSampFreq, 22050), mkFloat(idOutSampFreq, 44100), mkUint(idChannels, 2)))
-	// Regression: an Info whose malformed "CRC-32" child has a junk size that
-	// clamps to 4 bytes must not be mistaken for a real CRC - a title edit on it
-	// once wrote a title that a re-parse could not read back.
+	// Regression: an Info whose malformed "CRC-32" child has a junk size that clamps to 4 bytes must
+	// not be mistaken for a real CRC; a title edit on it once wrote a title that a re-parse could not
+	// read back.
 	f.Add([]byte("\x810\x18S\x80gA0\x15I\xa9f\xc9\xbf0000000"))
 	// Regression: a deeply nested SimpleTag chain. Capturing raw at every recursion
 	// level once amplified retained memory to roughly nesting-depth times the subtree
@@ -571,8 +547,8 @@ func FuzzMatroskaParse(f *testing.F) {
 			}
 		}
 
-		// A Title edit must round-trip or refuse cleanly (a layout the writer does
-		// not yet handle - no Void/overflow/etc. surfaces ErrUnsupportedTag).
+		// A Title edit must round-trip or refuse cleanly (a layout the writer does not yet handle; no
+		// Void/overflow/etc. surfaces ErrUnsupportedTag).
 		plan, err := doc.Edit().Set(tag.Title, "fuzz").Prepare()
 		if err != nil {
 			if errors.Is(err, waxerr.ErrUnsupportedTag) || errors.Is(err, waxerr.ErrInvalidData) {
@@ -669,8 +645,8 @@ func idToBytes(id uint64) []byte {
 	}
 }
 
-// sizeVINT encodes a data size as a full 8-byte VINT (marker 0x01), which is
-// always valid regardless of the value - the parser accepts any VINT length.
+// sizeVINT encodes a data size as a full 8-byte VINT (marker 0x01), which is always valid
+// regardless of the value; the parser accepts any VINT length.
 func sizeVINT(n int) []byte {
 	v := uint64(n)
 	return []byte{0x01, byte(v >> 48), byte(v >> 40), byte(v >> 32), byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)}
@@ -696,11 +672,9 @@ func mkSimpleNested(name, value string, sub ...[]byte) []byte {
 	return mkEl(idSimpleTag, concat(mkStr(idTagName, name), mkStr(idTagString, value), concat(sub...)))
 }
 
-// mkAudioCluster returns a minimal one-block audio Cluster. A synth fixture needs it
-// to carry real audio essence: without a cluster the parser flags WarnNoAudioFrames
-// (no audio) and Editor.Prepare refuses to write a no-audio file. Real .mka files
-// always carry clusters; the synth fixtures omitted them to focus on tag/chapter logic,
-// which a single preserved block does not disturb.
+// mkAudioCluster returns a minimal one-block audio Cluster. A synth fixture needs it to carry real
+// audio essence: without a cluster the parser flags WarnNoAudioFrames (no audio) and Editor.Prepare
+// refuses to write a no-audio file.
 func mkAudioCluster() []byte {
 	return mkEl(idCluster, concat(
 		mkUint(idTimestamp, 0),
@@ -708,10 +682,8 @@ func mkAudioCluster() []byte {
 	))
 }
 
-// buildMatroska assembles a minimal definite-size file: EBML header + Segment
-// containing an optional Info (with title), a one-block audio Cluster, and the given
-// Tags bytes. The cluster sits before the tags so a tag edit rewrites the tail without
-// touching it.
+// buildMatroska assembles a minimal definite-size file: EBML header + Segment containing an
+// optional Info (with title), a one-block audio Cluster, and the given Tags bytes.
 func buildMatroska(docType, title string, tags []byte) []byte {
 	var seg []byte
 	if title != "" {

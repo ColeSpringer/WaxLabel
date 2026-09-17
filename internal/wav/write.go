@@ -14,20 +14,8 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// Plan computes the byte-level rewrite that turns the original WAV into the
-// edited media. It is preservation-first: every chunk is kept in order and
-// copied verbatim except the tag containers, the audio "data" chunk is copied
-// byte-for-byte, and the RIFF size is recomputed.
-//
-// Two tag containers are reconciled by the precedence policy (see the package
-// doc): the embedded id3 chunk holds pictures and the full canonical set; the
-// RIFF-native LIST/INFO holds the representable subset so the ffmpeg family
-// still reads the file. A key this edit changed is written to both; an INFO item the
-// edit did not touch is copied verbatim, so a value the id3 chunk disagrees with, a
-// duplicate, and a second identifier for one key are the file's own data and survive.
-// An explicit set of a key whose INFO item conflicts re-renders that item, which is how a
-// caller resolves the disagreement. A changed value INFO cannot represent (multi-value,
-// an unmapped key, or any picture) forces an id3 chunk so nothing is lost.
+// Plan builds a preservation-first rewrite: keep chunk order, copy data verbatim,
+// re-render tag containers, recompute RIFF size. Tag precedence: see package doc.
 func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.WriteOptions) (*core.WritePlan, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -52,16 +40,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// total folded together because they share one item.
 	changed := foldInfoTrackPair(core.ChangedKeys(base.Tags, edited.Tags, opts.Touched))
 
-	// A WithStripEncoderStamp edit removes a transcoder-stamp ISFT item. The strip targets
-	// the stamp the FILE carries, never a value this edit authored, so it reads the same
-	// signal the CLI switches the option on with (an op on the key, not a moved value):
-	// without that, --set ENCODER=Lavf62.3.100 on a file already carrying that stamp would
-	// filter out the user's own value and write it nowhere, ISFT being the INFO home for the
-	// key. A removal leaves no value to write either way.
-	//
-	// A strip is a real change even when the canonical tags are untouched (a WAV carrying
-	// only an inherited ISFT, or one whose id3 chunk holds a clean ENCODER while INFO holds
-	// the stamp), so it must defeat the no-op fast path below and force an INFO rewrite.
+	// A WithStripEncoderStamp edit removes a transcoder-stamp ISFT item.
 	encoderAuthored := changed[tag.Encoder]
 	stripISFT := opts.StripEncoderStamp && !encoderAuthored
 	stampToStrip := stripISFT && infoPresent && hasTranscoderISFT(d.info)
@@ -72,9 +51,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// options, or the predicate could green-light a write the rebuild then renders differently.
 	wopts := id3.WriteOpts{Multi: opts.ID3Multi, NumericGenre: opts.NumericGenre}
 	// A requested write encoding (--numeric-genre) changes how a value is stored, not the
-	// value itself, so the tag comparison above cannot see it. It reaches only the id3
-	// chunk: LIST/INFO IGNR stores the genre name literally, and a file with no id3 chunk
-	// passes a nil tag, for which the predicate is false.
+	// value itself, so the tag comparison above cannot see it.
 	encodingRewrite := id3.EncodingRewriteNeeded(d.id3, edited.Tags, wopts)
 
 	// Decide which containers receive the edited tags. Chapters and synced lyrics force an
@@ -143,10 +120,8 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	emitINFO := writeINFO && len(newInfo) > 0
 	emitID3 := needID3 && newID3 != nil && len(newID3.Frames()) > 0
 
-	// When both LIST/INFO and ID3 are emitted, a multi-valued key keeps its full set
-	// only in ID3; INFO stores just the first value. Surface that native reduction as
-	// a plan-time note. Gate on the emit flags, not needID3/writeINFO, because a full
-	// clear can leave writeINFO true yet emit no INFO chunk.
+	// When both LIST/INFO and ID3 are emitted, a multi-valued key keeps its full set only
+	// in ID3;
 	if emitINFO && emitID3 {
 		report.Warnings = append(report.Warnings, nativeReducedWarnings(edited.Tags, changed)...)
 	}
@@ -177,9 +152,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		// LegacyStrip consolidates the mapped items into the id3 chunk, but an unmapped item
 		// has no canonical key and so no frame to move into: dropping the chunk destroys it.
 		// doc.go's contract is that unaffected data is warned about, never stripped silently,
-		// and this is the one WAV path that would. AIFF's strip has the same hole in a
-		// different shape - a mapped chunk whose value the projection did not select - and
-		// warns about it from its own Plan.
+		// and this is the one WAV path that would.
 		if ids := unmappedInfoIDs(d.info); len(ids) > 0 {
 			report.Warnings = core.Warn(report.Warnings, core.WarnLegacyStripDropped,
 				core.StripDroppedMessage("LIST/INFO chunk", []string{"items no canonical key can hold (" + strings.Join(ids, ", ") + ")"}))
@@ -189,8 +162,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		// rebuildInfo re-renders the chunk from the items alone, so a region the parser could
 		// not read as items has nowhere to go. Under --legacy strip this fires alongside
 		// legacy-strip-dropped: two distinct losses, items with no canonical key and bytes
-		// that were never items. A true no-op never reaches here, and core.DowngradeNoOp does
-		// not carry this code, so an unchanged file stays quiet.
+		// that were never items.
 		report.Warnings = core.Warn(report.Warnings, core.WarnMalformedTagEntryDropped,
 			fmt.Sprintf("%d byte(s) of the LIST/INFO chunk could not be read as items and are not carried into the rewritten chunk", d.infoTail))
 	}
@@ -217,9 +189,8 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// helper checks the re-projected output before warning.
 	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, id3Info, result.Tags)
 	report.Warnings = id3.AppendMalformedTailDropped(report.Warnings, d.id3)
-	// Collapse to a true no-op when the containers re-projected to base's values
-	// (a numeric genre, a dropped empty); an INFO strip, an encoder-stamp removal, or an
-	// encoding rewrite stays a real write. DowngradeNoOp carries the value-dropped warning
+	// Collapse to a true no-op when the containers re-projected to base's values (a
+	// numeric genre, a dropped empty); DowngradeNoOp carries the value-dropped warning
 	// forward so a dropped date still surfaces on a no-op.
 	if np := core.DowngradeNoOp(core.FormatWAV, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), stripINFO || stampToStrip || encodingRewrite || infoRewrite, report.Warnings); np != nil {
 		return np, nil
@@ -228,18 +199,8 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 }
 
 // id3Tags is the set the embedded id3 chunk renders from: edited, minus an inherited
-// transcoder stamp when this write is CREATING the chunk and the stamp is not something the
-// edit authored.
-//
-// The stamp reaches the canonical set from the ISFT item, so without this a wholly unrelated
-// edit that happens to force an id3 chunk (a DISCNUMBER, which INFO has no slot for) would
-// copy ffmpeg's leftover into a second container and make WaxLabel manufacture a second copy
-// of the noise it lints against. It is the same judgement the transfer policy already makes
-// when it excludes ENCODER from a copy: a stamp describes this file's own audio, not the
-// work, so it is preserved where it is and never propagated.
-//
-// An id3 chunk that already holds a stamped TSSE keeps it: refusing to author the stamp is
-// not a licence to delete one the file came with, and the linter flags it either way.
+// transcoder stamp when this write is CREATING the chunk and the stamp is not something
+// the edit authored.
 func id3Tags(edited tag.TagSet, id3Present, encoderAuthored bool) tag.TagSet {
 	if id3Present || encoderAuthored {
 		return edited
@@ -266,11 +227,9 @@ func id3Tags(edited tag.TagSet, id3Present, encoderAuthored bool) tag.TagSet {
 	return out
 }
 
-// planChunks builds the output chunk list in source order, re-rendering or
-// dropping the tag containers and copying everything else (including the data
-// chunk) verbatim, then inserting any newly created tag container before the
-// data chunk. dupLost collects the canonical keys the dropped duplicate containers held and
-// the surviving one does not, so the caller can warn about the values this write destroys.
+// planChunks builds the output chunk list in source order, re-rendering or dropping the
+// tag containers and copying everything else (including the data chunk) verbatim, then
+// inserting any newly created tag container before the data chunk.
 func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, stripINFO, infoBytesChange bool) (outs []outChunk, ops []string, dupLost []core.DuplicateContent) {
 	infoRewritten, id3Rewritten := false, false
 
@@ -354,16 +313,8 @@ func infoOut(items []infoItem) outChunk {
 	return outChunk{id: [4]byte{'L', 'I', 'S', 'T'}, role: roleINFO, body: body, bodyLen: int64(len(body))}
 }
 
-// infoBytesChange reports whether re-emitting the LIST/INFO chunk from the item model will
-// change the chunk's bytes. Equal items are not enough: the chunk is re-rendered from the
-// items alone, so a region the parser could not read as items and a pad byte it
-// re-synchronized over both die on the way out. With equal items the render is determined, so
-// a body of the same length is the same body, and the length check catches both losses.
-//
-// This is deliberately not the same question equalInfoItems answers for the no-op gate, which
-// asks whether the edit changed the INFO CONTENT. A file carrying an unreadable tail must
-// still round-trip an empty edit untouched, so that gate stays item-based and this one, asked
-// only once a write is already happening, decides what the report claims.
+// infoBytesChange reports whether re-emitting the LIST/INFO chunk from the item model
+// will change the chunk's bytes.
 func infoBytesChange(d *doc, newInfo []infoItem) bool {
 	if d.infoIdx < 0 {
 		return true
@@ -425,12 +376,8 @@ type outLayout struct {
 	dataIdx int
 }
 
-// assemble turns the output chunks into a rewrite segment list and recomputes
-// the container size, returning the layout needed to build the post-write
-// document. An RF64/BW64 source keeps its form: the 32-bit size fields that
-// cannot carry the value stay at the 0xFFFFFFFF marker and the regenerated ds64
-// chunk carries the real ones, so a rewrite never silently downgrades a 64-bit
-// file to plain RIFF (which would truncate its sizes).
+// assemble turns the output chunks into a rewrite segment list and recomputes the
+// container size, returning the layout needed to build the post-write document.
 func assemble(d *doc, outs []outChunk) (segs []bits.Segment, lay outLayout, err error) {
 	lay = outLayout{infoIdx: -1, id3Idx: -1, dataIdx: -1}
 	rf64 := d.isRF64()
@@ -617,13 +564,9 @@ func buildResult(edited *core.Media, base *doc, newInfo []infoItem, newID3 *id3.
 		Chapters:     chapters,
 		SyncedLyrics: syncedLyrics,
 		Families:     families,
-		// Recompute warnings from the written containers so the returned document
-		// matches a fresh parse of the output: a dropped duplicate no longer warns,
-		// a resolved numeric genre no longer warns, and a preserved ISFT stamp still
-		// does. (Duplicate-tag-block warnings are structural to the source and gone
-		// once consolidated, so they are correctly absent here.) projWs carries the
-		// id3-chunk chapter-flatten and synced-lyrics notes, re-derived from the written
-		// frames like Parse.
+		// Recompute warnings from the written containers so the returned document matches a
+		// fresh parse of the output: a dropped duplicate no longer warns, a resolved numeric
+		// genre no longer warns, and a preserved ISFT stamp still does.
 		Warnings:   append(projWs, mediaWarnings(nd, numericGenre)...),
 		Native:     nd,
 		Identity:   core.Identity{Size: lay.total},

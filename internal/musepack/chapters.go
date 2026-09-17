@@ -15,19 +15,15 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// SV8 stores chapters as CT packets inside the stream: a varlen start sample, a 16-bit
-// gain and peak, then an APEv2 tag without its "APETAGEX" preamble - the 24-byte header
-// record and the items, no footer - whose Title item names the chapter. mpcchap, the
-// reference chapter editor, is the only writer of them, and the reference decoder reads
-// them from two places only: right after the seek table an SO packet in the header
-// region points at, or else the run of consecutive CT packets that ends at the SE end
-// marker. A run anywhere else is invisible to every libmpcdec-based player, so it is not
-// read here either.
+// SV8 chapters are CT packets: varlen start sample, 16-bit gain/peak, then an
+// APEv2 tag without APETAGEX preamble (24-byte header + items, no footer); Title
+// names the chapter. Read only where the reference decoder does: after the seek
+// table an SO packet points at, or the consecutive CT run ending at SE. Elsewhere
+// is invisible to libmpcdec players.
 //
-// The packets are metadata inside the audio extent. A rewrite copies the stream
-// verbatim, so they are preserved but never edited: the chapters capability is read-only.
+// Packets sit inside the audio extent; rewrite copies the stream verbatim, so
+// chapters are preserved but never edited (read-only capability).
 
-// Packet keys this reader acts on.
 const (
 	keyAudio     = "AP"
 	keyChapter   = "CT"
@@ -36,24 +32,20 @@ const (
 	keyEnd       = "SE"
 )
 
-// chapterTagHeaderLen is the APEv2 header record less its 8-byte preamble: version,
-// size, item count, flags, and the reserved word. The item count sits at byte 8.
+// chapterTagHeaderLen: APEv2 header without 8-byte preamble; item count at byte 8.
 const chapterTagHeaderLen = 24
 
-// maxSizeBytes is the longest varlen number readSize accepts, so a packet header is at
-// most the two-byte key plus this.
+// maxSizeBytes: longest varlen readSize accepts (packet header = 2-byte key + this).
 const maxSizeBytes = 9
 
 // packet is one decoded SV8 packet header.
 type packet struct {
 	key    string
-	hdrLen int   // the key and size field
-	size   int64 // the whole packet, header included
+	hdrLen int   // key + size field
+	size   int64 // whole packet including header
 }
 
-// parsePacket decodes the packet header at the front of b, for a packet that must fit
-// within room bytes. A key outside A-Z, a size that does not cover its own header, or
-// one running past the room is not a packet.
+// parsePacket at the front of b; must fit in room. Invalid key/size is not a packet.
 func parsePacket(b []byte, room int64) (packet, bool) {
 	if len(b) < 3 || !isKeyByte(b[0]) || !isKeyByte(b[1]) {
 		return packet{}, false
@@ -67,7 +59,7 @@ func parsePacket(b []byte, room int64) (packet, bool) {
 
 func isKeyByte(c byte) bool { return c >= 'A' && c <= 'Z' }
 
-// readPacket decodes the packet header at off in a stream ending at end.
+// readPacket at off in a stream ending at end.
 func readPacket(src core.ReaderAtSized, off, end, limit int64) (packet, bool) {
 	n := min(int64(2+maxSizeBytes), end-off)
 	if n < 3 {
@@ -80,18 +72,10 @@ func readPacket(src core.ReaderAtSized, off, end, limit int64) (packet, bool) {
 	return parsePacket(b, end-off)
 }
 
-// chapterRun returns the offset of the CT run the reference decoder reads, or -1 when
-// there is none where it looks. Header packets are hopped until the first audio packet,
-// and an SO packet there whose pointer lands on an ST packet settles the answer as the
-// packet after that table. Otherwise the walk continues to the end marker, keeping the
-// offset of the last run of consecutive CT packets, which any other packet resets; the
-// run must end at the marker to count. A malformed packet header or a stream with no
-// end marker yields none, as the reference's search fails there too.
-//
-// The walk is one small read per packet, like the Matroska segment walk, and every
-// mpcenc file settles at its SO packet. A stream without one is walked whole, so the
-// element cap bounds the packets visited (reported when it trips) and the context is
-// checked along the way.
+// chapterRun: offset of the CT run the reference decoder reads, or -1.
+// Hop header packets; SO pointing at ST settles after that table. Else keep the
+// last consecutive CT run that ends at SE. Malformed header or no SE => none.
+// Element cap bounds a whole-file walk when there is no SO.
 func chapterRun(ctx context.Context, src core.ReaderAtSized, start, end, limit int64, maxElements int) (int64, []core.Warning, error) {
 	pos := start + int64(len(sv8Magic))
 	run := int64(-1)
@@ -131,10 +115,8 @@ func chapterRun(ctx context.Context, src core.ReaderAtSized, start, end, limit i
 	return -1, nil, nil
 }
 
-// afterSeekTable resolves an SO packet at pos: its payload is a varlen offset, relative
-// to the packet's own start, of the seek table. When an ST packet is there, the chapter
-// run begins right after it. Anything else there leaves the search to the walk. Only
-// the pointer's own bytes are read, whatever size the packet declares.
+// afterSeekTable: SO payload is a varlen offset (from packet start) to the seek
+// table; chapters begin right after an ST there. Only the pointer bytes are read.
 func afterSeekTable(src core.ReaderAtSized, pos int64, p packet, end, limit int64) (int64, bool) {
 	payload, err := bits.ReadSlice(src, pos+int64(p.hdrLen), min(p.size-int64(p.hdrLen), maxSizeBytes), limit)
 	if err != nil {
@@ -152,20 +134,20 @@ func afterSeekTable(src core.ReaderAtSized, pos int64, p packet, end, limit int6
 	return at + st.size, true
 }
 
-// chapterFault classifies what decodeChapter could not read of one packet.
+// chapterFault classifies what decodeChapter could not read.
 type chapterFault uint8
 
 const (
 	faultNone        chapterFault = iota
-	faultTruncated                // the payload cannot be read, or ends before the start sample, gain, and peak
-	faultUnplaceable              // the start sample is past any duration
-	faultOversized                // the packet is larger than the allocation limit
-	faultShortTag                 // a tag shorter than its header record; the chapter is listed untitled
-	faultCappedTag                // items past the element cap were not read; the title may be among them
+	faultTruncated                // payload unreadable or short of start/gain/peak
+	faultUnplaceable              // start sample past any duration
+	faultOversized                // larger than allocation limit
+	faultShortTag                 // tag shorter than header; chapter listed untitled
+	faultCappedTag                // items past element cap unread; title may be among them
 )
 
-// faultReports words each fault and says whether the chapter is still listed. The
-// capped-tag fault is an element-cap report, the rest describe a malformed entry.
+// faultReports: wording and whether the chapter is still listed.
+// Capped-tag is WarnElementCap; others are malformed-entry.
 var faultReports = [...]struct {
 	code   core.WarningCode
 	text   string
@@ -178,12 +160,9 @@ var faultReports = [...]struct {
 	faultCappedTag:   {core.WarnElementCap, "has more tag items than the element limit allows; items past it are not read", true},
 }
 
-// readChapters projects the run of CT packets at `at` into chapters, in start order,
-// and returns where the packets it read end. Every packet counts against the element
-// cap whether or not it yields a chapter, and the cap ends the walk, so a run of
-// malformed packets cannot spend unbounded work. Each fault is reported once for the
-// run, naming the first packet it hit and how many more shared it. The packets after a
-// faulty one are still read, since the packet framing around it is intact.
+// readChapters projects CT packets at at into chapters (start order) and returns
+// where the read ended. Every packet counts against the element cap. Each fault
+// is reported once for the run; framing after a faulty packet stays intact.
 func readChapters(src core.ReaderAtSized, at, end int64, rate int, limit int64, maxElements int) ([]core.Chapter, int64, []core.Warning) {
 	var chs []core.Chapter
 	var warnings []core.Warning
@@ -237,11 +216,8 @@ func readChapters(src core.ReaderAtSized, at, end int64, rate int, limit int64, 
 	return chs, pos, warnings
 }
 
-// decodeChapter decodes one CT payload: the start sample, the gain and peak (not
-// modeled; they stay in the bytes the rewrite copies), then the tag. A payload ending
-// before those fields, or a start sample no duration can hold, yields no chapter. A tag
-// shorter than its header record, or one whose items run past the element cap, still
-// yields the chapter, possibly untitled, with the fault to report.
+// decodeChapter: start sample, gain/peak (unmodeled; stay in copied bytes), then
+// tag. Short/capped tag still yields a chapter (possibly untitled) with a fault.
 func decodeChapter(p []byte, rate int, maxElements int) (core.Chapter, chapterFault) {
 	sample, n, ok := readSize(p)
 	if !ok || len(p) < n+4 {
@@ -265,7 +241,7 @@ func decodeChapter(p []byte, rate int, maxElements int) (core.Chapter, chapterFa
 			continue
 		}
 		if k, ok := mapping.CanonicalAPE(it.Key); ok && k == tag.Title {
-			// A multi-valued item is NUL-joined; a chapter has one title.
+			// Multi-valued items are NUL-joined; a chapter has one title.
 			ch.Title, _, _ = strings.Cut(it.Value, "\x00")
 			break
 		}

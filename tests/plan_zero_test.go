@@ -10,8 +10,7 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestZeroPlanIsTotal checks that an uninitialized plan, nil or hand-built, returns
-// clean errors or zero values instead of panicking.
+// uninitialized plan, nil or hand-built, returns clean errors or zero values instead of panicking.
 func TestZeroPlanIsTotal(t *testing.T) {
 	ctx := context.Background()
 	var nilPlan *wl.Plan

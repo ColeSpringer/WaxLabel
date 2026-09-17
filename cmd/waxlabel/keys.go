@@ -9,13 +9,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newKeysCmd builds the "keys" command, which lists the canonical, format-neutral
-// tag vocabulary with each key's cardinality and meaning - the discovery query
-// that needs no file and no format. It is the format-independent counterpart to
-// caps (which reports a single format's editable subset and storage fidelity);
-// every key here is writable on some format, and which formats store it is the
-// caps question. It dogfoods tag.KnownKeys, tag.Key.Multivalued, and
-// tag.Key.Description.
+// newKeysCmd builds "keys": the canonical, format-neutral tag vocabulary with
+// cardinality and meaning. No file or format needed. Counterpart to caps (which
+// reports one format's editable subset). Dogfoods tag.KnownKeys / Multivalued /
+// Description.
 func newKeysCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "keys",
@@ -40,29 +37,24 @@ func newKeysCmd() *cobra.Command {
 	return cmd
 }
 
-// jsonKeys is the machine-readable key catalog: the whole canonical vocabulary,
-// each key with its cardinality and description.
+// jsonKeys is the machine-readable key catalog.
 type jsonKeys struct {
 	SchemaVersion int       `json:"schemaVersion"`
 	Keys          []jsonKey `json:"keys"`
 }
 
-// jsonKey is one canonical key's catalog entry. Cardinality is the strict enum
-// "single" or "multi" (matching jsonCapKey), here the key's inherent cardinality
-// with no format restriction applied.
+// jsonKey is one catalog entry. Cardinality is "single" or "multi" (inherent;
+// no format restriction, unlike caps).
 type jsonKey struct {
 	Key         string `json:"key"`
 	Cardinality string `json:"cardinality"`
 	Description string `json:"description,omitempty"`
-	// Aliases are the alternative spellings --set/--add accept for this key (e.g. DATE, YEAR
-	// for RECORDINGDATE), so the common Vorbis spellings are discoverable rather than silently
-	// normalized. Omitted for a key with no aliases. Only the keys command uses this; caps
-	// shares renderKeyTable but not this field.
+	// Aliases accepted by --set/--add (e.g. DATE for RECORDINGDATE). Omitted when
+	// empty. Keys-only; caps shares renderKeyTable but not this field.
 	Aliases []string `json:"aliases,omitempty"`
 }
 
-// buildKeys projects the canonical vocabulary into its JSON form, in KnownKeys'
-// stable sorted order.
+// buildKeys projects KnownKeys into JSON, stable sorted order.
 func buildKeys() jsonKeys {
 	jk := jsonKeys{SchemaVersion: schemaVersion}
 	for _, k := range tag.KnownKeys() {
@@ -76,9 +68,7 @@ func buildKeys() jsonKeys {
 	return jk
 }
 
-// keyCardinality reports a key's inherent cardinality as the "single"/"multi"
-// enum. Unlike cardinalityOf (caps), there is no format here to restrict a
-// multi-valued key to one, so this reads tag.Key.Multivalued alone.
+// keyCardinality returns "single"/"multi" from Multivalued alone (no format cap).
 func keyCardinality(k tag.Key) string {
 	if k.Multivalued() {
 		return "multi"
@@ -86,15 +76,13 @@ func keyCardinality(k tag.Key) string {
 	return "single"
 }
 
-// renderKeys writes the human-readable key catalog: aligned key, cardinality, and
-// description columns at the top level (2-space indent).
+// renderKeys writes the human catalog: key, cardinality, description (2-space indent).
 func renderKeys(w io.Writer, jk jsonKeys) {
 	fmt.Fprintf(w, "canonical keys (%d):\n", len(jk.Keys))
 	rows := make([]keyRow, len(jk.Keys))
 	for i, k := range jk.Keys {
-		// Append the aliases to the description column (keys only); renderKeyTable is shared
-		// with caps, so aliases must not become a new column there. TrimSpace drops the leading
-		// gap when a key has no description of its own.
+		// Aliases go in the description column (keys only; caps must not get a new
+		// column). TrimSpace drops the leading gap when Description is empty.
 		desc := k.Description
 		if len(k.Aliases) > 0 {
 			desc = strings.TrimSpace(desc + "  (aliases: " + strings.Join(k.Aliases, ", ") + ")")
@@ -104,18 +92,13 @@ func renderKeys(w io.Writer, jk jsonKeys) {
 	renderKeyTable(w, "  ", rows)
 }
 
-// keyRow is one line of a key listing: the canonical key, its cardinality, and its
-// description. It is the shared shape rendered by both the caps editable-keys block
-// and this keys catalog (see renderKeyTable).
+// keyRow is one listing line. Shared by caps editable-keys and this catalog.
 type keyRow struct {
 	key, cardinality, description string
 }
 
-// renderKeyTable writes aligned key/cardinality/description columns, one row per
-// line, each prefixed by indent. The key and cardinality columns are padded to
-// their widest value so the descriptions line up. Shared by caps (its editable-keys
-// block, 4-space indent) and keys (the full catalog, 2-space indent), so the two
-// listings cannot drift in column layout.
+// renderKeyTable writes aligned key/cardinality/description columns under indent.
+// Shared by caps (4-space) and keys (2-space) so layouts cannot drift.
 func renderKeyTable(w io.Writer, indent string, rows []keyRow) {
 	keyWidth, cardWidth := 0, 0
 	for _, r := range rows {

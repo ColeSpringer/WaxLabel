@@ -7,22 +7,19 @@ import (
 	"testing"
 )
 
-// fixturePath builds a testdata path for fixtures without a shared constant.
+// fixturePath builds a testdata path without a shared constant.
 func fixturePath(name string) string { return filepath.Join("..", "..", "testdata", name) }
 
-// lintHasEncoderNoise reports whether a lint of path still flags the inherited
-// encoder stamp (finding code inherited-encoder, the canonical parse-warning code
-// lint now reuses).
+// lintHasEncoderNoise reports whether lint still flags inherited-encoder.
 func lintHasEncoderNoise(t *testing.T, path string) bool {
 	t.Helper()
 	out, _, _ := runCLI(t, "lint", path)
 	return strings.Contains(out, "inherited-encoder")
 }
 
-// --- WAV ISFT encoder stamp is clearable from the CLI ---
+// WAV ISFT encoder stamp clearable from CLI
 
-// TestWAVEncoderStampClearedBySetEdits checks each of the three set-side triggers drops
-// the WAV ISFT transcoder stamp so a re-lint is clean of inherited-encoder.
+// TestWAVEncoderStampClearedBySetEdits: set-side triggers clear ISFT; re-lint clean.
 func TestWAVEncoderStampClearedBySetEdits(t *testing.T) {
 	for _, args := range [][]string{
 		{"--strip-encoder"},
@@ -42,8 +39,7 @@ func TestWAVEncoderStampClearedBySetEdits(t *testing.T) {
 	}
 }
 
-// TestWAVLintFixClearsEncoderStamp confirms lint --fix reaches the WAV ISFT stamp and a
-// re-lint is clean of inherited-encoder.
+// TestWAVLintFixClearsEncoderStamp: lint --fix clears ISFT; re-lint clean.
 func TestWAVLintFixClearsEncoderStamp(t *testing.T) {
 	f := copyFixture(t, sampleWAV)
 	if !lintHasEncoderNoise(t, f) {
@@ -57,8 +53,7 @@ func TestWAVLintFixClearsEncoderStamp(t *testing.T) {
 	}
 }
 
-// TestWAVSetEncoderNoSplitBrain checks that setting ENCODER drops the old ISFT stamp
-// rather than leaving a new id3 ENCODER beside a surviving ISFT (split-brain).
+// TestWAVSetEncoderNoSplitBrain: set ENCODER drops old ISFT, not split-brain with id3 ENCODER.
 func TestWAVSetEncoderNoSplitBrain(t *testing.T) {
 	f := copyFixture(t, sampleWAV)
 	if _, errb, code := runCLI(t, "set", f, "--set", "ENCODER=MyTool"); code != 0 {
@@ -73,10 +68,9 @@ func TestWAVSetEncoderNoSplitBrain(t *testing.T) {
 	}
 }
 
-// --- native counts render with a unit, not as bytes ---
+// Native counts render with unit, not bytes
 
-// TestNativeOggPagesUnit checks the Ogg "audio pages" count renders as "N pages", never
-// as a byte size.
+// TestNativeOggPagesUnit: Ogg audio pages as "N pages", never byte size.
 func TestNativeOggPagesUnit(t *testing.T) {
 	out, _, code := runCLI(t, "dump", "--native", fixturePath("sample.ogg"))
 	if code != 0 {
@@ -91,9 +85,7 @@ func TestNativeOggPagesUnit(t *testing.T) {
 	}
 }
 
-// TestNativeMatroskaCountsAndNoBareBytes checks a Matroska native view renders the Tag
-// count with a "tags" unit and shows no misleading bare "0 B" (the EBML header and
-// Info.Title have no byte size).
+// TestNativeMatroskaCountsAndNoBareBytes: Tag count uses "tags" unit; no bare "0 B".
 func TestNativeMatroskaCountsAndNoBareBytes(t *testing.T) {
 	out, _, code := runCLI(t, "dump", "--native", sampleMKA)
 	if code != 0 {
@@ -107,7 +99,7 @@ func TestNativeMatroskaCountsAndNoBareBytes(t *testing.T) {
 	}
 }
 
-// nativeLine returns the first native-blocks line containing kind.
+// nativeLine returns first native-blocks line containing kind.
 func nativeLine(t *testing.T, out, kind string) string {
 	t.Helper()
 	for _, l := range strings.Split(out, "\n") {
@@ -119,14 +111,9 @@ func nativeLine(t *testing.T, out, kind string) string {
 	return ""
 }
 
-// --- chapter writes on former refusal fixtures ---
-//
-// The chapter-unsupported CLI path is not reachable for these fixtures: MP3/AAC/AIFF/WAV
-// use ID3 CHAP/CTOC, FLAC/Ogg use VorbisComment CHAPTERxxx, and MP4/Matroska use their
-// native chapter stores. The indefinite-article helper is covered in internal/core.
+// Chapter writes on former refusal fixtures (now ID3/VorbisComment/native stores).
 
-// TestAddChapterAcrossFormats checks that --add-chapter succeeds on the formats that used
-// to reject chapters, and that the chapter survives a re-parse.
+// TestAddChapterAcrossFormats: --add-chapter succeeds on formerly rejected formats; survives re-parse.
 func TestAddChapterAcrossFormats(t *testing.T) {
 	for _, fixture := range []string{notagsAIFF, notagsFLAC, fixturePath("sample.mp3")} {
 		f := copyFixture(t, fixture)
@@ -140,10 +127,9 @@ func TestAddChapterAcrossFormats(t *testing.T) {
 	}
 }
 
-// --- long values elided in human output, full in JSON ---
+// Long values elided in human output, full in JSON
 
-// TestLongValueElidedHumanFullJSON checks a pathologically long value is elided (with a
-// length hint) in the human plan preview, while --json keeps the exact bytes.
+// TestLongValueElidedHumanFullJSON: huge value elided in human plan; --json keeps exact bytes.
 func TestLongValueElidedHumanFullJSON(t *testing.T) {
 	f := copyFixture(t, sampleFLAC)
 	big := strings.Repeat("x", 100000)
@@ -166,10 +152,9 @@ func TestLongValueElidedHumanFullJSON(t *testing.T) {
 	}
 }
 
-// --- set -o - is rejected ---
+// set -o - rejected
 
-// TestSetOutputDashRejected checks "set -o -" is a usage error, not a write to a file
-// literally named "-".
+// TestSetOutputDashRejected: set -o - is usage error, not a file named "-".
 func TestSetOutputDashRejected(t *testing.T) {
 	f := copyFixture(t, sampleFLAC)
 	_, errb, code := runCLI(t, "set", f, "--set", "TITLE=X", "-o", "-")
@@ -181,10 +166,9 @@ func TestSetOutputDashRejected(t *testing.T) {
 	}
 }
 
-// --- caps --format webm reports the cover-refusing variant ---
+// caps --format webm reports cover-refusing variant
 
-// TestCapsFormatWebM checks caps --format webm is accepted and reports cover write as
-// unsupported, while plain matroska still reports it writable.
+// TestCapsFormatWebM: webm reports pictures write none; matroska still write full.
 func TestCapsFormatWebM(t *testing.T) {
 	out, _, code := runCLI(t, "caps", "--format", "webm")
 	if code != 0 {
@@ -199,7 +183,7 @@ func TestCapsFormatWebM(t *testing.T) {
 	}
 }
 
-// firstLines returns the first n lines of s, for compact failure output.
+// firstLines returns first n lines for compact failure output.
 func firstLines(s string, n int) string {
 	lines := strings.Split(s, "\n")
 	if len(lines) > n {

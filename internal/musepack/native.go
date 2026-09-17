@@ -8,22 +8,19 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// doc is the Musepack native document: the decoded stream header, any leading ID3v2
-// tag preserved verbatim, and the trailing containers whose start is the end of the
-// audio. It is the preservation-first base for rewrites and satisfies core.NativeDoc.
+// doc is the native document: stream header, optional leading ID3v2, trailing
+// APEv2/ID3v1. Trailer.Start is the end of audio. Implements core.NativeDoc.
 type doc struct {
 	leadingID3 []byte // stray ID3v2 before the stream marker, preserved
-	streamAt   int64  // offset of the Musepack marker (== len(leadingID3))
+	streamAt   int64  // Musepack marker offset (== len(leadingID3))
 
 	trailer ape.Trailer
 	header  header
 	track   core.AudioTrack
 	size    int64
 
-	// chapters is the projection of the SV8 chapter packets, in start order, and
-	// ctStart/ctEnd the extent of the run's packets that were read (equal when there
-	// is none). The run sits inside the verbatim-copied stream, so the projection is
-	// read-only.
+	// chapters: SV8 CT projection in start order; ctStart/ctEnd bound the run
+	// (equal when none). Inside the verbatim-copied stream: read-only.
 	chapters []core.Chapter
 	ctStart  int64
 	ctEnd    int64
@@ -31,12 +28,10 @@ type doc struct {
 
 func (d *doc) Format() core.Format { return core.FormatMusepack }
 
-// chapterStore reports whether the file has a chapter store the reader can project:
-// the SV8 packet stream, with a known sample rate to place the chapters by. The parse
-// and the capability answer from this one predicate.
+// chapterStore: SV8 with a known sample rate. Shared by parse and capability.
 func (d *doc) chapterStore() bool { return d.header.streamVersion >= 8 && d.header.sampleRate > 0 }
 
-// Clone deep-copies the document so Document accessors stay detached.
+// Clone deep-copies so Document accessors stay detached.
 func (d *doc) Clone() core.NativeDoc {
 	c := *d
 	c.leadingID3 = slices.Clone(d.leadingID3)
@@ -46,7 +41,7 @@ func (d *doc) Clone() core.NativeDoc {
 	return &c
 }
 
-// Describe summarizes the native structure for the dump/native views.
+// Describe summarizes native structure for dump/native views.
 func (d *doc) Describe() []core.NativeEntry {
 	var out []core.NativeEntry
 	if len(d.leadingID3) > 0 {
@@ -58,8 +53,7 @@ func (d *doc) Describe() []core.NativeEntry {
 	}
 	entries := d.trailer.Describe(kind, d.track.Codec)
 	if d.ctEnd > d.ctStart {
-		// Indented under the stream entry, whose size already counts it, the way the
-		// APEv2 entry's items are listed under the tag.
+		// Nested under the stream entry (size already includes it), like APEv2 items.
 		entries = slices.Insert(entries, 1, core.NativeEntry{
 			Kind: "  CT chapter packets", Size: int(d.ctEnd - d.ctStart), Note: fmt.Sprintf("%d chapters", len(d.chapters)),
 		})

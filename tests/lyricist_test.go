@@ -8,13 +8,10 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestLyricistRoundTrip proves the canonical LYRICIST key survives a real
-// set -> write -> reparse across the main storage mechanisms: a Vorbis comment (FLAC),
-// an ID3 TEXT frame (MP3), an MP4 com.apple.iTunes freeform atom (M4A), and the
-// embedded-ID3 chunk WAV and AIFF carry (RIFF/IFF have no native lyricist chunk, so
-// LYRICIST lands in their ID3 chunk as a TEXT frame, the same route COMPOSER takes).
-// Two values exercise the multivalued projection. On MP3 it additionally confirms the
-// value lands in the conformant TEXT frame rather than a TXXX:LYRICIST user frame.
+// canonical LYRICIST key survives a real set -> write -> reparse across the main storage
+// mechanisms: a Vorbis comment (FLAC), an ID3 TEXT frame (MP3), an MP4 com.apple.iTunes freeform
+// atom (M4A), and the embedded-ID3 chunk WAV and AIFF carry (RIFF/IFF have no native lyricist
+// chunk, so LYRICIST lands in their ID3 chunk as a TEXT frame, the same route COMPOSER takes).
 func TestLyricistRoundTrip(t *testing.T) {
 	want := []string{"Bernie Taupin", "Tim Rice"}
 

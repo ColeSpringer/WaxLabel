@@ -6,10 +6,9 @@ import (
 	"testing"
 )
 
-// TestChapterOverlapReconciledWarningSurface is a CLI regression guard: inserting a start-only
-// marker inside an already-ended chapter reconciles the stale overlap and surfaces the accurate
-// chapter-overlap-reconciled note - and, for MP4, replaces the previously-spurious
-// chapter-metadata-dropped warning. No duplicate-chapter or chapter-past-duration is invented.
+// TestChapterOverlapReconciledWarningSurface: a start-only marker inside an ended chapter
+// reconciles overlap and emits chapter-overlap-reconciled, not spurious MP4 metadata-dropped
+// or duplicate/past-duration warnings.
 func TestChapterOverlapReconciledWarningSurface(t *testing.T) {
 	t.Parallel()
 	chaptersMKA := filepath.Join("..", "..", "testdata", "chapters.mka")

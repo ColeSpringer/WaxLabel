@@ -16,16 +16,14 @@ func sizeOf(t *testing.T, path string) int64 {
 	return fi.Size()
 }
 
-// TestPaddingFlagsApplyAlone checks that padding flags still apply when no metadata edit
-// is pending. --no-padding strips existing padding, an already satisfied --padding N stays
-// a no-op, and a larger --padding N grows the region.
+// TestPaddingFlagsApplyAlone: padding flags apply with no metadata edit pending.
 func TestPaddingFlagsApplyAlone(t *testing.T) {
 	td := func(name string) string { return filepath.Join("..", "..", "testdata", name) }
 
 	for _, fix := range []string{"sample.flac", "sample.mp3", "sample.aac"} {
 		t.Run("no-padding strips "+fix, func(t *testing.T) {
 			f := copyFixture(t, td(fix))
-			// Reserve a known padding region first so there is something to strip.
+			// Seed padding region first.
 			if _, errb, code := runCLI(t, "set", f, "--padding", "8192"); code != 0 {
 				t.Fatalf("--padding 8192: code %d, %s", code, errb)
 			}
@@ -72,8 +70,7 @@ func TestPaddingFlagsApplyAlone(t *testing.T) {
 	})
 }
 
-// TestPaddingPresetsApplyAlone checks padding presets with no metadata edit. minimal
-// strips padding, while preserve leaves both padded and zero-padding files unchanged.
+// TestPaddingPresetsApplyAlone: minimal strips padding; preserve leaves file unchanged.
 func TestPaddingPresetsApplyAlone(t *testing.T) {
 	td := func(name string) string { return filepath.Join("..", "..", "testdata", name) }
 

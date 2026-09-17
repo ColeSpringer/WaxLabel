@@ -6,9 +6,9 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestVorbisDescriptionDistinctFromComment protects against merging native COMMENT and
-// DESCRIPTION into one canonical field. A mapping-level round-trip can miss that case,
-// so this uses one document carrying both fields and edits only COMMENT.
+// protects against merging native COMMENT and DESCRIPTION into one canonical field. A mapping-level
+// round-trip can miss that case, so this uses one document carrying both fields and edits only
+// COMMENT.
 func TestVorbisDescriptionDistinctFromComment(t *testing.T) {
 	streamInfo := make([]byte, 34)
 	streamInfo[0], streamInfo[1] = 0x10, 0x00

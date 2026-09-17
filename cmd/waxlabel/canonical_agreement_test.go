@@ -9,8 +9,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// copyReportPath runs "copy src dst" and returns the parsed report plus the written destination
-// path, so a follow-up diff can run against the same bytes copy graded.
+// copyReportPath runs copy and returns parsed report plus destination path for follow-up diff.
 func copyReportPath(t *testing.T, src, dstFixture string) (jsonCopy, string) {
 	t.Helper()
 	dst := copyFixture(t, dstFixture)
@@ -25,7 +24,7 @@ func copyReportPath(t *testing.T, src, dstFixture string) (jsonCopy, string) {
 	return jc, dst
 }
 
-// fieldGrade returns the transfer report's disposition for a field key, and whether it was found.
+// fieldGrade returns transfer disposition for a field key and whether it was found.
 func fieldGrade(jc jsonCopy, key string) (string, bool) {
 	for _, it := range jc.Transfer {
 		if it.Kind == "field" && it.Key == key {
@@ -35,22 +34,12 @@ func fieldGrade(jc jsonCopy, key string) (string, bool) {
 	return "", false
 }
 
-// TestCanonicalCopyDiffAgreement is the standing guard against copy/diff drift on the canonical
-// keys a format canonicalizes or drops. For every {key} x {value} x {format-pair}, it authors the
-// value on the source, copies it into the destination, and asserts copy's grade and diff's verdict
-// agree: a field copy grades losslessly "carried" must read back diff-identical, and one it grades
-// "dropped"/"lossy" must show a diff change. copy's grade, diff's fold, and the MP4 writer each keep
-// their own notion of what a format canonicalizes; this single matrix would have caught all three of
-// the numeric-fold, MEDIATYPE, and lenient-split drifts at once.
+// TestCanonicalCopyDiffAgreement: copy grade and diff verdict agree on canonical keys across
+// format pairs. Catches numeric-fold, MEDIATYPE, and lenient-split drift.
 func TestCanonicalCopyDiffAgreement(t *testing.T) {
 	t.Parallel()
-	// ITUNESADVISORY and BPM ride the same matrix: both are MP4-canonical integer atoms
-	// (rtng, tmpo). "174.0" is BPM's all-zero-fraction spelling, which tmpo stores as the
-	// same whole number: carried and diff-folded for BPM, dropped (a decimal) everywhere
-	// else. "174.99" is a genuine fraction: tmpo rounds it with a coercion warning, so BPM
-	// grades lossy on the MP4 legs and diff reports the change - agreement holds from the
-	// lossy side. "+3" is dropped on the unsigned keys (ParseUint) and never diff-folded
-	// there, while the signed trkn slots store and fold it.
+	// ITUNESADVISORY and BPM: MP4 integer atoms. "174.0" whole number: carried/folded for BPM on MP4.
+	// "174.99" fraction: lossy on MP4 legs. "+3" dropped on unsigned keys, folded on signed trkn slots.
 	keys := []tag.Key{tag.TrackNumber, tag.TrackTotal, tag.DiscNumber, tag.DiscTotal,
 		tag.MediaType, tag.ITunesAdvisory, tag.BPM}
 	values := []string{"01", "+3", "007", "1/2/3", "3/abc", "5", "128", "174.0", "174.99"}
@@ -68,9 +57,7 @@ func TestCanonicalCopyDiffAgreement(t *testing.T) {
 					src := buildTransferSource(t, pr.src, func(e *wl.Editor) *wl.Editor {
 						return e.Set(key, val)
 					})
-					// Only meaningful when the source format actually stored the value; an MP4
-					// source drops an unstorable value before it can enter the copy/diff pipeline,
-					// so there is nothing to grade or diff.
+					// Skip when source never stored the value (nothing to grade/diff).
 					if len(tagValues(dumpJSON(t, src), string(key))) == 0 {
 						t.Skipf("source %s did not store %s=%q (nothing to copy/diff)", pr.name, key, val)
 					}
@@ -92,9 +79,7 @@ func TestCanonicalCopyDiffAgreement(t *testing.T) {
 
 					carried := grade == "carried"
 					changed := hasTagChange(jd, string(key))
-					// A losslessly carried field must read back diff-identical; a dropped or lossy
-					// one must show a diff change. Any other combination means copy and diff
-					// disagree on what this format did to the value.
+					// carried => diff identical; dropped/lossy => diff changed.
 					if carried == changed {
 						t.Errorf("copy grade %q and diff change=%v disagree for %s=%q (%s): a carried field must read diff-identical, a dropped/lossy one must show a change",
 							grade, changed, key, val, pr.name)
@@ -105,11 +90,8 @@ func TestCanonicalCopyDiffAgreement(t *testing.T) {
 	}
 }
 
-// TestCompilationBooleanCopyDiffAgreement is the copy/diff guard for the COMPILATION boolean:
-// because every format now normalizes a recognized boolean word to "1"/"0" on write, a copy of it
-// across FLAC and M4A grades carried and diff reports no change, so the two agree. Before the
-// normalization, FLAC kept the literal "true" while M4A stored "1", so copy graded carried yet diff
-// reported "true -> 1" - the drift this pins shut.
+// TestCompilationBooleanCopyDiffAgreement: boolean normalizes to "1"/"0"; copy carried, diff unchanged.
+// Before normalization FLAC kept "true", M4A "1": copy carried but diff reported change.
 func TestCompilationBooleanCopyDiffAgreement(t *testing.T) {
 	t.Parallel()
 	pairs := []struct{ name, src, dst string }{
@@ -119,11 +101,8 @@ func TestCompilationBooleanCopyDiffAgreement(t *testing.T) {
 	runBooleanCopyDiffAgreement(t, tag.Compilation, pairs)
 }
 
-// TestGaplessBooleanCopyDiffAgreement clones the boolean guard for ITUNESGAPLESS across the
-// MP3 and Matroska legs. Its ID3 home is a TXXX user frame, the first boolean key stored
-// there, so this locks the TXXX-branch canonicalization: without it MP3 would keep the
-// literal "yes" while FLAC stores "1", and copy would grade carried what diff reports
-// changed. The MKA legs lock the same canonicalization in the Matroska SimpleTag emit.
+// TestGaplessBooleanCopyDiffAgreement: ITUNESGAPLESS across MP3 (TXXX) and Matroska legs.
+// Without normalization MP3 kept "yes", FLAC "1": copy/diff would disagree.
 func TestGaplessBooleanCopyDiffAgreement(t *testing.T) {
 	t.Parallel()
 	pairs := []struct{ name, src, dst string }{
@@ -135,8 +114,7 @@ func TestGaplessBooleanCopyDiffAgreement(t *testing.T) {
 	runBooleanCopyDiffAgreement(t, tag.ITunesGapless, pairs)
 }
 
-// runBooleanCopyDiffAgreement is the shared body: every recognized boolean word copies
-// carried and diffs identical across each format pair.
+// runBooleanCopyDiffAgreement: recognized boolean words copy carried and diff identical.
 func runBooleanCopyDiffAgreement(t *testing.T, key tag.Key, pairs []struct{ name, src, dst string }) {
 	for _, val := range []string{"true", "yes", "1", "false", "no", "0"} {
 		for _, pr := range pairs {

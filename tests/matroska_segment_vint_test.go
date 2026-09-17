@@ -14,10 +14,8 @@ const (
 	idSeekPosition = 0x53AC
 )
 
-// minWidthVINT encodes n as the shortest valid EBML data-size VINT. The shared sizeVINT
-// helper always emits 8 bytes, so it cannot exercise width-changing Segment sizes. The
-// all-ones value at a given width is the reserved unknown-size form, so a value needing every
-// bit rolls to the next width.
+// minWidthVINT encodes n as the shortest valid EBML data-size VINT. The shared sizeVINT helper
+// always emits 8 bytes, so it cannot exercise width-changing Segment sizes.
 func minWidthVINT(n int) []byte {
 	v := uint64(n)
 	for w := 1; w <= 8; w++ {
@@ -71,9 +69,8 @@ func assertSegmentVINTWidened(t *testing.T, src, out []byte) {
 	}
 }
 
-// buildMinSegMultiCluster is buildMultiClusterMKA's trailing-Cues layout wrapped in a
-// minimal-width Segment VINT. A body-growing edit widens both the Segment header and cue
-// slots.
+// buildMinSegMultiCluster is buildMultiClusterMKA's trailing-Cues layout wrapped in a minimal-width
+// Segment VINT.
 func buildMinSegMultiCluster(t *testing.T, title string) []byte {
 	t.Helper()
 	info := mkEl(idInfo, mkStr(idSegTitle, title))
@@ -95,9 +92,7 @@ func buildMinSegMultiCluster(t *testing.T, title string) []byte {
 	return concat(mkEl(idEBML, mkStr(idDocType, "matroska")), mkSegmentMinWidth(body))
 }
 
-// TestMatroskaChainedEditAcrossSegmentVINTWidthCues checks chained edits after a Segment
-// size VINT widens. The returned in-memory document must carry updated Segment geometry so a
-// second edit can rebuild cue positions without a reparse.
+// checks chained edits after a Segment size VINT widens.
 func TestMatroskaChainedEditAcrossSegmentVINTWidthCues(t *testing.T) {
 	src := buildMinSegMultiCluster(t, "x")
 	if got := mustParseBytes(t, src).Fields().Title; got != "x" {
@@ -141,8 +136,7 @@ func buildMinSegSeekHeadMKA(t *testing.T, title string) []byte {
 	return concat(mkEl(idEBML, mkStr(idDocType, "matroska")), mkSegmentMinWidth(body))
 }
 
-// assertSeekEntriesResolve checks that every segment-relative SeekPosition points at a
-// top-level element whose ID equals the entry's SeekID.
+// assertSeekEntriesResolve: each SeekPosition points at a top-level element matching SeekID.
 func assertSeekEntriesResolve(t *testing.T, data []byte) {
 	t.Helper()
 	_, segData, segEnd, ok := elemRange(data, 0, len(data), idSegment, nil)
@@ -206,9 +200,8 @@ func assertSeekEntriesResolve(t *testing.T, data []byte) {
 	}
 }
 
-// TestMatroskaChainedEditAcrossSegmentVINTWidthSeekHead is the SeekHead variant of the
-// chained edit check. After a width-changing first edit, a second edit on the returned
-// document must rebuild SeekHead positions that still resolve.
+// SeekHead variant of the chained edit check. After a width-changing first edit, a second edit on
+// the returned document must rebuild SeekHead positions that still resolve.
 func TestMatroskaChainedEditAcrossSegmentVINTWidthSeekHead(t *testing.T) {
 	src := buildMinSegSeekHeadMKA(t, "x")
 	if got := mustParseBytes(t, src).Fields().Title; got != "x" {

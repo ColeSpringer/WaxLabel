@@ -51,10 +51,8 @@ func TestDecodeADTSRejects(t *testing.T) {
 	}
 }
 
-// TestDecodeADTSConfigIndependentOfFrameLength is the crux of the essence-digest
-// design: two frames with identical static configuration but different
-// frame_length (bytes 3-5) decode to the same object type, rate index, and
-// channel config - so hashing the decoded config, not the raw header, is exact.
+// TestDecodeADTSConfigIndependentOfFrameLength: identical static config with
+// different frame_length must decode equal (essence digest hashes decoded config).
 func TestDecodeADTSConfigIndependentOfFrameLength(t *testing.T) {
 	a, ok1 := decodeADTS(buildADTS(1, 4, 2, 384))
 	b, ok2 := decodeADTS(buildADTS(1, 4, 2, 700))
@@ -75,8 +73,7 @@ func TestEssenceExtentConfig(t *testing.T) {
 	if ver != "aac-adts-v1" {
 		t.Errorf("extent version = %q, want aac-adts-v1", ver)
 	}
-	// The config carries the static fields only (object type, rate index, channel
-	// config) - never the per-frame frame_length.
+	// Static fields only; never per-frame frame_length.
 	if !bytes.Equal(cfg, []byte{2, 4, 2}) {
 		t.Errorf("config = %v, want [2 4 2]", cfg)
 	}

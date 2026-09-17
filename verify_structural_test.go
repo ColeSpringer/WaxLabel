@@ -12,11 +12,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestParseLimitsThreadedToVerify covers the --verify limits fix: the limits a document is parsed
-// under are recorded on it, so a WithVerifyEssence write re-parses the output under the same ceilings
-// the original parse cleared - not the write options' defaults (which would fail an elevated-limit
-// document's own structural re-verification, e.g. a tree deeper than the default MaxDepth or more
-// elements than the default cap). The result document inherits them so a re-edit re-verifies the same.
+// TestParseLimitsThreadedToVerify: parse limits are recorded and reused for
+// WithVerifyEssence re-parse; result doc inherits them.
 func TestParseLimitsThreadedToVerify(t *testing.T) {
 	elevated := Limits{MaxAllocBytes: 512 << 20, MaxDepth: 128, MaxElements: 500_000}
 	doc, err := ParseFile(context.Background(), "testdata/sample.flac", WithLimits(elevated))
@@ -39,14 +36,10 @@ func TestParseLimitsThreadedToVerify(t *testing.T) {
 	}
 }
 
-// TestVerifyToleratesElementGrowthPastTightLimit covers the other half of the --verify limits fix: a
-// document parsed under a tight MaxElements (enough for the input) can be edited to ADD elements past
-// that cap and still verify. An edit can add ID3 frames the input lacked, and the writer's own size
-// check gates against the library default (not the doc's tight cap), so the re-parse must floor
-// MaxElements at the default too - otherwise a valid, grown rewrite is discarded as "did not parse
-// back cleanly."
+// TestVerifyToleratesElementGrowthPastTightLimit: edit past a tight MaxElements
+// still verifies (re-parse floors at library default).
 func TestVerifyToleratesElementGrowthPastTightLimit(t *testing.T) {
-	// A tight element cap the tag-less MP3 input clears but a dozen-frame edit exceeds.
+	// Cap that tagless MP3 clears but a dozen-frame edit exceeds.
 	doc, err := ParseFile(context.Background(), "testdata/notags.mp3", WithLimits(Limits{MaxElements: 8}))
 	if err != nil {
 		t.Fatalf("parse under a tight element cap: %v", err)
@@ -64,7 +57,7 @@ func TestVerifyToleratesElementGrowthPastTightLimit(t *testing.T) {
 	}
 }
 
-// mp4Box renders a minimal 8-byte-header MP4 atom for the structural-verify test.
+// mp4Box renders a minimal 8-byte-header MP4 atom.
 func mp4Box(name string, payload []byte) []byte {
 	b := make([]byte, 8+len(payload))
 	binary.BigEndian.PutUint32(b[0:4], uint32(len(b)))
@@ -73,15 +66,10 @@ func mp4Box(name string, payload []byte) []byte {
 	return b
 }
 
-// TestStructuralVerifyCatchesBadOutput exercises the exact composition the --verify structural
-// re-parse uses inside verifyOutput: a sizedReaderAt over a real, still-open *os.File handed to the
-// format's codec.Parse. A structurally-invalid rewrite (a truncated moov whose last child leaves a
-// misaligning gap) must fail that parse, so a would-be-corrupt write aborts at writeAtomic's verify
-// hook before the atomic commit. The essence hash alone cannot catch this - it re-reads the same
-// verbatim media bytes - which is why this second check exists.
+// TestStructuralVerifyCatchesBadOutput: verifyOutput re-parse rejects a truncated
+// moov (essence hash alone cannot). Aborts before atomic commit.
 func TestStructuralVerifyCatchesBadOutput(t *testing.T) {
-	// ftyp + moov(free child + 4-byte zero gap): well-formed boxes, but the gap after the moov's
-	// last complete child is exactly the misalignment the parse guard rejects.
+	// ftyp + moov(free + 4-byte gap): misalignment the parse guard rejects.
 	bad := slices.Concat(
 		mp4Box("ftyp", []byte("M4A \x00\x00\x00\x00")),
 		mp4Box("moov", slices.Concat(mp4Box("free", nil), make([]byte, 4))),

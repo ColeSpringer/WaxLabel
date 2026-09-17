@@ -14,11 +14,8 @@ import (
 // guidMarkerHex is the Marker Object GUID as stored on disk.
 const guidMarkerHex = "01cd87f451a9cf118ee600c00c205365"
 
-// asfMarker is one marker: its presentation time on the file's own timeline (preroll
-// included, as ASF stores it) and its description. The optional fields override the
-// entry's own bookkeeping to build the malformed shapes a reader must survive: raw
-// description bytes in place of the encoded desc, a wrong entry length, and a wrong
-// description length in WCHARs (zero means the correct value).
+// asfMarker is one marker: its presentation time on the file's own timeline (preroll included, as
+// ASF stores it) and its description.
 type asfMarker struct {
 	at        time.Duration
 	desc      string
@@ -27,10 +24,9 @@ type asfMarker struct {
 	descLen   uint32
 }
 
-// asfMarkers builds a Marker Object: the reserved GUID, the count, the object's name,
-// then one entry per marker with an 8-byte offset, the presentation time in 100 ns
-// units, the entry length, a send time, flags, and the NUL-terminated UTF-16LE
-// description behind its length in WCHARs.
+// asfMarkers builds a Marker Object: the reserved GUID, the count, the object's name, then one
+// entry per marker with an 8-byte offset, the presentation time in 100 ns units, the entry length,
+// a send time, flags, and the NUL-terminated UTF-16LE description behind its length in WCHARs.
 func asfMarkers(name string, marks ...asfMarker) []byte {
 	g, _ := hexBytes(guidNoErrCorrHex)
 	b := slices.Clone(g)
@@ -114,8 +110,8 @@ func TestWMAMarkersReadAsChapters(t *testing.T) {
 	}
 }
 
-// TestWMAMarkerForms covers the marker shapes a reader meets: no description, a time
-// inside the preroll (clamped to the start), and a count the object cannot back.
+// marker shapes a reader meets: no description, a time inside the preroll (clamped to the start),
+// and a count the object cannot back.
 func TestWMAMarkerForms(t *testing.T) {
 	t.Run("untitled and clamped", func(t *testing.T) {
 		data := asfFile(
@@ -143,11 +139,11 @@ func TestWMAMarkerForms(t *testing.T) {
 	})
 }
 
-// TestWMAMarkerEntryShapes pins the reader to the description-length stepping ffprobe
-// uses and to the string forms a description can take: an entry length field that lies
-// does not derail the entries after it, a description length past its entry is bounded
-// by the entry, a NUL inside the description ends the title (a title carrying one could
-// not be copied anywhere), and a description length too wide for a 32-bit int is safe.
+// reader to the description-length stepping ffprobe uses and to the string forms a description can
+// take: an entry length field that lies does not derail the entries after it, a description length
+// past its entry is bounded by the entry, a NUL inside the description ends the title (a title
+// carrying one could not be copied anywhere), and a description length too wide for a 32-bit int is
+// safe.
 func TestWMAMarkerEntryShapes(t *testing.T) {
 	const preroll = 3 * time.Second
 	for _, c := range []struct {
@@ -189,8 +185,6 @@ func TestWMAMarkerElementCap(t *testing.T) {
 	}
 }
 
-// TestWMAMarkersTransfer is the transcode case: a WMA source's markers carry into a
-// destination that stores chapters.
 func TestWMAMarkersTransfer(t *testing.T) {
 	src := mustParseBytes(t, asfMarked())
 	dstBytes := readFixture(t, notagsFLAC)

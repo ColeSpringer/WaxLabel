@@ -18,9 +18,7 @@ func legacyOnlyMP3(t *testing.T) []byte {
 	return append(data, id3v1("", "", "Legacy Album", "1999", "legacy comment", 17)...)
 }
 
-// warningFor returns the plan warning with the given code, and whether it was present. It is
-// reportHasWarning's counterpart for a test that asserts on the warning's keys or message
-// rather than only its presence.
+// warningFor returns the plan warning with the given code, and whether it was present.
 func warningFor(plan *wl.Plan, code wl.WarningCode) (wl.Warning, bool) {
 	for _, w := range plan.Report().Warnings {
 		if w.Code == code {
@@ -30,9 +28,8 @@ func warningFor(plan *wl.Plan, code wl.WarningCode) (wl.Warning, bool) {
 	return wl.Warning{}, false
 }
 
-// TestLegacyStripWarnsAboutWhatItDestroys is the contract doc.go freezes: unaffected data,
-// legacy tags included, is preserved and warned, never stripped silently. An explicit
-// LegacyStrip does destroy legacy-only values, so it must say which.
+// contract doc.go freezes: unaffected data, legacy tags included, is preserved and warned, never
+// stripped silently. An explicit LegacyStrip does destroy legacy-only values, so it must say which.
 func TestLegacyStripWarnsAboutWhatItDestroys(t *testing.T) {
 	data := legacyOnlyMP3(t)
 	doc := mustParseBytes(t, data)
@@ -57,10 +54,9 @@ func TestLegacyStripWarnsAboutWhatItDestroys(t *testing.T) {
 	}
 }
 
-// TestLegacyStripJudgesTheEditedTags is the reason the rule takes an authority argument:
-// a strip that is also writing the value the legacy container held loses nothing, so
-// naming that key would be a false alarm - and a copy sets most of the source's keys on
-// the destination editor, which would make nearly every key a false alarm.
+// reason the rule takes an authority argument: a strip that is also writing the value the legacy
+// container held loses nothing, so naming that key would be a false alarm, and a copy sets most of
+// the source's keys on the destination editor, which would make nearly every key a false alarm.
 func TestLegacyStripJudgesTheEditedTags(t *testing.T) {
 	data := legacyOnlyMP3(t)
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Album, "Written Now").
@@ -80,10 +76,8 @@ func TestLegacyStripJudgesTheEditedTags(t *testing.T) {
 	}
 }
 
-// TestLegacyStripIgnoresKeysTheEditRemoved: the rule tests the edited tags, so a key the edit
-// CLEARS looks absent from the authority and read as "held only in the legacy container".
-// Nothing is lost there - the user asked for the removal, and the canonical set carried the
-// same value - so reporting it is a false alarm that --strict turns into a refused write.
+// rule tests the edited tags, so a key the edit CLEARS looks absent from the authority and read as
+// "held only in the legacy container".
 func TestLegacyStripIgnoresKeysTheEditRemoved(t *testing.T) {
 	// Both containers carry the same TITLE, so clearing it loses nothing either strips.
 	data := id3v2(3, textFrame(3, "TIT2", "Same Title"))
@@ -99,8 +93,6 @@ func TestLegacyStripIgnoresKeysTheEditRemoved(t *testing.T) {
 	}
 }
 
-// TestLegacyStripStillReportsGenuinelyLegacyOnly is the companion, so the filter above cannot
-// silence the case the warning exists for.
 func TestLegacyStripStillReportsGenuinelyLegacyOnly(t *testing.T) {
 	data := legacyOnlyMP3(t)
 	plan, err := mustParseBytes(t, data).Edit().Clear(tag.Title).
@@ -117,8 +109,6 @@ func TestLegacyStripStillReportsGenuinelyLegacyOnly(t *testing.T) {
 	}
 }
 
-// TestLegacyStripSilentWhenNothingIsLost: a legacy container fully redundant with the
-// canonical set loses nothing on a strip, so there is nothing to warn about.
 func TestLegacyStripSilentWhenNothingIsLost(t *testing.T) {
 	data := id3v2(3, textFrame(3, "TIT2", "Same Title"))
 	data = append(data, mp3Audio(t)...)
@@ -133,9 +123,9 @@ func TestLegacyStripSilentWhenNothingIsLost(t *testing.T) {
 	}
 }
 
-// TestLintFixNeverTripsLegacyStripWarning pins the complement the two gates form: PlanLintFix
-// adds LegacyStrip only when neither loss predicate holds, computed from the same primitives
-// against the same document, so the safe fix can never destroy what this warning reports.
+// complement the two gates form: PlanLintFix adds LegacyStrip only when neither loss predicate
+// holds, computed from the same primitives against the same document, so the safe fix can never
+// destroy what this warning reports.
 func TestLintFixNeverTripsLegacyStripWarning(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -148,9 +138,8 @@ func TestLintFixNeverTripsLegacyStripWarning(t *testing.T) {
 			return append(data, id3v1("Same Title", "", "", "", "", 255)...)
 		}},
 		{"legacy container echoing a stamped ENCODER", func(t *testing.T) []byte {
-			// PlanLintFix clears the stamped ENCODER, so the ID3v1 comment carrying the same
-			// stamp reads as legacy-only against the edited set. Nothing is lost: the canonical
-			// set held it too.
+			// PlanLintFix clears the stamped ENCODER, so the ID3v1 comment carrying the same stamp reads as
+			// legacy-only against the edited set. Nothing is lost: the canonical set held it too.
 			data := id3v2(3, textFrame(3, "TIT2", "Song"), textFrame(3, "TSSE", "Lavf62.3.100"))
 			data = append(data, mp3Audio(t)...)
 			return append(data, id3v1("Song", "", "", "", "", 255)...)
@@ -170,9 +159,8 @@ func TestLintFixNeverTripsLegacyStripWarning(t *testing.T) {
 	}
 }
 
-// TestLegacyStripSilentOnWAV pins the exclusion by construction: WAV and AIFF reuse
-// LegacyStrip to mean "consolidate into the id3 chunk", where the values move rather than
-// die, and they never mark a family Legacy.
+// exclusion by construction: WAV and AIFF reuse LegacyStrip to mean "consolidate into the id3
+// chunk", where the values move rather than die, and they never mark a family Legacy.
 func TestLegacyStripSilentOnWAV(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Song"}, [2]string{"ICOP", "ACME"}), wavData(400))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "New").
@@ -188,9 +176,9 @@ func TestLegacyStripSilentOnWAV(t *testing.T) {
 	}
 }
 
-// TestWAVLegacyStripWarnsAboutUnmappedItems closes the adjacent hole on the same flag: WAV
-// reuses LegacyStrip to mean "consolidate LIST/INFO into the id3 chunk", but an item with no
-// canonical key (IKEY, ISBJ) has no frame to move into, so the chunk drop destroys it.
+// closes the adjacent hole on the same flag: WAV reuses LegacyStrip to mean "consolidate LIST/INFO
+// into the id3 chunk", but an item with no canonical key (IKEY, ISBJ) has no frame to move into, so
+// the chunk drop destroys it.
 func TestWAVLegacyStripWarnsAboutUnmappedItems(t *testing.T) {
 	data := wavFile(wavFmtPCM(),
 		wavInfo([2]string{"INAM", "Song"}, [2]string{"IKEY", "Alice"}, [2]string{"ISBJ", "Subj"}), wavData(400))

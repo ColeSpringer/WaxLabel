@@ -10,16 +10,11 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// forgeMark is a newline followed by a distinctive sentinel. A single-line field
-// that fails to escape it forges a second output line; SanitizeLine renders the
-// newline as \x0a, so the raw mark never appears. The sentinel is unique to these
-// test payloads, so a match in real output can only be a forged line - unlike a
-// bare \n, which the boundary legitimately keeps as a line separator (so
-// assertNoRawControl cannot catch this class).
+// forgeMark is newline + sentinel. Unescaped it forges a second line; SanitizeLine emits \x0a.
+// Unique sentinel detects forgery; bare \n in boundaries is legitimate.
 const forgeMark = "\n!INJECTED!"
 
-// assertNoForgedLine fails if a hostile newline survived as a real line break -
-// i.e. a single-line field carrying forgeMark was not run through SanitizeLine.
+// assertNoForgedLine fails if forgeMark appears as a raw line break.
 func assertNoForgedLine(t *testing.T, label, output string) {
 	t.Helper()
 	if strings.Contains(output, forgeMark) {
@@ -27,9 +22,7 @@ func assertNoForgedLine(t *testing.T, label, output string) {
 	}
 }
 
-// forgeNamedCopy copies src into a temp file whose name embeds forgeMark (a real
-// newline; legal on Linux), so the record headers and error lines that print the
-// path are tested for line-forgery. It skips if the filesystem refuses the name.
+// forgeNamedCopy copies src to a temp path whose name embeds forgeMark (newline on Linux).
 func forgeNamedCopy(t *testing.T, src string) string {
 	t.Helper()
 	data, err := os.ReadFile(src)
@@ -43,10 +36,7 @@ func forgeNamedCopy(t *testing.T, src string) string {
 	return dst
 }
 
-// TestNoLineForgeryFromFilename: a path printed in a record header (or an error
-// line) must not let an embedded newline forge a line. Covers the commands the
-// SanitizeLine sweep now reaches for paths - dump, lint, lint --fix, diff, copy -
-// and the not-found error line.
+// TestNoLineForgeryFromFilename: paths in headers/errors must not forge lines (dump, lint, diff, copy).
 func TestNoLineForgeryFromFilename(t *testing.T) {
 	t.Parallel()
 	named := forgeNamedCopy(t, sampleFLAC)
@@ -74,24 +64,19 @@ func TestNoLineForgeryFromFilename(t *testing.T) {
 	}
 }
 
-// TestNoLineForgeryFromCodec (unit): a file-derived codec name with a newline (an
-// unrecognized container codec ID) cannot forge a line in the single-line audio
-// summary.
+// TestNoLineForgeryFromCodec: newline in codec name cannot forge audio summary line.
 func TestNoLineForgeryFromCodec(t *testing.T) {
 	line := audioLine(trackProps("Matroska", wl.AudioTrack{Codec: "X" + forgeMark, SampleRate: 48000, Channels: 2}))
 	assertNoForgedLine(t, "audioLine codec", line)
 }
 
-// TestNoLineForgeryFromTransferKey (unit): a file-derived transfer key (an
-// unvalidated field name from parse) with a newline is escaped on its single line.
+// TestNoLineForgeryFromTransferKey: newline in transfer key is escaped on one line.
 func TestNoLineForgeryFromTransferKey(t *testing.T) {
 	got := transferLabel(wl.TransferItem{Key: tag.Key("k" + forgeMark)})
 	assertNoForgedLine(t, "transferLabel key", got)
 }
 
-// TestNoLineForgeryFromTransferReason covers a drop reason that includes a source cover
-// MIME containing a newline. The reason is escaped on one report line, so it cannot forge
-// a fake loss line in the copy report.
+// TestNoLineForgeryFromTransferReason: newline in drop reason cannot forge copy report line.
 func TestNoLineForgeryFromTransferReason(t *testing.T) {
 	var buf strings.Builder
 	r := wl.TransferReport{Items: []wl.TransferItem{
@@ -101,8 +86,7 @@ func TestNoLineForgeryFromTransferReason(t *testing.T) {
 	assertNoForgedLine(t, "renderTransfer reason", buf.String())
 }
 
-// TestNoLineForgeryFromSetNote: the malformed-value note (stderr) and the change
-// preview (stdout) both escape a hostile newline in a --set value.
+// TestNoLineForgeryFromSetNote: stderr note and stdout preview escape newline in --set value.
 func TestNoLineForgeryFromSetNote(t *testing.T) {
 	t.Parallel()
 	target := copyFixture(t, sampleFLAC)

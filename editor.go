@@ -17,123 +17,69 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// ResolveAlias returns the canonical key for a recognized alternative tag spelling
-// (DATE/YEAR -> RECORDINGDATE, TOTALTRACKS -> TRACKTOTAL, ORGANIZATION -> LABEL, ...),
-// or key unchanged when it is not an alias. Front-ends use it before applying an edit
-// so an alias targets the real field instead of creating a duplicate custom field.
+// ResolveAlias maps DATE/YEAR -> RECORDINGDATE, TOTALTRACKS -> TRACKTOTAL, etc.
+// Non-aliases returned unchanged.
 func ResolveAlias(key tag.Key) tag.Key { return mapping.ResolveAlias(key) }
 
-// Editor records mutations against a [Document] without changing it. Mutations
-// accumulate as a presence-aware [tag.TagPatch] (for canonical fields) plus a
-// working picture list; [Editor.Prepare] resolves them into a [Plan]. The
-// editor methods return the editor for chaining.
+// Editor records mutations against a [Document]. [Editor.Prepare] builds a [Plan].
+// Methods return the editor for chaining.
 type Editor struct {
 	doc         *Document
 	base        *core.Media
 	patch       tag.TagPatch
 	pictures    []core.Picture
 	picsTouched bool
-	// addedMask is parallel to pictures: addedMask[i] is true when pictures[i] was
-	// added on this editor via AddPicture (so Prepare validates it), false for a
-	// picture Edit seeded from the file. A mask rather than a second slice lets
-	// RemovePictures filter both in lockstep with a single evaluation of the caller's
-	// match predicate, so a side-effecting or non-deterministic matcher cannot be
-	// called twice or desync the added set from what will be written.
+	// Parallel to pictures: true if AddPicture added it (Prepare validates those).
 	addedMask           []bool
 	chapters            []core.Chapter
 	chaptersTouched     bool
 	syncedLyrics        []core.SyncedLyrics
 	syncedLyricsTouched bool
-	// syncedLyricsCleared marks that the synced-lyrics set was explicitly cleared before this
-	// edit, so an ID3 SYLT rewrite must not fall back to the destination's existing SYLT
-	// language and descriptor: a clear means "start fresh," so an authored set with no language
-	// reads back with none rather than silently inheriting the cleared one. A plain authored
-	// set (no preceding clear) leaves this false and keeps that inheritance convenience.
+	// After ClearSyncedLyrics: ID3 SYLT must not inherit dest language/descriptor.
 	syncedLyricsCleared bool
 	outputGain          int
 	outputGainTouched   bool
-	// carried marks this editor as a faithful carry from a source (the transfer
-	// engine), not a user-authored edit, so [Editor.Prepare] suppresses the edit-time
-	// sanity warnings that flag authoring mistakes - the chapter past-duration /
-	// duplicate-start checks and the single-valued-multi note. Copying a file must not
-	// lecture about metadata the user authored none of (a source's own conflicting
-	// single-valued key, or its chapter timings).
+	// Transfer carry: suppress authoring sanity warnings.
 	carried bool
-	// syncedLyricsDroppedLines records the 1-based line numbers of authored LRC input that
-	// produced no timed lyric and were dropped (a front-end parse diagnostic, set via
-	// [Editor.NoteSyncedLyricsDropped]). [Editor.Prepare] surfaces it as a
-	// WarnSyncedLyricsLineDropped so a partial input drop does not pass silently.
+	// 1-based LRC lines dropped; Prepare warns WarnSyncedLyricsLineDropped.
 	syncedLyricsDroppedLines []int
-	// pictureSelectorMisses records cover-art role names a removal named that matched no picture
-	// in this file (set via [Editor.NotePictureSelectorMiss]). [Editor.Prepare] surfaces each as a
-	// WarnPictureSelectorMiss so a role that removed nothing is visible rather than a silent no-op.
+	// Roles that matched no picture; Prepare warns WarnPictureSelectorMiss.
 	pictureSelectorMisses []string
 }
 
-// Apply records an explicit patch (set/clear/add operations) after any already
-// recorded, so later edits win on conflicts. Each operation's key is resolved through
-// [ResolveAlias] first, exactly as the key-taking methods below do, so a patch built with
-// an alias spelling (e.g. DATE) lands on the canonical field rather than a custom key.
+// Apply appends a patch (later ops win). Keys go through [ResolveAlias].
 func (e *Editor) Apply(p tag.TagPatch) *Editor {
 	e.patch.Append(p.MapKeys(ResolveAlias))
 	return e
 }
 
-// Set replaces a key's values. The key is resolved through [ResolveAlias], so an
-// alternative spelling (Set(tag.Key("DATE"), ...)) lands on the canonical field
-// (RECORDINGDATE) on every format instead of creating a custom key; a non-alias key is
-// unchanged.
-//
-// Calling Set with no values collapses the key to absent during [Editor.Prepare], matching
-// the empty-value cleanup. [Editor.Clear] is the explicit removal call. Set(key, "") is
-// distinct: it stores one empty value. A format that cannot store that value may drop it,
-// report a removed/no-op change, and let the CLI print an advisory stderr note.
-//
-// A slash-combined "n/total" on [tag.TrackNumber] or [tag.DiscNumber] is normalized
-// at [Editor.Prepare] into the canonical pair (e.g. Set(tag.TrackNumber, "3/12")
-// becomes TRACKNUMBER=3 + TRACKTOTAL=12) so every format stores it identically; see
-// splitNumberPairs for the precedence rules.
+// Set replaces a key's values ([ResolveAlias]). No values -> absent at Prepare.
+// Set(key, "") stores one empty value. Slash "n/total" on track/disc splits at Prepare.
 func (e *Editor) Set(key tag.Key, vals ...string) *Editor {
 	e.patch.Set(ResolveAlias(key), vals...)
 	return e
 }
 
-// Clear removes a key (makes it absent). The key is resolved through [ResolveAlias], so
-// clearing an alias spelling removes the canonical field.
+// Clear removes a key ([ResolveAlias]).
 func (e *Editor) Clear(key tag.Key) *Editor {
 	e.patch.Clear(ResolveAlias(key))
 	return e
 }
 
-// Add appends values to a key. The key is resolved through [ResolveAlias], so adding under
-// an alias spelling appends to the canonical field.
+// Add appends values ([ResolveAlias]).
 func (e *Editor) Add(key tag.Key, vals ...string) *Editor {
 	e.patch.Add(ResolveAlias(key), vals...)
 	return e
 }
 
-// SetTags applies the non-empty fields of a typed [tag.Tags] as sugar (it
-// compiles to a patch of Set operations; it cannot clear fields).
+// SetTags applies non-empty [tag.Tags] fields as Sets (cannot clear).
 func (e *Editor) SetTags(t tag.Tags) *Editor { return e.Apply(t.Patch()) }
 
-// AddPicture appends a picture. Its MIME and dimensions are reconciled with the
-// image bytes via an authoritative header sniff ([Picture.SniffAuthoritative]):
-// when the bytes are a recognized image the sniffed MIME and dimensions win over
-// any the caller set, so a mislabeled cover cannot be embedded under a MIME that
-// contradicts it. An image the sniffer does not recognize is stored under
-// [UnrecognizedMIME] whatever MIME the caller set, and is refused unless
-// [WithUnrecognizedPictures] is given. (A file's stored picture, read by the
-// decoders, keeps its own MIME - that path fills only, via [Picture.SniffInto].)
+// AddPicture appends a picture. Sniff sets MIME/dimensions; unrecognized needs
+// [WithUnrecognizedPictures].
 func (e *Editor) AddPicture(p Picture) *Editor {
 	p.SniffAuthoritative()
-	// Deep-copy the payload so the editor owns its bytes: the caller passes a Picture by
-	// value, but Data is a slice aliasing their backing array, so a later mutation of that
-	// array (or reuse of the buffer) would otherwise change the bytes this edit writes.
-	// The read side (clonePicturesDeep) already detaches on the way out; this detaches on
-	// the way in with the same ownership rule.
 	p.Data = append([]byte(nil), p.Data...)
-	// Pad the mask for any Edit-seeded pictures not yet covered, then mark this one
-	// added, keeping addedMask parallel to pictures.
 	for len(e.addedMask) < len(e.pictures) {
 		e.addedMask = append(e.addedMask, false)
 	}
@@ -143,10 +89,7 @@ func (e *Editor) AddPicture(p Picture) *Editor {
 	return e
 }
 
-// RemovePictures drops every picture for which match returns true. match is
-// evaluated exactly once per picture, and the parallel added-mask is filtered with
-// the same verdicts, so an added-then-removed picture is not validated by Prepare
-// and a side-effecting/non-deterministic matcher cannot double-fire or desync.
+// RemovePictures drops pictures where match is true (evaluated once each).
 func (e *Editor) RemovePictures(match func(Picture) bool) *Editor {
 	pics := make([]core.Picture, 0, len(e.pictures))
 	mask := make([]bool, 0, len(e.pictures))
@@ -177,21 +120,14 @@ func (e *Editor) ClearPictures() *Editor {
 	return e
 }
 
-// SetChapters replaces the whole chapter list. Chapters are a timeline, so the
-// list is sorted by start time (stably, preserving the order of chapters that
-// share a start) because an out-of-order argument can lose a start when a container
-// encodes spans relative to the previous chapter. A format that cannot write chapters
-// reports that through [Capabilities]. Lists above a format's hard count cap are
-// rejected at [Editor.Prepare]; ID3 CTOC and MP4 Nero chpl are capped at 255 entries.
+// SetChapters replaces chapters (sorted by start). Cap checked at Prepare.
 func (e *Editor) SetChapters(chs ...Chapter) *Editor {
 	e.chapters = normalizeChapters(chs)
 	e.chaptersTouched = true
 	return e
 }
 
-// normalizeChapters is the shared authored-list normalization: a private copy, sorted by
-// start. Shared by [Editor.SetChapters] and [Transfer.SetChapters] so a replacement list
-// reaches the writer in the same shape a direct edit does.
+// normalizeChapters copies and sorts by start ([Editor]/[Transfer].SetChapters).
 func normalizeChapters(chs []Chapter) []core.Chapter {
 	out := core.CloneChapters(chs)
 	core.SortChaptersByStart(out)
@@ -205,26 +141,15 @@ func (e *Editor) ClearChapters() *Editor {
 	return e
 }
 
-// SetSyncedLyrics replaces all synced-lyrics sets. Lines within each set are sorted by
-// Time with a stable sort, matching [ParseLRC] and [Editor.SetChapters]. The line slices
-// are deep-copied so later caller mutations cannot change the pending edit. A format that
-// cannot write synced lyrics reports that through [Capabilities], and [Editor.Prepare]
-// rejects the write (or, under [WithAllowUnsupportedDrop], drops the set with a warning).
-//
-// It leaves the explicit-clear marker untouched, so calling it after [Editor.ClearSyncedLyrics]
-// authors a fresh set that does not inherit the destination's existing ID3 SYLT language, while
-// a plain SetSyncedLyrics with no preceding clear keeps that inheritance convenience.
+// SetSyncedLyrics replaces synced-lyrics sets (lines sorted, deep-copied).
+// After ClearSyncedLyrics, does not inherit dest ID3 SYLT language.
 func (e *Editor) SetSyncedLyrics(sls ...SyncedLyrics) *Editor {
 	e.syncedLyrics = normalizeSyncedLyrics(sls)
 	e.syncedLyricsTouched = true
 	return e
 }
 
-// normalizeSyncedLyrics is the shared authored-set normalization: sets with no lines are
-// dropped (writers skip them, so keeping one would report a set nothing wrote), and each
-// surviving set's lines are deep-copied and stably sorted by time. Shared by
-// [Editor.SetSyncedLyrics] and [Transfer.SetSyncedLyrics] so a transfer's report counts the
-// same sets the editor writes.
+// normalizeSyncedLyrics drops empty sets; deep-copies and sorts lines by time.
 func normalizeSyncedLyrics(sls []SyncedLyrics) []core.SyncedLyrics {
 	out := make([]core.SyncedLyrics, 0, len(sls))
 	for _, sl := range sls {
@@ -238,11 +163,7 @@ func normalizeSyncedLyrics(sls []SyncedLyrics) []core.SyncedLyrics {
 	return out
 }
 
-// NoteSyncedLyricsDropped records the 1-based line numbers of authored LRC input that produced no
-// timed lyric and were dropped, so [Editor.Prepare] surfaces a WarnSyncedLyricsLineDropped. It is a
-// front-end diagnostic (the CLI's --synced-lyrics-file parse), carried on the editor rather than the
-// SyncedLyrics content type so the library model stays free of a parse-time concern. Passing no line
-// numbers is a no-op.
+// NoteSyncedLyricsDropped records dropped LRC line numbers for Prepare warnings.
 func (e *Editor) NoteSyncedLyricsDropped(lines ...int) *Editor {
 	if len(lines) > 0 {
 		e.syncedLyricsDroppedLines = append(e.syncedLyricsDroppedLines, lines...)
@@ -250,11 +171,7 @@ func (e *Editor) NoteSyncedLyricsDropped(lines ...int) *Editor {
 	return e
 }
 
-// NotePictureSelectorMiss records cover-art role names a removal named that matched no picture in
-// this file, so [Editor.Prepare] surfaces a WarnPictureSelectorMiss per role rather than the removal
-// being a silent no-op. It is per-file (a role matched in one file may miss in another), so a
-// front-end computes the misses against this file's pictures and hands them here. Passing no roles is
-// a no-op.
+// NotePictureSelectorMiss records roles that matched no picture (Prepare warns).
 func (e *Editor) NotePictureSelectorMiss(roles ...string) *Editor {
 	if len(roles) > 0 {
 		e.pictureSelectorMisses = append(e.pictureSelectorMisses, roles...)
@@ -262,10 +179,7 @@ func (e *Editor) NotePictureSelectorMiss(roles ...string) *Editor {
 	return e
 }
 
-// ClearSyncedLyrics removes all synced lyrics. It also marks the set as explicitly cleared,
-// so a following [Editor.SetSyncedLyrics] authors a fresh set that does not inherit the
-// destination's existing ID3 SYLT language or descriptor. A clear with no following set just
-// removes the synced lyrics.
+// ClearSyncedLyrics removes synced lyrics and marks clear-then-set as fresh.
 func (e *Editor) ClearSyncedLyrics() *Editor {
 	e.syncedLyrics = nil
 	e.syncedLyricsTouched = true
@@ -273,35 +187,20 @@ func (e *Editor) ClearSyncedLyrics() *Editor {
 	return e
 }
 
-// SetOutputGain sets the decoder-applied output gain the stream header declares, as Opus
-// output_gain stores it: signed Q7.8 dB, 256 = +1 dB, so -896 is -3.50 dB. Only Ogg Opus
-// stores one; elsewhere [Editor.Prepare] refuses the edit (or, under
-// [WithAllowUnsupportedDrop], drops it with a warning). Transfers never carry it.
-//
-// RFC 7845 applies R128_TRACK_GAIN and R128_ALBUM_GAIN on top of the header gain, so
-// [Editor.Prepare] rebases whichever of them the file carries by the same change, leaving
-// the loudness a compliant player produces unmoved. An explicit [Editor.Set] or
-// [Editor.Clear] of one of those keys in the same edit wins over the rebase, and
-// [WithKeepR128Gains] leaves them all alone with a warning.
+// SetOutputGain sets Opus output_gain (signed Q7.8 dB, 256 = +1 dB). Prepare
+// rebases R128_* unless [WithKeepR128Gains] or an explicit Set/Clear of those keys.
 func (e *Editor) SetOutputGain(gain int) *Editor {
 	e.outputGain = gain
 	e.outputGainTouched = true
 	return e
 }
 
-// Native returns the native inspection view for the original parsed document.
-// It does not include pending editor changes; pictures, tags, or chapters added
-// on the editor are visible only after a save and reparse. Structural native
-// mutation, such as arbitrary block edits, multiple comment blocks, or vendor
-// string edits, is not part of the public editing API.
+// Native returns the parsed native document (no pending editor changes).
 func (e *Editor) Native() NativeEditor {
 	return NativeEditor{base: e.base}
 }
 
-// Prepare resolves the recorded mutations into a [Plan] under the given write
-// options. The plan's [Plan.Report] describes exactly what executing it will
-// do; nothing is written yet, and Prepare performs no I/O (the parsed document
-// holds everything the planner needs).
+// Prepare resolves mutations into a [Plan]. No I/O; Report matches Execute.
 func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	wo := resolveWriteOptions(opts)
 	// Propagate the carry marker so codecs can suppress author-convenience heuristics on a
@@ -725,23 +624,9 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 				core.SyncedLyricsMetadataDroppedMessage())
 		}
 	}
-	// An explicit LegacyStrip destroys whatever lives only in the legacy containers it
-	// removes, which doc.go's frozen contract says must never happen silently. The keys are
-	// computed against the EDITED tags, not the parsed ones: this edit may be writing the very
-	// value the legacy container held, and claiming to lose ALBUM while setting ALBUM would be
-	// a false alarm - and would fire for nearly every key of a copy, which sets most of the
-	// source's keys on the destination editor.
-	//
-	// Deliberately outside the !e.carried gate below. That flag suppresses warnings which
-	// lecture about metadata the user authored none of; here the user passed --legacy strip
-	// themselves and it is the destination's own data that disappears, and copy has its own
-	// --legacy flag, so suppressing on a carry would reproduce the hole one command over.
-	//
-	// lint --fix cannot reach this: PlanLintFix adds LegacyStrip only when neither predicate
-	// holds (lintfix.go), computed from the same two primitives against the same document, so
-	// the conditions are exact complements. WAV and AIFF are excluded by construction - they
-	// reuse LegacyStrip to mean "consolidate into the id3 chunk", and never mark a family
-	// Legacy - so a strip there stays silent.
+	// LegacyStrip destroys legacy-only values; warn what goes. Against edited tags
+	// (setting a key the legacy held is not a loss). Outside !carried: user asked for
+	// strip. PlanLintFix never reaches this. WAV/AIFF reuse LegacyStrip differently.
 	if wo.Legacy == core.LegacyStrip {
 		// A key the parsed file already carried canonically was never held only in the legacy
 		// container, whatever this edit then did to it. Without the filter, --clear TITLE
@@ -869,19 +754,8 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	return &Plan{doc: e.doc, plan: wp, opts: wo}, nil
 }
 
-// rejectInvalidValues refuses a NUL byte or invalid UTF-8 in any value, chapter title,
-// or picture description this edit introduces. A NUL silently truncates the field when it
-// is written to a C-string format (the ID3 frames MP3/WAV/AIFF store, MP4 atoms). Invalid
-// UTF-8 is reprojected through the read path - ID3 reads it back as U+FFFD, an MP4 chapter
-// title as "" - so a value passed raw to a writer would not round-trip and the result
-// would not equal a fresh parse; refusing it at the source keeps the "result == fresh
-// parse" guarantee by construction for every format, even those that carry the bytes
-// verbatim today. This is the library and transfer counterpart to the CLI's OS-level
-// argument guard. The tag scan covers only the keys the patch touches (their resolved
-// values are in editedTags); the file's untouched pre-existing tags are not re-judged.
-// Pictures are scoped to those added on this editor (addedMask), like the rest of the
-// added-picture validation; chapters cover the full edited list, which SetChapters
-// replaces wholesale.
+// rejectInvalidValues refuses NUL or invalid UTF-8 in touched tag values, added
+// picture descriptions, and chapter titles/languages (C-string / round-trip safety).
 func (e *Editor) rejectInvalidValues(editedTags tag.TagSet, keys []tag.Key) error {
 	for _, k := range keys {
 		vals, ok := editedTags.Get(k)
@@ -1008,31 +882,10 @@ func appendSingleValuedWarnings(ws []core.Warning, base, intent tag.TagSet) []co
 	return ws
 }
 
-// appendLegacyConflictWarnings flags a canonical key the edit changes whose value is
-// also carried in a preserved legacy container the family view surfaces - an ID3v1 or
-// APEv2 tag on the ID3-based formats (MP3/AAC) - which the default LegacyPreserve policy
-// keeps verbatim, so the legacy copy now disagrees with the freshly written native tag.
-// It is driven by the family view, so it covers exactly the legacy containers a codec
-// projects into fams; a FLAC trailing ID3v1, which the parser preserves but does not
-// project into families, is surfaced by the trailing-id3v1 parse warning and the
-// "trailing ID3v1 preservation" operation, not this edit-conflict warning.
-//
-// It fires only for an EDIT-INTRODUCED divergence: the legacy value agreed with the
-// native value before this edit (f.Selected) but the edit changed the written value so
-// the legacy copy is no longer among it. A pre-existing disagreement - already
-// unselected, e.g. an ID3v1 field the parser truncated to 30 bytes - is the linter's
-// conflicting-families job, not this edit-time warning. Agreement is judged with
-// [core.FamilySelected] against the plan's result tags (what the codec will actually
-// write, not the raw edited value - so a re-projected GENRE=17 that writes back as
-// "Rock" does not falsely conflict), the same presence test the parser and linter use,
-// so a multi-value key whose legacy value still survives the edit (ID3v2 ARTIST=[A,B]
-// against an ID3v1 "B") is not falsely flagged - a slice-equality check would be, since
-// each legacy family entry is single-valued by construction (one entry per legacy
-// value). It fires only under LegacyPreserve (strip resolves the divergence on write)
-// and only for a key the patch touches; clearing a key does not fire it (the native key
-// is then absent, which FamilySelected - like the linter - treats as no conflict). The
-// value is still written and the legacy container preserved as promised; this only
-// surfaces the divergence and the remedy. One warning per conflicting key.
+// appendLegacyConflictWarnings flags keys this edit changes that still live in a
+// preserved legacy container (ID3v1/APEv2 under LegacyPreserve). Only edit-introduced
+// divergence (agreed before, disagrees after). Uses [core.FamilySelected] against
+// result tags. One warning per key.
 func appendLegacyConflictWarnings(ws []core.Warning, fams []core.FamilyValue, patch tag.TagPatch, result tag.TagSet, legacy core.LegacyPolicy) []core.Warning {
 	if legacy != core.LegacyPreserve {
 		return ws
@@ -1183,21 +1036,7 @@ func matroskaChapterEndsDropped(format core.Format, newCh, baseCh []core.Chapter
 	return true
 }
 
-// appendPictureWarnings adds the non-fatal picture sanity warnings for the
-// pictures this edit authored - those with addedMask[i] true (added via
-// AddPicture), not the ones Edit seeded from the file. Scoping to the added set is
-// the picture counterpart to appendChapterWarnings' new-chapter scope: a copy or a
-// tags-only edit must not be lectured about a file's pre-existing art, which the
-// linter already covers whole-set. Three checks, each off a predicate the linter
-// shares so the rule cannot drift:
-//   - invalid-picture: an added picture stored under [core.UnrecognizedMIME]. This
-//     reaches here only under WithUnrecognizedPictures (the CLI's --force); without
-//     it validateAddedPictures has already rejected the picture.
-//   - duplicate-picture: an added picture whose image bytes ([core.Picture.Hash])
-//     match another in the set. Reported once per duplicate group an added picture
-//     belongs to, whether the twin is another added picture or a pre-existing one.
-//   - multiple-front-covers: an added front cover that leaves the set holding more
-//     than one front cover (a pair the user did not touch stays the linter's job).
+// appendPictureWarnings: invalid/duplicate/multi-front for AddPicture pics only.
 func appendPictureWarnings(ws []core.Warning, pics []core.Picture, addedMask []bool) []core.Warning {
 	added := func(i int) bool { return i < len(addedMask) && addedMask[i] }
 
@@ -1344,24 +1183,9 @@ func trimTokenValues(ts *tag.TagSet, patch tag.TagPatch) {
 	}
 }
 
-// rebaseR128Gains moves the R128 loudness tags in ts by the same change the output gain
-// made, so the loudness a compliant player produces stays where it was. RFC 7845 applies
-// R128_TRACK_GAIN and R128_ALBUM_GAIN on top of the header gain, both in the same Q7.8 dB
-// scale, so the update is a plain subtraction of delta.
-//
-// Two gates keep it from overriding the caller:
-//   - A key the patch Touches carries an explicit intent - a Set, a Clear, an Add - and is
-//     left for that op to decide, the same precedence splitNumberPairs gives an explicit
-//     total.
-//   - keep (WithKeepR128Gains) leaves every value as found, for a caller who knows the
-//     stored figures are stale.
-//
-// Both cases, and a value that is not a Q7.8 integer to begin with, return an advisory: the
-// tag now disagrees with the header, and only the caller knows what it should say. A key is
-// rebased whole or not at all - a key carrying one unrebasable value keeps all of them, so
-// the advisory's "not rebased" is true of everything under it. A rebase that would leave
-// the 16-bit range the field is defined over refuses the edit instead of storing a number
-// the field cannot hold.
+// rebaseR128Gains adjusts R128_* by -delta (RFC 7845, same Q7.8 scale as output
+// gain). Skips keys the patch touches; keep leaves values and warns. Out-of-range
+// rebase refuses the edit.
 func rebaseR128Gains(ts *tag.TagSet, patch tag.TagPatch, delta int, keep bool) ([]core.Warning, error) {
 	var warnings []core.Warning
 	for _, k := range ts.Keys() {
@@ -1399,39 +1223,10 @@ func rebaseR128Gains(ts *tag.TagSet, patch tag.TagPatch, delta int, keep bool) (
 	return warnings, nil
 }
 
-// splitNumberPairs normalizes a slash-combined "n/total" value on a track or disc
-// number that THIS edit introduced into the canonical pair every format stores -
-// TRACKNUMBER + TRACKTOTAL (and DISCNUMBER + DISCTOTAL). Without it a
-// Set(tag.TrackNumber, "3/12") splits on ID3/MP4/Matroska (whose native track field
-// is spec'd as number/total) but survives as the literal "3/12" on Vorbis/WAV (where
-// a slash is non-standard - the convention is a separate TRACKTOTAL comment), so the
-// canonical layer would disagree with itself. Doing it here, in Prepare, makes every
-// write - CLI and library alike - converge, since every write flows through Prepare.
-//
-// It uses the shared [tag.SplitNumberTotal] (the same substring split the ID3 read
-// path uses), setting each side only when non-empty (so "3/" yields just the number
-// and "/12" just the total) - preserving the exact substrings, including any leading
-// zeros, rather than renumbering through tag.ParseNumPair.
-//
-// Two gates keep it from churning unrelated state:
-//   - Only a number key the patch Touches is split, never a literal "3/12" merely
-//     carried from the base file - editing an unrelated field must not silently
-//     rewrite a pre-existing track number.
-//   - The total side is written only when the patch does not also Touch the total
-//     key, so an explicit Set/Clear of TRACKTOTAL in the same edit wins, while a slash
-//     total still updates a total carried from the base file.
-//
-// TRACKNUMBER/DISCNUMBER are canonically single-valued, so only a single-valued edit
-// is split; a multi-valued one (e.g. --add TRACKNUMBER=4/12 --add TRACKNUMBER=3) is
-// left untouched rather than collapsed to one value via Set, which would silently drop
-// the others - the single-valued-key warning flags that misuse separately. A
-// present-but-empty number ([""], from `set TRACKNUMBER=`) carries no slash and so is
-// left untouched.
-//
-// It returns a warning per pair whose explicit total (set by the same edit) disagrees with
-// the slash-derived one - the redundant derived total is dropped by design, and surfacing
-// the disagreement is the caller's to gate on e.carried (a faithful copy must not flag the
-// source's own values). The split itself always runs, so a carried edit still normalizes.
+// splitNumberPairs turns an edit-introduced "n/total" on TRACKNUMBER/DISCNUMBER
+// into the number+total pair every format stores. Only touched number keys;
+// explicit total in the same edit wins. Multi-valued numbers are left alone.
+// Returns conflict warnings when an explicit total disagrees with the slash side.
 func splitNumberPairs(ts *tag.TagSet, patch tag.TagPatch) []core.Warning {
 	var ws []core.Warning
 	for _, numKey := range []tag.Key{tag.TrackNumber, tag.DiscNumber} {

@@ -30,7 +30,7 @@ func TestCapsFormatText(t *testing.T) {
 			t.Errorf("output missing %q\n%s", want, out)
 		}
 	}
-	// ARTIST is multi-valued, TITLE single - the per-key cardinality column.
+	// ARTIST multi, TITLE single in the cardinality column.
 	if !strings.Contains(out, "ARTIST") || !strings.Contains(out, "multi") {
 		t.Errorf("expected ARTIST shown as multi:\n%s", out)
 	}
@@ -82,7 +82,7 @@ func TestCapsFormatJSON(t *testing.T) {
 }
 
 func TestCapsChaptersMaxItemsJSON(t *testing.T) {
-	// MP4 caps a chapter set at 255 (the 8-bit chpl count); caps surfaces it.
+	// MP4 chapter count is capped at 255 (8-bit chpl).
 	out, _, code := runCLI(t, "--json", "caps", "--format", "mp4")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
@@ -96,8 +96,7 @@ func TestCapsChaptersMaxItemsJSON(t *testing.T) {
 	}
 }
 
-// TestCapsM4BChapterTitleByteConstraint: the MP4 chapters capability surfaces its
-// 255-byte title cap as a constraint, so `caps --format m4b` documents the truncation a copy reports.
+// TestCapsM4BChapterTitleByteConstraint: caps --format m4b documents the 255-byte title cap.
 func TestCapsM4BChapterTitleByteConstraint(t *testing.T) {
 	out, _, code := runCLI(t, "caps", "--format", "m4b")
 	if code != 0 {
@@ -109,9 +108,7 @@ func TestCapsM4BChapterTitleByteConstraint(t *testing.T) {
 }
 
 func TestCapsListsEditableVocabulary(t *testing.T) {
-	// Every implemented format is fully field-writable today, so the editable-only
-	// listing covers the whole known vocabulary; assert FLAC's editable keys are
-	// exactly that set. (The format-independent catalog is the keys command's job.)
+	// All formats are fully field-writable today; FLAC editable keys should match KnownKeys.
 	var def jsonCaps
 	out, _, _ := runCLI(t, "--json", "caps", "--format", "flac")
 	if err := json.Unmarshal([]byte(out), &def); err != nil {
@@ -123,8 +120,7 @@ func TestCapsListsEditableVocabulary(t *testing.T) {
 }
 
 func TestCapsAllFlagIsGone(t *testing.T) {
-	// The dead --all flag was dropped (discovery moved to the keys command); it is
-	// now an unknown flag (usage error, exit 2).
+	// --all was removed; now an unknown flag (exit 2).
 	_, errOut, code := runCLI(t, "caps", "--format", "flac", "--all")
 	if code != 2 {
 		t.Fatalf("caps --all exit = %d, want 2 (unknown flag)", code)
@@ -145,10 +141,8 @@ func TestCapsMultiFileJSONIsArray(t *testing.T) {
 	}
 }
 
-// TestCapsSingleFileJSONIsArray pins that caps over files is a list command: even
-// a single file emits a one-element array, not a bare object
-// (caps --format stays a single object - see TestCapsFormatJSON), so a script can
-// consume caps over one or many files the same way.
+// TestCapsSingleFileJSONIsArray: caps over files is a list command (one-element array).
+// caps --format stays a bare object (TestCapsFormatJSON).
 func TestCapsSingleFileJSONIsArray(t *testing.T) {
 	out, _, code := runCLI(t, "--json", "caps", sampleFLAC)
 	if code != 0 {
@@ -158,7 +152,7 @@ func TestCapsSingleFileJSONIsArray(t *testing.T) {
 	if jc.Format != "FLAC" {
 		t.Errorf("format = %q, want FLAC", jc.Format)
 	}
-	// Unlike --format mode (File empty), the file form echoes the path back.
+	// File form echoes the path; --format mode leaves File empty.
 	if jc.File != sampleFLAC {
 		t.Errorf("file = %q, want %q", jc.File, sampleFLAC)
 	}
@@ -173,8 +167,7 @@ func TestCapsStdin(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; out=%q", code, out)
 	}
-	// The header reads "<stdin>", consistent with dump/verify/lint, and never the
-	// buffered temp path.
+	// Header is "<stdin>", not the buffered temp path.
 	if !strings.HasPrefix(out, "<stdin>\n") {
 		t.Errorf("stdin caps should display <stdin> as the name:\n%s", out)
 	}
@@ -205,9 +198,7 @@ func TestCapsUsageErrors(t *testing.T) {
 	}
 }
 
-// TestCapsJSONShortBoolForm verifies that --json=1 on an early usage error still
-// returns the JSON error envelope on stdout. The normal success path is handled by
-// pflag; terminal errors use wantsJSON's raw-argument scan and must agree with it.
+// TestCapsJSONShortBoolForm: --json=1 on usage error still emits JSON envelope via wantsJSON scan.
 func TestCapsJSONShortBoolForm(t *testing.T) {
 	stdout, stderr, code := runCLI(t, "caps", "--format", "bogus", "--json=1")
 	if code != 2 {
@@ -252,8 +243,7 @@ func TestParseFormat(t *testing.T) {
 		{"mka", "Matroska"},
 		{"mkv", "Matroska"},
 		{"matroska", "Matroska"},
-		// "webm" resolves to Matroska (its container) under the WebM subset option, so
-		// caps --format webm describes the cover-refusing variant (see TestCapsFormatWebM).
+		// webm resolves to Matroska under WebM subset (TestCapsFormatWebM).
 		{"webm", "Matroska"},
 	}
 	for _, c := range cases {
@@ -270,8 +260,7 @@ func TestParseFormat(t *testing.T) {
 	if _, _, _, err := parseFormat("nonsense"); err == nil {
 		t.Error(`parseFormat("nonsense") should fail`)
 	}
-	// .oga is claimed by both Ogg codecs that use it, so the extension alone cannot
-	// pick one; the error must name both rather than silently taking the first.
+	// .oga is ambiguous; error must name both Ogg codecs.
 	_, _, _, err := parseFormat("oga")
 	if err == nil {
 		t.Fatal(`parseFormat("oga") should report the ambiguity`)
@@ -281,8 +270,7 @@ func TestParseFormat(t *testing.T) {
 			t.Errorf("parseFormat(\"oga\") error = %q, want it to name %q", err, want)
 		}
 	}
-	// .ogg is claimed by both codecs too, but "ogg" as a format name has always meant
-	// Vorbis, so the alias resolves it rather than refusing the commonest spelling.
+	// "ogg" as a format name means Vorbis despite shared .ogg extension.
 	if f, _, _, err := parseFormat("ogg"); err != nil || f.String() != "Ogg Vorbis" {
 		t.Errorf(`parseFormat("ogg") = %v, %v; want Ogg Vorbis`, f, err)
 	}

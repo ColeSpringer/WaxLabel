@@ -11,14 +11,8 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// Projection is the canonical view of an APE tag: the tag set, the decoded cover
-// art, the family/source entries, and any read warnings. It mirrors
-// [id3.Projection] so the codecs that own an APE tag assemble their Media the same
-// way the ID3-bearing ones do.
-//
-// There are no chapter or synced-lyrics members because APE has no convention for
-// either; both report AccessNone in the capability model rather than being invented
-// here.
+// Projection is the canonical view of an APE tag (mirrors [id3.Projection]).
+// No chapter/synced-lyrics members (AccessNone; no APE convention).
 type Projection struct {
 	Tags     tag.TagSet
 	Pictures []core.Picture
@@ -26,9 +20,7 @@ type Projection struct {
 	Warnings []core.Warning
 }
 
-// Project decodes an APE tag into the canonical model. A nil tag projects to an
-// empty tag set, which is what a codec passes for a file with no APE tag and for
-// the result of an edit that cleared every item.
+// Project decodes an APE tag; nil => empty set.
 func Project(t *Tag) Projection {
 	var contribs []core.Contribution
 	var pics []core.Picture
@@ -42,8 +34,7 @@ func Project(t *Tag) Projection {
 				}
 				p, err := DecodeCover(it.Key, it.Data)
 				if err != nil {
-					// A malformed cover is warned and skipped, never silently dropped; its
-					// item survives in the native list and is re-emitted verbatim.
+					// Warn and skip; item stays in native list for verbatim re-emit.
 					warnings = core.Warn(warnings, core.WarnInvalidPicture, err.Error())
 					continue
 				}
@@ -61,9 +52,7 @@ func Project(t *Tag) Projection {
 	}
 
 	ts := core.BuildTagSet(contribs)
-	// APE stores a slashed "3/12" track just as the text codecs do, so the same shared
-	// normalization runs here; without it a slashed pair would read back differently on
-	// WavPack than on FLAC for one file.
+	// Same slashed track/disc normalization as the text codecs.
 	tag.NormalizeNumberPairs(&ts)
 	return Projection{
 		Tags:     ts,
@@ -73,16 +62,9 @@ func Project(t *Tag) Projection {
 	}
 }
 
-// InvalidKeyWarnings flags text items whose name cannot be represented as a canonical key,
-// so they are preserved in the item list but do not reach the tag set. APEv2 item names run
-// the full printable-ASCII range, while the canonical vocabulary stops at 0x7D (the floor the
-// Vorbis comment specification sets), so an item named MOOD~X is legal on disk and
-// unprojectable here. Without this the value would simply be missing from dump and lint, and
-// a copy would report a clean lossless carry while leaving it behind.
-//
-// It mirrors [Project]'s own drop decision, so the set flagged is exactly the set omitted.
-// Cover items and other binary items are not keys and are skipped; a reserved name is a write
-// rule, not a read one, so an item that already carries one still projects.
+// InvalidKeyWarnings: text items whose name is unprojectable (APE printable ASCII
+// vs canonical max 0x7D). Mirrors [Project]'s drop set. Binary/cover skipped;
+// reserved names still project on read.
 func InvalidKeyWarnings(t *Tag) []core.Warning {
 	if t == nil {
 		return nil
@@ -100,11 +82,7 @@ func InvalidKeyWarnings(t *Tag) []core.Warning {
 	return ws
 }
 
-// InvalidUTF8Warnings flags text items whose bytes are not valid UTF-8. APEv2
-// requires UTF-8, and APEv1 predates that requirement, so such an item is read
-// leniently (as Latin-1) rather than dropped - but a file carrying one is worth
-// reporting, since its values are a guess and the bytes another reader sees may
-// differ.
+// InvalidUTF8Warnings: non-UTF-8 text (read as Latin-1; worth reporting).
 func InvalidUTF8Warnings(t *Tag) []core.Warning {
 	if t == nil {
 		return nil
@@ -120,10 +98,7 @@ func InvalidUTF8Warnings(t *Tag) []core.Warning {
 	return ws
 }
 
-// EncoderNoise flags an inherited transcoder stamp in an APE item ("Encoder" or
-// "Tool Name" carrying an ffmpeg "Lavf..." string), the signature of an acquired
-// file. It is the APE analog of the Vorbis and ID3 checks, so the three codecs that
-// own an APE tag report it identically.
+// EncoderNoise: inherited Lavf/... stamp (same as Vorbis/ID3 checks).
 func EncoderNoise(items []Item) []core.Warning {
 	var ws []core.Warning
 	for _, it := range items {
@@ -142,20 +117,9 @@ func EncoderNoise(items []Item) []core.Warning {
 	return ws
 }
 
-// Capabilities describes what an APE tag can hold, for the codecs that use it as
-// their native store. It is defined once here rather than per codec so WavPack,
-// Monkey's Audio, and Musepack cannot drift.
-//
-// APE is free-form UTF-8 key/value with NUL-separated multi-values, so generic
-// fields are fully and losslessly writable. Cover art is the "Cover Art (Front)"
-// binary-item convention, which stores the image and a file name but no MIME type,
-// geometry, or description - so it is graded lossy in the metadata it drops.
-// Chapters, synced lyrics, and padding have no APE convention at all and report
-// AccessNone; inventing one would produce a file nothing else reads.
-//
-// perField is nil: APE has no length, type, or version limits to express, and
-// --numeric-genre has no effect here because APE genre is free text with no
-// genre-index convention.
+// Capabilities for APE-backed codecs (defined once so they cannot drift).
+// Fields: free-form UTF-8, lossless. Pictures: Cover Art convention (lossy role/
+// description). Chapters/synced lyrics/padding: AccessNone. perField nil.
 func Capabilities(f core.Format, readOnly bool) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
@@ -168,9 +132,7 @@ func Capabilities(f core.Format, readOnly bool) core.Capabilities {
 		Constraints:    []string{"the Cover Art convention holds one front and one back cover; another role is stored under a free cover name and reads back as that cover, and descriptions have nowhere to go"},
 		PictureLoss:    core.PictureLossNonCoverRoleAndDescription,
 	}
-	// Item names are unique within a tag, so the two cover names are slots: the writer
-	// keeps one picture per name (PartitionCoverSlots) and the partition here makes the
-	// editor and a transfer resolve - and grade - the slotless pictures the same way.
+	// Two cover names are slots; shared partition with editor/transfer.
 	pictures = core.WithPictureSlots(pictures, func(pics []core.Picture, added []bool) []int {
 		keptIdx, _ := PartitionCoverSlots(pics, added)
 		return keptIdx
@@ -178,28 +140,14 @@ func Capabilities(f core.Format, readOnly bool) core.Capabilities {
 	caps := core.NewCapabilities(f, readOnly, fields, pictures, core.Capability{}, core.AccessNone, nil).
 		WithFieldClassifier(TransferClassifier)
 	if readOnly {
-		// Carry the reason, not just the flag, the way asf and mp4 do: a caller that declines
-		// before reaching Plan (the transfer path) then returns the codec's own refusal rather
-		// than a generic one. No APEv2-backed container reports read-only today, so this exists
-		// so the first that does is not the one to discover the gap.
+		// Carry refusal reason (asf/mp4 pattern) for transfer decline before Plan.
 		caps = caps.WithReadOnlyReason(fmt.Errorf("%w: this %s file cannot be written", waxerr.ErrUnsupportedFormat, f))
 	}
 	return caps
 }
 
-// TransferClassifier grades the field shapes whose APE transfer fate the format-level
-// capability cannot express: a key whose item name the specification reserves
-// ([ReservedItemName]), and one whose name belongs to the Cover Art convention
-// ([IsCoverKey], whose items are binary pictures, so a text value has no home there). The
-// writer drops both rather than plant magic or a type-confused cover inside the tag, so a
-// copy that carried either - reporting a clean carry for a value that then vanishes -
-// would break the report-equals-write invariant [core.ProjectTransfer] exists to hold. It
-// reuses the writer's own predicates, so the copy report and the write drop cannot drift.
-// Every other key is left to the format-level grade.
-//
-// It is attached here rather than per codec so all four APEv2-backed containers (WavPack,
-// Monkey's Audio, Musepack, and any future one) get it from the shared Capabilities, the
-// same way they share the writer.
+// TransferClassifier: reserved names and Cover Art text keys => Dropped
+// (report==write; same predicates as the writer). Attached via shared Capabilities.
 func TransferClassifier(key tag.Key, _ []string, _ tag.TagSet) (core.Disposition, string, bool) {
 	name := mapping.APEName(key)
 	if ReservedItemName(name) {

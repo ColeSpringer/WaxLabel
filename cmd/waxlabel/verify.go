@@ -8,9 +8,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newVerifyCmd builds the "verify" command, which computes each file's
-// audio-essence identity (and, with --file, its whole-file identity). Like dump,
-// it processes files independently and reflects any failure in the exit code.
+// newVerifyCmd builds "verify": each file's audio-essence identity (and with
+// --file, whole-file identity). Like dump, files are independent; failures
+// affect the exit code.
 func newVerifyCmd() *cobra.Command {
 	var whole bool
 	var recursive bool
@@ -45,9 +45,8 @@ func newVerifyCmd() *cobra.Command {
 			noteNoFiles(cmd.ErrOrStderr(), paths, jsonMode(cmd))
 			noteSkipped(cmd.ErrOrStderr(), skipped, jsonMode(cmd))
 			noteLeftovers(cmd.ErrOrStderr(), leftovers, jsonMode(cmd))
-			// quiet is a text-mode presentation choice; --json has a fixed shape. In
-			// quiet mode each file is one TSV line, so the inter-record blank line is
-			// dropped (noSeparator) to keep a sort/uniq pipe clean.
+			// quiet is text-only; --json has a fixed shape. Quiet is one TSV line per
+			// file, so drop the inter-record blank (noSeparator) for sort/uniq pipes.
 			quiet = quiet && !jsonMode(cmd)
 			return perFile(cmd, paths,
 				guardPathErrors(pathErrors, func(ctx context.Context, path string) (jsonVerify, error) {
@@ -71,10 +70,9 @@ func newVerifyCmd() *cobra.Command {
 	return markListCommand(cmd)
 }
 
-// computeVerify parses the file at realPath and computes its essence digest (and
-// the whole-file digest when whole is set). displayPath is the name recorded in
-// the result and shown to the user; it differs from realPath only for standard
-// input ("-"), whose bytes are parsed from a temp file.
+// computeVerify parses realPath and computes its essence digest (and whole-file
+// when whole is set). displayPath is the user-facing name; it differs from
+// realPath only for stdin ("-"), whose bytes come from a temp file.
 func computeVerify(ctx context.Context, realPath, displayPath string, whole bool) (jsonVerify, error) {
 	doc, err := parseInput(ctx, realPath, displayPath)
 	if err != nil {
@@ -103,12 +101,10 @@ func renderVerify(w io.Writer, v jsonVerify, whole bool) {
 	}
 }
 
-// renderVerifyQuiet writes one tab-separated line per file - "essence<TAB>path", or
-// "essence<TAB>whole-file<TAB>path" under whole - so a run pipes straight into
-// `sort | uniq` to find duplicate audio. The path goes last and through displayName
-// (which routes via tag.SanitizeLine), so a tab/newline/CR in a filename is escaped
-// to \xNN: the digest columns stay intact and a hostile name cannot forge a TSV line
-// when the output is fed to awk/sort/uniq.
+// renderVerifyQuiet writes one TSV line: "essence\tpath", or
+// "essence\twhole-file\tpath" under whole, for `sort | uniq`. Path is last and
+// through displayName (SanitizeLine) so a tab/newline in a filename cannot forge
+// a TSV column when fed to awk/sort/uniq.
 func renderVerifyQuiet(w io.Writer, v jsonVerify, whole bool) {
 	if whole {
 		fmt.Fprintf(w, "%s\t%s\t%s\n", v.Essence, v.WholeFile, displayName(v.File))
@@ -117,9 +113,8 @@ func renderVerifyQuiet(w io.Writer, v jsonVerify, whole bool) {
 	fmt.Fprintf(w, "%s\t%s\n", v.Essence, displayName(v.File))
 }
 
-// jsonVerify is the machine-readable identity for one file. A failed element is
-// emitted as the shared jsonErrorEntry; this struct keeps a matching Error field so
-// a consumer can decode every array element into it (see jsonErrorEntry).
+// jsonVerify is one file's machine-readable identity. Failures use jsonErrorEntry;
+// Error is kept so a mixed array decodes into this type.
 type jsonVerify struct {
 	SchemaVersion int          `json:"schemaVersion"`
 	File          string       `json:"file"`

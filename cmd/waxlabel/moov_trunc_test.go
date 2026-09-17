@@ -8,16 +8,13 @@ import (
 	"testing"
 )
 
-// TestSetRejectsTruncatedMoov is the CLI end-to-end check: a truncated MP4 whose trailing
-// moov was clamped to EOF used to `dump` at exit 0 (reporting "tags: (none)") and let `set` write a
-// ~2x-size, self-unreadable file at exit 0. Both paths must now fail loudly (exit 4) and leave the
-// input byte-identical, so the silent corruption can no longer be reported as success.
+// TestSetRejectsTruncatedMoov: truncated moov is exit 4 on dump/set; input stays byte-identical.
 func TestSetRejectsTruncatedMoov(t *testing.T) {
 	full, err := os.ReadFile(filepath.Join("..", "..", "testdata", "sample.m4a"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 9144 bytes cuts into the trailing moov, leaving an unusable trailing gap.
+	// 9144-byte cut truncates trailing moov.
 	if len(full) <= 9144 {
 		t.Fatalf("fixture is %d bytes; the 9144-byte truncation needs a larger moov-trailing file", len(full))
 	}
@@ -35,8 +32,7 @@ func TestSetRejectsTruncatedMoov(t *testing.T) {
 	if code != 4 {
 		t.Errorf("set truncated moov: code=%d stderr=%q; want exit 4 (no write)", code, stderr)
 	}
-	// The rejected write must commit nothing: the input stays byte-identical (not the old 2x-size,
-	// self-unreadable output).
+	// Rejected set must not modify input.
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

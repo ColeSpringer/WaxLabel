@@ -6,8 +6,7 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// TestAudioDigestTrackID checks that TrackID participates in equality while the zero value
-// keeps the original digest string format.
+// TrackID participates in equality while the zero value keeps the original digest string format.
 func TestAudioDigestTrackID(t *testing.T) {
 	base := wl.AudioDigest{Algorithm: "sha256", ExtentVersion: "v1", Sum: []byte{0xAB, 0xCD}}
 

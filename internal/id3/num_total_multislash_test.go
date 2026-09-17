@@ -8,12 +8,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestNumTotalMultiSlashPreserved is a regression: a number field with two slashes
-// ("1/2/3") is not a valid "n/total" value, so re-joining "1/<total>" would silently drop
-// "/2/3". The prior code composed a *valid* "1/12" and lost the rest with no warning, while
-// the pre-parse plan note kept it "as text" - a contradiction. It must now be written
-// verbatim with the canonical total flagged dropped (surfacing value-dropped), matching the
-// no-total path which already keeps "1/2/3". Covers both TRACK (TRCK) and DISC (TPOS).
+// TestNumTotalMultiSlashPreserved: is a regression: a number field with two slashes
+
 func TestNumTotalMultiSlashPreserved(t *testing.T) {
 	for _, kp := range []struct {
 		name           string

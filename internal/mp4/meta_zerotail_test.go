@@ -10,13 +10,9 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestParseRejectsMetaZeroTailNoIlst covers the size-0-atom fix: a moov.udta.meta with no
-// ilst whose last real child (hdlr) is followed by >=8 trailing zero bytes must be rejected,
-// not silently absorbed. Before the fix a nested size-0 atom swallowed those zeros as one
-// child spanning to meta.end(), hiding the gap from the meta-no-ilst check - so a create-ilst
-// edit appended the new ilst after the zero atom and a re-parse re-expanded the zeros over
-// the freshly written tags. This is the >=8-zero counterpart to the 1-7-byte gap the sibling
-// TestParseRejectsUndersizedMetaGap already covers.
+// TestParseRejectsMetaZeroTailNoIlst covers the size-0-atom fix: a moov.udta.meta with
+// no ilst whose last real child (hdlr) is followed by >=8 trailing zero bytes must be
+// rejected, not silently absorbed.
 func TestParseRejectsMetaZeroTailNoIlst(t *testing.T) {
 	ctx := context.Background()
 	for _, tail := range []int{8, 9, 16, 64} {
@@ -28,10 +24,9 @@ func TestParseRejectsMetaZeroTailNoIlst(t *testing.T) {
 	}
 }
 
-// TestParseAcceptsTopLevelSizeZeroFinal is the regression guard for the fix's scope: the
-// topLevel branch is unchanged, so a genuine "runs to EOF" last box (declared size 0 at the
-// top level, e.g. a streaming mdat) still parses. Only a *nested* size-0 atom stops being
-// absorbed.
+// TestParseAcceptsTopLevelSizeZeroFinal is the regression guard for the fix's scope:
+// the topLevel branch is unchanged, so a genuine "runs to EOF" last box (declared size
+// 0 at the top level, e.g.
 func TestParseAcceptsTopLevelSizeZeroFinal(t *testing.T) {
 	ctx := context.Background()
 	ftyp := renderAtom(atomName("ftyp"), []byte("M4A \x00\x00\x00\x00M4A mp42"))

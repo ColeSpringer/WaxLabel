@@ -6,9 +6,7 @@ import (
 	"testing"
 )
 
-// TestCLISetOutputGainOpus walks the whole flag: the plan shows the change, set writes it,
-// dump reports it in both renderings, and verify's digest is unchanged because the gain is
-// masked out of the hashed configuration.
+// TestCLISetOutputGainOpus: plan/set/dump/verify round-trip; verify digest ignores header gain.
 func TestCLISetOutputGainOpus(t *testing.T) {
 	path := copyFixture(t, td("sample.opus"))
 	digestBefore, _, code := runCLI(t, "verify", path)
@@ -66,8 +64,8 @@ func TestCLISetOutputGainOpus(t *testing.T) {
 	}
 }
 
-// TestCLIOutputGainUnsupportedDroppedAndStrict: a format that stores no gain drops it with
-// a warning, exits 0, and still applies the rest of the edit; --strict refuses.
+// TestCLIOutputGainUnsupportedDroppedAndStrict: unsupported format drops gain with warning;
+// --strict refuses.
 func TestCLIOutputGainUnsupportedDroppedAndStrict(t *testing.T) {
 	path := copyFixture(t, td("sample.mp3"))
 	stdout, _, code := runCLI(t, "set", path, "--output-gain", "-3.5", "--set", "TITLE=Kept")
@@ -86,16 +84,14 @@ func TestCLIOutputGainUnsupportedDroppedAndStrict(t *testing.T) {
 	}
 }
 
-// TestCLIOutputGainReadOnlyExits3: a format that cannot be written at all is an
-// unsupported-format failure, never a silent success.
+// TestCLIOutputGainReadOnlyExits3: read-only format is exit 3, not silent success.
 func TestCLIOutputGainReadOnlyExits3(t *testing.T) {
 	if _, _, code := runCLI(t, "set", copyFixture(t, td("sample.wma")), "--output-gain", "-3.5"); code != 3 {
 		t.Errorf("set exit = %d, want 3 (unsupported format)", code)
 	}
 }
 
-// TestCLIOutputGainUsageErrors: the flag takes decibels, so anything that is not a finite
-// in-range number is a usage error.
+// TestCLIOutputGainUsageErrors: non-finite or out-of-range dB is usage error.
 func TestCLIOutputGainUsageErrors(t *testing.T) {
 	for _, v := range []string{"abc", "200", "-200", "nan", "inf", "1e400"} {
 		if _, _, code := runCLI(t, "set", copyFixture(t, td("sample.opus")), "--output-gain", v); code != 2 {
@@ -104,8 +100,7 @@ func TestCLIOutputGainUsageErrors(t *testing.T) {
 	}
 }
 
-// TestCLIOutputGainRoundsToQ78: the stored field is Q7.8, so a finer dB value rounds to
-// the nearest step.
+// TestCLIOutputGainRoundsToQ78: stored OpusHead gain is Q7.8.
 func TestCLIOutputGainRoundsToQ78(t *testing.T) {
 	path := copyFixture(t, td("sample.opus"))
 	if _, stderr, code := runCLI(t, "set", path, "--output-gain", "-3.501"); code != 0 {
@@ -144,8 +139,7 @@ func TestCapsOutputGainLevel(t *testing.T) {
 	}
 }
 
-// TestCLIDiffSeesOutputGain: set --output-gain changes the file, so diff must not call the
-// result identical to the original.
+// TestCLIDiffSeesOutputGain: diff must report header gain changes.
 func TestCLIDiffSeesOutputGain(t *testing.T) {
 	orig := copyFixture(t, td("sample.opus"))
 	edited := copyFixture(t, td("sample.opus"))
@@ -173,7 +167,7 @@ func TestCLIDiffSeesOutputGain(t *testing.T) {
 		t.Errorf("diff --json outputGain = %+v, want 0.00 dB -> -3.50 dB", jd.OutputGain)
 	}
 
-	// A format with no header gain reports none at all.
+	// Formats without header gain omit outputGain in diff JSON.
 	same, _, code := runCLI(t, "--json", "diff", td("sample.mp3"), td("sample.mp3"))
 	if code != 0 {
 		t.Fatalf("diff of a file with itself exit = %d", code)
@@ -201,8 +195,7 @@ func r128Fixture(t *testing.T, track, album string) string {
 	return path
 }
 
-// TestCLIOutputGainRebasesR128: RFC 7845 applies the R128 tags on top of the header gain, so
-// the plan shows them moving with it and the write is clean even under --strict.
+// TestCLIOutputGainRebasesR128: gain edit rebases R128 tags per RFC 7845; clean under --strict.
 func TestCLIOutputGainRebasesR128(t *testing.T) {
 	t.Parallel()
 	path := r128Fixture(t, "-896", "-512")
@@ -232,8 +225,7 @@ func TestCLIOutputGainRebasesR128(t *testing.T) {
 	}
 }
 
-// TestCLIOutputGainR128ExplicitSetWins: --output-gain's own help text tells the user to set
-// the tag, so that must not be refused as an unknown key, and it must beat the rebase.
+// TestCLIOutputGainR128ExplicitSetWins: explicit R128_TRACK_GAIN beats automatic rebase.
 func TestCLIOutputGainR128ExplicitSetWins(t *testing.T) {
 	t.Parallel()
 	path := r128Fixture(t, "-896", "")
@@ -246,8 +238,7 @@ func TestCLIOutputGainR128ExplicitSetWins(t *testing.T) {
 	}
 }
 
-// TestCLIKeepR128: the opt-out leaves both tags alone, says so, and stays advisory even
-// under --strict. Without --output-gain there is nothing to opt out of.
+// TestCLIKeepR128: --keep-r128 skips rebase, advisory even under --strict. Needs --output-gain.
 func TestCLIKeepR128(t *testing.T) {
 	t.Parallel()
 	path := r128Fixture(t, "-896", "-512")
@@ -271,8 +262,7 @@ func TestCLIKeepR128(t *testing.T) {
 	}
 }
 
-// TestCLIOutputGainR128Malformed: a value that is not a Q7.8 integer is noted when set and
-// cannot be rebased later, so a gain edit advises rather than silently leaving it wrong.
+// TestCLIOutputGainR128Malformed: non-Q7.8 R128 value is noted on set and blocks rebase.
 func TestCLIOutputGainR128Malformed(t *testing.T) {
 	t.Parallel()
 	path := copyFixture(t, td("sample.opus"))
@@ -292,8 +282,7 @@ func TestCLIOutputGainR128Malformed(t *testing.T) {
 	}
 }
 
-// TestCLILintR128: the RFC defines these keys, so lint checks their values and does not
-// call them custom fields.
+// TestCLILintR128: R128 keys are RFC-defined, not custom-key findings.
 func TestCLILintR128(t *testing.T) {
 	t.Parallel()
 	bad := copyFixture(t, td("sample.opus"))
@@ -319,8 +308,7 @@ func TestCLILintR128(t *testing.T) {
 		t.Errorf("lint did not flag the malformed R128 value:\n%s", out)
 	}
 
-	// sample.opus carries ffmpeg's encoder stamps, so it is never finding-free; what matters
-	// is that valid R128 values contribute nothing.
+	// Fixture has encoder stamps; valid R128 values must not add findings.
 	good := r128Fixture(t, "-896", "-512")
 	out, _, code = runCLI(t, "--json", "lint", good)
 	if code > 1 {

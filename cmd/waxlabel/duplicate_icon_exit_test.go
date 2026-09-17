@@ -4,11 +4,8 @@ import (
 	"testing"
 )
 
-// TestTwoFileIconsIsARefusedWrite: authoring a second type-1 picture leaves the source
-// file perfectly readable and only the requested write impossible, which is exit 3
-// (unsupported-tag), not exit 4 (invalid-data). The distinction matters beyond the number:
-// invalid-data outranks every exit-3 class in a batch run's aggregate, so grading a bad
-// flag combination as corruption would let it mask a genuinely corrupt file.
+// TestTwoFileIconsIsARefusedWrite: second type-1 picture is exit 3 (unsupported-tag), not 4.
+// Exit 4 outranks 3 in batch aggregate and would mask real corruption.
 func TestTwoFileIconsIsARefusedWrite(t *testing.T) {
 	t.Parallel()
 	png := writeTempImage(t, "icon.png", minimalPNG())

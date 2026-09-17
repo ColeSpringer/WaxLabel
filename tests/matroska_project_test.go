@@ -20,10 +20,7 @@ func trackTag(simples ...[]byte) []byte {
 		concat(simples...)))
 }
 
-// TestMatroskaProjectFaithful checks that the canonical Tags view projects each scope
-// without fold-deduping across all scopes. Intra-scope duplicates and case or
-// whitespace variants survive, cross-scope echoes collapse to one canonical value, and
-// distinct cross-scope values still surface and are reported by the families view.
+// canonical Tags view projects each scope without fold-deduping across all scopes.
 func TestMatroskaProjectFaithful(t *testing.T) {
 	t.Run("intra-scope duplicates preserved", func(t *testing.T) {
 		data := buildMatroska("matroska", "T", mkEl(idTags, albumTag(
@@ -72,10 +69,8 @@ func TestMatroskaProjectFaithful(t *testing.T) {
 	})
 }
 
-// TestMatroskaProjectTitleAuthoritative covers the TITLE special case. Info.Title is
-// authoritative, so an album-scope TITLE SimpleTag that echoes it does not duplicate
-// the canonical title. A genuinely different cross-scope TITLE still surfaces as a
-// conflict.
+// TITLE special case. Info.Title is authoritative, so an album-scope TITLE SimpleTag that echoes it
+// does not duplicate the canonical title.
 func TestMatroskaProjectTitleAuthoritative(t *testing.T) {
 	t.Run("Info.Title plus echoing album TITLE = one canonical title", func(t *testing.T) {
 		data := buildMatroska("matroska", "MyTitle", mkEl(idTags, albumTag(mkSimple("TITLE", "MyTitle"))))
@@ -102,11 +97,7 @@ func TestMatroskaProjectTitleAuthoritative(t *testing.T) {
 	})
 }
 
-// TestMatroskaWriteDupEchoPreservesMultiplicity covers the read/write symmetry around
-// duplicated album values and narrower-scope echoes. The reader surfaces the album
-// duplicates and suppresses the echo, so an unrelated edit must not subtract the album
-// copies as covered by that single echo. Distinct cross-scope values must still survive
-// without duplication.
+// read/write symmetry around duplicated album values and narrower-scope echoes.
 func TestMatroskaWriteDupEchoPreservesMultiplicity(t *testing.T) {
 	t.Run("album dup plus narrower echo survives an unrelated edit", func(t *testing.T) {
 		data := buildMatroska("matroska", "T", mkEl(idTags, concat(
@@ -138,11 +129,8 @@ func TestMatroskaWriteDupEchoPreservesMultiplicity(t *testing.T) {
 	})
 
 	t.Run("two album-scope groups do not grow or shrink on an unrelated edit", func(t *testing.T) {
-		// Both groups are at the album scope, so the reader does not suppress either - the
-		// canonical owns both. The sync must carry exactly two across the two groups: not
-		// drop both (set-based subtract) nor leave both groups full while re-emitting the
-		// canonical (the echo carve-out misfiring on a same-scope group), which would grow
-		// by one on every edit.
+		// Both groups are at the album scope, so the reader does not suppress either; the canonical owns
+		// both.
 		data := buildMatroska("matroska", "T", mkEl(idTags, concat(
 			albumTag(mkSimple("ARTIST", "Solo")),
 			albumTag(mkSimple("ARTIST", "Solo")))))
@@ -160,10 +148,9 @@ func TestMatroskaWriteDupEchoPreservesMultiplicity(t *testing.T) {
 	})
 }
 
-// TestMatroskaWriteTitleOnlyInScopedTag: a title that lives only in an album-scope
-// TITLE SimpleTag (the Info element has no Title child) must survive an unrelated edit.
-// A Tags re-render drops the managed TITLE SimpleTag, so the writer must migrate the
-// title into the authoritative Info.Title rather than silently dropping it.
+// title that lives only in an album-scope TITLE SimpleTag (the Info element has no Title child)
+// must survive an unrelated edit. A Tags re-render drops the managed TITLE SimpleTag, so the writer
+// must migrate the title into the authoritative Info.Title rather than silently dropping it.
 func TestMatroskaWriteTitleOnlyInScopedTag(t *testing.T) {
 	// An Info element present but with no Title child, plus an album-scope TITLE SimpleTag.
 	info := mkEl(idInfo, mkEl(idDuration, make([]byte, 8)))
@@ -184,10 +171,9 @@ func TestMatroskaWriteTitleOnlyInScopedTag(t *testing.T) {
 	}
 }
 
-// TestMatroskaDuplicateSurvivesWriter proves the duplicate round-trips through the
-// writer's renderTags, not only the reader: a forced (non-title) edit re-renders the
-// canonical ARTIST set, and a fresh parse of the output still reads all three values.
-// A no-op edit on the same file stays a no-op (the canonical view is byte-stable).
+// duplicate round-trips through the writer's renderTags, not only the reader: a forced (non-title)
+// edit re-renders the canonical ARTIST set, and a fresh parse of the output still reads all three
+// values. A no-op edit on the same file stays a no-op (the canonical view is byte-stable).
 func TestMatroskaDuplicateSurvivesWriter(t *testing.T) {
 	data := buildMatroska("matroska", "T", mkEl(idTags, albumTag(
 		mkSimple("ARTIST", "Solo"), mkSimple("ARTIST", "Solo"), mkSimple("ARTIST", "Band"))))
@@ -206,9 +192,9 @@ func TestMatroskaDuplicateSurvivesWriter(t *testing.T) {
 	}
 }
 
-// TestMatroskaDuplicateTransferCount: copying a duplicate-bearing Matroska ARTIST into
-// FLAC (which writes every value) reports all three carried - the count derives from
-// the now-faithful src.Tags, so the old "0 dropped / fewer carried" misreport is gone.
+// copying a duplicate-bearing Matroska ARTIST into FLAC (which writes every value) reports all
+// three carried; the count derives from the now-faithful src.Tags, so the old "0 dropped / fewer
+// carried" misreport is gone.
 func TestMatroskaDuplicateTransferCount(t *testing.T) {
 	data := buildMatroska("matroska", "T", mkEl(idTags, albumTag(
 		mkSimple("ARTIST", "Solo"), mkSimple("ARTIST", "Solo"), mkSimple("ARTIST", "Band"))))

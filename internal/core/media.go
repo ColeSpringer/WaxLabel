@@ -6,9 +6,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// Family identifies which tag container supplied a value. A single file can
-// carry several (native plus legacy), so the projection records provenance and
-// surfaces conflicts rather than hiding them.
+// Family identifies which tag container supplied a value.
 type Family uint8
 
 const (
@@ -52,8 +50,7 @@ func (f Family) String() string {
 	}
 }
 
-// Scope annotates the target a value applies to. Most formats are track-scoped;
-// Matroska's targets make album/edition/chapter scopes meaningful.
+// Scope is the target a value applies to (track, album, edition, chapter).
 type Scope uint8
 
 const (
@@ -76,66 +73,40 @@ func (s Scope) String() string {
 	}
 }
 
-// FamilyValue is one family's contribution to a canonical key. Selected marks
-// the contribution that won the canonical projection; unselected entries for
-// the same key indicate a conflict.
+// FamilyValue is one family's values for a key. Selected won projection; unselected = conflict.
 type FamilyValue struct {
 	Key      tag.Key
 	Family   Family
 	Scope    Scope
 	Values   []string
 	Selected bool
-	// Legacy marks a contribution from a non-authoritative, alternate container
-	// (MP3's ID3v1/APEv2, FLAC's leading ID3v2 / trailing ID3v1) rather than the
-	// format's canonical tag set. It distinguishes a value that lives only in such a
-	// container - which dump would otherwise omit and a legacy strip would destroy -
-	// from a native container's own scoped families, and disambiguates FamilyID3v2,
-	// which is canonical for MP3 but legacy for FLAC.
+	// Legacy: value from a non-authoritative container (ID3v1/APE, FLAC stray ID3).
 	Legacy bool
 }
 
-// NativeEntry is a human-readable summary of one native metadata block, for
-// the native/dump views.
+// NativeEntry summarizes one native metadata block for dump.
 type NativeEntry struct {
 	Kind string
-	// Size is a byte count by default, rendered with a binary unit (e.g. "57.2
-	// KiB"). When Unit is non-empty, Size is instead that many of Unit (a count or
-	// other non-byte quantity), rendered as "N <unit>" - so a count of pages,
-	// tags, or chapters is never mislabeled as bytes. A zero Size with no Unit
-	// renders blank (the block has no meaningful size, e.g. an EBML header).
+	// Size is bytes unless Unit is set (then a count: pages, tags, chapters).
 	Size int
-	// Unit names what Size counts when it is not bytes ("pages", "tags",
-	// "chapters"); empty means Size is a byte count.
+	// Unit names non-byte Size; empty means bytes.
 	Unit string
 	Note string
 }
 
-// NativeDoc is a codec's editable native document - the base for
-// preservation-first edits. It is opaque to the engine except for cloning (so
-// Document accessors stay detached) and describing (for the native view).
+// NativeDoc is a codec's editable native document (clone + describe only).
 type NativeDoc interface {
 	Format() Format
 	Clone() NativeDoc
 	Describe() []NativeEntry
 }
 
-// PaddingReporter is the optional interface a NativeDoc satisfies when its format
-// reserves a free region a metadata rewrite can grow into. It reports the same number
-// the codec's own write path puts in [WriteReport.PaddingAfter] for an untouched file,
-// so the read accessor and a plan agree. A doc that does not implement it has no padding
-// region to report.
-//
-// This is an interface rather than a field on NativeEntry because padding is not always
-// a describable block: ID3 padding lives inside the tag's declared size, so there is no
-// entry to hang it on.
+// PaddingReporter reports padding bytes (optional; ID3 padding is not a separate block).
 type PaddingReporter interface {
 	PaddingBytes() int64
 }
 
-// Media is the neutral parsed representation a codec produces and the engine
-// wraps in a Document. It carries both the canonical projection (Tags,
-// Pictures, Properties) and the native base (Native) needed for
-// preservation-first rewrites.
+// Media is the neutral parse result: canonical projection plus native base for rewrites.
 type Media struct {
 	Format       Format
 	Properties   Properties
@@ -148,35 +119,18 @@ type Media struct {
 	Native       NativeDoc
 	Identity     Identity
 
-	// LegacyOpaqueContent records that a legacy container holds non-tag content the
-	// canonical projection does not fold in (an MP3 APEv2's binary items, a FLAC
-	// leading ID3v2's pictures/chapters/synced lyrics, or an unreadable such
-	// container). A legacy strip cannot prove such a container fully redundant, so
-	// the safe auto-fix keeps it; dump surfaces it rather than hiding it.
+	// LegacyOpaqueContent: legacy container holds content projection cannot fold (APE binary, etc.).
 	LegacyOpaqueContent bool
 
-	// AudioStart and AudioEnd bound the audio essence within the source: the
-	// bytes the rewrite must copy verbatim and the essence digest must hash.
-	//
-	// This single contiguous extent fits FLAC (metadata up front, one trailing
-	// audio run). Codecs that interleave or split the essence set AudioRanges
-	// instead (see below); for them AudioStart still marks where the audio region
-	// begins (used for the save-back structural fingerprint).
+	// AudioStart/AudioEnd bound contiguous essence bytes to copy and hash.
 	AudioStart int64
 	AudioEnd   int64
 
-	// AudioRanges is the codec-supplied multi-segment essence region for formats
-	// whose audio is not one contiguous run - Ogg page bodies interleaved with
-	// page headers, and later multiple/relocatable MP4 mdat. When non-nil it is
-	// authoritative for essence hashing and verification (the ranges must be
-	// ascending and disjoint, in source order); when nil the single
-	// [AudioStart, AudioEnd) extent is used.
+	// AudioRanges is multi-segment essence when non-nil (Ogg, split mdat). Else use AudioStart/End.
 	AudioRanges [][2]int64
 }
 
-// EssenceRanges returns the audio-essence byte ranges to hash: the codec-supplied
-// AudioRanges when present, else the single [AudioStart, AudioEnd) extent. The
-// result is always non-nil for a parsed media with audio.
+// EssenceRanges returns audio byte ranges to hash (AudioRanges or single extent).
 func (m *Media) EssenceRanges() [][2]int64 {
 	if len(m.AudioRanges) > 0 {
 		return m.AudioRanges
@@ -184,8 +138,7 @@ func (m *Media) EssenceRanges() [][2]int64 {
 	return [][2]int64{{m.AudioStart, m.AudioEnd}}
 }
 
-// Clone returns a deep copy. Native is cloned through its interface; picture
-// Data stays shared (read-only by contract).
+// Clone deep-copies Media. Picture Data stays shared read-only.
 func (m *Media) Clone() *Media {
 	if m == nil {
 		return nil

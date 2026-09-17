@@ -12,10 +12,9 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestCopyChapterTitleTooLongReportsLossy checks that MP4's Nero chpl truncates a chapter
-// title past 255 bytes, so copying a chapter whose title exceeds that to MP4 must grade the chapter
-// set Lossy (with the truncation reason) rather than advertise a clean carry. FLAC/Ogg have no such
-// cap, so the same title stays Carried there.
+// MP4's Nero chpl truncates a chapter title past 255 bytes, so copying a chapter whose title
+// exceeds that to MP4 must grade the chapter set Lossy (with the truncation reason) rather than
+// advertise a clean carry.
 func TestCopyChapterTitleTooLongReportsLossy(t *testing.T) {
 	longTitle := strings.Repeat("x", 300)
 	// A FLAC source carrying one chapter with a 300-byte title (FLAC has no title cap).
@@ -62,12 +61,9 @@ func chapterItem(t *testing.T, r wl.TransferReport) wl.TransferItem {
 	return wl.TransferItem{}
 }
 
-// TestCopyTrimsMediaType covers the copy path: a source whose MEDIATYPE comment carries
-// surrounding whitespace (stored raw here, bypassing the writer's own trim) transfers the trimmed
-// single-token value to the destination, matching the set path so set, lint, and copy agree on the
-// stored form. REPLAYGAIN_* keys describe the source's own audio, so copy excludes them entirely
-// (their trim is exercised on the set/lint paths); the widened transfer gate keeps them aligned with
-// TrimTokenValue for any value that does reach the value-level grading.
+// copy path: a source whose MEDIATYPE comment carries surrounding whitespace (stored raw here,
+// bypassing the writer's own trim) transfers the trimmed single-token value to the destination,
+// matching the set path so set, lint, and copy agree on the stored form.
 func TestCopyTrimsMediaType(t *testing.T) {
 	srcBytes := flacWithCommentBlock([]vorbis.Comment{
 		{Name: "MEDIATYPE", Value: " 2 "},
@@ -96,10 +92,9 @@ func tinyGIF() []byte {
 	return append([]byte("GIF89a"), 0x03, 0x00, 0x05, 0x00, 0x77, 0x00, 0x00)
 }
 
-// TestPrepareTransferMP4ZeroTrackDropped is a regression guard: MP4 drops a literal 0 in a
-// trkn/disk slot on read, so the transfer grading must report TRACKNUMBER=0 (even paired with
-// a real total) as dropped, not carried - keeping the report in sync with what the writer stores
-// and reads back.
+// regression guard: MP4 drops a literal 0 in a trkn/disk slot on read, so the transfer grading must
+// report TRACKNUMBER=0 (even paired with a real total) as dropped, not carried; keeping the report
+// in sync with what the writer stores and reads back.
 func TestPrepareTransferMP4ZeroTrackDropped(t *testing.T) {
 	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.Set(tag.TrackNumber, "0").Set(tag.TrackTotal, "12")
@@ -131,9 +126,8 @@ func TestPrepareTransferMP4ZeroTrackDropped(t *testing.T) {
 	}
 }
 
-// TestPlanTransferReportsLosses simulates copying an M4B (tags + chapters) into a FLAC.
-// Tags carry, and the MP4 start+title chapters also carry because FLAC writes the same
-// chapter subset through VorbisComment CHAPTERxxx. No destination bytes are needed.
+// simulates copying an M4B (tags + chapters) into a FLAC. Tags carry, and the MP4 start+title
+// chapters also carry because FLAC writes the same chapter subset through VorbisComment CHAPTERxxx.
 func TestPlanTransferReportsLosses(t *testing.T) {
 	src := mustParseFile(t, sampleM4B)
 	report, err := src.PlanTransfer(wl.FormatFLAC)
@@ -173,8 +167,8 @@ func TestPlanTransferReportsLosses(t *testing.T) {
 	}
 }
 
-// TestPlanTransferUnsupportedDest: simulating a transfer to a format with no codec
-// is an error, while a writable destination (Matroska) carries the canonical set.
+// simulating a transfer to a format with no codec is an error, while a writable destination
+// (Matroska) carries the canonical set.
 func TestPlanTransferUnsupportedDest(t *testing.T) {
 	src := mustParseFile(t, sampleFLAC)
 
@@ -192,10 +186,8 @@ func TestPlanTransferUnsupportedDest(t *testing.T) {
 	}
 }
 
-// TestPrepareTransferReportMatchesResult checks that PrepareTransfer's loss report
-// matches the result of executing its plan: carried fields land with the source's values,
-// and dropped chapters do not appear. M4B -> FLAC exercises both a carried set and a
-// dropped set at once.
+// PrepareTransfer's loss report matches the result of executing its plan: carried fields land with
+// the source's values, and dropped chapters do not appear.
 func TestPrepareTransferReportMatchesResult(t *testing.T) {
 	src := mustParseFile(t, sampleM4B)
 	dstBytes := readFixture(t, "../testdata/notags.flac") // a blank canvas
@@ -230,8 +222,8 @@ func TestPrepareTransferReportMatchesResult(t *testing.T) {
 			}
 		}
 	}
-	// The blank destination had no tags, so the result's keys are exactly the
-	// carried set - the report and the write cannot disagree on membership.
+	// The blank destination had no tags, so the result's keys are exactly the carried set; the report
+	// and the write cannot disagree on membership.
 	for _, k := range result.Tags().Keys() {
 		if !carriedKeys[k] {
 			t.Errorf("result has key %s the report did not mark carried", k)
@@ -239,9 +231,6 @@ func TestPrepareTransferReportMatchesResult(t *testing.T) {
 	}
 }
 
-// TestPrepareTransferOverlayKeepsDestKeys: a key present only in the destination
-// survives the overlay (copy adds/overwrites the source's keys, it does not wipe
-// the destination).
 func TestPrepareTransferOverlayKeepsDestKeys(t *testing.T) {
 	src := mustParseBytes(t, readFixture(t, sampleFLAC)) // TITLE/ARTIST/ALBUM/ENCODER
 	// A destination FLAC carrying a key the source lacks.
@@ -264,11 +253,7 @@ func TestPrepareTransferOverlayKeepsDestKeys(t *testing.T) {
 	}
 }
 
-// TestPrepareTransferCarriesPictures: a source front cover carries into a
-// picture-capable destination and matches byte-for-byte. The destination here is MP4,
-// whose covr stores image data only - but a plain front cover (no role, no
-// description) round-trips losslessly, so the transfer reports it Carried, not Lossy
-// (the per-picture metadata loss is the plan warning's job, and there is none here).
+// source front cover carries into a picture-capable destination and matches byte-for-byte.
 func TestPrepareTransferCarriesPictures(t *testing.T) {
 	png := tinyPNG()
 	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
@@ -301,9 +286,8 @@ func TestPrepareTransferCarriesPictures(t *testing.T) {
 	}
 }
 
-// TestPlanTransferMatchesPrepareTransfer: the format-only simulation and the
-// project-onto-a-document path agree, because both consult the same decision
-// function with the same destination capabilities.
+// format-only simulation and the project-onto-a-document path agree, because both consult the same
+// decision function with the same destination capabilities.
 func TestPlanTransferMatchesPrepareTransfer(t *testing.T) {
 	src := mustParseFile(t, sampleM4B)
 	dst := mustParseBytes(t, readFixture(t, "../testdata/notags.flac"))
@@ -327,10 +311,9 @@ func TestPlanTransferMatchesPrepareTransfer(t *testing.T) {
 	}
 }
 
-// TestMP4RejectsUnstorableCover: an MP4 covr atom can only label JPEG/PNG/BMP, so
-// a cover in another format must fail loudly at Prepare rather than be silently
-// stored mislabeled as JPEG (a corrupt cover a cross-format copy would otherwise
-// claim "carried losslessly"). A supported format still writes.
+// MP4 covr atom can only label JPEG/PNG/BMP, so a cover in another format must fail loudly at
+// Prepare rather than be silently stored mislabeled as JPEG (a corrupt cover a cross-format copy
+// would otherwise claim "carried losslessly"). A supported format still writes.
 func TestMP4RejectsUnstorableCover(t *testing.T) {
 	doc := mustParseBytes(t, readFixture(t, "../testdata/notags.m4a"))
 	_, err := doc.Edit().
@@ -344,10 +327,7 @@ func TestMP4RejectsUnstorableCover(t *testing.T) {
 	}
 }
 
-// TestPrepareTransferDropsUnrepresentableCover checks that a GIF cover MP4 cannot store
-// is dropped and reported without failing the whole copy. Tags still carry; the
-// destination had no cover, so the result has none (the dest-with-a-cover preservation
-// case is TestPrepareTransferUnrepresentableCoverKeepsDestCover).
+// GIF cover MP4 cannot store is dropped and reported without failing the whole copy.
 func TestPrepareTransferDropsUnrepresentableCover(t *testing.T) {
 	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.Set("TITLE", "GIF Cover")
@@ -391,8 +371,6 @@ func TestPrepareTransferDropsUnrepresentableCover(t *testing.T) {
 	}
 }
 
-// TestPrepareTransferUnrepresentableCoverKeepsDestCover checks that an all-unrepresentable
-// source cover set leaves the destination's existing cover intact.
 func TestPrepareTransferUnrepresentableCoverKeepsDestCover(t *testing.T) {
 	// Source carries only a GIF cover an MP4 covr atom cannot store.
 	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
@@ -418,11 +396,10 @@ func TestPrepareTransferUnrepresentableCoverKeepsDestCover(t *testing.T) {
 	}
 }
 
-// TestPlanTransferMatroskaToMP4ChapterLoss checks transfer grading for chapter
-// metadata. Matroska chapters with gapped ends or any per-chapter language (uniform or
-// varying) are lossy when copied to MP4's start+title storage, which stores no language;
-// only language-free chapters are carried, and a Matroska destination carries the richer
-// metadata.
+// checks transfer grading for chapter metadata. Matroska chapters with gapped ends or any
+// per-chapter language (uniform or varying) are lossy when copied to MP4's start+title storage,
+// which stores no language; only language-free chapters are carried, and a Matroska destination
+// carries the richer metadata.
 func TestPlanTransferMatroskaToMP4ChapterLoss(t *testing.T) {
 	src := readFixture(t, sampleMKA)
 	withChapters := func(chs ...wl.Chapter) *wl.Document {
@@ -472,9 +449,9 @@ func TestPlanTransferMatroskaToMP4ChapterLoss(t *testing.T) {
 	if it := chapterItem(languageFree, wl.FormatMP4); it.Disposition != wl.Carried {
 		t.Errorf("language-free chapters -> MP4 = %s, want carried", it.Disposition)
 	}
-	// Only the final chapter carries an explicit end (no interior gap), which MP4's QuickTime
-	// text track stores, so the end itself is fine - but the uniform language these chapters
-	// carry is still dropped, so the copy is lossy for the language.
+	// Only the final chapter carries an explicit end (no interior gap), which MP4's QuickTime text
+	// track stores, so the end itself is fine, but the uniform language these chapters carry is still
+	// dropped, so the copy is lossy for the language.
 	lastEndOnly := withChapters(
 		wl.Chapter{Start: 0, Title: "One", LanguageIETF: "en-US"},
 		wl.Chapter{Start: ms(300), End: ms(600), Title: "Two", LanguageIETF: "en-US"},
@@ -484,10 +461,7 @@ func TestPlanTransferMatroskaToMP4ChapterLoss(t *testing.T) {
 	}
 }
 
-// TestPrepareTransferToWebMWithExistingCover checks that a WebM destination with an
-// existing cover attachment can still receive transferable tags. WebM reports pictures
-// as unsupported, so the source cover is dropped and the destination picture set is
-// left untouched.
+// WebM destination with an existing cover attachment can still receive transferable tags.
 func TestPrepareTransferToWebMWithExistingCover(t *testing.T) {
 	src := mustParseBytes(t, coverBearingFLAC(t, "WebM Cover Src"))
 
@@ -520,10 +494,7 @@ func TestPrepareTransferToWebMWithExistingCover(t *testing.T) {
 	}
 }
 
-// TestPrepareTransferMixedCoversSplit checks that a mixed cover set carries the storable
-// JPEG and drops only the GIF. The pictures written to the destination and the Dropped
-// item's MIME must partition the source set exactly, keeping the report aligned with the
-// bytes written.
+// mixed cover set carries the storable JPEG and drops only the GIF.
 func TestPrepareTransferMixedCoversSplit(t *testing.T) {
 	jpeg := tinyJPEG()
 	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
@@ -566,9 +537,9 @@ func TestPrepareTransferMixedCoversSplit(t *testing.T) {
 	}
 }
 
-// TestPrepareTransferToMatroska projects a FLAC's tags onto a Matroska canvas and
-// confirms the report matches the written result - a cross-format transfer into a
-// now-writable container (Title lands in Info.Title, the rest in SimpleTags).
+// projects a FLAC's tags onto a Matroska canvas and confirms the report matches the written result;
+// a cross-format transfer into a now-writable container (Title lands in Info.Title, the rest in
+// SimpleTags).
 func TestPrepareTransferToMatroska(t *testing.T) {
 	src := mustParseFile(t, sampleFLAC)
 	dstBytes := readFixture(t, "../testdata/notags.mka")
@@ -582,11 +553,8 @@ func TestPrepareTransferToMatroska(t *testing.T) {
 		t.Fatalf("expected canonical fields carried, got %+v", report)
 	}
 	result := mustParseBytes(t, applyToBytes(t, dstBytes, plan))
-	// Check the cleanly-mapping core fields land with the source values (TITLE goes
-	// to Info.Title, the rest to SimpleTags). ENCODER is asserted too: it now maps
-	// to the canonical Encoder key on both the Vorbis and Matroska sides, so it
-	// round-trips exactly (previously Matroska read it back as EncodedBy, a latent
-	// cross-format asymmetry the dedicated ENCODER key resolves).
+	// Check the cleanly-mapping core fields land with the source values (TITLE goes to Info.Title, the
+	// rest to SimpleTags).
 	for _, k := range []tag.Key{tag.Title, tag.Artist, tag.Album, tag.Encoder} {
 		srcVals, _ := src.Get(k)
 		gotVals, present := result.Get(k)
@@ -606,11 +574,9 @@ func coverBearingFLAC(t *testing.T, title string) []byte {
 	})
 }
 
-// TestPlanTransferMatroskaCoverWritable: a format-only PlanTransfer has no
-// destination file, so Matroska answers file-agnostically and still reports a
-// cover writable. The WebM cover refusal is a per-file constraint only a real
-// destination (PrepareTransfer/copy) can see, so PlanTransfer(Format) stays right
-// by construction.
+// format-only PlanTransfer has no destination file, so Matroska answers file-agnostically and still
+// reports a cover writable. The WebM cover refusal is a per-file constraint only a real destination
+// (PrepareTransfer/copy) can see, so PlanTransfer(Format) stays right by construction.
 func TestPlanTransferMatroskaCoverWritable(t *testing.T) {
 	src := mustParseBytes(t, coverBearingFLAC(t, "Cover Test"))
 	report, err := src.PlanTransfer(wl.FormatMatroska)
@@ -628,11 +594,9 @@ func TestPlanTransferMatroskaCoverWritable(t *testing.T) {
 	}
 }
 
-// TestPrepareTransferCoverToWebMDropsCover covers a file-dependent capability:
-// projecting a cover-bearing source onto WebM reports the cover dropped
-// (Attachments is outside the WebM subset), and the executed plan carries no
-// picture while the tags still land. Before file-aware capabilities this reported
-// "carried" and then errored at Prepare.
+// file-dependent capability: projecting a cover-bearing source onto WebM reports the cover dropped
+// (Attachments is outside the WebM subset), and the executed plan carries no picture while the tags
+// still land.
 func TestPrepareTransferCoverToWebMDropsCover(t *testing.T) {
 	src := mustParseBytes(t, coverBearingFLAC(t, "WebM Transfer"))
 
@@ -660,17 +624,13 @@ func TestPrepareTransferCoverToWebMDropsCover(t *testing.T) {
 	if got := result.Pictures(); len(got) != 0 {
 		t.Errorf("WebM result has %d pictures, want 0 (the cover was dropped)", len(got))
 	}
-	// The tags still transfer - only the cover is gated by the WebM subset.
+	// The tags still transfer; only the cover is gated by the WebM subset.
 	if got, ok := result.Get(tag.Title); !ok || !slices.Equal(got, []string{"WebM Transfer"}) {
 		t.Errorf("carried TITLE = %v (present=%v), want [WebM Transfer]", got, ok)
 	}
 }
 
-// TestTransferPictureDisposition verifies that a picture set can be lossy even
-// when the image bytes carry losslessly. The report is Lossy only when the
-// destination drops role or description metadata the pictures actually carry,
-// matching the destination's write-time picture-metadata warning. MP4 drops role
-// and description, Matroska drops only non-front roles, and FLAC drops neither.
+// picture set can be lossy even when the image bytes carry losslessly.
 func TestTransferPictureDisposition(t *testing.T) {
 	png := tinyPNG()
 	flacWith := func(p wl.Picture) []byte {
@@ -720,11 +680,9 @@ func TestTransferPictureDisposition(t *testing.T) {
 	}
 }
 
-// TestPlanTransferNumericGenreLossy verifies that under --numeric-genre a recognized GENRE is
-// stored as a numeric reference (ID3 TCON / MP4 gnre) and re-read as its canonical name, so
-// the destination mutates the value. The transfer report must grade it Lossy, not Carried;
-// without the option the genre carries verbatim. Every numeric-genre destination - AAC, MP3,
-// and MP4 (gnre) - must report consistently.
+// under --numeric-genre a recognized GENRE is stored as a numeric reference (ID3 TCON / MP4 gnre)
+// and re-read as its canonical name, so the destination mutates the value. The transfer report must
+// grade it Lossy, not Carried; without the option the genre carries verbatim.
 func TestPlanTransferNumericGenreLossy(t *testing.T) {
 	src := mustParseBytes(t, append(id3v2(3, textFrame(3, "TCON", "Rock"), textFrame(3, "TIT2", "T")), mp3Audio(t)...))
 
@@ -742,11 +700,7 @@ func TestPlanTransferNumericGenreLossy(t *testing.T) {
 		return wl.Carried
 	}
 
-	// AIFF and WAV join AAC/MP3/MP4 under --numeric-genre. AIFF has no native genre slot, so
-	// genre always routes through the ID3 chunk; WAV may force an ID3 chunk for the rest of a
-	// transfer (a multi-value field, an unmapped key, a picture), and its numeric TCON then
-	// wins read precedence - so the value-blind capability reports GENRE partial conservatively
-	// for both (matching the other ID3 codecs). A plain (non-numeric) transfer still carries.
+	// AIFF and WAV join AAC/MP3/MP4 under --numeric-genre.
 	for _, dst := range []wl.Format{wl.FormatAAC, wl.FormatMP3, wl.FormatMP4, wl.FormatAIFF, wl.FormatWAV} {
 		if d := genreDisp(dst); d != wl.Carried {
 			t.Errorf("GENRE transfer to %v without numeric-genre = %s, want carried", dst, d)
@@ -757,11 +711,8 @@ func TestPlanTransferNumericGenreLossy(t *testing.T) {
 	}
 }
 
-// TestAiffNumericGenreReducedWarns verifies that AIFF has no native genre slot, so a
-// --numeric-genre write stores the genre as a numeric ID3 TCON, re-read as its canonical
-// name - mutating "rock" -> "Rock". The edit must warn value-reduced naming GENRE (it
-// previously graded the field carried and stayed silent); a plain write keeps the text
-// genre verbatim with no warning.
+// AIFF has no native genre slot, so a --numeric-genre write stores the genre as a numeric ID3 TCON,
+// re-read as its canonical name; mutating "rock" -> "Rock".
 func TestAiffNumericGenreReducedWarns(t *testing.T) {
 	data := aiffFile("AIFF", stdCOMM(), aiffSSND(400), aiffID3(id3v2(4, textFrame(4, "TIT2", "T"))))
 
@@ -785,11 +736,10 @@ func TestAiffNumericGenreReducedWarns(t *testing.T) {
 	}
 }
 
-// TestWavNumericGenreReducedWithID3 verifies that WAV genre uses native LIST/INFO IGNR
-// text unless an id3 chunk is present, in which case the id3 value wins read precedence.
-// With a preserved id3 chunk a --numeric-genre write's numeric TCON becomes authoritative
-// and mutates "rock" -> "Rock", so it must warn; a bare WAV keeps IGNR text losslessly and
-// must not warn.
+// WAV genre uses native LIST/INFO IGNR text unless an id3 chunk is present, in which case the id3
+// value wins read precedence. With a preserved id3 chunk a --numeric-genre write's numeric TCON
+// becomes authoritative and mutates "rock" -> "Rock", so it must warn; a bare WAV keeps IGNR text
+// losslessly and must not warn.
 func TestWavNumericGenreReducedWithID3(t *testing.T) {
 	withID3 := wavFile(wavFmtPCM(), wavID3(id3v2(4, textFrame(4, "TIT2", "T"))), wavData(400))
 	wplan, err := mustParseBytes(t, withID3).Edit().Set(tag.Genre, "rock").Prepare(wl.WithNumericGenre())
@@ -816,13 +766,9 @@ func TestWavNumericGenreReducedWithID3(t *testing.T) {
 	}
 }
 
-// TestWavForcedID3NumericGenreWarns verifies that a bare WAV whose edit forces an
-// id3 chunk into existence - here an unmapped key, which LIST/INFO cannot store - routes
-// genre through that chunk too, so under --numeric-genre the numeric TCON mutates "rock" ->
-// "Rock" even though the base file had no id3 chunk. The value-blind capability cannot see
-// the forcing, so it reports GENRE partial under --numeric-genre and the edited-vs-result
-// comparison turns that into a precise value-reduced warning (no false positive on the
-// genre-only bare case, which TestWavNumericGenreReducedWithID3 covers).
+// bare WAV whose edit forces an id3 chunk into existence; here an unmapped key, which LIST/INFO
+// cannot store; routes genre through that chunk too, so under --numeric-genre the numeric TCON
+// mutates "rock" -> "Rock" even though the base file had no id3 chunk.
 func TestWavForcedID3NumericGenreWarns(t *testing.T) {
 	bare := wavFile(wavFmtPCM(), wavData(400))
 	plan, err := mustParseBytes(t, bare).Edit().
@@ -840,12 +786,9 @@ func TestWavForcedID3NumericGenreWarns(t *testing.T) {
 	}
 }
 
-// TestTransferCarriesV23MultiValueWarning is a regression guard: a copy that carries a
-// multi-value field verbatim onto an ID3v2.3 destination - while another field changes, so
-// the multi-value frame is preserved rather than re-rendered - must surface the
-// [id3-multi-value] caveat, the same one a direct multi-value set warns. The earlier gap
-// was that the warning was raised only for a re-rendered multi-value, so a carried-verbatim
-// one slipped through and the copy reported the field "carried" with no caveat.
+// regression guard: a copy that carries a multi-value field verbatim onto an ID3v2.3 destination;
+// while another field changes, so the multi-value frame is preserved rather than re-rendered; must
+// surface the [id3-multi-value] caveat, the same one a direct multi-value set warns.
 func TestTransferCarriesV23MultiValueWarning(t *testing.T) {
 	base := readFixture(t, sampleMP3) // ID3v2.3
 	// A v2.3 MP3 carrying a genuine multi-value ARTIST.
@@ -888,9 +831,9 @@ func mustPlan(t *testing.T, ed *wl.Editor) *wl.Plan {
 	return p
 }
 
-// TestTransferExcludesOwnAudioKeys checks that metadata copies leave file-audio values
-// with the destination. Encoder stamps, ReplayGain, and fingerprints are reported as
-// excluded, while recording identity and ordinary work metadata still transfer.
+// metadata copies leave file-audio values with the destination. Encoder stamps, ReplayGain, and
+// fingerprints are reported as excluded, while recording identity and ordinary work metadata still
+// transfer.
 func TestTransferExcludesOwnAudioKeys(t *testing.T) {
 	ownAudio := []tag.Key{
 		tag.Encoder, tag.EncodedBy, tag.EncodingHistory, tag.AcoustIDFingerprint,

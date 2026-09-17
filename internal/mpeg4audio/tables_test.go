@@ -5,8 +5,7 @@ import (
 	"testing"
 )
 
-// allBooks names every generated codebook with the entry count the specification states for
-// it, so a table that came out short or long fails here rather than decoding garbage.
+// allBooks lists generated codebooks with spec entry counts.
 func allBooks() map[string]struct {
 	book huffBook
 	want int
@@ -37,9 +36,7 @@ func allBooks() map[string]struct {
 	return m
 }
 
-// TestTableSizes checks each generated codebook against the entry count the specification
-// prints for it. A transcription error is a generator bug: fix the generator, never the
-// table by hand.
+// TestTableSizes: codebook lengths match spec (fix generator, not tables).
 func TestTableSizes(t *testing.T) {
 	for name, b := range allBooks() {
 		if len(b.book) != b.want {
@@ -48,9 +45,7 @@ func TestTableSizes(t *testing.T) {
 	}
 }
 
-// TestHuffmanBooksComplete checks the Kraft equality: a complete binary prefix code
-// satisfies sum(2^-len) == 1 exactly. Computed in integers at a 32-bit scale, so no
-// floating point rounding can hide a missing or duplicated codeword.
+// TestHuffmanBooksComplete: Kraft sum == 1 at 32-bit scale.
 func TestHuffmanBooksComplete(t *testing.T) {
 	for name, b := range allBooks() {
 		var sum uint64
@@ -66,8 +61,7 @@ func TestHuffmanBooksComplete(t *testing.T) {
 	}
 }
 
-// TestHuffmanBooksPrefixFree checks that no codeword is a prefix of a longer one, which is
-// what lets the bit-by-bit decoder stop at the first match.
+// TestHuffmanBooksPrefixFree: no codeword is prefix of another.
 func TestHuffmanBooksPrefixFree(t *testing.T) {
 	for name, b := range allBooks() {
 		for i, a := range b.book {
@@ -83,9 +77,7 @@ func TestHuffmanBooksPrefixFree(t *testing.T) {
 	}
 }
 
-// TestSWBOffsetTables checks the scalefactor band offsets: strictly increasing, the band
-// count the specification states per sampling-frequency index, a terminator at the window
-// length, and index 12 (7350 Hz) sharing index 11's layout.
+// TestSWBOffsetTables: increasing offsets, spec band counts, window terminator, 7350=8000.
 func TestSWBOffsetTables(t *testing.T) {
 	longCounts := [13]int{41, 41, 47, 49, 49, 51, 47, 47, 43, 43, 43, 40, 40}
 	shortCounts := [13]int{12, 12, 12, 14, 14, 14, 15, 15, 15, 15, 15, 15, 15}

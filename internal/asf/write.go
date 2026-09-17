@@ -7,10 +7,8 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// Plan refuses to rewrite an ASF file, but only after the no-op fast path: copying a
-// file unchanged is always safe, even for a format WaxLabel will not write, so an
-// unedited `copy` or `SaveAsFile` still produces a whole file and SaveBack still
-// skips it. Anything that would actually change bytes returns the refusal.
+// Plan refuses ASF rewrites after the no-op fast path (unchanged copy is always
+// safe). Any real byte change returns the refusal.
 func (Codec) Plan(ctx context.Context, base, edited *core.Media, _ core.WriteOptions) (*core.WritePlan, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -24,7 +22,6 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, _ core.WriteOpt
 		core.EqualChapters(base.Chapters, edited.Chapters) && core.EqualSyncedLyrics(base.SyncedLyrics, edited.SyncedLyrics) {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
-	// The same predicate Capabilities reports ReadOnly from, so the advertised
-	// capability and the actual write outcome cannot diverge.
+	// Same predicate Capabilities uses for ReadOnly.
 	return nil, refuseWrite()
 }

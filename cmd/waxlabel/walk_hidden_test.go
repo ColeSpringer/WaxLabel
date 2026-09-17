@@ -15,8 +15,7 @@ func writeEmptyFile(t *testing.T, path string) {
 	}
 }
 
-// TestWalkSkipsHiddenDirs verifies that a recursive walk does not descend hidden directories
-// (.git, .cache, ...) or pick up hidden files, while still walking normal subdirectories.
+// TestWalkSkipsHiddenDirs: skip hidden dirs and files; walk normal subdirs.
 func TestWalkSkipsHiddenDirs(t *testing.T) {
 	root := t.TempDir()
 	writeEmptyFile(t, filepath.Join(root, "a.flac"))
@@ -46,8 +45,7 @@ func TestWalkSkipsHiddenDirs(t *testing.T) {
 	}
 }
 
-// TestWalkHonorsExplicitHiddenRoot verifies that a hidden directory named as the walk root
-// is still walked; only hidden directories inside that root are pruned.
+// TestWalkHonorsExplicitHiddenRoot: hidden root is walked; hidden children inside are pruned.
 func TestWalkHonorsExplicitHiddenRoot(t *testing.T) {
 	hiddenRoot := filepath.Join(t.TempDir(), ".config")
 	if err := os.MkdirAll(hiddenRoot, 0o755); err != nil {

@@ -14,13 +14,10 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// Plan computes the byte-level rewrite that turns the original stream into the
-// edited media. It is preservation-first and packet-preserving: only the comment
-// header is rebuilt, the identification and (for Vorbis) setup headers are kept
-// verbatim, and every audio packet payload is copied unchanged. The BOS page is
-// copied as-is; the comment/setup headers are re-paginated. If that changes the
-// header-region page count, the following audio pages are renumbered - their
-// sequence number rewritten and CRC patched - without re-reading the audio.
+// Plan builds the rewrite. Comment header rebuilt; id/setup and audio payloads
+// verbatim. BOS copied; comment/setup re-paginated. If header page count changes,
+// audio pages are renumbered (seq+CRC) without re-reading bodies.
+
 func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.WriteOptions) (*core.WritePlan, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -35,9 +32,8 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	picturesChanged := !core.EqualPictures(base.Pictures, edited.Pictures)
 	chaptersChanged := !core.EqualChapters(base.Chapters, edited.Chapters)
 	syncedLyricsChanged := !core.EqualSyncedLyrics(base.SyncedLyrics, edited.SyncedLyrics)
-	// Vendor neutralization is a real metadata edit even when the comment list is unchanged.
-	// It must bypass the no-op fast path so the comment packet is rendered with the neutral
-	// vendor string.
+	// Vendor neutralization bypasses no-op even if comments are unchanged.
+
 	newVendor, vendorChanged := vorbis.NeutralizeVendor(d.vendor, opts.StripEncoderStamp)
 	// The output gain lives in the OpusHead, outside the comment header, so no tag,
 	// picture, chapter, or lyric comparison sees it.
@@ -46,11 +42,9 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 
 	report := core.WriteReport{Format: d.format, BytesBefore: edited.Identity.Size}
 
-	// Fast path: nothing changed. Emit a full verbatim copy (so SaveAsFile and
-	// WriteTo still produce a whole file) but flag NoOp so SaveBack skips it. This
-	// runs before the chained/alignment guards: copying a file unchanged is always
-	// safe, even for streams we will not rewrite. A chapters- or synced-lyrics-only edit
-	// (CHAPTERxxx / SYNCEDLYRICS comments) must defeat the gate too.
+	// NoOp: full copy for SaveAsFile/WriteTo; SaveBack skips. Before chained/alignment
+	// guards. Chapters/synced-lyrics-only edits must defeat this gate too.
+
 	if !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !vendorChanged && !gainChanged {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
@@ -66,18 +60,15 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 		return nil, fmt.Errorf("%w: OpusHead is %d bytes; it holds no output gain to patch", waxerr.ErrInvalidData, len(d.idPacket))
 	}
 
-	// A gain-only edit touches nothing but the identification packet, so page 0 is rebuilt
-	// and everything after the ORIGINAL page 0 is copied in one segment. That keeps the
-	// comment header, its padding, and every audio page byte-identical on any stream,
-	// canonical or not, instead of re-paginating a header the edit did not touch.
+	// Gain-only: rebuild page 0; copy everything after original page 0 (comment/audio
+	// byte-identical; no header re-pagination).
+
 	if gainChanged && !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !vendorChanged {
 		return gainOnlyPlan(edited, d, gain, report, d.writeAllocLimit(opts)), nil
 	}
 
-	// Rebuild the comment list: tag comments (minimal-change), owned CHAPTERxxx chapter and
-	// SYNCEDLYRICS comments, then one METADATA_BLOCK_PICTURE comment per edited picture.
-	// Chapters and synced lyrics are stored as Vorbis comments, so an edit to either rebuilds
-	// the list like a tag edit.
+	// Rebuild comments: tags, owned chapters/synced lyrics, then picture comments.
+
 	newComments := d.comments
 	commentsChanged := tagsChanged || chaptersChanged || syncedLyricsChanged
 	var rebuildInfo vorbis.RebuildInfo
@@ -93,12 +84,9 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	if syncedLyricsChanged && len(edited.SyncedLyrics) > 0 {
 		report.Operations = append(report.Operations, fmt.Sprintf("synced lyrics: %d", len(edited.SyncedLyrics)))
 	}
-	// Re-emit one METADATA_BLOCK_PICTURE comment per picture. edited.Pictures carries each cover's
-	// stored MIME (media.Pictures is the stored set, not a sniffed projection), so re-rendering it
-	// preserves an untouched cover's on-disk label; a newly added cover carries the type the editor
-	// reconciled with its bytes on add. Clone only when there are covers to append (the common
-	// tag/chapter edit has none): buildCommentPacket below only reads full, so aliasing newComments
-	// when nothing is appended is safe.
+	// One METADATA_BLOCK_PICTURE per picture (stored MIME, not sniffed). Clone only when
+	// appending; otherwise aliasing newComments is safe.
+
 	full := newComments
 	if d.kind != kindFLAC && len(edited.Pictures) > 0 {
 		full = slices.Clone(newComments)
@@ -116,26 +104,16 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 		report.Operations = append(report.Operations, "vendor stamp neutralized")
 	}
 
-	// Guard against emitting a comment header a default-limit reader would then refuse. Only a
-	// picture can realistically push the comment packet past the alloc ceiling (tags, chapters, and
-	// synced lyrics are all bounded well below it). Check the *whole* rebuilt comment packet, not
-	// each cover individually: reassembleHeaders caps the summed comment packet on re-read, so
-	// several near-limit covers that each fit but jointly overflow would otherwise produce a file
-	// that fails to re-parse at the same limit. The write limit floors at the whole original comment
-	// packet (origCommentPacketLen): those bytes were parsed within the (possibly raised) parse
-	// limit, so an unrelated edit on a file whose covers were parsed under WithLimits stays writable
-	// - and flooring to the whole packet (not the largest single cover, as the old per-cover floor
-	// did) also lets a file that already held two big covers rewrite. An additive edit that grows
-	// the packet past the floor on an above-limit file is still (correctly) rejected. Gate on the
-	// write limit (opts.Limits), like the sibling MP4 check, not a hardcoded default. --verify would
-	// miss this: its structural re-parse floors the alloc cap at the output size, so the failure
-	// belongs at write time.
+	// Refuse a comment packet a same-limit reader would reject. Check the whole packet
+	// (covers can jointly overflow). Floor at origCommentPacketLen so already-parsed data
+	// stays writable under a lower write limit. Gate on opts.Limits (--verify re-parse
+	// floors alloc at output size, so this belongs at write time).
+
 	limit := d.writeAllocLimit(opts)
 
-	// Build the header tail packets (with the possibly-neutralized vendor) once, here, so
-	// the whole-packet guard weighs the exact bytes the re-pagination below emits. Page 0
-	// (the id packet, alone) is normally copied verbatim; the FLAC mapping rebuilds it when
-	// its header-packet count changes.
+	// Build header-tail packets once so the size guard matches re-pagination output.
+	// Page 0 usually copied; FLAC rebuilds it when header-packet count changes.
+
 	newBlocks := d.flacBlocks
 	var flacDupContent []core.DuplicateContent
 	page0 := bits.Copy(0, d.page0Len)
@@ -152,11 +130,9 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 			return nil, err
 		}
 		tailPackets = flacHeaderPackets(newBlocks)
-		// Rebuild page 0 whenever the identification packet's BYTES change, not merely
-		// when the block count does. A file whose declared count was already wrong - or
-		// was the spec's "unknown" zero - would otherwise keep that value on disk while
-		// buildResult records the true one, breaking the result-equals-a-fresh-parse
-		// promise. STREAMINFO is carried through untouched either way.
+		// Rebuild page 0 when id packet bytes change (not just block count), so result
+		// matches a fresh parse even if the declared count was wrong/zero.
+
 		if p := flacIDWithCount(d.idPacket, len(newBlocks)); !bytes.Equal(p, d.idPacket) {
 			idPacket = p
 			p0, _ := paginateBOS(d.serial, idPacket)
@@ -175,10 +151,8 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 			report.Operations = append(report.Operations, "OpusHead output gain rewrite")
 		}
 	}
-	// Every header packet is reassembled (and capped) individually on re-read, so the guard
-	// is per-packet: for Vorbis and Opus that is the one comment packet, for FLAC each
-	// metadata block's packet - a single oversized cover must not slip through because the
-	// comment block alone stayed small.
+	// Per-packet guard on re-read (Vorbis/Opus: comment; FLAC: each metadata packet).
+
 	for _, pkt := range tailPackets {
 		if int64(len(pkt)) > limit {
 			return nil, fmt.Errorf("%w: Ogg %s is %s (max %s; raise the write allocation limit to keep it)",
@@ -206,11 +180,9 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 			newAudioPages[i] = ap
 		}
 	} else {
-		// Page count changed: every following page shifts by delta, so each audio
-		// page's sequence number is rebased and its CRC patched in place - the body
-		// is still copied byte-for-byte, only the 8 header bytes change. The patch
-		// bytes for all pages share one backing slice (a single allocation, not one
-		// per page); each page's literal segment is a distinct 8-byte window into it.
+		// Page count changed: rebase seq and patch CRC in place (bodies unchanged).
+		// One backing slice for all 8-byte patches.
+
 		patches := make([]byte, 8*len(d.audioPages))
 		for i, ap := range d.audioPages {
 			newSeq := ap.seq + uint32(delta)
@@ -239,21 +211,17 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	report.BytesAfter = newSize
 	report.PaddingAfter = int64(len(d.commentPad))
 
-	// An over-range chapter or synced-lyric timestamp was clamped to the codec ceiling while
-	// rendering the comment list; surface it as a write-time warning (before DowngradeNoOp).
-	// The clamp keeps the value readable, so result != base and the write proceeds instead of
-	// collapsing to a "No metadata changes" no-op.
+	// Clamp warnings before DowngradeNoOp; clamp keeps result != base.
+
 	report.Warnings = vorbis.RebuildWarnings(report.Warnings, rebuildInfo)
 
 	result := buildResult(edited, d, newVendor, newComments, newBlocks, newAudioPages, newHeaderPages, idPacket, page0Len, newAudioStart, shift, newSize, limit)
 	// Only the first Vorbis comment block survives; warn when an extra held content the
 	// written set does not, matching native FLAC.
 	report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "Vorbis comment block", result.Tags, flacDupContent)
-	// Ogg stores Vorbis values verbatim, so this downgrade only catches values the rebuild
-	// dropped, such as empty strings. Neither vendor neutralization nor an output-gain
-	// change has a canonical-tag diff, so both ride the structural-change flag: a gain-only
-	// edit takes the fast path above and never arrives here, but one combined with a
-	// dropped tag value would otherwise be downgraded to a no-op that keeps the old gain.
+	// Downgrade catches rebuild drops (e.g. empty strings). Vendor/gain are structural
+	// so a combined drop is not collapsed to a no-op that keeps the old gain.
+
 	if np := core.DowngradeNoOp(d.format, edited.Identity.Size, base, result, len(vorbis.DiffKeys(base.Tags, result.Tags)) == 0, vendorChanged || gainChanged, report.Warnings); np != nil {
 		return np, nil
 	}
@@ -265,12 +233,9 @@ func (c Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Wri
 	}, nil
 }
 
-// writeAllocLimit is the per-header-packet ceiling a rewrite must stay under, so it never
-// emits a file a default-limit reader would then refuse. It floors at the largest header
-// packet the file already carries: those bytes were read within the (possibly raised)
-// parse limit, so an unrelated edit stays possible under a lower write limit - and for
-// Vorbis the setup packet is copied verbatim, so guarding it against the bare limit would
-// refuse an edit over a packet the edit does not even touch.
+// writeAllocLimit: per-header-packet ceiling, floored at the largest existing header
+// packet (so setup copied verbatim is not refused under a lower write limit).
+
 func (d *doc) writeAllocLimit(opts core.WriteOptions) int64 {
 	limit := opts.Limits.MaxAllocBytes
 	if limit <= 0 {
@@ -279,9 +244,8 @@ func (d *doc) writeAllocLimit(opts core.WriteOptions) int64 {
 	return max(limit, d.origMaxHeaderPacket())
 }
 
-// gainOnlyPlan rewrites just the OpusHead's output gain: page 0 is rebuilt and everything
-// after the original page 0 is copied verbatim, so the header page count is unchanged and
-// the audio pages move in offset only.
+// gainOnlyPlan: rebuild page 0 for OpusHead gain; copy the rest verbatim.
+
 func gainOnlyPlan(edited *core.Media, d *doc, gain int, report core.WriteReport, limit int64) *core.WritePlan {
 	idPacket := opusHeadWithGain(d.idPacket, gain)
 	p0, _ := paginateBOS(d.serial, idPacket)
@@ -306,9 +270,8 @@ func gainOnlyPlan(edited *core.Media, d *doc, gain int, report core.WriteReport,
 	return &core.WritePlan{Segments: segs, Report: report, Result: result}
 }
 
-// buildCommentPacket frames a comment list as a full comment header packet: the per-codec
-// signature, the comment-list body under vendor, and the trailing framing bit for Vorbis or
-// preserved padding for Opus.
+// buildCommentPacket: signature + comment body + Vorbis framing bit or Opus padding.
+
 func (d *doc) buildCommentPacket(vendor string, comments []vorbis.Comment) []byte {
 	body := vorbis.RenderCommentList(vendor, comments)
 	if d.kind == kindVorbis {
@@ -323,10 +286,8 @@ func (d *doc) buildCommentPacket(vendor string, comments []vorbis.Comment) []byt
 	return append(pkt, d.commentPad...)
 }
 
-// buildResult constructs the post-write Media so the engine can return a
-// Document without re-parsing. The audio pages keep their bodies (and thus the
-// essence) and only shift in offset (and, when renumbered, sequence/CRC), so the
-// result equals a fresh parse of the written bytes.
+// buildResult builds post-write Media without re-parsing (audio bodies unchanged).
+
 func buildResult(edited *core.Media, base *doc, newVendor string, newComments []vorbis.Comment, newBlocks []fblock,
 	newAudioPages []apage, newHeaderPages int, idPacket []byte, newPage0Len, newAudioStart, shift, newSize, limit int64) *core.Media {
 
@@ -350,10 +311,8 @@ func buildResult(edited *core.Media, base *doc, newVendor string, newComments []
 		clean:       true,
 	}
 	if base.kind == kindFLAC {
-		// Re-derive the picture state from the blocks actually written, the same way a
-		// fresh parse would. Carrying the source's fields instead would keep an
-		// undecodable PICTURE block listed as "preserved" after it was already re-emitted
-		// into newBlocks, so a second picture edit on the returned document would drop it.
+		// Picture state from written blocks (not source fields) so chained edits match re-parse.
+
 		_, nd.malformedPictureBlocks, _ = decodeFLACBlockPictures(newBlocks, limit)
 		nd.commentPictures = commentSourcedPictures(newComments, limit)
 	}
@@ -366,9 +325,8 @@ func buildResult(edited *core.Media, base *doc, newVendor string, newComments []
 		Pictures:     core.ClonePictures(edited.Pictures),
 		Chapters:     vorbis.ProjectChapters(newComments),
 		SyncedLyrics: vorbis.ProjectSyncedLyrics(newComments),
-		// Recompute inherited-encoder warnings from the vendor and comments that were written.
-		// Other warnings carry verbatim because CHAPTERxxx and SYNCEDLYRICS projections emit
-		// no warnings today; if that changes, this must rederive those warnings too.
+		// Encoder warnings from written vendor/comments; other warnings carry for now.
+
 		Warnings:   vorbis.CarryEncoderWarnings(edited.Warnings, newVendor, newComments),
 		Native:     nd,
 		Identity:   core.Identity{Size: newSize},

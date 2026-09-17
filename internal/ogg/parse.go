@@ -22,11 +22,8 @@ var (
 	opusTags      = []byte("OpusTags")
 )
 
-// parse reads an Ogg Vorbis or Opus stream's metadata into a neutral Media. The
-// codec is detected from the stream itself (the identification header), so the
-// same routine serves both registered codec instances. The native document
-// preserves the decoder-critical header packets and a descriptor for every audio
-// page as the base for a packet-preserving rewrite.
+// parse reads Ogg metadata into a Media. Codec from the id header. Native doc
+// keeps decoder-critical headers and audio-page descriptors for rewrite.
 func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) (*core.Media, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -45,9 +42,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	d := &doc{serial: pages[0].serial}
 	var warnings []core.Warning
 
-	// Chained or multiplexed? More than one logical bitstream (distinct serial
-	// numbers) or more than one beginning-of-stream page means we read the first
-	// stream best-effort and refuse to write the file.
+	// Chained/multiplexed (multiple serials or BOS): read first stream; refuse write.
+
 	serials := map[uint32]bool{}
 	bosCount := 0
 	for _, p := range pages {
@@ -81,8 +77,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		d.format = core.FormatOggVorbis
 	}
 
-	// Header-region geometry: page 0 is the id packet alone; the region ends with
-	// the page where the last header packet completes.
+	// Header region: page 0 is id alone; ends where the last header packet completes.
+
 	d.page0Len = pages[0].total()
 	d.headerPages = hp.lastHeaderPage + 1
 	if d.headerPages < len(pages) {
@@ -91,13 +87,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		d.audioStart = lastEnd
 	}
 
-	// Walk from the page where the last header packet ended, collecting the audio
-	// essence ranges and the final granule for the chosen serial. For a clean
-	// stream audio begins on the next page; for a non-page-aligned stream the
-	// first audio packet shares this page, so its body is split at audioByteStart
-	// (the page itself is not a full audio page and the stream is not writable).
-	// Other multiplexed serials' pages are skipped, so the geometry reflects only
-	// our stream.
+	// Collect audio essence and final granule. Clean: next page. Shared page: split
+	// at audioByteStart (not writable). Skip other serials.
+
 	var lastGranule uint64
 	var audioRanges [][2]int64
 	for gi := hp.lastHeaderPage; gi < len(pages); gi++ {
@@ -105,18 +97,16 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		if p.serial != d.serial {
 			continue
 		}
-		// Essence range: the audio portion of this page's body - the whole body for
-		// a page after the header region, or only the tail past audioByteStart for a
-		// page shared with the last header packet.
+		// Essence: full body after headers, or tail past audioByteStart on a shared page.
+
 		if lo, hi := max(p.bodyOff(), hp.audioByteStart), p.bodyOff()+p.bodyLen; lo < hi {
 			audioRanges = append(audioRanges, [2]int64{lo, hi})
 		}
 		if p.granule != math.MaxUint64 { // -1 == "no packet completes on this page"
 			lastGranule = p.granule
 		}
-		// Write descriptors and the verbatim-copy extent cover only whole audio
-		// pages (strictly after the header region); a shared first page is never
-		// rewritten.
+		// Write descriptors: whole audio pages only (after header region).
+
 		if gi >= d.headerPages {
 			d.audioPages = append(d.audioPages, apage{
 				off: p.off, total: p.total(), bodyLen: p.bodyLen, seq: p.seq, crc: p.crc, granule: p.granule,
@@ -127,17 +117,15 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	if len(d.audioPages) == 0 {
 		d.audioEnd = d.audioStart
 	}
-	// Preserve any bytes after the last page of a clean single stream by recording
-	// their length and copying them from the source on write. Never buffer them:
-	// they could be arbitrarily large, and the Document stays detached and
-	// lightweight. For a chained file the trailing region is other streams we do
-	// not model, and writing is refused anyway.
+	// Trailing bytes after last page: record length, copy on write (never buffer).
+	// Chained: tail is other streams; write refused anyway.
+
 	if !d.chained && size > d.audioEnd {
 		d.trailingLen = size - d.audioEnd
 	}
 
-	// Native PICTURE blocks are decoded before the comment list so a FLAC stream
-	// carrying both forms orders its covers native-first, matching internal/flac.
+	// Native PICTURE before comments so FLAC cover order matches internal/flac.
+
 	d.decodeFLACPictures(limit, &warnings)
 	if len(d.dupContent) > 0 {
 		warnings = core.Warn(warnings, core.WarnMultipleVorbisComment,

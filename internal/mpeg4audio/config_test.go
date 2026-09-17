@@ -5,8 +5,7 @@ import (
 	"testing"
 )
 
-// mustHex decodes a config written as hex, the form every specification example
-// and every ffprobe extradata dump uses.
+// mustHex decodes hex config bytes.
 func mustHex(t *testing.T, s string) []byte {
 	t.Helper()
 	b, err := hex.DecodeString(s)
@@ -16,8 +15,7 @@ func mustHex(t *testing.T, s string) []byte {
 	return b
 }
 
-// TestParseConfigShapes: every AudioSpecificConfig shape a real file carries decodes to the
-// geometry a player produces, including the ffmpeg-native tail that denies SBR.
+// TestParseConfigShapes: real config shapes decode to output geometry.
 func TestParseConfigShapes(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -58,8 +56,7 @@ func TestParseConfigShapes(t *testing.T) {
 	}
 }
 
-// TestParseConfigSBRSignalled: a config that denies SBR is distinguishable from one that
-// says nothing about it, which is what lets a caller trust an entry's doubled rate.
+// TestParseConfigSBRSignalled: SBR denial vs silence.
 func TestParseConfigSBRSignalled(t *testing.T) {
 	cases := []struct {
 		name           string
@@ -84,8 +81,7 @@ func TestParseConfigSBRSignalled(t *testing.T) {
 	}
 }
 
-// TestParseConfigCoreGeometry: the core rate and channel configuration stay readable behind
-// the output geometry, since the essence digest and the "entry says double" rule need them.
+// TestParseConfigCoreGeometry: core fields readable behind output geometry.
 func TestParseConfigCoreGeometry(t *testing.T) {
 	c, ok := ParseConfig(mustHex(t, "eb098800"))
 	if !ok {
@@ -100,8 +96,7 @@ func TestParseConfigCoreGeometry(t *testing.T) {
 	}
 }
 
-// TestParseConfigProgramConfigElement: channelConfiguration 0 puts the layout in a
-// variable-length element, so the channel count is unknown and the tail is not read.
+// TestParseConfigProgramConfigElement: channelConfiguration 0 skips tail.
 func TestParseConfigProgramConfigElement(t *testing.T) {
 	c, ok := ParseConfig(mustHex(t, "1180"))
 	if !ok {
@@ -115,8 +110,7 @@ func TestParseConfigProgramConfigElement(t *testing.T) {
 	}
 }
 
-// TestParseConfigTooShort: fewer bits than the three fixed header fields is the only input
-// ParseConfig rejects outright.
+// TestParseConfigTooShort: only too-short input rejected outright.
 func TestParseConfigTooShort(t *testing.T) {
 	for _, b := range [][]byte{nil, {}, {0x12}} {
 		if _, ok := ParseConfig(b); ok {
@@ -132,8 +126,7 @@ func TestParseConfigTooShort(t *testing.T) {
 	}
 }
 
-// TestParseConfigNonConformant: a config that breaks the specification is reported
-// conservatively rather than trusted or rejected.
+// TestParseConfigNonConformant: non-conformant configs reported conservatively.
 func TestParseConfigNonConformant(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -163,9 +156,7 @@ func TestParseConfigNonConformant(t *testing.T) {
 	}
 }
 
-// TestParseConfigTruncatedTailIsSilence: a config cut off before sbrPresentFlag says nothing
-// about SBR. Reporting it as an explicit denial is worse than reporting no tail at all,
-// because a caller trusting the denial then overrides a container that was right.
+// TestParseConfigTruncatedTailIsSilence: truncated before sbrPresentFlag is silence, not denial.
 func TestParseConfigTruncatedTailIsSilence(t *testing.T) {
 	full, ok := ParseConfig(mustHex(t, "139056e580"))
 	if !ok || !full.SBRSignalled || !full.SBR {
@@ -181,9 +172,7 @@ func TestParseConfigTruncatedTailIsSilence(t *testing.T) {
 	}
 }
 
-// TestParseConfigAbsurdExplicitRate: the escape names rates the table cannot, but the field
-// is 24 bits and a corrupt config fills it. A value no format could store is not a rate, and
-// reporting one would override a container field that is probably right.
+// TestParseConfigAbsurdExplicitRate: absurd explicit rate reads as 0; max valid accepted.
 func TestParseConfigAbsurdExplicitRate(t *testing.T) {
 	c, ok := ParseConfig(mustHex(t, "17ffffff9056e5fffffff8"))
 	if !ok {
@@ -201,8 +190,7 @@ func TestParseConfigAbsurdExplicitRate(t *testing.T) {
 	}
 }
 
-// TestSampleRateTable: the reserved and escape indices report no rate, which is what lets
-// the ADTS decoder reject them with one comparison.
+// TestSampleRateTable: reserved/escape indices return 0.
 func TestSampleRateTable(t *testing.T) {
 	want := []int{96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350}
 	for i, w := range want {
@@ -217,9 +205,7 @@ func TestSampleRateTable(t *testing.T) {
 	}
 }
 
-// TestChannelCountTable: configuration 0 and the reserved values report no count; 11 through
-// 14 are the layouts a lookup that stops at 7 would get wrong. Checked against ffprobe, which
-// reads 11 as 6.1, 12 as 7.1, 13 as 22.2, and 14 as 5.1.2.
+// TestChannelCountTable: PCE/reserved return 0; layouts 11-14 match ffprobe.
 func TestChannelCountTable(t *testing.T) {
 	want := []int{0, 1, 2, 3, 4, 5, 6, 8, 0, 0, 0, 7, 8, 24, 8, 0}
 	for i, w := range want {
@@ -234,8 +220,7 @@ func TestChannelCountTable(t *testing.T) {
 	}
 }
 
-// TestObjectTypeName: only the types worth distinguishing are named; the rest fall back to
-// the bare codec name, which callers read as "no detail to report".
+// TestObjectTypeName: named AOTs and "AAC" fallback.
 func TestObjectTypeName(t *testing.T) {
 	named := map[int]string{
 		1: "AAC Main", 2: "AAC LC", 3: "AAC SSR", 4: "AAC LTP",

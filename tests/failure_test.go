@@ -13,7 +13,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// failWriter errors after accepting limit bytes, simulating a full disk partway through.
+// failWriter errors after limit bytes (full disk mid-write).
 type failWriter struct {
 	limit, written int
 }
@@ -60,7 +60,7 @@ func TestContextCancellationStopsExecute(t *testing.T) {
 	}
 }
 
-// SaveBack must be atomic and leave no temp litter, and a no-op must write nothing.
+// SaveBack is atomic (no temp litter); a no-op writes nothing.
 func TestSaveBackLeavesNoTempLitter(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sample.flac")
@@ -98,8 +98,7 @@ func TestSaveAsFileToBadDirFailsCleanly(t *testing.T) {
 	}
 }
 
-// mtime is updated by default, so scanners notice the edit, and kept with
-// WithPreserveModTime, including a timestamp from before the epoch.
+// mtime updates by default; WithPreserveModTime keeps it, including pre-epoch.
 func TestModTimePolicy(t *testing.T) {
 	past := time.Date(2020, 1, 1, 12, 0, 0, 0, time.UTC)
 
@@ -133,8 +132,7 @@ func TestModTimePolicy(t *testing.T) {
 		}
 	})
 
-	// A pre-1970 mtime is a negative Unix nanosecond count, which a > 0 guard drops: the
-	// save then updated the timestamp it had promised to keep.
+	// Pre-1970 mtime is negative Unix ns; a >0 guard must not drop WithPreserveModTime.
 	t.Run("WithPreserveModTime keeps a pre-epoch mtime", func(t *testing.T) {
 		ancient := time.Date(1969, 7, 20, 20, 17, 0, 0, time.UTC)
 		path := copyToTemp(t, sampleFLAC)

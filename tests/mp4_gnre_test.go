@@ -9,10 +9,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// gnreDataAtom returns the type/class field and the raw value of the first data atom
-// inside the output's "gnre" item. The data sub-atom follows the 4-byte "gnre" name:
-// [size:4]["data":4][version<<24 | type:4][locale:4][value]. None of the synthetic
-// payloads or titles contain "gnre", so the byte search is exact.
+// gnreDataAtom returns the type/class field and the raw value of the first data atom inside the
+// output's "gnre" item.
 func gnreDataAtom(t *testing.T, out []byte) (typ uint32, value []byte) {
 	t.Helper()
 	j := bytes.Index(out, []byte("gnre"))
@@ -27,11 +25,9 @@ func gnreDataAtom(t *testing.T, out []byte) (typ uint32, value []byte) {
 	return binary.BigEndian.Uint32(da[8:12]) & 0x00FFFFFF, da[16:size]
 }
 
-// TestMP4NumericGenreWritesGnre verifies that with --numeric-genre a recognized GENRE is written
-// as the legacy numeric "gnre" atom - an IMPLICIT-type (class 0) data atom holding the
-// 1-based ID3v1 index - which the parser folds back to the genre name. The type byte is
-// pinned because a UTF-8 (class 1) atom would carry the same numeric bytes yet decode as
-// the literal text "18".
+// with --numeric-genre a recognized GENRE is written as the legacy numeric "gnre" atom; an
+// IMPLICIT-type (class 0) data atom holding the 1-based ID3v1 index; which the parser folds back to
+// the genre name.
 func TestMP4NumericGenreWritesGnre(t *testing.T) {
 	base := mp4Tagged(mp4Text("\xa9nam", "T"))
 
@@ -56,8 +52,6 @@ func TestMP4NumericGenreWritesGnre(t *testing.T) {
 	}
 }
 
-// TestMP4NumericGenreMultiValueAllResolve verifies that a multi-valued GENRE writes gnre only when
-// every value is a standard genre; the data atoms keep input order.
 func TestMP4NumericGenreMultiValueAllResolve(t *testing.T) {
 	base := mp4Tagged(mp4Text("\xa9nam", "T"))
 	plan, err := mustParseBytes(t, base).Edit().Set(tag.Genre, "Rock", "Jazz").Prepare(wl.WithNumericGenre())
@@ -70,8 +64,6 @@ func TestMP4NumericGenreMultiValueAllResolve(t *testing.T) {
 	}
 }
 
-// TestMP4GenreTextFallback verifies that the default write, and a non-standard genre even with
-// --numeric-genre, both write the text \xa9gen atom rather than gnre.
 func TestMP4GenreTextFallback(t *testing.T) {
 	base := mp4Tagged(mp4Text("\xa9nam", "T"))
 

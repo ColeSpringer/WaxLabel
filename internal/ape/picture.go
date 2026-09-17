@@ -11,19 +11,14 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// Cover art in APE is a convention, not part of the specification: a binary item
-// named "Cover Art (Front)" or "Cover Art (Back)" whose payload is a NUL-terminated
-// file name followed by the image bytes. That is what foobar2000 and Mp3tag write
-// and read, which is the whole reason it is supported here - WaxLabel adopts APE
-// conventions that already exist rather than porting its own into a format that has
-// none.
+// Cover art convention (not in the spec): binary "Cover Art (Front|Back)" with
+// NUL-terminated file name then image bytes (foobar2000/Mp3tag).
 const (
 	coverFrontKey = "Cover Art (Front)"
 	coverBackKey  = "Cover Art (Back)"
 )
 
-// IsCoverKey reports whether an item name is one of the cover-art conventions this
-// package owns. Matching is case-insensitive because APE names are.
+// IsCoverKey: cover-art convention name (case-insensitive).
 func IsCoverKey(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case strings.ToLower(coverFrontKey), strings.ToLower(coverBackKey):
@@ -32,7 +27,7 @@ func IsCoverKey(name string) bool {
 	return false
 }
 
-// coverPictureType maps a cover item name to the picture type it denotes.
+// coverPictureType maps cover item name to PictureType.
 func coverPictureType(name string) core.PictureType {
 	if strings.EqualFold(strings.TrimSpace(name), coverBackKey) {
 		return core.PicBackCover
@@ -40,9 +35,7 @@ func coverPictureType(name string) core.PictureType {
 	return core.PicFrontCover
 }
 
-// coverKey is the item name for a picture type. Only front and back have a
-// convention; every other role is written as a front cover, which is what a reader
-// expecting the convention will find.
+// coverKey: Front/Back names; other roles store as front.
 func coverKey(t core.PictureType) string {
 	if t == core.PicBackCover {
 		return coverBackKey
@@ -50,20 +43,12 @@ func coverKey(t core.PictureType) string {
 	return coverFrontKey
 }
 
-// CoverSlotsReason explains a picture dropped because the convention's item names ran
-// out. The transfer report's dropped-picture item and the write-time warning both use it,
-// so a copy's grade and the write it predicts describe the same loss the same way.
+// CoverSlotsReason: shared by transfer drop grade and write warning.
 const CoverSlotsReason = "the Cover Art convention stores at most one front and one back cover item, leaving no item name free"
 
-// PartitionCoverSlots splits pics into the pictures the two-name Cover Art convention can
-// hold and the rest. APEv2 item names are unique within a tag, so at most one picture per
-// name can be written: one front item and one back item. added marks the pictures an edit
-// authored (nil when the distinction does not exist, as in a transfer projection); see
-// [assignCoverSlots] for the claim order. Both index slices are ascending, so emission
-// keeps the set's order.
-//
-// It is the selection behind the capability's slot partition, the editor's pre-plan
-// resolution, and the writer's emit, so the three cannot disagree about who has a slot.
+// PartitionCoverSlots: kept vs dropped under the two-name Cover Art convention
+// (one front, one back). added marks edit-authored pictures (nil in transfer).
+// Shared by capability, editor, and writer; see [assignCoverSlots].
 func PartitionCoverSlots(pics []core.Picture, added []bool) (keptIdx, droppedIdx []int) {
 	keptIdx, _ = assignCoverSlots(pics, added, nil)
 	kept := make([]bool, len(pics))
@@ -78,27 +63,15 @@ func PartitionCoverSlots(pics []core.Picture, added []bool) (keptIdx, droppedIdx
 	return keptIdx, droppedIdx
 }
 
-// assignCoverSlots is the one slot-assignment engine. An exact front or back claims its
-// own slot and never the other, since writing a known front as the back cover would
-// falsify a role the source asserted; any other role's name is already being rewritten,
-// so it takes whichever slot is free, front before back. Within a claim tier a picture
-// the edit added beats one the file already had (the edit targets the slot; a nil added
-// treats all pictures alike), and the earlier picture wins among equals - what a
-// faithful transfer of a two-front source carries.
-//
-// blocked names slots an undecodable cover item holds. A spilling picture prefers an
-// unblocked slot so the junk bytes survive, but takes a blocked one over being dropped;
-// an exact role claims its slot regardless, since that is a targeted replacement. Blocking
-// never changes who is kept - only which name they get and whether junk is displaced - so
-// the file-blind capability partition and the writer agree on every picture's fate.
-//
-// keptIdx is ascending; names[j] is the item name assigned to pics[keptIdx[j]].
+// assignCoverSlots: exact front/back claim their own slot; other roles take free
+// slots (front first). Within a tier, added beats pre-existing; earlier wins ties.
+// blocked: undecodable cover slots; spill prefers unblocked but takes blocked over
+// drop. Exact roles claim regardless. keptIdx ascending; names[j] for keptIdx[j].
 func assignCoverSlots(pics []core.Picture, added []bool, blocked map[string]bool) (keptIdx []int, names []string) {
 	taken := map[string]bool{}
 	slot := make(map[int]string, 2)
 	isAdded := func(i int) bool { return added != nil && i < len(added) && added[i] }
-	// Two sweeps per tier put added pictures ahead of pre-existing ones while keeping
-	// each group's own order stable.
+	// Added first, then pre-existing; order stable within each group.
 	forEachByPriority := func(visit func(i int, p core.Picture)) {
 		for i, p := range pics {
 			if isAdded(i) {
@@ -151,10 +124,7 @@ func assignCoverSlots(pics []core.Picture, added []bool, blocked map[string]bool
 	return keptIdx, names
 }
 
-// DecodeCover decodes a cover-art item's payload into a Picture. The stored file
-// name is a file name, not a description - that is what the tools writing this
-// convention put there - so it is not projected as one; the MIME type and geometry
-// are sniffed from the image bytes, since the convention stores neither.
+// DecodeCover: file name is not a description; MIME/geometry come from sniff.
 func DecodeCover(name string, data []byte) (core.Picture, error) {
 	i := bytes.IndexByte(data, 0)
 	if i < 0 {
@@ -164,22 +134,16 @@ func DecodeCover(name string, data []byte) (core.Picture, error) {
 	if len(img) == 0 {
 		return core.Picture{}, fmt.Errorf("%w: %s item carries no image bytes", waxerr.ErrInvalidData, name)
 	}
-	// The convention stores neither MIME nor geometry, so both come from the image
-	// header via the shared sniffer; unrecognized bytes degrade to UnrecognizedMIME,
-	// which is what the linter's invalid-picture rule keys on.
+	// Sniff MIME/geometry; unrecognized => UnrecognizedMIME (lint invalid-picture).
 	p := core.Picture{Type: coverPictureType(name), Data: slices.Clone(img)}
 	p.SniffInto()
 	return p, nil
 }
 
-// EncodeCover renders a Picture as a cover-art item: the item name the convention
-// uses for its type, and a payload of "filename\0" plus the image bytes. The file
-// name is synthesized from the role and the image's type, since the picture's
-// description has no home in this convention and a file name is not one.
+// EncodeCover: convention name + "filename\0" + image bytes (synthesized name).
 func EncodeCover(p core.Picture) Item { return encodeCoverAs(p, coverKey(p.Type)) }
 
-// encodeCoverAs renders p under an assigned item name, which the slot assignment may
-// pick apart from the role's own (a spilled role stored under the free back name).
+// encodeCoverAs: p under an assigned name (may differ from role's own).
 func encodeCoverAs(p core.Picture, name string) Item {
 	file := strings.ToLower(strings.ReplaceAll(name, " ", "_")) + coverExt(p.EffectiveMIME())
 	data := make([]byte, 0, len(file)+1+len(p.Data))
@@ -189,7 +153,5 @@ func encodeCoverAs(p core.Picture, name string) Item {
 	return Item{Key: name, Data: data, Flags: itemTypeBinary << itemTypeShift}
 }
 
-// coverExt is the conventional file extension for a picture MIME, used only to build the
-// stored file name. It is the sniffer's own mapping, so a cover keeps its own type here; an
-// unrecognized type gets no extension rather than a misleading one.
+// coverExt: sniffer extension for the stored file name (none if unrecognized).
 func coverExt(mime string) string { return bits.ImageExtension(mime) }

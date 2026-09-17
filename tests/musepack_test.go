@@ -42,8 +42,7 @@ func mpcVarlen(n uint64) []byte {
 	return out
 }
 
-// mpcPacket frames an SV8 packet. Its declared size covers the key and the size
-// field as well as the payload, so the length is solved for rather than computed.
+// mpcPacket frames an SV8 packet.
 func mpcPacket(key string, payload []byte) []byte {
 	total := 2 + 1 + len(payload)
 	for {
@@ -152,9 +151,8 @@ func TestMusepackRoundTrip(t *testing.T) {
 	}
 }
 
-// TestMusepackLeadingID3Preserved covers the stray front tag some SV7 encoders
-// wrote: it routes through detection, is preserved verbatim, stays legacy (never
-// authoritative), and a strip removes it.
+// stray front tag some SV7 encoders wrote: it routes through detection, is preserved verbatim,
+// stays legacy (never authoritative), and a strip removes it.
 func TestMusepackLeadingID3Preserved(t *testing.T) {
 	front := id3v2(4, textFrame(4, "TIT2", "Legacy Title"))
 	src := append(slices.Clone(front), mpcSV7(100, 0)...)
@@ -235,8 +233,6 @@ func TestMusepackMalformedRejected(t *testing.T) {
 	}
 }
 
-// TestMusepackUnsupportedSV7VersionRefused: a version byte outside the two SV7
-// spellings is refused by name rather than misread.
 func TestMusepackUnsupportedSV7VersionRefused(t *testing.T) {
 	data := mpcSV7(100, 0)
 	data[3] = 0x05
@@ -247,9 +243,8 @@ func TestMusepackUnsupportedSV7VersionRefused(t *testing.T) {
 	}
 }
 
-// TestMusepackDifferentialFFprobeReadsOurTags is the independent read-back proof.
-// ffmpeg cannot encode Musepack, but its mpc7 and mpc8 decoders read both the stream
-// and the APEv2 trailer, so ffprobe is still the oracle.
+// independent read-back proof. ffmpeg cannot encode Musepack, but its mpc7 and mpc8 decoders read
+// both the stream and the APEv2 trailer, so ffprobe is still the oracle.
 func TestMusepackDifferentialFFprobeReadsOurTags(t *testing.T) {
 	requireTool(t, "ffprobe")
 	for _, c := range []struct {

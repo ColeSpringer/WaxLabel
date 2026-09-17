@@ -9,26 +9,9 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// Matroska chapters live in a Chapters element, a small tree:
-//
-//	Chapters > EditionEntry > ChapterAtom
-//
-// Each EditionEntry is one independent chapter set; the edition flagged default
-// (or the first, when none is flagged) projects into core.Media.Chapters. A
-// ChapterAtom carries ChapterTimeStart and an optional ChapterTimeEnd - absolute
-// nanoseconds by spec, with the segment TimestampScale deliberately *not* applied
-// (unlike Cluster timestamps) - plus a ChapterDisplay > ChapString title. A surviving
-// chapter keeps its ChapterUID by matching the saved UID on start time, which preserves
-// chapter-scoped SimpleTags through inserts, deletes, and renames. If an edit changes
-// a chapter's start time, core.Chapter has no UID field to track it, so the writer must
-// mint a fresh UID. Every non-default edition is preserved verbatim.
-//
-// Like Tags, the full parsed tree is retained on the native doc: when chapters
-// are not edited the whole Chapters element is copied byte-for-byte (nested
-// sub-atoms, all editions, languages intact); only a SetChapters/ClearChapters
-// edit re-renders the default edition from the flat []core.Chapter.
-//
-// Reimplemented from the Matroska specification (RFC 9559); nothing is copied.
+// Matroska chapters live in a Chapters element, a small tree: Chapters > EditionEntry >
+// ChapterAtom Each EditionEntry is one independent chapter set; the edition flagged
+// default (or the first, when none is flagged) projects into core.Media.Chapters.
 
 // chapterDoc is the parsed Chapters element retained on the native doc for the
 // dump view, verbatim preservation, and re-rendering on a chapter edit.
@@ -40,14 +23,7 @@ type chapterDoc struct {
 	// displays that a flat re-render would drop (drives WarnChaptersFlattened).
 }
 
-// chapterEdition is one parsed EditionEntry. raw is the whole element, copied
-// verbatim for a non-default edition (the default edition is re-rendered, so its
-// raw is dropped at parse); prefix is its non-atom leading children (EditionUID,
-// the edition flags) with any CRC stripped, reused when the default edition is
-// re-rendered so its UID and flags survive; startUIDs records each top-level atom's
-// start time and ChapterUID in file order. Re-rendering uses those pairs to keep a
-// surviving chapter's UID by start time rather than by list position, since inserts
-// and deletes shift positions but leave surviving starts unchanged.
+// chapterEdition is one parsed EditionEntry.
 type chapterEdition struct {
 	raw       []byte
 	prefix    []byte
@@ -63,12 +39,9 @@ type chapterStartUID struct {
 	uid   uint64
 }
 
-// parseChapters reads a Chapters element into the native chapterDoc and returns
-// the default edition projected as []core.Chapter (nil when there are no
-// editions), stably ordered by start time. It records every edition so a later
-// edit can preserve the non-default ones verbatim and reuse the default edition's
-// UIDs; only the default edition's projection is retained (the others need just
-// their raw bytes).
+// parseChapters reads a Chapters element into the native chapterDoc and returns the
+// default edition projected as []core.Chapter (nil when there are no editions), stably
+// ordered by start time.
 func parseChapters(src core.ReaderAtSized, chapters element, depth *bits.Depth, limit int64, d *doc) ([]core.Chapter, error) {
 	cd := &chapterDoc{defIdx: -1, hasCRC: firstChildIsCRC(src, chapters, limit)}
 	var defChapters []core.Chapter
@@ -107,17 +80,14 @@ func parseChapters(src core.ReaderAtSized, chapters element, depth *bits.Depth, 
 	cd.editions[cd.defIdx].raw = nil
 	// SetChapters stable-sorts by start; ordering the projection the same way makes
 	// SetChapters(doc.Chapters()...) a no-op even when the source stored atoms out of
-	// start order. UIDs are reassigned by start time during re-render, so no parallel
-	// UID slice needs to be sorted with the projected chapters.
+	// start order.
 	core.SortChaptersByStart(defChapters)
 	return defChapters, nil
 }
 
-// parseEdition reads one EditionEntry: whether it is the default edition, the
-// non-atom children kept verbatim in prefix (EditionUID and the edition flags),
-// the ordered ChapterAtom UIDs, and the atoms projected as chapters. lossy reports
-// whether the edition carries nested sub-atoms or multi-language displays that a
-// flat re-render would drop.
+// parseEdition reads one EditionEntry: whether it is the default edition, the non-atom
+// children kept verbatim in prefix (EditionUID and the edition flags), the ordered
+// ChapterAtom UIDs, and the atoms projected as chapters.
 func parseEdition(src core.ReaderAtSized, ed element, depth *bits.Depth, limit int64) (out chapterEdition, isDefault bool, chs []core.Chapter, lossy bool, err error) {
 	out = chapterEdition{raw: captureRaw(src, ed, limit), hasCRC: firstChildIsCRC(src, ed, limit)}
 	err = eachChild(src, ed.dataStart, ed.dataEnd, depth, limit, func(el element) error {
@@ -151,10 +121,7 @@ func parseEdition(src core.ReaderAtSized, ed element, depth *bits.Depth, limit i
 }
 
 // parseChapterAtom reads one ChapterAtom's UID, start/end (absolute nanoseconds), the
-// hidden/enabled flags, and the first ChapterDisplay (title + language). Only the top-level
-// atom and its first display are projected; lossy reports a nested sub-atom, a second
-// display (other-language title), or any other unmodeled child - structure the flat
-// []core.Chapter model cannot hold and a re-render would drop.
+// hidden/enabled flags, and the first ChapterDisplay (title + language).
 func parseChapterAtom(src core.ReaderAtSized, atom element, depth *bits.Depth, limit int64) (ch core.Chapter, uid uint64, lossy bool, err error) {
 	var startNs, endNs int64
 	displays := 0
@@ -204,9 +171,7 @@ func parseChapterAtom(src core.ReaderAtSized, atom element, depth *bits.Depth, l
 }
 
 // readChapterDisplay reads one ChapterDisplay: the first ChapString title, the
-// ChapLanguage (ISO-639-2), and the ChapLanguageIETF (BCP-47). An absent or "und"
-// ChapLanguage normalizes to "" so a freshly written chapter carries no spurious
-// language. lossy reports an unmodeled ChapDisplay child (e.g. ChapCountry) the flat
+// ChapLanguage (ISO-639-2), and the ChapLanguageIETF (BCP-47). ChapCountry) the flat
 // model cannot hold, so the flatten warning covers it.
 func readChapterDisplay(src core.ReaderAtSized, disp element, depth *bits.Depth, limit int64) (title, lang, langIETF string, lossy bool, err error) {
 	got := false
@@ -223,8 +188,7 @@ func readChapterDisplay(src core.ReaderAtSized, disp element, depth *bits.Depth,
 			}
 			// Sanitize an invalid-UTF-8 title to "" (matching MP4's chpl and the QuickTime
 			// chapter track) so a later --json dump cannot emit raw invalid bytes and every
-			// chapter source behaves the same on read. Prepare separately rejects an
-			// invalid-UTF-8 title on write, so a value read back here is always valid.
+			// chapter source behaves the same on read.
 			if !utf8.ValidString(s) {
 				s = ""
 			}
@@ -240,10 +204,9 @@ func readChapterDisplay(src core.ReaderAtSized, disp element, depth *bits.Depth,
 		}
 		return nil
 	})
-	// Drop a language WaxLabel should not surface or re-emit: invalid UTF-8 (sanitized like
-	// the title, so no raw bytes reach --json/copy) or the "und"/absent default (which carries
-	// no information and would print a spurious "[lang: und]"). Both ChapLanguage and the IETF
-	// tag default to "und" on modern mkvmerge output, so both are normalized the same way.
+	// Drop a language WaxLabel should not surface or re-emit: invalid UTF-8 (sanitized
+	// like the title, so no raw bytes reach --json/copy) or the "und"/absent default
+	// (which carries no information and would print a spurious "[lang: und]").
 	lang = normalizeChapLang(lang)
 	langIETF = normalizeChapLang(langIETF)
 	return title, lang, langIETF, lossy, err
@@ -267,18 +230,10 @@ func clampNs(v uint64) int64 {
 	return int64(v)
 }
 
-// chaptersFromRaw parses a standalone Chapters element's bytes back into a
-// chapterDoc and its projected chapters, so buildResult derives the post-write
-// chapter view from the rendered bytes (the seekFromRaw/infoFromRaw pattern) - for
-// every realistic edit this makes the returned Document equal a fresh parse.
-//
-// It returns nil on a parse failure, like its seek/cues/info siblings. Because it
-// re-reads bytes this package just encoded, the only reachable failure is the
-// reader's own alloc cap - a chapter title past maxElement (64 MiB), far beyond any
-// real title and not a Matroska limit but ours. In that degenerate case the result
-// view degrades to "no chapters" rather than crashing; the written bytes are still
-// valid EBML another reader accepts, so propagating the error to refuse the write
-// would wrongly impose our read cap on the write path.
+// chaptersFromRaw parses a standalone Chapters element's bytes back into a chapterDoc
+// and its projected chapters, so buildResult derives the post-write chapter view from
+// the rendered bytes (the seekFromRaw/infoFromRaw pattern) - for every realistic edit
+// this makes the returned Document equal a fresh parse.
 func chaptersFromRaw(raw []byte, depth *bits.Depth, limit int64) (*chapterDoc, []core.Chapter) {
 	rs := core.BytesSource(raw)
 	root, ok := readElement(rs, 0, int64(len(raw)), limit)
@@ -295,13 +250,8 @@ func chaptersFromRaw(raw []byte, depth *bits.Depth, limit int64) (*chapterDoc, [
 
 // renderChapters builds the new Chapters element bytes from the edited chapters,
 // re-rendering the default edition and preserving every other edition verbatim.
-// It returns nil to drop the Chapters element entirely (a clear that empties the
-// only edition), which the writer turns into a removal.
 func renderChapters(d *doc, chs []core.Chapter) []byte {
-	// Clearing chapters (an empty list) removes them entirely. The flat model cannot
-	// keep a hidden non-default edition without it surfacing as the default on
-	// reparse, so "no chapters" drops the whole Chapters element - every edition -
-	// rather than silently promoting a previously-invisible edition into view.
+	// Clearing chapters (an empty list) removes them entirely.
 	if len(chs) == 0 {
 		return nil
 	}
@@ -337,11 +287,7 @@ func renderChapters(d *doc, chs []core.Chapter) []byte {
 
 // renderDefaultEdition rebuilds the default EditionEntry from the edited chapters,
 // keeping its preserved prefix (EditionUID/flags) and reassigning each surviving
-// chapter its original ChapterUID by start time. Position-based reuse is unsafe: an
-// insert, delete, or reorder can move a surviving chapter to a different list index
-// and break chapter-scoped tags. A chapter whose start matches no saved UID is minted
-// a fresh UID. It returns nil for an empty chapter list, since an EditionEntry requires
-// at least one ChapterAtom.
+// chapter its original ChapterUID by start time.
 func renderDefaultEdition(ed chapterEdition, chs []core.Chapter) []byte {
 	if len(chs) == 0 {
 		return nil
@@ -398,28 +344,19 @@ func renderChapterAtom(uid uint64, ch core.Chapter) []byte {
 	content := make([]byte, 0, 48+len(ch.Title))
 	content = append(content, uintElement(idChapterUID, uid)...)
 	content = append(content, uintElement(idChapTimeStart, uint64(chapNanos(ch.Start)))...)
-	// Only a closed chapter writes ChapterTimeEnd. End <= Start (a zero-length or
-	// backwards span) is treated as "open", symmetric with the read path's
-	// endNs > startNs guard - writing such an end would only emit a value the reader
-	// then ignores.
+	// Only a closed chapter writes ChapterTimeEnd.
 	if ch.End > ch.Start {
 		content = append(content, uintElement(idChapTimeEnd, uint64(chapNanos(ch.End)))...)
 	}
-	// Emit a flag only for its non-default state: ChapterFlagHidden defaults to 0 (emit
-	// 1 only when Hidden), ChapterFlagEnabled defaults to 1 (emit 0 only when Disabled).
-	// A zero-value Chapter (a CLI --add-chapter) writes neither and reads back visible
-	// and enabled, exactly as before these fields existed.
+	// Emit a flag only for its non-default state: ChapterFlagHidden defaults to 0 (emit 1
+	// only when Hidden), ChapterFlagEnabled defaults to 1 (emit 0 only when Disabled).
 	if ch.Hidden {
 		content = append(content, uintElement(idChapFlagHidden, 1)...)
 	}
 	if ch.Disabled {
 		content = append(content, uintElement(idChapFlagEnabled, 0)...)
 	}
-	// Emit a ChapterDisplay when the chapter has a title OR a modeled language to carry. A
-	// title-less chapter still needs a display (with an empty, spec-mandatory ChapString) to
-	// preserve a language - the case an invalid-UTF-8 title sanitized to "" on read produces -
-	// which a "title != ''" gate would silently drop on re-render. A chapter with neither (a
-	// bare CLI --add-chapter) writes no display, exactly as before.
+	// Emit a ChapterDisplay when the chapter has a title OR a modeled language to carry.
 	if ch.Title != "" || ch.Language != "" || ch.LanguageIETF != "" {
 		disp := stringElement(idChapString, ch.Title) // mandatory; an empty string is allowed
 		// ChapLanguage is mandatory; fall back to the spec "und" default when no language

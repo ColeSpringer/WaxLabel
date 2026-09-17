@@ -10,14 +10,13 @@ import (
 	"github.com/colespringer/waxlabel/internal/vorbis"
 )
 
-// Codec implements core.Codec for an Ogg-encapsulated codec. Three instances are
-// registered - one each for Vorbis, Opus, and FLAC - sharing this implementation.
-// They differ only in the format they claim and the detection signature; the parser
-// identifies the actual codec from the stream, so editing or hashing a parsed
-// document always routes back to the right instance via the recorded Format.
+// Codec implements core.Codec for Ogg. Three instances (Vorbis, Opus, FLAC) share
+// this code; they differ in claimed format and sniff signature. Parser picks the
+// real codec; edits route via recorded Format.
+
 type Codec struct{ format core.Format }
 
-// NewVorbis, NewOpus, and NewFLAC return the three Ogg codec instances.
+// NewVorbis, NewOpus, and NewFLAC return the three Ogg codecs.
 func NewVorbis() Codec { return Codec{format: core.FormatOggVorbis} }
 func NewOpus() Codec   { return Codec{format: core.FormatOggOpus} }
 func NewFLAC() Codec   { return Codec{format: core.FormatOggFLAC} }
@@ -30,15 +29,13 @@ func init() {
 
 func (c Codec) Format() core.Format { return c.format }
 
-// SkipsLeadingID3 reports false because Ogg streams begin with an OggS page.
+// SkipsLeadingID3 is false: streams start with OggS.
 func (Codec) SkipsLeadingID3() bool { return false }
 
-// Extensions claims both .ogg and .oga for Vorbis and FLAC alike. RFC 5334 narrows
-// .ogg to Vorbis and introduces .oga for other Ogg audio, but the reference flac tool
-// wrote Ogg FLAC as .ogg for years and such files are still common - so claiming only
-// .oga would make warnExtensionMismatch tell the user a legitimate .ogg write was a
-// transcode. The extensions are genuinely shared; the resulting --format ambiguity is
-// resolved by name, not by narrowing the claim.
+// Extensions: .ogg and .oga for Vorbis/FLAC. RFC 5334 prefers .oga for non-Vorbis,
+// but flac long wrote Ogg FLAC as .ogg; claiming only .oga would false-flag those.
+// Format ambiguity is resolved by name.
+
 func (c Codec) Extensions() []string {
 	if c.format == core.FormatOggOpus {
 		return []string{".opus"}
@@ -46,11 +43,9 @@ func (c Codec) Extensions() []string {
 	return []string{".ogg", ".oga"}
 }
 
-// Sniff matches an Ogg stream of this codec. All three start with the "OggS"
-// capture pattern, so the codec is told apart by the identification header that
-// begins the first page body ("\x01vorbis", "OpusHead", or "\x7FFLAC"). The
-// detection window covers it: the id packet is small and alone on the first page,
-// so its signature sits near the start of the file.
+// Sniff: OggS plus id signature ("\x01vorbis", "OpusHead", or "\x7FFLAC") near start
+// (id packet is alone on page 0).
+
 func (c Codec) Sniff(header []byte) bool {
 	if !bytes.HasPrefix(header, oggMagic) {
 		return false
@@ -68,10 +63,9 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 	return parse(ctx, src, opts)
 }
 
-// Capabilities reports Ogg's support. Tags are Vorbis comments, losslessly
-// writable. Art is METADATA_BLOCK_PICTURE for Vorbis and Opus, and a native FLAC
-// PICTURE block for the FLAC mapping - the one place the three diverge. Chapters
-// use the CHAPTERxxx comment convention, which stores start and title.
+// Capabilities: Vorbis comments; art is METADATA_BLOCK_PICTURE or FLAC PICTURE;
+// chapters are CHAPTERxxx (start+title).
+
 func (c Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
@@ -93,8 +87,8 @@ func (c Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabili
 		Constraints:    []string{"CHAPTERxxx stores start and title only (no end time, language, or flags)"},
 		ChapterLoss:    core.ChapterLossStartTitleOnly,
 	}
-	// OggTags/OpusTags padding is round-tripped as-is; there is no padding control,
-	// so AccessNone.
+	// Comment padding round-tripped as-is; no padding control.
+
 	caps := core.NewCapabilities(c.format, false, fields, pictures, chapters, core.AccessNone, nil).
 		WithSyncedLyrics(vorbis.SyncedLyricsCapability()).
 		WithFieldClassifier(vorbis.TransferClassifier)
@@ -104,8 +98,8 @@ func (c Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabili
 	return caps
 }
 
-// opusOutputGain returns the OpusHead's output gain (signed Q7.8 dB, little-endian at
-// bytes 16:18), or 0 when the header is too short to hold one.
+// opusOutputGain reads OpusHead output gain (signed Q7.8 at 16:18), or 0 if too short.
+
 func opusOutputGain(head []byte) int {
 	if len(head) < 18 {
 		return 0
@@ -113,8 +107,8 @@ func opusOutputGain(head []byte) int {
 	return int(int16(binary.LittleEndian.Uint16(head[16:18])))
 }
 
-// opusHeadWithGain returns a copy of the OpusHead with its output gain replaced, or an
-// unchanged copy when the header is too short to hold one.
+// opusHeadWithGain copies OpusHead with gain set (no-op copy if head too short).
+
 func opusHeadWithGain(head []byte, gain int) []byte {
 	out := slices.Clone(head)
 	if len(out) >= 18 {
@@ -123,39 +117,33 @@ func opusHeadWithGain(head []byte, gain int) []byte {
 	return out
 }
 
-// EssenceExtent returns the Ogg essence-digest inputs: a versioned extent name
-// and the decoder-critical configuration mixed into the hash ahead of the audio
-// packet payloads. For Opus that is the OpusHead packet with its output_gain masked
-// (the gain is an editable playback control, not part of the encoded audio, so two
-// copies differing only in gain dedup); for Vorbis it is the identification header plus
-// the setup header (the codebooks), since identical packets decoded with different
-// codebooks are not the same audio; for FLAC it is STREAMINFO.
+// EssenceExtent: versioned name plus decoder-critical config ahead of audio packets.
+// Opus: OpusHead with output_gain masked. Vorbis: id+setup. FLAC: STREAMINFO.
+
 func (c Codec) EssenceExtent(m *core.Media) (string, []byte) {
 	d, ok := m.Native.(*doc)
 	if !ok || d == nil {
-		// No parsed document to read the mapping from: fall back to the format the codec
-		// instance was registered for, which names the same extent.
+		// No native doc: use registered format's extent name.
+
 		return extentForFormat(c.format), nil
 	}
 	switch d.kind {
 	case kindOpus:
 		return extentOpus, opusHeadWithGain(d.idPacket, 0)
 	case kindFLAC:
-		// STREAMINFO alone, not the whole identification packet: the packet also
-		// carries the header-packet count, which a metadata rewrite legitimately
-		// changes and which says nothing about the audio.
+		// STREAMINFO only; id packet also has header-packet count (edit-mutable).
+
 		return extentFLAC, slices.Clone(d.streamInfo())
 	}
 	return extentVorbis, slices.Concat(d.idPacket, d.setupPacket)
 }
 
-// The versioned essence-extent names, one per Ogg mapping. Named once so the two ways of
-// reaching an extent - by codec format and by parsed stream kind - cannot disagree, and a
-// version bump is a single edit.
+// Essence-extent names per mapping (shared by format fallback and parsed kind).
+
 const (
 	extentVorbis = "ogg-vorbis-packets-v1"
-	// v2 masks the OpusHead output gain, an editable playback control that says nothing
-	// about the encoded audio. A v1 digest never compares equal to a v2 one.
+	// v2 masks output gain (playback control, not encoded audio).
+
 	extentOpus = "ogg-opus-packets-v2"
 	extentFLAC = "ogg-flac-frames-v1"
 )

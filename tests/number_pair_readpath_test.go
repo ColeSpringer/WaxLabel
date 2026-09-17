@@ -8,18 +8,10 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestNumberPairReadPathAgreesAcrossFormats is the cross-format agreement check for the
-// track/disc normalization: a slashed TRACKNUMBER stored natively must read back as the
-// same (TrackNumber, TrackTotal) canonical pair on every text codec, so dump, copy, and diff
-// agree on one file. Per-format tests miss this; the point is that the formats agree. FLAC
-// exercises the vorbis/wav post-pass (tag.NormalizeNumberPairs), MP3 the ID3 emitNumTotal path,
-// and Matroska the projectTag path, the three mechanisms kept in lockstep through the shared
-// tag.NumberTotalSplit. A malformed pair ("abc/1", "1/2/3") stays verbatim on the number key
-// everywhere.
-//
-// Two residuals are out of this table by design: AIFF maps no numeric key (its post-pass is a
-// no-op), and MP4 stores a structural uint16 pair, so "04/09" reads back 4/9 there and a
-// literal 0 or an out-of-uint16 value does not survive - MP4 is covered by its own codec tests.
+// cross-format agreement check for the track/disc normalization: a slashed TRACKNUMBER stored
+// natively must read back as the same (TrackNumber, TrackTotal) canonical pair on every text codec,
+// so dump, copy, and diff agree on one file. Per-format tests miss this; the point is that the
+// formats agree.
 func TestNumberPairReadPathAgreesAcrossFormats(t *testing.T) {
 	formats := []struct {
 		name  string
@@ -56,9 +48,9 @@ func TestNumberPairReadPathAgreesAcrossFormats(t *testing.T) {
 	}
 }
 
-// TestNumberPairReadPathExplicitTotalWins pins the both-present precedence rule: an explicit
-// companion total wins over the total a slashed number would derive, matching tag.ParseNumPair
-// and the editor. The FLAC read path splits the number but leaves the explicit TRACKTOTAL.
+// both-present precedence rule: an explicit companion total wins over the total a slashed number
+// would derive, matching tag.ParseNumPair and the editor. The FLAC read path splits the number but
+// leaves the explicit TRACKTOTAL.
 func TestNumberPairReadPathExplicitTotalWins(t *testing.T) {
 	doc := mustParseBytes(t, flacWithComments("TRACKNUMBER=4/9", "TRACKTOTAL=20"))
 	if n, _ := doc.Get(tag.TrackNumber); !slices.Equal(n, []string{"4"}) {
@@ -69,10 +61,9 @@ func TestNumberPairReadPathExplicitTotalWins(t *testing.T) {
 	}
 }
 
-// TestNumberPairReadPathByteIdenticalNoOp is the "why this is safe" guarantee: normalizing
-// "4/9" on read must not perturb the file. The native Vorbis comment stays verbatim, so a
-// no-op edit stays a no-op and the bytes are byte-identical (the read-time split lives only in
-// the canonical projection, not on disk).
+// "why this is safe" guarantee: normalizing "4/9" on read must not perturb the file. The native
+// Vorbis comment stays verbatim, so a no-op edit stays a no-op and the bytes are byte-identical
+// (the read-time split lives only in the canonical projection, not on disk).
 func TestNumberPairReadPathByteIdenticalNoOp(t *testing.T) {
 	src := flacWithComments("TRACKNUMBER=4/9")
 	plan, err := mustParseBytes(t, src).Edit().Prepare()
@@ -87,11 +78,9 @@ func TestNumberPairReadPathByteIdenticalNoOp(t *testing.T) {
 	}
 }
 
-// TestVorbisSlashPairEditRewritesComment guards against silent edit loss when a FLAC/Ogg
-// stores the pair only as a slashed TRACKNUMBER: the read path splits "4/9" into
-// TRACKNUMBER=4 + TRACKTOTAL=9, but the native comment is still "4/9". Editing either half
-// must rewrite the slash comment from the split values (vorbis.Rebuild), or the preserved
-// "4/9" would re-project and resurrect the edited-away value.
+// guards against silent edit loss when a FLAC/Ogg stores the pair only as a slashed TRACKNUMBER:
+// the read path splits "4/9" into TRACKNUMBER=4 + TRACKTOTAL=9, but the native comment is still
+// "4/9".
 func TestVorbisSlashPairEditRewritesComment(t *testing.T) {
 	// Clearing the derived total must stick, not reappear from the slash number.
 	t.Run("clear total", func(t *testing.T) {
@@ -162,8 +151,8 @@ func TestVorbisSlashPairEditRewritesComment(t *testing.T) {
 			t.Errorf("TrackTotal = %v, want [9] (no phantom duplicate)", v)
 		}
 	})
-	// An untouched explicit total comment (using a non-canonical spelling, after an unrelated
-	// comment) must be preserved verbatim in place - not relabeled to TRACKTOTAL or relocated.
+	// An untouched explicit total comment (using a non-canonical spelling, after an unrelated comment)
+	// must be preserved verbatim in place; not relabeled to TRACKTOTAL or relocated.
 	t.Run("untouched total preserved verbatim and in place", func(t *testing.T) {
 		src := flacWithComments("TRACKNUMBER=4/9", "COMMENT=hi", "TOTALTRACKS=20")
 		plan, err := mustParseBytes(t, src).Edit().Set(tag.TrackNumber, "5").Prepare()
@@ -211,11 +200,8 @@ func TestVorbisSlashPairEditRewritesComment(t *testing.T) {
 	})
 }
 
-// TestWAVSlashTrackNumberNoFalseFamilyConflict checks that a single IPRT="4/9", which normalizes
-// to TrackNumber=4 + TrackTotal=9, does not read back as a family conflict. The RIFF family view
-// must reflect the same split rather than compare the raw "4/9" against the normalized
-// TrackNumber, which would mark the only INFO row a conflict and raise a spurious
-// conflicting-families finding.
+// single IPRT="4/9", which normalizes to TrackNumber=4 + TrackTotal=9, does not read back as a
+// family conflict.
 func TestWAVSlashTrackNumberNoFalseFamilyConflict(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"IPRT", "4/9"}), wavData(400))
 	doc := mustParseBytes(t, data)

@@ -9,14 +9,10 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestRolesRoundTrip proves the six contributor-role keys survive a real set -> write ->
-// reparse across the main storage mechanisms: a Vorbis comment (FLAC), an ID3 involved-people
-// frame (MP3), MP4 com.apple.iTunes freeforms (M4A), the embedded-ID3 chunk WAV and AIFF carry,
-// and Matroska SimpleTags (MKA, identity names). Producers and Writers hold two values to
-// exercise the multivalued projection. On MP3
-// it additionally confirms the five involved-people roles land in the ID3 involved-people
-// frame with the Picard lowercase function strings, WRITER lands in a TXXX:Writer user frame,
-// and no role leaks as an uppercase TXXX user frame.
+// six contributor-role keys survive a real set -> write -> reparse across the main storage
+// mechanisms: a Vorbis comment (FLAC), an ID3 involved-people frame (MP3), MP4 com.apple.iTunes
+// freeforms (M4A), the embedded-ID3 chunk WAV and AIFF carry, and Matroska SimpleTags (MKA,
+// identity names).
 func TestRolesRoundTrip(t *testing.T) {
 	roles := []struct {
 		key  tag.Key

@@ -5,9 +5,7 @@ import (
 	"testing"
 )
 
-// TestSetID3MultiFlag: the three library policies are reachable from set and copy; the
-// default stays NUL-separated with its advisory, repeat writes one frame per value and drops
-// the advisory, and an unknown value is a usage error.
+// TestSetID3MultiFlag: set/copy expose NUL/repeat/unknown id3-multi policies.
 func TestSetID3MultiFlag(t *testing.T) {
 	t.Parallel()
 	f := copyFixture(t, td("notags.mp3"))
@@ -34,8 +32,7 @@ func TestSetID3MultiFlag(t *testing.T) {
 	if _, _, code = runCLI(t, "copy", "--dry-run", "--id3-multi", "slash", f2, f); code != 0 {
 		t.Errorf("copy should accept the flag: exit %d", code)
 	}
-	// An explicitly empty value is a usage error, as it is for the sibling write-shaping
-	// flags: it is otherwise indistinguishable from leaving the flag off.
+	// Empty --id3-multi is usage error (indistinguishable from unset).
 	for _, cmd := range [][]string{
 		{"set", f, "--set", "ARTIST=X", "--id3-multi", ""},
 		{"plan", f, "--set", "ARTIST=X", "--id3-multi", ""},

@@ -7,14 +7,10 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestFreeformCaseFoldCollisionFlagsConflict pins the deliberate tradeoff of the read-side case
-// fold (MP4FreeformKey): when a file carries the same MusicBrainz field twice under different
-// casing (two taggers) with disagreeing values, both now resolve to one canonical key. No value is
-// dropped - both survive as contributions - but because they arrive under two distinct native
-// sources (the verbatim casing is kept in Source), BuildFamilies marks the key unselected: a
-// surfaced conflict where the pre-fold read hid the foreign-cased atom from the canonical view
-// entirely. The foreign spelling and the two-separate-atoms structure normalize on the next write;
-// the values do not. Pinned so the merge is a decision, not an accident.
+// TestFreeformCaseFoldCollisionFlagsConflict pins the deliberate tradeoff of the
+// read-side case fold (MP4FreeformKey): when a file carries the same MusicBrainz field
+// twice under different casing (two taggers) with disagreeing values, both now resolve
+// to one canonical key.
 func TestFreeformCaseFoldCollisionFlagsConflict(t *testing.T) {
 	canonical := decodeItem(freeformItem("MusicBrainz Album Id", []string{"AAA"}))
 	foreign := decodeItem(freeformItem("musicbrainz album id", []string{"BBB"}))

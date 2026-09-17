@@ -7,9 +7,7 @@ import (
 	"github.com/colespringer/waxlabel/internal/bits"
 )
 
-// ReaderAtSized is WaxLabel's internal source contract: random access plus a known size, and
-// crucially no shared seek offset. A Document never holds one (it is detached); codecs
-// receive one only for the duration of a parse or a write.
+// ReaderAtSized is io.ReaderAt plus Size. No shared seek offset.
 type ReaderAtSized interface {
 	io.ReaderAt
 	Size() int64
@@ -27,8 +25,7 @@ func BytesSource(b []byte) ReaderAtSized { return bytesReaderAt{b: b} }
 func (r bytesReaderAt) Size() int64 { return int64(len(r.b)) }
 
 func (r bytesReaderAt) ReadAt(p []byte, off int64) (int, error) {
-	// off == len(b) is allowed: an empty source slice, so a zero-length read there
-	// succeeds with (0, nil) rather than EOF, matching os.File.ReadAt.
+	// off==len(b): zero-length read succeeds (os.File.ReadAt behavior).
 	if off < 0 || off > int64(len(r.b)) {
 		return 0, io.EOF
 	}
@@ -39,23 +36,14 @@ func (r bytesReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	return n, nil
 }
 
-// Fingerprint hashes a file's metadata regions, the bytes around the audio essence, for the
-// structural source fingerprint used in change detection. It hashes the header before the
-// essence ([0, AudioStart)) plus the tail after it ([AudioEnd, size)), covering a trailing
-// ID3v1, a WAV INFO/id3 chunk after the data chunk, and an MP4 moov after the last mdat. A
-// file with no identified essence is hashed whole. For a multi-segment essence the gaps
-// between segments are not hashed, since Ogg keeps its tags up front and an moov sandwiched
-// between two mdats is rare, so the backstop is weaker there but size/mtime/inode still
-// guard. ok is false when there is nothing to hash or the region cannot be read.
-//
-// Both parse and save-back call this with the same media extents, so the two fingerprints
-// cover identical byte ranges and cannot disagree spuriously.
+// Fingerprint hashes metadata regions around audio essence for change detection:
+// [0, AudioStart) plus [AudioEnd, size). No essence: whole file. Multi-segment: gaps skipped.
 func Fingerprint(src ReaderAtSized, m *Media, limit int64) ([32]byte, bool) {
 	size := src.Size()
 	if size <= 0 {
 		return [32]byte{}, false
 	}
-	// No identified essence (e.g. a data-less WAV): the whole file is metadata.
+	// No essence: hash whole file.
 	if m.AudioStart <= 0 && m.AudioEnd <= 0 && len(m.AudioRanges) == 0 {
 		all, err := bits.ReadSlice(src, 0, size, limit)
 		if err != nil {
@@ -71,8 +59,7 @@ func Fingerprint(src ReaderAtSized, m *Media, limit int64) ([32]byte, bool) {
 		}
 		region = head
 	}
-	// Trailing metadata after the last essence byte (any tags that follow the
-	// audio), for both contiguous and multi-segment essences.
+	// Trailing metadata after essence.
 	if m.AudioEnd > m.AudioStart && m.AudioEnd < size {
 		tail, err := bits.ReadSlice(src, m.AudioEnd, size-m.AudioEnd, limit)
 		if err != nil {
@@ -86,10 +73,7 @@ func Fingerprint(src ReaderAtSized, m *Media, limit int64) ([32]byte, bool) {
 	return bits.SHA256(region), true
 }
 
-// Identity is a strong fingerprint of a source file, recorded at parse so a later save-back
-// can detect that the file changed underneath us. Path, size, and mtime alone are too weak,
-// weaker still once mtime is not preserved, so a small structural fingerprint (a hash of the
-// metadata region) is included.
+// Identity fingerprints a source at parse time for save-back change detection.
 type Identity struct {
 	Path            string
 	Size            int64
@@ -100,12 +84,7 @@ type Identity struct {
 	HasFinger       bool
 }
 
-// Matches reports whether other is the same source this identity was recorded from, and a
-// reason string when it is not. It is the change-detection rule for a conservative in-place
-// save (SaveBack, or a SaveAsFile whose target resolves to the source): the full content
-// check plus the modification time. A derived write, to another path or a streaming writer,
-// uses [Identity.MatchesContent] instead, which omits the mtime so a benign touch during a
-// long parse-to-write window does not block a write whose byte offsets are still valid.
+// Matches is content check plus mtime for in-place save (SaveBack).
 func (id Identity) Matches(other Identity) (bool, string) {
 	if ok, why := id.MatchesContent(other); !ok {
 		return false, why
@@ -116,12 +95,7 @@ func (id Identity) Matches(other Identity) (bool, string) {
 	return true, ""
 }
 
-// MatchesContent reports whether other has the same byte content as this identity
-// (inode/device, size, and, when both sides have one, the structural fingerprint) but NOT
-// the modification time. A moved audio region always changes the size or the fingerprint, so
-// mtime says nothing about whether the recorded byte offsets are still valid; a derived write
-// skips it to avoid a false positive from a touch. [Identity.Matches] layers it back on for
-// the in-place case.
+// MatchesContent compares inode, size, and fingerprint; omits mtime (derived writes).
 func (id Identity) MatchesContent(other Identity) (bool, string) {
 	if id.INode != 0 && other.INode != 0 {
 		if id.INode != other.INode || id.Device != other.Device {

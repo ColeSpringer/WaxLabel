@@ -17,9 +17,7 @@ func mp4Atom(name string, body []byte) []byte {
 	return append(b, body...)
 }
 
-// TestMP4MetaZeroTailExit4 covers the CLI path: an MP4 whose moov.udta.meta has no ilst and
-// ends in >=8 zero bytes must fail with exit 4 (invalid-data) on dump and set - never parse as
-// a silent, tag-losing "Saved".
+// TestMP4MetaZeroTailExit4: meta with zero tail is exit 4 on dump/set, not silent success.
 func TestMP4MetaZeroTailExit4(t *testing.T) {
 	free := mp4Atom("free", nil)                     // an 8-byte leaf child that tiles cleanly
 	metaBody := append([]byte{0, 0, 0, 0}, free...)  // FullBox version/flags + the child
@@ -45,15 +43,13 @@ func TestMP4MetaZeroTailExit4(t *testing.T) {
 	}
 }
 
-// TestID3CorruptVersionExit4: an ID3v2 header with an out-of-range major version (5)
-// on valid MPEG audio is a recognized container whose contents are corrupt - invalid-data
-// (exit 4), not an unsupported format (exit 3).
+// TestID3CorruptVersionExit4: ID3v2 major version 5 is exit 4, not unsupported format.
 func TestID3CorruptVersionExit4(t *testing.T) {
 	frames, err := os.ReadFile(filepath.Join("..", "..", "testdata", "notags.mp3"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A structurally valid 10-byte ID3v2 header (sync-safe size 0) but major version 5.
+	// Valid 10-byte ID3v2 header, major version 5.
 	corrupt := append([]byte("ID3\x05\x00\x00\x00\x00\x00\x00"), frames...)
 	path := filepath.Join(t.TempDir(), "badver.mp3")
 	if err := os.WriteFile(path, corrupt, 0o644); err != nil {
@@ -64,9 +60,7 @@ func TestID3CorruptVersionExit4(t *testing.T) {
 	}
 }
 
-// TestMP3MalformedAPICSurfaced covers the CLI path: an MP3 whose ID3v2 APIC frame is
-// malformed (its MIME field has no NUL terminator, so decodeAPIC fails) must surface
-// invalid-picture on dump and lint - not silently drop the cover and report "no issues".
+// TestMP3MalformedAPICSurfaced: malformed APIC surfaces invalid-picture on dump/lint.
 func TestMP3MalformedAPICSurfaced(t *testing.T) {
 	frames, err := os.ReadFile(filepath.Join("..", "..", "testdata", "notags.mp3"))
 	if err != nil {
@@ -97,8 +91,7 @@ func TestMP3MalformedAPICSurfaced(t *testing.T) {
 	}
 }
 
-// TestEmptyWAVJSONNoBitrate: a zero-duration file (header-only PCM WAV) must not
-// emit bitrateBps in JSON, matching the human view's Duration()>0 gate so the two agree.
+// TestEmptyWAVJSONNoBitrate: zero-duration WAV omits bitrateBps in JSON (Duration()>0 gate).
 func TestEmptyWAVJSONNoBitrate(t *testing.T) {
 	emptyWAV := filepath.Join("..", "..", "testdata", "empty.wav")
 	stdout, _, code := runCLI(t, "dump", "--json", emptyWAV)
@@ -108,17 +101,13 @@ func TestEmptyWAVJSONNoBitrate(t *testing.T) {
 	if strings.Contains(stdout, "bitrateBps") {
 		t.Errorf("zero-duration WAV must not emit bitrateBps in JSON:\n%s", stdout)
 	}
-	// Guard the fixture assumption: empty.wav must actually be zero-duration (durationMs is
-	// omitempty, so absent), or the parity gate would not apply.
+	// Fixture must be zero-duration or gate does not apply.
 	if strings.Contains(stdout, "durationMs") {
 		t.Errorf("empty.wav is unexpectedly non-zero-duration; fixture assumption broken:\n%s", stdout)
 	}
 }
 
-// TestSubMillisecondWAVJSONConsistent covers the sub-millisecond edge of the bitrate gate: a
-// WAV with a few PCM samples (< 1ms) has Duration()>0 but Milliseconds()==0, so durationMs
-// rounds to 0 and drops (omitempty). bitrateBps must drop with it - gating on Milliseconds()
-// keeps the JSON from showing a bitrate with no duration.
+// TestSubMillisecondWAVJSONConsistent: sub-ms WAV drops durationMs and bitrateBps together.
 func TestSubMillisecondWAVJSONConsistent(t *testing.T) {
 	fmtBody := make([]byte, 16)
 	binary.LittleEndian.PutUint16(fmtBody[0:], 1)      // PCM

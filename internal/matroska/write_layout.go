@@ -10,10 +10,8 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// outItem is one element in the planned output: a literal (re-rendered) or a
-// verbatim copy from the source. origStart is the element's original file offset
-// (-1 for a created or flex element) so SeekHead targets can be remapped to new
-// positions; outOff is its offset in the output, filled during layout.
+// outItem is one element in the planned output: a literal (re-rendered) or a verbatim
+// copy from the source.
 type outItem struct {
 	id        uint64
 	lit       []byte // non-nil: emit literally
@@ -36,10 +34,9 @@ const (
 	itemChapters
 )
 
-// layout is the resolved output shape both write strategies produce: the segment
-// list, the new top-level child list, and the new file positions and bytes of the
-// re-derivable structures (SeekHead/Cues/Info/Attachments). buildResult turns it
-// into the post-write Media.
+// layout is the resolved output shape both write strategies produce: the segment list,
+// the new top-level child list, and the new file positions and bytes of the
+// re-derivable structures (SeekHead/Cues/Info/Attachments).
 type layout struct {
 	segs         []bits.Segment
 	children     []l1elem
@@ -58,14 +55,8 @@ type layout struct {
 	attach      attachBlock
 }
 
-// planAbsorb realizes the edit by absorbing its size change into a reserved Void
-// so the clusters never move. It re-renders the changed Segment children, sizes
-// the flex Void to keep the header's total length, patches the SeekHead positions
-// of the elements that shifted within the header (in place, at original width),
-// and copies the clusters and everything after them byte-for-byte. It returns
-// errFallback when the layout is not absorption-friendly (no Void, an edit in the
-// post-cluster tail, a drop of an element, or a position that would overflow its
-// width), so Plan tries planShift instead.
+// planAbsorb realizes the edit by absorbing its size change into a reserved Void so the
+// clusters never move.
 func planAbsorb(d *doc, base, edited *core.Media, ch changes, ed *editDecisions, report core.WriteReport) (*core.WritePlan, error) {
 	wb := d.wb
 
@@ -119,9 +110,6 @@ func planAbsorb(d *doc, base, edited *core.Media, ch changes, ed *editDecisions,
 			items = append(items, outItem{id: idVoid, origStart: c.start, kind: itemVoid})
 		case c.id == idCRC32 && wb.segVoidFromCRC != nil:
 			// Substitute the stale Segment-level CRC with the captured length-identical Void.
-			// litItem records idVoid as the output id (l1elem{id: it.id} in buildResult), so the
-			// returned doc carries a Void - a re-edit sees a Void, not a live CRC, with no
-			// separate post-write patch needed.
 			items = append(items, litItem(idVoid, wb.segVoidFromCRC, c.start, itemOther))
 		case c.id == idTags && ch.simple:
 			if tagsPlaced {
@@ -153,10 +141,10 @@ func planAbsorb(d *doc, base, edited *core.Media, ch changes, ed *editDecisions,
 	if flexIdx < 0 {
 		return nil, errFallback
 	}
-	// Created top-level elements (origStart -1) are appended but not added to an
-	// existing SeekHead, matching the shift path: the index is patched in place at a
-	// stable size, and SeekHead is an optional index (readers scan level-1 elements
-	// to find an unindexed Tags/Attachments/Chapters).
+	// Created top-level elements (origStart -1) are appended but not added to an existing
+	// SeekHead, matching the shift path: the index is patched in place at a stable size,
+	// and SeekHead is an optional index (readers scan level-1 elements to find an
+	// unindexed Tags/Attachments/Chapters).
 	if ch.simple && !tagsPlaced && r.tags != nil {
 		items = append(items, litItem(idTags, r.tags, -1, itemTags))
 	}
@@ -228,10 +216,7 @@ type rendered struct {
 	chapters     []byte
 }
 
-// renderChanged renders every Segment child the edit touches. The caller (Plan)
-// has already guaranteed an Info element exists when the title changed, so the
-// only failure here is an unparseable captured Info - a real ErrInvalidData, kept
-// distinct from the internal errFallback that signals "try the shift path".
+// renderChanged renders every Segment child the edit touches.
 func renderChanged(d *doc, base, edited *core.Media, ch changes, ed *editDecisions) (*rendered, error) {
 	r := &rendered{title: d.segTitle, titlePresent: d.hasSegTitle}
 	if ch.simple {
@@ -260,9 +245,7 @@ func litItem(id uint64, b []byte, origStart int64, kind itemKind) outItem {
 
 // assembleItems turns the header items into a segment list (EBML+Segment header
 // verbatim, each header item literal-or-copy, then the cluster tail verbatim) and
-// records the structures' new positions/bytes for buildResult. segHeader covers
-// [0, segDataStart): in absorption the Segment size is unchanged so it is copied;
-// the shift path passes a literal segHeader instead (delta != 0).
+// records the structures' new positions/bytes for buildResult.
 func assembleItems(wb *writeBase, items []outItem, delta int64) layout {
 	lay := layout{size: wb.size + delta, clusterStart: wb.clusterStart, delta: delta}
 	lay.segs = []bits.Segment{bits.Copy(0, wb.segDataStart)}
@@ -322,10 +305,10 @@ func assembleItems(wb *writeBase, items []outItem, delta int64) layout {
 	return lay
 }
 
-// childStart returns the new file offset of the first output child with the given
-// ID, so the result document's SeekHead/Cues/Info positions reflect their true new
-// location (a copied-but-relocated element does not simply shift by the total
-// delta) and so equal a fresh parse of the output.
+// childStart returns the new file offset of the first output child with the given ID,
+// so the result document's SeekHead/Cues/Info positions reflect their true new location
+// (a copied-but-relocated element does not simply shift by the total delta) and so
+// equal a fresh parse of the output.
 func childStart(children []l1elem, id uint64) int64 {
 	for _, c := range children {
 		if c.id == id {
@@ -358,13 +341,8 @@ func voidOfTotal(total int64) []byte {
 	return nil
 }
 
-// patchSeekAbsorb copies the SeekHead bytes and rewrites each SeekPosition whose
-// target moved (per oldToNew) in place at its original width, then recomputes the
-// CRC. ok is false if a new value does not fit its slot, or if an entry targets a
-// duplicate master that was absorbed (dropped) into the first - in either case Plan
-// falls back to the shift path (which rebuilds the SeekHead at minimal width and
-// omits dropped targets). An entry whose target is neither moved nor absorbed is
-// left as-is: it can legitimately point at a cluster outside the header item list.
+// patchSeekAbsorb copies the SeekHead bytes and rewrites each SeekPosition whose target
+// moved (per oldToNew) in place at its original width, then recomputes the CRC.
 func patchSeekAbsorb(sh *seekHead, segDataStart int64, oldToNew map[int64]int64, absorbed map[int64]bool) ([]byte, bool) {
 	if sh.hasNestedCRC {
 		// This in-place patch only recomputes the SeekHead CRC. A nested per-Seek
@@ -459,10 +437,6 @@ func buildResult(d *doc, edited *core.Media, r *rendered, ch changes, lay layout
 	}
 
 	// Derive Segment header geometry from the emitted layout, not from parse-time offsets.
-	// If the Segment data-size VINT widens, the first child moves and later in-memory edits
-	// must compute SeekHead and Cue positions from the new base. segSizeOff itself does not
-	// move: it sits just after the unchanged Segment ID. With no children there are no
-	// SeekHead or Cue positions to update, so keep the parse-time values.
 	segDataStart, segSizeLen := d.wb.segDataStart, d.wb.segSizeLen
 	if len(lay.children) > 0 {
 		segDataStart = lay.children[0].start
@@ -512,11 +486,10 @@ func buildResult(d *doc, edited *core.Media, r *rendered, ch changes, lay layout
 		Native:     nd,
 		Identity:   core.Identity{Size: lay.size},
 	}
-	// Mirror the parse side: essence digests hash only Cluster runs, so a segment with no clusters
-	// reports no audio extent - keeping the absorb and shift paths consistent with a fresh parse
-	// (a clusterless segment with trailing bytes otherwise let the absorb path report
-	// AudioStart = segDataEnd while shift and parse reported 0). When len(runs) > 0, clusters
-	// exist, so lay.clusterStart < lay.size is already implied and the outer check is redundant.
+	// Mirror the parse side: essence digests hash only Cluster runs, so a segment with no
+	// clusters reports no audio extent - keeping the absorb and shift paths consistent
+	// with a fresh parse (a clusterless segment with trailing bytes otherwise let the
+	// absorb path report AudioStart = segDataEnd while shift and parse reported 0).
 	if runs := clusterRuns(lay.children); len(runs) > 0 {
 		res.AudioStart = lay.clusterStart
 		res.AudioRanges = runs
@@ -547,27 +520,15 @@ func clusterRuns(children []l1elem) [][2]int64 {
 	return runs
 }
 
-// resultPictures returns the picture set the post-write Document reports: the picture-level
-// reprojection of the edited set, which equals a fresh parse of the written cover set. When the
-// covers were not rewritten they were preserved verbatim from base, and detectChanges already
-// found base equal to the reprojection, so it is correct either way - both funnel through
-// reprojectPictures so the change verdict and the result view cannot drift.
+// resultPictures returns the picture set the post-write Document reports: the
+// picture-level reprojection of the edited set, which equals a fresh parse of the
+// written cover set.
 func resultPictures(pics []core.Picture) []core.Picture {
 	return reprojectPictures(pics)
 }
 
-// reprojectPictures maps an edited picture set through the Matroska attachment round trip so the
-// result view equals a fresh parse of the written attachments. A picture WaxLabel writes gets a
-// cover-convention file name (cover.<ext>/small_cover.<ext> via coverFileStem), so an image or a
-// --force octet-stream cover reads back as a picture - the latter as an Unrecognized() cover (the
-// read/write symmetry) rather than vanishing and re-registering as a fresh attachment on every
-// copy. A picture the read gate would NOT project (isCoverAttachment: a non-image, non-octet MIME
-// such as a caller's text/plain, which reads back as a plain attachment) is dropped here so the
-// two agree; normal edit/transfer paths carry only image/* or octet-stream picture MIMEs, so this
-// drop is defensive. A kept picture is projected to what a fresh parse yields: the role reduced to
-// the cover-art file-name convention (only the front cover keeps a distinct role; others read back
-// as Other), the description sanitized like the read path (so a non-UTF8 description does not
-// re-introduce a false diff), and the geometry/MIME re-sniffed authoritatively.
+// reprojectPictures maps an edited picture set through the Matroska attachment round
+// trip so the result view equals a fresh parse of the written attachments.
 func reprojectPictures(pics []core.Picture) []core.Picture {
 	var out []core.Picture
 	for _, p := range pics {

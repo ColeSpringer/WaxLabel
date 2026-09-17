@@ -32,10 +32,8 @@ func pictureComment(p core.Picture) string {
 	return "METADATA_BLOCK_PICTURE=" + base64.StdEncoding.EncodeToString(vorbis.RenderPicture(p))
 }
 
-// TestPlanRejectsOversizedNewCover checks the write-side cap: a newly added cover whose
-// base64 footprint exceeds the write limit is refused with ErrPictureTooLarge (the same error
-// the sibling MP4/FLAC/ID3 covers return), rather than emitting a file a default-limit reader
-// would then choke on - a failure --verify's output-sized structural re-parse cannot catch.
+// TestPlanRejectsOversizedNewCover: the write-side cap: a newly added cover whose
+
 func TestPlanRejectsOversizedNewCover(t *testing.T) {
 	base := parseOpusStreamWith(t) // no pictures in the source
 	cover := smallCover()
@@ -62,13 +60,8 @@ func TestPlanRejectsOversizedNewCover(t *testing.T) {
 	}
 }
 
-// TestPlanWritesBackCoverParsedUnderRaisedLimit is the regression for the cap's floor: a cover
-// that was read within the (possibly raised) parse limit must remain writable even when the write
-// limit later sits below it - the file was readable going in, so an unrelated edit that does not
-// grow the comment packet past what the file already held must not be refused going out. The floor
-// is now the whole original comment packet (origCommentPacketLen), so a same-length edit stays
-// within it. This is the Ogg analogue of MP4 checkBuiltItems' parsed-size floor; without it, a
-// large-cover file parsed under WithLimits could never be edited.
+// TestPlanWritesBackCoverParsedUnderRaisedLimit: is the regression for the cap's floor: a cover
+
 func TestPlanWritesBackCoverParsedUnderRaisedLimit(t *testing.T) {
 	cover := smallCover()
 	base := parseOpusStreamWith(t, pictureComment(cover))
@@ -88,10 +81,8 @@ func TestPlanWritesBackCoverParsedUnderRaisedLimit(t *testing.T) {
 	}
 }
 
-// TestPlanRejectsCoversJointlyExceedingLimit pins the whole-packet cap: two covers that each fit
-// under the limit individually (so the old per-cover check passed both) but whose comment packet
-// jointly exceeds it are now rejected, rather than writing a file reassembleHeaders would refuse to
-// re-parse at the same limit. A one-cover control at the same limit still succeeds.
+// TestPlanRejectsCoversJointlyExceedingLimit: pins the whole-packet cap: two covers that each fit
+
 func TestPlanRejectsCoversJointlyExceedingLimit(t *testing.T) {
 	cover := smallCover()
 	// Measure the cover-less and one-cover comment packet sizes so the limit can sit strictly
@@ -127,11 +118,8 @@ func TestPlanRejectsCoversJointlyExceedingLimit(t *testing.T) {
 	}
 }
 
-// TestPlanRejectsAdditiveEditPastFloor pins the deliberately locked-in edge: on a file whose
-// comment packet already sits above the write limit (only reachable via a raised WithLimits parse
-// then a lower-limit write), an additive edit that grows the packet past the whole-packet floor is
-// now rejected with a limit hint - where the old per-cover check silently wrote a file a re-parse
-// at the same limit would refuse.
+// TestPlanRejectsAdditiveEditPastFloor: pins the deliberately locked-in edge: on a file whose
+
 func TestPlanRejectsAdditiveEditPastFloor(t *testing.T) {
 	cover := smallCover()
 	base := parseOpusStreamWith(t, pictureComment(cover)) // parsed at the default (high) limit

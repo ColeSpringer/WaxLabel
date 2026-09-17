@@ -1,7 +1,5 @@
-// Package tag defines WaxLabel's canonical, format-neutral tag model: the
-// validated [Key] vocabulary, the presence-aware [TagSet]/[TagPatch] that are
-// authoritative for editing, the typed [Tags] projection used for convenient
-// reads and sugar writes, and [Merge].
+// Package tag is WaxLabel's canonical tag model: [Key], presence-aware
+// [TagSet]/[TagPatch], typed [Tags], and [Merge].
 package tag
 
 import (
@@ -12,59 +10,24 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// Key is a validated canonical tag name. Canonical keys are format-neutral:
-// each codec's mapping layer translates them to and from native
-// representations (Vorbis comment names, ID3 frame IDs, MP4 atoms).
-//
-// A Key is uppercase ASCII. Keys drawn from the published vocabulary (the
-// exported constants below) are "known"; any other valid key is a canonical
-// custom field that passes through read and write unchanged. Native-only
-// entries that have no neutral meaning are modeled separately (see the
-// native editing hatch), not as keys.
+// Key is a validated canonical tag name (uppercase ASCII). Known constants are
+// the vocabulary; other valid keys are custom fields. Codecs map to native forms.
 type Key string
 
-// Validity rules: a key is non-empty, uppercase, printable ASCII (0x20-0x7D)
-// excluding '=' (which separates key from value in Vorbis comments) and
-// excluding lowercase letters. Vorbis comment names are case-insensitive, so
-// canonical keys are normalized to uppercase; requiring that here keeps the
-// canonical form unique, so direct comparisons and round-trips can't silently
-// disagree because of case.
-//
-// The upper bound is 0x7D, not 0x7E, because the Vorbis comment specification stops
-// there: a '~' is a legal APEv2 and ID3 TXXX name byte but not a legal Vorbis field
-// name, and this rule is a charset FLOOR - the intersection of what every format's key
-// syntax accepts - so that a key valid here is representable everywhere a string key is.
-// Admitting the one byte that breaks that would make the promise false for the sake of a
-// character nobody uses.
-//
-// Format-local rules about specific NAMES layer on top of this rather than joining it:
-// APEv2 forbids the item names ID3/TAG/OggS/MP+ ([ape.ReservedItemName]) and Vorbis
-// reserves the CHAPTERxxx and SYNCEDLYRICS namespaces, neither of which is expressible
-// as a byte predicate and neither of which is a charset question. The split is
-// deliberate: a charset floor belongs here, a value-level rule belongs to the format
-// that has it.
+// validKeyByte: printable ASCII 0x20-0x7D except '=' and lowercase. Cap at 0x7D
+// (Vorbis charset floor; '~' is legal in APE/ID3 TXXX but not Vorbis). Format-local
+// name bans (APE reserved, CHAPTER*/SYNCEDLYRICS) are separate.
 func validKeyByte(b byte) bool {
 	return b >= 0x20 && b <= 0x7D && b != '=' && !(b >= 'a' && b <= 'z')
 }
 
-// ParseKey trims surrounding whitespace, normalizes the result to uppercase,
-// then validates it, returning the canonical Key. It accepts any case on input
-// (so "title" becomes TITLE) and ignores surrounding whitespace (so "  X  "
-// becomes X; internal spaces are preserved, since a space is a valid key byte),
-// returning [waxerr.ErrInvalidKey] for empty (or all-whitespace) input or a
-// disallowed byte. ParseKey is the blessed way to build a Key from external
-// input; the exported constants are the way to name a known one.
+// ParseKey trims, uppercases, and validates. Use for external input; constants for known keys.
 func ParseKey(s string) (Key, error) {
-	// Trim before the empty check so an all-whitespace input is rejected as empty
-	// rather than slipping through, and so the offset in a disallowed-byte error is
-	// measured against the trimmed key the caller actually gets.
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return "", fmt.Errorf("%w: empty key", waxerr.ErrInvalidKey)
 	}
-	// Reject non-ASCII before ToUpper. Some confusable runes fold to ASCII letters under
-	// ToUpper, which could turn an invalid field name into a valid key; length-changing
-	// folds would also misalign the invalid-byte offset below.
+	// Reject non-ASCII before ToUpper (confusable folds, offset alignment).
 	for i := 0; i < len(s); i++ {
 		if s[i] >= 0x80 {
 			return "", invalidKeyByteError(s, s[i], i)
@@ -79,12 +42,7 @@ func ParseKey(s string) (Key, error) {
 	return Key(up), nil
 }
 
-// invalidKeyByteError formats ParseKey's "disallowed byte" error. A printable
-// ASCII offender is shown as a character - "contains '=' at offset 3" reads better than
-// "0x3d" - while a control or non-ASCII byte keeps the unambiguous hex form. The range
-// here is printable ASCII at large (through 0x7E), deliberately wider than validKeyByte:
-// it decides how to RENDER an offender, and '~' is a rejected byte that still reads
-// better as a character than as hex.
+// invalidKeyByteError formats a disallowed-byte error (printable as char, else hex).
 func invalidKeyByteError(s string, b byte, offset int) error {
 	if b >= 0x20 && b <= 0x7E {
 		return fmt.Errorf("%w: %q contains %q at offset %d", waxerr.ErrInvalidKey, s, rune(b), offset)

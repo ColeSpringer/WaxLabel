@@ -15,10 +15,9 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// The write-side differential is the real proof of interoperability: after we
-// edit and save a file, an independent tool (ffmpeg/ffprobe) must read back the
-// values we wrote, and must accept our output as a valid FLAC stream. These
-// tests skip cleanly when the tools are absent.
+// The write-side differential is the real proof of interoperability: after we edit and save a file,
+// an independent tool (ffmpeg/ffprobe) must read back the values we wrote, and must accept our
+// output as a valid FLAC stream.
 
 func TestDifferentialFFprobeReadsOurTags(t *testing.T) {
 	requireTool(t, "ffprobe")
@@ -94,12 +93,7 @@ func TestDifferentialFFmpegAcceptsOurOutput(t *testing.T) {
 	}
 }
 
-// requireTool guards a differential test on the presence of an external CLI
-// (ffprobe/ffmpeg). When the tool is missing it skips, so the suite stays green
-// on machines without ffmpeg - unless WAXLABEL_REQUIRE_FFMPEG is set (as the CI
-// differential job does), in which case a missing tool is a hard failure, so a
-// broken ffmpeg install can't silently turn the write-side differential gate
-// green. The env var covers both binaries, since ffprobe ships with ffmpeg.
+// requireTool guards a differential test on the presence of an external CLI (ffprobe/ffmpeg).
 func requireTool(t *testing.T, name string) {
 	t.Helper()
 	if _, err := exec.LookPath(name); err == nil {
@@ -112,15 +106,12 @@ func requireTool(t *testing.T, name string) {
 	t.Skipf("%s not available", name)
 }
 
-// ffmpegRequired reports whether a differential leg that cannot run here is a failure
-// rather than a skip: the CI differential job sets it, so a broken ffmpeg cannot turn the
-// gate green by skipping.
+// ffmpegRequired reports whether a differential leg that cannot run here is a failure rather than a
+// skip: the CI differential job sets it, so a broken ffmpeg cannot turn the gate green by skipping.
 func ffmpegRequired() bool { return os.Getenv("WAXLABEL_REQUIRE_FFMPEG") != "" }
 
-// ffmpegEncode runs ffmpeg with args and writes path, returning it. An encode ffmpeg
-// cannot do here (a codec this build lacks) skips the leg, or fails it under
-// WAXLABEL_REQUIRE_FFMPEG. t is the T of the leg, so a Fatal or Skip lands on the
-// goroutine running it.
+// ffmpegEncode runs ffmpeg with args and writes path, returning it. An encode ffmpeg cannot do here
+// (a codec this build lacks) skips the leg, or fails it under WAXLABEL_REQUIRE_FFMPEG.
 func ffmpegEncode(t *testing.T, path string, args ...string) string {
 	t.Helper()
 	full := append([]string{"-hide_banner", "-loglevel", "error"}, args...)
@@ -133,12 +124,8 @@ func ffmpegEncode(t *testing.T, path string, args ...string) string {
 	return path
 }
 
-// probeStream is what ffprobe makes of a file's first audio stream: every field the
-// differential tests compare, from one invocation. ffprobe writes most numbers as strings
-// in its JSON and leaves a field out, or writes "N/A", when the demuxer does not set it,
-// so an optional number reads as 0 when absent and Profile is empty then. SampleRate and
-// Channels are never absent for a stream ffprobe reads, so a witness missing them is an
-// error, not a 0 a comparison could pass on. TimeBase is the unit DurationTS counts in.
+// probeStream is what ffprobe makes of a file's first audio stream: every field the differential
+// tests compare, from one invocation.
 type probeStream struct {
 	SampleRate    int
 	Channels      int
@@ -160,8 +147,8 @@ func ffprobeStream(t *testing.T, path string) probeStream {
 		"-show_entries", "stream=sample_rate,channels,profile,bits_per_sample,duration_ts,duration,bit_rate,time_base",
 		"-of", "json", path).Output()
 	if err != nil {
-		// ffprobe says why on stderr - "missing mandatory atoms", an unreadable config -
-		// and without it a failure here is just an exit status.
+		// ffprobe says why on stderr; "missing mandatory atoms", an unreadable config, and without it a
+		// failure here is just an exit status.
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
 			t.Fatalf("ffprobe %s: %v\n%s", path, err, ee.Stderr)

@@ -7,9 +7,7 @@ import (
 	"time"
 )
 
-// TestParseLRCBasics checks the core LRC behaviors: leading metadata tags are skipped, a
-// multi-timestamp line yields one line per stamp, timestamps sort, and an empty-text clear
-// marker is preserved.
+// TestParseLRCBasics: skip metadata tags, split multi-timestamp lines, sort, preserve clear markers.
 func TestParseLRCBasics(t *testing.T) {
 	in := "[ar:Artist]\n[ti:Title]\n[al:Album]\n[length:03:00]\n" +
 		"[00:12.00]Line A\n[00:45.10][00:21.10]Chorus\n[00:30.000]\nplain line with no stamp"
@@ -30,17 +28,11 @@ func TestParseLRCBasics(t *testing.T) {
 	}
 }
 
-// TestParseLRCReportTruncation checks the read-path per-set line cap: an LRC document with
-// more than MaxSyncedLines timed lines is truncated to the cap and reports truncated=true, so
-// the VorbisComment read surfaces a warning rather than dropping lines silently. A document
-// within the cap reports truncated=false. This is the read counterpart to the write-path
-// TruncateSyncedLyrics cap; both keep a >cap set from being handled silently.
+// TestParseLRCReportTruncation: read-path line cap; truncated=true when over MaxSyncedLines.
 func TestParseLRCReportTruncation(t *testing.T) {
 	var b strings.Builder
 	const over = MaxSyncedLines + 5
 	for i := 0; i < over; i++ {
-		// One distinct timestamp per line (minute i, seconds 0), each a valid MM:SS form well
-		// within the LRC minute ceiling.
 		fmt.Fprintf(&b, "[%d:00.000]x\n", i)
 	}
 	lines, truncated := ParseLRCReport(b.String())
@@ -50,36 +42,30 @@ func TestParseLRCReportTruncation(t *testing.T) {
 	if len(lines) != MaxSyncedLines {
 		t.Errorf("truncated line count = %d, want the cap %d", len(lines), MaxSyncedLines)
 	}
-	// A set within the cap does not report truncation.
 	if _, tr := ParseLRCReport("[00:01.00]a\n[00:02.00]b"); tr {
 		t.Errorf("a within-cap document wrongly reported truncated=true")
 	}
 }
 
-// TestParseLRCOffset checks the foobar2000 offset rule (effective = timestamp - offset),
-// clamped at zero, and that the sign is applied as documented.
+// TestParseLRCOffset: effective = timestamp - offset, clamped at zero.
 func TestParseLRCOffset(t *testing.T) {
-	// offset 500 shifts every line 500 ms earlier.
 	got := ParseLRC("[offset:500]\n[00:01.000]A\n[00:00.200]B")
 	if len(got) != 2 {
 		t.Fatalf("got %d lines", len(got))
 	}
-	// B: 200ms - 500ms clamps to 0; A: 1000ms - 500ms = 500ms. Sorted: B(0) then A(500).
 	if got[0].Time != 0 || got[0].Text != "B" {
 		t.Errorf("line0 = %+v, want {0 B}", got[0])
 	}
 	if got[1].Time != 500*time.Millisecond || got[1].Text != "A" {
 		t.Errorf("line1 = %+v, want {500ms A}", got[1])
 	}
-	// A negative offset shifts later.
 	g2 := ParseLRC("[offset:-250]\n[00:01.000]A")
 	if g2[0].Time != 1250*time.Millisecond {
 		t.Errorf("negative offset: %v, want 1.25s", g2[0].Time)
 	}
 }
 
-// TestParseLRCBOM checks a leading UTF-8 BOM (common in Windows-saved LRC files) is stripped
-// so the first timed line is not lost.
+// TestParseLRCBOM: strip leading UTF-8 BOM.
 func TestParseLRCBOM(t *testing.T) {
 	got := ParseLRC("\ufeff[00:01.000]One\n[00:12.000]Two")
 	if len(got) != 2 || got[0].Text != "One" {
@@ -87,23 +73,18 @@ func TestParseLRCBOM(t *testing.T) {
 	}
 }
 
-// TestParseLRCInlineOffset checks an [offset:N] tag co-located before a timestamp on one
-// line is applied without losing that line's lyric (the offset and the stamp are both read
-// in the single leading-tag pass).
+// TestParseLRCInlineOffset: inline [offset:N] before a timestamp on the same line.
 func TestParseLRCInlineOffset(t *testing.T) {
 	got := ParseLRC("[offset:500][00:01.000]Hello")
 	if len(got) != 1 || got[0].Text != "Hello" || got[0].Time != 500*time.Millisecond {
 		t.Errorf("inline offset = %+v, want one {500ms Hello}", got)
 	}
-	// An offset on its own line still applies to a following line.
 	if g := ParseLRC("[offset:500]\n[00:01.000]A"); len(g) != 1 || g[0].Time != 500*time.Millisecond {
 		t.Errorf("standalone offset = %+v, want {500ms A}", g)
 	}
 }
 
-// TestLRCFractionScaling checks the fractional second scales by digit count: ".5" is
-// 500ms, ".05" is 50ms, ".050" is 50ms, and ".345" is 345ms. Both the centisecond LRC
-// convention and the millisecond form WaxLabel emits should parse.
+// TestLRCFractionScaling: fractional seconds scale by digit count.
 func TestLRCFractionScaling(t *testing.T) {
 	cases := map[string]time.Duration{
 		"[00:00.5]x":   500 * time.Millisecond,
@@ -121,15 +102,13 @@ func TestLRCFractionScaling(t *testing.T) {
 	}
 }
 
-// TestLRCTimestampForms checks the lenient timestamp forms the parser accepts beyond the
-// canonical [mm:ss.mmm]: an optional three-part hours form ([hh:mm:ss.fff], used by some
-// long files) and surrounding whitespace inside the brackets.
+// TestLRCTimestampForms: HH:MM:SS form and whitespace inside brackets.
 func TestLRCTimestampForms(t *testing.T) {
 	cases := map[string]time.Duration{
 		"[01:02:03.500]x": time.Hour + 2*time.Minute + 3*time.Second + 500*time.Millisecond,
 		"[2:00:00]x":      2 * time.Hour,
-		"[ 00:12.00 ]x":   12 * time.Second,  // edge whitespace inside the bracket
-		"[120:00.00]x":    120 * time.Minute, // a large minute count (the standard long form)
+		"[ 00:12.00 ]x":   12 * time.Second,
+		"[120:00.00]x":    120 * time.Minute,
 	}
 	for in, want := range cases {
 		got := ParseLRC(in)
@@ -137,14 +116,12 @@ func TestLRCTimestampForms(t *testing.T) {
 			t.Errorf("ParseLRC(%q) = %+v, want one line at %v", in, got, want)
 		}
 	}
-	// A spaced offset tag still applies.
 	if got := ParseLRC("[ offset:500 ]\n[00:01.000]A"); len(got) != 1 || got[0].Time != 500*time.Millisecond {
 		t.Errorf("spaced offset: %+v, want one line at 500ms", got)
 	}
 }
 
-// TestParseLRCCarriageReturns is a regression guard: classic-Mac pure-CR line endings (and CRLF)
-// must be split like LF, not read as one concatenated line.
+// TestParseLRCCarriageReturns: CR and CRLF split like LF.
 func TestParseLRCCarriageReturns(t *testing.T) {
 	for _, sep := range []string{"\r", "\r\n", "\n"} {
 		got := ParseLRC("[00:01.00]A" + sep + "[00:02.00]B")
@@ -154,14 +131,12 @@ func TestParseLRCCarriageReturns(t *testing.T) {
 	}
 }
 
-// TestParseLRCRejectsOutOfRangeSeconds is a regression guard: a seconds field >= 60 is malformed
-// in every form, and minutes >= 60 are rejected only in the three-part HH:MM:SS form; the
-// two-part MM:SS form keeps a large minute count for a long track ("[120:00.00]").
+// TestParseLRCRejectsOutOfRangeSeconds: seconds >= 60 rejected; large minutes OK in MM:SS form.
 func TestParseLRCRejectsOutOfRangeSeconds(t *testing.T) {
 	for _, in := range []string{
-		"[00:99.00]x", // 99 seconds, MM:SS
-		"[01:99:00]x", // 99 seconds, HH:MM:SS
-		"[01:60:00]x", // 60 minutes, HH:MM:SS
+		"[00:99.00]x",
+		"[01:99:00]x",
+		"[01:60:00]x",
 	} {
 		if got := ParseLRC(in); got != nil {
 			t.Errorf("ParseLRC(%q) = %+v, want no line (out-of-range field)", in, got)
@@ -172,14 +147,11 @@ func TestParseLRCRejectsOutOfRangeSeconds(t *testing.T) {
 	}
 }
 
-// TestFormatLRCRoundTrip checks FormatLRC emits [mm:ss.mmm] and round-trips losslessly
-// through ParseLRC, including a long (>99 minute) timestamp and an empty clear marker.
+// TestFormatLRCRoundTrip: FormatLRC round-trips through ParseLRC.
 func TestFormatLRCRoundTrip(t *testing.T) {
-	// Already sorted by time, since ParseLRC returns lines sorted (the round-trip must not
-	// reorder them).
 	lines := []SyncedLine{
 		{Time: 0, Text: "start"},
-		{Time: time.Hour, Text: ""}, // clear marker at 60:00
+		{Time: time.Hour, Text: ""},
 		{Time: 90*time.Minute + 12*time.Second + 345*time.Millisecond, Text: "long"},
 	}
 	out := FormatLRC(lines)
@@ -194,10 +166,7 @@ func TestFormatLRCRoundTrip(t *testing.T) {
 	}
 }
 
-// TestLRCBracketTextRoundTrip checks a lyric line whose text begins with a non-timestamp
-// bracket group (a section marker like "[Chorus]") round-trips: ParseLRC must stop
-// collecting timestamp tags at the first non-timestamp group rather than swallowing the
-// marker as a tag.
+// TestLRCBracketTextRoundTrip: bracketed lyric text (e.g. [Chorus]) round-trips.
 func TestLRCBracketTextRoundTrip(t *testing.T) {
 	for _, text := range []string{"[Chorus]", "[Verse 1] sing along", "[Bridge]", "[Intro]", "la [x] la", "plain"} {
 		lines := []SyncedLine{{Time: time.Second, Text: text}}
@@ -206,28 +175,18 @@ func TestLRCBracketTextRoundTrip(t *testing.T) {
 			t.Errorf("round-trip %q = %+v (LRC %q), want one {1s %q}", text, got, FormatLRC(lines), text)
 		}
 	}
-	// A bare metadata line still contributes no timed line (no leading timestamp).
 	if got := ParseLRC("[ar:Artist]\n[ti:Title]"); got != nil {
 		t.Errorf("metadata-only document yielded lines: %+v", got)
 	}
 }
 
-// TestLRCFieldOverflowRejected checks an absurd minute field, including one that would
-// overflow a time.Duration, is skipped rather than wrapped to an invalid negative value.
-// A huge [offset:] is clamped rather than overflowed.
+// TestLRCFieldOverflowRejected: absurd fields skipped; huge offset clamped, not overflowed.
 func TestLRCFieldOverflowRejected(t *testing.T) {
-	// Minute values past maxLRCField, an hours field large enough to overflow when
-	// multiplied by time.Hour, and an hours value that is valid per-field but whose
-	// minute-normalized form (what FormatLRC emits) exceeds maxLRCField and would not
-	// re-parse, must all be skipped rather than wrapped or made non-round-trippable.
 	for _, in := range []string{"[153722868:00.00]x", "[400000000:00.00]y", "[999999999:00]z", "[2562048:00:00]h", "[2000000:00:00]m"} {
 		if got := ParseLRC(in); len(got) != 0 {
 			t.Errorf("ParseLRC(%q) = %+v, want no line (absurd field skipped)", in, got)
 		}
 	}
-	// A gigantic positive offset is clamped (not overflowed) and applied to the real 10s
-	// line, shifting it back to 0 - the line must be present (exercising the clamp), not
-	// dropped, and non-negative.
 	got := ParseLRC("[offset:99999999999999999][00:10.00]x")
 	if len(got) != 1 {
 		t.Fatalf("huge inline offset: got %d lines, want 1 (the line must survive and exercise the clamp)", len(got))
@@ -235,8 +194,6 @@ func TestLRCFieldOverflowRejected(t *testing.T) {
 	if got[0].Time != 0 {
 		t.Errorf("huge offset applied to 10s line = %v, want 0 (clamped offset shifts it back)", got[0].Time)
 	}
-	// A gigantic negative offset shifts forward but is capped at the re-emittable maximum,
-	// staying non-negative and bounded.
 	for _, ln := range ParseLRC("[offset:-99999999999999999][00:10.00]y") {
 		if ln.Time < 0 || ln.Time > time.Duration(1<<21)*time.Minute {
 			t.Errorf("huge negative offset produced out-of-range time %v", ln.Time)
@@ -244,9 +201,7 @@ func TestLRCFieldOverflowRejected(t *testing.T) {
 	}
 }
 
-// TestFormatLRCFlattensNewlines checks an embedded newline in a line's text is flattened to
-// a space rather than written as a literal record separator (which ParseLRC would read as a
-// line break, dropping everything after it).
+// TestFormatLRCFlattensNewlines: embedded newlines flattened to space on write.
 func TestFormatLRCFlattensNewlines(t *testing.T) {
 	for _, in := range []string{"hello\nworld", "hello\r\nworld", "hello\rworld"} {
 		got := ParseLRC(FormatLRC([]SyncedLine{{Time: time.Second, Text: in}}))
@@ -256,9 +211,7 @@ func TestFormatLRCFlattensNewlines(t *testing.T) {
 	}
 }
 
-// TestFormatLRCSpaceSeparator pins the convention: FormatLRC separates a timestamp from
-// non-empty text with exactly one space, while an empty-text clear marker stays a bare timestamp
-// with no trailing space.
+// TestFormatLRCSpaceSeparator: one space before text; clear marker has no trailing space.
 func TestFormatLRCSpaceSeparator(t *testing.T) {
 	got := FormatLRC([]SyncedLine{
 		{Time: time.Second, Text: "hi"},
@@ -270,18 +223,14 @@ func TestFormatLRCSpaceSeparator(t *testing.T) {
 	}
 }
 
-// TestLRCTimestampShapedTextRoundTrip is the corruption repro: a lyric whose text is
-// itself a literal [mm:ss.xx]-shaped string used to corrupt on FLAC/Ogg - FormatLRC wrote
-// "[00:03.000][00:05.000]hi" with no separator, which ParseLRC read back as two phantom lines. The
-// space separator disambiguates it, so it now round-trips as one line whose text keeps the
-// bracketed prefix - including a lyric that legitimately begins with its own space.
+// TestLRCTimestampShapedTextRoundTrip: timestamp-shaped lyric text round-trips (space separator disambiguates).
 func TestLRCTimestampShapedTextRoundTrip(t *testing.T) {
 	for _, text := range []string{
-		"[00:05.000]hi",                 // text looks like a second timestamp
-		"[00:05.000]",                   // text is exactly a timestamp string
-		"[offset:500]x",                 // text looks like an offset directive
-		"[00:01.000] [00:02.000]spaced", // text is several timestamp-shaped groups
-		" hi",                           // legitimate leading space (written as two, stripped to one)
+		"[00:05.000]hi",
+		"[00:05.000]",
+		"[offset:500]x",
+		"[00:01.000] [00:02.000]spaced",
+		" hi",
 		"  two leading",
 	} {
 		lines := []SyncedLine{{Time: 3 * time.Second, Text: text}}
@@ -292,10 +241,7 @@ func TestLRCTimestampShapedTextRoundTrip(t *testing.T) {
 	}
 }
 
-// TestParseLRCTimestampTextSeparator covers how the read side treats the space between a timestamp
-// group and text, including externally-authored input: a space after a run of adjacent timestamps
-// separates shared text, a space between two timestamps stops collection at the first, and a
-// no-space external line is unaffected (there is no separator to strip).
+// TestParseLRCTimestampTextSeparator: space after adjacent timestamps shares text; space between timestamps stops collection.
 func TestParseLRCTimestampTextSeparator(t *testing.T) {
 	if got := ParseLRC("[00:01.00][00:02.00] chorus"); len(got) != 2 || got[0].Text != "chorus" || got[1].Text != "chorus" {
 		t.Errorf("adjacent-then-space = %+v, want two lines 'chorus'", got)
@@ -308,20 +254,16 @@ func TestParseLRCTimestampTextSeparator(t *testing.T) {
 	}
 }
 
-// FuzzLRCDoubleParse asserts double-parse idempotency: ParseLRC(FormatLRC(ParseLRC(x)))
-// equals ParseLRC(x) line for line. It holds for arbitrary input because ParseLRC's output never
-// contains an embedded newline (it splits on them), so FormatLRC's one non-inverse - flattening an
-// embedded newline to a space - never fires on already-parsed lines. Constructed-line equality is
-// deliberately not asserted (see the round-trip test above for the specific pinned cases).
+// FuzzLRCDoubleParse: ParseLRC(FormatLRC(ParseLRC(x))) == ParseLRC(x).
 func FuzzLRCDoubleParse(f *testing.F) {
 	for _, s := range []string{
 		"[00:01.000]hi",
-		"[00:03.000][00:05.000]hi",       // adjacent timestamps
-		"[00:03.00] [00:05.00]hi",        // space between: text is a timestamp string
-		"[00:01.00][00:02.00] chorus",    // shared text after a run
-		"[offset:500][00:01.000]A",       // offset directive
-		"[ar:Artist]\n[00:02.000] world", // metadata + a spaced line
-		"[00:30.000]",                    // bare clear marker
+		"[00:03.000][00:05.000]hi",
+		"[00:03.00] [00:05.00]hi",
+		"[00:01.00][00:02.00] chorus",
+		"[offset:500][00:01.000]A",
+		"[ar:Artist]\n[00:02.000] world",
+		"[00:30.000]",
 		"plain text no stamp",
 		"\ufeff[00:01.000]bom",
 	} {
@@ -341,7 +283,6 @@ func FuzzLRCDoubleParse(f *testing.F) {
 	})
 }
 
-// TestEqualSyncedLyrics checks element-wise equality across language, descriptor, and lines.
 func TestEqualSyncedLyrics(t *testing.T) {
 	a := []SyncedLyrics{{Language: "eng", Description: "d", Lines: []SyncedLine{{Time: time.Second, Text: "x"}}}}
 	b := []SyncedLyrics{{Language: "eng", Description: "d", Lines: []SyncedLine{{Time: time.Second, Text: "x"}}}}
@@ -362,8 +303,7 @@ func TestEqualSyncedLyrics(t *testing.T) {
 	}
 }
 
-// TestCloneSyncedLyricsDetaches checks the clone deep-copies Lines so a mutation cannot
-// reach back into the source, and preserves nil.
+// TestCloneSyncedLyricsDetaches: clone deep-copies Lines; nil in, nil out.
 func TestCloneSyncedLyricsDetaches(t *testing.T) {
 	if CloneSyncedLyrics(nil) != nil {
 		t.Error("clone of nil should be nil")
@@ -376,8 +316,7 @@ func TestCloneSyncedLyricsDetaches(t *testing.T) {
 	}
 }
 
-// TestSyncedLyricsLoseMetadata checks the language-loss predicate fires only when a set
-// carries a per-set language or descriptor.
+// TestSyncedLyricsLoseMetadata: language/descriptor and embedded line breaks are lossy under LRC store.
 func TestSyncedLyricsLoseMetadata(t *testing.T) {
 	plain := []SyncedLyrics{{Lines: []SyncedLine{{Time: 0, Text: "x"}}}}
 	if SyncedLyricsLoseMetadata(plain, SyncedLyricsLossLanguage) {
@@ -394,8 +333,6 @@ func TestSyncedLyricsLoseMetadata(t *testing.T) {
 	if !SyncedLyricsLoseMetadata(withDesc, SyncedLyricsLossLanguage) {
 		t.Error("a set with a descriptor should be lossy under the LRC store")
 	}
-	// An embedded line break in a line's text is flattened to a space by the LRC store,
-	// so a set carrying one is a lossy carry even with no language or descriptor.
 	for _, brk := range []string{"a\nb", "a\r\nb", "a\rb"} {
 		set := []SyncedLyrics{{Lines: []SyncedLine{{Time: 0, Text: brk}}}}
 		if !SyncedLyricsLoseMetadata(set, SyncedLyricsLossLanguage) {
@@ -404,7 +341,7 @@ func TestSyncedLyricsLoseMetadata(t *testing.T) {
 	}
 }
 
-// FuzzParseLRC asserts the LRC parser never panics and never yields a negative timestamp.
+// FuzzParseLRC: no panic; no negative timestamps.
 func FuzzParseLRC(f *testing.F) {
 	f.Add("")
 	f.Add("[00:12.00]Line")
@@ -412,12 +349,12 @@ func FuzzParseLRC(f *testing.F) {
 	f.Add("[ti:title][99:99.99]weird")
 	f.Add("[[[[::::....")
 	f.Add("[00:00.000][00:00.000]dup\nplain")
-	f.Add("[00:01.000][Chorus]")                      // bracket-leading text (regression)
-	f.Add("[153722868:00.00]overflow")                // minute field overflow (regression)
-	f.Add("[2562048:00:00]hours")                     // hours field overflow (regression)
-	f.Add("[2000000:00:00]minform")                   // hours valid per-field, minute form too big (regression)
-	f.Add("[offset:99999999999999999][00:10.00]huge") // offset overflow (regression)
-	f.Add("[ 01:02:03.50 ]spaced hours")              // whitespace + hours form
+	f.Add("[00:01.000][Chorus]")
+	f.Add("[153722868:00.00]overflow")
+	f.Add("[2562048:00:00]hours")
+	f.Add("[2000000:00:00]minform")
+	f.Add("[offset:99999999999999999][00:10.00]huge")
+	f.Add("[ 01:02:03.50 ]spaced hours")
 	f.Fuzz(func(t *testing.T, text string) {
 		lines := ParseLRC(text)
 		for _, ln := range lines {
@@ -425,30 +362,25 @@ func FuzzParseLRC(f *testing.F) {
 				t.Errorf("negative timestamp %v from %q", ln.Time, text)
 			}
 		}
-		// FormatLRC of the result must re-parse to the same lines (idempotent projection).
 		if got := ParseLRC(FormatLRC(lines)); len(got) != len(lines) {
 			t.Errorf("re-parse changed line count: %d -> %d", len(lines), len(got))
 		}
 	})
 }
 
-// TestParseLRCReportFullDroppedLines checks that the reporting parse variant returns the 1-based
-// line numbers of content the parser silently drops (a malformed timestamp, or a plain untimed
-// text line, or a bare section header) while excluding recognized structure: blank lines, ID
-// metadata tags, and offset/length tags. Those exclusions are what keep an ordinary annotated
-// LRC from being flagged.
+// TestParseLRCReportFullDroppedLines: 1-based line numbers for dropped content; structure tags excluded.
 func TestParseLRCReportFullDroppedLines(t *testing.T) {
 	in := strings.Join([]string{
-		"[ar:Artist]",        // 1: id tag, not dropped
-		"[00:01.00]good",     // 2: timed line
-		"[9:99.99]bad stamp", // 3: malformed timestamp, dropped
-		"just some text",     // 4: plain text, dropped
-		"[Chorus]",           // 5: bare section header, dropped and counted
-		"[offset:+200]",      // 6: offset tag, not dropped
-		"[length:03:45]",     // 7: length tag, not dropped
-		"",                   // 8: blank, not dropped
-		"   ",                // 9: whitespace, not dropped
-		"[00:05.00]good two", // 10: timed line
+		"[ar:Artist]",
+		"[00:01.00]good",
+		"[9:99.99]bad stamp",
+		"just some text",
+		"[Chorus]",
+		"[offset:+200]",
+		"[length:03:45]",
+		"",
+		"   ",
+		"[00:05.00]good two",
 	}, "\n")
 	lines, dropped := ParseLRCReportFull(in)
 	if len(lines) != 2 {
@@ -465,8 +397,7 @@ func TestParseLRCReportFullDroppedLines(t *testing.T) {
 	}
 }
 
-// TestCountsAsDroppedLRCLine pins the per-line classifier the drop count reads: recognized
-// structure yields no drop, while malformed timestamps, untimed text and bare bracket groups do.
+// TestCountsAsDroppedLRCLine: structure tags not dropped; bad stamps and bare bracket groups are.
 func TestCountsAsDroppedLRCLine(t *testing.T) {
 	cases := []struct {
 		line    string
@@ -484,15 +415,15 @@ func TestCountsAsDroppedLRCLine(t *testing.T) {
 		{"[offset:+200]", false},
 		{"[offset:-250]", false},
 		{"[length:03:45]", false},
-		{"[Chorus]", true},      // bare section header: lyric-sheet content the parser drops
-		{"[Verse 1]", true},     // the same with a space
-		{"[nocolonhere]", true}, // a bare group is not structure whatever it spells
-		{"[00.00.00]", true},    // a mistyped timestamp reads as a bare group
+		{"[Chorus]", true},
+		{"[Verse 1]", true},
+		{"[nocolonhere]", true},
+		{"[00.00.00]", true},
 		{"just some text", true},
-		{"[9:99.99]bad", true},       // trailing text after a bad stamp
-		{"[9:99.99]", true},          // bare bad stamp
-		{"[Note: whatever]", true},   // colon'd group that is not recognized metadata
-		{"[Chorus] with text", true}, // a section marker abutting lyric text drops the text
+		{"[9:99.99]bad", true},
+		{"[9:99.99]", true},
+		{"[Note: whatever]", true},
+		{"[Chorus] with text", true},
 	}
 	for _, c := range cases {
 		if got := countsAsDroppedLRCLine(c.line); got != c.dropped {

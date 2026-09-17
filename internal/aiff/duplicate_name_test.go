@@ -9,12 +9,10 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestDuplicateNamePreserved is the regression guard for the finding that a blanket first-wins
-// silently dropped preservable text values: two NAME chunks (both Title, a single-valued text
-// key) must project BOTH values. AIFF maps no number/total key, so the number-pair guard never
-// fires here; dropping the second value would be silent data loss, since both values survive
-// the write - an edit that leaves TITLE alone copies the chunks verbatim, and one that changes
-// it forces an ID3 chunk whose v2.4 TIT2 frame stores both NUL-separated.
+// TestDuplicateNamePreserved is the regression guard for the finding that a blanket
+// first-wins silently dropped preservable text values: two NAME chunks (both Title, a
+// single-valued text key) must project BOTH values. AIFF maps no number/total key, so
+// the number-pair guard never fires here;
 func TestDuplicateNamePreserved(t *testing.T) {
 	chunks := slices.Concat(aiffComm(), aiffSsnd(),
 		aiffChunk("NAME", []byte("First")), aiffChunk("NAME", []byte("Second")))

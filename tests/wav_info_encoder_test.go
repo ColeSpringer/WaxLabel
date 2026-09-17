@@ -9,8 +9,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestWAVISFTReadsAsEncoder checks the ISFT INFO item projects to ENCODER, so dump
-// reports the software stamp ffprobe shows as encoder= instead of leaving it invisible.
+// checks the ISFT INFO item projects to ENCODER, so dump reports the software stamp ffprobe shows
+// as encoder= instead of leaving it invisible.
 func TestWAVISFTReadsAsEncoder(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Song"}, [2]string{"ISFT", "Lavf61.7.100"}), wavData(400))
 	doc := mustParseBytes(t, data)
@@ -23,9 +23,8 @@ func TestWAVISFTReadsAsEncoder(t *testing.T) {
 	}
 }
 
-// TestWAVEncoderWritesISFTNotID3 checks ENCODER's INFO home is used on write: setting it
-// on a LIST/INFO-only WAV updates the ISFT item rather than spawning an id3 chunk to hold
-// a value INFO has a slot for.
+// checks ENCODER's INFO home is used on write: setting it on a LIST/INFO-only WAV updates the ISFT
+// item rather than spawning an id3 chunk to hold a value INFO has a slot for.
 func TestWAVEncoderWritesISFTNotID3(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Song"}), wavData(400))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Encoder, "MyTagger 1.0").Prepare()
@@ -44,10 +43,9 @@ func TestWAVEncoderWritesISFTNotID3(t *testing.T) {
 	}
 }
 
-// TestWAVStripEncoderStampRemovesISFT pins the strip's shape now that ISFT is ENCODER's
-// INFO home: WithStripEncoderStamp alone (no patch) removes the item rather than
-// re-rendering it from the value it just dropped, which is what the pre-mapping item-level
-// skip would have done once the append loop learned to write ISFT.
+// strip's shape now that ISFT is ENCODER's INFO home: WithStripEncoderStamp alone (no patch)
+// removes the item rather than re-rendering it from the value it just dropped, which is what the
+// pre-mapping item-level skip would have done once the append loop learned to write ISFT.
 func TestWAVStripEncoderStampRemovesISFT(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Song"}, [2]string{"ISFT", "Lavf61.7.100"}), wavData(400))
 	plan, err := mustParseBytes(t, data).Edit().Prepare(wl.WithStripEncoderStamp())
@@ -70,10 +68,10 @@ func TestWAVStripEncoderStampRemovesISFT(t *testing.T) {
 	}
 }
 
-// TestWAVAuthoredStampValueIsWritten guards the collision between the strip and an explicit
-// edit: the CLI turns WithStripEncoderStamp on for ANY ENCODER edit, so a strip that judged
-// the canonical value rather than the item filtered the user's own --set ENCODER=Lavf... out
-// of the only container that could hold it and wrote it nowhere, silently, at exit 0.
+// guards the collision between the strip and an explicit edit: the CLI turns WithStripEncoderStamp
+// on for ANY ENCODER edit, so a strip that judged the canonical value rather than the item filtered
+// the user's own --set ENCODER=Lavf... out of the only container that could hold it and wrote it
+// nowhere, silently, at exit 0.
 func TestWAVAuthoredStampValueIsWritten(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -103,11 +101,10 @@ func TestWAVAuthoredStampValueIsWritten(t *testing.T) {
 	}
 }
 
-// TestWAVStripJudgesTheItemNotTheCanonicalValue: with an id3 chunk present the canonical
-// ENCODER is that chunk's TSSE, so a strip that judged it would delete a clean user ISFT on
-// the strength of a stamp in a different container, and would leave a stamped ISFT in place
-// when the TSSE is clean - the second case making the file permanently unfixable, since
-// lint --fix has no canonical value to clear and the plan collapsed to a no-op.
+// with an id3 chunk present the canonical ENCODER is that chunk's TSSE, so a strip that judged it
+// would delete a clean user ISFT on the strength of a stamp in a different container, and would
+// leave a stamped ISFT in place when the TSSE is clean; the second case making the file permanently
+// unfixable, since lint --fix has no canonical value to clear and the plan collapsed to a no-op.
 func TestWAVStripJudgesTheItemNotTheCanonicalValue(t *testing.T) {
 	t.Run("clean ISFT survives a stamped TSSE", func(t *testing.T) {
 		data := wavFile(wavFmtPCM(), wavInfo([2]string{"ISFT", "Sound Forge 10"}),
@@ -141,9 +138,9 @@ func TestWAVStripJudgesTheItemNotTheCanonicalValue(t *testing.T) {
 	})
 }
 
-// TestWAVUnrelatedEditDoesNotPromoteStamp: an edit INFO cannot represent forces an id3 chunk,
-// and the canonical ENCODER reaching it from the ISFT item would copy ffmpeg's leftover into a
-// second container, making WaxLabel author a second copy of the noise it lints against.
+// edit INFO cannot represent forces an id3 chunk, and the canonical ENCODER reaching it from the
+// ISFT item would copy ffmpeg's leftover into a second container, making WaxLabel author a second
+// copy of the noise it lints against.
 func TestWAVUnrelatedEditDoesNotPromoteStamp(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Song"}, [2]string{"ISFT", "Lavf61.7.100"}), wavData(400))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.DiscNumber, "1").Prepare()
@@ -179,8 +176,8 @@ func countWarnings(doc *wl.Document, code wl.WarningCode) int {
 	return n
 }
 
-// TestWAVSetEncoderOverStampIsNotAStrip checks the operation line stays honest: replacing a
-// stamped ISFT is a rewrite the change list already describes, not a strip.
+// checks the operation line stays honest: replacing a stamped ISFT is a rewrite the change list
+// already describes, not a strip.
 func TestWAVSetEncoderOverStampIsNotAStrip(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"ISFT", "Lavf61.7.100"}), wavData(400))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Encoder, "MyTagger 1.0").Prepare(wl.WithStripEncoderStamp())
@@ -195,10 +192,9 @@ func TestWAVSetEncoderOverStampIsNotAStrip(t *testing.T) {
 	}
 }
 
-// TestWAVSlashedTrackStaysInInfo pins the write side of the IPRT="4/9" split: the read path
-// splits the pair into TRACKNUMBER and TRACKTOTAL, and the write recombines it into the one
-// item it came from, so an INFO-only file is not restructured into an id3 chunk to hold the
-// total the read had just derived.
+// write side of the IPRT="4/9" split: the read path splits the pair into TRACKNUMBER and
+// TRACKTOTAL, and the write recombines it into the one item it came from, so an INFO-only file is
+// not restructured into an id3 chunk to hold the total the read had just derived.
 func TestWAVSlashedTrackStaysInInfo(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Old"}, [2]string{"IPRT", "4/9"}), wavData(400))
 	doc := mustParseBytes(t, data)
@@ -228,9 +224,8 @@ func TestWAVSlashedTrackStaysInInfo(t *testing.T) {
 	}
 }
 
-// TestWAVDiscTotalStillForcesID3 is the boundary of the pair recombination: RIFF INFO has no
-// disc identifier at all, so a disc number has no item to ride on and legitimately promotes
-// the file to an id3 chunk.
+// boundary of the pair recombination: RIFF INFO has no disc identifier at all, so a disc number has
+// no item to ride on and legitimately promotes the file to an id3 chunk.
 func TestWAVDiscTotalStillForcesID3(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Song"}), wavData(400))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.DiscNumber, "1").Set(tag.DiscTotal, "2").Prepare()
@@ -247,8 +242,8 @@ func TestWAVDiscTotalStillForcesID3(t *testing.T) {
 	}
 }
 
-// TestWAVTrackTotalAloneForcesID3 is the other boundary: TRACKTOTAL is representable only as
-// the tail of an IPRT, so without a track number there is no item to write it into.
+// other boundary: TRACKTOTAL is representable only as the tail of an IPRT, so without a track
+// number there is no item to write it into.
 func TestWAVTrackTotalAloneForcesID3(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Song"}), wavData(400))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.TrackTotal, "9").Prepare()
@@ -264,11 +259,9 @@ func TestWAVTrackTotalAloneForcesID3(t *testing.T) {
 	}
 }
 
-// TestWAVSlashedTrackRejectsNonNumericPair guards the join against the read that will undo
-// it. A non-numeric track number composes to "A1/9", which reads back as one literal value
-// with the total merged in and lost, so the pair is not representable in INFO and the total
-// must not be written there. It falls through to the id3 chunk, whose writer refuses the
-// same composition for the same reason and warns.
+// guards the join against the read that will undo it. A non-numeric track number composes to
+// "A1/9", which reads back as one literal value with the total merged in and lost, so the pair is
+// not representable in INFO and the total must not be written there.
 func TestWAVSlashedTrackRejectsNonNumericPair(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Song"}, [2]string{"IPRT", "A1"}), wavData(400))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.TrackTotal, "9").Prepare()

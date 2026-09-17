@@ -40,10 +40,7 @@ func TestParseChapterTimestamp(t *testing.T) {
 }
 
 func TestParseChapterTimestampRejects(t *testing.T) {
-	// Every entry must be a usage error: negatives, out-of-range inner fields,
-	// non-numeric input, the Inf/NaN ParseFloat accepts, too many components, and a
-	// magnitude that would overflow int64-nanosecond time.Duration (which must be
-	// rejected, not silently wrapped to a negative duration).
+	// All must be usage errors, including Inf/NaN and int64 ns overflow (no silent wrap).
 	bad := []string{
 		"", "-90", "-01:00", "01:-30", // empty, negative
 		"00:60", "0:00:60", // seconds must be < 60
@@ -94,8 +91,7 @@ func TestSplitChapter(t *testing.T) {
 	}
 }
 
-// essenceOf returns a file's audio-essence digest via the verify command, so a
-// test can assert an edit left the audio untouched.
+// essenceOf returns verify's audio-essence digest for before/after checks.
 func essenceOf(t *testing.T, file string) string {
 	t.Helper()
 	out, _, code := runCLI(t, "--json", "verify", file)
@@ -103,8 +99,7 @@ func essenceOf(t *testing.T, file string) string {
 		t.Fatalf("verify %s exit = %d", file, code)
 	}
 	got := decodeJSONOne[jsonVerify](t, out).Essence
-	// A non-empty digest is the precondition for the before==after invariant to mean
-	// anything: an empty essence would let "" == "" pass the round-trip check trivially.
+	// Non-empty digest required or "" == "" passes trivially.
 	if got == "" {
 		t.Fatalf("verify %s produced an empty essence digest", file)
 	}
@@ -112,8 +107,7 @@ func essenceOf(t *testing.T, file string) string {
 }
 
 func TestSetAddChapterRoundTrip(t *testing.T) {
-	// Adding chapters to an MP4 appends to the existing list and round-trips through
-	// dump; the canonical case (first chapter at 0:00) is the plan's example.
+	// Clear-then-add round-trip; first chapter at 0:00.
 	file := copyFixture(t, sampleM4B)
 	before := essenceOf(t, file)
 	_, _, code := runCLI(t, "set", file, "--clear-chapters",
@@ -125,17 +119,14 @@ func TestSetAddChapterRoundTrip(t *testing.T) {
 	if !strings.Contains(out, "0:00:00.000  Intro") || !strings.Contains(out, "0:01:30.000  Verse") {
 		t.Errorf("dump after add-chapter missing expected chapters:\n%s", out)
 	}
-	// The headline invariant: editing chapters never touches the audio essence.
+	// Chapter edits must not change audio essence.
 	if after := essenceOf(t, file); after != before {
 		t.Errorf("essence changed by chapter edit: %s -> %s", before, after)
 	}
 }
 
 func TestSetAddChapterAppendsToExisting(t *testing.T) {
-	// --add-chapter alone (no --clear-chapters) must APPEND to the file's existing
-	// chapters, not replace them. sample_chapters.m4b ships three chapters; adding one
-	// more must leave all four. This catches an append->replace regression that the
-	// clear-then-add round-trip test would miss.
+	// --add-chapter appends; sample_chapters.m4b has 3, add one -> 4 (append/replace regression).
 	file := copyFixture(t, sampleM4B)
 	before, _, _ := runCLI(t, "dump", file)
 	for _, existing := range []string{"Opening Credits", "Chapter One", "Chapter Two"} {
@@ -158,8 +149,7 @@ func TestSetAddChapterAppendsToExisting(t *testing.T) {
 }
 
 func TestSetAddChapterDedupsExactDuplicates(t *testing.T) {
-	// A repeated --add-chapter (same Start/Title) must be written once, not twice,
-	// while two distinct titles at the same timestamp are both kept.
+	// Same Start+Title dedupes; distinct titles at same start both kept.
 	file := copyFixture(t, sampleM4B)
 	if _, _, code := runCLI(t, "set", file, "--clear-chapters",
 		"--add-chapter", "0:00=Intro",
@@ -179,11 +169,8 @@ func TestSetAddChapterDedupsExactDuplicates(t *testing.T) {
 	}
 }
 
-// TestSetReAddExistingMP4ChapterNoDuplicate: an MP4 chapter reads back a derived
-// End (from the next chapter's start) while a CLI addition has End == 0, so requiring End equality in
-// the dedup made re-adding an existing chapter write a duplicate. Matching Start+Title (and End only
-// when the addition carries one) dedups it: re-adding "0:00=Opening Credits" to a file that already
-// has that chapter leaves the count at 3, with the title appearing once.
+// TestSetReAddExistingMP4ChapterNoDuplicate: dedup matches Start+Title only (MP4 End is derived).
+// Re-adding an existing chapter must not duplicate.
 func TestSetReAddExistingMP4ChapterNoDuplicate(t *testing.T) {
 	file := copyFixture(t, sampleM4B)
 	if _, _, code := runCLI(t, "set", file, "--add-chapter", "0:00=Opening Credits"); code != 0 {
@@ -210,7 +197,7 @@ func TestSetClearChapters(t *testing.T) {
 }
 
 func TestPlanAddChapterShowsOperation(t *testing.T) {
-	// The plan preview surfaces the chapter operation (no write performed).
+	// Plan shows chapter op without writing.
 	out, _, code := runCLI(t, "plan", sampleM4B, "--add-chapter", "0:10=Extra")
 	if code != 0 {
 		t.Fatalf("plan --add-chapter exit = %d, want 0", code)
@@ -221,9 +208,7 @@ func TestPlanAddChapterShowsOperation(t *testing.T) {
 }
 
 func TestSetAddChapterOnFLAC(t *testing.T) {
-	// FLAC stores chapters via the VorbisComment CHAPTERxxx convention, so --add-chapter
-	// succeeds and the chapter round-trips through a re-parse. CHAPTERxxx belongs to the
-	// chapter projection, not the custom tag view.
+	// FLAC CHAPTERxxx is chapter projection, not custom tag view.
 	file := copyFixture(t, sampleFLAC)
 	if _, _, code := runCLI(t, "set", file, "--add-chapter", "0:00=Intro"); code != 0 {
 		t.Fatalf("set --add-chapter on FLAC exit = %d, want 0", code)
@@ -238,8 +223,7 @@ func TestSetAddChapterOnFLAC(t *testing.T) {
 }
 
 func TestSetBadChapterTimestampIsUsageError(t *testing.T) {
-	// A malformed timestamp fails as a usage error (exit 2) before any file is
-	// touched - the validation happens at compile time.
+	// Bad timestamp is usage error before file touch (compile-time validation).
 	file := copyFixture(t, sampleM4B)
 	_, _, code := runCLI(t, "set", file, "--add-chapter", "1:2:3:4=Bad")
 	if code != 2 {

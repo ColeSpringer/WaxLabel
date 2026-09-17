@@ -10,15 +10,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// errFilesDiffer is the sentinel diff returns when two files' canonical metadata
-// differs. It is plain (unclassified), so it maps to exit code 1 - the
-// diff(1)/`git diff --exit-code` convention of "1 = differences found" - and it is
-// returned already-rendered so no error line is printed over the diff output.
+// Sentinel for metadata mismatch: exit 1 (diff convention). Already-rendered so no error line over diff output.
 var errFilesDiffer = errors.New("files differ")
 
-// newDiffCmd builds the "diff" command, which compares two files' canonical
-// metadata. Its exit code follows the diff(1) convention: 0 when the metadata is
-// identical, 1 when it differs, and >=2 for an actual error.
+// newDiffCmd builds diff: compare canonical metadata. Exit 0/1/≥2 like diff(1).
 func newDiffCmd() *cobra.Command {
 	var quiet bool
 	cmd := &cobra.Command{
@@ -41,9 +36,7 @@ func newDiffCmd() *cobra.Command {
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			// --json has a fixed shape, so it overrides --quiet: a quiet JSON diff still
-			// emits the documented object (the exit code carries the verdict either way).
-			// This mirrors verify and set, so the flag pair behaves the same everywhere.
+			// --json overrides --quiet (same as verify/set).
 			quiet = quiet && !jsonMode(cmd)
 			if err := checkEmptyOperands(args...); err != nil {
 				return err
@@ -61,10 +54,7 @@ func newDiffCmd() *cobra.Command {
 			}
 			asJSON := jsonMode(cmd)
 			errOut := cmd.ErrOrStderr()
-			// On a parse failure, prefix the per-file "waxlabel: <path>: <reason>" line the
-			// other commands print in human mode, instead of the classifier's bare reason
-			// without the operand. JSON is unchanged: the raw error returns to dispatch,
-			// which emits the not-found/invalid-data envelope scripts read.
+			// Human mode: per-file error prefix. JSON unchanged (dispatch envelope).
 			parse := func(arg string) (*wl.Document, error) {
 				doc, err := parseInput(ctx, realOf(arg), arg)
 				if err != nil {
@@ -99,8 +89,7 @@ func newDiffCmd() *cobra.Command {
 			if d.identical() {
 				return nil
 			}
-			// Already-rendered: the diff (or nothing, under --quiet) is the output;
-			// dispatch keeps the exit code without printing an error line.
+			// Already-rendered: diff (or silence under --quiet) is output; exit code only.
 			return alreadyRendered(errFilesDiffer)
 		},
 	}
@@ -108,9 +97,7 @@ func newDiffCmd() *cobra.Command {
 	return cmd
 }
 
-// diffResult is the canonical-metadata delta from file a to file b. The tag
-// delta is a shared [tag.Change] list (the same primitive the write-plan preview
-// uses); the picture and chapter sets keep their own count-deltas.
+// Canonical delta a→b. Tags use tag.Change; pictures/chapters have count deltas.
 type diffResult struct {
 	tags         []tag.Change
 	picsA, picsB int
@@ -121,9 +108,7 @@ type diffResult struct {
 	syncedA      int
 	syncedB      int
 	syncedDiffer bool
-	// gainA/gainB are the Ogg Opus header output gains, in Q7.8. The gain is a stream
-	// property rather than a tag, but set --output-gain edits it, so a diff that ignored
-	// it would call two files identical that this tool itself can tell apart.
+	// Ogg Opus header output gain (Q7.8). Not a tag, but set --output-gain edits it.
 	gainA, gainB int
 	gainDiffer   bool
 }
@@ -133,8 +118,7 @@ func (d diffResult) identical() bool {
 	return len(d.tags) == 0 && !d.picsDiffer && !d.chapsDiffer && !d.syncedDiffer && !d.gainDiffer
 }
 
-// computeDiff compares the canonical tags, pictures, chapters, and synced lyrics of a and
-// b, reporting the delta from a to b (a is the left/old side, b the right/new side).
+// Delta from a to b (a=left/old, b=right/new).
 func computeDiff(a, b *wl.Document) diffResult {
 	pa, pb := a.Pictures(), b.Pictures()
 	ca, cb := a.Chapters(), b.Chapters()
@@ -146,11 +130,8 @@ func computeDiff(a, b *wl.Document) diffResult {
 		picsDiffer: !wl.EqualPictures(pa, pb),
 		chapsA:     len(ca),
 		chapsB:     len(cb),
-		// Duration-aware trailing normalization: a reconstructable end difference (a gapless
-		// interior end, or a trailing end that runs to EOF) is not a difference. copy opens a
-		// run-to-EOF trailing end before writing, so the destination refills it to its own EOF
-		// and a copied file's chapters stay equal here even when the two durations differ.
-		// Properties is a method on the Document here (not the codec-path field).
+		// Ignore reconstructable chapter ends (gapless interior, run-to-EOF). copy refills run-to-EOF to dest EOF.
+		// Properties is Document.Properties(), not codec-path field.
 		chapsDiffer:  !wl.EqualChaptersModuloEnds(ca, cb, a.Properties().Duration(), b.Properties().Duration()),
 		syncedA:      len(sa),
 		syncedB:      len(sb),
@@ -161,28 +142,16 @@ func computeDiff(a, b *wl.Document) diffResult {
 	}
 }
 
-// numericAwareTagDiff is tag.Diff with a narrow refinement: a key an MP4 integer atom
-// canonicalizes ([tag.IsMP4CanonicalKey]: the track/disc number/total, MEDIATYPE,
-// ITUNESADVISORY, the movement pair, and BPM) whose old and new values differ only by a leading
-// '+' or leading zeros ("+3"/"01" vs "3"/"1") is not reported as a change when one of the two
-// files is an MP4. Those are exactly the slots MP4 stores as an integer atom
-// (trkn/disk/stik/rtng/©mvi/©mvc/tmpo), so a copy into or out of an MP4 legitimately turns "01"
-// into "1"; treating that delta as no change keeps diff in step with how copy grades it
-// (Carried), the same reconstructable-difference reasoning the chapter diff applies to gapless
-// ends. For BPM the fold also covers an all-zero fraction ("174.0" vs "174" - tmpo stores the
-// same whole number, unwarned), while a genuine fraction ("174.99" vs "175") still reports:
-// tmpo's rounding there is a warned coercion, not a spelling artifact.
-//
-// The fold is deliberately scoped. It applies only when at least one side is an MP4 (the format
-// that canonicalizes); a text-to-text pair - same format or cross-format - stores the value
-// verbatim, so "01" vs "1" is a genuine on-disk difference to report. And it is NOT applied to
-// other numeric keys (play count, ...), which no format canonicalizes - folding those would hide
-// a real difference under a rationale that does not hold for them. Added and removed keys are
-// unaffected; only a same-key change is filtered.
+// tag.Diff plus MP4 canonical-key fold when one side is MP4.
+// Leading '+'/zeros on IsMP4CanonicalKey keys not reported as change (trkn/disk/stik/rtng/©mvi/©mvc/tmpo).
+// Matches copy Carried grading; same idea as chapter end normalization.
+// BPM: fold all-zero fraction ("174.0" vs "174"); genuine fractions still report (warned tmpo rounding).
+// Scope: at least one MP4 side. Text-to-text "01" vs "1" is a real difference.
+// Not applied to other numeric keys (play count, etc.). Added/removed keys unaffected.
 func numericAwareTagDiff(a, b tag.TagSet, fa, fb wl.Format) []tag.Change {
 	changes := tag.Diff(a, b)
 	if fa != wl.FormatMP4 && fb != wl.FormatMP4 {
-		return changes // no MP4 side canonicalizes the value; any numeric delta is genuine
+		return changes // no MP4 side; any numeric delta is genuine
 	}
 	out := changes[:0]
 	for _, c := range changes {
@@ -194,10 +163,9 @@ func numericAwareTagDiff(a, b tag.TagSet, fa, fb wl.Format) []tag.Change {
 	return out
 }
 
-// renderDiff prints the canonical-metadata delta with diff-style -/+/~ markers.
+// Canonical-metadata delta with diff-style -/+/~ markers.
 func renderDiff(w io.Writer, a, b string, d diffResult) {
-	// Escape and stdin-relabel the file paths for the single-line headers (consistent
-	// with dump/lint/caps), so a hostile filename from a glob cannot forge a line.
+	// Escape/relabel paths for headers (same as dump/lint/caps).
 	na, nb := displayName(a), displayName(b)
 	if d.identical() {
 		fmt.Fprintf(w, "%s and %s: identical metadata\n", na, nb)
@@ -215,18 +183,12 @@ func renderDiff(w io.Writer, a, b string, d diffResult) {
 	}
 }
 
-// renderChangeLine prints one tag change with diff-style -/+/~ markers at the
-// given indent. It delegates to [tag.Change.String] - the single change-line
-// formatter shared by the diff command, the write-plan change preview, and
-// library consumers - so their formatting cannot drift and the untrusted change
-// values are sanitized for the terminal in exactly one place.
+// One tag change at indent. Delegates to tag.Change.String (shared with write-plan preview); sanitization in one place.
 func renderChangeLine(w io.Writer, indent string, c tag.Change) {
 	fmt.Fprintf(w, "%s%s\n", indent, c.String())
 }
 
-// renderCountDelta prints a picture/chapter set delta. When the counts are equal
-// but the contents differ (e.g. a replaced cover or a retitled chapter), "N -> N"
-// would read as a no-op, so it says the contents differ explicitly.
+// Set count delta. Equal count but different contents: say "contents differ", not "N -> N".
 func renderCountDelta(w io.Writer, label string, differ bool, a, b int) {
 	if !differ {
 		return
@@ -238,11 +200,8 @@ func renderCountDelta(w io.Writer, label string, differ bool, a, b int) {
 	fmt.Fprintf(w, "  %s: %d -> %d\n", label, a, b)
 }
 
-// jsonDiff is the machine-readable canonical-metadata delta. The three count objects are
-// always present (like the tags array), each carrying a `changed` discriminator, so a consumer
-// reads `chapters.changed` rather than inferring a difference from key presence or a != b -
-// the latter cannot distinguish "contents differ at equal count" (a replaced cover, a retitled
-// chapter) from a no-op.
+// Machine-readable delta. Count objects always present with changed flag.
+// Avoids inferring from presence or a!=b (equal-count content change vs no-op).
 type jsonDiff struct {
 	SchemaVersion int           `json:"schemaVersion"`
 	FileA         string        `json:"a"`
@@ -252,13 +211,11 @@ type jsonDiff struct {
 	Pictures      jsonDiffCount `json:"pictures"`
 	Chapters      jsonDiffCount `json:"chapters"`
 	SyncedLyrics  jsonDiffCount `json:"syncedLyrics"`
-	// OutputGain is present only when the two files' header gains differ; every other
-	// format reports none, so an always-present object would be noise on most diffs.
+	// Omitted unless gain differs; most formats have none.
 	OutputGain *jsonDiffValue `json:"outputGain,omitempty"`
 }
 
-// jsonDiffValue is the delta for a single-valued property, the counterpart to
-// [jsonDiffCount] for a dimension that is one value rather than a set.
+// Single-value delta; counterpart to jsonDiffCount.
 type jsonDiffValue struct {
 	A string `json:"a"`
 	B string `json:"b"`
@@ -271,8 +228,7 @@ type jsonDiffTag struct {
 	B      []string `json:"b,omitempty"`
 }
 
-// jsonDiffCount is a set's before/after count plus whether the set changed at all - the flag
-// disambiguates an equal-count contents change (Changed true, A == B) from no difference.
+// Set before/after count plus changed; disambiguates equal-count content change from no-op.
 type jsonDiffCount struct {
 	A       int  `json:"a"`
 	B       int  `json:"b"`

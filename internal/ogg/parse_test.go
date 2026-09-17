@@ -76,9 +76,8 @@ func TestPlanRefusesNonAlignedWrite(t *testing.T) {
 	}
 }
 
-// TestChapterCapabilityRepresentation pins Ogg's chapter capability. Both Ogg Vorbis and
-// Ogg Opus store chapters via CHAPTERxxx comments, with full read/write access and
-// start+title fidelity.
+// TestChapterCapabilityRepresentation: pins Ogg's chapter capability
+
 func TestChapterCapabilityRepresentation(t *testing.T) {
 	for _, c := range []Codec{NewVorbis(), NewOpus()} {
 		caps := c.Capabilities(nil, core.DefaultWriteOptions())

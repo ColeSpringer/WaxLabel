@@ -1,6 +1,4 @@
-// This file covers APEv2 item names. APE keys are free-form UTF-8 with no
-// registry, so the mapping is a convention table: the spellings foobar2000,
-// Mp3tag, and the Monkey's Audio tools actually write.
+// This file covers APEv2 item names. Convention table for foobar2000/Mp3tag spellings.
 package mapping
 
 import (
@@ -9,9 +7,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// apeKeys folds common APE item names onto canonical keys. Names not listed fall
-// through to [tag.ParseKey], so an unrecognized item still becomes a custom field.
-// Matching is case-insensitive.
+// apeKeys folds common APE item names onto canonical keys. Unlisted names fall through to
+// [tag.ParseKey]. Case-insensitive.
 var apeKeys = map[string]tag.Key{
 	"title":        tag.Title,
 	"artist":       tag.Artist,
@@ -34,15 +31,9 @@ var apeKeys = map[string]tag.Key{
 	"isrc":         tag.ISRC,
 	"catalog":      tag.CatalogNumber,
 	"label":        tag.Label,
-	// APE's own spellings for release status and type. The shared alias table carries
-	// them too, so these rows are belt and braces: they pin the spelling to this mapping
-	// rather than leaving it to a table another format owns.
 	"musicbrainz_albumstatus": tag.ReleaseStatus,
 	"musicbrainz_albumtype":   tag.ReleaseType,
-	// The Matroska native tag spellings are edit aliases on every format
-	// (tag/aliases.go), so APE items using them must project onto the same
-	// canonical keys here or a set under the spelling would append beside the
-	// item instead of replacing it.
+	// Matroska native spellings (tag/aliases.go edit aliases); needed so sets replace, not append.
 	"lead_performer": tag.Artist,
 	"date_recorded":  tag.RecordingDate,
 	"date_released":  tag.ReleaseDate,
@@ -59,11 +50,7 @@ var apeKeys = map[string]tag.Key{
 	"content_group":  tag.Grouping,
 }
 
-// apeNames is the write-side spelling for the canonical keys whose conventional
-// APE item name is not the key itself. APE display names are mixed case by
-// convention ("Album Artist", not "ALBUMARTIST"), and third-party tools match on
-// them case-insensitively but show what is stored, so writing the conventional
-// form is what makes the file look right in foobar2000 and Mp3tag.
+// apeNames is write-side spelling where the conventional APE name differs from the key.
 var apeNames = map[tag.Key]string{
 	tag.Title:         "Title",
 	tag.Artist:        "Artist",
@@ -88,12 +75,8 @@ var apeNames = map[tag.Key]string{
 	tag.Label:         "Label",
 }
 
-// CanonicalAPE maps a native APE item name (any case, ignoring surrounding
-// whitespace) to its canonical key: the APE convention table first, then the shared
-// read-side alias table every other codec resolves through (so an APE "DATE" reads
-// as RECORDINGDATE exactly as a Vorbis one does), then the key itself. It reports
-// ok=false for a name that is none of those, which the caller drops from the
-// canonical view while preserving the item's bytes.
+// CanonicalAPE maps a native APE item name to its canonical key: apeKeys, then [tag.AliasKey],
+// then [tag.ParseKey].
 func CanonicalAPE(name string) (tag.Key, bool) {
 	if k, ok := apeKeys[strings.ToLower(strings.TrimSpace(name))]; ok {
 		return k, true
@@ -108,8 +91,7 @@ func CanonicalAPE(name string) (tag.Key, bool) {
 	return k, true
 }
 
-// APEName maps a canonical key to the item name used when writing it. Keys with no
-// convention write their own name verbatim.
+// APEName returns the APE item name to write for a canonical key.
 func APEName(key tag.Key) string {
 	if name, ok := apeNames[key]; ok {
 		return name

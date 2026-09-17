@@ -11,8 +11,7 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// TestSplitSyncedLyric checks the --add-synced-lyric assignment parser: a timestamp before
-// '=' and verbatim text after (empty and '='-bearing text allowed).
+// TestSplitSyncedLyric: --add-synced-lyric parser; timestamp before '=', text verbatim after.
 func TestSplitSyncedLyric(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -42,8 +41,7 @@ func TestSplitSyncedLyric(t *testing.T) {
 	}
 }
 
-// TestCLISyncedLyricsFile exercises the end-to-end CLI path: author synced lyrics from an
-// LRC file, then read them back through dump --json.
+// TestCLISyncedLyricsFile: LRC file round-trip via set and dump --json.
 func TestCLISyncedLyricsFile(t *testing.T) {
 	lrc := filepath.Join(t.TempDir(), "song.lrc")
 	if err := os.WriteFile(lrc, []byte("[ti:Song]\n[00:01.00]One\n[00:12.50]Two\n[00:30.00]\n"), 0o644); err != nil {
@@ -85,7 +83,7 @@ func TestCLISyncedLyricsFile(t *testing.T) {
 	}
 }
 
-// TestCLIAddSyncedLyric exercises --add-synced-lyric building one set from individual lines.
+// TestCLIAddSyncedLyric: --add-synced-lyric builds one set from individual lines.
 func TestCLIAddSyncedLyric(t *testing.T) {
 	file := copyFixture(t, "../../testdata/notags.mp3")
 	_, errb, code := runCLI(t, "set", file,
@@ -105,8 +103,7 @@ func TestCLIAddSyncedLyric(t *testing.T) {
 	}
 }
 
-// reportHasWarning reports whether a set/plan --json report array carries a warning with
-// the given code.
+// reportHasWarning reports whether set/plan --json output has a warning with code.
 func reportHasWarning(t *testing.T, out, code string) bool {
 	t.Helper()
 	for _, r := range decodeJSONList[jsonReport](t, out) {
@@ -119,10 +116,7 @@ func reportHasWarning(t *testing.T, out, code string) bool {
 	return false
 }
 
-// TestCLISyncedLyricsLangUndefinedWarns: authoring an ID3 synced-lyrics language of "xxx"
-// (the ISO-639-2 "undefined" marker, case-insensitively) is accepted and stored (exit 0),
-// but must warn that it reads back with no language, since a silent downgrade is exactly
-// what this surfaces. A real language does not warn. The lines themselves still store.
+// TestCLISyncedLyricsLangUndefinedWarns: ISO-639-2 "xxx" stores but warns (reads back with no language).
 func TestCLISyncedLyricsLangUndefinedWarns(t *testing.T) {
 	t.Parallel()
 	const code = "synced-lyrics-metadata-dropped"
@@ -138,7 +132,7 @@ func TestCLISyncedLyricsLangUndefinedWarns(t *testing.T) {
 		}
 	}
 
-	// A real language stores cleanly with no undefined-marker warning.
+	// Real language: no undefined-marker warning.
 	file := copyFixture(t, "../../testdata/notags.mp3")
 	out, errb, exit := runCLI(t, "--json", "set", file, "--add-synced-lyric", "0:01=hi", "--synced-lyrics-lang", "eng")
 	if exit != 0 {
@@ -149,7 +143,7 @@ func TestCLISyncedLyricsLangUndefinedWarns(t *testing.T) {
 	}
 }
 
-// TestPluralUnit checks the count formatter behind the synced-lyrics dump header.
+// TestPluralUnit: count formatter for synced-lyrics dump header.
 func TestPluralUnit(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -169,8 +163,7 @@ func TestPluralUnit(t *testing.T) {
 	}
 }
 
-// TestCLISyncedLyricsDumpHeaderCountsLines checks the dump header names both the set count
-// and the total line count, so the number no longer misreads as a line count.
+// TestCLISyncedLyricsDumpHeaderCountsLines: header shows set count and line count.
 func TestCLISyncedLyricsDumpHeaderCountsLines(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, "../../testdata/notags.mp3")
@@ -187,8 +180,7 @@ func TestCLISyncedLyricsDumpHeaderCountsLines(t *testing.T) {
 	}
 }
 
-// TestCLICapsSyncedLyrics checks caps reports the synced-lyrics dimension as writable for
-// the SYLT and LRC formats.
+// TestCLICapsSyncedLyrics: caps reports synced lyrics writable for SYLT/LRC formats.
 func TestCLICapsSyncedLyrics(t *testing.T) {
 	for _, format := range []string{"mp3", "flac", "ogg", "wav", "m4a"} {
 		out, _, code := runCLI(t, "caps", "--format", format, "--json")
@@ -202,8 +194,7 @@ func TestCLICapsSyncedLyrics(t *testing.T) {
 		if jc.SyncedLyrics == nil {
 			t.Fatalf("caps %s: no syncedLyrics dimension", format)
 		}
-		// MP4 (m4a) carries synced lyrics in a timed-text track, not metadata, so its
-		// write level is none; the SYLT/LRC formats are full.
+		// MP4 (m4a): timed-text track, write none; SYLT/LRC formats: full.
 		wantFull := format != "m4a"
 		if got := jc.SyncedLyrics.Write == "full"; got != wantFull {
 			t.Errorf("caps %s: syncedLyrics write = %q, wantFull=%v", format, jc.SyncedLyrics.Write, wantFull)
@@ -211,9 +202,7 @@ func TestCLICapsSyncedLyrics(t *testing.T) {
 	}
 }
 
-// TestTransferLabelSyncedLyrics checks the copy report names a synced-lyrics transfer item
-// rather than printing a blank label (it has no key, so a missing switch arm would fall
-// through to the empty default).
+// TestTransferLabelSyncedLyrics: copy report labels synced-lyrics item (no key; empty default otherwise).
 func TestTransferLabelSyncedLyrics(t *testing.T) {
 	got := transferLabel(wl.TransferItem{Kind: wl.TransferSyncedLyric, Count: 2})
 	if got != "synced lyrics (2)" {
@@ -221,9 +210,7 @@ func TestTransferLabelSyncedLyrics(t *testing.T) {
 	}
 }
 
-// TestCLISyncedLyricsLangValidation checks a malformed --synced-lyrics-lang is rejected
-// once up front (a usage error, exit 2) rather than silently padded into the SYLT field.
-// The validation should not depend on parsing a target file.
+// TestCLISyncedLyricsLangValidation: bad --synced-lyrics-lang is exit 2 up front; no file parse needed.
 func TestCLISyncedLyricsLangValidation(t *testing.T) {
 	file := copyFixture(t, "../../testdata/notags.mp3")
 	for _, bad := range []string{"en", "zz", "english", "e1g"} {
@@ -231,13 +218,12 @@ func TestCLISyncedLyricsLangValidation(t *testing.T) {
 		if code != 2 {
 			t.Errorf("--synced-lyrics-lang %q exit = %d, want 2 (usage error)", bad, code)
 		}
-		// The message promises 3 ASCII letters, not a full ISO-639-2 registry lookup (the
-		// validator accepts any 3 letters), so it must not overpromise a code check it never does.
+		// Message says 3 ASCII letters, not ISO-639-2 registry lookup.
 		if !strings.Contains(errb, "3 ASCII letters") {
 			t.Errorf("--synced-lyrics-lang %q message = %q, want it to mention \"3 ASCII letters\"", bad, errb)
 		}
 	}
-	// Any 3 ASCII letters are accepted, including one that is not a registered ISO-639-2 code.
+	// Any 3 ASCII letters accepted (including unregistered codes).
 	for _, ok := range []string{"eng", "zzz"} {
 		if _, errb, code := runCLI(t, "set", file, "--add-synced-lyric", "0:00=Hi", "--synced-lyrics-lang", ok); code != 0 {
 			t.Errorf("--synced-lyrics-lang %q exit = %d: %s", ok, code, errb)
@@ -245,8 +231,7 @@ func TestCLISyncedLyricsLangValidation(t *testing.T) {
 	}
 }
 
-// TestCLISyncedLyricsLangUppercaseCanonicalized checks that an uppercase
-// --synced-lyrics-lang is stored and dumped as canonical lowercase ISO-639-2.
+// TestCLISyncedLyricsLangUppercaseCanonicalized: uppercase lang stored/dumped as lowercase ISO-639-2.
 func TestCLISyncedLyricsLangUppercaseCanonicalized(t *testing.T) {
 	file := copyFixture(t, "../../testdata/notags.mp3")
 	if _, errb, code := runCLI(t, "set", file, "--add-synced-lyric", "0:00=Hi", "--synced-lyrics-lang", "ENG"); code != 0 {
@@ -259,15 +244,12 @@ func TestCLISyncedLyricsLangUppercaseCanonicalized(t *testing.T) {
 	}
 }
 
-// TestCLISyncedLyricsUnsupported checks authoring synced lyrics on a format that cannot store
-// them (MP4) drops the set with a warning rather than failing, so a mixed edit still applies
-// its storable part (a copy behaves the same way). A storable TITLE alongside the unsupported
-// set is written, the drop surfaces as synced-lyrics-unsupported, and --strict re-escalates it
-// to a failure.
+// TestCLISyncedLyricsUnsupported: MP4 drops synced lyrics with warning; storable edits still apply.
+// --strict re-escalates.
 func TestCLISyncedLyricsUnsupported(t *testing.T) {
 	const code = "synced-lyrics-unsupported"
 
-	// A mixed edit: the storable TITLE lands, the unsupported synced-lyrics set is dropped.
+	// Mixed edit: TITLE kept, synced lyrics dropped.
 	file := copyFixture(t, "../../testdata/notags.m4a")
 	out, errb, exit := runCLI(t, "--json", "set", file, "--set", "TITLE=KeepMe", "--add-synced-lyric", "0:00=Hi")
 	if exit != 0 {
@@ -285,7 +267,7 @@ func TestCLISyncedLyricsUnsupported(t *testing.T) {
 		t.Errorf("synced lyrics = %+v, want none (dropped on an MP4)", jd.SyncedLyrics)
 	}
 
-	// An all-unstorable request is a no-op success that still surfaces the drop warning.
+	// All-unstorable: no-op success, still warns.
 	file2 := copyFixture(t, "../../testdata/notags.m4a")
 	out2, errb2, exit2 := runCLI(t, "--json", "set", file2, "--add-synced-lyric", "0:00=Hi")
 	if exit2 != 0 {
@@ -295,7 +277,7 @@ func TestCLISyncedLyricsUnsupported(t *testing.T) {
 		t.Errorf("an all-unstorable set must still warn %q\n%s", code, out2)
 	}
 
-	// --strict re-escalates the drop to a per-file failure.
+	// --strict fails on dropped unsupported set.
 	file3 := copyFixture(t, "../../testdata/notags.m4a")
 	_, _, exit3 := runCLI(t, "set", file3, "--strict", "--add-synced-lyric", "0:00=Hi")
 	if exit3 == 0 {

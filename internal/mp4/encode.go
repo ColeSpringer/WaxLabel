@@ -15,10 +15,7 @@ import (
 // buildItems renders the edited canonical tags into ilst items, appends the
 // pre-resolved cover item(s) (see coverItemsToWrite - either the re-encoded edited
 // pictures or the parsed covr carried verbatim), then the preserved items (unknown
-// atoms and foreign freeforms kept verbatim) in their original order. The canonical
-// items come first in a stable order derived from the tag set's key order, so the same
-// input and edit produce the same bytes. Number/total pairs (trkn, disk) are
-// special-cased; everything else is a text atom (known four-cc) or a freeform.
+// atoms and foreign freeforms kept verbatim) in their original order.
 func buildItems(edited tag.TagSet, covr []item, preserved []item, numericGenre bool) []item {
 	var out []item
 	consumed := map[tag.Key]bool{}
@@ -95,14 +92,9 @@ func buildItems(edited tag.TagSet, covr []item, preserved []item, numericGenre b
 	return dedupePreservedItems(out, preserved)
 }
 
-// dedupePreservedItems appends the preserved items (unknown atoms and foreign freeforms kept
-// verbatim) after the rebuilt canonical items, dropping any preserved item whose atom identity a
-// rebuilt item already emits. A known atom with malformed content is owned:false, so it is kept
-// verbatim by preservedItems while buildItems re-emits the fresh canonical atom of the same type;
-// without this de-duplication the output would carry two atoms of one identity (e.g. a corrupt
-// \xa9nam beside the re-rendered one). It reasons about the whole rebuilt output, so a file with a
-// valid and a malformed covr, edited with pictures unchanged, carries the valid covr via covrItems
-// and the malformed duplicate is dropped - a conformant file has one covr, no canonical data lost.
+// dedupePreservedItems appends the preserved items (unknown atoms and foreign freeforms
+// kept verbatim) after the rebuilt canonical items, dropping any preserved item whose
+// atom identity a rebuilt item already emits.
 func dedupePreservedItems(built, preserved []item) []item {
 	emitted := map[itemKey]bool{}
 	for _, it := range built {
@@ -117,26 +109,21 @@ func dedupePreservedItems(built, preserved []item) []item {
 	return out
 }
 
-// itemKey is an ilst item's de-duplication identity: the four-cc name, plus the mean and name of a
-// freeform "----" atom. Keeping mean/name as their own comparable fields avoids both a separator
-// hack and cloning the (potentially large) payload into a string just to key a map.
+// itemKey is an ilst item's de-duplication identity: the four-cc name, plus the mean
+// and name of a freeform "----" atom.
 type itemKey struct {
 	name    [4]byte
 	mean    string
 	subName string
 }
 
-// mdtaItemKey keys an mdta item by its resolved key name rather than its four-byte index:
-// the index is an artifact of the keys table, so two items naming the same key can carry
-// different indices and must still de-duplicate. It reuses subName, which no mdta item
-// otherwise sets.
+// mdtaItemKey keys an mdta item by its resolved key name rather than its four-byte
+// index: the index is an artifact of the keys table, so two items naming the same key
+// can carry different indices and must still de-duplicate.
 func mdtaItemKey(key string) itemKey { return itemKey{subName: key} }
 
-// itemIdentity keys an ilst item by the atom slot a rebuilt canonical item would occupy. For most
-// atoms that is the four-cc alone, but a freeform "----" atom must be keyed by its mean+name too:
-// several legitimate foreign freeforms share the "----" four-cc and differ only there, so keying on
-// the four-cc alone would wrongly drop them. A malformed freeform leaves mean/name empty, which
-// cannot match a rebuilt (always parseable, always com.apple.iTunes-mean) item, so it is preserved.
+// itemIdentity keys an ilst item by the atom slot a rebuilt canonical item would
+// occupy.
 func itemIdentity(it item) itemKey {
 	if it.mdta() {
 		return mdtaItemKey(it.key)
@@ -148,12 +135,9 @@ func itemIdentity(it item) itemKey {
 	return itemKey{name: it.name}
 }
 
-// covrItems returns the owned (successfully decoded) covr item(s) among parsed ilst items, so an
-// edit that leaves the picture set unchanged can carry the original cover verbatim. A malformed
-// covr whose data atoms fail to parse is not owned, so preservedItems already carries it;
-// returning it here too would append it twice, once as a cover and once as a preserved item, and
-// duplicate it further on every later edit. A conformant file has at most one covr; owned ones
-// are returned in document order.
+// covrItems returns the owned (successfully decoded) covr item(s) among parsed ilst
+// items, so an edit that leaves the picture set unchanged can carry the original cover
+// verbatim.
 func covrItems(items []item) []item {
 	var out []item
 	for _, it := range items {
@@ -173,14 +157,7 @@ func isCoverItem(it item) bool {
 	return it.name == atomName("covr")
 }
 
-// coverItemsToWrite resolves the covr ilst item(s) to emit past the fast path. When the picture
-// set changed it re-encodes the edited pictures via coverItem, whose format checkCoverFormats has
-// already validated in Plan (that guard runs only under picturesChanged). When the picture set
-// did not change it carries the parsed covr item(s) verbatim. That keeps a cover the covr atom
-// cannot re-label faithfully (a GIF or WebP the read path now sniffs to its true MIME)
-// byte-for-byte under its original type code, instead of rewriting it under coverType's JPEG
-// default and stamping a JPEG type code over non-JPEG bytes on an unrelated tag- or chapter-only
-// edit.
+// coverItemsToWrite resolves the covr ilst item(s) to emit past the fast path.
 func coverItemsToWrite(pics []core.Picture, parsed []item, picturesChanged bool) []item {
 	if !picturesChanged {
 		return covrItems(parsed)
@@ -193,26 +170,16 @@ func coverItemsToWrite(pics []core.Picture, parsed []item, picturesChanged bool)
 
 // structuredSingleAtomKeys are the canonical keys buildItems routes to a structured
 // single-value encoder rather than the per-value text/freeform path: the trkn/disk pair
-// slots (pairItem packs each pair into one atom) and the boolean, integer, and BPM atoms
-// (boolItem/intItem/tmpoItem read only the first value). It is the one enumeration
-// multiValueDataKeys, extraStructuredValues, and transferClassifier share, and it must stay
-// in step with buildItems' switch - a key added there without an entry here would be
-// misreported as a multi-atom field.
+// slots (pairItem packs each pair into one atom) and the boolean, integer, and BPM
+// atoms (boolItem/intItem/tmpoItem read only the first value).
 var structuredSingleAtomKeys = map[tag.Key]bool{
 	tag.TrackNumber: true, tag.TrackTotal: true, tag.DiscNumber: true, tag.DiscTotal: true,
 	tag.Compilation: true, tag.MediaType: true, tag.ITunesAdvisory: true, tag.BPM: true,
 	tag.Movement: true, tag.MovementTotal: true, tag.ITunesGapless: true, tag.ShowMovement: true,
 }
 
-// multiValueDataKeys returns the canonical keys this edit writes as more than one MP4 data atom.
-// The iTunes ilst stores a multi-valued field as several data atoms under one item, which
-// round-trips through WaxLabel but which many third-party readers show only the first atom of, so
-// the writer notes the interop risk. Every field that reaches buildItems' default branch emits one
-// data atom per value - a known text atom (textItem), a numeric-genre atom (gnreItem), and a custom
-// freeform ---- atom (freeformItem) all do - so the only single-atom fields are the structured
-// slots. Excluding exactly those and taking any remaining key with more than one value names
-// precisely the multi-atom keys (WORK and MOVEMENTNAME are ©-text atoms, so they are multi-atom
-// and not excluded).
+// multiValueDataKeys returns the canonical keys this edit writes as more than one MP4
+// data atom.
 func multiValueDataKeys(edited tag.TagSet) []tag.Key {
 	var keys []tag.Key
 	for _, key := range edited.Keys() {
@@ -226,11 +193,9 @@ func multiValueDataKeys(edited tag.TagSet) []tag.Key {
 	return keys
 }
 
-// extraStructuredValues returns the structured single-atom keys holding more than one value,
-// whose surplus values buildItems silently reads past (every structured encoder consumes only
-// the first, or for trkn/disk the First of each slot key). The writer surfaces these as
-// value-dropped warnings so the loss is visible on both the set and the copy path; the
-// editor's single-valued-multi warning covers only authored edits.
+// extraStructuredValues returns the structured single-atom keys holding more than one
+// value, whose surplus values buildItems silently reads past (every structured encoder
+// consumes only the first, or for trkn/disk the First of each slot key).
 func extraStructuredValues(ts tag.TagSet) []droppedValue {
 	var out []droppedValue
 	for _, key := range ts.Keys() {
@@ -288,10 +253,7 @@ func gnreItem(indices []int) item {
 // genreItem builds the ilst item the genre lands in: the legacy numeric "gnre" atom (a
 // 1-based ID3v1 index) when the encoding was requested and every value resolves to a
 // standard genre, and the text "\xa9gen" atom otherwise, so an order-preserving mix of
-// standard and custom genres is kept verbatim. It reports false when there is nothing to
-// store, or when the genre has no mapped text atom, leaving buildItems' freeform branch to
-// handle it. buildItems and the two predicates below all go through it, so none of them can
-// assume a different item than the write emits.
+// standard and custom genres is kept verbatim.
 func genreItem(vals []string, numericGenre bool) (item, bool) {
 	if len(vals) == 0 {
 		return item{}, false
@@ -308,18 +270,8 @@ func genreItem(vals []string, numericGenre bool) (item, bool) {
 	return textItem(atomName(name), vals), true
 }
 
-// genreEncodingChanged reports whether writing the edited genre numerically would store it
-// differently from the parsed ilst. It is MP4's encoding-rewrite predicate, the counterpart
-// to id3.EncodingRewriteNeeded: MP4 has no ID3v2 container and buildItems rebuilds every
-// item from the edited tags, so the ID3 rebuilder's dirty-frame gate does not apply here and
-// the stored atom is compared against the one the write would build.
-//
-// The genre lives in one of two atoms, so crossing between the text "\xa9gen" and the
-// numeric "gnre" is a change, as is a differing gnre payload. Two text atoms compare equal
-// because a text-to-text difference is a canonical value change the caller's tag comparison
-// already sees, and a genre present on only one side is an addition or removal, likewise
-// already visible. A size delta is not enough on its own: it is non-zero for "Rock" only by
-// luck, and a two-character genre name would collapse it to zero.
+// genreEncodingChanged reports whether writing the edited genre numerically would store
+// it differently from the parsed ilst.
 func genreEncodingChanged(source []item, edited tag.TagSet) bool {
 	vals, _ := edited.Get(tag.Genre)
 	built, bOK := genreItem(vals, true)
@@ -334,15 +286,8 @@ func genreEncodingChanged(source []item, edited tag.TagSet) bool {
 }
 
 // numericGenreEncoding reports whether the rebuild writes the genre as the numeric gnre
-// atom: because this edit asked for it, or because the parsed ilst already stores it that
-// way and still holds the value being written.
-//
-// The second clause is what keeps an earlier --numeric-genre run from being undone. buildItems
-// rebuilds every item from the canonical tags, so without it a plain `--set TITLE=x` would
-// silently convert an existing gnre back to the text atom, and the file would ping-pong
-// between the two representations on alternating edits. A genre edit that changes the value
-// still drops back to text, matching the ID3 codecs, where a TCON a canonical change dirties
-// is re-rendered from the write options and one no change touched is preserved verbatim.
+// atom: because this edit asked for it, or because the parsed ilst already stores it
+// that way and still holds the value being written.
 func numericGenreEncoding(source []item, edited tag.TagSet, requested bool) bool {
 	if requested {
 		return true
@@ -395,11 +340,10 @@ func pairItem(name string, ts tag.TagSet, numKey, totKey tag.Key, trailing bool)
 	return item{name: atomName(name), payload: renderData(typeImplicit, v)}, true
 }
 
-// intItem builds an unsigned iTunes integer atom (stik, rtng, ©mvi, ©mvc) from the canonical
-// value (a decimal integer), rendered as width big-endian bytes. A value the atom's width cannot
-// hold is rejected (item{}, false) rather than widening the atom, and a non-numeric value is
-// likewise skipped. This must agree with ValidMP4IntValue, which reports the same value as
-// dropped so the writer's value-dropped warning fires for it.
+// intItem builds an unsigned iTunes integer atom (stik, rtng, ©mvi, ©mvc) from the
+// canonical value (a decimal integer), rendered as width big-endian bytes. A value the
+// atom's width cannot hold is rejected (item{}, false) rather than widening the atom,
+// and a non-numeric value is likewise skipped.
 func intItem(name string, width int, vals []string) (item, bool) {
 	if len(vals) == 0 {
 		return item{}, false
@@ -416,12 +360,10 @@ func intItem(name string, width int, vals []string) (item, bool) {
 	return item{name: atomName(name), payload: renderData(typeSignedInt, v)}, true
 }
 
-// tmpoItem builds the iTunes "tmpo" BPM atom (a two-byte big-endian integer) from the canonical
-// BPM value, via tag.BPMStoredWhole - the single stored-form decision the drop report
-// (bpmValueDropped), the coercion report (bpmValueCoerced), and the diff fold also derive from.
-// A value the validator rejects is dropped (item{}, false); a valid fractional value rounds to
-// the nearest whole number (no post-round range check is needed: the largest valid value is
-// 65535.0).
+// tmpoItem builds the iTunes "tmpo" BPM atom (a two-byte big-endian integer) from the
+// canonical BPM value, via tag.BPMStoredWhole - the single stored-form decision the
+// drop report (bpmValueDropped), the coercion report (bpmValueCoerced), and the diff
+// fold also derive from.
 func tmpoItem(vals []string) (item, bool) {
 	if len(vals) == 0 {
 		return item{}, false
@@ -442,12 +384,7 @@ func tmpoItem(vals []string) (item, bool) {
 // boolItem builds a single-byte boolean atom (cpil) from a canonical boolean
 // value (parsed the same way as the typed projection, so "TRUE"/" yes " agree).
 func boolItem(name string, vals []string) (item, bool) {
-	// Drop a present-empty value rather than fabricating a definite 0. An empty COMPILATION=
-	// carries no boolean intent, so writing a concrete false (which reads back as a real,
-	// strict-clean 0) would invent data the edit never supplied. This matches the MP4
-	// empty-number drop; unlike a text format such as FLAC, which stores the empty value
-	// verbatim, MP4 has no empty-boolean representation, so the atom is omitted. The drop is
-	// unwarned, mirroring the empty-number drop.
+	// Drop a present-empty value rather than fabricating a definite 0.
 	if len(vals) == 0 || strings.TrimSpace(vals[0]) == "" {
 		return item{}, false
 	}
@@ -467,22 +404,14 @@ func coverItem(pics []core.Picture) item {
 	return item{name: atomName("covr"), payload: payload}
 }
 
-// numTotal resolves the number/total a trkn/disk atom encodes. It consumes the same slots
-// resolvePairSlots resolves - a genuine "n/total" pair is split on "/", a malformed or
-// non-numeric value (e.g. "1/2/3", "3/abc") is kept whole on the number slot, and an explicit
-// total key wins - then parses each resolved slot as a plain integer (any parse failure, including
-// a whole non-numeric value, reads as 0) and clamps to the 16-bit range the atom stores. Sharing
-// one resolution with the drop report (appendDroppedPair) keeps storage and the warning in
-// lockstep, so a value the report names dropped is not silently stored as a lenient partial.
+// numTotal resolves the number/total a trkn/disk atom encodes.
 func numTotal(ts tag.TagSet, numKey, totKey tag.Key) (num, total uint16) {
 	numPart, totPart := resolvePairSlots(ts, numKey, totKey)
 	return clampUint16(slotInt(numPart)), clampUint16(slotInt(totPart))
 }
 
-// slotInt parses a resolved trkn/disk slot as a plain integer (trimmed), treating any parse
-// failure as 0. A whole non-numeric value resolvePairSlots kept intact ("1/2/3", "3/abc") fails
-// to parse and so reads as 0, which pairItem renders as an absent slot rather than a lenient
-// partial extracted from the first '/'.
+// slotInt parses a resolved trkn/disk slot as a plain integer (trimmed), treating any
+// parse failure as 0.
 func slotInt(s string) int {
 	n, err := strconv.Atoi(strings.TrimSpace(s))
 	if err != nil {
@@ -500,13 +429,7 @@ func clampUint16(n int) uint16 {
 }
 
 // droppedValue records a canonical (key, value) the iTunes atom encoders cannot
-// represent and would otherwise silently drop. ZeroUnset marks the one drop that is not a
-// hard rejection: a literal 0 in a trkn/disk slot, whose bytes ARE written (0/N) but which
-// decodePair reads back as absent (its num>0/total>0 guards treat 0 as unset), so it is a
-// round-trip loss rather than an unrepresentable value. The write.go warning wording keys off
-// it; a uint16-overflow or non-numeric drop leaves it false. Stored is set only on a
-// coercedValues entry: the value actually written ("0" for a coerced boolean, the rounded
-// integer for a fractional BPM), so the warning can name it.
+// represent and would otherwise silently drop.
 type droppedValue struct {
 	Key       tag.Key
 	Value     string
@@ -514,16 +437,11 @@ type droppedValue struct {
 	Stored    string
 }
 
-// droppedValues returns the canonical values this edit would genuinely lose at the iTunes
-// encode site (the value is not written at all): a trkn/disk slot outside the uint16 the atom
-// holds (numTotal -> clampUint16), an integer-atom value intItem cannot store (non-numeric,
-// or past the stik/rtng byte or ©mvi/©mvc uint16), or a BPM tmpoItem rejects (non-decimal, or
-// past 65535). It reads the same raw canonical strings those encoders consume - so it names
-// exactly what buildItems drops and cannot desync from it - and treats a literal 0 (the pair
-// encoder's "absent") and an absent/empty slot as no loss. The boolean keys are not here:
-// boolItem coerces a non-boolean to 0 and writes it, and tmpoItem rounds a valid fraction, so
-// those are coercions (see coercedValues), not drops. The encoders stay the authority on the
-// written value; this is only which were lost.
+// droppedValues returns the canonical values this edit would genuinely lose at the
+// iTunes encode site (the value is not written at all): a trkn/disk slot outside the
+// uint16 the atom holds (numTotal -> clampUint16), an integer-atom value intItem cannot
+// store (non-numeric, or past the stik/rtng byte or ©mvi/©mvc uint16), or a BPM
+// tmpoItem rejects (non-decimal, or past 65535).
 func droppedValues(ts tag.TagSet) []droppedValue {
 	var out []droppedValue
 	out = appendDroppedPair(out, ts, tag.TrackNumber, tag.TrackTotal)
@@ -572,17 +490,10 @@ func itunesExtraStructuredValues(ts tag.TagSet, itunes bool) []droppedValue {
 	return extraStructuredValues(ts)
 }
 
-// coercedValues returns the canonical values this edit stores in a normalized form because the
-// iTunes atom cannot hold the literal. Unlike droppedValues, these ARE written (the change set
-// shows the stored value); the warning only tells the user the literal was normalized. It reuses
-// the droppedValue (key, value) carrier, with Stored naming what was written. The boolean atoms
-// (cpil, pgap, shwm) each hold a single byte, so boolItem coerces a non-boolean like "maybe" to
-// 0 (false) and writes it, rather than dropping it; a valid fractional BPM likewise rounds to
-// the nearest whole number in the tmpo atom. A value stored non-canonically but numerically
-// intact ("03", "+3" in a trkn/disk slot, "174.0" in tmpo) is NOT a coercion worth warning: the
-// atom holds the same number, so it is a numerically-lossless canonicalization that a copy
-// grades Carried and diff treats as no change, not a reported loss. An empty value is exempt
-// because it stores nothing.
+// coercedValues returns the canonical values this edit stores in a normalized form
+// because the iTunes atom cannot hold the literal. The boolean atoms (cpil, pgap, shwm)
+// each hold a single byte, so boolItem coerces a non-boolean like "maybe" to 0 (false)
+// and writes it, rather than dropping it;
 func coercedValues(ts tag.TagSet) []droppedValue {
 	var out []droppedValue
 	for _, c := range []struct {
@@ -605,16 +516,9 @@ func coercedValues(ts tag.TagSet) []droppedValue {
 	return out
 }
 
-// resolvePairSlots resolves the two slots a trkn/disk number/total pair edits, through the guarded
-// tag.NumberTotalSplit so it matches the canonical model and restoreUnstorableSlots rather than
-// leniently cutting on the first '/'. A genuine numeric pair ("3/12", "3/09") splits into its number
-// and total; a value NumberTotalSplit declines to split (no '/', or a malformed/non-numeric pair like
-// "1/2/3" or "3/abc") is kept whole (trimmed) on the number slot with no total, so it is judged - and
-// dropped - against the number slot instead of fabricating a phantom total from the tail. A present,
-// raw-non-empty explicit total key then overrides the tail; like ParseNumPair the override gates on
-// the raw string, so a whitespace-only total overrides too and leaves no stale tail. The encoder
-// (numTotal) and the drop report (appendDroppedPair) share this one resolution, so storage and the
-// warning cannot drift on the split rule.
+// resolvePairSlots resolves the two slots a trkn/disk number/total pair edits, through
+// the guarded tag.NumberTotalSplit so it matches the canonical model and
+// restoreUnstorableSlots rather than leniently cutting on the first '/'.
 func resolvePairSlots(ts tag.TagSet, numKey, totKey tag.Key) (numPart, totPart string) {
 	numStr, _ := ts.First(numKey)
 	totStr, _ := ts.First(totKey)
@@ -629,25 +533,23 @@ func resolvePairSlots(ts tag.TagSet, numKey, totKey tag.Key) (numPart, totPart s
 	return numPart, totPart
 }
 
-// appendDroppedPair adds the dropped slot(s) of one trkn/disk pair. It resolves the two slots via
-// resolvePairSlots (shared with appendCoercedPair) so drop and coercion name the same slots the
-// encoder reads. TRACKNUMBER and TRACKTOTAL share one trkn atom, so each slot is judged against its
-// own source string (TRACKTOTAL=abc names TRACKTOTAL, not the merged pair).
+// appendDroppedPair adds the dropped slot(s) of one trkn/disk pair. It resolves the two
+// slots via resolvePairSlots (shared with appendCoercedPair) so drop and coercion name
+// the same slots the encoder reads.
 func appendDroppedPair(out []droppedValue, ts tag.TagSet, numKey, totKey tag.Key) []droppedValue {
 	numPart, totPart := resolvePairSlots(ts, numKey, totKey)
-	// decodePair drops a literal 0 in EITHER slot on read (its num>0/total>0 guards treat 0 as
-	// unset), so a 0 written to a slot never round-trips - report it per slot, not only when the
-	// whole pair collapses to absent. TRACKNUMBER=0 with TRACKTOTAL=12 still loses the 0 on read.
+	// decodePair drops a literal 0 in EITHER slot on read (its num>0/total>0 guards treat
+	// 0 as unset), so a 0 written to a slot never round-trips - report it per slot, not
+	// only when the whole pair collapses to absent.
 	out = appendSlotDrop(out, numKey, numPart)
 	out = appendSlotDrop(out, totKey, totPart)
 	return out
 }
 
-// appendSlotDrop records one trkn/disk slot the encoder would lose: either a value the uint16
-// atom cannot represent, or a literal 0 (which decodePair drops on read, so it never
-// round-trips - MP4 keeps its 0-as-unset write semantics, this only makes the loss visible). A
-// slot is reported at most once. The 0 case sets ZeroUnset so the warning can say "reads back as
-// absent" rather than the hard-rejection "cannot be represented".
+// appendSlotDrop records one trkn/disk slot the encoder would lose: either a value the
+// uint16 atom cannot represent, or a literal 0 (which decodePair drops on read, so it
+// never round-trips - MP4 keeps its 0-as-unset write semantics, this only makes the
+// loss visible).
 func appendSlotDrop(out []droppedValue, key tag.Key, slot string) []droppedValue {
 	switch {
 	case uint16ValueDropped(slot):
@@ -670,24 +572,15 @@ func isRepresentableZero(s string) bool {
 	return err == nil && n == 0
 }
 
-// slotValueDropped reports whether a resolved trkn/disk slot value is lost on write: a value the
-// uint16 atom cannot hold, or a literal 0 (decodePair drops a 0 slot on read, so it never
-// round-trips). It is the shared slot-level predicate so the writer's dropped-value report
-// (appendSlotDrop, whose two-case switch is this same disjunction) and the transfer capability
-// grading stay in lockstep on which slot values MP4 drops - otherwise a copy of TRACKNUMBER=0 (or
-// 0/total) would be graded carried yet the writer drops it and it reads back absent.
+// slotValueDropped reports whether a resolved trkn/disk slot value is lost on write: a
+// value the uint16 atom cannot hold, or a literal 0 (decodePair drops a 0 slot on read,
+// so it never round-trips).
 func slotValueDropped(s string) bool {
 	return uint16ValueDropped(s) || isRepresentableZero(s)
 }
 
-// uint16ValueDropped reports whether the trimmed slot string holds a value the
-// uint16 trkn/disk atom cannot represent: a non-numeric value, a negative, or one
-// past 65535. An empty slot is not a drop. A literal 0 also passes this check because
-// it fits uint16; appendSlotDrop handles the separate case where pairItem drops 0 by
-// treating the whole pair as absent.
-//
-// Transfer uses this same predicate for standalone total slots, keeping write behavior and
-// transfer grading aligned.
+// uint16ValueDropped reports whether the trimmed slot string holds a value the uint16
+// trkn/disk atom cannot represent: a non-numeric value, a negative, or one past 65535.
 func uint16ValueDropped(s string) bool {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -704,19 +597,9 @@ func uint16ValueDropped(s string) bool {
 // order restoreUnstorableSlots scans them.
 var pairSlotKeys = []tag.Key{tag.TrackNumber, tag.TrackTotal, tag.DiscNumber, tag.DiscTotal}
 
-// restoreUnstorableSlots returns a copy of edited with any fixed-width slot whose edited
-// value is genuinely unstorable restored from base, plus whether any slot was restored. MP4
-// homes a track/disc number in a fixed binary uint16, and the integer and BPM atoms (stik,
-// rtng, ©mvi, ©mvc, tmpo) are fixed-width too, so a value the atom cannot hold would clear
-// the slot and erase a good existing value; restoring keeps the old value rather than
-// deleting it. A slot is restored only when the edited value is unstorable (per its drop
-// predicate) AND base holds a storable, present value for it. Deliberately excluded: a
-// representable trkn/disk literal 0 (the separate ZeroUnset case, written as 0/N and read
-// back absent by design), an empty or cleared slot, a base slot that is itself unstorable
-// (nothing worth restoring), and the boolean atoms (a non-boolean is coerced to 0 and
-// written, not dropped). The caller runs the value-dropped warning pass on the pre-restore
-// tags, so the warning still fires; restoring base's value then lets an edit that changed
-// nothing else collapse to a true no-op that still carries the warning forward.
+// restoreUnstorableSlots returns a copy of edited with any fixed-width slot whose
+// edited value is genuinely unstorable restored from base, plus whether any slot was
+// restored.
 func restoreUnstorableSlots(base, edited tag.TagSet) (tag.TagSet, bool) {
 	out := edited
 	restored := false
@@ -746,15 +629,8 @@ func restoreUnstorableSlots(base, edited tag.TagSet) (tag.TagSet, bool) {
 	return out, restored
 }
 
-// numberComponentDropped builds the transfer-layer value-drop predicate for a TRACKNUMBER or
-// DISCNUMBER key. WithValueDrop fixes the predicate signature to func(string) bool with no key, but
-// the guarded split needs one, so this is a closure factory keyed on the number key (mirroring
-// vocabValueDropped below). It resolves the number side through the same guarded tag.NumberTotalSplit
-// the writer uses: a genuine "n/total" pair is judged on its number substring, while a malformed or
-// non-numeric value ("1/2/3", "3/abc") is kept whole and judged (and dropped) as one value, so copy
-// grading stays in lockstep with the writer instead of grading a lenient partial carried. The
-// embedded total is graded separately; the pair-level zero collapse is not reproduced here because
-// that rule depends on the sibling total slot.
+// numberComponentDropped builds the transfer-layer value-drop predicate for a
+// TRACKNUMBER or DISCNUMBER key.
 func numberComponentDropped(k tag.Key) func(string) bool {
 	return func(s string) bool {
 		num, _, _ := tag.NumberTotalSplit(k, s)
@@ -785,12 +661,9 @@ var (
 	showMovementValueDropped  = vocabValueDropped(tag.ShowMovement, tag.ValidBooleanValue)
 )
 
-// bpmValueCoerced reports whether a valid BPM value is stored in a normalized form: the tmpo
-// atom holds a whole number, so a fraction rounds to nearest, and the warning fires only when
-// rounding changes the numeric value ("174.99" -> "175" is coerced; "174.0" -> 174 is
-// numerically lossless and unwarned, mirroring the trkn leading-zero stance). stored is the
-// decimal form actually written. An invalid value reports false (that is bpmValueDropped's
-// case). Delegates to tag.BPMStoredWhole, the same decision tmpoItem writes by.
+// bpmValueCoerced reports whether a valid BPM value is stored in a normalized form: the
+// tmpo atom holds a whole number, so a fraction rounds to nearest, and the warning
+// fires only when rounding changes the numeric value ("174.99" -> "175" is coerced;
 func bpmValueCoerced(val string) (stored string, coerced bool) {
 	stored, roundChanged, ok := tag.BPMStoredWhole(val)
 	if !ok || !roundChanged {
@@ -824,10 +697,6 @@ func itemBytes(it item) []byte {
 }
 
 // renderAtom wraps a payload in an atom header: [size][name][payload].
-// freeAtomHeaderLen is the header renderAtom emits: the 32-bit size plus the four-byte
-// name. Padding sizing subtracts it on both sides - the writer when it lays a free atom
-// down, the native view when it reports how much room one leaves - so a source atom in the
-// 64-bit largesize form does not make the two disagree.
 const freeAtomHeaderLen = 8
 
 func renderAtom(name [4]byte, payload []byte) []byte {

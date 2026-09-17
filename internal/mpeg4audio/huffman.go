@@ -2,9 +2,7 @@ package mpeg4audio
 
 import "sync"
 
-// huffCode is one entry of a codebook: the codeword's bit length and its value, right
-// aligned. Symbol numbers are implicit in the table's order, matching the specification's
-// index column.
+// huffCode is codeword length and right-aligned value; symbol order matches spec index.
 type huffCode struct {
 	Len  uint8
 	Code uint32
@@ -13,10 +11,7 @@ type huffCode struct {
 // huffBook is a codebook indexed by symbol.
 type huffBook []huffCode
 
-// huffDecoder reads one codeword from a bit stream. The books are small and prefix-free, so
-// a map per codeword length is both compact and enough: a codeword is recognized as soon as
-// the bits read so far match an entry of that length, which for a prefix-free book is the
-// only reading.
+// huffDecoder decodes prefix-free books via per-length maps.
 type huffDecoder struct {
 	byLen  [33]map[uint32]int // symbol by codeword, per length
 	maxLen int
@@ -34,8 +29,7 @@ func newHuffDecoder(b huffBook) *huffDecoder {
 	return d
 }
 
-// decode reads one codeword bit by bit. ok is false at end of data or after maxLen bits
-// with no match, which a prefix-free, complete book makes impossible for real data.
+// decode reads one codeword bit by bit.
 func (d *huffDecoder) decode(r *bitReader) (int, bool) {
 	var code uint32
 	for n := 1; n <= d.maxLen; n++ {
@@ -51,16 +45,14 @@ func (d *huffDecoder) decode(r *bitReader) (int, bool) {
 	return 0, false
 }
 
-// bookDecoders holds a decoder for every generated codebook. They are built on first use
-// rather than in an init, so a program that parses no AAC frames pays nothing for them.
+// bookDecoders holds lazy-built decoders for all generated books.
 type bookDecoders struct {
 	scalefactor *huffDecoder
 	spectrum    [12]*huffDecoder
-	// The SBR envelope and noise-floor decoders, named after the specification's tables.
+	// SBR envelope/noise decoders.
 	tEnv15, fEnv15, tEnv30, fEnv30 *huffDecoder
 	tNoise30                       *huffDecoder
-	// The balance books are read only by sbr_channel_pair_element, which this package does
-	// not parse; they are built anyway so the table tests cover every generated book.
+	// Balance books unused here; built for table test coverage.
 	tEnvBal15, fEnvBal15, tEnvBal30, fEnvBal30, tNoiseBal30 *huffDecoder
 }
 

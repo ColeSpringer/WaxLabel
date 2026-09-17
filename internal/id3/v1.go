@@ -51,22 +51,9 @@ func v1Field(b []byte) string {
 	return strings.TrimRight(s, "\x00 ")
 }
 
-// LooksLikeID3v1 reports whether b is very likely a genuine 128-byte ID3v1/v1.1
-// trailer rather than audio bytes that merely begin with "TAG" at size-128. The
-// bare 3-byte magic is far too weak to gate an essence boundary: a false positive
-// pulls the audio end back 128 bytes and drops real audio from the essence digest and
-// structural fingerprint. This adds cheap structural checks that every real
-// Latin-1/Windows-1252 tag passes but a random audio tail almost never does - the
-// year field is digits/space/NUL, and the text fields carry no binary control bytes -
-// so the essence-affecting detection path can require them while the lenient display
-// path (ParseV1) keeps showing an already-detected tag.
-//
-// The strict year is a deliberate trade-off: a genuine but non-standard year at the
-// trailing position (a legacy writer's "90s" or "200?") is not auto-detected here and its
-// 128 bytes are treated as audio. That rare miss is preferred over the far more common
-// false positive - four printable-ASCII audio bytes landing in the year field - which would
-// silently pull the essence boundary back. ParseV1 stays lenient for the display path, so a
-// tag detected by other means still renders such a year.
+// LooksLikeID3v1: likely a real 128-byte ID3v1/v1.1 trailer, not audio at size-128.
+// Bare "TAG" is too weak for an essence boundary; adds structural checks.
+
 func LooksLikeID3v1(b []byte) bool {
 	if len(b) != 128 || string(b[:3]) != "TAG" {
 		return false

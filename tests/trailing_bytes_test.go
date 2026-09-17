@@ -13,9 +13,9 @@ import (
 // junk is the appended region the trailing-bytes tests look for.
 var junk = []byte("TRAILINGJUNK")
 
-// TestTrailingBytesReported checks that bytes belonging to no chunk or page are surfaced
-// rather than silently preserved. Byte preservation was already right; the silence was the
-// finding, since lint advertises the issues a tagger would want to see.
+// bytes belonging to no chunk or page are surfaced rather than silently preserved. Byte
+// preservation was already right; the silence was the finding, since lint advertises the issues a
+// tagger would want to see.
 func TestTrailingBytesReported(t *testing.T) {
 	for _, tc := range []struct{ name, fixture string }{
 		{"wav", "sample.wav"},
@@ -54,9 +54,8 @@ func TestTrailingBytesReported(t *testing.T) {
 	}
 }
 
-// TestTrailingBytesInsideContainer covers the other RIFF region: bytes after the last
-// chunk but still inside the declared container size, which the writer keeps counted in
-// the recomputed size rather than moving outside it.
+// other RIFF region: bytes after the last chunk but still inside the declared container size, which
+// the writer keeps counted in the recomputed size rather than moving outside it.
 func TestTrailingBytesInsideContainer(t *testing.T) {
 	body := append([]byte("WAVE"), wavFmtPCM()...)
 	body = append(body, wavData(400)...)
@@ -77,9 +76,8 @@ func TestTrailingBytesInsideContainer(t *testing.T) {
 	}
 }
 
-// TestTrailingBytesNotStrictEscalating pins the boundary --strict draws: trailing bytes
-// describe the state of the file the user was handed, not something the edit lost, so they
-// must not fail a write the way an edit-time loss does.
+// boundary --strict draws: trailing bytes describe the state of the file the user was handed, not
+// something the edit lost, so they must not fail a write the way an edit-time loss does.
 func TestTrailingBytesNotStrictEscalating(t *testing.T) {
 	clean, err := os.ReadFile(notagsWAV)
 	if err != nil {
@@ -91,11 +89,9 @@ func TestTrailingBytesNotStrictEscalating(t *testing.T) {
 	}
 }
 
-// TestMP4AppendedJunkReported: an MP4 walk clamps a final top-level atom whose declared size
-// overruns EOF, which is exactly what bytes appended after the last atom look like - the
-// first four read as an enormous size and the remainder becomes one phantom atom. Absorbing
-// it in silence is the condition this reports, under the same code RIFF uses for a clamped
-// chunk. mdat and moov are excluded: they carry their own truncated-audio warnings.
+// MP4 walk clamps a final top-level atom whose declared size overruns EOF, which is exactly what
+// bytes appended after the last atom look like; the first four read as an enormous size and the
+// remainder becomes one phantom atom.
 func TestMP4AppendedJunkReported(t *testing.T) {
 	clean, err := os.ReadFile("../testdata/sample.m4a")
 	if err != nil {
@@ -123,12 +119,8 @@ func TestMP4AppendedJunkReported(t *testing.T) {
 	}
 }
 
-// TestInContainerID3v1NamedNotCalledJunk: the RIFF/IFF walk stops on a well-formed ID3v1
-// trailer by shape, so it knows exactly what those 128 bytes are. Reporting them as bytes
-// that belong to nothing would be false. The code stays trailing-bytes rather than
-// trailing-id3v1: that one drives PlanLintFix's legacy strip, which on WAV means
-// "consolidate LIST/INFO into the id3 chunk" and would restructure the file without
-// removing the trailer the finding is about.
+// RIFF/IFF walk stops on a well-formed ID3v1 trailer by shape, so it knows exactly what those 128
+// bytes are. Reporting them as bytes that belong to nothing would be false.
 func TestInContainerID3v1NamedNotCalledJunk(t *testing.T) {
 	body := append([]byte("WAVE"), wavFmtPCM()...)
 	body = append(body, wavData(400)...)

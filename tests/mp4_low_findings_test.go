@@ -12,10 +12,9 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestMP4MultiValueInteropNote checks that a multi-valued text field on MP4 surfaces the
-// informational mp4-multi-value note (the iTunes ilst stores it as several data atoms, which many
-// readers show only the first of), round-trips all values, and does not escalate --strict (it is
-// informational, nothing is lost). A single-valued field and a structured slot do not warn.
+// multi-valued text field on MP4 surfaces the informational mp4-multi-value note (the iTunes ilst
+// stores it as several data atoms, which many readers show only the first of), round-trips all
+// values, and does not escalate --strict (it is informational, nothing is lost).
 func TestMP4MultiValueInteropNote(t *testing.T) {
 	src := readFixture(t, "../testdata/notags.m4a")
 
@@ -99,11 +98,7 @@ func TestMP4MultiValueInteropNote(t *testing.T) {
 	}
 }
 
-// TestMP4TrackNumberZeroWarns checks the MP4-specific TRACKNUMBER=0 case. decodePair drops
-// a 0 slot on read (its num>0/total>0 guards treat 0 as unset), so a user's 0 never round-trips
-// and the write must warn - even when the pair does not collapse: 0 paired with a real total
-// still loses the 0 on read (0/12 reads back as total-only), while the representable total is
-// not flagged.
+// checks the MP4-specific TRACKNUMBER=0 case.
 func TestMP4TrackNumberZeroWarns(t *testing.T) {
 	base := mp4Tagged(mp4Text("\xa9nam", "T"))
 	msgFor := func(p *wl.Plan, key tag.Key) (string, bool) {
@@ -155,11 +150,8 @@ func TestMP4TrackNumberZeroWarns(t *testing.T) {
 	}
 }
 
-// TestMP4CompilationCoercionWarns verifies that COMPILATION is a single boolean byte (cpil), so a
-// non-boolean value is coerced to false and written (0) rather than dropped. The write must
-// surface a value-coerced warning naming the key - the honest disposition, since the key does land
-// on disk - rather than the old value-dropped, which contradicted the change set showing ["0"]. A
-// recognized boolean spelling stores faithfully and must not warn.
+// COMPILATION is a single boolean byte (cpil), so a non-boolean value is coerced to false and
+// written (0) rather than dropped.
 func TestMP4CompilationCoercionWarns(t *testing.T) {
 	base := mp4Tagged(mp4Text("\xa9nam", "T"))
 
@@ -191,9 +183,9 @@ func TestMP4CompilationCoercionWarns(t *testing.T) {
 		}
 	}
 
-	// No-op preservation: on a file already cpil=0, COMPILATION=maybe coerces to the same 0,
-	// so the write is a byte-identical no-op - yet the coercion warning must still surface (the
-	// DowngradeNoOp preserve-list), or the silent normalization would vanish at exit 0.
+	// No-op preservation: on a file already cpil=0, COMPILATION=maybe coerces to the same 0, so the
+	// write is a byte-identical no-op, yet the coercion warning must still surface (the DowngradeNoOp
+	// preserve-list), or the silent normalization would vanish at exit 0.
 	cpil0 := mp4Tagged(mp4Text("\xa9nam", "T"), mp4Atom("cpil", mp4Data(21, []byte{0})))
 	p, err := mustParseBytes(t, cpil0).Edit().Set(tag.Compilation, "maybe").Prepare()
 	if err != nil {
@@ -207,11 +199,10 @@ func TestMP4CompilationCoercionWarns(t *testing.T) {
 	}
 }
 
-// TestMP4NumberNormalizationNotCoerced covers the direct-set path: a non-canonical trkn/disk number
-// (a leading zero or a sign) is stored as its 16-bit integer, but the leading zero or sign is a
-// numerically-lossless canonicalization, so the write does NOT surface a value-coerced warning for
-// it (a copy grades it Carried and diff treats it as no change). The boolean COMPILATION coercion,
-// which genuinely stores a fabricated value, still warns.
+// direct-set path: a non-canonical trkn/disk number (a leading zero or a sign) is stored as its
+// 16-bit integer, but the leading zero or sign is a numerically-lossless canonicalization, so the
+// write does NOT surface a value-coerced warning for it (a copy grades it Carried and diff treats
+// it as no change).
 func TestMP4NumberNormalizationNotCoerced(t *testing.T) {
 	base := mp4Tagged(mp4Text("\xa9nam", "T"))
 
@@ -254,10 +245,9 @@ func TestMP4NumberNormalizationNotCoerced(t *testing.T) {
 	}
 }
 
-// TestMP4TruncatedMdatOverrunsTrailingMoov verifies that a final mdat whose declared size runs
-// past EOF is clamped, swallowing whatever follows it. When a moov sits after such an
-// mdat the parser never sees it, so the failure must be reported as truncation (the real
-// cause) rather than the misleading "no moov box".
+// final mdat whose declared size runs past EOF is clamped, swallowing whatever follows it. When a
+// moov sits after such an mdat the parser never sees it, so the failure must be reported as
+// truncation (the real cause) rather than the misleading "no moov box".
 func TestMP4TruncatedMdatOverrunsTrailingMoov(t *testing.T) {
 	ftyp := mp4Ftyp()
 	moov := mp4Moov(nil, 0) // valid, but it will be swallowed by the over-declared mdat
@@ -278,12 +268,10 @@ func TestMP4TruncatedMdatOverrunsTrailingMoov(t *testing.T) {
 	}
 }
 
-// TestMP4UnsupportedCoverFormatDropsAndContinues: set with a GIF cover (a format MP4's covr
-// atom cannot label) under the drop option drops just that cover with a picture-unsupported
-// warning while a storable TITLE edit in the same command still applies - matching how copy
-// handles a GIF and WebM handles an unstorable cover, rather than hard-aborting the whole edit
-// and losing the TITLE. A PNG added alongside survives, and a direct library AddPicture without
-// the drop option still hits the hard-error backstop.
+// set with a GIF cover (a format MP4's covr atom cannot label) under the drop option drops just
+// that cover with a picture-unsupported warning while a storable TITLE edit in the same command
+// still applies; matching how copy handles a GIF and WebM handles an unstorable cover, rather than
+// hard-aborting the whole edit and losing the TITLE.
 func TestMP4UnsupportedCoverFormatDropsAndContinues(t *testing.T) {
 	src := readFixture(t, "../testdata/notags.m4a")
 
@@ -339,10 +327,9 @@ func TestMP4UnsupportedCoverFormatDropsAndContinues(t *testing.T) {
 	}
 }
 
-// TestMP4DroppedCoverDrawsNoSanityNote: a cover the format-drop removes must not draw the
-// added-picture sanity warnings, because those scope to the KEPT set. A dropped GIF front cover
-// no longer makes "multiple front covers", and a dropped exotic (--force) cover no longer reads
-// "invalid picture". Covers that survive the drop still warn as authored.
+// cover the format-drop removes must not draw the added-picture sanity warnings, because those
+// scope to the KEPT set. A dropped GIF front cover no longer makes "multiple front covers", and a
+// dropped exotic (--force) cover no longer reads "invalid picture".
 func TestMP4DroppedCoverDrawsNoSanityNote(t *testing.T) {
 	src := readFixture(t, "../testdata/notags.m4a")
 

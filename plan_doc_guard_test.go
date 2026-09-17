@@ -10,10 +10,7 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestPlanWithNilDocIsTotal checks the internal partial-plan case: an inner write plan
-// exists, but the source document is nil. Editor.Prepare does not build this today, but
-// Plan methods should still return clean zero values or errors rather than dereferencing
-// p.doc. This test lives in the internal package because only it can build that shape.
+// TestPlanWithNilDocIsTotal: plan with nil doc returns zeros/errors, no panic.
 func TestPlanWithNilDocIsTotal(t *testing.T) {
 	p := &Plan{plan: &core.WritePlan{}} // inner plan present, doc nil
 

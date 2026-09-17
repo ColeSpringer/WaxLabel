@@ -10,14 +10,12 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// These tests pin the "preserve and surface" contract for legacy metadata: lint --fix
-// auto-strips a legacy container (MP3 ID3v1/APEv2, FLAC leading ID3v2 / trailing ID3v1)
-// only when it is provably, fully redundant with the canonical set. A container holding a
-// value or non-tag content that lives nowhere else is kept, surfaced as legacy-only rather
-// than a bare "(none)", and left in place by the safe fix.
+// These tests pin the "preserve and surface" contract for legacy metadata: lint --fix auto-strips a
+// legacy container (MP3 ID3v1/APEv2, FLAC leading ID3v2 / trailing ID3v1) only when it is provably,
+// fully redundant with the canonical set.
 
-// apeTagBinaryItem builds a footer-only APEv2 tag carrying a single binary (NonText) item -
-// content Pairs() skips and a legacy strip cannot prove redundant.
+// apeTagBinaryItem builds a footer-only APEv2 tag carrying a single binary (NonText) item; content
+// Pairs() skips and a legacy strip cannot prove redundant.
 func apeTagBinaryItem(key string, value []byte) []byte {
 	var hdr [8]byte
 	put32le(hdr[0:4], len(value))
@@ -310,9 +308,8 @@ func TestMP3PostWriteMatchesReparseOpaqueLegacy(t *testing.T) {
 }
 
 func TestLegacyTagAndOpaqueContentBothSurface(t *testing.T) {
-	// A leading ID3v2 carrying both a unique title and a cover: the title is legacy-only and the
-	// cover is opaque non-tag content. These are independent signals, so both lint findings must
-	// fire, neither shadowing the other.
+	// A leading ID3v2 carrying both a unique title and a cover: the title is legacy-only and the cover
+	// is opaque non-tag content.
 	lead := id3v2(3, textFrame(3, "TIT2", "Lead Title"), apicFrontFrame("image/png", tinyPNG()))
 	data := slices.Concat(lead, flacWithVendor("test"))
 
@@ -350,10 +347,9 @@ func TestLintFixStripsRedundantFLACLeadingID3v2(t *testing.T) {
 	}
 }
 
-// TestFLACLeadingID3ConflictWarns pins the legacy-conflict gate: it keys on a family
-// entry actually being legacy, not on the container's name, so FLAC's stray leading
-// ID3v2 warns exactly as MP3's ID3v1 does when an edit leaves it holding a stale
-// value. The APEv2-native formats, whose APE tag is their own store, must not.
+// legacy-conflict gate: it keys on a family entry actually being legacy, not on the container's
+// name, so FLAC's stray leading ID3v2 warns exactly as MP3's ID3v1 does when an edit leaves it
+// holding a stale value. The APEv2-native formats, whose APE tag is their own store, must not.
 func TestFLACLeadingID3ConflictWarns(t *testing.T) {
 	// The legacy value must AGREE before the edit: the warning is for a divergence the
 	// edit introduces, not one the file already had.

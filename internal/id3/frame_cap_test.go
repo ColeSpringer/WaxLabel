@@ -9,9 +9,8 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestClampPadding checks the arithmetic guard for the ID3v2 payload size field:
-// frames plus padding must fit the sync-safe 28-bit limit. nonPad includes the 10-byte
-// tag header, so the frame bytes are nonPad-10.
+// TestClampPadding: the arithmetic guard for the ID3v2 payload size field
+
 func TestClampPadding(t *testing.T) {
 	const limit = int64(maxFrameSize)
 	// Within the field: padding is returned unchanged.
@@ -34,9 +33,8 @@ func TestClampPadding(t *testing.T) {
 	}
 }
 
-// TestRenderFrontTagClampsPadding covers the write path: reused padding for a very large
-// existing tag is clamped before the report is built, and the rendered size field matches
-// the actual payload. It allocates about 256 MB to reach the boundary, so -short skips it.
+// TestRenderFrontTagClampsPadding: the write path: reused padding for a very large
+
 func TestRenderFrontTagClampsPadding(t *testing.T) {
 	if testing.Short() {
 		t.Skip("allocates ~256 MB to exercise the 28-bit size-field boundary")
@@ -76,11 +74,8 @@ func TestRenderFrontTagClampsPadding(t *testing.T) {
 	}
 }
 
-// TestCheckSizeFrameCapBoundary is a regression: the write path enforces the same
-// element cap the reader uses, at the exact off-by-one boundary. The reader's
-// CheckElementCap errors at len >= max on the PRE-append count, so it accepts a tag of
-// exactly max frames; CheckSize must therefore accept max (a strict > test) and reject only
-// max+1 - a final-count CheckElementCap would wrongly reject a legitimate max-frame tag.
+// TestCheckSizeFrameCapBoundary: is a regression: the write path enforces the same
+
 func TestCheckSizeFrameCapBoundary(t *testing.T) {
 	max := bits.DefaultLimits.MaxElements
 	frames := func(n int) []Frame {

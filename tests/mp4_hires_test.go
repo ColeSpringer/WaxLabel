@@ -7,9 +7,9 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// TestMP4ALACSampleRateFromCookie: a 96 kHz ALAC's rate does not fit the sample entry's
-// 16.16 field, so the magic cookie carries it. The essence digest is unaffected: it salts
-// with the raw entry values, so two files differing only in the cookie hash the same.
+// 96 kHz ALAC's rate does not fit the sample entry's 16.16 field, so the magic cookie carries it.
+// The essence digest is unaffected: it salts with the raw entry values, so two files differing only
+// in the cookie hash the same.
 func TestMP4ALACSampleRateFromCookie(t *testing.T) {
 	build := func(cookieRate int) []byte {
 		return mp4AssembleStsd(mp4Stsd(mp4StsdEntry("alac", 2, 16, 0, mp4AlacCookie(cookieRate, 2, 24))), nil, nil, nil, 44100)
@@ -32,8 +32,8 @@ func TestMP4ALACSampleRateFromCookie(t *testing.T) {
 	}
 }
 
-// TestMP4FLACSampleRateFromStreamInfo: the FLAC-in-ISOBMFF spec makes dfLa's STREAMINFO
-// authoritative, so a 96 kHz FLAC-in-MP4 reports its real geometry rather than the entry's.
+// FLAC-in-ISOBMFF spec makes dfLa's STREAMINFO authoritative, so a 96 kHz FLAC-in-MP4 reports its
+// real geometry rather than the entry's.
 func TestMP4FLACSampleRateFromStreamInfo(t *testing.T) {
 	si := mp4StreamInfo(96000, 2, 24, 4096, 4096, 480000)
 	data := mp4AssembleStsd(mp4Stsd(mp4StsdEntry("fLaC", 2, 16, 0, mp4DfLa(si))), nil, nil, nil, 44100)
@@ -49,9 +49,8 @@ func TestMP4FLACSampleRateFromStreamInfo(t *testing.T) {
 	}
 }
 
-// TestMP4V2SoundEntryGeometry: a QuickTime version 2 sound entry carries a float64 rate
-// that a hi-res .mov needs. Its geometry stays out of the digest salt, which has always
-// been zero for such an entry.
+// QuickTime version 2 sound entry carries a float64 rate that a hi-res .mov needs. Its geometry
+// stays out of the digest salt, which has always been zero for such an entry.
 func TestMP4V2SoundEntryGeometry(t *testing.T) {
 	build := func(rate float64) []byte {
 		return mp4AssembleStsd(mp4Stsd(mp4StsdEntryV2("lpcm", rate, 2, 24)), nil, nil, nil, 44100)
@@ -67,12 +66,8 @@ func TestMP4V2SoundEntryGeometry(t *testing.T) {
 	}
 }
 
-// TestMP4StsdPrefixIndependentOfAllocLimit: the stsd prefix read is clamped to the
-// caller's allocation limit rather than refused by it, so the same bytes report the same
-// geometry and hash to the same digest whatever limit the caller set. The rate a codec
-// reads from its own configuration is limit-dependent in the other direction - a
-// configuration past the prefix is simply not seen - so the pin here is the codec name and
-// the digest, which must not move.
+// stsd prefix read is clamped to the caller's allocation limit rather than refused by it, so the
+// same bytes report the same geometry and hash to the same digest whatever limit the caller set.
 func TestMP4StsdPrefixIndependentOfAllocLimit(t *testing.T) {
 	// A second, padded entry pushes the stsd payload past the prefix a small limit allows.
 	stsd := mp4Stsd(

@@ -7,12 +7,10 @@ import (
 	"github.com/colespringer/waxlabel/internal/bits"
 )
 
-// TestAssembleSameOffsetInsertBeforeReplaceDeterministic checks that when a zero-width insert and a
-// same-offset replace share an offset (a combined tag+chapter edit where an insert lands exactly at
-// a replaced atom's start), assemble orders the insert first regardless of input order. The oldLen
-// tie-break makes this deterministic; a plain unstable off-only sort could emit the replace first,
-// advancing pos past the insert's offset and tripping assemble's own overlap guard. Both input
-// orders must therefore succeed and produce byte-identical segment lists.
+// TestAssembleSameOffsetInsertBeforeReplaceDeterministic checks that when a zero-width
+// insert and a same-offset replace share an offset (a combined tag+chapter edit where
+// an insert lands exactly at a replaced atom's start), assemble orders the insert first
+// regardless of input order.
 func TestAssembleSameOffsetInsertBeforeReplaceDeterministic(t *testing.T) {
 	const size = 100
 	insert := edit{off: 10, oldLen: 0, lit: []byte{0xAA}}        // zero-width insert at offset 10
@@ -51,11 +49,9 @@ func TestAssembleSameOffsetInsertBeforeReplaceDeterministic(t *testing.T) {
 	}
 }
 
-// TestAssembleSameOffsetZeroWidthInsertsStable checks that two zero-width inserts at the same offset
-// stay in input order. They share both offset and width, so the oldLen tie-break cannot order them;
-// SliceStable keeps input order and makes the output bytes reproducible, where plain sort.Slice
-// would order them by luck. The codec does not generate such a pair today, so this pins the
-// defensive guarantee.
+// TestAssembleSameOffsetZeroWidthInsertsStable checks that two zero-width inserts at
+// the same offset stay in input order. They share both offset and width, so the oldLen
+// tie-break cannot order them;
 func TestAssembleSameOffsetZeroWidthInsertsStable(t *testing.T) {
 	const size = 100
 	a := edit{off: 10, oldLen: 0, lit: []byte{0xA1}}

@@ -5,15 +5,13 @@ import (
 	"testing"
 )
 
-// TestDescribePerBlockVendor checks that a non-conformant FLAC with two VORBIS_COMMENT
-// blocks carrying distinct vendors has dump --native label each block with its own vendor,
-// not the first block's (which d.vendor holds).
+// TestDescribePerBlockVendor: each VORBIS_COMMENT block gets its own vendor note.
 func TestDescribePerBlockVendor(t *testing.T) {
 	d := &doc{blocks: []block{
 		{code: blkVorbisComment, body: renderVorbisComment("Vendor-A", nil)},
 		{code: blkVorbisComment, body: renderVorbisComment("Vendor-B", nil)},
 	}}
-	d.vendor = "Vendor-A" // as the parser sets it: the first block's vendor
+	d.vendor = "Vendor-A" // parser keeps first block's vendor
 
 	var notes []string
 	for _, e := range d.Describe() {
@@ -27,8 +25,7 @@ func TestDescribePerBlockVendor(t *testing.T) {
 	}
 }
 
-// TestVendorOfBounds covers vendorOf's tolerance: a short body and a declared length
-// that overruns the body both fall back to the remaining bytes instead of panicking.
+// TestVendorOfBounds: short or overrun bodies fall back to remaining bytes.
 func TestVendorOfBounds(t *testing.T) {
 	if got := vendorOf(nil); got != "" {
 		t.Errorf("vendorOf(nil) = %q, want empty", got)

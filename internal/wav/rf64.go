@@ -12,15 +12,9 @@ import (
 )
 
 // RF64 (EBU Tech 3306) and its BW64 successor lift RIFF's 4 GiB ceiling without
-// changing its shape: the header id becomes "RF64"/"BW64", every size field that
-// no longer fits reads 0xFFFFFFFF, and a mandatory "ds64" chunk - always the
-// first chunk - carries the real 64-bit values.
-//
-// Resolution is per chunk, not one blanket rule. The container size comes from
-// ds64.riffSize, the "data" chunk from ds64.dataSize, and any other oversized
-// chunk from the ds64 chunk-size table. A chunk whose declared size is not the
-// 0xFFFFFFFF marker keeps that size, which is what leaves plain RIFF's reading
-// of 0xFFFFFFFF as the streaming "size unknown" sentinel intact.
+// changing its shape: the header id becomes "RF64"/"BW64", every size field that no
+// longer fits reads 0xFFFFFFFF, and a mandatory "ds64" chunk - always the first chunk -
+// carries the real 64-bit values.
 const (
 	rf64Marker  = 0xFFFFFFFF
 	ds64MinBody = 8 + 8 + 8 + 4 // riffSize, dataSize, sampleCount, tableLength
@@ -93,12 +87,6 @@ func parseDS64(r io.ReaderAt, size, limit int64) (*ds64, error) {
 }
 
 // override resolves one chunk's real body length for [iff.WalkOptions.SizeOverride].
-// It answers only for a size field carrying the 0xFFFFFFFF marker, so a chunk whose
-// 32-bit size is honest keeps it.
-//
-// It is stateful: table entries are consumed in file order so repeated ids resolve to
-// successive entries rather than all to the first. One *ds64 therefore serves exactly
-// one walk. clone resets that state.
 func (t *ds64) override(id [4]byte, declared uint32) (int64, bool) {
 	if t == nil || declared != rf64Marker {
 		return 0, false
@@ -125,8 +113,7 @@ func (t *ds64) override(id [4]byte, declared uint32) (int64, bool) {
 // sizeFits converts a declared 64-bit size to the signed length the walker works in,
 // reporting no-override for a value that does not fit. A crafted ds64 can declare a
 // size above MaxInt64, which as a signed length is negative and would flow into a
-// negative copy range; refusing the override leaves the chunk's own 32-bit size in
-// force, which the walk then clamps to the file as it does any other overrun.
+// negative copy range;
 func sizeFits(n uint64) (int64, bool) {
 	if n > math.MaxInt64 {
 		return 0, false

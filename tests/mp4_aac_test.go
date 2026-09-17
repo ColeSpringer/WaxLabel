@@ -9,9 +9,9 @@ import (
 	"testing"
 )
 
-// mp4ZeroConfig returns a copy of an MP4 with the esds descriptor payload zeroed, so the
-// codec configuration is unreadable while every other byte - the sample entry the digest
-// salts with included - stays exactly as it was.
+// mp4ZeroConfig returns a copy of an MP4 with the esds descriptor payload zeroed, so the codec
+// configuration is unreadable while every other byte; the sample entry the digest salts with
+// included; stays exactly as it was.
 func mp4ZeroConfig(t *testing.T, data []byte) []byte {
 	t.Helper()
 	out := append([]byte(nil), data...)
@@ -42,10 +42,9 @@ func mp4AACFile(entryRate, entryChannels, timescale int, esds []byte) []byte {
 		nil, nil, nil, timescale)
 }
 
-// TestMP4AACSampleRateFromConfig: a 96 kHz AAC's rate does not fit the sample entry's
-// 16.16 field, so ffmpeg writes 0 there and the esds AudioSpecificConfig carries it. The
-// essence digest is unaffected: it salts with the raw entry values, so two files differing
-// only in the config hash the same.
+// 96 kHz AAC's rate does not fit the sample entry's 16.16 field, so ffmpeg writes 0 there and the
+// esds AudioSpecificConfig carries it. The essence digest is unaffected: it salts with the raw
+// entry values, so two files differing only in the config hash the same.
 func TestMP4AACSampleRateFromConfig(t *testing.T) {
 	t.Parallel()
 	build := func(asc string) []byte { return mp4AACFile(0, 2, 44100, mp4Esds(mp4ASC(t, asc))) }
@@ -67,9 +66,9 @@ func TestMP4AACSampleRateFromConfig(t *testing.T) {
 	}
 }
 
-// TestMP4AACSBRShapes: every SBR signalling a config can carry maps to the geometry a
-// player produces, including the tail that explicitly denies SBR and the downsampled shape
-// whose extension rate must not be doubled.
+// every SBR signalling a config can carry maps to the geometry a player produces, including the
+// tail that explicitly denies SBR and the downsampled shape whose extension rate must not be
+// doubled.
 func TestMP4AACSBRShapes(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -107,11 +106,8 @@ func TestMP4AACSBRShapes(t *testing.T) {
 	}
 }
 
-// TestMP4AACImplicitSBRKeepsEntryRate: an implicitly signalled HE-AAC stream copied into
-// MP4 carries a core-rate config, but the muxer decoded it and wrote the played rate into
-// the sample entry. An entry landing on exactly double the core rate is the signal, and it
-// holds whatever media timescale the muxer chose: requiring the timescale to match made a
-// real ffmpeg remux report half its rate under MP4Box and DASH timescales.
+// implicitly signalled HE-AAC stream copied into MP4 carries a core-rate config, but the muxer
+// decoded it and wrote the played rate into the sample entry.
 func TestMP4AACImplicitSBRKeepsEntryRate(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -149,9 +145,9 @@ func TestMP4AACImplicitSBRKeepsEntryRate(t *testing.T) {
 	}
 }
 
-// TestMP4AACWaveWrappedEsds: QuickTime nests the codec configuration in a wave wrapper
-// beside a 12-byte child literally named mp4a, so the scan has to match the box name and
-// descend rather than stop at the first four-cc that looks right.
+// QuickTime nests the codec configuration in a wave wrapper beside a 12-byte child literally named
+// mp4a, so the scan has to match the box name and descend rather than stop at the first four-cc
+// that looks right.
 func TestMP4AACWaveWrappedEsds(t *testing.T) {
 	t.Parallel()
 	wave := mp4Wave(
@@ -169,8 +165,8 @@ func TestMP4AACWaveWrappedEsds(t *testing.T) {
 	}
 }
 
-// TestMP4EsdsMalformedKeepsEntry: every way an esds can be unreadable leaves the sample
-// entry's own geometry and four-cc standing rather than reporting a partial decode.
+// every way an esds can be unreadable leaves the sample entry's own geometry and four-cc standing
+// rather than reporting a partial decode.
 func TestMP4EsdsMalformedKeepsEntry(t *testing.T) {
 	t.Parallel()
 	asc := mp4ASC(t, "1010") // would report 96000 if it were read
@@ -208,8 +204,8 @@ func TestMP4EsdsMalformedKeepsEntry(t *testing.T) {
 	}
 }
 
-// TestMP4EsdsMP3ObjectType: an MPEG-1 or MPEG-2 audio objectTypeIndication carries no
-// AudioSpecificConfig, and calling the track AAC because the four-cc says mp4a is wrong.
+// MPEG-1 or MPEG-2 audio objectTypeIndication carries no AudioSpecificConfig, and calling the track
+// AAC because the four-cc says mp4a is wrong.
 func TestMP4EsdsMP3ObjectType(t *testing.T) {
 	t.Parallel()
 	for _, oti := range []byte{0x69, 0x6B} {
@@ -224,9 +220,8 @@ func TestMP4EsdsMP3ObjectType(t *testing.T) {
 	}
 }
 
-// TestMP4EsdsProgramConfigElement: channelConfiguration 0 puts the layout in a
-// variable-length element this decoder does not walk, so the config supplies the rate and
-// the entry keeps the channel count.
+// channelConfiguration 0 puts the layout in a variable-length element this decoder does not walk,
+// so the config supplies the rate and the entry keeps the channel count.
 func TestMP4EsdsProgramConfigElement(t *testing.T) {
 	t.Parallel()
 	data := mp4AACFile(48000, 6, 48000, mp4Esds(mp4ASC(t, "1180")))
@@ -236,8 +231,8 @@ func TestMP4EsdsProgramConfigElement(t *testing.T) {
 	}
 }
 
-// TestMP4ExistingAACFixturesUnchanged: reading the esds must not move the geometry or the
-// digest of the AAC files that already parsed correctly; only the profile gains detail.
+// reading the esds must not move the geometry or the digest of the AAC files that already parsed
+// correctly; only the profile gains detail.
 func TestMP4ExistingAACFixturesUnchanged(t *testing.T) {
 	t.Parallel()
 	for _, path := range []string{"../testdata/sample.m4a", "../testdata/notags.m4a", "../testdata/sample_chapters.m4b"} {
@@ -265,7 +260,6 @@ func TestMP4ExistingAACFixturesUnchanged(t *testing.T) {
 	}
 }
 
-// TestMP4HEAACFixtures: real fdk-aac output, one file per explicit SBR shape.
 func TestMP4HEAACFixtures(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -293,9 +287,8 @@ func TestMP4HEAACFixtures(t *testing.T) {
 	}
 }
 
-// TestMP4DifferentialFFmpegHiResAAC: real ffmpeg output at 96 kHz, where the sample entry's
-// 16.16 rate field holds 0 and only the esds config carries the rate. Both the .m4a and the
-// QuickTime .mov shape must agree with ffprobe.
+// real ffmpeg output at 96 kHz, where the sample entry's 16.16 rate field holds 0 and only the esds
+// config carries the rate. Both the .m4a and the QuickTime .mov shape must agree with ffprobe.
 func TestMP4DifferentialFFmpegHiResAAC(t *testing.T) {
 	t.Parallel()
 	requireTool(t, "ffmpeg")
@@ -324,9 +317,8 @@ func TestMP4DifferentialFFmpegHiResAAC(t *testing.T) {
 	}
 }
 
-// TestMP4DifferentialFFprobeSBRShapes: every explicit SBR signalling, synthesized, read back
-// by ffprobe. Only the rate and channel count are compared: a frameless file has no profile
-// for ffprobe to report.
+// every explicit SBR signalling, synthesized, read back by ffprobe. Only the rate and channel count
+// are compared: a frameless file has no profile for ffprobe to report.
 func TestMP4DifferentialFFprobeSBRShapes(t *testing.T) {
 	t.Parallel()
 	requireTool(t, "ffprobe")
@@ -361,8 +353,7 @@ func TestMP4DifferentialFFprobeSBRShapes(t *testing.T) {
 	}
 }
 
-// TestMP4DifferentialHEAACFixtures: real fdk-aac files, where ffprobe's profile is a second
-// check on the object type we name.
+// real fdk-aac files, where ffprobe's profile is a second check on the object type we name.
 func TestMP4DifferentialHEAACFixtures(t *testing.T) {
 	t.Parallel()
 	requireTool(t, "ffprobe")
@@ -387,11 +378,8 @@ func TestMP4DifferentialHEAACFixtures(t *testing.T) {
 	}
 }
 
-// TestMP4DifferentialImplicitRemux: ffmpeg copying an implicitly signalled HE-AAC ADTS
-// stream into MP4 decodes it and writes the played geometry into the entry and the media
-// timescale. The ADTS source is checked beside it: its frames are parsed now, so the two
-// containers must report the same geometry and profile rather than the ADTS twin reporting
-// the core coder. ffprobe reads the ADTS profile field alone, so it grades geometry only.
+// ffmpeg copying an implicitly signalled HE-AAC ADTS stream into MP4 decodes it and writes the
+// played geometry into the entry and the media timescale.
 func TestMP4DifferentialImplicitRemux(t *testing.T) {
 	t.Parallel()
 	requireTool(t, "ffmpeg")

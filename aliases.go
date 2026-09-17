@@ -7,9 +7,8 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// These aliases re-export the shared value types (which live in internal/core
-// so codecs can use them without an import cycle) under the public package
-// name. To a caller they are waxlabel.Picture, waxlabel.Format, and so on.
+// Type aliases re-export internal/core value types under the public package
+// (avoids an import cycle for codecs). Callers see waxlabel.Picture, etc.
 type (
 	// Format identifies a container/codec.
 	Format = core.Format
@@ -61,15 +60,13 @@ type (
 	Limits = bits.Limits
 	// WriteReport describes a planned write.
 	WriteReport = core.WriteReport
-	// TransferReport describes a cross-format metadata copy: what each field,
-	// picture set, and chapter set would carry, downgrade, or lose.
+	// TransferReport describes a cross-format metadata copy.
 	TransferReport = core.TransferReport
-	// TransferItem is one piece of metadata's fate in a transfer.
+	// TransferItem is one metadata item's fate in a transfer.
 	TransferItem = core.TransferItem
-	// TransferKind names a transferred item's category (field/picture/chapter).
+	// TransferKind is field, picture, chapter, or synced lyric.
 	TransferKind = core.TransferKind
-	// Disposition grades how a value survives a transfer
-	// (carried/lossy/dropped/excluded).
+	// Disposition is carried, lossy, dropped, or excluded.
 	Disposition = core.Disposition
 )
 
@@ -83,15 +80,12 @@ const (
 
 // Picture MIME constants.
 const (
-	// UnrecognizedMIME is the MIME a picture carries when its bytes are not a recognized
-	// image header: a cover in a format the sniff does not know, junk, or an empty payload.
-	// It is what [Picture.Unrecognized] tests and what lint's invalid-picture finding names.
+	// UnrecognizedMIME is set when bytes are not a recognized image header
+	// (unknown format, junk, or empty). Used by [Picture.Unrecognized] and lint.
 	UnrecognizedMIME = core.UnrecognizedMIME
-	// LinkMIME is the MIME a picture declares when its payload is a URL pointing at the
-	// image rather than the image bytes. ID3v2 and the FLAC PICTURE block share it.
+	// LinkMIME means the payload is a URL, not image bytes (ID3v2 and FLAC PICTURE).
 	LinkMIME = core.LinkMIME
-	// RecognizedImageFormats names the formats [IsRecognizedImage] accepts, for a caller
-	// writing its own message about a rejected cover.
+	// RecognizedImageFormats names formats [IsRecognizedImage] accepts.
 	RecognizedImageFormats = bits.RecognizedFormats
 )
 
@@ -180,8 +174,8 @@ const (
 	FamilyASF      = core.FamilyASF
 )
 
-// Scope values annotate the target a family value applies to. Most formats are
-// track-scoped; Matroska's targets make album/edition/chapter scopes meaningful.
+// Scope values. Most formats are track-scoped; Matroska also uses album,
+// edition, and chapter targets.
 const (
 	ScopeTrack   = core.ScopeTrack
 	ScopeAlbum   = core.ScopeAlbum
@@ -269,104 +263,79 @@ const (
 	WarnOutputGainR128Tags    = core.WarnOutputGainR128Tags
 )
 
-// IsDiscardWarning reports whether a warning code means the edit's content was thrown away
-// rather than stored in an altered form. It is what tells a plan that changed no bytes
-// because its edit was discarded apart from one that changed no bytes because the file was
-// already up to date.
+// IsDiscardWarning reports whether the edit's content was thrown away rather
+// than stored in altered form. Distinguishes a no-byte plan whose edit was
+// discarded from one that was already up to date.
 func IsDiscardWarning(c WarningCode) bool { return core.IsDiscardWarning(c) }
 
 // HasDiscardWarning reports whether any warning in ws is a discard ([IsDiscardWarning]).
 func HasDiscardWarning(ws []Warning) bool { return core.HasDiscardWarning(ws) }
 
-// NoChangesLine is the one-line summary for a plan that writes no bytes: whether the file was
-// already up to date, or the edit was discarded. Shared so every renderer words it the same.
+// NoChangesLine is the shared one-line summary for a plan that writes no bytes
+// (already up to date, or edit discarded).
 func NoChangesLine(discarded bool) string { return core.NoChangesLine(discarded) }
 
-// BytesSource returns a ReaderAtSized backed by b (which must not be mutated
-// while in use). It is handy for parsing or writing in-memory data.
+// BytesSource returns a ReaderAtSized backed by b. Do not mutate b while in use.
 func BytesSource(b []byte) ReaderAtSized { return core.BytesSource(b) }
 
-// EqualPictures reports whether two picture slices are identical by content
-// (type, MIME, description, dimensions, and bytes), in order. It is the same
-// equality a codec uses to detect a picture edit, so a comparison and an edit
-// cannot disagree on what "the same pictures" means.
+// EqualPictures reports whether two picture slices match by content, in order.
+// Same equality codecs use to detect picture edits.
 func EqualPictures(a, b []Picture) bool { return core.EqualPictures(a, b) }
 
-// EqualChapters reports whether two chapter slices are identical by content
-// (start, end, and title), in order. This is the chapter analogue of [EqualPictures].
+// EqualChapters reports whether two chapter slices match by content, in order.
 func EqualChapters(a, b []Chapter) bool { return core.EqualChapters(a, b) }
 
-// EqualChaptersModuloEnds reports whether two chapter lists are equal after normalizing away
-// ends a codec would itself reconstruct (a gapless interior end, or a trailing end that runs
-// to end-of-file). Byte-identical lists are always equal regardless of duration. durA/durB are
-// the two files' media durations, used only for the trailing rule. It is what [diff] uses: the
-// interior gapless rule matches how copy grades that end (reconstructable), while the trailing
-// run-to-EOF rule is diff-specific and intentionally diverges from copy's format-based trailing
-// grade. [EqualChapters] (literal ends) still backs codec change-detection.
+// EqualChaptersModuloEnds reports equality after normalizing ends a codec would
+// reconstruct (gapless interior end, or trailing end to EOF). Byte-identical
+// lists are always equal. durA/durB are media durations for the trailing rule.
+// Diff uses this (interior rule matches copy; trailing run-to-EOF is
+// diff-specific). [EqualChapters] backs codec change-detection.
 func EqualChaptersModuloEnds(a, b []Chapter, durA, durB time.Duration) bool {
 	return core.EqualChaptersModuloEnds(a, b, durA, durB)
 }
 
-// EqualSyncedLyrics reports whether two synced-lyrics slices are identical by content
-// (language, description, and timed lines), in order. SyncedLyrics contains a slice, so
-// it is not comparable with ==; this is the equality codecs use to detect edits.
+// EqualSyncedLyrics reports whether two synced-lyrics slices match by content,
+// in order. SyncedLyrics holds a slice, so it is not comparable with ==.
 func EqualSyncedLyrics(a, b []SyncedLyrics) bool { return core.EqualSyncedLyrics(a, b) }
 
-// ParseLRC parses an LRC document into timed lyric lines, applying the foobar2000
-// [offset:] convention (effective timestamp = timestamp - offset) and skipping metadata
-// tags such as [ar:], [ti:], [al:], and [length:]. A line with several leading time tags
-// yields one SyncedLine per tag; lines are returned sorted by timestamp. This is the
-// parser behind the FLAC/Ogg SYNCEDLYRICS store and a convenience for building a
-// [SyncedLyrics] from an LRC file. LRC has no per-set language field; set it on
-// SyncedLyrics yourself when the destination can store it.
+// ParseLRC parses LRC into timed lines. Applies foobar2000 [offset:]
+// (effective = timestamp - offset); skips [ar:]/[ti:]/[al:]/[length:]. Multiple
+// leading time tags yield one SyncedLine each; results are sorted by time.
+// Used by FLAC/Ogg SYNCEDLYRICS. LRC has no language field; set it on
+// [SyncedLyrics] when needed.
 func ParseLRC(text string) []SyncedLine { return core.ParseLRC(text) }
 
-// ParseLRCFull is [ParseLRC] without the per-set line cap, for trusted input already held
-// whole in memory (such as a user-provided LRC file), so a downstream write-time cap is the
-// single truncation-and-warning point rather than a silent drop at read. Parsing untrusted
-// media keeps using the capped [ParseLRC]. The returned slice is bounded by the input size.
+// ParseLRCFull is [ParseLRC] without the per-set line cap, for trusted in-memory
+// input (e.g. a user LRC file). Untrusted media should use capped [ParseLRC].
 func ParseLRCFull(text string) []SyncedLine { return core.ParseLRCFull(text) }
 
-// ParseLRCReportFull is [ParseLRCFull] plus the 1-based line numbers of input lines the parser
-// dropped silently - non-blank lines that produced no timed lyric and are not recognized LRC
-// structure (a malformed timestamp, plain untimed text, or a bare [section] header, which is
-// lyric-sheet content no timed store can hold). Blank lines, ID metadata tags and
-// [offset:]/[length:] tags are recognized structure and are not reported. The CLI uses it to
-// warn (and fail --strict) when a --synced-lyrics-file drops lines rather than storing them
-// silently.
+// ParseLRCReportFull is [ParseLRCFull] plus 1-based line numbers of dropped
+// non-blank, non-structure lines (malformed timestamps, untimed text, bare
+// [section] headers). Blank lines and ID/[offset:]/[length:] tags are not
+// reported. CLI uses this for --synced-lyrics-file warnings and --strict.
 func ParseLRCReportFull(text string) (lines []SyncedLine, droppedLines []int) {
 	return core.ParseLRCReportFull(text)
 }
 
-// FormatLRC renders timed lyric lines as an LRC document ("[mm:ss.mmm]text" per line, in
-// order). It round-trips losslessly through [ParseLRC]; the per-set language and
-// descriptor are not representable in LRC and are not emitted.
+// FormatLRC renders timed lines as LRC ("[mm:ss.mmm]text"). Round-trips through
+// [ParseLRC]; language and descriptor are not in LRC and are omitted.
 func FormatLRC(lines []SyncedLine) string { return core.FormatLRC(lines) }
 
-// OutputGainDB renders an Opus output gain (signed Q7.8 dB, 256 = +1 dB, the unit
-// [AudioTrack.OutputGain] and [Editor.SetOutputGain] use) as decibels, so every front-end
-// prints the same figure.
+// OutputGainDB renders Opus output gain (signed Q7.8 dB, 256 = +1 dB) as text.
 func OutputGainDB(gain int) string { return core.OutputGainDB(gain) }
 
-// OutputGainDecibels converts an Opus output gain (signed Q7.8 dB) to decibels, for a
-// front-end that renders the number itself rather than [OutputGainDB]'s text.
+// OutputGainDecibels converts Opus output gain (signed Q7.8 dB) to float dB.
 func OutputGainDecibels(gain int) float64 { return core.OutputGainDecibels(gain) }
 
-// IsRecognizedImage reports whether data begins with the header of an image format
-// WaxLabel can identify; [RecognizedImageFormats] names them. It is a header sniff, not a
-// full decode, so it cannot recognize every valid image; a caller embedding a cover in a
-// format outside that list should offer an explicit override rather than treat a false
-// negative as corruption. The CLI uses it to reject a non-image file passed as
-// cover art before embedding it, without reaching into internal packages.
+// IsRecognizedImage reports whether data starts with a known image header
+// ([RecognizedImageFormats]). Header sniff only, not a full decode.
 func IsRecognizedImage(data []byte) bool {
 	_, ok := bits.SniffImage(data)
 	return ok
 }
 
-// ExtensionsFor returns the lowercase file extensions (each with a leading dot)
-// associated with format f, or nil for an unknown or unimplemented format. It
-// lets a caller warn when an output path's extension does not match the data
-// being written, since WaxLabel never transcodes.
+// ExtensionsFor returns lowercase extensions for format f (each with a leading
+// dot), or nil if unknown. WaxLabel never transcodes.
 func ExtensionsFor(f Format) []string {
 	codec, ok := core.ForFormat(f)
 	if !ok {
@@ -375,10 +344,7 @@ func ExtensionsFor(f Format) []string {
 	return codec.Extensions()
 }
 
-// Formats returns every container/codec format this build implements, in
-// registration order. It lets a caller enumerate the formats - for example to
-// gather all recognized file extensions via [ExtensionsFor] when scanning a
-// directory tree - without hard-coding the list.
+// Formats returns every implemented format in registration order.
 func Formats() []Format {
 	codecs := core.Codecs()
 	out := make([]Format, 0, len(codecs))
@@ -388,15 +354,9 @@ func Formats() []Format {
 	return out
 }
 
-// CapabilitiesFor reports what format f can do under the given write options,
-// without a parsed file. It is the file-less, format-level query an edit form for
-// a not-yet-created file of format f needs - the counterpart to
-// [Document.Capabilities], which answers the same question for a file already in
-// hand. Both route through the same codec call, so the file-aware and file-less
-// reports cannot drift. An unknown or unimplemented format reports read-only
-// (mirroring Document.Capabilities's no-codec fallback); pair it with the
-// per-key [tag.Key.Multivalued] and the [Capabilities.Field] detail to enumerate
-// what is editable.
+// CapabilitiesFor reports what format f can do under opts, without a parsed
+// file. Counterpart to [Document.Capabilities]. Unknown formats report
+// read-only.
 func CapabilitiesFor(f Format, opts ...WriteOption) Capabilities {
 	codec, ok := core.ForFormat(f)
 	if !ok {

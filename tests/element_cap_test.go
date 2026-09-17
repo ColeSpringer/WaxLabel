@@ -9,11 +9,9 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// Files built from floods of minimum-size metadata elements must be rejected with
-// ErrSizeTooLarge once the per-parse element count crosses Limits.MaxElements
-// (default 100000), instead of growing one descriptor per element. The inputs are
-// generated in-test and stay under about 1 MB because the cap fires on element count,
-// not byte size.
+// Files built from floods of minimum-size metadata elements must be rejected with ErrSizeTooLarge
+// once the per-parse element count crosses Limits.MaxElements (default 100000), instead of growing
+// one descriptor per element.
 const overCap = 100001
 
 // repeatConcat returns elem repeated n times in a single pre-sized buffer.
@@ -26,9 +24,9 @@ func repeatConcat(prefix, elem []byte, n int) []byte {
 	return out
 }
 
-// TestPartialLimitsKeepElementCap verifies that a caller passing a partial Limits via WithLimits
-// (e.g. only MaxDepth) must still get the default element cap - a zero field means "use the
-// default", not "unlimited" - so the DoS protection is not silently disabled.
+// caller passing a partial Limits via WithLimits (e.g. only MaxDepth) must still get the default
+// element cap; a zero field means "use the default", not "unlimited", so the DoS protection is not
+// silently disabled.
 func TestPartialLimitsKeepElementCap(t *testing.T) {
 	emptyChunk := append([]byte("JUNK"), wavLE32(0)...)
 	body := repeatConcat([]byte("WAVE"), emptyChunk, overCap)
@@ -105,11 +103,10 @@ func TestID3FrameCountCapped(t *testing.T) {
 	}
 }
 
-// TestVorbisCommentCountCapped verifies that a Vorbis comment list declares an
-// attacker-controlled uint32 count; for Ogg the comment packet is bounded only by the alloc
-// limit, so a body packed with minimum entries would amplify into one Comment descriptor
-// each to OOM. ParseCommentList (shared by FLAC and Ogg) must trip the element cap. The FLAC
-// path wires it; the entries carry '=' so each is actually stored (and counted).
+// Vorbis comment list declares an attacker-controlled uint32 count; for Ogg the comment packet is
+// bounded only by the alloc limit, so a body packed with minimum entries would amplify into one
+// Comment descriptor each to OOM. ParseCommentList (shared by FLAC and Ogg) must trip the element
+// cap.
 func TestVorbisCommentCountCapped(t *testing.T) {
 	entries := make([]string, overCap)
 	for i := range entries {
@@ -123,11 +120,8 @@ func TestVorbisCommentCountCapped(t *testing.T) {
 	}
 }
 
-// TestMatroskaMetadataElementCapped verifies that a Tags element packed with minimum-size
-// empty SimpleTags is metadata-granularity (unlike clusters), so the EBML walk must trip the
-// element cap rather than accumulate one descriptor each to OOM. The cap rides the depth
-// guard's breadth budget, which eachChild (the metadata walk) counts and walkSegment (the
-// cluster walk) does not - see TestMatroskaManyClustersParseUncapped for the exempt side.
+// Tags element packed with minimum-size empty SimpleTags is metadata-granularity (unlike clusters),
+// so the EBML walk must trip the element cap rather than accumulate one descriptor each to OOM.
 func TestMatroskaMetadataElementCapped(t *testing.T) {
 	simples := repeatConcat(nil, mkEl(idSimpleTag, nil), overCap)
 	seg := mkEl(idSegment, mkEl(idTags, mkEl(idTag, simples)))
@@ -139,12 +133,9 @@ func TestMatroskaMetadataElementCapped(t *testing.T) {
 	}
 }
 
-// TestWavAiffID3FrameCapErrors verifies that a WAV/AIFF id3 chunk whose frame count exceeds
-// MaxElements surfaces ErrSizeTooLarge instead of being swallowed by the tolerant
-// "is this chunk a tag?" guard (which would treat a structurally-valid id3 chunk as absent
-// and rewrite the file without it). Symmetric with the MP3/AAC front-tag path, which errors.
-// A genuinely malformed chunk still falls through to the native LIST/INFO fallback (covered
-// elsewhere); this is specifically the bounded-allocation cap breach.
+// WAV/AIFF id3 chunk whose frame count exceeds MaxElements surfaces ErrSizeTooLarge instead of
+// being swallowed by the tolerant "is this chunk a tag?" guard (which would treat a
+// structurally-valid id3 chunk as absent and rewrite the file without it).
 func TestWavAiffID3FrameCapErrors(t *testing.T) {
 	frames := make([][]byte, overCap)
 	empty := textFrame(3, "TIT2", "")
@@ -165,11 +156,9 @@ func TestWavAiffID3FrameCapErrors(t *testing.T) {
 	}
 }
 
-// TestMatroskaManyClustersParseUncapped guards against someone later
-// over-applying the element cap to an audio-granularity loop: a Matroska level-1
-// Cluster occurs once per audio packet group, so a long file legitimately has
-// hundreds of thousands. Far more than MaxElements clusters must still parse
-// cleanly. (The Ogg-page analogue is internal/ogg's TestScanPagesManyPagesUncapped.)
+// guards against someone later over-applying the element cap to an audio-granularity loop: a
+// Matroska level-1 Cluster occurs once per audio packet group, so a long file legitimately has
+// hundreds of thousands. Far more than MaxElements clusters must still parse cleanly.
 func TestMatroskaManyClustersParseUncapped(t *testing.T) {
 	const n = overCap + 20000 // comfortably past the cap an audio loop must not honor
 	cluster := mkAudioCluster()

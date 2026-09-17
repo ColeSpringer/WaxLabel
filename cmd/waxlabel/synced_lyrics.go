@@ -8,11 +8,9 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// splitSyncedLyric parses an --add-synced-lyric "TIMESTAMP=Text" assignment. The
-// timestamp is read from the text before the first '=', and everything after it is the
-// lyric text, including an empty string or additional '=' characters. It mirrors
-// splitChapter and reuses the shared [H:]MM:SS[.mmm] timestamp grammar, so a timestamp
-// copied from dump output parses back to the same instant.
+// splitSyncedLyric parses --add-synced-lyric "TIMESTAMP=Text": timestamp before
+// the first '=', text (possibly empty or containing '=') after. Mirrors
+// splitChapter; same [H:]MM:SS[.mmm] grammar so dump timestamps round-trip.
 func splitSyncedLyric(s string) (wl.SyncedLine, error) {
 	i := strings.IndexByte(s, '=')
 	if i < 0 {
@@ -20,8 +18,7 @@ func splitSyncedLyric(s string) (wl.SyncedLine, error) {
 	}
 	start, err := parseChapterTimestamp(s[:i])
 	if err != nil {
-		// Reword the shared timestamp parser's "chapter" noun for the synced-lyric path, so a
-		// bad --add-synced-lyric timestamp does not report an "invalid chapter timestamp".
+		// Reword the shared parser's "chapter" noun for this flag.
 		return wl.SyncedLine{}, usagef("invalid synced-lyric timestamp %q (want [H:]MM:SS[.mmm] or seconds, e.g. 1:30 or 90)", s[:i])
 	}
 	text := s[i+1:]
@@ -31,23 +28,16 @@ func splitSyncedLyric(s string) (wl.SyncedLine, error) {
 	return wl.SyncedLine{Time: start, Text: text}, nil
 }
 
-// syncedLyricsAdds resolves --synced-lyrics-file and --add-synced-lyric into the single
-// synced-lyrics set requested by the CLI, tagged with --synced-lyrics-lang. Authoring
-// synced lyrics replaces the destination's existing synced lyrics with this one set,
-// unlike --add-chapter, which appends. Merging individual lines into one of several
-// existing sets would be ambiguous because synced-lyrics sets are keyed differently by
-// native stores. The LRC file is read and timestamps are validated once, before any target
-// file is parsed, so bad input is reported once for the whole invocation. Returns nil when
-// neither authoring flag was given. droppedLines carries the 1-based --synced-lyrics-file line
-// numbers the parser dropped (no timed lyric, not recognized LRC structure), so a per-file
-// warning can surface the partial input loss rather than let it pass silently at exit 0.
+// syncedLyricsAdds resolves --synced-lyrics-file and --add-synced-lyric into one
+// set tagged with --synced-lyrics-lang. Authoring replaces existing synced lyrics
+// (unlike --add-chapter, which appends): merging into one of several native sets
+// would be ambiguous. LRC and timestamps are validated once before any target
+// parse. Nil when neither authoring flag is set. droppedLines are 1-based LRC
+// lines dropped (no timed lyric / unrecognized), for a per-file warning.
 func (e *editFlags) syncedLyricsAdds() (sets []wl.SyncedLyrics, droppedLines []int, err error) {
-	// Validate the author-provided language once for the whole run, alongside the timestamps,
-	// but only when lyrics are actually being authored: a bare --synced-lyrics-lang alongside
-	// --clear-synced-lyrics tags nothing, so its value is unused and must not fail the run. A
-	// typo such as ISO-639-1 "en" or "english" is then one usage error, not a per-file failure.
-	// ISO-639-2 codes are three letters; the SYLT field is a fixed three bytes, so a shorter or
-	// longer value would be padded or truncated.
+	// Validate language once for the run, only when authoring: bare
+	// --synced-lyrics-lang with --clear-synced-lyrics tags nothing. ISO-639-2 is
+	// three letters; SYLT is three bytes, so other lengths would pad/truncate.
 	authoring := e.syncedLyricsFile != "" || len(e.addSyncedLyric) > 0
 	if authoring && e.syncedLyricsLang != "" && !validLanguageCode(e.syncedLyricsLang) {
 		return nil, nil, usagef("--synced-lyrics-lang %q must be 3 ASCII letters (e.g. eng)", e.syncedLyricsLang)
@@ -62,17 +52,13 @@ func (e *editFlags) syncedLyricsAdds() (sets []wl.SyncedLyrics, droppedLines []i
 			return nil, nil, fmt.Errorf("--synced-lyrics-file: %s: %w", e.syncedLyricsFile, err)
 		}
 		content := string(data)
-		// Validate the file content at the boundary, like the argv author-text inputs, so a NUL
-		// byte (valid UTF-8, missed by a UTF-8-only check) or invalid UTF-8 in the LRC is a usage
-		// error (exit 2) rather than deferring to the library's exit-4 corrupt-media backstop.
+		// Boundary check like argv text: NUL (valid UTF-8) or invalid UTF-8 is
+		// usage (exit 2), not the library's exit-4 corrupt-media backstop.
 		if err := checkArgText(content, "--synced-lyrics-file: "+e.syncedLyricsFile); err != nil {
 			return nil, nil, err
 		}
-		// Parse the file uncapped: the content is already fully in memory, so the line count
-		// is bounded by the file size. Delivering every line lets the write-time cap in the
-		// library truncate and warn once (visible to --json and --strict), rather than this
-		// read silently dropping lines past the cap. The reporting variant also returns the line
-		// numbers dropped for having no timed lyric, so a partial-LRC drop is surfaced rather than silent.
+		// Uncapped parse: content is already in memory. Library write-time cap
+		// truncates and warns once (--json/--strict) instead of silently dropping.
 		fileLines, dropped := wl.ParseLRCReportFull(content)
 		if len(fileLines) == 0 {
 			return nil, nil, usagef("--synced-lyrics-file: %s: no timed lyric lines found (want LRC lines like [00:12.00]Text)", e.syncedLyricsFile)
@@ -90,17 +76,14 @@ func (e *editFlags) syncedLyricsAdds() (sets []wl.SyncedLyrics, droppedLines []i
 	if len(lines) == 0 {
 		return nil, nil, nil
 	}
-	// Store one set containing every authored line. The library sorts by timestamp.
-	// Lowercase the language here so the model, JSON dump, and encoded ISO-639-2
-	// bytes agree; validation has already limited the input to ASCII letters.
+	// One set of every authored line; library sorts by timestamp. Lowercase lang
+	// so model, JSON, and ISO-639-2 bytes agree (already ASCII-letter validated).
 	return []wl.SyncedLyrics{{Language: strings.ToLower(e.syncedLyricsLang), Lines: lines}}, droppedLines, nil
 }
 
-// validLanguageCode reports whether s is exactly three ASCII letters, the shape of an
-// ISO-639-2 language code and the only form the ID3 SYLT 3-byte field stores without
-// padding or truncation. Input is case-insensitive and is stored in lowercase. A full
-// ISO registry lookup is intentionally out of scope; the storage field can only preserve
-// three single-byte letters.
+// validLanguageCode reports exactly three ASCII letters (ISO-639-2 / SYLT shape).
+// Case-insensitive; stored lowercase. No registry lookup: the field holds three
+// single-byte letters only.
 func validLanguageCode(s string) bool {
 	if len(s) != 3 {
 		return false

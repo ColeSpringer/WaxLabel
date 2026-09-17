@@ -5,10 +5,8 @@ import (
 	"testing"
 )
 
-// TestFsyncDirNeverFailsACommittedWrite pins the property writeAtomic depends on: the
-// post-rename directory sync must not turn a committed write into a reported failure.
-// The shared POSIX shape used to return ERROR_ACCESS_DENIED on Windows, failing every
-// successful save.
+// TestFsyncDirNeverFailsACommittedWrite: post-rename dir sync must not fail a
+// committed write (old Windows POSIX shape returned ACCESS_DENIED).
 func TestFsyncDirNeverFailsACommittedWrite(t *testing.T) {
 	t.Parallel()
 	if err := fsyncDir(t.TempDir()); err != nil {

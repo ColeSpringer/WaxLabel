@@ -17,11 +17,7 @@ import (
 
 // parse reads a Matroska/WebM file into a neutral Media: the scoped tag tree from
 // Segment.Tags, the segment title from Segment.Info, cover art from
-// Segment.Attachments, and the audio geometry from Segment.Tracks. The cluster
-// media is never read - only the audio byte range is recorded. It also captures a
-// writeBase (the Segment header, the ordered top-level children, and the raw
-// bytes of the SeekHead/Cues/Info/Attachments/Tags) so the write path can
-// re-render and patch without the source (see rewrite_read.go).
+// Segment.Attachments, and the audio geometry from Segment.Tracks.
 func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) (*core.Media, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -29,9 +25,10 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	size := src.Size()
 	limit := opts.Limits.MaxAllocBytes
 	// The depth guard also carries the per-parse breadth budget: eachChild counts every
-	// metadata element it visits against MaxElements, so the SimpleTag/attachment/seek/cue/
-	// chapter walks cannot amplify a flat run of empty EBML elements into descriptors to OOM
-	// (clusters, walked by walkSegment, are exempt - see eachChild and TestMatroska*Clusters).
+	// metadata element it visits against MaxElements, so the
+	// SimpleTag/attachment/seek/cue/ chapter walks cannot amplify a flat run of empty EBML
+	// elements into descriptors to OOM (clusters, walked by walkSegment, are exempt - see
+	// eachChild and TestMatroska*Clusters).
 	depth := bits.NewDepth(opts.Limits.MaxDepth).WithElementCap(opts.Limits.MaxElements, "Matroska metadata elements")
 
 	d := &doc{}
@@ -71,11 +68,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	var tagsSeen bool // capture the Tags CRC framing from the first master only (later masters merge)
 	err = walkSegment(src, segStart, segEnd, depth, limit, func(el element) error {
 		if el.id == idCluster {
-			// Coalesce a contiguous run of Clusters into one descriptor. The writer copies
-			// the run as one byte range, and audioStart/audioEnd already track the run's
-			// bounds, so one descriptor per tiny cluster would only waste memory. Extend
-			// the last descriptor by index; keeping a pointer into wb.children would be
-			// unsafe across append reallocation. Non-cluster elements break the run.
+			// Coalesce a contiguous run of Clusters into one descriptor.
 			if n := len(wb.children); n > 0 && wb.children[n-1].id == idCluster {
 				wb.children[n-1].dataEnd = el.dataEnd
 			} else {
@@ -89,10 +82,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			}
 			return nil
 		}
-		// Charge every non-cluster level-1 child against the element budget. walkSegment
-		// does not count its children itself, and a Cluster/Void alternation would
-		// otherwise defeat cluster coalescing by forcing one descriptor per pair. Real
-		// files have few non-cluster level-1 children; adversarial floods are rejected.
+		// Charge every non-cluster level-1 child against the element budget.
 		if err := depth.Count(); err != nil {
 			return err
 		}
@@ -100,13 +90,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		switch el.id {
 		case idCRC32:
 			// A CRC-32 directly under the Segment covers the whole segment body, so any edit
-			// leaves it stale. Capture its bytes pre-flipped to a Void (byte[0] = idVoid): the
-			// writer substitutes this length-identical Void in place of the stale CRC, so the
-			// Segment data-size VINT is unchanged and nothing shifts. A Void's content is
-			// arbitrary, so keeping the old CRC value bytes inside it is harmless. Dropping the
-			// spec-optional CRC keeps the output valid (EBML RFC 8794) without the risky
-			// whole-file recompute the other masters' CRCs would need. It is the only CRC that
-			// appears directly in wb.children (the rest live inside their masters' raw bytes).
+			// leaves it stale.
 			if raw, err := bits.ReadSlice(src, el.start, el.dataEnd-el.start, limit); err == nil && len(raw) > 0 {
 				raw[0] = idVoid
 				wb.segVoidFromCRC = raw
@@ -174,14 +158,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		}
 	}
 
-	// Matroska carries no average-bitrate element. For a single audio-only file
-	// (one audio track, no video/subtitle track) derive it from the cluster byte
-	// span over the segment duration - the same audioBytes/secs every other codec
-	// uses. Skip multi-track or video-bearing files, where the cluster bytes are
-	// shared across streams and would inflate an audio figure. Attachments (cover
-	// art) sit outside the cluster bounds, so a cover-art + single-audio file still
-	// computes cleanly. The audioStart/audioEnd guard matches the AudioStart/AudioEnd
-	// guard below, so a clusterless file yields no bogus bitrate.
+	// Matroska carries no average-bitrate element. Skip multi-track or video-bearing
+	// files, where the cluster bytes are shared across streams and would inflate an audio
+	// figure.
 	if !d.sawNonAudio && len(d.tracks) == 1 && audioStart >= 0 && audioEnd > audioStart {
 		t := &d.tracks[0]
 		t.Bitrate = core.AverageBitrate(audioEnd-audioStart, t.Duration.Seconds())
@@ -321,17 +300,15 @@ func parseTrackEntry(src core.ReaderAtSized, entry element, depth *bits.Depth, l
 		// Read the private data only here, and only the prefix the decoder can consume: a
 		// Vorbis or FLAC CodecPrivate holds whole setup headers this parser has no use for,
 		// and an AAC one that declares megabytes should not be allocated to read 24 bytes.
-		// An unreadable one degrades to the CodecID, as the CodecID string itself degrades.
 		b, _ := readBytesPrefix(src, private, maxAudioSpecificConfig, limit)
 		applyAACCodecPrivate(&t, codecID, b, outputRate > 0)
 	}
 	d.tracks = append(d.tracks, t)
 }
 
-// applyAACCodecPrivate names an AAC track's profile and, when the container did not declare
-// an output rate, takes the played rate from the AudioSpecificConfig the CodecPrivate holds.
-// Without a usable config the CodecID's own suffix names the profile, which is all the
-// older mkvmerge and ffmpeg files that omit CodecPrivate carry.
+// applyAACCodecPrivate names an AAC track's profile and, when the container did not
+// declare an output rate, takes the played rate from the AudioSpecificConfig the
+// CodecPrivate holds.
 func applyAACCodecPrivate(t *core.AudioTrack, codecID string, private []byte, haveOutputRate bool) {
 	fromID := aacCodecIDProfile(codecID)
 	asc, ok := mpeg4audio.ParseConfig(private)
@@ -384,10 +361,9 @@ func aacCodecIDProfile(codecID string) string {
 	return "AAC"
 }
 
-// parseAudio reads the Audio sub-element's sampling frequency, channel count, and
-// bit depth onto t, returning OutputSamplingFrequency separately (0 when absent or
-// unusable). The caller applies it after copying the digest salt, which stays on
-// SamplingFrequency.
+// parseAudio reads the Audio sub-element's sampling frequency, channel count, and bit
+// depth onto t, returning OutputSamplingFrequency separately (0 when absent or
+// unusable).
 func parseAudio(src core.ReaderAtSized, audio element, depth *bits.Depth, limit int64, t *core.AudioTrack) int {
 	// Guard NaN/Inf and absurd magnitudes: int(NaN)/int(+Inf) is implementation-defined,
 	// and a wild rate poisons the essence config.
@@ -449,10 +425,8 @@ func parseTag(src core.ReaderAtSized, tagEl element, depth *bits.Depth, limit in
 			if err != nil {
 				return err
 			}
-			// Capture raw only for the top-level SimpleTag: its bytes already span the
-			// whole nested subtree, and only a top-level tag's raw is ever consumed by
-			// the write path. Capturing at every nesting level re-copied nearly the whole
-			// subtree per level, so retained memory grew with depth times subtree size.
+			// Capture raw only for the top-level SimpleTag: its bytes already span the whole
+			// nested subtree, and only a top-level tag's raw is ever consumed by the write path.
 			st.raw = captureRaw(src, el, limit)
 			g.tags = append(g.tags, st)
 		}
@@ -540,10 +514,8 @@ func parseAttachments(src core.ReaderAtSized, att element, depth *bits.Depth, li
 	return pics, err
 }
 
-// parseAttached reads one AttachedFile, returning its summary and, when it is an
-// image, a decoded Picture. The attachment fields and cover bytes propagate read
-// errors so a truncated or over-limit cover fails the parse rather than yielding
-// a partial picture.
+// parseAttached reads one AttachedFile, returning its summary and, when it is an image,
+// a decoded Picture.
 func parseAttached(src core.ReaderAtSized, af element, depth *bits.Depth, limit int64) (attachment, *core.Picture, error) {
 	a := attachment{raw: captureRaw(src, af, limit)}
 	var dataEl element
@@ -566,10 +538,10 @@ func parseAttached(src core.ReaderAtSized, af element, depth *bits.Depth, limit 
 	if err != nil {
 		return a, nil, err
 	}
-	// A cover is an image MIME, or a --force octet-stream stored under the cover-art file name:
-	// the latter reprojects as an Unrecognized() picture (removable, and rebuilt not preserved on
-	// write) instead of accumulating a new cover_<n> attachment on every re-add. A foreign
-	// non-image doc named cover.* (text/plain, application/pdf) stays a plain attachment.
+	// A cover is an image MIME, or a --force octet-stream stored under the cover-art file
+	// name: the latter reprojects as an Unrecognized() picture (removable, and rebuilt not
+	// preserved on write) instead of accumulating a new cover_<n> attachment on every
+	// re-add.
 	a.image = isCoverAttachment(a.mime, a.name)
 	if !a.image || !haveData {
 		return a, nil, nil
@@ -594,12 +566,7 @@ func parseAttached(src core.ReaderAtSized, af element, depth *bits.Depth, limit 
 	return a, &pic, nil
 }
 
-// resolveScope maps a tag group's targets to a canonical scope. A chapter or
-// edition UID, or a high TargetTypeValue, widens or narrows the level; the
-// default (empty targets => TargetTypeValue 50) is album level. A track UID
-// narrows an album/part-level group to the track. When the numeric
-// TargetTypeValue is absent, the informational TargetType string is consulted
-// (Picard and some hand-authored files set only the string).
+// resolveScope maps a tag group's targets to a canonical scope.
 func resolveScope(g tagGroup) core.Scope {
 	switch {
 	case g.chapterUID:
@@ -620,10 +587,9 @@ func resolveScope(g tagGroup) core.Scope {
 	}
 }
 
-// level resolves a tag group's TargetTypeValue: the explicit numeric value, else
-// the informational TargetType keyword (Picard and some hand-authored files set
-// only the string), else the spec default of 50 (album/movie). It is the single
-// level resolver shared by resolveScope and the native dump view.
+// level resolves a tag group's TargetTypeValue: the explicit numeric value, else the
+// informational TargetType keyword (Picard and some hand-authored files set only the
+// string), else the spec default of 50 (album/movie).
 func (g tagGroup) level() uint64 {
 	ttv := g.targetTypeValue
 	if ttv == 0 {
@@ -669,12 +635,8 @@ type scopedContribution struct {
 // the parsed groups and the segment title. Only top-level SimpleTags project to
 // the canonical set; nested sub-tags and unmapped names stay in the native tree.
 func project(d *doc) (tag.TagSet, []core.FamilyValue) {
-	// Matroska text is stored as raw bytes; a non-conformant file can hold invalid UTF-8 in a
-	// TagString or the Info.Title. Sanitize the values entering the canonical model (like the
-	// ID3/MP4/Vorbis readers) so a copy of such a value is not spuriously rejected by the
-	// write-time UTF-8 guard and --json never emits invalid bytes. The native tree keeps its
-	// raw bytes, and the write path preserves unchanged tags from their captured raw, so this
-	// does not alter byte-level preservation.
+	// Matroska text is stored as raw bytes; a non-conformant file can hold invalid UTF-8
+	// in a TagString or the Info.Title.
 	var contribs []scopedContribution
 	if d.hasSegTitle {
 		contribs = append(contribs, scopedContribution{tag.Title, core.SanitizeUTF8(d.segTitle), core.ScopeAlbum})
@@ -692,16 +654,7 @@ func project(d *doc) (tag.TagSet, []core.FamilyValue) {
 
 // projectFlat builds the flat TagSet from scoped Matroska contributions. For each key
 // it picks a primary scope, preferring album scope when present, and emits that scope's
-// values verbatim and in order. This keeps intra-scope duplicates and case or
-// whitespace variants visible, matching formats such as FLAC and Ogg. Values from
-// other scopes are added only when their folded form is not already present, so
-// album/track echoes collapse to one canonical value while genuinely distinct scoped
-// values still surface and can be reported by buildFamilies.
-//
-// TITLE is the one exception: it is single-valued in the authoritative Info.Title
-// contribution. An album-scope TITLE SimpleTag that echoes the segment title must not
-// duplicate it, so the primary emit fold-dedups TITLE only. A genuinely different TITLE
-// still surfaces and buildFamilies reports the scoped disagreement.
+// values verbatim and in order.
 func projectFlat(contribs []scopedContribution) tag.TagSet {
 	byKey := map[tag.Key][]scopedContribution{}
 	var keyOrder []tag.Key
@@ -731,22 +684,9 @@ type contributionEmit struct {
 	emitted bool
 }
 
-// projectionOrder resolves one canonical key's contributions (in the order the
-// parse walk produced them) into the order the flat projection visits them, each
-// flagged emitted or suppressed. It is the single decision point for "does this
-// SimpleTag's value reach the canonical set, and in what position": the reader
-// ([projectFlat]) turns the emitted ones into TagSet values, and the writer
-// (computeEditDecisions) uses the same verdict to decide which values a scoped
-// tag can still be trusted to carry. Keeping one implementation is what stops the
-// write side's model of the reader from rotting.
-//
-// The rule: scopes in first-seen order, with album as the primary scope when
-// present and the first-seen scope otherwise. Every primary-scope contribution
-// emits, in order, so intra-scope duplicates and case variants stay visible - the
-// one exception is [tag.Title], which is single-valued in the authoritative
-// Info.Title contribution and so fold-dedups against itself. A contribution at any
-// other scope emits only when its folded value is not already present, collapsing
-// album/track echoes while still surfacing genuinely distinct scoped values.
+// projectionOrder resolves one canonical key's contributions (in the order the parse
+// walk produced them) into the order the flat projection visits them, each flagged
+// emitted or suppressed.
 func projectionOrder(key tag.Key, contribs []scopedContribution) []contributionEmit {
 	if len(contribs) == 0 {
 		return nil
@@ -791,10 +731,9 @@ func projectionOrder(key tag.Key, contribs []scopedContribution) []contributionE
 	return out
 }
 
-// invalidKeyWarnings reports the SimpleTag names the canonical vocabulary cannot represent,
-// so a value the native tree preserves but the tag set never receives is not silent. It walks
-// the same groups project does and applies the same drop decision, so the set flagged is
-// exactly the set omitted.
+// invalidKeyWarnings reports the SimpleTag names the canonical vocabulary cannot
+// represent, so a value the native tree preserves but the tag set never receives is not
+// silent.
 func invalidKeyWarnings(d *doc) []core.Warning {
 	var ws []core.Warning
 	seen := map[string]bool{}
@@ -810,10 +749,8 @@ func invalidKeyWarnings(d *doc) []core.Warning {
 	return ws
 }
 
-// unprojectableTagName reports whether a SimpleTag name is dropped because the canonical
-// vocabulary cannot represent it, as opposed to being dropped on purpose. A technical name
-// (mkvmerge's BPS / NUMBER_OF_* / DURATION statistics) is a deliberate exclusion and must not
-// be reported as a loss; an empty name is not a key at all.
+// unprojectableTagName reports whether a SimpleTag name is dropped because the
+// canonical vocabulary cannot represent it, as opposed to being dropped on purpose.
 func unprojectableTagName(name string) bool {
 	if _, ok := mapping.MatroskaTagKey(name); ok {
 		return false
@@ -821,11 +758,8 @@ func unprojectableTagName(name string) bool {
 	return strings.TrimSpace(name) != "" && !mapping.MatroskaTechnicalName(name)
 }
 
-// projectTag maps one SimpleTag name/value to canonical contributions, splitting
-// a "n/total" track or disc number into its two canonical keys. An empty value maps
-// to a present empty contribution ([""]), matching what `set KEY=` writes and what
-// FLAC/Ogg keep; callers gate on the SimpleTag's hasValue first, so a binary- or
-// nested-only tag (no TagString) never reaches here. An unmapped name contributes nothing.
+// projectTag maps one SimpleTag name/value to canonical contributions, splitting a
+// "n/total" track or disc number into its two canonical keys.
 func projectTag(name, value string, scope core.Scope) []scopedContribution {
 	key, ok := mapping.MatroskaTagKey(name)
 	if !ok {
@@ -833,10 +767,9 @@ func projectTag(name, value string, scope core.Scope) []scopedContribution {
 	}
 	// Split a slashed track/disc number through the shared read-path helper, which
 	// preserves the exact substrings ("04/09" -> "04"/"09", "0/12" -> "0"/"12") rather
-	// than renumbering through ParseNumPair/strconv.Itoa (which dropped leading zeros
-	// and a literal 0), and leaves a malformed pair verbatim - so Matroska agrees with
-	// every other read path. A non-split value (no slash, malformed, or a non-pair key)
-	// contributes verbatim, including a present-empty value ([""]).
+	// than renumbering through ParseNumPair/strconv.Itoa (which dropped leading zeros and
+	// a literal 0), and leaves a malformed pair verbatim - so Matroska agrees with every
+	// other read path.
 	num, total, split := tag.NumberTotalSplit(key, value)
 	if !split {
 		return []scopedContribution{{key, value, scope}}
@@ -912,10 +845,8 @@ func mediaWarnings(ts tag.TagSet, fams []core.FamilyValue) []core.Warning {
 }
 
 // pictureType maps an attachment file name to a picture role using the Matroska
-// cover-art naming convention (matroska.org): the front cover is "cover.<ext>"
-// and a small thumbnail is "small_cover.<ext>". Matroska defines no standard
-// back-cover name, so anything that is not a recognized cover is Other rather
-// than guessed at from substrings (which would misfire on e.g. "background.jpg").
+// cover-art naming convention (matroska.org): the front cover is "cover.<ext>" and a
+// small thumbnail is "small_cover.<ext>".
 func pictureType(name string) core.PictureType {
 	n := strings.ToLower(name)
 	switch {
@@ -935,12 +866,10 @@ func isImageMIME(mime string) bool {
 	return strings.HasPrefix(strings.ToLower(mime), "image/")
 }
 
-// isCoverName reports whether an attachment file name follows the Matroska cover-art naming
-// convention this codec reads and writes: a base name (before the extension) of exactly "cover"
-// or "small_cover", optionally with WaxLabel's uniquifying numeric suffix ("cover_1",
-// "small_cover_2"), and any (or no) extension. isCoverAttachment pairs it with an octet-stream
-// MIME to admit a --force cover. It deliberately does NOT match a broad "cover_" prefix, so a
-// foreign attachment such as "cover_letter.txt" stays a plain preserved attachment.
+// isCoverName reports whether an attachment file name follows the Matroska cover-art
+// naming convention this codec reads and writes: a base name (before the extension) of
+// exactly "cover" or "small_cover", optionally with WaxLabel's uniquifying numeric
+// suffix ("cover_1", "small_cover_2"), and any (or no) extension.
 func isCoverName(name string) bool {
 	base := name
 	if i := strings.LastIndexByte(base, '.'); i >= 0 {
@@ -960,14 +889,9 @@ func isCoverName(name string) bool {
 	return false
 }
 
-// isCoverAttachment reports whether an AttachedFile projects as a cover picture. A cover is
-// either an image-MIME file, or WaxLabel's --force cover: an application/octet-stream stored
-// under the cover-art file name (cover.<ext>/small_cover.<ext>). Restricting the cover-name path
-// to octet-stream keeps a foreign non-image document that merely happens to be named cover.* (a
-// cover.txt/cover.pdf carrying text/plain or application/pdf) a plain preserved attachment rather
-// than promoting it to a picture and rebuilding it under the cover convention. Shared by the read
-// gate, the write attachment record, and the result reprojection so the three cannot drift on what
-// counts as a cover.
+// isCoverAttachment reports whether an AttachedFile projects as a cover picture. Shared
+// by the read gate, the write attachment record, and the result reprojection so the
+// three cannot drift on what counts as a cover.
 func isCoverAttachment(mime, name string) bool {
 	return isImageMIME(mime) || (mime == core.UnrecognizedMIME && isCoverName(name))
 }

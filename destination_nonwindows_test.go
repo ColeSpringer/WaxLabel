@@ -9,12 +9,8 @@ import (
 	"testing"
 )
 
-// TestDirSyncUnsupported pins which directory-sync failures fsyncDir skips as "this platform
-// has no such step" and which are lost writes that must still surface. The last two cases pin
-// that the deliberately narrow predicate cannot drift into "any error".
-//
-// Tagged unix rather than !windows because plan9 defines EINVAL and EIO but not ENOSYS,
-// ENOTSUP, ENOSPC, or EDQUOT.
+// TestDirSyncUnsupported: which Sync failures mean "no such step" vs lost write.
+// unix build: plan9 lacks ENOSYS/ENOTSUP/ENOSPC/EDQUOT.
 func TestDirSyncUnsupported(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {

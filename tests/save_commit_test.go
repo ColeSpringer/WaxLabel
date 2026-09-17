@@ -10,14 +10,9 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestInPlaceSaveCommitsCleanly is the end-to-end contract for an in-place write: err
-// nil AND Committed true, with the edit on disk. Three bugs broke this at once on
-// Windows: a source handle held across its own rename, a directory fsync that always
-// failed, and a committed write then counted as a failure.
-//
-// VerifyEssence is on deliberately. verifyOutput is the code most likely to grow a
-// source read later, and the source is now closed before the rename, so that would
-// fail here with ErrClosed on every platform.
+// end-to-end contract for an in-place write: err nil AND Committed true, with the edit on disk.
+// Three bugs broke this at once on Windows: a source handle held across its own rename, a directory
+// fsync that always failed, and a committed write then counted as a failure.
 func TestInPlaceSaveCommitsCleanly(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -53,9 +48,8 @@ func TestInPlaceSaveCommitsCleanly(t *testing.T) {
 	}
 }
 
-// TestFailedSaveReturnsNilDocument pins the other half: a failed write returns no
-// Document, matching every other failure path. A SaveAsFile into a missing directory
-// fails at the temp create, before any rename.
+// other half: a failed write returns no Document, matching every other failure path. A SaveAsFile
+// into a missing directory fails at the temp create, before any rename.
 func TestFailedSaveReturnsNilDocument(t *testing.T) {
 	doc := mustParseFile(t, sampleFLAC)
 	plan, err := doc.Edit().Set(tag.Title, "X").Prepare()

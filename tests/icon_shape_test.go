@@ -9,9 +9,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// pngOfSize returns tinyPNG with its IHDR width and height rewritten, so a test can build a
-// picture of any declared shape without a real encoder. The sniffer reads the dimensions
-// from IHDR, which is all these tests need.
+// pngOfSize returns tinyPNG with its IHDR width and height rewritten, so a test can build a picture
+// of any declared shape without a real encoder.
 func pngOfSize(w, h uint32) []byte {
 	b := slices.Clone(tinyPNG())
 	binary.BigEndian.PutUint32(b[16:20], w)
@@ -19,9 +18,8 @@ func pngOfSize(w, h uint32) []byte {
 	return b
 }
 
-// TestFileIconShapeWarns: ID3v2 section 4.14 requires a type-1 file icon to be a 32x32
-// PNG. Everything the check needs is already decoded on the picture, so nothing was
-// enforcing a rule the model could see.
+// ID3v2 section 4.14 requires a type-1 file icon to be a 32x32 PNG. Everything the check needs is
+// already decoded on the picture, so nothing was enforcing a rule the model could see.
 func TestFileIconShapeWarns(t *testing.T) {
 	data := readFixture(t, notagsMP3)
 	plan, err := mustParseBytes(t, data).Edit().
@@ -62,7 +60,6 @@ func containsSuffix(edit, lint string) bool {
 	return edit == lint || edit == "added "+lint
 }
 
-// TestFileIconMIMEWarns covers the other half of the same rule: the type requires PNG.
 func TestFileIconMIMEWarns(t *testing.T) {
 	data := readFixture(t, notagsMP3)
 	plan, err := mustParseBytes(t, data).Edit().
@@ -75,8 +72,8 @@ func TestFileIconMIMEWarns(t *testing.T) {
 	}
 }
 
-// TestConformingFileIconIsClean is the negative: a 32x32 PNG is exactly what the type asks
-// for, and neither surface should say anything about it.
+// negative: a 32x32 PNG is exactly what the type asks for, and neither surface should say anything
+// about it.
 func TestConformingFileIconIsClean(t *testing.T) {
 	data := readFixture(t, notagsMP3)
 	plan, err := mustParseBytes(t, data).Edit().
@@ -92,8 +89,6 @@ func TestConformingFileIconIsClean(t *testing.T) {
 	}
 }
 
-// TestOtherPictureTypesUnaffected: the rule is about type 1 only. A front cover of any
-// shape is ordinary cover art.
 func TestOtherPictureTypesUnaffected(t *testing.T) {
 	data := readFixture(t, notagsMP3)
 	plan, err := mustParseBytes(t, data).Edit().
@@ -106,8 +101,8 @@ func TestOtherPictureTypesUnaffected(t *testing.T) {
 	}
 }
 
-// TestFileIconRuleIsFormatAgnostic: FLAC and Vorbis METADATA_BLOCK_PICTURE inherit ID3's
-// picture-type vocabulary, so type 1 means the same thing there and gets the same rule.
+// FLAC and Vorbis METADATA_BLOCK_PICTURE inherit ID3's picture-type vocabulary, so type 1 means the
+// same thing there and gets the same rule.
 func TestFileIconRuleIsFormatAgnostic(t *testing.T) {
 	data := readFixture(t, notagsFLAC)
 	plan, err := mustParseBytes(t, data).Edit().
@@ -123,10 +118,8 @@ func TestFileIconRuleIsFormatAgnostic(t *testing.T) {
 	}
 }
 
-// TestV23DateSeparatorIsCoerced: "2001-02-03 10:20" is stored in full but reads back as
-// "2001-02-03T10:20", because TYER/TDAT/TIME store neither separator and the read path
-// recomposes with 'T'. Nothing is lost, so it is neither a drop nor a reduction - but the
-// stored value is not the one that was set, and --strict must see that.
+// "2001-02-03 10:20" is stored in full but reads back as "2001-02-03T10:20", because TYER/TDAT/TIME
+// store neither separator and the read path recomposes with 'T'.
 func TestV23DateSeparatorIsCoerced(t *testing.T) {
 	data := readFixture(t, notagsMP3)
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.RecordingDate, "2001-02-03 10:20").Prepare()
@@ -145,9 +138,9 @@ func TestV23DateSeparatorIsCoerced(t *testing.T) {
 	}
 }
 
-// TestV23DateFatesAreDistinct pins the classification boundaries, so a later pass cannot
-// collapse three answers into one: a value with no year drops, a value missing a component
-// reduces, a spelling change coerces, and a canonical value says nothing.
+// classification boundaries, so a later pass cannot collapse three answers into one: a value with
+// no year drops, a value missing a component reduces, a spelling change coerces, and a canonical
+// value says nothing.
 func TestV23DateFatesAreDistinct(t *testing.T) {
 	for _, c := range []struct {
 		value string

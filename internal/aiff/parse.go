@@ -16,10 +16,8 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// maxMetaChunk bounds how large a metadata chunk (a native text chunk or ID3) we
-// will read into memory. The SSND sound chunk is never read here - only its range
-// is recorded - so this guards only the small structural chunks against a hostile
-// size, alongside the user's MaxAllocBytes limit (whichever is smaller wins).
+// maxMetaChunk bounds how large a metadata chunk (a native text chunk or ID3) we will
+// read into memory.
 const maxMetaChunk = 64 << 20
 
 // maxCommChunk bounds the "COMM" read. The 18-byte common fields plus an AIFF-C
@@ -121,11 +119,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			d.id3Idx = i
 			break
 		}
-		// A bounded-allocation cap breach (a hostile frame flood hitting MaxElements) is a hard
-		// error, not a benign "this chunk is not a tag": swallowing it would silently treat a
-		// structurally-valid ID3 chunk as absent and rewrite the file without it. Surface it like
-		// the MP3/AAC front-tag path does. An ordinary malformed chunk still falls through to the
-		// native-chunk fallback.
+		// A bounded-allocation cap breach (a hostile frame flood hitting MaxElements) is a
+		// hard error, not a benign "this chunk is not a tag": swallowing it would silently
+		// treat a structurally-valid ID3 chunk as absent and rewrite the file without it.
 		if errors.Is(perr, waxerr.ErrSizeTooLarge) {
 			return nil, perr
 		}
@@ -157,12 +153,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			"more than one ID3 chunk; the first that parses is authoritative and the rest are dropped on rewrite")
 	}
 
-	// ssndAlign is the SSND "offset" field: block-alignment bytes that precede the
-	// first sample frame (almost always 0). soundDataStart advances past the 8-byte
-	// sub-header; adding ssndAlign below skips the declared alignment bytes as well,
-	// keeping them out of the essence digest and the packet count. The clamp
-	// treats a corrupt oversized offset as an empty sample range instead of leaving
-	// AudioStart greater than AudioEnd.
+	// ssndAlign is the SSND "offset" field: block-alignment bytes that precede the first
+	// sample frame (almost always 0).
 	var ssndAlign int64
 	if d.ssndIdx >= 0 {
 		ch := d.chunks[d.ssndIdx]
@@ -191,12 +183,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	warnings = core.WarnUnknownSize(warnings, d.unknownSizeChunks)
 
 	// The audio bytes are what survives past SSND's 8-byte sub-header and the declared
-	// alignment bytes (bodyLen is already EOF-clamped in walkChunks); max(0, ...) covers a
-	// body shorter than either, and no SSND at all is no audio. buildTrack caps the
+	// alignment bytes (bodyLen is already EOF-clamped in walkChunks); buildTrack caps the
 	// declared count by them, so a truncated file and one whose COMM merely overstates
-	// both report the frames present. The second case gets its own truncated-audio
-	// warning, since nothing else says the two chunks disagree; the first already has
-	// the SSND one.
+	// both report the frames present.
 	audioBytes := ssndAudioBytes(d.chunks, d.ssndIdx, ssndAlign)
 	d.track = buildTrack(d.comm, audioBytes)
 	if !d.ssndTruncated && d.comm.overstates(audioBytes) {
@@ -226,14 +215,11 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	return media, nil
 }
 
-// project derives the canonical view from a parsed (or rewritten) document under
-// the read-precedence policy: the embedded ID3 chunk is authoritative when
-// present, and the native text chunks fill in any canonical key ID3 does not
-// carry - so a native-only value (a Copyright in a "(c) " chunk, say) enters the
-// canonical set and survives a rewrite rather than being silently dropped. When
-// there is no ID3 chunk, the native chunks are the sole authority. Either way the
-// native chunks also contribute family entries with conflicts flagged. It is
-// shared by Parse and the post-write result so they cannot disagree.
+// project derives the canonical view from a parsed (or rewritten) document under the
+// read-precedence policy: the embedded ID3 chunk is authoritative when present, and the
+// native text chunks fill in any canonical key ID3 does not carry - so a native-only
+// value (a Copyright in a "(c) " chunk, say) enters the canonical set and survives a
+// rewrite rather than being silently dropped.
 func project(d *doc) (tags tag.TagSet, pics []core.Picture, chapters []core.Chapter, syncedLyrics []core.SyncedLyrics, families []core.FamilyValue, numericGenre bool, projWarnings []core.Warning) {
 	tags = tag.NewTagSet()
 	switch {
@@ -269,10 +255,8 @@ func project(d *doc) (tags tag.TagSet, pics []core.Picture, chapters []core.Chap
 
 // mediaWarnings returns the content-derived warnings for a parsed or rewritten
 // document: a resolved numeric genre and an inherited-encoder stamp from the ID3
-// chunk's TSSE/TENC frame (the AIFF analogue of WAV's ISFT scan - ffmpeg writes
-// the "Lavf..." stamp into ID3, not the native chunks). Structural warnings found
-// only while walking the source (duplicate ID3 chunks) are added by Parse itself.
-// Sharing this lets the post-write document's warnings match a fresh parse.
+// chunk's TSSE/TENC frame (the AIFF analogue of WAV's ISFT scan - ffmpeg writes the
+// "Lavf..." stamp into ID3, not the native chunks).
 func mediaWarnings(d *doc, numericGenre bool) []core.Warning {
 	var ws []core.Warning
 	if numericGenre {
@@ -346,8 +330,6 @@ func isTextChunk(id string) bool {
 }
 
 // isID3Chunk reports whether a chunk identifier holds an embedded ID3v2 tag.
-// "ID3 " is the de-facto AIFF identifier; "id3 " is the lowercase variant some
-// tools emit. Both are read; the writer emits "ID3 ".
 func isID3Chunk(id string) bool { return id == "ID3 " || id == "id3 " }
 
 // textValue extracts a native text chunk's value: the character run up to the

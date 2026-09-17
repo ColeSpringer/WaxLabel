@@ -21,8 +21,7 @@ func TestKeysJSONListsWholeVocabulary(t *testing.T) {
 	if want := len(tag.KnownKeys()); len(jk.Keys) != want {
 		t.Fatalf("keys listed %d, want the whole vocabulary (%d)", len(jk.Keys), want)
 	}
-	// Spot-check that cardinality and description are populated and correct: ARTIST
-	// is multi-valued, TITLE single-valued, each carrying its description.
+	// ARTIST multi, TITLE single, both with descriptions.
 	got := map[string]jsonKey{}
 	for _, k := range jk.Keys {
 		got[k.Key] = k
@@ -33,8 +32,7 @@ func TestKeysJSONListsWholeVocabulary(t *testing.T) {
 	if k := got["TITLE"]; k.Cardinality != "single" || k.Description == "" {
 		t.Errorf("TITLE = %+v, want single with a description", k)
 	}
-	// Aliases are surfaced so the common alternative spellings are discoverable: RECORDINGDATE
-	// carries DATE and YEAR. A key with no aliases (TITLE) omits the field entirely.
+	// RECORDINGDATE lists DATE/YEAR aliases; TITLE omits aliases field.
 	if k := got["RECORDINGDATE"]; !slices.Contains(k.Aliases, "DATE") || !slices.Contains(k.Aliases, "YEAR") {
 		t.Errorf("RECORDINGDATE aliases = %v, want them to contain DATE and YEAR", k.Aliases)
 	}
@@ -48,14 +46,13 @@ func TestKeysTextListsWholeVocabulary(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("keys exit = %d, want 0", code)
 	}
-	// The header reports the count; every known key appears on its own line.
+	// Header shows count; one line per key.
 	for _, k := range tag.KnownKeys() {
 		if !strings.Contains(out, string(k)) {
 			t.Errorf("keys output missing %q", k)
 		}
 	}
-	// Aliases are shown inline on the RECORDINGDATE row so the common Vorbis spellings are
-	// discoverable in the human listing, not just JSON.
+	// Text listing shows aliases inline on RECORDINGDATE.
 	if !strings.Contains(out, "aliases: DATE") {
 		t.Errorf("keys text output missing the RECORDINGDATE aliases annotation:\n%s", out)
 	}

@@ -16,15 +16,8 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestRoundTripInvariant is the direct encoding of WaxLabel's core promise - "the plan reports
-// exactly what the write will do" - over a small corpus of adversarial inputs across several
-// writable formats. For each case it edits, executes, and re-parses the output, then asserts
-// the plan's post-write result Document equals a fresh re-parse of the bytes it wrote across
-// every projection: tags, warnings, chapters, synced lyrics, and pictures. That single
-// equality catches the whole class the pre-v1.0 pass targeted (an over-range value silently
-// dropped, a preserved-but-invalid key double-counted, a malformed block lost on rewrite): if
-// the write emits something the round-trip cannot reproduce, the result Document and the
-// re-parse disagree here.
+// Plan result Document must equal a re-parse of the written bytes (tags, warnings, chapters,
+// lyrics, pictures). Catches silent drops and rewrite losses.
 func TestRoundTripInvariant(t *testing.T) {
 	read := func(path string) []byte {
 		b, err := os.ReadFile(path)
@@ -89,9 +82,7 @@ func TestRoundTripInvariant(t *testing.T) {
 			if err != nil {
 				t.Fatalf("prepare: %v", err)
 			}
-			// Every case is a real edit. A silent drop of the class this pass targets (an
-			// over-range chapter/lyric written unreadably) collapses the edit to "No metadata
-			// changes" - so a no-op here means the edit vanished before the write.
+			// Real edits only: a silent drop collapses to no-op ("No metadata changes").
 			if plan.IsNoOp() {
 				t.Fatal("a real edit collapsed to a no-op (the edit was silently dropped)")
 			}
@@ -106,10 +97,10 @@ func TestRoundTripInvariant(t *testing.T) {
 	}
 }
 
-// assertSameProjection fails if the plan's result document disagrees with a fresh re-parse of
-// the written bytes on any projected surface, the audio properties included: a write
-// copies the audio, but the count a reader derives from it can depend on the container
-// state the write changes, as a truncated AIFF's once did.
+// assertSameProjection fails if the plan's result document disagrees with a fresh re-parse of the
+// written bytes on any projected surface, the audio properties included: a write copies the audio,
+// but the count a reader derives from it can depend on the container state the write changes, as a
+// truncated AIFF's once did.
 func assertSameProjection(t *testing.T, want, got *wl.Document) {
 	t.Helper()
 	if diff := tag.Diff(want.Tags(), got.Tags()); len(diff) != 0 {
@@ -183,9 +174,9 @@ func rtPicturesEqual(a, b []wl.Picture) bool {
 	return true
 }
 
-// TestRoundTripInvariantFixtures runs the same result-equals-re-parse check over every
-// fixture in testdata, and requires that sweep to have exercised every writable format,
-// so a format the adversarial table above does not reach is still held to the promise.
+// same result-equals-re-parse check over every fixture in testdata, and requires that sweep to have
+// exercised every writable format, so a format the adversarial table above does not reach is still
+// held to the promise.
 func TestRoundTripInvariantFixtures(t *testing.T) {
 	paths, err := filepath.Glob("../testdata/*")
 	if err != nil || len(paths) == 0 {

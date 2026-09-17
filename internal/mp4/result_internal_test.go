@@ -9,10 +9,9 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// TestResultUdtaRawPatchesMetaSize verifies resultUdtaRaw's structural invariant:
-// after the ilst region inside the cached udta payload grows, the re-walked bytes
-// carry a self-consistent meta box whose declared size grew by the same delta. This
-// covers future splice paths as well as chained edits on a returned document.
+// TestResultUdtaRawPatchesMetaSize verifies resultUdtaRaw's structural invariant: after
+// the ilst region inside the cached udta payload grows, the re-walked bytes carry a
+// self-consistent meta box whose declared size grew by the same delta.
 func TestResultUdtaRawPatchesMetaSize(t *testing.T) {
 	raw, err := os.ReadFile("../../testdata/sample_chapters.m4b")
 	if err != nil {

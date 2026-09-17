@@ -8,9 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newDumpCmd builds the "dump" command, which reads each file and prints its
-// metadata. Multiple files are processed independently: a parse failure on one
-// is reported (and reflected in the exit code) without aborting the rest.
+// newDumpCmd builds dump: read each file and print metadata. One file failing does not stop the rest.
 func newDumpCmd() *cobra.Command {
 	var native bool
 	var recursive bool
@@ -41,10 +39,7 @@ func newDumpCmd() *cobra.Command {
 			noteNoFiles(cmd.ErrOrStderr(), paths, jsonMode(cmd))
 			noteSkipped(cmd.ErrOrStderr(), skipped, jsonMode(cmd))
 			noteLeftovers(cmd.ErrOrStderr(), leftovers, jsonMode(cmd))
-			// dump reports parsed metadata. A no-audio file is still a successful
-			// metadata read, so it exits 0 and carries the file-health signal as a
-			// warning. Commands that must hash, write, or fully lint audio essence
-			// return invalid-data for the same condition.
+			// dump treats metadata parse as success; no-audio exits 0 with a warning. Hash/write/lint return invalid-data for the same case.
 			return perFile(cmd, paths,
 				guardPathErrors(pathErrors, func(ctx context.Context, path string) (*wl.Document, error) {
 					return parseInput(ctx, realOf(path), path)
@@ -60,19 +55,13 @@ func newDumpCmd() *cobra.Command {
 	return markListCommand(cmd)
 }
 
-// jsonDocument is the machine-readable view of one dumped file. A failed element is
-// emitted as the shared jsonErrorEntry; this struct keeps a matching Error field so
-// a consumer can decode every array element into it (Error set, metadata absent on
-// failure; Error nil and metadata populated on success). See jsonErrorEntry.
+// jsonDocument is one dumped file in JSON. Error matches jsonErrorEntry so every array element decodes the same way.
 type jsonDocument struct {
 	SchemaVersion int          `json:"schemaVersion"`
 	File          string       `json:"file"`
 	Error         *jsonErrBody `json:"error,omitempty"`
 	Format        string       `json:"format,omitempty"`
-	// Subformat is the exact container subtype, such as "WebM" or "AIFC".
-	// Format stays at the codec family level. This mirrors properties.container at the
-	// top level so machine consumers do not have to inspect properties to distinguish
-	// WebM from Matroska.
+	// Subformat is the exact container (e.g. "WebM", "AIFC"); Format is the family. Mirrors properties.container.
 	Subformat    string             `json:"subformat,omitempty"`
 	Properties   *jsonProperties    `json:"properties,omitempty"`
 	Tags         []jsonTag          `json:"tags"`
@@ -80,9 +69,7 @@ type jsonDocument struct {
 	Chapters     []jsonChapter      `json:"chapters"`
 	SyncedLyrics []jsonSyncedLyrics `json:"syncedLyrics"`
 	Warnings     []jsonWarning      `json:"warnings"`
-	// LegacyOnly names canonical keys whose value lives only in a legacy container
-	// (see Document.LegacyOnlyKeys). Deliberately not gated on --native, so default
-	// JSON stops hiding a value the canonical tags view omits. Omitted when empty.
+	// LegacyOnly lists canonical keys only in legacy containers (Document.LegacyOnlyKeys). Not gated on --native. Omitted when empty.
 	LegacyOnly []string     `json:"legacyOnly,omitempty"`
 	Native     []jsonNative `json:"native,omitempty"`
 	Sources    []jsonSource `json:"sources,omitempty"`
@@ -91,23 +78,21 @@ type jsonDocument struct {
 type jsonProperties struct {
 	Container     string `json:"container,omitempty"`
 	Codec         string `json:"codec,omitempty"`
-	CodecProfile  string `json:"codecProfile,omitempty"` // container's raw spelling when it differs (e.g. "mp4a")
+	CodecProfile  string `json:"codecProfile,omitempty"` // raw container spelling when it differs (e.g. "mp4a")
 	SampleRate    int    `json:"sampleRate,omitempty"`
 	Channels      int    `json:"channels,omitempty"`
 	BitsPerSample int    `json:"bitsPerSample,omitempty"`
 	DurationMs    int64  `json:"durationMs,omitempty"`
-	BitrateBps    int    `json:"bitrateBps,omitempty"`   // meaningful average bits per second, not a nominal PCM header rate; omitted (like durationMs) when the duration is under one millisecond (text dump shows kbps)
-	PaddingBytes  int64  `json:"paddingBytes,omitempty"` // free padding around the metadata, matching what plan reports for an in-place write; omitted when 0 (no padding region)
-	// OutputGainDb is the decoder-applied output gain the stream header declares, in
-	// decibels. Only Ogg Opus stores one; omitted when 0.
+	BitrateBps    int    `json:"bitrateBps,omitempty"`   // average bps, not nominal PCM header rate; omitted when durationMs is 0
+	PaddingBytes  int64  `json:"paddingBytes,omitempty"` // metadata padding (same as plan); omitted when 0
+	// OutputGainDb is stream header output gain in dB. Ogg Opus only; omitted when 0.
 	OutputGainDb float64 `json:"outputGainDb,omitempty"`
 }
 
 type jsonTag struct {
 	Key    string   `json:"key"`
 	Values []string `json:"values"`
-	// Cardinality matches the human dump's single-valued key marker: "duplicate" when
-	// values fold to one, "conflict" when they differ, or empty for ordinary keys.
+	// Cardinality: "duplicate", "conflict", or empty (matches text dump single-valued marker).
 	Cardinality string `json:"cardinality,omitempty"`
 }
 
@@ -132,9 +117,7 @@ type jsonChapter struct {
 	Disabled     bool   `json:"disabled,omitempty"`
 }
 
-// jsonSyncedLyrics is one timed-lyrics set. Lines is always present (a set carries at
-// least one line); each line's text may be empty (a clear marker), so Text is not
-// omitempty.
+// jsonSyncedLyrics is one timed-lyrics set. Lines is always present; Text may be empty, so no omitempty.
 type jsonSyncedLyrics struct {
 	Language    string           `json:"language,omitempty"`
 	Description string           `json:"description,omitempty"`
@@ -160,24 +143,16 @@ type jsonSource struct {
 	Selected bool     `json:"selected"`
 }
 
-// toJSONDocument projects a parsed document into its JSON form.
+// toJSONDocument maps a parsed document to JSON.
 func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 	props := doc.Properties()
 	t := props.First()
-	// Bit depth describes the stored samples only for a fixed-width codec; for a
-	// lossy codec a container-stored depth (e.g. the legacy 16 MP4 writes for AAC)
-	// is noise. Zero it so omitempty drops the field, mirroring the text view's
-	// bitDepthMeaningful gate (audioLine) so human and JSON output agree.
+	// Zero bitsPerSample for lossy codecs (container depth is noise). Matches text view bitDepthMeaningful gate.
 	bitsPerSample := t.BitsPerSample
 	if !bitDepthMeaningful(t.Codec) {
 		bitsPerSample = 0
 	}
-	// bitrateBps is a meaningful average bitrate, not a nominal PCM header rate. A file with no
-	// whole-millisecond duration (a header-only PCM WAV, or a handful of sub-millisecond
-	// samples) has no average worth reporting, so zero it and let omitempty drop the field.
-	// Gate on the same rounded millisecond count the durationMs field reports, so the JSON
-	// never shows a bitrate with no duration beside it. The human view's >=1000 kbps rounding threshold is a
-	// display artifact and stays out of raw bps.
+	// Zero bitrateBps when durationMs is 0 (no average to report). Same gate as durationMs; text kbps rounding is display-only.
 	bitrateBps := t.Bitrate
 	if roundMs(props.Duration()) == 0 {
 		bitrateBps = 0
@@ -200,10 +175,7 @@ func toJSONDocument(path string, doc *wl.Document, native bool) jsonDocument {
 			PaddingBytes:  doc.Padding(),
 			OutputGainDb:  wl.OutputGainDecibels(t.OutputGain),
 		},
-		// All four iterable collections are inited non-nil (not just tags/pictures) so a
-		// no-tags / no-chapters / no-warnings file emits "[]" rather than null or an
-		// omitted field - `jq '.[].tags[]'` (and the others) never breaks. native/sources
-		// stay omitempty: they are feature-gated (--native), not always-present collections.
+		// Init all four collections non-nil so empty files emit []. jq '.[].tags[]' never breaks. native/sources stay omitempty (--native).
 		Tags:         []jsonTag{},
 		Pictures:     []jsonPicture{},
 		Chapters:     []jsonChapter{},

@@ -141,9 +141,8 @@ func TestDocumentAccessorsAndEditorSurface(t *testing.T) {
 	}
 }
 
-// TestPreservesUnknownBlocks builds a FLAC carrying an APPLICATION block (the
-// same preserve-verbatim path used for CUESHEET and SEEKTABLE) and confirms a
-// tag edit leaves that block byte-for-byte intact.
+// builds a FLAC carrying an APPLICATION block (the same preserve-verbatim path used for CUESHEET
+// and SEEKTABLE) and confirms a tag edit leaves that block byte-for-byte intact.
 func TestPreservesUnknownBlocks(t *testing.T) {
 	streamInfo := make([]byte, 34)
 	streamInfo[0], streamInfo[1] = 0x10, 0x00

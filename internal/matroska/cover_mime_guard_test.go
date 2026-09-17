@@ -8,11 +8,9 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// TestPlanRefusesNonCoverPictureMIME covers the Plan-time guard that no editor path can now
-// reach: Editor.AddPicture runs the authoritative sniff, which settles every added picture at
-// an image type, the unrecognized MIME, or the link sentinel. The guard is what keeps a
-// picture arriving under any other MIME from being dropped by the reprojection and collapsing
-// the edit into a silent no-op, so it is exercised here at the codec boundary instead.
+// TestPlanRefusesNonCoverPictureMIME covers the Plan-time guard that no editor path can
+// now reach: Editor.AddPicture runs the authoritative sniff, which settles every added
+// picture at an image type, the unrecognized MIME, or the link sentinel.
 func TestPlanRefusesNonCoverPictureMIME(t *testing.T) {
 	src := segBytes(cat(mkInfo("Title"), emptyCluster()))
 	base := parseMKA(t, src)

@@ -9,10 +9,9 @@ import (
 	"github.com/colespringer/waxlabel/internal/id3"
 )
 
-// chunk records one top-level RIFF chunk by identifier and source byte range.
-// Only small chunks (fmt, LIST, id3) have their bodies decoded into the doc; the
-// data chunk and every ancillary chunk are kept here only as ranges and copied
-// verbatim on rewrite, so a multi-megabyte data chunk is never read into memory.
+// chunk records one top-level RIFF chunk by identifier and source byte range. the data
+// chunk and every ancillary chunk are kept here only as ranges and copied verbatim on
+// rewrite, so a multi-megabyte data chunk is never read into memory.
 type chunk struct {
 	id      [4]byte
 	bodyOff int64 // source offset of the body (after the 8-byte chunk header)
@@ -30,10 +29,7 @@ type chunk struct {
 func (c chunk) id4() string { return string(c.id[:]) }
 
 // infoItem is one LIST/INFO sub-chunk: its 4CC and the raw value bytes (the ZSTR
-// content up to the first NUL, as stored). Keeping the raw bytes - rather than a
-// decoded string - lets an unmapped item round-trip byte-for-byte (no
-// Latin-1->UTF-8 re-encoding) while a mapped item is decoded on demand via text().
-// Items whose 4CC is not in the canonical mapping are still kept so they survive.
+// content up to the first NUL, as stored).
 type infoItem struct {
 	id  [4]byte
 	raw []byte
@@ -67,10 +63,9 @@ type fmtChunk struct {
 	bitsPerSample uint16
 }
 
-// doc is the WAV native document: every top-level chunk in order (with source
-// ranges), the decoded fmt geometry, the decoded LIST/INFO items and embedded
-// ID3v2 tag, and the data-chunk extent. It is the preservation-first base for
-// rewrites and satisfies core.NativeDoc.
+// doc is the WAV native document: every top-level chunk in order (with source ranges),
+// the decoded fmt geometry, the decoded LIST/INFO items and embedded ID3v2 tag, and the
+// data-chunk extent.
 type doc struct {
 	chunks  []chunk // every top-level chunk, in file order
 	infoIdx int     // index in chunks of the LIST/INFO chunk, or -1
@@ -80,10 +75,7 @@ type doc struct {
 	info []infoItem // decoded INFO items in order (nil if no INFO chunk)
 	id3  *id3.Tag   // decoded embedded ID3v2 tag (nil if no id3 chunk)
 	// infoTail is how many bytes at the end of the LIST/INFO chunk could not be read as
-	// items. rebuildInfo re-renders the chunk from info alone, so those bytes die on the
-	// next rewrite; the write path reports that rather than losing them silently. A
-	// post-write document rebuilds this doc from scratch, so the count does not survive
-	// into a file that no longer has the region.
+	// items. the write path reports that rather than losing them silently.
 	infoTail int64
 
 	dataOff int64 // data chunk body offset (audio essence start)
@@ -115,11 +107,9 @@ type doc struct {
 	outerLen int64
 
 	fmtCfg fmtChunk
-	// factSamples is the "fact" chunk's dwSampleLength (sample frames per channel),
-	// the only trustworthy length for a compressed payload whose fmt byte rate is
-	// nominal or zero. hasFact separates "declared 0" from "no fact chunk"; the chunk
-	// itself is preserved verbatim like every other non-tag chunk, since a metadata
-	// rewrite does not touch the audio it counts.
+	// factSamples is the "fact" chunk's dwSampleLength (sample frames per channel), the
+	// only trustworthy length for a compressed payload whose fmt byte rate is nominal or
+	// zero.
 	factSamples uint64
 	hasFact     bool
 	track       core.AudioTrack
@@ -139,8 +129,7 @@ func (d *doc) isRF64() bool { return d.ds64 != nil }
 
 // containerName is the subformat label reported in Properties.Container: "WAV" for a
 // plain RIFF container, and the header id itself ("RF64" or "BW64") for the 64-bit
-// extension, so a caller can tell the forms apart. It mirrors AIFF, which reports its
-// FORM type (AIFF vs AIFC) the same way.
+// extension, so a caller can tell the forms apart.
 func (d *doc) containerName() string {
 	if id := d.headerID(); id != "RIFF" {
 		return id

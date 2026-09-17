@@ -88,19 +88,10 @@ const (
 	v24DataLen     = 0x01
 )
 
-// parseFrames walks the frame region, decoding each frame and stopping at
-// padding (a zero ID byte), an invalid identifier, or truncation. major selects
-// the header geometry; tagUnsync (v2.4) forces per-frame de-unsynchronisation
-// even when a frame does not set its own flag.
-//
-// rest is the byte count left after the last frame it read: the tag's free padding when
-// the walk stopped on a zero ID, and the unread remainder when it stopped on a malformed
-// one. Only ParseTag records it, and only for a whole tag.
-//
-// malformed names the frame whose declared size ran past the end of the tag, and is empty
-// when the walk stopped cleanly - on padding, on a non-frame identifier, or on a body too
-// short to hold another header. It is what tells ParseTag whether rest is free padding or a
-// region nothing can read.
+// parseFrames walks the frame region until padding, bad ID, or truncation.
+// major selects header geometry; tagUnsync forces per-frame de-unsync on v2.4.
+// rest is remaining bytes (padding when stopped on a zero ID).
+
 func parseFrames(body []byte, major byte, tagUnsync bool, maxElements int) (frames []Frame, rest int, malformed string, err error) {
 	pos := 0
 	hdr := 10

@@ -4,10 +4,7 @@ import (
 	"testing"
 )
 
-// batchElem is the minimal shape every list command's --json element shares: the file
-// it describes, and an error object when that element failed. It is enough to assert
-// the per-element batch contract without each command's full result struct (json
-// decoding ignores the other fields).
+// batchElem is the shared list-command JSON element shape: file plus optional error.
 type batchElem struct {
 	File  string `json:"file"`
 	Error *struct {
@@ -15,13 +12,8 @@ type batchElem struct {
 	} `json:"error"`
 }
 
-// TestDirectoryInBatchIsPerElementError: a directory argument without
-// --recursive sitting between two good files must not collapse the whole batch into a
-// single fileless error. Each list command emits one element per input - the good
-// files succeed (no error), and the directory is its own "usage"-coded error carrying
-// its file - so a --json consumer keeps the one-element-per-input contract and the
-// good results survive. Previously expandPaths aborted the run up front, dropping
-// both good results into a single error with no file field.
+// TestDirectoryInBatchIsPerElementError: a non-recursive directory between good files is
+// a per-element usage error, not a fileless batch abort. Good results must survive.
 func TestDirectoryInBatchIsPerElementError(t *testing.T) {
 	t.Parallel()
 	for _, cmd := range []string{"dump", "verify", "lint", "plan", "set"} {
@@ -37,8 +29,7 @@ func TestDirectoryInBatchIsPerElementError(t *testing.T) {
 				args = append(args, "--set", "TITLE=X")
 			}
 			out, _, code := runCLI(t, args...)
-			// A failure occurred (the directory), but it did not abort the batch. The exact
-			// class is worseError's job; the per-element "usage" code below is the contract.
+			// Non-zero exit expected; per-element usage code is the contract here.
 			if code == 0 {
 				t.Fatalf("%s exit = 0, want non-zero (the directory is an error)", cmd)
 			}

@@ -53,11 +53,8 @@ func TestVorbisChapterEmitsCommonForm(t *testing.T) {
 	}
 }
 
-// TestVorbisChapterThousandFitsThreeDigits checks the exactly-1000 case: ffmpeg/ffprobe parse
-// CHAPTERxxx with a fixed 3-digit key (CHAPTER%03d), so a 1-based CHAPTER1000 (4 digits) would be
-// unreadable and drop chapters there. Numbering from 0 keeps every key 3-digit
-// (CHAPTER000..CHAPTER999), which ffmpeg reads in full, while WaxLabel still round-trips all 1000.
-// The boundary is pinned too: 999 chapters keep the common 1-based CHAPTER001 form.
+// TestVorbisChapterThousandFitsThreeDigits: the exactly-1000 case: ffmpeg/ffprobe parse
+
 func TestVorbisChapterThousandFitsThreeDigits(t *testing.T) {
 	// Boundary: 999 chapters stay 1-based (CHAPTER001..), the common foobar2000 form.
 	if cc999, _ := chapterComments(make([]core.Chapter, 999)); cc999[0].Name != "CHAPTER001" {
@@ -109,10 +106,8 @@ func TestVorbisChapterAcceptsAnyDigitsAndBase(t *testing.T) {
 	}
 }
 
-// TestVorbisChapterSortsByStart checks that chapters whose CHAPTERxxx index order disagrees
-// with their start times project in start-time order, so a load->store round-trip is a no-op
-// even for an out-of-order source. The prior sort.Ints(order) kept index order (the 10s
-// chapter ahead of the 5s one). Equal-start chapters break ties by index (stable sort).
+// TestVorbisChapterSortsByStart: chapters whose CHAPTERxxx index order disagrees
+
 func TestVorbisChapterSortsByStart(t *testing.T) {
 	comments := []Comment{
 		{Name: "CHAPTER001", Value: "00:00:10.000"}, // lower index, later time
@@ -172,9 +167,8 @@ func TestVorbisChapterOwnership(t *testing.T) {
 	}
 }
 
-// TestVorbisChapterMalformedNotAChapter checks a CHAPTERxxx with an unparseable timestamp,
-// or a stray CHAPTERxxxNAME with no timestamp, contributes no chapter (but is still owned -
-// see TestRebuildPreservesUnrelatedChapter).
+// TestVorbisChapterMalformedNotAChapter: a CHAPTERxxx with an unparseable timestamp,
+
 func TestVorbisChapterMalformedNotAChapter(t *testing.T) {
 	comments := []Comment{
 		{Name: "CHAPTER001", Value: "not-a-time"},
@@ -185,9 +179,8 @@ func TestVorbisChapterMalformedNotAChapter(t *testing.T) {
 	}
 }
 
-// TestRebuildOwnsChapters checks Rebuild's ownership: on a chapter edit the source
-// CHAPTERxxx are dropped and the edited set re-emitted; on an unrelated edit they are
-// preserved verbatim, including a malformed one.
+// TestRebuildOwnsChapters: Rebuild's ownership: on a chapter edit the source
+
 func TestRebuildOwnsChapters(t *testing.T) {
 	orig := []Comment{
 		{Name: "TITLE", Value: "Old"},
@@ -232,9 +225,8 @@ func hasComment(cs []Comment, name, value string) bool {
 	return false
 }
 
-// FuzzParseChapterTime asserts the CHAPTERxxx timestamp parser never panics or returns a
-// negative duration. The "2002000000000" seed is a regression: a huge bare-seconds value
-// once overflowed time.Duration into a negative span (now rejected as not-a-chapter).
+// FuzzParseChapterTime: the CHAPTERxxx timestamp parser never panics or returns a
+
 func FuzzParseChapterTime(f *testing.F) {
 	for _, s := range []string{"", ":", "::", "00:00:00.000", "1:2:3:4", "....", "99:99:99.99999", "-1", "00:00:01.5", "  12:34  ", "2002000000000"} {
 		f.Add(s)

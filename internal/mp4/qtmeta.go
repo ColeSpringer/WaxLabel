@@ -42,11 +42,9 @@ const (
 	qtTextMax = 0xFFFF
 )
 
-// parseKeys decodes a "keys" box payload into the key-name index. Entry i of the returned
-// slice is ilst index i+1 (the ilst item names are 1-based). Each entry is
-// [uint32 key_size][4cc key_namespace][key_value], with key_size covering the whole entry.
-// A malformed box yields no names, so every ilst item falls back to being preserved
-// verbatim rather than resolving against a half-read index.
+// parseKeys decodes a "keys" box payload into the key-name index. A malformed box
+// yields no names, so every ilst item falls back to being preserved verbatim rather
+// than resolving against a half-read index.
 func parseKeys(p []byte) []string {
 	if len(p) < 8 {
 		return nil
@@ -100,12 +98,8 @@ func renderKeys(names []string) []byte {
 // unresolved (and so preserved verbatim) rather than dropped.
 func mdtaIndex(name [4]byte) uint32 { return binary.BigEndian.Uint32(name[:]) }
 
-// resolveMdtaKey returns the key name an mdta ilst item resolves to through the keys index,
-// or "" when it resolves to nothing.
-//
-// The bound is compared in uint64: a crafted four-cc reads as an index above 2^31, which
-// int(i) turns negative on a 32-bit build, so an "int(i) > len(keys)" guard would pass and
-// the index panic.
+// resolveMdtaKey returns the key name an mdta ilst item resolves to through the keys
+// index, or "" when it resolves to nothing.
 func resolveMdtaKey(name [4]byte, keys []string) string {
 	i := mdtaIndex(name)
 	if i == 0 || uint64(i) > uint64(len(keys)) {
@@ -132,9 +126,8 @@ const (
 )
 
 // udtaText is one decoded QuickTime text atom sitting directly under moov.udta: its
-// four-character name, its parsed entries, and the canonical key it maps to. A file can
-// hold several entries for one atom; entries beyond the canonical one are preserved
-// verbatim by the writer and never dropped.
+// four-character name, its parsed entries, and the canonical key it maps to. entries
+// beyond the canonical one are preserved verbatim by the writer and never dropped.
 type udtaText struct {
 	ref     atomRef
 	name    [4]byte
@@ -144,10 +137,8 @@ type udtaText struct {
 
 func (u udtaText) id() string { return string(u.name[:]) }
 
-// parseQTText decodes a udta text atom payload as a back-to-back sequence of
-// [uint16 size][uint16 language]<text> entries, where size counts the text bytes only. It
-// returns ok == false when the payload does not tile exactly, so the caller can fall back to
-// the ilst-style "data" shape some writers use for the same atom names.
+// parseQTText decodes a udta text atom payload as a back-to-back sequence of [uint16
+// size][uint16 language]<text> entries, where size counts the text bytes only.
 func parseQTText(p []byte) ([]qtTextEntry, bool) {
 	n := int64(len(p))
 	if n < 4 {
@@ -202,10 +193,8 @@ func canonicalEntry(entries []qtTextEntry) int {
 	return 0
 }
 
-// decodeUdtaText decodes one direct udta child into a udtaText, or reports false when the
-// atom is not a mapped QuickTime text atom or its payload parses as neither shape. Both
-// shapes are accepted because some writers put an ilst-style "data" box under a udta-level
-// atom instead of the classic entry sequence.
+// decodeUdtaText decodes one direct udta child into a udtaText, or reports false when
+// the atom is not a mapped QuickTime text atom or its payload parses as neither shape.
 func decodeUdtaText(ref atomRef, payload []byte) (udtaText, bool) {
 	name := ref.name
 	key, ok := mapping.MP4UdtaTextKey(string(name[:]))

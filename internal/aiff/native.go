@@ -9,31 +9,23 @@ import (
 	"github.com/colespringer/waxlabel/internal/id3"
 )
 
-// chunk records one top-level IFF chunk by identifier and source byte range.
-// Only small chunks (COMM, the native text chunks, ID3) have their bodies
-// decoded into the doc; the SSND sound chunk and every ancillary chunk are kept
-// here only as ranges and copied verbatim on rewrite, so a multi-megabyte sound
-// chunk is never read into memory.
+// chunk is one top-level IFF chunk (id + source range). Small chunks are
+// decoded; SSND and ancillary chunks stay as ranges and are copied on rewrite.
 type chunk struct {
 	id      [4]byte
 	bodyOff int64 // source offset of the body (after the 8-byte chunk header)
 	bodyLen int64 // declared body length, excluding any trailing pad byte
-	// dupTag marks a redundant duplicate "ID3 " chunk. Only the first that parses
-	// is authoritative; duplicates are preserved verbatim on a no-op but dropped
-	// when the file is rewritten.
+	// dupTag: redundant duplicate "ID3 " chunk. First parse wins; dropped on rewrite.
 	dupTag bool
-	// dupContent is what this duplicate holds, graded against the written set at write time.
+	// dupContent: graded against the written set at write time.
 	dupContent core.DuplicateContent
 }
 
 // id4 returns the chunk identifier as a string.
 func (c chunk) id4() string { return string(c.id[:]) }
 
-// textItem is one decoded native text chunk (NAME/AUTH/"(c) "/ANNO): its 4CC and
-// the raw character bytes (the run up to the first NUL, as stored). Keeping the
-// raw bytes - rather than a decoded string - lets the value decode on demand
-// under the AIFF/UTF-8 fallback in text(), the same approach the wav codec uses
-// for INFO items. The live chunk-index data lives in doc.textIdx.
+// textItem is one native text chunk (NAME/AUTH/"(c) "/ANNO): 4CC and raw bytes
+// up to the first NUL. Decoded on demand via text() (UTF-8, else Latin-1).
 type textItem struct {
 	id  [4]byte
 	raw []byte
@@ -41,10 +33,7 @@ type textItem struct {
 
 func (it textItem) id4() string { return string(it.id[:]) }
 
-// text decodes the value bytes for projection: UTF-8 when valid (what the ffmpeg
-// family and modern taggers write), else Latin-1 (a reasonable fallback for the
-// historical Mac-Roman/ASCII text these chunks held), so a legacy high byte is a
-// valid rune in the canonical model rather than an invalid-UTF-8 string.
+// text: UTF-8 when valid, else Latin-1 (legacy Mac-Roman/ASCII).
 func (it textItem) text() string {
 	if utf8.Valid(it.raw) {
 		return string(it.raw)
@@ -56,11 +45,9 @@ func (it textItem) text() string {
 	return string(r)
 }
 
-// commChunk is the decoded "COMM" common chunk: the decoder-critical geometry
-// used for properties and the essence-digest configuration. The sample rate is
-// kept both decoded (for properties) and as its raw 80-bit bytes (for an exact
-// essence config). compType is the AIFF-C compression type (zero for plain AIFF).
-// numFrames is COMM's numSampleFrames, a packet count for the packetized types.
+// commChunk: COMM geometry for properties and essence digest. Rate kept decoded
+// and as raw 80-bit bytes. compType is AIFF-C compression (zero for AIFF).
+// numFrames is numSampleFrames (packet count for packetized types).
 type commChunk struct {
 	channels   uint16
 	numFrames  uint32
@@ -71,10 +58,8 @@ type commChunk struct {
 	isAIFC     bool
 }
 
-// doc is the AIFF native document: every top-level chunk in order (with source
-// ranges), the decoded COMM geometry, the decoded native text chunks and
-// embedded ID3v2 tag, and the SSND sound-frame extent. It is the
-// preservation-first base for rewrites and satisfies core.NativeDoc.
+// doc is the AIFF native document (chunks, COMM, text, ID3, SSND extent).
+// Preservation-first rewrite base; satisfies [core.NativeDoc].
 type doc struct {
 	chunks   []chunk // every top-level chunk, in file order
 	formType [4]byte // "AIFF" or "AIFC", preserved across a rewrite
@@ -89,33 +74,22 @@ type doc struct {
 
 	audioOff int64 // SSND sample-frame start (audio essence start)
 	audioEnd int64 // SSND body end (audio essence end)
-	// ssndAlign is the SSND "offset" field: block-alignment bytes before the first
-	// sample frame. audioOff already includes it; the value is retained so post-write
-	// result construction can match a fresh parse of the copied SSND.
+	// ssndAlign: SSND "offset" field (alignment before first frame). audioOff
+	// includes it; kept so post-write results match a fresh parse.
 	ssndAlign int64
-	// ssndTruncated records that the SSND chunk's declared size ran past EOF (and was
-	// not the 0xFFFFFFFF "size unknown" sentinel) - a truncated file. It is set where
-	// the walk already clamps the overrun, so the overrun is acted on where it is
-	// first known rather than reconstructed afterward.
+	// ssndTruncated: SSND declared size past EOF (not size-unknown sentinel).
 	ssndTruncated bool
-	// oversizedChunks holds non-audio chunk ids whose declared body ran past EOF and was
-	// clamped, so the parser can surface a warning.
+	// oversizedChunks: non-audio chunks clamped at EOF.
 	oversizedChunks [][4]byte
-	// unknownSizeChunks holds chunk ids that declared the 0xFFFFFFFF size-unknown value,
-	// whose extent was therefore taken as the rest of the file.
+	// unknownSizeChunks: chunks with 0xFFFFFFFF size (extent = rest of file).
 	unknownSizeChunks [][4]byte
 
-	// trailingOff/trailingLen capture leftover bytes inside the FORM chunk after
-	// the last well-formed chunk (rare: a corrupt region), preserved verbatim and
-	// counted in the FORM size.
+	// trailingOff/trailingLen: leftover inside FORM after last chunk (preserved).
 	trailingOff int64
 	trailingLen int64
-	// trailingID3v1 records that the walk stopped on a recognized ID3v1 trailer rather than
-	// on corruption, so the preserved region is named for what it is.
+	// trailingID3v1: walk stopped on ID3v1 trailer, not corruption.
 	trailingID3v1 bool
-	// outerOff/outerLen capture bytes after the FORM chunk - data appended outside
-	// the declared FORM size (e.g. a tacked-on tag). Preserved verbatim but kept
-	// outside the recomputed FORM size so a strict reader does not misparse them.
+	// outerOff/outerLen: bytes after FORM (preserved outside recomputed FORM size).
 	outerOff int64
 	outerLen int64
 
@@ -126,7 +100,7 @@ type doc struct {
 
 func (d *doc) Format() core.Format { return core.FormatAIFF }
 
-// Clone deep-copies the document so Document accessors stay detached.
+// Clone deep-copies so Document accessors stay detached.
 func (d *doc) Clone() core.NativeDoc {
 	c := *d
 	c.chunks = slices.Clone(d.chunks)
@@ -138,7 +112,7 @@ func (d *doc) Clone() core.NativeDoc {
 	return &c
 }
 
-// Describe summarizes the native chunk structure for the dump/native views.
+// Describe summarizes native chunks for dump/native views.
 func (d *doc) Describe() []core.NativeEntry {
 	out := make([]core.NativeEntry, 0, len(d.chunks))
 	for i, ch := range d.chunks {
@@ -151,9 +125,7 @@ func (d *doc) Describe() []core.NativeEntry {
 				note = fmt.Sprintf("ID3v2.%d, ", d.id3.SrcVersion()) + id3.FramesNote(d.id3)
 			}
 			out = append(out, core.NativeEntry{Kind: "ID3 chunk", Size: int(ch.bodyLen), Note: note})
-			// List the frames as MP3 and AAC do, so a described COMM here is as identifiable
-			// as the same frame inside an MP3 - which is the question the technical-description
-			// denylist exists to let a user answer.
+			// List frames like MP3/AAC for technical-description denylist use.
 			for _, f := range frames {
 				out = append(out, core.NativeEntry{Kind: "  " + f.ID, Size: len(f.Body), Note: id3.FrameNote(f)})
 			}
@@ -170,8 +142,7 @@ func (d *doc) Describe() []core.NativeEntry {
 	return out
 }
 
-// trailingWhat names the in-container trailing region for the parse warning, or "" when the
-// walk could not tell what the bytes are.
+// trailingWhat names the in-container trailing region, or "" if unknown.
 func (d *doc) trailingWhat() string {
 	if d.trailingID3v1 {
 		return core.TrailingID3v1What

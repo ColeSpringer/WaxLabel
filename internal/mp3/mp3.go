@@ -18,16 +18,15 @@ func init() { core.Register(New()) }
 
 func (Codec) Format() core.Format { return core.FormatMP3 }
 
-// SkipsLeadingID3 reports true because the leading ID3v2 tag is MP3's native tag container.
+// SkipsLeadingID3 is true: leading ID3v2 is the native tag container.
 func (Codec) SkipsLeadingID3() bool { return true }
 
-// Extensions claims ".mpga" alongside ".mp3": it is the same MPEG audio stream under
-// the name some tools and web servers use, so a --recursive walk must not skip it.
+// Extensions includes ".mpga" (same MPEG audio under another name).
+
 func (Codec) Extensions() []string { return []string{".mp3", ".mpga"} }
 
-// Sniff matches a leading ID3v2 tag or a bare MPEG audio frame. An ID3v2 header
-// is shared with other containers that may carry a stray leading ID3 (FLAC); the
-// parser disambiguates by peeking past the tag, so claiming "ID3" here is safe.
+// Sniff: leading ID3v2 or bare MPEG frame. Parser peeks past ID3 (shared with FLAC).
+
 func (Codec) Sniff(header []byte) bool {
 	if len(header) >= 3 && header[0] == 'I' && header[1] == 'D' && header[2] == '3' {
 		return true
@@ -43,11 +42,9 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 	return parse(ctx, src, opts)
 }
 
-// Capabilities reports MP3's support. Tags and art are stored as ID3v2 frames,
-// fully writable; the version is preserved on edit. Trailing ID3v1/APEv2 are
-// preserved and surfaced but not the write target. The Media is bound (not version-
-// blind) so the per-field ORIGINALDATE fidelity can reflect the file's actual ID3
-// write version.
+// Capabilities: ID3v2 tags/art (version preserved). Trailing ID3v1/APEv2 surfaced
+// only. Media bound so ORIGINALDATE fidelity matches the file's write version.
+
 func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
@@ -78,11 +75,8 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 // ID3Tag returns the parsed front ID3 tag, or nil when the file has none.
 func (d *doc) ID3Tag() *id3.Tag { return d.id3 }
 
-// EssenceExtent returns the MP3 essence-digest inputs: a versioned extent name
-// and the decoder-critical configuration mixed in ahead of the audio - the first
-// frame header together with the decoded sample rate and channel count, so two
-// streams with identical frame bytes but a different rate or channel layout hash
-// differently.
+// EssenceExtent: versioned name plus first frame header with rate/channels.
+
 func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 	var cfg [12]byte
 	if d, ok := m.Native.(*doc); ok {

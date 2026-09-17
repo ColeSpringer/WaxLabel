@@ -260,32 +260,10 @@ func decodeCTOC(body []byte) (ctocFrame, bool) {
 	return c, true
 }
 
-// chapterFrames renders a chapter list as the CHAP frames (one per chapter, in order)
-// followed by a single ordered top-level CTOC referencing them. It reports whether any
-// chapter time was clamped to the 32-bit millisecond field. Emitting the CHAP frames in
-// chapter order means a reader that ignores the CTOC still reads them correctly.
-//
-// It first materializes concrete ends for open-ended chapters (End == 0), so a
-// spec-conforming reader (ffprobe, players) sees bounded chapters instead of the 0xFFFFFFFF
-// "unused" sentinel encodeCHAP would otherwise emit (~49.7 days). This fill is ID3-local: the
-// canonical core.Chapter{End:0} "open" model is unchanged and MP4/Matroska keep omitting or
-// inferring ends as before. The fill runs on a clone, so the caller's chapter slice is not
-// mutated. Two separate rules apply:
-//   - Interior open chapter -> the next chapter's start (a gapless interval) via the shared
-//     core.FillInteriorEnds, so the ID3 writer and the MP4 read/write paths cannot drift on it.
-//   - Trailing open chapter -> a bounded end, whenever the duration is known (> 0): the media
-//     duration when it is past the last start, or a zero-length end (End = Start) when the last
-//     start is at or past the ms-floored duration, so a past/at-duration trailing chapter
-//     serializes endMs == startMs instead of the sentinel. This is genuinely ID3-local
-//     (core.FillInteriorEnds leaves the last chapter open; MP4 derives a bounded last end from the
-//     QuickTime text track's last-sample duration, not from Chapter.End; and Matroska's
-//     renderChapterAtom still treats End == Start as open, a divergence that only affects
-//     deliberately zero-length library-authored chapters and is accepted to keep this fix scoped
-//     to ID3). When the duration is unknown (0) the trailing chapter stays open and encodeCHAP
-//     emits the sentinel - no worse than before.
-//
-// Precondition: len(chs) <= 255. The CTOC entry count is a single byte (see encodeCTOC), so
-// a longer list would wrap it. Callers must enforce MaxChapters before writing.
+// chapterFrames renders CHAP frames (in order) plus one ordered top-level CTOC.
+// Reports 32-bit ms clamp. Open End==0 filled from MediaDuration when known
+// (else 0xFFFFFFFF sentinel). Concrete ends so readers see a real end.
+
 func chapterFrames(chs []core.Chapter, duration time.Duration, version byte) (frames []Frame, overflow bool) {
 	filled := core.CloneChapters(chs)
 	// Interior open ends -> the next chapter's start (gapless), shared with the MP4 paths so the

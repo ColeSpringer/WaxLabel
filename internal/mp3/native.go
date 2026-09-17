@@ -1,11 +1,7 @@
-// Package mp3 implements reading and writing MP3 (MPEG audio) metadata for the
-// public waxlabel package. The codec itself is internal. An MP3 file is an
-// optional front ID3v2 tag, the MPEG audio frames, and optional trailing legacy
-// containers (APEv2, then a 128-byte ID3v1). The ID3v2 tag is the authoritative,
-// writable container (decoded by internal/id3); the trailing legacy tags are
-// surfaced in the family view, preserved verbatim, and warned. The codec is
-// reimplemented from the MPEG-1/2 audio and ID3 specifications; reference
-// implementations were consulted for design only.
+// Package mp3: MP3 metadata for waxlabel. Internal. Layout: optional front ID3v2,
+// MPEG frames, optional trailing APEv2 then ID3v1. ID3v2 is authoritative (internal/id3);
+// legacy tags are family-viewed, preserved, warned.
+
 package mp3
 
 import (
@@ -17,10 +13,8 @@ import (
 	"github.com/colespringer/waxlabel/internal/id3"
 )
 
-// doc is the MP3 native document: the parsed ID3v2 tag, the audio geometry and
-// first MPEG frame header (decoder-critical config), and any preserved trailing
-// legacy containers. It is the preservation-first base for rewrites and
-// satisfies core.NativeDoc.
+// doc: ID3v2 tag, audio geometry, first frame header, trailing legacy. Implements core.NativeDoc.
+
 type doc struct {
 	id3    *id3.Tag // parsed ID3v2 tag (nil if the file has none)
 	id3Len int64    // on-disk length of the original ID3v2 region (0 if none)
@@ -40,7 +34,7 @@ type doc struct {
 
 func (d *doc) Format() core.Format { return core.FormatMP3 }
 
-// Clone deep-copies the document so Document accessors stay detached.
+// Clone deep-copies so Document accessors stay detached.
 func (d *doc) Clone() core.NativeDoc {
 	c := *d
 	if d.id3 != nil {
@@ -51,11 +45,11 @@ func (d *doc) Clone() core.NativeDoc {
 	return &c
 }
 
-// PaddingBytes reports the free padding inside the front ID3v2 region, the slack a tag
-// rewrite grows into before the audio has to move. It is 0 for a file with no front tag.
+// PaddingBytes is free space in the front ID3v2 region (0 if no front tag).
+
 func (d *doc) PaddingBytes() int64 { return id3.FrontTagPadding(d.id3) }
 
-// Describe summarizes the native structure for the dump/native views.
+// Describe summarizes native structure for dump/native views.
 func (d *doc) Describe() []core.NativeEntry {
 	var out []core.NativeEntry
 	if d.id3 != nil {

@@ -11,10 +11,10 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// TestCodecCapabilitiesNilSafe proves every registered codec answers a file-agnostic
-// capability query (m == nil, as PlanTransfer makes) without panicking and self-reports the
-// format it claims. The file-uniform codecs ignore the *core.Media and Matroska nil-guards
-// before reading docType, so a nil file must be safe for all of them.
+// every registered codec answers a file-agnostic capability query (m == nil, as PlanTransfer makes)
+// without panicking and self-reports the format it claims. The file-uniform codecs ignore the
+// *core.Media and Matroska nil-guards before reading docType, so a nil file must be safe for all of
+// them.
 func TestCodecCapabilitiesNilSafe(t *testing.T) {
 	codecs := core.Codecs()
 	if len(codecs) == 0 {
@@ -30,9 +30,6 @@ func TestCodecCapabilitiesNilSafe(t *testing.T) {
 
 // These bound the machine-generated capability table in the README, rendered from the codec
 // Capabilities so its per-format picture and chapter facts cannot drift from the code.
-// TestReadmeCapabilityBlockDerived regenerates the block and asserts the committed README
-// carries it verbatim; on a capability change, run the test and paste the block from its
-// failure output between the markers.
 const (
 	capsBlockBegin = "<!-- BEGIN caps (generated from codec Capabilities; see tests/capability_test.go) -->"
 	capsBlockEnd   = "<!-- END caps -->"
@@ -64,9 +61,8 @@ func capCell(c wl.Capability) string {
 	return s
 }
 
-// TestReadmeCapabilityBlockDerived renders the capability block from the codecs and asserts
-// the committed README carries it verbatim between the markers, so its caps facts are
-// generated rather than hand-maintained.
+// renders the capability block from the codecs and asserts the committed README carries it verbatim
+// between the markers, so its caps facts are generated rather than hand-maintained.
 func TestReadmeCapabilityBlockDerived(t *testing.T) {
 	readme, err := os.ReadFile("../README.md")
 	if err != nil {
@@ -84,11 +80,9 @@ func TestReadmeCapabilityBlockDerived(t *testing.T) {
 	}
 }
 
-// normalizeEOL rewrites CRLF to LF. The README is read from the working tree, whose line
-// endings belong to whoever cloned the repo (Git for Windows defaults to core.autocrlf=true),
-// while the want block is built with \n. Comparing raw would measure that checkout policy
-// instead of capability drift. The repo's .gitattributes pins LF, so this is the second line
-// of defense rather than the only one.
+// normalizeEOL rewrites CRLF to LF. The README is read from the working tree, whose line endings
+// belong to whoever cloned the repo (Git for Windows defaults to core.autocrlf=true), while the
+// want block is built with \n.
 func normalizeEOL(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
 
 // extractBetween returns the text strictly between the first begin and the next end

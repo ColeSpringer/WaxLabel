@@ -8,9 +8,7 @@ import (
 	"testing"
 )
 
-// fileState returns a file's bytes and modification time, for the no-churn assertions: a
-// rewrite that produced identical bytes would still bump the mtime, breaking hard links and
-// backup tools, so both have to hold.
+// fileState returns bytes and mtime for no-churn checks: identical bytes can still bump mtime.
 func fileState(t *testing.T, path string) ([]byte, string) {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -24,8 +22,7 @@ func fileState(t *testing.T, path string) ([]byte, string) {
 	return data, fi.ModTime().String()
 }
 
-// seedGenre copies a fixture and stores GENRE textually, the starting state both repros
-// begin from: a file whose genre is already the requested value, stored as a name.
+// seedGenre seeds a fixture with GENRE stored as a name (starting state for both repros).
 func seedGenre(t *testing.T, fixture, genre string) string {
 	t.Helper()
 	f := copyFixture(t, filepath.Join("..", "..", "testdata", fixture))
@@ -35,20 +32,12 @@ func seedGenre(t *testing.T, fixture, genre string) string {
 	return f
 }
 
-// TestNumericGenreAppliesWhenOnlyEncodingChanges is the report's defect: --numeric-genre
-// changes the ENCODING of the genre, not its canonical value, so every gate that keys on
-// canonical equality used to drop it. A bulk normalisation run then converted only the files
-// whose genre also changed, producing exactly the mixed-representation library the flag
-// exists to eliminate.
+// --numeric-genre re-encodes genre storage, not the canonical value. Gates keyed on canonical
+// equality used to skip it, leaving mixed "(17)" and "17" libraries after bulk runs.
 //
-// Two repros reach it through different gates and both must be covered. A) the value is
-// already the canonical name, so the codec's no-op fast path fires before any frame is
-// rebuilt. B) the value is given as the reference itself, so the frame IS rebuilt, but the
-// result re-projects to the same name and the no-op downgrade collapses the plan.
-//
-// Both land on the same stored form. A bare reference the edit supplies is resolved and
-// re-emitted in the write version's canonical form, so one pass cannot leave a library
-// mixing "17" and "(17)" depending on how each file's genre happened to be given.
+// Repro A: genre already the canonical name (codec no-op before rebuild). Repro B: genre
+// given as the reference (frame rebuilt, same name re-projected, plan collapsed). Both must
+// reach the same stored form.
 func TestNumericGenreAppliesWhenOnlyEncodingChanges(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -79,8 +68,7 @@ func TestNumericGenreAppliesWhenOnlyEncodingChanges(t *testing.T) {
 					"or one bulk pass leaves a mixed library", got, c.want)
 			}
 
-			// Either way the genre still reads back as Rock: the flag changes the storage,
-			// never the value.
+			// Genre still reads back as Rock; only storage changed.
 			for _, f := range []string{a, b} {
 				if out, _, code := runCLI(t, "dump", f); code != 0 || !strings.Contains(out, "Rock") {
 					t.Errorf("dump: code=%d, want the stored reference to resolve to Rock\n%s", code, out)
@@ -90,8 +78,7 @@ func TestNumericGenreAppliesWhenOnlyEncodingChanges(t *testing.T) {
 	}
 }
 
-// The same defect on MP4, whose genre is an atom rather than an ID3 frame: --numeric-genre
-// swaps the text "\xa9gen" atom for the numeric "gnre" one.
+// MP4: --numeric-genre swaps the text "\xa9gen" atom for numeric "gnre".
 func TestNumericGenreAppliesToMP4(t *testing.T) {
 	t.Parallel()
 	f := seedGenre(t, "notags.m4a", "Rock")
@@ -113,10 +100,8 @@ func TestNumericGenreAppliesToMP4(t *testing.T) {
 	}
 }
 
-// MP4 has a second write path: a chapter edit rewrites the whole moov.udta and reaches its
-// own no-op downgrade, which passed a hardcoded "nothing structural changed". An encoding
-// rewrite has to force the ilst rebuild there too, or the flag is dropped on exactly the
-// files a chapter edit touches.
+// MP4 chapter edits rewrite moov.udta and hit a separate no-op downgrade; encoding rewrites
+// must force ilst rebuild there too.
 func TestNumericGenreAppliesOnMP4ChapterPath(t *testing.T) {
 	t.Parallel()
 	f := seedGenre(t, "sample_chapters.m4b", "Rock")
@@ -129,10 +114,8 @@ func TestNumericGenreAppliesOnMP4ChapterPath(t *testing.T) {
 	}
 }
 
-// WAV is the one format where the flag applies conditionally: the genre lives in LIST/INFO
-// IGNR, which stores the name literally, unless the file also carries an embedded "id3 "
-// chunk. testdata has no such WAV, so the fixture is synthesized here - MUSICBRAINZ_TRACKID
-// is not INFO-representable, so storing it forces the chunk into existence.
+// WAV applies the flag only when an embedded "id3 " chunk exists. testdata has none; seed
+// MUSICBRAINZ_TRACKID (not INFO-representable) to force the chunk.
 func TestNumericGenreAppliesToWAVWithID3Chunk(t *testing.T) {
 	t.Parallel()
 	f := copyFixture(t, filepath.Join("..", "..", "testdata", "notags.wav"))
@@ -152,7 +135,7 @@ func TestNumericGenreAppliesToWAVWithID3Chunk(t *testing.T) {
 	if got := tconText(t, f); got != "17" {
 		t.Errorf("TCON in the id3 chunk = %q, want %q", got, "17")
 	}
-	// And it settles: a second pass leaves the file untouched.
+	// Second pass is a no-op.
 	before, mtimeBefore := fileState(t, f)
 	if _, _, code := runCLI(t, "set", f, "--set", "GENRE=Rock", "--numeric-genre", "-q"); code != 0 {
 		t.Fatalf("second pass: code=%d", code)
@@ -162,16 +145,13 @@ func TestNumericGenreAppliesToWAVWithID3Chunk(t *testing.T) {
 	}
 }
 
-// TestNumericGenreDoesNotChurn is the other half of the fix: the flag must apply wherever it
-// has an effect and nowhere else. A rewrite that changes nothing still bumps the mtime and
-// breaks hard links, so a bulk run over a library must leave the settled files completely
-// untouched - identical bytes AND an unchanged mtime.
+// Flag must apply only where it changes storage. No-op rewrites must not touch bytes or mtime.
 func TestNumericGenreDoesNotChurn(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name    string
 		fixture string
-		seed    []string // the edit that establishes the settled state
+		seed    []string // edit that reaches the settled state
 		because string
 	}{
 		{
@@ -190,8 +170,7 @@ func TestNumericGenreDoesNotChurn(t *testing.T) {
 			because: "idempotency through the embedded container rather than a front tag",
 		},
 		{
-			// MUSICBRAINZ_TRACKID is not INFO-representable, so storing it forces the id3
-			// chunk into existence; the genre then lands in both containers.
+			// MUSICBRAINZ_TRACKID forces an id3 chunk; genre lands in both containers.
 			name: "already numeric, WAV id3 chunk", fixture: "notags.wav",
 			seed:    []string{"--set", "GENRE=Rock", "--set", "MUSICBRAINZ_TRACKID=abc", "--numeric-genre"},
 			because: "the only WAV shape the flag reaches must settle like the rest",
@@ -255,20 +234,15 @@ func TestNumericGenreDoesNotChurn(t *testing.T) {
 	}
 }
 
-// The absence of the flag is not a request to re-encode back, so an unrelated edit on a file
-// already storing the reference must leave the genre alone. Without this the file would
-// ping-pong between the two representations on alternating runs, which no amount of
-// re-running the same command would reveal.
+// Omitting the flag must not revert numeric storage on unrelated edits (avoids ping-pong).
 //
-// MP4 needs its own row and does not get this for free. The ID3 codecs preserve a TCON no
-// canonical change touched, but buildItems rebuilds every ilst item from the canonical tags,
-// so an unrelated edit re-derives the genre atom from scratch and would silently convert an
-// existing gnre back to the text atom.
+// MP4 needs its own case: buildItems rebuilds ilst from canonical tags and would convert gnre
+// back to "\xa9gen" even when genre was untouched.
 func TestNumericGenreSurvivesAnUnrelatedEdit(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
 		fixture string
-		check   func(t *testing.T, path string) // fails if the numeric form was lost
+		check   func(t *testing.T, path string) // fails if numeric form was lost
 	}{
 		{"notags.mp3", func(t *testing.T, path string) {
 			if got := tconText(t, path); got != "(17)" {
@@ -304,9 +278,7 @@ func TestNumericGenreSurvivesAnUnrelatedEdit(t *testing.T) {
 	}
 }
 
-// A genre edit that changes the value does drop back to the name, on every format. The
-// preservation above is scoped to "this edit did not touch the genre" so that --numeric-genre
-// stays the only way to ask for the numeric form, rather than becoming sticky forever.
+// Changing the genre value drops numeric storage; --numeric-genre stays opt-in, not sticky.
 func TestGenreValueChangeDropsTheNumericForm(t *testing.T) {
 	t.Parallel()
 	mp3 := seedGenre(t, "notags.mp3", "Rock")
@@ -332,11 +304,7 @@ func TestGenreValueChangeDropsTheNumericForm(t *testing.T) {
 	}
 }
 
-// The forms --numeric-genre must leave alone, driven through the real CLI. Each renders
-// identically with and without the conversion, so rewriting one would swap a reference the
-// file already holds for its plain name, or downgrade a spec-legal ID3v2.3 frame to the
-// nonstandard NUL-separated extension. The fixtures are hand-built ID3 tags, because
-// WaxLabel's own writer never produces these forms.
+// Unconvertible TCON forms must not rewrite (fixtures hand-built; the writer never emits them).
 func TestNumericGenreLeavesUnconvertibleFormsAlone(t *testing.T) {
 	t.Parallel()
 	for _, tcon := range []string{
@@ -349,8 +317,7 @@ func TestNumericGenreLeavesUnconvertibleFormsAlone(t *testing.T) {
 		t.Run(tcon, func(t *testing.T) {
 			t.Parallel()
 			f := writeMP3WithTCON(t, tcon)
-			// Prove the fixture parses as intended before asserting on it: a mis-sized frame
-			// header would decode to a different value list and silently weaken the case.
+			// Confirm fixture TCON before asserting no-op (bad frame size would weaken the case).
 			if got := tconText(t, f); got != tcon {
 				t.Fatalf("fixture stores TCON %q, want %q", got, tcon)
 			}
@@ -367,8 +334,7 @@ func TestNumericGenreLeavesUnconvertibleFormsAlone(t *testing.T) {
 	}
 }
 
-// writeMP3WithTCON builds an MP3 carrying an ID3v2.3 tag whose only frame is a Latin-1 TCON
-// holding body verbatim, so a test can seed a stored form WaxLabel's writer never emits.
+// writeMP3WithTCON builds an MP3 with a lone Latin-1 TCON frame holding body verbatim.
 func writeMP3WithTCON(t *testing.T, body string) string {
 	t.Helper()
 	audio, err := os.ReadFile(filepath.Join("..", "..", "testdata", "notags.mp3"))
@@ -392,10 +358,7 @@ func writeMP3WithTCON(t *testing.T, body string) string {
 	return p
 }
 
-// An encoding-only write changes no canonical value and, since "Rock" and "(17)" are the
-// same length, no byte count either, so no other operation line fires. Without a line of its
-// own the plan would report a real write with no operations at all. Containment, not an
-// exact list: a padding line can legitimately join it.
+// Encoding-only write has no other operations; plan must still report "genre encoding rewrite".
 func TestNumericGenrePlanReportsTheOperation(t *testing.T) {
 	t.Parallel()
 	f := seedGenre(t, "notags.mp3", "Rock")
@@ -407,8 +370,7 @@ func TestNumericGenrePlanReportsTheOperation(t *testing.T) {
 		t.Errorf("plan of an encoding-only write must name the operation:\n%s", out)
 	}
 
-	// And the other half: once the file is settled, plan reports no changes rather than an
-	// operations block for a write that will not happen.
+	// Settled file: plan reports no changes, not a spurious operations block.
 	if _, _, code := runCLI(t, "set", f, "--set", "GENRE=Rock", "--numeric-genre", "-q"); code != 0 {
 		t.Fatalf("set: code=%d", code)
 	}

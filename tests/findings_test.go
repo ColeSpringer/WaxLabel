@@ -14,8 +14,8 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestNilContextRejected: every public ctx-taking entry point returns a clean
-// error for a nil context instead of panicking on the first ctx.Err() deref.
+// every public ctx-taking entry point returns a clean error for a nil context instead of panicking
+// on the first ctx.Err() deref.
 func TestNilContextRejected(t *testing.T) {
 	data := readFixture(t, sampleFLAC)
 	var nilCtx context.Context
@@ -53,9 +53,9 @@ func TestNilContextRejected(t *testing.T) {
 	wantNil("HashFile", err)
 }
 
-// TestAddedPictureValidation: a picture added to an editor whose bytes are not
-// a recognized image is rejected, unless opted out; a file's pre-existing pictures
-// are never re-validated, and a transfer carrying already-embedded art still works.
+// picture added to an editor whose bytes are not a recognized image is rejected, unless opted out;
+// a file's pre-existing pictures are never re-validated, and a transfer carrying already-embedded
+// art still works.
 func TestAddedPictureValidation(t *testing.T) {
 	path := copyToTemp(t, sampleFLAC)
 
@@ -116,10 +116,9 @@ func TestAddedPictureValidation(t *testing.T) {
 	}
 }
 
-// TestRemovePicturesMatchOnce: RemovePictures evaluates the caller's match
-// predicate exactly once per picture, including pictures added on the same editor -
-// the old two-pass sync (DeleteFunc over both the picture list and the added set)
-// invoked it twice for added pictures.
+// RemovePictures evaluates the caller's match predicate exactly once per picture, including
+// pictures added on the same editor; the old two-pass sync (DeleteFunc over both the picture list
+// and the added set) invoked it twice for added pictures.
 func TestRemovePicturesMatchOnce(t *testing.T) {
 	doc := mustParseFile(t, sampleFLAC)
 	base := len(doc.Pictures())
@@ -133,8 +132,8 @@ func TestRemovePicturesMatchOnce(t *testing.T) {
 	}
 }
 
-// TestInvalidKeyHint: a hand-built lowercase tag.Key fails Prepare with a
-// message that points the caller at ParseKey/MustKey.
+// hand-built lowercase tag.Key fails Prepare with a message that points the caller at
+// ParseKey/MustKey.
 func TestInvalidKeyHint(t *testing.T) {
 	doc := mustParseFile(t, sampleFLAC)
 	_, err := doc.Edit().Set(tag.Key("title"), "x").Prepare()
@@ -146,8 +145,6 @@ func TestInvalidKeyHint(t *testing.T) {
 	}
 }
 
-// TestChapterWarningsSurface: a chapter edit's sanity warnings flow through
-// the plan report: a chapter past the file end, and two chapters sharing a start.
 func TestChapterWarningsSurface(t *testing.T) {
 	doc := mustParseFile(t, sampleM4B)
 	dur := doc.Properties().Duration()
@@ -178,10 +175,9 @@ func TestChapterWarningsSurface(t *testing.T) {
 	}
 }
 
-// TestCopyChaptersDestinationFitWarnings: a transfer carries chapters verbatim, so it
-// suppresses the source-authoring warnings it authored none of. It still surfaces
-// chapter-past-duration when a carried chapter starts beyond the shorter destination's
-// playable length, matching what set warns.
+// transfer carries chapters verbatim, so it suppresses the source-authoring warnings it authored
+// none of. It still surfaces chapter-past-duration when a carried chapter starts beyond the shorter
+// destination's playable length, matching what set warns.
 func TestCopyChaptersDestinationFitWarnings(t *testing.T) {
 	src := mustParseFile(t, sampleM4B)                               // ~9s, chapters at 0:00 / 0:03 / 0:06
 	dst := mustParseFile(t, copyToTemp(t, "../testdata/sample.m4a")) // ~1s
@@ -209,10 +205,9 @@ func TestCopyChaptersDestinationFitWarnings(t *testing.T) {
 	}
 }
 
-// TestCopyRunToEOFChapterStaysEqual: when a source's final chapter runs to its EOF, copy
-// opens that trailing end so the destination refills it to its own longer EOF, and the two
-// compare equal under diff's duration-aware normalization. It asserts the chapter axis
-// directly, since copy excludes own-audio keys so a full diff still reports a difference.
+// when a source's final chapter runs to its EOF, copy opens that trailing end so the destination
+// refills it to its own longer EOF, and the two compare equal under diff's duration-aware
+// normalization.
 func TestCopyRunToEOFChapterStaysEqual(t *testing.T) {
 	src := mustParseFile(t, chaptersMKA)  // ~0.6s, Finale runs 0.400 -> 0.600 (source EOF)
 	dstBytes := readFixture(t, notagsMP3) // ~2.04s, longer than the source
@@ -240,10 +235,8 @@ func reportHasWarning(ws []wl.Warning, code wl.WarningCode) bool {
 	return false
 }
 
-// TestLegacyConflictWarning verifies that editing a key also held in a preserved
-// legacy container surfaces a legacy-conflict warning under LegacyPreserve. Stripping
-// the legacy container, setting the same value it already holds, or editing a key it
-// does not hold must not warn.
+// editing a key also held in a preserved legacy container surfaces a legacy-conflict warning under
+// LegacyPreserve.
 func TestLegacyConflictWarning(t *testing.T) {
 	path := copyToTemp(t, sampleMP3) // carries TITLE in both id3v2 and id3v1
 
@@ -327,9 +320,9 @@ func TestLegacyConflictWarning(t *testing.T) {
 	}
 }
 
-// TestRejectNULInEditValues: a NUL byte in a value the edit sets, in a chapter
-// title, or in an added picture's description is refused at Prepare rather than written
-// and cut, since a NUL silently truncates the field on a C-string format.
+// NUL byte in a value the edit sets, in a chapter title, or in an added picture's description is
+// refused at Prepare rather than written and cut, since a NUL silently truncates the field on a
+// C-string format.
 func TestRejectNULInEditValues(t *testing.T) {
 	path := copyToTemp(t, sampleFLAC)
 
@@ -368,10 +361,9 @@ func TestRejectNULInEditValues(t *testing.T) {
 	}
 }
 
-// TestPictureMIMESniffReconcile exercises the two Picture sniff methods in isolation.
-// SniffAuthoritative lets a recognized image's bytes win over a disagreeing caller-declared
-// MIME, so a mislabeled cover is never stored under a contradicting one. SniffInto is the
-// fill-only variant, which never relabels. A failed sniff keeps the caller's MIME in both.
+// two Picture sniff methods in isolation. SniffAuthoritative lets a recognized image's bytes win
+// over a disagreeing caller-declared MIME, so a mislabeled cover is never stored under a
+// contradicting one.
 func TestPictureMIMESniffReconcile(t *testing.T) {
 	// Embed path: PNG bytes wrongly declared JPEG with a bogus width; both corrected.
 	embed := wl.Picture{Type: wl.PicFrontCover, MIME: "image/jpeg", Width: 999, Data: tinyPNG()}
@@ -424,10 +416,9 @@ func TestPictureMIMESniffReconcile(t *testing.T) {
 	}
 }
 
-// TestSaveBackRefusesReExecute: executing the same plan with SaveBack twice fails the
-// second time with a clear "already wrote ... in place" message rather than the confusing
-// "source changed" the now-rewritten file would otherwise trigger, while a no-op
-// SaveBack (which writes nothing) stays re-runnable.
+// executing the same plan with SaveBack twice fails the second time with a clear "already wrote ...
+// in place" message rather than the confusing "source changed" the now-rewritten file would
+// otherwise trigger, while a no-op SaveBack (which writes nothing) stays re-runnable.
 func TestSaveBackRefusesReExecute(t *testing.T) {
 	ctx := context.Background()
 	plan, err := mustParseFile(t, copyToTemp(t, sampleFLAC)).Edit().Set(tag.Title, "Once").Prepare()
@@ -469,9 +460,8 @@ func TestSaveBackRefusesReExecute(t *testing.T) {
 	}
 }
 
-// TestUninitializedDocMessages: the message papercuts report clearly. A zero
-// Document's hash entry points, ParseFile(""), and a name-less Parse of
-// unidentifiable bytes all give specific, actionable errors.
+// message papercuts report clearly. A zero Document's hash entry points, ParseFile(""), and a
+// name-less Parse of unidentifiable bytes all give specific, actionable errors.
 func TestUninitializedDocMessages(t *testing.T) {
 	ctx := context.Background()
 	var zero wl.Document
@@ -495,8 +485,8 @@ func TestUninitializedDocMessages(t *testing.T) {
 	}
 }
 
-// TestWriteToNilWriterRejected: Plan.Execute with a WriteTo whose writer is nil
-// returns a clean error instead of panicking on the first write deref.
+// Plan.Execute with a WriteTo whose writer is nil returns a clean error instead of panicking on the
+// first write deref.
 func TestWriteToNilWriterRejected(t *testing.T) {
 	src := readFixture(t, sampleFLAC)
 	plan, err := mustParseBytes(t, src).Edit().Set(tag.Title, "X").Prepare()
@@ -509,10 +499,8 @@ func TestWriteToNilWriterRejected(t *testing.T) {
 	}
 }
 
-// TestNoOpDowngradeOnReprojection: when a codec re-projects an edit back to the value
-// already on disk, a numeric genre or an integer track number, the plan must read as an
-// immediate no-op so IsNoOp and Changes agree. The raw edit differing from base while the
-// projected result equalled it used to make set and lint --fix churn the file forever.
+// when a codec re-projects an edit back to the value already on disk, a numeric genre or an integer
+// track number, the plan must read as an immediate no-op so IsNoOp and Changes agree.
 func TestNoOpDowngradeOnReprojection(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -541,9 +529,8 @@ func TestNoOpDowngradeOnReprojection(t *testing.T) {
 	}
 }
 
-// TestNoOpDowngradeConvergesAndIsIdempotent: a numeric-genre edit whose
-// projection differs from the current value writes once; re-parsing and repeating
-// the same edit is then a no-op whose WriteTo reproduces the source bytes exactly,
+// numeric-genre edit whose projection differs from the current value writes once; re-parsing and
+// repeating the same edit is then a no-op whose WriteTo reproduces the source bytes exactly,
 // identically across runs, with no perpetual churn.
 func TestNoOpDowngradeConvergesAndIsIdempotent(t *testing.T) {
 	ctx := context.Background()

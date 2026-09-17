@@ -7,14 +7,11 @@ import (
 	"testing"
 )
 
-// TestLintReportsChapterIssues: set raises chapter-past-duration and duplicate-chapter on
-// its own input, and set --help tells the user to lint the saved file. lint has to answer,
-// or that pointer is a dead end. Both are warnings, so the file lints non-clean.
+// TestLintReportsChapterIssues: lint must report chapter-past-duration and duplicate-chapter.
 func TestLintReportsChapterIssues(t *testing.T) {
 	t.Parallel()
 	f := copyFixture(t, sampleFLAC)
-	// sample.flac is ~1 s, so 1:00:00 is unambiguously past the end. Two chapters at 0:00
-	// collide. Both are written faithfully; they are defects to report, not to refuse.
+	// ~1 s file: 1:00:00 is past end; two chapters at 0:00 collide.
 	if _, errb, code := runCLI(t, "set", f,
 		"--add-chapter", "0:00=A", "--add-chapter", "0:00.000=B", "--add-chapter", "1:00:00=Late"); code != 0 {
 		t.Fatalf("writing the chapters: exit = %d\n%s", code, errb)
@@ -44,9 +41,7 @@ func TestLintReportsChapterIssues(t *testing.T) {
 	}
 }
 
-// TestLintChapterCleanFileStaysClean is the control for the check above: a file whose
-// chapters are distinct and inside the duration reports neither code, so the new coverage
-// does not flip every chaptered file to exit 1.
+// TestLintChapterCleanFileStaysClean: well-formed chapters report neither code.
 func TestLintChapterCleanFileStaysClean(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "--json", "lint", sampleM4B)
@@ -64,9 +59,7 @@ func TestLintChapterCleanFileStaysClean(t *testing.T) {
 	}
 }
 
-// TestLintReportsChainedStream: dump names the chained stream and then tells the user to
-// run lint "for the full issue set". A partial read plus a refused write is exactly what a
-// linter should surface, so lint must report it too.
+// TestLintReportsChainedStream: lint must report chained-stream like dump suggests.
 func TestLintReportsChainedStream(t *testing.T) {
 	t.Parallel()
 	first, err := os.ReadFile(td("sample.ogg"))

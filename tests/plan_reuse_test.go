@@ -15,9 +15,8 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestPlanReuseGuardSaveAsFileInPlace checks that SaveAsFile to the source path spends
-// the plan just like SaveBack. Later Execute calls would read bytes that no longer match
-// the planned segments, so they are refused.
+// SaveAsFile to the source path spends the plan just like SaveBack. Later Execute calls would read
+// bytes that no longer match the planned segments, so they are refused.
 func TestPlanReuseGuardSaveAsFileInPlace(t *testing.T) {
 	ctx := context.Background()
 	work := copyToTemp(t, sampleFLAC)
@@ -41,8 +40,6 @@ func TestPlanReuseGuardSaveAsFileInPlace(t *testing.T) {
 	}
 }
 
-// TestPlanReuseSaveAsFileOtherPathsValid checks that repeated SaveAsFile runs to other
-// paths stay valid because the source bytes remain stable.
 func TestPlanReuseSaveAsFileOtherPathsValid(t *testing.T) {
 	ctx := context.Background()
 	doc := mustParseFile(t, sampleFLAC) // the read-only fixture is the stable source
@@ -62,9 +59,8 @@ func TestPlanReuseSaveAsFileOtherPathsValid(t *testing.T) {
 	}
 }
 
-// TestPlanReuseHardlinkAliasStaysSafe checks that writing to a hardlink alias does not
-// spend the plan. The atomic rename replaces the alias directory entry while leaving the
-// source path's bytes intact.
+// writing to a hardlink alias does not spend the plan. The atomic rename replaces the alias
+// directory entry while leaving the source path's bytes intact.
 func TestPlanReuseHardlinkAliasStaysSafe(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -100,8 +96,8 @@ func TestPlanReuseHardlinkAliasStaysSafe(t *testing.T) {
 	}
 }
 
-// TestPlanReuseSymlinkToSourceIsGuarded checks that writing through a symlink to the
-// source spends the plan because the real source file is rewritten.
+// writing through a symlink to the source spends the plan because the real source file is
+// rewritten.
 func TestPlanReuseSymlinkToSourceIsGuarded(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -128,10 +124,10 @@ func TestPlanReuseSymlinkToSourceIsGuarded(t *testing.T) {
 	}
 }
 
-// tamperFlip changes one byte of marker (which must sit in the metadata region) while
-// preserving the file's size, mtime, and inode, so only the structural fingerprint differs
-// from what the prior parse recorded - driving the fingerprint branch of change detection
-// specifically (size/mtime/inode all match).
+// tamperFlip changes one byte of marker (which must sit in the metadata region) while preserving
+// the file's size, mtime, and inode, so only the structural fingerprint differs from what the prior
+// parse recorded; driving the fingerprint branch of change detection specifically (size/mtime/inode
+// all match).
 func tamperFlip(t *testing.T, path, marker string) {
 	t.Helper()
 	info, err := os.Stat(path)
@@ -155,9 +151,8 @@ func tamperFlip(t *testing.T, path, marker string) {
 	}
 }
 
-// TestSaveReturnedDocCarriesFingerprint checks that a Document returned from a write keeps
-// the structural fingerprint, so later save-back change detection catches metadata tamper
-// even when size, mtime, and inode are preserved.
+// Document returned from a write keeps the structural fingerprint, so later save-back change
+// detection catches metadata tamper even when size, mtime, and inode are preserved.
 func TestSaveReturnedDocCarriesFingerprint(t *testing.T) {
 	ctx := context.Background()
 
@@ -202,8 +197,7 @@ func TestSaveReturnedDocCarriesFingerprint(t *testing.T) {
 	})
 }
 
-// appendByte grows a file by one byte, changing its size (and mtime). It drives the
-// size branch of change detection, the same tamper TestSourceChangedDetected uses.
+// appendByte grows a file by one byte, changing its size (and mtime).
 func appendByte(t *testing.T, path string) {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -215,11 +209,8 @@ func appendByte(t *testing.T, path string) {
 	}
 }
 
-// changedSourceCase is one way a source can change under a parsed document, plus the substring
-// the ErrSourceChanged reason must cite. TestSaveAsFileGuardsChangedSource and
-// TestWriteToGuardsChangedSource share it so both write paths exercise the same size change
-// (the inode/size branch) and fingerprint-only change (same size/mtime/inode, so the
-// fingerprint branch fires).
+// changedSourceCase is one way a source can change under a parsed document, plus the substring the
+// ErrSourceChanged reason must cite.
 type changedSourceCase struct {
 	name   string
 	tamper func(t *testing.T, path string)
@@ -233,10 +224,9 @@ func changedSourceCases() []changedSourceCase {
 	}
 }
 
-// TestSaveAsFileGuardsChangedSource checks the guard on SaveAsFile: a ParseFile source
-// that changed on disk since parse is refused with ErrSourceChanged, so the stale byte
-// offsets never copy the wrong bytes (and an in-place target is never silently corrupted).
-// Both a size change and a fingerprint-only change are caught, on an in-place target and another path.
+// checks the guard on SaveAsFile: a ParseFile source that changed on disk since parse is refused
+// with ErrSourceChanged, so the stale byte offsets never copy the wrong bytes (and an in-place
+// target is never silently corrupted).
 func TestSaveAsFileGuardsChangedSource(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range changedSourceCases() {
@@ -270,9 +260,9 @@ func TestSaveAsFileGuardsChangedSource(t *testing.T) {
 	}
 }
 
-// TestWriteToGuardsChangedSource checks the guard on WriteTo(w, nil): a ParseFile source
-// that changed on disk is refused before any bytes are streamed. A streaming writer never
-// clobbers the source, so this is a derived write - the precise inode+size+fingerprint check.
+// checks the guard on WriteTo(w, nil): a ParseFile source that changed on disk is refused before
+// any bytes are streamed. A streaming writer never clobbers the source, so this is a derived write;
+// the precise inode+size+fingerprint check.
 func TestWriteToGuardsChangedSource(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range changedSourceCases() {
@@ -295,10 +285,10 @@ func TestWriteToGuardsChangedSource(t *testing.T) {
 	}
 }
 
-// TestDerivedWriteUnchangedSourceSucceeds is the happy path that actually enters the
-// guard and passes: a ParseFile document whose source is unchanged writes cleanly via both
-// SaveAsFile(otherPath) and WriteTo(w, nil). Without it, an always-fire regression in the
-// guard would slip past the change-detection tests, which never reach a passing guard.
+// happy path that actually enters the guard and passes: a ParseFile document whose source is
+// unchanged writes cleanly via both SaveAsFile(otherPath) and WriteTo(w, nil). Without it, an
+// always-fire regression in the guard would slip past the change-detection tests, which never reach
+// a passing guard.
 func TestDerivedWriteUnchangedSourceSucceeds(t *testing.T) {
 	ctx := context.Background()
 	work := copyToTemp(t, sampleFLAC)
@@ -322,11 +312,9 @@ func TestDerivedWriteUnchangedSourceSucceeds(t *testing.T) {
 	}
 }
 
-// TestDerivedWriteIgnoresMtimeTouch pins the precise same-path/derived asymmetry the guard
-// introduces. Bumping only the source's mtime (bytes identical) must NOT block a derived
-// write: a moved audio region always changes size and/or the fingerprint, so mtime says
-// nothing about whether the planned offsets are still valid. The same touch DOES block an
-// in-place write, which stays conservative about clobbering the source.
+// precise same-path/derived asymmetry the guard introduces. Bumping only the source's mtime (bytes
+// identical) must NOT block a derived write: a moved audio region always changes size and/or the
+// fingerprint, so mtime says nothing about whether the planned offsets are still valid.
 func TestDerivedWriteIgnoresMtimeTouch(t *testing.T) {
 	ctx := context.Background()
 	touch := func(t *testing.T, path string) {
@@ -379,10 +367,9 @@ func TestDerivedWriteIgnoresMtimeTouch(t *testing.T) {
 	})
 }
 
-// TestGuardBypassedForStableSources checks the escape hatches: when the write copies from
-// bytes that cannot go stale, the guard does not run even if a file on disk changed. An
-// explicit WriteTo(w, source) uses caller-supplied bytes; an OpenSource document holds its
-// bytes in memory.
+// checks the escape hatches: when the write copies from bytes that cannot go stale, the guard does
+// not run even if a file on disk changed. An explicit WriteTo(w, source) uses caller-supplied
+// bytes; an OpenSource document holds its bytes in memory.
 func TestGuardBypassedForStableSources(t *testing.T) {
 	ctx := context.Background()
 

@@ -6,26 +6,19 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestMatroskaDJMixerRead folds Matroska's underscore/space DJMIXER spellings onto the
-// canonical key on read, while the write side keeps the identity "DJMIXER". Matroska tag
-// names are conventionally uppercase-underscore, so "DJ_MIXER" is the spelling a foreign
-// file most likely uses for this multi-token role key.
+// DJ_MIXER/DJ MIXER/DJ-MIXER read as DJMIXER; write stays "DJMIXER".
 func TestMatroskaDJMixerRead(t *testing.T) {
 	for _, name := range []string{"DJ_MIXER", "DJ MIXER", "DJ-MIXER", "dj_mixer", "DJMIXER"} {
 		if k, ok := MatroskaTagKey(name); !ok || k != tag.DJMixer {
 			t.Errorf("MatroskaTagKey(%q) = %q, %v; want DJMIXER, true", name, k, ok)
 		}
 	}
-	// The write side stays identity (no matroskaNames entry): the canonical "DJMIXER" is
-	// emitted and reads back to the same key, so the round-trip is exact.
 	if got := MatroskaTagName(tag.DJMixer); got != "DJMIXER" {
 		t.Errorf("MatroskaTagName(DJMIXER) = %q, want DJMIXER (identity write)", got)
 	}
 }
 
-// TestMatroskaReleaseDetail checks the release-detail names round-trip identity, and that
-// the APE/legacy-Picard spellings fold on read (this path never consults tag.AliasKey, so
-// without an entry the same string would fold on Vorbis and stay custom here).
+// Release detail keys round-trip identity; APE/Picard underscored spellings fold on read.
 func TestMatroskaReleaseDetail(t *testing.T) {
 	for _, k := range []tag.Key{tag.ReleaseCountry, tag.ReleaseStatus, tag.ReleaseType} {
 		if got := MatroskaTagName(k); got != string(k) {
@@ -48,10 +41,7 @@ func TestMatroskaReleaseDetail(t *testing.T) {
 	}
 }
 
-// TestMatroskaCountryNotReleaseCountry pins that a bare COUNTRY SimpleTag stays a custom
-// key. The Matroska spec defines COUNTRY as a nesting qualifier that scopes sibling tags to
-// a country, not as this release's country, so folding it onto RELEASECOUNTRY would both
-// misread the file and subject a free-text value to the two-letter malformed-country lint.
+// COUNTRY is a nesting qualifier in the spec, not RELEASECOUNTRY.
 func TestMatroskaCountryNotReleaseCountry(t *testing.T) {
 	k, ok := MatroskaTagKey("COUNTRY")
 	if !ok || k != tag.Key("COUNTRY") {
@@ -59,9 +49,7 @@ func TestMatroskaCountryNotReleaseCountry(t *testing.T) {
 	}
 }
 
-// TestMatroskaTechnicalNamesSharedPredicate pins the reserved technical set the
-// read filter and the write gate share: the literal statistics names, any
-// _STATISTICS-prefixed name, and nothing else.
+// Read filter and write gate share MatroskaTechnicalName.
 func TestMatroskaTechnicalNamesSharedPredicate(t *testing.T) {
 	for _, name := range []string{"DURATION", "BPS", "NUMBER_OF_FRAMES", "NUMBER_OF_BYTES",
 		"NUMBER_OF_BYTES_UNCOMPRESSED", "NUMBER_OF_FRAMES_UNCOMPRESSED",

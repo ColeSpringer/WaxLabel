@@ -6,12 +6,8 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// TestMP4DescribedCoverWarnsOnWrite (Fix 6): MP4's covr atom stores image bytes only,
-// so adding a front cover that carries a description drops the description on write.
-// That loss must surface as a picture-metadata-dropped warning on a *real* write -
-// the no-op variant (re-adding an existing image with a description) is already
-// covered by TestMP4PictureMetadataWarningSurvivesNoOp. This pins the predicate end
-// to end so the warning cannot silently regress on the ordinary add-a-cover path.
+// (Fix 6): MP4's covr atom stores image bytes only, so adding a front cover that carries a
+// description drops the description on write.
 func TestMP4DescribedCoverWarnsOnWrite(t *testing.T) {
 	base := readFixture(t, "../testdata/notags.m4a")
 	plan, err := mustParseBytes(t, base).Edit().
@@ -29,14 +25,8 @@ func TestMP4DescribedCoverWarnsOnWrite(t *testing.T) {
 	}
 }
 
-// TestMP4DescribedCoverWarnsOnTransfer (Fix 6): the realistic scenario the original
-// QA report flagged - copying a described cover from another file ONTO an MP4. The
-// transfer carries the picture, description included (via ClonePictures), into the
-// MP4 editor, so the resulting write plan sees a described cover and must warn, and
-// the transfer report must grade the picture Lossy rather than Carried. A description
-// silently normalized to "" before Plan would make both go quiet - exactly the gap
-// this guards. (The plain-cover counterpart that stays Carried is
-// TestPrepareTransferCarriesPictures.)
+// (Fix 6): the realistic scenario the original QA report flagged; copying a described cover from
+// another file ONTO an MP4.
 func TestMP4DescribedCoverWarnsOnTransfer(t *testing.T) {
 	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG(), Description: "liner notes"})

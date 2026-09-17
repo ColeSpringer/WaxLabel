@@ -17,10 +17,9 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// maxMetaChunk bounds how large a metadata chunk (LIST, id3) we will read into
-// memory. The data chunk is never read here - only its range is recorded - so
-// this guards only the small structural chunks against a hostile size. It works
-// alongside the user's MaxAllocBytes limit (whichever is smaller wins).
+// maxMetaChunk bounds how large a metadata chunk (LIST, id3) we will read into memory.
+// The data chunk is never read here - only its range is recorded - so this guards only
+// the small structural chunks against a hostile size.
 const maxMetaChunk = 64 << 20
 
 // maxFactChunk bounds the "fact" read. Only the leading 4-byte dwSampleLength is
@@ -58,11 +57,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	d := &doc{size: size, infoIdx: -1, id3Idx: -1, dataIdx: -1}
 	copy(d.form[:], hdr[0:4])
 
-	// The container size delimits it; bytes beyond it are appended out-of-container
-	// data (e.g. an ID3v1 tag), not chunks. Trust it as the walk boundary only when
-	// sane - a bogus 0 or 0xFFFFFFFF falls back to the file size so no chunk is
-	// missed. For RF64 the 32-bit field is the 0xFFFFFFFF marker and the real size
-	// lives in ds64, which must therefore be read before the walk.
+	// The container size delimits it; For RF64 the 32-bit field is the 0xFFFFFFFF marker
+	// and the real size lives in ds64, which must therefore be read before the walk.
 	declaredSize := uint64(binary.LittleEndian.Uint32(hdr[4:8]))
 	if rf64 {
 		t, err := parseDS64(src, size, limit)
@@ -159,16 +155,12 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		}
 		if err == nil {
 			// What a rewrite destroys: the bytes the item model does not carry, plus any the
-			// read above did not even see (maxMetaChunk cuts a body the alloc limit would
-			// still have allowed). rebuildInfo re-renders from the items alone, so all of it
-			// dies whatever put it there - which is why this is not gated on how the region
-			// came to be. An error path leaves it 0 rather than claiming the whole chunk.
+			// read above did not even see (maxMetaChunk cuts a body the alloc limit would still
+			// have allowed). An error path leaves it 0 rather than claiming the whole chunk.
 			d.infoTail = int64(unread) + max(0, d.chunks[i].bodyLen-int64(len(body)))
 			// The READ warning is suppressed where another code already names the same
 			// condition: the walker clamped this chunk to EOF, which oversized-chunk (or
-			// unknown-chunk-size, for the streaming sentinel) reports. Such a chunk is
-			// necessarily the last one the walk recorded, which is what keeps this from
-			// suppressing a different LIST that merely shares the id.
+			// unknown-chunk-size, for the streaming sentinel) reports.
 			infoTailClamped = i == len(d.chunks)-1 &&
 				(slices.Contains(d.oversizedChunks, d.chunks[i].id) ||
 					slices.Contains(d.unknownSizeChunks, d.chunks[i].id))
@@ -203,11 +195,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			d.id3Idx = i
 			break
 		}
-		// A bounded-allocation cap breach (a hostile frame flood hitting MaxElements) is a hard
-		// error, not a benign "this chunk is not a tag": swallowing it would silently treat a
-		// structurally-valid id3 chunk as absent and rewrite the file without it. Surface it like
-		// the MP3/AAC front-tag path does. An ordinary malformed chunk still falls through to the
-		// LIST/INFO fallback.
+		// A bounded-allocation cap breach (a hostile frame flood hitting MaxElements) is a
+		// hard error, not a benign "this chunk is not a tag": swallowing it would silently
+		// treat a structurally-valid id3 chunk as absent and rewrite the file without it.
 		if errors.Is(perr, waxerr.ErrSizeTooLarge) {
 			return nil, perr
 		}
@@ -291,14 +281,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	return media, nil
 }
 
-// project derives the canonical view from a parsed (or rewritten) document under
-// the read-precedence policy: the embedded id3 chunk is authoritative when
-// present, and LIST/INFO fills in any canonical key id3 does not carry - so an
-// INFO-only value (e.g. a Copyright present only in INFO) enters the canonical
-// set and survives a rewrite rather than being silently dropped. When there is
-// no id3 chunk, INFO is the sole authority. Either way INFO also contributes
-// family entries with conflicts flagged (mirroring how MP3 surfaces ID3v1/APEv2).
-// It is shared by Parse and the post-write result so they cannot disagree.
+// project derives the canonical view from a parsed (or rewritten) document under the
+// read-precedence policy: the embedded id3 chunk is authoritative when present, and
+// LIST/INFO fills in any canonical key id3 does not carry - so an INFO-only value (e.g.
 func project(d *doc) (tags tag.TagSet, pics []core.Picture, chapters []core.Chapter, syncedLyrics []core.SyncedLyrics, families []core.FamilyValue, numericGenre bool, projWarnings []core.Warning) {
 	tags = tag.NewTagSet()
 	switch {
@@ -341,10 +326,7 @@ func markDup(d *doc, idxs []int) {
 }
 
 // mediaWarnings returns the content-derived warnings for a parsed or rewritten
-// document: a resolved numeric genre and inherited-encoder stamps. Structural
-// warnings found only while walking the source (duplicate tag blocks) are added
-// by Parse itself. Sharing this lets the post-write document's warnings match a
-// fresh parse of the output rather than echoing the original parse's warnings.
+// document: a resolved numeric genre and inherited-encoder stamps.
 func mediaWarnings(d *doc, numericGenre bool) []core.Warning {
 	var ws []core.Warning
 	if numericGenre {
@@ -400,8 +382,6 @@ func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, riffEnd int
 }
 
 // isID3Chunk reports whether a chunk identifier holds an embedded ID3v2 tag.
-// "id3 " is the de-facto identifier; "ID3 " is the uppercase variant some tools
-// emit. Both are read; the writer emits "id3 ".
 func isID3Chunk(id string) bool { return id == "id3 " || id == "ID3 " }
 
 // parseFmt decodes the common leading fields of a "fmt " chunk. The first 16
@@ -423,17 +403,6 @@ func parseFmt(b []byte) (fmtChunk, bool) {
 
 // buildTrack assembles audio properties from the fmt geometry, the data length, and the
 // fact chunk's declared sample count.
-//
-// A constant-rate PCM family (PCM, IEEE float, A-law, mu-law) keeps the byte-rate
-// formulas, which are exact for it: duration is dataLen/byteRate, bitrate is the
-// declared byte rate, and a sample frame is blockAlign bytes. Everything else has a
-// nominal or absent avgBytesPerSec and a blockAlign that is a compressed block rather
-// than a sample frame, so those formulas are wrong by whatever the compression ratio
-// happens to be - an MS-ADPCM second reads as 1.4 s, and a block count reads as a sample
-// count off by three orders of magnitude. For those the declared sample count is the only
-// real length, and the bitrate follows from the bytes actually stored. Where neither is
-// usable the duration falls back to the nominal byte rate (better than nothing) and the
-// sample count stays 0 rather than reporting a block count as samples.
 func buildTrack(fc fmtChunk, dataLen int64, factSamples uint64, hasFact bool) core.AudioTrack {
 	t := core.AudioTrack{
 		Codec: codecName(fc.audioFormat),
@@ -471,9 +440,7 @@ func buildTrack(fc fmtChunk, dataLen int64, factSamples uint64, hasFact bool) co
 }
 
 // constantRatePCM reports whether a WAVE format tag names an uncompressed family whose
-// avgBytesPerSec is exact and whose blockAlign is one sample frame. WAVE_FORMAT_EXTENSIBLE
-// counts: its SubFormat GUID is PCM or IEEE float in every file that uses it in practice,
-// and treating it otherwise would regress the ordinary 24-bit and multichannel case.
+// avgBytesPerSec is exact and whose blockAlign is one sample frame.
 func constantRatePCM(format uint16) bool {
 	switch format {
 	case 0x0001, 0x0003, 0x0006, 0x0007, 0xFFFE: // PCM, IEEE float, A-law, mu-law, extensible
@@ -482,30 +449,17 @@ func constantRatePCM(format uint16) bool {
 	return false
 }
 
-// factSanityRatio bounds how far the duration a fact chunk declares may sit from the one
-// the nominal byte rate implies. It is deliberately loose: avgBytesPerSec is the value the
-// fact count exists to correct, so this rejects garbage (a 0xFFFFFFFF sample count reads
-// as tens of thousands of times the byte-rate estimate) without second-guessing an honest
-// disagreement like MS-ADPCM's 1.4x.
+// factSanityRatio bounds how far the duration a fact chunk declares may sit from the
+// one the nominal byte rate implies.
 const factSanityRatio = 8
 
-// minFactBitrate is the floor an implied average bitrate must clear for a declared sample
-// count to be believed: below 1 kbps there is no audio codec a RIFF file carries, only a
-// count that is too large for the bytes stored. It backstops the byte-rate comparison, which
-// says nothing when the declared rate is itself nonsense.
+// minFactBitrate is the floor an implied average bitrate must clear for a declared
+// sample count to be believed: below 1 kbps there is no audio codec a RIFF file
+// carries, only a count that is too large for the bytes stored.
 const minFactBitrate = 1000
 
-// factDuration converts a declared sample count into a duration, reporting ok=false when
-// the value cannot be trusted. dwSampleLength is attacker-controlled and some writers put
-// bytes there rather than sample frames, so 0xFFFFFFFF on a 20 KB file would otherwise
-// report a 27-hour duration and a nonsense bitrate.
-//
-// Two bounds, because either input can be the nonsense one. The declared duration must land
-// within factSanityRatio of the byte-rate estimate when there is a byte rate to compare
-// against (an MP3-in-WAV declares 0, so there often is not); and the audio it claims must be
-// stored at a plausible bitrate, which catches an absurd sampleRate the byte-rate comparison
-// cannot see - rate 1 with 800000 samples is 9.3 days of audio in 100 KB, at 1 bit per
-// second.
+// factDuration converts a declared sample count into a duration, reporting ok=false
+// when the value cannot be trusted.
 func factDuration(samples uint64, fc fmtChunk, dataLen int64) (time.Duration, bool) {
 	if samples == 0 || dataLen <= 0 {
 		return 0, false

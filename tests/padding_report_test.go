@@ -9,10 +9,9 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestOggFLACPaddingBlockNotReported pins a deliberate exclusion: rebuildFLACBlocks drops a
-// PADDING block on every rewrite (Ogg re-paginates the header region), so reporting it as
-// padding would promise slack that no write grows into and that the next edit deletes. The
-// native view still lists the block, which is where it belongs.
+// deliberate exclusion: rebuildFLACBlocks drops a PADDING block on every rewrite (Ogg re-paginates
+// the header region), so reporting it as padding would promise slack that no write grows into and
+// that the next edit deletes.
 func TestOggFLACPaddingBlockNotReported(t *testing.T) {
 	padding := append([]byte{1}, make([]byte, 4096)...)
 	comment := append([]byte{4}, vorbis.RenderCommentList("test", []vorbis.Comment{{Name: "TITLE", Value: "T"}})...)
@@ -42,10 +41,10 @@ func mp4LargesizeFree(payload int) []byte {
 	return append(b, make([]byte, payload)...)
 }
 
-// TestMP4PaddingHonorsTheWriterHeaderWidth: a rewrite replaces the region with a freshly
-// rendered free atom, which always uses the 8-byte header. A source atom in the 64-bit
-// largesize form therefore yields 8 more usable bytes than its own payload, and reporting
-// the payload would make Padding() jump by 8 across an otherwise in-place save-back.
+// rewrite replaces the region with a freshly rendered free atom, which always uses the 8-byte
+// header. A source atom in the 64-bit largesize form therefore yields 8 more usable bytes than its
+// own payload, and reporting the payload would make Padding() jump by 8 across an otherwise
+// in-place save-back.
 func TestMP4PaddingHonorsTheWriterHeaderWidth(t *testing.T) {
 	const payload = 64
 	data := mp4Assemble(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "Original Title")), mp4LargesizeFree(payload))
@@ -68,9 +67,8 @@ func TestMP4PaddingHonorsTheWriterHeaderWidth(t *testing.T) {
 	}
 }
 
-// TestMP4ChaptersOnlyEditReportsSurvivingPadding: a chapters-only edit does not rewrite the
-// ilst region, so the file's free atom survives verbatim. Reporting no padding would tell
-// the user a region vanished that the write does not touch.
+// chapters-only edit does not rewrite the ilst region, so the file's free atom survives verbatim.
+// Reporting no padding would tell the user a region vanished that the write does not touch.
 func TestMP4ChaptersOnlyEditReportsSurvivingPadding(t *testing.T) {
 	data := mp4Assemble(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "T")), mp4Atom("free", make([]byte, 512)))
 	doc := mustParseBytes(t, data)

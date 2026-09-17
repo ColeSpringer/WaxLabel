@@ -25,14 +25,13 @@ const (
 	notagsOggFLAC = "../testdata/notags.oga"
 )
 
-// oggFixtures is every Ogg mapping WaxLabel writes. The page layer, the comment
-// codec, and the rewrite path are shared, so the invariants below run over all
-// three; only cover-art storage differs (FLAC uses a native PICTURE block), and
-// that is transparent to these tests.
+// oggFixtures is every Ogg mapping WaxLabel writes. The page layer, the comment codec, and the
+// rewrite path are shared, so the invariants below run over all three; only cover-art storage
+// differs (FLAC uses a native PICTURE block), and that is transparent to these tests.
 var oggFixtures = []string{sampleOgg, sampleOpus, sampleOggFLAC}
 
-// pattern returns n deterministic bytes - a stand-in cover payload large enough
-// to push the comment header past one page when needed.
+// pattern returns n deterministic bytes; a stand-in cover payload large enough to push the comment
+// header past one page when needed.
 func pattern(n int) []byte {
 	b := make([]byte, n)
 	for i := range b {
@@ -94,8 +93,8 @@ func TestOggParse(t *testing.T) {
 	}
 }
 
-// TestOggRoundTripPreservesEssence is the core invariant: editing tags must not
-// disturb the audio packet payloads (the essence), and the values must read back.
+// core invariant: editing tags must not disturb the audio packet payloads (the essence), and the
+// values must read back.
 func TestOggRoundTripPreservesEssence(t *testing.T) {
 	for _, f := range oggFixtures {
 		src := readFixture(t, f)
@@ -152,8 +151,8 @@ func TestOggNoOpWritesNothing(t *testing.T) {
 	}
 }
 
-// TestOggCoverSmall adds and removes a small cover (one comment page, no
-// renumber) and confirms the picture round-trips and the essence is intact.
+// adds and removes a small cover (one comment page, no renumber) and confirms the picture
+// round-trips and the essence is intact.
 func TestOggCoverSmall(t *testing.T) {
 	for _, f := range oggFixtures {
 		src := readFixture(t, f)
@@ -185,18 +184,16 @@ func TestOggCoverSmall(t *testing.T) {
 	}
 }
 
-// TestOggCoverRenumberPreservesEssence adds a cover large enough that the comment
-// header spills onto another page, forcing the audio-page renumber path. The
-// audio essence must still be byte-identical and the picture must survive.
+// adds a cover large enough that the comment header spills onto another page, forcing the
+// audio-page renumber path. The audio essence must still be byte-identical and the picture must
+// survive.
 func TestOggCoverRenumberPreservesEssence(t *testing.T) {
 	cover := pattern(70000) // base64 ~93 KiB > one 65025-byte page body
 	for _, f := range oggFixtures {
 		src := readFixture(t, f)
 		before := essenceOf(t, src)
 
-		// pattern() is a deterministic non-image stand-in (this test exercises the
-		// page-renumber path, not image validity), so opt the added-picture
-		// validation out the way a deliberately exotic cover would.
+		// pattern() is non-image filler for the renumber path; WithUnrecognizedPictures skips validation.
 		plan, err := mustParseBytes(t, src).Edit().
 			AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: cover}).
 			Prepare(wl.WithUnrecognizedPictures())
@@ -223,9 +220,8 @@ func TestOggCoverRenumberPreservesEssence(t *testing.T) {
 	}
 }
 
-// TestOggSaveBackVerifyEssence exercises the SaveBack path with WithVerifyEssence
-// - which re-reads the written file and re-hashes its essence (verifyOutput) -
-// together with a renumbering cover add, so the buffered file write, the renumber
+// SaveBack path with WithVerifyEssence; which re-reads the written file and re-hashes its essence
+// (verifyOutput); together with a renumbering cover add, so the buffered file write, the renumber
 // loop, and output verification are all covered end to end.
 func TestOggSaveBackVerifyEssence(t *testing.T) {
 	for _, f := range oggFixtures {
@@ -254,9 +250,8 @@ func TestOggSaveBackVerifyEssence(t *testing.T) {
 	}
 }
 
-// TestOggOpusR128NotMappedToReplayGain guards the "Opus R128 distinct from ReplayGain" rule:
-// an R128_* tag passes through as its own canonical key and is never folded into the
-// ReplayGain keys.
+// guards the "Opus R128 distinct from ReplayGain" rule: an R128_* tag passes through as its own
+// canonical key and is never folded into the ReplayGain keys.
 func TestOggOpusR128NotMappedToReplayGain(t *testing.T) {
 	src := readFixture(t, sampleOpus)
 	plan, err := mustParseBytes(t, src).Edit().Set(tag.Key("R128_TRACK_GAIN"), "-2048").Prepare()
@@ -272,9 +267,6 @@ func TestOggOpusR128NotMappedToReplayGain(t *testing.T) {
 	}
 }
 
-// TestOggChainedReadBestEffortWriteRefused checks that a chained/multiplexed
-// stream is read best-effort (first stream's tags, with a warning) but refused on
-// write per the plan.
 func TestOggChainedReadBestEffortWriteRefused(t *testing.T) {
 	chained := append(slices.Clone(readFixture(t, sampleOgg)), readFixture(t, notagsOgg)...)
 	doc := mustParseBytes(t, chained)
@@ -290,8 +282,6 @@ func TestOggChainedReadBestEffortWriteRefused(t *testing.T) {
 	}
 }
 
-// TestOggPreservesTrailingBytes confirms bytes after the last Ogg page (recorded
-// by length and copied from the source, never buffered) survive a rewrite.
 func TestOggPreservesTrailingBytes(t *testing.T) {
 	junk := []byte("TRAILING-JUNK-PRESERVE-ME")
 	for _, f := range oggFixtures {
@@ -417,10 +407,9 @@ func TestOggDifferentialFFmpegDecodesRenumbered(t *testing.T) {
 	}
 }
 
-// TestOggBitrateIsMeasured: every Ogg codec reports a measured average, so one bitrate number
-// means the same thing across formats. Vorbis preferred bitrate_nominal, the encoder target,
-// which reads 96 kbps on a fixture whose whole-file rate is 44. A measured average over part
-// of a file cannot exceed the whole file's byte rate, which is the bound to pin.
+// every Ogg codec reports a measured average, so one bitrate number means the same thing across
+// formats. Vorbis preferred bitrate_nominal, the encoder target, which reads 96 kbps on a fixture
+// whose whole-file rate is 44.
 func TestOggBitrateIsMeasured(t *testing.T) {
 	for _, path := range oggFixtures {
 		t.Run(path, func(t *testing.T) {
@@ -447,9 +436,8 @@ func TestOggBitrateIsMeasured(t *testing.T) {
 	}
 }
 
-// TestOggDifferentialFFmpegAppliesOutputGain: ffprobe cannot show the header gain, but
-// every decoder applies it, so measure the decoded level. A -3.50 dB gain must lower the
-// mean volume by that much.
+// ffprobe cannot show the header gain, but every decoder applies it, so measure the decoded level.
+// A -3.50 dB gain must lower the mean volume by that much.
 func TestOggDifferentialFFmpegAppliesOutputGain(t *testing.T) {
 	requireTool(t, "ffmpeg")
 	meanVolume := func(path string) float64 {

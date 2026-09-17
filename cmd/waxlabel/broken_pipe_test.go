@@ -12,16 +12,13 @@ import (
 	"testing"
 )
 
-// epipeWriter fails every write with EPIPE, simulating a reader that closed the output pipe.
-// The sanitizing writer passes bytes straight through, so the EPIPE reaches dispatch as it
-// would from a real closed stdout, with no SIGPIPE goroutine setting a cancel cause.
+// epipeWriter fails every write with EPIPE, like a closed stdout pipe without a SIGPIPE cancel cause.
 type epipeWriter struct{}
 
 func (epipeWriter) Write(p []byte) (int, error) { return 0, syscall.EPIPE }
 
-// TestIsBrokenPipeRecognizesEPIPE: EPIPE must classify the same on every platform, including
-// Windows, where only a synthesized one can occur. pipe_windows_test.go covers the errnos
-// Windows really returns.
+// TestIsBrokenPipeRecognizesEPIPE: EPIPE must classify on every platform. Windows errnos
+// are in pipe_windows_test.go.
 func TestIsBrokenPipeRecognizesEPIPE(t *testing.T) {
 	t.Parallel()
 	if !isBrokenPipe(syscall.EPIPE) {
@@ -38,8 +35,7 @@ func TestIsBrokenPipeRecognizesEPIPE(t *testing.T) {
 	}
 }
 
-// TestClassifyBrokenPipe: errBrokenPipe maps to exit 0, code "broken-pipe", and an empty
-// message so renderError stays silent. The leaf the end-to-end tests below rely on.
+// TestClassifyBrokenPipe: errBrokenPipe is exit 0, code broken-pipe, silent message.
 func TestClassifyBrokenPipe(t *testing.T) {
 	t.Parallel()
 	c := classifyError(errBrokenPipe)
@@ -49,12 +45,11 @@ func TestClassifyBrokenPipe(t *testing.T) {
 	}
 }
 
-// TestBrokenPipeExitsZeroSilently: a run cancelled by a closed output pipe exits 0 and
-// silent, not the 130 a real Ctrl-C yields. Both leave the parse returning context.Canceled,
-// so the cancel cause is the only thing telling them apart.
+// TestBrokenPipeExitsZeroSilently: closed pipe exits 0 silent, not 130 like Ctrl-C. Only
+// the cancel cause distinguishes them.
 func TestBrokenPipeExitsZeroSilently(t *testing.T) {
 	t.Parallel()
-	// Two files, so the multi-file loop runs.
+	// Two files so the multi-file loop runs.
 	dir := t.TempDir()
 	data, err := os.ReadFile(sampleFLAC)
 	if err != nil {
@@ -79,8 +74,7 @@ func TestBrokenPipeExitsZeroSilently(t *testing.T) {
 	}
 }
 
-// TestRealCancelStillExits130 is the companion: the broken-pipe carve-out must not swallow
-// a real Ctrl-C.
+// TestRealCancelStillExits130: broken-pipe carve-out must not swallow real Ctrl-C.
 func TestRealCancelStillExits130(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancelCause(context.Background())
@@ -93,9 +87,8 @@ func TestRealCancelStillExits130(t *testing.T) {
 	}
 }
 
-// TestBrokenPipeSyncEPIPEExitsZero guards the JSON race: dump --json writes its array in one
-// call, so a closed pipe surfaces as a synchronous EPIPE before the async SIGPIPE goroutine
-// sets a cause. The uncancelled context here models that.
+// TestBrokenPipeSyncEPIPEExitsZero: dump --json can hit synchronous EPIPE before SIGPIPE
+// sets a cancel cause.
 func TestBrokenPipeSyncEPIPEExitsZero(t *testing.T) {
 	t.Parallel()
 	var errb bytes.Buffer
@@ -108,9 +101,7 @@ func TestBrokenPipeSyncEPIPEExitsZero(t *testing.T) {
 	}
 }
 
-// TestLintBrokenPipeExitsZeroSilently: lint runs its own per-file loop, which must honor a
-// closed output pipe the way dump's does. Without the carve-out, `lint --recursive BIG | head`
-// prints a line per remaining file and exits 130.
+// TestLintBrokenPipeExitsZeroSilently: lint's per-file loop must honor closed pipe like dump.
 func TestLintBrokenPipeExitsZeroSilently(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -137,9 +128,7 @@ func TestLintBrokenPipeExitsZeroSilently(t *testing.T) {
 	}
 }
 
-// TestLintBrokenPipeKeepsFindingExit: a closed pipe on lint's JSON write must not drop an
-// error-severity finding's exit 4 to broken-pipe's 0. The reader going away does not make
-// the file clean.
+// TestLintBrokenPipeKeepsFindingExit: closed pipe on lint JSON must not drop exit 4 to 0.
 func TestLintBrokenPipeKeepsFindingExit(t *testing.T) {
 	t.Parallel()
 	var errb bytes.Buffer
@@ -149,8 +138,7 @@ func TestLintBrokenPipeKeepsFindingExit(t *testing.T) {
 	}
 }
 
-// TestBrokenPipeJSONPreservesRealError: a genuine per-file error outranks broken-pipe, so
-// a junk file among the inputs still exits 3.
+// TestBrokenPipeJSONPreservesRealError: per-file errors outrank broken-pipe.
 func TestBrokenPipeJSONPreservesRealError(t *testing.T) {
 	t.Parallel()
 	junk := filepath.Join(t.TempDir(), "x.txt")

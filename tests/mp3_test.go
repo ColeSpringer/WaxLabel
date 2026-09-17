@@ -108,8 +108,7 @@ func TestMP3EssenceStableAcrossTagEdit(t *testing.T) {
 	}
 }
 
-// Write-side differential: an independent tool must read what we wrote and
-// accept our audio. These skip cleanly when ffmpeg/ffprobe are absent.
+// Write-side differential via ffmpeg/ffprobe; skips if tools are absent.
 
 func TestMP3DifferentialFFprobeReadsOurTags(t *testing.T) {
 	requireTool(t, "ffprobe")

@@ -6,9 +6,7 @@ import (
 	"testing"
 )
 
-// TestSubformatJSON checks that dump and caps expose the exact subtype at the top
-// level. format stays at the family level, while subformat distinguishes WebM from
-// Matroska and AIFC from AIFF. Plain formats report the same value for both fields.
+// TestSubformatJSON: format is family; subformat is variant (WebM, AIFC, RF64, etc.).
 func TestSubformatJSON(t *testing.T) {
 	sampleAIFC := filepath.Join("..", "..", "testdata", "sample.aifc")
 	sampleRF64 := filepath.Join("..", "..", "testdata", "sample-rf64.wav")
@@ -46,8 +44,7 @@ func TestSubformatJSON(t *testing.T) {
 		})
 	}
 
-	// caps --format webm has no file, but the selected WebM variant still supplies the
-	// subtype. Adding this field does not change schemaVersion.
+	// caps --format webm: subformat WebM without a file operand.
 	t.Run("caps/--format-webm", func(t *testing.T) {
 		out, _, code := runCLI(t, "--json", "caps", "--format", "webm")
 		if code != 0 {

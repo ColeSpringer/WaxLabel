@@ -31,8 +31,6 @@ func mp3WithSyncedLyrics(t *testing.T) []byte {
 	})
 }
 
-// TestTransferSetChaptersReplacesCarriedList: a replacement list is both what the report
-// grades and what the write lands, so the source's own chapters never reach the destination.
 func TestTransferSetChaptersReplacesCarriedList(t *testing.T) {
 	src := mustParseFile(t, sampleM4B)
 	if len(src.Chapters()) < 3 {
@@ -63,10 +61,7 @@ func TestTransferSetChaptersReplacesCarriedList(t *testing.T) {
 	}
 }
 
-// TestTransferReplacementEndAtSourceEOFStaysLiteral: the run-to-end-of-file reopen applies
-// only to the source's own list. A replacement is authored against the destination, so an
-// end at the source's duration is written literally rather than refilled to the
-// destination's longer end.
+// run-to-end-of-file reopen applies only to the source's own list.
 func TestTransferReplacementEndAtSourceEOFStaysLiteral(t *testing.T) {
 	src := mustParseFile(t, chaptersMKA)
 	dstBytes := readFixture(t, notagsMP3)
@@ -97,9 +92,6 @@ func TestTransferReplacementEndAtSourceEOFStaysLiteral(t *testing.T) {
 	}
 }
 
-// TestTransferSetChaptersNoneClearsDestination: an explicit empty replacement means "no
-// chapters" and removes the destination's own, even though a chapterless source has
-// nothing to report.
 func TestTransferSetChaptersNoneClearsDestination(t *testing.T) {
 	src := mustParseFile(t, notagsFLAC)
 	if len(src.Chapters()) != 0 {
@@ -128,8 +120,6 @@ func TestTransferSetChaptersNoneClearsDestination(t *testing.T) {
 	}
 }
 
-// TestTransferSourceWithoutChaptersKeepsDestination: a source that simply has no chapters
-// is not an explicit clear, so the destination keeps its own.
 func TestTransferSourceWithoutChaptersKeepsDestination(t *testing.T) {
 	src := mustParseFile(t, notagsFLAC)
 	dstBytes := readFixture(t, sampleM4B)
@@ -145,8 +135,6 @@ func TestTransferSourceWithoutChaptersKeepsDestination(t *testing.T) {
 	}
 }
 
-// TestTransferSetSyncedLyricsReplaces: a replacement set is graded and written in place of
-// the source's own.
 func TestTransferSetSyncedLyricsReplaces(t *testing.T) {
 	srcBytes := mp3WithSyncedLyrics(t)
 	src := mustParseBytes(t, srcBytes)
@@ -166,8 +154,6 @@ func TestTransferSetSyncedLyricsReplaces(t *testing.T) {
 	}
 }
 
-// TestTransferSetSyncedLyricsNoneClearsDestination: an explicit empty replacement removes
-// the destination's own sets.
 func TestTransferSetSyncedLyricsNoneClearsDestination(t *testing.T) {
 	src := mustParseFile(t, notagsFLAC)
 	dstBytes := mp3WithSyncedLyrics(t)
@@ -185,8 +171,6 @@ func TestTransferSetSyncedLyricsNoneClearsDestination(t *testing.T) {
 	}
 }
 
-// TestTransferReplacementChaptersSorted: an out-of-order replacement is sorted by start,
-// matching [wl.Editor.SetChapters].
 func TestTransferReplacementChaptersSorted(t *testing.T) {
 	src := mustParseFile(t, notagsFLAC)
 	dstBytes := readFixture(t, notagsMP3)
@@ -202,8 +186,7 @@ func TestTransferReplacementChaptersSorted(t *testing.T) {
 	}
 }
 
-// TestTransferPlanMatchesPrepareWithReplacement: the format-level simulation grades the
-// same replacement list the executable plan writes.
+// format-level simulation grades the same replacement list the executable plan writes.
 func TestTransferPlanMatchesPrepareWithReplacement(t *testing.T) {
 	src := mustParseFile(t, sampleM4B)
 	dst := mustParseBytes(t, readFixture(t, notagsMP3))
@@ -227,9 +210,8 @@ func TestTransferPlanMatchesPrepareWithReplacement(t *testing.T) {
 	}
 }
 
-// TestTransferReplacementPastDurationWarns: a replacement start past the destination's
-// playable length is a destination-fit problem the copy still surfaces, while the
-// source-authoring sanity warnings stay suppressed.
+// replacement start past the destination's playable length is a destination-fit problem the copy
+// still surfaces, while the source-authoring sanity warnings stay suppressed.
 func TestTransferReplacementPastDurationWarns(t *testing.T) {
 	src := mustParseFile(t, notagsFLAC)
 	dstBytes := readFixture(t, notagsMP3)
@@ -255,7 +237,6 @@ func TestTransferReplacementPastDurationWarns(t *testing.T) {
 	}
 }
 
-// TestTransferWrappersMatchBuilder: PrepareTransfer is the no-replacement builder.
 func TestTransferWrappersMatchBuilder(t *testing.T) {
 	src := mustParseFile(t, sampleM4B)
 	dstBytes := readFixture(t, notagsMP3)
@@ -278,7 +259,6 @@ func TestTransferWrappersMatchBuilder(t *testing.T) {
 	}
 }
 
-// TestTransferZeroDocumentRefused: a zero-value document has no media to copy.
 func TestTransferZeroDocumentRefused(t *testing.T) {
 	var zero wl.Document
 	if _, err := zero.Transfer().Plan(wl.FormatFLAC); !errors.Is(err, waxerr.ErrInvalidData) {

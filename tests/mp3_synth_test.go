@@ -31,9 +31,8 @@ func id3v2(version byte, frames ...[]byte) []byte {
 	return append(out, body...)
 }
 
-// id3Frame wraps a frame body in a v2.3/v2.4 header: 4-char id, size, two flag bytes.
-// v2.4 sizes are sync-safe; v2.3 uses a plain 4-byte big-endian count. Every frame builder
-// below goes through here so the version-dependent size rule lives in one place.
+// id3Frame wraps a frame body in a v2.3/v2.4 header: 4-char id, size, two flag bytes. v2.4 sizes
+// are sync-safe; v2.3 uses a plain 4-byte big-endian count.
 func id3Frame(version byte, id string, body []byte) []byte {
 	sz := []byte{byte(len(body) >> 24), byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}
 	if version >= 4 {
@@ -80,8 +79,8 @@ func id3v1(title, artist, album, year, comment string, genre byte) []byte {
 
 // mp3XingFrameVariant builds one MPEG-1 Layer 3 frame (128 kbps, 44.1 kHz, 417 bytes) carrying a
 // Xing header with a frame-count field. When crc is set the frame's protection bit is cleared and
-// the Xing sits 2 bytes later, behind the optional MPEG CRC; mono shrinks the side-information block
-// that precedes it. Both shifts move where the Xing lands, which is exactly what readVBR must probe.
+// the Xing sits 2 bytes later, behind the optional MPEG CRC; mono shrinks the side-information
+// block that precedes it.
 func mp3XingFrameVariant(mono, crc bool, declared uint32) []byte {
 	const frameLen = 417
 	f := make([]byte, frameLen)
@@ -279,9 +278,8 @@ func TestMP3APELegacyView(t *testing.T) {
 	}
 }
 
-// TestMP3PostWriteRetainsLegacyFamilies confirms the document returned from a
-// write surfaces the preserved trailing ID3v1 in its family view, matching a
-// fresh parse of the output (not just the new ID3v2).
+// document returned from a write surfaces the preserved trailing ID3v1 in its family view, matching
+// a fresh parse of the output (not just the new ID3v2).
 func TestMP3PostWriteRetainsLegacyFamilies(t *testing.T) {
 	data := id3v2(3, textFrame(3, "TIT2", "V2 Title"))
 	data = append(data, mp3Audio(t)...)
@@ -337,10 +335,9 @@ func apeTagCount(items map[string]string, footerCount int) []byte {
 	return append(body, foot...)
 }
 
-// TestMP3APEOverstatedItemCountPreserved checks that an APE footer can
-// overstate its item count without corrupting the read. The decoded item list is
-// capped, the raw APE bytes remain available for preservation, and the
-// authoritative ID3v2 tag still reads.
+// APE footer can overstate its item count without corrupting the read. The decoded item list is
+// capped, the raw APE bytes remain available for preservation, and the authoritative ID3v2 tag
+// still reads.
 func TestMP3APEOverstatedItemCountPreserved(t *testing.T) {
 	ape := apeTagCount(map[string]string{"Title": "APE Title"}, 1_000_000)
 	data := id3v2(3, textFrame(3, "TIT2", "V2 Title"))
@@ -463,12 +460,8 @@ func TestMP3V23MultiValueWarns(t *testing.T) {
 	}
 }
 
-// mp3XingFrame builds an MPEG-1 Layer III stereo frame header (128 kbps, 44100 Hz)
-// followed by a Xing header declaring frameCount frames. It is intentionally left
-// far short of the frame's full ~417-byte length, so the declared duration (from
-// the Xing count) implies far more audio than the bytes present - the truncated-
-// VBR signature. The 48 bytes it spans are exactly the header + MPEG-1-stereo side
-// information + the Xing tag, flags, and frame count the parser reads.
+// mp3XingFrame builds an MPEG-1 Layer III stereo frame header (128 kbps, 44100 Hz) followed by a
+// Xing header declaring frameCount frames.
 func mp3XingFrame(frameCount uint32) []byte {
 	b := []byte{0xFF, 0xFB, 0x90, 0x00} // MPEG-1 L3, 128 kbps, 44100 Hz, stereo
 	b = append(b, make([]byte, 32)...)  // side information (MPEG-1 stereo)
@@ -479,13 +472,9 @@ func mp3XingFrame(frameCount uint32) []byte {
 	return append(b, fc...)
 }
 
-// mp3VBRStream builds `frames` valid consecutive MPEG-1 Layer III frames (128 kbps,
-// 44100 Hz, stereo, 417 bytes each, zero-filled after the header), with a Xing
-// header in the first frame declaring `declared` frames. Unlike mp3XingFrame's
-// 48-byte stub - which fails parseMPEG's two-frame consensus and so never reaches
-// the truncation guard - these full-length frames actually validate (>= 2 needed),
-// so a fixture with declared == frames exercises the guard's intact (>= 8 kbps,
-// no-warn) branch. 417 is the parser's own frame length for this header.
+// mp3VBRStream builds `frames` valid consecutive MPEG-1 Layer III frames (128 kbps, 44100 Hz,
+// stereo, 417 bytes each, zero-filled after the header), with a Xing header in the first frame
+// declaring `declared` frames.
 func mp3VBRStream(frames int, declared uint32) []byte {
 	const frameLen = 417
 	out := make([]byte, 0, frames*frameLen)
@@ -502,11 +491,9 @@ func mp3VBRStream(frames int, declared uint32) []byte {
 	return out
 }
 
-// TestMP3TruncatedAfterXingWarns synthesizes a VBR MP3 whose Xing header survives
-// but whose frames are mostly gone (the report's head -c repro): the declared
-// frame count implies minutes of audio while only ~48 bytes are present, so the
-// average bitrate collapses below the MPEG floor and truncated-audio fires. An
-// intact VBR frame (padded to its real length) must not be flagged.
+// synthesizes a VBR MP3 whose Xing header survives but whose frames are mostly gone (the report's
+// head -c repro): the declared frame count implies minutes of audio while only ~48 bytes are
+// present, so the average bitrate collapses below the MPEG floor and truncated-audio fires.
 func TestMP3TruncatedAfterXingWarns(t *testing.T) {
 	t.Run("frames missing after Xing", func(t *testing.T) {
 		data := append(id3v2(3, textFrame(3, "TIT2", "X")), mp3XingFrame(10000)...)
@@ -519,9 +506,8 @@ func TestMP3TruncatedAfterXingWarns(t *testing.T) {
 		}
 	})
 	t.Run("extreme truncation collapses bitrate to zero", func(t *testing.T) {
-		// A multi-minute declared duration with only the ~48-byte header present drives
-		// the integer average bitrate to exactly 0; the warning must still fire (the
-		// signal is "< 8000", not "> 0 && < 8000").
+		// A multi-minute declared duration with only the ~48-byte header present drives the integer average
+		// bitrate to exactly 0; the warning must still fire (the signal is "< 8000", not "> 0 && < 8000").
 		data := append(id3v2(3, textFrame(3, "TIT2", "X")), mp3XingFrame(50000)...)
 		if doc := mustParseBytes(t, data); !hasWarning(doc, wl.WarnTruncatedAudio) {
 			t.Errorf("expected truncated-audio warning on an extreme truncation; got %v", doc.Warnings())
@@ -543,10 +529,9 @@ func TestMP3TruncatedAfterXingWarns(t *testing.T) {
 	})
 }
 
-// TestMP3NonAudioWarnsNoAudio checks that an MP3 selected by a leading ID3v2 tag but
-// carrying non-MPEG bytes after it reports WarnNoAudioFrames. The non-empty essence
-// range triggers the MP3 warning path, while the root zero-essence warning path stays
-// silent so the warning is not duplicated.
+// MP3 selected by a leading ID3v2 tag but carrying non-MPEG bytes after it reports
+// WarnNoAudioFrames. The non-empty essence range triggers the MP3 warning path, while the root
+// zero-essence warning path stays silent so the warning is not duplicated.
 func TestMP3NonAudioWarnsNoAudio(t *testing.T) {
 	t.Parallel()
 	data := append(id3v2(4, textFrame(4, "TIT2", "x")), []byte("this is text, not audio\n")...)

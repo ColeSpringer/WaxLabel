@@ -7,10 +7,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestWAVMultiValueNativeReduced verifies that a WAV retaining both LIST/INFO
-// and ID3 stores only the first native INFO value while keeping the full set in
-// ID3. The plan surfaces that as native-value-reduced; a single-value edit does
-// not warn.
+// WAV retaining both LIST/INFO and ID3 stores only the first native INFO value while keeping the
+// full set in ID3.
 func TestWAVMultiValueNativeReduced(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"IART", "A"}), wavData(400))
 
@@ -25,10 +23,9 @@ func TestWAVMultiValueNativeReduced(t *testing.T) {
 	}
 }
 
-// TestAIFFMultiValueNativeReduced verifies that a multi-value ARTIST reduces the
-// single-valued AUTH text chunk to its first value while keeping the full set in
-// ID3. Comment maps to repeatable ANNO chunks, so several Comment values write
-// without reduction even when a picture forces ID3 to be written too.
+// multi-value ARTIST reduces the single-valued AUTH text chunk to its first value while keeping the
+// full set in ID3. Comment maps to repeatable ANNO chunks, so several Comment values write without
+// reduction even when a picture forces ID3 to be written too.
 func TestAIFFMultiValueNativeReduced(t *testing.T) {
 	data := aiffFile("AIFF", stdCOMM(), aiffText("AUTH", "A"), aiffSSND(400))
 

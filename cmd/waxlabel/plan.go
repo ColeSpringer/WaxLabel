@@ -9,9 +9,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newPlanCmd builds the "plan" command, which resolves edits into a write plan
-// and reports exactly what saving would do - without touching the file. It
-// accepts multiple files (and directories with --recursive), previewing each.
+// newPlanCmd builds "plan": resolve edits into a write plan and report what
+// saving would do, without touching the file. Multiple files (and directories
+// with --recursive) are previewed independently.
 func newPlanCmd() *cobra.Command {
 	var ef editFlags
 	var recursive bool
@@ -32,9 +32,8 @@ func newPlanCmd() *cobra.Command {
 			editPrecedenceHelp,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Reject an explicitly-empty --preset/--legacy, matching set and the unknown-
-			// value rejection. plan has no no-edits guard: previewing an unedited file
-			// is a valid "is it up to date" query.
+			// Reject explicitly empty --preset/--legacy like set. No no-edits guard:
+			// previewing an unedited file is a valid "up to date?" query.
 			if err := rejectEmptyScalarFlags(cmd); err != nil {
 				return err
 			}
@@ -58,12 +57,8 @@ func newPlanCmd() *cobra.Command {
 			if err := notifyInvocationNotes(cmd.ErrOrStderr(), ce, &ef, realOf, paths, pathErrors, asJSON); err != nil {
 				return err
 			}
-			// An unquoted value with spaces (--set TITLE=Two Words) leaves a stray bare-word
-			// positional that the preview would misattribute - printing a truncated change
-			// (TITLE -> Two) then failing the stray word as not-found (exit 6). Since the plan
-			// preview is meant to be authoritative, refuse up front (exit 2) like set does, via
-			// the same shared helper. writes=false: plan never writes, so it uses the bare hint
-			// without set's "; nothing was written" suffix (which would be false here).
+			// Unquoted spaces (--set TITLE=Two Words) leave a stray positional; refuse up
+			// front (exit 2) like set. writes=false: bare hint, no "; nothing was written".
 			if err := refuseUnquotedValue(&ef, realOf, args, false); err != nil {
 				return err
 			}
@@ -75,8 +70,8 @@ func newPlanCmd() *cobra.Command {
 					if err != nil {
 						return nil, err
 					}
-					// Note once per format when a padding flag does not apply to it. Gated on
-					// ce.paddingFlag so the Capabilities are not built when no flag was given.
+					// Note once per format when a padding flag does not apply.
+					// Gated on ce.paddingFlag so Capabilities are not built otherwise.
 					if ce.paddingFlag {
 						pnoter.note(doc.Capabilities())
 					}
@@ -96,20 +91,15 @@ func newPlanCmd() *cobra.Command {
 	return markListCommand(cmd)
 }
 
-// jsonReport is the machine-readable form of a write plan, shared by plan and
-// set (set embeds it). A failed element in a bulk run is emitted as the shared
-// jsonErrorEntry; this struct keeps a matching Error field so a consumer can decode
-// every array element into it (Error set, plan fields absent on failure; Error nil
-// and plan fields populated on success). See jsonErrorEntry.
+// jsonReport is the machine-readable write plan (shared by plan and set).
+// Failures use jsonErrorEntry; Error is kept so a mixed array decodes here.
 type jsonReport struct {
 	SchemaVersion int          `json:"schemaVersion"`
 	File          string       `json:"file"`
 	Error         *jsonErrBody `json:"error,omitempty"`
 	NoOp          bool         `json:"noOp"`
-	// Changes is the canonical tag-level diff: keys added, removed, or replaced.
-	// Operations is the structural write list, such as an ID3v2 frame rewrite,
-	// encoder-stamp strip, or chapter-track rewrite. A fix can touch only native
-	// structure, so empty Changes can still be paired with non-empty Operations.
+	// Changes: tag-level diff. Operations: structural writes. Empty Changes can
+	// still pair with non-empty Operations (native-only fix).
 	Changes      []jsonChange  `json:"changes"`
 	Operations   []string      `json:"operations"`
 	BytesBefore  int64         `json:"bytesBefore"`
@@ -118,11 +108,8 @@ type jsonReport struct {
 	Warnings     []jsonWarning `json:"warnings"`
 }
 
-// jsonChange is one field's change in a write plan: the canonical key, how it
-// changed ("added"/"removed"/"changed"), and the before/after values. It mirrors
-// the shape of jsonDiffTag, naming the two sides old/new for a before/after edit. A
-// picture/chapter set-count change instead carries a real integer count (and omits
-// old/new), so a consumer reads the count as a number, not a stringified value.
+// jsonChange is one field change: key, kind, and old/new. Picture/chapter
+// set-count changes use Count (integer) and omit old/new.
 type jsonChange struct {
 	Key    string   `json:"key"`
 	Change string   `json:"change"`
@@ -131,16 +118,13 @@ type jsonChange struct {
 	New    []string `json:"new,omitempty"`
 }
 
-// toJSONChanges converts a tag-change list to its JSON form. Shared by the write
-// report and lint --fix so their change shape cannot drift.
+// toJSONChanges converts tag changes to JSON. Shared by write report and lint --fix.
 func toJSONChanges(changes []tag.Change) []jsonChange {
 	out := make([]jsonChange, 0, len(changes))
 	for _, c := range changes {
 		jc := jsonChange{Key: string(c.Key), Change: c.Kind.String()}
 		if isCountChange(c.Key) {
-			// A picture/chapter set-count change: emit the real integer count instead of
-			// the stringified Old/New the text render uses, dropping the bogus old/new for
-			// this kind (the human "changes:" block shows the per-picture detail separately).
+			// Integer count, not stringified Old/New (text render shows picture detail).
 			n := c.Count
 			jc.Count = &n
 		} else {
@@ -157,16 +141,13 @@ func toJSONReport(path string, plan *wl.Plan) jsonReport {
 	for _, x := range r.Warnings {
 		warnings = append(warnings, jsonWarning{Code: x.Code.String(), Message: x.Message})
 	}
-	// A no-op plan stamps Operations with the shared "no changes" sentinel (core.NoOpPlan) that
-	// drives the human "no changes" line; the JSON operations array is defined as the structural
-	// write list (README), so a no-op writes nothing and it must serialize as [] rather than leak
-	// the sentinel. Mirror the same normalization lint --fix applies.
+	// No-op plans stamp Operations with a "no changes" sentinel for the human line;
+	// JSON operations must be [] (structural write list), not that sentinel.
 	operations := r.Operations
 	if plan.IsNoOp() {
 		operations = nil
 	}
-	// nonNil on each collection so it serializes as [] (never null/omitted) - a
-	// consumer iterating.operations[]/.warnings[] works on a clean plan too.
+	// nonNil so collections serialize as [] (never null) for clean plans too.
 	return jsonReport{
 		SchemaVersion: schemaVersion,
 		File:          jsonFileName(path),

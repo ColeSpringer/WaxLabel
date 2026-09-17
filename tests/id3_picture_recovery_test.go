@@ -6,10 +6,8 @@ import (
 	"testing"
 )
 
-// TestPictureDescriptionTerminatorMissingRecovers: a PIC or APIC frame that omits the
-// description terminator puts the image where the description should end; the image's own
-// NUL bytes must not become the split point. The description reads empty and the image is
-// whole.
+// PIC or APIC frame that omits the description terminator puts the image where the description
+// should end; the image's own NUL bytes must not become the split point.
 func TestPictureDescriptionTerminatorMissingRecovers(t *testing.T) {
 	png := tinyPNG()
 	cases := []struct {
@@ -35,8 +33,6 @@ func TestPictureDescriptionTerminatorMissingRecovers(t *testing.T) {
 	}
 }
 
-// TestPictureDescriptionTerminatedStillSplitsThere: the recovery never overrides a real
-// terminator, so a described picture keeps its description.
 func TestPictureDescriptionTerminatedStillSplitsThere(t *testing.T) {
 	png := tinyPNG()
 	file := mp3WithFrames(t, id3Frame(4, "APIC", slices.Concat([]byte{0}, []byte("image/png\x00"), []byte{3}, []byte("Front\x00"), png)))

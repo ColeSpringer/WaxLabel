@@ -10,16 +10,9 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// displayName maps a path to its display form for a text record header: the "-"
-// stdin sentinel reads as "<stdin>", and every real path is shown through
-// [tag.SanitizeLine]. A Linux filename may contain any byte but '/' and NUL, so a
-// name handed over by a shell glob or the --recursive walk could otherwise forge a
-// line or drive the terminal from a record header before a byte is parsed; the CLI
-// boundary already blocks the control-hijack, and escaping the newline here also
-// stops line-forgery in a multi-file listing. It is otherwise cosmetic - readInputs
-// already keeps the buffered temp path out of the renderers (they receive the
-// original "-" arg, never the temp path). JSON output keeps the raw path/"-" so a
-// script still keys on the argument it passed.
+// displayName is the text header path: "-" becomes "<stdin>"; real paths pass through
+// [tag.SanitizeLine] so hostile names cannot forge lines in a multi-file listing.
+// JSON keeps the raw path so scripts can key on the argument they passed.
 func displayName(path string) string {
 	if s := stdinDisplay(path); s != "" {
 		return s
@@ -27,9 +20,8 @@ func displayName(path string) string {
 	return tag.SanitizeLine(path)
 }
 
-// stdinDisplay returns the display label for the stdin sentinel, or "" for any real path.
-// displayName and jsonFileName share it so the human and JSON outputs label stdin
-// identically; if the sentinel or its label ever changes, only this branch moves.
+// stdinDisplay returns "<stdin>" for the "-" sentinel, or "" for a real path.
+// Shared by displayName and jsonFileName so both outputs label stdin the same way.
 func stdinDisplay(path string) string {
 	if path == stdinArg {
 		return "<stdin>"
@@ -37,9 +29,7 @@ func stdinDisplay(path string) string {
 	return ""
 }
 
-// jsonFileName maps the stdin sentinel "-" to the "<stdin>" label for a JSON "file"
-// field while returning every real path unchanged. Unlike displayName, it does not run
-// SanitizeLine: JSON output preserves the exact path argument so scripts can key on it.
+// jsonFileName maps "-" to "<stdin>" for JSON "file"; real paths are unchanged (no SanitizeLine).
 func jsonFileName(path string) string {
 	if s := stdinDisplay(path); s != "" {
 		return s
@@ -50,22 +40,17 @@ func jsonFileName(path string) string {
 // renderDocument writes the human-readable view of a parsed file.
 func renderDocument(w io.Writer, path string, doc *wl.Document, native bool) {
 	fmt.Fprintf(w, "%s\n", displayName(path))
-	// The container's own name where it differs from the codec family (RF64/BW64, AIFC,
-	// WebM), so the human line says what --json's subformat already says.
+	// Container name when it differs from the codec family (RF64/BW64, AIFC, WebM).
 	fmt.Fprintf(w, "  format:  %s\n", transferFormatLabel(doc.Format(), doc.Properties().Container))
 	if line := audioLine(doc.Properties()); line != "" {
 		fmt.Fprintf(w, "  audio:   %s\n", line)
 	}
-	// Free padding around the metadata. Shown only when the format reserves one, so a file
-	// with no padding region stays silent rather than reporting 0.
+	// Omitted when the format has no padding region (avoid reporting 0).
 	if pad := doc.Padding(); pad > 0 {
 		fmt.Fprintf(w, "  padding: %s\n", wl.HumanBytes(pad))
 	}
 	renderTags(w, doc.Tags())
-	// Surface metadata the canonical tags view omits because it lives only in a legacy
-	// container, which a bare "(none)" would otherwise hide. A container can hold both a
-	// unique tag and opaque non-tag content, so the two notes are independent: each prints
-	// on its own rather than one shadowing the other. See --native for the full provenance.
+	// Legacy-only tags and opaque legacy content are separate notes; see --native for detail.
 	if lo := doc.LegacyOnlyKeys(); len(lo) > 0 {
 		fmt.Fprintf(w, "  note:    %s only in a legacy container; see --native\n", pluralUnit(len(lo), "tag"))
 	}
@@ -77,11 +62,7 @@ func renderDocument(w io.Writer, path string, doc *wl.Document, native bool) {
 	renderSyncedLyrics(w, doc.SyncedLyrics())
 	warnings := doc.Warnings()
 	renderWarnings(w, warnings)
-	// When dump surfaced parse warnings, point at lint for the deeper issue set dump
-	// does not compute - malformed dates/numbers, single-valued cardinality, custom
-	// keys, duplicate pictures - so "I ran dump and missed an issue" is signposted
-	// without dump taking on lint's cost. Gated on warnings present, so a clean file
-	// stays quiet.
+	// Parse warnings are a subset; lint finds malformed dates, cardinality, custom keys, etc.
 	if len(warnings) > 0 {
 		fmt.Fprintln(w, `  run "waxlabel lint" for the full issue set (e.g. malformed dates, custom keys)`)
 	}
@@ -90,35 +71,18 @@ func renderDocument(w io.Writer, path string, doc *wl.Document, native bool) {
 	}
 }
 
-// audioLine summarizes the first audio track as a single comma-separated line,
-// skipping fields that are not populated.
+// audioLine summarizes the first audio track on one comma-separated line.
 func audioLine(p wl.Properties) string {
 	t := p.First()
 	var parts []string
-	// hasSubstantive tracks whether the line carries information worth showing. A
-	// bare codec name with no technical detail (the 10-byte empty.mp3 that shows
-	// "MPEG AUDIO" beside a [no-audio] warning) is degenerate and drops the line; a
-	// genuine decodable stream always reports a sample rate and duration, so this
-	// never hides a real stream.
+	// Drop a bare codec name with no rate/channels/duration (e.g. empty.mp3 header noise).
 	hasSubstantive := false
 	switch {
 	case t.Codec != "":
-		// t.Codec is the canonical name (CanonicalCodec, applied at parse) - real
-		// acronyms stay uppercase (FLAC/AAC/MP3/ALAC/PCM/AC-3), proper names mixed
-		// (Opus/Vorbis). Render it verbatim, not upper-cased, so the human line matches
-		// the --json codec field and the library model exactly; for an unrecognized
-		// container codec ID it is the file's raw bytes (e.g. Matroska's codecName
-		// returns the ID tail verbatim), so escape it for the single-line row.
+		// Canonical codec name, rendered verbatim to match --json; escape for one-line output.
 		parts = append(parts, tag.SanitizeLine(t.Codec))
 	case p.Container != "":
-		// No codec was identified (e.g. an unrecognized Matroska/MP4 track): name the
-		// container and say so, rather than printing the container as if it were the
-		// codec (a bare "MATROSKA"). This "codec unknown" form is itself an
-		// informative signal (the container parsed; the codec did not resolve), so
-		// keep the line even when no technical properties accompany it - unlike a bare
-		// codec name, which would just be noise. The container is a fixed label today,
-		// but escape it for the single-line row in case a format ever derives it from
-		// the file.
+		// Container parsed but codec did not; keep the line even without rate/channels.
 		parts = append(parts, fmt.Sprintf("%s (codec unknown)", tag.SanitizeLine(p.Container)))
 		hasSubstantive = true
 	}
@@ -130,10 +94,7 @@ func audioLine(p wl.Properties) string {
 		parts = append(parts, fmt.Sprintf("%d ch", t.Channels))
 		hasSubstantive = true
 	}
-	// Bit depth describes the stored samples only for codecs that have a fixed sample
-	// width; a lossy codec decodes to PCM at an arbitrary depth, so a stored "16-bit"
-	// there (e.g. the legacy 16 MP4 writes for AAC) is noise. Show it only when the
-	// codec carries a real depth.
+	// Bit depth only for codecs with fixed sample width; lossy containers often lie (e.g. AAC in MP4).
 	if t.BitsPerSample > 0 && bitDepthMeaningful(t.Codec) {
 		parts = append(parts, fmt.Sprintf("%d-bit", t.BitsPerSample))
 		hasSubstantive = true
@@ -142,17 +103,11 @@ func audioLine(p wl.Properties) string {
 		parts = append(parts, humanDuration(d))
 		hasSubstantive = true
 	}
-	// Round to kbps; a sub-1-kbps average (a truncated file's collapsed bitrate)
-	// would print as a misleading "0 kbps", so it is omitted instead. Gate on a
-	// non-zero duration too: a header-only file (empty.wav, zero samples) has a
-	// header-derived rate * channels * depth bitrate that is meaningless over zero playtime -
-	// an average bitrate is undefined there - so the truthful header facts (codec,
-	// rate, channels, depth) stay while the bogus "705 kbps" is dropped.
+	// Omit sub-1 kbps (would round to 0) and zero-duration files (header bitrate is meaningless).
 	if t.Bitrate >= 1000 && p.Duration() > 0 {
 		parts = append(parts, fmt.Sprintf("%d kbps", t.Bitrate/1000))
 		hasSubstantive = true
 	}
-	// The decoder applies the header gain, so a non-zero one changes how the file sounds.
 	if t.OutputGain != 0 {
 		parts = append(parts, "gain "+wl.OutputGainDB(t.OutputGain))
 		hasSubstantive = true
@@ -163,17 +118,8 @@ func audioLine(p wl.Properties) string {
 	return strings.Join(parts, ", ")
 }
 
-// bitDepthMeaningful reports whether codec stores samples at a fixed width, the only case
-// where a "bits per sample" figure describes the audio. The lossy/perceptual codecs decode
-// to PCM at the decoder's chosen depth, so a container-stored one (the 16 MP4 writes for
-// AAC, the one a lossy WMA's WAVEFORMATEX carries) is noise. WMA Lossless is not among
-// them: it does decode at a stored width.
-//
-// A blacklist of the small, stable lossy set rather than a whitelist of the open-ended
-// lossless one, so the long tail that does report a real depth (A-law/mu-law, ADPCM, FLAC,
-// ALAC, WavPack, TTA, MLP, ...) keeps it. DTS is deliberately absent: its DTS-HD Master
-// Audio variant is lossless under the same name. codec is the canonical name, so AAC's
-// object-type spellings have already collapsed to "AAC".
+// bitDepthMeaningful is true when bits-per-sample describes stored samples (not lossy decode depth).
+// Blacklist the small lossy set; DTS omitted because DTS-HD Master is lossless under the same name.
 func bitDepthMeaningful(codec string) bool {
 	switch strings.ToUpper(codec) {
 	case "AAC", "MP1", "MP2", "MP3", "OPUS", "VORBIS", "AC-3", "E-AC-3", "MPC", "MUSEPACK",
@@ -183,16 +129,11 @@ func bitDepthMeaningful(codec string) bool {
 	return true
 }
 
-// keyColumn caps the alignment width so one very long key does not push every
-// value far to the right.
+// keyColumn caps tag key column width.
 const keyColumn = 24
 
-// dupOrConflict classifies a known single-valued key holding several values. If
-// the values fold to the same string, the rows are duplicates; lint reports only
-// single-valued-multi for that case, so dump marks them "(duplicate)" and keeps
-// them out of the conflict count. Differing values are marked "(conflict)" and
-// counted. The marker includes its leading two-space pad so callers can append it
-// directly.
+// dupOrConflict labels duplicate vs conflicting values on a single-valued key (matches lint).
+// Marker includes leading two spaces for direct append.
 func dupOrConflict(k tag.Key, vals []string) (marker string, conflict bool) {
 	switch cardinalityState(k, vals) {
 	case "duplicate":
@@ -203,8 +144,7 @@ func dupOrConflict(k tag.Key, vals []string) (marker string, conflict bool) {
 	return "", false
 }
 
-// cardinalityState classifies the extra values on a single-valued key. Human and JSON
-// dumps both use this helper so their duplicate/conflict markers stay in sync.
+// cardinalityState classifies duplicate vs conflict on a single-valued key (shared by text and JSON).
 func cardinalityState(k tag.Key, vals []string) string {
 	if !k.SingleValuedMulti(len(vals)) {
 		return ""
@@ -215,23 +155,14 @@ func cardinalityState(k tag.Key, vals []string) string {
 	return "conflict"
 }
 
-// renderTags prints the canonical tag set, one value per line with the key
-// repeated for multi-valued fields, preserving the set's order.
+// renderTags prints tags: one value per line, key repeated for multi-valued fields.
 func renderTags(w io.Writer, ts tag.TagSet) {
 	if ts.Len() == 0 {
 		fmt.Fprintln(w, "  tags:    (none)")
 		return
 	}
-	// "key"/"keys" makes explicit that the count is of distinct keys, not values:
-	// the layout prints one value per line (the key repeated for a multi-valued
-	// field), matching the JSON shape (keyed by distinct key, values under "values").
+	// Header counts distinct keys; conflict count includes extra "(conflict)" rows below.
 	n := ts.Len()
-	// One pass over the keys computes both the alignment width and the conflict count
-	// (a known single-valued key holding several differing values prints extra
-	// "(conflict)" rows below, so the header would otherwise undercount the visible
-	// conflicts). Identical duplicate values are marked "(duplicate)" instead and are
-	// excluded here by the same classifier used for each row. ValueCount keeps the
-	// common single-value key from cloning its slice for the distinct check.
 	width, conflicts := 0, 0
 	for _, k := range ts.Keys() {
 		if len(k) > width {
@@ -253,36 +184,22 @@ func renderTags(w io.Writer, ts tag.TagSet) {
 		fmt.Fprintf(w, ", %d in conflict", conflicts)
 	}
 	fmt.Fprintln(w, "):")
-	// Values print in the column after the key (4-space indent + key width + 2);
-	// continuation lines of a prose key's multi-line value align there too.
 	valueCol := 4 + width + 2
 	for k, vals := range ts.All() {
-		// A key is validated printable ASCII, but sanitize defensively so a hostile
-		// key from a malformed file cannot inject control bytes - or, via an embedded
-		// newline, forge a fake tag line - into the listing. SanitizeLine (not
-		// SanitizeText) because a key is single-line: it also escapes \n/\t.
+		// Defensive sanitize: hostile keys could forge tag lines (SanitizeLine for single-line keys).
 		ks := tag.SanitizeLine(string(k))
 		if len(vals) == 0 {
 			fmt.Fprintf(w, "    %-*s  (present, no value)\n", width, ks)
 			continue
 		}
-		// A known single-valued key holding several values is the
-		// [conflicting-families] merge surfacing as repeated rows. Differing values
-		// are a "(conflict)"; identical ones are a harmless "(duplicate)", matching
-		// the distinction lint draws.
 		suffix, _ := dupOrConflict(k, vals)
 		for _, v := range vals {
 			fmt.Fprintf(w, "    %-*s  ", width, ks)
-			// A present-but-empty value is distinct from a key with no values at all
-			// ("(present, no value)" above); label it so it does not print as a blank.
 			if v == "" {
 				fmt.Fprintln(w, "(empty value)"+suffix)
 				continue
 			}
-			// Elide a pathologically long value (a 100k-char comment) so it cannot flood
-			// the terminal; --json/--dump structured output keeps the exact bytes. The
-			// shared tag.ElideValue keeps the dump and the plan/diff change previews on one
-			// threshold and hint format.
+			// Elide huge values for terminal output; JSON keeps full bytes (shared tag.ElideValue).
 			if proseKeys[k] {
 				writeWrappedSuffix(w, valueCol, tag.ElideValue(v), suffix)
 				continue
@@ -292,36 +209,23 @@ func renderTags(w io.Writer, ts tag.TagSet) {
 	}
 }
 
-// proseKeys hold free text where a line break is content; every other value prints on one
-// line with the break escaped, so a file-controlled value cannot forge a row.
+// proseKeys are multi-line text fields; other values print on one escaped line.
 var proseKeys = map[tag.Key]bool{tag.Lyrics: true, tag.Comment: true, tag.Description: true, tag.LongDescription: true}
 
-// writeWrapped prints value followed by a newline, indenting every line after an
-// embedded newline to col so a multi-line value stays aligned under its first
-// line instead of falling back to column 0. It is [writeWrappedSuffix] with no
-// suffix.
+// writeWrapped prints a multi-line value with continuation lines indented to col.
 func writeWrapped(w io.Writer, col int, value string) {
 	writeWrappedSuffix(w, col, value, "")
 }
 
-// writeWrappedSuffix is [writeWrapped] that appends suffix to the first rendered
-// line only, so a row can be flagged (e.g. a single-valued conflict's "(conflict)"
-// marker) without disturbing the alignment of a multi-line value's continuation
-// lines. suffix is a fixed, non-file-derived label, so it is appended after the
-// per-line sanitize rather than through it.
+// writeWrappedSuffix is writeWrapped with suffix on the first line only (fixed label, not sanitized).
 func writeWrappedSuffix(w io.Writer, col int, value, suffix string) {
 	indent := strings.Repeat(" ", col)
 	lines := strings.Split(value, "\n")
-	// A trailing newline yields a final empty element; drop it so it does not
-	// print as a stray indent-only line. Internal blank lines are preserved.
+	// Drop trailing empty element from a final newline; keep internal blank lines.
 	if n := len(lines); n > 1 && lines[n-1] == "" {
 		lines = lines[:n-1]
 	}
 	for i, line := range lines {
-		// Trim a trailing CR (from a CRLF split) first, then escape any control
-		// bytes that survive - an embedded mid-line CR/ESC/BEL, the actual
-		// injection vector. Legitimate tabs and the line break (owned by the split
-		// above) are preserved.
 		line = tag.SanitizeText(strings.TrimSuffix(line, "\r"))
 		if i == 0 {
 			line += suffix
@@ -332,10 +236,7 @@ func writeWrappedSuffix(w io.Writer, col int, value, suffix string) {
 	}
 }
 
-// sanitizeJoin escapes each value for a single-line display (via [tag.SanitizeLine])
-// and joins them with sep, so a multi-value field built from untrusted file bytes
-// can neither inject control sequences nor - via an embedded newline - forge a line
-// in the joined row.
+// sanitizeJoin escapes values and joins with sep for safe single-line display.
 func sanitizeJoin(vals []string, sep string) string {
 	out := make([]string, len(vals))
 	for i, v := range vals {
@@ -344,22 +245,13 @@ func sanitizeJoin(vals []string, sep string) string {
 	return strings.Join(out, sep)
 }
 
-// pictureRow formats one picture's columns - type, MIME, dimensions ("WxH" or "--"
-// when unknown), and size - as a single line with no leading indent or trailing
-// newline. It is shared by the dump picture listing and the plan's added-picture
-// detail (C4a) so the two column layouts cannot drift. p.Type is an enum (safe) and
-// p.MIME is file-derived text; both are single-line columns escaped via SanitizeLine
-// (which also escapes \n/\t, so neither can break the layout or forge a line).
+// pictureRow formats type, MIME, dimensions, and size on one line (shared by dump and plan C4a).
 func pictureRow(p wl.Picture) string {
-	// Unknown dimensions read as "--", the same placeholder the rest of the tool uses
-	// for an absent value, rather than a lone "?".
 	dim := "--"
 	if p.Width > 0 && p.Height > 0 {
 		dim = fmt.Sprintf("%dx%d", p.Width, p.Height)
 	}
-	// Depth/colors ride the trailing free-form size column rather than a new fixed column, so
-	// the shared "%-12s %-22s %-9s %s" width (dump listing and plan's added-picture detail)
-	// stays intact. Colors is shown only for an indexed image (non-zero palette).
+	// Depth/colors append to size column; colors only for indexed images.
 	size := wl.HumanBytes(int64(len(p.Data)))
 	if p.Depth > 0 {
 		if p.Colors > 0 {
@@ -371,9 +263,7 @@ func pictureRow(p wl.Picture) string {
 	return fmt.Sprintf("%-12s %-22s %-9s %s", tag.SanitizeLine(p.Type.String()), tag.SanitizeLine(p.MIME), dim, size)
 }
 
-// renderPictures prints one line per embedded picture, numbered 1-based so the index
-// --remove-picture accepts is visible (the rows are in doc.Pictures() order, which is
-// what the index selects against).
+// renderPictures lists pictures 1-based (matches --remove-picture index and doc.Pictures order).
 func renderPictures(w io.Writer, pics []wl.Picture) {
 	if len(pics) == 0 {
 		return
@@ -382,9 +272,7 @@ func renderPictures(w io.Writer, pics []wl.Picture) {
 	for i, p := range pics {
 		fmt.Fprintf(w, "    %d. %s\n", i+1, pictureRow(p))
 		if p.Description != "" {
-			// p.Description prints via %q, which independently escapes control chars,
-			// \n/\t, invalid UTF-8, and DEL/C1 - meeting both safety tiers - so it is not
-			// run through SanitizeLine too (that would double-escape).
+			// %q escapes description; do not SanitizeLine (would double-escape).
 			fmt.Fprintf(w, "       %q\n", p.Description)
 		}
 	}
@@ -397,15 +285,8 @@ func renderChapters(w io.Writer, chs []wl.Chapter) {
 	}
 	fmt.Fprintf(w, "  chapters (%d):\n", len(chs))
 	for _, c := range chs {
-		// A chapter title is file-derived and rendered on a single line, so escape via
-		// SanitizeLine (escapes \n/\t too, so a title cannot forge a chapter line).
 		title := tag.SanitizeLine(c.Title)
-		// An untitled chapter shows an explicit "(untitled)" marker rather than a
-		// fabricated "Chapter N": the JSON view omits the title entirely (omitempty), so
-		// inventing a positional title here would make the human and machine views
-		// disagree and read as if the file carried a real title it does not. The marker
-		// matches the parenthetical-placeholder convention used elsewhere (e.g. "(empty
-		// value)").
+		// JSON omits empty titles; use "(untitled)" rather than inventing "Chapter N".
 		if title == "" {
 			title = "(untitled)"
 		}
@@ -413,11 +294,7 @@ func renderChapters(w io.Writer, chs []wl.Chapter) {
 	}
 }
 
-// chapterAnnotations renders the trailing per-chapter notes for the text listing: the
-// title language (the ISO-639-2 ChapLanguage, or the BCP-47 ChapLanguageIETF when only it
-// is set) and the hidden/disabled state. It returns "" for a plain visible enabled chapter
-// in an unspecified language, so the common case stays uncluttered. The language is
-// file-derived, so it is run through SanitizeLine like the title.
+// chapterAnnotations adds [lang: …], (hidden), and (disabled) suffixes; "" for the common case.
 func chapterAnnotations(c wl.Chapter) string {
 	var b strings.Builder
 	if lang := cmp.Or(c.Language, c.LanguageIETF); lang != "" {
@@ -432,17 +309,12 @@ func chapterAnnotations(c wl.Chapter) string {
 	return b.String()
 }
 
-// renderSyncedLyrics prints the timed (synchronized) lyric sets: a count header, then,
-// per set, an optional [lang/desc] marker followed by one timestamped line each. The
-// line timestamp uses the same H:MM:SS.mmm format as chapters, so a synced-lyric line and
-// a chapter at the same instant read identically.
+// renderSyncedLyrics prints synced lyric sets; timestamps match chapter format.
 func renderSyncedLyrics(w io.Writer, sets []wl.SyncedLyrics) {
 	if len(sets) == 0 {
 		return
 	}
-	// Count both sets and the total timed lines. The bare "(N)" the picture and chapter
-	// headers use would read as N lines here, but N is the number of sets, so name both
-	// quantities to remove that ambiguity.
+	// Header names both set count and line count (bare N would read as lines).
 	lines := 0
 	for _, sl := range sets {
 		lines += len(sl.Lines)
@@ -458,11 +330,7 @@ func renderSyncedLyrics(w io.Writer, sets []wl.SyncedLyrics) {
 	}
 }
 
-// pluralUnit formats a count with its unit, adding an "s" for anything but 1 ("1 set",
-// "5 lines", "1 key"). It is the shared count-with-noun rule for the dump headers that name
-// their unit: the tags header ("N key(s)") and the synced-lyrics header, which counts two
-// nested quantities (sets and their total lines) rather than the single bare "(N)" the
-// picture and chapter headers show.
+// pluralUnit formats "1 key" vs "5 keys" for dump headers that name their unit.
 func pluralUnit(n int, unit string) string {
 	if n == 1 {
 		return fmt.Sprintf("1 %s", unit)
@@ -470,10 +338,7 @@ func pluralUnit(n int, unit string) string {
 	return fmt.Sprintf("%d %ss", n, unit)
 }
 
-// syncedLyricsHeader renders a set's marker line: its language and descriptor, plus a
-// "set N" label when more than one set is present. Both text fields can come from the
-// file, so they are sanitized for one-line terminal output. The common single, unlabeled
-// set returns "" so the lyric lines render without extra clutter.
+// syncedLyricsHeader renders [lang/desc] and optional "set N"; "" for a single unlabeled set.
 func syncedLyricsHeader(sl wl.SyncedLyrics, idx, total int) string {
 	var notes []string
 	if sl.Language != "" {
@@ -499,8 +364,7 @@ func syncedLyricsHeader(sl wl.SyncedLyrics, idx, total int) string {
 	return joined
 }
 
-// syncedLineText renders a lyric line's text, marking an empty-text clear marker
-// "(blank)" so it is visible (matching how renderChapters marks an untitled chapter).
+// syncedLineText renders lyric text; empty becomes "(blank)".
 func syncedLineText(s string) string {
 	if t := tag.SanitizeLine(s); t != "" {
 		return t
@@ -515,9 +379,6 @@ func renderWarnings(w io.Writer, ws []wl.Warning) {
 	}
 	fmt.Fprintf(w, "  warnings (%d):\n", len(ws))
 	for _, x := range ws {
-		// A warning message can embed a file-derived snippet, but Warning.String now
-		// self-sanitizes, so it is safe to print directly (the output boundary is a
-		// second backstop).
 		fmt.Fprintf(w, "    %s\n", x.String())
 	}
 }
@@ -528,9 +389,6 @@ func renderNative(w io.Writer, doc *wl.Document) {
 		if entries := nd.Describe(); len(entries) > 0 {
 			fmt.Fprintf(w, "  native blocks (%d):\n", len(entries))
 			for _, e := range entries {
-				// Both Kind and Note are file-controlled for some formats (a Matroska
-				// segment title, attachment name/MIME, or native SimpleTag value), and
-				// each is one single-line column, so escape via SanitizeLine.
 				note := ""
 				if e.Note != "" {
 					note = "  - " + tag.SanitizeLine(e.Note)
@@ -540,10 +398,6 @@ func renderNative(w io.Writer, doc *wl.Document) {
 		}
 	}
 	if fams := doc.Families(); len(fams) > 0 {
-		// "families" matches the JSON `family` field and the keys/caps vocabulary;
-		// the caption says what the block is so the key/family/value columns are not bare
-		// jargon. Each row is one native field's contribution to a canonical key;
-		// "(conflict)" marks a value the projection did not select.
 		fmt.Fprintf(w, "  families (%d):\n", len(fams))
 		fmt.Fprintln(w, "    (provenance of tag values across containers)")
 		for _, f := range fams {
@@ -551,19 +405,12 @@ func renderNative(w io.Writer, doc *wl.Document) {
 			if !f.Selected {
 				flag = "  (conflict)"
 			}
-			// f.Family is an enum (safe); f.Key and f.Values are file-derived, so escape
-			// them. Both the key and the joined values are single-line, so SanitizeLine
-			// (via sanitizeJoin) escapes \n/\t as well as the terminal-hijack class.
 			fmt.Fprintf(w, "    %-20s %-8s %s%s\n", tag.SanitizeLine(string(f.Key)), f.Family, sanitizeJoin(f.Values, ", "), flag)
 		}
 	}
 }
 
-// nativeSize formats a native block entry's size column. A unit-bearing entry is a
-// count (pages, tags, chapters), shown as "N unit"; a zero-size entry with no unit
-// has no meaningful size (an EBML header, an MP4 QuickTime chapter track), shown
-// blank; everything else is a byte count humanized via HumanBytes. This is the one
-// place that decides bytes-vs-count, so a count can never be mislabeled "N B".
+// nativeSize formats size as "N unit", bytes, blank, or "0 B" for empty PADDING.
 func nativeSize(e wl.NativeEntry) string {
 	switch {
 	case e.Unit != "":
@@ -571,30 +418,18 @@ func nativeSize(e wl.NativeEntry) string {
 	case e.Size > 0:
 		return wl.HumanBytes(int64(e.Size))
 	case e.Kind == "PADDING":
-		// An empty (zero-length) PADDING block is a real byte-sized block, so show "0 B" rather
-		// than blank; other zero-size entries (an EBML header, an MP4 QuickTime chapter track) are
-		// structural and have no meaningful byte size, so they stay blank.
 		return "0 B"
 	default:
 		return ""
 	}
 }
 
-// renderReport prints a write plan: its operations, size change, padding, and
-// warnings. A no-op plan reports that the file is already up to date. addedPics are
-// the pictures this edit adds (ce.addPics); they are listed under a picture-count
-// change so an added cover is not opaque (C4a). copy passes nil (its transfer report
-// already details the carried pictures).
+// renderReport prints a write plan. addedPics detail picture adds under the count change (C4a).
 func renderReport(w io.Writer, path string, plan *wl.Plan, addedPics []wl.Picture) {
 	r := plan.Report()
 	name := displayName(path)
 	if plan.IsNoOp() {
-		// A no-op can still carry a warning the user must see - an edit whose only effect
-		// was a value the format could not store (value-dropped) leaves the bytes
-		// unchanged yet is not what the user asked for. Surface it rather than hide it
-		// behind "no changes", and when the warning is a discard say so in the headline:
-		// "already up to date" would claim the file holds what was asked for. The predicate
-		// is the library's, shared with Plan.String, so the two lines cannot drift.
+		// No-op may still warn (e.g. value dropped); headline matches Plan.String via HasDiscardWarning.
 		fmt.Fprintf(w, "%s: %s\n", name, wl.NoChangesLine(wl.HasDiscardWarning(r.Warnings)))
 		for _, x := range r.Warnings {
 			fmt.Fprintf(w, "  warning: %s\n", x.String())
@@ -603,11 +438,7 @@ func renderReport(w io.Writer, path string, plan *wl.Plan, addedPics []wl.Pictur
 	}
 	fmt.Fprintf(w, "%s: plan\n", name)
 	renderChanges(w, plan.Changes(), addedPics)
-	// Operations get their own heading and a glyph-free indent so a write step (e.g.
-	// "pictures: 1 block(s)") never reuses the leading "-" that means a removed key in
-	// the changes block above - the two lists sit adjacent, so a shared dash blurs an
-	// operation into a removal. This mirrors the "changes:" block's heading +
-	// indented items.
+	// Separate "operations:" heading so "-" removals above are not confused with operation lines.
 	fmt.Fprintln(w, "  operations:")
 	if len(r.Operations) == 0 {
 		fmt.Fprintln(w, "    rewrite metadata")
@@ -617,49 +448,29 @@ func renderReport(w io.Writer, path string, plan *wl.Plan, addedPics []wl.Pictur
 	}
 	fmt.Fprintf(w, "  size:    %s -> %s\n", wl.HumanBytes(r.BytesBefore), wl.HumanBytes(r.BytesAfter))
 	if r.PaddingAfter > 0 {
-		// Surface the control alongside the value so the padding is discoverable
-		// (the default is the deliberate 8 KiB FLAC-ecosystem convention).
 		fmt.Fprintf(w, "  padding: %s  (--padding N / --no-padding to change)\n", wl.HumanBytes(r.PaddingAfter))
 	} else if wl.CapabilitiesFor(r.Format).Padding != wl.AccessNone {
-		// Positive confirmation that no padding will be written - but only for a format
-		// that has a padding concept. WAV/AIFF/Matroska report 0 and Ogg reports only the
-		// comment padding it round-trips, none of which the user can control, so a
-		// "padding: none" line there would contradict the "padding control does not
-		// apply to %s" note those formats emit.
+		// Only for formats with user-controllable padding (WAV/Ogg/etc. would contradict their note).
 		fmt.Fprintln(w, "  padding: none")
 	}
 	for _, x := range r.Warnings {
-		// Warning.String self-sanitizes, and the output boundary backstops it, so a
-		// warning that embeds a file-derived snippet is still safe.
 		fmt.Fprintf(w, "  warning: %s\n", x.String())
 	}
 }
 
-// picturesCountKey and chaptersCountKey are the lowercase pseudo-keys the library's
-// plan uses for the picture-set and chapter-set count changes (see countChange in
-// plan.go); lowercase so they can never collide with a canonical (uppercase) key. The
-// CLI keys its added-picture detail off picturesCountKey, and the JSON path keys the
-// integer-count rendering off both.
+// Lowercase pseudo-keys for set-count changes (see countChange in plan.go); avoid canonical key collision.
 const (
 	picturesCountKey     = "pictures"
 	chaptersCountKey     = "chapters"
 	syncedLyricsCountKey = "synced lyrics"
 )
 
-// isCountChange reports whether c keys a synthetic picture/chapter/synced-lyrics set-count
-// change (the lowercase pseudo-keys countChange emits) rather than a canonical tag change,
-// so the JSON path emits its integer Count instead of the stringified Old/New.
+// isCountChange is true for synthetic set-count keys (JSON emits integer Count, not Old/New strings).
 func isCountChange(k tag.Key) bool {
 	return k == picturesCountKey || k == chaptersCountKey || k == syncedLyricsCountKey
 }
 
-// renderChanges prints the field-level change preview (which keys are added,
-// removed, or changed) under a "changes:" heading, reusing the diff markers. It
-// prints nothing when the plan changes no fields, so a picture-only or
-// container-only rewrite shows just its operations. Under a picture add or swap it
-// lists each added picture's type/MIME/size (addedPics) so a "+ pictures: 1" - or a
-// --force'd application/octet-stream cover - is not opaque (C4a); the machine view
-// (jsonReport) keeps the bare count, so JSON consumers read picture detail from dump.
+// renderChanges prints field diffs; lists addedPics under picture count changes (C4a).
 func renderChanges(w io.Writer, changes []tag.Change, addedPics []wl.Picture) {
 	if len(changes) == 0 {
 		return

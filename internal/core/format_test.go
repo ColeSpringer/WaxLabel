@@ -2,9 +2,7 @@ package core
 
 import "testing"
 
-// TestDefaultID3Version pins the one-rule policy: MP3 (read directly by legacy
-// hardware) defaults a fresh id3 tag to v2.3; every other id3-bearing format is
-// read only by modern software and defaults to v2.4.
+// TestDefaultID3Version: MP3 defaults to v2.3; other id3 formats to v2.4.
 func TestDefaultID3Version(t *testing.T) {
 	cases := map[Format]byte{
 		FormatMP3:  3,

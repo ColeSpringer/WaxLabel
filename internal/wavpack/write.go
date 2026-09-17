@@ -8,14 +8,8 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// Plan computes the byte-level rewrite that turns the original file into the edited
-// media. It is preservation-first: the WavPack blocks are copied verbatim and only
-// the tail is rebuilt - the APEv2 tag from the edited model (unknown and non-text
-// items kept, with their flags), then any legacy ID3v1 exactly as it was found.
-//
-// The write itself is [ape.PlanTrailingWrite], shared with the other containers whose
-// metadata is a trailing APEv2 tag; only the post-write document is built here, since
-// the native type is this package's.
+// Plan rebuilds the trailing APEv2 (and keeps ID3v1) while copying blocks verbatim.
+// Delegates to [ape.PlanTrailingWrite]; only the post-write doc is built here.
 func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.WriteOptions) (*core.WritePlan, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -30,9 +24,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	})
 }
 
-// buildResult constructs the post-write Media so the engine can return a Document
-// without re-parsing. The items actually written are re-projected, so the result
-// equals a fresh parse of the output bytes.
+// buildResult builds post-write Media without re-parsing (re-projects written items).
 func buildResult(edited *core.Media, base *doc, tp ape.TrailerPlan, newSize int64) *core.Media {
 	nd := &doc{
 		trailer: tp.Result(base.trailer.Start, base.trailer),

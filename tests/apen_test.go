@@ -40,8 +40,6 @@ func TestMonkeysAudioParse(t *testing.T) {
 	}
 }
 
-// TestMonkeysAudioRoundTripPreservesEssence: editing tags must not disturb the
-// compressed frames, and the values must read back.
 func TestMonkeysAudioRoundTripPreservesEssence(t *testing.T) {
 	src := readFixture(t, sampleAPE)
 	before := essenceOf(t, src)
@@ -71,7 +69,6 @@ func TestMonkeysAudioRoundTripPreservesEssence(t *testing.T) {
 	}
 }
 
-// TestMonkeysAudioTagCreated: a file with no APEv2 tag gains one on the first edit.
 func TestMonkeysAudioTagCreated(t *testing.T) {
 	src := readFixture(t, notagsAPE)
 	doc := mustParseBytes(t, src)
@@ -142,9 +139,8 @@ func legacyAPEHeader(version uint16, compressionLevel, formatFlags, channels uin
 	return b
 }
 
-// TestMonkeysAudioLegacyHeader covers the pre-3.98 layout: the geometry comes from
-// the inline fields, and the frame size from the version, so the sample count is
-// (frames-1)*blocksPerFrame + finalFrameBlocks.
+// pre-3.98 layout: the geometry comes from the inline fields, and the frame size from the version,
+// so the sample count is (frames-1)*blocksPerFrame + finalFrameBlocks.
 func TestMonkeysAudioLegacyHeader(t *testing.T) {
 	for _, c := range []struct {
 		name    string
@@ -174,8 +170,7 @@ func TestMonkeysAudioLegacyHeader(t *testing.T) {
 	}
 }
 
-// TestMonkeysAudioLegacyBitDepthFlags: before 3.98 the bit depth is encoded in the
-// format flags rather than stored.
+// before 3.98 the bit depth is encoded in the format flags rather than stored.
 func TestMonkeysAudioLegacyBitDepthFlags(t *testing.T) {
 	for _, c := range []struct {
 		flags uint16
@@ -188,8 +183,6 @@ func TestMonkeysAudioLegacyBitDepthFlags(t *testing.T) {
 	}
 }
 
-// TestMonkeysAudioAncientVersionRefused: below 3.8 the header is a different layout
-// and is refused by name rather than misread.
 func TestMonkeysAudioAncientVersionRefused(t *testing.T) {
 	data := append(legacyAPEHeader(3320, 2000, 0, 2, 44100, 1, 100), make([]byte, 64)...)
 	_, err := wl.Parse(context.Background(), wl.BytesSource(data))
@@ -205,9 +198,8 @@ func TestMonkeysAudioTruncatedHeaderRejected(t *testing.T) {
 	}
 }
 
-// TestMonkeysAudioDifferentialFFprobeReadsOurTags is the independent read-back
-// proof. ffmpeg cannot encode Monkey's Audio, but its decoder reads the container
-// and its APEv2 trailer, so ffprobe still serves as the oracle.
+// independent read-back proof. ffmpeg cannot encode Monkey's Audio, but its decoder reads the
+// container and its APEv2 trailer, so ffprobe still serves as the oracle.
 func TestMonkeysAudioDifferentialFFprobeReadsOurTags(t *testing.T) {
 	requireTool(t, "ffprobe")
 	path := copyToTemp(t, sampleAPE)

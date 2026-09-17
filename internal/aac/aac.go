@@ -1,18 +1,14 @@
 // Package aac implements reading and writing raw-AAC (ADTS) metadata for the
 // public waxlabel package. The codec itself is internal. A raw-AAC file is an
-// optional front ID3v2 tag (decoded by internal/id3, the same authoritative
-// container MP3 uses) followed by a bare sequence of ADTS frames, with no MPEG
-// framing layer and no trailing legacy containers. The ID3v2 tag is the sole
-// writable store; the audio is copied verbatim.
+// optional front ID3v2 tag (via internal/id3, same store as MP3) followed by ADTS
+// frames. The ID3v2 tag is the sole writable store; audio is copied verbatim.
 //
-// The first ADTS frame header gives the stream configuration (object type, sample
-// rate, channels). ADTS carries no frame-count header, so an accurate duration and
-// average bitrate come from a bounded walk of the frame headers - advancing by each
-// frame_length to sum the sample count, reading only headers and never the essence
-// payloads (see parse.go).
+// The first ADTS header gives stream config (object type, sample rate, channels).
+// ADTS has no frame-count header, so duration and average bitrate come from a
+// bounded walk of frame headers (see parse.go).
 //
-// The codec is reimplemented from the MPEG-2/4 AAC ADTS and ID3 specifications;
-// reference implementations were consulted for design only.
+// Reimplemented from the MPEG-2/4 AAC ADTS and ID3 specs; reference
+// implementations were consulted for design only.
 package aac
 
 import (
@@ -32,19 +28,15 @@ func init() { core.Register(New()) }
 
 func (Codec) Format() core.Format { return core.FormatAAC }
 
-// Extensions claims ".adts" alongside ".aac": ADTS is the byte framing this format
-// is, and the extension is common enough that a --recursive walk skipping it is a
-// bug rather than a nicety.
+// Extensions claims ".adts" alongside ".aac" so recursive walks do not skip ADTS files.
 func (Codec) Extensions() []string { return []string{".aac", ".adts"} }
 
-// SkipsLeadingID3 reports true because raw AAC commonly carries a leading ID3v2 tag.
+// SkipsLeadingID3 reports true: raw AAC often has a leading ID3v2 tag.
 func (Codec) SkipsLeadingID3() bool { return true }
 
-// Sniff matches a raw ADTS stream by a valid ADTS frame header at the start. A
-// front ID3v2 tag is intentionally not sniffed here: that header is claimed by
-// MP3, and the root parser disambiguates a leading ID3 by peeking past the tag
-// (detectPastLeadingID3), where this codec's ADTS recognizer then wins for an
-// ID3-prefixed.aac. Sniffing ID3 here too would just create a redundant tie.
+// Sniff matches a valid ADTS frame header at offset 0. Leading ID3 is not sniffed
+// here (MP3 claims that header); the root parser peeks past ID3 via
+// detectPastLeadingID3, where this recognizer wins for ID3-prefixed .aac.
 func (Codec) Sniff(header []byte) bool {
 	_, ok := decodeADTS(header)
 	return ok
@@ -55,10 +47,8 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 	return parse(ctx, src, opts)
 }
 
-// Capabilities reports AAC's support. Tags and art live in the front ID3v2 tag
-// and are fully writable, identical to MP3's ID3-backed story; the version is
-// preserved on edit. AAC has no secondary tag container, so there are no legacy
-// conflicts to surface.
+// Capabilities reports AAC support. Tags and art live in the front ID3v2 tag
+// (writable, version preserved). No secondary tag container.
 func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
@@ -73,32 +63,26 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 		Representation: "ID3v2 CHAP/CTOC frames",
 		Fidelity:       "start, end, and title stored; per-chapter language and hidden/disabled flags dropped",
 		Constraints:    []string{"chapter start/end limited to a 32-bit millisecond field (~49.7 days)"},
-		MaxItems:       255, // the CTOC entry count is a single byte
+		MaxItems:       255, // CTOC entry count is one byte
 		ChapterLoss:    core.ChapterLossLangFlags,
 	}
-	// AAC's front ID3 tag is the only tag store, so numeric genre and v2.3 original-date
-	// reductions follow the shared ID3 capability rules.
+	// Numeric genre and v2.3 original-date reductions follow shared ID3 rules.
 	perField := id3.PerFieldCapabilities(id3.WriteVersionFor(m, core.FormatAAC), opts.NumericGenre, true)
-	// ID3 front-tag padding is grow-only (ReuseOrTarget), identical to MP3: a forced
-	// rewrite can grow the region, but a fit-in-place edit cannot shrink it.
+	// Front-tag padding is grow-only (ReuseOrTarget), same as MP3.
 	return core.NewCapabilities(core.FormatAAC, false, fields, pictures, chapters, core.AccessPartial, perField).
 		WithSyncedLyrics(id3.SyncedLyricsCapability()).
 		WithFieldClassifier(id3.TransferClassifier)
 }
 
-// ID3Tag returns the parsed front ID3 tag, or nil when the file has none.
+// ID3Tag returns the parsed front ID3 tag, or nil when absent.
 func (d *doc) ID3Tag() *id3.Tag { return d.id3 }
 
-// EssenceExtent returns the AAC essence-digest inputs: a versioned extent name
-// and the decoded static stream configuration - object type, sampling-frequency
-// index, and channel configuration - mixed into the hash ahead of the audio.
+// EssenceExtent returns the AAC essence-digest inputs: versioned extent name and
+// decoded static config (object type, sampling-frequency index, channel config).
 //
-// It hashes the decoded static fields, not the raw first-header bytes, on
-// purpose: bytes 3-5 of an ADTS header carry the per-frame frame_length, so two
-// otherwise-identical streams whose first frame happens to differ in length
-// would hash differently if the raw header were used. The static config bits are
-// exact and need no decode (the same principle as AIFF hashing the COMM rate
-// bytes rather than the decoded float).
+// Hashes decoded fields, not raw first-header bytes: bytes 3-5 carry per-frame
+// frame_length, so otherwise-identical streams would diverge. Same idea as AIFF
+// hashing COMM rate bytes rather than the decoded float.
 func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 	var cfg [3]byte
 	if d, ok := m.Native.(*doc); ok && d != nil {

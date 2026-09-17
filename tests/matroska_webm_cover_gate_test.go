@@ -20,9 +20,9 @@ func webmWithCover() []byte {
 	return buildMatroska("webm", "WebM Dst", cover)
 }
 
-// TestWebMCoverClearGate: clearing the cover a WebM file carries is refused, or under
-// the drop option dropped with a warning that says the file keeps its cover, rather
-// than reaching the writer; re-setting the file's own cover plans no change.
+// clearing the cover a WebM file carries is refused, or under the drop option dropped with a
+// warning that says the file keeps its cover, rather than reaching the writer; re-setting the
+// file's own cover plans no change.
 func TestWebMCoverClearGate(t *testing.T) {
 	src := webmWithCover()
 	doc := mustParseBytes(t, src)

@@ -13,9 +13,8 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestOpusSetOutputGainRoundTrip: an output-gain edit patches the OpusHead alone. Only the
-// first page changes, the tags survive, and the essence digest is unaffected because the
-// gain is masked out of the hashed configuration.
+// output-gain edit patches the OpusHead alone. Only the first page changes, the tags survive, and
+// the essence digest is unaffected because the gain is masked out of the hashed configuration.
 func TestOpusSetOutputGainRoundTrip(t *testing.T) {
 	src := readFixture(t, sampleOpus)
 	doc := mustParseBytes(t, src)
@@ -71,7 +70,6 @@ func oggPageLen(t *testing.T, b []byte) int {
 	return total
 }
 
-// TestOutputGainSameValueNoOp: setting the gain the file already carries changes nothing.
 func TestOutputGainSameValueNoOp(t *testing.T) {
 	plan, err := mustParseFile(t, sampleOpus).Edit().SetOutputGain(0).Prepare()
 	if err != nil {
@@ -82,8 +80,6 @@ func TestOutputGainSameValueNoOp(t *testing.T) {
 	}
 }
 
-// TestOutputGainRangeRefused: the gain is a signed 16-bit Q7.8 field, so a value outside
-// it cannot be written.
 func TestOutputGainRangeRefused(t *testing.T) {
 	for _, gain := range []int{32768, -32769, 1 << 20} {
 		_, err := mustParseFile(t, sampleOpus).Edit().SetOutputGain(gain).Prepare()
@@ -93,8 +89,8 @@ func TestOutputGainRangeRefused(t *testing.T) {
 	}
 }
 
-// TestOutputGainRefusedOnNonOpus: a format with no output-gain store refuses the edit, or
-// under the drop option applies the rest of the edit and reports the discard.
+// format with no output-gain store refuses the edit, or under the drop option applies the rest of
+// the edit and reports the discard.
 func TestOutputGainRefusedOnNonOpus(t *testing.T) {
 	for _, fixture := range []string{sampleFLAC, sampleMP3, sampleOgg} {
 		t.Run(fixture, func(t *testing.T) {
@@ -128,8 +124,8 @@ func TestOutputGainRefusedOnNonOpus(t *testing.T) {
 	}
 }
 
-// TestOutputGainRefusedOnReadOnly: a file that cannot be written at all refuses with the
-// codec's own reason, never a silent no-op, even under the drop option.
+// file that cannot be written at all refuses with the codec's own reason, never a silent no-op,
+// even under the drop option.
 func TestOutputGainRefusedOnReadOnly(t *testing.T) {
 	for _, opts := range [][]wl.WriteOption{nil, {wl.WithAllowUnsupportedDrop()}} {
 		_, err := mustParseFile(t, sampleWMA).Edit().SetOutputGain(-896).Prepare(opts...)
@@ -143,8 +139,7 @@ func TestOutputGainRefusedOnReadOnly(t *testing.T) {
 	}
 }
 
-// TestOutputGainZeroOnNonOpusIsNoOp: setting the gain a gainless format already reports
-// changes nothing, so it is not refused.
+// setting the gain a gainless format already reports changes nothing, so it is not refused.
 func TestOutputGainZeroOnNonOpusIsNoOp(t *testing.T) {
 	plan, err := mustParseFile(t, sampleFLAC).Edit().SetOutputGain(0).Prepare()
 	if err != nil {
@@ -190,9 +185,8 @@ func r128WarningKeys(warnings []wl.Warning) []tag.Key {
 	return keys
 }
 
-// TestOutputGainRebasesR128Tags: RFC 7845 applies the R128 tags on top of the header gain,
-// so a header change subtracts the same delta from each of them. The loudness a compliant
-// player produces is then unchanged, and there is nothing to warn about.
+// RFC 7845 applies the R128 tags on top of the header gain, so a header change subtracts the same
+// delta from each of them.
 func TestOutputGainRebasesR128Tags(t *testing.T) {
 	withTags := r128Tagged(t, "-896", "-512")
 	plan, err := mustParseBytes(t, withTags).Edit().SetOutputGain(-896).Prepare()
@@ -225,8 +219,8 @@ func TestOutputGainRebasesR128Tags(t *testing.T) {
 	}
 }
 
-// TestOutputGainR128ExplicitOpsWin: a Set or Clear of an R128 key in the same edit is the
-// caller's own intent, which the rebase must not overwrite.
+// Set or Clear of an R128 key in the same edit is the caller's own intent, which the rebase must
+// not overwrite.
 func TestOutputGainR128ExplicitOpsWin(t *testing.T) {
 	withTags := r128Tagged(t, "-896", "-512")
 	plan, err := mustParseBytes(t, withTags).Edit().SetOutputGain(-896).
@@ -246,8 +240,6 @@ func TestOutputGainR128ExplicitOpsWin(t *testing.T) {
 	}
 }
 
-// TestOutputGainR128OnlyEditDoesNotRebase: with no header change there is no delta, so an
-// edit that only touches the tags leaves every other value alone.
 func TestOutputGainR128OnlyEditDoesNotRebase(t *testing.T) {
 	withTags := r128Tagged(t, "-896", "-512")
 	plan, err := mustParseBytes(t, withTags).Edit().Set("R128_TRACK_GAIN", "-100").Prepare()
@@ -263,8 +255,8 @@ func TestOutputGainR128OnlyEditDoesNotRebase(t *testing.T) {
 	}
 }
 
-// TestOutputGainR128MalformedWarns: a value that is not a Q7.8 integer cannot be rebased, so
-// it is kept and advised about. Surrounding whitespace is not malformed - those values trim.
+// value that is not a Q7.8 integer cannot be rebased, so it is kept and advised about. Surrounding
+// whitespace is not malformed; those values trim.
 func TestOutputGainR128MalformedWarns(t *testing.T) {
 	withTags := writeBack(t, sampleOpus, func(e *wl.Editor) {
 		e.Set("R128_TRACK_GAIN", "abc")
@@ -286,11 +278,8 @@ func TestOutputGainR128MalformedWarns(t *testing.T) {
 	}
 }
 
-// TestOutputGainR128RebaseOverflowRefused: the R128 fields are signed 16-bit, so a rebase
-// that would leave the range refuses the edit rather than storing a number the field cannot
-// hold. It is a write refusal, not a corrupt file: the value on disk is legal and the gain
-// edit is legal, so ErrInvalidData (which the CLI renders as "corrupt or violates its
-// format") would be a false report. The message names the way out.
+// R128 fields are signed 16-bit, so a rebase that would leave the range refuses the edit rather
+// than storing a number the field cannot hold.
 func TestOutputGainR128RebaseOverflowRefused(t *testing.T) {
 	withTags := writeBack(t, sampleOpus, func(e *wl.Editor) { e.Set("R128_TRACK_GAIN", "-32000") })
 	_, err := mustParseBytes(t, withTags).Edit().SetOutputGain(3000).Prepare()
@@ -311,8 +300,8 @@ func TestOutputGainR128RebaseOverflowRefused(t *testing.T) {
 	}
 }
 
-// TestOutputGainR128MultiValueIsAtomic: a key is rebased whole or not at all, so the
-// advisory's "not rebased" is true of every value under it rather than half of them.
+// key is rebased whole or not at all, so the advisory's "not rebased" is true of every value under
+// it rather than half of them.
 func TestOutputGainR128MultiValueIsAtomic(t *testing.T) {
 	withTags := writeBack(t, sampleOpus, func(e *wl.Editor) {
 		e.Set("R128_TRACK_GAIN", "-896", "abc", "-512")
@@ -330,7 +319,6 @@ func TestOutputGainR128MultiValueIsAtomic(t *testing.T) {
 	}
 }
 
-// TestOutputGainR128NotRebasedWhenGainDropped: no header moved, so the tags stay put.
 func TestOutputGainR128NotRebasedWhenGainDropped(t *testing.T) {
 	withTags := writeBack(t, "../testdata/sample.mp3", func(e *wl.Editor) {
 		e.Set("R128_TRACK_GAIN", "-896")
@@ -352,8 +340,8 @@ func TestOutputGainR128NotRebasedWhenGainDropped(t *testing.T) {
 	}
 }
 
-// TestOutputGainKeepR128Gains: the opt-out leaves both values as found and says so, for a
-// caller who knows the stored figures are stale.
+// opt-out leaves both values as found and says so, for a caller who knows the stored figures are
+// stale.
 func TestOutputGainKeepR128Gains(t *testing.T) {
 	withTags := r128Tagged(t, "-896", "-512")
 	plan, err := mustParseBytes(t, withTags).Edit().SetOutputGain(-896).Prepare(wl.WithKeepR128Gains())
@@ -380,8 +368,6 @@ func TestOutputGainKeepR128Gains(t *testing.T) {
 	}
 }
 
-// TestOutputGainNotCarriedByTransfer: the gain describes the destination's own audio, so a
-// metadata copy never carries it.
 func TestOutputGainNotCarriedByTransfer(t *testing.T) {
 	srcBytes := writeBack(t, sampleOpus, func(e *wl.Editor) { e.SetOutputGain(-896) })
 	src := mustParseBytes(t, srcBytes)

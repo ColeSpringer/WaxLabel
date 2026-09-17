@@ -1,12 +1,7 @@
 package bits
 
-// Ogg uses a CRC-32 that is *not* the reflected IEEE variant Go's
-// hash/crc32 provides: polynomial 0x04C11DB7, initial value 0, no input or
-// output reflection, and no final XOR (MSB-first). Using crc32.MakeTable here
-// would silently produce wrong checksums, so we build the table ourselves.
-//
-// The table is validated against libogg's published crc_lookup values in tests and
-// lives in the shared bits package because both Ogg Vorbis and Ogg Opus need it.
+// Ogg CRC-32: poly 0x04C11DB7, init 0, MSB-first, no reflection or final XOR.
+// Not Go's hash/crc32. Validated against libogg in tests.
 const oggPoly = 0x04C11DB7
 
 var oggTable = makeOggTable()
@@ -32,8 +27,7 @@ func OggCRC(p []byte) uint32 {
 	return UpdateOggCRC(0, p)
 }
 
-// UpdateOggCRC continues an Ogg CRC over additional bytes, so a page checksum
-// can be computed without concatenating the header and body.
+// UpdateOggCRC continues an Ogg CRC.
 func UpdateOggCRC(crc uint32, p []byte) uint32 {
 	for _, b := range p {
 		crc = (crc << 8) ^ oggTable[byte(crc>>24)^b]
@@ -41,12 +35,8 @@ func UpdateOggCRC(crc uint32, p []byte) uint32 {
 	return crc
 }
 
-// UpdateOggCRCZeros continues an Ogg CRC over n zero bytes without allocating a
-// zero buffer. It is the hot path for CRC "patching": because this CRC has
-// init 0 and no final XOR it is linear (CRC(a^b) == CRC(a)^CRC(b)), so a page
-// whose sequence number changed can have its checksum recomputed as
-// oldCRC ^ CRC(delta-bytes followed by zeros to the page end) - see the Ogg
-// codec's page-renumber path.
+// UpdateOggCRCZeros CRCs n zero bytes without allocation. Linear CRC (init 0, no xorout)
+// supports page checksum patching after sequence renumber.
 func UpdateOggCRCZeros(crc uint32, n int64) uint32 {
 	for ; n > 0; n-- {
 		crc = (crc << 8) ^ oggTable[byte(crc>>24)]

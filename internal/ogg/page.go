@@ -13,8 +13,8 @@ import (
 
 var oggMagic = []byte("OggS")
 
-// Ogg page header_type flag bits and fixed sizes. (Bit 0x04, end-of-stream, is
-// not acted on: the final granule is read from the last page regardless.)
+// Page header_type flags and sizes. EOS (0x04) unused; final granule from last page.
+
 const (
 	flagContinued = 0x01 // first packet on the page continues from the previous page
 	flagBOS       = 0x02 // beginning of stream
@@ -22,29 +22,20 @@ const (
 	maxSegments   = 255  // a lacing value of 255 means "packet continues"
 )
 
-// maxOggScanBytes bounds the heap retained by rawPage descriptors during scanPages.
-// Ogg pages cannot be coalesced because the renumber path rewrites each audio page's
-// sequence number and CRC. Without a budget, a stream made of minimum-size pages would
-// make even dump and verify retain memory proportional to page count. The metadata
-// element cap is not a good fit here because long real streams can legitimately have
-// many audio pages.
-//
-// 64 MiB holds about 930k empty page descriptors. That is far above normal Vorbis and
-// Opus pagination, but it rejects adversarial one-packet-per-page streams before they
-// can exhaust memory. Tests can pass a smaller scanBudget directly.
+// maxOggScanBytes caps heap for rawPage descriptors in scanPages. Pages cannot be
+// coalesced (renumber rewrites seq+CRC per page). 64 MiB ≈ 930k empty descriptors;
+// rejects adversarial one-packet-per-page streams. Tests may pass a smaller budget.
+
 const maxOggScanBytes = 64 << 20
 
-// rawPageBytes is the fixed heap cost on 64-bit builds, the tight case where
-// unsafe.Sizeof(rawPage{}) equals this constant; 32-bit layouts are smaller
-// (60 bytes: int64 and slice headers align to 4 there), over-counting the scan
-// budget which keeps it conservative. The lacing table is counted separately as
-// len(p.segs), so max-lacing pages are charged for their real footprint.
+// rawPageBytes: 64-bit sizeof(rawPage). 32-bit is smaller (conservative over-count).
+// Lacing charged separately via len(p.segs).
+
 const rawPageBytes = 72
 
-// rawPage is one parsed Ogg page header plus the location of its body. Audio
-// page bodies are never read during parsing - only their byte range is recorded
-// - so scanning a long file does not buffer the audio. Field order keeps the
-// single-byte flags last so the struct packs to rawPageBytes with no extra padding.
+// rawPage: page header plus body location. Audio bodies not buffered at parse.
+// flags last so the struct packs to rawPageBytes.
+
 type rawPage struct {
 	off     int64  // absolute offset of the "OggS" capture pattern
 	hdrLen  int64  // 27 + segment count
@@ -60,11 +51,9 @@ type rawPage struct {
 func (p rawPage) total() int64   { return p.hdrLen + p.bodyLen }
 func (p rawPage) bodyOff() int64 { return p.off + p.hdrLen }
 
-// scanPages reads every Ogg page header in src in order, recording each page's
-// location and lacing without reading audio bodies. It stops at the first
-// position that is not a valid page (trailing junk, or the end of the data),
-// returning that offset as end. The first bytes must be a valid Ogg page. It
-// checks ctx between pages so scanning a very large file can be cancelled.
+// scanPages records each page header and lacing (no audio bodies). Stops at first
+// non-page (junk or EOF). First bytes must be a valid page. Checks ctx between pages.
+
 func scanPages(ctx context.Context, src core.ReaderAtSized, size, limit, scanBudget int64) (pages []rawPage, end int64, err error) {
 	off := int64(0)
 	var retained int64 // cumulative heap cost of the rawPage descriptors below
@@ -74,9 +63,8 @@ func scanPages(ctx context.Context, src core.ReaderAtSized, size, limit, scanBud
 		}
 		hdr, e := bits.ReadSlice(src, off, pageFixedHdr, limit)
 		if e != nil {
-			// The loop guard guarantees these 27 bytes are within the file, so a
-			// failure here is a real I/O error (e.g. concurrent truncation), not a
-			// clean end of stream - surface it, as the segment-table read below does.
+			// Within file by loop guard: real I/O error, not clean EOF.
+
 			return nil, off, fmt.Errorf("%w: read page header at %d: %v", waxerr.ErrInvalidData, off, e)
 		}
 		if !bytes.Equal(hdr[0:4], oggMagic) || hdr[4] != 0 {
@@ -139,16 +127,13 @@ func buildPage(flags byte, granule uint64, serial, seq uint32, lacing, body []by
 	return page
 }
 
-// paginate lays packets out into Ogg pages starting at sequence number startSeq,
-// all with granule position 0 - correct for the Vorbis/Opus header pages this
-// builds. It returns the concatenated page bytes and the page count. The
-// continued flag is set on any page whose first segment continues a packet from
-// the previous page.
+// paginate lays packets into pages from startSeq, granule 0 (header pages).
+// Returns bytes and page count. Sets continued when a page continues a packet.
+
 func paginate(serial, startSeq uint32, packets [][]byte) (out []byte, pageCount int) {
-	// Build the lacing values and the body byte stream. Each packet contributes
-	// floor(len/255) lacing values of 255 then one final value of len%255, so a
-	// packet whose length is a multiple of 255 ends with an explicit 0 - the
-	// packet-boundary marker that keeps it from merging with the next packet.
+	// Lacing: floor(len/255)×255 then len%255. Multiple of 255 ends with 0
+	// (packet boundary so it does not merge with the next).
+
 	var lacing, body []byte
 	for _, pkt := range packets {
 		n := len(pkt)
@@ -178,18 +163,17 @@ func paginate(serial, startSeq uint32, packets [][]byte) (out []byte, pageCount 
 		bodyPos += pl
 		seq++
 		pageCount++
-		// The page ends mid-packet exactly when its last lacing value is 255 (the
-		// packet has more data); the next page is then a continuation.
+		// Last lacing 255 ⇒ packet continues on the next page.
+
 		continued = pageLac[len(pageLac)-1] == maxSegments
 		i = hi
 	}
 	return out, pageCount
 }
 
-// paginateBOS builds the beginning-of-stream page holding one packet alone: the
-// identification header, which every Ogg mapping puts on a page of its own. It is
-// used only when that packet's bytes change - the FLAC mapping's header-packet
-// count - since page 0 is otherwise copied verbatim.
+// paginateBOS builds the BOS page for a single id packet. Used when id bytes
+// change (FLAC header-packet count); otherwise page 0 is copied verbatim.
+
 func paginateBOS(serial uint32, pkt []byte) ([]byte, int) {
 	var lacing []byte
 	n := len(pkt)
@@ -199,18 +183,15 @@ func paginateBOS(serial uint32, pkt []byte) ([]byte, int) {
 	}
 	lacing = append(lacing, byte(n))
 	if len(lacing) > maxSegments {
-		return nil, 0 // unreachable for a real identification packet (>64 KiB)
+		return nil, 0 // real id packets are far smaller
 	}
 	return buildPage(flagBOS, 0, serial, 0, lacing, pkt), 1
 }
 
-// patchCRC recomputes a page's CRC after only its 4-byte sequence number (at
-// offset 18) changed, without re-reading the page body. The Ogg CRC has init 0
-// and no final XOR, so it is linear: the new CRC is the old CRC XOR the CRC of a
-// "difference" page that is zero everywhere except those 4 bytes. Leading zeros
-// before offset 18 contribute nothing (the running CRC stays 0 over zero bytes
-// from a zero state), so the difference reduces to the 4 XOR-delta bytes
-// followed by zeros to the end of the page (offset 22 through pageLen).
+// patchCRC updates CRC after seq (offset 18) changes, without re-reading the body.
+// Ogg CRC is linear (init 0, no final XOR): new = old XOR CRC(delta at 18:22,
+// zeros through page end).
+
 func patchCRC(oldCRC, oldSeq, newSeq uint32, pageLen int64) uint32 {
 	var d [4]byte
 	binary.LittleEndian.PutUint32(d[:], oldSeq^newSeq)

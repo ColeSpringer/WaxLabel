@@ -29,11 +29,10 @@ func wavWithInfo(items ...[2]string) []byte {
 	return riffWrap(chunks, nil, nil)
 }
 
-// TestDuplicateNumberInfoFirstWins covers the number-pair cardinality guard: two INFO items
-// mapping to one number key (two IPRT, both TrackNumber) project a single first-wins value,
-// not a phantom multi-value TRACKNUMBER that no writer can store - which would diff as a
-// spurious change and trip a false native-value-reduced warning. The family view still exposes
-// the conflict (the second item reads back unselected).
+// TestDuplicateNumberInfoFirstWins covers the number-pair cardinality guard: two INFO
+// items mapping to one number key (two IPRT, both TrackNumber) project a single
+// first-wins value, not a phantom multi-value TRACKNUMBER that no writer can store -
+// which would diff as a spurious change and trip a false native-value-reduced warning.
 func TestDuplicateNumberInfoFirstWins(t *testing.T) {
 	m, err := parse(context.Background(), core.BytesSource(wavWithInfo([2]string{"IPRT", "1"}, [2]string{"IPRT", "2"})), core.DefaultParseOptions())
 	if err != nil {
@@ -57,11 +56,10 @@ func TestDuplicateNumberInfoFirstWins(t *testing.T) {
 	}
 }
 
-// TestDuplicateTextInfoPreserved is the regression guard for the finding that the blanket
-// first-wins silently dropped preservable text values: two INAM items (both Title, a
-// single-valued text key) must project BOTH values, because the write then forces an ID3
-// chunk whose v2.4 TIT2 frame stores both NUL-separated. Dropping the second at read would
-// lose data that round-trips. nativeReducedWarnings fires accurately (both kept in ID3).
+// TestDuplicateTextInfoPreserved is the regression guard for the finding that the
+// blanket first-wins silently dropped preservable text values: two INAM items (both
+// Title, a single-valued text key) must project BOTH values, because the write then
+// forces an ID3 chunk whose v2.4 TIT2 frame stores both NUL-separated.
 func TestDuplicateTextInfoPreserved(t *testing.T) {
 	m, err := parse(context.Background(), core.BytesSource(wavWithInfo([2]string{"INAM", "A"}, [2]string{"INAM", "B"})), core.DefaultParseOptions())
 	if err != nil {

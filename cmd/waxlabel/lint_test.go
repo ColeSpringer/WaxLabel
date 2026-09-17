@@ -7,8 +7,7 @@ import (
 	"testing"
 )
 
-// TestLintReportsFindings: a file with noise lints non-clean (exit 1); a clean
-// file exits 0.
+// TestLintReportsFindings: noisy file exits 1; clean file exits 0.
 func TestLintReportsFindings(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "lint", sampleFLAC)
@@ -28,17 +27,12 @@ func TestLintReportsFindings(t *testing.T) {
 	}
 }
 
-// TestDumpLintCodeAlignment: a condition both dump and lint surface uses
-// the same code and message in each. dump prints the parse-warning codes; lint now
-// reuses them verbatim (inherited-encoder, trailing-id3v1) instead of its old private
-// aliases (encoder-noise, stale-legacy-tag), and one shared builder makes the
-// conflicting-families message read identically. dump also signposts lint for the
-// computed-only checks it does not run.
+// TestDumpLintCodeAlignment: dump and lint share parse-warning codes and conflicting-families
+// wording; dump signposts lint for computed-only checks.
 func TestDumpLintCodeAlignment(t *testing.T) {
 	t.Parallel()
 
-	// dump and lint name the same conditions with the same codes on an MP3 that
-	// carries an inherited encoder stamp and a trailing ID3v1.
+	// inherited-encoder and trailing-id3v1: same codes in dump and lint.
 	dumpOut, _, _ := runCLI(t, "dump", sampleMP3)
 	lintOut, _, _ := runCLI(t, "lint", sampleMP3)
 	for _, code := range []string{"inherited-encoder", "trailing-id3v1"} {
@@ -49,16 +43,14 @@ func TestDumpLintCodeAlignment(t *testing.T) {
 			t.Errorf("lint missing %q:\n%s", code, lintOut)
 		}
 	}
-	// The old private aliases must be gone from lint.
+	// Retired lint-only aliases must not appear.
 	for _, gone := range []string{"encoder-noise", "stale-legacy-tag"} {
 		if strings.Contains(lintOut, gone) {
 			t.Errorf("lint still uses the retired code %q:\n%s", gone, lintOut)
 		}
 	}
 
-	// the conflicting-families condition reads identically in dump and lint (shared
-	// wording + the same " (KEY)" suffix). chapters.mka carries a cross-target ENCODER
-	// conflict.
+	// conflicting-families: identical wording in dump and lint (chapters.mka ENCODER conflict).
 	mka := filepath.Join("..", "..", "testdata", "chapters.mka")
 	dumpMka, _, _ := runCLI(t, "dump", mka)
 	lintMka, _, _ := runCLI(t, "lint", mka)
@@ -66,8 +58,7 @@ func TestDumpLintCodeAlignment(t *testing.T) {
 	if !strings.Contains(dumpMka, msg) || !strings.Contains(lintMka, msg) {
 		t.Errorf("conflicting-families should read identically in dump and lint:\ndump:\n%s\nlint:\n%s", dumpMka, lintMka)
 	}
-	// The lint finding keeps the key structured in JSON (it is a real tag key, unlike the
-	// keyless picture findings), so a consumer can read it without parsing the message.
+	// lint --json keeps conflicting-families Key structured (real tag key, unlike picture findings).
 	lintJSON, _, _ := runCLI(t, "--json", "lint", mka)
 	jl := decodeJSONOne[jsonLint](t, lintJSON)
 	foundKey := false
@@ -83,7 +74,7 @@ func TestDumpLintCodeAlignment(t *testing.T) {
 		t.Error("expected a conflicting-families finding in lint --json")
 	}
 
-	// dump signposts lint when it surfaced warnings, and stays quiet on a clean file.
+	// dump signposts lint when warnings exist; clean dump stays quiet.
 	if !strings.Contains(dumpOut, `run "waxlabel lint"`) {
 		t.Errorf("dump with warnings should point at lint:\n%s", dumpOut)
 	}
@@ -92,7 +83,7 @@ func TestDumpLintCodeAlignment(t *testing.T) {
 	}
 }
 
-// TestLintJSON: the machine-readable shape carries the schema version and findings.
+// TestLintJSON: --json carries schemaVersion and findings.
 func TestLintJSON(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "--json", "lint", sampleFLAC)
@@ -108,44 +99,36 @@ func TestLintJSON(t *testing.T) {
 	}
 }
 
-// TestLintStructuralErrorOutranksFindings: a structural failure (missing file)
-// must outrank an exit-1 "issues found" so a script can tell them apart.
+// TestLintStructuralErrorOutranksFindings: structural failure (missing file) beats exit-1 findings.
 func TestLintStructuralErrorOutranksFindings(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "nope.flac")
-	// sampleFLAC has warning findings (would be exit 1); the missing file is exit 6.
+	// sampleFLAC would exit 1; missing file exits 6.
 	if _, _, code := runCLI(t, "lint", sampleFLAC, missing); code != 6 {
 		t.Errorf("exit = %d, want 6 (structural error outranks warning findings)", code)
 	}
 }
 
-// TestLintErrorSeverityExitsInvalidData verifies that an error-severity finding
-// such as no-audio exits 4 (invalid-data), the same class verify gives a no-audio
-// file and distinct from a warning's exit 1. The error-finding sentinel is folded
-// into the same worseError comparison as a structural error, so a no-audio plus
-// not-found run reports exit 4: a broken file outranks a wrong path. This is the
-// control-flow case that a warning plus not-found run would not catch.
+// TestLintErrorSeverityExitsInvalidData: error-severity finding (no-audio) exits 4, distinct
+// from warning exit 1. no-audio plus not-found still exits 4 (broken file outranks wrong path).
 func TestLintErrorSeverityExitsInvalidData(t *testing.T) {
 	t.Parallel()
-	// A single no-audio file: an error-severity finding -> exit 4.
+	// Single no-audio file: exit 4.
 	if _, _, code := runCLI(t, "lint", emptyMP3); code != 4 {
 		t.Errorf("lint no-audio exit = %d, want 4 (invalid-data)", code)
 	}
-	// no-audio (exit 4, rank 80) beside a missing file (exit 6, rank 55): the broken
-	// file wins, so the aggregate is exit 4 - not the wrong path's exit 6.
+	// no-audio (4) beside missing file (6): broken file wins; aggregate exit 4.
 	missing := filepath.Join(t.TempDir(), "nope.flac")
 	if _, _, code := runCLI(t, "lint", emptyMP3, missing); code != 4 {
 		t.Errorf("lint (no-audio + not-found) exit = %d, want 4 (broken file outranks wrong path)", code)
 	}
-	// A warning-only file still exits 1 (the prior behavior, preserved).
+	// Warning-only file still exits 1.
 	if _, _, code := runCLI(t, "lint", sampleFLAC); code != 1 {
 		t.Errorf("lint warning-only exit = %d, want 1", code)
 	}
 }
 
-// TestLintFixNeutralizesFlacVendor checks that --fix clears the canonical ENCODER comment
-// and neutralizes a transcoder-stamped FLAC vendor string. The saved file should re-lint
-// cleanly.
+// TestLintFixNeutralizesFlacVendor: --fix clears ENCODER and neutralizes transcoder vendor; re-lint clean.
 func TestLintFixNeutralizesFlacVendor(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -156,7 +139,7 @@ func TestLintFixNeutralizesFlacVendor(t *testing.T) {
 	if !strings.Contains(out, "ENCODER") {
 		t.Errorf("--fix output missing the ENCODER change:\n%s", out)
 	}
-	// A fresh lint should not see either the ENCODER comment or the vendor stamp.
+	// Re-lint must not see ENCODER comment or vendor stamp.
 	relint, _, rcode := runCLI(t, "lint", file)
 	if rcode != 0 {
 		t.Errorf("re-lint after --fix exit = %d, want 0 (clean):\n%s", rcode, relint)
@@ -166,8 +149,7 @@ func TestLintFixNeutralizesFlacVendor(t *testing.T) {
 	}
 }
 
-// TestLintFixFullyCleans: a file whose every finding is fixable ends clean
-// (exit 0) and re-lints clean.
+// TestLintFixFullyCleans: all-fixable findings end clean after --fix and re-lint.
 func TestLintFixFullyCleans(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleMP3)
@@ -179,20 +161,17 @@ func TestLintFixFullyCleans(t *testing.T) {
 	}
 }
 
-// TestLintFixReportsOperations: --fix surfaces the structural operations it
-// performed (stripping a legacy ID3v1 trailer), not just the field changes -
-// otherwise a legacy-container strip is invisible despite being saved.
+// TestLintFixReportsOperations: --fix surfaces structural ops (e.g. ID3v1 strip), not just field changes.
 func TestLintFixReportsOperations(t *testing.T) {
 	t.Parallel()
-	file := copyFixture(t, sampleMP3) // carries an ID3v1 trailer that --fix strips
+	file := copyFixture(t, sampleMP3) // has ID3v1 trailer that --fix strips
 	out, _, _ := runCLI(t, "lint", "--fix", file)
 	if !strings.Contains(out, "ID3v1 strip") {
 		t.Errorf("--fix text output missing the ID3v1 strip operation:\n%s", out)
 	}
 }
 
-// TestLintFixJSONOperations: the structural operations also appear in the JSON
-// result's operations array, bringing --fix in line with plan/set.
+// TestLintFixJSONOperations: --fix JSON includes operations (aligned with plan/set).
 func TestLintFixJSONOperations(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleMP3)
@@ -203,12 +182,10 @@ func TestLintFixJSONOperations(t *testing.T) {
 	}
 }
 
-// TestLintFixNothingToFix is a regression guard: on a clean file --fix has nothing to do, so it
-// prints "nothing to fix" (the NoOpPlan "no changes" sentinel no longer masks that branch) and
-// the --json operations array is empty rather than leaking the sentinel.
+// TestLintFixNothingToFix: clean file prints "nothing to fix"; NoOpPlan "no changes" must not leak.
 func TestLintFixNothingToFix(t *testing.T) {
 	t.Parallel()
-	out, _, _ := runCLI(t, "lint", "--fix", copyFixture(t, td("notags.mp3"))) // no lint findings
+	out, _, _ := runCLI(t, "lint", "--fix", copyFixture(t, td("notags.mp3"))) // no findings
 	if !strings.Contains(out, "nothing to fix") {
 		t.Errorf("clean --fix should print 'nothing to fix'; got:\n%s", out)
 	}
@@ -222,11 +199,8 @@ func TestLintFixNothingToFix(t *testing.T) {
 	}
 }
 
-// TestLintFixNoAudioGraceful is a regression guard: a no-audio (tag-only or truncated) file
-// cannot be written, but --fix must route it into the same graceful "nothing to fix / left
-// unchanged" path as any other unfixable finding instead of surfacing Prepare's opaque write
-// refusal. It leaves the file unchanged, exits 4 (the no-audio finding remains), and under --json
-// reports no-audio in remaining with no {"error": ...} envelope.
+// TestLintFixNoAudioGraceful: no-audio file cannot be written; --fix reports "nothing to fix /
+// left unchanged", exits 4, no Prepare refusal or JSON error envelope.
 func TestLintFixNoAudioGraceful(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "lint", "--fix", copyFixture(t, td("empty.mp3")))
@@ -278,8 +252,7 @@ func TestSetStripEncoder(t *testing.T) {
 	}
 }
 
-// TestPlanChangesPreview: plan shows the field-level change preview in text and
-// JSON.
+// TestPlanChangesPreview: plan shows field-level preview in text and JSON.
 func TestPlanChangesPreview(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "plan", sampleFLAC, "--set", "TITLE=New", "--clear", "ENCODER")
@@ -299,8 +272,7 @@ func TestPlanChangesPreview(t *testing.T) {
 	}
 }
 
-// TestDumpEmptyMP3NoAudio documents dump's read contract: a tag-only MP3 renders
-// metadata successfully, exits 0, and reports the no-audio condition as a warning.
+// TestDumpEmptyMP3NoAudio: tag-only MP3 dumps successfully (exit 0) with no-audio warning.
 func TestDumpEmptyMP3NoAudio(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "dump", emptyMP3)
@@ -312,8 +284,7 @@ func TestDumpEmptyMP3NoAudio(t *testing.T) {
 	}
 }
 
-// TestVerifyEmptyMP3Exit4: verifying a zero-essence file fails (exit 4) instead
-// of minting a fake digest.
+// TestVerifyEmptyMP3Exit4: zero-essence verify fails (exit 4), no fake digest.
 func TestVerifyEmptyMP3Exit4(t *testing.T) {
 	t.Parallel()
 	if _, _, code := runCLI(t, "verify", emptyMP3); code != 4 {
@@ -321,7 +292,7 @@ func TestVerifyEmptyMP3Exit4(t *testing.T) {
 	}
 }
 
-// TestDumpJSONSchemaVersion: per-file dump objects now carry schemaVersion.
+// TestDumpJSONSchemaVersion: dump --json objects carry schemaVersion.
 func TestDumpJSONSchemaVersion(t *testing.T) {
 	t.Parallel()
 	out, _, _ := runCLI(t, "--json", "dump", sampleFLAC)
@@ -331,8 +302,7 @@ func TestDumpJSONSchemaVersion(t *testing.T) {
 	}
 }
 
-// TestLintJSONFindingFixable: the fixable marker reaches JSON, so a scripted consumer can
-// tell which findings --fix will act on without hardcoding the codes.
+// TestLintJSONFindingFixable: fixable marker in JSON so scripts need not hardcode codes.
 func TestLintJSONFindingFixable(t *testing.T) {
 	t.Parallel()
 	f := copyFixture(t, sampleFLAC)

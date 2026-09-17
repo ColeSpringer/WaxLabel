@@ -6,11 +6,7 @@ import (
 	"testing"
 )
 
-// TestSetRenameFailureHidesTempName drives the real Windows failure this write path exists
-// for: a handle open on the target blocks MoveFileEx, so the commit fails after the retry
-// backoff. The user must see the file they named and the reason, not the temp file the rename
-// was from. os.Open takes no FILE_SHARE_DELETE, which is why the library releases its own
-// source handle before the rename.
+// TestSetRenameFailureHidesTempName: open handle blocks rename; error names target, not temp file.
 func TestSetRenameFailureHidesTempName(t *testing.T) {
 	file := copyFixture(t, sampleFLAC)
 	held, err := os.Open(file)

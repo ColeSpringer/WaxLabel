@@ -66,8 +66,7 @@ func wavInfo(pairs ...[2]string) []byte {
 	return wavChunk("LIST", body)
 }
 
-// wavID3 wraps ID3v2 tag bytes (built with id3v2/textFrame from mp3_synth_test)
-// in an "id3 " chunk.
+// wavID3 wraps ID3v2 tag bytes (built with id3v2/textFrame from mp3_synth_test) in an "id3 " chunk.
 func wavID3(tagBytes []byte) []byte { return wavChunk("id3 ", tagBytes) }
 
 func TestWAVId3TakesPrecedenceOverInfo(t *testing.T) {
@@ -147,9 +146,8 @@ func TestWAVInfoAuthoritativeWhenNoId3(t *testing.T) {
 	}
 }
 
-// TestWAVITRKReadsTrackNumber checks the ITRK read alias. INFO-only files can read
-// track numbers from ITRK, while newly written track numbers use IPRT so output stays
-// deterministic.
+// checks the ITRK read alias. INFO-only files can read track numbers from ITRK, while newly written
+// track numbers use IPRT so output stays deterministic.
 func TestWAVITRKReadsTrackNumber(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Track via ITRK"}, [2]string{"ITRK", "7"}), wavData(400))
 	if got := mustParseBytes(t, data).Fields().TrackNumber; got != 7 {
@@ -250,18 +248,15 @@ func TestWAVStripInfoConsolidatesToId3(t *testing.T) {
 }
 
 func TestWAVStripInfoConsolidatesToId3WithExistingId3(t *testing.T) {
-	// Source shape: an id3 chunk holds TITLE, while LIST/INFO holds keys not present
-	// in id3 (ARTIST, COPYRIGHT). When --legacy strip removes INFO, those native-only
-	// values must be emitted into id3. The regression seeded the ID3 diff base from
-	// the merged projection, so untouched native-only keys were omitted.
+	// Source shape: an id3 chunk holds TITLE, while LIST/INFO holds keys not present in id3 (ARTIST,
+	// COPYRIGHT). When --legacy strip removes INFO, those native-only values must be emitted into id3.
 	id3Chunk := wavID3(id3v2(3, textFrame(3, "TIT2", "Original Title")))
 	info := wavInfo([2]string{"IART", "Native Artist"}, [2]string{"ICOP", "Native Copyright"})
 	data := wavFile(wavFmtPCM(), info, id3Chunk, wavData(400))
 
 	t.Run("unchanged native-only keys survive", func(t *testing.T) {
-		// The edit touches only TITLE. Before the fix, ARTIST and COPYRIGHT were
-		// compared against the merged base, treated as unchanged, and omitted from
-		// the rebuilt id3 chunk.
+		// The edit touches only TITLE. Before the fix, ARTIST and COPYRIGHT were compared against the
+		// merged base, treated as unchanged, and omitted from the rebuilt id3 chunk.
 		plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "New Title").
 			Prepare(wl.WithLegacyPolicy(wl.LegacyStrip))
 		if err != nil {
@@ -364,10 +359,10 @@ func TestWAVAppendedDataKeptOutsideRiffSize(t *testing.T) {
 	}
 }
 
-// rf64File assembles an RF64 (or BW64) file: the 64-bit header, a leading ds64
-// chunk carrying the real container and data sizes, then the given chunks. The
-// data chunk's own size field is rewritten to the 0xFFFFFFFF marker so the file
-// exercises the ds64 resolution path rather than the plain 32-bit one.
+// rf64File assembles an RF64 (or BW64) file: the 64-bit header, a leading ds64 chunk carrying the
+// real container and data sizes, then the given chunks. The data chunk's own size field is
+// rewritten to the 0xFFFFFFFF marker so the file exercises the ds64 resolution path rather than the
+// plain 32-bit one.
 func rf64File(magic string, sampleCount uint64, chunks ...[]byte) []byte {
 	body := []byte("WAVE")
 	var dataSize uint64
@@ -389,10 +384,9 @@ func rf64File(magic string, sampleCount uint64, chunks ...[]byte) []byte {
 	return append(out, body...)
 }
 
-// TestWAVRF64RoundTrip checks the 64-bit RIFF extension end to end: the ds64 chunk
-// resolves the marked sizes on read, and a metadata edit keeps the RF64 form with a
-// regenerated ds64 rather than downgrading to plain RIFF (which would truncate the
-// sizes the extension exists to carry).
+// checks the 64-bit RIFF extension end to end: the ds64 chunk resolves the marked sizes on read,
+// and a metadata edit keeps the RF64 form with a regenerated ds64 rather than downgrading to plain
+// RIFF (which would truncate the sizes the extension exists to carry).
 func TestWAVRF64RoundTrip(t *testing.T) {
 	for _, magic := range []string{"RF64", "BW64"} {
 		t.Run(magic, func(t *testing.T) {
@@ -443,9 +437,8 @@ func TestWAVRF64RoundTrip(t *testing.T) {
 	}
 }
 
-// TestWAVRF64FixtureRoundTrip runs the same edit against an independently authored
-// RF64 file (ffmpeg -rf64 always), so the ds64 reading is checked against a real
-// writer's bytes and not only against the shape this package synthesizes.
+// same edit against an independently authored RF64 file (ffmpeg -rf64 always), so the ds64 reading
+// is checked against a real writer's bytes and not only against the shape this package synthesizes.
 func TestWAVRF64FixtureRoundTrip(t *testing.T) {
 	src := readFixture(t, sampleRF64)
 	doc := mustParseBytes(t, src)
@@ -478,9 +471,8 @@ func TestWAVRF64FixtureRoundTrip(t *testing.T) {
 	}
 }
 
-// TestWAVRF64WithoutDS64Rejected: the ds64 chunk is mandatory, and a file claiming
-// the 64-bit form without one has no way to report its real sizes. That is corrupt
-// input (exit 4), not an unsupported format.
+// ds64 chunk is mandatory, and a file claiming the 64-bit form without one has no way to report its
+// real sizes. That is corrupt input (exit 4), not an unsupported format.
 func TestWAVRF64WithoutDS64Rejected(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavData(64))
 	copy(data[0:4], "RF64")
@@ -569,10 +561,9 @@ func TestWAVDuplicateId3ChunksDropped(t *testing.T) {
 }
 
 func TestWAVCorruptId3NotDuplicatedOnForcedRewrite(t *testing.T) {
-	// A lone "id3 " chunk whose body fails to parse leaves no authoritative id3. An
-	// edit forcing a new id3 chunk (a non-INFO key) must drop the stale chunk so the
-	// output carries exactly one id3 chunk, not two (which a re-parse would flag as a
-	// duplicate, disagreeing with the returned document).
+	// A lone "id3 " chunk whose body fails to parse leaves no authoritative id3. An edit forcing a new
+	// id3 chunk (a non-INFO key) must drop the stale chunk so the output carries exactly one id3 chunk,
+	// not two (which a re-parse would flag as a duplicate, disagreeing with the returned document).
 	corrupt := wavChunk("id3 ", []byte("corrupt-not-a-valid-tag")) // fails id3.ParseTag
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "T"}), wavData(400), corrupt)
 	doc := mustParseBytes(t, data)
@@ -625,8 +616,7 @@ func TestWAVByteRateInEssenceDigest(t *testing.T) {
 }
 
 func TestWAVClearAllRemovesInfoChunk(t *testing.T) {
-	// Clearing the only tag drops the now-empty INFO chunk rather than leaving an
-	// empty husk.
+	// Clearing the only tag drops the now-empty INFO chunk rather than leaving an empty husk.
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Gone"}), wavData(200))
 	plan, err := mustParseBytes(t, data).Edit().Clear(tag.Title).Prepare()
 	if err != nil {
@@ -638,9 +628,8 @@ func TestWAVClearAllRemovesInfoChunk(t *testing.T) {
 	}
 }
 
-// TestWAVTruncatedDataChunkWarns covers the cross-format truncation signal: a data
-// chunk that declares more bytes than the file holds is flagged, while the
-// streaming "size unknown" sentinel a real piped capture carries is not.
+// cross-format truncation signal: a data chunk that declares more bytes than the file holds is
+// flagged, while the streaming "size unknown" sentinel a real piped capture carries is not.
 func TestWAVTruncatedDataChunkWarns(t *testing.T) {
 	t.Run("declared overruns file", func(t *testing.T) {
 		// The data header declares 100000 bytes but only 200 follow.
@@ -656,19 +645,17 @@ func TestWAVTruncatedDataChunkWarns(t *testing.T) {
 		}
 	})
 	t.Run("streaming sentinel not flagged", func(t *testing.T) {
-		// 0xFFFFFFFF means "size unknown" - the audio is whatever follows, not a
-		// truncation. (A 0 size is the other sentinel; it reads as no-audio instead.)
-		// wavLE32(-1) yields the same four 0xFF bytes on every int width, where
-		// int(^uint32(0)) overflows a 32-bit int at compile time.
+		// 0xFFFFFFFF means "size unknown"; the audio is whatever follows, not a truncation. (A 0 size is
+		// the other sentinel; it reads as no-audio instead.) wavLE32(-1) yields the same four 0xFF bytes on
+		// every int width, where int(^uint32(0)) overflows a 32-bit int at compile time.
 		dataHdr := slices.Concat([]byte("data"), wavLE32(-1))
 		data := wavFile(wavFmtPCM(), slices.Concat(dataHdr, make([]byte, 400)))
 		doc := mustParseBytes(t, data)
 		if hasWarning(doc, wl.WarnTruncatedAudio) {
 			t.Errorf("a streaming-sentinel data size must not be flagged truncated; got %v", doc.Warnings())
 		}
-		// Not truncation, but the clamp takes the rest of the file as audio, so a LIST/INFO
-		// sitting after the data chunk is swallowed and the file reads as untagged. Report
-		// that rather than leave the reader no signal at all.
+		// Not truncation, but the clamp takes the rest of the file as audio, so a LIST/INFO sitting after
+		// the data chunk is swallowed and the file reads as untagged.
 		if !hasWarning(doc, wl.WarnUnknownChunkSize) {
 			t.Errorf("the size-unknown sentinel left no signal at all; got %v", doc.Warnings())
 		}
@@ -718,10 +705,9 @@ func wavWithRiffSize(data []byte, declared uint32) []byte {
 	return out
 }
 
-// TestWAVTooSmallRiffSizeRecovers: a declared RIFF size that is in range but far too small
-// used to be trusted as the walk boundary, so data and every LIST/id3 chunk past it were
-// never seen: the file read as no-audio with the rest reported as trailing bytes. The walk
-// must retry against the file size and adopt that result, which recovers the whole file.
+// declared RIFF size that is in range but far too small used to be trusted as the walk boundary, so
+// data and every LIST/id3 chunk past it were never seen: the file read as no-audio with the rest
+// reported as trailing bytes.
 func TestWAVTooSmallRiffSizeRecovers(t *testing.T) {
 	full := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Recovered"}), wavData(400))
 	// 30 bytes covers "WAVE" plus the fmt chunk and stops before the INFO list.
@@ -745,9 +731,9 @@ func TestWAVTooSmallRiffSizeRecovers(t *testing.T) {
 	}
 }
 
-// TestWAVShortRiffSizeStrandedTagRecovered: a tagger that appended a LIST without updating
-// the RIFF size leaves it outside the container, invisible to the read - and a rewrite then
-// emits a second LIST beside the stranded one, so the file carries two.
+// tagger that appended a LIST without updating the RIFF size leaves it outside the container,
+// invisible to the read, and a rewrite then emits a second LIST beside the stranded one, so the
+// file carries two.
 func TestWAVShortRiffSizeStrandedTagRecovered(t *testing.T) {
 	full := wavFile(wavFmtPCM(), wavData(400), wavInfo([2]string{"INAM", "Stranded"}))
 	// A size covering everything but the trailing LIST, as if it predated the append.
@@ -771,9 +757,7 @@ func TestWAVShortRiffSizeStrandedTagRecovered(t *testing.T) {
 	}
 }
 
-// TestWAVTruncatedNoRecovery is the other half of the rule: when the wide re-walk finds no
-// audio, the narrow result stands. A genuinely tag-only file with appended junk must keep its
-// honest no-audio plus trailing-bytes verdict rather than having the junk parsed as chunks.
+// other half of the rule: when the wide re-walk finds no audio, the narrow result stands.
 func TestWAVTruncatedNoRecovery(t *testing.T) {
 	base := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Tagged"}))
 	data := append(slices.Clone(base), bytes.Repeat([]byte{0xAB}, 64)...)
@@ -793,8 +777,8 @@ func TestWAVTruncatedNoRecovery(t *testing.T) {
 	}
 }
 
-// TestWAVMalformedRiffSizesUnchanged guards the sizes the existing fallback already handled,
-// so the recovery retry does not disturb them.
+// guards the sizes the existing fallback already handled, so the recovery retry does not disturb
+// them.
 func TestWAVMalformedRiffSizesUnchanged(t *testing.T) {
 	full := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Intact"}), wavData(400))
 	declared := binary.LittleEndian.Uint32(full[4:8])
@@ -819,9 +803,8 @@ func TestWAVMalformedRiffSizesUnchanged(t *testing.T) {
 	}
 }
 
-// TestWAVAppendedBytesStillTrailing: a correct declared size with genuine out-of-container
-// bytes after it keeps reporting them as trailing. The recovery only runs when no data chunk
-// was found, so this file never reaches it.
+// correct declared size with genuine out-of-container bytes after it keeps reporting them as
+// trailing.
 func TestWAVAppendedBytesStillTrailing(t *testing.T) {
 	base := wavFile(wavFmtPCM(), wavData(400))
 	data := append(slices.Clone(base), bytes.Repeat([]byte{0xCD}, 40)...)
@@ -834,9 +817,8 @@ func TestWAVAppendedBytesStillTrailing(t *testing.T) {
 	}
 }
 
-// wavInfoNoPad builds a LIST/INFO chunk whose items carry no word-alignment pad byte after
-// an odd-size value. That is what a buggy writer emits, and it desynchronizes every item
-// after the first odd one for a reader that steps over the byte unconditionally.
+// wavInfoNoPad builds a LIST/INFO chunk whose items carry no word-alignment pad byte after an
+// odd-size value.
 func wavInfoNoPad(pairs ...[2]string) []byte {
 	body := []byte("INFO")
 	for _, p := range pairs {
@@ -871,11 +853,9 @@ var unpaddedInfoPairs = [][2]string{
 	{"INAM", "Song"}, {"IART", "Band"}, {"IPRD", "Album"}, {"ICMT", "Note"},
 }
 
-// TestWAVUnpaddedInfoReadsEveryItem: the walk used to desynchronize on the missing pad
-// byte, stop on the garbage with a nil error and no warning, and then destroy everything
-// past that point on the next rewrite, because rebuildInfo re-renders the chunk from the
-// items alone. Every item must now be read, the condition reported, and the values kept
-// across an unrelated edit.
+// walk used to desynchronize on the missing pad byte, stop on the garbage with a nil error and no
+// warning, and then destroy everything past that point on the next rewrite, because rebuildInfo
+// re-renders the chunk from the items alone.
 func TestWAVUnpaddedInfoReadsEveryItem(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -922,8 +902,8 @@ func TestWAVUnpaddedInfoReadsEveryItem(t *testing.T) {
 	}
 }
 
-// TestWAVWellFormedInfoStaysQuiet is the control: a properly padded list must not gain the
-// warning, or every ordinary WAV would report one.
+// control: a properly padded list must not gain the warning, or every ordinary WAV would report
+// one.
 func TestWAVWellFormedInfoStaysQuiet(t *testing.T) {
 	doc := mustParseBytes(t, wavFile(wavFmtPCM(), wavInfo(unpaddedInfoPairs...), wavData(400)))
 	if hasWarning(doc, wl.WarnMalformedTagEntry) {
@@ -931,9 +911,8 @@ func TestWAVWellFormedInfoStaysQuiet(t *testing.T) {
 	}
 }
 
-// TestWAVUnreadableInfoTailReportedOnWrite: a region the item walk cannot read has
-// nowhere to go in a rebuilt chunk, so the read warning is not enough - the write must say
-// the bytes are gone.
+// region the item walk cannot read has nowhere to go in a rebuilt chunk, so the read warning is not
+// enough; the write must say the bytes are gone.
 func TestWAVUnreadableInfoTailReportedOnWrite(t *testing.T) {
 	data := wavFile(wavFmtPCM(),
 		wavInfoWithTail([]byte{0x01, 0x02, 0x03}, [2]string{"INAM", "Song"}), wavData(400))
@@ -950,9 +929,8 @@ func TestWAVUnreadableInfoTailReportedOnWrite(t *testing.T) {
 	}
 }
 
-// TestWAVClampedOversizeInfoReportsOversizedOnly: a LIST whose declared size runs past EOF
-// was cut by the walker, not by the writer, so naming an unread tail would double-report a
-// condition oversized-chunk already states.
+// LIST whose declared size runs past EOF was cut by the walker, not by the writer, so naming an
+// unread tail would double-report a condition oversized-chunk already states.
 func TestWAVClampedOversizeInfoReportsOversizedOnly(t *testing.T) {
 	list := wavInfo([2]string{"INAM", "Song"})
 	over := slices.Clone(list)
@@ -966,13 +944,9 @@ func TestWAVClampedOversizeInfoReportsOversizedOnly(t *testing.T) {
 	}
 }
 
-// TestWAVWriteLossIsNotGatedOnHowTheRegionArose documents the split the read
-// suppression must not leak into: the read message is silenced where another code already
-// names the condition, but what a rewrite destroys is reported whatever put it there. The
-// two suppression cases are a clamped chunk (which swallows the rest of the file, so the
-// write is refused as no-audio before it can lose anything) and a body longer than the
-// 64 MiB metadata read - reachable, but only with a fixture that large, so the guard here
-// is the ordinary case: a file that carries both an unreadable region and a real edit.
+// documents the split the read suppression must not leak into: the read message is silenced where
+// another code already names the condition, but what a rewrite destroys is reported whatever put it
+// there.
 func TestWAVWriteLossIsNotGatedOnHowTheRegionArose(t *testing.T) {
 	data := wavFile(wavFmtPCM(),
 		wavInfoWithTail([]byte{0x01, 0x02, 0x03}, [2]string{"INAM", "Song"}), wavData(400))
@@ -985,10 +959,9 @@ func TestWAVWriteLossIsNotGatedOnHowTheRegionArose(t *testing.T) {
 	}
 }
 
-// TestWAVSentinelInfoDoesNotDoubleReport: a LIST the walker clamped because it declared the
-// size-unknown value is reported as unknown-chunk-size, so naming an unreadable tail as
-// well would both duplicate the diagnosis and make set --strict refuse a file whose only
-// defect is the streaming sentinel.
+// LIST the walker clamped because it declared the size-unknown value is reported as
+// unknown-chunk-size, so naming an unreadable tail as well would both duplicate the diagnosis and
+// make set --strict refuse a file whose only defect is the streaming sentinel.
 func TestWAVSentinelInfoDoesNotDoubleReport(t *testing.T) {
 	list := wavInfoWithTail([]byte{0x01, 0x02, 0x03}, [2]string{"INAM", "Song"})
 	copy(list[4:8], wavLE32(-1)) // the 0xFFFFFFFF size-unknown value
@@ -1001,9 +974,8 @@ func TestWAVSentinelInfoDoesNotDoubleReport(t *testing.T) {
 	}
 }
 
-// TestWAVBytesPastTheTerminatorReportedAndRefused: renderInfo writes an item's value up to
-// its first NUL plus one terminator, so bytes the item declared past it die on the next
-// rewrite. They used to go unmentioned on both sides, and set --strict exited 0.
+// renderInfo writes an item's value up to its first NUL plus one terminator, so bytes the item
+// declared past it die on the next rewrite.
 func TestWAVBytesPastTheTerminatorReportedAndRefused(t *testing.T) {
 	item := slices.Concat([]byte("INAM"), wavLE32(16), []byte("Song\x00HIDDENDATA\x00"))
 	data := wavFile(wavFmtPCM(), wavChunk("LIST", append([]byte("INFO"), item...)), wavData(400))
@@ -1023,9 +995,9 @@ func TestWAVBytesPastTheTerminatorReportedAndRefused(t *testing.T) {
 	}
 }
 
-// TestWAVListAlignmentZerosStayQuiet is the false-positive control: a writer that rounds a
-// LIST body up to a four-byte boundary leaves zeros the item model does not carry but a
-// rewrite re-creates, so warning about them would fail --strict on an ordinary file.
+// false-positive control: a writer that rounds a LIST body up to a four-byte boundary leaves zeros
+// the item model does not carry but a rewrite re-creates, so warning about them would fail --strict
+// on an ordinary file.
 func TestWAVListAlignmentZerosStayQuiet(t *testing.T) {
 	list := wavInfoWithTail(make([]byte, 8), [2]string{"INAM", "Song"})
 	doc := mustParseBytes(t, wavFile(wavFmtPCM(), list, wavData(400)))
@@ -1041,10 +1013,9 @@ func TestWAVListAlignmentZerosStayQuiet(t *testing.T) {
 	}
 }
 
-// TestRF64UnresolvedMarkerIsNotTheStreamingSentinel: inside an RF64/BW64 container the
-// 32-bit 0xFFFFFFFF is always the ds64 marker, so a chunk ds64 does not resolve keeps its
-// own size and clamps like any other overrun. Reading it as the streaming sentinel exempted
-// a genuinely truncated RF64 from truncated-audio.
+// inside an RF64/BW64 container the 32-bit 0xFFFFFFFF is always the ds64 marker, so a chunk ds64
+// does not resolve keeps its own size and clamps like any other overrun. Reading it as the
+// streaming sentinel exempted a genuinely truncated RF64 from truncated-audio.
 func TestRF64UnresolvedMarkerIsNotTheStreamingSentinel(t *testing.T) {
 	src := rf64File("RF64", 16, wavFmtPCM(), wavData(64))
 	// Blank the ds64 data size so the override declines for the data chunk, leaving its
@@ -1063,9 +1034,9 @@ func TestRF64UnresolvedMarkerIsNotTheStreamingSentinel(t *testing.T) {
 	}
 }
 
-// TestWAVConflictingInfoValueSurvivesUnrelatedEdit: the id3 chunk wins the projection, but
-// the INFO item it disagrees with is the file's own data; an edit that does not name the key
-// leaves it byte for byte, warns nothing, and keeps the conflict visible in the families.
+// id3 chunk wins the projection, but the INFO item it disagrees with is the file's own data; an
+// edit that does not name the key leaves it byte for byte, warns nothing, and keeps the conflict
+// visible in the families.
 func TestWAVConflictingInfoValueSurvivesUnrelatedEdit(t *testing.T) {
 	id3 := wavID3(id3v2(3, textFrame(3, "TIT2", "Id3 Title")))
 	info := wavInfo([2]string{"INAM", "Riff Title"})
@@ -1099,9 +1070,8 @@ func TestWAVConflictingInfoValueSurvivesUnrelatedEdit(t *testing.T) {
 	}
 }
 
-// TestWAVAlternateTrackIdentifierSurvives: IPRT and ITRK both read as TRACKNUMBER; an
-// unrelated edit keeps both, and a track edit updates both so ffmpeg (which reads ITRK)
-// and IPRT readers agree.
+// IPRT and ITRK both read as TRACKNUMBER; an unrelated edit keeps both, and a track edit updates
+// both so ffmpeg (which reads ITRK) and IPRT readers agree.
 func TestWAVAlternateTrackIdentifierSurvives(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"IPRT", "7"}, [2]string{"ITRK", "9"}), wavData(400))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Album, "Z").Prepare()
@@ -1127,9 +1097,9 @@ func TestWAVAlternateTrackIdentifierSurvives(t *testing.T) {
 	}
 }
 
-// TestWAVDuplicateInfoItemsSurvive: two INAM and two ICMT items are the file's own shape.
-// An unrelated edit keeps all four without spilling them into a new id3 chunk; a title edit
-// collapses the title to one item and leaves the comments alone.
+// two INAM and two ICMT items are the file's own shape. An unrelated edit keeps all four without
+// spilling them into a new id3 chunk; a title edit collapses the title to one item and leaves the
+// comments alone.
 func TestWAVDuplicateInfoItemsSurvive(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"ICMT", "c1"}, [2]string{"ICMT", "c2"}, [2]string{"INAM", "t1"}, [2]string{"INAM", "t2"}), wavData(400))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Album, "Z").Prepare()
@@ -1155,9 +1125,8 @@ func TestWAVDuplicateInfoItemsSurvive(t *testing.T) {
 	}
 }
 
-// TestWAVExplicitSetResolvesInfoConflict: setting a key to the value the projection already
-// holds is how a user resolves a conflicting INFO item, so it is a real write that re-renders
-// the item and reports what it did.
+// setting a key to the value the projection already holds is how a user resolves a conflicting INFO
+// item, so it is a real write that re-renders the item and reports what it did.
 func TestWAVExplicitSetResolvesInfoConflict(t *testing.T) {
 	id3 := wavID3(id3v2(3, textFrame(3, "TIT2", "Id3 Title")))
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Riff Title"}), id3, wavData(400))
@@ -1182,8 +1151,6 @@ func TestWAVExplicitSetResolvesInfoConflict(t *testing.T) {
 	}
 }
 
-// TestWAVTrackTotalEditRewritesPairItem: the total rides on IPRT, so editing only the total
-// must still re-render that item.
 func TestWAVTrackTotalEditRewritesPairItem(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"IPRT", "4/9"}), wavData(400))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.TrackTotal, "12").Prepare()
@@ -1224,9 +1191,8 @@ func infoItemsOf(t *testing.T, wav []byte) map[string]string {
 	return out
 }
 
-// TestWAVTrackTotalSurvivesNumberOnlyEdit: the number and total share one IPRT item, so an
-// edit naming only the number still has to judge whether the total can ride along. Clearing
-// the number leaves the total no INFO home, which must force an id3 chunk rather than drop it.
+// number and total share one IPRT item, so an edit naming only the number still has to judge
+// whether the total can ride along.
 func TestWAVTrackTotalSurvivesNumberOnlyEdit(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"IPRT", "4/9"}), wavData(400))
 	plan, err := mustParseBytes(t, data).Edit().Clear(tag.TrackNumber).Prepare()
@@ -1239,8 +1205,8 @@ func TestWAVTrackTotalSurvivesNumberOnlyEdit(t *testing.T) {
 	}
 }
 
-// TestWAVUnrepresentableTrackTotalStillWarns: a non-numeric number cannot compose "A1/9", so
-// neither container can hold the total and the write must say so rather than lose it quietly.
+// non-numeric number cannot compose "A1/9", so neither container can hold the total and the write
+// must say so rather than lose it quietly.
 func TestWAVUnrepresentableTrackTotalStillWarns(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"IPRT", "4/9"}), wavData(400))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.TrackNumber, "A1").Prepare()
@@ -1252,9 +1218,8 @@ func TestWAVUnrepresentableTrackTotalStillWarns(t *testing.T) {
 	}
 }
 
-// TestWAVSetEncoderToTheStoredStampKeepsIt: the CLI turns the stamp strip on for any edit
-// naming ENCODER, so the writer's gate has to read the same signal. Setting the key to the
-// value the ISFT item already holds is an authored value, not a stamp to remove.
+// CLI turns the stamp strip on for any edit naming ENCODER, so the writer's gate has to read the
+// same signal.
 func TestWAVSetEncoderToTheStoredStampKeepsIt(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"ISFT", "Lavf62.3.100"}), wavData(400))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Encoder, "Lavf62.3.100").
@@ -1268,8 +1233,6 @@ func TestWAVSetEncoderToTheStoredStampKeepsIt(t *testing.T) {
 	}
 }
 
-// TestWAVStripEncoderStampWithoutAnEncoderEditStillStrips: the gate above must not disarm the
-// option for a caller that never named the key.
 func TestWAVStripEncoderStampWithoutAnEncoderEditStillStrips(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"ISFT", "Lavf62.3.100"}, [2]string{"INAM", "T"}), wavData(400))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Album, "Z").Prepare(wl.WithStripEncoderStamp())
@@ -1281,9 +1244,8 @@ func TestWAVStripEncoderStampWithoutAnEncoderEditStillStrips(t *testing.T) {
 	}
 }
 
-// TestWAVStrippedInfoReportsNoConflictResolution: --legacy strip deletes the LIST chunk, so a
-// plan that also claimed to have resolved a conflict inside it would describe a write that
-// never happened.
+// --legacy strip deletes the LIST chunk, so a plan that also claimed to have resolved a conflict
+// inside it would describe a write that never happened.
 func TestWAVStrippedInfoReportsNoConflictResolution(t *testing.T) {
 	id3 := wavID3(id3v2(3, textFrame(3, "TIT2", "Id3 Title")))
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Riff Title"}), id3, wavData(400))
@@ -1298,8 +1260,8 @@ func TestWAVStrippedInfoReportsNoConflictResolution(t *testing.T) {
 	}
 }
 
-// TestWAVTechnicianAndEngineerItemsProject: ITCH is ffmpeg's encoded_by; both it and IENG
-// have canonical keys and now read, copy and write like the other INFO items.
+// ITCH is ffmpeg's encoded_by; both it and IENG have canonical keys and now read, copy and write
+// like the other INFO items.
 func TestWAVTechnicianAndEngineerItemsProject(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"ITCH", "Tech"}, [2]string{"IENG", "Eng"}), wavData(400))
 	doc := mustParseBytes(t, data)

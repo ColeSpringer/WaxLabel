@@ -15,14 +15,10 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// SV8 chapter synthesis. mpcchap, the reference chapter editor, is the only tool that
-// writes CT packets; its byte layout (and libmpcdec's reading of it) is what these
-// builders reproduce: a varlen start sample, a 16-bit gain and peak, then an APEv2 tag
-// without its "APETAGEX" preamble - the 24-byte header record and the items, no footer.
+// SV8 chapter synthesis.
 
-// mpcSV8Stream builds an SV8 file from a stream header with the given geometry and the
-// packets that follow it. The header carries a valid CRC so the reference decoder
-// accepts the file too.
+// mpcSV8Stream builds an SV8 file from a stream header with the given geometry and the packets that
+// follow it. The header carries a valid CRC so the reference decoder accepts the file too.
 func mpcSV8Stream(samples uint64, rateIndex, channels int, packets ...[]byte) []byte {
 	sh := []byte{0, 0, 0, 0, 8}
 	sh = append(sh, mpcVarlen(samples)...)
@@ -37,12 +33,8 @@ func mpcSV8Stream(samples uint64, rateIndex, channels int, packets ...[]byte) []
 	return out
 }
 
-// mpcChapterTag renders the tag a chapter packet carries: the APEv2 header record
-// minus its preamble (version, size, item count, flags, reserved) and the items. The
-// size counts the items alone, as the record excludes itself and there is no footer.
-// No items renders nothing, which is an untitled chapter. testdata/chapters.mpc is the
-// editor's own output of the same shape, which TestMusepackChaptersFromEditorWrittenFile
-// pins; this builder exists for the placements and malformed forms a real file lacks.
+// mpcChapterTag renders the tag a chapter packet carries: the APEv2 header record minus its
+// preamble (version, size, item count, flags, reserved) and the items.
 func mpcChapterTag(items ...[2]string) []byte {
 	if len(items) == 0 {
 		return nil
@@ -74,9 +66,7 @@ func mpcTitled(sample uint64, title string) []byte {
 	return mpcChapter(sample, mpcChapterTag([2]string{"Title", title}))
 }
 
-// mpcSeekOffset builds an SO packet whose pointer lands gap bytes past the packet's
-// own end. The pointer is relative to the packet's start and the packet's length
-// depends on the pointer's width, so the value is solved for.
+// mpcSeekOffset builds an SO packet whose pointer lands gap bytes past the packet's own end.
 func mpcSeekOffset(gap int) []byte {
 	ptr := gap + 4
 	for {
@@ -108,11 +98,9 @@ func mpcChaptered() []byte {
 		mpcEnd())
 }
 
-// chaptersMPC is an mpcenc stream mpcchap r475 wrote chapters into: Title=Intro at
-// sample 0, a three-item chapter at 8000 whose title item comes last, TITLE=Coda at
-// 16000, and an untitled chapter at 19000 carrying no tag bytes. It is the reference
-// editor's byte layout, so the reader is pinned to real output rather than to the
-// builder's understanding of it.
+// chaptersMPC is an mpcenc stream mpcchap r475 wrote chapters into: Title=Intro at sample 0, a
+// three-item chapter at 8000 whose title item comes last, TITLE=Coda at 16000, and an untitled
+// chapter at 19000 carrying no tag bytes.
 const chaptersMPC = "../testdata/chapters.mpc"
 
 func TestMusepackChaptersFromEditorWrittenFile(t *testing.T) {
@@ -161,9 +149,8 @@ func TestMusepackSV8ChaptersRead(t *testing.T) {
 	}
 }
 
-// TestMusepackSV8ChapterRunPlacement pins where the reference decoder looks for
-// chapters: right after the seek table an SO packet points at, or else the run of CT
-// packets that ends at the end marker. A run anywhere else is not seen.
+// where the reference decoder looks for chapters: right after the seek table an SO packet points
+// at, or else the run of CT packets that ends at the end marker.
 func TestMusepackSV8ChapterRunPlacement(t *testing.T) {
 	audio := mpcAudio(64)
 	st := mpcSeekTable()
@@ -199,7 +186,6 @@ func TestMusepackSV8ChapterRunPlacement(t *testing.T) {
 	}
 }
 
-// TestMusepackSV8ChapterTagForms covers what a chapter packet's tag can hold.
 func TestMusepackSV8ChapterTagForms(t *testing.T) {
 	for _, c := range []struct {
 		name  string
@@ -221,12 +207,11 @@ func TestMusepackSV8ChapterTagForms(t *testing.T) {
 	}
 }
 
-// TestMusepackSV8MalformedChapterPackets: a tag too short for its header record still
-// yields the chapter (untitled), a packet whose start sample runs off its end is
-// skipped while the packets after it are still read, and a start no duration can hold
-// is skipped rather than placed at the start; each is reported once however many
-// packets share the fault, and the packets count against the element cap whether or
-// not they yield a chapter.
+// tag too short for its header record still yields the chapter (untitled), a packet whose start
+// sample runs off its end is skipped while the packets after it are still read, and a start no
+// duration can hold is skipped rather than placed at the start; each is reported once however many
+// packets share the fault, and the packets count against the element cap whether or not they yield
+// a chapter.
 func TestMusepackSV8MalformedChapterPackets(t *testing.T) {
 	t.Run("start sample past any duration", func(t *testing.T) {
 		data := mpcSV8Stream(44100, 0, 2, mpcAudio(8), mpcTitled(1<<62, "far"), mpcTitled(1152, "near"), mpcEnd())
@@ -323,10 +308,8 @@ func TestMusepackSV8MalformedChapterPackets(t *testing.T) {
 	})
 }
 
-// TestMusepackSV8ChapterElementCap: the element cap bounds the packets walked to find
-// the run, the packets of the run itself, and the items a chapter tag is read for, each
-// reported when it trips. The run cap is reached through a seek offset, which ends the
-// walk at its second packet; a walk that must reach the end marker hits the cap first.
+// element cap bounds the packets walked to find the run, the packets of the run itself, and the
+// items a chapter tag is read for, each reported when it trips.
 func TestMusepackSV8ChapterElementCap(t *testing.T) {
 	audio := mpcAudio(64)
 	viaSeekTable := mpcSV8Stream(44100, 0, 2, mpcSeekOffset(len(audio)), audio, mpcSeekTable(),
@@ -381,10 +364,8 @@ func (s *countingSource) ReadAt(p []byte, off int64) (int, error) {
 	return s.ReaderAtSized.ReadAt(p, off)
 }
 
-// TestMusepackSV8ChapterRunCapBoundsWork: once the run cap trips nothing more of the
-// run is read, so a run of any length past the cap costs the same reads as one just
-// over it. The run is reached through a seek offset, which the walk's own cap does not
-// count.
+// once the run cap trips nothing more of the run is read, so a run of any length past the cap costs
+// the same reads as one just over it.
 func TestMusepackSV8ChapterRunCapBoundsWork(t *testing.T) {
 	audio := mpcAudio(64)
 	reads := func(n int) int {
@@ -407,9 +388,9 @@ func TestMusepackSV8ChapterRunCapBoundsWork(t *testing.T) {
 	}
 }
 
-// TestMusepackSV8StreamVersionAndKeys: an MPCK stream must declare stream version 8
-// in its header packet, as the reference decoder and ffmpeg both require, and a
-// packet key outside A-Z is not a packet, so a stream opening with one has no header.
+// MPCK stream must declare stream version 8 in its header packet, as the reference decoder and
+// ffmpeg both require, and a packet key outside A-Z is not a packet, so a stream opening with one
+// has no header.
 func TestMusepackSV8StreamVersionAndKeys(t *testing.T) {
 	data := mpcSV8(44100, 0, 0, 2)
 	data[4+2+1+4] = 7 // the version byte after the SH key, size, and CRC
@@ -430,9 +411,8 @@ func TestMusepackReservedRateReportsNoChapters(t *testing.T) {
 	}
 }
 
-// TestMusepackChaptersSurviveTagEdit: the packets sit inside the stream a rewrite
-// copies verbatim, so a tag edit keeps them and the plan's result document agrees
-// with a fresh parse.
+// packets sit inside the stream a rewrite copies verbatim, so a tag edit keeps them and the plan's
+// result document agrees with a fresh parse.
 func TestMusepackChaptersSurviveTagEdit(t *testing.T) {
 	src := mpcChaptered()
 	plan, err := mustParseBytes(t, src).Edit().Set(tag.Title, "Edited").Prepare()
@@ -454,9 +434,9 @@ func TestMusepackChaptersSurviveTagEdit(t *testing.T) {
 	assertSameProjection(t, result, re)
 }
 
-// TestMusepackChapterEditRefused: chapters are read but not written, so an edit that
-// would change them is refused, or dropped with a warning that says the file keeps
-// what it had. A clear on a chapterless file and an unchanged set stay no-ops.
+// chapters are read but not written, so an edit that would change them is refused, or dropped with
+// a warning that says the file keeps what it had. A clear on a chapterless file and an unchanged
+// set stay no-ops.
 func TestMusepackChapterEditRefused(t *testing.T) {
 	src := mpcChaptered()
 	doc := mustParseBytes(t, src)
@@ -530,9 +510,9 @@ func TestMusepackChapterEditRefused(t *testing.T) {
 	})
 }
 
-// TestMusepackChaptersTransfer is the transcode case: a Musepack source's chapters
-// carry into a destination that stores them, and a destination Musepack file keeps
-// its own chapters while the report says why the source's were not written.
+// transcode case: a Musepack source's chapters carry into a destination that stores them, and a
+// destination Musepack file keeps its own chapters while the report says why the source's were not
+// written.
 func TestMusepackChaptersTransfer(t *testing.T) {
 	t.Run("out of Musepack", func(t *testing.T) {
 		src := mustParseBytes(t, mpcChaptered())

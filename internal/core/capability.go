@@ -8,9 +8,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// AccessLevel grades how completely a dimension is supported. It is
-// deliberately not a single yes/no: a field can be readable but not writable,
-// or representable only with reduced fidelity.
+// AccessLevel grades support (none, partial, full). Read and write can diverge.
 type AccessLevel uint8
 
 const (
@@ -30,138 +28,69 @@ func (a AccessLevel) String() string {
 	}
 }
 
-// Capability reports support along several independent dimensions rather than
-// collapsing them into one enum, because they genuinely diverge (a field may
-// be fully readable yet only lossily writable). It is option-dependent: the
-// same field differs between, say, WAV with an "id3 " chunk and WAV INFO-only.
+// Capability reports read/write support and loss metadata. Option-dependent per format.
 type Capability struct {
 	Read           AccessLevel
 	Write          AccessLevel
 	Representation string   // how the value is stored natively
 	Fidelity       string   // e.g. "lossless", "year-only"
 	Constraints    []string // e.g. "ASCII only", "fixed vocabulary"
-	// MaxItems caps a set-valued dimension (pictures, chapters): the most the
-	// format can store, or 0 for no limit. It makes a hard structural limit (e.g.
-	// MP4's 255-chapter Nero chpl cap) machine-checkable, so a transfer can report
-	// an over-limit set as dropped instead of advertising it carried and then
-	// failing at write time.
+	// MaxItems caps set size (pictures, chapters); 0 = no limit. Used by transfer dispose.
 	MaxItems int
-	// MaxValues caps how many values one field may hold under this format: 0 for
-	// no format-level limit (the field's cardinality is then the key's own, via
-	// [tag.Key.Multivalued]), or 1 for a format that forces a single value even on
-	// an inherently multi-valued key. It is a cardinality hint for discovery
-	// (enumerating editable fields; the caps command), set only by the rare format
-	// that restricts a key's natural cardinality; the common case leaves it 0.
-	// Unlike MaxItems, it is deliberately not consulted by the transfer report: a
-	// multi-value downgrade a destination actually performs is expressed through
-	// Fidelity/Constraints, which the destination's writer honors (see dispose).
+	// MaxValues is a discovery cardinality hint; transfer uses Fidelity/Constraints instead.
 	MaxValues int
-	// PictureLoss grades which picture metadata this format drops on write (the pictures
-	// capability only; [PictureLossNone] for fields, chapters, and lossless formats).
-	// ProjectTransfer uses it to mark a picture set Lossy only when the specific pictures
-	// carry metadata the destination will drop, matching the codec's write-time warning.
+	// PictureLoss on pictures capability only; per-picture loss grading in ProjectTransfer.
 	PictureLoss PictureLoss
-	// ChapterLoss records chapter metadata this format cannot preserve on chapter
-	// writes. It is set only on the chapters capability. ProjectTransfer uses it to
-	// mark a chapter set Lossy only when those chapters actually carry affected
-	// metadata, matching the editor's write warning.
+	// ChapterLoss on chapters capability only.
 	ChapterLoss ChapterLoss
-	// ChapterTitleByteMax caps the byte length of a chapter title this format stores, or 0 for no
-	// limit. MP4's Nero chpl (an 8-bit length prefix) truncates a title past 255 bytes; FLAC/Ogg
-	// have no such cap. ProjectTransfer uses it to mark a chapter set Lossy when a title exceeds it,
-	// so a copy that will truncate a title reports the loss instead of a clean carry, matching the
-	// write-time chapter-title-truncated warning. Set only on the chapters capability.
+	// ChapterTitleByteMax title byte cap; 0 = none (MP4 chpl 255).
 	ChapterTitleByteMax int
-	// SyncedLyricsLoss records synced-lyrics metadata this format cannot preserve. It is
-	// set only on the synced-lyrics capability. ProjectTransfer uses it to mark a
-	// synced-lyrics set Lossy only when those sets carry affected metadata (a per-set
-	// language or descriptor an LRC store drops), matching the editor's write warning.
+	// SyncedLyricsLoss on synced-lyrics capability only.
 	SyncedLyricsLoss SyncedLyricsLoss
-	// SyncedLyricsTimeMax caps a synced-lyric line's timestamp this format stores, or 0 for no
-	// limit. ID3v2 SYLT's 32-bit millisecond field (~49.7 days) and the VorbisComment LRC
-	// store's re-parse ceiling ([MaxLRCTime]) both bound it. ProjectTransfer uses it to mark a
-	// synced-lyrics set Lossy when a line exceeds it, so a copy that will clamp a timestamp
-	// reports the loss instead of a clean carry, matching the write-time
-	// synced-lyrics-timestamp-clamped warning - the analogue of ChapterTitleByteMax. Set only on
-	// the synced-lyrics capability.
+	// SyncedLyricsTimeMax line timestamp cap; 0 = none (SYLT/LRC).
 	SyncedLyricsTimeMax time.Duration
-	// PictureMIMEs lists the cover MIME types this format can store; nil means no
-	// per-MIME restriction. The format may still store no pictures at all, which is
-	// decided by Write == AccessNone. A non-nil list (MP4's covr
-	// atom: JPEG/PNG/BMP) lets the transfer layer drop a single unrepresentable cover
-	// per-image instead of failing the whole copy. The pictures capability only.
+	// PictureMIMEs allowed cover MIMEs; nil = unrestricted. Pictures capability only.
 	PictureMIMEs []string
 
-	// reducesValue, when set, decides per value whether this capability stores reduced
-	// fidelity. It refines [dispose] for fields whose loss depends on the value, such as
-	// an ID3v2.3 year-only date that stores "2021" losslessly but truncates "2021-05-03".
-	// The field stays unexported because Capability is publicly aliased and JSON-marshaled.
+	// reducesValue: per-value Lossy vs Carried in [dispose].
 	reducesValue func(string) bool
-	// dropsValue, when set, decides per value whether this capability cannot store it at
-	// all. It takes precedence over reducesValue in [dispose], so a value omitted by the
-	// writer is reported as dropped rather than merely lossy.
+	// dropsValue: per-value Dropped; precedes reducesValue.
 	dropsValue func(string) bool
-	// slotPictures, when set on a pictures capability, selects which of a picture set the
-	// destination's fixed, uniquely-named slots can hold (APE's two-item Cover Art
-	// convention). added marks the pictures an edit authored, letting an added picture
-	// claim a slot from a pre-existing same-role one; a nil added treats all pictures
-	// alike (the transfer projection, which authors the whole set). It returns the kept
-	// indices in ascending order; the rest have no slot and are dropped by the writer, so
-	// [PartitionPictureSlots] and [PartitionPictureSlotsEdited] grade and filter them the
-	// same way. Unexported like the value predicates above; slotReason is the shared
-	// wording for the loss.
+	// slotPictures: fixed slot selection (APE). nil added = transfer path.
 	slotPictures func(pics []Picture, added []bool) []int
 	slotReason   string
 }
 
-// WithValueReduction returns a copy of c with a per-value reduction predicate. Internal
-// codecs use it when a field's transfer grade depends on the specific value being stored.
+// WithValueReduction attaches a per-value reduction predicate.
 func WithValueReduction(c Capability, reduces func(string) bool) Capability {
 	c.reducesValue = reduces
 	return c
 }
 
-// WithValueDrop returns a copy of c with a per-value drop predicate. Internal codecs use
-// it to keep transfer reports aligned with values their writer omits entirely.
+// WithValueDrop attaches a per-value drop predicate.
 func WithValueDrop(c Capability, drops func(string) bool) Capability {
 	c.dropsValue = drops
 	return c
 }
 
-// WithPictureSlots returns a copy of the pictures capability c carrying a slot partition:
-// slots selects the pictures the destination's uniquely-named storage slots can hold
-// (kept indices, ascending; added marks edit-authored pictures, nil when the distinction
-// does not exist), and reason is the wording for the ones left without a slot. The
-// codec's writer must apply the same selection, so a transfer graded by
-// [PartitionPictureSlots] and the write it predicts cannot drift.
+// WithPictureSlots attaches fixed slot selection for pictures (APE).
 func WithPictureSlots(c Capability, slots func(pics []Picture, added []bool) []int, reason string) Capability {
 	c.slotPictures = slots
 	c.slotReason = reason
 	return c
 }
 
-// Representable reports whether the pictures capability c can store picture p's image
-// format. A nil PictureMIMEs list imposes no MIME restriction; Write still decides
-// whether pictures are supported at all. The check uses [Picture.EffectiveMIME], so a
-// JPEG labeled image/jpg or IMAGE/JPEG is accepted, while a GIF mislabeled as JPEG is
-// rejected. ProjectTransfer and PrepareTransfer use this same predicate, keeping the
-// report and write filter aligned.
+// Representable reports whether c can store p's effective MIME.
 func Representable(c Capability, p Picture) bool {
 	return MIMERepresentable(c, p.EffectiveMIME())
 }
 
-// MIMERepresentable is [Representable] after the sniff: it decides from an
-// already-computed effective MIME, so a caller can sniff once and reuse the result. A
-// PictureMIMEs entry ending in "/*" is a wildcard matching any MIME of that top-level
-// type (e.g. image/* accepts image/tiff); exact entries still match by equality, so a
-// fixed list like MP4's is unaffected.
+// MIMERepresentable checks mime against PictureMIMEs; "image/*" wildcards supported.
 func MIMERepresentable(c Capability, mime string) bool {
 	if len(c.PictureMIMEs) == 0 || slices.Contains(c.PictureMIMEs, mime) {
 		return true
 	}
-	// Match a trailing "/*" wildcard against the lowercased MIME, mirroring a reader that
-	// gates attachments on a lowercase HasPrefix (Matroska accepts any image/ subtype), so
-	// a valid-but-unsniffable subtype is not over-conservatively graded Dropped.
+	// Wildcard match (Matroska image/*).
 	lower := strings.ToLower(mime)
 	for _, pat := range c.PictureMIMEs {
 		if prefix, ok := strings.CutSuffix(pat, "/*"); ok && strings.HasPrefix(lower, prefix+"/") {
@@ -171,15 +100,7 @@ func MIMERepresentable(c Capability, mime string) bool {
 	return false
 }
 
-// PartitionRepresentable splits pics into the covers a pictures capability c can store and
-// the effective MIME type of each cover it cannot, one entry per dropped cover in first-seen
-// order (so UnrepresentableReason can dedup them and a dropped item's count stays right). It
-// also returns keptIdx: the original index in pics of each kept cover, so a caller carrying a
-// per-picture slice parallel to pics (the editor's added-mask) can filter it in the same pass
-// rather than re-running the representability test. This is the one per-image split shared by
-// ProjectTransfer's report, PrepareTransfer's write filter, and the editor's drop-unsupported
-// path, so the three cannot drift on which covers a destination keeps. Each cover's effective
-// MIME is computed once.
+// PartitionRepresentable splits pics by representable MIME. Shared by transfer and editor.
 func PartitionRepresentable(c Capability, pics []Picture) (kept []Picture, keptIdx []int, droppedMIMEs []string) {
 	for i, p := range pics {
 		if mime := p.EffectiveMIME(); MIMERepresentable(c, mime) {
@@ -192,13 +113,7 @@ func PartitionRepresentable(c Capability, pics []Picture) (kept []Picture, keptI
 	return kept, keptIdx, droppedMIMEs
 }
 
-// PartitionPictureSlots applies the pictures capability's slot partition (see
-// [WithPictureSlots]): kept are the pictures the destination's uniquely-named slots can
-// hold, in set order, and dropped counts the ones left without a slot, with the
-// capability's shared reason. A capability with no partition keeps the set whole. It is
-// the slot analogue of [PartitionRepresentable], shared by ProjectTransfer's report and
-// PrepareTransfer's write filter so the report cannot promise a picture the writer then
-// drops.
+// PartitionPictureSlots applies slot partition; no partition keeps all.
 func PartitionPictureSlots(c Capability, pics []Picture) (kept []Picture, dropped int, reason string) {
 	if c.slotPictures == nil || len(pics) == 0 {
 		return pics, 0, ""
@@ -214,13 +129,7 @@ func PartitionPictureSlots(c Capability, pics []Picture) (kept []Picture, droppe
 	return kept, len(pics) - len(kept), c.slotReason
 }
 
-// PartitionPictureSlotsEdited is the editor's added-aware form of the slot partition:
-// added marks the pictures this edit authored, so an added picture claims a slot from a
-// pre-existing same-role one (the edit targets the slot) while a transfer-shaped call
-// with every picture added reduces to [PartitionPictureSlots]'s order-based selection.
-// It returns the kept indices (ascending), the capability's slot reason, and whether the
-// capability declares slots at all - false means the destination has no slot limit and
-// the editor leaves the set alone.
+// PartitionPictureSlotsEdited is editor path with added mask. ok false: no slot limit.
 func PartitionPictureSlotsEdited(c Capability, pics []Picture, added []bool) (keptIdx []int, reason string, ok bool) {
 	if c.slotPictures == nil {
 		return nil, "", false
@@ -228,12 +137,7 @@ func PartitionPictureSlotsEdited(c Capability, pics []Picture, added []bool) (ke
 	return c.slotPictures(pics, added), c.slotReason, true
 }
 
-// NumericGenreCapability returns the GENRE override for codecs that can store a
-// recognized genre as a numeric reference under --numeric-genre. Reading the value back
-// yields the canonical genre name, so spelling or case may change. The capability is
-// conservative: some values still write losslessly, but capability data is value-blind.
-// Edit warnings compare the written result to the requested value before warning, while
-// transfer reports grade AccessPartial as Lossy without a per-value check.
+// NumericGenreCapability is GENRE under --numeric-genre (partial write).
 func NumericGenreCapability(repr string) Capability {
 	return Capability{
 		Read: AccessFull, Write: AccessPartial,
@@ -242,10 +146,7 @@ func NumericGenreCapability(repr string) Capability {
 	}
 }
 
-// OriginalDateV23Capability returns the ORIGINALDATE override for an ID3-backed codec
-// writing ID3v2.3. Its TORY frame holds only the year, so YYYY-MM or YYYY-MM-DD values
-// lose sub-year precision. Keeping this in one helper keeps the ID3-backed codecs in
-// agreement; v2.4 writes the full TDOR string and needs no override.
+// OriginalDateV23Capability is ORIGINALDATE for ID3v2.3 (TORY year only).
 func OriginalDateV23Capability() Capability {
 	return Capability{
 		Read: AccessFull, Write: AccessPartial,
@@ -254,16 +155,7 @@ func OriginalDateV23Capability() Capability {
 	}
 }
 
-// RecordingDateV23Capability describes RECORDINGDATE in an ID3v2.3 tag. Its write level
-// stays AccessFull because the ID3 writer already reports the precise precision loss through
-// ReducedDates; the value-reduction predicate attached by id3 gives transfers the same
-// per-value grading without adding another editor warning.
-//
-// The Fidelity string is deliberately component-agnostic: v2.3 splits a date across TYER (year),
-// TDAT (day+month), and TIME (hour+minute), so which component a given value loses varies: a
-// "2021-06" drops the month, a "2021-06-15T10" drops the hour, a full "...T10:30:45" drops the
-// seconds. A component-specific reason ("seconds dropped") is wrong for the month case, so the shared
-// transfer reason names none; the per-value [value-reduced] write warning carries the specific one.
+// RecordingDateV23Capability is RECORDINGDATE for ID3v2.3. Per-value loss via id3 predicate.
 func RecordingDateV23Capability() Capability {
 	return Capability{
 		Read: AccessFull, Write: AccessFull,
@@ -280,42 +172,17 @@ type Capabilities struct {
 	Pictures     Capability
 	Chapters     Capability
 	SyncedLyrics Capability
-	// Padding grades how completely the format honors the post-metadata padding
-	// controls (--padding / --no-padding), as one AccessLevel rather than a full
-	// Capability (it has no representation or per-key detail):
-	//   - AccessFull: written and shrunk on every edit (FLAC, which always rewrites
-	//     its metadata block - PaddingPolicy.ClampTarget).
-	//   - AccessPartial: a forced rewrite can grow the region, but a fit-in-place edit
-	//     keeps the existing padding and cannot shrink it (the front-tag codecs MP4,
-	//     MP3, and AAC - PaddingPolicy.ReuseOrTarget).
-	//   - AccessNone: the format has no padding concept (Ogg/Opus, WAV, AIFF,
-	//     Matroska).
-	// The CLI reads it to tell the user when a padding flag does not (fully) apply,
-	// and caps renders it ("none"/"partial"/"full" via AccessLevel.String).
+	// Padding: full (FLAC), partial (MP3/MP4/AAC front tag), none (Ogg/WAV/Matroska).
 	Padding AccessLevel
-	// OutputGain grades whether this parser reads and writes the decoder-applied output
-	// gain a stream header declares. Only Ogg Opus is AccessFull; everywhere else an edit
-	// that sets one has nothing to write. AccessNone does not always mean the container
-	// holds no such gain: an Opus stream muxed into Matroska or MP4 carries an OpusHead
-	// inside its codec-private data, which this parser does not decode.
+	// OutputGain: Opus AccessFull; muxed Opus in other containers is not decoded here.
 	OutputGain   AccessLevel
 	GenericField Capability             // default for canonical keys
 	perField     map[tag.Key]Capability // overrides
-	// fieldClassifier is the per-field transfer hook WithFieldClassifier attaches, nil unless a
-	// codec sets one. It is unexported so it never JSON-marshals (Capabilities is a public
-	// alias); WithFieldClassifier documents what it grades and when ProjectTransfer runs it.
-	fieldClassifier FieldClassifier
-	// readOnlyReason is the refusal WithReadOnlyReason attaches, nil unless a codec sets
-	// one. Unexported for the same reason as fieldClassifier.
-	readOnlyReason error
+	fieldClassifier FieldClassifier // per-field transfer override; unexported for JSON
+	readOnlyReason error            // codec write refusal; unexported for JSON
 }
 
-// FieldClassifier is the per-field transfer-grading hook [Capabilities.WithFieldClassifier]
-// attaches. It receives a field's canonical key, the values the destination would store, and
-// the whole source tag set, and returns an overriding disposition and reason plus whether to
-// apply them - a false third result leaves the format-level grade untouched. Naming the shape
-// once keeps the struct field, the setter, and the codec classifiers that satisfy it from
-// drifting.
+// FieldClassifier overrides transfer grading for one field (cardinality, reserved keys, siblings).
 type FieldClassifier func(key tag.Key, values []string, all tag.TagSet) (Disposition, string, bool)
 
 // NewCapabilities builds a Capabilities with the given padding level and per-field
@@ -332,54 +199,31 @@ func NewCapabilities(f Format, readOnly bool, generic, pictures, chapters Capabi
 	}
 }
 
-// WithSyncedLyrics returns a copy of c with its synced-lyrics capability set. This keeps
-// [NewCapabilities] stable for existing codec construction while allowing codecs to opt
-// in to the additional capability dimension. Codecs that do not call it retain the zero
-// Capability, whose AccessNone read/write reports "no synced lyrics".
+// WithSyncedLyrics sets synced-lyrics capability.
 func (c Capabilities) WithSyncedLyrics(sl Capability) Capabilities {
 	c.SyncedLyrics = sl
 	return c
 }
 
-// WithOutputGain returns a copy of c with its output-gain capability set, the same opt-in
-// shape as [Capabilities.WithSyncedLyrics]. Codecs that do not call it keep AccessNone.
+// WithOutputGain sets output-gain capability.
 func (c Capabilities) WithOutputGain(level AccessLevel) Capabilities {
 	c.OutputGain = level
 	return c
 }
 
-// WithFieldClassifier returns a copy of c with a per-field transfer classifier. It is the
-// third and most granular of the transfer grading hooks: [WithValueReduction] and
-// [WithValueDrop] decide per value (func(string) bool, consumed in [dispose]'s value loop
-// with drop-before-reduce precedence), while this one alone sees a field's cardinality,
-// its key, and its sibling fields. Codecs use it to grade the writer-side drops those
-// per-value predicates cannot express: Matroska keeping only the first of a multi-value
-// TITLE (cardinality), a Vorbis reserved-namespace custom key (the key), an ID3 total
-// whose sibling number is non-numeric (a cross-field decision). [ProjectTransfer] consults
-// it only for a field graded Carried, which it may override to Dropped or Lossy to match a
-// writer-side drop; it never overrides a field the format-level capability already graded
-// Dropped or Lossy. The three hooks stay separate because they differ in granularity;
-// folding them into one is a larger refactor not warranted pre-v1.0.
+// WithFieldClassifier attaches per-field transfer grading. Overrides Carried only.
 func (c Capabilities) WithFieldClassifier(fn FieldClassifier) Capabilities {
 	c.fieldClassifier = fn
 	return c
 }
 
-// WithReadOnlyReason returns a copy of c carrying the error the codec would return if
-// asked to write this file. A codec that sets ReadOnly has already computed a precise
-// refusal (an ASF file is unsupported-format, a fragmented MP4 is unsupported-fragmentation,
-// and those are distinct exit-code rows); attaching it here lets a caller that refuses
-// before reaching Plan - the transfer path - return the codec's own answer instead of
-// synthesizing a vaguer one, and keeps the ReadOnly predicate and its reason from being
-// computed in two places.
+// WithReadOnlyReason attaches the codec's write refusal error.
 func (c Capabilities) WithReadOnlyReason(err error) Capabilities {
 	c.readOnlyReason = err
 	return c
 }
 
-// ReadOnlyReason returns the refusal a codec attached for a read-only file, or nil when
-// none was attached (the literal Capabilities{ReadOnly: true} fallbacks for an unknown or
-// unimplemented format). A caller acting on it supplies its own generic error for nil.
+// ReadOnlyReason returns attached write refusal, or nil.
 func (c Capabilities) ReadOnlyReason() error { return c.readOnlyReason }
 
 // Field returns the capability for key, falling back to GenericField when
@@ -391,10 +235,7 @@ func (c Capabilities) Field(key tag.Key) Capability {
 	return c.GenericField
 }
 
-// Reason returns the text used when a partial-write capability reduces fidelity.
-// Fidelity wins over Constraints; if neither is present, it returns a generic fallback.
-// Transfer and edit warnings share this helper so they describe the same loss the same
-// way.
+// Reason returns loss text: Fidelity, else Constraints, else generic fallback.
 func (c Capability) Reason() string {
 	if c.Fidelity != "" {
 		return c.Fidelity

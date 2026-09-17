@@ -8,11 +8,10 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// adtsStream builds a synthetic raw-AAC (ADTS) stream: `frames` AAC-LC frames at
-// 44.1 kHz with the given channel configuration, each a 7-byte fixed header (no
-// CRC) plus payloadPerFrame zero payload bytes. It is a real, detectable ADTS
-// stream - enough to drive detection and the verbatim-copy write path without an
-// encoder.
+// adtsStream builds a synthetic raw-AAC (ADTS) stream: `frames` AAC-LC frames at 44.1 kHz with the
+// given channel configuration, each a 7-byte fixed header (no CRC) plus payloadPerFrame zero
+// payload bytes. It is a real, detectable ADTS stream; enough to drive detection and the
+// verbatim-copy write path without an encoder.
 func adtsStream(chanConfig, frames, payloadPerFrame int) []byte {
 	const hdr = 7 // ADTS fixed header without CRC
 	frameLen := hdr + payloadPerFrame
@@ -33,8 +32,6 @@ func adtsStream(chanConfig, frames, payloadPerFrame int) []byte {
 	return out
 }
 
-// TestAACBareDetectAndCreateTags drives a bare synthetic ADTS stream through
-// detection and the "create an ID3v2 tag where none existed" write path.
 func TestAACBareDetectAndCreateTags(t *testing.T) {
 	data := adtsStream(2, 50, 200) // stereo
 	doc := mustParseBytes(t, data)
@@ -69,8 +66,6 @@ func TestAACBareDetectAndCreateTags(t *testing.T) {
 	}
 }
 
-// TestAACFrontID3Detection covers detectPastLeadingID3: a front ID3v2 tag is
-// sniffed as MP3, but the ADTS stream just past it must reclaim the file as AAC.
 func TestAACFrontID3Detection(t *testing.T) {
 	// id3v2/textFrame are defined in mp3_synth_test.go (same _test package).
 	data := append(id3v2(4, textFrame(4, "TIT2", "Tagged ADTS")), adtsStream(2, 20, 200)...)
@@ -93,9 +88,8 @@ func TestAACFrontID3Detection(t *testing.T) {
 	}
 }
 
-// TestAACMP3MutualExclusivity confirms the layer-bit split: an ADTS stream is
-// AAC (layer 00, which MP3 frame decoding rejects), and a real MPEG stream stays
-// MP3 (never misread as AAC).
+// layer-bit split: an ADTS stream is AAC (layer 00, which MP3 frame decoding rejects), and a real
+// MPEG stream stays MP3 (never misread as AAC).
 func TestAACMP3MutualExclusivity(t *testing.T) {
 	if doc := mustParseBytes(t, adtsStream(2, 8, 200)); doc.Format() != wl.FormatAAC {
 		t.Errorf("ADTS stream detected as %v, want AAC", doc.Format())
@@ -105,12 +99,9 @@ func TestAACMP3MutualExclusivity(t *testing.T) {
 	}
 }
 
-// TestAACExtensionDoesNotOverrideSniff locks the signature-only front-ID3 peek:
-// a file named .aac that is a leading ID3 followed by non-ADTS bytes must NOT be
-// reclassified to AAC by its extension alone - the sniffed leading ID3 (MP3)
-// stands, since only a real signature behind the tag may override it. (The
-// positive ID3+ADTS->AAC case is covered by TestAACFrontID3Detection, which uses a
-// path-less source, so it already resolves by signature.)
+// signature-only front-ID3 peek: a file named .aac that is a leading ID3 followed by non-ADTS bytes
+// must NOT be reclassified to AAC by its extension alone; the sniffed leading ID3 (MP3) stands,
+// since only a real signature behind the tag may override it.
 func TestAACExtensionDoesNotOverrideSniff(t *testing.T) {
 	data := append(id3v2(4, textFrame(4, "TIT2", "x")), 0, 1, 2, 3, 4, 5, 6, 7) // no ADTS sync
 	path := writeTempFile(t, "garbage.aac", data)

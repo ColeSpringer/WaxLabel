@@ -8,10 +8,7 @@ import (
 	"testing"
 )
 
-// id3v1Block builds a valid 128-byte ID3v1 tag (padding zeroed, a numeric year and genre so
-// the strict LooksLikeID3v1 gate accepts it). Every text field is a parameter so this one
-// hand-written offset table serves every test in the package: a second builder covering more
-// fields would have to be kept in lockstep, and the offsets are what a typo breaks silently.
+// id3v1Block builds a valid 128-byte ID3v1 tag. Parameterized fields share one offset table.
 func id3v1Block(title, album, comment string, genre byte) []byte {
 	b := make([]byte, 128)
 	copy(b[0:3], "TAG")
@@ -23,8 +20,7 @@ func id3v1Block(title, album, comment string, genre byte) []byte {
 	return b
 }
 
-// stackedID3v1MP3 returns an MP3 (from a fixture that carries no trailing legacy tag) with n
-// contiguous ID3v1 tags appended, as a re-tagging tool that never removes the old tag leaves.
+// stackedID3v1MP3 appends n contiguous ID3v1 tags to notags.mp3.
 func stackedID3v1MP3(t *testing.T, n int) []byte {
 	t.Helper()
 	audio, err := os.ReadFile(td("notags.mp3"))
@@ -48,9 +44,7 @@ func trailingID3v1Count(b []byte) int {
 	return n
 }
 
-// TestLegacyStripRemovesStackedID3v1 checks that a single --legacy strip clears an entire stacked
-// ID3v1 run (not just the last block), and that a normal edit preserves the whole run rather than
-// truncating an inner block.
+// TestLegacyStripRemovesStackedID3v1: --legacy strip clears full stacked run; normal edit preserves it.
 func TestLegacyStripRemovesStackedID3v1(t *testing.T) {
 	t.Parallel()
 	stacked := stackedID3v1MP3(t, 2)
@@ -58,7 +52,7 @@ func TestLegacyStripRemovesStackedID3v1(t *testing.T) {
 		t.Fatalf("fixture setup: trailing ID3v1 blocks = %d, want 2", got)
 	}
 
-	// The trailing-id3v1 warning reports the run length rather than reading singular.
+	// Dump reports stacked run length, not singular.
 	raw := filepath.Join(t.TempDir(), "raw.mp3")
 	if err := os.WriteFile(raw, stacked, 0o644); err != nil {
 		t.Fatal(err)
@@ -83,7 +77,7 @@ func TestLegacyStripRemovesStackedID3v1(t *testing.T) {
 		t.Errorf("after one --legacy strip, trailing ID3v1 blocks = %d, want 0", got)
 	}
 
-	// A normal edit preserves the full run: the inner block is not truncated by a fixed-128 copy.
+	// Normal edit preserves full run (no inner-block truncation).
 	norm := filepath.Join(t.TempDir(), "norm.mp3")
 	if err := os.WriteFile(norm, stacked, 0o644); err != nil {
 		t.Fatal(err)
@@ -100,8 +94,7 @@ func TestLegacyStripRemovesStackedID3v1(t *testing.T) {
 	}
 }
 
-// flacBodyEmptyVorbis builds a minimal FLAC with an empty Vorbis comment (no canonical tags), so a
-// legacy container prepended/appended to it is the only metadata.
+// flacBodyEmptyVorbis: minimal FLAC with empty Vorbis comment for legacy-only metadata tests.
 func flacBodyEmptyVorbis() []byte {
 	le := func(n int) []byte { return []byte{byte(n), byte(n >> 8), byte(n >> 16), byte(n >> 24)} }
 	block := func(code byte, last bool, body []byte) []byte {
@@ -125,8 +118,7 @@ func flacBodyEmptyVorbis() []byte {
 	return append(out, 0xFF, 0xF8) // a little audio
 }
 
-// legacyOnlyFLAC builds a FLAC whose only title lives in a trailing ID3v1 tag, so the canonical
-// tags view is empty and dump must surface a legacy note rather than a bare "(none)".
+// legacyOnlyFLAC: title only in trailing ID3v1; canonical tags empty.
 func legacyOnlyFLAC() []byte {
 	v1 := make([]byte, 128)
 	copy(v1[0:3], "TAG")
@@ -135,8 +127,7 @@ func legacyOnlyFLAC() []byte {
 	return append(flacBodyEmptyVorbis(), v1...)
 }
 
-// leadingTitlePictureFLAC builds a FLAC whose leading ID3v2 carries both a unique title (a
-// legacy-only tag) and a cover (opaque non-tag content), so dump must print both notes.
+// leadingTitlePictureFLAC: leading ID3v2 has legacy-only title plus cover.
 func leadingTitlePictureFLAC() []byte {
 	syncsafe := func(n int) []byte {
 		return []byte{byte(n>>21) & 0x7f, byte(n>>14) & 0x7f, byte(n>>7) & 0x7f, byte(n) & 0x7f}
@@ -158,8 +149,7 @@ func leadingTitlePictureFLAC() []byte {
 	return append(id3, flacBodyEmptyVorbis()...)
 }
 
-// TestDumpAndLintSurfaceLegacyOnly drives the real CLI: dump prints the legacy note and lint
-// reports legacy-only-tags for a file whose only tag lives in a legacy container.
+// TestDumpAndLintSurfaceLegacyOnly: dump legacy note and lint legacy-only-tags for legacy-only tag.
 func TestDumpAndLintSurfaceLegacyOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.flac")
 	if err := os.WriteFile(path, legacyOnlyFLAC(), 0o644); err != nil {
@@ -180,8 +170,7 @@ func TestDumpAndLintSurfaceLegacyOnly(t *testing.T) {
 	}
 }
 
-// TestDumpShowsBothLegacyNotes drives the CLI on a file that has both a legacy-only tag and opaque
-// legacy content, confirming neither dump note shadows the other and both lint findings fire.
+// TestDumpShowsBothLegacyNotes: legacy-only tag and opaque legacy content both surface.
 func TestDumpShowsBothLegacyNotes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "both.flac")
 	if err := os.WriteFile(path, leadingTitlePictureFLAC(), 0o644); err != nil {

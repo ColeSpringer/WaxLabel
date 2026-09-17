@@ -13,14 +13,10 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// A movie fragment's sample offsets live in its trun, which the stco/co64 fixups cannot
-// reach, so a fragmented file is readable but unwritable. The refusal predicate is a
-// top-level moof: an mvex on its own only declares that fragments MAY follow, and files
-// carrying one are ordinary and fully writable.
+// A movie fragment's sample offsets live in its trun, which the stco/co64 fixups cannot reach, so a
+// fragmented file is readable but unwritable.
 
-// mp4Fragmented builds a tagged progressive file that also declares mvex and carries a
-// moof. Carrying both boxes matches a real fragmented file, and pairs with
-// TestMP4MvexWithoutFragmentsIsWritable to pin the predicate on the moof.
+// mp4Fragmented builds a tagged progressive file that also declares mvex and carries a moof.
 func mp4Fragmented(title string) []byte {
 	data := mp4AssembleExtra(nil, mp4Mvex(),
 		mp4Meta(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", title))))
@@ -154,11 +150,9 @@ func TestMP4UnwritableFilesReportReadOnly(t *testing.T) {
 }
 
 func TestMP4UnwritableDestinationDropsTransfer(t *testing.T) {
-	// With ReadOnly reported, a transfer onto such a file reports clean per-item drops
-	// AND returns the codec's own refusal: the report says what could not be carried, the
-	// error says the write will not happen. Returning only the drops let the transfer
-	// collapse into a silent no-op that exited 0, while the same edit through the editor
-	// exited 3.
+	// With ReadOnly reported, a transfer onto such a file reports clean per-item drops AND returns the
+	// codec's own refusal: the report says what could not be carried, the error says the write will not
+	// happen.
 	src := mustParseBytes(t, mp4Tagged(mp4Text("\xa9nam", "Source Title")))
 	for name, data := range map[string][]byte{"iloc": mp4IlocFile(), "unknown saio": mp4UnknownSaioFile()} {
 		t.Run(name, func(t *testing.T) {
@@ -178,10 +172,10 @@ func TestMP4UnwritableDestinationDropsTransfer(t *testing.T) {
 }
 
 func TestMP4FragmentedTransferDropsEverything(t *testing.T) {
-	// The first real exercise of ReadOnly: true. A read-only destination drops every item
-	// and the transfer is refused with the codec's own error - ErrFragmented here, not the
-	// generic unsupported-format the iloc/saio cases give, since the two are distinct
-	// exit-code rows and flattening them would lose the reason.
+	// The first real exercise of ReadOnly: true. A read-only destination drops every item and the
+	// transfer is refused with the codec's own error. ErrFragmented here, not the generic
+	// unsupported-format the iloc/saio cases give, since the two are distinct exit-code rows and
+	// flattening them would lose the reason.
 	src := mustParseBytes(t, mp4Tagged(
 		mp4Text("\xa9nam", "Source Title"),
 		mp4Text("\xa9ART", "Source Artist"),
@@ -208,11 +202,7 @@ func TestMP4FragmentedTransferDropsEverything(t *testing.T) {
 }
 
 func TestMP4IlstItemNamedLikeOffsetTable(t *testing.T) {
-	// Offset-table collection is scoped to stbl children. An unscoped findAll over moov
-	// descends into udta/meta/ilst, so an ilst item whose four-cc collides with a table
-	// name was decoded as a real table: the parse failed on its bogus entry count, or a
-	// growing edit emitted a patch inside the rewritten ilst region and tripped the
-	// overlap guard.
+	// Offset-table collection is scoped to stbl children.
 	data := mp4Tagged(
 		mp4Text("\xa9nam", "T"),
 		mp4Text("stco", "not an offset table"),
@@ -240,18 +230,14 @@ func mp4Iloc() []byte {
 	return mp4Atom("iloc", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 12)))
 }
 
-// mp4IlocFile builds a tagged file carrying an iloc beside its ilst, inside
-// moov.udta.meta.
+// mp4IlocFile builds a tagged file carrying an iloc beside its ilst, inside moov.udta.meta.
 func mp4IlocFile() []byte {
 	return mp4Assemble(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "T")), mp4Iloc())
 }
 
 func TestMP4IlocRefusedAtEveryPlacement(t *testing.T) {
-	// An iloc's extents are absolute file offsets that nothing patches, so ANY rewrite
-	// that moves bytes strands them - not only one sharing the moov.udta.meta this codec
-	// replaces. The spec's usual placement is a top-level meta, so a guard that saw only
-	// the moov.udta.meta case would miss the shape real files carry and shift the mdat out
-	// from under the extents while reporting success.
+	// An iloc's extents are absolute file offsets that nothing patches, so ANY rewrite that moves bytes
+	// strands them; not only one sharing the moov.udta.meta this codec replaces.
 	tagged := mp4Tagged(mp4Text("\xa9nam", "T"))
 	cases := map[string][]byte{
 		"moov.udta.meta": mp4IlocFile(),
@@ -272,11 +258,9 @@ func TestMP4IlocRefusedAtEveryPlacement(t *testing.T) {
 }
 
 func TestMP4IlstItemNamedLikeSampleTableContainer(t *testing.T) {
-	// trak, mdia, minf, and stbl are all container atoms, so walkAtoms descends into an
-	// ilst item carrying one of those four-ccs. Collecting offset tables by name search
-	// would reach a crafted table nested inside the very region a growing write replaces,
-	// and emit a byte patch there. Resolving the spec path moov > trak > mdia > minf > stbl
-	// closes the nested case, not just the direct-child one.
+	// trak, mdia, minf, and stbl are all container atoms, so walkAtoms descends into an ilst item
+	// carrying one of those four-ccs. Collecting offset tables by name search would reach a crafted
+	// table nested inside the very region a growing write replaces, and emit a byte patch there.
 	data := mp4Tagged(
 		mp4Text("\xa9nam", "T"),
 		mp4Atom("stbl", mp4Stco(0x4000)),

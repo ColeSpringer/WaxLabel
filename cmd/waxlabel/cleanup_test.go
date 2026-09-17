@@ -2,10 +2,8 @@ package main
 
 import "testing"
 
-// TestCleanupRegistryRuns covers the forced-exit cleanup registry: registered cleanups run
-// once on a drain and are cleared (so a second drain does not re-run them), and a nil cleanup is
-// ignored. Not parallel - it drains the package-level registry, which the buffered-stdin path
-// also feeds - so it runs in the serial phase when no parallel CLI test can register concurrently.
+// TestCleanupRegistryRuns: drain runs registered cleanups once, clears the registry, ignores nil.
+// Not parallel: package-level registry shared with buffered-stdin path.
 func TestCleanupRegistryRuns(t *testing.T) {
 	var mine int
 	registerCleanup(func() { mine++ })
@@ -21,10 +19,7 @@ func TestCleanupRegistryRuns(t *testing.T) {
 	}
 }
 
-// TestCleanupRegistryDeregister covers the self-deregistration that keeps the registry holding
-// only in-flight temps: a deregistered cleanup does not run on a later drain. This is what stops
-// the normal-path cleanups from accumulating across the many in-process command runs the test
-// suite drives, and stops one command's drain from touching another concurrent command's entry.
+// TestCleanupRegistryDeregister: deregistered cleanup does not run on later drain.
 func TestCleanupRegistryDeregister(t *testing.T) {
 	var ran int
 	dereg := registerCleanup(func() { ran++ })

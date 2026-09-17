@@ -14,10 +14,7 @@ func chs(starts ...time.Duration) []Chapter {
 	return out
 }
 
-// TestChaptersPastDuration: the rule the editor and the linter share. The unknown-duration
-// gate lives here rather than in either caller, so a truncated or header-only file (which
-// reports 0 and already warns no-audio) cannot have every chapter flagged as beyond 0:00
-// through whichever caller forgot the guard.
+// TestChaptersPastDuration: shared editor/linter rule; unknown duration (0) reports none.
 func TestChaptersPastDuration(t *testing.T) {
 	const sec = time.Second
 	cases := []struct {
@@ -46,9 +43,7 @@ func TestChaptersPastDuration(t *testing.T) {
 	}
 }
 
-// TestDuplicateChapterStarts: one collision reports once however many chapters share the
-// start, and the list order is not assumed sorted - a codec's projection arrives in file
-// order, not the editor's sorted order.
+// TestDuplicateChapterStarts: one report per colliding start; input need not be sorted.
 func TestDuplicateChapterStarts(t *testing.T) {
 	const sec = time.Second
 	cases := []struct {

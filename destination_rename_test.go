@@ -7,10 +7,7 @@ import (
 	"testing"
 )
 
-// TestRenameErrorHidesTempName: a failed commit must report the target the user named and the
-// reason, never the temp file it renamed from. os.Rename's *os.LinkError carries both paths,
-// so the raw error leaked ".waxlabel-*.tmp" into the CLI's per-file line for exactly the
-// Windows sharing violation this write path exists to handle.
+// TestRenameErrorHidesTempName: commit failure names the target, not .waxlabel-*.tmp.
 func TestRenameErrorHidesTempName(t *testing.T) {
 	t.Parallel()
 	inner := &os.LinkError{
@@ -28,14 +25,13 @@ func TestRenameErrorHidesTempName(t *testing.T) {
 	if got := e.Error(); got != want {
 		t.Errorf("Error() = %q, want %q", got, want)
 	}
-	// Unwrapping to the LinkError is what keeps the CLI's local-I/O class (exit 6).
+	// Unwrap LinkError so CLI keeps local-I/O class (exit 6).
 	if _, ok := errors.AsType[*os.LinkError](e); !ok {
 		t.Error("renameError must unwrap to the *os.LinkError")
 	}
 }
 
-// TestRenameErrorNonLinkError: a rename failure that is not a *os.LinkError has no temp
-// name to drop, so its message is kept whole rather than being reduced to nothing.
+// TestRenameErrorNonLinkError: non-LinkError message kept whole.
 func TestRenameErrorNonLinkError(t *testing.T) {
 	t.Parallel()
 	e := &renameError{target: "/music/track.flac", err: errors.New("disk on fire")}

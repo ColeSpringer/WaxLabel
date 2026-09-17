@@ -2,15 +2,8 @@ package main
 
 import "testing"
 
-// An oversized cover is a refusal to write, not a verdict on the input file: the file reads
-// fine and only this invocation's image does not fit. It used to exit 4 (invalid-data,
-// documented as "the file is corrupt"), so a batch script that quarantines exit-4 files
-// quarantined healthy ones. It now exits 3 with its own code, alongside the other
-// write refusals.
-//
-// One case only, driving the real CLI path: the sentinel's own threshold is already pinned
-// in-memory by tests/review_test.go, and a success control would write another ~15 MiB per
-// run for no added coverage. 16 MiB is the FLAC picture block's 24-bit body limit.
+// TestOversizedPictureIsAWriteRefusal: oversized cover is exit 3 picture-too-large, not exit 4.
+// Threshold pinned in review_test.go; 16 MiB is FLAC 24-bit picture body limit.
 func TestOversizedPictureIsAWriteRefusal(t *testing.T) {
 	t.Parallel()
 	big := make([]byte, 16<<20)

@@ -10,8 +10,7 @@ import (
 
 // The IFF codecs re-emit a present tag container on every write, so the operation list has to
 // distinguish three things Execute really does to it: replace its bytes, leave them where they
-// were, and delete the container outright. These tests pin all three for the WAV and AIFF
-// twins together, since the rule is one rule.
+// were, and delete the container outright.
 
 func opsFor(t *testing.T, data []byte, edit func(*wl.Editor)) []string {
 	t.Helper()
@@ -29,9 +28,7 @@ func opsFor(t *testing.T, data []byte, edit func(*wl.Editor)) []string {
 
 func addCover(e *wl.Editor) { e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}) }
 
-// TestNativeContainerDropIsReported: clearing every value the native container holds deletes
-// the container. Execute removes a chunk the file had, so the report must name the removal
-// instead of leaving the renderer to fall back to a bare "rewrite metadata".
+// clearing every value the native container holds deletes the container.
 func TestNativeContainerDropIsReported(t *testing.T) {
 	for _, tc := range []struct {
 		name, op string
@@ -49,9 +46,8 @@ func TestNativeContainerDropIsReported(t *testing.T) {
 	}
 }
 
-// TestUnchangedNativeContainerReportsNoRewrite: a picture-only edit forces an ID3 chunk but
-// leaves the native container's bytes exactly where they were. Claiming a rewrite there
-// describes work no reader could observe.
+// picture-only edit forces an ID3 chunk but leaves the native container's bytes exactly where they
+// were. Claiming a rewrite there describes work no reader could observe.
 func TestUnchangedNativeContainerReportsNoRewrite(t *testing.T) {
 	for _, tc := range []struct {
 		name, op string
@@ -73,11 +69,9 @@ func TestUnchangedNativeContainerReportsNoRewrite(t *testing.T) {
 	}
 }
 
-// TestContainerRewriteReportedWhenOnlyTheBytesMove guards the half of the rule a value
-// comparison alone gets wrong. In both files every canonical value survives the rewrite
-// untouched, yet the container's bytes do move, so the rewrite is real and must be reported.
-// The same files must still round-trip an edit that names nothing as a no-op: the report
-// question ("do the bytes move?") is not the no-op question ("did the content change?").
+// guards the half of the rule a value comparison alone gets wrong. In both files every canonical
+// value survives the rewrite untouched, yet the container's bytes do move, so the rewrite is real
+// and must be reported.
 func TestContainerRewriteReportedWhenOnlyTheBytesMove(t *testing.T) {
 	// A LIST body whose tail the item walk could not read: the rewrite renders from the items
 	// alone, so those bytes do not come back.

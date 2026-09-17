@@ -8,20 +8,11 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// This file builds a QuickTime chapter text track - the representation iTunes and
-// Apple Books read (they ignore the Nero chpl). A chapter edit writes both: the
-// chpl (write_chapters.go) and this track. The track is a "text" trak in moov,
-// referenced from the audio track via a tref "chap"; its samples (one per
-// chapter: a 16-bit length, the UTF-8 title, and an "encd" text-encoding box)
-// live in a fresh mdat appended at end-of-file, so audio data never moves to make
-// room. The static box shapes mirror what ffmpeg's muxer writes, for maximum
-// player compatibility; only the dynamic parts (track id, durations, and the
-// sample tables) are computed per file.
+// This file builds a QuickTime chapter text track - the representation iTunes and Apple
+// Books read (they ignore the Nero chpl).
 
-// encdBox is the text-encoding modifier ffmpeg appends to each chapter text
-// sample (12 bytes: size, "encd", and the 0x0100 encoding value). The sample
-// readers here and in ffmpeg take the title from the 16-bit length prefix and
-// ignore this trailer, but it is included verbatim so output matches ffmpeg's.
+// encdBox is the text-encoding modifier ffmpeg appends to each chapter text sample (12
+// bytes: size, "encd", and the 0x0100 encoding value).
 var encdBox = []byte{0x00, 0x00, 0x00, 0x0c, 'e', 'n', 'c', 'd', 0x00, 0x00, 0x01, 0x00}
 
 // unityMatrix is the standard 3x3 fixed-point transform (identity with the
@@ -41,14 +32,10 @@ func be32u(n uint32) []byte {
 	return b[:]
 }
 
-// clampU32 saturates a 64-bit count to 32 bits for a v0 box field. It is a generic helper
-// applied to both the 90 kHz media fields (the mdhd duration, and by spec each stts delta)
-// and the movie-timescale fields (the tkhd/elst durations), so the ceiling it enforces
-// depends on the caller. The tightest-binding caller is the fixed 90 kHz media field, which
-// saturates at ~13.25 h; the movie-unit fields clamp at the movie-timescale ceiling instead -
-// larger for a coarse ~1 ms timescale (MaxUint32 ms is ~49.7 days), or smaller for a hi-res
-// file whose movie timescale exceeds 90 kHz. buildChapterTrak folds every one of these fields
-// into the WarnChapterStartOverflow signal, so a clamp at any of them is surfaced, not silent.
+// clampU32 saturates a 64-bit count to 32 bits for a v0 box field. the movie-unit
+// fields clamp at the movie-timescale ceiling instead - larger for a coarse ~1 ms
+// timescale (MaxUint32 ms is ~49.7 days), or smaller for a hi-res file whose movie
+// timescale exceeds 90 kHz.
 func clampU32(n uint64) uint32 {
 	if n > math.MaxUint32 {
 		return math.MaxUint32
@@ -56,10 +43,10 @@ func clampU32(n uint64) uint32 {
 	return uint32(n)
 }
 
-// chapterTextEntry is ffmpeg's QuickTime "text" sample description, captured
-// verbatim from a real chapter track (it carries a self data-reference index of
-// 1 and an empty default font table). It is opaque styling; only its presence
-// and shape matter, so it is embedded rather than reconstructed field by field.
+// chapterTextEntry is ffmpeg's QuickTime "text" sample description, captured verbatim
+// from a real chapter track (it carries a self data-reference index of 1 and an empty
+// default font table). only its presence and shape matter, so it is embedded rather
+// than reconstructed field by field.
 var chapterTextEntry = []byte{
 	0x00, 0x00, 0x00, 0x3b, 0x74, 0x65, 0x78, 0x74, 0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
@@ -129,13 +116,7 @@ func chapterTkhd(trackID uint32, duration uint64) []byte {
 	return renderAtom(atomName("tkhd"), p)
 }
 
-// chapterEdts maps the media into the movie timeline at normal rate. When the
-// first chapter starts after t=0 (firstStart > 0, in movie-timescale units), the
-// track's stts decode times still run from zero, so the start offset is carried by
-// a leading empty edit (segment_duration firstStart, media_time -1) before the
-// normal entry - the standard MP4 delayed-track form iTunes and Apple Books honor,
-// so the first chapter's start survives instead of being zero-anchored. firstStart
-// == 0 keeps the original single normal entry, byte for byte.
+// chapterEdts maps the media into the movie timeline at normal rate.
 func chapterEdts(firstStart, mediaDur uint64) []byte {
 	normal := make([]byte, 12)
 	binary.BigEndian.PutUint32(normal[0:4], clampU32(mediaDur)) // segment_duration (movie ts)
@@ -152,14 +133,8 @@ func chapterEdts(firstStart, mediaDur uint64) []byte {
 	return renderAtom(atomName("edts"), elst)
 }
 
-// chapterFirstStart is the first chapter's start in movie-timescale units - the
-// leading empty-edit offset that positions a chapter track whose first chapter is
-// not at t=0. It is 0 (no empty edit) when the movie timescale is unknown: the
-// reader needs that timescale to interpret the edit and cannot here, so the track
-// falls back to the original zero-anchored layout rather than encoding an offset no
-// reader could honor. When the timescale is known it equals the chapter track's
-// media timescale (the write path shares them), so the elst segment_duration and
-// the sample deltas use the same units.
+// chapterFirstStart is the first chapter's start in movie-timescale units - the leading
+// empty-edit offset that positions a chapter track whose first chapter is not at t=0.
 func chapterFirstStart(movieTimescale uint32, chapters []core.Chapter) uint64 {
 	if movieTimescale == 0 || len(chapters) == 0 {
 		return 0
@@ -182,14 +157,9 @@ func chapterSamples(chapters []core.Chapter) []byte {
 	return out
 }
 
-// chapterDeltas returns each chapter sample's stts duration in the chapter media timescale
-// (mts): the gap to the next chapter, and for the last chapter its own End (or the movie
-// duration) so the track spans the whole movie. Because mts is decoupled from the movie
-// timescale, the movie duration - given in movie-timescale units - is converted into mts
-// units before it bounds the last chapter. Deltas are clamped non-negative so an out-of-order
-// list cannot encode a negative duration. The reader sums these from zero, so they double as
-// the basis for the result view. saturated reports whether any delta exceeded the 32-bit stts
-// field and was clamped. The QuickTime track loses precision there; the uint64 Nero chpl does not.
+// chapterDeltas returns each chapter sample's stts duration in the chapter media
+// timescale (mts): the gap to the next chapter, and for the last chapter its own End
+// (or the movie duration) so the track spans the whole movie.
 func chapterDeltas(chapters []core.Chapter, mts, movieTimescale uint32, movieDuration uint64) (deltas []uint32, saturated bool) {
 	n := len(chapters)
 	starts := make([]uint64, n)
@@ -204,10 +174,8 @@ func chapterDeltas(chapters []core.Chapter, mts, movieTimescale uint32, movieDur
 		movieDurUnits = durationToUnits(scaleToDuration(movieDuration, movieTimescale), mts)
 	}
 	deltas = make([]uint32, n)
-	// debt counts units borrowed to separate coincident starts. Borrowing one unit
-	// keeps deltas strictly increasing; repaying it from later slack keeps subsequent
-	// distinct starts aligned with their originals. The unavoidable +1 stays only on
-	// the duplicate start.
+	// debt counts units borrowed to separate coincident starts. The unavoidable +1 stays
+	// only on the duplicate start.
 	var debt uint64
 	for i := range n {
 		var next uint64
@@ -220,10 +188,7 @@ func chapterDeltas(chapters []core.Chapter, mts, movieTimescale uint32, movieDur
 			next = movieDurUnits
 		default:
 			// A one-media-unit tail when nothing else bounds it: the chapter starts at or past
-			// the movie duration, so there is no real end to encode. One unit (not one second)
-			// is the same value the coincident-start path below produces, and it is what
-			// isPlaceholderTail recognizes so the read leaves the chapter open rather than
-			// reporting a fabricated end.
+			// the movie duration, so there is no real end to encode.
 			next = starts[i] + 1
 		}
 		// The input is stably sorted by start, so starts[i] <= next normally holds; a
@@ -253,41 +218,25 @@ func chapterDeltas(chapters []core.Chapter, mts, movieTimescale uint32, movieDur
 	return deltas, saturated
 }
 
-// buildChapterTrak renders the whole chapter text trak with a placeholder chunk
-// offset (the appended mdat's address is not known until the moov delta is). It
-// returns the trak bytes and the byte offset of the placeholder offset entry
-// within them: because the offset table is the last atom in the track, that
-// entry is simply the final 4 (stco) or 8 (co64) bytes.
+// buildChapterTrak renders the whole chapter text trak with a placeholder chunk offset
+// (the appended mdat's address is not known until the moov delta is).
 func buildChapterTrak(trackID, mts, movieTimescale uint32, movieDuration uint64, chapters []core.Chapter, co64 bool) (trak []byte, stcoEntryOff int, saturated bool) {
 	deltas, saturated := chapterDeltas(chapters, mts, movieTimescale, movieDuration)
 	var totalDur uint64 // the summed media (mts) span; mdhd.duration and the stts deltas use it
 	for _, d := range deltas {
 		totalDur += uint64(d)
 	}
-	// The first chapter's start becomes a leading empty edit, so the track
-	// presentation (tkhd) spans firstStart + the media, while the media itself
-	// (mdhd) stays totalDur. firstStart is 0 for a list starting at t=0, collapsing
-	// to the original equal-duration single-edit layout.
+	// The first chapter's start becomes a leading empty edit, so the track presentation
+	// (tkhd) spans firstStart + the media, while the media itself (mdhd) stays totalDur.
 	firstStart := chapterFirstStart(movieTimescale, chapters)
-	// mdhd.duration and the stts deltas are media-timescale (mts); tkhd.duration and the elst
-	// normal segment_duration are movie-timescale. With mts decoupled from the movie timescale,
-	// convert the media span into movie units for those two fields (the leading empty-edit
-	// segment_duration is firstStart, already movie units). When the movie timescale is unknown
-	// or equals mts the value is used as-is.
+	// mdhd.duration and the stts deltas are media-timescale (mts);
 	totalDurMovie := totalDur
 	if movieTimescale != 0 && movieTimescale != mts {
 		totalDurMovie = durationToUnits(scaleToDuration(totalDur, mts), movieTimescale)
 	}
-	// buildChapterTrak writes four clampU32 duration fields: the 90 kHz mdhd (totalDur) and three
-	// movie-unit fields - tkhd (firstStart+totalDurMovie), the elst normal segment (totalDurMovie),
-	// and the elst empty-edit segment (firstStart). Any clamp means the QuickTime track lost its
-	// exact duration, so fold them into the WarnChapterStartOverflow signal rather than the leading
-	// empty edit alone - in particular a chapter list whose cumulative span exceeds the field even
-	// when every inter-chapter delta is small. tkhdDur is the largest movie-unit field (firstStart
-	// >= 0), so checking it subsumes both elst segments; two terms cover all four. The fixed 90 kHz
-	// mdhd binds first at ~13.25 h, while a movie timescale above 90 kHz (a hi-res >=96 kHz file)
-	// makes tkhd bind sooner. tkhdDur is the same value passed to chapterTkhd below, so the check
-	// cannot drift from the field it guards.
+	// buildChapterTrak writes four clampU32 duration fields: the 90 kHz mdhd (totalDur)
+	// and three movie-unit fields - tkhd (firstStart+totalDurMovie), the elst normal
+	// segment (totalDurMovie), and the elst empty-edit segment (firstStart).
 	tkhdDur := firstStart + totalDurMovie
 	saturated = saturated || totalDur > math.MaxUint32 || tkhdDur > math.MaxUint32
 
@@ -349,18 +298,10 @@ func buildStco(co64 bool) []byte {
 	return renderAtom(atomName("stco"), slices.Concat([]byte{0, 0, 0, 0}, be32(1), make([]byte, 4)))
 }
 
-// qtWriteRoundTrip returns the chapters a fresh parse of the written QuickTime
-// track yields: the decode-time of each sample (the running sum of the stts
-// deltas, from zero) scaled to a Start and shifted by the leading empty-edit
-// offset, the next sample's time as End, and titles capped like the samples. It
-// mirrors decodeTextTrack exactly - including applying the offset in the Duration
-// domain after the per-sample scale, and recovering the last chapter's end from the
-// final stts boundary (open only for the placeholder tail) - so the
-// post-write result equals a reparse with no scale-rounding drift. The offset is 0 for
-// a zero-start list (or an unknown movie timescale), so such a write round-trips unchanged.
-// saturated reports whether any stts delta clamped (a per-gap span past ~13.25 h read back as
-// MaxUint32), the same value-based signal decodeTextTrack detects, so the caller can prefer the
-// exact chpl over this lossy track without recomputing the deltas.
+// qtWriteRoundTrip returns the chapters a fresh parse of the written QuickTime track
+// yields: the decode-time of each sample (the running sum of the stts deltas, from
+// zero) scaled to a Start and shifted by the leading empty-edit offset, the next
+// sample's time as End, and titles capped like the samples.
 func qtWriteRoundTrip(chapters []core.Chapter, mts, movieTimescale uint32, movieDuration uint64) (out []core.Chapter, saturated bool) {
 	if len(chapters) == 0 {
 		return nil, false
@@ -370,11 +311,9 @@ func qtWriteRoundTrip(chapters []core.Chapter, mts, movieTimescale uint32, movie
 	// clamped value back, so derive the offset from it too - the prediction then stays equal even
 	// past the 2^32-unit edge, and addClamp matches the read's saturating add.
 	clampedFirstStart := clampU32(chapterFirstStart(movieTimescale, chapters))
-	// Saturation has two sources, mirroring the read: an over-range stts delta (a >13.25 h gap
-	// clamped by buildStts, read back as a MaxUint32 delta) and a leading empty-edit offset whose
-	// clamped u32 segment_duration reads back as MaxUint32 (emptyEditOffset). Reuse that clamped
-	// value (the read's own signal) instead of re-deriving the boundary, so the two agree by
-	// construction (including at firstStart == MaxUint32 exactly, which clamps to itself).
+	// Saturation has two sources, mirroring the read: an over-range stts delta (a >13.25 h
+	// gap clamped by buildStts, read back as a MaxUint32 delta) and a leading empty-edit
+	// offset whose clamped u32 segment_duration reads back as MaxUint32 (emptyEditOffset).
 	saturated = slices.Contains(deltas, uint32(math.MaxUint32)) || clampedFirstStart == math.MaxUint32
 	offset := scaleToDuration(uint64(clampedFirstStart), movieTimescale)
 	cum := make([]uint64, len(chapters))
@@ -391,12 +330,10 @@ func qtWriteRoundTrip(chapters []core.Chapter, mts, movieTimescale uint32, movie
 			out[i].End = addClamp(scaleToDuration(cum[i+1], mts), offset)
 		}
 	}
-	// Mirror decodeTextTrack's last-end recovery exactly: the final stts boundary (the last
-	// cumulative sum plus the last delta) is the last chapter's end, reported verbatim except
-	// for the synthetic one-unit placeholder tail on a chapter starting at/past a known movie
-	// duration (isPlaceholderTail), which stays open. deltas[last] is the unit-grid twin of the
-	// read's endTime - times[last]. A written list is always under maxChapterSamples, so the
-	// reader's completed flag is always true here.
+	// Mirror decodeTextTrack's last-end recovery exactly: the final stts boundary (the
+	// last cumulative sum plus the last delta) is the last chapter's end, reported
+	// verbatim except for the synthetic one-unit placeholder tail on a chapter starting
+	// at/past a known movie duration (isPlaceholderTail), which stays open.
 	last := len(chapters) - 1
 	lastEnd := addClamp(scaleToDuration(cum[last]+uint64(deltas[last]), mts), offset)
 	if !isPlaceholderTail(out[last].Start, uint64(deltas[last]), mts, movieTimescale, movieDuration) {

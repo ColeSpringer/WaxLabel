@@ -18,16 +18,11 @@ func hasTagChange(jd jsonDiff, key string) bool {
 	return false
 }
 
-// TestDiffNumericFoldScopedToMP4 pins that the cross-format numeric fold only fires when an MP4
-// side is present. Two text formats store "01" and "1" verbatim, so diff must report the
-// difference; the fold once hid it, wrongly calling two genuinely-different files identical. When
-// one side is an MP4, the 16-bit atom canonicalizes the value, so copy grades it carried and diff
-// must agree by folding the delta to identical.
+// TestDiffNumericFoldScopedToMP4: numeric fold only when MP4 present; text-to-text keeps 01 vs 1.
 func TestDiffNumericFoldScopedToMP4(t *testing.T) {
 	t.Parallel()
 
-	// Text-to-text: a FLAC with TRACKNUMBER=01 and an MP3 with TRACKNUMBER=1 both store the
-	// value verbatim, so the difference is real and diff must exit 1 and report it.
+	// Text formats store 01 vs 1 verbatim; diff must report it.
 	t.Run("text to text reports leading-zero difference", func(t *testing.T) {
 		t.Parallel()
 		flac := buildTransferSource(t, notagsFLAC, func(e *wl.Editor) *wl.Editor {
@@ -56,9 +51,7 @@ func TestDiffNumericFoldScopedToMP4(t *testing.T) {
 		}
 	})
 
-	// MP4 side present: MEDIATYPE=01 copied FLAC->M4A round-trips through the 16-bit stik atom
-	// as "1". copy grades it carried; diff must agree and fold 01 vs 1 to identical for that
-	// slot, so the two commands cannot disagree on the same value.
+	// MP4 stik canonicalizes 01 to 1; copy carried and diff must agree.
 	t.Run("mp4 mediatype fold agrees with copy carried", func(t *testing.T) {
 		t.Parallel()
 		src := buildTransferSource(t, notagsFLAC, func(e *wl.Editor) *wl.Editor {

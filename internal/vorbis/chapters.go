@@ -10,15 +10,11 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// Chapters in Vorbis comments follow the de-facto CHAPTERxxx convention (foobar2000,
-// shared by FLAC and Ogg): a CHAPTERxxx comment holds a chapter's start as HH:MM:SS.mmm
-// and an optional CHAPTERxxxNAME comment holds its title. WaxLabel treats these comments
-// as structured chapters, not editable custom tag fields. They are replaced only by a
-// chapter edit and otherwise preserved byte-for-byte, including malformed entries. The
-// model is start+title only; FLAC CUESHEET blocks are preserved but not projected.
+// Chapters use the CHAPTERxxx convention (foobar2000; FLAC and Ogg). Structured
+// chapters (start+title), not custom tags. Replaced only by a chapter edit;
+// otherwise preserved including malformed. CUESHEET preserved but not projected.
 //
-// On write WaxLabel emits the common-writer form: 1-based, 3-digit numbers (CHAPTER001).
-// On read it accepts any digit count and 0- or 1-based numbering.
+// Write: 1-based 3-digit (CHAPTER001). Read: any digit count, 0- or 1-based.
 
 // chapterNamePrefix is the comment-name prefix for both the timestamp (CHAPTERxxx) and
 // the title (CHAPTERxxxNAME) comments.

@@ -19,7 +19,6 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// The fixtures live in the library's testdata directory, two levels up.
 var (
 	sampleFLAC = filepath.Join("..", "..", "testdata", "sample.flac")
 	notagsFLAC = filepath.Join("..", "..", "testdata", "notags.flac")
@@ -30,15 +29,12 @@ var (
 	lossless24 = filepath.Join("..", "..", "testdata", "lossless24.wma")
 )
 
-// runCLI drives the CLI exactly as dispatch does in main, capturing stdout, stderr, and the
-// exit code. Each call builds a fresh command tree and holds no shared mutable state, so
-// tests using it may run in parallel.
+// Fresh dispatch per call; safe for t.Parallel.
 func runCLI(t *testing.T, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
 	return runCLIStdin(t, "", args...)
 }
 
-// runCLIStdin is runCLI with a standard-input string, for the "-" path sentinel.
 func runCLIStdin(t *testing.T, stdin string, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
 	var out, errb bytes.Buffer
@@ -46,10 +42,7 @@ func runCLIStdin(t *testing.T, stdin string, args ...string) (stdout, stderr str
 	return out.String(), errb.String(), code
 }
 
-// requireUnwritableDir skips a test whose premise is that chmod 0o555 on a directory blocks
-// creating files in it. Root ignores the mode. Windows does not model directory writability
-// as a mode at all, and enforcing it needs an ACL deny entry, more machinery than a
-// negative-path assertion is worth.
+// Skip on root (ignores mode) and Windows (writability is ACL, not mode).
 func requireUnwritableDir(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -60,7 +53,6 @@ func requireUnwritableDir(t *testing.T) {
 	}
 }
 
-// copyFixture copies a fixture into a fresh temp file the test may modify.
 func copyFixture(t *testing.T, src string) string {
 	t.Helper()
 	data, err := os.ReadFile(src)
@@ -83,9 +75,7 @@ func tagValues(jd jsonDocument, key string) []string {
 	return nil
 }
 
-// decodeJSONList unmarshals a list command's --json output into a slice. Those commands
-// (dump/verify/lint/set/plan, and caps over files) always emit a JSON array, so this is the
-// single decode path for their output; callers assert the element count they expect.
+// List commands always emit a JSON array.
 func decodeJSONList[T any](t *testing.T, data string) []T {
 	t.Helper()
 	var arr []T
@@ -95,7 +85,6 @@ func decodeJSONList[T any](t *testing.T, data string) []T {
 	return arr
 }
 
-// decodeJSONOne is decodeJSONList for the single-path case: it asserts one element.
 func decodeJSONOne[T any](t *testing.T, data string) T {
 	t.Helper()
 	arr := decodeJSONList[T](t, data)
@@ -116,7 +105,6 @@ func TestDumpText(t *testing.T) {
 		"44100 Hz, 2 ch, 16-bit",
 		"TITLE",
 		"Original Title",
-		// The acquired-file signature must surface as a warning.
 		"[inherited-encoder]",
 	} {
 		if !strings.Contains(out, want) {
@@ -125,17 +113,15 @@ func TestDumpText(t *testing.T) {
 	}
 }
 
-// TestDumpJSONCodecCanonical: properties.codec is the canonical, container-neutral name,
-// while the container's raw spelling is preserved in codecProfile and omitted when the raw
-// name was already canonical.
+// properties.codec is canonical; raw spelling in codecProfile, omitted when already canonical.
 func TestDumpJSONCodecCanonical(t *testing.T) {
 	t.Parallel()
 	sampleOpus := filepath.Join("..", "..", "testdata", "sample.opus")
 	cases := []struct{ file, codec, profile string }{
-		{sampleM4B, "AAC", "AAC LC"}, // the esds object type, more precise than the fourcc
-		{sampleFLAC, "FLAC", "flac"}, // FLAC's lowercase preserved
-		{sampleOpus, "Opus", ""},     // already canonical: no profile
-		{mp3MOV, "MP3", ".mp3"},      // the QuickTime fourcc, demoted to the profile
+		{sampleM4B, "AAC", "AAC LC"}, // esds object type
+		{sampleFLAC, "FLAC", "flac"},
+		{sampleOpus, "Opus", ""}, // canonical: no profile
+		{mp3MOV, "MP3", ".mp3"},   // QuickTime fourcc in profile
 	}
 	for _, c := range cases {
 		out, _, code := runCLI(t, "dump", c.file, "--json")
@@ -153,21 +139,15 @@ func TestDumpJSONCodecCanonical(t *testing.T) {
 	}
 }
 
-// TestDumpJSONOmitsBitDepthForLossy: a lossy codec decodes to PCM at the decoder's chosen
-// depth, so a container-stored "16-bit" is noise and omitempty drops it, matching the text
-// view's gate. Lossless FLAC and WMA Lossless keep their real width. Every lossy fixture
-// here stores a literal 16 at the parser, so this exercises the gate rather than an
-// already-absent field.
+// Lossy codecs omit bitsPerSample (container depth is noise); lossless keeps real width.
 func TestDumpJSONOmitsBitDepthForLossy(t *testing.T) {
 	t.Parallel()
-	// Each fixture is its own subtest, so a failure on one still reports the rest.
 	for _, path := range []string{sampleM4B, sampleWMA, mp3MOV} {
 		t.Run("lossy "+filepath.Base(path), func(t *testing.T) {
 			out, _, code := runCLI(t, "dump", path, "--json")
 			if code != 0 {
 				t.Fatalf("exit = %d\n%s", code, out)
 			}
-			// The raw stream must not carry the key at all (omitempty over the zeroed field).
 			if strings.Contains(out, "bitsPerSample") {
 				t.Errorf("a lossy codec's dump should omit bitsPerSample:\n%s", out)
 			}
@@ -180,7 +160,6 @@ func TestDumpJSONOmitsBitDepthForLossy(t *testing.T) {
 			}
 		})
 	}
-	// The lossless codecs keep their real, fixed-width depth.
 	for _, c := range []struct {
 		path string
 		want int
@@ -201,8 +180,7 @@ func TestDumpJSONOmitsBitDepthForLossy(t *testing.T) {
 	}
 }
 
-// TestDumpTextOmitsBitDepthForLossy pins the human view to the same gate: neither a lossy
-// WMA nor a QuickTime MP3 track prints a width on its audio line.
+// Text dump: same bit-depth gate as JSON for lossy codecs.
 func TestDumpTextOmitsBitDepthForLossy(t *testing.T) {
 	t.Parallel()
 	for _, path := range []string{sampleWMA, mp3MOV} {
@@ -220,14 +198,10 @@ func TestDumpTextOmitsBitDepthForLossy(t *testing.T) {
 	}
 }
 
-// TestDumpSurfacesPaddingAndPictureDepth: padding surfaces as paddingBytes (a text
-// "padding:" line and a JSON field) on every format that reserves a padding region, not
-// only FLAC, and a picture's color depth surfaces as depth. A format with no padding
-// region omits paddingBytes; a non-indexed image omits colors.
+// paddingBytes on formats with padding regions; picture depth/colors on sample.mka cover.
 func TestDumpSurfacesPaddingAndPictureDepth(t *testing.T) {
 	t.Parallel()
 
-	// FLAC padding: text line and JSON field.
 	ftext, _, code := runCLI(t, "dump", sampleFLAC)
 	if code != 0 {
 		t.Fatalf("dump flac exit %d", code)
@@ -241,21 +215,18 @@ func TestDumpSurfacesPaddingAndPictureDepth(t *testing.T) {
 		t.Errorf("FLAC paddingBytes should be > 0; got %+v", fd.Properties)
 	}
 
-	// ID3 padding lives inside the tag's declared size rather than a describable block,
-	// so it is reported through the codec rather than by scanning the native view.
+	// ID3 padding via codec, not native scan.
 	mout, _, _ := runCLI(t, "dump", sampleMP3, "--json")
 	md := decodeJSONOne[jsonDocument](t, mout)
 	if md.Properties == nil || md.Properties.PaddingBytes <= 0 {
 		t.Errorf("MP3 paddingBytes should be > 0; got %+v", md.Properties)
 	}
 
-	// A format with no padding region at all still omits the field entirely.
 	wout, _, _ := runCLI(t, "dump", sampleWAV, "--json")
 	if strings.Contains(wout, "paddingBytes") {
 		t.Errorf("WAV dump should omit paddingBytes (no padding region):\n%s", wout)
 	}
 
-	// sample.mka carries a 24-bit non-indexed PNG cover, so depth is 24 and colors omitted.
 	pout, _, _ := runCLI(t, "dump", sampleMKA, "--json")
 	pd := decodeJSONOne[jsonDocument](t, pout)
 	if len(pd.Pictures) == 0 {
@@ -271,7 +242,6 @@ func TestDumpSurfacesPaddingAndPictureDepth(t *testing.T) {
 
 func TestDumpChapters(t *testing.T) {
 	t.Parallel()
-	// Text dump lists chapters with their titles.
 	out, _, code := runCLI(t, "dump", sampleM4B)
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
@@ -281,7 +251,6 @@ func TestDumpChapters(t *testing.T) {
 			t.Errorf("dump output missing %q\n--- got ---\n%s", want, out)
 		}
 	}
-	// JSON dump carries them with millisecond timings.
 	jout, _, code := runCLI(t, "--json", "dump", sampleM4B)
 	if code != 0 {
 		t.Fatalf("json dump exit = %d, want 0", code)
@@ -401,8 +370,7 @@ func TestSetNoOpWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Re-set the title to its current value so the edit resolves to a no-op; a bare
-	// `set file` with no edit flags is a usage error (see TestSetNoEditsRejected).
+	// Re-set to current value -> no-op (bare set with no flags is usage error).
 	out, _, code := runCLI(t, "set", file, "--set", "TITLE=Original Title")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
@@ -419,9 +387,7 @@ func TestSetNoOpWritesNothing(t *testing.T) {
 	}
 }
 
-// TestSetNoEditsRejected: an in-place `set <file>` with no edit flags is a usage error (exit
-// 2), read as a forgotten flag rather than a deliberate no-op. With -o it is a verbatim copy
-// and stays allowed.
+// set with no edit flags is usage error; -o verbatim copy still allowed.
 func TestSetNoEditsRejected(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -432,8 +398,7 @@ func TestSetNoEditsRejected(t *testing.T) {
 	if !strings.Contains(stderr, "no edits given") {
 		t.Errorf("stderr = %q, want it to mention 'no edits given'", stderr)
 	}
-	// A write-shaping flag (e.g. --no-padding) counts as an edit, so it is allowed.
-	if _, _, code := runCLI(t, "set", file, "--no-padding"); code != 0 {
+	if _, _, code := runCLI(t, "set", file, "--no-padding"); code != 0 { // write-shaping flag counts as edit
 		t.Errorf("set --no-padding (re-pad in place) exit = %d, want 0", code)
 	}
 }
@@ -463,9 +428,7 @@ func TestSetSaveAsLeavesOriginal(t *testing.T) {
 	}
 }
 
-// TestSetThroughSymlinkUpdatesTarget: editing through a symlink rewrites the link's target
-// and leaves the link in place, instead of replacing it with a regular file that would then
-// silently diverge from the real one.
+// Edit through symlink updates target; link must stay a symlink.
 func TestSetThroughSymlinkUpdatesTarget(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -486,13 +449,11 @@ func TestSetThroughSymlinkUpdatesTarget(t *testing.T) {
 		t.Fatalf("exit = %d, want 0", code)
 	}
 
-	// The link must still be a symlink, not a regular file.
 	if fi, err := os.Lstat(link); err != nil {
 		t.Fatalf("lstat link: %v", err)
 	} else if fi.Mode()&os.ModeSymlink == 0 {
 		t.Error("the symlink was replaced by a regular file")
 	}
-	// The edit landed on the target the link points at.
 	out, _, _ := runCLI(t, "--json", "dump", real)
 	jd := decodeJSONOne[jsonDocument](t, out)
 	if got := tagValues(jd, "TITLE"); len(got) != 1 || got[0] != "Linked" {
@@ -502,7 +463,6 @@ func TestSetThroughSymlinkUpdatesTarget(t *testing.T) {
 
 func TestVerifyEssenceStableAcrossTagEdit(t *testing.T) {
 	t.Parallel()
-	// A tag-only edit must not change the audio-essence identity.
 	out1, _, code := runCLI(t, "--json", "verify", sampleFLAC)
 	if code != 0 {
 		t.Fatalf("verify exit = %d", code)
@@ -537,8 +497,7 @@ func TestVerifyWholeFileFlag(t *testing.T) {
 	}
 }
 
-// TestVerifyQuietTSV: --quiet emits one tab-separated "essence<TAB>path" line per file, with
-// no labels and no blank separators, so the output pipes cleanly into sort/uniq.
+// verify -q: essence<TAB>path per file, pipe-friendly.
 func TestVerifyQuietTSV(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "verify", "-q", sampleFLAC, notagsFLAC)
@@ -558,14 +517,12 @@ func TestVerifyQuietTSV(t *testing.T) {
 			t.Errorf("first column %q is not an essence digest", cols[0])
 		}
 	}
-	// The labeled block must not appear in quiet mode.
 	if strings.Contains(out, "essence:") {
 		t.Errorf("quiet output should not carry the labeled block:\n%s", out)
 	}
 }
 
-// TestVerifyQuietWholeFileThreeColumns: under --whole-file the quiet line carries the
-// whole-file digest as a third column.
+// verify -q --whole-file: three tab columns.
 func TestVerifyQuietWholeFileThreeColumns(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "verify", "-q", "--whole-file", sampleFLAC)
@@ -581,8 +538,7 @@ func TestVerifyQuietWholeFileThreeColumns(t *testing.T) {
 	}
 }
 
-// TestVerifyQuietNoOpUnderJSON: --quiet is a text-mode choice, so under --json the stream
-// shape is unchanged, a JSON array rather than TSV.
+// --quiet is no-op under --json (stays JSON array).
 func TestVerifyQuietNoOpUnderJSON(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "--json", "verify", "-q", sampleFLAC)
@@ -598,8 +554,7 @@ func TestVerifyQuietNoOpUnderJSON(t *testing.T) {
 	}
 }
 
-// TestSetQuietSilentOnSuccess: a single-file set -q prints nothing on success, on either
-// stream: no plan preview, no outcome line.
+// set -q silent on success.
 func TestSetQuietSilentOnSuccess(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -610,7 +565,6 @@ func TestSetQuietSilentOnSuccess(t *testing.T) {
 	if out != "" || errb != "" {
 		t.Errorf("set -q should be silent on success; stdout=%q stderr=%q", out, errb)
 	}
-	// The edit still applied.
 	j, _, _ := runCLI(t, "--json", "dump", file)
 	jd := decodeJSONOne[jsonDocument](t, j)
 	if got := tagValues(jd, "TITLE"); len(got) != 1 || got[0] != "Quiet" {
@@ -618,8 +572,7 @@ func TestSetQuietSilentOnSuccess(t *testing.T) {
 	}
 }
 
-// TestSetQuietKeepsSummaryAndErrors: quiet suppresses the per-file preview and outcome but
-// keeps the multi-file summary and any per-file error.
+// set -q: suppresses per-file output, keeps summary and errors.
 func TestSetQuietKeepsSummaryAndErrors(t *testing.T) {
 	t.Parallel()
 	good := copyFixture(t, sampleFLAC)
@@ -628,22 +581,18 @@ func TestSetQuietKeepsSummaryAndErrors(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("a missing file should fail the run; exit = %d", code)
 	}
-	// The per-file plan/outcome is gone but the summary remains, with no leading blank
-	// line since there is no per-file output above it.
 	if strings.Contains(out, "plan") || strings.Contains(out, "Saved") {
 		t.Errorf("quiet stdout should omit the per-file preview/outcome:\n%s", out)
 	}
 	if strings.TrimRight(out, "\n") != "1 changed, 0 unchanged, 1 failed" {
 		t.Errorf("quiet stdout should be just the summary, got:\n%q", out)
 	}
-	// The error still surfaces on stderr.
 	if !strings.Contains(errb, "nope.flac") {
 		t.Errorf("quiet stderr should still report the failed file:\n%s", errb)
 	}
 }
 
-// TestMultiLineTagValueAligns: a value containing a newline (lyrics) keeps the aligned
-// layout, so its continuation line is indented rather than at column 0.
+// Multi-line tag values: continuation lines indented.
 func TestMultiLineTagValueAligns(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -657,15 +606,12 @@ func TestMultiLineTagValueAligns(t *testing.T) {
 	if !strings.Contains(out, "line one") || !strings.Contains(out, "line two") {
 		t.Fatalf("both lyric lines should appear:\n%s", out)
 	}
-	// A continuation line at column 0 would show as "\nline two"; indentation puts
-	// spaces before it.
 	if strings.Contains(out, "\nline two") {
 		t.Errorf("continuation line not indented:\n%s", out)
 	}
 }
 
-// TestClassifyError pins the exit-code/machine-code mapping that scripts rely on,
-// including the failure types the CLI never reaches through a normal run.
+// Exit-code and machine-code mapping for scripts.
 func TestClassifyError(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -679,9 +625,7 @@ func TestClassifyError(t *testing.T) {
 		{"rename", &os.LinkError{Op: "rename", Err: errors.New("x")}, 6, "io"},
 		{"open", &fs.PathError{Op: "open", Err: errors.New("x")}, 6, "io"},
 		{"not-found", &fs.PathError{Op: "open", Path: "/x.flac", Err: fs.ErrNotExist}, 6, "not-found"},
-		// A not-exist error that is not a *fs.PathError stays in the I/O class: "not-found"
-		// promises a clean path-only message only a PathError can build, so a rename race
-		// must not borrow that code with a raw message.
+		// Not-exist without PathError stays io: not-found needs PathError for clean message.
 		{"rename-not-found", &os.LinkError{Op: "rename", Err: fs.ErrNotExist}, 6, "io"},
 		{"usage", &usageError{msg: "bad"}, 2, "usage"},
 		{"invalid-key", fmt.Errorf("w: %w", waxerr.ErrInvalidKey), 2, "invalid-key"},
@@ -689,9 +633,7 @@ func TestClassifyError(t *testing.T) {
 		{"chained-stream", fmt.Errorf("w: %w", waxerr.ErrChainedStream), 3, "unsupported-stream"},
 		{"unaligned-stream", fmt.Errorf("w: %w", waxerr.ErrUnalignedStream), 3, "unsupported-alignment"},
 		{"fragmented", fmt.Errorf("w: %w", waxerr.ErrFragmented), 3, "unsupported-fragmentation"},
-		// A healthy file whose supplied cover does not fit: a write refusal, not corruption,
-		// so exit 3 and not the exit 4 a quarantine script acts on.
-		{"picture-too-large", fmt.Errorf("w: %w", waxerr.ErrPictureTooLarge), 3, "picture-too-large"},
+		{"picture-too-large", fmt.Errorf("w: %w", waxerr.ErrPictureTooLarge), 3, "picture-too-large"}, // write refusal, not corruption (exit 4)
 		{"invalid-data", fmt.Errorf("w: %w", waxerr.ErrInvalidData), 4, "invalid-data"},
 		{"input-too-large", fmt.Errorf("w: %w", waxerr.ErrInputTooLarge), 7, "input-too-large"},
 		{"source-changed", fmt.Errorf("w: %w", waxerr.ErrSourceChanged), 5, "source-changed"},
@@ -707,9 +649,7 @@ func TestClassifyError(t *testing.T) {
 	}
 }
 
-// TestClassifyNotFoundMessage pins the not-found message form, and that an already-wrapped
-// *fs.PathError is not flattened back into it: os.IsNotExist does not unwrap, so the
-// caller's message survives and the error classifies as generic I/O.
+// not-found message form; wrapped PathError classifies as io, not flattened to not-found.
 func TestClassifyNotFoundMessage(t *testing.T) {
 	t.Parallel()
 	bare := &fs.PathError{Op: "open", Path: "/x.flac", Err: fs.ErrNotExist}
@@ -717,15 +657,12 @@ func TestClassifyNotFoundMessage(t *testing.T) {
 		t.Errorf("bare message = %q, want %q", c.message, "/x.flac: no such file or directory")
 	}
 
-	// Mirrors edit.go's pictureLoadError: it unwraps to the *fs.PathError, so it stays
-	// io/exit 6 rather than flattening to not-found, but renders the bare cause.
+	// pictureLoadError: io/exit 6, bare cause in message.
 	wrapped := &pictureLoadError{label: "cover image", path: "/x.png", err: &fs.PathError{Op: "open", Path: "/x.png", Err: fs.ErrNotExist}}
 	c := classifyError(wrapped)
 	if c.code != "io" || c.exitCode != 6 {
 		t.Errorf("wrapped class = (%d,%q), want (6,\"io\")", c.exitCode, c.code)
 	}
-	// "<label>: <path>: <reason>", with no "open" verb and no doubled path. The canonical
-	// wording, not the raw cause, so a synthetic fs.ErrNotExist reads like a real one.
 	if want := "cover image: /x.png: " + notFoundReason; c.message != want {
 		t.Errorf("wrapped message = %q, want %q", c.message, want)
 	}
@@ -734,8 +671,7 @@ func TestClassifyNotFoundMessage(t *testing.T) {
 	}
 }
 
-// TestSentinelsHaveNoProgramPrefix: library sentinels carry no "waxlabel: " prefix. The CLI
-// owns the single prefix, so embedding one would double it.
+// Library sentinels must not embed "waxlabel:" prefix.
 func TestSentinelsHaveNoProgramPrefix(t *testing.T) {
 	t.Parallel()
 	for _, err := range []error{
@@ -751,8 +687,7 @@ func TestSentinelsHaveNoProgramPrefix(t *testing.T) {
 	}
 }
 
-// TestDumpMissingFilePathOnce: dump's per-file error names the path once, in its own prefix,
-// without the raw "open <path>:" that used to restate it.
+// Missing file: path once, no raw "open <path>:".
 func TestDumpMissingFilePathOnce(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "nope.flac")
@@ -768,8 +703,6 @@ func TestDumpMissingFilePathOnce(t *testing.T) {
 	}
 }
 
-// TestPlanMissingFileMessage: plan reports a missing file in the per-file form, the path
-// once then the bare reason, with no raw "open <path>:" prefix, matching dump and verify.
 func TestPlanMissingFileMessage(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "nope.flac")
@@ -788,18 +721,12 @@ func TestPlanMissingFileMessage(t *testing.T) {
 	}
 }
 
-// TestPerFileStderrAndJSONAgree runs the same failing input twice and pins what the two
-// renderings owe each other: stderr's per-file line is the JSON element's file and message
-// in human form, so one failure never reads two ways. Two classes creatable on every
-// platform, since permission-denied does not reproduce on Windows. The names stay benign
-// deliberately: displayName sanitizes and jsonFileName does not, so a control byte here
-// would test the sanitizer instead (TestBoundaryJSONStaysRaw does that).
+// stderr per-file line matches JSON file+message. Benign names (control bytes would test sanitizer).
 func TestPerFileStderrAndJSONAgree(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "missing.flac")
-	// The FLAC magic plus a STREAMINFO header declaring 34 bytes that are not there, so it
-	// identifies and then fails to parse: invalid-data, not unsupported-format.
+	// fLaC + truncated STREAMINFO: invalid-data, not unsupported-format.
 	corrupt := filepath.Join(dir, "corrupt.flac")
 	if err := os.WriteFile(corrupt, []byte("fLaC\x00\x00\x00\x22truncated"), 0o644); err != nil {
 		t.Fatal(err)
@@ -825,8 +752,7 @@ func TestPerFileStderrAndJSONAgree(t *testing.T) {
 	}
 }
 
-// TestDirectoryAsInput: a directory where a file is expected fails as a usage error (exit 2)
-// naming --recursive, rather than falling through to the parser's invalid-data class.
+// Directory without --recursive is usage error, not invalid-data.
 func TestDirectoryAsInput(t *testing.T) {
 	t.Parallel()
 	_, errb, code := runCLI(t, "dump", t.TempDir())
@@ -841,10 +767,7 @@ func TestDirectoryAsInput(t *testing.T) {
 	}
 }
 
-// TestTempCreateErrorNamesDir: the temp-create failure names the destination directory, not
-// the internal temp pattern, and the wrapped *fs.PathError keeps that message rather than
-// flattening to "no such file: <temp-name>". Triggered by an unwritable directory, since a
-// missing -o dir is caught up front and never reaches the write.
+// Temp-create error names destination dir, not internal .waxlabel- pattern.
 func TestTempCreateErrorNamesDir(t *testing.T) {
 	t.Parallel()
 	requireUnwritableDir(t)
@@ -853,7 +776,7 @@ func TestTempCreateErrorNamesDir(t *testing.T) {
 	if err := os.Mkdir(roDir, 0o555); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(roDir, 0o755) }) // let TempDir cleanup remove it
+	t.Cleanup(func() { os.Chmod(roDir, 0o755) })
 	_, errb, code := runCLI(t, "set", file, "--set", "TITLE=X", "-o", filepath.Join(roDir, "out.flac"))
 	if code != 6 {
 		t.Fatalf("exit = %d, want 6", code)
@@ -861,16 +784,12 @@ func TestTempCreateErrorNamesDir(t *testing.T) {
 	if !strings.Contains(errb, "create temp file in "+roDir) {
 		t.Errorf("stderr should name the destination dir: %q", errb)
 	}
-	// The internal temp-file pattern must not leak.
 	if strings.Contains(errb, ".waxlabel-") {
 		t.Errorf("internal temp pattern should not leak: %q", errb)
 	}
 }
 
-// TestSetOutputParentDirMissing: a -o path whose parent directory does not exist is a
-// not-found error (exit 6, like every other missing path) reported before the plan prints,
-// not a late temp-create io error. A parent that exists but is a regular file stays a usage
-// error (exit 2): a bad invocation, not a missing path.
+// Missing -o parent: not-found before plan. File-as-parent: usage error.
 func TestSetOutputParentDirMissing(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -887,7 +806,6 @@ func TestSetOutputParentDirMissing(t *testing.T) {
 		t.Errorf("the not-found error should fire before the plan prints; stdout:\n%s", out)
 	}
 
-	// A parent that exists but is a regular file (not a directory) is also rejected.
 	asFile := filepath.Join(t.TempDir(), "afile")
 	if err := os.WriteFile(asFile, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
@@ -898,9 +816,7 @@ func TestSetOutputParentDirMissing(t *testing.T) {
 	}
 }
 
-// TestAddCoverMissingFileContext: a missing cover file is reported as "cover image: <path>:
-// <reason>" (exit 6), with the path named once and no leaked Go "open" verb, while keeping
-// the I/O error class.
+// Missing cover: "cover image: <path>: <reason>", path once, no "open" verb.
 func TestAddCoverMissingFileContext(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -913,19 +829,15 @@ func TestAddCoverMissingFileContext(t *testing.T) {
 	if !strings.Contains(errb, want) {
 		t.Errorf("stderr should carry the clean cover message %q:\n%s", want, errb)
 	}
-	// Named once: pictureLoadError drops the *fs.PathError's repeated path.
 	if strings.Count(errb, missing) != 1 {
 		t.Errorf("cover path should appear once: %q", errb)
 	}
-	// Go's "open" verb must not leak into the user-facing message.
 	if strings.Contains(errb, "open "+missing) {
 		t.Errorf("stderr leaked Go's \"open\" verb: %q", errb)
 	}
 }
 
-// TestAddCoverRejectsNonImage: --add-cover at a file that is not a recognized image is a
-// usage error (exit 2) by default, and --force overrides it, embedding the bytes as
-// octet-stream.
+// Non-image cover is usage error; --force embeds as octet-stream.
 func TestAddCoverRejectsNonImage(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, notagsFLAC)
@@ -942,7 +854,6 @@ func TestAddCoverRejectsNonImage(t *testing.T) {
 		t.Errorf("stderr should explain the rejection: %q", errb)
 	}
 
-	// --force embeds it anyway; with no recognizable header it stores as octet-stream.
 	if _, _, code := runCLI(t, "set", file, "--add-cover", notImage, "--force"); code != 0 {
 		t.Fatalf("--force exit = %d, want 0", code)
 	}
@@ -953,8 +864,6 @@ func TestAddCoverRejectsNonImage(t *testing.T) {
 	}
 }
 
-// TestAddCoverAcceptsRecognizedImage: a recognized image (a BMP) embeds without --force and
-// sniffs to its true MIME instead of degrading to application/octet-stream.
 func TestAddCoverAcceptsRecognizedImage(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, notagsFLAC)
@@ -976,9 +885,7 @@ func TestAddCoverAcceptsRecognizedImage(t *testing.T) {
 	}
 }
 
-// TestSetExtensionMismatchWarns: an output extension that does not match the source format
-// warns but still writes. WaxLabel does not transcode, so the name is misleading, not
-// invalid.
+// Extension mismatch warns (no transcode) but still writes.
 func TestSetExtensionMismatchWarns(t *testing.T) {
 	t.Parallel()
 	src := copyFixture(t, sampleFLAC)
@@ -995,7 +902,6 @@ func TestSetExtensionMismatchWarns(t *testing.T) {
 	}
 }
 
-// TestSetExtensionMatchNoWarn: no warning when the output extension matches the format.
 func TestSetExtensionMatchNoWarn(t *testing.T) {
 	t.Parallel()
 	src := copyFixture(t, sampleFLAC)
@@ -1009,7 +915,6 @@ func TestSetExtensionMatchNoWarn(t *testing.T) {
 	}
 }
 
-// TestSetBulkInPlace edits several files in one invocation and prints a summary.
 func TestSetBulkInPlace(t *testing.T) {
 	t.Parallel()
 	a := copyFixture(t, sampleFLAC)
@@ -1030,7 +935,6 @@ func TestSetBulkInPlace(t *testing.T) {
 	}
 }
 
-// TestSetRecursive walks a directory, editing only the audio files and skipping the rest.
 func TestSetRecursive(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1047,7 +951,6 @@ func TestSetRecursive(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// A non-audio file in the tree must be ignored by the extension filter.
 	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("ignore"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1061,14 +964,13 @@ func TestSetRecursive(t *testing.T) {
 	}
 }
 
-// TestSetBulkContinuesPastFailure: the first error sets the exit class while the remaining
-// files still process, reflected in the summary.
+// Bulk set continues past failure; summary reflects partial success.
 func TestSetBulkContinuesPastFailure(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "nope.flac")
 	good := copyFixture(t, sampleFLAC)
 	out, _, code := runCLI(t, "set", missing, good, "--set", "TITLE=Bulk")
-	if code != 6 { // first failure is the missing file (not-found)
+	if code != 6 {
 		t.Fatalf("exit = %d, want 6", code)
 	}
 	if !strings.Contains(out, "1 changed, 0 unchanged, 1 failed") {
@@ -1081,7 +983,6 @@ func TestSetBulkContinuesPastFailure(t *testing.T) {
 	}
 }
 
-// TestSetOutputRejectsMultipleInputs: -o is refused with more than one input.
 func TestSetOutputRejectsMultipleInputs(t *testing.T) {
 	t.Parallel()
 	a := copyFixture(t, sampleFLAC)
@@ -1096,7 +997,6 @@ func TestSetOutputRejectsMultipleInputs(t *testing.T) {
 	}
 }
 
-// TestPlanBulkJSONArray: a multi-file plan emits a JSON array.
 func TestPlanBulkJSONArray(t *testing.T) {
 	t.Parallel()
 	a := copyFixture(t, sampleFLAC)
@@ -1111,7 +1011,6 @@ func TestPlanBulkJSONArray(t *testing.T) {
 	}
 }
 
-// TestDumpStdin reads a file from standard input via "-".
 func TestDumpStdin(t *testing.T) {
 	t.Parallel()
 	data, err := os.ReadFile(sampleFLAC)
@@ -1128,13 +1027,11 @@ func TestDumpStdin(t *testing.T) {
 	if strings.Contains(out, "waxlabel-stdin") {
 		t.Errorf("the buffered-stdin temp path leaked into output:\n%s", out)
 	}
-	// The text record header reads "<stdin>", not the bare "-" argument.
 	if !strings.Contains(out, "<stdin>") {
 		t.Errorf("dump - header should read <stdin>:\n%s", out)
 	}
 }
 
-// TestLintStdin lints a tag-only file read from standard input.
 func TestLintStdin(t *testing.T) {
 	t.Parallel()
 	data, err := os.ReadFile(emptyMP3)
@@ -1142,7 +1039,7 @@ func TestLintStdin(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, _, code := runCLIStdin(t, string(data), "lint", "-")
-	if code != 4 { // no-audio is a LintError, so it classifies as invalid-data.
+	if code != 4 { // no-audio -> invalid-data
 		t.Fatalf("exit = %d, want 4\n%s", code, out)
 	}
 	if !strings.Contains(out, "no-audio") {
@@ -1150,7 +1047,6 @@ func TestLintStdin(t *testing.T) {
 	}
 }
 
-// TestVerifyStdinKeepsDisplayName: verify shows "-" rather than the buffered temp path.
 func TestVerifyStdinKeepsDisplayName(t *testing.T) {
 	t.Parallel()
 	data, err := os.ReadFile(sampleFLAC)
@@ -1169,7 +1065,6 @@ func TestVerifyStdinKeepsDisplayName(t *testing.T) {
 	}
 }
 
-// TestDiffStdinAgainstFile diffs standard input against the same file on disk.
 func TestDiffStdinAgainstFile(t *testing.T) {
 	t.Parallel()
 	data, err := os.ReadFile(sampleFLAC)
@@ -1182,7 +1077,6 @@ func TestDiffStdinAgainstFile(t *testing.T) {
 	}
 }
 
-// TestDiffRejectsTwoStdin: only one operand may read standard input.
 func TestDiffRejectsTwoStdin(t *testing.T) {
 	t.Parallel()
 	_, errb, code := runCLIStdin(t, "x", "diff", "-", "-")
@@ -1194,7 +1088,6 @@ func TestDiffRejectsTwoStdin(t *testing.T) {
 	}
 }
 
-// TestSetStdinRequiresOutput: editing standard input in place is rejected.
 func TestSetStdinRequiresOutput(t *testing.T) {
 	t.Parallel()
 	data, err := os.ReadFile(sampleFLAC)
@@ -1210,9 +1103,7 @@ func TestSetStdinRequiresOutput(t *testing.T) {
 	}
 }
 
-// TestSetJSONErrorIsPerFileObject pins set's single-file --json failure shape: a one-element
-// array whose entry carries file + error, as dump/verify/lint do, not the bare terminal
-// {schemaVersion,error} envelope.
+// set --json failure: one-element array with file+error, not bare envelope.
 func TestSetJSONErrorIsPerFileObject(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "nope.flac")
@@ -1229,9 +1120,7 @@ func TestSetJSONErrorIsPerFileObject(t *testing.T) {
 	}
 }
 
-// TestSetRecursiveNoFiles: a --recursive walk matching no audio files aligns set with its
-// dry-run twin plan, a "no audio files found" note on stderr and exit 0 rather than a usage
-// error, with [] (not null) under --json for both.
+// Empty recursive set/plan: note on stderr, exit 0, JSON [] not null.
 func TestSetRecursiveNoFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1245,7 +1134,6 @@ func TestSetRecursiveNoFiles(t *testing.T) {
 	if n := strings.Count(errb, "no audio files found"); n != 1 {
 		t.Errorf("expected the no-files note exactly once, got %d: %q", n, errb)
 	}
-	// Under --json, both set and plan emit [] (not null) for the empty walk and exit 0.
 	for _, sub := range []string{"set", "plan"} {
 		out, _, c := runCLI(t, "--json", sub, "--recursive", dir, "--set", "TITLE=X")
 		if c != 0 {
@@ -1257,9 +1145,7 @@ func TestSetRecursiveNoFiles(t *testing.T) {
 	}
 }
 
-// TestLintFixRecursiveNoFiles: lint --fix treats an empty --recursive walk as exit 2 rather
-// than a silent success, while read-only lint of the same walk stays 0. set aligns with its
-// dry-run twin plan at 0 instead; lint --fix has no twin, so it keeps the guard.
+// lint --fix empty walk: exit 2; read-only lint exit 0 (set/plan align at 0).
 func TestLintFixRecursiveNoFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1278,15 +1164,11 @@ func TestLintFixRecursiveNoFiles(t *testing.T) {
 	}
 }
 
-// TestResolvePaddingFlag: the flag-to-policy resolver maps --padding/--no-padding to a write
-// option plus whether a flag was given, and rejects misuse, independent of any file.
 func TestResolvePaddingFlag(t *testing.T) {
 	t.Parallel()
-	// Neither flag set: no option (default policy untouched), no flag given.
 	if opt, given, err := resolvePaddingFlag("", false); opt != nil || given || err != nil {
 		t.Errorf("no flags: opt=%v given=%v err=%v, want nil,false,nil", opt, given, err)
 	}
-	// Valid forms produce an option and report a flag was given.
 	for _, c := range []struct {
 		padding   string
 		noPadding bool
@@ -1294,13 +1176,8 @@ func TestResolvePaddingFlag(t *testing.T) {
 	}{
 		{"16384", false, "--padding 16384"},
 		{"", true, "--no-padding"},
-		// "--padding 0" is the no-padding synonym: a parsed 0 is valid, not misuse. The
-		// closures are not comparable, so TestPaddingZeroShrinksLikeNoPadding proves the
-		// behavioral equivalence.
-		{"0", false, "--padding 0"},
+		{"0", false, "--padding 0"}, // synonym for no-padding; behavior in TestPaddingZeroShrinksLikeNoPadding
 		{"200000", false, "--padding 200000 (floor sets Min=Target)"},
-		// The two combine cleanly when --padding is any spelling of zero, since they then
-		// agree, rather than being rejected by a string "!= 0" test.
 		{"0", true, "--padding 0 --no-padding"},
 		{"00", true, "--padding 00 --no-padding"},
 		{" 0 ", true, "--padding ' 0 ' --no-padding"},
@@ -1309,9 +1186,6 @@ func TestResolvePaddingFlag(t *testing.T) {
 			t.Errorf("%s: opt=%v given=%v err=%v, want option,true,nil", c.desc, opt, given, err)
 		}
 	}
-	// Misuse is a usage error: padding alongside --no-padding, a negative count, a
-	// non-integer, and a count above the sanity cap, rejected before allocation. "   " is
-	// explicit rather than the unset "" sentinel, so it is a bad count, not the default.
 	for _, c := range []struct {
 		padding   string
 		noPadding bool
@@ -1322,8 +1196,6 @@ func TestResolvePaddingFlag(t *testing.T) {
 	}
 }
 
-// TestPaddingNoPadding: --no-padding drops the padding the default reserves, and the default
-// plan advertises the controls.
 func TestPaddingNoPadding(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -1341,16 +1213,12 @@ func TestPaddingNoPadding(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("plan --no-padding exit = %d", code)
 	}
-	// FLAC has a padding concept, so --no-padding confirms it positively rather than
-	// omitting the line.
 	if !strings.Contains(out, "padding: none") {
 		t.Errorf("--no-padding should confirm 'padding: none'; got:\n%s", out)
 	}
 }
 
-// TestPaddingZeroShrinksLikeNoPadding: "--padding 0" means no padding, like --no-padding. It
-// must drop the default-reserved padding and produce a file the same size as the
-// --no-padding write, not keep the region in place as a positive --padding floor does.
+// --padding 0 shrinks like --no-padding, not like a positive floor.
 func TestPaddingZeroShrinksLikeNoPadding(t *testing.T) {
 	t.Parallel()
 	sizeAfter := func(extra ...string) int64 {
@@ -1365,9 +1233,9 @@ func TestPaddingZeroShrinksLikeNoPadding(t *testing.T) {
 		}
 		return fi.Size()
 	}
-	def := sizeAfter()                  // default 8 KiB padding
-	none := sizeAfter("--no-padding")   // padding stripped
-	zero := sizeAfter("--padding", "0") // must behave like --no-padding
+	def := sizeAfter()
+	none := sizeAfter("--no-padding")
+	zero := sizeAfter("--padding", "0")
 	if zero >= def {
 		t.Errorf("--padding 0 size %d should be smaller than the default-padded %d", zero, def)
 	}
@@ -1376,8 +1244,7 @@ func TestPaddingZeroShrinksLikeNoPadding(t *testing.T) {
 	}
 }
 
-// TestPaddingPresetPrecedence: an explicit --padding overrides the preset's policy, so
-// "--preset minimal --padding N" reserves padding even though minimal alone writes none.
+// Explicit --padding overrides preset minimal (which alone writes none).
 func TestPaddingPresetPrecedence(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -1389,14 +1256,11 @@ func TestPaddingPresetPrecedence(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("plan exit = %d", code)
 	}
-	// The override writes a real region, so a byte value (not "padding: none").
 	if !strings.Contains(over, "padding:") || strings.Contains(over, "padding: none") {
 		t.Errorf("--padding should override the preset's zero padding; got:\n%s", over)
 	}
 }
 
-// TestPaddingFlagValidation: combining the flags, or a negative/non-integer value, is a
-// usage error (exit 2) through the CLI.
 func TestPaddingFlagValidation(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -1404,25 +1268,22 @@ func TestPaddingFlagValidation(t *testing.T) {
 		{"plan", file, "--padding", "1024", "--no-padding"},
 		{"plan", file, "--padding", "-1"},
 		{"plan", file, "--padding", "abc"},
-		{"plan", file, "--padding", "99999999999"}, // above the 64 MiB sanity cap
-		{"plan", file, "--padding", "1QiB"},        // unknown unit
-		{"plan", file, "--padding", "0.4"},         // a fraction would silently truncate to 0
-		{"plan", file, "--padding", "1.9KiB"},      // and this one to 1945
-		{"plan", file, "--padding", "1GiB"},        // a valid suffix, still above the cap
+		{"plan", file, "--padding", "99999999999"}, // above 64 MiB cap
+		{"plan", file, "--padding", "1QiB"},
+		{"plan", file, "--padding", "0.4"},    // fraction truncates to 0
+		{"plan", file, "--padding", "1.9KiB"}, // truncates to 1945
+		{"plan", file, "--padding", "1GiB"},   // valid suffix, above cap
 	} {
 		if _, _, code := runCLI(t, args...); code != 2 {
 			t.Errorf("args %v exit = %d, want 2 (usage)", args, code)
 		}
 	}
-	// The rejection keeps parseByteSize's own wording rather than flattening every failure to
-	// one message, so it still says which part of the value was wrong.
 	if _, errb, _ := runCLI(t, "plan", file, "--padding", "1QiB"); !strings.Contains(errb, "unknown unit") {
 		t.Errorf("--padding 1QiB error lost the unit detail: %s", errb)
 	}
 }
 
-// TestPaddingAcceptsSizeSuffixes: --padding reads the same size spellings --max-size does, so
-// "8KiB" is not a usage error while "2GiB" is fine on the other flag.
+// --padding accepts same size suffixes as --max-size.
 func TestPaddingAcceptsSizeSuffixes(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -1437,9 +1298,9 @@ func TestPaddingAcceptsSizeSuffixes(t *testing.T) {
 		"32768":   32768,
 		"32KiB":   32768,
 		"32 KiB":  32768,
-		"32k":     32768, // a bare unit letter is binary, matching HumanBytes' output
+		"32k":     32768, // bare k is binary
 		"33KB":    33000,
-		"32.0KiB": 32768, // a fractional spelling landing on a whole byte is fine
+		"32.0KiB": 32768,
 		"31.5KiB": 32256,
 	}
 	for spelling, want := range cases {
@@ -1449,9 +1310,7 @@ func TestPaddingAcceptsSizeSuffixes(t *testing.T) {
 	}
 }
 
-// TestPaddingFloorGrowsRegion: --padding N is a floor, not just a target. Even an edit that
-// fits the existing small padding must grow the region to at least N rather than reusing the
-// smaller leftover.
+// --padding N is a floor; must grow region even when edit fits existing padding.
 func TestPaddingFloorGrowsRegion(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -1462,19 +1321,15 @@ func TestPaddingFloorGrowsRegion(t *testing.T) {
 		}
 		return decodeJSONList[jsonReport](t, out)[0].PaddingAfter
 	}
-	// The fixture reuses its small (~8 KB) region by default.
 	if def := planPadding("--set", "TITLE=X"); def > 100000 {
 		t.Fatalf("fixture default padding = %d, expected the small reused region", def)
 	}
-	// With the floor, padding grows to the requested 200000 instead of reusing the smaller
-	// region and ignoring --padding.
 	if floor := planPadding("--set", "TITLE=X", "--padding", "200000"); floor < 200000 {
 		t.Errorf("--padding 200000 PaddingAfter = %d, want >= 200000 (floor)", floor)
 	}
 }
 
-// TestMalformedValueNotes: malformed numeric and date values are noted on stderr, the write
-// still succeeds, and --json suppresses the note.
+// Malformed numeric/date noted on stderr; write succeeds; --json suppresses note.
 func TestMalformedValueNotes(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -1488,7 +1343,6 @@ func TestMalformedValueNotes(t *testing.T) {
 	if !strings.Contains(errb, "RECORDINGDATE=banana is not YYYY") {
 		t.Errorf("expected a date note; stderr:\n%s", errb)
 	}
-	// --json suppresses the note (it would corrupt the machine stream).
 	out, jerr, _ := runCLI(t, "--json", "plan", file, "--set", "TRACKNUMBER=abc")
 	if strings.Contains(jerr, "does not look like a number") {
 		t.Errorf("note should be suppressed under --json; stderr:\n%s", jerr)
@@ -1498,8 +1352,6 @@ func TestMalformedValueNotes(t *testing.T) {
 	}
 }
 
-// TestMalformedValueNotesTolerant covers the values ParseNumPair and ValidPartialDate
-// accept: whitespace, "n/total", a leading sign, and partial dates.
 func TestMalformedValueNotesTolerant(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -1516,13 +1368,9 @@ func TestMalformedValueNotesTolerant(t *testing.T) {
 	}
 }
 
-// TestValueNotesDeferredUntilFiles: the invocation-level value note must not print on a run
-// that acts on no real file, or it advises about a value nothing was ever written for.
+// Value notes deferred until a real file is acted on.
 func TestValueNotesDeferredUntilFiles(t *testing.T) {
 	t.Parallel()
-	// A directory without --recursive is a per-element usage error, not a whole-batch abort,
-	// but still not an actionable input, so the value note stays silent: anyInputExists
-	// skips a path with a recorded pre-flight error.
 	_, errb, code := runCLI(t, "set", t.TempDir(), "--set", "TRACKNUMBER=abc")
 	if code != 2 {
 		t.Fatalf("directory exit = %d, want 2", code)
@@ -1530,8 +1378,6 @@ func TestValueNotesDeferredUntilFiles(t *testing.T) {
 	if strings.Contains(errb, "does not look like a number") {
 		t.Errorf("value note must not print on a directory-only run:\n%s", errb)
 	}
-	// An empty --recursive walk aligns with plan: exit 0 with an advisory, not a usage
-	// error. The value note still must not print, since no file was acted on.
 	_, errb, code = runCLI(t, "set", t.TempDir(), "--recursive", "--set", "TRACKNUMBER=abc")
 	if code != 0 {
 		t.Fatalf("empty-walk exit = %d, want 0", code)
@@ -1541,9 +1387,7 @@ func TestValueNotesDeferredUntilFiles(t *testing.T) {
 	}
 }
 
-// TestEmptyValueNote covers the advisory for --set KEY=. No target file has been inspected
-// yet, so the message can only say some formats may drop the empty value, and it must not
-// also carry the malformed-value warning.
+// --set KEY=: empty-value note, not malformed-value warning.
 func TestEmptyValueNote(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -1559,8 +1403,7 @@ func TestEmptyValueNote(t *testing.T) {
 	}
 }
 
-// TestWhitespaceNumericNote: whitespace-only numeric input follows the writer's trim rule,
-// becoming empty and taking the empty-value note rather than the malformed-value one.
+// Whitespace-only numeric trims to empty-value note, not malformed-value.
 func TestWhitespaceNumericNote(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -1576,8 +1419,6 @@ func TestWhitespaceNumericNote(t *testing.T) {
 	}
 }
 
-// TestDumpSanitizesEndToEnd: a tag value carrying an ESC/CR survives in the file but is
-// escaped on dump, so no raw control byte reaches the terminal.
 func TestDumpSanitizesEndToEnd(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -1596,8 +1437,6 @@ func TestDumpSanitizesEndToEnd(t *testing.T) {
 	}
 }
 
-// TestDiffSanitized: diff's change preview escapes control bytes too, since it shares
-// tag.Change.String() with the write-plan preview.
 func TestDiffSanitized(t *testing.T) {
 	t.Parallel()
 	a := copyFixture(t, sampleFLAC)
@@ -1605,7 +1444,7 @@ func TestDiffSanitized(t *testing.T) {
 	if _, _, code := runCLI(t, "set", b, "--set", "TITLE=clean\x1bX"); code != 0 {
 		t.Fatalf("set exit = %d", code)
 	}
-	out, _, _ := runCLI(t, "diff", a, b) // differing files exit 1; the diff is on stdout
+	out, _, _ := runCLI(t, "diff", a, b)
 	if strings.Contains(out, "\x1b") {
 		t.Errorf("diff leaked a raw ESC:\n%q", out)
 	}
@@ -1614,8 +1453,6 @@ func TestDiffSanitized(t *testing.T) {
 	}
 }
 
-// makeAudioTree writes two FLAC fixtures, one nested, plus a non-audio file into a fresh
-// temp dir. It backs the --recursive read-command tests.
 func makeAudioTree(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -1632,14 +1469,12 @@ func makeAudioTree(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	// A non-audio file in the tree must be ignored by the extension filter.
 	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("ignore"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return dir
 }
 
-// TestDumpRecursive walks a tree and dumps every audio file, skipping the rest by extension.
 func TestDumpRecursive(t *testing.T) {
 	t.Parallel()
 	dir := makeAudioTree(t)
@@ -1653,7 +1488,6 @@ func TestDumpRecursive(t *testing.T) {
 	}
 }
 
-// TestVerifyRecursive walks a tree and computes an essence digest for each file.
 func TestVerifyRecursive(t *testing.T) {
 	t.Parallel()
 	dir := makeAudioTree(t)
@@ -1672,8 +1506,7 @@ func TestVerifyRecursive(t *testing.T) {
 	}
 }
 
-// TestLintRecursive walks a tree and lints every audio file. The exit code is unchecked: the
-// fixtures may carry warning-level findings, which is orthogonal to the recursion under test.
+// Exit code unchecked; fixtures may have warnings unrelated to recursion.
 func TestLintRecursive(t *testing.T) {
 	t.Parallel()
 	dir := makeAudioTree(t)
@@ -1684,9 +1517,7 @@ func TestLintRecursive(t *testing.T) {
 	}
 }
 
-// TestDumpRecursiveNoFiles: a directory with no audio files still emits [] (not null) under
-// --json, with the exit-0 no-files and skipped-file advisories suppressed so the stream shape
-// stays clean. TestNoFilesNoteSuppressedUnderJSON covers the text-mode note.
+// Empty recursive dump --json: [], stderr clean (text note in TestNoFilesNoteSuppressedUnderJSON).
 func TestDumpRecursiveNoFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1705,9 +1536,7 @@ func TestDumpRecursiveNoFiles(t *testing.T) {
 	}
 }
 
-// TestSetUnknownKeyNote: an unknown --set key is written as a custom field with a one-line
-// stderr note, the run still exiting 0, followed by a single trailing hint pointing at the
-// keys command. The hint is emitted once even for several unknown keys.
+// Unknown keys: per-key note, exit 0, one keys hint even for multiple unknowns.
 func TestSetUnknownKeyNote(t *testing.T) {
 	t.Parallel()
 	f := copyFixture(t, sampleFLAC)
@@ -1718,7 +1547,6 @@ func TestSetUnknownKeyNote(t *testing.T) {
 	if !strings.Contains(errb, "TITEL is not a known key") || !strings.Contains(errb, "ARTST is not a known key") {
 		t.Errorf("expected per-key unknown-key notes on stderr, got: %q", errb)
 	}
-	// The discovery hint appears exactly once, after the per-key lines.
 	if n := strings.Count(errb, "waxlabel keys"); n != 1 {
 		t.Errorf("keys hint should appear exactly once for multiple unknown keys, got %d:\n%s", n, errb)
 	}
@@ -1729,8 +1557,6 @@ func TestSetUnknownKeyNote(t *testing.T) {
 	}
 }
 
-// TestSetStrictUnknownKeyFails: --strict turns an unknown key into a usage error (exit 2)
-// before any file is touched.
 func TestSetStrictUnknownKeyFails(t *testing.T) {
 	t.Parallel()
 	f := copyFixture(t, sampleFLAC)
@@ -1745,8 +1571,7 @@ func TestSetStrictUnknownKeyFails(t *testing.T) {
 	}
 }
 
-// TestSetUnknownKeyJSONClean: notes never pollute the --json stream. stdout stays a clean
-// array and stderr carries no note.
+// Unknown-key notes never pollute --json stdout or stderr.
 func TestSetUnknownKeyJSONClean(t *testing.T) {
 	t.Parallel()
 	f := copyFixture(t, sampleFLAC)
@@ -1762,8 +1587,7 @@ func TestSetUnknownKeyJSONClean(t *testing.T) {
 	}
 }
 
-// TestPlanSingleValuedMultiNote: pushing a single-valued key past one value surfaces as a
-// plan-report warning on stdout, not a separate stderr note, and the run still exits 0.
+// single-valued-multi on stdout report, not stderr note.
 func TestPlanSingleValuedMultiNote(t *testing.T) {
 	t.Parallel()
 	out, errb, code := runCLI(t, "plan", sampleFLAC, "--add", "ENCODER=a", "--add", "ENCODER=b")
@@ -1773,15 +1597,12 @@ func TestPlanSingleValuedMultiNote(t *testing.T) {
 	if !strings.Contains(out, "single-valued-multi") || !strings.Contains(out, "ENCODER is single-valued") {
 		t.Errorf("expected single-valued-multi warning in the report, got stdout: %q", out)
 	}
-	// The signal lives on the report, not printed twice as a stderr note.
 	if strings.Contains(errb, "note: ENCODER is single-valued") {
 		t.Errorf("single-valued signal should not also be a stderr note: %q", errb)
 	}
 }
 
-// TestSetCustomMultiValueNoSingleValuedNote: a custom key given several values gets the
-// unknown-key note but not the single-valued-multi one, since a custom field legitimately
-// holds a list and the values read back in full.
+// Custom multi-value: unknown-key note only, not single-valued-multi.
 func TestSetCustomMultiValueNoSingleValuedNote(t *testing.T) {
 	t.Parallel()
 	f := copyFixture(t, notagsFLAC)
@@ -1802,8 +1623,6 @@ func TestSetCustomMultiValueNoSingleValuedNote(t *testing.T) {
 	}
 }
 
-// TestSetStrictSingleValuedMultiFails: --strict fails a file whose edit pushes a
-// single-valued key past one value.
 func TestSetStrictSingleValuedMultiFails(t *testing.T) {
 	t.Parallel()
 	f := copyFixture(t, sampleFLAC)
@@ -1813,11 +1632,10 @@ func TestSetStrictSingleValuedMultiFails(t *testing.T) {
 	}
 }
 
-// TestSetSingleValuedMultiPerFileWarning: across a --recursive walk each offending file
-// carries the single-valued-multi signal in its own plan report, never as a stderr note.
+// Recursive walk: single-valued-multi per file on stdout, not stderr.
 func TestSetSingleValuedMultiPerFileWarning(t *testing.T) {
 	t.Parallel()
-	dir := makeAudioTree(t) // two FLAC fixtures, each already carrying an ENCODER
+	dir := makeAudioTree(t)
 	out, errb, _ := runCLI(t, "set", "--recursive", dir, "--add", "ENCODER=a", "--add", "ENCODER=b")
 	if n := strings.Count(out, "single-valued-multi"); n != 2 {
 		t.Errorf("single-valued-multi report warning appeared %d times, want 1 per file (2)", n)
@@ -1827,8 +1645,7 @@ func TestSetSingleValuedMultiPerFileWarning(t *testing.T) {
 	}
 }
 
-// TestSetStdinUsageBeatsCoverRead: the stdin-in-place usage error is reported before any
-// --add-cover file is read, so the actionable exit 2 wins over a cover read's exit 6.
+// stdin-in-place usage error before --add-cover read (exit 2 beats exit 6).
 func TestSetStdinUsageBeatsCoverRead(t *testing.T) {
 	t.Parallel()
 	missingCover := filepath.Join(t.TempDir(), "cover.jpg")
@@ -1844,7 +1661,6 @@ func TestSetStdinUsageBeatsCoverRead(t *testing.T) {
 	}
 }
 
-// TestSetStdinToOutput reads from standard input and writes to a file with -o.
 func TestSetStdinToOutput(t *testing.T) {
 	t.Parallel()
 	data, err := os.ReadFile(sampleFLAC)
@@ -1863,9 +1679,7 @@ func TestSetStdinToOutput(t *testing.T) {
 	}
 }
 
-// TestCopyChaptersIntoOggIsLossy exercises the transfer-report render end to end. Ogg stores
-// chapters as CHAPTERxxx comments, keeping start and title but not Matroska's per-chapter
-// language or flags, so the transfer is reported lossy rather than dropped.
+// Ogg chapter copy is lossy (CHAPTERxxx comments drop language/flags).
 func TestCopyChaptersIntoOggIsLossy(t *testing.T) {
 	t.Parallel()
 	src := filepath.Join("..", "..", "testdata", "chapters.mka")
@@ -1880,22 +1694,17 @@ func TestCopyChaptersIntoOggIsLossy(t *testing.T) {
 	if strings.Contains(out, "unsupported") {
 		t.Errorf("unsupported marker leaked into the report:\n%s", out)
 	}
-	// The chapters land in the Ogg file despite the metadata loss.
 	dump, _, _ := runCLI(t, "dump", dst)
 	if !strings.Contains(dump, "chapters (") {
 		t.Errorf("chapters did not transfer into the Ogg destination:\n%s", dump)
 	}
 }
 
-// TestCopySplitChapterSetShowsCarriedSibling: a chapter set that splits into
-// carried and lossy parts prints both lines, so the lossy line cannot read as a
-// chapter gone missing; the carried line has no reason and no trailing colon.
+// Split chapter set: both carried and lossy lines; carried line has no trailing colon.
 func TestCopySplitChapterSetShowsCarriedSibling(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	// Chapter one's end meets chapter two's start, so it carries; chapter two's ends early,
-	// well inside the 1 s fixture, so it grades lossy. Both stay below the file duration: a
-	// trailing end at or past it is a run-to-EOF end the transfer opens and diff folds away.
+	// Ch1 carries; ch2 ends early -> lossy. Ends below duration (run-to-EOF ends fold away).
 	src := copyFixture(t, notagsMP3)
 	doc, err := wl.ParseFile(ctx, src)
 	if err != nil {
@@ -1946,7 +1755,6 @@ func TestNotagsFixtureHasNoTags(t *testing.T) {
 	}
 }
 
-// TestExitCodes pins the stable failure classification scripts rely on.
 func TestExitCodes(t *testing.T) {
 	t.Parallel()
 	junk := filepath.Join(t.TempDir(), "x.txt")
@@ -1980,9 +1788,7 @@ func TestExitCodes(t *testing.T) {
 	}
 }
 
-// TestEmptyFileExitClass: an empty file is uniformly an unsupported-format failure (exit 3)
-// regardless of extension. It has no signature, so a .flac name must not steer it into the
-// FLAC parser and a different invalid-data class.
+// Empty file: exit 3 unsupported-format regardless of extension (.flac must not steer parser).
 func TestEmptyFileExitClass(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1995,7 +1801,6 @@ func TestEmptyFileExitClass(t *testing.T) {
 		if code != 3 {
 			t.Errorf("%s exit = %d, want 3 (unsupported-format)", name, code)
 		}
-		// The classified error names the empty-file cause so the failure is actionable.
 		jr := decodeJSONOne[jsonDocument](t, out)
 		if jr.Error == nil || jr.Error.Code != "unsupported-format" {
 			t.Errorf("%s error = %+v, want code unsupported-format", name, jr.Error)
@@ -2006,9 +1811,7 @@ func TestEmptyFileExitClass(t *testing.T) {
 	}
 }
 
-// TestContentFaithfulDetection pins the exit-code boundary for content sniffing.
-// Byte-identical junk is unsupported (exit 3) regardless of extension, while a recognized
-// container with corrupt contents stays invalid-data (exit 4).
+// Junk exit 3 regardless of extension; recognized container + corrupt contents exit 4.
 func TestContentFaithfulDetection(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -2022,8 +1825,6 @@ func TestContentFaithfulDetection(t *testing.T) {
 			t.Errorf("byte-identical junk%s exit = %d, want 3 (unsupported regardless of extension)", ext, code)
 		}
 	}
-	// A real FLAC signature selects the codec; corrupt contents then fail in the parser
-	// and keep the invalid-data classification.
 	corrupt := append([]byte("fLaC"), bytes.Repeat([]byte{0xFF}, 64)...)
 	path := filepath.Join(dir, "corrupt.flac")
 	if err := os.WriteFile(path, corrupt, 0o644); err != nil {
@@ -2034,9 +1835,7 @@ func TestContentFaithfulDetection(t *testing.T) {
 	}
 }
 
-// TestPlanJSONErrorIsPerFileObject pins plan's single-file --json failure shape: a
-// one-element array carrying the classified per-file error, not the bare terminal envelope
-// reserved for command-resolution failures.
+// plan --json failure: one-element array with per-file error, not bare envelope.
 func TestPlanJSONErrorIsPerFileObject(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "nope.flac")
@@ -2053,8 +1852,6 @@ func TestPlanJSONErrorIsPerFileObject(t *testing.T) {
 	}
 }
 
-// TestDumpJSONPerFileError: dump keeps going after a bad file and records the failure as a
-// per-file error object.
 func TestDumpJSONPerFileError(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "nope.flac")
@@ -2074,17 +1871,15 @@ func TestDumpJSONPerFileError(t *testing.T) {
 	}
 }
 
-// TestJSONErrorRoutingOnEarlyAbort: --json still routes the terminal error to stdout when
-// cobra aborts before binding the persistent flag. The shape follows the resolved command, so
-// an unknown command stays a bare object while a bad flag on a list command gets its array.
+// Early cobra abort: error on stdout; list commands get array, unknown command gets object.
 func TestJSONErrorRoutingOnEarlyAbort(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		args []string
 		list bool // a list command wraps its pre-flight error in a one-element array
 	}{
-		{[]string{"--json", "frobnicate", "x"}, false},           // unknown command -> object
-		{[]string{"dump", "--nope", "--json", sampleFLAC}, true}, // bad flag on dump -> array
+		{[]string{"--json", "frobnicate", "x"}, false},
+		{[]string{"dump", "--nope", "--json", sampleFLAC}, true},
 	}
 	for _, tc := range cases {
 		t.Run(strings.Join(tc.args, "_"), func(t *testing.T) {
@@ -2094,7 +1889,7 @@ func TestJSONErrorRoutingOnEarlyAbort(t *testing.T) {
 			}
 			var body jsonErrBody
 			if tc.list {
-				body = decodeJSONOne[jsonError](t, out).Error // asserts a single-element array
+				body = decodeJSONOne[jsonError](t, out).Error
 			} else {
 				var je jsonError
 				if err := json.Unmarshal([]byte(out), &je); err != nil {
@@ -2109,10 +1904,7 @@ func TestJSONErrorRoutingOnEarlyAbort(t *testing.T) {
 	}
 }
 
-// TestSetShowsPlanBeforeFailedWrite: the plan preview prints even when the write fails, as
-// the help promises. An in-place edit in an unwritable directory keeps the file readable, so
-// only the temp create fails; an -o write would be caught by the probe before the plan
-// renders.
+// Plan prints before failed write. RO dir: file readable, temp create fails.
 func TestSetShowsPlanBeforeFailedWrite(t *testing.T) {
 	t.Parallel()
 	requireUnwritableDir(t)
@@ -2120,8 +1912,6 @@ func TestSetShowsPlanBeforeFailedWrite(t *testing.T) {
 	if err := os.Mkdir(roDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// A real file in the dir, then make the dir read-only: the file stays readable, so parse
-	// and plan succeed, while the temp create for the in-place atomic write fails.
 	data, err := os.ReadFile(sampleFLAC)
 	if err != nil {
 		t.Fatal(err)
@@ -2153,7 +1943,7 @@ func TestHumanDuration(t *testing.T) {
 		{500 * time.Millisecond, "0.50s"},
 		{time.Second, "1.00s"},
 		{59500 * time.Millisecond, "59.50s"},
-		{59999 * time.Millisecond, "1:00"}, // boundary: must not be "60.00s"
+		{59999 * time.Millisecond, "1:00"}, // not "60.00s"
 		{60 * time.Second, "1:00"},
 		{90 * time.Second, "1:30"},
 		{3661 * time.Second, "1:01:01"},
@@ -2168,12 +1958,10 @@ func TestHumanDuration(t *testing.T) {
 func TestWriteWrapped(t *testing.T) {
 	t.Parallel()
 	var b bytes.Buffer
-	// A trailing newline must not produce a stray indent-only line.
 	writeWrapped(&b, 4, "a\nb\n")
 	if got, want := b.String(), "a\n    b\n"; got != want {
 		t.Errorf("trailing newline: got %q, want %q", got, want)
 	}
-	// An internal blank line is preserved.
 	b.Reset()
 	writeWrapped(&b, 2, "x\n\ny")
 	if got, want := b.String(), "x\n  \n  y\n"; got != want {
@@ -2181,10 +1969,7 @@ func TestWriteWrapped(t *testing.T) {
 	}
 }
 
-// TestErrClassRankCoversEveryErrorClass pins worseError's invariant: every class
-// classifyError produces has an errClassRank entry. A missing one falls to rank 0, below the
-// generic "error", so that class would lose the aggregate exit to any other failure.
-// Bidirectional, so adding a class means adding it to errClassRank and to the samples.
+// Every classifyError code has errClassRank entry; bidirectional with samples.
 func TestErrClassRankCoversEveryErrorClass(t *testing.T) {
 	t.Parallel()
 	samples := []error{
@@ -2200,12 +1985,12 @@ func TestErrClassRankCoversEveryErrorClass(t *testing.T) {
 		waxerr.ErrSourceChanged,
 		waxerr.ErrInvalidData,
 		waxerr.ErrInputTooLarge,
-		&fs.PathError{Op: "open", Path: "x", Err: fs.ErrNotExist}, // not-found
-		&fs.PathError{Op: "open", Path: "x", Err: errors.New("disk failure")}, // io
+		&fs.PathError{Op: "open", Path: "x", Err: fs.ErrNotExist},
+		&fs.PathError{Op: "open", Path: "x", Err: errors.New("disk failure")},
 		context.Canceled,
 		context.DeadlineExceeded,
-		errBrokenPipe,                           // broken-pipe (exit 0)
-		errors.New("some unclassified failure"), // error
+		errBrokenPipe,
+		errors.New("some unclassified failure"),
 	}
 	seen := map[string]bool{}
 	for _, err := range samples {
@@ -2220,17 +2005,13 @@ func TestErrClassRankCoversEveryErrorClass(t *testing.T) {
 			t.Errorf("errClassRank has %q, which no sampled error produces; add a sample or remove the rank", code)
 		}
 	}
-	// A corrupt file outranks a wrong path, which outranks a bad invocation.
 	if !(errClassRank["invalid-data"] > errClassRank["not-found"] && errClassRank["not-found"] > errClassRank["usage"]) {
 		t.Errorf("precedence broken: want invalid-data(%d) > not-found(%d) > usage(%d)",
 			errClassRank["invalid-data"], errClassRank["not-found"], errClassRank["usage"])
 	}
 }
 
-// TestInputTooLargeAggregateRank places an over-cap streamed input in the aggregate: below a
-// corrupt file, above an unsupported format. Both orders, since the aggregate is
-// order-independent. Driven through worseError directly because a real --max-size failure on
-// stdin aborts the invocation before the per-file loop.
+// input-too-large aggregate rank: below corrupt, above unsupported. Tested via worseError (stdin aborts early).
 func TestInputTooLargeAggregateRank(t *testing.T) {
 	t.Parallel()
 	inputTooLarge := fmt.Errorf("w: %w", waxerr.ErrInputTooLarge)

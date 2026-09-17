@@ -20,9 +20,9 @@ type WriteOpts struct {
 	NumericGenre bool // write TCON as a numeric reference when the genre is standard
 }
 
-// StructuredEdit carries the non-tag structures a frame rebuild owns. A structure is
-// dropped and re-emitted only when its change flag is set; otherwise the source frames
-// are preserved as-is.
+// StructuredEdit carries non-tag structures a frame rebuild owns. Dropped and
+// re-emitted only when the matching change flag is set; otherwise source frames stay.
+
 type StructuredEdit struct {
 	Pictures            []core.Picture
 	PicturesChanged     bool
@@ -30,126 +30,68 @@ type StructuredEdit struct {
 	ChaptersChanged     bool
 	SyncedLyrics        []core.SyncedLyrics
 	SyncedLyricsChanged bool
-	// Carried marks the whole edit as a faithful cross-format carry rather than something the
-	// user authored, which changes two decisions about metadata the DESTINATION already had.
-	// The synced-lyrics empty-language fallback is skipped: a carry of a no-language set
-	// (FLAC/Ogg store none) must read back with no language, not silently inherit the
-	// destination's. And a re-rendered comment does not keep the destination's COMM
-	// description: labelling a value that arrived from somewhere else "Ripped by EAC" is a
-	// claim about text that is no longer there. An authored edit leaves this false and keeps
-	// both conveniences.
+	// Carried: faithful cross-format carry (not user-authored). Skips synced-lyrics lang
+	// fallback and COMM description keep from the destination.
+
 	Carried bool
-	// SyncedLyricsCleared marks the synced-lyrics set as explicitly cleared before this edit
-	// authored a new one, so the same language/descriptor fallback is skipped: a clear means
-	// "start fresh," so an authored set with no language reads back with none instead of
-	// inheriting the cleared one. It is distinct from Carried (a faithful transfer)
-	// so the edit is not mislabeled; both suppress the fallback.
+	// SyncedLyricsCleared: clear-then-author; skip lang/descriptor fallback (start fresh).
+
 	SyncedLyricsCleared bool
-	// MediaDuration is the file's playable length, used only to bound a trailing open-ended
-	// chapter (End == 0) at CHAP serialization time so a spec-conforming reader sees a
-	// concrete end instead of the 0xFFFFFFFF "unused" sentinel (~49.7 days). Zero (unknown
-	// duration) leaves the trailing chapter open, emitting the sentinel as before. The
-	// canonical core.Chapter{End:0} "open" model is unchanged; the fill is ID3-local.
+	// MediaDuration: bounds open trailing chapter (End==0) at CHAP write; 0 keeps sentinel.
+
 	MediaDuration time.Duration
 }
 
-// RebuildInfo reports facts about a rebuild the caller surfaces in the write
-// report.
+// RebuildInfo is rebuild facts the caller surfaces in the write report.
+
 type RebuildInfo struct {
-	// UsedV23Multi is true when a v2.3 tag was written with NUL-separated
-	// multi-values (a nonstandard extension whose compatibility impact is flagged).
+	// UsedV23Multi: v2.3 written with NUL-separated multi-values (nonstandard).
+
 	UsedV23Multi bool
-	// DroppedDates lists year-anchored date keys whose edited value had no extractable
-	// numeric year and so rendered no v2.3 frame at all - a silent drop the caller
-	// surfaces as a value-dropped warning. Empty on v2.4 (TDRC/TDOR store the full
-	// string) and for values that do carry a year (only the sub-year precision is lost,
-	// which is not a drop). See detectDateFates.
+	// DroppedDates: v2.3 date keys with no extractable year (no frame written).
+
 	DroppedDates []tag.Key
-	// CoercedDates lists date keys whose v2.3 rendering stores every component but reads back
-	// spelled differently: "2001-02-03 10:20" comes back as "2001-02-03T10:20", because TYER/
-	// TDAT/TIME store neither separator and the read path recomposes with 'T'. Nothing is lost,
-	// so this is neither DroppedDates nor ReducedDates; the caller surfaces it as a
-	// value-coerced warning. Scoped to RecordingDate (OriginalDate renders only TORY and cannot
-	// coerce). See detectDateFates and classifyV23Date.
+	// CoercedDates: v2.3 date spelling change only (space→T on recompose). RecordingDate.
+
 	CoercedDates []ReducedDate
-	// ReducedDates lists date keys whose v2.3 rendering silently lost precision finer than
-	// the rendered frames capture: a month with no full date drops to the year (TDAT needs a
-	// full DDMM), and an hour with no minute drops to the date (TIME needs a full HHMM). Each
-	// entry pairs the key with the attempted edited value (e.g. "2021-03", "2021-03-15T10")
-	// for the warning text and the precision-aware suppression. Scoped to RecordingDate;
-	// OriginalDate's v2.3 reductions are reported through the capability-based value-reduced
-	// path (its TORY field is AccessPartial), so listing it here would double-warn. See
-	// detectDateFates and reducesDatePrecision.
+	// ReducedDates: v2.3 precision loss (RecordingDate). OriginalDate uses AccessPartial path.
+
 	ReducedDates []ReducedDate
-	// HasDroppedMalformedPicture is set when a picture edit replaced the APIC frames and
-	// at least one original APIC could not be decoded (a malformed cover). Those raw
-	// bytes are not carried forward, so the loss is surfaced rather than left silent.
+	// HasDroppedMalformedPicture: picture edit dropped undecodable APIC(s).
+
 	HasDroppedMalformedPicture bool
-	// NumericGenres lists the GENRE values this edit set that are a bare number naming a
-	// standard genre by index (e.g. "17"). Written verbatim to TCON, such a value reads
-	// back as the genre NAME on the pure-ID3 formats, so the caller surfaces it as a
-	// write-time numeric-genre warning - symmetric with the read-time one - suppressed
-	// where a native container keeps the literal number (WAV/AIFF INFO/text). See
-	// detectNumericGenres.
+	// NumericGenres: GENRE set to a bare index (reads back as the name on pure ID3).
+
 	NumericGenres []string
-	// DroppedTotals lists the TRACKTOTAL/DISCTOTAL/MOVEMENTTOTAL keys whose canonical value
-	// cannot be composed into a valid "n/total" TRCK/TPOS/MVIN frame because the number field is
-	// non-numeric (e.g. TRACKNUMBER="A1"): the reader would read "A1/12" as one literal value
-	// with the total merged in and lost, so the pair render preserves the number verbatim and
-	// drops the total. The caller surfaces it as a value-dropped warning keyed to the total. An
-	// embedded total in the number itself ("A1/12" with no canonical TRACKTOTAL) is preserved
-	// verbatim and is not a drop. See detectDroppedTotals.
+	// DroppedTotals: totals that cannot join a valid n/total frame (non-numeric number).
+
 	DroppedTotals []tag.Key
-	// DroppedTrailingValues lists the keys an edit touched whose trailing empty element the write
-	// cannot represent: a NUL-separated frame emits no trailing terminator, and the read path strips
-	// a trailing empty (see the read-strip floor in decodeStringsTracked), so the empty vanishes with
-	// no byte-level delta to reveal it. Only populated when the values are written NUL-separated (all
-	// of v2.4, or v2.3 under ID3MultiNullSep); repeat-frame and slash-join do not drop it. The caller
-	// surfaces it as a value-dropped warning keyed to each affected key. See detectDroppedTrailingValues.
+	// DroppedTrailingValues: trailing empties NUL frames cannot store (v2.4 / v2.3+nullsep).
+
 	DroppedTrailingValues []tag.Key
-	// DroppedEmptyValues lists the keys an edit set to an all-empty value that no frame was
-	// written for, so the key reads back absent. A plain text frame stores a present-empty
-	// value and reads it back; the genre, number-pair, movement and date frames cannot, and
-	// silently dropped it. Read off the frames actually rendered, so it cannot drift from the
-	// encoder. See detectDroppedEmptyValues.
+	// DroppedEmptyValues: all-empty keys that got no frame (read off rendered frames).
+
 	DroppedEmptyValues []tag.Key
-	// DroppedInvolvedEmpties lists the involved-people role keys an edit touched whose value carried
-	// an empty element the TIPL/IPLS frame cannot store. Unlike a plain multi-value text frame, which
-	// keeps interior empties, the involved-people body is function/name pairs and a nameless pair is
-	// dropped on both write and read (Picard's name-required guard), so an empty at any position
-	// vanishes. The caller surfaces it as a value-dropped warning keyed to each affected role. See
-	// detectDroppedInvolvedEmpties.
+	// DroppedInvolvedEmpties: roles with empties TIPL/IPLS cannot store (nameless pairs).
+
 	DroppedInvolvedEmpties []tag.Key
-	// ChapterOverflow is set when a chapter edit clamped a start or end past the CHAP
-	// frame's 32-bit millisecond field (~49.7 days). The caller surfaces it as a
-	// chapter-start-overflow warning.
+	// ChapterOverflow: chapter start/end clamped to CHAP 32-bit ms (~49.7 days).
+
 	ChapterOverflow bool
-	// DroppedChapterSubframes is set when a chapter edit dropped a source CHAP's subframe
-	// other than the TIT2 title (a per-chapter image or URL the flat model cannot hold),
-	// so that loss is surfaced rather than left silent.
+	// DroppedChapterSubframes: non-title CHAP subframes lost on chapter edit.
+
 	DroppedChapterSubframes bool
-	// SyncedLyricsOverflow is set when a synced-lyrics edit clamped a line's timestamp past
-	// the SYLT frame's 32-bit millisecond field (~49.7 days). The caller surfaces it as a
-	// synced-lyrics-timestamp-clamped warning.
+	// SyncedLyricsOverflow: SYLT timestamp clamped to 32-bit ms (~49.7 days).
+
 	SyncedLyricsOverflow bool
-	// SyncedLyricsInvalidNUL is set when a synced-lyrics edit's modeled line text or descriptor
-	// carries an embedded NUL, which the NUL-terminated SYLT field would silently truncate. Unlike
-	// the warnings above, this is a hard error: the caller turns it into waxerr.ErrInvalidData via
-	// RebuildError and refuses the write, rather than writing a truncated frame.
+	// SyncedLyricsInvalidNUL: embedded NUL in SYLT text/descriptor (hard error).
+
 	SyncedLyricsInvalidNUL bool
-	// CommentDescriptionDropped is set when a Comment rewrite could not keep a description
-	// one of the managed COMM frames carried: several managed frames, one frame whose edited
-	// Comment resolved to several values, or a faithful carry (where the destination's
-	// description does not label the value that arrived). The authored single-frame,
-	// single-value case keeps the description and does not set this. Clearing Comment does
-	// not either - the description goes with the value the user removed.
+	// CommentDescriptionDropped: could not keep COMM description (multi-frame/value or carry).
+
 	CommentDescriptionDropped bool
-	// SyncedLyricsLangUndefined is set when an authored synced-lyrics set carried a non-empty
-	// language that normalizes to the ID3 "undefined" marker ("xxx"/"XXX"): the value is
-	// stored (exit 0) but reads back with no language, so the caller surfaces it as a
-	// metadata-dropped warning rather than letting the downgrade go unnoticed. Only an
-	// explicitly-authored language triggers it - a faithful carry of a no-language source set
-	// has an empty language and reads back empty, so it is not flagged.
+	// SyncedLyricsLangUndefined: authored lang normalizes to "xxx" (stored; reads empty).
+
 	SyncedLyricsLangUndefined bool
 }
 
@@ -160,10 +102,9 @@ type ReducedDate struct {
 	Value string
 }
 
-// RebuildFrames produces the new frame list for an edited tag, preserving
-// unchanged and unmodelled frames in place and re-rendering only the frames a
-// changed canonical key affects. Pictures and chapters are reconciled here as well,
-// since APIC and CHAP/CTOC frames are interleaved with text frames.
+// RebuildFrames builds the new frame list: unchanged/unmodelled frames stay;
+// only frames for changed keys (and pictures/chapters/synced lyrics) re-render.
+
 func RebuildFrames(orig []Frame, base, edited tag.TagSet, version byte,
 	se StructuredEdit, opts WriteOpts) ([]Frame, RebuildInfo) {
 
@@ -974,14 +915,9 @@ func renderNumTotal(version byte, id string, edited tag.TagSet, numKey, totKey t
 }
 
 // composeNumTotal is the single compose-or-drop decision renderNumTotal (what to write) and
-// detectDroppedTotals (whether to warn) share, so the write and its value-dropped warning cannot
-// drift. It returns the TRCK/TPOS number field to write and whether a canonical total was thereby
-// dropped. It composes "n/total" only when the result is a valid numeric value the reader will split
-// back; a non-numeric number (e.g. "A1/12") otherwise reads as one literal value with the total
-// merged in and lost, so the number is preserved verbatim instead. An explicit canonical total wins
-// over one embedded in the number ("5/12" plus TRACKTOTAL never composes "5/12/20"); SplitNumberTotal
-// keeps exact digit strings, including leading zeros, unlike tag.ParseNumPair. totalDropped is true
-// only when a canonical total (from the total key, not an embedded one) is made unrepresentable.
+// detectDroppedTotals: totals that cannot join a valid n/total frame
+// (non-numeric number). Number kept; total dropped.
+
 func composeNumTotal(numKey tag.Key, num, canonicalTotal string) (value string, totalDropped bool) {
 	// A non-empty number field that is not itself a valid numeric value ("1/2/3", "A1/12")
 	// cannot be recomposed as "n/total" without silently dropping the extra text - splitting
@@ -1088,26 +1024,10 @@ func detectDroppedTotals(changed map[tag.Key]bool, edited tag.TagSet) []tag.Key 
 	return dropped
 }
 
-// detectDroppedTrailingValues finds the keys an edit touched whose value ends in a trailing
-// empty element (len > 1 with a final "") that the write cannot represent. A NUL-separated frame
-// emits no trailing terminator, so the trailing empty an edit set (e.g. ARTIST=[A, B, ""]) has no
-// representation and the read path strips exactly it (the len > 1 && trailing "" floor in
-// decodeStringsTracked). It models that floor, so there are no false positives: a lone [""] is
-// len 1 and round-trips, and interior or leading empties are kept.
-//
-// The strip only happens when the multi-value is written NUL-separated: always on v2.4, and on
-// v2.3 only under ID3MultiNullSep. ID3MultiRepeatFrame writes one frame per value, so the trailing
-// empty survives as its own frame and reads back; ID3MultiSlash collapses the whole multi-value
-// into one slash-joined value, so the trailing empty is not dropped as a distinct value either.
-// Warning under those policies would be a false positive that wrongly fails --strict, so the
-// detector returns nothing for them. Scoped to changed keys because the read path always strips a
-// trailing empty, so one can only enter the model through the edit. The result is sorted for
-// deterministic warning order.
-//
-// The involved-people role keys are excluded here: they render through the TIPL/IPLS
-// function/name path, which drops an empty at any position (not just a trailing one) on every
-// version and policy, so their empties are reported by detectDroppedInvolvedEmpties instead.
-// (WRITER is not an involved-people role - it rides a TXXX text frame - so it stays covered here.)
+// detectDroppedTrailingValues: keys whose trailing empty the write cannot store
+// (NUL frames emit no trailing terminator; read strips trailing empty). Only when
+// NUL-separated (v2.4 or v2.3+ID3MultiNullSep).
+
 func detectDroppedTrailingValues(changed map[tag.Key]bool, edited tag.TagSet, version byte, pol core.ID3MultiValuePolicy) []tag.Key {
 	if version < 4 && pol != core.ID3MultiNullSep {
 		return nil // repeat-frame preserves the empty; slash-join collapses the whole multi-value
@@ -1129,10 +1049,8 @@ func detectDroppedTrailingValues(changed map[tag.Key]bool, edited tag.TagSet, ve
 	return dropped
 }
 
-// detectDroppedEmptyValues finds the keys this edit set to an all-empty value for which no
-// frame was written, so the key reads back absent. Scoped to changed keys because an empty
-// value only enters the model through an edit. Keys the date and total detectors already
-// report are skipped so one drop warns once.
+// detectDroppedEmptyValues: all-empty keys that got no frame. Read off rendered frames.
+
 func detectDroppedEmptyValues(changed map[tag.Key]bool, edited tag.TagSet, produced map[string]bool, version byte, info RebuildInfo) []tag.Key {
 	reported := make(map[tag.Key]bool, len(info.DroppedDates)+len(info.DroppedTotals))
 	for _, k := range info.DroppedDates {
@@ -1159,13 +1077,9 @@ func detectDroppedEmptyValues(changed map[tag.Key]bool, edited tag.TagSet, produ
 	return dropped
 }
 
-// detectDroppedInvolvedEmpties finds the involved-people role keys an edit touched whose value
-// carries an empty element the TIPL/IPLS frame cannot store. Unlike a plain multi-value text
-// frame, which keeps interior empties, the involved-people body is function/name pairs and a
-// nameless pair is dropped on both write (renderUnit skips it) and read (decodeInvolvedPeople's
-// name-required guard, matching Picard), so an empty at any position - leading, interior, or
-// trailing - vanishes. It is version- and policy-independent, and scoped to changed keys because
-// an empty can only enter the model through an edit. The result is sorted for deterministic order.
+// detectDroppedInvolvedEmpties: changed involved-people keys with empties
+// TIPL/IPLS cannot store. Sorted for deterministic order.
+
 func detectDroppedInvolvedEmpties(changed map[tag.Key]bool, edited tag.TagSet) []tag.Key {
 	var dropped []tag.Key
 	for _, k := range mapping.ID3InvolvedKeys() {
@@ -1180,19 +1094,9 @@ func detectDroppedInvolvedEmpties(changed map[tag.Key]bool, edited tag.TagSet) [
 	return dropped
 }
 
-// TransferClassifier grades the fields whose ID3 transfer fate the format-level capability
-// cannot express. A TRACKTOTAL, DISCTOTAL, or MOVEMENTTOTAL whose sibling number cannot
-// join it in a valid "number/total" frame has nowhere to go - the writer drops it (see
-// [AppendRebuildWarnings]) - so a copy carrying one must report it Dropped rather than a
-// clean carry; each calls the same compose decision its writer uses, so the copy report
-// and the write drop cannot drift, and a lone total is not falsely dropped (both composers
-// render "/total" cleanly). A MOVEMENT already carrying pair syntax ("3/12") is graded
-// Lossy: the MVIN frame stores it, but the read path splits it into MOVEMENT and
-// MOVEMENTTOTAL, so the value does not carry back under one key (the track/disc numbers
-// cannot hit this - their read passes split the slash before grading). The four ID3-backed
-// codecs (MP3, AAC, AIFF, WAV) share it; every other field is left to the format-level
-// grade. It is a plain [core.FieldClassifier] (registered by value, not called), so it
-// captures nothing and allocates no closure.
+// TransferClassifier: ID3 transfer fates capabilities cannot express.
+// TRACKTOTAL/DISCTOTAL/MOVEMENTTOTAL with no valid number/total join → Dropped.
+
 func TransferClassifier(key tag.Key, values []string, all tag.TagSet) (core.Disposition, string, bool) {
 	switch key {
 	case tag.TrackTotal, tag.DiscTotal:
@@ -1239,20 +1143,9 @@ const (
 	partHourMin
 )
 
-// detectNumericGenres returns the GENRE values this edit set that are a bare integer
-// naming a standard genre by index (e.g. "17" -> "Rock"). Written verbatim to TCON, such a
-// value is resolved back to the genre NAME by the read path, so GENRE=17 round-trips as
-// "Rock" - a surprising change the caller surfaces (see AppendRebuildWarnings), suppressed
-// where a native container keeps the literal number. Only a value the edit actually changed
-// is reported, so an untouched pre-existing numeric genre does not warn.
-//
-// Three residuals of this handling are known and intentional, so a QA pass should not re-flag
-// them: (a) diff and copy treat a file holding "17" and one holding "Rock" as different, because
-// the read projection resolves "17" to "Rock" while the on-disk bytes differ; (b) on ID3v2.3 a
-// bare "17" is free text, so resolving it to "Rock" is non-conformant to what WaxLabel itself
-// wrote - the warning makes the surprise visible rather than rewriting the bytes; and (c) a
-// parenthesized "(17)" is escaped to "((17)" on disk and reads back as the literal "(17)", never
-// resolved (which is why isNumericGenreRef exempts a leading "(").
+// detectNumericGenres: GENRE values that are a bare genre index (e.g. "17").
+// Written to TCON they read back as the name; caller warns.
+
 func detectNumericGenres(changed map[tag.Key]bool, edited tag.TagSet) []string {
 	if !changed[tag.Genre] {
 		return nil
@@ -1285,20 +1178,9 @@ func isNumericGenreRef(v string) bool {
 	return numeric
 }
 
-// detectDateFates classifies the date keys this edit changed, in one pass, into the three
-// fates a v2.3 tag can give them. Each populates its own RebuildInfo field and its own
-// warning, but they are answers to a single question - what will the read path give back? -
-// so they are decided together from one [classifyV23Date] per value rather than by three
-// scanners re-asking it.
-//
-// v2.4 stores the full string in TDRC/TDOR, so nothing is lost and nothing is classified.
-//
-// The keys differ per fate, deliberately. A drop is checked for both date keys, because
-// TYER and TORY both need a valid 4-digit year and both render nothing without one. A
-// reduction and a coercion are scoped to RecordingDate: OriginalDate renders only TORY, so
-// its sub-year loss is reported through the capability path (reducesToYear, with its own
-// cross-container suppression) and listing it here would double-warn, and a year-only frame
-// cannot respell anything.
+// detectDateFates classifies changed date keys into drop/coerce/reduce for v2.3
+// (one [classifyV23Date] pass). v2.4 stores full strings (empty fates).
+
 func detectDateFates(changed map[tag.Key]bool, edited tag.TagSet, version byte) (dropped []tag.Key, reduced, coerced []ReducedDate) {
 	if version >= 4 {
 		return nil, nil, nil
@@ -1336,20 +1218,9 @@ const (
 	dateCoerced                 // every component survives, spelled differently on read-back
 )
 
-// classifyV23Date answers one question - what will the read path give back for this value? -
-// and derives the four fates from it, rather than letting separate scanners answer it
-// separately and drift.
-//
-// v2.3 splits a date-time across TYER (YYYY), TDAT (DDMM) and TIME (HHMM), each
-// all-or-nothing, and [composeV23Date] recomposes them on read. So the rendered parts are
-// exactly the three extractDatePart calls the writer makes, and the read-back is what
-// composeV23Date makes of them. A component the value carries that no frame captures is a
-// reduction; a value whose components all survive but whose spelling changes (a space
-// date-time separator recomposed as 'T') is a coercion.
-//
-// It models the RecordingDate triple. OriginalDate renders only TORY, so its sub-year loss is
-// a reduction the capability path reports (reducesToYear) and it can never coerce; only the
-// drop answer, which turns on the year alone, is shared with it.
+// classifyV23Date: what the read path returns after v2.3 TYER/TDAT/TIME split
+// and composeV23Date recompose. Derives the four fates from one answer.
+
 func classifyV23Date(iso string) dateFate {
 	if iso == "" {
 		return dateExact
@@ -1583,16 +1454,9 @@ func RebuildError(info RebuildInfo) error {
 	return nil
 }
 
-// CarryProjectionWarnings returns warnings for a post-write MP3/AAC document. Front-tag codecs
-// carry source parse warnings forward because buildResult cannot recompute the audio and
-// container warnings (trailing-id3v1, legacy-ape, ...). But an edit can resolve a warning the
-// ID3 projection produced, so any such warning the rewritten tag no longer projects must be
-// dropped, or the returned document would disagree with a fresh parse of the written bytes.
-// newTagWarnings is Project(newTag).Warnings; each reconciled code is stripped from the carried
-// set only when the new projection lacks it, preserving the remaining warning order:
-//   - chapters-flattened: a nested CTOC rewritten as a flat list no longer flattens;
-//   - invalid-picture: a picture edit drops a malformed APIC (HasDroppedMalformedPicture), so
-//     the malformed cover the source-parse warning described is gone from the output.
+// CarryProjectionWarnings: post-write MP3/AAC warnings from rebuild losses and
+// projection (dates, genres, chapters, synced lyrics, comments).
+
 func CarryProjectionWarnings(sourceWarnings, newTagWarnings []core.Warning) []core.Warning {
 	out := core.CloneWarnings(sourceWarnings)
 	for _, code := range []core.WarningCode{core.WarnChaptersFlattened, core.WarnInvalidPicture, core.WarnMalformedTagEntry} {
@@ -1603,22 +1467,9 @@ func CarryProjectionWarnings(sourceWarnings, newTagWarnings []core.Warning) []co
 	return out
 }
 
-// PerFieldCapabilities builds the per-key capability overrides shared by every
-// ID3-backed codec (MP3/AAC/AIFF/WAV). The two value-mutating ID3 cases are declared
-// once here rather than copied into each codec:
-//
-//   - ORIGINALDATE is AccessPartial when the codec writes ID3v2.3 (writeVersion == 3),
-//     whose TORY frame keeps only the year. This drives both the transfer grade and the
-//     value-reduced edit warning (editor.appendValueReducedWarnings), the latter confirming
-//     the value actually changed before warning.
-//   - GENRE is AccessPartial when --numeric-genre is set and the ID3 tag is the authoritative
-//     genre store for this codec (genreViaID3). That holds always for MP3/AAC/AIFF (no native
-//     genre slot wins over ID3), but for WAV only when an id3 chunk is present - a bare WAV's
-//     native LIST/INFO IGNR keeps the genre as text, losslessly. Off --numeric-genre the
-//     GENRE override is value-scoped instead: only a bare numeric reference grades a
-//     transfer Lossy, since TCON resolves it back to the genre name on read.
-//
-// Returns nil when none applies, so a codec with a lossless write passes no overrides.
+// PerFieldCapabilities: shared ID3 per-key overrides (MP3/AAC/AIFF/WAV).
+// ORIGINALDATE AccessPartial on v2.3 (TORY year-only).
+
 func PerFieldCapabilities(writeVersion byte, numericGenre, genreViaID3 bool) map[tag.Key]core.Capability {
 	var perField map[tag.Key]core.Capability
 	add := func(k tag.Key, c core.Capability) {
@@ -1729,23 +1580,9 @@ func allEmpty(values []string) bool {
 	return true
 }
 
-// EncodingRewriteNeeded reports whether re-rendering under the requested write-encoding
-// options would store a different representation of an otherwise unchanged canonical value,
-// so a codec's no-op fast path lets the write through instead of silently dropping the
-// request. src may be nil (a codec whose file carries no ID3 container), in which case
-// nothing is stored to differ from.
-//
-// Only an explicitly requested option counts. The absence of --numeric-genre is not a
-// request to re-encode a numeric TCON back to its name, so a file already storing "(17)" is
-// left alone and repeated runs converge instead of ping-ponging. It is deliberately narrow
-// in the other direction too: a stored form the conversion cannot improve on is left alone
-// rather than rewritten into a different-but-not-better one. The guards below say which.
-//
-// Numeric genre is the only option wired. The v2.3 multi-value policy is the known second
-// case - changing it on a file whose canonical values are unchanged is the identical silent
-// no-op, through these same gates - but every write passes some policy, so it carries no
-// "was it requested" signal and needs a policy-explicit write option first. The name is the
-// encoding class rather than the genre so that fix stays inside this package.
+// EncodingRewriteNeeded: write-encoding would change representation of an unchanged
+// value, so the no-op path lets the write through. nil src = no ID3 container.
+
 func EncodingRewriteNeeded(src *Tag, edited tag.TagSet, opts WriteOpts) bool {
 	if src == nil {
 		return false
@@ -1859,15 +1696,8 @@ func genreValues(names []string, version byte, numeric bool, pol core.ID3MultiVa
 	return out
 }
 
-// genreReference returns the write version's reference form for a value that names a
-// standard genre - "(17)" in v2.3, "17" in v2.4 - and whether one exists.
-//
-// A bare reference the caller supplied ("17") is resolved through the read path first, so a
-// single --numeric-genre pass normalizes it to the version's canonical form rather than
-// writing it through verbatim and leaving a library mixing "17" and "(17)". A parenthesized
-// value is deliberately not resolved: "(17)" is stored as the escaped literal "((17)" by
-// long-standing behavior, which the escape branch below owns. RX and CR resolve to names
-// with no ID3v1 index, so they fall through and keep the reference the file already holds.
+// genreReference: write version's reference form for a named standard genre.
+
 func genreReference(name string, version byte) (string, bool) {
 	idx := genreIndex(name)
 	if idx < 0 && !strings.HasPrefix(name, "(") {

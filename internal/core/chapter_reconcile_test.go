@@ -5,9 +5,7 @@ import (
 	"time"
 )
 
-// TestReconcileChapterOverlaps covers the helper: an edit-introduced overlap truncates the
-// preceding chapter's stale end to the next start, while a file's own pre-existing on-disk
-// overlap (both sides in base) is left verbatim.
+// TestReconcileChapterOverlaps: edit overlap truncates stale end; on-disk overlap (both in base) preserved.
 func TestReconcileChapterOverlaps(t *testing.T) {
 	ms := time.Millisecond
 	ch := func(start, end time.Duration, title string) Chapter {
@@ -16,7 +14,6 @@ func TestReconcileChapterOverlaps(t *testing.T) {
 
 	t.Run("inserted marker truncates the preceding stale end", func(t *testing.T) {
 		base := []Chapter{ch(0, 500, "A"), ch(500, 1500, "B"), ch(1500, 2000, "C")}
-		// Start-sorted list after inserting a start-only marker at 700 between B and C.
 		chs := []Chapter{ch(0, 500, "A"), ch(500, 1500, "B"), {Start: 700 * ms, Title: "M"}, ch(1500, 2000, "C")}
 		if !ReconcileChapterOverlaps(chs, base) {
 			t.Fatal("expected a reconciliation (B's end overlaps the marker)")
@@ -34,14 +31,13 @@ func TestReconcileChapterOverlaps(t *testing.T) {
 
 	t.Run("contiguous chapters are a no-op", func(t *testing.T) {
 		base := []Chapter{ch(0, 500, "A"), ch(500, 1000, "B")}
-		chs := []Chapter{ch(0, 500, "A"), ch(500, 1000, "B")} // End == next.Start, not past it
+		chs := []Chapter{ch(0, 500, "A"), ch(500, 1000, "B")}
 		if ReconcileChapterOverlaps(chs, base) {
 			t.Error("contiguous chapters must not reconcile")
 		}
 	})
 
 	t.Run("pre-existing on-disk overlap (both in base) is preserved", func(t *testing.T) {
-		// Both chapters overlap and both are in base (an external tool wrote them): leave verbatim.
 		base := []Chapter{ch(0, 1000, "A"), ch(500, 1500, "B")}
 		chs := []Chapter{ch(0, 1000, "A"), ch(500, 1500, "B")}
 		if ReconcileChapterOverlaps(chs, base) {
@@ -53,10 +49,7 @@ func TestReconcileChapterOverlaps(t *testing.T) {
 	})
 
 	t.Run("retitling a chapter does not reconcile a pre-existing overlap", func(t *testing.T) {
-		// A pre-existing overlap where only B's TITLE changed - no timing changed - must stay
-		// verbatim. Keying on the whole struct would treat retitled B as "new" and wrongly
-		// shorten A's end; keying on the timing values (both End 1000 and Start 500 are on base)
-		// leaves it alone.
+		// Title-only edit: key on timing values, not whole struct.
 		base := []Chapter{ch(0, 1000, "A"), ch(500, 1500, "B")}
 		chs := []Chapter{ch(0, 1000, "A"), ch(500, 1500, "B-retitled")}
 		if ReconcileChapterOverlaps(chs, base) {
@@ -68,8 +61,7 @@ func TestReconcileChapterOverlaps(t *testing.T) {
 	})
 
 	t.Run("unsorted input never drives End below Start", func(t *testing.T) {
-		// A caller that forgets to sort must not get End<Start corruption: the next start (200)
-		// is below chs[0].Start (500), so the truncation is skipped.
+		// Unsorted input: skip truncation when next start < current start.
 		chs := []Chapter{ch(500, 1000, "A"), ch(200, 300, "B")}
 		ReconcileChapterOverlaps(chs, nil)
 		if chs[0].End < chs[0].Start {
@@ -79,7 +71,6 @@ func TestReconcileChapterOverlaps(t *testing.T) {
 
 	t.Run("edited base end overshooting a neighbor reads as new and reconciles", func(t *testing.T) {
 		base := []Chapter{ch(0, 500, "A"), ch(500, 1000, "B")}
-		// A library caller lengthened A's end past B's start; the edited A differs from base.
 		chs := []Chapter{ch(0, 800, "A"), ch(500, 1000, "B")}
 		if !ReconcileChapterOverlaps(chs, base) {
 			t.Fatal("an edited end that overshoots the next start should reconcile")
@@ -97,11 +88,7 @@ func TestReconcileChapterOverlaps(t *testing.T) {
 	})
 
 	t.Run("coincident next start preserves the authored end", func(t *testing.T) {
-		// Two chapters share a start and A carries a real authored end past it (End > next). The
-		// old next >= Start guard truncated A.End onto the shared start (a zero-length interval,
-		// which the writer then serializes as open); the strict next > Start guard leaves A's end
-		// intact. base=nil so this reads as an edit-introduced change - eligible for reconciliation
-		// but for the coincident guard.
+		// Coincident start: next > Start guard preserves authored end (not zero-length collapse).
 		chs := []Chapter{ch(0, 100, "A"), {Start: 0, Title: "B"}}
 		if ReconcileChapterOverlaps(chs, nil) {
 			t.Error("a coincident next start must not reconcile (would collapse A to zero-length)")

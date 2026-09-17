@@ -12,10 +12,9 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// AudioDigest is a content identity for audio. Algorithm and the named,
-// versioned ExtentVersion travel with the Sum so a persisted dedup hash stays
-// interpretable library-wide: refining the extent definition is an opt-in new
-// version, not a silent change that invalidates old hashes.
+// AudioDigest is a content identity for audio. Algorithm and versioned
+// ExtentVersion travel with Sum so persisted digests stay interpretable:
+// refining the extent is an opt-in new version, not a silent break.
 type AudioDigest struct {
 	Algorithm     string
 	ExtentVersion string
@@ -23,9 +22,8 @@ type AudioDigest struct {
 	Sum           []byte
 }
 
-// String renders the digest as "algorithm/extent:hex". When TrackID is non-zero, it
-// renders as "algorithm/extent#trackID:hex" so per-track digests do not collide with
-// each other.
+// String renders as "algorithm/extent:hex", or "algorithm/extent#trackID:hex"
+// when TrackID is non-zero.
 func (d AudioDigest) String() string {
 	if d.TrackID != 0 {
 		return fmt.Sprintf("%s/%s#%d:%s", d.Algorithm, d.ExtentVersion, d.TrackID, hex.EncodeToString(d.Sum))
@@ -45,25 +43,16 @@ type hashOptions struct {
 	source core.ReaderAtSized
 }
 
-// WithHashSource supplies the source bytes to hash for a detached document
-// (one from [Parse]). Documents from [ParseFile] or [OpenSource] resolve their
-// source automatically.
+// WithHashSource supplies bytes to hash for a detached [Parse] document.
+// [ParseFile] and [OpenSource] resolve their source automatically.
 func WithHashSource(src ReaderAtSized) HashOption {
 	return func(o *hashOptions) { o.source = src }
 }
 
-// HashAudioEssence computes the encoded-essence identity: a hash over the
-// audio packets plus the decoder-critical configuration (sample rate, channel
-// count, bit depth, and FLAC block-size bounds). Mixing the config means two
-// files with byte-identical packets but different channel mapping are correctly
-// distinct. This answers "is this the same audio?", independent of tags.
-//
-// The digest is container-scoped: the config prefix and the named extent are both the
-// container's, so the same FLAC frames in a .flac and an .oga hash differently. Comparing one
-// codec's audio across two containers is a different question this does not answer.
-//
-// It is distinct from whole-file identity ([Document.HashFile]) and from a
-// decoded-PCM hash (which needs a decoder and is test-only).
+// HashAudioEssence hashes encoded audio packets plus decoder-critical config
+// (sample rate, channels, bit depth, FLAC block-size bounds). Independent of
+// tags. Container-scoped: the same FLAC frames in .flac and .oga differ.
+// Distinct from [Document.HashFile] and from a decoded-PCM hash.
 func (d *Document) HashAudioEssence(ctx context.Context, opts ...HashOption) (AudioDigest, error) {
 	if err := checkContext(ctx); err != nil {
 		return AudioDigest{}, err
@@ -80,18 +69,9 @@ func (d *Document) HashAudioEssence(ctx context.Context, opts ...HashOption) (Au
 
 	version, cfg := d.essenceExtent()
 	ranges := d.media.EssenceRanges()
-	// Refuse to hash a file with no real audio, on two signals that together are the
-	// single "no audio" gate: zero essence (all-empty ranges) would mint a
-	// fake-stable digest over nothing, so two distinct empty files collide; and a
-	// non-empty range the parser still flagged WarnNoAudioFrames - a non-empty text
-	// file named .mp3, whose parser set a range over the text bytes - would hash those
-	// bytes as if they were audio. Both are ErrInvalidData, so verify, set --verify, and
-	// HashAudioEssence all refuse a no-audio file. lint reaches the same invalid-data
-	// verdict. dump reports WarnNoAudioFrames but exits 0 because metadata rendering
-	// succeeded, so the warning is the shared signal for that read-only path. A
-	// malformed range (end < start) carries no such warning,
-	// so it still falls through to hashRanges' specific "end before start" error rather
-	// than being masked as a benign empty file.
+	// Refuse no-audio files: empty ranges would mint colliding digests, and a
+	// non-empty range still flagged WarnNoAudioFrames (e.g. text named .mp3)
+	// would hash non-audio. Descending ranges fall through to hashRanges.
 	if noEssence(ranges) || hasNoAudioWarning(d.media) {
 		return AudioDigest{}, fmt.Errorf("%w: no audio essence to hash", waxerr.ErrInvalidData)
 	}
@@ -107,9 +87,8 @@ func (d *Document) HashAudioEssence(ctx context.Context, opts ...HashOption) (Au
 	}, nil
 }
 
-// essenceExtent fetches the codec's versioned extent name and decoder-critical
-// configuration. If the format has no registered codec it falls back to a
-// neutral extent with no config.
+// essenceExtent returns the codec's versioned extent name and decoder config,
+// or a neutral extent with no config if unknown.
 func (d *Document) essenceExtent() (version string, config []byte) {
 	if codec, ok := core.ForFormat(d.media.Format); ok {
 		return codec.EssenceExtent(d.media)
@@ -117,8 +96,7 @@ func (d *Document) essenceExtent() (version string, config []byte) {
 	return "audio-extent-v1", nil
 }
 
-// HashFile computes the whole-file identity (a hash of every byte). This is the
-// strictest level: it changes whenever any byte, including tags, changes.
+// HashFile hashes every byte of the file (tags included).
 func (d *Document) HashFile(ctx context.Context, opts ...HashOption) (AudioDigest, error) {
 	if err := checkContext(ctx); err != nil {
 		return AudioDigest{}, err
@@ -140,15 +118,9 @@ func (d *Document) HashFile(ctx context.Context, opts ...HashOption) (AudioDiges
 	return AudioDigest{Algorithm: "sha256", ExtentVersion: "whole-file-v1", Sum: sum}, nil
 }
 
-// noEssence reports whether the ranges cover no audio: every range is empty
-// (start == end). It catches the all-empty case (a truly tag-only file, e.g.
-// empty.mp3): the parse-time WarnNoAudioFrames check fires off this same predicate
-// (parse.go), and the digest guard consults it too. But it is not the whole "no
-// audio" story: a parser can set a non-empty range yet still flag WarnNoAudioFrames
-// (a non-empty text file named .mp3), so the digest guard pairs this with
-// [hasNoAudioWarning] to catch that case as well. A descending range
-// (end < start) is a codec bug, not "empty", so it is left for hashRanges to reject
-// with its specific error rather than being masked as a benign tag-only file.
+// noEssence reports whether every range is empty (start == end). Paired with
+// [hasNoAudioWarning] for the no-audio gate. Descending ranges are left for
+// hashRanges, not treated as empty.
 func noEssence(ranges [][2]int64) bool {
 	for _, r := range ranges {
 		if r[1] != r[0] {
@@ -158,13 +130,9 @@ func noEssence(ranges [][2]int64) bool {
 	return true
 }
 
-// hasNoAudioWarning reports whether the parser made its authoritative no-audio
-// determination (WarnNoAudioFrames) for this media. The digest guard, the write-time
-// VerifyEssence path, and Editor.Prepare all consult it so a file the parser flagged
-// as carrying no real audio - even one whose parser set a non-empty essence range over
-// non-audio bytes - is never hashed, verified, or silently rewritten. It is the
-// warning twin of noEssence (the all-empty-range case); together they are the single
-// "this file has no audio" gate the library enforces.
+// hasNoAudioWarning reports whether the parser set WarnNoAudioFrames. Digest,
+// VerifyEssence, and Prepare consult it so flagged files are not hashed,
+// verified, or rewritten.
 func hasNoAudioWarning(media *core.Media) bool {
 	for _, w := range media.Warnings {
 		if w.Code == core.WarnNoAudioFrames {
@@ -174,12 +142,8 @@ func hasNoAudioWarning(media *core.Media) bool {
 	return false
 }
 
-// hashRanges hashes optional prefix bytes (the decoder-critical config) followed
-// by the concatenation of src over each [start,end) range in order. It is the
-// multi-segment essence hash: FLAC passes a single contiguous range, Ogg passes
-// each audio page body. It checks ctx between chunks so a large extent can be
-// cancelled. src need only support ReadAt (the written-output handle has no
-// Size).
+// hashRanges hashes optional prefix bytes then src over each [start,end) range.
+// Checks ctx between chunks. src need only support ReadAt.
 func hashRanges(ctx context.Context, src io.ReaderAt, prefix []byte, ranges [][2]int64) ([]byte, error) {
 	h := sha256.New()
 	h.Write(prefix)
@@ -190,9 +154,7 @@ func hashRanges(ctx context.Context, src io.ReaderAt, prefix []byte, ranges [][2
 		if end < start {
 			return nil, fmt.Errorf("%w: audio extent end before start", waxerr.ErrInvalidData)
 		}
-		// The extents must be ascending and disjoint so the digest is order- and
-		// overlap-stable; a codec bug that violated this would otherwise mint a
-		// wrong-but-stable hash. (A gap between extents is fine.)
+		// Extents must be ascending and disjoint for a stable digest.
 		if start < prevEnd {
 			return nil, fmt.Errorf("%w: audio extents overlap or are out of order", waxerr.ErrInvalidData)
 		}

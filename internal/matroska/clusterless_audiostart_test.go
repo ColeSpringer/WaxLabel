@@ -11,12 +11,9 @@ import (
 
 // TestAbsorbClusterlessReportsNoAudioStart is a regression: for a clusterless
 // (audio-less) segment with trailing bytes, the absorb write path once reported
-// AudioStart = segDataEnd (a nonzero scalar) while a fresh parse and the shift path reported 0 -
-// AudioRanges was empty in every case, so only the informational scalar disagreed. buildResult now
-// gates the audio extent purely on cluster runs, so a segment with no clusters reports no audio
-// extent, matching parse. The trailing bytes make clusterStart (== segDataEnd) < size, the exact
-// geometry that fed the old scalar; the +4 Title edit fits the reserved Void so the absorb path is
-// taken (not shift).
+// AudioStart = segDataEnd (a nonzero scalar) while a fresh parse and the shift path
+// reported 0 - AudioRanges was empty in every case, so only the informational scalar
+// disagreed.
 func TestAbsorbClusterlessReportsNoAudioStart(t *testing.T) {
 	void := encElement(idVoid, make([]byte, 40)) // reserved Void so the small edit absorbs in place
 	seg := segBytes(cat(mkInfo("Title"), void))

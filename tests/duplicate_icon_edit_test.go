@@ -10,11 +10,8 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// Some files contain duplicate file-icon pictures (two type-1 or two type-2
-// blocks), which FLAC forbids but existing files may carry. WaxLabel preserves
-// that input on unrelated edits: validatePictures runs only when the edit wrote
-// the picture set. A direct picture edit that creates a duplicate icon is still
-// rejected.
+// Some files contain duplicate file-icon pictures (two type-1 or two type-2 blocks), which FLAC
+// forbids but existing files may carry.
 
 // pngIcon is a type-1 (32x32 file-icon) picture backed by a real PNG.
 func pngIcon() wl.Picture {
@@ -60,8 +57,6 @@ func TestDuplicateIconTagEditSucceeds(t *testing.T) {
 
 func TestDuplicateIconTransferSucceedsWhenPicturesUntouched(t *testing.T) {
 	// Transfer tags from a clean, pictureless source into a two-icon destination.
-	// The source carries no picture, so the destination's picture set is untouched
-	// (picsTouched=false) and the transfer succeeds.
 	dstData := flacTwoType1Icons()
 	dst := mustParseBytes(t, dstData)
 	src := mustParseBytes(t, flacWithVendor("test", "TITLE=Copied"))
@@ -100,9 +95,8 @@ func TestDuplicateIconRemediationSucceeds(t *testing.T) {
 }
 
 func TestDuplicateIconLintFixRemediatesEncoderStamp(t *testing.T) {
-	// A transcoder vendor stamp creates a fixable inherited-encoder finding
-	// alongside duplicate icons, which lint cannot auto-fix. Prepare should still
-	// succeed: the encoder stamp is stripped while the icons pass through untouched.
+	// A transcoder vendor stamp creates a fixable inherited-encoder finding alongside duplicate icons,
+	// which lint cannot auto-fix.
 	data := flacWithCommentBlockVendor("Lavf59.27.100",
 		[]vorbis.Comment{{Name: "TITLE", Value: "x"}}, pngIcon(), pngIcon())
 	doc := mustParseBytes(t, data)
@@ -125,8 +119,6 @@ func TestDuplicateIconLintFixRemediatesEncoderStamp(t *testing.T) {
 
 func TestDuplicateIconDirectPictureEditStillRefused(t *testing.T) {
 	// Control: authoring a second icon is still caught (picsTouched=true -> validatePictures runs).
-	// It is a refused write, not corrupt input, so the sentinel is ErrUnsupportedTag: the file
-	// itself parsed fine and only this edit is impossible.
 	data := flacWithCommentBlock(nil, pngIcon()) // one icon to start
 	_, err := mustParseBytes(t, data).Edit().AddPicture(pngIcon()).Prepare()
 	if !errors.Is(err, waxerr.ErrUnsupportedTag) {
@@ -138,10 +130,9 @@ func TestDuplicateIconDirectPictureEditStillRefused(t *testing.T) {
 }
 
 func TestDuplicateIconTransferCarryingSecondIconSucceeds(t *testing.T) {
-	// A transfer faithfully carries the source picture set, so the source's own duplicate icons
-	// must not abort the copy as if the user had authored a second icon; the carried flag
-	// suppresses the icon-count rule (like the other faithful-carry checks). lint still flags the
-	// carried result, so the duplicate stays discoverable.
+	// A transfer faithfully carries the source picture set, so the source's own duplicate icons must
+	// not abort the copy as if the user had authored a second icon; the carried flag suppresses the
+	// icon-count rule (like the other faithful-carry checks).
 	dstData := flacWithVendor("test", "TITLE=Dst")
 	src := mustParseBytes(t, flacTwoType1Icons(vorbis.Comment{Name: "TITLE", Value: "Src"}))
 	plan, _, err := src.PrepareTransfer(mustParseBytes(t, dstData))

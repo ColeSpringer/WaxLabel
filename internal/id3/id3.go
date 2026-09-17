@@ -1,15 +1,7 @@
-// Package id3 implements reading and writing ID3v2 tags (v2.2, v2.3, v2.4) and
-// reading ID3v1. It is shared by the internal codecs that embed ID3 (MP3, raw
-// AAC, WAV, and AIFF), so the frame model, text encodings, unsynchronisation,
-// the numeric-genre table, and the canonical projection live here once. It is
-// reimplemented from the ID3v2.2/2.3/2.4 specifications; reference
-// implementations were consulted for design only.
-//
-// The native model is preservation-first: every frame is kept (decoded ones in
-// a clean, re-renderable form; compressed/encrypted/unknown ones verbatim) in
-// original order, so a tag edit rewrites only the affected frames. v2.2 is read
-// in full but normalised to v2.3 frame identifiers internally and written back
-// as v2.3 (v2.2 is obsolete); v2.3 and v2.4 round-trip at their own version.
+// Package id3: ID3v1/v2.2/v2.3/v2.4 for MP3, AAC, WAV, AIFF. Internal. Shared
+// frame codec, projection, rebuild. Keeps every frame (decoded re-renderable;
+// compressed/encrypted/unknown verbatim) so unrelated rewrites drop nothing opaque.
+
 package id3
 
 import (

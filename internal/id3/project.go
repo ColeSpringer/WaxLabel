@@ -48,19 +48,9 @@ func EncoderNoise(t *Tag) []core.Warning {
 	return ws
 }
 
-// RewriteBase selects the tag set used as the diff base when rebuilding an ID3
-// chunk inside a container that also has native metadata, such as WAV LIST/INFO
-// or AIFF text chunks. WAV and AIFF share this helper so their rewrite rules stay
-// aligned:
-//
-//   - no existing ID3 chunk: use an empty base so the full promoted tag set is
-//     written;
-//   - native metadata is being stripped: use only the parsed ID3 frames, so values
-//     from the stripped native container are treated as additions;
-//   - otherwise: use the merged projection, so unchanged frames are reused.
-//
-// srcTag is read only in the stripNative case. That case implies id3Present, so
-// srcTag is the parsed chunk, not the empty placeholder used for tagless files.
+// RewriteBase selects the ID3 rewrite diff base inside a container with native
+// metadata (WAV LIST/INFO, AIFF text). Shared so WAV/AIFF stay aligned.
+
 func RewriteBase(base tag.TagSet, srcTag *Tag, id3Present, stripNative bool) tag.TagSet {
 	switch {
 	case !id3Present:

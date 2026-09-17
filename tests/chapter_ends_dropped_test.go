@@ -7,9 +7,7 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// TestChapterEndsDroppedWarning checks the Matroska/WebM warning for replacing ended
-// chapters with open-ended ones. MP4 is exempt because its ends are inferred, a bare
-// clear is a deletion rather than a rewrite, and faithful transfer is suppressed.
+// checks the Matroska/WebM warning for replacing ended chapters with open-ended ones.
 func TestChapterEndsDroppedWarning(t *testing.T) {
 	mkaWithEnds := readFixture(t, chaptersMKA) // 3 chapters, each with an explicit end
 
@@ -42,8 +40,7 @@ func TestChapterEndsDroppedWarning(t *testing.T) {
 		t.Errorf("MP4 chapter rewrite must not warn chapter-ends-dropped (ends are inferred); got %v", mp4rewrite.Report().Warnings)
 	}
 
-	// 4. Faithful transfer is suppressed by the carried flag. The user did not author
-	// these chapters in the edit path, so this warning should not appear.
+	// 4. Faithful transfer is suppressed by the carried flag.
 	endless := buildMatroskaCh("matroska", "Src", mkEl(idChapters, mkEdition(true, nil,
 		mkAtom(1, 0, 0, "Alpha"),
 		mkAtom(2, uint64(100*time.Millisecond), 0, "Beta"),

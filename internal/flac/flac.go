@@ -17,22 +17,18 @@ func init() { core.Register(New()) }
 
 func (Codec) Format() core.Format { return core.FormatFLAC }
 
-// SkipsLeadingID3 reports true because FLAC tolerates a stray leading ID3v2 tag.
+// SkipsLeadingID3 is true: FLAC tolerates a stray leading ID3v2 tag.
 func (Codec) SkipsLeadingID3() bool { return true }
 func (Codec) Extensions() []string  { return []string{".flac"} }
 
-// Sniff matches the "fLaC" stream marker at offset 0. A FLAC file with a stray leading
-// ID3v2 tag has no "fLaC" there, so Sniff does not match it directly; it is recognized
-// via DetectLeading, which peeks past the leading ID3 to the inner "fLaC" signature.
-// The ID3 header is shared with MP3, so this method does not claim ID3 prefixes.
+// Sniff matches "fLaC" at offset 0. A leading ID3v2 has no "fLaC" there; DetectLeading
+// peeks past ID3 to the inner marker. Does not claim ID3 prefixes (shared with MP3).
 func (Codec) Sniff(header []byte) bool {
 	return len(header) >= 4 && string(header[:4]) == string(flacMagic)
 }
 
-// Capabilities reports FLAC's support. FLAC stores tags as Vorbis comments and
-// art as PICTURE blocks, both losslessly and fully writable. Chapters use the
-// VorbisComment CHAPTERxxx convention (start and title); a CUESHEET block is preserved
-// verbatim but not read as canonical chapters.
+// Capabilities: tags as Vorbis comments, art as PICTURE blocks, both fully writable.
+// Chapters use CHAPTERxxx (start+title); CUESHEET is preserved opaque, not projected.
 func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
@@ -50,22 +46,16 @@ func (Codec) Capabilities(_ *core.Media, opts core.WriteOptions) core.Capabiliti
 		Constraints:    []string{"CHAPTERxxx stores start and title only; a CUESHEET is preserved opaque but not read"},
 		ChapterLoss:    core.ChapterLossStartTitleOnly,
 	}
-	// FLAC rewrites its metadata block every edit, so it both grows and shrinks
-	// padding: --padding and --no-padding fully apply.
+	// Metadata rewrite every edit: padding both grows and shrinks.
 	return core.NewCapabilities(core.FormatFLAC, false, fields, pictures, chapters, core.AccessFull, nil).
 		WithSyncedLyrics(vorbis.SyncedLyricsCapability()).
 		WithFieldClassifier(vorbis.TransferClassifier)
 }
 
-// EssenceExtent returns the FLAC essence-digest inputs: the versioned extent
-// name and the decoder-critical STREAMINFO configuration (sample rate, channel
-// count, bit depth, and block-size bounds) mixed into the hash ahead of the
-// audio frames, so identical packets under different config hash differently.
-// v2 excludes a trailing region the frame-tail walk located (v1 hashed those
-// bytes as audio); per AudioDigest's contract the refinement is a new name, so
-// a persisted v1 hash stays labeled v1 rather than silently disagreeing. The
-// walk's search is bounded by min(4 MiB, the parse alloc limit), so what v2
-// excludes is deterministic for a given file and configuration.
+// EssenceExtent: versioned name plus STREAMINFO config mixed ahead of audio frames.
+// v2 excludes trailing junk found by the frame-tail walk (v1 hashed it as audio);
+// AudioDigest requires a new name for that refinement. Search is bounded by
+// min(4 MiB, alloc limit), so exclusion is deterministic for a given file/config.
 func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 	t := m.Properties.First()
 	var b [16]byte

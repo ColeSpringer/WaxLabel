@@ -36,9 +36,9 @@ func flacWithLowercaseComments(t *testing.T) []byte {
 	return append(out, data[off+4+bodyLen:]...)
 }
 
-// TestFLACPreservesLowercaseKeyCasingOnEdit checks the FLAC path end to end: editing one
-// field in a lowercase-keyed file keeps the file's spelling for the edited and untouched
-// keys, while an edited date alias rewrites to the preferred DATE.
+// checks the FLAC path end to end: editing one field in a lowercase-keyed file keeps the file's
+// spelling for the edited and untouched keys, while an edited date alias rewrites to the preferred
+// DATE.
 func TestFLACPreservesLowercaseKeyCasingOnEdit(t *testing.T) {
 	src := flacWithLowercaseComments(t)
 	doc := mustParseBytes(t, src)
@@ -309,9 +309,7 @@ func TestAddAndReadPicture(t *testing.T) {
 	}
 }
 
-// TestIndexedPictureColorsRoundTrip embeds an indexed GIF with an 8-entry global
-// color table and checks that the sniffed palette size reaches the FLAC PICTURE
-// block's Colors field and survives a reparse.
+// Indexed GIF (8-color GCT): sniffed palette size must fill PICTURE Colors and survive reparse.
 func TestIndexedPictureColorsRoundTrip(t *testing.T) {
 	path := copyToTemp(t, sampleFLAC)
 	doc := mustParseFile(t, path)
@@ -417,9 +415,7 @@ func tinyPNG() []byte {
 	}
 }
 
-// tinyJPEG returns a minimal complete JPEG header: SOI followed by a 3x5 SOF0. The
-// image sniffer requires a readable Start-Of-Frame, so a bare FF D8 FF magic does not
-// count as a recognized image.
+// tinyJPEG returns a minimal complete JPEG header: SOI followed by a 3x5 SOF0.
 func tinyJPEG() []byte {
 	return []byte{
 		0xFF, 0xD8, // SOI
@@ -431,12 +427,8 @@ func tinyJPEG() []byte {
 	}
 }
 
-// TestFLACValidFilesNotFlaggedTruncated guards the frame-tail walk against
-// false positives: a valid FLAC - including a minimal, effectively
-// zero-bitrate one whose STREAMINFO declares no total - must stay clean.
-// Truncation is detected from the frames themselves (frameTailWarnings), never
-// from a per-byte bitrate floor, which would false-flag silent or low-bitrate
-// lossless audio.
+// guards the frame-tail walk against false positives: a valid FLAC; including a minimal,
+// effectively zero-bitrate one whose STREAMINFO declares no total; must stay clean.
 func TestFLACValidFilesNotFlaggedTruncated(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -453,9 +445,9 @@ func TestFLACValidFilesNotFlaggedTruncated(t *testing.T) {
 	}
 }
 
-// TestFLACPaddingClampWarns verifies that requested padding above FLAC's ~16 MiB per-block
-// limit is clamped to it, and the write must surface a padding-clamped warning so the
-// smaller-than-asked padding is not silent. A sane padding does not warn.
+// requested padding above FLAC's ~16 MiB per-block limit is clamped to it, and the write must
+// surface a padding-clamped warning so the smaller-than-asked padding is not silent. A sane padding
+// does not warn.
 func TestFLACPaddingClampWarns(t *testing.T) {
 	doc := mustParseFile(t, sampleFLAC)
 	hasClamp := func(p *wl.Plan) bool {

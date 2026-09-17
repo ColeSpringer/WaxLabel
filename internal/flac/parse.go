@@ -14,9 +14,8 @@ import (
 
 var flacMagic = []byte("fLaC")
 
-// Parse reads a FLAC file's metadata into a neutral Media. The native document
-// (blocks, comments, pictures, and any stray ID3) is preserved as the base for
-// later edits; the canonical TagSet and typed projection are derived from it.
+// Parse reads FLAC metadata into a Media. Native doc is the edit base; TagSet and
+// typed fields are derived from it.
 func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) (*core.Media, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -27,7 +26,7 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	d := &doc{}
 	var warnings []core.Warning
 
-	// Detect a stray leading ID3v2 tag and preserve it.
+	// Stray leading ID3v2, preserved.
 	if hdr, err := bits.ReadSlice(src, 0, 10, limit); err == nil {
 		if n := id3v2Len(hdr); n > 0 && n <= size {
 			d.leadingID3, err = bits.ReadSlice(src, 0, n, limit)
@@ -56,8 +55,7 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 		h0 := c.Byte()
 		length := c.U24BE()
 		if c.Err() != nil {
-			// Wrap with %w so the cursor's sentinel (e.g. ErrSizeTooLarge)
-			// survives for callers that branch on it.
+			// Keep cursor sentinel (e.g. ErrSizeTooLarge) via %w.
 			return nil, fmt.Errorf("truncated block header: %w", c.Err())
 		}
 		code := h0 & 0x7F
@@ -81,10 +79,8 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 		return nil, fmt.Errorf("%w: STREAMINFO must be the first block", waxerr.ErrInvalidData)
 	}
 
-	// Detect a trailing ID3v1 tag and preserve it. Require it to sit entirely
-	// after the metadata region: otherwise audio bytes that merely happen to
-	// begin with "TAG" at size-128 would push audioEnd before audioStart,
-	// yielding a negative audio length.
+	// Trailing ID3v1, only if entirely after metadata (else "TAG" in audio at size-128
+	// would push audioEnd before audioStart).
 	if size >= 128 && size-128 >= d.audioStart {
 		if tail, err := bits.ReadSlice(src, size-128, 128, limit); err == nil && id3.LooksLikeID3v1(tail) {
 			d.trailingID3v1 = tail
@@ -100,12 +96,9 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	}
 	d.streamInfo = streamInfo
 
-	// FLAC declares no encoded-essence byte length (STREAMINFO holds the decoded
-	// TotalSamples), so a truncation or appended junk is visible only in the
-	// frames themselves; frameTailWarnings holds the walk's full story. A located
-	// trailing region is carved out of the audio extent like the other formats'
-	// trailing regions, keeping it out of the essence digest and the bitrate
-	// while the writer still copies it verbatim.
+	// No encoded byte length in STREAMINFO; truncation/junk come from frames.
+	// Located trailing region is carved from the audio extent (out of digest/bitrate)
+	// but still copied on write.
 	tailWarnings, trailingJunk, err := frameTailWarnings(ctx, src, d, limit)
 	if err != nil {
 		return nil, err
@@ -121,7 +114,7 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 		AudioEnd:   d.audioEnd,
 	}
 
-	// Decode the Vorbis comment block (first wins; warn on extras).
+	// First Vorbis comment block wins; warn on extras.
 	vcCount := 0
 	for _, b := range d.blocks {
 		if b.code != blkVorbisComment {
@@ -131,8 +124,7 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 		if vcCount > 1 {
 			warnings = core.Warn(warnings, core.WarnMultipleVorbisComment,
 				"more than one Vorbis comment block; the first is authoritative and the extras are dropped if the file is rewritten")
-			// Record what this extra block holds; the writer grades it against what it stores.
-			// An unparseable extra carries nothing readable, so it stays silent.
+			// Writer grades extras against what it stores; unparseable extras stay silent.
 			if _, extra, err := parseVorbisComment(b.body, limit, maxElements); err == nil {
 				lose, _ := projectComments(extra)
 				d.dupContent = append(d.dupContent, core.DuplicateContent{Tags: lose})
@@ -148,10 +140,8 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	}
 
 	media.Tags, media.Families = projectComments(d.comments)
-	// Project FLAC's legacy containers (leading ID3v2, trailing ID3v1) into family entries
-	// so a value living only in one is surfaced (never promoted into the Vorbis-only
-	// canonical set) and a conflict with a Vorbis value is flagged, giving FLAC the parity
-	// MP3 already has.
+	// Legacy ID3 into family entries (not canonical); conflicts flagged. Opaque when
+	// leading ID3v2 holds non-tag content a strip cannot prove redundant.
 	legacyFams, legacyOpaque := flacLegacyFamilies(media.Tags, d.leadingID3, d.trailingID3v1, maxElements)
 	media.Families = append(media.Families, legacyFams...)
 	media.LegacyOpaqueContent = legacyOpaque
@@ -162,8 +152,7 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	warnings = append(warnings, encoderNoiseWarnings(d.vendor, d.comments)...)
 	warnings = append(warnings, invalidKeyWarnings(d.comments)...)
 
-	// Decode pictures; a malformed picture is warned and skipped, but its raw block is
-	// preserved in the native doc (and re-emitted on a picture edit) so it is not destroyed.
+	// Malformed picture: warn, skip from Media.Pictures, keep raw body for re-emit.
 	for _, b := range d.blocks {
 		if b.code != blkPicture {
 			continue
@@ -177,22 +166,16 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 		media.Pictures = append(media.Pictures, p)
 	}
 
-	// Also decode cover art carried as a base64 METADATA_BLOCK_PICTURE Vorbis comment (the Ogg
-	// form some encoders use in FLAC), appended after the native pictures so it is visible and
-	// editable. Decoded comments are stripped from the list (so they are not also surfaced as
-	// tags) and recorded so the writer materializes exactly them into native blocks on a
-	// metadata-rewriting edit - a tag-only edit would otherwise drop the cover.
+	// Base64 METADATA_BLOCK_PICTURE comments (Ogg-style). Decode, strip from tags,
+	// record for materialization on rewrite.
 	var commentPics []core.Picture
 	var picWarnings []core.Warning
 	d.comments, commentPics, picWarnings = extractCommentPictures(d.comments, limit)
 	d.commentPictures = commentPics
 	media.Pictures = append(media.Pictures, commentPics...)
 	warnings = append(warnings, picWarnings...)
-	// media.Pictures keeps each cover's stored MIME/dimensions: it is the edit/write source (native
-	// blocks cloned verbatim, comment covers materialized from it), so it must not carry the sniffed
-	// type or an unrelated edit would rewrite an untouched cover's on-disk label. The read-side type
-	// detection runs at the display boundary instead - Document.Pictures and the linter project it
-	// through core.ProjectPictures.
+	// media.Pictures keeps stored MIME/dimensions (edit/write source). Sniffed type
+	// is applied at display (Document.Pictures / lint via core.ProjectPictures).
 
 	for _, b := range d.blocks {
 		if b.code > blkPicture && b.code != blkInvalid {
@@ -201,7 +184,6 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 		}
 	}
 
-	// Properties, including an average bitrate from the audio extent.
 	track := streamInfo
 	track.Bitrate = core.AverageBitrate(d.audioEnd-d.audioStart, track.Duration.Seconds())
 	media.Properties = core.Properties{Container: "FLAC", Tracks: []core.AudioTrack{track}}
@@ -212,12 +194,9 @@ func (Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseO
 	return media, nil
 }
 
-// extractCommentPictures splits base64 METADATA_BLOCK_PICTURE entries out of a Vorbis comment
-// list. It returns the comments to keep, the decoded covers (in comment order), and any
-// invalid-picture warnings. A malformed picture comment is kept verbatim and warned, never
-// dropped - exactly the Ogg parser's behavior via the shared vorbis decoder. The fast path
-// returns the input slice unchanged when no picture comment is present, so the common FLAC
-// file (native PICTURE blocks only) pays no reallocation.
+// extractCommentPictures splits METADATA_BLOCK_PICTURE comments out. Malformed
+// picture comments stay verbatim and are warned (same as Ogg via vorbis). Fast path
+// returns the input unchanged when none are present.
 func extractCommentPictures(comments []comment, limit int64) (kept []comment, pics []core.Picture, ws []core.Warning) {
 	has := false
 	for _, cm := range comments {
@@ -235,7 +214,7 @@ func extractCommentPictures(comments []comment, limit int64) (kept []comment, pi
 			kept = append(kept, cm)
 			continue
 		}
-		// Shared with the Ogg parser so the decode flow and the invalid-base64 wording cannot drift.
+		// Shared with Ogg so decode and invalid-base64 wording stay aligned.
 		pic, err := vorbis.DecodePictureComment(cm.value, limit)
 		if err != nil {
 			ws = core.Warn(ws, core.WarnInvalidPicture, err.Error())
@@ -247,24 +226,17 @@ func extractCommentPictures(comments []comment, limit int64) (kept []comment, pi
 	return kept, pics, ws
 }
 
-// flacLegacyFamilies projects FLAC's legacy containers (its leading ID3v2 and trailing ID3v1)
-// into family/source entries, mirroring MP3's legacyFamilies. Each entry is marked Legacy and
-// unselected when it disagrees with the authoritative Vorbis value. media.Tags stays Vorbis-only,
-// so this surfaces a legacy value (in dump --native and, if it conflicts, as a finding) without
-// promoting it into the canonical set. It also reports opaque when a leading ID3v2 carries non-tag
-// content the FLAC canonical does not fold in (pictures, chapters, synced lyrics) or is unreadable
-// - content a legacy strip cannot prove redundant. The leading ID3v2 bytes were already read at
-// parse, so this re-parses them in memory without touching the source.
+// flacLegacyFamilies projects leading ID3v2 / trailing ID3v1 into family entries
+// (like MP3). Marks Legacy/unselected on conflict with Vorbis. Opaque when leading
+// ID3v2 has non-tag content. Re-parses leading bytes in memory.
 func flacLegacyFamilies(auth tag.TagSet, leadingID3, trailingID3v1 []byte, maxElements int) (fams []core.FamilyValue, opaque bool) {
 	fams = id3.LegacyV1Families(auth, trailingID3v1)
 	leading, opaque := id3.LegacyV2Families(auth, leadingID3, maxElements)
 	return append(fams, leading...), opaque
 }
 
-// id3v2Len returns the total byte length of a stray leading ID3v2 tag given its
-// 10-byte header, or 0 if the header is not a valid ID3v2 tag. It delegates to
-// the shared id3 codec so the sync-safe size, footer, and reserved-version
-// handling stay in one place.
+// id3v2Len is the total length of a leading ID3v2 tag from its 10-byte header, or 0.
+// Delegates to id3 so sync-safe size / footer / reserved version stay shared.
 func id3v2Len(hdr []byte) int64 {
 	if n, ok := id3.TagSize(hdr); ok {
 		return n

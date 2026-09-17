@@ -5,18 +5,8 @@ import (
 	"slices"
 )
 
-// TagSet is the authoritative, presence-aware view of canonical tags: an
-// ordered multimap from [Key] to its values. Presence is explicit, so the
-// three states a typed struct cannot distinguish are all representable:
-//
-//   - absent: the key is not present ([TagSet.Has] is false);
-//   - present and empty: the key is present with no values;
-//   - present with values: the usual case.
-//
-// Key order is preserved (insertion order) so edits stay minimal-change.
-// TagSet carries reference state; copy it with [TagSet.Clone] rather than by
-// assignment when independent ownership is needed. The zero value is an empty,
-// ready-to-use set.
+// TagSet is the presence-aware ordered multimap of canonical tags:
+// absent, present-empty, or present-with-values. Clone for independent ownership.
 type TagSet struct {
 	order  []Key
 	values map[Key][]string
@@ -60,17 +50,10 @@ func (s TagSet) First(key Key) (string, bool) {
 // Len reports the number of present keys.
 func (s TagSet) Len() int { return len(s.order) }
 
-// ValueCount returns how many values key holds (0 if absent or present-but-empty),
-// without copying the value slice - a cheap length read for callers that only need
-// the count (e.g. a single-valued cardinality check), unlike [TagSet.Get], which
-// clones.
+// ValueCount returns how many values key holds without cloning.
 func (s TagSet) ValueCount(key Key) int { return len(s.values[key]) }
 
-// AnyValue reports whether key holds a value satisfying match, without copying the value
-// slice. [TagSet.Get]'s defensive clone is right for a caller that keeps the values and
-// wrong for one that only asks a question about them: the family view asks once per native
-// item, so a file with tens of thousands of items mapping to one key pays a clone of the
-// whole value list per item. match is never called for an absent key.
+// AnyValue reports whether any value matches, without cloning.
 func (s TagSet) AnyValue(key Key, match func(string) bool) bool {
 	for _, v := range s.values[key] {
 		if match(v) {

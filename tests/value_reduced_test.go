@@ -7,9 +7,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestMP3OriginalDateValueReduced checks that ID3v2.3 warns when ORIGINALDATE loses
-// month and day precision. A year-only value is already in the stored form, and ID3v2.4
-// keeps the full date in TDOR, so neither case warns.
+// ID3v2.3 warns when ORIGINALDATE loses month and day precision. A year-only value is already in
+// the stored form, and ID3v2.4 keeps the full date in TDOR, so neither case warns.
 func TestMP3OriginalDateValueReduced(t *testing.T) {
 	v23 := append(id3v2(3, textFrame(3, "TIT2", "T")), mp3Audio(t)...)
 	v24 := append(id3v2(4, textFrame(4, "TIT2", "T")), mp3Audio(t)...)
@@ -39,10 +38,9 @@ func TestMP3OriginalDateValueReduced(t *testing.T) {
 	}
 }
 
-// TestMP3RecordingDateSecondsValueReduced is a regression guard: ID3v2.3's TIME frame
-// stores only HHMM, so a RECORDINGDATE carrying seconds drops them and must warn
-// value-reduced - the same loss class as the existing month/hour reductions. A value to
-// the minute is lossless (no over-warn), and ID3v2.4 keeps seconds in TDRC.
+// regression guard: ID3v2.3's TIME frame stores only HHMM, so a RECORDINGDATE carrying seconds
+// drops them and must warn value-reduced; the same loss class as the existing month/hour
+// reductions. A value to the minute is lossless (no over-warn), and ID3v2.4 keeps seconds in TDRC.
 func TestMP3RecordingDateSecondsValueReduced(t *testing.T) {
 	v23 := append(id3v2(3, textFrame(3, "TIT2", "T")), mp3Audio(t)...)
 	v24 := append(id3v2(4, textFrame(4, "TIT2", "T")), mp3Audio(t)...)
@@ -66,8 +64,8 @@ func TestMP3RecordingDateSecondsValueReduced(t *testing.T) {
 	}
 }
 
-// TestTransferDateDispositionV23 checks that v2.3 date transfers are graded by the value's
-// precision. TORY is year-only, while TYER+TDAT+TIME keeps values to the minute.
+// v2.3 date transfers are graded by the value's precision. TORY is year-only, while TYER+TDAT+TIME
+// keeps values to the minute.
 func TestTransferDateDispositionV23(t *testing.T) {
 	// notags.mp3 resolves to an ID3v2.3 tag on write, so its date caps are the v2.3 ones.
 	dst := mustParseFile(t, "../testdata/notags.mp3")

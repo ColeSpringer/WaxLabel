@@ -11,11 +11,9 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// A chunk offset addresses media inside an mdat, so it always sits after the metadata
-// region a rewrite replaces. An offset that instead points INTO that region can be
-// carried below the start of the file when the region shrinks - a chapter clear drops a
-// whole text track out of moov. The subtraction must not wrap: a wrapped uint64 lands in
-// a 64-bit table as a ~18-exabyte offset, and the write would report success.
+// A chunk offset addresses media inside an mdat, so it always sits after the metadata region a
+// rewrite replaces. An offset that instead points INTO that region can be carried below the start
+// of the file when the region shrinks; a chapter clear drops a whole text track out of moov.
 
 // mp4Co64 builds a 64-bit chunk-offset table.
 func mp4Co64(entries ...uint64) []byte {

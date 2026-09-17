@@ -13,20 +13,9 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// Plan computes the byte-level rewrite that turns the original AIFF into the
-// edited media. It is preservation-first: every chunk is kept in order and
-// copied verbatim except the tag containers, the SSND sound chunk is copied
-// byte-for-byte, and the FORM size is recomputed.
-//
-// Two tag containers are reconciled by the precedence policy (see the package
-// doc): the embedded "ID3 " chunk holds pictures and the full canonical set; the
-// native text chunks (NAME/AUTH/"(c) "/ANNO) hold the representable subset so the
-// ffmpeg family still reads the file. A key this edit changed is written to both; a text
-// chunk the edit did not touch is copied verbatim, so a value the ID3 chunk disagrees with
-// and a duplicate NAME are the file's own data and survive. An explicit set of a key whose
-// chunk conflicts re-renders that chunk, which is how a caller resolves the disagreement. A
-// changed value the native chunks cannot represent (an unmapped key, a multi-value field
-// other than Comment, or any picture) forces an "ID3 " chunk so nothing is lost.
+// Plan builds a preservation-first rewrite: keep chunk order, copy SSND verbatim,
+// re-render tag containers, recompute FORM size. Tag precedence: see package doc /
+// write path below.
 func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.WriteOptions) (*core.WritePlan, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -45,10 +34,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	syncedLyricsChanged := !core.EqualSyncedLyrics(base.SyncedLyrics, edited.SyncedLyrics)
 	// LegacyStrip consolidates tags into the ID3 chunk by dropping the native ones.
 	stripText := opts.Legacy == core.LegacyStrip && textPresent
-	// The keys whose text chunks this write re-renders: the ones whose value moved, plus the
-	// ones the edit named outright (an explicit set of the already-projected value is how a
-	// caller resolves a chunk the ID3 chunk disagrees with). AIFF's native vocabulary maps no
-	// number key, so there is no number/total pair to fold together as WAV's IPRT needs.
+	// The keys whose text chunks this write re-renders: the ones whose value moved, plus
+	// the ones the edit named outright (an explicit set of the already-projected value is
+	// how a caller resolves a chunk the ID3 chunk disagrees with).
 	changed := core.ChangedKeys(base.Tags, edited.Tags, opts.Touched)
 
 	report := core.WriteReport{Format: core.FormatAIFF, BytesBefore: edited.Identity.Size}
@@ -57,9 +45,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// options, or the predicate could green-light a write the rebuild then renders differently.
 	wopts := id3.WriteOpts{Multi: opts.ID3Multi, NumericGenre: opts.NumericGenre}
 	// A requested write encoding (--numeric-genre) changes how a value is stored, not the
-	// value itself, so the tag comparison above cannot see it. It reaches only the ID3
-	// chunk: the native text chunks store no genre at all, and a file with no ID3 chunk
-	// passes a nil tag, for which the predicate is false.
+	// value itself, so the tag comparison above cannot see it.
 	encodingRewrite := id3.EncodingRewriteNeeded(d.id3, edited.Tags, wopts)
 
 	// Decide which containers receive the edited tags. Chapters and synced lyrics force an
@@ -131,11 +117,8 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	emitText := writeText && len(newText) > 0
 	emitID3 := needID3 && newID3 != nil && len(newID3.Frames()) > 0
 
-	// When both native text chunks and ID3 are emitted, any multi-valued key backed by
-	// a single-valued text chunk keeps its full set only in ID3; the text chunk stores
-	// just the first value. Surface that native reduction as a plan-time note. Gate on
-	// the emit flags, not needID3/writeText, so a full clear that emits no text chunk
-	// does not warn.
+	// When both native text chunks and ID3 are emitted, any multi-valued key backed by a
+	// single-valued text chunk keeps its full set only in ID3;
 	if emitText && emitID3 {
 		report.Warnings = append(report.Warnings, nativeReducedWarnings(edited.Tags, changed)...)
 	}
@@ -192,21 +175,17 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "ID3 chunk", result.Tags, dupLost)
 	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, id3Info, result.Tags)
 	report.Warnings = id3.AppendMalformedTailDropped(report.Warnings, d.id3)
-	// Collapse to a true no-op when the containers re-projected to base's values
-	// (e.g. a numeric genre); a native-text strip, a re-rendered conflicting chunk, and an
-	// encoding rewrite stay real writes. DowngradeNoOp carries the value-dropped warning
-	// forward so a dropped date still surfaces on a no-op.
+	// Collapse to a true no-op when the containers re-projected to base's values (e.g.
+	// DowngradeNoOp carries the value-dropped warning forward so a dropped date still
+	// surfaces on a no-op.
 	if np := core.DowngradeNoOp(core.FormatAIFF, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), stripText || encodingRewrite || textRewrite, report.Warnings); np != nil {
 		return np, nil
 	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
 }
 
-// planChunks builds the output chunk list in source order, re-rendering or
-// dropping the tag containers and copying everything else (including the SSND
-// sound chunk) verbatim. The native text chunks are regrouped at the position of
-// the first one (their order among themselves is not significant); a newly
-// created container is inserted before the SSND chunk.
+// planChunks builds the output chunk list in source order, re-rendering or dropping the
+// tag containers and copying everything else (including the SSND sound chunk) verbatim.
 func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, stripText, textBytesChange bool) (outs []outChunk, ops []string, dupLost []core.DuplicateContent) {
 	textGroupEmitted, id3Rewritten := false, false
 
@@ -264,12 +243,8 @@ func planChunks(d *doc, newText []outChunk, newID3 *id3.Tag, emitText, emitID3, 
 			dupLost = append(dupLost, ch.dupContent)
 			continue
 		default:
-			// A stale ID3-identified chunk reaches the default only when it parsed as
-			// neither the authoritative ID3 (handled above) nor a marked duplicate -
-			// i.e. a lone chunk whose body failed to decode as ID3, so no authoritative
-			// ID3 was found. Drop it when we are writing a fresh ID3 chunk, so the output
-			// never carries two ID3 chunks (which a re-parse would flag as a duplicate,
-			// disagreeing with the returned document).
+			// A stale ID3-identified chunk reaches the default only when it parsed as neither
+			// the authoritative ID3 (handled above) nor a marked duplicate - i.e.
 			if emitID3 && isID3Chunk(ch.id4()) {
 				ops = append(ops, "stale ID3 chunk drop")
 				continue
@@ -487,13 +462,9 @@ func buildResult(edited *core.Media, base *doc, newText []outChunk, newID3 *id3.
 		Chapters:     chapters,
 		SyncedLyrics: syncedLyrics,
 		Families:     families,
-		// Recompute warnings from the written containers so the returned document
-		// matches a fresh parse of the output: a dropped duplicate no longer warns, a
-		// resolved numeric genre no longer warns, and a preserved encoder stamp still
-		// does. (Duplicate-tag-block warnings are structural to the source and gone
-		// once consolidated, so they are correctly absent here.) projWs carries the
-		// ID3-chunk chapter-flatten and synced-lyrics notes, re-derived from the written
-		// frames like Parse.
+		// Recompute warnings from the written containers so the returned document matches a
+		// fresh parse of the output: a dropped duplicate no longer warns, a resolved numeric
+		// genre no longer warns, and a preserved encoder stamp still does.
 		Warnings:   append(projWs, resultWarnings(nd, numericGenre, audioBytes)...),
 		Native:     nd,
 		Identity:   core.Identity{Size: lay.total},

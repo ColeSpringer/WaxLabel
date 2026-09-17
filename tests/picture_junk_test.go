@@ -12,9 +12,9 @@ import (
 // read, under whatever label a container declares for them.
 func headlessPNG() []byte { return tinyPNG()[9:] }
 
-// TestJunkPictureUnderDeclaredMIMEDegrades: a declared image/png over undecodable bytes reads
-// as the unrecognized MIME with no dimensions, on every container that stores a label, and
-// lint flags it, matching what the write path already does for the same bytes.
+// declared image/png over undecodable bytes reads as the unrecognized MIME with no dimensions, on
+// every container that stores a label, and lint flags it, matching what the write path already does
+// for the same bytes.
 func TestJunkPictureUnderDeclaredMIMEDegrades(t *testing.T) {
 	cases := []struct {
 		name string
@@ -48,10 +48,10 @@ func TestJunkPictureUnderDeclaredMIMEDegrades(t *testing.T) {
 	}
 }
 
-// TestJunkPictureNeverRelabeledOnTransfer: the effective MIME the writers and transfer gates
-// see is the unrecognized one, so a junk cover is never carried into a new container under
-// the type its old label claimed. A destination whose covers must be a known image format
-// drops it; one that stores any cover keeps the bytes, but under the honest label.
+// effective MIME the writers and transfer gates see is the unrecognized one, so a junk cover is
+// never carried into a new container under the type its old label claimed. A destination whose
+// covers must be a known image format drops it; one that stores any cover keeps the bytes, but
+// under the honest label.
 func TestJunkPictureNeverRelabeledOnTransfer(t *testing.T) {
 	src := mustParseBytes(t, mp3WithFrames(t, id3Frame(4, "APIC", apicBody("image/png", 3, headlessPNG()))))
 
@@ -64,8 +64,8 @@ func TestJunkPictureNeverRelabeledOnTransfer(t *testing.T) {
 		t.Errorf("junk cover should be dropped on transfer into MP4, report = %+v", rep)
 	}
 
-	// FLAC stores any cover MIME, so the bytes carry - and the block that lands must declare
-	// the unrecognized type, never the image/png the source lied with.
+	// FLAC stores any cover MIME, so the bytes carry, and the block that lands must declare the
+	// unrecognized type, never the image/png the source lied with.
 	dstBytes := flacWithComments("TITLE=x")
 	plan, rep, err := src.PrepareTransfer(mustParseBytes(t, dstBytes))
 	if err != nil {
@@ -83,11 +83,8 @@ func TestJunkPictureNeverRelabeledOnTransfer(t *testing.T) {
 	}
 }
 
-// TestLinkPictureSurvivesPictureEdit: a picture whose MIME is the "-->" URL-link sentinel
-// declares that its payload is an address, not image bytes, so the sniff must leave it alone.
-// Degrading it would rewrite the link as a broken cover the moment any picture edit re-renders
-// the frame - the ID3 writer rebuilds every APIC from the picture set, so a lost sentinel is
-// lost on disk.
+// picture whose MIME is the "-->" URL-link sentinel declares that its payload is an address, not
+// image bytes, so the sniff must leave it alone.
 func TestLinkPictureSurvivesPictureEdit(t *testing.T) {
 	const url = "http://example.com/cover.png"
 	for _, c := range []struct {
@@ -122,11 +119,8 @@ func TestLinkPictureSurvivesPictureEdit(t *testing.T) {
 	}
 }
 
-// TestUnsniffableCoverCarriesIntoMatroska: Matroska stores a cover whose bytes the sniff
-// cannot identify as an octet-stream attachment under the cover-art name, and reads it back
-// as a picture, so its capability has to say so. Grading it unrepresentable would throw away
-// a valid cover in a format the sniff does not know rather than carry it, now that a stored
-// label no longer speaks for bytes nothing can decode.
+// Unsniffable cover becomes an octet-stream attachment Matroska still reads as a picture;
+// capability must allow it.
 func TestUnsniffableCoverCarriesIntoMatroska(t *testing.T) {
 	ico := []byte{0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x10, 0x10, 0x00, 0x00, 0x01, 0x00, 0x20, 0x00, 0x68, 0x04}
 	src := mustParseBytes(t, flacWithCommentBlock(nil,

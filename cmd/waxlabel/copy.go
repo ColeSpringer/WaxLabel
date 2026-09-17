@@ -9,10 +9,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newCopyCmd builds the "copy" command, which copies one file's canonical
-// metadata onto another, across formats, reporting what carries, downgrades, or is
-// lost on the way. The destination is rewritten in place (atomically);
-// --dry-run previews the transfer and the write without touching it.
+// newCopyCmd builds copy: project source metadata onto dest in place.
+// Reports carried/lossy/dropped. --dry-run previews without writing.
 func newCopyCmd() *cobra.Command {
 	var (
 		preset   string
@@ -35,17 +33,15 @@ func newCopyCmd() *cobra.Command {
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			srcPath, dstPath := args[0], args[1]
-			// Exit 2, before any parse, so it does not fall through to ErrInvalidData.
+			// Exit 2 before parse; avoids ErrInvalidData.
 			if err := checkEmptyOperands(srcPath, dstPath); err != nil {
 				return err
 			}
-			// copy is file-to-file with no streaming model, so "-" names no real file.
+			// No streaming; "-" is invalid.
 			if srcPath == stdinArg || dstPath == stdinArg {
 				return usagef("copy does not read standard input; pass file paths")
 			}
-			// The same check plan and set apply: an explicitly empty write-shaping flag is
-			// indistinguishable from an unset one, so it is a usage error rather than a
-			// silent no-op. Flags copy does not define are skipped.
+			// Empty write-shaping flags are usage errors (same as unset). Undefined flags skipped.
 			if err := rejectEmptyScalarFlags(cmd); err != nil {
 				return err
 			}
@@ -57,8 +53,7 @@ func newCopyCmd() *cobra.Command {
 			ctx := cmd.Context()
 			out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 			asJSON := jsonMode(cmd)
-			// Human output matches the per-file line dump/verify/set print, rather than the
-			// classifier's bare "no such file". JSON still returns to dispatch's envelope.
+			// Human mode: per-file error line, not bare classifier. JSON uses dispatch envelope.
 			parse := func(path string) (*wl.Document, error) {
 				doc, err := wl.ParseFile(ctx, path)
 				if err != nil {
@@ -70,8 +65,7 @@ func newCopyCmd() *cobra.Command {
 				}
 				return doc, nil
 			}
-			// A FIFO, directory, or socket is exit 2. acceptsStdin is false so the hint does
-			// not suggest "-"; a nonexistent path falls through to parse's not-found.
+			// Non-regular paths exit 2. acceptsStdin false (no "-" hint). Missing paths fall through to parse.
 			if err := checkRegularInputs(func(p string) string { return p }, false, srcPath, dstPath); err != nil {
 				return err
 			}
@@ -85,13 +79,11 @@ func newCopyCmd() *cobra.Command {
 			}
 
 			plan, report, err := srcDoc.PrepareTransfer(dstDoc, opts...)
-			// The labels distinguish WebM from Matroska, which share one Format.
+			// Labels distinguish WebM from Matroska (same Format).
 			srcLabel := transferFormatLabel(srcDoc.Format(), srcDoc.Properties().Container)
 			dstLabel := transferFormatLabel(dstDoc.Format(), dstDoc.Properties().Container)
 			if err != nil {
-				// The report still explains the failure - which fields could not be carried,
-				// and why - so it is shown on both surfaces before returning, not just the
-				// human one. A refused copy is exactly when a script needs the detail.
+				// Show transfer report on both surfaces before return; scripts need detail on refusal.
 				if !asJSON {
 					renderTransfer(out, srcPath, dstPath, report, srcLabel, dstLabel)
 					return err
@@ -105,16 +97,11 @@ func newCopyCmd() *cobra.Command {
 			// Preview before touching the destination.
 			if !asJSON {
 				renderTransfer(out, srcPath, dstPath, report, srcLabel, dstLabel)
-				// nil pictures: the transfer report above already details the carried ones.
+				// nil pictures: transfer report already lists them.
 				renderReport(out, dstPath, plan, nil)
 			}
-			// --strict fails a copy that is not a faithful carry, before any write. Two
-			// conditions, because a transfer can lose metadata two ways: the projection can
-			// grade an item lossy or dropped (the report), and the destination codec can
-			// warn about what the write itself does to a value it accepted (the plan). The
-			// second is not a formality - WarnLegacyStripDropped is emitted outside the
-			// carried gate, and every codec-emitted warning survives a carry - so it reuses
-			// the same gate set and plan reports.
+			// --strict: fail if projection is lossy/dropped or write would warn.
+			// WarnLegacyStripDropped and codec warnings bypass the carried gate; reuse plan reports.
 			if strict {
 				err := strictTransferError(report)
 				if err == nil {
@@ -123,9 +110,7 @@ func newCopyCmd() *cobra.Command {
 					}
 				}
 				if err != nil {
-					// A strict run writes nothing, so this envelope is the user's only account
-					// of what to fix. Counts alone would not name the items, which is the same
-					// reasoning that keeps set --strict's key list uncapped.
+					// Strict refusal writes nothing; JSON must name items (same uncapped key list as set --strict).
 					if !asJSON {
 						return err
 					}
@@ -164,9 +149,8 @@ func newCopyCmd() *cobra.Command {
 	return cmd
 }
 
-// strictTransferError fails a --strict copy whose projection is not a faithful carry,
-// naming what was lost. It reads TransferReport.Lossless, the same predicate the report
-// header counts, so the summary the user sees and the refusal cannot disagree.
+// strictTransferError fails --strict when projection is not lossless.
+// Uses TransferReport.Lossless (same predicate as header counts).
 func strictTransferError(report wl.TransferReport) error {
 	if report.Lossless() {
 		return nil
@@ -175,8 +159,7 @@ func strictTransferError(report wl.TransferReport) error {
 	return usagef("transfer is not lossless: %d lossy, %d dropped (omit --strict to write anyway)", lossy, dropped)
 }
 
-// transferLabel names a transfer item for display: the key for a field, or a
-// counted noun for the picture, chapter, and synced-lyrics sets.
+// transferLabel: field key, or counted noun for picture/chapter/synced-lyrics sets.
 func transferLabel(it wl.TransferItem) string {
 	switch it.Kind {
 	case wl.TransferPicture:
@@ -186,24 +169,18 @@ func transferLabel(it wl.TransferItem) string {
 	case wl.TransferSyncedLyric:
 		return fmt.Sprintf("synced lyrics (%d)", it.Count)
 	default:
-		// File-derived: an unvalidated field name can carry control bytes or a newline.
+		// Sanitize unvalidated field names (control bytes, newlines).
 		return tag.SanitizeLine(string(it.Key))
 	}
 }
 
-// renderTransfer prints the cross-format loss report: a carried/lossy/dropped summary,
-// then a line per item that does not carry cleanly. srcLabel/dstLabel come from
-// transferFormatLabel.
+// renderTransfer: carried/lossy/dropped summary, then per-item lines. Labels from transferFormatLabel.
 func renderTransfer(w io.Writer, src, dst string, r wl.TransferReport, srcLabel, dstLabel string) {
 	carried, lossy, dropped := r.Counts()
-	// displayName escapes the paths, so a hostile filename cannot forge a header line.
+	// displayName escapes paths against forged header lines.
 	fmt.Fprintf(w, "%s -> %s: transfer %s -> %s\n", displayName(src), displayName(dst), srcLabel, dstLabel)
 	fmt.Fprintf(w, "  %d carried, %d lossy, %d dropped\n", carried, lossy, dropped)
-	// A set kind (pictures, chapters, synced lyrics) that split into a carried
-	// part plus a lossy or dropped remainder shows its carried part too, so a
-	// split set does not read as items gone missing. Carried fields stay
-	// suppressed: the detail block is a loss report, and per-field carried lines
-	// would drown it.
+	// Split set kinds (partial carry + loss) show carried part too; pure carried fields stay suppressed.
 	splitKinds := map[wl.TransferKind]bool{}
 	for _, it := range r.Items {
 		if it.Kind != wl.TransferField && it.Disposition != wl.Carried {
@@ -214,8 +191,7 @@ func renderTransfer(w io.Writer, src, dst string, r wl.TransferReport, srcLabel,
 		if it.Disposition == wl.Carried && !splitKinds[it.Kind] {
 			continue
 		}
-		// Reason can carry file-derived text, and a newline would forge a report
-		// line; a carried item has no reason, so it takes no colon.
+		// Sanitize reason (file-derived); carried items have no reason/colon.
 		fmt.Fprintf(w, "  %-7s %s", it.Disposition, transferLabel(it))
 		if it.Reason != "" {
 			fmt.Fprintf(w, ": %s", tag.SanitizeLine(it.Reason))
@@ -224,24 +200,17 @@ func renderTransfer(w io.Writer, src, dst string, r wl.TransferReport, srcLabel,
 	}
 }
 
-// transferFormatLabel is the display name for one side of a transfer header. .mka and
-// .webm are both FormatMatroska, so that family shows its container instead; every other
-// format keeps its Format string. The JSON sourceFormat/destFormat stay the bare Format:
-// "WebM" is a container subtype, the format identity is Matroska.
+// Display label for one transfer side. Matroska family shows container (WebM vs MKA).
+// JSON sourceFormat/destFormat stay bare Format (WebM is container, not format identity).
 func transferFormatLabel(f wl.Format, container string) string {
-	// Any container that names itself something other than its codec family gets that name:
-	// WebM and Matroska share a Format, and so do WAV/RF64/BW64 and AIFF/AIFC. Naming only
-	// the family would tell an RF64 user their 64-bit file is a WAV, which is the very
-	// distinction Properties.Container exists to draw and which --json already reports.
+	// Show container when it differs from codec family (WebM/Matroska, WAV/RF64, AIFF/AIFC).
 	if container != "" && container != f.String() {
 		return container
 	}
 	return f.String()
 }
 
-// jsonCopy is the machine-readable result of a copy: per-item transfer dispositions plus
-// the destination write record. It embeds the jsonReport `set` emits, so the two cannot
-// drift. The embedded "file" is the destination.
+// jsonCopy: machine-readable copy result. Embeds jsonReport from set so shapes stay aligned. file is dest.
 type jsonCopy struct {
 	jsonReport
 	Source       string `json:"source"`
@@ -261,10 +230,7 @@ type jsonTransferItem struct {
 	Reason      string `json:"reason,omitempty"`
 }
 
-// toJSONCopyError is the envelope for a copy that is refused before the write: the same
-// transfer array a successful run emits, plus the error that stopped it. Returning the bare
-// error instead would leave a script with a code and no account of which items were lost,
-// while the human surface printed the whole report.
+// Refusal envelope: transfer array plus error. Bare error would leave scripts with code only.
 func toJSONCopyError(src, dst string, r wl.TransferReport, err error) jsonCopy {
 	jc := toJSONCopy(src, dst, r, nil, false, false, nil)
 	c := classifyError(err)

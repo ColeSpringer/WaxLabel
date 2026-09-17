@@ -8,8 +8,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestTransferDropsUnstorableMP4ValuesPreservesDest checks that MP4 values the writer cannot
-// store are reported as dropped and do not overwrite valid destination values.
+// MP4 values the writer cannot store are reported as dropped and do not overwrite valid destination
+// values.
 func TestTransferDropsUnstorableMP4ValuesPreservesDest(t *testing.T) {
 	keys := []tag.Key{tag.TrackNumber, tag.TrackTotal, tag.DiscNumber, tag.DiscTotal, tag.MediaType, tag.Compilation}
 
@@ -83,10 +83,7 @@ func TestTransferDropsUnstorableMP4ValuesPreservesDest(t *testing.T) {
 	// the sibling total slot, so a per-value predicate cannot detect it.
 }
 
-// TestTransferSlashTrackTotalToMP4 checks how transfer to MP4 handles the TRACKTOTAL carried by
-// a slash-combined source TRACKNUMBER. The FLAC read path splits "3/12" into TRACKNUMBER=3 +
-// TRACKTOTAL=12 at parse (tag.NormalizeNumberPairs), so transfer does not derive the total
-// itself; it sees two independent canonical keys and grades each against the destination.
+// checks how transfer to MP4 handles the TRACKTOTAL carried by a slash-combined source TRACKNUMBER.
 func TestTransferSlashTrackTotalToMP4(t *testing.T) {
 	dstBytes := readFixture(t, "../testdata/notags.m4a")
 
@@ -128,8 +125,8 @@ func TestTransferSlashTrackTotalToMP4(t *testing.T) {
 		t.Errorf("3/12: result TRACKTOTAL = %v, want [12]", got)
 	}
 
-	// 3/70000: the number is representable but the split-off total is not (past uint16), so
-	// the TRACKTOTAL item is Dropped - matching the writer, which stores 3 and drops 70000.
+	// 3/70000: the number is representable but the split-off total is not (past uint16), so the
+	// TRACKTOTAL item is Dropped; matching the writer, which stores 3 and drops 70000.
 	report, result = transfer(t, "3/70000")
 	if it, ok := totalItem(report); !ok || it.Disposition != wl.Dropped {
 		t.Errorf("3/70000: TRACKTOTAL item = %+v (present=%v), want one dropped", it, ok)
@@ -139,9 +136,7 @@ func TestTransferSlashTrackTotalToMP4(t *testing.T) {
 	}
 
 	// 70000/3: the split makes TRACKNUMBER=70000 (dropped, past uint16) and TRACKTOTAL=3 two
-	// independent keys. The number drops, but the representable total still carries on its own
-	// - the read-path split promoted it to a first-class value, so it no longer rides on the
-	// number the way a transfer-time-derived total once did.
+	// independent keys.
 	report, result = transfer(t, "70000/3")
 	if it, ok := totalItem(report); !ok || it.Disposition != wl.Carried {
 		t.Errorf("70000/3: TRACKTOTAL item = %+v (present=%v), want one carried", it, ok)
@@ -154,11 +149,7 @@ func TestTransferSlashTrackTotalToMP4(t *testing.T) {
 	}
 }
 
-// TestTransferSlashTotalDoesNotClobberDest checks that when a source's total is unstorable at
-// the destination, the destination's own total survives. The FLAC read path splits
-// "3/70000" into TRACKNUMBER=3 + TRACKTOTAL=70000; transfer grades that total Dropped (past
-// uint16 / negative) and skips it, so it never overwrites the destination's TRACKTOTAL, while
-// the representable number still carries.
+// when a source's total is unstorable at the destination, the destination's own total survives.
 func TestTransferSlashTotalDoesNotClobberDest(t *testing.T) {
 	for _, num := range []string{"3/70000", "3/-5"} {
 		dstBytes := writeBack(t, "../testdata/notags.m4a", func(e *wl.Editor) {

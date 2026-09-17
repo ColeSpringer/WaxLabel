@@ -7,10 +7,7 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// docWithCover builds a Document carrying one embedded front cover whose Data begins with the
-// given byte, for the RemovePictures immutability tests. Edit() seeds the editor via the shallow
-// core.ClonePictures, so the editor's picture Data aliases this Document's backing array - which is
-// exactly the sharing RemovePictures must not leak to a user predicate.
+// docWithCover builds a Document with one front cover; Edit() shallow-clones Data.
 func docWithCover(first byte) *Document {
 	return &Document{media: &core.Media{
 		Format:   core.FormatFLAC,
@@ -18,10 +15,7 @@ func docWithCover(first byte) *Document {
 	}}
 }
 
-// TestRemovePicturesMatchCannotMutateDocument covers the fix: RemovePictures is the only editor
-// method that hands a Picture to user code, and Edit() seeds the editor with Data aliasing the
-// immutable Document. A match predicate that writes p.Data must therefore not reach the Document's
-// bytes - RemovePictures hands match a Data-detached copy.
+// TestRemovePicturesMatchCannotMutateDocument: match gets a Data-detached copy.
 func TestRemovePicturesMatchCannotMutateDocument(t *testing.T) {
 	doc := docWithCover(0xAA)
 	doc.Edit().RemovePictures(func(p Picture) bool {
@@ -35,11 +29,8 @@ func TestRemovePicturesMatchCannotMutateDocument(t *testing.T) {
 	}
 }
 
-// TestRemovePicturesNoRaceWithPictures is the -race regression: a mutating RemovePictures
-// predicate running concurrently with doc.Pictures() reads must not race on shared picture bytes.
-// Before the fix, match received Data aliasing the Document, so its writes raced the reader's copy;
-// after it, match writes only its own detached probe, so there is no shared write. It passes with
-// or without -race, but only -race proves the absence of the data race.
+// TestRemovePicturesNoRaceWithPictures: concurrent mutating match vs Pictures()
+// must not race (-race proves it).
 func TestRemovePicturesNoRaceWithPictures(t *testing.T) {
 	doc := docWithCover(0xAA)
 	const iters = 200

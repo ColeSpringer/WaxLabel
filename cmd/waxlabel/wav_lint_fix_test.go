@@ -50,9 +50,7 @@ func writeInfoOnlyWAV(t *testing.T, name string, pairs ...[2]string) string {
 	return path
 }
 
-// wavChunkKinds lists a WAV's top-level chunk kinds via dump --native --json. Nested
-// entries (the INFO items, which Describe indents) are left out: this answers "what chunks
-// does the file hold", which is what a structural remediation must not change.
+// wavChunkKinds: top-level WAV chunk kinds from dump --native --json (structural check).
 func wavChunkKinds(t *testing.T, path string) []string {
 	t.Helper()
 	out, _, code := runCLI(t, "--json", "dump", "--native", path)
@@ -68,12 +66,7 @@ func wavChunkKinds(t *testing.T, path string) []string {
 	return kinds
 }
 
-// TestLintFixKeepsInfoOnlyWAVStructural is the regression guard for lint --fix on a
-// LIST/INFO-only WAV: remediation is documented as safe and non-destructive, so it must not
-// restructure the file. It used to add an id3 chunk holding the TRACKTOTAL its own read had
-// split out of IPRT="4/9", and rewrite IPRT to a bare "4". The assertion is the chunk list,
-// not the finding count: the failure mode is a chunk appearing, which a count-based check
-// would not see.
+// TestLintFixKeepsInfoOnlyWAVStructural: lint --fix must not add id3 or restructure INFO-only WAV.
 func TestLintFixKeepsInfoOnlyWAVStructural(t *testing.T) {
 	t.Parallel()
 	path := writeInfoOnlyWAV(t, "infoonly.wav",
@@ -100,15 +93,14 @@ func TestLintFixKeepsInfoOnlyWAVStructural(t *testing.T) {
 	if v := tagValues(jd, "ENCODER"); v != nil {
 		t.Errorf("ENCODER = %v, want absent after --fix", v)
 	}
-	// A second run has nothing left to do.
+	// Second lint --fix is a no-op.
 	fixOut, _, code := runCLI(t, "lint", "--fix", path)
 	if code != 0 || !strings.Contains(fixOut, "nothing to fix") {
 		t.Errorf("re-running --fix exit = %d, output:\n%s", code, fixOut)
 	}
 }
 
-// TestSetEncoderOnInfoOnlyWAVKeepsStructure is the companion for a plain edit: ENCODER has an
-// INFO home (ISFT), so writing it no longer promotes the file to an id3 chunk.
+// TestSetEncoderOnInfoOnlyWAVKeepsStructure: ENCODER via ISFT must not add id3 chunk.
 func TestSetEncoderOnInfoOnlyWAVKeepsStructure(t *testing.T) {
 	t.Parallel()
 	path := writeInfoOnlyWAV(t, "encoder.wav", [2]string{"INAM", "Song"})

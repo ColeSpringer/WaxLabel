@@ -15,8 +15,7 @@ var (
 	form = Dialect{Order: binary.BigEndian, AudioID: [4]byte{'S', 'S', 'N', 'D'}, Noun: "IFF chunks"}
 )
 
-// chunkBytes builds one chunk: 4-byte id + 4-byte size (in the dialect's order) + body,
-// plus a word-alignment pad byte when the body is odd (the pad is not counted in the size).
+// chunkBytes builds one chunk with optional pad (pad not in declared size).
 func chunkBytes(d Dialect, id string, body []byte) []byte {
 	hdr := make([]byte, 8)
 	copy(hdr, id)
@@ -39,9 +38,7 @@ func walk(t *testing.T, data []byte, end int64, d Dialect) Result {
 	return res
 }
 
-// TestWalkChunksPaddingAudioOuter exercises both dialects: an odd-length chunk excludes
-// its pad from the declared length yet the next chunk begins past it, the audio chunk is
-// indexed, and bytes beyond the container boundary are captured as the outer region.
+// TestWalkChunksPaddingAudioOuter: pad excluded, audio indexed, outer region captured.
 func TestWalkChunksPaddingAudioOuter(t *testing.T) {
 	for _, d := range []Dialect{riff, form} {
 		t.Run(d.Noun, func(t *testing.T) {
@@ -75,9 +72,7 @@ func TestWalkChunksPaddingAudioOuter(t *testing.T) {
 	}
 }
 
-// TestWalkChunksID3v1Tail: a 128-byte "TAG" region after the audio, counted inside the
-// container with a small (non-overrunning) declared length, is stopped at by the tail
-// detector and captured as the trailing region rather than parsed as phantom chunks.
+// TestWalkChunksID3v1Tail: 128-byte TAG tail preserved, not parsed as chunks.
 func TestWalkChunksID3v1Tail(t *testing.T) {
 	for _, d := range []Dialect{riff, form} {
 		t.Run(d.Noun, func(t *testing.T) {
@@ -99,9 +94,7 @@ func TestWalkChunksID3v1Tail(t *testing.T) {
 	}
 }
 
-// TestWalkChunksID3v1TailNoAudio: the ID3v1 tail is recognized by shape even in a
-// malformed container with no audio chunk - the break is gated on AudioIdx only for the
-// overrun shape, not the ID3v1 shape, so the marker is still preserved verbatim.
+// TestWalkChunksID3v1TailNoAudio: ID3v1 tail detected without audio chunk.
 func TestWalkChunksID3v1TailNoAudio(t *testing.T) {
 	body := append(make([]byte, 12), chunkBytes(riff, "junk", []byte{1, 2})...) // no audio chunk
 	tail := make([]byte, 128)
@@ -117,7 +110,7 @@ func TestWalkChunksID3v1TailNoAudio(t *testing.T) {
 	}
 }
 
-// TestWalkChunksNoChunks: an empty container yields ErrInvalidData with the dialect noun.
+// TestWalkChunksNoChunks: header-only container returns ErrInvalidData.
 func TestWalkChunksNoChunks(t *testing.T) {
 	data := make([]byte, 12) // header only, no chunks
 	_, err := WalkChunks(context.Background(), bytes.NewReader(data), WalkOptions{
@@ -128,8 +121,7 @@ func TestWalkChunksNoChunks(t *testing.T) {
 	}
 }
 
-// TestWalkChunksOversizedNonAudioChunk checks that clamped non-audio chunks are recorded
-// for caller warnings, while the 0xFFFFFFFF "size unknown" sentinel is left alone.
+// TestWalkChunksOversizedNonAudioChunk: clamped chunks recorded; 0xFFFFFFFF sentinel exempt.
 func TestWalkChunksOversizedNonAudioChunk(t *testing.T) {
 	for _, d := range []Dialect{riff, form} {
 		t.Run(d.Noun, func(t *testing.T) {

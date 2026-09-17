@@ -6,8 +6,7 @@ import (
 	"testing"
 )
 
-// TestDumpJSONCardinalityParity checks that dump --json reports the same duplicate or
-// conflict state the human dump shows for single-valued keys.
+// TestDumpJSONCardinalityParity: JSON and text dump agree on duplicate/conflict for single keys.
 func TestDumpJSONCardinalityParity(t *testing.T) {
 	td := func(n string) string { return filepath.Join("..", "..", "testdata", n) }
 

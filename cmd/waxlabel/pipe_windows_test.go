@@ -8,9 +8,7 @@ import (
 	"testing"
 )
 
-// TestIsBrokenPipeMatchesWindowsErrnos covers the errnos Windows actually returns for a
-// write to a closed pipe. EPIPE is inert here, so without these two `dump | head` exits 6
-// instead of 0.
+// TestIsBrokenPipeMatchesWindowsErrnos: Windows broken-pipe errnos (EPIPE inert here).
 func TestIsBrokenPipeMatchesWindowsErrnos(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -24,7 +22,7 @@ func TestIsBrokenPipeMatchesWindowsErrnos(t *testing.T) {
 			if !isBrokenPipe(tc.errno) {
 				t.Errorf("isBrokenPipe(%s) = false, want true", tc.name)
 			}
-			// Arrives wrapped in a *os.PathError from the write.
+			// Usually wrapped in *os.PathError from write.
 			if !isBrokenPipe(fmt.Errorf("write stdout: %w", tc.errno)) {
 				t.Errorf("isBrokenPipe(wrapped %s) = false, want true", tc.name)
 			}
@@ -32,8 +30,7 @@ func TestIsBrokenPipeMatchesWindowsErrnos(t *testing.T) {
 	}
 }
 
-// TestErrnoNoDataValue guards the local constant against a typo: syscall does not export
-// ERROR_NO_DATA, so nothing else pins it to 232.
+// TestErrnoNoDataValue: errnoNoData must be 232 (ERROR_NO_DATA, not exported by syscall).
 func TestErrnoNoDataValue(t *testing.T) {
 	t.Parallel()
 	if errnoNoData != 232 {

@@ -5,8 +5,7 @@ import (
 	"testing"
 )
 
-// TestRejectEmptyImagePath checks that empty image paths fail as usage errors with a clear
-// message before file I/O starts.
+// TestRejectEmptyImagePath: empty image path is usage error before I/O.
 func TestRejectEmptyImagePath(t *testing.T) {
 	file := copyFixture(t, notagsFLAC)
 	for _, args := range [][]string{
@@ -21,8 +20,7 @@ func TestRejectEmptyImagePath(t *testing.T) {
 	}
 }
 
-// TestEmptyNumberAdvisory checks that TRACKNUMBER=/5 writes successfully while advising
-// that the number side is empty. A negative total reports only the negative-number note.
+// TestEmptyNumberAdvisory: TRACKNUMBER=/5 writes with empty-number note; negative total alone.
 func TestEmptyNumberAdvisory(t *testing.T) {
 	_, stderr, code := runCLI(t, "set", copyFixture(t, notagsFLAC), "--set", "TRACKNUMBER=/5")
 	if code != 0 {
@@ -35,7 +33,7 @@ func TestEmptyNumberAdvisory(t *testing.T) {
 		t.Errorf("TRACKNUMBER=/5 must not fire the negative note: %q", stderr)
 	}
 
-	// /-5: only the negative note, not the empty-number one.
+	// /-5: negative note only, not empty-number.
 	_, stderr2, _ := runCLI(t, "set", copyFixture(t, notagsFLAC), "--set", "TRACKNUMBER=/-5")
 	if !strings.Contains(stderr2, "is negative") {
 		t.Errorf("TRACKNUMBER=/-5 stderr = %q, want the negative note", stderr2)

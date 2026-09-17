@@ -7,11 +7,9 @@ import (
 	"time"
 )
 
-// splitChapter parses an --add-chapter "TIMESTAMP=Title" assignment: the timestamp
-// before the first '=', and the (possibly empty, possibly '='-containing) title
-// after it. It mirrors splitAssign, so the value side is taken verbatim - a title
-// may contain '=' or be empty. A missing '=' or a malformed timestamp is a usage
-// error.
+// splitChapter parses --add-chapter "TIMESTAMP=Title": timestamp before the first
+// '=', title (possibly empty or containing '=') after. Mirrors splitAssign: value
+// side is verbatim. Missing '=' or bad timestamp is a usage error.
 func splitChapter(s string) (start time.Duration, title string, err error) {
 	i := strings.IndexByte(s, '=')
 	if i < 0 {
@@ -28,23 +26,16 @@ func splitChapter(s string) (start time.Duration, title string, err error) {
 	return start, title, nil
 }
 
-// parseChapterTimestamp parses a chapter start written as [H:]MM:SS[.mmm] or as
-// bare (possibly fractional) seconds. It round-trips the dump format exactly:
-// chapterTimestamp emits H:MM:SS.mmm, so a timestamp copied from a dump line parses
-// back to the same instant. Components are colon-separated and the seconds field
-// may carry 1, 2, or 3 fractional digits. Fractions are millisecond-resolution:
-// ".5" and ".500" are valid; ".9999" and a dangling "." are not. The leading
-// component may exceed 60 (90:00 is ninety minutes) but is bounded by the
-// representable range; an inner minutes field and the seconds field are each < 60,
-// and every field is non-negative - a negative,
-// out-of-range, or non-numeric field is a usage error.
+// parseChapterTimestamp parses [H:]MM:SS[.mmm] or bare (possibly fractional)
+// seconds. Round-trips dump's H:MM:SS.mmm. Fractional seconds are 1-3 digits
+// (ms resolution). Leading component may exceed 60 (90:00 = ninety minutes) but
+// stays in representable range; inner minutes and seconds are each < 60; all
+// fields non-negative.
 func parseChapterTimestamp(s string) (time.Duration, error) {
 	s = strings.TrimSpace(s)
-	// Restrict to the decimal grammar before parsing: strconv.ParseFloat would
-	// otherwise accept hex ("0x1p4"), scientific ("1e3"), underscored ("1_000"), and
-	// signed ("+90") forms, and ParseInt a leading '+', all outside the documented
-	// [H:]MM:SS[.mmm] shape. Allow only digits, the ':' separators, and the seconds
-	// '.'; this also subsumes the Inf/NaN guard (letters are rejected here).
+	// Restrict to the decimal grammar: strconv would otherwise accept hex,
+	// scientific, underscores, and signs outside [H:]MM:SS[.mmm]. Digits, ':',
+	// and '.' only; also rejects Inf/NaN.
 	if !onlyTimestampBytes(s) {
 		return 0, badTimestamp(s)
 	}
@@ -52,12 +43,9 @@ func parseChapterTimestamp(s string) (time.Duration, error) {
 	if len(parts) > 3 {
 		return 0, badTimestamp(s)
 	}
-	// The last component is the seconds (fractional allowed); any preceding ones are
-	// whole hours/minutes.
 	secStr := parts[len(parts)-1]
-	// When a fractional part is present it must be 1 to 3 digits: ParseFloat would
-	// otherwise accept a dangling dot ("1:30.") and an over-precise fraction (".9999"),
-	// neither of which the documented millisecond grammar admits. A bare ".5" stays valid.
+	// Fractional part must be 1-3 digits: ParseFloat accepts a dangling "." and
+	// over-precise fractions, which the ms grammar does not.
 	if idx := strings.IndexByte(secStr, '.'); idx >= 0 {
 		if frac := secStr[idx+1:]; len(frac) == 0 || len(frac) > 3 {
 			return 0, badTimestamp(s)
@@ -67,8 +55,7 @@ func parseChapterTimestamp(s string) (time.Duration, error) {
 	if err != nil || secs < 0 {
 		return 0, badTimestamp(s)
 	}
-	// Seconds is a bounded (non-leading) field whenever there is more than one
-	// component; only the single bare-seconds component is unbounded.
+	// Seconds is bounded when multi-component; bare seconds alone is unbounded.
 	if len(parts) >= 2 && secs >= 60 {
 		return 0, badTimestamp(s)
 	}
@@ -88,15 +75,11 @@ func parseChapterTimestamp(s string) (time.Duration, error) {
 			return 0, badTimestamp(s)
 		}
 	case 1:
-		// Bare seconds: the only (leading) component, so it is unbounded.
+		// Bare seconds: only component, unbounded.
 	}
-	// Reject a magnitude past what an int64-nanosecond time.Duration can hold
-	// (~292 years): an absurd field (e.g. a millions-of-hours leading component, or
-	// a huge bare-seconds value) would otherwise wrap to a negative duration,
-	// silently violating the non-negative contract above. The float sum is only
-	// approximate near the int64 ceiling, but at this scale the error is nanoseconds
-	// against centuries; the d < 0 guard then catches any boundary leak from that
-	// rounding (every field is non-negative, so a negative result can only be overflow).
+	// Reject magnitudes past int64-nanosecond Duration (~292 years); otherwise
+	// a huge field wraps to a negative duration. Float sum is approximate near
+	// the ceiling; d < 0 catches boundary leak (all fields non-negative).
 	if float64(hours)*float64(time.Hour)+float64(mins)*float64(time.Minute)+secs*float64(time.Second) >= float64(math.MaxInt64) {
 		return 0, badTimestamp(s)
 	}
@@ -108,11 +91,8 @@ func parseChapterTimestamp(s string) (time.Duration, error) {
 	return d, nil
 }
 
-// onlyTimestampBytes reports whether s is built solely from the decimal-timestamp
-// alphabet: ASCII digits, the ':' component separator, and the '.' seconds point.
-// It is the gate that keeps the strconv parsers from accepting hex/scientific/
-// underscored/signed numeric forms outside the documented grammar. An empty string
-// fails (no digits), which the parsers would reject anyway.
+// onlyTimestampBytes reports whether s uses only digits, ':', and '.'. Gates
+// strconv away from hex/scientific/underscore/signed forms. Empty fails.
 func onlyTimestampBytes(s string) bool {
 	if s == "" {
 		return false
@@ -126,10 +106,9 @@ func onlyTimestampBytes(s string) bool {
 	return true
 }
 
-// parseTimeField parses a whole-number hours/minutes component. A limit > 0 bounds
-// it to [0, limit) - an inner field that must not overflow into the next; limit <= 0
-// leaves it unbounded above, for a leading field. It reports ok=false for a
-// non-numeric, negative, or out-of-range value.
+// parseTimeField parses a whole hours/minutes component. limit > 0 bounds to
+// [0, limit); limit <= 0 is unbounded above (leading field). ok=false on
+// non-numeric, negative, or out-of-range.
 func parseTimeField(s string, limit int64) (int64, bool) {
 	n, err := strconv.ParseInt(s, 10, 64)
 	if err != nil || n < 0 || (limit > 0 && n >= limit) {

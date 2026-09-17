@@ -26,9 +26,7 @@ func id3FrameRaw(id string, body []byte) []byte {
 	return append(out, body...)
 }
 
-// TestID3ForeignUTF16SurvivesChainedEdit covers a foreign frame whose first UTF-16 value
-// has a little-endian BOM and whose later value omits it. An unrelated edit preserves the
-// TPE1 frame bytes, so the re-parse exercises the same foreign input a second time.
+// foreign frame whose first UTF-16 value has a little-endian BOM and whose later value omits it.
 func TestID3ForeignUTF16SurvivesChainedEdit(t *testing.T) {
 	// A multi-value TPE1: first value LE BOM, second value BOM-less LE (must inherit LE).
 	tpe1 := []byte{1} // encUTF16

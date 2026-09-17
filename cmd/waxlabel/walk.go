@@ -17,13 +17,11 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// stdinArg is the conventional path that means "read standard input". It is kept
-// as the display name in output so a buffered-stdin temp path never leaks.
+// stdinArg means "read standard input". Kept as the display name so buffered-stdin temp paths never appear in output.
 const stdinArg = "-"
 
-// bufferStdin copies standard input to a temp file, since a pipe has no ReaderAt or Size,
-// and returns its path plus a cleanup. It consumes stdin, so call it at most once per run.
-// A positive maxSize stops an endless pipe from filling the disk.
+// bufferStdin copies stdin to a temp file (pipes lack ReaderAt/Size) and returns its path
+// plus cleanup. Consumes stdin; call at most once per run. maxSize > 0 caps disk use.
 func bufferStdin(stdin io.Reader, maxSize int64) (path string, cleanup func(), err error) {
 	noop := func() {}
 	tmp, err := os.CreateTemp("", "waxlabel-stdin-*")
@@ -31,24 +29,19 @@ func bufferStdin(stdin io.Reader, maxSize int64) (path string, cleanup func(), e
 		return "", noop, err
 	}
 	name := tmp.Name()
-	// Registered before the io.Copy, so a forced exit mid-copy still deletes it. cleanup
-	// both deregisters and removes, and runs on every exit path, so no entry is orphaned.
-	//
-	// Close before removing, since Windows cannot delete an open file. That covers the idle
-	// handle, not every case: a quit landing mid-copy leaves an in-flight write holding a
-	// reference, so the real CloseHandle is deferred and the remove can still fail.
+	// Registered before io.Copy so forced exit mid-copy still deletes the temp file.
+	// Close before remove: Windows cannot delete open files. Quit mid-copy may leave
+	// an in-flight write holding a handle, so remove can still fail.
 	deregister := registerCleanup(func() { _ = tmp.Close(); _ = os.Remove(name) })
 	cleanup = func() {
 		deregister()
 		_ = os.Remove(name)
 	}
-	// A bound at the int64 ceiling would overflow the maxSize+1 probe below to a negative
-	// that io.LimitReader reads as "nothing", and nothing exceeds it anyway.
+	// math.MaxInt64 would overflow maxSize+1 below; io.LimitReader would then read nothing.
 	if maxSize == math.MaxInt64 {
 		maxSize = 0
 	}
-	// maxSize+1 so a stream of exactly maxSize still buffers while the first byte past it
-	// is caught below; a plain LimitReader would truncate and misparse instead.
+	// maxSize+1: exact-length streams buffer; overflow is detected below. LimitReader(maxSize) would truncate and misparse.
 	src := stdin
 	if maxSize > 0 {
 		src = io.LimitReader(stdin, maxSize+1)
@@ -71,10 +64,8 @@ func bufferStdin(stdin io.Reader, maxSize int64) (path string, cleanup func(), e
 	return name, cleanup, nil
 }
 
-// readInputs prepares a read command's arguments for parsing. "-" is buffered to one temp
-// file, since a pipe can be read only once; a second "-" would replay the same bytes and
-// is a usage error. It returns realOf, mapping each argument to the path to parse, plus a
-// cleanup. The original argument stays the display name, so "-" never shows a temp path.
+// readInputs buffers "-" to one temp file (pipes are read-once). Second "-" is a usage error.
+// Returns realOf (arg to parse path), cleanup, and keeps orig args for display names.
 func readInputs(stdin io.Reader, maxSize int64, paths []string) (realOf func(string) string, cleanup func(), err error) {
 	cleanup = func() {}
 	seenStdin := false
@@ -95,7 +86,7 @@ func readInputs(stdin io.Reader, maxSize int64, paths []string) (realOf func(str
 		}
 		stdinReal, cleanup = real, cl
 	}
-	// Non-empty exactly when a "-" was buffered, so no separate bool to keep in sync.
+	// Non-empty iff "-" was buffered; avoids a separate bool.
 	realOf = func(p string) string {
 		if p == stdinArg && stdinReal != "" {
 			return stdinReal
@@ -105,31 +96,26 @@ func readInputs(stdin io.Reader, maxSize int64, paths []string) (realOf func(str
 	return realOf, cleanup, nil
 }
 
-// parseInput parses realPath but reports it under origPath's name, so a buffered-stdin
-// temp path never leaks into the library's "could not identify" error. The source name is
-// the RAW path, not displayName: the library's %q already escapes control bytes once, so a
-// pre-sanitized name would double-escape a tab. Every read command routes through here so
-// the plumbing cannot be forgotten at a call site.
+// parseInput parses realPath but uses origPath in errors so temp stdin paths never leak.
+// WithSourceName gets the raw orig path (not displayName): %q escapes once; pre-sanitizing double-escapes tabs.
+// All read commands go through here.
 func parseInput(ctx context.Context, realPath, origPath string, extra ...wl.ParseOption) (*wl.Document, error) {
 	return wl.ParseFile(ctx, realPath, append(extra, wl.WithSourceName(jsonFileName(origPath)))...)
 }
 
-// expandPaths expands directory arguments into their audio files when recursive is set,
-// keeping files whose extension matches a known codec. Ordinary files and "-" pass through
-// in order. A stat or walk failure stays in place for the per-file loop to classify.
+// expandPaths with --recursive walks directories for known-audio extensions. Files and "-"
+// pass through in order. Stat/walk failures stay for the per-file loop.
 //
-// A directory without --recursive, or a directly-named FIFO/device/socket, stays in the
-// list with its error recorded in pathErrors. The caller checks that map first, so the bad
-// path surfaces as one per-element error while good inputs still process. Recording the
-// FIFO rather than opening it is load-bearing: a per-file os.Open on one would block. Only
-// an invocation-level failure returns err and aborts the run.
+// Without --recursive, directories and named FIFO/device/socket stay in the list with errors
+// in pathErrors. Caller checks pathErrors first: bad paths fail per-element; good inputs still run.
+// FIFOs must be recorded, not opened: os.Open on a FIFO blocks.
+// Only invocation-level failures return err and abort.
 //
-// skipped counts regular files passed over for not matching a known audio extension, and
-// leftovers the temp files an interrupted write left behind, both surfaced by the caller as
-// text-mode notes. Always zero without --recursive.
+// skipped: regular files with unknown extensions. leftovers: stale temp files from interrupted writes.
+// Both surfaced as text-mode notes. Zero without --recursive.
 func expandPaths(paths []string, recursive bool) (expanded []string, skipped, leftovers int, pathErrors map[string]error, err error) {
-	// Exit 2 before any stat, so it cannot fall through to ErrInvalidData and outrank a
-	// real not-found. The one invocation-level abort; everything below is per path.
+	// Exit 2 before stat so empty operands cannot become ErrInvalidData and outrank real not-found.
+	// Only invocation-level abort here; rest is per-path.
 	if err := checkEmptyOperands(paths...); err != nil {
 		return nil, 0, 0, nil, err
 	}
@@ -139,12 +125,11 @@ func expandPaths(paths []string, recursive bool) (expanded []string, skipped, le
 			if p == stdinArg {
 				continue
 			}
-			// One stat, reused below. A directory has more specific guidance, so it wins;
-			// otherwise checkRegularFileInfo catches a FIFO before the parse opens it and
-			// blocks. Recorded per path so the rest of the batch still runs.
+			// One stat, reused below. Directory check wins; else checkRegularFileInfo catches FIFOs before parse would block.
+			// Per-path errors; batch continues.
 			info, statErr := os.Stat(p)
 			if statErr == nil && info.IsDir() {
-				// No path in the detail: callers add the "waxlabel: <path>: " prefix.
+				// Callers add the "waxlabel: <path>: " prefix.
 				pathErrors[p] = usagef("is a directory; pass --recursive to walk it for audio files")
 				continue
 			}
@@ -162,8 +147,7 @@ func expandPaths(paths []string, recursive bool) (expanded []string, skipped, le
 		}
 		info, err := os.Stat(p)
 		if err != nil || !info.IsDir() {
-			// Record a directly-named FIFO per path rather than wedging the batch, so both
-			// branches agree. A regular or nonexistent path passes to the per-file loop.
+			// Record FIFO/device/socket per path; regular or missing paths go to the per-file loop.
 			if cerr := checkRegularFileInfo(p, info, err, true); cerr != nil {
 				pathErrors[p] = cerr
 			}
@@ -183,17 +167,15 @@ func expandPaths(paths []string, recursive bool) (expanded []string, skipped, le
 	return out, skipped, leftovers, pathErrors, nil
 }
 
-// walkError marks a path expandPaths added because the tree walk could not read it, rather
-// than one the user named. It is reported like any other per-path error, but it is not an
-// input anybody asked to act on, so an arity rule such as -o's single-input check must not
-// count it: an unreadable subdirectory beside one audio file is still a one-file run.
+// walkError: path added by expandPaths due to walk failure, not user input.
+// Reported like other per-path errors but excluded from arity checks (-o single-input):
+// unreadable subdir beside one audio file is still a one-file run.
 type walkError struct{ err error }
 
 func (e walkError) Error() string { return e.err.Error() }
 func (e walkError) Unwrap() error { return e.err }
 
-// namedInputs returns the paths the user actually asked to act on: everything expandPaths
-// produced except the directories it recorded as unreadable.
+// namedInputs: expandPaths output minus walkError paths.
 func namedInputs(paths []string, pathErrors map[string]error) []string {
 	out := make([]string, 0, len(paths))
 	for _, p := range paths {
@@ -206,11 +188,9 @@ func namedInputs(paths []string, pathErrors map[string]error) []string {
 	return out
 }
 
-// guardPathErrors wraps a per-file compute so a path carrying a recorded pre-flight error
-// returns it as the literal first step, before any os.Open. Centralizing that is what
-// guarantees the load-bearing invariant: a recorded FIFO is never opened, since its read
-// would block. Only a command with a bespoke write loop, as set has, checks pathErrors
-// inline instead, and must do so as the first statement of the loop body.
+// guardPathErrors returns recorded pre-flight errors before os.Open.
+// Invariant: recorded FIFOs are never opened (read blocks).
+// set checks pathErrors inline in its write loop; must be first in the loop body.
 func guardPathErrors[T any](pathErrors map[string]error, compute func(context.Context, string) (T, error)) func(context.Context, string) (T, error) {
 	return func(ctx context.Context, path string) (T, error) {
 		if e := pathErrors[path]; e != nil {
@@ -221,23 +201,19 @@ func guardPathErrors[T any](pathErrors map[string]error, compute func(context.Co
 	}
 }
 
-// checkRegularFile rejects a path that exists but is not a regular file as exit 2, the
-// CLI choke point that turns the library's exit-4 backstop into a precise message before
-// any parse. A nonexistent path returns nil, so the caller's not-found still owns a typo.
-// acceptsStdin tailors the hint: a command reading "-" points there, copy does not.
-//
-// A FIFO is the case that matters: os.Open blocks on its read end.
+// checkRegularFile: non-regular existing paths exit 2 with a precise message (before library exit 4).
+// Missing paths return nil so caller owns not-found. acceptsStdin tailors the FIFO hint.
+// FIFO matters: os.Open on read end blocks.
 func checkRegularFile(path string, acceptsStdin bool) error {
 	info, err := os.Stat(path)
 	return checkRegularFileInfo(path, info, err, acceptsStdin)
 }
 
-// checkRegularFileInfo is checkRegularFile given a stat the caller already has, so it need
-// not stat twice and open a window for the path to change in between. A non-nil statErr
-// returns nil, leaving the caller's not-found to own it; info is read only when it is nil.
+// checkRegularFileInfo: same as checkRegularFile but uses caller's stat (no double-stat TOCTOU).
+// Non-nil statErr returns nil; caller owns not-found.
 func checkRegularFileInfo(path string, info fs.FileInfo, statErr error, acceptsStdin bool) error {
 	if statErr != nil {
-		return nil // does not exist (or unstattable): let the not-found path classify it
+		return nil // missing or unstattable: caller classifies not-found
 	}
 	if info.Mode().IsRegular() {
 		return nil
@@ -245,22 +221,16 @@ func checkRegularFileInfo(path string, info fs.FileInfo, statErr error, acceptsS
 	if info.IsDir() {
 		return usagef("%s is a directory, not a file", path)
 	}
-	// FIFO, device, or socket: point at the escape hatch that fits the command.
+	// FIFO, device, or socket.
 	if acceptsStdin {
 		return usagef("%s is not a regular file; pipe a stream in with %q instead", path, stdinArg)
 	}
 	return usagef("%s is not a regular file; pass a regular file path instead", path)
 }
 
-// checkRegularInputs applies the checkRegularFile guard to each operand of a command that
-// parses its inputs directly rather than through expandPaths: caps, diff, and copy, which
-// take fixed operands and do not walk. Without it they would fall through to the library's
-// exit-4 backstop for a FIFO, a less precise class and message than the exit 2 the other
-// commands give for the same input. It checks the resolved path (so a "-"
-// maps to the buffered-stdin temp, a regular file, and passes) and lets a
-// nonexistent path through to the parse's own not-found. acceptsStdin tailors the
-// non-regular-file hint: caps/diff stream stdin and pass true; copy rejects "-" and
-// passes false, so its hint does not suggest a "-" it would refuse.
+// checkRegularInputs: checkRegularFile on direct-operand commands (caps, diff, copy) that skip expandPaths.
+// Without this, FIFOs hit library exit 4 instead of exit 2. Checks resolved path ("-" -> buffered temp).
+// Missing paths pass through to parse. acceptsStdin: true for caps/diff; false for copy (rejects "-").
 func checkRegularInputs(realOf func(string) string, acceptsStdin bool, args ...string) error {
 	for _, a := range args {
 		if a == stdinArg {
@@ -273,9 +243,8 @@ func checkRegularInputs(realOf func(string) string, acceptsStdin bool, args ...s
 	return nil
 }
 
-// checkEmptyOperands rejects an empty path operand as exit 2, shared by expandPaths and
-// the direct-operand copy/diff, which do not walk. Catching it here keeps an empty name
-// from reaching ErrInvalidData and outranking a real not-found. "-" is a real operand.
+// checkEmptyOperands: empty path is exit 2. Shared by expandPaths and copy/diff.
+// Prevents ErrInvalidData from outranking real not-found. "-" is valid.
 func checkEmptyOperands(paths ...string) error {
 	for _, p := range paths {
 		if p == "" {
@@ -285,19 +254,15 @@ func checkEmptyOperands(paths ...string) error {
 	return nil
 }
 
-// isWalkCandidate reports whether a non-directory walk entry is a file worth considering:
-// a regular file, or a symlink to one. A dangling link counts too, so the per-file loop
-// reports it as not-found rather than dropping it silently. A FIFO/socket/device does not.
-// Shared by the inclusion and skipped-count paths, so the two cannot disagree on what a
-// file is. WalkDir does not follow links, so os.Stat resolves them; it fails fast on a
-// dangling link and cannot block the way opening a FIFO would.
+// isWalkCandidate: regular file or symlink to one (dangling links included for not-found reporting).
+// Not FIFO/socket/device. Shared by inclusion and skip counting. WalkDir does not follow links;
+// os.Stat resolves symlinks and fails fast; cannot block like opening a FIFO.
 func isWalkCandidate(path string, d fs.DirEntry) bool {
 	switch {
 	case d.Type().IsRegular():
 		return true
 	case d.Type()&fs.ModeSymlink != 0:
-		// Stat failing means a dangling link, kept on purpose; only a link to a
-		// non-regular file is excluded.
+		// Stat failure: dangling link, kept. Exclude only symlinks to non-regular files.
 		info, err := os.Stat(path)
 		return err != nil || info.Mode().IsRegular()
 	default:
@@ -305,39 +270,28 @@ func isWalkCandidate(path string, d fs.DirEntry) bool {
 	}
 }
 
-// walkAudioFiles returns the audio files under root, sorted, selected by extension, plus a
-// count of candidates passed over, a count of the temp files an interrupted write left
-// behind, and the walk errors keyed by user-facing path. A malformed file with a matching
-// extension still surfaces its parse error in the per-file loop. The counts drive the
-// "N file(s) skipped" and leftover notes; the errors become io entries.
+// walkAudioFiles: sorted audio paths under root, skip/leftover counts, walk errors by user path.
+// Bad audio files still fail in the per-file parse loop. Counts feed skip/leftover notes; errors become io entries.
 func walkAudioFiles(root string) (files []string, skipped, leftovers int, errs map[string]error) {
-	// WalkDir lstats its root and never follows links, so a symlinked-directory argument
-	// would yield a node it refuses to descend. Resolve the root once and map matches back
-	// under the user's argument. Only the root: interior directory symlinks stay skipped,
-	// so this cannot reintroduce traversal-cycle risk.
+	// WalkDir lstats root and never follows links; symlinked directory args need root resolution
+	// with paths rebased to the user's argument. Interior dir symlinks stay skipped (no cycle risk).
 	walkRoot, linked := resolvedWalkRoot(root)
 	var out []string
 	errs = map[string]error{}
 	_ = filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			// A directory the walk cannot read, or a root it cannot stat. WalkDir has already
-			// skipped it; recording it lets the per-file loop report it as io instead of the
-			// tree reading clean over a subtree nobody saw.
+			// Unreadable directory or unreadable root. WalkDir skipped it; record for per-file io reporting.
 			errs[rebaseWalkPath(root, walkRoot, linked, path)] = err
 			return nil
 		}
-		// Prune a hidden directory and its subtree: .git and .cache are not media trees.
-		// An explicitly-named hidden root is still walked, so only interior ones go.
+		// Skip hidden directories (.git, .cache). Hidden root arg is still walked; only interior dirs pruned.
 		if d.IsDir() {
 			if path != walkRoot && strings.HasPrefix(d.Name(), ".") {
 				return fs.SkipDir
 			}
 			return nil
 		}
-		// Not counted as skipped either: deliberately hidden, not unrecognized media. A
-		// leftover temp is the exception: nothing else would ever mention it. Counted by the
-		// same rule clean applies by default - a regular file older than the age gate - so
-		// the note never points at a command that then finds nothing.
+		// Hidden files are not skipped-count. Exception: stale leftover temps (same age gate as clean default).
 		if strings.HasPrefix(d.Name(), ".") {
 			if wl.IsTempFileName(d.Name()) && staleLeftover(d) {
 				leftovers++
@@ -350,8 +304,7 @@ func walkAudioFiles(root string) (files []string, skipped, leftovers int, errs m
 		if isAudioExtension(filepath.Ext(path)) {
 			out = append(out, rebaseWalkPath(root, walkRoot, linked, path))
 		} else {
-			// A cover.jpg or notes.txt, counted so a directory of unrecognized files is
-			// not a silent near-no-op.
+			// Non-audio regular files (cover.jpg, etc.) counted as skipped.
 			skipped++
 		}
 		return nil
@@ -360,20 +313,16 @@ func walkAudioFiles(root string) (files []string, skipped, leftovers int, errs m
 	return out, skipped, leftovers, errs
 }
 
-// staleLeftover reports whether a temp-named entry is one clean would list without --all: a
-// regular file last written before the age gate. Anything newer belongs to a write that may
-// still be running, and anything that is not a regular file is not a temp this wrote.
+// staleLeftover: temp-named regular file older than cleanAgeGate (same rule as clean without --all).
+// Newer files may still be in use; non-regular files excluded.
 func staleLeftover(d fs.DirEntry) bool {
 	info, err := d.Info()
 	return err == nil && info.Mode().IsRegular() && time.Since(info.ModTime()) >= cleanAgeGate
 }
 
-// resolvedWalkRoot returns the real directory to walk for a recursive root argument.
-// When root is itself a symlink to a directory, WalkDir would refuse to descend it
-// (it never follows links), so the link is resolved with EvalSymlinks and linked is
-// true (the caller maps matches back under root); a plain directory, a non-directory
-// link, or an unreadable link is walked as-is (linked false). Only the named root is
-// resolved; interior links are left to isWalkCandidate, avoiding cycle risk.
+// resolvedWalkRoot: directory to walk for recursive root. Symlink-to-dir root is EvalSymlink'd
+// (linked=true; caller rebases paths). Plain dir, non-dir link, or unreadable link: walk as-is.
+// Only root resolved; interior links handled by isWalkCandidate.
 func resolvedWalkRoot(root string) (walkRoot string, linked bool) {
 	li, err := os.Lstat(root)
 	if err != nil || li.Mode()&fs.ModeSymlink == 0 {
@@ -389,9 +338,7 @@ func resolvedWalkRoot(root string) (walkRoot string, linked bool) {
 	return resolved, true
 }
 
-// rebaseWalkPath maps a path found under the resolved walk root back under the user's
-// original argument, so a symlinked-directory walk reports the name they passed. An
-// unresolved root, or a Rel failure, returns the path as found.
+// rebaseWalkPath: map resolved walk path back under user's root arg. Unlinked root or Rel failure: unchanged.
 func rebaseWalkPath(root, walkRoot string, linked bool, path string) string {
 	if !linked {
 		return path
@@ -403,8 +350,7 @@ func rebaseWalkPath(root, walkRoot string, linked bool, path string) string {
 	return filepath.Join(root, rel)
 }
 
-// audioExtensions is every extension a codec claims, gathered from the library's format
-// list so the walker's filter tracks new formats automatically.
+// audioExtensions: all codec extensions from wl.Formats(); tracks new formats automatically.
 var audioExtensions = func() map[string]bool {
 	m := make(map[string]bool)
 	for _, f := range wl.Formats() {
@@ -415,7 +361,7 @@ var audioExtensions = func() map[string]bool {
 	return m
 }()
 
-// isAudioExtension reports whether ext, with its leading dot, is claimed by a codec.
+// isAudioExtension: ext (with dot) is a known codec extension.
 func isAudioExtension(ext string) bool {
 	return audioExtensions[strings.ToLower(ext)]
 }

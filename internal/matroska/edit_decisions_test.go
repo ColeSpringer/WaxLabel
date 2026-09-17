@@ -24,15 +24,15 @@ func tagSet(kvs ...keyVals) tag.TagSet {
 }
 
 // simple builds a parsed SimpleTag carrying a string value, the shape the value
-// survival pass reasons about. raw stands in for the captured bytes so the
-// decisions can be driven without a real parse.
+// survival pass reasons about. raw stands in for the captured bytes so the decisions
+// can be driven without a real parse.
 func simple(name, value string) simpleTag {
 	return simpleTag{name: name, value: value, hasValue: true, raw: []byte(name)}
 }
 
-// albumGroup and trackGroup build the two scopes the decisions distinguish: the
-// group buildAlbumGroup syncs into, and a UID-narrowed group that must be able to
-// keep a still-wanted value in place.
+// albumGroup and trackGroup build the two scopes the decisions distinguish: the group
+// buildAlbumGroup syncs into, and a UID-narrowed group that must be able to keep a
+// still-wanted value in place.
 func albumGroup(tags ...simpleTag) tagGroup {
 	return tagGroup{scope: core.ScopeAlbum, targetTypeValue: 50, tags: tags, raw: []byte("album")}
 }
@@ -42,8 +42,8 @@ func trackGroup(tags ...simpleTag) tagGroup {
 }
 
 // TestComputeEditDecisionsValueSurvival covers the value-level outcome of an edit
-// against a scoped tag tree: which parsed SimpleTags survive at their own scope,
-// and which values are left for the album-scope re-emit.
+// against a scoped tag tree: which parsed SimpleTags survive at their own scope, and
+// which values are left for the album-scope re-emit.
 func TestComputeEditDecisionsValueSurvival(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -67,9 +67,8 @@ func TestComputeEditDecisionsValueSurvival(t *testing.T) {
 			wantAlbum: []keyVals{{tag.Encoder, nil}},
 		},
 		{
-			// The track ARTIST differs from the album one only by case, so the reader
-			// already suppresses it as a cross-scope echo. Appending a value keeps that
-			// echo covered by the album emit, so the tag survives untouched.
+			// The track ARTIST differs from the album one only by case, so the reader already
+			// suppresses it as a cross-scope echo.
 			name: "suppressed echo survives while its fold stays covered",
 			groups: []tagGroup{
 				albumGroup(simple("ARTIST", "X")),
@@ -94,9 +93,7 @@ func TestComputeEditDecisionsValueSurvival(t *testing.T) {
 			wantAlbum: []keyVals{{tag.Artist, []string{"X", "x"}}},
 		},
 		{
-			// One SimpleTag carries both halves of a slash number. The number half is
-			// kept exactly, but the total half is edited away, so the whole tag dies and
-			// the number the keep had consumed is released back to the album re-emit.
+			// One SimpleTag carries both halves of a slash number.
 			name: "slash conjunction releases the claimed half",
 			groups: []tagGroup{
 				albumGroup(simple("PART_NUMBER", "7")),
@@ -145,10 +142,10 @@ func TestComputeEditDecisionsValueSurvival(t *testing.T) {
 			wantAlbum: []keyVals{{tag.Artist, []string{"New"}}},
 		},
 		{
-			// A claim released by a doomed tag is re-offered to a denied twin: the
-			// slash tag's number half claims "2" first but dies with its cleared
-			// total, so the plain PART_NUMBER=2 keeps its scope instead of being
-			// deleted and re-synthesized at album scope.
+			// A claim released by a doomed tag is re-offered to a denied twin: the slash tag's
+			// number half claims "2" first but dies with its cleared total, so the plain
+			// PART_NUMBER=2 keeps its scope instead of being deleted and re-synthesized at album
+			// scope.
 			name: "released claim re-offers to a denied twin",
 			groups: []tagGroup{
 				trackGroup(simple("TOTAL_PARTS", "4")),
@@ -161,9 +158,8 @@ func TestComputeEditDecisionsValueSurvival(t *testing.T) {
 			wantAlbum: []keyVals{{tag.TrackNumber, nil}, {tag.TrackTotal, nil}},
 		},
 		{
-			// An echo whose fold is kept in place at an earlier scope stays
-			// suppressed on re-read, so its tag survives even though the album
-			// emit carries nothing.
+			// An echo whose fold is kept in place at an earlier scope stays suppressed on
+			// re-read, so its tag survives even though the album emit carries nothing.
 			name: "echo covered by a value kept at an earlier scope",
 			groups: []tagGroup{
 				albumGroup(simple("ARTIST", "X")),

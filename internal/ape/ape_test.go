@@ -9,8 +9,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// apeWithFooter appends a footer-only APEv2 footer to an item body, writing footerCount into
-// the item-count field (which may overstate the body's actual item count for cap tests).
+// apeWithFooter: footer-only tag; footerCount may overstate for cap tests.
 func apeWithFooter(body []byte, footerCount uint32) []byte {
 	foot := make([]byte, footerLen)
 	copy(foot[0:8], preamble)
@@ -21,7 +20,7 @@ func apeWithFooter(body []byte, footerCount uint32) []byte {
 	return append(body, foot...)
 }
 
-// buildAPE constructs a minimal footer-only APEv2 tag from text items.
+// buildAPE: minimal footer-only APEv2 from text items.
 func buildAPE(items map[string]string) []byte {
 	var body []byte
 	count := 0
@@ -61,8 +60,7 @@ func TestParseAPE(t *testing.T) {
 	}
 }
 
-// TestParseAPELyricist checks an APE "Lyricist" item surfaces as canonical LYRICIST
-// case-insensitively, keeping the APE lyricist projection aligned with the other formats.
+// TestParseAPELyricist: Lyricist -> LYRICIST case-insensitively.
 func TestParseAPELyricist(t *testing.T) {
 	data := buildAPE(map[string]string{"Lyricist": "Bernie Taupin"})
 	tg, ok, err := ParseAt(core.BytesSource(data), int64(len(data)), 1<<20, 1000)
@@ -78,8 +76,7 @@ func TestParseAPELyricist(t *testing.T) {
 	}
 }
 
-// TestParseAPERoles checks a few APE contributor-role items surface as their canonical keys
-// case-insensitively, keeping the APE role projection aligned with the other formats.
+// TestParseAPERoles: contributor roles -> canonical keys case-insensitively.
 func TestParseAPERoles(t *testing.T) {
 	data := buildAPE(map[string]string{"Producer": "Alice", "MIXER": "Bob", "djmixer": "Cara"})
 	tg, ok, err := ParseAt(core.BytesSource(data), int64(len(data)), 1<<20, 1000)
@@ -104,10 +101,7 @@ func TestParseAPERoles(t *testing.T) {
 	}
 }
 
-// TestParseAPEReleaseDetail checks the release-detail items surface as their canonical keys.
-// APE uses its own MUSICBRAINZ_ALBUMSTATUS / MUSICBRAINZ_ALBUMTYPE names, which need explicit
-// entries (Pairs consults apeKeys then tag.ParseKey, never tag.AliasKey), while RELEASECOUNTRY
-// resolves through the ParseKey fallthrough. Matching is case-insensitive throughout.
+// TestParseAPEReleaseDetail: MB status/type via apeKeys; RELEASECOUNTRY via ParseKey.
 func TestParseAPEReleaseDetail(t *testing.T) {
 	data := buildAPE(map[string]string{
 		"RELEASECOUNTRY":          "GB",
@@ -143,9 +137,7 @@ func TestParseAPEAbsent(t *testing.T) {
 	}
 }
 
-// buildAPEN builds a footer-only APE tag with n well-formed 1-byte-value text
-// items. footerCount is written to the footer and may overstate n for cap and
-// short-body tests.
+// buildAPEN: n text items; footerCount may overstate for cap tests.
 func buildAPEN(n int, footerCount uint32) []byte {
 	var body []byte
 	for i := range n {
@@ -219,9 +211,7 @@ func TestParseAPEItemHugeSizeRejected(t *testing.T) {
 	}
 }
 
-// TestParseAPEMatroskaNativeSpellings: the Matroska native spellings are edit
-// aliases on every format, so APE items using them must project onto the same
-// canonical keys (Pairs consults apeKeys then tag.ParseKey, never tag.AliasKey).
+// TestParseAPEMatroskaNativeSpellings: Matroska spellings project via apeKeys/ParseKey.
 func TestParseAPEMatroskaNativeSpellings(t *testing.T) {
 	data := buildAPE(map[string]string{
 		"Publisher":      "Matador",
@@ -245,10 +235,7 @@ func TestParseAPEMatroskaNativeSpellings(t *testing.T) {
 	}
 }
 
-// TestCarryWarningsRecomputesItemWarnings: the post-write warning set must match a
-// fresh parse of the output, so a parse-time warning about an item the rewrite removed
-// or replaced (an invalid-UTF-8 value rewritten, a squatting item displaced) is
-// recomputed from the written items rather than echoed from the source parse.
+// TestCarryWarningsRecomputesItemWarnings: post-write warnings match fresh parse.
 func TestCarryWarningsRecomputesItemWarnings(t *testing.T) {
 	stale := []core.Warning{
 		{Code: core.WarnInvalidText, Message: `APE item "Artist" is not valid UTF-8; read as Latin-1`},

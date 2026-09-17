@@ -17,9 +17,9 @@ import (
 // frame and its VBR header.
 const scanWindow = 64 << 10
 
-// parse reads an MP3 file's metadata into a neutral Media: the front ID3v2 tag
-// (authoritative, writable), the audio geometry and properties, and any trailing
+// parse reads MP3 metadata: front ID3v2 (authoritative), audio geometry, trailing
 // legacy containers (preserved, surfaced, warned).
+
 func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) (*core.Media, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -39,20 +39,13 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	d.id3Len = id3Len
 	d.audioStart = d.id3Len
 
-	// Trailing legacy containers, from the end inward: ID3v1 (last 128 bytes),
-	// then an APEv2 tag ending just before it. The strict LooksLikeID3v1 gate can miss a
-	// genuine ID3v1 whose year is non-standard (a legacy writer's "90s") or whose bytes carry
-	// a control byte; when it does, tailEnd stays at size and the APE probe below starts inside
-	// that undetected trailer, so a coexisting APEv2 tag (the rare [audio][APE][odd-year ID3v1]
-	// layout) is also missed and folded into essence. Accepted as the cost of not false-flagging
-	// random audio; the strict gate belongs on this sniff, unlike the WAV/AIFF path whose
-	// trailing tag sits at a declared chunk boundary.
+	// Trailing legacy inward: ID3v1 then APEv2 before it. Strict LooksLikeID3v1 can miss
+	// odd-year/control-byte trailers (and coexisting APE); accepted vs false-flagging audio.
+
 	tailEnd := size
-	// Scan backward in 128-byte steps while each block is a valid ID3v1 trailer, so a
-	// double-stacked (or deeper) ID3v1 run some re-tagging tools leave behind is captured as one
-	// contiguous block and fully stripped by a single --legacy strip, rather than needing one run
-	// per block. The strict LooksLikeID3v1 gate is kept per block, so audio bytes that happen to
-	// land on a 128-byte boundary are never mistaken for a tag.
+	// Scan back in 128-byte steps for stacked ID3v1 runs (one --legacy strip). Strict
+	// gate per block so audio on a 128-byte boundary is not mistaken for a tag.
+
 	id3v1Start := size
 	for id3v1Start-128 >= d.audioStart {
 		block, err := bits.ReadSlice(src, id3v1Start-128, 128, limit)
@@ -100,32 +93,17 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		if info, ok := parseMPEG(window); ok {
 			d.firstHeader = info.header
 			d.track = buildTrack(info, d.audioEnd-d.audioStart)
-			// A Xing/Info header declares the encoder's frame count, from which
-			// buildTrack derived the playable duration; the average bitrate it then
-			// computes spreads the bytes actually present over that declared duration.
-			// When frames are missing (a truncated download), that average collapses
-			// far below the 8 kbps MPEG floor - a reliable, zero-I/O truncation signal.
-			// An extreme truncation (a multi-minute declared duration with only the
-			// ~48-byte header left) drives the integer average to 0, so the test is a
-			// bare "< 8000" rather than "> 0 && < 8000": inside this block a frame was
-			// found, so the bytes present are real, and a 0 here means truncation, not
-			// "unknown". A CBR stream without a Xing count carries no declared length to
-			// check against, so that case is undetectable here and is left unflagged
-			// rather than risk a false positive on a valid file.
+			// Xing frame count → duration → average bitrate. Truncation: average falls
+			// below 8 kbps (incl. 0). CBR without Xing count: undetectable here.
+
 			if info.vbrFrames > 0 && d.track.Bitrate < 8000 {
 				warnings = core.Warn(warnings, core.WarnTruncatedAudio,
 					"fewer audio frames than the Xing/Info header declares; file may be truncated")
 			}
 		} else if d.audioEnd > d.audioStart {
-			// A non-empty essence region that yields no MPEG frame is a.mp3 that is not
-			// actually MPEG audio (text, a renamed file). Surface it under the shared
-			// no-audio code so dump/lint flag it instead of accepting it silently. This is
-			// distinct from the zero-essence no-audio in the root parse (which fires only
-			// when the range is empty), so the two never double-warn. The parser leaves the
-			// bytes intact (the file stays dumpable and usable as a copy source), but this
-			// warning is the no-audio gate's signal: set/plan and verify now refuse the
-			// file (ErrInvalidData, exit 4) rather than rewrite metadata around non-audio
-			// bytes or hash them as essence.
+			// Non-empty essence with no MPEG frame: not audio. Shared no-audio warning;
+			// set/plan/verify refuse (distinct from empty-range no-audio).
+
 			warnings = core.Warn(warnings, core.WarnNoAudioFrames,
 				"no MPEG audio frames found; file may not be audio")
 		}

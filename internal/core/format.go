@@ -1,13 +1,7 @@
-// Package core holds the value types shared between the public waxlabel
-// package and the internal codecs, plus the Codec contract itself. Keeping
-// these definitions here lets the root package re-export public types while
-// codecs remain internal, without introducing an import cycle.
+// Package core holds shared value types and the Codec contract for waxlabel and internal codecs.
 package core
 
-// Format identifies a container/codec combination. The set is closed: there is
-// no public registry, because a mutable global conflicts with the uint8
-// representation and invites ordering and collision bugs. New formats are added
-// here deliberately.
+// Format identifies a container/codec. Closed set (uint8); add new formats here.
 type Format uint8
 
 const (
@@ -67,14 +61,7 @@ func (f Format) String() string {
 	}
 }
 
-// DefaultID3Version returns the ID3v2 minor version a freshly created id3 tag uses
-// for format f - the from-scratch default only, since a file with an existing id3
-// tag keeps that tag's own version. MP3 defaults to v2.3: id3 is its primary tag and
-// a real ecosystem of legacy hardware players reads it directly and handles v2.3 most
-// reliably. Every other id3-bearing format - raw AAC, and the id3 chunk embedded in
-// WAV/AIFF - is read only by modern software, so it defaults to v2.4 (UTF-8, lossless
-// multi-value). This is the single place the per-format choice lives, so the codecs
-// cannot drift; NewEmpty clamps any other value to a valid one.
+// DefaultID3Version is the ID3v2 minor version for new tags. MP3: 3; others: 4.
 func DefaultID3Version(f Format) byte {
 	if f == FormatMP3 {
 		return 3
@@ -91,11 +78,7 @@ func (f Format) Implemented() bool {
 	return false
 }
 
-// Writable reports whether this version can write the format back. Matroska is
-// tag-writable (tags, segment title, attachments) and chapter-writable. WMA is
-// read-only - WaxLabel never writes an ASF file - though nothing depends on this
-// method to enforce it: the refusal lives in the codec, where the reported
-// capability and the actual write outcome come from one predicate.
+// Writable reports whether WaxLabel can write the format. Enforcement is in codecs.
 func (f Format) Writable() bool {
 	switch f {
 	case FormatFLAC, FormatOggVorbis, FormatOggOpus, FormatOggFLAC, FormatWavPack, FormatMonkeysAudio, FormatMusepack, FormatMP3, FormatWAV, FormatMP4, FormatAAC, FormatMatroska, FormatAIFF:

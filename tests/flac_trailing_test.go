@@ -24,11 +24,8 @@ func withTail(data []byte, tails ...[]byte) []byte {
 	return out
 }
 
-// TestFLACJunkExcludedFromEssenceDigest checks the point of carving junk out
-// of the audio region: a junk-appended rip carries the same audio-essence
-// identity as its clean twin, so the two dedup-match. Excluding the junk
-// changed the byte extent for such files, which is why the extent name is
-// flac-frames-v2.
+// checks the point of carving junk out of the audio region: a junk-appended rip carries the same
+// audio-essence identity as its clean twin, so the two dedup-match.
 func TestFLACJunkExcludedFromEssenceDigest(t *testing.T) {
 	clean := readFixture(t, sampleFLAC)
 	junk := withTail(clean, make([]byte, 512))
@@ -52,9 +49,8 @@ func TestFLACJunkExcludedFromEssenceDigest(t *testing.T) {
 	}
 }
 
-// TestFLACJunkSurvivesEdit checks the write side of the carve-out: an edit
-// copies the junk verbatim between the audio and a kept ID3v1 trailer, a
-// chained edit on the returned document keeps it too, and the written file
+// checks the write side of the carve-out: an edit copies the junk verbatim between the audio and a
+// kept ID3v1 trailer, a chained edit on the returned document keeps it too, and the written file
 // still dedup-matches the clean original.
 func TestFLACJunkSurvivesEdit(t *testing.T) {
 	ctx := context.Background()
@@ -90,8 +86,7 @@ func TestFLACJunkSurvivesEdit(t *testing.T) {
 		t.Error("edited junk file no longer dedup-matches the clean original")
 	}
 
-	// A chained edit on the returned document (no re-parse) must carry the
-	// junk region too.
+	// A chained edit on the returned document (no re-parse) must carry the junk region too.
 	plan2, err := res.Edit().Set(tag.Album, "Again").Prepare()
 	if err != nil {
 		t.Fatalf("Prepare(chained): %v", err)
@@ -105,11 +100,8 @@ func TestFLACJunkSurvivesEdit(t *testing.T) {
 	}
 }
 
-// TestFLACTailFindings drives the FLAC frame-tail walk through Parse on the
-// real fixture: appended bytes surface as a trailing region, missing audio as
-// a truncation, and a clean file as neither. A trailing ID3v1 tag is carved
-// off first, so junk wedged between the audio and the tag is still counted
-// exactly.
+// FLAC frame-tail walk through Parse on the real fixture: appended bytes surface as a trailing
+// region, missing audio as a truncation, and a clean file as neither.
 func TestFLACTailFindings(t *testing.T) {
 	clean := readFixture(t, sampleFLAC)
 	junk := withTail(clean, make([]byte, 512))
@@ -173,8 +165,6 @@ func TestFLACTailFindings(t *testing.T) {
 	}
 }
 
-// TestFLACJunkInNativeView checks that a carved trailing region shows in the
-// native view like Ogg's, so dump --native accounts for every byte.
 func TestFLACJunkInNativeView(t *testing.T) {
 	doc := mustParseBytes(t, withTail(readFixture(t, sampleFLAC), make([]byte, 512)))
 	for _, e := range doc.Native().Describe() {

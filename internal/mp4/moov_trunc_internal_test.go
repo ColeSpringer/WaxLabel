@@ -19,10 +19,9 @@ import (
 func mp4Ftyp() []byte { return renderAtom(atomName("ftyp"), []byte("M4A \x00\x00\x00\x00M4A mp42")) }
 func mp4Mdat() []byte { return renderAtom(atomName("mdat"), []byte("audiodata")) }
 
-// inflateBoxSize rewrites a rendered atom's 32-bit size field to `declared`, so a test can build a
-// top-level atom whose declared size overruns the bytes actually present - the clamp-to-EOF shape a
-// truncated download produces. The atom must be the file's last, or the clamp would swallow what
-// follows rather than stop at EOF.
+// inflateBoxSize rewrites a rendered atom's 32-bit size field to `declared`, so a test
+// can build a top-level atom whose declared size overruns the bytes actually present -
+// the clamp-to-EOF shape a truncated download produces.
 func inflateBoxSize(box []byte, declared uint32) []byte {
 	out := slices.Clone(box)
 	binary.BigEndian.PutUint32(out[0:4], declared)
@@ -38,12 +37,11 @@ func hasWarn(ws []core.Warning, code core.WarningCode) bool {
 	return false
 }
 
-// TestParseRejectsMoovTrailingGap covers a moov with no udta and a gap between where its
-// last complete child ends and moov.end() would misalign a create-ilst edit - buildCreated appends
-// the new udta at moov.end() (the no-udta/no-meta default branch), past the stray zeros walkAtoms
-// tolerated (the udta-terminator rule), so the output re-parses misaligned. parse must reject it, the
-// exact analogue of the meta-gap guard, whether the gap comes from a structural zero pad or a
-// truncated-download clamp, and whether the moov is childless or has a tiling child before the gap.
+// TestParseRejectsMoovTrailingGap covers a moov with no udta and a gap between where
+// its last complete child ends and moov.end() would misalign a create-ilst edit -
+// buildCreated appends the new udta at moov.end() (the no-udta/no-meta default branch),
+// past the stray zeros walkAtoms tolerated (the udta-terminator rule), so the output
+// re-parses misaligned.
 func TestParseRejectsMoovTrailingGap(t *testing.T) {
 	ctx := context.Background()
 	freeChild := renderAtom(atomName("free"), nil) // 8 bytes, a complete child
@@ -69,11 +67,10 @@ func TestParseRejectsMoovTrailingGap(t *testing.T) {
 }
 
 // TestParseAcceptsMoovCleanTail is the must-not-reject half: the moov guard is scoped
-// exactly to a udta-less moov that leaves a real gap, so it must not reject a moov whose child tiles
-// exactly to its end, a moov padded with a legal trailing free atom, or a moov that zero-pads *around
-// a present udta* (a muxer's alternative to a free atom) - all of which write correctly today. The
-// last case is the load-bearing scoping proof: with a udta present the insert targets udta.end(), not
-// moov.end(), so the moov-level gap is harmless and must be tolerated.
+// exactly to a udta-less moov that leaves a real gap, so it must not reject a moov
+// whose child tiles exactly to its end, a moov padded with a legal trailing free atom,
+// or a moov that zero-pads *around a present udta* (a muxer's alternative to a free
+// atom) - all of which write correctly today.
 func TestParseAcceptsMoovCleanTail(t *testing.T) {
 	ctx := context.Background()
 	accept := map[string][]byte{

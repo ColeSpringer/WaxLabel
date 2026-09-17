@@ -7,9 +7,9 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestEditorSetResolvesAlias is a regression guard: the key-taking editor methods resolve tag
-// aliases, so Set(tag.Key("DATE"), ...) lands on the canonical RECORDINGDATE on every format
-// instead of a custom DATE field - callers no longer have to pre-resolve.
+// regression guard: the key-taking editor methods resolve tag aliases, so Set(tag.Key("DATE"), ...)
+// lands on the canonical RECORDINGDATE on every format instead of a custom DATE field; callers no
+// longer have to pre-resolve.
 func TestEditorSetResolvesAlias(t *testing.T) {
 	data := flacWithComments("TITLE=Song") // no date yet
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Key("DATE"), "2021").Prepare()
@@ -19,8 +19,8 @@ func TestEditorSetResolvesAlias(t *testing.T) {
 	assertChangeOnCanonicalDate(t, plan)
 }
 
-// TestEditorApplyResolvesAlias covers the Apply(tag.TagPatch) path, which takes a pre-built
-// patch and would otherwise bypass alias resolution.
+// Apply(tag.TagPatch) path, which takes a pre-built patch and would otherwise bypass alias
+// resolution.
 func TestEditorApplyResolvesAlias(t *testing.T) {
 	data := flacWithComments("TITLE=Song")
 	p := tag.NewPatch()
@@ -48,9 +48,9 @@ func assertChangeOnCanonicalDate(t *testing.T, plan *wl.Plan) {
 	}
 }
 
-// TestEditorSetAliasRoundTripsMP4 pins the end-to-end effect on a format where a custom key
-// and the canonical field differ: on MP4 an unresolved DATE would be a freeform atom, so this
-// proves the resolved edit reads back as the canonical RECORDINGDATE, with no stray custom key.
+// end-to-end effect on a format where a custom key and the canonical field differ: on MP4 an
+// unresolved DATE would be a freeform atom, so this proves the resolved edit reads back as the
+// canonical RECORDINGDATE, with no stray custom key.
 func TestEditorSetAliasRoundTripsMP4(t *testing.T) {
 	data := mp4Tagged(mp4Text("\xa9nam", "Book"))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Key("DATE"), "2021").Prepare()

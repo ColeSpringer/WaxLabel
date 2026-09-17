@@ -1,15 +1,10 @@
-// Package vorbis implements the byte-level Vorbis comment list codec, the
-// FLAC-style PICTURE block codec, and the canonical projection / minimal-change
-// rebuild shared by every format that stores tags as Vorbis comments - FLAC and
-// Ogg Vorbis/Opus. It is an internal helper reimplemented from the Vorbis-comment
-// and FLAC picture specifications; reference implementations were consulted for
-// design only.
+// Package vorbis: Vorbis comment list codec, FLAC PICTURE codec, and shared
+// projection/rebuild for FLAC and Ogg. Internal; from the Vorbis-comment and
+// FLAC picture specs.
 //
-// A comment list is the format-neutral core: a vendor string and "NAME=value"
-// entries with little-endian length prefixes. FLAC wraps it in a metadata
-// block; Ogg Vorbis prefixes a "\x03vorbis" signature and appends a framing
-// bit; Ogg Opus prefixes "OpusTags" and may append padding. Those wrappers live
-// in the respective codecs; the list codec here is shared.
+// List core: vendor + LE-length "NAME=value" entries. FLAC wraps in a block;
+// Ogg Vorbis adds "\x03vorbis"+framing bit; Opus adds "OpusTags"+optional padding.
+
 package vorbis
 
 import (
@@ -24,29 +19,21 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// Comment is one Vorbis "NAME=value" entry. The original name spelling is kept
-// so unedited comments preserve their exact form on rewrite.
+// Comment is one "NAME=value" entry. Name spelling kept for unedited rewrite.
 //
-// Unseparated marks an entry with no "=" at all. Such an entry is well framed - the list
-// walk knows exactly where it starts and ends - but the model cannot interpret it, so Name
-// is empty and Value holds the entry bytes verbatim, the way an opaque ID3 frame carries a
-// body the model cannot reinterpret. [RenderCommentList] writes it back unchanged; every
-// projector skips it.
+// Unseparated: no "=". Well framed but uninterpreted: empty Name, Value is raw
+// bytes. [RenderCommentList] writes unchanged; projectors skip it.
+
 type Comment struct {
 	Name        string
 	Value       string
 	Unseparated bool
 }
 
-// ParseCommentList decodes a comment list (little-endian lengths): a vendor
-// string, a count, then that many "NAME=value" entries. It returns the number
-// of body bytes consumed so a caller can handle whatever follows the list - the
-// Vorbis framing bit, or Opus comment-header padding. An entry without '=' is kept
-// verbatim as an Unseparated comment rather than dropped. maxElements caps how many
-// comments accumulate (0 disables it): the count field is an attacker-controlled
-// uint32 and the body can be large (an Ogg comment packet is bounded only by the
-// alloc limit), so without the cap a body packed with minimum entries amplifies
-// into one Comment descriptor each to OOM - the same guard FLAC/RIFF/ID3/MP4 use.
+// ParseCommentList decodes LE-length vendor, count, and entries. Returns bytes
+// consumed (for framing bit / Opus padding). Entries without '=' are Unseparated.
+// maxElements caps accumulation (0 = off); count is attacker-controlled.
+
 func ParseCommentList(body []byte, limit int64, maxElements int) (vendor string, comments []Comment, n int64, err error) {
 	c := bits.NewCursor(bytes.NewReader(body), int64(len(body)), limit)
 	vlen := int64(c.U32LE())
@@ -81,9 +68,8 @@ func ParseCommentList(body []byte, limit int64, maxElements int) (vendor string,
 	return vendor, comments, c.Pos(), nil
 }
 
-// RenderCommentList encodes a vendor string and comments into a list body
-// (little-endian lengths, no signature or framing). Deterministic: same inputs
-// produce identical bytes.
+// RenderCommentList encodes vendor+comments (LE lengths, no framing). Deterministic.
+
 func RenderCommentList(vendor string, comments []Comment) []byte {
 	var buf bytes.Buffer
 	writeU32LE(&buf, uint32(len(vendor)))
@@ -102,17 +88,11 @@ func RenderCommentList(vendor string, comments []Comment) []byte {
 	return buf.Bytes()
 }
 
-// Project builds the canonical TagSet and the family/source view from a comment
-// list, preserving order. A canonical key fed by two or more distinct native
-// field names with disagreeing values (e.g. DATE=2020 and YEAR=2019, both
-// mapping to RecordingDate) is a genuine conflict and is marked unselected so it
-// surfaces in the family view and Lint. Repeats of the same native name
-// (ARTIST=A, ARTIST=B) are an ordinary multi-value, not a conflict.
-//
-// CHAPTERxxx and SYNCEDLYRICS comments are structured chapters and synced lyrics.
-// METADATA_BLOCK_PICTURE is cover art. These entries are owned by their dedicated
-// projectors, not by the custom tag view; Rebuild preserves them unless the matching edit
-// replaces the set.
+// Project builds TagSet and family/source view. Distinct native names with
+// disagreeing values for one key are conflicts (unselected). Same-name repeats
+// are multi-value. CHAPTERxxx, SYNCEDLYRICS, METADATA_BLOCK_PICTURE are owned
+// elsewhere; Rebuild preserves them unless that edit replaces them.
+
 func Project(comments []Comment) (tag.TagSet, []core.FamilyValue) {
 	ts := tag.NewTagSet()
 	famIndex := map[tag.Key]int{}
@@ -172,24 +152,15 @@ func Project(comments []Comment) (tag.TagSet, []core.FamilyValue) {
 	return ts, fams
 }
 
-// Rebuild produces the new comment list with minimal change: unchanged comments
-// keep their exact spelling and position; a changed key's new values replace its
-// first original occurrence (later duplicates and aliases of that key are
-// dropped, deduping inherited noise); newly added keys are appended in edited
-// order.
+// Rebuild: minimal change. Unchanged comments keep spelling/position; changed
+// keys replace the first occurrence (later dupes/aliases dropped); new keys append.
 //
-// An edited key that already existed keeps the file's own spelling for that key (so a
-// lowercase "artist" stays "artist" on an unrelated-value edit), except when the key
-// has a write-preferred Vorbis spelling distinct from its canonical name - an alias
-// like RecordingDate, whose preferred tag is DATE - in which case it canonicalizes to
-// that. A newly-added key uses the preferred Vorbis spelling.
+// Existing keys keep file spelling unless a write-preferred Vorbis name applies
+// (e.g. RecordingDate → DATE). New keys use the preferred spelling.
 //
-// CHAPTERxxx and SYNCEDLYRICS comments are owned by the chapter and synced-lyrics models,
-// not by the generic tag-key diff. A chapter or synced-lyrics edit drops the source owned
-// comments and appends the edited set; unrelated edits preserve them verbatim. A
-// METADATA_BLOCK_PICTURE comment is likewise never treated as a custom key: a malformed/opaque one
-// is preserved verbatim (a valid cover was decoded out into the picture set and is re-rendered by
-// the codec), and a --set on that reserved key drops-with-warning instead of overwriting it.
+// CHAPTERxxx/SYNCEDLYRICS/METADATA_BLOCK_PICTURE are owned: chapter/lyrics edits
+// replace them; unrelated edits preserve. Opaque picture comments stay verbatim.
+
 func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapters []core.Chapter, chaptersChanged bool, syncedLyrics []core.SyncedLyrics, syncedLyricsChanged bool) ([]Comment, RebuildInfo) {
 	var info RebuildInfo
 	emitted := map[tag.Key]bool{}

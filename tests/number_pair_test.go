@@ -11,9 +11,9 @@ import (
 // notagsFLAC is a FLAC with no canonical tags, so an edit's changes are unambiguous.
 const notagsFLAC = "../testdata/notags.flac"
 
-// TestTrackNumberSlashIsLibrarySemantic: the "n/total" split is a public-library
-// normalization, not just a CLI nicety - a caller doing Set(tag.TrackNumber, "3/12")
-// gets the canonical pair, here observed through the plan's field-level changes.
+// "n/total" split is a public-library normalization, not just a CLI nicety; a caller doing
+// Set(tag.TrackNumber, "3/12") gets the canonical pair, here observed through the plan's
+// field-level changes.
 func TestTrackNumberSlashIsLibrarySemantic(t *testing.T) {
 	doc := mustParseFile(t, copyToTemp(t, notagsFLAC))
 	plan, err := doc.Edit().Set(tag.TrackNumber, "3/12").Prepare()
@@ -32,11 +32,9 @@ func TestTrackNumberSlashIsLibrarySemantic(t *testing.T) {
 	}
 }
 
-// TestTrackNumberNULRejected: a NUL in a slash number is rejected by Prepare
-// before the split, not smuggled into the derived TRACKTOTAL (which rejectInvalidValues
-// does not scan, since it is not a patched key). This is the load-bearing reason
-// splitNumberPairs runs *after* the NUL guard. execve blocks a NUL in CLI argv, so
-// this footgun can only be reached - and tested - through the library.
+// NUL in a slash number is rejected by Prepare before the split, not smuggled into the derived
+// TRACKTOTAL (which rejectInvalidValues does not scan, since it is not a patched key). This is the
+// load-bearing reason splitNumberPairs runs *after* the NUL guard.
 func TestTrackNumberNULRejected(t *testing.T) {
 	doc := mustParseFile(t, copyToTemp(t, notagsFLAC))
 	if _, err := doc.Edit().Set(tag.TrackNumber, "3/\x00").Prepare(); !errors.Is(err, waxerr.ErrInvalidData) {

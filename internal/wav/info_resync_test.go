@@ -24,9 +24,7 @@ func infoItemRaw(id, value string, pad bool) []byte {
 func infoBody(items ...[]byte) []byte { return append([]byte("INFO"), slices.Concat(items...)...) }
 
 // TestParseInfoResynchronizesOverMissingPad: a writer that omits the pad byte after an
-// odd-size item desynchronizes every item after it. The walk used to stop on the garbage
-// with no error and no signal, and the next rewrite then destroyed everything past that
-// point; it now steps back to the unpadded position and reads the rest.
+// odd-size item desynchronizes every item after it.
 func TestParseInfoResynchronizesOverMissingPad(t *testing.T) {
 	body := infoBody(
 		infoItemRaw("INAM", "Song", false), // odd-size value with no pad: the desync
@@ -181,10 +179,9 @@ func TestPlausibleInfoItemToleratesPastEnd(t *testing.T) {
 	}
 }
 
-// TestParseInfoPadByteIsNotALoss: an odd item that DOES carry its pad byte, followed by a
-// region no walk can read, must not count the pad byte among the destroyed bytes - a
-// rewrite writes its own. The sibling case, where the pad byte is missing and that first
-// byte is real data, is TestParseInfoBothCandidatesImplausible.
+// TestParseInfoPadByteIsNotALoss: an odd item that DOES carry its pad byte, followed by
+// a region no walk can read, must not count the pad byte among the destroyed bytes - a
+// rewrite writes its own.
 func TestParseInfoPadByteIsNotALoss(t *testing.T) {
 	junk := []byte{0x01, 0x02, 0x03}
 	body := append(infoBody(infoItemRaw("INAM", "Song", true)), junk...)

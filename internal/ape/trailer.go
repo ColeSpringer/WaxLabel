@@ -10,15 +10,10 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// WavPack, Monkey's Audio, and Musepack all store their metadata the same way: an
-// APEv2 tag appended after the audio, optionally followed by a legacy ID3v1 tag. The
-// audio itself is opaque to WaxLabel and copied verbatim, so the three codecs differ
-// only in how they find where the audio ends and what they report about it. The
-// shared shape lives here so they cannot drift.
+// Shared trailing store for WavPack, Monkey's Audio, and Musepack: APEv2 after
+// audio, optional ID3v1. Audio is opaque and copied verbatim.
 
-// Trailer is the trailing-container region of such a file: the APEv2 tag (the native,
-// authoritative store), any legacy ID3v1 after it, and the offset where the region
-// begins - which is also the end of the audio.
+// Trailer: APEv2 (authoritative), optional ID3v1, Start (= end of audio).
 type Trailer struct {
 	Tag    *Tag
 	TagLen int64
@@ -26,14 +21,9 @@ type Trailer struct {
 	Start  int64
 }
 
-// PeelTrailer finds the trailing containers by walking in from the end of the file:
-// the ID3v1 tag last-written sits after the APEv2 tag, so it is peeled first.
-//
-// minStart is the earliest offset a tag may begin at - the end of the container's
-// first audio unit. An "APETAGEX" or "TAG" run before it is essence that happens to
-// spell the preamble, not a tag; without the floor a crafted file can place a footer
-// so the tag swallows the header the parser already read, and the rewrite then emits
-// bytes that no longer parse.
+// PeelTrailer walks end-first (ID3v1 after APEv2).
+// minStart: earliest tag offset (end of first audio unit). Without it, a crafted
+// footer can swallow the header and rewrite emits unparseable bytes.
 func PeelTrailer(src core.ReaderAtSized, size, minStart, limit int64, maxElements int) (Trailer, []core.Warning) {
 	var t Trailer
 	var warnings []core.Warning
@@ -58,7 +48,7 @@ func PeelTrailer(src core.ReaderAtSized, size, minStart, limit int64, maxElement
 	return t, warnings
 }
 
-// Items returns the parsed tag's items, or nil when the file carries no APEv2 tag.
+// Items returns tag items, or nil if no APEv2.
 func (t Trailer) Items() []Item {
 	if t.Tag == nil {
 		return nil
@@ -66,8 +56,7 @@ func (t Trailer) Items() []Item {
 	return t.Tag.Items
 }
 
-// Describe renders the trailing region for the dump/native views. audioKind names
-// the container's audio run ("WavPack blocks", "Monkey's Audio frames").
+// Describe for dump/native views. audioKind names the audio run.
 func (t Trailer) Describe(audioKind, codec string) []core.NativeEntry {
 	out := []core.NativeEntry{{Kind: audioKind, Size: int(t.Start), Note: codec}}
 	if t.Tag != nil {
@@ -90,26 +79,18 @@ func (t Trailer) Describe(audioKind, codec string) []core.NativeEntry {
 	return out
 }
 
-// TrailerPlan is the rebuilt trailing region: the new item list, the rendered APEv2
-// bytes (nil when no item survives, so an emptied tag is dropped rather than left as
-// an empty container), the ID3v1 to keep, and the operations to report.
+// TrailerPlan: rebuilt items, rendered APEv2 (nil if empty => drop tag), ID3v1, ops.
 type TrailerPlan struct {
 	Items      []Item
 	Bytes      []byte
 	ID3v1      []byte
 	Operations []string
-	// Rebuild records what it could not write here, for PlanTrailingWrite to turn into
-	// warnings; see [RebuildInfo].
+	// Rebuild: unwritable items for PlanTrailingWrite warnings; see [RebuildInfo].
 	Rebuild RebuildInfo
 }
 
-// RebuildTrailer applies an edit to the trailing region. It is the whole write side
-// these codecs share: the audio before Start is copied verbatim, and everything after
-// it comes from here.
-//
-// It refuses when the source tag's item list was truncated by the element cap: Items
-// is then not the whole tag, and rebuilding from it would silently delete every item
-// the parse could not see.
+// RebuildTrailer: shared write side (audio before Start copied verbatim).
+// Refuses if source Items were truncated by the element cap.
 func RebuildTrailer(t Trailer, base, edited tag.TagSet, pictures []core.Picture,
 	tagsChanged, picturesChanged, stripLegacy bool) (TrailerPlan, error) {
 
@@ -124,13 +105,11 @@ func RebuildTrailer(t Trailer, base, edited tag.TagSet, pictures []core.Picture,
 		p.Operations = append(p.Operations, "APEv2 rewrite")
 	}
 	if picturesChanged {
-		// Count the covers actually written, not the edited set: a picture the slot
-		// partition dropped is warned about, and the operation must not claim it.
+		// Count written covers only (slot-dropped are warned, not claimed).
 		p.Operations = append(p.Operations, fmt.Sprintf("pictures: %d", len(pictures)-len(p.Rebuild.SlotDroppedCovers)))
 	}
 	if len(p.Items) > 0 {
-		// Keep the source tag's version and header shape: an APEv1 tag relabelled APEv2
-		// would claim a UTF-8 guarantee its preserved bytes may not meet.
+		// Keep source version/header shape (APEv1 must not be relabelled APEv2).
 		version, hasHeader := writeVersion, true
 		if t.Tag != nil {
 			version, hasHeader = t.Tag.Version, t.Tag.HasHeader
@@ -151,9 +130,7 @@ func RebuildTrailer(t Trailer, base, edited tag.TagSet, pictures []core.Picture,
 	return p, nil
 }
 
-// Segments renders the rebuilt trailing region as rewrite segments, following the
-// caller's verbatim copy of the audio. The ID3v1 is copied from the source rather
-// than re-emitted as a literal, so a legacy tag round-trips byte for byte.
+// Segments after the caller's audio copy. ID3v1 is copied from source (byte-faithful).
 func (p TrailerPlan) Segments(size int64) []bits.Segment {
 	var segs []bits.Segment
 	if p.Bytes != nil {
@@ -165,8 +142,7 @@ func (p TrailerPlan) Segments(size int64) []bits.Segment {
 	return segs
 }
 
-// Result is the post-write trailing region, for the result document a codec returns
-// without re-parsing.
+// Result builds the post-write trailer without re-parsing.
 func (p TrailerPlan) Result(start int64, src Trailer) Trailer {
 	var newTag *Tag
 	if len(p.Items) > 0 {
@@ -181,21 +157,13 @@ func (p TrailerPlan) Result(start int64, src Trailer) Trailer {
 	return Trailer{Tag: newTag, TagLen: int64(len(p.Bytes)), ID3v1: p.ID3v1, Start: start}
 }
 
-// LegacyFamilies projects a trailing ID3v1 tag into family/source entries. The
-// canonical set stays APE-only, so this surfaces a value living only in the legacy
-// container (and flags it when it disagrees) without promoting it.
+// LegacyFamilies: ID3v1 into family view without promoting into canonical.
 func LegacyFamilies(auth tag.TagSet, id3v1 []byte) []core.FamilyValue {
 	return id3.LegacyV1Families(auth, id3v1)
 }
 
-// CarryWarnings rebuilds the post-write warning set from what was actually written:
-// the projection's own warnings and the inherited-encoder, invalid-UTF-8, and
-// invalid-key checks over the written items, plus the source warnings that still hold.
-// The item-derived codes are recomputed rather than carried because a rewrite can
-// remove the item a parse-time warning described (an edit replacing an invalid-UTF-8
-// value, or the uniqueness pass displacing a squatting item); the trailing-ID3v1 note
-// is dropped when a strip removed it. The result then matches a fresh parse of the
-// output rather than echoing the source parse.
+// CarryWarnings: recompute item-derived codes from written items so the result
+// matches a fresh parse (rewrite may remove the item a prior warning described).
 func CarryWarnings(prior []core.Warning, proj Projection, items []Item, id3v1 []byte) []core.Warning {
 	var out []core.Warning
 	for _, w := range prior {
@@ -216,10 +184,8 @@ func CarryWarnings(prior []core.Warning, proj Projection, items []Item, id3v1 []
 	return append(out, EncoderNoise(items)...)
 }
 
-// TrailingWrite is the input a codec whose only writable metadata is a trailing APEv2
-// tag hands [PlanTrailingWrite]. Everything before Start is audio and is copied
-// verbatim; Leading is an optional preserved region ahead of it (Musepack's stray front
-// ID3v2), which a legacy strip drops.
+// TrailingWrite inputs [PlanTrailingWrite]: audio before Start; optional Leading
+// (Musepack front ID3v2), dropped by legacy strip.
 type TrailingWrite struct {
 	Format  core.Format
 	Trailer Trailer
@@ -227,14 +193,8 @@ type TrailingWrite struct {
 	Leading []byte
 }
 
-// PlanTrailingWrite computes the whole rewrite for such a container. WavPack, Monkey's
-// Audio, and Musepack differ only in how they find where the audio ends, so the write
-// itself lives here: a fix to the no-op gate, the strip policy, or the segment layout
-// lands once rather than three times.
-//
-// result builds the codec's own post-write Media from the rebuilt trailer; it is the
-// only part that cannot be shared, because each codec owns its native document type. It
-// is not called when the plan collapses to a no-op.
+// PlanTrailingWrite: shared rewrite for trailing-APEv2 containers.
+// result builds codec-specific post-write Media (not called on no-op).
 func PlanTrailingWrite(w TrailingWrite, base, edited *core.Media, opts core.WriteOptions,
 	result func(tp TrailerPlan, newLeadingLen, newSize int64) *core.Media) (*core.WritePlan, error) {
 
@@ -246,10 +206,7 @@ func PlanTrailingWrite(w TrailingWrite, base, edited *core.Media, opts core.Writ
 
 	report := core.WriteReport{Format: w.Format, BytesBefore: edited.Identity.Size}
 
-	// Fast path: nothing changed. NoOpPlan emits a verbatim copy (so SaveAsFile and
-	// WriteTo still produce a whole file) flagged NoOp so SaveBack skips it. APE has no
-	// chapter or synced-lyrics convention, so neither can force a write here (Musepack's
-	// chapters live in its stream, which this write copies verbatim).
+	// No-op: verbatim copy flagged NoOp. APE has no chapter/synced-lyrics write.
 	if !tagsChanged && !picturesChanged && !stripLeading && !stripTrailing {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
@@ -260,9 +217,7 @@ func PlanTrailingWrite(w TrailingWrite, base, edited *core.Media, opts core.Writ
 	}
 	report.Operations = append(report.Operations, tp.Operations...)
 	report.Warnings = RebuildWarnings(report.Warnings, tp.Rebuild)
-	// The Cover Art convention keeps only the front and back roles and no description, so
-	// a picture write that carries either warns, the way the MP4 and Matroska writers do
-	// for their own picture stores; the transfer report grades the same predicate.
+	// Warn on non-front/back role or description (same predicate as transfer).
 	if picturesChanged && core.PicturesLoseMetadata(edited.Pictures, core.PictureLossNonCoverRoleAndDescription) {
 		report.Warnings = core.Warn(report.Warnings, core.WarnPictureMetadataDropped,
 			"the Cover Art convention stores only front and back covers: another role reads back as the cover name it was stored under, and descriptions are dropped")
@@ -284,9 +239,7 @@ func PlanTrailingWrite(w TrailingWrite, base, edited *core.Media, opts core.Writ
 	report.BytesAfter = newSize
 
 	res := result(tp, newLeadingLen, newSize)
-	// APE stores values verbatim, so this downgrade catches only what the rebuild dropped
-	// (an empty value, a key with no canonical mapping). A legacy strip is a real write no
-	// tag comparison can see, so it is the structural-change flag.
+	// Downgrade only catches rebuild drops; legacy strip is structural change.
 	if np := core.DowngradeNoOp(w.Format, edited.Identity.Size, base, res,
 		base.Tags.Equal(res.Tags), stripLeading || stripTrailing, report.Warnings); np != nil {
 		return np, nil

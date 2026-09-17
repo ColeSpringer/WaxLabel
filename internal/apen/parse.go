@@ -10,14 +10,12 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// headerWindow is the largest leading region parseHeader can need: a descriptor a
-// writer padded past its documented length, plus the header that follows it. It
-// bounds the single read the parse makes before the tail peel.
+// headerWindow bounds the single leading read before the tail peel (padded
+// descriptor plus header).
 const headerWindow = 4096
 
-// parse reads a Monkey's Audio file's metadata into a neutral Media: the audio
-// geometry from the header, the canonical tags from the APEv2 tag, and the legacy
-// ID3v1 (preserved, never authoritative) in the family view.
+// parse reads geometry from the header, tags from APEv2, and legacy ID3v1 into
+// the family view.
 func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) (*core.Media, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -36,8 +34,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 	d.header = h
 
-	// A trailing tag can never begin before the end of the header region, which is
-	// audio description; the floor keeps a crafted footer from swallowing it.
+	// Floor: a trailing tag must start after the header region (audio description).
 	trailer, warnings := ape.PeelTrailer(src, size, h.headerLen, limit, opts.Limits.MaxElements)
 	d.trailer = trailer
 
@@ -70,8 +67,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	return media, nil
 }
 
-// buildTrack derives the audio track from the decoded header. Every field is stated
-// there, so unlike the other lossless containers there is nothing to walk for.
+// buildTrack takes geometry from the header (all fields are stated there).
 func buildTrack(h header, audioEnd int64) core.AudioTrack {
 	t := core.AudioTrack{
 		Codec:         "Monkey's Audio",

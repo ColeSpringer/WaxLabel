@@ -13,8 +13,7 @@ import (
 )
 
 // TestSizeErrHumanized: the size-limit messages report humanized binary
-// magnitudes rather than raw byte counts. sizeErr takes the count directly, so no
-// oversized buffer is allocated.
+
 func TestSizeErrHumanized(t *testing.T) {
 	apic := sizeErr(Frame{ID: "APIC"}, 60*1024*1024)
 	if !strings.Contains(apic.Error(), "MiB") {
@@ -139,9 +138,8 @@ func TestDeunsync(t *testing.T) {
 	}
 }
 
-// TestTagLevelUnsyncOpaqueFrame covers opaque v2.4 frames whose bodies need unsync
-// normalization. Tag-level and frame-level unsync both normalize the body; a frame with
-// no unsync flag keeps its bytes and flags unchanged.
+// TestTagLevelUnsyncOpaqueFrame: opaque v2
+
 func TestTagLevelUnsyncOpaqueFrame(t *testing.T) {
 	rawBody := []byte{0xFF, 0x00, 0x42, 0xFF, 0x00} // FF 00 stuffing; de-unsyncs to:
 	deunsynced := []byte{0xFF, 0x42, 0xFF}
@@ -259,9 +257,8 @@ func buildTag(t *testing.T, version byte, frames []Frame) *Tag {
 	return tg
 }
 
-// TestRewriteBase covers the shared WAV/AIFF ID3 diff base: tagless files use an
-// empty base, legacy strip uses only the parsed ID3 frames so native-only values
-// get written into ID3, and normal rewrites use the merged projection.
+// TestRewriteBase: the shared WAV/AIFF ID3 diff base: tagless files use an
+
 func TestRewriteBase(t *testing.T) {
 	// srcTag carries only TITLE from the ID3 chunk. base is the merged projection:
 	// that TITLE plus ARTIST promoted from the native container.
@@ -338,11 +335,8 @@ func TestProjectBareSpecialGenreReinterpreted(t *testing.T) {
 	}
 }
 
-// TestNumericGenreWarningSurfaces checks that both user-visible numeric-genre surfaces stay in
-// step: the read projection's NumericGenre flag (which drives the [numeric-genre] read warning) and
-// detectNumericGenres (which drives the symmetric write warning). Both consume resolveGenres, so a
-// zero-padded "007" and an out-of-range "(192)" must warn on neither, while a canonical "7" warns on
-// both.
+// TestNumericGenreWarningSurfaces: both user-visible numeric-genre surfaces stay in
+
 func TestNumericGenreWarningSurfaces(t *testing.T) {
 	// Read surface: NumericGenre must be false for the newly-literal forms, true for a real index.
 	for _, c := range []struct {
@@ -463,11 +457,8 @@ func TestDateDecompositionV23(t *testing.T) {
 	}
 }
 
-// TestDroppedDateDetection checks the dropped-date fate: a year-anchored date key
-// whose edited value has no extractable numeric year renders no v2.3 frame and so is
-// dropped; the caller turns RebuildInfo.DroppedDates into a value-dropped
-// warning. The detection is year-anchored and per key, so a stored or year-bearing
-// date never false-fires, and v2.4 (TDRC stores the string) never populates it.
+// TestDroppedDateDetection: the dropped-date fate: a year-anchored date key
+
 func TestDroppedDateDetection(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -505,8 +496,7 @@ func TestDroppedDateDetection(t *testing.T) {
 }
 
 // TestDroppedDateOnlyTouchedKeys: an unchanged date key (base == edited) is never
-// flagged dropped - only a key the edit actually touched can be. This guards the
-// per-key, anchored-on-changed half of the rule.
+
 func TestDroppedDateOnlyTouchedKeys(t *testing.T) {
 	base := tag.NewTagSet()
 	base.Set(tag.RecordingDate, "Unknown")
@@ -517,9 +507,8 @@ func TestDroppedDateOnlyTouchedKeys(t *testing.T) {
 	}
 }
 
-// TestReleaseDateV23StoredNotDropped confirms the exclusion is safe: a non-date
-// ReleaseDate string on v2.3 renders a real TXXX:RELEASEDATE frame, so it genuinely
-// is not dropped (and must not warn). detectDateFates excludes it for this reason.
+// TestReleaseDateV23StoredNotDropped: the exclusion is safe: a non-date
+
 func TestReleaseDateV23StoredNotDropped(t *testing.T) {
 	base := tag.NewTagSet()
 	edited := tag.NewTagSet()
@@ -539,11 +528,8 @@ func TestReleaseDateV23StoredNotDropped(t *testing.T) {
 	}
 }
 
-// TestDroppedTrailingValuesByPolicy pins the trailing-empty detector to the write representation.
-// A NUL-separated frame strips a trailing empty (so it is a real drop that must warn), while
-// repeat-frame preserves the empty as its own frame and slash-join collapses the whole
-// multi-value, so neither drops the trailing empty and neither must warn. v2.4 always writes
-// NUL-separated regardless of policy. A lone empty and a value with no trailing empty never flag.
+// TestDroppedTrailingValuesByPolicy: pins the trailing-empty detector to the write representation
+
 func TestDroppedTrailingValuesByPolicy(t *testing.T) {
 	trailing := []string{"A", "B", ""}
 	flagged := func(keys []tag.Key) bool { return len(keys) == 1 && keys[0] == tag.Artist }
@@ -670,10 +656,8 @@ func TestTXXXLongTailRoundTrip(t *testing.T) {
 	}
 }
 
-// TestLyricistTXXXUpgradesToTEXT covers the backward-compatible upgrade: a legacy file
-// storing a TXXX:LYRICIST user frame reads onto canonical LYRICIST, and a rewrite that
-// edits LYRICIST drops the stale TXXX and re-renders the value as the conformant TEXT
-// frame, leaving exactly one frame and no duplicate.
+// TestLyricistTXXXUpgradesToTEXT: the backward-compatible upgrade: a legacy file
+
 func TestLyricistTXXXUpgradesToTEXT(t *testing.T) {
 	orig := []Frame{{ID: "TXXX", Body: encodeUserText(4, "LYRICIST", []string{"Old"})}}
 
@@ -709,9 +693,8 @@ func TestLyricistTXXXUpgradesToTEXT(t *testing.T) {
 	}
 }
 
-// TestTXXXCustomDescriptionCasePreserved verifies that editing a custom TXXX value
-// preserves the original description casing instead of rewriting it as the uppercased
-// canonical key. Aliased keys still write their preferred Picard spelling.
+// TestTXXXCustomDescriptionCasePreserved: editing a custom TXXX value
+
 func TestTXXXCustomDescriptionCasePreserved(t *testing.T) {
 	orig := []Frame{{ID: "TXXX", Body: encodeUserText(4, "MyMoodTag", []string{"happy"})}}
 	base := Project(buildTag(t, 4, orig)).Tags
@@ -742,9 +725,8 @@ func TestTXXXCustomDescriptionCasePreserved(t *testing.T) {
 	}
 }
 
-// TestPictureRoundTrip checks that an APIC survives encode and decode with its role,
-// description and bytes intact. The payload is a real PNG: decodeAPIC sniffs
-// authoritatively, so a declared type only survives when the bytes back it.
+// TestPictureRoundTrip: an APIC survives encode and decode with its role,
+
 func TestPictureRoundTrip(t *testing.T) {
 	pic := core.Picture{Type: core.PicFrontCover, MIME: "image/png", Description: "front", Data: tinyPNGBytes()}
 	body := encodeAPIC(pic, 4)
@@ -769,10 +751,8 @@ func TestPictureRoundTrip(t *testing.T) {
 	}
 }
 
-// TestRebuildBreadthV24 exercises a wide spread of render units (simple text,
-// AlbumArtist, Disc number/total, Comment, Lyrics, the MusicBrainz UFID + TXXX
-// long tail, v2.4 dates, and a raw pass-through frame) and confirms every value
-// survives a rebuild -> render -> parse -> project cycle.
+// TestRebuildBreadthV24: exercises a wide spread of render units (simple text,
+
 func TestRebuildBreadthV24(t *testing.T) {
 	edited := tag.NewTagSet()
 	edited.Set(tag.AlbumArtist, "AA")
@@ -801,11 +781,8 @@ func TestRebuildBreadthV24(t *testing.T) {
 	}
 }
 
-// TestRebuildRawMappedFrameID pins the raw frame-ID fallback: a value authored under a
-// mapped frame's own identifier (tag.Key("TBPM"), what `--set TBPM=128` produces) still
-// emits the frame instead of resolving only to the absent canonical BPM key and silently
-// writing nothing. The frame then projects back under the canonical key, since TBPM is
-// mapped on read.
+// TestRebuildRawMappedFrameID: pins the raw frame-ID fallback: a value authored under a
+
 func TestRebuildRawMappedFrameID(t *testing.T) {
 	edited := tag.NewTagSet()
 	edited.Set(tag.Key("TBPM"), "128")
@@ -1006,9 +983,8 @@ func TestFrameRenderIDUnmanaged(t *testing.T) {
 	}
 }
 
-// TestRebuildDropsStaleAlias confirms that editing a canonical value stored
-// under a non-canonical representation does not duplicate it or lose the edit:
-// the stale frame is dropped and only the write-version target is written.
+// TestRebuildDropsStaleAlias: editing a canonical value stored
+
 func TestRebuildDropsStaleAlias(t *testing.T) {
 	// v2.4: ReleaseDate held in a TXXX frame; editing it must drop the TXXX and
 	// write a single TDRL.
@@ -1033,9 +1009,8 @@ func TestRebuildDropsStaleAlias(t *testing.T) {
 	}
 }
 
-// TestRebuildDeterministicNewFrames confirms that adding several fields produces
-// byte-identical output across runs (the leftover render-ids are sorted, not
-// emitted in map order).
+// TestRebuildDeterministicNewFrames: adding several fields produces
+
 func TestRebuildDeterministicNewFrames(t *testing.T) {
 	edited := tag.NewTagSet()
 	edited.Set(tag.Title, "T")
@@ -1057,9 +1032,8 @@ func TestRebuildDeterministicNewFrames(t *testing.T) {
 	}
 }
 
-// TestSpacePaddedFrameID confirms a non-conformant space-padded frame ID does
-// not end the scan: the padded frame is preserved and a following valid frame is
-// still parsed (rather than dropped).
+// TestSpacePaddedFrameID: a non-conformant space-padded frame ID does
+
 func TestSpacePaddedFrameID(t *testing.T) {
 	// A space-padded "XXX " frame (4 bytes, 1-byte body), then a real TIT2.
 	pad := append([]byte("XXX "), 0, 0, 0, 1, 0, 0, 0x42)
@@ -1083,12 +1057,8 @@ func TestSpacePaddedFrameID(t *testing.T) {
 	}
 }
 
-// TestNonConformantFrameIDMarkedOpaque covers the re-read half of the unknown-v2.2-frame
-// preservation: a space-padded "TXY " ID (the form an unknown v2.2 frame takes once modernized
-// to v2.3 and read back) is marked opaque at decode, the single decode entry point. That one
-// flag - not a set of scattered per-projection gates - is what keeps the frame preserved
-// verbatim and out of the canonical model, and it closes the DecodeText path a text-frame
-// scan would otherwise leak through.
+// TestNonConformantFrameIDMarkedOpaque: the re-read half of the unknown-v2
+
 func TestNonConformantFrameIDMarkedOpaque(t *testing.T) {
 	frame := func(id, text string) []byte {
 		body := encodeTextFrame(encLatin1, []string{text})
@@ -1132,9 +1102,8 @@ func TestNonConformantFrameIDMarkedOpaque(t *testing.T) {
 	}
 }
 
-// TestHugeFrameSizeNoPanic guards the 32-bit overflow: a v2.3 frame header
-// declaring size 0xFFFFFFFF must be rejected (the scan stops) rather than
-// wrapping to a negative length and panicking on the slice.
+// TestHugeFrameSizeNoPanic: guards the 32-bit overflow: a v2
+
 func TestHugeFrameSizeNoPanic(t *testing.T) {
 	frame := append([]byte("TIT2"), 0xFF, 0xFF, 0xFF, 0xFF, 0, 0) // size = 4294967295
 	var sz [4]byte
@@ -1172,11 +1141,8 @@ func TestParseV1(t *testing.T) {
 	}
 }
 
-// TestRenderNumTotalNoTripleSlash verifies that a canonical number already
-// carrying a total ("5/12") plus an explicit total never composes "5/12/20",
-// which re-reads as TRACKTOTAL="12/20". The explicit total wins; an embedded one
-// is kept when no explicit total is set; leading zeros survive because this uses
-// SplitNumberTotal, not ParseNumPair.
+// TestRenderNumTotalNoTripleSlash: a canonical number already
+
 func TestRenderNumTotalNoTripleSlash(t *testing.T) {
 	cases := []struct{ num, total, want string }{
 		{"5/12", "20", "5/20"}, // explicit total wins over the embedded one
@@ -1213,13 +1179,8 @@ func TestRenderNumTotalNoTripleSlash(t *testing.T) {
 	}
 }
 
-// TestRenderNumTotalPathologicalResidual checks the ID3 behavior for a malformed
-// number pair the editor deliberately leaves unsplit. The writer renders "1/2/3"
-// verbatim, and the read path now leaves it verbatim on TrackNumber too - the same
-// validity gate (tag.NumberTotalSplit) the editor and every other text codec apply -
-// instead of composing a non-numeric number and a "2/3" total. The value is already
-// flagged malformed at set time, and the typed projection still matches MP4
-// (tag.ParseNumPair reads TrackNumber 1 from either shape).
+// TestRenderNumTotalPathologicalResidual: the ID3 behavior for a malformed
+
 func TestRenderNumTotalPathologicalResidual(t *testing.T) {
 	edited := tag.NewTagSet()
 	edited.Set(tag.TrackNumber, "1/2/3")
@@ -1243,10 +1204,8 @@ func TestRenderNumTotalPathologicalResidual(t *testing.T) {
 	}
 }
 
-// TestDecodeFrameDeunsyncBeforeStrip verifies that a v2.4 grouped frame under
-// tag-level unsynchronisation is de-unsynchronised before the group byte is
-// stripped. Otherwise a 0x00 stuffing byte that followed the stripped 0xFF stays
-// in the payload and splits "Hi" into the corrupt ["","Hi"] pair.
+// TestDecodeFrameDeunsyncBeforeStrip: a v2
+
 func TestDecodeFrameDeunsyncBeforeStrip(t *testing.T) {
 	// Clean region: group byte 0xFF, then a Latin-1 "Hi" text body {00 'H' 'i'}.
 	// Unsynchronising {FF 00 48 69} stuffs a 0x00 after the FF -> on-disk {FF 00 00 48 69}.
@@ -1266,10 +1225,8 @@ func TestDecodeFrameDeunsyncBeforeStrip(t *testing.T) {
 	}
 }
 
-// TestRebuildPreservesCommentLanguage verifies that the read path discards the
-// COMM/USLT 3-byte language, so an edit of the value must recover it from the
-// original frame rather than resetting to "eng". A brand-new comment defaults to
-// "eng", and a garbage 3-byte language round-trips verbatim.
+// TestRebuildPreservesCommentLanguage: the read path discards the
+
 func TestRebuildPreservesCommentLanguage(t *testing.T) {
 	lang := func(body []byte) string {
 		if len(body) < 4 {
@@ -1323,10 +1280,8 @@ func TestRebuildPreservesCommentLanguage(t *testing.T) {
 	}
 }
 
-// TestRebuildKeepsMultiLanguageCommentsOnUnrelatedEdit checks that an unrelated edit
-// preserves a v2.3 tag with two managed COMM frames in different languages. Because the
-// Comment field is not edited, both original frames and their language codes should carry
-// through verbatim.
+// TestRebuildKeepsMultiLanguageCommentsOnUnrelatedEdit: an unrelated edit
+
 func TestRebuildKeepsMultiLanguageCommentsOnUnrelatedEdit(t *testing.T) {
 	orig := []Frame{
 		{ID: "COMM", Body: encodeComment(3, "eng", "", []string{"English"})},
@@ -1363,13 +1318,8 @@ func TestRebuildKeepsMultiLanguageCommentsOnUnrelatedEdit(t *testing.T) {
 	}
 }
 
-// FuzzParseTag exercises the top-level ID3 parse chain - ParseTag -> parseFrames -> deunsync ->
-// decodeFrame, plus skipExtHeader and the footer/unsync bounds - that the CHAP/CTOC/SYLT body
-// fuzzers do not reach. Beyond "no panic," a successful parse is pushed through the canonical
-// projector and every canonical key and value must be valid UTF-8: a stronger invariant that
-// catches a projector leaking raw frame bytes into the canonical model. Values pass SanitizeUTF8,
-// so the value assertion is safe; a key hit would be a real projector leak to fix (e.g. a
-// TXXX-derived key carrying raw bytes), not a wrong test.
+// FuzzParseTag: exercises the top-level ID3 parse chain - ParseTag -> parseFrames -> deunsync ->
+
 func FuzzParseTag(f *testing.F) {
 	// Minimal empty tags at each major version.
 	f.Add([]byte("ID3\x03\x00\x00\x00\x00\x00\x00")) // empty v2.3

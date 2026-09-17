@@ -7,13 +7,9 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// Synchronized lyrics in Vorbis comments follow the de facto convention of a single
-// SYNCEDLYRICS comment holding an LRC document (foobar2000, shared by FLAC and Ogg).
-// WaxLabel treats it as structured synced lyrics, not an editable custom tag field: it is
-// replaced only by a synced-lyrics edit and otherwise preserved byte-for-byte, including a
-// malformed value. LRC has no language or descriptor field, so those are dropped (see
-// [core.SyncedLyricsLossLanguage]); the timed lines round-trip losslessly through the
-// shared [core.ParseLRC]/[core.FormatLRC].
+// Synced lyrics: one SYNCEDLYRICS comment with an LRC document (foobar2000;
+// FLAC and Ogg). Structured, not a custom tag. Replaced only by a synced-lyrics
+// edit; otherwise preserved including malformed. LRC has no language/descriptor.
 
 // syncedLyricsName is the comment name owning the LRC document.
 const syncedLyricsName = "SYNCEDLYRICS"

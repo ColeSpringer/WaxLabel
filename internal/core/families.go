@@ -7,11 +7,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// Contribution is one canonical value decoded from one native entry, tagged with
-// a source label so conflicts between distinct entries for the same key surface.
-// It is the shared input to [BuildTagSet] and [BuildFamilies], used by the codecs
-// that decode several native entries into the canonical model (ID3 frames, MP4
-// ilst atoms) so the conflict rule lives in one place.
+// Contribution is one decoded canonical value with a source label for conflict detection.
 type Contribution struct {
 	Key    tag.Key
 	Value  string
@@ -28,10 +24,7 @@ func BuildTagSet(contribs []Contribution) tag.TagSet {
 	return ts
 }
 
-// BuildFamilies groups contributions by key into family entries for the given
-// family, marking an entry unselected when distinct sources supplied distinct
-// values for one key - a conflict (e.g. an ID3 TYER vs TDRC recording date, or an
-// MP4 legacy gnre vs text genre).
+// BuildFamilies groups contributions by key; unselected when distinct sources disagree.
 func BuildFamilies(contribs []Contribution, family Family) []FamilyValue {
 	index := map[tag.Key]int{}
 	srcs := map[tag.Key]map[string]bool{}
@@ -57,15 +50,10 @@ func BuildFamilies(contribs []Contribution, family Family) []FamilyValue {
 	return fams
 }
 
-// distinctValues counts case- and space-insensitive distinct values using the
-// same fold rule as dump duplicate markers.
+// distinctValues counts fold-distinct values (same rule as dump duplicates).
 func distinctValues(vals []string) int { return tag.DistinctValues(vals) }
 
-// DiffKeys returns the canonical keys whose values differ between base and edited -
-// added, removed, or modified. It is the change set every minimal-change rebuild
-// consults to decide which native entries to re-render and which to leave verbatim,
-// shared so the Vorbis and APE writers cannot come to different verdicts about the
-// same edit.
+// DiffKeys returns keys added, removed, or changed between base and edited.
 func DiffKeys(base, edited tag.TagSet) map[tag.Key]bool {
 	changed := map[tag.Key]bool{}
 	for _, k := range base.Keys() {
@@ -83,11 +71,7 @@ func DiffKeys(base, edited tag.TagSet) map[tag.Key]bool {
 	return changed
 }
 
-// ChangedKeys is the change set a native store consults when it can hold a value the
-// projection did not select (WAV LIST/INFO, AIFF text chunks): the keys whose value moved,
-// plus the keys the edit named outright. The second half is what lets an explicit set of the
-// already-projected value re-render a native item that disagrees with the projection, which a
-// diff of values alone cannot see. touched may be nil.
+// ChangedKeys is DiffKeys plus touched keys (for native stores that can disagree with projection).
 func ChangedKeys(base, edited tag.TagSet, touched map[tag.Key]bool) map[tag.Key]bool {
 	changed := DiffKeys(base, edited)
 	for k := range touched {
@@ -96,20 +80,13 @@ func ChangedKeys(base, edited tag.TagSet, touched map[tag.Key]bool) map[tag.Key]
 	return changed
 }
 
-// StripDroppedMessage is the wording for a LegacyStrip write that destroyed data held only in
-// the container it removed. container names what went ("legacy container", "LIST/INFO chunk")
-// and lost describes what went with it; the skeleton is shared so the two producers - the
-// editor, for a legacy container, and the WAV codec, for the native chunk that policy also
-// removes - cannot describe one policy two ways. It names the remedy, since a warning about a
-// flag the user typed is only useful if it says what to type instead.
+// StripDroppedMessage wording for LegacyStrip data loss. Names remedy (omit --legacy strip).
 func StripDroppedMessage(container string, lost []string) string {
 	return "--legacy strip removed the " + container + " along with " + strings.Join(lost, " and ") +
 		"; omit it to keep the " + container
 }
 
-// LegacyStripDroppedMessage is [StripDroppedMessage] for the legacy containers: the keys whose
-// sole copy was there, the opaque non-tag content the projection cannot fold in, or both. The
-// two halves share one message because a write has one remedy for them.
+// LegacyStripDroppedMessage is [StripDroppedMessage] for legacy containers.
 func LegacyStripDroppedMessage(keys []tag.Key, opaque bool) string {
 	var lost []string
 	if len(keys) > 0 {
@@ -125,15 +102,8 @@ func LegacyStripDroppedMessage(keys []tag.Key, opaque bool) string {
 	return StripDroppedMessage("legacy container", lost)
 }
 
-// LegacyOnlyKeys returns, in family order, the canonical keys that exist only in a legacy
-// container (MP3 ID3v1/APEv2, FLAC's leading ID3v2 or trailing ID3v1) and not in auth.
-// These are exactly the values a legacy strip destroys.
-//
-// auth is an explicit argument rather than being read off a Media because the two callers
-// ask about different authorities and both are right: [Document.LegacyOnlyKeys] asks what
-// the parsed file holds, so dump and the safe auto-fix can see values the canonical set
-// omits, while the editor asks what the pending write holds, so a strip that is also
-// setting ALBUM does not claim to be losing ALBUM. Same rule, two authorities.
+// LegacyOnlyKeys returns legacy-only keys not in auth. auth is caller-chosen authority
+// (parsed file vs pending write).
 func LegacyOnlyKeys(fams []FamilyValue, auth tag.TagSet) []tag.Key {
 	var out []tag.Key
 	seen := make(map[tag.Key]bool)
@@ -146,10 +116,7 @@ func LegacyOnlyKeys(fams []FamilyValue, auth tag.TagSet) []tag.Key {
 	return out
 }
 
-// DuplicateContent is what a discarded duplicate tag container held, so the writer can tell a
-// redundant duplicate from one whose content dies with it. Tags is compared per key and per
-// value (a duplicate holding fewer keys, or fewer values for one key, is still redundant);
-// the counts cover what no canonical key can express.
+// DuplicateContent describes a duplicate container's extra content vs the written set.
 type DuplicateContent struct {
 	Tags         tag.TagSet
 	Pictures     int
@@ -174,12 +141,7 @@ func UnsubsumedKeys(winning, losing tag.TagSet) []tag.Key {
 	return out
 }
 
-// LegacyFamilies projects a legacy container's key/value pairs into family entries.
-// media.Tags stays whatever the format's authoritative store holds, so this surfaces a
-// value living only in a preserved container - and flags it when it disagrees - without
-// promoting it into the canonical set. Every Legacy entry is what the editor's
-// legacy-conflict warning fires on, so building them in one place is what keeps that
-// warning from either missing a container or firing on a format's own store.
+// LegacyFamilies projects legacy pairs into family entries without promoting to canonical tags.
 func LegacyFamilies(auth tag.TagSet, family Family, pairs []Contribution) []FamilyValue {
 	out := make([]FamilyValue, 0, len(pairs))
 	for _, p := range pairs {

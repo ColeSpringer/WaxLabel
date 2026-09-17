@@ -21,9 +21,9 @@ var writableFixtures = []string{
 
 // --- present-but-empty (zero-length) collapses to absent; IsNoOp is honest ---
 
-// TestZeroLengthEditIsNoOp proves a Set/Add of no values on an absent key is a true
-// no-op across every writable format: the key collapses to absent before planning, so
-// IsNoOp reports true and Changes is empty rather than minting a phantom rewrite.
+// Set/Add of no values on an absent key is a true no-op across every writable format: the key
+// collapses to absent before planning, so IsNoOp reports true and Changes is empty rather than
+// minting a phantom rewrite.
 func TestZeroLengthEditIsNoOp(t *testing.T) {
 	absent := tag.MustKey("WAXTEST_ABSENT")
 	for _, f := range writableFixtures {
@@ -48,9 +48,8 @@ func TestZeroLengthEditIsNoOp(t *testing.T) {
 	}
 }
 
-// TestZeroLengthSaveBackWritesNothing confirms the honest no-op reaches SaveBack: it
-// commits nothing and leaves the file's bytes and mtime untouched (before the
-// phantom change rewrote the file and bumped its mtime).
+// honest no-op reaches SaveBack: it commits nothing and leaves the file's bytes and mtime untouched
+// (before the phantom change rewrote the file and bumped its mtime).
 func TestZeroLengthSaveBackWritesNothing(t *testing.T) {
 	absent := tag.MustKey("WAXTEST_ABSENT")
 	for _, f := range []string{sampleFLAC, sampleWAV, sampleAIFF, sampleMP3, sampleMP4} {
@@ -87,10 +86,9 @@ func TestZeroLengthSaveBackWritesNothing(t *testing.T) {
 	}
 }
 
-// TestEmptyStringValueNotNormalized proves the normalization is scoped strictly to
-// zero-length: a present empty-string value ([""], what `set KEY=` produces) is left
-// intact and, on a format that stores it (FLAC/Vorbis), is a real change that round-trips
-// as a present empty value rather than collapsing to absent.
+// normalization is scoped strictly to zero-length: a present empty-string value ([""], what `set
+// KEY=` produces) is left intact and, on a format that stores it (FLAC/Vorbis), is a real change
+// that round-trips as a present empty value rather than collapsing to absent.
 func TestEmptyStringValueNotNormalized(t *testing.T) {
 	key := tag.MustKey("WAXTEST_EMPTYSTR")
 	src := readFixture(t, sampleFLAC)
@@ -110,10 +108,9 @@ func TestEmptyStringValueNotNormalized(t *testing.T) {
 
 // --- zero-value Document / nil sources are safe ---
 
-// TestZeroValueDocumentSafe exercises every public Document method on both a nil
-// *Document and an uninitialized &Document{}: the read accessors return the safe zero
-// value (no nil-media panic), and the edit/transfer entry points report the
-// uninitialized state as an error rather than panicking.
+// every public Document method on both a nil *Document and an uninitialized &Document{}: the read
+// accessors return the safe zero value (no nil-media panic), and the edit/transfer entry points
+// report the uninitialized state as an error rather than panicking.
 func TestZeroValueDocumentSafe(t *testing.T) {
 	check := func(label string, d *wl.Document) {
 		if got := d.Format(); got != wl.FormatUnknown {
@@ -160,9 +157,8 @@ func TestZeroValueDocumentSafe(t *testing.T) {
 	check("zero", &wl.Document{})
 }
 
-// TestTransferCarryNoSingleValuedWarning proves a faithful transfer carry does not
-// raise the single-valued-multi warning for a source whose single-valued key
-// legitimately holds several values - the copy must not flag metadata the user
+// faithful transfer carry does not raise the single-valued-multi warning for a source whose
+// single-valued key legitimately holds several values; the copy must not flag metadata the user
 // authored none of (the carry suppresses it, like the chapter sanity checks).
 func TestTransferCarryNoSingleValuedWarning(t *testing.T) {
 	base := readFixture(t, sampleFLAC)
@@ -187,7 +183,7 @@ func TestTransferCarryNoSingleValuedWarning(t *testing.T) {
 	}
 }
 
-// TestParseNilSourceRejected confirms a nil reader is a clean error, not a panic.
+// nil reader is a clean error, not a panic.
 func TestParseNilSourceRejected(t *testing.T) {
 	if _, err := wl.Parse(context.Background(), nil); !errors.Is(err, waxerr.ErrInvalidData) {
 		t.Errorf("Parse(nil) err = %v, want ErrInvalidData", err)
@@ -199,8 +195,8 @@ func TestParseNilSourceRejected(t *testing.T) {
 
 // --- ErrNeedsFile for a path-less SaveBack ---
 
-// TestSaveBackNeedsFile confirms a document parsed without a path (Parse) cannot
-// SaveBack and reports the typed ErrNeedsFile sentinel.
+// document parsed without a path (Parse) cannot SaveBack and reports the typed ErrNeedsFile
+// sentinel.
 func TestSaveBackNeedsFile(t *testing.T) {
 	src := readFixture(t, sampleFLAC)
 	doc, err := wl.Parse(context.Background(), wl.BytesSource(src))
@@ -218,9 +214,8 @@ func TestSaveBackNeedsFile(t *testing.T) {
 
 // --- single-valued-multi plan-report warning ---
 
-// TestSingleValuedMultiWarning checks a known single-valued key given several values
-// raises the WarnSingleValuedMulti plan warning (so it flows into the report and JSON),
-// while a single value does not.
+// checks a known single-valued key given several values raises the WarnSingleValuedMulti plan
+// warning (so it flows into the report and JSON), while a single value does not.
 func TestSingleValuedMultiWarning(t *testing.T) {
 	src := readFixture(t, sampleFLAC)
 	multi, err := mustParseBytes(t, src).Edit().Set(tag.Encoder, "a", "b").Prepare()
@@ -241,9 +236,8 @@ func TestSingleValuedMultiWarning(t *testing.T) {
 
 // --- WAV ISFT stamp strip (library, via WithStripEncoderStamp) ---
 
-// TestWAVStripEncoderStampDropsEmptyLIST builds a WAV whose only INFO item is a
-// transcoder ISFT stamp, strips it, and verifies the stamp is gone and the now-empty
-// LIST chunk is dropped entirely (not emitted bodyless).
+// builds a WAV whose only INFO item is a transcoder ISFT stamp, strips it, and verifies the stamp
+// is gone and the now-empty LIST chunk is dropped entirely (not emitted bodyless).
 func TestWAVStripEncoderStampDropsEmptyLIST(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"ISFT", "Lavf61.7.100"}), wavData(400))
 	doc := mustParseBytes(t, data)
@@ -268,8 +262,6 @@ func TestWAVStripEncoderStampDropsEmptyLIST(t *testing.T) {
 	}
 }
 
-// TestWAVStripEncoderStampKeepsOtherInfo confirms a strip drops only the transcoder
-// ISFT, preserving the other INFO items.
 func TestWAVStripEncoderStampKeepsOtherInfo(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Keep Me"}, [2]string{"ISFT", "Lavf61.7.100"}), wavData(400))
 	plan, err := mustParseBytes(t, data).Edit().Clear(tag.Encoder).Prepare(wl.WithStripEncoderStamp())
@@ -285,11 +277,8 @@ func TestWAVStripEncoderStampKeepsOtherInfo(t *testing.T) {
 	}
 }
 
-// TestWAVStripEncoderStampLeavesUserISFT confirms the strip is gated on
-// IsTranscoderStamp: a user's own ISFT (not a transcoder stamp) is preserved, so a
-// strip of a file without a transcoder stamp is a no-op. ISFT reads as ENCODER, so
-// the strip is asserted on its own here; pairing it with a Clear would be a real
-// canonical removal and would drop the item for a different reason.
+// strip is gated on IsTranscoderStamp: a user's own ISFT (not a transcoder stamp) is preserved, so
+// a strip of a file without a transcoder stamp is a no-op.
 func TestWAVStripEncoderStampLeavesUserISFT(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"ISFT", "My Editor 1.0"}), wavData(400))
 	doc := mustParseBytes(t, data)
@@ -321,9 +310,9 @@ func adtsStreamRDB(chanConfig, frames, payloadPerFrame, rdb int) []byte {
 	return out
 }
 
-// TestAACFrameWalkSampleCount checks the ADTS walk counts samples per frame correctly,
-// including the multi-block case: a frame with number_of_raw_data_blocks=1 holds two
-// 1024-sample blocks, so it counts as 2048 samples, not a flat 1024.
+// checks the ADTS walk counts samples per frame correctly, including the multi-block case: a frame
+// with number_of_raw_data_blocks=1 holds two 1024-sample blocks, so it counts as 2048 samples, not
+// a flat 1024.
 func TestAACFrameWalkSampleCount(t *testing.T) {
 	single := mustParseBytes(t, adtsStream(2, 10, 100)).Properties().First().TotalSamples
 	if single != 10*1024 {
@@ -335,9 +324,9 @@ func TestAACFrameWalkSampleCount(t *testing.T) {
 	}
 }
 
-// TestAACFixtureDurationAccurate checks the walk yields a duration and average bitrate
-// close to ffprobe's ground truth for sample.aac (~1.547s, ~122 kbps) - far tighter
-// than the old first-frame estimate, which was tens of percent off on VBR.
+// checks the walk yields a duration and average bitrate close to ffprobe's ground truth for
+// sample.aac (~1.547s, ~122 kbps); far tighter than the old first-frame estimate, which was tens of
+// percent off on VBR.
 func TestAACFixtureDurationAccurate(t *testing.T) {
 	tr := mustParseFile(t, sampleAAC).Properties().First()
 	if tr.TotalSamples != 67584 { // 66 frames x 1024 samples, deterministic for the fixture
@@ -351,9 +340,9 @@ func TestAACFixtureDurationAccurate(t *testing.T) {
 	}
 }
 
-// TestAACTruncatedSingleFrameZeroDuration confirms a stream too short to hold one
-// whole frame parses without panic and reports zero duration/bitrate/samples (the
-// honest answer for an unplayable fragment) while keeping the static config.
+// stream too short to hold one whole frame parses without panic and reports zero
+// duration/bitrate/samples (the honest answer for an unplayable fragment) while keeping the static
+// config.
 func TestAACTruncatedSingleFrameZeroDuration(t *testing.T) {
 	full := adtsStream(2, 1, 200) // one 207-byte frame
 	doc := mustParseBytes(t, full[:100])
@@ -370,9 +359,8 @@ func TestAACTruncatedSingleFrameZeroDuration(t *testing.T) {
 	}
 }
 
-// failAfterSource serves data from a byte slice but fails every ReadAt at or beyond
-// failAt, simulating a mid-stream I/O error (or a concurrent truncate) during the
-// ADTS frame walk.
+// failAfterSource serves data from a byte slice but fails every ReadAt at or beyond failAt,
+// simulating a mid-stream I/O error (or a concurrent truncate) during the ADTS frame walk.
 type failAfterSource struct {
 	data   []byte
 	failAt int64
@@ -391,10 +379,9 @@ func (s failAfterSource) ReadAt(p []byte, off int64) (int, error) {
 
 func (s failAfterSource) Size() int64 { return int64(len(s.data)) }
 
-// TestAACWalkPropagatesIOError confirms a genuine read error during the ADTS walk
-// fails the parse rather than being swallowed as a benign EOF (which would return a
-// silently short duration/bitrate). The stream is sized past one 64 KiB window so
-// the walk must read into the failing region.
+// genuine read error during the ADTS walk fails the parse rather than being swallowed as a benign
+// EOF (which would return a silently short duration/bitrate). The stream is sized past one 64 KiB
+// window so the walk must read into the failing region.
 func TestAACWalkPropagatesIOError(t *testing.T) {
 	data := adtsStream(2, 400, 200) // ~82 KB: forces a second walk window past 64 KiB
 	src := failAfterSource{data: data, failAt: 64 << 10}
@@ -405,9 +392,9 @@ func TestAACWalkPropagatesIOError(t *testing.T) {
 
 // --- lint conflicting-families deduped per key ---
 
-// TestLintConflictingFamiliesDedup confirms a key whose sources disagree is reported
-// once even when several of its family entries are unselected (sample.webm carries two
-// unselected ENCODER entries that must collapse to a single finding).
+// key whose sources disagree is reported once even when several of its family entries are
+// unselected (sample.webm carries two unselected ENCODER entries that must collapse to a single
+// finding).
 func TestLintConflictingFamiliesDedup(t *testing.T) {
 	n := 0
 	for _, f := range mustParseFile(t, sampleWebM).Lint() {
@@ -422,11 +409,9 @@ func TestLintConflictingFamiliesDedup(t *testing.T) {
 
 // --- fresh-tag id3 version policy (MP3 v2.3; AAC/WAV/AIFF v2.4) ---
 
-// TestFreshID3VersionPolicy forces a fresh id3 tag (a custom key has no native home in
-// WAV/AIFF and creates an id3 frame in MP3/AAC) and confirms the from-scratch version
-// follows the single policy: MP3 stays v2.3 for legacy-hardware compatibility, while
-// every other id3-bearing format defaults to v2.4. The version shows in the native
-// view's Kind (MP3/AAC) or Note (the WAV/AIFF id3 chunk), so both are scanned.
+// forces a fresh id3 tag (a custom key has no native home in WAV/AIFF and creates an id3 frame in
+// MP3/AAC) and confirms the from-scratch version follows the single policy: MP3 stays v2.3 for
+// legacy-hardware compatibility, while every other id3-bearing format defaults to v2.4.
 func TestFreshID3VersionPolicy(t *testing.T) {
 	cases := []struct{ fixture, wantVer string }{
 		{notagsMP3, "ID3v2.3"},  // legacy hardware reads MP3 id3 directly

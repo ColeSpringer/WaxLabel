@@ -18,12 +18,9 @@ func chaptersFromTitles(titles ...string) []wl.Chapter {
 	return chs
 }
 
-// TestMP4ChapterMdatFlatAndEssenceStable verifies that a QuickTime chapter write
-// appends a chapter-sample mdat at end-of-file. Each subsequent rewrite must reclaim the
-// prior one rather than leak it, so the mdat count stays flat from the second edit
-// onward and a clear returns it to baseline. The audio essence (parse-side audio-only
-// rule) stays byte-stable across the whole sequence. The synthetic audio payload (0xA7)
-// and the titles never contain "mdat", so the byte count is an exact atom count.
+// QuickTime chapter write appends a chapter-sample mdat at end-of-file. Each subsequent rewrite
+// must reclaim the prior one rather than leak it, so the mdat count stays flat from the second edit
+// onward and a clear returns it to baseline.
 func TestMP4ChapterMdatFlatAndEssenceStable(t *testing.T) {
 	base := mp4AssembleUdta() // ftyp + audio moov + audio mdat, no chapters
 	baseline := bytes.Count(base, []byte("mdat"))

@@ -11,12 +11,9 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// The FLAC-in-Ogg mapping. The first header packet is a fixed prologue followed
-// by the native FLAC stream marker and the STREAMINFO block; every later header
-// packet carries exactly one FLAC metadata block. Audio packets are FLAC frames.
-//
-// This is the one Ogg codec whose cover art is not a METADATA_BLOCK_PICTURE
-// comment: FLAC's native PICTURE block travels in a header packet of its own.
+// FLAC-in-Ogg: id packet is prologue + fLaC + STREAMINFO; later header packets
+// are one metadata block each; audio packets are FLAC frames. Cover art is a
+// native PICTURE block, not METADATA_BLOCK_PICTURE.
 const (
 	// flacIDFixed is the length of the identification packet up to and including
 	// the STREAMINFO body: "\x7FFLAC"(5) version(2) headerPackets(2) "fLaC"(4)

@@ -31,9 +31,8 @@ func TestPlanChanges(t *testing.T) {
 	}
 }
 
-// TestPlanString: the full preview a consumer prints with fmt.Println(plan) -
-// the field-level changes block followed by the report body - rather than the
-// Go-struct default. The README quick-start documents exactly this.
+// full preview a consumer prints with fmt.Println(plan); the field-level changes block followed by
+// the report body; rather than the Go-struct default.
 func TestPlanString(t *testing.T) {
 	doc := mustParseFile(t, sampleFLAC)
 	plan, err := doc.Edit().Set(tag.Title, "New Title").Prepare()
@@ -56,8 +55,8 @@ func TestPlanString(t *testing.T) {
 	}
 }
 
-// TestWriteReportString: the report formats as a readable, humanized block (and
-// the no-op / empty-operations forms), so fmt.Println(plan.Report()) is useful.
+// report formats as a readable, humanized block (and the no-op / empty-operations forms), so
+// fmt.Println(plan.Report()) is useful.
 func TestWriteReportString(t *testing.T) {
 	r := wl.WriteReport{
 		BytesBefore:  1000,
@@ -85,8 +84,8 @@ func TestWriteReportString(t *testing.T) {
 	}
 }
 
-// TestPlanChangesNoOp: a plan that edits nothing reports no changes (so the
-// preview never invents a change the write would not make).
+// plan that edits nothing reports no changes (so the preview never invents a change the write would
+// not make).
 func TestPlanChangesNoOp(t *testing.T) {
 	doc := mustParseFile(t, sampleFLAC)
 	plan, err := doc.Edit().Prepare()
@@ -98,9 +97,8 @@ func TestPlanChangesNoOp(t *testing.T) {
 	}
 }
 
-// TestPlanChangesPictures: adding a cover to a picture-free file shows a
-// picture-count change under the lowercase "pictures" pseudo-key (which cannot
-// collide with a real, always-uppercase canonical key).
+// adding a cover to a picture-free file shows a picture-count change under the lowercase "pictures"
+// pseudo-key (which cannot collide with a real, always-uppercase canonical key).
 func TestPlanChangesPictures(t *testing.T) {
 	doc := mustParseFile(t, "../testdata/notags.flac")
 	plan, err := doc.Edit().AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG()}).Prepare()
@@ -122,9 +120,8 @@ func TestPlanChangesPictures(t *testing.T) {
 	}
 }
 
-// TestPlanChangesChapters: a chapter edit shows a chapter-count change under the
-// lowercase "chapters" pseudo-key, so the preview is symmetric with the diff
-// command (which already reports chapter deltas).
+// chapter edit shows a chapter-count change under the lowercase "chapters" pseudo-key, so the
+// preview is symmetric with the diff command (which already reports chapter deltas).
 func TestPlanChangesChapters(t *testing.T) {
 	doc := mustParseFile(t, "../testdata/notags.mka")
 	plan, err := doc.Edit().SetChapters(
@@ -149,8 +146,6 @@ func TestPlanChangesChapters(t *testing.T) {
 	}
 }
 
-// TestPlanLintFix: the shared fixer clears the encoder stamp so applying its
-// patch removes ENCODER.
 func TestPlanLintFix(t *testing.T) {
 	doc := mustParseFile(t, sampleFLAC)
 	fix := doc.PlanLintFix()
@@ -169,9 +164,8 @@ func TestPlanLintFix(t *testing.T) {
 	}
 }
 
-// TestHashAudioEssenceEmptyErrors: a tag-only file has no essence to hash, so the
-// digest is refused rather than minting a fake-stable hash that would collide
-// across distinct empty files.
+// tag-only file has no essence to hash, so the digest is refused rather than minting a fake-stable
+// hash that would collide across distinct empty files.
 func TestHashAudioEssenceEmptyErrors(t *testing.T) {
 	emptyMP3 := readFixture(t, "../testdata/empty.mp3")
 	doc, err := wl.Parse(context.Background(), wl.BytesSource(emptyMP3))
@@ -183,8 +177,7 @@ func TestHashAudioEssenceEmptyErrors(t *testing.T) {
 	}
 }
 
-// TestParseEmptyMP3WarnsNoAudio: a tag-only/truncated MP3 surfaces the no-audio
-// warning so dump and lint can report it.
+// tag-only/truncated MP3 surfaces the no-audio warning so dump and lint can report it.
 func TestParseEmptyMP3WarnsNoAudio(t *testing.T) {
 	doc, err := wl.Parse(context.Background(), wl.BytesSource(readFixture(t, "../testdata/empty.mp3")))
 	if err != nil {
@@ -201,7 +194,6 @@ func TestParseEmptyMP3WarnsNoAudio(t *testing.T) {
 	}
 }
 
-// TestLintNoAudioFinding: the no-audio warning maps to a lint error.
 func TestLintNoAudioFinding(t *testing.T) {
 	doc, err := wl.Parse(context.Background(), wl.BytesSource(readFixture(t, "../testdata/empty.mp3")))
 	if err != nil {
@@ -218,10 +210,9 @@ func TestLintNoAudioFinding(t *testing.T) {
 	}
 }
 
-// TestNoAudioIsFormatAgnostic: the no-essence warning and the digest guard are
-// driven by one condition for every format, not an MP3 special-case. A tag-only
-// WAV must warn (so lint flags it) and refuse to hash (so verify fails) - the two
-// surfaces agreeing for a non-MP3 file.
+// no-essence warning and the digest guard are driven by one condition for every format, not an MP3
+// special-case. A tag-only WAV must warn (so lint flags it) and refuse to hash (so verify fails);
+// the two surfaces agreeing for a non-MP3 file.
 func TestNoAudioIsFormatAgnostic(t *testing.T) {
 	emptyWAV := readFixture(t, "../testdata/empty.wav")
 	doc, err := wl.Parse(context.Background(), wl.BytesSource(emptyWAV))

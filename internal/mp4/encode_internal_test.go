@@ -8,12 +8,9 @@ import (
 )
 
 // TestDroppedValues checks that droppedValues names exactly the canonical keys an MP4
-// write cannot store without mutation. Track and disc slots are uint16, so
-// non-numeric, negative, and >65535 values are lost. A literal "0" fits uint16, but
-// pairItem can collapse the whole pair to absent; that user-supplied 0 is reported
-// unless a non-zero counterpart keeps the pair. A malformed slashed value (a non-numeric
-// tail, e.g. "1/2/3" or "3/abc") is not a storable number/total: it is kept whole and
-// dropped against the number slot, never split into a phantom TRACKTOTAL.
+// write cannot store without mutation. "1/2/3" or "3/abc") is not a storable
+// number/total: it is kept whole and dropped against the number slot, never split into
+// a phantom TRACKTOTAL.
 func TestDroppedValues(t *testing.T) {
 	cases := []struct {
 		name string
@@ -60,11 +57,9 @@ func TestDroppedValues(t *testing.T) {
 	}
 }
 
-// TestBoolItemDropsEmpty checks that boolItem drops a present-empty COMPILATION value rather
-// than fabricating a definite 0 (which would read back as a real, strict-clean false). This
-// mirrors the MP4 empty-number drop; the remaining cross-format split - MP4 drops the empty
-// value while FLAC keeps it verbatim - is intentional and matches how numbers behave, so a
-// future reader should not "fix" it into a fabricated 0.
+// TestBoolItemDropsEmpty checks that boolItem drops a present-empty COMPILATION value
+// rather than fabricating a definite 0 (which would read back as a real, strict-clean
+// false).
 func TestBoolItemDropsEmpty(t *testing.T) {
 	for _, v := range []string{"", "   "} {
 		if _, ok := boolItem("cpil", []string{v}); ok {
@@ -80,10 +75,9 @@ func TestBoolItemDropsEmpty(t *testing.T) {
 	}
 }
 
-// TestRestoreUnstorablePairSlots pins the gate for preserving a good existing trkn/disk value
-// when an edit makes a slot genuinely unstorable: it restores from base only when the edited
-// value is unstorable AND base holds a storable, present value. A representable 0, an empty
-// slot, an unstorable base, and a storable edit are all left untouched.
+// TestRestoreUnstorablePairSlots pins the gate for preserving a good existing trkn/disk
+// value when an edit makes a slot genuinely unstorable: it restores from base only when
+// the edited value is unstorable AND base holds a storable, present value.
 func TestRestoreUnstorablePairSlots(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -127,11 +121,8 @@ func TestRestoreUnstorablePairSlots(t *testing.T) {
 	}
 }
 
-// TestCoercedValues checks that coercedValues reports a COMPILATION non-boolean stored as 0
-// (false). A trkn/disk number's leading zero or sign is a numerically-lossless canonicalization,
-// not a coercion worth warning, so no number slot appears here (a copy grades it Carried and diff
-// treats it as no change). A dropped slot (0, overflow, non-numeric) is not here either. The
-// iTunes structured keys' coercions are covered in TestITunesCoercedValues.
+// TestCoercedValues checks that coercedValues reports a COMPILATION non-boolean stored
+// as 0 (false). A dropped slot (0, overflow, non-numeric) is not here either.
 func TestCoercedValues(t *testing.T) {
 	// A non-boolean COMPILATION is the one coercion reported.
 	ts := tag.NewTagSet()
@@ -167,16 +158,10 @@ func TestCoercedValues(t *testing.T) {
 	}
 }
 
-// TestNumberSlotTransferGrading checks that a copy grades a canonical or normalized trkn/disk
-// number (a leading zero or sign, which the uint16 atom stores as the same integer) Carried, and
-// an unrepresentable one (overflow, the 0-reads-back-absent case, or a malformed slashed value)
-// Dropped. A leading zero or sign is a numerically-lossless canonicalization, so copy grades it
-// Carried, matching diff, which treats a sign/leading-zero-only delta as no change.
-//
-// This grades through core.ProjectTransfer over the MP4 codec's Capabilities - the same capability
-// layer (WithValueDrop) the caps command reports and the copy command consumes - so the malformed
-// slashed cases below confirm the guarded-split predicate rides the shared layer rather than any
-// per-command logic.
+// TestNumberSlotTransferGrading checks that a copy grades a canonical or normalized
+// trkn/disk number (a leading zero or sign, which the uint16 atom stores as the same
+// integer) Carried, and an unrepresentable one (overflow, the 0-reads-back-absent case,
+// or a malformed slashed value) Dropped.
 func TestNumberSlotTransferGrading(t *testing.T) {
 	caps := Codec{}.Capabilities(nil, core.WriteOptions{})
 	cases := []struct {
@@ -212,12 +197,8 @@ func TestNumberSlotTransferGrading(t *testing.T) {
 	}
 }
 
-// TestNumberDispositionAgreesWithRoundTrip pins the contract directly: for a range of number forms,
-// copy's per-item disposition and diff's equality verdict must agree. A form is graded Carried by
-// copy exactly when it round-trips through the real encode (pairItem) and decode (decodePair) to a
-// numerically-equal value, which is exactly when the numeric-aware diff would report no change. The
-// diff verdict uses numeric equality (tag.NumericValuesEqual): a leading zero or sign stored as the
-// same integer is no change, so copy grades it Carried too.
+// TestNumberDispositionAgreesWithRoundTrip pins the contract directly: for a range of
+// number forms, copy's per-item disposition and diff's equality verdict must agree.
 func TestNumberDispositionAgreesWithRoundTrip(t *testing.T) {
 	caps := Codec{}.Capabilities(nil, core.WriteOptions{})
 	forms := []string{"3", "12", "65535", "03", "003", "+3", "0", "00", "+0", "70000", "-3", "abc"}
@@ -236,9 +217,9 @@ func TestNumberDispositionAgreesWithRoundTrip(t *testing.T) {
 	}
 }
 
-// roundTripTrackNumber stores form in a trkn number slot via the real encoder and reads it back via
-// the real decoder, returning the read-back value and whether the number slot survived (a 0/overflow
-// slot reads back absent). It is the faithful "what does MP4 store and read back" diff would compare.
+// roundTripTrackNumber stores form in a trkn number slot via the real encoder and reads
+// it back via the real decoder, returning the read-back value and whether the number
+// slot survived (a 0/overflow slot reads back absent).
 func roundTripTrackNumber(form string) (string, bool) {
 	ts := tag.NewTagSet()
 	ts.Set(tag.TrackNumber, form)
@@ -296,11 +277,9 @@ func mp4GenreSet(vals ...string) tag.TagSet {
 	return ts
 }
 
-// TestGenreEncodingChanged pins MP4's encoding-rewrite predicate: it fires when writing the
-// edited genre numerically would move it between the text "\xa9gen" atom and the numeric
-// "gnre" one, or change a gnre payload, and stays quiet otherwise. It deliberately does not
-// lean on a size delta - "Rock" and a 2-byte gnre differ in length only by luck, and a
-// two-character genre name would collapse that difference to zero.
+// TestGenreEncodingChanged pins MP4's encoding-rewrite predicate: it fires when writing
+// the edited genre numerically would move it between the text "\xa9gen" atom and the
+// numeric "gnre" one, or change a gnre payload, and stays quiet otherwise.
 func TestGenreEncodingChanged(t *testing.T) {
 	text := func(v string) []item { return []item{textItem(atomName("\xa9gen"), []string{v})} }
 	numeric := func(idx ...int) []item { return []item{gnreItem(idx)} }
@@ -336,11 +315,9 @@ func TestGenreEncodingChanged(t *testing.T) {
 	}
 }
 
-// TestNumericGenreEncodingPreserved pins the other half: an edit that did not ask for the
-// numeric encoding still writes it when the file already stores it and the genre's value is
-// unchanged. Without this buildItems, which rebuilds every item from the canonical tags,
-// would convert an existing gnre back to the text atom on any unrelated edit, undoing an
-// earlier --numeric-genre run and ping-ponging the file between the two forms.
+// TestNumericGenreEncodingPreserved pins the other half: an edit that did not ask for
+// the numeric encoding still writes it when the file already stores it and the genre's
+// value is unchanged.
 func TestNumericGenreEncodingPreserved(t *testing.T) {
 	gnre := []item{gnreItem([]int{17})}
 	text := []item{textItem(atomName("\xa9gen"), []string{"Rock"})}

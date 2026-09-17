@@ -26,16 +26,11 @@ func diffChaptersChanged(t *testing.T, a, b string) bool {
 	return jd.Chapters.Changed
 }
 
-// TestDiffChaptersReconstructableIdentical checks the Finding 7 fix end-to-end: diff no longer
-// reports chapters as differing when the only difference is an end a codec would itself
-// reconstruct - matching how copy grades such an end as reconstructable rather than lossy.
+// TestDiffChaptersReconstructableIdentical: diff ignores reconstructable end differences (Finding 7).
 func TestDiffChaptersReconstructableIdentical(t *testing.T) {
 	notagsMP3 := filepath.Join("..", "..", "testdata", "notags.mp3")
 
-	// The report's motivating case: copy an M4B's chapters into a FLAC, then diff the two. The
-	// M4B carries gapless interior ends (each end == the next start) and an open trailing end;
-	// FLAC (CHAPTERxxx) stores start+title only, so it reads all ends open. Those interior ends
-	// are reconstructable, so the chapters must diff as identical.
+	// M4B gapless interior ends reconstruct from next start; FLAC stores start+title only.
 	t.Run("m4b copied to flac", func(t *testing.T) {
 		dst := copyFixture(t, notagsFLAC)
 		if _, _, code := runCLI(t, "copy", sampleM4B, dst); code != 0 {
@@ -46,13 +41,8 @@ func TestDiffChaptersReconstructableIdentical(t *testing.T) {
 		}
 	})
 
-	// The Truncate-path case: author the same chapters on an ID3 file (MP3) and a FLAC. The
-	// MP3's trailing open chapter is filled to the media duration floored to ms, while FLAC
-	// stores no end. notags.mp3's duration is 2037.551020 ms - deliberately NOT a whole
-	// millisecond - so normalizing the trailing end must truncate the duration to ms
-	// (2037 ms) before the >= comparison; a naive ">= duration" would leave 2037 ms < 2037.551
-	// ms unnormalized and wrongly report the chapters as differing. A whole-ms fixture would
-	// pass even with that bug, hiding the regression.
+	// Truncate path: notags.mp3 duration is 2037.551 ms; trailing end must floor to 2037 ms
+	// before compare, not use raw float duration.
 	t.Run("id3 vs flac, non-whole-ms duration", func(t *testing.T) {
 		mp3 := copyFixture(t, notagsMP3)
 		flac := copyFixture(t, notagsFLAC)
@@ -67,9 +57,7 @@ func TestDiffChaptersReconstructableIdentical(t *testing.T) {
 	})
 }
 
-// chapteredDoc authors chs on fixture, writes, and reparses, returning the resulting document.
-// It is used to build documents carrying explicit chapter ends the CLI's start=title
-// --add-chapter grammar cannot express (a gapped interior end, an early-ending trailing end).
+// chapteredDoc writes explicit chapter ends the CLI --add-chapter grammar cannot express.
 func chapteredDoc(t *testing.T, fixture string, chs ...wl.Chapter) *wl.Document {
 	t.Helper()
 	src, err := os.ReadFile(fixture)
@@ -95,15 +83,11 @@ func chapteredDoc(t *testing.T, fixture string, chs ...wl.Chapter) *wl.Document 
 	return re
 }
 
-// TestDiffChaptersGenuineEndStillDiffers checks Finding 7 did not blind diff to real end
-// differences: an end a codec cannot reconstruct (a gapped interior end, or a trailing end
-// that stops before EOF) must still make the chapters differ, matching copy's "lossy" grade.
-// Both cases use MP3, whose ID3 CHAP store preserves explicit ends.
+// TestDiffChaptersGenuineEndStillDiffers: non-reconstructable ends still differ (MP3 CHAP).
 func TestDiffChaptersGenuineEndStillDiffers(t *testing.T) {
 	notagsMP3 := filepath.Join("..", "..", "testdata", "notags.mp3")
 
-	// An interior chapter that ends before the next starts (a real gap, not gapless) cannot be
-	// inferred from the next start, so it differs from the same chapters left open.
+	// Gapped interior end cannot be inferred from next start.
 	t.Run("interior gapped end", func(t *testing.T) {
 		gapped := chapteredDoc(t, notagsMP3,
 			wl.Chapter{Start: 0, End: 200 * time.Millisecond, Title: "A"}, // ends at 200ms, next starts at 500ms
@@ -118,8 +102,7 @@ func TestDiffChaptersGenuineEndStillDiffers(t *testing.T) {
 		}
 	})
 
-	// A trailing chapter that ends before EOF carries information a run-to-EOF end does not, so
-	// it differs from the same chapters whose trailing end runs to the media duration.
+	// Trailing end before EOF differs from run-to-EOF.
 	t.Run("trailing end before EOF", func(t *testing.T) {
 		early := chapteredDoc(t, notagsMP3,
 			wl.Chapter{Start: 0, Title: "A"},

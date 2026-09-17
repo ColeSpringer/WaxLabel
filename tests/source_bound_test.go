@@ -11,13 +11,9 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestOpenSourceMaxSourceBytesBoundary pins the exact ingest boundary: a stream of
-// exactly the limit still parses (the read buffers limit+1 and compares, so len == limit
-// passes), while one byte past the limit fails with ErrInputTooLarge rather than being
-// silently truncated and misparsed. ErrInputTooLarge is distinct from ErrSizeTooLarge: a
-// raw stream carries no declared size, so exceeding a user cap is a resource-limit refusal,
-// not corruption. The input is a fixed valid FLAC and the limit is varied around its size,
-// so all three boundary positions are exercised with one fixture.
+// exact ingest boundary: a stream of exactly the limit still parses (the read buffers limit+1 and
+// compares, so len == limit passes), while one byte past the limit fails with ErrInputTooLarge
+// rather than being silently truncated and misparsed.
 func TestOpenSourceMaxSourceBytesBoundary(t *testing.T) {
 	src := readFixture(t, sampleFLAC)
 	size := int64(len(src))
@@ -52,9 +48,8 @@ func TestOpenSourceMaxSourceBytesBoundary(t *testing.T) {
 	}
 }
 
-// TestOpenSourceMaxSourceBytesUnlimited: a non-positive limit disables the cap, so a
-// stream larger than a small positive limit would reject still parses. This is the
-// documented WithMaxSourceBytes(0) escape hatch.
+// non-positive limit disables the cap, so a stream larger than a small positive limit would reject
+// still parses. This is the documented WithMaxSourceBytes(0) escape hatch.
 func TestOpenSourceMaxSourceBytesUnlimited(t *testing.T) {
 	src := readFixture(t, sampleFLAC)
 	s, err := wl.OpenSource(context.Background(), bytes.NewReader(src), wl.WithMaxSourceBytes(0))
@@ -66,9 +61,9 @@ func TestOpenSourceMaxSourceBytesUnlimited(t *testing.T) {
 	}
 }
 
-// TestOpenSourceMaxSourceBytesCeiling: a limit at the int64 ceiling must behave as
-// unbounded, not overflow the limit+1 probe to a negative that io.LimitReader reads as
-// "nothing" and so misparse every input as an empty (unidentifiable) file.
+// limit at the int64 ceiling must behave as unbounded, not overflow the limit+1 probe to a negative
+// that io.LimitReader reads as "nothing" and so misparse every input as an empty (unidentifiable)
+// file.
 func TestOpenSourceMaxSourceBytesCeiling(t *testing.T) {
 	src := readFixture(t, sampleFLAC)
 	s, err := wl.OpenSource(context.Background(), bytes.NewReader(src), wl.WithMaxSourceBytes(math.MaxInt64))

@@ -11,18 +11,16 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// Cue child IDs used to build narrow-slot Cues fixtures. The shared test helpers
-// emit canonical element sizes, so these tests construct 2-byte CueClusterPosition
-// slots directly against the real encoder.
+// Cue child IDs used to build narrow-slot Cues fixtures.
 const (
 	idCueTime   = 0xB3
 	idCueTrack  = 0xF7
 	idCueRelPos = 0xF0
 )
 
-// cueTrackPosBytes builds one CueTrackPositions with CueTrack before the position
-// and CueRelativePosition after it, so rebuild tests verify pre/post children
-// survive in order.
+// cueTrackPosBytes builds one CueTrackPositions with CueTrack before the position and
+// CueRelativePosition after it, so rebuild tests verify pre/post children survive in
+// order.
 func cueTrackPosBytes(track int, pos uint64, width int) []byte {
 	body := encElement(idCueTrack, uintData(uint64(track)))
 	body = append(body, encElement(idCueClusterPos, uintDataWidth(pos, width))...)
@@ -101,9 +99,8 @@ func countCueElem(t *testing.T, cues []byte, want uint64) int {
 	return n
 }
 
-// TestRebuildCuesToleratesVoid covers legal EBML padding at the Cues, CuePoint,
-// and CueTrackPositions levels. Rebuild drops Void padding, as SeekHead rebuild
-// does, but padding must not make an otherwise faithful Cues unrebuildable.
+// TestRebuildCuesToleratesVoid covers legal EBML padding at the Cues, CuePoint, and
+// CueTrackPositions levels.
 func TestRebuildCuesToleratesVoid(t *testing.T) {
 	void := encElement(idVoid, make([]byte, 8))
 	tp := encElement(idCueTrackPos, cat(
@@ -158,9 +155,9 @@ func TestRebuildCuesRefusesNonLeadingCRC(t *testing.T) {
 	}
 }
 
-// TestCuesCaptureFidelity confirms the parse populates the flat fast-path list and
-// the lazy buildCuePoints walk produces the rebuild tree, splitting each
-// CueTrackPositions at its position.
+// TestCuesCaptureFidelity confirms the parse populates the flat fast-path list and the
+// lazy buildCuePoints walk produces the rebuild tree, splitting each CueTrackPositions
+// at its position.
 func TestCuesCaptureFidelity(t *testing.T) {
 	raw := cuesBytes(true, cuePointBytes(0, cueTrackPosBytes(1, 872, 2)))
 	ci := parseCues(t, raw)
@@ -187,9 +184,7 @@ func TestCuesCaptureFidelity(t *testing.T) {
 	}
 }
 
-// TestRebuildCuesMultiTrack rebuilds a single CuePoint carrying two
-// CueTrackPositions. Both positions cross the 2-byte boundary, and the test checks
-// that the verbatim pre/post children survive in order.
+// TestRebuildCuesMultiTrack rebuilds a single CuePoint carrying two CueTrackPositions.
 func TestRebuildCuesMultiTrack(t *testing.T) {
 	raw := cuesBytes(true, cuePointBytes(0,
 		cueTrackPosBytes(1, 872, 2),
@@ -241,9 +236,9 @@ func TestRebuildCuesMultiCluster(t *testing.T) {
 	}
 }
 
-// TestRebuildCuesDroppedTarget verifies that a CueTrackPositions whose target is
-// absent from oldToNew is omitted, and that a CuePoint with no remaining tracks
-// disappears while the surviving entries still rebuild.
+// TestRebuildCuesDroppedTarget verifies that a CueTrackPositions whose target is absent
+// from oldToNew is omitted, and that a CuePoint with no remaining tracks disappears
+// while the surviving entries still rebuild.
 func TestRebuildCuesDroppedTarget(t *testing.T) {
 	raw := cuesBytes(false,
 		cuePointBytes(0, cueTrackPosBytes(1, 872, 2), cueTrackPosBytes(2, 900, 2)),
@@ -273,9 +268,9 @@ func TestRebuildCuesEmptyRefused(t *testing.T) {
 	}
 }
 
-// TestRebuildCuesUncaptured: a CueTrackPositions with no CueClusterPosition cannot
-// be modeled, so buildCuePoints reports the tree unrebuildable and both rebuildCues
-// and a forced shiftIndex.emit refuse rather than emit a wrong index.
+// TestRebuildCuesUncaptured: a CueTrackPositions with no CueClusterPosition cannot be
+// modeled, so buildCuePoints reports the tree unrebuildable and both rebuildCues and a
+// forced shiftIndex.emit refuse rather than emit a wrong index.
 func TestRebuildCuesUncaptured(t *testing.T) {
 	bad := encElement(idCueTrackPos, encElement(idCueTrack, uintData(1))) // no position
 	raw := cuesBytes(true, encElement(idCuePoint, append(uintElement(idCueTime, 0), bad...)))
@@ -297,8 +292,7 @@ func TestRebuildCuesUncaptured(t *testing.T) {
 }
 
 // TestRebuildCuesCRCPresence: the rebuilt Cues carries a CRC iff the source did
-// (mkvmerge writes one; the WebM fixtures do not). The recomputed value's validity
-// is covered end-to-end by checkCRCs in the integration test.
+// (mkvmerge writes one; the WebM fixtures do not).
 func TestRebuildCuesCRCPresence(t *testing.T) {
 	for _, crc := range []bool{true, false} {
 		ci := parseCues(t, cuesBytes(crc, cuePointBytes(0, cueTrackPosBytes(1, 872, 2))))
@@ -312,9 +306,8 @@ func TestRebuildCuesCRCPresence(t *testing.T) {
 	}
 }
 
-// TestCuesCaptureDepthTruncated verifies that a depth-limited walk refuses a
-// rebuild before it can produce a partial tree. The parse stores ci.maxDepth so
-// the lazy walk uses the same budget family as the original capture.
+// TestCuesCaptureDepthTruncated verifies that a depth-limited walk refuses a rebuild
+// before it can produce a partial tree.
 func TestCuesCaptureDepthTruncated(t *testing.T) {
 	raw := cuesBytes(true, cuePointBytes(0, cueTrackPosBytes(1, 872, 2)))
 	// A budget too small to reach CueClusterPosition (Cues > CuePoint > CueTrackPositions).
@@ -330,10 +323,8 @@ func TestCuesCaptureDepthTruncated(t *testing.T) {
 	}
 }
 
-// TestShiftConvergence drives resolveShiftLayout with a cover large enough to push
-// the single cluster past the 2-byte boundary, forcing both Cues and SeekHead
-// rebuilds. The test asserts the fixpoint settles quickly rather than hitting the
-// iteration bound and refusing a legal edit.
+// TestShiftConvergence drives resolveShiftLayout with a cover large enough to push the
+// single cluster past the 2-byte boundary, forcing both Cues and SeekHead rebuilds.
 func TestShiftConvergence(t *testing.T) {
 	src, err := os.ReadFile("../../testdata/sample.mka")
 	if err != nil {
@@ -386,9 +377,7 @@ func synthLargeCues(n int) []byte {
 	return cuesBytes(true, points...)
 }
 
-// BenchmarkCuesParseAlloc measures the parse cost of capturing a large Cues. The
-// intended parse path keeps only the flat cluster-offset list and does not retain
-// the nested rebuild tree or verbatim per-child byte copies.
+// BenchmarkCuesParseAlloc measures the parse cost of capturing a large Cues.
 func BenchmarkCuesParseAlloc(b *testing.B) {
 	raw := synthLargeCues(20000)
 	b.ReportAllocs()
@@ -400,12 +389,7 @@ func BenchmarkCuesParseAlloc(b *testing.B) {
 	}
 }
 
-// TestCuesParseAllocBudget keeps the parse path from eagerly building the rebuild
-// tree. For an N-CuePoint Cues, allocation count should stay near the flat
-// clusters walk, currently about 13 allocations per CuePoint, and well below the
-// eager tree path at about 34 per CuePoint. The 20-per-CuePoint budget leaves room
-// for runtime variation while catching the extra structured walk and verbatim child
-// copies.
+// TestCuesParseAllocBudget keeps the parse path from eagerly building the rebuild tree.
 func TestCuesParseAllocBudget(t *testing.T) {
 	const n = 4000
 	raw := synthLargeCues(n)
@@ -420,13 +404,8 @@ func TestCuesParseAllocBudget(t *testing.T) {
 }
 
 // Nested CRC-32 elements are valid in CuePoint, CueTrackPositions, and Seek. The
-// in-place patch paths only recompute the containing master CRC, so parsing a
-// nested CRC must force a rebuild.
-//
-// validateNestedCRCs walks Cues and SeekHead descendants. For each master with a
-// leading CRC-32 child, it recomputes the CRC over the remaining content and
-// compares it with the stored element. The returned count lets callers confirm
-// that the fixture actually contained CRCs.
+// in-place patch paths only recompute the containing master CRC, so parsing a nested
+// CRC must force a rebuild.
 func validateNestedCRCs(t *testing.T, raw []byte) int {
 	t.Helper()
 	rs := core.BytesSource(raw)
@@ -510,9 +489,9 @@ func TestBuildShiftIndexesForcesRebuildOnNestedCRC(t *testing.T) {
 	}
 }
 
-// TestRebuildCuesRecomputesNestedCRCs covers a Cues master CRC with nested
-// CuePoint and CueTrackPositions CRCs. A forced rebuild should repoint the
-// cluster and recompute every CRC element.
+// TestRebuildCuesRecomputesNestedCRCs covers a Cues master CRC with nested CuePoint and
+// CueTrackPositions CRCs. A forced rebuild should repoint the cluster and recompute
+// every CRC element.
 func TestRebuildCuesRecomputesNestedCRCs(t *testing.T) {
 	tp := encElement(idCueTrackPos, withCRC(cat(
 		encElement(idCueTrack, uintData(1)),
@@ -540,9 +519,8 @@ func TestRebuildCuesRecomputesNestedCRCs(t *testing.T) {
 	}
 }
 
-// TestRebuildCuesNestedCRCIdempotent checks that a rebuilt Cues still parses as
-// having nested CRCs, so the next edit rebuilds again instead of using the
-// in-place path. The second rebuild should converge byte-identically.
+// TestRebuildCuesNestedCRCIdempotent checks that a rebuilt Cues still parses as having
+// nested CRCs, so the next edit rebuilds again instead of using the in-place path.
 func TestRebuildCuesNestedCRCIdempotent(t *testing.T) {
 	raw := cuesBytes(true, encElement(idCuePoint, withCRC(cat(uintElement(idCueTime, 0), cueTrackPosBytes(1, 872, 2)))))
 	out1, _, ok := rebuildCues(parseCues(t, raw), directOffsetMap(map[int64]int64{872: 70000}), 0, 0)
@@ -566,8 +544,8 @@ func TestRebuildCuesNestedCRCIdempotent(t *testing.T) {
 }
 
 // TestRebuildCuesNestedCRCUnrebuildableRefused checks that a nested CRC on an
-// unrebuildable Cues tree forces rebuild, and that emit returns ok=false instead
-// of writing an in-place result with stale nested CRCs.
+// unrebuildable Cues tree forces rebuild, and that emit returns ok=false instead of
+// writing an in-place result with stale nested CRCs.
 func TestRebuildCuesNestedCRCUnrebuildableRefused(t *testing.T) {
 	badPoint := encElement(idCuePoint, withCRC(uintElement(idCueTime, 0))) // no CueTrackPositions
 	raw := cuesBytes(true, badPoint, cuePointBytes(1000, cueTrackPosBytes(1, 872, 2)))
@@ -584,9 +562,8 @@ func TestRebuildCuesNestedCRCUnrebuildableRefused(t *testing.T) {
 	}
 }
 
-// TestRebuildSeekHeadDropsPerSeekCRC checks that SeekHead rebuild re-encodes
-// each Seek without an optional per-Seek CRC, preserves the entry, and
-// recomputes the master CRC.
+// TestRebuildSeekHeadDropsPerSeekCRC checks that SeekHead rebuild re-encodes each Seek
+// without an optional per-Seek CRC, preserves the entry, and recomputes the master CRC.
 func TestRebuildSeekHeadDropsPerSeekCRC(t *testing.T) {
 	seekCRC := encElement(idSeek, withCRC(cat(
 		encElement(idSeekID, idBytes(idCues)),
@@ -615,9 +592,8 @@ func TestRebuildSeekHeadDropsPerSeekCRC(t *testing.T) {
 	}
 }
 
-// TestPatchSeekAbsorbFallsBackOnNestedCRC checks that the absorb fast path
-// refuses a SeekHead with a nested per-Seek CRC, while a plain SeekHead still
-// patches in place.
+// TestPatchSeekAbsorbFallsBackOnNestedCRC checks that the absorb fast path refuses a
+// SeekHead with a nested per-Seek CRC, while a plain SeekHead still patches in place.
 func TestPatchSeekAbsorbFallsBackOnNestedCRC(t *testing.T) {
 	nested := seekFromRaw(masterElement(idSeekHead, encElement(idSeek, withCRC(cat(
 		encElement(idSeekID, idBytes(idCues)),

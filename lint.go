@@ -39,20 +39,11 @@ type Finding struct {
 	Code     string
 	Message  string
 	Key      tag.Key // the field involved, or "" if not field-specific
-	// Fixable reports that [Document.PlanLintFix] acts on this finding: the inherited encoder
-	// stamp, and a legacy container fully redundant with the canonical set.
+	// Fixable means [Document.PlanLintFix] acts on this finding.
 	Fixable bool
 }
 
-// String renders the finding as "[severity] code: message (key)". The severity and
-// code are fixed library vocabulary; the message and key can be file-derived (the
-// inherited-encoder message carries the raw inherited stamp; a custom-key finding
-// carries the raw field name), so those two are run through [tag.SanitizeLine]
-// individually - the finding prints as one list item, so a newline or tab is
-// escaped too (it cannot forge a line), not just the terminal-hijack class. A
-// library consumer that prints this without the CLI's output boundary is then safe.
-// The malformed-date message is already %q-escaped inside the Message, which
-// SanitizeLine leaves intact (no double-escape).
+// String renders "[severity] code: message (key)". Message and key are sanitized.
 func (f Finding) String() string {
 	msg := tag.SanitizeLine(f.Message)
 	if f.Key != "" {
@@ -61,13 +52,8 @@ func (f Finding) String() string {
 	return fmt.Sprintf("[%s] %s: %s", f.Severity, f.Code, msg)
 }
 
-// Lint inspects a document for issues a tagger would want to surface or fix:
-// stale legacy containers, inherited encoder noise, conflicting family values,
-// duplicate or invalid pictures, chapters that collide or start past the audio,
-// malformed dates and numbers, single-valued keys carrying several values,
-// custom (non-vocabulary) keys, a tag entry the container holds but no reader can
-// interpret, and a chunk whose declared size the container leaves unknown. It reads
-// only the parsed document (no I/O) and never modifies it.
+// Lint reports metadata issues (legacy, encoder noise, conflicts, pictures,
+// chapters, values, cardinality, custom keys). No I/O; does not modify.
 func (d *Document) Lint() []Finding {
 	if d.zero() {
 		return nil
@@ -79,10 +65,6 @@ func (d *Document) Lint() []Finding {
 	legacyOnly := d.LegacyOnlyKeys()
 	out = append(out, lintLegacyOnly(legacyOnly)...)
 	out = append(out, lintOpaqueLegacy(d.media.LegacyOpaqueContent)...)
-	// Lint the display projection so a cover whose bytes disagree with its stored MIME (a GIF
-	// mislabeled image/png, or junk under a valid-looking label) is judged by its real type - the
-	// unrecognized-MIME and format checks then see what a reader would. media.Pictures stays stored
-	// for the write path; the projection is a read-only view.
 	out = append(out, lintPictures(core.ProjectPictures(d.media.Pictures))...)
 	out = append(out, lintChapters(d.media.Chapters, d.media.Properties.Duration())...)
 	out = append(out, lintValues(d.media.Tags)...)
@@ -108,17 +90,8 @@ func (d *Document) markFixable(fs []Finding, legacyOnly []tag.Key) {
 	}
 }
 
-// encoderStampReachable reports whether the encoder remediation can reach the stamps this
-// file carries. It clears transcoder-stamp values from [tag.Encoder] and, through
-// [WithStripEncoderStamp], neutralizes a container vendor string and a WAV ISFT item; it has
-// no way to reach one stored under [tag.EncodedBy], which ID3's TENC frame and an APEv2
-// "Encoded By" item both project to. So a file whose ENCODER is clean while its ENCODEDBY is
-// stamped has nothing the fix can act on, and saying otherwise would promise a repair that
-// lint --fix then reports as not auto-fixed.
-//
-// A file carrying both reads reachable: the fix acts, and the stamp it cannot reach is
-// reported as remaining. A vendor-string stamp alongside a stamped ENCODEDBY reads
-// unreachable though the vendor strip would act, which errs toward promising too little.
+// encoderStampReachable is true when PlanLintFix can reach a stamp: ENCODER or
+// vendor/ISFT via WithStripEncoderStamp. ENCODEDBY-only stamps are unreachable.
 func (d *Document) encoderStampReachable() bool {
 	return hasTranscoderStamp(d, tag.Encoder) || !hasTranscoderStamp(d, tag.EncodedBy)
 }
@@ -133,14 +106,7 @@ func hasTranscoderStamp(d *Document, key tag.Key) bool {
 	return slices.ContainsFunc(vals, core.IsTranscoderStamp)
 }
 
-// lintWarnings promotes the parse-time warnings that a tagger usually acts on. Each
-// promoted warning reuses w.Code.String() as its finding code, so a condition that
-// both dump (which prints the warning code) and lint surface reads with the same code
-// in each - no renamed alias to keep in sync. Only the subset a tagger acts on is
-// promoted (other parse warnings are informational); the per-condition severity is the
-// only thing this assigns. The computed-only lint codes that dump never prints
-// (malformed-date, single-valued-multi, custom-key, the picture checks) are added by
-// the sibling lint* helpers, not here.
+// lintWarnings promotes actionable parse warnings (same code strings as dump).
 func lintWarnings(ws []core.Warning) []Finding {
 	var out []Finding
 	for _, w := range ws {
@@ -153,29 +119,15 @@ func lintWarnings(ws []core.Warning) []Finding {
 		case core.WarnMultipleVorbisComment, core.WarnDuplicateTagBlock, core.WarnNoAudioFrames:
 			out = append(out, Finding{Severity: LintError, Code: w.Code.String(), Message: w.Message})
 		case core.WarnNumericGenre, core.WarnUnknownChunkSize:
-			// Informational, like negative-numeric/custom-key: worth surfacing in lint
-			// (README promises dump and lint both report it) without flipping the clean
-			// exit. A numeric genre reference resolved to a name, and a size-unknown chunk
-			// is what a non-seekable writer legitimately emits - so a piped WAV capture
-			// must not fail lint, though what the sentinel costs the reader (anything
-			// after the chunk) is still worth reporting.
+			// Info only (README: dump+lint report; must not fail clean exit / piped WAV).
 			out = append(out, Finding{Severity: LintInfo, Code: w.Code.String(), Message: w.Message})
 		}
 	}
 	return out
 }
 
-// lintChapters reports the two chapter defects a tagger acts on, whoever wrote them:
-// two chapters sharing a start (navigation lands on only one) and a chapter starting
-// past the file's playable length (usually a mistyped timestamp). The editor raises the
-// same pair on the chapters an edit introduces; this is the answer for a file WaxLabel
-// did not write, which is what set --help points at when it says to lint the saved file.
-//
-// Both rules come from [core.ChaptersPastDuration] and [core.DuplicateChapterStarts],
-// which the editor calls too, so the file view and the edit view cannot come to differ on
-// what a defect is - only on which chapters they ask about. The unknown-duration gate
-// (a truncated or header-only file reports 0, which would otherwise flag every chapter as
-// beyond 0:00) lives in that shared rule rather than being restated here.
+// lintChapters reports duplicate starts and starts past duration
+// ([core.ChaptersPastDuration], [core.DuplicateChapterStarts]; same as editor).
 func lintChapters(chapters []core.Chapter, duration time.Duration) []Finding {
 	var out []Finding
 	for _, c := range core.ChaptersPastDuration(chapters, duration) {
@@ -189,15 +141,7 @@ func lintChapters(chapters []core.Chapter, duration time.Duration) []Finding {
 	return out
 }
 
-// lintFamilies reports canonical keys whose source fields disagree (a value was
-// not selected because multiple native fields supplied conflicting values). A key
-// is reported once even when several of its family entries are unselected: one
-// conflict per key, so a consumer counting findings does not double-count a single
-// disagreement (the parse warning already surfaces it once). The wording is the shared
-// [core.ConflictingFamiliesMessage] - the same one the parser's conflicting-families
-// warning uses - so dump and lint read identically; the key lives in the Finding.Key
-// field (kept structured for JSON consumers, like the other key-specific findings), and
-// Finding.String renders it as the " (KEY)" suffix the dump warning appends inline.
+// lintFamilies reports one finding per key with unselected conflicting family values.
 func lintFamilies(fams []core.FamilyValue) []Finding {
 	var out []Finding
 	seen := map[tag.Key]bool{}
@@ -214,11 +158,7 @@ func lintFamilies(fams []core.FamilyValue) []Finding {
 	return out
 }
 
-// lintLegacyOnly reports canonical keys whose value lives only in a legacy container (see
-// [Document.LegacyOnlyKeys]). It is LintInfo so it does not flip the clean exit: the value is
-// preserved, not lost, and the pre-existing legacy-container warning already carries the
-// LintWarning severity. This finding explains why lint --fix intentionally leaves the container
-// in place - the values would be destroyed by a strip - and points at dump --native to see them.
+// lintLegacyOnly reports keys present only in a legacy container (info; explains --fix keep).
 func lintLegacyOnly(keys []tag.Key) []Finding {
 	if len(keys) == 0 {
 		return nil
@@ -227,12 +167,7 @@ func lintLegacyOnly(keys []tag.Key) []Finding {
 		Message: fmt.Sprintf("%d tag(s) present only in a legacy container; see dump --native", len(keys))}}
 }
 
-// lintOpaqueLegacy reports that a legacy container holds non-tag content the canonical view does
-// not fold in (an APEv2 binary item, a leading ID3v2's pictures/chapters/lyrics, or an unreadable
-// such container). It is LintInfo, like lintLegacyOnly: nothing is lost, the pre-existing legacy
-// warning already carries the LintWarning severity. It explains why lint --fix intentionally leaves
-// the container in place - a strip would destroy content that lives nowhere else - completing the
-// symmetry with the legacy-only-tags finding, which covers unique tags rather than non-tag content.
+// lintOpaqueLegacy reports non-tag legacy content that keeps the container on --fix.
 func lintOpaqueLegacy(opaque bool) []Finding {
 	if !opaque {
 		return nil
@@ -241,17 +176,9 @@ func lintOpaqueLegacy(opaque bool) []Finding {
 		Message: "a legacy container holds non-tag content (picture, chapter, or binary item) not shown; see dump --native"}}
 }
 
-// duplicatePictureMessage and multipleFrontCoversMessage are the shared human
-// messages for the duplicate-picture and multiple-front-covers conditions, so the
-// linter's whole-set finding (lintPictures) and the editor's edit-scoped plan warning
-// (appendPictureWarnings) read identically - only their scope differs, not the
-// wording, so a reword cannot make the two silently disagree on the same file.
+// Shared wording for duplicate-picture / multiple-front-covers (lint and editor).
 func duplicatePictureMessage(roles []core.PictureType) string {
-	// Name the message by the sorted set of roles the identical bytes appear under, not a single
-	// occurrence's role: the linter scans the whole parsed set and the editor scans the edit
-	// scope, so "first vs second occurrence" is not a shared concept and naming one would make
-	// the two disagree when the shared bytes carry different Types. A single role (the common
-	// case) keeps the original wording; multiple roles list them all in a stable order.
+	// Name by sorted roles present, not first/second occurrence.
 	if len(roles) <= 1 {
 		var t core.PictureType
 		if len(roles) == 1 {
@@ -337,21 +264,8 @@ func lintPictures(pics []Picture) []Finding {
 	return out
 }
 
-// lintValues reports tag values that violate their key's typed contract, driven by
-// the shared [tag.ValidatorFor] registry so the linter and the CLI's set-time note
-// ([noteMalformedValue]) apply exactly the same rule per category - numeric, date,
-// boolean, the MP4-integer keys (non-negative ints: MEDIATYPE, ITUNESADVISORY, and
-// the movement pair), BPM (a non-negative decimal), ReplayGain (a decimal/dB), the R128
-// gains (a signed 16-bit integer), and RELEASECOUNTRY (a two-letter code). This is the
-// single source the "lint and set agree" contract needs: it folds in the former
-// lintDates/lintNumbers and closes the gap where COMPILATION was set-validated but not
-// lint-validated, and MEDIATYPE/REPLAYGAIN at neither. A present-but-empty value is
-// skipped (set blesses it as the benign "empty value" advisory and writes it, so lint
-// must agree); RATING is uncovered (free-form across formats). Each finding is a
-// LintWarning, so a file with e.g. TRACKNUMBER=abc flips to a non-zero lint exit (a
-// deliberate expansion of lint coverage). Iterating the key names and Get-ing only
-// the keys with a contract (mirroring the prior helpers) clones at most those few value
-// slices, not the whole set.
+// lintValues reports values that fail [tag.ValidatorFor] contracts. Same rules
+// as set-time validation. Skips present-but-empty.
 func lintValues(ts tag.TagSet) []Finding {
 	var out []Finding
 	for _, k := range ts.Keys() {
@@ -399,14 +313,7 @@ func lintNegativeNumbers(ts tag.TagSet) []Finding {
 	return out
 }
 
-// lintCardinality reports known keys that canonically hold a single value but carry
-// more than one - e.g. a transcoded file projecting ENCODER to a muxer value plus a
-// codec value across two Matroska scopes. The typed accessor would silently read
-// only the first, so surfacing the duplication keeps that lossiness visible. A
-// multi-valued key (artist, genre, ...) is exempt, and so is a custom (unknown)
-// key: it has no typed accessor, so its values are read back in full via
-// TagSet.Get, and it is already reported by the custom-key rule. Flagging it here
-// would be a false positive (multiple values in a custom field are legitimate).
+// lintCardinality reports single-valued known keys that hold multiple values.
 func lintCardinality(ts tag.TagSet) []Finding {
 	var out []Finding
 	for k, vals := range ts.All() {
@@ -418,12 +325,7 @@ func lintCardinality(ts tag.TagSet) []Finding {
 	return out
 }
 
-// lintCustomKeys reports keys outside the published canonical vocabulary. A custom
-// field round-trips faithfully, so this is informational, never a warning: it
-// never flips a clean file to a non-zero exit, it just tells a tagger which fields
-// are non-standard. The R128 loudness keys are exempt: they are outside the vocabulary
-// because they describe the file's own audio rather than its metadata, but RFC 7845
-// defines them, so calling them non-standard would be wrong.
+// lintCustomKeys reports unknown keys (info only). R128_* exempt (RFC 7845).
 func lintCustomKeys(ts tag.TagSet) []Finding {
 	var out []Finding
 	for _, k := range ts.Keys() {

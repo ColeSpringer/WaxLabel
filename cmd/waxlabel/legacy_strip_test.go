@@ -9,9 +9,7 @@ import (
 	"testing"
 )
 
-// writeLegacyOnlyMP3 writes an MP3 whose ID3v2 holds TITLE and ARTIST while its ID3v1
-// trailer is the only home for ALBUM, RECORDINGDATE, COMMENT and GENRE. It is built by
-// running the CLI itself so the ID3v2 side is a real tag rather than a hand-rolled one.
+// writeLegacyOnlyMP3: ID3v2 has TITLE/ARTIST; ID3v1 trailer holds legacy-only fields.
 func writeLegacyOnlyMP3(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "legacyonly.mp3")
@@ -28,9 +26,7 @@ func writeLegacyOnlyMP3(t *testing.T) string {
 	return path
 }
 
-// TestSetLegacyStripWarnsAndStrictRefuses is the CLI half of the frozen contract: a
-// --legacy strip that destroys legacy-only values says which, and --strict turns that into
-// a refusal that writes nothing.
+// TestSetLegacyStripWarnsAndStrictRefuses: --legacy strip warns dropped legacy-only keys; --strict refuses.
 func TestSetLegacyStripWarnsAndStrictRefuses(t *testing.T) {
 	t.Parallel()
 	path := writeLegacyOnlyMP3(t)
@@ -67,8 +63,7 @@ func TestSetLegacyStripWarnsAndStrictRefuses(t *testing.T) {
 	}
 }
 
-// TestSetPresetMinimalWarnsLikeLegacyStrip: --preset minimal resolves to LegacyStrip, so it
-// must not be a quiet route around the warning.
+// TestSetPresetMinimalWarnsLikeLegacyStrip: --preset minimal must warn like --legacy strip.
 func TestSetPresetMinimalWarnsLikeLegacyStrip(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "set", writeLegacyOnlyMP3(t), "--set", "TITLE=New", "--preset", "minimal")
@@ -80,9 +75,7 @@ func TestSetPresetMinimalWarnsLikeLegacyStrip(t *testing.T) {
 	}
 }
 
-// TestCopyLegacyStripWarns: copy has its own --legacy flag, and the destination's own data is
-// what disappears, so the carry suppression that silences source-authored warnings must not
-// silence this one.
+// TestCopyLegacyStripWarns: copy --legacy strip warns for destination legacy-only loss.
 func TestCopyLegacyStripWarns(t *testing.T) {
 	t.Parallel()
 	src := filepath.Join(t.TempDir(), "src.flac")
@@ -98,9 +91,7 @@ func TestCopyLegacyStripWarns(t *testing.T) {
 	}
 }
 
-// TestLegacyStripUnmappedWAVItems is the WAV arm of the same flag: consolidating LIST/INFO
-// into an id3 chunk cannot carry an item with no canonical key, so the drop is reported and
-// --strict refuses it.
+// TestLegacyStripUnmappedWAVItems: unmapped LIST/INFO items drop on strip; --strict refuses.
 func TestLegacyStripUnmappedWAVItems(t *testing.T) {
 	t.Parallel()
 	path := writeInfoOnlyWAV(t, "unmapped.wav",
@@ -125,10 +116,7 @@ func TestLegacyStripUnmappedWAVItems(t *testing.T) {
 	}
 }
 
-// TestCopyStrictEscalatesLegacyStripDrop pins the half of copy --strict the report cannot
-// see: the projection is a clean carry, but the destination's own legacy container dies
-// under the write policy the user asked for. The warning is emitted outside the carried
-// gate precisely so a copy cannot be a quiet route around it.
+// TestCopyStrictEscalatesLegacyStripDrop: copy --strict refuses when strip would drop destination legacy data.
 func TestCopyStrictEscalatesLegacyStripDrop(t *testing.T) {
 	t.Parallel()
 	src := filepath.Join(t.TempDir(), "src.flac")

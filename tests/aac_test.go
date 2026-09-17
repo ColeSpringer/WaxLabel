@@ -85,9 +85,8 @@ func TestAACParseNoTags(t *testing.T) {
 	}
 }
 
-// TestAACEssenceStableAcrossTagEdit proves the ADTS stream is copied verbatim:
-// the essence digest is unchanged across a tag edit, for both a tagged file
-// (ID3 region resized) and a bare file (ID3 region created from nothing).
+// ADTS stream is copied verbatim: the essence digest is unchanged across a tag edit, for both a
+// tagged file (ID3 region resized) and a bare file (ID3 region created from nothing).
 func TestAACEssenceStableAcrossTagEdit(t *testing.T) {
 	for _, f := range []string{sampleAAC, notagsAAC} {
 		src := readFixture(t, f)
@@ -182,9 +181,9 @@ func TestAACDifferentialFFmpegDecodes(t *testing.T) {
 	}
 }
 
-// TestAACImplicitSBRDetected: ADTS carries no SBR signalling, so the frames themselves are
-// parsed; the fixtures decode to the played geometry ffprobe reports, and the ADTS twin of
-// an MP4 stream now reports what the MP4 does.
+// ADTS carries no SBR signalling, so the frames themselves are parsed; the fixtures decode to the
+// played geometry ffprobe reports, and the ADTS twin of an MP4 stream now reports what the MP4
+// does.
 func TestAACImplicitSBRDetected(t *testing.T) {
 	cases := []struct {
 		path           string
@@ -209,8 +208,8 @@ func TestAACImplicitSBRDetected(t *testing.T) {
 	}
 }
 
-// TestAACDigestUnchangedBySBRDetection pins the essence digest of the HE-AAC fixtures to the
-// values recorded before frame parsing existed, so the salt still comes from the header alone.
+// essence digest of the HE-AAC fixtures to the values recorded before frame parsing existed, so the
+// salt still comes from the header alone.
 func TestAACDigestUnchangedBySBRDetection(t *testing.T) {
 	for path, want := range map[string]string{
 		heaacAAC:                   "sha256/aac-adts-v1:0a36515dc52e76b86865cd32390377203874295adc8f99744146f4c67688a719",

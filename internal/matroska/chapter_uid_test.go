@@ -5,10 +5,8 @@ import (
 	"time"
 )
 
-// TestChapterUIDQueue covers the start-to-UID matching helpers. A match pops the
-// saved UID, a miss yields 0 so the caller can mint a fresh UID, and same-start UIDs
-// pop in file order. Zero slots stay in that order so a UID-less atom does not steal a
-// sibling's real UID.
+// TestChapterUIDQueue covers the start-to-UID matching helpers. Zero slots stay in that
+// order so a UID-less atom does not steal a sibling's real UID.
 func TestChapterUIDQueue(t *testing.T) {
 	q := chapterUIDQueue([]chapterStartUID{
 		{0, 11},
@@ -34,9 +32,7 @@ func TestChapterUIDQueue(t *testing.T) {
 }
 
 // TestChapterStartUIDsKeepZero verifies that a ChapterAtom with no real ChapterUID
-// keeps its slot in startUIDs. The zero later means "mint fresh", and keeping it
-// preserves file order for same-start siblings. len(startUIDs) is also the dump's
-// chapter count.
+// keeps its slot in startUIDs.
 func TestChapterStartUIDsKeepZero(t *testing.T) {
 	atoms := chapAtom(5, 0)
 	atoms = append(atoms, chapAtom(0, uint64(100*time.Millisecond))...) // no real ChapterUID

@@ -12,10 +12,10 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// flacWithCommentBlock builds a FLAC: STREAMINFO, any native PICTURE blocks, a VORBIS_COMMENT
-// block carrying the given comments, then a last PADDING block and a frame sync so audio is
-// detected. It lets a test plant a base64 METADATA_BLOCK_PICTURE comment alongside (or instead
-// of) native covers.
+// flacWithCommentBlock builds a FLAC: STREAMINFO, any native PICTURE blocks, a VORBIS_COMMENT block
+// carrying the given comments, then a last PADDING block and a frame sync so audio is detected. It
+// lets a test plant a base64 METADATA_BLOCK_PICTURE comment alongside (or instead of) native
+// covers.
 func flacWithCommentBlock(comments []vorbis.Comment, nativePics ...wl.Picture) []byte {
 	return flacWithCommentBlockVendor("test", comments, nativePics...)
 }
@@ -48,10 +48,9 @@ func flacCommentPictureSeed() []byte {
 	})
 }
 
-// TestFLACCommentPictureVisibleAndMaterializes checks that a cover stored only as a base64
-// METADATA_BLOCK_PICTURE comment must be visible on read, and a tag edit (pictures untouched)
-// must keep it - canonicalized into exactly one native PICTURE block, with the now-stale
-// picture comment dropped (not duplicated, not lost).
+// cover stored only as a base64 METADATA_BLOCK_PICTURE comment must be visible on read, and a tag
+// edit (pictures untouched) must keep it; canonicalized into exactly one native PICTURE block, with
+// the now-stale picture comment dropped (not duplicated, not lost).
 func TestFLACCommentPictureVisibleAndMaterializes(t *testing.T) {
 	pic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}
 	src := flacWithCommentBlock([]vorbis.Comment{
@@ -89,10 +88,10 @@ func TestFLACCommentPictureVisibleAndMaterializes(t *testing.T) {
 	}
 }
 
-// TestFLACMixedNativeAndCommentPictures covers the mixed case: a file with both a native
-// PICTURE block and a comment-embedded cover must read two distinct pictures, and a tag edit
-// must yield exactly two (the native block kept verbatim, the comment cover materialized once)
-// with no leftover METADATA_BLOCK_PICTURE comment - the easy duplication/loss regression.
+// mixed case: a file with both a native PICTURE block and a comment-embedded cover must read two
+// distinct pictures, and a tag edit must yield exactly two (the native block kept verbatim, the
+// comment cover materialized once) with no leftover METADATA_BLOCK_PICTURE comment; the easy
+// duplication/loss regression.
 func TestFLACMixedNativeAndCommentPictures(t *testing.T) {
 	commentPic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}
 	nativePic := wl.Picture{Type: wl.PicBackCover, MIME: "image/jpeg", Data: tinyJPEG()}
@@ -128,9 +127,9 @@ func TestFLACMixedNativeAndCommentPictures(t *testing.T) {
 	}
 }
 
-// TestFLACCommentPicturePictureEditNoDuplicate covers the picture-only-edit case: adding a
-// cover to a file whose original cover is a METADATA_BLOCK_PICTURE comment must drop that stale
-// comment (it is re-emitted as a native block), not leave it behind to duplicate the original.
+// picture-only-edit case: adding a cover to a file whose original cover is a METADATA_BLOCK_PICTURE
+// comment must drop that stale comment (it is re-emitted as a native block), not leave it behind to
+// duplicate the original.
 func TestFLACCommentPicturePictureEditNoDuplicate(t *testing.T) {
 	commentPic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}
 	src := flacWithCommentBlock([]vorbis.Comment{
@@ -166,11 +165,9 @@ func TestFLACCommentPicturePictureEditNoDuplicate(t *testing.T) {
 	}
 }
 
-// TestFLACCommentPictureSurvivesVendorStrip covers the vendor-only-edit case: --strip-encoder
-// re-renders the comment block (dropping the stripped METADATA_BLOCK_PICTURE comment) even though
-// no tag/chapter/picture changed, so the comment-sourced cover must still be materialized into a
-// native block rather than silently lost. Regression for the materialization trigger set, which
-// must mirror the comment-block re-render condition (commentsChanged || vendorChanged).
+// vendor-only-edit case: --strip-encoder re-renders the comment block (dropping the stripped
+// METADATA_BLOCK_PICTURE comment) even though no tag/chapter/picture changed, so the
+// comment-sourced cover must still be materialized into a native block rather than silently lost.
 func TestFLACCommentPictureSurvivesVendorStrip(t *testing.T) {
 	pic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}
 	src := flacWithCommentBlockVendor("Lavf58.76.100", []vorbis.Comment{
@@ -203,10 +200,9 @@ func TestFLACCommentPictureSurvivesVendorStrip(t *testing.T) {
 	}
 }
 
-// TestFLACCommentPictureOutOfRangeTypeMaterializes covers the caveat: a comment cover
-// whose on-disk type is out of the single-byte range is clamped to PicOther on read, and
-// materializing it re-renders from the parsed struct - so the round-trip asserts the cover's
-// presence and image data, not byte-identity of the original comment bytes.
+// caveat: a comment cover whose on-disk type is out of the single-byte range is clamped to PicOther
+// on read, and materializing it re-renders from the parsed struct, so the round-trip asserts the
+// cover's presence and image data, not byte-identity of the original comment bytes.
 func TestFLACCommentPictureOutOfRangeTypeMaterializes(t *testing.T) {
 	body := vorbis.RenderPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()})
 	binary.BigEndian.PutUint32(body[0:4], 259) // type past the single-byte ID3/FLAC range
@@ -237,10 +233,9 @@ func TestFLACCommentPictureOutOfRangeTypeMaterializes(t *testing.T) {
 	}
 }
 
-// TestFLACCommentPictureSurvivesChainedEdits covers the write path that clones
-// the comment block verbatim (here a padding-only edit): the returned Document
-// must still know the cover lives in a picture comment, so a second, chained
-// tag edit materializes it instead of silently dropping it.
+// write path that clones the comment block verbatim (here a padding-only edit): the returned
+// Document must still know the cover lives in a picture comment, so a second, chained tag edit
+// materializes it instead of silently dropping it.
 func TestFLACCommentPictureSurvivesChainedEdits(t *testing.T) {
 	ctx := context.Background()
 	pic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}

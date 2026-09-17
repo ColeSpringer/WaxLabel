@@ -47,12 +47,10 @@ var sampleRateTable = [3][4]int{
 	{11025, 12000, 8000, 0},
 }
 
-// parseMPEG scans window (read starting at the audio region) for the first valid
-// MPEG audio frame header and decodes the stream's properties, including a VBR
-// frame count when a Xing/Info/VBRI header is present. To reject a false sync in
-// inter-tag padding it requires a second valid frame at the computed frame
-// length (a two-frame consensus), with the same version/layer/sample rate. ok is
-// false when no frame is found.
+// parseMPEG finds the first valid MPEG frame in window and decodes properties,
+// including a VBR frame count when Xing/Info/VBRI is present. Requires a second
+// agreeing frame at the computed length (padding false-sync guard).
+
 func parseMPEG(window []byte) (mpegInfo, bool) {
 	for i := 0; i+4 <= len(window); i++ {
 		info, ok := decodeHeader(window[i:])
@@ -68,11 +66,9 @@ func parseMPEG(window []byte) (mpegInfo, bool) {
 	return mpegInfo{}, false
 }
 
-// confirmNextFrame checks that a second frame begins exactly one frame length
-// after the candidate at offset i and agrees on version, layer, and sample rate
-// - the standard guard against mistaking padding/garbage for the first frame. A
-// free-format frame (no computable length) or a candidate near the end of the
-// window (next frame beyond what we read) is accepted on its own.
+// confirmNextFrame: second frame at computed length agrees on version/layer/rate.
+// Free-format or near window end: accept alone.
+
 func confirmNextFrame(window []byte, i int, info mpegInfo) bool {
 	flen := frameLength(info)
 	if flen <= 0 {

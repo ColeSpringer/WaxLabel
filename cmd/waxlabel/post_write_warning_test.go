@@ -9,8 +9,7 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// TestWriteFailedUsesCommittedNotError pins the rule set, copy, and lint --fix branch
-// on. Driven directly because no test can make the post-commit step fail on demand.
+// TestWriteFailedUsesCommittedNotError: writeFailed uses Committed, not err alone.
 func TestWriteFailedUsesCommittedNotError(t *testing.T) {
 	t.Parallel()
 	boom := errors.New("directory fsync: no space left on device")
@@ -35,8 +34,7 @@ func TestWriteFailedUsesCommittedNotError(t *testing.T) {
 	}
 }
 
-// TestPostCommitWarningIsNotAnError checks the two ways the note surfaces: a stderr
-// line on the human path, and a payload field (never an error envelope) under --json.
+// TestPostCommitWarningIsNotAnError: post-commit note on stderr or postWriteWarning in JSON, not error.
 func TestPostCommitWarningIsNotAnError(t *testing.T) {
 	t.Parallel()
 	boom := errors.New("directory fsync: no space left on device")
@@ -44,7 +42,7 @@ func TestPostCommitWarningIsNotAnError(t *testing.T) {
 	var errb bytes.Buffer
 	warnPostCommit(&errb, false, "/music/a.flac", boom)
 	note := errb.String()
-	// Must report the write as done, and name the step that was not.
+	// Note: write done, names failed post-commit step.
 	if !strings.Contains(note, "written, but") || !strings.Contains(note, "directory fsync") {
 		t.Errorf("stderr note = %q, want it to report a completed write and name the failed step", note)
 	}
@@ -63,7 +61,7 @@ func TestPostCommitWarningIsNotAnError(t *testing.T) {
 		t.Errorf("a committed write must not carry an error envelope, got %+v", j.Error)
 	}
 
-	// --json keeps stderr clean, and a nil error is silent either way.
+	// JSON mode and nil error stay silent on stderr.
 	var quiet bytes.Buffer
 	warnPostCommit(&quiet, true, "/music/a.flac", boom)
 	warnPostCommit(&quiet, false, "/music/a.flac", nil)
@@ -72,8 +70,7 @@ func TestPostCommitWarningIsNotAnError(t *testing.T) {
 	}
 }
 
-// TestPostCommitWarningNamesTheWrittenFile: under set -o the input is untouched, so the
-// note must name the output.
+// TestPostCommitWarningNamesTheWrittenFile: set -o note names output, not input.
 func TestPostCommitWarningNamesTheWrittenFile(t *testing.T) {
 	t.Parallel()
 	var errb bytes.Buffer

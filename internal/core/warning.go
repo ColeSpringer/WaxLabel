@@ -9,380 +9,136 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// WarningCode categorizes a non-fatal condition surfaced during parse or
-// planning. Preservation-first means WaxLabel warns rather than silently
-// dropping or rewriting; callers can inspect or act on these.
+// WarningCode categorizes non-fatal parse/plan conditions. WaxLabel warns instead of silent loss.
 type WarningCode uint8
 
 const (
 	WarnUnknown WarningCode = iota
-	// WarnStrayLeadingID3 means an ID3v2 tag precedes the "fLaC" marker. It is
-	// preserved by default.
+	// WarnStrayLeadingID3: ID3v2 before FLAC marker. Preserved by default. Read path.
 	WarnStrayLeadingID3
-	// WarnTrailingID3v1 means a 128-byte ID3v1 tag trails the audio. Preserved.
+	// WarnTrailingID3v1: trailing 128-byte ID3v1. Preserved. Read path.
 	WarnTrailingID3v1
-	// WarnLegacyAPE means an APEv2 tag is present alongside the native tags.
+	// WarnLegacyAPE: APEv2 alongside native tags. Read path.
 	WarnLegacyAPE
-	// WarnMultipleVorbisComment means more than one Vorbis comment block was found; the first
-	// is authoritative and the extras are dropped if the file is rewritten (any edit collapses
-	// them to a single block), matching the runtime lint message.
+	// WarnMultipleVorbisComment: extra comment blocks; first wins on rewrite. Read path.
 	WarnMultipleVorbisComment
-	// WarnInheritedEncoder means an "encoder=Lavf..." style comment from a
-	// transcoder was found - typical of acquired files.
+	// WarnInheritedEncoder: transcoder encoder stamp (Lavf/Lavc). Read path.
 	WarnInheritedEncoder
-	// WarnDistrustedBlockSize means a block's declared length disagreed with
-	// its real content length (a known broken-encoder case).
+	// WarnDistrustedBlockSize: declared block size disagreed with content. Read path.
 	WarnDistrustedBlockSize
-	// WarnUnknownBlock means a metadata block of an unrecognized type was
-	// preserved verbatim.
+	// WarnUnknownBlock: unrecognized metadata block preserved verbatim. Read path.
 	WarnUnknownBlock
-	// WarnInvalidPicture means a picture block could not be fully interpreted.
+	// WarnInvalidPicture: picture block not fully interpreted. Read path.
 	WarnInvalidPicture
-	// WarnConflictingFamilies means multiple tag families supplied different
-	// values for the same canonical field.
+	// WarnConflictingFamilies: families disagree on one canonical key. Read path.
 	WarnConflictingFamilies
-	// WarnNumericGenre means a numeric/"(17)" genre reference was mapped to a
-	// name on read.
+	// WarnNumericGenre: numeric genre mapped to name on read. Read path.
 	WarnNumericGenre
-	// WarnChainedStream means a chained/multiplexed Ogg stream was read
-	// best-effort.
+	// WarnChainedStream: chained Ogg read best-effort. Read path.
 	WarnChainedStream
-	// WarnID3MultiValue means a multi-value field was written NUL-separated in an
-	// ID3v2.3 tag - a de-facto extension some readers do not split.
+	// WarnID3MultiValue: multi-value written NUL-separated in ID3v2.3. Write path; not --strict.
 	WarnID3MultiValue
-	// WarnDuplicateTagBlock means more than one tag container of the same kind was
-	// found (e.g. two RIFF LIST/INFO chunks or two WAV id3 chunks); the first is
-	// authoritative and the rest are dropped if the file is rewritten.
+	// WarnDuplicateTagBlock: duplicate tag container; first wins on rewrite. Read path.
 	WarnDuplicateTagBlock
-	// WarnChapterSourceConflict means a file carried chapters in two
-	// representations (an MP4 Nero chpl list and a QuickTime chapter text track)
-	// that disagree. The file was already inconsistent on parse; the richer
-	// representation is projected and this records the disagreement.
+	// WarnChapterSourceConflict: MP4 chapter representations disagree. Read path.
 	WarnChapterSourceConflict
-	// WarnChaptersStale meant a chapter edit was written to one representation only
-	// (the MP4 Nero chpl) while a second (a QuickTime chapter text track) was
-	// preserved verbatim and now disagreed. Chapter edits now rebuild both
-	// representations, so this is no longer emitted; the code remains part of the
-	// stable warning surface.
+	// WarnChaptersStale: obsolete; chapter edits now rebuild both MP4 stores. Stable surface only.
 	WarnChaptersStale
-	// WarnChapterTitleTruncated means one or more chapter titles were trimmed to fit
-	// a container limit on write (the Nero chpl's single-byte, 255-byte-max length
-	// prefix). It is a plan-time warning, surfaced rather than silently truncating.
+	// WarnChapterTitleTruncated: title trimmed to container limit on write. Plan; keyed N/A.
 	WarnChapterTitleTruncated
-	// WarnChaptersFlattened means a file's chapters carried structure the flat chapter
-	// model cannot hold, so that structure was dropped during projection. Matroska nested
-	// sub-chapters, secondary ChapterDisplay titles, and nested ID3v2 CTOC hierarchies
-	// all flatten to a single ordered chapter list.
+	// WarnChaptersFlattened: nested/extra chapter structure dropped on projection. Read path.
 	WarnChaptersFlattened
-	// WarnNoAudioFrames means no decodable audio frame was found: the file may be
-	// tag-only or truncated. The audio-essence digest refuses to hash zero essence
-	// (see HashAudioEssence) rather than mint a fake-stable hash over nothing.
+	// WarnNoAudioFrames: no decodable audio (tag-only or truncated). Read path.
 	WarnNoAudioFrames
-	// WarnTruncatedAudio means the container declares more audio than the file
-	// actually holds: a positive declared essence size whose end runs past the file
-	// (WAV data / AIFF SSND / MP4 mdat), a VBR MP3 whose Xing/Info frame count
-	// implies far more audio than the bytes present, or a FLAC whose frames stop
-	// short of STREAMINFO's declared sample count (or whose final frame's tail
-	// bytes are missing). It is the
-	// "some-but-not-all" counterpart to WarnNoAudioFrames (zero essence); only the
-	// reliable per-format signals are emitted, so a clean file is never flagged.
+	// WarnTruncatedAudio: declared audio extends past file. Read path.
 	WarnTruncatedAudio
-	// WarnChapterPastDuration means a chapter starts beyond the file's playable
-	// length - usually a mistyped timestamp. The editor raises it on the chapters an
-	// edit introduces (gated on a known, non-zero duration) and still writes them; lint
-	// raises the same code on the chapters a file already holds.
+	// WarnChapterPastDuration: chapter start past duration. Edit or lint. Keyless.
 	WarnChapterPastDuration
-	// WarnDuplicateChapter means a chapter list has two chapters sharing a start time -
-	// navigation will land on only one. As with WarnChapterPastDuration the editor
-	// raises it on an edit's own chapters, writing them faithfully, and lint raises it
-	// on what is already on disk.
+	// WarnDuplicateChapter: duplicate chapter start times. Edit or lint. Keyless.
 	WarnDuplicateChapter
-	// WarnSingleValuedMulti means an edit leaves a known single-valued key holding
-	// more than one value. The writer stores them faithfully, but a reader using the
-	// typed projection sees only the first - so it is surfaced as a plan-time warning
-	// rather than written silently.
+	// WarnSingleValuedMulti: single-valued key holds multiple values after edit. Plan; Warning.Keys.
 	WarnSingleValuedMulti
-	// WarnDuplicatePicture means an edit added a picture whose image bytes are
-	// identical (same [Picture.Hash]) to another in the set. It is an edit-time sanity
-	// warning scoped to pictures this edit authored (the linter reports the whole-set
-	// case separately); the picture is still written. Its String() is "duplicate-picture"
-	// to match the linter's finding code, so the two never drift.
+	// WarnDuplicatePicture: edit added duplicate image bytes. Plan; matches linter code.
 	WarnDuplicatePicture
-	// WarnMultipleFrontCovers means an edit added a front-cover picture to a set that
-	// now holds more than one. An edit-time sanity warning scoped to this edit's
-	// additions; both covers are still written. Its String() is "multiple-front-covers"
-	// to match the linter's finding code.
+	// WarnMultipleFrontCovers: edit added second front cover. Plan; matches linter code.
 	WarnMultipleFrontCovers
-	// WarnPictureMetadataDropped means the destination format does not fully preserve a
-	// picture's role (type) and/or description an edit set. MP4 covr atoms store image
-	// data only, so every cover reads back as a front cover with no description. Matroska
-	// preserves only the front-cover role; other roles read back as Other, though
-	// descriptions survive. The warning makes that loss visible before the write.
+	// WarnPictureMetadataDropped: destination drops picture role/description. Plan; Warning.Keys.
 	WarnPictureMetadataDropped
-	// WarnLegacyConflict means an edit changed a canonical key whose value is also held
-	// in a preserved legacy container the family view carries (an ID3v1 or APEv2 tag on
-	// the ID3-based formats) under the default LegacyPreserve policy, so the legacy copy
-	// now disagrees with the native tags. It is an edit-time sanity warning (the value is
-	// still written; the legacy container is preserved verbatim as promised), surfaced so
-	// the divergence is visible and the remedy (--legacy strip, or lint --fix) is offered.
+	// WarnLegacyConflict: edit diverges from preserved legacy container. Plan; remedy --legacy strip.
 	WarnLegacyConflict
-	// WarnValueDropped means an edit set a canonical value the destination format's encoder
-	// cannot represent, so the value is silently lost on write. It spans several codecs: an MP4
-	// iTunes trkn/disk number/total outside the uint16 the atom holds (a non-numeric value, a
-	// negative, or one past 65535) or a non-numeric stik media kind; an ID3v2.3 date with no valid
-	// 4-digit year (no TYER/TORY frame renders); an ID3 track/disc total that cannot attach to a
-	// non-numeric number (composing "A1/12" would re-read as one literal value with the total lost);
-	// an ID3 text frame whose edited value ends in a trailing empty element (ARTIST=[A, B, ""]),
-	// which the NUL-separated frame emits no terminator for and the read path strips, so the empty
-	// cannot round-trip; and a Vorbis custom key in a reserved namespace - CHAPTERxxx chapters,
-	// SYNCEDLYRICS synced lyrics, or METADATA_BLOCK_PICTURE cover art - that cannot be written as a tag.
-	// It is a plan-time warning carrying the offending key (Warning.Keys), surfaced before the write
-	// rather than vanishing with exit 0, so the user (and the CLI's --strict gate) sees the loss.
+	// WarnValueDropped: value cannot be encoded; lost on write. Plan; Warning.Keys; --strict.
 	WarnValueDropped
-	// WarnNativeValueReduced means a legitimately multi-valued key was reduced to its
-	// first value in a secondary single-valued native container (the WAV LIST/INFO chunk
-	// or an AIFF text chunk) while the full set is kept in the embedded ID3 chunk. The
-	// canonical projection is unaffected because ID3 wins, but a non-WaxLabel reader that
-	// consults only the native container will see only the first value. This is the
-	// opposite of WarnSingleValuedMulti: here the key is genuinely multi-valued and the
-	// reduction is a faithful format limit.
+	// WarnNativeValueReduced: multi-value reduced in native slot; full set in ID3. Write path.
 	WarnNativeValueReduced
-	// WarnValueReduced means an edit set a value the destination stores with reduced
-	// fidelity under a field-level partial-write capability. The warning carries the
-	// affected key and is emitted only when the codec's projected result differs from the
-	// edited value. For example, ID3v2.3 stores ORIGINALDATE as a year-only TORY frame.
+	// WarnValueReduced: partial-write fidelity loss when projection differs. Plan; Warning.Keys.
 	WarnValueReduced
-	// WarnChapterEndsDropped means a chapter rewrite replaced chapters that carried
-	// explicit end times with a list that has none. It is currently Matroska/WebM-only:
-	// that format reads ends from ChapterTimeEnd, while MP4 infers them from the next
-	// chapter start. The warning is keyless because it describes the chapter set, not a
-	// tag field.
+	// WarnChapterEndsDropped: rewrite dropped explicit chapter ends (Matroska). Plan; keyless.
 	WarnChapterEndsDropped
-	// WarnPaddingClamped means a requested post-metadata padding exceeded the format's
-	// per-block hard cap (FLAC's ~16 MiB metadata-block body) and was reduced to it, so
-	// the written padding is smaller than asked. Keyless: it describes the write, not a
-	// tag field.
+	// WarnPaddingClamped: padding request exceeded format cap. Write path; keyless.
 	WarnPaddingClamped
-	// WarnTagStructureDropped means an edit changed the value of an album-scope Matroska
-	// SimpleTag that carried structure the flat canonical model cannot hold - a secondary
-	// language (TagLanguage), a binary value (TagBinary), or nested sub-tags - so the new
-	// value is re-emitted flat and that structure is lost. An unchanged structured tag is
-	// preserved verbatim; this fires only when the key was edited, so the old bytes cannot
-	// be kept. It is a plan-time warning carrying the affected key (Warning.Keys), so the
-	// CLI's --strict gate can act on it.
+	// WarnTagStructureDropped: edited Matroska tag lost language/binary/nesting. Plan; Warning.Keys; --strict.
 	WarnTagStructureDropped
-	// WarnChapterStartOverflow means a chapter start or end exceeded a format's 32-bit
-	// timestamp field and was clamped on write. MP4 QuickTime chapter tracks and ID3v2
-	// CHAP frames both have this limit. It is keyless because it describes the chapter
-	// set, not a tag field.
+	// WarnChapterStartOverflow: chapter time clamped to 32-bit field. Write path; keyless.
 	WarnChapterStartOverflow
-	// WarnChapterMetadataDropped means a direct chapter edit carried fields the destination
-	// cannot store. The exact loss is driven by [ChapterLoss]: start+title formats drop
-	// gapped ends, language, and hidden/disabled flags; ID3v2 CHAP keeps ends but drops
-	// language and flags. It is scoped to authored chapters and is keyless because it
-	// describes the chapter set, not a tag field.
+	// WarnChapterMetadataDropped: chapter edit loses fields per [ChapterLoss]. Plan; keyless.
 	WarnChapterMetadataDropped
-	// WarnOversizedChunk means a non-audio RIFF/IFF chunk declared a body past EOF and was
-	// clamped to fit. It is separate from WarnTruncatedAudio because it describes a
-	// container chunk, not audio essence or a tag field.
+	// WarnOversizedChunk: RIFF/IFF chunk body clamped at EOF. Read path; not audio truncation.
 	WarnOversizedChunk
-	// WarnSyncedLyricsTimestampFormat means an ID3v2 SYLT frame used a non-millisecond
-	// timestamp format (the guard fires for any format byte other than 2 - MPEG frames is
-	// format 1, but bytes 0 and 3-255 also trip it). WaxLabel reads and writes only the
-	// millisecond format. Mapping a non-millisecond unit to a time would need context the
-	// model lacks (e.g. the full MPEG frame index), so the frame is skipped on projection
-	// rather than placed at the wrong offset. Keyless: it describes a synced-lyrics set,
-	// not a tag field.
+	// WarnSyncedLyricsTimestampFormat: non-ms SYLT skipped on read. Read path; keyless.
 	WarnSyncedLyricsTimestampFormat
-	// WarnSyncedLyricsContentType means an ID3v2 SYLT frame carried a non-lyric content
-	// type, such as chord, trivia, or image URL. Only the lyrics content type projects into
-	// the synced-lyrics model, so the frame is skipped rather than misrepresented as lyrics.
-	// It is preserved verbatim through an unrelated edit. Keyless.
+	// WarnSyncedLyricsContentType: non-lyric SYLT skipped. Read path; keyless.
 	WarnSyncedLyricsContentType
-	// WarnSyncedLyricsMetadataDropped means a direct synced-lyrics edit carried per-set
-	// metadata the destination cannot store faithfully. Two cases share it: the VorbisComment
-	// LRC store keeps the timed text only, dropping a per-set language or descriptor (see
-	// [SyncedLyricsLoss]); and an ID3 SYLT store given the language "xxx"/"XXX" writes it but
-	// reads it back as no language, since "xxx" is the ID3 "undefined" marker. Either way the
-	// timed text is unaffected (exit 0). It is scoped to authored sets and is keyless because
-	// it describes the synced-lyrics set, not a tag field.
+	// WarnSyncedLyricsMetadataDropped: LRC/SYLT per-set metadata loss on write. Plan; keyless.
 	WarnSyncedLyricsMetadataDropped
-	// WarnSyncedLyricsTimestampClamped means a synced-lyric line's timestamp exceeded the
-	// ID3v2 SYLT frame's 32-bit millisecond field (~49.7 days) and was clamped on write,
-	// the synced-lyrics analogue of [WarnChapterStartOverflow]. Keyless: it describes the
-	// synced-lyrics set, not a tag field.
+	// WarnSyncedLyricsTimestampClamped: SYLT/LRC timestamp clamped. Write path; keyless.
 	WarnSyncedLyricsTimestampClamped
-	// WarnInvalidTagKey means a Vorbis comment used a native name that does not map to a valid
-	// canonical tag key - an empty name, or one with characters the writer's Key.Valid() gate
-	// rejects. The raw comment is preserved verbatim on write (preservation-first Rebuild), so
-	// the key is absent from the canonical tag model and a copy does not carry it, but it is
-	// not removed from the file. Emitted on the read path so dump and lint surface it. Keyless:
-	// the offending native name is in the prose Message, since there is no valid canonical key
-	// to name.
+	// WarnInvalidTagKey: Vorbis name not mappable to canonical key; preserved in file. Read; keyless.
 	WarnInvalidTagKey
-	// WarnNumberTotalConflict means one edit both set a slash-combined track/disc number (e.g.
-	// TRACKNUMBER=3/12) and explicitly set the matching total (TRACKTOTAL=99) to a different
-	// value. The explicit total wins by design (the slash-derived total is only a fallback), so
-	// no value is lost - both the number and the explicit total are kept and only the redundant
-	// derived total goes unused - but the disagreement is surfaced so the user is not surprised.
-	// It is an edit-time-only warning carrying the affected total key (Warning.Keys); it is
-	// advisory and does not escalate --strict. Absent on a faithful copy, which must not flag the
-	// source's own values as an authored conflict.
+	// WarnNumberTotalConflict: slash number and explicit total disagree. Edit only; Warning.Keys; not --strict.
 	WarnNumberTotalConflict
-	// WarnValueCoerced means an edit set a canonical value the destination format cannot store
-	// as the literal given, so the encoder stored a normalized value instead of dropping it. It
-	// is the counterpart to [WarnValueDropped]: the key IS written (the change set shows the
-	// stored value), and the warning tells the user the literal was normalized. MP4 COMPILATION
-	// (cpil) is a single boolean byte, so a non-boolean like "maybe" is stored as 0 (false)
-	// rather than dropped. It is a plan-time warning carrying the offending key (Warning.Keys),
-	// so the CLI's --strict gate can act on it, matching WarnValueDropped's escalation. Appended
-	// to the end of the block so the existing codes keep their numbers.
+	// WarnValueCoerced: value normalized instead of dropped (vs WarnValueDropped). Plan; Warning.Keys; --strict.
 	WarnValueCoerced
-	// WarnChapterOverlapReconciled means a chapter edit inserted or moved a chapter such that a
-	// neighbor's explicit end overlapped the following start, so that stale end was truncated to
-	// the next start to keep the written list non-overlapping. It is informational (the user chose
-	// "truncate + note"): the reconciliation is applied to the edit's own overlaps only, a file's
-	// pre-existing on-disk overlap is left verbatim, and it does not escalate --strict. Keyless: it
-	// describes the chapter set, not a tag field.
+	// WarnChapterOverlapReconciled: edit overlap truncated stale end. Plan; keyless; not --strict.
 	WarnChapterOverlapReconciled
-	// WarnSyncedLyricsTruncated means a parsed synced-lyrics set carried more than the
-	// modeled per-set line cap (65,536 lines, roughly 18 hours of one-per-second lines) and
-	// the lines past it were dropped on read. It fires for both the ID3v2 SYLT decode and the
-	// VorbisComment LRC store, so a scanner sees the same code either way. The threshold is
-	// effectively unreachable, but the cap was previously silent; this removes that. Keyless:
-	// it describes the synced-lyrics set, not a tag field. Appended to the end of the block so
-	// the existing codes keep their numbers.
+	// WarnSyncedLyricsTruncated: per-set line cap exceeded on read (SYLT/LRC). Read; keyless.
 	WarnSyncedLyricsTruncated
-	// WarnSyncedLyricsUnsupported means an edit authored synced lyrics for a destination whose
-	// format has no synced-lyrics store at all (for example MP4), so the whole set was dropped
-	// rather than the write being refused. It is distinct from WarnSyncedLyricsMetadataDropped,
-	// which describes a set that IS stored but loses a per-set field: here nothing is stored.
-	// Keyless: it describes the synced-lyrics set, not a tag field.
+	// WarnSyncedLyricsUnsupported: no synced-lyrics store; whole set dropped. Plan discard; keyless; --strict.
 	WarnSyncedLyricsUnsupported
-	// WarnPictureUnsupported means an edit added cover art to a destination whose format cannot
-	// store it (a WebM file, whose subset excludes Attachments), so the picture was dropped
-	// rather than the write being refused. Keyless: it describes the picture, not a tag field.
+	// WarnPictureUnsupported: format cannot store cover; picture dropped. Plan discard; keyless; --strict.
 	WarnPictureUnsupported
-	// WarnChaptersUnsupported means an edit authored chapters for a destination whose format has
-	// no chapter store at all, so the whole list was dropped rather than the write being refused.
-	// It is distinct from WarnChapterMetadataDropped, which describes chapters that ARE stored but
-	// lose a field. Keyless: it describes the chapter set, not a tag field.
+	// WarnChaptersUnsupported: no chapter store; list dropped. Plan discard; keyless; --strict.
 	WarnChaptersUnsupported
-	// WarnMP4MultiValue means an MP4 field holds more than one value, which the iTunes ilst stores
-	// as multiple data atoms under one item. That round-trips through WaxLabel, but many third-party
-	// readers surface only the first atom, so the extra values are effectively invisible to them. It
-	// is informational (the values are fully written and read back), distinct from the ID3v2.3
-	// NUL-separated multi-value note and the WAV/AIFF native-value reduction, so it does not escalate
-	// --strict. It carries the affected key (Warning.Keys).
+	// WarnMP4MultiValue: MP4 multi-value round-trips but many readers show first only. Plan; Warning.Keys; not --strict.
 	WarnMP4MultiValue
-	// WarnSyncedLyricsLineDropped means an authored LRC input carried non-blank lines that produced
-	// no timed lyric and are not recognized LRC structure - a malformed timestamp (e.g. "[9:99.99]bad")
-	// or a plain untimed text line - so those lines were dropped while the rest were stored. Recognized
-	// structure (blank lines, ID metadata tags like [ar:]/[ti:]/[al:], [offset:]/[length:] tags, and
-	// bare [section] headers) is not counted. It is surfaced so a partial drop does not pass silently
-	// with exit 0; the CLI's --strict gate escalates it. Keyless: it describes the synced-lyrics input,
-	// not a tag field. Appended to the end of the block so the existing codes keep their numbers.
+	// WarnSyncedLyricsLineDropped: LRC input lines dropped as unrecognized. Plan; keyless; --strict.
 	WarnSyncedLyricsLineDropped
-	// WarnPictureSelectorMiss means a picture removal named a valid cover-art role (e.g. "artist") that
-	// matched no picture in the file, so the selector removed nothing. An out-of-range index stays a
-	// hard usage error; a role that matches nothing is a plan-time warning rather than a silent no-op,
-	// so a lossless-pipeline user (and the CLI's --strict gate) sees that the requested removal did not
-	// apply. Keyless: it names the role in prose, not a tag field. Appended to the end of the block so
-	// the existing codes keep their numbers.
+	// WarnPictureSelectorMiss: remove-by-role matched nothing. Plan discard; keyless; --strict.
 	WarnPictureSelectorMiss
-	// WarnFragmented means an MP4 carries movie fragments (a top-level moof). The tags in
-	// the initial movie box are read exactly; what degrades is the duration (an empty_moov
-	// file reports 0) and the essence digest, which cannot cover a fragment's samples. The
-	// file is unwritable, so an edit is refused with waxerr.ErrFragmented. Keyless: it
-	// describes the container, not a tag field. Appended to the end of the block so the
-	// existing codes keep their numbers.
+	// WarnFragmented: MP4 moof; unwritable, duration/digest degraded. Read; keyless.
 	WarnFragmented
-	// WarnInvalidText means a stored text value's bytes were not valid UTF-8 and were
-	// decoded through a legacy code page instead. The value is readable but is a
-	// best-effort reading, and another reader may render it differently.
+	// WarnInvalidText: non-UTF-8 decoded via legacy code page. Read path.
 	WarnInvalidText
-	// WarnElementCap means a container held more elements than the configured limit
-	// allows, so the parsed model is a partial view. A codec that rebuilds its whole
-	// metadata region from that model must refuse to write rather than drop the rest.
+	// WarnElementCap: parse element limit; partial model; write refused. Read path.
 	WarnElementCap
-	// WarnTrailingBytes means the file carries bytes that belong to no chunk, page,
-	// or frame: appended junk, a truncated write, or a trailer a tool left behind. They are
-	// preserved verbatim across an edit, and a region after the container is kept
-	// outside the recomputed container size so a strict reader does not misparse it.
-	// Nothing is lost, but the file is not what its own structure declares, which is
-	// what a tagger wants to know. Keyless: it describes a byte region, not a tag
-	// field. Appended to the end of the block so the existing codes keep their numbers.
+	// WarnTrailingBytes: bytes outside container structure; preserved. Read; keyless.
 	WarnTrailingBytes
-	// WarnLegacyStripDropped means an explicit LegacyStrip write policy destroyed data
-	// that lived only in the legacy container it removed: a canonical value no other
-	// container held, non-tag content the projection does not fold in, or both. Unlike
-	// every other legacy warning this describes a loss the write policy caused, not the
-	// file's pre-existing state, which is why it escalates under --strict. It is deliberately
-	// one code rather than two: the lint side splits legacy-only-tags from
-	// legacy-opaque-content because they answer two questions about a container that is being
-	// kept, while here there is one question and one remedy - drop --legacy strip. Carries the
-	// lost keys when there are any; the opaque-only case is keyless. Appended to the end of
-	// the block so the existing codes keep their numbers.
+	// WarnLegacyStripDropped: --legacy strip destroyed legacy-only data. Write; Warning.Keys if any; --strict.
 	WarnLegacyStripDropped
-	// WarnCommentDescriptionDropped means a comment edit could not keep a description one of
-	// the file's comment frames carried. ID3 COMM frames are described and languaged; the
-	// canonical COMMENT key is neither, so an edit that merges several described frames into
-	// one, or spreads one described frame's slot across several values, has nowhere to put
-	// the descriptions. The comment TEXT is written in full - only the label is lost.
-	// Reusing WarnTagStructureDropped would avoid a new code, but that one's documentation
-	// is written entirely about Matroska album-scope tags and "secondary language"
-	// misdescribes a comment description. Appended to the end of the block so the existing
-	// codes keep their numbers.
+	// WarnCommentDescriptionDropped: ID3 COMM description lost on merge/split. Plan; Warning.Keys.
 	WarnCommentDescriptionDropped
-	// WarnNonConformingIcon means a type-1 file-icon picture is not the 32x32 PNG ID3v2
-	// section 4.14 requires. Unlike its neighbour WarnDuplicatePicture this is a warning
-	// rather than an error, and the asymmetry is deliberate: two type-1 pictures make the
-	// frame set ambiguous and unrepairable without choosing one, while a single oversized
-	// icon is unambiguous and every reader renders it - only conformance suffers. The
-	// picture is written either way. Its String() is "non-conforming-icon" to match the
-	// linter's finding code, so the two never drift. Appended to the end of the block so
-	// the existing codes keep their numbers.
+	// WarnNonConformingIcon: type-1 icon not 32x32 PNG; still written. Plan; matches linter code.
 	WarnNonConformingIcon
-	// WarnDuplicateTagBlockDropped means a rewrite discarded a duplicate tag container holding
-	// content the written set does not. It is the write-path counterpart of
-	// WarnDuplicateTagBlock, which describes the file and so stays out of the strict set. A
-	// redundant duplicate is silent. Appended to the end of the block so the existing codes
-	// keep their numbers.
+	// WarnDuplicateTagBlockDropped: rewrite dropped duplicate with extra content. Write; Warning.Keys; --strict.
 	WarnDuplicateTagBlockDropped
-	// WarnMalformedTagEntry means a tag container held an entry the parser could not read:
-	// a RIFF INFO list that desynchronized on a missing pad byte, a Vorbis comment with no
-	// "=" separator, or an ID3 frame whose declared size ran past the tag. One code covers
-	// all three because they are one condition - the container is well formed, an entry
-	// inside it is not - and a user comparing two formats should see one condition rather
-	// than three. It describes the file, so it stays out of the strict set; its write-path
-	// counterpart WarnMalformedTagEntryDropped is what escalates. Appended to the end of the
-	// block so the existing codes keep their numbers.
+	// WarnMalformedTagEntry: unparseable tag entry; bytes preserved. Read; not --strict.
 	WarnMalformedTagEntry
-	// WarnMalformedTagEntryDropped means a rewrite could not carry a region the parser never
-	// read (see WarnMalformedTagEntry), so the written file is missing those bytes. It is the
-	// write-path counterpart, split from the read code for the same reason as the
-	// duplicate-tag-block pair: the read code describes the file before any edit. It is
-	// deliberately not a discard - the edit itself applied in full - so IsDiscardWarning
-	// leaves it out. Appended to the end of the block so the existing codes keep their
-	// numbers.
+	// WarnMalformedTagEntryDropped: rewrite omitted unreadable entry region. Write; --strict; not discard.
 	WarnMalformedTagEntryDropped
-	// WarnUnknownChunkSize means a chunk declared the 0xFFFFFFFF size-unknown value that
-	// nothing resolved, so its extent was taken as the rest of the file. That is what a
-	// non-seekable writer emits and is not truncation, but it costs the reader everything
-	// after the chunk: a LIST/INFO sitting past a sentinel-sized data chunk is swallowed
-	// into the audio extent and reads as no tags at all. Lint reports it at info severity so
-	// the very common piped-WAV case still exits clean. Appended to the end of the block so
-	// the existing codes keep their numbers.
+	// WarnUnknownChunkSize: 0xFFFFFFFF chunk size; rest of file taken as body. Read; info severity.
 	WarnUnknownChunkSize
-	// WarnOutputGainUnsupported means an edit set an output gain on a format that stores
-	// none, so the gain was dropped. Appended to the end of the block so the existing
-	// codes keep their numbers.
+	// WarnOutputGainUnsupported: output gain dropped (format stores none). Plan discard; --strict.
 	WarnOutputGainUnsupported
-	// WarnOutputGainR128Tags means a gain edit left the file's R128_TRACK_GAIN or
-	// R128_ALBUM_GAIN unchanged where RFC 7845 would have rebased it: kept under
-	// [WriteOptions.KeepR128Gains], or not a Q7.8 integer and so not rebasable. Those tags
-	// apply on top of the header gain, so an unrebased one plays at the wrong loudness.
-	// Advisory: the edit itself applied in full.
+	// WarnOutputGainR128Tags: R128 tags not rebased after gain edit ([WriteOptions.KeepR128Gains]). Advisory.
 	WarnOutputGainR128Tags
 )
 
@@ -523,21 +279,11 @@ func (c WarningCode) String() string {
 type Warning struct {
 	Code    WarningCode
 	Message string
-	// Keys names the canonical key(s) a key-specific warning concerns (a value-dropped
-	// or single-valued-multi warning), so a consumer can act on the key without parsing
-	// the prose Message - the CLI's --strict gate renders the offending key from it.
-	// It is metadata on top of Message (which already names the key in prose), not part
-	// of String(); it is empty for warnings that are not about a specific key.
+	// Keys: canonical keys for keyed warnings (--strict). Empty when keyless.
 	Keys []tag.Key
 }
 
-// String renders the warning as "[code] message". The code is a fixed vocabulary
-// word, but the message can embed a file-derived snippet (an inherited encoder
-// stamp, a conflicting family value), so it is run through [tag.SanitizeLine] -
-// the warning prints as one list item, so an embedded newline or tab is escaped
-// too (it cannot forge a line), not just the terminal-hijack class. A library
-// consumer that prints this without the CLI's output boundary is then safe, and
-// the boundary is a no-op over the already-escaped result.
+// String renders "[code] message". Message sanitized via [tag.SanitizeLine].
 func (w Warning) String() string { return "[" + w.Code.String() + "] " + tag.SanitizeLine(w.Message) }
 
 // Warn appends a warning to a slice, returning the new slice.
@@ -545,19 +291,12 @@ func Warn(ws []Warning, code WarningCode, msg string) []Warning {
 	return append(ws, Warning{Code: code, Message: msg})
 }
 
-// WarnKeyed appends a warning carrying the canonical key(s) it concerns, so a
-// consumer (the CLI's --strict gate) can name the offending key without parsing the
-// message. It is the keyed counterpart to [Warn]; the keys are metadata on top of
-// the prose Message, which still names the key itself.
+// WarnKeyed appends a warning with Warning.Keys set.
 func WarnKeyed(ws []Warning, code WarningCode, msg string, keys ...tag.Key) []Warning {
 	return append(ws, Warning{Code: code, Message: msg, Keys: keys})
 }
 
-// WarningsWithCode returns the warnings in ws whose code is one of codes, in order.
-// [DowngradeNoOp] uses it to carry the input-rejection warnings (value-dropped,
-// picture-metadata-dropped) through a no-op downgrade, which builds a fresh report:
-// when an edit produces no byte change precisely because an input could not be stored,
-// that silent drop must still surface (and --strict still escalate).
+// WarningsWithCode filters ws to listed codes, preserving order.
 func WarningsWithCode(ws []Warning, codes ...WarningCode) []Warning {
 	var out []Warning
 	for _, w := range ws {
@@ -580,21 +319,14 @@ func WarningsWithoutCode(ws []Warning, codes ...WarningCode) []Warning {
 	return out
 }
 
-// WarnNativeReduced appends a [WarnNativeValueReduced] warning naming a multi-valued
-// key whose secondary single-valued native container stores only its first value while
-// the full set is kept in the embedded ID3 chunk. container names the native slot for
-// the message ("LIST/INFO" for WAV, "text chunk" for AIFF).
+// WarnNativeReduced appends WarnNativeValueReduced for a multi-value native slot.
 func WarnNativeReduced(ws []Warning, key tag.Key, n int, container string) []Warning {
 	return WarnKeyed(ws, WarnNativeValueReduced,
 		fmt.Sprintf("%s: native %s stores only the first of %d values (full set kept in the ID3 chunk)", key, container, n),
 		key)
 }
 
-// NativeReducedWarnings notes each key whose multi-valued set is reduced to its first
-// value in a single-valued native slot while the full set is written alongside in ID3.
-// reduces reports whether a key maps to such a native slot; container names that slot in
-// the message ("LIST/INFO", "text chunk"). Only a key whose first value is present and
-// non-empty is reported, since a slot that stores nothing reduces nothing.
+// NativeReducedWarnings collects WarnNativeValueReduced for keys reduced in a native slot.
 func NativeReducedWarnings(ts tag.TagSet, container string, reduces func(tag.Key) bool) []Warning {
 	var ws []Warning
 	for _, k := range ts.Keys() {
@@ -610,26 +342,12 @@ func NativeReducedWarnings(ts tag.TagSet, container string, reduces func(tag.Key
 	return ws
 }
 
-// WarnTruncated appends a WarnTruncatedAudio warning naming the essence container
-// that overran its file (e.g. "the data chunk", "the SSND chunk", "an mdat atom").
-// The container walkers each detect the overrun at their own clamp but share this so
-// the code and phrasing cannot drift between formats.
+// WarnTruncated appends WarnTruncatedAudio with shared phrasing.
 func WarnTruncated(ws []Warning, subject string) []Warning {
 	return Warn(ws, WarnTruncatedAudio, subject+" declares more audio than the file holds; file may be truncated")
 }
 
-// WarnTrailing appends a trailing-bytes warning for a region of n bytes, or returns ws
-// unchanged when the region is empty. subject says where the bytes sit ("after the last
-// RIFF chunk", "after the Ogg stream"), which is the part that differs between the
-// container walkers; the promise the codecs share - the bytes are preserved verbatim - is
-// worded once here so they cannot describe the same condition three ways.
-//
-// what names the region when the walker could identify it. A container walk that stops on a
-// well-formed ID3v1 trailer knows exactly what those 128 bytes are, and calling them bytes
-// that belong to nothing would be false. The code stays trailing-bytes rather than
-// trailing-id3v1: that one drives PlanLintFix's legacy strip, which on WAV and AIFF means
-// "consolidate the native tags into the ID3 chunk" and would restructure the file without
-// removing the trailer the finding is about.
+// WarnTrailing appends WarnTrailingBytes. what identifies region (see TrailingID3v1What).
 func WarnTrailing(ws []Warning, n int64, subject, what string) []Warning {
 	if n <= 0 {
 		return ws
@@ -640,25 +358,13 @@ func WarnTrailing(ws []Warning, n int64, subject, what string) []Warning {
 	return Warn(ws, WarnTrailingBytes, fmt.Sprintf("%d byte(s) %s %s; preserved verbatim", n, subject, what))
 }
 
-// WarnInvalidKey appends an invalid-tag-key warning for a native key the canonical
-// vocabulary cannot represent. The item stays in the native document; what it cannot do is
-// reach the tag set, so dump, lint, diff and copy would all behave as though the value were
-// not there. Every read path that drops a key for this reason says so in the same words, so
-// a user comparing two formats sees one condition rather than five.
+// WarnInvalidKey appends WarnInvalidTagKey for an unmappable native name.
 func WarnInvalidKey(ws []Warning, name string) []Warning {
 	return Warn(ws, WarnInvalidTagKey,
 		"tag key not represented in canonical tags (not carried): "+WarnSnippet(name))
 }
 
-// WarnUnseparatedEntry appends one malformed-tag-entry warning for a comment list holding
-// entries with no "=" separator, quoting the first and counting the rest. It is worded
-// after [WarnInvalidKey] because the observable consequences are identical: the entry is
-// absent from the tags and from a copy, and the bytes stay in the file. FLAC and every Ogg
-// mapping share the comment codec, so they share this wording too.
-//
-// One warning rather than one per entry: the condition is a property of the list, and a
-// crafted comment packet can hold entries by the tens of thousands, which per-entry would
-// turn a 400 KiB file into megabytes of dump and lint output.
+// WarnUnseparatedEntry: one WarnMalformedTagEntry for unseparated comment entries (aggregated).
 func WarnUnseparatedEntry(ws []Warning, first string, n int) []Warning {
 	if n <= 0 {
 		return ws
@@ -670,11 +376,7 @@ func WarnUnseparatedEntry(ws []Warning, first string, n int) []Warning {
 	return Warn(ws, WarnMalformedTagEntry, msg)
 }
 
-// WarnUnknownSize appends an unknown-chunk-size warning for each chunk id declaring the
-// 0xFFFFFFFF size-unknown value. The wording is neutral about why the sentinel is there - a
-// non-seekable writer emits it legitimately - and says what it costs the reader, which is
-// the part a user acts on. WAV and AIFF share the walker that detects it, so they share
-// this loop rather than each spelling it out beside their oversized-chunk sibling.
+// WarnUnknownSize appends WarnUnknownChunkSize for 0xFFFFFFFF chunk sizes.
 func WarnUnknownSize(ws []Warning, ids [][4]byte) []Warning {
 	for _, id := range ids {
 		ws = Warn(ws, WarnUnknownChunkSize,
@@ -683,25 +385,13 @@ func WarnUnknownSize(ws []Warning, ids [][4]byte) []Warning {
 	return ws
 }
 
-// warnSnippetBytes bounds how much of a file-derived name, entry or stamp a warning
-// message quotes. Each of those is bounded only by the alloc limit, so without this a
-// crafted 1 MiB item becomes a 1 MiB line in dump and lint. It is far wider than any real
-// one, so only an abnormal one changes shape - much tighter than the threshold a displayed
-// tag value gets, since this text is spliced into one line of prose.
+// warnSnippetBytes caps quoted file-derived text in warning messages.
 const warnSnippetBytes = 96
 
-// WarnSnippet renders file-derived text for a warning message: a short value passes through
-// sanitized and unchanged, and an oversized one is elided. Every warning that splices bytes
-// the file chose - a native key name, an unseparated comment entry, an inherited encoder
-// stamp - goes through it, so none of them can flood a terminal and they all elide the same
-// way. [tag.ElideValueAt] owns the cut, so the hint reads as it does in dump and diff.
+// WarnSnippet sanitizes and elides file-derived warning text.
 func WarnSnippet(s string) string { return tag.SanitizeLine(tag.ElideValueAt(s, warnSnippetBytes)) }
 
-// UnparsedNote is the native-view suffix naming a region inside a described block that the
-// parser could not read - an unreadable LIST/INFO tail, an ID3 frame region past a size
-// that overran the tag. It keeps the dump honest: without it the block's size disagrees
-// with its listed contents in silence, which is the very condition malformed-tag-entry
-// reports. Empty when nothing went unread, so a clean block's note is unchanged.
+// UnparsedNote suffix for unread bytes in a native block summary. Empty when none.
 func UnparsedNote(n int64) string {
 	if n <= 0 {
 		return ""
@@ -709,49 +399,26 @@ func UnparsedNote(n int64) string {
 	return fmt.Sprintf(", %d unparsed byte(s)", n)
 }
 
-// TrailingID3v1What is [WarnTrailing]'s what for a region a container walk recognized as an
-// ID3v1 tag. WAV and AIFF preserve such a trailer but do not project it, so the wording says
-// so rather than implying the bytes are junk.
+// TrailingID3v1What is WarnTrailing's what for a preserved ID3v1 trailer.
 const TrailingID3v1What = "are an ID3v1 tag this format preserves but does not read"
 
-// ConflictingFamiliesMessage is the shared keyless wording for the conflicting-families
-// condition: more than one native field supplied a different value for a key, so no
-// value could be selected. Both surfaces attach the key the same way - the dump warning
-// (which has no key field) appends it inline as " (KEY)", and the linter's lintFamilies
-// finding carries it in its Key field, which Finding.String renders the same " (KEY)"
-// way - so dump and lint read identically while lint keeps the key structured (in its
-// JSON, like the other key-specific findings). Sharing the wording here is what keeps
-// the two from drifting, mirroring the duplicatePictureMessage/multipleFrontCoversMessage
-// pattern.
+// ConflictingFamiliesMessage is shared dump/lint wording for family conflicts.
 func ConflictingFamiliesMessage() string {
 	return "multiple source fields supplied conflicting values"
 }
 
-// ChapterPastDurationMessage is the shared wording for the chapter-past-duration
-// condition. The editor raises it on the chapters an edit introduces and the linter
-// raises it on the chapters a file already holds; sharing the wording here is what keeps
-// the two readings identical, as with [ConflictingFamiliesMessage].
+// ChapterPastDurationMessage is shared editor/lint wording.
 func ChapterPastDurationMessage(start, duration time.Duration) string {
 	return fmt.Sprintf("chapter at %s starts past the file duration (%s); check the timestamp",
 		FormatChapterTime(start), FormatChapterTime(duration))
 }
 
-// DuplicateChapterMessage is the shared wording for the duplicate-chapter condition,
-// shared between the editor and the linter for the same reason as
-// [ChapterPastDurationMessage].
+// DuplicateChapterMessage is shared editor/lint wording.
 func DuplicateChapterMessage(start time.Duration) string {
 	return fmt.Sprintf("two or more chapters share the start %s", FormatChapterTime(start))
 }
 
-// ChaptersPastDuration returns the chapters starting beyond the file's playable length, in
-// list order. A zero or unknown duration returns none: a truncated or header-only file
-// reports 0 (and already warns no-audio), which would otherwise flag every chapter as
-// beyond 0:00.
-//
-// The rule lives here because three callers ask it - the editor for the chapters an edit
-// introduces, the editor again for a faithful transfer's carried set, and the linter for
-// what is already on disk - and they differ only in which chapters they pass in, never in
-// what counts as past the end.
+// ChaptersPastDuration returns chapters with Start > duration. None when duration <= 0.
 func ChaptersPastDuration(chapters []Chapter, duration time.Duration) []Chapter {
 	if duration <= 0 {
 		return nil
@@ -765,10 +432,7 @@ func ChaptersPastDuration(chapters []Chapter, duration time.Duration) []Chapter 
 	return out
 }
 
-// DuplicateChapterStarts returns each start time shared by two or more chapters, in
-// first-seen order, so one collision is reported once however many chapters share it. The
-// list order is not assumed to be sorted: a codec's projection is not the editor's sorted
-// set. Shared by the editor and the linter for the same reason as [ChaptersPastDuration].
+// DuplicateChapterStarts returns duplicate start times, first-seen order.
 func DuplicateChapterStarts(chapters []Chapter) []time.Duration {
 	counts := make(map[time.Duration]int, len(chapters))
 	var out []time.Duration
@@ -780,10 +444,7 @@ func DuplicateChapterStarts(chapters []Chapter) []time.Duration {
 	return out
 }
 
-// IsDiscardWarning reports whether the thing asked for was not stored at all, so a plan
-// carrying it and no byte change did not apply the edit. The per-item losses are out even
-// though several are named "*Dropped": a picture missing its description IS stored, so
-// calling the edit discarded would overstate it. So are coerce, reduce, clamp and truncate.
+// IsDiscardWarning: edit requested storage that did not happen (whole item dropped).
 func IsDiscardWarning(c WarningCode) bool {
 	switch c {
 	case WarnValueDropped, WarnLegacyStripDropped, WarnDuplicateTagBlockDropped,
@@ -804,10 +465,7 @@ func HasDiscardWarning(ws []Warning) bool {
 	return false
 }
 
-// NoChangesLine is the one-line summary for a plan that writes no bytes. A plan whose only
-// effect was discarded still writes nothing, so a bare "already up to date" would state the
-// opposite of what happened; it says the edit was discarded instead. Both
-// [WriteReport.String] and the CLI render through it so the two cannot word it differently.
+// NoChangesLine summarizes a no-op plan; distinguishes discard vs already up to date.
 func NoChangesLine(discarded bool) string {
 	if discarded {
 		return "no changes written (the edit was discarded)"
@@ -815,10 +473,7 @@ func NoChangesLine(discarded bool) string {
 	return "no changes (already up to date)"
 }
 
-// AppendDuplicateBlockDropped names what the duplicate tag containers a rewrite discards held
-// that written does not. Grading against what the write stores, not the parse-time winner,
-// keeps --strict from refusing a write that loses nothing. Cover art, chapters and synced
-// lyrics carry no canonical key, so they are counted rather than named.
+// AppendDuplicateBlockDropped warns when a dropped duplicate held content the write omits.
 func AppendDuplicateBlockDropped(ws []Warning, container string, written tag.TagSet, dups []DuplicateContent) []Warning {
 	seen := map[tag.Key]bool{}
 	var keys []tag.Key
@@ -856,12 +511,7 @@ func AppendDuplicateBlockDropped(ws []Warning, container string, written tag.Tag
 			container, strings.Join(names, ", ")), keys...)
 }
 
-// CloneWarnings deep-copies a warning slice, detaching each Warning.Keys so a
-// caller mutating a returned warning's Keys cannot reach back into the shared
-// source slice. A shallow slices.Clone leaves every element's Keys aliasing the
-// original; [WarnKeyed] populates Keys, so a keyed warning surfaced through a
-// defensive copy (e.g. Plan.Report) needs the per-element clone too. Returns nil
-// for a nil/empty input.
+// CloneWarnings deep-copies warnings and their Keys slices. Nil/empty in, nil out.
 func CloneWarnings(ws []Warning) []Warning {
 	if len(ws) == 0 {
 		return nil

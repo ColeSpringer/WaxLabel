@@ -6,10 +6,8 @@ import (
 	"testing"
 )
 
-// TestIgnoredV22TagIsOpaqueToLintFix: a stray leading ID3v2.2 tag ignored for its
-// compression flag projects no values at all, which without care reads as "provably
-// redundant" and invites lint --fix to strip it. Nothing about an unreadable tag can be
-// shown to be redundant, so the container stays and the fix declines it.
+// stray leading ID3v2.2 tag ignored for its compression flag projects no values at all, which
+// without care reads as "provably redundant" and invites lint --fix to strip it.
 func TestIgnoredV22TagIsOpaqueToLintFix(t *testing.T) {
 	tagBytes := id3v2(2, frame22("TT2", []byte("\x00Compressed")))
 	tagBytes[5] = 0x40

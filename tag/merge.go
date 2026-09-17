@@ -47,19 +47,12 @@ type FieldProvenance struct {
 	Reason   string
 }
 
-// Merge combines base and incoming under strategy, returning the merged set
-// and per-key provenance. Result key order is base keys first (in base order)
-// then incoming-only keys (in incoming order); within a key, Union order is
-// base values then new incoming values. Neither input is modified.
-//
-// Single-valued keys are capped to their first selected value, even when the strategy
-// selects several. Dropped values are recorded in [FieldProvenance.Rejected] with a capped
-// reason so Merge matches the linter and --strict cardinality rule.
+// Merge combines base and incoming under strategy. Single-valued keys keep the
+// first selected value; extras go to Rejected.
 func Merge(base, incoming TagSet, strategy Strategy) (TagSet, []FieldProvenance) {
 	out := NewTagSet()
 	var prov []FieldProvenance
 
-	// Stable key ordering across the union.
 	keys := base.Keys()
 	for _, k := range incoming.Keys() {
 		if !base.Has(k) {

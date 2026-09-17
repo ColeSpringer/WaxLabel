@@ -21,9 +21,8 @@ func TestWithLimitsBoundsAllocation(t *testing.T) {
 	}
 }
 
-// TestWithLimitsZeroFieldUsesDefault: a partially-specified Limits keeps the
-// default bound for any zero field rather than reading zero as "reject everything"
-// (a literal zero MaxAllocBytes would refuse the STREAMINFO allocation).
+// partially-specified Limits keeps the default bound for any zero field rather than reading zero as
+// "reject everything" (a literal zero MaxAllocBytes would refuse the STREAMINFO allocation).
 func TestWithLimitsZeroFieldUsesDefault(t *testing.T) {
 	src := readFixture(t, sampleFLAC)
 	// Only MaxDepth is set; MaxAllocBytes is zero and must fall back to the default.
@@ -97,9 +96,8 @@ func TestLegacyTrailingID3v1(t *testing.T) {
 func TestLegacyLeadingID3v2(t *testing.T) {
 	ctx := context.Background()
 	src := withLeadingID3v2(readFixture(t, sampleFLAC))
-	// A leading-ID3 FLAC is detected by its .flac extension (the fLaC marker is
-	// past the sniff window, and claiming "ID3" would misroute MP3), so write it
-	// to a real file and use ParseFile.
+	// A leading-ID3 FLAC is detected by its .flac extension (the fLaC marker is past the sniff window,
+	// and claiming "ID3" would misroute MP3), so write it to a real file and use ParseFile.
 	path := writeTempFile(t, "lead.flac", src)
 
 	doc, err := wl.ParseFile(ctx, path)
@@ -146,9 +144,9 @@ func TestWithPaddingAndReport(t *testing.T) {
 func TestPaddingFloorWiring(t *testing.T) {
 	src := readFixture(t, sampleFLAC)
 
-	// A floor (Min == Target) grows the region: an edit that would fit the fixture's
-	// small existing padding must instead reserve at least Min, not reuse the smaller
-	// leftover (the fix - Min now gates the reuse branch).
+	// A floor (Min == Target) grows the region: an edit that would fit the fixture's small existing
+	// padding must instead reserve at least Min, not reuse the smaller leftover (the fix. Min now gates
+	// the reuse branch).
 	floorPlan, err := mustParseBytes(t, src).Edit().Set(tag.Title, "Floor").
 		Prepare(wl.WithPadding(wl.PaddingPolicy{Target: 200000, Min: 200000, ReuseInPlace: true}))
 	if err != nil {
@@ -159,9 +157,8 @@ func TestPaddingFloorWiring(t *testing.T) {
 	}
 	grown := applyToBytes(t, src, floorPlan)
 
-	// A region already past the floor reuses in place: re-editing the grown file under
-	// a small floor keeps the large region (Min only floors a grow, it never forces a
-	// shrink toward Target).
+	// A region already past the floor reuses in place: re-editing the grown file under a small floor
+	// keeps the large region (Min only floors a grow, it never forces a shrink toward Target).
 	reusePlan, err := mustParseBytes(t, grown).Edit().Set(tag.Title, "Reuse").
 		Prepare(wl.WithPadding(wl.PaddingPolicy{Target: 1000, Min: 1000, ReuseInPlace: true}))
 	if err != nil {

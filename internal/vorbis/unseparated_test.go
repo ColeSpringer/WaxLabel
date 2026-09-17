@@ -29,8 +29,7 @@ func commentListWithRaw(vendor string, entries ...string) []byte {
 }
 
 // TestUnseparatedEntryRoundTripsVerbatim: an entry with no "=" is well framed, so dropping
-// it destroyed bytes the walk had located perfectly well. It must survive parse and render
-// byte for byte, which is what stops the next rewrite from erasing it.
+
 func TestUnseparatedEntryRoundTripsVerbatim(t *testing.T) {
 	body := commentListWithRaw("vend", "TITLE=Song", "noequalshere", "ARTIST=Band")
 	vendor, cs, n, err := ParseCommentList(body, 1<<20, 0)
@@ -53,8 +52,7 @@ func TestUnseparatedEntryRoundTripsVerbatim(t *testing.T) {
 }
 
 // TestUnseparatedEntryStaysOutOfEveryProjection: the entry has no name, so nothing can key
-// off it. Each projector skips it explicitly rather than relying on an empty string
-// happening to miss every predicate.
+
 func TestUnseparatedEntryStaysOutOfEveryProjection(t *testing.T) {
 	cs := []Comment{
 		{Name: "TITLE", Value: "Song"},

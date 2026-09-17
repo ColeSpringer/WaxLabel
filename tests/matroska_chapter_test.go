@@ -38,17 +38,16 @@ func mkEdition(def bool, prefix []byte, atoms ...[]byte) []byte {
 	return mkEl(idEditionEntry, body)
 }
 
-// buildMatroskaCh assembles a minimal file with an Info title, a Chapters element,
-// and optional Tags. It delegates to buildMatroska (which appends its tags arg
-// after Info), passing chapters++tags so the envelope lives in one place.
+// buildMatroskaCh assembles a minimal file with an Info title, a Chapters element, and optional
+// Tags.
 func buildMatroskaCh(docType, title string, chapters, tags []byte) []byte {
 	return buildMatroska(docType, title, concat(chapters, tags))
 }
 
 func ms(n int) time.Duration { return time.Duration(n) * time.Millisecond }
 
-// TestMatroskaReadChapters reads the committed real-ffmpeg chapter fixture: three
-// chapters with absolute-nanosecond Start/End and ChapterDisplay titles.
+// committed real-ffmpeg chapter fixture: three chapters with absolute-nanosecond Start/End and
+// ChapterDisplay titles.
 func TestMatroskaReadChapters(t *testing.T) {
 	doc := mustParseFile(t, chaptersMKA)
 	chs := doc.Chapters()
@@ -81,9 +80,8 @@ func TestMatroskaReadChapters(t *testing.T) {
 	}
 }
 
-// TestMatroskaChapterRoundTripFixture edits a title on the real fixture and
-// confirms the chapters reparse identically (absorption path on a file with a Void)
-// and the cluster essence is untouched.
+// edits a title on the real fixture and confirms the chapters reparse identically (absorption path
+// on a file with a Void) and the cluster essence is untouched.
 func TestMatroskaChapterRoundTripFixture(t *testing.T) {
 	src := readFixture(t, chaptersMKA)
 	newChaps := []wl.Chapter{
@@ -111,9 +109,9 @@ func TestMatroskaChapterRoundTripFixture(t *testing.T) {
 	}
 }
 
-// TestMatroskaChapterCRCsValid edits chapters across both write paths and confirms
-// every CRC-32 in the output - including the re-rendered Chapters master - is
-// recomputed correctly (the integrity check a strict reader performs).
+// edits chapters across both write paths and confirms every CRC-32 in the output; including the
+// re-rendered Chapters master; is recomputed correctly (the integrity check a strict reader
+// performs).
 func TestMatroskaChapterCRCsValid(t *testing.T) {
 	src := readFixture(t, chaptersMKA)
 	for _, e := range []*wl.Editor{
@@ -129,9 +127,8 @@ func TestMatroskaChapterCRCsValid(t *testing.T) {
 	}
 }
 
-// TestMatroskaChapterDifferentialFFprobe writes chapters and confirms ffprobe -
-// the authority - reads them back with their End times (proving the Chapters tree
-// is valid) while the FLAC audio stream stays intact.
+// chapters and confirms ffprobe; the authority; reads them back with their End times (proving the
+// Chapters tree is valid) while the FLAC audio stream stays intact.
 func TestMatroskaChapterDifferentialFFprobe(t *testing.T) {
 	requireTool(t, "ffprobe")
 	path := copyToTemp(t, chaptersMKA)
@@ -182,8 +179,8 @@ func TestMatroskaChapterDifferentialFFprobe(t *testing.T) {
 	}
 }
 
-// TestMatroskaChapterCreate adds chapters to a file that had none (sample.mka),
-// confirming the new Chapters element round-trips and the audio is untouched.
+// adds chapters to a file that had none (sample.mka), confirming the new Chapters element
+// round-trips and the audio is untouched.
 func TestMatroskaChapterCreate(t *testing.T) {
 	src := readFixture(t, sampleMKA)
 	if len(mustParseBytes(t, src).Chapters()) != 0 {
@@ -212,7 +209,6 @@ func TestMatroskaChapterCreate(t *testing.T) {
 	}
 }
 
-// TestMatroskaChapterClear removes all chapters, dropping the Chapters element.
 func TestMatroskaChapterClear(t *testing.T) {
 	src := readFixture(t, chaptersMKA)
 	out, outDoc := saveMatroska(t, src, mustParseBytes(t, src).Edit().ClearChapters())
@@ -234,7 +230,6 @@ func TestMatroskaChapterClear(t *testing.T) {
 	}
 }
 
-// TestMatroskaChapterNoOp: re-setting the identical chapter list writes nothing.
 func TestMatroskaChapterNoOp(t *testing.T) {
 	src := readFixture(t, chaptersMKA)
 	cur := mustParseBytes(t, src).Chapters()
@@ -247,8 +242,6 @@ func TestMatroskaChapterNoOp(t *testing.T) {
 	}
 }
 
-// TestMatroskaChapterWebMAllowed: unlike cover attachments, the Chapters element is
-// in the WebM subset, so a chapter write to a .webm is allowed (not refused).
 func TestMatroskaChapterWebMAllowed(t *testing.T) {
 	src := readFixture(t, sampleWebM)
 	chs := []wl.Chapter{{Start: 0, End: time.Second, Title: "WebM Chapter"}}
@@ -262,9 +255,8 @@ func TestMatroskaChapterWebMAllowed(t *testing.T) {
 	essenceUnchanged(t, src, out)
 }
 
-// TestMatroskaChapterUIDsPreserved: a chapter edit reuses each chapter's original
-// ChapterUID by position, so chapter-scoped SimpleTags that reference a UID stay
-// valid. The synth file has no Void, so this also exercises the shift path.
+// chapter edit reuses each chapter's original ChapterUID by position, so chapter-scoped SimpleTags
+// that reference a UID stay valid.
 func TestMatroskaChapterUIDsPreserved(t *testing.T) {
 	chapters := mkEl(idChapters, mkEdition(true, nil,
 		mkAtom(42, 0, uint64(ms(200)), "First"),
@@ -298,8 +290,7 @@ func TestMatroskaChapterUIDsPreserved(t *testing.T) {
 	}
 }
 
-// TestMatroskaMultiEditionPreserved: only the default edition is re-rendered on an
-// edit; a non-default edition is preserved verbatim.
+// only the default edition is re-rendered on an edit; a non-default edition is preserved verbatim.
 func TestMatroskaMultiEditionPreserved(t *testing.T) {
 	chapters := mkEl(idChapters, concat(
 		mkEdition(true, nil, mkAtom(1, 0, uint64(ms(300)), "DefaultChap")),
@@ -324,9 +315,8 @@ func TestMatroskaMultiEditionPreserved(t *testing.T) {
 	}
 }
 
-// TestMatroskaChapterClearMultiEdition: clearing chapters on a multi-edition file
-// removes the whole Chapters element - it must not drop only the default edition
-// and silently promote a previously-hidden non-default edition into view.
+// clearing chapters on a multi-edition file removes the whole Chapters element; it must not drop
+// only the default edition and silently promote a previously-hidden non-default edition into view.
 func TestMatroskaChapterClearMultiEdition(t *testing.T) {
 	chapters := mkEl(idChapters, concat(
 		mkEdition(true, nil, mkAtom(1, 0, uint64(ms(300)), "DefaultChap")),
@@ -349,9 +339,8 @@ func TestMatroskaChapterClearMultiEdition(t *testing.T) {
 	}
 }
 
-// TestMatroskaChapterOutOfOrderSorted: a file whose ChapterAtoms are stored out of
-// start order projects sorted by start (so re-setting it is a no-op) and keeps each
-// chapter aligned with its own ChapterUID on a re-render.
+// file whose ChapterAtoms are stored out of start order projects sorted by start (so re-setting it
+// is a no-op) and keeps each chapter aligned with its own ChapterUID on a re-render.
 func TestMatroskaChapterOutOfOrderSorted(t *testing.T) {
 	chapters := mkEl(idChapters, mkEdition(true, nil,
 		mkAtom(200, uint64(ms(200)), uint64(ms(400)), "Second"), // stored first, starts later
@@ -372,8 +361,8 @@ func TestMatroskaChapterOutOfOrderSorted(t *testing.T) {
 	if !plan.Report().NoOp {
 		t.Errorf("SetChapters(doc.Chapters()...) on an out-of-order file should be a no-op, ops=%v", plan.Report().Operations)
 	}
-	// A real edit keeps each chapter's own UID - the start=0 chapter must reuse UID
-	// 100 (0x64) and the later one UID 200 (0xC8), not the swapped file-order pair.
+	// A real edit keeps each chapter's own UID; the start=0 chapter must reuse UID 100 (0x64) and the
+	// later one UID 200 (0xC8), not the swapped file-order pair.
 	out, _ := saveMatroska(t, data, mustParseBytes(t, data).Edit().SetChapters(
 		wl.Chapter{Start: 0, End: ms(200), Title: "First Renamed"},
 		wl.Chapter{Start: ms(200), End: ms(400), Title: "Second Renamed"},
@@ -386,9 +375,8 @@ func TestMatroskaChapterOutOfOrderSorted(t *testing.T) {
 	}
 }
 
-// TestMatroskaChapterFlattenWarns: editing a default edition that carries a nested
-// sub-chapter or a second (other-language) display drops that structure, surfaced
-// as a plan-time WarnChaptersFlattened. A clear (a removal, not a flatten) does not.
+// editing a default edition that carries a nested sub-chapter or a second (other-language) display
+// drops that structure, surfaced as a plan-time WarnChaptersFlattened.
 func TestMatroskaChapterFlattenWarns(t *testing.T) {
 	nested := mkEl(idChapterAtom, concat(
 		mkUint(idChapterUID, 1), mkUint(idChapTimeStart, 0),
@@ -437,8 +425,7 @@ func hasReportWarning(plan *wl.Plan, code wl.WarningCode) bool {
 	return false
 }
 
-// TestMatroskaChapterPreservedAcrossTagEdit: a tag edit leaves the chapters
-// untouched (the Chapters element is copied verbatim by byte range).
+// tag edit leaves the chapters untouched (the Chapters element is copied verbatim by byte range).
 func TestMatroskaChapterPreservedAcrossTagEdit(t *testing.T) {
 	src := readFixture(t, chaptersMKA)
 	before := mustParseBytes(t, src).Chapters()
@@ -455,9 +442,8 @@ func TestMatroskaChapterPreservedAcrossTagEdit(t *testing.T) {
 	}
 }
 
-// TestMatroskaChapterReEditNoReparse: a chapter edit applied to the returned
-// document (without re-parsing) round-trips, proving the result carries a valid
-// rewrite base and chapter model forward.
+// chapter edit applied to the returned document (without re-parsing) round-trips, proving the
+// result carries a valid rewrite base and chapter model forward.
 func TestMatroskaChapterReEditNoReparse(t *testing.T) {
 	src := readFixture(t, chaptersMKA)
 	out1, doc1 := saveMatroska(t, src, mustParseBytes(t, src).Edit().SetChapters(
@@ -477,10 +463,9 @@ func TestMatroskaChapterReEditNoReparse(t *testing.T) {
 	}
 }
 
-// TestMatroskaChapterCopyFromM4B is the cross-format chapter transfer: an M4B's
-// chapters project onto a Matroska destination (now that Matroska writes chapters),
-// the first time PlanTransfer's chapter path runs between two chapter-bearing
-// formats.
+// cross-format chapter transfer: an M4B's chapters project onto a Matroska destination (now that
+// Matroska writes chapters), the first time PlanTransfer's chapter path runs between two
+// chapter-bearing formats.
 func TestMatroskaChapterCopyFromM4B(t *testing.T) {
 	src := mustParseFile(t, sampleM4B)
 	srcChaps := src.Chapters()

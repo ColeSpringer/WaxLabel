@@ -9,11 +9,9 @@ import (
 	"github.com/colespringer/waxlabel/internal/id3"
 )
 
-// Plan computes the byte-level rewrite that turns the original file into the
-// edited media. It is preservation-first: only the front ID3v2 tag is
-// re-rendered (at the source's version, with unchanged and unmodelled frames
-// kept), and the ADTS audio stream is copied verbatim. AAC has no secondary tag
-// container, so the legacy policies are inert (nothing to strip or reconcile).
+// Plan builds a preservation-first rewrite: re-render the front ID3v2 tag
+// (source version; unchanged/unmodelled frames kept), copy ADTS verbatim.
+// No secondary tag container; legacy policies are inert.
 func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.WriteOptions) (*core.WritePlan, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -30,39 +28,30 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	report := core.WriteReport{Format: core.FormatAAC, BytesBefore: edited.Identity.Size}
 
-	// Choose the ID3v2 version (preserve the source's; the format default for a
-	// brand-new tag). Hoisted above the fast path so the encoding predicate can see the
-	// source frames.
+	// Preserve source version; format default for a new tag. Above fast path so
+	// the encoding predicate can see source frames.
 	srcTag := d.id3
 	if srcTag == nil {
 		srcTag = id3.NewEmpty(core.DefaultID3Version(core.FormatAAC))
 	}
 	version := srcTag.WriteVersion()
-	// One WriteOpts for both the predicate and the rebuild: they must render from identical
-	// options, or the predicate could green-light a write the rebuild then renders differently.
+	// Same WriteOpts for predicate and rebuild so they cannot disagree.
 	wopts := id3.WriteOpts{Multi: opts.ID3Multi, NumericGenre: opts.NumericGenre}
-	// A requested write encoding (--numeric-genre) changes how a value is stored, not the
-	// value itself, so the tag comparison above cannot see it. Without this the flag would
-	// apply only to the files whose genre also changed.
+	// --numeric-genre changes storage, not the value; tag Equal cannot see it.
 	encodingRewrite := id3.EncodingRewriteNeeded(srcTag, edited.Tags, wopts)
 
-	// Fast path: nothing changed. NoOpPlan emits a verbatim copy (so SaveAsFile/
-	// WriteTo still produce a whole file) flagged NoOp so SaveBack skips it. Explicit
-	// padding requests run the front-tag renderer below so a padding-only edit can take
-	// effect. A chapters- or synced-lyrics-only edit (CHAP/CTOC, SYLT) must defeat the
-	// no-op gate too.
+	// NoOpPlan: verbatim copy for SaveAsFile/WriteTo; SaveBack skips. Explicit
+	// padding and chapter/synced-lyrics-only edits defeat the gate.
 	if !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !opts.PaddingExplicit && !encodingRewrite {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
-	// Re-check the ID3 CTOC count at the codec boundary. Only a chapter edit re-renders
-	// the CTOC, so unchanged chapters can keep their source frames.
+	// CTOC count check only when chapters change (unchanged keep source frames).
 	if chaptersChanged {
 		if err := id3.CheckChapterCount(edited.Chapters); err != nil {
 			return nil, err
 		}
 	}
 
-	// Rebuild the frame list.
 	newFrames, info := id3.RebuildFrames(srcTag.Frames(), base.Tags, edited.Tags, version,
 		id3.StructuredEdit{
 			Pictures: edited.Pictures, PicturesChanged: picturesChanged,
@@ -79,18 +68,14 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		return nil, err
 	}
 
-	// Size and render the front ID3v2 tag, dropping it entirely when no frame survives (an
-	// edit that clears every frame) rather than fabricating an empty, padding-only container.
-	// The drop-empty-tag policy lives in the shared id3.RenderFrontTag so MP3 and AAC cannot
-	// diverge.
+	// Drop empty tag entirely (shared id3.RenderFrontTag policy with MP3).
 	ft := id3.RenderFrontTag(srcTag, version, newFrames, info, opts.Padding, d.id3Len,
 		d.id3 != nil, tagsChanged, picturesChanged, len(edited.Pictures), chaptersChanged, len(edited.Chapters),
 		syncedLyricsChanged, len(edited.SyncedLyrics))
 	report.PaddingAfter = ft.Padding
 	report.Operations = append(report.Operations, ft.Operations...)
 	report.Warnings = append(report.Warnings, ft.Warnings...)
-	// Compare the rendered front-tag size with the source region. When padding is the
-	// only request, a changed size is the edit.
+	// Padding-only edit: size change is the edit.
 	regionDiffers := int64(len(ft.Bytes)) != d.id3Len
 	if regionDiffers && !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged {
 		report.Operations = append(report.Operations, core.PaddingOp(d.id3Len, int64(len(ft.Bytes))-ft.Padding, ft.Padding))
@@ -99,7 +84,6 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		report.Operations = append(report.Operations, core.EncodingRewriteOp("genre"))
 	}
 
-	// Assemble the output: the new ID3v2 tag (when any), then the verbatim ADTS stream.
 	audioLen := d.audioEnd - d.audioStart
 	var segs []bits.Segment
 	if ft.Bytes != nil {
@@ -111,24 +95,18 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	report.BytesAfter = newSize
 
 	result := buildResult(edited, d, ft.Tag, ft.Bytes, audioLen, newSize)
-	// Surface ID3 rebuild losses the bytes cannot show: a date without a numeric year, or
-	// a v2.3 date whose month/time precision could not be stored. AAC has no other tag
-	// container, and fresh tags are v2.4, so this only fires on a preserved v2.3 tag.
+	// Rebuild losses not visible in bytes (e.g. v2.3 date precision). Fresh tags are v2.4.
 	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, info, result.Tags)
 	report.Warnings = id3.AppendMalformedTailDropped(report.Warnings, d.id3)
-	// Collapse to a true no-op when the ID3 rebuild re-projected to base's values; AAC has
-	// no strip flag, so an encoding rewrite is the only thing that forces the write.
-	// DowngradeNoOp carries the value-dropped warning forward so a dropped date still
-	// surfaces on a no-op.
+	// Collapse when rebuild matches base; encoding rewrite alone still forces write.
 	if np := core.DowngradeNoOp(core.FormatAAC, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), regionDiffers || encodingRewrite, report.Warnings); np != nil {
 		return np, nil
 	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
 }
 
-// buildResult constructs the post-write Media so the engine can return a
-// Document without re-parsing. The frames actually written are re-projected, so
-// the result equals a fresh parse of the output bytes for the canonical view.
+// buildResult builds post-write Media without re-parsing. Frames are re-projected
+// so the result matches a fresh parse of the output.
 func buildResult(edited *core.Media, base *doc, newTag *id3.Tag, tagBytes []byte, audioLen, newSize int64) *core.Media {
 	id3Len := int64(len(tagBytes))
 	nd := &doc{
@@ -141,8 +119,7 @@ func buildResult(edited *core.Media, base *doc, newTag *id3.Tag, tagBytes []byte
 		size:       newSize,
 	}
 	proj := id3.Project(newTag)
-	// Carry source-parse warnings forward, but drop a stale chapter-flatten note when the
-	// written tag no longer flattens. MP3 uses the same helper for the same front-tag path.
+	// Carry parse warnings; drop stale chapter-flatten when the written tag no longer flattens.
 	warnings := id3.CarryProjectionWarnings(edited.Warnings, proj.Warnings)
 	return &core.Media{
 		Format:       core.FormatAAC,

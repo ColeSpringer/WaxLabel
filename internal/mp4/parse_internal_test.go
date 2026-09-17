@@ -220,10 +220,9 @@ func parseStsdPayload(t *testing.T, payload []byte) *doc {
 	return d
 }
 
-// TestParseStsdV2SkipsGeometry checks that a v2+ AudioSampleEntry does not use the fixed
-// v0/v1 geometry offsets. Reading those offsets would feed bogus channels and sample rate
-// into the essence-digest salt. The codec 4CC is still read, and a v0 entry still reads
-// the fixed-offset geometry.
+// TestParseStsdV2SkipsGeometry checks that a v2+ AudioSampleEntry does not use the
+// fixed v0/v1 geometry offsets. Reading those offsets would feed bogus channels and
+// sample rate into the essence-digest salt.
 func TestParseStsdV2SkipsGeometry(t *testing.T) {
 	d := parseStsdPayload(t, mkStsdPayload(2))
 	if got := string(d.cfg.codec[:]); got != "mp4a" {
@@ -247,10 +246,9 @@ func TestParseStsdV2SkipsGeometry(t *testing.T) {
 	}
 }
 
-// TestParseStsdAlacCookieBitDepth checks that an ALAC entry's reported bit depth
-// comes from the magic cookie rather than the sample entry's sample_size field,
-// which convention pins at 16 whatever the payload depth. The essence-digest salt
-// keeps the raw entry value so existing ALAC digests are unchanged.
+// TestParseStsdAlacCookieBitDepth checks that an ALAC entry's reported bit depth comes
+// from the magic cookie rather than the sample entry's sample_size field, which
+// convention pins at 16 whatever the payload depth.
 func TestParseStsdAlacCookieBitDepth(t *testing.T) {
 	d := parseStsdPayload(t, mkAlacStsdPayload(24))
 	if d.track.BitsPerSample != 24 {

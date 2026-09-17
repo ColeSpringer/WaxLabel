@@ -1,14 +1,10 @@
-// Package ogg implements reading and writing metadata for Ogg Vorbis and Ogg
-// Opus for the public waxlabel package. The codec itself is internal. Both
-// codecs store tags as a Vorbis comment list and cover art as
-// METADATA_BLOCK_PICTURE entries, so the comment and picture codecs are shared
-// with FLAC via internal/vorbis; the Ogg-specific work is the page layer.
+// Package ogg implements Ogg Vorbis/Opus/FLAC metadata for waxlabel. Internal.
+// Tags are Vorbis comments; art is METADATA_BLOCK_PICTURE (via internal/vorbis)
+// except the FLAC mapping's native PICTURE blocks. Page layer is Ogg-specific.
 //
-// The write invariant is that the audio *packet payloads* are preserved
-// byte-for-byte (Ogg re-pagination is allowed, page checksums are not the
-// payload). The codec is reimplemented from RFC 3533 (Ogg), the Vorbis I and
-// Vorbis-comment specifications, and RFC 7845 (Ogg Opus); reference
-// implementations were consulted for design only.
+// Write invariant: audio packet payloads stay byte-identical (re-pagination OK;
+// page checksums are not payload). From RFC 3533, Vorbis I / comments, RFC 7845.
+
 package ogg
 
 import (
@@ -18,10 +14,10 @@ import (
 	"github.com/colespringer/waxlabel/internal/vorbis"
 )
 
-// kind distinguishes the three Ogg codecs WaxLabel writes. All store tags as a
-// Vorbis comment list; they differ in the comment-header framing, in which
-// header packets are decoder-critical, and - for FLAC alone - in carrying cover
-// art as a native PICTURE block rather than a METADATA_BLOCK_PICTURE comment.
+// kind is Vorbis, Opus, or FLAC. All use Vorbis comments; they differ in header
+// framing, which packets are decoder-critical, and FLAC cover art (native PICTURE
+// block vs METADATA_BLOCK_PICTURE comment).
+
 type kind uint8
 
 const (
@@ -30,29 +26,25 @@ const (
 	kindFLAC
 )
 
-// String is the codec name surfaced in the raw model and JSON properties.codec.
-// Titlecasing ("Opus"/"Vorbis") matches the Matroska reader, so Opus and Vorbis
-// read identically across the Ogg and Matroska containers. The central CanonicalCodec
-// step (applied after parse) normalizes the codecs that need it - e.g. FLAC's "flac"
-// -> "FLAC", MP4's "mp4a" -> "AAC" - but leaves Opus/Vorbis untouched, since they are
-// already the canonical names; getting their case right here is what keeps them
-// consistent. The text dump uppercases independently, so this affects only the
-// raw/JSON view, not display.
+// String is the raw/JSON codec name. "Opus"/"Vorbis" match Matroska. CanonicalCodec
+// normalizes others (e.g. flac→FLAC); Opus/Vorbis are already canonical. Text dump
+// uppercases on its own.
+
 func (k kind) String() string {
 	switch k {
 	case kindOpus:
 		return "Opus"
 	case kindFLAC:
-		// The raw name the native FLAC parser reports; CanonicalCodec uppercases it,
-		// so Ogg FLAC and native FLAC read identically.
+		// Same raw name as native FLAC; CanonicalCodec uppercases both.
+
 		return "flac"
 	}
 	return "Vorbis"
 }
 
-// apage is an audio page descriptor: enough to copy the page verbatim and, when
-// the header region's page count changes, to renumber it (rewrite its sequence
-// number and patch its CRC) without re-reading the body bytes.
+// apage describes an audio page for verbatim copy or renumber (seq + CRC patch)
+// when the header page count changes.
+
 type apage struct {
 	off     int64
 	total   int64
@@ -64,10 +56,9 @@ type apage struct {
 
 func (p apage) bodyOff() int64 { return p.off + (p.total - p.bodyLen) }
 
-// doc is the Ogg native document: the decoder-critical header packets kept
-// verbatim, the decoded comment list and pictures, and a descriptor for every
-// audio page (headers only - never the audio bytes). It is the preservation-first
-// base for rewrites and satisfies core.NativeDoc.
+// doc is the Ogg native document: verbatim decoder-critical headers, comments,
+// pictures, and per-audio-page descriptors (headers only). Implements core.NativeDoc.
+
 type doc struct {
 	format core.Format // FormatOggVorbis or FormatOggOpus
 	kind   kind
@@ -81,21 +72,19 @@ type doc struct {
 	setupPacket []byte // Vorbis setup header (packet 3), verbatim; nil for Opus and FLAC
 	commentPad  []byte // bytes after the comment list in the comment packet (Opus padding), preserved
 
-	// FLAC mapping only: every header packet after the identification packet is one
-	// FLAC metadata block, kept verbatim so untouched blocks (SEEKTABLE, CUESHEET,
-	// APPLICATION, unknown types) round-trip byte-for-byte. Cover art lives in
-	// PICTURE blocks here, not in the comment list.
+	// FLAC mapping: later header packets are FLAC metadata blocks (verbatim).
+	// Cover art is PICTURE blocks here, not comment METADATA_BLOCK_PICTURE.
+
 	flacBlocks []fblock
-	// dupContent is what each extra Vorbis comment block holds. Only the first survives a
-	// rewrite, so the writer grades these against what it stores.
+	// dupContent: payload of each extra Vorbis comment block (rewrite keeps first only).
+
 	dupContent             []core.DuplicateContent
 	malformedPictureBlocks [][]byte       // PICTURE bodies that failed to decode, preserved
 	commentPictures        []core.Picture // covers found as METADATA_BLOCK_PICTURE comments
 
-	// origCommentPacketLen is the raw comment header packet length as parsed. reassembleHeaders
-	// caps the summed comment packet at the alloc limit on re-read, so the write path floors its
-	// whole-packet size guard at this value: data already in the file (read within the parse
-	// limit) must stay writable even under a lower write limit. Clone copies it via c := *d.
+	// origCommentPacketLen: parsed comment packet length. Write floors its size guard here
+	// so data already readable under the parse limit stays writable under a lower write limit.
+
 	origCommentPacketLen int64
 
 	page0Len    int64 // BOS page length (the id packet, alone; copied verbatim)
@@ -120,8 +109,8 @@ func (d *doc) Clone() core.NativeDoc {
 	c.setupPacket = slices.Clone(d.setupPacket)
 	c.commentPad = slices.Clone(d.commentPad)
 	c.audioPages = slices.Clone(d.audioPages)
-	// Each block and each preserved picture body is copied too: cloning only the slice
-	// headers would leave every payload aliased to the document that handed it out.
+	// Deep-copy block/picture bodies; slice header clone would alias payloads.
+
 	c.flacBlocks = make([]fblock, len(d.flacBlocks))
 	for i, b := range d.flacBlocks {
 		c.flacBlocks[i] = b.clone()
@@ -135,17 +124,13 @@ func (d *doc) Clone() core.NativeDoc {
 	return &c
 }
 
-// PaddingBytes reports the bytes after the comment list inside the comment packet (Opus's
-// RFC 7845 padding), which the writer round-trips as-is. There is no padding control on
-// Ogg, so the number is the same before and after an edit.
-//
-// A FLAC PADDING block under the FLAC mapping is deliberately not counted, even though
-// dump --native lists it: rebuildFLACBlocks drops such a block on every rewrite (Ogg
-// re-paginates the header region, so padding there buys nothing), so counting it would
-// report slack that no rewrite grows into and that the next edit deletes.
+// PaddingBytes is Opus comment-packet padding (RFC 7845), round-tripped as-is.
+// No padding control. FLAC PADDING under the mapping is not counted: rebuilds drop it
+// (header re-pagination makes it useless).
+
 func (d *doc) PaddingBytes() int64 { return int64(len(d.commentPad)) }
 
-// Describe summarizes the native structure for the dump/native views.
+// Describe summarizes native structure for dump/native views.
 func (d *doc) Describe() []core.NativeEntry {
 	idKind, commentKind := "Vorbis identification header", "Vorbis comment header"
 	switch d.kind {

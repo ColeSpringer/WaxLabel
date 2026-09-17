@@ -5,10 +5,7 @@ import (
 	"time"
 )
 
-// TestEqualChaptersModuloEnds covers the duration-aware chapter equivalence diff uses so its
-// verdict agrees with how copy grades a reconstructable end. Reconstructable end differences
-// (a gapless interior end, or a trailing end that runs to EOF) compare equal; a genuine
-// interior gap, an early-ending trailing chapter, or any non-end difference still differs.
+// TestEqualChaptersModuloEnds: duration-aware end equivalence. Gapless interior and EOF trailing ends match; real gaps differ.
 func TestEqualChaptersModuloEnds(t *testing.T) {
 	ms := time.Millisecond
 	s := time.Second
@@ -31,33 +28,31 @@ func TestEqualChaptersModuloEnds(t *testing.T) {
 		},
 		{
 			name: "interior gapless end vs open are equal",
-			a:    []Chapter{ch(0, 5*s, "A"), ch(5*s, 0, "B")}, // A.End == B.Start
+			a:    []Chapter{ch(0, 5*s, "A"), ch(5*s, 0, "B")},
 			b:    []Chapter{ch(0, 0, "A"), ch(5*s, 0, "B")},
 			durA: dur, durB: dur, want: true,
 		},
 		{
 			name: "interior gapped end still differs",
-			a:    []Chapter{ch(0, 3*s, "A"), ch(5*s, 0, "B")}, // A ends early (gap before B)
+			a:    []Chapter{ch(0, 3*s, "A"), ch(5*s, 0, "B")},
 			b:    []Chapter{ch(0, 0, "A"), ch(5*s, 0, "B")},
 			durA: dur, durB: dur, want: false,
 		},
 		{
 			name: "trailing end at EOF vs open are equal",
-			a:    []Chapter{ch(0, 0, "A"), ch(5*s, dur, "B")}, // B runs to EOF
+			a:    []Chapter{ch(0, 0, "A"), ch(5*s, dur, "B")},
 			b:    []Chapter{ch(0, 0, "A"), ch(5*s, 0, "B")},
 			durA: dur, durB: dur, want: true,
 		},
 		{
 			name: "trailing end before EOF still differs",
-			a:    []Chapter{ch(0, 0, "A"), ch(5*s, 8*s, "B")}, // B ends at 8s, before the 10s EOF
+			a:    []Chapter{ch(0, 0, "A"), ch(5*s, 8*s, "B")},
 			b:    []Chapter{ch(0, 0, "A"), ch(5*s, 0, "B")},
 			durA: dur, durB: dur, want: false,
 		},
 		{
 			name: "trailing end floored to ms vs a non-whole-ms duration are equal",
-			// The Truncate guard: a written ID3 trailing end reads back as floor(dur) ms, while
-			// Properties().Duration() is nanosecond-precise. Without truncating dur to ms, a naive
-			// End >= dur would be 2037ms >= 2037.5ms -> false and wrongly report "differ".
+			// Truncate dur to ms: ID3 end is floor(dur); Properties duration is ns-precise.
 			a:    []Chapter{ch(0, 0, "A"), ch(1*s, 2037*ms, "B")},
 			b:    []Chapter{ch(0, 0, "A"), ch(1*s, 0, "B")},
 			durA: 2037*ms + 500*time.Microsecond, durB: 2037*ms + 500*time.Microsecond, want: true,
@@ -82,29 +77,21 @@ func TestEqualChaptersModuloEnds(t *testing.T) {
 		},
 		{
 			name: "unknown duration leaves a trailing end distinct",
-			// dur == 0: the trailing rule cannot fire, so a bounded trailing end is not
-			// normalized and stays distinct from an open one.
+			// dur == 0: trailing rule cannot fire.
 			a:    []Chapter{ch(0, 0, "A"), ch(5*s, 8*s, "B")},
 			b:    []Chapter{ch(0, 0, "A"), ch(5*s, 0, "B")},
 			durA: 0, durB: 0, want: false,
 		},
 		{
 			name: "differing durations make a byte-identical trailing end distinct",
-			// The trailing rule normalizes per file. A 50s end runs to EOF in a 50s file, so its
-			// End canonicalizes to 0, but it sits mid-file in a 100s file, where its End stays 50s.
-			// The two lists therefore canonicalize differently and are not equal, even though their
-			// metadata is byte-identical. This is the case the duration-blind fast path got wrong,
-			// so the fast path now gates on equal durations. It is also the more accurate answer: a
-			// [0,50s] chapter covers a 50s file entirely but only the first half of a 100s file.
+			// Trailing end normalizes per file duration; fast path gates on equal durations.
 			a:    []Chapter{ch(0, 50*s, "A")},
 			b:    []Chapter{ch(0, 50*s, "A")},
 			durA: 50 * s, durB: 100 * s, want: false,
 		},
 		{
 			name: "unknown duration makes a byte-identical trailing end distinct",
-			// With durB == 0 the trailing end cannot be shown to run to EOF, so it is not
-			// normalized and stays 50s, distinct from the 50s file's run-to-EOF end (normalized to
-			// 0). Reporting it equal instead would bring back the non-transitive mka/mp3/flac shape.
+			// durB == 0: cannot prove EOF; avoids non-transitive mka/mp3/flac shape.
 			a:    []Chapter{ch(0, 50*s, "A")},
 			b:    []Chapter{ch(0, 50*s, "A")},
 			durA: 50 * s, durB: 0, want: false,
@@ -115,7 +102,6 @@ func TestEqualChaptersModuloEnds(t *testing.T) {
 			if got := EqualChaptersModuloEnds(tc.a, tc.b, tc.durA, tc.durB); got != tc.want {
 				t.Errorf("EqualChaptersModuloEnds = %v, want %v", got, tc.want)
 			}
-			// Symmetric: swapping the operands (and their durations) must not change the verdict.
 			if got := EqualChaptersModuloEnds(tc.b, tc.a, tc.durB, tc.durA); got != tc.want {
 				t.Errorf("EqualChaptersModuloEnds (swapped) = %v, want %v", got, tc.want)
 			}
@@ -123,10 +109,7 @@ func TestEqualChaptersModuloEnds(t *testing.T) {
 	}
 }
 
-// TestEqualChaptersModuloEndsTransitive pins the property this comparison must hold: because
-// equality is the same canonical normalized form, it is transitive. Three files carrying the same
-// [0,50s] chapter but with different durations (unknown, 50s, 100s) must never produce A==B and
-// B==C yet A!=C.
+// TestEqualChaptersModuloEndsTransitive: no A==B, B==C, A!=C with mixed durations.
 func TestEqualChaptersModuloEndsTransitive(t *testing.T) {
 	s := time.Second
 	chs := []Chapter{{Start: 0, End: 50 * s, Title: "A"}}
@@ -134,13 +117,12 @@ func TestEqualChaptersModuloEndsTransitive(t *testing.T) {
 		name string
 		dur  time.Duration
 	}{
-		{"mka", 0},        // unknown duration: the 50s end cannot be shown to run to EOF
-		{"mp3", 50 * s},   // end runs to EOF, so it normalizes to open
-		{"flac", 100 * s}, // end sits mid-file, so it stays bounded
+		{"mka", 0},
+		{"mp3", 50 * s},
+		{"flac", 100 * s},
 	}
 	eq := func(i, j int) bool { return EqualChaptersModuloEnds(chs, chs, files[i].dur, files[j].dur) }
 
-	// Check every ordered triple for a transitivity violation: no A==B and B==C with A!=C.
 	for i := range files {
 		for j := range files {
 			for k := range files {
@@ -151,9 +133,6 @@ func TestEqualChaptersModuloEndsTransitive(t *testing.T) {
 			}
 		}
 	}
-	// The two verdicts the shape hinges on. A same-duration pair is equal, while the 50s and 100s
-	// files differ because their ends canonicalize to open and bounded respectively. The old
-	// byte-identical fast path forced both to equal, which is what broke transitivity.
 	if !eq(1, 1) {
 		t.Error("same-duration identical chapters must be equal (mp3 == mp3)")
 	}
@@ -162,8 +141,7 @@ func TestEqualChaptersModuloEndsTransitive(t *testing.T) {
 	}
 }
 
-// TestEqualChaptersModuloEndsDoesNotMutate checks the helper leaves its inputs untouched
-// (it normalizes clones), so a caller's chapter slices are safe to reuse afterward.
+// TestEqualChaptersModuloEndsDoesNotMutate: normalizes clones; inputs unchanged.
 func TestEqualChaptersModuloEndsDoesNotMutate(t *testing.T) {
 	s := time.Second
 	a := []Chapter{{Start: 0, End: 5 * s, Title: "A"}, {Start: 5 * s, End: 10 * s, Title: "B"}}

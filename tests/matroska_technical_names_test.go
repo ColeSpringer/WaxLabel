@@ -10,9 +10,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestMatroskaTechnicalNameMixedEditDropsWithWarning: an edit that changes a real
-// key and also supplies a reserved technical name writes the real change, does not
-// emit the technical element, and carries a keyed value-dropped warning.
+// edit that changes a real key and also supplies a reserved technical name writes the real change,
+// does not emit the technical element, and carries a keyed value-dropped warning.
 func TestMatroskaTechnicalNameMixedEditDropsWithWarning(t *testing.T) {
 	data := readFixture(t, sampleMKA)
 	before := bytes.Count(data, []byte("DURATION"))
@@ -35,8 +34,6 @@ func TestMatroskaTechnicalNameMixedEditDropsWithWarning(t *testing.T) {
 	}
 }
 
-// TestMatroskaTechnicalNearMissRoundTrips: names adjacent to the reserved set stay
-// ordinary custom fields and round-trip.
 func TestMatroskaTechnicalNearMissRoundTrips(t *testing.T) {
 	data := readFixture(t, sampleMKA)
 	_, re := saveMatroska(t, data, mustParseBytes(t, data).Edit().Set(tag.Key("DURATION_X"), "v"))
@@ -45,9 +42,9 @@ func TestMatroskaTechnicalNearMissRoundTrips(t *testing.T) {
 	}
 }
 
-// TestMatroskaTechnicalNameSetIsCleanNoOp: setting only reserved technical names
-// produces an honest no-op plan carrying a keyed value-dropped warning, and
-// executing it changes no bytes; the file never grows an element nothing reads.
+// setting only reserved technical names produces an honest no-op plan carrying a keyed
+// value-dropped warning, and executing it changes no bytes; the file never grows an element nothing
+// reads.
 func TestMatroskaTechnicalNameSetIsCleanNoOp(t *testing.T) {
 	for _, fixture := range []string{sampleMKA, sampleWebM} {
 		for _, key := range []string{"DURATION", "BPS", "NUMBER_OF_FRAMES", "_STATISTICS_WRITING_APP"} {

@@ -9,17 +9,12 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// APEv2 item names are unique within a tag, and the Cover Art convention has exactly
-// two of them, so a picture set is resolved onto those two slots: exact front and back
-// roles keep their own name, any other role takes a free name, an added picture claims
-// a slot from a pre-existing same-role one, and only a picture left with no name at all
-// is dropped. These tests pin that surface end to end: the editor's resolution and
-// warnings, the transfer report's grades, and a written file that lints clean.
+// APEv2 item names are unique within a tag, and the Cover Art convention has exactly two of them,
+// so a picture set is resolved onto those two slots: exact front and back roles keep their own
+// name, any other role takes a free name, an added picture claims a slot from a pre-existing
+// same-role one, and only a picture left with no name at all is dropped.
 
-// TestWavPackCoverSlotWrite: front + artist + band cannot all fit in two items. The
-// front keeps its name, the artist takes the free back name (role lost, image kept),
-// the band picture has no name left and is dropped with a warning, and the result
-// carries no colliding art for lint to flag.
+// front + artist + band cannot all fit in two items.
 func TestWavPackCoverSlotWrite(t *testing.T) {
 	src := readFixture(t, notagsWV)
 	plan, err := mustParseBytes(t, src).Edit().
@@ -53,9 +48,9 @@ func TestWavPackCoverSlotWrite(t *testing.T) {
 	}
 }
 
-// TestWavPackSlotlessPictureRefusedWithoutDropOption: for a library caller the slotless
-// picture is refused like an unrepresentable cover format; WithAllowUnsupportedDrop
-// (which the CLI always passes) turns the refusal into the warned drop above.
+// for a library caller the slotless picture is refused like an unrepresentable cover format;
+// WithAllowUnsupportedDrop (which the CLI always passes) turns the refusal into the warned drop
+// above.
 func TestWavPackSlotlessPictureRefusedWithoutDropOption(t *testing.T) {
 	src := readFixture(t, notagsWV)
 	_, err := mustParseBytes(t, src).Edit().
@@ -68,10 +63,9 @@ func TestWavPackSlotlessPictureRefusedWithoutDropOption(t *testing.T) {
 	}
 }
 
-// TestWavPackAddedFrontReplacesExisting: the edit targets the slot, so an added front
-// cover replaces the file's existing front rather than losing to it, and the
-// replacement of pre-existing art is warned. No drop option is needed: the added
-// picture is stored.
+// edit targets the slot, so an added front cover replaces the file's existing front rather than
+// losing to it, and the replacement of pre-existing art is warned. No drop option is needed: the
+// added picture is stored.
 func TestWavPackAddedFrontReplacesExisting(t *testing.T) {
 	src := readFixture(t, notagsWV)
 	seed, err := mustParseBytes(t, src).Edit().
@@ -98,9 +92,8 @@ func TestWavPackAddedFrontReplacesExisting(t *testing.T) {
 	}
 }
 
-// TestWavPackCoverSlotNoOpKeepsWarning: with both slots already held, an added picture
-// that resolves away entirely changes nothing on disk, but the loss must survive the
-// no-op collapse so --strict still catches it.
+// with both slots already held, an added picture that resolves away entirely changes nothing on
+// disk, but the loss must survive the no-op collapse so --strict still catches it.
 func TestWavPackCoverSlotNoOpKeepsWarning(t *testing.T) {
 	src := readFixture(t, notagsWV)
 	seed, err := mustParseBytes(t, src).Edit().
@@ -124,10 +117,9 @@ func TestWavPackCoverSlotNoOpKeepsWarning(t *testing.T) {
 	}
 }
 
-// TestTransferCoverSlotReport: copying a FLAC carrying front + artist + band pictures
-// into WavPack reports the front carried, the artist stored with reduced fidelity (its
-// role becomes the back cover), and the band picture dropped for want of a name; the
-// written destination holds exactly those two covers.
+// copying a FLAC carrying front + artist + band pictures into WavPack reports the front carried,
+// the artist stored with reduced fidelity (its role becomes the back cover), and the band picture
+// dropped for want of a name; the written destination holds exactly those two covers.
 func TestTransferCoverSlotReport(t *testing.T) {
 	flacSrc := readFixture(t, sampleFLAC)
 	seed, err := mustParseBytes(t, flacSrc).Edit().

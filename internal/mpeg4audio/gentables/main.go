@@ -1,14 +1,9 @@
-// Command gentables extracts the AAC and SBR Huffman codebooks and the scalefactor band
-// offsets from the text of ISO/IEC 14496-3:2009 and writes them as Go source for package
-// mpeg4audio. It is run by hand, not by go:generate: it needs a copy of the specification,
-// which is not redistributable and is never checked in.
+// Command gentables extracts AAC/SBR Huffman books and SWB offsets from ISO/IEC 14496-3:2009
+// PDF into mpeg4audio Go sources. Run by hand; spec not checked in.
 //
 //	go run . -spec /path/to/iso14496-3-2009.pdf -out ..
 //
-// Every table is identified by its "Table 4.A.N" caption rather than its title text, since
-// the extractor fragments titles but keeps the number intact. Each table is validated
-// against the size the specification states for it, and a mismatch is a hard failure naming
-// the table and the missing indices: a silently short codebook would decode garbage.
+// Tables located by "Table 4.A.N" caption. Entry count mismatch is hard failure.
 package main
 
 import (
@@ -85,8 +80,7 @@ type code struct {
 	value  uint32
 }
 
-// book accumulates one codebook's entries by symbol index, so a duplicate index is rejected
-// and a missing one is reported by number.
+// book accumulates codebook entries by symbol index.
 type book struct {
 	want    int
 	entries map[int]code
@@ -94,9 +88,7 @@ type book struct {
 
 func newBook(want int) *book { return &book{want: want, entries: map[int]code{}} }
 
-// add records one entry, ignoring anything outside the table's declared size or already
-// seen: the page furniture (headers, the licence footer, column captions) yields token
-// triples that must not become codewords, and the size bound is what rejects them.
+// add records one entry; ignores out-of-range, duplicate, or page furniture tokens.
 func (b *book) add(index, length int, value uint32) bool {
 	if index < 0 || index >= b.want || length < 1 || length > 32 {
 		return false
@@ -152,8 +144,7 @@ func rowWords(r *pdf.Reader, page int) ([][]string, error) {
 
 var tableCaption = regexp.MustCompile(`Table 4\.A\.(\d+)`)
 
-// captionNumber returns the annex table number a row introduces, or -1. The words of a
-// title fragment ("t_hu", "ffma", "n"), so the number is the only reliable identifier.
+// captionNumber returns Table 4.A.N number from a caption row, or -1.
 func captionNumber(spaced string) int {
 	m := tableCaption.FindStringSubmatch(spaced)
 	if m == nil {
@@ -202,18 +193,10 @@ func extractAAC(r *pdf.Reader) (map[int][]code, error) {
 	return finishAll(books, func(n int) string { return fmt.Sprintf("Table 4.A.%d", n) })
 }
 
-// columns tracks the next symbol expected in each of a codebook table's two printed
-// columns. The left column starts at 0 and the right at the midpoint, and each data row
-// carries one entry from each.
+// columns tracks next symbol index per printed column (left from 0, right from midpoint).
 type columns struct{ left, right int }
 
-// addAACRow reads one data row of an AAC codebook table. The extractor gives every word of
-// a row the same X, so a column boundary is only visible where the text itself carries a
-// space: a row reads as "8 19 7ffee698 f9", in which the codeword, the next index and its
-// length have run together. The row is therefore parsed against what the table says must
-// come next - the two expected symbol numbers - with whitespace treated as a boundary that
-// must fall between cells and every other boundary left free. A row that does not parse
-// (page furniture, a column heading) leaves the cursors alone.
+// addAACRow parses one AAC table row against expected symbol indices; whitespace is cell boundary.
 func addAACRow(b *book, c *columns, row string) {
 	left, right := strconv.Itoa(c.left), strconv.Itoa(c.right)
 	if got, ok := matchCells(row, []string{left, right}); ok {
@@ -223,7 +206,7 @@ func addAACRow(b *book, c *columns, row string) {
 		c.right++
 		return
 	}
-	// A column can run out one row before the other when the entry count is odd.
+	// Odd entry count: one column may finish first.
 	if got, ok := matchCells(row, []string{left}); ok && c.left < (b.want+1)/2 {
 		b.add(c.left, got[0].length, got[0].value)
 		c.left++
@@ -235,9 +218,7 @@ func addAACRow(b *book, c *columns, row string) {
 	}
 }
 
-// matchCells parses row as one (index, length, codeword) group per expected index, in
-// order, and reports whether the whole row is consumed. Each cell is a run of characters
-// containing no whitespace; a whitespace character in row must fall between cells.
+// matchCells parses (index,length,codeword) groups for expected indices; whole row consumed.
 func matchCells(row string, indices []string) ([]code, bool) {
 	out := make([]code, 0, len(indices))
 	if !matchFrom(row, 0, indices, &out) {
@@ -256,9 +237,7 @@ func matchFrom(s string, pos int, indices []string, out *[]code) bool {
 		return false
 	}
 	p := skipSpace(s, pos+len(idx))
-	// The length is one or two decimal digits; the codeword is up to eight hex digits and
-	// must fit in that many bits. Both are tried longest-first, so the common unambiguous
-	// reading is found without backtracking.
+	// Length 1-2 digits; codeword up to 8 hex; try longest-first.
 	for n := 2; n >= 1; n-- {
 		if p+n > len(s) {
 			continue
@@ -309,9 +288,7 @@ var sbrTables = []struct {
 	{88, "sbrTNoiseBal30", 25},
 }
 
-// sbrRow matches a whitespace-stripped SBR row: one or two (index, 8-hex length, 8-hex
-// codeword) triples. The extractor splits inside these cells, so the row is read as one
-// run of characters rather than as words.
+// sbrRow matches one or two SBR (index, hex len, hex code) triples in flattened text.
 var sbrRow = regexp.MustCompile(`^(\d+)0[xX]([0-9A-Fa-f]{8})0[xX]([0-9A-Fa-f]{8})(?:(\d+)0[xX]([0-9A-Fa-f]{8})0[xX]([0-9A-Fa-f]{8}))?$`)
 
 func extractSBR(r *pdf.Reader) (map[int][]code, error) {
@@ -393,9 +370,7 @@ var swbRates = map[int]int{
 }
 
 var (
-	// The dash is written as an escape: the specification prints an en dash here, and a
-	// literal one is invisible to a reader scanning for the odd character out - and to a
-	// mechanical dash cleanup, which would silently make this pattern match nothing.
+	// \x{2013} matches spec en dash; literal dash would break after cleanup.
 	swbCaption  = regexp.MustCompile(`Table 4\.1(?:29|3\d|4[01]) \x{2013} scalefactor bands`)
 	fsRow       = regexp.MustCompile(`^fs\s*\[kHz\]\s+(\S.*)$`)
 	numberTok   = regexp.MustCompile(`[0-9]+(?:\.[0-9]+)?`)
@@ -404,8 +379,7 @@ var (
 	longKeyword = "LONG_WINDOW"
 )
 
-// swbTable is one extracted scalefactor band table: the rates it applies to and the band
-// offsets, ending with the window length.
+// swbTable is one extracted SWB table with rates and offsets.
 type swbTable struct {
 	long    bool
 	rates   []int
@@ -464,7 +438,7 @@ func extractSWB(r *pdf.Reader) (long, short [13][]uint16, err error) {
 			}
 		}
 	}
-	// 7350 Hz shares the 8 kHz layout; the specification prints no separate table for it.
+	// 7350 Hz copies 8 kHz layout.
 	long[12], short[12] = long[11], short[11]
 	for i := range long {
 		if len(long[i]) != swbCountsLong[i]+1 {
@@ -477,8 +451,7 @@ func extractSWB(r *pdf.Reader) (long, short [13][]uint16, err error) {
 	return long, short, nil
 }
 
-// parseRates turns an "fs [kHz]" cell into rates in Hz. The cell separates its rates with
-// commas, with the word "and", or with both ("32,44.1,48", "22.05 and 24").
+// parseRates parses fs [kHz] cell to Hz (comma or "and" separated).
 func parseRates(s string) []int {
 	var out []int
 	for _, field := range numberTok.FindAllString(s, -1) {
@@ -491,8 +464,7 @@ func parseRates(s string) []int {
 	return out
 }
 
-// addSWBRow reads the (band, offset) pairs of one two-column row. A trailing lone number is
-// the window length that closes the table; the bracketed 1920-window alternates are dropped.
+// addSWBRow reads band/offset pairs; lone 1024/128 is window terminator.
 func addSWBRow(t *swbTable, line string) {
 	tokens := strings.Fields(bracketed.ReplaceAllString(line, " "))
 	for i := 0; i < len(tokens); {
@@ -511,8 +483,7 @@ func addSWBRow(t *swbTable, line string) {
 				}
 			}
 		}
-		// Not a band index: the window length that terminates the table (1024 or 128), or
-		// page furniture the size checks below reject.
+		// Window terminator or page furniture.
 		if band == 1024 || band == 128 {
 			t.last = band
 		}

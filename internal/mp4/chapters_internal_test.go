@@ -11,13 +11,11 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// TestCollectMvhdAgreesWithMovieTimingOf is the regression for the write/reparse twin divergence
-// a valid-but-truncated mvhd would introduce: collectMvhd (write path, populates
-// d.movieTimescale/d.movieDuration) and movieTimingOf (reparse, feeds the chapter last-end
-// canonicalization) must read the same timing at the same per-field thresholds. A v0 mvhd with a
-// present timescale+duration but cut off before next_track_ID (byte 96) previously left the write
-// path's timing zero while a reparse read it - desyncing the last-end canonicalization and
-// churning the file on an identical re-apply.
+// TestCollectMvhdAgreesWithMovieTimingOf is the regression for the write/reparse twin
+// divergence a valid-but-truncated mvhd would introduce: collectMvhd (write path,
+// populates d.movieTimescale/d.movieDuration) and movieTimingOf (reparse, feeds the
+// chapter last-end canonicalization) must read the same timing at the same per-field
+// thresholds.
 func TestCollectMvhdAgreesWithMovieTimingOf(t *testing.T) {
 	payload := make([]byte, 50)                      // v0, 50 bytes: past the duration field (byte 20), before next_track_ID (byte 96)
 	binary.BigEndian.PutUint32(payload[12:16], 1000) // timescale
@@ -102,10 +100,9 @@ func TestSentinelToZero64(t *testing.T) {
 
 func TestChapterDeltasLastChapterBounded(t *testing.T) {
 	chs := []core.Chapter{{Start: 0}, {Start: 5 * time.Second}}
-	// An unknown movie duration (the sentinel maps to 0) must give the final
-	// chapter a one-unit tail, not a multi-week span - the regression a raw
-	// 0xFFFFFFFF movieDuration would cause. One unit is the value isPlaceholderTail
-	// recognizes, so the read leaves such a chapter open rather than reporting the tail.
+	// An unknown movie duration (the sentinel maps to 0) must give the final chapter a
+	// one-unit tail, not a multi-week span - the regression a raw 0xFFFFFFFF movieDuration
+	// would cause.
 	if d, _ := chapterDeltas(chs, 1000, 1000, 0); d[1] != 1 {
 		t.Errorf("last delta with unknown duration = %d, want 1 (one-unit tail)", d[1])
 	}
@@ -183,12 +180,10 @@ func TestBuildChapterTrakLeadingOffsetSaturates(t *testing.T) {
 	}
 }
 
-// TestBuildChapterTrakCumulativeSpanSaturates checks that a chapter list whose cumulative
-// span exceeds the 90 kHz mdhd/tkhd/elst 32-bit duration field flags saturation even when
-// every individual inter-chapter gap fits (chapterDeltas alone reports none). Without folding
-// the cumulative totalDur / totalDurMovie / firstStart+totalDurMovie spans into the flag, a
-// real >13.25 h audiobook would write a clamped, un-warned chapter-track duration. Mirrors the
-// report's repro (0:00 / 13:00:00 / 13:30:00) at the default 90 kHz chapter media timescale.
+// TestBuildChapterTrakCumulativeSpanSaturates checks that a chapter list whose
+// cumulative span exceeds the 90 kHz mdhd/tkhd/elst 32-bit duration field flags
+// saturation even when every individual inter-chapter gap fits (chapterDeltas alone
+// reports none).
 func TestBuildChapterTrakCumulativeSpanSaturates(t *testing.T) {
 	const mts = chapterMediaTimescale // 90 kHz: MaxUint32 units is ~13.25 h
 	chs := []core.Chapter{
@@ -221,11 +216,6 @@ const (
 )
 
 // TestChapterEdtsEmptyEdit pins the wire format of the chapter track's edit list.
-// A non-zero first chapter is positioned by a leading empty edit
-// (media_time -1), not zero-anchored. Asserting the raw bytes matters because a
-// round-trip alone only proves WaxLabel's (lenient) reader agrees with its writer;
-// iTunes and Apple Books read these exact fields. A zero-start list keeps the
-// original single normal entry, byte for byte.
 func TestChapterEdtsEmptyEdit(t *testing.T) {
 	const firstStart, mediaDur = uint64(4000), uint64(9000)
 	be := binary.BigEndian
@@ -273,11 +263,8 @@ func TestChapterEdtsEmptyEdit(t *testing.T) {
 	})
 }
 
-// TestBuildChapterTrakEditGating checks the empty edit is written only when the
-// movie timescale is known. With it, a non-zero first chapter yields a 2-entry
-// elst; without it (timescale 0, the malformed-mvhd fallback) the track stays
-// zero-anchored - the reader cannot resolve the movie timescale to honor an edit,
-// so writing one would only desync the result from a reparse.
+// TestBuildChapterTrakEditGating checks the empty edit is written only when the movie
+// timescale is known.
 func TestBuildChapterTrakEditGating(t *testing.T) {
 	chs := []core.Chapter{{Start: 4 * time.Second, Title: "A"}, {Start: 9 * time.Second, Title: "B"}}
 	if c := trakElstEntryCount(t, mustBuildTrak(2, 1000, 1000, chs)); c != 2 {
@@ -320,10 +307,9 @@ func TestAddClampSaturates(t *testing.T) {
 	}
 }
 
-// TestEmptyEditOffset is the read side of that contract: an elst whose first entry is an empty
-// edit (media_time -1) yields its segment_duration as a Duration scaled by the
-// movie timescale; a normal first entry (or zero entries) yields no offset. It is
-// the inverse of chapterEdts.
+// TestEmptyEditOffset is the read side of that contract: an elst whose first entry is
+// an empty edit (media_time -1) yields its segment_duration as a Duration scaled by the
+// movie timescale;
 func TestEmptyEditOffset(t *testing.T) {
 	be := binary.BigEndian
 	elst := func(count uint32, entries ...byte) []byte {
@@ -359,11 +345,10 @@ func TestEmptyEditOffset(t *testing.T) {
 	}
 }
 
-// TestSpliceBytesCoincidentOffsetOrdering pins the tie-break for two reps sharing a start (a
-// combined tag+chapter edit where a chpl insert lands exactly at meta.end()): a zero-width insert
-// must be applied before a same-offset replace, deterministically and regardless of input order.
-// Without the tie-break sort.Slice ordered by luck, and emitting the replace first advances pos
-// past the insert's start, tripping the disjoint-range guard.
+// TestSpliceBytesCoincidentOffsetOrdering pins the tie-break for two reps sharing a
+// start (a combined tag+chapter edit where a chpl insert lands exactly at meta.end()):
+// a zero-width insert must be applied before a same-offset replace, deterministically
+// and regardless of input order.
 func TestSpliceBytesCoincidentOffsetOrdering(t *testing.T) {
 	src := []byte("AABBCC") // replace the "BB" pair at offset 2 with "XX", insert "II" at offset 2
 	insert := byteRep{start: 2, oldLen: 0, repl: []byte("II")}
@@ -382,9 +367,8 @@ func TestSpliceBytesCoincidentOffsetOrdering(t *testing.T) {
 	}
 }
 
-// TestIsPlaceholderTail covers both synthetic tails: the one media unit chapterDeltas writes
-// now, and the whole second earlier releases wrote. Rejecting the second would make every
-// file they produced read back with a fabricated end, and keep it on the next write.
+// TestIsPlaceholderTail covers both synthetic tails: the one media unit chapterDeltas
+// writes now, and the whole second earlier releases wrote.
 func TestIsPlaceholderTail(t *testing.T) {
 	const mts, movieTS, movieDur = 90000, 1000, 9000 // 9 s movie, 90 kHz chapter track
 	past := 10 * time.Second

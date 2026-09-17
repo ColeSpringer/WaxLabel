@@ -5,9 +5,7 @@ import (
 	"time"
 )
 
-// TestOpenPastDurationEnds pins the fold that makes an ID3 read agree with the start-only
-// stores: the bounded zero-length end CHAP must carry for a chapter past the media duration
-// reads back open, while an in-range zero-length chapter and a zero duration are untouched.
+// TestOpenPastDurationEnds: past-duration zero-length end folds open (ID3 vs start-only stores).
 func TestOpenPastDurationEnds(t *testing.T) {
 	const duration = 30 * time.Second
 	cases := []struct {
@@ -30,12 +28,10 @@ func TestOpenPastDurationEnds(t *testing.T) {
 			}
 		})
 	}
-	OpenPastDurationEnds(nil, duration) // an empty list must not panic
+	OpenPastDurationEnds(nil, duration)
 }
 
-// TestFormatChapterTimeRounds: the human timestamp reports the nearest millisecond, so a
-// sub-millisecond start does not read one millisecond low, and a value just under a second
-// carries into the seconds field rather than printing ".1000".
+// TestFormatChapterTimeRounds: nearest millisecond; sub-ms values carry correctly.
 func TestFormatChapterTimeRounds(t *testing.T) {
 	cases := map[time.Duration]string{
 		362811791 * time.Nanosecond:   "0:00:00.363",

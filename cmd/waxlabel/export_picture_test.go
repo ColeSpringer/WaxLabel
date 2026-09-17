@@ -9,8 +9,7 @@ import (
 	"testing"
 )
 
-// TestExportPictureRoundTrip: exporting an embedded cover writes its image bytes verbatim, so
-// the output file is byte-identical to the source image, and the JSON reports the picture.
+// TestExportPictureRoundTrip: exported bytes match source image; JSON reports picture metadata.
 func TestExportPictureRoundTrip(t *testing.T) {
 	t.Parallel()
 	cover := writeTempImage(t, "cover.png", minimalPNG())
@@ -40,16 +39,14 @@ func TestExportPictureRoundTrip(t *testing.T) {
 	}
 }
 
-// TestExportPictureSelectorErrors covers the exactly-one resolver's failure modes: an explicit
-// role that matches nothing, an ambiguous role that matches several (unlike --remove-picture, a
-// no-match or multi-match is an error here), an out-of-range index, a file with no pictures, and
-// the no-selector default when there is no single front cover to pick.
+// TestExportPictureSelectorErrors: exactly-one resolver errors (no match, ambiguous, bad index,
+// no pictures, no default front cover).
 func TestExportPictureSelectorErrors(t *testing.T) {
 	t.Parallel()
 	pngA := writeTempImage(t, "a.png", minimalPNG())
 	pngB := writeTempImage(t, "b.png", append(minimalPNG(), 0x00)) // distinct bytes, same role
 	f := copyFixture(t, notagsFLAC)
-	// Two front covers, so a role selector is ambiguous and the no-selector default cannot pick.
+	// Two front covers: role selector ambiguous; default cannot pick.
 	if _, errb, code := runCLI(t, "set", f, "--add-picture", "front-cover="+pngA, "--add-picture", "front-cover="+pngB); code != 0 {
 		t.Fatalf("authoring two covers exit %d: %s", code, errb)
 	}
@@ -75,7 +72,7 @@ func TestExportPictureSelectorErrors(t *testing.T) {
 		}
 	}
 
-	// An explicit index still picks exactly one of the two covers.
+	// Explicit index picks one cover.
 	if _, errb, code := runCLI(t, "export-picture", f, "--picture", "2", "-o", out); code != 0 {
 		t.Fatalf("index selector exit %d: %s", code, errb)
 	}
@@ -87,18 +84,15 @@ func TestExportPictureSelectorErrors(t *testing.T) {
 		t.Errorf("--picture 2 exported the wrong cover")
 	}
 
-	// A file with no pictures is a usage error, not a silent empty file.
+	// No pictures: usage error, not empty output file.
 	none := copyFixture(t, notagsFLAC)
 	if _, _, code := runCLI(t, "export-picture", none, "-o", filepath.Join(t.TempDir(), "none.png")); code != 2 {
 		t.Errorf("no-pictures export exit = %d, want 2", code)
 	}
 }
 
-// TestExportPictureRefusesInputAsOutput guards the "input is never modified" invariant: an -o
-// that resolves to the input (the same path, a symlink to it, or a hardlink sharing its inode)
-// is refused, so the audio is never clobbered with the extracted cover bytes. The refusal is
-// unconditional - even --overwrite cannot make in-place extraction meaningful - unlike set,
-// whose -o legitimately targets the input for an atomic in-place rewrite.
+// TestExportPictureRefusesInputAsOutput: -o same as input (path/symlink) refused; audio never
+// clobbered. Unlike set, even --overwrite cannot extract in place.
 func TestExportPictureRefusesInputAsOutput(t *testing.T) {
 	t.Parallel()
 	f := copyFixture(t, sampleMKA) // carries a cover
@@ -117,7 +111,7 @@ func TestExportPictureRefusesInputAsOutput(t *testing.T) {
 		}
 	}
 
-	// -o naming the input directly: refused without --overwrite, and still refused with it.
+	// -o == input refused with or without --overwrite.
 	if _, _, code := runCLI(t, "export-picture", f, "-o", f); code != 2 {
 		t.Errorf("-o == input exit = %d, want 2 (refused)", code)
 	}
@@ -127,7 +121,7 @@ func TestExportPictureRefusesInputAsOutput(t *testing.T) {
 	}
 	intact("after -o == input --overwrite")
 
-	// A symlink to the input resolves to the same file, so it is refused too.
+	// Symlink to input resolves same file; refused.
 	link := filepath.Join(t.TempDir(), "link.mka")
 	if err := os.Symlink(f, link); err != nil {
 		t.Skipf("symlink unsupported here: %v", err)
@@ -138,8 +132,7 @@ func TestExportPictureRefusesInputAsOutput(t *testing.T) {
 	intact("after -o symlink-to-input")
 }
 
-// TestExportPictureOverwriteGate: an existing output file is refused unless --overwrite, so a
-// stray export does not clobber a file, while --overwrite replaces it.
+// TestExportPictureOverwriteGate: existing -o refused unless --overwrite.
 func TestExportPictureOverwriteGate(t *testing.T) {
 	t.Parallel()
 	cover := writeTempImage(t, "cover.png", minimalPNG())
@@ -166,17 +159,14 @@ func TestExportPictureOverwriteGate(t *testing.T) {
 	}
 }
 
-// mp3JunkCover returns an MP3 whose APIC declares image/png over bytes no decoder can read.
-// The tag is built here rather than authored through the CLI: a fixture for a CLI test must
-// not depend on the command under test to produce it.
+// mp3JunkCover: hand-built APIC with image/png label over undecodable bytes (not CLI-authored).
 func mp3JunkCover(t *testing.T) []byte {
 	t.Helper()
 	audio, err := os.ReadFile(notagsMP3)
 	if err != nil {
 		t.Fatalf("read the audio fixture: %v", err)
 	}
-	// APIC body: Latin-1 encoding, NUL-terminated MIME, picture type, empty description,
-	// then a PNG with its signature stripped - bytes under a label nothing can decode.
+	// APIC: Latin-1 MIME, type front, PNG body with signature stripped.
 	body := []byte{0x00}
 	body = append(body, "image/png"...)
 	body = append(body, 0x00, 0x03, 0x00)
@@ -184,8 +174,7 @@ func mp3JunkCover(t *testing.T) []byte {
 	return append(id3v24Tag(t, "APIC", body), audio...)
 }
 
-// id3v24Tag wraps one frame in an ID3v2.4 tag. Both the tag and the frame size are
-// synchsafe: seven bits per byte, high bit clear.
+// id3v24Tag wraps one frame in ID3v2.4 with synchsafe tag and frame sizes.
 func id3v24Tag(t *testing.T, id string, body []byte) []byte {
 	t.Helper()
 	synchsafe := func(n int) []byte {
@@ -203,8 +192,7 @@ func id3v24Tag(t *testing.T, id string, body []byte) []byte {
 	return append(tag, frame...)
 }
 
-// TestExportPictureJunkReportsUnrecognized: a junk cover under a declared image/png is
-// written out under the unrecognized MIME, not the label its container lied with.
+// TestExportPictureJunkReportsUnrecognized: junk APIC exports as octet-stream, not declared png.
 func TestExportPictureJunkReportsUnrecognized(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

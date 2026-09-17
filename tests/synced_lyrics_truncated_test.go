@@ -7,13 +7,9 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// TestSyncedLyricsWriteCapTruncates authors a synced-lyrics set larger than the modeled
-// per-set line cap (65,536) and prepares a write. The plan truncates the set to the cap
-// before writing, surfaces a WarnSyncedLyricsTruncated so the drop is not silent, and the
-// re-parsed file carries exactly the cap. Both the ID3 SYLT store (MP3) and the VorbisComment
-// LRC store (FLAC) truncate at plan time, so the written container never carries the over-cap
-// set (unlike the old behavior, where an over-cap set was written whole and read back short
-// unwarned).
+// authors a synced-lyrics set larger than the modeled per-set line cap (65,536) and prepares a
+// write. The plan truncates the set to the cap before writing, surfaces a WarnSyncedLyricsTruncated
+// so the drop is not silent, and the re-parsed file carries exactly the cap.
 func TestSyncedLyricsWriteCapTruncates(t *testing.T) {
 	const cap = 1 << 16
 	const over = cap + 3

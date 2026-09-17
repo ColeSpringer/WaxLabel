@@ -2,27 +2,22 @@ package aac
 
 import "github.com/colespringer/waxlabel/internal/mpeg4audio"
 
-// adtsHeader is the decoded ADTS fixed header of a frame: the static stream
-// configuration (object type, sample rate, channels) plus the frame length. The
-// static config identifies the stream and feeds the essence digest; the frame
-// length advances the header walk that derives an accurate duration (see
-// totalADTSSamples) and is deliberately kept out of the digest (see
-// Codec.EssenceExtent).
+// adtsHeader is a decoded ADTS fixed header: static stream config plus frame
+// length. Config feeds the essence digest; length advances the duration walk
+// (totalADTSSamples) and is kept out of the digest (Codec.EssenceExtent).
 type adtsHeader struct {
-	objectType  int // MPEG-4 Audio Object Type (= profile field + 1): 1 Main, 2 LC, 3 SSR only, since decodeADTS rejects profile field 3 (AOT 4 / LTP)
+	objectType  int // MPEG-4 AOT (= profile+1): 1 Main, 2 LC, 3 SSR; profile 3 rejected
 	sfIndex     int // sampling-frequency index (0..12)
-	sampleRate  int // decoded sample rate in Hz
-	chanConfig  int // channel-configuration field (0..7)
-	channels    int // decoded channel count (0 when chanConfig is 0 / carried in the AOT config)
-	frameLength int // total bytes of this frame (header + payload)
-	rawBlocks   int // number_of_raw_data_blocks_in_frame (0..3); the frame holds rawBlocks+1 AAC blocks
-	// protectionAbsent is the header's own flag: when it is clear a two-byte CRC follows the
-	// fixed header, so the raw data block starts two bytes later.
+	sampleRate  int // Hz
+	chanConfig  int // channel-configuration (0..7)
+	channels    int // decoded count (0 when chanConfig is 0 / in AOT config)
+	frameLength int // total frame bytes (header + payload)
+	rawBlocks   int // number_of_raw_data_blocks_in_frame (0..3); frame holds rawBlocks+1 blocks
+	// protectionAbsent: when clear, a 2-byte CRC follows the fixed header.
 	protectionAbsent bool
 }
 
-// headerLen is the bytes before the first raw data block: the fixed header, plus the CRC
-// when the header declares one.
+// headerLen is bytes before the first raw data block (fixed header + optional CRC).
 func (h adtsHeader) headerLen() int {
 	if h.protectionAbsent {
 		return adtsHeaderSize
@@ -30,27 +25,21 @@ func (h adtsHeader) headerLen() int {
 	return adtsHeaderSize + 2
 }
 
-// adtsHeaderSize is the ADTS fixed header length without the optional 2-byte CRC
-// (present when protection_absent is 0). decodeADTS only reads the fixed header;
-// the CRC, when present, is inside frameLength and copied verbatim on write.
+// adtsHeaderSize is the fixed header without optional CRC. decodeADTS reads only
+// the fixed header; CRC (when present) sits inside frameLength and is copied on write.
 const adtsHeaderSize = 7
 
-// decodeADTS decodes and validates the ADTS fixed header at the start of b. It
-// is the single ADTS recognizer, shared by Sniff, the root front-ID3 detection
-// peek, and parse, so the strictness lives in one place.
+// decodeADTS validates the ADTS fixed header at b. Shared by Sniff, the root
+// front-ID3 peek, and parse.
 //
-// Validation is deliberately strict to keep raw ADTS from being confused with
-// MP3 or arbitrary bytes (the front-ID3 ambiguity now has a third party - MP3 vs
-// FLAC vs AAC): syncword 0xFFF, layer == 00 (always so for ADTS, and the value
-// MP3 frame decoding rejects, which gives the two formats mutual exclusivity), a
-// non-reserved object type (profile field != 3), a valid sampling-frequency
-// index (< 13), and a frame length at least the header size. ok is false on any
-// failure or a short buffer.
+// Strict enough to separate ADTS from MP3/arbitrary bytes: syncword 0xFFF,
+// layer == 00 (MP3 rejects this), non-reserved object type, sfIndex < 13, frame
+// length >= header size. ok is false on failure or short buffer.
 func decodeADTS(b []byte) (adtsHeader, bool) {
 	if len(b) < adtsHeaderSize {
 		return adtsHeader{}, false
 	}
-	// Syncword: 12 bits all 1 (byte 0, then the top nibble of byte 1).
+	// Syncword: 12 bits all 1.
 	if b[0] != 0xFF || b[1]&0xF0 != 0xF0 {
 		return adtsHeader{}, false
 	}
@@ -60,14 +49,11 @@ func decodeADTS(b []byte) (adtsHeader, bool) {
 	}
 	profile := int(b[2] >> 6)
 	if profile == 3 {
-		// Reserved in MPEG-2 ADTS; AOT 4 (LTP) in MPEG-4. Rejected either way: LTP
-		// is effectively unused in practice, and excluding one of the four profile
-		// values tightens the false-positive guard. So objectType is always 1-3.
+		// Reserved (MPEG-2) / AOT 4 LTP (MPEG-4). Reject both; keeps objectType in 1-3.
 		return adtsHeader{}, false
 	}
 	sfIndex := int(b[2] >> 2 & 0x0F)
-	// Indices 13-14 are reserved and 15 means "explicit rate in the AOT-specific
-	// config", which an ADTS header never carries; all three report no rate.
+	// 13-14 reserved; 15 means explicit rate (never in ADTS). All yield no rate.
 	sampleRate := mpeg4audio.SampleRate(sfIndex)
 	if sampleRate == 0 {
 		return adtsHeader{}, false
@@ -84,9 +70,7 @@ func decodeADTS(b []byte) (adtsHeader, bool) {
 		chanConfig:  chanConfig,
 		channels:    mpeg4audio.ChannelCount(chanConfig),
 		frameLength: frameLength,
-		// number_of_raw_data_blocks_in_frame: the last 2 bits of byte 6. A frame holds
-		// rawBlocks+1 AAC blocks (1..4), each samplesPerAACFrame samples, so the duration
-		// walk must not assume a flat one block per frame.
+		// Last 2 bits of byte 6: frame holds rawBlocks+1 AAC blocks (1..4).
 		rawBlocks:        int(b[6] & 0x03),
 		protectionAbsent: b[1]&0x01 != 0,
 	}, true

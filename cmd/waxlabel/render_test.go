@@ -10,19 +10,18 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// trackProps wraps a single audio track in a Properties for audioLine tests.
+// trackProps wraps one audio track in Properties for audioLine tests.
 func trackProps(container string, t wl.AudioTrack) wl.Properties {
 	return wl.Properties{Container: container, Tracks: []wl.AudioTrack{t}}
 }
 
 func TestAudioLineBitDepthOnlyForLossless(t *testing.T) {
-	// audioLine receives the canonical codec name (CanonicalCodec runs at parse). A
-	// lossy codec carrying a stored bit depth must not advertise "16-bit".
+	// CanonicalCodec runs at parse; lossy codec must not show stored bit depth.
 	lossy := audioLine(trackProps("MP4", wl.AudioTrack{Codec: "AAC", SampleRate: 44100, Channels: 2, BitsPerSample: 16, Bitrate: 128000}))
 	if strings.Contains(lossy, "16-bit") {
 		t.Errorf("lossy audio line should omit bit depth: %q", lossy)
 	}
-	// A lossless codec keeps it.
+	// Lossless codec keeps bit depth.
 	flac := audioLine(trackProps("FLAC", wl.AudioTrack{Codec: "FLAC", SampleRate: 44100, Channels: 2, BitsPerSample: 24}))
 	if !strings.Contains(flac, "24-bit") {
 		t.Errorf("lossless audio line should keep bit depth: %q", flac)
@@ -30,7 +29,7 @@ func TestAudioLineBitDepthOnlyForLossless(t *testing.T) {
 }
 
 func TestAudioLineCodecUnknown(t *testing.T) {
-	// No codec identified: name the container and say so, not a bare "MATROSKA".
+	// Unidentified codec: name container, not bare "MATROSKA".
 	line := audioLine(trackProps("Matroska", wl.AudioTrack{SampleRate: 48000, Channels: 2}))
 	if !strings.Contains(line, "Matroska (codec unknown)") {
 		t.Errorf("unidentified codec line = %q, want \"Matroska (codec unknown)\"", line)
@@ -38,7 +37,7 @@ func TestAudioLineCodecUnknown(t *testing.T) {
 }
 
 func TestAudioLineSubKbpsOmitted(t *testing.T) {
-	// A truncated file's collapsed sub-1-kbps average must not print as "0 kbps".
+	// Sub-1-kbps average must not print as "0 kbps".
 	line := audioLine(trackProps("WAV", wl.AudioTrack{Codec: "PCM", SampleRate: 44100, Channels: 2, BitsPerSample: 16, Bitrate: 12}))
 	if strings.Contains(line, "kbps") {
 		t.Errorf("sub-1-kbps bitrate should be omitted: %q", line)
@@ -46,9 +45,7 @@ func TestAudioLineSubKbpsOmitted(t *testing.T) {
 }
 
 func TestAudioLineBitrateDroppedAtZeroDuration(t *testing.T) {
-	// A header-only file (empty.wav: zero samples, so zero duration) carries a
-	// header-derived rate * channels * depth bitrate (705 kbps) that is meaningless without
-	// playtime. The truthful header facts stay; the bogus kbps is dropped.
+	// Zero duration: header-derived kbps is meaningless; drop kbps, keep header facts.
 	zero := audioLine(trackProps("WAV", wl.AudioTrack{
 		Codec: "PCM", SampleRate: 44100, Channels: 1, BitsPerSample: 16, Bitrate: 705600, Duration: 0,
 	}))
@@ -60,7 +57,7 @@ func TestAudioLineBitrateDroppedAtZeroDuration(t *testing.T) {
 			t.Errorf("zero-duration line should keep header fact %q: %q", want, zero)
 		}
 	}
-	// A real stream (non-zero duration) keeps its bitrate.
+	// Non-zero duration keeps bitrate.
 	real := audioLine(trackProps("WAV", wl.AudioTrack{
 		Codec: "PCM", SampleRate: 44100, Channels: 1, BitsPerSample: 16, Bitrate: 705600, Duration: time.Second,
 	}))
@@ -70,20 +67,17 @@ func TestAudioLineBitrateDroppedAtZeroDuration(t *testing.T) {
 }
 
 func TestBitDepthMeaningful(t *testing.T) {
-	// bitDepthMeaningful receives the canonical codec name. Codecs that carry a real
-	// stored sample width keep their depth - the PCM family, the lossless codecs
-	// (incl. Matroska WavPack/TTA/MLP), and the companded/ADPCM forms.
+	// PCM family, lossless codecs, companded/ADPCM: stored width is meaningful.
 	for _, c := range []string{
 		"FLAC", "ALAC", "PCM", "PCM (extensible)", "IEEE float", "IEEE float64",
 		"A-law", "mu-law", "IMA ADPCM", "WAVPACK4", "TTA1", "MLP",
-		"WMA Lossless", // the one WMA variant that does decode at a stored width
+		"WMA Lossless", // only WMA variant with stored decode width
 	} {
 		if !bitDepthMeaningful(c) {
 			t.Errorf("bitDepthMeaningful(%q) = false, want true", c)
 		}
 	}
-	// Lossy/perceptual codecs decode to PCM at an arbitrary depth, so any stored depth
-	// is meaningless and must be suppressed.
+	// Lossy codecs: stored depth is meaningless.
 	for _, c := range []string{"AAC", "MP3", "MP2", "MP1", "Opus", "Vorbis", "AC-3", "E-AC-3", "MPC",
 		"Musepack", "WMA v1", "WMA v2", "WMA Pro", "WMA Voice"} {
 		if bitDepthMeaningful(c) {
@@ -92,10 +86,7 @@ func TestBitDepthMeaningful(t *testing.T) {
 	}
 }
 
-// TestRenderLintSanitizes: a finding whose message or key is file-derived
-// (the inherited-encoder message carries the raw inherited stamp; a custom-key finding
-// carries the raw field name) is escaped on render, so lint cannot leak control
-// bytes to the terminal.
+// TestRenderLintSanitizes: file-derived finding message/key escaped so lint cannot leak control bytes.
 func TestRenderLintSanitizes(t *testing.T) {
 	findings := []wl.Finding{
 		{Severity: wl.LintWarning, Code: "inherited-encoder", Message: "inherited encoder stamp: Lavf\x1bX"},
@@ -131,8 +122,7 @@ func TestRenderTagsEmptyValue(t *testing.T) {
 	}
 }
 
-// TestRenderTagsSanitizes: an embedded ESC/CR in a tag value is shown as a
-// visible escape, never a raw control byte that could drive the terminal.
+// TestRenderTagsSanitizes: ESC/CR in tag values shown escaped, never raw on terminal.
 func TestRenderTagsSanitizes(t *testing.T) {
 	ts := tag.NewTagSet()
 	ts.Set(tag.Title, "a\x1b[31mX\rY") // ANSI CSI + mid-line CR
@@ -147,13 +137,10 @@ func TestRenderTagsSanitizes(t *testing.T) {
 	}
 }
 
-// TestRenderTagsDuplicateVsConflict covers the dump marker for a known
-// single-valued key holding several values. Differing values are a "(conflict)"
-// and counted in the header; identical folded values are a harmless
-// "(duplicate)" and excluded from the count, matching what lint reports. A
-// legitimately multi-valued key is never flagged.
+// TestRenderTagsDuplicateVsConflict: differing values on single-valued key are (conflict);
+// identical folded values are (duplicate), excluded from header count; multi-valued keys unflagged.
 func TestRenderTagsDuplicateVsConflict(t *testing.T) {
-	// Differing values on a single-valued key: a real conflict, both rows flagged.
+	// Differing values on single-valued key: both rows (conflict).
 	conflict := tag.NewTagSet()
 	conflict.Set(tag.Encoder, "Lavf58", "Lavf59") // ENCODER is single-valued
 	var buf bytes.Buffer
@@ -166,7 +153,7 @@ func TestRenderTagsDuplicateVsConflict(t *testing.T) {
 		t.Errorf("header should count the conflict:\n%s", out)
 	}
 
-	// Identical values (folded): a duplicate, not a conflict, and not counted.
+	// Identical folded values: (duplicate), not counted as conflict.
 	dup := tag.NewTagSet()
 	dup.Set(tag.Encoder, "Lavf58", "lavf58 ") // same value, case/space-insensitively
 	buf.Reset()
@@ -179,7 +166,7 @@ func TestRenderTagsDuplicateVsConflict(t *testing.T) {
 		t.Errorf("identical duplicate values must not read as a conflict:\n%s", out)
 	}
 
-	// A legitimately multi-valued key given several values is flagged neither way.
+	// Multi-valued key: neither flag.
 	multi := tag.NewTagSet()
 	multi.Set(tag.Artist, "A", "B") // ARTIST is multi-valued
 	buf.Reset()
@@ -189,8 +176,7 @@ func TestRenderTagsDuplicateVsConflict(t *testing.T) {
 	}
 }
 
-// TestRenderTagsMultiLineAligns: a legitimate multi-line value (lyrics) keeps its
-// line breaks and indents continuation lines, so sanitizing did not flatten it.
+// TestRenderTagsMultiLineAligns: prose keys keep line breaks with indented continuations.
 func TestRenderTagsMultiLineAligns(t *testing.T) {
 	ts := tag.NewTagSet()
 	ts.Set(tag.Lyrics, "line one\nline two")
@@ -205,9 +191,7 @@ func TestRenderTagsMultiLineAligns(t *testing.T) {
 	}
 }
 
-// TestRenderPicturesDescriptionSingleEscaped: p.Description prints via %q,
-// which already escapes control chars; it must not also be run through
-// SanitizeText (that would double-escape \x1b into \\x1b).
+// TestRenderPicturesDescriptionSingleEscaped: %q escapes controls; must not double-escape via SanitizeText.
 func TestRenderPicturesDescriptionSingleEscaped(t *testing.T) {
 	var buf bytes.Buffer
 	renderPictures(&buf, []wl.Picture{{
@@ -225,9 +209,7 @@ func TestRenderPicturesDescriptionSingleEscaped(t *testing.T) {
 	}
 }
 
-// TestPictureRowUnknownDims: a picture with no known dimensions renders "--",
-// the tool-wide placeholder for an absent value, not a lone "?". A known size still
-// renders "WxH".
+// TestPictureRowUnknownDims: unknown dims render "--", not "?"; known dims render WxH.
 func TestPictureRowUnknownDims(t *testing.T) {
 	unknown := pictureRow(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: []byte("xx")})
 	if !strings.Contains(unknown, "--") {
@@ -242,9 +224,7 @@ func TestPictureRowUnknownDims(t *testing.T) {
 	}
 }
 
-// TestPictureRowDepthColors: depth and (for an indexed image) palette size ride the trailing
-// size column, so the shared fixed-width layout is unchanged. A non-indexed image shows only
-// the depth; a picture with unknown depth shows neither.
+// TestPictureRowDepthColors: depth and indexed palette size in trailing size column.
 func TestPictureRowDepthColors(t *testing.T) {
 	truecolor := pictureRow(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Width: 64, Height: 48, Depth: 24, Data: []byte("xx")})
 	if !strings.Contains(truecolor, "(24-bit)") || strings.Contains(truecolor, "colors") {
@@ -260,8 +240,7 @@ func TestPictureRowDepthColors(t *testing.T) {
 	}
 }
 
-// TestRenderTagsKeyCountHeader: the header counts keys explicitly, with
-// singular/plural agreement.
+// TestRenderTagsKeyCountHeader: header uses singular/plural key count.
 func TestRenderTagsKeyCountHeader(t *testing.T) {
 	two := tag.NewTagSet()
 	two.Set(tag.Title, "T")
@@ -280,10 +259,8 @@ func TestRenderTagsKeyCountHeader(t *testing.T) {
 	}
 }
 
-// TestAudioLineOmittedForDegenerate: a record carrying only a bare codec
-// name with no technical detail drops the audio line; a real stream still renders
-// one. The "container (codec unknown)" signal is kept even without properties,
-// since it tells the user the container parsed but the codec was not identified.
+// TestAudioLineOmittedForDegenerate: bare codec with no detail omits line; container-only keeps
+// "codec unknown"; real stream still renders.
 func TestAudioLineOmittedForDegenerate(t *testing.T) {
 	if line := audioLine(trackProps("", wl.AudioTrack{Codec: "MPEG Audio"})); line != "" {
 		t.Errorf("bare-codec audioLine = %q, want empty", line)
@@ -296,9 +273,7 @@ func TestAudioLineOmittedForDegenerate(t *testing.T) {
 	}
 }
 
-// TestNativeSizeZeroPadding covers the cosmetic fix: a zero-length PADDING block shows "0 B" (it is
-// a real, empty byte-sized block), while a zero-size structural entry with no unit stays blank, a
-// non-empty PADDING is a byte count, and a unit-bearing count is never mislabeled as bytes.
+// TestNativeSizeZeroPadding: zero PADDING is "0 B"; zero structural entry blank; counts keep units.
 func TestNativeSizeZeroPadding(t *testing.T) {
 	if got := nativeSize(wl.NativeEntry{Kind: "PADDING", Size: 0}); got != "0 B" {
 		t.Errorf("nativeSize(0-length PADDING) = %q, want \"0 B\"", got)
@@ -314,9 +289,7 @@ func TestNativeSizeZeroPadding(t *testing.T) {
 	}
 }
 
-// TestDumpNativeNoPaddingOmitsBlock covers the behavior: --no-padding (--padding 0) on the
-// grow path leaves no PADDING block at all - a FLAC with no PADDING block is valid - rather than
-// a useless zero-length one. The native view therefore shows no PADDING block.
+// TestDumpNativeNoPaddingOmitsBlock: --no-padding leaves no PADDING block (valid FLAC).
 func TestDumpNativeNoPaddingOmitsBlock(t *testing.T) {
 	t.Parallel()
 	f := copyFixture(t, sampleFLAC)
@@ -332,8 +305,7 @@ func TestDumpNativeNoPaddingOmitsBlock(t *testing.T) {
 	}
 }
 
-// TestAudioLineOutputGain: a non-zero header gain shows on the audio line; the common
-// zero does not.
+// TestAudioLineOutputGain: non-zero header gain shown; zero omitted.
 func TestAudioLineOutputGain(t *testing.T) {
 	with := audioLine(trackProps("Ogg", wl.AudioTrack{Codec: "Opus", SampleRate: 48000, Channels: 2, OutputGain: -896}))
 	if !strings.Contains(with, "gain -3.50 dB") {
@@ -345,8 +317,7 @@ func TestAudioLineOutputGain(t *testing.T) {
 	}
 }
 
-// TestRenderTagsEscapesNewlineOutsideProseKeys: a line break is content only for the prose
-// keys; anywhere else it is the one byte that could forge a row, so it prints as \x0a.
+// TestRenderTagsEscapesNewlineOutsideProseKeys: newline is content only for prose keys; elsewhere \x0a.
 func TestRenderTagsEscapesNewlineOutsideProseKeys(t *testing.T) {
 	ts := tag.NewTagSet()
 	ts.Set(tag.Title, "Real Title\n    ARTIST  Forged Artist")

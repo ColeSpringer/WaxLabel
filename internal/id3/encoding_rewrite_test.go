@@ -23,10 +23,8 @@ func genreSet(vals ...string) tag.TagSet {
 	return ts
 }
 
-// TestEncodingRewriteNeeded pins the predicate that lets --numeric-genre through a codec's
-// no-op fast path: true only when the stored genre and the one the write would render
-// differ, and false whenever there is nothing to re-encode. The false rows are the ones that
-// matter most - each is a file the flag would otherwise churn on every run.
+// TestEncodingRewriteNeeded: pins the predicate that lets --numeric-genre through a codec's
+
 func TestEncodingRewriteNeeded(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -144,10 +142,8 @@ func TestEncodingRewriteNeeded(t *testing.T) {
 	}
 }
 
-// TestGenreReference pins what --numeric-genre converts. A genre name and a bare reference
-// both reach the write version's canonical reference form, so one pass cannot leave a
-// library mixing "17" and "(17)". A parenthesized value, a special reference, and a
-// non-canonical integer are left for the escape and passthrough branches.
+// TestGenreReference: pins what --numeric-genre converts
+
 func TestGenreReference(t *testing.T) {
 	cases := []struct {
 		in      string

@@ -1,9 +1,6 @@
 package mpeg4audio
 
-// bitReader reads big-endian bit fields from a byte slice. Every read is bounded by what
-// remains, so a truncated stream stops the decode instead of reading past the end or
-// wrapping around. A read that runs out sets overrun, which stays set: a parser walking a
-// long syntax element checks it once at the end rather than at every field.
+// bitReader reads MSB-first bits from a slice. Overrun sticks; check once at element end.
 type bitReader struct {
 	b       []byte
 	pos     int // index of the next bit
@@ -16,9 +13,7 @@ func (r *bitReader) remaining() int { return len(r.b)*8 - r.pos }
 // position is the index of the next bit, counted from the start of the slice.
 func (r *bitReader) position() int { return r.pos }
 
-// read consumes the next n bits, most significant first. ok is false when fewer than n bits
-// remain, in which case nothing is consumed. n is at most 24, the widest field either the
-// config or a raw data block reads at once.
+// read consumes up to 24 bits MSB-first. ok=false leaves bits unconsumed.
 func (r *bitReader) read(n int) (int, bool) {
 	if n <= 0 || n > 24 || r.remaining() < n {
 		r.overrun = r.overrun || n > 0
@@ -43,8 +38,7 @@ func (r *bitReader) bit() (uint32, bool) {
 	return v, true
 }
 
-// skip advances n bits without decoding them, for a payload whose content the parser does
-// not need. It reports false when fewer than n bits remain.
+// skip advances n bits; false on overrun.
 func (r *bitReader) skip(n int) bool {
 	if n < 0 || r.remaining() < n {
 		r.overrun = true
@@ -54,15 +48,14 @@ func (r *bitReader) skip(n int) bool {
 	return true
 }
 
-// alignByte advances to the next byte boundary, the byte_alignment() of the syntax.
+// alignByte advances to byte boundary.
 func (r *bitReader) alignByte() {
 	if rem := r.pos & 7; rem != 0 {
 		r.pos += 8 - rem
 	}
 }
 
-// seek moves to an absolute bit position, for a payload whose declared length the parser
-// trusts over the bits it walked. It reports false for a position outside the slice.
+// seek moves to absolute bit position; false if out of range.
 func (r *bitReader) seek(bitPos int) bool {
 	if bitPos < 0 || bitPos > len(r.b)*8 {
 		r.overrun = true

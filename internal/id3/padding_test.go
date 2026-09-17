@@ -28,11 +28,7 @@ func rawFrame(major byte, id string, body []byte) []byte {
 }
 
 // TestTagPaddingMeasuresTheSourceRegion: padding is measured off the parsed region, not
-// derived by re-rendering the frames. Deriving it goes wrong wherever the on-disk shape
-// differs from what the writer emits - a v2.2 tag's 6-byte frame headers most of all,
-// since RenderedSize assumes the 10-byte v2.3/v2.4 header and would over-count the frames
-// by 4 bytes each. Document.Padding reports this number, so a derived one would put a
-// figure in dump --json that is nowhere in the file.
+
 func TestTagPaddingMeasuresTheSourceRegion(t *testing.T) {
 	const pad = 200
 	cases := []struct {
@@ -87,9 +83,7 @@ func TestTagPaddingMeasuresTheSourceRegion(t *testing.T) {
 }
 
 // TestRenderFrontTagRestampsPadding: the tag a rewrite produces must carry the padding the
-// rewrite sized, not the source's. Both feed Document.Padding - the source tag when a file
-// is read, the rebuilt one when a plan's result is inspected - so inheriting the source's
-// number would make a post-write document describe a region that no longer exists.
+
 func TestRenderFrontTagRestampsPadding(t *testing.T) {
 	src, err := ParseTag(wrapTag(3, 0, append(rawFrame(3, "TIT2", []byte("\x00Old")), make([]byte, 500)...)), 0)
 	if err != nil {

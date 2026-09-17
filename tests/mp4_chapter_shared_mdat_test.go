@@ -9,10 +9,9 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// mp4QTFileSharedMdat builds a QuickTime-chapter MP4 whose chapter text track stores its
-// single chunk at the start of the trailing mdat, which also holds the audio (chapter
-// samples first, then audio). This layout must not be mistaken for a standalone chapter
-// mdat during a chapter rewrite.
+// mp4QTFileSharedMdat builds a QuickTime-chapter MP4 whose chapter text track stores its single
+// chunk at the start of the trailing mdat, which also holds the audio (chapter samples first, then
+// audio). This layout must not be mistaken for a standalone chapter mdat during a chapter rewrite.
 func mp4QTFileSharedMdat(startsMS []int, titles []string) []byte {
 	audioFiller := bytes.Repeat([]byte{0xA7}, 120)
 	samples := mp4SamplesBlob(titles)
@@ -29,10 +28,9 @@ func mp4QTFileSharedMdat(startsMS []int, titles []string) []byte {
 	return build(uint32(audioOff), uint32(textOff))
 }
 
-// TestMP4ChapterEditKeepsSharedAudioMdat verifies that when a foreign chapter track's single chunk
-// sits at the start of the trailing mdat that also holds the audio, a chapter rewrite must
-// not reclaim that mdat, since doing so would drop the audio. The audio essence stays
-// byte-stable across the edit.
+// when a foreign chapter track's single chunk sits at the start of the trailing mdat that also
+// holds the audio, a chapter rewrite must not reclaim that mdat, since doing so would drop the
+// audio. The audio essence stays byte-stable across the edit.
 func TestMP4ChapterEditKeepsSharedAudioMdat(t *testing.T) {
 	data := mp4QTFileSharedMdat([]int{0, 5000}, []string{"A", "B"})
 	before := essenceOf(t, data)
@@ -55,13 +53,9 @@ func TestMP4ChapterEditKeepsSharedAudioMdat(t *testing.T) {
 	}
 }
 
-// mp4QTFileForeignTrackMdat builds a QuickTime-chapter MP4 whose chapter text track stores
-// its single chunk at the start of the trailing mdat, which also holds a second audio
-// track's samples (chapter samples first, then that track). The first audio track - the one
-// d.audioTrak points at - lives in an earlier, separate mdat. This is the multi-track shape
-// an audio-only reclaim gate misreads: the first audio track is absent from the trailing
-// mdat, so a gate consulting only it would wrongly delete that mdat and drop the second
-// track's media. The reclaim check must consult every non-chapter track instead.
+// mp4QTFileForeignTrackMdat builds a QuickTime-chapter MP4 whose chapter text track stores its
+// single chunk at the start of the trailing mdat, which also holds a second audio track's samples
+// (chapter samples first, then that track).
 func mp4QTFileForeignTrackMdat(startsMS []int, titles []string) []byte {
 	audio1 := bytes.Repeat([]byte{0xA7}, 120) // first audio track -> its own (earlier) mdat
 	foreign := bytes.Repeat([]byte{0xBB}, 80) // a second audio track -> the trailing mdat
@@ -84,11 +78,9 @@ func mp4QTFileForeignTrackMdat(startsMS []int, titles []string) []byte {
 	return build(uint32(audio1Off), uint32(foreignOff), uint32(mdat2Payload))
 }
 
-// TestMP4ChapterEditKeepsForeignTrackMdat verifies that when the chapter track's single chunk sits
-// at the front of the trailing mdat that also holds a second audio track - while the first
-// audio track lives in an earlier mdat - a chapter rewrite must not reclaim that
-// trailing mdat. Doing so would drop the second track's samples, which a gate consulting
-// only the first audio track would have missed.
+// when the chapter track's single chunk sits at the front of the trailing mdat that also holds a
+// second audio track; while the first audio track lives in an earlier mdat; a chapter rewrite must
+// not reclaim that trailing mdat.
 func TestMP4ChapterEditKeepsForeignTrackMdat(t *testing.T) {
 	data := mp4QTFileForeignTrackMdat([]int{0, 5000}, []string{"A", "B"})
 	foreign := bytes.Repeat([]byte{0xBB}, 80)

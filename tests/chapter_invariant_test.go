@@ -10,10 +10,8 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// TestChapterCapabilityConsistency keeps the grading-critical chapter capability fields
-// (MaxItems and ChapterLoss) equal across codecs that share the same physical store. The
-// store logic is centralized in internal/id3 and internal/vorbis, but the capability
-// metadata is declared per codec.
+// keeps the grading-critical chapter capability fields (MaxItems and ChapterLoss) equal across
+// codecs that share the same physical store.
 func TestChapterCapabilityConsistency(t *testing.T) {
 	chapterCaps := func(f wl.Format) wl.Capability { return wl.CapabilitiesFor(f).Chapters }
 	sameGrading := func(group []wl.Format) wl.Capability {
@@ -38,9 +36,8 @@ func TestChapterCapabilityConsistency(t *testing.T) {
 	}
 }
 
-// assertChapters checks a chapter slice by start and title, the common subset every
-// chaptered format stores. path names the source being checked: in-memory result or
-// reparsed bytes.
+// assertChapters checks a chapter slice by start and title, the common subset every chaptered
+// format stores. path names the source being checked: in-memory result or reparsed bytes.
 func assertChapters(t *testing.T, path string, got, want []wl.Chapter) {
 	t.Helper()
 	if len(got) != len(want) {
@@ -54,9 +51,8 @@ func assertChapters(t *testing.T, path string, got, want []wl.Chapter) {
 	}
 }
 
-// executeChapters applies the plan and returns chapters from both the in-memory Document
-// that Execute builds from plan.Result and a fresh re-parse of the written bytes. Checking
-// both catches a buildResult that writes correct bytes but forgets to set Media.Chapters.
+// executeChapters applies the plan and returns chapters from both the in-memory Document that
+// Execute builds from plan.Result and a fresh re-parse of the written bytes.
 func executeChapters(t *testing.T, src []byte, plan *wl.Plan) (inMemory, reparsed []wl.Chapter) {
 	t.Helper()
 	var buf bytes.Buffer
@@ -82,18 +78,9 @@ var chapterFixtures = map[wl.Format]string{
 	wl.FormatMatroska:  "../testdata/notags.mka",
 }
 
-// TestChapterWriteInvariant checks every writable chapter format with the same structured
-// edit. It catches missing change detection, missing write support, and post-write result
-// plumbing without requiring per-codec copies of the same test.
-//
-//  1. produce a non-no-op plan, proving the codec's change-detection gate includes chapters
-//     (a missing term silently no-ops a chapters-only SetChapters); and
-//  2. round-trip the chapters' start and title through a re-parse, proving the writer
-//     persists them and the projected result equals a fresh parse.
-//
-// Start and title are the lossy-common subset every chaptered format stores (ID3 CHAP also
-// keeps ends; CHAPTERxxx and MP4 do not), so the assertion holds uniformly. A new chaptered
-// codec is covered automatically; one with a missing gate or projection arm fails here.
+// checks every writable chapter format with the same structured edit. It catches missing change
+// detection, missing write support, and post-write result plumbing without requiring per-codec
+// copies of the same test.
 func TestChapterWriteInvariant(t *testing.T) {
 	want := []wl.Chapter{
 		{Start: 0, Title: "Opening"},

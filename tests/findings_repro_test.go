@@ -33,11 +33,10 @@ func prepareWith(t *testing.T, src []byte, edit func(*wl.Editor)) *wl.Plan {
 	return plan
 }
 
-// TestPictureWarningsScopedToAddedPictures pins that the edit-time picture warnings
-// fire only for pictures this edit authored, never for a file's pre-existing art
-// (which stays the linter's whole-set concern). Adding a second front cover warns;
-// adding an unrelated picture to a file that already had two front covers does not,
-// and a tags-only edit on it stays silent.
+// that the edit-time picture warnings fire only for pictures this edit authored, never for a file's
+// pre-existing art (which stays the linter's whole-set concern). Adding a second front cover warns;
+// adding an unrelated picture to a file that already had two front covers does not, and a tags-only
+// edit on it stays silent.
 func TestPictureWarningsScopedToAddedPictures(t *testing.T) {
 	t.Parallel()
 	frontA := tinyPNG()
@@ -84,17 +83,16 @@ func TestPictureWarningsScopedToAddedPictures(t *testing.T) {
 	}
 }
 
-// truncatedSSND builds an SSND chunk header that declares declaredBody bytes but
-// supplies only presentBody (< declaredBody) and no word-align pad - the on-disk
-// shape of a cut-off AIFF, where the sound chunk runs past the end of the file.
+// truncatedSSND builds an SSND chunk header that declares declaredBody bytes but supplies only
+// presentBody (< declaredBody) and no word-align pad; the on-disk shape of a cut-off AIFF, where
+// the sound chunk runs past the end of the file.
 func truncatedSSND(declaredBody, presentBody int) []byte {
 	out := append([]byte("SSND"), aiffBE32(declaredBody)...)
 	return append(out, make([]byte, presentBody)...)
 }
 
-// truncatedSSNDOffset is truncatedSSND with a non-zero SSND `offset` field (the
-// block-alignment bytes that precede the first sample frame), written into the first
-// 4 bytes of the body.
+// truncatedSSNDOffset is truncatedSSND with a non-zero SSND `offset` field (the block-alignment
+// bytes that precede the first sample frame), written into the first 4 bytes of the body.
 func truncatedSSNDOffset(declaredBody int, offset uint32, presentBody int) []byte {
 	out := append([]byte("SSND"), aiffBE32(declaredBody)...)
 	body := make([]byte, presentBody)
@@ -102,10 +100,9 @@ func truncatedSSNDOffset(declaredBody int, offset uint32, presentBody int) []byt
 	return append(out, body...)
 }
 
-// TestAIFFTruncatedDurationRecomputed pins that a truncated PCM AIFF reports the
-// duration its surviving SSND bytes decode to (like WAV), a truncated ima4 the
-// surviving packets' frames, and a type with no known packet layout COMM's declared
-// count, its bytes being unmappable. All still flag truncated-audio.
+// that a truncated PCM AIFF reports the duration its surviving SSND bytes decode to (like WAV), a
+// truncated ima4 the surviving packets' frames, and a type with no known packet layout COMM's
+// declared count, its bytes being unmappable. All still flag truncated-audio.
 func TestAIFFTruncatedDurationRecomputed(t *testing.T) {
 	t.Parallel()
 	const (
@@ -170,9 +167,8 @@ func TestAIFFTruncatedDurationRecomputed(t *testing.T) {
 		t.Errorf("truncated unknown-type duration = %v, want ~%v (declared count kept)", got, dur(declaredFrames))
 	}
 
-	// SSND body truncated to fewer than the 8-byte sub-header: no sample bytes survive,
-	// so 0 frames (a zero-length duration) - not a phantom frame from counting the
-	// partial sub-header as audio.
+	// SSND body truncated to fewer than the 8-byte sub-header: no sample bytes survive, so 0 frames (a
+	// zero-length duration); not a phantom frame from counting the partial sub-header as audio.
 	stub := mustParseBytes(t, aiffFile("AIFF",
 		aiffCOMM(channels, declaredFrames, sampleSize, rate),
 		truncatedSSND(declaredBody, 4))) // 4 bytes of body, below ssndHeaderLen (8)

@@ -11,9 +11,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// syncedLyricsFixtures maps each synced-lyrics-writable format to a clean fixture. MP4 and
-// Matroska are intentionally absent: they carry synced lyrics in a timed-text track, not
-// metadata, so their SyncedLyrics capability is AccessNone.
+// syncedLyricsFixtures maps each synced-lyrics-writable format to a clean fixture.
 var syncedLyricsFixtures = map[wl.Format]string{
 	wl.FormatMP3:       "../testdata/notags.mp3",
 	wl.FormatAAC:       "../testdata/notags.aac",
@@ -25,9 +23,8 @@ var syncedLyricsFixtures = map[wl.Format]string{
 	wl.FormatOggFLAC:   "../testdata/notags.oga",
 }
 
-// sampleSyncedLines is the timed-line subset every synced-lyrics format stores (SYLT keeps
-// the language and descriptor; the LRC store drops them, so only the lines round-trip
-// uniformly). It includes an empty-text clear marker.
+// sampleSyncedLines is the timed-line subset every synced-lyrics format stores (SYLT keeps the
+// language and descriptor; the LRC store drops them, so only the lines round-trip uniformly).
 var sampleSyncedLines = []wl.SyncedLine{
 	{Time: 0, Text: "Opening"},
 	{Time: 12 * time.Second, Text: "Verse one"},
@@ -67,11 +64,10 @@ func executeSynced(t *testing.T, src []byte, plan *wl.Plan) (inMemory, reparsed 
 	return doc.SyncedLyrics(), mustParseBytes(t, buf.Bytes()).SyncedLyrics()
 }
 
-// TestSyncedLyricsWriteInvariant checks every synced-lyrics-writable format with the same
-// structured edit: the codec's change-detection gate must include synced lyrics (a missing
-// term silently no-ops a SetSyncedLyrics), and the writer must persist the timed lines so
-// the projected result equals a fresh parse. A clear must also round-trip to none. It is
-// the synced-lyrics analogue of TestChapterWriteInvariant.
+// checks every synced-lyrics-writable format with the same structured edit: the codec's
+// change-detection gate must include synced lyrics (a missing term silently no-ops a
+// SetSyncedLyrics), and the writer must persist the timed lines so the projected result equals a
+// fresh parse.
 func TestSyncedLyricsWriteInvariant(t *testing.T) {
 	want := wl.SyncedLyrics{Language: "eng", Description: "Main", Lines: sampleSyncedLines}
 	for _, f := range wl.Formats() {
@@ -119,11 +115,9 @@ func TestSyncedLyricsWriteInvariant(t *testing.T) {
 	}
 }
 
-// TestNoOpWriteOnLyricedFLACByteIdentical is the preservation pin: an edit that does not
-// touch synced lyrics never re-serializes them through FormatLRC, so a no-op write on a
-// lyrics-bearing FLAC is byte-identical and an unrelated title edit leaves the synced lyrics intact
-// on re-parse. This is what keeps the new space-separator convention from silently rewriting (and,
-// for a file an older WaxLabel already corrupted, re-touching) the lyrics block on every save.
+// preservation pin: an edit that does not touch synced lyrics never re-serializes them through
+// FormatLRC, so a no-op write on a lyrics-bearing FLAC is byte-identical and an unrelated title
+// edit leaves the synced lyrics intact on re-parse.
 func TestNoOpWriteOnLyricedFLACByteIdentical(t *testing.T) {
 	src, err := os.ReadFile("../testdata/notags.flac")
 	if err != nil {
@@ -155,9 +149,9 @@ func TestNoOpWriteOnLyricedFLACByteIdentical(t *testing.T) {
 	assertSyncedLines(t, "after unrelated title edit", mustParseBytes(t, edited).SyncedLyrics(), sampleSyncedLines)
 }
 
-// TestSyncedLyricsCapabilityConsistency keeps synced-lyrics capability fields equal across
-// codecs that share the same physical store, and confirms the two stores differ in the
-// expected way: SYLT is lossless, while the LRC store drops language and descriptor.
+// keeps synced-lyrics capability fields equal across codecs that share the same physical store, and
+// confirms the two stores differ in the expected way: SYLT is lossless, while the LRC store drops
+// language and descriptor.
 func TestSyncedLyricsCapabilityConsistency(t *testing.T) {
 	cap := func(f wl.Format) wl.Capability { return wl.CapabilitiesFor(f).SyncedLyrics }
 	same := func(group []wl.Format) wl.Capability {
@@ -173,10 +167,8 @@ func TestSyncedLyricsCapabilityConsistency(t *testing.T) {
 	}
 	id3 := same([]wl.Format{wl.FormatMP3, wl.FormatAAC, wl.FormatAIFF, wl.FormatWAV})
 	vorbis := same([]wl.Format{wl.FormatFLAC, wl.FormatOggVorbis, wl.FormatOggOpus})
-	// SYLT is lossless and the LRC store drops language and descriptor, so the two stores
-	// must grade differently. The transfer grading test exercises the loss semantics. A
-	// zero-value Capability has the no-loss default, so id3 matching it confirms SYLT is
-	// graded lossless.
+	// SYLT is lossless and the LRC store drops language and descriptor, so the two stores must grade
+	// differently. The transfer grading test exercises the loss semantics.
 	if id3.SyncedLyricsLoss == vorbis.SyncedLyricsLoss {
 		t.Errorf("ID3 (lossless) and Vorbis (language-dropped) synced-lyrics loss should differ, both = %d", id3.SyncedLyricsLoss)
 	}
@@ -201,9 +193,9 @@ func lyricedMP3(t *testing.T) []byte {
 	return applyToBytes(t, src, plan)
 }
 
-// TestSyncedLyricsTransferGrading checks the transfer report grades a synced-lyrics set by
-// the destination's capability: lossless onto another SYLT format, Lossy onto an LRC store
-// (language dropped), and Dropped onto a format that cannot store synced lyrics at all.
+// checks the transfer report grades a synced-lyrics set by the destination's capability: lossless
+// onto another SYLT format, Lossy onto an LRC store (language dropped), and Dropped onto a format
+// that cannot store synced lyrics at all.
 func TestSyncedLyricsTransferGrading(t *testing.T) {
 	doc := mustParseBytes(t, lyricedMP3(t))
 
@@ -274,11 +266,8 @@ func TestSyncedLyricsTransferGrading(t *testing.T) {
 	}
 }
 
-// TestSyncedLyricsLanguageRoundTrip checks the library accepts a file's own short (1-2
-// byte) NUL-padded SYLT language and round-trips it through a read-then-rewrite instead
-// of corrupting it to "enX" or blocking the edit. The CLI validates author-provided
-// --synced-lyrics-lang values separately; the library stays lenient so parsed files can
-// be saved again.
+// checks the library accepts a file's own short (1-2 byte) NUL-padded SYLT language and round-trips
+// it through a read-then-rewrite instead of corrupting it to "enX" or blocking the edit.
 func TestSyncedLyricsLanguageRoundTrip(t *testing.T) {
 	src, err := os.ReadFile("../testdata/notags.mp3")
 	if err != nil {
@@ -310,9 +299,8 @@ func TestSyncedLyricsLanguageRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSyncedLyricsEmptySetDropped checks authoring a set with no lines writes nothing and is
-// not reported as a written set, so the plan's count never disagrees with the result (the
-// codecs skip a line-less set). Combined with a real tag edit it stays a clean tag-only edit.
+// checks authoring a set with no lines writes nothing and is not reported as a written set, so the
+// plan's count never disagrees with the result (the codecs skip a line-less set).
 func TestSyncedLyricsEmptySetDropped(t *testing.T) {
 	for _, fx := range []string{"../testdata/notags.mp3", "../testdata/notags.flac"} {
 		src, err := os.ReadFile(fx)
@@ -336,9 +324,9 @@ func TestSyncedLyricsEmptySetDropped(t *testing.T) {
 	}
 }
 
-// TestSyncedLyricsTimestampOverflowWarns checks a synced-lyric line past the SYLT 32-bit
-// millisecond field surfaces a clamp warning on an ID3-backed write rather than silently
-// moving the lyric while the report still implies losslessness.
+// checks a synced-lyric line past the SYLT 32-bit millisecond field surfaces a clamp warning on an
+// ID3-backed write rather than silently moving the lyric while the report still implies
+// losslessness.
 func TestSyncedLyricsTimestampOverflowWarns(t *testing.T) {
 	src, err := os.ReadFile("../testdata/notags.mp3")
 	if err != nil {
@@ -360,9 +348,8 @@ func TestSyncedLyricsTimestampOverflowWarns(t *testing.T) {
 	}
 }
 
-// TestSyncedLyricsTransferApply checks the transfer apply path carries the timed lines
-// onto the destination, not only that the report grades them. An MP3 SYLT set copies onto
-// a clean FLAC with the language dropped by the LRC store but every line kept.
+// checks the transfer apply path carries the timed lines onto the destination, not only that the
+// report grades them.
 func TestSyncedLyricsTransferApply(t *testing.T) {
 	src := mustParseBytes(t, lyricedMP3(t))
 	dstBytes, err := os.ReadFile("../testdata/notags.flac")
@@ -381,12 +368,10 @@ func TestSyncedLyricsTransferApply(t *testing.T) {
 	}
 }
 
-// TestSyncedLyricsCarryDoesNotInheritLanguage is a regression guard at the library boundary:
-// carrying a no-language synced-lyrics set (a FLAC/Ogg source stores none) onto a destination
-// that already has an eng SYLT must read back with no language, not silently inherit the
-// destination's - otherwise the transfer report says "carried/lossless" while the bytes gain a
-// language the source never had. The id3 unit test pins that an authored line-only edit still
-// keeps the destination language (the documented CLI convenience); this pins the carry path.
+// regression guard at the library boundary: carrying a no-language synced-lyrics set (a FLAC/Ogg
+// source stores none) onto a destination that already has an eng SYLT must read back with no
+// language, not silently inherit the destination's; otherwise the transfer report says
+// "carried/lossless" while the bytes gain a language the source never had.
 func TestSyncedLyricsCarryDoesNotInheritLanguage(t *testing.T) {
 	// Source: a FLAC carrying a no-language synced-lyrics set (the Vorbis LRC store holds none).
 	flacBytes, err := os.ReadFile("../testdata/notags.flac")
@@ -414,9 +399,8 @@ func TestSyncedLyricsCarryDoesNotInheritLanguage(t *testing.T) {
 	}
 }
 
-// TestSyncedLyricsPreservation checks an unrelated tag edit preserves a file's synced
-// lyrics: the SYLT (MP3) and SYNCEDLYRICS (FLAC) stores are owned by the structured model,
-// so they survive a title edit untouched.
+// checks an unrelated tag edit preserves a file's synced lyrics: the SYLT (MP3) and SYNCEDLYRICS
+// (FLAC) stores are owned by the structured model, so they survive a title edit untouched.
 func TestSyncedLyricsPreservation(t *testing.T) {
 	t.Run("MP3-SYLT", func(t *testing.T) {
 		lyriced := lyricedMP3(t)

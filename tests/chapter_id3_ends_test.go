@@ -10,9 +10,8 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// id3ChapterFixtures are the four ID3-CHAP-backed formats and a clean, chapterless fixture
-// for each. They share one physical chapter store (internal/id3 CHAP/CTOC), so the
-// open-ended-chapter serialization rule must hold identically across all four.
+// id3ChapterFixtures are the four ID3-CHAP-backed formats and a clean, chapterless fixture for
+// each.
 var id3ChapterFixtures = []struct {
 	format wl.Format
 	path   string
@@ -23,17 +22,11 @@ var id3ChapterFixtures = []struct {
 	{wl.FormatWAV, "../testdata/notags.wav"},
 }
 
-// TestID3ChapterOpenEndsMaterialized checks that authoring open-ended chapters (End == 0) on
-// the ID3-backed formats serializes concrete ends a spec-conforming reader can use, rather
-// than the 0xFFFFFFFF "unused" sentinel (~49.7 days) that ffprobe/players take literally:
-//   - an interior open chapter reads back with End == the next chapter's start (a gapless
-//     interval); and
-//   - the trailing open chapter reads back with End == the media duration (ms-floored),
-//     never open.
-//
-// The trailing assertion is on the concrete End value, which the sentinel cannot spoof:
-// WaxLabel's own decoder reads 0xFFFFFFFF back as End == 0, so a regression that dropped the
-// trailing end to the sentinel would surface here as End == 0 (open), failing the != 0 check.
+// authoring open-ended chapters (End == 0) on the ID3-backed formats serializes concrete ends a
+// spec-conforming reader can use, rather than the 0xFFFFFFFF "unused" sentinel (~49.7 days) that
+// ffprobe/players take literally:; an interior open chapter reads back with End == the next
+// chapter's start (a gapless interval), and; the trailing open chapter reads back with End == the
+// media duration (ms-floored), never open.
 func TestID3ChapterOpenEndsMaterialized(t *testing.T) {
 	for _, fx := range id3ChapterFixtures {
 		t.Run(fx.format.String(), func(t *testing.T) {
@@ -72,11 +65,10 @@ func TestID3ChapterOpenEndsMaterialized(t *testing.T) {
 	}
 }
 
-// TestID3ChapterTrailingEndPastDurationReadsOpen checks the past/at-duration trailing chapter
-// across the ID3-backed formats: authoring a chapter that starts past the media duration
-// serializes a bounded zero-length end (End == Start) rather than the 0xFFFFFFFF sentinel that
-// ffprobe/players render as ~49.7 days, and the reader folds that bounded end back to open so an
-// ID3 read agrees with the start-only stores.
+// checks the past/at-duration trailing chapter across the ID3-backed formats: authoring a chapter
+// that starts past the media duration serializes a bounded zero-length end (End == Start) rather
+// than the 0xFFFFFFFF sentinel that ffprobe/players render as ~49.7 days, and the reader folds that
+// bounded end back to open so an ID3 read agrees with the start-only stores.
 func TestID3ChapterTrailingEndPastDurationReadsOpen(t *testing.T) {
 	for _, fx := range id3ChapterFixtures {
 		t.Run(fx.format.String(), func(t *testing.T) {
@@ -116,12 +108,11 @@ func TestID3ChapterTrailingEndPastDurationReadsOpen(t *testing.T) {
 	}
 }
 
-// TestID3ChapterPastDurationCopyDiffIdentical pins the cross-package interaction the bounded
-// past-duration end depends on: a past-duration chapter now reads back bounded (End == Start)
-// instead of open, and core.normalizeReconstructableEnds must still fold that bounded end (always
-// >= the media duration) back to open just as it did the old sentinel - so copying the chapters
-// into a different-duration destination still diffs as chapters-identical. A regression in that
-// fold surfaces here as a spurious chapter difference.
+// cross-package interaction the bounded past-duration end depends on: a past-duration chapter now
+// reads back bounded (End == Start) instead of open, and core.normalizeReconstructableEnds must
+// still fold that bounded end (always >= the media duration) back to open just as it did the old
+// sentinel, so copying the chapters into a different-duration destination still diffs as
+// chapters-identical.
 func TestID3ChapterPastDurationCopyDiffIdentical(t *testing.T) {
 	srcBytes, err := os.ReadFile("../testdata/notags.mp3")
 	if err != nil {
@@ -156,14 +147,8 @@ func TestID3ChapterPastDurationCopyDiffIdentical(t *testing.T) {
 	}
 }
 
-// TestID3ChapterReapplyOpenEndsNoOp checks that authoring open-ended chapters and then
-// re-authoring the identical open-ended chapters collapses to a no-op. After the first write
-// the file carries filled ends (interior -> next start, trailing -> duration), so the second
-// edit's open-ended list differs from the stored chapters by literal end comparison and does
-// NOT satisfy the fast-path no-op gate; it re-renders to byte-identical CHAP frames and
-// DowngradeNoOp collapses it via re-projection. This is the one behavior shift Finding 1
-// introduces (the no-op now arrives by byte-identity, as it already does for MP4), so it is
-// pinned here on MP3 (front-tag path) and WAV (embedded id3-chunk path).
+// authoring open-ended chapters and then re-authoring the identical open-ended chapters collapses
+// to a no-op.
 func TestID3ChapterReapplyOpenEndsNoOp(t *testing.T) {
 	chapters := []wl.Chapter{
 		{Start: 0, Title: "A"},

@@ -113,10 +113,7 @@ func decoderConfig(b []byte, off, end int) entryConfig {
 }
 
 // readDescriptor reads one MPEG-4 descriptor header at b[off:end], returning its tag
-// and the bounds of its body. The size is an expandable class length: up to four
-// bytes, each contributing seven bits, with the top bit meaning "another byte
-// follows". A fifth continuation, a body running past end, or a header that does not
-// fit is not a descriptor, and the caller keeps the sample entry's own values.
+// and the bounds of its body.
 func readDescriptor(b []byte, off, end int) (tag byte, bodyStart, bodyEnd int, ok bool) {
 	if off < 0 || off >= end {
 		return 0, 0, 0, false

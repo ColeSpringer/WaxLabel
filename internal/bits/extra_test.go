@@ -40,8 +40,7 @@ func TestReadSliceBounds(t *testing.T) {
 	if _, err := ReadSlice(r, 8, 5, 1<<20); !errors.Is(err, waxerr.ErrInvalidData) {
 		t.Errorf("past-EOF err = %v, want ErrInvalidData", err)
 	}
-	// A non-positive limit is a caller bug - the allocation would be unbounded - so it is
-	// rejected rather than treated as "unlimited".
+	// Non-positive limit rejected (would be unbounded allocation).
 	for _, lim := range []int64{0, -1} {
 		if _, err := ReadSlice(r, 0, 3, lim); !errors.Is(err, waxerr.ErrInvalidData) {
 			t.Errorf("limit %d err = %v, want ErrInvalidData (a real ceiling is required)", lim, err)
@@ -53,7 +52,6 @@ func TestHasherTapMatchesDirectHash(t *testing.T) {
 	src := bytes.NewReader([]byte("AAAABBBBCCCCDDDD"))
 	cfg := []byte("config")
 
-	// Hash config + the [4,12) region directly.
 	want := sha256.New()
 	want.Write(cfg)
 	want.Write([]byte("BBBBCCCC"))
@@ -76,7 +74,7 @@ func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }
 func TestWriteCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	src := bytes.NewReader(make([]byte, 1<<18)) // larger than one chunk
+	src := bytes.NewReader(make([]byte, 1<<18))
 	_, err := Write(ctx, discardWriter{}, src, []Segment{Copy(0, 1<<18)}, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("Write with cancelled ctx err = %v, want context.Canceled", err)

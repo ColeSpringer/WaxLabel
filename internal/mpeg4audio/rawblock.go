@@ -9,8 +9,7 @@ type FrameConfig struct {
 	ChannelConfig int
 }
 
-// FrameInfo is what one raw data block revealed. Parametric stereo is not among it: that
-// lives inside the SBR payload, which [ParseSBRSingleChannel] reads.
+// FrameInfo from one raw data block. PS is in SBR payload ([ParseSBRSingleChannel]).
 type FrameInfo struct {
 	SBR        bool   // an SBR fill element followed a channel element
 	SBRPayload []byte // the SBR extension payload of the first single channel element, for the SBR parser
@@ -18,9 +17,7 @@ type FrameInfo struct {
 	SBRCRC     bool   // it was the EXT_SBR_DATA_CRC form
 }
 
-// ErrUnsupported marks a block whose syntax this parser does not walk: an object type other
-// than AAC LC, a coupling channel element, or a tool (prediction, gain control) that only
-// the Main and SSR profiles use. It is not a corrupt frame; nothing can be concluded from it.
+// ErrUnsupported: syntax not walked (non-LC AOT, CCE, Main/SSR tools). Not corruption.
 var ErrUnsupported = errors.New("mpeg4audio: unsupported syntax")
 
 // errInvalidBlock marks a block whose syntax this parser walked and found inconsistent.
@@ -44,14 +41,10 @@ const (
 	extSBRDataCRC = 0xE
 )
 
-// maxElements bounds the element walk. A raw data block holds at most one element per
-// channel plus fill and data elements; sixty-four is far past any real frame and stops a
-// crafted block from looping.
+// maxElements caps element loop (64 >> real frames).
 const maxElements = 64
 
-// ParseRawDataBlock parses one AAC raw_data_block (ISO/IEC 14496-3 4.4.2). It succeeds only
-// when the block ends exactly on the END element followed by byte alignment, so a table or
-// syntax error surfaces as a failure rather than a wrong answer.
+// ParseRawDataBlock parses raw_data_block (4.4.2). Success requires exact END + alignment.
 func ParseRawDataBlock(data []byte, cfg FrameConfig) (FrameInfo, error) {
 	if cfg.ObjectType != 2 {
 		return FrameInfo{}, ErrUnsupported
@@ -70,8 +63,7 @@ type blockParser struct {
 	r    *bitReader
 	cfg  FrameConfig
 	info FrameInfo
-	// sceStart is the bit position of the single channel element whose SBR payload is
-	// worth keeping, or -1 once one has been kept or none is pending.
+	// sceStart is SCE bit position for SBR capture, or -1.
 	sceStart int
 }
 
@@ -114,9 +106,7 @@ func (p *blockParser) run() error {
 			if err := p.dse(); err != nil {
 				return err
 			}
-			// A data or program config element between a channel element and a fill element
-			// breaks the adjacency that makes the fill that channel's SBR payload, so the
-			// pairing is dropped rather than carried across it.
+			// DSE/PCE between channel and fill breaks SBR adjacency.
 			lastWasChannel = false
 			p.sceStart = -1
 		case idPCE:
@@ -129,14 +119,12 @@ func (p *blockParser) run() error {
 			if err := p.fil(lastWasChannel); err != nil {
 				return err
 			}
-			// A second fill element still follows the channel element the first one did.
 		}
 	}
 	return errInvalidBlock
 }
 
-// cpe reads a channel_pair_element: the shared ics_info when common_window is set, the
-// mid/side mask that follows it, then both channels' streams.
+// cpe reads channel_pair_element.
 func (p *blockParser) cpe() error {
 	if _, ok := p.r.read(4); !ok { // element_instance_tag
 		return errInvalidBlock
@@ -157,8 +145,7 @@ func (p *blockParser) cpe() error {
 			return errInvalidBlock
 		}
 		if msMask == 1 {
-			// One bit per coded band per window group; the group lengths themselves do not
-			// enter, only how many groups there are.
+			// MS mask: one bit per band per group.
 			if !p.r.skip(len(shared.groupLengths) * shared.maxSfb) {
 				return errInvalidBlock
 			}
@@ -170,7 +157,7 @@ func (p *blockParser) cpe() error {
 	return p.ics(common == 1, shared)
 }
 
-// dse reads a data_stream_element, whose payload is opaque to this parser.
+// dse skips data_stream_element payload.
 func (p *blockParser) dse() error {
 	if _, ok := p.r.read(4); !ok { // element_instance_tag
 		return errInvalidBlock
@@ -199,8 +186,7 @@ func (p *blockParser) dse() error {
 	return nil
 }
 
-// pce reads a program_config_element (4.4.1.1). Its layout is walked only to find its end:
-// the element describes a channel mapping this parser does not need.
+// pce walks program_config_element to its end.
 func (p *blockParser) pce() error {
 	r := p.r
 	if !r.skip(4 + 2) { // element_instance_tag, object_type
@@ -218,7 +204,7 @@ func (p *blockParser) pce() error {
 	if !(ok1 && ok2 && ok3 && ok4 && ok5 && ok6) {
 		return errInvalidBlock
 	}
-	// mono_mixdown, stereo_mixdown and matrix_mixdown each add an element number when present.
+	// Optional mixdown element numbers.
 	for _, width := range []int{4, 4, 3} {
 		present, ok := r.bit()
 		if !ok {
@@ -239,9 +225,7 @@ func (p *blockParser) pce() error {
 	return nil
 }
 
-// fil reads a fill_element. Only the SBR extension payloads matter here, and only when the
-// element follows a channel element, which is what makes them that channel's SBR data; the
-// rest of the payload types are skipped whole by the count the element declares.
+// fil reads fill_element; captures SBR when adjacent after channel element.
 func (p *blockParser) fil(lastWasChannel bool) error {
 	cnt, ok := p.r.read(4)
 	if !ok {
@@ -276,8 +260,7 @@ func (p *blockParser) fil(lastWasChannel bool) error {
 	return nil
 }
 
-// copyBits returns n bits of b starting at bit offset from, left aligned in a fresh slice,
-// so a payload that does not start on a byte boundary can be handed to a parser of its own.
+// copyBits extracts n bits from bit offset from, left-aligned in a new slice.
 func copyBits(b []byte, from, n int) ([]byte, int) {
 	if n <= 0 || from < 0 || from+n > len(b)*8 {
 		return nil, 0

@@ -27,9 +27,8 @@ const (
 	lossless24WMA = "../testdata/lossless24.wma"
 )
 
-// ASF synthesis. ffmpeg writes WMA, but not the WM/Picture descriptor or the
-// Metadata Library records, so those shapes are built here rather than shipped as
-// binary fixtures.
+// ASF synthesis. ffmpeg writes WMA, but not the WM/Picture descriptor or the Metadata Library
+// records, so those shapes are built here rather than shipped as binary fixtures.
 
 // asfUTF16 encodes a NUL-terminated UTF-16LE string, the only text encoding ASF uses.
 func asfUTF16(s string) []byte {
@@ -101,8 +100,8 @@ func asfStreamProperties(formatTag uint16, channels uint16, rate uint32, bits ui
 	return asfStreamPropertiesRaw(asfWaveFormatEx(formatTag, channels, rate, bits, nil))
 }
 
-// asfWaveFormatEx builds a WAVEFORMATEX with cbSize declaring the codec extra bytes that
-// follow it - the bytes a codec's own configuration rides in.
+// asfWaveFormatEx builds a WAVEFORMATEX with cbSize declaring the codec extra bytes that follow it;
+// the bytes a codec's own configuration rides in.
 func asfWaveFormatEx(formatTag, channels uint16, rate uint32, bits uint16, extra []byte) []byte {
 	w := make([]byte, 18)
 	binary.LittleEndian.PutUint16(w[0:2], formatTag)
@@ -115,10 +114,8 @@ func asfWaveFormatEx(formatTag, channels uint16, rate uint32, bits uint16, extra
 	return append(w, extra...)
 }
 
-// asfLosslessExtra is the 18-byte WMA Lossless codec configuration, whose leading word is
-// the depth a decoder works at. The rest - a channel mask, then encoder settings - is the
-// shape a Windows Media encode carries, kept so the depth is read out of a realistic
-// structure rather than a lone word.
+// asfLosslessExtra is the 18-byte WMA Lossless codec configuration, whose leading word is the depth
+// a decoder works at.
 func asfLosslessExtra(depth uint16) []byte {
 	b := make([]byte, 18)
 	binary.LittleEndian.PutUint16(b[0:2], depth)
@@ -127,9 +124,8 @@ func asfLosslessExtra(depth uint16) []byte {
 	return b
 }
 
-// asfStreamPropertiesRaw wraps a whole WAVEFORMATEX - cbSize and any codec extra bytes
-// included - in an audio Stream Properties object, for the cases that turn on what sits
-// behind the fixed fields.
+// asfStreamPropertiesRaw wraps a whole WAVEFORMATEX; cbSize and any codec extra bytes included; in
+// an audio Stream Properties object, for the cases that turn on what sits behind the fixed fields.
 func asfStreamPropertiesRaw(w []byte) []byte {
 	g, _ := hexBytes(guidAudioMediaHex)
 	e, _ := hexBytes(guidNoErrCorrHex)
@@ -220,9 +216,8 @@ func asfDataObject(packets []byte) []byte {
 	return asfObject(guidDataHex, append(b, packets...))
 }
 
-// asfFileWithData puts a real Data Object where asfFile leaves plain filler, so the file
-// has an audio extent at all. The header length is read back from the built bytes rather
-// than recomputed, so the two cannot drift apart.
+// asfFileWithData puts a real Data Object where asfFile leaves plain filler, so the file has an
+// audio extent at all.
 func asfFileWithData(data []byte, children ...[]byte) []byte {
 	full := asfFile(children...)
 	headerLen := int(binary.LittleEndian.Uint64(full[16:24]))
@@ -259,9 +254,8 @@ func TestWMAParse(t *testing.T) {
 	}
 }
 
-// TestWMAWriteRefused pins the read-only contract: the refusal is the format
-// sentinel (exit 3), not the unsupported-tag one, which is documented as "a tag
-// exists that this version cannot model" and would misdescribe WMA.
+// read-only contract: the refusal is the format sentinel (exit 3), not the unsupported-tag one,
+// which is documented as "a tag exists that this version cannot model" and would misdescribe WMA.
 func TestWMAWriteRefused(t *testing.T) {
 	doc := mustParseFile(t, sampleWMA)
 	if !doc.Capabilities().ReadOnly {
@@ -276,8 +270,8 @@ func TestWMAWriteRefused(t *testing.T) {
 	}
 }
 
-// TestWMAUnchangedCopyStillWorks: the refusal sits after the no-op fast path, so
-// copying a WMA verbatim - which changes nothing - still produces a whole file.
+// refusal sits after the no-op fast path, so copying a WMA verbatim; which changes nothing; still
+// produces a whole file.
 func TestWMAUnchangedCopyStillWorks(t *testing.T) {
 	src := readFixture(t, sampleWMA)
 	plan, err := mustParseBytes(t, src).Edit().Prepare()
@@ -292,8 +286,8 @@ func TestWMAUnchangedCopyStillWorks(t *testing.T) {
 	}
 }
 
-// TestWMAContentDescriptionAndDescriptors covers both tag objects at once, including
-// the numeric descriptor types and the slash-pair split every codec shares.
+// both tag objects at once, including the numeric descriptor types and the slash-pair split every
+// codec shares.
 func TestWMAContentDescriptionAndDescriptors(t *testing.T) {
 	data := asfFile(
 		asfFileProperties(3*time.Second, 500),
@@ -337,9 +331,8 @@ func TestWMAContentDescriptionAndDescriptors(t *testing.T) {
 	}
 }
 
-// TestWMADuplicateValueFolded: the ffmpeg family writes the Content Description
-// fields and repeats them as descriptors. That is one value with two spellings, not a
-// multi-valued field.
+// ffmpeg family writes the Content Description fields and repeats them as descriptors. That is one
+// value with two spellings, not a multi-valued field.
 func TestWMADuplicateValueFolded(t *testing.T) {
 	data := asfFile(
 		asfStreamProperties(0x0161, 2, 44100, 16),
@@ -361,8 +354,8 @@ func TestWMADuplicateValueFolded(t *testing.T) {
 	}
 }
 
-// TestWMAPicture covers the WM/Picture descriptor, including its role and
-// description - which ASF stores and most other picture conventions do not.
+// WM/Picture descriptor, including its role and description; which ASF stores and most other
+// picture conventions do not.
 func TestWMAPicture(t *testing.T) {
 	png := tinyPNG()
 	data := asfFile(
@@ -387,9 +380,8 @@ func TestWMAPicture(t *testing.T) {
 	}
 }
 
-// TestWMAPictureInMetadataLibrary: a large cover is written into the Header
-// Extension's Metadata objects rather than the Extended Content Description, whose
-// value length is only 16 bits.
+// large cover is written into the Header Extension's Metadata objects rather than the Extended
+// Content Description, whose value length is only 16 bits.
 func TestWMAPictureInMetadataObject(t *testing.T) {
 	png := tinyPNG()
 	data := asfFile(
@@ -408,7 +400,7 @@ func TestWMAPictureInMetadataObject(t *testing.T) {
 	}
 }
 
-// TestWMAMalformedPictureWarns: a bad cover is surfaced, not silently dropped.
+// bad cover is surfaced, not silently dropped.
 func TestWMAMalformedPictureWarns(t *testing.T) {
 	data := asfFile(
 		asfStreamProperties(0x0161, 2, 44100, 16),
@@ -423,9 +415,8 @@ func TestWMAMalformedPictureWarns(t *testing.T) {
 	}
 }
 
-// TestWMACodecVariantsAllRead: WMA is a family, and Pro/Lossless/Voice differ only in
-// the decoder they need. A metadata reader must read all of them rather than refusing
-// a variant by name.
+// WMA is a family, and Pro/Lossless/Voice differ only in the decoder they need. A metadata reader
+// must read all of them rather than refusing a variant by name.
 func TestWMACodecVariantsAllRead(t *testing.T) {
 	for _, c := range []struct {
 		tag  uint16
@@ -442,8 +433,8 @@ func TestWMACodecVariantsAllRead(t *testing.T) {
 		if got := doc.Properties().First().Codec; got != c.name {
 			t.Errorf("format tag %#04x -> codec %q, want %q", c.tag, got, c.name)
 		}
-		// With no codec extra bytes there is nothing to read behind the structure, so every
-		// variant reports the fixed field - Lossless included.
+		// With no codec extra bytes there is nothing to read behind the structure, so every variant reports
+		// the fixed field. Lossless included.
 		if got := doc.Properties().First().BitsPerSample; got != 16 {
 			t.Errorf("format tag %#04x -> bits per sample %d, want 16", c.tag, got)
 		}
@@ -453,10 +444,10 @@ func TestWMACodecVariantsAllRead(t *testing.T) {
 	}
 }
 
-// TestWMALosslessDepthFromExtraBytes: for WMA Lossless the depth a decoder works at lives
-// in the codec extra bytes, and wBitsPerSample is decoration a real encode does leave
-// disagreeing. Only 16 and 24 count, the two depths the format defines: anything else is a
-// field misread rather than a stream to describe, and the fixed field stands.
+// for WMA Lossless the depth a decoder works at lives in the codec extra bytes, and wBitsPerSample
+// is decoration a real encode does leave disagreeing. Only 16 and 24 count, the two depths the
+// format defines: anything else is a field misread rather than a stream to describe, and the fixed
+// field stands.
 func TestWMALosslessDepthFromExtraBytes(t *testing.T) {
 	lossless := asfWaveFormatEx(0x0163, 2, 44100, 16, asfLosslessExtra(24))
 	for _, c := range []struct {
@@ -485,10 +476,8 @@ func TestWMALosslessDepthFromExtraBytes(t *testing.T) {
 	}
 }
 
-// TestWMALosslessFixtureDepth reads a real Windows Media Lossless encode, then patches its
-// wBitsPerSample to disagree with the codec extra bytes. The extra bytes must still win:
-// that fixed field is what a decoder ignores. The digest is pinned: the salt is the
-// structure as stored, wBitsPerSample included, so the extra bytes never move it.
+// real Windows Media Lossless encode, then patches its wBitsPerSample to disagree with the codec
+// extra bytes. The extra bytes must still win: that fixed field is what a decoder ignores.
 func TestWMALosslessFixtureDepth(t *testing.T) {
 	src := readFixture(t, lossless24WMA)
 	doc := mustParseBytes(t, src)
@@ -507,8 +496,8 @@ func TestWMALosslessFixtureDepth(t *testing.T) {
 		t.Errorf("digest = %s, want the v2 digest of the unchanged fixture", got)
 	}
 
-	// The WAVEFORMATEX, found by its tag, channel count and sample rate - a byte pattern
-	// that occurs once in the fixture. wBitsPerSample is the word at offset 14.
+	// The WAVEFORMATEX, found by its tag, channel count and sample rate; a byte pattern that occurs
+	// once in the fixture. wBitsPerSample is the word at offset 14.
 	head := []byte{0x63, 0x01, 0x02, 0x00, 0x44, 0xAC, 0x00, 0x00}
 	i := bytes.Index(src, head)
 	if i < 0 || bytes.Contains(src[i+1:], head) {
@@ -549,12 +538,10 @@ func asfPatchU32(t *testing.T, b []byte, off int, want, set uint32) []byte {
 	return out
 }
 
-// TestWMAOverlongLengthsRejected: every declared length inside the header is an
-// unvalidated uint32 the reader turns into an int. On a 32-bit build a value near 2 GiB
-// overflows a "base + length" bounds check to a negative number, which passes the test and
-// then panics on the slice, so each guard compares against the bytes that remain instead.
-// On a 64-bit build these files simply parse to the same thing, which makes the linux/386
-// job the one that would catch a regression.
+// every declared length inside the header is an unvalidated uint32 the reader turns into an int. On
+// a 32-bit build a value near 2 GiB overflows a "base + length" bounds check to a negative number,
+// which passes the test and then panics on the slice, so each guard compares against the bytes that
+// remain instead.
 func TestWMAOverlongLengthsRejected(t *testing.T) {
 	const nearMaxInt32 = 0x7FFFFFFF
 	// Every ASF object opens with a 16-byte GUID and an 8-byte size.
@@ -603,11 +590,7 @@ func TestWMAOverlongLengthsRejected(t *testing.T) {
 	})
 }
 
-// TestWMADataObjectLengthRejected: the Data Object's declared length is what bounds the
-// audio extent, and it is an unvalidated uint64. A length near MaxInt64 overflowed
-// headerEnd+objLen to a negative number that passed the bounds test, so the extent was
-// published ending before it began and the failure surfaced as "end before start" rather
-// than as the unknown extent every other malformed Data Object here reports.
+// Data Object's declared length is what bounds the audio extent, and it is an unvalidated uint64.
 func TestWMADataObjectLengthRejected(t *testing.T) {
 	props := asfStreamProperties(0x0161, 2, 44100, 16)
 	good := asfFileWithData(asfDataObject(bytes.Repeat([]byte{0xA5}, 128)), props)
@@ -645,11 +628,10 @@ func TestWMATruncatedHeaderRejected(t *testing.T) {
 	}
 }
 
-// TestWMADigestSaltCarriesByteRateAndBlockAlign: the asf-packets-v2 salt is the
-// WAVEFORMATEX as stored, so two streams over identical packets whose byte rates differ by
-// exactly 65536, which the v1 salt's 16-bit field could not tell apart, or whose block
-// aligns differ, which v1 never hashed, get different digests, while identical structures
-// agree.
+// asf-packets-v2 salt is the WAVEFORMATEX as stored, so two streams over identical packets whose
+// byte rates differ by exactly 65536, which the v1 salt's 16-bit field could not tell apart, or
+// whose block aligns differ, which v1 never hashed, get different digests, while identical
+// structures agree.
 func TestWMADigestSaltCarriesByteRateAndBlockAlign(t *testing.T) {
 	t.Parallel()
 	packets := asfDataObject(bytes.Repeat([]byte{0xA5}, 128))

@@ -10,9 +10,7 @@ import (
 	"time"
 )
 
-// TestParseByteSize covers the human-size parser backing --max-size: binary and decimal
-// units, a raw byte count, the unlimited zero, an optional space before the unit, and the
-// rejected forms. A bare unit letter is binary so a value round-trips with HumanBytes.
+// TestParseByteSize: --max-size human-size parser (binary/decimal units, zero unlimited, rejects).
 func TestParseByteSize(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -52,10 +50,7 @@ func TestParseByteSize(t *testing.T) {
 	}
 }
 
-// TestMaxSizeStdinBoundary drives the CLI at the exact ingest boundary: a valid FLAC
-// piped to `dump -` still dumps when --max-size equals its size, exits 7 (input-too-large,
-// where ErrInputTooLarge maps - a user resource cap on a stream, not corruption) when the
-// cap is one byte under, and dumps again when the cap is disabled with 0.
+// TestMaxSizeStdinBoundary: at cap dumps; one byte under exits 7 (input-too-large); 0 disables cap.
 func TestMaxSizeStdinBoundary(t *testing.T) {
 	t.Parallel()
 	data, err := os.ReadFile(sampleFLAC)
@@ -85,8 +80,7 @@ func TestMaxSizeStdinBoundary(t *testing.T) {
 	}
 }
 
-// endlessReader yields an unbounded stream of one byte, modeling `cat /dev/zero | ...`.
-// It has no EOF, so a command that reads it without a bound would never return.
+// endlessReader: unbounded stream with no EOF.
 type endlessReader struct{}
 
 func (endlessReader) Read(p []byte) (int, error) {
@@ -96,10 +90,7 @@ func (endlessReader) Read(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// TestMaxSizeStopsEndlessStdin is the no-hang guard: a bounded `dump -` on an endless
-// stream stops at the cap and exits 7 (input-too-large) promptly instead of buffering forever.
-// A regression that dropped the bound would spool the endless reader and hang, which the timeout
-// converts into a prompt failure.
+// TestMaxSizeStopsEndlessStdin: bounded dump - on endless stdin exits 7 without hanging.
 func TestMaxSizeStopsEndlessStdin(t *testing.T) {
 	t.Parallel()
 	type result struct {

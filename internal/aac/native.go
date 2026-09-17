@@ -7,18 +7,16 @@ import (
 	"github.com/colespringer/waxlabel/internal/id3"
 )
 
-// doc is the AAC native document: the optional front ID3v2 tag (the sole,
-// authoritative, writable container) plus the ADTS essence geometry and the
-// first frame's decoded configuration (decoder-critical, for the essence
-// digest). It is the preservation-first base for rewrites and satisfies
-// core.NativeDoc.
+// doc is the AAC native document: optional front ID3v2 tag (sole writable store),
+// ADTS geometry, and first-frame config for the essence digest. Satisfies
+// [core.NativeDoc].
 type doc struct {
-	id3    *id3.Tag // parsed front ID3v2 tag (nil if the file has none)
-	id3Len int64    // on-disk length of the original ID3v2 region (0 if none)
+	id3    *id3.Tag // front ID3v2 (nil if none)
+	id3Len int64    // on-disk ID3v2 region length (0 if none)
 
 	audioStart int64      // first ADTS byte (== id3Len)
-	audioEnd   int64      // end of the ADTS stream (EOF)
-	header     adtsHeader // first frame's decoded header, for the essence config
+	audioEnd   int64      // ADTS stream end (EOF)
+	header     adtsHeader // first frame header (essence config)
 	track      core.AudioTrack
 
 	size int64
@@ -26,7 +24,7 @@ type doc struct {
 
 func (d *doc) Format() core.Format { return core.FormatAAC }
 
-// Clone deep-copies the document so Document accessors stay detached.
+// Clone deep-copies so Document accessors stay detached.
 func (d *doc) Clone() core.NativeDoc {
 	c := *d
 	if d.id3 != nil {
@@ -35,11 +33,10 @@ func (d *doc) Clone() core.NativeDoc {
 	return &c
 }
 
-// PaddingBytes reports the free padding inside the front ID3v2 region, the slack a tag
-// rewrite grows into before the audio has to move. It is 0 for a file with no front tag.
+// PaddingBytes is free padding inside the front ID3v2 region (0 if no front tag).
 func (d *doc) PaddingBytes() int64 { return id3.FrontTagPadding(d.id3) }
 
-// Describe summarizes the native structure for the dump/native views.
+// Describe summarizes native structure for dump/native views.
 func (d *doc) Describe() []core.NativeEntry {
 	var out []core.NativeEntry
 	if d.id3 != nil {

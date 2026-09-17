@@ -11,24 +11,13 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// Matroska is an EBML document: a tree of elements, each
-//
-//	[Element ID (VINT)][Element Data Size (VINT)][data]
-//
-// A VINT's first byte holds a length descriptor - the position of its most
-// significant set bit gives the total byte length (0x80 => 1 byte... 0x01 => 8).
-// For element IDs the descriptor bits are kept (the canonical ID form); for
-// sizes and values they are stripped. A size whose value field is all ones is
-// the "unknown size" form (a streamed element that runs until a higher-level
-// element appears) - preserved verbatim on write rather than rewritten. The
-// inverse encoders live in encode.go.
-//
-// Reimplemented from the EBML/Matroska specifications (RFC 8794 / RFC 9559).
+// Matroska is an EBML document: a tree of elements, each [Element ID (VINT)][Element
+// Data Size (VINT)][data] A VINT's first byte holds a length descriptor - the position
+// of its most significant set bit gives the total byte length (0x80 => 1 byte...
 
-// Element IDs this codec reads. The structural elements the write path must
-// preserve byte-faithfully - SeekHead/Seek/SeekPosition, Cues/CueClusterPosition,
-// Void, and CRC-32 - are enumerated here too. The cluster media payload is still
-// never decoded, only its byte range recorded.
+// Element IDs this codec reads. The structural elements the write path must preserve
+// byte-faithfully - SeekHead/Seek/SeekPosition, Cues/CueClusterPosition, Void, and
+// CRC-32 - are enumerated here too.
 const (
 	idEBML            = 0x1A45DFA3
 	idDocType         = 0x4282
@@ -95,11 +84,9 @@ const (
 	idCRC32           = 0xBF
 )
 
-// level1IDs are the Segment's direct children - the elements an unknown-size
-// element (in practice a streamed Cluster) ends at, per the EBML rule that an
-// unknown-size element runs until the next equal-or-higher-level element. They
-// are used to bound such an element by skipping its children by size (never
-// scanning payload bytes) until one of these IDs appears.
+// level1IDs are the Segment's direct children - the elements an unknown-size element
+// (in practice a streamed Cluster) ends at, per the EBML rule that an unknown-size
+// element runs until the next equal-or-higher-level element.
 var level1IDs = map[uint64]bool{
 	idSeekHead: true, idInfo: true, idTracks: true, idTags: true,
 	idAttachments: true, idCluster: true, idCues: true, idChapters: true,
@@ -108,11 +95,8 @@ var level1IDs = map[uint64]bool{
 // trackTypeAudio is the TrackType value for an audio stream.
 const trackTypeAudio = 2
 
-// maxElement caps how many bytes of a single leaf element this codec reads into
-// memory (tag strings, attachment metadata, cover art). The large cluster media
-// payloads are never read - only their byte ranges are recorded - so this guards
-// the small structural elements against a hostile declared size, alongside the
-// user's MaxAllocBytes limit (whichever is smaller wins).
+// maxElement caps how many bytes of a single leaf element this codec reads into memory
+// (tag strings, attachment metadata, cover art).
 const maxElement = 64 << 20
 
 // vintLen returns the byte length a VINT occupies given its first byte, or 0 if
@@ -126,10 +110,7 @@ func vintLen(first byte) int {
 	return 0
 }
 
-// readVINT reads a variable-length integer in [off, end). keepMarker retains the
-// length-descriptor bit (element IDs); otherwise it is stripped (sizes/values).
-// It reports the value, the bytes consumed, whether the stripped value was the
-// all-ones "unknown" form, and ok.
+// readVINT reads a variable-length integer in [off, end).
 func readVINT(src core.ReaderAtSized, off, end, limit int64, keepMarker bool) (val uint64, n int64, unknown, ok bool) {
 	if off < 0 || off >= end {
 		return 0, 0, false, false
@@ -162,11 +143,7 @@ func readVINT(src core.ReaderAtSized, off, end, limit int64, keepMarker bool) (v
 	return val, int64(length), val == maxVal, true
 }
 
-// element is one parsed EBML element header: its ID and the byte range of its
-// data. next points at the following sibling. An unknown-size element is clamped
-// to the parent's end and stops sibling iteration (its true end cannot be known
-// without descending, which this read-only codec does not need to do for the
-// cluster media it skips).
+// element is one parsed EBML element header: its ID and the byte range of its data.
 type element struct {
 	id        uint64
 	start     int64 // the element's own first byte (the ID)
@@ -204,14 +181,9 @@ func readElement(src core.ReaderAtSized, off, end, limit int64) (element, bool) 
 	return element{id: id, start: off, dataStart: dataStart, dataEnd: dataEnd, unknown: unknown, next: dataEnd}, true
 }
 
-// resolveUnknownEnd returns the true end of an unknown-size element whose data
-// begins at from, used at the Segment level so siblings placed after a streamed
-// (unknown-size) Cluster - trailing Tags or Attachments - are not lost. It skips
-// the element's children by their declared size (reading only headers, never the
-// media payload) until it meets a Segment-level element ID, which by the EBML
-// unknown-size rule is where the element ends. It falls back to end when it
-// cannot resolve (a nested unknown-size child, an unparseable header, or no
-// level-1 element follows).
+// resolveUnknownEnd returns the true end of an unknown-size element whose data begins
+// at from, used at the Segment level so siblings placed after a streamed (unknown-size)
+// Cluster - trailing Tags or Attachments - are not lost.
 func resolveUnknownEnd(src core.ReaderAtSized, from, end int64, limit int64) int64 {
 	off := from
 	for off < end {
@@ -230,10 +202,8 @@ func resolveUnknownEnd(src core.ReaderAtSized, from, end int64, limit int64) int
 	return end
 }
 
-// intVal converts an EBML unsigned integer to an int, returning 0 for a value too
-// large to be a sane count or geometry. A direct uint64->int cast of a hostile
-// 8-byte value would otherwise produce a negative property and wrap in the
-// essence-digest config.
+// intVal converts an EBML unsigned integer to an int, returning 0 for a value too large
+// to be a sane count or geometry.
 func intVal(v uint64) int {
 	if v > math.MaxInt32 {
 		return 0
@@ -255,10 +225,7 @@ func eachChild(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limi
 		if !ok {
 			return nil
 		}
-		// Count every metadata element walked against the per-parse breadth budget. eachChild
-		// (unlike walkSegment, which iterates clusters) drives the tag/attachment/seek/cue/
-		// chapter walks, so a region of minimum-size EBML elements cannot accumulate one
-		// descriptor each to OOM. Clusters are audio-granularity and stay uncapped.
+		// Count every metadata element walked against the per-parse breadth budget.
 		if err := depth.Count(); err != nil {
 			return err
 		}
@@ -273,11 +240,10 @@ func eachChild(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limi
 	return nil
 }
 
-// walkSegment iterates the Segment's direct children like eachChild, but resolves
-// an unknown-size element (a streamed Cluster) to its true end via
-// resolveUnknownEnd, so siblings placed after it - trailing Tags or Attachments -
-// are still visited and the element's recorded extent is accurate rather than
-// overstated to the Segment end.
+// walkSegment iterates the Segment's direct children like eachChild, but resolves an
+// unknown-size element (a streamed Cluster) to its true end via resolveUnknownEnd, so
+// siblings placed after it - trailing Tags or Attachments - are still visited and the
+// element's recorded extent is accurate rather than overstated to the Segment end.
 func walkSegment(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limit int64, fn func(element) error) error {
 	if err := depth.Enter(); err != nil {
 		return err
@@ -343,10 +309,8 @@ func readFloat(src core.ReaderAtSized, el element, limit int64) (float64, bool) 
 	}
 }
 
-// readString reads a UTF-8 string element, capped at maxElement, with trailing
-// NUL padding (which some muxers add) trimmed. It propagates the read error so a
-// metadata value that is truncated or exceeds the alloc limit fails the parse
-// rather than being silently dropped.
+// readString reads a UTF-8 string element, capped at maxElement, with trailing NUL
+// padding (which some muxers add) trimmed.
 func readString(src core.ReaderAtSized, el element, limit int64) (string, error) {
 	b, err := readBytes(src, el, limit)
 	if err != nil {
@@ -371,10 +335,7 @@ func readBytesPrefix(src core.ReaderAtSized, el element, max, limit int64) ([]by
 	return bits.ReadSlice(src, el.dataStart, n, limit)
 }
 
-// readBytes reads a leaf element's data. A length beyond the metadata cap or the
-// user's alloc limit yields waxerr.ErrSizeTooLarge rather than a silently
-// truncated value (a truncated cover handed to the image sniffer would be a
-// corrupt picture). An empty element is (nil, nil).
+// readBytes reads a leaf element's data.
 func readBytes(src core.ReaderAtSized, el element, limit int64) ([]byte, error) {
 	n := el.dataLen()
 	if n <= 0 {

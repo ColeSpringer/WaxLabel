@@ -6,27 +6,17 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// This file holds the ID3v2 <-> canonical mapping tables shared by the id3
-// codec. Only the simple 1:1 text frames and the TXXX user-frame descriptions
-// live here as data; the version- and semantics-dependent frames (genre TCON,
-// the TRCK/TPOS number+total pairs, the date frames, UFID, COMM/USLT) are
-// decoded by the id3 package itself. Frame identifiers are the modern
-// v2.3/v2.4 four-character form (the codec upgrades v2.2 on read).
+// ID3v2 <-> canonical mapping. Simple text frames and TXXX descriptions here; TCON, TRCK/TPOS,
+// dates, UFID, COMM/USLT handled in internal/id3. Frame ids are v2.3/v2.4 four-char form.
 
-// id3TextFrames maps a text frame identifier to its canonical key, for frames
-// that carry exactly one canonical field as their text. Frames absent here pass
-// through under their own identifier as a canonical custom key.
+// id3TextFrames maps text frame ids to canonical keys. Unlisted frames pass through as custom keys.
 var id3TextFrames = map[string]tag.Key{
 	"TIT2": tag.Title,
 	"TPE1": tag.Artist,
 	"TALB": tag.Album,
 	"TPE2": tag.AlbumArtist,
 	"TCOM": tag.Composer,
-	// TEXT is the ID3v2.3/2.4 "Lyricist/Text writer" frame (v2.2 TXT, upgraded on read).
-	// A non-conformant file carrying both a TEXT frame and a TXXX:LYRICIST user frame
-	// projects two LYRICIST values; LYRICIST is multivalued, so both are kept rather than
-	// flagged as single-valued-multi (unlike the single-valued TCMP dual-representation edge
-	// below), and WaxLabel never writes such a file.
+	// TEXT is lyricist (v2.2 TXT upgraded). TEXT + TXXX:LYRICIST both project; LYRICIST is multivalued.
 	"TEXT": tag.Lyricist,
 	"TPE3": tag.Conductor,
 	"TPE4": tag.Remixer,
@@ -36,27 +26,23 @@ var id3TextFrames = map[string]tag.Key{
 	"TIT1": tag.Grouping,
 	"TSST": tag.DiscSubtitle,
 	"TSRC": tag.ISRC,
-	"TENC": tag.EncodedBy, // encoding person
-	"TSSE": tag.Encoder,   // encoding software/settings (the Lavf... stamp)
+	"TENC": tag.EncodedBy,
+	"TSSE": tag.Encoder, // Lavf stamp
 	"TSOT": tag.TitleSort,
 	"TSOP": tag.ArtistSort,
 	"TSOA": tag.AlbumSort,
 	"TSO2": tag.AlbumArtistSort,
 	"TSOC": tag.ComposerSort,
 	"TCMP": tag.Compilation,
-	"TBPM": tag.BPM, // beats per minute
-	// MVNM is Apple's movement-name frame; not T-prefixed, so the id3 read
-	// path needs its own case (the generic text case is T-gated).
+	"TBPM": tag.BPM,
+	// MVNM is not T-prefixed; id3 read handles it separately.
 	"MVNM": tag.MovementName,
 }
 
 // id3KeyFrames is the inverse of id3TextFrames, built at init.
 var id3KeyFrames = map[tag.Key]string{}
 
-// txxxAliases maps an uppercased TXXX description to a canonical key, folding the
-// Picard/MusicBrainz long-tail spellings (mixed case, spaces) onto the canonical
-// vocabulary. Descriptions not listed map to the uppercased description as a
-// custom key, so nothing is lost.
+// txxxAliases maps uppercased TXXX descriptions to canonical keys.
 var txxxAliases = map[string]tag.Key{
 	"MUSICBRAINZ ALBUM ID":         tag.MBReleaseID,
 	"MUSICBRAINZ ARTIST ID":        tag.MBArtistID,
@@ -73,38 +59,20 @@ var txxxAliases = map[string]tag.Key{
 	"REPLAYGAIN_TRACK_PEAK":        tag.ReplayGainTrackPeak,
 	"REPLAYGAIN_ALBUM_GAIN":        tag.ReplayGainAlbumGain,
 	"REPLAYGAIN_ALBUM_PEAK":        tag.ReplayGainAlbumPeak,
-	// Picard spells the release-level detail as mixed-case "MusicBrainz Album ..." user
-	// frames. The bare canonical spellings need no entry: ID3TXXXKey falls through to
-	// tag.ParseKey, which yields the same key.
+	// Picard mixed-case names; bare canonical spellings use tag.ParseKey fallthrough.
 	"MUSICBRAINZ ALBUM RELEASE COUNTRY": tag.ReleaseCountry,
 	"MUSICBRAINZ ALBUM STATUS":          tag.ReleaseStatus,
 	"MUSICBRAINZ ALBUM TYPE":            tag.ReleaseType,
-	// The APE/legacy-Picard underscored spellings. This path consults only this table and
-	// tag.ParseKey, never tag.AliasKey, so a foreign frame using them needs an entry here
-	// or the same string would fold on Vorbis and stay custom on ID3.
+	// No tag.AliasKey on this path.
 	"MUSICBRAINZ_ALBUMSTATUS": tag.ReleaseStatus,
 	"MUSICBRAINZ_ALBUMTYPE":   tag.ReleaseType,
-	// ffmpeg writes the compilation flag as a TXXX:TCMP user frame, not only the dedicated
-	// TCMP text frame (which id3Frames already maps), so fold that spelling onto COMPILATION
-	// too. Compilation still writes back as the dedicated TCMP frame (it is not in
-	// txxxDescForKey), so this only widens what is accepted on read. (Conscious edge: a file
-	// carrying BOTH a dedicated TCMP frame AND a TXXX:TCMP - a redundant, non-conformant input
-	// WaxLabel never writes - now projects COMPILATION twice and lint flags single-valued-multi.
-	// That escalation is defensible: the file is genuinely redundant, and flagging it is lint's
-	// job.)
+	// ffmpeg TXXX:TCMP; write still uses TCMP frame. Both TCMP frame + TXXX:TCMP -> lint single-valued-multi.
 	"TCMP": tag.Compilation,
-	// DJMIXER is the only multi-token role key, so fold its spaced/underscored/hyphenated
-	// spellings onto the canonical when they arrive as a foreign TXXX user frame. The write
-	// path always targets TIPL/IPLS, never TXXX, so this only widens what is accepted on read.
+	// Read-only DJMIXER variants; write uses TIPL/IPLS.
 	"DJ MIXER": tag.DJMixer,
 	"DJ_MIXER": tag.DJMixer,
 	"DJ-MIXER": tag.DJMixer,
-	// The Matroska native tag spellings are edit aliases on every format
-	// (tag/aliases.go), so a foreign TXXX frame using one folds onto the same
-	// canonical key here too. Without these an edit under the spelling retargets
-	// the canonical frame while the TXXX frame keeps reading as a custom key, so a
-	// set behaves as an append and a clear leaves the frame behind. Read-only:
-	// none of them appears in txxxDescForKey, so writes keep their frames.
+	// Matroska native spellings (tag/aliases.go); read-only.
 	"LEAD_PERFORMER": tag.Artist,
 	"DATE_RECORDED":  tag.RecordingDate,
 	"DATE_RELEASED":  tag.ReleaseDate,
@@ -121,9 +89,7 @@ var txxxAliases = map[string]tag.Key{
 	"CONTENT_GROUP":  tag.Grouping,
 }
 
-// txxxDescForKey gives the preferred TXXX description to write for a canonical
-// key whose natural home is a user frame. Keys not listed write their own name
-// as the description.
+// txxxDescForKey is preferred TXXX write description. Unlisted keys write string(key).
 var txxxDescForKey = map[tag.Key]string{
 	tag.MBReleaseID:         "MusicBrainz Album Id",
 	tag.MBArtistID:          "MusicBrainz Artist Id",
@@ -134,18 +100,14 @@ var txxxDescForKey = map[tag.Key]string{
 	tag.MBDiscID:            "MusicBrainz Disc Id",
 	tag.AcoustID:            "Acoustid Id",
 	tag.AcoustIDFingerprint: "Acoustid Fingerprint",
-	// WRITER rides the generic TXXX fallback; the Picard spelling is "Writer".
 	tag.Writer: "Writer",
-	// The release-level detail: write the Picard names so Picard reads our output back.
 	tag.ReleaseCountry: "MusicBrainz Album Release Country",
 	tag.ReleaseStatus:  "MusicBrainz Album Status",
 	tag.ReleaseType:    "MusicBrainz Album Type",
 }
 
-// id3InvolvedRoles maps a credit key to the exact TIPL/IPLS involvement string Picard
-// writes (the de-facto interop spelling). Note the two that diverge from the canonical key
-// name: MIXER writes "mix" and DJMIXER writes "DJ-mix". WRITER is intentionally absent - it
-// is a TXXX:Writer user frame, not an involved-people entry.
+// id3InvolvedRoles maps credit keys to Picard TIPL/IPLS strings. MIXER->"mix", DJMIXER->"DJ-mix".
+// WRITER is TXXX:Writer, not involved-people.
 var id3InvolvedRoles = map[tag.Key]string{
 	tag.Producer: "producer",
 	tag.Engineer: "engineer",
@@ -154,16 +116,10 @@ var id3InvolvedRoles = map[tag.Key]string{
 	tag.DJMixer:  "DJ-mix",
 }
 
-// id3InvolvedOrder is the deterministic emit order for the involved-people roles, so a
-// rebuilt TIPL/IPLS frame is byte-stable across writes.
+// id3InvolvedOrder is deterministic TIPL/IPLS emit order.
 var id3InvolvedOrder = []tag.Key{tag.Producer, tag.Engineer, tag.Mixer, tag.Arranger, tag.DJMixer}
 
-// id3InvolvedReadAliases seeds extra read-only involvement spellings that non-Picard
-// taggers (Kid3/Mp3tag/foobar) use for the two roles whose Picard function diverges from
-// the canonical key name. Read folds them onto the canonical key; writes always use the
-// canonical id3InvolvedRoles spelling ("mix"/"DJ-mix"). Without this a file using "mixer"
-// or "dj-mixer" would be preserved-but-invisible, even though MIXER/DJMIXER round-trip on
-// Vorbis/MP4/APE - the involved-people analog of the txxxAliases long-tail folding.
+// id3InvolvedReadAliases: read-only spellings from Kid3/Mp3tag/foobar; write stays Picard form.
 var id3InvolvedReadAliases = map[string]tag.Key{
 	"mixer":    tag.Mixer,
 	"djmixer":  tag.DJMixer,
@@ -173,8 +129,7 @@ var id3InvolvedReadAliases = map[string]tag.Key{
 	"dj_mixer": tag.DJMixer,
 }
 
-// id3InvolvedByFunc maps a case-folded involvement function to its canonical key, built at
-// init from both id3InvolvedRoles and id3InvolvedReadAliases.
+// id3InvolvedByFunc maps case-folded involvement function to canonical key.
 var id3InvolvedByFunc = map[string]tag.Key{}
 
 func init() {
@@ -189,23 +144,19 @@ func init() {
 	}
 }
 
-// ID3FrameKey returns the canonical key for a simple text frame and whether it
-// is known here. Special frames (TCON, TRCK, TPOS, dates, TXXX, UFID, COMM,
-// USLT, APIC) are not listed; the id3 package decodes those directly.
+// ID3FrameKey returns the canonical key for a simple text frame.
 func ID3FrameKey(id string) (tag.Key, bool) {
 	k, ok := id3TextFrames[id]
 	return k, ok
 }
 
-// ID3KeyFrame returns the simple text frame for a canonical key, if one exists.
+// ID3KeyFrame returns the text frame for a canonical key, if any.
 func ID3KeyFrame(key tag.Key) (string, bool) {
 	id, ok := id3KeyFrames[key]
 	return id, ok
 }
 
-// ID3TXXXKey maps a TXXX description to its canonical key. A known alias folds
-// onto the vocabulary; otherwise the uppercased description becomes a custom
-// key. ok is false only when the description cannot form a valid key.
+// ID3TXXXKey maps a TXXX description to its canonical key via txxxAliases or tag.ParseKey.
 func ID3TXXXKey(desc string) (tag.Key, bool) {
 	up := normalizeKey(desc)
 	if k, ok := txxxAliases[up]; ok {
@@ -218,8 +169,7 @@ func ID3TXXXKey(desc string) (tag.Key, bool) {
 	return k, true
 }
 
-// ID3TXXXDesc returns the TXXX description to write for a canonical key: a
-// preferred Picard spelling when one exists, else the key's own name.
+// ID3TXXXDesc returns the TXXX description to write for a canonical key.
 func ID3TXXXDesc(key tag.Key) string {
 	if d, ok := txxxDescForKey[key]; ok {
 		return d
@@ -227,28 +177,19 @@ func ID3TXXXDesc(key tag.Key) string {
 	return string(key)
 }
 
-// ID3InvolvedFunction returns the TIPL/IPLS involvement string a credit key writes, and
-// whether key is an involved-people role at all (false for WRITER and every non-credit key).
+// ID3InvolvedFunction returns the TIPL/IPLS involvement string to write, if key is a credit role.
 func ID3InvolvedFunction(key tag.Key) (string, bool) {
 	fn, ok := id3InvolvedRoles[key]
 	return fn, ok
 }
 
-// ID3InvolvedRoleKey maps an involvement function to its canonical key, folding case and
-// surrounding whitespace and consulting both the canonical Picard spellings and the
-// read-only aliases. It is lenient where Picard is strict; the write path always emits the
-// canonical id3InvolvedRoles spelling, so a folded value normalizes on the next edit that
-// touches the frame. ok is false for an unmodeled involvement (e.g. "mastering").
+// ID3InvolvedRoleKey maps an involvement function to its canonical key (Picard + read aliases).
 func ID3InvolvedRoleKey(fn string) (tag.Key, bool) {
 	k, ok := id3InvolvedByFunc[strings.ToLower(strings.TrimSpace(fn))]
 	return k, ok
 }
 
-// technicalCommentDescs are COMM descriptions that mark a frame as machine data rather
-// than a human comment: iTunes writes its normalization, gapless, and playback state under
-// these, and ReplayGain analysers write theirs under a REPLAYGAIN_* description. Such a
-// frame is preserved in the native tag but never projected as COMMENT, and the writer never
-// manages one, so an unrelated edit cannot consume it.
+// technicalCommentDescs are machine COMM descriptions, not projected as COMMENT.
 var technicalCommentDescs = map[string]bool{
 	"ITUNNORM": true,
 	"ITUNSMPB": true,
@@ -257,21 +198,11 @@ var technicalCommentDescs = map[string]bool{
 	"ITUNEXTC": true,
 }
 
-// technicalCommentPrefixes cover the families whose descriptions vary per entry, so an
-// exact table cannot name them all.
+// technicalCommentPrefixes cover families with varying descriptions.
 var technicalCommentPrefixes = []string{"ITUNES_CDDB", "REPLAYGAIN"}
 
-// ID3TechnicalCommentDesc reports whether a COMM description marks the frame as machine
-// data rather than a comment a person wrote. The read filter and the writer's management
-// gates consult this one predicate, so the set of frames projected and the set of frames
-// managed cannot drift - the same reason [MatroskaTechnicalName] exists.
-//
-// The list is expected to be incomplete. Other conventions exist (Songs-DB_*,
-// MusicMatch_*, CDDB*, and some rippers' literal "ID3v1 Comment"), and adding an entry is
-// a one-line change. A miss is recoverable rather than destructive: projecting a machine
-// comment as COMMENT makes it visible and carries it on a copy, but destroys nothing until
-// COMMENT is itself edited. Worth running over a real library before treating the list as
-// settled.
+// ID3TechnicalCommentDesc reports machine COMM frames. Shared by read filter and writer gate
+// (same pattern as [MatroskaTechnicalName]). List is intentionally incomplete.
 func ID3TechnicalCommentDesc(desc string) bool {
 	up := normalizeKey(desc)
 	if technicalCommentDescs[up] {
@@ -285,10 +216,7 @@ func ID3TechnicalCommentDesc(desc string) bool {
 	return false
 }
 
-// ID3InvolvedKeys returns the involved-people role keys in deterministic emit order. The
-// returned slice is shared and read-only - it backs per-frame and per-render iteration in the
-// id3 codec, so it must not be mutated. (id3InvolvedOrder has len==cap, so an append reallocates
-// rather than corrupting it, but callers should still only range over the result.)
+// ID3InvolvedKeys returns involved-people role keys in emit order. Shared slice; do not mutate.
 func ID3InvolvedKeys() []tag.Key {
 	return id3InvolvedOrder
 }

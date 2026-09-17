@@ -7,16 +7,16 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// Cue child IDs not already declared (idCues/idCuePoint/idCueTrackPos/idCueClusterPos
-// live in matroska_write_test.go; idCluster/idSegment/idInfo/... in matroska_test.go).
+// Cue child IDs not already declared (idCues/idCuePoint/idCueTrackPos/idCueClusterPos live in
+// matroska_write_test.go; idCluster/idSegment/idInfo/...
 const (
 	idCueTime  = 0xB3
 	idCueTrack = 0xF7
 )
 
-// mkNarrowPos builds a CueClusterPosition with a 2-byte value - the width a
-// boundary-crossing edit must widen. The synth mkEl/mkUint helpers emit 8-byte
-// VINTs, so a narrow slot is hand-encoded: id 0xF1, size 0x82 (2-byte), value.
+// mkNarrowPos builds a CueClusterPosition with a 2-byte value; the width a boundary-crossing edit
+// must widen. The synth mkEl/mkUint helpers emit 8-byte VINTs, so a narrow slot is hand-encoded: id
+// 0xF1, size 0x82 (2-byte), value.
 func mkNarrowPos(v int) []byte {
 	return []byte{0xF1, 0x82, byte(v >> 8), byte(v)}
 }
@@ -35,13 +35,8 @@ func mkAudioClusterTS(ts uint64) []byte {
 	))
 }
 
-// buildMultiClusterMKA synthesizes a 3-cluster Matroska whose Cues holds one
-// 2-byte-slot CuePoint per cluster, each pointing at its cluster's true
-// segment-relative offset. With frontCues the Cues precedes the clusters (so a later
-// Cues rebuild shifts the clusters it points at - the feedback topology finding #6
-// flags as untested); otherwise it trails them. A large Title edit then pushes every
-// cluster past 65535, forcing all three positions to widen 2->3 bytes through the
-// real shift pipeline.
+// buildMultiClusterMKA synthesizes a 3-cluster Matroska whose Cues holds one 2-byte-slot CuePoint
+// per cluster, each pointing at its cluster's true segment-relative offset.
 func buildMultiClusterMKA(t *testing.T, frontCues bool, title string) []byte {
 	t.Helper()
 	info := mkEl(idInfo, mkStr(idSegTitle, title))
@@ -136,13 +131,7 @@ func collectCuePositions(data []byte, start, end int, out *[]int64) {
 	}
 }
 
-// assertAllCuesPointAtClusters checks that every CueClusterPosition (not just the
-// first) resolves, in order, to its Cluster's start. The clusters are contiguous, so
-// the parser coalesces them to one descriptor and the later cues target interior run
-// offsets. This checks that the shift-path offsetMap repointed every cue, not only the
-// run's first direct-keyed cluster. wantCross requires at least one position to cross
-// the 2-byte slot boundary, proving the minimal-width rebuild path ran; false checks
-// that the in-place patch path kept every interior cue correct without a width change.
+// assertAllCuesPointAtClusters: every CueClusterPosition resolves, in order, to its Cluster start.
 func assertAllCuesPointAtClusters(t *testing.T, data []byte, wantCross bool) {
 	t.Helper()
 	_, segData, segEnd, ok := elemRange(data, 0, len(data), idSegment, nil)
@@ -178,12 +167,8 @@ func assertAllCuesPointAtClusters(t *testing.T, data []byte, wantCross bool) {
 	}
 }
 
-// TestMatroskaMultiClusterRebuildsAllCues drives a 3-cluster file through the real
-// shift pipeline, asserting every cue, not just the first, is repointed to its
-// cluster. Because the clusters are contiguous they coalesce to one descriptor, so
-// later cues exercise offsetMap's run fallback rather than a direct key. The test
-// covers both trailing and leading Cues layouts, plus both offset paths: an in-place
-// patch and a boundary-crossing edit that forces a minimal-width Cues rebuild.
+// 3-cluster file through the real shift pipeline, asserting every cue, not just the first, is
+// repointed to its cluster.
 func TestMatroskaMultiClusterRebuildsAllCues(t *testing.T) {
 	for _, frontCues := range []bool{false, true} {
 		topology := "trailing-cues"

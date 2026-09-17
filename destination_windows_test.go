@@ -9,8 +9,7 @@ import (
 	"testing"
 )
 
-// TestRetryableRenameError pins which failures earn a retry. Anything but a transient
-// handle must surface at once instead of after the full backoff.
+// TestRetryableRenameError: only transient handle failures retry.
 func TestRetryableRenameError(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -33,8 +32,7 @@ func TestRetryableRenameError(t *testing.T) {
 	}
 }
 
-// TestRenameReplaceSurfacesRealFailures: a rename that can never succeed still returns
-// its error rather than being retried into silence.
+// TestRenameReplaceSurfacesRealFailures: non-retryable rename still errors.
 func TestRenameReplaceSurfacesRealFailures(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -43,8 +41,8 @@ func TestRenameReplaceSurfacesRealFailures(t *testing.T) {
 	}
 }
 
-// TestClearTargetReadOnlyRoundTrips: the attribute is dropped for the rename and put
-// back by restore, and a writable or missing target is left alone.
+// TestClearTargetReadOnlyRoundTrips: drop readonly for rename, restore after;
+// writable/missing targets untouched.
 func TestClearTargetReadOnlyRoundTrips(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -67,7 +65,7 @@ func TestClearTargetReadOnlyRoundTrips(t *testing.T) {
 		t.Errorf("restore did not put the attribute back: mode = %o", perm)
 	}
 
-	// A writable target is left alone, a missing one must not panic.
+	// Writable left alone; missing must not panic.
 	rw := filepath.Join(dir, "rw.flac")
 	if err := os.WriteFile(rw, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)

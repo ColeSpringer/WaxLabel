@@ -247,9 +247,8 @@ func TestWAVDifferentialFFmpegDecodes(t *testing.T) {
 	}
 }
 
-// TestWAVVerifyEssenceOnWrite exercises the SaveBack path with WithVerifyEssence:
-// the data chunk is copied from its source offset, so the engine's tap must hash
-// the right bytes against the parsed extent.
+// SaveBack path with WithVerifyEssence: the data chunk is copied from its source offset, so the
+// engine's tap must hash the right bytes against the parsed extent.
 func TestWAVVerifyEssenceOnWrite(t *testing.T) {
 	path := copyToTemp(t, sampleWAV)
 	plan, err := mustParseFile(t, path).Edit().Set(tag.Title, "Verified").Prepare(wl.WithVerifyEssence())
@@ -261,10 +260,9 @@ func TestWAVVerifyEssenceOnWrite(t *testing.T) {
 	}
 }
 
-// TestWAVTrailingMetadataChangeDetected proves the fingerprint covers trailing
-// metadata: a WAV whose id3 chunk sits after the data chunk, externally edited in
-// place (same size and mtime), is caught on save-back. The old [0,dataOff)
-// fingerprint missed anything after the audio.
+// fingerprint covers trailing metadata: a WAV whose id3 chunk sits after the data chunk, externally
+// edited in place (same size and mtime), is caught on save-back. The old [0,dataOff) fingerprint
+// missed anything after the audio.
 func TestWAVTrailingMetadataChangeDetected(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavData(400), wavID3(id3v2(3, textFrame(3, "TIT2", "Original"))))
 	path := writeTempFile(t, "trail.wav", data)
@@ -298,8 +296,7 @@ func TestWAVTrailingMetadataChangeDetected(t *testing.T) {
 	}
 }
 
-// TestWAVPostWriteWarningsMatchReparse confirms the document returned from a
-// write recomputes its warnings instead of echoing the parse warnings: a
+// document returned from a write recomputes its warnings instead of echoing the parse warnings: a
 // duplicate-tag-block the rewrite consolidated must no longer be reported.
 func TestWAVPostWriteWarningsMatchReparse(t *testing.T) {
 	data := wavFile(wavFmtPCM(),
@@ -327,9 +324,8 @@ func TestWAVPostWriteWarningsMatchReparse(t *testing.T) {
 	}
 }
 
-// TestWAVPostWriteRetainsFamilies confirms the document returned from a write
-// surfaces the same family view as a fresh parse of the output - here the
-// secondary INFO container after an id3 chunk is added.
+// document returned from a write surfaces the same family view as a fresh parse of the output; here
+// the secondary INFO container after an id3 chunk is added.
 func TestWAVPostWriteRetainsFamilies(t *testing.T) {
 	src := readFixture(t, sampleWAV)
 	plan, err := mustParseBytes(t, src).Edit().

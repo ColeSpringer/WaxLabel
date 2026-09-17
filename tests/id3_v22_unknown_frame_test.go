@@ -18,11 +18,10 @@ func v22WithUnknownFrame(t *testing.T) []byte {
 	), mp3Audio(t)...)
 }
 
-// TestMP3V22UnknownFrameNoPhantom is a regression guard: an unknown ID3v2.2 frame is
-// preserved under a space-padded "TXY " ID when the tag is modernized to v2.3, but that
-// non-conformant ID must never surface as a phantom canonical tag - not on the first
-// read, not on re-read of the written file, and not in the plan preview (which must
-// equal a fresh re-parse). The frame's bytes are still kept verbatim.
+// regression guard: an unknown ID3v2.2 frame is preserved under a space-padded "TXY " ID when the
+// tag is modernized to v2.3, but that non-conformant ID must never surface as a phantom canonical
+// tag; not on the first read, not on re-read of the written file, and not in the plan preview
+// (which must equal a fresh re-parse).
 func TestMP3V22UnknownFrameNoPhantom(t *testing.T) {
 	data := v22WithUnknownFrame(t)
 
@@ -51,8 +50,8 @@ func TestMP3V22UnknownFrameNoPhantom(t *testing.T) {
 		t.Error("the unknown v2.2 frame body was not preserved on modernization")
 	}
 
-	// Re-read: "TXY " now decodes as a normal (non-opaque) frame, yet it must still not
-	// surface as a phantom canonical tag - this is the projection gate.
+	// Re-read: "TXY " now decodes as a normal (non-opaque) frame, yet it must still not surface as a
+	// phantom canonical tag; this is the projection gate.
 	re := mustParseBytes(t, out)
 	if v, ok := re.Get(tag.Key("TXY")); ok {
 		t.Errorf("phantom canonical TXY=%v appeared on re-read of the modernized tag", v)
@@ -62,9 +61,9 @@ func TestMP3V22UnknownFrameNoPhantom(t *testing.T) {
 	}
 }
 
-// TestMP3V22UnknownFrameIdempotent confirms the preserved frame is stable once it is a
-// normal non-opaque frame in the modernized file: a no-op write is byte-identical, and a
-// second real edit keeps the frame verbatim without minting a phantom.
+// preserved frame is stable once it is a normal non-opaque frame in the modernized file: a no-op
+// write is byte-identical, and a second real edit keeps the frame verbatim without minting a
+// phantom.
 func TestMP3V22UnknownFrameIdempotent(t *testing.T) {
 	data := v22WithUnknownFrame(t)
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Album, "V22 Album").Prepare()
@@ -105,11 +104,9 @@ func TestMP3V22UnknownFrameIdempotent(t *testing.T) {
 	}
 }
 
-// TestMP3V22UnknownFrameKeyCollision exercises the write.go gates: setting the canonical
-// key TXY (which renders as a TXXX:TXY frame) on the modernized file must keep the
-// preserved "TXY " frame AND write the new value - neither clobbers the other. Without
-// the frameKeys conformance gate the rebuilder treats the preserved "TXY " frame as a
-// stale representation of canonical TXY and drops it.
+// write.go gates: setting the canonical key TXY (which renders as a TXXX:TXY frame) on the
+// modernized file must keep the preserved "TXY " frame AND write the new value; neither clobbers
+// the other.
 func TestMP3V22UnknownFrameKeyCollision(t *testing.T) {
 	data := v22WithUnknownFrame(t)
 	modernize, err := mustParseBytes(t, data).Edit().Set(tag.Album, "V22 Album").Prepare()

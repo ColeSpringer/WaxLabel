@@ -8,14 +8,12 @@ import (
 	"testing"
 )
 
-// TestCLIWebMCoverDropped checks that adding cover art to a WebM file (whose subset excludes
-// Attachments) drops the picture with a warning rather than failing, so a mixed edit still
-// applies its storable tag. --strict re-escalates the drop to a failure.
+// TestCLIWebMCoverDropped: WebM drops cover with warning; mixed tag still applies; --strict fails.
 func TestCLIWebMCoverDropped(t *testing.T) {
 	const code = "picture-unsupported"
 	cover := writeTempImage(t, "cover.png", minimalPNG())
 
-	// A mixed edit: the storable ARTIST lands, the cover is dropped.
+	// ARTIST applies; cover drops.
 	file := copyFixture(t, "../../testdata/sample.webm")
 	out, errb, exit := runCLI(t, "--json", "set", file, "--set", "ARTIST=Keep", "--add-cover", cover)
 	if exit != 0 {
@@ -33,16 +31,14 @@ func TestCLIWebMCoverDropped(t *testing.T) {
 		t.Errorf("pictures = %+v, want none (dropped on WebM)", jd.Pictures)
 	}
 
-	// --strict re-escalates the drop to a per-file failure.
+	// --strict escalates drop to failure.
 	file2 := copyFixture(t, "../../testdata/sample.webm")
 	_, _, exit2 := runCLI(t, "set", file2, "--strict", "--add-cover", cover)
 	if exit2 == 0 {
 		t.Error("--strict must fail when an added cover is dropped as unsupported")
 	}
 
-	// A dropped picture set skips the picture sanity checks: adding two front covers to a WebM must
-	// surface only the single unsupported-drop warning, not a multiple-front-covers note about art
-	// that is never written (the drop is one warning, matching chapters and synced lyrics).
+	// Dropped cover skips picture sanity checks; one unsupported-drop warning only.
 	file3 := copyFixture(t, "../../testdata/sample.webm")
 	out3, _, exit3 := runCLI(t, "--json", "set", file3,
 		"--add-picture", "front-cover="+cover, "--add-picture", "front-cover="+cover)
@@ -57,10 +53,7 @@ func TestCLIWebMCoverDropped(t *testing.T) {
 	}
 }
 
-// TestCLIClearSyncedLyricsClearsLanguage checks that --clear-synced-lyrics combined with
-// authoring starts fresh: the authored set with no --synced-lyrics-lang reads back with no
-// language rather than inheriting the file's existing SYLT language, while an explicit
-// --synced-lyrics-lang still wins. A plain author with no clear keeps the inherited language.
+// TestCLIClearSyncedLyricsClearsLanguage: clear+author resets language; explicit lang wins.
 func TestCLIClearSyncedLyricsClearsLanguage(t *testing.T) {
 	syncedLang := func(t *testing.T, file string) string {
 		t.Helper()
@@ -72,7 +65,7 @@ func TestCLIClearSyncedLyricsClearsLanguage(t *testing.T) {
 		return jd.SyncedLyrics[0].Language
 	}
 
-	// Author a set with language deu.
+	// Seed SYLT with language deu.
 	file := copyFixture(t, "../../testdata/notags.mp3")
 	if _, errb, code := runCLI(t, "set", file, "--add-synced-lyric", "0:05=Old", "--synced-lyrics-lang", "deu"); code != 0 {
 		t.Fatalf("author deu exit %d: %s", code, errb)
@@ -81,7 +74,7 @@ func TestCLIClearSyncedLyricsClearsLanguage(t *testing.T) {
 		t.Fatalf("language after author = %q, want deu", got)
 	}
 
-	// Clear + author with no language: the language is not inherited.
+	// Clear + author: no inherited language.
 	if _, errb, code := runCLI(t, "set", file, "--clear-synced-lyrics", "--add-synced-lyric", "5=New"); code != 0 {
 		t.Fatalf("clear+author exit %d: %s", code, errb)
 	}
@@ -89,7 +82,7 @@ func TestCLIClearSyncedLyricsClearsLanguage(t *testing.T) {
 		t.Errorf("language after clear+author = %q, want empty (cleared, not inherited)", got)
 	}
 
-	// Clear + author WITH an explicit language: the explicit language wins.
+	// Clear + explicit lang: explicit wins.
 	file2 := copyFixture(t, "../../testdata/notags.mp3")
 	if _, _, code := runCLI(t, "set", file2, "--add-synced-lyric", "0:05=Old", "--synced-lyrics-lang", "eng"); code != 0 {
 		t.Fatalf("author eng failed")
@@ -101,7 +94,7 @@ func TestCLIClearSyncedLyricsClearsLanguage(t *testing.T) {
 		t.Errorf("language after clear+author+deu = %q, want deu (explicit wins)", got)
 	}
 
-	// A plain author with no clear keeps the file's existing language.
+	// Plain author without clear keeps existing language.
 	file3 := copyFixture(t, "../../testdata/notags.mp3")
 	if _, _, code := runCLI(t, "set", file3, "--add-synced-lyric", "0:05=Old", "--synced-lyrics-lang", "eng"); code != 0 {
 		t.Fatalf("author eng failed")
@@ -114,8 +107,7 @@ func TestCLIClearSyncedLyricsClearsLanguage(t *testing.T) {
 	}
 }
 
-// TestCLIClearSyncedLyricsFileClearsLanguage exercises the same fresh-start behavior through the
-// --synced-lyrics-file authoring branch, which shares the clear path with --add-synced-lyric.
+// TestCLIClearSyncedLyricsFileClearsLanguage: same clear behavior via --synced-lyrics-file.
 func TestCLIClearSyncedLyricsFileClearsLanguage(t *testing.T) {
 	lrc := filepath.Join(t.TempDir(), "new.lrc")
 	if err := os.WriteFile(lrc, []byte("[00:05.000]fresh line"), 0o644); err != nil {
@@ -139,16 +131,14 @@ func TestCLIClearSyncedLyricsFileClearsLanguage(t *testing.T) {
 	}
 }
 
-// TestCLISyncedLyricsWriteTruncationStrict checks that authoring a synced-lyrics set past the
-// modeled per-set line cap through --synced-lyrics-file truncates on write with a warning
-// (exit 0), stores exactly the cap, and fails under --strict.
+// TestCLISyncedLyricsWriteTruncationStrict: over-cap truncates with warning; --strict fails.
 func TestCLISyncedLyricsWriteTruncationStrict(t *testing.T) {
 	const cap = 1 << 16
 	const code = "synced-lyrics-truncated"
 
 	var b strings.Builder
 	for i := 0; i < cap+1; i++ {
-		// One distinct LRC line (minute i, second 0), a valid MM:SS form well within the ceiling.
+		// Distinct MM:SS lines, one per minute.
 		b.WriteString("[")
 		b.WriteString(strconv.Itoa(i))
 		b.WriteString(":00.000]x\n")
@@ -158,7 +148,7 @@ func TestCLISyncedLyricsWriteTruncationStrict(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Without --strict: exit 0, truncation warning, and exactly the cap is stored.
+	// Without --strict: exit 0, truncation warning, cap stored.
 	file := copyFixture(t, "../../testdata/notags.flac")
 	out, errb, exit := runCLI(t, "--json", "set", file, "--synced-lyrics-file", lrc)
 	if exit != 0 {
@@ -173,7 +163,7 @@ func TestCLISyncedLyricsWriteTruncationStrict(t *testing.T) {
 		t.Errorf("stored lines = %v, want one set of exactly %d", jd.SyncedLyrics, cap)
 	}
 
-	// With --strict: the truncation escalates to a failure.
+	// With --strict: truncation fails.
 	file2 := copyFixture(t, "../../testdata/notags.flac")
 	_, _, exit2 := runCLI(t, "set", file2, "--strict", "--synced-lyrics-file", lrc)
 	if exit2 == 0 {

@@ -9,22 +9,14 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// An MP4 file is a tree of atoms (a.k.a. boxes). Each atom is
-//
-//	[4-byte big-endian size][4-byte type][payload]
-//
-// where size counts the whole atom including the 8-byte header. A size of 1
-// means a 64-bit size follows the type (header is then 16 bytes); a size of 0
-// means the atom runs to end-of-file (only valid at the top level). The "meta"
-// atom is a FullBox: a 4-byte version/flags field precedes its children.
+// An MP4 file is a tree of atoms (a.k.a. A size of 1 means a 64-bit size follows the
+// type (header is then 16 bytes);
 
 // metaSkip is the version/flags prefix inside a "meta" atom before its children.
 const metaSkip = 4
 
-// containerAtoms are the atoms this codec descends into: the path to the iTunes
-// tag list (moov.udta.meta.ilst) and to the chunk-offset tables
-// (moov.trak.mdia.minf.stbl). Everything else (including each ilst item's "data"
-// children, which are decoded separately) is treated as a leaf.
+// containerAtoms are the atoms this codec descends into: the path to the iTunes tag
+// list (moov.udta.meta.ilst) and to the chunk-offset tables (moov.trak.mdia.minf.stbl).
 var containerAtoms = map[[4]byte]bool{
 	atomName("moov"): true,
 	atomName("trak"): true,
@@ -50,11 +42,10 @@ type node struct {
 	offset    int64 // atom start in the source
 	headerLen int64 // 8, or 16 for a 64-bit size
 	size      int64 // total atom length including the header (clamped to the region)
-	// truncated records that this atom's declared size overran the region and was
-	// clamped (only a top-level final atom can be - a truncated download). The "runs
-	// to EOF" sentinel (a declared 0) is resolved to the region length before the
-	// clamp, so it never reads as truncated. Detected from the clamp's own comparison
-	// (no offset+size arithmetic, which a near-2^63 64-bit size would overflow).
+	// truncated records that this atom's declared size overran the region and was clamped
+	// (only a top-level final atom can be - a truncated download). The "runs to EOF"
+	// sentinel (a declared 0) is resolved to the region length before the clamp, so it
+	// never reads as truncated.
 	truncated bool
 	children  []node
 }
@@ -63,13 +54,9 @@ func (n node) id() string        { return string(n.name[:]) }
 func (n node) payloadOff() int64 { return n.offset + n.headerLen }
 func (n node) end() int64        { return n.offset + n.size }
 
-// childStart returns where a container atom's children begin: the payload start,
-// plus the 4-byte FullBox version/flags prefix when the atom is a "meta" box in
-// its ISO/iTunes form. QuickTime authors a bare "meta" with no version/flags, so
-// the prefix is detected rather than assumed (assuming it would misalign child
-// parsing and silently read the file as untagged): a FullBox meta's version/flags
-// are 00 00 00 00, whereas a bare meta begins with its first child's non-zero
-// size.
+// childStart returns where a container atom's children begin: the payload start, plus
+// the 4-byte FullBox version/flags prefix when the atom is a "meta" box in its
+// ISO/iTunes form.
 func childStart(src core.ReaderAtSized, n node, limit int64) int64 {
 	po := n.payloadOff()
 	if n.name != atomName("meta") || po+metaSkip > n.end() {
@@ -82,13 +69,10 @@ func childStart(src core.ReaderAtSized, n node, limit int64) int64 {
 	return po + metaSkip
 }
 
-// trailingGap returns the count of unusable bytes between where a container's children end and
-// n.end(): the last child's end, or - only when childless - the child-start position (read lazily,
-// since a has-children container never needs it), subtracted from n.end(). A positive result is an
-// all-zero remainder walkAtoms tolerated (the udta-terminator rule) but a create/insert rewrite
-// would append past, misaligning the re-parse; 0 means the children tile exactly to the end. The
-// moov (no-udta) and moov.udta.meta (no-ilst) insert guards both key off this one predicate so the
-// two subtle truncation checks cannot drift.
+// trailingGap returns the count of unusable bytes between where a container's children
+// end and n.end(): the last child's end, or - only when childless - the child-start
+// position (read lazily, since a has-children container never needs it), subtracted
+// from n.end().
 func trailingGap(src core.ReaderAtSized, n node, limit int64) int64 {
 	var childEnd int64
 	if k := len(n.children); k > 0 {
@@ -99,16 +83,8 @@ func trailingGap(src core.ReaderAtSized, n node, limit int64) int64 {
 	return n.end() - childEnd
 }
 
-// walkAtoms parses the atoms in [start, end) of src into a node tree, recursing
-// into container atoms up to the depth guard. It reads only atom headers (never
-// payloads), so a large mdat costs nothing. topLevel marks the outermost call:
-// only there is an atom whose declared size overruns the region tolerated (a
-// truncated final atom, e.g. a half-downloaded mdat, so the complete earlier
-// metadata still reads); a *nested* atom that overruns its parent is structural
-// corruption and is rejected, because clamping it leaves the recorded size
-// inconsistent with the preserved source bytes - which would make an edit's
-// rewrite emit un-reparseable output (the inserted tag path would fall inside the
-// clamped-but-still-oversized child's declared extent).
+// walkAtoms parses the atoms in [start, end) of src into a node tree, recursing into
+// container atoms up to the depth guard.
 func walkAtoms(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limit int64, topLevel bool) ([]node, error) {
 	if err := depth.Enter(); err != nil {
 		return nil, err
@@ -152,16 +128,8 @@ walkLoop:
 				return nil, fmt.Errorf("%w: 64-bit atom %q size %d below 16", waxerr.ErrInvalidData, name, size)
 			}
 		case size == 0:
-			// A declared size of 0 means "runs to the end of the enclosing region,"
-			// which is only meaningful for a top-level final atom (it extends to EOF).
-			// A *nested* size-0 atom would otherwise absorb every remaining byte - including
-			// a no-ilst meta's trailing zeros - as one spanning child, and a create-ilst
-			// rewrite then re-parses that atom back over the inserted tag path. Do not
-			// absorb it: stop walking here so the remaining bytes fall through to the tail
-			// rules below (all-zero padding stays tolerated; a non-zero remainder is
-			// rejected as a ragged tail) and the meta-no-ilst gate (parse.go) rejects the
-			// dangerous case. A bare break would only exit the switch, so the loop is
-			// labeled.
+			// A declared size of 0 means "runs to the end of the enclosing region," which is
+			// only meaningful for a top-level final atom (it extends to EOF).
 			if !topLevel {
 				break walkLoop
 			}
@@ -202,17 +170,10 @@ walkLoop:
 		}
 		off = next
 	}
-	// A nested container's children must exactly tile it. Leftover bytes that do
-	// not form a complete atom (a ragged tail) are corruption: parse would ignore
-	// them, but a create/insert rewrite appends the new tag path after the
-	// container's recorded end, leaving the stray bytes to misalign the re-parse of
-	// the output. Top-level trailing bytes are tolerated (junk after the last atom
-	// stays after everything and re-parses identically).
-	//
-	// An exception: an all-zero remainder is benign and must be kept readable -
-	// QuickTime terminates a udta user-data list with a 32-bit zero, and zero
-	// padding cannot form a misaligning atom header. Only a non-zero ragged tail is
-	// rejected.
+	// A nested container's children must exactly tile it. An exception: an all-zero
+	// remainder is benign and must be kept readable - QuickTime terminates a udta
+	// user-data list with a 32-bit zero, and zero padding cannot form a misaligning atom
+	// header.
 	if !topLevel && off < end {
 		tail, err := bits.ReadSlice(src, off, end-off, limit)
 		if err != nil {
@@ -251,10 +212,7 @@ func (n node) findAll(name string, out []node) []node {
 	return out
 }
 
-// offsetTable is a parsed chunk-offset table (stco or co64). Its entries are
-// absolute file offsets into the media data; when metadata before the media is
-// resized, every entry past the insertion point is shifted. The atom's source
-// location and version/flags are kept so the rewritten table lands in place.
+// offsetTable is a parsed chunk-offset table (stco or co64).
 type offsetTable struct {
 	offset    int64 // atom start in the source
 	headerLen int64
@@ -298,9 +256,7 @@ func (r atomRef) payloadOff() int64 { return r.offset + r.headerLen }
 
 // sizeField returns the offset from the atom start and byte width of the field that
 // encodes the atom's total size. A 16-byte header is the 64-bit largesize form, whose
-// real size is the 8-byte field 8 bytes in; otherwise the 4-byte size leads the box.
-// metaSizeRep and resultUdtaRaw both call this helper so the write path and returned
-// result document patch the same box layout.
+// real size is the 8-byte field 8 bytes in;
 func (r atomRef) sizeField() (off, width int64) {
 	if r.headerLen == 16 {
 		return 8, 8

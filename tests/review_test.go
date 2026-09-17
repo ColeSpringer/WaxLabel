@@ -16,10 +16,9 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// flacWithTwoVC builds a FLAC with two VORBIS_COMMENT blocks (out of spec, but
-// real files have it); only the first is projected into the canonical tags, and any
-// rewrite collapses the extras to a single block (the multiple-vorbis-comment lint
-// promises this).
+// flacWithTwoVC builds a FLAC with two VORBIS_COMMENT blocks (out of spec, but real files have it);
+// only the first is projected into the canonical tags, and any rewrite collapses the extras to a
+// single block (the multiple-vorbis-comment lint promises this).
 func flacWithTwoVC() []byte {
 	out := []byte("fLaC")
 	out = append(out, flacBlock(0, false, validStreamInfo())...)
@@ -29,10 +28,8 @@ func flacWithTwoVC() []byte {
 	return append(out, 0xFF, 0xF8)
 }
 
-// TestFLACReuseLargePaddingNoSpuriousClamp verifies that a large existing padding region
-// is reused exactly by splitting it across multiple legal FLAC padding blocks. ReuseInPlace
-// should preserve the audio offset and must not warn padding-clamped when the user did not
-// request new oversized padding.
+// large existing padding region is reused exactly by splitting it across multiple legal FLAC
+// padding blocks.
 func TestFLACReuseLargePaddingNoSpuriousClamp(t *testing.T) {
 	data := []byte("fLaC")
 	data = append(data, flacBlock(0, false, validStreamInfo())...)
@@ -103,9 +100,9 @@ func TestPictureTooLargeRejected(t *testing.T) {
 	}
 }
 
-// TestDiffSanitizesHostileKey: Change.String must escape the KEY as well as the values, or
-// diff and the write-plan preview would leak control bytes. The Vorbis reader drops such a
-// name on projection, so this drives the sanitizer directly at the tag layer.
+// Change.String must escape the KEY as well as the values, or diff and the write-plan preview would
+// leak control bytes. The Vorbis reader drops such a name on projection, so this drives the
+// sanitizer directly at the tag layer.
 func TestDiffSanitizesHostileKey(t *testing.T) {
 	edited := tag.NewTagSet()
 	edited.Add(tag.Title, "x")
@@ -267,10 +264,10 @@ func TestInvalidKeyRejectedOnWrite(t *testing.T) {
 	}
 }
 
-// Any rewrite collapses extra VORBIS_COMMENT blocks to one, honoring the
-// multiple-vorbis-comment lint's promise. It holds for tag edits, which re-render the
-// block, and equally for picture-only, padding-only, and legacy-strip edits, where every
-// change flag is false yet the de-dup guard must still fire.
+// Any rewrite collapses extra VORBIS_COMMENT blocks to one, honoring the multiple-vorbis-comment
+// lint's promise. It holds for tag edits, which re-render the block, and equally for picture-only,
+// padding-only, and legacy-strip edits, where every change flag is false yet the de-dup guard must
+// still fire.
 func TestExtraVorbisBlocksCollapsedOnAnyEdit(t *testing.T) {
 	data := flacWithTwoVC()
 
@@ -351,9 +348,8 @@ func TestSaveAsFilePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Windows has no POSIX mode: os.Stat reports 0666 for any writable file and 0444 for
-	// one carrying the read-only attribute, so 0644 is simply unreachable there. The
-	// property under test, not left at os.CreateTemp's owner-only 0600, holds on both.
+	// Windows has no POSIX mode: os.Stat reports 0666 for any writable file and 0444 for one carrying
+	// the read-only attribute, so 0644 is simply unreachable there.
 	want := os.FileMode(0o644)
 	if runtime.GOOS == "windows" {
 		want = 0o666

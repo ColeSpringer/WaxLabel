@@ -85,9 +85,8 @@ func TestAIFFParseNoTags(t *testing.T) {
 	}
 }
 
-// TestAIFFParseAIFC covers the AIFF-C variant: the AIFC form type, the FVER
-// chunk, native text tags, and an 80-bit COMM rate decoded from a 24-byte COMM
-// with a "sowt" compression type.
+// AIFF-C variant: the AIFC form type, the FVER chunk, native text tags, and an 80-bit COMM rate
+// decoded from a 24-byte COMM with a "sowt" compression type.
 func TestAIFFParseAIFC(t *testing.T) {
 	doc := mustParseFile(t, sampleAIFC)
 	if doc.Format() != wl.FormatAIFF {
@@ -282,8 +281,7 @@ func TestAIFFDifferentialFFmpegDecodes(t *testing.T) {
 	if _, _, err := plan.Execute(context.Background(), wl.SaveBack()); err != nil {
 		t.Fatal(err)
 	}
-	// Decode only the audio stream: this fails loudly if our chunk framing or the
-	// FORM size is broken.
+	// Decode only the audio stream: this fails loudly if our chunk framing or the FORM size is broken.
 	cmd := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error",
 		"-i", path, "-map", "0:a", "-f", "null", "-")
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -294,9 +292,8 @@ func TestAIFFDifferentialFFmpegDecodes(t *testing.T) {
 	}
 }
 
-// TestAIFFVerifyEssenceOnWrite exercises SaveBack with WithVerifyEssence: the
-// SSND chunk is copied from its source offset, so the engine's tap must hash the
-// right sample-frame bytes against the parsed extent.
+// SaveBack with WithVerifyEssence: the SSND chunk is copied from its source offset, so the engine's
+// tap must hash the right sample-frame bytes against the parsed extent.
 func TestAIFFVerifyEssenceOnWrite(t *testing.T) {
 	path := copyToTemp(t, sampleAIFF)
 	plan, err := mustParseFile(t, path).Edit().Set(tag.Title, "Verified").Prepare(wl.WithVerifyEssence())
@@ -308,9 +305,8 @@ func TestAIFFVerifyEssenceOnWrite(t *testing.T) {
 	}
 }
 
-// TestAIFFSSNDOffsetExcludedFromEssence verifies that SSND "offset" alignment bytes
-// precede the first sample frame and are not hashed as audio. Files with identical
-// sample frames but different offsets should hash the same.
+// SSND "offset" alignment bytes precede the first sample frame and are not hashed as audio. Files
+// with identical sample frames but different offsets should hash the same.
 func TestAIFFSSNDOffsetExcludedFromEssence(t *testing.T) {
 	samples := bytes.Repeat([]byte{0xA7}, 1000*4) // every frame stdCOMM declares
 	align := []byte{0xFF, 0xFF, 0xFF, 0xFF}       // distinct so a leak would change the digest
@@ -332,9 +328,8 @@ func TestAIFFSSNDOffsetExcludedFromEssence(t *testing.T) {
 	}
 }
 
-// TestAIFFSSNDOffsetResultMatchesReparse checks that a metadata edit on an AIFF with
-// a non-zero SSND offset returns a result document whose essence range matches a fresh
-// parse of the written output.
+// metadata edit on an AIFF with a non-zero SSND offset returns a result document whose essence
+// range matches a fresh parse of the written output.
 func TestAIFFSSNDOffsetResultMatchesReparse(t *testing.T) {
 	samples := bytes.Repeat([]byte{0xA7}, 1000*4) // every frame stdCOMM declares
 	align := []byte{0xFF, 0xFF, 0xFF, 0xFF}       // distinct: a leak would change the digest

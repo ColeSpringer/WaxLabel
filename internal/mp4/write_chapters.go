@@ -13,25 +13,15 @@ import (
 // list longer than this cannot be written. The editor rejects it at Prepare.
 const maxChplChapters = 255
 
-// planChapters computes the rewrite when the chapter list changed. When the file
-// has an audio track, it rebuilds the QuickTime chapter track too (planChaptersQT).
-// Otherwise it falls back to the chpl-only path below, which rewrites
-// the whole moov.udta as one contiguous region - splicing the new ilst and chpl
-// byte ranges into the preserved udta bytes - so a chpl resize and an ilst resize
-// fold into a single delta the existing chunk-offset machinery consumes unchanged.
-// In that fallback an unrewritable QuickTime track is preserved and flagged stale.
+// planChapters computes the rewrite when the chapter list changed.
 func planChapters(d *doc, edited *core.Media, needIlst, picturesChanged bool, opts core.WriteOptions, report core.WriteReport) (*core.WritePlan, error) {
 	if d.udta != nil && d.udtaRaw == nil {
 		return nil, fmt.Errorf("%w: MP4 udta bytes were not captured for a chapter rewrite", waxerr.ErrInvalidData)
 	}
 
-	// When the file has an audio track to anchor a chapter text track to, rebuild
-	// the QuickTime chapter track alongside the chpl so iTunes and Apple Books see
-	// edits too. audioMdiaOff (the tref insertion point) is always set for
-	// a resolved audio track; requiring it guards a malformed track from a bad
-	// insert. The QuickTime path applies when it can rebuild/remove an existing
-	// chapter track, create one (a free track id exists), or strip a dangling tref
-	// "chap" on a clear. The chpl-only path below is the fallback (no audio track).
+	// When the file has an audio track to anchor a chapter text track to, rebuild the
+	// QuickTime chapter track alongside the chpl so iTunes and Apple Books see edits too.
+	// audioMdiaOff (the tref insertion point) is always set for a resolved audio track;
 	if d.audioTrak != nil && d.audioMdiaOff > 0 {
 		writing := len(edited.Chapters) > 0
 		if d.chapTrak != nil || (writing && d.nextTrackID > 0) || (!writing && d.audioHasChap) {
@@ -141,10 +131,9 @@ type udtaRegion struct {
 	paddingClamped         bool
 }
 
-// udtaWrite is what one udta region rebuild must place. reps offsets are relative to the udta
-// payload start, like every other byteRep here. chapterEdit gates the chpl entirely: a
-// tag-only rebuild must neither re-render it from the merged list nor read an empty list as a
-// clear.
+// udtaWrite is what one udta region rebuild must place. chapterEdit gates the chpl
+// entirely: a tag-only rebuild must neither re-render it from the merged list nor read
+// an empty list as a clear.
 type udtaWrite struct {
 	ilst        []byte
 	needIlst    bool
@@ -152,10 +141,8 @@ type udtaWrite struct {
 	chapterEdit bool
 	reps        []byteRep
 	appends     []byte
-	// metaDelta is the net byte change of the reps that sit inside the meta box (a rewritten
-	// keys index). meta's own size field is patched from the ilst resize, so a change to any
-	// other meta child has to be added there or meta under-declares its content and the
-	// following atom parses at the wrong offset.
+	// metaDelta is the net byte change of the reps that sit inside the meta box (a
+	// rewritten keys index).
 	metaDelta int64
 }
 
@@ -274,12 +261,9 @@ type byteRep struct {
 // covered by a replacement - so udta siblings and meta children outside the
 // ilst/chpl ranges survive a chapter rewrite verbatim.
 func spliceBytes(src []byte, reps []byteRep) ([]byte, error) {
-	// Order by start; on a tie, a zero-width insert (oldLen==0) sorts before a same-offset replace
-	// (a combined tag+chapter edit where a chpl insert lands exactly at meta.end()). Emitting the
-	// replace first would advance pos past the insert's start, tripping the r.start<pos guard below,
-	// so the oldLen tie-break forces insert-before-replace regardless of input order. SliceStable
-	// (not Slice) additionally pins the order of two reps sharing both start and width, keeping the
-	// output bytes reproducible even though the codec does not generate such a pair.
+	// Order by start; Emitting the replace first would advance pos past the insert's
+	// start, tripping the r.start<pos guard below, so the oldLen tie-break forces
+	// insert-before-replace regardless of input order.
 	sort.SliceStable(reps, func(i, j int) bool {
 		if reps[i].start != reps[j].start {
 			return reps[i].start < reps[j].start
@@ -325,8 +309,8 @@ func metaSizeRep(d *doc, ups, newSize int64) byteRep {
 
 // fitIlst places the new ilst within a region of oldRegionLen bytes, reusing the
 // surplus as free padding when it fits in place and falling back to fresh padding
-// otherwise - the same rule planLayout uses, so chapter and tag edits leave the
-// same in-place slack. It returns the bytes and the free payload length.
+// otherwise - the same rule planLayout uses, so chapter and tag edits leave the same
+// in-place slack.
 func fitIlst(newIlst []byte, oldRegionLen int64, pol core.PaddingPolicy) (region []byte, freeContent int64, clamped bool) {
 	pad := pol.ClampTarget()
 	if pad > maxPadding {
@@ -380,10 +364,7 @@ func chapterOps(d *doc, edited *core.Media, needIlst bool, delta int64) []string
 	return ops
 }
 
-// buildChapterResult constructs the post-write Media for a chapter rewrite. It
-// recovers the new ilst/chpl/meta atom offsets by re-walking the rendered udta
-// payload (so they equal a fresh parse), and shifts the chunk-offset tables, mdat
-// ranges, and top-level layout by the single combined delta.
+// buildChapterResult constructs the post-write Media for a chapter rewrite.
 func buildChapterResult(edited *core.Media, base *doc, items []item, reg udtaRegion, delta, total int64) *core.Media {
 	// The result's chapter view must equal a fresh parse of the written bytes: the
 	// chpl we wrote round-trips through its 100 ns / 255-byte encoding, and a
@@ -424,10 +405,8 @@ func buildChapterResult(edited *core.Media, base *doc, items []item, reg udtaReg
 }
 
 // applyUdtaRefs recovers the rewritten user-data state by re-walking the rendered udta
-// payload: the udta/meta/ilst/free/keys/chpl offsets, the meta handler and keys index, and
-// the decoded QuickTime text atoms. Decoding the bytes just written (rather than carrying
-// the write's own intent forward) is what makes the result equal a fresh parse of the
-// output. Both udta-region write paths use it, so neither can drift from the other.
+// payload: the udta/meta/ilst/free/keys/chpl offsets, the meta handler and keys index,
+// and the decoded QuickTime text atoms.
 func applyUdtaRefs(nd *doc, reg udtaRegion) {
 	if len(reg.udtaPayload) == 0 {
 		return
@@ -479,10 +458,9 @@ func applyUdtaRefs(nd *doc, reg udtaRegion) {
 	}
 }
 
-// chplRoundTrip simulates the chpl encode->decode round trip - a start rounded to
-// the 100 ns chpl unit, a title trimmed to the chpl byte cap, ends filled from
-// the next start - so it equals decodeChpl(renderChpl(chapters)). That lets a
-// result document mirror a fresh parse of its own bytes without re-reading them.
+// chplRoundTrip simulates the chpl encode->decode round trip - a start rounded to the
+// 100 ns chpl unit, a title trimmed to the chpl byte cap, ends filled from the next
+// start - so it equals decodeChpl(renderChpl(chapters)).
 func chplRoundTrip(chapters []core.Chapter) []core.Chapter {
 	if len(chapters) == 0 {
 		return nil
@@ -499,10 +477,7 @@ func chplRoundTrip(chapters []core.Chapter) []core.Chapter {
 }
 
 // chapterResultView returns the chapters and source-conflict a fresh parse of a
-// chapter-edited file would yield, plus the chpl-specific count. A preserved
-// QuickTime track is preferred on reparse, so the written chpl is shadowed and a
-// disagreement surfaces as a conflict (the file is genuinely inconsistent until
-// the QuickTime track is rewritten).
+// chapter-edited file would yield, plus the chpl-specific count.
 func chapterResultView(base *doc, written []core.Chapter) (chapters []core.Chapter, chplCount int, conflict bool) {
 	chpl := chplRoundTrip(written)
 	if base.hasQTChapters {
@@ -541,14 +516,9 @@ func atomRefAt(n node, base int64) atomRef {
 	return atomRef{name: n.name, offset: base + n.offset, headerLen: n.headerLen, size: n.size}
 }
 
-// udtaCleanLen returns the length of a udta payload up to the end of its last
-// complete child atom, excluding any tolerated trailing zero (QuickTime
-// terminates its user-data list with a 32-bit zero, and parse keeps that
-// padding). A new child must be inserted/appended at this offset - not the
-// payload's raw end - or the zero tail shifts it out of alignment and corrupts
-// the re-parse of the output. An all-zero payload yields 0; a payload walkAtoms
-// unexpectedly rejects (parse already accepted it) yields its full length, so no
-// real bytes are dropped.
+// udtaCleanLen returns the length of a udta payload up to the end of its last complete
+// child atom, excluding any tolerated trailing zero (QuickTime terminates its user-data
+// list with a 32-bit zero, and parse keeps that padding).
 func udtaCleanLen(payload []byte) int64 {
 	nodes, err := walkAtoms(core.BytesSource(payload), 0, int64(len(payload)),
 		bits.NewDepth(bits.DefaultLimits.MaxDepth), maxMetaChunk, false)

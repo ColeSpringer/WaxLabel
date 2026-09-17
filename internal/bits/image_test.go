@@ -119,9 +119,7 @@ func TestSniffImage(t *testing.T) {
 	}
 }
 
-// TestSniffJPEGRequiresSOF checks that a JPEG must carry a readable Start-Of-Frame
-// before the sniffer accepts it. A bare magic number or a SOF truncated before its
-// geometry is rejected; intact JPEGs are still covered by TestSniffImage.
+// TestSniffJPEGRequiresSOF rejects magic-only or truncated SOF JPEGs.
 func TestSniffJPEGRequiresSOF(t *testing.T) {
 	if _, ok := SniffImage([]byte{0xFF, 0xD8, 0xFF}); ok {
 		t.Error("a 3-byte FF D8 FF magic (no SOF) must not sniff as a valid JPEG")
@@ -132,9 +130,7 @@ func TestSniffJPEGRequiresSOF(t *testing.T) {
 	}
 }
 
-// TestSniffBMPNegativeWidth checks a hostile BMP with the sign bit set in the
-// width field yields a non-negative dimension (its magnitude), so it cannot wrap
-// to a huge value when later stored as an unsigned 32-bit picture width.
+// TestSniffBMPNegativeWidth normalizes signed BMP width to magnitude.
 func TestSniffBMPNegativeWidth(t *testing.T) {
 	bmp := []byte{
 		'B', 'M', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -155,9 +151,7 @@ func TestSniffBMPNegativeWidth(t *testing.T) {
 	}
 }
 
-// TestSniffBMPOS2Header checks that an OS/2 2.x BITMAPINFOHEADER2 (a 16-byte DIB
-// header) shares the BITMAPINFOHEADER width/height/depth field offsets (18/22/28), so its
-// dimensions are read rather than reported as 0x0.
+// TestSniffBMPOS2Header reads 16-byte OS/2 DIB at shared offsets 18/22/28.
 func TestSniffBMPOS2Header(t *testing.T) {
 	os2 := []byte{
 		'B', 'M', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 14-byte file header
@@ -176,10 +170,7 @@ func TestSniffBMPOS2Header(t *testing.T) {
 	}
 }
 
-// TestSniffTIFFIgnoresMultiValueCount checks that an ImageWidth/ImageLength IFD
-// entry whose value count is not 1 - meaning its 4-byte field is a file offset,
-// not an inline value - is skipped, rather than mistaking the offset for a
-// dimension.
+// TestSniffTIFFIgnoresMultiValueCount skips IFD entries with count != 1.
 func TestSniffTIFFIgnoresMultiValueCount(t *testing.T) {
 	tiff := []byte{
 		'I', 'I', 0x2A, 0x00, // little-endian magic
@@ -202,8 +193,7 @@ func TestSniffTIFFIgnoresMultiValueCount(t *testing.T) {
 	}
 }
 
-// pngChunk builds a single PNG chunk: a 4-byte big-endian length, the 4-byte type,
-// the data, and a placeholder CRC (the sniffer does not validate it).
+// pngChunk builds one PNG chunk with placeholder CRC.
 func pngChunk(typ string, data []byte) []byte {
 	b := []byte{byte(len(data) >> 24), byte(len(data) >> 16), byte(len(data) >> 8), byte(len(data))}
 	b = append(b, typ...)
@@ -211,9 +201,7 @@ func pngChunk(typ string, data []byte) []byte {
 	return append(b, 0, 0, 0, 0) // CRC placeholder
 }
 
-// TestSniffIndexedColors covers palette counts: indexed PNG reads its PLTE entry
-// count, GIF reads the global color table size, non-indexed formats stay 0, and a
-// garbage chunk length is bounded instead of panicking.
+// TestSniffIndexedColors: PLTE/GCT counts; garbage chunk length must not panic.
 func TestSniffIndexedColors(t *testing.T) {
 	pngMagic := []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
 	ihdr := func(colorType byte) []byte {
@@ -259,14 +247,12 @@ func TestSniffIndexedColors(t *testing.T) {
 // zeroMinor is the all-zero minor version most ISOBMFF images carry.
 const zeroMinor = "\x00\x00\x00\x00"
 
-// realAVIFHeader is the first 32 bytes of an AVIF written by ffmpeg: the ftyp box verbatim,
-// so the synthetic boxes below are anchored to what an encoder actually emits.
+// realAVIFHeader is ffmpeg AVIF ftyp prefix.
 func realAVIFHeader() []byte {
 	return []byte("\x00\x00\x00\x20ftypavif\x00\x00\x00\x00avifmif1miafMA1A")
 }
 
-// ftypBox builds an ISOBMFF ftyp box: a big-endian size, the "ftyp" type, the major
-// brand, a minor version, then the compatible brands.
+// ftypBox builds an ftyp box with major, minor, and compatible brands.
 func ftypBox(major, minor string, compatible ...string) []byte {
 	b := []byte{0, 0, 0, 0}
 	b = append(b, "ftyp"...)
@@ -279,9 +265,7 @@ func ftypBox(major, minor string, compatible ...string) []byte {
 	return b
 }
 
-// TestSniffISOBMFF covers the still-image brands of the ISO base media container: each
-// maps to its own MIME with no dimensions, a brand listed only as compatible still
-// counts, and a movie brand is not an image.
+// TestSniffISOBMFF: image brands map to MIME; movies excluded; minor_version not scanned.
 func TestSniffISOBMFF(t *testing.T) {
 	cases := []struct {
 		name string
@@ -338,9 +322,7 @@ func TestSniffISOBMFF(t *testing.T) {
 	}
 }
 
-// TestSniffISOBMFFUnusableBoxSize covers the sizes that cannot bound the scan: 0 ("to end of
-// file"), 1 (a 64-bit size occupies the major brand's offset), and one past the buffer. Each
-// falls back to the major brand alone rather than reading on into the payload.
+// TestSniffISOBMFFUnusableBoxSize: box sizes 0/1/oversize fall back to major brand only.
 func TestSniffISOBMFFUnusableBoxSize(t *testing.T) {
 	withSize := func(n uint32, b []byte) []byte {
 		out := append([]byte(nil), b...)
@@ -370,9 +352,7 @@ func TestSniffISOBMFFUnusableBoxSize(t *testing.T) {
 	}
 }
 
-// jxlCodestreamHeaders are the leading bytes of real JPEG XL files written by libjxl, one set
-// per SizeHeader path: the small sizes code the height in five bits with an aspect ratio, the
-// others code one or both dimensions through the wider U32 fields.
+// jxlCodestreamHeaders are libjxl codestream prefixes per canvas size.
 var jxlCodestreamHeaders = map[string][]byte{
 	"1x1":       {0xFF, 0x0A, 0x00, 0x90, 0x01, 0x00, 0x13, 0x88},
 	"8x8":       {0xFF, 0x0A, 0x41, 0x06, 0x00, 0x13, 0x88, 0x02},
@@ -383,9 +363,7 @@ var jxlCodestreamHeaders = map[string][]byte{
 	"2000x1333": {0xFF, 0x0A, 0xA2, 0x29, 0xE8, 0xF9, 0x0C, 0x00},
 }
 
-// TestSniffJXL covers both JPEG XL forms. Real codestream headers must report their exact
-// canvas; the container signature reports the MIME alone; and a signature with nothing
-// decodable behind it is not an image, the rule sniffJPEG applies to a Start-Of-Frame.
+// TestSniffJXL: codestream dimensions, container MIME-only, undecodable signature rejected.
 func TestSniffJXL(t *testing.T) {
 	for name, header := range jxlCodestreamHeaders {
 		t.Run("codestream-"+name, func(t *testing.T) {
@@ -417,9 +395,7 @@ func TestSniffJXL(t *testing.T) {
 	}
 }
 
-// TestImageExtensionCoversEverySniffedMIME is the drift guard between the sniffer and the
-// file names codecs build from its result: every MIME SniffImage can report must have an
-// extension, so teaching the sniffer a format cannot silently leave covers misnamed.
+// TestImageExtensionCoversEverySniffedMIME: every SniffImage MIME has ImageExtension.
 func TestImageExtensionCoversEverySniffedMIME(t *testing.T) {
 	mimes := map[string]bool{
 		"image/png": true, "image/jpeg": true, "image/gif": true,
@@ -438,12 +414,7 @@ func TestImageExtensionCoversEverySniffedMIME(t *testing.T) {
 	}
 }
 
-// TestSniffTIFFOverlongIFDOffset: the first-IFD offset is an unvalidated uint32 from the
-// file, and cover art reaches this sniffer straight from a tag. On a 32-bit build an
-// offset near 2 GiB overflowed the "offset + 2 > len" bounds check to a negative number
-// that passed it and then panicked on the slice, so the guard compares against the bytes
-// that remain. The file still sniffs as a TIFF with no dimensions, which is what the
-// sniffer reports for any IFD it cannot reach.
+// TestSniffTIFFOverlongIFDOffset: overlong IFD offset must not panic; TIFF with zero dims.
 func TestSniffTIFFOverlongIFDOffset(t *testing.T) {
 	for _, c := range []struct {
 		name   string

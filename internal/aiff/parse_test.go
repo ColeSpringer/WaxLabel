@@ -110,15 +110,11 @@ func TestAIFFChunkPaddingAndOuterBoundary(t *testing.T) {
 
 // TestAIFFTrailerSurvivesEditByteForByte checks that a contiguous ID3v1 "TAG" trailer
 // survives an unrelated edit byte-for-byte, whether a writer counted it inside the FORM
-// size or appended it after the FORM. If parsed as a phantom chunk, the edit would rewrite
-// its header and split the marker.
+// size or appended it after the FORM.
 func TestAIFFTrailerSurvivesEditByteForByte(t *testing.T) {
 	chunks := bytes.Join([][]byte{aiffComm(), aiffSsnd()}, nil)
 	// inbounds is a 128-byte "TAG" region whose declared-length bytes encode a small odd
-	// value (1): it does not overrun the container, so the overrun proxy misses it. The odd
-	// phantom body would force a word-align pad on re-emit that zeroes the non-zero byte at
-	// [9], unless the 128-byte-TAG-at-tail detector preserves it. An all-NUL trailer would
-	// round-trip by coincidence because declaredLen 0 is even.
+	// value (1): it does not overrun the container, so the overrun proxy misses it.
 	inbounds := make([]byte, 128)
 	copy(inbounds, "TAG")
 	inbounds[7] = 0x01 // declaredLen = 1 (big-endian), small and odd

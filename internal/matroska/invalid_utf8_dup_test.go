@@ -8,21 +8,16 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// segBytesDoc wraps a Segment body with the given DocType ("matroska" or "webm"),
-// so a single scenario can be exercised as both container flavors (the tag write
-// path is DocType-agnostic).
+// segBytesDoc wraps a Segment body with the given DocType ("matroska" or "webm"), so a
+// single scenario can be exercised as both container flavors (the tag write path is
+// DocType-agnostic).
 func segBytesDoc(docType string, body []byte) []byte {
 	out := encElement(idEBML, stringElement(idDocType, docType))
 	return append(out, encElement(idSegment, body)...)
 }
 
-// TestMatroskaInvalidUTF8TagNotDuplicatedOnEdit is a regression: a
-// non-conformant file can hold invalid UTF-8 in an album-scope SimpleTag. The
-// canonical TagSet sanitizes that value, but the write path's subtraction sets were
-// built from the raw bytes, so the value never folded against the canonical one, was
-// never subtracted, and got re-emitted flat - growing by one copy on every unrelated
-// edit. Sanitizing the subtraction source keeps the count flat; a valid-UTF-8 control
-// stays unaffected.
+// TestMatroskaInvalidUTF8TagNotDuplicatedOnEdit is a regression: a non-conformant file
+// can hold invalid UTF-8 in an album-scope SimpleTag.
 func TestMatroskaInvalidUTF8TagNotDuplicatedOnEdit(t *testing.T) {
 	for _, docType := range []string{"matroska", "webm"} {
 		t.Run(docType, func(t *testing.T) {

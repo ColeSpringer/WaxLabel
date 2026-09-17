@@ -22,13 +22,10 @@ func mkfifo(t *testing.T, path string) {
 	}
 }
 
-// runCLIBounded runs the CLI in a goroutine and fails the test if it does not
-// finish within d. It is the no-hang assertion for the FIFO tests: os.Open on a
-// FIFO's read end blocks until a writer appears and is not context-cancellable, so
-// only the stat-first guard (not a ctx timeout) can prevent the block - a regression
-// would hang here, which this converts into a prompt failure instead of the package
-// timeout. The streams are read only after the goroutine returns (delivered over the
-// channel), so the timeout path never races the still-blocked goroutine's buffers.
+// runCLIBounded runs the CLI in a goroutine and fails if it does not finish within d.
+// FIFO read opens block until a writer appears and ignore context cancel; only stat-first
+// rejection avoids the hang. Streams are read after the goroutine returns so a timeout
+// does not race blocked I/O buffers.
 func runCLIBounded(t *testing.T, d time.Duration, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
 	type result struct {
@@ -50,10 +47,8 @@ func runCLIBounded(t *testing.T, d time.Duration, args ...string) (stdout, stder
 	}
 }
 
-// TestFifoInputRejectedFast: a FIFO handed to a read command no longer
-// hangs (opening a FIFO's read end blocks until a writer appears). A directly-named
-// FIFO is rejected fast as a usage error (exit 2) both with and without --recursive,
-// with no writer ever attached.
+// TestFifoInputRejectedFast: a directly named FIFO is a usage error (exit 2) with or
+// without --recursive, without ever opening the read end (which would block).
 func TestFifoInputRejectedFast(t *testing.T) {
 	t.Parallel()
 	fifo := filepath.Join(t.TempDir(), "pipe.flac")
@@ -75,10 +70,8 @@ func TestFifoInputRejectedFast(t *testing.T) {
 	})
 }
 
-// TestFifoInWalkedTreeSkipped: a FIFO discovered inside a walked directory is
-// skipped like a non-audio file (not a usage error), so a stale pipe cannot wedge a
-// batch - while the real audio files in the same tree are still processed, and the
-// walk never blocks on the pipe.
+// TestFifoInWalkedTreeSkipped: a FIFO under a walked tree is skipped like a non-audio
+// file (not a usage error). Real audio still processes; the walk never opens the pipe.
 func TestFifoInWalkedTreeSkipped(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -104,11 +97,8 @@ func TestFifoInWalkedTreeSkipped(t *testing.T) {
 	}
 }
 
-// TestFifoInBatchIsPerElementError: a directly-named FIFO between two good
-// files is recorded as that path's per-element usage error rather than aborting the
-// whole batch - and crucially the FIFO is never opened (its read would block), so the
-// run returns promptly (runCLIBounded). The good files still process. This is the
-// per-element twin of TestFifoInputRejectedFast (a lone FIFO).
+// TestFifoInBatchIsPerElementError: a FIFO between good files is a per-element usage
+// error, not a batch abort. The pipe is never opened; good files still process.
 func TestFifoInBatchIsPerElementError(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -144,9 +134,8 @@ func TestFifoInBatchIsPerElementError(t *testing.T) {
 	}
 }
 
-// TestFifoRejectedByNonExpandingCommands: caps and diff parse operands
-// directly (no expandPaths), yet still reject a FIFO fast as a usage error (exit 2)
-// with no hang - the checkRegularInputs guard, not just the library backstop.
+// TestFifoRejectedByNonExpandingCommands: caps and diff (no expandPaths) still reject
+// a FIFO via checkRegularInputs before any blocking open.
 func TestFifoRejectedByNonExpandingCommands(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -168,9 +157,8 @@ func TestFifoRejectedByNonExpandingCommands(t *testing.T) {
 	}
 }
 
-// TestCopyFifoHintOmitsDash verifies that copy's non-regular-file hint does not
-// suggest piping a stream in with "-", because copy rejects stdin. It points at a
-// regular file path instead. The stdin-reading commands keep the "-" hint.
+// TestCopyFifoHintOmitsDash: copy's non-regular-file hint must not suggest "-"; copy
+// rejects stdin. Stdin-reading commands keep the "-" hint.
 func TestCopyFifoHintOmitsDash(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -191,7 +179,7 @@ func TestCopyFifoHintOmitsDash(t *testing.T) {
 	if !strings.Contains(errb, "not a regular file") {
 		t.Errorf("copy fifo stderr should explain the non-regular file: %q", errb)
 	}
-	// The hint must point at a regular file path, not the "-" stream copy rejects.
+	// Hint must name a regular file path, not "-".
 	if strings.Contains(errb, "pipe a stream") {
 		t.Errorf("copy hint must not suggest piping with '-', which copy rejects: %q", errb)
 	}

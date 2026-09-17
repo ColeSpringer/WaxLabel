@@ -25,23 +25,14 @@ import (
 //     edit to the ilst rather than splitting the write across both stores.
 //   - A file with no store at all keeps the mdirappl creation path.
 
-// mdtaStore reports whether the file's meta box keys its ilst items through a "keys" index.
-// The table must have parsed: with an absent or unreadable keys box, index-keyed items would
-// name entries nothing holds, and rewriting the box would wipe a table the file owns and
-// silently re-point its preserved items. Such a file keeps the four-character encoder, which
-// this reader still reads back (an unresolved item falls through to the four-cc dispatch).
+// mdtaStore reports whether the file's meta box keys its ilst items through a "keys"
+// index.
 func mdtaStore(d *doc) bool {
 	return d.metaHandler == mdtaHandler && d.keys != nil && len(d.keyNames) > 0
 }
 
-// buildMdtaItems is buildItems for an mdta store: every canonical value becomes a keys entry
-// plus an ilst item named by that entry's 1-based index. Emitting a four-character atom here
-// instead is what put a mixed iTunes item inside an mdta box.
-//
-// baseKeys is the file's existing keys index, carried forward by position and only ever
-// appended to. Holding an index stable is what keeps a preserved item (one whose key the
-// canonical vocabulary cannot represent) pointing at the same name after the rewrite, and it
-// makes a re-edit of the same tags produce byte-identical output.
+// buildMdtaItems is buildItems for an mdta store: every canonical value becomes a keys
+// entry plus an ilst item named by that entry's 1-based index.
 func buildMdtaItems(edited tag.TagSet, covr []item, preserved []item, baseKeys []string) ([]item, []string) {
 	names := slices.Clone(baseKeys)
 	index := make(map[string]int, len(names))
@@ -97,9 +88,7 @@ func buildMdtaItems(edited tag.TagSet, covr []item, preserved []item, baseKeys [
 }
 
 // buildIlstItems renders the ilst items for whichever keying the file's meta box uses,
-// returning the mdta keys index alongside them (nil for an iTunes store). It is the one
-// place the two encoders are chosen between, so no caller can build four-character items
-// for an mdta box.
+// returning the mdta keys index alongside them (nil for an iTunes store).
 func buildIlstItems(d *doc, edited tag.TagSet, covr []item, numericGenre bool) ([]item, []string) {
 	if mdtaStore(d) {
 		return buildMdtaItems(edited, covr, preservedItems(d.items), d.keyNames)
@@ -125,10 +114,9 @@ func keysRep(d *doc, newKeys []string, ups int64) (byteRep, bool) {
 }
 
 // udtaCanHoldAll reports whether every canonical value in tags fits the udta-level text
-// atoms: a single value per key, within the entry's 16-bit size field, and a four-character
-// atom to hold it. Pictures never fit (cover art needs an ilst covr), so the caller checks
-// those separately. One value that does not fit moves the whole edit to the ilst rather than
-// being silently truncated by renderQTText.
+// atoms: a single value per key, within the entry's 16-bit size field, and a
+// four-character atom to hold it. Pictures never fit (cover art needs an ilst covr), so
+// the caller checks those separately.
 func udtaCanHoldAll(texts []udtaText, tags tag.TagSet) bool {
 	held := map[tag.Key]bool{}
 	for _, u := range texts {
@@ -152,20 +140,10 @@ func udtaCanHoldAll(texts []udtaText, tags tag.TagSet) bool {
 	return true
 }
 
-// planUdtaTexts renders the udta-level text atoms for an edit: an atom whose canonical value
-// the edit changed is rewritten, one whose key the edit no longer carries is deleted, and one
-// already holding the canonical value is left alone so an unrelated edit does not rewrite the
-// whole user-data box. When create is true (the udta store is the file's write target) a
-// canonical key with no atom yet gets a fresh one under its four-character name.
-//
-// Rewriting an atom keeps its other-language entries verbatim and replaces only the entry
-// canonicalEntry selects, so a multi-language "\xa9nam" keeps its translations while its
-// canonical value tracks the edit. An atom the file stored in the ilst-style "data" shape is
-// re-rendered in the classic entry-sequence shape, which is what QuickTime and ffmpeg write
-// and what this reader prefers; an unchanged one keeps its original bytes.
-//
-// It returns the replacements (udta-payload-relative), the atoms to append, and the udta
-// text set the written file will hold, so the post-write result matches a fresh parse.
+// planUdtaTexts renders the udta-level text atoms for an edit: an atom whose canonical
+// value the edit changed is rewritten, one whose key the edit no longer carries is
+// deleted, and one already holding the canonical value is left alone so an unrelated
+// edit does not rewrite the whole user-data box.
 func planUdtaTexts(d *doc, tags tag.TagSet, create bool, ups int64) ([]byteRep, []byte, []udtaText) {
 	var reps []byteRep
 	var appends []byte
@@ -251,12 +229,8 @@ func (w qtMetaWrite) needsUdtaRegion() bool {
 	return w.udtaOnly || len(w.reps) > 0 || len(w.appends) > 0
 }
 
-// planQTMeta resolves which store an edit writes to and what has to change outside the ilst.
-// newKeys is the keys index buildMdtaItems produced (nil for an iTunes store).
-//
-// allowUdtaOnly is false on the chapter paths: those already rewrite the whole udta with an
-// ilst in it, so letting them also elect the udta-only store would mean two write targets
-// for one edit.
+// planQTMeta resolves which store an edit writes to and what has to change outside the
+// ilst.
 func planQTMeta(d *doc, edited *core.Media, newKeys []string, allowUdtaOnly bool) (qtMetaWrite, error) {
 	w := qtMetaWrite{keys: newKeys}
 	if d.udta == nil {
@@ -281,10 +255,7 @@ func planQTMeta(d *doc, edited *core.Media, newKeys []string, allowUdtaOnly bool
 		w.texts = texts
 		w.textsChanged = len(reps) > 0 || len(appends) > 0
 	}
-	// Splicing needs the captured udta payload. Without it a keys rewrite would leave items
-	// naming a table entry no box holds, and a skipped text sync would leave the two stores
-	// disagreeing - the split brain the store rule exists to prevent. Fail as a chapter
-	// rewrite does on the same missing bytes.
+	// Splicing needs the captured udta payload.
 	if d.udtaRaw == nil && w.needsUdtaRegion() {
 		return qtMetaWrite{}, fmt.Errorf("%w: MP4 udta bytes were not captured, so the QuickTime metadata stores cannot be rewritten",
 			waxerr.ErrInvalidData)
@@ -292,11 +263,9 @@ func planQTMeta(d *doc, edited *core.Media, newKeys []string, allowUdtaOnly bool
 	return w, nil
 }
 
-// planQTMetaWrite computes the rewrite when a tag edit has to touch udta bytes outside the
-// ilst region: an mdta keys index that gained an entry, or udta-level text atoms being kept
-// in sync with the canonical value. It rewrites the whole moov.udta as one contiguous
-// region, the way the chpl-only chapter path does, so every change folds into a single delta
-// the existing chunk-offset machinery consumes unchanged.
+// planQTMetaWrite computes the rewrite when a tag edit has to touch udta bytes outside
+// the ilst region: an mdta keys index that gained an entry, or udta-level text atoms
+// being kept in sync with the canonical value.
 func planQTMetaWrite(d *doc, base, edited *core.Media, newItems []item, qw qtMetaWrite, encodingRewrite bool, opts core.WriteOptions, report core.WriteReport) (*core.WritePlan, error) {
 	w := udtaWrite{reps: qw.reps, appends: qw.appends, metaDelta: qw.metaDelta}
 	if !qw.udtaOnly {

@@ -42,9 +42,7 @@ func TestParseStreamInfo(t *testing.T) {
 }
 
 func TestParseStreamInfoDurationOverflowGuarded(t *testing.T) {
-	// SampleRate 1 with a near-2^36 total-sample count would overflow the int64
-	// nanoseconds of time.Duration; the guard leaves Duration at 0 instead of
-	// producing garbage.
+	// SampleRate 1 + near-2^36 samples would overflow Duration; guard leaves 0.
 	body := make([]byte, streamInfoLen)
 	body[0], body[1], body[2], body[3] = 0x10, 0x00, 0x10, 0x00
 	// Sample rate = 1: bytes 10,11 zero; byte 12 high nibble carries rate&0xF.
@@ -132,16 +130,14 @@ func TestRenderBlockHeader(t *testing.T) {
 }
 
 func TestParseVorbisCommentPreservesEntriesWithoutEquals(t *testing.T) {
-	// An entry lacking '=' is well framed, so it is kept verbatim and rendered back
-	// unchanged rather than destroyed on the next rewrite.
+	// Entry without '=' is kept and re-rendered unchanged.
 	comments := []comment{{name: "TITLE", value: "ok"}}
 	body := renderVorbisComment("v", comments)
-	// Append a malformed entry manually.
+
 	bad := []byte("noequalshere")
 	body = append(body, byte(len(bad)), 0, 0, 0)
 	body = append(body, bad...)
-	// Bump the comment count from 1 to 2.
-	// vendor len (4) + vendor (1) => count at offset 5.
+	// Count at offset 5 (vendor len 4 + vendor 1).
 	body[5] = 2
 	vendor, got, err := parseVorbisComment(body, 1<<20, 0)
 	if err != nil {

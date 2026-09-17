@@ -1,35 +1,23 @@
 // Package wav implements reading and writing WAV (RIFF/WAVE) metadata for the
-// public waxlabel package. The codec itself is internal. A WAV file is a RIFF
-// container of chunks: a "fmt " chunk describing the audio, a "data" chunk
-// holding the PCM essence, and any number of metadata and ancillary chunks
-// (LIST/INFO tags, an embedded "id3 " ID3v2 tag, bext, iXML, cue, ...).
+// public waxlabel package. The codec itself is internal. A WAV file is RIFF
+// chunks: "fmt " (audio), "data" (PCM), plus metadata (LIST/INFO, embedded
+// "id3 ", bext, iXML, cue, ...).
 //
-// WAV carries tags in two places, so the codec handles both:
+// Tags live in two places:
 //
-//   - LIST/INFO - the RIFF-native tag block (a small fixed 4CC vocabulary, one
-//     string each). It is what the ffmpeg family reads and writes, hence the
-//     realistic acquired-file case, so it is a first-class read/write container.
-//   - an embedded "id3 " chunk - a full ID3v2 tag (decoded by internal/id3),
-//     the only place WAV can hold pictures and the MusicBrainz/Picard long tail.
+//   - LIST/INFO: RIFF-native fixed 4CC vocabulary (what ffmpeg reads/writes).
+//   - embedded "id3 " chunk: full ID3v2 (via internal/id3); only place for
+//     pictures and the long tail.
 //
-// Precedence (read): the id3 chunk is authoritative when present (it is the
-// richer container and the deliberate-tagger signal); otherwise LIST/INFO is.
-// Both surface in the family view with conflicts flagged. Precedence (write):
-// see write.go: a key the edit changes is written to both present containers, while
-// an INFO item the edit leaves alone is copied verbatim, so a value the id3 chunk
-// disagrees with is the file's own data and survives (an explicit set of the key is
-// how a caller resolves it). INFO is the home for a bare file, and pictures or any
-// changed value INFO cannot represent force an id3 chunk; nothing is ever lost. All
-// other chunks are preserved verbatim.
+// Read precedence: id3 wins when present; else LIST/INFO. Both in the family
+// view with conflicts flagged. Write: see write.go. Other chunks stay verbatim.
 //
-// RF64/BW64 (the 64-bit extension, EBU Tech 3306) is read and written in the same
-// pass: the sizes that no longer fit a 32-bit field read 0xFFFFFFFF and their real
-// values come from the mandatory leading "ds64" chunk, which the writer regenerates
-// from the new layout. The form is preserved - an RF64 file is never rewritten as
-// plain RIFF, which would truncate its sizes.
+// RF64/BW64 (EBU Tech 3306): sizes that do not fit 32-bit read as 0xFFFFFFFF;
+// real values come from leading "ds64", regenerated on write. Form is preserved
+// (RF64 is never rewritten as plain RIFF).
 //
-// The codec is reimplemented from the RIFF/WAVE and ID3 specifications;
-// reference implementations were consulted for design only.
+// Reimplemented from the RIFF/WAVE and ID3 specs; reference implementations
+// were consulted for design only.
 package wav
 
 import (
@@ -51,12 +39,10 @@ func init() { core.Register(New()) }
 func (Codec) Format() core.Format  { return core.FormatWAV }
 func (Codec) Extensions() []string { return []string{".wav", ".wave"} }
 
-// SkipsLeadingID3 reports false because WAV/RF64 files begin with a RIFF/RF64 header.
+// SkipsLeadingID3 is false: WAV/RF64 begins with RIFF/RF64.
 func (Codec) SkipsLeadingID3() bool { return false }
 
-// Sniff matches a "RIFF....WAVE" header, plus the 64-bit RF64/BW64 variants, which also
-// carry "WAVE" at offset 8. Detection is content-only, so matching them here is what
-// routes all three forms to Parse.
+// Sniff matches RIFF/RF64/BW64 with WAVE at offset 8.
 func (Codec) Sniff(header []byte) bool {
 	if len(header) < 12 || string(header[8:12]) != "WAVE" {
 		return false
@@ -73,10 +59,8 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 	return parse(ctx, src, opts)
 }
 
-// Capabilities reports WAV's support. Tags and art are fully writable through
-// the embedded id3 chunk; the RIFF-native LIST/INFO block is also written but is
-// a lower-fidelity store (a fixed vocabulary of single-valued strings), so the
-// generic-field capability notes both representations.
+// Capabilities: tags/art via id3 chunk (full); LIST/INFO is lower-fidelity
+// (fixed vocabulary, single-valued).
 func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
@@ -96,32 +80,23 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 			"chapters require an id3 chunk; native cue/adtl chapters are preserved opaque but not read",
 			"chapter start/end limited to a 32-bit millisecond field (~49.7 days)",
 		},
-		MaxItems:    255, // the CTOC entry count is a single byte
+		MaxItems:    255, // CTOC entry count is one byte
 		ChapterLoss: core.ChapterLossLangFlags,
 	}
-	// A WAV write may route genre through the id3 chunk when one is present or when an edit
-	// forces one into existence. The capability is value-blind, so it conservatively reports
-	// numeric GENRE as partial; edit warnings remain precise because they compare the written
-	// result to the requested value. v2.3 original-date reductions follow the same shared
-	// ID3 rules.
+	// Genre may route through id3; capability is value-blind so numeric GENRE is
+	// partial. Shared v2.3 original-date rules.
 	perField := id3.PerFieldCapabilities(id3.WriteVersionFor(m, core.FormatWAV), opts.NumericGenre, true)
-	// WAV has no metadata-padding concept, so the padding controls do not apply. Synced
-	// lyrics, like chapters and pictures, require an id3 chunk (LIST/INFO cannot hold them);
-	// an edit forces one into existence, so the write stays AccessFull.
+	// No metadata padding. Synced lyrics need id3 (edit may create the chunk).
 	return core.NewCapabilities(core.FormatWAV, false, fields, pictures, chapters, core.AccessNone, perField).
 		WithSyncedLyrics(id3.SyncedLyricsCapability()).
 		WithFieldClassifier(id3.TransferClassifier)
 }
 
-// ID3Tag returns the parsed id3-chunk tag, or nil when the file has none.
+// ID3Tag returns the parsed id3-chunk tag, or nil when absent.
 func (d *doc) ID3Tag() *id3.Tag { return d.id3 }
 
-// EssenceExtent returns the WAV essence-digest inputs: a versioned extent name
-// and the decoder-critical "fmt " configuration mixed in ahead of the audio -
-// the sample format tag, channel count, sample rate, bit depth, and block
-// alignment - so identical PCM bytes under a different channel layout or rate
-// hash differently. The hashed extent itself is the data chunk's payload (set as
-// the media's [AudioStart, AudioEnd) range).
+// EssenceExtent: versioned name plus fmt config (format tag, channels, rate,
+// bit depth, block align, byte rate) mixed ahead of the data payload.
 func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 	var cfg [16]byte
 	if d, ok := m.Native.(*doc); ok {
@@ -130,9 +105,7 @@ func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 		binary.LittleEndian.PutUint32(cfg[4:8], d.fmtCfg.sampleRate)
 		binary.LittleEndian.PutUint16(cfg[8:10], d.fmtCfg.bitsPerSample)
 		binary.LittleEndian.PutUint16(cfg[10:12], d.fmtCfg.blockAlign)
-		// byteRate is largely redundant with the above for PCM but cheap to include
-		// and distinguishes compressed RIFF payloads with the same surface geometry.
-		// It is a uint32, so the full value is stored (not truncated to 16 bits).
+		// byteRate distinguishes compressed RIFF with the same surface geometry.
 		binary.LittleEndian.PutUint32(cfg[12:16], d.fmtCfg.byteRate)
 	}
 	return "wav-data-v1", cfg[:]

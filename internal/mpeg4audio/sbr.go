@@ -1,12 +1,8 @@
 package mpeg4audio
 
-// This file walks the SBR extension payload of a single channel element far enough to see
-// whether its extended data carries the parametric stereo extension, which is what makes an
-// implicitly signalled HE-AAC stream HE-AAC v2. Nothing is reconstructed; the walk exists so
-// the extension flag is read from where the specification puts it rather than guessed.
+// SBR single-channel walk to detect parametric stereo in extended data (no reconstruction).
 
-// sbrHeader is what an sbr_header() declares. The fields not read here (the limiter and
-// smoothing settings) affect only reconstruction, so they are skipped rather than stored.
+// sbrHeader is sbr_header(); limiter/smoothing skipped (reconstruction only).
 type sbrHeader struct {
 	ampRes     uint32
 	startFreq  int
@@ -17,8 +13,7 @@ type sbrHeader struct {
 	noiseBands int
 }
 
-// SBRState carries the header across frames; a frame without a header reuses the last one.
-// A caller walking a stream keeps one per element and passes it to every frame.
+// SBRState carries header across frames; reuse when header absent.
 type SBRState struct {
 	header    sbrHeader
 	bands     sbrBands
@@ -28,23 +23,12 @@ type SBRState struct {
 // extensionIDPS is the bs_extension_id of the parametric stereo extension (Table 4.112).
 const extensionIDPS = 2
 
-// maxEnvelopes is the envelope count 4.6.18.3.6 allows in one frame: five for VARVAR, and
-// four for FIXFIX, which grid() enforces separately since only that class can spell more. A
-// grid declaring more is a payload this parser did not read correctly.
+// maxEnvelopes caps grid envelope count (5 VARVAR; FIXFIX capped separately).
 const maxEnvelopes = 5
 
-// ParseSBRSingleChannel parses the sbr_extension_data of a single channel element (the bits
-// after the extension_type nibble) and reports whether its extended data carries the
-// parametric stereo extension. ok is false when the payload does not parse or no header has
-// been seen yet.
-//
-// payloadBits is the whole fill element after the nibble, which can hold further extension
-// payloads behind the SBR one, so the walk is not expected to reach its end - and since
-// sbr_extension_data pads itself to a byte boundary, where it lands is not itself evidence.
-// What catches a misread is the walk running out of payload: a wrong band count or a wrong
-// grid sends the Huffman decoder past the end, and the header derivation refuses a frequency
-// range the QMF bank cannot hold. A stream is read frame by frame against one shared state,
-// so a misread that survives one frame rarely survives the next.
+// ParseSBRSingleChannel parses sbr_extension_data after extension_type nibble.
+// ok=false on parse failure or missing header. payloadBits may include trailing extensions;
+// misreads overrun payload or fail band derivation.
 func ParseSBRSingleChannel(payload []byte, payloadBits int, crc bool, sbrRateIdx int, st *SBRState) (ps bool, ok bool) {
 	if st == nil || payloadBits <= 0 || payloadBits > len(payload)*8 {
 		return false, false
@@ -65,7 +49,7 @@ func ParseSBRSingleChannel(payload []byte, payloadBits int, crc bool, sbrRateIdx
 		return false, false
 	}
 	if !st.hasHeader {
-		return false, false // a frame that never carried a header cannot be sized
+		return false, false // no header yet
 	}
 	ps, okData := p.singleChannelElement()
 	if !okData || p.r.overrun || p.r.position() > payloadBits {
@@ -162,9 +146,7 @@ func (p *sbrParser) singleChannelElement() (ps bool, ok bool) {
 	return p.extendedData()
 }
 
-// sbrGrid is what an sbr_grid() declares: how many envelopes and noise floors the frame
-// carries, each envelope's frequency resolution, and the amplitude resolution in force,
-// which a single-envelope FIXFIX frame forces to zero whatever the header said.
+// sbrGrid is sbr_grid() envelope/noise layout.
 type sbrGrid struct {
 	numEnv   int
 	numNoise int
@@ -191,9 +173,7 @@ func (p *sbrParser) grid() (sbrGrid, bool) {
 	switch class {
 	case frameFixFix:
 		tmp, ok := r.read(2)
-		// bs_num_env is 2^tmp, so the field can spell 8 - but 4.6.18.3.6 caps a FIXFIX
-		// frame at four envelopes, so 8 is a value no conforming stream carries and this
-		// walk cannot size. Refusing it is the requirement, not an oversight.
+		// FIXFIX bs_num_env=8 (tmp=3) exceeds spec cap of 4.
 		if !ok || tmp == 3 {
 			return g, false
 		}
@@ -220,8 +200,7 @@ func (p *sbrParser) grid() (sbrGrid, bool) {
 		if !r.skip(2 * numRel) { // the relative borders
 			return g, false
 		}
-		// FIXVAR writes its resolutions from the last envelope back to the first, since its
-		// variable border is the frame's trailing edge; VARFIX writes them in order.
+		// FIXVAR reads freqRes last-to-first; VARFIX in order.
 		if !p.readPointerAndRes(&g, class == frameFixVar) {
 			return g, false
 		}
@@ -252,9 +231,7 @@ func (p *sbrParser) grid() (sbrGrid, bool) {
 	return g, true
 }
 
-// readPointerAndRes reads bs_pointer and the per-envelope frequency resolutions the three
-// variable frame classes share. reverse assigns them from the last envelope backwards, which
-// is how FIXVAR stores them.
+// readPointerAndRes reads bs_pointer and per-envelope freqRes (reverse for FIXVAR).
 func (p *sbrParser) readPointerAndRes(g *sbrGrid, reverse bool) bool {
 	if g.numEnv < 1 || g.numEnv > maxEnvelopes {
 		return false
@@ -334,8 +311,7 @@ func (p *sbrParser) envelope(g sbrGrid, dfEnv [maxEnvelopes]uint32) bool {
 	return true
 }
 
-// noise reads sbr_noise() for an uncoupled channel. The frequency-direction noise book is
-// the envelope's own 3.0 dB book, which is what Table 4.A.78 says f_huffman_noise_3_0dB is.
+// noise reads sbr_noise(); freq direction uses fEnv30 book per Table 4.A.78.
 func (p *sbrParser) noise(g sbrGrid, dfNoise [maxEnvelopes]uint32) bool {
 	books := decoders()
 	n := p.st.bands.numNoise
@@ -365,11 +341,7 @@ func decodeRun(d *huffDecoder, r *bitReader, n int) bool {
 	return true
 }
 
-// extendedData reads the bs_extended_data block and reports whether its first extension is
-// the parametric stereo one. Only the first id is read, which is all the question needs: an
-// extension that is not parametric stereo consumes the rest of the block as fill (8.A.2), so
-// no other extension can follow it, and one that is parametric stereo has already answered.
-// The block declares its own byte count, so skipping it needs no per-extension length.
+// extendedData reads bs_extended_data; PS from first extension id. Rest skipped by byte count.
 func (p *sbrParser) extendedData() (ps bool, ok bool) {
 	cnt, okRead := p.r.read(4)
 	if !okRead {

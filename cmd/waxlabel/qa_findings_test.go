@@ -15,10 +15,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// --add-chapter dedups on the fields the CLI can author: start, end, and title.
-// Parse-derived chapter language should not make the same user-authored chapter
-// look distinct. The fixture is authored through the library because the CLI has
-// no language syntax for chapters.
+// Dedup keys start/end/title only; language from parse must not defeat it. Library-authored fixture (CLI has no chapter language).
 func TestSetAddChapterDedupsAcrossLanguageField(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -26,8 +23,7 @@ func TestSetAddChapterDedupsAcrossLanguageField(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// One open-ended (End == 0) chapter carrying a language, matching what --add-chapter "0:01=X"
-	// would produce except for the language the CLI cannot set.
+	// Open-ended chapter with language; matches --add-chapter "0:01=X" except language.
 	plan, err := doc.Edit().SetChapters(wl.Chapter{Start: time.Second, Title: "X", Language: "eng"}).Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -49,8 +45,7 @@ func TestSetAddChapterDedupsAcrossLanguageField(t *testing.T) {
 	}
 }
 
-// caps reports container capability, not file health. A no-audio file can still
-// have readable capabilities, so the command prints its report and exits 0.
+// caps is capability, not health; no-audio still exits 0.
 func TestCapsEmptyNoAudioExit0(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "caps", emptyMP3)
@@ -62,8 +57,7 @@ func TestCapsEmptyNoAudioExit0(t *testing.T) {
 	}
 }
 
-// A no-audio file does not fail a dump batch. It is a successful metadata read
-// with a warning, so the aggregate exit code stays 0 when all files are readable.
+// no-audio is warning-only; batch exit stays 0.
 func TestDumpMixedBatchNoAudioExit0(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "dump", sampleFLAC, emptyMP3)
@@ -75,12 +69,11 @@ func TestDumpMixedBatchNoAudioExit0(t *testing.T) {
 	}
 }
 
-// A corrupt file still dominates a dump batch at exit 4. The no-audio warning
-// path must not weaken invalid-data results from files that cannot be parsed.
+// Corrupt file still dominates batch at exit 4; no-audio must not weaken it.
 func TestDumpBatchCorruptStillDominates(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	// A file the FLAC detector claims by its "fLaC" magic but cannot parse: invalid-data.
+	// fLaC magic but unparseable: invalid-data.
 	bad := filepath.Join(dir, "garbage.flac")
 	if err := os.WriteFile(bad, append([]byte("fLaC"), make([]byte, 64)...), 0o644); err != nil {
 		t.Fatal(err)
@@ -90,8 +83,6 @@ func TestDumpBatchCorruptStillDominates(t *testing.T) {
 	}
 }
 
-// caps follows the same batch contract as dump: a no-audio file with readable
-// capabilities does not make the batch fail.
 func TestCapsMixedBatchNoAudioExit0(t *testing.T) {
 	t.Parallel()
 	if _, _, code := runCLI(t, "caps", sampleFLAC, emptyMP3); code != 0 {
@@ -99,8 +90,7 @@ func TestCapsMixedBatchNoAudioExit0(t *testing.T) {
 	}
 }
 
-// In JSON mode, a no-audio file is a normal dump record with a warning. It is
-// not represented as an error element.
+// JSON: no-audio is a normal record with warning, not an error element.
 func TestDumpJSONNoAudioNoError(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "--json", "dump", sampleFLAC, emptyMP3)
@@ -129,10 +119,7 @@ func TestDumpJSONNoAudioNoError(t *testing.T) {
 	}
 }
 
-// TestNoFilesNoteSuppressedUnderJSON checks that an empty --recursive walk under --json writes
-// nothing to stderr (the stdout shape stays a clean []), matching the sibling noteSkipped, while
-// text mode still prints the "no audio files found" advisory so an empty walk is not a silent
-// success. It runs on both dump and lint, the read commands that walk directories.
+// Empty --recursive under --json: stderr clean, stdout []; text mode still advises. dump and lint.
 func TestNoFilesNoteSuppressedUnderJSON(t *testing.T) {
 	t.Parallel()
 	for _, cmd := range []string{"dump", "lint"} {
@@ -141,7 +128,6 @@ func TestNoFilesNoteSuppressedUnderJSON(t *testing.T) {
 			t.Parallel()
 			empty := t.TempDir()
 
-			// --json: nothing on stderr, exit 0.
 			stdout, stderr, code := runCLI(t, "--json", cmd, "--recursive", empty)
 			if code != 0 {
 				t.Fatalf("%s --json empty walk exit = %d, want 0; stderr=%q", cmd, code, stderr)
@@ -153,7 +139,6 @@ func TestNoFilesNoteSuppressedUnderJSON(t *testing.T) {
 				t.Errorf("%s --json empty walk stdout = %q, want []", cmd, stdout)
 			}
 
-			// Text mode: the advisory still fires so the empty walk is not a silent no-op.
 			_, textErr, code := runCLI(t, cmd, "--recursive", empty)
 			if code != 0 {
 				t.Fatalf("%s (text) empty walk exit = %d, want 0", cmd, code)
@@ -165,9 +150,7 @@ func TestNoFilesNoteSuppressedUnderJSON(t *testing.T) {
 	}
 }
 
-// TestWAVAIFFStructuralOpsGatedOnChange: WAV and AIFF gate each id3-container op on its own
-// change flag and model count, like MP3 and AAC. An edit that adds a container reports it
-// with the count; a tag-only edit on a file already carrying them emits no ops.
+// WAV/AIFF gate container ops on change, like MP3/AAC; tag-only edit emits no spurious ops.
 func TestWAVAIFFStructuralOpsGatedOnChange(t *testing.T) {
 	t.Parallel()
 	cover := writeTempImage(t, "cover.png", minimalPNG())
@@ -179,12 +162,10 @@ func TestWAVAIFFStructuralOpsGatedOnChange(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			// An actual synced-lyrics edit still reports the op, with the model set count (1).
 			if ops := planOperations(t, copyFixture(t, tc.fixture), "--add-synced-lyric", "0:01=Hi"); !slices.Contains(ops, "synced lyrics: 1") {
 				t.Errorf("adding synced lyrics: operations = %v, want a 'synced lyrics: 1' op", ops)
 			}
 
-			// Author a file carrying synced lyrics, a cover, and a chapter.
 			f := copyFixture(t, tc.fixture)
 			if _, errb, code := runCLI(t, "set", f,
 				"--add-synced-lyric", "0:01=Hi",
@@ -193,8 +174,6 @@ func TestWAVAIFFStructuralOpsGatedOnChange(t *testing.T) {
 				t.Fatalf("authoring exit %d: %s", code, errb)
 			}
 
-			// A tag-only edit carries all three containers through unchanged, so none of their
-			// per-container ops appear, only the tag rewrite itself.
 			ops := planOperations(t, f, "--set", "TITLE=Hello")
 			for _, op := range ops {
 				if strings.HasPrefix(op, "synced lyrics:") || strings.HasPrefix(op, "pictures:") || strings.HasPrefix(op, "chapters:") {
@@ -205,16 +184,12 @@ func TestWAVAIFFStructuralOpsGatedOnChange(t *testing.T) {
 	}
 }
 
-// TestMP3PictureClearOmitsZeroCountOp checks that clearing pictures on MP3 (through the shared
-// RenderFrontTag) emits no "pictures: 0" op, matching the chapters and synced-lyrics lines and the
-// WAV/AIFF gate, so all four codecs read uniformly. The removal is still recorded as a change, so
-// nothing is silently lost.
+// MP3 picture clear: no "pictures: 0" op (matches chapters/synced-lyrics/WAV/AIFF gate).
 func TestMP3PictureClearOmitsZeroCountOp(t *testing.T) {
 	t.Parallel()
 	cover := writeTempImage(t, "cover.png", minimalPNG())
 	f := copyFixture(t, "../../testdata/notags.mp3")
-	// Keep a TITLE so the write is a frame rewrite, not a full tag removal, isolating the
-	// picture-line behavior rather than the removal path.
+	// TITLE keeps frame rewrite path, isolating picture-line behavior.
 	if _, errb, code := runCLI(t, "set", f, "--set", "TITLE=Keep", "--add-cover", cover); code != 0 {
 		t.Fatalf("authoring exit %d: %s", code, errb)
 	}
@@ -226,10 +201,7 @@ func TestMP3PictureClearOmitsZeroCountOp(t *testing.T) {
 	}
 }
 
-// TestNoOpJSONOperationsEmpty checks that a no-op plan/set/copy emits "operations": [] in
-// JSON, not the human "no changes" sentinel: the operations array is defined as the structural
-// write list (README), and a no-op writes nothing. This brings plan/set/copy in line with
-// lint --fix, which already normalizes a no-op to [].
+// No-op JSON: "operations": [], not human "no changes" sentinel (structural write list only).
 func TestNoOpJSONOperationsEmpty(t *testing.T) {
 	t.Parallel()
 
@@ -247,7 +219,6 @@ func TestNoOpJSONOperationsEmpty(t *testing.T) {
 		}
 	}
 
-	// plan with no edits is a pure no-op.
 	planF := copyFixture(t, "../../testdata/notags.flac")
 	out, errb, code := runCLI(t, "--json", "plan", planF)
 	if code != 0 {
@@ -255,7 +226,6 @@ func TestNoOpJSONOperationsEmpty(t *testing.T) {
 	}
 	assertEmpty("plan", decodeJSONOne[report](t, out))
 
-	// set to the value the file already holds is a no-op.
 	setF := copyFixture(t, "../../testdata/notags.flac")
 	if _, errb, code := runCLI(t, "set", setF, "--set", "TITLE=Same"); code != 0 {
 		t.Fatalf("authoring set exit %d: %s", code, errb)
@@ -266,8 +236,7 @@ func TestNoOpJSONOperationsEmpty(t *testing.T) {
 	}
 	assertEmpty("set", decodeJSONOne[report](t, out))
 
-	// copy of a metadata-free source onto a copy of itself carries nothing: a no-op copy. Copy
-	// emits a single JSON object (not the list plan/set do), so decode it directly.
+	// copy emits single object, not array.
 	copyDst := copyFixture(t, "../../testdata/notags.flac")
 	cout, errb, code := runCLI(t, "--json", "copy", "../../testdata/notags.flac", copyDst)
 	if code != 0 {
@@ -280,7 +249,6 @@ func TestNoOpJSONOperationsEmpty(t *testing.T) {
 	assertEmpty("copy", jc)
 }
 
-// planOperations runs `plan --json <file> <args...>` and returns the single report's operations.
 func planOperations(t *testing.T, file string, args ...string) []string {
 	t.Helper()
 	out, errb, code := runCLI(t, append([]string{"--json", "plan", file}, args...)...)
@@ -292,8 +260,7 @@ func planOperations(t *testing.T, file string, args ...string) []string {
 	}](t, out).Operations
 }
 
-// caps has no warnings field, so JSON mode represents a readable no-audio file
-// as a clean capability record.
+// caps JSON has no warnings field; no-audio is a clean record.
 func TestCapsJSONNoAudioNoError(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "--json", "caps", emptyMP3)
@@ -306,7 +273,6 @@ func TestCapsJSONNoAudioNoError(t *testing.T) {
 	}
 }
 
-// caps accepts "adts" as an alias for aac.
 func TestCapsFormatADTSAlias(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "caps", "--format", "adts")
@@ -318,16 +284,12 @@ func TestCapsFormatADTSAlias(t *testing.T) {
 	}
 }
 
-// A bare numeric GENRE warns on an ID3 target because it reads back as the genre
-// name. Formats that keep the value literally, Vorbis and WAV in its LIST/INFO IGNR
-// slot, should not warn. AIFF stores genre only in its ID3 chunk, so it warns like
-// MP3/AAC (it is not exempt the way WAV is, despite both carrying a native container).
+// Bare numeric GENRE warns on ID3 targets (reads back as name); FLAC/WAV keep literal. AIFF warns via ID3 chunk.
 func TestNumericGenreWriteWarnAsymmetry(t *testing.T) {
 	t.Parallel()
 	notagsMP3 := filepath.Join("..", "..", "testdata", "notags.mp3")
 
-	// Every target where the genre resolves to a name on read must warn: MP3/AAC (pure ID3) and
-	// AIFF (ID3 chunk; no native genre text chunk to keep the literal number).
+	// MP3/AAC/AIFF resolve to genre name on read.
 	for _, name := range []string{"notags.mp3", "notags.aac", "notags.aiff"} {
 		fix := filepath.Join("..", "..", "testdata", name)
 		out, _, code := runCLI(t, "plan", fix, "--set", "GENRE=17")
@@ -339,7 +301,7 @@ func TestNumericGenreWriteWarnAsymmetry(t *testing.T) {
 		}
 	}
 
-	// Targets that keep "17" verbatim must not warn: Vorbis (FLAC) and WAV's LIST/INFO IGNR.
+	// FLAC and WAV keep "17" verbatim.
 	for _, name := range []string{"notags.flac", "notags.wav"} {
 		fix := filepath.Join("..", "..", "testdata", name)
 		out, _, code := runCLI(t, "plan", fix, "--set", "GENRE=17")
@@ -351,9 +313,7 @@ func TestNumericGenreWriteWarnAsymmetry(t *testing.T) {
 		}
 	}
 
-	// A literal value beginning with "(" is escaped on write, so it round-trips verbatim
-	// instead of being resolved to a genre name. The warning and the round-trip should
-	// agree on that behavior.
+	// Parenthesized values round-trip verbatim, not resolved to genre name.
 	for _, ref := range []string{"(17)", "(RX)", "(2020) Best Of"} {
 		out, _, code := runCLI(t, "plan", notagsMP3, "--set", "GENRE="+ref)
 		if code != 0 {
@@ -377,15 +337,11 @@ func TestNumericGenreWriteWarnAsymmetry(t *testing.T) {
 	}
 }
 
-// TestNumberTotalNonNumericDropsTotalCLI: a non-numeric TRACKNUMBER plus a TRACKTOTAL
-// cannot compose "n/total", so the number is written verbatim, the total dropped with a
-// warning, and it reads back "A1" rather than the corrupt "A1/12". The write is idempotent,
-// and a literal "A1/12" set alone is preserved unwarned.
+// Non-numeric TRACKNUMBER + TRACKTOTAL: total dropped, reads "A1" not "A1/12". Literal "A1/12" alone preserved.
 func TestNumberTotalNonNumericDropsTotalCLI(t *testing.T) {
 	t.Parallel()
 	notagsMP3 := filepath.Join("..", "..", "testdata", "notags.mp3")
 
-	// plan surfaces the value-dropped warning keyed to TRACKTOTAL.
 	planOut, _, code := runCLI(t, "plan", notagsMP3, "--set", "TRACKNUMBER=A1", "--set", "TRACKTOTAL=12")
 	if code != 0 {
 		t.Fatalf("plan exit = %d, want 0", code)
@@ -409,7 +365,6 @@ func TestNumberTotalNonNumericDropsTotalCLI(t *testing.T) {
 		t.Errorf("want TRACKNUMBER=A1 present and TRACKTOTAL absent (dropped):\n%s", dumped)
 	}
 
-	// Idempotent: re-setting the retained TRACKNUMBER=A1 changes nothing.
 	before, _ := os.ReadFile(f)
 	if _, stderr, code := runCLI(t, "set", f, "--set", "TRACKNUMBER=A1"); code != 0 {
 		t.Fatalf("second set exit = %d: %s", code, stderr)
@@ -418,7 +373,6 @@ func TestNumberTotalNonNumericDropsTotalCLI(t *testing.T) {
 		t.Error("re-setting the retained TRACKNUMBER changed bytes (not idempotent)")
 	}
 
-	// A literal "A1/12" as the number alone is preserved verbatim and not warned.
 	planVerbatim, _, _ := runCLI(t, "plan", notagsMP3, "--set", "TRACKNUMBER=A1/12")
 	if strings.Contains(planVerbatim, "value-dropped") {
 		t.Errorf("a verbatim TRACKNUMBER=A1/12 must not warn value-dropped:\n%s", planVerbatim)
@@ -432,10 +386,7 @@ func TestNumberTotalNonNumericDropsTotalCLI(t *testing.T) {
 	}
 }
 
-// TestMP4MalformedNumberPairDropsNumberCLI: a malformed slashed TRACKNUMBER is not a
-// storable number/total, so MP4 keeps it whole and drops it with no phantom TRACKTOTAL,
-// rather than cutting a partial number off the first '/'. A copy from FLAC grades it
-// dropped and diff agrees the number differs, so the two cannot disagree.
+// Malformed slashed TRACKNUMBER on MP4: dropped whole, no phantom TRACKTOTAL. copy/diff agree with FLAC source.
 func TestMP4MalformedNumberPairDropsNumberCLI(t *testing.T) {
 	t.Parallel()
 	notagsM4A := filepath.Join("..", "..", "testdata", "notags.m4a")
@@ -495,10 +446,7 @@ func TestMP4MalformedNumberPairDropsNumberCLI(t *testing.T) {
 	})
 }
 
-// TestReservedChapterKeyDroppedWithWarning: a custom key in the reserved CHAPTERxxx
-// namespace cannot be written as a Vorbis custom field (on read the chapter model owns it), so
-// setting CHAPTER005=hijack on a FLAC must warn value-dropped and leave the key absent from the tag
-// view, not claim it was written and then lose it silently.
+// CHAPTERxxx custom keys owned by chapter model; must warn value-dropped, not silently lose.
 func TestReservedChapterKeyDroppedWithWarning(t *testing.T) {
 	t.Parallel()
 	f := copyFixture(t, filepath.Join("..", "..", "testdata", "notags.flac"))
@@ -518,9 +466,7 @@ func TestReservedChapterKeyDroppedWithWarning(t *testing.T) {
 	}
 }
 
-// TestSetTrimsMediaTypeAndReplayGain covers the set path: MEDIATYPE and REPLAYGAIN_* are
-// single-token values, so surrounding whitespace in a --set value is trimmed before storage the same
-// way it is for numeric and date keys, while the internal space in "-7.30 dB" survives.
+// MEDIATYPE and REPLAYGAIN_* trim outer whitespace; internal space in "-7.30 dB" survives.
 func TestSetTrimsMediaTypeAndReplayGain(t *testing.T) {
 	t.Parallel()
 	f := copyFixture(t, filepath.Join("..", "..", "testdata", "notags.flac"))
@@ -537,9 +483,7 @@ func TestSetTrimsMediaTypeAndReplayGain(t *testing.T) {
 	}
 }
 
-// TestMalformedYearDroppedNotTruncated covers an ID3v2.3 target: a malformed 5-digit
-// year and a non-canonical compact date have no valid 4-digit year, so they must be dropped with a
-// value-dropped warning rather than silently truncated to a valid-but-wrong "1000"/"2021".
+// ID3v2.3: malformed year dropped with warning, not truncated to wrong 4-digit year.
 func TestMalformedYearDroppedNotTruncated(t *testing.T) {
 	t.Parallel()
 	for _, v := range []string{"10000", "20210503"} {
@@ -558,9 +502,7 @@ func TestMalformedYearDroppedNotTruncated(t *testing.T) {
 	}
 }
 
-// When an existing -o target is used without --overwrite, the actionable
-// already-exists refusal should win over any writability probe error. The probe
-// must not preempt the clearer refusal or touch the target path.
+// already-exists refusal wins over writability probe; probe must not touch target.
 func TestSetOutputExistsBeatsWritabilityProbe(t *testing.T) {
 	t.Parallel()
 	requireUnwritableDir(t)
@@ -583,11 +525,8 @@ func TestSetOutputExistsBeatsWritabilityProbe(t *testing.T) {
 	}
 }
 
-// Bare DISC/TRACK and spaced or underscored ALBUM ARTIST spellings resolve to
-// canonical keys. DISC/TRACK are outside ClosestKey's suggestion distance, so
-// aliases keep them from being treated as custom fields.
+// DISC/TRACK/ALBUM ARTIST aliases resolve to canonical keys (outside ClosestKey distance).
 func TestSetBareDiscTrackAliasResolves(t *testing.T) {
-	// --strict now succeeds for each bare/aliased spelling.
 	for _, kv := range []string{"DISC=1", "TRACK=2", "ALBUM ARTIST=The Band", "ALBUM_ARTIST=The Band"} {
 		f := copyFixture(t, sampleFLAC)
 		if _, stderr, code := runCLI(t, "set", f, "--set", kv, "--strict", "-q"); code != 0 {
@@ -595,7 +534,6 @@ func TestSetBareDiscTrackAliasResolves(t *testing.T) {
 		}
 	}
 
-	// Non-strict: no custom-field note, and the values land on the canonical keys.
 	f := copyFixture(t, sampleFLAC)
 	_, stderr, code := runCLI(t, "set", f, "--set", "DISC=1", "--set", "TRACK=2")
 	if code != 0 {
@@ -612,7 +550,7 @@ func TestSetBareDiscTrackAliasResolves(t *testing.T) {
 		t.Errorf("TRACK=2 should project canonical TRACKNUMBER=[2]; got %v", v)
 	}
 
-	// DISC=1 projects canonical DISCNUMBER on every format (resolution is format-independent).
+	// DISC=1 -> DISCNUMBER on every format.
 	for _, name := range []string{"notags.flac", "notags.ogg", "notags.mp3", "notags.m4a"} {
 		ff := copyFixture(t, td(name))
 		if _, errb, c := runCLI(t, "set", ff, "--set", "DISC=1", "-q"); c != 0 {
@@ -623,7 +561,6 @@ func TestSetBareDiscTrackAliasResolves(t *testing.T) {
 		}
 	}
 
-	// A number-pair on the alias still splits to DiscNumber + DiscTotal after resolving.
 	pair := copyFixture(t, td("notags.flac"))
 	if _, _, c := runCLI(t, "set", pair, "--set", "DISC=1/2", "-q"); c != 0 {
 		t.Fatalf("set DISC=1/2 exit %d", c)
@@ -637,13 +574,9 @@ func TestSetBareDiscTrackAliasResolves(t *testing.T) {
 	}
 }
 
-// TestSetMatroskaNativeSpellingReplaces: setting a Matroska native tag
-// spelling now resolves to the canonical key before the write, so it replaces the field's
-// value instead of appending a second, custom-keyed value that projects onto the same
-// canonical key.
+// Matroska native spellings resolve to canonical keys and replace, not append duplicate projection.
 func TestSetMatroskaNativeSpellingReplaces(t *testing.T) {
-	// sample.mka carries an inherited-encoder warning unrelated to this alias fix (ffmpeg's
-	// ENCODER stamp); fix it up front so the later lint assertions isolate the alias behavior.
+	// Clear inherited-encoder baseline so lint isolates alias behavior.
 	f := copyFixture(t, td("sample.mka"))
 	if _, errb, code := runCLI(t, "lint", "--fix", f); code != 0 {
 		t.Fatalf("lint --fix baseline: code=%d stderr=%q", code, errb)
@@ -674,14 +607,11 @@ func TestSetMatroskaNativeSpellingReplaces(t *testing.T) {
 		t.Errorf("lint after TOTAL_PARTS=9: code=%d stderr=%q", code, errb)
 	}
 
-	// --strict succeeds: PART_NUMBER resolves to the canonical TRACKNUMBER, so the
-	// unknown-key pre-flight never fires.
 	h := copyFixture(t, td("sample.mka"))
 	if _, errb, code := runCLI(t, "set", h, "--strict", "--set", "PART_NUMBER=7", "-q"); code != 0 {
 		t.Errorf("set --strict PART_NUMBER=7: code=%d stderr=%q", code, errb)
 	}
 
-	// Cross-format spot check: the alias applies on every format, not just Matroska.
 	ff := copyFixture(t, td("notags.flac"))
 	if _, errb, code := runCLI(t, "set", ff, "--set", "PUBLISHER=X", "-q"); code != 0 {
 		t.Fatalf("set PUBLISHER=X: code=%d stderr=%q", code, errb)

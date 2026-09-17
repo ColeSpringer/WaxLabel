@@ -8,10 +8,10 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// TestUnprojectableKeyReportedEverywhere: a native key the canonical vocabulary cannot
-// represent is preserved on disk but never reaches the tag set, so without a warning it is
-// absent from dump, lint and diff while copy reports a clean lossless carry. Every format
-// that holds string keys must say so, not just the one that always did.
+// native key the canonical vocabulary cannot represent is preserved on disk but never reaches the
+// tag set, so without a warning it is absent from dump, lint and diff while copy reports a clean
+// lossless carry. Every format that holds string keys must say so, not just the one that always
+// did.
 func TestUnprojectableKeyReportedEverywhere(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -53,8 +53,8 @@ func TestUnprojectableKeyReportedEverywhere(t *testing.T) {
 	}
 }
 
-// TestRepresentableKeysStayQuiet is the negative: a fixture whose keys all project must not
-// draw the warning, or it would fire on every ordinary file.
+// negative: a fixture whose keys all project must not draw the warning, or it would fire on every
+// ordinary file.
 func TestRepresentableKeysStayQuiet(t *testing.T) {
 	for _, f := range []string{"sample.flac", "sample.mp3", "sample.wv", "sample.mka", "sample.m4a", "sample.wma"} {
 		data, err := os.ReadFile("../testdata/" + f)

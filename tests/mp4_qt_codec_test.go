@@ -7,15 +7,11 @@ import (
 	"testing"
 )
 
-// mp3MOV is copied from WaxFlow's container/mp4 corpus, where it is one remux of a single
-// encode (ffmpeg 8.0.1, Ubuntu):
-//
-//	ffmpeg -f lavfi -i "sine=frequency=440:sample_rate=22050:duration=1" \
-//	    -ac 1 -c:a libmp3lame -b:a 32k mp3.mp3
-//	ffmpeg -i mp3.mp3 -c copy mp3.mov
-//
-// A "qt  " brand with wide+mdat ahead of the moov, carrying the MP3 stream in a QuickTime
-// version 1 ".mp3" sample entry - mono, 22050 Hz, samplesize 16, a chan child, no esds.
+// mp3MOV is copied from WaxFlow's container/mp4 corpus, where it is one remux of a single encode
+// (ffmpeg 8.0.1, Ubuntu): ffmpeg -f lavfi -i "sine=frequency=440:sample_rate=22050:duration=1" \
+// -ac 1 -c:a libmp3lame -b:a 32k mp3.mp3 ffmpeg -i mp3.mp3 -c copy mp3.mov A "qt " brand with
+// wide+mdat ahead of the moov, carrying the MP3 stream in a QuickTime version 1 ".mp3" sample
+// entry; mono, 22050 Hz, samplesize 16, a chan child, no esds.
 const mp3MOV = "../testdata/mp3.mov"
 
 // mp4QTChan is the channel-layout box a QuickTime sound entry carries beside its geometry,
@@ -30,12 +26,9 @@ func mp4QTChan() []byte {
 	))
 }
 
-// TestMP4QuickTimeFourccCodecs: a fourcc is a container spelling, not a codec name, so
-// each one reports the canonical codec with the fourcc kept as the profile - the same
-// stream in an mp4a/esds entry and in a QuickTime one must read alike. The depth comes
-// from wherever the format keeps it: the fourcc for the fixed-width PCM forms, a pcmC box
-// for the ISOBMFF ipcm/fpcm pair, and the entry's own samplesize field only where that
-// field is authoritative.
+// fourcc is a container spelling, not a codec name, so each one reports the canonical codec with
+// the fourcc kept as the profile; the same stream in an mp4a/esds entry and in a QuickTime one must
+// read alike.
 func TestMP4QuickTimeFourccCodecs(t *testing.T) {
 	for _, c := range []struct {
 		name     string
@@ -49,8 +42,8 @@ func TestMP4QuickTimeFourccCodecs(t *testing.T) {
 		// A QuickTime MP3 track, the shape mp3.mov carries. The 16 in the entry is
 		// decoration for a lossy codec; the CLI's bit-depth gate is what suppresses it.
 		{"mp3 v1", mp4StsdEntryV1(".mp3", 1, 16, 22050, mp4QTChan()), 22050, "MP3", ".mp3", 1, 16},
-		// QTFF's Windows-codec spelling: "ms" then the WAVE format tag. The fourcc holds a
-		// NUL, so it can never be the profile - the tag names the codec outright.
+		// QTFF's Windows-codec spelling: "ms" then the WAVE format tag. The fourcc holds a NUL, so it can
+		// never be the profile; the tag names the codec outright.
 		{"ms wave tag", mp4StsdEntry("ms\x00\x55", 2, 16, 44100), 44100, "MP3", "", 2, 16},
 
 		// sowt is 16-bit here and 24-bit there: for the entries whose fourcc names no
@@ -110,10 +103,9 @@ func TestMP4QuickTimeFourccCodecs(t *testing.T) {
 	}
 }
 
-// TestMP4QuickTimeMP3Fixture reads the committed .mov: the same MP3 stream an mp4a/esds
-// entry reports as "MP3" must read the same way from a QuickTime ".mp3" entry, with the
-// fourcc demoted to the profile. The digest extent is pinned because none of this touches
-// the salt, which keeps the raw entry values.
+// committed .mov: the same MP3 stream an mp4a/esds entry reports as "MP3" must read the same way
+// from a QuickTime ".mp3" entry, with the fourcc demoted to the profile. The digest extent is
+// pinned because none of this touches the salt, which keeps the raw entry values.
 func TestMP4QuickTimeMP3Fixture(t *testing.T) {
 	doc := mustParseFile(t, mp3MOV)
 	tr := doc.Properties().First()
@@ -132,10 +124,8 @@ func TestMP4QuickTimeMP3Fixture(t *testing.T) {
 	}
 }
 
-// TestMP4DifferentialFFmpegFourccs encodes each uncompressed fourcc with the real ffmpeg
-// and checks the codec, profile, geometry and depth against ffprobe reading the same
-// bytes. The stream-copy legs are the agreement case the whole table exists for: one MP3
-// stream copied into both .mov and .mp4 must read as one codec.
+// each uncompressed fourcc with the real ffmpeg and checks the codec, profile, geometry and depth
+// against ffprobe reading the same bytes.
 func TestMP4DifferentialFFmpegFourccs(t *testing.T) {
 	requireTool(t, "ffmpeg")
 	requireTool(t, "ffprobe")
@@ -201,11 +191,7 @@ func TestMP4DifferentialFFmpegFourccs(t *testing.T) {
 			if tr.SampleRate != p.SampleRate || tr.Channels != p.Channels {
 				t.Errorf("geometry = %d Hz / %d ch, ffprobe says %d/%d", tr.SampleRate, tr.Channels, p.SampleRate, p.Channels)
 			}
-			// The width the file declares is the one both readers must agree on. The
-			// table's is the width the encode asked for, which binds only where the writer
-			// recorded it: ffmpeg 6.1 fills an ipcm track's pcmC from the encoder's sample
-			// format rather than its sample width, so a pcm_s24le encode declares 32 there
-			// and ffmpeg reads its own file back as pcm_s32le. ffmpeg 8 declares 24.
+			// The width the file declares is the one both readers must agree on.
 			switch {
 			case tr.BitsPerSample != p.BitsPerSample:
 				t.Errorf("bits per sample = %d, ffprobe says %d", tr.BitsPerSample, p.BitsPerSample)

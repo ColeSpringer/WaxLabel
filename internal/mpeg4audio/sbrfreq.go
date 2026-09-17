@@ -2,12 +2,9 @@ package mpeg4audio
 
 import "math"
 
-// This file derives the SBR frequency band tables of ISO/IEC 14496-3 4.6.18.3.2 from an SBR
-// header. Nothing here reconstructs audio: the band counts are what the envelope and noise
-// payloads are sized by, so a frame cannot be walked to its end without them.
+// SBR frequency band derivation (4.6.18.3.2) for envelope/noise sizing.
 
-// startOffsets are the bs_start_freq offset tables, chosen by the SBR sampling rate. The SBR
-// rate is twice the core coder's for a stream whose SBR is signalled implicitly.
+// startOffsets are bs_start_freq tables by SBR rate (2x core when implicit SBR).
 var startOffsets = map[int][16]int{
 	16000: {-8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7},
 	22050: {-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 9, 11, 13},
@@ -20,9 +17,7 @@ var (
 	offsetsHigh = [16]int{-2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 9, 11, 13, 16, 20, 24}
 )
 
-// startOffset returns the offset table row for an SBR sampling rate. The four rates with
-// their own row take it; 44.1 kHz through 64 kHz share one row and anything above 64 kHz
-// another. A rate below 16 kHz has no row of its own and takes the 16 kHz one.
+// startOffset picks offset row for fsSBR; <16 kHz uses 16 kHz row.
 func startOffset(fsSBR int) [16]int {
 	if row, ok := startOffsets[fsSBR]; ok {
 		return row
@@ -40,8 +35,7 @@ func startOffset(fsSBR int) [16]int {
 // nint rounds to the nearest integer, halves away from zero, as the specification's NINT.
 func nint(x float64) int { return int(math.Floor(x + 0.5)) }
 
-// sbrBands holds what one SBR header implies about the frequency layout: the master band
-// table and the three counts the payload walk is sized by.
+// sbrBands holds master table and envelope/noise band counts.
 type sbrBands struct {
 	numMaster int
 	numHigh   int
@@ -58,9 +52,7 @@ func (b *sbrBands) numEnvBands(freqRes uint32) int {
 	return b.numHigh
 }
 
-// deriveBands builds the master frequency band table for a header and reduces it to the
-// counts the payload needs. ok is false for a header whose frequency range the QMF bank
-// cannot represent, which is what 4.6.18.3.6 forbids and a corrupt header produces.
+// deriveBands builds band counts from header. false if QMF range invalid (4.6.18.3.6).
 func deriveBands(h sbrHeader, fsSBR int) (sbrBands, bool) {
 	k0, k2, ok := frequencyBounds(h, fsSBR)
 	if !ok {
@@ -80,7 +72,7 @@ func deriveBands(h sbrHeader, fsSBR int) (sbrBands, bool) {
 	}
 	kx := fMaster[h.xoverBand]
 	k2m := fMaster[numMaster]
-	// 4.6.18.3.6: the SBR range starts at or below QMF subband 32 and ends within the bank.
+	// 4.6.18.3.6: kx <= 32, k2 within bank.
 	if kx <= 0 || kx > 32 || k2m <= kx || k2m > 64 {
 		return sbrBands{}, false
 	}
@@ -96,8 +88,7 @@ func deriveBands(h sbrHeader, fsSBR int) (sbrBands, bool) {
 	}, true
 }
 
-// maxQMFBands is the widest SBR range each sampling rate may cover, from 4.6.18.3.6. A
-// header outside it is not a header this parser read correctly.
+// maxQMFBands is max SBR span by rate (4.6.18.3.6).
 func maxQMFBands(fsSBR int) int {
 	switch {
 	case fsSBR <= 32000:
@@ -152,9 +143,7 @@ func frequencyBounds(h sbrHeader, fsSBR int) (k0, k2 int, ok bool) {
 	return k0, k2, true
 }
 
-// masterTable builds f_Master, the band borders every other SBR table is a subset of. The
-// two branches are the specification's Figure 4.39 (a linear scale) and Figure 4.40 (a
-// warped one).
+// masterTable builds f_Master (Figure 4.39 linear or 4.40 warped).
 func masterTable(h sbrHeader, k0, k2 int) ([]int, bool) {
 	if h.freqScale == 0 {
 		return linearMasterTable(h, k0, k2)
@@ -174,8 +163,7 @@ func linearMasterTable(h sbrHeader, k0, k2 int) ([]int, bool) {
 	for i := range vDk {
 		vDk[i] = dk
 	}
-	// Spread the difference between what the uniform bands reach and k2 over the outermost
-	// bands: widening from the top when short, narrowing from the bottom when long.
+	// Adjust outer bands so uniform widths sum to k2.
 	diff := k2 - (k0 + numBands*dk)
 	for i := numBands - 1; diff > 0 && i >= 0; i-- {
 		vDk[i]++
@@ -219,8 +207,7 @@ func warpedMasterTable(h sbrHeader, k0, k2 int) ([]int, bool) {
 	if !ok {
 		return nil, false
 	}
-	// Keep the first band of the upper region from being narrower than the widest band of
-	// the lower one, which would make the warp fold back on itself.
+	// Upper region first band >= max lower band width.
 	if vDk1[0] < maxInt(vDk0) {
 		change := maxInt(vDk0) - vDk1[0]
 		if half := (vDk1[numBands1-1] - vDk1[0]) / 2; change > half {
@@ -237,8 +224,7 @@ func warpedMasterTable(h sbrHeader, k0, k2 int) ([]int, bool) {
 	return append(vk0, vk1[1:]...), true
 }
 
-// warpedWidths returns the band widths of a geometric progression from lo to hi over n
-// bands, sorted ascending as the specification's sort() leaves them.
+// warpedWidths returns sorted geometric band widths lo..hi.
 func warpedWidths(lo, hi, n int) ([]int, bool) {
 	if n <= 0 || lo <= 0 || hi <= lo {
 		return nil, false
@@ -253,8 +239,7 @@ func warpedWidths(lo, hi, n int) ([]int, bool) {
 	return out, true
 }
 
-// accumulate turns band widths into band borders starting at k0, rejecting a zero or
-// negative width (a table whose bands would not advance) and a border past the QMF bank.
+// accumulate builds borders from widths; rejects non-positive width or border > 64.
 func accumulate(k0 int, widths []int) ([]int, bool) {
 	out := make([]int, len(widths)+1)
 	out[0] = k0
@@ -270,8 +255,7 @@ func accumulate(k0 int, widths []int) ([]int, bool) {
 	return out, true
 }
 
-// sortInts sorts a small slice ascending. Insertion sort keeps the package free of a sort
-// import for slices that never exceed a few dozen entries.
+// sortInts insertion-sorts small slices (avoids sort import).
 func sortInts(v []int) {
 	for i := 1; i < len(v); i++ {
 		for j := i; j > 0 && v[j] < v[j-1]; j-- {

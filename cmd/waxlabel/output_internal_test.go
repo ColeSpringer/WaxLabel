@@ -13,10 +13,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestHasFlagHonorsDoubleDash: hasFlag detects a long flag before the POSIX "--" terminator
-// but treats an identical-looking token after it as a positional, so a file literally named
-// --format cannot masquerade as the caps format query and flip a list command's pre-flight
-// error from an array to an object.
+// TestHasFlagHonorsDoubleDash: tokens after "--" are positionals, not flags (file named --format).
 func TestHasFlagHonorsDoubleDash(t *testing.T) {
 	if !hasFlag([]string{"caps", "--format", "flac"}, "format") {
 		t.Error("--format before -- should be detected as the flag")
@@ -32,9 +29,7 @@ func TestHasFlagHonorsDoubleDash(t *testing.T) {
 	}
 }
 
-// TestWantsJSONParsesBoolForms: raw-argument routing follows pflag's boolean forms. ParseBool
-// spellings update the flag, invalid values leave the previous state, and tokens after "--"
-// are positionals.
+// TestWantsJSONParsesBoolForms: wantsJSON follows pflag bool forms; invalid leaves prior state.
 func TestWantsJSONParsesBoolForms(t *testing.T) {
 	for _, c := range []struct {
 		args []string
@@ -62,10 +57,7 @@ func TestWantsJSONParsesBoolForms(t *testing.T) {
 	}
 }
 
-// TestStrictWarningReasonKeyless: the --strict reason names the offending key when a warning
-// carries one, and degrades to the warning's own prose, not a leading bare colon, for a
-// defensive keyless one. Uses a code that keeps the compact "KEY: reason" format;
-// WarnValueDropped echoes its own message instead (see the test below).
+// TestStrictWarningReasonKeyless: keyed warnings become "KEY: reason"; keyless use message as-is.
 func TestStrictWarningReasonKeyless(t *testing.T) {
 	keyed := wl.Warning{Code: wl.WarnValueCoerced, Message: "TITLE coerced", Keys: []tag.Key{tag.Title}}
 	if got := strictWarningReason(keyed); !strings.HasPrefix(got, "TITLE:") {
@@ -77,10 +69,8 @@ func TestStrictWarningReasonKeyless(t *testing.T) {
 	}
 }
 
-// TestStrictWarningReasonValueDroppedEchoesMessage: a dropped-value strict reason mirrors the
-// plan-body warning verbatim rather than a fixed phrase, so the two never contradict each
-// other on the drop reason. Notably the MP4 trkn/disk 0 case, which reads "treated as unset
-// ... reads back as absent", not "cannot be represented".
+// TestStrictWarningReasonValueDroppedEchoesMessage: value-dropped strict reason mirrors plan
+// warning verbatim (e.g. MP4 zero slot wording).
 func TestStrictWarningReasonValueDroppedEchoesMessage(t *testing.T) {
 	zero := wl.Warning{
 		Code:    wl.WarnValueDropped,
@@ -95,9 +85,7 @@ func TestStrictWarningReasonValueDroppedEchoesMessage(t *testing.T) {
 	}
 }
 
-// TestStrictEscalatesTagStructureDropped: WarnTagStructureDropped is keyed for a lossy edited
-// field, so --strict must escalate it. Checks both halves of the gate: the code is in the
-// escalating set, and its reason names the offending key.
+// TestStrictEscalatesTagStructureDropped: tag-structure-dropped escalates under --strict with key.
 func TestStrictEscalatesTagStructureDropped(t *testing.T) {
 	if !strictEscalatingCodes[wl.WarnTagStructureDropped] {
 		t.Error("--strict must escalate tag-structure-dropped (a lossy keyed edit)")
@@ -108,10 +96,7 @@ func TestStrictEscalatesTagStructureDropped(t *testing.T) {
 	}
 }
 
-// TestPerFileReasonAndEntryAgree covers the error shapes no portable CLI run produces, on
-// both renderings at once: the human per-file line's reason and the --json element's message.
-// Each is asserted against the same literal rather than against the other, which would only
-// restate that errorEntry calls perFileReason.
+// TestPerFileReasonAndEntryAgree: perFileReason and errorEntry message match for edge errors.
 func TestPerFileReasonAndEntryAgree(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -134,15 +119,12 @@ func TestPerFileReasonAndEntryAgree(t *testing.T) {
 		err:  fmt.Errorf("computing: %w", context.DeadlineExceeded),
 		want: timeoutReason,
 	}, {
-		// Not a bare PathError, so nothing is reduced and both paths survive. The write path
-		// no longer emits a raw one, since a failed rename is wrapped to hide the temp name,
-		// so this pins the fall-through any other LinkError still takes.
+		// LinkError is not reduced; pins fall-through for non-rename cases.
 		name: "LinkError is not reduced",
 		err:  &os.LinkError{Op: "rename", Old: "a.tmp", New: "f.flac", Err: errors.New("cross-device link")},
 		want: "rename a.tmp f.flac: cross-device link",
 	}, {
-		// The boundary is load-bearing: pictureLoadError is the live wrapped case, and its
-		// label around the inner path is the whole point of that wrapper.
+		// Wrapped PathError keeps caller framing (pictureLoadError shape).
 		name: "wrapped PathError keeps the caller's framing and the inner path",
 		err:  fmt.Errorf("reading cover art: %w", &fs.PathError{Op: "open", Path: "cover.jpg", Err: fs.ErrPermission}),
 		want: "reading cover art: open cover.jpg: permission denied",

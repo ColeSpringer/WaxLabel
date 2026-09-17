@@ -11,34 +11,23 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// offsetMap resolves an original absolute file offset to its new absolute offset in
-// the shifted output. direct holds exact per-element mappings. runs covers coalesced
-// cluster descriptors: the parser retains one descriptor per contiguous cluster run,
-// so a Cue or SeekHead target that points into a later cluster in the run may not have
-// a direct key. Because the whole run is copied verbatim and shifts by one delta, an
-// interior offset maps to itself plus that run's shift.
-//
-// Only the shift path needs this fallback because that is where clusters move and
-// CueClusterPosition or SeekPosition targets must be repointed. The absorb path leaves
-// unmatched cluster targets untouched and can keep using a plain map.
+// offsetMap resolves an original absolute file offset to its new absolute offset in the
+// shifted output.
 type offsetMap struct {
 	direct map[int64]int64
 	runs   []clusterRun
 }
 
 // clusterRun is one coalesced cluster run's original [start, end) extent and the byte
-// shift applied to it in the output. The interval is half-open, so an offset exactly at
-// end resolves through the next element's direct mapping instead of this run. Runs are
-// appended in file order and never overlap, which lets lookup use binary search.
+// shift applied to it in the output. Runs are appended in file order and never overlap,
+// which lets lookup use binary search.
 type clusterRun struct {
 	start, end int64
 	shift      int64
 }
 
 // lookup returns the new absolute offset for an original absolute offset, and whether
-// it was found. A direct hit wins. Otherwise, the offset maps through the cluster run
-// that contains it, found by binary search over the sorted, non-overlapping runs. This
-// keeps repointing from becoming quadratic on files with many cluster runs.
+// it was found.
 func (m offsetMap) lookup(abs int64) (int64, bool) {
 	if v, ok := m.direct[abs]; ok {
 		return v, true
@@ -58,20 +47,8 @@ func directOffsetMap(m map[int64]int64) offsetMap {
 	return offsetMap{direct: m}
 }
 
-// planShift is the fallback when absorption does not apply (no reserved Void, or
-// the edited header does not fit one). It re-renders the changed children in
-// place and lets the tail shift by the size delta, then repoints the moved
-// segment-relative positions: CueClusterPosition and the SeekHead SeekPositions
-// of elements after the edit. It also recomputes the affected CRC-32s and the
-// Segment size. Because the clusters move, the result records their new range.
-//
-// Both indexes are patched in place at their original width when every moved
-// position fits (no element size changes, so no cascade); when a position would
-// overflow its width or its target was dropped, that index, SeekHead or Cues, is
-// re-encoded at minimal width, and the resulting size changes are resolved together
-// by a short bounded layout fixpoint (resolveShiftLayout). The common art operation
-// (embedding an album cover that pushes the clusters past a VINT-width boundary)
-// takes the Cues rebuild path. Only a genuinely unrebuildable index is refused.
+// planShift is the fallback when absorption does not apply (no reserved Void, or the
+// edited header does not fit one).
 func planShift(d *doc, base, edited *core.Media, ch changes, ed *editDecisions, report core.WriteReport) (*core.WritePlan, error) {
 	wb := d.wb
 	r, err := renderChanged(d, base, edited, ch, ed)
@@ -92,10 +69,7 @@ func planShift(d *doc, base, edited *core.Media, ch changes, ed *editDecisions, 
 	return &core.WritePlan{Segments: lay.segs, NoOp: false, Report: report, Result: result}, nil
 }
 
-// shiftIndex wraps one segment-relative index, either SeekHead or Cues. itemIdx is
-// its outItem slot; a negative value means the index is absent. raw/crc/entries
-// feed the in-place patch path, rebuild handles the minimal-width fallback, and
-// force latches that fallback once it has been needed.
+// shiftIndex wraps one segment-relative index, either SeekHead or Cues.
 type shiftIndex struct {
 	itemIdx int // its outItem index; <0 if the index is absent
 	raw     []byte
@@ -105,10 +79,9 @@ type shiftIndex struct {
 	force   bool // monotone latch: once a rebuild was needed, stays set
 }
 
-// emit returns the index bytes for the current layout iteration. It patches in
-// place while possible; after force is set, or if a slot cannot fit or its target
-// is gone, it calls rebuild. ok is false only when rebuild cannot faithfully
-// produce an index.
+// emit returns the index bytes for the current layout iteration. It patches in place
+// while possible; after force is set, or if a slot cannot fit or its target is gone, it
+// calls rebuild.
 func (ix *shiftIndex) emit(om offsetMap, inSeg, outSeg int64) (out []byte, n int64, rebuilt, ok bool) {
 	if ix.itemIdx < 0 {
 		return nil, 0, false, true
@@ -122,11 +95,9 @@ func (ix *shiftIndex) emit(om offsetMap, inSeg, outSeg int64) (out []byte, n int
 	return out, n, true, ok
 }
 
-// buildShiftIndexes prepares SeekHead and Cues indexes for the layout fixpoint.
-// The Cues rebuild closure caches buildCuePoints because parsing ci.raw is
-// independent of output offsets; SeekHead rebuilds directly from its flat entry
-// list. The closures keep state local to this write attempt and do not mutate the
-// shared writeBase.
+// buildShiftIndexes prepares SeekHead and Cues indexes for the layout fixpoint. The
+// closures keep state local to this write attempt and do not mutate the shared
+// writeBase.
 func buildShiftIndexes(wb *writeBase, seekIdx, cuesIdx int) []*shiftIndex {
 	seek := &shiftIndex{itemIdx: seekIdx}
 	if seekIdx >= 0 {
@@ -167,28 +138,8 @@ func buildShiftIndexes(wb *writeBase, seekIdx, cuesIdx int) []*shiftIndex {
 	return []*shiftIndex{seek, cues}
 }
 
-// resolveShiftLayout runs the bounded layout fixpoint that places the shifted
-// children and repoints the moved positions. Each iteration recomputes the old->new
-// offset map from the current item sizes, emits both indexes (SeekHead and Cues),
-// installs the fresh bytes, and loops if either index changed size. A size change
-// moves later elements, which changes the offsets stored in both indexes.
-//
-// Re-encoding (a full rebuild) latches per index: once a position overflows its
-// in-place slot, or an entry to a dropped element must go, that index re-encodes at
-// minimal width every iteration thereafter. Minimal-width re-encoding is a monotone
-// fixpoint; flipping back to in-place patching could oscillate around a width
-// boundary. The bytes are installed every iteration even when the size is unchanged
-// (see installIndex): a same-length re-encode can still hold different position
-// values after a prior growth shifted a cluster, so the size comparison decides only
-// whether to loop again, never whether to install.
-//
-// emit and installIndex run for each index on every iteration, accumulating one
-// resized flag. emit reads only immutable writeBase state and oldToNew, so
-// installing one index cannot affect another emission until the next iteration.
-//
-// iters is returned for regression tests. ok is false when an index cannot be
-// re-encoded (an uncaptured Cues tree, a SeekHead missing a SeekID, or a degenerate
-// empty result), which the caller surfaces as overflowErr.
+// resolveShiftLayout runs the bounded layout fixpoint that places the shifted children
+// and repoints the moved positions.
 func resolveShiftLayout(wb *writeBase, items []outItem, seekIdx, cuesIdx int) (lay layout, iters int, ok bool) {
 	indexes := buildShiftIndexes(wb, seekIdx, cuesIdx)
 	for iters = 1; iters <= 8; iters++ {
@@ -214,10 +165,7 @@ func resolveShiftLayout(wb *writeBase, items []outItem, seekIdx, cuesIdx int) (l
 }
 
 // installIndex writes a re-encoded index's bytes into its output item and reports
-// whether its size changed (which forces another layout pass). It always installs
-// the bytes, even on an unchanged size, because a same-length re-encode can still
-// carry different position values after a prior cluster shift. Installing only on
-// a size change would leave a silently corrupt index that still parses.
+// whether its size changed (which forces another layout pass).
 func installIndex(items []outItem, idx int, b []byte, n int64) (resized bool) {
 	if idx < 0 {
 		return false
@@ -277,13 +225,8 @@ func buildShiftItems(wb *writeBase, ch changes, r *rendered) (items []outItem, s
 	if insertAt < 0 {
 		insertAt = len(items)
 	}
-	// Newly created top-level elements get origStart -1; they are appended to the
-	// output but not added to an existing SeekHead. The index is
-	// preserved/patched at a stable size, never regenerated to gain entries, so
-	// adding one would grow the SeekHead and perturb the size-preserving layout.
-	// SeekHead is an optional index per RFC 9559 and readers locate level-1
-	// elements by scanning, so an unindexed new Tags/Attachments/Chapters is still
-	// found. This is the same deliberate limitation for all three created element kinds.
+	// Newly created top-level elements get origStart -1; they are appended to the output
+	// but not added to an existing SeekHead.
 	var created []outItem
 	if ch.simple && !tagsPlaced && r.tags != nil {
 		created = append(created, litItem(idTags, r.tags, -1, itemTags))
@@ -306,11 +249,9 @@ func buildShiftItems(wb *writeBase, ch changes, r *rendered) (items []outItem, s
 	return items, seekIdx, cuesIdx
 }
 
-// computeShiftLayout recomputes the Segment lead (the recomputed size VINT), the
-// output data start, the old-to-new offset map, and the new Segment body length from
-// the current item sizes. A coalesced cluster descriptor registers both its first
-// offset as a direct key and a clusterRun spanning its whole extent, so targets inside
-// later clusters in the run still resolve.
+// computeShiftLayout recomputes the Segment lead (the recomputed size VINT), the output
+// data start, the old-to-new offset map, and the new Segment body length from the
+// current item sizes.
 func computeShiftLayout(wb *writeBase, items []outItem) (segLead []bits.Segment, outSegStart int64, om offsetMap, bodyLen int64) {
 	for _, it := range items {
 		bodyLen += it.n
@@ -352,11 +293,8 @@ func rebuildSeekHead(sh *seekHead, om offsetMap, inSegStart, outSegStart int64) 
 	return out, int64(len(out)), true
 }
 
-// rebuildCues re-encodes the Cues element at minimal width. It builds the
-// CuePoint tree from the captured raw bytes and passes that tree to encodeCues.
-// Unit tests call this uncached path; resolveShiftLayout caches the tree across
-// the fixpoint. ok is false when the tree cannot be captured faithfully or the
-// result would be an invalid empty Cues.
+// rebuildCues re-encodes the Cues element at minimal width. ok is false when the tree
+// cannot be captured faithfully or the result would be an invalid empty Cues.
 func rebuildCues(ci *cuesIndex, om offsetMap, inSegStart, outSegStart int64) ([]byte, int64, bool) {
 	points, ok := buildCuePoints(ci)
 	if !ok {
@@ -367,12 +305,7 @@ func rebuildCues(ci *cuesIndex, om offsetMap, inSegStart, outSegStart int64) ([]
 
 // encodeCues re-encodes a Cues element from a captured CuePoint tree with every
 // CueClusterPosition at minimal width. A cluster offset fits in eight bytes, so
-// overflow is not possible here. Non-position children such as CueTime, CueTrack,
-// and CueRelativePosition are emitted from the captured prefix/pre/post slices so
-// unmodeled fields survive byte-for-byte. A CueTrackPositions whose target cluster
-// was dropped is omitted; a CuePoint left with no positions disappears. crc != nil
-// reproduces a leading CRC-32, and sizeHint pre-sizes the accumulator. ok is false
-// when the result would be an invalid empty Cues.
+// overflow is not possible here.
 func encodeCues(points []cuePoint, crc *crcSpot, sizeHint int, om offsetMap, inSeg, outSeg int64) (out []byte, length int64, ok bool) {
 	// The rebuilt element is usually close in size to the original, so size the
 	// accumulator from the captured bytes to avoid repeated growth.
@@ -508,10 +441,8 @@ func assembleShift(wb *writeBase, items []outItem, segLead []bits.Segment, outSe
 	return lay
 }
 
-// overflowErr is returned when an index cannot be rebuilt or the bounded fixpoint
-// does not settle. Ordinary width growth is handled by minimal-width re-encoding;
-// this path is for malformed or unsupported index layouts, such as a SeekHead
-// missing a SeekID or an unmodeled Cues tree.
+// overflowErr is returned when an index cannot be rebuilt or the bounded fixpoint does
+// not settle.
 func overflowErr() error {
 	return fmt.Errorf("%w: a Matroska SeekHead/Cues index could not be re-encoded after the edit",
 		waxerr.ErrUnsupportedTag)

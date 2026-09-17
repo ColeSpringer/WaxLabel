@@ -15,14 +15,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// cleanAgeGate is how recently a temp file must have been written to be assumed part of a
-// write still in flight. Nothing newer is listed or removed unless --all is given.
+// cleanAgeGate: temps newer than this are assumed in-flight unless --all.
 const cleanAgeGate = time.Hour
 
-// newCleanCmd builds "clean": list (and with --remove, delete) the .waxlabel-*.tmp files a
-// killed write left beside its target. A write interrupted by SIGINT or SIGTERM removes its
-// own temp (the signal path in main.go drains them); this is for SIGKILL and power loss.
-// Age-gated to an hour so a write in flight is never touched; --all lifts the gate.
+// newCleanCmd builds "clean": list (or --remove) .waxlabel-*.tmp leftovers. SIGINT/
+// SIGTERM already drain temps in main; this covers SIGKILL and power loss. Age-gated
+// to one hour; --all lifts the gate.
 func newCleanCmd() *cobra.Command {
 	var recursive, remove, all bool
 	cmd := &cobra.Command{
@@ -44,8 +42,7 @@ func newCleanCmd() *cobra.Command {
 	return markListCommand(cmd)
 }
 
-// jsonClean is one leftover temp file in the machine-readable report. Removed is false on a
-// dry run and on a removal that failed, which records its own error entry.
+// jsonClean is one leftover in the JSON report. Removed is false on dry run or failed remove.
 type jsonClean struct {
 	SchemaVersion int          `json:"schemaVersion"`
 	File          string       `json:"file"`
@@ -55,9 +52,8 @@ type jsonClean struct {
 	Error         *jsonErrBody `json:"error,omitempty"`
 }
 
-// errorPath names the path an error happened on, for an error that carries one, falling
-// back to the argument that reached it. A walk failure inside a tree names the subdirectory
-// nobody could open, which is the path a user has to act on.
+// errorPath returns the path on the error when present, else fallback. Walk failures
+// name the unreadable subdirectory.
 func errorPath(err error, fallback string) string {
 	var pe *fs.PathError
 	if errors.As(err, &pe) && pe.Path != "" {
@@ -66,9 +62,7 @@ func errorPath(err error, fallback string) string {
 	return fallback
 }
 
-// humanAge renders how long ago a leftover was written. humanDuration formats a playback
-// position, so it would print three days as "72:00:00"; a leftover's age is measured in
-// days once a library has sat untouched for a while.
+// humanAge formats leftover age. humanDuration is playback time ("72:00:00" for 3 days).
 func humanAge(d time.Duration) string {
 	switch {
 	case d < time.Minute:
@@ -82,21 +76,21 @@ func humanAge(d time.Duration) string {
 	}
 }
 
-// leftoverTemp is one candidate found by the scan, before any removal.
+// leftoverTemp is one scan candidate before removal.
 type leftoverTemp struct {
 	path string
 	size int64
 	mod  time.Time
 }
 
-// runClean scans each directory argument, then lists or removes what it found. A directory
-// that cannot be scanned is a per-path error (exit 6) and the other arguments still run.
+// runClean scans each directory, then lists or removes. Unreadable dirs are per-path
+// errors (exit 6); other args still run.
 func runClean(cmd *cobra.Command, dirs []string, recursive, remove, all bool) error {
 	if err := checkEmptyOperands(dirs...); err != nil {
 		return err
 	}
-	// Every operand is stat'd once, before anything is deleted: a usage error raised part
-	// way through would leave files already removed for earlier arguments unreported.
+	// Stat every operand before any delete so a mid-run usage error cannot leave
+	// earlier removals unreported.
 	stats := make([]error, len(dirs))
 	for i, dir := range dirs {
 		info, err := os.Stat(dir)
@@ -110,8 +104,7 @@ func runClean(cmd *cobra.Command, dirs []string, recursive, remove, all bool) er
 	var items []any
 	var worstErr error
 	found, removed := 0, 0
-	// report records a per-path failure without stopping the run. path names what actually
-	// failed, which for a walk error is the subdirectory, not the argument that reached it.
+	// report records a per-path failure without stopping. path is what failed (subdir for walks).
 	report := func(path string, err error) {
 		if worseError(worstErr, err) {
 			worstErr = err
@@ -167,8 +160,7 @@ func runClean(cmd *cobra.Command, dirs []string, recursive, remove, all bool) er
 		return alreadyRendered(worstErr)
 	}
 	switch {
-	// A directory the scan could not read makes "none found" a claim nobody can stand
-	// behind, so say what was seen rather than that the tree is clean.
+	// Unreadable dirs: don't claim "none found" for a tree we couldn't fully scan.
 	case found == 0 && worstErr != nil:
 		fmt.Fprintln(out, "no leftover temp files where the scan could look")
 	case found == 0:
@@ -181,16 +173,12 @@ func runClean(cmd *cobra.Command, dirs []string, recursive, remove, all bool) er
 	return alreadyRendered(worstErr)
 }
 
-// scanLeftovers collects the temp files under dir, sorted by path. Without recursive it
-// reads the directory's own entries; with it, a walk that prunes hidden directories the way
-// walkAudioFiles does, so a .git or .cache tree is not searched. Without all, a file written
-// within the last hour is left alone: it most likely belongs to a write still running.
+// scanLeftovers collects temps under dir, sorted. Non-recursive: dir entries only.
+// Recursive: walk like walkAudioFiles (prune hidden dirs). Without --all, skip files
+// newer than the age gate (likely in-flight writes).
 //
-// A subtree the walk cannot read is reported, not swallowed: saying nothing over a directory
-// nobody could look inside would tell a user their library is clean when the one place a
-// leftover might sit was never opened. The audio walk reports the same condition. It is
-// reported alongside what the scan did find, never instead of it, so one unreadable album
-// does not stop --remove from deleting the leftovers everywhere else.
+// Unreadable subtrees are reported alongside finds, not swallowed: one bad album must
+// not stop --remove elsewhere, and silence must not imply a clean tree.
 func scanLeftovers(ctx context.Context, dir string, recursive, all bool) ([]leftoverTemp, []error, error) {
 	var out []leftoverTemp
 	var unreadable []error
@@ -220,18 +208,14 @@ func scanLeftovers(ctx context.Context, dir string, recursive, all bool) ([]left
 			consider(filepath.Join(dir, d.Name()), d)
 		}
 	} else {
-		// WalkDir lstats its root and never follows links, so a symlinked music directory
-		// would yield one node it refuses to descend. Resolve the root the way the audio
-		// walk does and map matches back under the name the user passed.
+		// WalkDir never follows links; resolve symlink roots like the audio walk.
 		walkRoot, linked := resolvedWalkRoot(dir)
 		err := filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
 			if cerr := ctx.Err(); cerr != nil {
 				return cerr
 			}
 			if err != nil {
-				// Record it and keep walking: WalkDir has already skipped this node, and
-				// the rest of the tree is still worth scanning. The error carries the path
-				// it happened on, which is the subdirectory, not the argument.
+				// Record and continue; WalkDir already skipped this node.
 				unreadable = append(unreadable, err)
 				return nil
 			}
@@ -245,7 +229,7 @@ func scanLeftovers(ctx context.Context, dir string, recursive, all bool) ([]left
 			return nil
 		})
 		if err != nil {
-			return nil, unreadable, err // only a cancelled context reaches here
+			return nil, unreadable, err // cancel only
 		}
 	}
 	slices.SortFunc(out, func(a, b leftoverTemp) int { return strings.Compare(a.path, b.path) })

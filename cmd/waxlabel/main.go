@@ -1,8 +1,7 @@
-// Command waxlabel is the command-line interface to the WaxLabel audio-metadata
-// library. It reads and writes audio-file tags and embedded cover art for the
-// formats the library supports (FLAC, Ogg Vorbis/Opus, MP3, WAV, MP4/M4A/M4B,
-// AAC/ADTS, Matroska/WebM, and AIFF/AIFF-C). Every command maps directly onto the
-// public API, so it dogfoods the library end to end.
+// Command waxlabel is the CLI for the WaxLabel audio-metadata library. It reads
+// and writes tags and cover art for the formats the library supports (FLAC, Ogg
+// Vorbis/Opus/FLAC, MP3, WAV, MP4/M4A/M4B, AAC/ADTS, Matroska/WebM, AIFF/AIFF-C,
+// WavPack, Monkey's Audio, Musepack; WMA/ASF read-only).
 //
 // Usage:
 //
@@ -19,8 +18,7 @@
 //	copy     copy metadata from one file onto another (cross-format)
 //	diff     compare two files' canonical metadata
 //
-// Run "waxlabel <command> --help" for a command's flags, and see README.md for
-// the exit-code table.
+// Run "waxlabel <command> --help" for flags; see README.md for exit codes.
 package main
 
 import (
@@ -33,27 +31,27 @@ import (
 )
 
 func main() {
-	// Two-stage interrupt: the first signal cancels in-flight work, a second forces an
-	// exit for an operation that cannot observe cancellation (blocked in fsync, say).
-	// Its own goroutine, so the second signal lands even with main stuck. os.Exit skips
-	// defers, so the forced path drains the cleanup registry itself.
+	// First signal cancels in-flight work; a second forces exit for ops that cannot
+	// observe cancellation (e.g. blocked in fsync). Own goroutine so the second
+	// signal still lands if main is stuck. os.Exit skips defers, so the forced path
+	// drains the cleanup registry itself.
 	//
-	// A canceled op returns context.Canceled either way, so the cancel CAUSE is the only
-	// thing telling a benign closed pipe (exit 0) from a real Ctrl-C (exit 130).
+	// A canceled op always returns context.Canceled; only the cancel cause separates
+	// a benign closed pipe (exit 0) from Ctrl-C (exit 130).
 	ctx, cancel := context.WithCancelCause(context.Background())
 	sig := make(chan os.Signal, 2)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sig
-		cancel(nil) // nil cause -> context.Canceled: a real interrupt, exit 130
+		cancel(nil) // nil cause -> context.Canceled: real interrupt, exit 130
 		<-sig
 		runCleanups()
 		os.Exit(130)
 	}()
 
-	// SIGPIPE gets its OWN channel: uncaught it kills the process before any cleanup,
-	// and folding it into the two-stage machine above would let a broken pipe consume a
-	// later Ctrl-C's graceful stage. Windows defines the constant but never delivers it.
+	// SIGPIPE on its own channel: uncaught it kills before cleanup, and folding it
+	// into the two-stage machine would let a broken pipe consume a later Ctrl-C's
+	// graceful stage. Windows defines the constant but never delivers it.
 	pipe := make(chan os.Signal, 1)
 	signal.Notify(pipe, syscall.SIGPIPE)
 	go func() {
@@ -68,15 +66,13 @@ func main() {
 	os.Exit(code)
 }
 
-// dispatch builds and runs the root command and returns the process exit code,
-// rendering any terminal error exactly once: a JSON envelope on stdout under --json, a
-// human line on stderr otherwise. Streams are parameters so tests can drive it without
-// spawning a process.
+// dispatch builds and runs the root command and returns the process exit code.
+// Terminal errors render once: JSON envelope on stdout under --json, else a human
+// line on stderr. Streams are parameters so tests can drive it without spawning.
 func dispatch(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	// Sanitizing boundary, so no renderer can leak a terminal-control sequence from
-	// untrusted file bytes. Subcommands inherit these via cobra; the --json paths unwrap
-	// to the raw stream in writeJSON so the machine contract keeps exact bytes. Closed on
-	// return to flush a held-back partial rune.
+	// Sanitizing boundary so renderers cannot leak terminal-control sequences from
+	// untrusted file bytes. Subcommands inherit via cobra; --json unwraps to the raw
+	// stream in writeJSON. Closed on return to flush a held-back partial rune.
 	sout := newSanitizingWriter(stdout)
 	serr := newSanitizingWriter(stderr)
 	defer sout.Close()
@@ -92,30 +88,26 @@ func dispatch(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	if err == nil {
 		return 0
 	}
-	// A closed output pipe is benign: re-tag as broken-pipe (exit 0, silent). Two shapes.
-	// A synchronous errno from the terminal write is definitive proof, so it is NOT gated
-	// on the cancel cause, which the async SIGPIPE goroutine may not have set yet.
-	// A context.Canceled IS gated on the cause, to keep a real Ctrl-C exiting 130.
+	// Closed output pipe is benign (exit 0, silent). Synchronous errno from the write
+	// is definitive and is not gated on cancel cause (SIGPIPE goroutine may lag).
+	// context.Canceled is gated on the cause so real Ctrl-C stays exit 130.
 	if isBrokenPipe(err) ||
 		(errors.Is(err, context.Canceled) && errors.Is(context.Cause(ctx), errBrokenPipe)) {
 		err = errBrokenPipe
 	}
-	// A command that already wrote its own output keeps its exit class but is not
-	// rendered twice.
+	// Already-written output keeps its exit class but is not rendered twice.
 	if _, rendered := errors.AsType[*alreadyRenderedError](err); rendered {
 		return exitCodeFor(err)
 	}
-	// Scan raw args rather than the parsed flag: cobra may have aborted before binding
-	// it, and a --json caller still expects the error as JSON on stdout.
+	// Scan raw args: cobra may have aborted before binding --json.
 	asJSON := wantsJSON(args)
-	// Cobra does not type unknown-command/flag errors, so classify them first.
+	// Cobra does not type unknown-command/flag errors; classify first.
 	err = normalizeExecuteError(err)
 	out := io.Writer(serr)
 	if asJSON {
 		out = sout
 	}
-	// A list command's --json output is an array, so its pre-flight error is wrapped in a
-	// single-element array. Resolved via cobra's Find, so no command-name list can drift.
+	// List-command --json is an array; wrap its pre-flight error in a one-element array.
 	renderError(out, asJSON, emitsJSONList(root, args), err)
 	return exitCodeFor(err)
 }

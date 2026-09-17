@@ -8,11 +8,8 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// Segment is one piece of a rewrite plan: either literal bytes to emit, or a
-// range to copy verbatim from the source. A rewrite is a list of segments,
-// which lets a codec replace just the metadata region while copying the audio
-// payload byte-for-byte (the preservation invariant) and, for save-back,
-// stream straight to a temp file without buffering the whole file.
+// Segment is literal bytes or a source copy range. Rewrites replace metadata while
+// copying audio verbatim and streaming to disk.
 type Segment struct {
 	// Literal, when non-nil, is emitted as-is and Off/Len are ignored.
 	Literal []byte
@@ -40,24 +37,13 @@ func OutputLen(segs []Segment) int64 {
 	return n
 }
 
-// Tap observes copied source bytes as a rewrite streams, identified by their
-// source offset. It is used to hash the audio essence while it is already
-// moving past, avoiding a second read. Only copied (not literal) bytes are
-// observed, since literals have no source offset.
+// Tap observes copied (not literal) source bytes during a rewrite, by offset.
 type Tap interface {
-	// Observe receives a run of copied bytes that begin at srcOff in the
-	// source. The implementation decides which (if any) it cares about.
-	//
-	// p aliases a reusable buffer that is overwritten on the next read, so an
-	// implementation that needs the bytes beyond this call must copy them.
-	// Consuming them immediately (hashing, counting) is fine.
+	// Observe receives bytes starting at srcOff. p is reused; copy if retained.
 	Observe(srcOff int64, p []byte)
 }
 
-// Write streams segs to dst, copying source ranges from src. If tap is
-// non-nil, each copied run is reported to it with its source offset. It checks
-// ctx between chunks so a large copy can be cancelled mid-stream. It returns the
-// number of bytes written.
+// Write streams segs to dst from src. tap sees each copied run. Checks ctx between chunks.
 func Write(ctx context.Context, dst io.Writer, src io.ReaderAt, segs []Segment, tap Tap) (int64, error) {
 	buf := make([]byte, 1<<16)
 	var total int64

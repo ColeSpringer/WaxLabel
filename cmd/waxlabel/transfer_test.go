@@ -14,7 +14,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// Additional cross-format fixtures (the shared FLAC/M4B ones live in cli_test.go).
+// Extra cross-format fixtures (shared FLAC/M4B ones live in cli_test.go).
 var (
 	notagsM4A   = filepath.Join("..", "..", "testdata", "notags.m4a")
 	sampleMP3   = filepath.Join("..", "..", "testdata", "sample.mp3")
@@ -26,11 +26,7 @@ var (
 	sampleWebMF = filepath.Join("..", "..", "testdata", "sample.webm") // DocType webm
 )
 
-// assertCopyAgrees runs "copy src dst" for real and checks the strongest
-// contract: every field the JSON report marks carried actually lands in the
-// written destination with the source's exact values, and a dropped chapter set
-// leaves no chapters behind. The report and the bytes Execute produced cannot
-// disagree.
+// assertCopyAgrees runs copy and checks carried fields match source values; dropped chapters stay absent.
 func assertCopyAgrees(t *testing.T, src, dstFixture string) {
 	t.Helper()
 	dst := copyFixture(t, dstFixture)
@@ -46,8 +42,7 @@ func assertCopyAgrees(t *testing.T, src, dstFixture string) {
 	if !jc.Committed {
 		t.Errorf("%s -> %s: copy reported not committed", src, dstFixture)
 	}
-	// The write record is embedded (like set's --json), not a hand-copied subset:
-	// a real cross-format copy writes tags, so it reports operations and sizes.
+	// Write record is embedded like set --json (operations and byte sizes required).
 	if !jc.NoOp && len(jc.Operations) == 0 {
 		t.Errorf("%s -> %s: copy --json omitted write operations", src, dstFixture)
 	}
@@ -88,8 +83,7 @@ func dumpJSON(t *testing.T, path string) jsonDocument {
 	return decodeJSONOne[jsonDocument](t, out)
 }
 
-// TestCopyReportMatchesResult covers the representative format pairs the plan
-// names (FLAC->MP4, MP3->Opus, WAV->AIFF) plus the chapter-dropping M4B->FLAC.
+// TestCopyReportMatchesResult: representative format pairs plus chapter-dropping M4B->FLAC.
 func TestCopyReportMatchesResult(t *testing.T) {
 	t.Parallel()
 	pairs := []struct{ src, dst string }{
@@ -103,11 +97,8 @@ func TestCopyReportMatchesResult(t *testing.T) {
 	}
 }
 
-// TestCopySyncedLyricsNewlineReportsLossy: a SYLT line whose text carries an
-// embedded newline is flattened to a space by the FLAC/Ogg LRC store, a silent content change, so a
-// copy to an LRC-backed destination must grade the synced-lyrics carry Lossy, not lossless. The CLI's
-// LRC input cannot author an embedded newline (it reads as a line break), so the source is built
-// through the library.
+// TestCopySyncedLyricsNewlineReportsLossy: SYLT newline flattens to space in LRC store; copy
+// must grade lossy. CLI cannot author embedded newlines; source built via library.
 func TestCopySyncedLyricsNewlineReportsLossy(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -148,16 +139,13 @@ func TestCopySyncedLyricsNewlineReportsLossy(t *testing.T) {
 	}
 }
 
-// TestCopyDateReductionReasonNotWrong: v2.3 splits a date across TYER/TDAT/TIME, so
-// which component a value loses varies. The shared transfer reason must be component-agnostic (never
-// a wrong "seconds dropped" for a month-precision value); the per-value [value-reduced] write warning
-// carries the specific component. Copying 2021-06, a T10, and a T10:30:45 to MP3 each grades the date
-// lossy with a reason that never names "seconds".
+// TestCopyDateReductionReasonNotWrong: v2.3 date loss varies by component; transfer reason must
+// stay component-agnostic (per-value [value-reduced] carries specifics).
 func TestCopyDateReductionReasonNotWrong(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	for _, date := range []string{"2021-06", "2021-06-15T10", "2021-06-15T10:30:45"} {
-		src := copyFixture(t, notagsFLAC) // FLAC stores the date verbatim
+		src := copyFixture(t, notagsFLAC) // stores date verbatim
 		doc, err := wl.ParseFile(ctx, src)
 		if err != nil {
 			t.Fatal(err)
@@ -197,7 +185,7 @@ func TestCopyDateReductionReasonNotWrong(t *testing.T) {
 	}
 }
 
-// TestCopyDryRunLeavesDestUnchanged: --dry-run previews but writes nothing.
+// TestCopyDryRunLeavesDestUnchanged: --dry-run previews without writing.
 func TestCopyDryRunLeavesDestUnchanged(t *testing.T) {
 	t.Parallel()
 	dst := copyFixture(t, notagsM4A)
@@ -221,8 +209,7 @@ func TestCopyDryRunLeavesDestUnchanged(t *testing.T) {
 	}
 }
 
-// TestCopyToMatroskaSucceeds: copying onto a Matroska file now writes the carried
-// tags and exits 0 (the format became writable in this version).
+// TestCopyToMatroskaSucceeds: copy onto Matroska writes tags and exits 0.
 func TestCopyToMatroskaSucceeds(t *testing.T) {
 	t.Parallel()
 	dst := copyFixture(t, notagsMKA)
@@ -233,7 +220,7 @@ func TestCopyToMatroskaSucceeds(t *testing.T) {
 	if !strings.Contains(out, "carried") {
 		t.Errorf("expected a carried report:\n%s", out)
 	}
-	// The destination now reads back the source's title.
+	// Destination reads back source title.
 	got := tagValues(dumpJSON(t, dst), "TITLE")
 	want := tagValues(dumpJSON(t, sampleFLAC), "TITLE")
 	if len(want) == 0 || !slices.Equal(got, want) {
@@ -241,11 +228,8 @@ func TestCopyToMatroskaSucceeds(t *testing.T) {
 	}
 }
 
-// TestCopyCoverToWebMDropsCover: copying a cover-bearing source onto a WebM file
-// reports the cover dropped (Attachments is outside the WebM subset) and still
-// writes the tags, exiting 0. This is the file-aware capability fix: before it,
-// the copy advertised the cover "carried" and then errored at Prepare, the one
-// report-vs-result disagreement the transfer layer otherwise rules out.
+// TestCopyCoverToWebMDropsCover: WebM drops cover (Attachments outside subset) but carries tags.
+// Before the file-aware fix, copy reported carried then failed at Prepare.
 func TestCopyCoverToWebMDropsCover(t *testing.T) {
 	t.Parallel()
 	dst := copyFixture(t, sampleWebMF)
@@ -281,7 +265,7 @@ func TestCopyCoverToWebMDropsCover(t *testing.T) {
 		t.Error("expected at least one carried tag (the cover gate must not block tags)")
 	}
 
-	// report == result: the executed write left no picture but carried the title.
+	// Report matches result: no picture, title carried.
 	res := dumpJSON(t, dst)
 	if len(res.Pictures) != 0 {
 		t.Errorf("WebM result has %d pictures, want 0 (the cover was dropped)", len(res.Pictures))
@@ -293,14 +277,10 @@ func TestCopyCoverToWebMDropsCover(t *testing.T) {
 	}
 }
 
-// TestCopyHeaderDistinguishesWebM checks the transfer header names the container
-// subtype for the Matroska family: a .webm side reads "WebM" and a .mka side
-// "Matroska". Both are FormatMatroska, so the bare format alone would print the
-// uninformative "Matroska -> Matroska"; the header instead pulls each side's
-// container label. Other formats keep their Format string (covered elsewhere).
+// TestCopyHeaderDistinguishesWebM: Matroska family header uses container label (WebM vs Matroska).
 func TestCopyHeaderDistinguishesWebM(t *testing.T) {
 	t.Parallel()
-	// Destination is webm -> "Matroska -> WebM".
+	// dst webm: "Matroska -> WebM".
 	dst := copyFixture(t, sampleWebMF)
 	out, _, code := runCLI(t, "copy", sampleMKA, dst, "--dry-run")
 	if code != 0 {
@@ -309,7 +289,7 @@ func TestCopyHeaderDistinguishesWebM(t *testing.T) {
 	if !strings.Contains(out, "transfer Matroska -> WebM") {
 		t.Errorf("webm destination should show 'Matroska -> WebM':\n%s", out)
 	}
-	// Source is webm -> "WebM -> Matroska".
+	// src webm: "WebM -> Matroska".
 	dst2 := copyFixture(t, notagsMKA)
 	out2, _, code2 := runCLI(t, "copy", sampleWebMF, dst2, "--dry-run")
 	if code2 != 0 {
@@ -320,7 +300,7 @@ func TestCopyHeaderDistinguishesWebM(t *testing.T) {
 	}
 }
 
-// TestDiffExitCodes pins the diff(1)-style contract: 0 identical, 1 differs.
+// TestDiffExitCodes: diff-style exits (0 identical, 1 differs).
 func TestDiffExitCodes(t *testing.T) {
 	t.Parallel()
 	if _, _, code := runCLI(t, "diff", sampleFLAC, sampleFLAC); code != 0 {
@@ -342,10 +322,10 @@ func TestDiffExitCodes(t *testing.T) {
 	}
 }
 
-// TestDiffGoldenOutput checks the -/+/~ markers against known fixture deltas.
+// TestDiffGoldenOutput: -/+/~ markers against known fixture deltas.
 func TestDiffGoldenOutput(t *testing.T) {
 	t.Parallel()
-	// Removed keys: present in A (sample), absent in B (notags).
+	// Keys in A (sample), absent in B (notags).
 	out, _, code := runCLI(t, "diff", sampleFLAC, notagsFLAC)
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
@@ -356,7 +336,7 @@ func TestDiffGoldenOutput(t *testing.T) {
 		}
 	}
 
-	// A controlled changed value: same file, one edited title.
+	// Same file, one edited title.
 	a := copyFixture(t, sampleFLAC)
 	b := copyFixture(t, sampleFLAC)
 	if _, _, c := runCLI(t, "set", b, "--set", "TITLE=Changed"); c != 0 {
@@ -371,7 +351,7 @@ func TestDiffGoldenOutput(t *testing.T) {
 	}
 }
 
-// TestDiffJSON checks the machine-readable diff shape and exit code.
+// TestDiffJSON: machine-readable diff shape and exit codes.
 func TestDiffJSON(t *testing.T) {
 	t.Parallel()
 	out, _, code := runCLI(t, "--json", "diff", sampleFLAC, notagsFLAC)
@@ -388,7 +368,7 @@ func TestDiffJSON(t *testing.T) {
 	if len(jd.Tags) == 0 {
 		t.Error("expected tag diffs")
 	}
-	// An identical pair still emits a well-formed object, with exit 0.
+	// Identical pair: well-formed object, exit 0.
 	iout, _, code := runCLI(t, "--json", "diff", sampleFLAC, sampleFLAC)
 	if code != 0 {
 		t.Fatalf("identical exit = %d, want 0", code)
@@ -400,8 +380,7 @@ func TestDiffJSON(t *testing.T) {
 	if !ij.Identical {
 		t.Error("identical = false, want true")
 	}
-	// The three count objects are always present now (not omitempty pointers), each with a
-	// `changed` discriminator; on an identical pair every one is changed:false.
+	// Count objects always present with changed discriminator; identical pair: all changed:false.
 	for label, c := range map[string]jsonDiffCount{"pictures": ij.Pictures, "chapters": ij.Chapters, "syncedLyrics": ij.SyncedLyrics} {
 		if c.Changed {
 			t.Errorf("identical pair: %s.changed = true, want false", label)
@@ -409,8 +388,7 @@ func TestDiffJSON(t *testing.T) {
 	}
 }
 
-// TestDiffErrorsRankAboveDifferences: a real failure (missing file, junk input)
-// must exceed exit 1 so scripts can tell "differs" from "broke".
+// TestDiffErrorsRankAboveDifferences: real failures exceed exit 1 (scripts distinguish broke vs differs).
 func TestDiffErrorsRankAboveDifferences(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "nope.flac")
@@ -426,8 +404,7 @@ func TestDiffErrorsRankAboveDifferences(t *testing.T) {
 	}
 }
 
-// TestRenderCountDelta pins the picture/chapter delta rendering, especially the
-// equal-count case where a bare "N -> N" would read as a no-op.
+// TestRenderCountDelta: picture/chapter delta rendering; equal count must not read as no-op.
 func TestRenderCountDelta(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -449,8 +426,7 @@ func TestRenderCountDelta(t *testing.T) {
 	}
 }
 
-// TestDiffPictureContentsDiffer: two files with one cover each but different bytes
-// must not read as "1 -> 1" (a no-op); the diff says the contents differ.
+// TestDiffPictureContentsDiffer: one cover each, different bytes; must not read as "1 -> 1".
 func TestDiffPictureContentsDiffer(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -480,8 +456,7 @@ func TestDiffPictureContentsDiffer(t *testing.T) {
 		t.Errorf("expected a contents-differ line:\n%s", out)
 	}
 
-	// the equal-count contents change must be unambiguous in JSON too - both counts are 1,
-	// so a consumer needs pictures.changed rather than an a != b guess (which reads as a no-op).
+	// JSON: equal counts need pictures.changed, not an a!=b guess.
 	jout, _, jcode := runCLI(t, "--json", "diff", a, b)
 	if jcode != 1 {
 		t.Fatalf("json exit = %d, want 1", jcode)
@@ -495,7 +470,7 @@ func TestDiffPictureContentsDiffer(t *testing.T) {
 	}
 }
 
-// minimalPNG is a 1x1 PNG, enough to sniff as image/png for a cover.
+// minimalPNG: 1x1 PNG, enough to sniff as image/png.
 func minimalPNG() []byte {
 	return []byte{
 		0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A,
@@ -505,8 +480,7 @@ func minimalPNG() []byte {
 	}
 }
 
-// minimalJPEG returns a complete minimal JPEG header with a distinct MIME from
-// minimalPNG, letting tests tell which cover survived a last-wins merge.
+// minimalJPEG: minimal JPEG header, distinct MIME from minimalPNG (last-wins cover tests).
 func minimalJPEG() []byte {
 	return []byte{
 		0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08,
@@ -515,7 +489,7 @@ func minimalJPEG() []byte {
 	}
 }
 
-// TestCopyUsageErrors: copy and diff need exactly two paths.
+// TestCopyDiffArgCounts: copy and diff require exactly two paths.
 func TestCopyDiffArgCounts(t *testing.T) {
 	t.Parallel()
 	cases := [][]string{

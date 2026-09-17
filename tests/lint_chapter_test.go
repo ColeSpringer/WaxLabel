@@ -9,11 +9,9 @@ import (
 	"github.com/colespringer/waxlabel/internal/vorbis"
 )
 
-// TestLintChaptersGatedOnKnownDuration: the past-duration rule needs a duration to compare
-// against. A file whose duration reads 0 - a header-only or truncated stream - would
-// otherwise have every chapter flagged as beyond 0:00, so the linter gates on a known
-// non-zero duration exactly as the editor does. The duplicate rule needs no duration and
-// still applies, which is what keeps the gate from silencing the whole helper.
+// past-duration rule needs a duration to compare against. A file whose duration reads 0; a
+// header-only or truncated stream; would otherwise have every chapter flagged as beyond 0:00, so
+// the linter gates on a known non-zero duration exactly as the editor does.
 func TestLintChaptersGatedOnKnownDuration(t *testing.T) {
 	// A comment block plus chapter comments and no audio frames: the STREAMINFO carries no
 	// sample count, so Duration() is 0 while the chapters are real.
@@ -45,9 +43,8 @@ func TestLintChaptersGatedOnKnownDuration(t *testing.T) {
 	}
 }
 
-// TestLintChaptersPastKnownDuration is the positive half: with a real duration, a chapter
-// beyond it is reported. Together with the gate test above, removing the duration guard
-// changes one of the two outcomes.
+// positive half: with a real duration, a chapter beyond it is reported. Together with the gate test
+// above, removing the duration guard changes one of the two outcomes.
 func TestLintChaptersPastKnownDuration(t *testing.T) {
 	src := readFixture(t, sampleFLAC)
 	plan, err := mustParseBytes(t, src).Edit().SetChapters(

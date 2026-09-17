@@ -9,11 +9,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestPlanLintFixPreservesCleanEncoder is a regression guard: the inherited-encoder finding
-// also fires on a bare transcoder vendor string, so lint --fix must not clear a clean,
-// user-set ENCODER tag as collateral. The clear is gated on the ENCODER value itself being a
-// transcoder stamp, while the vendor neutralization (WithStripEncoderStamp) stays outside that
-// gate - so the Lavf vendor is still fixed and a re-lint of the saved file is clean.
+// regression guard: the inherited-encoder finding also fires on a bare transcoder vendor string, so
+// lint --fix must not clear a clean, user-set ENCODER tag as collateral.
 func TestPlanLintFixPreservesCleanEncoder(t *testing.T) {
 	data := flacWithVendor("Lavf58.76.100", "ENCODER=MyTagger 1.0", "TITLE=Song")
 	doc := mustParseBytes(t, data)
@@ -38,9 +35,8 @@ func TestPlanLintFixPreservesCleanEncoder(t *testing.T) {
 	}
 }
 
-// TestPlanLintFixClearsStampEncoder is the companion: when the ENCODER value is a
-// transcoder stamp, lint --fix still clears it (the gate reuses the linter's own noise test,
-// so it can never disagree with the finding).
+// companion: when the ENCODER value is a transcoder stamp, lint --fix still clears it (the gate
+// reuses the linter's own noise test, so it can never disagree with the finding).
 func TestPlanLintFixClearsStampEncoder(t *testing.T) {
 	data := flacWithVendor("reference libFLAC", "ENCODER=Lavf58.76.100", "TITLE=Song")
 	doc := mustParseBytes(t, data)
@@ -79,10 +75,10 @@ func hasInheritedEncoder(doc *wl.Document) bool {
 	return false
 }
 
-// TestPlanLintFixMultiValueEncoderRemovesStamp is a regression guard: when ENCODER carries
-// several values and a later one is a transcoder stamp, lint --fix removes only the stamp value
-// (keeping the clean one), rather than inspecting only the first value and leaving the stamp - so
-// a re-lint of the saved file is clean and the clean value survives.
+// regression guard: when ENCODER carries several values and a later one is a transcoder stamp, lint
+// --fix removes only the stamp value (keeping the clean one), rather than inspecting only the first
+// value and leaving the stamp, so a re-lint of the saved file is clean and the clean value
+// survives.
 func TestPlanLintFixMultiValueEncoderRemovesStamp(t *testing.T) {
 	// A clean ENCODER value first, then a Lavf stamp (a FLAC with two ENCODER comments); the
 	// vendor is a non-Lavf string so only the ENCODER comment carries the stamp.
@@ -104,9 +100,8 @@ func TestPlanLintFixMultiValueEncoderRemovesStamp(t *testing.T) {
 	}
 }
 
-// TestStripEncoderNeutralizesFlacVendor checks that --strip-encoder rewrites a
-// transcoder-stamped FLAC vendor even when no ENCODER comment is present. The returned
-// document and a fresh parse of the written bytes should both lint cleanly.
+// --strip-encoder rewrites a transcoder-stamped FLAC vendor even when no ENCODER comment is
+// present. The returned document and a fresh parse of the written bytes should both lint cleanly.
 func TestStripEncoderNeutralizesFlacVendor(t *testing.T) {
 	data := flacWithVendor("Lavf58.76.100", "TITLE=Song")
 	src := mustParseBytes(t, data)

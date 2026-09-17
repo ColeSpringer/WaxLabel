@@ -6,12 +6,9 @@ import (
 	"testing"
 )
 
-// mp4WithTrailingMdats builds a parseable MP4 (ftyp + audio-only moov + audio mdat) and
-// appends nLeaked extra "dead" mdats after the audio - the shape an older build leaked by
-// appending a fresh QuickTime-chapter mdat on every chapter edit and never reclaiming the
-// prior one. There is no chapter track, so this is the cleared-but-leaked layout the
-// parse-side fix must still treat as audio-only. The audio stco points at the first
-// (audio) mdat's payload.
+// mp4WithTrailingMdats builds a parseable MP4 (ftyp + audio-only moov + audio mdat) and appends
+// nLeaked extra "dead" mdats after the audio; the shape an older build leaked by appending a fresh
+// QuickTime-chapter mdat on every chapter edit and never reclaiming the prior one.
 func mp4WithTrailingMdats(nLeaked int) []byte {
 	audio := bytes.Repeat([]byte{0xA7}, 120)
 	dead := bytes.Repeat([]byte{0xCC}, 48)
@@ -27,11 +24,9 @@ func mp4WithTrailingMdats(nLeaked int) []byte {
 	return build(uint32(j + 4)) // audio stco -> first (audio) mdat payload
 }
 
-// TestMP4EssenceIgnoresLeakedChapterMdats verifies that the audio essence is exactly
-// the mdats that contain an audio-track chunk offset, so several dead chapter mdats an
-// older build leaked (with no surviving chapter track) are excluded from the digest. It
-// therefore equals a clean single-mdat file's digest and stays byte-stable. This is the
-// legacy-leak path the going-forward chapter-edit tests do not reach.
+// audio essence is exactly the mdats that contain an audio-track chunk offset, so several dead
+// chapter mdats an older build leaked (with no surviving chapter track) are excluded from the
+// digest. It therefore equals a clean single-mdat file's digest and stays byte-stable.
 func TestMP4EssenceIgnoresLeakedChapterMdats(t *testing.T) {
 	clean := mp4WithTrailingMdats(0)
 	leaked := mp4WithTrailingMdats(3)
@@ -70,11 +65,9 @@ func mp4TwoAudioTwoMdat(audio1, audio2 []byte) []byte {
 	return build(uint32(o1), uint32(o2))
 }
 
-// TestMP4EssenceCoversSecondAudioTrack verifies that with two audio tracks in two mdats, the
-// audio-essence digest hashes both mdats. Filtering on only the first audio track's
-// offset table dropped the second track's mdat, so a change confined to it compared equal
-// (a verify/dedup false negative). The digest must differ when only the second track's
-// samples change.
+// with two audio tracks in two mdats, the audio-essence digest hashes both mdats. Filtering on only
+// the first audio track's offset table dropped the second track's mdat, so a change confined to it
+// compared equal (a verify/dedup false negative).
 func TestMP4EssenceCoversSecondAudioTrack(t *testing.T) {
 	base := mp4TwoAudioTwoMdat(bytes.Repeat([]byte{0x11}, 64), bytes.Repeat([]byte{0x22}, 64))
 	alt := mp4TwoAudioTwoMdat(bytes.Repeat([]byte{0x11}, 64), bytes.Repeat([]byte{0x33}, 64))

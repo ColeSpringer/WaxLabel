@@ -8,18 +8,13 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// item is one decoded ilst child: the four-character atom name and its raw
-// payload (everything after the 8-byte atom header). Whether the canonical
-// rebuild owns an item - versus preserving it verbatim, the MP4 analogue of ID3's
-// opaque frames - is recomputed on demand by owned(), not cached here, so the
-// projection stays a pure read of an immutable document.
+// item is one decoded ilst child: the four-character atom name and its raw payload
+// (everything after the 8-byte atom header).
 type item struct {
 	name    [4]byte
 	payload []byte
-	// key is the mdta key name this item resolved to through the meta's "keys" index, empty
-	// for an ordinary four-character iTunes item. It is resolved once at parse time so
-	// decodeItem stays a pure function of one item and needs no keys table threaded through
-	// every caller of owned().
+	// key is the mdta key name this item resolved to through the meta's "keys" index,
+	// empty for an ordinary four-character iTunes item.
 	key string
 }
 
@@ -29,11 +24,10 @@ func (it item) id() string { return string(it.name[:]) }
 // atom name.
 func (it item) mdta() bool { return it.key != "" }
 
-// doc is the MP4 native document: the top-level atom layout, references to the
-// tag-path atoms (moov / udta / meta / ilst) and an adjacent free padding atom,
-// the decoded ilst items, every chunk-offset table (for media-offset fixups when
-// the metadata is resized), and the mdat essence ranges. It is the
-// preservation-first base for rewrites and satisfies core.NativeDoc.
+// doc is the MP4 native document: the top-level atom layout, references to the tag-path
+// atoms (moov / udta / meta / ilst) and an adjacent free padding atom, the decoded ilst
+// items, every chunk-offset table (for media-offset fixups when the metadata is
+// resized), and the mdat essence ranges.
 type doc struct {
 	topLevel []atomRef // every top-level atom in order
 
@@ -45,12 +39,8 @@ type doc struct {
 	free *atomRef // a free or skip padding atom adjacent to ilst inside meta, if present (reusable)
 	chpl *atomRef // moov.udta.chpl Nero chapter list, if present
 
-	// QuickTime chapter-write refs (the chapter text track lives in moov as a
-	// sibling trak referenced from the audio track's tref "chap"). These let a
-	// chapter edit rebuild that track without re-reading the source: the audio
-	// trak to attach a tref to, where its mdia starts (the tref insertion point),
-	// any existing tref, the existing chapter trak to replace, and the mvhd fields
-	// a new track needs (the movie timescale/duration and a free track id).
+	// QuickTime chapter-write refs (the chapter text track lives in moov as a sibling trak
+	// referenced from the audio track's tref "chap").
 	audioTrak    *atomRef // the first "soun" trak, if any
 	audioMdiaOff int64    // absolute offset of the audio trak's mdia (tref goes before it)
 	audioTref    *atomRef // the audio trak's tref, if any
@@ -72,17 +62,12 @@ type doc struct {
 	metaHandler string
 	keyNames    []string
 	// udtaTexts holds the classic QuickTime text atoms decoded from direct moov.udta
-	// children (a plain .mov's whole tag store). They are kept apart from items because they
-	// live outside meta entirely and are re-rendered through the udta splice, not the ilst.
-	// udtaKids lists every direct udta child in order, decoded or not, for the native view.
+	// children (a plain .mov's whole tag store).
 	udtaTexts []udtaText
 	udtaKids  []atomRef
 	offTables []offsetTable // every stbl stco/co64 in moov, in document order
 	// auxTables holds every stbl saio in moov, kept apart from offTables because a saio
-	// locates sample auxiliary information (CENC) rather than a media chunk. Both live in
-	// an mdat and both shift on a resize, but only a chunk offset marks an mdat as audio
-	// essence, so merging the two would skew the essence trim (firstNonChapterChunk) and
-	// silently change the essence digest.
+	// locates sample auxiliary information (CENC) rather than a media chunk.
 	auxTables []offsetTable
 	mdats     [][2]int64 // mdat payload ranges (offset, length), in document order
 	// mdatTruncated records that an mdat atom's declared size overran EOF and was
@@ -105,12 +90,7 @@ type doc struct {
 	size       int64
 	majorBrand string // ftyp major brand (e.g. "M4A ", "M4B "), for the native view
 
-	// Chapter model. chapters is the projected, deduplicated list (a Nero chpl
-	// list and/or a QuickTime chapter text track project into it). chplVersion is
-	// the version byte of an existing chpl, preserved when chpl is re-rendered.
-	// hasQTChapters records that a QuickTime chapter text track is present (and, on
-	// a post-write document, that one was written): a chapter edit rebuilds it from
-	// the edited model so both representations stay in sync.
+	// Chapter model.
 	chapters      []core.Chapter
 	chplVersion   uint8
 	chplCount     int // chapters in the chpl atom specifically (for the native view)
@@ -119,21 +99,14 @@ type doc struct {
 	// it is carried into a post-write document so its warnings match a fresh parse.
 	chapterConflict bool
 	// oversizedAtom names a final top-level atom whose declared size overran EOF and was
-	// clamped, which is also what bytes appended after the last atom look like. Empty when
-	// the file tiles cleanly. mdat and moov are excluded: they carry their own
-	// truncated-audio warnings.
+	// clamped, which is also what bytes appended after the last atom look like. mdat and
+	// moov are excluded: they carry their own truncated-audio warnings.
 	oversizedAtom string
 }
 
 func (d *doc) Format() core.Format { return core.FormatMP4 }
 
 // refuseWrite reports why this document cannot be rewritten at all, or nil when it can.
-// Plan returns the error and Capabilities reports ReadOnly from the same call, so the
-// capability a caller is shown and the outcome of an actual write cannot diverge - a
-// second, hand-maintained copy of the predicate would drift the moment either side gained
-// a case. Each refusal here is unconditional: a file matching one cannot be written by any
-// edit, which is what ReadOnly claims. A refusal that depended on what the edit contained
-// would belong in Plan alone.
 func (d *doc) refuseWrite() error {
 	switch {
 	case d.fragmented:
@@ -206,14 +179,6 @@ func cloneRef(r *atomRef) *atomRef {
 
 // PaddingBytes reports the payload of the free/skip atom adjacent to ilst - the only
 // padding this codec reuses in place, and the number a plan reports as PaddingAfter.
-// A stray free atom elsewhere in the file is not counted: the writer cannot grow into it,
-// so counting it would promise slack that does not exist.
-//
-// The subtraction is the 8-byte header the writer will emit, not the source atom's own
-// headerLen. A rewrite replaces the region with a freshly rendered free atom, which always
-// uses the 32-bit header; a source atom written in the 64-bit largesize form therefore
-// yields 8 more usable bytes than its payload, and reporting its payload would make the
-// figure jump across an otherwise in-place save-back.
 func (d *doc) PaddingBytes() int64 {
 	if d.free == nil {
 		return 0

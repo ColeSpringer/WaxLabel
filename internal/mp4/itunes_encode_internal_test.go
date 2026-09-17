@@ -9,10 +9,9 @@ import (
 )
 
 // TestITunesDroppedValues checks that droppedValues names exactly the iTunes structured
-// values the atom encoders cannot store: an advisory or movement outside its atom's width or
-// non-numeric, and a BPM the validator rejects (non-decimal, signed, or past 65535). A valid
-// value, including a literal advisory 0 and a fractional BPM (a coercion, not a drop), is
-// kept.
+// values the atom encoders cannot store: an advisory or movement outside its atom's
+// width or non-numeric, and a BPM the validator rejects (non-decimal, signed, or past
+// 65535).
 func TestITunesDroppedValues(t *testing.T) {
 	cases := []struct {
 		name string
@@ -151,10 +150,7 @@ func TestTmpoItemBytes(t *testing.T) {
 }
 
 // TestDecodeIntBoolTypeGuard pins that the integer and boolean decoders own only an
-// integer-bearing data type (signed-int 21 or implicit 0). A text-typed atom would have its
-// ASCII bytes misread as a big-endian number (type-1 "50" is 0x3530 = 13616) or, for a
-// boolean, ASCII "0" (0x30, non-zero) read as true - and the bogus value would then be
-// rewritten over the original on the next edit. Such an atom stays preserved-not-owned.
+// integer-bearing data type (signed-int 21 or implicit 0).
 func TestDecodeIntBoolTypeGuard(t *testing.T) {
 	cases := []struct {
 		name      string

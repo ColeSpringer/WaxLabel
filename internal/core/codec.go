@@ -8,10 +8,7 @@ import (
 	"github.com/colespringer/waxlabel/internal/bits"
 )
 
-// Codec is the contract every format implementation satisfies. Parsing
-// produces a neutral [Media]; planning turns an edited Media into a byte-level
-// rewrite. The same Codec instance answers capability queries so the reported
-// capabilities and the actual write behavior cannot drift apart.
+// Codec parses to [Media], plans rewrites, and reports capabilities from one implementation.
 type Codec interface {
 	Format() Format
 	// Extensions are the lowercase file extensions (with dot) this codec
@@ -19,37 +16,19 @@ type Codec interface {
 	Extensions() []string
 	// Sniff reports whether the leading bytes look like this format.
 	Sniff(header []byte) bool
-	// SkipsLeadingID3 reports whether this parser accepts a leading ID3v2 tag before the
-	// format signature. [DetectLeading] only routes an inner signature past ID3 to codecs
-	// that declare this support; other matches are reported as unsupported input.
+	// SkipsLeadingID3: parser accepts leading ID3v2 ([DetectLeading]).
 	SkipsLeadingID3() bool
 	// Parse reads metadata from src into a Media.
 	Parse(ctx context.Context, src ReaderAtSized, opts ParseOptions) (*Media, error)
-	// Plan computes the rewrite that realizes edited over base (the unedited
-	// parse). It works purely from the parsed Media - the native document holds
-	// every structural detail needed - so a detached Document can be planned
-	// without reopening the source; only Execute reads the source bytes. The
-	// returned plan's Report describes exactly what executing it will do.
+	// Plan computes rewrite from parsed Media only; Execute reads source bytes.
 	Plan(ctx context.Context, base, edited *Media, opts WriteOptions) (*WritePlan, error)
-	// Capabilities reports support under the given write options. m is the
-	// parsed file the query is about, or nil for a file-agnostic, format-level
-	// query (as [Document.PlanTransfer] makes, having no destination file). A
-	// codec whose support is uniform across files ignores m; one with a per-file
-	// constraint (Matroska, where the WebM subset forbids cover attachments)
-	// consults it when present, and must nil-guard. Threading the file in keeps
-	// the reported capability honest for the report==result transfer invariant.
+	// Capabilities reports support; m is parsed file or nil for format-level query.
 	Capabilities(m *Media, opts WriteOptions) Capabilities
-	// EssenceExtent returns the inputs to the audio-essence digest for this
-	// format: a named, versioned extent identifier and the decoder-critical
-	// configuration bytes mixed into the hash ahead of the audio. What counts as
-	// "decoder-critical" is codec-specific, so it lives here rather than in the
-	// format-independent public layer.
+	// EssenceExtent returns digest version and decoder-critical config bytes.
 	EssenceExtent(m *Media) (version string, config []byte)
 }
 
-// WriteReport is the human-and-machine-readable description of a planned
-// write. It is produced together with the segments so plan and execution
-// share state: Report() on a Plan returns exactly what Execute will carry out.
+// WriteReport describes a planned write; matches execution.
 type WriteReport struct {
 	Format       Format
 	NoOp         bool
@@ -60,28 +39,10 @@ type WriteReport struct {
 	Warnings     []Warning
 }
 
-// String renders the report as the human-readable block the CLI and library
-// consumers print: the operations (falling back to "rewrite metadata" when the
-// codec named none), the before/after size, the padding when any is written, and
-// any warnings - or the [NoChangesLine] summary for a no-op. Sizes are
-// humanized via [bits.HumanBytes].
-//
-// The operation and size lines are library-generated; the warning line is safe
-// because [Warning.String] self-sanitizes (plan warnings are library-generated
-// today, but this keeps the report safe if one ever embeds a file-derived snippet
-// such as a chapter title). The field-level change block - the only place
-// untrusted tag values appear in a plan - is rendered separately by
-// [waxlabel.Plan.String] through the sanitizing [tag.Change.String]. The block
-// carries no path header (that is display context the CLI adds) and no trailing
-// newline.
+// String renders human-readable plan summary. Warnings via [Warning.String] (sanitized).
 func (r WriteReport) String() string {
 	if r.NoOp {
-		// A no-op can still carry a warning the consumer must see - an edit whose only
-		// effect was a value the format could not store (value-dropped) leaves the bytes
-		// unchanged yet is not what was asked for, so it must not vanish behind a bare "no
-		// changes". When that warning is a discard, the headline itself says so rather than
-		// claiming the file is already up to date. A clean no-op has no warnings, so this
-		// stays just that one line.
+		// No-op may still carry discard warnings (value-dropped, etc.).
 		s := NoChangesLine(HasDiscardWarning(r.Warnings))
 		for _, x := range r.Warnings {
 			s += "\n  warning: " + x.String()
@@ -105,9 +66,7 @@ func (r WriteReport) String() string {
 	return strings.Join(lines, "\n")
 }
 
-// WritePlan is the codec's output from planning: the rewrite segments, a no-op
-// flag, the report, and the resulting post-write Media (so the engine can
-// return a Document without re-parsing).
+// WritePlan is plan output: segments, report, post-write Media.
 type WritePlan struct {
 	Segments []bits.Segment
 	NoOp     bool
@@ -115,12 +74,7 @@ type WritePlan struct {
 	Result   *Media
 }
 
-// NoOpPlan builds the "nothing changed" write plan every codec returns when an
-// edit touches nothing: a verbatim whole-file copy flagged NoOp (so SaveBack
-// skips it, while SaveAsFile/WriteTo still emit the whole file), carrying result
-// as the post-write Media. The passed report (already bearing Format and
-// BytesBefore) is finalized here - NoOp marker, unchanged byte count, the "no
-// changes" operation - so the no-op path cannot drift between codecs.
+// NoOpPlan builds unchanged write plan (SaveBack skips; SaveAsFile still writes file).
 func NoOpPlan(report WriteReport, size int64, result *Media) *WritePlan {
 	report.NoOp = true
 	report.BytesAfter = size
@@ -133,66 +87,18 @@ func NoOpPlan(report WriteReport, size int64, result *Media) *WritePlan {
 	}
 }
 
-// PaddingOp formats the "padding X -> Y" operation line for padding-only writes. oldRegion
-// is the source metadata-region size, newContent is the rendered content size before new
-// padding, and padAfter is the padding now written. The old padding is clamped at zero
-// because this is display text and a re-rendered content block can differ slightly from
-// the on-disk bytes.
+// PaddingOp formats padding operation line for display.
 func PaddingOp(oldRegion, newContent, padAfter int64) string {
 	return fmt.Sprintf("padding %d -> %d", max(int64(0), oldRegion-newContent), padAfter)
 }
 
-// EncodingRewriteOp formats the operation line for a write that stores a value in a
-// different representation than the file currently holds - a --numeric-genre run turning
-// "Rock" into "(17)". It is reported whenever that re-encoding happens, including alongside
-// a genuine value change, so the plan says which form was written.
-//
-// It is load-bearing on the encoding-only write: nothing changes canonically, and "Rock" and
-// "(17)" are the same length, so neither a frame-rewrite nor a padding line fires and the
-// plan would otherwise report a real write with no operations at all. what names the field
-// ("genre"); the wording is format-neutral because MP4 has no ID3v2 frames.
+// EncodingRewriteOp formats encoding-only rewrite line (e.g. numeric genre).
 func EncodingRewriteOp(what string) string {
 	return what + " encoding rewrite"
 }
 
-// DowngradeNoOp returns a clean no-op plan when a codec's projected post-write
-// result is metadata-equivalent to base - the edit re-projected to the values
-// already present (GENRE=17 -> Rock, TRACKNUMBER=03 -> 3, a dropped empty or
-// invalid value) - and nothing structural forces a write. It returns nil when a
-// real change remains, leaving the codec's full rewrite plan in place.
-//
-// This keeps a codec's IsNoOp() and Changes() verdicts in agreement: the raw edit
-// can differ from base (so the fast-path no-op gate did not fire) while the
-// projected result equals base (so Plan.Changes() is empty). Without this
-// downgrade such an edit churns the file - a byte-identical rewrite that only
-// bumps the mtime - on every save, copy, or lint --fix.
-//
-// tagsEqual is the codec's OWN verdict, computed with its native diff primitive
-// against result.Tags (TagSet.Equal for the ID3/INFO codecs, the Vorbis key diff
-// for FLAC/Ogg), so the.Equal/DiffKeys variance cannot make one codec subtly
-// disagree with its own fast path. structuralChange is the OR of the codec's
-// write-forcing flags that no tag/picture/chapter comparison captures (a legacy
-// strip, an encoder-stamp removal, ...); when set, the rewrite is never a no-op.
-//
-// A fresh WriteReport{Format, BytesBefore} is passed to NoOpPlan rather than the
-// codec's already-mutated report: NoOpPlan resets Operations and BytesAfter but
-// not Warnings or PaddingAfter, so reusing a report a partial render had stamped
-// with a warning or padding would leak it onto a plan that writes nothing.
-//
-// Because NoOpPlan starts from a warning-free report, DowngradeNoOp re-attaches the
-// input-loss warnings from the codec's pre-downgrade report: values the format could not
-// store, values it stored with reduced precision, picture metadata it dropped, a picture
-// the destination could not store at all (an APE cover left without a slot), a numeric
-// genre reference the input supplied that reads back as a name, chapter titles trimmed to
-// a container limit, chapter metadata the format cannot hold, a chapter timestamp clamped
-// to a 32-bit field, chapter hierarchy flattened on projection, and synced-lyrics
-// metadata dropped by an LRC store. Those reflect the
-// user's INPUT, not the write mechanics, and are
-// often the very reason the byte stream did not change (GENRE=17 on a file already projecting
-// Rock; an over-long chapter title re-applied to a file already holding its truncation), so
-// they still need to surface on the no-op report (the value-dropped case additionally trips
-// --strict). Write-mechanics warnings, such as an ID3v2.3 storage convention, are left behind
-// because the write did not happen.
+// DowngradeNoOp returns no-op plan when projected result equals base and no structural change.
+// Re-attaches input-loss warnings from priorWarnings; omits write-mechanics warnings.
 func DowngradeNoOp(format Format, size int64, base, result *Media, tagsEqual, structuralChange bool, priorWarnings []Warning) *WritePlan {
 	if structuralChange || !tagsEqual {
 		return nil
@@ -206,9 +112,7 @@ func DowngradeNoOp(format Format, size int64, base, result *Media, tagsEqual, st
 	return np
 }
 
-// codec registry. Codecs register from their package init; the root package
-// imports them for the side effect. The codec set is not user-extensible, so
-// this lives in internal/core.
+// Codec registry (init registration; not user-extensible).
 var registry []Codec
 
 // Register adds a codec. It is called from codec package initializers.
@@ -227,13 +131,7 @@ func ForFormat(f Format) (Codec, bool) {
 	return nil, false
 }
 
-// Detect picks a codec by sniffing the header. Detection is content-only: a file
-// whose leading bytes match no container signature is unrecognized regardless of its
-// path or extension. The caller maps that to unsupported (exit 3), while a
-// recognized container that fails deeper parsing is invalid (exit 4). The path
-// argument is retained for call-site/signature compatibility but is no longer
-// consulted; an extension is too weak a signal to classify bytes that carry no
-// signature. header may be short.
+// Detect picks codec by header sniff only (path ignored). header may be short.
 func Detect(path string, header []byte) (Codec, bool) {
 	for _, c := range registry {
 		if c.Sniff(header) {
@@ -243,27 +141,9 @@ func Detect(path string, header []byte) (Codec, bool) {
 	return nil, false
 }
 
-// DetectLeading detects src's format, looking past a recognized skippable leading
-// region when one is present. leadingLen reports the byte length of such a region
-// from the file's first bytes - it is supplied by the caller (as id3.TagSize) so
-// core need not import the id3 codec, which is the whole reason this front-tag
-// disambiguation cannot live inside id3 or be a method here without the callback.
-//
-// A leading ID3v2 tag is sniffed as MP3 (the sole bare-ID3 sniffer), but several
-// formats tolerate (FLAC) or require (raw AAC) a front ID3. So when a leading
-// region is present and a *different* format's signature sits just past it, that
-// inner format wins; otherwise the header-level detection stands (MP3 for a real
-// ID3-prefixed MP3, the common case). Detection is content-only throughout (Detect
-// no longer consults the path), so a mere ".aac"/".flac" name cannot reclassify
-// bytes that carry no signature. Only a positively sniffed inner signature can.
-//
-// This is the single path every ID3-bearing format (MP3 vs FLAC vs AAC) resolves
-// through, rather than a per-format predicate that is correct only while MP3 is
-// the sole ID3-sniffing codec.
+// DetectLeading sniffs past skippable leading region (ID3). Inner format wins if SkipsLeadingID3.
 func DetectLeading(src ReaderAtSized, path string, leadingLen func(header []byte) (int64, bool)) (Codec, bool) {
-	// 64 bytes spans the Ogg BOS page's identification header, where the codec
-	// signature ("\x01vorbis" / "OpusHead") that distinguishes Vorbis from Opus
-	// lives; shorter formats (FLAC's "fLaC", ID3) need only the first few.
+	// 64 bytes covers Ogg BOS id header and shorter signatures.
 	header := make([]byte, 64)
 	n, _ := src.ReadAt(header, 0)
 	header = header[:n]
@@ -282,9 +162,7 @@ func DetectLeading(src ReaderAtSized, path string, leadingLen func(header []byte
 		return codec, true
 	}
 	if inner, ok := Detect("", peek[:pn]); ok && inner.Format() != codec.Format() {
-		// Route through the inner signature only when that parser explicitly accepts a
-		// leading ID3 tag. Container signatures found past ID3 are unsupported input, not
-		// corrupt files for a parser that starts at byte 0.
+		// Inner format only when SkipsLeadingID3; else unsupported input.
 		if inner.SkipsLeadingID3() {
 			return inner, true
 		}

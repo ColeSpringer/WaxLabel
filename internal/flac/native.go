@@ -1,7 +1,5 @@
 // Package flac implements reading and writing FLAC metadata for the public
-// waxlabel package. The codec itself is internal. It is reimplemented from the
-// FLAC format specification; reference implementations were consulted for
-// design only.
+// waxlabel package. Internal; reimplemented from the FLAC specification.
 package flac
 
 import (
@@ -12,8 +10,7 @@ import (
 	"github.com/colespringer/waxlabel/internal/vorbis"
 )
 
-// FLAC metadata block type codes and the 24-bit body limit, from internal/vorbis so
-// the native stream and the Ogg mapping cannot disagree about them.
+// Block type codes and 24-bit body limit, shared with the Ogg mapping via internal/vorbis.
 const (
 	blkStreamInfo    = vorbis.BlockStreamInfo
 	blkPadding       = vorbis.BlockPadding
@@ -30,9 +27,8 @@ const (
 
 func blockName(code byte) string { return vorbis.BlockName(code) }
 
-// block is one raw metadata block, header excluded. The body is preserved
-// verbatim so unedited blocks (SEEKTABLE, CUESHEET, APPLICATION, unknown
-// types) round-trip byte-for-byte.
+// block is one raw metadata block without its header. Body is kept verbatim so
+// unedited blocks (SEEKTABLE, CUESHEET, APPLICATION, unknown types) round-trip.
 type block struct {
 	code byte
 	body []byte
@@ -40,19 +36,16 @@ type block struct {
 
 func (b block) clone() block { return block{code: b.code, body: slices.Clone(b.body)} }
 
-// comment is one Vorbis "NAME=value" entry, keeping the original name spelling
-// so unedited comments preserve their exact form. unseparated marks an entry with no
-// "=" at all: name is empty and value holds the entry bytes verbatim (see
-// [vorbis.Comment]).
+// comment is one Vorbis "NAME=value" entry. Name spelling is kept for unedited
+// comments. unseparated marks an entry with no "=": empty name, value holds the
+// entry bytes verbatim (see [vorbis.Comment]).
 type comment struct {
 	name        string
 	value       string
 	unseparated bool
 }
 
-// doc is the FLAC native document: the parsed blocks in original order plus
-// the decoded Vorbis comments and pictures. It is the preservation-first base
-// for rewrites and satisfies [core.NativeDoc].
+// doc is the parsed FLAC native document. Implements [core.NativeDoc].
 type doc struct {
 	leadingID3    []byte // stray ID3v2 before "fLaC", preserved
 	trailingID3v1 []byte // 128-byte ID3v1 after audio, preserved
@@ -60,24 +53,18 @@ type doc struct {
 	blocks   []block   // all metadata blocks, in original order
 	vendor   string    // Vorbis comment vendor string
 	comments []comment // decoded Vorbis comments, in order (picture comments stripped)
-	// commentPictures holds covers decoded from base64 METADATA_BLOCK_PICTURE comments (the
-	// Ogg form some encoders use in FLAC). They are stripped from comments above and projected
-	// into Media.Pictures; the writer materializes exactly these into native PICTURE blocks on
-	// a metadata-rewriting edit, so a tag-only edit does not silently drop the cover.
+	// commentPictures: covers from base64 METADATA_BLOCK_PICTURE comments (Ogg-style
+	// in FLAC). Stripped from comments and projected into Media.Pictures; on a
+	// metadata rewrite the writer emits them as native PICTURE blocks so a tag-only
+	// edit does not drop the cover.
 	commentPictures []core.Picture
-	// malformedPictureBlocks holds the raw bodies of native PICTURE blocks that failed to
-	// decode at parse (warned and skipped from Media.Pictures, but valid metadata the user did
-	// not author). A picture edit re-emits covers only from the decoded set, which would drop
-	// these; the writer re-appends them verbatim on a picture edit so the edit does not destroy
-	// them, matching Ogg's opaque-comment retention. Storing the exact parse-time bodies, rather
-	// than re-detecting malformed blocks in the write loop, keeps the classification
-	// deterministic: it cannot diverge under a different alloc limit at write time. The cost is
-	// a second reference to each such body, bounded by the block size and only for the rare file
-	// that carries an undecodable cover. At parse this aliases the entry in blocks; Clone copies
-	// them independently.
+	// malformedPictureBlocks: native PICTURE bodies that failed decode at parse
+	// (warned, omitted from Media.Pictures). On a picture edit the writer re-appends
+	// them verbatim. Stored at parse so write-time alloc limits cannot reclassify
+	// them. Parse aliases blocks entries; Clone copies independently.
 	malformedPictureBlocks [][]byte
-	// dupContent is what each extra Vorbis comment block holds. A rewrite keeps only the
-	// first, so the writer grades these against what it stores.
+	// dupContent: payload of each extra Vorbis comment block. Rewrite keeps only
+	// the first; the writer grades these against what it stores.
 	dupContent []core.DuplicateContent
 
 	streamInfo core.AudioTrack
@@ -85,9 +72,8 @@ type doc struct {
 	flacStart  int64 // offset of "fLaC" (== len(leadingID3))
 	audioStart int64 // first audio byte (after last metadata block)
 	audioEnd   int64 // one past last audio byte (excludes trailingJunk and trailingID3v1)
-	// trailingJunk is the length of the region between the final frame's end and
-	// any ID3v1 trailer, located by frameTailWarnings: outside the audio extent,
-	// copied verbatim on a rewrite.
+	// trailingJunk: bytes between the last frame and any ID3v1 trailer
+	// (frameTailWarnings). Outside the audio extent; copied on rewrite.
 	trailingJunk int64
 }
 
@@ -102,7 +88,7 @@ func (d *doc) Clone() core.NativeDoc {
 		comments:        slices.Clone(d.comments),
 		commentPictures: core.ClonePictures(d.commentPictures),
 		streamInfo:      d.streamInfo,
-		// preserved so a picture edit on a cloned doc still re-appends the undecodable blocks
+		// so a picture edit on the clone still re-appends undecodable blocks
 		malformedPictureBlocks: cloneByteSlices(d.malformedPictureBlocks),
 		dupContent:             slices.Clone(d.dupContent),
 		flacStart:              d.flacStart,
@@ -117,8 +103,7 @@ func (d *doc) Clone() core.NativeDoc {
 	return c
 }
 
-// cloneByteSlices deep-copies a slice of byte slices, returning nil for nil input so a doc
-// with no malformed picture blocks keeps that shape on clone.
+// cloneByteSlices deep-copies a [][]byte. Nil in yields nil out.
 func cloneByteSlices(in [][]byte) [][]byte {
 	if in == nil {
 		return nil
@@ -130,7 +115,7 @@ func cloneByteSlices(in [][]byte) [][]byte {
 	return out
 }
 
-// Describe summarizes the native blocks for the dump/native views.
+// Describe summarizes native blocks for dump/native views.
 func (d *doc) Describe() []core.NativeEntry {
 	var out []core.NativeEntry
 	if len(d.leadingID3) > 0 {
@@ -140,9 +125,7 @@ func (d *doc) Describe() []core.NativeEntry {
 		e := core.NativeEntry{Kind: blockName(b.code), Size: len(b.body)}
 		switch b.code {
 		case blkVorbisComment:
-			// Decode each block's own vendor rather than reusing d.vendor (the first
-			// block's), so a non-conformant file with duplicate VORBIS_COMMENT blocks
-			// reports the right vendor for each.
+			// Per-block vendor; d.vendor is only the first block's.
 			e.Note = "vendor=" + vendorOf(b.body)
 		case blkPicture:
 			e.Note = "embedded picture"
@@ -158,20 +141,15 @@ func (d *doc) Describe() []core.NativeEntry {
 	return out
 }
 
-// PaddingBytes reports the region a metadata rewrite grows into before the audio has to
-// move: the number a plan reports as PaddingAfter when the write reuses the file's own
-// padding. FLAC both grows and shrinks it.
-//
-// It is not a plain sum of the PADDING bodies. A rewrite drops every source PADDING block
-// and lays down fresh padding filling the same region, so k blocks collapse into one and
-// k-1 four-byte headers become usable payload; summing bodies alone would under-report by
-// exactly that. Budgeting the whole region and running it back through paddingBlocks - the
-// writer's own split - keeps the two exact even where the region needs several blocks.
+// PaddingBytes is the reusable padding region for in-place rewrite (PaddingAfter).
+// Not a sum of PADDING bodies: rewrite drops source PADDING and fills the same
+// region, so k blocks collapse and k-1 headers become payload. Budget the whole
+// region through paddingBlocks so the plan matches the writer.
 func (d *doc) PaddingBytes() int64 {
 	budget := 0
 	for _, b := range d.blocks {
 		if b.code == blkPadding {
-			budget += 4 + len(b.body) // the block header is reusable space too
+			budget += 4 + len(b.body) // header is reusable space too
 		}
 	}
 	if budget == 0 {
@@ -184,14 +162,10 @@ func (d *doc) PaddingBytes() int64 {
 	return total
 }
 
-// vendorOf extracts the vendor string from a VORBIS_COMMENT block body without a
-// full comment-list parse: the body opens with a little-endian uint32 length
-// followed by the vendor bytes. A body too short to hold the length, or a length
-// that overruns it (a malformed block), falls back to whatever bytes remain so a
-// duplicate block still reports its own vendor rather than borrowing the first
-// block's. The sz<0 guard matches the codebase's int(uint32) overflow handling on a
-// 32-bit int. The human and --json renderers sanitize terminal-control bytes, so
-// returning the raw vendor bytes here is safe.
+// vendorOf reads the vendor from a VORBIS_COMMENT body (LE uint32 length, then
+// bytes) without a full parse. Short or overrun bodies fall back to remaining
+// bytes so a duplicate block reports its own vendor. sz<0 matches int(uint32)
+// overflow on 32-bit. Renderers sanitize control bytes, so raw return is fine.
 func vendorOf(body []byte) string {
 	if len(body) < 4 {
 		return string(body)

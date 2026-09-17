@@ -10,8 +10,6 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestWarnOversizedChunkIsPublic checks that oversized-chunk warnings are re-exported for
-// external callers and emitted by a real WAV parse.
 func TestWarnOversizedChunkIsPublic(t *testing.T) {
 	le := binary.LittleEndian
 	chunk := func(id string, declared uint32, body []byte) []byte {
@@ -48,8 +46,6 @@ func TestWarnOversizedChunkIsPublic(t *testing.T) {
 	}
 }
 
-// TestID3PrefixedContainerIsUnsupported checks that a container signature after a leading
-// ID3 tag is reported unsupported instead of being routed to a parser that starts at byte 0.
 func TestID3PrefixedContainerIsUnsupported(t *testing.T) {
 	id3 := make([]byte, 10)
 	copy(id3, "ID3")
@@ -68,9 +64,8 @@ func TestID3PrefixedContainerIsUnsupported(t *testing.T) {
 	}
 }
 
-// TestRF64SniffsAsWAV checks that the 64-bit RIFF forms route to the WAV codec on
-// content alone, so their ds64-resolved sizes are read rather than the file falling
-// through to a generic "could not identify".
+// 64-bit RIFF forms route to the WAV codec on content alone, so their ds64-resolved sizes are read
+// rather than the file falling through to a generic "could not identify".
 func TestRF64SniffsAsWAV(t *testing.T) {
 	for _, magic := range []string{"RF64", "BW64"} {
 		t.Run(magic, func(t *testing.T) {

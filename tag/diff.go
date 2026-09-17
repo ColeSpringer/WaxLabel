@@ -8,20 +8,8 @@ import (
 	"github.com/colespringer/waxlabel/internal/bits"
 )
 
-// NumericValuesEqual reports whether two value slices for key k are equal at the presentation
-// level: a numeric key's values are equal when they differ only by a leading '+' or leading zeros
-// ("03" == "3", "+3" == "3"), including within a slashed "n/total" pair ("3/012" == "3/12"). The
-// unsigned MP4-integer keys (the stik/rtng/©mvi/©mvc slots) fold leading zeros but NOT a sign:
-// their atoms drop a signed value instead of storing it (ParseUint), so "+1" and "1" are a stored
-// value against a dropped one, not two spellings of one number. BPM folds any spelling tmpo
-// stores as the same number without rounding ("174.0", "0174" == "174", via [BPMStoredWhole]),
-// while a genuine fraction ("174.99" vs "175") compares verbatim, so tmpo's warned rounding still
-// reports as a change. A key in none of these categories falls back to exact slice equality. It
-// is a pure value predicate and does not itself decide when such a delta should count as "no
-// change" - only some keys are canonicalized by some formats, so the caller scopes it to the keys
-// and format pairs where the delta is a lossless-copy artifact rather than a genuine byte
-// difference (see the diff command). It never changes stored bytes; this is a compare-layer
-// predicate only.
+// NumericValuesEqual compares presentation equality for numeric/BPM/MP4-int keys
+// (leading zeros; '+' on signed numerics; BPM via [BPMStoredWhole]). Compare-only.
 func NumericValuesEqual(k Key, a, b []string) bool {
 	if !IsNumericKey(k) && !IsMP4IntKey(k) && !IsBPMKey(k) {
 		return slices.Equal(a, b)
@@ -290,50 +278,15 @@ func ElideValueAt(v string, max int) string {
 	return v[:keep] + "…[+" + bits.HumanBytes(int64(len(v)-keep)) + "]"
 }
 
-// SanitizeText returns s with control and non-printable bytes rendered as
-// visible \xNN escapes, so an untrusted tag value cannot inject terminal escape
-// sequences (ESC/CSI), carriage returns, or bells into human-facing text output.
-// It is rune-aware: it decodes UTF-8 and escapes only genuine control
-// codepoints, so multi-byte text (accented Latin, CJK, emoji) survives intact
-// even though its continuation bytes fall in the 0x80-0x9F range a naive
-// byte-level scan would corrupt.
-//
-// Kept verbatim: the horizontal tab and the newline (the multi-line value
-// renderer relies on \n, and a tab is benign alignment). Escaped: the C0
-// controls (0x00-0x1F except \t/\n), DEL (0x7F), the C1 controls (0x80-0x9F),
-// the bidirectional and zero-width format controls as \uXXXX, and any byte that is
-// not valid UTF-8 (escaped one byte at a time). Every other rune passes through
-// unchanged.
-//
-// It keeps '\n'/'\t', so it backs the multi-line value display (the dump value
-// renderer, which owns the line break) and the CLI's sanitizing output boundary.
-// Single-line fields use [SanitizeLine] instead (it also escapes '\n'/'\t'); both
-// share one escape core ([sanitize]), so their escaping cannot drift. The
-// structured accessors ([TagSet], [Change.Old]/[Change.New]) and --json still
-// carry the exact bytes for scripts.
+// SanitizeText escapes control/non-printable runes as \xNN (or \uXXXX for bidi/
+// zero-width). Keeps \t and \n. Rune-aware so multi-byte UTF-8 is intact.
+// Single-line fields use [SanitizeLine].
 func SanitizeText(s string) string { return sanitize(s, controlRune) }
 
-// SanitizeLine is [SanitizeText] (control bytes as \xNN, the bidirectional and
-// zero-width format controls as \uXXXX) that additionally escapes the horizontal tab
-// and the newline, for a single-line field - a tag key, a picture type or MIME, a
-// chapter title, a native block label, a file path - where an embedded newline
-// would forge a fake line in a listing (output spoofing) or a tab would break
-// column alignment. Its output is printable ASCII, so it composes with the CLI's
-// sanitizing output boundary and any surrounding per-field escape with no
-// double-escaping.
-//
-// Multi-line tag values keep [SanitizeText] (applied by the value renderer, which
-// owns the line break), so their genuine newlines survive as real breaks.
+// SanitizeLine is [SanitizeText] that also escapes \t and \n (listing/spoof safety).
 func SanitizeLine(s string) string { return sanitize(s, lineControlRune) }
 
-// sanitize returns s with every rune isControl reports as control rendered as a
-// visible \xNN escape, and the bidirectional and zero-width format controls as
-// \uXXXX. It is rune-aware - it decodes UTF-8 and escapes only
-// genuine control codepoints, so multi-byte text survives - and escapes any byte
-// that is not valid UTF-8 one at a time. isControl must match only codepoints
-// <= U+00FF, so the escaped value fits one byte; both controlRune and
-// lineControlRune do. It backs both [SanitizeText] and [SanitizeLine] so their
-// escaping cannot drift.
+// sanitize is the shared escape core for [SanitizeText] and [SanitizeLine].
 func sanitize(s string, isControl func(rune) bool) string {
 	// Fast path: a clean, valid-UTF-8 value (the common case) is returned
 	// unchanged with no allocation.

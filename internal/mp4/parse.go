@@ -15,30 +15,22 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// maxMetaChunk bounds how large an ilst item or other structural atom this codec
-// reads into memory. The mdat media payload is never read here - only its range
-// is recorded - so this guards the small structural atoms (plus cover art, whose
-// real size is well under the limit) against a hostile declared size. It works
-// alongside the user's MaxAllocBytes limit (whichever is smaller wins).
+// maxMetaChunk bounds structural atom reads (mdat range only recorded). Works with
+// MaxAllocBytes (smaller wins).
 const maxMetaChunk = 64 << 20
 
-// parse reads an MP4 file's atom structure into a neutral Media: the iTunes tags
-// from moov.udta.meta.ilst, the audio geometry from the sample tables, the
-// chunk-offset tables and mdat ranges a preservation-first rewrite needs, and
-// every top-level atom preserved as the rewrite base. A top-level moof (movie
-// fragments) is recorded and warned rather than rejected: the initial movie box's
-// tags read exactly, and only the rewrite is refused, at Plan. A moov declaring
-// mvex without any fragment present is an ordinary progressive file and is read
-// and written normally. A fragmented media segment - fragments with no movie box
-// at all - is still rejected here.
+// parse reads MP4 into a Media: ilst tags, sample-table geometry, offset tables and
+// mdat ranges for rewrite, top-level atoms as base. Top-level moof is recorded and
+// warned (rewrite refused at Plan). mvex without fragments is progressive. Segments
+// with no moov are rejected here.
 func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) (*core.Media, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	size := src.Size()
-	// Resolve an unset allocation limit (a zero-value ParseOptions) to the library default, so
-	// every bounded read still has a real ceiling now that ReadSlice requires a positive limit.
-	// The public Parse path already supplies DefaultLimits; this covers a direct-parse caller.
+	// Resolve an unset allocation limit (a zero-value ParseOptions) to the library
+	// default, so every bounded read still has a real ceiling now that ReadSlice requires
+	// a positive limit.
 	limit := opts.Limits.MaxAllocBytes
 	if limit <= 0 {
 		limit = bits.DefaultLimits.MaxAllocBytes
@@ -55,11 +47,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 
 	d := &doc{size: size}
 	// A top-level atom whose declared size ran past EOF is clamped so the complete earlier
-	// atoms still read. That is also what junk appended to a file looks like: the first four
-	// bytes read as an enormous size and the remainder becomes one phantom atom. mdat and
-	// moov get their own truncated-audio warnings below; every other name would otherwise be
-	// absorbed in silence, which is the RIFF oversized-chunk condition under another
-	// container.
+	// atoms still read. mdat and moov get their own truncated-audio warnings below;
 	if last := top[len(top)-1]; last.truncated && last.id() != "mdat" && last.id() != "moov" {
 		d.oversizedAtom = last.id()
 	}
@@ -77,8 +65,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		case "moof":
 			// Movie fragments. The file reads fine (the init moov's ilst carries the tags) but
 			// is not rewritable: the stco/co64 fixups cannot reach a fragment's trun sample
-			// offsets, so a metadata resize would desynchronize the media. Refused at Plan,
-			// mirroring how the Ogg codec records a chained stream and refuses only the rewrite.
+			// offsets, so a metadata resize would desynchronize the media.
 			d.fragmented = true
 		case "mdat":
 			d.mdats = append(d.mdats, [2]int64{a.payloadOff(), a.size - a.headerLen})
@@ -92,10 +79,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	if !haveMoov {
 		// A fragmented media segment has no movie box by design, so it keeps the exit-3
 		// classification the in-loop rejection used to give it rather than falling through to
-		// the invalid-data "no moov box" diagnostic. This deliberately runs ahead of the
-		// truncation branch below, inverting the precedence that branch argues for: a segment
-		// has no trailing moov to overrun, so "an mdat overran a trailing moov" would name a
-		// cause that cannot exist here. Truncation still wins for every non-segment shape.
+		// the invalid-data "no moov box" diagnostic.
 		if d.fragmented || hasTopLevel(d, "styp") {
 			return nil, fmt.Errorf("%w: fragmented MP4 media segment (no moov box)",
 				waxerr.ErrUnsupportedFormat)
@@ -111,16 +95,11 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 	d.moov = refPtr(moov)
 
-	// A gap between where moov's children end and moov.end() corrupts a create-ilst edit the
-	// same way the meta gap (below) does: with no udta present, buildCreated appends the new
-	// udta/meta/ilst at moov.end() (write.go, the default branch), but a re-parse resolves
-	// moov's children at their recorded ends (earlier), so the inserted tag path lands past a
-	// stray all-zero remainder and misaligns. walkAtoms tolerates that remainder (the
-	// udta-terminator rule), so it must be rejected here - the exact analogue of the meta guard,
-	// sharing the trailingGap predicate. Scoped to a moov with no udta: with a udta the insert
-	// targets udta.end() (guarded by udtaCleanLen) or meta.end() (guarded by the meta gap check),
-	// so a valid file that zero-pads moov around a present udta still writes correctly and must not
-	// be rejected. A childless truncated moov (gap == moov payload) is rejected too.
+	// A gap between where moov's children end and moov.end() corrupts a create-ilst edit
+	// the same way the meta gap (below) does: with no udta present, buildCreated appends
+	// the new udta/meta/ilst at moov.end() (write.go, the default branch), but a re-parse
+	// resolves moov's children at their recorded ends (earlier), so the inserted tag path
+	// lands past a stray all-zero remainder and misaligns.
 	if _, ok := moov.find("udta"); !ok {
 		if gap := trailingGap(src, moov, limit); gap > 0 {
 			// No "(truncated)" qualifier: the gap can come from a truncated download or a muxer's
@@ -143,12 +122,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	haveChpl := false
 	if udta, ok := moov.find("udta"); ok {
 		d.udta = refPtr(udta)
-		// Capture the udta payload verbatim so a chapter rewrite can splice the new
-		// ilst/chpl byte ranges into it while preserving every other user-data atom.
-		// The whole payload is read (bounded by the user's alloc limit, not the
-		// smaller per-atom cap) so it is never silently truncated - a truncated
-		// d.udtaRaw would splice against a delta computed from the full size. If it
-		// exceeds the limit, d.udtaRaw stays nil and a chapter rewrite fails loudly.
+		// Capture the udta payload verbatim so a chapter rewrite can splice the new ilst/chpl
+		// byte ranges into it while preserving every other user-data atom.
 		if udtaLen := udta.size - udta.headerLen; udtaLen >= 0 {
 			if raw, err := bits.ReadSlice(src, udta.payloadOff(), udtaLen, limit); err == nil {
 				d.udtaRaw = raw
@@ -161,10 +136,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			d.chpl = refPtr(chpl)
 			chplNode, haveChpl = chpl, true
 		}
-		// Classic QuickTime keeps its tags as direct udta children ("\xa9nam", "\xa9swr", ...)
-		// with no meta wrapper. Decode them before the meta branch so a file carrying both
-		// stores contributes from both; the two carry distinct source labels, so a
-		// disagreement surfaces as a conflicting family rather than one silently winning.
+		// Classic QuickTime keeps its tags as direct udta children ("\xa9nam", "\xa9swr",
+		// ...) with no meta wrapper. the two carry distinct source labels, so a disagreement
+		// surfaces as a conflicting family rather than one silently winning.
 		decodeUdtaTexts(src, udta, d, limit)
 		if meta, ok := udta.find("meta"); ok {
 			ilst, hasIlst := meta.find("ilst")
@@ -184,13 +158,6 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			// A gap between where meta's children end and meta.end() corrupts a create-ilst
 			// edit: buildCreated appends the new ilst at meta.end(), but a re-parse resolves the
 			// first child at childStart/last-child-end (earlier), so the ilst lands misaligned.
-			// walkAtoms tolerates an all-zero gap (the udta-terminator rule), so it must be
-			// rejected here instead. Only a meta with no ilst can take that append path (an
-			// existing ilst is edited in place), so the check is scoped to !hasIlst. trailingGap
-			// (shared with the moov guard above) covers the bare (9-11 byte) and FullBox-with-zero-
-			// pad (13-15+ byte) shapes uniformly; an empty bare meta (size 8) and an empty FullBox
-			// meta (size 12) have no gap and edit cleanly, as does a meta whose hdlr child tiles to
-			// its end.
 			if !hasIlst {
 				if gap := trailingGap(src, meta, limit); gap > 0 {
 					return nil, fmt.Errorf("%w: moov.udta.meta has %d unusable trailing byte(s)",
@@ -265,9 +232,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 }
 
 // mediaWarnings returns the content-derived warnings for a parsed or rewritten
-// document: a resolved numeric genre and an inherited transcoder stamp (ffmpeg
-// writes "Lavf..." into the \xa9too / Encoder atom on acquired files). Sharing
-// this lets the post-write document's warnings match a fresh parse of the output.
+// document: a resolved numeric genre and an inherited transcoder stamp (ffmpeg writes
+// "Lavf..." into the \xa9too / Encoder atom on acquired files).
 func mediaWarnings(tags tag.TagSet, numericGenre bool) []core.Warning {
 	var ws []core.Warning
 	if numericGenre {
@@ -295,16 +261,8 @@ func nodesNamed(list []node, name string) []node {
 	return out
 }
 
-// sampleTables returns every sample table in moov, resolved along the spec path
-// moov > trak > mdia > minf > stbl rather than by a name search.
-//
-// The distinction is load-bearing: trak, mdia, minf, and stbl are all container atoms, so
-// walkAtoms descends into an ilst item that happens to carry one of those four-ccs, and
-// findAll would reach it through udta > meta > ilst. A crafted offset table inside such an
-// item is then decoded as a real one - failing the parse on a bogus entry count, or
-// emitting a byte patch inside the very region a growing write replaces, which trips
-// assemble's overlap guard. Walking the path closes that whole class rather than the
-// direct-child case alone.
+// sampleTables returns every sample table in moov, resolved along the spec path moov >
+// trak > mdia > minf > stbl rather than by a name search.
 func sampleTables(moov node) []node {
 	var out []node
 	for _, trak := range nodesNamed(moov.children, "trak") {
@@ -319,19 +277,8 @@ func sampleTables(moov node) []node {
 
 // collectOffsetTables reads the offset tables in moov into the doc, parsing their
 // entries so the writer can shift them when the metadata is resized without re-reading
-// the source: the stco/co64 chunk offsets into d.offTables and the saio sample-auxiliary
-// offsets into d.auxTables. Scoping to sampleTables also removes any need to reason about
-// a traf-contained saio: a traf is never an stbl, and a file carrying fragments is
-// refused.
-//
-// Tables land in document order per stbl, replacing the old "all stco then all co64"
-// grouping. The order stays immaterial: each table is patched at its own recorded source
-// offset.
-//
-// A malformed saio degrades to a write refusal instead of failing the parse. The tag list
-// and movie box do not depend on it, so a file whose ilst reads perfectly must still dump,
-// lint, and verify - and did, before saio was collected at all. A broken stco/co64 stays
-// fatal: it leaves the media itself unaddressable.
+// the source: the stco/co64 chunk offsets into d.offTables and the saio
+// sample-auxiliary offsets into d.auxTables.
 func collectOffsetTables(ctx context.Context, src core.ReaderAtSized, moov node, d *doc, limit int64) error {
 	for _, stbl := range sampleTables(moov) {
 		for _, a := range stbl.children {
@@ -361,12 +308,10 @@ func collectOffsetTables(ctx context.Context, src core.ReaderAtSized, moov node,
 	return nil
 }
 
-// hasIlocBox reports whether a meta box carries an iloc item-location box. Its extents
-// are absolute file offsets that nothing patches, so a rewrite that moves bytes strands
-// them wherever the box sits - not only when it shares the moov.udta.meta this codec
-// rewrites. The three placements the spec allows for a meta are checked (top level, moov,
-// and moov.udta) rather than searching the tree by name, so an ilst item named "meta"
-// cannot force a spurious refusal.
+// hasIlocBox reports whether a meta box carries an iloc item-location box. The three
+// placements the spec allows for a meta are checked (top level, moov, and moov.udta)
+// rather than searching the tree by name, so an ilst item named "meta" cannot force a
+// spurious refusal.
 func hasIlocBox(top []node, moov node) bool {
 	metas := append(nodesNamed(top, "meta"), nodesNamed(moov.children, "meta")...)
 	for _, udta := range nodesNamed(moov.children, "udta") {
@@ -391,29 +336,14 @@ func hasTopLevel(d *doc, name string) bool {
 	return false
 }
 
-// boundedCount reports whether `declared` fixed-width entries (each `width` bytes, after a
-// `header`-byte table prefix) fit within `avail` bytes. The single guard every count-driven
-// MP4 table decoder shares so none can drift into an unbounded loop. Every caller passes a
-// uint32-widened count and a fixed small header/width constant (never data-derived), so
-// header+declared*width (<= ~8.6e10) cannot overflow int64 and inputs are never negative - no
-// explicit overflow/negative guard is needed (a future untrusted-width caller would add one).
+// boundedCount reports whether `declared` fixed-width entries (each `width` bytes,
+// after a `header`-byte table prefix) fit within `avail` bytes.
 func boundedCount(declared, header, width, avail int64) bool {
 	return header+declared*width <= avail
 }
 
-// parseOffsetTable decodes one stco/co64/saio atom: a 4-byte version/flags, a
-// per-box optional prefix, a 4-byte entry count, then that many 32- or 64-bit
-// offsets. The entry width comes from the atom itself rather than from the caller -
-// co64 is always 64-bit, and a saio's width is its own FullBox version (0: 32-bit,
-// 1: 64-bit) - so a mixed-width set of tables decodes correctly in one pass.
-//
-// A saio's layout is ISO/IEC 14496-12 section 8.7.13: version/flags(4), then
-// aux_info_type(4) + aux_info_type_parameter(4) only when flags&1, then
-// entry_count(4), then the offsets.
-//
-// It stays a pure decoder (no doc argument): the chapter reader parses a track's
-// stco/co64 through it with no document in hand, so the one unpatchable case reports
-// itself through errSkipTable and the collector records it.
+// parseOffsetTable decodes one stco/co64/saio atom: a 4-byte version/flags, a per-box
+// optional prefix, a 4-byte entry count, then that many 32- or 64-bit offsets.
 func parseOffsetTable(src core.ReaderAtSized, a node, limit int64) (offsetTable, error) {
 	body, err := readPayloadWhole(src, a, maxMetaChunk, limit)
 	if err != nil {
@@ -574,10 +504,7 @@ func parseProperties(src core.ReaderAtSized, moov node, d *doc, limit int64) {
 			d.track.Duration = scaleToDuration(dur, ts)
 		}
 	}
-	// Report the edit-list-trimmed playable duration. The raw mdhd duration can include
-	// AAC encoder priming that the track's own edit list removes. Only shrink the value;
-	// malformed edit lists should not inflate it. Bitrate below is recomputed from the
-	// trimmed duration.
+	// Report the edit-list-trimmed playable duration.
 	if mvTs, _ := movieTimingOf(src, moov, limit); mvTs > 0 {
 		if edited := trackEditedDuration(src, trak, mvTs, limit); edited > 0 && edited < d.track.Duration {
 			d.track.Duration = edited
@@ -602,31 +529,6 @@ func handlerType(src core.ReaderAtSized, hdlr node, limit int64) string {
 }
 
 // parseStsd fills the codec name and audio geometry from the first sample entry.
-// The AudioSampleEntry layout (after the entry's 8-byte size+4cc header): 6+2+8
-// reserved bytes, then channels(2), sample_size(2), 4 skipped, sample_rate(16.16).
-// That fixed layout holds for a v0 or v1 sound entry; a v2 entry replaces it with the
-// QuickTime structure, whose float64 rate and uint32 channel count sit elsewhere.
-//
-// For the three entries whose configuration this parser decodes - the ALAC magic cookie,
-// the FLAC dfLa STREAMINFO, and the AAC esds AudioSpecificConfig - that configuration is
-// the decoder's source of truth and overrides the entry, whose 16.16 rate field cannot
-// hold a hi-res rate at all. Only the reported track is corrected; d.cfg keeps the raw
-// entry values, so the essence-digest salt (and every stored digest) is unchanged.
-//
-// AAC alone needs the entry back, because an AudioSpecificConfig describes the core coder
-// and a player outputs an SBR stream at twice that rate. Three cases: a config that
-// declares SBR gives the played rate outright; a config that says nothing about SBR whose
-// entry rate is exactly double the core rate is an implicitly signalled stream the muxer
-// already decoded, so the entry stands; otherwise the config's core rate wins, including
-// over a config that explicitly denies SBR.
-//
-// The uncompressed entries need the same correction for a different reason: their fourcc
-// carries detail the fixed fields do not. A QuickTime "ms" + WAVE-format-tag fourcc names
-// a Windows codec through the same table WAV and ASF read that tag with, so the NUL-bearing
-// spelling never reaches the reported codec. The PCM-family fourccs name the sample width,
-// which the entry's samplesize field does not (writers store a fixed 16 there whatever the
-// real width); the ISOBMFF ipcm/fpcm pair keep theirs in a pcmC box instead; and a v2
-// entry's format flags are the only place a float lpcm stream differs from an integer one.
 func parseStsd(src core.ReaderAtSized, stsd node, d *doc, timescale uint32, limit int64) {
 	// Clamp to the alloc limit rather than letting ReadSlice refuse the read: a caller with
 	// a limit below the prefix would otherwise get no codec and no geometry at all, and
@@ -640,11 +542,7 @@ func parseStsd(src core.ReaderAtSized, stsd node, d *doc, timescale uint32, limi
 	d.track.Codec = fourcc
 	if tag, ok := core.QuickTimeWaveFormatTag(fourcc); ok {
 		// QTFF's spelling for a Windows codec, read as ffmpeg's mov demuxer reads the same
-		// bytes. Every tag goes through the shared table, so "ms\x00\x55" names MP3 the way
-		// that tag does in a WAV "fmt " chunk or an ASF Stream Properties object, and one
-		// the table does not know reports its own hex rather than a fourcc holding a NUL.
-		// Fourccs outside this spelling are reported raw; render escapes what is not
-		// printable.
+		// bytes.
 		d.track.Codec = core.WaveFormatCodec(tag)
 	}
 
@@ -657,10 +555,6 @@ func parseStsd(src core.ReaderAtSized, stsd node, d *doc, timescale uint32, limi
 	}
 
 	// The sound sample-entry version lives 16 bytes into the entry (which starts at b[8]);
-	// the len>=44 guard above already covers b[24:26]. A version past 2 is read with the v2
-	// layout: QuickTime has defined no later one, and its struct is self-describing (a
-	// declared size gates every field), so a v3 that keeps the prefix reads correctly and
-	// one that does not fails the size check rather than misparsing the v0/v1 offsets.
 	version := binary.BigEndian.Uint16(b[24:26])
 	extOff := 8 + 36 // extensions follow the fixed AudioSampleEntry fields
 	switch {
@@ -698,10 +592,7 @@ func parseStsd(src core.ReaderAtSized, stsd node, d *doc, timescale uint32, limi
 			d.track.BitsPerSample = 0
 		}
 		// A v0 entry stores the rate as 16.16, which holds nothing above 65535, so ffmpeg
-		// writes zero for a hi-res ISOBMFF ipcm/fpcm track. These entries carry no
-		// configuration to recover it from, leaving the media timescale - which for an
-		// uncompressed track is the sample rate, and is what the .mov twin's v2 entry
-		// states outright.
+		// writes zero for a hi-res ISOBMFF ipcm/fpcm track.
 		if d.track.SampleRate == 0 && timescale > 0 && timescale < math.MaxInt32 {
 			d.track.SampleRate = int(timescale)
 		}
@@ -709,10 +600,8 @@ func parseStsd(src core.ReaderAtSized, stsd node, d *doc, timescale uint32, limi
 }
 
 // parseSoundEntryV2 decodes a QuickTime version 2 sound sample entry's geometry onto
-// d.track and returns where its extension boxes start. The v2 struct replaces the fixed
-// v0/v1 fields with a declared struct size, a float64 rate, a uint32 channel count, and a
-// constant bits-per-channel that compressed codecs leave zero. d.cfg is left zero: the
-// digest salt has never carried v2 geometry, and filling it now would change every stored
+// d.track and returns where its extension boxes start. d.cfg is left zero: the digest
+// salt has never carried v2 geometry, and filling it now would change every stored
 // digest for such a file.
 func parseSoundEntryV2(b []byte, end int, d *doc) (extOff int, ok bool) {
 	if len(b) < 68 {
@@ -737,10 +626,7 @@ func parseSoundEntryV2(b []byte, end int, d *doc) (extOff int, ok bool) {
 		d.track.BitsPerSample = int(depth)
 	}
 	// formatSpecificFlags, the word after constBitsPerChannel (size >= 72 above guarantees
-	// the bytes). An lpcm fourcc says only "linear PCM", so bit 0 - kAudioFormatFlagIsFloat -
-	// is the format's only statement that the samples are floats; the width then names which
-	// float form, as it does for the fl32/fl64 fourccs. A width no float format defines
-	// leaves the entry naming itself, the same rule the pcmC box follows.
+	// the bytes).
 	if flags := binary.BigEndian.Uint32(b[68:72]); string(b[12:16]) == "lpcm" && flags&1 != 0 {
 		switch d.track.BitsPerSample {
 		case 32:
@@ -757,12 +643,7 @@ func parseSoundEntryV2(b []byte, end int, d *doc) (extOff int, ok bool) {
 // METADATA_BLOCK_HEADER, and the STREAMINFO body.
 const dfLaStreamInfoEnd = 8 + 4 + 4 + vorbis.StreamInfoLen
 
-// entryConfig is what a codec's own configuration declares. streamInfo is set only for a
-// FLAC entry, whose STREAMINFO the FLAC-in-ISOBMFF spec makes authoritative for the whole
-// track, block-size bounds and MD5 included; asc only for an esds, whose AudioSpecificConfig
-// needs reconciling with the entry rather than simply replacing it. codec is set where the
-// configuration names the codec more precisely than the four-cc: an esds object type, and a
-// pcmC width that separates the two float forms one fourcc covers.
+// entryConfig is what a codec's own configuration declares.
 type entryConfig struct {
 	sampleRate, channels, bitDepth int
 	streamInfo                     *core.AudioTrack
@@ -773,11 +654,7 @@ type entryConfig struct {
 func (c entryConfig) empty() bool { return c == entryConfig{} }
 
 // scanEntryConfig walks sibling boxes in b[off:end] for the sample entry's codec
-// configuration, descending into a QuickTime 'wave' wrapper. The ALAC magic cookie is a
-// 12-byte box header (size, type, version/flags) followed by the 24-byte
-// ALACSpecificConfig: bitDepth at 5, numChannels at 9, and the sample rate at 20, after
-// the u32 frameLength and u8 compatibleVersion. Recursion depth is bounded by the buffer:
-// each level consumes an 8-byte header of an at-most-1024-byte prefix.
+// configuration, descending into a QuickTime 'wave' wrapper.
 func scanEntryConfig(b []byte, off, end int, fourcc string) entryConfig {
 	for off+8 <= end {
 		size := int(binary.BigEndian.Uint32(b[off : off+4]))
@@ -829,11 +706,9 @@ func alacCookieConfig(b []byte, off, size int) entryConfig {
 }
 
 // pcmCConfig decodes the PCM configuration box an ISOBMFF ipcm or fpcm entry carries, a
-// FullBox whose 8-byte header and 4 version/flags bytes are followed by format_flags and
-// then PCM_sample_size. That is where these entries keep the width; their samplesize field
-// holds the same fixed 16 every writer puts there. A width the entry's fourcc does not
-// define is dropped rather than published. scanEntryConfig has already bounded off+size by
-// the buffer, so a declared size that covers the field is enough to read it.
+// FullBox whose 8-byte header and 4 version/flags bytes are followed by format_flags
+// and then PCM_sample_size. A width the entry's fourcc does not define is dropped
+// rather than published.
 func pcmCConfig(b []byte, off, size int, fourcc string) entryConfig {
 	if size < 14 {
 		return entryConfig{}
@@ -854,11 +729,8 @@ func pcmCConfig(b []byte, off, size int, fourcc string) entryConfig {
 }
 
 // dfLaStreamInfo decodes the STREAMINFO the dfLa box at b[off:] must open with, or nil
-// when the box is too small to hold one, opens with another block type, or is cut short of
-// its 34 bytes by the prefix read. Layout: the 8-byte box header, a 4-byte FullBox
-// version/flags, then METADATA_BLOCK_HEADER and body. The bound is the sample entry's end,
-// not the buffer's: a dfLa declaring more bytes than it has would otherwise decode
-// STREAMINFO out of whatever box follows it.
+// when the box is too small to hold one, opens with another block type, or is cut short
+// of its 34 bytes by the prefix read.
 func dfLaStreamInfo(b []byte, off, size, end int) *core.AudioTrack {
 	if size < dfLaStreamInfoEnd || off+dfLaStreamInfoEnd > end || b[off+12]&0x7F != vorbis.BlockStreamInfo {
 		return nil
@@ -871,8 +743,7 @@ func dfLaStreamInfo(b []byte, off, size, end int) *core.AudioTrack {
 }
 
 // applyEntryConfig overrides the sample entry's reported geometry with the codec
-// configuration's. The entry's Duration and TotalSamples stand, since the timing comes
-// from mdhd; its four-cc stands too unless the configuration names the codec more
+// configuration's. its four-cc stands too unless the configuration names the codec more
 // precisely, which an esds objectTypeIndication and a 64-bit pcmC width do.
 func applyEntryConfig(d *doc, cfg entryConfig) {
 	if si := cfg.streamInfo; si != nil {
@@ -903,9 +774,7 @@ func applyEntryConfig(d *doc, cfg entryConfig) {
 }
 
 // applyAACConfig reconciles an AudioSpecificConfig with the geometry the sample entry
-// already put on the track. The config describes the core coder, so it cannot simply
-// replace the entry: an SBR stream plays at twice the core rate, and a muxer that decoded
-// one may have written that played rate into the entry itself.
+// already put on the track.
 func applyAACConfig(d *doc, asc mpeg4audio.Config) {
 	entryRate, entryChannels := d.track.SampleRate, d.track.Channels
 	switch {
@@ -921,10 +790,7 @@ func applyAACConfig(d *doc, asc mpeg4audio.Config) {
 	case !asc.SBRSignalled && asc.ObjectType == aacLC && asc.SampleRate > 0 && entryRate == 2*asc.SampleRate:
 		// An implicitly signalled HE-AAC stream copied into MP4: the config is the core
 		// coder's, but the muxer decoded the stream and wrote the played geometry into the
-		// entry. An entry landing on exactly double the core rate is the signal; corruption
-		// does not pick that value. A config that denies SBR never reaches here, and the
-		// core has to be AAC LC, which is what HE-AAC is defined over - an AAC LD or
-		// xHE-AAC track whose rates happen to sit 2:1 apart must not be relabeled.
+		// entry.
 		d.track.Codec = "HE-AAC"
 		if entryChannels == 2 && asc.ChannelConfig == 1 {
 			d.track.Codec = "HE-AAC v2"
@@ -939,10 +805,7 @@ func applyAACConfig(d *doc, asc mpeg4audio.Config) {
 	}
 }
 
-// setEssence records the audio-essence byte ranges from the mdat atoms. A single
-// mdat uses the contiguous [AudioStart, AudioEnd) extent (which gives the best
-// change-detection fingerprint, covering metadata both before and after the
-// media); multiple mdats use the multi-segment AudioRanges.
+// setEssence records the audio-essence byte ranges from the mdat atoms.
 func setEssence(d *doc, media *core.Media) {
 	ranges := essenceMdats(d)
 	switch len(ranges) {
@@ -958,18 +821,7 @@ func setEssence(d *doc, media *core.Media) {
 	}
 }
 
-// essenceMdats returns the mdat ranges that hold media essence, as [start, end). Each
-// range begins at its first non-chapter chunk, so front-loaded QuickTime chapter samples
-// are excluded. An mdat holding only chapter samples is dropped entirely, including
-// chapter mdats leaked by older builds.
-//
-// The trim is unconditional (single and multi-mdat) and front-only by design: a WaxLabel
-// chapter edit copies the shared mdat verbatim and appends a new chapter mdat, so trimming
-// to the first audio chunk in both the source and the rewritten result keeps the digest
-// stable. Filtering against every non-chapter offset table (not just the first audio
-// track's) keeps secondary audio, video, and subtitle tracks. Chapter samples interleaved
-// after the first audio chunk stay in the digest, which avoids trimming audio. A file with
-// no non-chapter offset table keeps every mdat whole.
+// essenceMdats returns the mdat ranges that hold media essence, as [start, end).
 func essenceMdats(d *doc) [][2]int64 {
 	ranges := make([][2]int64, len(d.mdats))
 	for i, m := range d.mdats {
@@ -995,9 +847,7 @@ func essenceMdats(d *doc) [][2]int64 {
 }
 
 // firstNonChapterChunk returns the smallest non-chapter chunk offset within the mdat
-// range [r[0], r[1]), or -1 if the mdat holds no non-chapter chunk (chapter-only). It is
-// the lower bound of the essence trim: everything before it in the mdat is front-loaded
-// chapter text.
+// range [r[0], r[1]), or -1 if the mdat holds no non-chapter chunk (chapter-only).
 func firstNonChapterChunk(r [2]int64, tables []offsetTable) int64 {
 	first := int64(-1)
 	for _, t := range tables {
@@ -1067,20 +917,13 @@ func trackOffTable(d *doc, trak *atomRef) (offsetTable, bool) {
 }
 
 // readPayloadPrefix reads up to prefixLen bytes of an atom's payload, bounded by the
-// alloc limit. The header-prefix decoders (the ftyp brand, mvhd/tkhd/mdhd/hdlr/stsd
-// leading fields) intend to read only the front of a possibly-larger atom, so reading
-// min(payloadSize, prefixLen) and never failing on a larger atom is the correct contract.
+// alloc limit.
 func readPayloadPrefix(src core.ReaderAtSized, n node, prefixLen, limit int64) ([]byte, error) {
 	return bits.ReadSlice(src, n.payloadOff(), min(n.size-n.headerLen, prefixLen), limit)
 }
 
 // readPayloadWhole reads an atom's entire payload, failing with ErrSizeTooLarge when it
-// exceeds capBytes rather than silently truncating it. The whole-atom decoders (the ilst
-// items and the structural offset/sample tables) need every byte, so a payload past the cap
-// is a hard error, not a quietly-shortened read that downstream length checks would then
-// reject with a misleading diagnostic. capBytes is maxMetaChunk for the structural tables
-// (which should never approach it) and the configurable MaxAllocBytes for ilst/covr items
-// (legitimately large cover art). It never reads a large mdat (only its range is recorded).
+// exceeds capBytes rather than silently truncating it.
 func readPayloadWhole(src core.ReaderAtSized, n node, capBytes, limit int64) ([]byte, error) {
 	payloadSize := n.size - n.headerLen
 	// capBytes <= 0 means "no cap", matching the limit <= 0 unbounded convention bits.ReadSlice

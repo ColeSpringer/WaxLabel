@@ -12,13 +12,11 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// notagsMP3 is a tag-free MP3 destination for the ID3 transfer repro (the other fixtures
-// are declared in cli_test.go / transfer_test.go).
+// notagsMP3: tag-free MP3 destination for ID3 transfer repro.
 var notagsMP3 = filepath.Join("..", "..", "testdata", "notags.mp3")
 
-// buildTransferSource copies fixture to a temp file and applies edit through the library,
-// so a test can author a source carrying values (multi-value fields, custom keys) the CLI
-// edit surface cannot easily express. It returns the written source path.
+// buildTransferSource copies fixture, applies library edit, returns source path.
+// Authors values the CLI edit surface cannot easily express.
 func buildTransferSource(t *testing.T, fixture string, edit func(*wl.Editor) *wl.Editor) string {
 	t.Helper()
 	ctx := context.Background()
@@ -37,9 +35,7 @@ func buildTransferSource(t *testing.T, fixture string, edit func(*wl.Editor) *wl
 	return path
 }
 
-// runCopyReport runs a real "copy src dst" and returns the parsed report plus the source
-// and written-destination dumps, so a test can check both the report disposition and what
-// actually landed in the destination.
+// runCopyReport runs copy; returns report plus source and destination dumps.
 func runCopyReport(t *testing.T, src, dstFixture string) (jsonCopy, jsonDocument, jsonDocument) {
 	t.Helper()
 	dst := copyFixture(t, dstFixture)
@@ -54,7 +50,7 @@ func runCopyReport(t *testing.T, src, dstFixture string) (jsonCopy, jsonDocument
 	return jc, dumpJSON(t, src), dumpJSON(t, dst)
 }
 
-// fieldItem returns the transfer report's field item for key.
+// fieldItem returns transfer report field item for key.
 func fieldItem(t *testing.T, jc jsonCopy, key string) jsonTransferItem {
 	t.Helper()
 	for _, it := range jc.Transfer {
@@ -66,11 +62,7 @@ func fieldItem(t *testing.T, jc jsonCopy, key string) jsonTransferItem {
 	return jsonTransferItem{}
 }
 
-// assertReportMatchesReality pins the finding's core promise directly: for every field
-// item, what the report claims is what the destination actually stored. A carried field
-// holds the source's exact values, a dropped field is absent, and a lossy field is present
-// but reduced (not the full source values). This is the report-equals-reality property the
-// three repros share.
+// assertReportMatchesReality: carried = exact source values; dropped = absent; lossy = present but reduced.
 func assertReportMatchesReality(t *testing.T, jc jsonCopy, srcDoc, dstDoc jsonDocument) {
 	t.Helper()
 	for _, it := range jc.Transfer {
@@ -99,9 +91,7 @@ func assertReportMatchesReality(t *testing.T, jc jsonCopy, srcDoc, dstDoc jsonDo
 	}
 }
 
-// TestCopyMatroskaMultiTitleLossy: a multi-value TITLE copied into Matroska, which homes
-// TITLE in the single-valued Info.Title element, is graded lossy (not a clean carry) with
-// the first value still written, and the report matches what lands in the destination.
+// TestCopyMatroskaMultiTitleLossy: multi-value TITLE -> Matroska Info.Title grades lossy; first value kept.
 func TestCopyMatroskaMultiTitleLossy(t *testing.T) {
 	t.Parallel()
 	src := buildTransferSource(t, notagsFLAC, func(e *wl.Editor) *wl.Editor {
@@ -119,11 +109,7 @@ func TestCopyMatroskaMultiTitleLossy(t *testing.T) {
 	assertReportMatchesReality(t, jc, srcDoc, dstDoc)
 }
 
-// TestCopyID3TotalDroppedWhenNumberNonNumeric: a TRACKTOTAL beside a non-numeric
-// TRACKNUMBER copied to an ID3-backed destination is graded dropped (ID3 stores a total
-// only as the second half of "number/total", which a non-numeric number cannot form),
-// while the number itself carries. The destination confirms it: the total is absent, the
-// number present.
+// TestCopyID3TotalDroppedWhenNumberNonNumeric: non-numeric TRACKNUMBER drops TRACKTOTAL on ID3 dest.
 func TestCopyID3TotalDroppedWhenNumberNonNumeric(t *testing.T) {
 	t.Parallel()
 	src := buildTransferSource(t, notagsFLAC, func(e *wl.Editor) *wl.Editor {
@@ -143,10 +129,7 @@ func TestCopyID3TotalDroppedWhenNumberNonNumeric(t *testing.T) {
 	assertReportMatchesReality(t, jc, srcDoc, dstDoc)
 }
 
-// TestCopyVorbisReservedNamespaceDropped: a custom key whose native Vorbis name lands in a
-// reserved namespace (CHAPTER050NAME) copied Matroska->FLAC is graded dropped, because a
-// Vorbis writer refuses to emit a stray comment a reader would consume as structured
-// chapter data. The destination confirms the key is absent.
+// TestCopyVorbisReservedNamespaceDropped: CHAPTER050NAME in reserved Vorbis namespace grades dropped.
 func TestCopyVorbisReservedNamespaceDropped(t *testing.T) {
 	t.Parallel()
 	src := buildTransferSource(t, notagsMKA, func(e *wl.Editor) *wl.Editor {
@@ -163,10 +146,7 @@ func TestCopyVorbisReservedNamespaceDropped(t *testing.T) {
 	assertReportMatchesReality(t, jc, srcDoc, dstDoc)
 }
 
-// TestCopyVorbisOrdinaryKeysCarried is the negative guard for the reserved-namespace
-// classifier: an ordinary custom key (MYKEY) and a normal canonical key (ARTIST) copied
-// Matroska->FLAC must stay carried, since neither native Vorbis name is reserved. This
-// pins the VorbisName direction so the classifier cannot over-drop a legitimate field.
+// TestCopyVorbisOrdinaryKeysCarried: MYKEY and ARTIST stay carried (negative guard for reserved classifier).
 func TestCopyVorbisOrdinaryKeysCarried(t *testing.T) {
 	t.Parallel()
 	src := buildTransferSource(t, notagsMKA, func(e *wl.Editor) *wl.Editor {
@@ -182,10 +162,8 @@ func TestCopyVorbisOrdinaryKeysCarried(t *testing.T) {
 	assertReportMatchesReality(t, jc, srcDoc, dstDoc)
 }
 
-// TestCopyNumericGenreToID3IsLossy: a bare numeric genre reference carried onto an
-// ID3-backed destination reads back as its genre name, so the copy report must
-// grade it lossy instead of a clean carry. A spelled-out genre still carries
-// clean, and an MP4 destination stores the literal text.
+// TestCopyNumericGenreToID3IsLossy: bare numeric GENRE on ID3 reads back as name (lossy); named carries;
+// MP4 stores literal text.
 func TestCopyNumericGenreToID3IsLossy(t *testing.T) {
 	lossyGenre := regexp.MustCompile(`(?m)^  lossy\s+GENRE:`)
 	src := buildTransferSource(t, notagsFLAC, func(e *wl.Editor) *wl.Editor { return e.Set(tag.Genre, "17") })

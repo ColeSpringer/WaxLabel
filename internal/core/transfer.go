@@ -7,8 +7,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TransferKind names the category of a transferred piece of metadata: a
-// canonical field, the picture set, or the chapter list.
+// TransferKind names transferred metadata category (field, picture, chapter, synced lyrics).
 type TransferKind uint8
 
 const (
@@ -31,22 +30,17 @@ func (k TransferKind) String() string {
 	}
 }
 
-// Disposition grades how a piece of metadata survives a cross-format transfer.
-// The three states mirror the capability model: a destination either stores a
-// value faithfully, stores it with reduced fidelity, or cannot store it at all.
+// Disposition grades cross-format transfer outcome (carried, lossy, dropped, excluded).
 type Disposition uint8
 
 const (
-	// Carried means the destination stores the value losslessly.
+	// Carried: stored losslessly.
 	Carried Disposition = iota
-	// Lossy means the destination stores it with reduced fidelity (the Reason
-	// records how).
+	// Lossy: stored with reduced fidelity.
 	Lossy
-	// Dropped means the destination cannot store it (the Reason records why).
+	// Dropped: destination cannot store it.
 	Dropped
-	// Excluded means policy deliberately leaves the value out of the transfer. It is
-	// reported with a reason, but it is not a capability loss and does not make an
-	// otherwise clean copy lossy.
+	// Excluded: policy skip; not a capability loss.
 	Excluded
 )
 
@@ -63,9 +57,7 @@ func (d Disposition) String() string {
 	}
 }
 
-// TransferItem is one piece of metadata's fate in a transfer. Key is set for
-// TransferField items; for the picture, chapter, and synced-lyrics sets it is empty and
-// Count is the number of items in the set.
+// TransferItem is one metadata item's transfer fate. Count is set size for picture/chapter/lyrics.
 type TransferItem struct {
 	Kind        TransferKind
 	Key         tag.Key
@@ -74,23 +66,15 @@ type TransferItem struct {
 	Reason      string
 }
 
-// TransferReport is the result of projecting a source document's canonical
-// metadata onto a destination format: one item per field, in source order, then
-// the picture, chapter, and synced-lyrics sets. Each of those three sets may split
-// into a carried item (always first, with an empty Reason) plus one merged lossy
-// item; the picture set can also add a third dropped item naming unrepresentable
-// cover MIME types. It is purely descriptive (no I/O) and is built from the same
-// projection a transfer write applies.
+// TransferReport projects source metadata onto destination capabilities. Set items may split
+// carried/lossy/dropped. Descriptive only; matches transfer write filter.
 type TransferReport struct {
 	Source Format
 	Dest   Format
 	Items  []TransferItem
 }
 
-// Counts tallies the items by disposition. A picture- or chapter-set item stands for
-// it.Count pictures/chapters, so its Count is summed - the headline then matches the
-// per-item detail and the JSON counts. A field item is a single unit (its Count is
-// the value count, e.g. two ARTIST values, not a number of fields), so it counts as one.
+// Counts tallies by disposition. Set items sum Count; field items count as one each.
 func (r TransferReport) Counts() (carried, lossy, dropped int) {
 	for _, it := range r.Items {
 		n := 1
@@ -116,52 +100,29 @@ func (r TransferReport) Lossless() bool {
 	return lossy == 0 && dropped == 0
 }
 
-// HasDropped reports whether the destination could not store at least one item. It is
-// the "this transfer asked to write something and could not" test, distinct from
-// [TransferReport.Lossless], which a merely downgraded item also fails.
+// HasDropped reports any Dropped item (distinct from merely lossy).
 func (r TransferReport) HasDropped() bool {
 	_, _, dropped := r.Counts()
 	return dropped > 0
 }
 
-// ProjectTransfer computes how each piece of src's canonical metadata fares
-// against the destination capabilities dst: a field/picture/chapter that the
-// destination writes fully is Carried, one it writes with reduced fidelity is
-// Lossy, and one it cannot write is Dropped. The capabilities already fold in the
-// destination's write options, so option-dependent support (a format that gains a
-// container only under certain options) is reflected here without this function
-// needing the options itself.
-//
-// The picture set can also add a Dropped item naming unrepresentable cover MIME
-// types (see [Representable]), on top of any carried/lossy split.
-//
-// PlanTransfer (simulation) and the transfer apply path both use this computation, so
-// the reported fates match the write filter.
+// ProjectTransfer grades each metadata item against dst capabilities.
+// Shared by PlanTransfer and apply path. Pictures may also drop unrepresentable MIMEs.
 func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 	var items []TransferItem
 	for _, k := range src.Tags.Keys() {
 		vals, _ := src.Tags.Get(k)
 		if k.DescribesOwnAudio() {
-			// Metadata copies do not carry audio. Values that describe this file's audio,
-			// such as encoder stamps, ReplayGain, or an AcoustID fingerprint, would describe
-			// the source samples after being copied to a different destination. Report the
-			// skip explicitly, but keep the copy lossless.
+			// Own-audio keys are excluded; copy stays lossless.
 			items = append(items, TransferItem{
 				Kind: TransferField, Key: k, Count: len(vals), Disposition: Excluded,
 				Reason: "not transferred; describes this file's own audio, not the work, so the destination keeps whatever it already had for this key",
 			})
 			continue
 		}
-		// Grade the value the writer would store, not the raw parsed bytes. Trimmable fields
-		// ([tag.IsTrimmableKey]: numeric, date, MP4-integer, BPM, ReplayGain, R128 gain,
-		// release-country) are trimmed before rendering, so value-level predicates should see
-		// the stored form (matching TrimTokenValue's own gate). The ReplayGain and R128 keys
-		// are filtered upstream as own-audio, so every other trimmable category reaches here;
-		// keying off the shared predicate keeps this gate from drifting from TrimTokenValue
-		// when a key is added.
+		// Grade stored form: trim trimmable keys before predicates.
 		graded := vals
 		if tag.IsTrimmableKey(k) {
-			// Copy on write: most stored values are already clean, so they reuse vals.
 			cloned := false
 			for i, v := range vals {
 				trimmed := tag.TrimTokenValue(k, v)
@@ -176,12 +137,7 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 			}
 		}
 		disp, reason := dispose(dst.Field(k), dst.ReadOnly, len(graded), "this field", graded)
-		// A field the format-level capability grades Carried can still be dropped or reduced
-		// by a per-field decision the writer makes from the whole tag set: cardinality it
-		// collapses, a key its namespace reserves, or a value that depends on a sibling
-		// field. The classifier sees all three, so it can override a falsely-clean Carried to
-		// match the write. It never overrides a correct Dropped/Lossy, so consult it only for
-		// a Carried grade.
+		// fieldClassifier may override a Carried grade to match writer-side drops.
 		if disp == Carried && dst.fieldClassifier != nil {
 			if d, r, ok := dst.fieldClassifier(k, graded, src.Tags); ok {
 				disp, reason = d, r
@@ -191,24 +147,11 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 			Kind: TransferField, Key: k, Count: len(vals),
 			Disposition: disp, Reason: reason,
 		})
-		// A slashed track/disc number (TRACKNUMBER=3/12) is split into its number and total
-		// keys by the codec read path, so TRACKTOTAL is an ordinary key graded by this loop -
-		// no transfer-time derivation is needed.
 	}
 	if len(src.Pictures) > 0 {
-		// Split the set by per-image representability. A destination such as MP4 can store
-		// covers only in certain MIME types, so it drops just the unsupported covers instead
-		// of failing the whole transfer. PartitionRepresentable is the same split the write
-		// filter and the editor's drop path use, so the report cannot drift from the write.
+		// Split by representable MIME (same as write filter).
 		rep, _, unrepMIMEs := PartitionRepresentable(dst.Pictures, src.Pictures)
-		// Then by slot: a destination with fixed, uniquely-named picture slots (APE's
-		// two-item Cover Art convention) holds only one picture per slot, so the ones left
-		// without a slot are graded Dropped below - the same selection PrepareTransfer's
-		// write filter applies and the codec's writer enforces. Skipped when the
-		// destination cannot write pictures at all (read-only, or no picture store): the
-		// whole set is then dropped for that one reason, not split across two causes. No
-		// shipping capability combines slots with either state; this keeps a future one
-		// from reporting the same loss twice.
+		// Then partition fixed slots (APE). Skipped when pictures cannot be written.
 		var slotDropped int
 		var slotReason string
 		if !dst.ReadOnly && dst.Pictures.Write != AccessNone {
@@ -217,16 +160,7 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 		if len(rep) > 0 {
 			disp, reason := dispose(dst.Pictures, dst.ReadOnly, len(rep), "pictures", nil)
 			if disp == Carried {
-				// dispose reports picture sets as Carried when the image bytes themselves carry
-				// byte-for-byte. MP4 and Matroska can still drop a picture's role or description,
-				// but that loss is per-picture, so partition the representable subset: covers that
-				// keep their metadata stay Carried, and those that lose it become Lossy. Copying a
-				// front cover plus a back cover then reports 1 carried, 1 lossy, rather than the
-				// whole set flipped to lossy by the one affected cover. Only the Carried branch
-				// splits (the dropped-MIME item is emitted separately below). A Dropped/Lossy target
-				// keeps a single full-count item; the Lossy case is defensive (no picture capability
-				// uses AccessPartial today). dst.Pictures.Reason() words the lossy reason like the
-				// chapter and synced-lyrics paths and is never empty.
+				// Per-picture metadata loss splits carried vs lossy.
 				var carried, lossy int
 				for _, p := range rep {
 					if pictureLosesMetadata(p, dst.Pictures.PictureLoss) {
@@ -255,20 +189,10 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 		}
 	}
 	if n := len(src.Chapters); n > 0 {
-		// Graded as given: the caller passes the list it will write, already carrying whatever
-		// run-to-EOF reopen or replacement it decided on, so the report cannot describe a
-		// different list from the write.
 		chapters := src.Chapters
 		disp, reason := dispose(dst.Chapters, dst.ReadOnly, n, "chapters", nil)
 		if disp == Carried {
-			// dispose reports chapter sets as Carried when the timeline itself carries. A start+title
-			// destination can still drop per-chapter metadata (an interior gapped end, per-chapter
-			// language, hidden/disabled flags), and MP4's chpl byte cap can truncate an over-long
-			// title - both per-chapter losses. So partition the set the way pictures are partitioned:
-			// chapters that keep everything stay Carried; those that lose metadata OR have an over-long
-			// title become Lossy. Copying a plain chapter beside a hidden/flagged one then reports N-1
-			// carried, 1 lossy, rather than the whole set flipped by the one affected chapter. Only the
-			// Carried branch splits; a Dropped/Lossy target keeps a single full-count item below.
+			// Per-chapter metadata or title-cap loss splits carried vs lossy.
 			var carried, lossy int
 			lostMetadata := false
 			for i, c := range chapters {
@@ -281,11 +205,7 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 					carried++
 				}
 			}
-			// The merged lossy item carries a single reason. A chapter lossy only via the title cap,
-			// sitting beside a metadata-lossy one, reports the metadata reason - matching the prior
-			// precedence (metadata was checked before the title cap) and the picture path. Use the
-			// metadata reason when any lossy chapter lost metadata, else the title-cap message (len is
-			// the byte length, matching MP4's 255-byte chpl length prefix).
+			// One lossy reason: metadata wins over title-cap-only.
 			lossyReason := dst.Chapters.Reason()
 			if !lostMetadata {
 				lossyReason = "chapter title is too long and was truncated"
@@ -300,12 +220,7 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 	if n := len(src.SyncedLyrics); n > 0 {
 		disp, reason := dispose(dst.SyncedLyrics, dst.ReadOnly, n, "synced lyrics", nil)
 		if disp == Carried {
-			// LRC destinations carry the timed text but drop each set's per-set language/descriptor
-			// (and flatten embedded line breaks), and a line timestamp past the destination's field
-			// is clamped on write - both per-set losses. So partition the set the way pictures and
-			// chapters are: sets that keep everything stay Carried; those that lose metadata OR clamp
-			// a timestamp become Lossy. Copying a plain lyric set beside one carrying a descriptor an
-			// LRC target drops then reports 1 carried, 1 lossy, rather than the whole set flipped.
+			// Per-set metadata or timestamp clamp splits carried vs lossy.
 			var carried, lossy int
 			lostMetadata := false
 			for _, sl := range src.SyncedLyrics {
@@ -318,9 +233,7 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 					carried++
 				}
 			}
-			// The merged lossy item carries a single reason. A set lossy only via a clamp, beside a
-			// metadata-lossy one, reports the metadata reason - matching the prior precedence (metadata
-			// checked before the clamp) and the chapter path.
+			// One lossy reason: metadata wins over clamp-only.
 			lossyReason := dst.SyncedLyrics.Reason()
 			if !lostMetadata {
 				lossyReason = "a synced-lyric timestamp is too large and was clamped"
@@ -335,12 +248,7 @@ func ProjectTransfer(src *Media, dst Capabilities) []TransferItem {
 	return items
 }
 
-// appendCarriedLossyItems appends the carried-then-lossy items for a per-item-partitioned metadata
-// set (pictures, chapters, synced lyrics), pinning the deterministic order and empty-reason invariant
-// all three share: the carried item first with an empty Reason, then a single merged lossy item with
-// lossyReason. A zero count emits no item, and Counts() sums the multiple items so the headline stays
-// exact. Only the Carried-disposition branch of each kind splits; a Dropped/Lossy target keeps one
-// full-count item and does not call this.
+// appendCarriedLossyItems appends carried then merged lossy items (empty reason on carried).
 func appendCarriedLossyItems(items []TransferItem, kind TransferKind, carried, lossy int, lossyReason string) []TransferItem {
 	if carried > 0 {
 		items = append(items, TransferItem{Kind: kind, Count: carried, Disposition: Carried})
@@ -351,33 +259,14 @@ func appendCarriedLossyItems(items []TransferItem, kind TransferKind, carried, l
 	return items
 }
 
-// dispose grades how a piece of metadata (count items of it) survives against the
-// destination capability c, returning the disposition and a human-readable reason
-// drawn from the capability's own description. noun names the metadata kind
-// ("pictures" / "chapters" / "this field") for a destination-focused drop reason.
-// A read-only destination drops everything; a set that exceeds the capability's
-// hard MaxItems is dropped (the destination would reject the whole set at write
-// time, so reporting it carried would be a lie); otherwise the write level decides.
-//
-// Note: this does not consult Capability.MaxValues. dispose is the predictive half
-// of the report==write invariant, and the apply path (PrepareTransfer) only skips
-// Dropped items - a Lossy field is still written with all its values, the loss
-// realized by the destination codec's writer. No codec truncates values to
-// MaxValues at write time, so reporting a MaxValues truncation here would promise a
-// write that never happens. A format that genuinely reduces a multi-value field
-// expresses that through its Fidelity/Constraints (which its writer honors, e.g.
-// WAV's single-valued INFO); MaxValues is a cardinality hint for discovery (caps),
-// not a transfer-fidelity signal.
+// dispose grades metadata against capability c. Read-only and MaxItems overrun -> Dropped.
+// Does not use MaxValues (discovery hint only; loss is via Fidelity/Constraints).
 func dispose(c Capability, readOnly bool, count int, noun string, values []string) (Disposition, string) {
 	if readOnly {
 		return Dropped, "destination is read-only"
 	}
 	if c.Write == AccessNone {
-		// Destination-focused wording: the reason a user sees is "what the target
-		// format can't hold", not the source-side Representation string ("no covers",
-		// "not modeled"), which read as internal jargon in the loss report. A store
-		// the destination reads but cannot write (Musepack's chapter packets, a cover
-		// inside a WebM file) says only that: the format may hold the item, or may not.
+		// User-facing drop wording names destination limits, not internal Representation strings.
 		if c.Read != AccessNone {
 			return Dropped, "destination cannot write " + noun
 		}
@@ -386,9 +275,7 @@ func dispose(c Capability, readOnly bool, count int, noun string, values []strin
 	if c.MaxItems > 0 && count > c.MaxItems {
 		return Dropped, fmt.Sprintf("exceeds the destination limit of %d", c.MaxItems)
 	}
-	// A value-drop predicate decides, per value, whether the destination cannot store it
-	// at all. Check it before reduction so an omitted value is reported as dropped, not
-	// lossy.
+	// dropsValue before reducesValue: omit -> Dropped, not Lossy.
 	if c.dropsValue != nil {
 		for _, v := range values {
 			if c.dropsValue(v) {
@@ -396,8 +283,7 @@ func dispose(c Capability, readOnly bool, count int, noun string, values []strin
 			}
 		}
 	}
-	// A value-reduction predicate decides Lossy vs Carried from the actual values. This
-	// covers fields whose fidelity is value-dependent, such as a year-only date field.
+	// reducesValue: value-dependent Lossy vs Carried.
 	if c.reducesValue != nil {
 		for _, v := range values {
 			if c.reducesValue(v) {
@@ -412,11 +298,7 @@ func dispose(c Capability, readOnly bool, count int, noun string, values []strin
 	return Carried, ""
 }
 
-// UnrepresentableReason names the destination format and the distinct MIME types it
-// cannot store, in first-seen order, for a dropped-cover item's reason. mimes are the
-// effective MIMEs rejected by MIMERepresentable, so a GIF mislabeled as JPEG reports
-// "cannot store image/gif" rather than the stored label. The editor's drop-unsupported
-// path reuses it so a set-time cover-format drop reads the same as copy's report item.
+// UnrepresentableReason names dst and distinct unrepresentable MIMEs (effective MIME).
 func UnrepresentableReason(dst Format, mimes []string) string {
 	seen := map[string]bool{}
 	var distinct []string

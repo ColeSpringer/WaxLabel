@@ -10,12 +10,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// byteSizeValue is the pflag.Value backing --max-size. It parses a human-readable byte
-// size (a bare count, or a number with a binary or decimal unit) into a byte ceiling and
-// renders it back with the library's HumanBytes formatter, so the help text and any
-// error echo the size the same way WaxLabel prints every other size. A stored value of 0
-// means "unlimited". WaxLabel already formats sizes with HumanBytes but has no parser to
-// reuse, so this type owns the reverse direction.
+// byteSizeValue is the pflag.Value for --max-size. It parses a human byte size
+// and renders via HumanBytes so help and errors match other size output. 0 means
+// unlimited. The library formats sizes but has no parser; this owns the reverse.
 type byteSizeValue int64
 
 func (v *byteSizeValue) Set(s string) error {
@@ -36,42 +33,39 @@ func (v *byteSizeValue) String() string {
 
 func (v *byteSizeValue) Type() string { return "size" }
 
-// parseByteSize converts a human byte-size string into a byte count. It accepts a bare
-// integer or decimal number, optionally followed by a unit: KB/MB/GB/TB are decimal
-// (powers of 1000) and KiB/MiB/GiB/TiB are binary (powers of 1024), matched
-// case-insensitively with an optional space before the unit. A bare unit letter (K, M,
-// G, T) is binary, so a value round-trips with HumanBytes' binary output. "0" (any zero)
-// means unlimited. A redundant leading '+' is accepted; a negative, empty, or unparseable
-// value is rejected (a leading '-' reports "must not be negative").
+// parseByteSize converts a human byte-size string to a byte count. Accepts a bare
+// number optionally followed by a unit: KB/MB/GB/TB are decimal (1000^n);
+// KiB/MiB/GiB/TiB and bare K/M/G/T are binary (1024^n), case-insensitive, optional
+// space before the unit. Bare letters are binary so values round-trip with
+// HumanBytes. "0" means unlimited. Leading '+' allowed; negative/empty/unparseable
+// rejected.
 func parseByteSize(s string) (int64, error) {
 	total, err := byteSizeFloat(s)
 	if err != nil {
 		return 0, err
 	}
-	// float64(math.MaxInt64) rounds up to 2^63, so this comparison also rejects a total of
-	// exactly 2^63, which int64(total) would otherwise wrap to a negative "unlimited" value.
+	// float64(MaxInt64) rounds up to 2^63; reject that too so int64(total) cannot
+	// wrap to a negative "unlimited".
 	if total >= float64(math.MaxInt64) {
 		return 0, fmt.Errorf("invalid size %q: too large", s)
 	}
 	return int64(total), nil
 }
 
-// byteSizeFloat is parseByteSize's numeric half: the value in bytes before it is truncated to
-// an int64, so a caller that must reject a fractional result can see one.
+// byteSizeFloat is the numeric half of parseByteSize before int64 truncation, so
+// callers that must reject a fractional result can see one.
 func byteSizeFloat(s string) (float64, error) {
 	trimmed := strings.TrimSpace(s)
 	if trimmed == "" {
 		return 0, fmt.Errorf("empty size")
 	}
-	// A leading '-' is a negative size: name it as such. The digit-only number scan below never
-	// consumes the sign, so without this check "-5MB" would fall through to the generic
-	// "expected a leading number" and the num < 0 branch would be dead. A leading '+' is a
-	// redundant positive sign; strip it so "+5MB" parses like "5MB".
+	// Leading '-' would otherwise fall through to "expected a leading number"
+	// (the digit scan never consumes the sign). Strip redundant '+'.
 	if strings.HasPrefix(trimmed, "-") {
 		return 0, fmt.Errorf("invalid size %q: must not be negative", s)
 	}
 	trimmed = strings.TrimPrefix(trimmed, "+")
-	// Split the leading number (digits and an optional decimal point) from the unit.
+	// Split leading number (digits + optional '.') from unit.
 	i := 0
 	for i < len(trimmed) && (trimmed[i] >= '0' && trimmed[i] <= '9' || trimmed[i] == '.') {
 		i++
@@ -94,9 +88,8 @@ func byteSizeFloat(s string) (float64, error) {
 	return num * float64(mult), nil
 }
 
-// parseByteSizeExact is parseByteSize for a value that must land on a whole byte. "1.5KiB" is
-// 1536 and passes; "0.4" and "1.9KiB" would truncate, which silently changes what was asked
-// for, so they are rejected rather than rounded.
+// parseByteSizeExact rejects sizes that would truncate to a whole byte
+// (e.g. "0.4", "1.9KiB"). "1.5KiB" (1536) passes.
 func parseByteSizeExact(s string) (int64, error) {
 	n, err := parseByteSize(s)
 	if err != nil {
@@ -112,11 +105,9 @@ func parseByteSizeExact(s string) (int64, error) {
 	return n, nil
 }
 
-// unitMultiplier maps a size unit suffix to its byte multiplier. An empty suffix or a bare
-// "B" is one byte; a bare letter (K/M/G/T) or an explicit "iB" form is binary (1024), and a
-// plain decimal "B" form (KB/MB/...) is 1000. The forms are listed explicitly rather than
-// derived from suffix trimming so the accepted set is obvious. Binary units match the
-// binary magnitudes HumanBytes prints.
+// unitMultiplier maps a size unit suffix to its byte multiplier. Empty/"B" = 1;
+// K/M/G/T or *iB = binary (1024); KB/MB/... = decimal (1000). Listed explicitly
+// so the accepted set is obvious. Binary matches HumanBytes magnitudes.
 func unitMultiplier(u string) (int64, error) {
 	switch strings.ToLower(u) {
 	case "", "b":
@@ -141,11 +132,8 @@ func unitMultiplier(u string) (int64, error) {
 	return 0, fmt.Errorf("unknown unit %q", u)
 }
 
-// maxSizeFlag reads the resolved --max-size ceiling for a command (0 means unlimited).
-// The flag is registered persistently on the root, so every stdin-reading subcommand
-// resolves it through this one helper rather than redeclaring the flag. A missing flag or
-// an unexpected value type falls back to the library default, so a command that forgets
-// to inherit it still ingests within a bound.
+// maxSizeFlag reads --max-size (0 = unlimited). Persistent on root; fallback to
+// the library default if missing or wrong type so a forgotten inherit still bounds.
 func maxSizeFlag(cmd *cobra.Command) int64 {
 	if f := cmd.Flags().Lookup("max-size"); f != nil {
 		if v, ok := f.Value.(*byteSizeValue); ok {

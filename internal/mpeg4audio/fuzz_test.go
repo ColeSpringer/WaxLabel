@@ -5,15 +5,10 @@ import (
 	"testing"
 )
 
-// maxConfigBytes bounds the prefixes the SBR check walks. The decoder reads at most a few
-// dozen bits, so a longer prefix cannot reach a field a shorter one missed.
+// maxConfigBytes bounds fuzz config prefix length.
 const maxConfigBytes = 24
 
-// FuzzParseConfig checks the decoder survives arbitrary bytes and keeps the bounds its
-// callers rely on: a rate that fits the 24-bit field, a channel count from the table, a
-// printable profile name, parametric stereo only over a mono core, and SBR reported only
-// from bits that are present - a truncated config must never claim an extension the whole
-// one does not, which is what a read running off the end would produce.
+// FuzzParseConfig: no panic; invariants on rate, channels, PS, SBRSignalled vs full parse.
 func FuzzParseConfig(f *testing.F) {
 	seeds := []string{
 		"120856e500", "1010", "101056e500", "178061a810", "119056e580",

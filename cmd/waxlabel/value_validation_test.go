@@ -7,11 +7,8 @@ import (
 	"testing"
 )
 
-// TestLintAndNoteAgree checks that set-time notes and Document.Lint use the same value
-// validators. Numeric, date, boolean, MP4-integer, BPM, ReplayGain, and RELEASECOUNTRY
-// values should get the same malformed verdict in both paths. RATING is free-form and is
-// flagged by neither, as are RELEASESTATUS, RELEASETYPE, WORK, and MOVEMENTNAME. Valid
-// values trigger neither path.
+// TestLintAndNoteAgree: set notes and Document.Lint share value validators; same malformed verdict.
+// RATING, RELEASESTATUS, RELEASETYPE, WORK, MOVEMENTNAME are free-form (neither flags).
 func TestLintAndNoteAgree(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -22,40 +19,38 @@ func TestLintAndNoteAgree(t *testing.T) {
 		{"MEDIATYPE=2", false},
 		{"REPLAYGAIN_TRACK_GAIN=loud", true},
 		{"REPLAYGAIN_TRACK_GAIN=-7.30 dB", false},
-		{"REPLAYGAIN_TRACK_GAIN=Inf dB", true}, // ParseFloat accepts Inf; a gain must be finite
+		{"REPLAYGAIN_TRACK_GAIN=Inf dB", true}, // ParseFloat accepts Inf; gain must be finite
 		{"REPLAYGAIN_TRACK_PEAK=0.988553", false},
-		{"REPLAYGAIN_TRACK_PEAK=-0.5", true}, // a peak is a magnitude, never negative
-		{"REPLAYGAIN_TRACK_PEAK=NaN", true},  // ParseFloat accepts NaN; a peak must be finite
+		{"REPLAYGAIN_TRACK_PEAK=-0.5", true}, // peak is magnitude, not negative
+		{"REPLAYGAIN_TRACK_PEAK=NaN", true},  // ParseFloat accepts NaN; peak must be finite
 		{"COMPILATION=maybe", true},
 		{"COMPILATION=1", false},
-		{"RATING=abc", false}, // free-form: malformed by neither
+		{"RATING=abc", false}, // free-form
 		{"TRACKNUMBER=abc", true},
 		{"RECORDINGDATE=banana", true},
 		{"RECORDINGDATE=2021-06", false},
 		{"RELEASECOUNTRY=United Kingdom", true},
 		{"RELEASECOUNTRY=GB", false},
-		{"RELEASECOUNTRY=XW", false},      // the MusicBrainz worldwide pseudo-code
-		{"RELEASESTATUS=official", false}, // an open vocabulary: no shape to check
+		{"RELEASECOUNTRY=XW", false},      // MusicBrainz worldwide pseudo-code
+		{"RELEASESTATUS=official", false}, // open vocabulary
 		{"RELEASETYPE=album", false},
 		{"ITUNESADVISORY=1", false},
-		{"ITUNESADVISORY=256", true}, // past the single byte the rtng atom stores
+		{"ITUNESADVISORY=256", true}, // exceeds single byte rtng atom stores
 		{"ITUNESADVISORY=1.5", true},
 		{"ITUNESGAPLESS=maybe", true},
 		{"ITUNESGAPLESS=yes", false},
-		{"BPM=174.99", false}, // fractional BPM is common (Serato/MIK/Traktor) and lints clean
+		{"BPM=174.99", false}, // fractional BPM is common and lints clean
 		{"BPM=abc", true},
-		{"MOVEMENT=3/12", true}, // no pair syntax at the tag level; the ID3 codec owns the MVIN join
+		{"MOVEMENT=3/12", true}, // no pair syntax at tag level; ID3 codec owns MVIN join
 		{"MOVEMENT=3", false},
-		{"WORK=anything at all", false}, // free text: no shape to check
+		{"WORK=anything at all", false}, // free text
 	}
 	for _, c := range cases {
 		c := c
 		t.Run(c.kv, func(t *testing.T) {
 			t.Parallel()
 			file := copyFixture(t, sampleFLAC)
-			// The note half writes to stderr ("... kept as text where the format supports
-			// it"); the lint half to stdout (a "malformed-*" finding code). They must reach
-			// the same verdict.
+			// Note on stderr ("kept as text"); lint on stdout ("malformed-*"); same verdict.
 			_, noteErr, _ := runCLI(t, "set", file, "--set", c.kv)
 			noted := strings.Contains(noteErr, "kept as text")
 			lintOut, _, _ := runCLI(t, "lint", file)
@@ -70,10 +65,8 @@ func TestLintAndNoteAgree(t *testing.T) {
 	}
 }
 
-// TestValueDroppedWarningM4A checks the values MP4 cannot store faithfully. Numeric
-// track and disc slots reject non-numeric, negative, and >65535 values. A literal "0"
-// warns in either slot - decodePair drops a 0 on read, so it never round-trips, even paired
-// with a real total. The warning names the dropped canonical key, and --strict escalates it.
+// TestValueDroppedWarningM4A: MP4 rejects bad track/disc slots; literal "0" never round-trips
+// (decodePair drops 0 on read). Warning names canonical key; --strict escalates.
 func TestValueDroppedWarningM4A(t *testing.T) {
 	t.Parallel()
 	notagsM4A := filepath.Join("..", "..", "testdata", "notags.m4a")
@@ -88,8 +81,7 @@ func TestValueDroppedWarningM4A(t *testing.T) {
 		}
 	}
 
-	// A fractional BPM stores (rounded to nearest, exit 0 with a value-coerced warning), and
-	// --strict escalates the coercion to exit 2 like a drop, the Compilation-mirror behavior.
+	// Fractional BPM rounds with value-coerced warning; --strict escalates like a drop.
 	if out, _, code := runCLI(t, "plan", copyFixture(t, notagsM4A), "--set", "BPM=174.99"); !strings.Contains(out, "value-coerced") || code != 0 {
 		t.Errorf("plan BPM=174.99: want a value-coerced warning at exit 0, got exit %d:\n%s", code, out)
 	}
@@ -97,16 +89,13 @@ func TestValueDroppedWarningM4A(t *testing.T) {
 		t.Errorf("set --strict BPM=174.99: exit = %d, want 2 (a coercion escalates like a drop)", code)
 	}
 
-	// The shared trkn atom names the offending slot: TRACKTOTAL, not TRACKNUMBER.
+	// trkn atom names offending slot: TRACKTOTAL, not TRACKNUMBER.
 	out, _, _ := runCLI(t, "plan", copyFixture(t, notagsM4A), "--set", "TRACKNUMBER=3", "--set", "TRACKTOTAL=abc")
 	if !strings.Contains(out, "value-dropped") || !strings.Contains(out, "TRACKTOTAL") {
 		t.Errorf("plan TRACKTOTAL=abc: want a value-dropped warning naming TRACKTOTAL:\n%s", out)
 	}
 
-	// TRACKNUMBER=0 with a real total still loses the 0 on read (decodePair drops a 0 slot), so it
-	// warns for TRACKNUMBER even though 12 stores fine. Its wording says the 0 reads back as
-	// absent (the bytes are written, just not round-tripped), not that it cannot be represented -
-	// unlike a genuine uint16 overflow, which keeps the "cannot be represented" phrasing.
+	// TRACKNUMBER=0 with real total: 0 dropped on read; wording says "reads back as absent".
 	out, _, _ = runCLI(t, "plan", copyFixture(t, notagsM4A), "--set", "TRACKNUMBER=0", "--set", "TRACKTOTAL=12")
 	if !strings.Contains(out, "value-dropped") || !strings.Contains(out, "TRACKNUMBER") {
 		t.Errorf("plan TRACKNUMBER=0 TRACKTOTAL=12: the 0 is dropped on read, want a value-dropped warning naming TRACKNUMBER:\n%s", out)
@@ -117,8 +106,7 @@ func TestValueDroppedWarningM4A(t *testing.T) {
 	if overflow, _, _ := runCLI(t, "plan", copyFixture(t, notagsM4A), "--set", "TRACKNUMBER=70000"); !strings.Contains(overflow, "cannot be represented") {
 		t.Errorf("plan TRACKNUMBER=70000: a uint16 overflow should keep the 'cannot be represented' wording:\n%s", overflow)
 	}
-	// MEDIATYPE=2 is a defined stik media kind (fits the single byte the atom stores), so it is
-	// written and does not warn - the counterpart to the MEDIATYPE=256 drop above.
+	// MEDIATYPE=2 fits stik byte; no warning (contrast MEDIATYPE=256 above).
 	for _, kv := range []string{"MEDIATYPE=2", "TRACKNUMBER=5"} {
 		if out, _, _ := runCLI(t, "plan", copyFixture(t, notagsM4A), "--set", kv); strings.Contains(out, "value-dropped") {
 			t.Errorf("plan --set %s: unexpected value-dropped warning:\n%s", kv, out)
@@ -126,10 +114,7 @@ func TestValueDroppedWarningM4A(t *testing.T) {
 	}
 }
 
-// TestValueDroppedWarningVisibleOnNoOpOutput checks that value-dropped warnings still
-// surface when the dropped value makes the write a no-op. This matters for `set -o`,
-// which otherwise suppresses the no-op preview. TRACKNUMBER=70000 is a valid integer
-// that overflows the uint16 atom, so the plan-body warning is the only signal.
+// TestValueDroppedWarningVisibleOnNoOpOutput: value-dropped must show on set -o no-op writes.
 func TestValueDroppedWarningVisibleOnNoOpOutput(t *testing.T) {
 	t.Parallel()
 	in := copyFixture(t, filepath.Join("..", "..", "testdata", "notags.m4a"))
@@ -143,13 +128,8 @@ func TestValueDroppedWarningVisibleOnNoOpOutput(t *testing.T) {
 	}
 }
 
-// TestMatroskaSingleValuedMultiWarning checks the edit intent, not only Matroska's
-// re-projected result. Info.Title stores one value, so TITLE=A plus TITLE=B must warn
-// even though the codec result collapses to one value. --strict escalates it to exit 2.
-//
-// The FLAC/ALBUM row pins the same warning on the default (non-strict) path of a format
-// that stores the extra values fine: the typed projection still reads only the first, so
-// the note fires and the run exits 0, which is the designed outcome rather than a gap.
+// TestMatroskaSingleValuedMultiWarning: edit intent, not re-projected result. TITLE=A+B warns
+// on Matroska (Info.Title single-valued) and on FLAC (default path, exit 0); --strict -> 2.
 func TestMatroskaSingleValuedMultiWarning(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct{ name, fixture, key string }{
@@ -169,16 +149,13 @@ func TestMatroskaSingleValuedMultiWarning(t *testing.T) {
 	}
 }
 
-// TestArgTextValidationIsUsageError: an author-entered value carrying invalid
-// UTF-8 (or, for file content, a NUL) is caught at the CLI boundary as a usage error (exit 2),
-// not deferred to the library's exit-4 "file is corrupt" backstop - even on read-only `plan`
-// against a valid file. Every author-text boundary routes through the shared checkArgText.
+// TestArgTextValidationIsUsageError: invalid UTF-8 or NUL in author text is exit 2 at CLI
+// boundary (checkArgText), not library exit 4, including read-only plan.
 func TestArgTextValidationIsUsageError(t *testing.T) {
 	t.Parallel()
 	badUTF8 := "x\xffy" // a lone 0xff is invalid UTF-8
 
-	// A valid cover so the --picture-description case fails on the description text, not on the
-	// "needs at least one picture" branch.
+	// Valid cover so --picture-description fails on description, not missing-picture branch.
 	cover := writeTempImage(t, "cover.png", minimalPNG())
 
 	argCases := map[string][]string{
@@ -195,8 +172,7 @@ func TestArgTextValidationIsUsageError(t *testing.T) {
 		}
 	}
 
-	// --synced-lyrics-file is file content, which can hold a NUL that is valid UTF-8 - the case a
-	// UTF-8-only check would leave at exit 4. Both invalid UTF-8 and a NUL must land at exit 2.
+	// LRC file content: NUL is valid UTF-8 but must still exit 2 (not UTF-8-only gap at exit 4).
 	fileCases := map[string]string{
 		"LRC invalid UTF-8": "[00:12.00]Bad" + badUTF8 + "Line\n",
 		"LRC NUL byte":      "[00:12.00]Null\x00Line\n",
@@ -212,37 +188,30 @@ func TestArgTextValidationIsUsageError(t *testing.T) {
 	}
 }
 
-// TestMalformedValueNamesTheRealFault: a category with more than one way to fail must say
-// which one happened. "2001-13-01" is exactly YYYY-MM-DD, so calling it the wrong shape is
-// false - the month is what does not exist - and BPM=70000 is plainly a non-negative
-// number that merely exceeds the atom's ceiling. A value that really is the wrong shape
-// keeps the shape wording. Both surfaces read one classifier, so the set-time note and the
-// lint finding agree per value (TestLintAndNoteAgree pins the verdict; this pins the
-// reason).
+// TestMalformedValueNamesTheRealFault: multi-failure categories name the actual fault.
+// Set note and lint message agree (TestLintAndNoteAgree pins verdict; this pins reason).
 func TestMalformedValueNamesTheRealFault(t *testing.T) {
 	t.Parallel()
-	// want is the substring both surfaces must carry. wantNote overrides it for the cases
-	// where the note keeps its own "does not look like" phrasing, which is the pre-existing
-	// per-surface convention for a shape fault: only the reason has to agree, not the voice.
+	// wantNote overrides where note keeps "does not look like" phrasing for shape faults.
 	cases := []struct {
 		kv, code, want, wantNote string
 	}{
-		// Right shape, impossible date.
+		// Impossible date (right shape).
 		{"RECORDINGDATE=2001-13-01", "malformed-date", "is not a real date", ""},
 		{"RECORDINGDATE=2001-02-30", "malformed-date", "is not a real date", ""},
 		{"RECORDINGDATE=0000", "malformed-date", "is not a real date", ""},
-		// Genuinely the wrong shape: unpadded, and not a date at all.
+		// Wrong shape.
 		{"RECORDINGDATE=2021-6-1", "malformed-date", "is not YYYY", ""},
 		{"RECORDINGDATE=banana", "malformed-date", "is not YYYY", ""},
-		// A real number past its atom's ceiling, which differs per key.
+		// Number past atom ceiling (varies by key).
 		{"BPM=70000", "malformed-number", "exceeds the maximum of 65535", ""},
 		{"MEDIATYPE=9999", "malformed-number", "exceeds the maximum of 255", ""},
 		{"ITUNESADVISORY=256", "malformed-number", "exceeds the maximum of 255", ""},
 		{"MOVEMENT=70000", "malformed-number", "exceeds the maximum of 65535", ""},
-		// Not a number at all: the shape wording still applies.
+		// Not a number: shape wording applies.
 		{"BPM=abc", "malformed-number", "is not a non-negative number", "does not look like a non-negative number"},
 		{"MEDIATYPE=abc", "malformed-number", "is not a non-negative integer", "does not look like a non-negative integer"},
-		// A well-formed figure that a peak simply cannot be.
+		// Well-formed value invalid for key semantics.
 		{"REPLAYGAIN_TRACK_PEAK=-0.5", "malformed-number", "a peak is an amplitude", ""},
 		{"REPLAYGAIN_TRACK_GAIN=loud", "malformed-number", "is not a ReplayGain value", "does not look like a ReplayGain value"},
 	}

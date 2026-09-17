@@ -5,30 +5,25 @@ import (
 	"testing"
 )
 
-// TestCompletionUnknownShellExits2 checks that an unknown shell name is a usage error (exit 2),
-// matching every other unknown-topic path (help, version, unknown command) - not cobra's
-// default non-runnable-parent behavior, which skipped arg validation and exited 0 on a typo.
+// TestCompletionUnknownShellExits2: unknown shell is usage error (exit 2), not cobra's silent 0.
 func TestCompletionUnknownShellExits2(t *testing.T) {
 	if _, _, code := runCLI(t, "completion", "zzz"); code != 2 {
 		t.Errorf("completion zzz exit = %d, want 2 (usage)", code)
 	}
-	// An extra argument after a valid shell is also rejected (each subcommand is NoArgs).
+	// Extra arg after a valid shell is also rejected (NoArgs subcommands).
 	if _, _, code := runCLI(t, "completion", "bash", "extra"); code != 2 {
 		t.Errorf("completion bash extra exit = %d, want 2 (usage)", code)
 	}
 }
 
-// TestCompletionBareExits0 checks the runnable parent: a bare "completion" prints help and
-// exits 0 rather than erroring.
+// TestCompletionBareExits0: bare "completion" prints help at exit 0.
 func TestCompletionBareExits0(t *testing.T) {
 	if _, _, code := runCLI(t, "completion"); code != 0 {
 		t.Errorf("bare completion exit = %d, want 0", code)
 	}
 }
 
-// TestCompletionShellsGenerate checks each supported shell generates a script at exit 0, and
-// that the bash script has a non-empty body (proving the generator actually ran and wrote to
-// the redirected output the harness captures).
+// TestCompletionShellsGenerate: each shell emits a non-empty script at exit 0.
 func TestCompletionShellsGenerate(t *testing.T) {
 	for _, shell := range []string{"bash", "zsh", "fish", "powershell"} {
 		out, _, code := runCLI(t, "completion", shell)
@@ -39,8 +34,7 @@ func TestCompletionShellsGenerate(t *testing.T) {
 			t.Errorf("completion %s produced an empty script", shell)
 		}
 	}
-	// The bash script names the program, confirming it is a real completion body and not an
-	// unrelated help dump.
+	// Bash body must name the program, not look like generic help.
 	out, _, _ := runCLI(t, "completion", "bash")
 	if !strings.Contains(out, "waxlabel") {
 		t.Errorf("bash completion body does not mention waxlabel:\n%s", out)

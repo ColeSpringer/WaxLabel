@@ -12,9 +12,8 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// mp4Chpl builds a Nero chpl atom. version 1 includes a 4-byte reserved field
-// before the count (the form ffmpeg writes); version 0 omits it. Each chapter is
-// an 8-byte 100 ns start plus a length-prefixed UTF-8 title.
+// mp4Chpl builds a Nero chpl atom. version 1 includes a 4-byte reserved field before the count (the
+// form ffmpeg writes); version 0 omits it.
 func mp4Chpl(version byte, starts []time.Duration, titles []string) []byte {
 	body := []byte{version, 0, 0, 0}
 	if version == 1 {
@@ -172,8 +171,8 @@ func TestMP4ChapterTagAndChapterTogether(t *testing.T) {
 }
 
 func TestMP4ChapterPreservesUnknownUdtaSibling(t *testing.T) {
-	// An unknown udta sibling (here a cprt copyright atom) must survive a chapter
-	// rewrite byte-for-byte - the udta is spliced, not rebuilt from a fixed shape.
+	// An unknown udta sibling (here a cprt copyright atom) must survive a chapter rewrite
+	// byte-for-byte; the udta is spliced, not rebuilt from a fixed shape.
 	cprt := mp4Atom("cprt", append([]byte{0, 0, 0, 0}, []byte("PRESERVE-THIS-NOTICE")...))
 	chpl := mp4Chpl(1, []time.Duration{0}, []string{"One"})
 	data := mp4AssembleUdta(mp4Meta(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "T"))), cprt, chpl)
@@ -228,12 +227,10 @@ func TestMP4ChapterTitleTruncatedTo255(t *testing.T) {
 }
 
 func TestMP4ChapterStartRoundsNotTruncates(t *testing.T) {
-	// A chapter start is encoded in the chapter track's media timescale. WaxLabel writes that
-	// track at a fixed fine timescale (90,000, so 1 ms = 90 units), decoupled from the coarse
-	// movie timescale, so a sub-millisecond start survives instead of rounding to the nearest
-	// millisecond as a 1 ms movie timescale would force. 2.7006 s is exactly 243,054 units at
-	// 90 kHz, so it round-trips with no loss (and the exact uint64 Nero chpl agrees). (The
-	// second chapter is checked: the first is the track's time-zero anchor, always read as 0.)
+	// A chapter start is encoded in the chapter track's media timescale. WaxLabel writes that track at
+	// a fixed fine timescale (90,000, so 1 ms = 90 units), decoupled from the coarse movie timescale,
+	// so a sub-millisecond start survives instead of rounding to the nearest millisecond as a 1 ms
+	// movie timescale would force.
 	data := mp4Tagged(mp4Text("\xa9nam", "T"))
 	start := 2700600 * time.Microsecond // 2700.6 ms, exact at the 90 kHz chapter timescale
 	plan, err := mustParseBytes(t, data).Edit().SetChapters(
@@ -312,10 +309,9 @@ func TestMP4ChapterRoundTripStable(t *testing.T) {
 }
 
 func TestChapterCountCapEnforced(t *testing.T) {
-	// The ID3 CTOC entry count and the MP4 Nero chpl count are both single bytes, so a
-	// 256th chapter would overflow the count field and write a malformed container. Prepare
-	// rejects an over-limit list with ErrUnsupportedTag (the generic Chapters.MaxItems gate);
-	// exactly 255 is accepted. MP3 exercises the ID3 CTOC path.
+	// The ID3 CTOC entry count and the MP4 Nero chpl count are both single bytes, so a 256th chapter
+	// would overflow the count field and write a malformed container. Prepare rejects an over-limit
+	// list with ErrUnsupportedTag (the generic Chapters.MaxItems gate); exactly 255 is accepted.
 	doc := mustParseFile(t, sampleMP3)
 	mk := func(n int) []wl.Chapter {
 		chs := make([]wl.Chapter, n)

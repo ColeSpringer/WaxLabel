@@ -11,9 +11,8 @@ import (
 	"github.com/colespringer/waxlabel/internal/id3"
 )
 
-// nonLyricSYLTFrame builds a SYLT frame body with a non-lyric content type (2 = trivia), which the
-// projection skips as not-lyrics but the rebuild preserves verbatim. Layout:
-// encoding(1) language(3) timestamp-format(1) content-type(1) descriptor(NUL) [text(NUL) ts(4)].
+// nonLyricSYLTFrame builds a SYLT frame body with a non-lyric content type (2 =
+// trivia), which the projection skips as not-lyrics but the rebuild preserves verbatim.
 func nonLyricSYLTFrame() id3.Frame {
 	body := []byte{0x00}                        // Latin-1
 	body = append(body, "eng"...)               // language
@@ -26,10 +25,8 @@ func nonLyricSYLTFrame() id3.Frame {
 	return id3.Frame{ID: "SYLT", Body: body}
 }
 
-// TestWAVSyncedLyricsOpCountsModelSetsNotSYLTFrames checks that the "synced lyrics: N" op counts
-// modeled lyric sets (len(edited.SyncedLyrics)), not raw SYLT frames. A non-lyric SYLT the file
-// already carries is skipped on read but preserved verbatim into the written id3 chunk, so counting
-// raw SYLT frames would report 2 for a single-set lyrics edit; the model count reports 1.
+// TestWAVSyncedLyricsOpCountsModelSetsNotSYLTFrames checks that the "synced lyrics: N"
+// op counts modeled lyric sets (len(edited.SyncedLyrics)), not raw SYLT frames.
 func TestWAVSyncedLyricsOpCountsModelSetsNotSYLTFrames(t *testing.T) {
 	ctx := context.Background()
 

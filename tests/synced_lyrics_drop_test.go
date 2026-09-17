@@ -8,13 +8,11 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// TestSyncedLyricsDropDeterministicSingleWarning checks the library-side drop of a whole
-// unstorable structural edit under WithAllowUnsupportedDrop: authoring synced lyrics on an MP4
-// (which has no synced-lyrics store) drops the set with exactly one warning and no error, the
-// drop yields a byte-identical no-op, and a repeated Prepare produces the identical result and
-// the same single warning (so the drop does not mutate the editor's backing state). Exactly one
-// synced-lyrics warning must appear: the whole-item drop code, not also the per-set
-// metadata-loss code.
+// checks the library-side drop of a whole unstorable structural edit under
+// WithAllowUnsupportedDrop: authoring synced lyrics on an MP4 (which has no synced-lyrics store)
+// drops the set with exactly one warning and no error, the drop yields a byte-identical no-op, and
+// a repeated Prepare produces the identical result and the same single warning (so the drop does
+// not mutate the editor's backing state).
 func TestSyncedLyricsDropDeterministicSingleWarning(t *testing.T) {
 	src := readFixture(t, "../testdata/notags.m4a")
 	set := wl.SyncedLyrics{Language: "eng", Lines: []wl.SyncedLine{{Time: 5 * time.Second, Text: "hi"}}}
@@ -59,9 +57,8 @@ func TestSyncedLyricsDropDeterministicSingleWarning(t *testing.T) {
 	}
 }
 
-// TestSyncedLyricsDropDefaultsToError checks that without WithAllowUnsupportedDrop the whole-item
-// capability gate is still a hard error, so a direct library caller who does not opt into
-// dropping keeps the strict refusal.
+// without WithAllowUnsupportedDrop the whole-item capability gate is still a hard error, so a
+// direct library caller who does not opt into dropping keeps the strict refusal.
 func TestSyncedLyricsDropDefaultsToError(t *testing.T) {
 	src := readFixture(t, "../testdata/notags.m4a")
 	set := wl.SyncedLyrics{Lines: []wl.SyncedLine{{Time: 5 * time.Second, Text: "hi"}}}

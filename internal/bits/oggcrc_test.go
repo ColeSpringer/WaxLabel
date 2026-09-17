@@ -2,9 +2,7 @@ package bits
 
 import "testing"
 
-// liboggKnownTable is the first 16 entries of libogg's published crc_lookup
-// table (the official Ogg CRC vector). If our generated table matches these,
-// the polynomial, bit order, and direction are correct.
+// liboggKnownTable is first 16 libogg crc_lookup entries.
 var liboggKnownTable = [16]uint32{
 	0x00000000, 0x04c11db7, 0x09823b6e, 0x0d4326d9,
 	0x130476dc, 0x17c56b6b, 0x1a864db2, 0x1e475005,
@@ -20,8 +18,7 @@ func TestOggCRCTableMatchesLibogg(t *testing.T) {
 	}
 }
 
-// bitwiseOggCRC is an independent, table-free reference (MSB-first, init 0, no
-// xorout) used to cross-check the table-driven implementation.
+// bitwiseOggCRC is table-free reference CRC.
 func bitwiseOggCRC(p []byte) uint32 {
 	var crc uint32
 	for _, b := range p {

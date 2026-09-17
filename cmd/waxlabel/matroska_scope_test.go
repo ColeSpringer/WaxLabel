@@ -8,10 +8,7 @@ import (
 	"testing"
 )
 
-// webmCleanTrackEncoder copies sample.webm with its track-scoped ENCODER replaced by a real
-// encoder name of the same byte length, so every enclosing EBML size stays valid. The
-// shipped value is itself a stamp, which --fix now clears, leaving no survivor to check
-// scope retention on.
+// webmCleanTrackEncoder: replace track ENCODER stamp with same-length real name for scope test.
 func webmCleanTrackEncoder(t *testing.T) string {
 	t.Helper()
 	data, err := os.ReadFile("../../testdata/sample.webm")
@@ -29,11 +26,7 @@ func webmCleanTrackEncoder(t *testing.T) string {
 	return dst
 }
 
-// TestLintFixKeepsMatroskaTrackScope: the file carries a muxer ENCODER at album scope and a
-// real encoder name at track scope, so lint flags the cross-scope conflict and --fix resolves
-// it to the clean value. That fix must leave the surviving value in the track Tag block it
-// already lives in rather than relocating it to album scope, and a second run must find
-// nothing to do.
+// TestLintFixKeepsMatroskaTrackScope: --fix keeps ENCODER at track scope, not album.
 func TestLintFixKeepsMatroskaTrackScope(t *testing.T) {
 	file := webmCleanTrackEncoder(t)
 
@@ -88,10 +81,7 @@ func TestLintFixKeepsMatroskaTrackScope(t *testing.T) {
 	}
 }
 
-// TestLintFixClearsMatroskaStampPair: the shipped fixture's ENCODER is a stamp at both
-// scopes ("Lavf61.7.100" muxer, "Lavc61.19.101 libopus" codec). Both are transcoder stamps,
-// so --fix clears the key outright - the same result FLAC, MP3, MP4, WAV and WavPack already
-// give - rather than keeping the Lavc value and calling the file clean.
+// TestLintFixClearsMatroskaStampPair: --fix clears both muxer and codec ENCODER stamps.
 func TestLintFixClearsMatroskaStampPair(t *testing.T) {
 	file := copyFixture(t, "../../testdata/sample.webm")
 

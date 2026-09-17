@@ -39,9 +39,8 @@ func TestInspectAllocsIndependentOfPictureSize(t *testing.T) {
 	}
 }
 
-// Pictures() returns a fully detached deep copy on every call: each call's Data is
-// independent, so mutating one does not corrupt a later call (the #16 fix). Bulk
-// scans that must not pay the per-call copy use Inspect(), which skips payloads.
+// Pictures() returns a fully detached deep copy on every call: each call's Data is independent, so
+// mutating one does not corrupt a later call (the #16 fix).
 func TestPicturesDetachedAcrossCalls(t *testing.T) {
 	doc := mustParseBytes(t, bigPictureFLAC(t, 4<<20))
 	a := doc.Pictures()
@@ -131,8 +130,7 @@ func TestDocumentIsDetachedAfterParseFile(t *testing.T) {
 	doc := mustParseFile(t, path)
 	src := readFixture(t, path)
 
-	// Editing+writing via an explicit source works even though ParseFile closed
-	// its own handle.
+	// Editing+writing via an explicit source works even though ParseFile closed its own handle.
 	plan, err := doc.Edit().Set(tag.Title, "Detached").Prepare()
 	if err != nil {
 		t.Fatal(err)

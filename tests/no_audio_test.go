@@ -10,9 +10,8 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestNoAudioMP3RefusesHashAndWrite checks that an MP3 selected by a leading ID3v2
-// tag but carrying non-MPEG bytes refuses hashing and writes. The parser reports
-// WarnNoAudioFrames over a non-empty essence range; HashAudioEssence, verify, and
+// MP3 selected by a leading ID3v2 tag but carrying non-MPEG bytes refuses hashing and writes. The
+// parser reports WarnNoAudioFrames over a non-empty essence range; HashAudioEssence, verify, and
 // Editor.Prepare all fail with ErrInvalidData instead of treating those bytes as audio.
 func TestNoAudioMP3RefusesHashAndWrite(t *testing.T) {
 	ctx := context.Background()
@@ -29,30 +28,22 @@ func TestNoAudioMP3RefusesHashAndWrite(t *testing.T) {
 	if _, err := doc.HashAudioEssence(ctx); !errors.Is(err, waxerr.ErrInvalidData) {
 		t.Errorf("HashAudioEssence err = %v, want ErrInvalidData", err)
 	}
-	// Editor.Prepare refuses (set/plan and a copy's destination editor funnel through it, so
-	// they inherit the guard at one site). The CLI's lint --fix is the exception: it
-	// short-circuits on the no-audio warning before Prepare, so it reports the finding
-	// gracefully ("nothing to fix / left unchanged") rather than hitting this refusal.
+	// Editor.Prepare refuses (set/plan and a copy's destination editor funnel through it, so they
+	// inherit the guard at one site).
 	if _, err := doc.Edit().Set(tag.Title, "Y").Prepare(); !errors.Is(err, waxerr.ErrInvalidData) {
 		t.Errorf("Prepare err = %v, want ErrInvalidData", err)
 	}
 }
 
-// TestNoAudioAACRefusesHashAndWrite checks that an AAC file selected by a valid ADTS
-// header but containing no whole frame is treated like the MP3 no-audio case. The
-// parser reports WarnNoAudioFrames and hashing, verify, and writes fail with
+// AAC file selected by a valid ADTS header but containing no whole frame is treated like the MP3
+// no-audio case. The parser reports WarnNoAudioFrames and hashing, verify, and writes fail with
 // ErrInvalidData instead of digesting non-audio bytes.
-//
-// Under content-only detection only a genuine ADTS signature reaches the AAC codec.
-// Non-ADTS garbage is unsupported; the valid-but-truncated header below still
-// self-detects and exercises the zero-frame gate.
 func TestNoAudioAACRefusesHashAndWrite(t *testing.T) {
 	ctx := context.Background()
 
-	// adtsHeaderOnly builds a single 7-byte ADTS fixed header (no CRC) at 44.1 kHz
-	// stereo that decodes - so the bytes are sniffed as AAC - but declares frameLen
-	// bytes. With no payload supplied, the frame runs past EOF and the walk counts
-	// zero whole frames, leaving TotalSamples at zero.
+	// adtsHeaderOnly builds a single 7-byte ADTS fixed header (no CRC) at 44.1 kHz stereo that decodes;
+	// so the bytes are sniffed as AAC, but declares frameLen bytes. With no payload supplied, the frame
+	// runs past EOF and the walk counts zero whole frames, leaving TotalSamples at zero.
 	adtsHeaderOnly := func(frameLen int) []byte {
 		b := make([]byte, 7)
 		b[0] = 0xFF                                // syncword high
@@ -87,9 +78,7 @@ func TestNoAudioAACRefusesHashAndWrite(t *testing.T) {
 			if _, err := doc.HashAudioEssence(ctx); !errors.Is(err, waxerr.ErrInvalidData) {
 				t.Errorf("HashAudioEssence err = %v, want ErrInvalidData", err)
 			}
-			// set/plan and a copy's destination funnel through Prepare, which refuses too. The
-			// CLI's lint --fix short-circuits on the no-audio warning before Prepare, reporting the
-			// finding gracefully rather than inheriting this refusal.
+			// set/plan and a copy's destination funnel through Prepare, which refuses too.
 			if _, err := doc.Edit().Set(tag.Title, "Y").Prepare(); !errors.Is(err, waxerr.ErrInvalidData) {
 				t.Errorf("Prepare err = %v, want ErrInvalidData", err)
 			}

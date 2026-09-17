@@ -6,8 +6,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestRIFFTrackNumberAliases checks that IPRT and ITRK both read as TrackNumber,
-// while the write mapping stays deterministic by choosing IPRT.
+// IPRT and ITRK read as TrackNumber; write path uses IPRT.
 func TestRIFFTrackNumberAliases(t *testing.T) {
 	for _, id := range []string{"IPRT", "ITRK"} {
 		k, ok := RIFFInfoKey(id)
@@ -20,8 +19,7 @@ func TestRIFFTrackNumberAliases(t *testing.T) {
 	}
 }
 
-// TestRIFFEncoderIsISFT pins the software stamp to ENCODER on both sides, so a WAV read
-// agrees with ffprobe's encoder= and an ENCODER write has an INFO slot to land in.
+// ISFT maps to ENCODER both ways (ffprobe encoder=).
 func TestRIFFEncoderIsISFT(t *testing.T) {
 	if k, ok := RIFFInfoKey("ISFT"); !ok || k != tag.Encoder {
 		t.Errorf("RIFFInfoKey(ISFT) = %s,%v, want ENCODER,true", k, ok)
@@ -31,8 +29,7 @@ func TestRIFFEncoderIsISFT(t *testing.T) {
 	}
 }
 
-// TestRIFFTechnicianAndEngineerMapped: ITCH is ffmpeg's encoded_by and IENG its engineer;
-// both have canonical keys, so they read and write like the other INFO items.
+// ITCH (encoded_by) and IENG (engineer) round-trip.
 func TestRIFFTechnicianAndEngineerMapped(t *testing.T) {
 	for id, want := range map[string]tag.Key{"ITCH": tag.EncodedBy, "IENG": tag.Engineer} {
 		if k, ok := RIFFInfoKey(id); !ok || k != want {

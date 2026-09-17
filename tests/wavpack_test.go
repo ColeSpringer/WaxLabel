@@ -44,8 +44,7 @@ func TestWavPackParse(t *testing.T) {
 	}
 }
 
-// TestWavPackRoundTripPreservesEssence is the core invariant: editing tags must not
-// disturb the WavPack blocks, and the values must read back.
+// core invariant: editing tags must not disturb the WavPack blocks, and the values must read back.
 func TestWavPackRoundTripPreservesEssence(t *testing.T) {
 	src := readFixture(t, sampleWV)
 	before := essenceOf(t, src)
@@ -100,9 +99,6 @@ func TestWavPackNoOpWritesNothing(t *testing.T) {
 	}
 }
 
-// TestWavPackTagCreatedOnBareFile: a file whose APEv2 tag was dropped (or never
-// written) gains one, and clearing every key drops it again rather than leaving an
-// empty container behind.
 func TestWavPackTagCreatedAndDropped(t *testing.T) {
 	src := readFixture(t, notagsWV)
 	doc := mustParseBytes(t, src)
@@ -134,8 +130,6 @@ func TestWavPackTagCreatedAndDropped(t *testing.T) {
 	}
 }
 
-// TestWavPackCoverRoundTrip exercises the APE Cover Art convention through the
-// public picture API.
 func TestWavPackCoverRoundTrip(t *testing.T) {
 	src := readFixture(t, sampleWV)
 	before := essenceOf(t, src)
@@ -164,9 +158,8 @@ func TestWavPackCoverRoundTrip(t *testing.T) {
 	}
 }
 
-// TestWavPackTrailingID3v1Preserved: a WavPack file can carry a legacy ID3v1 after
-// its APEv2 tag. It stays legacy - surfaced, preserved, never authoritative - and a
-// strip removes it.
+// WavPack file can carry a legacy ID3v1 after its APEv2 tag. It stays legacy; surfaced, preserved,
+// never authoritative, and a strip removes it.
 func TestWavPackTrailingID3v1Preserved(t *testing.T) {
 	v1 := make([]byte, 128)
 	copy(v1[0:3], "TAG")
@@ -202,8 +195,7 @@ func TestWavPackTrailingID3v1Preserved(t *testing.T) {
 	}
 }
 
-// TestWavPackTruncatedHeaderRejected: a wvpk marker with no usable block header is
-// corrupt input, not a format WaxLabel cannot read.
+// wvpk marker with no usable block header is corrupt input, not a format WaxLabel cannot read.
 func TestWavPackTruncatedHeaderRejected(t *testing.T) {
 	_, err := wl.Parse(context.Background(), wl.BytesSource([]byte("wvpk\x10\x00\x00\x00")))
 	if !errors.Is(err, waxerr.ErrInvalidData) {
@@ -211,8 +203,6 @@ func TestWavPackTruncatedHeaderRejected(t *testing.T) {
 	}
 }
 
-// TestWavPackUnsupportedVersionRefused: a stream version outside the documented
-// range is refused by name rather than misread.
 func TestWavPackUnsupportedVersionRefused(t *testing.T) {
 	data := slices.Clone(readFixture(t, sampleWV))
 	data[8], data[9] = 0xFF, 0x0F // version 0x0FFF, above the supported range
@@ -222,9 +212,8 @@ func TestWavPackUnsupportedVersionRefused(t *testing.T) {
 	}
 }
 
-// TestWavPackDifferentialFFprobeReadsOurTags is the independent read-back proof:
-// ffprobe is a different codebase from a different author, so unlike a self
-// round-trip it cannot share a misreading of the APE layout with us.
+// independent read-back proof: ffprobe is a different codebase from a different author, so unlike a
+// self round-trip it cannot share a misreading of the APE layout with us.
 func TestWavPackDifferentialFFprobeReadsOurTags(t *testing.T) {
 	requireTool(t, "ffprobe")
 	path := copyToTemp(t, sampleWV)
@@ -258,8 +247,7 @@ func TestWavPackDifferentialFFprobeReadsOurTags(t *testing.T) {
 	}
 }
 
-// TestWavPackDifferentialFFmpegDecodes: our rewritten tail must not disturb the
-// blocks, which fails loudly if the audio extent moved.
+// our rewritten tail must not disturb the blocks, which fails loudly if the audio extent moved.
 func TestWavPackDifferentialFFmpegDecodes(t *testing.T) {
 	requireTool(t, "ffmpeg")
 	path := copyToTemp(t, sampleWV)

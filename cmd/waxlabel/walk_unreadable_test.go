@@ -13,9 +13,7 @@ func requireUnreadableDir(t *testing.T) {
 	requireUnwritableDir(t)
 }
 
-// TestRecursiveWalkReportsUnreadableDirectory: a subtree the walk cannot read is an io
-// error entry (exit 6) beside the files it did read, not a silent omission, in both output
-// modes and for the bespoke set loop.
+// TestRecursiveWalkReportsUnreadableDirectory: unreadable subtree is per-path io error (exit 6).
 func TestRecursiveWalkReportsUnreadableDirectory(t *testing.T) {
 	requireUnreadableDir(t)
 	root := t.TempDir()
@@ -60,7 +58,7 @@ func TestRecursiveWalkReportsUnreadableDirectory(t *testing.T) {
 	if code != 6 || !strings.Contains(errb, "nope") || !strings.Contains(errb, "permission denied") {
 		t.Errorf("human mode: exit %d stderr %q", code, errb)
 	}
-	// The line already names the path, so the reason must not repeat it.
+	// Path appears once in error line; reason must not repeat it.
 	if strings.Count(errb, nope) != 1 {
 		t.Errorf("the path should appear once, not once per wrapper: %q", errb)
 	}
@@ -68,8 +66,7 @@ func TestRecursiveWalkReportsUnreadableDirectory(t *testing.T) {
 		t.Errorf("set: exit %d stderr %q", code, errb)
 	}
 
-	// The unreadable directory is reported, but nobody asked to write it, so it must not
-	// count toward -o's single-input rule and refuse a legitimate one-file run.
+	// Unreadable dir must not count as -o input for single-input rule.
 	outO, errO, codeO := runCLI(t, "set", "--recursive", root, "--set", "TITLE=T", "-o", filepath.Join(t.TempDir(), "out.flac"))
 	if codeO != 6 {
 		t.Errorf("set -o: exit %d, want 6 for the unreadable directory\n%s%s", codeO, outO, errO)

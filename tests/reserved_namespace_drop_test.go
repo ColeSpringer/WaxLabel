@@ -8,15 +8,9 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestReservedNamespaceDropOnSet drives the public edit flow on every Vorbis-comment container
-// (FLAC, Ogg Vorbis, Opus) and pins that setting a custom key in one of the three reserved
-// namespaces - SYNCEDLYRICS synced lyrics, METADATA_BLOCK_PICTURE cover art - via --set is
-// dropped-with-warning rather than written. The payloads are deliberately *valid* (a real LRC
-// line and a real base64 cover) so this pins the v1.0 decision: a valid payload set through --set
-// no longer sneaks in through a side channel as structured data. The write collapses to a no-op
-// (result re-projects to base) carrying a value-dropped warning, and the file gains no synced
-// lyrics or cover. A later reader must not "restore" the side channel; that would reopen the
-// silent-loss / silent-structuring split the guard closes.
+// public edit flow on every Vorbis-comment container (FLAC, Ogg Vorbis, Opus) and pins that setting
+// a custom key in one of the three reserved namespaces. SYNCEDLYRICS synced lyrics,
+// METADATA_BLOCK_PICTURE cover art; via --set is dropped-with-warning rather than written.
 func TestReservedNamespaceDropOnSet(t *testing.T) {
 	ctx := context.Background()
 	// A valid base64 METADATA_BLOCK_PICTURE value (the same encoding a real Ogg cover uses).
@@ -40,8 +34,8 @@ func TestReservedNamespaceDropOnSet(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Prepare: %v", err)
 				}
-				// The valid payload re-projects to base (it is dropped, not stored), so the write is a
-				// no-op that still must carry the value-dropped warning - never a silent exit 0.
+				// The valid payload re-projects to base (it is dropped, not stored), so the write is a no-op that
+				// still must carry the value-dropped warning; never a silent exit 0.
 				if !plan.IsNoOp() {
 					t.Errorf("expected a no-op write (the reserved key is dropped, nothing else changed); got a real write: %v", plan.Report().Operations)
 				}

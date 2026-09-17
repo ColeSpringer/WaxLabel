@@ -9,9 +9,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestSaveBackOnAReadOnlyFile: editing a read-only file succeeds and leaves it
-// read-only. Windows has to clear the attribute for the rename and put it back, and the
-// final assertion fails if that clear ever moves above the mode carry-over.
+// editing a read-only file succeeds and leaves it read-only.
 func TestSaveBackOnAReadOnlyFile(t *testing.T) {
 	path := copyToTemp(t, sampleFLAC)
 	if err := os.Chmod(path, 0o444); err != nil {

@@ -7,38 +7,31 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// Musepack has two incompatible stream formats. SV7 opens with "MP+" and a version
-// byte and puts the whole description in one fixed header; SV8 opens with "MPCK" and
-// is a stream of keyed packets, the first of which ("SH") carries the description.
-// Both are common in real libraries, so both are read.
+// Two stream formats: SV7 ("MP+" + version, fixed header) and SV8 ("MPCK", keyed
+// packets; "SH" carries the description). Both are read.
 const (
 	sv7Magic = "MP+"
 	sv8Magic = "MPCK"
 
-	// sv7HeaderLen is the leading region SV7 files always have: the magic and version
-	// byte, the frame count, and 16 bytes of stream configuration.
+	// sv7HeaderLen: magic, version, frame count, 16-byte config.
 	sv7HeaderLen = 24
-	// sv7FrameSamples is SV7's fixed decoded frame size. The format stores a frame
-	// count rather than a sample count, and the final frame's true length is not
-	// recorded, so a whole-frame product is what every decoder reports.
+	// sv7FrameSamples: fixed decoded frame size. Format stores frame count only;
+	// final-frame length is unknown, so whole-frame product is what decoders report.
 	sv7FrameSamples = 1152
-	// sv7Version and sv7VersionAlt are the two stream-version bytes SV7 files carry.
 	sv7Version    = 0x07
 	sv7VersionAlt = 0x17
 )
 
-// sampleRates is the four-entry rate table both stream versions index into.
+// sampleRates is the four-entry table both versions index into.
 var sampleRates = [4]int{44100, 48000, 37800, 32000}
 
-// header is the decoded stream description, assembled from whichever version the
-// file uses so the rest of the codec sees one shape.
+// header is the decoded stream description in one shape for either version.
 type header struct {
 	streamVersion int
 	sampleRate    int
 	channels      int
 	totalSamples  uint64
-	// headerLen is the on-disk length of the description region measured from the
-	// start of the Musepack stream: the earliest offset a trailing tag could begin at.
+	// headerLen: description region from stream start (floor for a trailing tag).
 	headerLen int64
 }
 
@@ -53,9 +46,8 @@ func parseHeader(b []byte) (header, error) {
 	return header{}, fmt.Errorf("%w: missing the MPCK or MP+ stream marker", waxerr.ErrInvalidData)
 }
 
-// parseSV7 decodes the fixed SV7 header: "MP+", the version byte, a 32-bit frame
-// count, and a 16-byte configuration block whose third byte holds the sample-rate
-// index in its low two bits. SV7 is always two channels.
+// parseSV7: "MP+", version, frame count, config (rate index in byte 10 low 2 bits).
+// Always two channels.
 func parseSV7(b []byte) (header, error) {
 	if len(b) < sv7HeaderLen {
 		return header{}, fmt.Errorf("%w: SV7 header is %d bytes, need %d", waxerr.ErrInvalidData, len(b), sv7HeaderLen)
@@ -74,11 +66,9 @@ func parseSV7(b []byte) (header, error) {
 	}, nil
 }
 
-// parseSV8 walks the packet stream for the "SH" stream header, which must be the
-// first packet after the magic. Later packets (seek table, replay gain, encoder
-// info, audio) are not decoded here: the tag store is the trailing APEv2 tag, and
-// the audio is copied verbatim. A packet key is two letters A-Z, as the reference
-// decoder requires; anything else ends the walk.
+// parseSV8 walks for the first "SH" after the magic. Later packets are not decoded
+// here (tags are trailing APEv2; audio is copied verbatim). Key must be two A-Z
+// letters (reference decoder rule).
 func parseSV8(b []byte) (header, error) {
 	pos := len(sv8Magic)
 	for pos < len(b) {
@@ -99,11 +89,8 @@ func parseSV8(b []byte) (header, error) {
 	return header{}, fmt.Errorf("%w: Musepack SV8 stream has no SH stream header", waxerr.ErrInvalidData)
 }
 
-// parseSV8StreamHeader decodes an SH packet payload: a CRC, the stream version, the
-// sample and beginning-silence counts as variable-length numbers, then a bit-packed
-// tail holding the sample-rate index, band count, channel count, and block size. The
-// version must be 8: the reference decoder and ffmpeg both refuse any other inside a
-// packet stream, and the label, the chapter store, and the framing then agree.
+// parseSV8StreamHeader: CRC, version (must be 8), varlen sample/silence counts,
+// then bit-packed rate/bands/channels/block size.
 func parseSV8StreamHeader(b []byte) (header, error) {
 	if len(b) < 5 {
 		return header{}, fmt.Errorf("%w: SV8 stream header is %d bytes", waxerr.ErrInvalidData, len(b))
@@ -126,12 +113,9 @@ func parseSV8StreamHeader(b []byte) (header, error) {
 	if pos+2 > len(b) {
 		return header{}, fmt.Errorf("%w: SV8 stream header is truncated before its configuration", waxerr.ErrInvalidData)
 	}
-	// byte 0: sample-frequency index (3 bits) then max used bands (5 bits).
-	// byte 1: channel count less one (4 bits), mid/side flag (1 bit), block size (3 of 5 bits).
-	//
-	// The index is three bits wide but only four values are defined; the rest are
-	// reserved. Masking to two bits would alias a reserved index onto a real rate, so an
-	// out-of-table value leaves the rate unset instead.
+	// byte 0: rate index (3 bits), max bands (5). byte 1: channels-1 (4), mid/side (1),
+	// block size (3 of 5). Index is 3 bits but only four rates are defined; masking to
+	// 2 bits would alias reserved indexes, so out-of-table leaves rate unset.
 	if i := int(b[pos] >> 5); i < len(sampleRates) {
 		h.sampleRate = sampleRates[i]
 	}
@@ -142,13 +126,11 @@ func parseSV8StreamHeader(b []byte) (header, error) {
 	return h, nil
 }
 
-// readSize decodes Musepack's variable-length number: seven bits per byte,
-// big-endian, with the high bit set on every byte but the last. It returns the value
-// and the bytes consumed.
+// readSize: 7 bits/byte, big-endian, high bit set on all but the last.
 func readSize(b []byte) (uint64, int, bool) {
 	var v uint64
 	for i := 0; i < len(b); i++ {
-		// Nine continuation bytes would be 63 bits; refuse a tenth rather than wrap.
+		// Nine continuation bytes = 63 bits; refuse a tenth rather than wrap.
 		if i >= 9 {
 			return 0, 0, false
 		}

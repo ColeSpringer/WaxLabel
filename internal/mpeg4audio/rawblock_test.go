@@ -9,24 +9,19 @@ import (
 	"testing"
 )
 
-// adtsFrame is one frame located inside an ADTS stream: its raw data block and the header
-// fields the block is parsed under.
+// adtsFrame is raw data block plus parse config from ADTS header.
 type adtsFrame struct {
 	block []byte
 	cfg   FrameConfig
 }
 
-// walkADTS splits an ADTS stream into its frames. It decodes only the seven fixed header
-// bytes it needs, so the test does not depend on the aac package (which depends on this one).
-// A frame carrying more than one raw data block, or a profile other than AAC LC, is skipped:
-// the parser under test does not claim those.
+// walkADTS splits ADTS into AAC LC single-block frames (no aac package dep).
 func walkADTS(t *testing.T, data []byte) []adtsFrame {
 	t.Helper()
 	return walkADTSBytes(data)
 }
 
-// walkADTSBytes is walkADTS without a testing.T, so the fuzz seeder shares it. A stream it
-// cannot follow yields the frames it read before losing sync.
+// walkADTSBytes is walkADTS for fuzz seeds.
 func walkADTSBytes(data []byte) []adtsFrame {
 	var out []adtsFrame
 	off := 0
@@ -74,9 +69,7 @@ func readFixtureFile(name string) ([]byte, error) {
 	return os.ReadFile(filepath.Join("..", "..", "testdata", name))
 }
 
-// TestParseRawDataBlockFixtures walks every frame of the checked-in AAC streams. A parse
-// failure means the syntax walk or a codebook is wrong: the block must end exactly on its
-// END element, so a misread anywhere lands the reader somewhere else.
+// TestParseRawDataBlockFixtures: every fixture frame must parse to END.
 func TestParseRawDataBlockFixtures(t *testing.T) {
 	cases := []struct {
 		file       string
@@ -110,8 +103,7 @@ func TestParseRawDataBlockFixtures(t *testing.T) {
 	}
 }
 
-// TestParseRawDataBlockRejectsTruncated: every prefix of a valid block fails rather than
-// panicking or reporting a block it did not read to the end.
+// TestParseRawDataBlockRejectsTruncated: every proper prefix fails.
 func TestParseRawDataBlockRejectsTruncated(t *testing.T) {
 	frames := walkADTS(t, readFixture(t, "notags.aac"))
 	if len(frames) == 0 {
@@ -125,8 +117,7 @@ func TestParseRawDataBlockRejectsTruncated(t *testing.T) {
 	}
 }
 
-// TestParseRawDataBlockRejectsOtherObjectTypes: only AAC LC is walked, and anything else
-// abstains rather than guessing.
+// TestParseRawDataBlockRejectsOtherObjectTypes: non-LC returns ErrUnsupported.
 func TestParseRawDataBlockRejectsOtherObjectTypes(t *testing.T) {
 	frames := walkADTS(t, readFixture(t, "notags.aac"))
 	cfg := frames[0].cfg
@@ -136,9 +127,7 @@ func TestParseRawDataBlockRejectsOtherObjectTypes(t *testing.T) {
 	}
 }
 
-// TestParseRawDataBlockLCCorpus generates AAC LC streams across the sampling rates, channel
-// counts and bitrates a real encoder produces, so the walk meets every codebook, both window
-// sequences, TNS and pulse data rather than only what the fixtures happen to contain.
+// TestParseRawDataBlockLCCorpus: ffmpeg-generated LC corpus across rates/channels/bitrates.
 func TestParseRawDataBlockLCCorpus(t *testing.T) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		t.Skip("ffmpeg not installed")

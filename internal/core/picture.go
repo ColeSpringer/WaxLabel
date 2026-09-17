@@ -8,8 +8,7 @@ import (
 	"github.com/colespringer/waxlabel/internal/bits"
 )
 
-// PictureType enumerates the cover-art roles, matching the ID3 APIC / FLAC
-// PICTURE type IDs so values round-trip across formats unchanged.
+// PictureType is cover-art role (ID3 APIC / FLAC PICTURE type IDs).
 type PictureType uint8
 
 const (
@@ -50,30 +49,18 @@ func (p PictureType) String() string {
 	return "reserved"
 }
 
-// SingleIcon reports whether p is one of the icon types (1 and 2) that must be
-// unique within a file; the writer validates this.
+// SingleIcon reports type-1 or type-2 icons, which must be unique per file.
 func (p PictureType) SingleIcon() bool {
 	return p == PicFileIcon || p == PicOtherFileIcon
 }
 
-// UnrecognizedMIME is the MIME a picture is stored under when the sniff cannot identify
-// its bytes as an image (a cover in a format the sniff does not know, junk, or an empty
-// payload all degrade to this). It is the single string the linter's
-// invalid-picture rule and the editor's plan-time picture warning both key on -
-// rather than re-sniffing - so a cover a codec already recognized is never
-// false-flagged and the two checks cannot drift.
+// UnrecognizedMIME is stored when sniff finds no image header. Shared by linter and editor.
 const UnrecognizedMIME = "application/octet-stream"
 
-// LinkMIME is the MIME a picture declares when its payload is a URL pointing at the image
-// rather than the image bytes themselves. ID3v2's APIC frame and the FLAC PICTURE block
-// share the convention, so it is a picture kind rather than a codec detail. The sniff leaves
-// it alone: there are no image bytes to read, and degrading the declaration would rewrite a
-// link as a broken cover the next time the file is written.
+// LinkMIME is APIC/PICTURE URL payload ("-->"). Sniff does not alter it.
 const LinkMIME = "-->"
 
-// CountIcons returns how many type-1 (file icon) and type-2 (other file icon)
-// pictures are present. Both must be at most one. The writer's validation and
-// the linter share this so their notion of icon validity cannot drift.
+// CountIcons counts type-1 and type-2 icons. Shared by writer validation and linter.
 func CountIcons(pics []Picture) (icon, otherIcon int) {
 	for _, p := range pics {
 		if !p.Type.SingleIcon() {
@@ -88,28 +75,14 @@ func CountIcons(pics []Picture) (icon, otherIcon int) {
 	return icon, otherIcon
 }
 
-// fileIconSide is the pixel dimension ID3v2 section 4.14 requires of a type-1 file icon,
-// which must be a 32x32 PNG.
+// fileIconSide is required type-1 icon size (ID3v2 4.14).
 const fileIconSide = 32
 
-// fileIconMIME is the image type that section requires. Both halves of the rule are one
-// predicate so the edit-time warning and the lint finding cannot enforce different ones.
+// fileIconMIME is required type-1 icon MIME (ID3v2 4.14).
 const fileIconMIME = "image/png"
 
-// NonConformingIcon reports whether p is a type-1 file icon that violates ID3v2 4.14's
-// shape rule (a 32x32 PNG), and returns the reason. Dimensions and MIME are already
-// decoded on every path that builds a Picture, so this reads what is there rather than
-// re-sniffing.
-//
-// The vocabulary is format-agnostic on purpose: FLAC and Vorbis METADATA_BLOCK_PICTURE
-// inherit ID3's picture types, so the same type-1 means the same thing there. A zero
-// dimension is not judged - it means the sniff could not determine one, and inventing a
-// violation from a missing measurement would flag valid art.
-//
-// An unsniffable picture is not judged either: it already draws the invalid-picture
-// finding, and adding "is application/octet-stream; the type requires image/png" would
-// report the same fact twice under two codes. The MIME comparison folds case, the way
-// [MIMERepresentable] does, so a caller-supplied "image/PNG" is not a violation.
+// NonConformingIcon reports a type-1 icon that is not 32x32 PNG. Skips zero dimensions
+// and [UnrecognizedMIME] pictures. MIME compare is case-folded.
 func NonConformingIcon(p Picture) (string, bool) {
 	if p.Type != PicFileIcon || p.Unrecognized() {
 		return "", false
@@ -124,59 +97,37 @@ func NonConformingIcon(p Picture) (string, bool) {
 	return "", false
 }
 
-// PictureLoss names which picture metadata a destination format drops when it
-// stores cover art as image data with a fixed role. It is recorded on the
-// pictures [Capability] so transfer reports and codec write-time warnings use
-// the same [PicturesLoseMetadata] predicate.
+// PictureLoss names picture metadata a destination drops. On pictures [Capability];
+// [PicturesLoseMetadata] is shared by transfers and write warnings.
 type PictureLoss uint8
 
 const (
-	// PictureLossNone means the format preserves role and description (FLAC, Ogg, ID3).
+	// PictureLossNone: role and description preserved.
 	PictureLossNone PictureLoss = iota
-	// PictureLossRoleOnly means the format preserves the front-cover and Other roles,
-	// but reads any other role back as Other. Descriptions survive. Matroska names only
-	// cover and small_cover, and small_cover round-trips as Other, so only a role that is
-	// neither front cover nor Other is lost.
+	// PictureLossRoleOnly: front and Other preserved; other roles read as Other (Matroska).
 	PictureLossRoleOnly
-	// PictureLossRoleAndDescription means the format stores image bytes only,
-	// dropping both role and description. MP4's covr atom does this: every cover reads
-	// back as a front cover with no description.
+	// PictureLossRoleAndDescription: bytes only (MP4 covr).
 	PictureLossRoleAndDescription
-	// PictureLossNonCoverRoleAndDescription means the format preserves the front- and
-	// back-cover roles exactly but stores any other role under one of those two names,
-	// and drops descriptions. APE's two-item Cover Art convention does this: a front or
-	// back cover round-trips, while an artist picture reads back as whichever cover
-	// name had room for it.
+	// PictureLossNonCoverRoleAndDescription: front/back exact; other roles remapped (APE).
 	PictureLossNonCoverRoleAndDescription
 )
 
-// pictureLosesMetadata reports whether storing a single picture p under a destination whose picture
-// loss is loss would drop role or description metadata p actually carries. PicturesLoseMetadata
-// folds it over a whole set, and [ProjectTransfer] uses it to partition a set into carried and
-// lossy covers, so the whole-set write warning and the per-picture transfer split grade each cover
-// the same way. A plain front cover with no description is never flagged.
+// pictureLosesMetadata is per-picture; [PicturesLoseMetadata] folds it.
 func pictureLosesMetadata(p Picture, loss PictureLoss) bool {
 	switch loss {
 	case PictureLossRoleAndDescription:
 		return p.Type != PicFrontCover || p.Description != ""
 	case PictureLossRoleOnly:
-		// A PicOther picture already round-trips as Other (Matroska's small_cover), so only a
-		// role that is neither front cover nor Other is lost.
+		// PicOther round-trips; only non-front, non-Other roles are loss.
 		return p.Type != PicFrontCover && p.Type != PicOther
 	case PictureLossNonCoverRoleAndDescription:
-		// Front and back covers round-trip exactly; any other role reads back as a cover,
-		// and a description is dropped either way.
+		// Front/back exact; other roles or any description are loss.
 		return (p.Type != PicFrontCover && p.Type != PicBackCover) || p.Description != ""
 	}
 	return false
 }
 
-// PicturesLoseMetadata reports whether storing pics under a destination whose
-// picture loss is loss would drop role or description metadata the pictures
-// actually carry. Write-time picture-metadata warnings and transfer disposition
-// both use this predicate, so a copy reported lossy is the same case whose write
-// warns. A plain front cover with no description is never flagged. It folds
-// pictureLosesMetadata over the set: a set loses metadata if any picture does.
+// PicturesLoseMetadata folds pictureLosesMetadata over pics.
 func PicturesLoseMetadata(pics []Picture, loss PictureLoss) bool {
 	for _, p := range pics {
 		if pictureLosesMetadata(p, loss) {
@@ -186,9 +137,7 @@ func PicturesLoseMetadata(pics []Picture, loss PictureLoss) bool {
 	return false
 }
 
-// Picture is an embedded image. Data bytes are reference-shared read-only:
-// deep-copying multi-megabyte payloads on every accessor is wasteful, so
-// callers must not mutate Data. The structural fields are copied freely.
+// Picture is an embedded image. Data is shared read-only; do not mutate Data.
 type Picture struct {
 	Type        PictureType
 	MIME        string
@@ -200,51 +149,28 @@ type Picture struct {
 	Data        []byte
 }
 
-// Hash returns a content hash of the image bytes, for cross-track cover
-// deduplication. It is the identity of the *image*, so the same artwork used as
-// both a front and back cover (or with different descriptions) hashes equal -
-// type and description are usage metadata, not the picture.
+// Hash is SHA256 of image bytes (ignores type and description).
 func (p Picture) Hash() [32]byte {
 	return bits.SHA256(p.Data)
 }
 
-// Unrecognized reports whether the picture is stored under [UnrecognizedMIME] -
-// i.e. its bytes were not a recognized image header. The shared predicate behind
-// the linter's invalid-picture finding and the editor's plan-time picture warning.
+// Unrecognized reports [UnrecognizedMIME].
 func (p Picture) Unrecognized() bool { return p.MIME == UnrecognizedMIME }
 
-// CloneMeta returns a copy whose structural fields are independent but whose
-// Data slice is shared (read-only). This is what accessors hand out.
+// CloneMeta copies structural fields; Data stays shared.
 func (p Picture) CloneMeta() Picture {
 	c := p // Data shared by design
 	return c
 }
 
-// SniffInto fills MIME, Width, Height, and Depth from the picture's own bytes
-// when they are not already set, via a header-only sniff (no decode). It returns
-// whether the format was recognized. This is the fill-when-empty variant: it leaves
-// a value the caller already set in place and only supplies the ones left zero. The
-// CLI's picture-load path (--add-cover/--add-picture) uses it to fill a freshly read
-// image's fields. The codec read paths, by contrast, use [Picture.SniffAuthoritative]
-// so recognizable bytes win over a mislabeled container MIME.
+// SniffInto fills empty MIME/dimensions from bytes (fill-when-empty). CLI picture load uses this.
 func (p *Picture) SniffInto() bool { return p.sniff(false) }
 
-// SniffAuthoritative reconciles MIME and dimensions with the picture's own bytes,
-// letting a successful sniff overwrite a caller-declared value that disagrees - so a
-// mislabeled cover cannot be embedded under a MIME that contradicts its bytes. It is
-// the embed-path counterpart to [Picture.SniffInto] ([Editor.AddPicture] uses it);
-// each dimension is taken only when the sniff determined it (non-zero), so a sniffer
-// that could not fill one does not clobber a caller value with a 0. A failed sniff
-// degrades the MIME to [UnrecognizedMIME] and clears the dimensions: a label nothing
-// can decode describes nothing. [LinkMIME] is the one declaration that survives, since
-// it describes the payload rather than claiming an image format.
+// SniffAuthoritative lets bytes override caller MIME/dimensions. Failed sniff -> [UnrecognizedMIME].
+// [LinkMIME] is unchanged.
 func (p *Picture) SniffAuthoritative() bool { return p.sniff(true) }
 
-// EffectiveMIME returns the MIME type an authoritative sniff would store: the canonical
-// sniffed type when the bytes are recognized, [LinkMIME] for a URL payload, otherwise
-// [UnrecognizedMIME]. It mirrors [Editor.AddPicture] without mutating p, so representability
-// checks use the type the writer will actually see rather than a stale or non-canonical
-// container label.
+// EffectiveMIME is sniffed MIME, [LinkMIME], or [UnrecognizedMIME] without mutating p.
 func (p Picture) EffectiveMIME() string {
 	if info, ok := bits.SniffImage(p.Data); ok {
 		return info.MIME
@@ -255,14 +181,10 @@ func (p Picture) EffectiveMIME() string {
 	return UnrecognizedMIME
 }
 
-// sniff backs [Picture.SniffInto] (fill-when-empty) and [Picture.SniffAuthoritative]
-// (bytes win). On a failed sniff, authoritative degrades the MIME and clears every
-// dimension; fill-when-empty only sets an empty MIME. On a success, authoritative
-// overwrites MIME and every sniff-determined dimension, while fill-when-empty sets only
-// the fields the caller left zero.
+// sniff backs SniffInto and SniffAuthoritative.
 func (p *Picture) sniff(authoritative bool) bool {
 	if p.MIME == LinkMIME {
-		return false // a URL payload has no image header to read; see LinkMIME
+		return false
 	}
 	info, ok := bits.SniffImage(p.Data)
 	if !ok {
@@ -284,9 +206,7 @@ func (p *Picture) sniff(authoritative bool) bool {
 	return true
 }
 
-// pickDim chooses a picture dimension between the caller's value and the sniffed one.
-// Authoritative: the sniffed value wins when it was determined (non-zero), else the
-// caller's stands. Fill-when-empty: the sniffed value fills a caller zero only.
+// pickDim merges caller and sniffed dimension per authoritative vs fill-when-empty rules.
 func pickDim(authoritative bool, cur, sniffed int) int {
 	if authoritative {
 		if sniffed != 0 {
@@ -300,13 +220,8 @@ func pickDim(authoritative bool, cur, sniffed int) int {
 	return cur
 }
 
-// ProjectPictures returns a display copy of ps: an independent clone (the image Data stays shared,
-// read-only) whose MIME and dimensions are reconciled with each picture's own bytes via
-// [Picture.SniffAuthoritative], so a mislabeled cover reports its real type and a junk cover degrades
-// to [UnrecognizedMIME] for the linter to flag. The caller's originals are left alone, which is what
-// lets FLAC and Ogg keep a mislabeled cover's on-disk label through an unrelated edit: their writers
-// re-serialize from the stored set, so the sniffed type must stay out of it. The accessor and the
-// linter project; the codecs keep the raw type.
+// ProjectPictures clones ps and SniffAuthoritative each picture for display/lint.
+// Originals unchanged so writers keep on-disk labels.
 func ProjectPictures(ps []Picture) []Picture {
 	out := ClonePictures(ps)
 	for i := range out {
@@ -315,8 +230,7 @@ func ProjectPictures(ps []Picture) []Picture {
 	return out
 }
 
-// ClonePictures deep-copies the slice header and structural fields (sharing
-// Data) for handing out detached accessor results.
+// ClonePictures clones slice and meta; Data shared. Nil in, nil out.
 func ClonePictures(ps []Picture) []Picture {
 	if ps == nil {
 		return nil
@@ -328,18 +242,12 @@ func ClonePictures(ps []Picture) []Picture {
 	return out
 }
 
-// PictureUnsupportedMessage returns the drop warning text for a destination whose format
-// cannot store cover art at all, so an added picture is dropped rather than the write refused.
-// It is produced by the format-independent picture-write capability gate (Pictures.Write below
-// AccessPartial), so it names no specific format - today only a WebM file (whose subset excludes
-// Attachments) reaches it, and the Matroska writer's own refusal path names WebM explicitly.
+// PictureUnsupportedMessage is for formats that cannot store cover art.
 func PictureUnsupportedMessage() string {
 	return "this file's format cannot store cover art; the picture was dropped"
 }
 
-// PicturesReadOnlyMessage is the drop warning for a file whose cover art is read but
-// cannot be rewritten (an attachment inside a WebM file, whose subset has no
-// Attachments): the file keeps the cover art it had, and only the edit is dropped.
+// PicturesReadOnlyMessage is for read-only cover art (e.g. WebM attachments).
 func PicturesReadOnlyMessage() string {
 	return "cover art in this file is read-only; the picture edit was dropped and the file keeps its cover art"
 }

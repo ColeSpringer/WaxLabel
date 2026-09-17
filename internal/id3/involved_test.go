@@ -24,10 +24,8 @@ func onlyInvolvedFrame(t *testing.T, out []Frame, id string) []involvedPerson {
 	return decodeInvolvedPeople(bodies[0])
 }
 
-// TestInvolvedPeopleRoundTrip is the base case for both versions: the modeled roles project
-// (folding the Picard functions), an unknown involvement is not projected, and editing one
-// role re-renders a single frame that keeps the untouched sibling roles and preserves the
-// unknown involvement. A conformant multi-person frame must not trip the v2.3 multi flag.
+// TestInvolvedPeopleRoundTrip: is the base case for both versions: the modeled roles project
+
 func TestInvolvedPeopleRoundTrip(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -77,9 +75,8 @@ func TestInvolvedPeopleRoundTrip(t *testing.T) {
 	}
 }
 
-// TestInvolvedPeopleUntouchedSiblingSurvives is the crux: editing one role must not drop an
-// untouched sibling role stored in the same frame. It pins the property the no-StructuredEdit
-// design rests on (renderUnit gathers all role keys from `edited`, not just the changed ones).
+// TestInvolvedPeopleUntouchedSiblingSurvives: is the crux: editing one role must not drop an
+
 func TestInvolvedPeopleUntouchedSiblingSurvives(t *testing.T) {
 	orig := []Frame{{ID: "TIPL", Body: encodeTextFrame(encLatin1,
 		[]string{"producer", "Alice", "engineer", "Eve"})}}
@@ -94,10 +91,8 @@ func TestInvolvedPeopleUntouchedSiblingSurvives(t *testing.T) {
 	}
 }
 
-// TestInvolvedPeopleCapitalizedFunctionNoDuplicate covers the case-folded known-check: a
-// capitalized "Producer" already projects to PRODUCER and re-emits from `edited`, so it must
-// not also be preserved as an unknown, which would duplicate the credit. On rewrite it also
-// normalizes to the canonical lowercase Picard spelling.
+// TestInvolvedPeopleCapitalizedFunctionNoDuplicate: the case-folded known-check: a
+
 func TestInvolvedPeopleCapitalizedFunctionNoDuplicate(t *testing.T) {
 	orig := []Frame{{ID: "TIPL", Body: encodeTextFrame(encLatin1,
 		[]string{"Producer", "Alice"})}}
@@ -147,9 +142,8 @@ func TestInvolvedPeopleUnknownOrderPreserved(t *testing.T) {
 	}
 }
 
-// TestInvolvedPeopleV23MultiPersonNoWarning checks that a multi-person IPLS on v2.3 (several
-// people under one role) is treated as a conformant involved-people frame, NOT the de-facto
-// v2.3 NUL-separated multi-value extension, so it does not set UsedV23Multi.
+// TestInvolvedPeopleV23MultiPersonNoWarning: a multi-person IPLS on v2
+
 func TestInvolvedPeopleV23MultiPersonNoWarning(t *testing.T) {
 	orig := []Frame{{ID: "IPLS", Body: encodeTextFrame(encLatin1,
 		[]string{"producer", "Alice", "producer", "Bob"})}}
@@ -170,9 +164,8 @@ func TestInvolvedPeopleV23MultiPersonNoWarning(t *testing.T) {
 	}
 }
 
-// TestInvolvedPeopleCrossVersionDrop covers a role edit that changes the write version: a
-// source IPLS (v2.3) rewritten as v2.4 must leave one TIPL and no stale IPLS, and must carry
-// the unknown involvement across the version switch.
+// TestInvolvedPeopleCrossVersionDrop: a role edit that changes the write version: a
+
 func TestInvolvedPeopleCrossVersionDrop(t *testing.T) {
 	orig := []Frame{{ID: "IPLS", Body: encodeTextFrame(encLatin1,
 		[]string{"producer", "Alice", "mastering", "Dave"})}}
@@ -192,10 +185,8 @@ func TestInvolvedPeopleCrossVersionDrop(t *testing.T) {
 	}
 }
 
-// TestInvolvedPeopleEmptyValueDropped checks that an empty credit value in an involved-people
-// role - which the function/name pairing cannot store at any position, unlike a plain
-// multi-value text frame that keeps interior empties - is dropped from the frame AND reported as
-// a single value-dropped warning: not silent, and not double-counted by the trailing-empty path.
+// TestInvolvedPeopleEmptyValueDropped: an empty credit value in an involved-people
+
 func TestInvolvedPeopleEmptyValueDropped(t *testing.T) {
 	for _, tc := range []struct {
 		name string

@@ -13,9 +13,8 @@ import (
 )
 
 // TestRawCRCOverlongSizeVINT verifies that a CRC-32 element whose 4-byte size is
-// written with an overlong VINT (0x40 0x04 rather than the canonical 0x84) is
-// still recognized. rawCRC decodes the size VINT and accepts any width whose
-// value is 4; recomputeCRC then rewrites the value as crc32(content).
+// written with an overlong VINT (0x40 0x04 rather than the canonical 0x84) is still
+// recognized.
 func TestRawCRCOverlongSizeVINT(t *testing.T) {
 	content := []byte{0x11, 0x22, 0x33, 0x44, 0x55} // the master's body, after the CRC element
 	// CRC id (0xBF) + overlong 2-byte size VINT encoding 4 (0x40 0x04) + 4 value bytes.
@@ -42,9 +41,7 @@ func TestRawCRCOverlongSizeVINT(t *testing.T) {
 }
 
 // TestRenderInfoOverlongCRCVINT checks that an Info element whose CRC-32 uses an
-// overlong size VINT survives a title edit. The renderer must preserve the CRC element's
-// encoded width, recompute the checksum over the right window, and leave unrelated Info
-// children intact.
+// overlong size VINT survives a title edit.
 func TestRenderInfoOverlongCRCVINT(t *testing.T) {
 	limit := int64(1 << 20)
 	depth := bits.NewDepth(8)
@@ -173,9 +170,9 @@ func TestVoidOfTotal(t *testing.T) {
 	}
 }
 
-// TestAttachedFileUID confirms a written cover carries the mandatory FileUID, that
-// it is non-zero, and that it is random (distinct across renders) - a collision
-// across 64 bits is negligible.
+// TestAttachedFileUID confirms a written cover carries the mandatory FileUID, that it
+// is non-zero, and that it is random (distinct across renders) - a collision across 64
+// bits is negligible.
 func TestAttachedFileUID(t *testing.T) {
 	pic := core.Picture{Type: core.PicFrontCover, MIME: "image/png", Data: []byte("cover-bytes")}
 	b0, _ := attachedFileBytes(pic, "cover.png")
@@ -194,9 +191,9 @@ func TestAttachedFileUID(t *testing.T) {
 	}
 }
 
-// TestCheckIndexCaptured: an edit is refused when a SeekHead/Cues element exists
-// but its structure was not captured (a read/over-limit failure), since copying it
-// verbatim while other elements move would corrupt its offsets.
+// TestCheckIndexCaptured: an edit is refused when a SeekHead/Cues element exists but
+// its structure was not captured (a read/over-limit failure), since copying it verbatim
+// while other elements move would corrupt its offsets.
 func TestCheckIndexCaptured(t *testing.T) {
 	if err := checkIndexCaptured(&writeBase{children: []l1elem{{id: idSeekHead}}}); err == nil {
 		t.Error("uncaptured SeekHead should be refused")
@@ -213,9 +210,9 @@ func TestCheckIndexCaptured(t *testing.T) {
 	}
 }
 
-// preserveDecisions builds the edit decisions checkPreservable consults for a doc
-// whose given canonical keys changed value, so the raw-capture gates can be driven
-// without running a whole write.
+// preserveDecisions builds the edit decisions checkPreservable consults for a doc whose
+// given canonical keys changed value, so the raw-capture gates can be driven without
+// running a whole write.
 func preserveDecisions(d *doc, keys ...tag.Key) *editDecisions {
 	base, edited := tag.NewTagSet(), tag.NewTagSet()
 	for _, k := range keys {
@@ -251,10 +248,10 @@ func TestCheckPreservable(t *testing.T) {
 		t.Errorf("fully-captured doc should pass: %v", err)
 	}
 
-	// A track group carrying an edited key (ENCODER) is re-rendered, not preserved:
-	// its surviving SimpleTag's raw must have been captured, even though the group's
+	// A track group carrying an edited key (ENCODER) is re-rendered, not preserved: its
+	// surviving SimpleTag's raw must have been captured, even though the group's
 	// whole-element raw is nil (a large group whose dropped key shrank it under the
-	// limit). A surviving tag with no raw is refused.
+	// limit).
 	rerender := &doc{groups: []tagGroup{
 		{scope: core.ScopeAlbum, raw: []byte{1}},
 		{scope: core.ScopeTrack, trackUID: true, raw: nil, targetsRaw: []byte{1}, tags: []simpleTag{
@@ -348,9 +345,9 @@ func TestMatroskaNameRoundTrip(t *testing.T) {
 	}
 }
 
-// Creating an album-scope Tag must emit the schema-mandatory Targets child.
-// Strict validators reject a Tag without Targets, and the returned tagGroup
-// should match a fresh parse of the rendered bytes.
+// Creating an album-scope Tag must emit the schema-mandatory Targets child. Strict
+// validators reject a Tag without Targets, and the returned tagGroup should match a
+// fresh parse of the rendered bytes.
 func TestBuildAlbumGroupEmitsTargets(t *testing.T) {
 	base := tag.NewTagSet()
 	edited := tag.NewTagSet()
@@ -383,10 +380,8 @@ func TestBuildAlbumGroupEmitsTargets(t *testing.T) {
 	}
 }
 
-// TestKeepInPlaceGroupWithoutRaw: a group that holds an edited key but keeps its
-// value in place has nothing to drop, yet its whole-element bytes may be
-// uncaptured. The write must fall back to re-rendering it from its captured
-// parts, not refuse the edit or silently drop the group.
+// TestKeepInPlaceGroupWithoutRaw: a group that holds an edited key but keeps its value
+// in place has nothing to drop, yet its whole-element bytes may be uncaptured.
 func TestKeepInPlaceGroupWithoutRaw(t *testing.T) {
 	d := &doc{groups: []tagGroup{
 		{scope: core.ScopeAlbum, raw: []byte{1}, tags: []simpleTag{

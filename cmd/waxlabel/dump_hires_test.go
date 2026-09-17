@@ -22,8 +22,7 @@ func be16(n int) []byte {
 	return b
 }
 
-// hiResFile writes a one-track .m4a around the given audio sample entry, with a 96 kHz
-// media timescale. It is the smallest file the dump path will read geometry out of.
+// hiResFile: minimal one-track .m4a at 96 kHz media timescale.
 func hiResFile(t *testing.T, entry []byte) string {
 	t.Helper()
 	stsd := mp4Atom("stsd", slices.Concat([]byte{0, 0, 0, 0}, be32(1), entry))
@@ -48,9 +47,7 @@ func hiResFile(t *testing.T, entry []byte) string {
 	return path
 }
 
-// hiResALACFile writes a synthetic ALAC .m4a whose sample entry's 16.16 rate field is 0
-// (it cannot hold 96000) and whose magic cookie declares the real 96 kHz / 24-bit stereo
-// configuration.
+// hiResALACFile: stsd 16.16 rate is 0; real 96 kHz/24-bit stereo in ALAC magic cookie.
 func hiResALACFile(t *testing.T) string {
 	t.Helper()
 	cookieCfg := make([]byte, 24)
@@ -70,8 +67,7 @@ func hiResALACFile(t *testing.T) string {
 	)))
 }
 
-// hiResAACFile writes a synthetic AAC .m4a with the same unusable 16.16 rate field, its
-// real 96 kHz stereo geometry declared by the esds AudioSpecificConfig instead.
+// hiResAACFile: stsd 16.16 rate is 0; real 96 kHz stereo in esds ASC.
 func hiResAACFile(t *testing.T) string {
 	t.Helper()
 	descr := func(tag byte, body []byte) []byte {
@@ -90,8 +86,7 @@ func hiResAACFile(t *testing.T) string {
 	)))
 }
 
-// TestDumpJSONHiResALACSampleRate: the rate the CLI reports for a hi-res ALAC comes from
-// the magic cookie, the only place a 96 kHz rate fits.
+// TestDumpJSONHiResALACSampleRate: hi-res ALAC sample rate comes from magic cookie.
 func TestDumpJSONHiResALACSampleRate(t *testing.T) {
 	path := hiResALACFile(t)
 	jd := dumpJSON(t, path)
@@ -116,8 +111,7 @@ func TestDumpJSONHiResALACSampleRate(t *testing.T) {
 	}
 }
 
-// TestDumpJSONHiResAACSampleRate: the rate the CLI reports for a hi-res AAC comes from the
-// esds AudioSpecificConfig, and the object type it names becomes the codec profile.
+// TestDumpJSONHiResAACSampleRate: hi-res AAC rate from esds ASC; profile from object type.
 func TestDumpJSONHiResAACSampleRate(t *testing.T) {
 	t.Parallel()
 	path := hiResAACFile(t)

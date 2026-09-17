@@ -14,8 +14,7 @@ func TestAverageBitrate(t *testing.T) {
 		{"negative duration", 1_000_000, -1, 0},
 		{"zero bytes", 0, 10, 0},
 		{"negative bytes", -5, 10, 0},
-		// A near-zero (e.g. adversarial) duration would overflow the int cast; the
-		// MaxInt32 cap suppresses the absurd value instead of returning garbage.
+		// Near-zero duration would overflow int cast; capped at 0.
 		{"tiny duration capped", 1_000_000, 1e-9, 0},
 	}
 	for _, tc := range cases {
@@ -29,33 +28,30 @@ func TestAverageBitrate(t *testing.T) {
 
 func TestCanonicalCodec(t *testing.T) {
 	cases := []struct{ raw, codec, profile string }{
-		{"mp4a", "AAC", "mp4a"},     // MP4 fourcc
-		{"AAC LC", "AAC", "AAC LC"}, // raw-AAC object type
-		{"AAC", "AAC", ""},          // already canonical (Matroska)
+		{"mp4a", "AAC", "mp4a"},
+		{"AAC LC", "AAC", "AAC LC"},
+		{"AAC", "AAC", ""},
 		{"AAC LTP", "AAC", "AAC LTP"},
-		{"HE-AAC", "AAC", "HE-AAC"},       // SBR, from an esds AudioSpecificConfig
-		{"HE-AAC v2", "AAC", "HE-AAC v2"}, // SBR + parametric stereo
+		{"HE-AAC", "AAC", "HE-AAC"},
+		{"HE-AAC v2", "AAC", "HE-AAC v2"},
 		{"xHE-AAC", "AAC", "xHE-AAC"},
-		{"alac", "ALAC", "alac"}, // MP4 fourcc, case
-		{"flac", "FLAC", "flac"}, // FLAC's lowercase
-		{"FLAC", "FLAC", ""},     // already canonical (Matroska)
+		{"alac", "ALAC", "alac"},
+		{"flac", "FLAC", "flac"},
+		{"FLAC", "FLAC", ""},
 		{"MPEG-1 Layer 3", "MP3", "MPEG-1 Layer 3"},
 		{"MPEG-2.5 Layer 3", "MP3", "MPEG-2.5 Layer 3"},
 		{"MPEG-1 Layer 2", "MP2", "MPEG-1 Layer 2"},
 		{"MPEG-1 Layer 1", "MP1", "MPEG-1 Layer 1"},
-		{"MP3", "MP3", ""},         // already canonical (Matroska)
-		{"ac-3", "AC-3", "ac-3"},   // MP4 fourcc -> matches Matroska "AC-3"
-		{"AC-3", "AC-3", ""},       // already canonical (Matroska)
-		{"ec-3", "E-AC-3", "ec-3"}, // MP4 Dolby Digital Plus fourcc
-		{"EAC3", "E-AC-3", "EAC3"}, // Matroska A_EAC3 stripped form
+		{"MP3", "MP3", ""},
+		{"ac-3", "AC-3", "ac-3"},
+		{"AC-3", "AC-3", ""},
+		{"ec-3", "E-AC-3", "ec-3"},
+		{"EAC3", "E-AC-3", "EAC3"},
 		{"Opus", "Opus", ""},
 		{"Vorbis", "Vorbis", ""},
 		{"PCM", "PCM", ""},
-		{"WAVPACK4", "WAVPACK4", ""}, // Matroska, no canonical mapping
-		// The QuickTime/ISOBMFF fourccs, which AIFF-C spells the same way. The byte order,
-		// width and signedness each names is profile detail of one codec, so a stream
-		// reads the same whichever container carried it.
-		{".mp3", "MP3", ".mp3"}, // QuickTime's MP3 fourcc, the esds twin of "MP3"
+		{"WAVPACK4", "WAVPACK4", ""},
+		{".mp3", "MP3", ".mp3"},
 		{".mp2", "MP2", ".mp2"},
 		{"sowt", "PCM", "sowt"},
 		{"twos", "PCM", "twos"},
@@ -63,16 +59,16 @@ func TestCanonicalCodec(t *testing.T) {
 		{"ipcm", "PCM", "ipcm"},
 		{"in24", "PCM", "in24"},
 		{"NONE", "PCM", "NONE"},
-		{"raw ", "PCM", "raw "}, // the trailing space is part of the fourcc
+		{"raw ", "PCM", "raw "},
 		{"fl32", "IEEE float", "fl32"},
 		{"fpcm", "IEEE float", "fpcm"},
 		{"fl64", "IEEE float64", "fl64"},
-		{"IEEE float", "IEEE float", ""}, // already canonical (WAV, AIFF-C)
+		{"IEEE float", "IEEE float", ""},
 		{"ulaw", "mu-law", "ulaw"},
 		{"alaw", "A-law", "alaw"},
 		{"ima4", "IMA ADPCM", "ima4"},
-		{"MAC3", "MAC3", ""},     // the fourcc is the name
-		{"mac3", "MAC3", "mac3"}, // folded to Apple's spelling, the raw one kept
+		{"MAC3", "MAC3", ""},
+		{"mac3", "MAC3", "mac3"},
 		{"MAC6", "MAC6", ""},
 	}
 	for _, c := range cases {
@@ -83,17 +79,16 @@ func TestCanonicalCodec(t *testing.T) {
 	}
 }
 
-// TestWaveFormatCodec: a format tag names one codec whatever container carried the
-// WAVEFORMATEX, so the RIFF, ASF and QuickTime "ms" readers share this table.
+// TestWaveFormatCodec: WAVE format tag to codec name (shared by RIFF, ASF, QuickTime ms readers).
 func TestWaveFormatCodec(t *testing.T) {
 	for _, c := range []struct {
 		tag  uint16
 		want string
 	}{
-		{0x0050, "MP2"}, // MPEG Layer 2; without it the tag read as "WAVE format 0x0050"
+		{0x0050, "MP2"},
 		{0x0055, "MP3"},
 		{0x0163, "WMA Lossless"},
-		{0x1234, "WAVE format 0x1234"}, // unrecognized tags report themselves, not a guess
+		{0x1234, "WAVE format 0x1234"},
 	} {
 		if got := WaveFormatCodec(c.tag); got != c.want {
 			t.Errorf("WaveFormatCodec(%#04x) = %q, want %q", c.tag, got, c.want)
@@ -101,10 +96,7 @@ func TestWaveFormatCodec(t *testing.T) {
 	}
 }
 
-// TestFourccSampleLayout: one fourcc has one layout whichever container carried it, so the
-// MP4 and AIFF-C readers share this table; it folds case as the codec table does; the
-// packetized QuickTime types carry their geometry here rather than as a case elsewhere; and
-// the "ms" + WAVE-tag spellings of the byte-linear tags resolve to that layout.
+// TestFourccSampleLayout: fourcc to sample layout (MP4 and AIFF-C share table).
 func TestFourccSampleLayout(t *testing.T) {
 	linear := func(depth int) SampleLayout { return SampleLayout{Depth: depth, FramesPerPacket: 1} }
 	for _, c := range []struct {
@@ -123,7 +115,7 @@ func TestFourccSampleLayout(t *testing.T) {
 		{"mac6", SampleLayout{FramesPerPacket: 6, PacketBytes: 1}, true},
 		{"ms\x00\x01", linear(0), true}, {"ms\x00\x03", linear(0), true},
 		{"ms\x00\x06", linear(8), true}, {"ms\x00\x07", linear(8), true},
-		{"ms\x00\x55", SampleLayout{}, false}, // MP3 by tag: no fixed layout
+		{"ms\x00\x55", SampleLayout{}, false},
 		{"mp4a", SampleLayout{}, false}, {".mp3", SampleLayout{}, false}, {"QDM2", SampleLayout{}, false}, {"", SampleLayout{}, false},
 	} {
 		if got, ok := FourccSampleLayout(c.fourcc); got != c.want || ok != c.ok {
@@ -132,8 +124,7 @@ func TestFourccSampleLayout(t *testing.T) {
 	}
 }
 
-// TestQuickTimeWaveFormatTag: the "ms" + tag spelling yields the big-endian tag, and only a
-// four-byte fourcc opening with "ms" has that shape.
+// TestQuickTimeWaveFormatTag: "ms" + WAVE tag fourcc to big-endian tag.
 func TestQuickTimeWaveFormatTag(t *testing.T) {
 	for _, c := range []struct {
 		fourcc string
@@ -149,7 +140,6 @@ func TestQuickTimeWaveFormatTag(t *testing.T) {
 	}
 }
 
-// TestOutputGainDB renders the Opus Q7.8 output gain as the dB figure the CLI speaks.
 func TestOutputGainDB(t *testing.T) {
 	for _, c := range []struct {
 		gain int
@@ -160,8 +150,7 @@ func TestOutputGainDB(t *testing.T) {
 		{256, "1.00 dB"},
 		{-32768, "-128.00 dB"},
 		{32767, "127.9961 dB"},
-		// Adjacent Q7.8 steps are ~0.0039 dB apart, so two decimals would render a real
-		// change as no change at all.
+		// Q7.8 steps are ~0.0039 dB; need four decimals.
 		{-897, "-3.5039 dB"},
 		{1, "0.0039 dB"},
 	} {
@@ -171,8 +160,7 @@ func TestOutputGainDB(t *testing.T) {
 	}
 }
 
-// TestOutputGainWarningDiscardClassification: an unwritable gain is a discard (nothing was
-// stored), while the R128 advisory rides along with an edit that did apply.
+// TestOutputGainWarningDiscardClassification: unsupported gain is discard; R128 advisory is not.
 func TestOutputGainWarningDiscardClassification(t *testing.T) {
 	if !IsDiscardWarning(WarnOutputGainUnsupported) {
 		t.Error("WarnOutputGainUnsupported should be a discard warning")
