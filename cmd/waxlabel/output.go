@@ -85,7 +85,7 @@ func (s *sanitizingWriter) Write(p []byte) (int, error) {
 		data = append(s.buf, p...)
 	}
 	hold := incompleteSuffix(data)
-		// string(...) copies prefix now so s.buf reslice below cannot alias it.
+	// string(...) copies prefix now so s.buf reslice below cannot alias it.
 	clean := tag.SanitizeText(string(data[:len(data)-hold]))
 	if _, err := io.WriteString(s.w, clean); err != nil {
 		// Nothing committed: keep prior tail, report 0 consumed.

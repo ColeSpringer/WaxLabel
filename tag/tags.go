@@ -49,10 +49,10 @@ type Tags struct {
 
 	ReleaseCountry string
 	ReleaseStatus  string
-	ReleaseTypes []string // primary then secondary
+	ReleaseTypes   []string // primary then secondary
 
-	Conductor string
-	Remixer   string
+	Conductor  string
+	Remixer    string
 	Performers []PerformerCredit // ordered PERFORMER credits
 	// EncodedBy is the encoding person; Encoder is the encoding software.
 	EncodedBy string

@@ -100,10 +100,10 @@ var txxxDescForKey = map[tag.Key]string{
 	tag.MBDiscID:            "MusicBrainz Disc Id",
 	tag.AcoustID:            "Acoustid Id",
 	tag.AcoustIDFingerprint: "Acoustid Fingerprint",
-	tag.Writer: "Writer",
-	tag.ReleaseCountry: "MusicBrainz Album Release Country",
-	tag.ReleaseStatus:  "MusicBrainz Album Status",
-	tag.ReleaseType:    "MusicBrainz Album Type",
+	tag.Writer:              "Writer",
+	tag.ReleaseCountry:      "MusicBrainz Album Release Country",
+	tag.ReleaseStatus:       "MusicBrainz Album Status",
+	tag.ReleaseType:         "MusicBrainz Album Type",
 }
 
 // id3InvolvedRoles maps credit keys to Picard TIPL/IPLS strings. MIXER->"mix", DJMIXER->"DJ-mix".

@@ -18,8 +18,8 @@ const (
 	// sv7FrameSamples: fixed decoded frame size. Format stores frame count only;
 	// final-frame length is unknown, so whole-frame product is what decoders report.
 	sv7FrameSamples = 1152
-	sv7Version    = 0x07
-	sv7VersionAlt = 0x17
+	sv7Version      = 0x07
+	sv7VersionAlt   = 0x17
 )
 
 // sampleRates is the four-entry table both versions index into.

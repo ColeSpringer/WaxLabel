@@ -869,32 +869,32 @@ func noteMalformedValue(notes *cappedNotes, k tag.Key, v string) {
 //   - WarnNonConformingIcon: written in full; conformance only.
 //   - duplicate-tag-block-dropped IS escalated (write destroyed content).
 var strictEscalatingCodes = map[wl.WarningCode]bool{
-	wl.WarnValueDropped:      true,
-	wl.WarnValueCoerced:      true,
-	wl.WarnValueReduced:      true,
-	wl.WarnSingleValuedMulti: true,
-	wl.WarnNumericGenre: true, // ID3 numeric genre reads back as name
-	wl.WarnTagStructureDropped:    true,
-	wl.WarnPictureMetadataDropped: true,
+	wl.WarnValueDropped:              true,
+	wl.WarnValueCoerced:              true,
+	wl.WarnValueReduced:              true,
+	wl.WarnSingleValuedMulti:         true,
+	wl.WarnNumericGenre:              true, // ID3 numeric genre reads back as name
+	wl.WarnTagStructureDropped:       true,
+	wl.WarnPictureMetadataDropped:    true,
 	wl.WarnCommentDescriptionDropped: true,
 	// Chapter codes: !carried gate applies to editor codes only, not this whole map.
 	// copy --strict can escalate on carry (codec never sees the flag).
-	wl.WarnChapterEndsDropped:     true,
-	wl.WarnChapterTitleTruncated:  true,
-	wl.WarnChapterStartOverflow:   true,
-	wl.WarnChapterMetadataDropped: true,
+	wl.WarnChapterEndsDropped:           true,
+	wl.WarnChapterTitleTruncated:        true,
+	wl.WarnChapterStartOverflow:         true,
+	wl.WarnChapterMetadataDropped:       true,
 	wl.WarnSyncedLyricsMetadataDropped:  true,
 	wl.WarnSyncedLyricsTimestampClamped: true,
-	wl.WarnSyncedLyricsTruncated: true,
-	wl.WarnSyncedLyricsUnsupported: true,
-	wl.WarnPictureUnsupported:      true,
-	wl.WarnChaptersUnsupported:     true,
-	wl.WarnOutputGainUnsupported:   true,
-	wl.WarnSyncedLyricsLineDropped: true,
-	wl.WarnPictureSelectorMiss:     true,
-	wl.WarnLegacyStripDropped: true, // policy destroyed data
-	wl.WarnDuplicateTagBlockDropped: true, // write destroyed duplicate container content
-	wl.WarnMalformedTagEntryDropped: true, // write dropped unread parser region
+	wl.WarnSyncedLyricsTruncated:        true,
+	wl.WarnSyncedLyricsUnsupported:      true,
+	wl.WarnPictureUnsupported:           true,
+	wl.WarnChaptersUnsupported:          true,
+	wl.WarnOutputGainUnsupported:        true,
+	wl.WarnSyncedLyricsLineDropped:      true,
+	wl.WarnPictureSelectorMiss:          true,
+	wl.WarnLegacyStripDropped:           true, // policy destroyed data
+	wl.WarnDuplicateTagBlockDropped:     true, // write destroyed duplicate container content
+	wl.WarnMalformedTagEntryDropped:     true, // write dropped unread parser region
 }
 
 // strictWarningGate fails a file at exit 2 when --strict and plan has escalating warnings.

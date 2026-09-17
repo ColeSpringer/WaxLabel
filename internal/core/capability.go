@@ -175,11 +175,11 @@ type Capabilities struct {
 	// Padding: full (FLAC), partial (MP3/MP4/AAC front tag), none (Ogg/WAV/Matroska).
 	Padding AccessLevel
 	// OutputGain: Opus AccessFull; muxed Opus in other containers is not decoded here.
-	OutputGain   AccessLevel
-	GenericField Capability             // default for canonical keys
-	perField     map[tag.Key]Capability // overrides
-	fieldClassifier FieldClassifier // per-field transfer override; unexported for JSON
-	readOnlyReason error            // codec write refusal; unexported for JSON
+	OutputGain      AccessLevel
+	GenericField    Capability             // default for canonical keys
+	perField        map[tag.Key]Capability // overrides
+	fieldClassifier FieldClassifier        // per-field transfer override; unexported for JSON
+	readOnlyReason  error                  // codec write refusal; unexported for JSON
 }
 
 // FieldClassifier overrides transfer grading for one field (cardinality, reserved keys, siblings).

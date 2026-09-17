@@ -121,7 +121,7 @@ func TestDumpJSONCodecCanonical(t *testing.T) {
 		{sampleM4B, "AAC", "AAC LC"}, // esds object type
 		{sampleFLAC, "FLAC", "flac"},
 		{sampleOpus, "Opus", ""}, // canonical: no profile
-		{mp3MOV, "MP3", ".mp3"},   // QuickTime fourcc in profile
+		{mp3MOV, "MP3", ".mp3"},  // QuickTime fourcc in profile
 	}
 	for _, c := range cases {
 		out, _, code := runCLI(t, "dump", c.file, "--json")
