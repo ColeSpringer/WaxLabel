@@ -19,11 +19,10 @@ var writableFixtures = []string{
 	sampleFLAC, sampleOgg, sampleOpus, sampleMP3, sampleWAV, sampleMP4, sampleAAC, sampleMKA, sampleAIFF,
 }
 
-// --- present-but-empty (zero-length) collapses to absent; IsNoOp is honest ---
+// --- present-but-empty (zero-length) collapses to absent ---
 
-// Set/Add of no values on an absent key is a true no-op across every writable format: the key
-// collapses to absent before planning, so IsNoOp reports true and Changes is empty rather than
-// minting a phantom rewrite.
+// Set/Add of no values on an absent key is a no-op across every writable format: the key collapses
+// to absent before planning, so IsNoOp reports true and Changes is empty.
 func TestZeroLengthEditIsNoOp(t *testing.T) {
 	absent := tag.MustKey("WAXTEST_ABSENT")
 	for _, f := range writableFixtures {
@@ -48,8 +47,7 @@ func TestZeroLengthEditIsNoOp(t *testing.T) {
 	}
 }
 
-// honest no-op reaches SaveBack: it commits nothing and leaves the file's bytes and mtime untouched
-// (before the phantom change rewrote the file and bumped its mtime).
+// the no-op reaches SaveBack: it commits nothing and leaves the file's bytes and mtime untouched.
 func TestZeroLengthSaveBackWritesNothing(t *testing.T) {
 	absent := tag.MustKey("WAXTEST_ABSENT")
 	for _, f := range []string{sampleFLAC, sampleWAV, sampleAIFF, sampleMP3, sampleMP4} {
@@ -86,9 +84,9 @@ func TestZeroLengthSaveBackWritesNothing(t *testing.T) {
 	}
 }
 
-// normalization is scoped strictly to zero-length: a present empty-string value ([""], what `set
-// KEY=` produces) is left intact and, on a format that stores it (FLAC/Vorbis), is a real change
-// that round-trips as a present empty value rather than collapsing to absent.
+// normalization is scoped to zero-length: a present empty-string value ([""], what `set KEY=`
+// produces) is left intact and, on a format that stores it (FLAC/Vorbis), is a change that
+// round-trips as a present empty value.
 func TestEmptyStringValueNotNormalized(t *testing.T) {
 	key := tag.MustKey("WAXTEST_EMPTYSTR")
 	src := readFixture(t, sampleFLAC)
@@ -157,13 +155,13 @@ func TestZeroValueDocumentSafe(t *testing.T) {
 	check("zero", &wl.Document{})
 }
 
-// faithful transfer carry does not raise the single-valued-multi warning for a source whose
-// single-valued key legitimately holds several values; the copy must not flag metadata the user
-// authored none of (the carry suppresses it, like the chapter sanity checks).
+// a transfer carry does not raise the single-valued-multi warning for a source whose single-valued
+// key holds several values; the copy must not flag metadata the user authored none of (the carry
+// suppresses it, like the chapter sanity checks).
 func TestTransferCarryNoSingleValuedWarning(t *testing.T) {
 	base := readFixture(t, sampleFLAC)
-	// Build a source whose single-valued ENCODER holds two values (a conflict state a
-	// real file can carry), by writing them and reparsing.
+	// Build a source whose single-valued ENCODER holds two values (a state a file can carry), by
+	// writing them and reparsing.
 	multiPlan, err := mustParseBytes(t, base).Edit().Set(tag.Encoder, "a", "b").Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -310,9 +308,9 @@ func adtsStreamRDB(chanConfig, frames, payloadPerFrame, rdb int) []byte {
 	return out
 }
 
-// checks the ADTS walk counts samples per frame correctly, including the multi-block case: a frame
-// with number_of_raw_data_blocks=1 holds two 1024-sample blocks, so it counts as 2048 samples, not
-// a flat 1024.
+// the ADTS walk counts samples per frame, including the multi-block case: a frame with
+// number_of_raw_data_blocks=1 holds two 1024-sample blocks, so it counts as 2048 samples, not a
+// flat 1024.
 func TestAACFrameWalkSampleCount(t *testing.T) {
 	single := mustParseBytes(t, adtsStream(2, 10, 100)).Properties().First().TotalSamples
 	if single != 10*1024 {
@@ -324,9 +322,8 @@ func TestAACFrameWalkSampleCount(t *testing.T) {
 	}
 }
 
-// checks the walk yields a duration and average bitrate close to ffprobe's ground truth for
-// sample.aac (~1.547s, ~122 kbps); far tighter than the old first-frame estimate, which was tens of
-// percent off on VBR.
+// the walk yields a duration and average bitrate close to ffprobe's ground truth for sample.aac
+// (~1.547s, ~122 kbps).
 func TestAACFixtureDurationAccurate(t *testing.T) {
 	tr := mustParseFile(t, sampleAAC).Properties().First()
 	if tr.TotalSamples != 67584 { // 66 frames x 1024 samples, deterministic for the fixture
@@ -341,8 +338,7 @@ func TestAACFixtureDurationAccurate(t *testing.T) {
 }
 
 // stream too short to hold one whole frame parses without panic and reports zero
-// duration/bitrate/samples (the honest answer for an unplayable fragment) while keeping the static
-// config.
+// duration/bitrate/samples while keeping the static config.
 func TestAACTruncatedSingleFrameZeroDuration(t *testing.T) {
 	full := adtsStream(2, 1, 200) // one 207-byte frame
 	doc := mustParseBytes(t, full[:100])
@@ -379,9 +375,9 @@ func (s failAfterSource) ReadAt(p []byte, off int64) (int, error) {
 
 func (s failAfterSource) Size() int64 { return int64(len(s.data)) }
 
-// genuine read error during the ADTS walk fails the parse rather than being swallowed as a benign
-// EOF (which would return a silently short duration/bitrate). The stream is sized past one 64 KiB
-// window so the walk must read into the failing region.
+// a read error during the ADTS walk fails the parse instead of being swallowed as a benign EOF
+// (which would return a short duration/bitrate). The stream is sized past one 64 KiB window so
+// the walk must read into the failing region.
 func TestAACWalkPropagatesIOError(t *testing.T) {
 	data := adtsStream(2, 400, 200) // ~82 KB: forces a second walk window past 64 KiB
 	src := failAfterSource{data: data, failAt: 64 << 10}

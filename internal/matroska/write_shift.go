@@ -40,9 +40,8 @@ func (m offsetMap) lookup(abs int64) (int64, bool) {
 	return 0, false
 }
 
-// directOffsetMap wraps a bare original-to-new map as an offsetMap with no cluster
-// runs. Unit tests use it when they drive rebuildCues or patchPositions with a small
-// hand-built map; production code builds runs in computeShiftLayout.
+// directOffsetMap wraps an original-to-new map as an offsetMap with no cluster runs.
+// Tests use it to drive rebuildCues or patchPositions; computeShiftLayout builds runs.
 func directOffsetMap(m map[int64]int64) offsetMap {
 	return offsetMap{direct: m}
 }
@@ -194,9 +193,8 @@ func buildShiftItems(wb *writeBase, ch changes, r *rendered) (items []outItem, s
 			cuesIdx = len(items)
 			items = append(items, copyItem(c, itemOther))
 		case c.id == idCRC32 && wb.segVoidFromCRC != nil:
-			// Substitute the stale Segment-level CRC with the captured length-identical Void
-			// rather than copyItem-ing the original bytes; litItem records idVoid as the output
-			// id, so the returned doc carries a Void instead of a live, now-wrong CRC.
+			// Substitute the stale Segment-level CRC with the captured length-identical Void.
+			// litItem records idVoid as the output id, so the returned doc carries a Void.
 			items = append(items, litItem(idVoid, wb.segVoidFromCRC, c.start, itemOther))
 		case c.id == idInfo && ch.title:
 			items = append(items, litItem(idInfo, r.info, c.start, itemInfo))
@@ -294,7 +292,7 @@ func rebuildSeekHead(sh *seekHead, om offsetMap, inSegStart, outSegStart int64) 
 }
 
 // rebuildCues re-encodes the Cues element at minimal width. ok is false when the tree
-// cannot be captured faithfully or the result would be an invalid empty Cues.
+// cannot be captured or the result would be an invalid empty Cues.
 func rebuildCues(ci *cuesIndex, om offsetMap, inSegStart, outSegStart int64) ([]byte, int64, bool) {
 	points, ok := buildCuePoints(ci)
 	if !ok {
@@ -307,8 +305,7 @@ func rebuildCues(ci *cuesIndex, om offsetMap, inSegStart, outSegStart int64) ([]
 // CueClusterPosition at minimal width. A cluster offset fits in eight bytes, so
 // overflow is not possible here.
 func encodeCues(points []cuePoint, crc *crcSpot, sizeHint int, om offsetMap, inSeg, outSeg int64) (out []byte, length int64, ok bool) {
-	// The rebuilt element is usually close in size to the original, so size the
-	// accumulator from the captured bytes to avoid repeated growth.
+	// Size the accumulator from the captured bytes; the rebuild is usually close in size.
 	content := make([]byte, 0, sizeHint)
 	for _, p := range points {
 		// Clone prefix/pre so the appends below never write into the captured tree,

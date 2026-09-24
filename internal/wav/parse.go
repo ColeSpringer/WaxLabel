@@ -17,26 +17,22 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// maxMetaChunk bounds how large a metadata chunk (LIST, id3) we will read into memory.
-// The data chunk is never read here - only its range is recorded - so this guards only
-// the small structural chunks against a hostile size.
+// maxMetaChunk bounds the metadata chunks (LIST, id3) read into memory. The data
+// chunk is never read here; only its range is recorded.
 const maxMetaChunk = 64 << 20
 
 // maxFactChunk bounds the "fact" read. Only the leading 4-byte dwSampleLength is
-// decoded; a longer fact chunk (the spec leaves room for format-specific fields) is
-// preserved verbatim on rewrite like any other chunk.
+// decoded; the format-specific fields a longer fact chunk may carry are copied
+// verbatim on rewrite.
 const maxFactChunk = 4
 
-// maxFmtChunk bounds the "fmt " read. Only the first 16 bytes are decoded (and a
-// WAVE_FORMAT_EXTENSIBLE chunk is 40), so there is no reason to read a chunk that
-// declares a larger body into memory - the rest is copied from the source on
-// rewrite regardless.
+// maxFmtChunk bounds the "fmt " read. Only the first 16 bytes are decoded, and a
+// WAVE_FORMAT_EXTENSIBLE chunk is 40; the rest is copied from the source on rewrite.
 const maxFmtChunk = 40
 
-// parse reads a WAV file's chunk structure into a neutral Media: the audio
-// geometry from "fmt ", the canonical tags from the id3 chunk (authoritative)
-// or LIST/INFO (the fallback authority), the family/source view for both, and
-// every chunk preserved as the base for a preservation-first rewrite.
+// parse reads a WAV file into a Media: audio geometry from "fmt ", canonical tags
+// from the id3 chunk (authoritative) or LIST/INFO (fallback), the family view for
+// both, and every chunk recorded as the base for a preservation-first rewrite.
 func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) (*core.Media, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -57,8 +53,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	d := &doc{size: size, infoIdx: -1, id3Idx: -1, dataIdx: -1}
 	copy(d.form[:], hdr[0:4])
 
-	// The container size delimits it; For RF64 the 32-bit field is the 0xFFFFFFFF marker
-	// and the real size lives in ds64, which must therefore be read before the walk.
+	// The container size delimits the walk. In RF64 the 32-bit field is the 0xFFFFFFFF
+	// marker and the real size lives in ds64, so ds64 is read first.
 	declaredSize := uint64(binary.LittleEndian.Uint32(hdr[4:8]))
 	if rf64 {
 		t, err := parseDS64(src, size, limit)
@@ -90,9 +86,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		d.dataOff = d.chunks[d.dataIdx].bodyOff
 		d.dataLen = d.chunks[d.dataIdx].bodyLen
 	}
-	// First pass over the already-walked chunks: parse fmt, and collect the INFO
-	// list and id3 chunk candidate indices (resolving the authoritative one and
-	// duplicates afterward, so a corrupt-then-valid id3 pair is handled correctly).
+	// First pass: parse fmt and collect the INFO list and id3 chunk candidates. The
+	// authoritative one and duplicates are resolved afterward, which handles a
+	// corrupt-then-valid id3 pair.
 	fmtFound := false
 	infoPadRescued, infoTailClamped := false, false
 	var infoIdxs, id3Idxs []int
@@ -114,10 +110,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 				return nil, err
 			}
 			if len(body) == maxFactChunk {
-				// In an RF64/BW64 container the 32-bit field is the marker and the real count
-				// lives in ds64 (EBU Tech 3306), exactly as for the chunk sizes. Reading it
-				// from there makes the two agree by construction rather than by the sanity
-				// gate happening to reject 0xFFFFFFFF.
+				// In RF64/BW64 the 32-bit field is the marker and the real count lives in ds64
+				// (EBU Tech 3306), as for the chunk sizes.
 				d.factSamples = uint64(binary.LittleEndian.Uint32(body))
 				if d.ds64 != nil {
 					d.factSamples = d.ds64.sampleCount
@@ -146,21 +140,19 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		if err != nil {
 			return nil, err
 		}
-		// type already confirmed INFO; a cap breach is a hard error (mirroring the
-		// embedded-id3 sibling below), while a truncated/malformed list stays tolerant.
+		// A cap breach is a hard error, as for the id3 chunk below; a truncated or
+		// malformed list is tolerated.
 		var unread int
 		d.info, unread, infoPadRescued, err = parseInfo(body, opts.Limits.MaxElements)
 		if errors.Is(err, waxerr.ErrSizeTooLarge) {
 			return nil, err
 		}
 		if err == nil {
-			// What a rewrite destroys: the bytes the item model does not carry, plus any the
-			// read above did not even see (maxMetaChunk cuts a body the alloc limit would still
-			// have allowed). An error path leaves it 0 rather than claiming the whole chunk.
+			// Bytes a rewrite destroys: those the item model does not carry, plus any past
+			// the maxMetaChunk cut. The error path leaves it 0.
 			d.infoTail = int64(unread) + max(0, d.chunks[i].bodyLen-int64(len(body)))
-			// The READ warning is suppressed where another code already names the same
-			// condition: the walker clamped this chunk to EOF, which oversized-chunk (or
-			// unknown-chunk-size, for the streaming sentinel) reports.
+			// Suppress the read warning when the walker clamped this chunk to EOF, which
+			// oversized-chunk or unknown-chunk-size already reports.
 			infoTailClamped = i == len(d.chunks)-1 &&
 				(slices.Contains(d.oversizedChunks, d.chunks[i].id) ||
 					slices.Contains(d.unknownSizeChunks, d.chunks[i].id))
@@ -181,9 +173,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		}
 	}
 
-	// The first id3 chunk that parses is authoritative; every other id3 chunk -
-	// a duplicate, or a corrupt one sitting beside a valid one - is marked dropped
-	// so the output never carries two id3 chunks.
+	// The first id3 chunk that parses is authoritative. Every other id3 chunk, a
+	// duplicate or a corrupt one beside a valid one, is marked dropped so the output
+	// never carries two.
 	for _, i := range id3Idxs {
 		body, err := bits.ReadSlice(src, d.chunks[i].bodyOff, min(d.chunks[i].bodyLen, maxMetaChunk), limit)
 		if err != nil {
@@ -195,9 +187,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			d.id3Idx = i
 			break
 		}
-		// A bounded-allocation cap breach (a hostile frame flood hitting MaxElements) is a
-		// hard error, not a benign "this chunk is not a tag": swallowing it would silently
-		// treat a structurally-valid id3 chunk as absent and rewrite the file without it.
+		// A MaxElements cap breach is a hard error, not "this chunk is not a tag":
+		// swallowing it would treat a valid id3 chunk as absent and rewrite without it.
 		if errors.Is(perr, waxerr.ErrSizeTooLarge) {
 			return nil, perr
 		}
@@ -244,9 +235,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	// A chunk declared the size-unknown sentinel, so everything past it was read as its
 	// body. Not truncation, but the reader loses whatever followed.
 	warnings = core.WarnUnknownSize(warnings, d.unknownSizeChunks)
-	// The LIST/INFO read could not account for the whole chunk. Both live here rather than
-	// in mediaWarnings because a rewrite writes a well-formed list, so the post-write
-	// document must not still report a condition the rewrite removed.
+	// The LIST/INFO read could not account for the whole chunk. These stay out of
+	// mediaWarnings: a rewrite writes a well-formed list, and the post-write document
+	// must not report a condition the rewrite removed.
 	if infoPadRescued {
 		warnings = core.Warn(warnings, core.WarnMalformedTagEntry,
 			"a LIST/INFO item is not followed by its word-alignment pad byte; the list was re-synchronized to read the items after it")
@@ -281,9 +272,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	return media, nil
 }
 
-// project derives the canonical view from a parsed (or rewritten) document under the
-// read-precedence policy: the embedded id3 chunk is authoritative when present, and
-// LIST/INFO fills in any canonical key id3 does not carry - so an INFO-only value (e.g.
+// project derives the canonical view from a parsed or rewritten document: the id3
+// chunk is authoritative when present, and LIST/INFO fills in any canonical key id3
+// does not carry.
 func project(d *doc) (tags tag.TagSet, pics []core.Picture, chapters []core.Chapter, syncedLyrics []core.SyncedLyrics, families []core.FamilyValue, numericGenre bool, projWarnings []core.Warning) {
 	tags = tag.NewTagSet()
 	switch {
@@ -291,9 +282,8 @@ func project(d *doc) (tags tag.TagSet, pics []core.Picture, chapters []core.Chap
 		proj := id3.Project(d.id3)
 		tags = proj.Tags
 		pics = proj.Pictures
-		// Chapters and synced lyrics live only in the embedded id3 chunk (CHAP/CTOC, SYLT).
-		// A native cue/adtl WAV chapter list is preserved opaque but not projected (a known
-		// gap), so a bare WAV reports no chapters.
+		// Chapters and synced lyrics live only in the id3 chunk (CHAP/CTOC, SYLT). A native
+		// cue/adtl chapter list is preserved opaque but not projected (a known gap).
 		chapters = proj.Chapters
 		core.OpenPastDurationEnds(chapters, d.track.Duration)
 		syncedLyrics = proj.SyncedLyrics
@@ -334,9 +324,9 @@ func mediaWarnings(d *doc, numericGenre bool) []core.Warning {
 	}
 	ws = append(ws, encoderNoise(d.info)...)
 	ws = append(ws, id3.EncoderNoise(d.id3)...)
-	// Both regions survive a rewrite byte for byte (write.go), so this is the only
-	// place they are ever mentioned. The in-RIFF one is counted in the recomputed
-	// container size; the outer one deliberately is not.
+	// Both regions survive a rewrite byte for byte (write.go), so only this place
+	// mentions them. The in-RIFF one counts toward the recomputed container size; the
+	// outer one does not.
 	ws = core.WarnTrailing(ws, d.trailingLen, "after the last RIFF chunk", d.trailingWhat())
 	ws = core.WarnTrailing(ws, d.outerLen, "after the RIFF container", "")
 	return ws
@@ -350,16 +340,13 @@ var riffDialect = iff.Dialect{
 }
 
 // walkChunks records every top-level RIFF chunk by identifier and source range via the
-// shared iff walker, then copies the result into d. It reads only chunk headers (never
-// bodies), so a large data chunk costs nothing.
+// shared iff walker. It reads only chunk headers, so a large data chunk costs nothing.
 func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, riffEnd int64, trustedEnd bool, limit int64, maxElements int) (distrusted bool, err error) {
 	opts := iff.WalkOptions{
 		Size: d.size, End: riffEnd, Limit: limit, MaxElements: maxElements, Dialect: riffDialect,
 		TrustedEnd: trustedEnd,
 	}
-	// Only an RF64/BW64 file has 64-bit sizes to resolve. Leaving the hook nil for plain
-	// RIFF keeps the walk on its original path instead of calling a method that would
-	// decline for every chunk of every file.
+	// Only an RF64/BW64 file has 64-bit sizes to resolve; plain RIFF leaves the hook nil.
 	if d.ds64 != nil {
 		opts.SizeOverride = d.ds64.override
 	}
@@ -384,9 +371,8 @@ func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, riffEnd int
 // isID3Chunk reports whether a chunk identifier holds an embedded ID3v2 tag.
 func isID3Chunk(id string) bool { return id == "id3 " || id == "ID3 " }
 
-// parseFmt decodes the common leading fields of a "fmt " chunk. The first 16
-// bytes cover PCM and the common compressed forms; WAVE_FORMAT_EXTENSIBLE and
-// longer fmt chunks carry extra bytes after these, which are not needed here.
+// parseFmt decodes the first 16 bytes of a "fmt " chunk, which cover PCM and the
+// common compressed forms. WAVE_FORMAT_EXTENSIBLE's extra bytes are not needed here.
 func parseFmt(b []byte) (fmtChunk, bool) {
 	if len(b) < 16 {
 		return fmtChunk{}, false
@@ -406,9 +392,8 @@ func parseFmt(b []byte) (fmtChunk, bool) {
 func buildTrack(fc fmtChunk, dataLen int64, factSamples uint64, hasFact bool) core.AudioTrack {
 	t := core.AudioTrack{
 		Codec: codecName(fc.audioFormat),
-		// Cap the uint32->int conversions so a hostile fmt value cannot overflow
-		// into a negative property on a 32-bit platform (where int is 32-bit), the
-		// same int(uint32) hazard parseInfo guards. Real rates are far below the cap.
+		// Cap the uint32->int conversion so a hostile fmt value cannot go negative on a
+		// 32-bit platform, the int(uint32) hazard parseInfo also handles.
 		SampleRate:    int(min(int64(fc.sampleRate), math.MaxInt32)),
 		Channels:      int(fc.channels),
 		BitsPerSample: int(fc.bitsPerSample),
@@ -453,9 +438,8 @@ func constantRatePCM(format uint16) bool {
 // one the nominal byte rate implies.
 const factSanityRatio = 8
 
-// minFactBitrate is the floor an implied average bitrate must clear for a declared
-// sample count to be believed: below 1 kbps there is no audio codec a RIFF file
-// carries, only a count that is too large for the bytes stored.
+// minFactBitrate is the floor the implied average bitrate must clear for a declared
+// sample count to be believed: no RIFF audio codec runs below 1 kbps.
 const minFactBitrate = 1000
 
 // factDuration converts a declared sample count into a duration, reporting ok=false
@@ -482,6 +466,5 @@ func factDuration(samples uint64, fc fmtChunk, dataLen int64) (time.Duration, bo
 }
 
 // codecName maps a WAVE format tag to a codec name. The table is shared with the ASF
-// reader, whose Stream Properties object carries the same structure, so one format tag
-// cannot read as two different codecs depending on the container.
+// reader, whose Stream Properties object carries the same structure.
 func codecName(format uint16) string { return core.WaveFormatCodec(format) }

@@ -258,7 +258,8 @@ func TestStrictBeforeNotFound(t *testing.T) {
 	}
 }
 
-// Unknown help topic exits 2; valid topic and bare help exit 0. Flag after valid command is stripped, not rejected.
+// Unknown help topic exits 2; valid topic and bare help exit 0. A flag after a valid
+// command is stripped, not rejected.
 func TestHelpTopicExitCode(t *testing.T) {
 	if _, _, code := runCLI(t, "help", "bogus"); code != 2 {
 		t.Errorf("help bogus exit = %d, want 2", code)
@@ -580,7 +581,7 @@ func TestRecursiveWalkThroughSymlinkedDirRoot(t *testing.T) {
 	}
 }
 
-// Dangling audio symlink reported as not-found, not dropped silently.
+// Dangling audio symlink is reported as not-found, not dropped.
 func TestRecursiveWalkReportsDanglingSymlink(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

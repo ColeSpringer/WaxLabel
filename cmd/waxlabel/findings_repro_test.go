@@ -211,7 +211,7 @@ func TestPictureEditing(t *testing.T) {
 	}
 }
 
-// Role names come from PictureType.String(); guards against silent renames breaking front-cover= etc.
+// Role names come from PictureType.String(); a rename there would break front-cover= etc.
 func TestPictureRoleVocabulary(t *testing.T) {
 	t.Parallel()
 	for name, want := range map[string]wl.PictureType{

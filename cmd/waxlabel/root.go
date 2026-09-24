@@ -62,7 +62,7 @@ func newRootCmd() *cobra.Command {
 	return root
 }
 
-// Bare waxlabel (no subcommand) is usage error (exit 2); cobra default is help+exit 0.
+// noCommand: bare waxlabel (no subcommand) is usage error (exit 2); cobra default is help+exit 0.
 // Human: help on stderr + already-rendered error. --json: unrendered usageError for dispatch.
 // --help/-h still exit 0 (resolved before RunE).
 func noCommand(cmd *cobra.Command) error {
@@ -78,8 +78,8 @@ func noCommand(cmd *cobra.Command) error {
 	return alreadyRendered(usagef("no command given"))
 }
 
-// Custom help: unknown topic exits 2 (cobra default is 0). Valid topics and bare "help" exit 0.
-// --help flag unchanged.
+// newHelpCmd replaces cobra's help command: unknown topic exits 2 (cobra default is 0).
+// Valid topics and bare "help" exit 0. --help flag unchanged.
 func newHelpCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "help [command]",
@@ -97,7 +97,7 @@ func newHelpCmd() *cobra.Command {
 	}
 }
 
-// "version" subcommand for bare "waxlabel version". Same output as --version; resolveVersion is source.
+// newVersionCmd builds the "version" subcommand. Same output as --version via resolveVersion.
 func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
@@ -107,9 +107,9 @@ func newVersionCmd() *cobra.Command {
 	}
 }
 
-// Replaces cobra completion: unknown shell/extra args exit 2. cobra's non-runnable parent skips
-// NoArgs ("completion zzz" exits 0); runnable parent + per-shell NoArgs fixes that. Named
-// "completion" prevents cobra's default. Generators use RunE-time OutOrStdout for redirects.
+// newCompletionCmd replaces cobra completion: unknown shell/extra args exit 2. cobra's non-runnable
+// parent skips NoArgs ("completion zzz" exits 0); runnable parent + per-shell NoArgs fixes that.
+// Named "completion" to displace cobra's own. Generators use RunE-time OutOrStdout for redirects.
 func newCompletionCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "completion [bash|zsh|fish|powershell]",
@@ -182,7 +182,7 @@ func wrapUsageErrors(cmd *cobra.Command) {
 	}
 }
 
-// Set via -ldflags "-X main.version=<tag>" for release builds; overrides VCS-derived build info.
+// version is set via -ldflags "-X main.version=<tag>" for release builds; overrides VCS build info.
 var version string
 
 // resolveVersion: ldflags version, else build info, else "dev".

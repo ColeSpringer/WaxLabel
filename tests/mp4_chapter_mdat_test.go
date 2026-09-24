@@ -37,8 +37,8 @@ func TestMP4ChapterMdatFlatAndEssenceStable(t *testing.T) {
 		return applyToBytes(t, src, plan)
 	}
 
-	// First edit creates the QuickTime chapter track and appends its mdat: the count may
-	// legitimately rise here (there was no chapter mdat before).
+	// The first edit creates the QuickTime chapter track and appends its mdat: the count rises
+	// here (there was no chapter mdat before).
 	v := setChapters(base, "A", "B")
 	firstCount := bytes.Count(v, []byte("mdat"))
 	if firstCount <= baseline {

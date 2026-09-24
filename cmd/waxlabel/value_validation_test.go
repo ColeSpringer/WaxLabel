@@ -95,7 +95,7 @@ func TestValueDroppedWarningM4A(t *testing.T) {
 		t.Errorf("plan TRACKTOTAL=abc: want a value-dropped warning naming TRACKTOTAL:\n%s", out)
 	}
 
-	// TRACKNUMBER=0 with real total: 0 dropped on read; wording says "reads back as absent".
+	// TRACKNUMBER=0 with TRACKTOTAL=12: 0 dropped on read; wording says "reads back as absent".
 	out, _, _ = runCLI(t, "plan", copyFixture(t, notagsM4A), "--set", "TRACKNUMBER=0", "--set", "TRACKTOTAL=12")
 	if !strings.Contains(out, "value-dropped") || !strings.Contains(out, "TRACKNUMBER") {
 		t.Errorf("plan TRACKNUMBER=0 TRACKTOTAL=12: the 0 is dropped on read, want a value-dropped warning naming TRACKNUMBER:\n%s", out)
@@ -188,7 +188,7 @@ func TestArgTextValidationIsUsageError(t *testing.T) {
 	}
 }
 
-// TestMalformedValueNamesTheRealFault: multi-failure categories name the actual fault.
+// TestMalformedValueNamesTheRealFault: multi-failure categories name the fault that applies.
 // Set note and lint message agree (TestLintAndNoteAgree pins verdict; this pins reason).
 func TestMalformedValueNamesTheRealFault(t *testing.T) {
 	t.Parallel()

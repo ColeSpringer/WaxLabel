@@ -8,9 +8,9 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// The IFF codecs re-emit a present tag container on every write, so the operation list has to
-// distinguish three things Execute really does to it: replace its bytes, leave them where they
-// were, and delete the container outright.
+// The IFF codecs re-emit a present tag container on every write, so the operation list must
+// distinguish what Execute does to it: replace its bytes, leave them in place, or delete the
+// container.
 
 func opsFor(t *testing.T, data []byte, edit func(*wl.Editor)) []string {
 	t.Helper()
@@ -46,8 +46,8 @@ func TestNativeContainerDropIsReported(t *testing.T) {
 	}
 }
 
-// picture-only edit forces an ID3 chunk but leaves the native container's bytes exactly where they
-// were. Claiming a rewrite there describes work no reader could observe.
+// A picture-only edit forces an ID3 chunk but leaves the native container's bytes in place, so no
+// rewrite is reported.
 func TestUnchangedNativeContainerReportsNoRewrite(t *testing.T) {
 	for _, tc := range []struct {
 		name, op string
@@ -69,9 +69,8 @@ func TestUnchangedNativeContainerReportsNoRewrite(t *testing.T) {
 	}
 }
 
-// guards the half of the rule a value comparison alone gets wrong. In both files every canonical
-// value survives the rewrite untouched, yet the container's bytes do move, so the rewrite is real
-// and must be reported.
+// The half of the rule a value comparison alone gets wrong: every canonical value survives the
+// rewrite untouched, yet the container's bytes move, so the rewrite must be reported.
 func TestContainerRewriteReportedWhenOnlyTheBytesMove(t *testing.T) {
 	// A LIST body whose tail the item walk could not read: the rewrite renders from the items
 	// alone, so those bytes do not come back.

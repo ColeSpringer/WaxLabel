@@ -139,11 +139,10 @@ func TestWMAMarkerForms(t *testing.T) {
 	})
 }
 
-// reader to the description-length stepping ffprobe uses and to the string forms a description can
-// take: an entry length field that lies does not derail the entries after it, a description length
-// past its entry is bounded by the entry, a NUL inside the description ends the title (a title
-// carrying one could not be copied anywhere), and a description length too wide for a 32-bit int is
-// safe.
+// The reader follows the description-length stepping ffprobe uses: an entry length field that lies
+// does not derail the entries after it, a description length past its entry is bounded by the
+// entry, a NUL inside the description ends the title (a title carrying one could not be copied
+// anywhere), and a description length too wide for a 32-bit int is safe.
 func TestWMAMarkerEntryShapes(t *testing.T) {
 	const preroll = 3 * time.Second
 	for _, c := range []struct {

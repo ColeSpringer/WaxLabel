@@ -299,7 +299,7 @@ func mp4Moov(udta []byte, stcoOff uint32) []byte {
 }
 
 // mp4MoovExtra is mp4Moov with two extension points: stblExtra is appended to the audio track's
-// stbl (beside the stco; where a saio belongs), and moovExtra to the moov itself (an mvex).
+// stbl (beside the stco, where a saio belongs), and moovExtra to the moov itself (an mvex).
 func mp4MoovExtra(udta []byte, stcoOff uint32, stblExtra, moovExtra []byte) []byte {
 	return mp4MoovStsd(udta, stcoOff, stblExtra, moovExtra, mp4StsdAudio(), 44100)
 }
@@ -531,10 +531,9 @@ func TestMP4RewriteInPlaceKeepsOffsets(t *testing.T) {
 }
 
 func TestMP4RewriteReusesSkipPadding(t *testing.T) {
-	// A "skip" atom is spec padding exactly like "free" (the native view marks both). An edit that
-	// grows the ilst past its original size but still fits within the adjacent skip slack must reuse
-	// the region in place rather than shift the mdat: the mdat must not move (stco unchanged) and the
-	// file size must stay the same.
+	// A "skip" atom is spec padding like "free" (the native view marks both). An edit that grows
+	// the ilst past its original size but still fits within the adjacent skip slack must reuse the
+	// region in place: the mdat must not move (stco unchanged) and the file size must stay the same.
 	skip := mp4Atom("skip", make([]byte, 64))
 	data := mp4Assemble(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "T")), skip)
 
@@ -690,9 +689,9 @@ func TestMP4CraftedDataAtomSizeNoPanic(t *testing.T) {
 }
 
 func TestMP4BareMetaQuickTime(t *testing.T) {
-	// QuickTime authors a bare meta (no FullBox version/flags prefix). The codec must detect this and
-	// still find the ilst; otherwise the 4-byte skip misaligns child parsing and the file reads as
-	// untagged (silent data loss).
+	// QuickTime authors a bare meta (no FullBox version/flags prefix). The codec must detect this
+	// and still find the ilst; otherwise the 4-byte skip misaligns child parsing and the file reads
+	// as untagged.
 	bare := mp4MetaBare(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "Bare Meta Title")))
 	data := mp4AssembleUdta(bare)
 
@@ -710,10 +709,9 @@ func TestMP4BareMetaQuickTime(t *testing.T) {
 	}
 }
 
-// udta that ends in a 32-bit-zero QuickTime terminator (which parse tolerates) and has no ilst:
-// creating a tag must insert the new meta after the last real child, dropping the terminator; not
-// after it, which would shift the meta out of alignment and corrupt every following atom on
-// re-parse.
+// A udta that ends in a 32-bit-zero QuickTime terminator (which parse tolerates) and has no
+// ilst: creating a tag must insert the new meta after the last real child and drop the
+// terminator. Inserting after it would misalign the meta and corrupt every following atom.
 func TestMP4UdtaZeroTerminatorCreatesTag(t *testing.T) {
 	child := mp4Atom("Xtra", []byte("XTRADATA")) // a real opaque udta child (preserved verbatim)
 	data := mp4AssembleUdta(child, mp4be32(0))   //...then a 32-bit-zero QuickTime terminator
@@ -736,9 +734,9 @@ func TestMP4UdtaZeroTerminatorCreatesTag(t *testing.T) {
 }
 
 func TestMP4MultiMdatTrailingMoovFingerprinted(t *testing.T) {
-	// Two mdats with the moov (tags) after the last one: the change-detection fingerprint must hash the
-	// trailing moov, so two files differing only in a tag (same size) get different fingerprints.
-	// Before the fix, an AudioRanges essence skipped the tail and these collided.
+	// Two mdats with the moov (tags) after the last one: the change-detection fingerprint must
+	// hash the trailing moov, so two files differing only in a tag (same size) get different
+	// fingerprints.
 	build := func(title string) []byte {
 		udta := mp4Atom("udta", mp4Meta(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", title))))
 		moov := mp4Moov(udta, 100)
@@ -815,10 +813,9 @@ func TestMP4MalformedCoverNotDuplicatedOnPictureEdit(t *testing.T) {
 }
 
 func TestMP4ForeignFreeformSurvivesCanonicalFreeformEdit(t *testing.T) {
-	// A com.apple.iTunes freeform with a mixed-case internal name (iTunNORM) is preserved verbatim.
-	// An edit that authors a custom canonical key emits its own "----" atom, so de-duplication must
-	// key freeforms by mean+name rather than the shared "----" fourcc, or the foreign atom would be
-	// wrongly dropped.
+	// A com.apple.iTunes freeform with a mixed-case internal name (iTunNORM) is preserved
+	// verbatim. An edit that authors a custom canonical key emits its own "----" atom, so
+	// de-duplication must key freeforms by mean+name, not the shared "----" fourcc.
 	foreign := mp4Freeform("com.apple.iTunes", "iTunNORM", "00000123 00000456")
 	data := mp4Tagged(mp4Text("\xa9nam", "T"), foreign)
 
@@ -854,9 +851,8 @@ func TestMP4FragmentedReadNotWritten(t *testing.T) {
 }
 
 func TestMP4MalformedContainerTilingRejected(t *testing.T) {
-	// A nested container's children must exactly tile it. Two fuzz-found shapes broke the round-trip
-	// (parse clamped/ignored the defect, then a create/insert rewrite copied the original bytes
-	// verbatim and emitted un-reparseable output), so both are now rejected at parse.
+	// A nested container's children must exactly tile it. Both shapes are rejected at parse: a
+	// rewrite that copied the defect verbatim would emit un-reparseable output.
 	ftyp := mp4Atom("ftyp", []byte("M4A \x00\x00\x00\x00isom"))
 	cases := map[string][]byte{
 		// trak inside moov declares 1000 bytes but only 16 are present (overrun).
@@ -873,9 +869,9 @@ func TestMP4MalformedContainerTilingRejected(t *testing.T) {
 }
 
 func TestMP4QuickTimeUdtaTerminatorAccepted(t *testing.T) {
-	// QuickTime terminates a udta user-data list with a 32-bit zero. The
-	// nested-tiling rejection must treat an all-zero remainder as benign so these
-	// Apple-authored files still read (regression guard for that check).
+	// QuickTime terminates a udta user-data list with a 32-bit zero. The nested-tiling
+	// rejection must treat an all-zero remainder as benign so these Apple-authored files
+	// still read.
 	udta := mp4Atom("udta", append(mp4Text("\xa9nam", "X"), 0, 0, 0, 0))
 	file := slices.Concat(mp4Atom("ftyp", []byte("M4A \x00\x00\x00\x00isom")), mp4Atom("moov", udta))
 	if _, err := wl.Parse(context.Background(), wl.BytesSource(file)); err != nil {
@@ -884,13 +880,13 @@ func TestMP4QuickTimeUdtaTerminatorAccepted(t *testing.T) {
 }
 
 func TestMP4PaddingFloorGrowsRegion(t *testing.T) {
-	// --padding N is a floor, honored on the in-place reuse path too. MP4 reuses the existing ilst+free
-	// region when the new content fits; without the floor wired into that path, a large --padding over
-	// a small region was silently ignored.
+	// --padding N is a floor, honored on the in-place reuse path too. MP4 reuses the existing
+	// ilst+free region when the new content fits, so without the floor on that path a large
+	// --padding over a small region would be ignored.
 	data := mp4Tagged(mp4Text("\xa9nam", "T"))
 
-	// Set a different title so the seed actually rewrites (creating the 50 KB region);
-	// setting it to its current value would be a no-op and leave the region untouched.
+	// Set a different title so the seed rewrites (creating the 50 KB region); setting it to
+	// its current value would be a no-op.
 	seedPlan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Seeded").
 		Prepare(wl.WithPadding(wl.PaddingPolicy{Target: 50000, Max: 1 << 20, ReuseInPlace: true}))
 	if err != nil {
@@ -968,9 +964,8 @@ func TestMP4CreateTagsOnUntaggedFile(t *testing.T) {
 }
 
 func TestMP4CreateMetaInExistingUdta(t *testing.T) {
-	// A file with a udta (holding only a chpl) but no meta/ilst: editing must create meta+ilst inside
-	// the existing udta, preserve the chpl, fix the stco, and read back; exercising the create-in-udta
-	// path and its result rebuild.
+	// A file with a udta (holding only a chpl) but no meta/ilst: editing must create meta+ilst
+	// inside the existing udta, preserve the chpl, fix the stco, and read back.
 	chpl := mp4Atom("chpl", slices.Concat([]byte{1, 0, 0, 0}, make([]byte, 4), []byte{1},
 		make([]byte, 8), []byte{3}, []byte("One")))
 	data := mp4AssembleUdta(chpl)
@@ -1009,8 +1004,8 @@ func TestMP4CreateMetaInExistingUdta(t *testing.T) {
 
 func TestMP4VerifyEssenceOnGrow(t *testing.T) {
 	// A faststart file (moov before mdat) grown so the mdat moves: WithVerifyEssence
-	// re-hashes the written output's mdat and compares it to the source, so it fails
-	// loudly if buildResult shifted the essence range wrong. The save must succeed.
+	// re-hashes the written output's mdat and compares it to the source, so it fails if
+	// buildResult shifted the essence range wrong. The save must succeed.
 	data := mp4Tagged(mp4Text("\xa9nam", "T"))
 	path := writeTempFile(t, "verify.m4a", data)
 	dst := path + ".out.m4a"
@@ -1198,7 +1193,7 @@ func TestMP4TruncatedMdatWarns(t *testing.T) {
 	})
 	t.Run("64-bit mdat near 2^63 does not overflow detection", func(t *testing.T) {
 		// A 64-bit mdat declaring ~2^63 bytes: forming offset+declaredSize overflows
-		// int64 to negative and silently suppressed the warning. Detecting at the walk's
+		// int64 to negative and would suppress the warning. Detecting at the walk's
 		// clamp (a comparison, no addition) is overflow-safe, so it is still flagged.
 		mdat64 := func(payload []byte) []byte {
 			b := append([]byte{0, 0, 0, 1}, []byte("mdat")...) // size==1 => 64-bit size follows
@@ -1222,9 +1217,8 @@ func TestMP4TruncatedMdatWarns(t *testing.T) {
 	})
 }
 
-// detection now looks past a leading free box, so such a file must also parse and keep that box
-// across a write; the parser was already generic over top-level atoms, and detection was the only
-// barrier.
+// Detection looks past a leading free box, so such a file must parse and keep that box across
+// a write.
 func TestMP4LeadingFreeAtomParsesAndSurvives(t *testing.T) {
 	free := mp4Atom("free", []byte{0, 0, 0, 0, 0, 0, 0, 0})
 	data := mp4AssembleLeading(free, nil, nil, mp4Meta(mp4HdlrMdir(), mp4Ilst(mp4Text("\xa9nam", "Song"))))

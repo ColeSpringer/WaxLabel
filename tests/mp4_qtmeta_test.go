@@ -32,9 +32,9 @@ func mp4MdtaFile(names []string, values []string) []byte {
 	return mp4Assemble(mp4HdlrMdta(), mp4Keys(names...), mp4Ilst(items...))
 }
 
-// report's repro: an ffmpeg "+use_metadata_tags" file keys its ilst items by index into a keys box
-// holding bare names. Without the keys index every item falls to the unknown-atom branch and the
-// file reports no tags at all.
+// An ffmpeg "+use_metadata_tags" file keys its ilst items by index into a keys box holding bare
+// names. Without the keys index every item falls to the unknown-atom branch and the file reports
+// no tags at all.
 func TestMP4MdtaBareKeysRead(t *testing.T) {
 	data := mp4MdtaFile(
 		[]string{"title", "artist", "encoder"},
@@ -52,8 +52,8 @@ func TestMP4MdtaBareKeysRead(t *testing.T) {
 	}
 }
 
-// Apple's own recorders write the reverse-DNS key form. Stripping the prefix lands both producers
-// on the same vocabulary.
+// Apple's recorders write the reverse-DNS key form. Stripping the prefix puts both producers on
+// the same vocabulary.
 func TestMP4MdtaApplePrefixedKeysRead(t *testing.T) {
 	data := mp4MdtaFile(
 		[]string{"com.apple.quicktime.title", "com.apple.quicktime.creationdate", "com.apple.quicktime.software"},
@@ -123,9 +123,9 @@ func TestMP4UdtaTextRead(t *testing.T) {
 	}
 }
 
-// several [size][language]<text> entries can sit back to back in one atom (this is where ffprobe's
-// "title-eng" comes from). The first undefined/English entry supplies the canonical value, and
-// every other entry survives a rewrite verbatim rather than being flattened away.
+// Several [size][language]<text> entries can sit back to back in one atom (the source of
+// ffprobe's "title-eng"). The first undefined/English entry supplies the canonical value, and
+// every other entry survives a rewrite verbatim.
 func TestMP4UdtaMultiLanguageCanonicalValue(t *testing.T) {
 	data := mp4AssembleUdta(mp4UdtaText("\xa9nam",
 		mp4QTTextEntry(langDeu, "Deutscher Titel"),
@@ -193,7 +193,7 @@ func TestMP4UdtaIlstDisagreementSurvivesUnrelatedEdit(t *testing.T) {
 	if v, _ := re.Tags().Get(tag.Title); len(v) != 1 {
 		t.Errorf("TITLE = %v, want one value; the disagreement must not become a multi-value", v)
 	}
-	// The write syncs udta to the ilst, so the two now agree and no conflict remains, but they must
+	// The write syncs udta to the ilst, so the two agree and no conflict remains, but they must
 	// agree on the ilst's value, not by having absorbed both.
 	if v, _ := re.Tags().Get(tag.Title); len(v) != 1 || v[0] != "Ilst Title" {
 		t.Errorf("TITLE = %v, want [Ilst Title]", v)
@@ -226,9 +226,8 @@ func TestMP4UdtaUnmappedAtomPreserved(t *testing.T) {
 	}
 }
 
-// write half of the report's repro: a set on a keys-indexed file must land as a keys entry plus an
-// index-keyed item, not as a four-character "\xa9nam" atom sitting inside an mdta box where nothing
-// will read it.
+// A set on a keys-indexed file must be written as a keys entry plus an index-keyed item, not as
+// a four-character "\xa9nam" atom inside an mdta box where nothing will read it.
 func TestMP4MdtaWriteStaysKeyed(t *testing.T) {
 	data := mp4MdtaFile([]string{"title"}, []string{"Before"})
 	doc := mustParseBytes(t, data)
@@ -250,8 +249,8 @@ func TestMP4MdtaWriteStaysKeyed(t *testing.T) {
 	if v, _ := re.Tags().Get(tag.Album); len(v) != 1 || v[0] != "Fresh" {
 		t.Errorf("ALBUM = %v, want [Fresh]", v)
 	}
-	// Re-applying the same edit must be a true no-op: the keys index is carried forward by
-	// position, so a second write reuses every entry and produces identical bytes.
+	// Re-applying the same edit must be a no-op: the keys index is carried forward by position,
+	// so a second write reuses every entry and produces identical bytes.
 	plan2, err := re.Edit().Set(tag.Title, "After").Set(tag.Album, "Fresh").Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -460,9 +459,9 @@ func TestMP4MdtaWithoutKeysBoxFallsBack(t *testing.T) {
 	}
 }
 
-// ilst item whose four-cc reads as a keys index the table does not cover resolves to nothing and is
-// preserved verbatim. The index is compared as an unsigned value: a name above 2^31 turns negative
-// under a 32-bit int, which made the bounds check pass and the lookup panic.
+// An ilst item whose four-cc reads as a keys index the table does not cover resolves to nothing
+// and is preserved verbatim. The index is compared as an unsigned value: a name above 2^31
+// turns negative under a 32-bit int, which would pass the bounds check and panic the lookup.
 func TestMP4MdtaOutOfRangeIndexPreserved(t *testing.T) {
 	// "\xa9nam" reads as the index 0xA96E616D (2842583405), far past a one-entry table.
 	data := mp4Assemble(mp4HdlrMdta(), mp4Keys("title"),

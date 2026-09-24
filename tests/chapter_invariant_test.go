@@ -10,8 +10,8 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// keeps the grading-critical chapter capability fields (MaxItems and ChapterLoss) equal across
-// codecs that share the same physical store.
+// The grading-critical chapter capability fields (MaxItems and ChapterLoss) must be equal across
+// codecs that share a physical store.
 func TestChapterCapabilityConsistency(t *testing.T) {
 	chapterCaps := func(f wl.Format) wl.Capability { return wl.CapabilitiesFor(f).Chapters }
 	sameGrading := func(group []wl.Format) wl.Capability {
@@ -29,8 +29,8 @@ func TestChapterCapabilityConsistency(t *testing.T) {
 	// (FLAC/Ogg) must each grade uniformly within the group.
 	id3 := sameGrading([]wl.Format{wl.FormatMP3, wl.FormatAAC, wl.FormatAIFF, wl.FormatWAV})
 	vorbis := sameGrading([]wl.Format{wl.FormatFLAC, wl.FormatOggVorbis, wl.FormatOggOpus})
-	// And the two stores genuinely differ: ID3 keeps end times (LangFlags), CHAPTERxxx does
-	// not (StartTitleOnly), so a uniform ChapterLoss across both would be a real bug.
+	// The two stores differ: ID3 keeps end times (LangFlags), CHAPTERxxx does not
+	// (StartTitleOnly), so a uniform ChapterLoss across both would be a bug.
 	if id3.ChapterLoss == vorbis.ChapterLoss {
 		t.Errorf("ID3 and Vorbis chapter loss should differ, both = %d", id3.ChapterLoss)
 	}
@@ -78,9 +78,8 @@ var chapterFixtures = map[wl.Format]string{
 	wl.FormatMatroska:  "../testdata/notags.mka",
 }
 
-// checks every writable chapter format with the same structured edit. It catches missing change
-// detection, missing write support, and post-write result plumbing without requiring per-codec
-// copies of the same test.
+// Every writable chapter format gets the same structured edit, which catches missing change
+// detection, missing write support, and broken post-write result plumbing.
 func TestChapterWriteInvariant(t *testing.T) {
 	want := []wl.Chapter{
 		{Start: 0, Title: "Opening"},
@@ -112,8 +111,8 @@ func TestChapterWriteInvariant(t *testing.T) {
 			assertChapters(t, "in-memory result", inMem, want)
 			assertChapters(t, "reparsed bytes", reparsed, want)
 
-			// Clearing the chapters must also round-trip to none on both paths, exercising the
-			// clear branch the set-only path does not. Re-edit the now-chaptered output.
+			// Clearing must also round-trip to none on both paths; that is the clear branch the
+			// set-only path does not reach.
 			chaptered := applyToBytes(t, src, plan)
 			clearPlan, err := mustParseBytes(t, chaptered).Edit().ClearChapters().Prepare()
 			if err != nil {

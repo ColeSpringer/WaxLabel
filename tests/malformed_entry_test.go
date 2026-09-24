@@ -15,9 +15,9 @@ import (
 // length prefix, but with no separator, so no reader can split it into a key and a value.
 const unseparatedEntry = "noequalshere"
 
-// entry used to be dropped at parse and then erased by the next rewrite, which re-renders the list
-// from the parsed comments. The comment codec is shared, so one fix covers FLAC and every Ogg
-// mapping; both the native FLAC block and the Ogg FLAC packet form are driven here.
+// An unseparated entry is preserved across a rewrite, which re-renders the list from the parsed
+// comments, and is reported. The comment codec is shared by FLAC and every Ogg mapping, so both
+// the native FLAC block and the Ogg FLAC packet form are covered.
 func TestUnseparatedVorbisEntryPreservedAndReported(t *testing.T) {
 	body := renderVC("TITLE=Song", unseparatedEntry)
 	for _, tc := range []struct {
@@ -40,8 +40,7 @@ func TestUnseparatedVorbisEntryPreservedAndReported(t *testing.T) {
 			if !lintHasCode(doc, "malformed-tag-entry") {
 				t.Errorf("lint did not promote the warning: %v", doc.Lint())
 			}
-			// The bytes survive an unrelated edit, and a re-parse reports the condition exactly once;
-			// preserved, and not double-counted.
+			// The bytes survive an unrelated edit, and a re-parse reports the condition exactly once.
 			plan, err := doc.Edit().Set(tag.Album, "New").Prepare()
 			if err != nil {
 				t.Fatal(err)
@@ -75,8 +74,8 @@ func overrunFrame(id string) []byte {
 	return slices.Concat([]byte(id), syncsafe(1<<20), []byte{0, 0}, []byte("short"))
 }
 
-// walk stopped on the overrunning frame with no error and no signal, and ParseTag then recorded the
-// unread remainder as free padding, so dump reported room the file does not have.
+// An overrunning frame is reported and dropped, and its unread remainder is not counted as
+// padding, since dump would otherwise report room the file does not have.
 func TestID3OverrunningFrameReportedAndDropped(t *testing.T) {
 	data := mp3WithFrames(t, textFrame(4, "TIT2", "Song"), overrunFrame("TALB"))
 	doc := mustParseBytes(t, data)
@@ -130,8 +129,8 @@ func TestID3CleanTagKeepsItsPadding(t *testing.T) {
 	}
 }
 
-// tag header declaring more bytes than the whole file returned "no front tag" with a nil error, so
-// the tag vanished from every view with no diagnostic at all.
+// A front tag header declaring more bytes than the whole file must draw a diagnostic, not read
+// as "no front tag" with a nil error.
 func TestID3FrontTagOverrunningFileReported(t *testing.T) {
 	audio := mp3Audio(t)
 	hdr := slices.Concat([]byte{'I', 'D', '3', 4, 0, 0}, syncsafe(1<<20))
@@ -141,8 +140,9 @@ func TestID3FrontTagOverrunningFileReported(t *testing.T) {
 	}
 }
 
-// condition is a property of the list, and a crafted comment packet can hold entries by the tens of
-// thousands. One warning per entry turned a 400 KiB file into megabytes of dump and lint output.
+// The condition is a property of the list, so it is reported once. A crafted comment packet can
+// hold tens of thousands of entries, and one warning per entry would turn a 400 KiB file into
+// megabytes of dump and lint output.
 func TestManyUnseparatedEntriesReportOnce(t *testing.T) {
 	entries := make([]string, 0, 5001)
 	entries = append(entries, "TITLE=Song")
@@ -160,8 +160,8 @@ func TestManyUnseparatedEntriesReportOnce(t *testing.T) {
 	}
 }
 
-// warning splices bytes the file chose, so an oversized value must be elided rather than printed
-// whole; a 1 MiB ENCODER containing "lavf" would otherwise be a 1 MiB line in dump and lint.
+// A warning splices bytes the file chose, so an oversized value must be elided; a 1 MiB ENCODER
+// containing "lavf" would otherwise be a 1 MiB line in dump and lint.
 func TestWarningSnippetsAreBounded(t *testing.T) {
 	const big = 4096
 	for _, tc := range []struct{ name, entry string }{
@@ -183,9 +183,9 @@ func TestWarningSnippetsAreBounded(t *testing.T) {
 	}
 }
 
-// Document a write returns must match a fresh parse of the bytes it wrote. The rewritten tag has no
-// unreadable tail, so carrying the read warning forward would have the result claim the region both
-// still exists and was dropped.
+// The Document a write returns must match a fresh parse of the bytes it wrote. The rewritten tag
+// has no unreadable tail, so carrying the read warning forward would claim the region both still
+// exists and was dropped.
 func TestID3MalformedTailClearsOnThePostWriteDocument(t *testing.T) {
 	data := mp3WithFrames(t, textFrame(4, "TIT2", "Song"), overrunFrame("TALB"))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Artist, "Band").Prepare()
@@ -205,8 +205,8 @@ func TestID3MalformedTailClearsOnThePostWriteDocument(t *testing.T) {
 	}
 }
 
-// v2.2 identifier is upgraded to its v2.3/v2.4 spelling everywhere else in the output, so the
-// diagnostic must not name a frame the listing beside it calls something different.
+// A v2.2 identifier is upgraded to its v2.3/v2.4 spelling everywhere else in the output, so the
+// diagnostic must use the same name.
 func TestID3v22MalformedFrameUsesTheUpgradedID(t *testing.T) {
 	// A v2.2 TAL (album) frame whose 3-byte size overruns the tag.
 	bad := slices.Concat([]byte("TAL"), []byte{0x0F, 0xFF, 0xFF}, []byte("short"))
@@ -222,8 +222,8 @@ func TestID3v22MalformedFrameUsesTheUpgradedID(t *testing.T) {
 	}
 }
 
-// zeroing the phantom padding removed the only line that accounted for the region, so the block's
-// size disagreed with its listed frames in silence; the very condition the warning is about.
+// The native view must account for the unreadable region; with the phantom padding zeroed, nothing
+// else explains why the block's size disagrees with its listed frames.
 func TestID3MalformedTailShownInTheNativeView(t *testing.T) {
 	data := mp3WithFrames(t, textFrame(4, "TIT2", "Song"), overrunFrame("TALB"))
 	var note string

@@ -249,10 +249,9 @@ func TestProjectAndPatchRoundTrip(t *testing.T) {
 	}
 }
 
-// TestProjectPlayCountErrorsToZero: the typed PlayCount follows ParseNumPair's convention -
-// surrounding whitespace is trimmed, and every parse error (including int overflow) yields 0
-// rather than strconv.Atoi's partial value - so a malformed raw PLAYCOUNT does not leak a
-// half-parsed or garbage count into the projection. The raw bytes remain via TagSet.Get.
+// TestProjectPlayCountErrorsToZero: the typed PlayCount follows ParseNumPair's convention.
+// Surrounding whitespace is trimmed, and every parse error, int overflow included, yields 0
+// rather than strconv.Atoi's partial value. The raw bytes remain via TagSet.Get.
 func TestProjectPlayCountErrorsToZero(t *testing.T) {
 	cases := []struct {
 		raw  string
@@ -277,8 +276,7 @@ func TestProjectPlayCountErrorsToZero(t *testing.T) {
 }
 
 // TestProjectNewAccessors: the audiobook/provenance accessors project from their canonical
-// keys and round-trip through Patch (both sides of the mirror), so a Project -> Patch -> Apply
-// keeps them rather than silently dropping them. MediaType is distinct from Media.
+// keys and round-trip through Project -> Patch -> Apply. MediaType is distinct from Media.
 func TestProjectNewAccessors(t *testing.T) {
 	ts := NewTagSet()
 	ts.Set(Media, "CD") // the pre-existing release-medium field, distinct from MediaType
@@ -309,8 +307,7 @@ func TestProjectNewAccessors(t *testing.T) {
 	if got := fields(Project(ts)); !maps.Equal(got, want) {
 		t.Errorf("Project accessors = %v, want %v", got, want)
 	}
-	// Both sides of the mirror: Project reads them AND Patch writes them, so a round-trip
-	// preserves every one. A key populated on only one side would drop here.
+	// A key that Project reads but Patch does not write, or the reverse, drops here.
 	round := fields(Project(Project(ts).Patch().Apply(NewTagSet())))
 	if !maps.Equal(round, want) {
 		t.Errorf("Project -> Patch round-trip = %v, want %v", round, want)
@@ -318,9 +315,9 @@ func TestProjectNewAccessors(t *testing.T) {
 }
 
 // TestProjectReleaseDetailAccessors: the three release-detail accessors project from their
-// canonical keys and round-trip through Patch, so a Project -> Patch -> Apply keeps them.
-// ReleaseTypes is the multivalued one (a primary type plus secondary types), so the two-value
-// case is what proves it did not collapse to a scalar on either side of the mirror.
+// canonical keys and round-trip through Project -> Patch -> Apply. ReleaseTypes is
+// multivalued (a primary type plus secondary types), so the two-value case proves it did
+// not collapse to a scalar on either side.
 func TestProjectReleaseDetailAccessors(t *testing.T) {
 	ts := NewTagSet()
 	ts.Set(ReleaseCountry, "GB")
@@ -431,8 +428,8 @@ func TestValidReplayGainValue(t *testing.T) {
 
 // TestValidReleaseCountryValue checks the RELEASECOUNTRY shape contract: exactly two ASCII
 // letters, whitespace-tolerant and case-blind, which covers ISO 3166-1 alpha-2 plus
-// MusicBrainz's XW/XE pseudo-codes without a whitelist to keep current. The key is also
-// trimmable, so a spaced value stores as the bare code rather than keeping its padding.
+// MusicBrainz's XW/XE pseudo-codes without a whitelist. The key is also trimmable, so a
+// spaced value stores as the bare code.
 func TestValidReleaseCountryValue(t *testing.T) {
 	for _, v := range []string{"GB", "US", "XW", "XE", "gb", " GB "} {
 		if !ValidReleaseCountryValue(ReleaseCountry, v) {
@@ -511,9 +508,8 @@ func TestPerformersRoundTrip(t *testing.T) {
 	}
 }
 
-// TestPerformersPreserveOrder verifies that a multi-valued PERFORMER's order is significant and
-// must survive Project -> Patch -> Apply unchanged. The old map-keyed-by-role projection
-// re-sorted it.
+// TestPerformersPreserveOrder: a multi-valued PERFORMER's order is significant and must
+// survive Project -> Patch -> Apply unchanged.
 func TestPerformersPreserveOrder(t *testing.T) {
 	values := []string{"Zoe (vocals)", "Amy (guitar)", "Bob (drums)"}
 	ts := NewTagSet()
@@ -526,10 +522,9 @@ func TestPerformersPreserveOrder(t *testing.T) {
 	}
 }
 
-// TestPerformersTrimSurroundingWhitespace: incidental whitespace around a PERFORMER
-// value must not hide the "(role)" suffix (a trailing space before the value end) nor
-// stick to the parsed name. The native bytes are preserved separately; this only cleans
-// the typed projection.
+// TestPerformersTrimSurroundingWhitespace: whitespace around a PERFORMER value must not
+// hide the "(role)" suffix or stick to the parsed name. Only the typed projection is
+// cleaned; the native bytes are preserved separately.
 func TestPerformersTrimSurroundingWhitespace(t *testing.T) {
 	cases := []struct {
 		value string
@@ -547,9 +542,8 @@ func TestPerformersTrimSurroundingWhitespace(t *testing.T) {
 	}
 }
 
-// TestPerformersParenthesizedValues verifies that a fully-parenthesized value has no name to
-// split a role from, so it must be kept whole and re-emit verbatim rather than being
-// mangled (the old splitter dropped the parentheses or split an empty name).
+// TestPerformersParenthesizedValues: a fully-parenthesized value has no name to split a
+// role from, so it is kept whole and re-emits verbatim.
 func TestPerformersParenthesizedValues(t *testing.T) {
 	cases := []struct {
 		value string

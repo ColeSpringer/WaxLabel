@@ -9,16 +9,16 @@ import (
 	"github.com/colespringer/waxlabel/internal/id3"
 )
 
-// chunk records one top-level RIFF chunk by identifier and source byte range. the data
-// chunk and every ancillary chunk are kept here only as ranges and copied verbatim on
-// rewrite, so a multi-megabyte data chunk is never read into memory.
+// chunk records one top-level RIFF chunk by identifier and source byte range. The data
+// chunk and every ancillary chunk are kept only as ranges and copied verbatim on
+// rewrite, so a large data chunk is never read into memory.
 type chunk struct {
 	id      [4]byte
 	bodyOff int64 // source offset of the body (after the 8-byte chunk header)
 	bodyLen int64 // declared body length, excluding any trailing pad byte
-	// dupTag marks a redundant duplicate tag container (a second LIST/INFO or id3
-	// chunk). Only the first of each kind is authoritative; duplicates are
-	// preserved verbatim on a no-op but dropped when the file is rewritten.
+	// dupTag marks a duplicate tag container (a second LIST/INFO or id3 chunk). The
+	// first of each kind is authoritative; duplicates survive a no-op but are dropped
+	// on rewrite.
 	dupTag bool
 	// dupContent is what this duplicate holds, graded against the written set at write time so
 	// a duplicate whose values the edit itself now stores is silent.
@@ -37,10 +37,8 @@ type infoItem struct {
 
 func (it infoItem) id4() string { return string(it.id[:]) }
 
-// text decodes the value bytes for projection: UTF-8 when valid (what the ffmpeg
-// family and modern taggers write), else Latin-1 (the historical RIFF code
-// page), so a legacy é (0xE9) is a valid 'é' in the canonical model rather than
-// an invalid-UTF-8 string.
+// text decodes the value bytes: UTF-8 when valid (what ffmpeg and modern taggers
+// write), else Latin-1 (the historical RIFF code page), so a legacy 0xE9 reads as 'é'.
 func (it infoItem) text() string {
 	if utf8.Valid(it.raw) {
 		return string(it.raw)
@@ -75,15 +73,14 @@ type doc struct {
 	info []infoItem // decoded INFO items in order (nil if no INFO chunk)
 	id3  *id3.Tag   // decoded embedded ID3v2 tag (nil if no id3 chunk)
 	// infoTail is how many bytes at the end of the LIST/INFO chunk could not be read as
-	// items. the write path reports that rather than losing them silently.
+	// items; the write path reports their loss.
 	infoTail int64
 
 	dataOff int64 // data chunk body offset (audio essence start)
 	dataLen int64 // data chunk body length (audio essence length)
-	// dataTruncated records that the data chunk's declared size ran past EOF (and was
-	// not the 0xFFFFFFFF "size unknown" streaming sentinel) - a truncated file. It is
-	// set where the walk already clamps the overrun, so the overrun is acted on where
-	// it is first known rather than reconstructed afterward.
+	// dataTruncated records that the data chunk's declared size ran past EOF and was
+	// not the 0xFFFFFFFF size-unknown sentinel: a truncated file. The walk sets it where
+	// it clamps the overrun.
 	dataTruncated bool
 	// oversizedChunks holds non-audio chunk ids whose declared body ran past EOF and was
 	// clamped, so the parser can surface a warning.
@@ -100,9 +97,9 @@ type doc struct {
 	// trailingID3v1 records that the walk stopped on a recognized ID3v1 trailer rather than
 	// on corruption, so the preserved region is named for what it is.
 	trailingID3v1 bool
-	// outerOff/outerLen capture bytes after the RIFF chunk - data appended outside
-	// the declared RIFF size (e.g. a tacked-on ID3v1). Preserved verbatim but kept
-	// outside the recomputed RIFF size so a strict reader does not misparse them.
+	// outerOff/outerLen capture bytes after the RIFF chunk, outside the declared RIFF
+	// size (a tacked-on ID3v1, say). Preserved verbatim and kept outside the recomputed
+	// RIFF size so a strict reader does not misparse them.
 	outerOff int64
 	outerLen int64
 
@@ -115,10 +112,9 @@ type doc struct {
 	track       core.AudioTrack
 	size        int64
 
-	// form is the container's 12-byte header id: "RIFF", or "RF64"/"BW64" for the
-	// 64-bit extension. It is carried so a rewrite keeps the form it was given -
-	// never silently downgrading an RF64 file to RIFF - and ds64 holds that
-	// extension's decoded sizes (nil for plain RIFF).
+	// form is the container's header id: "RIFF", or "RF64"/"BW64" for the 64-bit
+	// extension. A rewrite keeps the form it was given. ds64 holds the extension's
+	// decoded sizes (nil for plain RIFF).
 	form [4]byte
 	ds64 *ds64
 }
@@ -128,8 +124,7 @@ type doc struct {
 func (d *doc) isRF64() bool { return d.ds64 != nil }
 
 // containerName is the subformat label reported in Properties.Container: "WAV" for a
-// plain RIFF container, and the header id itself ("RF64" or "BW64") for the 64-bit
-// extension, so a caller can tell the forms apart.
+// plain RIFF container, and the header id itself ("RF64" or "BW64") otherwise.
 func (d *doc) containerName() string {
 	if id := d.headerID(); id != "RIFF" {
 		return id
@@ -157,8 +152,7 @@ func (d *doc) Describe() []core.NativeEntry {
 	for i, ch := range d.chunks {
 		switch i {
 		case d.infoIdx:
-			// Name the unreadable tail so the item count stops disagreeing with the chunk
-			// size in silence.
+			// Name the unreadable tail, which explains an item count short of the chunk size.
 			note := fmt.Sprintf("%d items", len(d.info)) + core.UnparsedNote(d.infoTail)
 			out = append(out, core.NativeEntry{
 				Kind: "LIST/INFO", Size: int(ch.bodyLen), Note: note,
@@ -174,9 +168,8 @@ func (d *doc) Describe() []core.NativeEntry {
 				note = fmt.Sprintf("ID3v2.%d, ", d.id3.SrcVersion()) + id3.FramesNote(d.id3)
 			}
 			out = append(out, core.NativeEntry{Kind: "id3 chunk", Size: int(ch.bodyLen), Note: note})
-			// List the frames as MP3 and AAC do, so a described COMM here is as identifiable
-			// as the same frame inside an MP3 - which is the question the technical-description
-			// denylist exists to let a user answer.
+			// List the frames as MP3 and AAC do, so the technical-description denylist can
+			// identify a COMM here as well as one inside an MP3.
 			for _, f := range frames {
 				out = append(out, core.NativeEntry{Kind: "  " + f.ID, Size: len(f.Body), Note: id3.FrameNote(f)})
 			}

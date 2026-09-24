@@ -34,10 +34,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	syncedLyricsChanged := !core.EqualSyncedLyrics(base.SyncedLyrics, edited.SyncedLyrics)
 	// LegacyStrip consolidates tags into the id3 chunk by dropping LIST/INFO.
 	stripINFO := opts.Legacy == core.LegacyStrip && infoPresent
-	// The keys whose INFO items this write re-renders: the ones whose value moved, plus the
-	// ones the edit named outright (an explicit set of the already-projected value is how a
-	// caller resolves an INFO item the id3 chunk disagrees with), with the track number and
-	// total folded together because they share one item.
+	// Keys whose INFO items this write re-renders: those whose value moved plus those the
+	// edit named outright. Setting the already-projected value is how a caller resolves
+	// an INFO item the id3 chunk disagrees with. Track number and total share one item.
 	changed := foldInfoTrackPair(core.ChangedKeys(base.Tags, edited.Tags, opts.Touched))
 
 	// A WithStripEncoderStamp edit removes a transcoder-stamp ISFT item.
@@ -47,8 +46,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	report := core.WriteReport{Format: core.FormatWAV, BytesBefore: edited.Identity.Size}
 
-	// One WriteOpts for both the predicate and the rebuild: they must render from identical
-	// options, or the predicate could green-light a write the rebuild then renders differently.
+	// One WriteOpts for both the predicate and the rebuild, so they cannot disagree.
 	wopts := id3.WriteOpts{Multi: opts.ID3Multi, NumericGenre: opts.NumericGenre}
 	// A requested write encoding (--numeric-genre) changes how a value is stored, not the
 	// value itself, so the tag comparison above cannot see it.
@@ -68,10 +66,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	// while leaving the canonical set as it was; it must defeat both no-op gates.
 	infoRewrite := writeINFO && infoPresent && !equalInfoItems(newInfo, d.info)
 
-	// Fast path: nothing changed. NoOpPlan emits a verbatim copy (so SaveAsFile/
-	// WriteTo still produce a whole file) flagged NoOp so SaveBack skips it. A
-	// chapters- or synced-lyrics-only edit (CHAP/CTOC, SYLT in the id3 chunk) must defeat
-	// the gate too.
+	// Fast path: nothing changed. NoOpPlan emits a verbatim copy flagged NoOp, so
+	// SaveAsFile/WriteTo still produce a whole file and SaveBack skips it. A chapters-
+	// or synced-lyrics-only edit must defeat the gate too.
 	if !tagsChanged && !picturesChanged && !chaptersChanged && !syncedLyricsChanged && !stripINFO && !stampToStrip && !encodingRewrite && !infoRewrite {
 		return core.NoOpPlan(report, edited.Identity.Size, base), nil
 	}
@@ -83,10 +80,9 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		}
 	}
 
-	// Build the new id3 tag. id3.RewriteBase picks the diff base: no id3 chunk
-	// means an empty base, --legacy strip uses only the parsed id3 frames so
-	// INFO-only values are emitted into id3, and the default path uses the merged
-	// base.
+	// id3.RewriteBase picks the diff base: empty with no id3 chunk, the parsed id3
+	// frames alone under --legacy strip (so INFO-only values are emitted into id3),
+	// and the merged base otherwise.
 	var newID3 *id3.Tag
 	var id3Info id3.RebuildInfo
 	if needID3 {
@@ -121,7 +117,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	emitID3 := needID3 && newID3 != nil && len(newID3.Frames()) > 0
 
 	// When both LIST/INFO and ID3 are emitted, a multi-valued key keeps its full set only
-	// in ID3;
+	// in ID3.
 	if emitINFO && emitID3 {
 		report.Warnings = append(report.Warnings, nativeReducedWarnings(edited.Tags, changed)...)
 	}
@@ -133,9 +129,8 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		return nil, err
 	}
 	report.Operations = ops
-	// Only a chunk this plan actually writes can have had a conflict resolved in it; a strip
-	// or a full clear drops the LIST outright, and claiming a resolution there would describe
-	// something Execute does not do.
+	// Only a chunk this plan writes can have a conflict resolved in it; a strip or a full
+	// clear drops the LIST outright.
 	if emitINFO {
 		for _, k := range infoConflictKeys(base.Families, changed) {
 			report.Operations = append(report.Operations, "LIST/INFO conflict resolved ("+string(k)+")")
@@ -149,26 +144,23 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 			syncedLyricsChanged, len(edited.SyncedLyrics))...)
 	}
 	if stripINFO {
-		// LegacyStrip consolidates the mapped items into the id3 chunk, but an unmapped item
-		// has no canonical key and so no frame to move into: dropping the chunk destroys it.
-		// doc.go's contract is that unaffected data is warned about, never stripped silently,
-		// and this is the one WAV path that would.
+		// LegacyStrip moves the mapped items into the id3 chunk, but an unmapped item has no
+		// canonical key and so no frame to move into: dropping the chunk destroys it. doc.go
+		// requires a warning for such a loss.
 		if ids := unmappedInfoIDs(d.info); len(ids) > 0 {
 			report.Warnings = core.Warn(report.Warnings, core.WarnLegacyStripDropped,
 				core.StripDroppedMessage("LIST/INFO chunk", []string{"items no canonical key can hold (" + strings.Join(ids, ", ") + ")"}))
 		}
 	}
 	if d.infoIdx >= 0 && d.infoTail > 0 {
-		// rebuildInfo re-renders the chunk from the items alone, so a region the parser could
-		// not read as items has nowhere to go. Under --legacy strip this fires alongside
-		// legacy-strip-dropped: two distinct losses, items with no canonical key and bytes
-		// that were never items.
+		// rebuildInfo re-renders the chunk from the items alone, so bytes the parser could
+		// not read as items are lost. Under --legacy strip this fires alongside
+		// legacy-strip-dropped; the two losses are distinct.
 		report.Warnings = core.Warn(report.Warnings, core.WarnMalformedTagEntryDropped,
 			fmt.Sprintf("%d byte(s) of the LIST/INFO chunk could not be read as items and are not carried into the rewritten chunk", d.infoTail))
 	}
 	if stampToStrip {
-		// Surface the strip even when it empties the LIST (which records no rewrite op),
-		// so a plan that only drops the stamp is not reported as a contentless rewrite.
+		// Report the strip even when it empties the LIST, which records no rewrite op.
 		report.Operations = append(report.Operations, "ISFT encoder stamp strip")
 	}
 
@@ -184,23 +176,20 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	result := buildResult(edited, d, newInfo, newID3, lay)
 	report.Warnings = core.AppendDuplicateBlockDropped(report.Warnings, "tag chunk", result.Tags, dupLost)
-	// Surface ID3 rebuild losses only when the file as a whole loses them. WAV also writes
-	// RecordingDate to native LIST/INFO ICRD, where it can survive verbatim; the shared
-	// helper checks the re-projected output before warning.
+	// Report ID3 rebuild losses only when the file as a whole loses them: RecordingDate
+	// can survive verbatim in LIST/INFO ICRD, and the helper checks the re-projected output.
 	report.Warnings = id3.AppendRebuildWarnings(report.Warnings, id3Info, result.Tags)
 	report.Warnings = id3.AppendMalformedTailDropped(report.Warnings, d.id3)
-	// Collapse to a true no-op when the containers re-projected to base's values (a
-	// numeric genre, a dropped empty); DowngradeNoOp carries the value-dropped warning
-	// forward so a dropped date still surfaces on a no-op.
+	// Collapse to a no-op when the containers re-projected to base's values (a numeric
+	// genre, a dropped empty). DowngradeNoOp carries the value-dropped warning forward.
 	if np := core.DowngradeNoOp(core.FormatWAV, edited.Identity.Size, base, result, base.Tags.Equal(result.Tags), stripINFO || stampToStrip || encodingRewrite || infoRewrite, report.Warnings); np != nil {
 		return np, nil
 	}
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
 }
 
-// id3Tags is the set the embedded id3 chunk renders from: edited, minus an inherited
-// transcoder stamp when this write is CREATING the chunk and the stamp is not something
-// the edit authored.
+// id3Tags is the set the id3 chunk renders from: edited, minus an inherited transcoder
+// stamp when this write creates the chunk and the edit did not author the stamp.
 func id3Tags(edited tag.TagSet, id3Present, encoderAuthored bool) tag.TagSet {
 	if id3Present || encoderAuthored {
 		return edited
@@ -243,17 +232,14 @@ func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, 
 			if emitINFO {
 				outs = append(outs, infoOut(newInfo))
 				infoRewritten = true
-				// A present chunk is always re-emitted, so the op reports the rewrite only
-				// when the bytes actually move; otherwise it describes work no reader could
-				// see. The chunk still has to be re-emitted: it is a literal in the segment
-				// list either way.
+				// A present chunk is always re-emitted as a literal; the op reports a rewrite
+				// only when the bytes change.
 				if infoBytesChange {
 					ops = append(ops, "LIST/INFO rewrite")
 				}
 				continue
 			}
-			// The edit emptied the chunk, so Execute deletes one the file had. Report the
-			// removal rather than leaving the plan to describe it as a bare rewrite.
+			// The edit emptied the chunk, so Execute deletes one the file had.
 			ops = append(ops, "LIST/INFO drop")
 			continue
 		case d.id3Idx:
@@ -267,17 +253,13 @@ func planChunks(d *doc, newInfo []infoItem, newID3 *id3.Tag, emitINFO, emitID3, 
 			continue
 		default:
 			if ch.dupTag {
-				// Redundant duplicate tag container (a second LIST/INFO or id3 chunk).
-				// Drop it on rewrite so the output carries a single, consistent copy
-				// rather than a stale shadow of the authoritative one.
+				// A second LIST/INFO or id3 chunk: dropped so the output carries one copy.
 				ops = append(ops, "duplicate tag chunk drop")
 				dupLost = append(dupLost, ch.dupContent)
 				continue
 			}
-			// A lone id3 chunk whose body failed to parse leaves no authoritative id3
-			// (so it was not marked dupTag). Drop it when we are writing a fresh id3
-			// chunk, so the output never carries two id3 chunks (which a re-parse would
-			// flag as a duplicate, disagreeing with the returned document).
+			// A lone id3 chunk that failed to parse is not marked dupTag. Drop it when a
+			// fresh id3 chunk is written, so the output never carries two.
 			if emitID3 && isID3Chunk(ch.id4()) {
 				ops = append(ops, "stale id3 chunk drop")
 				continue
@@ -449,10 +431,9 @@ func assemble(d *doc, outs []outChunk) (segs []bits.Segment, lay outLayout, err 
 		}
 		running += oc.bodyLen
 		if oc.bodyLen&1 == 1 {
-			// Word-alignment pad. Always a literal zero: the RIFF spec defines pad
-			// bytes as zero and not part of the data, and a malformed source may
-			// omit the final chunk's pad entirely (so copying it would read past
-			// EOF - found by the fuzzer).
+			// Word-alignment pad, always a literal zero: RIFF defines pad bytes as zero
+			// and not part of the data, and a malformed source may omit the final chunk's
+			// pad, so copying it would read past EOF.
 			segs = append(segs, bits.Lit([]byte{0}))
 			running++
 		}
@@ -484,9 +465,8 @@ func (d *doc) headerID() string {
 	return string(d.form[:])
 }
 
-// stripDS64 removes the source ds64 chunk from the output list. It is regenerated
-// from the new layout rather than copied, since the sizes it carries are exactly
-// what a metadata rewrite moves.
+// stripDS64 removes the source ds64 chunk from the output list; it is regenerated
+// from the new layout because a metadata rewrite moves the sizes it carries.
 func stripDS64(outs []outChunk) []outChunk {
 	kept := outs[:0:0]
 	for _, oc := range outs {
@@ -512,10 +492,9 @@ func ds64Overrides(outs []outChunk) (table []ds64Size, dataSize uint64) {
 	return table, dataSize
 }
 
-// buildResult constructs the post-write Media so the engine can return a
-// Document without re-parsing. Its canonical view is re-projected (via the same
-// project used by Parse) from the containers actually written, so it equals a
-// fresh parse of the output.
+// buildResult constructs the post-write Media without re-parsing. Its canonical view
+// is re-projected from the written containers with the same project Parse uses, so it
+// equals a fresh parse of the output.
 func buildResult(edited *core.Media, base *doc, newInfo []infoItem, newID3 *id3.Tag, lay outLayout) *core.Media {
 	nd := &doc{
 		chunks:  lay.chunks,
@@ -535,8 +514,7 @@ func buildResult(edited *core.Media, base *doc, newInfo []infoItem, newID3 *id3.
 		ds64:        base.ds64.clone(),
 	}
 	if nd.ds64 != nil {
-		// Keep the carried ds64 in step with the bytes just written, so the result document
-		// describes the output rather than the source it was derived from.
+		// Update the carried ds64 to the bytes just written.
 		nd.ds64.riffSize = uint64(lay.total - 8 - base.outerLen)
 		nd.ds64.dataSize = uint64(base.dataLen)
 	}
@@ -546,9 +524,8 @@ func buildResult(edited *core.Media, base *doc, newInfo []infoItem, newID3 *id3.
 	if lay.id3Idx >= 0 {
 		nd.id3 = newID3
 	}
-	// The in-RIFF trailing and out-of-RIFF regions were appended verbatim at the
-	// end of the output, in that order; record their new offsets so re-editing the
-	// returned document (without re-parsing) still preserves them.
+	// The in-RIFF trailing and outer regions were appended verbatim at the end of the
+	// output, in that order. Record their new offsets so a re-edit still preserves them.
 	nd.outerLen = base.outerLen
 	nd.outerOff = lay.total - base.outerLen
 	nd.trailingLen = base.trailingLen
@@ -564,9 +541,8 @@ func buildResult(edited *core.Media, base *doc, newInfo []infoItem, newID3 *id3.
 		Chapters:     chapters,
 		SyncedLyrics: syncedLyrics,
 		Families:     families,
-		// Recompute warnings from the written containers so the returned document matches a
-		// fresh parse of the output: a dropped duplicate no longer warns, a resolved numeric
-		// genre no longer warns, and a preserved ISFT stamp still does.
+		// Recompute warnings from the written containers to match a fresh parse: a dropped
+		// duplicate and a resolved numeric genre no longer warn; a preserved ISFT stamp does.
 		Warnings:   append(projWs, mediaWarnings(nd, numericGenre)...),
 		Native:     nd,
 		Identity:   core.Identity{Size: lay.total},

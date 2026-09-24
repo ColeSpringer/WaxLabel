@@ -37,8 +37,8 @@ func TestWAVADPCMDurationFromFact(t *testing.T) {
 	}
 }
 
-// other failing shape: a WAV carrying MP3 payload declares avgBytesPerSec 0, so there is no
-// byte-rate formula at all and both duration and bitrate used to read null.
+// other shape: a WAV carrying MP3 payload declares avgBytesPerSec 0, so there is no byte-rate
+// formula at all and the fact count is the only source of duration and bitrate.
 func TestWAVMP3InWAVDurationFromFact(t *testing.T) {
 	data := wavFile(wavFmtTag(0x0055, 1, 1152, 0, 44100, 0), wavFact(45205), wavData(8359))
 	tr := mustParseBytes(t, data).Properties().First()
@@ -133,8 +133,7 @@ func TestWAVFactSurvivesEdit(t *testing.T) {
 }
 
 // WAVEFORMATEX describes the audio in both a RIFF "fmt " chunk and an ASF Stream Properties object,
-// so one format tag must name one codec whichever container carried it. Tag 0x0050 is MPEG Layer 2;
-// before it was mapped, both containers reported the raw "WAVE format 0x0050".
+// so one format tag must name one codec whichever container carried it. Tag 0x0050 is MPEG Layer 2.
 func TestWaveFormatTagMP2AcrossContainers(t *testing.T) {
 	wav := wavFile(wavFmtTag(0x0050, 2, 1152, 0, 44100, 32000), wavData(4096))
 	if got := mustParseBytes(t, wav).Properties().First().Codec; got != "MP2" {

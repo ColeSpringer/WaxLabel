@@ -10,9 +10,8 @@ import (
 )
 
 // allKeyConstants lists every exported Key constant. TestKnownKeysMatchConstants
-// asserts it equals KnownKeys() exactly, so adding a constant without a
-// vocabulary entry, or adding a vocabulary entry without a constant, fails this
-// test instead of breaking discovery output quietly.
+// asserts it equals KnownKeys() exactly, so a constant without a vocabulary entry,
+// or the reverse, fails the test.
 var allKeyConstants = []Key{
 	Title, Artist, Album, AlbumArtist, Composer, Lyricist, Genre,
 	TrackNumber, TrackTotal, DiscNumber, DiscTotal,
@@ -122,8 +121,8 @@ func TestSingleValuedMulti(t *testing.T) {
 }
 
 // TestParseKeyInvalidByteMessage checks the offending-byte rendering: a printable
-// ASCII byte is shown as a character (easier to read than hex), while a control or
-// non-ASCII byte keeps the unambiguous hex form. Both stay ErrInvalidKey.
+// ASCII byte shows as a character, a control or non-ASCII byte as hex. Both are
+// ErrInvalidKey.
 func TestParseKeyInvalidByteMessage(t *testing.T) {
 	if _, err := ParseKey("TI=TLE"); err == nil || !strings.Contains(err.Error(), "'='") {
 		t.Errorf("ParseKey(\"TI=TLE\") error = %v, want a quoted '=' character", err)
@@ -136,9 +135,9 @@ func TestParseKeyInvalidByteMessage(t *testing.T) {
 	}
 }
 
-// TestR128GainKeysAreCustomOwnAudio: the Opus loudness tags sit outside the canonical
-// vocabulary on purpose (they are valid custom keys), but they describe this file's own
-// audio, so a metadata copy must leave the destination's alone.
+// TestR128GainKeysAreCustomOwnAudio: the Opus loudness tags are valid custom keys outside
+// the canonical vocabulary, but they describe this file's own audio, so a metadata copy
+// leaves the destination's alone.
 func TestR128GainKeysAreCustomOwnAudio(t *testing.T) {
 	for _, k := range []Key{"R128_TRACK_GAIN", "R128_ALBUM_GAIN"} {
 		if !IsR128GainKey(k) {
@@ -170,7 +169,7 @@ func TestR128GainKeysAreCustomOwnAudio(t *testing.T) {
 	}
 }
 
-// TestValidR128GainValue: RFC 7845 section 5.2.1 spells the value out - a base-10 integer in
+// TestValidR128GainValue: RFC 7845 section 5.2.1 defines the value as a base-10 integer in
 // the signed 16-bit range, optional sign, leading zeros allowed, at most 6 characters.
 func TestValidR128GainValue(t *testing.T) {
 	valid := []string{"-573", " 111 ", "+5", "-32768", "32767", "000573", "0"}

@@ -14,8 +14,10 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestRebuildDropsReservedKey: a newly-added custom key in any of the three reserved
-
+// TestRebuildDropsReservedKey checks that a new custom key in a reserved namespace
+// (CHAPTERxxx, SYNCEDLYRICS, METADATA_BLOCK_PICTURE) is dropped, recorded in
+// ReservedKeys, and warned value-dropped naming the namespace. The synced-lyrics and
+// picture payloads are valid, pinning that a valid payload is still dropped.
 func TestRebuildDropsReservedKey(t *testing.T) {
 	validCover := base64.StdEncoding.EncodeToString(RenderPicture(core.Picture{
 		Type: core.PicFrontCover, MIME: "image/png", Data: []byte{1, 2, 3},
@@ -70,8 +72,10 @@ func TestRebuildDropsReservedKey(t *testing.T) {
 	}
 }
 
-// TestRebuildSetOnExistingPictureCommentDrops: the case where the file already holds a
-
+// TestRebuildSetOnExistingPictureCommentDrops checks that --set METADATA_BLOCK_PICTURE on
+// a file holding a malformed picture comment drops the set value with a warning and
+// preserves the existing comment verbatim, instead of overwriting it in place via the
+// generic key path.
 func TestRebuildSetOnExistingPictureCommentDrops(t *testing.T) {
 	orig := []Comment{{Name: "TITLE", Value: "Keep"}, {Name: "METADATA_BLOCK_PICTURE", Value: "not-valid-base64!!"}}
 	edited := tag.NewTagSet()
@@ -105,8 +109,9 @@ func TestRebuildSetOnExistingPictureCommentDrops(t *testing.T) {
 	}
 }
 
-// TestPictureDecodePreservesStoredMIME: the re-serialization half: the decoders
-
+// TestPictureDecodePreservesStoredMIME checks that ParsePicture and DecodePictureComment
+// return the MIME as stored, never sniffed, so a mislabeled cover's on-disk label
+// survives an unrelated edit.
 func TestPictureDecodePreservesStoredMIME(t *testing.T) {
 	gif := append([]byte("GIF89a"), 0x03, 0x00, 0x05, 0x00, 0x77, 0x00, 0x00)
 	body := RenderPicture(core.Picture{Type: core.PicFrontCover, MIME: "image/png", Data: gif}) // mislabeled
@@ -122,8 +127,8 @@ func TestPictureDecodePreservesStoredMIME(t *testing.T) {
 	}
 }
 
-// TestPictureCommentLenMatchesRender: pins the arithmetic PictureCommentLen to the actual
-
+// TestPictureCommentLenMatchesRender pins PictureCommentLen to the RenderPicture layout,
+// so the write-side size guard cannot under-count a cover if RenderPicture changes.
 func TestPictureCommentLenMatchesRender(t *testing.T) {
 	for _, p := range []core.Picture{
 		{Type: core.PicFrontCover, MIME: "image/png", Description: "cover", Data: make([]byte, 5000)},
@@ -137,8 +142,9 @@ func TestPictureCommentLenMatchesRender(t *testing.T) {
 	}
 }
 
-// TestParseCommentListCountCapped: ParseCommentList stops at maxElements
-
+// TestParseCommentListCountCapped checks that ParseCommentList stops at maxElements with
+// ErrSizeTooLarge, since the attacker-controlled count would otherwise amplify a run of
+// minimum entries into one Comment descriptor each, and that a zero cap stays unbounded.
 func TestParseCommentListCountCapped(t *testing.T) {
 	const max = 1000
 	entries := make([]Comment, max+50)
@@ -155,8 +161,10 @@ func TestParseCommentListCountCapped(t *testing.T) {
 	}
 }
 
-// TestParseCommentListReportsConsumed: the bytes-consumed return value the
-
+// TestParseCommentListReportsConsumed checks the bytes-consumed value the Ogg codecs use
+// to find the Vorbis framing bit and preserve Opus padding. The tail is a well-formed
+// extra entry past the declared count: a parser that ignored the count would swallow
+// it, which a plain non-"=" tail could not detect.
 func TestParseCommentListReportsConsumed(t *testing.T) {
 	body := RenderCommentList("vend", []Comment{{Name: "A", Value: "1"}, {Name: "B", Value: "2"}})
 	extra := []byte("EXTRA=ignored")
@@ -181,8 +189,9 @@ func TestParseCommentListReportsConsumed(t *testing.T) {
 	}
 }
 
-// TestProjectMarksConflicts: two distinct native names mapping to one
-
+// TestProjectMarksConflicts checks that two distinct native names mapping to one
+// canonical key with disagreeing values are a conflict, while a repeated name is a
+// multi-value.
 func TestProjectMarksConflicts(t *testing.T) {
 	_, fams := Project([]Comment{
 		{Name: "DATE", Value: "2020"}, {Name: "YEAR", Value: "2019"}, // both -> RecordingDate, disagree
@@ -200,8 +209,8 @@ func TestProjectMarksConflicts(t *testing.T) {
 	}
 }
 
-// TestRebuildMinimalChange: the rebuild keeps unchanged comments verbatim,
-
+// TestRebuildMinimalChange checks that the rebuild keeps unchanged comments verbatim,
+// replaces a changed key in place, drops aliases of a changed key, and appends new keys.
 func TestRebuildMinimalChange(t *testing.T) {
 	orig := []Comment{
 		{Name: "TITLE", Value: "Old"},
@@ -234,8 +243,9 @@ func TestRebuildMinimalChange(t *testing.T) {
 	}
 }
 
-// TestRebuildPreservesEditedKeyCasing: editing an existing key keeps the
-
+// TestRebuildPreservesEditedKeyCasing checks that editing an existing key keeps the
+// file's spelling (lowercase "title" stays "title"), untouched keys stay verbatim, and
+// an edited alias canonicalizes to its preferred spelling (DATE).
 func TestRebuildPreservesEditedKeyCasing(t *testing.T) {
 	orig := []Comment{
 		{Name: "artist", Value: "A"},
@@ -262,8 +272,8 @@ func TestRebuildPreservesEditedKeyCasing(t *testing.T) {
 	}
 }
 
-// TestEncoderNoiseDeduplicatesVendorEcho: a transcoder stamp appearing
-
+// TestEncoderNoiseDeduplicatesVendorEcho checks that a transcoder stamp in both the
+// vendor string and an ENCODER comment is reported once, and distinct stamps twice.
 func TestEncoderNoiseDeduplicatesVendorEcho(t *testing.T) {
 	t.Run("same value collapses to one", func(t *testing.T) {
 		ws := EncoderNoise("Lavf60.3.100", []Comment{{Name: "ENCODER", Value: "Lavf60.3.100"}})
@@ -328,8 +338,10 @@ func TestParsePictureSanitizesDescription(t *testing.T) {
 	}
 }
 
-// TestParsePictureClampsOutOfRangeType: a picture type past the single-byte
-
+// TestParsePictureClampsOutOfRangeType checks that a picture type past the single-byte
+// ID3/FLAC role space reads as PicOther instead of wrapping into a valid role (259 & 0xFF
+// == 3, "Front cover"), with the image bytes preserved. FLAC PICTURE blocks and Ogg
+// METADATA_BLOCK_PICTURE comments share the decoder.
 func TestParsePictureClampsOutOfRangeType(t *testing.T) {
 	body := RenderPicture(core.Picture{
 		Type: core.PicFrontCover, MIME: "image/png", Data: []byte{1, 2, 3},
@@ -349,8 +361,8 @@ func TestParsePictureClampsOutOfRangeType(t *testing.T) {
 	}
 }
 
-// TestProjectSkipsPictureComment: picture comments stay out of the custom tag
-
+// TestProjectSkipsPictureComment checks that picture comments, including malformed ones
+// the parser keeps opaque, appear in neither the tag view nor the family values.
 func TestProjectSkipsPictureComment(t *testing.T) {
 	for _, name := range []string{"METADATA_BLOCK_PICTURE", "metadata_block_picture"} {
 		ts, fams := Project([]Comment{
@@ -371,8 +383,8 @@ func TestProjectSkipsPictureComment(t *testing.T) {
 	}
 }
 
-// TestRebuildPreservesPictureComment: an opaque picture comment survives an
-
+// TestRebuildPreservesPictureComment checks that an opaque picture comment survives an
+// unrelated tag edit as an ordinary preserved comment.
 func TestRebuildPreservesPictureComment(t *testing.T) {
 	orig := []Comment{
 		{Name: "TITLE", Value: "Old"},
@@ -393,8 +405,9 @@ func TestRebuildPreservesPictureComment(t *testing.T) {
 	}
 }
 
-// TestNeutralizeVendorCodecStamp: the comment-header vendor string is where a transcode
-
+// TestNeutralizeVendorCodecStamp checks that libavcodec and libavformat vendor stamps
+// are both neutralized, and an encoder's own vendor string survives untouched, since no
+// canonical key can restore it.
 func TestNeutralizeVendorCodecStamp(t *testing.T) {
 	for _, v := range []string{"Lavc61.19.101 libopus", "libavcodec 60.31.102", "Lavf61.7.100"} {
 		got, changed := NeutralizeVendor(v, true)

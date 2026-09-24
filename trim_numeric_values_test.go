@@ -58,7 +58,7 @@ func TestTrimTokenValues(t *testing.T) {
 		p.Set(tag.Title, "X") // edits an unrelated field
 		ts := p.Apply(base)
 		trimTokenValues(&ts, p)
-		wantVals(t, ts, tag.TrackNumber, " 5 ") // untouched - the edit never patched it
+		wantVals(t, ts, tag.TrackNumber, " 5 ") // untouched; the edit never patched it
 	})
 
 	t.Run("leading zeros preserved (only whitespace removed)", func(t *testing.T) {

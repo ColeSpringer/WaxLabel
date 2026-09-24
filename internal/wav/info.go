@@ -25,10 +25,9 @@ func parseInfo(body []byte, maxElements int) (items []infoItem, unread int, padR
 		// hazard on a 32-bit platform) or runs past the body, so the slice below is safe.
 		size := int(binary.LittleEndian.Uint32(body[pos+4 : pos+8]))
 		start := pos + 8
-		// ZSTR: the value ends at the first NUL. Cutting there (rather than only
-		// trimming trailing NULs) means an interior NUL cannot survive into the
-		// canonical string and later truncate an id3 text frame. Clone so the item
-		// does not alias the larger body buffer.
+		// ZSTR: the value ends at the first NUL. Cutting there keeps an interior NUL out
+		// of the canonical string, where it would truncate an id3 text frame. Clone so
+		// the item does not alias the body buffer.
 		content := body[start : start+size]
 		if i := bytes.IndexByte(content, 0); i >= 0 {
 			// renderInfo writes the cut value plus one NUL, so whatever the item declared
@@ -36,9 +35,9 @@ func parseInfo(body []byte, maxElements int) (items []infoItem, unread int, padR
 			unread += unreadableBytes(content[i+1:])
 			content = content[:i]
 		}
-		// Cap the item count before appending so a hostile LIST full of zero-length
-		// items cannot balloon allocation - stopping on an implausible header stays
-		// benign, only a genuine cap breach is fatal.
+		// Cap the item count before appending so a LIST of zero-length items cannot
+		// balloon allocation. An implausible header stops the loop; only a cap breach
+		// is fatal.
 		if err := bits.CheckElementCap(len(items), maxElements, "RIFF INFO items"); err != nil {
 			return nil, 0, false, err
 		}
@@ -60,8 +59,8 @@ func parseInfo(body []byte, maxElements int) (items []infoItem, unread int, padR
 	return items, unread + unreadableBytes(body[pos:]), padRescued, nil
 }
 
-// unreadableBytes reports how many of b's bytes a rewrite would destroy. Anything else
-// is content the item model cannot carry.
+// unreadableBytes reports how many of b's bytes a rewrite would destroy: none for a
+// run of zeros, which a rewrite re-creates, else all of them.
 func unreadableBytes(b []byte) int {
 	for _, c := range b {
 		if c != 0 {
@@ -100,13 +99,12 @@ func infoTags(items []infoItem) tag.TagSet {
 		if !ok {
 			continue
 		}
-		// Surface a present-empty INFO item (a size-1 NUL, text() == "") as a present-empty
-		// value, not absent, so --set TITLE= round-trips like the other formats. Every item
-		// in the list is present; an absent key simply has no item.
+		// A present-empty INFO item (a size-1 NUL, text() == "") projects as a present-empty
+		// value, not absent, so --set TITLE= round-trips like the other formats.
 		ts.AddNativeItem(key, it.text())
 	}
-	// IPRT/ITRK map to TrackNumber, so a non-standard IPRT="4/9" would otherwise read
-	// verbatim while ID3/MP4 split it - normalize here so every read path agrees.
+	// IPRT/ITRK map to TrackNumber; split a non-standard IPRT="4/9" as ID3/MP4 do so
+	// every read path agrees.
 	tag.NormalizeNumberPairs(&ts)
 	return ts
 }
@@ -134,10 +132,8 @@ func infoFamilies(auth tag.TagSet, items []infoItem) []core.FamilyValue {
 		if v == "" {
 			continue
 		}
-		// Split a slashed track/disc number the same way infoTags does, so the family value
-		// matches the (normalized) authoritative tag instead of being falsely graded a
-		// conflict - a raw "4/9" compared against TrackNumber=4 would read unselected and
-		// surface a spurious conflicting-families finding.
+		// Split a slashed track/disc number as infoTags does, so a raw "4/9" compared
+		// against TrackNumber=4 is not graded a conflict.
 		if num, total, split := tag.NumberTotalSplit(key, v); split {
 			if num != "" {
 				add(key, num)
@@ -152,10 +148,9 @@ func infoFamilies(auth tag.TagSet, items []infoItem) []core.FamilyValue {
 	return out
 }
 
-// infoRepresentable reports whether every key in ts can be stored faithfully in
-// LIST/INFO: each must map to an INFO identifier and carry at most one value (a
-// present-but-empty value is representable - stored as a size-1 NUL INFO item, see
-// infoValue).
+// infoRepresentable reports whether every changed key in ts can be stored in
+// LIST/INFO: each must map to an INFO identifier and carry at most one value. A
+// present-empty value is representable as a size-1 NUL item (see infoValue).
 func infoRepresentable(ts tag.TagSet, changed map[tag.Key]bool) bool {
 	for _, k := range ts.Keys() {
 		if !changed[k] {
@@ -205,7 +200,7 @@ func rebuildInfo(orig []infoItem, edited tag.TagSet, changed map[tag.Key]bool, s
 			emittedID[it.id] = true
 			emittedKey[key] = true
 		}
-		// else: key absent in the edited set - drop the item.
+		// else: key absent in the edited set, so drop the item.
 	}
 	for _, k := range edited.Keys() {
 		// The changed gate keeps a no-op a no-op: without it, a WAV whose INFO does not
@@ -247,10 +242,9 @@ func infoConflictKeys(fams []core.FamilyValue, changed map[tag.Key]bool) []tag.K
 	return out
 }
 
-// infoValue returns the value INFO should store for key - the first value, since INFO
-// is single-valued - or ok=false only when the key is absent. This lets a present-empty
-// value round-trip through INFO like the other formats, rather than being dropped and
-// relying on a forced ID3 chunk.
+// infoValue returns the value INFO stores for key: the first value, since INFO is
+// single-valued. ok is false only when the key is absent, so a present-empty value
+// round-trips through INFO like the other formats.
 func infoValue(ts tag.TagSet, key tag.Key) (string, bool) {
 	v, ok := ts.First(key)
 	if !ok {
@@ -292,9 +286,9 @@ func foldInfoTrackPair(changed map[tag.Key]bool) map[tag.Key]bool {
 	return changed
 }
 
-// nativeReducedWarnings notes each multi-valued key reduced to its first value in the
-// single-valued LIST/INFO chunk while the full set is kept in the ID3 chunk written
-// alongside it. an unchanged key keeps its own items verbatim and loses nothing.
+// nativeReducedWarnings notes each changed multi-valued key reduced to its first value
+// in the single-valued LIST/INFO chunk; the ID3 chunk written alongside keeps the full
+// set. An unchanged key keeps its own items verbatim.
 func nativeReducedWarnings(ts tag.TagSet, changed map[tag.Key]bool) []core.Warning {
 	return core.NativeReducedWarnings(ts, "LIST/INFO", func(k tag.Key) bool {
 		_, ok := mapping.RIFFKeyInfo(k)
@@ -302,10 +296,9 @@ func nativeReducedWarnings(ts tag.TagSet, changed map[tag.Key]bool) []core.Warni
 	})
 }
 
-// renderInfo serializes INFO items into a LIST chunk body: the "INFO" list type
-// followed by each item as 4CC + little-endian size + NUL-terminated value, word
-// aligned. The returned bytes are the chunk body (the caller prepends the "LIST"
-// header).
+// renderInfo serializes INFO items into a LIST chunk body: the "INFO" list type, then
+// each item as 4CC + little-endian size + NUL-terminated value, word aligned. The
+// caller prepends the "LIST" header.
 func renderInfo(items []infoItem) []byte {
 	out := []byte("INFO")
 	for _, it := range items {
@@ -324,8 +317,7 @@ func renderInfo(items []infoItem) []byte {
 }
 
 // unmappedInfoIDs lists, in file order and without repeats, the INFO identifiers that
-// project to no canonical key (ILNG, ISBJ, IKEY, ...). Everywhere else those items are
-// preserved verbatim;
+// project to no canonical key (ILNG, ISBJ, IKEY, ...).
 func unmappedInfoIDs(items []infoItem) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -346,9 +338,9 @@ func isTranscoderISFT(it infoItem) bool {
 	return it.id4() == "ISFT" && core.IsTranscoderStamp(it.text())
 }
 
-// hasTranscoderISFT reports whether items contains a strippable transcoder-stamp
-// ISFT. The WAV Plan uses it to know a strip would change the file, so a
-// WithStripEncoderStamp edit of an otherwise-unchanged file is not a no-op.
+// hasTranscoderISFT reports whether items contains a strippable transcoder-stamp ISFT,
+// so Plan knows a WithStripEncoderStamp edit of an otherwise-unchanged file is not a
+// no-op.
 func hasTranscoderISFT(items []infoItem) bool {
 	for _, it := range items {
 		if isTranscoderISFT(it) {

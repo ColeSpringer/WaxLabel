@@ -17,9 +17,8 @@ import (
 // per the Nero convention ffmpeg's mov_read_chpl follows.
 const chplStartUnit = 10_000_000
 
-// maxChapterSamples bounds the QuickTime sample-table walk so a crafted text
-// track cannot make a metadata read iterate unboundedly. Real chapter tracks
-// hold a handful of samples; this is far above any plausible count.
+// maxChapterSamples bounds the QuickTime sample-table walk so a crafted text track
+// cannot make a metadata read iterate unboundedly. It is far above any plausible count.
 const maxChapterSamples = 1 << 16
 
 // titleByteMax is the chpl per-title cap: its length prefix is a single byte, so
@@ -93,9 +92,8 @@ func decodeChpl(src core.ReaderAtSized, chpl node, limit int64) (version uint8, 
 		if pos+titleLen > n {
 			return 0, nil, false
 		}
-		// Match the QuickTime path: an invalid-UTF-8 title yields an empty title
-		// (not invalid bytes that a later JSON dump would mangle), so both chapter
-		// sources behave the same.
+		// Match the QuickTime path: an invalid-UTF-8 title reads as empty (a JSON dump would
+		// mangle the raw bytes), so both chapter sources behave the same.
 		title := ""
 		if raw := b[pos : pos+titleLen]; utf8.Valid(raw) {
 			title = string(raw)
@@ -108,7 +106,7 @@ func decodeChpl(src core.ReaderAtSized, chpl node, limit int64) (version uint8, 
 }
 
 // renderChpl encodes chapters into a Nero chpl atom, preserving the parsed version
-// (defaulting to 1, the form ffmpeg writes). each title is truncated to 255 bytes on a
+// (defaulting to 1, the form ffmpeg writes). Each title is truncated to 255 bytes on a
 // UTF-8 boundary because the length prefix is a single byte.
 func renderChpl(version uint8, chapters []core.Chapter) []byte {
 	payload := make([]byte, 0, 8+len(chapters)*16)
@@ -140,9 +138,9 @@ func collectChapterRefs(src core.ReaderAtSized, moov node, d *doc, limit int64) 
 		collectMvhd(src, mvhd, d, limit)
 	}
 	// A track id free of every existing track, used when mvhd's next_track_ID is
-	// missing, the all-ones sentinel, or stale (not actually past every track).
-	// nextTrackID 0 means none is free (a track already holds the max id), so a new
-	// chapter track cannot be created - maxID+1 would wrap to the invalid id 0.
+	// missing, the all-ones sentinel, or stale (not past every track). nextTrackID 0
+	// means none is free: a track already holds the max id, and maxID+1 would wrap to
+	// the invalid id 0.
 	maxID := uint32(0)
 	for _, t := range traks {
 		if tkhd, ok := t.find("tkhd"); ok {
@@ -194,10 +192,9 @@ func collectMvhd(src core.ReaderAtSized, mvhd node, d *doc, limit int64) {
 		return
 	}
 	po := mvhd.payloadOff()
-	// Read the timescale/duration through readMvhdTiming - the SAME decode movieTimingOf
-	// uses on a reparse - so the write path's d.movieTimescale/d.movieDuration cannot
-	// drift from it (a drift would desync the chapter last-end recovery and churn the
-	// file).
+	// Read the timescale/duration through readMvhdTiming, the decode movieTimingOf uses on
+	// a reparse, so the write path's d.movieTimescale/d.movieDuration match it. A mismatch
+	// would desync the chapter last-end recovery and rewrite the file.
 	d.movieTimescale, d.movieDuration = readMvhdTiming(b)
 	switch b[0] {
 	case 0:
@@ -247,8 +244,8 @@ func decodeQTChapters(src core.ReaderAtSized, moov node, limit int64) (chapters 
 	offset, offsetSaturated := chapterEditOffset(src, text, movieTimescale, limit)
 	chapters, saturated, ok = decodeTextTrack(src, text, offset, movieTimescale, movieDuration, limit)
 	// A clamped leading empty edit (a first chapter past the u32 movie-timescale ceiling)
-	// is a saturation the stts-delta scan cannot see - the over-range start lives in the
-	// edit list, not an inter-sample gap - so fold it in here too.
+	// is a saturation the stts-delta scan cannot see, since the over-range start lives in
+	// the edit list, so fold it in here too.
 	return chapters, saturated || offsetSaturated, ok
 }
 
@@ -293,9 +290,8 @@ func readMvhdTiming(b []byte) (timescale uint32, duration uint64) {
 }
 
 // chapterEditOffset returns the presentation delay a leading empty edit in trak's elst
-// imposes - the standard MP4 way a chapter track whose first chapter starts after t=0
-// is positioned (its stts decode times run from zero, so the start lives in the edit
-// list).
+// imposes: the standard MP4 way to position a chapter track whose first chapter starts
+// after t=0, since its stts decode times run from zero.
 func chapterEditOffset(src core.ReaderAtSized, trak node, movieTimescale uint32, limit int64) (offset time.Duration, saturated bool) {
 	if movieTimescale == 0 {
 		return 0, false
@@ -313,8 +309,7 @@ func chapterEditOffset(src core.ReaderAtSized, trak node, movieTimescale uint32,
 		size := int64(binary.BigEndian.Uint32(b[pos : pos+4]))
 		// size < 8 is the 64-bit-size form (the 32-bit field reads 1, the real size
 		// following the type) or the size-0 "to end of box" form. A real elst is a few
-		// 12/20-byte entries and uses neither, so stop and report no offset rather than
-		// grow this by-hand scan for a case that cannot occur on a chapter track.
+		// 12/20-byte entries and uses neither, so stop and report no offset.
 		if size < 8 || pos+size > n {
 			break
 		}
@@ -328,7 +323,7 @@ func chapterEditOffset(src core.ReaderAtSized, trak node, movieTimescale uint32,
 
 // emptyEditOffset reads an elst box payload (version/flags, entry_count, then the
 // entries) and, when the first entry is an empty edit (media_time == -1), returns its
-// segment_duration scaled by the movie timescale;
+// segment_duration scaled by the movie timescale.
 func emptyEditOffset(p []byte, movieTimescale uint32) (offset time.Duration, saturated bool) {
 	if len(p) < 8 || binary.BigEndian.Uint32(p[4:8]) == 0 { // version/flags + entry_count
 		return 0, false
@@ -340,8 +335,8 @@ func emptyEditOffset(p []byte, movieTimescale uint32) (offset time.Duration, sat
 		}
 		// A version-0 segment_duration read back as exactly MaxUint32 is a clamped leading
 		// offset: the first chapter starts past the u32 movie-timescale ceiling, so its
-		// QuickTime start is lossy garbage. WaxLabel writes version-0 empty edits
-		// (chapterEdts), so this is the case that can clamp;
+		// QuickTime start is lossy. WaxLabel writes version-0 empty edits (chapterEdts), so
+		// this is the case that can clamp.
 		seg := binary.BigEndian.Uint32(p[8:12])
 		return scaleToDuration(uint64(seg), movieTimescale), seg == math.MaxUint32
 	case 1:
@@ -522,7 +517,7 @@ func decodeTextTrack(src core.ReaderAtSized, trak node, offset time.Duration, mo
 	if !ok || len(times) == 0 {
 		return nil, false, false
 	}
-	// A written stts delta that clamped is read back as exactly MaxUint32;
+	// A written stts delta that clamped is read back as exactly MaxUint32.
 	for i := 1; i < len(times); i++ {
 		if times[i]-times[i-1] == math.MaxUint32 {
 			saturated = true
@@ -544,14 +539,12 @@ func decodeTextTrack(src core.ReaderAtSized, trak node, offset time.Duration, mo
 		chapters = append(chapters, ch)
 	}
 	// Recover the last chapter's end from the stts running total (endTime, the decode time
-	// past the final sample) - the per-sample loop above cannot fill it, there being no
-	// next start.
+	// past the final sample); the per-sample loop above has no next start to fill it from.
 	if completed && len(chapters) == len(times) {
 		last := len(chapters) - 1
 		// Compare on the media-unit grid, not the Duration grid: scaleToDuration rounds, so
-		// at a fine timescale the gap between two adjacent units is not a fixed number of
-		// nanoseconds and a Duration-level test for the placeholder would fire on some
-		// timescales and not others, breaking the read/predictor mirror per fixture.
+		// at a fine timescale a Duration-level test for the placeholder would fire on some
+		// timescales and not others, breaking the read/predictor mirror.
 		lastEnd := addClamp(scaleToDuration(endTime, timescale), offset)
 		if !isPlaceholderTail(chapters[last].Start, endTime-times[last], timescale, movieTimescale, movieDuration) {
 			chapters[last].End = lastEnd
@@ -567,9 +560,9 @@ type sampleOffset struct {
 }
 
 // sampleTimes returns each sample's cumulative decode time (in the media timescale)
-// from the stts table, plus endTime - the running total past the final sample, i.e. the
-// maxChapterSamples early-return leaves it mid-table, so the caller must not treat it
-// as the last chapter's end there.
+// from the stts table, plus endTime, the running total past the final sample. The
+// maxChapterSamples early return leaves endTime mid-table (completed false), so the
+// caller must not treat it as the last chapter's end there.
 func sampleTimes(src core.ReaderAtSized, stbl node, limit int64) (times []uint64, endTime uint64, completed, ok bool) {
 	stts, found := stbl.find("stts")
 	if !found {
@@ -798,9 +791,9 @@ func sameCountAndTitles(a, b []core.Chapter) bool {
 }
 
 // mergeChplStartsQTEnd combines two agreeing chapter sources: chpl's exact uint64
-// starts and its own interior ends (filled from its next starts, free of the QuickTime
-// stts drift), with the last chapter's end taken from the QuickTime track - the only
-// source that recovers it, the chpl leaving its last end open.
+// starts and interior ends (filled from its next starts, free of the QuickTime stts
+// drift), plus the last chapter's end from the QuickTime track, the only source that
+// has it.
 func mergeChplStartsQTEnd(chpl, qt []core.Chapter) []core.Chapter {
 	out := core.CloneChapters(chpl)
 	if n := len(out); n > 0 && n == len(qt) && qt[n-1].End >= out[n-1].Start {
@@ -831,8 +824,7 @@ func chaptersAgree(a, b []core.Chapter) bool {
 
 // isPlaceholderTail reports whether the last chapter's stts span is the synthetic
 // one-unit tail chapterDeltas writes for an open last chapter that starts at or past a
-// known movie duration (its "next = starts[i] + 1" default branch), as opposed to a
-// genuinely authored end.
+// known movie duration (its "next = starts[i] + 1" default branch).
 func isPlaceholderTail(lastStart time.Duration, lastDeltaUnits uint64, mediaTimescale uint32, movieTimescale uint32, movieDuration uint64) bool {
 	if movieTimescale == 0 || movieDuration == 0 {
 		return false
@@ -843,9 +835,8 @@ func isPlaceholderTail(lastStart time.Duration, lastDeltaUnits uint64, mediaTime
 	return lastDeltaUnits == 1 || (mediaTimescale != 0 && lastDeltaUnits == uint64(mediaTimescale))
 }
 
-// mdhdFields decodes a mdhd atom's media timescale and duration (version 0 or 1).
-// It is shared by the audio-property duration read and the chapter-track timescale
-// read so the field layout lives in one place.
+// mdhdFields decodes a mdhd atom's media timescale and duration (version 0 or 1). The
+// audio-property duration read and the chapter-track timescale read share it.
 func mdhdFields(src core.ReaderAtSized, mdhd node, limit int64) (timescale uint32, duration uint64, ok bool) {
 	b, err := readPayloadPrefix(src, mdhd, 32, limit)
 	if err != nil || len(b) < 4 {
@@ -868,16 +859,14 @@ func mdhdFields(src core.ReaderAtSized, mdhd node, limit int64) (timescale uint3
 }
 
 // mdhdTimescale reads the media timescale from a mdhd atom. A zero timescale is
-// rejected: it is invalid and would otherwise collapse every chapter time to zero
-// rather than failing the track over to no QuickTime chapters.
+// rejected: it is invalid and would collapse every chapter time to zero.
 func mdhdTimescale(src core.ReaderAtSized, mdhd node, limit int64) (uint32, bool) {
 	ts, _, ok := mdhdFields(src, mdhd, limit)
 	return ts, ok && ts != 0
 }
 
 // addClamp returns a + b saturated at MaxInt64, so adding the edit-list offset to a
-// per-sample time preserves scaleToDuration's "clamp rather than overflow" guarantee
-// end to end.
+// per-sample time preserves scaleToDuration's clamp-not-overflow guarantee end to end.
 func addClamp(a, b time.Duration) time.Duration {
 	if s := a + b; s >= a {
 		return s

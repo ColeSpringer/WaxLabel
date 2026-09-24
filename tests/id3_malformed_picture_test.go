@@ -14,9 +14,8 @@ func apicFrameRaw(body []byte) []byte {
 	return append(out, body...)
 }
 
-// picture edit re-emits the edited cover set and drops the original APIC frames. A malformed
-// original (one decodeAPIC cannot read) is therefore lost, so the write must surface an
-// invalid-picture warning rather than dropping it silently.
+// A picture edit re-emits the edited cover set and drops the original APIC frames. A malformed
+// original (one decodeAPIC cannot read) is therefore lost, so the write must warn invalid-picture.
 func TestID3MalformedCoverDroppedWarns(t *testing.T) {
 	addCover := func(e *wl.Editor) {
 		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()})

@@ -21,21 +21,19 @@ func isSyncedLyricsComment(name string) bool {
 	return strings.EqualFold(name, syncedLyricsName)
 }
 
-// ProjectSyncedLyrics decodes the first SYNCEDLYRICS comment that holds a parseable LRC
-// document into one synced-lyrics set. The LRC store holds one set. A SYNCEDLYRICS value
-// with no timed line is skipped so a later valid one can still project, but every
-// SYNCEDLYRICS comment is owned by this model: unrelated edits preserve them, and a
-// synced-lyrics edit replaces them. Returns nil when none carries timed lines.
+// ProjectSyncedLyrics decodes the first SYNCEDLYRICS comment holding a parseable LRC
+// document into one synced-lyrics set (the LRC store holds one). A value with no timed
+// line is skipped so a later valid one can project, but every SYNCEDLYRICS comment is
+// owned: unrelated edits preserve them, a synced-lyrics edit replaces them. Returns nil
+// when none carries timed lines.
 func ProjectSyncedLyrics(comments []Comment) []core.SyncedLyrics {
 	sets, _ := ProjectSyncedLyricsReport(comments)
 	return sets
 }
 
-// ProjectSyncedLyricsReport is [ProjectSyncedLyrics] plus read warnings: it surfaces a
-// [core.WarnSyncedLyricsTruncated] when the LRC document carried more than the modeled line
-// cap and lines past it were dropped on read. The FLAC and Ogg parse paths use it so that
-// truncation is not silent; the write re-projection uses the plain [ProjectSyncedLyrics]
-// and ignores the warning.
+// ProjectSyncedLyricsReport is [ProjectSyncedLyrics] plus a [core.WarnSyncedLyricsTruncated]
+// when the LRC document exceeded the line cap and lines past it were dropped on read. The
+// FLAC and Ogg parse paths use it; the write re-projection uses [ProjectSyncedLyrics].
 func ProjectSyncedLyricsReport(comments []Comment) ([]core.SyncedLyrics, []core.Warning) {
 	for _, cm := range comments {
 		if cm.Unseparated {
@@ -59,12 +57,10 @@ func ProjectSyncedLyricsReport(comments []Comment) ([]core.SyncedLyrics, []core.
 	return nil, nil
 }
 
-// syncedLyricsComments renders synced-lyrics sets as a single SYNCEDLYRICS comment holding
-// the first set's lines as LRC (the store holds one set). A set with no lines emits no
-// comment, so it round-trips to no synced lyrics rather than an empty comment. A line
-// timestamp past the LRC ceiling is clamped to it (reported via the returned bool) so an
-// over-range edited line is stored at the ceiling rather than written unreadably and
-// silently dropped on the next parse.
+// syncedLyricsComments renders the first set's lines as one SYNCEDLYRICS comment in LRC
+// (the store holds one set). A set with no lines emits no comment, so it round-trips to
+// no synced lyrics. A timestamp past the LRC ceiling is clamped to it (reported via the
+// returned bool) so the next parse does not drop the line.
 func syncedLyricsComments(sls []core.SyncedLyrics) ([]Comment, bool) {
 	if len(sls) == 0 || len(sls[0].Lines) == 0 {
 		return nil, false
@@ -81,8 +77,7 @@ func syncedLyricsComments(sls []core.SyncedLyrics) ([]Comment, bool) {
 	if !overflow {
 		return []Comment{{Name: syncedLyricsName, Value: core.FormatLRC(lines)}}, false
 	}
-	// At least one line is over the ceiling: clamp into a copy so the caller's input is not
-	// mutated, then render.
+	// Clamp into a copy so the caller's input is not mutated.
 	clamped := make([]core.SyncedLine, len(lines))
 	for i, ln := range lines {
 		ln.Time, _ = core.ClampLRCTime(ln.Time)
@@ -92,9 +87,8 @@ func syncedLyricsComments(sls []core.SyncedLyrics) ([]Comment, bool) {
 }
 
 // SyncedLyricsCapability is the synced-lyrics capability shared by FLAC and Ogg. The LRC
-// store holds one set (MaxItems 1) and cannot store the per-set language or descriptor
-// (SyncedLyricsLossLanguage), so a transfer of a SYLT set carrying either field is graded
-// Lossy. The shared helper keeps FLAC and Ogg identical by construction.
+// store holds one set (MaxItems 1) and no per-set language or descriptor
+// (SyncedLyricsLossLanguage), so a transfer of a SYLT set carrying either is Lossy.
 func SyncedLyricsCapability() core.Capability {
 	return core.Capability{
 		Read:             core.AccessFull,
@@ -104,8 +98,8 @@ func SyncedLyricsCapability() core.Capability {
 		Constraints:      []string{fmt.Sprintf("at most %d synced-lyric lines (lines past the cap are dropped on read)", core.MaxSyncedLines)},
 		MaxItems:         1,
 		SyncedLyricsLoss: core.SyncedLyricsLossLanguage,
-		// A line past the LRC re-parse ceiling is clamped on write (see the ClampLRCTime call
-		// above); expose it so a transfer grades a clamping copy Lossy rather than a clean carry.
+		// Write clamps a line past this ceiling (see ClampLRCTime above); expose it so a
+		// transfer grades a clamping copy Lossy.
 		SyncedLyricsTimeMax: core.MaxLRCTime,
 	}
 }

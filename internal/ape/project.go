@@ -117,7 +117,7 @@ func EncoderNoise(items []Item) []core.Warning {
 	return ws
 }
 
-// Capabilities for APE-backed codecs (defined once so they cannot drift).
+// Capabilities is the one definition shared by all APE-backed codecs.
 // Fields: free-form UTF-8, lossless. Pictures: Cover Art convention (lossy role/
 // description). Chapters/synced lyrics/padding: AccessNone. perField nil.
 func Capabilities(f core.Format, readOnly bool) core.Capabilities {

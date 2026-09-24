@@ -26,9 +26,9 @@ func mp4Co64(entries ...uint64) []byte {
 	return mp4Atom("co64", body)
 }
 
-// mp4AudioTrakChapCo64 is mp4AudioTrakChap with a co64 in place of the stco, so a
-// shrinking rewrite exercises the 64-bit entry path (where a wrap is silent, rather than
-// caught by the stco table's own 4 GiB ceiling).
+// mp4AudioTrakChapCo64 is mp4AudioTrakChap with a co64 in place of the stco, so a shrinking
+// rewrite covers the 64-bit entry path, where a wrap is not caught by the stco table's own
+// 4 GiB ceiling.
 func mp4AudioTrakChapCo64(chapTrackID int, chunk uint64) []byte {
 	tkhd := mp4Atom("tkhd", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 8), mp4be32(1), make([]byte, 4)))
 	tref := mp4Atom("tref", mp4Atom("chap", mp4be32(chapTrackID)))

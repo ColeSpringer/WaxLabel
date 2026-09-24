@@ -42,7 +42,7 @@ const (
 	WarnDuplicateTagBlock
 	// WarnChapterSourceConflict: MP4 chapter representations disagree. Read path.
 	WarnChapterSourceConflict
-	// WarnChaptersStale: obsolete; chapter edits now rebuild both MP4 stores. Stable surface only.
+	// WarnChaptersStale: obsolete; chapter edits rebuild both MP4 stores. Stable surface only.
 	WarnChaptersStale
 	// WarnChapterTitleTruncated: title trimmed to container limit on write. Plan; keyed N/A.
 	WarnChapterTitleTruncated
@@ -307,8 +307,7 @@ func WarningsWithCode(ws []Warning, codes ...WarningCode) []Warning {
 	return out
 }
 
-// WarningsWithoutCode returns the warnings in ws whose code is not listed in codes,
-// preserving order. It is the complement of [WarningsWithCode].
+// WarningsWithoutCode drops the listed codes, preserving order. Complement of [WarningsWithCode].
 func WarningsWithoutCode(ws []Warning, codes ...WarningCode) []Warning {
 	var out []Warning
 	for _, w := range ws {

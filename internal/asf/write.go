@@ -8,7 +8,7 @@ import (
 )
 
 // Plan refuses ASF rewrites after the no-op fast path (unchanged copy is always
-// safe). Any real byte change returns the refusal.
+// safe). Any byte change returns the refusal.
 func (Codec) Plan(ctx context.Context, base, edited *core.Media, _ core.WriteOptions) (*core.WritePlan, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

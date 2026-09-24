@@ -28,8 +28,7 @@ func TestNoAudioMP3RefusesHashAndWrite(t *testing.T) {
 	if _, err := doc.HashAudioEssence(ctx); !errors.Is(err, waxerr.ErrInvalidData) {
 		t.Errorf("HashAudioEssence err = %v, want ErrInvalidData", err)
 	}
-	// Editor.Prepare refuses (set/plan and a copy's destination editor funnel through it, so they
-	// inherit the guard at one site).
+	// Editor.Prepare refuses; set/plan and a copy's destination editor funnel through it.
 	if _, err := doc.Edit().Set(tag.Title, "Y").Prepare(); !errors.Is(err, waxerr.ErrInvalidData) {
 		t.Errorf("Prepare err = %v, want ErrInvalidData", err)
 	}
@@ -41,9 +40,9 @@ func TestNoAudioMP3RefusesHashAndWrite(t *testing.T) {
 func TestNoAudioAACRefusesHashAndWrite(t *testing.T) {
 	ctx := context.Background()
 
-	// adtsHeaderOnly builds a single 7-byte ADTS fixed header (no CRC) at 44.1 kHz stereo that decodes;
-	// so the bytes are sniffed as AAC, but declares frameLen bytes. With no payload supplied, the frame
-	// runs past EOF and the walk counts zero whole frames, leaving TotalSamples at zero.
+	// adtsHeaderOnly builds one 7-byte ADTS fixed header (no CRC) at 44.1 kHz stereo, so the bytes
+	// sniff as AAC, declaring a frameLen-byte frame. With no payload the frame runs past EOF, the
+	// walk counts zero whole frames, and TotalSamples stays zero.
 	adtsHeaderOnly := func(frameLen int) []byte {
 		b := make([]byte, 7)
 		b[0] = 0xFF                                // syncword high

@@ -139,7 +139,7 @@ func TestDumpJSONCodecCanonical(t *testing.T) {
 	}
 }
 
-// Lossy codecs omit bitsPerSample (container depth is noise); lossless keeps real width.
+// Lossy codecs omit bitsPerSample (container depth is noise); lossless keeps it.
 func TestDumpJSONOmitsBitDepthForLossy(t *testing.T) {
 	t.Parallel()
 	for _, path := range []string{sampleM4B, sampleWMA, mp3MOV} {
@@ -1368,7 +1368,7 @@ func TestMalformedValueNotesTolerant(t *testing.T) {
 	}
 }
 
-// Value notes deferred until a real file is acted on.
+// Value notes are deferred until a file is acted on.
 func TestValueNotesDeferredUntilFiles(t *testing.T) {
 	t.Parallel()
 	_, errb, code := runCLI(t, "set", t.TempDir(), "--set", "TRACKNUMBER=abc")

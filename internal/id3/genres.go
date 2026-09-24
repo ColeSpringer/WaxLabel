@@ -5,10 +5,9 @@ import (
 	"strings"
 )
 
-// genres is the ID3v1 / Winamp numeric genre table (0-191). It is reference
-// data, not expression: the original 0-79 entries are from the ID3v1
-// specification, 80-191 are the de-facto Winamp extensions. Reproduced for
-// numeric-genre resolution.
+// genres is the ID3v1 / Winamp numeric genre table (0-191): entries 0-79 are from the
+// ID3v1 specification, 80-191 the de-facto Winamp extensions. It is reference data, not
+// expression.
 var genres = [...]string{
 	"Blues", "Classic Rock", "Country", "Dance", "Disco", "Funk", "Grunge",
 	"Hip-Hop", "Jazz", "Metal", "New Age", "Oldies", "Other", "Pop", "R&B",
@@ -54,10 +53,9 @@ func genreName(n int) (string, bool) {
 	return genres[n], true
 }
 
-// GenreName exposes the numeric-genre table to the other codecs that share it
-// (MP4's legacy "gnre" atom resolves a 1-based ID3v1 genre number to a name). It
-// keeps the vendored 192-entry list in one place rather than duplicated per
-// codec; n is the 0-based index.
+// GenreName exposes the numeric-genre table to other codecs (MP4's legacy "gnre" atom
+// resolves a 1-based ID3v1 genre number to a name), so the 192-entry list lives in one
+// place. n is the 0-based index.
 func GenreName(n int) (string, bool) { return genreName(n) }
 
 // genreByName maps a lowercased genre name to its index, built once so the
@@ -160,20 +158,16 @@ func resolveGenres(v string) (names []string, numeric bool) {
 		v = v[end+1:]
 	}
 	if rest := strings.TrimSpace(v); rest != "" {
-		// A leading "((" escapes a literal "(" that begins the refinement text; unescape it to a
-		// single "(". A lone leading "(" here is the literal text of an unterminated reference (e.g.
-		// "(17)(hello" or a bare "(hello"), so it is kept verbatim rather than stripped - matching
-		// the paren-token preservation of the reference branches above. Trimming space first also
-		// lets the "((" unescape fire after a "(17) ((Live)"-style space before the escaped paren.
+		// A leading "((" escapes a literal "(" beginning the refinement; unescape it. A lone
+		// leading "(" is the literal text of an unterminated reference ("(17)(hello", "(hello")
+		// and is kept verbatim. Trimming space first lets the unescape fire after "(17) ((Live)".
 		if strings.HasPrefix(rest, "((") {
 			rest = rest[1:]
 		}
-		// Skip a refinement that just repeats the genre it immediately follows: "(17)Rock" resolves
-		// the reference to "Rock", so a trailing "Rock" would yield ["Rock","Rock"]. A distinct
-		// refinement ("(4)Eurodisco" -> ["Disco","Eurodisco"]) is still kept. The len(names)==0 guard
-		// is load-bearing: an unterminated reference ("(hello") leaves names empty and reaches here,
-		// so indexing names[len(names)-1] without it would panic. Only the exact adjacent repeat is
-		// folded; case-folded or non-adjacent repeats are left as authored.
+		// Skip a refinement that repeats the genre it follows: "(17)Rock" would yield
+		// ["Rock","Rock"]. A distinct refinement ("(4)Eurodisco" -> ["Disco","Eurodisco"]) is
+		// kept. The len(names)==0 guard matters: an unterminated reference ("(hello") leaves
+		// names empty. Only the exact adjacent repeat is folded.
 		if len(names) == 0 || rest != names[len(names)-1] {
 			names = append(names, rest)
 		}

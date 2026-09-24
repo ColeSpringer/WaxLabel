@@ -8,10 +8,10 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// canonical LYRICIST key survives a real set -> write -> reparse across the main storage
-// mechanisms: a Vorbis comment (FLAC), an ID3 TEXT frame (MP3), an MP4 com.apple.iTunes freeform
-// atom (M4A), and the embedded-ID3 chunk WAV and AIFF carry (RIFF/IFF have no native lyricist
-// chunk, so LYRICIST lands in their ID3 chunk as a TEXT frame, the same route COMPOSER takes).
+// LYRICIST survives set -> write -> reparse across the main storage mechanisms: a Vorbis
+// comment (FLAC), an ID3 TEXT frame (MP3), an MP4 com.apple.iTunes freeform atom (M4A), and
+// the embedded ID3 chunk of WAV and AIFF. RIFF/IFF have no native lyricist chunk, so LYRICIST
+// goes in their ID3 chunk as a TEXT frame, like COMPOSER.
 func TestLyricistRoundTrip(t *testing.T) {
 	want := []string{"Bernie Taupin", "Tim Rice"}
 
@@ -33,8 +33,8 @@ func TestLyricistRoundTrip(t *testing.T) {
 
 		if f == sampleMP3 {
 			// The value must render as the conformant TEXT frame, never a TXXX:LYRICIST
-			// user frame. Absence of the "LYRICIST" description bytes proves it is not a
-			// TXXX frame, and presence of the "TEXT" frame id confirms the intended home.
+			// user frame. The "LYRICIST" bytes would be the TXXX description, so their
+			// absence proves it.
 			if !bytes.Contains(out, []byte("TEXT")) {
 				t.Errorf("%s: expected a TEXT frame in the written output", f)
 			}

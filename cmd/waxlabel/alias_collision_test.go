@@ -39,7 +39,7 @@ func TestAliasCollisionNote(t *testing.T) {
 
 	t.Run("whitespace-only difference on a trimmable key does not warn", func(t *testing.T) {
 		t.Parallel()
-		// TRACK/TRACKNUMBER trim to the same stored "1"; not a real conflict.
+		// TRACK/TRACKNUMBER trim to the same stored "1"; not a conflict.
 		_, stderr, _ := runCLI(t, "set", copyFixture(t, sampleFLAC), "--set", "TRACK=1", "--set", "TRACKNUMBER= 1")
 		if strings.Contains(stderr, marker) {
 			t.Errorf("a whitespace-only difference on a trimmable key must not warn (both store \"1\"); stderr:\n%s", stderr)

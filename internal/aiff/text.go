@@ -18,21 +18,18 @@ func textTags(items []textItem) tag.TagSet {
 		if !ok {
 			continue
 		}
-		// Surface a present-empty (genuinely zero-length) text chunk as a present-empty value,
-		// not absent, so --set TITLE= round-trips like the other formats. Every chunk in the
-		// list is present; an absent key simply has no chunk.
+		// A zero-length text chunk projects as a present-empty value, not absent, so
+		// --set TITLE= round-trips like the other formats.
 		ts.AddNativeItem(key, it.text())
 	}
-	// No number-pair normalization here: AIFF's native text chunks map no numeric key
-	// (mapping.aiffTextKeys), so a slashed track/disc number cannot occur. If a numeric
-	// mapping is ever added, split it with tag.NormalizeNumberPairs like the WAV/Vorbis paths.
+	// No number-pair normalization: AIFF's native text chunks map no numeric key
+	// (mapping.aiffTextKeys). A future numeric mapping needs tag.NormalizeNumberPairs.
 	return ts
 }
 
 // textFamilies builds AIFF family/source entries from native text chunks, marking an
 // entry unselected (a conflict) when its value disagrees with the authoritative value
-// for the same key. A duplicate number/total item reads back unselected (textTags is
-// first-wins for those);
+// for the same key.
 func textFamilies(auth tag.TagSet, items []textItem) []core.FamilyValue {
 	var out []core.FamilyValue
 	for _, it := range items {
@@ -52,9 +49,9 @@ func textFamilies(auth tag.TagSet, items []textItem) []core.FamilyValue {
 	return out
 }
 
-// textRepresentable reports whether every key in ts can be stored faithfully in the
-// native text chunks: each must map to a native identifier, and only Comment (which
-// writes as repeated ANNO chunks) may carry more than one value.
+// textRepresentable reports whether every changed key in ts can be stored in the
+// native text chunks: each must map to a native identifier, and only Comment (written
+// as repeated ANNO chunks) may carry more than one value.
 func textRepresentable(ts tag.TagSet, changed map[tag.Key]bool) bool {
 	for _, k := range ts.Keys() {
 		if !changed[k] {
@@ -100,8 +97,7 @@ func rebuildText(orig []textItem, edited tag.TagSet, changed map[tag.Key]bool) [
 		key, ok := mapping.AIFFTextKey(it.id4())
 		if !ok {
 			// Unreachable: parse collects a chunk into texts only when it maps. An unmapped
-			// chunk is an ordinary chunk, preserved verbatim by planChunks, which is why this
-			// drops rather than carrying raw bytes the way WAV's open INFO vocabulary must.
+			// chunk is an ordinary chunk that planChunks preserves verbatim.
 			continue
 		}
 		if !changed[key] {
@@ -151,9 +147,9 @@ func textBytesChange(d *doc, newText []outChunk) bool {
 	return false
 }
 
-// textConflictKeys lists the keys this write re-renders whose AIFF family entry disagreed
-// with the projection: the conflicting chunks the write replaces. It is keyed on the same
-// change set rebuildText is, so the report cannot claim more or less than the rewrite does.
+// textConflictKeys lists the keys this write re-renders whose AIFF family entry
+// disagreed with the projection: the conflicting chunks the write replaces. It uses
+// the same change set as rebuildText.
 func textConflictKeys(fams []core.FamilyValue, changed map[tag.Key]bool) []tag.Key {
 	var out []tag.Key
 	seen := map[tag.Key]bool{}
@@ -166,10 +162,9 @@ func textConflictKeys(fams []core.FamilyValue, changed map[tag.Key]bool) []tag.K
 	return out
 }
 
-// strippedTextKeys lists the canonical keys whose native text chunk holds a value that
-// is going nowhere: the projection did not select it (the ID3 chunk disagreed, or it
-// duplicates a value the canonical set does not carry), and this edit did not write it
-// either, so no frame in the ID3 chunk will hold it.
+// strippedTextKeys lists the canonical keys whose native text chunk holds a value no
+// ID3 frame will hold: the projection did not select it (the ID3 chunk disagreed, or
+// it duplicates a value the canonical set lacks) and this edit did not write it.
 func strippedTextKeys(fams []core.FamilyValue, edited tag.TagSet) []tag.Key {
 	var out []tag.Key
 	seen := map[tag.Key]bool{}
@@ -187,9 +182,8 @@ func strippedTextKeys(fams []core.FamilyValue, edited tag.TagSet) []tag.Key {
 	return out
 }
 
-// textOut builds one native text output chunk holding the raw value bytes. AIFF
-// text chunks are plain character runs; the value is written verbatim (no NUL
-// terminator) and word-aligned by assemble.
+// textOut builds one native text output chunk: the value bytes verbatim, with no NUL
+// terminator; assemble word-aligns it.
 func textOut(id [4]byte, value string) outChunk {
 	return outChunk{id: id, role: roleText, body: []byte(value), bodyLen: int64(len(value))}
 }

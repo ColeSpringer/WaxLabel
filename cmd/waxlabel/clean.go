@@ -160,7 +160,7 @@ func runClean(cmd *cobra.Command, dirs []string, recursive, remove, all bool) er
 		return alreadyRendered(worstErr)
 	}
 	switch {
-	// Unreadable dirs: don't claim "none found" for a tree we couldn't fully scan.
+	// Unreadable dirs: do not claim "none found" for a partially scanned tree.
 	case found == 0 && worstErr != nil:
 		fmt.Fprintln(out, "no leftover temp files where the scan could look")
 	case found == 0:

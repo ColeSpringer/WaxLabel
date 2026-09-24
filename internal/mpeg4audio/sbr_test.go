@@ -68,8 +68,6 @@ func TestSBRExtensionIDDecidesPS(t *testing.T) {
 	if _, ok := ParseSBRSingleChannel(info.SBRPayload, info.SBRBits, info.SBRCRC, sbrIdx, &st); !ok {
 		t.Fatal("the unmodified payload must parse")
 	}
-	// Find the extension id by walking to it, then rewrite those two bits to a value that is
-	// not EXTENSION_ID_PS and confirm the same walk reports no parametric stereo.
 	pos, found := extensionIDPosition(t, info, sbrIdx)
 	if !found {
 		t.Fatal("the parametric-stereo fixture must carry extended data to locate its id in")

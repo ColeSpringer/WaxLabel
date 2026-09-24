@@ -24,8 +24,8 @@ func withTail(data []byte, tails ...[]byte) []byte {
 	return out
 }
 
-// checks the point of carving junk out of the audio region: a junk-appended rip carries the same
-// audio-essence identity as its clean twin, so the two dedup-match.
+// A junk-appended rip carries the same audio-essence identity as its clean twin, so the two
+// dedup-match.
 func TestFLACJunkExcludedFromEssenceDigest(t *testing.T) {
 	clean := readFixture(t, sampleFLAC)
 	junk := withTail(clean, make([]byte, 512))
@@ -49,9 +49,9 @@ func TestFLACJunkExcludedFromEssenceDigest(t *testing.T) {
 	}
 }
 
-// checks the write side of the carve-out: an edit copies the junk verbatim between the audio and a
-// kept ID3v1 trailer, a chained edit on the returned document keeps it too, and the written file
-// still dedup-matches the clean original.
+// Write side: an edit copies the junk verbatim between the audio and a kept ID3v1 trailer, a
+// chained edit on the returned document keeps it too, and the written file still dedup-matches
+// the clean original.
 func TestFLACJunkSurvivesEdit(t *testing.T) {
 	ctx := context.Background()
 	clean := readFixture(t, sampleFLAC)

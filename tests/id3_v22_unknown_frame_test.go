@@ -18,10 +18,10 @@ func v22WithUnknownFrame(t *testing.T) []byte {
 	), mp3Audio(t)...)
 }
 
-// regression guard: an unknown ID3v2.2 frame is preserved under a space-padded "TXY " ID when the
-// tag is modernized to v2.3, but that non-conformant ID must never surface as a phantom canonical
-// tag; not on the first read, not on re-read of the written file, and not in the plan preview
-// (which must equal a fresh re-parse).
+// An unknown ID3v2.2 frame is preserved under a space-padded "TXY " ID when the tag is modernized
+// to v2.3, but that non-conformant ID must never surface as a phantom canonical tag: not on the
+// first read, not on re-read of the written file, and not in the plan preview (which must equal a
+// fresh re-parse).
 func TestMP3V22UnknownFrameNoPhantom(t *testing.T) {
 	data := v22WithUnknownFrame(t)
 
@@ -36,8 +36,7 @@ func TestMP3V22UnknownFrameNoPhantom(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The plan preview must not invent a TXY change: the preview is not a separate guess,
-	// it equals a fresh re-parse of the output.
+	// The plan preview must not invent a TXY change: it equals a fresh re-parse of the output.
 	for _, c := range plan.Changes() {
 		if c.Key == tag.Key("TXY") {
 			t.Errorf("plan preview invented a phantom TXY change: %v", c)
@@ -61,8 +60,8 @@ func TestMP3V22UnknownFrameNoPhantom(t *testing.T) {
 	}
 }
 
-// preserved frame is stable once it is a normal non-opaque frame in the modernized file: a no-op
-// write is byte-identical, and a second real edit keeps the frame verbatim without minting a
+// The preserved frame is stable once it is a normal non-opaque frame in the modernized file: a
+// no-op write is byte-identical, and a second edit keeps the frame verbatim without minting a
 // phantom.
 func TestMP3V22UnknownFrameIdempotent(t *testing.T) {
 	data := v22WithUnknownFrame(t)
@@ -104,9 +103,8 @@ func TestMP3V22UnknownFrameIdempotent(t *testing.T) {
 	}
 }
 
-// write.go gates: setting the canonical key TXY (which renders as a TXXX:TXY frame) on the
-// modernized file must keep the preserved "TXY " frame AND write the new value; neither clobbers
-// the other.
+// Setting the canonical key TXY (which renders as a TXXX:TXY frame) on the modernized file must
+// keep the preserved "TXY " frame and write the new value; neither clobbers the other.
 func TestMP3V22UnknownFrameKeyCollision(t *testing.T) {
 	data := v22WithUnknownFrame(t)
 	modernize, err := mustParseBytes(t, data).Edit().Set(tag.Album, "V22 Album").Prepare()

@@ -1,10 +1,9 @@
 name: Release
 
-# Build and publish the CLI binaries whenever a release tag (vX.Y.Z) is pushed. Binaries are
-# built from the checked-out tag; the tag is linked in as the version with -ldflags so a
+# Build and publish the CLI binaries when a release tag (vX.Y.Z) is pushed. Binaries are
+# built from the checked-out tag, with the tag linked in as the version by -ldflags so a
 # binary reports it deterministically (resolveVersion in cmd/waxlabel prefers it). Every
-# v-prefixed tag starts a run so that a malformed one fails loudly at the first gate
-# instead of being ignored.
+# v-prefixed tag starts a run, so a malformed one fails at the first gate.
 on:
   push:
     tags:
@@ -33,9 +32,9 @@ jobs:
           go-version-file: go.mod
           check-latest: true
 
-      # Gate: a release tag is vX.Y.Z, and the changelog carries a section for it, closed
-      # before the tag is cut. A tag with no section was cut too early; fail here, before
-      # anything is built, rather than ship binaries the changelog does not know about.
+      # Gate: a release tag is vX.Y.Z and the changelog has a section for it, closed
+      # before the tag is cut. A tag with no section was cut too early; fail before
+      # anything is built.
       - name: Check tag and changelog
         run: |
           set -euo pipefail
@@ -50,8 +49,8 @@ jobs:
           fi
 
       # Gate: rerun the race suite against the exact tagged tree before any binary is
-      # published, with ffmpeg present and required, so a release clears the same enforced
-      # differential suite as the CI gate on main instead of skipping it.
+      # published, with ffmpeg present and required, so a release clears the same
+      # differential suite as the CI gate on main.
       - name: Install ffmpeg
         run: |
           sudo apt-get update

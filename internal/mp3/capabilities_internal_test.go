@@ -8,8 +8,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestCapabilitiesOriginalDateVersion: ORIGINALDATE is reported lossy onto a v2
-
+// TestCapabilitiesOriginalDateVersion: ORIGINALDATE write is AccessPartial (lossy) for
+// a v2.3 tag and AccessFull for v2.4.
 func TestCapabilitiesOriginalDateVersion(t *testing.T) {
 	codec := New()
 	originalDateWrite := func(m *core.Media) core.AccessLevel {

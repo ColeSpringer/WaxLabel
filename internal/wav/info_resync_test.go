@@ -6,9 +6,9 @@ import (
 	"testing"
 )
 
-// infoItemRaw renders one INFO item exactly as a writer would, with pad controlling
-// whether the word-alignment byte after an odd-size value is emitted. Omitting it is the
-// malformation these tests are about, so it is a parameter rather than a fixed rule.
+// infoItemRaw renders one INFO item as a writer would; pad controls whether the
+// word-alignment byte after an odd-size value is emitted. Omitting it is the
+// malformation these tests cover.
 func infoItemRaw(id, value string, pad bool) []byte {
 	val := append([]byte(value), 0) // ZSTR terminator
 	sz := make([]byte, 4)
@@ -73,9 +73,8 @@ func TestParseInfoKeepsPaddedBranch(t *testing.T) {
 	}
 }
 
-// TestParseInfoFinalUnpaddedItemStaysQuiet: a list whose sole odd item is the last one,
-// unpadded, parses completely and loses nothing, so it must not gain a warning for a byte
-// the next rewrite adds anyway.
+// TestParseInfoFinalUnpaddedItemStaysQuiet: a list whose only odd item is the last
+// one, unpadded, parses completely and loses nothing, so it gains no warning.
 func TestParseInfoFinalUnpaddedItemStaysQuiet(t *testing.T) {
 	body := infoBody(infoItemRaw("IART", "Artist", true), infoItemRaw("INAM", "Song", false))
 	items, unread, padRescued, err := parseInfo(body, 0)
@@ -93,9 +92,9 @@ func TestParseInfoFinalUnpaddedItemStaysQuiet(t *testing.T) {
 	}
 }
 
-// TestParseInfoReportsUnreadableTail: a region neither candidate position can read as an
-// item is reported through consumed, so the caller can warn rather than let the rewrite
-// destroy it in silence. The tail here is too short to hold another item header.
+// TestParseInfoReportsUnreadableTail: a region neither candidate position can read as
+// an item is reported through unread so the caller can warn. The tail here is too
+// short to hold another item header.
 func TestParseInfoReportsUnreadableTail(t *testing.T) {
 	junk := []byte{0x01, 0x02, 0x03}
 	body := append(infoBody(infoItemRaw("INAM", "Title", true)), junk...)
@@ -111,9 +110,9 @@ func TestParseInfoReportsUnreadableTail(t *testing.T) {
 	}
 }
 
-// TestParseInfoBothCandidatesImplausible pins the tie-break: when nothing readable follows
-// the odd item, the walk stays at the unpadded position rather than stepping over a pad
-// byte it cannot see, so the count of destroyed bytes is exact instead of one short.
+// TestParseInfoBothCandidatesImplausible pins the tie-break: when nothing readable
+// follows the odd item, the walk stays at the unpadded position, so the count of
+// destroyed bytes is exact rather than one short.
 func TestParseInfoBothCandidatesImplausible(t *testing.T) {
 	junk := []byte{0x01, 0x02, 0x03}
 	body := append(infoBody(infoItemRaw("INAM", "Song", false)), junk...)
@@ -179,9 +178,9 @@ func TestPlausibleInfoItemToleratesPastEnd(t *testing.T) {
 	}
 }
 
-// TestParseInfoPadByteIsNotALoss: an odd item that DOES carry its pad byte, followed by
-// a region no walk can read, must not count the pad byte among the destroyed bytes - a
-// rewrite writes its own.
+// TestParseInfoPadByteIsNotALoss: an odd item that carries its pad byte, followed by a
+// region no walk can read, must not count the pad byte as destroyed; a rewrite writes
+// its own.
 func TestParseInfoPadByteIsNotALoss(t *testing.T) {
 	junk := []byte{0x01, 0x02, 0x03}
 	body := append(infoBody(infoItemRaw("INAM", "Song", true)), junk...)

@@ -16,23 +16,20 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// maxMetaChunk bounds how large a metadata chunk (a native text chunk or ID3) we will
-// read into memory.
+// maxMetaChunk bounds the metadata chunks (native text or ID3) read into memory.
 const maxMetaChunk = 64 << 20
 
-// maxCommChunk bounds the "COMM" read. The 18-byte common fields plus an AIFF-C
-// compression type fit well within this; the rest (an AIFF-C compression name) is
-// not decoded, and the chunk is copied from the source on rewrite regardless.
+// maxCommChunk bounds the "COMM" read: the 18 common bytes plus an AIFF-C compression
+// type. The compression name is not decoded; the chunk is copied verbatim on rewrite.
 const maxCommChunk = 64
 
 // ssndHeaderLen is the size of SSND's offset + blockSize sub-header, which
 // precedes the sample frames and is not itself audio.
 const ssndHeaderLen = 8
 
-// parse reads an AIFF file's chunk structure into a neutral Media: the audio
-// geometry from "COMM", the canonical tags from the ID3 chunk (authoritative) or
-// the native text chunks (the fallback authority), the family/source view for
-// both, and every chunk preserved as the base for a preservation-first rewrite.
+// parse reads an AIFF file into a Media: audio geometry from "COMM", canonical tags
+// from the ID3 chunk (authoritative) or the native text chunks (fallback), the family
+// view for both, and every chunk recorded as the base for a preservation-first rewrite.
 func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) (*core.Media, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -52,9 +49,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		return nil, fmt.Errorf("%w: FORM type %q is not AIFF/AIFC", waxerr.ErrInvalidData, formType)
 	}
 
-	// The FORM size delimits the container; bytes beyond it are appended out-of-FORM
-	// data, not chunks. Trust it as the walk boundary only when sane - a bogus 0 or
-	// 0xFFFFFFFF falls back to the file size so no chunk is missed.
+	// The FORM size delimits the container; bytes beyond it are out-of-FORM data, not
+	// chunks. A bogus size (0, 0xFFFFFFFF) falls back to the file size.
 	formEnd := 8 + int64(binary.BigEndian.Uint32(hdr[4:8]))
 	if formEnd < 12 || formEnd > size {
 		formEnd = size
@@ -75,9 +71,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	}
 	isAIFC := formType == "AIFC"
 
-	// First pass over the walked chunks: decode COMM, collect the native text
-	// chunks and the ID3 chunk candidate indices (resolving the authoritative ID3
-	// and duplicates afterward, so a corrupt-then-valid ID3 pair is handled right).
+	// First pass: decode COMM and collect the native text chunks and ID3 candidates. The
+	// authoritative ID3 and duplicates are resolved afterward, which handles a
+	// corrupt-then-valid ID3 pair.
 	commFound := false
 	var id3Idxs []int
 	for i := range d.chunks {
@@ -105,9 +101,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		}
 	}
 
-	// The first ID3 chunk that parses is authoritative; every other ID3 chunk - a
-	// duplicate, or a corrupt one beside a valid one - is marked dropped so the
-	// output never carries two ID3 chunks.
+	// The first ID3 chunk that parses is authoritative. Every other ID3 chunk, a
+	// duplicate or a corrupt one beside a valid one, is marked dropped so the output
+	// never carries two.
 	for _, i := range id3Idxs {
 		body, err := bits.ReadSlice(src, d.chunks[i].bodyOff, min(d.chunks[i].bodyLen, maxMetaChunk), limit)
 		if err != nil {
@@ -119,9 +115,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			d.id3Idx = i
 			break
 		}
-		// A bounded-allocation cap breach (a hostile frame flood hitting MaxElements) is a
-		// hard error, not a benign "this chunk is not a tag": swallowing it would silently
-		// treat a structurally-valid ID3 chunk as absent and rewrite the file without it.
+		// A MaxElements cap breach is a hard error, not "this chunk is not a tag":
+		// swallowing it would treat a valid ID3 chunk as absent and rewrite without it.
 		if errors.Is(perr, waxerr.ErrSizeTooLarge) {
 			return nil, perr
 		}
@@ -178,14 +173,12 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			fmt.Sprintf("the %q chunk declares more bytes than the file holds and was clamped to EOF", string(id[:])))
 	}
 	// A chunk declared the size-unknown sentinel, so everything past it was read as its
-	// body. AIFF shares the walker that detects it, so warning on WAV alone would be
-	// arbitrary. Not truncation, but the reader loses whatever followed.
+	// body. Not truncation, but the reader loses whatever followed.
 	warnings = core.WarnUnknownSize(warnings, d.unknownSizeChunks)
 
-	// The audio bytes are what survives past SSND's 8-byte sub-header and the declared
-	// alignment bytes (bodyLen is already EOF-clamped in walkChunks); buildTrack caps the
-	// declared count by them, so a truncated file and one whose COMM merely overstates
-	// both report the frames present.
+	// Audio bytes: the SSND body past its 8-byte sub-header and the declared alignment
+	// bytes (bodyLen is EOF-clamped in walkChunks). buildTrack caps the declared count by
+	// them, so a truncated file and an overstating COMM both report the frames present.
 	audioBytes := ssndAudioBytes(d.chunks, d.ssndIdx, ssndAlign)
 	d.track = buildTrack(d.comm, audioBytes)
 	if !d.ssndTruncated && d.comm.overstates(audioBytes) {
@@ -215,11 +208,10 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	return media, nil
 }
 
-// project derives the canonical view from a parsed (or rewritten) document under the
-// read-precedence policy: the embedded ID3 chunk is authoritative when present, and the
-// native text chunks fill in any canonical key ID3 does not carry - so a native-only
-// value (a Copyright in a "(c) " chunk, say) enters the canonical set and survives a
-// rewrite rather than being silently dropped.
+// project derives the canonical view from a parsed or rewritten document: the ID3
+// chunk is authoritative when present, and the native text chunks fill in any
+// canonical key ID3 does not carry, so a native-only value (a "(c) " Copyright, say)
+// survives a rewrite.
 func project(d *doc) (tags tag.TagSet, pics []core.Picture, chapters []core.Chapter, syncedLyrics []core.SyncedLyrics, families []core.FamilyValue, numericGenre bool, projWarnings []core.Warning) {
 	tags = tag.NewTagSet()
 	switch {
@@ -235,8 +227,7 @@ func project(d *doc) (tags tag.TagSet, pics []core.Picture, chapters []core.Chap
 		projWarnings = proj.Warnings
 		families = proj.Families
 		numericGenre = proj.NumericGenre
-		// ID3 wins on conflict; the native chunks fill keys ID3 lacks (precedence
-		// merge), so a native-only value is not lost.
+		// ID3 wins on conflict; the native chunks fill keys ID3 lacks (precedence merge).
 		nativeSet := textTags(d.texts)
 		for _, k := range nativeSet.Keys() {
 			if tags.Has(k) {
@@ -254,18 +245,17 @@ func project(d *doc) (tags tag.TagSet, pics []core.Picture, chapters []core.Chap
 }
 
 // mediaWarnings returns the content-derived warnings for a parsed or rewritten
-// document: a resolved numeric genre and an inherited-encoder stamp from the ID3
-// chunk's TSSE/TENC frame (the AIFF analogue of WAV's ISFT scan - ffmpeg writes the
-// "Lavf..." stamp into ID3, not the native chunks).
+// document: a resolved numeric genre and an inherited-encoder stamp in the ID3 chunk's
+// TSSE/TENC frame (ffmpeg writes "Lavf..." into ID3, not the native chunks).
 func mediaWarnings(d *doc, numericGenre bool) []core.Warning {
 	var ws []core.Warning
 	if numericGenre {
 		ws = core.Warn(ws, core.WarnNumericGenre, "a numeric genre reference was resolved to a name")
 	}
 	ws = append(ws, id3.EncoderNoise(d.id3)...)
-	// Both regions survive a rewrite byte for byte (write.go), so this is the only
-	// place they are ever mentioned. The in-FORM one is counted in the recomputed
-	// container size; the outer one deliberately is not.
+	// Both regions survive a rewrite byte for byte (write.go), so only this place
+	// mentions them. The in-FORM one counts toward the recomputed container size; the
+	// outer one does not.
 	ws = core.WarnTrailing(ws, d.trailingLen, "after the last IFF chunk", d.trailingWhat())
 	ws = core.WarnTrailing(ws, d.outerLen, "after the FORM container", "")
 	return ws
@@ -279,8 +269,7 @@ var formDialect = iff.Dialect{
 }
 
 // walkChunks records every top-level IFF chunk by identifier and source range via the
-// shared iff walker, then copies the result into d. It reads only chunk headers (never
-// bodies), so a large SSND chunk costs nothing.
+// shared iff walker. It reads only chunk headers, so a large SSND chunk costs nothing.
 func walkChunks(ctx context.Context, src core.ReaderAtSized, d *doc, formEnd, limit int64, maxElements int) (distrusted bool, err error) {
 	res, distrusted, err := iff.WalkChunksRecovering(ctx, src, iff.WalkOptions{
 		Size: d.size, End: formEnd, Limit: limit, MaxElements: maxElements, Dialect: formDialect,
@@ -332,9 +321,8 @@ func isTextChunk(id string) bool {
 // isID3Chunk reports whether a chunk identifier holds an embedded ID3v2 tag.
 func isID3Chunk(id string) bool { return id == "ID3 " || id == "id3 " }
 
-// textValue extracts a native text chunk's value: the character run up to the
-// first NUL (AIFF text chunks are commonly NUL-padded). Cutting at the first NUL
-// - rather than only trimming trailing NULs - keeps an interior NUL from later
+// textValue extracts a native text chunk's value: the run up to the first NUL (AIFF
+// text chunks are commonly NUL-padded). Cutting there keeps an interior NUL from
 // truncating an ID3 text frame when the value is promoted to the ID3 chunk.
 func textValue(body []byte) []byte {
 	for i, b := range body {

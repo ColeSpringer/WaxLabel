@@ -36,9 +36,8 @@ func TestCutDescription(t *testing.T) {
 		{"unterminated before an image", "image/png", png, "", png, true},
 		{"unterminated before junk", "image/png", junk, "", junk, false},
 		{"terminated before junk", "image/png", append([]byte("Front\x00"), junk...), "Front", junk, true},
-		// The sniffer accepts a bare "BM" prefix, so a description that starts with one must
-		// not make the whole remainder read as an image and swallow the description. The
-		// frame declares a PNG, and "BM cover art..." is not one.
+		// The sniffer accepts a bare "BM" prefix, so a description starting with one must
+		// not make the whole remainder read as an image; the frame declares a PNG.
 		{"description starting with an image signature", "image/png", append([]byte("BM cover art\x00"), junk...), "BM cover art", junk, true},
 		// The same where the declared type is the one the description imitates: the bytes
 		// after the terminator are still what the frame is about.

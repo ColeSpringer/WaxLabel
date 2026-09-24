@@ -9,10 +9,9 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestDuplicateNamePreserved is the regression guard for the finding that a blanket
-// first-wins silently dropped preservable text values: two NAME chunks (both Title, a
-// single-valued text key) must project BOTH values. AIFF maps no number/total key, so
-// the number-pair guard never fires here;
+// TestDuplicateNamePreserved checks that two NAME chunks (both Title, a single-valued
+// text key) project both values. AIFF maps no number/total key, so the number-pair
+// guard never fires here.
 func TestDuplicateNamePreserved(t *testing.T) {
 	chunks := slices.Concat(aiffComm(), aiffSsnd(),
 		aiffChunk("NAME", []byte("First")), aiffChunk("NAME", []byte("Second")))
@@ -24,8 +23,8 @@ func TestDuplicateNamePreserved(t *testing.T) {
 	if !ok || len(vals) != 2 || vals[0] != "First" || vals[1] != "Second" {
 		t.Fatalf("Title = %v (ok=%v), want both values [\"First\" \"Second\"] preserved", vals, ok)
 	}
-	// An edit that changes the key reduces the pair to the single-valued NAME chunk and keeps
-	// it whole in ID3, which is a real reduction to report.
+	// An edit that changes the key reduces the pair to the single-valued NAME chunk and
+	// keeps it whole in ID3: a reduction to report.
 	if ws := nativeReducedWarnings(m.Tags, map[tag.Key]bool{tag.Title: true}); len(ws) != 1 {
 		t.Errorf("a changed duplicate Title should warn native-value-reduced once, got %v", ws)
 	}
@@ -36,8 +35,8 @@ func TestDuplicateNamePreserved(t *testing.T) {
 	}
 }
 
-// TestDuplicateAnnoStillAccumulates guards the genuinely multi-valued path: Comment (ANNO) is
-// multi-valued, so two ANNO chunks both project - unchanged by the number-pair guard.
+// TestDuplicateAnnoStillAccumulates: Comment (ANNO) is multi-valued, so two ANNO chunks
+// both project, unaffected by the number-pair guard.
 func TestDuplicateAnnoStillAccumulates(t *testing.T) {
 	chunks := slices.Concat(aiffComm(), aiffSsnd(),
 		aiffChunk("ANNO", []byte("one")), aiffChunk("ANNO", []byte("two")))

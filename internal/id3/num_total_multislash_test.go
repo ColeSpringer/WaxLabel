@@ -8,8 +8,9 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestNumTotalMultiSlashPreserved: is a regression: a number field with two slashes
-
+// TestNumTotalMultiSlashPreserved checks a number field with two slashes ("1/2/3"), which
+// is not a valid "n/total" value, is written verbatim with the canonical total flagged
+// dropped rather than recomposed as "1/<total>". Covers TRCK and TPOS.
 func TestNumTotalMultiSlashPreserved(t *testing.T) {
 	for _, kp := range []struct {
 		name           string
@@ -48,9 +49,9 @@ func TestNumTotalMultiSlashPreserved(t *testing.T) {
 				t.Errorf("no canonical total present, nothing should be dropped, got %v", info.DroppedTotals)
 			}
 		})
-		// The empty-number guard: a lone total (no number) is cleanly representable as "/total"
-		// and must round-trip, NOT be dropped like a non-numeric number. This pins the num!=""
-		// condition so the multi-slash guard never regresses a bare --set TRACKTOTAL=N.
+		// A lone total (no number) is representable as "/total" and must round-trip, not be
+		// dropped like a non-numeric number; this pins the num!="" condition for a bare
+		// --set TRACKTOTAL=N.
 		t.Run(kp.name+"/lone total preserved as /total", func(t *testing.T) {
 			edited := tag.NewTagSet()
 			edited.Set(kp.totKey, "12") // total only, no number

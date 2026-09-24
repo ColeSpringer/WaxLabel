@@ -28,7 +28,7 @@ const (
 )
 
 // ASF synthesis. ffmpeg writes WMA, but not the WM/Picture descriptor or the Metadata Library
-// records, so those shapes are built here rather than shipped as binary fixtures.
+// records, so those shapes are built here.
 
 // asfUTF16 encodes a NUL-terminated UTF-16LE string, the only text encoding ASF uses.
 func asfUTF16(s string) []byte {
@@ -100,8 +100,8 @@ func asfStreamProperties(formatTag uint16, channels uint16, rate uint32, bits ui
 	return asfStreamPropertiesRaw(asfWaveFormatEx(formatTag, channels, rate, bits, nil))
 }
 
-// asfWaveFormatEx builds a WAVEFORMATEX with cbSize declaring the codec extra bytes that follow it;
-// the bytes a codec's own configuration rides in.
+// asfWaveFormatEx builds a WAVEFORMATEX with cbSize declaring the codec extra bytes that follow it,
+// where a codec's own configuration lives.
 func asfWaveFormatEx(formatTag, channels uint16, rate uint32, bits uint16, extra []byte) []byte {
 	w := make([]byte, 18)
 	binary.LittleEndian.PutUint16(w[0:2], formatTag)
@@ -124,8 +124,8 @@ func asfLosslessExtra(depth uint16) []byte {
 	return b
 }
 
-// asfStreamPropertiesRaw wraps a whole WAVEFORMATEX; cbSize and any codec extra bytes included; in
-// an audio Stream Properties object, for the cases that turn on what sits behind the fixed fields.
+// asfStreamPropertiesRaw wraps a whole WAVEFORMATEX, cbSize and any codec extra bytes included, in
+// an audio Stream Properties object.
 func asfStreamPropertiesRaw(w []byte) []byte {
 	g, _ := hexBytes(guidAudioMediaHex)
 	e, _ := hexBytes(guidNoErrCorrHex)
@@ -270,8 +270,8 @@ func TestWMAWriteRefused(t *testing.T) {
 	}
 }
 
-// refusal sits after the no-op fast path, so copying a WMA verbatim; which changes nothing; still
-// produces a whole file.
+// The refusal sits after the no-op fast path, so a verbatim copy of a WMA still produces a whole
+// file.
 func TestWMAUnchangedCopyStillWorks(t *testing.T) {
 	src := readFixture(t, sampleWMA)
 	plan, err := mustParseBytes(t, src).Edit().Prepare()
@@ -343,7 +343,7 @@ func TestWMADuplicateValueFolded(t *testing.T) {
 		t.Errorf("TITLE = %v, want one value", got)
 	}
 
-	// A genuine disagreement still contributes both, so the conflict stays visible.
+	// A disagreement still contributes both, so the conflict stays visible.
 	data2 := asfFile(
 		asfStreamProperties(0x0161, 2, 44100, 16),
 		asfContentDescription("First", "", "", "", ""),
@@ -400,7 +400,7 @@ func TestWMAPictureInMetadataObject(t *testing.T) {
 	}
 }
 
-// bad cover is surfaced, not silently dropped.
+// A bad cover is surfaced as a warning.
 func TestWMAMalformedPictureWarns(t *testing.T) {
 	data := asfFile(
 		asfStreamProperties(0x0161, 2, 44100, 16),
@@ -416,7 +416,7 @@ func TestWMAMalformedPictureWarns(t *testing.T) {
 }
 
 // WMA is a family, and Pro/Lossless/Voice differ only in the decoder they need. A metadata reader
-// must read all of them rather than refusing a variant by name.
+// must read all of them.
 func TestWMACodecVariantsAllRead(t *testing.T) {
 	for _, c := range []struct {
 		tag  uint16
@@ -444,10 +444,9 @@ func TestWMACodecVariantsAllRead(t *testing.T) {
 	}
 }
 
-// for WMA Lossless the depth a decoder works at lives in the codec extra bytes, and wBitsPerSample
-// is decoration a real encode does leave disagreeing. Only 16 and 24 count, the two depths the
-// format defines: anything else is a field misread rather than a stream to describe, and the fixed
-// field stands.
+// For WMA Lossless the depth a decoder works at lives in the codec extra bytes, and an encoder can
+// leave wBitsPerSample disagreeing. Only 16 and 24 count, the two depths the format defines; any
+// other value is a misread, and the fixed field stands.
 func TestWMALosslessDepthFromExtraBytes(t *testing.T) {
 	lossless := asfWaveFormatEx(0x0163, 2, 44100, 16, asfLosslessExtra(24))
 	for _, c := range []struct {
@@ -476,8 +475,8 @@ func TestWMALosslessDepthFromExtraBytes(t *testing.T) {
 	}
 }
 
-// real Windows Media Lossless encode, then patches its wBitsPerSample to disagree with the codec
-// extra bytes. The extra bytes must still win: that fixed field is what a decoder ignores.
+// A Windows Media Lossless encode, with its wBitsPerSample patched to disagree with the codec extra
+// bytes. The extra bytes must win: a decoder ignores the fixed field.
 func TestWMALosslessFixtureDepth(t *testing.T) {
 	src := readFixture(t, lossless24WMA)
 	doc := mustParseBytes(t, src)
@@ -509,9 +508,8 @@ func TestWMALosslessFixtureDepth(t *testing.T) {
 		t.Errorf("with wBitsPerSample patched to 16, bits per sample = %d, want 24", got)
 	}
 
-	// The two halves of "the structure as stored": the fixed field is salted, so patching
-	// it moves the digest, and the codec extra bytes the depth actually comes from are
-	// not, so patching those leaves it where it was.
+	// The fixed field is salted, so patching it moves the digest; the codec extra bytes the
+	// depth comes from are not, so patching those leaves it unchanged.
 	if essenceOf(t, patched).Equal(digest) {
 		t.Error("patching wBitsPerSample left the digest unchanged: the salt dropped the stored field")
 	}
@@ -525,9 +523,8 @@ func TestWMALosslessFixtureDepth(t *testing.T) {
 	}
 }
 
-// asfPatchU32 replaces the little-endian uint32 at off, first checking it holds want. A
-// change to the builders then fails the test loudly instead of silently patching whatever
-// bytes happen to sit at a stale offset.
+// asfPatchU32 replaces the little-endian uint32 at off, first checking it holds want, so a
+// change to the builders fails the test instead of patching a stale offset.
 func asfPatchU32(t *testing.T, b []byte, off int, want, set uint32) []byte {
 	t.Helper()
 	if got := binary.LittleEndian.Uint32(b[off : off+4]); got != want {
@@ -538,10 +535,9 @@ func asfPatchU32(t *testing.T, b []byte, off int, want, set uint32) []byte {
 	return out
 }
 
-// every declared length inside the header is an unvalidated uint32 the reader turns into an int. On
-// a 32-bit build a value near 2 GiB overflows a "base + length" bounds check to a negative number,
-// which passes the test and then panics on the slice, so each guard compares against the bytes that
-// remain instead.
+// Every declared length inside the header is an unvalidated uint32 the reader turns into an int. On
+// a 32-bit build a value near 2 GiB overflows a "base + length" bounds check to a negative number
+// that passes and then panics on the slice, so each check compares against the bytes that remain.
 func TestWMAOverlongLengthsRejected(t *testing.T) {
 	const nearMaxInt32 = 0x7FFFFFFF
 	// Every ASF object opens with a 16-byte GUID and an 8-byte size.

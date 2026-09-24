@@ -10,9 +10,9 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// end-to-end contract for an in-place write: err nil AND Committed true, with the edit on disk.
-// Three bugs broke this at once on Windows: a source handle held across its own rename, a directory
-// fsync that always failed, and a committed write then counted as a failure.
+// end-to-end contract for an in-place write: err nil and Committed true, with the edit on disk.
+// Windows is the sensitive platform: a source handle held across its own rename, a directory
+// fsync that always fails, or a committed write counted as a failure each break it.
 func TestInPlaceSaveCommitsCleanly(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {

@@ -7,8 +7,9 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// TestLooksLikeID3v1: the stricter trailing-ID3v1 detection: a genuine ID3v1/v1
-
+// TestLooksLikeID3v1 covers the strict trailing-ID3v1 detection: a genuine ID3v1/v1.1
+// tag passes, but audio bytes that merely begin with "TAG" at size-128 are rejected, so
+// a false positive cannot pull the audio-essence boundary back 128 bytes.
 func TestLooksLikeID3v1(t *testing.T) {
 	real := make([]byte, 128)
 	copy(real[0:3], "TAG")
@@ -59,8 +60,8 @@ func TestLooksLikeID3v1(t *testing.T) {
 	}
 }
 
-// FuzzLooksLikeID3v1: the strict detector never panics and stays a subset of the
-
+// FuzzLooksLikeID3v1 asserts the strict detector never panics and stays a subset of the
+// lenient ParseV1: any block it accepts must also parse.
 func FuzzLooksLikeID3v1(f *testing.F) {
 	real := make([]byte, 128)
 	copy(real[0:3], "TAG")
@@ -86,8 +87,10 @@ func FuzzLooksLikeID3v1(f *testing.F) {
 	})
 }
 
-// TestProjectWarnsMalformedAPIC: the malformed-cover read warning: an APIC frame whose
-
+// TestProjectWarnsMalformedAPIC covers the malformed-cover read warning: an APIC body too
+// short to hold a NUL-terminated MIME fails decodeAPIC, so Project surfaces
+// WarnInvalidPicture for dump and lint. Every ID3-embedding codec flows through this
+// projector.
 func TestProjectWarnsMalformedAPIC(t *testing.T) {
 	tg := tagWith(4, []Frame{{ID: "APIC", Body: []byte("\x00image/png")}}) // no NUL after MIME
 	proj := Project(tg)

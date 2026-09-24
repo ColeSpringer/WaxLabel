@@ -21,9 +21,9 @@ func segmentFirstChildIsVoid(t *testing.T, b []byte) bool {
 	return b[ds] == 0xEC
 }
 
-// CRC-32 directly under the Segment covers the whole segment body, so any edit makes it stale. The
-// writer must neutralize it to a Void (not copy the stale CRC), keeping the output valid (the CRC
-// is spec-optional) without a whole-file recompute.
+// A CRC-32 directly under the Segment covers the whole segment body, so any edit makes it
+// stale. The writer neutralizes it to a Void; the CRC is spec-optional, so the output stays
+// valid without a whole-file recompute.
 func TestMatroskaSegmentCRCDroppedToVoid(t *testing.T) {
 	tags := mkEl(idTags, mkEl(idTag, concat(
 		mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "AA"))))
@@ -37,8 +37,7 @@ func TestMatroskaSegmentCRCDroppedToVoid(t *testing.T) {
 	)
 	data := concat(mkEl(idEBML, mkStr(idDocType, "matroska")), mkEl(idSegment, mkCRC(seg)))
 
-	// The synthesized fixture itself carries a valid Segment CRC (sanity-checks the builder
-	// and the validator agree before any edit).
+	// The fixture carries a valid Segment CRC: the builder and the validator agree before any edit.
 	checkCRCs(t, data, 0, len(data), 0)
 	if segmentFirstChildIsVoid(t, data) {
 		t.Fatal("setup: fixture Segment should start with a CRC-32, not a Void")
@@ -68,9 +67,9 @@ func TestMatroskaSegmentCRCDroppedToVoid(t *testing.T) {
 	}
 }
 
-// robustness gap: a Segment-level CRC-32 whose declared size exceeds the alloc limit cannot be
-// captured for neutralization, so an edit must refuse loudly (the same contract the index elements
-// use) rather than copy the stale CRC over an edited body and silently produce an invalid file.
+// A Segment-level CRC-32 whose declared size exceeds the alloc limit cannot be captured for
+// neutralization, so an edit must refuse (the same contract the index elements use) rather than
+// copy the stale CRC over an edited body and produce an invalid file.
 func TestMatroskaSegmentCRCUncapturableRefused(t *testing.T) {
 	// A non-conformant Segment CRC declaring far more content (2000 bytes) than the 1 KiB parse
 	// limit will read, so its capture fails and segVoidFromCRC stays nil.

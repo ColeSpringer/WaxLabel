@@ -8,9 +8,9 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// regression guard: the QuickTime reader recovers the last chapter's end from the stts running
-// total. An explicit end that lands below the movie duration must survive the round trip, and the
-// in-memory result must equal a fresh reparse.
+// The QuickTime reader recovers the last chapter's end from the stts running total. An explicit
+// end below the movie duration must survive the round trip, and the in-memory result must equal
+// a fresh reparse.
 func TestMP4ChapterLastEndRecoveredBelowMovieDuration(t *testing.T) {
 	src := readFixture(t, sampleM4B) // movie duration 9 s
 	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
@@ -34,8 +34,8 @@ func TestMP4ChapterLastEndRecoveredBelowMovieDuration(t *testing.T) {
 	}
 }
 
-// direction the last-chapter end takes: an open last chapter is written as a span to the movie
-// duration and read back as that end, not canonicalized to 0.
+// An open last chapter is written as a span to the movie duration and read back as that end,
+// not canonicalized to 0.
 func TestMP4ChapterOpenLastMaterializesMovieDuration(t *testing.T) {
 	src := readFixture(t, sampleM4B) // movie duration 9 s
 	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
@@ -56,8 +56,8 @@ func TestMP4ChapterOpenLastMaterializesMovieDuration(t *testing.T) {
 	}
 }
 
-// reversal's payoff, and the report's own repro: an authored last-chapter end that lands exactly on
-// the movie duration must read back as that value, not as null.
+// An authored last-chapter end that lands exactly on the movie duration must read back as that
+// value, not as null.
 func TestMP4ChapterConcreteEndAtMovieDurationRoundTrips(t *testing.T) {
 	src := readFixture(t, sampleMP4) // movie duration 1000 ms
 	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
@@ -78,9 +78,8 @@ func TestMP4ChapterConcreteEndAtMovieDurationRoundTrips(t *testing.T) {
 	}
 }
 
-// open half of the asymmetry: a last chapter starting past the movie duration gets a synthetic
-// placeholder tail on write that isPlaceholderTail recognizes, so it reads back open rather than as
-// an end our own writer invented.
+// A last chapter starting past the movie duration gets a synthetic placeholder tail on write
+// that isPlaceholderTail recognizes, so it reads back open rather than as a writer-invented end.
 func TestMP4ChapterOpenLastPastMovieDurationReadsOpen(t *testing.T) {
 	src := readFixture(t, sampleM4B) // movie duration 9 s
 	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
@@ -128,14 +127,12 @@ func TestMP4ChapterPlaceholderTailOnUnitGrid(t *testing.T) {
 	}
 }
 
-// regression guard: coincident and sub-millisecond-apart starts drift in the QuickTime stts (a
-// duplicate start borrows a unit that only repays from later slack), but the uint64 Nero chpl keeps
-// them exact. When the two sources agree, the read must take the chpl's exact starts, not the
-// drifted QuickTime ones.
+// Coincident and sub-millisecond-apart starts drift in the QuickTime stts (a duplicate start
+// borrows a unit that only repays from later slack), but the uint64 Nero chpl keeps them exact.
+// When the two sources agree, the read must take the chpl's exact starts.
 func TestMP4ChapterExactChplStartsOverDriftedQT(t *testing.T) {
 	src := readFixture(t, sampleM4B)
-	// Three coincident starts at 3 s, then two 1 ms apart; the report's 10/10/10/.001/.002 shape, kept
-	// inside the fixture's 9 s duration.
+	// Three coincident starts at 3 s, then two 1 ms apart, kept inside the fixture's 9 s duration.
 	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(
 			wl.Chapter{Start: 3 * time.Second, Title: "A"},
@@ -169,9 +166,8 @@ func TestMP4ChapterExactChplStartsOverDriftedQT(t *testing.T) {
 	}
 }
 
-// regression guard: a chapter list carrying a last-chapter end now round-trips, so re-applying it
-// is a true no-op with byte-identical output; three re-copies in a row report "no changes" and
-// never churn the file.
+// A chapter list carrying a last-chapter end round-trips, so re-applying it is a no-op with
+// byte-identical output; three re-copies in a row report "no changes".
 func TestMP4ChapterCopyWithEndConverges(t *testing.T) {
 	src := readFixture(t, sampleM4B)
 	first, err := mustParseBytes(t, src).Edit().SetChapters(
@@ -186,7 +182,7 @@ func TestMP4ChapterCopyWithEndConverges(t *testing.T) {
 	cur := out
 	for i := 1; i <= 3; i++ {
 		doc := mustParseBytes(t, cur)
-		// A re-copy re-applies the read-back list (which now carries the recovered end).
+		// A re-copy re-applies the read-back list, which carries the recovered end.
 		plan, err := doc.Edit().SetChapters(doc.Chapters()...).Prepare()
 		if err != nil {
 			t.Fatal(err)
@@ -202,9 +198,8 @@ func TestMP4ChapterCopyWithEndConverges(t *testing.T) {
 	}
 }
 
-// regression for a chapter gap past ~13.25 h: the 90 kHz QuickTime stts delta clamps
-// (WarnChapterStartOverflow), corrupting the QuickTime starts, but the exact uint64 Nero chpl
-// survives.
+// A chapter gap past ~13.25 h clamps the 90 kHz QuickTime stts delta (WarnChapterStartOverflow),
+// corrupting the QuickTime starts, but the exact uint64 Nero chpl survives.
 func TestMP4ChapterGapPastClampPrefersChpl(t *testing.T) {
 	src := readFixture(t, sampleM4B)
 	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
@@ -230,9 +225,9 @@ func TestMP4ChapterGapPastClampPrefersChpl(t *testing.T) {
 	}
 }
 
-// regression guard: a first chapter starting past the u32 movie-timescale ceiling (here 5,000,000 s
-// at a 1 ms movie timescale, ~57.9 days > the ~49.7 day field) carries its start in the leading
-// empty edit, whose u32 segment_duration clamps to MaxUint32.
+// A first chapter starting past the u32 movie-timescale ceiling (here 5,000,000 s at a 1 ms
+// movie timescale, ~57.9 days > the ~49.7 day field) carries its start in the leading empty
+// edit, whose u32 segment_duration clamps to MaxUint32.
 func TestMP4ChapterOversizedStartPrefersChpl(t *testing.T) {
 	src := readFixture(t, sampleM4B) // movie timescale 1000 (1 ms)
 	const farStart = 5_000_000 * time.Second
@@ -255,8 +250,8 @@ func TestMP4ChapterOversizedStartPrefersChpl(t *testing.T) {
 	}
 }
 
-// corner where coincident starts borrow stts units that an open last chapter's own slack repays, so
-// its recovered end lands a few units short of the movie duration.
+// Coincident starts borrow stts units that an open last chapter's own slack repays, so its
+// recovered end is a few units short of the movie duration.
 func TestMP4ChapterCoincidentOpenLastMirrors(t *testing.T) {
 	src := readFixture(t, sampleM4B)
 	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
@@ -273,9 +268,8 @@ func TestMP4ChapterCoincidentOpenLastMirrors(t *testing.T) {
 	}
 }
 
-// shared mirror-invariant guard the whole read/predictor divergence class depends on: for each
-// chapter edit, the in-memory Result.Chapters and the chapter-source-conflict flag must equal a
-// fresh parse of the written bytes.
+// The mirror invariant: for each chapter edit, the in-memory Result.Chapters and the
+// chapter-source-conflict flag must equal a fresh parse of the written bytes.
 func TestMP4ChapterWriteReparseInvariant(t *testing.T) {
 	src := readFixture(t, sampleM4B)
 	sec := func(s int) time.Duration { return time.Duration(s) * time.Second }

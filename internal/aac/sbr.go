@@ -44,7 +44,7 @@ func detectSBR(ctx context.Context, src core.ReaderAtSized, start, end int64, h 
 		}
 		n := min(end-off, int64(len(buf)))
 		got, rerr := src.ReadAt(buf[:n], off)
-		// Short/EOF: stop with what we have rather than fail an already-parsed file.
+		// Short read or EOF: keep what was read instead of failing an already-parsed file.
 		if rerr != nil && rerr != io.EOF {
 			return false, false, nil
 		}

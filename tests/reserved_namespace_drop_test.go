@@ -8,12 +8,12 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// public edit flow on every Vorbis-comment container (FLAC, Ogg Vorbis, Opus) and pins that setting
-// a custom key in one of the three reserved namespaces. SYNCEDLYRICS synced lyrics,
-// METADATA_BLOCK_PICTURE cover art; via --set is dropped-with-warning rather than written.
+// public edit flow on every Vorbis-comment container (FLAC, Ogg Vorbis, Opus): setting a custom key
+// in two of the three reserved namespaces (SYNCEDLYRICS synced lyrics, METADATA_BLOCK_PICTURE cover
+// art) via --set is dropped with a warning, not written.
 func TestReservedNamespaceDropOnSet(t *testing.T) {
 	ctx := context.Background()
-	// A valid base64 METADATA_BLOCK_PICTURE value (the same encoding a real Ogg cover uses).
+	// A valid base64 METADATA_BLOCK_PICTURE value (the encoding an Ogg cover uses).
 	validCover := commentPictureValue(wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()})
 
 	for _, fx := range []string{"../testdata/sample.flac", "../testdata/sample.ogg", "../testdata/sample.opus"} {
@@ -34,8 +34,8 @@ func TestReservedNamespaceDropOnSet(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Prepare: %v", err)
 				}
-				// The valid payload re-projects to base (it is dropped, not stored), so the write is a no-op that
-				// still must carry the value-dropped warning; never a silent exit 0.
+				// The valid payload is dropped, not stored, so the write is a no-op that must still carry
+				// the value-dropped warning.
 				if !plan.IsNoOp() {
 					t.Errorf("expected a no-op write (the reserved key is dropped, nothing else changed); got a real write: %v", plan.Report().Operations)
 				}

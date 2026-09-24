@@ -60,8 +60,8 @@ func MustKey(s string) Key {
 }
 
 // Valid reports whether k satisfies the key rules (non-empty, uppercase,
-// printable ASCII 0x20-0x7D without '='). The exported Key constants are always valid; a
-// hand-built Key such as Key("title") is not - use [ParseKey] to normalize.
+// printable ASCII 0x20-0x7D without '='). The exported Key constants are always
+// valid. A hand-built Key such as Key("title") is not; use [ParseKey] to normalize.
 func (k Key) Valid() bool {
 	if k == "" {
 		return false
@@ -109,57 +109,44 @@ func (k Key) Known() bool {
 // custom field.
 func (k Key) Description() string { return vocabulary[k] }
 
-// Multivalued reports whether key canonically holds an ordered list of values
-// (multiple artists, composers, lyricists, genres, comments, performers,
-// contributor roles, per-artist MusicBrainz IDs, or release-group types) rather
-// than a single one. A consumer rendering an edit form uses it to choose between
-// one input and a repeatable list. The set mirrors the
-// list-valued ([]string) fields of the typed [Tags] projection, so the
-// structured signal and the typed sugar agree on which fields are plural. It is
-// the key's inherent cardinality; a custom (unknown) key is single-valued, and a
-// format that restricts a field further reports that through its capability's
-// MaxValues, not here.
+// Multivalued reports whether k canonically holds an ordered list of values:
+// artists, composers, lyricists, genres, comments, performers, contributor roles,
+// per-artist MusicBrainz IDs, and release-group types. An edit form uses it to
+// choose between one input and a repeatable list. The set mirrors the []string
+// fields of the typed [Tags] projection. It is the key's inherent cardinality: a
+// custom (unknown) key is single-valued, and a format that restricts a field
+// further reports that through its capability's MaxValues.
 func (k Key) Multivalued() bool { return multivalued[k] }
 
-// numberPairKeys are the numeric index/total keys - a track's or disc's number and
-// optional total. Each names a single scalar a recording carries exactly one of, and the
-// composite formats render it as one value (ID3 collapses TrackNumber+TrackTotal into a single
-// "n/total" TRCK frame, TPOS likewise; MP4 packs both into one trkn/disk atom). A Vorbis comment
-// (FLAC/Ogg) or a Matroska SimpleTag could physically store two, but WaxLabel models these as a
-// single scalar and keeps only the first, so unlike a genuinely multi-valued text key a duplicate
-// is treated as non-conformant rather than preserved.
+// numberPairKeys backs [Key.NumberPair]: the track and disc number and total keys.
 var numberPairKeys = map[Key]bool{
 	TrackNumber: true, TrackTotal: true, DiscNumber: true, DiscTotal: true,
 }
 
 // NumberPair reports whether k is a numeric track/disc index or total. WaxLabel models such a
-// key as a single scalar: the composite formats (ID3 TRCK/TPOS, MP4 trkn/disk) store only one,
-// and although a Vorbis comment or Matroska SimpleTag could hold two, the readers keep only the
-// first. So a duplicate native item mapping to it - two RIFF IPRT chunks, say - is non-conformant
-// junk rather than preservable data, and the IFF readers keep only the first. A plain
-// single-valued *text* key is not a NumberPair: its duplicates round-trip through the
-// multi-value-capable ID3 fallback and so are preserved, not dropped.
+// key as a single scalar: ID3 collapses number and total into one "n/total" TRCK/TPOS frame,
+// MP4 packs both into one trkn/disk atom, and although a Vorbis comment or Matroska SimpleTag
+// could hold two, the readers keep only the first. So a duplicate native item mapping to it,
+// such as two RIFF IPRT chunks, is non-conformant junk, and the IFF readers keep only the
+// first. A single-valued text key is not a NumberPair: its duplicates round-trip through the
+// multi-value-capable ID3 fallback and are preserved.
 func (k Key) NumberPair() bool { return numberPairKeys[k] }
 
 // SingleValuedMulti reports whether holding count values violates the key's
-// single-valued cardinality: it is a known, single-valued key - so the typed [Tags]
-// projection would read only the first value - being given more than one. A
-// multivalued key, or a custom (unknown) key (which has no typed accessor and no
-// enforced cardinality), is never a violation. It is the shared predicate behind
-// the linter's single-valued-multi finding and the set/plan --strict guardrail, so
-// the two cannot drift apart on the rule.
+// cardinality: a known single-valued key, whose typed [Tags] projection reads only
+// the first value, holding more than one. A multivalued key, or a custom (unknown)
+// key with no typed accessor and no enforced cardinality, is never a violation. The
+// linter's single-valued-multi finding and the set/plan --strict guardrail share it.
 func (k Key) SingleValuedMulti(count int) bool {
 	return count > 1 && k.Known() && !k.Multivalued()
 }
 
 func (k Key) String() string { return string(k) }
 
-// KnownKeys returns the published canonical vocabulary in a stable, sorted order.
-// It is the programmatic counterpart to the exported Key constants: a consumer
-// can enumerate every editable field - pairing each with [Key.Description] and
-// [Key.Multivalued] - instead of hard-coding the constant list. The order is
-// deterministic so output and golden tests do not churn. The result is a fresh
-// copy the caller may sort, filter, or append to freely.
+// KnownKeys returns the published canonical vocabulary in sorted order, so a
+// consumer can enumerate every editable field, pairing each with [Key.Description]
+// and [Key.Multivalued], without hard-coding the constant list. The result is a
+// fresh copy the caller may modify.
 func KnownKeys() []Key {
 	return slices.Clone(sortedKnownKeys)
 }
@@ -375,11 +362,11 @@ var vocabulary = map[Key]string{
 	MovementTotal:       "total movements in the work",
 }
 
-// multivalued is the set of canonical keys that hold a list of distinct values
-// rather than a single one. It is kept in lockstep with the list-valued fields of
-// the typed [Tags] projection: Artists, Composers, Lyricists, Genres, Comment, Performers,
-// the contributor-role credits (Producers/Engineers/Mixers/Arrangers/Writers/DJMixers),
-// the per-artist MusicBrainz IDs, and ReleaseTypes. Keys absent here are single-valued.
+// multivalued is the set of canonical keys that hold a list of values. It matches the
+// list-valued fields of the typed [Tags] projection: Artists, Composers, Lyricists, Genres,
+// Comment, Performers, the contributor-role credits (Producers/Engineers/Mixers/Arrangers/
+// Writers/DJMixers), the per-artist MusicBrainz IDs, and ReleaseTypes. Keys absent here are
+// single-valued.
 var multivalued = map[Key]bool{
 	Artist:          true,
 	Composer:        true,
@@ -398,9 +385,8 @@ var multivalued = map[Key]bool{
 	MBAlbumArtistID: true,
 }
 
-// sortedKnownKeys is the vocabulary in sorted order, computed once at package
-// init (the vocabulary is static), so [KnownKeys] re-sorts nothing per call - it
-// just clones this. Kept beside the vocabulary it derives from.
+// sortedKnownKeys is the vocabulary in sorted order, computed once at package init
+// so [KnownKeys] only clones it.
 var sortedKnownKeys = func() []Key {
 	keys := make([]Key, 0, len(vocabulary))
 	for k := range vocabulary {

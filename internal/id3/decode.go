@@ -6,12 +6,10 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// DecodeText decodes a plain text frame's value(s), for callers outside the
-// package that need a frame's textual content (e.g. encoder-noise detection). It
-// returns nil for non-text, user-defined (TXXX), or opaque frames, and for the
-// involved-people frames TIPL and TMCL, whose bodies are NUL-separated function/name
-// pairs rather than plain text. (IPLS, their v2.3 counterpart, begins with 'I', so the
-// leading-'T' check already excludes it without an explicit case.)
+// DecodeText decodes a plain text frame's value(s) for callers outside the package, such
+// as encoder-noise detection. It returns nil for non-text, TXXX, or opaque frames, and
+// for TIPL and TMCL, whose bodies are NUL-separated function/name pairs. IPLS begins with
+// 'I', so the leading-'T' check already excludes it.
 func DecodeText(f Frame) []string {
 	if f.Opaque || f.ID == "TXXX" || f.ID == "TIPL" || f.ID == "TMCL" || len(f.ID) == 0 || f.ID[0] != 'T' {
 		return nil
@@ -110,12 +108,11 @@ type involvedPerson struct {
 	Name     string
 }
 
-// decodeInvolvedPeople decodes a TIPL/IPLS body (an encoding byte followed by a
-// NUL-separated function/name list) into ordered pairs. The body is byte-identical to a
-// multi-value text frame, so it reuses decodeStrings and then pairs the flat list as
-// [func, name, func, name, ...]. A trailing unpaired function is dropped, and a pair with
-// an empty name is dropped (matching Picard's "and name" guard: a nameless involvement
-// carries no data).
+// decodeInvolvedPeople decodes a TIPL/IPLS body (an encoding byte then a NUL-separated
+// function/name list) into ordered pairs. The body is byte-identical to a multi-value
+// text frame, so it reuses decodeStrings and pairs the flat list as [func, name, ...]. A
+// trailing unpaired function is dropped, as is a pair with an empty name (Picard's "and
+// name" guard: a nameless involvement carries no data).
 func decodeInvolvedPeople(body []byte) []involvedPerson {
 	if len(body) == 0 {
 		return nil

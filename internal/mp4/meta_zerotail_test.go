@@ -10,9 +10,8 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestParseRejectsMetaZeroTailNoIlst covers the size-0-atom fix: a moov.udta.meta with
-// no ilst whose last real child (hdlr) is followed by >=8 trailing zero bytes must be
-// rejected, not silently absorbed.
+// TestParseRejectsMetaZeroTailNoIlst: a moov.udta.meta with no ilst whose last real child
+// (hdlr) is followed by >=8 trailing zero bytes must be rejected, not absorbed.
 func TestParseRejectsMetaZeroTailNoIlst(t *testing.T) {
 	ctx := context.Background()
 	for _, tail := range []int{8, 9, 16, 64} {
@@ -24,9 +23,8 @@ func TestParseRejectsMetaZeroTailNoIlst(t *testing.T) {
 	}
 }
 
-// TestParseAcceptsTopLevelSizeZeroFinal is the regression guard for the fix's scope:
-// the topLevel branch is unchanged, so a genuine "runs to EOF" last box (declared size
-// 0 at the top level, e.g.
+// TestParseAcceptsTopLevelSizeZeroFinal: a "runs to EOF" last box (declared size 0 at
+// the top level) is still accepted.
 func TestParseAcceptsTopLevelSizeZeroFinal(t *testing.T) {
 	ctx := context.Background()
 	ftyp := renderAtom(atomName("ftyp"), []byte("M4A \x00\x00\x00\x00M4A mp42"))

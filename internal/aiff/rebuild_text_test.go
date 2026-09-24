@@ -15,9 +15,9 @@ func titem(id, val string) textItem {
 	return it
 }
 
-// chunkStrings renders the fields the rewrite depends on. The role is included because
-// assemble records a chunk in the result document's text index by role alone: a copied chunk
-// that lost roleText still writes the right bytes, so only this catches it.
+// chunkStrings renders the fields the rewrite depends on, including the role: assemble
+// records a chunk in the result's text index by role alone, so a chunk that lost
+// roleText writes the right bytes and only this catches it.
 func chunkStrings(out []outChunk) []string {
 	s := make([]string, len(out))
 	for i, c := range out {

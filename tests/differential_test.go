@@ -15,9 +15,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// The write-side differential is the real proof of interoperability: after we edit and save a file,
-// an independent tool (ffmpeg/ffprobe) must read back the values we wrote, and must accept our
-// output as a valid FLAC stream.
+// Write-side differential: after an edit is saved, an independent tool (ffmpeg/ffprobe) must read
+// back the written values and accept the output as a valid FLAC stream.
 
 func TestDifferentialFFprobeReadsOurTags(t *testing.T) {
 	requireTool(t, "ffprobe")
@@ -78,8 +77,8 @@ func TestDifferentialFFmpegAcceptsOurOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Remux through ffmpeg with stream copy: this fully demuxes our metadata and
-	// audio and fails loudly if anything is malformed.
+	// A stream-copy remux demuxes the metadata and audio in full and fails if
+	// anything is malformed.
 	remux := path + ".remux.flac"
 	cmd := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error",
 		"-i", path, "-c", "copy", "-y", remux)
@@ -87,13 +86,14 @@ func TestDifferentialFFmpegAcceptsOurOutput(t *testing.T) {
 		t.Fatalf("ffmpeg rejected our output: %v\n%s", err, out)
 	}
 
-	// And we can read the remuxed file back, with our title intact.
+	// The remuxed file reads back with the title intact.
 	if got := mustParseFile(t, remux).Fields().Title; got != "Valid FLAC" {
 		t.Errorf("after ffmpeg remux, Title = %q, want Valid FLAC", got)
 	}
 }
 
-// requireTool guards a differential test on the presence of an external CLI (ffprobe/ffmpeg).
+// requireTool skips a differential test, or fails it under WAXLABEL_REQUIRE_FFMPEG, when an
+// external CLI (ffprobe/ffmpeg) is absent.
 func requireTool(t *testing.T, name string) {
 	t.Helper()
 	if _, err := exec.LookPath(name); err == nil {
@@ -147,8 +147,8 @@ func ffprobeStream(t *testing.T, path string) probeStream {
 		"-show_entries", "stream=sample_rate,channels,profile,bits_per_sample,duration_ts,duration,bit_rate,time_base",
 		"-of", "json", path).Output()
 	if err != nil {
-		// ffprobe says why on stderr; "missing mandatory atoms", an unreadable config, and without it a
-		// failure here is just an exit status.
+		// ffprobe says why on stderr ("missing mandatory atoms", an unreadable config); without it a
+		// failure here is only an exit status.
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
 			t.Fatalf("ffprobe %s: %v\n%s", path, err, ee.Stderr)
@@ -203,9 +203,8 @@ func ffprobeStream(t *testing.T, path string) probeStream {
 	return p
 }
 
-// ffmpegSine encodes one second of a 1 kHz sine at the given geometry with codecArgs
-// naming the codec (and any option it needs), the source every differential encode here
-// starts from, and returns path.
+// ffmpegSine encodes one second of a 1 kHz sine at the given geometry, with codecArgs
+// naming the codec and any option it needs, and returns path.
 func ffmpegSine(t *testing.T, path string, channels, rate int, codecArgs ...string) string {
 	t.Helper()
 	args := []string{"-f", "lavfi", "-i", "sine=frequency=1000:duration=1",

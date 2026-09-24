@@ -47,7 +47,7 @@ func TestParseChapterTimestampRejects(t *testing.T) {
 		"0:90:00",             // inner minutes must be < 60 when hours present
 		"1:2:3:4",             // too many components
 		"ab", "1:xx", "1.2.3", // non-numeric
-		"Inf", "NaN", // ParseFloat accepts these; we must not
+		"Inf", "NaN", // ParseFloat accepts these
 		"0x1p4", "1e3", "1_000", "+90", "+1:30", // nonstandard numeric forms outside the decimal grammar
 		"1:30.", "00:00:00.9999", ".9999", // dangling dot, and over-precise fractions (> 3 digits)
 		"2562048:00:00",       // hours overflow int64 nanoseconds

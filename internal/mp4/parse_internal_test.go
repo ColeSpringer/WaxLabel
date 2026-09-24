@@ -302,9 +302,9 @@ func TestParseStsdAlacWaveWrappedCookie(t *testing.T) {
 	}
 }
 
-// TestCapabilitiesPictureMIMEsCloned guards against the public Capabilities aliasing the
-// package coverMIMEs backing array: a caller mutating the returned slice must not corrupt
-// the write-time cover guard, which reads the package var via coverMIMESupported.
+// TestCapabilitiesPictureMIMEsCloned checks that the public Capabilities does not alias
+// the package coverMIMEs backing array: a caller mutating the returned slice must not
+// corrupt the write-time cover check (coverMIMESupported).
 func TestCapabilitiesPictureMIMEsCloned(t *testing.T) {
 	mimes := Codec{}.Capabilities(nil, core.WriteOptions{}).Pictures.PictureMIMEs
 	if len(mimes) == 0 {
@@ -557,7 +557,7 @@ func TestParseStsdFlacDfLaTruncatedIgnored(t *testing.T) {
 
 // TestParseStsdV2Geometry: a version 2 sound entry carries its rate as a float64 and its
 // channel count as a uint32, so a hi-res .mov reports them instead of nothing. The digest
-// salt stays the four-cc plus zero geometry, as it was when v2 entries were skipped.
+// salt stays the four-cc plus zero geometry.
 func TestParseStsdV2Geometry(t *testing.T) {
 	d := parseStsdPayload(t, mkV2StsdPayload("lpcm", 96000, 2, 24, nil))
 	if d.track.SampleRate != 96000 || d.track.Channels != 2 || d.track.BitsPerSample != 24 {

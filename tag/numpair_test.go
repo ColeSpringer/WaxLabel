@@ -6,8 +6,7 @@ import (
 )
 
 // TestSplitNumberTotal pins the substring-preserving split shared by the ID3 read
-// path and the edit-time pair normalization - distinct from ParseNumPair, which
-// renumbers to ints and so drops leading zeros.
+// path and the edit-time pair normalization. Unlike ParseNumPair, it keeps leading zeros.
 func TestSplitNumberTotal(t *testing.T) {
 	for _, c := range []struct{ in, num, total string }{
 		{"3/12", "3", "12"},
@@ -39,11 +38,10 @@ func TestTotalKey(t *testing.T) {
 	}
 }
 
-// TestNumberTotalSplit pins the shared read-path split decision used by the id3, matroska, and
-// vorbis/wav read paths, so all of them split a slashed value the same way. A well-formed pair
-// splits (leading zeros and a literal 0 preserved); a malformed pair, a bare slash, a slashless
-// value, or a non-pair key comes back whole with split=false, so the value stays verbatim on the
-// number key exactly as the editor leaves it.
+// TestNumberTotalSplit pins the read-path split shared by the id3, matroska, and vorbis/wav
+// readers. A well-formed pair splits, leading zeros and a literal 0 preserved; a malformed
+// pair, a bare slash, a slashless value, or a non-pair key comes back whole with split=false,
+// so the value stays verbatim on the number key as the editor leaves it.
 func TestNumberTotalSplit(t *testing.T) {
 	for _, c := range []struct {
 		key        Key

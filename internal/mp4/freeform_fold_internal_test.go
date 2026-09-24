@@ -7,10 +7,9 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestFreeformCaseFoldCollisionFlagsConflict pins the deliberate tradeoff of the
-// read-side case fold (MP4FreeformKey): when a file carries the same MusicBrainz field
-// twice under different casing (two taggers) with disagreeing values, both now resolve
-// to one canonical key.
+// TestFreeformCaseFoldCollisionFlagsConflict pins the tradeoff of the read-side case fold
+// (MP4FreeformKey): when a file carries the same MusicBrainz field twice under different
+// casing (two taggers) with disagreeing values, both resolve to one canonical key.
 func TestFreeformCaseFoldCollisionFlagsConflict(t *testing.T) {
 	canonical := decodeItem(freeformItem("MusicBrainz Album Id", []string{"AAA"}))
 	foreign := decodeItem(freeformItem("musicbrainz album id", []string{"BBB"}))

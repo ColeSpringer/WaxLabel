@@ -8,9 +8,9 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// BenchmarkInfoFamiliesFlood guards the family view against the quadratic shape a
-// crafted LIST/INFO reaches: every item maps to one canonical key, so grading each
-// against the authoritative set once rescanned the whole value list per item.
+// BenchmarkInfoFamiliesFlood measures the family view on a LIST/INFO whose every item
+// maps to one canonical key, the shape that makes a per-item scan of the
+// authoritative set quadratic.
 func BenchmarkInfoFamiliesFlood(b *testing.B) {
 	for _, n := range []int{5000, 10000, 20000} {
 		b.Run(strconv.Itoa(n), func(b *testing.B) {

@@ -28,9 +28,8 @@ func mp4QTFileSharedMdat(startsMS []int, titles []string) []byte {
 	return build(uint32(audioOff), uint32(textOff))
 }
 
-// when a foreign chapter track's single chunk sits at the start of the trailing mdat that also
-// holds the audio, a chapter rewrite must not reclaim that mdat, since doing so would drop the
-// audio. The audio essence stays byte-stable across the edit.
+// When a foreign chapter track's single chunk sits at the start of the trailing mdat that also
+// holds the audio, a chapter rewrite must not reclaim that mdat, which would drop the audio.
 func TestMP4ChapterEditKeepsSharedAudioMdat(t *testing.T) {
 	data := mp4QTFileSharedMdat([]int{0, 5000}, []string{"A", "B"})
 	before := essenceOf(t, data)
@@ -78,8 +77,8 @@ func mp4QTFileForeignTrackMdat(startsMS []int, titles []string) []byte {
 	return build(uint32(audio1Off), uint32(foreignOff), uint32(mdat2Payload))
 }
 
-// when the chapter track's single chunk sits at the front of the trailing mdat that also holds a
-// second audio track; while the first audio track lives in an earlier mdat; a chapter rewrite must
+// When the chapter track's single chunk sits at the front of the trailing mdat that also holds
+// a second audio track (the first audio track lives in an earlier mdat), a chapter rewrite must
 // not reclaim that trailing mdat.
 func TestMP4ChapterEditKeepsForeignTrackMdat(t *testing.T) {
 	data := mp4QTFileForeignTrackMdat([]int{0, 5000}, []string{"A", "B"})

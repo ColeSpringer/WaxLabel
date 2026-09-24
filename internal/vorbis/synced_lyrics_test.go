@@ -8,8 +8,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestSyncedLyricsOwnership: a SYNCEDLYRICS comment is owned by the synced-lyrics
-
+// TestSyncedLyricsOwnership checks that a SYNCEDLYRICS comment stays out of the generic
+// tag projection and projects as synced lyrics.
 func TestSyncedLyricsOwnership(t *testing.T) {
 	comments := []Comment{
 		{Name: "TITLE", Value: "Song"},

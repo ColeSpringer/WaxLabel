@@ -87,9 +87,9 @@ func TestLintDuplicatePicture(t *testing.T) {
 	}
 }
 
-// regression guard: the editor's edit-scope warning and the linter's whole-set finding must produce
-// the SAME duplicate-picture message even when the identical bytes appear under different roles
-// (front + back); naming a single occurrence's role made the two disagree by iteration order.
+// The editor's edit-scope warning and the linter's whole-set finding must produce the same
+// duplicate-picture message when identical bytes appear under different roles (front + back).
+// Naming only one occurrence's role would make them differ by iteration order.
 func TestDuplicatePictureMessageAgrees(t *testing.T) {
 	png := tinyPNG()
 	plan, err := mustParseBytes(t, readFixture(t, "../testdata/notags.flac")).Edit().
@@ -128,8 +128,8 @@ func TestDuplicatePictureMessageAgrees(t *testing.T) {
 }
 
 func TestLintSingleValuedMulti(t *testing.T) {
-	// A single-valued key (ENCODER) carrying two values; the read-side symptom of a transcoded or
-	// multi-scope file; is flagged as a warning.
+	// A single-valued key (ENCODER) carrying two values is flagged as a warning. It is the
+	// read-side symptom of a transcoded or multi-scope file.
 	doc := mustParseBytes(t, writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.Set(tag.Encoder, "Lavf", "Lavc")
 		e.Set(tag.Artist, "A", "B")
@@ -150,9 +150,9 @@ func TestLintSingleValuedMulti(t *testing.T) {
 }
 
 func TestLintCustomKeyMultiValueNotFlagged(t *testing.T) {
-	// A custom key with several values is legitimate; it has no typed accessor that would lose data, so
-	// it gets only the info-level custom-key finding, never the single-valued-multi warning (which
-	// exists for the typed projection's first-only read of known keys).
+	// A custom key with several values gets only the info-level custom-key finding, never
+	// single-valued-multi: that warning covers the typed projection's first-only read of known
+	// keys, and a custom key has no typed accessor to lose data.
 	doc := mustParseBytes(t, writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.Set(tag.Key("MY_CUSTOM_FIELD"), "a", "b")
 	}))
@@ -166,8 +166,8 @@ func TestLintCustomKeyMultiValueNotFlagged(t *testing.T) {
 }
 
 func TestLintCustomKeyIsInfo(t *testing.T) {
-	// A custom (non-vocabulary) key is reported at info severity, so it never flips a clean file to a
-	// non-zero exit; it is purely advisory.
+	// A custom (non-vocabulary) key is reported at info severity, so it never flips a clean file
+	// to a non-zero exit.
 	doc := mustParseBytes(t, writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.Set(tag.Key("MY_CUSTOM_FIELD"), "x")
 	}))
@@ -246,8 +246,8 @@ type writerTo struct{ b []byte }
 
 func (w *writerTo) Write(p []byte) (int, error) { w.b = append(w.b, p...); return len(p), nil }
 
-// numeric genre reference resolved on read surfaces as an info-level lint finding, reconciling lint
-// with README's promise that dump and lint both report numeric-genre.
+// A numeric genre reference resolved on read is an info-level lint finding, as README promises:
+// dump and lint both report numeric-genre.
 func TestLintNumericGenre(t *testing.T) {
 	base := mp4Tagged(mp4Text("\xa9nam", "T"))
 	plan, err := mustParseBytes(t, base).Edit().Set(tag.Genre, "Rock").Prepare(wl.WithNumericGenre())
@@ -309,9 +309,9 @@ func TestLintFindingFixable(t *testing.T) {
 	}
 }
 
-// fix clears a stamp from ENCODER and neutralizes a container vendor string, but nothing reaches
-// one stored under ENCODEDBY (ID3's TENC frame), so such a finding must not advertise a repair lint
-// --fix then declines.
+// The fix clears a stamp from ENCODER and neutralizes a container vendor string. It cannot reach
+// a stamp stored under ENCODEDBY (ID3's TENC frame), so that finding must not advertise a repair
+// that lint --fix would decline.
 func TestLintEncoderFixableOnlyWhereTheFixReaches(t *testing.T) {
 	tencOnly := mustParseBytes(t, mp3WithFrames(t, id3Frame(4, "TENC", append([]byte{0}, "Lavf61.7.100"...))))
 	var saw bool

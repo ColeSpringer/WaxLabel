@@ -130,9 +130,8 @@ func TestDuplicateIconDirectPictureEditStillRefused(t *testing.T) {
 }
 
 func TestDuplicateIconTransferCarryingSecondIconSucceeds(t *testing.T) {
-	// A transfer faithfully carries the source picture set, so the source's own duplicate icons must
-	// not abort the copy as if the user had authored a second icon; the carried flag suppresses the
-	// icon-count rule (like the other faithful-carry checks).
+	// A transfer carries the source picture set as is, so the source's own duplicate icons must not
+	// abort the copy; the carried flag suppresses the icon-count rule, as for the other carry checks.
 	dstData := flacWithVendor("test", "TITLE=Dst")
 	src := mustParseBytes(t, flacTwoType1Icons(vorbis.Comment{Name: "TITLE", Value: "Src"}))
 	plan, _, err := src.PrepareTransfer(mustParseBytes(t, dstData))
@@ -156,8 +155,8 @@ func TestDuplicateIconTransferCarryingSecondIconSucceeds(t *testing.T) {
 }
 
 func TestDuplicateFrontCoverTagEditUnaffected(t *testing.T) {
-	// Control: type-3 (front cover) duplicates were never covered by the icon-count rule; a
-	// tags-only edit stays fine regardless of the gate.
+	// Control: type-3 (front cover) duplicates are not covered by the icon-count rule, so a
+	// tags-only edit prepares.
 	cover := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}
 	data := flacWithCommentBlock(nil, cover, cover)
 	if _, err := mustParseBytes(t, data).Edit().Set(tag.Title, "X").Prepare(); err != nil {

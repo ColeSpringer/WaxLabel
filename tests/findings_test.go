@@ -14,8 +14,8 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// every public ctx-taking entry point returns a clean error for a nil context instead of panicking
-// on the first ctx.Err() deref.
+// Every public ctx-taking entry point returns an error for a nil context instead of panicking on
+// the first ctx.Err() deref.
 func TestNilContextRejected(t *testing.T) {
 	data := readFixture(t, sampleFLAC)
 	var nilCtx context.Context
@@ -53,9 +53,9 @@ func TestNilContextRejected(t *testing.T) {
 	wantNil("HashFile", err)
 }
 
-// picture added to an editor whose bytes are not a recognized image is rejected, unless opted out;
-// a file's pre-existing pictures are never re-validated, and a transfer carrying already-embedded
-// art still works.
+// A picture added to an editor whose bytes are not a recognized image is rejected unless opted
+// out; a file's pre-existing pictures are never re-validated, and a transfer carrying
+// already-embedded art still works.
 func TestAddedPictureValidation(t *testing.T) {
 	path := copyToTemp(t, sampleFLAC)
 
@@ -78,7 +78,7 @@ func TestAddedPictureValidation(t *testing.T) {
 		t.Errorf("non-image picture: err = %v, want the type quoted as \"Front cover\"", err)
 	}
 
-	// WithUnrecognizedPictures opts a deliberately exotic cover back in.
+	// WithUnrecognizedPictures opts an exotic cover back in.
 	if _, err := mustParseFile(t, path).Edit().
 		AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: []byte("not an image at all")}).
 		Prepare(wl.WithUnrecognizedPictures()); err != nil {
@@ -107,9 +107,9 @@ func TestAddedPictureValidation(t *testing.T) {
 		t.Errorf("tags-only edit re-validated a pre-existing picture: %v", err)
 	}
 
-	// Regression: transferring the carrier onto another file still succeeds: the
-	// transfer engine opts picture validation out, carrying already-embedded art that
-	// the header sniff would reject (copy has no --force).
+	// Transferring the carrier onto another file succeeds: the transfer engine opts
+	// picture validation out, carrying already-embedded art the header sniff would
+	// reject (copy has no --force).
 	dest := mustParseFile(t, copyToTemp(t, sampleFLAC))
 	if _, _, err := carrier.PrepareTransfer(dest); err != nil {
 		t.Errorf("transfer carrying a non-sniffable embedded cover should succeed, got: %v", err)
@@ -117,8 +117,7 @@ func TestAddedPictureValidation(t *testing.T) {
 }
 
 // RemovePictures evaluates the caller's match predicate exactly once per picture, including
-// pictures added on the same editor; the old two-pass sync (DeleteFunc over both the picture list
-// and the added set) invoked it twice for added pictures.
+// pictures added on the same editor.
 func TestRemovePicturesMatchOnce(t *testing.T) {
 	doc := mustParseFile(t, sampleFLAC)
 	base := len(doc.Pictures())
@@ -175,9 +174,9 @@ func TestChapterWarningsSurface(t *testing.T) {
 	}
 }
 
-// transfer carries chapters verbatim, so it suppresses the source-authoring warnings it authored
-// none of. It still surfaces chapter-past-duration when a carried chapter starts beyond the shorter
-// destination's playable length, matching what set warns.
+// A transfer carries chapters verbatim, so it suppresses the source-authoring warnings. It still
+// surfaces chapter-past-duration when a carried chapter starts beyond the shorter destination's
+// playable length, as set warns.
 func TestCopyChaptersDestinationFitWarnings(t *testing.T) {
 	src := mustParseFile(t, sampleM4B)                               // ~9s, chapters at 0:00 / 0:03 / 0:06
 	dst := mustParseFile(t, copyToTemp(t, "../testdata/sample.m4a")) // ~1s
@@ -185,7 +184,7 @@ func TestCopyChaptersDestinationFitWarnings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Sanity-check the chapters actually carried (else the test proves nothing).
+	// The chapters must have carried, or the test proves nothing.
 	carried := false
 	for _, it := range report.Items {
 		if it.Kind == wl.TransferChapter && it.Disposition != wl.Dropped {
@@ -290,10 +289,9 @@ func TestLegacyConflictWarning(t *testing.T) {
 		t.Errorf("clearing a key should not raise a legacy-conflict warning; got %v", cleared.Report().Warnings)
 	}
 
-	// A value the codec re-projects to the one already written is NOT a conflict: the
-	// fixture's GENRE is "Rock", and GENRE=17 writes back as the numeric genre "Rock", so
-	// judging against the plan's result tags (not the raw edited "17") raises no warning.
-	// Comparing against the raw edited value would have falsely flagged it.
+	// A value the codec re-projects to the one already written is not a conflict: the
+	// fixture's GENRE is "Rock", and GENRE=17 writes back as "Rock", so judging against the
+	// plan's result tags (not the raw edited "17") raises no warning.
 	genre, err := mustParseFile(t, path).Edit().Set(tag.Genre, "17").Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -302,7 +300,7 @@ func TestLegacyConflictWarning(t *testing.T) {
 		t.Errorf("a numeric genre re-projected to the existing value should not warn; got %v", genre.Report().Warnings)
 	}
 	// The same edit re-projects to the value already on disk, so it must read as an
-	// immediate no-op: IsNoOp() and Changes() agree, not a churning rewrite.
+	// immediate no-op: IsNoOp() and Changes() agree.
 	if !genre.IsNoOp() {
 		t.Error("GENRE=17 over an existing Rock: IsNoOp() = false, want true (re-projection is a no-op)")
 	}
@@ -320,9 +318,8 @@ func TestLegacyConflictWarning(t *testing.T) {
 	}
 }
 
-// NUL byte in a value the edit sets, in a chapter title, or in an added picture's description is
-// refused at Prepare rather than written and cut, since a NUL silently truncates the field on a
-// C-string format.
+// A NUL byte in a value the edit sets, in a chapter title, or in an added picture's description is
+// refused at Prepare, since a NUL truncates the field on a C-string format.
 func TestRejectNULInEditValues(t *testing.T) {
 	path := copyToTemp(t, sampleFLAC)
 
@@ -377,9 +374,9 @@ func TestPictureMIMESniffReconcile(t *testing.T) {
 		t.Errorf("authoritative dims = %dx%d, want 1x1 (sniff wins for a determined dimension)", embed.Width, embed.Height)
 	}
 
-	// SniffInto (fill-only) in isolation: a set MIME that disagrees with the bytes is left
-	// as-is and only an empty field is filled. This is the method contract, not the codec read
-	// path; the decoders now call SniffAuthoritative, so dump reports the true type.
+	// SniffInto (fill-only) in isolation: a set MIME that disagrees with the bytes is left as
+	// is and only an empty field is filled. This is the method contract, not the codec read
+	// path; the decoders call SniffAuthoritative, so dump reports the sniffed type.
 	read := wl.Picture{Type: wl.PicFrontCover, MIME: "image/jpeg", Data: tinyPNG()}
 	if !read.SniffInto() {
 		t.Fatal("tinyPNG should sniff as a recognized image")
@@ -416,9 +413,9 @@ func TestPictureMIMESniffReconcile(t *testing.T) {
 	}
 }
 
-// executing the same plan with SaveBack twice fails the second time with a clear "already wrote ...
-// in place" message rather than the confusing "source changed" the now-rewritten file would
-// otherwise trigger, while a no-op SaveBack (which writes nothing) stays re-runnable.
+// Executing the same plan with SaveBack twice fails the second time with an "already wrote ... in
+// place" message, not the "source changed" the rewritten file would otherwise trigger; a no-op
+// SaveBack (which writes nothing) stays re-runnable.
 func TestSaveBackRefusesReExecute(t *testing.T) {
 	ctx := context.Background()
 	plan, err := mustParseFile(t, copyToTemp(t, sampleFLAC)).Edit().Set(tag.Title, "Once").Prepare()
@@ -436,9 +433,9 @@ func TestSaveBackRefusesReExecute(t *testing.T) {
 		t.Errorf("second SaveBack err = %v, want it to mention 'already wrote ... in place'", err)
 	}
 
-	// A committed SaveBack spends the plan for EVERY destination, not just a second
-	// SaveBack: re-reading the rewritten file with the original layout's segments would
-	// corrupt the output, so SaveAsFile and WriteTo are refused too.
+	// A committed SaveBack consumes the plan for every destination: re-reading the
+	// rewritten file with the original layout's segments would corrupt the output, so
+	// SaveAsFile and WriteTo are refused too.
 	if _, _, err := plan.Execute(ctx, wl.SaveAsFile(filepath.Join(t.TempDir(), "out.flac"))); !errors.Is(err, waxerr.ErrInvalidData) {
 		t.Errorf("SaveAsFile after a committed SaveBack err = %v, want ErrInvalidData", err)
 	}
@@ -460,8 +457,8 @@ func TestSaveBackRefusesReExecute(t *testing.T) {
 	}
 }
 
-// message papercuts report clearly. A zero Document's hash entry points, ParseFile(""), and a
-// name-less Parse of unidentifiable bytes all give specific, actionable errors.
+// A zero Document's hash entry points, ParseFile(""), and a name-less Parse of unidentifiable
+// bytes all give specific errors.
 func TestUninitializedDocMessages(t *testing.T) {
 	ctx := context.Background()
 	var zero wl.Document
@@ -472,9 +469,8 @@ func TestUninitializedDocMessages(t *testing.T) {
 		t.Errorf("zeroDoc.HashFile err = %v, want it to mention 'not initialized'", err)
 	}
 	// An empty path is a caller mistake, classified as ErrInvalidData (exit 4) like the
-	// other nil/empty-input guards, deliberately not the fs.ErrNotExist a bare
-	// os.Stat("") would have produced (an empty path is an invalid argument, not a
-	// missing file). Pin the class so the deliberate change is not silently undone.
+	// other nil/empty-input checks, not the fs.ErrNotExist a bare os.Stat("") would
+	// produce: an empty path is an invalid argument, not a missing file.
 	if _, err := wl.ParseFile(ctx, ""); !errors.Is(err, waxerr.ErrInvalidData) || !strings.Contains(err.Error(), "input filename is empty") {
 		t.Errorf("ParseFile(\"\") err = %v, want ErrInvalidData mentioning 'input filename is empty'", err)
 	}
@@ -529,15 +525,15 @@ func TestNoOpDowngradeOnReprojection(t *testing.T) {
 	}
 }
 
-// numeric-genre edit whose projection differs from the current value writes once; re-parsing and
+// A numeric-genre edit whose projection differs from the current value writes once; re-parsing and
 // repeating the same edit is then a no-op whose WriteTo reproduces the source bytes exactly,
-// identically across runs, with no perpetual churn.
+// identically across runs.
 func TestNoOpDowngradeConvergesAndIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	path := copyToTemp(t, sampleMP3) // GENRE=Rock
 
 	// Seed a base whose genre differs from 17's projection (Rock), so the first
-	// numeric-genre edit is a genuine write rather than an immediate no-op.
+	// numeric-genre edit writes.
 	seed, err := mustParseFile(t, path).Edit().Set(tag.Genre, "Jazz").Prepare()
 	if err != nil {
 		t.Fatal(err)

@@ -33,7 +33,7 @@ import (
 func main() {
 	// First signal cancels in-flight work; a second forces exit for ops that cannot
 	// observe cancellation (e.g. blocked in fsync). Own goroutine so the second
-	// signal still lands if main is stuck. os.Exit skips defers, so the forced path
+	// signal is still handled if main is stuck. os.Exit skips defers, so the forced path
 	// drains the cleanup registry itself.
 	//
 	// A canceled op always returns context.Canceled; only the cancel cause separates
@@ -43,7 +43,7 @@ func main() {
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sig
-		cancel(nil) // nil cause -> context.Canceled: real interrupt, exit 130
+		cancel(nil) // nil cause -> context.Canceled: interrupt, exit 130
 		<-sig
 		runCleanups()
 		os.Exit(130)
@@ -90,7 +90,7 @@ func dispatch(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	}
 	// Closed output pipe is benign (exit 0, silent). Synchronous errno from the write
 	// is definitive and is not gated on cancel cause (SIGPIPE goroutine may lag).
-	// context.Canceled is gated on the cause so real Ctrl-C stays exit 130.
+	// context.Canceled is gated on the cause so Ctrl-C stays exit 130.
 	if isBrokenPipe(err) ||
 		(errors.Is(err, context.Canceled) && errors.Is(context.Cause(ctx), errBrokenPipe)) {
 		err = errBrokenPipe

@@ -10,22 +10,20 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// maxFrameSize is the largest a frame body (v2.4) or the whole frame region can
-// be: the sync-safe 28-bit size field caps both at just under 256 MiB. Writing a
-// larger value would silently truncate the size field and corrupt the tag.
+// maxFrameSize is the largest a v2.4 frame body or the whole frame region can be: the
+// sync-safe 28-bit size field caps both just under 256 MiB. A larger value would
+// truncate the size field and corrupt the tag.
 const maxFrameSize = 1<<28 - 1
 
 // CheckSize rejects a frame list that cannot be encoded: more than maxElements frames, or
-// a frame region overflowing the sync-safe size fields. The element cap is checked first so
-// a write can never mint a tag the read path would then refuse to re-parse - an edit that
-// nets a frame onto a tag already at the cap. The realistic size trigger is an over-large
-// embedded picture, reported as ErrPictureTooLarge; anything else is ErrSizeTooLarge.
+// a frame region overflowing the sync-safe size fields. The element cap is checked first
+// so a write never mints a tag the read path would refuse to re-parse. An over-large
+// embedded picture reports ErrPictureTooLarge; anything else is ErrSizeTooLarge.
 //
-// The cap test is a strict len(frames) > maxElements, NOT bits.CheckElementCap: the reader
-// calls CheckElementCap with the pre-append count, so it errors at >= max and thus accepts
-// exactly maxElements frames. A final-count CheckElementCap (which trips at >= max) would
-// reject a legitimate maxElements-frame tag the reader reads back fine; the strict > test
-// matches the reader's boundary. Pass bits.DefaultLimits.MaxElements, the read-path default.
+// The cap test is a strict len(frames) > maxElements, not bits.CheckElementCap: the
+// reader calls CheckElementCap with the pre-append count, so it accepts exactly
+// maxElements frames, and a final-count CheckElementCap would reject a tag the reader
+// reads back fine. Pass bits.DefaultLimits.MaxElements, the read-path default.
 func CheckSize(writeVersion byte, frames []Frame, maxElements int) error {
 	if maxElements > 0 && len(frames) > maxElements {
 		return fmt.Errorf("%w: ID3v2 tag has %d frames, exceeding the %d-frame limit",
@@ -53,12 +51,11 @@ func sizeErr(f Frame, n int) error {
 	return fmt.Errorf("%w: %s frame is %s (max %s)", waxerr.ErrSizeTooLarge, f.ID, bits.HumanBytes(int64(n)), bits.HumanBytes(int64(maxFrameSize)))
 }
 
-// Frame is one ID3v2 frame. ID is always the 4-character v2.3/v2.4 identifier
-// (a v2.2 3-character ID is upgraded on read). For a normal frame Body holds the
-// clean, re-renderable payload (de-unsynchronised, with any grouping byte and
-// data-length indicator stripped) and Flags is zero; for an opaque frame
-// (compressed, encrypted, or otherwise not safe to reinterpret) Body and Flags
-// are kept exactly as read so the frame round-trips byte-for-byte.
+// Frame is one ID3v2 frame. ID is always the 4-character v2.3/v2.4 identifier (a v2.2
+// 3-character ID is upgraded on read). A normal frame's Body is the clean, re-renderable
+// payload (de-unsynchronised, grouping byte and data-length indicator stripped) and Flags
+// is zero. An opaque frame (compressed, encrypted, or otherwise unsafe to reinterpret)
+// keeps Body and Flags exactly as read so it round-trips byte-for-byte.
 type Frame struct {
 	ID     string
 	Flags  [2]byte
@@ -88,10 +85,13 @@ const (
 	v24DataLen     = 0x01
 )
 
-// parseFrames walks the frame region until padding, bad ID, or truncation.
-// major selects header geometry; tagUnsync forces per-frame de-unsync on v2.4.
-// rest is remaining bytes (padding when stopped on a zero ID).
-
+// parseFrames walks the frame region, decoding each frame and stopping at padding (a zero
+// ID byte), an invalid identifier, or truncation. major selects the header geometry;
+// tagUnsync (v2.4) forces per-frame de-unsynchronisation even when a frame does not set
+// its own flag. rest is the byte count after the last frame read: free padding when the
+// walk stopped on a zero ID, the unread remainder when it stopped on a malformed frame.
+// malformed names the frame whose declared size ran past the end of the tag, and is empty
+// when the walk stopped cleanly; it tells ParseTag whether rest is padding or unreadable.
 func parseFrames(body []byte, major byte, tagUnsync bool, maxElements int) (frames []Frame, rest int, malformed string, err error) {
 	pos := 0
 	hdr := 10
@@ -103,9 +103,9 @@ func parseFrames(body []byte, major byte, tagUnsync bool, maxElements int) (fram
 		if body[pos] == 0 {
 			break // padding
 		}
-		// The body is already bounded by the caller's MaxAllocBytes, but a body full
-		// of minimum-size (6/10 B) frames still amplifies into one Frame descriptor
-		// each; cap the count so a hostile tag cannot accumulate them to OOM.
+		// The body is bounded by the caller's MaxAllocBytes, but a body full of
+		// minimum-size (6/10 B) frames still amplifies into one Frame descriptor each;
+		// cap the count.
 		if err := bits.CheckElementCap(len(frames), maxElements, "ID3 frames"); err != nil {
 			return nil, 0, "", err
 		}
@@ -123,7 +123,7 @@ func parseFrames(body []byte, major byte, tagUnsync bool, maxElements int) (fram
 			flags = [2]byte{body[pos+8], body[pos+9]}
 		default: // 4
 			// v2.4 sizes are sync-safe; some buggy encoders write plain sizes, but
-			// the sync-safe reading is the spec and what we re-emit.
+			// sync-safe is the spec and what Render emits.
 			size = syncSafe(body[pos+4 : pos+8])
 			flags = [2]byte{body[pos+8], body[pos+9]}
 		}
@@ -131,10 +131,9 @@ func parseFrames(body []byte, major byte, tagUnsync bool, maxElements int) (fram
 		// Compare in int64: a v2.3 plain 32-bit size can be up to 0xFFFFFFFF, which
 		// on a 32-bit platform would wrap to a negative int and slip past the guard.
 		if size < 0 || int64(start)+size > int64(len(body)) {
-			// The frame declares more bytes than the tag holds. Stop rather than over-read,
-			// and name it: what follows is unreadable, not free padding. Report the id the
-			// rest of the output uses, so a v2.2 tag does not warn about a "TAL" frame that
-			// dump lists as TALB.
+			// The frame declares more bytes than the tag holds. Stop and name it: what
+			// follows is unreadable, not padding. Report the id the rest of the output uses,
+			// so a v2.2 tag does not warn about a "TAL" frame that dump lists as TALB.
 			return frames, len(body) - pos, reportedFrameID(id, major), nil
 		}
 		raw := body[start : start+int(size)]
@@ -146,9 +145,9 @@ func parseFrames(body []byte, major byte, tagUnsync bool, maxElements int) (fram
 }
 
 // reportedFrameID renders a frame identifier the way the decoded frame list does: a v2.2
-// id is upgraded to its v2.3/v2.4 spelling, falling back to the space-padded form for one
-// the table does not know. [decodeFrame] applies the same two rules to the frames it keeps,
-// so a diagnostic naming a frame cannot spell it differently from the listing beside it.
+// id is upgraded to its v2.3/v2.4 spelling, or space-padded when the table does not know
+// it. [decodeFrame] applies the same two rules, so a diagnostic cannot spell a frame
+// differently from the listing beside it.
 func reportedFrameID(id string, major byte) string {
 	if major != 2 {
 		return id
@@ -178,13 +177,12 @@ func decodeFrame(id string, flags [2]byte, raw []byte, major byte, tagUnsync boo
 	}
 
 	compressed, encrypted, grouping, unsync, dataLen := decodeFrameFlags(flags, major)
-	// Preserve verbatim (opaque) when the body cannot be reinterpreted - compressed or
-	// encrypted - or when the ID is not spec-conformant. A non-conformant ID is a space-padded
-	// v2.2 upgrade (e.g. "TXY " from padID) that was rendered into this v2.3/2.4 tag and is now
-	// being re-read: marking it opaque here, the single decode entry point, is what keeps it out
-	// of the canonical projection and the managed-frame rebuild on re-read - mirroring how the
-	// v2.2 read above already marks the unknown frame opaque - so the flag models it uniformly
-	// on both reads and every f.Opaque short-circuit (projection, rebuild, DecodeText) covers it.
+	// Preserve verbatim (opaque) when the body cannot be reinterpreted (compressed or
+	// encrypted) or the ID is not spec-conformant. A non-conformant ID is a space-padded
+	// v2.2 upgrade ("TXY " from padID) rendered into this v2.3/2.4 tag and now re-read.
+	// Marking it opaque here, the single decode entry point, keeps it out of the projection
+	// and the managed-frame rebuild, since every f.Opaque short-circuit (projection,
+	// rebuild, DecodeText) covers it.
 	if compressed || encrypted || !conformantFrameID(id) {
 		// v2.4 unsync still applies to an opaque body. Render writes a tag header without
 		// tag-level unsync, so normalize the body here and clear the frame-level unsync bit when
@@ -195,11 +193,10 @@ func decodeFrame(id string, flags [2]byte, raw []byte, major byte, tagUnsync boo
 		}
 		return Frame{ID: id, Flags: flags, Body: slices.Clone(raw), Opaque: true}
 	}
-	// De-unsynchronise first: per the v2.4 spec the unsync transform covers the whole
-	// frame-data region, including the group byte and data-length indicator. Stripping
-	// first would strand a 0x00 stuffing byte that followed a stripped 0xFF into the
-	// payload, producing an extra empty text value. v2.3 whole-tag unsync is already
-	// undone in ParseTag, so only v2.4 frames reach deunsync here.
+	// De-unsynchronise first: per the v2.4 spec the transform covers the whole frame-data
+	// region, including the group byte and data-length indicator. Stripping first would
+	// strand a 0x00 stuffing byte in the payload as an extra empty value. v2.3 whole-tag
+	// unsync is undone in ParseTag, so only v2.4 frames reach deunsync here.
 	b := raw
 	if unsync || (major == 4 && tagUnsync) {
 		b = deunsync(b)
@@ -222,12 +219,10 @@ func decodeFrameFlags(flags [2]byte, major byte) (compressed, encrypted, groupin
 	return f&v24Compression != 0, f&v24Encryption != 0, f&v24Grouping != 0, f&v24Unsync != 0, f&v24DataLen != 0
 }
 
-// validFrameID reports whether id looks like a frame identifier: it begins with
-// A-Z or a digit, and the remaining characters are A-Z, digits, or spaces. The
-// trailing-space allowance tolerates the non-conformant-but-real case of a
-// three-character ID padded to four (e.g. "TT2 "), so such a frame is preserved
-// verbatim rather than ending the scan and dropping every later frame. A leading
-// space or NUL still stops the scan (the start of padding or garbage).
+// validFrameID reports whether id looks like a frame identifier: it begins with A-Z or a
+// digit, and the rest are A-Z, digits, or spaces. The trailing-space allowance keeps a
+// three-character ID padded to four ("TT2 ") from ending the scan and dropping every
+// later frame. A leading space or NUL still stops the scan.
 func validFrameID(id string) bool {
 	if len(id) == 0 {
 		return false
@@ -243,18 +238,17 @@ func validFrameID(id string) bool {
 	return true
 }
 
-// isUpperAlnum reports whether c is an uppercase ASCII letter or a digit - the character class
-// an ID3 frame identifier is built from. Shared by validFrameID, conformantFrameID, and
-// rawFrameIDKey so the allowed byte set is defined in one place.
+// isUpperAlnum reports whether c is an uppercase ASCII letter or a digit, the character
+// class of an ID3 frame identifier. validFrameID, conformantFrameID, and rawFrameIDKey
+// share it.
 func isUpperAlnum(c byte) bool {
 	return c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
 }
 
 // conformantFrameID reports whether id is a spec-conformant 4-character frame identifier:
-// exactly four bytes, each A-Z or 0-9. Unlike validFrameID it does NOT tolerate a trailing
-// space, so an unknown ID3v2.2 frame preserved under a space-padded best-effort ID (e.g. "TXY "
-// from padID) is rejected. decodeFrame uses it to mark such a re-read frame opaque, so it stays
-// preserved verbatim and never surfaces as a canonical tag; rawFrameIDKey builds on it.
+// exactly four bytes, each A-Z or 0-9. Unlike validFrameID it rejects a trailing space, so
+// an unknown ID3v2.2 frame preserved under a space-padded ID ("TXY " from padID) fails.
+// decodeFrame uses it to mark such a re-read frame opaque; rawFrameIDKey builds on it.
 func conformantFrameID(id string) bool {
 	if len(id) != 4 {
 		return false
@@ -276,12 +270,11 @@ func padID(id string) string {
 	return id[:4]
 }
 
-// clampPadding bounds padding so the rendered tag's payload - frames plus padding,
-// i.e. everything after the 10-byte header - fits the sync-safe 28-bit size field.
-// nonPad is the rendered non-padding size including that header (RenderedSize), so
-// the frame bytes are nonPad-10. It returns the clamped padding and whether a clamp
-// was applied. The floor is self-safe: an over-limit frame set (which CheckSize
-// rejects before this runs) yields maxPad 0 rather than a negative padding.
+// clampPadding bounds padding so the rendered tag's payload (frames plus padding, after
+// the 10-byte header) fits the sync-safe 28-bit size field. nonPad is the rendered
+// non-padding size including that header (RenderedSize). It returns the clamped padding
+// and whether a clamp was applied. An over-limit frame set, which CheckSize rejects
+// first, yields maxPad 0 rather than a negative padding.
 func clampPadding(nonPad, padSize int64) (int64, bool) {
 	maxPad := max(0, int64(maxFrameSize)-(nonPad-10))
 	if padSize > maxPad {
@@ -297,9 +290,9 @@ func Render(writeVersion byte, frames []Frame, padding int) []byte {
 	for _, f := range frames {
 		fb = append(fb, renderFrame(writeVersion, f)...)
 	}
-	// Backstop direct Render callers: padding must not push frames+padding past the
-	// 28-bit size field. RenderFrontTag clamps earlier for normal front-tag writes, and
-	// WAV/AIFF callers pass padding=0. Frame bytes are still checked upstream by CheckSize.
+	// Clamp for direct Render callers: padding must not push frames+padding past the
+	// 28-bit size field. RenderFrontTag clamps earlier, WAV/AIFF pass padding=0, and
+	// CheckSize checks the frame bytes.
 	if clamped, _ := clampPadding(int64(len(fb))+10, int64(padding)); clamped < int64(padding) {
 		padding = int(clamped)
 	}
@@ -314,13 +307,10 @@ func Render(writeVersion byte, frames []Frame, padding int) []byte {
 	return out
 }
 
-// RenderedSize returns the on-disk byte length [Render] would emit for frames
-// with no padding - a 10-byte tag header plus each frame's 10-byte header and
-// body - without materializing the bytes. Codecs that size padding by
-// reuse-in-place use it to avoid rendering the whole tag (picture bodies and
-// all) a throwaway second time just to measure it. The length is independent of
-// the write version: v2.3 and v2.4 frame headers are both 10 bytes; only the
-// size field's encoding differs.
+// RenderedSize returns the on-disk length [Render] would emit for frames with no padding:
+// a 10-byte tag header plus each frame's 10-byte header and body. Codecs that size
+// padding by reuse-in-place use it instead of rendering the whole tag a second time. The
+// length is independent of the write version; only the size field's encoding differs.
 func RenderedSize(frames []Frame) int64 {
 	total := int64(10) // tag header
 	for _, f := range frames {
@@ -330,14 +320,11 @@ func RenderedSize(frames []Frame) int64 {
 }
 
 // FrameNote is the dump --native note for one frame: what it is beyond its four-character
-// id. A described frame - COMM, USLT, TXXX - carries its identity in a description the id
-// does not show, so a bare "COMM 20 B" line leaves the reader unable to tell an iTunes
-// normalization block from a real comment, or to audit which descriptions the technical
-// denylist ([mapping.ID3TechnicalCommentDesc]) is keeping out of the canonical view. The
-// description is a stored string, so it goes through [tag.SanitizeLine]: a control byte
-// must not reach the terminal raw and an embedded newline must not forge a line.
-//
-// MP3 and AAC share it, since they list frames identically.
+// id. A described frame (COMM, USLT, TXXX) carries its identity in a description the id
+// does not show, so a bare "COMM 20 B" line cannot tell an iTunes normalization block
+// from a real comment, or show which descriptions [mapping.ID3TechnicalCommentDesc] keeps
+// out of the canonical view. The description is a stored string, so it goes through
+// [tag.SanitizeLine]. MP3 and AAC share it.
 func FrameNote(f Frame) string {
 	if f.Opaque {
 		return "preserved (opaque)"
@@ -359,9 +346,9 @@ func FrameNote(f Frame) string {
 
 // FramesNote is the native-view note for a described ID3v2 tag: its frame count, plus the
 // byte count of a region the frame walk could not read (see [Tag.MalformedTail]). Padding
-// is not counted as unparsed - it is free space the tag legitimately holds - but a
-// malformed tail is not padding either, so without this the block size would silently
-// disagree with the frames listed under it. All four ID3-backed codecs render through it.
+// is not counted as unparsed, but a malformed tail is not padding either; without it the
+// block size would disagree with the frames listed under it. All four ID3-backed codecs
+// render through it.
 func FramesNote(t *Tag) string {
 	if t == nil {
 		return "0 frames"
@@ -371,11 +358,10 @@ func FramesNote(t *Tag) string {
 }
 
 // FrontTagPadding reports the free padding inside a front ID3v2 region, or 0 for a file
-// with no front tag. ID3 padding has no describable block of its own - it lives inside the
-// tag's declared size - so this is what Document.Padding reports for the ID3-fronted
-// codecs. The number is [Tag.Padding]: measured where the tag was parsed, and restamped by
-// RenderFrontTag on the tag a rewrite produces, so a read of the written file and the
-// plan that wrote it report the same region.
+// with no front tag. ID3 padding lives inside the tag's declared size and has no block of
+// its own, so this is what Document.Padding reports for the ID3-fronted codecs. The number
+// is [Tag.Padding]: measured at parse, and restamped by RenderFrontTag on a rewrite, so a
+// read of the written file and the plan that wrote it report the same region.
 func FrontTagPadding(t *Tag) int64 {
 	if t == nil {
 		return 0

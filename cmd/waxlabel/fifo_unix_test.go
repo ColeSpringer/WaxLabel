@@ -13,8 +13,7 @@ import (
 	"time"
 )
 
-// mkfifo creates a named pipe for the non-regular-file tests, skipping the test if
-// the platform or filesystem refuses one.
+// mkfifo creates a named pipe, skipping the test if the platform refuses one.
 func mkfifo(t *testing.T, path string) {
 	t.Helper()
 	if err := syscall.Mkfifo(path, 0o644); err != nil {
@@ -71,7 +70,7 @@ func TestFifoInputRejectedFast(t *testing.T) {
 }
 
 // TestFifoInWalkedTreeSkipped: a FIFO under a walked tree is skipped like a non-audio
-// file (not a usage error). Real audio still processes; the walk never opens the pipe.
+// file (not a usage error). Audio still processes; the walk never opens the pipe.
 func TestFifoInWalkedTreeSkipped(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

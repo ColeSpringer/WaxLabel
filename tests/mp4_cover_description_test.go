@@ -6,8 +6,8 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// (Fix 6): MP4's covr atom stores image bytes only, so adding a front cover that carries a
-// description drops the description on write.
+// MP4's covr atom stores image bytes only, so adding a front cover that carries a description
+// drops the description on write.
 func TestMP4DescribedCoverWarnsOnWrite(t *testing.T) {
 	base := readFixture(t, "../testdata/notags.m4a")
 	plan, err := mustParseBytes(t, base).Edit().
@@ -25,8 +25,7 @@ func TestMP4DescribedCoverWarnsOnWrite(t *testing.T) {
 	}
 }
 
-// (Fix 6): the realistic scenario the original QA report flagged; copying a described cover from
-// another file ONTO an MP4.
+// Copying a described cover from another file onto an MP4.
 func TestMP4DescribedCoverWarnsOnTransfer(t *testing.T) {
 	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.AddPicture(wl.Picture{Type: wl.PicFrontCover, Data: tinyPNG(), Description: "liner notes"})

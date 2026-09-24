@@ -21,7 +21,7 @@ func planChapters(d *doc, edited *core.Media, needIlst, picturesChanged bool, op
 
 	// When the file has an audio track to anchor a chapter text track to, rebuild the
 	// QuickTime chapter track alongside the chpl so iTunes and Apple Books see edits too.
-	// audioMdiaOff (the tref insertion point) is always set for a resolved audio track;
+	// audioMdiaOff (the tref insertion point) is always set for a resolved audio track.
 	if d.audioTrak != nil && d.audioMdiaOff > 0 {
 		writing := len(edited.Chapters) > 0
 		if d.chapTrak != nil || (writing && d.nextTrackID > 0) || (!writing && d.audioHasChap) {
@@ -67,9 +67,9 @@ func planChapters(d *doc, edited *core.Media, needIlst, picturesChanged bool, op
 		report.Warnings = core.Warn(report.Warnings, core.WarnChapterTitleTruncated,
 			fmt.Sprintf("%d chapter title(s) trimmed to %d bytes (the Nero chpl length prefix is one byte)", n, titleByteMax))
 	}
-	// No WarnChaptersStale here: this fallback runs only when there is no audio
-	// track to anchor a QuickTime chapter track to, in which case the file has no
-	// QuickTime chapter track to leave stale (decoding one requires an audio track).
+	// No WarnChaptersStale here: this fallback runs only when there is no audio track to
+	// anchor a QuickTime chapter track to, so there is no such track to leave stale
+	// (decoding one requires an audio track).
 
 	resultItems := d.items // ilst unchanged: keep the parsed items verbatim
 	if needIlst {
@@ -79,9 +79,9 @@ func planChapters(d *doc, edited *core.Media, needIlst, picturesChanged bool, op
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
 }
 
-// buildChapterUdta renders the new ilst (when tags or pictures changed) and the
-// udta region (the chpl, and the ilst spliced in) that both chapter-write paths -
-// the chpl-only fallback and the QuickTime path - start from.
+// buildChapterUdta renders the new ilst (when tags or pictures changed) and the udta
+// region (the chpl, and the ilst spliced in) that both chapter-write paths, the chpl-only
+// fallback and the QuickTime path, start from.
 func buildChapterUdta(d *doc, edited *core.Media, needIlst, picturesChanged bool, opts core.WriteOptions) ([]item, udtaRegion, error) {
 	var newItems []item
 	var newIlst []byte
@@ -206,8 +206,7 @@ func buildUdtaRegion(d *doc, w udtaWrite, opts core.WriteOptions) (udtaRegion, e
 		}
 	} else {
 		// The ilst region is not rewritten (a chapters-only edit), so the file's existing
-		// free atom survives verbatim. Report the padding that will still be there, not
-		// none: the write leaves exactly the region the native view already describes.
+		// free atom survives verbatim and its padding is what the write leaves.
 		freeContent = d.PaddingBytes()
 	}
 
@@ -239,9 +238,9 @@ func buildUdtaRegion(d *doc, w udtaWrite, opts core.WriteOptions) (udtaRegion, e
 		ancestors: []atomRef{*d.moov}, freeContent: freeContent, paddingClamped: padClamped,
 	}
 	if len(payload) == 0 {
-		// The udta became empty (e.g. ClearChapters on a chpl-only udta): drop the
-		// whole atom rather than leave an empty 8-byte udta, so the result's nil
-		// udta matches the bytes and a later edit does not create a second udta.
+		// The udta became empty (e.g. ClearChapters on a chpl-only udta): drop the whole
+		// atom, so the result's nil udta matches the bytes and a later edit does not create
+		// a second udta.
 		return reg, nil
 	}
 	reg.regionBytes = renderAtom(atomName("udta"), payload)
@@ -258,12 +257,12 @@ type byteRep struct {
 }
 
 // spliceBytes applies the (disjoint) replacements to src, copying every byte not
-// covered by a replacement - so udta siblings and meta children outside the
-// ilst/chpl ranges survive a chapter rewrite verbatim.
+// covered by a replacement, so udta siblings and meta children outside the ilst/chpl
+// ranges survive a chapter rewrite verbatim.
 func spliceBytes(src []byte, reps []byteRep) ([]byte, error) {
-	// Order by start; Emitting the replace first would advance pos past the insert's
-	// start, tripping the r.start<pos guard below, so the oldLen tie-break forces
-	// insert-before-replace regardless of input order.
+	// Order by start. Emitting a replace before an insert at the same start would advance
+	// pos past it and trip the r.start<pos check below, so the oldLen tie-break forces
+	// insert-before-replace.
 	sort.SliceStable(reps, func(i, j int) bool {
 		if reps[i].start != reps[j].start {
 			return reps[i].start < reps[j].start
@@ -308,9 +307,8 @@ func metaSizeRep(d *doc, ups, newSize int64) byteRep {
 }
 
 // fitIlst places the new ilst within a region of oldRegionLen bytes, reusing the
-// surplus as free padding when it fits in place and falling back to fresh padding
-// otherwise - the same rule planLayout uses, so chapter and tag edits leave the same
-// in-place slack.
+// surplus as free padding when it fits in place and emitting fresh padding otherwise:
+// the same rule planLayout uses, so chapter and tag edits leave the same in-place slack.
 func fitIlst(newIlst []byte, oldRegionLen int64, pol core.PaddingPolicy) (region []byte, freeContent int64, clamped bool) {
 	pad := pol.ClampTarget()
 	if pad > maxPadding {
@@ -367,8 +365,8 @@ func chapterOps(d *doc, edited *core.Media, needIlst bool, delta int64) []string
 // buildChapterResult constructs the post-write Media for a chapter rewrite.
 func buildChapterResult(edited *core.Media, base *doc, items []item, reg udtaRegion, delta, total int64) *core.Media {
 	// The result's chapter view must equal a fresh parse of the written bytes: the
-	// chpl we wrote round-trips through its 100 ns / 255-byte encoding, and a
-	// preserved QuickTime track still wins the projection (shadowing the edit).
+	// written chpl round-trips through its 100 ns / 255-byte encoding, and a preserved
+	// QuickTime track still wins the projection (shadowing the edit).
 	resultChapters, chplCount, conflict := chapterResultView(base, edited.Chapters)
 	nd := &doc{
 		size:            total,
@@ -458,9 +456,9 @@ func applyUdtaRefs(nd *doc, reg udtaRegion) {
 	}
 }
 
-// chplRoundTrip simulates the chpl encode->decode round trip - a start rounded to the
+// chplRoundTrip simulates the chpl encode->decode round trip (a start rounded to the
 // 100 ns chpl unit, a title trimmed to the chpl byte cap, ends filled from the next
-// start - so it equals decodeChpl(renderChpl(chapters)).
+// start), so it equals decodeChpl(renderChpl(chapters)).
 func chplRoundTrip(chapters []core.Chapter) []core.Chapter {
 	if len(chapters) == 0 {
 		return nil

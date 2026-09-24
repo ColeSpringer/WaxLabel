@@ -50,12 +50,12 @@ func TestJunkPictureUnderDeclaredMIMEDegrades(t *testing.T) {
 
 // effective MIME the writers and transfer gates see is the unrecognized one, so a junk cover is
 // never carried into a new container under the type its old label claimed. A destination whose
-// covers must be a known image format drops it; one that stores any cover keeps the bytes, but
-// under the honest label.
+// covers must be a known image format drops it; one that stores any cover keeps the bytes under
+// the unrecognized label.
 func TestJunkPictureNeverRelabeledOnTransfer(t *testing.T) {
 	src := mustParseBytes(t, mp3WithFrames(t, id3Frame(4, "APIC", apicBody("image/png", 3, headlessPNG()))))
 
-	// MP4's covr atom can only label JPEG, PNG or BMP, so there is no honest way to store it.
+	// MP4's covr atom can only label JPEG, PNG or BMP, so the junk cover cannot be stored.
 	rep, err := src.PlanTransfer(wl.FormatMP4)
 	if err != nil {
 		t.Fatal(err)
@@ -64,8 +64,8 @@ func TestJunkPictureNeverRelabeledOnTransfer(t *testing.T) {
 		t.Errorf("junk cover should be dropped on transfer into MP4, report = %+v", rep)
 	}
 
-	// FLAC stores any cover MIME, so the bytes carry, and the block that lands must declare the
-	// unrecognized type, never the image/png the source lied with.
+	// FLAC stores any cover MIME, so the bytes carry, and the written block must declare the
+	// unrecognized type, not the source's image/png.
 	dstBytes := flacWithComments("TITLE=x")
 	plan, rep, err := src.PrepareTransfer(mustParseBytes(t, dstBytes))
 	if err != nil {

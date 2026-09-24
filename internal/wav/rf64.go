@@ -11,17 +11,15 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// RF64 (EBU Tech 3306) and its BW64 successor lift RIFF's 4 GiB ceiling without
-// changing its shape: the header id becomes "RF64"/"BW64", every size field that no
-// longer fits reads 0xFFFFFFFF, and a mandatory "ds64" chunk - always the first chunk -
-// carries the real 64-bit values.
+// RF64 (EBU Tech 3306) and its BW64 successor lift RIFF's 4 GiB ceiling: the header
+// id becomes "RF64"/"BW64", every size field that no longer fits reads 0xFFFFFFFF, and
+// a mandatory "ds64" chunk, always the first chunk, carries the real 64-bit values.
 const (
 	rf64Marker  = 0xFFFFFFFF
 	ds64MinBody = 8 + 8 + 8 + 4 // riffSize, dataSize, sampleCount, tableLength
 	ds64Entry   = 4 + 8         // chunk id, 64-bit size
-	// maxDS64Entries bounds the chunk-size table against a hostile tableLength. A real
-	// file needs one entry per non-data chunk above 4 GiB, so any plausible count is
-	// tiny; this is a ceiling, not a budget.
+	// maxDS64Entries bounds the chunk-size table against a hostile tableLength. A file
+	// needs one entry per non-data chunk above 4 GiB, so any plausible count is tiny.
 	maxDS64Entries = 1 << 16
 )
 
@@ -32,9 +30,8 @@ type ds64Size struct {
 	size uint64
 }
 
-// ds64 is the decoded ds64 chunk plus the walk state that matches its table
-// entries to chunks. A nil *ds64 is a plain RIFF file, so override answers "no
-// override" for every chunk and the walker behaves exactly as before.
+// ds64 is the decoded ds64 chunk plus the walk state that matches its table entries
+// to chunks. A nil *ds64 is a plain RIFF file; override then declines every chunk.
 type ds64 struct {
 	riffSize    uint64
 	dataSize    uint64
@@ -48,9 +45,8 @@ type ds64 struct {
 	dataSeen bool
 }
 
-// parseDS64 reads the ds64 chunk, which RF64 requires to be the first chunk, at
-// offset 12. It is read before the chunk walk because the walk needs its sizes -
-// including the container boundary the walk stops at.
+// parseDS64 reads the ds64 chunk, which RF64 requires first, at offset 12. It runs
+// before the chunk walk, which needs its sizes and the container boundary.
 func parseDS64(r io.ReaderAt, size, limit int64) (*ds64, error) {
 	head, err := bits.ReadSlice(r, 12, 8, limit)
 	if err != nil || string(head[0:4]) != "ds64" {
@@ -75,8 +71,8 @@ func parseDS64(r io.ReaderAt, size, limit int64) (*ds64, error) {
 		return nil, fmt.Errorf("%w: ds64 table declares %d entries", waxerr.ErrSizeTooLarge, n)
 	}
 	// A table declaring more entries than the body holds is truncated, not fatal: the
-	// entries that are present still resolve their chunks, and the rest fall back to the
-	// declared 32-bit size, which the walk already clamps to the file.
+	// present entries still resolve their chunks; the rest keep the declared 32-bit
+	// size, which the walk clamps to the file.
 	for i := 0; i < n && 28+(i+1)*ds64Entry <= len(body); i++ {
 		e := body[28+i*ds64Entry:]
 		var id [4]byte
@@ -110,10 +106,9 @@ func (t *ds64) override(id [4]byte, declared uint32) (int64, bool) {
 	return 0, false
 }
 
-// sizeFits converts a declared 64-bit size to the signed length the walker works in,
-// reporting no-override for a value that does not fit. A crafted ds64 can declare a
-// size above MaxInt64, which as a signed length is negative and would flow into a
-// negative copy range;
+// sizeFits converts a declared 64-bit size to the signed length the walker uses,
+// reporting no-override for a value above MaxInt64, which would read as a negative
+// copy range.
 func sizeFits(n uint64) (int64, bool) {
 	if n > math.MaxInt64 {
 		return 0, false
@@ -122,8 +117,7 @@ func sizeFits(n uint64) (int64, bool) {
 }
 
 // clone deep-copies the decoded chunk so a Document stays detached. The walk state
-// (used/dataSeen) is deliberately not carried: it belongs to one walk, and a clone is
-// never re-walked.
+// (used/dataSeen) belongs to one walk and is not carried.
 func (t *ds64) clone() *ds64 {
 	if t == nil {
 		return nil
@@ -134,10 +128,9 @@ func (t *ds64) clone() *ds64 {
 	return &c
 }
 
-// renderDS64 builds the ds64 chunk body for an output file: the recomputed
-// container and data sizes, the sample count carried over from the source (a
-// metadata rewrite never touches the audio), and a table entry for every non-data
-// chunk that still needs one.
+// renderDS64 builds the ds64 chunk body for an output file: the recomputed container
+// and data sizes, the source's sample count (the audio is untouched), and a table
+// entry for every non-data chunk that still needs one.
 func renderDS64(riffSize, dataSize, sampleCount uint64, table []ds64Size) []byte {
 	body := make([]byte, ds64MinBody, ds64MinBody+len(table)*ds64Entry)
 	binary.LittleEndian.PutUint64(body[0:8], riffSize)

@@ -9,9 +9,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// ffmpeg codec stamp names the actual codec rather than only the muxer, but it still describes the
-// transcode that produced the file, so it is an inherited encoder wherever a muxer stamp already
-// was.
+// ffmpeg codec stamp names the codec rather than only the muxer, but it still describes the
+// transcode that produced the file, so it is an inherited encoder wherever a muxer stamp is.
 func TestLavcStampReported(t *testing.T) {
 	const stamp = "Lavc61.19.101 libopus"
 	for _, fixture := range []string{sampleFLAC, sampleMP3, sampleMP4, sampleWAV} {
@@ -39,8 +38,8 @@ func TestLavcStampReported(t *testing.T) {
 	}
 }
 
-// write side of the widening: --strip-encoder / WithStripEncoderStamp judges the WAV ISFT item on
-// its own bytes, so a codec stamp there is now dropped like a muxer stamp already was.
+// write side: --strip-encoder / WithStripEncoderStamp judges the WAV ISFT item on its own bytes,
+// so a codec stamp there is dropped like a muxer stamp.
 func TestLavcStampStripped(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Keep"}, [2]string{"ISFT", "Lavc61.19.101 libopus"}), wavData(400))
 	doc := mustParseBytes(t, data)

@@ -61,7 +61,7 @@ func (h header) totalSamples() uint64 {
 }
 
 // parseHeader decodes the layout at the front of b. Short or overrunning declared
-// regions are refused rather than trusted past the leading window.
+// regions are refused.
 func parseHeader(b []byte) (header, error) {
 	var h header
 	if len(b) < 6 {
@@ -88,12 +88,12 @@ func parseDescriptorHeader(b []byte, h header) (header, error) {
 	}
 	descBytes := int64(binary.LittleEndian.Uint32(b[8:12]))
 	hdrBytes := int64(binary.LittleEndian.Uint32(b[12:16]))
-	// Trust the writer's descriptor length when sane; else fall back to documented
-	// sizes. Clamp from above too: absurd nHeaderBytes would push headerLen past EOF,
-	// peel would miss the real APEv2, and rewrite would append a second tag.
-	// Clamp against room for the header after the descriptor, not only that the
-	// descriptor fits: a length landing exactly at end of read would otherwise pass
-	// here and fail later, flipping on whether a rewrite had already appended a tag.
+	// Trust the descriptor and header lengths when sane; else use the documented
+	// sizes. Clamp from above too: an absurd nHeaderBytes would push headerLen past
+	// EOF, peel would miss the APEv2, and rewrite would append a second tag. The
+	// descriptor bound also needs room for the header after it: a length ending
+	// exactly at the end of the read would otherwise pass here, fail below, and
+	// flip once a rewrite had appended a tag.
 	if descBytes < descriptorLen || descBytes+headerLen > int64(len(b)) {
 		descBytes = descriptorLen
 	}

@@ -32,8 +32,8 @@ func FormatChapterTime(d time.Duration) string {
 type Chapter struct {
 	// Start is the chapter's offset from the start of the media.
 	Start time.Duration
-	// End is where the chapter stops. Zero means "until the next chapter, or
-	// end of file" - the common case for the start-only formats (Nero chpl).
+	// End is where the chapter stops. Zero means until the next chapter or end
+	// of file, the common case for start-only formats (Nero chpl).
 	End time.Duration
 	// Title is the chapter name (may be empty).
 	Title string
@@ -213,10 +213,9 @@ func EqualChapters(a, b []Chapter) bool {
 }
 
 // EqualChaptersModuloEnds compares lists after normalizeReconstructableEnds per duration.
-// Used by diff. Equality is defined on the normalized form, so it is transitive.
-//
-// Fast path when durA==durB and lists match literally; dur equality is required because
-// trailing-end normalization depends on duration.
+// Used by diff. Equality is defined on the normalized form, so it is transitive. The
+// literal fast path requires durA==durB because trailing-end normalization depends on
+// duration.
 //
 // Interior gapless ends (End==next.Start) match copy grading via chapterEndReachesNextStart.
 // Trailing EOF ends normalize for diff but may still grade lossy on copy when the store

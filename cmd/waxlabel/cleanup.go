@@ -33,7 +33,7 @@ func registerCleanup(fn func()) (deregister func()) {
 }
 
 // runCleanups runs and clears every still-registered cleanup. Called by the signal
-// goroutine just before os.Exit. Idempotent; iterates a snapshot so concurrent
+// goroutine before os.Exit. Idempotent; iterates a snapshot so concurrent
 // register cannot race the loop.
 func runCleanups() {
 	cleanupMu.Lock()

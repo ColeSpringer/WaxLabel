@@ -129,9 +129,9 @@ type SaveResult struct {
 // Execute runs the plan against [SaveBack], [SaveAsFile], or [WriteTo].
 //
 // Failed write: err != nil AND Committed false.
-//   - err nil, Committed true: bytes landed.
+//   - err nil, Committed true: bytes written.
 //   - err nil, Committed false: no-op (writes nothing); not a failure.
-//   - err non-nil, Committed true: bytes landed, later step failed; plan is spent.
+//   - err non-nil, Committed true: bytes written, later step failed; further Execute refused.
 //   - err non-nil, Committed false: nothing written; Document is nil.
 //
 // Reusable until an execution writes over the source path.

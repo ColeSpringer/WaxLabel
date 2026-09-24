@@ -125,9 +125,8 @@ func TestPlanReuseSymlinkToSourceIsGuarded(t *testing.T) {
 }
 
 // tamperFlip changes one byte of marker (which must sit in the metadata region) while preserving
-// the file's size, mtime, and inode, so only the structural fingerprint differs from what the prior
-// parse recorded; driving the fingerprint branch of change detection specifically (size/mtime/inode
-// all match).
+// the file's size, mtime, and inode, so only the structural fingerprint differs from what the
+// prior parse recorded. This drives the fingerprint branch of change detection.
 func tamperFlip(t *testing.T, path, marker string) {
 	t.Helper()
 	info, err := os.Stat(path)
@@ -225,8 +224,7 @@ func changedSourceCases() []changedSourceCase {
 }
 
 // checks the guard on SaveAsFile: a ParseFile source that changed on disk since parse is refused
-// with ErrSourceChanged, so the stale byte offsets never copy the wrong bytes (and an in-place
-// target is never silently corrupted).
+// with ErrSourceChanged, so stale byte offsets never copy the wrong bytes.
 func TestSaveAsFileGuardsChangedSource(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range changedSourceCases() {
@@ -261,8 +259,8 @@ func TestSaveAsFileGuardsChangedSource(t *testing.T) {
 }
 
 // checks the guard on WriteTo(w, nil): a ParseFile source that changed on disk is refused before
-// any bytes are streamed. A streaming writer never clobbers the source, so this is a derived write;
-// the precise inode+size+fingerprint check.
+// any bytes are streamed. A streaming writer never clobbers the source, so this is a derived write
+// and uses the inode+size+fingerprint check.
 func TestWriteToGuardsChangedSource(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range changedSourceCases() {
@@ -285,10 +283,9 @@ func TestWriteToGuardsChangedSource(t *testing.T) {
 	}
 }
 
-// happy path that actually enters the guard and passes: a ParseFile document whose source is
-// unchanged writes cleanly via both SaveAsFile(otherPath) and WriteTo(w, nil). Without it, an
-// always-fire regression in the guard would slip past the change-detection tests, which never reach
-// a passing guard.
+// happy path through the guard: a ParseFile document whose source is unchanged writes via both
+// SaveAsFile(otherPath) and WriteTo(w, nil). An always-fire regression in the guard would slip
+// past the change-detection tests, which never reach a passing guard.
 func TestDerivedWriteUnchangedSourceSucceeds(t *testing.T) {
 	ctx := context.Background()
 	work := copyToTemp(t, sampleFLAC)
@@ -312,9 +309,9 @@ func TestDerivedWriteUnchangedSourceSucceeds(t *testing.T) {
 	}
 }
 
-// precise same-path/derived asymmetry the guard introduces. Bumping only the source's mtime (bytes
-// identical) must NOT block a derived write: a moved audio region always changes size and/or the
-// fingerprint, so mtime says nothing about whether the planned offsets are still valid.
+// same-path/derived asymmetry of the guard. Bumping only the source's mtime (bytes identical)
+// must not block a derived write: a moved audio region always changes size and/or the fingerprint,
+// so mtime says nothing about whether the planned offsets are still valid.
 func TestDerivedWriteIgnoresMtimeTouch(t *testing.T) {
 	ctx := context.Background()
 	touch := func(t *testing.T, path string) {

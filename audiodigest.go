@@ -12,9 +12,9 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// AudioDigest is a content identity for audio. Algorithm and versioned
-// ExtentVersion travel with Sum so persisted digests stay interpretable:
-// refining the extent is an opt-in new version, not a silent break.
+// AudioDigest is a content identity for audio. Algorithm and ExtentVersion travel
+// with Sum so persisted digests stay interpretable; refining the extent is a new
+// version.
 type AudioDigest struct {
 	Algorithm     string
 	ExtentVersion string

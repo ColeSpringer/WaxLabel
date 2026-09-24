@@ -63,7 +63,7 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte("MAC \x96\x0f\x00\x00"))                                                                  // MAC marker, descriptor truncated
 	f.Add(append(legacyAPEHeader(3970, 2000, 0, 2, 44100, 1, 100), make([]byte, 64)...))                   // pre-3.98 inline header
 	f.Add([]byte("MAC \x96\x0f\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff"))
-	f.Add([]byte("MAC 0000\xe6\x00\x00\x00" + strings.Repeat("0", 136)))                                                                                  // descriptor length landing exactly on the rewritten file's end                                                                                 // descriptor declaring absurd region sizes
+	f.Add([]byte("MAC 0000\xe6\x00\x00\x00" + strings.Repeat("0", 136)))                                                                                  // descriptor length landing exactly on the rewritten file's end; the seed above declares absurd region sizes
 	f.Add(asfFile(asfStreamProperties(0x0161, 2, 44100, 16), asfContentDescription("T", "A", "", "", "")))                                                // minimal ASF
 	f.Add(asfFile(asfStreamPropertiesRaw(asfWaveFormatEx(0x0163, 2, 44100, 16, asfLosslessExtra(24)))))                                                   // WMA Lossless, depth behind the structure
 	f.Add(asfFile(asfExtContentDescription(asfDescriptor{"WM/Picture", 1, []byte{3, 0xFF, 0xFF, 0xFF, 0xFF}})))                                           // WM/Picture declaring an absurd image length
@@ -149,8 +149,7 @@ func FuzzParse(f *testing.F) {
 				return
 			}
 			// A file the parser flagged as having no audio essence (WarnNoAudioFrames) is refused by
-			// Editor.Prepare (ErrInvalidData): it is a contradictory file the library declines to rewrite, not
-			// a regression.
+			// Editor.Prepare (ErrInvalidData): the library declines to rewrite a contradictory file.
 			if errors.Is(err, waxerr.ErrInvalidData) && hasWarning(doc, wl.WarnNoAudioFrames) {
 				return
 			}
@@ -171,8 +170,8 @@ func FuzzParse(f *testing.F) {
 			// (ErrUnalignedStream), an oversized layout (ErrInvalidData), an MP4 whose crafted offsets would
 			// overflow a 32-bit table on a grow (ErrSizeTooLarge), a fragmented MP4 (ErrFragmented), an MP4
 			// carrying an unpatchable absolute-offset box (ErrUnsupportedFormat), a Matroska layout the writer
-			// does not handle; no reserved Void, a position that would overflow its width, a Title with no Info
-			// element (ErrUnsupportedTag), or any WMA at all, which is read-only by design.
+			// does not handle (no reserved Void, a position that would overflow its width, a Title with no
+			// Info element: ErrUnsupportedTag), or any WMA, which is read-only.
 			if errors.Is(err, waxerr.ErrChainedStream) || errors.Is(err, waxerr.ErrInvalidData) ||
 				errors.Is(err, waxerr.ErrUnalignedStream) || errors.Is(err, waxerr.ErrSizeTooLarge) ||
 				errors.Is(err, waxerr.ErrUnsupportedTag) || errors.Is(err, waxerr.ErrFragmented) ||

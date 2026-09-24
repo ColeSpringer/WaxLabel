@@ -28,8 +28,8 @@ func hasKeyedValueReduced(ws []wl.Warning, key tag.Key) bool {
 	return false
 }
 
-// YYYY-MM RECORDINGDATE carries month precision a v2.3 TDAT cannot represent (TDAT needs a full
-// DDMM), so only TYER (the year) is written and the month is silently lost. The writer must raise a
+// A YYYY-MM RECORDINGDATE carries month precision a v2.3 TDAT cannot represent (TDAT needs a full
+// DDMM), so only TYER (the year) is written and the month is lost. The writer must raise a
 // value-reduced warning naming the key unless the full value remains the file's authoritative
 // projection.
 func TestID3v23MonthOnlyDateReduced(t *testing.T) {
@@ -44,17 +44,16 @@ func TestID3v23MonthOnlyDateReduced(t *testing.T) {
 	}
 
 	// WAV carrying a preserved v2.3 id3 chunk: id3 wins the read precedence, so the authoritative
-	// projection is the reduced "2021" even though INFO ICRD physically holds "2021-03"; suppressing
-	// here would reintroduce the silent loss this test guards (dump would show "2021" with no warning),
-	// so it must warn.
+	// projection is the reduced "2021" even though INFO ICRD holds "2021-03", and it must warn (dump
+	// would show "2021").
 	wavID3Preserved := wavFile(wavFmtPCM(), wavID3(id3v2(3, textFrame(3, "TYER", "2021"))), wavData(400))
 	wplan := prepareWith(t, wavID3Preserved, func(e *wl.Editor) { e.Set(tag.RecordingDate, "2021-03") })
 	if !hasKeyedValueReduced(wplan.Report().Warnings, tag.RecordingDate) {
 		t.Errorf("WAV with a preserved v2.3 id3 chunk reduces to the year authoritatively; must warn; got %v", wplan.Report().Warnings)
 	}
 
-	// WAV with no id3 chunk: RECORDINGDATE writes only the native INFO ICRD (verbatim), so the full
-	// "2021-03" is the authoritative projection, so nothing was lost and no warning should be raised.
+	// WAV with no id3 chunk: RECORDINGDATE writes only the native INFO ICRD verbatim, so the full
+	// "2021-03" is the authoritative projection and nothing warns.
 	wavInfoOnly := wavFile(wavFmtPCM(), wavData(400))
 	wiplan := prepareWith(t, wavInfoOnly, func(e *wl.Editor) { e.Set(tag.RecordingDate, "2021-03") })
 	if hasKeyedValueReduced(wiplan.Report().Warnings, tag.RecordingDate) {
@@ -112,8 +111,8 @@ func TestID3v23OriginalDateReduced(t *testing.T) {
 }
 
 // v2.3 TDAT needs a canonical YYYY-MM-DD, so a non-canonical partial date ("2021-3", "2021-03-1")
-// drops its month/day to the year just as the canonical "2021-03" does, and the tool stores values
-// verbatim (no normalization), so these forms are reachable and must warn value-reduced too.
+// drops its month/day to the year as the canonical "2021-03" does. The tool stores values verbatim,
+// so these forms are reachable and must warn value-reduced too.
 func TestID3v23NonCanonicalDateReduced(t *testing.T) {
 	mp3 := append(id3v2(3, textFrame(3, "TIT2", "T")), mp3Audio(t)...)
 	for _, v := range []string{"2021-3", "2021-03-1"} {
@@ -132,9 +131,8 @@ func TestID3v23NonCanonicalDateReduced(t *testing.T) {
 	}
 }
 
-// hour with no minute ("2021-03-15T10") has a full date (TYER+TDAT render) but TIME needs a full
-// HH:MM, so the hour is silently dropped on a v2.3 write; a sub-day reduction the month-only check
-// missed.
+// An hour with no minute ("2021-03-15T10") has a full date (TYER+TDAT render) but TIME needs a full
+// HH:MM, so the hour is dropped on a v2.3 write and must warn value-reduced.
 func TestID3v23SubDayDateReduced(t *testing.T) {
 	mp3 := append(id3v2(3, textFrame(3, "TIT2", "T")), mp3Audio(t)...)
 
@@ -152,10 +150,9 @@ func TestID3v23SubDayDateReduced(t *testing.T) {
 	}
 }
 
-// every ID3-backed format (MP3, AAC, AIFF, WAV) writes dates through the shared id3.RebuildFrames,
+// Every ID3-backed format (MP3, AAC, AIFF, WAV) writes dates through the shared id3.RebuildFrames,
 // so a v2.3 tag drops a recording or original date that has no numeric year (TYER/TORY hold a year,
-// not a free string), and the writer must raise a value-dropped warning naming the key rather than
-// dropping it silently.
+// not a free string), and the writer must raise a value-dropped warning naming the key.
 func TestID3v23DroppedDateWarns(t *testing.T) {
 	// The shared piece under test is the v2.3 ID3 tag carrying RECORDINGDATE=2021; a single TYER frame
 	// (id3v2/textFrame take the major version, so id3v2(3, ...) pins v2.3).
@@ -188,8 +185,7 @@ func TestID3v23DroppedDateWarns(t *testing.T) {
 
 // WAV writes a date to both the native LIST/INFO (ICRD = RecordingDate) and, when one is preserved,
 // a v2.3 id3 chunk. The id3 TYER drops a no-year date, but ICRD keeps it verbatim, so the value
-// round-trips and must not raise a value-dropped warning (which --strict would escalate to exit 2
-// on a faithfully-stored value).
+// round-trips and must not raise a value-dropped warning, which --strict would escalate to exit 2.
 func TestWavDateRetainedInInfoNoWarning(t *testing.T) {
 	data := wavFile(wavFmtPCM(),
 		wavInfo([2]string{"ICRD", "2020"}),             // native INFO date slot
@@ -208,9 +204,8 @@ func TestWavDateRetainedInInfoNoWarning(t *testing.T) {
 	}
 }
 
-// v2.4 tag (AAC's from-scratch default) stores the date as a free TDRC string, so an
-// unrepresentable value is kept, not dropped, and must not raise a false value-dropped warning. The
-// warning fires only where the value is actually lost.
+// A v2.4 tag (AAC's from-scratch default) stores the date as a free TDRC string, so an
+// unrepresentable value is kept and must not raise a value-dropped warning.
 func TestID3v24DateStoredNoWarning(t *testing.T) {
 	// A bare ADTS stream gets a brand-new ID3v2.4 tag on write (DefaultID3Version(AAC)).
 	doc := mustParseBytes(t, adtsStream(2, 20, 200))
@@ -222,16 +217,16 @@ func TestID3v24DateStoredNoWarning(t *testing.T) {
 		t.Errorf("v2.4 stores the date string, so it must not warn value-dropped; got %v",
 			plan.Report().Warnings)
 	}
-	// And the value really is stored (round-trips), proving the no-warning is correct.
+	// The value round-trips.
 	re := mustParseBytes(t, applyToBytes(t, adtsStream(2, 20, 200), plan))
 	if v, _ := re.Tags().First(tag.RecordingDate); v != "Unknown Date" {
 		t.Errorf("v2.4 RecordingDate round-trip = %q, want %q", v, "Unknown Date")
 	}
 }
 
-// when the dropped date is the only edit and the file had no date to begin with, the write produces
-// no byte change, yet the value-dropped warning must still surface (and --strict still escalate)
-// rather than vanish behind the no-op downgrade, exactly as the MP4 picture-metadata warning does.
+// When the dropped date is the only edit and the file had no date, the write produces no byte
+// change, yet the value-dropped warning must survive the no-op downgrade (so --strict still
+// escalates), as the MP4 picture-metadata warning does.
 func TestID3v23DroppedDateWarnsOnNoOp(t *testing.T) {
 	doc := mustParseBytes(t, mp3Audio(t)) // tagless: a new tag is ID3v2.3 (MP3 default)
 	plan, err := doc.Edit().Set(tag.RecordingDate, "Unknown Date").Prepare()

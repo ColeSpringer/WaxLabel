@@ -13,9 +13,8 @@ import (
 // junk is the appended region the trailing-bytes tests look for.
 var junk = []byte("TRAILINGJUNK")
 
-// bytes belonging to no chunk or page are surfaced rather than silently preserved. Byte
-// preservation was already right; the silence was the finding, since lint advertises the issues a
-// tagger would want to see.
+// bytes belonging to no chunk or page are preserved and reported, since lint advertises the issues
+// a tagger would want to see.
 func TestTrailingBytesReported(t *testing.T) {
 	for _, tc := range []struct{ name, fixture string }{
 		{"wav", "sample.wav"},
@@ -38,7 +37,7 @@ func TestTrailingBytesReported(t *testing.T) {
 			if !hasWarning(doc, wl.WarnTrailingBytes) {
 				t.Error("dump should carry the same warning lint promotes")
 			}
-			// The point of the code: preserved verbatim, and still reported afterwards.
+			// Preserved verbatim across an edit, and still reported afterwards.
 			plan, err := doc.Edit().Set(tag.Title, "Edited").Prepare()
 			if err != nil {
 				t.Fatal(err)

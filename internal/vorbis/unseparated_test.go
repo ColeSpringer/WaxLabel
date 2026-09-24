@@ -11,8 +11,7 @@ import (
 )
 
 // commentListWithRaw renders a comment list by hand so an entry with no "=" can be placed
-// in it. RenderCommentList would compose one from a Name and a Value, which is exactly the
-// composition the Unseparated flag exists to avoid.
+// in it; RenderCommentList would compose one from a Name and a Value.
 func commentListWithRaw(vendor string, entries ...string) []byte {
 	le := func(n int) []byte {
 		b := make([]byte, 4)
@@ -28,8 +27,8 @@ func commentListWithRaw(vendor string, entries ...string) []byte {
 	return out
 }
 
-// TestUnseparatedEntryRoundTripsVerbatim: an entry with no "=" is well framed, so dropping
-
+// TestUnseparatedEntryRoundTripsVerbatim checks that an entry with no "=" survives parse
+// and render byte for byte, so a rewrite does not erase it.
 func TestUnseparatedEntryRoundTripsVerbatim(t *testing.T) {
 	body := commentListWithRaw("vend", "TITLE=Song", "noequalshere", "ARTIST=Band")
 	vendor, cs, n, err := ParseCommentList(body, 1<<20, 0)
@@ -51,8 +50,8 @@ func TestUnseparatedEntryRoundTripsVerbatim(t *testing.T) {
 	}
 }
 
-// TestUnseparatedEntryStaysOutOfEveryProjection: the entry has no name, so nothing can key
-
+// TestUnseparatedEntryStaysOutOfEveryProjection checks that every projector skips the
+// nameless entry explicitly rather than relying on "" missing each predicate.
 func TestUnseparatedEntryStaysOutOfEveryProjection(t *testing.T) {
 	cs := []Comment{
 		{Name: "TITLE", Value: "Song"},
@@ -78,8 +77,8 @@ func TestUnseparatedEntryStaysOutOfEveryProjection(t *testing.T) {
 	}
 }
 
-// TestUnseparatedEntryWarnsMalformed: the entry is preserved but unreadable, so it must be
-// reported the way an unrepresentable key is - the observable consequences are identical.
+// TestUnseparatedEntryWarnsMalformed checks that the preserved but unreadable entry is
+// reported like an unrepresentable key.
 func TestUnseparatedEntryWarnsMalformed(t *testing.T) {
 	ws := InvalidKeyWarnings([]Comment{
 		{Name: "TITLE", Value: "Song"},

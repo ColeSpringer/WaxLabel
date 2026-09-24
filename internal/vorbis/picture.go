@@ -16,9 +16,9 @@ import (
 // Vorbis and Opus. The value is a FLAC PICTURE block payload.
 const PictureComment = "METADATA_BLOCK_PICTURE"
 
-// pictureCommentBase64Error is the warning message for a METADATA_BLOCK_PICTURE comment whose
-// value is not valid base64. The FLAC and Ogg parsers both preserve such a comment verbatim, so
-// sharing the wording (via DecodePictureComment) keeps the two from drifting.
+// pictureCommentBase64Error is the warning message for a METADATA_BLOCK_PICTURE comment
+// whose value is not valid base64. The FLAC and Ogg parsers share it via
+// DecodePictureComment.
 const pictureCommentBase64Error = "METADATA_BLOCK_PICTURE is not valid base64; preserved as a comment"
 
 // IsPictureComment reports whether a comment name is the cover-art picture comment,
@@ -28,11 +28,10 @@ func IsPictureComment(name string) bool {
 	return strings.EqualFold(name, PictureComment)
 }
 
-// DecodePictureComment base64-decodes a METADATA_BLOCK_PICTURE comment value and parses it into a
-// Picture. On failure it returns a descriptive error - the shared base64 message, or ParsePicture's
-// own error - so the caller warns with WarnInvalidPicture and preserves the comment verbatim. It is
-// the shared core of the FLAC and Ogg picture-comment decoders, so neither the flow nor the base64
-// wording can drift between the two formats.
+// DecodePictureComment base64-decodes a METADATA_BLOCK_PICTURE comment value and parses it
+// into a Picture. On failure it returns the shared base64 message or ParsePicture's error,
+// and the caller warns WarnInvalidPicture and preserves the comment verbatim. The FLAC and
+// Ogg picture-comment decoders share it.
 func DecodePictureComment(value string, limit int64) (core.Picture, error) {
 	raw, err := base64.StdEncoding.DecodeString(value)
 	if err != nil {
@@ -47,31 +46,30 @@ func DecodePictureComment(value string, limit int64) (core.Picture, error) {
 func ParsePicture(body []byte, limit int64) (core.Picture, error) {
 	c := bits.NewCursor(bytes.NewReader(body), int64(len(body)), limit)
 	var p core.Picture
-	// The on-disk type is a 32-bit field, but the defined + reserved role space is a single
-	// byte (matches ID3 APIC). A value past 255 is non-conformant; clamp it to PicOther (the
-	// honest "undefined role" default) rather than letting the narrowing conversion wrap it
-	// into a misleading valid role (e.g. 259 -> "Front cover"). Picture bytes are unaffected.
+	// The on-disk type is a 32-bit field, but the role space is a single byte (as in
+	// ID3 APIC). Clamp a value past 255 to PicOther; a narrowing conversion would wrap
+	// it into a valid role (259 -> "Front cover"). Picture bytes are unaffected.
 	typ := c.U32BE()
 	if typ > 255 {
 		typ = 0 // PicOther; out of the single-byte ID3/FLAC type space
 	}
 	p.Type = core.PictureType(typ)
 	p.MIME = string(c.Bytes(int64(c.U32BE())))
-	// The description is stored as raw bytes; a non-conformant file can hold invalid UTF-8.
-	// Sanitize it into the model like the tag-value read paths, so a transfer that re-adds
-	// this picture is not rejected by the write-time UTF-8 guard and --json stays valid.
+	// A non-conformant file can hold an invalid-UTF-8 description. Sanitize it like the
+	// tag-value read paths, so the write-time UTF-8 guard does not reject a transfer that
+	// re-adds this picture and --json stays valid.
 	p.Description = core.SanitizeUTF8(string(c.Bytes(int64(c.U32BE()))))
 	p.Width = int(c.U32BE())
 	p.Height = int(c.U32BE())
 	p.Depth = int(c.U32BE())
 	p.Colors = int(c.U32BE())
 	p.Data = c.Bytes(int64(c.U32BE()))
-	// The MIME and dimensions come back as stored, not sniffed. This decoder doubles as the
-	// re-serialization source (FLAC materializes a comment cover into a native block, and Ogg
-	// re-emits the comment), so correcting a mislabeled MIME here would write the sniffed value back
-	// on an unrelated edit. Type detection happens on the display copy instead, where the FLAC and
-	// Ogg parsers hand media.Pictures to core.ProjectPictures. id3/mp4/matroska sniff at read too,
-	// but their writers preserve the picture verbatim, so the sniffed type never reaches disk.
+	// MIME and dimensions come back as stored, not sniffed. This decoder is also the
+	// re-serialization source (FLAC materializes a comment cover into a native block, Ogg
+	// re-emits the comment), so a corrected MIME would be written back on an unrelated
+	// edit. Type detection runs on the display copy, where the FLAC and Ogg parsers hand
+	// media.Pictures to core.ProjectPictures. id3/mp4/matroska can sniff at read because
+	// their writers preserve the picture verbatim.
 	if c.Err() != nil {
 		return core.Picture{}, fmt.Errorf("picture block: %w", c.Err())
 	}
@@ -96,13 +94,11 @@ func RenderPicture(p core.Picture) []byte {
 	return buf.Bytes()
 }
 
-// PictureCommentLen returns how many bytes the picture takes up as a base64
-// METADATA_BLOCK_PICTURE comment value, which is the bulk of its weight in the comment packet.
-// It lets a write-side size check measure a cover without rendering it: the result equals
-// base64.StdEncoding.EncodedLen(len(RenderPicture(p))), but the rendered length is recomputed
-// from RenderPicture's layout (eight fixed 32-bit fields, then the MIME, description, and image
-// bytes) instead of built. TestPictureCommentLenMatchesRender guards the arithmetic against a
-// change to RenderPicture.
+// PictureCommentLen returns the size of the picture as a base64 METADATA_BLOCK_PICTURE
+// comment value, so a write-side size check can measure a cover without rendering it.
+// It equals base64.StdEncoding.EncodedLen(len(RenderPicture(p))), computed from
+// RenderPicture's layout (eight 32-bit fields, then MIME, description, and image bytes).
+// TestPictureCommentLenMatchesRender checks the arithmetic against RenderPicture.
 func PictureCommentLen(p core.Picture) int64 {
 	const fixedFields = 8 * 4 // the eight 32-bit fields RenderPicture writes before the image data
 	rendered := fixedFields + len(p.MIME) + len(p.Description) + len(p.Data)

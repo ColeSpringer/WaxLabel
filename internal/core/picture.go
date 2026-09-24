@@ -159,7 +159,7 @@ func (p Picture) Unrecognized() bool { return p.MIME == UnrecognizedMIME }
 
 // CloneMeta copies structural fields; Data stays shared.
 func (p Picture) CloneMeta() Picture {
-	c := p // Data shared by design
+	c := p // Data stays shared
 	return c
 }
 

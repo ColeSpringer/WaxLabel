@@ -12,10 +12,10 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// buildItems renders the edited canonical tags into ilst items, appends the
-// pre-resolved cover item(s) (see coverItemsToWrite - either the re-encoded edited
-// pictures or the parsed covr carried verbatim), then the preserved items (unknown
-// atoms and foreign freeforms kept verbatim) in their original order.
+// buildItems renders the edited canonical tags into ilst items, appends the cover
+// item(s) coverItemsToWrite resolved (re-encoded edited pictures or the parsed covr
+// verbatim), then the preserved items (unknown atoms and foreign freeforms) in their
+// original order.
 func buildItems(edited tag.TagSet, covr []item, preserved []item, numericGenre bool) []item {
 	var out []item
 	consumed := map[tag.Key]bool{}
@@ -194,8 +194,8 @@ func multiValueDataKeys(edited tag.TagSet) []tag.Key {
 }
 
 // extraStructuredValues returns the structured single-atom keys holding more than one
-// value, whose surplus values buildItems silently reads past (every structured encoder
-// consumes only the first, or for trkn/disk the First of each slot key).
+// value. buildItems drops the surplus: every structured encoder consumes only the first
+// value, or for trkn/disk the First of each slot key.
 func extraStructuredValues(ts tag.TagSet) []droppedValue {
 	var out []droppedValue
 	for _, key := range ts.Keys() {
@@ -250,10 +250,10 @@ func gnreItem(indices []int) item {
 	return item{name: atomName("gnre"), payload: payload}
 }
 
-// genreItem builds the ilst item the genre lands in: the legacy numeric "gnre" atom (a
-// 1-based ID3v1 index) when the encoding was requested and every value resolves to a
-// standard genre, and the text "\xa9gen" atom otherwise, so an order-preserving mix of
-// standard and custom genres is kept verbatim.
+// genreItem builds the genre's ilst item: the legacy numeric "gnre" atom (a 1-based
+// ID3v1 index) when the encoding was requested and every value resolves to a standard
+// genre, else the text "\xa9gen" atom, which keeps a mix of standard and custom genres
+// verbatim.
 func genreItem(vals []string, numericGenre bool) (item, bool) {
 	if len(vals) == 0 {
 		return item{}, false
@@ -342,8 +342,7 @@ func pairItem(name string, ts tag.TagSet, numKey, totKey tag.Key, trailing bool)
 
 // intItem builds an unsigned iTunes integer atom (stik, rtng, ©mvi, ©mvc) from the
 // canonical value (a decimal integer), rendered as width big-endian bytes. A value the
-// atom's width cannot hold is rejected (item{}, false) rather than widening the atom,
-// and a non-numeric value is likewise skipped.
+// atom's width cannot hold, or a non-numeric one, is rejected (item{}, false).
 func intItem(name string, width int, vals []string) (item, bool) {
 	if len(vals) == 0 {
 		return item{}, false
@@ -361,9 +360,8 @@ func intItem(name string, width int, vals []string) (item, bool) {
 }
 
 // tmpoItem builds the iTunes "tmpo" BPM atom (a two-byte big-endian integer) from the
-// canonical BPM value, via tag.BPMStoredWhole - the single stored-form decision the
-// drop report (bpmValueDropped), the coercion report (bpmValueCoerced), and the diff
-// fold also derive from.
+// canonical BPM value via tag.BPMStoredWhole, the stored-form decision the drop report
+// (bpmValueDropped), the coercion report (bpmValueCoerced), and the diff fold share.
 func tmpoItem(vals []string) (item, bool) {
 	if len(vals) == 0 {
 		return item{}, false
@@ -429,7 +427,7 @@ func clampUint16(n int) uint16 {
 }
 
 // droppedValue records a canonical (key, value) the iTunes atom encoders cannot
-// represent and would otherwise silently drop.
+// represent and would otherwise drop.
 type droppedValue struct {
 	Key       tag.Key
 	Value     string
@@ -437,18 +435,17 @@ type droppedValue struct {
 	Stored    string
 }
 
-// droppedValues returns the canonical values this edit would genuinely lose at the
-// iTunes encode site (the value is not written at all): a trkn/disk slot outside the
-// uint16 the atom holds (numTotal -> clampUint16), an integer-atom value intItem cannot
-// store (non-numeric, or past the stik/rtng byte or ©mvi/©mvc uint16), or a BPM
-// tmpoItem rejects (non-decimal, or past 65535).
+// droppedValues returns the canonical values the iTunes encoders do not write at all: a
+// trkn/disk slot outside the uint16 the atom holds (numTotal -> clampUint16), an
+// integer-atom value intItem cannot store (non-numeric, or past the stik/rtng byte or
+// ©mvi/©mvc uint16), or a BPM tmpoItem rejects (non-decimal, or past 65535).
 func droppedValues(ts tag.TagSet) []droppedValue {
 	var out []droppedValue
 	out = appendDroppedPair(out, ts, tag.TrackNumber, tag.TrackTotal)
 	out = appendDroppedPair(out, ts, tag.DiscNumber, tag.DiscTotal)
-	// The integer atoms and BPM use the same value-drop predicates exposed to transfer. An
-	// empty value is exempt because it intentionally stores nothing; a value the encoder
-	// rejects is a genuine drop because intItem/tmpoItem return no atom for it.
+	// The integer atoms and BPM use the value-drop predicates exposed to transfer. An empty
+	// value is exempt because it stores nothing; intItem/tmpoItem return no atom for a
+	// value they reject.
 	for _, d := range []struct {
 		key     tag.Key
 		dropped func(string) bool
@@ -492,8 +489,7 @@ func itunesExtraStructuredValues(ts tag.TagSet, itunes bool) []droppedValue {
 
 // coercedValues returns the canonical values this edit stores in a normalized form
 // because the iTunes atom cannot hold the literal. The boolean atoms (cpil, pgap, shwm)
-// each hold a single byte, so boolItem coerces a non-boolean like "maybe" to 0 (false)
-// and writes it, rather than dropping it;
+// each hold a single byte, so boolItem coerces a non-boolean like "maybe" to 0 (false).
 func coercedValues(ts tag.TagSet) []droppedValue {
 	var out []droppedValue
 	for _, c := range []struct {
@@ -516,9 +512,9 @@ func coercedValues(ts tag.TagSet) []droppedValue {
 	return out
 }
 
-// resolvePairSlots resolves the two slots a trkn/disk number/total pair edits, through
-// the guarded tag.NumberTotalSplit so it matches the canonical model and
-// restoreUnstorableSlots rather than leniently cutting on the first '/'.
+// resolvePairSlots resolves the two slots a trkn/disk number/total pair edits through
+// tag.NumberTotalSplit, so it matches the canonical model and restoreUnstorableSlots,
+// not a lenient cut on the first '/'.
 func resolvePairSlots(ts tag.TagSet, numKey, totKey tag.Key) (numPart, totPart string) {
 	numStr, _ := ts.First(numKey)
 	totStr, _ := ts.First(totKey)
@@ -534,22 +530,20 @@ func resolvePairSlots(ts tag.TagSet, numKey, totKey tag.Key) (numPart, totPart s
 }
 
 // appendDroppedPair adds the dropped slot(s) of one trkn/disk pair. It resolves the two
-// slots via resolvePairSlots (shared with appendCoercedPair) so drop and coercion name
-// the same slots the encoder reads.
+// slots via resolvePairSlots, so the report names the same slots the encoder reads.
 func appendDroppedPair(out []droppedValue, ts tag.TagSet, numKey, totKey tag.Key) []droppedValue {
 	numPart, totPart := resolvePairSlots(ts, numKey, totKey)
-	// decodePair drops a literal 0 in EITHER slot on read (its num>0/total>0 guards treat
-	// 0 as unset), so a 0 written to a slot never round-trips - report it per slot, not
+	// decodePair drops a literal 0 in either slot on read (its num>0/total>0 checks treat
+	// 0 as unset), so a 0 written to a slot never round-trips. Report it per slot, not
 	// only when the whole pair collapses to absent.
 	out = appendSlotDrop(out, numKey, numPart)
 	out = appendSlotDrop(out, totKey, totPart)
 	return out
 }
 
-// appendSlotDrop records one trkn/disk slot the encoder would lose: either a value the
-// uint16 atom cannot represent, or a literal 0 (which decodePair drops on read, so it
-// never round-trips - MP4 keeps its 0-as-unset write semantics, this only makes the
-// loss visible).
+// appendSlotDrop records one trkn/disk slot the encoder would lose: a value the uint16
+// atom cannot represent, or a literal 0, which decodePair drops on read so it never
+// round-trips. MP4 keeps its 0-as-unset write semantics; this only reports the loss.
 func appendSlotDrop(out []droppedValue, key tag.Key, slot string) []droppedValue {
 	switch {
 	case uint16ValueDropped(slot):
@@ -597,9 +591,8 @@ func uint16ValueDropped(s string) bool {
 // order restoreUnstorableSlots scans them.
 var pairSlotKeys = []tag.Key{tag.TrackNumber, tag.TrackTotal, tag.DiscNumber, tag.DiscTotal}
 
-// restoreUnstorableSlots returns a copy of edited with any fixed-width slot whose
-// edited value is genuinely unstorable restored from base, plus whether any slot was
-// restored.
+// restoreUnstorableSlots returns a copy of edited with any fixed-width slot whose edited
+// value is unstorable restored from base, plus whether any slot was restored.
 func restoreUnstorableSlots(base, edited tag.TagSet) (tag.TagSet, bool) {
 	out := edited
 	restored := false
@@ -640,7 +633,7 @@ func numberComponentDropped(k tag.Key) func(string) bool {
 
 // vocabValueDropped builds the value-drop predicate for a vocabulary atom such as stik or
 // cpil. The transfer layer passes raw values for these keys, so trim here and exempt empty
-// values, which intentionally store nothing.
+// values, which store nothing.
 func vocabValueDropped(k tag.Key, valid func(tag.Key, string) bool) func(string) bool {
 	return func(val string) bool {
 		v := strings.TrimSpace(val)
@@ -663,7 +656,7 @@ var (
 
 // bpmValueCoerced reports whether a valid BPM value is stored in a normalized form: the
 // tmpo atom holds a whole number, so a fraction rounds to nearest, and the warning
-// fires only when rounding changes the numeric value ("174.99" -> "175" is coerced;
+// fires only when rounding changes the numeric value ("174.99" -> "175" is coerced).
 func bpmValueCoerced(val string) (stored string, coerced bool) {
 	stored, roundChanged, ok := tag.BPMStoredWhole(val)
 	if !ok || !roundChanged {

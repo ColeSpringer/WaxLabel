@@ -45,8 +45,8 @@ func TestMP4MvexWithoutFragmentsIsWritable(t *testing.T) {
 	if got := mustParseBytes(t, out).Fields().Title; got != "A substantially longer title that grows the ilst" {
 		t.Errorf("re-parsed Title = %q", got)
 	}
-	// The real regression guard: a re-parse would succeed even with a broken offset, so
-	// assert the chunk offset still resolves to the mdat payload after the grow.
+	// A re-parse would succeed even with a broken offset, so assert the chunk offset still
+	// resolves to the mdat payload after the grow.
 	if mdat, stco := mp4Index(t, out); mdat != stco {
 		t.Errorf("stco entry = %d, want the mdat payload offset %d", stco, mdat)
 	}
@@ -64,10 +64,9 @@ func TestMP4FragmentedReadable(t *testing.T) {
 
 func TestMP4FragmentedWriteRefused(t *testing.T) {
 	data := mp4Fragmented("Fragged")
-	// The chapter arm guards against anyone later dropping Chapters.Write to AccessNone
-	// for a read-only file: the editor would then refuse with ErrUnsupportedTag and
-	// "chapters cannot be written to an MP4 file" before Plan ever runs, replacing the
-	// precise refusal with a wrong sentinel and a false claim about the format.
+	// The chapter arm covers Chapters.Write being dropped to AccessNone for a read-only file:
+	// the editor would then refuse with ErrUnsupportedTag and "chapters cannot be written to an
+	// MP4 file" before Plan runs, a wrong sentinel and a false claim about the format.
 	cases := map[string]func(*wl.Editor) *wl.Editor{
 		"tag edit": func(e *wl.Editor) *wl.Editor { return e.Set(tag.Title, "Edited") },
 		"chapter edit": func(e *wl.Editor) *wl.Editor {
@@ -101,9 +100,9 @@ func TestMP4FragmentedNoOpCopiesVerbatim(t *testing.T) {
 }
 
 func TestMP4FragmentedSegmentUnsupported(t *testing.T) {
-	// A fragmented media segment has no movie box by design. The ftyp is mandatory here:
-	// Sniff requires it, so without one the file never reaches the MP4 codec and the test
-	// would pass for the wrong reason.
+	// A fragmented media segment has no movie box. The ftyp is mandatory here: Sniff requires
+	// it, so without one the file never reaches the MP4 codec and the test would pass for the
+	// wrong reason.
 	data := slices.Concat(
 		mp4Ftyp(),
 		mp4Atom("styp", []byte("msdh\x00\x00\x00\x00msdhmsix")),
@@ -114,17 +113,16 @@ func TestMP4FragmentedSegmentUnsupported(t *testing.T) {
 	if !errors.Is(err, waxerr.ErrUnsupportedFormat) {
 		t.Fatalf("segment parse error = %v, want ErrUnsupportedFormat", err)
 	}
-	// Not invalid-data: the segment is well-formed, it just carries no moov, so it must
-	// keep the exit-3 classification rather than reading as a corrupt file.
+	// Not invalid-data: the segment is well-formed but carries no moov, so it must keep the
+	// exit-3 classification rather than reading as a corrupt file.
 	if errors.Is(err, waxerr.ErrInvalidData) {
 		t.Errorf("a well-formed segment must not classify as invalid data: %v", err)
 	}
 }
 
 func TestMP4UnwritableFilesReportReadOnly(t *testing.T) {
-	// Every shape Plan refuses outright must also report ReadOnly, so the capability
-	// matches what a write would do. A file that claimed to be writable and then failed
-	// in Plan would break the report==result invariant the Codec contract states.
+	// Every shape Plan refuses outright must also report ReadOnly, so the capability matches
+	// what a write would do; the Codec contract states the report==result invariant.
 	cases := map[string][]byte{
 		"fragmented":   mp4Fragmented("Fragged"),
 		"iloc":         mp4IlocFile(),
@@ -136,7 +134,7 @@ func TestMP4UnwritableFilesReportReadOnly(t *testing.T) {
 			if !doc.Capabilities().ReadOnly {
 				t.Error("an unwritable file should report ReadOnly")
 			}
-			// Confirm the pairing rather than assume it: the write really is refused.
+			// Confirm the pairing: the write is refused.
 			if _, err := doc.Edit().Set(tag.Title, "Edited longer title to force a grow").Prepare(); err == nil {
 				t.Error("expected the write to be refused")
 			}
@@ -150,9 +148,8 @@ func TestMP4UnwritableFilesReportReadOnly(t *testing.T) {
 }
 
 func TestMP4UnwritableDestinationDropsTransfer(t *testing.T) {
-	// With ReadOnly reported, a transfer onto such a file reports clean per-item drops AND returns the
-	// codec's own refusal: the report says what could not be carried, the error says the write will not
-	// happen.
+	// A transfer onto a ReadOnly file reports per-item drops and returns the codec's own refusal:
+	// the report says what could not be carried, the error says the write will not happen.
 	src := mustParseBytes(t, mp4Tagged(mp4Text("\xa9nam", "Source Title")))
 	for name, data := range map[string][]byte{"iloc": mp4IlocFile(), "unknown saio": mp4UnknownSaioFile()} {
 		t.Run(name, func(t *testing.T) {
@@ -172,10 +169,9 @@ func TestMP4UnwritableDestinationDropsTransfer(t *testing.T) {
 }
 
 func TestMP4FragmentedTransferDropsEverything(t *testing.T) {
-	// The first real exercise of ReadOnly: true. A read-only destination drops every item and the
-	// transfer is refused with the codec's own error. ErrFragmented here, not the generic
-	// unsupported-format the iloc/saio cases give, since the two are distinct exit-code rows and
-	// flattening them would lose the reason.
+	// A read-only destination drops every item and the transfer is refused with the codec's own
+	// error: ErrFragmented here, not the generic unsupported-format the iloc/saio cases give,
+	// since the two are distinct exit-code rows.
 	src := mustParseBytes(t, mp4Tagged(
 		mp4Text("\xa9nam", "Source Title"),
 		mp4Text("\xa9ART", "Source Artist"),
@@ -236,8 +232,8 @@ func mp4IlocFile() []byte {
 }
 
 func TestMP4IlocRefusedAtEveryPlacement(t *testing.T) {
-	// An iloc's extents are absolute file offsets that nothing patches, so ANY rewrite that moves bytes
-	// strands them; not only one sharing the moov.udta.meta this codec replaces.
+	// An iloc's extents are absolute file offsets that nothing patches, so any rewrite that moves
+	// bytes strands them, not only one sharing the moov.udta.meta this codec replaces.
 	tagged := mp4Tagged(mp4Text("\xa9nam", "T"))
 	cases := map[string][]byte{
 		"moov.udta.meta": mp4IlocFile(),

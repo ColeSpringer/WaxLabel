@@ -8,9 +8,8 @@ import (
 // ebml.go. Values (SeekPosition, CueClusterPosition) are plain big-endian unsigned
 // integers, not VINTs.
 
-// idBytes returns an element ID's on-wire bytes. The ID already carries its
-// length-descriptor bits, so its magnitude fixes the byte count (0x80-0xFE => 1
-// byte ... a 4-byte ID => 4), mirroring how readVINT(keepMarker=true) decoded it.
+// idBytes returns an element ID's on-wire bytes. The ID carries its length-descriptor
+// bits, so its magnitude fixes the byte count, as readVINT(keepMarker=true) decoded it.
 func idBytes(id uint64) []byte {
 	switch {
 	case id <= 0xFF:
@@ -63,9 +62,9 @@ func sizeVINTWidthOK(n uint64, width int) ([]byte, bool) {
 	return b, true
 }
 
-// uintData encodes v as a big-endian unsigned integer in minWidth..8 bytes,
-// widening only as needed. EBML integers are plain (no marker bit); this is the
-// payload of a uint element or of a SeekPosition/CueClusterPosition.
+// uintData encodes v as a minimal-width big-endian unsigned integer (1-8 bytes).
+// EBML integers carry no marker bit; this is the payload of a uint element or of a
+// SeekPosition/CueClusterPosition.
 func uintData(v uint64) []byte {
 	w := 1
 	for t := v >> 8; t != 0; t >>= 8 {
@@ -74,9 +73,8 @@ func uintData(v uint64) []byte {
 	return uintDataWidth(v, w)
 }
 
-// uintDataWidth encodes v as a big-endian integer in exactly width bytes, or
-// nil if it does not fit - used to patch a position in place at its original
-// width so the surrounding element keeps its size.
+// uintDataWidth encodes v as a big-endian integer in exactly width bytes, or nil if
+// it does not fit. It patches a position in place at its original width.
 func uintDataWidth(v uint64, width int) []byte {
 	if width < 1 || width > 8 {
 		return nil
@@ -110,16 +108,14 @@ func uintElement(id, v uint64) []byte { return encElement(id, uintData(v)) }
 func stringElement(id uint64, s string) []byte { return encElement(id, []byte(s)) }
 
 // crcElement renders a CRC-32 element (ID 0xBF, 4-byte little-endian value) over
-// content. Matroska's CRC-32 is the IEEE polynomial (zlib's crc32) stored
-// little-endian - verified against the real fixtures' stored CRCs.
+// content. Matroska's CRC-32 is the IEEE polynomial (zlib's crc32), little-endian.
 func crcElement(content []byte) []byte {
 	sum := crc32.ChecksumIEEE(content)
 	return []byte{idCRC32 & 0xFF, 0x84, byte(sum), byte(sum >> 8), byte(sum >> 16), byte(sum >> 24)}
 }
 
-// withCRC prepends a CRC-32 element computed over payload, returning the master
-// element's content (CRC element ++ payload) - the form mkvmerge writes, where
-// the CRC covers everything in the master after itself.
+// withCRC prepends a CRC-32 element computed over payload, giving the master element's
+// content (CRC ++ payload). As in mkvmerge, the CRC covers everything after itself.
 func withCRC(payload []byte) []byte {
 	crc := crcElement(payload)
 	out := make([]byte, 0, len(crc)+len(payload))
@@ -128,9 +124,8 @@ func withCRC(payload []byte) []byte {
 	return out
 }
 
-// masterElement builds a master element from rendered children, optionally
-// guarded by a leading CRC-32 (when the source element carried one, so the
-// rewrite preserves that integrity convention).
+// masterElement builds a master element from rendered children, with a leading CRC-32
+// when crc is set (the source element carried one).
 func masterElement(id uint64, children []byte, crc bool) []byte {
 	if crc {
 		return encElement(id, withCRC(children))

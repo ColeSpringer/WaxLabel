@@ -7,9 +7,9 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// SBR probe reads a window of frames, but a caller with a small MaxAllocBytes must still get a
-// parsed file. The probe shrinks to the limit instead of failing the read, so the geometry may fall
-// back to the core coder's while the parse itself always succeeds.
+// The SBR probe reads a window of frames, but a caller with a small MaxAllocBytes must still get
+// a parsed file. The probe shrinks to the limit, so the geometry may fall back to the core coder's
+// while the parse itself succeeds.
 func TestAACParsesUnderSmallAllocLimit(t *testing.T) {
 	data := readFixture(t, heaacAAC)
 	for _, limit := range []int64{1024, 4096, 65536} {

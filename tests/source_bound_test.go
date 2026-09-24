@@ -12,8 +12,7 @@ import (
 )
 
 // exact ingest boundary: a stream of exactly the limit still parses (the read buffers limit+1 and
-// compares, so len == limit passes), while one byte past the limit fails with ErrInputTooLarge
-// rather than being silently truncated and misparsed.
+// compares, so len == limit passes), while one byte past the limit fails with ErrInputTooLarge.
 func TestOpenSourceMaxSourceBytesBoundary(t *testing.T) {
 	src := readFixture(t, sampleFLAC)
 	size := int64(len(src))

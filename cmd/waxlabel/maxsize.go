@@ -106,8 +106,8 @@ func parseByteSizeExact(s string) (int64, error) {
 }
 
 // unitMultiplier maps a size unit suffix to its byte multiplier. Empty/"B" = 1;
-// K/M/G/T or *iB = binary (1024); KB/MB/... = decimal (1000). Listed explicitly
-// so the accepted set is obvious. Binary matches HumanBytes magnitudes.
+// K/M/G/T or *iB = binary (1024); KB/MB/... = decimal (1000). Binary matches
+// HumanBytes magnitudes.
 func unitMultiplier(u string) (int64, error) {
 	switch strings.ToLower(u) {
 	case "", "b":

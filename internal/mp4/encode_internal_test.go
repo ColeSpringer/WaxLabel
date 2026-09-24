@@ -8,9 +8,9 @@ import (
 )
 
 // TestDroppedValues checks that droppedValues names exactly the canonical keys an MP4
-// write cannot store without mutation. "1/2/3" or "3/abc") is not a storable
-// number/total: it is kept whole and dropped against the number slot, never split into
-// a phantom TRACKTOTAL.
+// write cannot store without mutation. A malformed slashed value ("1/2/3" or "3/abc")
+// is kept whole and dropped against the number slot, never split into a phantom
+// TRACKTOTAL.
 func TestDroppedValues(t *testing.T) {
 	cases := []struct {
 		name string
@@ -76,7 +76,7 @@ func TestBoolItemDropsEmpty(t *testing.T) {
 }
 
 // TestRestoreUnstorablePairSlots pins the gate for preserving a good existing trkn/disk
-// value when an edit makes a slot genuinely unstorable: it restores from base only when
+// value when an edit makes a slot unstorable: it restores from base only when
 // the edited value is unstorable AND base holds a storable, present value.
 func TestRestoreUnstorablePairSlots(t *testing.T) {
 	cases := []struct {

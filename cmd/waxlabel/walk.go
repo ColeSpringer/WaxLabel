@@ -104,18 +104,15 @@ func parseInput(ctx context.Context, realPath, origPath string, extra ...wl.Pars
 }
 
 // expandPaths with --recursive walks directories for known-audio extensions. Files and "-"
-// pass through in order. Stat/walk failures stay for the per-file loop.
+// pass through in order. Without --recursive, directories and named FIFO/device/socket stay
+// in the list with errors in pathErrors. The caller checks pathErrors first: bad paths fail
+// per-element and good inputs still run. FIFOs are recorded, not opened: os.Open on a FIFO
+// blocks. Stat and walk failures are per-path; only invocation-level failures return err.
 //
-// Without --recursive, directories and named FIFO/device/socket stay in the list with errors
-// in pathErrors. Caller checks pathErrors first: bad paths fail per-element; good inputs still run.
-// FIFOs must be recorded, not opened: os.Open on a FIFO blocks.
-// Only invocation-level failures return err and abort.
-//
-// skipped: regular files with unknown extensions. leftovers: stale temp files from interrupted writes.
-// Both surfaced as text-mode notes. Zero without --recursive.
+// skipped counts regular files with unknown extensions; leftovers counts stale temp files from
+// interrupted writes. Both are text-mode notes and zero without --recursive.
 func expandPaths(paths []string, recursive bool) (expanded []string, skipped, leftovers int, pathErrors map[string]error, err error) {
-	// Exit 2 before stat so empty operands cannot become ErrInvalidData and outrank real not-found.
-	// Only invocation-level abort here; rest is per-path.
+	// Exit 2 before stat so empty operands cannot become ErrInvalidData and outrank not-found.
 	if err := checkEmptyOperands(paths...); err != nil {
 		return nil, 0, 0, nil, err
 	}
@@ -244,7 +241,7 @@ func checkRegularInputs(realOf func(string) string, acceptsStdin bool, args ...s
 }
 
 // checkEmptyOperands: empty path is exit 2. Shared by expandPaths and copy/diff.
-// Prevents ErrInvalidData from outranking real not-found. "-" is valid.
+// Prevents ErrInvalidData from outranking not-found. "-" is valid.
 func checkEmptyOperands(paths ...string) error {
 	for _, p := range paths {
 		if p == "" {

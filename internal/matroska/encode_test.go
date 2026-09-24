@@ -50,7 +50,7 @@ func TestRenderInfoOverlongCRCVINT(t *testing.T) {
 	ts := uintElement(idTimestampScl, 1000000)
 	body := append(append([]byte{}, title...), ts...)
 	// CRC element with an overlong 2-byte size VINT (0x40 0x04) encoding length 4,
-	// its value correct over the body that follows it - a real-file shape.
+	// its value valid over the body that follows it, as in real files.
 	sum := crc32.ChecksumIEEE(body)
 	crcEl := []byte{idCRC32 & 0xFF, 0x40, 0x04, byte(sum), byte(sum >> 8), byte(sum >> 16), byte(sum >> 24)}
 	content := append(append([]byte{}, crcEl...), body...)
@@ -170,9 +170,8 @@ func TestVoidOfTotal(t *testing.T) {
 	}
 }
 
-// TestAttachedFileUID confirms a written cover carries the mandatory FileUID, that it
-// is non-zero, and that it is random (distinct across renders) - a collision across 64
-// bits is negligible.
+// TestAttachedFileUID confirms a written cover carries the mandatory FileUID, non-zero
+// and distinct across renders.
 func TestAttachedFileUID(t *testing.T) {
 	pic := core.Picture{Type: core.PicFrontCover, MIME: "image/png", Data: []byte("cover-bytes")}
 	b0, _ := attachedFileBytes(pic, "cover.png")
@@ -222,8 +221,7 @@ func preserveDecisions(d *doc, keys ...tag.Key) *editDecisions {
 }
 
 // TestCheckPreservable: an edit is refused when an element the writer must copy
-// verbatim could not be captured (raw==nil from an over-limit size), rather than
-// silently dropping it.
+// verbatim was not captured (raw==nil from an over-limit size).
 func TestCheckPreservable(t *testing.T) {
 	// A non-album group whose bytes weren't captured. It carries no edited key, so
 	// it takes the verbatim path and needs its whole-element raw.
@@ -248,10 +246,9 @@ func TestCheckPreservable(t *testing.T) {
 		t.Errorf("fully-captured doc should pass: %v", err)
 	}
 
-	// A track group carrying an edited key (ENCODER) is re-rendered, not preserved: its
-	// surviving SimpleTag's raw must have been captured, even though the group's
-	// whole-element raw is nil (a large group whose dropped key shrank it under the
-	// limit).
+	// A track group carrying an edited key (ENCODER) is re-rendered: its surviving
+	// SimpleTag's raw must be captured even when the group's whole-element raw is nil
+	// (a large group whose dropped key shrank it under the limit).
 	rerender := &doc{groups: []tagGroup{
 		{scope: core.ScopeAlbum, raw: []byte{1}},
 		{scope: core.ScopeTrack, trackUID: true, raw: nil, targetsRaw: []byte{1}, tags: []simpleTag{
@@ -275,7 +272,7 @@ func TestCheckPreservable(t *testing.T) {
 		t.Error("re-rendered scope-narrowing group with uncaptured Targets should be refused")
 	}
 	// A re-rendered group where every SimpleTag is dropped needs neither the
-	// surviving-tag raws nor the Targets - it disappears entirely.
+	// surviving-tag raws nor the Targets; it disappears entirely.
 	emptied := &doc{groups: []tagGroup{
 		{scope: core.ScopeAlbum, raw: []byte{1}},
 		{scope: core.ScopeTrack, trackUID: true, raw: nil, targetsRaw: nil, tags: []simpleTag{
@@ -345,9 +342,9 @@ func TestMatroskaNameRoundTrip(t *testing.T) {
 	}
 }
 
-// Creating an album-scope Tag must emit the schema-mandatory Targets child. Strict
-// validators reject a Tag without Targets, and the returned tagGroup should match a
-// fresh parse of the rendered bytes.
+// TestBuildAlbumGroupEmitsTargets: a created album-scope Tag carries the mandatory
+// Targets child (strict validators reject a Tag without one), and the returned
+// tagGroup matches a fresh parse of the rendered bytes.
 func TestBuildAlbumGroupEmitsTargets(t *testing.T) {
 	base := tag.NewTagSet()
 	edited := tag.NewTagSet()

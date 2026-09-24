@@ -8,11 +8,10 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// apicHeader cuts an APIC frame body into its header fields and the remaining image
-// payload. The payload is returned as a sub-slice, not copied. Layout:
-// encoding(1) MIME(Latin-1, NUL-terminated) type(1) description(encoded, terminated)
-// data. It is the shared structural parse behind decodeAPIC (which clones and sniffs
-// the payload) and validAPIC (which does neither).
+// apicHeader cuts an APIC frame body into its header fields and the image payload, as a
+// sub-slice. Layout: encoding(1) MIME(Latin-1, NUL-terminated) type(1) description(encoded,
+// terminated) data. decodeAPIC (which clones and sniffs the payload) and validAPIC (which
+// does neither) share it.
 func apicHeader(body []byte) (enc byte, mime string, ptype byte, desc string, rest []byte, ok bool) {
 	if len(body) < 4 {
 		return 0, "", 0, "", nil, false
@@ -35,9 +34,16 @@ func apicHeader(body []byte) (enc byte, mime string, ptype byte, desc string, re
 	return enc, mime, ptype, desc, rest, true
 }
 
-// cutDescription splits description from image bytes. Missing terminator would
-// land inside image data (PNG has NUL at offset 8); uses declared MIME to bound.
-
+// cutDescription splits a picture frame's description from its image. A missing terminator
+// puts the image's own bytes where the description should end, so a split at the first
+// terminator lands inside the image: a PNG carries a NUL at offset 8, in the IHDR length.
+// declared is the type the frame claims (an APIC MIME, a PIC format's MIME), read through
+// canonicalPictureMIME so the spellings real taggers write still count. A terminated frame
+// keeps its split unless the bytes after it are not an image while the whole remainder is
+// an image of exactly the declared type; requiring the match keeps a description that
+// begins with a weak signature (a bare "BM") from being eaten. An unterminated frame has
+// no competing reading, so any recognizable image wins. ok is false only when no
+// terminator exists and rest is not an image.
 func cutDescription(enc byte, declared string, rest []byte) (desc string, data []byte, ok bool) {
 	desc, data, ok = cutEncoded(enc, rest)
 	if ok {
@@ -56,16 +62,11 @@ func cutDescription(enc byte, declared string, rest []byte) (desc string, data [
 }
 
 // decodeAPIC decodes an APIC frame body into a Picture. A malformed frame yields ok=false
-// and is preserved opaque.
-//
-// The trimmed declared MIME is passed straight through (including the "-->" URL-link
-// sentinel, which core.LinkMIME keeps out of the sniff so the frame round-trips) rather than
-// coercing a blank MIME to "image/" - that read-side coercion is dropped so an authoritative
-// sniff can speak for the bytes. SniffAuthoritative then lets recognizable bytes win over a
-// mislabeled or blank declaration (a JPEG under a bogus MIME reads as image/jpeg), and
-// degrades any other declaration over unrecognizable bytes to UnrecognizedMIME rather than
-// the old blank->"image/". encodeAPIC still re-adds "image/" for an empty MIME at write, so
-// a round-trip of a genuinely blank declaration is unaffected.
+// and is preserved opaque. The trimmed declared MIME passes straight through, including
+// the "-->" URL-link sentinel that core.LinkMIME keeps out of the sniff. SniffAuthoritative
+// then lets recognizable bytes win over a mislabeled or blank declaration (a JPEG under a
+// bogus MIME reads as image/jpeg) and degrades any other declaration over unrecognizable
+// bytes to UnrecognizedMIME. encodeAPIC re-adds "image/" for an empty MIME at write.
 func decodeAPIC(body []byte) (core.Picture, bool) {
 	_, mime, ptype, desc, rest, ok := apicHeader(body)
 	if !ok {
@@ -136,11 +137,9 @@ func convertPICtoAPIC(body []byte) []byte {
 }
 
 // canonicalPictureMIME folds a declared picture type onto the MIME the sniffer reports for
-// those bytes, so a comparison against a sniff is not defeated by the spellings real taggers
-// write: "image/jpg" and "JPEG" for a JPEG, "PNG" with no type at all, an upper-cased type,
-// a parameter after a semicolon. A declaration it does not recognize returns "", which
-// matches no sniff - the point of the comparison is a declaration that agrees with the
-// bytes, and one nothing can place agrees with nothing.
+// those bytes, so a comparison against a sniff survives the spellings real taggers write:
+// "image/jpg", "JPEG", a bare "PNG", an upper-cased type, a parameter after a semicolon.
+// An unrecognized declaration returns "", which matches no sniff.
 func canonicalPictureMIME(declared string) string {
 	s := strings.ToLower(strings.TrimSpace(declared))
 	if i := strings.IndexByte(s, ';'); i >= 0 {
@@ -193,11 +192,10 @@ func cutLatin1(b []byte) (string, []byte, bool) {
 	return "", nil, false
 }
 
-// cutEncoded reads a terminated string in the given encoding, returning it and
-// the bytes after the terminator. A missing terminator consumes the rest (the
-// description is the final terminated field before binary data, so a well-formed
-// frame always has one). It uses fresh byte-order state, so standalone terminated fields
-// such as APIC and v2.2 PIC descriptions decode by their own BOM.
+// cutEncoded reads a terminated string in the given encoding, returning it and the bytes
+// after the terminator; with no terminator it returns ok=false and b as the remainder. It
+// uses fresh byte-order state, so standalone fields such as APIC and v2.2 PIC descriptions
+// decode by their own BOM.
 func cutEncoded(enc byte, b []byte) (string, []byte, bool) {
 	return cutEncodedTracked(enc, b, &utf16Order{})
 }

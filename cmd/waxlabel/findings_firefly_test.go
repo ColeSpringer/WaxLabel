@@ -137,7 +137,7 @@ func TestDiffNumericSignLeadingZeroNotAChange(t *testing.T) {
 	}
 }
 
-// TestDiffNumericFoldScopedToNumberSlotsAndCrossFormat: same-format leading-zero delta is real;
+// TestDiffNumericFoldScopedToNumberSlotsAndCrossFormat: same-format leading-zero delta is a change;
 // cross-format fold applies only to track/disc slots MP4 canonicalizes.
 func TestDiffNumericFoldScopedToNumberSlotsAndCrossFormat(t *testing.T) {
 	// Same format: 03 vs 3 stored verbatim; must report change.
@@ -157,7 +157,7 @@ func TestDiffNumericFoldScopedToNumberSlotsAndCrossFormat(t *testing.T) {
 		t.Errorf("same-format 03 vs 3 must report a TRACKNUMBER change (both stored verbatim)\n%s", out)
 	}
 
-	// Cross-format PLAYCOUNT: no canonicalization; 007 vs 7 is a real change.
+	// Cross-format PLAYCOUNT: no canonicalization; 007 vs 7 is a change.
 	fl := copyFixture(t, td("notags.flac"))
 	m4 := copyFixture(t, td("notags.m4a"))
 	if _, _, code := runCLI(t, "set", fl, "--set", "PLAYCOUNT=007", "-q"); code != 0 {

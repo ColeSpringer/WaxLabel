@@ -9,9 +9,9 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// Matroska chapters live in a Chapters element, a small tree: Chapters > EditionEntry >
-// ChapterAtom Each EditionEntry is one independent chapter set; the edition flagged
-// default (or the first, when none is flagged) projects into core.Media.Chapters.
+// Matroska chapters form a small tree: Chapters > EditionEntry > ChapterAtom. Each
+// EditionEntry is one independent chapter set; the edition flagged default (or the
+// first, when none is flagged) projects into core.Media.Chapters.
 
 // chapterDoc is the parsed Chapters element retained on the native doc for the
 // dump view, verbatim preservation, and re-rendering on a chapter edit.
@@ -76,7 +76,7 @@ func parseChapters(src core.ReaderAtSized, chapters element, depth *bits.Depth, 
 		cd.defIdx = 0 // no edition flagged default: the first one is the default
 	}
 	// The default edition is re-rendered on an edit, never copied verbatim, so its
-	// captured bytes are dead weight on the retained document - drop them.
+	// captured bytes are not needed.
 	cd.editions[cd.defIdx].raw = nil
 	// SetChapters stable-sorts by start; ordering the projection the same way makes
 	// SetChapters(doc.Chapters()...) a no-op even when the source stored atoms out of
@@ -140,7 +140,7 @@ func parseChapterAtom(src core.ReaderAtSized, atom element, depth *bits.Depth, l
 		case idChapDisplay:
 			displays++
 			if displays > 1 {
-				return nil // a second display is an other-language title we cannot carry
+				return nil // a second display is an other-language title the flat model cannot carry
 			}
 			title, lang, langIETF, dispLossy, err := readChapterDisplay(src, el, depth, limit)
 			if err != nil {
@@ -154,10 +154,8 @@ func parseChapterAtom(src core.ReaderAtSized, atom element, depth *bits.Depth, l
 			// Structural framing, not chapter data: a re-render recomputes its own CRC and
 			// drops padding, so neither is a content loss.
 		default:
-			// Any other unmodeled ChapterAtom child (ChapterSegmentUID, ChapProcess,
-			// ChapterTrack, ...) the flat model cannot carry: flag it lossy so the flatten
-			// warning covers the whole silent-loss class, not just nested atoms and
-			// multi-language displays.
+			// Any other ChapterAtom child (ChapterSegmentUID, ChapProcess, ChapterTrack, ...)
+			// is unmodeled, so the flatten warning covers it too.
 			lossy = true
 		}
 		return nil
@@ -171,8 +169,8 @@ func parseChapterAtom(src core.ReaderAtSized, atom element, depth *bits.Depth, l
 }
 
 // readChapterDisplay reads one ChapterDisplay: the first ChapString title, the
-// ChapLanguage (ISO-639-2), and the ChapLanguageIETF (BCP-47). ChapCountry) the flat
-// model cannot hold, so the flatten warning covers it.
+// ChapLanguage (ISO-639-2), and the ChapLanguageIETF (BCP-47). Any other child
+// (ChapCountry, ...) is unmodeled and flagged lossy.
 func readChapterDisplay(src core.ReaderAtSized, disp element, depth *bits.Depth, limit int64) (title, lang, langIETF string, lossy bool, err error) {
 	got := false
 	err = eachChild(src, disp.dataStart, disp.dataEnd, depth, limit, func(el element) error {
@@ -186,9 +184,8 @@ func readChapterDisplay(src core.ReaderAtSized, disp element, depth *bits.Depth,
 			if err != nil {
 				return err
 			}
-			// Sanitize an invalid-UTF-8 title to "" (matching MP4's chpl and the QuickTime
-			// chapter track) so a later --json dump cannot emit raw invalid bytes and every
-			// chapter source behaves the same on read.
+			// An invalid-UTF-8 title reads as "", matching MP4's chpl and the QuickTime chapter
+			// track, so --json never emits raw invalid bytes.
 			if !utf8.ValidString(s) {
 				s = ""
 			}
@@ -204,9 +201,8 @@ func readChapterDisplay(src core.ReaderAtSized, disp element, depth *bits.Depth,
 		}
 		return nil
 	})
-	// Drop a language WaxLabel should not surface or re-emit: invalid UTF-8 (sanitized
-	// like the title, so no raw bytes reach --json/copy) or the "und"/absent default
-	// (which carries no information and would print a spurious "[lang: und]").
+	// Drop a language not worth surfacing or re-emitting: invalid UTF-8, or the "und"
+	// default, which would print a spurious "[lang: und]".
 	lang = normalizeChapLang(lang)
 	langIETF = normalizeChapLang(langIETF)
 	return title, lang, langIETF, lossy, err
@@ -230,10 +226,9 @@ func clampNs(v uint64) int64 {
 	return int64(v)
 }
 
-// chaptersFromRaw parses a standalone Chapters element's bytes back into a chapterDoc
-// and its projected chapters, so buildResult derives the post-write chapter view from
-// the rendered bytes (the seekFromRaw/infoFromRaw pattern) - for every realistic edit
-// this makes the returned Document equal a fresh parse.
+// chaptersFromRaw parses a standalone Chapters element's bytes into a chapterDoc and
+// its projected chapters. buildResult uses it on the rendered bytes (the seekFromRaw
+// pattern) so the returned Document equals a fresh parse.
 func chaptersFromRaw(raw []byte, depth *bits.Depth, limit int64) (*chapterDoc, []core.Chapter) {
 	rs := core.BytesSource(raw)
 	root, ok := readElement(rs, 0, int64(len(raw)), limit)
@@ -292,9 +287,8 @@ func renderDefaultEdition(ed chapterEdition, chs []core.Chapter) []byte {
 	if len(chs) == 0 {
 		return nil
 	}
-	// Size content up front: the prefix plus a per-chapter estimate (UID + start +
-	// end + display framing ~ 48 bytes, plus the title) so the accumulator does not
-	// repeatedly grow.
+	// Size content up front: the prefix plus ~48 bytes per chapter (UID, start, end,
+	// display framing) and its title.
 	size := len(ed.prefix)
 	for _, ch := range chs {
 		size += 48 + len(ch.Title)
@@ -359,15 +353,15 @@ func renderChapterAtom(uid uint64, ch core.Chapter) []byte {
 	// Emit a ChapterDisplay when the chapter has a title OR a modeled language to carry.
 	if ch.Title != "" || ch.Language != "" || ch.LanguageIETF != "" {
 		disp := stringElement(idChapString, ch.Title) // mandatory; an empty string is allowed
-		// ChapLanguage is mandatory; fall back to the spec "und" default when no language
-		// was modeled, which a re-parse normalizes back to "" (so the round-trip is stable).
+		// ChapLanguage is mandatory: write the spec default "und" when none is modeled,
+		// which a re-parse normalizes back to "".
 		lang := ch.Language
 		if lang == "" {
 			lang = "und"
 		}
 		disp = append(disp, stringElement(idChapLang, lang)...)
-		// ChapLanguageIETF only when set - modern mkvmerge writes it, so preserving it keeps
-		// a real file's chapters from re-rendering lossily and tripping the flatten warning.
+		// ChapLanguageIETF only when set. mkvmerge writes it, so dropping it would make a
+		// re-render lossy and trip the flatten warning.
 		if ch.LanguageIETF != "" {
 			disp = append(disp, stringElement(idChapLangIETF, ch.LanguageIETF)...)
 		}

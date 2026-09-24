@@ -58,8 +58,8 @@ type Tags struct {
 	EncodedBy string
 	Encoder   string
 
-	// Contributor-role credits (multivalued). On ID3 the first five ride the
-	// involved-people list (TIPL/IPLS), and Writers rides a TXXX:Writer user frame.
+	// Contributor-role credits (multivalued). On ID3 the first five map to the
+	// involved-people list (TIPL/IPLS); Writers is a TXXX:Writer user frame.
 	Producers []string
 	Engineers []string
 	Mixers    []string
@@ -227,8 +227,8 @@ func Project(ts TagSet) Tags {
 
 	t.TrackNumber, t.TrackTotal = ParseNumPair(first(TrackNumber), first(TrackTotal))
 	t.DiscNumber, t.DiscTotal = ParseNumPair(first(DiscNumber), first(DiscTotal))
-	// Match ParseNumPair's convention (trim surrounding whitespace, every error including
-	// overflow yields 0) rather than leaving PlayCount at strconv.Atoi's partial 0 on error.
+	// Match ParseNumPair: trim surrounding whitespace, and every error, overflow included,
+	// yields 0 rather than strconv.Atoi's partial value.
 	if pc, err := strconv.Atoi(strings.TrimSpace(first(PlayCount))); err == nil {
 		t.PlayCount = pc
 	} else {
@@ -362,9 +362,8 @@ func (t Tags) Patch() TagPatch {
 
 // ParseNumPair resolves a "number" and "total" pair (e.g. track or disc
 // numbering). The number field may use the "n/total" convention; an explicit
-// total field wins if present. Surrounding whitespace is ignored. It is exported
-// so codecs that store numbering as a structured pair (e.g. MP4 trkn/disk) parse
-// the canonical strings the same way the typed projection does.
+// total wins. Surrounding whitespace is ignored. Exported so codecs that store a
+// structured pair (MP4 trkn/disk) parse the canonical strings as the projection does.
 func ParseNumPair(num, total string) (n, tot int) {
 	// atoi parses a trimmed int and treats every error as 0, including
 	// out-of-range overflow.
@@ -389,15 +388,13 @@ func ParseNumPair(num, total string) (n, tot int) {
 	return n, tot
 }
 
-// Fold normalizes a string for case- and space-insensitive comparison
-// (lowercased, surrounding whitespace trimmed). It is the canonical fold rule for
-// the whole tree: [core.Fold] delegates to it (core imports tag, not the reverse),
-// so codecs that import core and the tag package's own callers fold identically.
+// Fold lowercases s and trims surrounding whitespace, for case- and
+// space-insensitive comparison. [core.Fold] delegates to it (core imports tag,
+// not the reverse), so every caller in the tree folds identically.
 func Fold(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 
-// DistinctValues counts the case- and space-insensitive distinct values in vals,
-// folding each through [Fold]. Dump duplicate markers and codec family-conflict
-// checks both use this rule, so they agree on what counts as the same value.
+// DistinctValues counts the distinct values in vals after [Fold]. Dump duplicate
+// markers and codec family-conflict checks share it.
 func DistinctValues(vals []string) int {
 	seen := make(map[string]bool, len(vals))
 	for _, v := range vals {
@@ -407,11 +404,10 @@ func DistinctValues(vals []string) int {
 }
 
 // SplitNumberTotal splits a "number/total" value (e.g. "3/12") on the first '/'
-// into its trimmed number and total substrings. Unlike [ParseNumPair] it preserves
-// the exact substrings - leading zeros and all - rather than renumbering to ints, so
-// it suits a write/edit normalization that must not silently rewrite the value. Each
-// side is "" when absent or blank ("3/" -> "3",""; "/12" -> "","12"). It is the
-// single substring split shared by the ID3 read path and the edit-time pair split.
+// into its trimmed number and total substrings. Unlike [ParseNumPair] it keeps the
+// exact substrings, leading zeros included, so an edit-time normalization does not
+// rewrite the value. Either side is "" when absent or blank ("3/" -> "3",""; "/12"
+// -> "","12"). The ID3 read path and the edit-time pair split share it.
 func SplitNumberTotal(v string) (num, total string) {
 	num, total, _ = strings.Cut(v, "/")
 	return strings.TrimSpace(num), strings.TrimSpace(total)
@@ -419,8 +415,7 @@ func SplitNumberTotal(v string) (num, total string) {
 
 // TotalKey returns the canonical "total" companion for a numbering key:
 // [TrackNumber] -> [TrackTotal], [DiscNumber] -> [DiscTotal]. Any other key is
-// returned unchanged. It is the single number->total mapping shared by the codecs
-// and the edit-time numbering split so the sites cannot drift.
+// returned unchanged. The codecs and the edit-time numbering split share it.
 func TotalKey(k Key) Key {
 	switch k {
 	case TrackNumber:
@@ -449,7 +444,7 @@ func NormalizeNumberPairs(ts *TagSet) {
 	for _, numKey := range []Key{TrackNumber, DiscNumber} {
 		vals, ok := ts.Get(numKey)
 		if !ok || len(vals) != 1 {
-			continue // absent, or multi-valued (out of scope - never lose a value)
+			continue // absent, or multi-valued (never lose a value)
 		}
 		SplitNumberValue(ts, numKey, vals[0], !ts.Has(TotalKey(numKey)))
 	}
@@ -472,14 +467,12 @@ func SplitNumberValue(ts *TagSet, numKey Key, value string, setTotal bool) {
 	}
 }
 
-// numericKeys are the canonical keys whose typed [Tags] projection is an int, so
-// a non-numeric value does not round-trip through that accessor (it reads 0): the
-// track and disc number/total, and the play count. Rating is excluded (it is a
-// free-form string), and so is MediaType (vocabulary-only, no typed accessor). It
-// backs [IsNumericKey] and the set-time malformed-value note.
-//
-// It is deliberately not [IsMP4CanonicalKey]: this set carries PlayCount and omits MediaType,
-// the reverse of what a 16-bit MP4 atom normalizes, so do not fold the two together.
+// numericKeys are the canonical keys whose typed [Tags] projection is an int, so a
+// non-numeric value reads 0 there: the track and disc number/total, and the play
+// count. Rating (a free-form string) and MediaType (vocabulary-only, no typed
+// accessor) are excluded. It backs [IsNumericKey] and the set-time malformed-value
+// note. It is not [IsMP4CanonicalKey], which omits PlayCount and carries MediaType;
+// do not fold the two together.
 var numericKeys = map[Key]bool{
 	TrackNumber: true,
 	TrackTotal:  true,
@@ -488,9 +481,8 @@ var numericKeys = map[Key]bool{
 	PlayCount:   true,
 }
 
-// dateKeySet is the canonical partial-date keys, kept as a set so [IsDateKey] is
-// the single date-key definition shared by the linter's malformed-date rule and
-// the set-time malformed-value note.
+// dateKeySet is the canonical partial-date keys. [IsDateKey] reads it for the
+// linter's malformed-date rule and the set-time malformed-value note.
 var dateKeySet = map[Key]bool{
 	RecordingDate:   true,
 	ReleaseDate:     true,
@@ -498,11 +490,9 @@ var dateKeySet = map[Key]bool{
 	AcquisitionDate: true,
 }
 
-// booleanKeys is the canonical keys whose value is a boolean flag - Compilation,
+// booleanKeys is the canonical keys whose value is a boolean flag: Compilation,
 // ITunesGapless, and ShowMovement, whose typed [Tags] projections are bools
-// ([ParseBool]). Kept as a set so [IsBooleanKey] is the single boolean-key
-// definition the set-time malformed-value note reads, mirroring
-// numericKeys/dateKeySet.
+// ([ParseBool]). [IsBooleanKey] reads it for the set-time malformed-value note.
 var booleanKeys = map[Key]bool{
 	Compilation:   true,
 	ITunesGapless: true,
@@ -522,22 +512,20 @@ func IsDateKey(k Key) bool { return dateKeySet[k] }
 func IsBooleanKey(k Key) bool { return booleanKeys[k] }
 
 // ValidNumericValue reports whether v is a value the numeric key k accepts
-// without loss. It mirrors [ParseNumPair] exactly so it never flags a value that
-// round-trips: surrounding whitespace is ignored, the pair keys (TrackNumber and
-// DiscNumber) accept the "number/total" convention, and the parse is
-// strconv.Atoi (which accepts a leading sign). A key that is not numeric is
-// reported valid - there is nothing to check.
+// without loss. It mirrors [ParseNumPair], so it never flags a value that
+// round-trips: surrounding whitespace is ignored, TrackNumber and DiscNumber
+// accept the "number/total" convention, and the parse is strconv.Atoi (which
+// accepts a leading sign). A non-numeric key is reported valid.
 func ValidNumericValue(k Key, v string) bool {
 	if !numericKeys[k] {
 		return true
 	}
-	// Only the number fields carry "n/total"; the standalone totals and play count
-	// do not (ParseNumPair splits only the number field).
+	// Only the number fields carry "n/total" (ParseNumPair splits only those).
 	if k == TrackNumber || k == DiscNumber {
 		if num, total, ok := strings.Cut(v, "/"); ok {
-			// A bare "/" (both sides blank) is malformed: a lone slash carries no number,
-			// so it must not pass the validator and let splitNumberPairs delete the key.
-			// One blank side ("3/" or "/2") is still fine - ParseNumPair reads it as 0.
+			// A bare "/" is malformed: it carries no number, and passing it would let
+			// splitNumberPairs delete the key. One blank side ("3/" or "/2") is fine;
+			// ParseNumPair reads it as 0.
 			if strings.TrimSpace(num) == "" && strings.TrimSpace(total) == "" {
 				return false
 			}
@@ -548,20 +536,18 @@ func ValidNumericValue(k Key, v string) bool {
 }
 
 // numComponent reports whether one side of a "number/total" value is acceptable.
-// An empty side ("3/" or "/2") is fine: ParseNumPair runs each side through Atoi
-// and ignores the error, so an empty side parses to 0 and the value round-trips -
-// only a non-empty, non-numeric side is malformed.
+// An empty side ("3/" or "/2") is fine: ParseNumPair reads it as 0, so the value
+// round-trips. Only a non-empty, non-numeric side is malformed.
 func numComponent(s string) bool {
 	return strings.TrimSpace(s) == "" || validInt(s)
 }
 
 // NegativeNumericValue reports whether numeric key k's value v has a negative
 // component. Atoi accepts a leading sign, so such a value round-trips and
-// [ValidNumericValue] accepts it - but a negative track/disc number, total, or play
-// count is semantically odd, so the CLI advises on it (the value is still written).
-// It mirrors ValidNumericValue's structure so the "n/total" pair keys check each
-// side independently: both -3/10 and 3/-10 are caught. A non-numeric key, or a value
-// with no negative component, reports false.
+// [ValidNumericValue] accepts it, but a negative track/disc number, total, or play
+// count is odd, so the CLI advises on it and still writes it. The "n/total" pair
+// keys check each side: both -3/10 and 3/-10 are caught. A non-numeric key reports
+// false.
 func NegativeNumericValue(k Key, v string) bool {
 	if !numericKeys[k] {
 		return false
@@ -575,10 +561,9 @@ func NegativeNumericValue(k Key, v string) bool {
 }
 
 // EmptyNumberWithTotal reports whether v is a valid "number/total" value for TrackNumber or
-// DiscNumber with an empty number side and a numeric total, such as "/5". The value is valid
-// and can be written, but the empty number is easy to type by accident, so the CLI reports an
-// advisory. Explicit total keys can override the embedded total; this helper only describes
-// the submitted pair value.
+// DiscNumber with an empty number and a numeric total, such as "/5". The value is writable,
+// but the empty number is easy to type by accident, so the CLI reports an advisory. It judges
+// only the submitted pair; an explicit total key can override the embedded total.
 func EmptyNumberWithTotal(k Key, v string) bool {
 	if k != TrackNumber && k != DiscNumber {
 		return false
@@ -587,22 +572,19 @@ func EmptyNumberWithTotal(k Key, v string) bool {
 	return num == "" && validInt(total)
 }
 
-// IsTrimmableKey reports whether a value stored under k is a single-token value whose surrounding
-// whitespace is never meaningful - a numeric, date, MP4-integer, BPM, ReplayGain, R128 gain, or
-// release-country key. [TrimTokenValue], the editor's per-key trim gate, and the transfer grade
-// all key off this one predicate, so the stored form, the write, and the copy report cannot
-// disagree on which keys trim; adding a trim-eligible key here updates all three at once.
+// IsTrimmableKey reports whether k holds a single-token value whose surrounding whitespace is
+// never meaningful: a numeric, date, MP4-integer, BPM, ReplayGain, R128 gain, or release-country
+// key. [TrimTokenValue], the editor's per-key trim gate, and the transfer grade all use it, so
+// adding a key here updates all three.
 func IsTrimmableKey(k Key) bool {
 	return numericKeys[k] || dateKeySet[k] || IsMP4IntKey(k) || IsBPMKey(k) ||
 		IsReplayGainKey(k) || IsReleaseCountryKey(k) || IsR128GainKey(k)
 }
 
 // TrimTokenValue removes surrounding whitespace from a trimmable value (see [IsTrimmableKey]) and
-// leaves other values unchanged. The editor and CLI advisories share this helper so stored values
-// match the forms [ValidNumericValue] and [ValidPartialDate] accept. The MP4-integer keys, BPM,
-// RELEASECOUNTRY, and the REPLAYGAIN_* keys are single-token values ("2", "128", "GB", "-7.30 dB")
-// where a stray leading or trailing space is never meaningful, so they trim the same way; internal
-// whitespace (the space before "dB") and digits, including leading zeros, are preserved.
+// leaves other values unchanged. The editor and CLI advisories share it, so stored values match
+// the forms [ValidNumericValue] and [ValidPartialDate] accept. Internal whitespace (the space
+// before "dB") and digits, leading zeros included, are preserved.
 func TrimTokenValue(k Key, v string) string {
 	if IsTrimmableKey(k) {
 		return strings.TrimSpace(v)
@@ -610,10 +592,9 @@ func TrimTokenValue(k Key, v string) string {
 	return v
 }
 
-// parseIntField parses one numeric component (trimmed of surrounding whitespace),
-// the same parse [ParseNumPair] applies, returning the value and whether it parsed.
-// It is the single place validInt and negativeInt read, so a parse-rule change cannot
-// make the malformed and negative checks drift apart.
+// parseIntField parses one trimmed numeric component with the parse [ParseNumPair]
+// applies, returning the value and whether it parsed. validInt and negativeInt both
+// read it, so the malformed and negative checks share one parse rule.
 func parseIntField(s string) (int, bool) {
 	n, err := strconv.Atoi(strings.TrimSpace(s))
 	return n, err == nil
@@ -626,25 +607,23 @@ func negativeInt(s string) bool {
 	return ok && n < 0
 }
 
-// validInt reports whether s, after trimming surrounding whitespace, parses as an
-// integer - the same parse [ParseNumPair] applies.
+// validInt reports whether s, trimmed, parses as an integer, the same parse
+// [ParseNumPair] applies.
 func validInt(s string) bool {
 	_, ok := parseIntField(s)
 	return ok
 }
 
 // ValidPartialDate accepts the ISO-8601 reduced precisions YYYY, YYYY-MM, and
-// YYYY-MM-DD. It uses time.Parse so the calendar is checked properly - month
-// range, days per month, and leap years - rejecting e.g. 2021-02-31. The exact
-// length match enforces zero-padded canonical form (rejecting "2021-6-1"). It is
-// shared by the linter's malformed-date rule and the set-time malformed-value
-// note, so the two cannot disagree on what a valid date is.
+// YYYY-MM-DD. time.Parse checks the calendar (month range, days per month, leap
+// years), so 2021-02-31 is rejected. The exact length match enforces zero-padded
+// form, rejecting "2021-6-1". The linter's malformed-date rule and the set-time
+// malformed-value note share it.
 func ValidPartialDate(s string) bool {
 	// Trim first so incidental surrounding space is tolerated like every other typed value.
 	s = strings.TrimSpace(s)
-	// Year 0000 is not a meaningful recording/release year, but time.Parse accepts it; reject it
-	// here so the linter's malformed-date rule and set-time validation agree. The year is always
-	// the leading 4 characters in each canonical layout below.
+	// time.Parse accepts year 0000, which is not a meaningful year; reject it so lint and
+	// set-time validation agree. The year is the leading 4 characters of every layout.
 	if strings.HasPrefix(s, "0000") {
 		return false
 	}
@@ -658,29 +637,25 @@ func ValidPartialDate(s string) bool {
 	return false
 }
 
-// partialDateLayouts are the accepted reduced precisions, longest first. Both
-// [ValidPartialDate] and partialDateShaped read them, so adding a precision cannot leave
-// the two disagreeing about what shape a date may take.
+// partialDateLayouts are the accepted reduced precisions, longest first.
+// [ValidPartialDate] and partialDateShaped both read them.
 var partialDateLayouts = []string{"2006-01-02", "2006-01", "2006"}
 
-// The two halves of the malformed-date complaint. A value that is not shaped like one of
-// the accepted layouts gets the shape wording; one that is gets the calendar wording from
-// [partialDateDetail], because telling a user that "2001-13-01" is not YYYY-MM-DD is
-// simply false - it is exactly that, naming a month that does not exist.
+// The two halves of the malformed-date complaint. A value not shaped like an accepted
+// layout gets the shape wording; one that is gets the calendar wording from
+// [partialDateDetail]. "2001-13-01" is YYYY-MM-DD shaped; its month does not exist.
 const (
 	dateShapeLintDetail = "is not YYYY, YYYY-MM, or YYYY-MM-DD"
 	dateShapeNoteDetail = "is not YYYY / YYYY-MM / YYYY-MM-DD"
-	// One wording serves both surfaces here: unlike the shape complaint, there are no
-	// layouts to spell out differently for each.
+	// One wording serves both surfaces; there are no layouts to spell differently.
 	dateCalendarDetail = "is not a real date"
 )
 
 // partialDateDetail explains why a date value failed [ValidPartialDate], as the lint tail
-// and the set-time note tail. A value with the digit layout of an accepted reduced
-// precision failed on the calendar - an out-of-range month, a day past the month's length,
-// or year 0000 - while everything else, non-canonical padding ("2021-6-1") included,
-// failed on shape. It backs the date validator's Detail hook, so both surfaces classify a
-// value the same way.
+// and the set-time note tail. A value with the digit layout of an accepted precision
+// failed on the calendar (an out-of-range month, a day past the month's length, or year
+// 0000); anything else, non-canonical padding ("2021-6-1") included, failed on shape. It
+// backs the date validator's Detail hook, so both surfaces classify a value the same way.
 func partialDateDetail(_ Key, v string) (lint, note string) {
 	if partialDateShaped(v) {
 		return dateCalendarDetail, dateCalendarDetail
@@ -688,11 +663,10 @@ func partialDateDetail(_ Key, v string) (lint, note string) {
 	return dateShapeLintDetail, dateShapeNoteDetail
 }
 
-// partialDateShaped reports whether v matches one of [partialDateLayouts] positionally -
-// a digit everywhere the layout has one, a hyphen everywhere it has one - saying nothing
-// about whether the date it names exists. Reading the layouts rather than restating them
-// is what keeps it stricter than a "looks datish" guess: the zero-padded widths are
-// exactly what separates a shape complaint from a calendar one, and they are defined once.
+// partialDateShaped reports whether v matches one of [partialDateLayouts] positionally: a
+// digit wherever the layout has one, a hyphen wherever it has one. It says nothing about
+// whether the date exists. Reading the layouts keeps the zero-padded widths, which separate
+// a shape complaint from a calendar one, defined once.
 func partialDateShaped(v string) bool {
 	v = strings.TrimSpace(v)
 	for _, layout := range partialDateLayouts {
@@ -726,12 +700,11 @@ func ParseBool(s string) bool {
 	}
 }
 
-// CanonicalBoolValue normalizes a recognized boolean spelling to the canonical "1"/"0" a boolean
-// tag stores: "1"/"true"/"yes" (the [ParseBool] affirmatives) become "1", and "0"/"false"/"no"
-// become "0", case-insensitively and whitespace-trimmed. An unrecognized value (e.g. "maybe") is
-// returned unchanged, so a codec can canonicalize a valid boolean losslessly while leaving
-// anything else as literal text. It mirrors the "1" convention [Tags.Patch] writes and matches
-// MP4's cpil canonicalization, so FLAC, ID3, and MP4 store a boolean field identically.
+// CanonicalBoolValue normalizes a recognized boolean spelling to the "1"/"0" a boolean tag
+// stores: "1"/"true"/"yes" (the [ParseBool] affirmatives) become "1", and "0"/"false"/"no"
+// become "0", case-insensitively and whitespace-trimmed. An unrecognized value ("maybe") is
+// returned unchanged, so a codec keeps it as literal text. It matches the "1" [Tags.Patch]
+// writes and MP4's cpil canonicalization, so FLAC, ID3, and MP4 store a boolean identically.
 func CanonicalBoolValue(v string) string {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "1", "true", "yes":
@@ -744,12 +717,10 @@ func CanonicalBoolValue(v string) string {
 }
 
 // ValidBooleanValue reports whether v is a recognized boolean spelling for the
-// boolean key k - "1"/"true"/"yes" or "0"/"false"/"no", case-insensitive and
-// whitespace-trimmed, the affirmatives matching [ParseBool] exactly plus their
-// negatives. A key that is not boolean is reported valid - there is nothing to
-// check. It backs the set-time malformed-value note, so a value that does not
-// round-trip through the bool projection ("maybe") can be flagged while still
-// being written faithfully.
+// boolean key k: "1"/"true"/"yes" (matching [ParseBool]) or "0"/"false"/"no",
+// case-insensitive and whitespace-trimmed. A non-boolean key is reported valid.
+// It backs the set-time malformed-value note, so a value that does not round-trip
+// through the bool projection ("maybe") is flagged but still written.
 func ValidBooleanValue(k Key, v string) bool {
 	if !booleanKeys[k] {
 		return true
@@ -762,9 +733,8 @@ func ValidBooleanValue(k Key, v string) bool {
 	}
 }
 
-// replayGainKeys is the canonical ReplayGain gain/peak keys, kept as a set so
-// [IsReplayGainKey] is the single definition shared by the linter and the set-time
-// malformed-value note, mirroring numericKeys/dateKeySet/booleanKeys.
+// replayGainKeys is the canonical ReplayGain gain/peak keys. [IsReplayGainKey]
+// reads it for the linter and the set-time malformed-value note.
 var replayGainKeys = map[Key]bool{
 	ReplayGainTrackGain: true,
 	ReplayGainTrackPeak: true,
@@ -772,10 +742,10 @@ var replayGainKeys = map[Key]bool{
 	ReplayGainAlbumPeak: true,
 }
 
-// r128GainKeys is the Opus loudness tags RFC 7845 defines. They are deliberately outside
-// the canonical vocabulary (they are ordinary custom keys), but they describe this file's
-// own audio, so a metadata copy must not carry them. They are not ReplayGain keys: the
-// value is a plain Q7.8 integer, not the "-3.50 dB" text the ReplayGain checks expect.
+// r128GainKeys is the Opus loudness tags RFC 7845 defines. They are ordinary custom keys
+// outside the canonical vocabulary, but they describe this file's own audio, so a metadata
+// copy must not carry them. They are not ReplayGain keys: the value is a Q7.8 integer, not
+// the "-3.50 dB" text the ReplayGain checks expect.
 var r128GainKeys = map[Key]bool{
 	"R128_TRACK_GAIN": true,
 	"R128_ALBUM_GAIN": true,
@@ -789,10 +759,9 @@ func IsR128GainKey(k Key) bool { return r128GainKeys[k] }
 func IsMediaTypeKey(k Key) bool { return k == MediaType }
 
 // mp4IntKeyMax maps each canonical key stored as an unsigned MP4 integer atom to
-// the largest value its atom can hold: the one-byte stik and rtng, and the
-// two-byte ©mvi and ©mvc. It is the single width table [ValidMP4IntValue] and the
-// MP4 encoder both derive from, so the validator and the atom cannot disagree on
-// range. BPM (tmpo) is deliberately absent: its validator accepts fractions.
+// the largest value its atom holds: one byte for stik and rtng, two for ©mvi and
+// ©mvc. [ValidMP4IntValue] and the MP4 encoder both derive from it. BPM (tmpo) is
+// absent: its validator accepts fractions.
 var mp4IntKeyMax = map[Key]uint64{
 	MediaType:      0xFF,
 	ITunesAdvisory: 0xFF,
@@ -806,13 +775,12 @@ var mp4IntKeyMax = map[Key]uint64{
 func IsMP4IntKey(k Key) bool { _, ok := mp4IntKeyMax[k]; return ok }
 
 // ValidMP4IntValue reports whether v is a value the MP4-integer key k accepts: a
-// non-negative integer no greater than the key's atom can hold (255 for the
-// one-byte stik/rtng, 65535 for the two-byte movement atoms), ignoring
-// surrounding whitespace. It mirrors the MP4 encoder's intItem, which rejects a
-// value past the atom's width rather than widening it, so a value the encoder
-// drops is flagged here too. The parse is ParseUint, which rejects a leading '+'
-// - intended, since the atom stores an unsigned magnitude with no sign to round-
-// trip. A key that is not an MP4-integer key is reported valid.
+// non-negative integer no greater than the key's atom holds (255 for the one-byte
+// stik/rtng, 65535 for the two-byte movement atoms), ignoring surrounding
+// whitespace. It mirrors the MP4 encoder's intItem, which rejects a value past the
+// atom's width, so a value the encoder drops is flagged here too. The parse is
+// ParseUint, which rejects a leading '+': the atom stores an unsigned magnitude
+// with no sign to round-trip. A non-MP4-integer key is reported valid.
 func ValidMP4IntValue(k Key, v string) bool {
 	max, ok := mp4IntKeyMax[k]
 	if !ok {
@@ -828,15 +796,13 @@ func IsBPMKey(k Key) bool { return k == BPM }
 
 // ValidBPMValue reports whether v is a value the BPM key accepts: a non-negative
 // decimal number no greater than 65535 (the two-byte tmpo atom's ceiling),
-// fractions included ("174.99" - DJ tools write fractional BPM), ignoring
-// surrounding whitespace. It mirrors [ValidReplayGainValue]'s shape: a byte
-// pre-scan for the conventional decimal form - digits and at most one '.' -
-// then ParseFloat, so the scientific, hex, and underscored forms ParseFloat
-// alone would accept ("1e3", "0x1p7", "1_0") are rejected. No sign is allowed:
-// the atom stores an unsigned magnitude. Text formats store the value verbatim;
-// the MP4 encoder's tmpoItem drops exactly what this rejects and rounds the
-// rest, so the drop report and the atom stay in lockstep. A non-BPM key is
-// reported valid.
+// fractions included ("174.99"; DJ tools write fractional BPM), ignoring
+// surrounding whitespace. Like [ValidReplayGainValue], a byte pre-scan for digits
+// and at most one '.' precedes ParseFloat, so the scientific, hex, and underscored
+// forms ParseFloat alone accepts ("1e3", "0x1p7", "1_0") are rejected. No sign is
+// allowed: the atom stores an unsigned magnitude. Text formats store the value
+// verbatim; the MP4 encoder's tmpoItem drops exactly what this rejects and rounds
+// the rest. A non-BPM key is reported valid.
 func ValidBPMValue(k Key, v string) bool {
 	if k != BPM {
 		return true
@@ -860,24 +826,22 @@ func ValidBPMValue(k Key, v string) bool {
 	if err != nil {
 		return false
 	}
-	// The byte-scan already rejects "NaN"/"Inf" (their letters), so this is a
-	// defensive finite check.
+	// The byte-scan already rejects "NaN"/"Inf"; this is a defensive finite check.
 	if math.IsNaN(f) || math.IsInf(f, 0) {
 		return false
 	}
 	return f <= maxBPM
 }
 
-// maxBPM is the largest BPM the two-byte MP4 tmpo atom can hold. [ValidBPMValue] and
-// bpmDetail share it so the check and the message it produces cannot disagree.
+// maxBPM is the largest BPM the two-byte MP4 tmpo atom holds. [ValidBPMValue] and
+// bpmDetail share it.
 const maxBPM = 65535
 
 // BPMStoredWhole returns the whole-number decimal form the MP4 tmpo atom stores for a BPM
-// value, and whether storing it changes the numeric value (a genuine fraction rounds to
-// nearest; a respell such as "174.0" or "0174" is numerically lossless). ok is false for a
-// value [ValidBPMValue] rejects, which the atom drops instead. The MP4 encoder, its
-// coercion report, and the diff fold all derive from this one decision, so "does tmpo store
-// the same number" cannot be answered differently in different places.
+// value, and whether storing changes the numeric value: a fraction rounds to nearest, while
+// a respelling such as "174.0" or "0174" is lossless. ok is false for a value [ValidBPMValue]
+// rejects, which the atom drops. The MP4 encoder, its coercion report, and the diff fold all
+// derive from it.
 func BPMStoredWhole(v string) (stored string, roundChanged, ok bool) {
 	s := strings.TrimSpace(v)
 	if !ValidBPMValue(BPM, s) {
@@ -892,14 +856,12 @@ func BPMStoredWhole(v string) (stored string, roundChanged, ok bool) {
 }
 
 // IsMP4CanonicalKey reports whether an MP4 integer atom canonicalizes k's value on
-// decode - dropping a leading sign or leading zeros ("01" -> "1"), or rounding a
-// fraction. Those are the four number slots ([Key.NumberPair]: the track/disc
-// number and total, packed into trkn/disk), the unsigned integer atoms
-// ([IsMP4IntKey]: stik, rtng, ©mvi, ©mvc), and BPM (the tmpo atom rounds to a
-// whole number). It is the key gate the diff command's cross-format numeric fold
-// uses, so the fold applies only where an MP4 atom genuinely normalizes the value,
-// not to every numeric key. It is deliberately not [numericKeys] (which carries
-// PlayCount and none of the atom-backed keys); keep the two sets apart.
+// decode by dropping a leading sign or leading zeros ("01" -> "1") or rounding a
+// fraction: the four number slots ([Key.NumberPair], packed into trkn/disk), the
+// unsigned integer atoms ([IsMP4IntKey]: stik, rtng, ©mvi, ©mvc), and BPM (tmpo
+// rounds to a whole number). The diff command's cross-format numeric fold uses it
+// as its key gate, so the fold applies only where an atom normalizes the value. It
+// is not [numericKeys], which carries PlayCount and none of the atom-backed keys.
 func IsMP4CanonicalKey(k Key) bool { return k.NumberPair() || IsMP4IntKey(k) || IsBPMKey(k) }
 
 // IsReplayGainKey reports whether k is a canonical ReplayGain gain or peak key.
@@ -924,10 +886,10 @@ func (k Key) DescribesOwnAudio() bool {
 }
 
 // ValidMediaTypeValue reports whether v is a value the MEDIATYPE (iTunes stik media kind) key
-// accepts: a non-negative integer no greater than 255, the single byte the stik atom stores (the
-// defined iTunes media kinds are 0-14). It is a wrapper over [ValidMP4IntValue], kept for public
-// API stability - including its any-other-key-is-valid contract, so it stays a no-op for the
-// other MP4-integer keys rather than newly judging them.
+// accepts: a non-negative integer no greater than 255, the single byte the stik atom stores
+// (the defined iTunes media kinds are 0-14). It wraps [ValidMP4IntValue] and is kept for API
+// stability, including its any-other-key-is-valid contract, so it stays a no-op for the other
+// MP4-integer keys.
 func ValidMediaTypeValue(k Key, v string) bool {
 	if k != MediaType {
 		return true
@@ -941,9 +903,9 @@ func IsReleaseCountryKey(k Key) bool { return k == ReleaseCountry }
 
 // ValidReleaseCountryValue reports whether v is a value RELEASECOUNTRY accepts: exactly
 // two ASCII letters, ignoring surrounding whitespace. That is the ISO 3166-1 alpha-2 shape,
-// and it also admits MusicBrainz's XW (worldwide) and XE (Europe) without a country
-// whitelist to keep current. Case is not checked: "gb" names the same country as "GB". A
-// non-ReleaseCountry key is reported valid.
+// and it admits MusicBrainz's XW (worldwide) and XE (Europe) without a country whitelist.
+// Case is not checked: "gb" names the same country as "GB". A non-ReleaseCountry key is
+// reported valid.
 func ValidReleaseCountryValue(k Key, v string) bool {
 	if k != ReleaseCountry {
 		return true
@@ -961,19 +923,17 @@ func ValidReleaseCountryValue(k Key, v string) bool {
 }
 
 // ValidR128GainValue reports whether v is a value the R128 loudness key k accepts. RFC 7845
-// section 5.2.1 is exact: "an integer from -32768 to 32767, inclusive, represented in ASCII
-// as a base 10 number with no whitespace. A leading '+' or '-' character is valid. Leading
-// zeros are also permitted, but the value MUST be represented by no more than 6
-// characters". Surrounding whitespace is trimmed first, the way every other single-token
-// validator here does, so the stored form and the check agree. A non-R128 key is reported
-// valid.
+// section 5.2.1: "an integer from -32768 to 32767, inclusive, represented in ASCII as a base
+// 10 number with no whitespace. A leading '+' or '-' character is valid. Leading zeros are
+// also permitted, but the value MUST be represented by no more than 6 characters".
+// Surrounding whitespace is trimmed first, like every other single-token validator here. A
+// non-R128 key is reported valid.
 func ValidR128GainValue(k Key, v string) bool {
 	if !r128GainKeys[k] {
 		return true
 	}
-	// strconv.Atoi is exactly the RFC's grammar at base 10: an optional single sign then
-	// ASCII digits, with no exponent, hex, or underscore forms accepted. Only the
-	// 6-character cap and the range are the RFC's own additions.
+	// strconv.Atoi is the RFC's grammar: an optional sign then ASCII digits, with no
+	// exponent, hex, or underscore forms. The 6-character cap and the range are checked here.
 	s := strings.TrimSpace(v)
 	if len(s) > 6 {
 		return false
@@ -983,12 +943,11 @@ func ValidR128GainValue(k Key, v string) bool {
 }
 
 // ValidReplayGainValue reports whether v is a value the ReplayGain key k accepts: a
-// decimal number with an optional leading sign (a positive gain is conventionally written
-// "+2.34 dB"), optionally suffixed with a case-insensitive "dB" (the conventional gain
-// unit; a peak is unitless). A *_PEAK key additionally rejects any leading '-' (a peak is
-// an amplitude, never signed), while a *_GAIN may carry either sign. A non-ReplayGain key
-// is reported valid. It mirrors [ValidPartialDate]'s shape so the linter and the set-time
-// note share one definition.
+// decimal number with an optional leading sign (a positive gain is conventionally
+// "+2.34 dB"), optionally suffixed with a case-insensitive "dB" (a peak is unitless).
+// A *_PEAK key also rejects any leading '-', since a peak is an amplitude; a *_GAIN may
+// carry either sign. A non-ReplayGain key is reported valid. The linter and the set-time
+// note share it.
 func ValidReplayGainValue(k Key, v string) bool {
 	if !replayGainKeys[k] {
 		return true
@@ -997,13 +956,11 @@ func ValidReplayGainValue(k Key, v string) bool {
 	if len(s) >= 2 && strings.EqualFold(s[len(s)-2:], "dB") {
 		s = strings.TrimSpace(s[:len(s)-2])
 	}
-	// strconv.ParseFloat is too permissive for a ReplayGain figure: it accepts scientific
-	// (1e3), hex (0x1p-2), and underscored (1_0.5) forms. Pre-scan for the conventional
-	// decimal shape - digits, at most one '.', an optional single leading sign - then let
-	// ParseFloat finish the job (a lone sign or '.' passes this scan but ParseFloat rejects
-	// it, so the two compose). A leading '+' is allowed: the ReplayGain convention writes a
-	// positive gain with an explicit sign (e.g. "+2.34 dB"), so rejecting it would
-	// false-flag legitimate values.
+	// strconv.ParseFloat alone accepts scientific (1e3), hex (0x1p-2), and underscored
+	// (1_0.5) forms. Pre-scan for the conventional decimal shape (digits, at most one '.',
+	// an optional single leading sign), then let ParseFloat finish; a lone sign or '.'
+	// passes the scan but ParseFloat rejects it. A leading '+' is allowed because the
+	// ReplayGain convention writes a positive gain as "+2.34 dB".
 	if s == "" {
 		return false
 	}
@@ -1026,24 +983,21 @@ func ValidReplayGainValue(k Key, v string) bool {
 	if err != nil {
 		return false
 	}
-	// The byte-scan already rejects "NaN"/"Inf" (their letters), so this is a defensive
-	// finite check.
+	// The byte-scan already rejects "NaN"/"Inf"; this is a defensive finite check.
 	if math.IsNaN(f) || math.IsInf(f, 0) {
 		return false
 	}
-	// A peak is an amplitude, never signed: reject any leading '-' (so "-0.0" fails too,
-	// not just a negative magnitude). A *_GAIN may be negative.
+	// A peak is an amplitude, never signed: reject any leading '-', so "-0.0" fails too.
+	// A *_GAIN may be negative.
 	if k == ReplayGainTrackPeak || k == ReplayGainAlbumPeak {
 		return !strings.HasPrefix(s, "-")
 	}
 	return true
 }
 
-// A rejected value in a range-checked category fails one of two ways: it is not a number
-// of the right shape at all, or it is one and simply exceeds what the destination atom can
-// hold. Saying "is not a non-negative number" about BPM=70000 is false - it is exactly
-// that - so the over-range case names the ceiling instead, the way partialDateDetail names
-// the calendar.
+// overRangeDetail names the ceiling for a value of the right shape that exceeds what the
+// destination atom holds. "is not a non-negative number" would be false for BPM=70000, so
+// the over-range case names the maximum, as partialDateDetail names the calendar.
 func overRangeDetail(what string, max uint64) (lint, note string) {
 	return fmt.Sprintf("is %s but exceeds the maximum of %d", what, max),
 		fmt.Sprintf("is %s but exceeds the maximum of %d", what, max)
@@ -1072,9 +1026,9 @@ func bpmDetail(_ Key, v string) (lint, note string) {
 	return "is not a non-negative number", "does not look like a non-negative number"
 }
 
-// replayGainDetail separates a negative peak from a value that is not a ReplayGain figure
-// at all. A peak is an amplitude, so "-0.5" is well-formed and simply cannot be negative;
-// the generic wording would send the user looking for a syntax error that is not there.
+// replayGainDetail separates a negative peak from a value that is not a ReplayGain figure.
+// A peak is an amplitude, so "-0.5" is well-formed but cannot be negative; the generic
+// wording would send the user looking for a syntax error.
 func replayGainDetail(k Key, v string) (lint, note string) {
 	if k == ReplayGainTrackPeak || k == ReplayGainAlbumPeak {
 		s := strings.TrimSpace(v)
@@ -1089,13 +1043,12 @@ func replayGainDetail(k Key, v string) (lint, note string) {
 	return "is not a ReplayGain value (e.g. -7.30 dB)", "does not look like a ReplayGain value (e.g. -7.30 dB)"
 }
 
-// Validator is the value contract for one category of canonical key - the single
-// source the linter ([Document.Lint]) and the CLI's set-time malformed-value note
-// both consume, so the "lint and set agree" contract cannot drift. Applies reports
-// whether a key falls in the category; Valid reports whether a present, non-empty
-// value is acceptable. LintDetail/NoteDetail are the human tails the two surfaces
-// append, phrased for each (the linter as "%q <LintDetail>", the note as
-// "KEY=VALUE <NoteDetail>; kept as text where the format supports it").
+// Validator is the value contract for one category of canonical key. The linter
+// ([Document.Lint]) and the CLI's set-time malformed-value note both consume it.
+// Applies reports whether a key falls in the category; Valid reports whether a
+// present, non-empty value is acceptable. LintDetail/NoteDetail are the tails the
+// two surfaces append: the linter as "%q <LintDetail>", the note as "KEY=VALUE
+// <NoteDetail>; kept as text where the format supports it".
 type Validator struct {
 	Applies    func(Key) bool
 	Valid      func(Key, string) bool
@@ -1103,17 +1056,15 @@ type Validator struct {
 	LintDetail string
 	NoteDetail string
 	// Detail refines LintDetail/NoteDetail for one rejected value, for a category with
-	// more than one way to fail. It takes the key as well as the value because a category
-	// can be range-checked per key (the MP4 integer atoms differ in width). Nil where the
-	// category has a single failure mode; use [Validator.Details], which falls back to the
-	// fixed pair.
+	// more than one failure mode. It takes the key because a category can be range-checked
+	// per key (the MP4 integer atoms differ in width). Nil for a single failure mode;
+	// [Validator.Details] falls back to the fixed pair.
 	Detail func(k Key, value string) (lint, note string)
 }
 
-// Details returns the human tails to append for key k's rejected value: the per-value
-// refinement when the category has one, otherwise the category's fixed pair. Both
-// surfaces call it, so the linter's finding and the set-time note cannot describe one
-// rejected value two different ways.
+// Details returns the tails to append for key k's rejected value: the per-value
+// refinement when the category has one, otherwise the fixed pair. Both surfaces call it,
+// so the linter's finding and the set-time note describe a rejected value the same way.
 func (v Validator) Details(k Key, value string) (lint, note string) {
 	if v.Detail != nil {
 		return v.Detail(k, value)
@@ -1121,9 +1072,8 @@ func (v Validator) Details(k Key, value string) (lint, note string) {
 	return v.LintDetail, v.NoteDetail
 }
 
-// validators is the category registry. The category key-sets are disjoint, so a key
-// matches at most one. RATING is deliberately absent: it is free-form across formats
-// with no canonical numeric contract.
+// validators is the category registry. The key sets are disjoint, so a key matches at
+// most one. RATING is absent: it is free-form across formats.
 var validators = []Validator{
 	{IsNumericKey, ValidNumericValue, "malformed-number",
 		"is not a number", "does not look like a number", nil},
@@ -1147,8 +1097,7 @@ var validators = []Validator{
 }
 
 // ValidatorFor returns the value contract for key k, and whether k has one. A key in
-// no category - a free-form key like RATING, or any custom key - returns false, so
-// its values are never flagged as malformed.
+// no category (RATING, or any custom key) returns false, so its values are never flagged.
 func ValidatorFor(k Key) (Validator, bool) {
 	for _, v := range validators {
 		if v.Applies(k) {
@@ -1158,29 +1107,26 @@ func ValidatorFor(k Key) (Validator, bool) {
 	return Validator{}, false
 }
 
-// Performer is one credited performer: a Name and an optional Role (the part or
-// instrument, e.g. "guitar"). It models a single PERFORMER value, stored as
-// "Name (Role)" or a bare "Name" when Role is empty. Performer is a comparable
-// struct, so two performers can be compared with ==.
+// PerformerCredit is one credited performer: a Name and an optional Role (the part
+// or instrument, e.g. "guitar"). It models one PERFORMER value, stored as
+// "Name (Role)", or a bare "Name" when Role is empty. It is comparable with ==.
 //
-// A Performer with an empty Name and a non-empty Role re-emits as "(Role)", which
-// re-parses as {Name: "(Role)"} - the one shape that is not round-trip-stable;
-// construct performers with a non-empty Name.
+// An empty Name with a non-empty Role re-emits as "(Role)", which re-parses as
+// {Name: "(Role)"}; that shape is not round-trip-stable, so construct credits
+// with a non-empty Name.
 type PerformerCredit struct {
 	Name string
 	Role string
 }
 
 // parsePerformers reads PERFORMER values in order, splitting a trailing "(role)"
-// off each into a Role. The split happens only when both the pre-paren name and the
-// role text are non-empty after trimming; otherwise the whole value is kept as the
-// Name, so a fully-parenthesized value ("(note)", "()", "Name ()") round-trips
-// verbatim instead of losing its parentheses.
+// off each into a Role. The split happens only when both the name before the paren
+// and the role text are non-empty after trimming; otherwise the whole value is the
+// Name, so "(note)", "()", and "Name ()" round-trip verbatim.
 //
-// Each value is trimmed once up front so incidental surrounding whitespace ("Name
-// (role) ") does not hide the "(role)" suffix and leave it stuck on the name. The
-// typed projection is a convenience view (lossy by design), so dropping that
-// whitespace here is acceptable; the native bytes are preserved regardless.
+// Each value is trimmed first so surrounding whitespace ("Name (role) ") does not
+// hide the "(role)" suffix. The typed projection is lossy, so dropping that
+// whitespace is acceptable; the native bytes are preserved regardless.
 func parsePerformers(vals []string) []PerformerCredit {
 	if len(vals) == 0 {
 		return nil
@@ -1204,10 +1150,10 @@ func parsePerformers(vals []string) []PerformerCredit {
 }
 
 // formatPerformers is the inverse of parsePerformers, emitting one value per
-// performer IN ORDER (PERFORMER order is significant, so no sort). A performer with
+// performer in order (PERFORMER order is significant, so no sort). A performer with
 // a role emits "Name (Role)"; a bare name emits the name; an empty-name performer
-// with a role emits "(Role)" with no leading space (reachable only from a directly
-// constructed Performer, and not round-trip-stable - see Performer).
+// with a role emits "(Role)", reachable only from a directly constructed credit and
+// not round-trip-stable (see [PerformerCredit]).
 func formatPerformers(ps []PerformerCredit) []string {
 	if len(ps) == 0 {
 		return nil

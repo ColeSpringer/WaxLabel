@@ -25,9 +25,9 @@ const (
 	// flacStreamInfoOff is where the STREAMINFO body starts in the identification packet.
 	flacStreamInfoOff = 17
 
-	// FLAC metadata block type codes, from internal/vorbis so the Ogg mapping and the
-	// native FLAC stream cannot disagree about them. Every code this file does not name
-	// is preserved verbatim in its own header packet.
+	// FLAC metadata block type codes, shared with the native FLAC stream via
+	// internal/vorbis. Every code this file does not name is preserved verbatim in its
+	// own header packet.
 	flacBlkStreamInfo    = vorbis.BlockStreamInfo
 	flacBlkPadding       = vorbis.BlockPadding
 	flacBlkVorbisComment = vorbis.BlockVorbisComment
@@ -144,9 +144,9 @@ func rebuildFLACBlocks(d *doc, vendor string, comments []vorbis.Comment, picture
 	picturesEmitted := false
 	commentReRendered := false
 
-	// A picture edit re-emits every cover as a native block. If the source carried a
-	// comment-embedded cover, cloning the comment block verbatim would keep that now-stale
-	// METADATA_BLOCK_PICTURE alongside the fresh native block, so force a re-render.
+	// A picture edit re-emits every cover as a native block, so a verbatim comment
+	// block would keep a stale METADATA_BLOCK_PICTURE beside the fresh native block.
+	// Force a re-render when the source had one.
 	dropPictureComment := picturesChanged && len(d.commentPictures) > 0
 
 	emitPictures := func() {
@@ -183,7 +183,7 @@ func rebuildFLACBlocks(d *doc, vendor string, comments []vorbis.Comment, picture
 			out = append(out, b)
 		case flacBlkPadding:
 			// Ogg re-paginates the header region on every rewrite, so a padding block
-			// buys nothing here; drop it rather than carry dead bytes through pages.
+			// is useless; drop it.
 			continue
 		default:
 			out = append(out, b)
@@ -200,8 +200,8 @@ func rebuildFLACBlocks(d *doc, vendor string, comments []vorbis.Comment, picture
 		emitPictures()
 	}
 	// Materialize comment-sourced covers when the comment block was re-rendered (which
-	// strips the METADATA_BLOCK_PICTURE entry) but pictures were not separately re-emitted.
-	// Without this a tag-only edit would silently drop the cover.
+	// strips the METADATA_BLOCK_PICTURE entry) but pictures were not re-emitted, or a
+	// tag-only edit would drop the cover.
 	if commentReRendered && !picturesChanged {
 		for _, p := range d.commentPictures {
 			out = append(out, fblock{code: flacBlkPicture, body: vorbis.RenderPicture(p)})
@@ -241,9 +241,8 @@ func (d *doc) streamInfo() []byte {
 func (b fblock) clone() fblock { return fblock{code: b.code, body: slices.Clone(b.body)} }
 
 // decodeFLACBlockPictures splits a FLAC block list into the covers it holds and the
-// PICTURE bodies that would not decode. It is the one derivation both the parser and
-// the post-write result use, so a rewritten document reports the same picture set a
-// fresh parse of its bytes would.
+// PICTURE bodies that would not decode. The parser and the post-write result both use
+// it, so a rewritten document reports the same picture set a fresh parse would.
 func decodeFLACBlockPictures(blocks []fblock, limit int64) (pics []core.Picture, malformed [][]byte, warnings []core.Warning) {
 	for _, b := range blocks {
 		if b.code != flacBlkPicture {
@@ -261,9 +260,8 @@ func decodeFLACBlockPictures(blocks []fblock, limit int64) (pics []core.Picture,
 }
 
 // commentSourcedPictures decodes the covers a comment list still carries as
-// METADATA_BLOCK_PICTURE entries. It is how the post-write document re-derives the
-// field the parser fills, so a comment block preserved verbatim keeps its covers
-// materializable and a re-rendered one reports none.
+// METADATA_BLOCK_PICTURE entries. The post-write document re-derives the parser's field
+// with it, so a verbatim comment block keeps its covers and a re-rendered one has none.
 func commentSourcedPictures(comments []vorbis.Comment, limit int64) []core.Picture {
 	var out []core.Picture
 	for _, cm := range comments {
@@ -277,11 +275,10 @@ func commentSourcedPictures(comments []vorbis.Comment, limit int64) []core.Pictu
 	return out
 }
 
-// origMaxHeaderPacket is the largest header packet this document was parsed with:
-// the comment packet for every mapping, plus the Vorbis setup packet and each FLAC
-// metadata block's packet. The write-side allocation guard floors at it so bytes
-// already in the file - read within the (possibly raised) parse limit - stay writable
-// under a lower write limit, whether or not the edit touches them.
+// origMaxHeaderPacket is the largest header packet this document was parsed with: the
+// comment packet, plus the Vorbis setup packet and each FLAC metadata block's packet.
+// The write-side allocation guard floors at it, so bytes read within a raised parse
+// limit stay writable under a lower write limit.
 func (d *doc) origMaxHeaderPacket() int64 {
 	n := d.origCommentPacketLen
 	if sz := int64(len(d.setupPacket)); sz > n {
@@ -296,7 +293,7 @@ func (d *doc) origMaxHeaderPacket() int64 {
 }
 
 // headerPacketName names a header packet for the size-guard error, so a refusal says
-// which packet was too large rather than always blaming the comment header.
+// which packet was too large.
 func headerPacketName(k kind, pkt []byte) string {
 	if k != kindFLAC {
 		return "comment header"
@@ -307,10 +304,9 @@ func headerPacketName(k kind, pkt []byte) string {
 	return "header packet"
 }
 
-// flacIDWithCount returns the identification packet with its header-packet count
-// updated to n. Everything else - the mapping version and the STREAMINFO block -
-// is carried verbatim, so the decoder-critical bytes are untouched. The count is
-// the one field a metadata rewrite can invalidate: adding or removing a picture
+// flacIDWithCount returns the identification packet with its header-packet count set
+// to n; the mapping version and STREAMINFO block are carried verbatim. The count is the
+// one field a metadata rewrite can invalidate, since adding or removing a picture
 // changes how many header packets follow.
 func flacIDWithCount(id []byte, n int) []byte {
 	out := make([]byte, len(id))

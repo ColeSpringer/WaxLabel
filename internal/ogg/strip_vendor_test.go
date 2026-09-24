@@ -18,8 +18,9 @@ func hasInheritedWarn(ws []core.Warning) bool {
 	return false
 }
 
-// TestStripEncoderNeutralizesOpusVendor: --strip-encoder on a transcoder-stamped
-
+// TestStripEncoderNeutralizesOpusVendor checks that --strip-encoder on a
+// transcoder-stamped Opus vendor string is a write, and the result's warnings match
+// the neutralized vendor.
 func TestStripEncoderNeutralizesOpusVendor(t *testing.T) {
 	const serial = 0x4F4747
 	head := []byte{'O', 'p', 'u', 's', 'H', 'e', 'a', 'd', 1, 2, 0, 0, 0x80, 0xBB, 0, 0, 0, 0, 0}

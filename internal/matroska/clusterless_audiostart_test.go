@@ -9,11 +9,9 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestAbsorbClusterlessReportsNoAudioStart is a regression: for a clusterless
-// (audio-less) segment with trailing bytes, the absorb write path once reported
-// AudioStart = segDataEnd (a nonzero scalar) while a fresh parse and the shift path
-// reported 0 - AudioRanges was empty in every case, so only the informational scalar
-// disagreed.
+// TestAbsorbClusterlessReportsNoAudioStart checks that the absorb path reports no
+// audio extent for a clusterless segment with trailing bytes, matching a fresh parse
+// and the shift path.
 func TestAbsorbClusterlessReportsNoAudioStart(t *testing.T) {
 	void := encElement(idVoid, make([]byte, 40)) // reserved Void so the small edit absorbs in place
 	seg := segBytes(cat(mkInfo("Title"), void))
@@ -21,8 +19,7 @@ func TestAbsorbClusterlessReportsNoAudioStart(t *testing.T) {
 
 	base := parseMKA(t, src)
 	d := base.Native.(*doc)
-	// Preconditions: no clusters (so a fresh parse reports no audio extent), and clusterStart < size
-	// (trailing bytes) - the exact shape that produced the old nonzero absorb-path scalar.
+	// Preconditions: no clusters, and clusterStart < size (trailing bytes).
 	if base.AudioStart != 0 || len(base.AudioRanges) != 0 {
 		t.Fatalf("setup: parse of a clusterless segment reported AudioStart=%d ranges=%v, want 0 / none", base.AudioStart, base.AudioRanges)
 	}
@@ -36,8 +33,8 @@ func TestAbsorbClusterlessReportsNoAudioStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
-	// Guard the test against silently taking the shift path (which also reports 0): the shift path
-	// appends an "N-byte tail shift" operation, so its absence confirms the absorb path ran.
+	// The shift path also reports 0, so confirm absorb ran: only shift appends an
+	// "N-byte tail shift" operation.
 	for _, op := range plan.Report.Operations {
 		if strings.Contains(op, "shift") {
 			t.Fatalf("expected the absorb path, but a tail shift ran: %v", plan.Report.Operations)

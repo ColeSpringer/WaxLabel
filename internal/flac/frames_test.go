@@ -18,8 +18,9 @@ func fixtureInfo() core.AudioTrack {
 	}
 }
 
-// TestDecodeFrameHeader: drives the header decoder with the two real headers
-
+// TestDecodeFrameHeader drives the header decoder with two headers from
+// testdata/sample.flac (frame 0, and the short last frame with a 16-bit coded block
+// size), a hand-built variable-strategy header, and corruptions of each field.
 func TestDecodeFrameHeader(t *testing.T) {
 	si := fixtureInfo()
 	first := []byte{0xFF, 0xF8, 0x59, 0x88, 0x00, 0x8A}
@@ -136,8 +137,9 @@ func synthTailAudio(total, block int, variable bool, val uint16) []byte {
 	return out
 }
 
-// TestFrameTailWarnings: drives the tail walk over synthetic audio regions
-
+// TestFrameTailWarnings drives the tail walk over synthetic audio regions: clean streams
+// stay silent, appended bytes are reported as a trailing region with their exact count,
+// and missing audio (whole frames or a cut inside the final frame) as a truncation.
 func TestFrameTailWarnings(t *testing.T) {
 	const total, block = 44100, 4608
 	si := fixtureInfo()
@@ -247,8 +249,9 @@ func TestFrameTailWarnings(t *testing.T) {
 	}
 }
 
-// TestFrameTailRespectsAllocLimit: pins the walk's behavior under a
-
+// TestFrameTailRespectsAllocLimit checks that under a MaxAllocBytes smaller than its
+// windows the walk stays silent (the junk stays inside the audio extent) instead of
+// exceeding the caller's read bound.
 func TestFrameTailRespectsAllocLimit(t *testing.T) {
 	audio := append(synthTailAudio(44100, 4608, false, 0x1234), make([]byte, 20<<10)...)
 	d := &doc{audioEnd: int64(len(audio)), streamInfo: fixtureInfo()}
@@ -258,8 +261,8 @@ func TestFrameTailRespectsAllocLimit(t *testing.T) {
 	}
 }
 
-// TestFrameTailCancellation: a cancelled context surfaces as an
-
+// TestFrameTailCancellation checks that a cancelled context surfaces as an error, not a
+// no-findings result, so a cancelled parse cannot succeed with a different audio extent.
 func TestFrameTailCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

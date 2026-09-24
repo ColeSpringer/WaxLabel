@@ -11,9 +11,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestMatroskaProjectSanitizesInvalidUTF8 is a regression guard: the Matroska reader
-// stores text as raw bytes, so a non-conformant file can hold invalid UTF-8 in a
-// TagString or the Info.Title.
+// TestMatroskaProjectSanitizesInvalidUTF8: invalid UTF-8 in a TagString or the
+// Info.Title (Matroska text is raw bytes) is sanitized on projection.
 func TestMatroskaProjectSanitizesInvalidUTF8(t *testing.T) {
 	artist := encElement(idSimpleTag, cat(
 		stringElement(idTagName, "ARTIST"),
@@ -42,10 +41,9 @@ func renderPlan(t *testing.T, src []byte, plan *core.WritePlan) []byte {
 	return buf.Bytes()
 }
 
-// structuredTagsMKA builds a non-flat Matroska file (the kind ffmpeg cannot emit and
-// the QA suite lacked): an album-scope Tag group whose ARTIST carries a secondary
-// TagLanguage, plus a binary SimpleTag and a SimpleTag with a nested sub-tag - exactly
-// the structure a flat re-emit drops.
+// structuredTagsMKA builds a non-flat Matroska file: an album-scope Tag group whose
+// ARTIST carries a TagLanguage, plus a binary SimpleTag and a SimpleTag with a nested
+// sub-tag, the structure a flat re-emit drops.
 func structuredTagsMKA() []byte {
 	targets := encElement(idTargets, uintElement(idTgtTypeVal, 50)) // album scope
 	artist := encElement(idSimpleTag, cat(
@@ -69,10 +67,9 @@ func structuredTagsMKA() []byte {
 	return segBytes(cat(mkInfo("Title"), tags, emptyCluster()))
 }
 
-// TestPreservesAlbumTagStructureThroughUnrelatedEdit is a regression on a non-flat
-// fixture: an edit that touches an UNRELATED key must keep every album-scope
-// SimpleTag's language, binary value, and nested sub-tags byte-for-byte, not re-emit
-// them flat.
+// TestPreservesAlbumTagStructureThroughUnrelatedEdit: an edit of an unrelated key keeps
+// every album-scope SimpleTag's language, binary value, and nested sub-tags
+// byte-for-byte.
 func TestPreservesAlbumTagStructureThroughUnrelatedEdit(t *testing.T) {
 	src := structuredTagsMKA()
 	base := parseMKA(t, src)
@@ -120,7 +117,7 @@ func TestPreservesAlbumTagStructureThroughUnrelatedEdit(t *testing.T) {
 }
 
 // TestWarnsWhenEditedTagDropsStructure: changing the value of a structured album tag
-// cannot keep its old bytes, so the structure is genuinely lost - this must warn (keyed).
+// loses its structure, which must warn with the key.
 func TestWarnsWhenEditedTagDropsStructure(t *testing.T) {
 	src := structuredTagsMKA()
 	base := parseMKA(t, src)
@@ -182,10 +179,9 @@ func TestMatroskaWarnsWhenExtraTitleValueDropped(t *testing.T) {
 	}
 }
 
-// TestTransferClassifierDropsTechnicalName pins that TransferClassifier routes a
-// reserved Matroska technical name to Dropped with a non-empty reason, while a name
-// merely adjacent to the reserved set gets no verdict from this classifier (leaving it
-// to the format-level grade).
+// TestTransferClassifierDropsTechnicalName: TransferClassifier routes a reserved
+// technical name to Dropped with a reason, and gives no verdict for a name merely
+// adjacent to the reserved set.
 func TestTransferClassifierDropsTechnicalName(t *testing.T) {
 	disp, reason, ok := TransferClassifier(tag.Key("DURATION"), []string{"x"}, tag.TagSet{})
 	if !ok || disp != core.Dropped || reason == "" {
@@ -216,10 +212,9 @@ func structuredChaptersMKA() []byte {
 	return segBytes(cat(mkInfo("Title"), chapters, emptyCluster()))
 }
 
-// TestPreservesChapterStructureThroughReRender is a regression on a non-flat fixture: a
-// chapter edit re-renders the default edition, which must keep each chapter's language,
-// IETF language, and hidden/disabled flags instead of stripping them to a bare "und"
-// atom.
+// TestPreservesChapterStructureThroughReRender: a chapter edit re-renders the default
+// edition and must keep each chapter's language, IETF language, and hidden/disabled
+// flags.
 func TestPreservesChapterStructureThroughReRender(t *testing.T) {
 	src := structuredChaptersMKA()
 	base := parseMKA(t, src)
@@ -265,9 +260,8 @@ func TestPreservesChapterStructureThroughReRender(t *testing.T) {
 	}
 }
 
-// TestWarnsOnNarrowerScopeStructureDropped: editing a key whose structured (language-
-// carrying) SimpleTag lives at a NON-album scope drops the structure on re-render too,
-// so the tag-structure-dropped warning must cover it - not just album scope.
+// TestWarnsOnNarrowerScopeStructureDropped: editing a key whose language-carrying
+// SimpleTag lives at a non-album scope also warns tag-structure-dropped.
 func TestWarnsOnNarrowerScopeStructureDropped(t *testing.T) {
 	targets := encElement(idTargets, uintElement(idTgtTypeVal, 30)) // track scope
 	artist := encElement(idSimpleTag, cat(
@@ -295,10 +289,9 @@ func TestWarnsOnNarrowerScopeStructureDropped(t *testing.T) {
 	}
 }
 
-// TestChapterLanguagePreservedWithEmptyTitle: a chapter carrying a language but an
-// empty title (the case an invalid-UTF-8 title sanitized to "" produces) must keep its
-// language through a re-render - the render must emit a ChapterDisplay for the language
-// even with no title, or the language is silently lost.
+// TestChapterLanguagePreservedWithEmptyTitle: a chapter with a language but an empty
+// title (an invalid-UTF-8 title sanitizes to "") keeps its language through a
+// re-render, so the render emits a ChapterDisplay even with no title.
 func TestChapterLanguagePreservedWithEmptyTitle(t *testing.T) {
 	disp := encElement(idChapDisplay, cat(
 		stringElement(idChapString, ""), // empty (sanitized) title
@@ -318,9 +311,8 @@ func TestChapterLanguagePreservedWithEmptyTitle(t *testing.T) {
 	}
 }
 
-// TestChapterIETFUndNormalized: an "und" ChapLanguageIETF (mkvmerge's default on nearly
-// every chapter) carries no information and must normalize to "" like ChapLanguage, so
-// the text listing shows no spurious "[lang: und]" and --json omits the field.
+// TestChapterIETFUndNormalized: an "und" ChapLanguageIETF (mkvmerge's default) normalizes
+// to "" like ChapLanguage, so the listing shows no "[lang: und]" and --json omits it.
 func TestChapterIETFUndNormalized(t *testing.T) {
 	disp := encElement(idChapDisplay, cat(
 		stringElement(idChapString, "Intro"),
@@ -335,9 +327,8 @@ func TestChapterIETFUndNormalized(t *testing.T) {
 	}
 }
 
-// TestTitleSimpleTagMigratesWithoutDuplicate is a regression guard: a file whose title
-// lives only in an album TITLE SimpleTag (no Info.Title) migrates that title into
-// Info.Title on any edit.
+// TestTitleSimpleTagMigratesWithoutDuplicate: a title that lives only in an album TITLE
+// SimpleTag (no Info.Title) migrates into Info.Title on any edit, without a duplicate.
 func TestTitleSimpleTagMigratesWithoutDuplicate(t *testing.T) {
 	// An Info element with no Title child (title lives only in a SimpleTag), plus an album
 	// group carrying TITLE + ARTIST.
@@ -381,7 +372,7 @@ func TestTitlePreservedWhenNoInfo(t *testing.T) {
 	titleTag := encElement(idSimpleTag, cat(stringElement(idTagName, "TITLE"), stringElement(idTagString, "MyTitle")))
 	artist := encElement(idSimpleTag, cat(stringElement(idTagName, "ARTIST"), stringElement(idTagString, "A")))
 	tags := encElement(idTags, encElement(idTag, cat(targets, titleTag, artist)))
-	src := segBytes(cat(tags, emptyCluster())) // deliberately no Info element
+	src := segBytes(cat(tags, emptyCluster())) // no Info element
 
 	base := parseMKA(t, src)
 	if base.Native.(*doc).wb.info != nil {
@@ -550,10 +541,9 @@ func TestStaleSeekHeadAfterAbsorbingDuplicateMaster(t *testing.T) {
 	}
 }
 
-// TestMatroskaAttachmentDescriptionSanitized is the picture-description half of the
-// parsed- text sanitization: a cover attachment's FileDescription is stored as raw
-// bytes, so a non-conformant file can hold invalid UTF-8 that a transfer would
-// otherwise re-add and the write-time guard reject.
+// TestMatroskaAttachmentDescriptionSanitized: a cover attachment's FileDescription
+// (raw bytes) is sanitized on parse, so a transfer cannot re-add invalid UTF-8 that
+// the write-time check would reject.
 func TestMatroskaAttachmentDescriptionSanitized(t *testing.T) {
 	att := encElement(idAttachments, encElement(idAttached, cat(
 		stringElement(idFileName, "cover.png"),
@@ -607,9 +597,8 @@ func TestMultipleDisplaysAreLossy(t *testing.T) {
 	}
 }
 
-// TestDuplicateChapStringIsLossy: a single ChapterDisplay with two ChapString elements
-// keeps only the first - the second is silently dropped unless lossy is flagged, so
-// this guards that the duplicate-string case is part of the silent-loss class.
+// TestDuplicateChapStringIsLossy: a ChapterDisplay with two ChapString elements keeps
+// only the first, so it must trip the flatten warning.
 func TestDuplicateChapStringIsLossy(t *testing.T) {
 	disp := encElement(idChapDisplay, cat(
 		stringElement(idChapString, "Intro"),
@@ -623,9 +612,8 @@ func TestDuplicateChapStringIsLossy(t *testing.T) {
 	}
 }
 
-// TestUnmodeledChapterChildStillWarns: an unmodeled ChapterAtom child the flat model
-// cannot carry (here a ChapProcess) still trips the flatten warning on a chapter edit,
-// so the broadened lossy detection covers the whole silent-loss class.
+// TestUnmodeledChapterChildStillWarns: an unmodeled ChapterAtom child (here a
+// ChapProcess) trips the flatten warning on a chapter edit.
 func TestUnmodeledChapterChildStillWarns(t *testing.T) {
 	const idChapProcess = 0x6944
 	atom := encElement(idChapterAtom, cat(

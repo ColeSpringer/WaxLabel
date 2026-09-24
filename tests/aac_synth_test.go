@@ -10,8 +10,8 @@ import (
 
 // adtsStream builds a synthetic raw-AAC (ADTS) stream: `frames` AAC-LC frames at 44.1 kHz with the
 // given channel configuration, each a 7-byte fixed header (no CRC) plus payloadPerFrame zero
-// payload bytes. It is a real, detectable ADTS stream; enough to drive detection and the
-// verbatim-copy write path without an encoder.
+// payload bytes. That is enough to drive detection and the verbatim-copy write path without an
+// encoder.
 func adtsStream(chanConfig, frames, payloadPerFrame int) []byte {
 	const hdr = 7 // ADTS fixed header without CRC
 	frameLen := hdr + payloadPerFrame
@@ -88,8 +88,8 @@ func TestAACFrontID3Detection(t *testing.T) {
 	}
 }
 
-// layer-bit split: an ADTS stream is AAC (layer 00, which MP3 frame decoding rejects), and a real
-// MPEG stream stays MP3 (never misread as AAC).
+// layer-bit split: an ADTS stream is AAC (layer 00, which MP3 frame decoding rejects), and an MPEG
+// stream stays MP3.
 func TestAACMP3MutualExclusivity(t *testing.T) {
 	if doc := mustParseBytes(t, adtsStream(2, 8, 200)); doc.Format() != wl.FormatAAC {
 		t.Errorf("ADTS stream detected as %v, want AAC", doc.Format())
@@ -99,9 +99,8 @@ func TestAACMP3MutualExclusivity(t *testing.T) {
 	}
 }
 
-// signature-only front-ID3 peek: a file named .aac that is a leading ID3 followed by non-ADTS bytes
-// must NOT be reclassified to AAC by its extension alone; the sniffed leading ID3 (MP3) stands,
-// since only a real signature behind the tag may override it.
+// signature-only front-ID3 peek: a leading ID3 followed by non-ADTS bytes in a file named .aac
+// stays MP3. Only a signature behind the tag may override the sniffed ID3; the extension may not.
 func TestAACExtensionDoesNotOverrideSniff(t *testing.T) {
 	data := append(id3v2(4, textFrame(4, "TIT2", "x")), 0, 1, 2, 3, 4, 5, 6, 7) // no ADTS sync
 	path := writeTempFile(t, "garbage.aac", data)

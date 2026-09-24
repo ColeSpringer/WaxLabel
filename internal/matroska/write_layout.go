@@ -65,8 +65,8 @@ func planAbsorb(d *doc, base, edited *core.Media, ch changes, ed *editDecisions,
 		return nil, err
 	}
 
-	// A changed element in the post-cluster tail, or a drop of an existing
-	// element, is not absorption-friendly - the shift path rebuilds the SeekHead.
+	// A changed element in the post-cluster tail, or a drop of an existing element,
+	// needs the shift path, which rebuilds the SeekHead.
 	for _, c := range wb.children {
 		switch {
 		case c.id == idTags && ch.simple:
@@ -142,9 +142,8 @@ func planAbsorb(d *doc, base, edited *core.Media, ch changes, ed *editDecisions,
 		return nil, errFallback
 	}
 	// Created top-level elements (origStart -1) are appended but not added to an existing
-	// SeekHead, matching the shift path: the index is patched in place at a stable size,
-	// and SeekHead is an optional index (readers scan level-1 elements to find an
-	// unindexed Tags/Attachments/Chapters).
+	// SeekHead, as in the shift path: the index is patched in place at a stable size, and
+	// readers scan level-1 elements for an unindexed Tags/Attachments/Chapters.
 	if ch.simple && !tagsPlaced && r.tags != nil {
 		items = append(items, litItem(idTags, r.tags, -1, itemTags))
 	}
@@ -202,9 +201,9 @@ func planAbsorb(d *doc, base, edited *core.Media, ch changes, ed *editDecisions,
 	return &core.WritePlan{Segments: lay.segs, NoOp: false, Report: report, Result: result}, nil
 }
 
-// rendered holds every Segment child an edit re-rendered, so the two write
-// strategies and buildResult thread one value rather than a long parameter list.
-// A nil tags/attach/chapters byte slice means that element is dropped.
+// rendered holds every Segment child an edit re-rendered, shared by the two write
+// strategies and buildResult. A nil tags/attach/chapters slice means the element is
+// dropped.
 type rendered struct {
 	tags         []byte
 	groups       []tagGroup
@@ -285,9 +284,8 @@ func assembleItems(wb *writeBase, items []outItem, delta int64) layout {
 			lay.cuesStart = nc.start
 		}
 	}
-	// Cues bytes for the result: unchanged in absorption (clusters fixed), so the
-	// base bytes apply at the (possibly shifted) start. The shift path overrides
-	// this with patched bytes.
+	// Cues bytes for the result: absorption never moves clusters, so the base bytes
+	// apply at the (possibly shifted) start. The shift path overrides them.
 	if wb.cues != nil && lay.cuesRaw == nil {
 		lay.cuesRaw = wb.cues.raw
 		if lay.cuesStart == 0 {
@@ -305,10 +303,9 @@ func assembleItems(wb *writeBase, items []outItem, delta int64) layout {
 	return lay
 }
 
-// childStart returns the new file offset of the first output child with the given ID,
-// so the result document's SeekHead/Cues/Info positions reflect their true new location
-// (a copied-but-relocated element does not simply shift by the total delta) and so
-// equal a fresh parse of the output.
+// childStart returns the new file offset of the first output child with the given ID.
+// The result document's SeekHead/Cues/Info positions come from it because a copied
+// element does not necessarily shift by the total delta.
 func childStart(children []l1elem, id uint64) int64 {
 	for _, c := range children {
 		if c.id == id {
@@ -354,8 +351,8 @@ func patchSeekAbsorb(sh *seekHead, segDataStart int64, oldToNew map[int64]int64,
 	for _, e := range sh.entries {
 		abs := segDataStart + int64(e.target)
 		if absorbed[abs] {
-			// The entry targets a dropped duplicate master; its bytes are gone, so there
-			// is no in-place value to write. Rebuild the SeekHead via the shift path.
+			// The entry targets a dropped duplicate master, so there is no in-place value
+			// to write; the shift path rebuilds the SeekHead without it.
 			return nil, false
 		}
 		newAbs, ok := oldToNew[abs]
@@ -426,9 +423,9 @@ func buildResult(d *doc, edited *core.Media, r *rendered, ch changes, lay layout
 		nd.attachments = r.atts
 	}
 
-	// Re-derive the chapter view from the rendered bytes (re-parsing them, the
-	// seekFromRaw pattern) so the returned Document's chapters equal a fresh parse;
-	// an edit that dropped the Chapters element leaves none.
+	// Re-parse the chapter view from the rendered bytes (the seekFromRaw pattern) so
+	// the returned Document's chapters equal a fresh parse; a dropped Chapters element
+	// leaves none.
 	var resChapters []core.Chapter
 	if ch.chapters {
 		nd.chapters, resChapters = chaptersFromRaw(lay.chaptersRaw, depth, limit)
@@ -486,10 +483,9 @@ func buildResult(d *doc, edited *core.Media, r *rendered, ch changes, lay layout
 		Native:     nd,
 		Identity:   core.Identity{Size: lay.size},
 	}
-	// Mirror the parse side: essence digests hash only Cluster runs, so a segment with no
-	// clusters reports no audio extent - keeping the absorb and shift paths consistent
-	// with a fresh parse (a clusterless segment with trailing bytes otherwise let the
-	// absorb path report AudioStart = segDataEnd while shift and parse reported 0).
+	// Mirror the parse side: essence digests hash only Cluster runs, so a segment with
+	// no clusters reports no audio extent. A clusterless segment with trailing bytes
+	// would otherwise report AudioStart = segDataEnd here while parse reports 0.
 	if runs := clusterRuns(lay.children); len(runs) > 0 {
 		res.AudioStart = lay.clusterStart
 		res.AudioRanges = runs
@@ -521,8 +517,7 @@ func clusterRuns(children []l1elem) [][2]int64 {
 }
 
 // resultPictures returns the picture set the post-write Document reports: the
-// picture-level reprojection of the edited set, which equals a fresh parse of the
-// written cover set.
+// reprojected edited set, which equals a fresh parse of the written covers.
 func resultPictures(pics []core.Picture) []core.Picture {
 	return reprojectPictures(pics)
 }
@@ -534,7 +529,7 @@ func reprojectPictures(pics []core.Picture) []core.Picture {
 	for _, p := range pics {
 		name := coverFileName(p)
 		if !isCoverAttachment(p.MIME, name) {
-			continue // would read back as a plain attachment, not a cover - keep result==reparse
+			continue // reads back as a plain attachment, not a cover
 		}
 		np := core.Picture{
 			Type:        pictureType(name),

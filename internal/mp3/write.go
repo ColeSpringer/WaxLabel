@@ -12,7 +12,6 @@ import (
 
 // Plan builds the rewrite. Front ID3v2 re-rendered (source version; untouched
 // frames kept); MPEG and trailing legacy copied unless stripped.
-
 func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.WriteOptions) (*core.WritePlan, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -33,16 +32,14 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 
 	report := core.WriteReport{Format: core.FormatMP3, BytesBefore: edited.Identity.Size}
 
-	// Choose the ID3v2 version (preserve the source's; the format default for a
-	// brand-new tag). Hoisted above the fast path so the encoding predicate can see the
-	// source frames.
+	// Preserve the source version; format default for a new tag. Above the fast path so
+	// the encoding predicate can see the source frames.
 	srcTag := d.id3
 	if srcTag == nil {
 		srcTag = id3.NewEmpty(core.DefaultID3Version(core.FormatMP3))
 	}
 	version := srcTag.WriteVersion()
-	// One WriteOpts for both the predicate and the rebuild: they must render from identical
-	// options, or the predicate could green-light a write the rebuild then renders differently.
+	// One WriteOpts for both the predicate and the rebuild, so they cannot disagree.
 	wopts := id3.WriteOpts{Multi: opts.ID3Multi, NumericGenre: opts.NumericGenre}
 	// Write-encoding (--numeric-genre) is invisible to tag compare; force a rewrite.
 
@@ -122,9 +119,8 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 			report.Operations = append(report.Operations, "APEv2 preservation")
 		}
 		if id3v1Len > 0 {
-			// Copy the full detected ID3v1 run (id3v1Len), not a hardcoded 128: a double-stacked
-			// trailer captured by the parser is 256+ bytes, and a literal 128 here would preserve
-			// only the last block and silently truncate the inner one on a normal edit.
+			// Copy the whole detected ID3v1 run (id3v1Len), not a literal 128: a stacked trailer
+			// is 256+ bytes, and 128 would keep only the last block.
 			segs = append(segs, bits.Copy(d.size-id3v1Len, id3v1Len))
 			report.Operations = append(report.Operations, "ID3v1 preservation")
 		}
@@ -146,9 +142,8 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	return &core.WritePlan{Segments: segs, NoOp: false, Report: report, Result: result}, nil
 }
 
-// buildResult constructs the post-write Media so the engine can return a
-// Document without re-parsing. The frames actually written are re-projected, so
-// the result equals a fresh parse of the bytes for the canonical view.
+// buildResult constructs the post-write Media without re-parsing. The written frames
+// are re-projected, so the canonical view equals a fresh parse of the bytes.
 func buildResult(edited *core.Media, base *doc, newTag *id3.Tag, tagBytes []byte,
 	audioLen, apeLen, id3v1Len, newSize int64) *core.Media {
 
@@ -171,9 +166,8 @@ func buildResult(edited *core.Media, base *doc, newTag *id3.Tag, tagBytes []byte
 		nd.id3v1 = slices.Clone(base.id3v1)
 	}
 	proj := id3.Project(newTag)
-	// Re-add the preserved legacy containers to the family view so the returned
-	// document matches a fresh parse of the written bytes (conflicts recomputed
-	// against the new ID3v2 values).
+	// Re-add the preserved legacy containers to the family view, with conflicts
+	// recomputed against the new ID3v2 values, to match a fresh parse.
 	families := append(proj.Families, legacyFamilies(proj.Tags, nd.id3v1, nd.apeTag)...)
 	// Carry source-parse warnings forward, but drop a stale chapter-flatten note when the
 	// written tag no longer flattens. AAC uses the same helper for the same front-tag path.
@@ -183,8 +177,8 @@ func buildResult(edited *core.Media, base *doc, newTag *id3.Tag, tagBytes []byte
 		Properties: edited.Properties.Clone(),
 		Tags:       proj.Tags,
 		Families:   families,
-		// Recompute opaque legacy content from the APEv2 actually preserved, so the returned
-		// Document matches a fresh parse (a legacy strip left nd.apeTag nil, so this is false then).
+		// Recompute opaque legacy content from the preserved APEv2 to match a fresh parse;
+		// after a legacy strip nd.apeTag is nil, so this is false.
 		LegacyOpaqueContent: apeHasNonText(nd.apeTag),
 		Pictures:            core.ClonePictures(edited.Pictures),
 		Chapters:            core.ChaptersOpenedPastDuration(proj.Chapters, nd.track.Duration),

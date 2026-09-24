@@ -20,26 +20,25 @@ import (
 // the title (CHAPTERxxxNAME) comments.
 const chapterNamePrefix = "CHAPTER"
 
-// MaxChapters is the most chapters the CHAPTERxxx convention can hold inside its 3-digit
-// namespace: a 1000-entry list numbers CHAPTER000..CHAPTER999, and one more would need a
-// 4-digit key that no other reader recognizes. Formats backed by VorbisComment enforce it
-// through Capabilities.Chapters.MaxItems.
+// MaxChapters is the most chapters the 3-digit CHAPTERxxx namespace holds: a
+// 1000-entry list numbers CHAPTER000..CHAPTER999, and one more would need a 4-digit
+// key no other reader recognizes. VorbisComment formats enforce it through
+// Capabilities.Chapters.MaxItems.
 const MaxChapters = 1000
 
 // maxChapterSec is the largest whole-second chapter offset parseChapterTime accepts
-// (1,000,000 hours). Anything past it is treated as malformed on read, so the writer
-// clamps to it: an over-range edited chapter is stored at the ceiling (and warned) rather
-// than written unreadably and silently dropped on the next parse.
+// (1,000,000 hours). Past it a comment reads as malformed, so the writer clamps an
+// over-range chapter start to it (and warns) instead of writing a value the next
+// parse would drop.
 const maxChapterSec = int64(1_000_000) * 3600
 
-// maxChapterDuration is that ceiling as a Duration - the exact value chapterComments clamps
-// an over-range chapter start to.
+// maxChapterDuration is that ceiling as a Duration, the value chapterComments clamps to.
 const maxChapterDuration = time.Duration(maxChapterSec) * time.Second
 
 // parseChapterName splits a CHAPTERxxx / CHAPTERxxxNAME comment name into its numeric
-// index and whether it is the NAME (title) half. ok is false for any other name, including
-// a CHAPTER prefix with no digits ("CHAPTERS") or a different field, so a genuine custom
-// tag is never mistaken for a chapter comment.
+// index and whether it is the NAME (title) half. ok is false for any other name,
+// including a CHAPTER prefix with no digits ("CHAPTERS"), so a custom tag is never
+// mistaken for a chapter comment.
 func parseChapterName(name string) (index int, isTitle bool, ok bool) {
 	up := strings.ToUpper(name)
 	rest, found := strings.CutPrefix(up, chapterNamePrefix)
@@ -67,11 +66,10 @@ func isChapterComment(name string) bool {
 	return ok
 }
 
-// ProjectChapters decodes the CHAPTERxxx/CHAPTERxxxNAME comments into an ordered chapter
-// list ordered by chapter number. A comment with no parseable timestamp contributes no
-// chapter. A stray CHAPTERxxxNAME with no CHAPTERxxx is not a chapter, but it is still
-// owned: unrelated edits preserve it, and chapter edits replace it with the edited set.
-// Returns nil when none.
+// ProjectChapters decodes the CHAPTERxxx/CHAPTERxxxNAME comments into a chapter list
+// sorted by start. A comment with no parseable timestamp contributes no chapter. A
+// stray CHAPTERxxxNAME with no CHAPTERxxx is not a chapter but is still owned:
+// unrelated edits preserve it, chapter edits replace it. Returns nil when none.
 func ProjectChapters(comments []Comment) []core.Chapter {
 	type entry struct {
 		start    time.Duration
@@ -107,27 +105,22 @@ func ProjectChapters(comments []Comment) []core.Chapter {
 			chs = append(chs, core.Chapter{Start: e.start, Title: e.title})
 		}
 	}
-	// Build in CHAPTERxxx index order above, then sort by start so an out-of-order
-	// source (CHAPTER001 later than CHAPTER002) projects in time order, making a load->store
-	// round-trip a no-op; the prior index order breaks ties deterministically for
-	// equal-start chapters. Conformant files (index order == time order) are unaffected.
+	// Sort by start so an out-of-order source (CHAPTER001 later than CHAPTER002)
+	// projects in time order and a load->store round-trip is a no-op; the index order
+	// above breaks ties for equal-start chapters.
 	core.SortChaptersByStart(chs)
 	return chs
 }
 
 // chapterComments renders a chapter list as CHAPTERxxx (+ optional CHAPTERxxxNAME)
-// comments in the common-writer form: 3-digit numbers, 1-based for the usual case. A chapter
-// with an empty title emits no CHAPTERxxxNAME, so it round-trips to a titleless chapter rather
-// than an empty-string title.
+// comments: 3-digit numbers, 1-based below 1000 chapters. A chapter with an empty title
+// emits no CHAPTERxxxNAME, so it round-trips to a titleless chapter.
 //
-// The index is numbered from 0 instead of 1 once there are 1000 or more chapters. ffmpeg and
-// ffprobe parse the CHAPTERxxx convention with a fixed 3-digit key (CHAPTER%03d), so a 4-digit
-// key is unreadable there: at exactly 1000 chapters a 1-based CHAPTER1000 would be 4 digits, and
-// numbering from 0 keeps the whole run 3-digit (CHAPTER000..CHAPTER999) so ffmpeg reads all 1000.
-// Below 1000 the common 1-based CHAPTER001 form is unchanged. Past MaxChapters no 3-digit scheme
-// fits; the editor refuses such a list before it reaches here, so the 4-digit tail this loop would
-// emit is defensive only. WaxLabel's own reader accepts any digit count and round-trips every
-// chapter regardless, which is how a file that already holds one stays readable.
+// At 1000 or more chapters numbering starts from 0. ffmpeg and ffprobe parse the
+// convention with a fixed 3-digit key (CHAPTER%03d), so a 1-based CHAPTER1000 would be
+// unreadable there, while CHAPTER000..CHAPTER999 reads in full. Past MaxChapters no
+// 3-digit scheme fits; the editor refuses such a list first, so the 4-digit tail this
+// loop would emit is defensive only. WaxLabel's own reader accepts any digit count.
 func chapterComments(chs []core.Chapter) ([]Comment, bool) {
 	out := make([]Comment, 0, len(chs))
 	overflow := false
@@ -138,7 +131,7 @@ func chapterComments(chs []core.Chapter) ([]Comment, bool) {
 	for i, ch := range chs {
 		start := ch.Start
 		if start > maxChapterDuration {
-			start = maxChapterDuration // clamp to the reader's ceiling so it round-trips, not silently dropped
+			start = maxChapterDuration // clamp to the reader's ceiling so it round-trips
 			overflow = true
 		}
 		num := fmt.Sprintf("%s%03d", chapterNamePrefix, base+i)
@@ -166,11 +159,10 @@ func formatChapterTime(d time.Duration) string {
 	return fmt.Sprintf("%02d:%02d:%02d.%03d", h, m, s, ms)
 }
 
-// parseChapterTime parses a CHAPTERxxx timestamp leniently: [[HH:]MM:]SS[.fff], where the
-// hour and minute fields, when present, are all-digit and the fractional second is scaled
-// by its digit count (".5" is 500 ms, ".05" is 50 ms, ".050" is 50 ms) and truncated to
-// millisecond precision. It returns false for a malformed value so the caller preserves
-// the comment verbatim rather than minting a bogus chapter.
+// parseChapterTime parses a CHAPTERxxx timestamp leniently: [[HH:]MM:]SS[.fff]. Hour
+// and minute fields are all-digit; the fraction scales by its digit count (".5" is
+// 500 ms, ".05" and ".050" are 50 ms) and truncates to milliseconds. It returns false
+// for a malformed value so the caller preserves the comment verbatim.
 func parseChapterTime(s string) (time.Duration, bool) {
 	s = strings.TrimSpace(s)
 	parts := strings.Split(s, ":")
@@ -208,9 +200,8 @@ func parseChapterTime(s string) (time.Duration, bool) {
 		}
 		ms, _ = strconv.Atoi(fracStr[:3])
 	}
-	// Reject absurd values before they can overflow time.Duration. The generous final
-	// ceiling is far past any real chapter; beyond it the comment is treated as malformed
-	// and preserved through unrelated edits.
+	// Reject absurd values before they can overflow time.Duration. Past the final
+	// ceiling the comment is treated as malformed and preserved through unrelated edits.
 	const maxField = 1 << 32 // keeps h*3600 + m*60 + sec inside int64
 	if int64(h) > maxField || int64(m) > maxField || int64(sec) > maxField {
 		return 0, false

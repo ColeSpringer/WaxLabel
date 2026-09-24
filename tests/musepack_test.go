@@ -17,8 +17,8 @@ import (
 )
 
 // Musepack synthesis. ffmpeg has no Musepack encoder, so both stream versions are
-// built here rather than shipped as binary fixtures; ffprobe's mpc7 and mpc8
-// decoders still read them back, which is what makes the differential test possible.
+// built here; ffprobe's mpc7 and mpc8 decoders still read them back, which makes
+// the differential test possible.
 
 // mpcVarlen encodes Musepack's variable-length number: seven bits per byte,
 // big-endian, high bit set on every byte but the last.

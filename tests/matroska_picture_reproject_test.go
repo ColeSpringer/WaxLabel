@@ -10,8 +10,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// regression guard: a picture whose role Matroska reduces to Other must not re-trigger an
-// attachment rewrite on every copy.
+// A picture whose role Matroska reduces to Other must not re-trigger an attachment rewrite on
+// every copy.
 func TestMatroskaNonFrontCoverCopyIdempotent(t *testing.T) {
 	png := tinyPNG()
 	cover := mkEl(idAttachments, mkEl(idAttached, concat(
@@ -24,8 +24,8 @@ func TestMatroskaNonFrontCoverCopyIdempotent(t *testing.T) {
 	if pics := doc.Pictures(); len(pics) != 1 || pics[0].Type != wl.PicOther {
 		t.Fatalf("setup: expected 1 Other-role cover, got %+v", doc.Pictures())
 	}
-	// Replace it with a back-cover role carrying the same bytes; what a cross-format copy yields (an
-	// MP3/FLAC back cover Matroska cannot represent, so it reduces to Other).
+	// Replace it with a back-cover role carrying the same bytes, as a cross-format copy from an
+	// MP3/FLAC back cover yields; Matroska cannot represent the role, so it reduces to Other.
 	plan, err := doc.Edit().
 		RemovePictures(func(wl.Picture) bool { return true }).
 		AddPicture(wl.Picture{Type: wl.PicBackCover, Data: slices.Clone(png)}).
@@ -38,9 +38,8 @@ func TestMatroskaNonFrontCoverCopyIdempotent(t *testing.T) {
 	}
 }
 
-// read/write-symmetry regression: a non-image cover embedded under --force is written under the
-// cover-art file name (cover.<ext>), so it now reads back as one Unrecognized() picture rather than
-// vanishing as a plain attachment.
+// A non-image cover embedded under --force is written under the cover-art file name
+// (cover.<ext>), so it reads back as one Unrecognized() picture, not a plain attachment.
 func TestMatroskaForceNonImageReprojectsAsCover(t *testing.T) {
 	data := buildMatroska("matroska", "force-cover", nil)
 	nonImage := wl.Picture{Type: wl.PicFrontCover, MIME: "application/octet-stream", Data: []byte("plain file, not an image")}
@@ -69,7 +68,7 @@ func TestMatroskaForceNonImageReprojectsAsCover(t *testing.T) {
 	}
 }
 
-// report repro: repeating `--remove-pictures --add-cover garbage.bin --force` must not stack
+// Repeating `--remove-pictures --add-cover garbage.bin --force` must not stack
 // cover_1/cover_2/...
 func TestMatroskaForceCoverNoAccumulation(t *testing.T) {
 	letter := mkEl(idAttachments, mkEl(idAttached, concat(
@@ -101,7 +100,7 @@ func TestMatroskaForceCoverNoAccumulation(t *testing.T) {
 		t.Errorf("after two --force rounds: %d covers, want 1 (no cover_<n> accumulation)", len(pics))
 	}
 
-	// --remove-pictures now clears the forced cover (a picture, not an unremovable attachment).
+	// --remove-pictures clears the forced cover (a picture, not an unremovable attachment).
 	clr, err := mustParseBytes(t, out).Edit().RemovePictures(func(wl.Picture) bool { return true }).Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -119,9 +118,9 @@ func TestMatroskaForceCoverNoAccumulation(t *testing.T) {
 	}
 }
 
-// guards the cover-name gate's scope: an attachment named exactly cover.txt but carrying a
-// non-image, non-octet-stream MIME (text/plain) is NOT promoted to a picture; only an image MIME or
-// WaxLabel's --force octet-stream cover is.
+// The cover-name gate's scope: an attachment named cover.txt with a non-image, non-octet-stream
+// MIME (text/plain) is not promoted to a picture; only an image MIME or WaxLabel's --force
+// octet-stream cover is.
 func TestMatroskaCoverNamedNonImageStaysAttachment(t *testing.T) {
 	att := mkEl(idAttachments, mkEl(idAttached, concat(
 		mkStr(idFileName, "cover.txt"), // a valid cover *name* but a text MIME
@@ -153,10 +152,9 @@ func TestMatroskaCoverNamedNonImageStaysAttachment(t *testing.T) {
 	}
 }
 
-// in the deliberate consequence of the octet-stream cover gate: a FOREIGN application/octet-stream
-// attachment named cover.bin (not authored by WaxLabel) reprojects as a removable Unrecognized()
-// picture, and an unrelated edit rebuilds it under the cover-art convention rather than preserving
-// it verbatim.
+// A consequence of the octet-stream cover gate: a foreign application/octet-stream attachment
+// named cover.bin (not authored by WaxLabel) reprojects as a removable Unrecognized() picture,
+// and an unrelated edit rebuilds it under the cover-art convention.
 func TestMatroskaForeignOctetCoverReprojects(t *testing.T) {
 	foreign := mkEl(idAttachments, mkEl(idAttached, concat(
 		mkStr(idFileName, "cover.bin"),
@@ -183,9 +181,9 @@ func TestMatroskaForeignOctetCoverReprojects(t *testing.T) {
 	}
 }
 
-// guards against silent data loss for a directly-authored picture whose declared MIME is neither an
-// image nor an octet-stream cover (a caller doing AddPicture{MIME:"text/plain"|"application/pdf"} +
-// WithUnrecognizedPictures).
+// A directly-authored picture whose declared MIME is neither an image nor an octet-stream cover
+// (AddPicture{MIME:"text/plain"|"application/pdf"} + WithUnrecognizedPictures) is stored, not
+// lost.
 func TestMatroskaNonCoverMIMEStoredAsForcedCover(t *testing.T) {
 	data := buildMatroska("matroska", "reject", nil)
 	for _, mime := range []string{"text/plain", "application/pdf", "application/octet-stream"} {

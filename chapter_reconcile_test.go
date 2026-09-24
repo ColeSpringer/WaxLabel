@@ -148,7 +148,7 @@ func TestCoincidentStartChapterEndPreservedRoundTrip(t *testing.T) {
 			if a == nil {
 				t.Fatalf("chapter A not found after round-trip; chapters=%+v", got.Chapters())
 			}
-			// Keep End=600ms; old next >= Start guard collapsed A onto the shared start.
+			// A next >= Start guard would collapse A's end onto the shared start.
 			if a.End != 600*ms {
 				t.Errorf("chapter A End = %v, want 600ms preserved end to end", a.End)
 			}

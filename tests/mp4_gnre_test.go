@@ -25,9 +25,9 @@ func gnreDataAtom(t *testing.T, out []byte) (typ uint32, value []byte) {
 	return binary.BigEndian.Uint32(da[8:12]) & 0x00FFFFFF, da[16:size]
 }
 
-// with --numeric-genre a recognized GENRE is written as the legacy numeric "gnre" atom; an
-// IMPLICIT-type (class 0) data atom holding the 1-based ID3v1 index; which the parser folds back to
-// the genre name.
+// With --numeric-genre a recognized GENRE is written as the legacy numeric "gnre" atom, an
+// IMPLICIT-type (class 0) data atom holding the 1-based ID3v1 index, which the parser folds
+// back to the genre name.
 func TestMP4NumericGenreWritesGnre(t *testing.T) {
 	base := mp4Tagged(mp4Text("\xa9nam", "T"))
 

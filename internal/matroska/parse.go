@@ -25,10 +25,9 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	size := src.Size()
 	limit := opts.Limits.MaxAllocBytes
 	// The depth guard also carries the per-parse breadth budget: eachChild counts every
-	// metadata element it visits against MaxElements, so the
-	// SimpleTag/attachment/seek/cue/ chapter walks cannot amplify a flat run of empty EBML
-	// elements into descriptors to OOM (clusters, walked by walkSegment, are exempt - see
-	// eachChild and TestMatroska*Clusters).
+	// metadata element against MaxElements, so a flat run of empty EBML elements cannot
+	// amplify into descriptors and OOM. Clusters, walked by walkSegment, are exempt; see
+	// eachChild and TestMatroska*Clusters.
 	depth := bits.NewDepth(opts.Limits.MaxDepth).WithElementCap(opts.Limits.MaxElements, "Matroska metadata elements")
 
 	d := &doc{}
@@ -109,9 +108,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 		case idTracks:
 			parseTracks(src, el, depth, limit, d)
 		case idTags:
-			// A merged element adopts the FIRST master's framing (the layout keeps the
-			// first master and absorbs the rest), so capture the CRC flag once; still parse
-			// every master so the later groups merge.
+			// The layout keeps the first Tags master and absorbs the rest, so capture the CRC
+			// flag from the first only. Every master is still parsed so its groups merge.
 			if !tagsSeen {
 				wb.tagsCRC = firstChildIsCRC(src, el, limit)
 				tagsSeen = true
@@ -119,8 +117,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 			return parseTags(src, el, depth, limit, d)
 		case idAttachments:
 			// Keep the first Attachments master's framing (the one the layout preserves);
-			// still parse every master so later files merge. wb.attach is a pointer, so a
-			// nil check gates it to the first.
+			// still parse every master so later files merge.
 			if wb.attach == nil {
 				wb.attach = &attachBlock{start: el.start, end: el.dataEnd, hasCRC: firstChildIsCRC(src, el, limit)}
 			}
@@ -188,9 +185,8 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	return media, nil
 }
 
-// readDocType returns the EBML header's DocType ("matroska" or "webm"). It is an
-// informational container label, so a read error degrades to "" rather than
-// failing the parse.
+// readDocType returns the EBML header's DocType ("matroska" or "webm"), or "" on a
+// read error: it is only an informational container label.
 func readDocType(src core.ReaderAtSized, ebml element, depth *bits.Depth, limit int64) string {
 	var dt string
 	_ = eachChild(src, ebml.dataStart, ebml.dataEnd, depth, limit, func(c element) error {
@@ -230,9 +226,8 @@ func parseInfo(src core.ReaderAtSized, info element, depth *bits.Depth, limit in
 	if err != nil {
 		return 0, err
 	}
-	// Guard NaN/Inf explicitly: comparisons against NaN are all false, and a
-	// float->int64 conversion of an out-of-range or NaN value is implementation-
-	// defined in Go.
+	// Check NaN explicitly: comparisons against NaN are all false, and converting an
+	// out-of-range or NaN float to int64 is implementation-defined in Go.
 	ns := duration * float64(scale)
 	if math.IsNaN(ns) || ns <= 0 || ns >= float64(1<<62) {
 		return 0, nil
@@ -268,8 +263,8 @@ func parseTrackEntry(src core.ReaderAtSized, entry element, depth *bits.Depth, l
 		case idTrackNumber:
 			t.Index = intVal(readUint(src, el, limit))
 		case idAudio:
-			// Only overwrite when this element declared one: a malformed entry with a second,
-			// silent Audio child must not erase what the first one said.
+			// Only overwrite when this Audio child declared one, so a malformed second,
+			// empty Audio child does not erase the first.
 			if r := parseAudio(src, el, depth, limit, &t); r > 0 {
 				outputRate = r
 			}
@@ -283,8 +278,7 @@ func parseTrackEntry(src core.ReaderAtSized, entry element, depth *bits.Depth, l
 		return
 	}
 	t.Codec = codecName(codecID)
-	// The digest salt is SamplingFrequency, the element it has always been, so copy it
-	// before the played rate replaces the reported one.
+	// The digest salt is SamplingFrequency, so copy it before the output rate replaces it.
 	if len(d.tracks) == 0 {
 		d.codecID = codecID
 		d.sampleRate = t.SampleRate
@@ -297,9 +291,9 @@ func parseTrackEntry(src core.ReaderAtSized, entry element, depth *bits.Depth, l
 		t.SampleRate = outputRate
 	}
 	if strings.HasPrefix(codecID, "A_AAC") {
-		// Read the private data only here, and only the prefix the decoder can consume: a
-		// Vorbis or FLAC CodecPrivate holds whole setup headers this parser has no use for,
-		// and an AAC one that declares megabytes should not be allocated to read 24 bytes.
+		// Read CodecPrivate only for AAC and only the prefix the decoder consumes: Vorbis
+		// and FLAC private data hold whole setup headers, and an AAC one that declares
+		// megabytes must not be allocated to read 24 bytes.
 		b, _ := readBytesPrefix(src, private, maxAudioSpecificConfig, limit)
 		applyAACCodecPrivate(&t, codecID, b, outputRate > 0)
 	}
@@ -318,13 +312,13 @@ func applyAACCodecPrivate(t *core.AudioTrack, codecID string, private []byte, ha
 	}
 	switch {
 	case asc.SBRSignalled || asc.SBR:
-		// The config addressed SBR, so it is the stream's own account of itself and outranks
-		// a suffix the muxer may have left stale.
+		// The config addressed SBR, so it outranks a CodecID suffix the muxer may have left
+		// stale.
 		t.Codec = asc.ProfileName()
 	case fromID != "AAC":
-		// The config said nothing about SBR, so the suffix's claim stands unopposed. Letting
-		// the config win here would turn A_AAC/MPEG4/LC/SBR into "AAC LC", losing a fact the
-		// same file reports correctly when it carries no CodecPrivate at all.
+		// The config said nothing about SBR, so the suffix stands. Letting the config win
+		// would turn A_AAC/MPEG4/LC/SBR into "AAC LC", while the same file with no
+		// CodecPrivate reads HE-AAC.
 		t.Codec = fromID
 	default:
 		t.Codec = asc.ProfileName()
@@ -332,8 +326,8 @@ func applyAACCodecPrivate(t *core.AudioTrack, codecID string, private []byte, ha
 	if haveOutputRate || !asc.SBR {
 		return
 	}
-	// The container under-declared, so the config supplies the played geometry - the channel
-	// count with the rate, or a parametric-stereo track reads as stereo at one channel.
+	// The container under-declared, so the config supplies the played rate and channel
+	// count; a parametric-stereo track would otherwise read as one channel.
 	if r := asc.OutputSampleRate(); r > 0 {
 		t.SampleRate = r
 	}
@@ -425,8 +419,8 @@ func parseTag(src core.ReaderAtSized, tagEl element, depth *bits.Depth, limit in
 			if err != nil {
 				return err
 			}
-			// Capture raw only for the top-level SimpleTag: its bytes already span the whole
-			// nested subtree, and only a top-level tag's raw is ever consumed by the write path.
+			// Capture raw only for the top-level SimpleTag: its bytes span the whole nested
+			// subtree, and the write path reads no nested tag's raw.
 			st.raw = captureRaw(src, el, limit)
 			g.tags = append(g.tags, st)
 		}
@@ -459,8 +453,7 @@ func parseTargets(src core.ReaderAtSized, targets element, depth *bits.Depth, li
 // parseSimpleTag reads a SimpleTag (name/value/language) and recurses into any
 // nested sub-tags. eachChild's depth guard bounds the recursion.
 func parseSimpleTag(src core.ReaderAtSized, st element, depth *bits.Depth, limit int64) (simpleTag, error) {
-	// Leave raw nil here: the caller sets it on the top-level tag only. A nested
-	// sub-tag's raw is never read (its bytes are already part of the top-level raw).
+	// raw stays nil here; parseTag sets it on the top-level tag only.
 	s := simpleTag{}
 	err := eachChild(src, st.dataStart, st.dataEnd, depth, limit, func(el element) error {
 		switch el.id {
@@ -538,10 +531,9 @@ func parseAttached(src core.ReaderAtSized, af element, depth *bits.Depth, limit 
 	if err != nil {
 		return a, nil, err
 	}
-	// A cover is an image MIME, or a --force octet-stream stored under the cover-art file
-	// name: the latter reprojects as an Unrecognized() picture (removable, and rebuilt not
-	// preserved on write) instead of accumulating a new cover_<n> attachment on every
-	// re-add.
+	// A cover is an image MIME, or a --force octet-stream stored under the cover-art
+	// file name. The latter reprojects as an Unrecognized() picture (removable, rebuilt
+	// on write) rather than accumulating a new cover_<n> attachment on every re-add.
 	a.image = isCoverAttachment(a.mime, a.name)
 	if !a.image || !haveData {
 		return a, nil, nil
@@ -553,15 +545,14 @@ func parseAttached(src core.ReaderAtSized, af element, depth *bits.Depth, limit 
 	pic := core.Picture{
 		Type: pictureType(a.name),
 		MIME: a.mime,
-		// Sanitize the attachment description into the canonical picture like the tag-value
-		// read path, so a transfer that re-adds this cover is not rejected by the write-time
-		// UTF-8 guard. The native attachment keeps its raw description (preserved verbatim).
+		// Sanitize the description like the tag-value read path, so a transfer that re-adds
+		// this cover passes the write-time UTF-8 check. The native attachment keeps the
+		// raw description.
 		Description: core.SanitizeUTF8(a.description),
 		Data:        data,
 	}
-	// Let recognizable bytes win over the declared attachment MIME, matching the ID3/MP4
-	// read paths - a mislabeled cover reads as its true type. Matroska accepts any MIME and
-	// has no cover-format write guard, so the stakes are lower, but the principle is shared.
+	// Recognizable bytes win over the declared MIME, as in the ID3/MP4 read paths, so a
+	// mislabeled cover reads as its true type.
 	pic.SniffAuthoritative()
 	return a, &pic, nil
 }
@@ -732,8 +723,7 @@ func projectionOrder(key tag.Key, contribs []scopedContribution) []contributionE
 }
 
 // invalidKeyWarnings reports the SimpleTag names the canonical vocabulary cannot
-// represent, so a value the native tree preserves but the tag set never receives is not
-// silent.
+// represent: the native tree preserves their values but the tag set never sees them.
 func invalidKeyWarnings(d *doc) []core.Warning {
 	var ws []core.Warning
 	seen := map[string]bool{}
@@ -750,7 +740,8 @@ func invalidKeyWarnings(d *doc) []core.Warning {
 }
 
 // unprojectableTagName reports whether a SimpleTag name is dropped because the
-// canonical vocabulary cannot represent it, as opposed to being dropped on purpose.
+// canonical vocabulary cannot represent it, rather than because it is a reserved
+// technical name.
 func unprojectableTagName(name string) bool {
 	if _, ok := mapping.MatroskaTagKey(name); ok {
 		return false
@@ -765,10 +756,8 @@ func projectTag(name, value string, scope core.Scope) []scopedContribution {
 	if !ok {
 		return nil
 	}
-	// Split a slashed track/disc number through the shared read-path helper, which
-	// preserves the exact substrings ("04/09" -> "04"/"09", "0/12" -> "0"/"12") rather
-	// than renumbering through ParseNumPair/strconv.Itoa (which dropped leading zeros and
-	// a literal 0), and leaves a malformed pair verbatim - so Matroska agrees with every
+	// The shared helper keeps the exact substrings ("04/09" -> "04"/"09", "0/12" ->
+	// "0"/"12") and leaves a malformed pair verbatim, so Matroska agrees with every
 	// other read path.
 	num, total, split := tag.NumberTotalSplit(key, value)
 	if !split {
@@ -835,9 +824,9 @@ func mediaWarnings(ts tag.TagSet, fams []core.FamilyValue) []core.Warning {
 	for _, f := range fams {
 		if !f.Selected && !seen[f.Key] {
 			seen[f.Key] = true
-			// A warning has no key field, so the key is appended inline as " (KEY)" - the
-			// same suffix Finding.String renders from lintFamilies' Key field, so the dump
-			// warning and the lint finding read identically.
+			// A warning has no key field, so the key is appended as " (KEY)", the suffix
+			// Finding.String renders from lintFamilies' Key field; dump and lint then read
+			// identically.
 			ws = core.Warn(ws, core.WarnConflictingFamilies, core.ConflictingFamiliesMessage()+" ("+string(f.Key)+")")
 		}
 	}
@@ -859,17 +848,15 @@ func pictureType(name string) core.PictureType {
 	}
 }
 
-// isImageMIME reports whether a MIME labels an image. It is one input to isCoverAttachment (the
-// shared Matroska cover-art gate): an image/* AttachedFile projects into a Picture, as does a
-// cover-named application/octet-stream (a --force-embedded unsniffable cover).
+// isImageMIME reports whether a MIME labels an image. isCoverAttachment, the shared
+// cover-art gate, accepts it or a cover-named application/octet-stream (a --force cover).
 func isImageMIME(mime string) bool {
 	return strings.HasPrefix(strings.ToLower(mime), "image/")
 }
 
-// isCoverName reports whether an attachment file name follows the Matroska cover-art
-// naming convention this codec reads and writes: a base name (before the extension) of
-// exactly "cover" or "small_cover", optionally with WaxLabel's uniquifying numeric
-// suffix ("cover_1", "small_cover_2"), and any (or no) extension.
+// isCoverName reports whether an attachment file name follows the cover-art naming
+// convention: a base name of "cover" or "small_cover", optionally with WaxLabel's
+// numeric suffix ("cover_1", "small_cover_2"), and any or no extension.
 func isCoverName(name string) bool {
 	base := name
 	if i := strings.LastIndexByte(base, '.'); i >= 0 {
@@ -889,9 +876,8 @@ func isCoverName(name string) bool {
 	return false
 }
 
-// isCoverAttachment reports whether an AttachedFile projects as a cover picture. Shared
-// by the read gate, the write attachment record, and the result reprojection so the
-// three cannot drift on what counts as a cover.
+// isCoverAttachment reports whether an AttachedFile projects as a cover picture. The
+// read gate, the write attachment record, and the result reprojection all use it.
 func isCoverAttachment(mime, name string) bool {
 	return isImageMIME(mime) || (mime == core.UnrecognizedMIME && isCoverName(name))
 }

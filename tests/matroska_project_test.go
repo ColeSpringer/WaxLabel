@@ -148,9 +148,9 @@ func TestMatroskaWriteDupEchoPreservesMultiplicity(t *testing.T) {
 	})
 }
 
-// title that lives only in an album-scope TITLE SimpleTag (the Info element has no Title child)
-// must survive an unrelated edit. A Tags re-render drops the managed TITLE SimpleTag, so the writer
-// must migrate the title into the authoritative Info.Title rather than silently dropping it.
+// A title that lives only in an album-scope TITLE SimpleTag (Info has no Title child) must
+// survive an unrelated edit. A Tags re-render drops the managed TITLE SimpleTag, so the writer
+// must migrate the title into the authoritative Info.Title.
 func TestMatroskaWriteTitleOnlyInScopedTag(t *testing.T) {
 	// An Info element present but with no Title child, plus an album-scope TITLE SimpleTag.
 	info := mkEl(idInfo, mkEl(idDuration, make([]byte, 8)))
@@ -192,9 +192,8 @@ func TestMatroskaDuplicateSurvivesWriter(t *testing.T) {
 	}
 }
 
-// copying a duplicate-bearing Matroska ARTIST into FLAC (which writes every value) reports all
-// three carried; the count derives from the now-faithful src.Tags, so the old "0 dropped / fewer
-// carried" misreport is gone.
+// Copying a duplicate-bearing Matroska ARTIST into FLAC (which writes every value) reports all
+// three carried; the count derives from src.Tags.
 func TestMatroskaDuplicateTransferCount(t *testing.T) {
 	data := buildMatroska("matroska", "T", mkEl(idTags, albumTag(
 		mkSimple("ARTIST", "Solo"), mkSimple("ARTIST", "Solo"), mkSimple("ARTIST", "Band"))))

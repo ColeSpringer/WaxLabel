@@ -10,8 +10,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// edit that changes a real key and also supplies a reserved technical name writes the real change,
-// does not emit the technical element, and carries a keyed value-dropped warning.
+// An edit that changes a real key and also supplies a reserved technical name writes the real
+// change, omits the technical element, and carries a keyed value-dropped warning.
 func TestMatroskaTechnicalNameMixedEditDropsWithWarning(t *testing.T) {
 	data := readFixture(t, sampleMKA)
 	before := bytes.Count(data, []byte("DURATION"))
@@ -42,9 +42,8 @@ func TestMatroskaTechnicalNearMissRoundTrips(t *testing.T) {
 	}
 }
 
-// setting only reserved technical names produces an honest no-op plan carrying a keyed
-// value-dropped warning, and executing it changes no bytes; the file never grows an element nothing
-// reads.
+// Setting only reserved technical names produces a no-op plan carrying a keyed value-dropped
+// warning, and executing it changes no bytes; the file never grows an element nothing reads.
 func TestMatroskaTechnicalNameSetIsCleanNoOp(t *testing.T) {
 	for _, fixture := range []string{sampleMKA, sampleWebM} {
 		for _, key := range []string{"DURATION", "BPS", "NUMBER_OF_FRAMES", "_STATISTICS_WRITING_APP"} {

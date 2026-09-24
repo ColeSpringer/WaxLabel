@@ -63,9 +63,8 @@ func TestWavPackSlotlessPictureRefusedWithoutDropOption(t *testing.T) {
 	}
 }
 
-// edit targets the slot, so an added front cover replaces the file's existing front rather than
-// losing to it, and the replacement of pre-existing art is warned. No drop option is needed: the
-// added picture is stored.
+// An edit targets the slot, so an added front cover replaces the file's existing front, and the
+// replacement is warned. No drop option is needed: the added picture is stored.
 func TestWavPackAddedFrontReplacesExisting(t *testing.T) {
 	src := readFixture(t, notagsWV)
 	seed, err := mustParseBytes(t, src).Edit().

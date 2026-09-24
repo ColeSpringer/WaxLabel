@@ -217,8 +217,7 @@ func TestAIFFCapabilitiesAndNative(t *testing.T) {
 
 func TestAIFFCCodecNames(t *testing.T) {
 	// The compression type reads as the same codec and profile it does from a .mov, the
-	// fourcc kept as the profile whatever its case, so one stream reports one thing
-	// whichever QuickTime-family container carried it.
+	// fourcc kept as the profile whatever its case.
 	for _, tc := range []struct {
 		comp        string
 		want        string
@@ -297,9 +296,8 @@ func TestAIFFHostileCOMMBitrateNotNegative(t *testing.T) {
 
 func TestAIFFCorruptId3NotDuplicatedOnForcedRewrite(t *testing.T) {
 	// A lone "ID3 " chunk whose body is not a valid ID3 tag leaves no authoritative ID3. An edit that
-	// forces a new ID3 chunk (adding a picture) must drop the stale chunk so the output carries exactly
-	// one ID3 chunk; not two, which a re-parse would flag as a duplicate, disagreeing with the returned
-	// document.
+	// forces a new ID3 chunk (adding a picture) must drop the stale chunk, or a re-parse flags a
+	// duplicate and disagrees with the returned document.
 	corrupt := aiffID3([]byte("corrupt-not-a-valid-tag")) // fails id3.ParseTag
 	data := aiffFile("AIFF", aiffText("NAME", "T"), stdCOMM(), stdSSND(), corrupt)
 	doc := mustParseBytes(t, data)
@@ -329,7 +327,7 @@ func TestAIFFCorruptId3NotDuplicatedOnForcedRewrite(t *testing.T) {
 func TestAIFFSynthAIFCFloatCodec(t *testing.T) {
 	// A synthetic AIFF-C with an "fl32" compression type: the form type is AIFC, the
 	// 24-byte COMM decodes the compression type to a codec name, and an edit
-	// preserves the AIFC form type without disturbing the audio essence.
+	// preserves the AIFC form type and the audio essence.
 	data := aiffFile("AIFC",
 		aiffChunk("FVER", []byte{0xA2, 0x80, 0x51, 0x40}),
 		aiffText("NAME", "Float"),
@@ -397,7 +395,7 @@ func TestAIFFId3TakesPrecedenceOverNative(t *testing.T) {
 
 func TestAIFFId3PlusNativeDisjointKeysPreserved(t *testing.T) {
 	// ID3 carries Title; a "(c) " chunk carries a Copyright ID3 lacks. The native-only value must merge
-	// into the canonical set and survive an unrelated edit, not be silently dropped on rewrite.
+	// into the canonical set and survive an unrelated edit.
 	data := aiffFile("AIFF",
 		aiffText("(c) ", "ACME Records"),
 		stdCOMM(),
@@ -552,9 +550,8 @@ func TestAIFFStripNativeConsolidatesToId3(t *testing.T) {
 }
 
 func TestAIFFStripNativeConsolidatesToId3WithExistingId3(t *testing.T) {
-	// Source shape: an ID3 chunk holds TITLE, while native AIFF text chunks hold keys not present in
-	// ID3 (AUTH -> Artist, "(c) " -> Copyright). When --legacy strip removes native text chunks, those
-	// native-only values must be emitted into ID3.
+	// An ID3 chunk holds TITLE; native text chunks hold keys ID3 lacks (AUTH -> Artist, "(c) " ->
+	// Copyright). When --legacy strip removes the native chunks, those values must move into ID3.
 	id3Chunk := aiffID3(id3v2(4, textFrame(4, "TIT2", "Original Title")))
 	data := aiffFile("AIFF", aiffText("AUTH", "Native Artist"), aiffText("(c) ", "Native Copyright"),
 		id3Chunk, stdCOMM(), stdSSND())
@@ -697,7 +694,7 @@ func TestAIFFDuplicateId3ChunksDropped(t *testing.T) {
 
 func TestAIFFLatin1NativeValueDecodes(t *testing.T) {
 	// A legacy Latin-1 native value (0xE9 == 'é') must decode to valid UTF-8 in the
-	// canonical model rather than passing through as an invalid-UTF-8 string.
+	// canonical model.
 	data := aiffFile("AIFF", aiffText("NAME", "caf\xe9"), stdCOMM(), stdSSND())
 	title := mustParseBytes(t, data).Fields().Title
 	if title != "café" {
@@ -709,7 +706,7 @@ func TestAIFFLatin1NativeValueDecodes(t *testing.T) {
 }
 
 func TestAIFFClearAllRemovesNativeChunks(t *testing.T) {
-	// Clearing the only tag drops the now-empty native chunk rather than leaving a husk.
+	// Clearing the only tag drops the now-empty native chunk.
 	data := aiffFile("AIFF", aiffText("NAME", "Gone"), stdCOMM(), stdSSND())
 	plan, err := mustParseBytes(t, data).Edit().Clear(tag.Title).Prepare()
 	if err != nil {
@@ -785,9 +782,9 @@ func aiffWithFormSize(data []byte, declared uint32) []byte {
 	return out
 }
 
-// FORM size shorter than the file hides every chunk past it, so a tagger that appended a NAME chunk
-// without updating the header loses those tags and a rewrite emits a second one beside the stranded
-// copy. WAV had the same defect; both walk through iff.WalkChunksRecovering now.
+// A FORM size shorter than the file must not hide the chunks past it: a tagger that appended a
+// NAME chunk without updating the header would lose those tags, and a rewrite would emit a second
+// NAME beside the stranded copy. AIFF and WAV share iff.WalkChunksRecovering.
 func TestAIFFShortFormSizeRecovered(t *testing.T) {
 	name := aiffText("NAME", "Stranded")
 	full := aiffFile("AIFF", aiffCOMM(2, 100, 16, 44100), aiffSSND(400), name)
@@ -825,9 +822,8 @@ func TestAIFFAppendedBytesStillTrailing(t *testing.T) {
 	}
 }
 
-// AIFF shares the walker that exempts a 0xFFFFFFFF size-unknown chunk from the truncation and
-// oversized signals, so warning on WAV and not here would be arbitrary. The exemption stays; what
-// it costs the reader is now reported.
+// The shared chunk walker exempts a 0xFFFFFFFF size-unknown chunk from the truncation and
+// oversized signals and reports the unknown size instead, on AIFF as on WAV.
 func TestAIFFSentinelSSNDSizeReported(t *testing.T) {
 	ssnd := aiffSSND(400)
 	copy(ssnd[4:8], []byte{0xFF, 0xFF, 0xFF, 0xFF})
@@ -895,7 +891,7 @@ func TestAIFFDuplicateNameChunksSurviveUnrelatedEdit(t *testing.T) {
 
 // untouched-chunk rule: a file whose NAME chunk disagrees with its ID3 chunk is in its steady
 // state, so an edit that names nothing must not rewrite it. Without the gate the writer would
-// restamp the ID3 value over NAME on every pass, and no run of the tool would ever settle.
+// restamp the ID3 value over NAME on every pass.
 func TestAIFFEmptyEditOnConflictingChunksIsNoOp(t *testing.T) {
 	data := aiffFile("AIFF", stdCOMM(), aiffText("NAME", "Aiff Title"),
 		aiffID3(id3v2(4, textFrame(4, "TIT2", "Id3 Title"))), stdSSND())
@@ -908,9 +904,9 @@ func TestAIFFEmptyEditOnConflictingChunksIsNoOp(t *testing.T) {
 	}
 }
 
-// --legacy strip is the one AIFF path that destroys a native value rather than moving it, because a
-// value the projection did not select has no canonical key to ride into the ID3 chunk. doc.go's
-// contract says a loss like that must be reported.
+// --legacy strip is the one AIFF path that destroys a native value: a value the projection did not
+// select has no canonical key to carry it into the ID3 chunk. doc.go's contract says such a loss
+// must be reported.
 func TestAIFFLegacyStripWarnsAboutDestroyedTextValues(t *testing.T) {
 	data := aiffFile("AIFF", stdCOMM(), aiffText("NAME", "Aiff Title"),
 		aiffID3(id3v2(4, textFrame(4, "TIT2", "Id3 Title"))), stdSSND())

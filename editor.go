@@ -94,11 +94,10 @@ func (e *Editor) RemovePictures(match func(Picture) bool) *Editor {
 	pics := make([]core.Picture, 0, len(e.pictures))
 	mask := make([]bool, 0, len(e.pictures))
 	for i, p := range e.pictures {
-		// Edit() seeds e.pictures via the shallow core.ClonePictures, so each p.Data still
-		// aliases the immutable Document's backing array. match is the only place the editor
-		// hands a Picture to user code, so detach Data for the probe: a predicate that writes
-		// p.Data then cannot mutate the Document (or race a concurrent doc.Pictures()). The
-		// retained e.pictures keeps the efficient shallow share; only the probe is a copy.
+		// Edit seeds e.pictures with the shallow core.ClonePictures, so p.Data aliases the
+		// Document's bytes. Hand match a Data-detached copy, so a predicate that writes
+		// p.Data cannot mutate the Document or race doc.Pictures(). The retained
+		// e.pictures keeps the shallow share.
 		probe := p
 		probe.Data = append([]byte(nil), p.Data...)
 		if match(probe) {
@@ -203,20 +202,16 @@ func (e *Editor) Native() NativeEditor {
 // Prepare resolves mutations into a [Plan]. No I/O; Report matches Execute.
 func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	wo := resolveWriteOptions(opts)
-	// Propagate the carry marker so codecs can suppress author-convenience heuristics on a
-	// faithful transfer (e.g. the ID3 SYLT language fallback). Set at the single transfer
-	// chokepoint (transfer.go), so every carry path inherits it and authored edits do not.
+	// Carried lets codecs skip author-convenience heuristics on a transfer (e.g. the
+	// ID3 SYLT language fallback). transfer.go sets it for every carry path.
 	wo.Carried = e.carried
 	wo.Touched = touchedKeys(e.patch)
-	// Propagate the explicit-clear marker so an ID3 SYLT rewrite skips its language/descriptor
-	// fallback: a cleared-then-authored set starts fresh instead of inheriting the destination's
-	// existing SYLT metadata. It is distinct from Carried (a faithful transfer), which would
-	// mislabel the edit.
+	// SyncedLyricsCleared makes an ID3 SYLT rewrite skip its language/descriptor
+	// fallback, so a cleared-then-authored set does not inherit the destination's SYLT
+	// metadata. Distinct from Carried, which would mislabel the edit.
 	wo.SyncedLyricsCleared = e.syncedLyricsCleared
 
-	// An editor from a zero-value Document (Document.Edit guards that case) has no
-	// base media to plan against; report it cleanly rather than deref a nil base
-	// below.
+	// An editor from a zero-value Document has no base media to plan against.
 	if e.base == nil {
 		return nil, fmt.Errorf("%w: document is not initialized; use ParseFile/Parse", waxerr.ErrInvalidData)
 	}
@@ -225,22 +220,17 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		return nil, fmt.Errorf("%w: output gain %d is outside the signed 16-bit Q7.8 range", waxerr.ErrInvalidData, e.outputGain)
 	}
 
-	// Refuse to build a write plan for a file the parser determined has no real audio
-	// (WarnNoAudioFrames): writing it would re-render metadata around non-audio bytes
-	// and silently bless a contradictory file. Every editing path - set/plan, lint
-	// --fix, and a copy's destination editor (transfer.go) - funnels through Prepare, so
-	// they inherit this one guard (exit 4), making a no-audio file fail to edit just as
-	// it fails to verify. It is a base-document validity check, not an authored-edit
-	// warning, so it is not gated on the carried flag. The copy source stays readable: a
-	// no-audio file is still dumpable and its tags are real, so copying tags out of one is
-	// allowed (only the destination, which writes, is gated here).
+	// Refuse to plan a write for a file with no audio (WarnNoAudioFrames): it would
+	// re-render metadata around non-audio bytes. Every editing path (set/plan, lint
+	// --fix, a copy's destination editor) funnels through Prepare, so this one check
+	// covers them all (exit 4). It is a base-document check, not gated on carried. A
+	// no-audio file is still readable, so copying tags out of one is allowed.
 	if hasNoAudioWarning(e.base) {
 		return nil, fmt.Errorf("%w: file has no audio essence; refusing to write metadata to a no-audio file", waxerr.ErrInvalidData)
 	}
 
-	// Validate every key the edit touches before it can reach the native writer
-	// and corrupt on round-trip (e.g. a key containing '='). The key list is reused by
-	// the NUL scan below, so it is computed once.
+	// Reject an invalid key (e.g. one containing '=') before it reaches the native
+	// writer. patchKeys is reused by the NUL scan below.
 	patchKeys := e.patch.Keys()
 	for _, k := range patchKeys {
 		if !k.Valid() {
@@ -248,40 +238,30 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		}
 	}
 
-	// Share the native document and properties rather than deep-copying them:
-	// planning only reads the native (re-cloning the blocks it keeps), so a full
-	// copy here - which would duplicate every block body, including embedded
-	// cover art - is pure waste. Only the canonical tags (cloned by the patch)
-	// and the picture set are replaced.
+	// Share the native document and properties instead of deep-copying: planning
+	// only reads the native and re-clones the blocks it keeps. Only the canonical
+	// tags (cloned by the patch) and the picture set are replaced.
 	editedTags := e.patch.Apply(e.base.Tags)
-	// Collapse any key left present with a zero-length value slice to absent before
-	// the codec plans or Changes() diffs: a Set/Add of no values on an absent key
-	// (or a clear-then-empty-add) leaves the key present-but-empty, which no codec
-	// persists - so without this the plan would diff a phantom add against an
-	// identical file, reporting a change and bumping mtime over bytes that never
-	// moved. The scope is strictly zero-length: a present [""] (what `set KEY=`
-	// produces) is a distinct, CLI-reachable empty value and is left untouched.
+	// Make a key with a zero-length value slice absent before the codec plans or
+	// Changes diffs. A Set/Add of no values leaves the key present-but-empty, which
+	// no codec persists, so the plan would report a phantom change. A present [""]
+	// (what `set KEY=` produces) is a distinct value and is kept.
 	dropEmptyValuedKeys(&editedTags)
 	// Reject a NUL byte or invalid UTF-8 in any value, chapter title, or picture
-	// description this edit introduces: a NUL silently truncates the field on the
-	// C-string formats, and invalid UTF-8 is reprojected through the read path (ID3 to
-	// U+FFFD, an MP4 chapter title to "") so the written result would not equal a fresh
-	// parse - both would corrupt the write, so they are refused at the source.
+	// description this edit introduces. A NUL truncates the field on C-string
+	// formats; invalid UTF-8 is reprojected on read (ID3 to U+FFFD, an MP4 chapter
+	// title to ""), so the written result would not equal a fresh parse.
 	if err := e.rejectInvalidValues(editedTags, patchKeys); err != nil {
 		return nil, err
 	}
-	// Trim numeric values introduced by this edit before any number-pair split. That
-	// keeps the stored value in the same form WaxLabel already uses for validation and
-	// parsing, while still preserving carried values from the source file.
+	// Trim numeric values this edit introduces before the number-pair split, so the
+	// stored form matches what validation and parsing use. Carried values are kept.
 	trimTokenValues(&editedTags, e.patch)
-	// Normalize a slash-combined "n/total" track or disc number this edit introduced
-	// into the canonical pair every format stores (see splitNumberPairs). It runs
-	// after rejectInvalidValues, not before: that scan only covers the patched keys, so
-	// splitting first would route a NUL from "3/\x00" into an unscanned derived
-	// TRACKTOTAL and smuggle it past the guard onto a C-string format. Splitting after
-	// means the NUL is still on the touched TRACKNUMBER and is rejected above.
-	// The returned conflict warnings (an explicit total disagreeing with a slash-derived
-	// one) are surfaced below, gated on !e.carried like the other authored warnings.
+	// Split a slash-combined "n/total" track or disc number this edit introduced into
+	// the pair every format stores. It runs after rejectInvalidValues: that scan
+	// covers only patched keys, so splitting first would move a NUL from "3/\x00"
+	// into an unscanned derived TRACKTOTAL. The conflict warnings it returns are
+	// surfaced below, gated on !e.carried.
 	numberConflicts := splitNumberPairs(&editedTags, e.patch)
 	edited := &core.Media{
 		Format:       e.base.Format,
@@ -291,9 +271,8 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		Chapters:     e.base.Chapters,
 		SyncedLyrics: e.base.SyncedLyrics,
 		Families:     e.base.Families,
-		// Carry the base's legacy-opaque flag alongside its families: the codec result builders
-		// recompute both from the bytes they write, but a no-op path that returns this edit-intent
-		// Media directly must still reflect the file's current legacy state.
+		// Codec result builders recompute this from the bytes they write, but a no-op
+		// path returns this Media directly, so it must carry the file's legacy state.
 		LegacyOpaqueContent: e.base.LegacyOpaqueContent,
 		Warnings:            e.base.Warnings,
 		Native:              e.base.Native,
@@ -311,24 +290,20 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	if e.syncedLyricsTouched {
 		edited.SyncedLyrics = e.syncedLyrics
 	}
-	// Enforce the icon-count rule only when this edit authored the picture set. Tags-only
-	// edits use the file's existing pictures, so duplicate type-1 or type-2 icons in
-	// the source file should not block unrelated tag edits or lint fixes. A faithful carry
-	// authors nothing (like the other carried-suppressed checks above), so a copy must not
-	// reject the source's own duplicate icons as if the user authored them; lint still flags
-	// the carried result. Direct picture edits set picsTouched without carried and are
-	// validated here.
+	// Enforce the icon-count rule only when this edit authored the picture set, so
+	// duplicate type-1 or type-2 icons already in the file do not block a tags-only
+	// edit or lint fix. A carry authors nothing, so a copy must not reject the
+	// source's own duplicate icons; lint still flags the carried result.
 	if e.picsTouched && !e.carried {
 		if err := validatePictures(edited.Pictures); err != nil {
 			return nil, err
 		}
 	}
-	// Validate only the pictures added on this editor (not the file's pre-existing
-	// ones, which Edit seeded): a direct caller handing AddPicture empty or junk
-	// bytes would otherwise have them embedded as application/octet-stream. The CLI
-	// guards the common mistake earlier in loadCovers; this is the library-side
-	// safety net. WithUnrecognizedPictures opts a deliberately exotic cover back in
-	// (and the transfer engine opts out wholesale, carrying already-embedded art).
+	// Validate only pictures added on this editor, not the file's pre-existing ones.
+	// Without it, junk or empty AddPicture bytes would embed as
+	// application/octet-stream. The CLI checks earlier in loadCovers; this is the
+	// library-side net. WithUnrecognizedPictures opts an exotic cover back in; the
+	// transfer engine opts out wholesale.
 	if !wo.AllowUnrecognizedPictures {
 		if err := validateAddedPictures(e.pictures, e.addedMask); err != nil {
 			return nil, err
@@ -342,11 +317,10 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// Compute capabilities once under these write options. The chapter gate below and
 	// the value-reduction check after planning must read the same write policy.
 	caps := codec.Capabilities(e.base, wo)
-	// The output gain lives in the stream header, not the tag store, so no
-	// tag/picture/chapter/lyric comparison sees it - and the ASF and fragmented-MP4 planners
-	// return a no-op when those are all equal. Without an explicit gate here a gain edit on
-	// such a file would exit 0 having written nothing. It sits outside structuralGates for
-	// that reason: a read-only file refuses with the codec's own reason instead.
+	// The output gain lives in the stream header, so no tag/picture/chapter/lyric
+	// comparison sees it, and the ASF and fragmented-MP4 planners return a no-op when
+	// those are equal. Without this gate a gain edit on such a file would exit 0
+	// having written nothing. A read-only file refuses with the codec's own reason.
 	var outputGainDropped bool
 	gainChanged := e.outputGainTouched && e.outputGain != e.base.Properties.First().OutputGain
 	if gainChanged {
@@ -361,10 +335,9 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 			outputGainDropped = true
 		}
 	}
-	// RFC 7845 applies the R128 loudness tags on top of the header gain, so moving the
-	// header without them would play the file at a different loudness. Rebasing by the same
-	// delta keeps it where it was. editedTags is reassigned onto edited below, which copied
-	// the TagSet by value.
+	// RFC 7845 applies the R128 tags on top of the header gain, so rebase them by the
+	// same delta to keep the loudness. edited copied the TagSet by value, so
+	// editedTags is reassigned onto it.
 	var r128Warnings []core.Warning
 	if gainChanged && !outputGainDropped {
 		var err error
@@ -376,30 +349,25 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		edited.Tags = editedTags
 	}
 
-	// A whole structural edit the destination cannot store at all is either a hard error
-	// (the default) or, when the caller opts into dropping unsupported edits, removed with a
-	// warning so the storable part of the edit still applies (matching how a cross-format
-	// copy drops what the destination cannot hold). A dropped item builds a fresh edited.X
-	// and records the drop; its metadata-loss and sanity warnings below are then skipped so
-	// exactly one warning surfaces per drop. The drops run before the chapter reconcile and
-	// codec.Plan so the plan sees the storable remainder. A format-incapable destination in a
-	// transfer is handled earlier (ProjectTransfer marks the item Dropped before it is set),
-	// so the touched flags are false there and none of this fires.
+	// A structural edit the destination cannot store is a hard error by default, or
+	// under AllowUnsupportedDrop is removed with a warning so the storable part still
+	// applies. A dropped item resets edited.X and skips its metadata-loss and sanity
+	// warnings below, so exactly one warning surfaces per drop. The drops run before
+	// the chapter reconcile and codec.Plan. In a transfer, ProjectTransfer marks such
+	// an item Dropped before it is set, so the touched flags are false and none of
+	// this fires.
 	var chaptersDropped, syncedLyricsDropped, picturesDropped bool
 
-	// The structural gates below are skipped for a read-only file. Dropping an item there
-	// would report the FORMAT's storage limits ("a WMA file cannot store chapters") for a
-	// write that was never going to happen for a different reason, and would let the edit
-	// collapse into a silent exit-0 no-op while the same edit to a tag exits 3. Leaving the
-	// item in place carries the edit down to the codec, whose own refusal names the real
-	// reason - the single predicate its Capabilities reports ReadOnly from.
+	// Skip the structural gates for a read-only file. Dropping an item there would
+	// report the format's storage limits ("a WMA file cannot store chapters") and let
+	// the edit collapse into an exit-0 no-op, while the same tag edit exits 3.
+	// Leaving the item in place lets the codec's own refusal name the reason.
 	structuralGates := !caps.ReadOnly
 
-	// Chapters: refuse (or drop) a chapter edit on a format that cannot write chapters,
-	// whether it has no chapter store or one it only reads (Musepack's SV8 packets). The
-	// gate is a change against the file's own list, so ClearChapters() on a chapterless
-	// format stays a harmless no-op while a clear on a read-only store is refused: the
-	// chapters would otherwise stay and the plan would report nothing.
+	// Chapters: refuse or drop a chapter edit on a format that cannot write chapters,
+	// whether it has no store or a read-only one (Musepack's SV8 packets). The gate
+	// is a change against the file's own list, so ClearChapters on a chapterless
+	// format is a no-op while a clear on a read-only store is refused.
 	if structuralGates && e.chaptersTouched && caps.Chapters.Write < core.AccessPartial && !core.EqualChapters(e.chapters, e.base.Chapters) {
 		if !wo.AllowUnsupportedDrop {
 			return nil, fmt.Errorf("%w: chapters cannot be written to %s %s file",
@@ -408,18 +376,16 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		edited.Chapters = e.base.Chapters
 		chaptersDropped = true
 	}
-	// The chapter-count limit stays a hard error even under the drop option: ID3 CTOC and MP4
-	// Nero chpl use single-byte counts, so allowing 256 entries would produce a malformed
-	// container, and silently truncating a small deliberate list is worse than refusing.
-	// Skipped once the whole list is already dropped. Transfers apply the same limit before
-	// calling SetChapters, which leaves this path for direct edits.
+	// The chapter-count limit is a hard error even under the drop option: ID3 CTOC
+	// and MP4 Nero chpl use single-byte counts, so 256 entries would be malformed,
+	// and truncating a list is worse than refusing. Transfers apply the limit before
+	// SetChapters, so this is for direct edits.
 	if !chaptersDropped && e.chaptersTouched && caps.Chapters.MaxItems > 0 && len(e.chapters) > caps.Chapters.MaxItems {
 		return nil, fmt.Errorf("%w: %d chapters exceeds the %d %s can store",
 			waxerr.ErrUnsupportedTag, len(e.chapters), caps.Chapters.MaxItems, e.base.Format)
 	}
-	// Synced lyrics: refuse (or drop) an authored set on a format with no synced-lyrics store.
-	// MP4 and Matroska can carry timed lyric tracks, but those tracks are outside this
-	// metadata model. A clear on an unsupported format stays a no-op.
+	// Synced lyrics: refuse or drop an authored set on a format with no store. MP4
+	// and Matroska timed lyric tracks are outside this model. A clear is a no-op.
 	if structuralGates && e.syncedLyricsTouched && len(e.syncedLyrics) > 0 && caps.SyncedLyrics.Write < core.AccessPartial {
 		if !wo.AllowUnsupportedDrop {
 			return nil, fmt.Errorf("%w: synced lyrics cannot be written to %s %s file",
@@ -433,24 +399,20 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		return nil, fmt.Errorf("%w: %d synced-lyrics sets exceeds the %d %s can store",
 			waxerr.ErrUnsupportedTag, len(e.syncedLyrics), caps.SyncedLyrics.MaxItems, e.base.Format)
 	}
-	// Cover art: WebM excludes the Attachments element, so a cover edit on it cannot be
-	// stored. Under the drop option, drop the edit here; otherwise the Matroska writer's
-	// plan-time cover refusal (keyed on the same absent capability) remains the backstop.
-	// The gate is a change against the file's own set, like the chapter gate above, so
-	// clearing the cover a WebM file carries is dropped with a warning rather than
-	// handed to the writer to refuse.
+	// Cover art: WebM excludes the Attachments element. Under the drop option, drop
+	// the cover edit here; otherwise the Matroska writer's plan-time refusal (keyed on
+	// the same capability) applies. The gate is a change against the file's own set,
+	// so clearing a WebM file's cover is dropped with a warning.
 	if structuralGates && wo.AllowUnsupportedDrop && e.picsTouched && caps.Pictures.Write < core.AccessPartial && !core.EqualPictures(e.pictures, e.base.Pictures) {
 		edited.Pictures = e.base.Pictures
 		picturesDropped = true
 	}
-	// Cover format: a destination that stores pictures but only in certain image formats (MP4's
-	// covr labels only JPEG/PNG/BMP) drops just the covers it cannot label, keeping any it can,
-	// so a storable TITLE/chapter edit in the same command still applies - matching how copy
-	// drops an unrepresentable cover while carrying the rest. Gated on the drop option: without
-	// it the codec's plan-time checkCoverFormats stays the hard-error backstop (so a direct
-	// library AddPicture still refuses a GIF). Distinct from the WebM whole-set picturesDropped
-	// above, which the >= AccessPartial guard and !picturesDropped exclude. Partition once so the
-	// kept picture slice and its added-mask stay positionally aligned for the sanity warnings.
+	// Cover format: a destination that labels only some image formats (MP4's covr:
+	// JPEG/PNG/BMP) drops the covers it cannot label and keeps the rest, so the rest
+	// of the edit still applies. Without the drop option the codec's checkCoverFormats
+	// refuses (a direct AddPicture of a GIF still fails). The >= AccessPartial guard
+	// and !picturesDropped exclude the WebM whole-set case above. Partition once so
+	// the kept slice and its added-mask stay aligned for the sanity warnings.
 	keptPics, keptMask := e.pictures, e.addedMask
 	var pictureFormatsDropped bool
 	var droppedPictureMIMEs []string
@@ -468,19 +430,15 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 			droppedPictureMIMEs = dropped
 		}
 	}
-	// Picture slots: a destination whose picture store is a set of uniquely-named slots
-	// (APE's two Cover Art items) holds one picture per slot, and the added-aware
-	// partition resolves the set here, where which pictures this edit authored is known:
-	// an added picture claims a slot from a pre-existing same-role one - the edit targets
-	// the slot, so adding a front cover replaces the file's front rather than losing to
-	// it - while an added picture left with no slot at all is refused like an
-	// unrepresentable cover format, or dropped with a warning under the same drop option.
-	// A displaced pre-existing picture is dropped with its own warning; it is the
-	// destination's data, so refusing the edit for it would make replacement impossible.
-	// A faithful transfer never conflicts here: PrepareTransfer filters the source set
-	// through the same partition before it reaches the editor. Resolving before the plan
-	// keeps the codec's writer a pure backstop and the added-scoped picture sanity
-	// warnings below accurate about the set actually written.
+	// Picture slots: a store of uniquely-named slots (APE's two Cover Art items)
+	// holds one picture per slot. The added-aware partition resolves the set here,
+	// where the authored pictures are known: an added picture claims the slot of a
+	// pre-existing same-role one (adding a front cover replaces the file's front),
+	// and an added picture with no slot is refused, or dropped with a warning under
+	// the drop option. A displaced pre-existing picture is dropped with its own
+	// warning. A transfer never conflicts here: PrepareTransfer filters the source
+	// set through the same partition. Resolving before the plan keeps the picture
+	// sanity warnings below accurate about the set written.
 	var slotDroppedRoles, slotReplacedRoles []core.PictureType
 	var slotReason string
 	if structuralGates && e.picsTouched && !picturesDropped && len(keptPics) > 0 &&
@@ -516,9 +474,8 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 			keptPics, keptMask = kept, mask
 		}
 	}
-	// Truncate an over-cap synced-lyrics set to the modeled per-set line cap before planning,
-	// so the written file and the plan result agree on the line count. A write-path truncation
-	// would leave the plan over-counting. Skipped for a set already dropped whole above.
+	// Truncate an over-cap synced-lyrics set to the per-set line cap before planning,
+	// so the plan result and the written file agree on the line count.
 	var syncedLyricsTruncated bool
 	if e.syncedLyricsTouched && !syncedLyricsDropped && len(edited.SyncedLyrics) > 0 {
 		if capped, truncated := core.TruncateSyncedLyrics(edited.SyncedLyrics); truncated {
@@ -526,18 +483,15 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 			syncedLyricsTruncated = true
 		}
 	}
-	// Do not reject a parsed 1-2 byte SYLT language here. Some files store NUL-padded short
-	// codes, and the writer preserves them on read-then-write; longer values are truncated
-	// to SYLT's fixed three bytes. The CLI validates author-entered --synced-lyrics-lang
-	// values before they reach this path.
+	// Do not reject a parsed 1-2 byte SYLT language here: some files store NUL-padded
+	// short codes, which the writer preserves; longer values are truncated to SYLT's
+	// three bytes. The CLI validates --synced-lyrics-lang before this path.
 	//
-	// Reconcile any overlap this chapter edit introduced before planning, so the codec writes a
-	// non-overlapping list. Inserting a start-only chapter between already-ended chapters leaves
-	// the preceding chapter's end overlapping the insert; truncating that end to the next start
-	// fixes both the silent ID3/Matroska overlap and the spurious MP4 chapter-metadata-dropped
-	// warning at once. Reconcile into a clone (leaving e.chapters untouched, so a repeated
-	// Prepare() recomputes identically and the note stays deterministic); the !e.carried gate
-	// preserves faithful-transfer fidelity.
+	// Reconcile any overlap this chapter edit introduced before planning. Inserting a
+	// start-only chapter between ended chapters leaves the preceding end overlapping
+	// the insert; truncating it to the next start fixes the ID3/Matroska overlap and
+	// the spurious MP4 chapter-metadata-dropped warning. Reconcile into a clone so a
+	// repeated Prepare recomputes identically. Skipped on a carry.
 	var chaptersReconciled bool
 	if e.chaptersTouched && !e.carried && !chaptersDropped {
 		reconciled := core.CloneChapters(e.chapters)
@@ -546,10 +500,8 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 			chaptersReconciled = true
 		}
 	}
-	// edited shares the base's Properties, so overlay a clone rather than mutating the
-	// parsed document. The gate above already established the format writes an output gain,
-	// and every such parse reports a track; the length check is the guard against that
-	// invariant breaking, not a reachable path.
+	// edited shares the base's Properties, so overlay a clone. Every format that
+	// writes an output gain reports a track; the length check is defensive.
 	if gainChanged && !outputGainDropped && len(e.base.Properties.Tracks) > 0 {
 		props := e.base.Properties.Clone()
 		props.Tracks[0].OutputGain = e.outputGain
@@ -559,51 +511,37 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Surface edit-time chapter sanity warnings (a start past the file end, or two
-	// chapters sharing a start) on the plan report so they flow through the same
-	// Warnings path the CLI and JSON already render. Only chapters this edit
-	// introduces are checked - not the file's pre-existing chapters, which the CLI's
-	// --add-chapter merges into the SetChapters list (so warning about them would
-	// flag chapters the user never touched). A faithful carry (the transfer engine)
-	// authors nothing, so it suppresses these entirely via the carried flag.
-	// A chapter list dropped whole above skips these too, so the single unsupported drop
-	// warning is the only signal rather than a flurry of sanity notes about chapters that
-	// will not be written.
+	// Chapter sanity warnings (a start past the file end, two chapters sharing a
+	// start) go on the plan report. Only chapters this edit introduces are checked:
+	// the CLI's --add-chapter merges the file's chapters into the SetChapters list. A
+	// carry authors nothing and a dropped list is not written, so both skip these.
 	if e.chaptersTouched && !e.carried && !chaptersDropped {
 		wp.Report.Warnings = appendChapterWarnings(wp.Report.Warnings, e.chapters, e.base.Chapters, e.base.Properties.Duration())
-		// Matroska/WebM can store explicit chapter end times. A CLI chapter rebuild has
-		// no end-time syntax, so warn when it replaces ended chapters with open-ended ones.
-		// Faithful transfer is suppressed by the carried flag above.
+		// Matroska/WebM store explicit chapter ends. A CLI chapter rebuild has no
+		// end-time syntax, so warn when it replaces ended chapters with open-ended ones.
 		if matroskaChapterEndsDropped(e.base.Format, e.chapters, e.base.Chapters) {
 			wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnChapterEndsDropped,
 				"chapters rewrite drops explicit end times (CLI-built chapters are open-ended)")
 		}
-		// Warn when this destination cannot store every field in the authored chapter
-		// list. ChapterLoss is option-independent, so use the capability value already
-		// computed for the write plan. This reads edited.Chapters (the reconciled list),
-		// not e.chapters: once a stale interior end is truncated to the next start it is
-		// inferable, so a start-title format no longer reports a spurious gapped-end loss -
-		// while a genuine interior gap (End < next.Start) or a pre-existing on-disk overlap
-		// (not reconciled) still warns. The reconcile note below is the accurate signal.
+		// Warn when the destination cannot store every field of the authored chapters.
+		// This reads edited.Chapters (the reconciled list), not e.chapters: a stale end
+		// truncated to the next start is inferable, so a start-title format does not
+		// report a spurious gapped-end loss. An interior gap (End < next.Start) or an
+		// on-disk overlap still warns.
 		if loss := caps.Chapters.ChapterLoss; core.ChaptersLoseMetadata(edited.Chapters, loss) {
 			wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnChapterMetadataDropped,
 				core.ChapterMetadataDroppedMessage(loss))
 		}
-		// A stale end that overlapped the next start was truncated to keep the written list
-		// non-overlapping. The user chose "truncate + note," so surface it (informational; it
-		// does not escalate --strict).
+		// Note the truncation. Informational; it does not escalate --strict.
 		if chaptersReconciled {
 			wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnChapterOverlapReconciled,
 				"a chapter's end overlapped the next chapter's start and was truncated to keep the chapters non-overlapping")
 		}
 	}
-	// A faithful carry still surfaces chapters that overshoot the DESTINATION's playable
-	// length (a destination-fit signal legitimate for copy), while suppressing the
-	// source-authoring sanity warnings (duplicate-chapter, single-valued-multi) it authored
-	// none of. Every copied chapter is authored fresh from the source, so the whole list is
-	// new; unlike appendChapterWarnings this does not consult an isNew gate (full-struct
-	// equality against the destination base), which would otherwise skip a copied chapter
-	// that happens to equal a pre-existing destination one and still overshoots.
+	// A carry still warns about chapters past the destination's duration (a
+	// destination-fit signal) while skipping the authoring warnings above. Every
+	// copied chapter is new, so no isNew gate: one that equals a pre-existing
+	// destination chapter and still overshoots must warn.
 	if e.chaptersTouched && e.carried && !chaptersDropped {
 		dur := e.base.Properties.Duration()
 		for _, c := range core.ChaptersPastDuration(e.chapters, dur) {
@@ -611,13 +549,9 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 				core.ChapterPastDurationMessage(c.Start, dur))
 		}
 	}
-	// Warn when the destination cannot store every field in the authored synced-lyrics
-	// list. The LRC store keeps timed text but drops the per-set language and descriptor,
-	// mirroring the chapter metadata-dropped warning above. SyncedLyricsLoss is
-	// option-independent, so use the capability value already computed for the write plan.
-	// A transfer that carries source metadata is already graded in its transfer report.
-	// A set dropped whole above skips this, so the single unsupported drop warning stands
-	// alone (the metadata-loss code would otherwise describe a set that is not written).
+	// Warn when the destination cannot store every field of the authored synced
+	// lyrics: the LRC store drops the per-set language and descriptor. A transfer is
+	// graded in its transfer report; a set dropped whole is not written.
 	if e.syncedLyricsTouched && !e.carried && !syncedLyricsDropped {
 		if loss := caps.SyncedLyrics.SyncedLyricsLoss; core.SyncedLyricsLoseMetadata(e.syncedLyrics, loss) {
 			wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnSyncedLyricsMetadataDropped,
@@ -628,13 +562,11 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 	// (setting a key the legacy held is not a loss). Outside !carried: user asked for
 	// strip. PlanLintFix never reaches this. WAV/AIFF reuse LegacyStrip differently.
 	if wo.Legacy == core.LegacyStrip {
-		// A key the parsed file already carried canonically was never held only in the legacy
-		// container, whatever this edit then did to it. Without the filter, --clear TITLE
-		// --legacy strip claims TITLE is "held only there" because the edit removed it from
-		// the authority the rule tests - a loss the user asked for, reported as one the strip
-		// caused. It is also what makes the lint --fix complement hold: PlanLintFix clears a
-		// stamped ENCODER, and a legacy container echoing that stamp would otherwise read as
-		// legacy-only and fail its own fix under --strict.
+		// A key the file already carried canonically was never legacy-only, whatever
+		// this edit did to it. Without the filter, --clear TITLE --legacy strip would
+		// report TITLE as held only in the legacy container. It also keeps lint --fix
+		// consistent: PlanLintFix clears a stamped ENCODER, and a legacy container
+		// echoing that stamp would otherwise read as legacy-only and fail under --strict.
 		lost := slices.DeleteFunc(core.LegacyOnlyKeys(e.base.Families, editedTags),
 			func(k tag.Key) bool { return e.base.Tags.Has(k) })
 		if len(lost) > 0 || e.base.LegacyOpaqueContent {
@@ -642,11 +574,9 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 				core.LegacyStripDroppedMessage(lost, e.base.LegacyOpaqueContent), lost...)
 		}
 	}
-	// Surface the whole-item structural drops and the synced-lyrics truncation recorded above.
-	// They are appended after planning so they ride the same plan-report Warnings path the CLI
-	// and JSON render, and so --strict (which reads these codes) escalates a drop or truncation
-	// to a failure. A drop still surfaces even when the remaining edit is a byte-identical
-	// no-op, so an all-unstorable set reports the loss instead of silently succeeding.
+	// Report the structural drops and the synced-lyrics truncation on the plan
+	// report, where --strict escalates them. A drop surfaces even when the remaining
+	// edit is a byte-identical no-op.
 	if chaptersDropped {
 		msg := core.ChaptersUnsupportedMessage(e.base.Format)
 		if caps.Chapters.Read != core.AccessNone {
@@ -670,19 +600,17 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		}
 		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnPictureUnsupported, msg)
 	}
-	// A cover-format drop must surface its own warning here, independent of whether the picture
-	// set still changed: when every added cover is unrepresentable the kept set collapses back to
-	// base, so picturesChanged is false and the codec's checkCoverFormats never runs. Emitting
-	// from the drop flag (not the plan) keeps the loss visible, names the exact MIMEs like copy's
-	// report item, and rides WarnPictureUnsupported so --strict escalates it exactly like WebM.
+	// A cover-format drop warns from the drop flag, not the plan: when every added
+	// cover is unrepresentable the kept set equals base and the codec's
+	// checkCoverFormats never runs. It names the MIMEs and uses
+	// WarnPictureUnsupported so --strict escalates it like WebM.
 	if pictureFormatsDropped {
 		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnPictureUnsupported,
 			core.UnrepresentableReason(e.base.Format, droppedPictureMIMEs))
 	}
 	// Slot losses resolved above: an added picture with no slot, and a pre-existing
-	// picture an added one displaced. Worded like the APE writer's own backstop warning,
-	// and emitted from the recorded lists so the loss survives an edit that collapses to
-	// a byte-identical no-op (an added picture whose whole effect was resolved away).
+	// picture an added one displaced. Worded like the APE writer's own warning, and
+	// emitted from the recorded lists so the loss survives a byte-identical no-op.
 	for _, role := range slotDroppedRoles {
 		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnPictureUnsupported,
 			fmt.Sprintf("the %s picture was dropped: %s", role, slotReason))
@@ -695,10 +623,9 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnSyncedLyricsTruncated,
 			core.SyncedLyricsTruncatedMessage())
 	}
-	// Surface the front-end-authored input diagnostics: LRC lines dropped during parse, and a
-	// picture-removal role that matched nothing in this file. Both are user input that did not fully
-	// apply, carried on the editor by the CLI (a carry authors none of them), so they ride the plan
-	// report and the CLI's --strict gate escalates them.
+	// Input diagnostics the CLI recorded on the editor: LRC lines dropped during
+	// parse, and a picture-removal role that matched nothing. Both go on the plan
+	// report so --strict escalates them.
 	if n := len(e.syncedLyricsDroppedLines); n > 0 {
 		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnSyncedLyricsLineDropped, fmt.Sprintf(
 			"%d synced-lyric line(s) had no timestamp and were dropped (lines: %s)", n, formatLineList(e.syncedLyricsDroppedLines)))
@@ -707,48 +634,34 @@ func (e *Editor) Prepare(opts ...WriteOption) (*Plan, error) {
 		wp.Report.Warnings = core.Warn(wp.Report.Warnings, core.WarnPictureSelectorMiss, fmt.Sprintf(
 			"no %s picture to remove; the role matched nothing in this file", role))
 	}
-	// Surface edit-time picture sanity warnings for the pictures this edit authored
-	// (added via AddPicture, tracked by addedMask) - an unrecognized image embedded
-	// under WithUnrecognizedPictures, an added duplicate, or an added front cover that
-	// makes a second - so the user sees what a picture edit introduced without being
-	// lectured about a file's pre-existing art (which stays the linter's whole-set
-	// concern, mirroring how the chapter checks scope to newly-authored chapters). A
-	// faithful carry authors nothing, so it suppresses these via the carried flag. A
-	// picture set dropped whole above skips this too, so the single unsupported drop
-	// warning is the only signal rather than a sanity note about art that is not written.
+	// Picture sanity warnings for the pictures this edit added (addedMask): an
+	// unrecognized image embedded under WithUnrecognizedPictures, an added duplicate,
+	// or an added second front cover. Pre-existing art is the linter's concern. A
+	// carry authors nothing and a dropped set is not written, so both skip these.
 	if e.picsTouched && !e.carried && !picturesDropped {
-		// Pass the kept set and its filtered mask (equal to e.pictures/e.addedMask when no cover
-		// format was dropped): a dropped --force GIF then draws no spurious invalid/duplicate note,
-		// while covers that survived the drop still warn as authored.
+		// The kept set and its mask equal e.pictures/e.addedMask unless a cover format
+		// was dropped; a dropped --force GIF then draws no invalid/duplicate note.
 		wp.Report.Warnings = appendPictureWarnings(wp.Report.Warnings, keptPics, keptMask)
 	}
-	// Surface a known single-valued key the edit leaves holding multiple values as a
-	// non-fatal plan warning, so a library caller sees the cardinality the typed
-	// projection would silently collapse to its first value. It names exactly the
-	// keys the CLI's --strict gate acts on, and lets the CLI read the signal off the
-	// report once (now also in --json warnings). A faithful carry suppresses it (like the
-	// chapter checks): a copy must not flag the source's own conflicting single-valued
-	// key as if the user authored it.
+	// Warn about a known single-valued key the edit leaves holding multiple values,
+	// which the typed projection collapses to its first value. The warning names the
+	// keys the CLI's --strict gate acts on. A carry must not flag the source's own
+	// values, so it is suppressed.
 	if !e.carried {
-		// The single-valued-multi check judges against the EDIT INTENT (edited.Tags), not
-		// the codec's re-projected result: a single-valued key is single-valued by the
-		// key's own definition regardless of format, and a format that collapses the value
-		// in its result (Matroska's Info.Title) would otherwise stay silent on the very
-		// loss the warning exists to surface. Diffing base->intent still avoids
+		// The single-valued-multi check judges the edit intent (edited.Tags), not the
+		// codec's result: a format that collapses the value in its result (Matroska's
+		// Info.Title) would otherwise hide the loss. Diffing base->intent avoids
 		// re-flagging an untouched pre-existing multi.
 		wp.Report.Warnings = appendSingleValuedWarnings(wp.Report.Warnings, e.base.Tags, edited.Tags)
-		// The legacy-conflict check, by contrast, judges against the plan's result tags
-		// (what the codec will actually write): a value the codec re-projects - e.g.
-		// GENRE=17 written back as the name "Rock" - must not read as a conflict when the
-		// written value in fact still agrees. Suppressed on a faithful carry like the rest.
+		// The legacy-conflict check judges the plan's result tags (what the codec
+		// writes): a re-projected value such as GENRE=17 written as "Rock" must not read
+		// as a conflict when the written value still agrees.
 		result := planResultTags(wp, edited)
 		wp.Report.Warnings = appendLegacyConflictWarnings(wp.Report.Warnings, e.base.Families, e.patch, result, wo.Legacy)
 		// Warn when a patched value is reduced by the destination's field-level write
 		// capability, using the same projected result tags as the legacy conflict check.
 		wp.Report.Warnings = appendValueReducedWarnings(wp.Report.Warnings, caps, patchKeys, editedTags, result)
-		// Surface a track/disc total-vs-slash conflict this edit authored (computed at the
-		// number-pair split above, where the precedence lives). A faithful carry is suppressed
-		// by the enclosing !e.carried gate: a copy must not flag the source's own values.
+		// The track/disc total-vs-slash conflicts computed at the number-pair split.
 		wp.Report.Warnings = append(wp.Report.Warnings, numberConflicts...)
 	}
 	return &Plan{doc: e.doc, plan: wp, opts: wo}, nil
@@ -779,10 +692,9 @@ func (e *Editor) rejectInvalidValues(editedTags tag.TagSet, keys []tag.Key) erro
 		if err := checkWritableText(c.Title, "chapter title"); err != nil {
 			return err
 		}
-		// The Matroska chapter languages are written verbatim into the EBML, and the read
-		// path sanitizes them on parse, so a freshly authored invalid-UTF-8 language would
-		// not round-trip - reject it at the source like the title (library-only; the CLI has
-		// no chapter-language syntax).
+		// Matroska writes chapter languages verbatim and sanitizes them on parse, so an
+		// invalid-UTF-8 language would not round-trip. Library-only; the CLI has no
+		// chapter-language syntax.
 		if err := checkWritableText(c.Language, "chapter language"); err != nil {
 			return err
 		}
@@ -790,10 +702,9 @@ func (e *Editor) rejectInvalidValues(editedTags tag.TagSet, keys []tag.Key) erro
 			return err
 		}
 	}
-	// Synced-lyrics text, descriptor, and language are stored in SYLT or LRC and read back
-	// through sanitization. Reject newly authored NULs or invalid UTF-8 here, using the
-	// same rule as chapter titles, so the written values can round-trip through the model.
-	// SetSyncedLyrics replaces the whole list, so the full edited set is scanned.
+	// Synced-lyrics text, descriptor, and language are read back through
+	// sanitization, so they get the same rule. SetSyncedLyrics replaces the whole
+	// list, so the full set is scanned.
 	for _, sl := range e.syncedLyrics {
 		if err := checkWritableText(sl.Language, "synced-lyrics language"); err != nil {
 			return err
@@ -810,11 +721,10 @@ func (e *Editor) rejectInvalidValues(editedTags tag.TagSet, keys []tag.Key) erro
 	return nil
 }
 
-// WritableTextReason returns "" when s can be written faithfully to every supported format,
-// else a short reason phrase ("contains a NUL byte" / "contains invalid UTF-8"). It is the
-// single source of truth for the NUL / invalid-UTF-8 rule: the internal checkWritableText and
-// the public ValidWritableText wrap it in an [waxerr.ErrInvalidData] error, and a front-end (the
-// CLI) can read the bare phrase to build its own message without parsing an error string.
+// WritableTextReason returns "" when s can be written to every supported format,
+// else a reason phrase ("contains a NUL byte" / "contains invalid UTF-8").
+// checkWritableText and [ValidWritableText] wrap it in [waxerr.ErrInvalidData];
+// the CLI reads the bare phrase to build its own message.
 func WritableTextReason(s string) string {
 	if strings.IndexByte(s, 0) >= 0 {
 		return "contains a NUL byte"
@@ -825,12 +735,11 @@ func WritableTextReason(s string) string {
 	return ""
 }
 
-// ValidWritableText reports whether s can be written faithfully to every supported format:
-// no NUL byte (which truncates a C-string field) and valid UTF-8 (the read path reprojects
-// invalid UTF-8, so it would not round-trip). It returns nil, or an error wrapping
-// [waxerr.ErrInvalidData] naming the problem. Editor edits already enforce this on authored
-// text; a caller (or a front-end) may pre-check a value with it, or with [WritableTextReason]
-// for the bare reason phrase, before building an edit.
+// ValidWritableText returns nil when s can be written to every supported format,
+// else an error wrapping [waxerr.ErrInvalidData]: a NUL byte truncates a C-string
+// field, and invalid UTF-8 is reprojected on read so it would not round-trip.
+// Editor edits enforce this on authored text; callers may pre-check with it or
+// with [WritableTextReason].
 func ValidWritableText(s string) error {
 	if r := WritableTextReason(s); r != "" {
 		return fmt.Errorf("%w: %s", waxerr.ErrInvalidData, r)
@@ -838,12 +747,9 @@ func ValidWritableText(s string) error {
 	return nil
 }
 
-// checkWritableText refuses a freshly authored text value WaxLabel cannot faithfully write
-// to every format: a NUL byte (truncates a C-string field) or invalid UTF-8 (reprojected
-// by the read path, so it would not round-trip). what names the field for the error. A
-// value read back through the (sanitizing) parse path is always valid UTF-8, so this fires
-// only on CLI/library input freshly authored by the caller. It shares WritableTextReason with
-// the public ValidWritableText, so its "<what> contains ..." messages stay in lockstep.
+// checkWritableText is [ValidWritableText] with the field (what) named in the
+// error. A value read through the sanitizing parse path is always valid, so this
+// fires only on freshly authored input.
 func checkWritableText(s, what string) error {
 	if r := WritableTextReason(s); r != "" {
 		return fmt.Errorf("%w: %s %s", waxerr.ErrInvalidData, what, r)
@@ -851,10 +757,9 @@ func checkWritableText(s, what string) error {
 	return nil
 }
 
-// planResultTags returns the tag set the plan will write: the codec's computed
-// result when present, else the edited set (a NoOp plan may carry no result). It
-// is the same source [Plan.Changes] diffs against, so a warning derived from it
-// matches the plan's reported changes.
+// planResultTags returns the tag set the plan will write: the codec's result when
+// present, else the edited set (a NoOp plan may carry no result). [Plan.Changes]
+// diffs against the same source.
 func planResultTags(wp *core.WritePlan, edited *core.Media) tag.TagSet {
 	if wp.Result != nil {
 		return wp.Result.Tags
@@ -863,14 +768,11 @@ func planResultTags(wp *core.WritePlan, edited *core.Media) tag.TagSet {
 }
 
 // appendSingleValuedWarnings adds a WarnSingleValuedMulti for every known
-// single-valued key the edit changes into holding more than one value. It diffs base
-// against the edit INTENT (the edited tag set), not the codec's re-projected result,
-// so a format that collapses the value in its own result (Matroska's Info.Title) is
-// still flagged - the cardinality is a property of the key, not the format.
-// Diffing against base avoids re-flagging an untouched pre-existing multi (already
-// reported by Lint), and the shared [tag.Key.SingleValuedMulti] predicate keeps the
-// library warning, the linter's finding, and the CLI's --strict gate from disagreeing.
-// Each warning carries the offending key (Warning.Keys) so the gate can name it.
+// single-valued key the edit changes into holding more than one value. It diffs
+// base against the edit intent, so a format that collapses the value in its result
+// (Matroska's Info.Title) is still flagged and an untouched pre-existing multi is
+// not. The shared [tag.Key.SingleValuedMulti] predicate keeps this, the linter, and
+// the CLI's --strict gate in agreement. Each warning carries the key (Warning.Keys).
 func appendSingleValuedWarnings(ws []core.Warning, base, intent tag.TagSet) []core.Warning {
 	for _, c := range tag.Diff(base, intent) {
 		if c.Key.SingleValuedMulti(len(c.New)) {
@@ -892,29 +794,26 @@ func appendLegacyConflictWarnings(ws []core.Warning, fams []core.FamilyValue, pa
 	}
 	seen := map[tag.Key]bool{}
 	for _, f := range fams {
-		// Gate on the Legacy marker, not on the family name: APEv2 is a legacy container
-		// in MP3 but the native, authoritative store in WavPack, Monkey's Audio, and
-		// Musepack, where an edit writes it directly and there is no divergence to warn
-		// about. The parser sets Legacy on exactly the entries a rewrite does not update.
+		// Gate on the Legacy marker, not the family name: APEv2 is legacy in MP3 but
+		// the native store in WavPack, Monkey's Audio, and Musepack. The parser sets
+		// Legacy on exactly the entries a rewrite does not update.
 		if !f.Legacy {
 			continue
 		}
-		// Skip an already-warned key, a key the edit does not touch, a pre-existing
-		// conflict (!f.Selected - not edit-introduced), or a malformed empty legacy entry.
-		// Legacy entries are single-valued by construction, so f.Values[0] is the value.
+		// Skip an already-warned key, an untouched key, a pre-existing conflict
+		// (!f.Selected), or an empty entry. Legacy entries are single-valued.
 		if seen[f.Key] || !patch.Touches(f.Key) || !f.Selected || len(f.Values) == 0 {
 			continue
 		}
-		// No conflict while the legacy value still agrees with the written native values
-		// (present among them, or the key was cleared) - the same rule the family view uses.
+		// No conflict while the legacy value agrees with the written values (present
+		// among them, or the key was cleared), by the family view's rule.
 		if core.FamilySelected(result, f.Key, f.Values[0]) {
 			continue
 		}
 		seen[f.Key] = true
-		// The remedy names what actually resolves the conflict. --legacy strip always drops the
-		// stale container. lint --fix does so too, but only when every legacy container is fully
-		// redundant with the canonical set; on a mixed file (one redundant, one holding unique
-		// data) its all-or-nothing strip declines, so it is qualified rather than promised.
+		// --legacy strip always drops the stale container. lint --fix does so only when
+		// every legacy container is redundant with the canonical set, so the message
+		// qualifies it.
 		ws = core.Warn(ws, core.WarnLegacyConflict, fmt.Sprintf(
 			"preserved %s tag still holds the old %s value and now conflicts with the edit; use --legacy strip to drop it (lint --fix does so only when the legacy container is fully redundant)",
 			f.Family, f.Key))
@@ -922,14 +821,12 @@ func appendLegacyConflictWarnings(ws []core.Warning, fams []core.FamilyValue, pa
 	return ws
 }
 
-// appendValueReducedWarnings reports patched values that the destination stores with
-// reduced fidelity. Today that applies to an MP3 ORIGINALDATE written as ID3v2.3,
-// where TORY keeps only the year.
-//
-// The check compares the edited tags with the codec's projected result, so a value that
-// already matches the reduced form does not warn. The AccessPartial capability gate
-// keeps ordinary canonicalization, such as GENRE=17 becoming "Rock", out of this path.
-// The reason text comes from the same Capability.Reason helper used by transfer.
+// appendValueReducedWarnings reports patched values the destination stores with
+// reduced fidelity, e.g. an MP3 ORIGINALDATE written as ID3v2.3 TORY (year only).
+// It compares the edited tags with the codec's result, so a value already in the
+// reduced form does not warn. The AccessPartial gate keeps ordinary
+// canonicalization (GENRE=17 becoming "Rock") out. The reason text is
+// Capability.Reason, shared with transfer.
 func appendValueReducedWarnings(ws []core.Warning, caps core.Capabilities, patchKeys []tag.Key, edited, result tag.TagSet) []core.Warning {
 	for _, k := range patchKeys {
 		editedVals, ok := edited.Get(k)
@@ -944,15 +841,12 @@ func appendValueReducedWarnings(ws []core.Warning, caps core.Capabilities, patch
 		}
 		resultVals, _ := result.Get(k)
 		if slices.Equal(editedVals, resultVals) {
-			continue // the write did not actually reduce the value
+			continue // the write did not reduce the value
 		}
 		if hasKeyedWarning(ws, core.WarnNumericGenre, k) {
-			// The numeric-genre warning already reports this exact loss and names the
-			// value; a generic capability reduction on top would state it twice.
+			// The numeric-genre warning already reports this loss.
 			continue
 		}
-		// Use the same reason text as transfer so edit and copy describe the loss the
-		// same way.
 		ws = core.WarnKeyed(ws, core.WarnValueReduced, fmt.Sprintf("%s: %s", k, fc.Reason()), k)
 	}
 	return ws
@@ -969,17 +863,13 @@ func hasKeyedWarning(ws []core.Warning, code core.WarningCode, k tag.Key) bool {
 	return false
 }
 
-// appendChapterWarnings adds the non-fatal chapter sanity warnings for the
-// chapters this edit introduces (those in chapters but not in base):
-// WarnChapterPastDuration for a newly-added chapter starting beyond the file's
-// playable length, and WarnDuplicateChapter for a start a newly-added chapter
-// shares with another. Scoping to the new chapters means a pre-existing on-disk
-// chapter merged into the list (the CLI's --add-chapter appends to the file's
-// chapters) is not flagged, while a collision the new chapter causes still is.
-// chapters is sorted by Start (SetChapters), so equal starts are adjacent and each
-// distinct collision is reported once. The past-duration check is gated on a known,
-// non-zero duration: a truncated or header-only file reports duration 0 (and
-// already warns no-audio), which would otherwise flag every chapter as beyond 0:00.
+// appendChapterWarnings adds chapter sanity warnings for the chapters in chapters
+// but not in base: WarnChapterPastDuration for a start beyond the file's playable
+// length, and WarnDuplicateChapter for a start shared with another chapter. A
+// pre-existing chapter merged in by the CLI's --add-chapter is not flagged, but a
+// collision a new chapter causes is. chapters is sorted by Start, so each distinct
+// collision is reported once. Duration 0 (a truncated or header-only file, which
+// already warns no-audio) skips the past-duration check.
 func appendChapterWarnings(ws []core.Warning, chapters, base []core.Chapter, duration time.Duration) []core.Warning {
 	baseSet := make(map[core.Chapter]bool, len(base))
 	for _, c := range base {
@@ -993,9 +883,8 @@ func appendChapterWarnings(ws []core.Warning, chapters, base []core.Chapter, dur
 				core.ChapterPastDurationMessage(c.Start, duration))
 		}
 	}
-	// Warn about a collision only when a newly-added chapter is part of it, so one among
-	// untouched pre-existing chapters stays quiet here - lint reports those, on the file
-	// rather than on the edit.
+	// Warn about a collision only when a new chapter is part of it; lint reports
+	// collisions among pre-existing chapters.
 	for _, start := range core.DuplicateChapterStarts(chapters) {
 		for _, c := range chapters {
 			if c.Start == start && isNew(c) {
@@ -1007,13 +896,10 @@ func appendChapterWarnings(ws []core.Warning, chapters, base []core.Chapter, dur
 	return ws
 }
 
-// matroskaChapterEndsDropped reports whether a Matroska/WebM chapter rewrite replaces
-// explicit ChapterTimeEnd values with an open-ended list. MP4 does not need this check
-// because its chapter ends are inferred from the next start time.
-//
-// A bare clear is a deletion, not an open-ended rewrite, so it does not warn. Appending
-// a chapter keeps the existing ended chapters in the new list, and library callers that
-// set Chapter.End keep their ends as well.
+// matroskaChapterEndsDropped reports whether a Matroska/WebM chapter rewrite
+// replaces explicit ChapterTimeEnd values with an open-ended list. MP4 infers ends
+// from the next start. A bare clear does not warn; an append keeps the existing
+// ended chapters.
 func matroskaChapterEndsDropped(format core.Format, newCh, baseCh []core.Chapter) bool {
 	if format != core.FormatMatroska || len(newCh) == 0 {
 		return false
@@ -1040,9 +926,8 @@ func matroskaChapterEndsDropped(format core.Format, newCh, baseCh []core.Chapter
 func appendPictureWarnings(ws []core.Warning, pics []core.Picture, addedMask []bool) []core.Warning {
 	added := func(i int) bool { return i < len(addedMask) && addedMask[i] }
 
-	// One cheap pass over the set (no hashing): flag each added unrecognized image,
-	// tally front covers, record the byte lengths of added pictures (for the duplicate
-	// scan below), and note whether anything was added at all.
+	// One pass without hashing: flag added unrecognized images, tally front covers,
+	// and record added byte lengths for the duplicate scan below.
 	var anyAdded, frontAdded bool
 	fronts := 0
 	addedLens := map[int]bool{}
@@ -1054,9 +939,7 @@ func appendPictureWarnings(ws []core.Warning, pics []core.Picture, addedMask []b
 				ws = core.Warn(ws, core.WarnInvalidPicture, fmt.Sprintf(
 					"added %s picture is not a recognized image type (%s)", p.Type, p.MIME))
 			}
-			// The file-icon shape rule, scoped to this edit's additions like the duplicate
-			// and front-cover checks: a file's pre-existing non-conforming icon stays the
-			// linter's whole-set concern.
+			// The file-icon shape rule, scoped to added pictures like the other checks.
 			if reason, bad := core.NonConformingIcon(p); bad {
 				ws = core.Warn(ws, core.WarnNonConformingIcon, "added "+reason)
 			}
@@ -1068,16 +951,14 @@ func appendPictureWarnings(ws []core.Warning, pics []core.Picture, addedMask []b
 			}
 		}
 	}
-	// Nothing added (e.g. a removal-only edit, where addedMask is all-false): there is
-	// nothing to warn about, and - importantly - no picture has been hashed.
+	// Nothing added (a removal-only edit): nothing to warn about, nothing hashed.
 	if !anyAdded {
 		return ws
 	}
 
-	// Duplicate detection. Two images of different byte length can never be equal, so
-	// hash only pictures whose length some added picture shares - a large pre-existing
-	// cover of a different size is never SHA-256'd. Then warn once per duplicate group an
-	// added picture belongs to (whether its twin is another added or a carried picture).
+	// Duplicates: hash only pictures whose byte length some added picture shares, so
+	// a large pre-existing cover of another size is never hashed. Warn once per
+	// duplicate group an added picture belongs to.
 	hashes := map[int][32]byte{}
 	counts := map[[32]byte]int{}
 	for i, p := range pics {
@@ -1092,9 +973,8 @@ func appendPictureWarnings(ws []core.Warning, pics []core.Picture, addedMask []b
 	for i := range pics { // pic order, so the warnings are deterministic
 		if h, ok := hashes[i]; ok && added(i) && counts[h] > 1 && !warned[h] {
 			warned[h] = true
-			// Name every role the identical bytes appear under (sorted), not this occurrence's
-			// role, so the message matches the linter's whole-set finding regardless of which
-			// occurrence each site reaches first.
+			// Name every role the identical bytes appear under, so the message
+			// matches the linter's finding.
 			ws = core.Warn(ws, core.WarnDuplicatePicture, duplicatePictureMessage(distinctSortedRoles(pics, hashes, h)))
 		}
 	}
@@ -1105,15 +985,11 @@ func appendPictureWarnings(ws []core.Warning, pics []core.Picture, addedMask []b
 	return ws
 }
 
-// validateAddedPictures rejects an added picture (one with addedMask[i] true) whose
-// bytes are not a recognized image - an empty payload or a header [IsRecognizedImage]
-// does not know. It re-sniffs Data and ignores any caller-declared MIME, so
-// MIME:"image/png" on junk bytes is still rejected. The message names the picture's
-// type and the opt-out. It is the library counterpart to the CLI's loadCovers
-// pre-check, run at Prepare so a direct API user cannot embed an
-// application/octet-stream picture by mistake; WithUnrecognizedPictures (and the
-// CLI's --force) skip it for a deliberately exotic cover. Pre-existing pictures
-// Edit seeded (addedMask false) are never re-judged.
+// validateAddedPictures rejects an added picture (addedMask[i] true) whose bytes
+// [IsRecognizedImage] does not know, including an empty payload. It sniffs Data
+// and ignores the declared MIME. Library counterpart to the CLI's loadCovers
+// check; WithUnrecognizedPictures (the CLI's --force) skips it. Pre-existing
+// pictures are never re-judged.
 func validateAddedPictures(pics []core.Picture, addedMask []bool) error {
 	for i, p := range pics {
 		if i < len(addedMask) && addedMask[i] && !IsRecognizedImage(p.Data) {
@@ -1125,13 +1001,10 @@ func validateAddedPictures(pics []core.Picture, addedMask []bool) error {
 	return nil
 }
 
-// dropEmptyValuedKeys removes every key that is present with a zero-length value
-// slice, making it absent. It is the [Editor.Prepare] normalization that keeps a
-// plan honest (see the call site): such a key is what an Add/Set of no values
-// against an absent key produces, and no codec stores it, so leaving it present
-// would make IsNoOp/Changes disagree with the bytes actually written. It is
-// scoped strictly to a zero-length slice - a present [""] (one empty string) is a
-// distinct, intentional state and is preserved.
+// dropEmptyValuedKeys makes every key present with a zero-length value slice
+// absent. An Add/Set of no values produces such a key, and no codec stores it, so
+// leaving it would make IsNoOp/Changes disagree with the bytes written. A present
+// [""] is a distinct state and is kept.
 func dropEmptyValuedKeys(ts *tag.TagSet) {
 	for _, k := range ts.Keys() {
 		if vs, ok := ts.Get(k); ok && len(vs) == 0 {
@@ -1140,10 +1013,10 @@ func dropEmptyValuedKeys(ts *tag.TagSet) {
 	}
 }
 
-// touchedKeys is the set of canonical keys this edit named, whatever the op. A native
-// store that can hold a value the projection did not select (WAV LIST/INFO, AIFF text
-// chunks) re-renders exactly these, so an explicit set of the already-projected value is
-// how a caller resolves such a conflict.
+// touchedKeys is the set of canonical keys this edit named, whatever the op. A
+// native store that can hold a value the projection did not select (WAV LIST/INFO,
+// AIFF text chunks) re-renders exactly these, so an explicit set resolves such a
+// conflict.
 func touchedKeys(p tag.TagPatch) map[tag.Key]bool {
 	keys := p.Keys()
 	if len(keys) == 0 {
@@ -1156,11 +1029,10 @@ func touchedKeys(p tag.TagPatch) map[tag.Key]bool {
 	return out
 }
 
-// trimTokenValues applies [tag.TrimTokenValue] to the trimmable keys ([tag.IsTrimmableKey]:
-// numeric, date, MP4-integer, BPM, ReplayGain, R128 gain, and release-country) touched by
-// this edit, so stored values match the
-// trimmed form the validators accept. It is scoped to patched keys, like splitNumberPairs, so
-// carried source values are not rewritten.
+// trimTokenValues applies [tag.TrimTokenValue] to the trimmable keys
+// ([tag.IsTrimmableKey]: numeric, date, MP4-integer, BPM, ReplayGain, R128 gain,
+// release-country) this edit touches, so stored values match the form the
+// validators accept. Carried source values are not rewritten.
 func trimTokenValues(ts *tag.TagSet, patch tag.TagPatch) {
 	for _, k := range patch.Keys() {
 		if !tag.IsTrimmableKey(k) {
@@ -1209,8 +1081,8 @@ func rebaseR128Gains(ts *tag.TagSet, patch tag.TagPatch, delta int, keep bool) (
 			old, _ := strconv.Atoi(strings.TrimSpace(v)) // the validator already accepted it
 			n := old - delta
 			if n < math.MinInt16 || n > math.MaxInt16 {
-				// The file reads fine and the gain edit is legal; this one tag cannot hold the
-				// result, which is a write refusal rather than a corrupt file.
+				// The file is fine; this one tag cannot hold the result, so refuse
+				// the write.
 				return nil, fmt.Errorf("%w: rebasing %s from %d by %d leaves %d, outside the signed 16-bit range the field holds; set or clear it in the same edit, or pass WithKeepR128Gains (--keep-r128) to leave it alone",
 					waxerr.ErrUnsupportedTag, k, old, delta, n)
 			}
@@ -1235,17 +1107,13 @@ func splitNumberPairs(ts *tag.TagSet, patch tag.TagPatch) []core.Warning {
 		}
 		vals, ok := ts.Get(numKey)
 		if !ok || len(vals) != 1 {
-			continue // absent, or multi-valued (out of scope - never lose a value)
+			continue // absent, or multi-valued (out of scope; never lose a value)
 		}
 		totKey := tag.TotalKey(numKey)
 		touchesTotal := patch.Touches(totKey)
-		// When the same edit also sets the total explicitly, that explicit value wins (the
-		// SplitNumberValue call below is told not to write the derived total). Warn when the two
-		// numerically disagree so the unused slash-derived total is not a silent surprise.
-		// Detection lives here, where the precedence lives, so the two cannot drift. A
-		// leading-zero-only difference ("1/07" + TRACKTOTAL=7) is not a conflict - the same total,
-		// and the derived "07" is discarded anyway; agreement, a malformed number (no derived
-		// total), or an edit that does not touch the total also does not warn.
+		// An explicit total in the same edit wins; warn when it numerically disagrees
+		// with the slash-derived one. A leading-zero-only difference ("1/07" +
+		// TRACKTOTAL=7) is not a conflict. A malformed number derives no total.
 		_, derived, split := tag.NumberTotalSplit(numKey, vals[0])
 		explicit, _ := ts.First(totKey)
 		if touchesTotal && split && derived != "" && explicit != "" && !sameTotal(explicit, derived) {
@@ -1253,22 +1121,19 @@ func splitNumberPairs(ts *tag.TagSet, patch tag.TagPatch) []core.Warning {
 				fmt.Sprintf("%s %s overrides the total %s derived from %s %q",
 					totKey, explicit, derived, numKey, vals[0]), totKey, numKey)
 		}
-		// Split through the shared split-and-assign body, so this edit-time site cannot drift
-		// from the codec read paths ([tag.NormalizeNumberPairs] uses the same helper). A value
-		// with no slash, or a malformed pair ("abc/1", "1/2/3"), is left verbatim on the number
-		// key (the set-time note flags it). The total is written unless the patch also touches
-		// the total key, so an explicit Set/Clear of the total in the same edit wins while a
-		// slash total still updates a base-carried one.
+		// The shared helper ([tag.NormalizeNumberPairs] uses it too) leaves a value with
+		// no slash or a malformed pair ("abc/1", "1/2/3") verbatim; the set-time note
+		// flags it. The total is written unless the patch touches the total key, so an
+		// explicit Set/Clear wins while a slash total still updates a base-carried one.
 		tag.SplitNumberValue(ts, numKey, vals[0], !touchesTotal)
 	}
 	return ws
 }
 
-// sameTotal reports whether two track/disc total strings denote the same number, so a
-// leading-zero-only difference ("07" vs "7", "012" vs "12") is not flagged as a conflict. The
-// derived side is already validated numeric; a non-numeric or out-of-range explicit total never
-// parses equal, so it still counts as a genuine disagreement (and its own malformed-value note
-// fires separately). Exact-string equality short-circuits the common case.
+// sameTotal reports whether two total strings denote the same number, so "07" vs
+// "7" is not a conflict. A non-numeric or out-of-range explicit total never parses
+// equal and still counts as a disagreement; its own malformed-value note fires
+// separately.
 func sameTotal(explicit, derived string) bool {
 	if explicit == derived {
 		return true
@@ -1287,13 +1152,10 @@ func formatLineList(lines []int) string {
 	return strings.Join(s, ", ")
 }
 
-// validatePictures enforces the single-icon rule: picture types 1 and 2 must
-// each appear at most once.
-//
-// The sentinel is ErrUnsupportedTag, not ErrInvalidData: the source file parsed fine
-// and only the requested write is impossible, which is the same shape as the
-// chapter-count refusal above. Reporting it as corruption would also let a bad flag
-// combination outrank a genuinely corrupt file in a multi-file run's exit code.
+// validatePictures enforces the single-icon rule: picture types 1 and 2 each
+// appear at most once. The sentinel is ErrUnsupportedTag, not ErrInvalidData: the
+// file parsed fine and only the write is impossible, and a bad flag combination
+// must not outrank a corrupt file in a multi-file run's exit code.
 func validatePictures(pics []core.Picture) error {
 	icon, otherIcon := core.CountIcons(pics)
 	if icon > 1 {

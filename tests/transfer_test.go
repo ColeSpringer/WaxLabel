@@ -13,8 +13,7 @@ import (
 )
 
 // MP4's Nero chpl truncates a chapter title past 255 bytes, so copying a chapter whose title
-// exceeds that to MP4 must grade the chapter set Lossy (with the truncation reason) rather than
-// advertise a clean carry.
+// exceeds that to MP4 must grade the chapter set Lossy (with the truncation reason).
 func TestCopyChapterTitleTooLongReportsLossy(t *testing.T) {
 	longTitle := strings.Repeat("x", 300)
 	// A FLAC source carrying one chapter with a 300-byte title (FLAC has no title cap).
@@ -92,9 +91,9 @@ func tinyGIF() []byte {
 	return append([]byte("GIF89a"), 0x03, 0x00, 0x05, 0x00, 0x77, 0x00, 0x00)
 }
 
-// regression guard: MP4 drops a literal 0 in a trkn/disk slot on read, so the transfer grading must
-// report TRACKNUMBER=0 (even paired with a real total) as dropped, not carried; keeping the report
-// in sync with what the writer stores and reads back.
+// MP4 drops a literal 0 in a trkn/disk slot on read, so the transfer grading must report
+// TRACKNUMBER=0 (even paired with a total) as dropped, not carried, matching what the writer
+// stores and reads back.
 func TestPrepareTransferMP4ZeroTrackDropped(t *testing.T) {
 	srcBytes := writeBack(t, "../testdata/notags.flac", func(e *wl.Editor) {
 		e.Set(tag.TrackNumber, "0").Set(tag.TrackTotal, "12")
@@ -311,9 +310,9 @@ func TestPlanTransferMatchesPrepareTransfer(t *testing.T) {
 	}
 }
 
-// MP4 covr atom can only label JPEG/PNG/BMP, so a cover in another format must fail loudly at
-// Prepare rather than be silently stored mislabeled as JPEG (a corrupt cover a cross-format copy
-// would otherwise claim "carried losslessly"). A supported format still writes.
+// MP4 covr atom can only label JPEG/PNG/BMP, so a cover in another format must fail at Prepare
+// instead of being stored mislabeled as JPEG, which a cross-format copy would then claim "carried
+// losslessly". A supported format still writes.
 func TestMP4RejectsUnstorableCover(t *testing.T) {
 	doc := mustParseBytes(t, readFixture(t, "../testdata/notags.m4a"))
 	_, err := doc.Edit().
@@ -450,8 +449,7 @@ func TestPlanTransferMatroskaToMP4ChapterLoss(t *testing.T) {
 		t.Errorf("language-free chapters -> MP4 = %s, want carried", it.Disposition)
 	}
 	// Only the final chapter carries an explicit end (no interior gap), which MP4's QuickTime text
-	// track stores, so the end itself is fine, but the uniform language these chapters carry is still
-	// dropped, so the copy is lossy for the language.
+	// track stores, so the end is fine; the uniform language is still dropped, so the copy is lossy.
 	lastEndOnly := withChapters(
 		wl.Chapter{Start: 0, Title: "One", LanguageIETF: "en-US"},
 		wl.Chapter{Start: ms(300), End: ms(600), Title: "Two", LanguageIETF: "en-US"},
@@ -537,9 +535,8 @@ func TestPrepareTransferMixedCoversSplit(t *testing.T) {
 	}
 }
 
-// projects a FLAC's tags onto a Matroska canvas and confirms the report matches the written result;
-// a cross-format transfer into a now-writable container (Title lands in Info.Title, the rest in
-// SimpleTags).
+// projects a FLAC's tags onto a Matroska canvas and confirms the report matches the written result
+// (Title goes to Info.Title, the rest to SimpleTags).
 func TestPrepareTransferToMatroska(t *testing.T) {
 	src := mustParseFile(t, sampleFLAC)
 	dstBytes := readFixture(t, "../testdata/notags.mka")
@@ -575,8 +572,8 @@ func coverBearingFLAC(t *testing.T, title string) []byte {
 }
 
 // format-only PlanTransfer has no destination file, so Matroska answers file-agnostically and still
-// reports a cover writable. The WebM cover refusal is a per-file constraint only a real destination
-// (PrepareTransfer/copy) can see, so PlanTransfer(Format) stays right by construction.
+// reports a cover writable. The WebM cover refusal is a per-file constraint that only
+// PrepareTransfer/copy can see.
 func TestPlanTransferMatroskaCoverWritable(t *testing.T) {
 	src := mustParseBytes(t, coverBearingFLAC(t, "Cover Test"))
 	report, err := src.PlanTransfer(wl.FormatMatroska)
@@ -766,9 +763,9 @@ func TestWavNumericGenreReducedWithID3(t *testing.T) {
 	}
 }
 
-// bare WAV whose edit forces an id3 chunk into existence; here an unmapped key, which LIST/INFO
-// cannot store; routes genre through that chunk too, so under --numeric-genre the numeric TCON
-// mutates "rock" -> "Rock" even though the base file had no id3 chunk.
+// bare WAV whose edit forces an id3 chunk into existence (here via an unmapped key, which
+// LIST/INFO cannot store) routes genre through that chunk too, so under --numeric-genre the
+// numeric TCON mutates "rock" -> "Rock" even though the base file had no id3 chunk.
 func TestWavForcedID3NumericGenreWarns(t *testing.T) {
 	bare := wavFile(wavFmtPCM(), wavData(400))
 	plan, err := mustParseBytes(t, bare).Edit().
@@ -786,12 +783,12 @@ func TestWavForcedID3NumericGenreWarns(t *testing.T) {
 	}
 }
 
-// regression guard: a copy that carries a multi-value field verbatim onto an ID3v2.3 destination;
-// while another field changes, so the multi-value frame is preserved rather than re-rendered; must
-// surface the [id3-multi-value] caveat, the same one a direct multi-value set warns.
+// a copy that carries a multi-value field verbatim onto an ID3v2.3 destination (another field
+// changes, so the multi-value frame is preserved, not re-rendered) must surface the
+// [id3-multi-value] caveat, the same one a direct multi-value set warns.
 func TestTransferCarriesV23MultiValueWarning(t *testing.T) {
 	base := readFixture(t, sampleMP3) // ID3v2.3
-	// A v2.3 MP3 carrying a genuine multi-value ARTIST.
+	// A v2.3 MP3 carrying a multi-value ARTIST.
 	multi := applyToBytes(t, base, mustPlan(t, mustParseBytes(t, base).Edit().Set(tag.Artist, "A", "B", "C")))
 
 	// Source and destination both hold ARTIST=[A,B,C] but differ in TITLE, so the copy
@@ -815,7 +812,7 @@ func TestTransferCarriesV23MultiValueWarning(t *testing.T) {
 	if !warned {
 		t.Errorf("a copy carrying a v2.3 multi-value verbatim must warn id3-multi-value; got %v", plan.Report().Warnings)
 	}
-	// The carried multi-value still round-trips for our own reader.
+	// The carried multi-value still round-trips through WaxLabel's reader.
 	if got := mustParseBytes(t, applyToBytes(t, dst, plan)).Fields().Artists; !slices.Equal(got, []string{"A", "B", "C"}) {
 		t.Errorf("carried multi-value artists = %v, want [A B C]", got)
 	}

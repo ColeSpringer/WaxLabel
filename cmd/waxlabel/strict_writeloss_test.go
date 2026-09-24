@@ -289,7 +289,7 @@ func TestDiscardedEditNotReportedAsUpToDate(t *testing.T) {
 	}
 }
 
-// Genuine no-op keeps "already up to date" wording.
+// A clean no-op keeps "already up to date" wording.
 func TestCleanNoOpStillReportsUpToDate(t *testing.T) {
 	t.Parallel()
 	file := copyFixture(t, sampleFLAC)
@@ -302,7 +302,7 @@ func TestCleanNoOpStillReportsUpToDate(t *testing.T) {
 	}
 }
 
-// Empty GENRE on ID3 drops stub TCON silently; other text fields keep present-empty.
+// Empty GENRE on ID3 writes no TCON and warns value-dropped; other text fields keep present-empty.
 func TestEmptyGenreDroppedOnID3(t *testing.T) {
 	t.Parallel()
 	t.Run("id3-backed formats drop and report it", func(t *testing.T) {

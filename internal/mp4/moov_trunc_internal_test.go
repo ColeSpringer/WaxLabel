@@ -20,8 +20,8 @@ func mp4Ftyp() []byte { return renderAtom(atomName("ftyp"), []byte("M4A \x00\x00
 func mp4Mdat() []byte { return renderAtom(atomName("mdat"), []byte("audiodata")) }
 
 // inflateBoxSize rewrites a rendered atom's 32-bit size field to `declared`, so a test
-// can build a top-level atom whose declared size overruns the bytes actually present -
-// the clamp-to-EOF shape a truncated download produces.
+// can build a top-level atom whose declared size overruns the bytes present: the
+// clamp-to-EOF shape a truncated download produces.
 func inflateBoxSize(box []byte, declared uint32) []byte {
 	out := slices.Clone(box)
 	binary.BigEndian.PutUint32(out[0:4], declared)
@@ -37,11 +37,10 @@ func hasWarn(ws []core.Warning, code core.WarningCode) bool {
 	return false
 }
 
-// TestParseRejectsMoovTrailingGap covers a moov with no udta and a gap between where
-// its last complete child ends and moov.end() would misalign a create-ilst edit -
-// buildCreated appends the new udta at moov.end() (the no-udta/no-meta default branch),
-// past the stray zeros walkAtoms tolerated (the udta-terminator rule), so the output
-// re-parses misaligned.
+// TestParseRejectsMoovTrailingGap: a moov with no udta and a gap between its last
+// complete child and moov.end() would misalign a create-ilst edit. buildCreated appends
+// the new udta at moov.end() (the no-udta/no-meta default branch), past the stray zeros
+// walkAtoms tolerated (the udta-terminator rule), so the output re-parses misaligned.
 func TestParseRejectsMoovTrailingGap(t *testing.T) {
 	ctx := context.Background()
 	freeChild := renderAtom(atomName("free"), nil) // 8 bytes, a complete child
@@ -54,8 +53,7 @@ func TestParseRejectsMoovTrailingGap(t *testing.T) {
 		"childless zero payload": slices.Concat(mp4Ftyp(),
 			renderAtom(atomName("moov"), make([]byte, 8)), mp4Mdat()),
 		// Truncated download: moov is last and declares far more than remains; the clamp to EOF
-		// leaves a gap after its one complete child. This is the internal analogue of the
-		// `head -c 9144 sample.m4a` repro that silently wrote a 2x-size, self-unreadable file.
+		// leaves a gap after its one complete child (the `head -c 9144 sample.m4a` repro).
 		"truncated clamp leaves gap": slices.Concat(mp4Ftyp(),
 			inflateBoxSize(renderAtom(atomName("moov"), slices.Concat(freeChild, make([]byte, 4))), 1<<20)),
 	}
@@ -66,11 +64,10 @@ func TestParseRejectsMoovTrailingGap(t *testing.T) {
 	}
 }
 
-// TestParseAcceptsMoovCleanTail is the must-not-reject half: the moov guard is scoped
-// exactly to a udta-less moov that leaves a real gap, so it must not reject a moov
-// whose child tiles exactly to its end, a moov padded with a legal trailing free atom,
-// or a moov that zero-pads *around a present udta* (a muxer's alternative to a free
-// atom) - all of which write correctly today.
+// TestParseAcceptsMoovCleanTail: the moov check is scoped to a udta-less moov that leaves
+// a gap, so it must not reject a moov whose child tiles exactly to its end, a moov padded
+// with a legal trailing free atom, or a moov that zero-pads around a present udta (a
+// muxer's alternative to a free atom).
 func TestParseAcceptsMoovCleanTail(t *testing.T) {
 	ctx := context.Background()
 	accept := map[string][]byte{
@@ -89,13 +86,13 @@ func TestParseAcceptsMoovCleanTail(t *testing.T) {
 	}
 }
 
-// TestParseWarnsCleanTruncatedMoov covers the warn half: a moov clamped to EOF whose
-// surviving children still tile exactly to the clamped end has no misaligning gap and is accepted,
-// but the degraded structure must be surfaced with a truncation warning rather than reported clean.
+// TestParseWarnsCleanTruncatedMoov: a moov clamped to EOF whose surviving children still
+// tile exactly to the clamped end has no misaligning gap and is accepted, but must carry
+// a truncation warning.
 func TestParseWarnsCleanTruncatedMoov(t *testing.T) {
 	ctx := context.Background()
 	// moov is last and declares far more than remains; its one child (a free atom) tiles exactly to
-	// the clamped end, so there is no gap - only a truncation to report.
+	// the clamped end, so there is no gap, only a truncation to report.
 	moov := renderAtom(atomName("moov"), renderAtom(atomName("free"), nil)) // child tiles to end
 	data := slices.Concat(mp4Ftyp(), inflateBoxSize(moov, 1<<20))
 	media, err := parse(ctx, core.BytesSource(data), core.ParseOptions{})
@@ -107,10 +104,9 @@ func TestParseWarnsCleanTruncatedMoov(t *testing.T) {
 	}
 }
 
-// TestMoovLevelGapRoundTripsTagEdit is the round-trip counterpart to the scoping proof above: a moov
-// that zero-pads around a present udta.meta still accepts a create-ilst tag edit (inserted at
-// meta.end(), before the moov-level gap) and the written file re-parses with the tag present and no
-// error - proving the tolerated moov gap does not become corruption on write.
+// TestMoovLevelGapRoundTripsTagEdit: a moov that zero-pads around a present udta.meta still
+// accepts a create-ilst tag edit (inserted at meta.end(), before the moov-level gap), and the
+// written file re-parses with the tag present. The tolerated moov gap is not corruption on write.
 func TestMoovLevelGapRoundTripsTagEdit(t *testing.T) {
 	ctx := context.Background()
 	udtaMeta := renderAtom(atomName("udta"), renderAtom(atomName("meta"), nil))

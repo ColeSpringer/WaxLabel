@@ -12,9 +12,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// This file collects regression tests for the pre-v1.0 correctness pass: the read model must
-// not accept (or the writer emit) something the round-trip cannot faithfully preserve while
-// the success/warning report claims otherwise.
+// Regression tests for round-trip fidelity: the read model must not accept (or the writer emit)
+// something the round-trip cannot preserve while the success/warning report claims otherwise.
 
 func countWarning(ws []wl.Warning, code wl.WarningCode) int {
 	n := 0
@@ -31,8 +30,8 @@ func hasWarn(ws []wl.Warning, code wl.WarningCode) bool { return countWarning(ws
 // --- non-conformant Vorbis key validated at read ---
 
 // invalid-tag-key handling: an empty-name Vorbis comment is dropped from the canonical model (the
-// writer's Key.Valid gate would reject it) and surfaced as a warning, so a copy no longer "carries"
-// it and then aborts.
+// writer's Key.Valid gate would reject it) and surfaced as a warning, so a copy does not "carry"
+// it and then abort.
 func TestInvalidVorbisKeyWarnsPreservesAndCopiesClean(t *testing.T) {
 	src := flacWithComments("TITLE=x", "=orphan") // a comment with an empty name
 	doc := mustParseBytes(t, src)
@@ -66,9 +65,8 @@ func TestInvalidVorbisKeyWarnsPreservesAndCopiesClean(t *testing.T) {
 	}
 }
 
-// end-to-end guard for the finding that a blanket first-wins silently dropped a preservable text
-// value. A WAV with two INAM (Title) items must carry both through an unrelated edit: the write
-// forces an ID3 chunk whose v2.4 TIT2 preserves both, so a re-parse still sees both.
+// A WAV with two INAM (Title) items must carry both through an unrelated edit: the write forces
+// an ID3 chunk whose v2.4 TIT2 preserves both, so a re-parse still sees both.
 func TestDuplicateWAVTextValuePreservedOnSave(t *testing.T) {
 	src := wavFile(wavFmtPCM(), wavInfo([2]string{"INAM", "Title A"}, [2]string{"INAM", "Title B"}), wavData(400))
 	doc := mustParseBytes(t, src)
@@ -207,10 +205,9 @@ func TestFLACMalformedPicturePreservedAcrossPictureEdit(t *testing.T) {
 	}
 }
 
-// finding that buildResult omitted the malformed-block field from the in-memory result doc: a
-// SECOND picture edit on the returned Document (chained, with no re-parse between edits) must still
-// preserve the undecodable block, so a fresh parse of the twice-edited output still warns
-// invalid-picture.
+// buildResult must carry the malformed-block field into the in-memory result doc: a second picture
+// edit on the returned Document (chained, no re-parse between edits) must still preserve the
+// undecodable block, so a fresh parse of the twice-edited output still warns invalid-picture.
 func TestFLACMalformedPictureSurvivesChainedEdit(t *testing.T) {
 	src := flacWithMalformedPicture()
 	plan, err := mustParseBytes(t, src).Edit().
@@ -252,7 +249,7 @@ func mp3WithMalformedAPIC(t *testing.T) []byte {
 	return append(append(tagBytes, frame...), frames...)
 }
 
-// finding that a picture edit on an MP3 with a malformed APIC left a stale invalid-picture warning
+// a picture edit on an MP3 with a malformed APIC must not leave a stale invalid-picture warning
 // on the returned Document.
 func TestMP3MalformedAPICWarningNotStaleAfterPictureEdit(t *testing.T) {
 	src := mp3WithMalformedAPIC(t)
@@ -300,7 +297,7 @@ func TestTrailingID3v1StrictDetection(t *testing.T) {
 		t.Errorf("a fake TAG tail must not be detected as trailing ID3v1: %v", fakeDoc.Warnings())
 	}
 
-	// A genuine ID3v1 tag is still detected.
+	// A well-formed ID3v1 tag is still detected.
 	real := make([]byte, 128)
 	copy(real, "TAG")
 	copy(real[3:33], "A Title")
@@ -324,7 +321,7 @@ func TestMatroskaUnrepresentableCoverPreservesDestPNG(t *testing.T) {
 		t.Fatalf("source cover should be a non-image link picture, got %v", pics)
 	}
 
-	// Destination: sample.mka, which carries a real PNG cover.
+	// Destination: sample.mka, which carries a PNG cover.
 	dstBytes, err := os.ReadFile(sampleMKA)
 	if err != nil {
 		t.Fatal(err)

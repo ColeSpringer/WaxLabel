@@ -28,8 +28,7 @@ func mp3WithFrames(t *testing.T, frames ...[]byte) []byte {
 	return append(id3v2(4, frames...), mp3Audio(t)...)
 }
 
-// read half: a described COMM was invisible everywhere; dump, lint, diff and copy all behaved as if
-// the file had no comment, while ffprobe showed it. Only a machine description stays out.
+// A described COMM reads as COMMENT, as ffprobe shows it. Only a machine description stays out.
 func TestDescribedCommentIsRead(t *testing.T) {
 	data := mp3WithFrames(t, commFrame(4, "eng", "desc", "the comment"))
 	doc := mustParseBytes(t, data)
@@ -47,7 +46,7 @@ func TestTechnicalCommentStaysUnprojected(t *testing.T) {
 			t.Errorf("%s projected as COMMENT = %v, want unprojected", desc, v)
 		}
 	}
-	// And a COMMENT edit leaves it alone rather than merging it into the new frame.
+	// A COMMENT edit must not merge it into the new frame.
 	data := mp3WithFrames(t, commFrame(4, "eng", "iTunNORM", "machine data"))
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Comment, "Hello").Prepare()
 	if err != nil {
@@ -62,10 +61,10 @@ func TestTechnicalCommentStaysUnprojected(t *testing.T) {
 	}
 }
 
-// source label: core.BuildFamilies marks a key unselected when distinct SOURCES supply distinct
-// values, so labelling each frame by its own description would turn an ordinary file carrying one
-// plain and one described comment into a spurious conflicting-families finding. One source reads
-// both as a multi-valued COMMENT.
+// core.BuildFamilies marks a key unselected when distinct sources supply distinct values, so
+// labelling each frame by its own description would turn a file carrying one plain and one
+// described comment into a spurious conflicting-families finding. One source reads both as a
+// multi-valued COMMENT.
 func TestDescribedCommentNoFamilyConflict(t *testing.T) {
 	data := mp3WithFrames(t,
 		commFrame(4, "eng", "", "plain comment"),
@@ -95,7 +94,7 @@ func TestUnrelatedEditPreservesDescribedComment(t *testing.T) {
 	}
 }
 
-// ordinary case; one described comment from Windows Explorer or a CDDB-era tagger; which must stay
+// The ordinary case, one described comment from Windows Explorer or a CDDB-era tagger, stays
 // lossless: the merge is unambiguous, so the description and language survive the edit.
 func TestSingleDescribedCommentEditKeepsDescription(t *testing.T) {
 	data := mp3WithFrames(t, commFrame(4, "ger", "desc", "the comment"))
@@ -116,8 +115,8 @@ func TestSingleDescribedCommentEditKeepsDescription(t *testing.T) {
 	}
 }
 
-// several managed frames cannot all keep their description in the one frame the flat model writes,
-// so the loss is reported rather than left silent.
+// Several managed frames cannot all keep their description in the one frame the flat model writes,
+// so the loss is warned.
 func TestAmbiguousCommentMergeWarns(t *testing.T) {
 	data := mp3WithFrames(t,
 		commFrame(4, "eng", "", "plain comment"),
@@ -135,9 +134,9 @@ func TestAmbiguousCommentMergeWarns(t *testing.T) {
 	}
 }
 
-// description labels the comment the DESTINATION had. A value arriving from another file is not the
-// thing it labels, so keeping it would stamp the destination's "Ripped by EAC" onto the source's
-// text and assert something false.
+// The description labels the comment the destination had. A value arriving from another file is
+// not the thing it labels, so keeping it would stamp the destination's "Ripped by EAC" onto the
+// source's text.
 func TestCarriedCommentDropsTheDestinationDescription(t *testing.T) {
 	dst := mustParseBytes(t, mp3WithFrames(t, commFrame(4, "eng", "Ripped by EAC", "old comment")))
 	src := mustParseBytes(t, flacWithVendor("ref", "COMMENT=From the source"))
@@ -154,8 +153,7 @@ func TestCarriedCommentDropsTheDestinationDescription(t *testing.T) {
 	}
 }
 
-// boundary: the description goes with the value the user removed, which is a deliberate removal,
-// not a loss to report.
+// The description goes with the value the user removed; a removal is not a loss to report.
 func TestClearingCommentIsNotADescriptionDrop(t *testing.T) {
 	data := mp3WithFrames(t, commFrame(4, "eng", "desc", "the comment"))
 	plan, err := mustParseBytes(t, data).Edit().Clear(tag.Comment).Prepare()
@@ -170,8 +168,7 @@ func TestClearingCommentIsNotADescriptionDrop(t *testing.T) {
 	}
 }
 
-// seen-guard: with several managed COMM frames the last one's language used to win. It was latent
-// while only an empty-description COMM could be managed, and reachable once described ones are.
+// With several managed COMM frames the first one's language wins.
 func TestCommentLanguageFirstWins(t *testing.T) {
 	data := mp3WithFrames(t,
 		commFrame(4, "ger", "", "first"),

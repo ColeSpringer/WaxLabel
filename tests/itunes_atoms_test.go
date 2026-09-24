@@ -11,8 +11,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// mp4AllITunesAtoms builds a file carrying every iTunes structured atom this change projects, plus
-// the three classic text atoms (©wrk, ©mvn, ©enc).
+// mp4AllITunesAtoms builds a file carrying every projected iTunes structured atom, plus the three
+// classic text atoms (©wrk, ©mvn, ©enc).
 func mp4AllITunesAtoms() []byte {
 	return mp4Tagged(
 		mp4Text("\xa9nam", "T"),
@@ -57,8 +57,7 @@ func itunesDataAtom(t *testing.T, out []byte, name string) (typ uint32, value []
 	return binary.BigEndian.Uint32(da[8:12]) & 0x00FFFFFF, da[16:size]
 }
 
-// structured atoms into the canonical keys and the typed Fields projection. These atoms were
-// preserved-but-invisible before this change.
+// The structured atoms project into the canonical keys and the typed Fields projection.
 func TestMP4ITunesAtomsProject(t *testing.T) {
 	doc := mustParseBytes(t, mp4AllITunesAtoms())
 	for key, want := range itunesAtomValues {
@@ -78,7 +77,7 @@ func TestMP4ITunesAtomsProject(t *testing.T) {
 	}
 }
 
-// lenient decode edges: a literal advisory 0 and the legacy 4 read faithfully, an implicit-type (0)
+// lenient decode edges: a literal advisory 0 and the legacy 4 read as stored, an implicit-type (0)
 // data atom is accepted, and tmpo decodes at 1- and 4-byte widths.
 func TestMP4ITunesAtomDecodeFidelity(t *testing.T) {
 	cases := []struct {
@@ -103,8 +102,8 @@ func TestMP4ITunesAtomDecodeFidelity(t *testing.T) {
 	}
 }
 
-// sets the eight keys on a bare file and pins the atoms and their bytes: structured atoms with
-// type-21 data, no "----" freeform fallback, and a clean round-trip including a literal advisory 0.
+// Setting the eight keys on a bare file writes structured atoms with type-21 data, no "----"
+// freeform fallback, and round-trips, including a literal advisory 0.
 func TestMP4ITunesWriteCreatesAtoms(t *testing.T) {
 	data := mp4Tagged(mp4Text("\xa9nam", "T"))
 	// The two flags get distinct values so a swapped pgap/shwm encoder fails the byte pins.
@@ -163,8 +162,7 @@ func TestMP4ITunesWriteCreatesAtoms(t *testing.T) {
 	}
 }
 
-// ownership guard: every decode case must have its encode case, or a Title-only edit would silently
-// delete the atom it now owns.
+// Every decode case must have its encode case, or a Title-only edit would delete the atom it owns.
 func TestMP4ITunesAtomsSurviveUnrelatedEdit(t *testing.T) {
 	data := mp4AllITunesAtoms()
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Renamed").Prepare()
@@ -239,8 +237,8 @@ func TestMP4ITunesDropAndCoerceWarnings(t *testing.T) {
 	}
 }
 
-// file holding both the structured rtng and a freeform ITUNESADVISORY: both project, distinct
-// values leave the family unselected and lint flags the single-valued key, identical values stay
+// A file holding both the structured rtng and a freeform ITUNESADVISORY: both project; distinct
+// values leave the family unselected and lint flags the single-valued key; identical values stay
 // selected.
 func TestMP4ITunesAdvisoryDualRepresentation(t *testing.T) {
 	build := func(freeformVal string) []byte {
@@ -554,9 +552,9 @@ func TestITunesKeysCrossFormat(t *testing.T) {
 	check("MP3->M4A", mustParseBytes(t, applyToBytes(t, readFixture(t, "../testdata/notags.m4a"), planBack)))
 }
 
-// structured atom carrying a text-typed data atom (a nonconformant file another tool patched): its
-// ASCII bytes must not be misread as a big-endian integer, so it projects nothing, and an unrelated
-// edit preserves it verbatim instead of rewriting it as the bogus number.
+// A structured atom carrying a text-typed data atom (a nonconformant file another tool patched):
+// its ASCII bytes must not be misread as a big-endian integer, so it projects nothing, and an
+// unrelated edit preserves it verbatim.
 func TestMP4TextTypedIntAtomPreserved(t *testing.T) {
 	textTmpo := mp4Atom("tmpo", mp4Data(1, []byte("50")))
 	data := mp4Tagged(mp4Text("\xa9nam", "T"), textTmpo)
@@ -578,8 +576,8 @@ func TestMP4TextTypedIntAtomPreserved(t *testing.T) {
 	}
 }
 
-// MVIN's managed status: an MP3 already carrying an MVIN pair edited to a new MOVEMENT re-renders
-// the one frame rather than emitting a second beside the stale original.
+// An MP3 already carrying an MVIN pair edited to a new MOVEMENT re-renders the one frame, not a
+// second beside the stale original.
 func TestID3MovementFrameManaged(t *testing.T) {
 	data := append(id3v2(3, textFrame(3, "MVIN", "3/12")), mp3Audio(t)...)
 	plan, err := mustParseBytes(t, data).Edit().Set(tag.Movement, "5").Prepare()
@@ -600,7 +598,7 @@ func TestID3MovementFrameManaged(t *testing.T) {
 }
 
 // movementSplit's validity gate: an MVIN body whose side is not a valid movement integer stays one
-// verbatim MOVEMENT value instead of fabricating a total from garbage.
+// verbatim MOVEMENT value, with no total fabricated.
 func TestID3MovementMalformedPairVerbatim(t *testing.T) {
 	for _, body := range []string{"abc/1", "3/70000", "ab/cd/12"} {
 		data := append(id3v2(3, textFrame(3, "MVIN", body)), mp3Audio(t)...)

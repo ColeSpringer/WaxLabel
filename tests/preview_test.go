@@ -31,8 +31,8 @@ func TestPlanChanges(t *testing.T) {
 	}
 }
 
-// full preview a consumer prints with fmt.Println(plan); the field-level changes block followed by
-// the report body; rather than the Go-struct default.
+// full preview a consumer prints with fmt.Println(plan): the field-level changes block followed by
+// the report body.
 func TestPlanString(t *testing.T) {
 	doc := mustParseFile(t, sampleFLAC)
 	plan, err := doc.Edit().Set(tag.Title, "New Title").Prepare()
@@ -211,8 +211,7 @@ func TestLintNoAudioFinding(t *testing.T) {
 }
 
 // no-essence warning and the digest guard are driven by one condition for every format, not an MP3
-// special-case. A tag-only WAV must warn (so lint flags it) and refuse to hash (so verify fails);
-// the two surfaces agreeing for a non-MP3 file.
+// special-case. A tag-only WAV must warn (so lint flags it) and refuse to hash (so verify fails).
 func TestNoAudioIsFormatAgnostic(t *testing.T) {
 	emptyWAV := readFixture(t, "../testdata/empty.wav")
 	doc, err := wl.Parse(context.Background(), wl.BytesSource(emptyWAV))

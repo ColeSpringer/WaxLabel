@@ -220,9 +220,9 @@ func TestOggCoverRenumberPreservesEssence(t *testing.T) {
 	}
 }
 
-// SaveBack path with WithVerifyEssence; which re-reads the written file and re-hashes its essence
-// (verifyOutput); together with a renumbering cover add, so the buffered file write, the renumber
-// loop, and output verification are all covered end to end.
+// SaveBack with WithVerifyEssence, which re-reads the written file and re-hashes its essence
+// (verifyOutput), plus a renumbering cover add: the buffered file write, the renumber loop, and
+// output verification are covered end to end.
 func TestOggSaveBackVerifyEssence(t *testing.T) {
 	for _, f := range oggFixtures {
 		path := copyToTemp(t, f)
@@ -250,8 +250,8 @@ func TestOggSaveBackVerifyEssence(t *testing.T) {
 	}
 }
 
-// guards the "Opus R128 distinct from ReplayGain" rule: an R128_* tag passes through as its own
-// canonical key and is never folded into the ReplayGain keys.
+// Opus R128 stays distinct from ReplayGain: an R128_* tag passes through as its own canonical key
+// and is never folded into the ReplayGain keys.
 func TestOggOpusR128NotMappedToReplayGain(t *testing.T) {
 	src := readFixture(t, sampleOpus)
 	plan, err := mustParseBytes(t, src).Edit().Set(tag.Key("R128_TRACK_GAIN"), "-2048").Prepare()
@@ -330,8 +330,8 @@ func TestOggExtensionRouting(t *testing.T) {
 	}
 }
 
-// Write-side differential: an independent tool must read back what we wrote
-// and accept our audio. These skip cleanly when ffmpeg/ffprobe are absent.
+// Write-side differential: an independent tool must read back the written tags
+// and accept the audio. These skip when ffmpeg/ffprobe are absent.
 
 func TestOggDifferentialFFprobeReadsOurTags(t *testing.T) {
 	requireTool(t, "ffprobe")
@@ -393,9 +393,9 @@ func TestOggDifferentialFFmpegDecodesRenumbered(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Fully demux+decode the audio stream: this fails loudly if our pages,
-		// lacing, sequence numbers, or CRCs are malformed. (Audio-only mapping
-		// avoids ffmpeg's ogg muxer refusing the attached-picture stream.)
+		// Demux and decode the audio stream: this fails if the pages, lacing, sequence
+		// numbers, or CRCs are malformed. The audio-only map keeps ffmpeg's ogg muxer
+		// from refusing the attached-picture stream.
 		cmd := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error",
 			"-i", path, "-map", "0:a", "-f", "null", "-")
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -408,8 +408,8 @@ func TestOggDifferentialFFmpegDecodesRenumbered(t *testing.T) {
 }
 
 // every Ogg codec reports a measured average, so one bitrate number means the same thing across
-// formats. Vorbis preferred bitrate_nominal, the encoder target, which reads 96 kbps on a fixture
-// whose whole-file rate is 44.
+// formats. Vorbis's bitrate_nominal is the encoder target and reads 96 kbps on a fixture whose
+// whole-file rate is 44, so it must not be reported.
 func TestOggBitrateIsMeasured(t *testing.T) {
 	for _, path := range oggFixtures {
 		t.Run(path, func(t *testing.T) {

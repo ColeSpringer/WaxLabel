@@ -43,8 +43,8 @@ func TestContentDetectionCoversFixtures(t *testing.T) {
 	}
 }
 
-// checks the formats whose parsers read past a leading ID3v2 tag: MP3, FLAC, and raw AAC. Other
-// inner signatures past ID3 should be reported unsupported.
+// The parsers that read past a leading ID3v2 tag are MP3, FLAC, and raw AAC. Other inner
+// signatures past ID3 are reported unsupported.
 func TestSkipsLeadingID3Set(t *testing.T) {
 	want := map[core.Format]bool{
 		core.FormatMP3: true, core.FormatFLAC: true, core.FormatAAC: true,
@@ -62,9 +62,8 @@ func TestSkipsLeadingID3Set(t *testing.T) {
 	}
 }
 
-// mp4.Sniff tested "ftyp" at a fixed offset, so a file whose writer emitted a free/skip/wide box
-// first was unsupported (exit 3) even though the parser handles it; walkAtoms is generic over
-// top-level atoms and only moov is required.
+// A file whose writer emitted a free/skip/wide box before "ftyp" is still detected as MP4:
+// walkAtoms is generic over top-level atoms and only moov is required.
 func TestDetectsMP4BehindLeadingFreeBox(t *testing.T) {
 	ftyp := []byte("\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00M4A mp42isom")
 	box := func(name string, n int) []byte {

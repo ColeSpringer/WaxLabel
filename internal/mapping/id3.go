@@ -202,7 +202,7 @@ var technicalCommentDescs = map[string]bool{
 var technicalCommentPrefixes = []string{"ITUNES_CDDB", "REPLAYGAIN"}
 
 // ID3TechnicalCommentDesc reports machine COMM frames. Shared by read filter and writer gate
-// (same pattern as [MatroskaTechnicalName]). List is intentionally incomplete.
+// (same pattern as [MatroskaTechnicalName]). The list is not exhaustive.
 func ID3TechnicalCommentDesc(desc string) bool {
 	up := normalizeKey(desc)
 	if technicalCommentDescs[up] {

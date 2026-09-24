@@ -53,12 +53,12 @@ func (e *editFlags) syncedLyricsAdds() (sets []wl.SyncedLyrics, droppedLines []i
 		}
 		content := string(data)
 		// Boundary check like argv text: NUL (valid UTF-8) or invalid UTF-8 is
-		// usage (exit 2), not the library's exit-4 corrupt-media backstop.
+		// usage (exit 2), not the library's exit-4 corrupt-media error.
 		if err := checkArgText(content, "--synced-lyrics-file: "+e.syncedLyricsFile); err != nil {
 			return nil, nil, err
 		}
-		// Uncapped parse: content is already in memory. Library write-time cap
-		// truncates and warns once (--json/--strict) instead of silently dropping.
+		// Uncapped parse: content is already in memory. The library's write-time cap
+		// truncates and warns once (--json/--strict).
 		fileLines, dropped := wl.ParseLRCReportFull(content)
 		if len(fileLines) == 0 {
 			return nil, nil, usagef("--synced-lyrics-file: %s: no timed lyric lines found (want LRC lines like [00:12.00]Text)", e.syncedLyricsFile)

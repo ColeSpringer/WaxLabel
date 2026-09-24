@@ -16,8 +16,8 @@ func segBytesDoc(docType string, body []byte) []byte {
 	return append(out, encElement(idSegment, body)...)
 }
 
-// TestMatroskaInvalidUTF8TagNotDuplicatedOnEdit is a regression: a non-conformant file
-// can hold invalid UTF-8 in an album-scope SimpleTag.
+// TestMatroskaInvalidUTF8TagNotDuplicatedOnEdit: an album-scope SimpleTag holding
+// invalid UTF-8 is not duplicated by unrelated edits.
 func TestMatroskaInvalidUTF8TagNotDuplicatedOnEdit(t *testing.T) {
 	for _, docType := range []string{"matroska", "webm"} {
 		t.Run(docType, func(t *testing.T) {

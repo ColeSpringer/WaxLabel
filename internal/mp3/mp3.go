@@ -22,11 +22,9 @@ func (Codec) Format() core.Format { return core.FormatMP3 }
 func (Codec) SkipsLeadingID3() bool { return true }
 
 // Extensions includes ".mpga" (same MPEG audio under another name).
-
 func (Codec) Extensions() []string { return []string{".mp3", ".mpga"} }
 
 // Sniff: leading ID3v2 or bare MPEG frame. Parser peeks past ID3 (shared with FLAC).
-
 func (Codec) Sniff(header []byte) bool {
 	if len(header) >= 3 && header[0] == 'I' && header[1] == 'D' && header[2] == '3' {
 		return true
@@ -44,7 +42,6 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 
 // Capabilities: ID3v2 tags/art (version preserved). Trailing ID3v1/APEv2 surfaced
 // only. Media bound so ORIGINALDATE fidelity matches the file's write version.
-
 func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
 		Read: core.AccessFull, Write: core.AccessFull,
@@ -76,7 +73,6 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 func (d *doc) ID3Tag() *id3.Tag { return d.id3 }
 
 // EssenceExtent: versioned name plus first frame header with rate/channels.
-
 func (Codec) EssenceExtent(m *core.Media) (string, []byte) {
 	var cfg [12]byte
 	if d, ok := m.Native.(*doc); ok {

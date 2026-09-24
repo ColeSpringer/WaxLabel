@@ -88,7 +88,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		}
 	}
 
-	// WebM: refuse cover write (Plan backstop; Capabilities gates transfer). Keep isWebM in sync.
+	// WebM: refuse cover write here too (Capabilities gates transfer). Keep isWebM in sync.
 	if ch.pictures && isWebM(d.docType) {
 		return nil, fmt.Errorf("%w: cover art cannot be written to %s WebM file (Attachments is not in the WebM subset)",
 			waxerr.ErrUnsupportedTag, core.IndefiniteArticle("WebM"))
@@ -153,7 +153,7 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 		report.Warnings = core.Warn(report.Warnings, core.WarnPictureMetadataDropped,
 			"Matroska preserves only the front cover's role; other picture roles read back as Other")
 	}
-	// --force non-image cover: no honesty warning (reads as Unrecognized; lint flags).
+	// --force non-image cover: no warning here (reads as Unrecognized; lint flags it).
 
 	pl, err := planAbsorb(d, base, edited, ch, ed, report)
 	if err != nil {
@@ -196,28 +196,25 @@ func detectChanges(base, edited *core.Media) changes {
 	b.Delete(tag.Title)
 	e.Delete(tag.Title)
 	return changes{
-		// Compare the whole Title value list, not just the first: changing or adding
-		// a later Title value is a real edit, not a no-op (only the first lands in
-		// the single-valued Info.Title, but the edit must not be silently dropped).
+		// Compare the whole Title value list: adding or changing a later value is an
+		// edit even though only the first reaches the single-valued Info.Title.
 		simple: !b.Equal(e),
 		title:  !slices.Equal(bt, et),
 		// Compare base against the reprojected edited set (roles reduced to the cover-art
-		// file-name convention, description sanitized, MIME re-sniffed), not the raw edited
-		// roles: a role Matroska cannot represent would otherwise look like a change on every
-		// copy even though the on-disk cover set is already identical.
+		// file names, description sanitized, MIME re-sniffed). A role Matroska cannot
+		// represent would otherwise look like a change on every copy.
 		pictures: !core.EqualPictures(base.Pictures, reprojectPictures(edited.Pictures)),
 		chapters: !core.EqualChapters(base.Chapters, edited.Chapters),
 	}
 }
 
-// isWebM reports whether the EBML DocType is the WebM subset, matching the
-// case-insensitive comparison the reader uses for the container label.
+// isWebM reports whether the EBML DocType is WebM, case-insensitively like containerName.
 func isWebM(docType string) bool { return strings.EqualFold(docType, "webm") }
 
-// checkIndexCaptured refuses the edit when a SeekHead/Cues element cannot be safely
-// rewritten: more than one is present (a linked index - only the last is captured, so
-// the others would be copied with stale offsets), or its single instance was not
-// captured at parse (a read failure or over-limit declared size).
+// checkIndexCaptured refuses the edit when a SeekHead/Cues element cannot be
+// rewritten: more than one is present (a linked index; only the last is captured, so
+// the others would copy with stale offsets), or the single instance was not captured
+// at parse (read failure or over-limit declared size).
 func checkIndexCaptured(wb *writeBase) error {
 	seeks, cues := 0, 0
 	for _, c := range wb.children {
@@ -255,9 +252,8 @@ func checkSegmentCRCCaptured(wb *writeBase) error {
 	return nil
 }
 
-// checkPreservable refuses the edit when an element the writer must copy verbatim could
-// not be captured (its bytes exceeded the alloc limit, so captureRaw returned nil) -
-// dropping it would silently lose data.
+// checkPreservable refuses the edit when an element the writer must copy verbatim was
+// not captured (its bytes exceeded the alloc limit, so captureRaw returned nil).
 func checkPreservable(d *doc, ch changes, ed *editDecisions) error {
 	tooBig := func(what string) error {
 		return fmt.Errorf("%w: a Matroska %s is too large to rewrite within the alloc limit", waxerr.ErrUnsupportedTag, what)
@@ -265,16 +261,15 @@ func checkPreservable(d *doc, ch changes, ed *editDecisions) error {
 	if ch.simple {
 		for i, g := range d.groups {
 			if i == ed.albumIdx {
-				// Synced in place: every SimpleTag the edit keeps verbatim - a non-canonical tag,
-				// OR a managed tag whose canonical key was not edited (preserved with its
-				// language/binary/nested structure) - needs its captured bytes.
+				// Album group, synced in place: every SimpleTag kept verbatim (a non-canonical
+				// tag, or a managed tag whose key was not edited) needs its captured bytes.
 				for ti, st := range g.tags {
 					if ed.dropped(i, ti) || migratesToInfo(st, d.wb.info != nil) {
 						continue // re-emitted from the canonical set, or migrated to Info.Title: no raw needed
 					}
 					if st.raw == nil {
 						// Includes a managed TITLE kept because no Info exists to migrate it
-						// to. Refuse rather than let buildAlbumGroup skip an uncapturable tag.
+						// to; buildAlbumGroup would otherwise skip the uncaptured tag.
 						return tooBig("tag")
 					}
 				}
@@ -285,14 +280,12 @@ func checkPreservable(d *doc, ch changes, ed *editDecisions) error {
 					continue // preserved verbatim from the whole Tag element's bytes
 				}
 				if len(g.tags) == 0 {
-					// No whole-element bytes and no captured SimpleTags to rebuild
-					// from: refuse rather than silently dropping the group.
+					// No whole-element bytes and no SimpleTags to rebuild from.
 					return tooBig("tag group")
 				}
 			}
 			// Re-rendered to drop its edited keys: every surviving SimpleTag needs its bytes,
-			// and a scope-narrowing group needs its Targets bytes too (else the rebuild would
-			// silently lose the narrowing).
+			// and a scope-narrowing group needs its Targets bytes too.
 			kept := 0
 			for ti, st := range g.tags {
 				if ed.dropped(i, ti) {
@@ -316,9 +309,8 @@ func checkPreservable(d *doc, ch changes, ed *editDecisions) error {
 		}
 	}
 	if ch.chapters && d.chapters != nil {
-		// The default edition is re-rendered from the parsed model, but every other
-		// edition is copied from its captured bytes - refuse if one was too large to
-		// capture rather than silently dropping it.
+		// The default edition is re-rendered from the parsed model; every other edition
+		// is copied from its captured bytes.
 		for i, e := range d.chapters.editions {
 			if i != d.chapters.defIdx && e.raw == nil {
 				return tooBig("chapter edition")
@@ -328,9 +320,8 @@ func checkPreservable(d *doc, ch changes, ed *editDecisions) error {
 	return nil
 }
 
-// errFallback signals that the absorption path cannot apply (no reserved Void, or
-// the edited header does not fit) so Plan should try the shift path instead. It
-// is internal control flow, never returned to the caller.
+// errFallback signals that absorption cannot apply (no reserved Void, or the edited
+// header does not fit) and Plan should try the shift path. Never returned to the caller.
 var errFallback = fmt.Errorf("matroska: absorption not applicable")
 
 func isFallback(err error) bool { return errors.Is(err, errFallback) }
@@ -340,7 +331,7 @@ func isFallback(err error) bool { return errors.Is(err, errFallback) }
 func renderTags(d *doc, base, edited tag.TagSet, ed *editDecisions) (raw []byte, groups []tagGroup) {
 	covered, albumOwn, others := coveredByOtherScopes(d.groups, ed)
 	// A managed TITLE migrates to Info.Title only when an Info element exists; with
-	// none, buildAlbumGroup preserves the SimpleTag verbatim instead of dropping it.
+	// none, buildAlbumGroup keeps the SimpleTag verbatim.
 	infoPresent := d.wb.info != nil
 	var content []byte
 
@@ -365,15 +356,14 @@ func renderTags(d *doc, base, edited tag.TagSet, ed *editDecisions) (raw []byte,
 	if len(content) == 0 {
 		return nil, nil
 	}
-	// A Tags element carries a leading CRC-32 when the source Tags master did (the
-	// mkvmerge convention of a CRC on the master).
+	// Lead with a CRC-32 when the source Tags master did (the mkvmerge convention).
 	return masterElement(idTags, content, d.wb.tagsCRC), groups
 }
 
 // coveredByOtherScopes returns, per canonical key, the projected values a non-album
-// group will still carry after the edit, so the album-group sync can leave an unchanged
-// value at its own scope instead of re-emitting it at album scope (which would
-// duplicate it on every save and risk a spurious cross-scope conflict).
+// group still carries after the edit. The album-group sync leaves those at their own
+// scope, since re-emitting them at album scope would duplicate them on every save
+// and risk a spurious cross-scope conflict.
 func coveredByOtherScopes(groups []tagGroup, ed *editDecisions) (covered, albumOwn map[tag.Key][]string, others map[tag.Key][]scopedContribution) {
 	// Per key, the case-folded values the album scope itself keeps after the edit, plus the
 	// same values as ordered lists (albumOwn) for buildAlbumGroup's subtraction.
@@ -419,8 +409,7 @@ func forEachSurvivingContribution(g tagGroup, gi int, ed *editDecisions, fn func
 		if ed.dropped(gi, ti) || !st.hasValue {
 			continue
 		}
-		// Sanitize the raw SimpleTag value to match the canonical TagSet (parse.go projects
-		// through core.SanitizeUTF8).
+		// Sanitize the value as project does, so it matches the canonical TagSet.
 		for _, c := range projectTag(st.name, core.SanitizeUTF8(st.value), g.scope) {
 			fn(c)
 		}
@@ -446,8 +435,7 @@ func renderNonAlbumGroup(g tagGroup, gi int, ed *editDecisions) (out tagGroup, r
 	if !groupTouchedBy(len(g.tags), gi, ed) && g.raw != nil {
 		return g, g.raw, true // preserve verbatim
 	}
-	// An untouched group without whole-element bytes falls through: it is rebuilt
-	// from its captured parts rather than dropped.
+	// An untouched group without whole-element bytes is rebuilt from its captured parts.
 	out = g
 	out.tags = nil
 	var simple []byte
@@ -467,10 +455,9 @@ func renderNonAlbumGroup(g tagGroup, gi int, ed *editDecisions) (out tagGroup, r
 	}
 	content = append(content, simple...)
 	rendered := masterElement(idTag, content, g.hasCRC)
-	// Carry the freshly rendered bytes (not the stale input raw, which still holds the
-	// dropped SimpleTags) so the returned document's group equals a fresh parse of the
-	// output - a re-edit of that document then preserves this group verbatim correctly
-	// instead of re-emitting the dropped key or dropping the group.
+	// Carry the rendered bytes, not the input raw that still holds the dropped
+	// SimpleTags, so the returned document's group equals a fresh parse of the output
+	// and a re-edit preserves it verbatim.
 	out.raw = rendered
 	return out, rendered, true
 }
@@ -489,9 +476,8 @@ func (ed *editDecisions) dropped(gi, ti int) bool { return ed.drop[[2]int{gi, ti
 func (ed *editDecisions) edited(k tag.Key) bool   { return ed.ek[k] }
 
 // contribDecision is the fate of one canonical contribution a parsed SimpleTag
-// projects: whether the value survives at the scope that already holds it, and whether
-// keeping it claimed one of the edited values (so the album-scope re-emit must not
-// write that value a second time).
+// projects: whether the value survives at its own scope, and whether keeping it
+// claimed one of the edited values, which the album-scope re-emit then omits.
 type contribDecision struct {
 	key       tag.Key
 	owner     [2]int // {group index, tag index} of the SimpleTag it came from
@@ -567,21 +553,20 @@ func computeEditDecisions(groups []tagGroup, albumIdx int, base, edited tag.TagS
 				ds = append(ds, d)
 				continue
 			}
-			// Album-scope copies would permute the re-emitted list, boolean copies would dodge
-			// the "1"/"0" canonicalization, and a fold-duplicated value kept in place would let
-			// the reader's echo suppression halve its multiplicity - none of those may claim.
+			// Not claimable: an album-scope copy would permute the re-emitted list, a boolean
+			// copy would skip the "1"/"0" canonicalization, and a fold-duplicated value kept
+			// in place would let the reader's echo suppression halve its multiplicity.
 			d.claimable = groups[d.owner[0]].scope != core.ScopeAlbum && !boolean &&
 				folds[k][core.Fold(d.value)] == 1
 			ds = append(ds, d)
 		}
 	}
 
-	// A tag with a contribution that can never be claimed is doomed outright; the
-	// remaining claims are then handed out in emission order among the surviving tags, one
-	// round per newly doomed tag: a denial dooms the loser's tag (any dropped contribution
-	// kills the whole SimpleTag), which releases its own claims for the next round, so a
-	// value freed by a dying tag is re-offered to a denied twin instead of being relocated
-	// to album scope.
+	// A tag with a contribution that can never be claimed is doomed outright. Claims are
+	// then handed out in emission order among the surviving tags, one round per newly
+	// doomed tag: a denied claim dooms its tag (any dropped contribution drops the whole
+	// SimpleTag), which releases that tag's claims for the next round, so a freed value
+	// is re-offered to a denied twin rather than relocated to album scope.
 	doomed := map[[2]int]bool{}
 	for _, d := range ds {
 		if !d.echo && (!d.claimable || exact[d.key][d.value] == 0) {
@@ -623,10 +608,10 @@ func computeEditDecisions(groups []tagGroup, albumIdx int, base, edited tag.TagS
 	}
 	ed.setAlbumVals(edited, ds)
 
-	// Echoes are judged once the album values are known: one survives while its fold stays
-	// suppressed on re-read, covered by the album emit or by a value kept in place at a
-	// position that projects before it (ds follows projectionOrder per key, so a walk in
-	// order sees exactly the earlier folds).
+	// Judge echoes once the album values are known: one survives while its fold stays
+	// suppressed on re-read, covered by the album emit or by a value kept in place that
+	// projects before it (ds follows projectionOrder per key, so a walk in order sees
+	// exactly the earlier folds).
 	keptFolds := map[tag.Key]map[string]bool{}
 	noteKept := func(d *contribDecision) {
 		if d.claimed {
@@ -677,10 +662,9 @@ func computeEditDecisions(groups []tagGroup, albumIdx int, base, edited tag.TagS
 	return ed
 }
 
-// releaseDoomedClaims applies the tag-level conjunction: a SimpleTag whose fate is
-// already sealed by one dropped contribution cannot carry its other contributions
-// either, so the values those had claimed go back to the album-scope re-emit rather
-// than disappearing with the tag.
+// releaseDoomedClaims applies the tag-level conjunction: a SimpleTag doomed by one
+// dropped contribution cannot carry its other contributions either, so the values
+// those had claimed return to the album-scope re-emit.
 func releaseDoomedClaims(ds []contribDecision) {
 	doomed := map[[2]int]bool{}
 	for _, d := range ds {
@@ -696,7 +680,7 @@ func releaseDoomedClaims(ds []contribDecision) {
 }
 
 // setAlbumVals records, per changed key, the edited values no surviving scoped tag
-// claimed - the values the album-scope sync must write - in edited order.
+// claimed, in edited order. These are the values the album-scope sync writes.
 func (ed *editDecisions) setAlbumVals(edited tag.TagSet, ds []contribDecision) {
 	claimed := map[tag.Key]map[string]int{}
 	for _, d := range ds {
@@ -723,8 +707,8 @@ func (ed *editDecisions) setAlbumVals(edited tag.TagSet, ds []contribDecision) {
 	}
 }
 
-// foldCovered reports whether vals already carries value's case-folded form, i.e.
-// whether the album-scope emit will make a narrower-scope copy of it invisible.
+// foldCovered reports whether vals carries value's case-folded form, in which case
+// the album-scope emit suppresses a narrower-scope copy of it.
 func foldCovered(vals []string, value string) bool {
 	f := core.Fold(value)
 	for _, v := range vals {
@@ -735,15 +719,14 @@ func foldCovered(vals []string, value string) bool {
 	return false
 }
 
-// meaningfulLang reports whether an EBML language string names a real language, i.e.
+// meaningfulLang reports whether a language string is set and not "und".
 func meaningfulLang(lang string) bool {
 	return lang != "" && !strings.EqualFold(lang, "und")
 }
 
-// tagStructureDropped returns the canonical keys whose album-scope SimpleTag carried
-// structure the flat canonical model cannot hold - a TagLanguage, a TagBinary value, or
-// nested sub-tags - that this edit drops because the key's value changed (ed.dropped),
-// re-emitting it flat at album scope.
+// tagStructureDropped returns the canonical keys whose dropped SimpleTag (ed.dropped)
+// carried structure the flat model cannot hold: a TagLanguage, a TagBinary value, or
+// nested sub-tags. The edit re-emits such a key flat at album scope.
 func tagStructureDropped(d *doc, ed *editDecisions) []tag.Key {
 	var keys []tag.Key
 	seen := map[tag.Key]bool{}
@@ -767,23 +750,21 @@ func tagStructureDropped(d *doc, ed *editDecisions) []tag.Key {
 	return keys
 }
 
-// isManagedTitle reports whether a SimpleTag maps to the canonical Title, which is
-// always homed in Info.Title - so it is never kept as an album SimpleTag in the output.
+// isManagedTitle reports whether a SimpleTag maps to the canonical Title, whose home
+// is Info.Title (see migratesToInfo).
 func isManagedTitle(st simpleTag) bool {
 	k, ok := mapping.MatroskaTagKey(st.name)
 	return ok && k == tag.Title
 }
 
-// migratesToInfo reports whether a managed TITLE SimpleTag will migrate to Info.Title
-// and thus be dropped from the Tags element: it is a managed title AND an Info element
-// exists to receive it.
+// migratesToInfo reports whether a managed TITLE SimpleTag moves to Info.Title and
+// leaves the Tags element, which requires an Info element to receive it.
 func migratesToInfo(st simpleTag, infoPresent bool) bool {
 	return isManagedTitle(st) && infoPresent
 }
 
-// groupTouchedBy reports whether any of the group's nTags SimpleTags would be
-// dropped by the edit - i.e. whether the group must be re-rendered rather than
-// preserved verbatim.
+// groupTouchedBy reports whether the edit drops any of the group's nTags SimpleTags,
+// in which case the group is re-rendered rather than preserved verbatim.
 func groupTouchedBy(nTags, gi int, ed *editDecisions) bool {
 	for ti := 0; ti < nTags; ti++ {
 		if ed.dropped(gi, ti) {
@@ -831,10 +812,9 @@ func buildAlbumGroup(group *tagGroup, gi int, base, edited tag.TagSet, covered, 
 	if group != nil {
 		out = *group
 		out.tags = nil
-		// Preserve every SimpleTag the edit does not drop, verbatim from its captured bytes -
-		// custom names, technical stats, binary, nested trees, AND managed tags whose
-		// canonical key was not edited (keeping the language, binary value, or secondary
-		// structure a flat re-emit would lose).
+		// Preserve every SimpleTag the edit does not drop, verbatim from its captured
+		// bytes: custom names, technical stats, binary, nested trees, and managed tags
+		// whose canonical key was not edited (keeping structure a flat re-emit would lose).
 		for ti, st := range group.tags {
 			if ed.dropped(gi, ti) || migratesToInfo(st, infoPresent) {
 				continue
@@ -852,16 +832,16 @@ func buildAlbumGroup(group *tagGroup, gi int, base, edited tag.TagSet, covered, 
 		}
 		vals, _ := edited.Get(k)
 		if bv, _ := base.Get(k); slices.Equal(bv, vals) {
-			// Unchanged key carried verbatim elsewhere - by a narrower scope (covered) or by
-			// this album group's own preserved SimpleTags (albumOwn) - is re-emitted only for
-			// the canonical values not already preserved.
+			// An unchanged key carried verbatim elsewhere, by a narrower scope (covered) or by
+			// this group's own preserved SimpleTags (albumOwn), re-emits only the values not
+			// already preserved.
 			if sub := slices.Concat(covered[k], albumOwn[k]); len(sub) > 0 {
 				emit := subtractFold(vals, sub)
 				if !reprojectsTo(k, vals, albumOwn[k], emit, others[k]) {
-					// A partially subtracted fold would leave the album emit suppressing the surviving
-					// narrower copies, shrinking the value's multiplicity on re-read: re-emit
-					// everything the album group itself does not preserve, and let the narrower copies
-					// ride along as suppressed echoes.
+					// A partially subtracted fold would leave the album emit suppressing the
+					// surviving narrower copies and shrink the value's multiplicity on re-read.
+					// Re-emit everything the album group itself does not preserve; the narrower
+					// copies become suppressed echoes.
 					emit = subtractFold(vals, albumOwn[k])
 				}
 				vals = emit
@@ -887,8 +867,7 @@ func buildAlbumGroup(group *tagGroup, gi int, base, edited tag.TagSet, covered, 
 			continue // reserved technical name: never emitted, warned at plan time
 		}
 		for _, v := range vals {
-			// A present empty value from `set KEY=` is emitted as a zero-length SimpleTag, not
-			// skipped.
+			// A present empty value (set KEY=) is emitted as a zero-length SimpleTag.
 			stb := simpleTagBytes(name, v)
 			simple = append(simple, stb...)
 			// Carry the freshly rendered bytes as this synthesized tag's raw, so the result
@@ -911,8 +890,8 @@ func buildAlbumGroup(group *tagGroup, gi int, base, edited tag.TagSet, covered, 
 	return out, rendered
 }
 
-// subtractFold removes covered values from vals by folded form, one occurrence at a
-// time, preserving survivor case and order.
+// reprojectsTo reports whether albumOwn, emit, and the other scopes' contributions
+// project back to exactly want, with the same multiplicity.
 func reprojectsTo(key tag.Key, want, albumOwn, emit []string, others []scopedContribution) bool {
 	contribs := make([]scopedContribution, 0, len(albumOwn)+len(emit)+len(others))
 	for _, v := range albumOwn {
@@ -941,6 +920,8 @@ func reprojectsTo(key tag.Key, want, albumOwn, emit []string, others []scopedCon
 	return got == len(want)
 }
 
+// subtractFold removes covered values from vals by folded form, one occurrence at a
+// time, preserving survivor case and order.
 func subtractFold(vals, covered []string) []string {
 	remaining := make(map[string]int, len(covered))
 	for _, c := range covered {
@@ -1000,9 +981,8 @@ func renderInfo(ib *infoBlock, title string, present bool) (raw []byte, newTitle
 		content = append(content, r[ib.insertOff:]...)
 	}
 	if ib.crc != nil {
-		// Recompute the CRC over the new content following the CRC element by reusing
-		// recomputeCRC (rather than a hardcoded content[0:6]): EBML permits an overlong CRC
-		// size VINT, so the 4 value bytes are not always at index 2.
+		// Recompute the CRC via recomputeCRC rather than a hardcoded content[0:6]: EBML
+		// permits an overlong CRC size VINT, so the 4 value bytes are not always at index 2.
 		fixed := make([]byte, len(content))
 		copy(fixed, content)
 		recomputeCRC(fixed, &crcSpot{valOff: ib.crc.valOff - headerLen, contentStart: ib.crc.contentStart - headerLen})
@@ -1016,9 +996,8 @@ func renderInfo(ib *infoBlock, title string, present bool) (raw []byte, newTitle
 // the element is dropped). It also returns the new attachment list for the result.
 func renderAttachments(d *doc, pics []core.Picture) (raw []byte, atts []attachment) {
 	var content []byte
-	// Track the names already used in this element so two same-role, same-MIME
-	// covers (both "cover.png") get distinct FileNames. Seed it with the preserved
-	// non-image attachment names so a cover cannot collide with one of those either.
+	// Names used so far, so two same-role, same-MIME covers (both "cover.png") get
+	// distinct FileNames. Seeded with the preserved non-image attachment names.
 	used := map[string]bool{}
 	for _, a := range d.attachments {
 		if a.image || a.raw == nil {
@@ -1052,9 +1031,8 @@ func attachedFileBytes(p core.Picture, name string) ([]byte, attachment) {
 	}
 	payload = append(payload, encElement(idFileData, p.Data)...)
 	payload = append(payload, uintElement(idFileUID, fileUID())...)
-	// image mirrors the read gate (isCoverAttachment) so this result attachment matches a fresh
-	// reparse: a --force octet-stream cover is written under a cover name, so it must read back as
-	// a picture here too, not a plain attachment.
+	// image mirrors the read gate (isCoverAttachment) so the result attachment matches a
+	// fresh reparse: a --force octet-stream cover under a cover name reads back as a picture.
 	a := attachment{name: name, mime: p.MIME, description: p.Description, size: len(p.Data), image: isCoverAttachment(p.MIME, name)}
 	return encElement(idAttached, payload), a
 }
@@ -1084,9 +1062,9 @@ func randomUID() uint64 {
 	return v
 }
 
-// coverFileName is the canonical (un-disambiguated) AttachedFile name for a cover
-// role. It backs the result view's Type derivation; the actually-stored name is
-// resolved by renderAttachments and may carry a numeric suffix.
+// coverFileName is the canonical AttachedFile name for a cover role, used to derive
+// the result view's Type. The stored name comes from renderAttachments and may carry
+// a numeric suffix.
 func coverFileName(p core.Picture) string {
 	return coverFileStem(p) + imageExt(p.MIME)
 }

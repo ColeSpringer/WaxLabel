@@ -32,8 +32,8 @@ func TestMP4ALACSampleRateFromCookie(t *testing.T) {
 	}
 }
 
-// FLAC-in-ISOBMFF spec makes dfLa's STREAMINFO authoritative, so a 96 kHz FLAC-in-MP4 reports its
-// real geometry rather than the entry's.
+// The FLAC-in-ISOBMFF spec makes dfLa's STREAMINFO authoritative, so a 96 kHz FLAC-in-MP4
+// reports that geometry rather than the entry's.
 func TestMP4FLACSampleRateFromStreamInfo(t *testing.T) {
 	si := mp4StreamInfo(96000, 2, 24, 4096, 4096, 480000)
 	data := mp4AssembleStsd(mp4Stsd(mp4StsdEntry("fLaC", 2, 16, 0, mp4DfLa(si))), nil, nil, nil, 44100)
@@ -49,8 +49,8 @@ func TestMP4FLACSampleRateFromStreamInfo(t *testing.T) {
 	}
 }
 
-// QuickTime version 2 sound entry carries a float64 rate that a hi-res .mov needs. Its geometry
-// stays out of the digest salt, which has always been zero for such an entry.
+// A QuickTime version 2 sound entry carries a float64 rate that a hi-res .mov needs. Its
+// geometry stays out of the digest salt, which is zero for such an entry.
 func TestMP4V2SoundEntryGeometry(t *testing.T) {
 	build := func(rate float64) []byte {
 		return mp4AssembleStsd(mp4Stsd(mp4StsdEntryV2("lpcm", rate, 2, 24)), nil, nil, nil, 44100)

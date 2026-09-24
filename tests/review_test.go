@@ -163,7 +163,7 @@ func TestTrailingID3FalsePositiveGuard(t *testing.T) {
 	}
 }
 
-// Two native fields mapping to one canonical key with different values are a real
+// Two native fields mapping to one canonical key with different values are a
 // conflict and must surface in the family view and Lint.
 func TestConflictingFamiliesDetected(t *testing.T) {
 	doc := mustParseBytes(t, flacWithComments("DATE=2020", "YEAR=2019"))
@@ -182,7 +182,7 @@ func TestConflictingFamiliesDetected(t *testing.T) {
 	}
 }
 
-// A genuine multi-value (same field repeated) is not a conflict.
+// A multi-value (same field repeated) is not a conflict.
 func TestRepeatedFieldIsNotConflict(t *testing.T) {
 	doc := mustParseBytes(t, flacWithComments("ARTIST=A", "ARTIST=B"))
 	for _, f := range doc.Families() {
@@ -264,16 +264,14 @@ func TestInvalidKeyRejectedOnWrite(t *testing.T) {
 	}
 }
 
-// Any rewrite collapses extra VORBIS_COMMENT blocks to one, honoring the multiple-vorbis-comment
-// lint's promise. It holds for tag edits, which re-render the block, and equally for picture-only,
-// padding-only, and legacy-strip edits, where every change flag is false yet the de-dup guard must
-// still fire.
+// Any rewrite collapses extra VORBIS_COMMENT blocks to one, as the multiple-vorbis-comment lint
+// promises. It holds for tag edits, which re-render the block, and for picture-only, padding-only,
+// and legacy-strip edits, where every change flag is false yet the de-dup must still fire.
 func TestExtraVorbisBlocksCollapsedOnAnyEdit(t *testing.T) {
 	data := flacWithTwoVC()
 
-	// countVCBlocks re-parses out and counts its VORBIS_COMMENT blocks by re-reading the
-	// native FLAC document, so the assertion does not depend on a comment's text substring
-	// surviving (which a byte scan would).
+	// assertSingleVC checks that the extra block's ALBUM=y is gone and the first block's
+	// TITLE=x survives.
 	assertSingleVC := func(t *testing.T, out []byte) {
 		t.Helper()
 		if bytes.Contains(out, []byte("ALBUM=y")) {
@@ -295,8 +293,7 @@ func TestExtraVorbisBlocksCollapsedOnAnyEdit(t *testing.T) {
 
 	t.Run("padding-only collapses extras", func(t *testing.T) {
 		doc := mustParseBytes(t, data)
-		// A padding grow is a real (non-tag) edit: no change flag is set, so this exercises
-		// the hoisted de-dup guard.
+		// A padding grow is an edit that sets no change flag, so it exercises the de-dup guard.
 		plan, err := doc.Edit().Prepare(wl.WithPadding(wl.PaddingPolicy{Target: 4096}))
 		if err != nil {
 			t.Fatal(err)
@@ -308,7 +305,7 @@ func TestExtraVorbisBlocksCollapsedOnAnyEdit(t *testing.T) {
 	})
 
 	t.Run("legacy-strip collapses extras", func(t *testing.T) {
-		// A trailing ID3v1 makes the legacy strip a real edit with no comment/vendor/picture
+		// A trailing ID3v1 makes the legacy strip an edit with no comment/vendor/picture
 		// change, the third all-flags-false path.
 		src := withTrailingID3v1(data)
 		doc := mustParseBytes(t, src)
@@ -349,7 +346,7 @@ func TestSaveAsFilePermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Windows has no POSIX mode: os.Stat reports 0666 for any writable file and 0444 for one carrying
-	// the read-only attribute, so 0644 is simply unreachable there.
+	// the read-only attribute, so 0644 is unreachable there.
 	want := os.FileMode(0o644)
 	if runtime.GOOS == "windows" {
 		want = 0o666

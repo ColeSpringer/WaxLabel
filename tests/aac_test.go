@@ -110,13 +110,12 @@ func TestAACEssenceStableAcrossTagEdit(t *testing.T) {
 	}
 }
 
-// Write-side differential: an independent tool must read what we wrote and
-// accept our audio. These skip cleanly when ffmpeg/ffprobe are absent.
+// Write-side differential: an independent tool must read the written tags and
+// accept the audio. These skip when ffmpeg/ffprobe are absent.
 
 func TestAACDifferentialFFprobeReadsOurTags(t *testing.T) {
 	requireTool(t, "ffprobe")
-	// Both fixtures: the tagged one resizes an existing ID3; the bare one has a
-	// fresh ID3v2 created where there was none.
+	// The tagged fixture resizes an existing ID3; the bare one gets a fresh ID3v2.
 	for _, f := range []string{sampleAAC, notagsAAC} {
 		path := copyToTemp(t, f)
 		plan, err := mustParseFile(t, path).Edit().
@@ -168,8 +167,8 @@ func TestAACDifferentialFFmpegDecodes(t *testing.T) {
 		if _, _, err := plan.Execute(context.Background(), wl.SaveBack()); err != nil {
 			t.Fatal(err)
 		}
-		// Decode the audio stream: this fails loudly if our ADTS framing is broken
-		// (e.g. the new ID3 ran into the first frame).
+		// Decoding fails if the ADTS framing is broken, e.g. the new ID3 ran into the
+		// first frame.
 		cmd := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error",
 			"-i", path, "-map", "0:a", "-f", "null", "-")
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -181,9 +180,8 @@ func TestAACDifferentialFFmpegDecodes(t *testing.T) {
 	}
 }
 
-// ADTS carries no SBR signalling, so the frames themselves are parsed; the fixtures decode to the
-// played geometry ffprobe reports, and the ADTS twin of an MP4 stream now reports what the MP4
-// does.
+// ADTS carries no SBR signalling, so the frames themselves are parsed: the fixtures report the
+// played geometry ffprobe reports, and the ADTS twin of an MP4 stream reports what the MP4 does.
 func TestAACImplicitSBRDetected(t *testing.T) {
 	cases := []struct {
 		path           string
@@ -208,8 +206,8 @@ func TestAACImplicitSBRDetected(t *testing.T) {
 	}
 }
 
-// essence digest of the HE-AAC fixtures to the values recorded before frame parsing existed, so the
-// salt still comes from the header alone.
+// SBR detection does not change the essence digest: the salt comes from the header alone, so the
+// HE-AAC fixtures keep the digests recorded before frame parsing existed.
 func TestAACDigestUnchangedBySBRDetection(t *testing.T) {
 	for path, want := range map[string]string{
 		heaacAAC:                   "sha256/aac-adts-v1:0a36515dc52e76b86865cd32390377203874295adc8f99744146f4c67688a719",

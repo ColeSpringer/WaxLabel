@@ -227,8 +227,8 @@ func TestAIFFCoverRoundTrip(t *testing.T) {
 	}
 }
 
-// Write-side differential: ffmpeg/ffprobe must read what we wrote and accept
-// our audio. These skip cleanly when the tools are absent.
+// Write-side differential: ffmpeg/ffprobe must read the written tags and accept
+// the audio. These skip when the tools are absent.
 
 func TestAIFFDifferentialFFprobeReadsOurTags(t *testing.T) {
 	requireTool(t, "ffprobe")
@@ -281,7 +281,7 @@ func TestAIFFDifferentialFFmpegDecodes(t *testing.T) {
 	if _, _, err := plan.Execute(context.Background(), wl.SaveBack()); err != nil {
 		t.Fatal(err)
 	}
-	// Decode only the audio stream: this fails loudly if our chunk framing or the FORM size is broken.
+	// Decoding fails if the chunk framing or the FORM size is broken.
 	cmd := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error",
 		"-i", path, "-map", "0:a", "-f", "null", "-")
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -374,7 +374,7 @@ func TestAIFFSSNDOffsetResultMatchesReparse(t *testing.T) {
 
 func TestAIFFRejectsNonAIFF(t *testing.T) {
 	// A FORM container that is not AIFF/AIFC carries no AIFF signature, so content-only
-	// detection rejects it as unsupported rather than routing it by extension.
+	// detection rejects it as unsupported whatever the extension.
 	data := append([]byte("FORM\x00\x00\x00\x04"), []byte("8SVX")...)
 	path := writeTempFile(t, "x.aiff", data)
 	_, err := wl.ParseFile(context.Background(), path)

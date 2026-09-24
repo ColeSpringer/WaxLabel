@@ -123,9 +123,9 @@ func TestMonkeysAudioCoverRoundTrip(t *testing.T) {
 	}
 }
 
-// legacyAPEHeader builds the pre-3.98 layout, which inlines the geometry and leaves
-// the frame size to be derived from the version. ffmpeg cannot encode Monkey's Audio
-// at all, so the older header shape has to be synthesized to be covered.
+// legacyAPEHeader builds the pre-3.98 layout, which inlines the geometry and derives
+// the frame size from the version. ffmpeg cannot encode Monkey's Audio, so the older
+// header is synthesized.
 func legacyAPEHeader(version uint16, compressionLevel, formatFlags, channels uint16, rate, totalFrames, finalBlocks uint32) []byte {
 	b := make([]byte, 32)
 	copy(b[0:4], "MAC ")

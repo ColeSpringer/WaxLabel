@@ -11,10 +11,9 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// every registered codec answers a file-agnostic capability query (m == nil, as PlanTransfer makes)
-// without panicking and self-reports the format it claims. The file-uniform codecs ignore the
-// *core.Media and Matroska nil-guards before reading docType, so a nil file must be safe for all of
-// them.
+// Every registered codec answers a file-agnostic capability query (m == nil, as PlanTransfer makes)
+// without panicking and reports its own format. The file-uniform codecs ignore the *core.Media and
+// Matroska nil-guards before reading docType, so a nil file must be safe for all of them.
 func TestCodecCapabilitiesNilSafe(t *testing.T) {
 	codecs := core.Codecs()
 	if len(codecs) == 0 {
@@ -28,8 +27,8 @@ func TestCodecCapabilitiesNilSafe(t *testing.T) {
 	}
 }
 
-// These bound the machine-generated capability table in the README, rendered from the codec
-// Capabilities so its per-format picture and chapter facts cannot drift from the code.
+// These bound the generated capability table in the README, rendered from the codec Capabilities
+// so its per-format picture and chapter facts match the code.
 const (
 	capsBlockBegin = "<!-- BEGIN caps (generated from codec Capabilities; see tests/capability_test.go) -->"
 	capsBlockEnd   = "<!-- END caps -->"
@@ -61,8 +60,8 @@ func capCell(c wl.Capability) string {
 	return s
 }
 
-// renders the capability block from the codecs and asserts the committed README carries it verbatim
-// between the markers, so its caps facts are generated rather than hand-maintained.
+// The committed README must carry the capability block rendered from the codecs verbatim between
+// the markers.
 func TestReadmeCapabilityBlockDerived(t *testing.T) {
 	readme, err := os.ReadFile("../README.md")
 	if err != nil {

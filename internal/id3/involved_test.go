@@ -24,8 +24,10 @@ func onlyInvolvedFrame(t *testing.T, out []Frame, id string) []involvedPerson {
 	return decodeInvolvedPeople(bodies[0])
 }
 
-// TestInvolvedPeopleRoundTrip: is the base case for both versions: the modeled roles project
-
+// TestInvolvedPeopleRoundTrip is the base case for both versions: the modeled roles
+// project (folding the Picard functions), an unknown involvement does not, and editing
+// one role re-renders a single frame that keeps the untouched sibling roles and the
+// unknown involvement. A conformant multi-person frame must not trip the v2.3 multi flag.
 func TestInvolvedPeopleRoundTrip(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -75,8 +77,9 @@ func TestInvolvedPeopleRoundTrip(t *testing.T) {
 	}
 }
 
-// TestInvolvedPeopleUntouchedSiblingSurvives: is the crux: editing one role must not drop an
-
+// TestInvolvedPeopleUntouchedSiblingSurvives checks editing one role does not drop an
+// untouched sibling role in the same frame: renderUnit gathers all role keys from edited,
+// not just the changed ones.
 func TestInvolvedPeopleUntouchedSiblingSurvives(t *testing.T) {
 	orig := []Frame{{ID: "TIPL", Body: encodeTextFrame(encLatin1,
 		[]string{"producer", "Alice", "engineer", "Eve"})}}
@@ -91,8 +94,10 @@ func TestInvolvedPeopleUntouchedSiblingSurvives(t *testing.T) {
 	}
 }
 
-// TestInvolvedPeopleCapitalizedFunctionNoDuplicate: the case-folded known-check: a
-
+// TestInvolvedPeopleCapitalizedFunctionNoDuplicate covers the case-folded known-check: a
+// capitalized "Producer" projects to PRODUCER and re-emits from edited, so it must not
+// also be preserved as an unknown, which would duplicate the credit. On rewrite it
+// normalizes to the lowercase Picard spelling.
 func TestInvolvedPeopleCapitalizedFunctionNoDuplicate(t *testing.T) {
 	orig := []Frame{{ID: "TIPL", Body: encodeTextFrame(encLatin1,
 		[]string{"Producer", "Alice"})}}
@@ -142,8 +147,9 @@ func TestInvolvedPeopleUnknownOrderPreserved(t *testing.T) {
 	}
 }
 
-// TestInvolvedPeopleV23MultiPersonNoWarning: a multi-person IPLS on v2
-
+// TestInvolvedPeopleV23MultiPersonNoWarning checks a multi-person IPLS on v2.3 is a
+// conformant involved-people frame, not the v2.3 NUL-separated multi-value extension, so
+// it does not set UsedV23Multi.
 func TestInvolvedPeopleV23MultiPersonNoWarning(t *testing.T) {
 	orig := []Frame{{ID: "IPLS", Body: encodeTextFrame(encLatin1,
 		[]string{"producer", "Alice", "producer", "Bob"})}}
@@ -164,8 +170,9 @@ func TestInvolvedPeopleV23MultiPersonNoWarning(t *testing.T) {
 	}
 }
 
-// TestInvolvedPeopleCrossVersionDrop: a role edit that changes the write version: a
-
+// TestInvolvedPeopleCrossVersionDrop covers a role edit that changes the write version: a
+// v2.3 IPLS rewritten as v2.4 leaves one TIPL, no stale IPLS, and carries the unknown
+// involvement across.
 func TestInvolvedPeopleCrossVersionDrop(t *testing.T) {
 	orig := []Frame{{ID: "IPLS", Body: encodeTextFrame(encLatin1,
 		[]string{"producer", "Alice", "mastering", "Dave"})}}
@@ -185,8 +192,10 @@ func TestInvolvedPeopleCrossVersionDrop(t *testing.T) {
 	}
 }
 
-// TestInvolvedPeopleEmptyValueDropped: an empty credit value in an involved-people
-
+// TestInvolvedPeopleEmptyValueDropped checks an empty credit value in an involved-people
+// role, which the function/name pairing cannot store at any position, is dropped from
+// the frame and reported as exactly one value-dropped warning, not double-counted by the
+// trailing-empty path.
 func TestInvolvedPeopleEmptyValueDropped(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -222,8 +231,8 @@ func TestInvolvedPeopleEmptyValueDropped(t *testing.T) {
 	}
 }
 
-// TestKeyRenderIDsInvolvedRoles pins the version-branched render targets: the five roles dirty
-// TIPL on v2.4 and IPLS on v2.3, while WRITER rides the generic TXXX fallback.
+// TestKeyRenderIDsInvolvedRoles pins the version-branched render targets: the five roles
+// dirty TIPL on v2.4 and IPLS on v2.3, while WRITER takes the generic TXXX fallback.
 func TestKeyRenderIDsInvolvedRoles(t *testing.T) {
 	for _, k := range []tag.Key{tag.Producer, tag.Engineer, tag.Mixer, tag.Arranger, tag.DJMixer} {
 		if got := keyRenderIDs(k, 4); !slices.Equal(got, []string{"TIPL"}) {

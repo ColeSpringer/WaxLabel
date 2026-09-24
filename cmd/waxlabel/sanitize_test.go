@@ -162,7 +162,7 @@ func TestUnidentifiedFilenameEscapedOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Old bug re-escaped \t to \\x09 in reason; check for double-backslash artifact.
+	// A double-escaped tab would show as \\x09 in the reason.
 	_, stderr, code := runCLI(t, "dump", path)
 	if code == 0 {
 		t.Fatalf("dump of an unidentifiable file should fail")

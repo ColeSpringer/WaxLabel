@@ -199,8 +199,7 @@ func decodeCover(it item) itemResult {
 	return itemResult{pics: pics, owned: true}
 }
 
-// coverMIME maps a covr data-atom type code to an image MIME, and coverType the reverse
-// - the single place the cover image-format mapping lives.
+// coverMIME maps a covr data-atom type code to an image MIME, and coverType the reverse.
 func coverMIME(typ uint32) string {
 	switch typ {
 	case typeJPEG:
@@ -225,20 +224,19 @@ func coverType(mime string) uint32 {
 	}
 }
 
-// coverMIMEs lists the image formats an MP4 covr atom can faithfully label. Only JPEG,
-// PNG, and BMP have covr type codes. The write-time guard and the transfer capability
-// both read this list.
+// coverMIMEs lists the image formats an MP4 covr atom can label: only JPEG, PNG, and BMP
+// have covr type codes. The write-time check and the transfer capability both read it.
 var coverMIMEs = []string{"image/jpeg", "image/png", "image/bmp"}
 
-// coverMIMESupported reports whether an MP4 covr atom can faithfully label this image
-// format.
+// coverMIMESupported reports whether an MP4 covr atom can label this image format.
 func coverMIMESupported(mime string) bool {
 	return slices.Contains(coverMIMEs, mime)
 }
 
 // decodeGnre decodes the legacy numeric genre atom (a 1-based ID3v1 genre index)
 // into a genre name, mirroring how iTunes/mutagen fold "gnre" into the text
-// genre. It is always rewritten as a text "\xa9gen" atom.
+// genre. A write keeps gnre only when the value is unchanged or NumericGenre is
+// set; otherwise it is rewritten as a text "\xa9gen" atom.
 func decodeGnre(it item) itemResult {
 	atoms, ok := parseDataAtoms(it.payload)
 	if !ok {
@@ -260,8 +258,7 @@ func decodeGnre(it item) itemResult {
 }
 
 // decodeInt decodes an iTunes integer atom (stik, rtng, tmpo, ©mvi, ©mvc) into its
-// canonical key as the decimal string, so it round-trips exactly rather than being
-// normalized to a name.
+// canonical key as the decimal string, not a name, so it round-trips exactly.
 func decodeInt(it item, key tag.Key) itemResult {
 	atoms, ok := parseDataAtoms(it.payload)
 	if !ok || len(atoms) != 1 {
@@ -373,9 +370,8 @@ func parseLabelAtom(p []byte, pos int64, want string) (string, int64, bool) {
 	return string(p[pos+12 : pos+size]), pos + size, true
 }
 
-// project derives the canonical view from a parsed (or rewritten) document. It is
-// a pure read - it does not mutate the items - so it is shared by Parse and the
-// post-write result without coupling the writer to call order.
+// project derives the canonical view from a parsed (or rewritten) document. It is a
+// pure read, so Parse and the post-write result share it regardless of call order.
 func project(d *doc) (tags tag.TagSet, pics []core.Picture, families []core.FamilyValue, numericGenre bool) {
 	var contribs []core.Contribution
 	for _, it := range d.items {
@@ -388,8 +384,7 @@ func project(d *doc) (tags tag.TagSet, pics []core.Picture, families []core.Fami
 		numericGenre = numericGenre || r.numericGenre
 	}
 	// A udta-level value is promoted only for a key the ilst does not hold: merging the
-	// two would fold a genuine disagreement into a multi-value the next write stores as
-	// one, losing the conflict.
+	// two would fold a disagreement into a multi-value the next write stores as one.
 	ilstTags := core.BuildTagSet(contribs)
 	var secondary []core.Contribution
 	for _, c := range udtaContributions(d.udtaTexts) {
@@ -411,9 +406,8 @@ func project(d *doc) (tags tag.TagSet, pics []core.Picture, families []core.Fami
 }
 
 // invalidKeyWarnings reports the iTunes freeform names the canonical vocabulary cannot
-// represent. decodeFreeform preserves such an item verbatim and contributes nothing,
-// which without this leaves the value absent from every canonical view with nothing
-// said.
+// represent. decodeFreeform preserves such an item verbatim and contributes nothing, so
+// without a warning the value would be absent from every canonical view unremarked.
 func invalidKeyWarnings(d *doc) []core.Warning {
 	var ws []core.Warning
 	seen := map[string]bool{}
@@ -434,8 +428,7 @@ func invalidKeyWarnings(d *doc) []core.Warning {
 	return ws
 }
 
-// owned reports whether the canonical rebuild owns an item - i.e. Items it does not own
+// owned reports whether the canonical rebuild owns an item. Items it does not own
 // (unknown atoms, foreign-mean freeforms, parse failures) are preserved verbatim. It is
-// recomputed wherever needed rather than cached on the item, keeping projection a pure
-// read.
+// recomputed wherever needed, not cached on the item, so projection stays a pure read.
 func owned(it item) bool { return decodeItem(it).owned }

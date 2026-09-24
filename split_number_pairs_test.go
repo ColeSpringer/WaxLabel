@@ -66,7 +66,7 @@ func TestSplitNumberPairs(t *testing.T) {
 		ts := p.Apply(base)
 		splitNumberPairs(&ts, p)
 		wantVals(t, ts, tag.TrackNumber, "3")
-		wantVals(t, ts, tag.TrackTotal, "12") // not the "absent in editedTags" test - it updates
+		wantVals(t, ts, tag.TrackTotal, "12") // a slash total updates a base-carried one
 	})
 
 	t.Run("no churn: untouched literal is left alone", func(t *testing.T) {
@@ -76,7 +76,7 @@ func TestSplitNumberPairs(t *testing.T) {
 		p.Set(tag.Title, "X") // edits an unrelated field
 		ts := p.Apply(base)
 		splitNumberPairs(&ts, p)
-		wantVals(t, ts, tag.TrackNumber, "3/12") // unchanged - not split
+		wantVals(t, ts, tag.TrackNumber, "3/12") // unchanged, not split
 		wantAbsent(t, ts, tag.TrackTotal)        // never invented
 	})
 
@@ -138,7 +138,7 @@ func TestSplitNumberPairs(t *testing.T) {
 		p.Set(tag.TrackNumber, "03/09")
 		ts := p.Apply(tag.NewTagSet())
 		splitNumberPairs(&ts, p)
-		wantVals(t, ts, tag.TrackNumber, "03") // ParseNumPair would collapse to "3"; we keep substrings
+		wantVals(t, ts, tag.TrackNumber, "03") // substrings kept; ParseNumPair would give "3"
 		wantVals(t, ts, tag.TrackTotal, "09")
 	})
 

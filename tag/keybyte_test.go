@@ -5,11 +5,10 @@ import (
 	"testing"
 )
 
-// TestKeyByteSweep sweeps the whole printable-ASCII range, so the charset floor is pinned
-// by enumeration rather than by whichever bytes happen to appear in other tests. The floor
-// is the intersection of what every format's key syntax accepts: the Vorbis comment
-// specification stops at 0x7D, so '~' (0x7E) is out even though APEv2, ID3 TXXX
-// descriptions and MP4 freeform names all accept it.
+// TestKeyByteSweep sweeps every byte value, so the charset floor is pinned by
+// enumeration. The floor is the intersection of every format's key syntax: the Vorbis
+// comment specification stops at 0x7D, so '~' (0x7E) is out even though APEv2, ID3 TXXX
+// descriptions, and MP4 freeform names accept it.
 func TestKeyByteSweep(t *testing.T) {
 	for b := 0x00; b <= 0xFF; b++ {
 		c := byte(b)
@@ -38,9 +37,8 @@ func TestKeyByteSweep(t *testing.T) {
 	}
 }
 
-// TestTildeKeyRejected names the one byte the tightened bound removed, so a later pass that
-// widens the range back to 0x7E fails here with the reason attached rather than quietly
-// breaking the floor the doc comment promises.
+// TestTildeKeyRejected pins '~' (0x7E) as an invalid key byte, so a change that widens the
+// range back to 0x7E fails here with the reason attached.
 func TestTildeKeyRejected(t *testing.T) {
 	_, err := ParseKey("KEY WITH~TILDE")
 	if err == nil {

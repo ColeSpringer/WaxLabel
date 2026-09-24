@@ -8,8 +8,7 @@ import (
 )
 
 // result-equals-a-fresh-parse promise across two picture edits: the first re-emits the cover set
-// (carrying the undecodable block along), and the second must still see that block rather than
-// dropping bytes the read path promised to preserve.
+// (carrying the undecodable block along), and the second must still see that block.
 func TestOggFLACChainedPictureEditKeepsMalformedBlock(t *testing.T) {
 	junk := append([]byte{6, 0, 0, 4}, []byte{0xFF, 0xFF, 0xFF, 0xFF}...) // PICTURE block, undecodable body
 	comment := append([]byte{4}, vorbis.RenderCommentList("test", nil)...)

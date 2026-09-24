@@ -10,18 +10,16 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// ID3v2 synchronized lyrics live in the SYLT frame (an upgraded v2.2 SLT becomes SYLT via
+// ID3v2 synchronized lyrics live in the SYLT frame (a v2.2 SLT upgrades to SYLT through
 // the v2.2 frame-ID table, so this decoder reads both). The frame body is:
 //
 //	encoding(1) language(3) timestamp-format(1) content-type(1) descriptor(term) [text(term) timestamp(4)]*
 //
 // WaxLabel models only millisecond timestamps (format 2) and the lyrics content type (1):
-// the MPEG-frames format needs the full frame index to map to a time, and a
-// non-lyric content type (chord, trivia, image URL) is not lyrics. A SYLT that uses
-// either is skipped with a warning and preserved verbatim through an unrelated edit.
-//
-// The implementation follows the ID3v2 SYLT frame layout; reference implementations were
-// used only to check behavior.
+// the MPEG-frames format needs the full frame index to map to a time, and a non-lyric
+// content type (chord, trivia, image URL) is not lyrics. A SYLT using either is skipped
+// with a warning and preserved verbatim through an unrelated edit. Reference
+// implementations were used only to check behavior.
 
 const (
 	// syltFmtMillis is the SYLT timestamp format for absolute milliseconds (format 2);
@@ -35,15 +33,14 @@ const (
 	syltTimeMax uint32 = 0xFFFFFFFF
 )
 
-// maxSyltLines caps how many timed lines one SYLT frame decodes, a defense-in-depth bound
-// against hostile input. The cap is far past any real song's line count.
+// maxSyltLines caps how many timed lines one SYLT frame decodes, a bound against hostile
+// input far past any real song's line count.
 const maxSyltLines = 1 << 16
 
 // SyncedLyricsCapability is the synced-lyrics capability shared by every ID3-backed codec
 // (MP3/AAC/AIFF/WAV). SYLT stores the language, descriptor, per-line millisecond
 // timestamps, and text losslessly, and several SYLT frames may coexist, so there is no
-// item cap and no loss. The shared helper keeps the four codecs identical by construction,
-// mirroring the per-codec chapter capability.
+// item cap and no loss.
 func SyncedLyricsCapability() core.Capability {
 	return core.Capability{
 		Read:           core.AccessFull,
@@ -85,11 +82,10 @@ func ProjectSyncedLyrics(t *Tag) ([]core.SyncedLyrics, []core.Warning) {
 	return sets, ws
 }
 
-// decodeSYLT decodes a SYLT frame body into one synced-lyrics set. It returns ok == false
-// (with a warning) for a frame it cannot model: a bad header, an MPEG-frames timestamp
-// format, a non-lyric content type, or a body with no decodable line. The per-line text
-// has its conventional leading line-break marker stripped so the modeled text is the clean
-// line content.
+// decodeSYLT decodes a SYLT frame body into one synced-lyrics set. ok is false (with a
+// warning) for a frame it cannot model: a bad header, an MPEG-frames timestamp format, a
+// non-lyric content type, or a body with no decodable line. Each line's conventional
+// leading line-break marker is stripped.
 func decodeSYLT(body []byte) (core.SyncedLyrics, []core.Warning, bool) {
 	// encoding(1) + language(3) + tsfmt(1) + content(1) = 6 header bytes before the
 	// terminated descriptor.
@@ -125,11 +121,10 @@ func decodeSYLT(body []byte) (core.SyncedLyrics, []core.Warning, bool) {
 		if !tok || len(after) < 4 {
 			break // truncated entry: keep what parsed
 		}
-		// A valid line entry decoded, but the per-set cap is already full: drop it and flag
-		// the truncation. Checking the cap here, after decoding a real entry rather than at
-		// the loop top, means trailing padding or a malformed tail after exactly maxSyltLines
-		// lines is not mistaken for a dropped line - the same cap-before-append test the LRC
-		// path uses.
+		// A valid line decoded but the cap is full: drop it and flag the truncation.
+		// Checking after decoding a real entry, as the LRC path does, means trailing padding
+		// or a malformed tail after exactly maxSyltLines lines is not mistaken for a dropped
+		// line.
 		if len(lines) >= maxSyltLines {
 			capped = true
 			break
@@ -145,9 +140,8 @@ func decodeSYLT(body []byte) (core.SyncedLyrics, []core.Warning, bool) {
 		return core.SyncedLyrics{}, nil, false
 	}
 	// Project in chronological order, matching the model contract and the LRC store's
-	// ParseLRC. That keeps the public view consistent even when a SYLT frame lists entries
-	// out of order. encodeSYLT preserves slice order, so re-rendering a sorted model set is
-	// byte-stable.
+	// ParseLRC, even when a SYLT frame lists entries out of order. encodeSYLT preserves
+	// slice order, so re-rendering a sorted set is byte-stable.
 	slices.SortStableFunc(lines, func(a, b core.SyncedLine) int { return cmp.Compare(a.Time, b.Time) })
 	var ws []core.Warning
 	if capped {
@@ -157,12 +151,11 @@ func decodeSYLT(body []byte) (core.SyncedLyrics, []core.Warning, bool) {
 	return core.SyncedLyrics{Language: lang, Description: core.SanitizeUTF8(desc), Lines: lines}, ws, true
 }
 
-// syltProjectsLyrics reports whether a SYLT frame projects into the synced-lyrics model (a
-// lyrics, millisecond-timestamped frame with at least one line). The rebuild path uses it
-// to drop only the SYLT frames a synced-lyrics edit replaces, preserving a non-projecting
-// SYLT (a chord or trivia track) verbatim. It checks the header and that one line entry
-// decodes, matching decodeSYLT's ok result, without decoding, sanitizing, and sorting every
-// line only to compute the boolean.
+// syltProjectsLyrics reports whether a SYLT frame projects into the synced-lyrics model: a
+// lyrics, millisecond-timestamped frame with at least one line. The rebuild path uses it
+// to drop only the SYLT frames a synced-lyrics edit replaces, preserving a chord or
+// trivia track verbatim. It checks the header and that one line decodes, matching
+// decodeSYLT's ok result without decoding every line.
 func syltProjectsLyrics(body []byte) bool {
 	if len(body) < 6 || !validEncoding(body[0]) || body[4] != syltFmtMillis || body[5] != syltContentLyrics {
 		return false
@@ -187,13 +180,11 @@ func syltFrameLanguage(body []byte) (string, bool) {
 	return string(body[1:4]), true
 }
 
-// syltFrameDescriptor returns the content descriptor of a SYLT frame body, decoded per its encoding
-// byte (Latin-1/UTF-16/UTF-8) exactly as decodeSYLT and syltProjectsLyrics read it. It is the
-// empty-descriptor fallback when re-rendering an edited set whose modeled descriptor is unset, so a
-// line-only edit keeps the file's existing descriptor rather than blanking it. Plain cutEncoded (not
-// the tracked variant) is correct: the descriptor is the first string, so the shared UTF-16-BOM
-// state the tracked variant threads across later lines does not matter here. The descriptor is not
-// fixed-width, so it is decoded through cutEncoded rather than sliced by hand.
+// syltFrameDescriptor returns a SYLT frame body's content descriptor, decoded per its
+// encoding byte as decodeSYLT reads it. It is the empty-descriptor fallback when
+// re-rendering an edited set whose descriptor is unset, so a line-only edit keeps the
+// file's descriptor. Plain cutEncoded suffices: the descriptor is the first string, so
+// the UTF-16 BOM state the tracked variant threads across later lines does not apply.
 func syltFrameDescriptor(body []byte) (string, bool) {
 	if len(body) < 6 || !validEncoding(body[0]) {
 		return "", false
@@ -205,25 +196,23 @@ func syltFrameDescriptor(body []byte) (string, bool) {
 	return core.SanitizeUTF8(desc), true
 }
 
-// syltFrames renders synced-lyrics sets as SYLT frames (one per set, in order). fallbackLang and
-// fallbackDesc are the raw 3-byte language and content descriptor of the first original projecting
-// SYLT, used for a set whose modeled language or descriptor is empty so a line-only edit keeps the
-// file's existing values (a CLI-authored set carries neither). A set with no lines emits no frame: a
-// line-less SYLT projects to nothing on re-read, so writing one would create a frame with no model
-// value. This matches the Vorbis LRC store's syncedLyricsComments. It reports whether any line's
-// timestamp was clamped to the 32-bit millisecond field.
+// syltFrames renders synced-lyrics sets as SYLT frames, one per set in order. fallbackLang
+// and fallbackDesc are the raw 3-byte language and descriptor of the first original
+// projecting SYLT, used for a set whose own are empty so a line-only edit keeps the file's
+// values (a CLI-authored set carries neither). A set with no lines emits no frame: a
+// line-less SYLT projects to nothing on re-read, matching the Vorbis LRC store's
+// syncedLyricsComments. It reports whether any timestamp was clamped to the 32-bit
+// millisecond field and whether any text carries a NUL.
 func syltFrames(sets []core.SyncedLyrics, version byte, fallbackLang, fallbackDesc string) (frames []Frame, overflow, invalidNUL bool) {
 	frames = make([]Frame, 0, len(sets))
 	for _, sl := range sets {
 		if len(sl.Lines) == 0 {
 			continue
 		}
-		// Defense-in-depth: a NUL in the modeled line text or authored descriptor would silently
-		// truncate the NUL-terminated SYLT text/descriptor field. The editor already rejects an
-		// authored NUL; flag one here too so a library caller that bypasses the editor surfaces
-		// waxerr.ErrInvalidData (via RebuildError) rather than writing a truncated frame. Only these
-		// values need checking: fallbackDesc/fallbackLang come from decoded SYLT strings, which
-		// cannot contain a NUL (it is the field terminator on read).
+		// A NUL in the line text or authored descriptor would truncate the NUL-terminated
+		// SYLT field. The editor already rejects one; flag it here too so a library caller
+		// that bypasses the editor gets waxerr.ErrInvalidData via RebuildError. fallbackDesc
+		// and fallbackLang come from decoded SYLT strings and cannot contain a NUL.
 		if strings.IndexByte(sl.Description, 0) >= 0 {
 			invalidNUL = true
 		}
@@ -241,13 +230,11 @@ func syltFrames(sets []core.SyncedLyrics, version byte, fallbackLang, fallbackDe
 
 // encodeSYLT renders a SYLT frame body for the write version: always the millisecond
 // timestamp format and the lyrics content type. Each line's text is prefixed with the
-// conventional line-break marker (a newline), which decodeSYLT strips on read, so the
-// modeled text round-trips. The encoding is chosen across the descriptor and every line so
-// a non-Latin-1 lyric upgrades the whole frame consistently. An empty modeled descriptor
-// falls back to fallbackDesc (the first original SYLT's descriptor) so an authored line-only
-// edit keeps it, mirroring the language fallback; the chosen descriptor is used for both the
-// encoding decision and the written bytes so the two cannot disagree. It reports whether any
-// line's timestamp was clamped to the 32-bit millisecond field (~49.7 days).
+// conventional line-break marker (a newline), which decodeSYLT strips on read. The
+// encoding is chosen across the descriptor and every line so a non-Latin-1 lyric upgrades
+// the whole frame. An empty descriptor falls back to fallbackDesc, mirroring the language
+// fallback, and the chosen descriptor feeds both the encoding decision and the written
+// bytes. It reports whether any timestamp was clamped to the 32-bit millisecond field.
 func encodeSYLT(sl core.SyncedLyrics, version byte, fallbackLang, fallbackDesc string) (body []byte, overflow bool) {
 	desc := sl.Description
 	if desc == "" {
@@ -282,18 +269,15 @@ func encodeSYLT(sl core.SyncedLyrics, version byte, fallbackLang, fallbackDesc s
 }
 
 // syltLangBytes renders a modeled language into the SYLT frame's fixed 3-byte field. An
-// empty language writes the spec's "XXX" undefined marker. A 1-2 byte code is NUL-padded
-// because some encoders store short codes that way; using "X" padding would read back as a
-// different language such as "enX". A longer value is truncated to the field's hard limit.
-// ISO-639-2 codes are conventionally lowercase. Fold uppercase ASCII here so
-// callers that bypass the CLI still write canonical bytes. This avoids Unicode
-// case folding before the fixed-width pad/truncate below.
+// empty or undefined language writes the spec's "XXX" marker. A 1-2 byte code is
+// NUL-padded, as some encoders store short codes; "X" padding would read back as a
+// different language such as "enX". A longer value is truncated. Uppercase ASCII is
+// folded to the conventional lowercase ISO-639-2 form before the fixed-width pad, so
+// callers that bypass the CLI still write canonical bytes.
 func syltLangBytes(lang string) []byte {
-	// Recognize every ISO "undefined" form (empty, NUL/space-padded, or "xxx") as the canonical
-	// "XXX" marker, using the exact rule the read applies (syltLanguage). Otherwise a model
-	// language of "xxx" - which the CLI accepts and the model may carry - would be stored
-	// verbatim yet read back empty, the asymmetry; now write and read agree that "xxx" is
-	// the undefined marker (the model's unspecified = empty convention).
+	// Recognize every "undefined" form (empty, NUL/space-padded, or "xxx") with the read
+	// rule (syltLanguage), so a model language of "xxx" is not stored verbatim yet read
+	// back empty.
 	if syltLanguage(lang) == "" {
 		return []byte{'X', 'X', 'X'}
 	}

@@ -23,7 +23,6 @@ import (
 //
 // Packets sit inside the audio extent; rewrite copies the stream verbatim, so
 // chapters are preserved but never edited (read-only capability).
-
 const (
 	keyAudio     = "AP"
 	keyChapter   = "CT"

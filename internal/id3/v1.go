@@ -7,7 +7,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// V1 is a decoded ID3v1 / ID3v1.1 tag - the fixed 128-byte trailer. It is read
+// V1 is a decoded ID3v1 / ID3v1.1 tag, the fixed 128-byte trailer. It is read
 // for the family view and preserved verbatim; ID3v2 is authoritative.
 type V1 struct {
 	Title   string
@@ -51,9 +51,14 @@ func v1Field(b []byte) string {
 	return strings.TrimRight(s, "\x00 ")
 }
 
-// LooksLikeID3v1: likely a real 128-byte ID3v1/v1.1 trailer, not audio at size-128.
-// Bare "TAG" is too weak for an essence boundary; adds structural checks.
-
+// LooksLikeID3v1 reports whether b is likely a 128-byte ID3v1/v1.1 trailer
+// rather than audio bytes that begin with "TAG" at size-128. The 3-byte magic is too weak
+// to gate an essence boundary: a false positive pulls the audio end back 128 bytes and
+// drops real audio from the essence digest and structural fingerprint. It adds structural
+// checks every real Latin-1/Windows-1252 tag passes but a random audio tail almost never
+// does: the year is digits/space/NUL and the text fields carry no binary control bytes.
+// The strict year is a trade-off: a non-standard year ("90s", "200?") is not detected and
+// its 128 bytes count as audio. ParseV1 stays lenient for the display path.
 func LooksLikeID3v1(b []byte) bool {
 	if len(b) != 128 || string(b[:3]) != "TAG" {
 		return false
@@ -71,9 +76,9 @@ func LooksLikeID3v1(b []byte) bool {
 		}
 	}
 	// Comment b[97:127], with the ID3v1.1 carve-out: ParseV1 reads b[126] as a binary
-	// track byte when b[125]==0 && b[126]!=0 (values like 3, 5, 7 fall in the rejected
-	// control range), so validate only the 28-byte comment text there and leave the
-	// track byte unchecked; otherwise the full 30-byte comment is text.
+	// track byte when b[125]==0 && b[126]!=0 (values like 3 fall in the rejected control
+	// range), so validate only the 28-byte comment text there; otherwise the full 30
+	// bytes are text.
 	commentEnd := 127
 	if b[125] == 0 && b[126] != 0 {
 		commentEnd = 125

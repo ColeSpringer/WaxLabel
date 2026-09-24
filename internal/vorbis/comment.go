@@ -4,7 +4,6 @@
 //
 // List core: vendor + LE-length "NAME=value" entries. FLAC wraps in a block;
 // Ogg Vorbis adds "\x03vorbis"+framing bit; Opus adds "OpusTags"+optional padding.
-
 package vorbis
 
 import (
@@ -23,7 +22,6 @@ import (
 //
 // Unseparated: no "=". Well framed but uninterpreted: empty Name, Value is raw
 // bytes. [RenderCommentList] writes unchanged; projectors skip it.
-
 type Comment struct {
 	Name        string
 	Value       string
@@ -33,7 +31,6 @@ type Comment struct {
 // ParseCommentList decodes LE-length vendor, count, and entries. Returns bytes
 // consumed (for framing bit / Opus padding). Entries without '=' are Unseparated.
 // maxElements caps accumulation (0 = off); count is attacker-controlled.
-
 func ParseCommentList(body []byte, limit int64, maxElements int) (vendor string, comments []Comment, n int64, err error) {
 	c := bits.NewCursor(bytes.NewReader(body), int64(len(body)), limit)
 	vlen := int64(c.U32LE())
@@ -48,15 +45,14 @@ func ParseCommentList(body []byte, limit int64, maxElements int) (vendor string,
 		if c.Err() != nil {
 			break
 		}
-		// The cap counts a malformed entry too: it allocates a descriptor like any other,
-		// so a body packed with them must hit ErrSizeTooLarge rather than slip past.
+		// A malformed entry counts toward the cap too: it allocates a descriptor like
+		// any other, so a body packed with them still hits ErrSizeTooLarge.
 		if capErr := bits.CheckElementCap(len(comments), maxElements, "Vorbis comments"); capErr != nil {
 			return vendor, comments, c.Pos(), capErr
 		}
 		name, value, ok := strings.Cut(string(entry), "=")
 		if !ok {
-			// No separator: keep the entry bytes verbatim so a rewrite preserves them
-			// instead of destroying a region the walk framed perfectly well.
+			// No separator: keep the entry bytes verbatim so a rewrite preserves them.
 			comments = append(comments, Comment{Value: string(entry), Unseparated: true})
 			continue
 		}
@@ -69,15 +65,13 @@ func ParseCommentList(body []byte, limit int64, maxElements int) (vendor string,
 }
 
 // RenderCommentList encodes vendor+comments (LE lengths, no framing). Deterministic.
-
 func RenderCommentList(vendor string, comments []Comment) []byte {
 	var buf bytes.Buffer
 	writeU32LE(&buf, uint32(len(vendor)))
 	buf.WriteString(vendor)
 	writeU32LE(&buf, uint32(len(comments)))
 	for _, cm := range comments {
-		// An entry that had no separator is written back exactly as it was read; composing
-		// "=" + Value would corrupt the very bytes the parse kept in order to preserve.
+		// An unseparated entry is written back as read; "=" + Value would corrupt it.
 		entry := cm.Value
 		if !cm.Unseparated {
 			entry = cm.Name + "=" + cm.Value
@@ -92,7 +86,6 @@ func RenderCommentList(vendor string, comments []Comment) []byte {
 // disagreeing values for one key are conflicts (unselected). Same-name repeats
 // are multi-value. CHAPTERxxx, SYNCEDLYRICS, METADATA_BLOCK_PICTURE are owned
 // elsewhere; Rebuild preserves them unless that edit replaces them.
-
 func Project(comments []Comment) (tag.TagSet, []core.FamilyValue) {
 	ts := tag.NewTagSet()
 	famIndex := map[tag.Key]int{}
@@ -107,21 +100,18 @@ func Project(comments []Comment) (tag.TagSet, []core.FamilyValue) {
 		}
 		key, valid := canonicalTagKey(cm.Name)
 		if !valid {
-			// A non-conformant native name (empty, or with characters the writer's Key.Valid()
-			// gate rejects) has no valid canonical key. Keep it out of the canonical model
-			// entirely - no tag, no family entry - so copy does not grade it Carried and then
-			// abort at write time. The raw comment is untouched in the native list, so an
-			// unrelated edit still preserves it verbatim (Rebuild copies it as-is);
-			// InvalidKeyWarnings surfaces it at the parse sites via the same canonicalTagKey rule.
+			// A name that is empty or has characters Key.Valid() rejects has no valid
+			// canonical key. Keep it out of the canonical model (no tag, no family entry),
+			// or copy would grade it Carried and then abort at write time. The raw comment
+			// stays in the native list, so Rebuild still preserves it. InvalidKeyWarnings
+			// flags it through the same canonicalTagKey rule.
 			continue
 		}
-		// The Vorbis reader stores values as raw bytes; a non-conformant file can hold invalid
-		// UTF-8 (the spec mandates UTF-8, but WaxLabel parses best-effort). Sanitize it into the
-		// canonical model the way the ID3/MP4/Matroska readers do, so the model never carries raw
-		// invalid sequences: a copy of such a value is not spuriously rejected by the write-time
-		// UTF-8 guard, and --json never emits invalid bytes. The native comment list keeps its
-		// raw bytes, so an unrelated edit still preserves them verbatim (Rebuild copies unchanged
-		// comments as-is).
+		// The spec mandates UTF-8, but a non-conformant file can hold invalid bytes.
+		// Sanitize the value into the canonical model as the ID3/MP4/Matroska readers
+		// do, so the write-time UTF-8 guard does not reject a copy and --json never
+		// emits invalid bytes. The native list keeps the raw bytes, so Rebuild still
+		// preserves them on an unrelated edit.
 		val := core.SanitizeUTF8(cm.Value)
 		ts.Add(key, val)
 		if i, ok := famIndex[key]; ok {
@@ -141,13 +131,11 @@ func Project(comments []Comment) (tag.TagSet, []core.FamilyValue) {
 			fams[i].Selected = false
 		}
 	}
-	// Split a slashed TRACKNUMBER/DISCNUMBER ("4/9") into number + total so this read path
-	// agrees with the ID3/MP4/Matroska projections and the editor. Vorbis stores the pair
-	// verbatim, so without this the canonical layer would disagree with itself. The native
-	// comment list keeps its raw "4/9" (Rebuild copies unchanged comments as-is), so a plain
-	// read then write stays byte-identical and an unrelated edit re-projects through the same
-	// post-pass, keeping base == result. Only ts is normalized; the family view still shows the
-	// raw value by design.
+	// Split a slashed TRACKNUMBER/DISCNUMBER ("4/9") into number + total, as the
+	// ID3/MP4/Matroska projections and the editor do. The native list keeps the raw
+	// "4/9", so a read then write stays byte-identical and an unrelated edit
+	// re-projects through this same pass, keeping base == result. Only ts is
+	// normalized; the family view shows the raw value.
 	tag.NormalizeNumberPairs(&ts)
 	return ts, fams
 }
@@ -160,16 +148,15 @@ func Project(comments []Comment) (tag.TagSet, []core.FamilyValue) {
 //
 // CHAPTERxxx/SYNCEDLYRICS/METADATA_BLOCK_PICTURE are owned: chapter/lyrics edits
 // replace them; unrelated edits preserve. Opaque picture comments stay verbatim.
-
 func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapters []core.Chapter, chaptersChanged bool, syncedLyrics []core.SyncedLyrics, syncedLyricsChanged bool) ([]Comment, RebuildInfo) {
 	var info RebuildInfo
 	emitted := map[tag.Key]bool{}
 	out := make([]Comment, 0, len(orig))
 	emit := func(k tag.Key, name string) {
 		vals, _ := edited.Get(k)
-		// Canonicalize a recognized boolean word to "1"/"0" on write (COMPILATION=true -> 1),
-		// matching MP4's cpil and keeping copy (Carried) and diff (no change) in agreement across
-		// formats. An unrecognized value ("maybe") is left as text by CanonicalBoolValue.
+		// Canonicalize a recognized boolean word to "1"/"0" (COMPILATION=true -> 1),
+		// matching MP4's cpil, so copy (Carried) and diff (no change) agree across
+		// formats. CanonicalBoolValue leaves an unrecognized value ("maybe") as text.
 		boolean := tag.IsBooleanKey(k)
 		for _, v := range vals {
 			if boolean {
@@ -179,11 +166,10 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapte
 		}
 		emitted[k] = true
 	}
-	// hasNative marks the canonical keys that already own a native comment in orig. The slash-pair
-	// rewrite below re-derives a total from the slash only when its total key has no comment of
-	// its own; an explicit TRACKTOTAL/TOTALTRACKS is left to the normal loop, which preserves or
-	// replaces it in place. Re-deriving it there too would duplicate an explicit-total-first
-	// ordering, or relabel and relocate an untouched one.
+	// hasNative marks the canonical keys that own a native comment in orig. The
+	// slash-pair rewrite below derives a total only when the total key has no
+	// comment of its own; the normal loop preserves or replaces an explicit
+	// TRACKTOTAL/TOTALTRACKS in place, so it is neither duplicated nor moved.
 	hasNative := map[tag.Key]bool{}
 	for _, cm := range orig {
 		if cm.Unseparated || isChapterComment(cm.Name) || isSyncedLyricsComment(cm.Name) {
@@ -209,27 +195,20 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapte
 			continue // dropped on a synced-lyrics edit; re-emitted below
 		}
 		if IsPictureComment(cm.Name) {
-			// Cover art belongs to the picture model and is re-rendered by the codec, never edited
-			// as a custom tag: a valid cover was already decoded out into the picture set, so only
-			// a malformed, opaque comment lingers here. Preserve it verbatim and skip the generic
-			// key path, so a --set METADATA_BLOCK_PICTURE on a file that already holds a picture
-			// comment cannot overwrite it in place. It falls through to the reserved-namespace drop
-			// below instead, the same as chapters and synced lyrics; without this branch that --set
-			// would quietly reopen the side channel the guard closes.
+			// A valid cover was decoded into the picture set, so only a malformed, opaque
+			// comment remains here. Preserve it verbatim and skip the generic key path, so
+			// a --set METADATA_BLOCK_PICTURE cannot overwrite it in place; that --set falls
+			// through to the reserved-namespace drop below, like chapters and synced lyrics.
 			out = append(out, cm)
 			continue
 		}
 		k := mapping.CanonicalVorbis(cm.Name)
-		// A slash-backed TRACKNUMBER/DISCNUMBER comment natively holds both the number and a
-		// derived total; the read path splits "4/9" into TRACKNUMBER=4 + TRACKTOTAL=9. When either
-		// canonical key changed, rewrite the number from the edited value and drop the slash, or a
-		// cleared or edited total would resurface when the preserved "4/9" is re-projected. The
-		// derived total gets its own comment only when the total key has no native comment;
-		// otherwise the explicit TRACKTOTAL/TOTALTRACKS is left to the normal loop (kept verbatim
-		// if untouched, replaced in place if changed) so it is neither duplicated nor moved. This
-		// tracks the read-path split ([tag.NumberTotalSplit]) and Matroska's edit decisions so write
-		// and projection agree. An unrelated edit leaves the pair alone, so the fall-through below
-		// preserves the slash comment verbatim.
+		// The read path splits a slashed "4/9" into TRACKNUMBER=4 + TRACKTOTAL=9
+		// ([tag.NumberTotalSplit]). When either key changed, rewrite the number from the
+		// edited value and drop the slash, or a cleared or edited total would resurface
+		// from the preserved "4/9". The derived total gets its own comment only when the
+		// total key has no native comment (see hasNative). This matches Matroska's edit
+		// decisions. An unrelated edit falls through and preserves the slash comment.
 		if k == tag.TrackNumber || k == tag.DiscNumber {
 			if _, _, split := tag.NumberTotalSplit(k, cm.Value); split {
 				totKey := tag.TotalKey(k)
@@ -263,15 +242,11 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapte
 	}
 	for _, k := range edited.Keys() {
 		if changed[k] && !emitted[k] {
-			// A newly-added key in a reserved namespace - CHAPTERxxx/CHAPTERxxxNAME chapters,
-			// SYNCEDLYRICS synced lyrics, or METADATA_BLOCK_PICTURE cover art - cannot be written
-			// as a custom field: on read each is owned by its structured projector, not the tag
-			// view, so writing it would leave a stray comment the reader consumes as structured
-			// data and the key vanishes silently. Record it so the caller warns value-dropped, and
-			// skip it rather than emit a comment that re-reads as something other than a custom
-			// field. All three behave like CHAPTERxxx (always drop-with-warning), rather than the
-			// surprising "invalid payload lost, valid payload silently becomes a chapter / synced
-			// lyric / cover"; users set these through the dedicated paths, not --set.
+			// A new key in a reserved namespace (CHAPTERxxx/CHAPTERxxxNAME, SYNCEDLYRICS,
+			// METADATA_BLOCK_PICTURE) cannot be written as a custom field: a structured
+			// projector owns it on read, so the comment would re-read as a chapter, synced
+			// lyric, or cover and the key would vanish. Record it so the caller warns
+			// value-dropped. Users set these through the dedicated paths, not --set.
 			name := mapping.VorbisName(k)
 			if reservedNamespace(name) != "" {
 				info.ReservedKeys = append(info.ReservedKeys, k)
@@ -293,12 +268,11 @@ func Rebuild(orig []Comment, edited tag.TagSet, changed map[tag.Key]bool, chapte
 	return out, info
 }
 
-// RebuildInfo reports the codec-ceiling clamps [Rebuild] applied while rendering owned
-// chapter and synced-lyrics comments, so the caller can attach the matching write-time
-// warnings. Rebuild stays otherwise pure - it records the clamp here rather than emitting a
-// warning itself - mirroring ID3's RebuildInfo. The clamp is not cosmetic: without it the
-// over-range value is written past what the reader accepts and re-projects to nothing, so
-// the write collapses to a "No metadata changes" no-op and the edit is silently lost.
+// RebuildInfo reports the codec-ceiling clamps [Rebuild] applied to owned chapter
+// and synced-lyrics comments; the caller attaches the write-time warnings, as with
+// ID3's RebuildInfo. Without the clamp an over-range value is written past what the
+// reader accepts and re-projects to nothing, so the write collapses to a "No
+// metadata changes" no-op and the edit is lost.
 type RebuildInfo struct {
 	// ChapterOverflow is set when a chapter start exceeded the CHAPTERxxx timestamp ceiling
 	// and was clamped to it.
@@ -306,23 +280,18 @@ type RebuildInfo struct {
 	// SyncedLyricsOverflow is set when a synced-lyric line's timestamp exceeded the LRC
 	// timestamp ceiling and was clamped to it.
 	SyncedLyricsOverflow bool
-	// ReservedKeys lists newly-added keys in a reserved namespace - CHAPTERxxx/CHAPTERxxxNAME
-	// chapters, SYNCEDLYRICS synced lyrics, or METADATA_BLOCK_PICTURE cover art - that cannot be
-	// written as custom fields: on read they are owned by a structured projector, not the tag
-	// view, so writing one would leave a stray comment the reader silently consumes as structured
-	// data. They are dropped rather than written, and the caller surfaces a value-dropped warning
-	// naming the specific namespace per key.
+	// ReservedKeys lists new keys in a reserved namespace (CHAPTERxxx/CHAPTERxxxNAME,
+	// SYNCEDLYRICS, METADATA_BLOCK_PICTURE) that were dropped instead of written as
+	// custom fields, since a structured projector would consume the comment on read.
+	// The caller surfaces a value-dropped warning naming the namespace per key.
 	ReservedKeys []tag.Key
 }
 
-// RebuildWarnings appends the write-time warnings for what [Rebuild] recorded in RebuildInfo:
-// the codec-ceiling clamps (an over-range chapter or synced-lyric timestamp, surfacing the same
-// coded warning MP4/ID3 emit) and the reserved-namespace drops (a custom key in a reserved
-// namespace - CHAPTERxxx chapters, SYNCEDLYRICS synced lyrics, or METADATA_BLOCK_PICTURE cover
-// art - that cannot be written as a tag). FLAC and Ogg share it, keeping their two write paths
-// aligned. The clamp warnings are write-report only - the stored value sits at the codec ceiling
-// and re-parses cleanly, so a fresh parse emits neither - while a reserved-key drop is a real
-// value loss carried through even a no-op (via DowngradeNoOp) so it is never silent.
+// RebuildWarnings appends the write-time warnings for what [Rebuild] recorded: the
+// codec-ceiling clamps (the same coded warning MP4/ID3 emit) and the reserved-namespace
+// drops. FLAC and Ogg share it. The clamp warnings are write-report only, since the
+// stored value sits at the ceiling and re-parses cleanly; a reserved-key drop is a
+// value loss carried through even a no-op via DowngradeNoOp.
 func RebuildWarnings(prior []core.Warning, info RebuildInfo) []core.Warning {
 	if info.ChapterOverflow {
 		prior = core.Warn(prior, core.WarnChapterStartOverflow,
@@ -333,8 +302,7 @@ func RebuildWarnings(prior []core.Warning, info RebuildInfo) []core.Warning {
 			"a synced-lyric timestamp exceeded the LRC timestamp limit and was clamped")
 	}
 	for _, k := range info.ReservedKeys {
-		// The key reached ReservedKeys only because reservedNamespace matched, so the label here is
-		// the same non-empty classification the drop decision made.
+		// reservedNamespace matched when Rebuild dropped the key, so ns is non-empty.
 		ns := reservedNamespace(mapping.VorbisName(k))
 		prior = core.WarnKeyed(prior, core.WarnValueDropped,
 			fmt.Sprintf("%s is in the reserved %s namespace and cannot be written as a custom field", k, ns), k)
@@ -342,21 +310,19 @@ func RebuildWarnings(prior []core.Warning, info RebuildInfo) []core.Warning {
 	return prior
 }
 
-// InvalidKeyWarnings reports a WarnInvalidTagKey for each comment whose native name does
-// not map to a valid canonical tag key (an empty name, or one with characters the writer's
-// Key.Valid() gate rejects). Project drops such a key from the canonical model, but the raw
-// comment is preserved verbatim on write, so the warning says the key is not represented in
-// canonical tags / not carried - not that it was removed. Emitted at the parse sites like
-// EncoderNoise; owned structured comments (chapters, synced lyrics, pictures) are skipped,
-// exactly as Project skips them.
+// InvalidKeyWarnings reports a WarnInvalidTagKey for each comment whose name has no
+// valid canonical key (empty, or with characters Key.Valid() rejects). Project drops
+// the key but the raw comment survives a write, so the warning says the key is not
+// carried, not that it was removed. Called at the parse sites like EncoderNoise.
+// Owned structured comments (chapters, synced lyrics, pictures) are skipped, as in
+// Project.
 func InvalidKeyWarnings(comments []Comment) []core.Warning {
 	var ws []core.Warning
 	unseparated, first := 0, ""
 	for _, cm := range comments {
 		if cm.Unseparated {
-			// A different malformation with the same consequences: the entry is in the file
-			// and preserved, but nothing can read it as a key and a value. Collected rather
-			// than emitted here so a list full of them is one warning, not tens of thousands.
+			// Preserved in the file, but unreadable as a key and value. Counted, not
+			// warned per entry, so a list full of them is one warning.
 			if unseparated++; unseparated == 1 {
 				first = cm.Value
 			}
@@ -373,21 +339,19 @@ func InvalidKeyWarnings(comments []Comment) []core.Warning {
 	return core.WarnUnseparatedEntry(ws, first, unseparated)
 }
 
-// canonicalTagKey resolves a Vorbis comment name to its canonical key and reports whether that
-// key is valid, meaning representable in the canonical tag model. [Project] (which drops an
-// invalid key) and [InvalidKeyWarnings] (which flags it) share this one decision so the two
-// cannot drift out of sync.
+// canonicalTagKey resolves a Vorbis comment name to its canonical key and reports
+// whether that key is representable in the canonical tag model. [Project] (which
+// drops an invalid key) and [InvalidKeyWarnings] (which flags it) share the decision.
 func canonicalTagKey(name string) (tag.Key, bool) {
 	k := mapping.CanonicalVorbis(name)
 	return k, k.Valid()
 }
 
-// reservedNamespace classifies a Vorbis comment name that a structured projector owns rather than
-// the custom tag view, returning its label ("chapter", "synced lyrics", or "cover art") or "" for
-// an ordinary custom field. [Project], [Rebuild], [RebuildWarnings], and [InvalidKeyWarnings] all
-// resolve it here, so the "is this reserved?" test (label != "") and the value-dropped warning
-// text stay in step: a new namespace is added in one place, and [RebuildWarnings] can never name a
-// namespace the drop decision did not make.
+// reservedNamespace returns the label of the structured projector that owns a Vorbis
+// comment name ("chapter", "synced lyrics", or "cover art"), or "" for an ordinary
+// custom field. [Project], [Rebuild], [RebuildWarnings], and [InvalidKeyWarnings] all
+// resolve it here, so the reserved test (label != "") and the value-dropped warning
+// text agree, and a new namespace is added in one place.
 func reservedNamespace(name string) string {
 	switch {
 	case isChapterComment(name):
@@ -400,21 +364,17 @@ func reservedNamespace(name string) string {
 	return ""
 }
 
-// TransferClassifier grades the fields whose Vorbis transfer fate the format-level
-// capability cannot express: a custom key whose native Vorbis name falls in a reserved
-// namespace (CHAPTERxxx chapters, SYNCEDLYRICS synced lyrics, METADATA_BLOCK_PICTURE cover
-// art). A Vorbis writer drops such a key rather than emit a stray comment a reader would
-// silently consume as structured data (see [RebuildWarnings]), so a copy that carries one -
-// e.g. a Matroska CHAPTER050NAME custom tag copied to FLAC/Ogg - must report it Dropped
-// rather than a clean carry. It reuses the same reservedNamespace decision the writer makes,
-// keeping the copy report and the write drop in step; FLAC and Ogg share it. Every ordinary
-// key is left to the format-level grade.
+// TransferClassifier grades a custom key whose native Vorbis name falls in a reserved
+// namespace (CHAPTERxxx, SYNCEDLYRICS, METADATA_BLOCK_PICTURE), which the format-level
+// capability cannot express. The writer drops such a key (see [RebuildWarnings]), so a
+// copy that carries one, e.g. a Matroska CHAPTER050NAME custom tag copied to FLAC/Ogg,
+// reports it Dropped. It reuses the writer's reservedNamespace decision; FLAC and Ogg
+// share it. Every ordinary key is left to the format-level grade.
 //
-// The direction inverts the writer: the writer classifies the stored comment name, while
-// this classifies the native name of a canonical key (mapping.VorbisName). The two align
-// only while VorbisName(customKey) equals the raw stored name, which a negative transfer
-// test guards. It is a plain [core.FieldClassifier] (registered by value, not called), so it
-// captures nothing and allocates no closure.
+// The writer classifies the stored comment name; this classifies the native name of a
+// canonical key (mapping.VorbisName). The two align only while VorbisName(customKey)
+// equals the raw stored name, which a negative transfer test checks. It is a plain
+// [core.FieldClassifier] registered by value, so it captures nothing.
 func TransferClassifier(key tag.Key, _ []string, _ tag.TagSet) (core.Disposition, string, bool) {
 	if ns := reservedNamespace(mapping.VorbisName(key)); ns != "" {
 		return core.Dropped, fmt.Sprintf("the %s namespace is reserved for structured data, so it cannot be written as a Vorbis custom field", ns), true
@@ -426,11 +386,9 @@ func TransferClassifier(key tag.Key, _ []string, _ tag.TagSet) (core.Disposition
 // edited (added, removed, or modified).
 func DiffKeys(base, edited tag.TagSet) map[tag.Key]bool { return core.DiffKeys(base, edited) }
 
-// EncoderNoise flags inherited transcoder stamps (e.g. ffmpeg's
-// "encoder=Lavf..." comment or vendor string), the typical signature of a file
-// acquired by transcoding. When the vendor string and an ENCODER comment carry the
-// identical stamp - ffmpeg writes the same "Lavf..." into both - they collapse
-// into one warning rather than reporting the same value twice.
+// EncoderNoise flags inherited transcoder stamps (e.g. ffmpeg's "encoder=Lavf..."
+// comment or vendor string). When the vendor string and an ENCODER comment carry
+// the same stamp, as ffmpeg writes, they collapse into one warning.
 func EncoderNoise(vendor string, comments []Comment) []core.Warning {
 	var ws []core.Warning
 	vendorStamp := core.IsTranscoderStamp(vendor)
@@ -439,10 +397,9 @@ func EncoderNoise(vendor string, comments []Comment) []core.Warning {
 	if vendorStamp {
 		for _, cm := range comments {
 			if cm.Unseparated {
-				continue // no name; it names no field, least of all ENCODER
+				continue // no name, so not ENCODER
 			}
-			// Match case-insensitively: a transcoder writes the same stamp into both,
-			// and a casing difference between the two should still collapse to one note.
+			// Match case-insensitively so a casing difference still collapses to one note.
 			if strings.EqualFold(cm.Name, "ENCODER") && strings.EqualFold(cm.Value, vendor) {
 				vendorEchoed = true
 				break
@@ -454,15 +411,15 @@ func EncoderNoise(vendor string, comments []Comment) []core.Warning {
 		ws = core.Warn(ws, core.WarnInheritedEncoder,
 			"transcoder stamp in vendor string and encoder comment: "+core.WarnSnippet(vendor))
 	case vendorStamp:
-		// Name the field explicitly: dump shows the ENCODER *tag* (e.g. "Lavc..."),
-		// while this stamp is the container *vendor string* (never a tag), so without
-		// the distinction the warning reads as contradicting the displayed ENCODER.
+		// Name the field: dump shows the ENCODER tag (e.g. "Lavc..."), while this stamp
+		// is the container vendor string, not a tag, so without the distinction the
+		// warning reads as contradicting the displayed ENCODER.
 		ws = core.Warn(ws, core.WarnInheritedEncoder,
 			"container vendor string (distinct from the ENCODER tag) is a transcoder stamp: "+core.WarnSnippet(vendor))
 	}
 	for _, cm := range comments {
 		if cm.Unseparated {
-			continue // no name; it names no field, least of all ENCODER
+			continue // no name, so not ENCODER
 		}
 		if !strings.EqualFold(cm.Name, "ENCODER") || !core.IsTranscoderStamp(cm.Value) {
 			continue
@@ -481,8 +438,8 @@ func EncoderNoise(vendor string, comments []Comment) []core.Warning {
 const WaxLabelVendor = "WaxLabel"
 
 // NeutralizeVendor returns the vendor string to write under the strip flag and reports
-// whether it changed. A changed vendor is a real edit because no canonical tag key can reach
-// the comment-header vendor field.
+// whether it changed. A changed vendor is an edit in itself: no canonical tag key can
+// reach the comment-header vendor field.
 func NeutralizeVendor(vendor string, strip bool) (string, bool) {
 	if strip && core.IsTranscoderStamp(vendor) {
 		return WaxLabelVendor, true

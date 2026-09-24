@@ -141,9 +141,8 @@ func unionValues(a, b []string) []string {
 	appendUnique(a)
 	appendUnique(b)
 	if len(out) == 0 {
-		// A fresh slice, never a sub-slice of an argument: the result belongs to the merged
-		// set, and sharing a backing array would let a later append into it reach across
-		// into the caller's own values.
+		// Return a fresh slice, never a sub-slice of an argument: sharing a backing array
+		// would let a later append reach into the caller's values.
 		if len(a) > 0 {
 			return append(out, a[0])
 		}

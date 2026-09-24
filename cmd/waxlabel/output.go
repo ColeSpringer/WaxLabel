@@ -56,8 +56,8 @@ func nonNil[T any](s []T) []T {
 }
 
 // sanitizingWriter is the human-output boundary: dispatch wraps stdout/stderr once so
-// a future renderer cannot leak terminal controls. [tag.SanitizeText] is idempotent
-// and composes with per-field escapes.
+// no renderer can leak terminal controls. [tag.SanitizeText] is idempotent and
+// composes with per-field escapes.
 //
 // Keeps '\n' for line separation; newline forgery is per-field [tag.SanitizeLine].
 // JSON uses [sanitizingWriter.Raw].
@@ -157,7 +157,7 @@ type jsonWarning struct {
 }
 
 // jsonErrBody is code, message, and hint for terminal and per-file JSON errors.
-// Hint matches classifiedError.hint so human and JSON cannot drift.
+// Hint matches classifiedError.hint so human and JSON agree.
 type jsonErrBody struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
@@ -236,9 +236,9 @@ func perFile[P any](
 	for _, path := range paths {
 		p, err := compute(cmd.Context(), path)
 		if err != nil {
-			// Closed output pipe cancelled context: stop silently, do not print
-			// "canceled" per remaining file. isPipeClose gates so a real file error
-			// racing the close is still recorded.
+			// Closed output pipe cancelled the context: stop without printing
+			// "canceled" per remaining file. isPipeClose gates so a file error racing
+			// the close is still recorded.
 			if errors.Is(context.Cause(cmd.Context()), errBrokenPipe) && isPipeClose(err) {
 				break
 			}
@@ -357,7 +357,7 @@ func noteLeftovers(w io.Writer, n int, asJSON bool) {
 
 // usageError is bad-args failure (exit 2). Extra fields only at cobra dead-ends:
 // cmd for help hint, wantsHint for "run --help", multiline for trusted cobra text,
-// hint overrides wantsHint. usagef leaves all zero (self-documenting).
+// hint overrides wantsHint. usagef leaves all zero.
 type usageError struct {
 	msg       string
 	cmd       string
@@ -373,7 +373,7 @@ func usagef(format string, args ...any) error {
 }
 
 // checkArgText maps writable-text rejection to exit 2 (bad invocation, not corrupt
-// file). Reason from WritableTextReason, same as library backstop. argv has no NUL;
+// file). Reason from WritableTextReason, the library's own check. argv has no NUL;
 // --synced-lyrics-file content can.
 func checkArgText(value, what string) error {
 	if reason := wl.WritableTextReason(value); reason != "" {
@@ -483,9 +483,9 @@ const (
 	timeoutReason  = "operation timed out"
 )
 
-// writeFailed is true when Execute failed without commit. Post-commit error after
-// committed write is not failure (bytes landed). warnPostCommit names the step. set,
-// copy, lint --fix branch here.
+// writeFailed is true when Execute failed without commit. An error after commit is
+// not failure: the bytes are written. warnPostCommit names the step. set, copy, and
+// lint --fix branch here.
 func writeFailed(res wl.SaveResult, err error) bool { return err != nil && !res.Committed }
 
 // warnPostCommit notes committed write with failed post-commit step (see writeFailed).
@@ -530,7 +530,7 @@ type classifiedError struct {
 var errBrokenPipe = errors.New("broken output pipe")
 
 // isPipeClose is context cancel or broken-pipe errno from write racing reader close.
-// perFile pairs with errBrokenPipe cause so coincident real file errors still record.
+// perFile pairs it with the errBrokenPipe cause so coincident file errors still record.
 func isPipeClose(err error) bool {
 	return errors.Is(err, context.Canceled) || isBrokenPipe(err)
 }
@@ -690,7 +690,7 @@ func looksLikePathFlag(msg string) bool {
 	return looksLikePath(msg[strings.LastIndexByte(msg, ' ')+1:])
 }
 
-// looksLikeBareWord: plain word not path (e.g. unquoted `--set TITLE=Two Words` fragment).
+// looksLikeBareWord: not a path (e.g. an unquoted `--set TITLE=Two Words` fragment).
 func looksLikeBareWord(s string) bool {
 	return !looksLikePath(s)
 }
@@ -709,8 +709,8 @@ func normalizeExecuteError(err error) error {
 				// Cobra "Did you mean?" block: keep newlines. cmd empty -> hint "waxlabel".
 				ue.multiline, ue.wantsHint = true, true
 			case "unknown flag", "unknown shorthand":
-				// Backstop; flag errors usually go through FlagErrorFunc with dashPathHint.
-				// Genuine typo keeps --help hint.
+				// Fallback; flag errors usually go through FlagErrorFunc with dashPathHint.
+				// A typo keeps the --help hint.
 				if looksLikePathFlag(msg) {
 					ue.hint = dashPathHint
 				}

@@ -230,10 +230,10 @@ func renderCaps(w io.Writer, jc jsonCaps) {
 	renderKeyTable(w, "    ", rows)
 }
 
-// renderCapDim: one dimension line plus optional constraints.
-// capLabelWidth fits longest label ("synced lyrics:").
+// capLabelWidth fits the longest label ("synced lyrics:").
 const capLabelWidth = 14
 
+// renderCapDim writes one dimension line plus optional constraints.
 func renderCapDim(w io.Writer, label string, d *jsonCapDim) {
 	if d == nil {
 		return

@@ -143,8 +143,8 @@ func TestParseRawDataBlockLCCorpus(t *testing.T) {
 					cmd := exec.Command("ffmpeg", "-nostdin", "-loglevel", "error", "-y",
 						"-f", "lavfi", "-i", fmt.Sprintf("anoisesrc=d=3:c=pink:r=%d:a=0.4", rate),
 						"-ac", fmt.Sprint(channels), "-c:a", "aac", "-b:a", bitrate, out)
-					// ffmpeg is installed (checked above), so a failure here is a real one:
-					// skipping would quietly drop a rate or bitrate from the corpus.
+					// ffmpeg is installed (checked above), so an encode failure is fatal;
+					// skipping would drop a rate or bitrate from the corpus.
 					if err := cmd.Run(); err != nil {
 						t.Fatalf("ffmpeg could not encode %s: %v", name, err)
 					}

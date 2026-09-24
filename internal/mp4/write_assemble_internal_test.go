@@ -9,7 +9,7 @@ import (
 
 // TestAssembleSameOffsetInsertBeforeReplaceDeterministic checks that when a zero-width
 // insert and a same-offset replace share an offset (a combined tag+chapter edit where
-// an insert lands exactly at a replaced atom's start), assemble orders the insert first
+// an insert falls exactly at a replaced atom's start), assemble orders the insert first
 // regardless of input order.
 func TestAssembleSameOffsetInsertBeforeReplaceDeterministic(t *testing.T) {
 	const size = 100
@@ -51,7 +51,7 @@ func TestAssembleSameOffsetInsertBeforeReplaceDeterministic(t *testing.T) {
 
 // TestAssembleSameOffsetZeroWidthInsertsStable checks that two zero-width inserts at
 // the same offset stay in input order. They share both offset and width, so the oldLen
-// tie-break cannot order them;
+// tie-break cannot order them.
 func TestAssembleSameOffsetZeroWidthInsertsStable(t *testing.T) {
 	const size = 100
 	a := edit{off: 10, oldLen: 0, lit: []byte{0xA1}}

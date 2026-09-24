@@ -79,7 +79,8 @@ func (c Codec) Parse(ctx context.Context, src core.ReaderAtSized, opts core.Pars
 }
 
 // Capabilities: ilst tags/art fully writable; chapters from chpl and QT text track
-// (edit rewrites both). Numeric gnre is read but rewritten as text genre.
+// (edit rewrites both). Numeric gnre reads; a write keeps it only for an unchanged
+// value or with NumericGenre, else it becomes a text genre.
 // Fragmented files (top-level moof) report ReadOnly; m == nil reports writable.
 func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabilities {
 	fields := core.Capability{
@@ -98,8 +99,7 @@ func (Codec) Capabilities(m *core.Media, opts core.WriteOptions) core.Capabiliti
 		Constraints: []string{"covers store image data only - picture role and description are dropped (read back as front cover)"},
 		PictureLoss: core.PictureLossRoleAndDescription,
 		// A covr atom can only label JPEG/PNG/BMP, so the transfer layer drops other cover
-		// formats per-image. Clone the package var: Capabilities is publicly exported, so
-		// handing out the backing array would let a caller mutate the write-time allowlist.
+		// formats per-image. Clone the package var so a caller cannot mutate the allowlist.
 		PictureMIMEs: slices.Clone(coverMIMEs),
 	}
 	chapters := core.Capability{

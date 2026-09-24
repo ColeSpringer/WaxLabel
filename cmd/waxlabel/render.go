@@ -10,7 +10,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// displayName is the text header path: "-" becomes "<stdin>"; real paths pass through
+// displayName is the text header path: "-" becomes "<stdin>"; other paths pass through
 // [tag.SanitizeLine] so hostile names cannot forge lines in a multi-file listing.
 // JSON keeps the raw path so scripts can key on the argument they passed.
 func displayName(path string) string {
@@ -20,7 +20,7 @@ func displayName(path string) string {
 	return tag.SanitizeLine(path)
 }
 
-// stdinDisplay returns "<stdin>" for the "-" sentinel, or "" for a real path.
+// stdinDisplay returns "<stdin>" for the "-" sentinel, else "".
 // Shared by displayName and jsonFileName so both outputs label stdin the same way.
 func stdinDisplay(path string) string {
 	if path == stdinArg {
@@ -29,7 +29,7 @@ func stdinDisplay(path string) string {
 	return ""
 }
 
-// jsonFileName maps "-" to "<stdin>" for JSON "file"; real paths are unchanged (no SanitizeLine).
+// jsonFileName maps "-" to "<stdin>" for JSON "file"; other paths are unchanged (no SanitizeLine).
 func jsonFileName(path string) string {
 	if s := stdinDisplay(path); s != "" {
 		return s
@@ -286,7 +286,7 @@ func renderChapters(w io.Writer, chs []wl.Chapter) {
 	fmt.Fprintf(w, "  chapters (%d):\n", len(chs))
 	for _, c := range chs {
 		title := tag.SanitizeLine(c.Title)
-		// JSON omits empty titles; use "(untitled)" rather than inventing "Chapter N".
+		// JSON omits empty titles; text shows "(untitled)".
 		if title == "" {
 			title = "(untitled)"
 		}

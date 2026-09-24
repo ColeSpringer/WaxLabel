@@ -37,8 +37,10 @@ func TestSerializeMetadataOmitsEmptyPadding(t *testing.T) {
 	}
 }
 
-// TestPaddingBytesMatchesReuse: a rewrite drops every source PADDING block and refills the
-
+// TestPaddingBytesMatchesReuse checks that PaddingBytes reports what a reuse rewrite
+// leaves: it drops every source PADDING block and refills the region, so k blocks
+// collapse into one and k-1 four-byte headers become payload; a plain sum of the bodies
+// under-reports by 4*(k-1).
 func TestPaddingBytesMatchesReuse(t *testing.T) {
 	comment := block{code: blkVorbisComment, body: renderVorbisComment("v", nil)}
 	for _, n := range []int{0, 1, 2, 5} {
@@ -50,8 +52,7 @@ func TestPaddingBytesMatchesReuse(t *testing.T) {
 		}
 		d := &doc{blocks: blocks, audioStart: int64(4 + region)}
 
-		// The reuse path with an unchanged content size is exactly the in-place write the
-		// read accessor claims to describe.
+		// The reuse path with unchanged content is the in-place write the accessor describes.
 		_, padSize, _, _ := serializeMetadata([]block{comment}, d, core.PaddingPolicy{ReuseInPlace: true})
 		if got := d.PaddingBytes(); got != int64(padSize) {
 			t.Errorf("%d PADDING block(s): PaddingBytes = %d, reuse writes %d", n, got, padSize)

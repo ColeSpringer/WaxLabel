@@ -17,8 +17,8 @@ func TestSniffImage(t *testing.T) {
 	}
 	// 3x5 GIF89a with a Global Color Table (flag 0x80) and size field 7 -> depth 8, 256 colors.
 	gif := append([]byte("GIF89a"), 0x03, 0x00, 0x05, 0x00, 0xF7, 0x00, 0x00)
-	// 3x5 GIF89a with NO Global Color Table (high bit clear): depth and colors stay zero
-	// rather than being fabricated from the then-reserved size field.
+	// 3x5 GIF89a with no Global Color Table (high bit clear): depth and colors stay zero;
+	// without a GCT the size bits are reserved.
 	gifNoGCT := append([]byte("GIF89a"), 0x03, 0x00, 0x05, 0x00, 0x77, 0x00, 0x00)
 	// 3x5 baseline JPEG: SOI then SOF0 (precision 8, 3 components).
 	jpeg := []byte{
@@ -28,8 +28,7 @@ func TestSniffImage(t *testing.T) {
 		0x03, // components
 		0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01,
 	}
-	// Same JPEG but with 0xFF fill bytes before the SOF marker, which the
-	// sniffer must skip rather than mistake for a marker.
+	// Same JPEG with 0xFF fill bytes before the SOF marker; the sniffer must skip them.
 	jpegFill := []byte{
 		0xFF, 0xD8, 0xFF, 0xFF, 0xFF, 0xC0, 0x00, 0x11, 0x08,
 		0x00, 0x05, 0x00, 0x03, 0x03,
@@ -106,14 +105,13 @@ func TestSniffImage(t *testing.T) {
 		t.Error("expected unrecognized data to return ok=false")
 	}
 
-	// A RIFF/WAVE container (a WAV file) shares WebP's "RIFF" prefix but a
-	// different form type, so it must not be sniffed as an image.
+	// RIFF/WAVE shares WebP's "RIFF" prefix but not its form type; it must not sniff as
+	// an image.
 	if _, ok := SniffImage([]byte("RIFF\x00\x00\x00\x00WAVEfmt ")); ok {
 		t.Error("RIFF/WAVE should not sniff as a WebP image")
 	}
 
-	// A recognized header too short to carry dimensions still yields its MIME with
-	// zero dimensions, rather than reporting the data unrecognized.
+	// A recognized header too short for dimensions still yields its MIME with zero dimensions.
 	if got, ok := SniffImage([]byte("RIFF\x00\x00\x00\x00WEBP")); !ok || got != (ImageInfo{MIME: "image/webp"}) {
 		t.Errorf("short WebP: got %+v ok=%v, want image/webp with zero dimensions", got, ok)
 	}
@@ -178,7 +176,7 @@ func TestSniffTIFFIgnoresMultiValueCount(t *testing.T) {
 		0x02, 0x00, // entry count
 		// ImageWidth with count=2: the field is an offset (0x0539), to be skipped.
 		0x00, 0x01, 0x03, 0x00, 0x02, 0, 0, 0, 0x39, 0x05, 0x00, 0x00,
-		// ImageLength with count=1: a genuine inline height of 5.
+		// ImageLength with count=1: inline height 5.
 		0x01, 0x01, 0x03, 0x00, 0x01, 0, 0, 0, 0x05, 0x00, 0x00, 0x00,
 	}
 	got, ok := SniffImage(tiff)
@@ -286,7 +284,7 @@ func TestSniffISOBMFF(t *testing.T) {
 		{"hevs", ftypBox("hevs", zeroMinor), "image/heif-sequence"},
 		{"avis", ftypBox("avis", zeroMinor), "image/avif-sequence"},
 		{"compatible-brand-only", ftypBox("mp42", zeroMinor, "mp41", "avif"), "image/avif"},
-		// A real AVIF header, byte for byte from an ffmpeg encode.
+		// An AVIF header copied from an ffmpeg encode.
 		{"real-avif", realAVIFHeader(), "image/avif"},
 	}
 	for _, tc := range cases {
@@ -305,8 +303,8 @@ func TestSniffISOBMFF(t *testing.T) {
 	if _, ok := SniffImage(ftypBox("isom", "\x00\x00\x02\x00", "iso2", "mp41")); ok {
 		t.Error("an isom movie must not sniff as an image")
 	}
-	// The minor version sits between the major and compatible brands; reading it as a
-	// brand would turn any movie whose version happens to spell one into an image.
+	// The minor version sits between the major and compatible brands; read as a brand, it
+	// could turn a movie into an image.
 	if _, ok := SniffImage(ftypBox("isom", "avif", "mp41")); ok {
 		t.Error("the minor version must not be read as a brand")
 	}
@@ -314,8 +312,8 @@ func TestSniffISOBMFF(t *testing.T) {
 	if _, ok := SniffImage([]byte{0, 0, 0, 0x10, 'f', 't', 'y', 'p'}); ok {
 		t.Error("a truncated ftyp box must not sniff as an image")
 	}
-	// The declared box size bounds the brand scan: a movie's payload after the box is not
-	// made of brands, so a 4-aligned "avif" in it must not turn the file into an image.
+	// The declared box size bounds the brand scan; a 4-aligned "avif" in the payload past
+	// the box must not turn the file into an image.
 	movie := append(ftypBox("isom", zeroMinor, "iso2"), []byte("\x00\x00\x01\x18moovavif")...)
 	if _, ok := SniffImage(movie); ok {
 		t.Error("a brand string in the payload past the ftyp box must not sniff as an image")
@@ -335,15 +333,15 @@ func TestSniffISOBMFFUnusableBoxSize(t *testing.T) {
 			t.Errorf("box size %d: got %+v ok=%v, want image/avif from the major brand", size, got, ok)
 		}
 	}
-	// Major brand isom with a compatible avif: the unusable size must stop the scan before
-	// the compatible brands, which it could not vouch for.
+	// Major brand isom with a compatible avif: an unusable size stops the scan before the
+	// compatible brands.
 	for _, size := range []uint32{0, 1, 1000} {
 		if _, ok := SniffImage(withSize(size, ftypBox("isom", zeroMinor, "avif"))); ok {
 			t.Errorf("box size %d: compatible brands must not be scanned when the size cannot bound them", size)
 		}
 	}
-	// A real 64-bit box puts an 8-byte largesize where the major brand belongs, so there is
-	// no brand to read at the offset the fallback trusts.
+	// A 64-bit box puts an 8-byte largesize where the major brand belongs, so the fallback
+	// offset holds no brand.
 	large := append([]byte{0, 0, 0, 1}, "ftyp"...)
 	large = append(large, make([]byte, 8)...) // largesize
 	large = append(large, "avifmif1"...)      // the brands, at offset 16

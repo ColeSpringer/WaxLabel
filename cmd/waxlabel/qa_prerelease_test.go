@@ -99,7 +99,7 @@ func TestSyncedLyricsPartialDrop(t *testing.T) {
 		t.Errorf("set --strict with a section header: exit = %d, want 2", code)
 	}
 
-	// All-bad: existing "no timed lyric lines" usage error.
+	// All-bad: the "no timed lyric lines" usage error.
 	allbad := writeLRC(t, "just text\n[9:99.99]bad\n")
 	_, errb, code := runCLI(t, "set", copyFixture(t, notagsFLAC), "--synced-lyrics-file", allbad)
 	if code != 2 || !strings.Contains(errb, "no timed lyric lines") {

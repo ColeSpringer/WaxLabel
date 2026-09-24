@@ -212,8 +212,8 @@ func TestWavPackUnsupportedVersionRefused(t *testing.T) {
 	}
 }
 
-// independent read-back proof: ffprobe is a different codebase from a different author, so unlike a
-// self round-trip it cannot share a misreading of the APE layout with us.
+// independent read-back proof: ffprobe is a different codebase, so unlike a self round-trip it
+// cannot share a misreading of the APE layout.
 func TestWavPackDifferentialFFprobeReadsOurTags(t *testing.T) {
 	requireTool(t, "ffprobe")
 	path := copyToTemp(t, sampleWV)
@@ -247,7 +247,7 @@ func TestWavPackDifferentialFFprobeReadsOurTags(t *testing.T) {
 	}
 }
 
-// our rewritten tail must not disturb the blocks, which fails loudly if the audio extent moved.
+// the rewritten tail must not disturb the blocks; ffmpeg fails if the audio extent moved.
 func TestWavPackDifferentialFFmpegDecodes(t *testing.T) {
 	requireTool(t, "ffmpeg")
 	path := copyToTemp(t, sampleWV)

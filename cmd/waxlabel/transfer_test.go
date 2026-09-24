@@ -229,7 +229,6 @@ func TestCopyToMatroskaSucceeds(t *testing.T) {
 }
 
 // TestCopyCoverToWebMDropsCover: WebM drops cover (Attachments outside subset) but carries tags.
-// Before the file-aware fix, copy reported carried then failed at Prepare.
 func TestCopyCoverToWebMDropsCover(t *testing.T) {
 	t.Parallel()
 	dst := copyFixture(t, sampleWebMF)
@@ -388,7 +387,7 @@ func TestDiffJSON(t *testing.T) {
 	}
 }
 
-// TestDiffErrorsRankAboveDifferences: real failures exceed exit 1 (scripts distinguish broke vs differs).
+// TestDiffErrorsRankAboveDifferences: failures exit above 1 (scripts distinguish broke vs differs).
 func TestDiffErrorsRankAboveDifferences(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "nope.flac")

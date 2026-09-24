@@ -423,7 +423,7 @@ func (d *doc) tracks() []core.AudioTrack {
 	case d.maxBitrate > 0:
 		t.Bitrate = core.AverageBitrate(int64(d.maxBitrate)/8, 1)
 	}
-	// Derive sample count from duration; guard float conversion.
+	// Derive sample count from duration; bound the float conversion.
 	if samples := t.Duration.Seconds() * float64(t.SampleRate); samples > 0 && samples < math.MaxInt64 {
 		t.TotalSamples = uint64(samples)
 	}

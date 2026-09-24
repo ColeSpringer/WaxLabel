@@ -134,7 +134,7 @@ func TestCoalesceWriteRoundTripsDescriptorCount(t *testing.T) {
 // and the half-open [start, end) boundary.
 func TestOffsetMapLookup(t *testing.T) {
 	// run [100,130) shifts +1000; the element right after it (origStart 130) maps to a
-	// deliberately distinct 9999 so a boundary hit can be told apart from run + shift.
+	// distinct 9999 so a boundary hit can be told apart from run + shift.
 	om := offsetMap{
 		direct: map[int64]int64{100: 1100, 130: 9999},
 		runs:   []clusterRun{{start: 100, end: 130, shift: 1000}},

@@ -254,7 +254,7 @@ func TestLintFixPreservesFLACLeadingID3v2Picture(t *testing.T) {
 func TestFLACPostWriteMatchesReparseLegacySignals(t *testing.T) {
 	// A FLAC with a preserved leading ID3v2 (unique title + cover) edited under the default
 	// preserve policy: the Document returned by Execute must report the same legacy signals as a
-	// fresh parse of the written bytes, not under-report them.
+	// fresh parse of the written bytes.
 	lead := id3v2(3, textFrame(3, "TIT2", "Lead Title"), apicFrontFrame("image/png", tinyPNG()))
 	data := slices.Concat(lead, flacWithVendor("test"))
 
@@ -347,11 +347,11 @@ func TestLintFixStripsRedundantFLACLeadingID3v2(t *testing.T) {
 	}
 }
 
-// legacy-conflict gate: it keys on a family entry actually being legacy, not on the container's
-// name, so FLAC's stray leading ID3v2 warns exactly as MP3's ID3v1 does when an edit leaves it
-// holding a stale value. The APEv2-native formats, whose APE tag is their own store, must not.
+// The legacy-conflict check keys on a family entry being legacy, not on the container's name, so
+// FLAC's stray leading ID3v2 warns as MP3's ID3v1 does when an edit leaves it holding a stale
+// value. The APEv2-native formats, whose APE tag is their own store, must not.
 func TestFLACLeadingID3ConflictWarns(t *testing.T) {
-	// The legacy value must AGREE before the edit: the warning is for a divergence the
+	// The legacy value must agree before the edit: the warning is for a divergence the
 	// edit introduces, not one the file already had.
 	src := append(id3v2(4, textFrame(4, "TIT2", "Current")), flacWithComments("TITLE=Current")...)
 	plan, err := mustParseBytes(t, src).Edit().Set(tag.Title, "Edited").Prepare()

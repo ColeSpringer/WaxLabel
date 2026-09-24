@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// webmCleanTrackEncoder: replace track ENCODER stamp with same-length real name for scope test.
+// webmCleanTrackEncoder replaces the track ENCODER stamp with a same-length clean name.
 func webmCleanTrackEncoder(t *testing.T) string {
 	t.Helper()
 	data, err := os.ReadFile("../../testdata/sample.webm")

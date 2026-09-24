@@ -119,7 +119,7 @@ func TestPerFileReasonAndEntryAgree(t *testing.T) {
 		err:  fmt.Errorf("computing: %w", context.DeadlineExceeded),
 		want: timeoutReason,
 	}, {
-		// LinkError is not reduced; pins fall-through for non-rename cases.
+		// LinkError is not a PathError, so perFileReason leaves it whole.
 		name: "LinkError is not reduced",
 		err:  &os.LinkError{Op: "rename", Old: "a.tmp", New: "f.flac", Err: errors.New("cross-device link")},
 		want: "rename a.tmp f.flac: cross-device link",

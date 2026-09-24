@@ -363,7 +363,7 @@ var (
 )
 
 // swbRates maps a sampling rate in Hz to its samplingFrequencyIndex. 7350 shares 8000's
-// band layout and is filled from it rather than read separately.
+// band layout and is filled from it.
 var swbRates = map[int]int{
 	96000: 0, 88200: 1, 64000: 2, 48000: 3, 44100: 4, 32000: 5, 24000: 6,
 	22050: 7, 16000: 8, 12000: 9, 11025: 10, 8000: 11, 7350: 12,

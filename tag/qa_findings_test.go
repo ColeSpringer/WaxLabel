@@ -98,10 +98,9 @@ func TestDescribesOwnAudio(t *testing.T) {
 	}
 }
 
-// TestTrimTokenValueMediaTypeReplayGain checks that MEDIATYPE and the REPLAYGAIN_* keys are
-// single-token values, so TrimTokenValue strips their surrounding whitespace the same way it does
-// numeric and date keys. Internal whitespace (the space before "dB") is preserved, and a
-// free-text key is left untouched.
+// TestTrimTokenValueMediaTypeReplayGain: MEDIATYPE and the REPLAYGAIN_* keys are single-token
+// values, so TrimTokenValue strips their surrounding whitespace like numeric and date keys.
+// Internal whitespace (the space before "dB") is preserved, and a free-text key is untouched.
 func TestTrimTokenValueMediaTypeReplayGain(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -121,9 +120,8 @@ func TestTrimTokenValueMediaTypeReplayGain(t *testing.T) {
 	}
 }
 
-// TestValidPartialDateRejectsYearZero covers the cosmetic year-0000 guard: time.Parse would accept
-// "0000", but it is not a meaningful year, so ValidPartialDate rejects it (and its month/day
-// extensions) while still accepting real dates - keeping lint and set-time validation in agreement.
+// TestValidPartialDateRejectsYearZero: time.Parse accepts "0000", but it is not a meaningful
+// year, so ValidPartialDate rejects it and its month/day extensions while accepting real dates.
 func TestValidPartialDateRejectsYearZero(t *testing.T) {
 	t.Parallel()
 	for _, s := range []string{"0000", "0000-01", "0000-01-01"} {

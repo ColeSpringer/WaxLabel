@@ -10,10 +10,10 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// nonAlignedOpus builds a deliberately non-standard Ogg Opus stream in which the
-// first audio packet shares the OpusTags page (so the comment header does not end
-// on a page boundary). No real encoder produces this, but the reader must still
-// account for that page's audio. Returns the stream and the audio payload bytes.
+// nonAlignedOpus builds a non-standard Ogg Opus stream in which the first audio packet
+// shares the OpusTags page, so the comment header does not end on a page boundary. No
+// encoder produces this, but the reader must still account for that page's audio.
+// Returns the stream and the audio payload bytes.
 func nonAlignedOpus(t *testing.T) ([]byte, []byte) {
 	t.Helper()
 	const serial = 0x1234
@@ -45,8 +45,8 @@ func TestParseNonAlignedAudioEssence(t *testing.T) {
 		t.Error("stream sharing the comment page with audio must not be marked clean")
 	}
 
-	// The shared page's audio body must appear in the essence ranges (the bug was
-	// that it was dropped, yielding zero ranges and a wrong digest).
+	// The shared page's audio body must appear in the essence ranges; dropping it
+	// yields zero ranges and a wrong digest.
 	ranges := media.EssenceRanges()
 	if len(ranges) != 1 {
 		t.Fatalf("essence ranges = %d, want 1", len(ranges))
@@ -55,8 +55,8 @@ func TestParseNonAlignedAudioEssence(t *testing.T) {
 	if hi-lo != int64(len(audio)) || string(stream[lo:hi]) != string(audio) {
 		t.Errorf("essence range = stream[%d:%d] = %q, want %q", lo, hi, stream[lo:hi], audio)
 	}
-	// And the final granule (960 samples at 48 kHz, minus zero pre-skip) gives a
-	// non-zero duration rather than being lost with the page.
+	// The final granule (960 samples at 48 kHz, minus zero pre-skip) gives a non-zero
+	// duration.
 	if media.Properties.First().Duration <= 0 {
 		t.Error("duration should be derived from the shared page's granule")
 	}
@@ -76,8 +76,8 @@ func TestPlanRefusesNonAlignedWrite(t *testing.T) {
 	}
 }
 
-// TestChapterCapabilityRepresentation: pins Ogg's chapter capability
-
+// TestChapterCapabilityRepresentation pins Ogg's chapter capability: Vorbis and Opus
+// store chapters as CHAPTERxxx comments with full read/write access.
 func TestChapterCapabilityRepresentation(t *testing.T) {
 	for _, c := range []Codec{NewVorbis(), NewOpus()} {
 		caps := c.Capabilities(nil, core.DefaultWriteOptions())

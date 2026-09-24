@@ -200,7 +200,7 @@ func renderTransfer(w io.Writer, src, dst string, r wl.TransferReport, srcLabel,
 	}
 }
 
-// Display label for one transfer side. Matroska family shows container (WebM vs MKA).
+// transferFormatLabel labels one transfer side. Matroska family shows container (WebM vs MKA).
 // JSON sourceFormat/destFormat stay bare Format (WebM is container, not format identity).
 func transferFormatLabel(f wl.Format, container string) string {
 	// Show container when it differs from codec family (WebM/Matroska, WAV/RF64, AIFF/AIFC).

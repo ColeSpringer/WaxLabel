@@ -167,12 +167,12 @@ A corrupt file (exit 4) outranks a mistyped path (exit 6).
 | Musepack | read/write | APEv2 for SV7 and SV8. SV8 chapter packets read and preserved, not written. Leading ID3v2 as legacy. |
 | WMA / ASF | read-only | Content Description, `WM/*`, `WM/Picture`, Marker Object chapters. No ASF writes. |
 
-When `set` authors a structural edit a format cannot store (e.g. cover art on WebM,
+When `set` authors a structural edit a format cannot store (cover art on WebM,
 chapters with no chapter store), it drops that item with a warning and applies the
 rest. `set --strict` promotes drops to failures (exit 2). `copy --strict` refuses a
-non-lossless transfer, or when writing the destination would itself lose metadata.
-Copy onto a read-only destination (WMA, fragmented MP4) is refused at exit 3 after
-the per-field report; not a silent no-op.
+non-lossless transfer, or one whose destination write would itself lose metadata.
+Copy onto a read-only destination (WMA, fragmented MP4) exits 3 after the per-field
+report.
 
 Table below is generated from the same capability model as `waxlabel caps`.
 
@@ -195,10 +195,10 @@ Table below is generated from the same capability model as `waxlabel caps`.
 | WavPack | read full, write full · APEv2 Cover Art item | read none, write none | read none, write none |
 <!-- END caps -->
 
-Some limits are intentional (MP4 cover drops picture description; ID3 chapters store
-no per-chapter language; Matroska writes random UIDs so chapter/attachment rewrites
-are not byte-reproducible). Documented in package docs and surfaced as write-time
-warnings.
+Some limits are intentional: MP4 covers drop the picture description, ID3 chapters
+store no per-chapter language, and Matroska writes random UIDs, so chapter and
+attachment rewrites are not byte-reproducible. Package docs describe them and writes
+warn about them.
 
 ## Safety
 

@@ -144,8 +144,7 @@ func TestComputeEditDecisionsValueSurvival(t *testing.T) {
 		{
 			// A claim released by a doomed tag is re-offered to a denied twin: the slash tag's
 			// number half claims "2" first but dies with its cleared total, so the plain
-			// PART_NUMBER=2 keeps its scope instead of being deleted and re-synthesized at album
-			// scope.
+			// PART_NUMBER=2 keeps its scope.
 			name: "released claim re-offers to a denied twin",
 			groups: []tagGroup{
 				trackGroup(simple("TOTAL_PARTS", "4")),

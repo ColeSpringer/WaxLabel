@@ -23,8 +23,9 @@ func genreSet(vals ...string) tag.TagSet {
 	return ts
 }
 
-// TestEncodingRewriteNeeded: pins the predicate that lets --numeric-genre through a codec's
-
+// TestEncodingRewriteNeeded pins the predicate that lets --numeric-genre through a codec's
+// no-op fast path: true only when the stored genre and the one the write would render
+// differ. Each false row is a file the flag would otherwise rewrite on every run.
 func TestEncodingRewriteNeeded(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -81,9 +82,9 @@ func TestEncodingRewriteNeeded(t *testing.T) {
 			because: "the second repro: the value changed but re-projects to Rock, so only this " +
 				"keeps the write from collapsing back to a no-op",
 		},
-		// The rows below are the forms the predicate must NOT touch. Each renders identically
-		// with and without numeric conversion, so a rewrite would swap a reference the file
-		// already holds for its plain name, or apply an unrelated escaping.
+		// The rows below are forms the predicate must not touch: each renders identically
+		// with and without numeric conversion, so a rewrite would swap a stored reference
+		// for its name or apply an unrelated escaping.
 		{
 			name: "special reference", src: tconTag(3, "(RX)"), edited: genreSet("Remix"),
 			opts: WriteOpts{NumericGenre: true}, want: false,
@@ -142,8 +143,10 @@ func TestEncodingRewriteNeeded(t *testing.T) {
 	}
 }
 
-// TestGenreReference: pins what --numeric-genre converts
-
+// TestGenreReference pins what --numeric-genre converts: a genre name and a bare
+// reference both reach the write version's reference form, so one pass cannot leave a
+// library mixing "17" and "(17)". A parenthesized value, a special reference, and a
+// non-canonical integer are left to the escape and passthrough branches.
 func TestGenreReference(t *testing.T) {
 	cases := []struct {
 		in      string
@@ -176,7 +179,7 @@ func TestGenreReference(t *testing.T) {
 
 // A UTF-16 TCON holding the same text as a Latin-1 one must not read as a difference: both
 // sides are decoded before comparison, so the text encoding cannot masquerade as an
-// encoding rewrite and churn the file.
+// encoding rewrite and force a write.
 func TestEncodingRewriteNeededIgnoresTextEncoding(t *testing.T) {
 	src := NewEmpty(3).WithFrames([]Frame{{ID: "TCON", Body: encodeTextFrame(encUTF16, []string{"(17)"})}}, 0)
 	if EncodingRewriteNeeded(src, genreSet("Rock"), WriteOpts{NumericGenre: true}) {

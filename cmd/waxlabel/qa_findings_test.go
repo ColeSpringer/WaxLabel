@@ -15,7 +15,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// Dedup keys start/end/title only; language from parse must not defeat it. Library-authored fixture (CLI has no chapter language).
+// Dedup keys on start/end/title only; a parsed language must not defeat it. The fixture is
+// library-authored because the CLI cannot set chapter language.
 func TestSetAddChapterDedupsAcrossLanguageField(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -446,7 +447,7 @@ func TestMP4MalformedNumberPairDropsNumberCLI(t *testing.T) {
 	})
 }
 
-// CHAPTERxxx custom keys owned by chapter model; must warn value-dropped, not silently lose.
+// CHAPTERxxx custom keys belong to the chapter model; setting one must warn value-dropped.
 func TestReservedChapterKeyDroppedWithWarning(t *testing.T) {
 	t.Parallel()
 	f := copyFixture(t, filepath.Join("..", "..", "testdata", "notags.flac"))

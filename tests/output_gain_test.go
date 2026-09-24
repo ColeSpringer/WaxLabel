@@ -293,7 +293,7 @@ func TestOutputGainR128RebaseOverflowRefused(t *testing.T) {
 		t.Errorf("the refusal should name the escape hatch: %v", err)
 	}
 	// -32768 is a legal RFC 7845 value, so it must not be the reason an unrelated edit fails
-	// until the rebase actually leaves the range.
+	// until the rebase leaves the range.
 	legal := writeBack(t, sampleOpus, func(e *wl.Editor) { e.Set("R128_TRACK_GAIN", "-32768") })
 	if _, err := mustParseBytes(t, legal).Edit().SetOutputGain(-256).Set(tag.Title, "x").Prepare(); err != nil {
 		t.Errorf("a rebase that stays in range must not fail: %v", err)

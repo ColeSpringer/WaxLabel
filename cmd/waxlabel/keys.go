@@ -11,7 +11,7 @@ import (
 
 // newKeysCmd builds "keys": the canonical, format-neutral tag vocabulary with
 // cardinality and meaning. No file or format needed. Counterpart to caps (which
-// reports one format's editable subset). Dogfoods tag.KnownKeys / Multivalued /
+// reports one format's editable subset). Uses tag.KnownKeys, Multivalued, and
 // Description.
 func newKeysCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -98,7 +98,7 @@ type keyRow struct {
 }
 
 // renderKeyTable writes aligned key/cardinality/description columns under indent.
-// Shared by caps (4-space) and keys (2-space) so layouts cannot drift.
+// Shared by caps (4-space) and keys (2-space) so the layouts match.
 func renderKeyTable(w io.Writer, indent string, rows []keyRow) {
 	keyWidth, cardWidth := 0, 0
 	for _, r := range rows {

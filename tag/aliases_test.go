@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestKeyAliases checks KeyAliases returns a key's genuine alternative spellings, sorted, with
+// TestKeyAliases checks KeyAliases returns a key's alternative spellings, sorted, with
 // self-aliases excluded and nil for a key that has none.
 func TestKeyAliases(t *testing.T) {
 	cases := []struct {
@@ -38,9 +38,8 @@ func TestKeyAliases(t *testing.T) {
 		}
 	}
 
-	// The self-alias is genuinely excluded, not merely absent: TRACKTOTAL still resolves to
-	// TrackTotal via AliasKey (so the uppercased canonical spelling works), yet KeyAliases must
-	// not echo it back as an alias of itself.
+	// The self-alias is excluded, not merely absent: TRACKTOTAL still resolves to TrackTotal
+	// via AliasKey, yet KeyAliases must not echo it back as an alias of itself.
 	if k, ok := AliasKey("TRACKTOTAL"); !ok || k != TrackTotal {
 		t.Fatalf("AliasKey(TRACKTOTAL) = %v,%v; want TrackTotal,true (precondition)", k, ok)
 	}
@@ -51,8 +50,7 @@ func TestKeyAliases(t *testing.T) {
 
 // TestDJMixerAliases folds the spaced/underscored/hyphenated spellings of the only
 // multi-token role key onto canonical DJMIXER, so an edit under "DJ MIXER" resolves to it
-// instead of silently becoming a custom key. Bare DJMIXER stays a valid canonical key,
-// not an alias of itself.
+// instead of becoming a custom key. Bare DJMIXER stays a valid key, not an alias of itself.
 func TestDJMixerAliases(t *testing.T) {
 	for _, spelling := range []string{"DJ MIXER", "DJ-MIXER", "DJ_MIXER", "dj mixer"} {
 		if k, ok := AliasKey(spelling); !ok || k != DJMixer {
@@ -69,8 +67,8 @@ func TestDJMixerAliases(t *testing.T) {
 
 // TestReleaseDetailAliases folds the MUSICBRAINZ_ALBUM* spellings (the APE convention and the
 // legacy Picard names) onto canonical RELEASESTATUS and RELEASETYPE, so a --set under either
-// spelling resolves to the canonical key instead of silently creating a custom one. The
-// canonical names stay valid keys, not aliases of themselves.
+// resolves to the canonical key instead of creating a custom one. The canonical names stay
+// valid keys, not aliases of themselves.
 func TestReleaseDetailAliases(t *testing.T) {
 	for _, c := range []struct {
 		spelling string

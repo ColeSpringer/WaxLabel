@@ -62,9 +62,8 @@ func textFrame22(id, text string) []byte {
 	return frame22(id, append([]byte{0}, text...))
 }
 
-// id3v1 builds a 128-byte ID3v1 trailer. Every text field is a parameter so one hand-written
-// offset table serves every test: a second builder covering more fields would have to be kept
-// in lockstep with this one, and the offsets are exactly what a typo breaks silently.
+// id3v1 builds a 128-byte ID3v1 trailer. Every text field is a parameter so a single
+// hand-written offset table serves every test.
 func id3v1(title, artist, album, year, comment string, genre byte) []byte {
 	b := make([]byte, 128)
 	copy(b[0:3], "TAG")
@@ -278,8 +277,8 @@ func TestMP3APELegacyView(t *testing.T) {
 	}
 }
 
-// document returned from a write surfaces the preserved trailing ID3v1 in its family view, matching
-// a fresh parse of the output (not just the new ID3v2).
+// The document returned from a write surfaces the preserved trailing ID3v1 in its family view,
+// matching a fresh parse of the output.
 func TestMP3PostWriteRetainsLegacyFamilies(t *testing.T) {
 	data := id3v2(3, textFrame(3, "TIT2", "V2 Title"))
 	data = append(data, mp3Audio(t)...)
@@ -453,7 +452,7 @@ func TestMP3V23MultiValueWarns(t *testing.T) {
 	if !warned {
 		t.Errorf("expected an id3-multi-value warning in the report; got %v", plan.Report().Warnings)
 	}
-	// The values still round-trip for our own reader.
+	// The values still round-trip for this reader.
 	got := mustParseBytes(t, applyToBytes(t, src, plan)).Fields().Artists
 	if !slices.Equal(got, []string{"A", "B", "C"}) {
 		t.Errorf("multi-value artists round-trip = %v", got)
@@ -491,9 +490,9 @@ func mp3VBRStream(frames int, declared uint32) []byte {
 	return out
 }
 
-// synthesizes a VBR MP3 whose Xing header survives but whose frames are mostly gone (the report's
-// head -c repro): the declared frame count implies minutes of audio while only ~48 bytes are
-// present, so the average bitrate collapses below the MPEG floor and truncated-audio fires.
+// A VBR MP3 whose Xing header survives but whose frames are mostly gone (a head -c truncation):
+// the declared frame count implies minutes of audio while only ~48 bytes are present, so the
+// average bitrate collapses below the MPEG floor and truncated-audio fires.
 func TestMP3TruncatedAfterXingWarns(t *testing.T) {
 	t.Run("frames missing after Xing", func(t *testing.T) {
 		data := append(id3v2(3, textFrame(3, "TIT2", "X")), mp3XingFrame(10000)...)
@@ -515,9 +514,9 @@ func TestMP3TruncatedAfterXingWarns(t *testing.T) {
 	})
 	t.Run("intact VBR stream not flagged", func(t *testing.T) {
 		// Two full frames whose Xing count matches the frames present: the average
-		// bitrate is the real ~128 kbps, so the guard's "< 8000" branch is exercised
-		// and no warning fires. The codec check guards against a regression to the
-		// vacuous case (a stub that fails parseMPEG never reaches the guard at all).
+		// bitrate is ~128 kbps, so the "< 8000" branch runs and no warning fires. The
+		// codec check rules out the vacuous case, where a stub that fails parseMPEG
+		// never reaches the check.
 		data := append(id3v2(3, textFrame(3, "TIT2", "X")), mp3VBRStream(2, 2)...)
 		doc := mustParseBytes(t, data)
 		if got := doc.Properties().First().Codec; got != "MP3" {
@@ -529,9 +528,9 @@ func TestMP3TruncatedAfterXingWarns(t *testing.T) {
 	})
 }
 
-// MP3 selected by a leading ID3v2 tag but carrying non-MPEG bytes after it reports
-// WarnNoAudioFrames. The non-empty essence range triggers the MP3 warning path, while the root
-// zero-essence warning path stays silent so the warning is not duplicated.
+// An MP3 selected by a leading ID3v2 tag but carrying non-MPEG bytes after it reports
+// WarnNoAudioFrames once: the non-empty essence range triggers the MP3 warning path, and the
+// root zero-essence path does not fire.
 func TestMP3NonAudioWarnsNoAudio(t *testing.T) {
 	t.Parallel()
 	data := append(id3v2(4, textFrame(4, "TIT2", "x")), []byte("this is text, not audio\n")...)

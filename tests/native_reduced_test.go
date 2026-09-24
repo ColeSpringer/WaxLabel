@@ -34,7 +34,6 @@ func TestAIFFMultiValueNativeReduced(t *testing.T) {
 		t.Errorf("multi-value ARTIST should warn native-value-reduced; got %v", multi.Report().Warnings)
 	}
 
-	// Comment maps to repeatable ANNO chunks, so multi-value Comment is not reduced.
 	// Add a picture so the ID3 chunk is emitted alongside the text chunks.
 	comments := prepareWith(t, data, func(e *wl.Editor) {
 		e.Set(tag.Comment, "one", "two")

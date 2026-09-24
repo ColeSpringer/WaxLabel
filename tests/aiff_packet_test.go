@@ -64,22 +64,22 @@ var aiffGeometryRows = []aiffGeometryRow{
 	{"NONE stereo", 2, 1000, 16, "NONE", 1000 * 4, 1000, 16, 1411200, 500, false, true},
 	{"sowt 20-bit in 3 bytes", 2, 1000, 20, "sowt", 1000 * 6, 1000, 20, 2116800, 500, false, false},
 	// An ISOBMFF spelling with no AIFF-C meaning of its own: byte-linear at COMM's
-	// width, as the shared table says, rather than an unknown layout.
+	// width, as the shared table says.
 	{"fpcm at COMM's 32 bits", 2, 1000, 32, "fpcm", 1000 * 8, 1000, 32, 2822400, 500, false, false},
 	// QuickTime's "ms" + WAVE-tag spellings of the byte-linear tags: mu-law is 8-bit
 	// whatever COMM says, PCM is COMM's width.
 	{"ms mu-law tag", 1, 44100, 16, "ms\x00\x07", 44100, 44100, 8, 352800, 22050, false, false},
 	{"ms PCM tag", 2, 1000, 16, "ms\x00\x01", 1000 * 4, 1000, 16, 1411200, 500, false, false},
 	// A writer that stored the spec-literal frame count where QuickTime stores packets: the SSND holds
-	// 690 packets, so 690 is what the count is capped to, where ffprobe multiplies out to 64 seconds.
+	// 690 packets, so the count is capped to 690; ffprobe multiplies out to 64 seconds.
 	{"ima4 spec-literal frame count", 1, 44160, 4, "ima4", 690 * 34, 44160, 4, 187425, 22080, true, false},
 	// No known layout: the count is COMM's, the file's only statement of length, and no bitrate is
 	// derived from it; truncation cannot move the count, since the bytes cannot be mapped to frames.
 	{"unknown layout", 2, 100, 16, "QDM2", 64, 100, 16, 0, 100, false, false},
 }
 
-// COMM's numSampleFrames counts packets, not frames, for the QuickTime packetized types, so an ima4
-// stream read 64x short.
+// COMM's numSampleFrames counts packets, not frames, for the QuickTime packetized types: an ima4
+// packet holds 64 frames.
 func TestAIFFCPacketizedGeometry(t *testing.T) {
 	t.Parallel()
 	for _, c := range aiffGeometryRows {
@@ -99,7 +99,7 @@ func TestAIFFCPacketizedGeometry(t *testing.T) {
 			if !withinDuration(tr.Duration, sampleDuration(c.samples, 44100), time.Millisecond) {
 				t.Errorf("duration = %v, want ~%v", tr.Duration, sampleDuration(c.samples, 44100))
 			}
-			// A whole file's chunks agree, so nothing warns, unless COMM overstates by design.
+			// A whole file's chunks agree, so nothing warns, unless the row's COMM overstates.
 			if hasWarning(doc, wl.WarnTruncatedAudio) != c.overstated {
 				t.Errorf("truncated-audio warning = %v, want %v for a whole file", !c.overstated, c.overstated)
 			}
@@ -124,10 +124,9 @@ func TestAIFFCPacketizedGeometry(t *testing.T) {
 	}
 }
 
-// well-formed file whose COMM declares more frames than its SSND chunk holds reports the chunk's
-// length and says so, the same truncated-audio code a FLAC raises when its frames stop short of
-// STREAMINFO's count, since nothing else tells a caller the two chunks disagree; a file with no
-// audio at all is the no-audio-frames condition instead, not this one.
+// A COMM that declares more frames than the SSND holds reports the chunk's length and warns
+// truncated-audio, the code a FLAC raises when its frames stop short of STREAMINFO's count. A file
+// with no audio at all is no-audio-frames instead.
 func TestAIFFCOverstatedCOMMWarns(t *testing.T) {
 	t.Parallel()
 	over := mustParseBytes(t, aiffFile("AIFF", aiffCOMM(2, 1000, 16, 44100), aiffSSND(100*4)))
@@ -147,9 +146,8 @@ func TestAIFFCOverstatedCOMMWarns(t *testing.T) {
 	}
 }
 
-// sample width that is not a whole number of bytes is stored rounded up to whole bytes, so the
-// bitrate follows the bytes on disk rather than the declared width, in plain AIFF as much as in
-// AIFF-C. ffprobe reports the same figure.
+// A sample width that is not a whole number of bytes is stored rounded up, so the bitrate follows
+// the bytes on disk, in plain AIFF as in AIFF-C. ffprobe reports the same figure.
 func TestAIFFStoredWidthBitrate(t *testing.T) {
 	t.Parallel()
 	tr := mustParseBytes(t, aiffFile("AIFF", aiffCOMM(2, 1000, 20, 44100), aiffSSND(1000*6))).Properties().First()
@@ -176,9 +174,8 @@ func TestAIFFCHostileFrameCountCapped(t *testing.T) {
 	}
 }
 
-// ima4, mu-law and A-law with the real ffmpeg and checks the sample count, duration, bitrate and
-// width against ffprobe reading the same bytes: COMM counts ima4 packets, and ffprobe is the
-// independent witness that the packet arithmetic lands on the figures a player sees.
+// ima4, mu-law and A-law encoded by ffmpeg, checked for sample count, duration, bitrate and width
+// against ffprobe reading the same bytes: the independent witness for the packet arithmetic.
 func TestAIFFDifferentialFFmpegPacketized(t *testing.T) {
 	requireTool(t, "ffmpeg")
 	requireTool(t, "ffprobe")
@@ -227,8 +224,8 @@ func TestAIFFDifferentialFFmpegPacketized(t *testing.T) {
 			base := filepath.Join(dir, strings.ReplaceAll(c.name, " ", "-"))
 			aifc := ffmpegSine(t, base+".aifc", c.channels, 44100, "-c:a", c.codec)
 			agree(t, aifc, c.depth)
-			// ffmpeg pads the last ima4 packet in the .aifc and trims it with an edit list in the .mov, so the
-			// two differ by under 2 ms; before the fix the .aifc read 16 ms against the .mov's second.
+			// ffmpeg pads the last ima4 packet in the .aifc and trims it with an edit list in the .mov, so
+			// the two differ by under 2 ms.
 			mov := ffmpegSine(t, base+".mov", c.channels, 44100, "-c:a", c.codec)
 			aifcDur := mustParseFile(t, aifc).Properties().Duration()
 			if movDur := mustParseFile(t, mov).Properties().Duration(); !withinDuration(movDur, aifcDur, 5*time.Millisecond) {

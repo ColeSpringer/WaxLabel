@@ -1,7 +1,14 @@
-// Package id3: ID3v1/v2.2/v2.3/v2.4 for MP3, AAC, WAV, AIFF. Internal. Shared
-// frame codec, projection, rebuild. Keeps every frame (decoded re-renderable;
-// compressed/encrypted/unknown verbatim) so unrelated rewrites drop nothing opaque.
-
+// Package id3 reads and writes ID3v2 tags (v2.2, v2.3, v2.4) and reads ID3v1. The
+// internal codecs that embed ID3 (MP3, raw AAC, WAV, and AIFF) share it, so the frame
+// model, text encodings, unsynchronisation, the numeric-genre table, and the canonical
+// projection live here once. It is reimplemented from the ID3v2.2/2.3/2.4 specifications;
+// reference implementations were consulted for design only.
+//
+// The native model is preservation-first: every frame is kept in original order (decoded
+// ones in a clean, re-renderable form; compressed, encrypted, and unknown ones verbatim),
+// so a tag edit rewrites only the affected frames. v2.2 is read in full, normalised to
+// v2.3 frame identifiers, and written back as v2.3; v2.3 and v2.4 round-trip at their own
+// version.
 package id3
 
 import (
@@ -20,26 +27,23 @@ const (
 	hdrFooter      = 0x10 // a 10-byte footer trails the tag (v2.4)
 )
 
-// Tag is a parsed ID3v2 tag: the decoded frames in original order plus the
-// version metadata needed to write them back at the right version. srcVersion
-// records what was read (2, 3, or 4) for reporting; writeVersion is the version
-// actually emitted (3 or 4 - a v2.2 source is modernised to v2.3).
+// Tag is a parsed ID3v2 tag: the decoded frames in original order plus the version
+// metadata needed to write them back. srcVersion records what was read (2, 3, or 4);
+// writeVersion is the version emitted (3 or 4; a v2.2 source is modernised to v2.3).
 type Tag struct {
 	srcVersion   byte
 	writeVersion byte
 	revision     byte
 	frames       []Frame
 	// padding is the free bytes after the last frame inside the tag region: measured on
-	// read, and restamped by RenderFrontTag for the tag a rewrite produces. Measuring it
-	// rather than deriving it from a re-render is what makes it right for every source
-	// shape - a v2.2 tag's 6-byte frame headers, an extended header, a footer - none of
-	// which RenderedSize models, since that function sizes what the writer will emit.
+	// read, and restamped by RenderFrontTag for the tag a rewrite produces. Measuring is
+	// right for every source shape (a v2.2 tag's 6-byte frame headers, an extended header,
+	// a footer), none of which RenderedSize models, since it sizes what the writer emits.
 	padding int64
 	// malformedID names the frame whose declared size ran past the end of the tag, and
-	// malformedTail counts the bytes from that frame's header to the end of the region. The
-	// walk cannot read past such a frame, so those bytes are not free padding (padding is 0
-	// for that stop) and a rewrite - which renders frames plus padding - replaces them with
-	// zeros. Both are cleared by WithFrames: a rewritten tag has no malformed tail.
+	// malformedTail counts the bytes from that frame's header to the end of the region.
+	// The walk cannot read past such a frame, so those bytes are not free padding (padding
+	// is 0 for that stop) and a rewrite replaces them with zeros. WithFrames clears both.
 	malformedID   string
 	malformedTail int64
 	// ignored is the reason the whole tag was skipped (a v2.2 compression flag), empty when
@@ -74,8 +78,8 @@ func (t *Tag) SrcVersion() byte { return t.srcVersion }
 func (t *Tag) WriteVersion() byte { return t.writeVersion }
 
 // WriteVersionOr returns t's write version, or the format default when t is nil. It is the
-// single home for the "which ID3 minor version will this codec write" rule (the v2.3-vs-v2.4
-// split that governs the date-frame and numeric-genre fidelity).
+// one home for which ID3 minor version a codec writes, the v2.3-vs-v2.4 split that governs
+// date-frame and numeric-genre fidelity.
 func WriteVersionOr(t *Tag, f core.Format) byte {
 	if t != nil {
 		return t.WriteVersion()
@@ -83,10 +87,9 @@ func WriteVersionOr(t *Tag, f core.Format) byte {
 	return core.DefaultID3Version(f)
 }
 
-// id3Doc is the native-document view WriteVersionFor needs: the file's parsed ID3 tag, or nil
-// when the file has none. Every ID3-backed codec's *doc implements it with a one-line ID3Tag
-// accessor, so reaching the native tag is expressed once here instead of in four per-codec
-// wrappers that could drift in how m.Native is unwrapped.
+// id3Doc is the native-document view WriteVersionFor needs: the file's parsed ID3 tag, or
+// nil when the file has none. Every ID3-backed codec's *doc implements it with a one-line
+// ID3Tag accessor.
 type id3Doc interface{ ID3Tag() *Tag }
 
 // WriteVersionFor returns the ID3 minor version codec format f would write for media m: the
@@ -116,9 +119,8 @@ func (t *Tag) Clone() *Tag {
 }
 
 // WithFrames returns a copy of the tag carrying frames and the padding the rewrite sized,
-// for building the post-write document. The padding is passed rather than inherited: the
-// source tag's measured padding describes the region on disk, which is exactly what the
-// rewrite is replacing.
+// for building the post-write document. The source tag's measured padding describes the
+// on-disk region the rewrite replaces, so it is not inherited.
 func (t *Tag) WithFrames(frames []Frame, padding int64) *Tag {
 	c := *t
 	c.frames = frames
@@ -160,12 +162,12 @@ func TagSize(header []byte) (int64, bool) {
 	return total, true
 }
 
-// ReadFront reads a leading ID3v2 tag from the start of src, returning the parsed
-// tag, its on-disk length, and any read warning; it returns a nil tag and length 0
-// when src has no readable leading ID3. It is the shared front-tag read for the codecs
-// whose authoritative container is a front ID3v2 tag (MP3 and raw AAC); FLAC, which only
-// preserves a stray leading ID3 verbatim, reads the raw bytes itself. size is the source
-// size (the tag must fit within it); limit bounds the allocation.
+// ReadFront reads a leading ID3v2 tag from the start of src, returning the parsed tag,
+// its on-disk length, and any read warning; a nil tag and length 0 mean src has no
+// readable leading ID3. MP3 and raw AAC, whose authoritative container is a front ID3v2
+// tag, share it; FLAC only preserves a stray leading ID3 verbatim and reads the raw bytes
+// itself. size is the source size (the tag must fit within it); limit bounds the
+// allocation.
 func ReadFront(src core.ReaderAtSized, size, limit int64, maxElements int) (*Tag, int64, []core.Warning, error) {
 	hdr, err := bits.ReadSlice(src, 0, 10, limit)
 	if err != nil {
@@ -176,9 +178,8 @@ func ReadFront(src core.ReaderAtSized, size, limit int64, maxElements int) (*Tag
 		return nil, 0, nil, nil // no ID3v2 header here
 	}
 	if total > size {
-		// The header is a real one whose declared size runs past the end of the file. That
-		// is a tag we cannot read, not a file without one, so it must not vanish silently:
-		// the bytes stay in place (they are audio to every other reader) and are reported.
+		// A real header whose declared size runs past the end of the file is an unreadable
+		// tag, not a file without one: the bytes stay in place and are reported.
 		return nil, 0, core.Warn(nil, core.WarnMalformedTagEntry,
 			fmt.Sprintf("the leading ID3v2 tag declares %d bytes but the file holds %d; the tag could not be read", total, size)), nil
 	}
@@ -221,10 +222,9 @@ func ParseTag(data []byte, maxElements int) (*Tag, error) {
 	}
 	major := data[3]
 	if major < 2 || major > 4 {
-		// TagSize already matched a recognized "ID3" header, so an out-of-range major
-		// version is a corrupt tag inside a recognized container - invalid data (exit 4),
-		// not an unsupported format (exit 3), matching the "not an ID3v2 header" sibling
-		// above.
+		// TagSize already matched an "ID3" header, so an out-of-range major version is a
+		// corrupt tag: invalid data (exit 4), not an unsupported format (exit 3), matching
+		// the "not an ID3v2 header" sibling above.
 		return nil, fmt.Errorf("%w: ID3v2 major version %d out of range", waxerr.ErrInvalidData, major)
 	}
 	flags := data[5]
@@ -251,7 +251,7 @@ func ParseTag(data []byte, maxElements int) (*Tag, error) {
 
 	// v2.2/v2.3 unsynchronisation covers the whole tag; undo it before parsing.
 	// v2.4 signals unsynchronisation per frame (the header bit, if set, means it
-	// applies to all frames - handled in parseFrames).
+	// applies to all frames; handled in parseFrames).
 	tagUnsync := flags&hdrUnsync != 0
 	if major <= 3 && tagUnsync {
 		body = deunsync(body)

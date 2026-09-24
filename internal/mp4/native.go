@@ -71,8 +71,8 @@ type doc struct {
 	auxTables []offsetTable
 	mdats     [][2]int64 // mdat payload ranges (offset, length), in document order
 	// mdatTruncated records that an mdat atom's declared size overran EOF and was
-	// clamped - a truncated file. Set from the atom walk's own clamp, so the 64-bit
-	// mdat size that would overflow an offset+size computation never reaches one.
+	// clamped (a truncated file). Set from the atom walk's own clamp, so a 64-bit mdat
+	// size that would overflow an offset+size computation never reaches one.
 	mdatTruncated bool
 	fragmented    bool // a top-level moof: readable, but Plan refuses the rewrite
 	auxUnknown    bool // a saio with an unrecognized version: offsets cannot be patched
@@ -177,7 +177,7 @@ func cloneRef(r *atomRef) *atomRef {
 	return &c
 }
 
-// PaddingBytes reports the payload of the free/skip atom adjacent to ilst - the only
+// PaddingBytes reports the payload of the free/skip atom adjacent to ilst: the only
 // padding this codec reuses in place, and the number a plan reports as PaddingAfter.
 func (d *doc) PaddingBytes() int64 {
 	if d.free == nil {
@@ -212,8 +212,8 @@ func (d *doc) Describe() []core.NativeEntry {
 				note = "file type (" + d.majorBrand + ")"
 			}
 		default:
-			// Single-source the padding set via reusablePadding (free/skip) so the dump label
-			// and the in-place reuse logic cannot drift on which atoms count as padding.
+			// reusablePadding (free/skip) decides both the dump label and in-place reuse, so
+			// the two cannot disagree on which atoms count as padding.
 			if reusablePadding(a.id()) {
 				note = "padding"
 			}

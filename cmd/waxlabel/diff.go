@@ -10,7 +10,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Sentinel for metadata mismatch: exit 1 (diff convention). Already-rendered so no error line over diff output.
+// errFilesDiffer: metadata mismatch, exit 1 (diff convention). Already-rendered so no error line over diff output.
 var errFilesDiffer = errors.New("files differ")
 
 // newDiffCmd builds diff: compare canonical metadata. Exit 0/1/≥2 like diff(1).
@@ -97,7 +97,7 @@ func newDiffCmd() *cobra.Command {
 	return cmd
 }
 
-// Canonical delta a→b. Tags use tag.Change; pictures/chapters have count deltas.
+// diffResult is the canonical delta a→b. Tags use tag.Change; pictures/chapters have count deltas.
 type diffResult struct {
 	tags         []tag.Change
 	picsA, picsB int
@@ -118,7 +118,7 @@ func (d diffResult) identical() bool {
 	return len(d.tags) == 0 && !d.picsDiffer && !d.chapsDiffer && !d.syncedDiffer && !d.gainDiffer
 }
 
-// Delta from a to b (a=left/old, b=right/new).
+// computeDiff returns the delta from a to b (a=left/old, b=right/new).
 func computeDiff(a, b *wl.Document) diffResult {
 	pa, pb := a.Pictures(), b.Pictures()
 	ca, cb := a.Chapters(), b.Chapters()
@@ -142,12 +142,11 @@ func computeDiff(a, b *wl.Document) diffResult {
 	}
 }
 
-// tag.Diff plus MP4 canonical-key fold when one side is MP4.
-// Leading '+'/zeros on IsMP4CanonicalKey keys not reported as change (trkn/disk/stik/rtng/©mvi/©mvc/tmpo).
-// Matches copy Carried grading; same idea as chapter end normalization.
-// BPM: fold all-zero fraction ("174.0" vs "174"); genuine fractions still report (warned tmpo rounding).
-// Scope: at least one MP4 side. Text-to-text "01" vs "1" is a real difference.
-// Not applied to other numeric keys (play count, etc.). Added/removed keys unaffected.
+// numericAwareTagDiff is tag.Diff plus an MP4 canonical-key fold when one side is MP4: leading
+// '+'/zeros on IsMP4CanonicalKey keys (trkn/disk/stik/rtng/©mvi/©mvc/tmpo) are not a change.
+// Matches copy Carried grading. BPM folds an all-zero fraction ("174.0" vs "174"); other fractions
+// still report (tmpo rounding warns). Text-to-text "01" vs "1" still differs. Other numeric keys
+// (play count, etc.) and added/removed keys are unaffected.
 func numericAwareTagDiff(a, b tag.TagSet, fa, fb wl.Format) []tag.Change {
 	changes := tag.Diff(a, b)
 	if fa != wl.FormatMP4 && fb != wl.FormatMP4 {
@@ -163,7 +162,7 @@ func numericAwareTagDiff(a, b tag.TagSet, fa, fb wl.Format) []tag.Change {
 	return out
 }
 
-// Canonical-metadata delta with diff-style -/+/~ markers.
+// renderDiff prints the canonical-metadata delta with diff-style -/+/~ markers.
 func renderDiff(w io.Writer, a, b string, d diffResult) {
 	// Escape/relabel paths for headers (same as dump/lint/caps).
 	na, nb := displayName(a), displayName(b)
@@ -183,12 +182,13 @@ func renderDiff(w io.Writer, a, b string, d diffResult) {
 	}
 }
 
-// One tag change at indent. Delegates to tag.Change.String (shared with write-plan preview); sanitization in one place.
+// renderChangeLine prints one tag change at indent via tag.Change.String, shared with the
+// write-plan preview so sanitization lives in one place.
 func renderChangeLine(w io.Writer, indent string, c tag.Change) {
 	fmt.Fprintf(w, "%s%s\n", indent, c.String())
 }
 
-// Set count delta. Equal count but different contents: say "contents differ", not "N -> N".
+// renderCountDelta prints a set count delta. Equal count but different contents: "contents differ", not "N -> N".
 func renderCountDelta(w io.Writer, label string, differ bool, a, b int) {
 	if !differ {
 		return
@@ -200,8 +200,8 @@ func renderCountDelta(w io.Writer, label string, differ bool, a, b int) {
 	fmt.Fprintf(w, "  %s: %d -> %d\n", label, a, b)
 }
 
-// Machine-readable delta. Count objects always present with changed flag.
-// Avoids inferring from presence or a!=b (equal-count content change vs no-op).
+// jsonDiff is the machine-readable delta. Count objects are always present with a changed flag,
+// since presence or a!=b cannot tell an equal-count content change from a no-op.
 type jsonDiff struct {
 	SchemaVersion int           `json:"schemaVersion"`
 	FileA         string        `json:"a"`
@@ -215,7 +215,7 @@ type jsonDiff struct {
 	OutputGain *jsonDiffValue `json:"outputGain,omitempty"`
 }
 
-// Single-value delta; counterpart to jsonDiffCount.
+// jsonDiffValue is a single-value delta; counterpart to jsonDiffCount.
 type jsonDiffValue struct {
 	A string `json:"a"`
 	B string `json:"b"`
@@ -228,7 +228,7 @@ type jsonDiffTag struct {
 	B      []string `json:"b,omitempty"`
 }
 
-// Set before/after count plus changed; disambiguates equal-count content change from no-op.
+// jsonDiffCount is a set's before/after count plus changed; disambiguates equal-count content change from no-op.
 type jsonDiffCount struct {
 	A       int  `json:"a"`
 	B       int  `json:"b"`

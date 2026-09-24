@@ -13,9 +13,8 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// regression guard: an edit introducing invalid UTF-8 in a tag value or chapter title is rejected
-// at Prepare (so "result == fresh parse" holds by construction), while a perfectly valid value is
-// NOT spuriously rejected and round-trips.
+// an edit introducing invalid UTF-8 in a tag value or chapter title is rejected at Prepare (so
+// "result == fresh parse" holds by construction), while a valid multibyte value round-trips.
 func TestPrepareRejectsInvalidUTF8(t *testing.T) {
 	src := readFixture(t, sampleFLAC)
 	bad := "bad\xff\xfevalue" // 0xff 0xfe is not valid UTF-8
@@ -29,7 +28,7 @@ func TestPrepareRejectsInvalidUTF8(t *testing.T) {
 		t.Errorf("invalid-UTF-8 chapter title: err = %v, want ErrInvalidData", err)
 	}
 
-	// A valid (multibyte) value is not rejected and round-trips faithfully.
+	// A valid (multibyte) value is not rejected and round-trips.
 	plan, err := mustParseBytes(t, src).Edit().Set(tag.Artist, "Vàlid ☃ name").Prepare()
 	if err != nil {
 		t.Fatalf("valid UTF-8 value spuriously rejected: %v", err)
@@ -39,9 +38,8 @@ func TestPrepareRejectsInvalidUTF8(t *testing.T) {
 	}
 }
 
-// copy-path guard: a value read back through the (now sanitizing) parse path is always valid UTF-8,
-// so copying it onto another file must never trip the new Prepare reject; it fires only on freshly
-// authored input.
+// a value read back through the sanitizing parse path is always valid UTF-8, so copying it onto
+// another file must never trip the Prepare reject; it fires only on freshly authored input.
 func TestCopiedValueNotSpuriouslyRejected(t *testing.T) {
 	// sampleMKA's chapters/tags read back valid; copy them onto a fresh MP3.
 	src := mustParseBytes(t, readFixture(t, sampleMKA))
@@ -51,9 +49,9 @@ func TestCopiedValueNotSpuriouslyRejected(t *testing.T) {
 	}
 }
 
-// regression guard: a --legacy strip on a tagless MP3 with a trailing APEv2 tag must drop the APE
-// and NOT fabricate an empty front ID3v2 tag. The write stays a real write (the file shrinks),
-// buildResult does not panic on the nil tag, and the output re-parses tagless.
+// a --legacy strip on a tagless MP3 with a trailing APEv2 tag must drop the APE and not fabricate
+// an empty front ID3v2 tag. The file shrinks, buildResult does not panic on the nil tag, and the
+// output re-parses tagless.
 func TestLegacyStripDropsTagWithoutFabrication(t *testing.T) {
 	data := append(slices.Clone(mp3Audio(t)), apeTag(map[string]string{"Title": "APE Title"})...)
 	doc := mustParseBytes(t, data)
@@ -105,9 +103,8 @@ func TestClearAllDropsFrontID3(t *testing.T) {
 	}
 }
 
-// regression guard (made live by the keyed warning): mutating a warning's Keys (or the Operations
-// slice) on the value Report() returns must not reach back into the plan's own report, so a later
-// Report() is intact.
+// mutating a warning's Keys (or the Operations slice) on the value Report() returns must not reach
+// back into the plan's own report, so a later Report() is intact.
 func TestPlanReportIsDefensiveCopy(t *testing.T) {
 	// GENRE=17 on a tagless MP3 produces a keyed numeric-genre warning.
 	plan, err := mustParseBytes(t, readFixture(t, notagsMP3)).Edit().Set(tag.Genre, "17").Prepare()
@@ -131,10 +128,9 @@ func TestPlanReportIsDefensiveCopy(t *testing.T) {
 	}
 }
 
-// regression guard: the album SimpleTags a Matroska write synthesizes (re-emitted canonical values)
-// must carry their rendered bytes, so a second unrelated edit on the RETURNED in-memory Document
-// (not a re-parse) does not mistake a freshly generated tag for one whose source bytes were too big
-// to capture.
+// the album SimpleTags a Matroska write synthesizes (re-emitted canonical values) must carry their
+// rendered bytes, so a second unrelated edit on the returned in-memory Document (not a re-parse)
+// does not mistake a freshly generated tag for one whose source bytes were too big to capture.
 func TestMatroskaReturnedDocumentReEditable(t *testing.T) {
 	src := readFixture(t, sampleMKA)
 	// Edit 1 changes ARTIST, synthesizing the ARTIST SimpleTag in the returned document.
@@ -158,9 +154,9 @@ func TestMatroskaReturnedDocumentReEditable(t *testing.T) {
 	}
 }
 
-// regression guard: setting a bare numeric GENRE on an ID3 file whose genre already projects to
-// that name is a byte no-op, but the user's input was still reinterpreted, so the numeric-genre
-// caveat must survive the no-op downgrade rather than vanishing behind a clean "no changes" report.
+// setting a bare numeric GENRE on an ID3 file whose genre already projects to that name is a byte
+// no-op, but the input was still reinterpreted, so the numeric-genre caveat must survive the no-op
+// downgrade.
 func TestNumericGenreWarningSurvivesNoOp(t *testing.T) {
 	src := readFixture(t, sampleMP3) // already GENRE=Rock
 	plan, err := mustParseBytes(t, src).Edit().Set(tag.Genre, "17").Prepare()
@@ -181,9 +177,8 @@ func TestNumericGenreWarningSurvivesNoOp(t *testing.T) {
 	}
 }
 
-// regression guard: an edit authoring invalid UTF-8 in a chapter language (not just the title) is
-// rejected at Prepare, so it cannot be written verbatim into the EBML and round-trip as raw invalid
-// bytes.
+// an edit authoring invalid UTF-8 in a chapter language (not only the title) is rejected at
+// Prepare, so it cannot be written verbatim into the EBML.
 func TestPrepareRejectsInvalidChapterLanguage(t *testing.T) {
 	src := readFixture(t, sampleMKA)
 	bad := "e\xffg"
@@ -197,8 +192,8 @@ func TestPrepareRejectsInvalidChapterLanguage(t *testing.T) {
 	}
 }
 
-// regression guard: a repeated numeric GENRE reference must warn once, not once per occurrence (and
-// that single warning is what DowngradeNoOp carries onto a no-op report).
+// a repeated numeric GENRE reference must warn once, not once per occurrence; that single warning
+// is what DowngradeNoOp carries onto a no-op report.
 func TestNumericGenreWarnsOnceForDuplicates(t *testing.T) {
 	plan, err := mustParseBytes(t, readFixture(t, notagsMP3)).Edit().Set(tag.Genre, "17", "17").Prepare()
 	if err != nil {
@@ -223,8 +218,8 @@ func chapterSetTwo(e *wl.Editor) *wl.Editor {
 	)
 }
 
-// regression guard on the QuickTime path: re-applying an identical multi-chapter list to an
-// already-written file collapses to a true no-op.
+// QuickTime path: re-applying an identical multi-chapter list to an already-written file collapses
+// to a no-op.
 func TestMP4ChapterReapplyMultiNoOpQT(t *testing.T) {
 	data := mp4QTFile([]int{0, 5000}, []string{"Seed A", "Seed B"})
 	_, re := execChapters(t, data, chapterSetTwo)
@@ -237,7 +232,7 @@ func TestMP4ChapterReapplyMultiNoOpQT(t *testing.T) {
 	}
 }
 
-// regression guard on the chpl-only fallback (no QuickTime track).
+// same on the chpl-only fallback (no QuickTime track).
 func TestMP4ChapterReapplyMultiNoOpChpl(t *testing.T) {
 	build := func(stcoOff uint32) []byte {
 		// -1 encodes the max track id 0xFFFFFFFF through mp4be32's uint32 conversion on every int width;
@@ -263,9 +258,9 @@ func TestMP4ChapterReapplyMultiNoOpChpl(t *testing.T) {
 	}
 }
 
-// conflict guard: on a file whose chpl and QuickTime track disagree, re-applying the
-// (QuickTime-preferred) projection must NOT collapse; the write resolves the conflict by rewriting
-// the stale chpl, and DowngradeNoOp does not carry the conflict warning.
+// on a file whose chpl and QuickTime track disagree, re-applying the (QuickTime-preferred)
+// projection must not collapse; the write resolves the conflict by rewriting the stale chpl, and
+// DowngradeNoOp does not carry the conflict warning.
 func TestMP4ChapterConflictedReapplyResolvesThenCollapses(t *testing.T) {
 	chpl := mp4Chpl(1, []time.Duration{0, 5 * time.Second}, []string{"Nero One", "Nero Two"})
 	data := mp4QTFile([]int{0, 5000}, []string{"QT One", "QT Two"}, chpl)
@@ -302,10 +297,8 @@ func TestMP4ChapterConflictedReapplyResolvesThenCollapses(t *testing.T) {
 	}
 }
 
-// read-side regression: a Vorbis file carrying both native DISC and DISCNUMBER folds both onto
-// canonical DISCNUMBER (two values, one key). The native bytes are preserved, so this is a
-// canonical-view-only change and no-op detection stays sane; a no-op edit on such a file does not
-// spuriously churn.
+// a Vorbis file carrying both native DISC and DISCNUMBER folds both onto canonical DISCNUMBER (two
+// values, one key). The native bytes are preserved, so a no-op edit on such a file stays a no-op.
 func TestVorbisDiscReadSideFold(t *testing.T) {
 	data := flacWithComments("TITLE=Folded", "DISC=1", "DISCNUMBER=2")
 	doc := mustParseBytes(t, data)
@@ -321,10 +314,9 @@ func TestVorbisDiscReadSideFold(t *testing.T) {
 	}
 }
 
-// that the no-op collapse still surfaces input-loss: re-applying an over-long chapter title to a
-// file already holding its truncation is byte-identical (a no-op), but the chapter-title-truncated
-// warning; the user's input being trimmed to a container limit; is carried onto the no-op report,
-// exactly as value-reduced is for an over-precise date.
+// the no-op collapse still surfaces input loss: re-applying an over-long chapter title to a file
+// already holding its truncation is byte-identical, but the chapter-title-truncated warning is
+// carried onto the no-op report, as value-reduced is for an over-precise date.
 func TestMP4ChapterReapplyTruncatedTitleCarriesWarning(t *testing.T) {
 	longTitle := strings.Repeat("a", 300) // exceeds the 255-byte chapter-title limit
 	data := mp4QTFile([]int{0, 5000}, []string{"Seed A", "Seed B"})
@@ -347,9 +339,8 @@ func TestMP4ChapterReapplyTruncatedTitleCarriesWarning(t *testing.T) {
 	}
 }
 
-// guards the chapter no-op collapse against dropping a real edit: setting an explicit End on the
-// LAST chapter of a QuickTime-track file encodes that value into the final sample's stts duration
-// (chapterDeltas).
+// the chapter no-op collapse must not drop an edit: an explicit End on the last chapter of a
+// QuickTime-track file encodes that value into the final sample's stts duration (chapterDeltas).
 func TestMP4ChapterLastEndEditNotCollapsed(t *testing.T) {
 	data := mp4QTFile([]int{0, 5000}, []string{"A", "B"})
 	// Same starts/titles the file already projects, but the last chapter gains an explicit End (8 s).

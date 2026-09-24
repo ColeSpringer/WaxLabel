@@ -11,11 +11,10 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// TestCollectMvhdAgreesWithMovieTimingOf is the regression for the write/reparse twin
-// divergence a valid-but-truncated mvhd would introduce: collectMvhd (write path,
-// populates d.movieTimescale/d.movieDuration) and movieTimingOf (reparse, feeds the
-// chapter last-end canonicalization) must read the same timing at the same per-field
-// thresholds.
+// TestCollectMvhdAgreesWithMovieTimingOf: collectMvhd (write path, populates
+// d.movieTimescale/d.movieDuration) and movieTimingOf (reparse, feeds the chapter
+// last-end canonicalization) must read the same timing from a valid-but-truncated mvhd
+// at the same per-field thresholds.
 func TestCollectMvhdAgreesWithMovieTimingOf(t *testing.T) {
 	payload := make([]byte, 50)                      // v0, 50 bytes: past the duration field (byte 20), before next_track_ID (byte 96)
 	binary.BigEndian.PutUint32(payload[12:16], 1000) // timescale
@@ -101,8 +100,7 @@ func TestSentinelToZero64(t *testing.T) {
 func TestChapterDeltasLastChapterBounded(t *testing.T) {
 	chs := []core.Chapter{{Start: 0}, {Start: 5 * time.Second}}
 	// An unknown movie duration (the sentinel maps to 0) must give the final chapter a
-	// one-unit tail, not a multi-week span - the regression a raw 0xFFFFFFFF movieDuration
-	// would cause.
+	// one-unit tail, not the multi-week span a raw 0xFFFFFFFF movieDuration would cause.
 	if d, _ := chapterDeltas(chs, 1000, 1000, 0); d[1] != 1 {
 		t.Errorf("last delta with unknown duration = %d, want 1 (one-unit tail)", d[1])
 	}
@@ -192,7 +190,7 @@ func TestBuildChapterTrakCumulativeSpanSaturates(t *testing.T) {
 		{Start: 13*time.Hour + 30*time.Minute, End: 13*time.Hour + 30*time.Minute + time.Second},
 	}
 	// Each gap (13 h, then 30 min) is under the ~13.25 h per-field ceiling, so no per-gap stts
-	// delta clamps - the flag must come from the cumulative span, not a single delta.
+	// delta clamps; the flag must come from the cumulative span.
 	if _, satDeltas := chapterDeltas(chs, mts, mts, 0); satDeltas {
 		t.Fatal("setup: no single inter-chapter gap should saturate the stts deltas")
 	}
@@ -309,7 +307,7 @@ func TestAddClampSaturates(t *testing.T) {
 
 // TestEmptyEditOffset is the read side of that contract: an elst whose first entry is
 // an empty edit (media_time -1) yields its segment_duration as a Duration scaled by the
-// movie timescale;
+// movie timescale.
 func TestEmptyEditOffset(t *testing.T) {
 	be := binary.BigEndian
 	elst := func(count uint32, entries ...byte) []byte {
@@ -338,7 +336,7 @@ func TestEmptyEditOffset(t *testing.T) {
 		t.Errorf("empty-elst offset = %v/sat=%v, want 0/false", got, sat)
 	}
 	// A segment_duration read back as exactly MaxUint32 is a clamped leading offset (a
-	// first chapter past the u32 movie-timescale ceiling), so saturated must be set - that is
+	// first chapter past the u32 movie-timescale ceiling), so saturated must be set; that is
 	// how mergeChapters learns to take the exact chpl start over the clamped QuickTime one.
 	if got, sat := emptyEditOffset(elst(1, entry(math.MaxUint32, -1)...), 1000); !sat {
 		t.Errorf("MaxUint32 segment_duration offset = %v/sat=%v, want saturated=true", got, sat)
@@ -346,9 +344,8 @@ func TestEmptyEditOffset(t *testing.T) {
 }
 
 // TestSpliceBytesCoincidentOffsetOrdering pins the tie-break for two reps sharing a
-// start (a combined tag+chapter edit where a chpl insert lands exactly at meta.end()):
-// a zero-width insert must be applied before a same-offset replace, deterministically
-// and regardless of input order.
+// start (a combined tag+chapter edit where a chpl insert falls exactly at meta.end()):
+// a zero-width insert is applied before a same-offset replace regardless of input order.
 func TestSpliceBytesCoincidentOffsetOrdering(t *testing.T) {
 	src := []byte("AABBCC") // replace the "BB" pair at offset 2 with "XX", insert "II" at offset 2
 	insert := byteRep{start: 2, oldLen: 0, repl: []byte("II")}

@@ -6,8 +6,8 @@ import (
 )
 
 // TestValidMP4IntValue checks the unsigned MP4-integer contract: a non-negative decimal
-// integer within the key's atom width, whitespace-tolerant, with ParseUint's leading-'+'
-// rejection intended (the atom stores an unsigned magnitude with no sign to round-trip).
+// integer within the key's atom width, whitespace-tolerant. A leading '+' is rejected: the
+// atom stores an unsigned magnitude with no sign to round-trip.
 func TestValidMP4IntValue(t *testing.T) {
 	for _, v := range []string{"0", "1", "2", "4", "255", " 2 "} {
 		if !ValidMP4IntValue(ITunesAdvisory, v) {
@@ -141,9 +141,8 @@ func TestITunesKeyContracts(t *testing.T) {
 		t.Error(`ValidMediaTypeValue(MOVEMENT, "70000") = false, want true (non-MediaType keys are not judged)`)
 	}
 	// BPM folds an all-zero fraction onto the whole number tmpo stores (an unwarned,
-	// Carried-graded canonicalization), while a genuine fraction stays a reported change
-	// (tmpo's rounding there is warned). The decimal fold is BPM-only: a trkn slot drops
-	// a decimal rather than storing it.
+	// Carried-graded canonicalization); a nonzero fraction stays a reported change, since
+	// tmpo's rounding is warned. The decimal fold is BPM-only: a trkn slot drops a decimal.
 	for _, c := range []struct {
 		a, b string
 		want bool
@@ -164,8 +163,7 @@ func TestITunesKeyContracts(t *testing.T) {
 }
 
 // TestProjectITunesFields: the iTunes structured accessors project from their canonical keys
-// and round-trip through Patch (both sides of the mirror), the booleans as flags and the
-// numeric atoms as strings.
+// and round-trip through Patch, the booleans as flags and the numeric atoms as strings.
 func TestProjectITunesFields(t *testing.T) {
 	ts := NewTagSet()
 	ts.Set(ITunesAdvisory, "1")
@@ -188,7 +186,7 @@ func TestProjectITunesFields(t *testing.T) {
 		}
 	}
 	check("Project", Project(ts))
-	// Both sides of the mirror: a field populated on only one side drops here. The
-	// ShowMovement "yes" re-emits as the canonical "1" flag, which still projects true.
+	// A field populated on only one side drops here. ShowMovement "yes" re-emits as the
+	// canonical "1" flag, which still projects true.
 	check("Project -> Patch", Project(Project(ts).Patch().Apply(NewTagSet())))
 }

@@ -68,10 +68,9 @@ func findWAVChunk(d *doc, id string) *chunk {
 	return nil
 }
 
-// TestWAVChunkPaddingAndOuterBoundary checks the two parse-time structural rules: an
-// odd-length chunk excludes its word-alignment pad byte from the declared length yet the
-// next chunk begins after the pad, and bytes after riffSize are captured as the outer
-// region (not parsed as chunks).
+// TestWAVChunkPaddingAndOuterBoundary checks two structural rules: an odd-length chunk
+// excludes its word-alignment pad byte from the declared length yet the next chunk
+// begins after the pad, and bytes after riffSize are captured as the outer region.
 func TestWAVChunkPaddingAndOuterBoundary(t *testing.T) {
 	odd := []byte{1, 2, 3, 4, 5} // 5-byte body -> one pad byte
 	chunks := bytes.Join([][]byte{

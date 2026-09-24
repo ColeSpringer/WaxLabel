@@ -254,7 +254,7 @@ func TestITunesTransferGrading(t *testing.T) {
 
 // TestStructuredSingleAtomKeySet pins the shared enumeration: every structured key is
 // excluded from the multi-atom note and has its surplus values reported, while a ©-text key
-// (WORK) stays a genuine multi-atom field.
+// (WORK) stays a multi-atom field.
 func TestStructuredSingleAtomKeySet(t *testing.T) {
 	for key := range structuredSingleAtomKeys {
 		ts := tag.NewTagSet()

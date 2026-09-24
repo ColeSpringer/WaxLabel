@@ -16,9 +16,9 @@ const (
 	picardType    = "MusicBrainz Album Type"
 )
 
-// three release-detail keys survive a real set -> write -> reparse across the main storage
-// mechanisms: a Vorbis comment (FLAC), ID3 TXXX user frames (MP3), MP4 com.apple.iTunes freeforms
-// (M4A), the embedded-ID3 chunk WAV and AIFF carry, and Matroska SimpleTags (MKA, identity names).
+// three release-detail keys survive set -> write -> reparse across the main storage mechanisms:
+// a Vorbis comment (FLAC), ID3 TXXX user frames (MP3), MP4 com.apple.iTunes freeforms (M4A), the
+// embedded-ID3 chunk WAV and AIFF carry, and Matroska SimpleTags (MKA, identity names).
 func TestReleaseDetailRoundTrip(t *testing.T) {
 	details := []struct {
 		key  tag.Key
@@ -60,9 +60,8 @@ func TestReleaseDetailRoundTrip(t *testing.T) {
 	}
 }
 
-// atoms Picard actually writes. Before the mapping entries existed decodeFreeform missed the
-// mixed-case names and left the items unowned: preserved on write, but invisible to Get, Fields,
-// dump, diff, and copy.
+// atoms Picard writes. decodeFreeform must own the mixed-case names; an unowned item is preserved
+// on write but invisible to Get, Fields, dump, diff, and copy.
 func TestReleaseDetailMP4PicardAtoms(t *testing.T) {
 	data := mp4Tagged(
 		mp4Freeform("com.apple.iTunes", picardCountry, "GB"),
@@ -182,7 +181,7 @@ func TestReleaseDetailDualRepresentationID3(t *testing.T) {
 	if got, _ := doc.Tags().Get(tag.ReleaseCountry); len(got) != 2 {
 		t.Fatalf("RELEASECOUNTRY = %v, want both frames to project", got)
 	}
-	// The key is Known() now, so the redundancy is lint's business. A custom key was exempt.
+	// The key is Known(), so the redundancy is lint's business; a custom key would be exempt.
 	if !hasLintCode(doc, "single-valued-multi") {
 		t.Errorf("expected a single-valued-multi finding; got %v", doc.Lint())
 	}
@@ -209,8 +208,8 @@ func TestReleaseDetailDualRepresentationID3(t *testing.T) {
 		t.Error("the surviving frame should be the Picard-spelled one")
 	}
 
-	// An unrelated edit copies both frames verbatim, so the duplication persists. This
-	// asymmetry with MP4 (which always coalesces) is easy to get wrong later, so pin it.
+	// An unrelated edit copies both frames verbatim, so the duplication persists; MP4 by contrast
+	// always coalesces.
 	unrelatedPlan, err := mustParseBytes(t, data).Edit().Set(tag.Title, "Untouched").Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -326,7 +325,7 @@ func TestReleaseDetailDualTaggedMP3Families(t *testing.T) {
 		apeVal   string
 		selected bool
 	}{
-		{"bootleg", false}, // a genuine disagreement, previously invisible
+		{"bootleg", false}, // a disagreement
 		{"official", true},
 	} {
 		doc := mustParseBytes(t, build(c.apeVal))

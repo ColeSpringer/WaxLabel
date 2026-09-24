@@ -1,9 +1,8 @@
 name: Fuzz
 
 # Runs every fuzz target for a bounded time, twice a week and on demand. CI runs the same
-# targets as plain tests (seed corpus only); this is where they get to explore. A push
-# that edits this file runs it briefly, so the pipeline is checked when it changes rather
-# than at the next scheduled run.
+# targets on the seed corpus only; this is where they explore. A push that edits this
+# file runs it briefly, so the pipeline is checked when it changes.
 on:
   schedule:
     - cron: '23 7 * * 0,3'
@@ -47,12 +46,11 @@ jobs:
         with:
           go-version-file: go.mod
           check-latest: true
-      # The inputs a run finds interesting land in Go's fuzz cache and would die with the
-      # runner. Carry them to the next run so fuzzing accumulates instead of restarting from
-      # the seeds each time: the key is unique per run so every run saves, and the prefix
-      # restores the newest. The save is its own step below, so a finding does not cost the
-      # other targets their corpus. An untouched cache is evicted after a week, which the
-      # twice-weekly schedule stays inside.
+      # Interesting inputs go to Go's fuzz cache, which dies with the runner. Carry them to
+      # the next run so fuzzing accumulates: the key is unique per run so every run saves,
+      # and the prefix restores the newest. The save is its own step below, so a finding
+      # does not cost the other targets their corpus. An untouched cache is evicted after a
+      # week, which the twice-weekly schedule stays inside.
       - uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build/fuzz
@@ -88,7 +86,7 @@ jobs:
           path: ~/.cache/go-build/fuzz
           key: corpus-${{ github.run_id }}-${{ github.run_attempt }}
       # A failing input is written under its package's testdata/fuzz/<Target>/. Upload them
-      # so the crashers outlive the runner; the fix lands each as an f.Add seed in the test,
+      # so the crashers outlive the runner; the fix adds each as an f.Add seed in the test,
       # not as a corpus file (the project keeps seeds inline).
       - name: Upload failing inputs
         if: failure()

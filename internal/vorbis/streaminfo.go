@@ -17,9 +17,8 @@ const StreamInfoLen = 34
 // bit-packed region holds a 20-bit sample rate, 3-bit channel count (less
 // one), 5-bit bits-per-sample (less one), and 36-bit total sample count.
 //
-// It lives here rather than in internal/flac because both FLAC containers need
-// it: the native .flac stream and the Ogg FLAC mapping, whose identification
-// packet ends with the same STREAMINFO block.
+// It lives here because the native .flac stream and the Ogg FLAC mapping (whose
+// identification packet ends with the same STREAMINFO block) both need it.
 func ParseStreamInfo(body []byte) (core.AudioTrack, error) {
 	if len(body) < StreamInfoLen {
 		return core.AudioTrack{}, fmt.Errorf("%w: STREAMINFO is %d bytes, need %d", waxerr.ErrInvalidData, len(body), StreamInfoLen)
@@ -46,10 +45,8 @@ func ParseStreamInfo(body []byte) (core.AudioTrack, error) {
 	return t, nil
 }
 
-// FLAC metadata block type codes. Both FLAC containers - the native stream and the Ogg
-// mapping, where each header packet carries one block - walk the same block types, so
-// the codes and their names live here with the STREAMINFO decoder rather than being
-// declared once per package.
+// FLAC metadata block type codes, shared by the native stream and the Ogg mapping
+// (where each header packet carries one block).
 const (
 	BlockStreamInfo    = 0
 	BlockPadding       = 1

@@ -8,7 +8,7 @@ import (
 	"github.com/colespringer/waxlabel/internal/core"
 )
 
-// This file builds a QuickTime chapter text track - the representation iTunes and Apple
+// This file builds a QuickTime chapter text track, the representation iTunes and Apple
 // Books read (they ignore the Nero chpl).
 
 // encdBox is the text-encoding modifier ffmpeg appends to each chapter text sample (12
@@ -32,10 +32,10 @@ func be32u(n uint32) []byte {
 	return b[:]
 }
 
-// clampU32 saturates a 64-bit count to 32 bits for a v0 box field. the movie-unit
-// fields clamp at the movie-timescale ceiling instead - larger for a coarse ~1 ms
-// timescale (MaxUint32 ms is ~49.7 days), or smaller for a hi-res file whose movie
-// timescale exceeds 90 kHz.
+// clampU32 saturates a 64-bit count to 32 bits for a v0 box field. The movie-unit
+// fields clamp at the movie-timescale ceiling: larger for a coarse ~1 ms timescale
+// (MaxUint32 ms is ~49.7 days), smaller for a hi-res file whose movie timescale
+// exceeds 90 kHz.
 func clampU32(n uint64) uint32 {
 	if n > math.MaxUint32 {
 		return math.MaxUint32
@@ -44,9 +44,8 @@ func clampU32(n uint64) uint32 {
 }
 
 // chapterTextEntry is ffmpeg's QuickTime "text" sample description, captured verbatim
-// from a real chapter track (it carries a self data-reference index of 1 and an empty
-// default font table). only its presence and shape matter, so it is embedded rather
-// than reconstructed field by field.
+// from a real chapter track (a self data-reference index of 1 and an empty default font
+// table). Only its presence and shape matter, so it is embedded as bytes.
 var chapterTextEntry = []byte{
 	0x00, 0x00, 0x00, 0x3b, 0x74, 0x65, 0x78, 0x74, 0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
@@ -133,7 +132,7 @@ func chapterEdts(firstStart, mediaDur uint64) []byte {
 	return renderAtom(atomName("edts"), elst)
 }
 
-// chapterFirstStart is the first chapter's start in movie-timescale units - the leading
+// chapterFirstStart is the first chapter's start in movie-timescale units: the leading
 // empty-edit offset that positions a chapter track whose first chapter is not at t=0.
 func chapterFirstStart(movieTimescale uint32, chapters []core.Chapter) uint64 {
 	if movieTimescale == 0 || len(chapters) == 0 {
@@ -192,8 +191,8 @@ func chapterDeltas(chapters []core.Chapter, mts, movieTimescale uint32, movieDur
 			next = starts[i] + 1
 		}
 		// The input is stably sorted by start, so starts[i] <= next normally holds; a
-		// zero raw gap is a genuine collision (or a last chapter the movie duration does
-		// not extend), not disorder.
+		// zero raw gap is a collision (or a last chapter the movie duration does not
+		// extend), not disorder.
 		var rawDelta uint64
 		if next > starts[i] {
 			rawDelta = next - starts[i]
@@ -229,13 +228,13 @@ func buildChapterTrak(trackID, mts, movieTimescale uint32, movieDuration uint64,
 	// The first chapter's start becomes a leading empty edit, so the track presentation
 	// (tkhd) spans firstStart + the media, while the media itself (mdhd) stays totalDur.
 	firstStart := chapterFirstStart(movieTimescale, chapters)
-	// mdhd.duration and the stts deltas are media-timescale (mts);
+	// mdhd.duration and the stts deltas are media-timescale (mts).
 	totalDurMovie := totalDur
 	if movieTimescale != 0 && movieTimescale != mts {
 		totalDurMovie = durationToUnits(scaleToDuration(totalDur, mts), movieTimescale)
 	}
 	// buildChapterTrak writes four clampU32 duration fields: the 90 kHz mdhd (totalDur)
-	// and three movie-unit fields - tkhd (firstStart+totalDurMovie), the elst normal
+	// and three movie-unit fields, tkhd (firstStart+totalDurMovie), the elst normal
 	// segment (totalDurMovie), and the elst empty-edit segment (firstStart).
 	tkhdDur := firstStart + totalDurMovie
 	saturated = saturated || totalDur > math.MaxUint32 || tkhdDur > math.MaxUint32
@@ -307,9 +306,9 @@ func qtWriteRoundTrip(chapters []core.Chapter, mts, movieTimescale uint32, movie
 		return nil, false
 	}
 	deltas, _ := chapterDeltas(chapters, mts, movieTimescale, movieDuration)
-	// chapterEdts writes firstStart as a u32 segment_duration via clampU32; a reparse reads that
-	// clamped value back, so derive the offset from it too - the prediction then stays equal even
-	// past the 2^32-unit edge, and addClamp matches the read's saturating add.
+	// chapterEdts writes firstStart as a u32 segment_duration via clampU32 and a reparse
+	// reads that clamped value back, so derive the offset from it too; the prediction then
+	// holds past the 2^32-unit edge, and addClamp matches the read's saturating add.
 	clampedFirstStart := clampU32(chapterFirstStart(movieTimescale, chapters))
 	// Saturation has two sources, mirroring the read: an over-range stts delta (a >13.25 h
 	// gap clamped by buildStts, read back as a MaxUint32 delta) and a leading empty-edit

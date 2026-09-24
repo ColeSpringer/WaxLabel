@@ -562,7 +562,7 @@ func TestRenderPreservesVersionAndShape(t *testing.T) {
 	}
 }
 
-// TestParseAtRejectsUnbackedHeaderFlag: has-header bit needs real APETAGEX.
+// TestParseAtRejectsUnbackedHeaderFlag: has-header bit needs a backing APETAGEX record.
 func TestParseAtRejectsUnbackedHeaderFlag(t *testing.T) {
 	raw, err := Render([]Item{{Key: "Title", Value: "x"}}, writeVersion, false)
 	if err != nil {

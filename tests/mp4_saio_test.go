@@ -18,8 +18,8 @@ import (
 // longTitle grows the ilst past any free padding, forcing the offset-fixup path.
 const longTitle = "A substantially longer title that grows the ilst region past its padding"
 
-// mp4SaioFile builds a tagged file with a saio in the audio track's stbl whose single offset points
-// 16 bytes into the mdat payload; past the ilst region, so a growing edit must shift it.
+// mp4SaioFile builds a tagged file with a saio in the audio track's stbl whose single offset
+// points 16 bytes into the mdat payload, past the ilst region, so a growing edit must shift it.
 func mp4SaioFile(t *testing.T, version uint8, auxType bool) []byte {
 	t.Helper()
 	build := func(auxOff uint32) []byte {
@@ -82,7 +82,7 @@ func TestMP4SaioOffsetsShifted(t *testing.T) {
 					t.Errorf("saio entry %d = %d, want %d (shifted by the %d-byte metadata delta)", i, after[i], want, delta)
 				}
 			}
-			// The chunk offsets must still track the mdat too, so the aux patch did not land on top of them.
+			// The chunk offsets must still track the mdat: the aux patch must not overwrite them.
 			if mdat, stco := mp4Index(t, out); mdat != stco {
 				t.Errorf("stco entry = %d, want the mdat payload offset %d", stco, mdat)
 			}
@@ -98,8 +98,8 @@ func mp4UnknownSaioFile() []byte {
 }
 
 func TestMP4MalformedSaioStillReads(t *testing.T) {
-	// A saio the codec cannot decode must not fail the parse: the movie box and tag list do not depend
-	// on it, and such a file read fine before saio was collected at all.
+	// A saio the codec cannot decode must not fail the parse: the movie box and tag list do not
+	// depend on it.
 	cases := map[string][]byte{
 		"unknown version":   mp4Saio(2, false, 0x1000),
 		"absurd entrycount": mp4Atom("saio", slices.Concat([]byte{0, 0, 0, 0}, mp4be32(1<<30))),
@@ -142,8 +142,8 @@ func TestMP4SaioUnknownVersionRefused(t *testing.T) {
 }
 
 // mp4SaioAheadOfAudio builds a tagged file whose audio chunk sits auxLead bytes into the mdat
-// payload, optionally with a saio pointing at the payload start; ahead of that chunk. A saio
-// treated as a chunk offset would drag the essence trim back to the payload start, which is the
+// payload, optionally with a saio pointing at the payload start, ahead of that chunk. A saio
+// treated as a chunk offset would move the essence trim back to the payload start, which is the
 // auxLead == 0 shape.
 func mp4SaioAheadOfAudio(auxLead int, withSaio bool) []byte {
 	mdatPayload := bytes.Repeat([]byte{0xA7}, 120)
@@ -161,18 +161,18 @@ func mp4SaioAheadOfAudio(auxLead int, withSaio bool) []byte {
 }
 
 func TestMP4SaioDoesNotAffectEssenceDigest(t *testing.T) {
-	// Guards why auxTables is a separate slice: nonChapterTables and firstNonChapterChunk treat every
-	// offTables entry as a chunk locating media, so a merged saio sitting ahead of the first audio
-	// chunk would silently widen the essence extent.
+	// Why auxTables is a separate slice: nonChapterTables and firstNonChapterChunk treat every
+	// offTables entry as a chunk locating media, so a merged saio ahead of the first audio chunk
+	// would widen the essence extent.
 	const auxLead = 32
 	withSaio := essenceOf(t, mp4SaioAheadOfAudio(auxLead, true))
 	without := essenceOf(t, mp4SaioAheadOfAudio(auxLead, false))
 	if !withSaio.Equal(without) {
 		t.Error("a saio ahead of the first audio chunk changed the essence digest")
 	}
-	// The control: a file whose audio genuinely starts at the payload start; the extent a merged saio
-	// would have produced; must hash differently. Without this the equality above could hold for the
-	// wrong reason (a digest blind to the trim).
+	// The control: a file whose audio starts at the payload start (the extent a merged saio would
+	// produce) must hash differently. Otherwise the equality above could hold because the digest
+	// is blind to the trim.
 	if untrimmed := essenceOf(t, mp4SaioAheadOfAudio(0, false)); withSaio.Equal(untrimmed) {
 		t.Error("the digest is insensitive to the essence trim, so the check above proves nothing")
 	}
@@ -201,9 +201,9 @@ func mp4QTFileSaioTrailingMdat(startsMS []int, titles []string, aux []byte) []by
 }
 
 func TestMP4SaioBlocksChapterMdatReclaim(t *testing.T) {
-	// Splitting auxTables out of nonChapterTables is right for the essence trim but would silently
-	// remove aux data from the reclaim guard, so the guard carries its own aux check. Without it this
-	// trailing mdat is deleted and every saio offset just patched points at nothing.
+	// Splitting auxTables out of nonChapterTables is right for the essence trim but removes aux
+	// data from the reclaim guard, so the guard carries its own aux check. Without it this trailing
+	// mdat is deleted and every saio offset just patched points at nothing.
 	aux := bytes.Repeat([]byte{0xBB}, 48)
 	data := mp4QTFileSaioTrailingMdat([]int{0, 5000}, []string{"A", "B"}, aux)
 	if !bytes.Contains(data, aux) {

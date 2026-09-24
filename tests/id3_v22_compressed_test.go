@@ -8,8 +8,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// tag is invisible to the projection (as it is to ffprobe), the parse says so, and a rewrite that
-// replaces the unreadable region says so too, so --strict can refuse it.
+// A compressed v2.2 tag is invisible to the projection (as it is to ffprobe); the parse warns, and
+// a rewrite that replaces the unreadable region warns too, so --strict can refuse it.
 func TestMP3V22CompressedTagIgnoredAndWarned(t *testing.T) {
 	tagBytes := id3v2(2, frame22("TT2", []byte("\x00Compressed")))
 	tagBytes[5] = 0x40

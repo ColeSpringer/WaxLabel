@@ -27,14 +27,12 @@ func termLen(enc byte) int {
 	return 1
 }
 
-// decodeStrings interprets a text-frame payload (the bytes after the encoding
-// byte) as one or more null-separated strings. ID3v2.4 allows multiple values
-// in a single text frame; earlier versions officially allow one, but real files
-// null-separate anyway, so splitting is safe across versions. A trailing
-// terminator yields no extra empty value, and any trailing empties left by
-// padding terminators (a frame ending in two or more NULs, as some foreign
-// encoders write) are stripped too, matching TagLib/mutagen; an all-terminator
-// frame still decodes to a single empty value.
+// decodeStrings interprets a text-frame payload (the bytes after the encoding byte) as
+// one or more null-separated strings. ID3v2.4 allows several values in one text frame;
+// earlier versions officially allow one, but real files null-separate anyway. A trailing
+// terminator yields no extra empty value, and trailing empties left by padding
+// terminators (a frame ending in two or more NULs) are stripped too, matching
+// TagLib/mutagen; an all-terminator frame still decodes to a single empty value.
 func decodeStrings(enc byte, data []byte) []string {
 	// A text frame is one frame: share byte-order state across its values so a UTF-16 BOM on
 	// the first value also applies to later values that omit a BOM.
@@ -60,10 +58,9 @@ func decodeStringsTracked(enc byte, data []byte, order *utf16Order) []string {
 			break
 		}
 	}
-	// Strip trailing empties produced by padding terminators (a frame ending in a
-	// double NUL decodes to [..., ""]). Trailing-only: an interior present-empty value
-	// in a genuine multi-value frame is preserved, and the len>1 floor keeps a lone ""
-	// for an all-terminator frame.
+	// Strip trailing empties from padding terminators (a double NUL decodes to [..., ""]).
+	// Interior empties are kept, and the len>1 floor keeps a lone "" for an
+	// all-terminator frame.
 	for len(out) > 1 && out[len(out)-1] == "" {
 		out = out[:len(out)-1]
 	}
@@ -243,10 +240,9 @@ func latin1able(s string) bool {
 	return true
 }
 
-// chooseEncoding picks the text encoding for re-rendering values under a write
-// version: Latin-1 when every value fits (compact and maximally compatible),
-// else UTF-8 for v2.4 or UTF-16 for v2.3 (which has no UTF-8). Unchanged frames
-// keep their original bytes; this only governs frames we re-render.
+// chooseEncoding picks the text encoding for re-rendering values under a write version:
+// Latin-1 when every value fits (compact and most compatible), else UTF-8 for v2.4 or
+// UTF-16 for v2.3, which has no UTF-8. Unchanged frames keep their original bytes.
 func chooseEncoding(version byte, values []string) byte {
 	allLatin1 := true
 	for _, v := range values {

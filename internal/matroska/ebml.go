@@ -12,12 +12,12 @@ import (
 )
 
 // Matroska is an EBML document: a tree of elements, each [Element ID (VINT)][Element
-// Data Size (VINT)][data] A VINT's first byte holds a length descriptor - the position
-// of its most significant set bit gives the total byte length (0x80 => 1 byte...
+// Data Size (VINT)][data]. A VINT's first byte holds a length descriptor: the position
+// of its most significant set bit gives the total byte length (0x80 => 1 byte, 0x40 =>
+// 2 bytes, ...).
 
-// Element IDs this codec reads. The structural elements the write path must preserve
-// byte-faithfully - SeekHead/Seek/SeekPosition, Cues/CueClusterPosition, Void, and
-// CRC-32 - are enumerated here too.
+// Element IDs this codec reads, including the structural elements the write path
+// preserves: SeekHead/Seek/SeekPosition, Cues/CueClusterPosition, Void, and CRC-32.
 const (
 	idEBML            = 0x1A45DFA3
 	idDocType         = 0x4282
@@ -84,7 +84,7 @@ const (
 	idCRC32           = 0xBF
 )
 
-// level1IDs are the Segment's direct children - the elements an unknown-size element
+// level1IDs are the Segment's direct children: the elements an unknown-size element
 // (in practice a streamed Cluster) ends at, per the EBML rule that an unknown-size
 // element runs until the next equal-or-higher-level element.
 var level1IDs = map[uint64]bool{
@@ -115,9 +115,8 @@ func readVINT(src core.ReaderAtSized, off, end, limit int64, keepMarker bool) (v
 	if off < 0 || off >= end {
 		return 0, 0, false, false
 	}
-	// One read of up to 8 bytes (a VINT's max length): the first byte's
-	// length-descriptor tells how many of them form the integer, so reading the
-	// whole header at once avoids a second read that re-fetches the first byte.
+	// One read of up to 8 bytes (a VINT's max length) instead of a first-byte read
+	// followed by a second for the rest.
 	want := min(end-off, 8)
 	buf, err := bits.ReadSlice(src, off, want, limit)
 	if err != nil {
@@ -181,9 +180,9 @@ func readElement(src core.ReaderAtSized, off, end, limit int64) (element, bool) 
 	return element{id: id, start: off, dataStart: dataStart, dataEnd: dataEnd, unknown: unknown, next: dataEnd}, true
 }
 
-// resolveUnknownEnd returns the true end of an unknown-size element whose data begins
-// at from, used at the Segment level so siblings placed after a streamed (unknown-size)
-// Cluster - trailing Tags or Attachments - are not lost.
+// resolveUnknownEnd returns the end of an unknown-size element whose data begins at
+// from. walkSegment uses it so siblings after a streamed Cluster (trailing Tags or
+// Attachments) are still visited.
 func resolveUnknownEnd(src core.ReaderAtSized, from, end int64, limit int64) int64 {
 	off := from
 	for off < end {
@@ -211,9 +210,9 @@ func intVal(v uint64) int {
 	return int(v)
 }
 
-// eachChild iterates the elements in [start, end), invoking fn for each. It stops
-// without error on a header it cannot parse or on an element with no forward
-// progress (never panicking on malformed input). depth bounds nesting.
+// eachChild calls fn for each element in [start, end). It stops without error on a
+// header it cannot parse or an element that makes no forward progress. depth bounds
+// nesting.
 func eachChild(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limit int64, fn func(element) error) error {
 	if err := depth.Enter(); err != nil {
 		return err
@@ -242,8 +241,7 @@ func eachChild(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limi
 
 // walkSegment iterates the Segment's direct children like eachChild, but resolves an
 // unknown-size element (a streamed Cluster) to its true end via resolveUnknownEnd, so
-// siblings placed after it - trailing Tags or Attachments - are still visited and the
-// element's recorded extent is accurate rather than overstated to the Segment end.
+// later siblings are still visited and the element's extent is not overstated.
 func walkSegment(src core.ReaderAtSized, start, end int64, depth *bits.Depth, limit int64, fn func(element) error) error {
 	if err := depth.Enter(); err != nil {
 		return err
@@ -319,14 +317,13 @@ func readString(src core.ReaderAtSized, el element, limit int64) (string, error)
 	return strings.TrimRight(string(b), "\x00"), nil
 }
 
-// maxAudioSpecificConfig bounds the CodecPrivate prefix the AAC config decoder is given.
-// The decoder reads at most a few dozen bits past its header, so 32 bytes is provably every
-// byte it can consume, and a declared length beyond that is never allocated.
+// maxAudioSpecificConfig bounds the CodecPrivate prefix given to the AAC config decoder,
+// which reads at most a few dozen bits past its header; 32 bytes covers every byte it
+// can consume.
 const maxAudioSpecificConfig = 32
 
-// readBytesPrefix reads at most max bytes of a leaf element's data. Unlike [readBytes] a
-// longer element is not an error: the caller has declared it needs only a prefix, so a
-// hostile length costs a bounded read rather than the whole allocation.
+// readBytesPrefix reads at most max bytes of a leaf element's data. Unlike [readBytes],
+// a longer element is not an error, so a hostile length costs only a bounded read.
 func readBytesPrefix(src core.ReaderAtSized, el element, max, limit int64) ([]byte, error) {
 	n := min(el.dataLen(), max)
 	if n <= 0 {

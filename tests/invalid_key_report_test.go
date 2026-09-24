@@ -8,10 +8,9 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// native key the canonical vocabulary cannot represent is preserved on disk but never reaches the
-// tag set, so without a warning it is absent from dump, lint and diff while copy reports a clean
-// lossless carry. Every format that holds string keys must say so, not just the one that always
-// did.
+// A native key the canonical vocabulary cannot represent is preserved on disk but never reaches the
+// tag set, so without a warning it is absent from dump, lint and diff while copy reports a lossless
+// carry. Every format that holds string keys must warn.
 func TestUnprojectableKeyReportedEverywhere(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -44,8 +43,8 @@ func TestUnprojectableKeyReportedEverywhere(t *testing.T) {
 			if !named {
 				t.Errorf("the warning does not name the key: %v", doc.Warnings())
 			}
-			// The value the file CAN represent still projects, so the warning is scoped to
-			// the key that failed rather than shutting the whole projection down.
+			// The value the file can represent still projects: the warning is scoped to the
+			// key that failed.
 			if doc.Fields().Title != "Song" {
 				t.Errorf("title = %q, want Song", doc.Fields().Title)
 			}
@@ -53,8 +52,8 @@ func TestUnprojectableKeyReportedEverywhere(t *testing.T) {
 	}
 }
 
-// negative: a fixture whose keys all project must not draw the warning, or it would fire on every
-// ordinary file.
+// A fixture whose keys all project must not draw the warning, or it would fire on every ordinary
+// file.
 func TestRepresentableKeysStayQuiet(t *testing.T) {
 	for _, f := range []string{"sample.flac", "sample.mp3", "sample.wv", "sample.mka", "sample.m4a", "sample.wma"} {
 		data, err := os.ReadFile("../testdata/" + f)

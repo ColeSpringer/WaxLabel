@@ -260,7 +260,7 @@ func TestRenderTagsKeyCountHeader(t *testing.T) {
 }
 
 // TestAudioLineOmittedForDegenerate: bare codec with no detail omits line; container-only keeps
-// "codec unknown"; real stream still renders.
+// "codec unknown"; a stream with a sample rate still renders.
 func TestAudioLineOmittedForDegenerate(t *testing.T) {
 	if line := audioLine(trackProps("", wl.AudioTrack{Codec: "MPEG Audio"})); line != "" {
 		t.Errorf("bare-codec audioLine = %q, want empty", line)

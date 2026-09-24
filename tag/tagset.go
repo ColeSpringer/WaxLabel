@@ -99,9 +99,8 @@ func (s *TagSet) Add(key Key, vals ...string) {
 }
 
 // AddNativeItem projects one native tag item under the IFF single-item cardinality rule:
-// a duplicate of a [Key.NumberPair] key (a track/disc number no writer can store twice) keeps
-// the first and drops the rest, while every other key accumulates. The RIFF/INFO and AIFF text
-// readers share this one method so the first-wins rule cannot drift between them.
+// a duplicate of a [Key.NumberPair] key keeps the first and drops the rest; every other
+// key accumulates. The RIFF/INFO and AIFF text readers share it.
 func (s *TagSet) AddNativeItem(key Key, v string) {
 	if key.NumberPair() && s.Has(key) {
 		return
@@ -178,9 +177,8 @@ type patchOp struct {
 	values []string
 }
 
-// TagPatch is an ordered list of explicit edits - set, clear, add - applied
-// against a base [TagSet]. Because each op is explicit there is no zero-value
-// ambiguity: clearing a key is distinct from setting it to empty. Later ops
+// TagPatch is an ordered list of explicit edits (set, clear, add) applied to a
+// base [TagSet]. Clearing a key is distinct from setting it to empty. Later ops
 // override earlier ones for the same key.
 type TagPatch struct {
 	ops []patchOp
@@ -228,8 +226,7 @@ func (p TagPatch) Keys() []Key {
 }
 
 // Touches reports whether the patch records any operation (set, clear, or add) on
-// key. It is the allocation-free membership test for "does this edit affect KEY?",
-// where [TagPatch.Keys] would build a slice and a dedup map just to be scanned.
+// key. Unlike [TagPatch.Keys], it allocates nothing.
 func (p TagPatch) Touches(key Key) bool {
 	for _, op := range p.ops {
 		if op.key == key {
@@ -239,9 +236,8 @@ func (p TagPatch) Touches(key Key) bool {
 	return false
 }
 
-// Writes reports whether the patch records a write (a Set or Add, not a Clear) on
-// key. It reads straight from the recorded ops, so a caller checking for a
-// write-then-clear conflict needs no parallel bookkeeping.
+// Writes reports whether the patch records a Set or Add (not a Clear) on key. A
+// caller checking for a write-then-clear conflict needs no parallel bookkeeping.
 func (p TagPatch) Writes(key Key) bool {
 	for _, op := range p.ops {
 		if op.key == key && (op.kind == opSet || op.kind == opAdd) {
@@ -257,10 +253,10 @@ func (p *TagPatch) Append(other TagPatch) {
 	p.ops = append(p.ops, other.ops...)
 }
 
-// MapKeys returns a copy of the patch with every operation's key passed through fn (values
-// and op order unchanged). Front-ends use it with an alias resolver so a pre-built patch
-// targets canonical keys - the same normalization the key-taking editor methods apply. The
-// tag package stays decoupled from the alias table by taking fn rather than resolving itself.
+// MapKeys returns a copy of the patch with every operation's key passed through fn; values
+// and op order are unchanged. Front-ends use it with an alias resolver so a pre-built patch
+// targets canonical keys, the same normalization the key-taking editor methods apply. Taking
+// fn keeps this package decoupled from the alias table.
 func (p TagPatch) MapKeys(fn func(Key) Key) TagPatch {
 	out := TagPatch{ops: make([]patchOp, len(p.ops))}
 	for i, op := range p.ops {

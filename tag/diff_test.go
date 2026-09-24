@@ -6,11 +6,11 @@ import (
 	"testing"
 )
 
-// TestNumericValuesEqual pins the numeric-key equality: leading '+' and leading zeros do not make
-// a numeric value different, including inside a slashed "n/total" pair, while a genuinely different
-// number, a non-numeric token, or a mismatched count stays distinct. MEDIATYPE (the stik slot an
-// MP4 atom canonicalizes) folds the same way even though it is not in numericKeys. A key in neither
-// category falls back to exact slice equality.
+// TestNumericValuesEqual pins the numeric-key equality: a leading '+' or leading zeros do not
+// make a value different, including inside a slashed "n/total" pair, while a different number,
+// a non-numeric token, or a mismatched count stays distinct. MEDIATYPE (the stik slot an MP4
+// atom canonicalizes) folds the same way though it is not in numericKeys. Any other key falls
+// back to exact slice equality.
 func TestNumericValuesEqual(t *testing.T) {
 	cases := []struct {
 		name string
@@ -86,9 +86,8 @@ func TestDiffNoOp(t *testing.T) {
 	}
 }
 
-// TestDiffMultiValueOrderSignificant: a reordered multi-value field is a change
-// (the diff uses the same order-significant equality a codec uses to detect an
-// edit).
+// TestDiffMultiValueOrderSignificant: a reordered multi-value field is a change,
+// the same order-significant equality a codec uses to detect an edit.
 func TestDiffMultiValueOrderSignificant(t *testing.T) {
 	var base, edited TagSet
 	base.Add(Artist, "A", "B")
@@ -168,9 +167,9 @@ func TestSanitizeText(t *testing.T) {
 	}
 }
 
-// TestSanitizeTextPreservesUnicode is the UTF-8 regression guard: a naive
-// byte-level C1 (0x80-0x9F) check would corrupt multi-byte text, whose
-// continuation bytes live in that range. Decoding to runes first keeps it intact.
+// TestSanitizeTextPreservesUnicode: a byte-level C1 (0x80-0x9F) check would corrupt
+// multi-byte text, whose continuation bytes fall in that range. Decoding to runes
+// first keeps it intact.
 func TestSanitizeTextPreservesUnicode(t *testing.T) {
 	for _, s := range []string{"café", "naïve", "日本語", "emoji 🎵🎶", "Þórr"} {
 		if got := SanitizeText(s); got != s {
@@ -187,11 +186,10 @@ func TestSanitizeTextInvalidUTF8(t *testing.T) {
 	}
 }
 
-// TestSanitizeLine is SanitizeText's bar plus the tab and newline: a single-line
-// field (a tag key, a chapter title, a change-line value) must occupy exactly one
-// line, so both are escaped - unlike SanitizeText, which keeps them for the
-// multi-line value renderer. Everything else escapes identically, and multi-byte
-// text still survives.
+// TestSanitizeLine: SanitizeText's bar plus the tab and newline. A single-line field
+// (a tag key, a chapter title, a change-line value) must occupy one line, so both are
+// escaped, unlike SanitizeText, which keeps them for the multi-line value renderer.
+// Everything else escapes identically, and multi-byte text survives.
 func TestSanitizeLine(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"clean", "clean"},

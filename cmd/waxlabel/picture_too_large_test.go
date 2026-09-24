@@ -7,7 +7,7 @@ import "testing"
 func TestOversizedPictureIsAWriteRefusal(t *testing.T) {
 	t.Parallel()
 	big := make([]byte, 16<<20)
-	copy(big, minimalPNG()) // a real header, so the image-recognition gate is not what rejects it
+	copy(big, minimalPNG()) // a valid header, so the image-recognition gate is not what rejects it
 	cover := writeTempImage(t, "huge.png", big)
 
 	stdout, stderr, code := runCLI(t, "set", "--json", copyFixture(t, sampleFLAC), "--add-cover", cover)

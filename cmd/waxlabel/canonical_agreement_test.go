@@ -91,7 +91,6 @@ func TestCanonicalCopyDiffAgreement(t *testing.T) {
 }
 
 // TestCompilationBooleanCopyDiffAgreement: boolean normalizes to "1"/"0"; copy carried, diff unchanged.
-// Before normalization FLAC kept "true", M4A "1": copy carried but diff reported change.
 func TestCompilationBooleanCopyDiffAgreement(t *testing.T) {
 	t.Parallel()
 	pairs := []struct{ name, src, dst string }{
@@ -102,7 +101,6 @@ func TestCompilationBooleanCopyDiffAgreement(t *testing.T) {
 }
 
 // TestGaplessBooleanCopyDiffAgreement: ITUNESGAPLESS across MP3 (TXXX) and Matroska legs.
-// Without normalization MP3 kept "yes", FLAC "1": copy/diff would disagree.
 func TestGaplessBooleanCopyDiffAgreement(t *testing.T) {
 	t.Parallel()
 	pairs := []struct{ name, src, dst string }{

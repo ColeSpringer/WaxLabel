@@ -36,9 +36,8 @@ func flacWithLowercaseComments(t *testing.T) []byte {
 	return append(out, data[off+4+bodyLen:]...)
 }
 
-// checks the FLAC path end to end: editing one field in a lowercase-keyed file keeps the file's
-// spelling for the edited and untouched keys, while an edited date alias rewrites to the preferred
-// DATE.
+// Editing one field in a lowercase-keyed file keeps the file's spelling for the edited and
+// untouched keys, while an edited date alias rewrites to the preferred DATE.
 func TestFLACPreservesLowercaseKeyCasingOnEdit(t *testing.T) {
 	src := flacWithLowercaseComments(t)
 	doc := mustParseBytes(t, src)
@@ -251,8 +250,7 @@ func TestDeterministicGolden(t *testing.T) {
 	}
 }
 
-// The N-getter + 1-mutator deep-copy isolation test: accessor results must not
-// alias the Document's internal state.
+// Accessor results must not alias the Document's internal state.
 func TestAccessorsAreDetached(t *testing.T) {
 	doc := mustParseFile(t, sampleFLAC)
 
@@ -427,8 +425,8 @@ func tinyJPEG() []byte {
 	}
 }
 
-// guards the frame-tail walk against false positives: a valid FLAC; including a minimal,
-// effectively zero-bitrate one whose STREAMINFO declares no total; must stay clean.
+// A valid FLAC, including a minimal near-zero-bitrate one whose STREAMINFO declares no total,
+// must not be flagged truncated.
 func TestFLACValidFilesNotFlaggedTruncated(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -445,9 +443,8 @@ func TestFLACValidFilesNotFlaggedTruncated(t *testing.T) {
 	}
 }
 
-// requested padding above FLAC's ~16 MiB per-block limit is clamped to it, and the write must
-// surface a padding-clamped warning so the smaller-than-asked padding is not silent. A sane padding
-// does not warn.
+// Requested padding above FLAC's ~16 MiB per-block limit is clamped to it, and the write must warn
+// padding-clamped. A sane padding does not warn.
 func TestFLACPaddingClampWarns(t *testing.T) {
 	doc := mustParseFile(t, sampleFLAC)
 	hasClamp := func(p *wl.Plan) bool {

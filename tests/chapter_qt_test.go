@@ -13,8 +13,7 @@ import (
 )
 
 // Synthetic QuickTime chapter text track. ffmpeg writes such a track alongside the chpl when it
-// adds chapters; these builders let the reader be exercised without ffmpeg (the real fixture covers
-// the integration).
+// adds chapters; these builders exercise the reader without ffmpeg.
 
 func mp4be16(n int) []byte {
 	b := make([]byte, 2)
@@ -167,8 +166,8 @@ func TestMP4ChapterWriteCreatesQTTrack(t *testing.T) {
 	}
 }
 
-// mp4AudioTrakTkhd builds an audio trak with a tkhd carrying the given track id and the given extra
-// children (e.g.
+// mp4AudioTrakTkhd builds an audio trak with a tkhd carrying the given track id and any extra
+// children, such as a tref.
 func mp4AudioTrakTkhd(trackID int, audioStco uint32, extra ...[]byte) []byte {
 	tkhd := mp4Atom("tkhd", slices.Concat([]byte{0, 0, 0, 0}, make([]byte, 8), mp4be32(trackID), make([]byte, 4)))
 	stbl := mp4Atom("stbl", slices.Concat(mp4StsdAudio(), mp4Stco(audioStco)))
@@ -281,7 +280,7 @@ func TestMP4SetChaptersMetadataDroppedWarns(t *testing.T) {
 func TestMP4ChapterMaxTrackIDNoCreate(t *testing.T) {
 	// A track already holding the max track id (0xFFFFFFFF) leaves no free id, so a chapter create must
 	// not build a track with the wrapped invalid id 0; it falls back to the chpl, and the chapters
-	// still read. (Fuzz-reachable now that FuzzParse chapter-edits.)
+	// still read.
 	build := func(stcoOff uint32) []byte {
 		// -1 encodes the max track id 0xFFFFFFFF through mp4be32's uint32 conversion on every int width;
 		// int(uint32(0xFFFFFFFF)) overflows a 32-bit int at compile time.
@@ -308,8 +307,7 @@ func TestMP4ChapterMaxTrackIDNoCreate(t *testing.T) {
 }
 
 func TestMP4ChapterTrefPreservesOtherRefs(t *testing.T) {
-	// An audio tref holding a non-"chap" reference must keep it when a chapter create adds the "chap";
-	// only the chap entry is ours to write.
+	// An audio tref holding a non-"chap" reference must keep it when a chapter create adds the "chap".
 	otherRef := mp4Atom("hint", mp4be32(7)) // a non-chap reference
 	tref := mp4Atom("tref", otherRef)
 	build := func(stcoOff uint32) []byte {
@@ -366,9 +364,9 @@ func TestMP4ChapterClearRemovesDanglingChap(t *testing.T) {
 }
 
 func TestMP4ChapterClearThenSetNoReparse(t *testing.T) {
-	// Regression: ClearChapters deletes the audio tref; on the returned document a follow-up
-	// SetChapters without a reparse must re-insert a tref (the carried ref must reflect the deletion,
-	// not still point at the deleted tref and splice a new one over the audio track's mdia).
+	// ClearChapters deletes the audio tref; on the returned document a follow-up SetChapters without
+	// a reparse must re-insert a tref. The carried ref must reflect the deletion, or the new tref is
+	// spliced over the audio track's mdia.
 	data := mp4QTFile([]int{0, 5000}, []string{"A", "B"})
 	plan1, err := mustParseBytes(t, data).Edit().ClearChapters().Prepare()
 	if err != nil {
@@ -407,9 +405,9 @@ func TestMP4ChapterClearThenSetNoReparse(t *testing.T) {
 }
 
 func TestMP4ChapterCreateThenClearNoReparse(t *testing.T) {
-	// Regression: SetChapters on a chapterless file inserts an audio tref; on the
-	// returned document ClearChapters without a reparse must remove that tref (the
-	// carried ref must reflect the insert, not stay nil and leave the tref dangling).
+	// SetChapters on a chapterless file inserts an audio tref; on the returned document
+	// ClearChapters without a reparse must remove that tref. The carried ref must reflect
+	// the insert, or the tref is left dangling.
 	data := mp4Tagged(mp4Text("\xa9nam", "T"))
 	plan1, err := mustParseBytes(t, data).Edit().
 		SetChapters(wl.Chapter{Start: 0, Title: "A"}, wl.Chapter{Start: 3 * time.Second, Title: "B"}).Prepare()
@@ -436,9 +434,9 @@ func TestMP4ChapterCreateThenClearNoReparse(t *testing.T) {
 }
 
 func TestMP4ChaptersSortedByStart(t *testing.T) {
-	// Chapters set out of order are stored sorted by start time, so both the chpl and the QuickTime
-	// track encode sane forward spans. A reparse reads them in order with no lost start and no source
-	// conflict (the two representations agree), and the in-memory result matches.
+	// Chapters set out of order are stored sorted by start time, so the chpl and the QuickTime track
+	// encode forward spans. A reparse reads them in order with no source conflict, and the in-memory
+	// result matches.
 	data := mp4Tagged(mp4Text("\xa9nam", "T"))
 	res, re := execChapters(t, data, func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(
@@ -463,9 +461,8 @@ func TestMP4ChaptersSortedByStart(t *testing.T) {
 }
 
 func TestMP4ChapterClearRemovesQTTrack(t *testing.T) {
-	// Clearing chapters on a file with a QuickTime chapter track removes that track (and the audio
-	// track's tref "chap"), not just the chpl, so a fresh read finds no chapters and no leftover
-	// chapter track.
+	// Clearing chapters on a file with a QuickTime chapter track removes that track and the audio
+	// track's tref "chap", not just the chpl.
 	data := mp4QTFile([]int{0, 5000}, []string{"One", "Two"})
 	res, re := execChapters(t, data, func(e *wl.Editor) *wl.Editor { return e.ClearChapters() })
 	if len(res.Chapters()) != 0 || len(re.Chapters()) != 0 {
@@ -521,9 +518,8 @@ func TestMP4ChapterReEditQTResult(t *testing.T) {
 	}
 }
 
-// checks the returned-document splice path: a tag edit grows ilst inside meta, and a follow-up
-// SetChapters on that returned document must splice chpl into bytes whose meta size remains
-// self-consistent.
+// A tag edit grows ilst inside meta, and a follow-up SetChapters on the returned document must
+// splice chpl into bytes whose meta size stays self-consistent.
 func TestMP4TagGrowThenChapterEditReparses(t *testing.T) {
 	src := readFixture(t, sampleM4B)
 	const grownTitle = "A Much Longer Title That Forces The ilst And meta Region To Grow Substantially"
@@ -567,9 +563,9 @@ func TestMP4TagGrowThenChapterEditReparses(t *testing.T) {
 }
 
 func TestMP4ChapterEditRealFixtureQTTrack(t *testing.T) {
-	// Editing chapters on the real ffmpeg M4B (chpl + a QuickTime track) replaces
-	// the QuickTime track in place: a fresh read returns the new chapters, the old
-	// titles are gone as live chapters, and the result equals the reparse.
+	// Editing chapters on the ffmpeg M4B fixture (chpl + a QuickTime track) replaces
+	// the QuickTime track in place: a fresh read returns the new chapters, and the
+	// result equals the reparse.
 	src := readFixture(t, sampleM4B)
 	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(
@@ -593,8 +589,8 @@ func TestMP4ChapterEditRealFixtureQTTrack(t *testing.T) {
 }
 
 func TestMP4ChapterNonZeroStartRoundTrip(t *testing.T) {
-	// A multi-chapter list whose first start is not zero round-trips with every start preserved (the
-	// QuickTime track's leading empty edit carries the offset, rather than zero-anchoring the list).
+	// A multi-chapter list whose first start is not zero round-trips with every start preserved: the
+	// QuickTime track's leading empty edit carries the offset.
 	src := readFixture(t, sampleM4B)
 	res, re := execChapters(t, src, func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(
@@ -679,9 +675,9 @@ func TestMP4ChapterAgreementNoConflict(t *testing.T) {
 }
 
 func TestMP4ChapterEditRewritesQTTrack(t *testing.T) {
-	// Editing chapters on a file with a QuickTime chapter track now rebuilds that track too, so it is
-	// no longer stale: no chapters-stale warning, and a fresh read returns the edit from the QuickTime
-	// track (the representation iTunes/Apple Books use).
+	// Editing chapters on a file with a QuickTime chapter track rebuilds that track too: no
+	// chapters-stale warning, and a fresh read returns the edit from the QuickTime track (the
+	// representation iTunes/Apple Books use).
 	data := mp4QTFile([]int{0, 5000}, []string{"Original One", "Original Two"})
 	plan, err := mustParseBytes(t, data).Edit().
 		SetChapters(

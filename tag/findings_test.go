@@ -79,9 +79,8 @@ func TestBooleanValueHelpers(t *testing.T) {
 	}
 }
 
-// TestCanonicalBoolValue checks that recognized boolean spellings normalize to "1"/"0"
-// (case-insensitive, trimmed) while an unrecognized value is returned unchanged, so a codec
-// can canonicalize a valid boolean losslessly and leave anything else as literal text.
+// TestCanonicalBoolValue: recognized boolean spellings normalize to "1"/"0"
+// (case-insensitive, trimmed); an unrecognized value is returned unchanged.
 func TestCanonicalBoolValue(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{

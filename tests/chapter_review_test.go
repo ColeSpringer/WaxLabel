@@ -35,9 +35,9 @@ func chapterWarn(doc *wl.Document, code wl.WarningCode) bool {
 	return false
 }
 
-// regression for the headline finding: the in-memory result of a chapter edit must equal a fresh
-// parse of its own bytes; same chapters (a preserved QuickTime track still wins), same
-// source-conflict warning, and same ftyp brand in the native view.
+// The in-memory result of a chapter edit must equal a fresh parse of its own bytes: same chapters
+// (a preserved QuickTime track still wins), same source-conflict warning, and same ftyp brand in
+// the native view.
 func TestMP4ChapterEditResultMatchesReparse(t *testing.T) {
 	data := mp4QTFile([]int{0, 3000, 6000}, []string{"A", "B", "C"})
 	res, re := execChapters(t, data, func(e *wl.Editor) *wl.Editor {
@@ -55,8 +55,7 @@ func TestMP4ChapterEditResultMatchesReparse(t *testing.T) {
 }
 
 func TestMP4ChapterEndFilledInResult(t *testing.T) {
-	// chpl carries no End; the result must fill it from the next start exactly as a
-	// reparse does (no End=0 where a reparse shows a real end).
+	// chpl carries no End; the result must fill it from the next start as a reparse does.
 	data := mp4Tagged(mp4Text("\xa9nam", "T"))
 	res, re := execChapters(t, data, func(e *wl.Editor) *wl.Editor {
 		return e.SetChapters(wl.Chapter{Start: 0, Title: "A"}, wl.Chapter{Start: 4 * time.Second, Title: "B"})
@@ -112,8 +111,7 @@ func TestMP4ClearChaptersRemovesUdtaCleanly(t *testing.T) {
 
 func TestMP4MediaTypeWideValueDropped(t *testing.T) {
 	// A stik value past the single byte the atom stores (the iTunes media kinds are 0-14) is
-	// dropped and warned, not widened into a 2- or 4-byte atom: the conscious conformance choice
-	// over preserving an out-of-vocabulary value. A value that fits (2) still stores.
+	// dropped and warned, not widened into a 2- or 4-byte atom. A value that fits (2) still stores.
 	data := mp4Tagged(mp4Text("\xa9nam", "T"))
 	p, err := mustParseBytes(t, data).Edit().Set(tag.MediaType, "256").Prepare()
 	if err != nil {

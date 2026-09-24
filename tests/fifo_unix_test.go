@@ -14,9 +14,8 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// library backstop directly: ParseFile on a FIFO must return promptly with an invalid-data error
-// rather than blocking in os.Open (which waits for a writer on a FIFO's read end and ignores the
-// context).
+// ParseFile on a FIFO must return promptly with an invalid-data error; os.Open would block waiting
+// for a writer on the FIFO's read end and ignore the context.
 func TestParseFileFifoBackstop(t *testing.T) {
 	t.Parallel()
 	fifo := filepath.Join(t.TempDir(), "pipe.flac")

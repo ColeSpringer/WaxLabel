@@ -10,15 +10,14 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// read side: a covr item whose payload exceeds the configured alloc limit must fail loudly with
-// ErrSizeTooLarge rather than silently truncate to a partial, unreadable cover (the old
-// min(payloadSize, maxMetaChunk) behavior).
+// A covr item whose payload exceeds the configured alloc limit must fail with ErrSizeTooLarge
+// rather than truncate to a partial, unreadable cover.
 func TestMP4OversizedCoverFailsLoudNotTruncated(t *testing.T) {
 	bigData := bytes.Repeat([]byte{0x7F}, 8192)
 	covr := mp4Atom("covr", mp4Data(14, bigData)) // type 14 = PNG cover
 	data := mp4Tagged(mp4Text("\xa9nam", "T"), covr)
 
-	// Too-small limit: the covr read must fail loudly, not return a truncated cover.
+	// Too-small limit: the covr read must fail, not return a truncated cover.
 	_, err := wl.Parse(context.Background(), wl.BytesSource(data), wl.WithLimits(wl.Limits{MaxAllocBytes: 4096}))
 	if !errors.Is(err, waxerr.ErrSizeTooLarge) {
 		t.Fatalf("oversized covr under a 4 KiB limit: err = %v, want ErrSizeTooLarge", err)

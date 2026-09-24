@@ -67,7 +67,7 @@ func newSetCmd() *cobra.Command {
 			if err := rejectEmptyScalarFlags(cmd); err != nil {
 				return err
 			}
-			// No edits and no -o is almost always a forgotten flag. With -o, verbatim copy is intentional.
+			// No edits and no -o is almost always a forgotten flag. With -o it is a verbatim copy.
 			if output == "" && editFlagsEmpty(cmd) {
 				return usagef("no edits given (use --set/--add/--clear/--add-cover/--add-chapter/...)")
 			}
@@ -135,7 +135,7 @@ func newSetCmd() *cobra.Command {
 
 // checkOutputTarget validates -o before any write. Rejects directories (rename fails EISDIR).
 // Existing entries need --overwrite unless sameWriteTarget says in-place. When inputReal is
-// missing, overwrite stays silent so input not-found surfaces first.
+// missing, the overwrite check is skipped so input not-found surfaces first.
 func checkOutputTarget(output, inputReal string, overwrite bool) error {
 	// "-" is stdin/stdout sentinel, not an output path.
 	if output == stdinArg {
@@ -175,14 +175,12 @@ func checkOutputTarget(output, inputReal string, overwrite bool) error {
 	return checkOutputDirWritable(resolved)
 }
 
-// sameWriteTarget: -o and input resolve to the same write target (symlink/./ ok).
-// Hardlink does not; falls through to "already exists".
-//
-// Unlike library sameFileTarget (fails closed toward "same" to block clobbering),
-// this gate fails closed toward "different" because same skips the --overwrite prompt.
-//
-// Alias match only where EvalSymlinks canonicalizes. Windows folds case; macOS keeps
-// spelling; bind mounts are not collapsed, so write is refused pending --overwrite.
+// sameWriteTarget reports whether -o and the input resolve to the same write target
+// (symlinks and ./ count; a hardlink does not and falls through to "already exists").
+// Unlike the library's sameFileTarget, which fails toward "same" to block clobbering,
+// this fails toward "different", since "same" skips the --overwrite check. Aliases
+// match only where EvalSymlinks canonicalizes: Windows folds case, macOS keeps
+// spelling, bind mounts are not collapsed; those writes are refused pending --overwrite.
 func sameWriteTarget(output, inputReal string) bool {
 	return absOrClean(wl.ResolveWriteTarget(output)) == absOrClean(wl.ResolveWriteTarget(inputReal))
 }

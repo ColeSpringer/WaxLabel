@@ -19,9 +19,9 @@ func mkChapters(n int) []wl.Chapter {
 	return chs
 }
 
-// CHAPTERxxx convention is a 3-digit namespace, and the writer already numbers a 1000-entry list
-// from 0 so it fits (CHAPTER000..CHAPTER999). One more needs a 4-digit key that no other reader
-// recognizes, so it is a refused write (ErrUnsupportedTag) rather than a silently unreadable file.
+// The CHAPTERxxx convention is a 3-digit namespace, and the writer numbers a 1000-entry list from
+// 0 so it fits (CHAPTER000..CHAPTER999). One more needs a 4-digit key no other reader recognizes,
+// so the write is refused (ErrUnsupportedTag).
 func TestVorbisChapterCapEnforced(t *testing.T) {
 	for _, c := range []struct{ name, path string }{
 		{"flac", sampleFLAC},
@@ -39,8 +39,8 @@ func TestVorbisChapterCapEnforced(t *testing.T) {
 	}
 }
 
-// checks the cap is set where the numbering actually runs out: a full 1000-chapter write must
-// produce only 3-digit keys, which is the whole reason 1000 and not 999 is the limit.
+// A full 1000-chapter write must produce only 3-digit keys, which is why 1000 and not 999 is the
+// limit.
 func TestVorbisChapterCapStaysInNamespace(t *testing.T) {
 	src := readFixture(t, sampleFLAC)
 	plan, err := mustParseBytes(t, src).Edit().SetChapters(mkChapters(1000)...).Prepare()

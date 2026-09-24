@@ -98,9 +98,9 @@ func TestRoundTripInvariant(t *testing.T) {
 }
 
 // assertSameProjection fails if the plan's result document disagrees with a fresh re-parse of the
-// written bytes on any projected surface, the audio properties included: a write copies the audio,
-// but the count a reader derives from it can depend on the container state the write changes, as a
-// truncated AIFF's once did.
+// written bytes on any projected surface, audio properties included: a write copies the audio, but
+// the count a reader derives from it can depend on container state the write changes (a truncated
+// AIFF's does).
 func assertSameProjection(t *testing.T, want, got *wl.Document) {
 	t.Helper()
 	if diff := tag.Diff(want.Tags(), got.Tags()); len(diff) != 0 {
@@ -197,7 +197,7 @@ func TestRoundTripInvariantFixtures(t *testing.T) {
 			plan, err := doc.Edit().Set(tag.Title, "RoundTrip Title ZZ9").Prepare()
 			if err != nil {
 				// A header-only fixture has no audio essence, which Editor.Prepare refuses
-				// to write metadata to by design; there is no output to hold to the promise.
+				// to write metadata to; there is no output to hold to the promise.
 				if errors.Is(err, waxerr.ErrInvalidData) && hasWarning(doc, wl.WarnNoAudioFrames) {
 					t.Skip("no audio essence: the editor refuses the write")
 				}

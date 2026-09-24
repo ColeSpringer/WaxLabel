@@ -24,22 +24,19 @@ func CheckChapterCount(chapters []core.Chapter) error {
 }
 
 // ID3v2 chapters are reference-based. CHAP and CTOC are top-level frames: CHAP stores a
-// time span and optional subframes, while CTOC stores child element IDs. This codec
-// decodes each CHAP one subframe level deep for its TIT2 title and uses the selected CTOC
-// only for ordering. It does not recurse through child references, so malformed or hostile
-// tags cannot create deep traversal.
-//
-// Reimplemented from the ID3v2 Chapter Frame Addendum; reference implementations were
-// consulted for design only.
+// time span and optional subframes, CTOC stores child element IDs. This codec decodes each
+// CHAP one subframe level deep for its TIT2 title and uses the selected CTOC only for
+// ordering. It does not recurse through child references, so a hostile tag cannot force
+// deep traversal. Reimplemented from the ID3v2 Chapter Frame Addendum; reference
+// implementations were consulted for design only.
 
 const (
-	// chapFieldUnused is the 0xFFFFFFFF sentinel the spec defines for a CHAP byte-offset
-	// field that is "not used". We always write it for both offset fields (we navigate by
-	// time, not byte offset) and reuse it as the "no explicit end time" marker for the end
-	// time field, so an open-ended chapter (End == 0) round-trips.
+	// chapFieldUnused is the spec's 0xFFFFFFFF "not used" sentinel for a CHAP byte-offset
+	// field. Both offset fields always carry it (navigation is by time), and the end-time
+	// field reuses it as "no explicit end", so an open-ended chapter (End == 0) round-trips.
 	chapFieldUnused uint32 = 0xFFFFFFFF
-	// chapTimeMax is the largest chapter time we store: one below the unused sentinel, so a
-	// clamped overflow never collides with "no end time".
+	// chapTimeMax is the largest stored chapter time: one below the unused sentinel, so a
+	// clamped overflow never reads as "no end time".
 	chapTimeMax uint32 = 0xFFFFFFFE
 )
 
@@ -56,18 +53,17 @@ const (
 	chapElementPrefix = "chp"
 )
 
-// maxChapterSubframes caps how many subframes one CHAP is parsed for - defense-in-depth
-// against a hostile frame, since in practice a CHAP carries just a TIT2.
+// maxChapterSubframes caps how many subframes one CHAP is parsed for. A hostile frame
+// could carry many; a real one carries a TIT2.
 const maxChapterSubframes = 16
 
-// ProjectChapters decodes a tag's CHAP/CTOC frames into a start-ordered, flat chapter list
-// plus any read warnings (a flattened nested table of contents). It returns nil chapters
-// when the tag carries none. Chapters are stable-sorted by start time, so a source that stored
-// CHAP/CTOC out of start order still projects in time order, making a load->store round-trip a
-// no-op (mirrors the Vorbis and Matroska projectors). The CTOC/CHAP order built below only breaks
-// ties between equal-start chapters: the top-level CTOC's child element-ID list when present,
-// falling back to the first CTOC, then to the CHAP frames' file order; a CHAP not referenced by
-// the chosen CTOC is appended in file order so no chapter is lost.
+// ProjectChapters decodes a tag's CHAP/CTOC frames into a start-ordered flat chapter list
+// plus read warnings (a flattened nested table of contents), or nil when the tag has
+// none. Chapters are stable-sorted by start so an out-of-order source projects in time
+// order and a load->store round-trip is a no-op, as in the Vorbis and Matroska
+// projectors. CTOC/CHAP order only breaks ties between equal starts: the top-level CTOC's
+// child list, else the first CTOC, else CHAP file order; a CHAP the chosen CTOC does not
+// reference is appended in file order so no chapter is lost.
 func ProjectChapters(t *Tag) ([]core.Chapter, []core.Warning) {
 	if t == nil {
 		return nil, nil
@@ -76,16 +72,14 @@ func ProjectChapters(t *Tag) ([]core.Chapter, []core.Warning) {
 	if major < 3 {
 		major = 3 // CHAP/CTOC are v2.3+; their subframes use the 10-byte header geometry
 	}
-	// Keep every CHAP in file order; do not key by element ID, which would collapse
-	// duplicate or empty IDs (multiple CHAP frames sharing an ID, or several with none)
-	// into one chapter and lose the rest. CTOC ordering is resolved against this slice
-	// below using a parallel emitted[] marker, so each TOC reference consumes one distinct
-	// CHAP rather than overwriting a map entry.
+	// Keep every CHAP in file order rather than keyed by element ID, which would collapse
+	// duplicate or empty IDs into one chapter. The TOC walk below consumes one distinct
+	// CHAP per reference.
 	var chaps []decodedCHAP
 	var tocs []ctocFrame
 	for _, f := range t.frames {
-		// A compressed or encrypted frame body is uninterpretable here. Preserve opaque
-		// frames through the rebuild path, but do not project them as chapters.
+		// An opaque (compressed or encrypted) body is uninterpretable; the rebuild path
+		// preserves it, but it does not project.
 		if f.Opaque {
 			continue
 		}
@@ -104,13 +98,11 @@ func ProjectChapters(t *Tag) ([]core.Chapter, []core.Warning) {
 		return nil, nil
 	}
 
-	// Index the CHAP positions by element ID so the TOC walk consumes them in O(1) rather than
-	// rescanning the whole slice per child (a crafted tag can hold many CHAP frames up to the
-	// element cap). byID[id] is the file-order queue of not-yet-placed CHAP indices for that ID;
-	// taken[i] marks chaps[i] as placed. The chosen TOC orders the list: for each child
-	// element-ID, take the first un-placed CHAP with that ID. Any CHAP the TOC did not reference
-	// (or all of them when there is no TOC) is appended in file order, so no chapter is lost -
-	// including duplicate and empty IDs, which each occupy their own slot.
+	// Index CHAP positions by element ID so the TOC walk is O(1) per child; a crafted tag
+	// can hold CHAP frames up to the element cap. byID[id] queues the not-yet-placed
+	// indices for that ID in file order and taken[i] marks chaps[i] placed. For each TOC
+	// child, take the first un-placed CHAP with that ID; every CHAP the TOC did not
+	// reference is appended in file order, including duplicate and empty IDs.
 	byID := make(map[string][]int, len(chaps))
 	for i, c := range chaps {
 		byID[c.id] = append(byID[c.id], i)
@@ -134,10 +126,8 @@ func ProjectChapters(t *Tag) ([]core.Chapter, []core.Warning) {
 			ordered = append(ordered, chaps[i].ch)
 		}
 	}
-	// Sort by start so an out-of-order source projects in time order and a load->store
-	// round-trip is a no-op; the CTOC/file order built above breaks ties for equal-start chapters
-	// deterministically. Only the projected view changes - a tag-only edit still preserves the
-	// on-disk frame order.
+	// Sort by start; the CTOC/file order above breaks ties. Only the projected view
+	// changes: a tag-only edit still preserves the on-disk frame order.
 	core.SortChaptersByStart(ordered)
 
 	var ws []core.Warning
@@ -166,7 +156,7 @@ type ctocFrame struct {
 }
 
 // pickTOC selects the table of contents to order by: the first top-level CTOC, else the
-// first CTOC, else nil (no CTOC - order by CHAP file order).
+// first CTOC, else nil (no CTOC: order by CHAP file order).
 func pickTOC(tocs []ctocFrame) *ctocFrame {
 	for i := range tocs {
 		if tocs[i].topLevel {
@@ -182,14 +172,11 @@ func pickTOC(tocs []ctocFrame) *ctocFrame {
 // decodeCHAP decodes a CHAP frame body into its element ID and a chapter. Layout:
 // element-id (NUL-terminated Latin-1), start ms (uint32 BE), end ms (uint32 BE), start
 // byte offset (uint32 BE), end byte offset (uint32 BE), then optional subframes. The byte
-// offsets are ignored (we navigate by time); the title comes from a TIT2 subframe parsed
-// one level deep. An end of chapFieldUnused (or 0) means "no explicit end".
-//
-// A start of chapFieldUnused (0xFFFFFFFF) is the spec's "time not used" sentinel for a
-// chapter located purely by byte offset. Since this decoder navigates by time and ignores
-// the byte offsets, such a chapter has no usable position and is reported unrepresentable
-// (ok == false) rather than projected at a bogus ~49.7-day timestamp; it is preserved
-// verbatim on an unrelated edit.
+// offsets are ignored; the title comes from a TIT2 subframe parsed one level deep. An end
+// of chapFieldUnused (or 0) means "no explicit end". A start of chapFieldUnused is the
+// spec's "time not used" sentinel for a byte-offset-only chapter; with no usable position
+// it is reported unrepresentable (ok == false) rather than projected at ~49.7 days, and an
+// unrelated edit preserves it verbatim.
 func decodeCHAP(body []byte, major byte) (string, core.Chapter, bool) {
 	id, rest, ok := cutLatin1(body)
 	if !ok || len(rest) < 16 {
@@ -260,28 +247,26 @@ func decodeCTOC(body []byte) (ctocFrame, bool) {
 	return c, true
 }
 
-// chapterFrames renders CHAP frames (in order) plus one ordered top-level CTOC.
-// Reports 32-bit ms clamp. Open End==0 filled from MediaDuration when known
-// (else 0xFFFFFFFF sentinel). Concrete ends so readers see a real end.
-
+// chapterFrames renders a chapter list as CHAP frames (one per chapter, in order) followed
+// by one ordered top-level CTOC, and reports whether any time was clamped to the 32-bit
+// millisecond field. CHAP frames in chapter order read correctly even when a reader
+// ignores the CTOC. Open-ended chapters (End == 0) first get concrete ends, on a clone, so
+// a spec-conforming reader sees bounded chapters instead of the 0xFFFFFFFF sentinel
+// (~49.7 days): an interior open chapter takes the next chapter's start
+// (core.FillInteriorEnds, shared with MP4), and a trailing one takes a bounded end when
+// the duration is known. The fill is ID3-local; the core.Chapter{End:0} model is
+// unchanged. Precondition: len(chs) <= MaxChapters, since the CTOC count is one byte.
 func chapterFrames(chs []core.Chapter, duration time.Duration, version byte) (frames []Frame, overflow bool) {
 	filled := core.CloneChapters(chs)
-	// Interior open ends -> the next chapter's start (gapless), shared with the MP4 paths so the
-	// rule cannot drift. It leaves the last chapter open. FillInteriorEnds gates on a strictly
-	// greater next start, so two chapters sharing a start (a degenerate case already surfaced by a
-	// duplicate-chapter warning) leave the interior one open rather than giving it End == Start, an
-	// empty interval. That is why coincident-start chapters serialize with asymmetric ends: the
-	// interior one stays open (encodeCHAP's 0xFFFFFFFF sentinel) while the trailing fill below
-	// bounds only the last chapter. No data is lost, and the duplicate start is already warned, so
-	// this is left as-is rather than special-cased in cross-format shared code.
+	// Interior open ends take the next chapter's start; the last chapter stays open.
+	// FillInteriorEnds requires a strictly greater next start, so two chapters sharing a
+	// start (already warned as a duplicate) leave the interior one open rather than an
+	// empty interval, while the trailing fill below bounds only the last chapter.
 	core.FillInteriorEnds(filled)
-	// Trailing open chapter -> a bounded end (ID3-local), whenever the duration is known (> 0).
-	// A duration past the last start fills a run-to-EOF end (End = duration); a duration at or
-	// before the last start (a chapter authored past the ms-floored media duration) fills a
-	// bounded zero-length end (End = Start) rather than leaving it open, so encodeCHAP serializes
-	// endMs == startMs instead of the 0xFFFFFFFF sentinel a player renders as ~49.7 days. Using
-	// max(duration, start) keeps the end from running backwards. When the duration is unknown (0)
-	// the chapter stays open and encodeCHAP emits the sentinel - no worse than before.
+	// A trailing open chapter gets a bounded end when the duration is known: End = duration
+	// when it is past the last start, else a zero-length End = Start, so encodeCHAP writes
+	// endMs == startMs instead of the sentinel a player renders as ~49.7 days. An unknown
+	// duration (0) leaves it open.
 	if n := len(filled); n > 0 && filled[n-1].End == 0 && duration > 0 {
 		filled[n-1].End = max(duration, filled[n-1].Start)
 	}
@@ -303,13 +288,11 @@ func chapterFrames(chs []core.Chapter, duration time.Duration, version byte) (fr
 func encodeCHAP(id string, ch core.Chapter, version byte) ([]byte, bool) {
 	startMs, ov1 := durationToMs(ch.Start, chapTimeMax)
 	endMs, ov2 := chapFieldUnused, false
-	// A closed chapter writes an explicit end, including a bounded zero-length end (End == Start,
-	// nonzero) so a past/at-duration trailing chapter serializes endMs == startMs rather than the
-	// ~49.7-day sentinel. A backwards end (End < Start) or an unset one (End == 0) is treated as
-	// "open" and emits the unused sentinel - serializing it would only write an invalid interval.
-	// This bounds a zero-length end everywhere except at t=0: a chapter authored with
-	// Start == End == 0 cannot be distinguished from an unset end, so it stays open (the one
-	// documented corner of the bounded-zero-length behavior).
+	// A closed chapter writes an explicit end, including a zero-length End == Start
+	// (nonzero) so a past/at-duration trailing chapter serializes endMs == startMs. A
+	// backwards end (End < Start) or an unset one (End == 0) is open and emits the unused
+	// sentinel. A chapter with Start == End == 0 is indistinguishable from unset and stays
+	// open.
 	if ch.End >= ch.Start && ch.End > 0 {
 		endMs, ov2 = durationToMs(ch.End, chapTimeMax)
 	}

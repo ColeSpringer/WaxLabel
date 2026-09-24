@@ -10,8 +10,8 @@ import (
 )
 
 // mp4ZeroConfig returns a copy of an MP4 with the esds descriptor payload zeroed, so the codec
-// configuration is unreadable while every other byte; the sample entry the digest salts with
-// included; stays exactly as it was.
+// configuration is unreadable while every other byte, including the sample entry the digest
+// salts with, is unchanged.
 func mp4ZeroConfig(t *testing.T, data []byte) []byte {
 	t.Helper()
 	out := append([]byte(nil), data...)
@@ -66,9 +66,8 @@ func TestMP4AACSampleRateFromConfig(t *testing.T) {
 	}
 }
 
-// every SBR signalling a config can carry maps to the geometry a player produces, including the
-// tail that explicitly denies SBR and the downsampled shape whose extension rate must not be
-// doubled.
+// Every SBR signalling a config can carry maps to the geometry a player produces, including
+// the tail that denies SBR and the downsampled shape whose extension rate must not be doubled.
 func TestMP4AACSBRShapes(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -231,8 +230,8 @@ func TestMP4EsdsProgramConfigElement(t *testing.T) {
 	}
 }
 
-// reading the esds must not move the geometry or the digest of the AAC files that already parsed
-// correctly; only the profile gains detail.
+// Reading the esds must not move the geometry or the digest of the existing AAC fixtures; only
+// the profile gains detail.
 func TestMP4ExistingAACFixturesUnchanged(t *testing.T) {
 	t.Parallel()
 	for _, path := range []string{"../testdata/sample.m4a", "../testdata/notags.m4a", "../testdata/sample_chapters.m4b"} {
@@ -287,7 +286,7 @@ func TestMP4HEAACFixtures(t *testing.T) {
 	}
 }
 
-// real ffmpeg output at 96 kHz, where the sample entry's 16.16 rate field holds 0 and only the esds
+// ffmpeg output at 96 kHz, where the sample entry's 16.16 rate field holds 0 and only the esds
 // config carries the rate. Both the .m4a and the QuickTime .mov shape must agree with ffprobe.
 func TestMP4DifferentialFFmpegHiResAAC(t *testing.T) {
 	t.Parallel()
@@ -353,7 +352,7 @@ func TestMP4DifferentialFFprobeSBRShapes(t *testing.T) {
 	}
 }
 
-// real fdk-aac files, where ffprobe's profile is a second check on the object type we name.
+// fdk-aac fixtures, where ffprobe's profile is a second check on the named object type.
 func TestMP4DifferentialHEAACFixtures(t *testing.T) {
 	t.Parallel()
 	requireTool(t, "ffprobe")

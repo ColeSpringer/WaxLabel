@@ -23,8 +23,8 @@ const (
 	sampleM4B = "../testdata/sample_chapters.m4b" // ffmpeg-authored: chpl + a QuickTime chapter track
 )
 
-// committed real-ffmpeg M4B (chpl plus a QuickTime chapter text track) without needing ffmpeg at
-// test time.
+// The ffmpeg-written M4B fixture (chpl plus a QuickTime chapter text track), read without
+// ffmpeg.
 func TestMP4ReadsChapterFixture(t *testing.T) {
 	doc := mustParseFile(t, sampleM4B)
 	chs := doc.Chapters()
@@ -166,9 +166,9 @@ func TestMP4DifferentialQTChapterTrack(t *testing.T) {
 func TestMP4DifferentialQTChapterFaststart(t *testing.T) {
 	requireTool(t, "ffmpeg")
 	requireTool(t, "ffprobe")
-	// A faststart file puts moov before mdat, so writing chapters shifts the audio mdat by the moov
-	// delta (the existing chunk-offset fixup) while the chapter samples still land in a fresh mdat at
-	// end-of-file. ffmpeg must accept it and the audio must decode unchanged; the stronger offset path.
+	// A faststart file puts moov before mdat, so writing chapters shifts the audio mdat by the
+	// moov delta (the chunk-offset fixup) while the chapter samples go in a fresh mdat at
+	// end-of-file. ffmpeg must accept it and the audio must decode unchanged.
 	base := genM4A(t, map[string]string{"title": "FS"})
 	path := filepath.Join(t.TempDir(), "fast.m4a")
 	if o, err := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error",
@@ -236,8 +236,7 @@ func TestMP4DifferentialChapterAudioUnchanged(t *testing.T) {
 	}
 }
 
-// committed real-ffmpeg fixture without needing ffmpeg at test time, and round-trips an edit
-// through it.
+// The ffmpeg-written fixture, read without ffmpeg, and an edit round-tripped through it.
 func TestMP4ReadsSampleFixture(t *testing.T) {
 	doc := mustParseFile(t, sampleMP4)
 	f := doc.Fields()
@@ -289,8 +288,8 @@ func realPNG(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
-// genM4A creates a real AAC-in-MP4 file with ffmpeg, with the given metadata. It is the realistic
-// acquired-file case (ffmpeg also stamps an "encoder=Lavf" note).
+// genM4A creates an AAC-in-MP4 file with ffmpeg and the given metadata, the acquired-file case
+// (ffmpeg also stamps an "encoder=Lavf" note).
 func genM4A(t *testing.T, meta map[string]string) string {
 	t.Helper()
 	requireTool(t, "ffmpeg")
@@ -386,8 +385,8 @@ func TestMP4DifferentialFFmpegAcceptsOurOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Remux with stream copy: ffmpeg fully demuxes our atoms and audio, failing
-	// loudly if the moov/stco/mdat layout is malformed.
+	// Remux with stream copy: ffmpeg fully demuxes the atoms and audio, failing if the
+	// moov/stco/mdat layout is malformed.
 	remux := filepath.Join(t.TempDir(), "remux.m4a")
 	cmd := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error",
 		"-i", path, "-c", "copy", "-y", remux)
@@ -401,8 +400,8 @@ func TestMP4DifferentialFFmpegAcceptsOurOutput(t *testing.T) {
 
 func TestMP4DifferentialDecodeUnchanged(t *testing.T) {
 	requireTool(t, "ffmpeg")
-	// Editing tags must not disturb the audio: the decoded PCM of our output must
-	// match the decoded PCM of the original byte-for-byte.
+	// Editing tags must not disturb the audio: the decoded PCM of the output must match
+	// the decoded PCM of the original byte-for-byte.
 	path := genM4A(t, map[string]string{"title": "Pre"})
 	pcmBefore := decodePCM(t, path)
 
@@ -441,9 +440,8 @@ func decodePCM(t *testing.T, path string) []byte {
 	return b
 }
 
-// editing QuickTime chapters in a shared mdat leaves the audio-essence digest unchanged.
-// Front-loaded chapter samples are excluded from the digest, so retitling chapters does not change
-// the audio fingerprint.
+// Editing QuickTime chapters in a shared mdat leaves the audio-essence digest unchanged:
+// front-loaded chapter samples are excluded from the digest.
 func TestMP4ChapterEditKeepsEssenceDigest(t *testing.T) {
 	ctx := context.Background()
 	before, err := mustParseFile(t, sampleM4B).HashAudioEssence(ctx)
@@ -488,9 +486,9 @@ func TestMP4DurationIsEditListTrimmed(t *testing.T) {
 	}
 }
 
-// real ffmpeg output at 96 kHz, where the sample entry's 16.16 rate field cannot hold the rate. The
-// .m4a leg carries a bare cookie on a v0 entry and the .mov leg a wave-wrapped one on a QuickTime
-// v2 entry; both must report the codec configuration's geometry.
+// ffmpeg output at 96 kHz, where the sample entry's 16.16 rate field cannot hold the rate. The
+// .m4a leg carries a bare cookie on a v0 entry and the .mov leg a wave-wrapped one on a
+// QuickTime v2 entry; both must report the codec configuration's geometry.
 func TestMP4DifferentialFFmpegHiResALAC(t *testing.T) {
 	requireTool(t, "ffmpeg")
 	dir := t.TempDir()

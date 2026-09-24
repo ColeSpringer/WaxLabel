@@ -163,7 +163,7 @@ func TestMP3DifferentialFFmpegDecodes(t *testing.T) {
 		if _, _, err := plan.Execute(context.Background(), wl.SaveBack()); err != nil {
 			t.Fatal(err)
 		}
-		// Decode the audio stream: this fails loudly if our framing is broken.
+		// Decode the audio stream: this fails if the framing is broken.
 		cmd := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error",
 			"-i", path, "-map", "0:a", "-f", "null", "-")
 		if out, err := cmd.CombinedOutput(); err != nil {

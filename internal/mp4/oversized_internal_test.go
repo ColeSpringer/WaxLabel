@@ -15,10 +15,9 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestCheckItemSizes is the unit test of the write-side oversized-item guard: a covr item
-// past the limit reports ErrPictureTooLarge, any other ilst item reports ErrSizeTooLarge, an
-// item within the limit passes, and a zero/unset limit falls back to the 256 MiB library ceiling
-// (so a normal item still passes rather than the guard rejecting everything or panicking).
+// TestCheckItemSizes covers the write-side oversized-item check: a covr item past the
+// limit reports ErrPictureTooLarge, any other ilst item reports ErrSizeTooLarge, an item
+// within the limit passes, and a zero/unset limit falls back to the 256 MiB library ceiling.
 func TestCheckItemSizes(t *testing.T) {
 	const limit = 1024
 	big := make([]byte, 2048)
@@ -39,10 +38,8 @@ func TestCheckItemSizes(t *testing.T) {
 	}
 }
 
-// TestReadPayloadWholeFailsLoudOnOversize is the discriminating read-side regression: a
-// node whose declared payload exceeds the cap must fail loudly with ErrSizeTooLarge
-// *before* reading or allocating, where the old min(payloadSize, cap) silently
-// truncated to the cap.
+// TestReadPayloadWholeFailsLoudOnOversize: a node whose declared payload exceeds the cap
+// must fail with ErrSizeTooLarge before reading or allocating, not truncate to the cap.
 func TestReadPayloadWholeFailsLoudOnOversize(t *testing.T) {
 	src := core.BytesSource(make([]byte, 16)) // never actually read: the size check returns first
 	// 100 MiB declared payload against the 64 MiB structural cap.
@@ -50,17 +47,17 @@ func TestReadPayloadWholeFailsLoudOnOversize(t *testing.T) {
 	if _, err := readPayloadWhole(src, n, maxMetaChunk, 256<<20); !errors.Is(err, waxerr.ErrSizeTooLarge) {
 		t.Fatalf("oversized payload: err = %v, want ErrSizeTooLarge (no silent truncation)", err)
 	}
-	// readPayloadPrefix, by contrast, intentionally reads only the prefix and never fails on a
-	// larger atom: a 100 MiB atom still yields its 4-byte prefix.
+	// readPayloadPrefix, by contrast, reads only the prefix and never fails on a larger
+	// atom: a 100 MiB atom still yields its 4-byte prefix.
 	src2 := core.BytesSource(make([]byte, 8+4))
 	if b, err := readPayloadPrefix(src2, node{offset: 0, headerLen: 8, size: 100 << 20}, 4, 256<<20); err != nil || len(b) != 4 {
 		t.Fatalf("prefix read of a large atom: b=%d err=%v, want 4 bytes no error", len(b), err)
 	}
 }
 
-// TestCheckBuiltItemsFloorsAtParsedItems covers the fix: an item already present at
-// parse (read within the parse limit) must not be rejected on write even when the write
-// limit is far smaller - checkBuiltItems floors the limit at the largest parsed item.
+// TestCheckBuiltItemsFloorsAtParsedItems: an item already present at parse (read within
+// the parse limit) must not be rejected on write even when the write limit is far
+// smaller; checkBuiltItems floors the limit at the largest parsed item.
 func TestCheckBuiltItemsFloorsAtParsedItems(t *testing.T) {
 	const limit = 100
 	parsed := []item{{name: atomName("covr"), payload: make([]byte, 500)}} // a large cover read at parse
@@ -77,9 +74,9 @@ func TestCheckBuiltItemsFloorsAtParsedItems(t *testing.T) {
 	}
 }
 
-// TestPlanRejectsOversizedItem proves the guard is wired into the write path: a custom tag value
-// larger than the configured limit renders into an oversized "----" freeform that Plan must
-// reject with ErrSizeTooLarge instead of writing an item it could not read back.
+// TestPlanRejectsOversizedItem checks the write path: a custom tag value larger than the
+// configured limit renders into an oversized "----" freeform that Plan must reject with
+// ErrSizeTooLarge.
 func TestPlanRejectsOversizedItem(t *testing.T) {
 	raw, err := os.ReadFile("../../testdata/sample.m4a")
 	if err != nil {
@@ -102,9 +99,9 @@ func TestPlanRejectsOversizedItem(t *testing.T) {
 	}
 }
 
-// TestPlanChapterPathRejectsOversizedItem proves the guard is wired into the *chapter* write path
-// too (write_chapters.go), not only the tag path: a chapter edit that also carries an oversized
-// tag routes through buildChapterUdta, whose checkItemSizes must reject it with ErrSizeTooLarge.
+// TestPlanChapterPathRejectsOversizedItem checks the chapter write path (write_chapters.go)
+// too: a chapter edit that also carries an oversized tag routes through buildChapterUdta,
+// whose checkItemSizes must reject it with ErrSizeTooLarge.
 func TestPlanChapterPathRejectsOversizedItem(t *testing.T) {
 	raw, err := os.ReadFile("../../testdata/sample_chapters.m4b")
 	if err != nil {
@@ -133,7 +130,7 @@ func TestPlanChapterPathRejectsOversizedItem(t *testing.T) {
 	}
 }
 
-// mkMP4WithUdtaMeta builds a minimal parseable MP4 - ftyp, moov(udta(meta)), mdat - wrapping the
+// mkMP4WithUdtaMeta builds a minimal parseable MP4 (ftyp, moov(udta(meta)), mdat) wrapping the
 // given raw meta box (header included), so a test can exercise parse's moov.udta.meta gap check
 // against a specific meta shape and, for an editable shape, round-trip a tag edit through it.
 func mkMP4WithUdtaMeta(meta []byte) []byte {
@@ -144,10 +141,9 @@ func mkMP4WithUdtaMeta(meta []byte) []byte {
 	return slices.Concat(ftyp, moov, mdat)
 }
 
-// TestParseRejectsUndersizedMetaGap covers the fix: a moov.udta.meta with a gap between
-// where its children end and its own end corrupts a create-ilst edit (buildCreated
-// appends the new ilst at meta.end(), but a re-parse resolves the first child earlier,
-// so the ilst lands misaligned).
+// TestParseRejectsUndersizedMetaGap: a moov.udta.meta with a gap between where its
+// children end and its own end corrupts a create-ilst edit (buildCreated appends the new
+// ilst at meta.end(), but a re-parse resolves the first child earlier, misaligning it).
 func TestParseRejectsUndersizedMetaGap(t *testing.T) {
 	ctx := context.Background()
 	reject := map[string][]byte{
@@ -176,9 +172,9 @@ func TestParseRejectsUndersizedMetaGap(t *testing.T) {
 	}
 }
 
-// TestEmptyMetaRoundTripsTagEdit locks in the lossless empty-meta upgrade the gap check leaves
-// intact: a size-8 empty meta (no ilst, no gap) still accepts a tag edit - the create-ilst path
-// inserts an ilst inside the existing meta - and the written file re-parses with the tag present.
+// TestEmptyMetaRoundTripsTagEdit: a size-8 empty meta (no ilst, no gap) still accepts a tag
+// edit (the create-ilst path inserts an ilst inside the existing meta) and the written file
+// re-parses with the tag present.
 func TestEmptyMetaRoundTripsTagEdit(t *testing.T) {
 	ctx := context.Background()
 	raw := mkMP4WithUdtaMeta(renderAtom(atomName("meta"), nil)) // size-8 empty bare meta

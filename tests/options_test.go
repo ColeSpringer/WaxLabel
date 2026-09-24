@@ -145,8 +145,8 @@ func TestPaddingFloorWiring(t *testing.T) {
 	src := readFixture(t, sampleFLAC)
 
 	// A floor (Min == Target) grows the region: an edit that would fit the fixture's small existing
-	// padding must instead reserve at least Min, not reuse the smaller leftover (the fix. Min now gates
-	// the reuse branch).
+	// padding must reserve at least Min instead of reusing the smaller leftover. Min gates the
+	// reuse branch.
 	floorPlan, err := mustParseBytes(t, src).Edit().Set(tag.Title, "Floor").
 		Prepare(wl.WithPadding(wl.PaddingPolicy{Target: 200000, Min: 200000, ReuseInPlace: true}))
 	if err != nil {

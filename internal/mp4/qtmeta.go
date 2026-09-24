@@ -15,18 +15,16 @@ import (
 //   - An mdta-handler meta box, whose "keys" atom is an index of full key names and whose
 //     ilst items are keyed by that index rather than by a four-character atom name. ffmpeg
 //     writes this shape under "-movflags +use_metadata_tags".
-//   - Classic QuickTime text atoms ("\xa9nam", "\xa9swr", ...) sitting directly under
-//     moov.udta with no meta wrapper at all, which is what a plain .mov carries.
+//   - Classic QuickTime text atoms ("\xa9nam", "\xa9swr", ...) directly under moov.udta
+//     with no meta wrapper, as in a plain .mov.
 //
-// A file can carry all three stores at once. Every store contributes, so nothing a file
-// holds is invisible, and each contributes under its own Contribution.Source label
-// ("\xa9nam" for the iTunes ilst, "mdta:title", "udta.\xa9nam"). BuildFamilies marks a key
-// unselected when two sources disagree, so a disagreement between two stores lands in
-// lint's conflicting-families rule instead of one store silently winning.
+// A file can carry all three stores at once. Every store contributes, each under its own
+// Contribution.Source label ("\xa9nam" for the iTunes ilst, "mdta:title",
+// "udta.\xa9nam"). BuildFamilies marks a key unselected when two sources disagree, so a
+// disagreement between stores surfaces in lint's conflicting-families rule.
 
 // mdtaHandler is the meta hdlr handler_type for a keys-indexed metadata store; mdirHandler
-// is the iTunes one. A meta with any other handler is decoded as iTunes, which is what the
-// four-character dispatch already assumed.
+// is the iTunes one. A meta with any other handler is decoded as iTunes.
 const (
 	mdtaHandler = "mdta"
 	mdirHandler = "mdir"
@@ -43,8 +41,8 @@ const (
 )
 
 // parseKeys decodes a "keys" box payload into the key-name index. A malformed box
-// yields no names, so every ilst item falls back to being preserved verbatim rather
-// than resolving against a half-read index.
+// yields no names, so every ilst item is preserved verbatim rather than resolved
+// against a half-read index.
 func parseKeys(p []byte) []string {
 	if len(p) < 8 {
 		return nil
@@ -95,7 +93,7 @@ func renderKeys(names []string) []byte {
 
 // mdtaIndex returns the 1-based keys index an mdta ilst item's four-byte name encodes, or 0
 // when the name is not a usable index. An item naming an index past the keys table is left
-// unresolved (and so preserved verbatim) rather than dropped.
+// unresolved and so preserved verbatim.
 func mdtaIndex(name [4]byte) uint32 { return binary.BigEndian.Uint32(name[:]) }
 
 // resolveMdtaKey returns the key name an mdta ilst item resolves to through the keys
@@ -125,9 +123,9 @@ const (
 	langEng        uint16 = 0x15C7
 )
 
-// udtaText is one decoded QuickTime text atom sitting directly under moov.udta: its
-// four-character name, its parsed entries, and the canonical key it maps to. entries
-// beyond the canonical one are preserved verbatim by the writer and never dropped.
+// udtaText is one decoded QuickTime text atom directly under moov.udta: its four-character
+// name, its parsed entries, and the canonical key it maps to. The writer preserves entries
+// beyond the canonical one verbatim.
 type udtaText struct {
 	ref     atomRef
 	name    [4]byte
@@ -221,9 +219,8 @@ func decodeUdtaText(ref atomRef, payload []byte) (udtaText, bool) {
 }
 
 // udtaContributions projects the decoded udta-level text atoms into canonical
-// contributions. Each carries a "udta."-prefixed source label so a value that disagrees with
-// the same key in an ilst surfaces as a conflicting family rather than one store winning
-// silently.
+// contributions. Each carries a "udta."-prefixed source label, so a value that disagrees
+// with the same key in an ilst surfaces as a conflicting family.
 func udtaContributions(texts []udtaText) []core.Contribution {
 	var out []core.Contribution
 	for _, u := range texts {

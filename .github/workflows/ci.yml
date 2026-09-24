@@ -5,9 +5,9 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-  # A weekly run on an idle main catches drift no push would: a new Go patch release
-  # (setup-go resolves the newest toolchain go.mod allows), a new ffmpeg in apt behind the
-  # differential gate, and new entries in the Go vulnerability database.
+  # A weekly run on an idle main catches what no push would: a new Go patch release
+  # (setup-go resolves the newest toolchain go.mod allows), a new apt ffmpeg behind the
+  # differential gate, and new Go vulnerability database entries.
   schedule:
     - cron: '17 6 * * 1'
 
@@ -23,16 +23,14 @@ concurrency:
 
 jobs:
   # Core suite across operating systems, plus native linux/arm64 since the release ships
-  # it. The Go version is read from go.mod so the toolchain stays a single source of
-  # truth. Differential tests that shell out to ffmpeg/ffprobe skip cleanly here when the
-  # tools are absent (see the dedicated `differential` job below for the
-  # guaranteed-present gate).
+  # it. The Go version comes from go.mod. Differential tests that shell out to
+  # ffmpeg/ffprobe skip here when the tools are absent; the `differential` job below
+  # guarantees them.
   #
   # Windows runs the full suite, not just a compile: the filesystem semantics the write
   # path depends on (rename over an open handle, directory fsync, the read-only attribute,
-  # broken-pipe errnos) differ there in ways only running the tests catches. The race
-  # detector needs cgo, and the windows runners ship mingw-w64 gcc, so CGO_ENABLED is
-  # pinned rather than left to the default.
+  # broken-pipe errnos) differ there. The race detector needs cgo, and the windows runners
+  # ship mingw-w64 gcc, so CGO_ENABLED is pinned.
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -53,12 +51,10 @@ jobs:
         run: go build ./...
       - name: Vet
         run: go vet ./...
-      # release.yml builds the targets listed in .github/release-targets with cgo off. The
-      # matrix runs four of them natively, but with cgo on for the race detector, so this
-      # is the one place every release build configuration compiles before a tag is cut;
-      # it costs seconds. Ahead of the test step on purpose: as a compile gate it must
-      # still report when a test fails, or a broken build ships behind an unrelated red
-      # test.
+      # release.yml builds the targets in .github/release-targets with cgo off. The matrix
+      # runs four of them natively with cgo on, so this is the one place every release
+      # build configuration compiles before a tag is cut. It runs before the tests so a
+      # broken build still reports behind an unrelated red test.
       - name: Cross-build release targets
         if: matrix.os == 'ubuntu-latest'
         env:
@@ -114,8 +110,8 @@ jobs:
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
 
   # Known vulnerabilities in the module graph and the standard library, reported only where
-  # the code actually reaches them. The tool is deliberately unpinned: it is a client for a
-  # live database, and the newest client reads the newest schema.
+  # the code reaches them. The tool is unpinned: it is a client for a live database, and
+  # the newest client reads the newest schema.
   vulncheck:
     name: vulncheck
     runs-on: ubuntu-latest
@@ -129,12 +125,10 @@ jobs:
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
-  # The write-side differential is the real proof of interoperability: with
-  # ffmpeg/ffprobe guaranteed present, the per-format differential tests run
-  # (instead of skipping) and gate the build, so each format's differential is
-  # enforced as it ships rather than discovered at v1.0. The differential tests
-  # are gated by runtime tool-presence checks (exec.LookPath), matching the
-  # committed test pattern; installing ffmpeg here is what flips them on.
+  # With ffmpeg/ffprobe present, the per-format differential tests run and gate the
+  # build, so each format's interoperability is enforced as it ships. The tests check
+  # for the tools at runtime (exec.LookPath); installing ffmpeg here is what turns
+  # them on.
   differential:
     name: differential (ffmpeg)
     runs-on: ubuntu-latest
@@ -154,8 +148,8 @@ jobs:
           ffmpeg -version
           ffprobe -version
       - name: Test (race, differential suite)
-        # Make a missing binary a hard failure here (not a skip), so a broken
-        # ffmpeg install can't let the differential gate pass silently green.
+        # A missing binary is a hard failure here, not a skip, so a broken ffmpeg
+        # install cannot pass the differential gate.
         env:
           WAXLABEL_REQUIRE_FFMPEG: "1"
         run: go test ./... -race

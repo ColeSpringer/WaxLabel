@@ -7,8 +7,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// Cue child IDs not already declared (idCues/idCuePoint/idCueTrackPos/idCueClusterPos live in
-// matroska_write_test.go; idCluster/idSegment/idInfo/...
+// Cue child IDs not declared elsewhere; idCues/idCuePoint/idCueTrackPos/idCueClusterPos live in
+// matroska_write_test.go.
 const (
 	idCueTime  = 0xB3
 	idCueTrack = 0xF7
@@ -167,8 +167,8 @@ func assertAllCuesPointAtClusters(t *testing.T, data []byte, wantCross bool) {
 	}
 }
 
-// 3-cluster file through the real shift pipeline, asserting every cue, not just the first, is
-// repointed to its cluster.
+// A 3-cluster file through the shift pipeline: every cue, not just the first, is repointed to
+// its cluster.
 func TestMatroskaMultiClusterRebuildsAllCues(t *testing.T) {
 	for _, frontCues := range []bool{false, true} {
 		topology := "trailing-cues"

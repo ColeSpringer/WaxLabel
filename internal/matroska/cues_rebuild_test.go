@@ -139,9 +139,8 @@ func TestRebuildCuesToleratesVoid(t *testing.T) {
 	}
 }
 
-// TestRebuildCuesRefusesNonLeadingCRC: a CRC-32 that is not the leading child (so
-// hasCRC, which is leading-only, cannot reproduce it) marks the capture unrebuildable
-// rather than silently dropping the integrity guard on rebuild.
+// TestRebuildCuesRefusesNonLeadingCRC: a CRC-32 that is not the leading child (which
+// the leading-only hasCRC cannot reproduce) marks the capture unrebuildable.
 func TestRebuildCuesRefusesNonLeadingCRC(t *testing.T) {
 	crc := []byte{idCRC32 & 0xFF, 0x84, 0, 0, 0, 0} // a well-formed CRC element, mis-placed
 	point := encElement(idCuePoint, cat(uintElement(idCueTime, 0), cueTrackPosBytes(1, 872, 2), crc))
@@ -403,9 +402,10 @@ func TestCuesParseAllocBudget(t *testing.T) {
 	}
 }
 
-// Nested CRC-32 elements are valid in CuePoint, CueTrackPositions, and Seek. The
-// in-place patch paths only recompute the containing master CRC, so parsing a nested
-// CRC must force a rebuild.
+// validateNestedCRCs checks every CRC-32 leading a Cues, CuePoint, CueTrackPositions,
+// SeekHead, or Seek element in raw and returns how many it checked. Nested CRCs are
+// valid there, and the in-place patch paths recompute only the master CRC, so a
+// nested CRC must force a rebuild.
 func validateNestedCRCs(t *testing.T, raw []byte) int {
 	t.Helper()
 	rs := core.BytesSource(raw)

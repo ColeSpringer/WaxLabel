@@ -12,9 +12,8 @@ import (
 )
 
 // wavWithNZeroInfo builds a WAV whose LIST/INFO holds n zero-length items (8 bytes
-// each: a 4CC id and a zero size, no value, no pad). It is the cheap amplification
-// probe for the element cap - a flood of empty items that a missing cap would
-// still append one struct per header.
+// each: a 4CC id and a zero size, no value, no pad), the cheapest flood for the
+// element cap.
 func wavWithNZeroInfo(n int) []byte {
 	items := make([][2]string, n)
 	for i := range items {
@@ -23,10 +22,9 @@ func wavWithNZeroInfo(n int) []byte {
 	return wavWithInfo(items...)
 }
 
-// TestInfoElementCapRejectsFlood is the release-gate regression: a LIST/INFO of
-// MaxElements+1 items must fail with ErrSizeTooLarge rather than allocate one item
-// per 8-byte header, so WithLimits actually bounds a crafted LIST. A tiny cap keeps
-// it cheap and precise.
+// TestInfoElementCapRejectsFlood checks that a LIST/INFO of MaxElements+1 items fails
+// with ErrSizeTooLarge rather than allocating one item per 8-byte header. A tiny cap
+// keeps it cheap.
 func TestInfoElementCapRejectsFlood(t *testing.T) {
 	opts := core.DefaultParseOptions()
 	opts.Limits.MaxElements = 100
@@ -37,8 +35,7 @@ func TestInfoElementCapRejectsFlood(t *testing.T) {
 }
 
 // TestInfoElementCapDefaultLimit confirms the default 100000-item cap is enforced
-// too (not only an explicit WithLimits). The body is sized to just exceed the
-// default (~0.8 MB), not the report's 24 MB in-process reproduction.
+// without an explicit WithLimits. The body just exceeds the default (~0.8 MB).
 func TestInfoElementCapDefaultLimit(t *testing.T) {
 	src := wavWithNZeroInfo(bits.DefaultLimits.MaxElements + 1)
 	if _, err := parse(context.Background(), core.BytesSource(src), core.DefaultParseOptions()); !errors.Is(err, waxerr.ErrSizeTooLarge) {
@@ -46,9 +43,9 @@ func TestInfoElementCapDefaultLimit(t *testing.T) {
 	}
 }
 
-// TestInfoTruncatedListStillParses guards the preserved tolerance: a LIST/INFO
-// whose trailing item declares more bytes than are present stops at that item and
-// keeps the well-formed ones, with no error. Only a genuine cap breach is fatal.
+// TestInfoTruncatedListStillParses checks that a LIST/INFO whose trailing item
+// declares more bytes than are present stops at that item and keeps the well-formed
+// ones, with no error. Only a cap breach is fatal.
 func TestInfoTruncatedListStillParses(t *testing.T) {
 	body := append([]byte("INFO"), infoItemBytes("INAM", "hello")...)
 	body = append(body, "IART"...)

@@ -46,7 +46,7 @@ func buildMatroskaCh(docType, title string, chapters, tags []byte) []byte {
 
 func ms(n int) time.Duration { return time.Duration(n) * time.Millisecond }
 
-// committed real-ffmpeg chapter fixture: three chapters with absolute-nanosecond Start/End and
+// The ffmpeg-written chapter fixture: three chapters with absolute-nanosecond Start/End and
 // ChapterDisplay titles.
 func TestMatroskaReadChapters(t *testing.T) {
 	doc := mustParseFile(t, chaptersMKA)
@@ -80,8 +80,8 @@ func TestMatroskaReadChapters(t *testing.T) {
 	}
 }
 
-// edits a title on the real fixture and confirms the chapters reparse identically (absorption path
-// on a file with a Void) and the cluster essence is untouched.
+// A title edit on the fixture (the absorption path, since the file has a Void) reparses
+// identically and leaves the cluster essence untouched.
 func TestMatroskaChapterRoundTripFixture(t *testing.T) {
 	src := readFixture(t, chaptersMKA)
 	newChaps := []wl.Chapter{
@@ -109,9 +109,8 @@ func TestMatroskaChapterRoundTripFixture(t *testing.T) {
 	}
 }
 
-// edits chapters across both write paths and confirms every CRC-32 in the output; including the
-// re-rendered Chapters master; is recomputed correctly (the integrity check a strict reader
-// performs).
+// Chapter edits on both write paths recompute every CRC-32 in the output, including the
+// re-rendered Chapters master, which a strict reader checks.
 func TestMatroskaChapterCRCsValid(t *testing.T) {
 	src := readFixture(t, chaptersMKA)
 	for _, e := range []*wl.Editor{
@@ -127,8 +126,8 @@ func TestMatroskaChapterCRCsValid(t *testing.T) {
 	}
 }
 
-// chapters and confirms ffprobe; the authority; reads them back with their End times (proving the
-// Chapters tree is valid) while the FLAC audio stream stays intact.
+// ffprobe reads edited chapters back with their End times, proving the Chapters tree is valid,
+// and the FLAC audio stream stays intact.
 func TestMatroskaChapterDifferentialFFprobe(t *testing.T) {
 	requireTool(t, "ffprobe")
 	path := copyToTemp(t, chaptersMKA)
@@ -315,8 +314,8 @@ func TestMatroskaMultiEditionPreserved(t *testing.T) {
 	}
 }
 
-// clearing chapters on a multi-edition file removes the whole Chapters element; it must not drop
-// only the default edition and silently promote a previously-hidden non-default edition into view.
+// Clearing chapters on a multi-edition file removes the whole Chapters element. Dropping only
+// the default edition would promote a hidden non-default edition into view.
 func TestMatroskaChapterClearMultiEdition(t *testing.T) {
 	chapters := mkEl(idChapters, concat(
 		mkEdition(true, nil, mkAtom(1, 0, uint64(ms(300)), "DefaultChap")),
@@ -353,7 +352,7 @@ func TestMatroskaChapterOutOfOrderSorted(t *testing.T) {
 	if len(chs) != 2 || chs[0].Title != "First" || chs[1].Title != "Second" {
 		t.Fatalf("projection not sorted by start: %+v", chs)
 	}
-	// Re-setting the (already-sorted) projection is a true no-op.
+	// Re-setting the already-sorted projection is a no-op.
 	plan, err := doc.Edit().SetChapters(chs...).Prepare()
 	if err != nil {
 		t.Fatal(err)
@@ -361,7 +360,7 @@ func TestMatroskaChapterOutOfOrderSorted(t *testing.T) {
 	if !plan.Report().NoOp {
 		t.Errorf("SetChapters(doc.Chapters()...) on an out-of-order file should be a no-op, ops=%v", plan.Report().Operations)
 	}
-	// A real edit keeps each chapter's own UID; the start=0 chapter must reuse UID 100 (0x64) and the
+	// An edit keeps each chapter's own UID: the start=0 chapter must reuse UID 100 (0x64) and the
 	// later one UID 200 (0xC8), not the swapped file-order pair.
 	out, _ := saveMatroska(t, data, mustParseBytes(t, data).Edit().SetChapters(
 		wl.Chapter{Start: 0, End: ms(200), Title: "First Renamed"},
@@ -463,9 +462,8 @@ func TestMatroskaChapterReEditNoReparse(t *testing.T) {
 	}
 }
 
-// cross-format chapter transfer: an M4B's chapters project onto a Matroska destination (now that
-// Matroska writes chapters), the first time PlanTransfer's chapter path runs between two
-// chapter-bearing formats.
+// Cross-format chapter transfer: an M4B's chapters project onto a Matroska destination through
+// PlanTransfer's chapter path.
 func TestMatroskaChapterCopyFromM4B(t *testing.T) {
 	src := mustParseFile(t, sampleM4B)
 	srcChaps := src.Chapters()
@@ -490,7 +488,7 @@ func TestMatroskaChapterCopyFromM4B(t *testing.T) {
 		t.Error("expected a carried chapter item")
 	}
 
-	// Apply onto a real Matroska destination and confirm the chapters land.
+	// Apply onto a Matroska destination and check the chapters.
 	dstBytes := readFixture(t, sampleMKA)
 	dst := mustParseBytes(t, dstBytes)
 	plan, _, err := src.PrepareTransfer(dst)

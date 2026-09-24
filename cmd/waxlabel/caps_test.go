@@ -9,8 +9,7 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// capsCardinality returns the reported cardinality for key in a caps result, or
-// "" if the key is absent.
+// capsCardinality returns the cardinality caps reports for key, or "" if absent.
 func capsCardinality(jc jsonCaps, key string) string {
 	for _, k := range jc.Keys {
 		if k.Key == key {
@@ -108,7 +107,7 @@ func TestCapsM4BChapterTitleByteConstraint(t *testing.T) {
 }
 
 func TestCapsListsEditableVocabulary(t *testing.T) {
-	// All formats are fully field-writable today; FLAC editable keys should match KnownKeys.
+	// All formats are fully field-writable; FLAC editable keys should match KnownKeys.
 	var def jsonCaps
 	out, _, _ := runCLI(t, "--json", "caps", "--format", "flac")
 	if err := json.Unmarshal([]byte(out), &def); err != nil {
@@ -120,7 +119,7 @@ func TestCapsListsEditableVocabulary(t *testing.T) {
 }
 
 func TestCapsAllFlagIsGone(t *testing.T) {
-	// --all was removed; now an unknown flag (exit 2).
+	// --all is an unknown flag (exit 2).
 	_, errOut, code := runCLI(t, "caps", "--format", "flac", "--all")
 	if code != 2 {
 		t.Fatalf("caps --all exit = %d, want 2 (unknown flag)", code)

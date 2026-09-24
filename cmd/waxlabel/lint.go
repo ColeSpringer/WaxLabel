@@ -100,7 +100,7 @@ func lintLoop[T any](
 	for _, path := range paths {
 		t, err := compute(cmd.Context(), path)
 		if err != nil {
-			// Broken pipe: stop silently. isPipeClose gates so a real file error still records.
+			// Broken pipe: stop silently. isPipeClose gates so a coincident file error still records.
 			if errors.Is(context.Cause(cmd.Context()), errBrokenPipe) && isPipeClose(err) {
 				break
 			}
@@ -222,7 +222,7 @@ type fixOutcome struct {
 }
 
 // lintFixOne parses, applies safe remediation, saves, re-lints.
-// Re-lint keeps "remaining" honest (e.g. encoder stamp in vendor string survives Clear).
+// Re-lint keeps "remaining" accurate (e.g. an encoder stamp in a vendor string survives Clear).
 func lintFixOne(ctx context.Context, path string) (fixOutcome, error) {
 	doc, err := wl.ParseFile(ctx, path)
 	if err != nil {
@@ -257,7 +257,7 @@ func lintFixOne(ctx context.Context, path string) (fixOutcome, error) {
 	} else {
 		remaining = doc.Lint()
 	}
-	// No-op plan carries NoOpPlan sentinel in operations; clear so JSON/render stay honest.
+	// No-op plan carries the NoOpPlan sentinel in operations; clear it for JSON/render.
 	operations := plan.Report().Operations
 	if plan.IsNoOp() {
 		operations = nil

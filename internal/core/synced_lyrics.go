@@ -174,16 +174,15 @@ func ClampLRCTime(d time.Duration) (time.Duration, bool) {
 // maxLRCOffsetMs bounds [offset:] magnitude so applyLRCOffset cannot overflow.
 const maxLRCOffsetMs = 1 << 40
 
-// ParseLRC parses LRC into timed lines. Skips metadata tags; applies foobar2000 [offset:].
-// Leading [mm:ss.xx] or [mm:ss.mmm] tags yield one line each; stops at non-timestamp brackets.
-// Fractional seconds scale by digit count, truncated to ms. Empty text after a stamp is a clear marker.
-// Sorted stably by time, capped at [MaxSyncedLines]. No timestamps yields nil.
+// ParseLRC parses LRC into timed lines. Leading [mm:ss.xx] or [mm:ss.mmm] tags yield one
+// line each; scanning stops at a non-timestamp bracket. Fractional seconds scale by digit
+// count, truncated to ms. Empty text after a stamp is a clear marker. Metadata tags are
+// skipped. The first foobar2000 [offset:N] (ms, signed) wins: effective = timestamp - offset,
+// clamped at zero. Lines sort stably by time, capped at [MaxSyncedLines]; no timestamps
+// yields nil. A leading UTF-8 BOM is stripped.
 //
 // [FormatLRC] emits one space after the stamp; ParseLRC strips it for round-trip.
 // Abutted stamp+text with no separator reads as multiple tags (LRC has no escape).
-//
-// First [offset:N] wins (ms, signed). effective = timestamp - offset, clamped at zero.
-// Strips UTF-8 BOM.
 func ParseLRC(text string) []SyncedLine {
 	lines, _ := ParseLRCReport(text)
 	return lines

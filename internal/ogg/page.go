@@ -14,7 +14,6 @@ import (
 var oggMagic = []byte("OggS")
 
 // Page header_type flags and sizes. EOS (0x04) unused; final granule from last page.
-
 const (
 	flagContinued = 0x01 // first packet on the page continues from the previous page
 	flagBOS       = 0x02 // beginning of stream
@@ -25,17 +24,14 @@ const (
 // maxOggScanBytes caps heap for rawPage descriptors in scanPages. Pages cannot be
 // coalesced (renumber rewrites seq+CRC per page). 64 MiB ≈ 930k empty descriptors;
 // rejects adversarial one-packet-per-page streams. Tests may pass a smaller budget.
-
 const maxOggScanBytes = 64 << 20
 
 // rawPageBytes: 64-bit sizeof(rawPage). 32-bit is smaller (conservative over-count).
 // Lacing charged separately via len(p.segs).
-
 const rawPageBytes = 72
 
 // rawPage: page header plus body location. Audio bodies not buffered at parse.
 // flags last so the struct packs to rawPageBytes.
-
 type rawPage struct {
 	off     int64  // absolute offset of the "OggS" capture pattern
 	hdrLen  int64  // 27 + segment count
@@ -53,7 +49,6 @@ func (p rawPage) bodyOff() int64 { return p.off + p.hdrLen }
 
 // scanPages records each page header and lacing (no audio bodies). Stops at first
 // non-page (junk or EOF). First bytes must be a valid page. Checks ctx between pages.
-
 func scanPages(ctx context.Context, src core.ReaderAtSized, size, limit, scanBudget int64) (pages []rawPage, end int64, err error) {
 	off := int64(0)
 	var retained int64 // cumulative heap cost of the rawPage descriptors below
@@ -64,7 +59,6 @@ func scanPages(ctx context.Context, src core.ReaderAtSized, size, limit, scanBud
 		hdr, e := bits.ReadSlice(src, off, pageFixedHdr, limit)
 		if e != nil {
 			// Within file by loop guard: real I/O error, not clean EOF.
-
 			return nil, off, fmt.Errorf("%w: read page header at %d: %v", waxerr.ErrInvalidData, off, e)
 		}
 		if !bytes.Equal(hdr[0:4], oggMagic) || hdr[4] != 0 {
@@ -93,8 +87,8 @@ func scanPages(ctx context.Context, src core.ReaderAtSized, size, limit, scanBud
 		if p.total() > size-off {
 			return nil, off, fmt.Errorf("%w: Ogg page at %d overruns the file", waxerr.ErrInvalidData, off)
 		}
-		// Count the descriptor and its lacing table so both empty-page and max-lacing
-		// floods are bounded by the memory they actually retain.
+		// Count the descriptor and its lacing table so empty-page and max-lacing floods
+		// are both bounded by the memory they retain.
 		retained += rawPageBytes + int64(len(segs))
 		if retained > scanBudget {
 			return nil, off, fmt.Errorf("%w: Ogg page descriptors exceed the %d-byte scan budget", waxerr.ErrSizeTooLarge, scanBudget)
@@ -129,11 +123,9 @@ func buildPage(flags byte, granule uint64, serial, seq uint32, lacing, body []by
 
 // paginate lays packets into pages from startSeq, granule 0 (header pages).
 // Returns bytes and page count. Sets continued when a page continues a packet.
-
 func paginate(serial, startSeq uint32, packets [][]byte) (out []byte, pageCount int) {
 	// Lacing: floor(len/255)×255 then len%255. Multiple of 255 ends with 0
 	// (packet boundary so it does not merge with the next).
-
 	var lacing, body []byte
 	for _, pkt := range packets {
 		n := len(pkt)
@@ -164,7 +156,6 @@ func paginate(serial, startSeq uint32, packets [][]byte) (out []byte, pageCount 
 		seq++
 		pageCount++
 		// Last lacing 255 ⇒ packet continues on the next page.
-
 		continued = pageLac[len(pageLac)-1] == maxSegments
 		i = hi
 	}
@@ -173,7 +164,6 @@ func paginate(serial, startSeq uint32, packets [][]byte) (out []byte, pageCount 
 
 // paginateBOS builds the BOS page for a single id packet. Used when id bytes
 // change (FLAC header-packet count); otherwise page 0 is copied verbatim.
-
 func paginateBOS(serial uint32, pkt []byte) ([]byte, int) {
 	var lacing []byte
 	n := len(pkt)
@@ -191,7 +181,6 @@ func paginateBOS(serial uint32, pkt []byte) ([]byte, int) {
 // patchCRC updates CRC after seq (offset 18) changes, without re-reading the body.
 // Ogg CRC is linear (init 0, no final XOR): new = old XOR CRC(delta at 18:22,
 // zeros through page end).
-
 func patchCRC(oldCRC, oldSeq, newSeq uint32, pageLen int64) uint32 {
 	var d [4]byte
 	binary.LittleEndian.PutUint32(d[:], oldSeq^newSeq)

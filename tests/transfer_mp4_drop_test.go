@@ -25,7 +25,7 @@ func TestTransferDropsUnstorableMP4ValuesPreservesDest(t *testing.T) {
 	})
 	dst := mustParseBytes(t, dstBytes)
 	// Snapshot what the destination round-trips so the assertions compare against the
-	// real stored form (e.g. cpil may read back canonicalized), not a guessed spelling.
+	// stored form (cpil may read back canonicalized), not a guessed spelling.
 	want := map[tag.Key][]string{}
 	for _, k := range keys {
 		v, ok := dst.Get(k)

@@ -27,8 +27,8 @@ func mkAudioTrackFile(codecID string, private []byte, audioKids ...[]byte) []byt
 	return concat(mkEl(idEBML, mkStr(idDocType, "matroska")), mkEl(idSegment, seg))
 }
 
-// SBR track declares the core rate in SamplingFrequency and the played rate in
-// OutputSamplingFrequency, and it is the played one a listener hears. The digest salt stays on
+// An SBR track declares the core rate in SamplingFrequency and the played rate in
+// OutputSamplingFrequency; the played one is reported. The digest salt stays on
 // SamplingFrequency, so adding the output element must not move it.
 func TestMatroskaOutputSamplingFrequency(t *testing.T) {
 	t.Parallel()
@@ -87,9 +87,9 @@ func TestMatroskaAACRateFromCodecPrivate(t *testing.T) {
 	}
 }
 
-// CodecPrivate that says nothing about SBR does not contradict the CodecID's /SBR suffix, so the
-// suffix stands. Letting the config win made the same file report "AAC LC" with a CodecPrivate and
-// "HE-AAC" without one; adding information made the answer worse.
+// A CodecPrivate that says nothing about SBR does not contradict the CodecID's /SBR suffix, so
+// the suffix stands. Letting the config win would make the same file report "AAC LC" with a
+// CodecPrivate and "HE-AAC" without one.
 func TestMatroskaAACCodecIDSBRSurvivesSilentConfig(t *testing.T) {
 	t.Parallel()
 	kids := []([]byte){mkFloat(idSampFreq, 22050), mkUint(idChannels, 2)}

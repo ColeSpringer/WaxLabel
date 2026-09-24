@@ -64,8 +64,7 @@ func TestID3PrefixedContainerIsUnsupported(t *testing.T) {
 	}
 }
 
-// 64-bit RIFF forms route to the WAV codec on content alone, so their ds64-resolved sizes are read
-// rather than the file falling through to a generic "could not identify".
+// 64-bit RIFF forms route to the WAV codec on content alone, so their ds64-resolved sizes are read.
 func TestRF64SniffsAsWAV(t *testing.T) {
 	for _, magic := range []string{"RF64", "BW64"} {
 		t.Run(magic, func(t *testing.T) {

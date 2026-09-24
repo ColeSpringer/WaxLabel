@@ -71,8 +71,8 @@ type doc struct {
 	sawNonAudio bool // a video/subtitle/button track was present; gates the audio-only bitrate
 
 	// essence-digest config, captured from the first audio track. sampleRate is the
-	// SamplingFrequency element, not the played rate an SBR track reports: the salt has
-	// always been the core value and moving it would change every stored digest.
+	// SamplingFrequency element, not the played rate an SBR track reports; changing
+	// the salt would change every stored digest.
 	codecID    string
 	sampleRate int
 	channels   int
@@ -224,9 +224,8 @@ func (d *doc) Describe() []core.NativeEntry {
 	}
 	out = append(out, core.NativeEntry{Kind: "EBML", Note: "DocType " + dt})
 	if d.hasSegTitle {
-		// No Size: the Note already shows the title verbatim, so its char-length would
-		// be a redundant (and bytes-mislabeled) column. A present-but-empty title shows
-		// an empty Note, distinct from a file with no Info.Title at all.
+		// No Size: the Note shows the title verbatim. A present-but-empty title shows an
+		// empty Note, distinct from a file with no Info.Title.
 		out = append(out, core.NativeEntry{Kind: "Info.Title", Note: d.segTitle})
 	}
 	for _, g := range d.groups {

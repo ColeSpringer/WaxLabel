@@ -73,8 +73,9 @@ func TestSYLTLanguageNormalization(t *testing.T) {
 	}
 }
 
-// TestSYLTLanguageWriteMatchesRead: is a regression: a modeled language of "xxx" (which the
-
+// TestSYLTLanguageWriteMatchesRead checks a modeled language of "xxx" (which the CLI
+// accepts) is stored as the canonical "XXX" undefined marker and reads back empty, the
+// same as an empty model language.
 func TestSYLTLanguageWriteMatchesRead(t *testing.T) {
 	for _, lang := range []string{"xxx", "XXX", ""} {
 		frames, _, _ := syltFrames([]core.SyncedLyrics{{Language: lang, Lines: []core.SyncedLine{{Time: 0, Text: "x"}}}}, 4, "", "")
@@ -113,8 +114,9 @@ func TestSYLTTimestampFormatSkipped(t *testing.T) {
 	}
 }
 
-// TestSYLTTruncationPrecision: pins that decodeSYLT flags truncation only when a genuine line
-
+// TestSYLTTruncationPrecision pins that decodeSYLT flags truncation only when a real line
+// is dropped at the cap, not because trailing bytes remain: exactly maxSyltLines lines
+// plus an incomplete trailing entry decode with no warning; one line past the cap warns.
 func TestSYLTTruncationPrecision(t *testing.T) {
 	makeLines := func(n int) []core.SyncedLine {
 		ls := make([]core.SyncedLine, n)
@@ -240,8 +242,9 @@ func TestSYLTSkipsEmptySet(t *testing.T) {
 	}
 }
 
-// TestSYLTNonLyricLanguageNotInherited: an empty-language synced-lyrics edit does
-
+// TestSYLTNonLyricLanguageNotInherited checks an empty-language synced-lyrics edit does
+// not inherit the language of a leading non-lyric chord SYLT; the origLangs fallback is
+// gated on a projecting frame.
 func TestSYLTNonLyricLanguageNotInherited(t *testing.T) {
 	// A leading chord SYLT (content-type != lyrics) in German.
 	chord := buildSYLT(encLatin1, "deu", syltFmtMillis, 5 /* chord */, "", []core.SyncedLine{{Time: 0, Text: "Am"}})
@@ -267,8 +270,9 @@ func TestSYLTNonLyricLanguageNotInherited(t *testing.T) {
 	}
 }
 
-// TestSYLTCarriedLanguageNotInherited: is a regression: a faithful carry of a
-
+// TestSYLTCarriedLanguageNotInherited checks a carry of a no-language synced-lyrics set
+// does not inherit the destination's SYLT language, while an authored line-only edit
+// still keeps it; the two pin the Carried gate.
 func TestSYLTCarriedLanguageNotInherited(t *testing.T) {
 	// A leading projecting lyrics SYLT already in the destination, in English.
 	engLyrics := buildSYLT(encLatin1, "eng", syltFmtMillis, syltContentLyrics, "", []core.SyncedLine{{Time: 0, Text: "old"}})
@@ -297,8 +301,9 @@ func TestSYLTCarriedLanguageNotInherited(t *testing.T) {
 	}
 }
 
-// TestSYLTDescriptorPreservedOnAuthoring: authoring lyric lines over a SYLT carrying a
-
+// TestSYLTDescriptorPreservedOnAuthoring checks authoring lyric lines over a SYLT with a
+// content descriptor keeps that descriptor (an authored set carries Description==""),
+// while a cross-format carry does not inherit it; the two pin the Carried guard.
 func TestSYLTDescriptorPreservedOnAuthoring(t *testing.T) {
 	// A projecting lyrics SYLT already in the destination, with a content descriptor.
 	described := buildSYLT(encLatin1, "eng", syltFmtMillis, syltContentLyrics, "Karaoke",
@@ -329,8 +334,8 @@ func TestSYLTDescriptorPreservedOnAuthoring(t *testing.T) {
 	}
 }
 
-// TestSYLTTimestampOverflow: a line past the SYLT 32-bit millisecond field (~49
-
+// TestSYLTTimestampOverflow checks a line past the SYLT 32-bit millisecond field (~49.7
+// days) is reported as clamped, so the codec can warn.
 func TestSYLTTimestampOverflow(t *testing.T) {
 	// ~60 days, past the 32-bit millisecond ceiling.
 	set := core.SyncedLyrics{Lines: []core.SyncedLine{{Time: 60 * 24 * time.Hour, Text: "way out"}}}
@@ -344,8 +349,10 @@ func TestSYLTTimestampOverflow(t *testing.T) {
 	}
 }
 
-// TestSyncedLyricsNULFlaggedAndErrored: the shared NUL-guard mechanism: RebuildFrames flags
-
+// TestSyncedLyricsNULFlaggedAndErrored checks the NUL guard: RebuildFrames flags an
+// embedded NUL in a line's text or an authored descriptor via RebuildInfo, RebuildError
+// turns the flag into waxerr.ErrInvalidData, and a clean set does neither. The root
+// package's TestSyncedLyricsNULRejectedAtCodec covers the end-to-end wiring.
 func TestSyncedLyricsNULFlaggedAndErrored(t *testing.T) {
 	infoFor := func(sl core.SyncedLyrics) RebuildInfo {
 		_, info := RebuildFrames(nil, tag.NewTagSet(), tag.NewTagSet(), 4, StructuredEdit{
@@ -379,8 +386,9 @@ func TestSyncedLyricsNULFlaggedAndErrored(t *testing.T) {
 	}
 }
 
-// TestSYLTTimestampFullRange: SYLT accepts the full uint32
-
+// TestSYLTTimestampFullRange checks SYLT accepts the full uint32 millisecond range: a
+// line at 0xFFFFFFFF round-trips without overflow, since CHAP's chapTimeMax ceiling does
+// not apply.
 func TestSYLTTimestampFullRange(t *testing.T) {
 	const maxMs = 0xFFFFFFFF
 	wantD := time.Duration(maxMs) * time.Millisecond
@@ -412,8 +420,9 @@ func TestSYLTTimestampClampsAtFullMax(t *testing.T) {
 	}
 }
 
-// TestSyltLangBytesCanonicalizesCase: SYLT language encoding folds
-
+// TestSyltLangBytesCanonicalizesCase checks SYLT language encoding folds uppercase
+// ISO-639-2 codes to lowercase before the fixed-width pad, while keeping the "XXX"
+// undefined marker and short NUL-padded codes in shape.
 func TestSyltLangBytesCanonicalizesCase(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"ENG", "eng"},
@@ -428,8 +437,9 @@ func TestSyltLangBytesCanonicalizesCase(t *testing.T) {
 	}
 }
 
-// TestSYLTUppercaseLanguageWrittenLowercase: the encoder writes
-
+// TestSYLTUppercaseLanguageWrittenLowercase checks the encoder writes lowercase for both
+// an authored uppercase language and one inherited through fallbackLang. The decoder
+// preserves case, so lowercase bytes in the frame prove the encoder folded.
 func TestSYLTUppercaseLanguageWrittenLowercase(t *testing.T) {
 	explicit := core.SyncedLyrics{Language: "ENG", Lines: []core.SyncedLine{{Time: time.Second, Text: "x"}}}
 	frames, _, _ := syltFrames([]core.SyncedLyrics{explicit}, 4, "", "")

@@ -93,8 +93,7 @@ func (r TransferReport) Counts() (carried, lossy, dropped int) {
 	return carried, lossy, dropped
 }
 
-// Lossless reports whether every item carries without loss (nothing lossy or
-// dropped).
+// Lossless reports whether no item is lossy or dropped.
 func (r TransferReport) Lossless() bool {
 	_, lossy, dropped := r.Counts()
 	return lossy == 0 && dropped == 0

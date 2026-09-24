@@ -6,9 +6,9 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// APEv2 item may hold a zero-length value, so `set KEY=` must store an empty item rather than
-// removing the key; the behaviour every other writable format already has. Removal stays the job of
-// a clear, which is the zero-length value *slice*.
+// An APEv2 item may hold a zero-length value, so `set KEY=` must store an empty item, not remove
+// the key, as every other writable format does. Removal is the job of a clear, which is the
+// zero-length value *slice*.
 func TestAPEStoresExplicitlyEmptyValue(t *testing.T) {
 	for _, c := range []struct{ name, path string }{
 		{"wavpack", sampleWV},

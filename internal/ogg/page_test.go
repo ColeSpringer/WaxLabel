@@ -13,8 +13,11 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// TestRawPageBytesMatchesStructSize: keeps the retained-byte accounting honest: the
-
+// TestRawPageBytesMatchesStructSize checks that rawPageBytes is at least the struct
+// size, so a field addition cannot undercount the scan budget, and on 64-bit (the tight
+// case) equals it, so a shrunk struct cannot over-charge and reject long files early.
+// 32-bit layouts are smaller (60: int64 and slice headers align to 4), which only
+// over-counts.
 func TestRawPageBytesMatchesStructSize(t *testing.T) {
 	got := int(unsafe.Sizeof(rawPage{}))
 	if got > rawPageBytes {
@@ -33,8 +36,9 @@ func pattern(n int) []byte {
 	return b
 }
 
-// TestPatchCRCMatchesRecompute: is the linchpin of the audio-page renumber path
-
+// TestPatchCRCMatchesRecompute checks that patching a page's CRC after only its
+// sequence number changed equals a full recomputation, or renumbered files get corrupt
+// checksums.
 func TestPatchCRCMatchesRecompute(t *testing.T) {
 	body := pattern(5000)
 	var lacing []byte
@@ -59,8 +63,9 @@ func TestPatchCRCMatchesRecompute(t *testing.T) {
 	}
 }
 
-// TestPaginateRoundTrip: packets laid out by paginate re-scan to the
-
+// TestPaginateRoundTrip checks that packets laid out by paginate re-scan to the same
+// bytes (including one spanning pages and one whose length is a multiple of 255, which
+// needs a trailing 0 lacing), and that every page carries a valid CRC.
 func TestPaginateRoundTrip(t *testing.T) {
 	packets := [][]byte{
 		pattern(100),
@@ -121,8 +126,8 @@ func TestPaginateRoundTrip(t *testing.T) {
 	}
 }
 
-// TestPaginateSequenceAndContinuation: sequence numbers increment from
-
+// TestPaginateSequenceAndContinuation checks that sequence numbers increment from the
+// start value and only pages continuing a packet set the continued flag.
 func TestPaginateSequenceAndContinuation(t *testing.T) {
 	out, _ := paginate(1, 5, [][]byte{pattern(70000)}) // one packet across pages
 	src := core.BytesSource(out)
@@ -147,8 +152,9 @@ func TestScanPagesRejectsNonOgg(t *testing.T) {
 	}
 }
 
-// TestScanPagesManyPagesUncapped: guards against someone later applying the
-
+// TestScanPagesManyPagesUncapped checks that the metadata element cap
+// (bits.Limits.MaxElements, default 100000) does not apply to the Ogg page loop: one
+// apage is recorded per audio page, so a long stream has far more than the cap.
 func TestScanPagesManyPagesUncapped(t *testing.T) {
 	const n = 120000 // exceeds the 100000 metadata cap; an audio-granularity loop must not honor it
 	lacing := []byte{1}
@@ -170,8 +176,9 @@ func TestScanPagesManyPagesUncapped(t *testing.T) {
 	}
 }
 
-// TestScanPagesBoundsRetainedBytes: scanPages uses a byte budget, not a
-
+// TestScanPagesBoundsRetainedBytes checks that scanPages budgets retained descriptors by
+// bytes, not page count, and charges the lacing table: a page count that fits as empty
+// pages overflows once each page carries a full lacing table.
 func TestScanPagesBoundsRetainedBytes(t *testing.T) {
 	const budget = 64 << 10 // small budget so the bound trips quickly
 

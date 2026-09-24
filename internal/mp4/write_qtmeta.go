@@ -13,16 +13,16 @@ import (
 
 // This file is the write half of the two QuickTime metadata stores qtmeta.go reads: an
 // mdta-handler meta (keys index plus index-keyed ilst items) and the classic text atoms
-// sitting directly under moov.udta.
+// directly under moov.udta.
 //
-// Which store a canonical value goes to is decided once per file, never per key, so no key
-// can ever live in two stores holding different values:
+// The store is chosen once per file, never per key, so no key can live in two stores
+// with different values:
 //
-//   - A file with an ilst writes there. Every udta-level text atom is then rewritten to the
-//     canonical value for its key, or removed when that key is gone, so the two agree.
-//   - A file whose only store is udta-level text atoms writes there, but only while udta can
-//     hold the whole edit (see udtaCanHoldAll). One key it cannot represent moves the whole
-//     edit to the ilst rather than splitting the write across both stores.
+//   - A file with an ilst writes there. Every udta-level text atom is then rewritten to
+//     the canonical value for its key, or removed when that key is gone.
+//   - A file whose only store is udta-level text atoms writes there while udta can hold
+//     the whole edit (see udtaCanHoldAll). One key it cannot represent moves the whole
+//     edit to the ilst.
 //   - A file with no store at all keeps the mdirappl creation path.
 
 // mdtaStore reports whether the file's meta box keys its ilst items through a "keys"
@@ -153,9 +153,8 @@ func planUdtaTexts(d *doc, tags tag.TagSet, create bool, ups int64) ([]byteRep, 
 		held[u.key] = true
 		vals, ok := tags.Get(u.key)
 		if !ok || len(vals) == 0 {
-			// Drop the atom only when the canonical entry is all it holds. Blanking that one
-			// entry instead keeps the other-language entries this store is meant to preserve,
-			// and reads back with the key absent either way.
+			// Drop the atom only when the canonical entry is all it holds. Otherwise blank that
+			// entry: the other-language entries stay, and the key reads back absent either way.
 			if len(u.entries) > 1 {
 				entries := slices.Clone(u.entries)
 				i := canonicalEntry(entries)
@@ -212,7 +211,7 @@ type qtMetaWrite struct {
 	keys []string
 	// reps and appends are the udta-payload-relative edits outside the ilst region: the
 	// rewritten keys box and the synced udta text atoms. metaDelta is the part of that byte
-	// change that lands inside the meta box, which meta's own size field must absorb.
+	// change inside the meta box, which meta's own size field must absorb.
 	reps      []byteRep
 	appends   []byte
 	metaDelta int64
@@ -323,9 +322,8 @@ func planQTMetaWrite(d *doc, base, edited *core.Media, newItems []item, qw qtMet
 		resultItems = d.items
 	}
 	result := buildQTMetaResult(edited, d, resultItems, qw, reg, delta, total)
-	// Collapse to a true no-op when the rebuild re-projected to base's values, the same
-	// guard the in-place ilst path applies. A grown region (delta != 0) is a real
-	// structural change and blocks the collapse.
+	// Collapse to a no-op when the rebuild re-projected to base's values, as the in-place
+	// ilst path does. A grown region (delta != 0) is a structural change and blocks it.
 	if np := core.DowngradeNoOp(core.FormatMP4, edited.Identity.Size, base, result,
 		base.Tags.Equal(result.Tags), delta != 0 || encodingRewrite, report.Warnings); np != nil {
 		return np, nil
@@ -374,8 +372,7 @@ func buildQTMetaResult(edited *core.Media, src *doc, items []item, qw qtMetaWrit
 		udtaRaw:         reg.udtaPayload,
 	}
 	// metaHandler, keyNames, udtaTexts and every udta atom ref come from applyUdtaRefs
-	// re-reading the bytes just rendered, so they match a fresh parse rather than the
-	// write's own intent.
+	// re-reading the rendered bytes, so they match a fresh parse.
 	shiftStructure(nd, src, reg.regionStart, reg.regionEnd, delta)
 	carryChapterRefs(nd, src, reg.regionEnd, delta)
 	applyUdtaRefs(nd, reg)

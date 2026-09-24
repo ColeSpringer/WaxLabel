@@ -31,8 +31,8 @@ func wavWithInfo(items ...[2]string) []byte {
 
 // TestDuplicateNumberInfoFirstWins covers the number-pair cardinality guard: two INFO
 // items mapping to one number key (two IPRT, both TrackNumber) project a single
-// first-wins value, not a phantom multi-value TRACKNUMBER that no writer can store -
-// which would diff as a spurious change and trip a false native-value-reduced warning.
+// first-wins value, not a multi-value TRACKNUMBER no writer can store, which would
+// diff as a spurious change and trip a false native-value-reduced warning.
 func TestDuplicateNumberInfoFirstWins(t *testing.T) {
 	m, err := parse(context.Background(), core.BytesSource(wavWithInfo([2]string{"IPRT", "1"}, [2]string{"IPRT", "2"})), core.DefaultParseOptions())
 	if err != nil {
@@ -56,10 +56,9 @@ func TestDuplicateNumberInfoFirstWins(t *testing.T) {
 	}
 }
 
-// TestDuplicateTextInfoPreserved is the regression guard for the finding that the
-// blanket first-wins silently dropped preservable text values: two INAM items (both
-// Title, a single-valued text key) must project BOTH values, because the write then
-// forces an ID3 chunk whose v2.4 TIT2 frame stores both NUL-separated.
+// TestDuplicateTextInfoPreserved checks that two INAM items (both Title, a
+// single-valued text key) project both values; the write then forces an ID3 chunk
+// whose v2.4 TIT2 frame stores both NUL-separated.
 func TestDuplicateTextInfoPreserved(t *testing.T) {
 	m, err := parse(context.Background(), core.BytesSource(wavWithInfo([2]string{"INAM", "A"}, [2]string{"INAM", "B"})), core.DefaultParseOptions())
 	if err != nil {
@@ -69,8 +68,7 @@ func TestDuplicateTextInfoPreserved(t *testing.T) {
 	if !ok || len(vals) != 2 || vals[0] != "A" || vals[1] != "B" {
 		t.Fatalf("Title = %v (ok=%v), want both values [\"A\" \"B\"] preserved", vals, ok)
 	}
-	// The reduction to the single-valued INFO container is real and preserved in ID3, so the
-	// warning here is accurate, not the false one the number-pair case produced.
+	// INFO is single-valued and ID3 keeps the full set, so one warning is accurate.
 	if ws := nativeReducedWarnings(m.Tags, map[tag.Key]bool{tag.Title: true}); len(ws) != 1 {
 		t.Errorf("duplicate Title should warn native-value-reduced exactly once, got %v", ws)
 	}

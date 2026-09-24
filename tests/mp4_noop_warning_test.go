@@ -7,10 +7,9 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// (review): adding a description to an existing MP4 cover with no other change is a no-op write;
-// the covr atom stores image data only, so the description is dropped and the result round-trips to
-// base, but the picture-metadata-dropped warning must still surface rather than vanish behind "no
-// changes".
+// Adding a description to an existing MP4 cover with no other change is a no-op write: the covr
+// atom stores image data only, so the result round-trips to base, but the
+// picture-metadata-dropped warning must still surface rather than vanish behind "no changes".
 func TestMP4PictureMetadataWarningSurvivesNoOp(t *testing.T) {
 	ctx := context.Background()
 

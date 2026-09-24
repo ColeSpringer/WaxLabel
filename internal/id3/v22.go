@@ -1,9 +1,9 @@
 package id3
 
 // v22Upgrade maps an ID3v2.2 three-character frame identifier to its v2.3/v2.4
-// four-character equivalent. v2.2 is obsolete; reading it in full and writing
-// back as v2.3 means the rest of the codec only ever deals with modern IDs. The
-// table follows the identifiers defined by the ID3v2.2 and v2.3 specifications.
+// four-character equivalent, per the ID3v2.2 and v2.3 specifications. v2.2 is
+// read in full and written back as v2.3, so the rest of the codec deals only
+// with modern IDs.
 var v22Upgrade = map[string]string{
 	"BUF": "RBUF", "CNT": "PCNT", "COM": "COMM", "CRA": "AENC", "CRM": "ENCR",
 	"ETC": "ETCO", "EQU": "EQUA", "GEO": "GEOB", "IPL": "IPLS", "LNK": "LINK",

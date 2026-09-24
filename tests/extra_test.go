@@ -39,8 +39,8 @@ func TestInspectAllocsIndependentOfPictureSize(t *testing.T) {
 	}
 }
 
-// Pictures() returns a fully detached deep copy on every call: each call's Data is independent, so
-// mutating one does not corrupt a later call (the #16 fix).
+// Pictures() returns a detached deep copy on every call: each call's Data is independent, so
+// mutating one does not corrupt a later call.
 func TestPicturesDetachedAcrossCalls(t *testing.T) {
 	doc := mustParseBytes(t, bigPictureFLAC(t, 4<<20))
 	a := doc.Pictures()
@@ -124,8 +124,8 @@ func TestOpenSourceTeesAndEdits(t *testing.T) {
 }
 
 func TestDocumentIsDetachedAfterParseFile(t *testing.T) {
-	// The whole point of detachment: no fd is retained, so the document stays
-	// valid and editable after the file is gone.
+	// Detachment retains no fd, so the document stays valid and editable after the
+	// file is gone.
 	path := copyToTemp(t, sampleFLAC)
 	doc := mustParseFile(t, path)
 	src := readFixture(t, path)

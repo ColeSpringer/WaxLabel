@@ -64,10 +64,9 @@ func executeSynced(t *testing.T, src []byte, plan *wl.Plan) (inMemory, reparsed 
 	return doc.SyncedLyrics(), mustParseBytes(t, buf.Bytes()).SyncedLyrics()
 }
 
-// checks every synced-lyrics-writable format with the same structured edit: the codec's
-// change-detection gate must include synced lyrics (a missing term silently no-ops a
-// SetSyncedLyrics), and the writer must persist the timed lines so the projected result equals a
-// fresh parse.
+// every synced-lyrics-writable format gets the same structured edit: the codec's change-detection
+// gate must include synced lyrics (a missing term no-ops a SetSyncedLyrics), and the writer must
+// persist the timed lines so the projected result equals a fresh parse.
 func TestSyncedLyricsWriteInvariant(t *testing.T) {
 	want := wl.SyncedLyrics{Language: "eng", Description: "Main", Lines: sampleSyncedLines}
 	for _, f := range wl.Formats() {
@@ -115,9 +114,9 @@ func TestSyncedLyricsWriteInvariant(t *testing.T) {
 	}
 }
 
-// preservation pin: an edit that does not touch synced lyrics never re-serializes them through
-// FormatLRC, so a no-op write on a lyrics-bearing FLAC is byte-identical and an unrelated title
-// edit leaves the synced lyrics intact on re-parse.
+// an edit that does not touch synced lyrics never re-serializes them through FormatLRC, so a no-op
+// write on a lyrics-bearing FLAC is byte-identical and an unrelated title edit leaves the synced
+// lyrics intact on re-parse.
 func TestNoOpWriteOnLyricedFLACByteIdentical(t *testing.T) {
 	src, err := os.ReadFile("../testdata/notags.flac")
 	if err != nil {
@@ -130,8 +129,8 @@ func TestNoOpWriteOnLyricedFLACByteIdentical(t *testing.T) {
 	}
 	lyriced := applyToBytes(t, src, lyricPlan)
 
-	// A no-op write must reproduce the exact bytes (the crown-jewel invariant), proving the lyrics
-	// block is copied verbatim rather than re-emitted through FormatLRC.
+	// A no-op write must reproduce the exact bytes: the lyrics block is copied verbatim, not
+	// re-emitted through FormatLRC.
 	noop, err := mustParseBytes(t, lyriced).Edit().Prepare()
 	if err != nil {
 		t.Fatalf("Prepare no-op: %v", err)
@@ -324,9 +323,8 @@ func TestSyncedLyricsEmptySetDropped(t *testing.T) {
 	}
 }
 
-// checks a synced-lyric line past the SYLT 32-bit millisecond field surfaces a clamp warning on an
-// ID3-backed write rather than silently moving the lyric while the report still implies
-// losslessness.
+// a synced-lyric line past the SYLT 32-bit millisecond field surfaces a clamp warning on an
+// ID3-backed write, so the report does not imply losslessness.
 func TestSyncedLyricsTimestampOverflowWarns(t *testing.T) {
 	src, err := os.ReadFile("../testdata/notags.mp3")
 	if err != nil {
@@ -368,10 +366,9 @@ func TestSyncedLyricsTransferApply(t *testing.T) {
 	}
 }
 
-// regression guard at the library boundary: carrying a no-language synced-lyrics set (a FLAC/Ogg
-// source stores none) onto a destination that already has an eng SYLT must read back with no
-// language, not silently inherit the destination's; otherwise the transfer report says
-// "carried/lossless" while the bytes gain a language the source never had.
+// carrying a no-language synced-lyrics set (a FLAC/Ogg source stores none) onto a destination that
+// already has an eng SYLT must read back with no language, not inherit the destination's; otherwise
+// the transfer report says "carried/lossless" while the bytes gain a language the source never had.
 func TestSyncedLyricsCarryDoesNotInheritLanguage(t *testing.T) {
 	// Source: a FLAC carrying a no-language synced-lyrics set (the Vorbis LRC store holds none).
 	flacBytes, err := os.ReadFile("../testdata/notags.flac")

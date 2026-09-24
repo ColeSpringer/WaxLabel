@@ -4,7 +4,6 @@
 //
 // Write invariant: audio packet payloads stay byte-identical (re-pagination OK;
 // page checksums are not payload). From RFC 3533, Vorbis I / comments, RFC 7845.
-
 package ogg
 
 import (
@@ -17,7 +16,6 @@ import (
 // kind is Vorbis, Opus, or FLAC. All use Vorbis comments; they differ in header
 // framing, which packets are decoder-critical, and FLAC cover art (native PICTURE
 // block vs METADATA_BLOCK_PICTURE comment).
-
 type kind uint8
 
 const (
@@ -29,14 +27,12 @@ const (
 // String is the raw/JSON codec name. "Opus"/"Vorbis" match Matroska. CanonicalCodec
 // normalizes others (e.g. flac→FLAC); Opus/Vorbis are already canonical. Text dump
 // uppercases on its own.
-
 func (k kind) String() string {
 	switch k {
 	case kindOpus:
 		return "Opus"
 	case kindFLAC:
 		// Same raw name as native FLAC; CanonicalCodec uppercases both.
-
 		return "flac"
 	}
 	return "Vorbis"
@@ -44,7 +40,6 @@ func (k kind) String() string {
 
 // apage describes an audio page for verbatim copy or renumber (seq + CRC patch)
 // when the header page count changes.
-
 type apage struct {
 	off     int64
 	total   int64
@@ -58,7 +53,6 @@ func (p apage) bodyOff() int64 { return p.off + (p.total - p.bodyLen) }
 
 // doc is the Ogg native document: verbatim decoder-critical headers, comments,
 // pictures, and per-audio-page descriptors (headers only). Implements core.NativeDoc.
-
 type doc struct {
 	format core.Format // FormatOggVorbis or FormatOggOpus
 	kind   kind
@@ -74,17 +68,14 @@ type doc struct {
 
 	// FLAC mapping: later header packets are FLAC metadata blocks (verbatim).
 	// Cover art is PICTURE blocks here, not comment METADATA_BLOCK_PICTURE.
-
 	flacBlocks []fblock
 	// dupContent: payload of each extra Vorbis comment block (rewrite keeps first only).
-
 	dupContent             []core.DuplicateContent
 	malformedPictureBlocks [][]byte       // PICTURE bodies that failed to decode, preserved
 	commentPictures        []core.Picture // covers found as METADATA_BLOCK_PICTURE comments
 
 	// origCommentPacketLen: parsed comment packet length. Write floors its size guard here
 	// so data already readable under the parse limit stays writable under a lower write limit.
-
 	origCommentPacketLen int64
 
 	page0Len    int64 // BOS page length (the id packet, alone; copied verbatim)
@@ -110,7 +101,6 @@ func (d *doc) Clone() core.NativeDoc {
 	c.commentPad = slices.Clone(d.commentPad)
 	c.audioPages = slices.Clone(d.audioPages)
 	// Deep-copy block/picture bodies; slice header clone would alias payloads.
-
 	c.flacBlocks = make([]fblock, len(d.flacBlocks))
 	for i, b := range d.flacBlocks {
 		c.flacBlocks[i] = b.clone()
@@ -127,7 +117,6 @@ func (d *doc) Clone() core.NativeDoc {
 // PaddingBytes is Opus comment-packet padding (RFC 7845), round-tripped as-is.
 // No padding control. FLAC PADDING under the mapping is not counted: rebuilds drop it
 // (header re-pagination makes it useless).
-
 func (d *doc) PaddingBytes() int64 { return int64(len(d.commentPad)) }
 
 // Describe summarizes native structure for dump/native views.

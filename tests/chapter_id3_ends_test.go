@@ -22,11 +22,10 @@ var id3ChapterFixtures = []struct {
 	{wl.FormatWAV, "../testdata/notags.wav"},
 }
 
-// authoring open-ended chapters (End == 0) on the ID3-backed formats serializes concrete ends a
-// spec-conforming reader can use, rather than the 0xFFFFFFFF "unused" sentinel (~49.7 days) that
-// ffprobe/players take literally:; an interior open chapter reads back with End == the next
-// chapter's start (a gapless interval), and; the trailing open chapter reads back with End == the
-// media duration (ms-floored), never open.
+// Authoring open-ended chapters (End == 0) on the ID3-backed formats serializes concrete ends, not
+// the 0xFFFFFFFF "unused" sentinel (~49.7 days) that ffprobe/players take literally: an interior
+// open chapter reads back with End == the next chapter's start, and the trailing open chapter
+// reads back with End == the media duration (ms-floored).
 func TestID3ChapterOpenEndsMaterialized(t *testing.T) {
 	for _, fx := range id3ChapterFixtures {
 		t.Run(fx.format.String(), func(t *testing.T) {
@@ -65,10 +64,9 @@ func TestID3ChapterOpenEndsMaterialized(t *testing.T) {
 	}
 }
 
-// checks the past/at-duration trailing chapter across the ID3-backed formats: authoring a chapter
-// that starts past the media duration serializes a bounded zero-length end (End == Start) rather
-// than the 0xFFFFFFFF sentinel that ffprobe/players render as ~49.7 days, and the reader folds that
-// bounded end back to open so an ID3 read agrees with the start-only stores.
+// A chapter that starts past the media duration serializes a bounded zero-length end (End ==
+// Start), not the 0xFFFFFFFF sentinel that ffprobe/players render as ~49.7 days, and the reader
+// folds that bounded end back to open so an ID3 read agrees with the start-only stores.
 func TestID3ChapterTrailingEndPastDurationReadsOpen(t *testing.T) {
 	for _, fx := range id3ChapterFixtures {
 		t.Run(fx.format.String(), func(t *testing.T) {
@@ -78,7 +76,7 @@ func TestID3ChapterTrailingEndPastDurationReadsOpen(t *testing.T) {
 			}
 			doc := mustParseBytes(t, src)
 			// A whole-ms start well past the media duration, so the trailing fill bounds it to a
-			// zero-length end (max(duration, start) == start) instead of leaving it open.
+			// zero-length end (max(duration, start) == start).
 			past := doc.Properties().Duration().Truncate(time.Millisecond) + 5*time.Second
 			plan, err := doc.Edit().SetChapters(
 				wl.Chapter{Start: 0, Title: "A"},
@@ -108,11 +106,9 @@ func TestID3ChapterTrailingEndPastDurationReadsOpen(t *testing.T) {
 	}
 }
 
-// cross-package interaction the bounded past-duration end depends on: a past-duration chapter now
-// reads back bounded (End == Start) instead of open, and core.normalizeReconstructableEnds must
-// still fold that bounded end (always >= the media duration) back to open just as it did the old
-// sentinel, so copying the chapters into a different-duration destination still diffs as
-// chapters-identical.
+// A past-duration chapter reads back bounded (End == Start), and core.normalizeReconstructableEnds
+// must fold that bounded end (always >= the media duration) back to open, so copying the chapters
+// into a different-duration destination still diffs as chapters-identical.
 func TestID3ChapterPastDurationCopyDiffIdentical(t *testing.T) {
 	srcBytes, err := os.ReadFile("../testdata/notags.mp3")
 	if err != nil {

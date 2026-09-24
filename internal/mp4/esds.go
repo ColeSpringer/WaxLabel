@@ -4,7 +4,7 @@ import "github.com/colespringer/waxlabel/internal/mpeg4audio"
 
 // MPEG-4 descriptor tags (ISO/IEC 14496-1). An esds box holds one ES_Descriptor,
 // which nests a DecoderConfigDescriptor, which nests the codec's own
-// DecoderSpecificInfo - for AAC, the AudioSpecificConfig.
+// DecoderSpecificInfo, for AAC the AudioSpecificConfig.
 const (
 	tagES                 = 0x03
 	tagDecoderConfig      = 0x04
@@ -13,8 +13,8 @@ const (
 
 // decoderConfigFixed is the DecoderConfigDescriptor's fixed part:
 // objectTypeIndication (1), streamType (1), bufferSizeDB (3), maxBitrate (4),
-// avgBitrate (4). The two bitrates are read past rather than reported: the track's
-// bitrate is computed from the real byte span, which is honest for a VBR stream.
+// avgBitrate (4). The two bitrates are skipped: the track's bitrate is computed from
+// the byte span, which holds for a VBR stream.
 const decoderConfigFixed = 13
 
 // esdsHeaderLen is the esds box header plus its FullBox version/flags word, which

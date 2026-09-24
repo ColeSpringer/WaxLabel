@@ -21,8 +21,10 @@ func frameValue(frames []Frame, id string) (string, bool) {
 	return "", false
 }
 
-// TestNumTotalNonNumericDropsTotal: composing "n/total" into a TRCK/TPOS frame is
-
+// TestNumTotalNonNumericDropsTotal checks composing "n/total" into TRCK/TPOS is gated on
+// a valid numeric result: a non-numeric number ("A1") plus a canonical TRACKTOTAL writes
+// the number verbatim and drops and records the total, since "A1/12" would read back as
+// one literal value. An embedded total ("A1/12" alone) is kept and not flagged.
 func TestNumTotalNonNumericDropsTotal(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -83,8 +85,8 @@ func TestNumTotalDropIdempotent(t *testing.T) {
 	}
 }
 
-// TestNumTotalUnchangedPairNotFlagged: an unchanged track pair (base == edited) is never flagged
-
+// TestNumTotalUnchangedPairNotFlagged checks an unchanged track pair (base == edited) is
+// never flagged dropped, matching detectDateFates' anchored-on-changed rule.
 func TestNumTotalUnchangedPairNotFlagged(t *testing.T) {
 	base := tag.NewTagSet()
 	base.Set(tag.TrackNumber, "A1")
@@ -97,8 +99,9 @@ func TestNumTotalUnchangedPairNotFlagged(t *testing.T) {
 	}
 }
 
-// TestExtractDatePartYearBounded: extractDatePart's year component is exactly
-
+// TestExtractDatePartYearBounded checks extractDatePart's year is exactly 4 digits
+// bounded by end-of-string or '-', so a 5-digit year or a compact form yields no year
+// rather than a truncated wrong value.
 func TestExtractDatePartYearBounded(t *testing.T) {
 	for _, c := range []struct {
 		iso  string

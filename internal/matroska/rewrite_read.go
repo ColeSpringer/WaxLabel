@@ -8,9 +8,8 @@ import (
 // This file captures the byte-level rewrite base at parse time: the raw bytes and
 // in-buffer offsets the write path patches or re-renders.
 
-// captureRaw reads an element's full bytes ([start, dataEnd)) bounded by the
-// alloc limit. A failure (truncation, over-limit) returns nil so the writer
-// falls back to refusing the edit rather than splicing partial bytes.
+// captureRaw reads an element's full bytes ([start, dataEnd)) within the alloc limit.
+// A failure (truncation, over-limit) returns nil, and the writer then refuses the edit.
 func captureRaw(src core.ReaderAtSized, el element, limit int64) []byte {
 	b, err := bits.ReadSlice(src, el.start, el.dataEnd-el.start, limit)
 	if err != nil {
@@ -30,14 +29,12 @@ func firstChildIsCRC(src core.ReaderAtSized, el element, limit int64) bool {
 // raw is the full element; contentOff is where its payload begins (after the
 // ID and size VINT). It returns nil when no CRC-32 leads the payload.
 func rawCRC(raw []byte, contentOff int) *crcSpot {
-	// Decode the size VINT from raw and accept the CRC only when its decoded value is
-	// exactly 4, regardless of VINT width.
+	// Accept the CRC only when its size VINT decodes to exactly 4, whatever its width.
 	if contentOff+1 >= len(raw) || raw[contentOff] != byte(idCRC32) {
 		return nil
 	}
 	length := vintLen(raw[contentOff+1])
-	// length is the VINT width in [1,8]. vintLen guarantees that, but keep the local
-	// bound so the mask shift and value decode stay safe even if that helper changes.
+	// The local bound keeps the mask shift and decode safe even if vintLen changes.
 	if length == 0 || length > 8 || contentOff+1+length+4 > len(raw) {
 		return nil
 	}
@@ -161,8 +158,7 @@ func buildCuePoints(ci *cuesIndex) (points []cuePoint, ok bool) {
 	}
 	// Use a fresh Depth.
 	points, ok = capturePoints(rs, ci.raw, root, bits.NewDepth(ci.maxDepth), ci.limit)
-	// The tree must account for exactly the same positions as the flat list. If it
-	// does not, it is not a faithful basis for a rebuild.
+	// The tree must hold exactly the positions of the flat list, or a rebuild cannot trust it.
 	if countTrackPos(points) != len(ci.clusters) {
 		ok = false
 	}
@@ -228,9 +224,9 @@ func capturePoint(rs core.ReaderAtSized, raw []byte, cp element, depth *bits.Dep
 	return pt, ok && err == nil && len(pt.tracks) > 0
 }
 
-// captureTrackPos parses one CueTrackPositions, splitting its children at the
-// CueClusterPosition into pre (before, e.g. CueRelativePosition) kept verbatim,
-// recording the position target.
+// captureTrackPos parses one CueTrackPositions, keeping the children before the
+// CueClusterPosition in pre and those after it in post (both verbatim) and recording
+// the position target.
 func captureTrackPos(rs core.ReaderAtSized, raw []byte, ctp element, depth *bits.Depth, limit int64) (cueTrackPos, bool) {
 	tp := cueTrackPos{hasCRC: firstChildIsCRC(rs, ctp, limit)}
 	positions, bad := 0, false
@@ -275,10 +271,9 @@ func countTrackPos(points []cuePoint) int {
 	return n
 }
 
-// captureInfo records the Info element's bytes, CRC, and Title-child location so a
-// Title edit can splice a new Title (or remove/insert one) and recompute the CRC
-// without re-deriving the other Info children (Duration, SegmentUID, ...), which are
-// preserved verbatim within raw.
+// captureInfo records the Info element's bytes, CRC, and Title-child location, so a
+// Title edit can splice, insert, or remove the Title and recompute the CRC while the
+// other children (Duration, SegmentUID, ...) stay verbatim.
 func captureInfo(src core.ReaderAtSized, el element, depth *bits.Depth, limit int64) *infoBlock {
 	raw := captureRaw(src, el, limit)
 	if raw == nil {

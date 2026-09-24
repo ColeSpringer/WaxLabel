@@ -31,8 +31,7 @@ func wavLE32(n int) []byte {
 	return b
 }
 
-// wavChunk wraps a chunk body in its 8-byte header, word-aligning with a pad byte when the
-// body length is odd.
+// wavChunk wraps a chunk body in its 8-byte header, word-aligning an odd body.
 func wavChunk(id string, body []byte) []byte {
 	out := slices.Concat([]byte(id), wavLE32(len(body)), body)
 	if len(body)&1 == 1 {

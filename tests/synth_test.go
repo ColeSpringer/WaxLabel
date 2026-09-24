@@ -11,8 +11,8 @@ import (
 )
 
 // synthFLAC builds a minimal valid FLAC with STREAMINFO + PADDING + a little
-// audio, and deliberately no VORBIS_COMMENT block, so editing it exercises the
-// "create a comment block where none existed" path.
+// audio and no VORBIS_COMMENT block, so editing it exercises the "create a
+// comment block where none existed" path.
 func synthFLAC() []byte {
 	streamInfo := make([]byte, 34)
 	streamInfo[0], streamInfo[1] = 0x10, 0x00 // min block 4096

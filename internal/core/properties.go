@@ -44,8 +44,8 @@ type AudioTrack struct {
 // OutputGainDecibels converts Q7.8 output gain to decibels.
 func OutputGainDecibels(gain int) float64 { return float64(gain) / 256 }
 
-// OutputGainDB renders Q7.8 gain as dB. Uses at least two decimals; adds more when needed so a
-// real gain change never prints as an identical before/after (~0.0039 dB per Q7.8 step).
+// OutputGainDB renders Q7.8 gain as dB. Uses at least two decimals, more when needed so a
+// gain change never prints as an identical before/after (~0.0039 dB per Q7.8 step).
 func OutputGainDB(gain int) string {
 	s := strings.TrimRight(fmt.Sprintf("%.4f", OutputGainDecibels(gain)), "0")
 	if n := strings.IndexByte(s, '.'); n >= 0 && len(s)-n < 3 {

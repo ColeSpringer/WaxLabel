@@ -193,7 +193,7 @@ func TestOggFLACPictureIsNativeBlock(t *testing.T) {
 
 // cross-form file: some encoders put a METADATA_BLOCK_PICTURE comment in an Ogg FLAC stream. It
 // must read as a cover, and a tag-only edit (which re-renders the comment block and so strips the
-// entry) must materialize it as a native PICTURE block rather than drop it.
+// entry) must materialize it as a native PICTURE block.
 func TestOggFLACCommentPictureMaterialized(t *testing.T) {
 	pic := wl.Picture{Type: wl.PicFrontCover, MIME: "image/png", Data: tinyPNG()}
 	comment := append([]byte{4}, vorbis.RenderCommentList("test", []vorbis.Comment{

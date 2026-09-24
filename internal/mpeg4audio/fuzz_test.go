@@ -42,8 +42,8 @@ func FuzzParseConfig(f *testing.F) {
 		if c.PS && c.ChannelConfig != 1 {
 			t.Fatalf("parametric stereo kept over channelConfiguration %d for config %x", c.ChannelConfig, b)
 		}
-		// Both SBR facts come from bits the config actually holds, so no prefix can claim
-		// what the whole does not - not the extension, and not the denial of one.
+		// Both SBR facts come from bits the config holds, so no prefix can claim what
+		// the whole does not: neither the extension nor the denial of one.
 		for n := range min(len(b), maxConfigBytes) {
 			p, ok := ParseConfig(b[:n])
 			if !ok {

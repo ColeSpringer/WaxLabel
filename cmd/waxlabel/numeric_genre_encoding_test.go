@@ -32,12 +32,11 @@ func seedGenre(t *testing.T, fixture, genre string) string {
 	return f
 }
 
-// --numeric-genre re-encodes genre storage, not the canonical value. Gates keyed on canonical
-// equality used to skip it, leaving mixed "(17)" and "17" libraries after bulk runs.
-//
+// --numeric-genre re-encodes genre storage, not the canonical value, so gates keyed on
+// canonical equality must not skip it; skipping leaves mixed "(17)" and "17" libraries.
 // Repro A: genre already the canonical name (codec no-op before rebuild). Repro B: genre
-// given as the reference (frame rebuilt, same name re-projected, plan collapsed). Both must
-// reach the same stored form.
+// given as the reference (frame rebuilt, same name re-projected, plan collapsed). Both
+// must reach the same stored form.
 func TestNumericGenreAppliesWhenOnlyEncodingChanges(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -234,10 +233,9 @@ func TestNumericGenreDoesNotChurn(t *testing.T) {
 	}
 }
 
-// Omitting the flag must not revert numeric storage on unrelated edits (avoids ping-pong).
-//
-// MP4 needs its own case: buildItems rebuilds ilst from canonical tags and would convert gnre
-// back to "\xa9gen" even when genre was untouched.
+// Omitting the flag must not revert numeric storage on unrelated edits. MP4 needs its own
+// case: buildItems rebuilds ilst from canonical tags and would convert gnre back to
+// "\xa9gen" even when genre was untouched.
 func TestNumericGenreSurvivesAnUnrelatedEdit(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {

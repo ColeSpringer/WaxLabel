@@ -41,11 +41,10 @@ func numericTokenEqual(a, b string, canon func(string) string) bool {
 }
 
 // canonicalBPMToken folds a BPM token to the whole number tmpo stores, but only when storing
-// does not round ([BPMStoredWhole]): "174.0", "0174", and even "174.000000000000001" (which
-// ParseFloat collapses to 174, so the atom stores it unwarned) all fold to "174". Any other
-// value - a rounded fraction, a signed value, or something invalid - compares verbatim
-// (trimmed), so a warned rounding still reports and a value MP4 drops never equates to one it
-// stores.
+// does not round ([BPMStoredWhole]): "174.0", "0174", and "174.000000000000001" (ParseFloat
+// collapses it to 174, so the atom stores it unwarned) all fold to "174". A rounded fraction,
+// a signed value, or an invalid value compares verbatim (trimmed), so a warned rounding still
+// reports and a value MP4 drops never equates to one it stores.
 func canonicalBPMToken(s string) string {
 	if stored, roundChanged, ok := BPMStoredWhole(s); ok && !roundChanged {
 		return stored
@@ -55,9 +54,8 @@ func canonicalBPMToken(s string) string {
 
 // canonicalUnsignedToken is canonicalNumeric for the unsigned MP4-integer keys: leading zeros
 // fold, a sign does not. Their atoms parse with ParseUint, which drops "+1"/"-1" rather than
-// storing 1, so folding the sign would equate a dropped value with a stored one. The decimal
-// point needs no special case: canonicalNumeric already leaves a non-integer verbatim, and the
-// atoms drop decimals.
+// storing 1, so folding the sign would equate a dropped value with a stored one. A decimal
+// needs no special case: canonicalNumeric leaves a non-integer verbatim, and the atoms drop it.
 func canonicalUnsignedToken(s string) string {
 	t := strings.TrimSpace(s)
 	if len(t) > 0 && (t[0] == '+' || t[0] == '-') {
@@ -68,11 +66,9 @@ func canonicalUnsignedToken(s string) string {
 
 // canonicalNumeric returns the canonical decimal form of a numeric token, dropping a leading '+'
 // and leading zeros ("03" -> "3", "+3" -> "3", "-03" -> "-3", any all-zero form -> "0"). A token
-// that is not a plain integer (empty, a sign with no digits, or any non-digit character) is
-// returned trimmed and verbatim, so a genuinely different or non-numeric value stays distinct
-// rather than folding to a shared canonical form. It works at the string level rather than parsing
-// to an int, so a value past the int range (an absurd but possible tag value) still canonicalizes
-// its sign and leading zeros instead of falling through to a verbatim, spuriously-unequal compare.
+// that is not a plain integer (empty, a sign with no digits, or any non-digit) is returned trimmed
+// and verbatim, so a different or non-numeric value stays distinct. It works on the string, not a
+// parsed int, so a value past the int range still canonicalizes its sign and leading zeros.
 func canonicalNumeric(s string) string {
 	s = strings.TrimSpace(s)
 	digits := s
@@ -116,8 +112,7 @@ func isAllASCIIDigits(s string) bool {
 type ChangeKind uint8
 
 const (
-	// ChangeUnknown is the zero value, so a never-set ChangeKind is detectably
-	// invalid rather than silently reading as a real kind.
+	// ChangeUnknown is the zero value, so a never-set ChangeKind is detectably invalid.
 	ChangeUnknown ChangeKind = iota
 	// ChangeAdded marks a key present only in the edited set.
 	ChangeAdded
@@ -142,16 +137,14 @@ func (k ChangeKind) String() string {
 	}
 }
 
-// Change is one key's difference between a base and an edited [TagSet]: the key,
-// how it changed, and the relevant values. Old holds the base values (set for a
-// removed or changed key); New holds the edited values (set for an added or
-// changed key).
+// Change is one key's difference between a base and an edited [TagSet]. Old holds
+// the base values (set for a removed or changed key); New holds the edited values
+// (set for an added or changed key).
 //
 // Count is set only for the synthetic picture/chapter set-count changes (the
-// lowercase "pictures"/"chapters" pseudo-keys a write plan emits): it carries the
-// relevant integer count as a real number, so a machine consumer reads it as a count
-// rather than parsing the human Old/New strings (which exist for the text render). It
-// is zero for an ordinary tag-key change.
+// lowercase "pictures"/"chapters" pseudo-keys a write plan emits). It carries the
+// count as a number, so a machine consumer need not parse the Old/New strings,
+// which exist for the text render. It is zero for an ordinary tag-key change.
 type Change struct {
 	Key   Key
 	Kind  ChangeKind
@@ -160,21 +153,16 @@ type Change struct {
 	Count int
 }
 
-// Diff reports the per-key delta from base to edited: keys dropped (removed),
-// keys whose values changed, then keys introduced (added). Removed and changed
-// keys come first in base's order, added keys last in edited's order, so the
-// result is stable and minimal-change. Values are compared order-significantly
-// (the same equality a codec uses to detect an edit), so a key present in both
-// with identical values yields no Change.
-//
-// It is the single tag-diff primitive shared by the CLI's diff command and the
-// write-plan change preview, so the two cannot drift.
+// Diff reports the per-key delta from base to edited. Removed and changed keys
+// come first in base's order, then added keys in edited's order, so the result is
+// stable and minimal. Values compare order-significantly, the same equality a
+// codec uses to detect an edit, so a key present in both with identical values
+// yields no Change. The CLI's diff command and the write-plan change preview
+// share it.
 func Diff(base, edited TagSet) []Change {
 	var out []Change
-	// Read the unexported fields directly rather than through Keys/Get: those
-	// clone defensively for external callers, but here (inside the package) we
-	// need clones only for the values we actually keep in a Change, which must be
-	// detached copies the caller can hold. Unchanged keys allocate nothing.
+	// Read the unexported fields directly: Keys/Get clone defensively, and only the
+	// values kept in a Change need detached copies. Unchanged keys allocate nothing.
 	for _, k := range base.order {
 		ov := base.values[k]
 		if nv, ok := edited.values[k]; ok {
@@ -193,20 +181,12 @@ func Diff(base, edited TagSet) []Change {
 	return out
 }
 
-// String renders one change as a single diff-style line: "- KEY: old" for a
-// removed key, "+ KEY: new" for an added one, and "~ KEY: old -> new" for a
-// changed one. Multiple values are joined with " | " (so a value containing a
-// comma is not misread as two), and a key present with no values reads as
-// "(present, no value)". The key and every value are run through [SanitizeLine] -
-// the row is a single line, so an embedded newline or tab is escaped (it can
-// neither forge a row nor break the layout), not just the terminal-hijack class -
-// even though both originate in an untrusted file (a custom Vorbis/MP4 field name
-// bypasses key validation on parse); a caller that needs the exact bytes reads
-// Key/Old/New directly.
-//
-// The line carries no indent and no trailing newline, so the caller controls
-// layout. It is the single change-line formatter shared by the library's
-// plan/diff previews and the CLI, so their formatting cannot drift.
+// String renders one change as a diff-style line: "- KEY: old" for a removed
+// key, "+ KEY: new" for an added one, "~ KEY: old -> new" for a changed one.
+// Multiple values join with " | "; a key with no values reads "(present, no
+// value)". Key and values pass through [SanitizeLine], so an embedded newline
+// or tab cannot forge a row; read Key/Old/New for the exact bytes. No indent,
+// no trailing newline. The plan/diff previews and the CLI share it.
 func (c Change) String() string {
 	key := SanitizeLine(string(c.Key))
 	switch c.Kind {
@@ -221,10 +201,9 @@ func (c Change) String() string {
 	}
 }
 
-// joinChangeValues renders a key's values for a change line: the empty case as
-// "(present, no value)", otherwise each value elided for display ([ElideValue])
-// then escaped for a single-line row via [SanitizeLine] and joined with " | ". A
-// machine consumer reads the exact values from [Change.Old]/[Change.New].
+// joinChangeValues renders a key's values for a change line: "(present, no value)"
+// for none, otherwise each value elided ([ElideValue]), escaped ([SanitizeLine]),
+// and joined with " | ". The exact values are in [Change.Old]/[Change.New].
 func joinChangeValues(vals []string) string {
 	if len(vals) == 0 {
 		return "(present, no value)"
@@ -236,34 +215,29 @@ func joinChangeValues(vals []string) string {
 	return strings.Join(out, " | ")
 }
 
-// maxDisplayValueBytes bounds how much of a single tag value a human-facing
-// renderer prints. A value at or under this length prints in full; a longer one is
-// elided to a prefix plus a length hint, so a pathological value (a 100k-character
-// comment glued into a file) cannot flood the terminal. It is generous enough that
-// normal values - even long lyrics or comments - print whole; only an abnormally
-// large value elides. The structured accessors ([Change.Old]/[Change.New],
-// [TagSet]) and --json keep the exact bytes, so a script always sees the full value.
+// maxDisplayValueBytes bounds how much of one tag value a human-facing renderer
+// prints. A longer value is elided to a prefix plus a length hint, so a pathological
+// value (a 100k-character comment) cannot flood the terminal. Normal values, long
+// lyrics and comments included, print whole. The structured accessors
+// ([Change.Old]/[Change.New], [TagSet]) and --json keep the exact bytes.
 const maxDisplayValueBytes = 4096
 
 // ElideValue returns v shortened for human display when it exceeds
 // maxDisplayValueBytes: the first maxDisplayValueBytes bytes (trimmed back to a
-// UTF-8 rune boundary) followed by an ellipsis and a hint naming the elided
-// remainder, e.g. "…[+94.0 KiB]". A value within the limit is returned unchanged.
-// It is the single elision shared by the change-line formatter ([Change.String])
-// and the CLI's tag/dump renderers, so they cannot disagree on the threshold or the
-// hint; a caller needing the exact value reads it from the structured fields. It is
-// applied before sanitizing, so the hint and the boundary are computed on the real
-// value, and the caller's [SanitizeLine]/[SanitizeText] then escapes the result.
+// UTF-8 rune boundary), an ellipsis, and a hint naming the elided remainder, e.g.
+// "…[+94.0 KiB]". A value within the limit is returned unchanged. The change-line
+// formatter ([Change.String]) and the CLI's tag/dump renderers share it. It runs
+// before sanitizing, so the hint and boundary come from the real value and the
+// caller's [SanitizeLine]/[SanitizeText] then escapes the result.
 func ElideValue(v string) string { return ElideValueAt(v, maxDisplayValueBytes) }
 
 // ElideValueAt is [ElideValue] with a caller-chosen threshold, for text held to a tighter
-// bound than a displayed tag value: a warning quoting a file-derived key or entry, which is
-// one line of prose rather than a field of its own. Sharing the cut keeps one back-off rule
-// and one hint spelling across both.
+// bound than a displayed tag value, such as a warning quoting a file-derived key or entry.
+// Sharing the cut keeps one back-off rule and one hint spelling.
 //
-// A prefix that backs all the way off (max lands inside a run of continuation bytes, which
-// is what a binary blob looks like) keeps the raw cut instead of eliding to nothing: the
-// caller sanitizes, and [SanitizeLine] escapes an invalid byte rather than emitting it.
+// When the prefix backs all the way off (max lands inside a run of continuation bytes, as
+// in a binary blob) it keeps the raw cut instead of eliding to nothing; the caller's
+// [SanitizeLine] then escapes the invalid byte.
 func ElideValueAt(v string, max int) string {
 	if max < 1 || len(v) <= max {
 		return v
@@ -298,8 +272,7 @@ func sanitize(s string, isControl func(rune) bool) string {
 	for i := 0; i < len(s); {
 		r, size := utf8.DecodeRuneInString(s[i:])
 		if r == utf8.RuneError && size == 1 {
-			// An invalid UTF-8 byte: escape it on its own so the result stays valid
-			// printable text rather than emitting a replacement character.
+			// An invalid UTF-8 byte is escaped on its own, not emitted as a replacement character.
 			writeHexEscape(&b, s[i])
 			i++
 			continue
@@ -320,8 +293,7 @@ func sanitize(s string, isControl func(rune) bool) string {
 const hexDigits = "0123456789abcdef"
 
 // writeHexEscape writes c as a two-digit \xNN escape. It avoids fmt's reflection
-// and per-call allocation, since this runs once for every offending byte on the
-// (already cold) escape path.
+// and allocation, since it runs once per offending byte.
 func writeHexEscape(b *strings.Builder, c byte) {
 	b.WriteString(`\x`)
 	b.WriteByte(hexDigits[c>>4])
@@ -343,10 +315,9 @@ func formatControlRune(r rune) bool {
 	return false
 }
 
-// writeUnicodeEscape writes r as a visible \uXXXX escape, for a format control whose
-// codepoint does not fit the one-byte \xNN form. Like [writeHexEscape] it avoids fmt's
-// reflection and per-call allocation; every rune formatControlRune matches is below U+10000,
-// so four digits always suffice.
+// writeUnicodeEscape writes r as a \uXXXX escape, for a format control whose codepoint
+// does not fit \xNN. Like [writeHexEscape] it avoids fmt. Every rune formatControlRune
+// matches is below U+10000, so four digits suffice.
 func writeUnicodeEscape(b *strings.Builder, r rune) {
 	b.WriteString(`\u`)
 	b.WriteByte(hexDigits[r>>12&0x0f])
@@ -362,17 +333,15 @@ func controlRune(r rune) bool {
 	return r != '\t' && r != '\n' && isControlByte(r)
 }
 
-// isControlByte reports whether r is a non-printable control codepoint - a C0
-// control, DEL, or a C1 control - independent of the tab/newline policy. It is the
-// shared core of both escaping predicates and matches only codepoints <= U+009F,
-// so an escaped value fits one byte.
+// isControlByte reports whether r is a C0 control, DEL, or a C1 control, regardless
+// of the tab/newline policy. Both escaping predicates share it. It matches only
+// codepoints <= U+009F, so an escaped value fits one byte.
 func isControlByte(r rune) bool {
 	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
 }
 
 // lineControlRune reports whether r is a control codepoint [SanitizeLine] escapes:
-// every control byte, including the tab and newline a single-line field must not
-// carry.
+// every control byte, including tab and newline.
 func lineControlRune(r rune) bool {
 	return isControlByte(r)
 }

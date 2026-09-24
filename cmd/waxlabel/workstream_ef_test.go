@@ -111,9 +111,9 @@ func nativeLine(t *testing.T, out, kind string) string {
 	return ""
 }
 
-// Chapter writes on former refusal fixtures (now ID3/VorbisComment/native stores).
+// Chapter writes on AIFF, FLAC and MP3 (native, VorbisComment and ID3 stores).
 
-// TestAddChapterAcrossFormats: --add-chapter succeeds on formerly rejected formats; survives re-parse.
+// TestAddChapterAcrossFormats: --add-chapter succeeds on AIFF, FLAC and MP3; survives re-parse.
 func TestAddChapterAcrossFormats(t *testing.T) {
 	for _, fixture := range []string{notagsAIFF, notagsFLAC, fixturePath("sample.mp3")} {
 		f := copyFixture(t, fixture)

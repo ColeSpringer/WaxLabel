@@ -39,7 +39,7 @@ var reservedItemNames = map[string]string{
 
 // ReservedItemName: case-folded APEv2-reserved names (CLI uppercases keys).
 // Value rule, not charset (same split as vorbis reserved namespaces).
-// Spec length 2-255 is NOT enforced: reserved is a collision hazard; short names work.
+// Spec length 2-255 is not enforced: reserved is a collision hazard; short names work.
 func ReservedItemName(name string) bool {
 	_, ok := reservedMagic(name)
 	return ok
@@ -126,7 +126,7 @@ func Rebuild(orig []Item, base, edited tag.TagSet, pictures []core.Picture, pict
 	var info RebuildInfo
 
 	emitPictures := func() {
-		// Slot assign (two names); drop is backstop. blocked = undecodable slots.
+		// Slot assign (two names); no slot means drop. blocked = undecodable slots.
 		malformed := malformedCovers(orig)
 		blocked := map[string]bool{}
 		for _, it := range malformed {

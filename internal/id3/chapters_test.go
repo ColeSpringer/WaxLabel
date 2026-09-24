@@ -20,8 +20,9 @@ func tagWith(version byte, frames []Frame) *Tag {
 	return &Tag{srcVersion: version, writeVersion: version, frames: frames}
 }
 
-// TestChapterRoundTrip: decode(encode(x)) == x for the start, end, and title CHAP
-
+// TestChapterRoundTrip checks decode(encode(x)) == x for CHAP start, end, and title at
+// both write versions. chapterFrames fills open ends before encoding: an interior open
+// chapter takes the next chapter's start, the trailing one the media duration.
 func TestChapterRoundTrip(t *testing.T) {
 	const duration = 10 * time.Second
 	in := []core.Chapter{
@@ -54,8 +55,9 @@ func TestChapterRoundTrip(t *testing.T) {
 	}
 }
 
-// TestChapterOpenEndRoundTrips: the unknown-duration fallback: with duration 0, a
-
+// TestChapterOpenEndRoundTrips checks the unknown-duration fallback: with duration 0, a
+// trailing open-ended chapter keeps the 0xFFFFFFFF sentinel and reads back open, not as
+// a ~49.7-day time.
 func TestChapterOpenEndRoundTrips(t *testing.T) {
 	frames, _ := chapterFrames([]core.Chapter{{Start: 2 * time.Second, Title: "A"}}, 0, 4)
 	got, _ := ProjectChapters(tagWith(4, frames))
@@ -64,8 +66,9 @@ func TestChapterOpenEndRoundTrips(t *testing.T) {
 	}
 }
 
-// TestChapterTrailingEndFilledFromDuration: the known-duration case: a trailing
-
+// TestChapterTrailingEndFilledFromDuration checks a trailing open-ended chapter takes the
+// media duration as its concrete end. The assertion is End == duration, which the
+// sentinel cannot spoof: the decoder reads the sentinel back as End == 0.
 func TestChapterTrailingEndFilledFromDuration(t *testing.T) {
 	const duration = 12 * time.Second
 	frames, _ := chapterFrames([]core.Chapter{{Start: 2 * time.Second, Title: "A"}}, duration, 4)
@@ -91,8 +94,9 @@ func TestChapterInteriorEndFilledFromNextStart(t *testing.T) {
 	}
 }
 
-// TestChapterFilledEndClampsBelowSentinel: a filled trailing end past the 32-bit
-
+// TestChapterFilledEndClampsBelowSentinel checks a filled trailing end past the 32-bit
+// millisecond field clamps to chapTimeMax (0xFFFFFFFE), never the 0xFFFFFFFF sentinel
+// that decodes as open. The raw end bytes are inspected.
 func TestChapterFilledEndClampsBelowSentinel(t *testing.T) {
 	huge := time.Duration(0x100000000) * time.Millisecond // one past the uint32 ms field
 	frames, overflow := chapterFrames([]core.Chapter{{Start: time.Second, Title: "A"}}, huge, 4)
@@ -108,8 +112,10 @@ func TestChapterFilledEndClampsBelowSentinel(t *testing.T) {
 	}
 }
 
-// TestChapterSubMillisecondTrailingEndFloorsSafely: the ms-resolution edge of the CHAP
-
+// TestChapterSubMillisecondTrailingEndFloorsSafely covers the ms-resolution edge of the
+// CHAP fill: a media duration under 1 ms past the last start floors (durationToMs) onto
+// the start. The result must be a zero-length chapter (End == Start), never End < Start
+// and never the 0xFFFFFFFF sentinel.
 func TestChapterSubMillisecondTrailingEndFloorsSafely(t *testing.T) {
 	start := 1000 * time.Millisecond
 	duration := start + 500*time.Microsecond // 0.5 ms past the start: floors to the same ms
@@ -131,8 +137,12 @@ func TestChapterSubMillisecondTrailingEndFloorsSafely(t *testing.T) {
 	}
 }
 
-// TestChapterTrailingEndNormalizesAgainstWriteDuration: ties the ID3 writer's millisecond
-
+// TestChapterTrailingEndNormalizesAgainstWriteDuration ties the writer's millisecond
+// flooring (durationToMs) to the diff comparator's truncation
+// (core.EqualChaptersModuloEnds): a trailing open chapter written from a non-whole-ms
+// duration must read back as an end the comparator normalizes to open. Otherwise a file
+// WaxLabel just wrote would diff against an equivalent open-ended list. The Truncate in
+// normalizeReconstructableEnds holds this coupling.
 func TestChapterTrailingEndNormalizesAgainstWriteDuration(t *testing.T) {
 	start := time.Second
 	duration := 2037*time.Millisecond + 551*time.Microsecond // deliberately not a whole ms
@@ -149,8 +159,9 @@ func TestChapterTrailingEndNormalizesAgainstWriteDuration(t *testing.T) {
 	}
 }
 
-// TestChapterTimeClampsBelowSentinel: CHAP clamps past the 32-bit
-
+// TestChapterTimeClampsBelowSentinel checks CHAP clamps past the 32-bit millisecond field
+// to chapTimeMax (0xFFFFFFFE), one below the "unused" sentinel; SYLT's 0xFFFFFFFF
+// ceiling would decode as time-not-used.
 func TestChapterTimeClampsBelowSentinel(t *testing.T) {
 	body, overflow := encodeCHAP("a", core.Chapter{Start: time.Duration(0x100000000) * time.Millisecond, Title: "X"}, 4)
 	if !overflow {
@@ -162,8 +173,10 @@ func TestChapterTimeClampsBelowSentinel(t *testing.T) {
 	}
 }
 
-// TestChapterEndSerialization: encodeCHAP's end-field guard directly (without chapterFrames'
-
+// TestChapterEndSerialization checks encodeCHAP's end-field guard without chapterFrames'
+// fill: a zero-length end (End == Start, nonzero) serializes endMs == startMs, while a
+// backwards end (End < Start), an unset end (End == 0), and the t=0 corner (Start == End
+// == 0) all serialize the 0xFFFFFFFF sentinel.
 func TestChapterEndSerialization(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -197,8 +210,10 @@ func TestChapterEndSerialization(t *testing.T) {
 	}
 }
 
-// TestChapterTrailingEndBoundedPastDuration: the past/at-duration trailing fill: when the
-
+// TestChapterTrailingEndBoundedPastDuration checks the past/at-duration trailing fill: a
+// last chapter starting past or at the media duration gets a zero-length end (endMs ==
+// startMs), not the 0xFFFFFFFF sentinel ffprobe/VLC render as ~49.7 days. The raw end
+// bytes are inspected.
 func TestChapterTrailingEndBoundedPastDuration(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -257,8 +272,9 @@ func TestChapterCTOCOrdering(t *testing.T) {
 	}
 }
 
-// TestCarryProjectionWarnings: the front-tag warning carry: a stale projection note
-
+// TestCarryProjectionWarnings checks the front-tag warning carry: a stale projection note
+// (chapters-flattened or invalid-picture) is dropped when the written tag no longer
+// projects it and kept in source order when it does; container warnings carry unchanged.
 func TestCarryProjectionWarnings(t *testing.T) {
 	flat := core.Warning{Code: core.WarnChaptersFlattened, Message: "flat"}
 	enc := core.Warning{Code: core.WarnInheritedEncoder, Message: "enc"}
@@ -275,9 +291,9 @@ func TestCarryProjectionWarnings(t *testing.T) {
 		t.Errorf("flattened-away: got %+v, want [encoder] only", got)
 	}
 
-	// A source invalid-picture (a parsed malformed APIC) is dropped when a picture edit's
-	// rewritten tag no longer projects it (the malformed cover was dropped), but a container
-	// warning like legacy-ape carries unchanged.
+	// A source invalid-picture is dropped when the rewritten tag no longer projects it (a
+	// picture edit dropped the malformed cover); a container warning like legacy-ape
+	// carries unchanged.
 	badPic := core.Warning{Code: core.WarnInvalidPicture, Message: "APIC: invalid picture data"}
 	ape := core.Warning{Code: core.WarnLegacyAPE, Message: "ape"}
 	got = CarryProjectionWarnings([]core.Warning{badPic, ape}, nil)
@@ -291,7 +307,7 @@ func TestCarryProjectionWarnings(t *testing.T) {
 	}
 }
 
-// TestCheckChapterCount checks the codec-level backstop for the single-byte CTOC count:
+// TestCheckChapterCount checks the codec-level check for the single-byte CTOC count:
 // exactly 255 is accepted, 256 is rejected with ErrUnsupportedTag.
 func TestCheckChapterCount(t *testing.T) {
 	if err := CheckChapterCount(make([]core.Chapter, MaxChapters)); err != nil {
@@ -302,8 +318,9 @@ func TestCheckChapterCount(t *testing.T) {
 	}
 }
 
-// TestChapterCTOCSubsetKeepsUnreferenced: when a CTOC references only a subset of
-
+// TestChapterCTOCSubsetKeepsUnreferenced checks a CTOC referencing only a subset of the
+// CHAP frames still projects the unreferenced chapters: file order [a,b,c] with CTOC [b]
+// must keep a and c.
 func TestChapterCTOCSubsetKeepsUnreferenced(t *testing.T) {
 	mk := func(id string, start time.Duration, title string) Frame {
 		body, _ := encodeCHAP(id, core.Chapter{Start: start, Title: title}, 4)
@@ -331,8 +348,9 @@ func TestChapterCTOCSubsetKeepsUnreferenced(t *testing.T) {
 	}
 }
 
-// TestChapterProjectionStartSorted: CHAP/CTOC frames stored out of start order project
-
+// TestChapterProjectionStartSorted checks CHAP/CTOC frames stored out of start order
+// project in start order, so two files storing the same chapters in different frame/CTOC
+// order project identically and SetChapters(doc.Chapters()...) is idempotent.
 func TestChapterProjectionStartSorted(t *testing.T) {
 	mk := func(id string, start time.Duration, title string) Frame {
 		body, _ := encodeCHAP(id, core.Chapter{Start: start, Title: title}, 4)
@@ -367,10 +385,9 @@ func TestChapterProjectionStartSorted(t *testing.T) {
 		t.Errorf("reversed vs forward frame order projected differently: %+v vs %+v", got, fwd)
 	}
 
-	// SetChapters(doc.Chapters()...) idempotency: storing the projected chapters and re-reading
-	// reaches a fixpoint, so a second store+read makes no further change. (The first store fills
-	// open interior ends via chapterFrames; from there the start-sorted projection is stable - the
-	// stable-sort of an already-sorted list is a no-op.)
+	// Idempotency: storing the projected chapters and re-reading reaches a fixpoint. The
+	// first store fills open interior ends; from there the start-sorted projection is
+	// stable.
 	once, _ := chapterFrames(got, 0, 4)
 	pass1, _ := ProjectChapters(tagWith(4, once))
 	twice, _ := chapterFrames(pass1, 0, 4)
@@ -380,8 +397,9 @@ func TestChapterProjectionStartSorted(t *testing.T) {
 	}
 }
 
-// TestChapterDuplicateElementIDsAllSurvive: several CHAP frames sharing an
-
+// TestChapterDuplicateElementIDsAllSurvive checks several CHAP frames sharing an element
+// ID (a non-conformant tag) each project to a distinct chapter. Without a CTOC they keep
+// file order; a CTOC naming the shared ID more than once consumes one CHAP per reference.
 func TestChapterDuplicateElementIDsAllSurvive(t *testing.T) {
 	mk := func(id string, start time.Duration, title string) Frame {
 		body, _ := encodeCHAP(id, core.Chapter{Start: start, Title: title}, 4)
@@ -420,8 +438,8 @@ func TestChapterDuplicateElementIDsAllSurvive(t *testing.T) {
 	}
 }
 
-// TestChapterEmptyElementIDsAllSurvive: the empty-ID case: several CHAP
-
+// TestChapterEmptyElementIDsAllSurvive checks several CHAP frames with an empty element
+// ID each project to a distinct chapter rather than collapsing under the shared "" key.
 func TestChapterEmptyElementIDsAllSurvive(t *testing.T) {
 	mk := func(start time.Duration, title string) Frame {
 		body, _ := encodeCHAP("", core.Chapter{Start: start, Title: title}, 4)
@@ -455,7 +473,7 @@ func TestChapterOpaqueFrameNotProjected(t *testing.T) {
 	if chs, _ := ProjectChapters(tagWith(4, []Frame{{ID: "CHAP", Body: body}})); len(chs) != 1 {
 		t.Errorf("non-opaque CHAP projected %d chapters, want 1", len(chs))
 	}
-	// A chapter edit must preserve the opaque CHAP verbatim (we never decoded it).
+	// A chapter edit must preserve the opaque CHAP verbatim; it was never decoded.
 	out, _ := RebuildFrames([]Frame{{ID: "CHAP", Body: body, Opaque: true}}, tag.NewTagSet(), tag.NewTagSet(), 4,
 		StructuredEdit{Chapters: []core.Chapter{{Start: 0, Title: "New"}}, ChaptersChanged: true}, WriteOpts{})
 	preserved := false
@@ -575,8 +593,9 @@ func TestRebuildPreservesChaptersOnTagEdit(t *testing.T) {
 	}
 }
 
-// TestChapterEditFlattensNestedCTOCWarning: a chapter edit on a tag whose source
-
+// TestChapterEditFlattensNestedCTOCWarning checks a chapter edit on a tag with a nested
+// CTOC writes one flat CTOC whose projection carries no flatten warning; the post-write
+// result uses the written tag's warnings, not stale source warnings.
 func TestChapterEditFlattensNestedCTOCWarning(t *testing.T) {
 	chapA, _ := encodeCHAP("a", core.Chapter{Start: 0, Title: "A"}, 4)
 	nested := []Frame{

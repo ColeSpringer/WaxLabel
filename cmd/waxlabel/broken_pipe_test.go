@@ -74,11 +74,11 @@ func TestBrokenPipeExitsZeroSilently(t *testing.T) {
 	}
 }
 
-// TestRealCancelStillExits130: broken-pipe carve-out must not swallow real Ctrl-C.
+// TestRealCancelStillExits130: broken-pipe carve-out must not swallow Ctrl-C.
 func TestRealCancelStillExits130(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancelCause(context.Background())
-	cancel(nil) // nil cause -> context.Canceled: a real interrupt, not a broken pipe
+	cancel(nil) // nil cause -> context.Canceled: an interrupt, not a broken pipe
 
 	var out, errb bytes.Buffer
 	code := dispatch(ctx, []string{"dump", sampleFLAC}, strings.NewReader(""), &out, &errb)

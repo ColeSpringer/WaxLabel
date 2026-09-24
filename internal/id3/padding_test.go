@@ -12,7 +12,7 @@ func wrapTag(major, flags byte, body []byte) []byte {
 
 // rawFrame renders one frame header of the given version's geometry: v2.2 uses a
 // 3-character id and a 3-byte size, v2.3 a 4-character id and a plain 4-byte size, v2.4
-// the same with a sync-safe size. The widths are the whole point of the test below.
+// the same with a sync-safe size.
 func rawFrame(major byte, id string, body []byte) []byte {
 	n := len(body)
 	switch major {
@@ -27,8 +27,9 @@ func rawFrame(major byte, id string, body []byte) []byte {
 	}
 }
 
-// TestTagPaddingMeasuresTheSourceRegion: padding is measured off the parsed region, not
-
+// TestTagPaddingMeasuresTheSourceRegion checks padding is measured off the parsed region,
+// not derived by re-rendering: a v2.2 tag's 6-byte frame headers would make RenderedSize
+// over-count by 4 bytes per frame, and Document.Padding reports this number.
 func TestTagPaddingMeasuresTheSourceRegion(t *testing.T) {
 	const pad = 200
 	cases := []struct {
@@ -82,8 +83,9 @@ func TestTagPaddingMeasuresTheSourceRegion(t *testing.T) {
 	})
 }
 
-// TestRenderFrontTagRestampsPadding: the tag a rewrite produces must carry the padding the
-
+// TestRenderFrontTagRestampsPadding checks the tag a rewrite produces carries the padding
+// the rewrite sized, not the source's; both feed Document.Padding, so inheriting the
+// source's number would describe a region that no longer exists.
 func TestRenderFrontTagRestampsPadding(t *testing.T) {
 	src, err := ParseTag(wrapTag(3, 0, append(rawFrame(3, "TIT2", []byte("\x00Old")), make([]byte, 500)...)), 0)
 	if err != nil {

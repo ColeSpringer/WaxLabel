@@ -20,8 +20,8 @@ func (Codec) Plan(ctx context.Context, base, edited *core.Media, opts core.Write
 	if !ok || d == nil {
 		return nil, fmt.Errorf("musepack: edited media has no Musepack native document")
 	}
-	// Chapters sit in the copied stream. Capability gate refuses first; this is the
-	// bypass backstop (worded differently so tests can tell which refused).
+	// Chapters sit in the copied stream. The capability gate refuses first; this
+	// check catches a bypass, worded differently so tests can tell which refused.
 	if !core.EqualChapters(base.Chapters, edited.Chapters) {
 		return nil, fmt.Errorf("%w: the Musepack writer copies the chapter packets verbatim and cannot apply a chapter change", waxerr.ErrUnsupportedTag)
 	}

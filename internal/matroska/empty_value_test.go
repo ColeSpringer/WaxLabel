@@ -8,10 +8,9 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// TestManagedTagWithoutTagStringStaysNative guards the empty-value change against
-// over-reach: a managed SimpleTag (its name maps to a canonical key) that carries only
-// a TagBinary or only nested sub-tags - no TagString of its own - must stay
-// native-only, not surface as a spurious empty canonical value (ARTIST=[""]).
+// TestManagedTagWithoutTagStringStaysNative: a managed SimpleTag (its name maps to a
+// canonical key) with only a TagBinary or only nested sub-tags, no TagString, stays
+// native-only rather than surfacing as an empty canonical value (ARTIST=[""]).
 func TestManagedTagWithoutTagStringStaysNative(t *testing.T) {
 	const limit = int64(1 << 20)
 	cases := []struct {
@@ -70,9 +69,9 @@ func TestEmptySimpleTagRoundTrip(t *testing.T) {
 	}
 }
 
-// TestBuildAlbumGroupKeepsEmptyValue exercises the changed writer function directly:
-// buildAlbumGroup must emit a present-empty canonical value as a SimpleTag rather than
-// drop the whole group (the regression that made `set ARTIST=` == `--clear ARTIST`).
+// TestBuildAlbumGroupKeepsEmptyValue: buildAlbumGroup emits a present-empty canonical
+// value as a SimpleTag rather than dropping the group (`set ARTIST=` is not `--clear
+// ARTIST`).
 func TestBuildAlbumGroupKeepsEmptyValue(t *testing.T) {
 	const limit = int64(1 << 20)
 	base := tag.NewTagSet()
@@ -120,8 +119,7 @@ func TestRenderInfoTitlePresence(t *testing.T) {
 		t.Fatalf("no title + present=false: hasSegTitle=true, want false")
 	}
 
-	// Case 2: an Info that ALREADY has a Title (the replace/remove path, titleOff >= 0)
-	// - the branch a titleless fixture never exercises.
+	// Case 2: an Info that already has a Title (the replace/remove path, titleOff >= 0).
 	withTitle := infoFromRaw(
 		encElement(idInfo, append(uintElement(idTimestampScl, 1000000), stringElement(idSegTitle, "Old")...)),
 		0, bits.NewDepth(8), limit)

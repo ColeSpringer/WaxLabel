@@ -91,7 +91,7 @@ func wvSubBlock(id byte, data []byte) []byte {
 func TestWavPackNonStandardSampleRate(t *testing.T) {
 	const rateIndexUnknown, magShift = 15, 18
 	flags := uint32(1) | // 2 bytes per sample
-		uint32(15)<<magShift | // magnitude, deliberately not the bit depth
+		uint32(15)<<magShift | // magnitude, not the bit depth
 		uint32(rateIndexUnknown)<<23
 	sub := wvSubBlock(0x27, []byte{0x40, 0x1F, 0x00}) // ID_SAMPLE_RATE: 8000 Hz, 24-bit LE
 	data := wvBlock(flags, 8000, sub)
@@ -123,9 +123,8 @@ func TestWavPackDSDBlock(t *testing.T) {
 	}
 }
 
-// read-alias behavior the APEv2 mapping gained when its table moved to internal/mapping: an APE
-// "Year" item resolves to RECORDINGDATE like every other format's date spelling, so MP3's legacy
-// family view shows it under the same key the canonical set uses.
+// APEv2 read alias: an APE "Year" item resolves to RECORDINGDATE like every other format's
+// date spelling, so MP3's legacy family view shows it under the same key the canonical set uses.
 func TestMP3LegacyAPEDateSurfacesAsRecordingDate(t *testing.T) {
 	ape := apeTagText(map[string]string{"Year": "1999"})
 	data := append(append(id3v2(4, textFrame(4, "TDRC", "2020")), mp3Audio(t)...), ape...)

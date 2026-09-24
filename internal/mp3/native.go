@@ -14,7 +14,6 @@ import (
 )
 
 // doc: ID3v2 tag, audio geometry, first frame header, trailing legacy. Implements core.NativeDoc.
-
 type doc struct {
 	id3    *id3.Tag // parsed ID3v2 tag (nil if the file has none)
 	id3Len int64    // on-disk length of the original ID3v2 region (0 if none)
@@ -46,7 +45,6 @@ func (d *doc) Clone() core.NativeDoc {
 }
 
 // PaddingBytes is free space in the front ID3v2 region (0 if no front tag).
-
 func (d *doc) PaddingBytes() int64 { return id3.FrontTagPadding(d.id3) }
 
 // Describe summarizes native structure for dump/native views.

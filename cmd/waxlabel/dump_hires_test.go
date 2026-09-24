@@ -47,7 +47,7 @@ func hiResFile(t *testing.T, entry []byte) string {
 	return path
 }
 
-// hiResALACFile: stsd 16.16 rate is 0; real 96 kHz/24-bit stereo in ALAC magic cookie.
+// hiResALACFile: stsd 16.16 rate is 0; the ALAC magic cookie holds 96 kHz/24-bit stereo.
 func hiResALACFile(t *testing.T) string {
 	t.Helper()
 	cookieCfg := make([]byte, 24)
@@ -67,7 +67,7 @@ func hiResALACFile(t *testing.T) string {
 	)))
 }
 
-// hiResAACFile: stsd 16.16 rate is 0; real 96 kHz stereo in esds ASC.
+// hiResAACFile: stsd 16.16 rate is 0; the esds ASC holds 96 kHz stereo.
 func hiResAACFile(t *testing.T) string {
 	t.Helper()
 	descr := func(tag byte, body []byte) []byte {

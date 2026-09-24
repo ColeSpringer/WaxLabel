@@ -8,11 +8,10 @@ import (
 	wl "github.com/colespringer/waxlabel"
 )
 
-// checks the library-side drop of a whole unstorable structural edit under
-// WithAllowUnsupportedDrop: authoring synced lyrics on an MP4 (which has no synced-lyrics store)
-// drops the set with exactly one warning and no error, the drop yields a byte-identical no-op, and
-// a repeated Prepare produces the identical result and the same single warning (so the drop does
-// not mutate the editor's backing state).
+// library-side drop of a whole unstorable structural edit under WithAllowUnsupportedDrop: authoring
+// synced lyrics on an MP4 (which has no synced-lyrics store) drops the set with exactly one warning
+// and no error, the write is a byte-identical no-op, and a repeated Prepare produces the same
+// result and single warning (the drop does not mutate the editor's backing state).
 func TestSyncedLyricsDropDeterministicSingleWarning(t *testing.T) {
 	src := readFixture(t, "../testdata/notags.m4a")
 	set := wl.SyncedLyrics{Language: "eng", Lines: []wl.SyncedLine{{Time: 5 * time.Second, Text: "hi"}}}
@@ -43,8 +42,7 @@ func TestSyncedLyricsDropDeterministicSingleWarning(t *testing.T) {
 		t.Errorf("dropping the only edit must be a byte-identical no-op")
 	}
 
-	// A repeated Prepare on a fresh editor produces the identical result and the same single
-	// warning, proving the drop built fresh slices rather than mutating the editor's state.
+	// A repeated Prepare on a fresh editor must produce the identical result and single warning.
 	plan2, err := mustParseBytes(t, src).Edit().SetSyncedLyrics(set).Prepare(wl.WithAllowUnsupportedDrop())
 	if err != nil {
 		t.Fatalf("second prepare: %v", err)

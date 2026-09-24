@@ -9,9 +9,9 @@ import (
 	"github.com/colespringer/waxlabel/internal/vorbis"
 )
 
-// past-duration rule needs a duration to compare against. A file whose duration reads 0; a
-// header-only or truncated stream; would otherwise have every chapter flagged as beyond 0:00, so
-// the linter gates on a known non-zero duration exactly as the editor does.
+// The past-duration rule needs a duration to compare against. A file whose duration reads 0 (a
+// header-only or truncated stream) would otherwise have every chapter flagged as beyond 0:00, so
+// the linter requires a known non-zero duration, as the editor does.
 func TestLintChaptersGatedOnKnownDuration(t *testing.T) {
 	// A comment block plus chapter comments and no audio frames: the STREAMINFO carries no
 	// sample count, so Duration() is 0 while the chapters are real.
@@ -36,15 +36,15 @@ func TestLintChaptersGatedOnKnownDuration(t *testing.T) {
 			t.Errorf("an unknown duration must not flag a chapter as past the end: %v", f)
 		}
 	}
-	// The duplicate rule is independent of duration, so it still fires: without this the
-	// test would pass even if lintChapters returned nothing at all.
+	// The duplicate rule is independent of duration, so it still fires; without this check
+	// the test would pass even if lintChapters returned nothing.
 	if !slices.Contains(codes, "duplicate-chapter") {
 		t.Errorf("two chapters at the same start should lint as duplicate-chapter, got %v", codes)
 	}
 }
 
-// positive half: with a real duration, a chapter beyond it is reported. Together with the gate test
-// above, removing the duration guard changes one of the two outcomes.
+// With a known duration, a chapter beyond it is reported. Together with the gate test above,
+// removing the duration check changes one of the two outcomes.
 func TestLintChaptersPastKnownDuration(t *testing.T) {
 	src := readFixture(t, sampleFLAC)
 	plan, err := mustParseBytes(t, src).Edit().SetChapters(

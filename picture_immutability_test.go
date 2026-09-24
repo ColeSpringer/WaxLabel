@@ -22,7 +22,7 @@ func TestRemovePicturesMatchCannotMutateDocument(t *testing.T) {
 		if len(p.Data) > 0 {
 			p.Data[0] = 0xFF // must land on the detached probe, not the Document
 		}
-		return false // keep the picture; we are only probing the aliasing
+		return false // keep the picture; only probe the aliasing
 	})
 	if got := doc.Pictures()[0].Data[0]; got != 0xAA {
 		t.Errorf("Document cover Data[0] = %#x after a mutating match, want 0xaa (match mutated shared bytes)", got)

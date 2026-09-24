@@ -19,7 +19,7 @@ func pngOfSize(w, h uint32) []byte {
 }
 
 // ID3v2 section 4.14 requires a type-1 file icon to be a 32x32 PNG. Everything the check needs is
-// already decoded on the picture, so nothing was enforcing a rule the model could see.
+// already decoded on the picture.
 func TestFileIconShapeWarns(t *testing.T) {
 	data := readFixture(t, notagsMP3)
 	plan, err := mustParseBytes(t, data).Edit().
@@ -31,7 +31,7 @@ func TestFileIconShapeWarns(t *testing.T) {
 	if !ok {
 		t.Fatalf("a 64x64 file icon was accepted silently: %v", plan.Report().Warnings)
 	}
-	// The warning and the lint finding share a string, so the two cannot drift.
+	// The warning and the lint finding share a string, so the two must agree.
 	re := mustParseBytes(t, applyToBytes(t, data, plan))
 	var found bool
 	for _, f := range re.Lint() {
@@ -72,8 +72,7 @@ func TestFileIconMIMEWarns(t *testing.T) {
 	}
 }
 
-// negative: a 32x32 PNG is exactly what the type asks for, and neither surface should say anything
-// about it.
+// A 32x32 PNG is what the type asks for, so neither surface says anything about it.
 func TestConformingFileIconIsClean(t *testing.T) {
 	data := readFixture(t, notagsMP3)
 	plan, err := mustParseBytes(t, data).Edit().
@@ -138,9 +137,8 @@ func TestV23DateSeparatorIsCoerced(t *testing.T) {
 	}
 }
 
-// classification boundaries, so a later pass cannot collapse three answers into one: a value with
-// no year drops, a value missing a component reduces, a spelling change coerces, and a canonical
-// value says nothing.
+// The classification boundaries: a value with no year drops, a value missing a component reduces,
+// a spelling change coerces, and a canonical value says nothing.
 func TestV23DateFatesAreDistinct(t *testing.T) {
 	for _, c := range []struct {
 		value string

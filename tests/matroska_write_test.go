@@ -277,8 +277,8 @@ func checkCRCs(t *testing.T, b []byte, start, end, depth int) {
 	}
 }
 
-// edits Tags, Info.Title, and the cover (touching the Tags/Info/SeekHead/Cues CRC-32s across both
-// the absorb and shift paths) and verifies every CRC-32 in the output is recomputed correctly.
+// Edits across the absorb and shift paths (touching the Tags/Info/SeekHead/Cues CRC-32s) must
+// recompute every CRC-32 in the output.
 func TestMatroskaWriteCRCsValid(t *testing.T) {
 	src := readFixture(t, sampleMKA)
 	for _, e := range []*wl.Editor{
@@ -291,8 +291,8 @@ func TestMatroskaWriteCRCsValid(t *testing.T) {
 	}
 }
 
-// tags (a small absorbed edit and a large shifting one) and confirms ffprobe; the authority; reads
-// them back and still sees a valid FLAC audio stream, proving the rewrite kept the container sound.
+// After a small absorbed edit and a large shifting one, ffprobe reads the tags back and still
+// sees a valid FLAC audio stream, proving the rewrite kept the container sound.
 func TestMatroskaDifferentialFFprobe(t *testing.T) {
 	requireTool(t, "ffprobe")
 	path := copyToTemp(t, sampleMKA)
@@ -339,8 +339,8 @@ func TestMatroskaDifferentialFFprobe(t *testing.T) {
 	}
 }
 
-// ffmpeg accepts our edited output for a stream-copy remux (a strict structural validation of the
-// rewrite).
+// ffmpeg accepts the edited output for a stream-copy remux, a strict structural validation of
+// the rewrite.
 func TestMatroskaDifferentialRemux(t *testing.T) {
 	requireTool(t, "ffmpeg")
 	path := copyToTemp(t, sampleMKA)
@@ -407,8 +407,8 @@ func countSegChildren(t *testing.T, data []byte, wantID uint64) int {
 	return 0
 }
 
-// editing a file with a track-scoped tag must not duplicate that tag into album scope (finding:
-// every save re-emitting the whole flattened set bloats the file and risks a spurious conflict).
+// Editing a file with a track-scoped tag must not duplicate that tag into album scope: a save
+// that re-emits the whole flattened set bloats the file and risks a spurious conflict.
 func TestMatroskaWriteCrossScopeNoDuplicate(t *testing.T) {
 	tags := mkEl(idTags, concat(
 		mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "AA"))),
@@ -456,9 +456,8 @@ func multiScopeTags(crc bool, trackExtra ...[]byte) []byte {
 	return mkEl(idTags, concat(album, mkEl(idTag, trackContent)))
 }
 
-// clearing a key carried at album *and* track scope removes it from every scope (finding #1),
-// leaves unrelated scoped tags intact, and dissolves the spurious cross-scope conflict the two
-// copies produced.
+// Clearing a key carried at album and track scope removes it from every scope, leaves
+// unrelated scoped tags intact, and dissolves the cross-scope conflict the two copies produced.
 func TestMatroskaWriteMultiScopeClear(t *testing.T) {
 	data := buildMatroska("matroska", "T", multiScopeTags(false, mkSimple("PART_NUMBER", "2/10")))
 
@@ -585,7 +584,7 @@ func TestMatroskaWriteMultiScopeAppendKeepsScopes(t *testing.T) {
 	assertFamilyScopes(t, re, tag.Encoder, wl.ScopeAlbum, wl.ScopeTrack)
 }
 
-// pure cross-scope reorder is an ordering Matroska cannot represent, so it collapses to a clean
+// A pure cross-scope reorder is an ordering Matroska cannot represent, so it collapses to a
 // no-op rather than rewriting the file to the same projection.
 func TestMatroskaWriteMultiScopeReorderIsNoOp(t *testing.T) {
 	data := buildMatroska("matroska", "T", multiScopeTags(false))
@@ -631,8 +630,8 @@ func TestMatroskaWriteSlashPairSurvivesWhenBothHalvesKept(t *testing.T) {
 	assertFamilyScopes(t, re, tag.TrackTotal, wl.ScopeTrack)
 }
 
-// CRC-bearing track group that must be re-rendered (to drop the edited key) has its CRC recomputed
-// over the new content; the old verbatim fast path never touched a non-album group's CRC.
+// A CRC-bearing track group that must be re-rendered (to drop the edited key) has its CRC
+// recomputed over the new content.
 func TestMatroskaWriteMultiScopeCRCRecompute(t *testing.T) {
 	data := buildMatroska("matroska", "T", multiScopeTags(true, mkSimple("COMPOSER", "TrackComposer")))
 
@@ -648,9 +647,9 @@ func TestMatroskaWriteMultiScopeCRCRecompute(t *testing.T) {
 	}
 }
 
-// after a multi-scope clear re-renders a track group, the returned document is re-editable in
-// place; a second, unrelated edit preserves the surviving track tag and does not resurrect the
-// cleared key (the re-rendered group carries its new bytes, not the stale ones).
+// After a multi-scope clear re-renders a track group, the returned document is re-editable in
+// place: a second, unrelated edit preserves the surviving track tag and does not resurrect the
+// cleared key.
 func TestMatroskaWriteMultiScopeRerenderRoundTrips(t *testing.T) {
 	data := buildMatroska("matroska", "T", multiScopeTags(false, mkSimple("COMPOSER", "TrackComposer")))
 
@@ -670,9 +669,8 @@ func TestMatroskaWriteMultiScopeRerenderRoundTrips(t *testing.T) {
 	}
 }
 
-// (finding #1): a key split across scopes with different values (ENCODER album=album-enc +
-// track=track-enc, the transcoded-file shape) must keep BOTH values when an unrelated tag is
-// edited.
+// A key split across scopes with different values (ENCODER album=album-enc + track=track-enc,
+// the transcoded-file shape) must keep both values when an unrelated tag is edited.
 func TestMatroskaWriteCrossScopeSplitValuePreserved(t *testing.T) {
 	data := buildMatroska("matroska", "T", multiScopeTags(false))
 	if v, _ := mustParseBytes(t, data).Get(tag.Encoder); len(v) != 2 {
@@ -694,7 +692,7 @@ func TestMatroskaWriteCrossScopeSplitValuePreserved(t *testing.T) {
 		t.Errorf("edit not applied: artists=%v", f.Artists)
 	}
 
-	// A second, unrelated save must not drift the layout (re-drop or duplicate).
+	// A second, unrelated save must not change the layout (re-drop or duplicate).
 	out2, _ := saveMatroska(t, out, re.Edit().Set(tag.Album, "Alb"))
 	if n := bytes.Count(out2, []byte("ENCODER")); n != 2 {
 		t.Errorf("ENCODER written %d times after a second save, want 2 (idempotent)", n)
@@ -704,8 +702,7 @@ func TestMatroskaWriteCrossScopeSplitValuePreserved(t *testing.T) {
 	}
 }
 
-// (finding #1): a track-scoped slash number (PART_NUMBER=3/12) projects to TrackNumber=3 AND
-// TrackTotal=12.
+// A track-scoped slash number (PART_NUMBER=3/12) projects to TrackNumber=3 and TrackTotal=12.
 func TestMatroskaWriteCrossScopeSplitNumberNoDuplicate(t *testing.T) {
 	tags := mkEl(idTags, concat(
 		mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "AA"))),
@@ -730,8 +727,8 @@ func TestMatroskaWriteCrossScopeSplitNumberNoDuplicate(t *testing.T) {
 	}
 }
 
-// (finding #1 regression guard): editing ONE half of a track-scoped slash number (PART_NUMBER=3/12,
-// projecting TrackNumber=3 AND TrackTotal=12) must keep the other half.
+// Editing one half of a track-scoped slash number (PART_NUMBER=3/12, projecting TrackNumber=3
+// and TrackTotal=12) must keep the other half.
 func TestMatroskaWriteSplitNumberComponentEdit(t *testing.T) {
 	build := func() []byte {
 		return buildMatroska("matroska", "T", mkEl(idTags, concat(
@@ -788,8 +785,8 @@ func TestMatroskaWriteSplitNumberComponentEdit(t *testing.T) {
 	})
 }
 
-// title-only edit reaches a TITLE SimpleTag carried at another scope (which also projects into the
-// canonical Title) and removes it, so the projection reads the single new title; the cross-scope
+// A title-only edit removes a TITLE SimpleTag carried at another scope (which also projects
+// into the canonical Title), so the projection reads the single new title. The cross-scope
 // removal contract applies to Title, not just SimpleTag-only keys.
 func TestMatroskaWriteTitleOnlyDropsScopedTitleTag(t *testing.T) {
 	tags := mkEl(idTags, mkEl(idTag, concat(
@@ -813,8 +810,8 @@ func TestMatroskaWriteTitleOnlyDropsScopedTitleTag(t *testing.T) {
 	}
 }
 
-// report's exact repro on the real transcoded fixture; clearing ENCODER reaches both the muxer
-// (album) and codec (track) stamp, and the audio essence is byte-identical.
+// On the transcoded fixture, clearing ENCODER reaches both the muxer (album) and codec (track)
+// stamp, and the audio essence is byte-identical.
 func TestMatroskaStripEncoderMultiScopePreservesEssence(t *testing.T) {
 	src := readFixture(t, sampleWebM)
 	if v, _ := mustParseBytes(t, src).Get(tag.Encoder); len(v) != 2 {
@@ -866,8 +863,8 @@ func TestMatroskaWriteMultipleSeekHeadRefused(t *testing.T) {
 	}
 }
 
-// adding a 2nd Title value is detected as a change (not a silent no-op), even though Info.Title
-// stores only the first.
+// Adding a 2nd Title value is detected as a change, even though Info.Title stores only the
+// first.
 func TestMatroskaWriteMultiValueTitleNotNoOp(t *testing.T) {
 	data := buildMatroska("matroska", "A", mkEl(idTags, mkEl(idTag, concat(
 		mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "AA")))))
@@ -936,8 +933,8 @@ func TestMatroskaBackCoverWarnsRoleLoss(t *testing.T) {
 	}
 }
 
-// Title edit on a (malformed) file with no Info element is refused cleanly rather than silently
-// dropped or corrupting.
+// A Title edit on a (malformed) file with no Info element is refused rather than dropped or
+// corrupting.
 func TestMatroskaWriteNoInfoTitleRefused(t *testing.T) {
 	data := buildMatroska("matroska", "", mkEl(idTags, mkEl(idTag, concat(
 		mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "A")))))
@@ -1065,9 +1062,8 @@ func assertCuePointsAtCluster(t *testing.T, data []byte) {
 	}
 }
 
-// embeds a ~200 KB cover on sample.mka; the most common art operation; pushing the single cluster
-// (@924) well past 65535 and forcing the 2->3 byte CueClusterPosition (and SeekHead) rebuild end to
-// end.
+// A ~200 KB cover on sample.mka pushes the single cluster (@924) well past 65535, forcing the
+// 2->3 byte CueClusterPosition (and SeekHead) rebuild end to end.
 func TestMatroskaLargeCoverRebuildsCues(t *testing.T) {
 	src := readFixture(t, sampleMKA)
 	big := append(tinyPNG(), bytes.Repeat([]byte{0x7F}, 200000)...) // valid PNG header + filler
@@ -1116,9 +1112,9 @@ func TestMatroskaLargeCoverRebuildsCues(t *testing.T) {
 	})
 }
 
-// forces the same boundary-crossing rebuild on a .webm via a ~70 KB Info.Title (WebM has no
-// Attachments subset, so a cover is refused). The WebM fixtures carry no CRC-32s, so this also
-// exercises the rebuild path without the CRC convention.
+// The same boundary-crossing rebuild on a .webm via a ~70 KB Info.Title (WebM has no
+// Attachments, so a cover is refused). The WebM fixtures carry no CRC-32s, so this also covers
+// the rebuild path without the CRC convention.
 func TestMatroskaWebMLargeTitleRebuildsCues(t *testing.T) {
 	src := readFixture(t, sampleWebM)
 	title := strings.Repeat("w", 70000)
@@ -1143,9 +1139,8 @@ func TestMatroskaWebMLargeTitleRebuildsCues(t *testing.T) {
 	})
 }
 
-// re-edits the document returned by a boundary-crossing save (without reparsing the bytes) and
-// saves again, proving buildResult's cuesFromRaw re-derivation supports a second edit on the
-// rebuilt Cues tree.
+// A second edit on the document returned by a boundary-crossing save (no reparse) proves
+// buildResult's cuesFromRaw re-derivation supports the rebuilt Cues tree.
 func TestMatroskaCoverRebuildReedit(t *testing.T) {
 	src := readFixture(t, sampleMKA)
 	big := append(tinyPNG(), bytes.Repeat([]byte{0x42}, 200000)...)
@@ -1168,8 +1163,8 @@ func TestMatroskaCoverRebuildReedit(t *testing.T) {
 	essenceUnchanged(t, src, out2)
 }
 
-// edit/save path for an unknown-size (0xFF) Segment; the streamed form mkvmerge/ffmpeg commonly
-// emit; which TestMatroskaUnknownSizeSegment only parses.
+// The edit/save path for an unknown-size (0xFF) Segment, the streamed form mkvmerge/ffmpeg
+// commonly emit, which TestMatroskaUnknownSizeSegment only parses.
 func TestMatroskaWriteUnknownSizeSegment(t *testing.T) {
 	// Reuse the 0xFF-segment construction from TestMatroskaUnknownSizeSegment, with a one-block
 	// audio Cluster added so the file has essence (the write path refuses a no-audio file). The
@@ -1215,10 +1210,9 @@ func uidTrackTag(uid uint64, tags ...[]byte) []byte {
 	return mkEl(idTag, concat(mkEl(idTargets, concat(mkUint(idTgtTypeVal, 50), mkUint(idTagTrackUID, uid))), concat(tags...)))
 }
 
-// editing the track number away from one of two slash tags must not halve the unedited total's
-// multiplicity. The surviving slash tag keeps its "10", so the album re-emit has to carry the full
-// [10 10] rather than subtracting the surviving copy, which the reader would then suppress as an
-// echo.
+// Editing the track number away from one of two slash tags must not halve the unedited
+// total's multiplicity. The surviving slash tag keeps its "10", so the album re-emit must carry
+// the full [10 10]; a subtracted copy would be suppressed by the reader as an echo.
 func TestMatroskaWriteUneditedTotalKeepsMultiplicity(t *testing.T) {
 	data := buildMatroska("matroska", "T", mkEl(idTags, concat(
 		uidTrackTag(7, mkSimple("PART_NUMBER", "1/10")),
@@ -1236,8 +1230,8 @@ func TestMatroskaWriteUneditedTotalKeepsMultiplicity(t *testing.T) {
 	}
 }
 
-// boolean set must land as one canonical "1", not leave a differently-spelled scoped copy behind
-// that re-reads as a second value on a single-valued key.
+// A boolean set must store one canonical "1", not leave a differently-spelled scoped copy that
+// re-reads as a second value on a single-valued key.
 func TestMatroskaWriteBooleanCanonicalizesEveryScope(t *testing.T) {
 	album := mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("COMPILATION", "yes")))
 	data := buildMatroska("matroska", "T", mkEl(idTags, concat(album, uidTrackTag(7, mkSimple("COMPILATION", "yes")))))
@@ -1250,8 +1244,8 @@ func TestMatroskaWriteBooleanCanonicalizesEveryScope(t *testing.T) {
 	}
 }
 
-// boolean word kept by an exact scoped match must still be stored canonically; the same command
-// must not store "1" or "yes" depending on which scoped copies happen to exist.
+// A boolean word kept by an exact scoped match must still be stored canonically; the same
+// command must not store "1" or "yes" depending on which scoped copies exist.
 func TestMatroskaWriteBooleanClaimStillCanonicalizes(t *testing.T) {
 	album := mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("COMPILATION", "1")))
 	data := buildMatroska("matroska", "T", mkEl(idTags, concat(album, uidTrackTag(7, mkSimple("COMPILATION", "yes")))))
@@ -1261,9 +1255,9 @@ func TestMatroskaWriteBooleanClaimStillCanonicalizes(t *testing.T) {
 	}
 }
 
-// key spread over two album-scope Tag blocks is album-owned in both, so an append re-emits the
-// whole list in edited order instead of leaving one value stranded in the second block where it
-// re-reads ahead of the appended value.
+// A key spread over two album-scope Tag blocks is album-owned in both, so an append re-emits
+// the whole list in edited order; a value left in the second block would re-read ahead of the
+// appended one.
 func TestMatroskaWriteTwoAlbumBlocksAppendKeepsOrder(t *testing.T) {
 	tag0 := mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ARTIST", "AA"), mkSimple("ENCODER", "A")))
 	tag1 := mkEl(idTag, concat(mkEl(idTargets, mkUint(idTgtTypeVal, 50)), mkSimple("ENCODER", "B")))

@@ -10,8 +10,7 @@ import (
 )
 
 // Files built from floods of minimum-size metadata elements must be rejected with ErrSizeTooLarge
-// once the per-parse element count crosses Limits.MaxElements (default 100000), instead of growing
-// one descriptor per element.
+// once the per-parse element count crosses Limits.MaxElements (default 100000).
 const overCap = 100001
 
 // repeatConcat returns elem repeated n times in a single pre-sized buffer.
@@ -24,9 +23,8 @@ func repeatConcat(prefix, elem []byte, n int) []byte {
 	return out
 }
 
-// caller passing a partial Limits via WithLimits (e.g. only MaxDepth) must still get the default
-// element cap; a zero field means "use the default", not "unlimited", so the DoS protection is not
-// silently disabled.
+// A caller passing a partial Limits via WithLimits (e.g. only MaxDepth) must still get the default
+// element cap: a zero field means "use the default", not "unlimited".
 func TestPartialLimitsKeepElementCap(t *testing.T) {
 	emptyChunk := append([]byte("JUNK"), wavLE32(0)...)
 	body := repeatConcat([]byte("WAVE"), emptyChunk, overCap)
@@ -120,8 +118,8 @@ func TestVorbisCommentCountCapped(t *testing.T) {
 	}
 }
 
-// Tags element packed with minimum-size empty SimpleTags is metadata-granularity (unlike clusters),
-// so the EBML walk must trip the element cap rather than accumulate one descriptor each to OOM.
+// A Tags element packed with minimum-size empty SimpleTags is metadata-granularity (unlike
+// clusters), so the EBML walk must trip the element cap.
 func TestMatroskaMetadataElementCapped(t *testing.T) {
 	simples := repeatConcat(nil, mkEl(idSimpleTag, nil), overCap)
 	seg := mkEl(idSegment, mkEl(idTags, mkEl(idTag, simples)))
@@ -133,9 +131,9 @@ func TestMatroskaMetadataElementCapped(t *testing.T) {
 	}
 }
 
-// WAV/AIFF id3 chunk whose frame count exceeds MaxElements surfaces ErrSizeTooLarge instead of
-// being swallowed by the tolerant "is this chunk a tag?" guard (which would treat a
-// structurally-valid id3 chunk as absent and rewrite the file without it).
+// A WAV/AIFF id3 chunk whose frame count exceeds MaxElements surfaces ErrSizeTooLarge; the
+// tolerant "is this chunk a tag?" check must not swallow it, or a structurally valid id3 chunk
+// would be treated as absent and dropped on rewrite.
 func TestWavAiffID3FrameCapErrors(t *testing.T) {
 	frames := make([][]byte, overCap)
 	empty := textFrame(3, "TIT2", "")
@@ -156,9 +154,9 @@ func TestWavAiffID3FrameCapErrors(t *testing.T) {
 	}
 }
 
-// guards against someone later over-applying the element cap to an audio-granularity loop: a
-// Matroska level-1 Cluster occurs once per audio packet group, so a long file legitimately has
-// hundreds of thousands. Far more than MaxElements clusters must still parse cleanly.
+// The element cap must not apply to an audio-granularity loop: a Matroska level-1 Cluster occurs
+// once per audio packet group, so a long file has hundreds of thousands. Far more than MaxElements
+// clusters must still parse.
 func TestMatroskaManyClustersParseUncapped(t *testing.T) {
 	const n = overCap + 20000 // comfortably past the cap an audio loop must not honor
 	cluster := mkAudioCluster()

@@ -41,9 +41,8 @@ func sumRawBytes(d *doc) (total, nilNestedRaw int) {
 	return total, nilNestedRaw
 }
 
-// TestNestedSimpleTagAllocationBounded is the CI guard for the deep-nested SimpleTag
-// memory blowup: capturing raw at every recursion level retained roughly depth times
-// the subtree size.
+// TestNestedSimpleTagAllocationBounded checks that a deeply nested SimpleTag does not
+// retain raw bytes at every recursion level (roughly depth times the subtree size).
 func TestNestedSimpleTagAllocationBounded(t *testing.T) {
 	const (
 		wraps   = 50        // nesting levels; stays within the 64-level depth budget

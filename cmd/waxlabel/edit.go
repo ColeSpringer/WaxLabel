@@ -120,7 +120,7 @@ func editFlagsEmpty(cmd *cobra.Command) bool {
 }
 
 // quotingHint detects unquoted spaced values: --set/--add with a stray bare-word
-// positional beside a real input (--set TITLE=Two Words -> file + Words).
+// positional beside an existing input (--set TITLE=Two Words -> file + Words).
 // Needs a resolved sibling to avoid false positives on lone missing extensionless paths.
 // Shared by plan (advisory) and set (refuses before write).
 func quotingHint(ef *editFlags, realOf func(string) string, args []string) (hint string, ok bool) {
@@ -680,7 +680,7 @@ func dedupUnknownKeys(keys []tag.Key) []tag.Key {
 }
 
 // anyInputExists reports whether any path is actionable ("-" always counts).
-// Defers cosmetic notes until a real input exists so missing-file runs show not-found first.
+// Callers defer cosmetic notes until an input exists so missing-file runs show not-found first.
 // Skips pathErrors entries (directory without --recursive, FIFO, etc.).
 // --strict unknown-key checks are not gated on this.
 func anyInputExists(realOf func(string) string, paths []string, pathErrors map[string]error) bool {

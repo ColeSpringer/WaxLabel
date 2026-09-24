@@ -26,10 +26,9 @@ type Projection struct {
 	Warnings     []core.Warning
 }
 
-// EncoderNoise reports inherited-encoder warnings for the tag's TSSE/TENC frames
-// (ffmpeg writes "Lavf..." there), the signature of a transcoded/acquired file.
-// It is shared by the container codecs that embed ID3v2 (MP3 and WAV) so the
-// check lives in one place. A nil tag yields no warnings.
+// EncoderNoise reports inherited-encoder warnings for the tag's TSSE/TENC frames (ffmpeg
+// writes "Lavf..." there), the signature of a transcoded or acquired file. The codecs
+// that embed ID3v2 (MP3 and WAV) share it. A nil tag yields no warnings.
 func EncoderNoise(t *Tag) []core.Warning {
 	if t == nil {
 		return nil
@@ -48,9 +47,13 @@ func EncoderNoise(t *Tag) []core.Warning {
 	return ws
 }
 
-// RewriteBase selects the ID3 rewrite diff base inside a container with native
-// metadata (WAV LIST/INFO, AIFF text). Shared so WAV/AIFF stay aligned.
-
+// RewriteBase selects the diff base for rebuilding an ID3 chunk inside a container that
+// also has native metadata (WAV LIST/INFO, AIFF text chunks). WAV and AIFF share it so
+// their rewrite rules stay aligned. With no existing ID3 chunk the base is empty, so the
+// full promoted tag set is written; when the native metadata is being stripped the base
+// is only the parsed ID3 frames, so native values count as additions; otherwise it is the
+// merged projection, so unchanged frames are reused. srcTag is read only in the
+// stripNative case, which implies id3Present.
 func RewriteBase(base tag.TagSet, srcTag *Tag, id3Present, stripNative bool) tag.TagSet {
 	switch {
 	case !id3Present:
@@ -77,8 +80,8 @@ func Project(t *Tag) Projection {
 	numeric := false
 
 	// A frame whose declared size overran the tag stopped the walk, so everything from its
-	// header on is unread. Every ID3-backed codec projects through here, so MP3, AAC and the
-	// embedded id3 chunks in WAV and AIFF all inherit the diagnostic.
+	// header on is unread. Every ID3-backed codec projects through here and inherits the
+	// diagnostic.
 	if id, n := t.MalformedTail(); id != "" {
 		warnings = core.Warn(warnings, core.WarnMalformedTagEntry,
 			fmt.Sprintf("the %s frame declares more bytes than the tag holds; the %d byte(s) from it to the end of the tag could not be read",
@@ -101,19 +104,18 @@ func Project(t *Tag) Projection {
 			if p, ok := decodeAPIC(f.Body); ok {
 				pics = append(pics, p)
 			} else {
-				// A malformed APIC is dropped from the picture set but must not be silent:
-				// surface it on the read path so dump and lint report the bad cover, matching
-				// the FLAC PICTURE-block warning. decodeAPIC returns only ok, so the message
-				// is static.
+				// A malformed APIC is dropped from the picture set; warn so dump and lint
+				// report the bad cover, matching the FLAC PICTURE-block warning. decodeAPIC
+				// returns only ok, so the message is static.
 				warnings = core.Warn(warnings, core.WarnInvalidPicture, "APIC: invalid picture data")
 			}
 		case f.ID == "TXXX":
 			if desc, vals, ok := decodeUserText(f.Body); ok {
 				key, kok := mapping.ID3TXXXKey(desc)
 				if !kok {
-					// The description is not representable as a canonical key (a lowercase-only
-					// or punctuation-bearing one), so the frame is preserved but its value never
-					// reaches the tag set. Say so rather than let it vanish from every view.
+					// The description is not representable as a canonical key (lowercase-only
+					// or punctuation-bearing), so the frame is preserved but its value never
+					// reaches the tag set. Warn so it does not vanish from every view.
 					warnings = core.WarnInvalidKey(warnings, desc)
 					continue
 				}
@@ -128,32 +130,27 @@ func Project(t *Tag) Projection {
 			}
 		case f.ID == "COMM":
 			// A described comment is still a comment: Windows Explorer and CDDB-era taggers
-			// write one, and leaving it unprojected made it invisible to dump, lint and diff
-			// and made copy report a clean lossless carry while leaving it behind. Only a
-			// machine description (iTunes normalization, ReplayGain) stays out, through the
-			// predicate the writer's management gates also consult.
-			//
-			// The source label is the literal "COMM", not a description-derived string:
-			// core.BuildFamilies marks a key unselected when distinct SOURCES supply distinct
-			// values, so a per-description source would turn an ordinary file carrying one
-			// plain and one described comment into a spurious conflicting-families finding.
-			// One source reads both as a multi-valued COMMENT, which is what the key is. The
-			// TXXX precedent does not generalize: different TXXX descriptions land on
-			// different canonical keys and so never collide on one.
+			// write one, and leaving it unprojected hid it from dump, lint and diff and let
+			// copy report a lossless carry that left it behind. Only a machine description
+			// (iTunes normalization, ReplayGain) stays out, through the predicate the
+			// writer's management gates also use. The source label is the literal "COMM",
+			// not the description: core.BuildFamilies marks a key unselected when distinct
+			// sources supply distinct values, so a per-description source would turn one
+			// plain plus one described comment into a spurious conflicting-families
+			// finding. Different TXXX descriptions land on different keys and never
+			// collide, so that precedent does not apply.
 			if desc, vals, ok := decodeCommentFrame(f.Body); ok && !mapping.ID3TechnicalCommentDesc(desc) {
 				for _, v := range vals {
 					emit(tag.Comment, v, "COMM")
 				}
 			}
 		case f.ID == "USLT":
-			// Only an empty-description USLT projects, deliberately - unlike COMM above,
-			// which projects any non-technical description. tag.Lyrics is not multivalued
-			// (tag/keys.go) and renderUnit's USLT branch takes edited.First(tag.Lyrics), so
-			// projecting a described USLT beside a plain one would manufacture a
-			// single-valued-multi finding on read and then silently collapse to the first on
-			// any write: strictly worse than preserved-but-invisible. A described USLT
-			// descriptor usually marks an alternate or translated set, which is a different
-			// thing from "the lyrics", whereas a described comment is still a comment.
+			// Only an empty-description USLT projects, unlike COMM above. tag.Lyrics is not
+			// multivalued (tag/keys.go) and renderUnit's USLT branch takes
+			// edited.First(tag.Lyrics), so projecting a described USLT beside a plain one
+			// would raise a single-valued-multi finding on read and collapse to the first on
+			// write. A described USLT usually marks an alternate or translated set, which is
+			// not "the lyrics".
 			if desc, text, ok := decodeLangText(f.Body); ok && desc == "" {
 				emit(tag.Lyrics, text, "USLT")
 			}
@@ -174,10 +171,10 @@ func Project(t *Tag) Projection {
 		case isDateFrame(f.ID):
 			dp.add(f.ID, decodeTextFrame(f.Body))
 		case f.ID == "TIPL" || f.ID == "IPLS":
-			// The involved-people list holds one function/name pair per credit. Project only the
-			// functions we model (folding case and read-only aliases); unknown involvements are
-			// left unprojected here and preserved on write. decodeInvolvedPeople already drops
-			// nameless pairs, so every pair here has a name. TIPL must precede the T-prefix tail.
+			// The involved-people list holds one function/name pair per credit. Project only
+			// the modelled functions (folding case and read-only aliases); unknown
+			// involvements stay unprojected and are preserved on write. decodeInvolvedPeople
+			// drops nameless pairs. TIPL must precede the T-prefix tail.
 			for _, p := range decodeInvolvedPeople(f.Body) {
 				if k, ok := mapping.ID3InvolvedRoleKey(p.Function); ok {
 					emit(k, p.Name, f.ID)
@@ -237,12 +234,10 @@ func Project(t *Tag) Projection {
 	}
 }
 
-// emitNumTotal splits "n/total" text values into a number key and a total key, via
-// the shared [tag.NumberTotalSplit] so the substring split - and its validity gate -
-// cannot drift from the edit-time pair normalization or the other read paths. A
-// malformed pair ("abc/1", "1/2/3") stays verbatim on the number key instead of
-// composing a non-numeric number or a fabricated total, matching the editor and every
-// other codec; a well-formed "4/9" splits and preserves leading zeros.
+// emitNumTotal splits "n/total" text values into a number key and a total key via the
+// shared [tag.NumberTotalSplit], so the split and its validity gate match the edit-time
+// pair normalization and the other read paths. A malformed pair ("abc/1", "1/2/3") stays
+// verbatim on the number key; a well-formed "4/9" splits and keeps leading zeros.
 func emitNumTotal(emit func(tag.Key, string, string), vals []string, numKey, totKey tag.Key, src string) {
 	for _, v := range vals {
 		num, total, _ := tag.NumberTotalSplit(numKey, v)
@@ -255,15 +250,14 @@ func emitNumTotal(emit func(tag.Key, string, string), vals []string, numKey, tot
 	}
 }
 
-// movementSplit splits an MVIN "number/total" value into its number and total substrings,
-// the movement analog of [tag.NumberTotalSplit] (which is hard-gated to the track/disc keys,
-// and whose [tag.ValidNumericValue] gate passes anything for a non-member key, so it cannot
-// be widened here). A value splits only when it contains a '/', each side is empty or a
-// valid movement integer ([tag.ValidMP4IntValue], so unsigned and within uint16), and the
-// sides are not both empty; anything else - no slash, a malformed side ("abc/1"), a bare "/"
-// - stays whole on the number side with split=false, matching NumberTotalSplit's
-// malformed-stays-verbatim contract. The MVIN read case and composeMovementPair both go
-// through it, so compose and read cannot drift.
+// movementSplit splits an MVIN "number/total" value into its number and total, the
+// movement analog of [tag.NumberTotalSplit], which is gated to the track/disc keys and
+// whose [tag.ValidNumericValue] gate passes anything for other keys. A value splits only
+// when it contains a '/', each side is empty or a valid movement integer
+// ([tag.ValidMP4IntValue]: unsigned, within uint16), and the sides are not both empty;
+// anything else (no slash, "abc/1", a bare "/") stays whole on the number side with
+// split=false, matching NumberTotalSplit's malformed-stays-verbatim contract. The MVIN
+// read case and composeMovementPair share it.
 func movementSplit(v string) (num, total string, split bool) {
 	if !strings.ContainsRune(v, '/') {
 		return v, "", false
@@ -296,12 +290,9 @@ func LegacyV1Families(auth tag.TagSet, raw []byte) []core.FamilyValue {
 
 // LegacyV2Families projects a preserved, non-authoritative ID3v2 tag into legacy family
 // entries, and reports whether it also carries content the canonical set does not fold
-// in - pictures, chapters, or synced lyrics - which a legacy strip cannot prove
-// redundant. FLAC's stray leading tag and Musepack's both take this path.
-//
-// An unreadable tag reports opaque with no entries: nothing about it can be shown to be
-// redundant with what the authoritative store holds. A tag that parsed but was ignored
-// whole ([Tag.Ignored]) is unreadable in the same sense and reports opaque too.
+// in (pictures, chapters, or synced lyrics), which a legacy strip cannot prove redundant.
+// FLAC's stray leading tag and Musepack's both take this path. An unreadable tag, or one
+// parsed but ignored whole ([Tag.Ignored]), reports opaque with no entries.
 func LegacyV2Families(auth tag.TagSet, raw []byte, maxElements int) ([]core.FamilyValue, bool) {
 	if len(raw) == 0 {
 		return nil, false
@@ -318,11 +309,10 @@ func LegacyV2Families(auth tag.TagSet, raw []byte, maxElements int) ([]core.Fami
 			contribs = append(contribs, core.Contribution{Key: k, Value: v})
 		}
 	}
-	// A region the frame walk could not read is content nothing can show to be redundant,
-	// exactly like the unparseable-tag case above: a strip would destroy it, so the caller
-	// must treat the container as opaque and refuse to prove the strip safe. A tag ignored
-	// whole (a v2.2 compression flag) is the same case with no frames at all: it projects
-	// nothing, so without this it would read as provably empty and be stripped away.
+	// A region the frame walk could not read, or a tag ignored whole (a v2.2 compression
+	// flag), is content nothing can prove redundant; a strip would destroy it, so the
+	// container is opaque. Without this an ignored tag would project nothing and read as
+	// provably empty.
 	malformed, _ := t.MalformedTail()
 	opaque := malformed != "" || t.Ignored() != "" ||
 		len(proj.Pictures) > 0 || len(proj.Chapters) > 0 || len(proj.SyncedLyrics) > 0

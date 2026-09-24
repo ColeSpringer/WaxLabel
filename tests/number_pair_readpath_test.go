@@ -10,8 +10,7 @@ import (
 
 // cross-format agreement check for the track/disc normalization: a slashed TRACKNUMBER stored
 // natively must read back as the same (TrackNumber, TrackTotal) canonical pair on every text codec,
-// so dump, copy, and diff agree on one file. Per-format tests miss this; the point is that the
-// formats agree.
+// so dump, copy, and diff agree on one file.
 func TestNumberPairReadPathAgreesAcrossFormats(t *testing.T) {
 	formats := []struct {
 		name  string
@@ -61,9 +60,9 @@ func TestNumberPairReadPathExplicitTotalWins(t *testing.T) {
 	}
 }
 
-// "why this is safe" guarantee: normalizing "4/9" on read must not perturb the file. The native
-// Vorbis comment stays verbatim, so a no-op edit stays a no-op and the bytes are byte-identical
-// (the read-time split lives only in the canonical projection, not on disk).
+// normalizing "4/9" on read must not perturb the file. The native Vorbis comment stays verbatim,
+// so a no-op edit stays a no-op and the bytes are identical; the split lives only in the
+// canonical projection.
 func TestNumberPairReadPathByteIdenticalNoOp(t *testing.T) {
 	src := flacWithComments("TRACKNUMBER=4/9")
 	plan, err := mustParseBytes(t, src).Edit().Prepare()
@@ -78,9 +77,8 @@ func TestNumberPairReadPathByteIdenticalNoOp(t *testing.T) {
 	}
 }
 
-// guards against silent edit loss when a FLAC/Ogg stores the pair only as a slashed TRACKNUMBER:
-// the read path splits "4/9" into TRACKNUMBER=4 + TRACKTOTAL=9, but the native comment is still
-// "4/9".
+// edits to a pair a FLAC/Ogg stores only as a slashed TRACKNUMBER must not be lost: the read path
+// splits "4/9" into TRACKNUMBER=4 + TRACKTOTAL=9, but the native comment is still "4/9".
 func TestVorbisSlashPairEditRewritesComment(t *testing.T) {
 	// Clearing the derived total must stick, not reappear from the slash number.
 	t.Run("clear total", func(t *testing.T) {

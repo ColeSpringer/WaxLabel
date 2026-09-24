@@ -9,10 +9,9 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// six contributor-role keys survive a real set -> write -> reparse across the main storage
-// mechanisms: a Vorbis comment (FLAC), an ID3 involved-people frame (MP3), MP4 com.apple.iTunes
-// freeforms (M4A), the embedded-ID3 chunk WAV and AIFF carry, and Matroska SimpleTags (MKA,
-// identity names).
+// six contributor-role keys survive set -> write -> reparse across the main storage mechanisms: a
+// Vorbis comment (FLAC), an ID3 involved-people frame (MP3), MP4 com.apple.iTunes freeforms (M4A),
+// the embedded-ID3 chunk WAV and AIFF carry, and Matroska SimpleTags (MKA, identity names).
 func TestRolesRoundTrip(t *testing.T) {
 	roles := []struct {
 		key  tag.Key
@@ -60,7 +59,7 @@ func TestRolesRoundTrip(t *testing.T) {
 			if bytes.Contains(out, []byte("PRODUCER")) {
 				t.Errorf("%s: a role leaked as an uppercase TXXX user frame (found \"PRODUCER\")", f)
 			}
-			// WRITER rides a TXXX:Writer user frame (Picard spelling), not the involved-people list.
+			// WRITER uses a TXXX:Writer user frame (Picard spelling), not the involved-people list.
 			if !bytes.Contains(out, []byte("Writer")) {
 				t.Errorf("%s: expected a TXXX:Writer user frame in the written output", f)
 			}

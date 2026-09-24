@@ -203,8 +203,7 @@ func TestMP4ChapterTooManyRejected(t *testing.T) {
 }
 
 func TestMP4ChapterTitleTruncatedTo255(t *testing.T) {
-	// A title longer than the 8-bit chpl length prefix is truncated, not corrupted,
-	// and the truncation is surfaced (never silent).
+	// A title longer than the 8-bit chpl length prefix is truncated, and the truncation is warned.
 	long := string(bytes.Repeat([]byte("x"), 300))
 	data := mp4Tagged(mp4Text("\xa9nam", "T"))
 	plan, err := mustParseBytes(t, data).Edit().SetChapters(wl.Chapter{Start: 0, Title: long}).Prepare()
@@ -229,8 +228,7 @@ func TestMP4ChapterTitleTruncatedTo255(t *testing.T) {
 func TestMP4ChapterStartRoundsNotTruncates(t *testing.T) {
 	// A chapter start is encoded in the chapter track's media timescale. WaxLabel writes that track at
 	// a fixed fine timescale (90,000, so 1 ms = 90 units), decoupled from the coarse movie timescale,
-	// so a sub-millisecond start survives instead of rounding to the nearest millisecond as a 1 ms
-	// movie timescale would force.
+	// so a sub-millisecond start survives.
 	data := mp4Tagged(mp4Text("\xa9nam", "T"))
 	start := 2700600 * time.Microsecond // 2700.6 ms, exact at the 90 kHz chapter timescale
 	plan, err := mustParseBytes(t, data).Edit().SetChapters(
@@ -348,9 +346,9 @@ func TestSetChaptersOnFLACRoundTrips(t *testing.T) {
 }
 
 func TestClearChaptersOnIncapableFormatIsNoOp(t *testing.T) {
-	// Clearing chapters on a chapterless, chapter-incapable format is harmless: the
-	// guard keys on a non-empty list, so an empty list never fires (just as clearing
-	// a cover on WebM does not error). A concurrent tag edit must still apply.
+	// Clearing chapters on a file that has none is harmless: the guard keys on a
+	// non-empty list, so an empty list never fires (as clearing a cover on WebM does
+	// not error). A concurrent tag edit must still apply.
 	doc := mustParseBytes(t, synthFLAC())
 	plan, err := doc.Edit().ClearChapters().Set(tag.Title, "Kept").Prepare()
 	if err != nil {

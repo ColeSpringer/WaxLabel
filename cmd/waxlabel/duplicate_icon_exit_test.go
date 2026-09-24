@@ -5,7 +5,7 @@ import (
 )
 
 // TestTwoFileIconsIsARefusedWrite: second type-1 picture is exit 3 (unsupported-tag), not 4.
-// Exit 4 outranks 3 in batch aggregate and would mask real corruption.
+// Exit 4 outranks 3 in batch aggregate and would mask corruption.
 func TestTwoFileIconsIsARefusedWrite(t *testing.T) {
 	t.Parallel()
 	png := writeTempImage(t, "icon.png", minimalPNG())

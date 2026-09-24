@@ -48,10 +48,10 @@ type Destination struct {
 // Close any caller-held handle on the path before saving (Windows).
 func SaveBack() Destination { return Destination{kind: destSaveBack} }
 
-// SaveAsFile writes a complete file at path atomically. Always writes whole.
-// Overwrites without refusing (caller/CLI guard clobber). Path resolving to the
-// source spends the plan like SaveBack. [ParseFile] checks source unchanged;
-// [Parse] needs [WriteTo] with an explicit source.
+// SaveAsFile writes a complete file at path atomically, even for a no-op plan.
+// Overwrites without refusing (the caller or CLI checks clobber). A path resolving
+// to the source commits the plan like SaveBack. [ParseFile] checks the source is
+// unchanged; [Parse] needs [WriteTo] with an explicit source.
 func SaveAsFile(path string) Destination { return Destination{kind: destSaveAsFile, path: path} }
 
 // WriteTo streams complete output to w. source required for detached [Parse];
@@ -114,16 +114,15 @@ func (p *Plan) saveBack(ctx context.Context) (*Document, SaveResult, error) {
 		return p.doc, SaveResult{Committed: false, Dest: p.doc.media.Identity, Doc: p.doc}, nil
 	}
 
-	// The hook closes src before the rename replaces the path it was opened from; the
-	// defer above stays as the backstop, and a double Close is harmless.
+	// The hook closes src before the rename replaces its path; a double Close is harmless.
 	committed, werr := p.writeFile(ctx, p.doc.path, src, func() { src.Close() })
 	destID, _ := fileIdentity(p.doc.path)
 	if !committed {
 		// No post-write file to describe, so no Document.
 		return nil, SaveResult{Committed: false, Dest: destID}, werr
 	}
-	// Bytes are in place (the rename succeeded), even if a later step like the
-	// directory fsync errored; mark the plan so a second SaveBack is refused.
+	// The rename succeeded, so the bytes are in place even if the directory fsync
+	// failed. Mark the plan so a second SaveBack is refused.
 	p.committed = true
 	resDoc := p.resultDocument(p.doc.path, nil, destID)
 	return resDoc, SaveResult{Committed: true, Dest: destID, Doc: resDoc}, werr
@@ -136,25 +135,25 @@ func (p *Plan) saveAsFile(ctx context.Context, path string) (*Document, SaveResu
 	}
 	defer closer()
 
-	// A ParseFile document reopens its source, so a change since parse would copy the wrong
-	// bytes, and for an in-place target write that corruption over the source. An
-	// OpenSource document reads stable bytes and a detached Parse doc failed above.
+	// A ParseFile document reopens its source, so a change since parse would copy the
+	// wrong bytes. An OpenSource document reads stable bytes; a detached Parse
+	// document failed above.
 	if p.doc.reopensFileSource() {
 		if current, err := p.verifySourceUnchanged(src, sameFileTarget(path, p.doc.path)); err != nil {
 			return nil, SaveResult{Dest: current}, err
 		}
 	}
 
-	// The closer is the release hook: the target may resolve to the source, which the
-	// rename then replaces. It is idempotent, so the defer above still backstops.
+	// The closer is the release hook: the target may resolve to the source, which
+	// the rename replaces. It is idempotent.
 	committed, werr := p.writeFile(ctx, path, src, closer)
 	destID, _ := fileIdentity(path)
 	if !committed {
 		return nil, SaveResult{Committed: false, Dest: destID}, werr
 	}
 	if sameFileTarget(path, p.doc.path) {
-		// This replaced the plan's source, so spend the plan as SaveBack does. Matched by
-		// resolved path, not inode: a rename to a hardlink alias leaves the source intact.
+		// This replaced the plan's source, so mark it committed as SaveBack does. Matched
+		// by resolved path, not inode: a rename onto a hardlink alias leaves the source.
 		p.committed = true
 	}
 	resDoc := p.resultDocument(path, nil, destID)

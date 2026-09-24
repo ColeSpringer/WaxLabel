@@ -50,7 +50,6 @@ var sampleRateTable = [3][4]int{
 // parseMPEG finds the first valid MPEG frame in window and decodes properties,
 // including a VBR frame count when Xing/Info/VBRI is present. Requires a second
 // agreeing frame at the computed length (padding false-sync guard).
-
 func parseMPEG(window []byte) (mpegInfo, bool) {
 	for i := 0; i+4 <= len(window); i++ {
 		info, ok := decodeHeader(window[i:])
@@ -68,7 +67,6 @@ func parseMPEG(window []byte) (mpegInfo, bool) {
 
 // confirmNextFrame: second frame at computed length agrees on version/layer/rate.
 // Free-format or near window end: accept alone.
-
 func confirmNextFrame(window []byte, i int, info mpegInfo) bool {
 	flen := frameLength(info)
 	if flen <= 0 {
@@ -168,12 +166,11 @@ func codecName(version, layer int) string {
 // the total frame count, which gives an accurate duration for variable-bitrate
 // streams. frame points at the start of the first frame header.
 func readVBR(frame []byte, info *mpegInfo) {
-	// Xing/Info sits after the header and side information, offset by an optional
-	// 2-byte MPEG CRC when the protection bit is clear. Probe the CRC-less offset
-	// first (no reliance on the sometimes-inaccurate protection bit), then the
-	// CRC-present one. With a CRC present, the CRC-less offset lands on the last two
-	// side-info bytes plus the first two of "Xing", which cannot spell "Xing"/"Info",
-	// so there is no false early match.
+	// Xing/Info sits after the header and side information, plus a 2-byte MPEG CRC when
+	// the protection bit is clear. Probe the CRC-less offset first, then the CRC-present
+	// one; the protection bit is sometimes wrong. With a CRC present, the CRC-less
+	// offset covers the last two side-info bytes and the first two of "Xing", which
+	// cannot spell "Xing"/"Info", so there is no false early match.
 	side := sideInfoSize(info.version, info.channels)
 	for _, off := range [2]int{4 + side, 4 + 2 + side} {
 		if off+12 > len(frame) {

@@ -181,8 +181,8 @@ func TestWAVCoverRoundTrip(t *testing.T) {
 	}
 }
 
-// Write-side differential: ffmpeg/ffprobe must read what we wrote and accept
-// our audio. These skip cleanly when the tools are absent.
+// Write-side differential: ffmpeg/ffprobe must read the written tags and accept
+// the audio. These skip when the tools are absent.
 
 func TestWAVDifferentialFFprobeReadsOurTags(t *testing.T) {
 	requireTool(t, "ffprobe")
@@ -235,8 +235,8 @@ func TestWAVDifferentialFFmpegDecodes(t *testing.T) {
 	if _, _, err := plan.Execute(context.Background(), wl.SaveBack()); err != nil {
 		t.Fatal(err)
 	}
-	// Decode only the audio stream: this fails loudly if our chunk framing or the
-	// RIFF size is broken. (The embedded cover becomes a separate video stream.)
+	// Decode only the audio stream: this fails if the chunk framing or the RIFF
+	// size is broken. The embedded cover becomes a separate video stream.
 	cmd := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error",
 		"-i", path, "-map", "0:a", "-f", "null", "-")
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -261,8 +261,7 @@ func TestWAVVerifyEssenceOnWrite(t *testing.T) {
 }
 
 // fingerprint covers trailing metadata: a WAV whose id3 chunk sits after the data chunk, externally
-// edited in place (same size and mtime), is caught on save-back. The old [0,dataOff) fingerprint
-// missed anything after the audio.
+// edited in place (same size and mtime), is caught on save-back.
 func TestWAVTrailingMetadataChangeDetected(t *testing.T) {
 	data := wavFile(wavFmtPCM(), wavData(400), wavID3(id3v2(3, textFrame(3, "TIT2", "Original"))))
 	path := writeTempFile(t, "trail.wav", data)
@@ -297,7 +296,7 @@ func TestWAVTrailingMetadataChangeDetected(t *testing.T) {
 }
 
 // document returned from a write recomputes its warnings instead of echoing the parse warnings: a
-// duplicate-tag-block the rewrite consolidated must no longer be reported.
+// duplicate-tag-block the rewrite consolidated must not be reported.
 func TestWAVPostWriteWarningsMatchReparse(t *testing.T) {
 	data := wavFile(wavFmtPCM(),
 		wavInfo([2]string{"INAM", "First"}),

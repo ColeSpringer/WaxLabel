@@ -207,11 +207,10 @@ func TestMusepackSV8ChapterTagForms(t *testing.T) {
 	}
 }
 
-// tag too short for its header record still yields the chapter (untitled), a packet whose start
-// sample runs off its end is skipped while the packets after it are still read, and a start no
-// duration can hold is skipped rather than placed at the start; each is reported once however many
-// packets share the fault, and the packets count against the element cap whether or not they yield
-// a chapter.
+// A tag too short for its header record still yields an untitled chapter; a packet whose start
+// sample runs off its end is skipped while the packets after it are still read; a start no
+// duration can hold is skipped rather than placed at the start. Each fault is reported once
+// however many packets share it, and every packet counts against the element cap.
 func TestMusepackSV8MalformedChapterPackets(t *testing.T) {
 	t.Run("start sample past any duration", func(t *testing.T) {
 		data := mpcSV8Stream(44100, 0, 2, mpcAudio(8), mpcTitled(1<<62, "far"), mpcTitled(1152, "near"), mpcEnd())
@@ -337,7 +336,7 @@ func TestMusepackSV8ChapterElementCap(t *testing.T) {
 		}
 	}
 	// The title item sits past the per-tag item cap: the chapter reads untitled and the
-	// cap is reported rather than the title silently going missing.
+	// cap is reported.
 	items := make([][2]string, 0, 9)
 	for i := range 8 {
 		items = append(items, [2]string{"Comment", strings.Repeat("x", i+1)})
@@ -451,7 +450,7 @@ func TestMusepackChapterEditRefused(t *testing.T) {
 			ed := doc.Edit()
 			c.edit(ed)
 			_, err := ed.Prepare()
-			// The exact gate wording: the writer's own backstop refuses differently.
+			// The exact gate wording: the writer's own refusal reads differently.
 			if !errors.Is(err, waxerr.ErrUnsupportedTag) || !strings.HasSuffix(err.Error(), "chapters cannot be written to a Musepack file") {
 				t.Errorf("err = %v, want the editor's unsupported-tag refusal naming the format", err)
 			}
@@ -510,9 +509,8 @@ func TestMusepackChapterEditRefused(t *testing.T) {
 	})
 }
 
-// transcode case: a Musepack source's chapters carry into a destination that stores them, and a
-// destination Musepack file keeps its own chapters while the report says why the source's were not
-// written.
+// A Musepack source's chapters carry into a destination that stores them, and a destination
+// Musepack file keeps its own chapters while the report says why the source's were not written.
 func TestMusepackChaptersTransfer(t *testing.T) {
 	t.Run("out of Musepack", func(t *testing.T) {
 		src := mustParseBytes(t, mpcChaptered())

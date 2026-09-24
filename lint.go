@@ -193,11 +193,10 @@ func duplicatePictureMessage(roles []core.PictureType) string {
 	return fmt.Sprintf("identical picture appears more than once (roles: %s)", strings.Join(names, ", "))
 }
 
-// distinctSortedRoles returns the distinct picture types among pics whose bytes hash to one of
-// the given per-index hashes equal to h, sorted, so a duplicate-picture message names every role
-// the identical bytes appear under in a stable, iteration-order-independent way. hashes[i] is the
-// precomputed hash of pics[i] (a site may only hash a length-matching subset; an index absent
-// from hashes is skipped).
+// distinctSortedRoles returns the sorted distinct picture types of the pics whose
+// hash equals h, so a duplicate-picture message names every role the identical
+// bytes appear under. hashes[i] is the precomputed hash of pics[i]; an index absent
+// from hashes is skipped (a site may hash only a length-matching subset).
 func distinctSortedRoles(pics []Picture, hashes map[int][32]byte, h [32]byte) []core.PictureType {
 	var roles []core.PictureType
 	for i := range pics {
@@ -217,9 +216,8 @@ func multipleFrontCoversMessage(fronts int) string {
 // single-icon rule.
 func lintPictures(pics []Picture) []Finding {
 	var out []Finding
-	// Precompute every picture's hash once, so a duplicate finding can name the whole set of
-	// roles the identical bytes appear under (distinctSortedRoles) rather than a single
-	// occurrence's role - keeping the message identical to the editor's edit-scope warning.
+	// Hash every picture once so a duplicate finding can name every role the identical
+	// bytes appear under (distinctSortedRoles), matching the editor's warning.
 	hashes := make(map[int][32]byte, len(pics))
 	for i, p := range pics {
 		hashes[i] = p.Hash()
@@ -227,19 +225,16 @@ func lintPictures(pics []Picture) []Finding {
 	seen := map[[32]byte]bool{}
 	fronts := 0
 	for i, p := range pics {
-		// A picture the codec could not sniff is stored as the unrecognized-image MIME;
-		// key on that (not a re-sniff) so a cover a codec already recognized is never
-		// false-flagged. Reported only - never auto-fixed - since a valid cover in an
-		// image format the sniff does not know degrades to exactly this, and dropping
-		// it would be silent data loss.
+		// A picture the codec could not sniff carries the unrecognized-image MIME; key
+		// on that, not a re-sniff. Never auto-fixed: a valid cover in an image format
+		// the sniff does not know looks the same, and dropping it would lose data.
 		if p.Unrecognized() {
 			out = append(out, Finding{Severity: LintWarning, Code: "invalid-picture",
 				Message: fmt.Sprintf("%s picture is not a recognized image type (%s)", p.Type, p.MIME)})
 		}
 		if reason, bad := core.NonConformingIcon(p); bad {
-			// The code comes from the warning's own String, not a literal: the edit-time
-			// warning and this finding are documented to report the same condition under the
-			// same code, and a hand-written copy would let a rename split them silently.
+			// The code comes from the warning's String, not a literal, so the edit-time
+			// warning and this finding cannot diverge.
 			out = append(out, Finding{Severity: LintWarning, Code: core.WarnNonConformingIcon.String(), Message: reason})
 		}
 		h := hashes[i]
@@ -254,9 +249,8 @@ func lintPictures(pics []Picture) []Finding {
 	if fronts > 1 {
 		out = append(out, Finding{Severity: LintWarning, Code: "multiple-front-covers", Message: multipleFrontCoversMessage(fronts)})
 	}
-	// LintError, not the LintWarning non-conforming-icon gets: two type-1 pictures make the
-	// frame set ambiguous and unrepairable without choosing one, while an oversized icon is
-	// unambiguous and every reader renders it. Do not "fix" the asymmetry.
+	// LintError, unlike non-conforming-icon: two type-1 pictures are ambiguous and
+	// unrepairable without choosing one, while an oversized icon still renders.
 	if icon, otherIcon := core.CountIcons(pics); icon > 1 || otherIcon > 1 {
 		out = append(out, Finding{Severity: LintError, Code: "duplicate-icon",
 			Message: "picture types 1/2 must be unique"})
@@ -275,11 +269,9 @@ func lintValues(ts tag.TagSet) []Finding {
 		}
 		vals, _ := ts.Get(k)
 		for _, v := range vals {
-			// Trim the value the same way set does before it validates, so lint and set cannot
-			// disagree on a whitespace-only or space-padded trimmable value. A whitespace-only
-			// numeric ("   ") trims to empty and is skipped as the benign empty-value case set
-			// writes; a space-padded number (" 3 ") validates on its trimmed form. TrimTokenValue
-			// early-returns for a non-trimmable key, so those validators see the value unchanged.
+			// Trim as set does before it validates, so lint and set agree: a
+			// whitespace-only numeric ("   ") trims to empty and is skipped, and " 3 "
+			// validates on its trimmed form. Non-trimmable keys are unchanged.
 			v = tag.TrimTokenValue(k, v)
 			if v != "" && !val.Valid(k, v) {
 				detail, _ := val.Details(k, v)
@@ -291,11 +283,10 @@ func lintValues(ts tag.TagSet) []Finding {
 	return out
 }
 
-// lintNegativeNumbers reports numeric fields with negative values, such as a negative
-// track number or play count. These values parse and round-trip, but they are usually
-// mistakes. This mirrors the set-time advisory using the same predicate and stays
-// LintInfo, like custom-key, so it does not change the clean/non-clean exit boundary.
-// Present-but-empty values are skipped.
+// lintNegativeNumbers reports negative numeric values (track number, play count).
+// They round-trip but are usually mistakes. Same predicate as the set-time
+// advisory; LintInfo, like custom-key, so it does not change the clean exit
+// boundary. Empty values are skipped.
 func lintNegativeNumbers(ts tag.TagSet) []Finding {
 	var out []Finding
 	for _, k := range ts.Keys() {

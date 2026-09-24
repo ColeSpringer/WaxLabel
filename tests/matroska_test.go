@@ -23,8 +23,8 @@ const (
 	chaptersMKA = "../testdata/chapters.mka"
 )
 
-// committed real-ffmpeg fixture without needing ffmpeg at test time: the title comes from
-// Info.Title, the numbering is split from ffmpeg's "n/total", and the date maps to RecordingDate.
+// The ffmpeg-written fixture, read without ffmpeg: the title comes from Info.Title, the
+// numbering is split from ffmpeg's "n/total", and the date maps to RecordingDate.
 func TestMatroskaReadsSampleFixture(t *testing.T) {
 	doc := mustParseFile(t, sampleMKA)
 	if doc.Format() != wl.FormatMatroska {
@@ -77,7 +77,7 @@ func TestMatroskaProperties(t *testing.T) {
 	}
 }
 
-// average-bitrate feature: Matroska has no bitrate element, so for a single audio-only file it is
+// Matroska has no bitrate element, so for a single audio-only file the average bitrate is
 // derived from the cluster byte span over the segment duration.
 func TestMatroskaAverageBitrate(t *testing.T) {
 	t.Parallel()
@@ -108,7 +108,7 @@ func TestMatroskaCoverArt(t *testing.T) {
 	}
 }
 
-// committed Opus/WebM fixture. ffmpeg places the title in Info.Title here too, and stamps two
+// The Opus/WebM fixture: ffmpeg places the title in Info.Title here too, and stamps two
 // ENCODER values at different targets, which must surface as a scope conflict.
 func TestMatroskaWebMFixture(t *testing.T) {
 	doc := mustParseFile(t, sampleWebM)
@@ -194,9 +194,8 @@ func TestMatroskaAudioEssence(t *testing.T) {
 	}
 }
 
-// synthesizes a file with album, track, edition, and chapter targets plus pass-through and
-// technical tag names, checking the scope-aware projection and that the right things are and are
-// not projected.
+// A file with album, track, edition, and chapter targets plus pass-through and technical tag
+// names: the scope-aware projection, and what is and is not projected.
 func TestMatroskaScopeResolution(t *testing.T) {
 	tags := mkEl(idTags, concat(
 		// Album-level (TargetTypeValue 50): ARTIST.
@@ -292,9 +291,8 @@ func TestMatroskaUnknownSizeSegment(t *testing.T) {
 	}
 }
 
-// Tags placed *after* an unknown-size (streamed) Cluster are still read: the parser resolves the
-// cluster's end by skipping its children, rather than treating it as running to the segment end and
-// dropping everything after it.
+// Tags placed after an unknown-size (streamed) Cluster are still read: the parser resolves the
+// cluster's end by skipping its children instead of running it to the segment end.
 func TestMatroskaUnknownSizeClusterTrailingTags(t *testing.T) {
 	info := mkEl(idInfo, mkStr(idSegTitle, "Streamed"))
 	tracks := mkEl(idTracks, mkEl(idTrackEntry, concat(mkUint(idTrackType, 2), mkStr(idCodecID, "A_OPUS"))))
@@ -356,8 +354,8 @@ func TestMatroskaNestedTagPreserved(t *testing.T) {
 	}
 }
 
-// tag value larger than the configured MaxAllocBytes fails the parse with ErrSizeTooLarge rather
-// than being silently dropped; the alloc limit is surfaced, not bypassed.
+// A tag value larger than the configured MaxAllocBytes fails the parse with ErrSizeTooLarge
+// rather than being dropped.
 func TestMatroskaRejectsOverLimitTag(t *testing.T) {
 	big := make([]byte, 4096)
 	for i := range big {
@@ -449,8 +447,8 @@ func TestMatroskaPictureTypeNaming(t *testing.T) {
 	}
 }
 
-// read-side differential: ffmpeg writes a fresh file and our parser must read back exactly the tags
-// ffmpeg was given.
+// Read-side differential: ffmpeg writes a fresh file and the parser must read back exactly the
+// tags ffmpeg was given.
 func TestMatroskaDifferentialFFmpeg(t *testing.T) {
 	requireTool(t, "ffmpeg")
 	dir := t.TempDir()
@@ -485,9 +483,8 @@ func TestMatroskaDifferentialFFmpeg(t *testing.T) {
 }
 
 // FuzzMatroskaParse asserts the Matroska reader and writer never panic and never corrupt the
-// essence on whatever they accept. It forces EBML detection by keeping the magic prefix, so
-// arbitrary mutations exercise the codec itself (unknown-size elements, truncated VINTs, hostile
-// lengths) rather than being routed elsewhere.
+// essence on whatever they accept. It keeps the EBML magic prefix so arbitrary mutations reach
+// the codec itself (unknown-size elements, truncated VINTs, hostile lengths).
 func FuzzMatroskaParse(f *testing.F) {
 	const magic = "\x1a\x45\xdf\xa3"
 	for _, p := range []string{sampleMKA, sampleWebM, notagsMKA} {
@@ -502,13 +499,12 @@ func FuzzMatroskaParse(f *testing.F) {
 	// elements the AAC rate and profile come from.
 	f.Add(mkAudioTrackFile("A_AAC/MPEG4/LC/SBR", []byte{0x2b, 0x92, 0x08, 0x00},
 		mkFloat(idSampFreq, 22050), mkFloat(idOutSampFreq, 44100), mkUint(idChannels, 2)))
-	// Regression: an Info whose malformed "CRC-32" child has a junk size that clamps to 4 bytes must
-	// not be mistaken for a real CRC; a title edit on it once wrote a title that a re-parse could not
-	// read back.
+	// An Info whose malformed "CRC-32" child has a junk size that clamps to 4 bytes must not be
+	// mistaken for a real CRC; a title edit on it must write a title a re-parse can read back.
 	f.Add([]byte("\x810\x18S\x80gA0\x15I\xa9f\xc9\xbf0000000"))
-	// Regression: a deeply nested SimpleTag chain. Capturing raw at every recursion
-	// level once amplified retained memory to roughly nesting-depth times the subtree
-	// size; only the top-level tag keeps raw now, so this must parse within bounds.
+	// A deeply nested SimpleTag chain must parse within bounds. Only the top-level tag
+	// keeps raw; capturing raw at every recursion level would retain roughly
+	// nesting-depth times the subtree size.
 	{
 		node := mkSimple("LEAF", "deep")
 		for i := 0; i < 40; i++ {
@@ -547,8 +543,8 @@ func FuzzMatroskaParse(f *testing.F) {
 			}
 		}
 
-		// A Title edit must round-trip or refuse cleanly (a layout the writer does not yet handle; no
-		// Void/overflow/etc. surfaces ErrUnsupportedTag).
+		// A Title edit must round-trip or refuse cleanly: a layout the writer does not handle (no
+		// Void, overflow, etc.) surfaces ErrUnsupportedTag.
 		plan, err := doc.Edit().Set(tag.Title, "fuzz").Prepare()
 		if err != nil {
 			if errors.Is(err, waxerr.ErrUnsupportedTag) || errors.Is(err, waxerr.ErrInvalidData) {
@@ -672,9 +668,8 @@ func mkSimpleNested(name, value string, sub ...[]byte) []byte {
 	return mkEl(idSimpleTag, concat(mkStr(idTagName, name), mkStr(idTagString, value), concat(sub...)))
 }
 
-// mkAudioCluster returns a minimal one-block audio Cluster. A synth fixture needs it to carry real
-// audio essence: without a cluster the parser flags WarnNoAudioFrames (no audio) and Editor.Prepare
-// refuses to write a no-audio file.
+// mkAudioCluster returns a minimal one-block audio Cluster. Without one the parser flags
+// WarnNoAudioFrames and Editor.Prepare refuses to write a no-audio file.
 func mkAudioCluster() []byte {
 	return mkEl(idCluster, concat(
 		mkUint(idTimestamp, 0),

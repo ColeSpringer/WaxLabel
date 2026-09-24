@@ -130,7 +130,7 @@ func RebuildTrailer(t Trailer, base, edited tag.TagSet, pictures []core.Picture,
 	return p, nil
 }
 
-// Segments after the caller's audio copy. ID3v1 is copied from source (byte-faithful).
+// Segments after the caller's audio copy. ID3v1 is copied verbatim from source.
 func (p TrailerPlan) Segments(size int64) []bits.Segment {
 	var segs []bits.Segment
 	if p.Bytes != nil {

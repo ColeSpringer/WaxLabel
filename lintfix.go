@@ -24,9 +24,9 @@ type LintFix struct {
 //
 // Encoder remediation is not gated on Fixable: the option is always safe and
 // reaches a vendor string no document-level predicate sees. Legacy strip is
-// gated on Fixable (unique legacy tags or opaque legacy content keep the
-// container). Explicit [LegacyStrip] still strips unconditionally with a
-// warning; this plan never trips that warning.
+// gated on Fixable: unique legacy tags or opaque legacy content keep the
+// container. An explicit [LegacyStrip] strips unconditionally with a warning;
+// this plan never triggers it.
 //
 // No other findings are acted on. Derived from the parsed document only.
 func (d *Document) PlanLintFix() LintFix {

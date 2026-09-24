@@ -12,7 +12,7 @@ import (
 const errnoNoData = syscall.Errno(232)
 
 // isBrokenPipe reports a write to a closed output pipe. syscall.EPIPE is synthetic
-// on Windows and never returned; without the real errnos `dump | head` exits 6
+// on Windows and never returned; without the Windows errnos `dump | head` exits 6
 // instead of 0. EPIPE stays matched so a synthesized one classifies the same.
 // WSAECONNRESET is unreachable (no net import).
 func isBrokenPipe(err error) bool {

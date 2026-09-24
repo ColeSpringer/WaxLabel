@@ -9,8 +9,8 @@ import (
 	"github.com/colespringer/waxlabel/tag"
 )
 
-// regression guard: the inherited-encoder finding also fires on a bare transcoder vendor string, so
-// lint --fix must not clear a clean, user-set ENCODER tag as collateral.
+// the inherited-encoder finding also fires on a bare transcoder vendor string, so lint --fix must
+// not clear a clean, user-set ENCODER tag as collateral.
 func TestPlanLintFixPreservesCleanEncoder(t *testing.T) {
 	data := flacWithVendor("Lavf58.76.100", "ENCODER=MyTagger 1.0", "TITLE=Song")
 	doc := mustParseBytes(t, data)
@@ -75,10 +75,8 @@ func hasInheritedEncoder(doc *wl.Document) bool {
 	return false
 }
 
-// regression guard: when ENCODER carries several values and a later one is a transcoder stamp, lint
-// --fix removes only the stamp value (keeping the clean one), rather than inspecting only the first
-// value and leaving the stamp, so a re-lint of the saved file is clean and the clean value
-// survives.
+// when ENCODER carries several values and a later one is a transcoder stamp, lint --fix removes
+// only the stamp value, so a re-lint of the saved file is clean and the clean value survives.
 func TestPlanLintFixMultiValueEncoderRemovesStamp(t *testing.T) {
 	// A clean ENCODER value first, then a Lavf stamp (a FLAC with two ENCODER comments); the
 	// vendor is a non-Lavf string so only the ENCODER comment carries the stamp.
@@ -133,7 +131,7 @@ func TestStripEncoderNeutralizesFlacVendor(t *testing.T) {
 	if hasInheritedEncoder(mustParseBytes(t, w.b)) {
 		t.Error("re-parsed FLAC still flags inherited-encoder after --strip-encoder")
 	}
-	// The real tag is untouched by the strip.
+	// The tag is untouched by the strip.
 	if v, _ := mustParseBytes(t, w.b).Get(tag.Title); len(v) != 1 || v[0] != "Song" {
 		t.Errorf("TITLE = %v, want [Song] (strip must not disturb tags)", v)
 	}

@@ -9,8 +9,8 @@ import (
 	"github.com/colespringer/waxlabel/waxerr"
 )
 
-// An MP4 file is a tree of atoms (a.k.a. A size of 1 means a 64-bit size follows the
-// type (header is then 16 bytes);
+// An MP4 file is a tree of atoms (boxes). A size of 1 means a 64-bit size follows the
+// type (the header is then 16 bytes).
 
 // metaSkip is the version/flags prefix inside a "meta" atom before its children.
 const metaSkip = 4
@@ -43,9 +43,9 @@ type node struct {
 	headerLen int64 // 8, or 16 for a 64-bit size
 	size      int64 // total atom length including the header (clamped to the region)
 	// truncated records that this atom's declared size overran the region and was clamped
-	// (only a top-level final atom can be - a truncated download). The "runs to EOF"
-	// sentinel (a declared 0) is resolved to the region length before the clamp, so it
-	// never reads as truncated.
+	// (only a top-level final atom can be: a truncated download). The "runs to EOF"
+	// sentinel (a declared 0) resolves to the region length before the clamp, so it never
+	// reads as truncated.
 	truncated bool
 	children  []node
 }
@@ -70,9 +70,8 @@ func childStart(src core.ReaderAtSized, n node, limit int64) int64 {
 }
 
 // trailingGap returns the count of unusable bytes between where a container's children
-// end and n.end(): the last child's end, or - only when childless - the child-start
-// position (read lazily, since a has-children container never needs it), subtracted
-// from n.end().
+// end and n.end(). The children end at the last child's end, or, when childless, at the
+// child-start position (read lazily, since a container with children never needs it).
 func trailingGap(src core.ReaderAtSized, n node, limit int64) int64 {
 	var childEnd int64
 	if k := len(n.children); k > 0 {
@@ -111,10 +110,9 @@ walkLoop:
 		headerLen := int64(8)
 		switch {
 		case size == 1:
-			// A 64-bit atom needs a 16-byte header; reject one that does not fit the
-			// region rather than reading its extended size from outside it (which would
-			// also let the size clamp below fall under headerLen, making payload lengths
-			// like a.size-a.headerLen negative downstream).
+			// A 64-bit atom needs a 16-byte header; reject one that does not fit the region.
+			// Reading its extended size from outside would let the size clamp below fall
+			// under headerLen, making payload lengths like a.size-a.headerLen negative.
 			if off+16 > end {
 				return nil, fmt.Errorf("%w: 64-bit atom %q header truncated", waxerr.ErrInvalidData, name)
 			}
@@ -138,18 +136,17 @@ walkLoop:
 			return nil, fmt.Errorf("%w: atom %q size %d below 8", waxerr.ErrInvalidData, name, size)
 		}
 		// Only a top-level size==0 sentinel became end-off above (a nested one broke out
-		// of the walk), so past here only a genuinely oversized atom trips the clamp below
-		// and reads as truncated.
+		// of the walk), so past here only an oversized atom trips the clamp below and
+		// reads as truncated.
 		truncated := false
 		if size > end-off {
 			if !topLevel {
 				return nil, fmt.Errorf("%w: atom %q declares %d bytes but only %d remain in its container",
 					waxerr.ErrInvalidData, name, size, end-off)
 			}
-			// Top-level final atom overruns end-of-file (a truncated download): clamp
-			// so the complete earlier atoms still read. This stays consistent on a
-			// rewrite because such an atom is last and re-clamps identically on
-			// re-parse of the output.
+			// Top-level final atom overruns end-of-file (a truncated download): clamp so the
+			// complete earlier atoms still read. A rewrite stays consistent because such an
+			// atom is last and re-clamps identically on a re-parse of the output.
 			truncated = true
 			size = end - off
 		}
@@ -170,10 +167,9 @@ walkLoop:
 		}
 		off = next
 	}
-	// A nested container's children must exactly tile it. An exception: an all-zero
-	// remainder is benign and must be kept readable - QuickTime terminates a udta
-	// user-data list with a 32-bit zero, and zero padding cannot form a misaligning atom
-	// header.
+	// A nested container's children must exactly tile it, except that an all-zero
+	// remainder is benign: QuickTime terminates a udta user-data list with a 32-bit zero,
+	// and zero padding cannot form a misaligning atom header.
 	if !topLevel && off < end {
 		tail, err := bits.ReadSlice(src, off, end-off, limit)
 		if err != nil {
@@ -256,7 +252,7 @@ func (r atomRef) payloadOff() int64 { return r.offset + r.headerLen }
 
 // sizeField returns the offset from the atom start and byte width of the field that
 // encodes the atom's total size. A 16-byte header is the 64-bit largesize form, whose
-// real size is the 8-byte field 8 bytes in;
+// real size is the 8-byte field 8 bytes in.
 func (r atomRef) sizeField() (off, width int64) {
 	if r.headerLen == 16 {
 		return 8, 8

@@ -94,8 +94,8 @@ var asfNames = map[string]tag.Key{
 	"replaygain_album_peak":             tag.ReplayGainAlbumPeak,
 }
 
-// ASFUnrepresentable reports whether a name is dropped because it cannot parse as a key,
-// not deliberate suppression (empty-key table entries).
+// ASFUnrepresentable reports whether a name is dropped because it cannot parse as a key.
+// Suppressed (empty-key) table entries report false.
 func ASFUnrepresentable(name string) bool {
 	norm := strings.ToLower(strings.TrimSpace(name))
 	if _, listed := asfNames[norm]; listed {
@@ -105,9 +105,9 @@ func ASFUnrepresentable(name string) bool {
 	return !ok
 }
 
-// CanonicalASF maps an ASF descriptor name to its canonical key. ok=false for unlisted names
-// and deliberate suppressions. Unlisted WM/* names retry without prefix via tag.AliasKey and
-// tag.ParseKey.
+// CanonicalASF maps an ASF descriptor name to its canonical key. An unlisted name retries
+// with everything up to its first "/" removed, via tag.AliasKey then tag.ParseKey. ok=false
+// for suppressed (empty-key) entries and for names that fail tag.ParseKey.
 func CanonicalASF(name string) (tag.Key, bool) {
 	norm := strings.ToLower(strings.TrimSpace(name))
 	if k, ok := asfNames[norm]; ok {
