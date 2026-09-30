@@ -42,10 +42,11 @@ jobs:
       FUZZTIME: ${{ inputs.fuzztime || ((github.event_name == 'push' || github.event_name == 'pull_request') && '10s') || '2m' }}
     steps:
       - uses: actions/checkout@v7
+      # The newest Go, not the go.mod version: before 1.27, a target that found nothing can
+      # fail with "context deadline exceeded" when -fuzztime expires (golang/go#75804).
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
-          check-latest: true
+          go-version: stable
       # Interesting inputs go to Go's fuzz cache, which dies with the runner. Carry them to
       # the next run so fuzzing accumulates: the key is unique per run so every run saves,
       # and the prefix restores the newest. The save is its own step below, so a finding
