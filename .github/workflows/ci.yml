@@ -107,7 +107,7 @@ jobs:
       - name: go mod tidy
         run: go mod tidy -diff
       - name: staticcheck
-        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
 
   # Known vulnerabilities in the module graph and the standard library, reported only where
   # the code reaches them. The tool is unpinned: it is a client for a live database, and
