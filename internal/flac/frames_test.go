@@ -115,7 +115,7 @@ func synthTailFrame(num uint64, block int, variable bool, val uint16) []byte {
 	fr = append(fr, codedNumber(num)...)
 	fr = append(fr, byte((block-1)>>8), byte(block-1))
 	fr = append(fr, crc8(0, fr))
-	for ch := 0; ch < 2; ch++ {
+	for range 2 {
 		fr = append(fr, 0x00, byte(val>>8), byte(val)) // constant subframe
 	}
 	c := crc16(0, fr)
@@ -277,7 +277,7 @@ func TestFrameTailCancellation(t *testing.T) {
 // audio region, located by re-walking the frame headers.
 func frameOffset(audio []byte, si core.AudioTrack, n int) int {
 	off := 0
-	for i := 0; i < n; i++ {
+	for range n {
 		h, ok := decodeFrameHeader(audio[off:], si)
 		if !ok {
 			panic("frameOffset: synthetic region does not decode")

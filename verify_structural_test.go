@@ -45,7 +45,7 @@ func TestVerifyToleratesElementGrowthPastTightLimit(t *testing.T) {
 		t.Fatalf("parse under a tight element cap: %v", err)
 	}
 	ed := doc.Edit()
-	for i := 0; i < 12; i++ {
+	for i := range 12 {
 		ed.Set(tag.Key("CUSTOMFIELD"+string(rune('A'+i))), "value") // each custom key renders one TXXX frame
 	}
 	plan, err := ed.Prepare(WithVerifyEssence())

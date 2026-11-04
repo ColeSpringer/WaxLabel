@@ -102,7 +102,7 @@ func TestNativeMatroskaCountsAndNoBareBytes(t *testing.T) {
 // nativeLine returns first native-blocks line containing kind.
 func nativeLine(t *testing.T, out, kind string) string {
 	t.Helper()
-	for _, l := range strings.Split(out, "\n") {
+	for l := range strings.SplitSeq(out, "\n") {
 		if strings.Contains(l, kind) {
 			return l
 		}

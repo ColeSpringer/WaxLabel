@@ -46,7 +46,7 @@ func TestPreservationProperty(t *testing.T) {
 		return vals
 	}
 
-	for iter := 0; iter < 300; iter++ {
+	for iter := range 300 {
 		var p tag.TagPatch
 		for ops := rng.Intn(5); ops >= 0; ops-- {
 			k := keys[rng.Intn(len(keys))]

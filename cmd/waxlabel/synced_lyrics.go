@@ -12,16 +12,15 @@ import (
 // the first '=', text (possibly empty or containing '=') after. Mirrors
 // splitChapter; same [H:]MM:SS[.mmm] grammar so dump timestamps round-trip.
 func splitSyncedLyric(s string) (wl.SyncedLine, error) {
-	i := strings.IndexByte(s, '=')
-	if i < 0 {
+	ts, text, ok := strings.Cut(s, "=")
+	if !ok {
 		return wl.SyncedLine{}, usagef("missing '=' in %q (want TIMESTAMP=Text, e.g. 1:30=Verse)", s)
 	}
-	start, err := parseChapterTimestamp(s[:i])
+	start, err := parseChapterTimestamp(ts)
 	if err != nil {
 		// Reword the shared parser's "chapter" noun for this flag.
-		return wl.SyncedLine{}, usagef("invalid synced-lyric timestamp %q (want [H:]MM:SS[.mmm] or seconds, e.g. 1:30 or 90)", s[:i])
+		return wl.SyncedLine{}, usagef("invalid synced-lyric timestamp %q (want [H:]MM:SS[.mmm] or seconds, e.g. 1:30 or 90)", ts)
 	}
-	text := s[i+1:]
 	if err := checkArgText(text, "synced-lyric text"); err != nil {
 		return wl.SyncedLine{}, err
 	}
@@ -88,7 +87,7 @@ func validLanguageCode(s string) bool {
 	if len(s) != 3 {
 		return false
 	}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if c := s[i]; !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z') {
 			return false
 		}

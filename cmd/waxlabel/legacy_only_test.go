@@ -28,7 +28,7 @@ func stackedID3v1MP3(t *testing.T, n int) []byte {
 		t.Fatal(err)
 	}
 	out := audio
-	for i := 0; i < n; i++ {
+	for range n {
 		out = append(out, id3v1Block("Tag", "", "", 255)...)
 	}
 	return out

@@ -192,7 +192,7 @@ func (d *doc) readMarkers(b []byte, warnings *[]core.Warning, maxElements int) {
 		*warnings = core.Warn(*warnings, core.WarnMalformedTagEntry,
 			fmt.Sprintf("the Marker Object declares %d markers but ends after %d; the rest are not read", count, read))
 	}
-	for i := uint32(0); i < count; i++ {
+	for i := range count {
 		if bits.CheckElementCap(int(i), maxElements, "ASF markers") != nil {
 			*warnings = core.Warn(*warnings, core.WarnElementCap,
 				"the Marker Object has more markers than the element limit allows; the rest are not read")
@@ -298,7 +298,7 @@ func (d *doc) readExtendedContentDescription(b []byte, emit func(tag.Key, string
 	}
 	count := int(binary.LittleEndian.Uint16(b[0:2]))
 	pos := 2
-	for i := 0; i < count; i++ {
+	for i := range count {
 		if bits.CheckElementCap(i, maxElements, "ASF descriptors") != nil {
 			return
 		}
@@ -348,7 +348,7 @@ func (d *doc) readMetadataRecords(b []byte, emit func(tag.Key, string, string), 
 	}
 	count := int(binary.LittleEndian.Uint16(b[0:2]))
 	pos := 2
-	for i := 0; i < count; i++ {
+	for i := range count {
 		if bits.CheckElementCap(i, maxElements, "ASF metadata records") != nil {
 			return
 		}

@@ -79,7 +79,7 @@ func TestCoalesceAlternationRejectedPastCap(t *testing.T) {
 	cluster := emptyCluster()
 	body := make([]byte, 0, len(mkInfo("x"))+n*(len(void)+len(cluster)))
 	body = append(body, mkInfo("x")...)
-	for i := 0; i < n; i++ {
+	for range n {
 		body = append(body, cluster...)
 		body = append(body, void...)
 	}

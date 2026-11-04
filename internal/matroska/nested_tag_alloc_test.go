@@ -12,7 +12,7 @@ func nestedSimpleTags(wraps, payload int) []byte {
 		stringElement(idTagName, "LEAF"),
 		encElement(idTagString, bytes.Repeat([]byte{'x'}, payload)),
 	))
-	for i := 0; i < wraps; i++ {
+	for range wraps {
 		node = encElement(idSimpleTag, cat(stringElement(idTagName, "N"), node))
 	}
 	return node

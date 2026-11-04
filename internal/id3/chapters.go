@@ -68,10 +68,8 @@ func ProjectChapters(t *Tag) ([]core.Chapter, []core.Warning) {
 	if t == nil {
 		return nil, nil
 	}
-	major := t.srcVersion
-	if major < 3 {
-		major = 3 // CHAP/CTOC are v2.3+; their subframes use the 10-byte header geometry
-	}
+	// CHAP/CTOC are v2.3+; their subframes use the 10-byte header geometry.
+	major := max(t.srcVersion, 3)
 	// Keep every CHAP in file order rather than keyed by element ID, which would collapse
 	// duplicate or empty IDs into one chapter. The TOC walk below consumes one distinct
 	// CHAP per reference.
@@ -236,7 +234,7 @@ func decodeCTOC(body []byte) (ctocFrame, bool) {
 	count := int(rest[1])
 	rest = rest[2:]
 	c := ctocFrame{id: id, topLevel: flags&ctocTopLevel != 0}
-	for i := 0; i < count; i++ {
+	for range count {
 		child, r, cok := cutLatin1(rest)
 		if !cok {
 			break // truncated child list; keep what parsed

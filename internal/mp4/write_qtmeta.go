@@ -144,10 +144,9 @@ func udtaCanHoldAll(texts []udtaText, tags tag.TagSet) bool {
 // value the edit changed is rewritten, one whose key the edit no longer carries is
 // deleted, and one already holding the canonical value is left alone so an unrelated
 // edit does not rewrite the whole user-data box.
-func planUdtaTexts(d *doc, tags tag.TagSet, create bool, ups int64) ([]byteRep, []byte, []udtaText) {
+func planUdtaTexts(d *doc, tags tag.TagSet, create bool, ups int64) ([]byteRep, []byte) {
 	var reps []byteRep
 	var appends []byte
-	var out []udtaText
 	held := map[tag.Key]bool{}
 	for _, u := range d.udtaTexts {
 		held[u.key] = true
@@ -164,7 +163,6 @@ func planUdtaTexts(d *doc, tags tag.TagSet, create bool, ups int64) ([]byteRep, 
 				entries[i].text = ""
 				reps = append(reps, byteRep{start: u.ref.offset - ups, oldLen: u.ref.size,
 					repl: renderAtom(u.name, renderQTText(entries))})
-				out = append(out, udtaText{name: u.name, key: u.key, entries: entries})
 				continue
 			}
 			reps = append(reps, byteRep{start: u.ref.offset - ups, oldLen: u.ref.size})
@@ -181,10 +179,9 @@ func planUdtaTexts(d *doc, tags tag.TagSet, create bool, ups int64) ([]byteRep, 
 		entries[i].text = vals[0]
 		reps = append(reps, byteRep{start: u.ref.offset - ups, oldLen: u.ref.size,
 			repl: renderAtom(u.name, renderQTText(entries))})
-		out = append(out, udtaText{name: u.name, key: u.key, entries: entries})
 	}
 	if !create {
-		return reps, nil, out
+		return reps, nil
 	}
 	for _, k := range tags.Keys() {
 		vals, _ := tags.Get(k)
@@ -197,9 +194,8 @@ func planUdtaTexts(d *doc, tags tag.TagSet, create bool, ups int64) ([]byteRep, 
 		}
 		entries := []qtTextEntry{{lang: langUnd, text: vals[0]}}
 		appends = append(appends, renderAtom(atomName(name), renderQTText(entries))...)
-		out = append(out, udtaText{name: atomName(name), key: k, entries: entries})
 	}
-	return reps, appends, out
+	return reps, appends
 }
 
 // qtMetaWrite is the resolved QuickTime-store decision for one edit.
@@ -215,10 +211,7 @@ type qtMetaWrite struct {
 	reps      []byteRep
 	appends   []byte
 	metaDelta int64
-	// texts is the udta text set the written file holds, for the post-write result.
-	// textsChanged records that some udta atom was rewritten OR deleted; texts alone misses a
-	// delete-only sync, which still changes bytes and must be reported.
-	texts        []udtaText
+	// textsChanged records that some udta text atom was rewritten or deleted.
 	textsChanged bool
 }
 
@@ -248,10 +241,9 @@ func planQTMeta(d *doc, edited *core.Media, newKeys []string, allowUdtaOnly bool
 		}
 	}
 	if len(d.udtaTexts) > 0 {
-		reps, appends, texts := planUdtaTexts(d, edited.Tags, w.udtaOnly, ups)
+		reps, appends := planUdtaTexts(d, edited.Tags, w.udtaOnly, ups)
 		w.reps = append(w.reps, reps...)
 		w.appends = appends
-		w.texts = texts
 		w.textsChanged = len(reps) > 0 || len(appends) > 0
 	}
 	// Splicing needs the captured udta payload.
@@ -321,7 +313,7 @@ func planQTMetaWrite(d *doc, base, edited *core.Media, newItems []item, qw qtMet
 	if qw.udtaOnly {
 		resultItems = d.items
 	}
-	result := buildQTMetaResult(edited, d, resultItems, qw, reg, delta, total)
+	result := buildQTMetaResult(edited, d, resultItems, reg, delta, total)
 	// Collapse to a no-op when the rebuild re-projected to base's values, as the in-place
 	// ilst path does. A grown region (delta != 0) is a structural change and blocks it.
 	if np := core.DowngradeNoOp(core.FormatMP4, edited.Identity.Size, base, result,
@@ -357,7 +349,7 @@ func qtMetaOps(d *doc, qw qtMetaWrite, delta int64, pics int) []string {
 // buildQTMetaResult constructs the post-write Media for a udta-region tag rewrite, the
 // analogue of buildChapterResult for an edit that changes no chapters: the chapter model is
 // carried forward verbatim, and the atom refs come from re-walking the rendered udta.
-func buildQTMetaResult(edited *core.Media, src *doc, items []item, qw qtMetaWrite, reg udtaRegion, delta, total int64) *core.Media {
+func buildQTMetaResult(edited *core.Media, src *doc, items []item, reg udtaRegion, delta, total int64) *core.Media {
 	nd := &doc{
 		size:            total,
 		cfg:             src.cfg,

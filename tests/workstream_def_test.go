@@ -302,7 +302,7 @@ func TestWAVStripEncoderStampLeavesUserISFT(t *testing.T) {
 func adtsStreamRDB(chanConfig, frames, payloadPerFrame, rdb int) []byte {
 	out := adtsStream(chanConfig, frames, payloadPerFrame)
 	frameLen := 7 + payloadPerFrame
-	for i := 0; i < frames; i++ {
+	for i := range frames {
 		out[i*frameLen+6] = byte(rdb & 0x03)
 	}
 	return out

@@ -253,7 +253,7 @@ func conformantFrameID(id string) bool {
 	if len(id) != 4 {
 		return false
 	}
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		if !isUpperAlnum(id[i]) {
 			return false
 		}

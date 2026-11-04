@@ -477,7 +477,7 @@ func mp3XingFrame(frameCount uint32) []byte {
 func mp3VBRStream(frames int, declared uint32) []byte {
 	const frameLen = 417
 	out := make([]byte, 0, frames*frameLen)
-	for i := 0; i < frames; i++ {
+	for i := range frames {
 		f := make([]byte, frameLen)
 		f[0], f[1], f[2], f[3] = 0xFF, 0xFB, 0x90, 0x00
 		if i == 0 {

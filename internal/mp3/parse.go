@@ -77,16 +77,10 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 				"APEv2 tag present; preserved")
 		}
 	}
-	d.audioEnd = tailEnd
-	if d.audioEnd < d.audioStart {
-		d.audioEnd = d.audioStart
-	}
+	d.audioEnd = max(tailEnd, d.audioStart)
 
 	// Audio properties from the first MPEG frame (and its VBR header, for length).
-	win := d.audioEnd - d.audioStart
-	if win > scanWindow {
-		win = scanWindow
-	}
+	win := min(d.audioEnd-d.audioStart, scanWindow)
 	if window, err := bits.ReadSlice(src, d.audioStart, win, limit); err == nil {
 		if info, ok := parseMPEG(window); ok {
 			d.firstHeader = info.header

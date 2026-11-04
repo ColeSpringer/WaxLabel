@@ -384,7 +384,7 @@ func parseOffsetTable(src core.ReaderAtSized, a node, limit int64) (offsetTable,
 			waxerr.ErrInvalidData, a.id(), count, len(body))
 	}
 	t.entries = make([]uint64, count)
-	for i := int64(0); i < count; i++ {
+	for i := range count {
 		off := 8 + t.entryPrefix + i*width
 		if t.co64 {
 			t.entries[i] = binary.BigEndian.Uint64(body[off : off+8])

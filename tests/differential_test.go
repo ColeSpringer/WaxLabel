@@ -149,8 +149,7 @@ func ffprobeStream(t *testing.T, path string) probeStream {
 	if err != nil {
 		// ffprobe says why on stderr ("missing mandatory atoms", an unreadable config); without it a
 		// failure here is only an exit status.
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
+		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 			t.Fatalf("ffprobe %s: %v\n%s", path, err, ee.Stderr)
 		}
 		t.Fatalf("ffprobe %s: %v", path, err)

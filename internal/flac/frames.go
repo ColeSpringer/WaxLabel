@@ -193,9 +193,9 @@ var (
 
 func makeCRC8Table() *[256]uint8 {
 	var t [256]uint8
-	for n := 0; n < 256; n++ {
+	for n := range 256 {
 		c := uint8(n)
-		for k := 0; k < 8; k++ {
+		for range 8 {
 			if c&0x80 != 0 {
 				c = (c << 1) ^ frameCRC8Poly
 			} else {
@@ -209,9 +209,9 @@ func makeCRC8Table() *[256]uint8 {
 
 func makeCRC16Table() *[256]uint16 {
 	var t [256]uint16
-	for n := 0; n < 256; n++ {
+	for n := range 256 {
 		c := uint16(n) << 8
-		for k := 0; k < 8; k++ {
+		for range 8 {
 			if c&0x8000 != 0 {
 				c = (c << 1) ^ frameCRC16Poly
 			} else {

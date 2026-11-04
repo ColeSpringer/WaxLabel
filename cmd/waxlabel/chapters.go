@@ -11,15 +11,14 @@ import (
 // '=', title (possibly empty or containing '=') after. Mirrors splitAssign: value
 // side is verbatim. Missing '=' or bad timestamp is a usage error.
 func splitChapter(s string) (start time.Duration, title string, err error) {
-	i := strings.IndexByte(s, '=')
-	if i < 0 {
+	ts, title, ok := strings.Cut(s, "=")
+	if !ok {
 		return 0, "", usagef("missing '=' in %q (want TIMESTAMP=Title, e.g. 1:30=Verse)", s)
 	}
-	start, err = parseChapterTimestamp(s[:i])
+	start, err = parseChapterTimestamp(ts)
 	if err != nil {
 		return 0, "", err
 	}
-	title = s[i+1:]
 	if err := checkArgText(title, "chapter title"); err != nil {
 		return 0, "", err
 	}
@@ -46,10 +45,8 @@ func parseChapterTimestamp(s string) (time.Duration, error) {
 	secStr := parts[len(parts)-1]
 	// Fractional part must be 1-3 digits: ParseFloat accepts a dangling "." and
 	// over-precise fractions, which the ms grammar does not.
-	if idx := strings.IndexByte(secStr, '.'); idx >= 0 {
-		if frac := secStr[idx+1:]; len(frac) == 0 || len(frac) > 3 {
-			return 0, badTimestamp(s)
-		}
+	if _, frac, ok := strings.Cut(secStr, "."); ok && (len(frac) == 0 || len(frac) > 3) {
+		return 0, badTimestamp(s)
 	}
 	secs, err := strconv.ParseFloat(secStr, 64)
 	if err != nil || secs < 0 {

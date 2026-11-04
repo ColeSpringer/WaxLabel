@@ -1033,7 +1033,7 @@ func TestRebuildDeterministicNewFrames(t *testing.T) {
 	edited.Set(tag.ISRC, "Y")
 
 	var first []byte
-	for i := 0; i < 25; i++ {
+	for i := range 25 {
 		out, _ := RebuildFrames(nil, tag.NewTagSet(), edited, 4, StructuredEdit{}, WriteOpts{})
 		data := Render(4, out, 0)
 		if i == 0 {

@@ -121,7 +121,6 @@ func TestCoincidentStartChapterEndPreservedRoundTrip(t *testing.T) {
 		{"id3", "testdata/notags.mp3", ".mp3"},
 		{"matroska", "testdata/notags.mka", ".mka"},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			base, err := ParseFile(ctx, tc.src)
 			if err != nil {

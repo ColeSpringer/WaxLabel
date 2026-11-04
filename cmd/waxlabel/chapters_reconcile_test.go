@@ -22,7 +22,6 @@ func TestChapterOverlapReconciledWarningSurface(t *testing.T) {
 		{"matroska", chaptersMKA, "0.1=Marker"}, // Intro 0-0.2s -> overlaps a 0.1s marker
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			out, _, code := runCLI(t, "plan", copyFixture(t, c.file), "--add-chapter", c.marker)

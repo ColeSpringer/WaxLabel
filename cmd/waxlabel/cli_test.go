@@ -189,7 +189,7 @@ func TestDumpTextOmitsBitDepthForLossy(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("exit = %d\n%s", code, out)
 			}
-			for _, line := range strings.Split(out, "\n") {
+			for line := range strings.SplitSeq(out, "\n") {
 				if strings.Contains(line, "audio:") && strings.Contains(line, "-bit") {
 					t.Errorf("audio line shows a bit depth: %s", line)
 				}

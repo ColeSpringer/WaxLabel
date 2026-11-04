@@ -114,10 +114,10 @@ func TestCLIOutputGainRoundsToQ78(t *testing.T) {
 // capLine reports whether the caps report has a row with the given label and value.
 func capLine(t *testing.T, out, label, want string) bool {
 	t.Helper()
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		f := strings.TrimSpace(line)
-		if strings.HasPrefix(f, label) {
-			return strings.TrimSpace(strings.TrimPrefix(f, label)) == want
+		if after, ok := strings.CutPrefix(f, label); ok {
+			return strings.TrimSpace(after) == want
 		}
 	}
 	return false

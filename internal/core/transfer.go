@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/colespringer/waxlabel/tag"
@@ -276,18 +277,14 @@ func dispose(c Capability, readOnly bool, count int, noun string, values []strin
 	}
 	// dropsValue before reducesValue: omit -> Dropped, not Lossy.
 	if c.dropsValue != nil {
-		for _, v := range values {
-			if c.dropsValue(v) {
-				return Dropped, "the destination cannot store this value"
-			}
+		if slices.ContainsFunc(values, c.dropsValue) {
+			return Dropped, "the destination cannot store this value"
 		}
 	}
 	// reducesValue: value-dependent Lossy vs Carried.
 	if c.reducesValue != nil {
-		for _, v := range values {
-			if c.reducesValue(v) {
-				return Lossy, c.Reason()
-			}
+		if slices.ContainsFunc(values, c.reducesValue) {
+			return Lossy, c.Reason()
 		}
 		return Carried, ""
 	}

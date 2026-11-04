@@ -67,10 +67,7 @@ func Write(ctx context.Context, dst io.Writer, src io.ReaderAt, segs []Segment, 
 			if err := ctx.Err(); err != nil {
 				return total, err
 			}
-			chunk := int64(len(buf))
-			if remaining < chunk {
-				chunk = remaining
-			}
+			chunk := min(remaining, int64(len(buf)))
 			if _, err := src.ReadAt(buf[:chunk], off); err != nil {
 				return total, fmt.Errorf("%w: copy read at %d: %v", waxerr.ErrInvalidData, off, err)
 			}

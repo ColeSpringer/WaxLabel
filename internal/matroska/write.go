@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -576,11 +577,7 @@ func computeEditDecisions(groups []tagGroup, albumIdx int, base, edited tag.TagS
 	for {
 		avail := make(map[tag.Key]map[string]int, len(exact))
 		for k, ex := range exact {
-			cp := make(map[string]int, len(ex))
-			for v, n := range ex {
-				cp[v] = n
-			}
-			avail[k] = cp
+			avail[k] = maps.Clone(ex)
 		}
 		for i := range ds {
 			d := &ds[i]
@@ -766,7 +763,7 @@ func migratesToInfo(st simpleTag, infoPresent bool) bool {
 // groupTouchedBy reports whether the edit drops any of the group's nTags SimpleTags,
 // in which case the group is re-rendered rather than preserved verbatim.
 func groupTouchedBy(nTags, gi int, ed *editDecisions) bool {
-	for ti := 0; ti < nTags; ti++ {
+	for ti := range nTags {
 		if ed.dropped(gi, ti) {
 			return true
 		}
@@ -778,10 +775,8 @@ func groupTouchedBy(nTags, gi int, ed *editDecisions) bool {
 // projects into the canonical Title alongside Info.Title.
 func hasManagedTitleTag(groups []tagGroup) bool {
 	for _, g := range groups {
-		for _, st := range g.tags {
-			if isManagedTitle(st) {
-				return true
-			}
+		if slices.ContainsFunc(g.tags, isManagedTitle) {
+			return true
 		}
 	}
 	return false

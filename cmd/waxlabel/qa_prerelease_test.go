@@ -14,7 +14,6 @@ func TestStrictTrailingEmptyValueDropped(t *testing.T) {
 	args := []string{"--set", "ARTIST=A", "--add", "ARTIST=B", "--add", "ARTIST="}
 
 	for _, f := range []string{"notags.mp3", "notags.wav", "notags.aac", "notags.aiff"} {
-		f := f
 		t.Run("drops/"+f, func(t *testing.T) {
 			t.Parallel()
 			out, _, _ := runCLI(t, append([]string{"plan", copyFixture(t, td(f))}, args...)...)
@@ -28,7 +27,6 @@ func TestStrictTrailingEmptyValueDropped(t *testing.T) {
 	}
 
 	for _, f := range []string{"notags.flac", "notags.ogg", "notags.m4a", "notags.mka"} {
-		f := f
 		t.Run("roundtrips/"+f, func(t *testing.T) {
 			t.Parallel()
 			out, _, _ := runCLI(t, append([]string{"plan", copyFixture(t, td(f))}, args...)...)
@@ -216,7 +214,6 @@ func TestSilentDropFailsStrictMatrix(t *testing.T) {
 		{"mediatype oversized", notagsM4A, []string{"--set", "MEDIATYPE=256"}, "value-dropped"},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			out, _, _ := runCLI(t, append([]string{"plan", copyFixture(t, c.fixture)}, c.args...)...)

@@ -3,6 +3,7 @@ package mp4
 import (
 	"encoding/binary"
 	"math"
+	"slices"
 	"time"
 	"unicode/utf8"
 
@@ -81,7 +82,7 @@ func decodeChpl(src core.ReaderAtSized, chpl node, limit int64) (version uint8, 
 	count := int64(b[pos])
 	pos++
 	chapters = make([]core.Chapter, 0, count)
-	for i := int64(0); i < count; i++ {
+	for range count {
 		if pos+9 > n { // 8-byte start + 1-byte length
 			return 0, nil, false
 		}
@@ -390,7 +391,7 @@ func elstSegmentDurationSum(p []byte) uint64 {
 		if !boundedCount(count, 8, 12, int64(len(p))) {
 			return 0
 		}
-		for i := int64(0); i < count; i++ {
+		for i := range count {
 			off := 8 + i*12
 			sum += uint64(binary.BigEndian.Uint32(p[off : off+4]))
 		}
@@ -398,7 +399,7 @@ func elstSegmentDurationSum(p []byte) uint64 {
 		if !boundedCount(count, 8, 20, int64(len(p))) {
 			return 0
 		}
-		for i := int64(0); i < count; i++ {
+		for i := range count {
 			off := 8 + i*20
 			sum += binary.BigEndian.Uint64(p[off : off+8])
 		}
@@ -462,10 +463,8 @@ func trakByID(src core.ReaderAtSized, traks []node, ids []uint32, limit int64) (
 		if !ok {
 			continue
 		}
-		for _, want := range ids {
-			if id == want {
-				return t, true
-			}
+		if slices.Contains(ids, id) {
+			return t, true
 		}
 	}
 	return node{}, false
@@ -577,11 +576,11 @@ func sampleTimes(src core.ReaderAtSized, stbl node, limit int64) (times []uint64
 		return nil, 0, false, false
 	}
 	var t uint64
-	for i := int64(0); i < count; i++ {
+	for i := range count {
 		o := 8 + i*8
 		n := binary.BigEndian.Uint32(b[o : o+4])
 		delta := binary.BigEndian.Uint32(b[o+4 : o+8])
-		for j := uint32(0); j < n; j++ {
+		for range n {
 			if len(times) >= maxChapterSamples {
 				return times, t, false, true // capped: t is not the true final boundary
 			}
@@ -639,13 +638,7 @@ func sampleSizes(src core.ReaderAtSized, stbl node, nSamples int, limit int64) (
 		return nil, false
 	}
 	shared := binary.BigEndian.Uint32(b[4:8])
-	count := int64(binary.BigEndian.Uint32(b[8:12]))
-	if count > int64(nSamples) {
-		count = int64(nSamples)
-	}
-	if count > maxChapterSamples {
-		count = maxChapterSamples
-	}
+	count := min(int64(binary.BigEndian.Uint32(b[8:12])), int64(nSamples), maxChapterSamples)
 	sizes := make([]uint32, count)
 	if shared != 0 {
 		for i := range sizes {
@@ -656,7 +649,7 @@ func sampleSizes(src core.ReaderAtSized, stbl node, nSamples int, limit int64) (
 	if !boundedCount(count, 12, 4, int64(len(b))) {
 		return nil, false
 	}
-	for i := int64(0); i < count; i++ {
+	for i := range count {
 		o := 12 + i*4
 		sizes[i] = binary.BigEndian.Uint32(b[o : o+4])
 	}
@@ -698,7 +691,7 @@ func stscEntries(src core.ReaderAtSized, stbl node, limit int64) ([]stscEntry, b
 		return nil, false
 	}
 	out := make([]stscEntry, count)
-	for i := int64(0); i < count; i++ {
+	for i := range count {
 		o := 8 + i*12
 		out[i] = stscEntry{
 			firstChunk:      binary.BigEndian.Uint32(b[o : o+4]),
@@ -723,7 +716,7 @@ func expandStsc(entries []stscEntry, nChunks int) []uint32 {
 		return out
 	}
 	ei := 0
-	for c := 0; c < nChunks; c++ {
+	for c := range nChunks {
 		for ei+1 < len(entries) && int(entries[ei+1].firstChunk) <= c+1 {
 			ei++
 		}

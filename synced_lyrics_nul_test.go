@@ -19,7 +19,6 @@ func TestSyncedLyricsNULRejectedAtCodec(t *testing.T) {
 		"testdata/notags.aiff",
 		"testdata/notags.aac",
 	} {
-		fixture := fixture
 		t.Run(fixture, func(t *testing.T) {
 			doc, err := ParseFile(ctx, fixture)
 			if err != nil {

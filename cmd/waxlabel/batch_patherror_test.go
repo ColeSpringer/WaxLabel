@@ -17,7 +17,6 @@ type batchElem struct {
 func TestDirectoryInBatchIsPerElementError(t *testing.T) {
 	t.Parallel()
 	for _, cmd := range []string{"dump", "verify", "lint", "plan", "set"} {
-		cmd := cmd
 		t.Run(cmd, func(t *testing.T) {
 			t.Parallel()
 			good1 := copyFixture(t, sampleFLAC)

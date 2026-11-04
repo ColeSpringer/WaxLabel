@@ -375,9 +375,9 @@ func ParseNumPair(num, total string) (n, tot int) {
 		return v
 	}
 	if num != "" {
-		if i := strings.IndexByte(num, '/'); i >= 0 {
-			n = atoi(num[:i])
-			tot = atoi(num[i+1:])
+		if before, after, ok := strings.Cut(num, "/"); ok {
+			n = atoi(before)
+			tot = atoi(after)
 		} else {
 			n = atoi(num)
 		}

@@ -146,7 +146,7 @@ func buildAPEN(n int, footerCount uint32) []byte {
 		binary.LittleEndian.PutUint32(hdr[0:4], uint32(len(val)))
 		binary.LittleEndian.PutUint32(hdr[4:8], 0) // text item
 		body = append(body, hdr[:]...)
-		body = append(body, []byte(fmt.Sprintf("K%d", i))...)
+		body = fmt.Appendf(body, "K%d", i)
 		body = append(body, 0)
 		body = append(body, []byte(val)...)
 	}

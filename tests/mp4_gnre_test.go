@@ -13,11 +13,10 @@ import (
 // output's "gnre" item.
 func gnreDataAtom(t *testing.T, out []byte) (typ uint32, value []byte) {
 	t.Helper()
-	j := bytes.Index(out, []byte("gnre"))
-	if j < 0 {
+	_, da, ok := bytes.Cut(out, []byte("gnre")) // the data sub-atom begins right after the gnre name
+	if !ok {
 		t.Fatalf("no gnre atom in output")
 	}
-	da := out[j+4:] // the data sub-atom begins right after the gnre name
 	if len(da) < 16 || string(da[4:8]) != "data" {
 		t.Fatalf("gnre payload is not a data atom: % x", da[:min(16, len(da))])
 	}

@@ -183,7 +183,7 @@ func TestAttachedFileUID(t *testing.T) {
 	if uidOf(t, b0) == uidOf(t, b1) {
 		t.Error("FileUID should be random (two renders collided)")
 	}
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		if fileUID() == 0 {
 			t.Fatal("fileUID must never return zero")
 		}

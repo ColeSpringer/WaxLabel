@@ -46,7 +46,6 @@ func TestLintAndNoteAgree(t *testing.T) {
 		{"WORK=anything at all", false}, // free text
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.kv, func(t *testing.T) {
 			t.Parallel()
 			file := copyFixture(t, sampleFLAC)

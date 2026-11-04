@@ -26,7 +26,7 @@ func compactJSON(t *testing.T, s string) string {
 
 // lineWith returns the first output line containing sub.
 func lineWith(out, sub string) string {
-	for _, ln := range strings.Split(out, "\n") {
+	for ln := range strings.SplitSeq(out, "\n") {
 		if strings.Contains(ln, sub) {
 			return ln
 		}

@@ -463,8 +463,7 @@ func perFileReason(err error) string {
 	}
 	// walkError wraps walk *fs.PathError for arity rules; unwrap so PathError below drops
 	// path caller prints itself.
-	var we walkError
-	if errors.As(err, &we) {
+	if we, ok := errors.AsType[walkError](err); ok {
 		err = we.Unwrap()
 	}
 	if pe, ok := err.(*fs.PathError); ok {

@@ -14,7 +14,7 @@ func mp4WithTrailingMdats(nLeaked int) []byte {
 	dead := bytes.Repeat([]byte{0xCC}, 48)
 	build := func(stcoOff uint32) []byte {
 		parts := [][]byte{mp4Ftyp(), mp4Moov(nil, stcoOff), mp4Atom("mdat", audio)}
-		for i := 0; i < nLeaked; i++ {
+		for range nLeaked {
 			parts = append(parts, mp4Atom("mdat", dead))
 		}
 		return slices.Concat(parts...)

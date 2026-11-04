@@ -126,11 +126,10 @@ func assignCoverSlots(pics []core.Picture, added []bool, blocked map[string]bool
 
 // DecodeCover: file name is not a description; MIME/geometry come from sniff.
 func DecodeCover(name string, data []byte) (core.Picture, error) {
-	i := bytes.IndexByte(data, 0)
-	if i < 0 {
+	_, img, ok := bytes.Cut(data, []byte{0})
+	if !ok {
 		return core.Picture{}, fmt.Errorf("%w: %s item has no NUL-terminated file name", waxerr.ErrInvalidData, name)
 	}
-	img := data[i+1:]
 	if len(img) == 0 {
 		return core.Picture{}, fmt.Errorf("%w: %s item carries no image bytes", waxerr.ErrInvalidData, name)
 	}

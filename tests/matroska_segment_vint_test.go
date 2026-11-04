@@ -162,10 +162,7 @@ func assertSeekEntriesResolve(t *testing.T, data []byte) {
 		}
 		sz, szn, _ := readVint(data, off+idn, false)
 		ds := off + idn + szn
-		de := ds + int(sz)
-		if de > shEnd {
-			de = shEnd
-		}
+		de := min(ds+int(sz), shEnd)
 		if id == idSeek {
 			var seekID uint64
 			pos := -1

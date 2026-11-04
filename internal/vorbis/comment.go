@@ -36,7 +36,7 @@ func ParseCommentList(body []byte, limit int64, maxElements int) (vendor string,
 	vlen := int64(c.U32LE())
 	vendor = string(c.Bytes(vlen))
 	count := c.U32LE()
-	for i := uint32(0); i < count; i++ {
+	for range count {
 		if c.Err() != nil {
 			break
 		}

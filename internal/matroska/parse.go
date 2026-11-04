@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -691,11 +692,8 @@ func projectionOrder(key tag.Key, contribs []scopedContribution) []contributionE
 		}
 	}
 	primary := scopes[0]
-	for _, s := range scopes {
-		if s == core.ScopeAlbum {
-			primary = core.ScopeAlbum // album is the canonical scope when present
-			break
-		}
+	if slices.Contains(scopes, core.ScopeAlbum) {
+		primary = core.ScopeAlbum // album is the canonical scope when present
 	}
 	present := map[string]bool{}
 	out := make([]contributionEmit, 0, len(contribs))

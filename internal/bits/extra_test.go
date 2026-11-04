@@ -12,7 +12,7 @@ import (
 
 func TestDepthGuard(t *testing.T) {
 	d := NewDepth(3)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := d.Enter(); err != nil {
 			t.Fatalf("level %d: unexpected err %v", i, err)
 		}

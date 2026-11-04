@@ -55,12 +55,7 @@ func (s TagSet) ValueCount(key Key) int { return len(s.values[key]) }
 
 // AnyValue reports whether any value matches, without cloning.
 func (s TagSet) AnyValue(key Key, match func(string) bool) bool {
-	for _, v := range s.values[key] {
-		if match(v) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(s.values[key], match)
 }
 
 // Keys returns the present keys in their preserved order.

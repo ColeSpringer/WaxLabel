@@ -124,7 +124,6 @@ func TestDumpJSONNoAudioNoError(t *testing.T) {
 func TestNoFilesNoteSuppressedUnderJSON(t *testing.T) {
 	t.Parallel()
 	for _, cmd := range []string{"dump", "lint"} {
-		cmd := cmd
 		t.Run(cmd, func(t *testing.T) {
 			t.Parallel()
 			empty := t.TempDir()
@@ -159,7 +158,6 @@ func TestWAVAIFFStructuralOpsGatedOnChange(t *testing.T) {
 		{"wav", "../../testdata/notags.wav"},
 		{"aiff", "../../testdata/notags.aiff"},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 

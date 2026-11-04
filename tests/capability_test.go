@@ -87,14 +87,13 @@ func normalizeEOL(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") 
 // extractBetween returns the text strictly between the first begin and the next end
 // marker, and whether both were found in order.
 func extractBetween(s, begin, end string) (string, bool) {
-	i := strings.Index(s, begin)
-	if i < 0 {
+	_, rest, ok := strings.Cut(s, begin)
+	if !ok {
 		return "", false
 	}
-	rest := s[i+len(begin):]
-	j := strings.Index(rest, end)
-	if j < 0 {
+	between, _, ok := strings.Cut(rest, end)
+	if !ok {
 		return "", false
 	}
-	return rest[:j], true
+	return between, true
 }

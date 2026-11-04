@@ -129,7 +129,7 @@ func parseSV8StreamHeader(b []byte) (header, error) {
 // readSize: 7 bits/byte, big-endian, high bit set on all but the last.
 func readSize(b []byte) (uint64, int, bool) {
 	var v uint64
-	for i := 0; i < len(b); i++ {
+	for i := range b {
 		// Nine continuation bytes = 63 bits; refuse a tenth rather than wrap.
 		if i >= 9 {
 			return 0, 0, false

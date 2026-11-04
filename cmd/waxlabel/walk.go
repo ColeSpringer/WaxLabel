@@ -176,8 +176,7 @@ func (e walkError) Unwrap() error { return e.err }
 func namedInputs(paths []string, pathErrors map[string]error) []string {
 	out := make([]string, 0, len(paths))
 	for _, p := range paths {
-		var we walkError
-		if errors.As(pathErrors[p], &we) {
+		if _, ok := errors.AsType[walkError](pathErrors[p]); ok {
 			continue
 		}
 		out = append(out, p)
@@ -243,10 +242,8 @@ func checkRegularInputs(realOf func(string) string, acceptsStdin bool, args ...s
 // checkEmptyOperands: empty path is exit 2. Shared by expandPaths and copy/diff.
 // Prevents ErrInvalidData from outranking not-found. "-" is valid.
 func checkEmptyOperands(paths ...string) error {
-	for _, p := range paths {
-		if p == "" {
-			return usagef("input filename is empty")
-		}
+	if slices.Contains(paths, "") {
+		return usagef("input filename is empty")
 	}
 	return nil
 }

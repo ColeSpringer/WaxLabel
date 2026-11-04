@@ -102,7 +102,7 @@ func TestPaddingNotePerFormat(t *testing.T) {
 
 // Match want on the padding: line only, not fields/pictures/chapters.
 func paddingLineHas(capsOut, want string) bool {
-	for _, line := range strings.Split(capsOut, "\n") {
+	for line := range strings.SplitSeq(capsOut, "\n") {
 		if strings.Contains(line, "padding:") {
 			return strings.Contains(line, want)
 		}

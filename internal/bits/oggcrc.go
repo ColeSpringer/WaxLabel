@@ -8,9 +8,9 @@ var oggTable = makeOggTable()
 
 func makeOggTable() *[256]uint32 {
 	var t [256]uint32
-	for n := 0; n < 256; n++ {
+	for n := range 256 {
 		c := uint32(n) << 24
-		for k := 0; k < 8; k++ {
+		for range 8 {
 			if c&0x80000000 != 0 {
 				c = (c << 1) ^ oggPoly
 			} else {

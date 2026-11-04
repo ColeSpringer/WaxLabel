@@ -380,8 +380,7 @@ func synthLargeCues(n int) []byte {
 func BenchmarkCuesParseAlloc(b *testing.B) {
 	raw := synthLargeCues(20000)
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if cuesFromRaw(raw, 0, bits.NewDepth(64), maxElement) == nil {
 			b.Fatal("cuesFromRaw returned nil")
 		}

@@ -102,7 +102,7 @@ const maxElement = 64 << 20
 // vintLen returns the byte length a VINT occupies given its first byte, or 0 if
 // the byte has no length-descriptor bit set (invalid).
 func vintLen(first byte) int {
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		if first&(0x80>>i) != 0 {
 			return i + 1
 		}

@@ -139,7 +139,7 @@ func TestMatroskaWriteDupEchoPreservesMultiplicity(t *testing.T) {
 		}
 		out := data
 		// Repeat the edit a few times: a compounding bug grows the count each pass.
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			out, _ = saveMatroska(t, out, mustParseBytes(t, out).Edit().Set(tag.Album, "X"))
 			if got, _ := mustParseBytes(t, out).Get(tag.Artist); !slices.Equal(got, []string{"Solo", "Solo"}) {
 				t.Fatalf("pass %d: ARTIST = %v, want a stable [Solo Solo]", i+1, got)

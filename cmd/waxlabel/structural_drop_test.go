@@ -137,7 +137,7 @@ func TestCLISyncedLyricsWriteTruncationStrict(t *testing.T) {
 	const code = "synced-lyrics-truncated"
 
 	var b strings.Builder
-	for i := 0; i < cap+1; i++ {
+	for i := range cap + 1 {
 		// Distinct MM:SS lines, one per minute.
 		b.WriteString("[")
 		b.WriteString(strconv.Itoa(i))

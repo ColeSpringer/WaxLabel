@@ -55,8 +55,7 @@ type jsonClean struct {
 // errorPath returns the path on the error when present, else fallback. Walk failures
 // name the unreadable subdirectory.
 func errorPath(err error, fallback string) string {
-	var pe *fs.PathError
-	if errors.As(err, &pe) && pe.Path != "" {
+	if pe, ok := errors.AsType[*fs.PathError](err); ok && pe.Path != "" {
 		return pe.Path
 	}
 	return fallback

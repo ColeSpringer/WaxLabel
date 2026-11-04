@@ -38,7 +38,7 @@ func TestRemovePicturesNoRaceWithPictures(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		for n := 0; n < iters; n++ {
+		for range iters {
 			doc.Edit().RemovePictures(func(p Picture) bool {
 				for i := range p.Data {
 					p.Data[i] ^= 0xFF
@@ -49,7 +49,7 @@ func TestRemovePicturesNoRaceWithPictures(t *testing.T) {
 	}()
 	go func() {
 		defer wg.Done()
-		for n := 0; n < iters; n++ {
+		for range iters {
 			for _, p := range doc.Pictures() {
 				_ = p.Data
 			}

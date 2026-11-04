@@ -43,11 +43,11 @@ type WriteReport struct {
 func (r WriteReport) String() string {
 	if r.NoOp {
 		// No-op may still carry discard warnings (value-dropped, etc.).
-		s := NoChangesLine(HasDiscardWarning(r.Warnings))
+		lines := []string{NoChangesLine(HasDiscardWarning(r.Warnings))}
 		for _, x := range r.Warnings {
-			s += "\n  warning: " + x.String()
+			lines = append(lines, "  warning: "+x.String())
 		}
-		return s
+		return strings.Join(lines, "\n")
 	}
 	var lines []string
 	if len(r.Operations) == 0 {

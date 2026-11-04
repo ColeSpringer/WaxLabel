@@ -23,7 +23,7 @@ func bitwiseOggCRC(p []byte) uint32 {
 	var crc uint32
 	for _, b := range p {
 		crc ^= uint32(b) << 24
-		for i := 0; i < 8; i++ {
+		for range 8 {
 			if crc&0x80000000 != 0 {
 				crc = (crc << 1) ^ oggPoly
 			} else {

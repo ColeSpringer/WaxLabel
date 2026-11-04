@@ -342,12 +342,7 @@ func isTranscoderISFT(it infoItem) bool {
 // so Plan knows a WithStripEncoderStamp edit of an otherwise-unchanged file is not a
 // no-op.
 func hasTranscoderISFT(items []infoItem) bool {
-	for _, it := range items {
-		if isTranscoderISFT(it) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(items, isTranscoderISFT)
 }
 
 // encoderNoise flags an inherited transcoder stamp: the ISFT software item

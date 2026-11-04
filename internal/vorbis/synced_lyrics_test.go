@@ -90,11 +90,11 @@ func TestSyncedLyricsRebuildReplaces(t *testing.T) {
 	var lyrics, titles int
 	var lrcValue string
 	for _, cm := range out {
-		switch {
-		case cm.Name == "SYNCEDLYRICS":
+		switch cm.Name {
+		case "SYNCEDLYRICS":
 			lyrics++
 			lrcValue = cm.Value
-		case cm.Name == "TITLE":
+		case "TITLE":
 			titles++
 		}
 	}

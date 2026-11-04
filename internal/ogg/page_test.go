@@ -160,7 +160,7 @@ func TestScanPagesManyPagesUncapped(t *testing.T) {
 	lacing := []byte{1}
 	body := []byte{0xAA}
 	buf := make([]byte, 0, n*(pageFixedHdr+len(lacing)+len(body)))
-	for i := 0; i < n; i++ {
+	for i := range n {
 		buf = append(buf, buildPage(0, uint64(i), 0xCAFEBABE, uint32(i), lacing, body)...)
 	}
 	src := core.BytesSource(buf)
@@ -189,7 +189,7 @@ func TestScanPagesBoundsRetainedBytes(t *testing.T) {
 		}
 		body := make([]byte, bodyLen)
 		var buf []byte
-		for i := 0; i < n; i++ {
+		for i := range n {
 			buf = append(buf, buildPage(0, uint64(i), 0xCAFEBABE, uint32(i), lacing, body)...)
 		}
 		return buf

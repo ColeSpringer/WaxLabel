@@ -230,15 +230,14 @@ func (e *editFlags) patch() (tag.TagPatch, error) {
 // splitAssign parses KEY=VALUE. Key is normalized and alias-resolved.
 // Value is everything after the first '=', so it may contain '='.
 func splitAssign(s string) (tag.Key, string, error) {
-	i := strings.IndexByte(s, '=')
-	if i < 0 {
+	rawKey, v, ok := strings.Cut(s, "=")
+	if !ok {
 		return "", "", usagef("missing '=' in %q (want KEY=VALUE; use --clear to remove a key)", s)
 	}
-	k, err := parseEditKey(strings.TrimSpace(s[:i]))
+	k, err := parseEditKey(strings.TrimSpace(rawKey))
 	if err != nil {
 		return "", "", &usageError{msg: err.Error()}
 	}
-	v := s[i+1:]
 	if err := checkArgText(v, fmt.Sprintf("value for %q", k)); err != nil {
 		return "", "", err
 	}
@@ -348,7 +347,7 @@ func (e *pictureLoadError) Unwrap() error { return e.err }
 // (lowercase, spaces to hyphens) so it tracks the enum and disambiguates roles.
 var pictureRoles = func() map[string]wl.PictureType {
 	m := map[string]wl.PictureType{}
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		p := wl.PictureType(i)
 		name := p.String()
 		if name == "reserved" {
@@ -799,7 +798,8 @@ func notifyValueNotes(errOut io.Writer, e *editFlags, asJSON bool) {
 		// Trim like the writer for collision and malformed checks.
 		v = tag.TrimTokenValue(k, v)
 		// Compare trimmed values; run before empty-value continue.
-		spelling := strings.TrimSpace(kv[:strings.IndexByte(kv, '=')])
+		rawKey, _, _ := strings.Cut(kv, "=")
+		spelling := strings.TrimSpace(rawKey)
 		prev, ok := seen[k]
 		if !ok {
 			prev = &seenSet{first: spelling}

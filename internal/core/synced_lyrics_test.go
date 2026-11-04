@@ -32,7 +32,7 @@ func TestParseLRCBasics(t *testing.T) {
 func TestParseLRCReportTruncation(t *testing.T) {
 	var b strings.Builder
 	const over = MaxSyncedLines + 5
-	for i := 0; i < over; i++ {
+	for i := range over {
 		fmt.Fprintf(&b, "[%d:00.000]x\n", i)
 	}
 	lines, truncated := ParseLRCReport(b.String())

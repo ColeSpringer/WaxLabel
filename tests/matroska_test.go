@@ -507,7 +507,7 @@ func FuzzMatroskaParse(f *testing.F) {
 	// nesting-depth times the subtree size.
 	{
 		node := mkSimple("LEAF", "deep")
-		for i := 0; i < 40; i++ {
+		for range 40 {
 			node = mkEl(idSimpleTag, concat(mkStr(idTagName, "N"), node))
 		}
 		f.Add(buildMatroska("matroska", "", mkEl(idTags, mkEl(idTag, concat(mkEl(idTargets, nil), node)))))

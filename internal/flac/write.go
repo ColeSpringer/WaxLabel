@@ -251,10 +251,7 @@ func rebuildBlocks(d *doc, newVendor string, newComments []comment, pictures []c
 func paddingBlocks(budget int) []block {
 	var out []block
 	for budget > 4+maxBlockBody {
-		body := budget - 8 // reserve header for following block
-		if body > maxBlockBody {
-			body = maxBlockBody
-		}
+		body := min(budget-8, maxBlockBody) // reserve header for following block
 		out = append(out, block{code: blkPadding, body: make([]byte, body)})
 		budget -= 4 + body
 	}

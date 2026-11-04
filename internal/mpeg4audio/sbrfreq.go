@@ -115,10 +115,10 @@ func frequencyBounds(h sbrHeader, fsSBR int) (k0, k2 int, ok bool) {
 	startMin := nint(startMinHz * 128 / float64(fsSBR))
 	stopMin := nint(stopMinHz * 128 / float64(fsSBR))
 	k0 = startMin + startOffset(fsSBR)[h.startFreq]
-	switch {
-	case h.stopFreq == 15:
+	switch h.stopFreq {
+	case 15:
 		k2 = min(64, 3*k0)
-	case h.stopFreq == 14:
+	case 14:
 		k2 = min(64, 2*k0)
 	default:
 		if stopMin <= 0 {

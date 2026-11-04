@@ -17,7 +17,7 @@ const overCap = 100001
 func repeatConcat(prefix, elem []byte, n int) []byte {
 	out := make([]byte, 0, len(prefix)+n*len(elem))
 	out = append(out, prefix...)
-	for i := 0; i < n; i++ {
+	for range n {
 		out = append(out, elem...)
 	}
 	return out
@@ -161,7 +161,7 @@ func TestMatroskaManyClustersParseUncapped(t *testing.T) {
 	const n = overCap + 20000 // comfortably past the cap an audio loop must not honor
 	cluster := mkAudioCluster()
 	seg := mkEl(idInfo, mkStr(idSegTitle, "x"))
-	for i := 0; i < n; i++ {
+	for range n {
 		seg = append(seg, cluster...)
 	}
 	data := concat(mkEl(idEBML, mkStr(idDocType, "matroska")), mkEl(idSegment, seg))

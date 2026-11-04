@@ -30,10 +30,7 @@ func parse(ctx context.Context, src core.ReaderAtSized, opts core.ParseOptions) 
 	d.id3 = tg
 	d.id3Len = id3Len
 	d.audioStart = d.id3Len
-	d.audioEnd = size
-	if d.audioEnd < d.audioStart {
-		d.audioEnd = d.audioStart
-	}
+	d.audioEnd = max(size, d.audioStart)
 
 	// First-frame header. Short/malformed leaves track zero (detection already
 	// required a valid header for a real .aac). Read only when a full header fits.
@@ -141,19 +138,13 @@ func buildTrack(h adtsHeader, totalSamples uint64, audioBytes int64, sbr, ps boo
 // Trailing non-ADTS is excluded. Stops at first bad header or overrun. Honors ctx
 // per window; propagates real read errors (not benign EOF).
 func totalADTSSamples(ctx context.Context, src core.ReaderAtSized, start, end int64) (samples uint64, audioBytes int64, err error) {
-	bufSize := end - start
-	if bufSize > adtsScanChunk {
-		bufSize = adtsScanChunk
-	}
+	bufSize := min(end-start, adtsScanChunk)
 	buf := make([]byte, bufSize)
 	for off := start; off+int64(adtsHeaderSize) <= end; {
 		if e := ctx.Err(); e != nil {
 			return 0, 0, e
 		}
-		n := end - off
-		if n > int64(len(buf)) {
-			n = int64(len(buf))
-		}
+		n := min(end-off, int64(len(buf)))
 		got, rerr := src.ReadAt(buf[:n], off)
 		// Short read: source lost claimed bytes. Full read with EOF (got == n) is fine.
 		if rerr != nil && rerr != io.EOF {
